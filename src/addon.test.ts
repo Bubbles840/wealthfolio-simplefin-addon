@@ -234,6 +234,7 @@ describe('addon enable()', () => {
       }));
       const { Scheduler } = await import('./utils/scheduler');
       const startSpy = vi.spyOn(Scheduler.prototype, 'start');
+      vi.spyOn(Scheduler.prototype, 'isRunning').mockReturnValue(false);
 
       // Start with no setup, scheduleHours will be 6 after wizard completes
       const ctx = makeCtx({ accessUrl: null, accountMapping: null, syncScheduleHours: 6 });
