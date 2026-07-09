@@ -78,7 +78,7 @@ export default function enable(ctx: AddonContext) {
   // Read the schedule the user configured, wire up the scheduler, then show SyncPage.
   async function handleComplete(): Promise<void> {
     const hours = await store.getSyncScheduleHours();
-    if (hours && hours > 0) {
+    if (hours && hours > 0 && !scheduler.isRunning()) {
       scheduler.start(hours, () => runSync(ctx, store));
     } else {
       // scheduleHours === 0 or null → auto-sync disabled
