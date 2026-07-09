@@ -32,11 +32,14 @@ export function SetupPage({ ctx, store, onComplete }: Props) {
     try {
       const accessUrl = await claimToken(token.trim());
       await store.setAccessUrl(accessUrl);
-      setToken('');
       // Fetch only recent data — we just need the account list, not all history
       const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
       const accountSet = await fetchAccounts(accessUrl, yesterday);
+      if (accountSet.errors.length > 0) {
+        setError(`SimpleFin: ${accountSet.errors.join('; ')}`);
+      }
       setSfAccounts(accountSet.accounts);
+      setToken(''); // clear only after successful fetch (token is one-time-use; fetch errors are retryable with stored URL)
       setStep(2);
     } catch (e: any) {
       setError(e.message ?? 'Connection failed');
