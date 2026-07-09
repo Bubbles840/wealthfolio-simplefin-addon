@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ESNext",
+    "jsx": "react-jsx",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "types": ["node", "react", "react-dom"],
+    "paths": {
+      "@shared/*": ["./shared/*"]
+    },
+    "baseUrl": "."
+  },
+  "include": ["src", "shared/**/*", "vitest.config.ts"]
+}
