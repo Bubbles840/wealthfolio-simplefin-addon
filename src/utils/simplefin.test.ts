@@ -49,7 +49,7 @@ describe('fetchAccounts', () => {
     const result = await fetchAccounts(accessUrl, startDate);
 
     const [calledUrl, calledOpts] = mockFetch.mock.calls[0];
-    expect(calledUrl).toContain('/accounts');
+    expect(calledUrl).toContain('/simplefin/accounts');
     expect(calledUrl).toContain(`start-date=${Math.floor(startDate.getTime() / 1000)}`);
     expect(calledUrl).toMatch(/^https:/); // never HTTP
     expect((calledOpts as RequestInit).headers).toMatchObject({
