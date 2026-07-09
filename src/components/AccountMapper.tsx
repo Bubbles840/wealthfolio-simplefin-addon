@@ -12,9 +12,12 @@ interface Props {
 export function AccountMapper({ ctx, simplefinAccounts, initialMapping, onSave }: Props) {
   const [wfAccounts, setWfAccounts] = useState<Array<{ id: string; name: string }>>([]);
   const [mapping, setMapping] = useState<AccountMapping>(initialMapping);
+  const [loadError, setLoadError] = useState('');
 
   useEffect(() => {
-    ctx.api.accounts.getAll().then(setWfAccounts);
+    ctx.api.accounts.getAll()
+      .then(setWfAccounts)
+      .catch((e: any) => setLoadError(e.message ?? 'Failed to load accounts'));
   }, [ctx]);
 
   const handleSelect = (sfinId: string, wfId: string) => {
@@ -34,6 +37,7 @@ export function AccountMapper({ ctx, simplefinAccounts, initialMapping, onSave }
 
   return (
     <div>
+      {loadError && <p style={{ color: 'red' }}>{loadError}</p>}
       <div style={{ display: 'flex', gap: 16, marginBottom: 12 }}>
         <strong style={{ flex: 1 }}>SimpleFin Account</strong>
         <strong style={{ flex: 1 }}>Wealthfolio Account</strong>
@@ -68,7 +72,7 @@ export function AccountMapper({ ctx, simplefinAccounts, initialMapping, onSave }
             );
             onSave(cleanMapping);
           }}
-          disabled={Object.keys(mapping).length === 0}
+          disabled={Object.values(mapping).filter(Boolean).length === 0}
         >
           Save Mapping
         </button>

@@ -42,7 +42,7 @@ export function RuleEditor({ rules, onChange }: Props) {
         Rules run top-to-bottom. First match wins. Defaults: positive → DEPOSIT, negative → WITHDRAWAL.
       </p>
       {rules.map((rule, i) => (
-        <div key={`${rule.matchType}-${rule.pattern}-${i}`} style={{ display: 'flex', gap: 8, marginBottom: 8, alignItems: 'center' }}>
+        <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 8, alignItems: 'center' }}>
           <select value={rule.matchType} onChange={(e) => updateRule(i, { matchType: e.target.value as 'contains' | 'regex' })}>
             <option value="contains">contains</option>
             <option value="regex">regex</option>
