@@ -32,7 +32,10 @@ export function SetupPage({ ctx, store, onComplete }: Props) {
     try {
       const accessUrl = await claimToken(token.trim());
       await store.setAccessUrl(accessUrl);
-      const accountSet = await fetchAccounts(accessUrl, new Date(0));
+      setToken('');
+      // Fetch only recent data — we just need the account list, not all history
+      const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const accountSet = await fetchAccounts(accessUrl, yesterday);
       setSfAccounts(accountSet.accounts);
       setStep(2);
     } catch (e: any) {

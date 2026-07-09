@@ -7,7 +7,9 @@ function requireHttps(url: string, label: string): void {
 }
 
 export async function claimToken(setupToken: string): Promise<string> {
-  const claimUrl = atob(setupToken);
+  // SimpleFin tokens use URL-safe base64 (- instead of +, _ instead of /)
+  const normalized = setupToken.replace(/-/g, '+').replace(/_/g, '/');
+  const claimUrl = atob(normalized);
   requireHttps(claimUrl, 'SimpleFin claim URL');
 
   const res = await fetch(claimUrl, { method: 'POST' });

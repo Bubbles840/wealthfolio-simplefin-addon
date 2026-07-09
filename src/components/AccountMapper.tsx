@@ -63,7 +63,12 @@ export function AccountMapper({ ctx, simplefinAccounts, initialMapping, onSave }
         <button type="button" onClick={handleAutoMatch}>Auto-match by name</button>
         <button
           type="button"
-          onClick={() => onSave(mapping)}
+          onClick={() => {
+            const cleanMapping = Object.fromEntries(
+              Object.entries(mapping).filter(([, v]) => v && v !== '__create__')
+            );
+            onSave(cleanMapping);
+          }}
           disabled={Object.keys(mapping).length === 0}
         >
           Save Mapping

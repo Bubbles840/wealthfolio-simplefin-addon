@@ -27,9 +27,14 @@ export function RuleEditor({ rules, onChange }: Props) {
     onChange(rules.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
   };
 
-  const testResult = testDesc
-    ? mapTransaction(testDesc, 1 /* positive, tests rules only */, rules)
-    : null;
+  let testResult: string | null = null;
+  if (testDesc) {
+    try {
+      testResult = mapTransaction(testDesc, 1, rules);
+    } catch {
+      testResult = '(invalid regex pattern)';
+    }
+  }
 
   return (
     <div>
@@ -37,7 +42,7 @@ export function RuleEditor({ rules, onChange }: Props) {
         Rules run top-to-bottom. First match wins. Defaults: positive → DEPOSIT, negative → WITHDRAWAL.
       </p>
       {rules.map((rule, i) => (
-        <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 8, alignItems: 'center' }}>
+        <div key={`${rule.matchType}-${rule.pattern}-${i}`} style={{ display: 'flex', gap: 8, marginBottom: 8, alignItems: 'center' }}>
           <select value={rule.matchType} onChange={(e) => updateRule(i, { matchType: e.target.value as 'contains' | 'regex' })}>
             <option value="contains">contains</option>
             <option value="regex">regex</option>

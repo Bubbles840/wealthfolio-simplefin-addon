@@ -33,6 +33,19 @@ describe('claimToken', () => {
   it('throws when decoded URL is not HTTPS', async () => {
     await expect(claimToken(btoa('http://bridge.simplefin.org/claim/x'))).rejects.toThrow('HTTPS');
   });
+
+  it('handles URL-safe base64 tokens (- and _)', async () => {
+    const rawUrl = 'https://bridge.simplefin.org/simplefin/claim/abc123';
+    // Manually produce a URL-safe base64 token
+    const token = btoa(rawUrl).replace(/\+/g, '-').replace(/\//g, '_');
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      text: async () => 'https://user:pass@bridge.simplefin.org/simplefin',
+    });
+    const result = await claimToken(token);
+    expect(result).toBe('https://user:pass@bridge.simplefin.org/simplefin');
+  });
 });
 
 describe('fetchAccounts', () => {
