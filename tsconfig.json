@@ -8,7 +8,7 @@
     "skipLibCheck": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
-    "types": ["node", "react", "react-dom"],
+    "types": ["node", "react", "react-dom", "vitest/globals"],
     "paths": {
       "@shared/*": ["./shared/*"]
     },
