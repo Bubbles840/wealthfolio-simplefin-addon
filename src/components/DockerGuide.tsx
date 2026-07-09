@@ -71,9 +71,16 @@ export function DockerGuide({ store }: Props) {
 
           <div style={{ marginBottom: 12 }}>
             <strong>Your SimpleFin Access URL:</strong>{' '}
-            <code>{masked ? '••••••••••••••••' : accessUrl}</code>{' '}
-            <button type="button" onClick={() => { setMasked(false); navigator.clipboard.writeText(accessUrl); }}>
-              Reveal &amp; Copy
+            <code>{masked ? accessUrl.replace(/\/\/[^@]+@/, '//***@') : accessUrl}</code>{' '}
+            <button type="button" onClick={() => setMasked((m) => !m)}>
+              {masked ? 'Reveal' : 'Hide'}
+            </button>
+            <button
+              type="button"
+              style={{ marginLeft: 8 }}
+              onClick={() => navigator.clipboard.writeText(accessUrl)}
+            >
+              Copy
             </button>
           </div>
 

@@ -46,7 +46,9 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
       const result = await runSync(ctx, store);
       if (result.errors.length > 0) setError(result.errors.join('; '));
       setImported(result.imported);
-      setLastSyncAt(new Date());
+      const now = new Date();
+      await store.setLastSyncAt(now);
+      setLastSyncAt(now);
     } catch (e: any) {
       setError(e.message ?? 'Sync failed');
     } finally {
@@ -67,7 +69,7 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
     <div style={{ maxWidth: 640, margin: '0 auto', padding: 24 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h2 style={{ margin: 0 }}>SimpleFin Sync</h2>
-        <button onClick={doSync} disabled={syncing}>
+        <button type="button" onClick={doSync} disabled={syncing}>
           {syncing ? 'Syncing…' : 'Sync Now'}
         </button>
       </div>
@@ -86,7 +88,7 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
 
       <section style={{ marginTop: 20 }}>
         <strong>AUTO-SYNC</strong>{' '}
-        {scheduleHours ? `Every ${scheduleHours} hours` : 'Disabled'}
+        {scheduleHours ? `Every ${scheduleHours} hours` : 'Off'}
       </section>
 
       <section style={{ marginTop: 20 }}>
