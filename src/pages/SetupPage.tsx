@@ -80,6 +80,8 @@ export function SetupPage({ ctx, store, onComplete }: Props) {
     <div style={{ maxWidth: 600, margin: '0 auto', padding: 24 }}>
       <h2>SimpleFin Sync Setup</h2>
 
+      {error && <p style={{ color: 'red' }}>{error}</p>}
+
       {step === 1 && (
         <div>
           <h3>Step 1 of 4 — Connect SimpleFin</h3>
@@ -90,7 +92,6 @@ export function SetupPage({ ctx, store, onComplete }: Props) {
             placeholder="Paste setup token here"
             style={{ width: '100%', marginBottom: 8 }}
           />
-          {error && <p style={{ color: 'red' }}>{error}</p>}
           <button onClick={handleConnect} disabled={!token || loading}>
             {loading ? 'Connecting…' : 'Connect'}
           </button>
