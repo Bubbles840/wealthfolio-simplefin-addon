@@ -47,21 +47,33 @@ export function SetupPage({ ctx, store, onComplete }: Props) {
 
   // Step 2: Save mapping
   const handleSaveMapping = async (m: AccountMapping) => {
-    await store.setAccountMapping(m);
-    setMapping(m);
-    setStep(3);
+    try {
+      await store.setAccountMapping(m);
+      setMapping(m);
+      setStep(3);
+    } catch (e: any) {
+      setError(e.message ?? 'Failed to save account mapping');
+    }
   };
 
   // Step 3: Save rules
   const handleSaveRules = async () => {
-    await store.setMappingRules(rules);
-    setStep(4);
+    try {
+      await store.setMappingRules(rules);
+      setStep(4);
+    } catch (e: any) {
+      setError(e.message ?? 'Failed to save rules');
+    }
   };
 
   // Step 4: Save schedule
   const handleFinish = async () => {
-    await store.setSyncScheduleHours(autoSync ? scheduleHours : 0);
-    onComplete();
+    try {
+      await store.setSyncScheduleHours(autoSync ? scheduleHours : 0);
+      onComplete();
+    } catch (e: any) {
+      setError(e.message ?? 'Failed to save schedule');
+    }
   };
 
   return (

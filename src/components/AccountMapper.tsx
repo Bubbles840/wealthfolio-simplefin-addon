@@ -54,7 +54,6 @@ export function AccountMapper({ ctx, simplefinAccounts, initialMapping, onSave }
               {wfAccounts.map((wf) => (
                 <option key={wf.id} value={wf.id}>{wf.name}</option>
               ))}
-              <option value="__create__">+ Create new account…</option>
             </select>
           </div>
         </div>
@@ -65,7 +64,7 @@ export function AccountMapper({ ctx, simplefinAccounts, initialMapping, onSave }
           type="button"
           onClick={() => {
             const cleanMapping = Object.fromEntries(
-              Object.entries(mapping).filter(([, v]) => v && v !== '__create__')
+              Object.entries(mapping).filter(([, v]) => !!v)
             );
             onSave(cleanMapping);
           }}
