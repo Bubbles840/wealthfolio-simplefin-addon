@@ -62,9 +62,15 @@ export async function runSync(ctx: AddonContext, store: SecretsStore): Promise<S
     }));
 
     const checked = await ctx.api.activities.checkImport(wfAccountId, activities);
-    const toImport = checked.filter((a: any) => a.isValid && !a.duplicateOfId);
-    const dupCount = checked.length - toImport.length;
+    const toImport = checked
+      .filter((a: any) => a.isValid && !a.duplicateOfId)
+      .map((a: any) => ({ ...a, isDraft: false, isValid: true }));
+    const dupCount = checked.filter((a: any) => a.isValid && a.duplicateOfId).length;
+    const invalidCount = checked.filter((a: any) => !a.isValid).length;
     skipped += dupCount;
+    if (invalidCount > 0) {
+      errors.push(`${invalidCount} transaction(s) failed validation for account ${wfAccountId}`);
+    }
 
     if (toImport.length > 0) {
       await ctx.api.activities.import(toImport);
