@@ -14,7 +14,7 @@ describe('fetchAccountsNode', () => {
     });
     await fetchAccountsNode('https://user:pass@bridge.simplefin.org/simplefin', new Date());
     const [url, opts] = mockFetch.mock.calls[0];
-    expect(url).toContain('/accounts');
+    expect(url).toContain('/simplefin/accounts');
     expect((opts as any).headers.Authorization).toMatch(/^Basic /);
   });
 

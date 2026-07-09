@@ -16,7 +16,8 @@ export async function fetchAccountsNode(
   url.username = '';
   url.password = '';
 
-  const accountsUrl = new URL('/accounts', url.origin + url.pathname.replace(/\/$/, ''));
+  const base = url.origin + url.pathname.replace(/\/$/, '');
+  const accountsUrl = new URL(`${base}/accounts`);
   accountsUrl.searchParams.set('start-date', String(Math.floor(startDate.getTime() / 1000)));
   accountsUrl.searchParams.set('pending', '1');
 
