@@ -27,11 +27,26 @@ describe('claimToken', () => {
 
   it('throws when the claim response is not ok', async () => {
     mockFetch.mockResolvedValueOnce({ ok: false, status: 403, text: async () => '' });
-    await expect(claimToken(btoa('https://example.com/claim/x'))).rejects.toThrow('403');
+    await expect(claimToken(btoa('https://bridge.simplefin.org/claim/x'))).rejects.toThrow('403');
   });
 
   it('throws when decoded URL is not HTTPS', async () => {
     await expect(claimToken(btoa('http://bridge.simplefin.org/claim/x'))).rejects.toThrow('HTTPS');
+  });
+
+  it('throws when claim URL is not a simplefin.org domain', async () => {
+    await expect(claimToken(btoa('https://evil.com/claim/x'))).rejects.toThrow('simplefin.org');
+  });
+
+  it('throws when access URL returned by claim is not a simplefin.org domain', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      text: async () => 'https://evil.com/simplefin',
+    });
+    await expect(
+      claimToken(btoa('https://bridge.simplefin.org/claim/x')),
+    ).rejects.toThrow('simplefin.org');
   });
 
   it('handles URL-safe base64 tokens (- and _)', async () => {
@@ -73,8 +88,14 @@ describe('fetchAccounts', () => {
 
   it('throws when access URL is not HTTPS', async () => {
     await expect(
-      fetchAccounts('http://user:pass@example.com/simplefin', new Date()),
+      fetchAccounts('http://user:pass@bridge.simplefin.org/simplefin', new Date()),
     ).rejects.toThrow('HTTPS');
+  });
+
+  it('throws when access URL is not a simplefin.org domain', async () => {
+    await expect(
+      fetchAccounts('https://user:pass@evil.com/simplefin', new Date()),
+    ).rejects.toThrow('simplefin.org');
   });
 
   it('throws on non-ok response', async () => {

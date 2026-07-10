@@ -46,10 +46,12 @@ describe('mapTransaction', () => {
     expect(mapTransaction('Grocery store', -30, rules)).toBe('WITHDRAWAL');
   });
 
-  it('throws on invalid regex pattern', () => {
+  it('skips invalid regex rules instead of throwing (protects sync runs)', () => {
     const rules: MappingRule[] = [
       { pattern: '[invalid', matchType: 'regex', activityType: 'INTEREST' },
     ];
-    expect(() => mapTransaction('test', 1, rules)).toThrow();
+    // Must not throw — falls through to amount-based default
+    expect(mapTransaction('test', 1, rules)).toBe('DEPOSIT');
+    expect(mapTransaction('test', -1, rules)).toBe('WITHDRAWAL');
   });
 });

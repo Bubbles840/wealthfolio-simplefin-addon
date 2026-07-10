@@ -11,8 +11,14 @@ export function mapTransaction(
         return rule.activityType;
       }
     } else {
-      // Throws on invalid regex — caller's responsibility to validate rules at save time
-      const re = new RegExp(rule.pattern, 'i');
+      // Skip rules with invalid regex rather than crashing a whole sync run.
+      // RuleEditor surfaces the error at save/preview time so the user can fix it.
+      let re: RegExp;
+      try {
+        re = new RegExp(rule.pattern, 'i');
+      } catch {
+        continue;
+      }
       if (re.test(description)) {
         return rule.activityType;
       }
