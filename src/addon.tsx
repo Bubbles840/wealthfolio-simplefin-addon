@@ -1,103 +1,102 @@
-import React from 'react';
-import { createRoot } from 'react-dom/client';
-import type { AddonContext } from '@wealthfolio/addon-sdk';
+import React, { useState, useEffect } from 'react';
+import type { AddonContext, AddonEnableFunction } from '@wealthfolio/addon-sdk';
 import { SetupPage } from './pages/SetupPage';
 import { SyncPage } from './pages/SyncPage';
 import { SecretsStore } from './utils/secrets';
 import { Scheduler } from './utils/scheduler';
 import { runSync } from './utils/sync';
 
-export default function enable(ctx: AddonContext) {
-  const store = new SecretsStore(ctx);
-  const scheduler = new Scheduler();
-  let root: ReturnType<typeof createRoot> | null = null;
+// ── Module-level singletons set by enable() ───────────────────────────────────
 
-  const sidebarItem = ctx.sidebar.addItem({
-    id: 'simplefin-sync',
-    label: 'SimpleFin Sync',
-    route: '/simplefin-sync',
-    order: 90,
-  });
+let addonCtx: AddonContext | undefined;
+let addonStore: SecretsStore | undefined;
+let addonScheduler: Scheduler | undefined;
 
-  ctx.router.add({
-    path: '/simplefin-sync',
-    title: 'SimpleFin Sync',
-    render: async ({ root: container }) => {
-      // Reuse the root across re-renders of the same route
-      root ??= createRoot(container);
+// ── Testable view component ───────────────────────────────────────────────────
 
-      // isSetup requires BOTH an access URL and at least one mapped account.
-      // Checking only accessUrl would show SyncPage after an abandoned mid-flow setup.
-      const [accessUrl, mapping] = await Promise.all([
-        store.getAccessUrl(),
-        store.getAccountMapping(),
-      ]);
-      const isSetup = !!accessUrl && !!mapping && Object.keys(mapping).length > 0;
+export interface SimplefinSyncViewProps {
+  ctx: AddonContext;
+  store: SecretsStore;
+  scheduler: Scheduler;
+}
 
-      // Start or stop the background scheduler based on stored preference.
-      // scheduleHours === 0 (or null) means disabled — never call scheduler.start(0)
-      // because Scheduler clamps to 1 hr and keeps ticking even when the user disabled it.
-      if (isSetup) {
-        const hours = await store.getSyncScheduleHours();
-        if (hours && hours > 0) {
-          if (!scheduler.isRunning()) {
-            scheduler.start(hours, () => runSync(ctx, store));
-          }
-        } else {
-          scheduler.stop();
+export function SimplefinSyncView({ ctx, store, scheduler }: SimplefinSyncViewProps) {
+  const [isSetup, setIsSetup] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    Promise.all([store.getAccessUrl(), store.getAccountMapping()]).then(
+      ([accessUrl, mapping]) => {
+        const setup = !!accessUrl && !!mapping && Object.keys(mapping).length > 0;
+        if (setup) {
+          store.getSyncScheduleHours().then((hours) => {
+            if (hours && hours > 0 && !scheduler.isRunning()) {
+              scheduler.start(hours, () => runSync(ctx, store));
+            } else if (!hours || hours <= 0) {
+              scheduler.stop();
+            }
+          });
         }
-      }
+        setIsSetup(setup);
+      },
+    );
+  }, [ctx, store, scheduler]);
 
-      renderView(isSetup);
-    },
-  });
+  if (isSetup === null) return null;
 
-  function renderView(isSetup: boolean): void {
-    if (!root) return;
-    if (!isSetup) {
-      root.render(
-        <SetupPage
-          ctx={ctx}
-          store={store}
-          onComplete={handleComplete}
-        />,
-      );
-    } else {
-      root.render(
-        <SyncPage
-          ctx={ctx}
-          store={store}
-          scheduler={scheduler}
-          onReset={handleReset}
-        />,
-      );
-    }
-  }
-
-  // Called by SetupPage when the user completes the wizard.
-  // Read the schedule the user configured, wire up the scheduler, then show SyncPage.
-  async function handleComplete(): Promise<void> {
+  const handleComplete = async () => {
     const hours = await store.getSyncScheduleHours();
     if (hours && hours > 0 && !scheduler.isRunning()) {
       scheduler.start(hours, () => runSync(ctx, store));
     } else {
-      // scheduleHours === 0 or null → auto-sync disabled
       scheduler.stop();
     }
-    renderView(true);
+    setIsSetup(true);
+  };
+
+  const handleReset = () => {
+    scheduler.stop();
+    setIsSetup(false);
+  };
+
+  if (!isSetup) {
+    return <SetupPage ctx={ctx} store={store} onComplete={handleComplete} />;
   }
 
-  // Called by SyncPage when the user resets / disconnects.
-  // Stop any running scheduler and return to the setup wizard.
-  function handleReset(): void {
-    scheduler.stop();
-    renderView(false);
-  }
+  return <SyncPage ctx={ctx} store={store} scheduler={scheduler} onReset={handleReset} />;
+}
+
+// ── Route component ───────────────────────────────────────────────────────────
+
+function SimplefinRoute() {
+  return (
+    <SimplefinSyncView
+      ctx={addonCtx!}
+      store={addonStore!}
+      scheduler={addonScheduler!}
+    />
+  );
+}
+
+// ── Addon entry point ─────────────────────────────────────────────────────────
+
+const enable: AddonEnableFunction = (ctx) => {
+  addonCtx = ctx;
+  addonStore = new SecretsStore(ctx);
+  addonScheduler = new Scheduler();
+
+  // Sidebar entry is declared in manifest.json contributes.links.sidebar —
+  // no ctx.sidebar.addItem() call needed.
+  ctx.router.add({
+    id: 'simplefin-sync',
+    component: SimplefinRoute,
+  });
 
   ctx.onDisable(() => {
-    scheduler.stop();
-    root?.unmount();
-    root = null;
-    sidebarItem.remove();
+    addonScheduler!.stop();
+    addonCtx = undefined;
+    addonStore = undefined;
+    addonScheduler = undefined;
   });
-}
+};
+
+export default enable;

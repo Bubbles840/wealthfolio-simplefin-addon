@@ -184,7 +184,7 @@ describe('runCompanionSync', () => {
       ]),
       importActivities: vi.fn().mockResolvedValue(undefined),
     });
-    vi.mocked(WealthfolioClient).mockImplementation(() => mockClient as unknown as WealthfolioClient);
+    vi.mocked(WealthfolioClient).mockImplementation(function () { return mockClient; } as unknown as new (url: string) => WealthfolioClient);
 
     vi.mocked(fetchAccountsNode).mockResolvedValue({
       errors: [],
@@ -223,7 +223,7 @@ describe('runCompanionSync', () => {
 
   it('skips accounts not present in ACCOUNT_MAPPING', async () => {
     const mockClient = makeWfClientMock();
-    vi.mocked(WealthfolioClient).mockImplementation(() => mockClient as unknown as WealthfolioClient);
+    vi.mocked(WealthfolioClient).mockImplementation(function () { return mockClient; } as unknown as new (url: string) => WealthfolioClient);
 
     vi.mocked(fetchAccountsNode).mockResolvedValue({
       errors: [],
@@ -265,7 +265,7 @@ describe('runCompanionSync', () => {
     process.env.MIN_SYNC_INTERVAL_HOURS = '1';
 
     const mockClient = makeWfClientMock();
-    vi.mocked(WealthfolioClient).mockImplementation(() => mockClient as unknown as WealthfolioClient);
+    vi.mocked(WealthfolioClient).mockImplementation(function () { return mockClient; } as unknown as new (url: string) => WealthfolioClient);
     vi.mocked(fetchAccountsNode).mockResolvedValue({ errors: [], accounts: [] });
 
     await runCompanionSync();
@@ -277,7 +277,7 @@ describe('runCompanionSync', () => {
     process.env.WEALTHFOLIO_API_KEY = 'test-api-key';
 
     const instance = makeWfClientMock({ token: undefined as unknown });
-    vi.mocked(WealthfolioClient).mockImplementation(() => instance as unknown as WealthfolioClient);
+    vi.mocked(WealthfolioClient).mockImplementation(function () { return instance; } as unknown as new (url: string) => WealthfolioClient);
     vi.mocked(fetchAccountsNode).mockResolvedValue({ errors: [], accounts: [] });
 
     await runCompanionSync();
@@ -293,7 +293,7 @@ describe('runCompanionSync', () => {
     process.env.WEALTHFOLIO_PASSWORD = 'secret';
 
     const mockClient = makeWfClientMock();
-    vi.mocked(WealthfolioClient).mockImplementation(() => mockClient as unknown as WealthfolioClient);
+    vi.mocked(WealthfolioClient).mockImplementation(function () { return mockClient; } as unknown as new (url: string) => WealthfolioClient);
     vi.mocked(fetchAccountsNode).mockResolvedValue({ errors: [], accounts: [] });
 
     await runCompanionSync();
@@ -311,7 +311,7 @@ describe('runCompanionSync', () => {
         { isDuplicate: false, comment: 'tx-neg' },
       ]),
     });
-    vi.mocked(WealthfolioClient).mockImplementation(() => mockClient as unknown as WealthfolioClient);
+    vi.mocked(WealthfolioClient).mockImplementation(function () { return mockClient; } as unknown as new (url: string) => WealthfolioClient);
 
     vi.mocked(fetchAccountsNode).mockResolvedValue({
       errors: [],
@@ -344,7 +344,7 @@ describe('runCompanionSync', () => {
         { isDuplicate: false, comment: 'simplefin-tx-id-abc' },
       ]),
     });
-    vi.mocked(WealthfolioClient).mockImplementation(() => mockClient as unknown as WealthfolioClient);
+    vi.mocked(WealthfolioClient).mockImplementation(function () { return mockClient; } as unknown as new (url: string) => WealthfolioClient);
 
     vi.mocked(fetchAccountsNode).mockResolvedValue({
       errors: [],
@@ -377,7 +377,7 @@ describe('runCompanionSync', () => {
 
   it('persists lastSyncAt to STATE_FILE after a successful sync', async () => {
     const mockClient = makeWfClientMock();
-    vi.mocked(WealthfolioClient).mockImplementation(() => mockClient as unknown as WealthfolioClient);
+    vi.mocked(WealthfolioClient).mockImplementation(function () { return mockClient; } as unknown as new (url: string) => WealthfolioClient);
     vi.mocked(fetchAccountsNode).mockResolvedValue({ errors: [], accounts: [] });
 
     const before = Date.now();
@@ -404,12 +404,8 @@ describe('runCompanionSync', () => {
       return Promise.resolve([{ isDuplicate: false, comment: 'tx-ok' }]);
     });
     const mockImportActivities = vi.fn().mockResolvedValue(undefined);
-    vi.mocked(WealthfolioClient).mockImplementation(() =>
-      makeWfClientMock({
-        checkImport: mockCheckImport,
-        importActivities: mockImportActivities,
-      }) as unknown as WealthfolioClient,
-    );
+    const wfMock = makeWfClientMock({ checkImport: mockCheckImport, importActivities: mockImportActivities });
+    vi.mocked(WealthfolioClient).mockImplementation(function () { return wfMock; } as unknown as new (url: string) => WealthfolioClient);
 
     vi.mocked(fetchAccountsNode).mockResolvedValue({
       errors: [],

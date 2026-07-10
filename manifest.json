@@ -4,14 +4,25 @@
   "version": "1.0.0",
   "description": "Sync bank transactions from SimpleFin into Wealthfolio automatically.",
   "author": "Community",
-  "permissions": {
-    "accounts": ["read"],
-    "activities": ["import", "search"],
-    "secrets": ["set", "get", "delete"],
-    "network": ["request"],
-    "ui": ["read"]
+  "main": "dist/addon.js",
+  "sdkVersion": "3.6.0",
+  "minWealthfolioVersion": "3.6.0",
+  "enabled": true,
+  "contributes": {
+    "routes": [{ "id": "simplefin-sync" }],
+    "links": {
+      "sidebar": [
+        {
+          "id": "simplefin-sync",
+          "route": "simplefin-sync",
+          "label": "SimpleFin Sync",
+          "icon": "building-2",
+          "order": 90
+        }
+      ]
+    }
   },
-  "dataAccess": [
+  "permissions": [
     {
       "category": "accounts",
       "functions": ["getAll"],
@@ -32,11 +43,6 @@
       "functions": ["request"],
       "purpose": "Fetch transaction data from SimpleFin Bridge",
       "hosts": ["bridge.simplefin.org"]
-    },
-    {
-      "category": "ui",
-      "functions": ["sidebar.addItem", "router.add"],
-      "purpose": "Add SimpleFin Sync to sidebar navigation"
     }
   ]
 }
