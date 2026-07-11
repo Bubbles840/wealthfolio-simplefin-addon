@@ -78,11 +78,11 @@ default typing).
 
 ### 3. Linking (companion only)
 
-After `importActivities` succeeds, the companion calls
-`POST /api/v1/activities/link` with `{ activityAId, activityBId }` for each
-detected pair, using activity ids returned in the import response
-(`ImportActivitiesResult.activities[].id`, matched back by comment). Link
-failures are logged, never fatal — the reconciliation sweep retries next run.
+Linking happens exclusively via the reconciliation sweep (§4), which runs
+immediately after import in the same cycle — pairs imported this run are
+linked seconds later. (Amended from the original import-response-ID design:
+id population in the import response is not contractually guaranteed, and
+the sweep is required anyway for addon-imported pairs.)
 
 ### 4. Reconciliation sweep (companion, each run)
 
