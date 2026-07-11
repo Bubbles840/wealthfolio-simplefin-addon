@@ -1,3 +1,13 @@
+export interface ActivitySearchItem {
+  id: string;
+  accountId: string;
+  activityType: string;
+  /** ISO date or datetime string */
+  date: string;
+  amount?: string | number | null;
+  sourceGroupId?: string | null;
+}
+
 export class WealthfolioClient {
   private token: string | null = null;
 
@@ -46,12 +56,12 @@ export class WealthfolioClient {
     return res.json() as Promise<unknown[]>;
   }
 
-  async getAccounts(): Promise<Array<{ id: string }>> {
+  async getAccounts(): Promise<Array<{ id: string; accountType?: string }>> {
     const res = await fetch(`${this.baseUrl}/api/v1/accounts`, {
       headers: this.authHeaders(),
     });
     if (!res.ok) throw new Error(`getAccounts failed: ${res.status}`);
-    return res.json() as Promise<Array<{ id: string }>>;
+    return res.json() as Promise<Array<{ id: string; accountType?: string }>>;
   }
 
   /**
@@ -64,6 +74,34 @@ export class WealthfolioClient {
     });
     if (!res.ok) throw new Error(`getLatestValuations failed: ${res.status}`);
     return res.json() as Promise<Array<{ accountId: string; totalValue: string | number }>>;
+  }
+
+  /** Marks two activities as one internal transfer (shared source_group_id). */
+  async linkTransferActivities(activityAId: string, activityBId: string): Promise<void> {
+    const res = await fetch(`${this.baseUrl}/api/v1/activities/link`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
+      body: JSON.stringify({ activityAId, activityBId }),
+    });
+    if (!res.ok) throw new Error(`linkTransferActivities failed: ${res.status}`);
+  }
+
+  async searchActivities(body: {
+    page: number;
+    pageSize: number;
+    accountIdFilter?: string[];
+    activityTypeFilter?: string[];
+    dateFrom?: string;
+    dateTo?: string;
+  }): Promise<ActivitySearchItem[]> {
+    const res = await fetch(`${this.baseUrl}/api/v1/activities/search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`searchActivities failed: ${res.status}`);
+    const json = (await res.json()) as { data: ActivitySearchItem[] };
+    return json.data;
   }
 
   async importActivities(activities: unknown[]): Promise<void> {

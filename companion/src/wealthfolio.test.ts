@@ -74,4 +74,38 @@ describe('WealthfolioClient', () => {
     const [, opts] = mockFetch.mock.calls[0];
     expect((opts as any).headers.Authorization).toBeUndefined();
   });
+
+  it('linkTransferActivities POSTs both ids to /activities/link', async () => {
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => [{}, {}] });
+    const client = new WealthfolioClient('http://wealthfolio:8088');
+    await client.linkTransferActivities('act-out', 'act-in');
+    const [url, opts] = mockFetch.mock.calls[0];
+    expect(url).toBe('http://wealthfolio:8088/api/v1/activities/link');
+    expect(JSON.parse((opts as any).body)).toEqual({ activityAId: 'act-out', activityBId: 'act-in' });
+  });
+
+  it('linkTransferActivities throws on non-ok status', async () => {
+    mockFetch.mockResolvedValueOnce({ ok: false, status: 422 });
+    const client = new WealthfolioClient('http://wealthfolio:8088');
+    await expect(client.linkTransferActivities('a', 'b')).rejects.toThrow('422');
+  });
+
+  it('searchActivities POSTs filters and returns the data array', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ data: [{ id: 'act-1', accountId: 'wf-a', activityType: 'TRANSFER_OUT', date: '2026-07-05', amount: '500', sourceGroupId: null }], meta: {} }),
+    });
+    const client = new WealthfolioClient('http://wealthfolio:8088');
+    const items = await client.searchActivities({
+      page: 1, pageSize: 200,
+      accountIdFilter: ['wf-a'],
+      activityTypeFilter: ['TRANSFER_IN', 'TRANSFER_OUT'],
+      dateFrom: '2026-06-28',
+    });
+    const [url, opts] = mockFetch.mock.calls[0];
+    expect(url).toBe('http://wealthfolio:8088/api/v1/activities/search');
+    expect(JSON.parse((opts as any).body).activityTypeFilter).toEqual(['TRANSFER_IN', 'TRANSFER_OUT']);
+    expect(items).toHaveLength(1);
+    expect(items[0].id).toBe('act-1');
+  });
 });
