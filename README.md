@@ -40,15 +40,19 @@ npm run bundle
 - The companion logs a warning when a synced account's balance drifts more
   than $1 from what SimpleFin reports.
 
-### Starting balances
+### Architecture: addon first, companion optional
 
-Automatic starting-balance corrections (so an account lands on its real bank
-balance instead of just the sum of imported transactions) are handled by the
-**Docker companion only** — it reads accurate balances from Wealthfolio's
-valuations API and tracks which accounts are done in its own state. The
-in-app **Sync Now** deliberately never creates balance entries. If you run
-without the companion, set an opening balance once via the account page's
-edit-balance control.
+The addon is the complete product: it syncs when you use the app (Sync Now
+plus the in-app schedule while a tab is open), detects transfers, types card
+refunds, and creates one-time starting-balance corrections using accurate
+balances from Wealthfolio's valuations API. The Docker companion exists only
+because Wealthfolio addons can't run when no browser tab is open — it runs
+the **same shared sync logic** in the background. Running both is safe: the
+correction math self-cancels when the other side already did the work.
+
+The one thing only the companion can do today is *link* the two sides of a
+transfer (the addon SDK exposes no link API — upstream issue filed). Without
+the companion, link a detected pair with one click in the Spending UI.
 
 ## License
 

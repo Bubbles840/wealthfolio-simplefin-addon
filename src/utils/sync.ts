@@ -45,11 +45,31 @@ export async function runSync(ctx: AddonContext, store: SecretsStore): Promise<S
 
   let imported = 0;
   let skipped = 0;
+  const balanceInitialized = await store.getBalanceInitialized();
   // Account types drive default typing (card refunds → CREDIT etc.)
   const wfAccounts = await ctx.api.accounts.getAll().catch(() => []);
   const wfTypes = new Map<string, string>(
     wfAccounts.map((a): [string, string] => [a.id, String(a.accountType ?? '')]),
   );
+
+  // Current Wealthfolio balances for the one-time starting-balance
+  // correction. They come from the valuations API — accounts.getAll() has no
+  // balance data behind it, and treating that absence as 0 once created
+  // full-balance duplicate corrections. A failed fetch or a missing
+  // per-account entry skips the correction (and leaves the account
+  // un-initialized so a later run retries) rather than guessing 0.
+  let wfBalances: Map<string, number> | null = null;
+  try {
+    const mappedWfIds = [...new Set(Object.values(mapping))];
+    const valuations = mappedWfIds.length > 0
+      ? await ctx.api.portfolio.getLatestValuations(mappedWfIds)
+      : [];
+    wfBalances = new Map(
+      valuations.map((v): [string, number] => [v.accountId, v.totalValue ?? 0]),
+    );
+  } catch {
+    errors.push('Could not read account balances — starting-balance checks skipped this run');
+  }
 
   // Phase A: resolve activity types for every transaction across all mapped
   // accounts, so transfer pairs can be detected across account boundaries
@@ -132,16 +152,53 @@ export async function runSync(ctx: AddonContext, store: SecretsStore): Promise<S
       errors.push(`${invalidCount} transaction(s) failed validation for account ${wfAccountId}`);
     }
 
-    // Starting-balance corrections are deliberately NOT done here. They need
-    // an accurate current-balance read, and getting that wrong once (the
-    // accounts API has no balance field) created full-balance duplicate
-    // entries. The Docker companion owns balance corrections — it reads the
-    // valuations endpoint and tracks initialization in its own state. Addon-
-    // only users can set an opening balance via the account page's
-    // edit-balance control instead.
-    if (toImport.length > 0) {
-      await ctx.api.activities.import(toImport);
-      imported += toImport.length;
+    // One-time starting balance so the account lands on SimpleFin's reported
+    // balance instead of just the fetch window's deltas. Runs only when this
+    // account's balance is actually readable; the dedup-aware windowDelta
+    // (counting only about-to-import transactions) makes this self-cancelling
+    // when the Docker companion already corrected the account, so running
+    // both syncers stays safe.
+    const importList = [...toImport];
+    const canReadBalance = wfBalances !== null && wfBalances.has(wfAccountId);
+    if (canReadBalance && !balanceInitialized.includes(sfAccount.id)) {
+      const signedByComment = new Map(
+        transactions.map((tx) => [`${tx.description} · ${tx.id}`, parseFloat(tx.amount)]),
+      );
+      const targetBalance = parseFloat(sfAccount.balance);
+      const windowDelta = toImport.reduce(
+        (sum: number, a: any) => sum + (signedByComment.get(a.comment) ?? 0),
+        0,
+      );
+      const currentWfBalance = wfBalances!.get(wfAccountId)!;
+      const starting = targetBalance - windowDelta - currentWfBalance;
+      if (Number.isFinite(starting) && Math.abs(starting) >= 0.01) {
+        const oldestPosted = transactions.length > 0
+          ? Math.min(...transactions.map((tx) => tx.posted))
+          : Math.floor(Date.now() / 1000);
+        const dayBefore = new Date((oldestPosted - 24 * 60 * 60) * 1000);
+        importList.unshift({
+          accountId: wfAccountId,
+          activityType: starting > 0 ? 'DEPOSIT' : 'WITHDRAWAL',
+          date: dayBefore.toISOString().split('T')[0],
+          symbol: `$CASH-${sfAccount.currency}`,
+          amount: Math.abs(Math.round(starting * 100) / 100),
+          currency: sfAccount.currency,
+          sourceSystem: 'simplefin' as const,
+          comment: `Starting balance · ${sfAccount.id}`,
+          isValid: true,
+          isDraft: false,
+        });
+      }
+    }
+
+    if (importList.length > 0) {
+      await ctx.api.activities.import(importList);
+      imported += importList.length;
+    }
+    // Mark done only when the balance was readable for this account, so a
+    // skipped correction retries on a later run
+    if (canReadBalance) {
+      await store.addBalanceInitialized(sfAccount.id);
     }
   }
 

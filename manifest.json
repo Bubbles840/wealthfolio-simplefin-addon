@@ -38,6 +38,11 @@
       "purpose": "Import bank transactions from SimpleFin"
     },
     {
+      "category": "portfolio",
+      "functions": ["getLatestValuations"],
+      "purpose": "Read current account balances to size one-time starting-balance corrections"
+    },
+    {
       "category": "secrets",
       "functions": ["set", "get", "use", "delete"],
       "purpose": "Store SimpleFin credentials and sync configuration securely"

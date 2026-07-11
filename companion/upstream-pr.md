@@ -177,3 +177,50 @@ this bug without the workaround.
 | `apps/frontend/src/addons/iframe/addon-sandbox-entry.tsx` | Update regex to `(?<![.\w$])import\s*\(` |
 
 The fix is a single regex change.
+
+---
+
+# Upstream Issue #3 — Expose transfer linking to addons
+
+Submit this to: https://github.com/afadil/wealthfolio/issues/new
+
+---
+
+## Title
+
+`feat: expose activities.link / activities.unlink in the addon SDK`
+
+---
+
+## Body
+
+### Problem
+
+Wealthfolio has first-class internal-transfer support: two activities typed
+TRANSFER_OUT / TRANSFER_IN can be linked (`POST /api/v1/activities/link`),
+and linked pairs classify as InternalTransfer — correctly excluded from
+spending and income analytics. Addons that import bank data (e.g. via
+SimpleFin) can detect transfer pairs and import them with the right types,
+but **cannot link them**: the addon SDK's activities API has no `link` /
+`unlink` methods and the sandbox RPC allowlist has no corresponding entries.
+
+The result is that addon-imported transfers count as expenses/income until
+the user links each pair manually in the Spending UI (or runs a separate
+server-side process against the HTTP API).
+
+### Proposed change
+
+- `@wealthfolio/addon-sdk`: add `link(activityAId, activityBId)` and
+  `unlink(activityAId, activityBId)` to the activities API.
+- Sandbox RPC allowlist: add `activities.link`, `activities.unlink`.
+- Permission catalog: add `link` / `unlink` to the `activities` category
+  (already high-risk, consent-gated).
+
+The server endpoints already exist (`/activities/link`, `/activities/unlink`)
+— this is only frontend/SDK plumbing.
+
+### Use case
+
+A bank-sync addon detects that -$500 in checking and +$500 on a credit card
+within 3 days are one card payment, imports them as TRANSFER_OUT/TRANSFER_IN,
+and links them so spending analytics don't double-count the payment.
