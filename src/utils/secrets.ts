@@ -6,6 +6,8 @@ const KEYS = {
   authB64: 'simplefin_auth_b64',
   accountMapping: 'account_mapping',
   accountNames: 'account_names',
+  // No longer written (starting balances are companion-only now); kept in
+  // KEYS so clearAll() still wipes the orphaned secret from older installs.
   balanceInitialized: 'balance_initialized',
   mappingRules: 'mapping_rules',
   syncScheduleHours: 'sync_schedule_hours',
@@ -48,21 +50,6 @@ export class SecretsStore {
   }
   async setAccountNames(names: Record<string, string>): Promise<void> {
     await this.ctx.api.secrets.set(KEYS.accountNames, JSON.stringify(names));
-  }
-
-  /** SimpleFin account IDs that already received a starting-balance entry. */
-  async getBalanceInitialized(): Promise<string[]> {
-    const raw = await this.ctx.api.secrets.get(KEYS.balanceInitialized);
-    return raw ? (JSON.parse(raw) as string[]) : [];
-  }
-  async addBalanceInitialized(sfinAccountId: string): Promise<void> {
-    const current = await this.getBalanceInitialized();
-    if (!current.includes(sfinAccountId)) {
-      await this.ctx.api.secrets.set(
-        KEYS.balanceInitialized,
-        JSON.stringify([...current, sfinAccountId]),
-      );
-    }
   }
 
   async getMappingRules(): Promise<MappingRule[]> {

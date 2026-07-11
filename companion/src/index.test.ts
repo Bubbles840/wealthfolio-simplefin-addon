@@ -686,6 +686,31 @@ describe('runCompanionSync', () => {
     logSpy.mockRestore();
   });
 
+  it('skips the starting balance and does not mark initialized when the account has no valuation entry', async () => {
+    // Fresh state (not initialized) and an empty valuations response: the
+    // balance is unknown, so no correction may be created and the account
+    // must stay un-initialized for a retry once a valuation exists.
+    writeFileSync(TEST_STATE_FILE, JSON.stringify({}));
+    const mockImportActivities = vi.fn().mockResolvedValue(undefined);
+    const wfMock = makeWfClientMock({
+      importActivities: mockImportActivities,
+      getLatestValuations: vi.fn().mockResolvedValue([]),
+    });
+    vi.mocked(WealthfolioClient).mockImplementation(function () { return wfMock; } as unknown as new (url: string) => WealthfolioClient);
+    vi.mocked(fetchAccountsNode).mockResolvedValue({
+      errors: [],
+      accounts: [
+        { id: 'sfin-account-1', name: 'Checking', currency: 'USD', balance: '1000.00', 'balance-date': 1700000000, transactions: [] },
+      ],
+    });
+
+    await runCompanionSync();
+
+    expect(mockImportActivities).not.toHaveBeenCalled();
+    const state = JSON.parse(readFileSync(TEST_STATE_FILE, 'utf8')) as { balanceInitialized?: string[] };
+    expect(state.balanceInitialized ?? []).not.toContain('sfin-account-1');
+  });
+
   it('skips the drift check when an initialized account has no valuation entry', async () => {
     const logSpy = vi.spyOn(console, 'log');
     const wfMock = makeWfClientMock({

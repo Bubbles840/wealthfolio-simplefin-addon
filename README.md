@@ -40,6 +40,16 @@ npm run bundle
 - The companion logs a warning when a synced account's balance drifts more
   than $1 from what SimpleFin reports.
 
+### Starting balances
+
+Automatic starting-balance corrections (so an account lands on its real bank
+balance instead of just the sum of imported transactions) are handled by the
+**Docker companion only** — it reads accurate balances from Wealthfolio's
+valuations API and tracks which accounts are done in its own state. The
+in-app **Sync Now** deliberately never creates balance entries. If you run
+without the companion, set an opening balance once via the account page's
+edit-balance control.
+
 ## License
 
 MIT

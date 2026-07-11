@@ -409,10 +409,15 @@ export async function runCompanionSync(): Promise<void> {
 
       // One-time starting balance so the account lands on SimpleFin's
       // reported balance instead of just the fetch window's deltas.
-      // Skipped entirely when balances couldn't be fetched — a missing
-      // balance must never be treated as 0 (that under-corrects).
+      // Skipped entirely when the account's balance is unknown — either the
+      // whole fetch failed or this account has no valuation row yet (brand-new
+      // accounts get one after their first imported transactions). A missing
+      // balance must never be treated as 0: that once created full-balance
+      // duplicate corrections. Skipping leaves the account un-initialized so
+      // a later run retries once a valuation exists.
       const importList = [...toImport];
-      if (wfBalances !== null && !balanceInitialized.includes(sfAccount.id)) {
+      const canReadBalance = wfBalances !== null && wfBalances.has(wfAccountId);
+      if (canReadBalance && !balanceInitialized.includes(sfAccount.id)) {
         const signedByComment = new Map(
           transactions.map((tx) => [`${tx.description} · ${tx.id}`, parseFloat(tx.amount)]),
         );
@@ -421,7 +426,7 @@ export async function runCompanionSync(): Promise<void> {
           (sum, a) => sum + (signedByComment.get(a.comment) ?? 0),
           0,
         );
-        const currentWfBalance = wfBalances.get(wfAccountId) ?? 0;
+        const currentWfBalance = wfBalances!.get(wfAccountId)!;
         const starting = targetBalance - windowDelta - currentWfBalance;
         if (Number.isFinite(starting) && Math.abs(starting) >= 0.01) {
           const oldestPosted = transactions.length > 0
@@ -475,7 +480,8 @@ export async function runCompanionSync(): Promise<void> {
         `Account ${wfAccountId}: ${importList.length} imported, ${skipped} duplicate(s) skipped`,
       );
       // Only mark initialized when the starting-balance check actually ran
-      if (wfBalances !== null) {
+      // (balance was readable for this specific account)
+      if (canReadBalance) {
         markBalanceInitialized(sfAccount.id);
       }
     } catch (err) {

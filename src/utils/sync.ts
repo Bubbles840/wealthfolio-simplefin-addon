@@ -45,13 +45,8 @@ export async function runSync(ctx: AddonContext, store: SecretsStore): Promise<S
 
   let imported = 0;
   let skipped = 0;
-  const balanceInitialized = await store.getBalanceInitialized();
-  // Current Wealthfolio balances, read before importing, for the one-time
-  // starting-balance calculation below
+  // Account types drive default typing (card refunds → CREDIT etc.)
   const wfAccounts = await ctx.api.accounts.getAll().catch(() => []);
-  const wfBalances = new Map<string, number>(
-    wfAccounts.map((a): [string, number] => [a.id, a.balance ?? 0]),
-  );
   const wfTypes = new Map<string, string>(
     wfAccounts.map((a): [string, string] => [a.id, String(a.accountType ?? '')]),
   );
@@ -124,12 +119,6 @@ export async function runSync(ctx: AddonContext, store: SecretsStore): Promise<S
       isDraft: false,
     }));
 
-    // Duplicate detection runs BEFORE the starting-balance calculation so the
-    // correction only counts transactions that will actually be imported.
-    // This makes it safe to run the addon and the Docker companion side by
-    // side (even on different SimpleFin tokens): whatever the other syncer
-    // already imported shows up as a duplicate here, contributes nothing to
-    // the delta, and the starting balance self-cancels to zero.
     const checked = activities.length > 0
       ? await ctx.api.activities.checkImport(activities)
       : [];
@@ -143,48 +132,17 @@ export async function runSync(ctx: AddonContext, store: SecretsStore): Promise<S
       errors.push(`${invalidCount} transaction(s) failed validation for account ${wfAccountId}`);
     }
 
-    // One-time starting balance: transactions alone only capture the fetch
-    // window's deltas, so the account balance would be wrong by whatever the
-    // balance was before the window. SimpleFin reports the true current
-    // balance; the correction is what's needed on top of the existing
-    // Wealthfolio balance plus the about-to-be-imported deltas to land on it.
-    const importList = [...toImport];
-    if (!balanceInitialized.includes(sfAccount.id)) {
-      const signedByComment = new Map(
-        transactions.map((tx) => [`${tx.description} · ${tx.id}`, parseFloat(tx.amount)]),
-      );
-      const targetBalance = parseFloat(sfAccount.balance);
-      const windowDelta = toImport.reduce(
-        (sum: number, a: any) => sum + (signedByComment.get(a.comment) ?? 0),
-        0,
-      );
-      const currentWfBalance = wfBalances.get(wfAccountId) ?? 0;
-      const starting = targetBalance - windowDelta - currentWfBalance;
-      if (Number.isFinite(starting) && Math.abs(starting) >= 0.01) {
-        const oldestPosted = transactions.length > 0
-          ? Math.min(...transactions.map((tx) => tx.posted))
-          : Math.floor(Date.now() / 1000);
-        const dayBefore = new Date((oldestPosted - 24 * 60 * 60) * 1000);
-        importList.unshift({
-          accountId: wfAccountId,
-          activityType: starting > 0 ? 'DEPOSIT' : 'WITHDRAWAL',
-          date: dayBefore.toISOString().split('T')[0],
-          symbol: `$CASH-${sfAccount.currency}`,
-          amount: Math.abs(Math.round(starting * 100) / 100),
-          currency: sfAccount.currency,
-          sourceSystem: 'simplefin' as const,
-          comment: `Starting balance · ${sfAccount.id}`,
-          isValid: true,
-          isDraft: false,
-        });
-      }
+    // Starting-balance corrections are deliberately NOT done here. They need
+    // an accurate current-balance read, and getting that wrong once (the
+    // accounts API has no balance field) created full-balance duplicate
+    // entries. The Docker companion owns balance corrections — it reads the
+    // valuations endpoint and tracks initialization in its own state. Addon-
+    // only users can set an opening balance via the account page's
+    // edit-balance control instead.
+    if (toImport.length > 0) {
+      await ctx.api.activities.import(toImport);
+      imported += toImport.length;
     }
-
-    if (importList.length > 0) {
-      await ctx.api.activities.import(importList);
-      imported += importList.length;
-    }
-    await store.addBalanceInitialized(sfAccount.id);
   }
 
   await store.setLastSyncAt(new Date());
