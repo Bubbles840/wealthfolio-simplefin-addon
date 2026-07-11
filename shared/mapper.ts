@@ -1,10 +1,19 @@
 import type { ActivityType, MappingRule } from './types';
 
-export function mapTransaction(
-  description: string,
-  amount: number,
-  rules: MappingRule[],
-): ActivityType {
+/**
+ * Payment-shaped descriptions on credit cards (incoming card payments).
+ * Applied ONLY to positive amounts on CREDIT_CARD accounts — on cash accounts
+ * "payment" is too generic (rent payment, utility payment are real expenses).
+ */
+export const CARD_PAYMENT_KEYWORDS = /payment|autopay|thank you|e-?pay/i;
+
+export interface MappedType {
+  type: ActivityType;
+  /** True when a user mapping rule decided the type (never auto-overridden) */
+  fromRule: boolean;
+}
+
+function matchRule(description: string, rules: MappingRule[]): ActivityType | null {
   for (const rule of rules) {
     if (rule.matchType === 'contains') {
       if (description.toLowerCase().includes(rule.pattern.toLowerCase())) {
@@ -24,5 +33,35 @@ export function mapTransaction(
       }
     }
   }
-  return amount >= 0 ? 'DEPOSIT' : 'WITHDRAWAL';
+  return null;
+}
+
+export function mapTransactionWithSource(
+  description: string,
+  amount: number,
+  rules: MappingRule[],
+  accountType?: string,
+): MappedType {
+  const ruled = matchRule(description, rules);
+  if (ruled) return { type: ruled, fromRule: true };
+
+  if (accountType === 'CREDIT_CARD') {
+    if (amount < 0) return { type: 'WITHDRAWAL', fromRule: false };
+    // Positive on a card: a payment (transfer) or a merchant refund (CREDIT,
+    // which Wealthfolio nets against spending as an expense refund)
+    return {
+      type: CARD_PAYMENT_KEYWORDS.test(description) ? 'TRANSFER_IN' : 'CREDIT',
+      fromRule: false,
+    };
+  }
+
+  return { type: amount >= 0 ? 'DEPOSIT' : 'WITHDRAWAL', fromRule: false };
+}
+
+export function mapTransaction(
+  description: string,
+  amount: number,
+  rules: MappingRule[],
+): ActivityType {
+  return mapTransactionWithSource(description, amount, rules).type;
 }
