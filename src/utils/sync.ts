@@ -1,5 +1,8 @@
 import { fetchAccounts } from './simplefin';
-import { mapTransaction } from '../../shared/mapper';
+import { mapTransactionWithSource } from '../../shared/mapper';
+import { detectTransferPairs } from '../../shared/transfers';
+import type { TransferCandidate } from '../../shared/transfers';
+import type { SimplefinAccount, SimplefinTransaction, ActivityType } from '../../shared/types';
 import type { SecretsStore } from './secrets';
 import type { AddonContext } from '@wealthfolio/addon-sdk';
 
@@ -45,26 +48,65 @@ export async function runSync(ctx: AddonContext, store: SecretsStore): Promise<S
   const balanceInitialized = await store.getBalanceInitialized();
   // Current Wealthfolio balances, read before importing, for the one-time
   // starting-balance calculation below
+  const wfAccounts = await ctx.api.accounts.getAll().catch(() => []);
   const wfBalances = new Map<string, number>(
-    (await ctx.api.accounts.getAll().catch(() => [])).map(
-      (a): [string, number] => [a.id, a.balance ?? 0],
-    ),
+    wfAccounts.map((a): [string, number] => [a.id, a.balance ?? 0]),
   );
+  const wfTypes = new Map<string, string>(
+    wfAccounts.map((a): [string, string] => [a.id, String(a.accountType ?? '')]),
+  );
+
+  // Phase A: resolve activity types for every transaction across all mapped
+  // accounts, so transfer pairs can be detected across account boundaries
+  interface PreparedTx {
+    sfAccountId: string;
+    tx: SimplefinTransaction;
+    type: ActivityType;
+  }
+  const preparedByAccount = new Map<string, PreparedTx[]>();
+  const candidates: TransferCandidate[] = [];
 
   for (const sfAccount of accountSet.accounts) {
     const wfAccountId = mapping[sfAccount.id];
     if (!wfAccountId) continue;
-
     // Pending transactions often have no posted timestamp yet (posted: 0),
     // which produces a 1970 date the server rejects. Skip them — they import
     // on a later sync once they post.
     const transactions = (sfAccount.transactions ?? []).filter(
       (tx) => !tx.pending && tx.posted > 0,
     );
+    const prepared: PreparedTx[] = [];
+    for (const tx of transactions) {
+      const amount = parseFloat(tx.amount);
+      const { type, fromRule } = mapTransactionWithSource(
+        tx.description, amount, rules, wfTypes.get(wfAccountId),
+      );
+      prepared.push({ sfAccountId: sfAccount.id, tx, type });
+      candidates.push({
+        txId: tx.id, accountId: sfAccount.id, posted: tx.posted, amount, ruleTyped: fromRule,
+      });
+    }
+    preparedByAccount.set(sfAccount.id, prepared);
+  }
 
-    const activities = transactions.map((tx) => ({
+  const detection = detectTransferPairs(candidates);
+  for (const prepared of preparedByAccount.values()) {
+    for (const p of prepared) {
+      const override = detection.typeByTxId.get(p.tx.id);
+      if (override) p.type = override;
+    }
+  }
+
+  for (const sfAccount of accountSet.accounts) {
+    const wfAccountId = mapping[sfAccount.id];
+    if (!wfAccountId) continue;
+
+    const prepared = preparedByAccount.get(sfAccount.id) ?? [];
+    const transactions = prepared.map((p) => p.tx);
+
+    const activities = prepared.map(({ tx, type }) => ({
       accountId: wfAccountId,
-      activityType: mapTransaction(tx.description, parseFloat(tx.amount), rules),
+      activityType: type,
       date: new Date(tx.posted * 1000).toISOString().split('T')[0],
       // Wealthfolio's required symbol field; $CASH-{currency} is its reserved
       // symbol for cash activities (bare $CASH is rejected)

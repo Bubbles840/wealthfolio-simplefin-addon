@@ -25,7 +25,10 @@ const makeCtx = () => ({
   api: {
     network: { request: vi.fn() },
     accounts: {
-      getAll: vi.fn(async () => [{ id: 'wf-account-a', name: 'Checking', balance: 0 }]),
+      getAll: vi.fn(async () => [
+        { id: 'wf-account-a', name: 'Checking', balance: 0, accountType: 'CASH' },
+        { id: 'wf-account-b', name: 'Card', balance: 0, accountType: 'CREDIT_CARD' },
+      ]),
     },
     activities: {
       checkImport: vi.fn(async (acts: any[]) =>
@@ -188,6 +191,47 @@ describe('runSync', () => {
     expect(ctx.api.activities.import).not.toHaveBeenCalled();
     expect(result.imported).toBe(0);
     expect(result.skipped).toBe(1);
+  });
+
+  it('types matched cross-account pairs as transfers', async () => {
+    vi.mocked(fetchAccounts).mockResolvedValueOnce({
+      errors: [],
+      accounts: [
+        { id: 'sfin-1', name: 'Checking', currency: 'USD', balance: '1000.00', 'balance-date': 1700000000,
+          transactions: [{ id: 'tx-out', posted: 1700000000, amount: '-500.00', description: 'Payment to Citibank' }] },
+        { id: 'sfin-2', name: 'Card', currency: 'USD', balance: '-500.00', 'balance-date': 1700000000,
+          transactions: [{ id: 'tx-in', posted: 1700086400, amount: '500.00', description: 'PAYMENT THANK YOU' }] },
+      ],
+    });
+    const ctx = makeCtx();
+    const store = makeStore({
+      getAccountMapping: vi.fn(async () => ({ 'sfin-1': 'wf-account-a', 'sfin-2': 'wf-account-b' })),
+      getBalanceInitialized: vi.fn(async () => ['sfin-1', 'sfin-2']),
+    });
+    await runSync(ctx, store as any);
+    const imported = vi.mocked(ctx.api.activities.import).mock.calls.flatMap((c: any) => c[0]);
+    const out = imported.find((a: any) => a.comment.includes('tx-out'));
+    const inn = imported.find((a: any) => a.comment.includes('tx-in'));
+    expect(out.activityType).toBe('TRANSFER_OUT');
+    expect(inn.activityType).toBe('TRANSFER_IN');
+  });
+
+  it('types unmatched positive card amounts as CREDIT (refund)', async () => {
+    vi.mocked(fetchAccounts).mockResolvedValueOnce({
+      errors: [],
+      accounts: [
+        { id: 'sfin-2', name: 'Card', currency: 'USD', balance: '0', 'balance-date': 1700000000,
+          transactions: [{ id: 'tx-r', posted: 1700000000, amount: '66.45', description: 'UNIQLO REFUND' }] },
+      ],
+    });
+    const ctx = makeCtx();
+    const store = makeStore({
+      getAccountMapping: vi.fn(async () => ({ 'sfin-2': 'wf-account-b' })),
+      getBalanceInitialized: vi.fn(async () => ['sfin-2']),
+    });
+    await runSync(ctx, store as any);
+    const imported = vi.mocked(ctx.api.activities.import).mock.calls[0][0];
+    expect(imported[0].activityType).toBe('CREDIT');
   });
 });
 
