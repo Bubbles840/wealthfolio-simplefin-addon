@@ -19,8 +19,10 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
 import { fetchAccountsNode, claimTokenNode } from './simplefin.js';
 import { WealthfolioClient } from './wealthfolio.js';
-import { mapTransaction } from '../../shared/mapper.js';
-import type { AccountMapping, ActivityType, MappingRule } from '../../shared/types.js';
+import { mapTransactionWithSource } from '../../shared/mapper.js';
+import { detectTransferPairs } from '../../shared/transfers.js';
+import type { TransferCandidate } from '../../shared/transfers.js';
+import type { AccountMapping, ActivityType, MappingRule, SimplefinTransaction } from '../../shared/types.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -264,6 +266,54 @@ export async function runCompanionSync(): Promise<void> {
     log(`Could not fetch Wealthfolio balances — skipping starting-balance checks this run: ${(err as Error).message}`);
   }
 
+  let wfTypes = new Map<string, string>();
+  try {
+    wfTypes = new Map(
+      (await wfClient.getAccounts()).map((a): [string, string] => [a.id, String(a.accountType ?? '')]),
+    );
+  } catch (err) {
+    debug(`Could not fetch account types: ${(err as Error).message}`);
+  }
+
+  // Phase A: resolve activity types for every transaction across all mapped
+  // accounts, so transfer pairs can be detected across account boundaries
+  interface PreparedTx {
+    tx: SimplefinTransaction;
+    type: ActivityType;
+  }
+  const preparedByAccount = new Map<string, PreparedTx[]>();
+  const candidates: TransferCandidate[] = [];
+
+  for (const sfAccount of accountSet.accounts) {
+    const wfAccountId = mapping[sfAccount.id];
+    if (!wfAccountId) continue;
+    // Pending transactions often have no posted timestamp yet (posted: 0),
+    // producing a 1970 date the server rejects. They import once posted.
+    const transactions = (sfAccount.transactions ?? []).filter(
+      (tx) => !tx.pending && tx.posted > 0,
+    );
+    const prepared: PreparedTx[] = [];
+    for (const tx of transactions) {
+      const amount = parseFloat(tx.amount);
+      const { type, fromRule } = mapTransactionWithSource(
+        tx.description, amount, rules, wfTypes.get(wfAccountId),
+      );
+      prepared.push({ tx, type });
+      candidates.push({
+        txId: tx.id, accountId: sfAccount.id, posted: tx.posted, amount, ruleTyped: fromRule,
+      });
+    }
+    preparedByAccount.set(sfAccount.id, prepared);
+  }
+
+  const detection = detectTransferPairs(candidates);
+  for (const prepared of preparedByAccount.values()) {
+    for (const p of prepared) {
+      const override = detection.typeByTxId.get(p.tx.id);
+      if (override) p.type = override;
+    }
+  }
+
   for (const sfAccount of accountSet.accounts) {
     const wfAccountId = mapping[sfAccount.id];
     if (!wfAccountId) {
@@ -271,19 +321,16 @@ export async function runCompanionSync(): Promise<void> {
       continue;
     }
 
-    // Pending transactions often have no posted timestamp yet (posted: 0),
-    // producing a 1970 date the server rejects. They import once posted.
-    const transactions = (sfAccount.transactions ?? []).filter(
-      (tx) => !tx.pending && tx.posted > 0,
-    );
+    const prepared = preparedByAccount.get(sfAccount.id) ?? [];
+    const transactions = prepared.map((p) => p.tx);
 
     debug(
       `Processing ${transactions.length} transactions for ${sfAccount.id} → ${wfAccountId}`,
     );
 
-    const activities: ActivityImport[] = transactions.map((tx) => ({
+    const activities: ActivityImport[] = prepared.map(({ tx, type }) => ({
       accountId: wfAccountId,
-      activityType: mapTransaction(tx.description, parseFloat(tx.amount), rules),
+      activityType: type,
       date: new Date(tx.posted * 1000).toISOString().split('T')[0],
       symbol: `$CASH-${sfAccount.currency}`,
       amount: Math.abs(parseFloat(tx.amount)),
@@ -344,6 +391,29 @@ export async function runCompanionSync(): Promise<void> {
             isValid: true,
             isDraft: false,
           });
+        }
+      }
+
+      // Drift warning: for already-initialized accounts, the same arithmetic
+      // that sizes a starting balance now acts as a consistency check.
+      // No auto-correction — valuations recalculate asynchronously after
+      // imports, so a correction here could fight the recalc.
+      if (wfBalances !== null && balanceInitialized.includes(sfAccount.id)) {
+        const targetBalance = parseFloat(sfAccount.balance);
+        const signedByComment = new Map(
+          transactions.map((tx) => [`${tx.description} · ${tx.id}`, parseFloat(tx.amount)]),
+        );
+        const windowDelta = toImport.reduce(
+          (sum, a) => sum + (signedByComment.get(a.comment) ?? 0),
+          0,
+        );
+        const currentWfBalance = wfBalances.get(wfAccountId) ?? 0;
+        const drift = targetBalance - windowDelta - currentWfBalance;
+        if (Number.isFinite(drift) && Math.abs(drift) > 1.0) {
+          log(
+            `Balance drift on account ${wfAccountId}: Wealthfolio will be off by ${drift.toFixed(2)} ` +
+            `${sfAccount.currency} after this sync — review the account's activities`,
+          );
         }
       }
 

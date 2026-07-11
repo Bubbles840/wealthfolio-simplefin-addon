@@ -625,4 +625,62 @@ describe('runCompanionSync', () => {
     // Both filtered out and account already initialized → nothing to check/import
     expect(mockCheckImport).not.toHaveBeenCalled();
   });
+
+  it('types matched cross-account pairs as transfers', async () => {
+    process.env.ACCOUNT_MAPPING = JSON.stringify({
+      'sfin-account-1': 'wf-account-1',
+      'sfin-account-2': 'wf-account-2',
+    });
+    // both accounts pre-initialized so no starting-balance entries interfere
+    writeFileSync(TEST_STATE_FILE, JSON.stringify({ balanceInitialized: ['sfin-account-1', 'sfin-account-2'] }));
+
+    const mockCheckImport = vi.fn().mockImplementation((_id: string, acts: unknown[]) =>
+      Promise.resolve((acts as object[]).map((a) => ({ ...a, isDuplicate: false }))),
+    );
+    const wfMock = makeWfClientMock({
+      checkImport: mockCheckImport,
+      getAccounts: vi.fn().mockResolvedValue([
+        { id: 'wf-account-1', accountType: 'CASH' },
+        { id: 'wf-account-2', accountType: 'CREDIT_CARD' },
+      ]),
+    });
+    vi.mocked(WealthfolioClient).mockImplementation(function () { return wfMock; } as unknown as new (url: string) => WealthfolioClient);
+
+    vi.mocked(fetchAccountsNode).mockResolvedValue({
+      errors: [],
+      accounts: [
+        { id: 'sfin-account-1', name: 'Checking', currency: 'USD', balance: '1000.00', 'balance-date': 1700000000,
+          transactions: [{ id: 'tx-out', posted: 1700000000, amount: '-500.00', description: 'Payment to Citibank' }] },
+        { id: 'sfin-account-2', name: 'Card', currency: 'USD', balance: '-500.00', 'balance-date': 1700000000,
+          transactions: [{ id: 'tx-in', posted: 1700086400, amount: '500.00', description: 'PAYMENT THANK YOU' }] },
+      ],
+    });
+
+    await runCompanionSync();
+
+    const submitted = mockCheckImport.mock.calls.flatMap((c) => c[1] as Array<{ comment: string; activityType: string }>);
+    expect(submitted.find((a) => a.comment.includes('tx-out'))!.activityType).toBe('TRANSFER_OUT');
+    expect(submitted.find((a) => a.comment.includes('tx-in'))!.activityType).toBe('TRANSFER_IN');
+  });
+
+  it('logs a drift warning when an initialized account disagrees with SimpleFin by > $1', async () => {
+    const logSpy = vi.spyOn(console, 'log');
+    const wfMock = makeWfClientMock({
+      getLatestValuations: vi.fn().mockResolvedValue([{ accountId: 'wf-account-1', totalValue: '900' }]),
+    });
+    vi.mocked(WealthfolioClient).mockImplementation(function () { return wfMock; } as unknown as new (url: string) => WealthfolioClient);
+    vi.mocked(fetchAccountsNode).mockResolvedValue({
+      errors: [],
+      accounts: [
+        { id: 'sfin-account-1', name: 'Checking', currency: 'USD', balance: '1000.00', 'balance-date': 1700000000, transactions: [] },
+      ],
+    });
+    // account already initialized -> drift check active, no correction entry
+    writeFileSync(TEST_STATE_FILE, JSON.stringify({ balanceInitialized: ['sfin-account-1'] }));
+
+    await runCompanionSync();
+
+    expect(logSpy.mock.calls.flat().join('\n')).toMatch(/Balance drift.*wf-account-1.*100/);
+    logSpy.mockRestore();
+  });
 });
