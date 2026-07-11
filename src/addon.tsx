@@ -1,10 +1,12 @@
 import React, { useState, useEffect } from 'react';
+import { createRoot } from 'react-dom/client';
 import type { AddonContext, AddonEnableFunction } from '@wealthfolio/addon-sdk';
 import { SetupPage } from './pages/SetupPage';
 import { SyncPage } from './pages/SyncPage';
 import { SecretsStore } from './utils/secrets';
 import { Scheduler } from './utils/scheduler';
 import { runSync } from './utils/sync';
+import { ThemeStyles } from './components/ui';
 
 // ── Module-level singletons set by enable() ───────────────────────────────────
 
@@ -41,7 +43,7 @@ export function SimplefinSyncView({ ctx, store, scheduler }: SimplefinSyncViewPr
     );
   }, [ctx, store, scheduler]);
 
-  if (isSetup === null) return null;
+  if (isSetup === null) return <ThemeStyles />;
 
   const handleComplete = async () => {
     const hours = await store.getSyncScheduleHours();
@@ -58,22 +60,15 @@ export function SimplefinSyncView({ ctx, store, scheduler }: SimplefinSyncViewPr
     setIsSetup(false);
   };
 
-  if (!isSetup) {
-    return <SetupPage ctx={ctx} store={store} onComplete={handleComplete} />;
-  }
-
-  return <SyncPage ctx={ctx} store={store} scheduler={scheduler} onReset={handleReset} />;
-}
-
-// ── Route component ───────────────────────────────────────────────────────────
-
-function SimplefinRoute() {
   return (
-    <SimplefinSyncView
-      ctx={addonCtx!}
-      store={addonStore!}
-      scheduler={addonScheduler!}
-    />
+    <>
+      <ThemeStyles />
+      {!isSetup ? (
+        <SetupPage ctx={ctx} store={store} onComplete={handleComplete} />
+      ) : (
+        <SyncPage ctx={ctx} store={store} scheduler={scheduler} onReset={handleReset} />
+      )}
+    </>
   );
 }
 
@@ -84,18 +79,37 @@ const enable: AddonEnableFunction = (ctx) => {
   addonStore = new SecretsStore(ctx);
   addonScheduler = new Scheduler();
 
-  // Sidebar entry is declared in manifest.json contributes.links.sidebar —
-  // no ctx.sidebar.addItem() call needed.
-  ctx.router.add({
+  const sidebarItem = ctx.sidebar.addItem({
     id: 'simplefin-sync',
-    component: SimplefinRoute,
+    label: 'SimpleFin Sync',
+    // Host-drawn icon set has no wave like SimpleFin's logo; 'bank' reads as
+    // "bank connection" and doesn't collide with Wealthfolio's own sidebar
+    // icons (chart-line-up is already Insights)
+    icon: 'bank',
+    route: '/addons/simplefin-sync',
+    order: 90,
+  });
+
+  let root: ReturnType<typeof createRoot> | undefined;
+
+  ctx.router.add({
+    path: '/addons/simplefin-sync',
+    render: ({ root: routeRoot }) => {
+      root ??= createRoot(routeRoot);
+      root.render(
+        <SimplefinSyncView ctx={addonCtx!} store={addonStore!} scheduler={addonScheduler!} />,
+      );
+    },
   });
 
   ctx.onDisable(() => {
     addonScheduler!.stop();
+    root?.unmount();
+    sidebarItem.remove();
     addonCtx = undefined;
     addonStore = undefined;
     addonScheduler = undefined;
+    root = undefined;
   });
 };
 

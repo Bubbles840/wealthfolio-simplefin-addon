@@ -8,6 +8,10 @@
   "sdkVersion": "3.6.0",
   "minWealthfolioVersion": "3.6.0",
   "enabled": true,
+  "network": {
+    "allowedHosts": ["bridge.simplefin.org", "beta-bridge.simplefin.org"],
+    "approvedHosts": ["bridge.simplefin.org", "beta-bridge.simplefin.org"]
+  },
   "contributes": {
     "routes": [{ "id": "simplefin-sync" }],
     "links": {
@@ -16,7 +20,7 @@
           "id": "simplefin-sync",
           "route": "simplefin-sync",
           "label": "SimpleFin Sync",
-          "icon": "building-2",
+          "icon": "bank",
           "order": 90
         }
       ]
@@ -25,8 +29,8 @@
   "permissions": [
     {
       "category": "accounts",
-      "functions": ["getAll"],
-      "purpose": "Show existing accounts for mapping to SimpleFin accounts"
+      "functions": ["getAll", "create"],
+      "purpose": "Show existing accounts, and optionally create new Wealthfolio accounts, for mapping to SimpleFin accounts"
     },
     {
       "category": "activities",
@@ -35,14 +39,18 @@
     },
     {
       "category": "secrets",
-      "functions": ["set", "get", "delete"],
+      "functions": ["set", "get", "use", "delete"],
       "purpose": "Store SimpleFin credentials and sync configuration securely"
     },
     {
       "category": "network",
       "functions": ["request"],
-      "purpose": "Fetch transaction data from SimpleFin Bridge",
-      "hosts": ["bridge.simplefin.org"]
+      "purpose": "Fetch transaction data from SimpleFin Bridge"
+    },
+    {
+      "category": "ui",
+      "functions": ["sidebar.addItem", "router.add", "onDisable"],
+      "purpose": "Register sidebar navigation item and route for SimpleFin Sync"
     }
   ]
 }

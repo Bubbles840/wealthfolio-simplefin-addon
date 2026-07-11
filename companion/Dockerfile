@@ -28,8 +28,10 @@ COPY --from=builder /build/companion/dist/ ./dist/
 COPY companion/package*.json ./
 RUN npm ci --omit=dev
 
-# Give the non-root node user write access to /app so it can persist state.json
-RUN chown -R node:node /app
+# Give the non-root node user write access to /app so it can persist state.json,
+# and pre-create /data so the named volume mounted there inherits node ownership
+# (STATE_FILE=/data/state.json holds the claimed SimpleFin credentials)
+RUN chown -R node:node /app && mkdir -p /data && chown node:node /data
 
 USER node
 

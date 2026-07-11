@@ -17,6 +17,10 @@ const makeProps = () => ({
   store: {
     getAccessUrl: vi.fn(async () => null),
     setAccessUrl: vi.fn(async () => {}),
+    setAuthB64: vi.fn(async () => {}),
+    getAuthB64Key: vi.fn(async () => 'simplefin_auth_b64'),
+    setAccountNames: vi.fn(async () => {}),
+    getAccountNames: vi.fn(async () => ({})),
     getAccountMapping: vi.fn(async () => null),
     setAccountMapping: vi.fn(async () => {}),
     getMappingRules: vi.fn(async () => []),

@@ -3,7 +3,6 @@ import { generateEnvFile, generateComposeSnippet } from './compose-gen';
 import type { ComposeConfig } from './compose-gen';
 
 const config: ComposeConfig = {
-  accessUrl: 'https://user:pass@bridge.simplefin.org/simplefin',
   wealthfolioApiUrl: 'http://wealthfolio:7500',
   accountMapping: { 'sfin-1': 'wf-a' },
   syncSchedule: '0 */6 * * *',
@@ -12,8 +11,11 @@ const config: ComposeConfig = {
 };
 
 describe('generateEnvFile', () => {
-  it('includes SIMPLEFIN_ACCESS_URL', () => {
-    expect(generateEnvFile(config)).toContain('SIMPLEFIN_ACCESS_URL=https://user:pass@bridge');
+  it('includes an empty SIMPLEFIN_SETUP_TOKEN placeholder, never an access URL', () => {
+    const env = generateEnvFile(config);
+    expect(env).toContain('SIMPLEFIN_SETUP_TOKEN=');
+    expect(env).not.toContain('SIMPLEFIN_ACCESS_URL');
+    expect(env).not.toContain('user:pass');
   });
 
   it('includes ACCOUNT_MAPPING as JSON', () => {
@@ -21,8 +23,8 @@ describe('generateEnvFile', () => {
     expect(generateEnvFile(config)).toContain('sfin-1');
   });
 
-  it('includes a .gitignore warning', () => {
-    expect(generateEnvFile(config)).toContain('.gitignore');
+  it('points STATE_FILE at the persistent volume', () => {
+    expect(generateEnvFile(config)).toContain('STATE_FILE=/data/state.json');
   });
 
   it('does not include any undefined values', () => {
@@ -31,8 +33,11 @@ describe('generateEnvFile', () => {
 });
 
 describe('generateComposeSnippet', () => {
-  it('references the ghcr image', () => {
-    expect(generateComposeSnippet(config)).toContain('ghcr.io/wealthfolio-community/simplefin-sync');
+  it('builds locally from the companion Dockerfile (no published image)', () => {
+    const snippet = generateComposeSnippet(config);
+    expect(snippet).toContain('build:');
+    expect(snippet).toContain('dockerfile: companion/Dockerfile');
+    expect(snippet).not.toContain('image:');
   });
 
   it('uses non-root user', () => {
@@ -41,5 +46,11 @@ describe('generateComposeSnippet', () => {
 
   it('includes env_file reference', () => {
     expect(generateComposeSnippet(config)).toContain('env_file');
+  });
+
+  it('mounts a persistent volume for claimed credentials', () => {
+    const snippet = generateComposeSnippet(config);
+    expect(snippet).toContain('simplefin-sync-data:/data');
+    expect(snippet).toContain('volumes:');
   });
 });

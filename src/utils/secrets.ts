@@ -3,7 +3,10 @@ import type { AccountMapping, MappingRule } from '../../shared/types';
 
 const KEYS = {
   accessUrl: 'simplefin_access_url',
+  authB64: 'simplefin_auth_b64',
   accountMapping: 'account_mapping',
+  accountNames: 'account_names',
+  balanceInitialized: 'balance_initialized',
   mappingRules: 'mapping_rules',
   syncScheduleHours: 'sync_schedule_hours',
   lastSyncAt: 'last_sync_at',
@@ -19,12 +22,47 @@ export class SecretsStore {
     await this.ctx.api.secrets.set(KEYS.accessUrl, url);
   }
 
+  // The Wealthfolio SDK only supports Bearer auth for brokered requests.
+  // We store the pre-computed base64(user:pass) so the backend injects
+  // "Authorization: Bearer <base64>" which SimpleFin may accept.
+  async getAuthB64Key(): Promise<string> {
+    return KEYS.authB64;
+  }
+  async setAuthB64(credentialsB64: string): Promise<void> {
+    await this.ctx.api.secrets.set(KEYS.authB64, credentialsB64);
+  }
+
   async getAccountMapping(): Promise<AccountMapping | null> {
     const raw = await this.ctx.api.secrets.get(KEYS.accountMapping);
     return raw ? (JSON.parse(raw) as AccountMapping) : null;
   }
   async setAccountMapping(mapping: AccountMapping): Promise<void> {
     await this.ctx.api.secrets.set(KEYS.accountMapping, JSON.stringify(mapping));
+  }
+
+  /** Display names of SimpleFin accounts, keyed by SimpleFin account ID.
+   *  Captured at setup so the sync page can show names instead of raw IDs. */
+  async getAccountNames(): Promise<Record<string, string>> {
+    const raw = await this.ctx.api.secrets.get(KEYS.accountNames);
+    return raw ? (JSON.parse(raw) as Record<string, string>) : {};
+  }
+  async setAccountNames(names: Record<string, string>): Promise<void> {
+    await this.ctx.api.secrets.set(KEYS.accountNames, JSON.stringify(names));
+  }
+
+  /** SimpleFin account IDs that already received a starting-balance entry. */
+  async getBalanceInitialized(): Promise<string[]> {
+    const raw = await this.ctx.api.secrets.get(KEYS.balanceInitialized);
+    return raw ? (JSON.parse(raw) as string[]) : [];
+  }
+  async addBalanceInitialized(sfinAccountId: string): Promise<void> {
+    const current = await this.getBalanceInitialized();
+    if (!current.includes(sfinAccountId)) {
+      await this.ctx.api.secrets.set(
+        KEYS.balanceInitialized,
+        JSON.stringify([...current, sfinAccountId]),
+      );
+    }
   }
 
   async getMappingRules(): Promise<MappingRule[]> {

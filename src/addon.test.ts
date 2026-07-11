@@ -27,6 +27,7 @@ import enable, { SimplefinSyncView } from './addon';
 function makeCtx() {
   let disableCallback: (() => void) | null = null;
   const ctx = {
+    sidebar: { addItem: vi.fn(() => ({ remove: vi.fn() })) },
     router: { add: vi.fn() },
     onDisable: vi.fn((cb: () => void) => { disableCallback = cb; }),
     api: {
@@ -74,18 +75,24 @@ function makeScheduler(running = false) {
 describe('addon enable()', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('registers a route with id "simplefin-sync" and a component', () => {
+  it('registers a route at /addons/simplefin-sync with a render function', () => {
     const ctx = makeCtx();
     enable(ctx);
     expect(ctx.router.add).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 'simplefin-sync', component: expect.any(Function) }),
+      expect.objectContaining({ path: '/addons/simplefin-sync', render: expect.any(Function) }),
     );
   });
 
-  it('does NOT call ctx.sidebar.addItem (sidebar is declarative in manifest)', () => {
-    const ctx = { ...makeCtx(), sidebar: { addItem: vi.fn() } };
+  it('calls ctx.sidebar.addItem with the correct sidebar entry', () => {
+    const ctx = makeCtx();
     enable(ctx);
-    expect((ctx.sidebar as any).addItem).not.toHaveBeenCalled();
+    expect(ctx.sidebar.addItem).toHaveBeenCalledWith({
+      id: 'simplefin-sync',
+      label: 'SimpleFin Sync',
+      icon: 'bank',
+      route: '/addons/simplefin-sync',
+      order: 90,
+    });
   });
 
   it('registers an onDisable callback', () => {

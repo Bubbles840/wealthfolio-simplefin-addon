@@ -1,3 +1,4 @@
+import type { NetworkAPI } from '@wealthfolio/addon-sdk';
 import type { SimplefinAccountSet } from '../../shared/types';
 
 function requireHttps(url: string, label: string): void {
@@ -18,18 +19,18 @@ function requireSimpleFinDomain(url: string, label: string): void {
   }
 }
 
-export async function claimToken(setupToken: string): Promise<string> {
+export async function claimToken(setupToken: string, network: NetworkAPI): Promise<string> {
   // SimpleFin tokens use URL-safe base64 (- instead of +, _ instead of /)
   const normalized = setupToken.replace(/-/g, '+').replace(/_/g, '/');
   const claimUrl = atob(normalized);
   requireHttps(claimUrl, 'SimpleFin claim URL');
   requireSimpleFinDomain(claimUrl, 'SimpleFin claim URL');
 
-  const res = await fetch(claimUrl, { method: 'POST' });
-  if (!res.ok) {
+  const res = await network.request({ url: claimUrl, method: 'POST' });
+  if (res.status < 200 || res.status >= 300) {
     throw new Error(`SimpleFin claim failed: ${res.status}`);
   }
-  const accessUrl = await res.text();
+  const accessUrl = res.body.trim();
   requireHttps(accessUrl, 'SimpleFin access URL');
   requireSimpleFinDomain(accessUrl, 'SimpleFin access URL');
   return accessUrl;
@@ -38,33 +39,33 @@ export async function claimToken(setupToken: string): Promise<string> {
 export async function fetchAccounts(
   accessUrl: string,
   startDate: Date,
+  network: NetworkAPI,
+  authSecretKey?: string,
 ): Promise<SimplefinAccountSet> {
   requireHttps(accessUrl, 'SimpleFin access URL');
   requireSimpleFinDomain(accessUrl, 'SimpleFin access URL');
 
-  // Extract credentials and base URL from the access URL
+  // Strip credentials from URL — Wealthfolio blocks URL-embedded credentials
+  // and direct Authorization headers. Instead we reference a stored secret via
+  // auth.secretKey; the backend injects "Authorization: Bearer <secret>" where
+  // the secret is the pre-computed base64(user:pass) from the access URL.
   const url = new URL(accessUrl);
-  // btoa() only handles Latin-1. URL.username/password are percent-decoded by
-  // the browser (e.g. '%C3%A9' → 'é'), so re-encode to stay within Latin-1.
-  const credString = `${url.username}:${url.password}`;
-  const credentials = btoa(
-    encodeURIComponent(credString).replace(/%([0-9A-F]{2})/gi, (_, hex) =>
-      String.fromCharCode(parseInt(hex, 16)),
-    ),
-  );
   url.username = '';
   url.password = '';
+  url.pathname = url.pathname.replace(/\/$/, '') + '/accounts';
+  url.searchParams.set('start-date', String(Math.floor(startDate.getTime() / 1000)));
 
-  const base = url.origin + url.pathname.replace(/\/$/, '');
-  const accountsUrl = new URL(`${base}/accounts`);
-  accountsUrl.searchParams.set('start-date', String(Math.floor(startDate.getTime() / 1000)));
-  accountsUrl.searchParams.set('pending', '1');
+  const req: Parameters<NetworkAPI['request']>[0] = { url: url.href, method: 'GET' };
+  if (authSecretKey) {
+    // SDK types only expose 'bearer', but our patched Wealthfolio backend also
+    // supports 'basic' (injects "Authorization: Basic <secret>"). SimpleFin
+    // requires Basic auth; bearer does not work.
+    req.auth = { type: 'basic' as 'bearer', secretKey: authSecretKey };
+  }
 
-  const res = await fetch(accountsUrl.toString(), {
-    headers: { Authorization: `Basic ${credentials}` },
-  });
-  if (!res.ok) {
+  const res = await network.request(req);
+  if (res.status < 200 || res.status >= 300) {
     throw new Error(`SimpleFin /accounts failed: ${res.status}`);
   }
-  return res.json() as Promise<SimplefinAccountSet>;
+  return JSON.parse(res.body) as SimplefinAccountSet;
 }

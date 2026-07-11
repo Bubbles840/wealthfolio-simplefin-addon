@@ -7,13 +7,18 @@ vi.mock('../utils/sync', () => ({
 }));
 
 const makeProps = () => ({
-  ctx: {} as any,
+  ctx: {
+    api: { accounts: { getAll: vi.fn(async () => [{ id: 'wf-a', name: 'Checking' }]) } },
+  } as any,
   store: {
     getLastSyncAt: vi.fn(async () => new Date('2024-01-01T10:00:00Z')),
     getAccountMapping: vi.fn(async () => ({ 'sfin-1': 'wf-a', 'sfin-2': 'wf-b' })),
     getMappingRules: vi.fn(async () => []),
     getSyncScheduleHours: vi.fn(async () => 6),
     getAccessUrl: vi.fn(async () => 'https://u:p@bridge.simplefin.org/simplefin'),
+    getAccountNames: vi.fn(async () => ({ 'sfin-1': 'Growth', 'sfin-2': 'Spend' })),
+    setAccountNames: vi.fn(),
+    getAuthB64Key: vi.fn(async () => 'simplefin_auth_b64'),
     setLastSyncAt: vi.fn(),
   } as any,
   onReset: vi.fn(),
@@ -31,5 +36,15 @@ describe('SyncPage', () => {
     await waitFor(() => screen.getByRole('button', { name: /sync now/i }));
     fireEvent.click(screen.getByRole('button', { name: /sync now/i }));
     await waitFor(() => expect(screen.getByText(/5 transactions/i)).toBeInTheDocument());
+  });
+
+  it('shows account names instead of raw IDs in the mapping list', async () => {
+    render(<SyncPage {...makeProps()} />);
+    await waitFor(() => expect(screen.getByText(/Growth/)).toBeInTheDocument());
+    expect(screen.getByText(/Checking/)).toBeInTheDocument();
+    // Raw IDs may appear in the Docker guide's generated config, but the
+    // mapping list itself must show names
+    const growthItem = screen.getByText(/Growth/).closest('li');
+    expect(growthItem?.textContent).not.toContain('sfin-1');
   });
 });

@@ -1,9 +1,11 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import type { AddonContext } from '@wealthfolio/addon-sdk';
 import { runSync } from '../utils/sync';
+import { fetchAccounts } from '../utils/simplefin';
 import { SyncStatus } from '../components/SyncStatus';
 import { DockerGuide } from '../components/DockerGuide';
 import { RuleEditor } from '../components/RuleEditor';
+import { Button, Card, ErrorBox, SectionLabel } from '../components/ui';
 import type { SecretsStore } from '../utils/secrets';
 import type { Scheduler } from '../utils/scheduler';
 import type { AccountMapping, MappingRule } from '../../shared/types';
@@ -24,6 +26,9 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
   const [scheduleHours, setScheduleHours] = useState<number | null>(null);
   const [error, setError] = useState('');
   const [editingRules, setEditingRules] = useState(false);
+  const [sfinNames, setSfinNames] = useState<Record<string, string>>({});
+  const [wfNames, setWfNames] = useState<Record<string, string>>({});
+  const [confirmingReset, setConfirmingReset] = useState(false);
 
   useEffect(() => {
     Promise.all([
@@ -31,13 +36,37 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
       store.getAccountMapping(),
       store.getMappingRules(),
       store.getSyncScheduleHours(),
-    ]).then(([last, m, r, h]) => {
+      store.getAccountNames(),
+      ctx.api.accounts.getAll().catch(() => []),
+    ]).then(([last, m, r, h, names, wfAccounts]) => {
       setLastSyncAt(last);
       setMapping(m ?? {});
       setRules(r);
       setScheduleHours(h);
+      setSfinNames(names);
+      setWfNames(Object.fromEntries(wfAccounts.map((a) => [a.id, a.name])));
+
+      // Backfill for installs set up before account names were captured
+      if (Object.keys(names).length === 0 && m && Object.keys(m).length > 0) {
+        backfillNames();
+      }
     });
-  }, [store]);
+
+    async function backfillNames() {
+      try {
+        const accessUrl = await store.getAccessUrl();
+        if (!accessUrl) return;
+        const authKey = await store.getAuthB64Key();
+        const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
+        const accountSet = await fetchAccounts(accessUrl, yesterday, ctx.api.network, authKey);
+        const fetched = Object.fromEntries(accountSet.accounts.map((a) => [a.id, a.name]));
+        await store.setAccountNames(fetched);
+        setSfinNames(fetched);
+      } catch {
+        // Names are cosmetic — leave IDs visible rather than surface an error
+      }
+    }
+  }, [store, ctx]);
 
   const doSync = useCallback(async () => {
     setSyncing(true);
@@ -56,8 +85,10 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
     }
   }, [ctx, store]);
 
+  // window.confirm is silently suppressed in the addon sandbox (iframe has
+  // sandbox="allow-scripts" without allow-modals), so confirmation must be
+  // rendered inline instead
   const handleReset = async () => {
-    if (!confirm('Reset all SimpleFin Sync settings? You will need to reconnect.')) return;
     scheduler.stop();
     await store.clearAll();
     onReset();
@@ -66,37 +97,53 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
   const mappedCount = Object.keys(mapping).length;
 
   return (
-    <div style={{ maxWidth: 640, margin: '0 auto', padding: 24 }}>
+    <div className="sfin-page">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <h2 style={{ margin: 0 }}>SimpleFin Sync</h2>
-        <button type="button" onClick={doSync} disabled={syncing}>
+        <div>
+          <h2 className="sfin-title">SimpleFin Sync</h2>
+          <SyncStatus lastSyncAt={lastSyncAt} imported={imported} syncing={syncing} />
+        </div>
+        <Button onClick={doSync} disabled={syncing}>
           {syncing ? 'Syncing…' : 'Sync Now'}
-        </button>
+        </Button>
       </div>
 
-      <SyncStatus lastSyncAt={lastSyncAt} imported={imported} syncing={syncing} />
-      {error && <p style={{ color: 'red' }}>{error}</p>}
+      {error && <ErrorBox>{error}</ErrorBox>}
 
-      <section style={{ marginTop: 20 }}>
-        <strong>ACCOUNTS ({mappedCount} mapped)</strong>
-        <ul style={{ margin: '8px 0', padding: '0 0 0 16px' }}>
+      <div className="sfin-callout" style={{ marginTop: 16, marginBottom: 0 }}>
+        💡 Imported bank transactions appear under <strong>Activities</strong>. To see them in the{' '}
+        <strong>Spending</strong> tab with categories and budgets, enable the Spending Tracker for
+        your mapped accounts: <strong>Settings → Spending Tracker</strong>.
+      </div>
+
+      <Card>
+        <SectionLabel>Accounts ({mappedCount} mapped)</SectionLabel>
+        <ul className="sfin-list">
           {Object.entries(mapping).map(([sfinId, wfId]) => (
-            <li key={sfinId}>{sfinId} → {wfId}</li>
+            <li key={sfinId}>
+              {sfinNames[sfinId] ?? sfinId}
+              <span className="sfin-subtle"> → </span>
+              {wfNames[wfId] ?? (
+                <span style={{ color: 'var(--destructive)' }}>
+                  account no longer exists — reset and re-map
+                </span>
+              )}
+            </li>
           ))}
         </ul>
-      </section>
+      </Card>
 
-      <section style={{ marginTop: 20 }}>
-        <strong>AUTO-SYNC</strong>{' '}
+      <Card>
+        <SectionLabel>Auto-Sync</SectionLabel>
         {scheduleHours ? `Every ${scheduleHours} hours` : 'Off'}
-      </section>
+      </Card>
 
-      <section style={{ marginTop: 20 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-          <strong>TRANSACTION RULES</strong>
-          <button type="button" onClick={() => setEditingRules((e) => !e)}>
+      <Card>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <SectionLabel>Transaction Rules</SectionLabel>
+          <Button variant="ghost" onClick={() => setEditingRules((e) => !e)}>
             {editingRules ? 'Done' : 'Edit'}
-          </button>
+          </Button>
         </div>
         {editingRules ? (
           <RuleEditor
@@ -107,21 +154,35 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
             }}
           />
         ) : (
-          <ul style={{ margin: '8px 0', padding: '0 0 0 16px', fontSize: 13 }}>
+          <ul className="sfin-list">
             {rules.map((r, i) => (
               <li key={i}>"{r.pattern}" → {r.activityType}</li>
             ))}
-            <li style={{ opacity: 0.6 }}>+ → DEPOSIT, - → WITHDRAWAL (defaults)</li>
+            <li className="sfin-subtle">+ → DEPOSIT, - → WITHDRAWAL (defaults)</li>
           </ul>
         )}
-      </section>
+      </Card>
 
       <DockerGuide store={store} />
 
-      <div style={{ marginTop: 24, display: 'flex', gap: 8 }}>
-        <button type="button" onClick={handleReset} style={{ color: 'red' }}>
-          Reset Setup
-        </button>
+      <div style={{ marginTop: 24 }}>
+        {confirmingReset ? (
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <span className="sfin-subtle">
+              Reset all SimpleFin Sync settings? You will need to reconnect.
+            </span>
+            <Button variant="destructive" onClick={handleReset}>
+              Yes, reset everything
+            </Button>
+            <Button variant="ghost" onClick={() => setConfirmingReset(false)}>
+              Cancel
+            </Button>
+          </div>
+        ) : (
+          <Button variant="destructive" onClick={() => setConfirmingReset(true)}>
+            Reset Setup
+          </Button>
+        )}
       </div>
     </div>
   );

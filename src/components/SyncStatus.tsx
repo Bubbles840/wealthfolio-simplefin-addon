@@ -17,10 +17,11 @@ function timeAgo(date: Date): string {
 }
 
 export function SyncStatus({ lastSyncAt, imported, syncing }: Props) {
-  if (syncing) return <p>Syncing…</p>;
-  if (!lastSyncAt) return <p>Never synced</p>;
+  const style = { margin: '4px 0 0' };
+  if (syncing) return <p className="sfin-subtle" style={style}>Syncing…</p>;
+  if (!lastSyncAt) return <p className="sfin-subtle" style={style}>Never synced</p>;
   return (
-    <p>
+    <p className="sfin-subtle" style={style}>
       Last synced {timeAgo(lastSyncAt)}
       {imported !== null && ` • ${imported} transaction${imported === 1 ? '' : 's'} imported`}
     </p>

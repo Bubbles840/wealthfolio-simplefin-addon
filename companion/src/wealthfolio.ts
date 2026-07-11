@@ -3,15 +3,32 @@ export class WealthfolioClient {
 
   constructor(private baseUrl: string) {}
 
-  async login(username: string, password: string): Promise<void> {
+  /**
+   * Wealthfolio's server uses password-only auth: POST /api/v1/auth/login
+   * with { password } returns the session JWT in a Set-Cookie header
+   * (wf_session=<jwt>), not in the response body. The same JWT is accepted
+   * as an Authorization: Bearer header on subsequent requests.
+   */
+  async login(password: string): Promise<void> {
     const res = await fetch(`${this.baseUrl}/api/v1/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password }),
+      body: JSON.stringify({ password }),
     });
     if (!res.ok) throw new Error(`Wealthfolio login failed: ${res.status}`);
-    const data = await res.json() as { token: string };
-    this.token = data.token;
+
+    const setCookies: string[] =
+      typeof (res.headers as any).getSetCookie === 'function'
+        ? (res.headers as any).getSetCookie()
+        : [res.headers.get('set-cookie') ?? ''];
+    for (const cookie of setCookies) {
+      const match = /(?:^|;\s*)wf_session=([^;]+)/.exec(cookie);
+      if (match && match[1]) {
+        this.token = match[1];
+        return;
+      }
+    }
+    throw new Error('Wealthfolio login succeeded but no wf_session cookie was returned');
   }
 
   private authHeaders(): Record<string, string> {
@@ -27,6 +44,26 @@ export class WealthfolioClient {
     });
     if (!res.ok) throw new Error(`checkImport failed: ${res.status}`);
     return res.json() as Promise<unknown[]>;
+  }
+
+  async getAccounts(): Promise<Array<{ id: string }>> {
+    const res = await fetch(`${this.baseUrl}/api/v1/accounts`, {
+      headers: this.authHeaders(),
+    });
+    if (!res.ok) throw new Error(`getAccounts failed: ${res.status}`);
+    return res.json() as Promise<Array<{ id: string }>>;
+  }
+
+  /**
+   * Latest per-account valuations. The accounts endpoint has no balance
+   * field — totalValue here is the real current account balance.
+   */
+  async getLatestValuations(): Promise<Array<{ accountId: string; totalValue: string | number }>> {
+    const res = await fetch(`${this.baseUrl}/api/v1/valuations/latest`, {
+      headers: this.authHeaders(),
+    });
+    if (!res.ok) throw new Error(`getLatestValuations failed: ${res.status}`);
+    return res.json() as Promise<Array<{ accountId: string; totalValue: string | number }>>;
   }
 
   async importActivities(activities: unknown[]): Promise<void> {
