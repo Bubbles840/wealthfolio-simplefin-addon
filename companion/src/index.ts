@@ -183,6 +183,55 @@ export function validateStartupEnv(): void {
   }
 }
 
+// ── Reconciliation sweep ─────────────────────────────────────────────────────
+
+/**
+ * Reconciliation sweep: find unlinked TRANSFER_IN / TRANSFER_OUT activities
+ * in the mapped accounts and link matching pairs. Covers pairs imported by
+ * the in-app addon sync (which cannot call the link API), earlier link
+ * failures, and manually retyped rows. Returns the number of pairs linked.
+ */
+export async function reconcileTransferLinks(
+  wfClient: WealthfolioClient,
+  wfAccountIds: string[],
+  lookbackDays: number,
+): Promise<number> {
+  if (wfAccountIds.length === 0) return 0;
+
+  const from = new Date(Date.now() - (lookbackDays + 7) * 24 * 60 * 60 * 1000);
+  const items = await wfClient.searchActivities({
+    page: 1,
+    pageSize: 200,
+    accountIdFilter: wfAccountIds,
+    activityTypeFilter: ['TRANSFER_IN', 'TRANSFER_OUT'],
+    dateFrom: from.toISOString().split('T')[0],
+  });
+
+  const unlinked = items.filter((a) => !a.sourceGroupId);
+  // Activities store absolute amounts; direction lives in the type. Rebuild
+  // signed candidates so the shared pair matcher applies unchanged.
+  const candidates: TransferCandidate[] = unlinked.map((a) => ({
+    txId: a.id,
+    accountId: a.accountId,
+    posted: Math.floor(new Date(a.date).getTime() / 1000),
+    amount: Math.abs(parseFloat(String(a.amount ?? '0'))) *
+      (a.activityType === 'TRANSFER_OUT' ? -1 : 1),
+    ruleTyped: false,
+  }));
+
+  const { pairs } = detectTransferPairs(candidates);
+  let linked = 0;
+  for (const pair of pairs) {
+    try {
+      await wfClient.linkTransferActivities(pair.outTxId, pair.inTxId);
+      linked += 1;
+    } catch (err) {
+      log(`Could not link transfer pair ${pair.outTxId} + ${pair.inTxId}: ${(err as Error).message}`);
+    }
+  }
+  return linked;
+}
+
 // ── Core sync logic ───────────────────────────────────────────────────────────
 
 /**
@@ -434,6 +483,13 @@ export async function runCompanionSync(): Promise<void> {
       log(`Error syncing account ${wfAccountId}: ${msg}`);
       accountErrors += 1;
     }
+  }
+
+  try {
+    const linked = await reconcileTransferLinks(wfClient, Object.values(mapping), lookbackDays);
+    if (linked > 0) log(`Linked ${linked} transfer pair(s)`);
+  } catch (err) {
+    log(`Transfer reconciliation skipped: ${(err as Error).message}`);
   }
 
   // Only advance lastSyncAt on a clean run. Advancing it after failures would

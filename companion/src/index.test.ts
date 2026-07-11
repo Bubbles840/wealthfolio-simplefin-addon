@@ -73,6 +73,8 @@ function makeWfClientMock(overrides: Record<string, unknown> = {}): Record<strin
     importActivities: vi.fn().mockResolvedValue(undefined),
     getAccounts: vi.fn().mockResolvedValue([]),
     getLatestValuations: vi.fn().mockResolvedValue([]),
+    searchActivities: vi.fn().mockResolvedValue([]),
+    linkTransferActivities: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
 }
@@ -702,5 +704,35 @@ describe('runCompanionSync', () => {
 
     expect(logSpy.mock.calls.flat().join('\n')).not.toMatch(/Balance drift/);
     logSpy.mockRestore();
+  });
+
+  it('reconciliation links unlinked transfer pairs found via search', async () => {
+    const mockLink = vi.fn().mockResolvedValue(undefined);
+    const wfMock = makeWfClientMock({
+      searchActivities: vi.fn().mockResolvedValue([
+        { id: 'act-out', accountId: 'wf-account-1', activityType: 'TRANSFER_OUT', date: '2026-07-05', amount: '500', sourceGroupId: null },
+        { id: 'act-in', accountId: 'wf-account-2', activityType: 'TRANSFER_IN', date: '2026-07-06', amount: '500', sourceGroupId: null },
+        { id: 'act-linked', accountId: 'wf-account-1', activityType: 'TRANSFER_OUT', date: '2026-07-05', amount: '75', sourceGroupId: 'grp-1' },
+      ]),
+      linkTransferActivities: mockLink,
+    });
+    vi.mocked(WealthfolioClient).mockImplementation(function () { return wfMock; } as unknown as new (url: string) => WealthfolioClient);
+    vi.mocked(fetchAccountsNode).mockResolvedValue({ errors: [], accounts: [] });
+
+    await runCompanionSync();
+
+    expect(mockLink).toHaveBeenCalledTimes(1);
+    expect(mockLink).toHaveBeenCalledWith('act-out', 'act-in');
+  });
+
+  it('reconciliation failures are non-fatal and do not block lastSyncAt', async () => {
+    const wfMock = makeWfClientMock({
+      searchActivities: vi.fn().mockRejectedValue(new Error('boom')),
+    });
+    vi.mocked(WealthfolioClient).mockImplementation(function () { return wfMock; } as unknown as new (url: string) => WealthfolioClient);
+    vi.mocked(fetchAccountsNode).mockResolvedValue({ errors: [], accounts: [] });
+
+    await expect(runCompanionSync()).resolves.toBeUndefined();
+    expect(getLastSyncAt()).not.toBeNull();
   });
 });
