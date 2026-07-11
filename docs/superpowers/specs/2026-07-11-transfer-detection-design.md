@@ -133,3 +133,6 @@ the log line tells the user exactly what to look at.
 - Cross-currency transfers are not matched.
 - The in-app sync's pairs stay unlinked (counting in spending) until the next
   companion run or a manual UI link.
+- The reconciliation sweep can link a keyword-typed card TRANSFER_IN to an
+  unrelated cash TRANSFER_OUT if their amounts and dates coincide — the same
+  amount+date collision risk the pair matcher already accepts.
