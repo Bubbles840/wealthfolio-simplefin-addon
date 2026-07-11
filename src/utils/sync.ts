@@ -32,6 +32,28 @@ async function hasExistingStartingBalance(
   return res.data.some((a) => (a.comment ?? '') === marker);
 }
 
+/**
+ * Type-proof idempotency guard. Wealthfolio's duplicate check hashes the
+ * activity type into its fingerprint, so a transaction re-synced under a
+ * different resolved type (rule changes, account-type edits, addon upgrades,
+ * transfer detection kicking in) would slip past it and import twice. Every
+ * imported activity carries its SimpleFin tx id at the end of the comment —
+ * collect the ids already present so fetched transactions can be skipped by
+ * identity, independent of type.
+ */
+async function fetchExistingTxIds(ctx: AddonContext, wfAccountId: string): Promise<Set<string>> {
+  const res = await ctx.api.activities.search(
+    0, 500, { accountIds: [wfAccountId] }, '', { id: 'date', desc: true },
+  );
+  const ids = new Set<string>();
+  for (const a of res.data) {
+    const comment = a.comment ?? '';
+    const sep = comment.lastIndexOf(' · ');
+    if (sep !== -1) ids.add(comment.slice(sep + 3));
+  }
+  return ids;
+}
+
 export async function runSync(ctx: AddonContext, store: SecretsStore): Promise<SyncResult> {
   const errors: string[] = [];
 
@@ -134,7 +156,18 @@ export async function runSync(ctx: AddonContext, store: SecretsStore): Promise<S
     const wfAccountId = mapping[sfAccount.id];
     if (!wfAccountId) continue;
 
-    const prepared = preparedByAccount.get(sfAccount.id) ?? [];
+    // Skip transactions already imported (matched by SimpleFin tx id, so a
+    // changed resolved type can never re-import one). Falls back to the
+    // server's own duplicate check when the lookup fails.
+    let existingTxIds = new Set<string>();
+    try {
+      existingTxIds = await fetchExistingTxIds(ctx, wfAccountId);
+    } catch {
+      // search unavailable — checkImport still catches same-type duplicates
+    }
+    const preparedAll = preparedByAccount.get(sfAccount.id) ?? [];
+    const prepared = preparedAll.filter((p) => !existingTxIds.has(p.tx.id));
+    skipped += preparedAll.length - prepared.length;
     const transactions = prepared.map((p) => p.tx);
 
     const activities = prepared.map(({ tx, type }) => ({

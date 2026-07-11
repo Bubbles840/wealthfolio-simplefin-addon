@@ -371,7 +371,29 @@ export async function runCompanionSync(): Promise<void> {
       continue;
     }
 
-    const prepared = preparedByAccount.get(sfAccount.id) ?? [];
+    // Type-proof idempotency guard: Wealthfolio's duplicate check hashes the
+    // activity type, so a transaction re-synced under a different resolved
+    // type would import twice. Skip anything whose SimpleFin tx id already
+    // appears at the end of an existing activity comment.
+    let existingTxIds = new Set<string>();
+    try {
+      const existing = await wfClient.searchActivities({
+        page: 0,
+        pageSize: 500,
+        accountIdFilter: [wfAccountId],
+      });
+      for (const a of existing) {
+        const comment = a.comment ?? '';
+        const sep = comment.lastIndexOf(' · ');
+        if (sep !== -1) existingTxIds.add(comment.slice(sep + 3));
+      }
+    } catch {
+      // search unavailable — checkImport still catches same-type duplicates
+    }
+
+    const preparedAll = preparedByAccount.get(sfAccount.id) ?? [];
+    const prepared = preparedAll.filter((p) => !existingTxIds.has(p.tx.id));
+    totalSkipped += preparedAll.length - prepared.length;
     const transactions = prepared.map((p) => p.tx);
 
     debug(

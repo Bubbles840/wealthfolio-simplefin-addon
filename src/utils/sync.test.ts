@@ -144,6 +144,22 @@ describe('runSync', () => {
 
 
 
+  it('never re-imports a transaction whose SimpleFin id already exists, even under a different type', async () => {
+    const tx = { id: 'tx-1', posted: 1700000000, amount: '-1982.19', description: 'Payment to Citibank' };
+    vi.mocked(fetchAccounts).mockResolvedValueOnce(makeAccountSet([tx]));
+    const ctx = makeCtx();
+    // The transaction already exists as a WITHDRAWAL; this sync would resolve
+    // a different type, which slips past Wealthfolio's type-hashed dedup —
+    // the tx-id guard must catch it instead
+    ctx.api.activities.search = vi.fn(async () => ({
+      data: [{ id: 'act-1', comment: 'Payment to Citibank · tx-1' }],
+    }));
+    const result = await runSync(ctx, makeStore() as any);
+
+    expect(ctx.api.activities.import).not.toHaveBeenCalled();
+    expect(result.skipped).toBe(1);
+  });
+
   it('types matched cross-account pairs as transfers', async () => {
     vi.mocked(fetchAccounts).mockResolvedValueOnce({
       errors: [],

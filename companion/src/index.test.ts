@@ -628,6 +628,30 @@ describe('runCompanionSync', () => {
     expect(mockCheckImport).not.toHaveBeenCalled();
   });
 
+  it('never re-imports a transaction whose SimpleFin id already exists, even under a different type', async () => {
+    writeFileSync(TEST_STATE_FILE, JSON.stringify({ balanceInitialized: ['sfin-account-1'] }));
+    const mockCheckImport = vi.fn().mockResolvedValue([]);
+    const wfMock = makeWfClientMock({
+      checkImport: mockCheckImport,
+      searchActivities: vi.fn().mockResolvedValue([
+        { id: 'act-1', accountId: 'wf-account-1', activityType: 'WITHDRAWAL', date: '2026-07-05', amount: '1982.19', sourceGroupId: null, comment: 'Payment to Citibank · tx-1' },
+      ]),
+    });
+    vi.mocked(WealthfolioClient).mockImplementation(function () { return wfMock; } as unknown as new (url: string) => WealthfolioClient);
+    vi.mocked(fetchAccountsNode).mockResolvedValue({
+      errors: [],
+      accounts: [
+        { id: 'sfin-account-1', name: 'Checking', currency: 'USD', balance: '1000.00', 'balance-date': 1700000000,
+          transactions: [{ id: 'tx-1', posted: 1700000000, amount: '-1982.19', description: 'Payment to Citibank' }] },
+      ],
+    });
+
+    await runCompanionSync();
+
+    // Filtered by tx id before checkImport ever sees it
+    expect(mockCheckImport).not.toHaveBeenCalled();
+  });
+
   it('types matched cross-account pairs as transfers', async () => {
     process.env.ACCOUNT_MAPPING = JSON.stringify({
       'sfin-account-1': 'wf-account-1',
