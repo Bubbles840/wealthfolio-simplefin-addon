@@ -398,7 +398,7 @@ export async function runCompanionSync(): Promise<void> {
       // that sizes a starting balance now acts as a consistency check.
       // No auto-correction — valuations recalculate asynchronously after
       // imports, so a correction here could fight the recalc.
-      if (wfBalances !== null && balanceInitialized.includes(sfAccount.id)) {
+      if (wfBalances !== null && wfBalances.has(wfAccountId) && balanceInitialized.includes(sfAccount.id)) {
         const targetBalance = parseFloat(sfAccount.balance);
         const signedByComment = new Map(
           transactions.map((tx) => [`${tx.description} · ${tx.id}`, parseFloat(tx.amount)]),
@@ -407,7 +407,7 @@ export async function runCompanionSync(): Promise<void> {
           (sum, a) => sum + (signedByComment.get(a.comment) ?? 0),
           0,
         );
-        const currentWfBalance = wfBalances.get(wfAccountId) ?? 0;
+        const currentWfBalance = wfBalances.get(wfAccountId)!;
         const drift = targetBalance - windowDelta - currentWfBalance;
         if (Number.isFinite(drift) && Math.abs(drift) > 1.0) {
           log(

@@ -683,4 +683,24 @@ describe('runCompanionSync', () => {
     expect(logSpy.mock.calls.flat().join('\n')).toMatch(/Balance drift.*wf-account-1.*100/);
     logSpy.mockRestore();
   });
+
+  it('skips the drift check when an initialized account has no valuation entry', async () => {
+    const logSpy = vi.spyOn(console, 'log');
+    const wfMock = makeWfClientMock({
+      getLatestValuations: vi.fn().mockResolvedValue([]),
+    });
+    vi.mocked(WealthfolioClient).mockImplementation(function () { return wfMock; } as unknown as new (url: string) => WealthfolioClient);
+    vi.mocked(fetchAccountsNode).mockResolvedValue({
+      errors: [],
+      accounts: [
+        { id: 'sfin-account-1', name: 'Checking', currency: 'USD', balance: '1000.00', 'balance-date': 1700000000, transactions: [] },
+      ],
+    });
+    writeFileSync(TEST_STATE_FILE, JSON.stringify({ balanceInitialized: ['sfin-account-1'] }));
+
+    await runCompanionSync();
+
+    expect(logSpy.mock.calls.flat().join('\n')).not.toMatch(/Balance drift/);
+    logSpy.mockRestore();
+  });
 });
