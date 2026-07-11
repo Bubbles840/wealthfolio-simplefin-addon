@@ -41,6 +41,7 @@ const makeCtx = () => ({
         acts.map((a: any) => ({ ...a, isValid: true })),
       ),
       import: vi.fn(async (acts: any[]) => acts),
+      search: vi.fn(async () => ({ data: [] })),
     },
   },
 } as any);
@@ -229,6 +230,22 @@ describe('runSync', () => {
     expect(ctx.api.activities.import).not.toHaveBeenCalled();
     expect(store.addBalanceInitialized).not.toHaveBeenCalled();
     expect(result.errors).toHaveLength(0); // per-account skip is silent, not an error
+  });
+
+  it('does not create a second starting balance when one already exists in Wealthfolio', async () => {
+    vi.mocked(fetchAccounts).mockResolvedValueOnce(makeAccountSet([])); // balance 1000.00
+    const ctx = makeCtx();
+    // Valuation is stale/wrong (0), but Wealthfolio already holds a
+    // starting-balance entry created by the companion
+    ctx.api.activities.search = vi.fn(async () => ({
+      data: [{ id: 'act-sb', comment: 'Starting balance · sfin-1' }],
+    }));
+    const store = makeStore({ getBalanceInitialized: vi.fn(async () => []) });
+    await runSync(ctx, store as any);
+
+    expect(ctx.api.activities.import).not.toHaveBeenCalled();
+    // Still marks done so the search isn't repeated every run
+    expect(store.addBalanceInitialized).toHaveBeenCalledWith('sfin-1');
   });
 
   it('starting balance self-cancels when window transactions are duplicates and the valuation is already correct', async () => {

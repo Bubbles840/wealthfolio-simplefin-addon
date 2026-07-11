@@ -34,8 +34,8 @@
     },
     {
       "category": "activities",
-      "functions": ["checkImport", "import"],
-      "purpose": "Import bank transactions from SimpleFin"
+      "functions": ["checkImport", "import", "search"],
+      "purpose": "Import bank transactions from SimpleFin and check for existing starting-balance entries"
     },
     {
       "category": "portfolio",

@@ -6,6 +6,7 @@ export interface ActivitySearchItem {
   date: string;
   amount?: string | number | null;
   sourceGroupId?: string | null;
+  comment?: string | null;
 }
 
 export class WealthfolioClient {

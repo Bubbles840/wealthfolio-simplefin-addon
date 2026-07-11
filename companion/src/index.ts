@@ -200,7 +200,8 @@ export async function reconcileTransferLinks(
 
   const from = new Date(Date.now() - (lookbackDays + 7) * 24 * 60 * 60 * 1000);
   const items = await wfClient.searchActivities({
-    page: 1,
+    // page is 0-based (server: offset = page * page_size)
+    page: 0,
     pageSize: 200,
     accountIdFilter: wfAccountIds,
     activityTypeFilter: ['TRANSFER_IN', 'TRANSFER_OUT'],
@@ -417,7 +418,27 @@ export async function runCompanionSync(): Promise<void> {
       // a later run retries once a valuation exists.
       const importList = [...toImport];
       const canReadBalance = wfBalances !== null && wfBalances.has(wfAccountId);
+      // Shared-truth guard: both syncers keep separate "already corrected"
+      // ledgers, so before creating a correction, ask Wealthfolio itself
+      // whether one already exists for this account. This makes "at most one
+      // starting-balance entry per account, ever" hold even if local state
+      // is lost or the other syncer did the work.
+      let alreadyCorrected = false;
       if (canReadBalance && !balanceInitialized.includes(sfAccount.id)) {
+        try {
+          const marker = `Starting balance · ${sfAccount.id}`;
+          const existing = await wfClient.searchActivities({
+            page: 0,
+            pageSize: 500,
+            accountIdFilter: [wfAccountId],
+          });
+          alreadyCorrected = existing.some((a) => (a.comment ?? '') === marker);
+        } catch {
+          // Cannot verify — fall through to the math, which self-cancels when
+          // the other syncer already corrected and balances are readable
+        }
+      }
+      if (canReadBalance && !alreadyCorrected && !balanceInitialized.includes(sfAccount.id)) {
         const signedByComment = new Map(
           transactions.map((tx) => [`${tx.description} · ${tx.id}`, parseFloat(tx.amount)]),
         );

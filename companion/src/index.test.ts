@@ -686,6 +686,33 @@ describe('runCompanionSync', () => {
     logSpy.mockRestore();
   });
 
+  it('does not create a second starting balance when one already exists in Wealthfolio', async () => {
+    writeFileSync(TEST_STATE_FILE, JSON.stringify({}));
+    const mockImportActivities = vi.fn().mockResolvedValue(undefined);
+    const wfMock = makeWfClientMock({
+      importActivities: mockImportActivities,
+      getLatestValuations: vi.fn().mockResolvedValue([{ accountId: 'wf-account-1', totalValue: '0' }]),
+      searchActivities: vi.fn().mockResolvedValue([
+        { id: 'act-sb', accountId: 'wf-account-1', activityType: 'DEPOSIT', date: '2026-06-10', amount: '1000', sourceGroupId: null, comment: 'Starting balance · sfin-account-1' },
+      ]),
+    });
+    vi.mocked(WealthfolioClient).mockImplementation(function () { return wfMock; } as unknown as new (url: string) => WealthfolioClient);
+    vi.mocked(fetchAccountsNode).mockResolvedValue({
+      errors: [],
+      accounts: [
+        { id: 'sfin-account-1', name: 'Checking', currency: 'USD', balance: '1000.00', 'balance-date': 1700000000, transactions: [] },
+      ],
+    });
+
+    await runCompanionSync();
+
+    // Valuation says 0 (stale), which would compute a +1000 correction — the
+    // shared-truth guard must prevent the duplicate anyway
+    expect(mockImportActivities).not.toHaveBeenCalled();
+    const state = JSON.parse(readFileSync(TEST_STATE_FILE, 'utf8')) as { balanceInitialized?: string[] };
+    expect(state.balanceInitialized).toContain('sfin-account-1');
+  });
+
   it('skips the starting balance and does not mark initialized when the account has no valuation entry', async () => {
     // Fresh state (not initialized) and an empty valuations response: the
     // balance is unknown, so no correction may be created and the account

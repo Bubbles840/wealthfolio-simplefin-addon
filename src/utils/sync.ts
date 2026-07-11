@@ -14,6 +14,24 @@ export interface SyncResult {
   errors: string[];
 }
 
+/**
+ * Shared-truth guard: asks Wealthfolio whether a starting-balance entry for
+ * this SimpleFin account already exists (created by any syncer). Entries are
+ * dated before the account's oldest imported transaction, so sorting by date
+ * ascending puts them in the first rows.
+ */
+async function hasExistingStartingBalance(
+  ctx: AddonContext,
+  wfAccountId: string,
+  sfinAccountId: string,
+): Promise<boolean> {
+  const res = await ctx.api.activities.search(
+    0, 50, { accountIds: [wfAccountId] }, '', { id: 'date', desc: false },
+  );
+  const marker = `Starting balance · ${sfinAccountId}`;
+  return res.data.some((a) => (a.comment ?? '') === marker);
+}
+
 export async function runSync(ctx: AddonContext, store: SecretsStore): Promise<SyncResult> {
   const errors: string[] = [];
 
@@ -160,7 +178,20 @@ export async function runSync(ctx: AddonContext, store: SecretsStore): Promise<S
     // both syncers stays safe.
     const importList = [...toImport];
     const canReadBalance = wfBalances !== null && wfBalances.has(wfAccountId);
+    // Shared-truth guard: both syncers keep separate "already corrected"
+    // ledgers, so ask Wealthfolio itself whether a correction already exists
+    // before creating one — "at most one starting-balance entry per account,
+    // ever" holds even if local state is lost or the companion did the work.
+    let alreadyCorrected = false;
     if (canReadBalance && !balanceInitialized.includes(sfAccount.id)) {
+      try {
+        alreadyCorrected = await hasExistingStartingBalance(ctx, wfAccountId, sfAccount.id);
+      } catch {
+        // Cannot verify — fall through to the math, which self-cancels when
+        // the other syncer already corrected and balances are readable
+      }
+    }
+    if (canReadBalance && !alreadyCorrected && !balanceInitialized.includes(sfAccount.id)) {
       const signedByComment = new Map(
         transactions.map((tx) => [`${tx.description} · ${tx.id}`, parseFloat(tx.amount)]),
       );
