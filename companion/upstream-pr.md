@@ -12,6 +12,7 @@ their codebase yourself.
 | 1 | Basic auth in addon network requests | feature | **Accepted upstream** — expected next release | Drop the patched `wealthfolio-patched` image; use the official image. See "Follow-up 1" below. |
 | 2 | Sandbox `.import()` rewrite bug | bug | **Accepted upstream** — expected next release | Remove the post-minify `["import"]` workaround from `vite.config.ts`. See "Follow-up 2". |
 | 3 | Expose `activities.link` to addons | feature | Not yet filed — post the section below | Add native transfer linking to the addon (drop the manual UI step). See "Follow-up 3". |
+| 4 | Expose spending-tracker settings to addons | feature | Not yet filed — post the section below | Auto-enroll CASH / CREDIT_CARD accounts during setup, skip investment accounts. See "Follow-up 4". |
 
 Once a release lands that includes #1 and #2, do the follow-ups below and
 bump `minWealthfolioVersion` in `manifest.json` to that release.
@@ -273,6 +274,74 @@ No server-side changes — the endpoints already exist.
 ---
 ---
 
+# Upstream Issue #4 — Expose spending-tracker settings to addons
+
+**Status: ready to post.** Copy the Title and Body below into
+https://github.com/afadil/wealthfolio/issues/new (feature request). Post as
+an issue, not a PR.
+
+---
+
+## Title
+
+`feat: expose spending-tracker settings (spending.getSettings / updateSettings) in the addon SDK`
+
+---
+
+## Body
+
+### Problem
+
+Enrolling an account in the Spending Tracker is a manual step
+(Settings → Spending Tracker → select accounts). The server already exposes
+it (`GET`/`PUT /api/v1/spending/settings` with
+`{ enabled, account_ids }`), but the addon SDK has no `spending` API, the
+sandbox RPC allowlist has no `spending.*` entries, and there is no
+`spending` permission category.
+
+A bank-sync addon (e.g. SimpleFin) knows each account's type at setup time
+via `accounts.getAll()` (`accountType`). It could enroll the accounts a user
+would obviously want tracked — cash/checking/savings and credit cards — and
+skip investment accounts, so the user doesn't have to repeat the mapping in
+a second place. Today it can't, because the setting isn't reachable from an
+addon.
+
+### Proposed change
+
+- **`@wealthfolio/addon-sdk`** — add a `spending` host API:
+  ```ts
+  getSettings(): Promise<{ enabled: boolean; accountIds: string[] }>;
+  updateSettings(update: { enabled?: boolean; accountIds?: string[] }): Promise<…>;
+  ```
+- **Sandbox RPC allowlist** — add `spending.getSettings`,
+  `spending.updateSettings`.
+- **Permission catalog** — add a `spending` category (high-risk,
+  consent-gated) with `getSettings` / `updateSettings`.
+
+Server endpoints already exist (`/spending/settings`) — frontend/SDK
+plumbing only.
+
+### Use case
+
+On first setup, a bank-sync addon reads `accountType` for each mapped
+account and adds the CASH / CREDIT_CARD ones to the spending tracker's
+`accountIds`, leaving investment accounts out — so spending analytics work
+immediately without a separate manual enrollment step.
+
+### Files to change
+
+| File | Change |
+|------|--------|
+| `packages/addon-sdk/src/host-api.ts` | Add a `spending` API with `getSettings` / `updateSettings` |
+| `apps/frontend/src/addons/iframe/addon-iframe-manager.ts` | Add `spending.getSettings`, `spending.updateSettings` to the RPC allowlist |
+| `apps/frontend/src/addons/…` runtime context | Wire to `/spending/settings` GET/PUT |
+| `packages/addon-sdk/src/permissions.ts` | Add a `spending` permission category |
+
+No server-side changes — the endpoints already exist.
+
+---
+---
+
 # Follow-up work on our side (this repo) once each ships
 
 These are the changes to make **here** after a Wealthfolio release includes
@@ -303,3 +372,13 @@ release as part of the same change.
   manifest permissions.
 - Drop the "link manually in the Spending tab" step from the README; the
   addon becomes fully hands-off for transfers.
+
+## Follow-up 4 — auto-enroll in the spending tracker (after Issue #4 ships)
+
+- During setup (and on each sync, idempotently), read `accountType` from
+  `accounts.getAll()` and call `spending.updateSettings` to add the mapped
+  `CASH` / `CREDIT_CARD` account IDs to the tracker, leaving investment
+  (`SECURITIES`) accounts out. Merge with the existing `accountIds` — never
+  remove an account the user enrolled themselves.
+- Add a `spending` entry to the manifest permissions, and drop the
+  "enable the Spending Tracker manually" callout from the SyncPage / README.
