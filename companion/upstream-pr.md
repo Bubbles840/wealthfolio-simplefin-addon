@@ -1,7 +1,28 @@
-# Upstream PR / Issue for Wealthfolio
+# Upstream Issues for Wealthfolio
 
-Submit this to: https://github.com/afadil/wealthfolio/issues/new
-Or as a PR against the `main` branch.
+Filed as issues (not PRs) against https://github.com/afadil/wealthfolio.
+Reporting a needed change in someone else's project is what the Issues tab
+is for; a PR is only worth it once you've written and tested the fix in
+their codebase yourself.
+
+## Status
+
+| # | Title | Kind | Status | Our follow-up when it ships |
+|---|-------|------|--------|------------------------------|
+| 1 | Basic auth in addon network requests | feature | **Accepted upstream** — expected next release | Drop the patched `wealthfolio-patched` image; use the official image. See "Follow-up 1" below. |
+| 2 | Sandbox `.import()` rewrite bug | bug | **Accepted upstream** — expected next release | Remove the post-minify `["import"]` workaround from `vite.config.ts`. See "Follow-up 2". |
+| 3 | Expose `activities.link` to addons | feature | Not yet filed — post the section below | Add native transfer linking to the addon (drop the manual UI step). See "Follow-up 3". |
+
+Once a release lands that includes #1 and #2, do the follow-ups below and
+bump `minWealthfolioVersion` in `manifest.json` to that release.
+
+---
+---
+
+# Upstream Issue #1 — Basic auth in addon network requests
+
+**Status: accepted upstream, expected in the next release.** Kept here for
+the record and for the follow-up work it unblocks.
 
 ---
 
@@ -99,7 +120,8 @@ The Rust diff is ~5 lines. The TypeScript change is one character (`\| 'basic'`)
 
 # Upstream Issue #2 — Sandbox Import Rewrite Bug
 
-Submit this to: https://github.com/afadil/wealthfolio/issues/new
+**Status: accepted upstream, expected in the next release.** Kept for the
+record and the follow-up it unblocks.
 
 ---
 
@@ -182,7 +204,11 @@ The fix is a single regex change.
 
 # Upstream Issue #3 — Expose transfer linking to addons
 
-Submit this to: https://github.com/afadil/wealthfolio/issues/new
+**Status: ready to post.** Copy the Title and Body below into
+https://github.com/afadil/wealthfolio/issues/new (label it a feature
+request). Post it as an issue, not a PR — the change lives across the SDK,
+the sandbox allowlist, and the permission catalog, so it's cleanest for a
+maintainer to implement.
 
 ---
 
@@ -197,30 +223,83 @@ Submit this to: https://github.com/afadil/wealthfolio/issues/new
 ### Problem
 
 Wealthfolio has first-class internal-transfer support: two activities typed
-TRANSFER_OUT / TRANSFER_IN can be linked (`POST /api/v1/activities/link`),
-and linked pairs classify as InternalTransfer — correctly excluded from
+`TRANSFER_OUT` / `TRANSFER_IN` can be linked (`POST /api/v1/activities/link`),
+and linked pairs classify as `InternalTransfer` — correctly excluded from
 spending and income analytics. Addons that import bank data (e.g. via
 SimpleFin) can detect transfer pairs and import them with the right types,
 but **cannot link them**: the addon SDK's activities API has no `link` /
-`unlink` methods and the sandbox RPC allowlist has no corresponding entries.
+`unlink` methods, and the sandbox RPC allowlist has no corresponding entries.
 
-The result is that addon-imported transfers count as expenses/income until
-the user links each pair manually in the Spending UI (or runs a separate
-server-side process against the HTTP API).
+The result is that addon-imported transfers keep counting as spending /
+income until the user links each pair by hand in the Spending UI. For a
+bank-sync addon that produces these pairs automatically, the missing link
+step is the one thing it can't finish on its own.
 
 ### Proposed change
 
-- `@wealthfolio/addon-sdk`: add `link(activityAId, activityBId)` and
-  `unlink(activityAId, activityBId)` to the activities API.
-- Sandbox RPC allowlist: add `activities.link`, `activities.unlink`.
-- Permission catalog: add `link` / `unlink` to the `activities` category
-  (already high-risk, consent-gated).
+- **`@wealthfolio/addon-sdk`** — add to the activities host API:
+  ```ts
+  link(activityAId: string, activityBId: string): Promise<void>;
+  unlink(activityAId: string, activityBId: string): Promise<void>;
+  ```
+- **Sandbox RPC allowlist** — add `activities.link` and `activities.unlink`
+  alongside the existing `activities.*` entries.
+- **Permission catalog** — add `link` / `unlink` to the `activities`
+  category (already high-risk and consent-gated, so no new risk tier).
 
-The server endpoints already exist (`/activities/link`, `/activities/unlink`)
-— this is only frontend/SDK plumbing.
+The server endpoints already exist (`/activities/link`,
+`/activities/unlink`), so this is frontend/SDK plumbing only — the same
+shape as the existing `activities.import` / `activities.checkImport` wiring.
 
 ### Use case
 
-A bank-sync addon detects that -$500 in checking and +$500 on a credit card
-within 3 days are one card payment, imports them as TRANSFER_OUT/TRANSFER_IN,
-and links them so spending analytics don't double-count the payment.
+A bank-sync addon detects that a −$500 charge in checking and a +$500 credit
+on a card within a few days are one card payment, imports them as
+`TRANSFER_OUT` / `TRANSFER_IN`, and links them so spending analytics don't
+double-count the payment — end to end, without asking the user to link each
+pair manually.
+
+### Files to change
+
+| File | Change |
+|------|--------|
+| `packages/addon-sdk/src/host-api.ts` (activities API) | Add `link` / `unlink` method signatures |
+| `apps/frontend/src/addons/iframe/addon-iframe-manager.ts` | Add `activities.link`, `activities.unlink` to the RPC allowlist |
+| `apps/frontend/src/addons/…` runtime context | Wire the two methods to the existing `/activities/link` + `/activities/unlink` calls |
+| `packages/addon-sdk/src/permissions.ts` | Add `link` / `unlink` to the `activities` permission category |
+
+No server-side changes — the endpoints already exist.
+
+---
+---
+
+# Follow-up work on our side (this repo) once each ships
+
+These are the changes to make **here** after a Wealthfolio release includes
+the upstream fixes. Bump `minWealthfolioVersion` in `manifest.json` to that
+release as part of the same change.
+
+## Follow-up 1 — drop the patched image (after Issue #1 ships)
+
+- Stop building/running the `wealthfolio-patched` image; use the official
+  Wealthfolio image. The addon already sends `auth: { type: 'basic', … }`,
+  which the official build will then accept natively.
+- Remove `companion/build-wealthfolio.sh` (or mark it legacy) and any README
+  mention of the patched image.
+
+## Follow-up 2 — remove the `import()` workaround (after Issue #2 ships)
+
+- Delete the post-minify transform in `vite.config.ts` that rewrites
+  `.import(` → `["import"](` (the `escapeImportPropertyCalls` plugin). Once
+  the sandbox regex is fixed upstream, `ctx.api.activities.import(...)`
+  survives untouched and the workaround is dead weight.
+- Keep the `grep -c '\.import('` build check until this is done, then drop it.
+
+## Follow-up 3 — native transfer linking (after Issue #3 ships)
+
+- Add `link` to the addon's activities calls and link detected pairs directly
+  in `runSync` (mirror the companion's reconciliation sweep, which already
+  does this via the HTTP API). Add `activities: [..., 'link']` to the
+  manifest permissions.
+- Drop the "link manually in the Spending tab" step from the README; the
+  addon becomes fully hands-off for transfers.
