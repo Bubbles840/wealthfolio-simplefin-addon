@@ -312,6 +312,33 @@ describe('runSync', () => {
     expect(result.skipped).toBe(1);
   });
 
+  it('isolates a failing account so others still import', async () => {
+    vi.mocked(fetchAccounts).mockResolvedValueOnce({
+      errors: [],
+      accounts: [
+        { id: 'sfin-bad', name: 'Bad', currency: 'USD', balance: '0', 'balance-date': 0,
+          transactions: [{ id: 'tx-bad', posted: 1700000000, amount: '-5.00', description: 'X' }] },
+        { id: 'sfin-1', name: 'Good', currency: 'USD', balance: '0', 'balance-date': 0,
+          transactions: [{ id: 'tx-good', posted: 1700000000, amount: '-9.00', description: 'Y' }] },
+      ],
+    });
+    const ctx = makeCtx();
+    // checkImport throws only for the bad account's activity
+    ctx.api.activities.checkImport = vi.fn(async (acts: any[]) => {
+      if (acts.some((a) => a.comment.includes('tx-bad'))) throw new Error('boom');
+      return acts.map((a: any) => ({ ...a, isValid: true }));
+    });
+    const store = makeStore({
+      getAccountMapping: vi.fn(async () => ({ 'sfin-bad': 'wf-account-a', 'sfin-1': 'wf-account-b' })),
+    });
+    const result = await runSync(ctx, store as any);
+
+    // Good account still imported; error recorded for the bad one
+    const imported = vi.mocked(ctx.api.activities.import).mock.calls.flatMap((c: any) => c[0]);
+    expect(imported.some((a: any) => a.comment.includes('tx-good'))).toBe(true);
+    expect(result.errors.some((e) => /failed/i.test(e))).toBe(true);
+  });
+
   it('coalesces concurrent calls into a single run (single-flight)', async () => {
     let resolveFetch: (v: any) => void = () => {};
     vi.mocked(fetchAccounts).mockReturnValueOnce(

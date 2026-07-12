@@ -186,6 +186,7 @@ async function runSyncOnce(ctx: AddonContext, store: SecretsStore): Promise<Sync
     const wfAccountId = mapping[sfAccount.id];
     if (!wfAccountId) continue;
 
+    try {
     // Skip transactions already imported (matched by SimpleFin tx id, so a
     // changed resolved type can never re-import one). Falls back to the
     // server's own duplicate check when the lookup fails.
@@ -306,6 +307,11 @@ async function runSyncOnce(ctx: AddonContext, store: SecretsStore): Promise<Sync
         currency: sfAccount.currency,
         date: new Date((oldestPosted - 24 * 60 * 60) * 1000).toISOString().split('T')[0],
       });
+    }
+    } catch (e: any) {
+      // Isolate per-account failures (e.g. a mapping pointing at a deleted
+      // Wealthfolio account) so one bad account can't abort the whole sync
+      errors.push(`Account ${wfAccountId} failed: ${e?.message ?? e}`);
     }
   }
 
