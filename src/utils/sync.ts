@@ -159,6 +159,7 @@ async function runSyncOnce(ctx: AddonContext, store: SecretsStore): Promise<Sync
       prepared.push({ sfAccountId: sfAccount.id, tx, type });
       candidates.push({
         txId: tx.id, accountId: sfAccount.id, posted: tx.posted, amount, ruleTyped: fromRule,
+        accountType: wfTypes.get(wfAccountId),
       });
     }
     preparedByAccount.set(sfAccount.id, prepared);

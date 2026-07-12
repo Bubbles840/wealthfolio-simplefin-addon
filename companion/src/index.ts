@@ -351,6 +351,7 @@ export async function runCompanionSync(): Promise<void> {
       prepared.push({ tx, type });
       candidates.push({
         txId: tx.id, accountId: sfAccount.id, posted: tx.posted, amount, ruleTyped: fromRule,
+        accountType: wfTypes.get(wfAccountId),
       });
     }
     preparedByAccount.set(sfAccount.id, prepared);

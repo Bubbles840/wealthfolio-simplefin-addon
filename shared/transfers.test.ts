@@ -82,6 +82,24 @@ describe('detectTransferPairs', () => {
     expect(new Set(used).size).toBe(4);
   });
 
+  it('never types a credit-card charge as TRANSFER_OUT (card negatives excluded from OUT side)', () => {
+    const d = detectTransferPairs([
+      cand({ txId: 'card-charge', accountId: 'card', amount: -50, accountType: 'CREDIT_CARD' }),
+      cand({ txId: 'cash-in', accountId: 'checking', amount: 50, posted: T0 + DAY }),
+    ]);
+    expect(d.pairs).toHaveLength(0);
+    expect(d.typeByTxId.size).toBe(0);
+  });
+
+  it('still pairs a cash payment out with a credit-card payment in', () => {
+    const d = detectTransferPairs([
+      cand({ txId: 'cash-out', accountId: 'checking', amount: -50, accountType: 'CASH' }),
+      cand({ txId: 'card-in', accountId: 'card', amount: 50, posted: T0 + DAY, accountType: 'CREDIT_CARD' }),
+    ]);
+    expect(d.pairs).toEqual([{ outTxId: 'cash-out', inTxId: 'card-in' }]);
+    expect(d.typeByTxId.get('card-in')).toBe('TRANSFER_IN');
+  });
+
   it('ignores zero and non-finite amounts', () => {
     const d = detectTransferPairs([
       cand({ txId: 'a', accountId: 'x', amount: 0 }),

@@ -25,6 +25,12 @@ export interface TransferCandidate {
   amount: number;
   /** True when a user mapping rule set the type — excluded from pairing */
   ruleTyped: boolean;
+  /** Wealthfolio account type (e.g. 'CREDIT_CARD'); optional. A credit card's
+   *  negative side (a charge) is never auto-typed TRANSFER_OUT — on cards,
+   *  transfers classify as Ignored in spending, so a coincidental match would
+   *  silently hide a real purchase. The card's positive side (a payment
+   *  received) can still become TRANSFER_IN. */
+  accountType?: string;
 }
 
 export interface TransferPair {
@@ -42,7 +48,9 @@ export function detectTransferPairs(candidates: TransferCandidate[]): TransferDe
     .filter((c) => !c.ruleTyped && Number.isFinite(c.amount) && c.amount !== 0)
     .sort((a, b) => a.posted - b.posted || a.txId.localeCompare(b.txId));
 
-  const negatives = eligible.filter((c) => c.amount < 0);
+  // A credit card's negative (a charge) is never eligible as the OUT side of
+  // an auto-detected transfer — see accountType doc above.
+  const negatives = eligible.filter((c) => c.amount < 0 && c.accountType !== 'CREDIT_CARD');
   const positives = eligible.filter((c) => c.amount > 0);
 
   const usedPositives = new Set<string>();

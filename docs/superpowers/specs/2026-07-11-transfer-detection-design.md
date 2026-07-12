@@ -136,3 +136,13 @@ the log line tells the user exactly what to look at.
 - The reconciliation sweep can link a keyword-typed card TRANSFER_IN to an
   unrelated cash TRANSFER_OUT if their amounts and dates coincide — the same
   amount+date collision risk the pair matcher already accepts.
+
+## Amendment 2026-07-11 — credit-card charge protection
+
+A credit card's negative side (a charge) is never auto-typed TRANSFER_OUT.
+On credit-card accounts Wealthfolio classifies transfers as Ignored in
+spending *even when unlinked*, so a coincidental amount+date match could
+silently hide a real purchase from spending totals. The pair matcher now
+excludes `accountType === 'CREDIT_CARD'` candidates from the OUT (negative)
+side; a card's positive side (a payment received) can still become
+TRANSFER_IN. Implemented via an optional `accountType` on `TransferCandidate`.
