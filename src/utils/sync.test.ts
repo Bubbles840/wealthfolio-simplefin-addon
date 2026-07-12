@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { runSync, MIN_SYNC_INTERVAL_MS } from './sync';
+import { runSync, MIN_SYNC_INTERVAL_MS, VALUATION_POLL } from './sync';
 
 vi.mock('./simplefin', () => ({
   fetchAccounts: vi.fn(),
@@ -61,7 +61,12 @@ const makeAccountSet = (transactions: any[] = []) => ({
 });
 
 describe('runSync', () => {
-  beforeEach(() => vi.mocked(fetchAccounts).mockReset());
+  beforeEach(() => {
+    vi.mocked(fetchAccounts).mockReset();
+    // Keep the same-run valuation poll effectively instant in tests
+    VALUATION_POLL.delayMs = 1;
+    VALUATION_POLL.attempts = 3;
+  });
 
   it('returns 0 imported when no transactions', async () => {
     vi.mocked(fetchAccounts).mockResolvedValueOnce(makeAccountSet([]));
@@ -248,6 +253,31 @@ describe('runSync', () => {
     expect(result.errors).toHaveLength(0); // per-account skip is silent, not an error
   });
 
+  it('applies the starting balance in the same run once the first valuation appears', async () => {
+    const tx = { id: 'tx-1', posted: 1700000000, amount: '-12.50', description: 'Coffee' };
+    vi.mocked(fetchAccounts).mockResolvedValueOnce(makeAccountSet([tx])); // balance 1000.00
+    const ctx = makeCtx();
+    let calls = 0;
+    // Pre-loop read: no valuation row yet (brand-new account). Later polls:
+    // the post-import recalculation has produced one.
+    ctx.api.portfolio.getLatestValuations = vi.fn(async () => {
+      calls += 1;
+      return calls >= 3 ? [{ accountId: 'wf-account-a', totalValue: 987.5 }] : [];
+    });
+    const store = makeStore({ getBalanceInitialized: vi.fn(async () => []) });
+    const result = await runSync(ctx, store as any);
+
+    const importCalls = vi.mocked(ctx.api.activities.import).mock.calls;
+    expect(importCalls).toHaveLength(2); // transactions first, then the correction
+    const correction = importCalls[1][0][0];
+    expect(correction.comment).toBe('Starting balance · sfin-1');
+    expect(correction.activityType).toBe('DEPOSIT');
+    // 1000.00 target − 987.50 fresh valuation (already includes the import)
+    expect(correction.amount).toBe(12.5);
+    expect(store.addBalanceInitialized).toHaveBeenCalledWith('sfin-1');
+    expect(result.imported).toBe(2);
+  });
+
   it('does not create a second starting balance when one already exists in Wealthfolio', async () => {
     vi.mocked(fetchAccounts).mockResolvedValueOnce(makeAccountSet([])); // balance 1000.00
     const ctx = makeCtx();
@@ -280,6 +310,21 @@ describe('runSync', () => {
     // 1000 target − 0 non-dup deltas − 1000 valuation = 0 → no correction
     expect(ctx.api.activities.import).not.toHaveBeenCalled();
     expect(result.skipped).toBe(1);
+  });
+
+  it('coalesces concurrent calls into a single run (single-flight)', async () => {
+    let resolveFetch: (v: any) => void = () => {};
+    vi.mocked(fetchAccounts).mockReturnValueOnce(
+      new Promise((res) => { resolveFetch = res; }) as any,
+    );
+    const ctx = makeCtx();
+    const store = makeStore();
+    const a = runSync(ctx, store as any);
+    const b = runSync(ctx, store as any); // same in-flight run
+    resolveFetch(makeAccountSet([]));
+    await Promise.all([a, b]);
+    // fetchAccounts called once despite two runSync calls
+    expect(fetchAccounts).toHaveBeenCalledTimes(1);
   });
 });
 

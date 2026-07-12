@@ -8,6 +8,12 @@ import type { AddonContext } from '@wealthfolio/addon-sdk';
 
 export const MIN_SYNC_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 
+/** Polling for freshly computed valuations after a first import (see the
+ *  second-pass block in runSync). Exported so tests can shrink the delay. */
+export const VALUATION_POLL = { attempts: 6, delayMs: 2500 };
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 export interface SyncResult {
   imported: number;
   skipped: number;
@@ -54,7 +60,21 @@ async function fetchExistingTxIds(ctx: AddonContext, wfAccountId: string): Promi
   return ids;
 }
 
-export async function runSync(ctx: AddonContext, store: SecretsStore): Promise<SyncResult> {
+// Single-flight lock: the startup catch-up, the in-app schedule, and the
+// Sync Now button can otherwise overlap in the first seconds after load —
+// concurrent runs could each pass the pre-import checks before the other's
+// writes land. Concurrent callers share the in-progress run's result.
+let syncInFlight: Promise<SyncResult> | null = null;
+
+export function runSync(ctx: AddonContext, store: SecretsStore): Promise<SyncResult> {
+  if (syncInFlight) return syncInFlight;
+  syncInFlight = runSyncOnce(ctx, store).finally(() => {
+    syncInFlight = null;
+  });
+  return syncInFlight;
+}
+
+async function runSyncOnce(ctx: AddonContext, store: SecretsStore): Promise<SyncResult> {
   const errors: string[] = [];
 
   // Enforce minimum interval
@@ -151,6 +171,16 @@ export async function runSync(ctx: AddonContext, store: SecretsStore): Promise<S
       if (override) p.type = override;
     }
   }
+
+  // Accounts whose starting balance couldn't run yet because no valuation
+  // row exists (first-ever import); handled by the second pass below
+  let pendingCorrections: Array<{
+    sfinAccountId: string;
+    wfAccountId: string;
+    targetBalance: number;
+    currency: string;
+    date: string;
+  }> = [];
 
   for (const sfAccount of accountSet.accounts) {
     const wfAccountId = mapping[sfAccount.id];
@@ -263,6 +293,76 @@ export async function runSync(ctx: AddonContext, store: SecretsStore): Promise<S
     // skipped correction retries on a later run
     if (canReadBalance) {
       await store.addBalanceInitialized(sfAccount.id);
+    } else if (wfBalances !== null && !balanceInitialized.includes(sfAccount.id)) {
+      // No valuation row yet (brand-new account) — queue for the same-run
+      // second pass below instead of waiting a whole sync cycle
+      const oldestPosted = transactions.length > 0
+        ? Math.min(...transactions.map((tx) => tx.posted))
+        : Math.floor(Date.now() / 1000);
+      pendingCorrections.push({
+        sfinAccountId: sfAccount.id,
+        wfAccountId,
+        targetBalance: parseFloat(sfAccount.balance),
+        currency: sfAccount.currency,
+        date: new Date((oldestPosted - 24 * 60 * 60) * 1000).toISOString().split('T')[0],
+      });
+    }
+  }
+
+  // Second pass: a brand-new account has no valuation row until Wealthfolio's
+  // async recalculation runs after its first import. Poll briefly for the
+  // fresh valuation and correct in the same run. A row appearing for an
+  // account that had none implies it was computed after the import above, so
+  // it already reflects the imported transactions — the correction is simply
+  // target − valuation.
+  if (wfBalances !== null && pendingCorrections.length > 0) {
+    for (
+      let attempt = 0;
+      attempt < VALUATION_POLL.attempts && pendingCorrections.length > 0;
+      attempt++
+    ) {
+      await sleep(VALUATION_POLL.delayMs);
+      let latest: Map<string, number>;
+      try {
+        const vals = await ctx.api.portfolio.getLatestValuations(
+          pendingCorrections.map((p) => p.wfAccountId),
+        );
+        latest = new Map(vals.map((v): [string, number] => [v.accountId, v.totalValue ?? 0]));
+      } catch {
+        continue;
+      }
+      const stillPending: typeof pendingCorrections = [];
+      for (const p of pendingCorrections) {
+        const valuation = latest.get(p.wfAccountId);
+        if (valuation === undefined) {
+          stillPending.push(p);
+          continue;
+        }
+        try {
+          const alreadyDone = await hasExistingStartingBalance(ctx, p.wfAccountId, p.sfinAccountId);
+          const starting = p.targetBalance - valuation;
+          if (!alreadyDone && Number.isFinite(starting) && Math.abs(starting) >= 0.01) {
+            const correction = {
+              accountId: p.wfAccountId,
+              activityType: (starting > 0 ? 'DEPOSIT' : 'WITHDRAWAL') as ActivityType,
+              date: p.date,
+              symbol: `$CASH-${p.currency}`,
+              amount: Math.abs(Math.round(starting * 100) / 100),
+              currency: p.currency,
+              sourceSystem: 'simplefin' as const,
+              comment: `Starting balance · ${p.sfinAccountId}`,
+              isValid: true,
+              isDraft: false,
+            };
+            await ctx.api.activities.import([correction]);
+            imported += 1;
+          }
+          await store.addBalanceInitialized(p.sfinAccountId);
+        } catch {
+          stillPending.push(p);
+        }
+      }
+      pendingCorrections = stillPending;
     }
   }
 

@@ -79,6 +79,31 @@ const enable: AddonEnableFunction = (ctx) => {
   addonStore = new SecretsStore(ctx);
   addonScheduler = new Scheduler();
 
+  // Catch-up sync on app startup, so data is fresh without visiting the
+  // addon page. runSync's own 1-hour minimum interval is the cooldown —
+  // reloading the page shortly after a sync is a cheap no-op that returns
+  // before any network call. The in-app schedule also starts here so it
+  // ticks while the app is open.
+  const startupStore = addonStore;
+  const startupScheduler = addonScheduler;
+  void (async () => {
+    try {
+      const [accessUrl, mapping] = await Promise.all([
+        startupStore.getAccessUrl(),
+        startupStore.getAccountMapping(),
+      ]);
+      if (!accessUrl || !mapping || Object.keys(mapping).length === 0) return;
+      const hours = await startupStore.getSyncScheduleHours();
+      if (hours && hours > 0 && !startupScheduler.isRunning()) {
+        startupScheduler.start(hours, () => runSync(ctx, startupStore));
+      }
+      await runSync(ctx, startupStore);
+    } catch {
+      // Background catch-up must never break addon load; the sync page
+      // surfaces errors when the user syncs interactively
+    }
+  })();
+
   const sidebarItem = ctx.sidebar.addItem({
     id: 'simplefin-sync',
     label: 'SimpleFin Sync',

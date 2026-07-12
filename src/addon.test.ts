@@ -21,6 +21,7 @@ vi.mock('./utils/sync', () => ({
 }));
 
 import enable, { SimplefinSyncView } from './addon';
+import { runSync } from './utils/sync';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -93,6 +94,26 @@ describe('addon enable()', () => {
       route: '/addons/simplefin-sync',
       order: 90,
     });
+  });
+
+  it('runs a catch-up sync on startup when configured', async () => {
+    vi.mocked(runSync).mockClear();
+    const ctx = makeCtx();
+    const values: Record<string, string> = {
+      simplefin_access_url: 'https://u:p@bridge.simplefin.org/simplefin',
+      account_mapping: JSON.stringify({ 'sfin-1': 'wf-a' }),
+    };
+    ctx.api.secrets.get = vi.fn(async (k: string) => values[k] ?? null);
+    enable(ctx);
+    await waitFor(() => expect(runSync).toHaveBeenCalled());
+  });
+
+  it('does not sync on startup when not configured', async () => {
+    vi.mocked(runSync).mockClear();
+    const ctx = makeCtx(); // secrets.get returns null
+    enable(ctx);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(runSync).not.toHaveBeenCalled();
   });
 
   it('registers an onDisable callback', () => {

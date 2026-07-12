@@ -24,35 +24,45 @@ npm run bundle
 
 ## Usage
 
+### Syncing
+
+The addon syncs when you open Wealthfolio (a catch-up runs on startup),
+while a tab is open (on your chosen interval), and whenever you press
+**Sync Now**. A one-hour minimum interval acts as a cooldown, so reloading
+the page is a cheap no-op.
+
 ### Transfers, card payments & refunds
 
 - Transfers between two synced accounts (e.g. paying a credit card from
   checking) are detected automatically — equal amounts, opposite signs,
-  within 3 days — and imported as a linked Transfer Out / Transfer In pair,
+  within 3 days — and imported as a Transfer Out / Transfer In pair,
   excluded from spending and income analytics.
-- The in-app **Sync Now** can type transfers but not link them; the Docker
-  companion links them on its next run (or link manually in the Spending UI).
+- Wealthfolio does not yet expose a linking API to addons ([upstream issue
+  filed](companion/upstream-pr.md)), so link the two sides with one click in
+  the Spending tab: open the Transfer Out row's ⋮ menu → **Link transfer** →
+  pick the matching Transfer In.
 - Positive amounts on credit-card accounts import as **Credit** (refunds,
   netted against spending) unless they look like a card payment
   ("payment", "autopay", "thank you", "e-pay"), which become Transfer In.
 - Your mapping rules always win over automatic detection — add a rule if a
   bank's phrasing needs different treatment.
-- The companion logs a warning when a synced account's balance drifts more
-  than $1 from what SimpleFin reports.
 
-### Architecture: addon first, companion optional
+### Starting balances
 
-The addon is the complete product: it syncs when you use the app (Sync Now
-plus the in-app schedule while a tab is open), detects transfers, types card
-refunds, and creates one-time starting-balance corrections using accurate
-balances from Wealthfolio's valuations API. The Docker companion exists only
-because Wealthfolio addons can't run when no browser tab is open — it runs
-the **same shared sync logic** in the background. Running both is safe: the
-correction math self-cancels when the other side already did the work.
+On an account's first sync the addon reads its current balance from
+Wealthfolio's valuations API and adds a one-time correction so the account
+lands on its real bank balance instead of just the sum of imported
+transactions. For a brand-new account the valuation is computed
+asynchronously after the first import, so the addon polls briefly and applies
+the correction in the same run.
 
-The one thing only the companion can do today is *link* the two sides of a
-transfer (the addon SDK exposes no link API — upstream issue filed). Without
-the companion, link a detected pair with one click in the Spending UI.
+### Background sync (optional companion)
+
+Wealthfolio addons only run while a browser tab is open. If you want data to
+refresh without opening the app, the `companion/` folder contains an optional
+Docker service that runs the **same sync logic** on a schedule. It is not
+required — the addon is the complete product — and is documented separately
+in that folder.
 
 ## License
 

@@ -3,7 +3,6 @@ import type { AddonContext } from '@wealthfolio/addon-sdk';
 import { runSync } from '../utils/sync';
 import { fetchAccounts } from '../utils/simplefin';
 import { SyncStatus } from '../components/SyncStatus';
-import { DockerGuide } from '../components/DockerGuide';
 import { RuleEditor } from '../components/RuleEditor';
 import { Button, Card, ErrorBox, SectionLabel } from '../components/ui';
 import type { SecretsStore } from '../utils/secrets';
@@ -163,7 +162,6 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
         )}
       </Card>
 
-      <DockerGuide store={store} />
 
       <div style={{ marginTop: 24 }}>
         {confirmingReset ? (
