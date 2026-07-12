@@ -66,25 +66,39 @@ async function fetchExistingTxIds(ctx: AddonContext, wfAccountId: string): Promi
 // writes land. Concurrent callers share the in-progress run's result.
 let syncInFlight: Promise<SyncResult> | null = null;
 
-export function runSync(ctx: AddonContext, store: SecretsStore): Promise<SyncResult> {
+export interface SyncOptions {
+  /** Bypass the 1-hour minimum interval (the "Sync anyway" button). */
+  force?: boolean;
+}
+
+/** Distinct marker so the UI can recognise an interval skip and offer to
+ *  force, rather than treating it as a generic error. */
+export const INTERVAL_SKIP_MESSAGE =
+  'Skipped: minimum sync interval of 1 hour not yet elapsed';
+
+export function runSync(
+  ctx: AddonContext,
+  store: SecretsStore,
+  opts: SyncOptions = {},
+): Promise<SyncResult> {
   if (syncInFlight) return syncInFlight;
-  syncInFlight = runSyncOnce(ctx, store).finally(() => {
+  syncInFlight = runSyncOnce(ctx, store, opts).finally(() => {
     syncInFlight = null;
   });
   return syncInFlight;
 }
 
-async function runSyncOnce(ctx: AddonContext, store: SecretsStore): Promise<SyncResult> {
+async function runSyncOnce(
+  ctx: AddonContext,
+  store: SecretsStore,
+  opts: SyncOptions,
+): Promise<SyncResult> {
   const errors: string[] = [];
 
-  // Enforce minimum interval
+  // Enforce minimum interval unless the caller forces (Sync anyway)
   const lastSync = await store.getLastSyncAt();
-  if (lastSync && Date.now() - lastSync.getTime() < MIN_SYNC_INTERVAL_MS) {
-    return {
-      imported: 0,
-      skipped: 0,
-      errors: ['Skipped: minimum sync interval of 1 hour not yet elapsed'],
-    };
+  if (!opts.force && lastSync && Date.now() - lastSync.getTime() < MIN_SYNC_INTERVAL_MS) {
+    return { imported: 0, skipped: 0, errors: [INTERVAL_SKIP_MESSAGE] };
   }
 
   const accessUrl = await store.getAccessUrl();

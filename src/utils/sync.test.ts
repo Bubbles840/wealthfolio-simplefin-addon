@@ -114,6 +114,16 @@ describe('runSync', () => {
     expect(fetchAccounts).not.toHaveBeenCalled();
   });
 
+  it('force bypasses the minimum sync interval', async () => {
+    const recentSync = new Date(Date.now() - 30 * 60 * 1000);
+    vi.mocked(fetchAccounts).mockResolvedValueOnce(makeAccountSet([]));
+    const store = makeStore({ getLastSyncAt: vi.fn(async () => recentSync) });
+    const ctx = makeCtx();
+    const result = await runSync(ctx, store as any, { force: true });
+    expect(result.errors).toHaveLength(0);
+    expect(fetchAccounts).toHaveBeenCalledOnce();
+  });
+
   it('skips activities marked as duplicates by checkImport', async () => {
     const tx = { id: 'tx-dup', posted: 1700000000, amount: '100.00', description: 'Paycheck' };
     vi.mocked(fetchAccounts).mockResolvedValueOnce(makeAccountSet([tx]));

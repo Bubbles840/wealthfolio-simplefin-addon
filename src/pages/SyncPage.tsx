@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import type { AddonContext } from '@wealthfolio/addon-sdk';
-import { runSync } from '../utils/sync';
+import { runSync, INTERVAL_SKIP_MESSAGE } from '../utils/sync';
 import { fetchAccounts } from '../utils/simplefin';
 import { SyncStatus } from '../components/SyncStatus';
 import { RuleEditor } from '../components/RuleEditor';
@@ -24,6 +24,7 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
   const [rules, setRules] = useState<MappingRule[]>([]);
   const [scheduleHours, setScheduleHours] = useState<number | null>(null);
   const [error, setError] = useState('');
+  const [intervalBlocked, setIntervalBlocked] = useState(false);
   const [editingRules, setEditingRules] = useState(false);
   const [sfinNames, setSfinNames] = useState<Record<string, string>>({});
   const [wfNames, setWfNames] = useState<Record<string, string>>({});
@@ -67,16 +68,22 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
     }
   }, [store, ctx]);
 
-  const doSync = useCallback(async () => {
+  const doSync = useCallback(async (force = false) => {
     setSyncing(true);
     setError('');
+    setIntervalBlocked(false);
     try {
-      const result = await runSync(ctx, store);
+      const result = await runSync(ctx, store, { force });
+      // A pure interval skip isn't an error — offer to force instead
+      if (result.errors.length === 1 && result.errors[0] === INTERVAL_SKIP_MESSAGE) {
+        setIntervalBlocked(true);
+        return;
+      }
       if (result.errors.length > 0) setError(result.errors.join('; '));
       setImported(result.imported);
-      const now = new Date();
-      await store.setLastSyncAt(now);
-      setLastSyncAt(now);
+      // runSync stamps lastSyncAt itself; mirror it for the header
+      const last = await store.getLastSyncAt();
+      setLastSyncAt(last);
     } catch (e: any) {
       setError(e.message ?? 'Sync failed');
     } finally {
@@ -102,12 +109,27 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
           <h2 className="sfin-title">SimpleFin Sync</h2>
           <SyncStatus lastSyncAt={lastSyncAt} imported={imported} syncing={syncing} />
         </div>
-        <Button onClick={doSync} disabled={syncing}>
+        <Button onClick={() => doSync(false)} disabled={syncing}>
           {syncing ? 'Syncing…' : 'Sync Now'}
         </Button>
       </div>
 
       {error && <ErrorBox>{error}</ErrorBox>}
+
+      {intervalBlocked && (
+        <div className="sfin-callout" style={{ marginTop: 16, marginBottom: 0 }}>
+          Last sync was under an hour ago, so Sync Now was skipped to avoid
+          hammering SimpleFin.{' '}
+          <Button
+            variant="ghost"
+            onClick={() => doSync(true)}
+            disabled={syncing}
+            style={{ marginLeft: 4 }}
+          >
+            Sync anyway
+          </Button>
+        </div>
+      )}
 
       <div className="sfin-callout" style={{ marginTop: 16, marginBottom: 0 }}>
         💡 Imported bank transactions appear under <strong>Activities</strong>. To see them in the{' '}
