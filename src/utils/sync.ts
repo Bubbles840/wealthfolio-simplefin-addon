@@ -109,7 +109,13 @@ async function runSyncOnce(
 
   const rules = await store.getMappingRules();
 
-  const startDate = lastSync ?? new Date(Date.now() - 30 * 24 * 60 * 60 * 1000); // 30d lookback on first sync
+  // Incremental syncs fetch since the last sync. A forced sync (Sync anyway)
+  // re-pulls the full 30-day window — the reason to force is that data is
+  // missing, which a since-last-sync window (often minutes wide) would not
+  // recover. First sync also uses the full window. The tx-id dedup guard
+  // makes the wider re-pull safe (nothing re-imports).
+  const THIRTY_DAYS_AGO = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+  const startDate = opts.force || !lastSync ? THIRTY_DAYS_AGO : lastSync;
   const authKey = await store.getAuthB64Key();
   const accountSet = await fetchAccounts(accessUrl, startDate, ctx.api.network, authKey);
 

@@ -114,7 +114,7 @@ describe('runSync', () => {
     expect(fetchAccounts).not.toHaveBeenCalled();
   });
 
-  it('force bypasses the minimum sync interval', async () => {
+  it('force bypasses the minimum sync interval and re-pulls the full 30-day window', async () => {
     const recentSync = new Date(Date.now() - 30 * 60 * 1000);
     vi.mocked(fetchAccounts).mockResolvedValueOnce(makeAccountSet([]));
     const store = makeStore({ getLastSyncAt: vi.fn(async () => recentSync) });
@@ -122,6 +122,10 @@ describe('runSync', () => {
     const result = await runSync(ctx, store as any, { force: true });
     expect(result.errors).toHaveLength(0);
     expect(fetchAccounts).toHaveBeenCalledOnce();
+    // startDate (2nd arg) must be ~30 days ago, not the recent lastSync
+    const startDate = vi.mocked(fetchAccounts).mock.calls[0][1] as Date;
+    const daysAgo = (Date.now() - startDate.getTime()) / (24 * 60 * 60 * 1000);
+    expect(daysAgo).toBeGreaterThan(29);
   });
 
   it('skips activities marked as duplicates by checkImport', async () => {
