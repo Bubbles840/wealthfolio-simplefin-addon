@@ -32,7 +32,7 @@ export function SimplefinSyncView({ ctx, store, scheduler }: SimplefinSyncViewPr
         if (setup) {
           store.getSyncScheduleHours().then((hours) => {
             if (hours && hours > 0 && !scheduler.isRunning()) {
-              scheduler.start(hours, () => runSync(ctx, store));
+              scheduler.start(hours, () => store.getLastSyncAt(), () => runSync(ctx, store));
             } else if (!hours || hours <= 0) {
               scheduler.stop();
             }
@@ -48,7 +48,7 @@ export function SimplefinSyncView({ ctx, store, scheduler }: SimplefinSyncViewPr
   const handleComplete = async () => {
     const hours = await store.getSyncScheduleHours();
     if (hours && hours > 0 && !scheduler.isRunning()) {
-      scheduler.start(hours, () => runSync(ctx, store));
+      scheduler.start(hours, () => store.getLastSyncAt(), () => runSync(ctx, store));
     } else {
       scheduler.stop();
     }
@@ -79,11 +79,12 @@ const enable: AddonEnableFunction = (ctx) => {
   addonStore = new SecretsStore(ctx);
   addonScheduler = new Scheduler();
 
-  // Catch-up sync on app startup, so data is fresh without visiting the
-  // addon page. runSync's own 1-hour minimum interval is the cooldown —
-  // reloading the page shortly after a sync is a cheap no-op that returns
-  // before any network call. The in-app schedule also starts here so it
-  // ticks while the app is open.
+  // Start the auto-sync scheduler on app startup, so data stays fresh without
+  // visiting the addon page. The scheduler polls the wall clock every minute
+  // and runs a sync when one is due (including immediately on start, which is
+  // the startup catch-up). It survives sleep/backgrounding: a window that
+  // elapsed while the machine was off is caught within a minute of waking,
+  // rather than being lost as a single long timer would lose it.
   const startupStore = addonStore;
   const startupScheduler = addonScheduler;
   void (async () => {
@@ -95,11 +96,14 @@ const enable: AddonEnableFunction = (ctx) => {
       if (!accessUrl || !mapping || Object.keys(mapping).length === 0) return;
       const hours = await startupStore.getSyncScheduleHours();
       if (hours && hours > 0 && !startupScheduler.isRunning()) {
-        startupScheduler.start(hours, () => runSync(ctx, startupStore));
+        startupScheduler.start(
+          hours,
+          () => startupStore.getLastSyncAt(),
+          () => runSync(ctx, startupStore),
+        );
       }
-      await runSync(ctx, startupStore);
     } catch {
-      // Background catch-up must never break addon load; the sync page
+      // Background startup must never break addon load; the sync page
       // surfaces errors when the user syncs interactively
     }
   })();

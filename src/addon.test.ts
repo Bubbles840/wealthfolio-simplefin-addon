@@ -96,16 +96,33 @@ describe('addon enable()', () => {
     });
   });
 
-  it('runs a catch-up sync on startup when configured', async () => {
+  it('runs a catch-up sync on startup when auto-sync is enabled', async () => {
     vi.mocked(runSync).mockClear();
     const ctx = makeCtx();
     const values: Record<string, string> = {
       simplefin_access_url: 'https://u:p@bridge.simplefin.org/simplefin',
       account_mapping: JSON.stringify({ 'sfin-1': 'wf-a' }),
+      sync_schedule_hours: '6',
     };
     ctx.api.secrets.get = vi.fn(async (k: string) => values[k] ?? null);
     enable(ctx);
+    // The scheduler's immediate wall-clock check sees no prior sync (due) and
+    // triggers runSync — this is the startup catch-up.
     await waitFor(() => expect(runSync).toHaveBeenCalled());
+  });
+
+  it('does not sync on startup when auto-sync is off', async () => {
+    vi.mocked(runSync).mockClear();
+    const ctx = makeCtx();
+    const values: Record<string, string> = {
+      simplefin_access_url: 'https://u:p@bridge.simplefin.org/simplefin',
+      account_mapping: JSON.stringify({ 'sfin-1': 'wf-a' }),
+      sync_schedule_hours: '0',
+    };
+    ctx.api.secrets.get = vi.fn(async (k: string) => values[k] ?? null);
+    enable(ctx);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(runSync).not.toHaveBeenCalled();
   });
 
   it('does not sync on startup when not configured', async () => {
@@ -214,7 +231,7 @@ describe('SimplefinSyncView', () => {
       }),
     );
     await waitFor(() => expect(screen.getByText('SyncPage')).toBeInTheDocument());
-    expect(scheduler.start).toHaveBeenCalledWith(6, expect.any(Function));
+    expect(scheduler.start).toHaveBeenCalledWith(6, expect.any(Function), expect.any(Function));
   });
 
   it('does NOT start scheduler when hours = 0 (disabled)', async () => {
@@ -271,7 +288,7 @@ describe('SimplefinSyncView', () => {
     await onComplete();
 
     await waitFor(() => expect(screen.getByText('SyncPage')).toBeInTheDocument());
-    expect(scheduler.start).toHaveBeenCalledWith(6, expect.any(Function));
+    expect(scheduler.start).toHaveBeenCalledWith(6, expect.any(Function), expect.any(Function));
   });
 
   it('transitions to SyncPage without starting scheduler on handleComplete (hours = 0)', async () => {
