@@ -336,6 +336,24 @@ describe('runCompanionSync', () => {
     expect(fetchAccountsNode).toHaveBeenCalledOnce();
   });
 
+  it('re-scans a lookback overlap before lastSyncAt so backdated late-posting transactions are not missed', async () => {
+    const lastSync = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000); // 2 days ago
+    writeFileSync(TEST_STATE_FILE, JSON.stringify({ lastSyncAt: lastSync.toISOString() }));
+    process.env.MIN_SYNC_INTERVAL_HOURS = '1';
+
+    const mockClient = makeWfClientMock();
+    vi.mocked(WealthfolioClient).mockImplementation(function () { return mockClient; } as unknown as new (url: string) => WealthfolioClient);
+    vi.mocked(fetchAccountsNode).mockResolvedValue({ errors: [], accounts: [] });
+
+    await runCompanionSync();
+
+    const startDate = vi.mocked(fetchAccountsNode).mock.calls[0][1] as Date;
+    const daysAgo = (Date.now() - startDate.getTime()) / (24 * 60 * 60 * 1000);
+    // 2 days (lastSync) + 14 days (overlap) ≈ 16 days back, not 2
+    expect(daysAgo).toBeGreaterThan(15);
+    expect(daysAgo).toBeLessThan(17);
+  });
+
   it('uses WEALTHFOLIO_API_KEY as Bearer token without calling login', async () => {
     process.env.WEALTHFOLIO_API_KEY = 'test-api-key';
 

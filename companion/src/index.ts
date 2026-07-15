@@ -264,8 +264,16 @@ export async function runCompanionSync(): Promise<void> {
     return;
   }
 
-  const startDate =
-    lastSyncAt ?? new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1000);
+  // Incremental syncs re-scan a two-week overlap before lastSyncAt. Card
+  // purchases post a few days late, often with a `posted` timestamp backdated
+  // to the purchase date — earlier than lastSyncAt. SimpleFin filters on
+  // `posted`, so a window beginning exactly at lastSyncAt would drop them
+  // forever. The tx-id dedup guard makes re-scanning already-imported rows a
+  // no-op. (Mirrors SYNC_LOOKBACK_OVERLAP_MS in the addon's sync.ts.)
+  const LOOKBACK_OVERLAP_MS = 14 * 24 * 60 * 60 * 1000;
+  const startDate = lastSyncAt
+    ? new Date(lastSyncAt.getTime() - LOOKBACK_OVERLAP_MS)
+    : new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1000);
 
   debug(`Fetching SimpleFin data from ${maskUrl(accessUrl)} since ${startDate.toISOString()}`);
 

@@ -8,6 +8,18 @@ import type { AddonContext } from '@wealthfolio/addon-sdk';
 
 export const MIN_SYNC_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 
+/**
+ * How far before lastSyncAt an incremental sync re-scans. Card purchases post
+ * a few days late, frequently with a `posted` timestamp backdated to the
+ * purchase date — earlier than lastSyncAt. SimpleFin's start-date filter is on
+ * `posted`, so a window that began exactly at lastSyncAt would exclude such a
+ * transaction permanently (it becomes available only after we synced, but is
+ * dated before our window). Re-scanning a two-week overlap catches them once
+ * they post; the tx-id dedup guard makes re-scanning already-imported rows a
+ * no-op, and the 3-day transfer-pair window keeps old rows from re-pairing.
+ */
+export const SYNC_LOOKBACK_OVERLAP_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
+
 /** Polling for freshly computed valuations after a first import (see the
  *  second-pass block in runSync). Exported so tests can shrink the delay. */
 export const VALUATION_POLL = { attempts: 6, delayMs: 2500 };
@@ -109,13 +121,18 @@ async function runSyncOnce(
 
   const rules = await store.getMappingRules();
 
-  // Incremental syncs fetch since the last sync. A forced sync (Sync anyway)
-  // re-pulls the full 30-day window — the reason to force is that data is
-  // missing, which a since-last-sync window (often minutes wide) would not
-  // recover. First sync also uses the full window. The tx-id dedup guard
-  // makes the wider re-pull safe (nothing re-imports).
+  // Incremental syncs fetch since the last sync, minus a lookback overlap so
+  // transactions that post late with a backdated `posted` date aren't dropped
+  // (see SYNC_LOOKBACK_OVERLAP_MS). A forced sync (Sync anyway) re-pulls the
+  // full 30-day window — the reason to force is that data is missing, which a
+  // since-last-sync window (often minutes wide) would not recover. First sync
+  // also uses the full window. The tx-id dedup guard makes the wider re-pull
+  // safe (nothing re-imports).
   const THIRTY_DAYS_AGO = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-  const startDate = opts.force || !lastSync ? THIRTY_DAYS_AGO : lastSync;
+  const startDate =
+    opts.force || !lastSync
+      ? THIRTY_DAYS_AGO
+      : new Date(lastSync.getTime() - SYNC_LOOKBACK_OVERLAP_MS);
   const authKey = await store.getAuthB64Key();
   const accountSet = await fetchAccounts(accessUrl, startDate, ctx.api.network, authKey);
 

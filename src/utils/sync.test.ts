@@ -128,6 +128,23 @@ describe('runSync', () => {
     expect(daysAgo).toBeGreaterThan(29);
   });
 
+  it('re-scans a lookback overlap before lastSyncAt so late-posting backdated transactions are not missed', async () => {
+    // Card purchases post a few days late with `posted` backdated to the
+    // purchase date, which lands before lastSyncAt. An incremental window that
+    // began exactly at lastSyncAt would let SimpleFin's start-date filter drop
+    // them forever. The window must reach back a lookback overlap.
+    const lastSync = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000); // 2 days ago
+    vi.mocked(fetchAccounts).mockResolvedValueOnce(makeAccountSet([]));
+    const store = makeStore({ getLastSyncAt: vi.fn(async () => lastSync) });
+    const ctx = makeCtx();
+    await runSync(ctx, store as any);
+    const startDate = vi.mocked(fetchAccounts).mock.calls[0][1] as Date;
+    const daysAgo = (Date.now() - startDate.getTime()) / (24 * 60 * 60 * 1000);
+    // 2 days (lastSync) + 14 days (overlap) ≈ 16 days back, well before lastSync
+    expect(daysAgo).toBeGreaterThan(15);
+    expect(daysAgo).toBeLessThan(17);
+  });
+
   it('skips activities marked as duplicates by checkImport', async () => {
     const tx = { id: 'tx-dup', posted: 1700000000, amount: '100.00', description: 'Paycheck' };
     vi.mocked(fetchAccounts).mockResolvedValueOnce(makeAccountSet([tx]));
