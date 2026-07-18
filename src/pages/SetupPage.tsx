@@ -23,7 +23,7 @@ export function SetupPage({ ctx, store, onComplete }: Props) {
   const [sfAccounts, setSfAccounts] = useState<SimplefinAccount[]>([]);
   const [mapping, setMapping] = useState<AccountMapping>({});
   const [rules, setRules] = useState<MappingRule[]>([]);
-  const [scheduleHours, setScheduleHours] = useState<number>(6);
+  const [scheduleHours, setScheduleHours] = useState<number>(4);
   const [autoSync, setAutoSync] = useState(false);
 
   // Step 1: Claim token

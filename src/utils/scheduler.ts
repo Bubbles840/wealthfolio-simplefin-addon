@@ -10,7 +10,7 @@ import { MIN_SYNC_INTERVAL_MS } from './sync';
  * and fires promptly on wake, and because "due?" is decided against the
  * persisted wall-clock lastSyncAt, a missed window is caught within one poll.
  */
-export const SCHEDULER_POLL_MS = 60 * 1000;
+export const SCHEDULER_POLL_MS = 5 * 60 * 1000; // wall-clock check every 5 minutes
 
 export class Scheduler {
   private handle: ReturnType<typeof setInterval> | null = null;
