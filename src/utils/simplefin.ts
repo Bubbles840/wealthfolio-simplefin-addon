@@ -54,6 +54,7 @@ export async function fetchAccounts(
   url.password = '';
   url.pathname = url.pathname.replace(/\/$/, '') + '/accounts';
   url.searchParams.set('start-date', String(Math.floor(startDate.getTime() / 1000)));
+  url.searchParams.set('pending', '1');
 
   const req: Parameters<NetworkAPI['request']>[0] = { url: url.href, method: 'GET' };
   if (authSecretKey) {

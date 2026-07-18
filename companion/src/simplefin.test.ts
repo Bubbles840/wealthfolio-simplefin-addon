@@ -23,4 +23,14 @@ describe('fetchAccountsNode', () => {
       fetchAccountsNode('http://user:pass@bridge.simplefin.org/simplefin', new Date()),
     ).rejects.toThrow('HTTPS');
   });
+
+  it('requests pending transactions', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ errors: [], accounts: [] }),
+    });
+    await fetchAccountsNode('https://u:p@bridge.simplefin.org/simplefin', new Date(0));
+    const [url] = mockFetch.mock.calls[0];
+    expect(url).toContain('pending=1');
+  });
 });

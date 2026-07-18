@@ -104,4 +104,11 @@ describe('fetchAccounts', () => {
       fetchAccounts('https://user:pass@bridge.simplefin.org/simplefin', new Date(), network),
     ).rejects.toThrow('401');
   });
+
+  it('requests pending transactions', async () => {
+    const network = makeNetwork(() => okResponse('{"errors":[],"accounts":[]}'));
+    await fetchAccounts('https://u:p@bridge.simplefin.org/simplefin', new Date(0), network);
+    const [calledReq] = (network.request as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(calledReq.url).toContain('pending=1');
+  });
 });

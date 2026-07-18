@@ -49,6 +49,7 @@ export async function fetchAccountsNode(
   const base = url.origin + url.pathname.replace(/\/$/, '');
   const accountsUrl = new URL(`${base}/accounts`);
   accountsUrl.searchParams.set('start-date', String(Math.floor(startDate.getTime() / 1000)));
+  accountsUrl.searchParams.set('pending', '1');
 
   const res = await fetch(accountsUrl.toString(), {
     headers: { Authorization: `Basic ${credentials}` },
