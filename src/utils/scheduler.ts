@@ -6,9 +6,10 @@ import { MIN_SYNC_INTERVAL_MS } from './sync';
  * suspended or heavily throttled by the browser/Electron when the machine
  * sleeps or the tab is backgrounded, and a suspended timer does NOT catch up
  * the firing it missed — so a scheduled window that elapsed while the app was
- * asleep would be silently skipped. A 60-second timer survives sleep/throttle
- * and fires promptly on wake, and because "due?" is decided against the
- * persisted wall-clock lastSyncAt, a missed window is caught within one poll.
+ * asleep would be silently skipped. A short (few-minute) poll survives
+ * sleep/throttle and fires promptly on wake, and because "due?" is decided
+ * against the persisted wall-clock lastSyncAt, a missed window is caught
+ * within one poll.
  */
 export const SCHEDULER_POLL_MS = 5 * 60 * 1000; // wall-clock check every 5 minutes
 
