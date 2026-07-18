@@ -9,9 +9,9 @@ their codebase yourself.
 
 | # | Title | Kind | Status | Our follow-up when it ships |
 |---|-------|------|--------|------------------------------|
-| 1 | Basic auth in addon network requests | feature | **Accepted upstream** — expected next release | Drop the patched `wealthfolio-patched` image; use the official image. See "Follow-up 1" below. |
-| 2 | Sandbox `.import()` rewrite bug | bug | **Accepted upstream** — expected next release | Remove the post-minify `["import"]` workaround from `vite.config.ts`. See "Follow-up 2". |
-| 3 | Expose `activities.link` to addons | feature | Not yet filed — post the section below | Add native transfer linking to the addon (drop the manual UI step). See "Follow-up 3". |
+| 1 | Basic auth in addon network requests | feature | **Shipped in v3.6.2** | Drop the patched `wealthfolio-patched` image; use the official image. See "Follow-up 1" below. |
+| 2 | Sandbox `.import()` rewrite bug | bug | **Shipped in v3.6.2** | Remove the post-minify `["import"]` workaround from `vite.config.ts`. See "Follow-up 2". |
+| 3 | Expose `activities.link` to addons | feature | Not yet filed — post the section below | Being addressed via a self-assigned shared sourceGroupId (see 2026-07-18 plan, Task 12); the dedicated link() method is still not in 3.6.2. |
 | 4 | Expose spending-tracker settings to addons | feature | Not yet filed — post the section below | Auto-enroll CASH / CREDIT_CARD accounts during setup, skip investment accounts. See "Follow-up 4". |
 
 Once a release lands that includes #1 and #2, do the follow-ups below and

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# LEGACY: no longer required as of Wealthfolio 3.6.2, which ships addon Basic auth. Use the official image ghcr.io/wealthfolio/wealthfolio:3.6.2 instead.
+#
 # Builds a patched Wealthfolio Docker image with Basic auth support for addon
 # network requests (required for SimpleFin Sync).
 #
