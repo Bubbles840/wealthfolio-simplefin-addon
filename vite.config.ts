@@ -26,26 +26,8 @@ const hostProvidedDependencies = [
   'recharts',
 ];
 
-// Wealthfolio's addon sandbox rewrites /\bimport\s*\(/g in addon code to
-// intercept dynamic imports — and \b matches after a dot, so a method call
-// like `activities.import(...)` gets mangled into
-// `activities.globalThis.__wealthfolioImport(...)` and fails at runtime.
-// Rewriting property calls to bracket notation in the emitted bundle dodges
-// the regex ("[\"import\"](" doesn't match). Must run post-minify: esbuild
-// normalizes a["import"] back to a.import if done in source.
-const escapeImportPropertyCalls = {
-  name: 'escape-import-property-calls',
-  generateBundle(_: unknown, bundle: Record<string, { type: string; code?: string }>) {
-    for (const chunk of Object.values(bundle)) {
-      if (chunk.type === 'chunk' && chunk.code) {
-        chunk.code = chunk.code.replace(/\.import\s*\(/g, '["import"](');
-      }
-    }
-  },
-};
-
 export default defineConfig({
-  plugins: [react(), tailwindcss(), escapeImportPropertyCalls],
+  plugins: [react(), tailwindcss()],
   resolve: {
     alias: {
       '@shared': resolve(__dirname, 'shared'),
