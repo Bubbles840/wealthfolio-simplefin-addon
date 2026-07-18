@@ -20,6 +20,7 @@ const makeProps = () => ({
     setAccountNames: vi.fn(),
     getAuthB64Key: vi.fn(async () => 'simplefin_auth_b64'),
     setLastSyncAt: vi.fn(),
+    setSyncScheduleHours: vi.fn(),
   } as any,
   onReset: vi.fn(),
   scheduler: { start: vi.fn(), stop: vi.fn(), isRunning: vi.fn(() => false) } as any,
@@ -46,5 +47,14 @@ describe('SyncPage', () => {
     // mapping list itself must show names
     const growthItem = screen.getByText(/Growth/).closest('li');
     expect(growthItem?.textContent).not.toContain('sfin-1');
+  });
+
+  it('changing the interval saves it and restarts the scheduler', async () => {
+    const props = makeProps();
+    render(<SyncPage {...props} />);
+    const select = await screen.findByLabelText(/auto-sync interval/i);
+    fireEvent.change(select, { target: { value: '8' } });
+    await waitFor(() => expect(props.store.setSyncScheduleHours).toHaveBeenCalledWith(8));
+    expect(props.scheduler.start).toHaveBeenCalledWith(8, expect.any(Function), expect.any(Function));
   });
 });

@@ -156,7 +156,28 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
 
       <Card>
         <SectionLabel>Auto-Sync</SectionLabel>
-        {scheduleHours ? `Every ${scheduleHours} hours` : 'Off'}
+        <label htmlFor="sfin-interval" className="sfin-subtle" style={{ display: 'block', marginBottom: 4 }}>
+          Auto-Sync interval
+        </label>
+        <select
+          id="sfin-interval"
+          value={scheduleHours ?? 0}
+          onChange={async (e) => {
+            const hours = Number(e.target.value);
+            setScheduleHours(hours);
+            await store.setSyncScheduleHours(hours);
+            scheduler.stop();
+            if (hours > 0) {
+              scheduler.start(hours, () => store.getLastSyncAt(), () => runSync(ctx, store));
+            }
+          }}
+        >
+          <option value={0}>Off</option>
+          <option value={1}>Every 1 hour</option>
+          <option value={4}>Every 4 hours</option>
+          <option value={8}>Every 8 hours</option>
+          <option value={24}>Every 24 hours</option>
+        </select>
       </Card>
 
       <Card>
