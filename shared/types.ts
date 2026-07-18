@@ -16,10 +16,11 @@ export interface SimplefinOrg {
 
 export interface SimplefinTransaction {
   id: string;
-  posted: number;        // Unix timestamp
+  posted: number;        // Unix timestamp (0 for some pending rows)
   amount: string;        // Numeric string e.g. "-12.50"
   description: string;
   pending?: boolean;
+  transacted_at?: number; // Unix timestamp; used to date pending rows lacking `posted`
 }
 
 export interface SimplefinAccount {
