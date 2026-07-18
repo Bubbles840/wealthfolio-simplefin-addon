@@ -5,8 +5,8 @@
   "description": "Sync bank transactions from SimpleFin into Wealthfolio automatically.",
   "author": "Community",
   "main": "dist/addon.js",
-  "sdkVersion": "3.6.0",
-  "minWealthfolioVersion": "3.6.0",
+  "sdkVersion": "3.6.2",
+  "minWealthfolioVersion": "3.6.2",
   "enabled": true,
   "network": {
     "allowedHosts": ["bridge.simplefin.org", "beta-bridge.simplefin.org"],
@@ -34,8 +34,8 @@
     },
     {
       "category": "activities",
-      "functions": ["checkImport", "import", "search"],
-      "purpose": "Import bank transactions from SimpleFin and check for existing starting-balance entries"
+      "functions": ["checkImport", "import", "search", "getAll", "create", "update", "saveMany"],
+      "purpose": "Import bank transactions, reconcile pending transactions (create/update/delete), and link transfer pairs"
     },
     {
       "category": "portfolio",
