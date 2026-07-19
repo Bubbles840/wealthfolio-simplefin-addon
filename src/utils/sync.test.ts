@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { runSync, MIN_SYNC_INTERVAL_MS, VALUATION_POLL } from './sync';
+import { runSync, applyBalanceAdjustment, MIN_SYNC_INTERVAL_MS, VALUATION_POLL } from './sync';
 
 vi.mock('./simplefin', () => ({
   fetchAccounts: vi.fn(),
@@ -22,6 +22,8 @@ const makeStore = (overrides: Record<string, unknown> = {}) => ({
   setLinkedGroups: vi.fn(async (_map: Record<string, string>) => {}),
   getAccountBalances: vi.fn(async (): Promise<Record<string, unknown>> => ({})),
   setAccountBalances: vi.fn(async (_map: Record<string, unknown>) => {}),
+  getAutoHeal: vi.fn(async () => false),
+  setAutoHeal: vi.fn(async (_on: boolean) => {}),
   ...overrides,
 });
 
@@ -195,6 +197,56 @@ describe('runSync', () => {
     const captured = vi.mocked(store.setAccountBalances).mock.calls.at(-1)![0] as any;
     expect(captured['sfin-1'].balance).toBe(1000);
     expect(captured['sfin-1'].drift).toBeNull();
+  });
+
+  it('heal mode re-scans a 90-day window and bypasses the interval', async () => {
+    const recentSync = new Date(Date.now() - 5 * 60 * 1000); // 5 min ago
+    vi.mocked(fetchAccounts).mockResolvedValueOnce(makeAccountSet([]));
+    const store = makeStore({ getLastSyncAt: vi.fn(async () => recentSync) });
+    await runSync(makeCtx(), store as any, { heal: true });
+    expect(fetchAccounts).toHaveBeenCalledOnce();
+    const startDate = vi.mocked(fetchAccounts).mock.calls[0][1] as Date;
+    const daysAgo = (Date.now() - startDate.getTime()) / (24 * 60 * 60 * 1000);
+    expect(daysAgo).toBeGreaterThan(89);
+    expect(daysAgo).toBeLessThan(91);
+  });
+
+  it('the Auto-heal setting puts a normal sync into heal mode', async () => {
+    vi.mocked(fetchAccounts).mockResolvedValueOnce(makeAccountSet([]));
+    const store = makeStore({ getAutoHeal: vi.fn(async () => true) });
+    await runSync(makeCtx(), store as any);
+    const startDate = vi.mocked(fetchAccounts).mock.calls[0][1] as Date;
+    const daysAgo = (Date.now() - startDate.getTime()) / (24 * 60 * 60 * 1000);
+    expect(daysAgo).toBeGreaterThan(89); // 90-day heal window, not 30
+  });
+
+  it('heal measures residual drift lag-free (accounting for what it imports)', async () => {
+    // SimpleFin balance 1000, valuation 0, importing a +900 deposit this run →
+    // residual = 1000 - 0 - 900 = 100 (still off by 100 after the import).
+    const tx = { id: 'tx-dep', posted: 1700000000, amount: '900.00', description: 'Deposit' };
+    vi.mocked(fetchAccounts).mockResolvedValueOnce(makeAccountSet([tx]));
+    const store = makeStore();
+    await runSync(makeCtx(), store as any, { heal: true });
+    const captured = vi.mocked(store.setAccountBalances).mock.calls.at(-1)![0] as any;
+    expect(captured['sfin-1'].drift).toBe(100);
+  });
+
+  it('applyBalanceAdjustment imports a dated adjustment and clears the drift', async () => {
+    const ctx = makeCtx();
+    const store = makeStore({
+      getAccountBalances: vi.fn(async () => ({
+        'sfin-1': { balance: 1000, currency: 'USD', date: 1700000000, drift: 250.5 },
+      })),
+    });
+    await applyBalanceAdjustment(ctx, store as any, {
+      sfinAccountId: 'sfin-1', wfAccountId: 'wf-account-a', currency: 'USD', amount: 250.5,
+    });
+    const imported = vi.mocked(ctx.api.activities.import).mock.calls.at(-1)![0] as any[];
+    expect(imported[0].activityType).toBe('DEPOSIT');
+    expect(imported[0].amount).toBe(250.5);
+    expect(imported[0].comment).toMatch(/^Balance adjustment · sfin-1 · /);
+    const persisted = vi.mocked(store.setAccountBalances).mock.calls.at(-1)![0] as any;
+    expect(persisted['sfin-1'].drift).toBeNull();
   });
 
   it('drops only transactions with neither posted nor transacted_at', async () => {

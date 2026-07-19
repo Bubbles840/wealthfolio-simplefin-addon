@@ -28,6 +28,8 @@ const makeProps = () => ({
     getAuthB64Key: vi.fn(async () => 'simplefin_auth_b64'),
     setLastSyncAt: vi.fn(),
     setSyncScheduleHours: vi.fn(),
+    getAutoHeal: vi.fn(async () => false),
+    setAutoHeal: vi.fn(),
   } as any,
   onReset: vi.fn(),
   scheduler: { start: vi.fn(), stop: vi.fn(), isRunning: vi.fn(() => false) } as any,

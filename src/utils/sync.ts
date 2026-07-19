@@ -37,6 +37,10 @@ export const SYNC_LOOKBACK_OVERLAP_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
  *  rounding and to keep the Sync page from crying wolf over pennies. */
 export const DRIFT_THRESHOLD_DOLLARS = 1;
 
+/** Heal ("Reconcile balances") re-scans this far back — wider than a normal
+ *  force sync — to recover transactions that a broken earlier sync missed. */
+export const HEAL_WINDOW_MS = 90 * 24 * 60 * 60 * 1000; // 90 days
+
 /** Polling for freshly computed valuations after a first import (see the
  *  second-pass block in runSync). Exported so tests can shrink the delay. */
 export const VALUATION_POLL = { attempts: 6, delayMs: 2500 };
@@ -113,6 +117,11 @@ let syncInFlight: Promise<SyncResult> | null = null;
 export interface SyncOptions {
   /** Bypass the 1-hour minimum interval (the "Sync anyway" button). */
   force?: boolean;
+  /** Heal/Reconcile: re-scan a wide 90-day window to recover transactions
+   *  that never imported, and measure residual drift lag-free (accounting for
+   *  what this run imports) so the Sync page can offer a balance adjustment for
+   *  anything SimpleFin can't supply. Implies force (bypasses the interval). */
+  heal?: boolean;
 }
 
 /** Distinct marker so the UI can recognise an interval skip and offer to
@@ -139,9 +148,13 @@ async function runSyncOnce(
 ): Promise<SyncResult> {
   const errors: string[] = [];
 
-  // Enforce minimum interval unless the caller forces (Sync anyway)
+  // Heal is either an explicit "Reconcile" click or the persistent Auto-heal
+  // setting, so every sync path (scheduler, startup, Sync Now) honours it.
+  const heal = opts.heal || (await store.getAutoHeal());
+
+  // Enforce minimum interval unless the caller forces (Sync anyway) or heals
   const lastSync = await store.getLastSyncAt();
-  if (!opts.force && lastSync && Date.now() - lastSync.getTime() < MIN_SYNC_INTERVAL_MS) {
+  if (!opts.force && !heal && lastSync && Date.now() - lastSync.getTime() < MIN_SYNC_INTERVAL_MS) {
     return { imported: 0, skipped: 0, errors: [INTERVAL_SKIP_MESSAGE] };
   }
 
@@ -161,8 +174,9 @@ async function runSyncOnce(
   // also uses the full window. The tx-id dedup guard makes the wider re-pull
   // safe (nothing re-imports).
   const THIRTY_DAYS_AGO = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-  const startDate =
-    opts.force || !lastSync
+  const startDate = heal
+    ? new Date(Date.now() - HEAL_WINDOW_MS)
+    : opts.force || !lastSync
       ? THIRTY_DAYS_AGO
       : new Date(lastSync.getTime() - SYNC_LOOKBACK_OVERLAP_MS);
   const authKey = await store.getAuthB64Key();
@@ -329,12 +343,28 @@ async function runSyncOnce(
     // this run (Wealthfolio recomputes valuations asynchronously, so a fresh
     // import wouldn't be reflected yet); otherwise leave drift null ("in sync").
     const sfBalance = parseFloat(sfAccount.balance);
-    const stable = plan.creates.length === 0 && plan.updates.length === 0 && plan.deleteIds.length === 0;
     const wfValuation = wfBalances?.get(wfAccountId);
     let drift: number | null = null;
-    if (stable && wfValuation !== undefined && Number.isFinite(sfBalance)) {
-      const d = sfBalance - wfValuation;
-      if (Math.abs(d) > DRIFT_THRESHOLD_DOLLARS) drift = Math.round(d * 100) / 100;
+    if (wfValuation !== undefined && Number.isFinite(sfBalance)) {
+      if (heal) {
+        // Heal measures residual lag-free: after this run Wealthfolio's balance
+        // becomes wfValuation + what we import now, so residual = SimpleFin −
+        // that. This surfaces drift even on accounts we just imported into —
+        // exactly what the plug offer needs.
+        const windowDelta = plan.creates
+          .filter((t) => !t.pending)
+          .reduce((sum, t) => sum + (signedByTxId.get(t.txId) ?? 0), 0);
+        const d = sfBalance - wfValuation - windowDelta;
+        if (Math.abs(d) > DRIFT_THRESHOLD_DOLLARS) drift = Math.round(d * 100) / 100;
+      } else {
+        // Normal sync: Wealthfolio recomputes valuations asynchronously, so a
+        // fresh import isn't reflected yet — only trust drift on a quiet account.
+        const stable = plan.creates.length === 0 && plan.updates.length === 0 && plan.deleteIds.length === 0;
+        if (stable) {
+          const d = sfBalance - wfValuation;
+          if (Math.abs(d) > DRIFT_THRESHOLD_DOLLARS) drift = Math.round(d * 100) / 100;
+        }
+      }
     }
     accountBalances[sfAccount.id] = {
       balance: Number.isFinite(sfBalance) ? sfBalance : null,
@@ -554,4 +584,43 @@ async function runSyncOnce(
   await store.setLastSyncAt(new Date());
 
   return { imported, skipped, errors };
+}
+
+/**
+ * Force one account's Wealthfolio balance to match SimpleFin's reported balance
+ * by adding a one-time, dated balance-adjustment activity for the residual the
+ * heal re-scan couldn't recover (SimpleFin no longer supplies it, or a stale
+ * starting-balance anchor). The entry is a normal cash activity the user can
+ * see and recategorize. `amount` is signed (SimpleFin − Wealthfolio): positive
+ * adds a DEPOSIT to raise the balance, negative a WITHDRAWAL to lower it.
+ */
+export async function applyBalanceAdjustment(
+  ctx: AddonContext,
+  store: SecretsStore,
+  args: { sfinAccountId: string; wfAccountId: string; currency: string; amount: number },
+): Promise<void> {
+  const { sfinAccountId, wfAccountId, currency, amount } = args;
+  if (!Number.isFinite(amount) || Math.abs(amount) < 0.01) return;
+  const today = new Date().toISOString().split('T')[0];
+  // Built as a variable (not an inline literal) so it matches the same relaxed
+  // shape the starting-balance correction uses for activities.import.
+  const adjustment = {
+    accountId: wfAccountId,
+    activityType: (amount > 0 ? 'DEPOSIT' : 'WITHDRAWAL') as ActivityType,
+    date: today,
+    symbol: `$CASH-${currency}`,
+    amount: Math.abs(Math.round(amount * 100) / 100),
+    currency,
+    sourceSystem: 'simplefin' as const,
+    comment: `Balance adjustment · ${sfinAccountId} · ${today}`,
+    isValid: true,
+    isDraft: false,
+  };
+  await ctx.api.activities.import([adjustment]);
+  // Clear the stored drift so the Sync page reflects the fix immediately.
+  const balances = await store.getAccountBalances();
+  if (balances[sfinAccountId]) {
+    balances[sfinAccountId] = { ...balances[sfinAccountId], drift: null };
+    await store.setAccountBalances(balances);
+  }
 }

@@ -26,6 +26,7 @@ const KEYS = {
   lastSyncAt: 'last_sync_at',
   linkedGroups: 'linked_groups',
   accountBalances: 'account_balances',
+  autoHeal: 'auto_heal',
 } as const;
 
 export class SecretsStore {
@@ -95,6 +96,15 @@ export class SecretsStore {
   }
   async setSyncScheduleHours(hours: number): Promise<void> {
     await this.ctx.api.secrets.set(KEYS.syncScheduleHours, String(hours));
+  }
+
+  /** When on, every sync runs in heal mode (wide 90-day re-scan to recover
+   *  missing transactions + accurate drift). The residual plug stays manual. */
+  async getAutoHeal(): Promise<boolean> {
+    return (await this.ctx.api.secrets.get(KEYS.autoHeal)) === 'true';
+  }
+  async setAutoHeal(on: boolean): Promise<void> {
+    await this.ctx.api.secrets.set(KEYS.autoHeal, on ? 'true' : 'false');
   }
 
   async getLastSyncAt(): Promise<Date | null> {

@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import type { AddonContext } from '@wealthfolio/addon-sdk';
-import { runSync, INTERVAL_SKIP_MESSAGE } from '../utils/sync';
+import { runSync, INTERVAL_SKIP_MESSAGE, applyBalanceAdjustment } from '../utils/sync';
 import { fetchAccounts } from '../utils/simplefin';
 import { SyncStatus } from '../components/SyncStatus';
 import { RuleEditor } from '../components/RuleEditor';
@@ -61,6 +61,9 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
   const [wfNames, setWfNames] = useState<Record<string, string>>({});
   const [balances, setBalances] = useState<Record<string, AccountBalanceInfo>>({});
   const [confirmingReset, setConfirmingReset] = useState(false);
+  const [healing, setHealing] = useState(false);
+  const [adjusting, setAdjusting] = useState<string | null>(null);
+  const [autoHeal, setAutoHeal] = useState(false);
 
   const loadBalances = useCallback(() => {
     store.getAccountBalances().then(setBalances).catch(() => {});
@@ -74,14 +77,16 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
       store.getSyncScheduleHours(),
       store.getAccountNames(),
       store.getAccountBalances(),
+      store.getAutoHeal(),
       ctx.api.accounts.getAll().catch(() => []),
-    ]).then(([last, m, r, h, names, bal, wfAccounts]) => {
+    ]).then(([last, m, r, h, names, bal, ah, wfAccounts]) => {
       setLastSyncAt(last);
       setMapping(m ?? {});
       setRules(r);
       setScheduleHours(h);
       setSfinNames(names);
       setBalances(bal);
+      setAutoHeal(ah);
       setWfNames(Object.fromEntries(wfAccounts.map((a) => [a.id, a.name])));
 
       // Backfill for installs set up before account names were captured
@@ -129,6 +134,41 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
       setSyncing(false);
     }
   }, [ctx, store, loadBalances]);
+
+  // Heal: re-scan a wide window to recover missing transactions, then re-measure
+  // drift so any residual can be plugged.
+  const doHeal = useCallback(async () => {
+    setHealing(true);
+    setError('');
+    try {
+      const result = await runSync(ctx, store, { heal: true });
+      if (result.errors.length > 0) setError(result.errors.join('; '));
+      setImported(result.imported);
+      setLastSyncAt(await store.getLastSyncAt());
+      loadBalances();
+    } catch (e: any) {
+      setError(e.message ?? 'Reconcile failed');
+    } finally {
+      setHealing(false);
+    }
+  }, [ctx, store, loadBalances]);
+
+  // Plug the residual: add a one-time balance-adjustment entry for an account.
+  const doAdjust = useCallback(
+    async (sfinId: string, wfId: string, currency: string, amount: number) => {
+      setAdjusting(sfinId);
+      setError('');
+      try {
+        await applyBalanceAdjustment(ctx, store, { sfinAccountId: sfinId, wfAccountId: wfId, currency, amount });
+        loadBalances();
+      } catch (e: any) {
+        setError(e.message ?? 'Adjustment failed');
+      } finally {
+        setAdjusting(null);
+      }
+    },
+    [ctx, store, loadBalances],
+  );
 
   // window.confirm is silently suppressed in the addon sandbox (iframe has
   // sandbox="allow-scripts" without allow-modals), so confirmation must be
@@ -180,16 +220,33 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
         </div>
       )}
 
-      {driftAccounts.map(([sfinId]) => {
+      {driftAccounts.map(([sfinId, wfId]) => {
         const info = balances[sfinId];
+        const drift = info.drift as number;
         return (
           <div className="sfin-banner-warn" key={sfinId}>
             <span aria-hidden>⚠</span>
-            <div>
-              <b>{sfinNames[sfinId] ?? sfinId}</b> looks out of sync — SimpleFin reports{' '}
-              <b>{money(info.balance ?? 0, info.currency)}</b>, off by{' '}
-              <b>{money(Math.abs(info.drift as number), info.currency)}</b> from Wealthfolio. Try{' '}
-              <b>Sync anyway</b>, or check for a transaction Wealthfolio missed.
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div>
+                <b>{sfinNames[sfinId] ?? sfinId}</b> is off by{' '}
+                <b>{money(Math.abs(drift), info.currency)}</b> — SimpleFin reports{' '}
+                <b>{money(info.balance ?? 0, info.currency)}</b>.
+              </div>
+              <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+                <Button variant="outline" onClick={doHeal} disabled={healing || syncing}>
+                  {healing ? 'Re-scanning…' : 'Re-scan 90 days'}
+                </Button>
+                <Button
+                  variant="ghost"
+                  title="Add a one-time balance adjustment so this account matches your bank"
+                  onClick={() => doAdjust(sfinId, wfId, info.currency, drift)}
+                  disabled={adjusting === sfinId || healing}
+                >
+                  {adjusting === sfinId
+                    ? 'Adjusting…'
+                    : `${drift > 0 ? 'Add' : 'Subtract'} ${money(Math.abs(drift), info.currency)}`}
+                </Button>
+              </div>
             </div>
           </div>
         );
@@ -283,6 +340,25 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
           <option value={8}>Every 8 hours</option>
           <option value={24}>Every 24 hours</option>
         </select>
+
+        <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginTop: 16, cursor: 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={autoHeal}
+            style={{ marginTop: 2 }}
+            onChange={async (e) => {
+              setAutoHeal(e.target.checked);
+              await store.setAutoHeal(e.target.checked);
+            }}
+          />
+          <span>
+            <span style={{ fontWeight: 550 }}>Auto-heal</span>
+            <span className="sfin-subtle">
+              {' '}— re-scan 90 days on every sync to recover missing transactions. Balance
+              adjustments stay manual.
+            </span>
+          </span>
+        </label>
       </Card>
 
       <Card>
