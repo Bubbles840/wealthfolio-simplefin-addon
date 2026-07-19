@@ -30,6 +30,8 @@ const makeProps = () => ({
     setSyncScheduleHours: vi.fn(),
     getAutoHeal: vi.fn(async () => false),
     setAutoHeal: vi.fn(),
+    getAutoAdjust: vi.fn(async () => false),
+    setAutoAdjust: vi.fn(),
   } as any,
   onReset: vi.fn(),
   scheduler: { start: vi.fn(), stop: vi.fn(), isRunning: vi.fn(() => false) } as any,

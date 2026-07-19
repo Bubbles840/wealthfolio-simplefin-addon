@@ -27,6 +27,7 @@ const KEYS = {
   linkedGroups: 'linked_groups',
   accountBalances: 'account_balances',
   autoHeal: 'auto_heal',
+  autoAdjust: 'auto_adjust',
 } as const;
 
 export class SecretsStore {
@@ -105,6 +106,15 @@ export class SecretsStore {
   }
   async setAutoHeal(on: boolean): Promise<void> {
     await this.ctx.api.secrets.set(KEYS.autoHeal, on ? 'true' : 'false');
+  }
+
+  /** Aggressive heal: on top of the re-scan, automatically insert a balance
+   *  adjustment for any residual drift each sync (no prompt). Implies auto-heal. */
+  async getAutoAdjust(): Promise<boolean> {
+    return (await this.ctx.api.secrets.get(KEYS.autoAdjust)) === 'true';
+  }
+  async setAutoAdjust(on: boolean): Promise<void> {
+    await this.ctx.api.secrets.set(KEYS.autoAdjust, on ? 'true' : 'false');
   }
 
   async getLastSyncAt(): Promise<Date | null> {

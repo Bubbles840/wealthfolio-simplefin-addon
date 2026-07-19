@@ -24,6 +24,8 @@ const makeStore = (overrides: Record<string, unknown> = {}) => ({
   setAccountBalances: vi.fn(async (_map: Record<string, unknown>) => {}),
   getAutoHeal: vi.fn(async () => false),
   setAutoHeal: vi.fn(async (_on: boolean) => {}),
+  getAutoAdjust: vi.fn(async () => false),
+  setAutoAdjust: vi.fn(async (_on: boolean) => {}),
   ...overrides,
 });
 
@@ -229,6 +231,23 @@ describe('runSync', () => {
     await runSync(makeCtx(), store as any, { heal: true });
     const captured = vi.mocked(store.setAccountBalances).mock.calls.at(-1)![0] as any;
     expect(captured['sfin-1'].drift).toBe(100);
+  });
+
+  it('aggressive auto-heal auto-inserts the adjustment and leaves no residual drift', async () => {
+    // Quiet account: SimpleFin 1000, valuation 0 → residual 1000 in heal mode.
+    vi.mocked(fetchAccounts).mockResolvedValueOnce(makeAccountSet([]));
+    const store = makeStore({ getAutoAdjust: vi.fn(async () => true) });
+    const ctx = makeCtx();
+    await runSync(ctx, store as any);
+    // An adjustment DEPOSIT of 1000 was imported...
+    const imports = vi.mocked(ctx.api.activities.import).mock.calls.flatMap((c: any) => c[0]);
+    const adj = imports.find((a: any) => String(a.comment).startsWith('Balance adjustment'));
+    expect(adj).toBeTruthy();
+    expect(adj.activityType).toBe('DEPOSIT');
+    expect(adj.amount).toBe(1000);
+    // ...and the stored drift is cleared.
+    const captured = vi.mocked(store.setAccountBalances).mock.calls.at(-1)![0] as any;
+    expect(captured['sfin-1'].drift).toBeNull();
   });
 
   it('applyBalanceAdjustment imports a dated adjustment and clears the drift', async () => {

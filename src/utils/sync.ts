@@ -148,9 +148,11 @@ async function runSyncOnce(
 ): Promise<SyncResult> {
   const errors: string[] = [];
 
-  // Heal is either an explicit "Reconcile" click or the persistent Auto-heal
-  // setting, so every sync path (scheduler, startup, Sync Now) honours it.
-  const heal = opts.heal || (await store.getAutoHeal());
+  // Heal is an explicit "Reconcile" click, the persistent Auto-heal setting, or
+  // Aggressive auto-heal (which also auto-plugs residual drift). Any of them
+  // triggers the wide re-scan on every sync path (scheduler, startup, Sync Now).
+  const autoAdjust = await store.getAutoAdjust();
+  const heal = opts.heal || autoAdjust || (await store.getAutoHeal());
 
   // Enforce minimum interval unless the caller forces (Sync anyway) or heals
   const lastSync = await store.getLastSyncAt();
@@ -356,6 +358,17 @@ async function runSyncOnce(
           .reduce((sum, t) => sum + (signedByTxId.get(t.txId) ?? 0), 0);
         const d = sfBalance - wfValuation - windowDelta;
         if (Math.abs(d) > DRIFT_THRESHOLD_DOLLARS) drift = Math.round(d * 100) / 100;
+        // Aggressive auto-heal: plug the residual right away (no prompt).
+        if (autoAdjust && drift != null) {
+          await importAdjustmentActivity(ctx, {
+            sfinAccountId: sfAccount.id,
+            wfAccountId,
+            currency: sfAccount.currency,
+            amount: drift,
+          });
+          imported += 1;
+          drift = null;
+        }
       } else {
         // Normal sync: Wealthfolio recomputes valuations asynchronously, so a
         // fresh import isn't reflected yet — only trust drift on a quiet account.
@@ -594,9 +607,12 @@ async function runSyncOnce(
  * see and recategorize. `amount` is signed (SimpleFin − Wealthfolio): positive
  * adds a DEPOSIT to raise the balance, negative a WITHDRAWAL to lower it.
  */
-export async function applyBalanceAdjustment(
+/** Import one dated balance-adjustment activity. `amount` is signed
+ *  (SimpleFin − Wealthfolio): positive adds a DEPOSIT, negative a WITHDRAWAL.
+ *  No-op for a negligible amount. Shared by the manual button and the
+ *  aggressive auto-heal path. */
+async function importAdjustmentActivity(
   ctx: AddonContext,
-  store: SecretsStore,
   args: { sfinAccountId: string; wfAccountId: string; currency: string; amount: number },
 ): Promise<void> {
   const { sfinAccountId, wfAccountId, currency, amount } = args;
@@ -617,10 +633,19 @@ export async function applyBalanceAdjustment(
     isDraft: false,
   };
   await ctx.api.activities.import([adjustment]);
+}
+
+export async function applyBalanceAdjustment(
+  ctx: AddonContext,
+  store: SecretsStore,
+  args: { sfinAccountId: string; wfAccountId: string; currency: string; amount: number },
+): Promise<void> {
+  if (!Number.isFinite(args.amount) || Math.abs(args.amount) < 0.01) return;
+  await importAdjustmentActivity(ctx, args);
   // Clear the stored drift so the Sync page reflects the fix immediately.
   const balances = await store.getAccountBalances();
-  if (balances[sfinAccountId]) {
-    balances[sfinAccountId] = { ...balances[sfinAccountId], drift: null };
+  if (balances[args.sfinAccountId]) {
+    balances[args.sfinAccountId] = { ...balances[args.sfinAccountId], drift: null };
     await store.setAccountBalances(balances);
   }
 }

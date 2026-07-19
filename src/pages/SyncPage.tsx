@@ -64,6 +64,7 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
   const [healing, setHealing] = useState(false);
   const [adjusting, setAdjusting] = useState<string | null>(null);
   const [autoHeal, setAutoHeal] = useState(false);
+  const [autoAdjust, setAutoAdjust] = useState(false);
 
   const loadBalances = useCallback(() => {
     store.getAccountBalances().then(setBalances).catch(() => {});
@@ -78,8 +79,9 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
       store.getAccountNames(),
       store.getAccountBalances(),
       store.getAutoHeal(),
+      store.getAutoAdjust(),
       ctx.api.accounts.getAll().catch(() => []),
-    ]).then(([last, m, r, h, names, bal, ah, wfAccounts]) => {
+    ]).then(([last, m, r, h, names, bal, ah, aa, wfAccounts]) => {
       setLastSyncAt(last);
       setMapping(m ?? {});
       setRules(r);
@@ -87,6 +89,7 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
       setSfinNames(names);
       setBalances(bal);
       setAutoHeal(ah);
+      setAutoAdjust(aa);
       setWfNames(Object.fromEntries(wfAccounts.map((a) => [a.id, a.name])));
 
       // Backfill for installs set up before account names were captured
@@ -356,6 +359,25 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
             <span className="sfin-subtle">
               {' '}— re-scan 90 days on every sync to recover missing transactions. Balance
               adjustments stay manual.
+            </span>
+          </span>
+        </label>
+
+        <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginTop: 10, cursor: 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={autoAdjust}
+            style={{ marginTop: 2 }}
+            onChange={async (e) => {
+              setAutoAdjust(e.target.checked);
+              await store.setAutoAdjust(e.target.checked);
+            }}
+          />
+          <span>
+            <span style={{ fontWeight: 550 }}>Aggressively auto-heal</span>
+            <span className="sfin-subtle">
+              {' '}— also auto-insert balance adjustments for any residual, without asking
+              (includes the re-scan). Forces balances to match your bank on every sync.
             </span>
           </span>
         </label>
