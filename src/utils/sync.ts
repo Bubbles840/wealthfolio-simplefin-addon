@@ -44,6 +44,13 @@ export const DRIFT_THRESHOLD_DOLLARS = 1;
  *  lands, so we stay a day inside it. */
 export const HEAL_WINDOW_MS = 89 * 24 * 60 * 60 * 1000; // ~90 days, under SimpleFin's cap
 
+/** Recurring auto-heal uses a narrower window than the one-off manual re-scan:
+ *  SimpleFin recommends ≤45 days and warns wide requests may be capped, so a
+ *  sync that runs every few hours stays inside that. Drift measurement and the
+ *  auto-plug work on any window — only the one-time "recover old history" job
+ *  needs the full 89-day reach, and that's the manual button. */
+export const AUTO_HEAL_WINDOW_MS = 44 * 24 * 60 * 60 * 1000; // under SimpleFin's 45-day recommendation
+
 /** Polling for freshly computed valuations after a first import (see the
  *  second-pass block in runSync). Exported so tests can shrink the delay. */
 export const VALUATION_POLL = { attempts: 6, delayMs: 2500 };
@@ -196,11 +203,13 @@ async function runSyncOnce(
   // also uses the full window. The tx-id dedup guard makes the wider re-pull
   // safe (nothing re-imports).
   const THIRTY_DAYS_AGO = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-  const startDate = heal
-    ? new Date(Date.now() - HEAL_WINDOW_MS)
-    : opts.force || !lastSync
-      ? THIRTY_DAYS_AGO
-      : new Date(lastSync.getTime() - SYNC_LOOKBACK_OVERLAP_MS);
+  const startDate = opts.heal
+    ? new Date(Date.now() - HEAL_WINDOW_MS) // manual "Re-scan 90 days": full reach, occasional
+    : heal
+      ? new Date(Date.now() - AUTO_HEAL_WINDOW_MS) // recurring auto-heal: stay within SimpleFin's recommendation
+      : opts.force || !lastSync
+        ? THIRTY_DAYS_AGO
+        : new Date(lastSync.getTime() - SYNC_LOOKBACK_OVERLAP_MS);
   const authKey = await store.getAuthB64Key();
   const accountSet = await fetchAccounts(accessUrl, startDate, ctx.api.network, authKey);
 

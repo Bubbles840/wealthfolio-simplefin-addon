@@ -236,13 +236,14 @@ describe('runSync', () => {
     expect(daysAgo).toBeLessThan(90);
   });
 
-  it('the Auto-heal setting puts a normal sync into heal mode', async () => {
+  it('the Auto-heal setting uses the narrower recurring window (≤45 days, not 30 or 90)', async () => {
     vi.mocked(fetchAccounts).mockResolvedValueOnce(makeAccountSet([]));
     const store = makeStore({ getAutoHeal: vi.fn(async () => true) });
     await runSync(makeCtx(), store as any);
     const startDate = vi.mocked(fetchAccounts).mock.calls[0][1] as Date;
     const daysAgo = (Date.now() - startDate.getTime()) / (24 * 60 * 60 * 1000);
-    expect(daysAgo).toBeGreaterThan(88); // ~90-day heal window, not 30
+    expect(daysAgo).toBeGreaterThan(43);
+    expect(daysAgo).toBeLessThan(45); // recurring auto-heal stays within SimpleFin's 45-day recommendation
   });
 
   it('heal measures residual drift lag-free (accounting for what it imports)', async () => {

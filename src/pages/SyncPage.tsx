@@ -357,8 +357,8 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
           <span>
             <span style={{ fontWeight: 550 }}>Auto-heal</span>
             <span className="sfin-subtle">
-              {' '}— re-scan 90 days on every sync to recover missing transactions. Balance
-              adjustments stay manual.
+              {' '}— re-scan ~45 days each sync to catch missing transactions and check
+              balances. Balance adjustments stay manual.
             </span>
           </span>
         </label>
