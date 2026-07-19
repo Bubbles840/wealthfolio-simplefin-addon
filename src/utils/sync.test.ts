@@ -484,13 +484,6 @@ describe('runSync', () => {
     expect(inn.sourceGroupId).toBeTruthy();
     expect(out.sourceGroupId).toBe(inn.sourceGroupId);
 
-    // Transfer legs must carry quantity = the dollars at unit price 1, so
-    // Wealthfolio actually moves the cash (an amount-only transfer moves $0).
-    expect(Number(out.quantity)).toBe(Math.abs(Number(out.amount)));
-    expect(Number(out.unitPrice)).toBe(1);
-    expect(Number(inn.quantity)).toBe(Math.abs(Number(inn.amount)));
-    expect(Number(inn.unitPrice)).toBe(1);
-
     expect(store.setLinkedGroups).toHaveBeenCalledOnce();
     const persisted = vi.mocked(store.setLinkedGroups).mock.calls[0][0] as Record<string, string>;
     expect(persisted['tx-out']).toBe(out.sourceGroupId);

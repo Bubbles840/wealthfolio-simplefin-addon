@@ -19,21 +19,6 @@ function txEpoch(tx: SimplefinTransaction): number | null {
   return null;
 }
 
-/**
- * Extra activity fields that make a cash TRANSFER actually move the balance.
- * Wealthfolio moves a TRANSFER's value as quantity × unit price of the asset,
- * so an amount-only cash transfer moves $0 (Price/Amount shows $0.00). Giving a
- * transfer leg quantity = the dollar amount at unit price $1 moves the cash,
- * and matches the quantity both legs need to link (see transfer_pairs). Non-
- * transfer types (DEPOSIT/WITHDRAWAL/CREDIT) already move via `amount`.
- */
-function cashTransferQty(type: string, absCents: number): { quantity?: number; unitPrice?: number } {
-  if (type === 'TRANSFER_OUT' || type === 'TRANSFER_IN') {
-    return { quantity: absCents / 100, unitPrice: 1 };
-  }
-  return {};
-}
-
 export const MIN_SYNC_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 
 /**
@@ -464,11 +449,6 @@ async function runSyncOnce(
         // Resolve the reserved cash asset by its $CASH-<currency> symbol.
         symbol: { symbol: cashSymbol },
         amount: t.absCents / 100,
-        // Wealthfolio moves a TRANSFER's value as quantity × unit price of the
-        // asset — an amount-only cash transfer moves $0 (the balance bug). Set
-        // quantity = the dollars and unit price = 1 so the cash actually moves;
-        // transfer_pairs also requires matching quantities on both legs.
-        ...cashTransferQty(t.type, t.absCents),
         currency: sfAccount.currency,
         comment: `${descByTxId.get(t.txId) ?? ''} · ${t.txId}${t.pending ? PENDING_SUFFIX : ''}`,
         ...(gid ? { sourceGroupId: gid } : {}),
@@ -497,7 +477,6 @@ async function runSyncOnce(
           activityDate: row.date,
           symbol: { symbol: cashSymbol },
           amount: row.absCents / 100,
-          ...cashTransferQty(row.type, row.absCents),
           currency: sfAccount.currency,
           comment: `${descByTxId.get(row.txId) ?? ''} · ${row.txId}`,
           sourceGroupId: gid,
