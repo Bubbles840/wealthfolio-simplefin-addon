@@ -205,6 +205,13 @@ async function runSyncOnce(
   const accountSet = await fetchAccounts(accessUrl, startDate, ctx.api.network, authKey);
 
   for (const sfErr of accountSet.errors) {
+    // SimpleFin returns informational notices (window-size recommendations and
+    // caps) in the same `errors` array. A wide heal re-scan always trips these,
+    // and the data still comes back — so they aren't failures. Drop them so
+    // only genuine problems (auth, connection) reach the Sync page.
+    if (/\b(exceeds|recommended|was capped|date range|will be capped|may be capped)\b/i.test(String(sfErr))) {
+      continue;
+    }
     errors.push(`SimpleFin: ${sfErr}`);
   }
 

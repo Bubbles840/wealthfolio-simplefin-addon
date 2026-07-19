@@ -100,6 +100,19 @@ describe('runSync', () => {
     expect(result.errors.some((e) => e.includes('undefined'))).toBe(false);
   });
 
+  it('drops benign SimpleFin window-size notices (not real errors)', async () => {
+    vi.mocked(fetchAccounts).mockResolvedValueOnce({
+      errors: [
+        'Requested date range exceeds recommended range of 45 days. In the future, this may be capped.',
+        'Connection to Chase may need attention',
+      ],
+      accounts: [],
+    });
+    const result = await runSync(makeCtx(), makeStore() as any);
+    expect(result.errors.some((e) => e.includes('recommended range'))).toBe(false);
+    expect(result.errors.some((e) => e.includes('may need attention'))).toBe(true);
+  });
+
   it('imports a valid transaction via saveMany', async () => {
     const tx = { id: 'tx-1', posted: 1700000000, amount: '-12.50', description: 'Coffee' };
     vi.mocked(fetchAccounts).mockResolvedValueOnce(makeAccountSet([tx]));
