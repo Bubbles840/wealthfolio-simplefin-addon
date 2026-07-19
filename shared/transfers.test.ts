@@ -35,7 +35,7 @@ describe('detectTransferPairs', () => {
     expect(d.pairs).toHaveLength(0);
   });
 
-  it('does not pair beyond the 3-day window', () => {
+  it('does not pair beyond the match window', () => {
     const d = detectTransferPairs([
       cand({ txId: 'a', accountId: 'x', amount: -50 }),
       cand({ txId: 'b', accountId: 'y', amount: 50, posted: T0 + TRANSFER_MATCH_WINDOW_SECONDS + 1 }),

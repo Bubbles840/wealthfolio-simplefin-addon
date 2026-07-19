@@ -12,7 +12,10 @@
  * wins over auto-detection.
  */
 
-export const TRANSFER_MATCH_WINDOW_SECONDS = 3 * 24 * 60 * 60;
+// 5 days: a card payment's two sides (checking debit + card credit) can post a
+// few days apart, and a bank bill-pay straddling a weekend can take 4-5 days.
+// Distinctive amounts make false pairs at this width negligible.
+export const TRANSFER_MATCH_WINDOW_SECONDS = 5 * 24 * 60 * 60;
 
 export interface TransferCandidate {
   /** SimpleFin transaction id (or activity id in the reconciliation sweep) */
