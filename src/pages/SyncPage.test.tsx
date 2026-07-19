@@ -18,6 +18,10 @@ const makeProps = () => ({
     getAccessUrl: vi.fn(async () => 'https://u:p@bridge.simplefin.org/simplefin'),
     getAccountNames: vi.fn(async () => ({ 'sfin-1': 'Growth', 'sfin-2': 'Spend' })),
     setAccountNames: vi.fn(),
+    getAccountBalances: vi.fn(async () => ({
+      'sfin-1': { balance: 1234.56, currency: 'USD', date: 1700000000, drift: null },
+      'sfin-2': { balance: -420.1, currency: 'USD', date: 1700000000, drift: 15.22 },
+    })),
     getAuthB64Key: vi.fn(async () => 'simplefin_auth_b64'),
     setLastSyncAt: vi.fn(),
     setSyncScheduleHours: vi.fn(),
@@ -43,10 +47,9 @@ describe('SyncPage', () => {
     render(<SyncPage {...makeProps()} />);
     await waitFor(() => expect(screen.getByText(/Growth/)).toBeInTheDocument());
     expect(screen.getByText(/Checking/)).toBeInTheDocument();
-    // Raw IDs may appear in the Docker guide's generated config, but the
-    // mapping list itself must show names
-    const growthItem = screen.getByText(/Growth/).closest('li');
-    expect(growthItem?.textContent).not.toContain('sfin-1');
+    // The account row must show the name, not the raw SimpleFin ID
+    const growthRow = screen.getByText(/Growth/).closest('.sfin-acct');
+    expect(growthRow?.textContent).not.toContain('sfin-1');
   });
 
   it('changing the interval saves it and restarts the scheduler', async () => {

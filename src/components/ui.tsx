@@ -138,6 +138,65 @@ const css = `
   letter-spacing: 0.06em;
   margin-bottom: 4px;
 }
+
+/* ── Redesign: header, stat tiles, account rows, chips, drift banner ────── */
+.sfin-head {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 16px; margin-bottom: 20px;
+}
+.sfin-live { color: var(--primary); }
+.sfin-strip { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.sfin-tile {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 14px 16px;
+}
+.sfin-tile-val {
+  font-size: 22px; font-weight: 650; letter-spacing: -0.02em; margin-top: 5px;
+  font-variant-numeric: tabular-nums;
+}
+.sfin-card-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; margin-bottom: 2px;
+}
+.sfin-acct {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 16px; padding: 12px 0; border-top: 1px solid var(--border);
+}
+.sfin-acct-left { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.sfin-avatar {
+  width: 34px; height: 34px; flex: none; border-radius: 9px;
+  background: color-mix(in srgb, var(--primary) 16%, transparent);
+  color: var(--primary); display: grid; place-items: center;
+  font-weight: 700; font-size: 12px; text-transform: uppercase;
+}
+.sfin-acct-name {
+  font-weight: 550; font-size: 13.5px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.sfin-acct-map { color: var(--muted-foreground); font-size: 12px; }
+.sfin-acct-right { text-align: right; flex: none; }
+.sfin-bal {
+  font-size: 16px; font-weight: 640; letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+}
+.sfin-chip {
+  display: inline-flex; align-items: center; gap: 5px; margin-top: 5px;
+  font-size: 11px; font-weight: 550; padding: 2px 8px; border-radius: 999px;
+  background: color-mix(in srgb, var(--primary) 15%, transparent); color: var(--primary);
+}
+.sfin-chip--off {
+  background: color-mix(in srgb, var(--destructive) 14%, transparent);
+  color: var(--destructive);
+}
+.sfin-chip svg { width: 11px; height: 11px; }
+.sfin-banner-warn {
+  display: flex; gap: 10px; align-items: flex-start;
+  background: color-mix(in srgb, var(--destructive) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--destructive) 32%, transparent);
+  border-radius: calc(var(--radius) - 2px);
+  padding: 12px 14px; font-size: 13px; line-height: 1.5; margin-top: 16px;
+}
+.sfin-banner-warn b { color: var(--foreground); font-weight: 600; }
 `;
 
 /** Injects the stylesheet once. Render at the addon root. */
