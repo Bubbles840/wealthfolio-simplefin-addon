@@ -6,7 +6,7 @@ import { planReconciliation } from '../../shared/reconcile';
 import type { FeedTx, ExistingRow } from '../../shared/reconcile';
 import type { SimplefinAccount, SimplefinTransaction, ActivityType } from '../../shared/types';
 import type { SecretsStore } from './secrets';
-import type { AddonContext, ActivityCreate, ActivityUpdate, AssetResolutionInput } from '@wealthfolio/addon-sdk';
+import type { AddonContext, ActivityCreate, ActivityUpdate } from '@wealthfolio/addon-sdk';
 
 /**
  * A datable timestamp for a SimpleFin transaction: `posted` when present, else
@@ -329,11 +329,11 @@ async function runSyncOnce(
         accountId: t.wfAccountId,
         activityType: t.type,
         activityDate: t.date,
-        // The host resolves cash activities from the reserved $CASH-<currency>
-        // symbol string (bare $CASH is rejected). The SDK's d.ts models `symbol`
-        // as an object, but the reserved cash symbol is a bare string — the same
-        // shape the import() path uses — so narrow past the declared type.
-        symbol: cashSymbol as unknown as AssetResolutionInput,
+        // The /activities/bulk endpoint deserializes `symbol` as an
+        // AssetResolutionInput object (a bare string 422s with
+        // "invalid type: string, expected struct AssetResolutionInput").
+        // Resolve the reserved cash asset by its $CASH-<currency> symbol.
+        symbol: { symbol: cashSymbol },
         amount: t.absCents / 100,
         currency: sfAccount.currency,
         comment: `${descByTxId.get(t.txId) ?? ''} · ${t.txId}${t.pending ? PENDING_SUFFIX : ''}`,
@@ -361,7 +361,7 @@ async function runSyncOnce(
           accountId: row.wfAccountId,
           activityType: row.type,
           activityDate: row.date,
-          symbol: `$CASH-${sfAccount.currency}` as unknown as AssetResolutionInput,
+          symbol: { symbol: cashSymbol },
           amount: row.absCents / 100,
           currency: sfAccount.currency,
           comment: `${descByTxId.get(row.txId) ?? ''} · ${row.txId}`,

@@ -95,7 +95,7 @@ describe('runSync', () => {
     expect(req.creates).toHaveLength(1);
     expect(req.creates![0].accountId).toBe('wf-account-a');
     expect(req.creates![0].activityType).toBe('WITHDRAWAL');
-    expect(req.creates![0].symbol).toBe('$CASH-USD');
+    expect(req.creates![0].symbol).toEqual({ symbol: '$CASH-USD' });
     expect(req.creates![0].comment).toBe('Coffee \u00b7 tx-1');
   });
 
