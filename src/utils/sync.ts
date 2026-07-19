@@ -247,6 +247,29 @@ async function runSyncOnce(
     }
   }
 
+  // Auto-link transfer pairs: stamp a shared sourceGroupId on both sides so
+  // Wealthfolio treats them as an internal transfer. A local ledger (txId → gid)
+  // makes this idempotent — a pair whose both sides already carry the same gid
+  // is skipped so already-linked pairs produce no per-sync churn. The two sides
+  // span two accounts, so groupByTxId is computed once here and applied inside
+  // each account's build below. detection.pairs excludes pending rows (they are
+  // not transfer candidates), so no pending side is ever linked.
+  const ledger = await store.getLinkedGroups();
+  let ledgerChanged = false;
+  const groupByTxId = new Map<string, string>();
+  for (const { outTxId, inTxId } of detection.pairs) {
+    const existingGid = ledger[outTxId] ?? ledger[inTxId];
+    const alreadyLinked =
+      existingGid !== undefined && ledger[outTxId] === existingGid && ledger[inTxId] === existingGid;
+    if (alreadyLinked) continue;
+    const gid = existingGid ?? crypto.randomUUID();
+    groupByTxId.set(outTxId, gid);
+    groupByTxId.set(inTxId, gid);
+    ledger[outTxId] = gid;
+    ledger[inTxId] = gid;
+    ledgerChanged = true;
+  }
+
   // Accounts whose starting balance couldn't run yet because no valuation
   // row exists (first-ever import); handled by the second pass below
   let pendingCorrections: Array<{
@@ -298,28 +321,59 @@ async function runSyncOnce(
     // id gives readable, unique titles; the ` · pending` suffix marks rows that
     // haven't settled so they can be reconciled when they post.
     const cashSymbol = `$CASH-${sfAccount.currency}`;
-    const toActivityCreate = (t: FeedTx): ActivityCreate => ({
-      accountId: t.wfAccountId,
-      activityType: t.type,
-      activityDate: t.date,
-      // The host resolves cash activities from the reserved $CASH-<currency>
-      // symbol string (bare $CASH is rejected). The SDK's d.ts models `symbol`
-      // as an object, but the reserved cash symbol is a bare string — the same
-      // shape the import() path uses — so narrow past the declared type.
-      symbol: cashSymbol as unknown as AssetResolutionInput,
-      amount: t.absCents / 100,
-      currency: sfAccount.currency,
-      comment: `${descByTxId.get(t.txId) ?? ''} · ${t.txId}${t.pending ? PENDING_SUFFIX : ''}`,
-    });
+    const toActivityCreate = (t: FeedTx): ActivityCreate => {
+      // Only set sourceGroupId when this tx is part of a (re)linking pair —
+      // never emit an empty string for a non-member.
+      const gid = groupByTxId.get(t.txId);
+      return {
+        accountId: t.wfAccountId,
+        activityType: t.type,
+        activityDate: t.date,
+        // The host resolves cash activities from the reserved $CASH-<currency>
+        // symbol string (bare $CASH is rejected). The SDK's d.ts models `symbol`
+        // as an object, but the reserved cash symbol is a bare string — the same
+        // shape the import() path uses — so narrow past the declared type.
+        symbol: cashSymbol as unknown as AssetResolutionInput,
+        amount: t.absCents / 100,
+        currency: sfAccount.currency,
+        comment: `${descByTxId.get(t.txId) ?? ''} · ${t.txId}${t.pending ? PENDING_SUFFIX : ''}`,
+        ...(gid ? { sourceGroupId: gid } : {}),
+      };
+    };
     const toActivityUpdate = (wfId: string, t: FeedTx): ActivityUpdate => ({
       ...toActivityCreate(t),
       id: wfId,
     });
 
-    if (plan.creates.length || plan.updates.length || plan.deleteIds.length) {
+    // Forced link updates: a pair member that is already imported and otherwise
+    // unchanged is neither a create nor a plan update, so it won't carry the
+    // gid on its own. Emit an extra update to stamp it. Guard against a txId a
+    // create or plan update already covers (those pick up the gid via
+    // toActivityCreate above) so we never emit two updates for one txId.
+    const forcedLinkUpdates: ActivityUpdate[] = [];
+    if (groupByTxId.size > 0) {
+      const covered = new Set<string>([...createdTxIds, ...updatedToTxIds]);
+      for (const row of existing) {
+        const gid = groupByTxId.get(row.txId);
+        if (!gid || covered.has(row.txId)) continue;
+        forcedLinkUpdates.push({
+          id: row.wfId,
+          accountId: row.wfAccountId,
+          activityType: row.type,
+          activityDate: row.date,
+          symbol: `$CASH-${sfAccount.currency}` as unknown as AssetResolutionInput,
+          amount: row.absCents / 100,
+          currency: sfAccount.currency,
+          comment: `${descByTxId.get(row.txId) ?? ''} · ${row.txId}`,
+          sourceGroupId: gid,
+        });
+      }
+    }
+
+    if (plan.creates.length || plan.updates.length || plan.deleteIds.length || forcedLinkUpdates.length) {
       const result = await ctx.api.activities.saveMany({
         creates: plan.creates.map(toActivityCreate),
-        updates: plan.updates.map((u) => toActivityUpdate(u.wfId, u.to)),
+        updates: [...plan.updates.map((u) => toActivityUpdate(u.wfId, u.to)), ...forcedLinkUpdates],
         deleteIds: plan.deleteIds,
       });
       // Only creates are new imports; updates/deletes are reconciliation.
@@ -463,6 +517,10 @@ async function runSyncOnce(
       pendingCorrections = stillPending;
     }
   }
+
+  // Persist the link ledger once, only when a pair was newly (re)linked this
+  // run, so an already-linked steady state performs no secrets write.
+  if (ledgerChanged) await store.setLinkedGroups(ledger);
 
   await store.setLastSyncAt(new Date());
 

@@ -18,6 +18,8 @@ const makeStore = (overrides: Record<string, unknown> = {}) => ({
   // transaction imports. Starting-balance tests override this.
   getBalanceInitialized: vi.fn(async () => ['sfin-1', 'sfin-2']),
   addBalanceInitialized: vi.fn(async () => {}),
+  getLinkedGroups: vi.fn(async (): Promise<Record<string, string>> => ({})),
+  setLinkedGroups: vi.fn(async (_map: Record<string, string>) => {}),
   ...overrides,
 });
 
@@ -285,6 +287,100 @@ describe('runSync', () => {
     const inn = creates.find((a: any) => a.comment.includes('tx-in'));
     expect(out.activityType).toBe('TRANSFER_OUT');
     expect(inn.activityType).toBe('TRANSFER_IN');
+  });
+
+  // A matching TRANSFER_OUT (account A) and TRANSFER_IN (account B) posted
+  // within the 3-day window, used by the linking tests below.
+  const transferPairAccountSet = () => ({
+    errors: [],
+    accounts: [
+      { id: 'sfin-1', name: 'Checking', currency: 'USD', balance: '1000.00', 'balance-date': 1700000000,
+        transactions: [{ id: 'tx-out', posted: 1700000000, amount: '-500.00', description: 'Payment to Citibank' }] },
+      { id: 'sfin-2', name: 'Card', currency: 'USD', balance: '-500.00', 'balance-date': 1700086400,
+        transactions: [{ id: 'tx-in', posted: 1700086400, amount: '500.00', description: 'PAYMENT THANK YOU' }] },
+    ],
+  });
+  const twoAccountStore = (overrides: Record<string, unknown> = {}) =>
+    makeStore({
+      getAccountMapping: vi.fn(async () => ({ 'sfin-1': 'wf-account-a', 'sfin-2': 'wf-account-b' })),
+      ...overrides,
+    });
+
+  it('auto-links a new transfer pair: both creates share a sourceGroupId and the ledger is persisted', async () => {
+    vi.mocked(fetchAccounts).mockResolvedValueOnce(transferPairAccountSet());
+    const ctx = makeCtx();
+    const store = twoAccountStore();
+    await runSync(ctx, store as any);
+
+    const creates = vi.mocked(ctx.api.activities.saveMany).mock.calls.flatMap((c: any) => c[0].creates ?? []);
+    const out = creates.find((a: any) => a.comment.includes('tx-out'));
+    const inn = creates.find((a: any) => a.comment.includes('tx-in'));
+    expect(out.sourceGroupId).toBeTruthy();
+    expect(inn.sourceGroupId).toBeTruthy();
+    expect(out.sourceGroupId).toBe(inn.sourceGroupId);
+
+    expect(store.setLinkedGroups).toHaveBeenCalledOnce();
+    const persisted = vi.mocked(store.setLinkedGroups).mock.calls[0][0] as Record<string, string>;
+    expect(persisted['tx-out']).toBe(out.sourceGroupId);
+    expect(persisted['tx-in']).toBe(out.sourceGroupId);
+  });
+
+  it('re-links an already-imported transfer pair via forced updates carrying a shared sourceGroupId', async () => {
+    vi.mocked(fetchAccounts).mockResolvedValueOnce(transferPairAccountSet());
+    const ctx = makeCtx();
+    // Both sides already exist as unchanged rows (matching type/amount/date),
+    // so the reconciler produces no create and no update — only the forced
+    // link update should stamp them.
+    const existingByAccount: Record<string, any[]> = {
+      'wf-account-a': [{ id: 'act-out', comment: 'Payment to Citibank · tx-out', amount: '-500.00', activityType: 'TRANSFER_OUT', date: '2023-11-14' }],
+      'wf-account-b': [{ id: 'act-in', comment: 'PAYMENT THANK YOU · tx-in', amount: '500.00', activityType: 'TRANSFER_IN', date: '2023-11-15' }],
+    };
+    ctx.api.activities.search = vi.fn(async (_p: number, _l: number, filter: any) => ({
+      data: existingByAccount[filter.accountIds[0]] ?? [],
+    }));
+    const store = twoAccountStore();
+    await runSync(ctx, store as any);
+
+    const updates = vi.mocked(ctx.api.activities.saveMany).mock.calls.flatMap((c: any) => c[0].updates ?? []);
+    const creates = vi.mocked(ctx.api.activities.saveMany).mock.calls.flatMap((c: any) => c[0].creates ?? []);
+    expect(creates).toHaveLength(0);
+    const outUp = updates.find((u: any) => u.id === 'act-out');
+    const inUp = updates.find((u: any) => u.id === 'act-in');
+    expect(outUp.sourceGroupId).toBeTruthy();
+    expect(inUp.sourceGroupId).toBeTruthy();
+    expect(outUp.sourceGroupId).toBe(inUp.sourceGroupId);
+    expect(store.setLinkedGroups).toHaveBeenCalledOnce();
+  });
+
+  it('does nothing for a transfer pair already linked in the ledger (idempotent, no churn)', async () => {
+    vi.mocked(fetchAccounts).mockResolvedValueOnce(transferPairAccountSet());
+    const ctx = makeCtx();
+    const existingByAccount: Record<string, any[]> = {
+      'wf-account-a': [{ id: 'act-out', comment: 'Payment to Citibank · tx-out', amount: '-500.00', activityType: 'TRANSFER_OUT', date: '2023-11-14' }],
+      'wf-account-b': [{ id: 'act-in', comment: 'PAYMENT THANK YOU · tx-in', amount: '500.00', activityType: 'TRANSFER_IN', date: '2023-11-15' }],
+    };
+    ctx.api.activities.search = vi.fn(async (_p: number, _l: number, filter: any) => ({
+      data: existingByAccount[filter.accountIds[0]] ?? [],
+    }));
+    const store = twoAccountStore({
+      getLinkedGroups: vi.fn(async () => ({ 'tx-out': 'gid-existing', 'tx-in': 'gid-existing' })),
+    });
+    await runSync(ctx, store as any);
+
+    const updates = vi.mocked(ctx.api.activities.saveMany).mock.calls.flatMap((c: any) => c[0].updates ?? []);
+    expect(updates.some((u: any) => u.sourceGroupId !== undefined)).toBe(false);
+    expect(store.setLinkedGroups).not.toHaveBeenCalled();
+  });
+
+  it('does not set a sourceGroupId on a non-pair (lone) transaction', async () => {
+    const tx = { id: 'tx-solo', posted: 1700000000, amount: '-12.50', description: 'Coffee' };
+    vi.mocked(fetchAccounts).mockResolvedValueOnce(makeAccountSet([tx]));
+    const ctx = makeCtx();
+    const store = makeStore();
+    await runSync(ctx, store as any);
+    const create = vi.mocked(ctx.api.activities.saveMany).mock.calls[0][0].creates![0];
+    expect(create.sourceGroupId).toBeUndefined();
+    expect(store.setLinkedGroups).not.toHaveBeenCalled();
   });
 
   it('types unmatched positive card amounts as CREDIT (refund)', async () => {

@@ -10,6 +10,7 @@ const KEYS = {
   mappingRules: 'mapping_rules',
   syncScheduleHours: 'sync_schedule_hours',
   lastSyncAt: 'last_sync_at',
+  linkedGroups: 'linked_groups',
 } as const;
 
 export class SecretsStore {
@@ -87,6 +88,17 @@ export class SecretsStore {
   }
   async setLastSyncAt(date: Date): Promise<void> {
     await this.ctx.api.secrets.set(KEYS.lastSyncAt, date.toISOString());
+  }
+
+  /** Ledger of SimpleFin tx id → shared sourceGroupId for linked transfer
+   *  pairs. `ActivityDetails` doesn't expose sourceGroupId, so we track which
+   *  pairs we've already linked here to keep re-linking idempotent (no churn). */
+  async getLinkedGroups(): Promise<Record<string, string>> {
+    const raw = await this.ctx.api.secrets.get(KEYS.linkedGroups);
+    return raw ? (JSON.parse(raw) as Record<string, string>) : {};
+  }
+  async setLinkedGroups(map: Record<string, string>): Promise<void> {
+    await this.ctx.api.secrets.set(KEYS.linkedGroups, JSON.stringify(map));
   }
 
   async clearAll(): Promise<void> {
