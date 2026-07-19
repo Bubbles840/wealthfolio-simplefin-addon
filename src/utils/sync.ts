@@ -38,8 +38,11 @@ export const SYNC_LOOKBACK_OVERLAP_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
 export const DRIFT_THRESHOLD_DOLLARS = 1;
 
 /** Heal ("Reconcile balances") re-scans this far back — wider than a normal
- *  force sync — to recover transactions that a broken earlier sync missed. */
-export const HEAL_WINDOW_MS = 90 * 24 * 60 * 60 * 1000; // 90 days
+ *  force sync — to recover transactions that a broken earlier sync missed.
+ *  Just under SimpleFin's 90-day maximum: requesting exactly 90 days trips a
+ *  "date range exceeds limit and was capped" notice by the time the request
+ *  lands, so we stay a day inside it. */
+export const HEAL_WINDOW_MS = 89 * 24 * 60 * 60 * 1000; // ~90 days, under SimpleFin's cap
 
 /** Polling for freshly computed valuations after a first import (see the
  *  second-pass block in runSync). Exported so tests can shrink the delay. */

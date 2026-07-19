@@ -219,8 +219,8 @@ describe('runSync', () => {
     expect(fetchAccounts).toHaveBeenCalledOnce();
     const startDate = vi.mocked(fetchAccounts).mock.calls[0][1] as Date;
     const daysAgo = (Date.now() - startDate.getTime()) / (24 * 60 * 60 * 1000);
-    expect(daysAgo).toBeGreaterThan(89);
-    expect(daysAgo).toBeLessThan(91);
+    expect(daysAgo).toBeGreaterThan(88);
+    expect(daysAgo).toBeLessThan(90);
   });
 
   it('the Auto-heal setting puts a normal sync into heal mode', async () => {
@@ -229,7 +229,7 @@ describe('runSync', () => {
     await runSync(makeCtx(), store as any);
     const startDate = vi.mocked(fetchAccounts).mock.calls[0][1] as Date;
     const daysAgo = (Date.now() - startDate.getTime()) / (24 * 60 * 60 * 1000);
-    expect(daysAgo).toBeGreaterThan(89); // 90-day heal window, not 30
+    expect(daysAgo).toBeGreaterThan(88); // ~90-day heal window, not 30
   });
 
   it('heal measures residual drift lag-free (accounting for what it imports)', async () => {
