@@ -382,3 +382,50 @@ release as part of the same change.
   remove an account the user enrolled themselves.
 - Add a `spending` entry to the manifest permissions, and drop the
   "enable the Spending Tracker manually" callout from the SyncPage / README.
+
+---
+---
+
+# Upstream Issue #5 — Bulk import doesn't resolve $CASH for transfer legs
+
+**Status: to file.** Discovered 2026-07-19 debugging cash-account balance drift.
+
+## Title
+
+`bug: /activities/bulk resolves $CASH-<ccy> to real cash for DEPOSIT/WITHDRAWAL but not TRANSFER_IN/TRANSFER_OUT`
+
+## Body
+
+### Problem
+
+Creating cash activities through `POST /api/v1/activities/bulk` with the reserved
+cash symbol (`{ symbol: "$CASH-USD" }`):
+
+- **DEPOSIT / WITHDRAWAL** → resolve to the account's real **Cash** asset; the
+  `amount` moves the cash balance correctly. ✓
+- **TRANSFER_IN / TRANSFER_OUT** → resolve to a literal **security** named
+  "$CASH"; the leg shows Price/Amount **$0.00** (real figure only in Total),
+  quantity is empty, and **the account's cash balance does not move**. ✗
+
+The two linked legs still pair (shared `source_group_id`) and classify as an
+internal transfer (excluded from spending) — but because neither leg moves
+cash, both accounts drift from their true balances by the transfer amount.
+
+A transfer created through Wealthfolio's own **Add Activity → Transfer (Cash)**
+form works correctly (symbol shows "Cash", Price/Amount = the amount, both
+balances move). So the cash-symbol resolution exists; it just isn't applied on
+the bulk-import path for transfer legs. Adding `quantity`/`unitPrice` to the
+bulk payload does not override it.
+
+### Expected
+
+`/activities/bulk` should resolve `$CASH-<ccy>` to the account's cash asset for
+`TRANSFER_IN`/`TRANSFER_OUT` the same way it does for `DEPOSIT`/`WITHDRAWAL`, so
+an amount-only cash transfer moves both accounts' cash balances.
+
+### Impact for the SimpleFin Sync addon
+
+Internal cash transfers between two synced accounts (e.g. savings → checking)
+import as linked TRANSFER_OUT/TRANSFER_IN (correctly excluded from spending) but
+leave both account balances wrong. Today the addon works around it with a
+balance-adjustment "heal" — but a native fix here removes the need entirely.
