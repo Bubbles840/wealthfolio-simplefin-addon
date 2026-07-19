@@ -13,6 +13,7 @@ their codebase yourself.
 | 2 | Sandbox `.import()` rewrite bug | bug | **Shipped in v3.6.2** | Remove the post-minify `["import"]` workaround from `vite.config.ts`. See "Follow-up 2". |
 | 3 | Expose `activities.link` to addons | feature | Not yet filed — post the section below | Being addressed via a self-assigned shared sourceGroupId (see 2026-07-18 plan, Task 12); the dedicated link() method is still not in 3.6.2. |
 | 4 | Expose spending-tracker settings to addons | feature | Not yet filed — post the section below | Auto-enroll CASH / CREDIT_CARD accounts during setup, skip investment accounts. See "Follow-up 4". |
+| 5 | Bulk import doesn't move cash for transfer legs | bug | Not yet filed — post the section below | Drop the balance-adjustment "heal" workaround for internal cash transfers once cash transfers move balances natively. |
 
 Once a release lands that includes #1 and #2, do the follow-ups below and
 bump `minWealthfolioVersion` in `manifest.json` to that release.
@@ -388,7 +389,9 @@ release as part of the same change.
 
 # Upstream Issue #5 — Bulk import doesn't resolve $CASH for transfer legs
 
-**Status: to file.** Discovered 2026-07-19 debugging cash-account balance drift.
+**Status: ready to post.** Copy the Title and Body below into
+https://github.com/afadil/wealthfolio/issues/new (label it a bug). Discovered
+2026-07-19 debugging cash-account balance drift.
 
 ## Title
 
@@ -429,3 +432,30 @@ Internal cash transfers between two synced accounts (e.g. savings → checking)
 import as linked TRANSFER_OUT/TRANSFER_IN (correctly excluded from spending) but
 leave both account balances wrong. Today the addon works around it with a
 balance-adjustment "heal" — but a native fix here removes the need entirely.
+
+### Steps to reproduce
+
+1. `POST /api/v1/activities/bulk` with two linked cash legs, e.g.:
+   ```json
+   {
+     "creates": [
+       { "accountId": "<A>", "activityType": "TRANSFER_OUT",
+         "symbol": { "symbol": "$CASH-USD" }, "amount": 100, "currency": "USD",
+         "sourceGroupId": "grp-1" },
+       { "accountId": "<B>", "activityType": "TRANSFER_IN",
+         "symbol": { "symbol": "$CASH-USD" }, "amount": 100, "currency": "USD",
+         "sourceGroupId": "grp-1" }
+     ]
+   }
+   ```
+2. Open either account: the leg shows symbol **"$CASH"**, Price/Amount **$0.00**
+   (the 100 only appears in Total), and the **cash balance is unchanged**.
+3. Now create the same transfer via **Add Activity → Transfer (Cash)** between
+   A and B: symbol shows **"Cash"**, Price/Amount = **$100**, and **both cash
+   balances move**. Same intent, different result.
+
+### Files to change (likely)
+
+| File | Change |
+|------|--------|
+| `crates/core/src/activities/…` (bulk-import asset resolution) | Resolve the reserved `$CASH-<ccy>` symbol to the account's cash asset for `TRANSFER_IN` / `TRANSFER_OUT` legs, the same resolution already applied to `DEPOSIT` / `WITHDRAWAL`, so the leg's `amount` moves the cash balance. |
