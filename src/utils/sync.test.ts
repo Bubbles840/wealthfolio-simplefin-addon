@@ -250,6 +250,40 @@ describe('runSync', () => {
     expect(captured['sfin-1'].drift).toBeNull();
   });
 
+  it('heal does not measure drift when the account has pending activity (not comparable)', async () => {
+    vi.mocked(fetchAccounts).mockResolvedValueOnce(makeAccountSet([]));
+    const ctx = makeCtx();
+    // An existing pending row: Wealthfolio's valuation includes it but
+    // SimpleFin's posted balance does not, so drift is not measurable.
+    ctx.api.activities.search = vi.fn(async () => ({
+      data: [
+        { id: 'act-p', accountId: 'wf-account-a', activityType: 'WITHDRAWAL', date: '2026-07-10', amount: '5.00', comment: 'Coffee · tx-p · pending' },
+      ],
+    }));
+    const store = makeStore();
+    await runSync(ctx, store as any, { heal: true });
+    const captured = vi.mocked(store.setAccountBalances).mock.calls.at(-1)![0] as any;
+    expect(captured['sfin-1'].drift).toBeNull();
+  });
+
+  it('aggressive auto-heal does not stack a second adjustment when one exists today', async () => {
+    vi.mocked(fetchAccounts).mockResolvedValueOnce(makeAccountSet([]));
+    const ctx = makeCtx();
+    const today = new Date().toISOString().split('T')[0];
+    ctx.api.activities.search = vi.fn(async () => ({
+      data: [
+        { id: 'act-adj', accountId: 'wf-account-a', activityType: 'DEPOSIT', date: today, amount: '1000', comment: `Balance adjustment · sfin-1 · ${today}` },
+      ],
+    }));
+    const store = makeStore({ getAutoAdjust: vi.fn(async () => true) });
+    await runSync(ctx, store as any);
+    const imports = vi.mocked(ctx.api.activities.import).mock.calls.flatMap((c: any) => c[0]);
+    const adjustments = imports.filter((a: any) => String(a.comment).startsWith('Balance adjustment'));
+    expect(adjustments).toHaveLength(0); // guarded: one already exists today
+    const captured = vi.mocked(store.setAccountBalances).mock.calls.at(-1)![0] as any;
+    expect(captured['sfin-1'].drift).toBeNull();
+  });
+
   it('applyBalanceAdjustment imports a dated adjustment and clears the drift', async () => {
     const ctx = makeCtx();
     const store = makeStore({

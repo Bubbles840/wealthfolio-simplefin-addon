@@ -71,6 +71,23 @@ async function hasExistingStartingBalance(
   return res.data.some((a) => (a.comment ?? '') === marker);
 }
 
+/**
+ * Whether a balance-adjustment entry was already inserted for this account today
+ * — the once-a-day guard that stops aggressive auto-heal from stacking a second
+ * adjustment on a rapid re-sync before Wealthfolio has recomputed valuations.
+ */
+async function hasAdjustmentToday(
+  ctx: AddonContext,
+  wfAccountId: string,
+  sfinAccountId: string,
+): Promise<boolean> {
+  const res = await ctx.api.activities.search(
+    0, 50, { accountIds: [wfAccountId] }, '', { id: 'date', desc: true },
+  );
+  const marker = `Balance adjustment · ${sfinAccountId} · ${new Date().toISOString().split('T')[0]}`;
+  return res.data.some((a) => (a.comment ?? '') === marker);
+}
+
 const PENDING_SUFFIX = ' · pending';
 
 /**
@@ -348,34 +365,42 @@ async function runSyncOnce(
     const wfValuation = wfBalances?.get(wfAccountId);
     let drift: number | null = null;
     if (wfValuation !== undefined && Number.isFinite(sfBalance)) {
-      if (heal) {
-        // Heal measures residual lag-free: after this run Wealthfolio's balance
-        // becomes wfValuation + what we import now, so residual = SimpleFin −
-        // that. This surfaces drift even on accounts we just imported into —
-        // exactly what the plug offer needs.
-        const windowDelta = plan.creates
-          .filter((t) => !t.pending)
-          .reduce((sum, t) => sum + (signedByTxId.get(t.txId) ?? 0), 0);
+      // Drift compares SimpleFin's POSTED balance to Wealthfolio's valuation.
+      // They're only comparable when the account is SETTLED: pending rows are in
+      // Wealthfolio's valuation but not in SimpleFin's posted balance, and a run
+      // that updates/deletes rows moves the valuation by amounts a create-only
+      // delta wouldn't capture. So measure only with no pending anywhere and no
+      // updates/deletes this run.
+      const noPending = !feed.some((t) => t.pending) && !existing.some((r) => r.pending);
+      const createOnly = plan.updates.length === 0 && plan.deleteIds.length === 0;
+      // Heal re-scans wide and imports, so it must subtract what it creates
+      // (lag-free: WF's balance becomes wfValuation + creates). A normal sync
+      // only trusts drift when nothing was created (valuation is otherwise
+      // stale), so its windowDelta is 0 by construction.
+      if (noPending && createOnly && (heal || plan.creates.length === 0)) {
+        const windowDelta = plan.creates.reduce(
+          (sum, t) => sum + (signedByTxId.get(t.txId) ?? 0),
+          0,
+        );
         const d = sfBalance - wfValuation - windowDelta;
         if (Math.abs(d) > DRIFT_THRESHOLD_DOLLARS) drift = Math.round(d * 100) / 100;
-        // Aggressive auto-heal: plug the residual right away (no prompt).
-        if (autoAdjust && drift != null) {
-          await importAdjustmentActivity(ctx, {
-            sfinAccountId: sfAccount.id,
-            wfAccountId,
-            currency: sfAccount.currency,
-            amount: drift,
-          });
-          imported += 1;
-          drift = null;
-        }
-      } else {
-        // Normal sync: Wealthfolio recomputes valuations asynchronously, so a
-        // fresh import isn't reflected yet — only trust drift on a quiet account.
-        const stable = plan.creates.length === 0 && plan.updates.length === 0 && plan.deleteIds.length === 0;
-        if (stable) {
-          const d = sfBalance - wfValuation;
-          if (Math.abs(d) > DRIFT_THRESHOLD_DOLLARS) drift = Math.round(d * 100) / 100;
+        // Aggressive auto-heal: plug the residual immediately — but at most one
+        // adjustment per account per day, so a stale valuation on a rapid
+        // re-sync (the adjustment isn't recomputed yet) can't stack duplicates.
+        if (heal && autoAdjust && drift != null) {
+          const alreadyToday = await hasAdjustmentToday(ctx, wfAccountId, sfAccount.id).catch(
+            () => false,
+          );
+          if (!alreadyToday) {
+            await importAdjustmentActivity(ctx, {
+              sfinAccountId: sfAccount.id,
+              wfAccountId,
+              currency: sfAccount.currency,
+              amount: drift,
+            });
+            imported += 1;
+          }
+          drift = null; // healed (or already healed today)
         }
       }
     }
@@ -599,14 +624,6 @@ async function runSyncOnce(
   return { imported, skipped, errors };
 }
 
-/**
- * Force one account's Wealthfolio balance to match SimpleFin's reported balance
- * by adding a one-time, dated balance-adjustment activity for the residual the
- * heal re-scan couldn't recover (SimpleFin no longer supplies it, or a stale
- * starting-balance anchor). The entry is a normal cash activity the user can
- * see and recategorize. `amount` is signed (SimpleFin − Wealthfolio): positive
- * adds a DEPOSIT to raise the balance, negative a WITHDRAWAL to lower it.
- */
 /** Import one dated balance-adjustment activity. `amount` is signed
  *  (SimpleFin − Wealthfolio): positive adds a DEPOSIT, negative a WITHDRAWAL.
  *  No-op for a negligible amount. Shared by the manual button and the
@@ -635,6 +652,12 @@ async function importAdjustmentActivity(
   await ctx.api.activities.import([adjustment]);
 }
 
+/**
+ * Manual "Add adjustment" button: true one account to SimpleFin's balance by
+ * importing a one-time balance-adjustment entry for the residual the heal
+ * re-scan couldn't recover, then clear its stored drift so the Sync page
+ * updates immediately.
+ */
 export async function applyBalanceAdjustment(
   ctx: AddonContext,
   store: SecretsStore,
