@@ -414,6 +414,11 @@ The two linked legs still pair (shared `source_group_id`) and classify as an
 internal transfer (excluded from spending) — but because neither leg moves
 cash, both accounts drift from their true balances by the transfer amount.
 
+Visible confirmation: the mis-resolved leg creates a phantom **"$CASH"
+security** that appears under **Holdings / Investments** as a $0.00-value
+position (and accumulates a share quantity if the payload sets one). A real
+cash activity should never produce an investment holding.
+
 A transfer created through Wealthfolio's own **Add Activity → Transfer (Cash)**
 form works correctly (symbol shows "Cash", Price/Amount = the amount, both
 balances move). So the cash-symbol resolution exists; it just isn't applied on
@@ -449,7 +454,8 @@ balance-adjustment "heal" — but a native fix here removes the need entirely.
    }
    ```
 2. Open either account: the leg shows symbol **"$CASH"**, Price/Amount **$0.00**
-   (the 100 only appears in Total), and the **cash balance is unchanged**.
+   (the 100 only appears in Total), and the **cash balance is unchanged**. A
+   phantom **$CASH** position also appears under **Holdings / Investments**.
 3. Now create the same transfer via **Add Activity → Transfer (Cash)** between
    A and B: symbol shows **"Cash"**, Price/Amount = **$100**, and **both cash
    balances move**. Same intent, different result.
