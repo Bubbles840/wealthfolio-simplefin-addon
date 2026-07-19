@@ -42,6 +42,13 @@ const makeCtx = () => ({
       ),
       import: vi.fn(async (acts: any[]) => acts),
       search: vi.fn(async () => ({ data: [] })),
+      saveMany: vi.fn(async (req: any) => ({
+        created: req.creates ?? [],
+        updated: req.updates ?? [],
+        deleted: req.deleteIds ?? [],
+        createdMappings: [],
+        errors: [],
+      })),
     },
   },
 } as any);
@@ -75,19 +82,19 @@ describe('runSync', () => {
     expect(result.errors).toHaveLength(0);
   });
 
-  it('imports a valid transaction', async () => {
+  it('imports a valid transaction via saveMany', async () => {
     const tx = { id: 'tx-1', posted: 1700000000, amount: '-12.50', description: 'Coffee' };
     vi.mocked(fetchAccounts).mockResolvedValueOnce(makeAccountSet([tx]));
     const ctx = makeCtx();
     const result = await runSync(ctx, makeStore() as any);
     expect(result.imported).toBe(1);
-    expect(ctx.api.activities.import).toHaveBeenCalledOnce();
-    const imported = vi.mocked(ctx.api.activities.import).mock.calls[0][0];
-    expect(imported[0].accountId).toBe('wf-account-a');
-    expect(imported[0].activityType).toBe('WITHDRAWAL');
-    expect(imported[0].symbol).toBe('$CASH-USD');
-    expect(imported[0].comment).toBe('Coffee \u00b7 tx-1');
-    expect(imported[0].sourceSystem).toBe('simplefin');
+    expect(ctx.api.activities.saveMany).toHaveBeenCalledOnce();
+    const req = vi.mocked(ctx.api.activities.saveMany).mock.calls[0][0];
+    expect(req.creates).toHaveLength(1);
+    expect(req.creates![0].accountId).toBe('wf-account-a');
+    expect(req.creates![0].activityType).toBe('WITHDRAWAL');
+    expect(req.creates![0].symbol).toBe('$CASH-USD');
+    expect(req.creates![0].comment).toBe('Coffee \u00b7 tx-1');
   });
 
   it('skips transactions for unmapped SimpleFin accounts', async () => {
@@ -145,19 +152,6 @@ describe('runSync', () => {
     expect(daysAgo).toBeLessThan(17);
   });
 
-  it('skips activities marked as duplicates by checkImport', async () => {
-    const tx = { id: 'tx-dup', posted: 1700000000, amount: '100.00', description: 'Paycheck' };
-    vi.mocked(fetchAccounts).mockResolvedValueOnce(makeAccountSet([tx]));
-    const ctx = makeCtx();
-    ctx.api.activities.checkImport = vi.fn(async (acts: any[]) =>
-      acts.map((a: any) => ({ ...a, isValid: true, duplicateOfId: 'existing-id' })),
-    );
-    const result = await runSync(ctx, makeStore() as any);
-    expect(result.skipped).toBe(1);
-    expect(result.imported).toBe(0);
-    expect(ctx.api.activities.import).not.toHaveBeenCalled();
-  });
-
   it('updates lastSyncAt after a successful sync', async () => {
     vi.mocked(fetchAccounts).mockResolvedValueOnce(makeAccountSet([]));
     const store = makeStore();
@@ -165,34 +159,109 @@ describe('runSync', () => {
     expect(store.setLastSyncAt).toHaveBeenCalledOnce();
   });
 
-  it('skips pending and unposted transactions', async () => {
+  it('drops only transactions with neither posted nor transacted_at', async () => {
     vi.mocked(fetchAccounts).mockResolvedValueOnce(makeAccountSet([
-      { id: 'tx-pending', posted: 1700000000, amount: '-5.00', description: 'Pending', pending: true },
-      { id: 'tx-unposted', posted: 0, amount: '-5.00', description: 'Unposted' },
+      { id: 'tx-undatable', posted: 0, amount: '-5.00', description: 'No date' },
+      { id: 'tx-pending', posted: 0, transacted_at: 1700000000, amount: '-5.00', description: 'Pending', pending: true },
     ]));
     const ctx = makeCtx();
+    await runSync(ctx, makeStore() as any);
+    const creates = vi.mocked(ctx.api.activities.saveMany).mock.calls[0]?.[0].creates ?? [];
+    const comments = creates.map((a: any) => a.comment);
+    expect(comments.some((c: string) => c.includes('tx-pending'))).toBe(true);
+    expect(comments.some((c: string) => c.includes('tx-undatable'))).toBe(false);
+  });
+
+  it('imports a pending transaction with a · pending comment suffix', async () => {
+    const tx = { id: 'tx-p', posted: 0, transacted_at: 1700000000, amount: '-5.00', description: 'Pending Coffee', pending: true };
+    vi.mocked(fetchAccounts).mockResolvedValueOnce(makeAccountSet([tx]));
+    const ctx = makeCtx();
     const result = await runSync(ctx, makeStore() as any);
-    expect(result.imported).toBe(0);
-    expect(ctx.api.activities.import).not.toHaveBeenCalled();
+    expect(ctx.api.activities.saveMany).toHaveBeenCalledOnce();
+    const req = vi.mocked(ctx.api.activities.saveMany).mock.calls[0][0];
+    expect(req.creates).toHaveLength(1);
+    expect(req.creates![0].comment).toBe('Pending Coffee · tx-p · pending');
+    expect(result.imported).toBe(1);
+  });
+
+  it('updates a pending row in place when it posts (no new create)', async () => {
+    // Same tx, now posted (pending:false). An existing pending row for the
+    // same txId must be updated in place, not re-created.
+    const tx = { id: 'tx-x', posted: 1700000000, amount: '-5.00', description: 'Coffee' };
+    vi.mocked(fetchAccounts).mockResolvedValueOnce(makeAccountSet([tx]));
+    const ctx = makeCtx();
+    ctx.api.activities.search = vi.fn(async () => ({
+      data: [{ id: 'act-x', comment: 'Coffee · tx-x · pending', amount: '-5.00', activityType: 'WITHDRAWAL', date: '2023-11-14' }],
+    }));
+    await runSync(ctx, makeStore() as any);
+    const req = vi.mocked(ctx.api.activities.saveMany).mock.calls[0][0];
+    expect(req.creates ?? []).toHaveLength(0);
+    expect(req.updates).toHaveLength(1);
+    expect(req.updates![0].id).toBe('act-x');
+    expect(req.updates![0].comment).toBe('Coffee · tx-x'); // pending suffix dropped
+  });
+
+  it('deletes a previously-imported pending row that vanished with no match', async () => {
+    vi.mocked(fetchAccounts).mockResolvedValueOnce(makeAccountSet([])); // empty feed
+    const ctx = makeCtx();
+    ctx.api.activities.search = vi.fn(async () => ({
+      data: [{ id: 'act-gone', comment: 'Gone · tx-gone · pending', amount: '-9.99', activityType: 'WITHDRAWAL', date: '2023-11-14' }],
+    }));
+    await runSync(ctx, makeStore() as any);
+    const req = vi.mocked(ctx.api.activities.saveMany).mock.calls[0][0];
+    expect(req.deleteIds).toEqual(['act-gone']);
+  });
+
+  it('excludes pending transactions from transfer detection', async () => {
+    vi.mocked(fetchAccounts).mockResolvedValueOnce({
+      errors: [],
+      accounts: [
+        { id: 'sfin-1', name: 'Checking', currency: 'USD', balance: '1000.00', 'balance-date': 1700000000,
+          transactions: [{ id: 'tx-out', posted: 0, transacted_at: 1700000000, amount: '-500.00', description: 'Transfer', pending: true }] },
+        { id: 'sfin-2', name: 'Card', currency: 'USD', balance: '-500.00', 'balance-date': 1700000000,
+          transactions: [{ id: 'tx-in', posted: 1700086400, amount: '500.00', description: 'PAYMENT THANK YOU' }] },
+      ],
+    });
+    const ctx = makeCtx();
+    const store = makeStore({
+      getAccountMapping: vi.fn(async () => ({ 'sfin-1': 'wf-account-a', 'sfin-2': 'wf-account-b' })),
+    });
+    await runSync(ctx, store as any);
+    const creates = vi.mocked(ctx.api.activities.saveMany).mock.calls.flatMap((c: any) => c[0].creates ?? []);
+    const out = creates.find((a: any) => a.comment.includes('tx-out'));
+    // A pending row is not a transfer candidate, so it stays WITHDRAWAL rather
+    // than pairing with the incoming card payment.
+    expect(out.activityType).toBe('WITHDRAWAL');
   });
 
 
-
-
-
-  it('never re-imports a transaction whose SimpleFin id already exists, even under a different type', async () => {
+  it('never creates a duplicate for an existing SimpleFin id, reconciling in place instead', async () => {
     const tx = { id: 'tx-1', posted: 1700000000, amount: '-1982.19', description: 'Payment to Citibank' };
     vi.mocked(fetchAccounts).mockResolvedValueOnce(makeAccountSet([tx]));
     const ctx = makeCtx();
-    // The transaction already exists as a WITHDRAWAL; this sync would resolve
-    // a different type, which slips past Wealthfolio's type-hashed dedup —
-    // the tx-id guard must catch it instead
+    // Already exists as a DEPOSIT (a since-changed type); the txId guard must
+    // reconcile the row in place rather than create a second one.
     ctx.api.activities.search = vi.fn(async () => ({
-      data: [{ id: 'act-1', comment: 'Payment to Citibank · tx-1' }],
+      data: [{ id: 'act-1', comment: 'Payment to Citibank · tx-1', amount: '-1982.19', activityType: 'DEPOSIT', date: '2023-11-14' }],
+    }));
+    await runSync(ctx, makeStore() as any);
+
+    const req = vi.mocked(ctx.api.activities.saveMany).mock.calls[0]?.[0];
+    expect(req?.creates ?? []).toHaveLength(0);   // no duplicate created
+    expect(req?.updates?.[0]?.id).toBe('act-1');  // reconciled in place
+    expect(ctx.api.activities.import).not.toHaveBeenCalled();
+  });
+
+  it('skips an already-imported unchanged transaction (no create/update)', async () => {
+    const tx = { id: 'tx-1', posted: 1700000000, amount: '-1982.19', description: 'Payment to Citibank' };
+    vi.mocked(fetchAccounts).mockResolvedValueOnce(makeAccountSet([tx]));
+    const ctx = makeCtx();
+    ctx.api.activities.search = vi.fn(async () => ({
+      data: [{ id: 'act-1', comment: 'Payment to Citibank · tx-1', amount: '-1982.19', activityType: 'WITHDRAWAL', date: '2023-11-14' }],
     }));
     const result = await runSync(ctx, makeStore() as any);
 
-    expect(ctx.api.activities.import).not.toHaveBeenCalled();
+    expect(ctx.api.activities.saveMany).not.toHaveBeenCalled();
     expect(result.skipped).toBe(1);
   });
 
@@ -211,9 +280,9 @@ describe('runSync', () => {
       getAccountMapping: vi.fn(async () => ({ 'sfin-1': 'wf-account-a', 'sfin-2': 'wf-account-b' })),
     });
     await runSync(ctx, store as any);
-    const imported = vi.mocked(ctx.api.activities.import).mock.calls.flatMap((c: any) => c[0]);
-    const out = imported.find((a: any) => a.comment.includes('tx-out'));
-    const inn = imported.find((a: any) => a.comment.includes('tx-in'));
+    const creates = vi.mocked(ctx.api.activities.saveMany).mock.calls.flatMap((c: any) => c[0].creates ?? []);
+    const out = creates.find((a: any) => a.comment.includes('tx-out'));
+    const inn = creates.find((a: any) => a.comment.includes('tx-in'));
     expect(out.activityType).toBe('TRANSFER_OUT');
     expect(inn.activityType).toBe('TRANSFER_IN');
   });
@@ -231,8 +300,8 @@ describe('runSync', () => {
       getAccountMapping: vi.fn(async () => ({ 'sfin-2': 'wf-account-b' })),
     });
     await runSync(ctx, store as any);
-    const imported = vi.mocked(ctx.api.activities.import).mock.calls[0][0];
-    expect(imported[0].activityType).toBe('CREDIT');
+    const creates = vi.mocked(ctx.api.activities.saveMany).mock.calls[0][0].creates ?? [];
+    expect(creates[0].activityType).toBe('CREDIT');
   });
   it('adds a starting-balance entry on first sync using the valuation balance', async () => {
     const tx = { id: 'tx-1', posted: 1700000000, amount: '-12.50', description: 'Coffee' };
@@ -298,15 +367,17 @@ describe('runSync', () => {
     const store = makeStore({ getBalanceInitialized: vi.fn(async () => []) });
     const result = await runSync(ctx, store as any);
 
+    // Feed transactions now go through saveMany; import() carries only the
+    // second-pass correction.
     const importCalls = vi.mocked(ctx.api.activities.import).mock.calls;
-    expect(importCalls).toHaveLength(2); // transactions first, then the correction
-    const correction = importCalls[1][0][0];
+    expect(importCalls).toHaveLength(1);
+    const correction = importCalls[0][0][0];
     expect(correction.comment).toBe('Starting balance · sfin-1');
     expect(correction.activityType).toBe('DEPOSIT');
     // 1000.00 target − 987.50 fresh valuation (already includes the import)
     expect(correction.amount).toBe(12.5);
     expect(store.addBalanceInitialized).toHaveBeenCalledWith('sfin-1');
-    expect(result.imported).toBe(2);
+    expect(result.imported).toBe(2); // 1 create (saveMany) + 1 correction
   });
 
   it('does not create a second starting balance when one already exists in Wealthfolio', async () => {
@@ -325,20 +396,22 @@ describe('runSync', () => {
     expect(store.addBalanceInitialized).toHaveBeenCalledWith('sfin-1');
   });
 
-  it('starting balance self-cancels when window transactions are duplicates and the valuation is already correct', async () => {
+  it('starting balance self-cancels when window transactions already exist and the valuation is already correct', async () => {
     const tx = { id: 'tx-1', posted: 1700000000, amount: '-50.00', description: 'Groceries' };
     vi.mocked(fetchAccounts).mockResolvedValueOnce(makeAccountSet([tx])); // balance 1000.00
     const ctx = makeCtx();
-    ctx.api.activities.checkImport = vi.fn(async (acts: any[]) =>
-      acts.map((a: any) => ({ ...a, isValid: true, duplicateOfId: 'existing' })),
-    );
+    // The window tx is already imported (unchanged), so it is neither a create
+    // nor part of the window delta.
+    ctx.api.activities.search = vi.fn(async () => ({
+      data: [{ id: 'act-1', comment: 'Groceries · tx-1', amount: '-50.00', activityType: 'WITHDRAWAL', date: '2023-11-14' }],
+    }));
     ctx.api.portfolio.getLatestValuations = vi.fn(async () => [
       { accountId: 'wf-account-a', totalValue: 1000 },
     ]);
     const store = makeStore({ getBalanceInitialized: vi.fn(async () => []) });
     const result = await runSync(ctx, store as any);
 
-    // 1000 target − 0 non-dup deltas − 1000 valuation = 0 → no correction
+    // 1000 target − 0 window delta − 1000 valuation = 0 → no correction
     expect(ctx.api.activities.import).not.toHaveBeenCalled();
     expect(result.skipped).toBe(1);
   });
@@ -354,10 +427,10 @@ describe('runSync', () => {
       ],
     });
     const ctx = makeCtx();
-    // checkImport throws only for the bad account's activity
-    ctx.api.activities.checkImport = vi.fn(async (acts: any[]) => {
-      if (acts.some((a) => a.comment.includes('tx-bad'))) throw new Error('boom');
-      return acts.map((a: any) => ({ ...a, isValid: true }));
+    // saveMany throws only for the bad account's activity
+    ctx.api.activities.saveMany = vi.fn(async (req: any) => {
+      if ((req.creates ?? []).some((a: any) => a.comment.includes('tx-bad'))) throw new Error('boom');
+      return { created: req.creates ?? [], updated: req.updates ?? [], deleted: req.deleteIds ?? [], createdMappings: [], errors: [] };
     });
     const store = makeStore({
       getAccountMapping: vi.fn(async () => ({ 'sfin-bad': 'wf-account-a', 'sfin-1': 'wf-account-b' })),
@@ -365,8 +438,8 @@ describe('runSync', () => {
     const result = await runSync(ctx, store as any);
 
     // Good account still imported; error recorded for the bad one
-    const imported = vi.mocked(ctx.api.activities.import).mock.calls.flatMap((c: any) => c[0]);
-    expect(imported.some((a: any) => a.comment.includes('tx-good'))).toBe(true);
+    const creates = vi.mocked(ctx.api.activities.saveMany).mock.calls.flatMap((c: any) => c[0].creates ?? []);
+    expect(creates.some((a: any) => a.comment.includes('tx-good'))).toBe(true);
     expect(result.errors.some((e) => /failed/i.test(e))).toBe(true);
   });
 

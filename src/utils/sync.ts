@@ -2,9 +2,22 @@ import { fetchAccounts } from './simplefin';
 import { mapTransactionWithSource } from '../../shared/mapper';
 import { detectTransferPairs } from '../../shared/transfers';
 import type { TransferCandidate } from '../../shared/transfers';
+import { planReconciliation } from '../../shared/reconcile';
+import type { FeedTx, ExistingRow } from '../../shared/reconcile';
 import type { SimplefinAccount, SimplefinTransaction, ActivityType } from '../../shared/types';
 import type { SecretsStore } from './secrets';
-import type { AddonContext } from '@wealthfolio/addon-sdk';
+import type { AddonContext, ActivityCreate, ActivityUpdate, AssetResolutionInput } from '@wealthfolio/addon-sdk';
+
+/**
+ * A datable timestamp for a SimpleFin transaction: `posted` when present, else
+ * `transacted_at` (pending rows frequently have `posted: 0` until they settle).
+ * Rows with neither can't be dated and are dropped from the sync.
+ */
+function txEpoch(tx: SimplefinTransaction): number | null {
+  if (tx.posted && tx.posted > 0) return tx.posted;
+  if (tx.transacted_at && tx.transacted_at > 0) return tx.transacted_at;
+  return null;
+}
 
 export const MIN_SYNC_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 
@@ -50,26 +63,41 @@ async function hasExistingStartingBalance(
   return res.data.some((a) => (a.comment ?? '') === marker);
 }
 
+const PENDING_SUFFIX = ' · pending';
+
 /**
- * Type-proof idempotency guard. Wealthfolio's duplicate check hashes the
- * activity type into its fingerprint, so a transaction re-synced under a
- * different resolved type (rule changes, account-type edits, addon upgrades,
- * transfer detection kicking in) would slip past it and import twice. Every
- * imported activity carries its SimpleFin tx id at the end of the comment —
- * collect the ids already present so fetched transactions can be skipped by
- * identity, independent of type.
+ * Reads the existing SimpleFin-sourced activities for an account into
+ * `ExistingRow`s the reconciliation planner can match against. Every imported
+ * activity carries its SimpleFin tx id at the end of the comment, optionally
+ * followed by a ` · pending` marker — parse both back out so a row can be
+ * matched by identity (independent of type) and recognised as still-pending.
  */
-async function fetchExistingTxIds(ctx: AddonContext, wfAccountId: string): Promise<Set<string>> {
+async function fetchExistingRows(ctx: AddonContext, wfAccountId: string): Promise<ExistingRow[]> {
   const res = await ctx.api.activities.search(
     0, 500, { accountIds: [wfAccountId] }, '', { id: 'date', desc: true },
   );
-  const ids = new Set<string>();
+  const rows: ExistingRow[] = [];
   for (const a of res.data) {
-    const comment = a.comment ?? '';
+    let comment = a.comment ?? '';
+    let pending = false;
+    if (comment.endsWith(PENDING_SUFFIX)) {
+      pending = true;
+      comment = comment.slice(0, -PENDING_SUFFIX.length);
+    }
     const sep = comment.lastIndexOf(' · ');
-    if (sep !== -1) ids.add(comment.slice(sep + 3));
+    if (sep === -1) continue;
+    const txId = comment.slice(sep + 3);
+    rows.push({
+      wfId: a.id,
+      wfAccountId,
+      txId,
+      absCents: Math.round(Math.abs(parseFloat(String(a.amount ?? '0'))) * 100),
+      type: String(a.activityType),
+      date: String(a.date).slice(0, 10),
+      pending,
+    });
   }
-  return ids;
+  return rows;
 }
 
 // Single-flight lock: the startup catch-up, the in-app schedule, and the
@@ -177,15 +205,19 @@ async function runSyncOnce(
   }
   const preparedByAccount = new Map<string, PreparedTx[]>();
   const candidates: TransferCandidate[] = [];
+  // Rebuild activity comments (create/update) from the tx id, and recover the
+  // signed amount for the starting-balance window delta.
+  const descByTxId = new Map<string, string>();
+  const signedByTxId = new Map<string, number>();
 
   for (const sfAccount of accountSet.accounts) {
     const wfAccountId = mapping[sfAccount.id];
     if (!wfAccountId) continue;
-    // Pending transactions often have no posted timestamp yet (posted: 0),
-    // which produces a 1970 date the server rejects. Skip them — they import
-    // on a later sync once they post.
+    // Keep pending rows now (they import and reconcile), dropping only rows we
+    // can't date at all — no `posted` and no `transacted_at` — since those
+    // would produce a 1970 date the server rejects.
     const transactions = (sfAccount.transactions ?? []).filter(
-      (tx) => !tx.pending && tx.posted > 0,
+      (tx) => txEpoch(tx) !== null,
     );
     const prepared: PreparedTx[] = [];
     for (const tx of transactions) {
@@ -194,8 +226,13 @@ async function runSyncOnce(
         tx.description, amount, rules, wfTypes.get(wfAccountId),
       );
       prepared.push({ sfAccountId: sfAccount.id, tx, type });
+      descByTxId.set(tx.id, tx.description);
+      signedByTxId.set(tx.id, amount);
+      // Pending transactions are provisional — exclude them from transfer
+      // pairing so a not-yet-settled row can't lock in a TRANSFER typing.
+      if (tx.pending) continue;
       candidates.push({
-        txId: tx.id, accountId: sfAccount.id, posted: tx.posted, amount, ruleTyped: fromRule,
+        txId: tx.id, accountId: sfAccount.id, posted: txEpoch(tx)!, amount, ruleTyped: fromRule,
         accountType: wfTypes.get(wfAccountId),
       });
     }
@@ -225,60 +262,87 @@ async function runSyncOnce(
     if (!wfAccountId) continue;
 
     try {
-    // Skip transactions already imported (matched by SimpleFin tx id, so a
-    // changed resolved type can never re-import one). Falls back to the
-    // server's own duplicate check when the lookup fails.
-    let existingTxIds = new Set<string>();
-    try {
-      existingTxIds = await fetchExistingTxIds(ctx, wfAccountId);
-    } catch {
-      // search unavailable — checkImport still catches same-type duplicates
-    }
     const preparedAll = preparedByAccount.get(sfAccount.id) ?? [];
-    const prepared = preparedAll.filter((p) => !existingTxIds.has(p.tx.id));
-    skipped += preparedAll.length - prepared.length;
-    const transactions = prepared.map((p) => p.tx);
 
-    const activities = prepared.map(({ tx, type }) => ({
-      accountId: wfAccountId,
-      activityType: type,
-      date: new Date(tx.posted * 1000).toISOString().split('T')[0],
-      // Wealthfolio's required symbol field; $CASH-{currency} is its reserved
-      // symbol for cash activities (bare $CASH is rejected)
-      symbol: `$CASH-${sfAccount.currency}`,
-      amount: Math.abs(parseFloat(tx.amount)),
-      currency: sfAccount.currency,
-      sourceSystem: 'simplefin' as const,
-      // Wealthfolio shows the comment as the cash activity's title, and the
-      // comment is also hashed into the duplicate-detection key. Combining the
-      // bank description with the SimpleFin tx ID gives readable titles while
-      // keeping the key unique (two identical purchases on the same day must
-      // not dedup against each other).
-      comment: `${tx.description} · ${tx.id}`,
-      isValid: true,
-      isDraft: false,
+    // Build the feed for this account and reconcile it against the rows already
+    // imported (matched by SimpleFin tx id, so a changed resolved type updates
+    // in place rather than re-importing). A failed read of existing rows is
+    // treated as "none" — the planner then creates everything and the host's
+    // own dedup remains the backstop.
+    const feed: FeedTx[] = preparedAll.map(({ tx, type }) => ({
+      txId: tx.id,
+      wfAccountId,
+      absCents: Math.round(Math.abs(parseFloat(tx.amount)) * 100),
+      type,
+      date: new Date(txEpoch(tx)! * 1000).toISOString().split('T')[0],
+      pending: !!tx.pending,
     }));
-
-    const checked = activities.length > 0
-      ? await ctx.api.activities.checkImport(activities)
-      : [];
-    const toImport = checked
-      .filter((a: any) => a.isValid && !a.duplicateOfId)
-      .map((a: any) => ({ ...a, isDraft: false, isValid: true }));
-    const dupCount = checked.filter((a: any) => a.isValid && a.duplicateOfId).length;
-    const invalidCount = checked.filter((a: any) => !a.isValid).length;
-    skipped += dupCount;
-    if (invalidCount > 0) {
-      errors.push(`${invalidCount} transaction(s) failed validation for account ${wfAccountId}`);
+    let existing: ExistingRow[] = [];
+    try {
+      existing = await fetchExistingRows(ctx, wfAccountId);
+    } catch {
+      // search unavailable — proceed as if no rows exist
     }
+    const plan = planReconciliation(feed, existing);
+
+    // Feed rows that produced neither a create nor an update are already
+    // imported and unchanged — count them as skipped.
+    const createdTxIds = new Set(plan.creates.map((t) => t.txId));
+    const updatedToTxIds = new Set(plan.updates.map((u) => u.to.txId));
+    skipped += feed.filter(
+      (t) => !createdTxIds.has(t.txId) && !updatedToTxIds.has(t.txId),
+    ).length;
+
+    // Wealthfolio shows the comment as the cash activity's title and hashes it
+    // into its dedup key. Combining the bank description with the SimpleFin tx
+    // id gives readable, unique titles; the ` · pending` suffix marks rows that
+    // haven't settled so they can be reconciled when they post.
+    const cashSymbol = `$CASH-${sfAccount.currency}`;
+    const toActivityCreate = (t: FeedTx): ActivityCreate => ({
+      accountId: t.wfAccountId,
+      activityType: t.type,
+      activityDate: t.date,
+      // The host resolves cash activities from the reserved $CASH-<currency>
+      // symbol string (bare $CASH is rejected). The SDK's d.ts models `symbol`
+      // as an object, but the reserved cash symbol is a bare string — the same
+      // shape the import() path uses — so narrow past the declared type.
+      symbol: cashSymbol as unknown as AssetResolutionInput,
+      amount: t.absCents / 100,
+      currency: sfAccount.currency,
+      comment: `${descByTxId.get(t.txId) ?? ''} · ${t.txId}${t.pending ? PENDING_SUFFIX : ''}`,
+    });
+    const toActivityUpdate = (wfId: string, t: FeedTx): ActivityUpdate => ({
+      ...toActivityCreate(t),
+      id: wfId,
+    });
+
+    if (plan.creates.length || plan.updates.length || plan.deleteIds.length) {
+      const result = await ctx.api.activities.saveMany({
+        creates: plan.creates.map(toActivityCreate),
+        updates: plan.updates.map((u) => toActivityUpdate(u.wfId, u.to)),
+        deleteIds: plan.deleteIds,
+      });
+      // Only creates are new imports; updates/deletes are reconciliation.
+      imported += result.created.length;
+      for (const err of result.errors ?? []) {
+        errors.push(`Account ${wfAccountId} save error (${err.action}): ${err.message}`);
+      }
+    }
+
+    // Oldest datable timestamp for the account — used to place the one-time
+    // starting-balance entry a day before the earliest transaction.
+    const epochs = preparedAll
+      .map((p) => txEpoch(p.tx))
+      .filter((e): e is number => e !== null);
+    const oldestEpoch = epochs.length > 0 ? Math.min(...epochs) : Math.floor(Date.now() / 1000);
+    const dayBeforeDate = new Date((oldestEpoch - 24 * 60 * 60) * 1000).toISOString().split('T')[0];
 
     // One-time starting balance so the account lands on SimpleFin's reported
     // balance instead of just the fetch window's deltas. Runs only when this
-    // account's balance is actually readable; the dedup-aware windowDelta
-    // (counting only about-to-import transactions) makes this self-cancelling
-    // when the Docker companion already corrected the account, so running
-    // both syncers stays safe.
-    const importList = [...toImport];
+    // account's balance is actually readable; the reconciliation-aware
+    // windowDelta (counting only about-to-create, non-pending rows) makes this
+    // self-cancelling when the Docker companion already corrected the account,
+    // so running both syncers stays safe.
     const canReadBalance = wfBalances !== null && wfBalances.has(wfAccountId);
     // Shared-truth guard: both syncers keep separate "already corrected"
     // ledgers, so ask Wealthfolio itself whether a correction already exists
@@ -294,25 +358,20 @@ async function runSyncOnce(
       }
     }
     if (canReadBalance && !alreadyCorrected && !balanceInitialized.includes(sfAccount.id)) {
-      const signedByComment = new Map(
-        transactions.map((tx) => [`${tx.description} · ${tx.id}`, parseFloat(tx.amount)]),
-      );
       const targetBalance = parseFloat(sfAccount.balance);
-      const windowDelta = toImport.reduce(
-        (sum: number, a: any) => sum + (signedByComment.get(a.comment) ?? 0),
-        0,
-      );
+      // Pending rows are provisional and excluded from the delta — only rows we
+      // are actually creating (not reconciling in place) and that have posted
+      // move the balance.
+      const windowDelta = plan.creates
+        .filter((t) => !t.pending)
+        .reduce((sum, t) => sum + (signedByTxId.get(t.txId) ?? 0), 0);
       const currentWfBalance = wfBalances!.get(wfAccountId)!;
       const starting = targetBalance - windowDelta - currentWfBalance;
       if (Number.isFinite(starting) && Math.abs(starting) >= 0.01) {
-        const oldestPosted = transactions.length > 0
-          ? Math.min(...transactions.map((tx) => tx.posted))
-          : Math.floor(Date.now() / 1000);
-        const dayBefore = new Date((oldestPosted - 24 * 60 * 60) * 1000);
-        importList.unshift({
+        const correction = {
           accountId: wfAccountId,
-          activityType: starting > 0 ? 'DEPOSIT' : 'WITHDRAWAL',
-          date: dayBefore.toISOString().split('T')[0],
+          activityType: (starting > 0 ? 'DEPOSIT' : 'WITHDRAWAL') as ActivityType,
+          date: dayBeforeDate,
           symbol: `$CASH-${sfAccount.currency}`,
           amount: Math.abs(Math.round(starting * 100) / 100),
           currency: sfAccount.currency,
@@ -320,14 +379,12 @@ async function runSyncOnce(
           comment: `Starting balance · ${sfAccount.id}`,
           isValid: true,
           isDraft: false,
-        });
+        };
+        await ctx.api.activities.import([correction]);
+        imported += 1;
       }
     }
 
-    if (importList.length > 0) {
-      await ctx.api.activities.import(importList);
-      imported += importList.length;
-    }
     // Mark done only when the balance was readable for this account, so a
     // skipped correction retries on a later run
     if (canReadBalance) {
@@ -335,15 +392,12 @@ async function runSyncOnce(
     } else if (wfBalances !== null && !balanceInitialized.includes(sfAccount.id)) {
       // No valuation row yet (brand-new account) — queue for the same-run
       // second pass below instead of waiting a whole sync cycle
-      const oldestPosted = transactions.length > 0
-        ? Math.min(...transactions.map((tx) => tx.posted))
-        : Math.floor(Date.now() / 1000);
       pendingCorrections.push({
         sfinAccountId: sfAccount.id,
         wfAccountId,
         targetBalance: parseFloat(sfAccount.balance),
         currency: sfAccount.currency,
-        date: new Date((oldestPosted - 24 * 60 * 60) * 1000).toISOString().split('T')[0],
+        date: dayBeforeDate,
       });
     }
     } catch (e: any) {
