@@ -33,7 +33,8 @@ export interface SimplefinAccount {
 }
 
 export interface SimplefinAccountSet {
-  errors: Array<{ code: string; message: string }>;
+  // SimpleFin returns errors as an array of human-readable strings.
+  errors: string[];
   accounts: SimplefinAccount[];
 }
 

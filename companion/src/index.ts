@@ -301,7 +301,7 @@ export async function runCompanionSync(): Promise<void> {
   const accountSet = await fetchAccountsNode(accessUrl, startDate);
 
   for (const err of accountSet.errors) {
-    log(`SimpleFin error: ${err.code} — ${err.message}`);
+    log(`SimpleFin: ${err}`);
   }
 
   let totalImported = 0;

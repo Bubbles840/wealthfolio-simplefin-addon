@@ -90,6 +90,16 @@ describe('runSync', () => {
     expect(result.errors).toHaveLength(0);
   });
 
+  it('surfaces SimpleFin error strings verbatim (not "undefined — undefined")', async () => {
+    vi.mocked(fetchAccounts).mockResolvedValueOnce({
+      errors: ['Connection to 360 Performance Savings may need attention'],
+      accounts: [],
+    });
+    const result = await runSync(makeCtx(), makeStore() as any);
+    expect(result.errors.some((e) => e.includes('may need attention'))).toBe(true);
+    expect(result.errors.some((e) => e.includes('undefined'))).toBe(false);
+  });
+
   it('imports a valid transaction via saveMany', async () => {
     const tx = { id: 'tx-1', posted: 1700000000, amount: '-12.50', description: 'Coffee' };
     vi.mocked(fetchAccounts).mockResolvedValueOnce(makeAccountSet([tx]));

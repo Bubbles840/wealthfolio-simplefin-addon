@@ -202,7 +202,7 @@ async function runSyncOnce(
   const accountSet = await fetchAccounts(accessUrl, startDate, ctx.api.network, authKey);
 
   for (const sfErr of accountSet.errors) {
-    errors.push(`SimpleFin error: ${sfErr.code} — ${sfErr.message}`);
+    errors.push(`SimpleFin: ${sfErr}`);
   }
 
   let imported = 0;
