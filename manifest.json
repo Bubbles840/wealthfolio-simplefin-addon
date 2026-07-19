@@ -38,6 +38,11 @@
       "purpose": "Import bank transactions, reconcile pending transactions (create/update/delete), and link transfer pairs"
     },
     {
+      "category": "navigation",
+      "functions": ["navigate"],
+      "purpose": "Open a mapped account's page in Wealthfolio when its row is clicked"
+    },
+    {
       "category": "portfolio",
       "functions": ["getLatestValuations"],
       "purpose": "Read current account balances to size one-time starting-balance corrections"

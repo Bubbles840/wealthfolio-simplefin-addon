@@ -337,7 +337,7 @@ async function runSyncOnce(
       if (Math.abs(d) > DRIFT_THRESHOLD_DOLLARS) drift = Math.round(d * 100) / 100;
     }
     accountBalances[sfAccount.id] = {
-      balance: Number.isFinite(sfBalance) ? sfBalance : 0,
+      balance: Number.isFinite(sfBalance) ? sfBalance : null,
       currency: sfAccount.currency,
       date: sfAccount['balance-date'],
       drift,

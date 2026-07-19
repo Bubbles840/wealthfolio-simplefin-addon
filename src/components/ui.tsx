@@ -162,6 +162,12 @@ const css = `
   display: flex; align-items: center; justify-content: space-between;
   gap: 16px; padding: 12px 0; border-top: 1px solid var(--border);
 }
+.sfin-acct--link {
+  cursor: pointer; margin: 0 -10px; padding-left: 10px; padding-right: 10px;
+  border-radius: 10px; transition: background 0.12s;
+}
+.sfin-acct--link:hover { background: var(--muted); }
+.sfin-acct--link:focus-visible { outline: 2px solid var(--ring, var(--primary)); outline-offset: -2px; }
 .sfin-acct-left { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .sfin-avatar {
   width: 34px; height: 34px; flex: none; border-radius: 9px;

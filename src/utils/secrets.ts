@@ -3,8 +3,9 @@ import type { AccountMapping, MappingRule } from '../../shared/types';
 
 /** Per-account balance snapshot captured on each sync, for the Sync page. */
 export interface AccountBalanceInfo {
-  /** SimpleFin's reported balance for the account. */
-  balance: number;
+  /** SimpleFin's reported balance, or null when SimpleFin didn't provide a
+   *  numeric balance for the account (shown as "—" rather than a false $0.00). */
+  balance: number | null;
   currency: string;
   /** SimpleFin balance-date (Unix seconds). */
   date: number;

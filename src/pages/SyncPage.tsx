@@ -187,7 +187,7 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
             <span aria-hidden>⚠</span>
             <div>
               <b>{sfinNames[sfinId] ?? sfinId}</b> looks out of sync — SimpleFin reports{' '}
-              <b>{money(info.balance, info.currency)}</b>, off by{' '}
+              <b>{money(info.balance ?? 0, info.currency)}</b>, off by{' '}
               <b>{money(Math.abs(info.drift as number), info.currency)}</b> from Wealthfolio. Try{' '}
               <b>Sync anyway</b>, or check for a transaction Wealthfolio missed.
             </div>
@@ -220,14 +220,30 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
         {mappedEntries.map(([sfinId, wfId]) => {
           const info = balances[sfinId];
           const name = sfinNames[sfinId] ?? sfinId;
+          const exists = !!wfNames[wfId];
+          const open = () => { if (exists) ctx.api.navigation.navigate(`/accounts/${wfId}`).catch(() => {}); };
           return (
-            <div className="sfin-acct" key={sfinId}>
+            <div
+              className={`sfin-acct${exists ? ' sfin-acct--link' : ''}`}
+              key={sfinId}
+              {...(exists
+                ? {
+                    role: 'button',
+                    tabIndex: 0,
+                    title: 'Open this account in Wealthfolio',
+                    onClick: open,
+                    onKeyDown: (e: React.KeyboardEvent) => {
+                      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
+                    },
+                  }
+                : {})}
+            >
               <div className="sfin-acct-left">
                 <div className="sfin-avatar">{initials(name)}</div>
                 <div style={{ minWidth: 0 }}>
                   <div className="sfin-acct-name">{name}</div>
                   <div className="sfin-acct-map">
-                    {wfNames[wfId] ? (
+                    {exists ? (
                       `→ ${wfNames[wfId]}`
                     ) : (
                       <span style={{ color: 'var(--destructive)' }}>account no longer exists — reset &amp; re-map</span>
@@ -236,8 +252,8 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
                 </div>
               </div>
               <div className="sfin-acct-right">
-                <div className="sfin-bal">{info ? money(info.balance, info.currency) : '—'}</div>
-                {info && (info.drift == null ? (
+                <div className="sfin-bal">{info && info.balance != null ? money(info.balance, info.currency) : '—'}</div>
+                {info && info.balance != null && (info.drift == null ? (
                   <span className="sfin-chip"><CheckIcon /> in sync</span>
                 ) : (
                   <span className="sfin-chip sfin-chip--off"><AlertIcon /> off by {money(Math.abs(info.drift), info.currency)}</span>

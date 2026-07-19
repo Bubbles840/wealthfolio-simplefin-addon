@@ -8,7 +8,10 @@ vi.mock('../utils/sync', () => ({
 
 const makeProps = () => ({
   ctx: {
-    api: { accounts: { getAll: vi.fn(async () => [{ id: 'wf-a', name: 'Checking' }]) } },
+    api: {
+      accounts: { getAll: vi.fn(async () => [{ id: 'wf-a', name: 'Checking' }]) },
+      navigation: { navigate: vi.fn(async () => {}) },
+    },
   } as any,
   store: {
     getLastSyncAt: vi.fn(async () => new Date('2024-01-01T10:00:00Z')),
@@ -50,6 +53,14 @@ describe('SyncPage', () => {
     // The account row must show the name, not the raw SimpleFin ID
     const growthRow = screen.getByText(/Growth/).closest('.sfin-acct');
     expect(growthRow?.textContent).not.toContain('sfin-1');
+  });
+
+  it('navigates to the Wealthfolio account when a mapped row is clicked', async () => {
+    const props = makeProps();
+    render(<SyncPage {...props} />);
+    await waitFor(() => expect(screen.getByText(/Growth/)).toBeInTheDocument());
+    fireEvent.click(screen.getByText(/Growth/).closest('.sfin-acct')!);
+    expect(props.ctx.api.navigation.navigate).toHaveBeenCalledWith('/accounts/wf-a');
   });
 
   it('changing the interval saves it and restarts the scheduler', async () => {
