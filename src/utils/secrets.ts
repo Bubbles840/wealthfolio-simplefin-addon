@@ -1,6 +1,19 @@
 import type { AddonContext } from '@wealthfolio/addon-sdk';
 import type { AccountMapping, MappingRule } from '../../shared/types';
 
+/** Per-account balance snapshot captured on each sync, for the Sync page. */
+export interface AccountBalanceInfo {
+  /** SimpleFin's reported balance for the account. */
+  balance: number;
+  currency: string;
+  /** SimpleFin balance-date (Unix seconds). */
+  date: number;
+  /** SimpleFin balance − Wealthfolio balance, set only when it was safely
+   *  measurable (no imports that run) and exceeds the drift threshold; null
+   *  means "in sync" (or not measurable this run). */
+  drift: number | null;
+}
+
 const KEYS = {
   accessUrl: 'simplefin_access_url',
   authB64: 'simplefin_auth_b64',
@@ -11,6 +24,7 @@ const KEYS = {
   syncScheduleHours: 'sync_schedule_hours',
   lastSyncAt: 'last_sync_at',
   linkedGroups: 'linked_groups',
+  accountBalances: 'account_balances',
 } as const;
 
 export class SecretsStore {
@@ -99,6 +113,16 @@ export class SecretsStore {
   }
   async setLinkedGroups(map: Record<string, string>): Promise<void> {
     await this.ctx.api.secrets.set(KEYS.linkedGroups, JSON.stringify(map));
+  }
+
+  /** Latest per-account SimpleFin balance + drift, keyed by SimpleFin account
+   *  ID. Captured each sync so the Sync page can show balances instantly. */
+  async getAccountBalances(): Promise<Record<string, AccountBalanceInfo>> {
+    const raw = await this.ctx.api.secrets.get(KEYS.accountBalances);
+    return raw ? (JSON.parse(raw) as Record<string, AccountBalanceInfo>) : {};
+  }
+  async setAccountBalances(map: Record<string, AccountBalanceInfo>): Promise<void> {
+    await this.ctx.api.secrets.set(KEYS.accountBalances, JSON.stringify(map));
   }
 
   async clearAll(): Promise<void> {

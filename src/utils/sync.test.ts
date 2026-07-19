@@ -20,6 +20,8 @@ const makeStore = (overrides: Record<string, unknown> = {}) => ({
   addBalanceInitialized: vi.fn(async () => {}),
   getLinkedGroups: vi.fn(async (): Promise<Record<string, string>> => ({})),
   setLinkedGroups: vi.fn(async (_map: Record<string, string>) => {}),
+  getAccountBalances: vi.fn(async (): Promise<Record<string, unknown>> => ({})),
+  setAccountBalances: vi.fn(async (_map: Record<string, unknown>) => {}),
   ...overrides,
 });
 
@@ -159,6 +161,40 @@ describe('runSync', () => {
     const store = makeStore();
     await runSync(makeCtx(), store as any);
     expect(store.setLastSyncAt).toHaveBeenCalledOnce();
+  });
+
+  it('captures the SimpleFin balance and drift for a quiet, diverged account', async () => {
+    // balance 1000 from makeAccountSet, no transactions → stable run; the
+    // default valuation for wf-account-a is 0, so drift = 1000 - 0.
+    vi.mocked(fetchAccounts).mockResolvedValueOnce(makeAccountSet([]));
+    const store = makeStore();
+    await runSync(makeCtx(), store as any);
+    const captured = vi.mocked(store.setAccountBalances).mock.calls.at(-1)![0] as any;
+    expect(captured['sfin-1'].balance).toBe(1000);
+    expect(captured['sfin-1'].currency).toBe('USD');
+    expect(captured['sfin-1'].drift).toBe(1000);
+  });
+
+  it('reports no drift when SimpleFin and Wealthfolio agree', async () => {
+    vi.mocked(fetchAccounts).mockResolvedValueOnce(makeAccountSet([]));
+    const ctx = makeCtx();
+    ctx.api.portfolio.getLatestValuations = vi.fn(async () => [
+      { accountId: 'wf-account-a', totalValue: 1000 },
+    ]);
+    const store = makeStore();
+    await runSync(ctx, store as any);
+    const captured = vi.mocked(store.setAccountBalances).mock.calls.at(-1)![0] as any;
+    expect(captured['sfin-1'].drift).toBeNull();
+  });
+
+  it('does not flag drift on a run that imported (valuation lags the import)', async () => {
+    const tx = { id: 'tx-x', posted: 1700000000, amount: '-25.00', description: 'Coffee' };
+    vi.mocked(fetchAccounts).mockResolvedValueOnce(makeAccountSet([tx]));
+    const store = makeStore();
+    await runSync(makeCtx(), store as any);
+    const captured = vi.mocked(store.setAccountBalances).mock.calls.at(-1)![0] as any;
+    expect(captured['sfin-1'].balance).toBe(1000);
+    expect(captured['sfin-1'].drift).toBeNull();
   });
 
   it('drops only transactions with neither posted nor transacted_at', async () => {

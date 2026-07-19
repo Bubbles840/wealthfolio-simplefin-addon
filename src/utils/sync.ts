@@ -5,7 +5,7 @@ import type { TransferCandidate } from '../../shared/transfers';
 import { planReconciliation } from '../../shared/reconcile';
 import type { FeedTx, ExistingRow } from '../../shared/reconcile';
 import type { SimplefinAccount, SimplefinTransaction, ActivityType } from '../../shared/types';
-import type { SecretsStore } from './secrets';
+import type { SecretsStore, AccountBalanceInfo } from './secrets';
 import type { AddonContext, ActivityCreate, ActivityUpdate } from '@wealthfolio/addon-sdk';
 
 /**
@@ -32,6 +32,10 @@ export const MIN_SYNC_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
  * no-op, and the 3-day transfer-pair window keeps old rows from re-pairing.
  */
 export const SYNC_LOOKBACK_OVERLAP_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
+
+/** Only flag balance drift (SimpleFin vs Wealthfolio) beyond this, to absorb
+ *  rounding and to keep the Sync page from crying wolf over pennies. */
+export const DRIFT_THRESHOLD_DOLLARS = 1;
 
 /** Polling for freshly computed valuations after a first import (see the
  *  second-pass block in runSync). Exported so tests can shrink the delay. */
@@ -280,6 +284,10 @@ async function runSyncOnce(
     date: string;
   }> = [];
 
+  // Per-account SimpleFin balances (+ drift vs Wealthfolio) captured for the
+  // Sync page. Persisted at the end of the run so the page shows them instantly.
+  const accountBalances: Record<string, AccountBalanceInfo> = {};
+
   for (const sfAccount of accountSet.accounts) {
     const wfAccountId = mapping[sfAccount.id];
     if (!wfAccountId) continue;
@@ -315,6 +323,25 @@ async function runSyncOnce(
     skipped += feed.filter(
       (t) => !createdTxIds.has(t.txId) && !updatedToTxIds.has(t.txId),
     ).length;
+
+    // Capture SimpleFin's reported balance for the Sync page, plus drift vs
+    // Wealthfolio. Drift is only trustworthy when nothing was imported/updated
+    // this run (Wealthfolio recomputes valuations asynchronously, so a fresh
+    // import wouldn't be reflected yet); otherwise leave drift null ("in sync").
+    const sfBalance = parseFloat(sfAccount.balance);
+    const stable = plan.creates.length === 0 && plan.updates.length === 0 && plan.deleteIds.length === 0;
+    const wfValuation = wfBalances?.get(wfAccountId);
+    let drift: number | null = null;
+    if (stable && wfValuation !== undefined && Number.isFinite(sfBalance)) {
+      const d = sfBalance - wfValuation;
+      if (Math.abs(d) > DRIFT_THRESHOLD_DOLLARS) drift = Math.round(d * 100) / 100;
+    }
+    accountBalances[sfAccount.id] = {
+      balance: Number.isFinite(sfBalance) ? sfBalance : 0,
+      currency: sfAccount.currency,
+      date: sfAccount['balance-date'],
+      drift,
+    };
 
     // Wealthfolio shows the comment as the cash activity's title and hashes it
     // into its dedup key. Combining the bank description with the SimpleFin tx
@@ -521,6 +548,8 @@ async function runSyncOnce(
   // Persist the link ledger once, only when a pair was newly (re)linked this
   // run, so an already-linked steady state performs no secrets write.
   if (ledgerChanged) await store.setLinkedGroups(ledger);
+
+  await store.setAccountBalances(accountBalances);
 
   await store.setLastSyncAt(new Date());
 
