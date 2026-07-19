@@ -93,7 +93,7 @@ async function fetchExistingRows(ctx: AddonContext, wfAccountId: string): Promis
       txId,
       absCents: Math.round(Math.abs(parseFloat(String(a.amount ?? '0'))) * 100),
       type: String(a.activityType),
-      date: String(a.date).slice(0, 10),
+      date: new Date(a.date).toISOString().slice(0, 10),
       pending,
     });
   }
