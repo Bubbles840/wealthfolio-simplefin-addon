@@ -438,6 +438,17 @@ import as linked TRANSFER_OUT/TRANSFER_IN (correctly excluded from spending) but
 leave both account balances wrong. Today the addon works around it with a
 balance-adjustment "heal" — but a native fix here removes the need entirely.
 
+Workaround detail (2026-07-20): Wealthfolio classifies spending/income purely
+by `activityType` + account type, with no per-activity budget-exclusion field
+exposed to addons. The heal plug was originally a plain `DEPOSIT`/`WITHDRAWAL`,
+which meant every plug showed up as Income or Spending on the dashboard. The
+addon now emits the plug as a spending-neutral `CREDIT` (no subtype) on CASH
+accounts — `amount` to add cash, `fee` to remove it — which Wealthfolio's
+classifier treats as `Ignored` while still moving the cash balance. This keeps
+the workaround from polluting the budget, but it's still a workaround; a
+native fix here is what actually removes the need for balance-adjustment
+plugs at all.
+
 ### Steps to reproduce
 
 1. `POST /api/v1/activities/bulk` with two linked cash legs, e.g.:

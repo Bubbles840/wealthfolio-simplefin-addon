@@ -643,8 +643,39 @@ async function runSyncOnce(
   return { imported, skipped, errors };
 }
 
+/**
+ * Wealthfolio classifies spending/income by activity type + account type, with
+ * no per-activity budget-exclusion field reachable from the addon SDK. On a
+ * CASH account, DEPOSIT counts as Income and WITHDRAWAL as Expense — so a
+ * plain balance-adjustment plug would pollute the Spending page. A CREDIT
+ * with no subtype classifies as Ignored there (neither spending nor income)
+ * while still moving cash by `amount − fee − tax`, so it doubles as a
+ * spending-neutral plug in both directions: `amount` to add cash, `fee` to
+ * remove it. CREDIT_CARD/SECURITIES/CRYPTOCURRENCY don't have this problem
+ * (DEPOSIT is already Ignored on a card, and every type is Ignored on
+ * investment-style accounts), so they keep the simpler DEPOSIT/WITHDRAWAL
+ * shape unchanged.
+ */
+export function neutralAdjustmentFields(
+  accountType: string,
+  signedAmount: number,
+): { activityType: ActivityType; amount: number; fee: number } {
+  const mag = Math.abs(Math.round(signedAmount * 100) / 100);
+  if (accountType === 'CASH') {
+    return signedAmount > 0
+      ? { activityType: 'CREDIT' as ActivityType, amount: mag, fee: 0 }
+      : { activityType: 'CREDIT' as ActivityType, amount: 0, fee: mag };
+  }
+  return {
+    activityType: (signedAmount > 0 ? 'DEPOSIT' : 'WITHDRAWAL') as ActivityType,
+    amount: mag,
+    fee: 0,
+  };
+}
+
 /** Import one dated balance-adjustment activity. `amount` is signed
- *  (SimpleFin − Wealthfolio): positive adds a DEPOSIT, negative a WITHDRAWAL.
+ *  (SimpleFin − Wealthfolio). On CASH accounts this is a spending-neutral
+ *  CREDIT (see neutralAdjustmentFields); elsewhere a DEPOSIT/WITHDRAWAL.
  *  No-op for a negligible amount. Shared by the manual button and the
  *  aggressive auto-heal path. */
 async function importAdjustmentActivity(
@@ -654,14 +685,20 @@ async function importAdjustmentActivity(
   const { sfinAccountId, wfAccountId, currency, amount } = args;
   if (!Number.isFinite(amount) || Math.abs(amount) < 0.01) return;
   const today = new Date().toISOString().split('T')[0];
+  const wfAccounts = await ctx.api.accounts.getAll().catch(() => []);
+  const accountType = String(
+    wfAccounts.find((a) => a.id === wfAccountId)?.accountType ?? '',
+  );
+  const { activityType, amount: fieldAmount, fee } = neutralAdjustmentFields(accountType, amount);
   // Built as a variable (not an inline literal) so it matches the same relaxed
   // shape the starting-balance correction uses for activities.import.
   const adjustment = {
     accountId: wfAccountId,
-    activityType: (amount > 0 ? 'DEPOSIT' : 'WITHDRAWAL') as ActivityType,
+    activityType,
     date: today,
     symbol: `$CASH-${currency}`,
-    amount: Math.abs(Math.round(amount * 100) / 100),
+    amount: fieldAmount,
+    fee,
     currency,
     sourceSystem: 'simplefin' as const,
     comment: `Balance adjustment · ${sfinAccountId} · ${today}`,

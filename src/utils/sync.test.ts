@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { runSync, applyBalanceAdjustment, MIN_SYNC_INTERVAL_MS, VALUATION_POLL } from './sync';
+import {
+  runSync,
+  applyBalanceAdjustment,
+  neutralAdjustmentFields,
+  MIN_SYNC_INTERVAL_MS,
+  VALUATION_POLL,
+} from './sync';
 
 vi.mock('./simplefin', () => ({
   fetchAccounts: vi.fn(),
@@ -263,12 +269,13 @@ describe('runSync', () => {
     const store = makeStore({ getAutoAdjust: vi.fn(async () => true) });
     const ctx = makeCtx();
     await runSync(ctx, store as any);
-    // An adjustment DEPOSIT of 1000 was imported...
+    // A spending-neutral CREDIT of 1000 was imported (wf-account-a is CASH)...
     const imports = vi.mocked(ctx.api.activities.import).mock.calls.flatMap((c: any) => c[0]);
     const adj = imports.find((a: any) => String(a.comment).startsWith('Balance adjustment'));
     expect(adj).toBeTruthy();
-    expect(adj.activityType).toBe('DEPOSIT');
+    expect(adj.activityType).toBe('CREDIT');
     expect(adj.amount).toBe(1000);
+    expect(adj.fee).toBe(0);
     // ...and the stored drift is cleared.
     const captured = vi.mocked(store.setAccountBalances).mock.calls.at(-1)![0] as any;
     expect(captured['sfin-1'].drift).toBeNull();
@@ -308,7 +315,7 @@ describe('runSync', () => {
     expect(captured['sfin-1'].drift).toBeNull();
   });
 
-  it('applyBalanceAdjustment imports a dated adjustment and clears the drift', async () => {
+  it('applyBalanceAdjustment imports a spending-neutral CREDIT on a CASH account and clears the drift', async () => {
     const ctx = makeCtx();
     const store = makeStore({
       getAccountBalances: vi.fn(async () => ({
@@ -319,11 +326,44 @@ describe('runSync', () => {
       sfinAccountId: 'sfin-1', wfAccountId: 'wf-account-a', currency: 'USD', amount: 250.5,
     });
     const imported = vi.mocked(ctx.api.activities.import).mock.calls.at(-1)![0] as any[];
-    expect(imported[0].activityType).toBe('DEPOSIT');
+    expect(imported[0].activityType).toBe('CREDIT');
     expect(imported[0].amount).toBe(250.5);
+    expect(imported[0].fee).toBe(0);
     expect(imported[0].comment).toMatch(/^Balance adjustment · sfin-1 · /);
     const persisted = vi.mocked(store.setAccountBalances).mock.calls.at(-1)![0] as any;
     expect(persisted['sfin-1'].drift).toBeNull();
+  });
+
+  it('applyBalanceAdjustment imports a spending-neutral CREDIT+fee for a negative drift on a CASH account', async () => {
+    const ctx = makeCtx();
+    const store = makeStore({
+      getAccountBalances: vi.fn(async () => ({
+        'sfin-1': { balance: 1000, currency: 'USD', date: 1700000000, drift: -2635.26 },
+      })),
+    });
+    await applyBalanceAdjustment(ctx, store as any, {
+      sfinAccountId: 'sfin-1', wfAccountId: 'wf-account-a', currency: 'USD', amount: -2635.26,
+    });
+    const imported = vi.mocked(ctx.api.activities.import).mock.calls.at(-1)![0] as any[];
+    expect(imported[0].activityType).toBe('CREDIT');
+    expect(imported[0].amount).toBe(0);
+    expect(imported[0].fee).toBe(2635.26);
+  });
+
+  it('applyBalanceAdjustment keeps DEPOSIT/WITHDRAWAL on a non-CASH account', async () => {
+    const ctx = makeCtx();
+    const store = makeStore({
+      getAccountBalances: vi.fn(async () => ({
+        'sfin-2': { balance: 100, currency: 'USD', date: 1700000000, drift: -80 },
+      })),
+    });
+    await applyBalanceAdjustment(ctx, store as any, {
+      sfinAccountId: 'sfin-2', wfAccountId: 'wf-account-b', currency: 'USD', amount: -80,
+    });
+    const imported = vi.mocked(ctx.api.activities.import).mock.calls.at(-1)![0] as any[];
+    expect(imported[0].activityType).toBe('WITHDRAWAL');
+    expect(imported[0].amount).toBe(80);
+    expect(imported[0].fee).toBe(0);
   });
 
   it('drops only transactions with neither posted nor transacted_at', async () => {
@@ -723,5 +763,43 @@ describe('runSync', () => {
 describe('MIN_SYNC_INTERVAL_MS', () => {
   it('equals 1 hour in ms', () => {
     expect(MIN_SYNC_INTERVAL_MS).toBe(3_600_000);
+  });
+});
+
+describe('neutralAdjustmentFields', () => {
+  it('CASH + positive drift: CREDIT with amount, no fee', () => {
+    expect(neutralAdjustmentFields('CASH', 250.5)).toEqual({
+      activityType: 'CREDIT', amount: 250.5, fee: 0,
+    });
+  });
+
+  it('CASH + negative drift: CREDIT with fee, no amount — nets to the drift', () => {
+    const result = neutralAdjustmentFields('CASH', -2635.26);
+    expect(result).toEqual({ activityType: 'CREDIT', amount: 0, fee: 2635.26 });
+    expect(result.amount - result.fee).toBeCloseTo(-2635.26);
+  });
+
+  it('CREDIT_CARD: keeps DEPOSIT/WITHDRAWAL', () => {
+    expect(neutralAdjustmentFields('CREDIT_CARD', 40)).toEqual({
+      activityType: 'DEPOSIT', amount: 40, fee: 0,
+    });
+    expect(neutralAdjustmentFields('CREDIT_CARD', -40)).toEqual({
+      activityType: 'WITHDRAWAL', amount: 40, fee: 0,
+    });
+  });
+
+  it('unknown/SECURITIES account type: keeps DEPOSIT/WITHDRAWAL', () => {
+    expect(neutralAdjustmentFields('SECURITIES', 10)).toEqual({
+      activityType: 'DEPOSIT', amount: 10, fee: 0,
+    });
+    expect(neutralAdjustmentFields('', -10)).toEqual({
+      activityType: 'WITHDRAWAL', amount: 10, fee: 0,
+    });
+  });
+
+  it('rounds to cents', () => {
+    expect(neutralAdjustmentFields('CASH', 10.129)).toEqual({
+      activityType: 'CREDIT', amount: 10.13, fee: 0,
+    });
   });
 });
