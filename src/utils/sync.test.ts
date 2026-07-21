@@ -56,9 +56,14 @@ const makeCtx = () => ({
       ),
       import: vi.fn(async (acts: any[]) => acts),
       search: vi.fn(async () => ({ data: [] })),
+      // Mimic the host: echo saved rows back as Activity objects (which name the
+      // comment field `notes`), assigning a new id to each create so the atomic
+      // transfer-link flush can address them.
       saveMany: vi.fn(async (req: any) => ({
-        created: req.creates ?? [],
-        updated: req.updates ?? [],
+        created: (req.creates ?? []).map((c: any, i: number) => ({
+          ...c, id: c.id ?? `created-${i}`, notes: c.comment,
+        })),
+        updated: (req.updates ?? []).map((u: any) => ({ ...u, notes: u.comment })),
         deleted: req.deleteIds ?? [],
         createdMappings: [],
         errors: [],
@@ -511,21 +516,31 @@ describe('runSync', () => {
       ...overrides,
     });
 
-  it('auto-links a new transfer pair: both creates share a sourceGroupId and the ledger is persisted', async () => {
+  it('auto-links a new transfer pair: both legs share a sourceGroupId in a SINGLE atomic flush call', async () => {
     vi.mocked(fetchAccounts).mockResolvedValueOnce(transferPairAccountSet());
     const ctx = makeCtx();
     const store = twoAccountStore();
     await runSync(ctx, store as any);
 
+    // Linking is NOT done on the per-account import creates (a per-account call
+    // only ever holds one leg of a cross-account pair). Both legs must be
+    // stamped together in one saveMany so Wealthfolio sees a complete 2-leg group.
     const creates = vi.mocked(ctx.api.activities.saveMany).mock.calls.flatMap((c: any) => c[0].creates ?? []);
-    const out = creates.find((a: any) => a.comment.includes('tx-out'));
-    const inn = creates.find((a: any) => a.comment.includes('tx-in'));
-    expect(out.sourceGroupId).toBeTruthy();
-    expect(inn.sourceGroupId).toBeTruthy();
-    expect(out.sourceGroupId).toBe(inn.sourceGroupId);
+    expect(creates.every((a: any) => a.sourceGroupId === undefined)).toBe(true);
 
-    expect(store.setLinkedGroups).toHaveBeenCalledOnce();
-    const persisted = vi.mocked(store.setLinkedGroups).mock.calls[0][0] as Record<string, string>;
+    const flushCall = vi.mocked(ctx.api.activities.saveMany).mock.calls
+      .find((c: any) => (c[0].updates ?? []).some((u: any) => u.sourceGroupId));
+    expect(flushCall).toBeTruthy();
+    const flushUpdates = flushCall![0].updates as any[];
+    const out = flushUpdates.find((u) => u.comment.includes('tx-out'));
+    const inn = flushUpdates.find((u) => u.comment.includes('tx-in'));
+    expect(out.sourceGroupId).toBeTruthy();
+    expect(inn.sourceGroupId).toBe(out.sourceGroupId);
+    // Both legs are in the SAME call (atomic) — that is the whole fix.
+    expect(flushUpdates.filter((u) => u.sourceGroupId).length).toBe(2);
+
+    expect(store.setLinkedGroups).toHaveBeenCalled();
+    const persisted = vi.mocked(store.setLinkedGroups).mock.calls.at(-1)![0] as Record<string, string>;
     expect(persisted['tx-out']).toBe(out.sourceGroupId);
     expect(persisted['tx-in']).toBe(out.sourceGroupId);
   });
@@ -585,6 +600,118 @@ describe('runSync', () => {
     await runSync(ctx, store as any);
     const create = vi.mocked(ctx.api.activities.saveMany).mock.calls[0][0].creates![0];
     expect(create.sourceGroupId).toBeUndefined();
+    expect(store.setLinkedGroups).not.toHaveBeenCalled();
+  });
+
+  it('manual Reconcile (heal) re-stamps a pair the ledger already claims is linked', async () => {
+    // The ledger says tx-out/tx-in are already linked, but the rows themselves
+    // carry no sourceGroupId (a stale/optimistic ledger entry — the real bug
+    // this fix targets). A normal sync trusts the ledger and does nothing (see
+    // "does nothing for a transfer pair already linked" above); heal must not.
+    vi.mocked(fetchAccounts).mockResolvedValueOnce(transferPairAccountSet());
+    const ctx = makeCtx();
+    const existingByAccount: Record<string, any[]> = {
+      'wf-account-a': [{ id: 'act-out', comment: 'Payment to Citibank · tx-out', amount: '-500.00', activityType: 'TRANSFER_OUT', date: '2023-11-14' }],
+      'wf-account-b': [{ id: 'act-in', comment: 'PAYMENT THANK YOU · tx-in', amount: '500.00', activityType: 'TRANSFER_IN', date: '2023-11-15' }],
+    };
+    ctx.api.activities.search = vi.fn(async (_p: number, _l: number, filter: any) => ({
+      data: existingByAccount[filter.accountIds[0]] ?? [],
+    }));
+    const store = twoAccountStore({
+      getLinkedGroups: vi.fn(async () => ({ 'tx-out': 'gid-stale', 'tx-in': 'gid-stale' })),
+    });
+    await runSync(ctx, store as any, { heal: true });
+
+    const updates = vi.mocked(ctx.api.activities.saveMany).mock.calls.flatMap((c: any) => c[0].updates ?? []);
+    const outUp = updates.find((u: any) => u.id === 'act-out');
+    const inUp = updates.find((u: any) => u.id === 'act-in');
+    expect(outUp.sourceGroupId).toBeTruthy();
+    expect(inUp.sourceGroupId).toBeTruthy();
+    expect(outUp.sourceGroupId).toBe(inUp.sourceGroupId);
+    // Heal mints a FRESH gid (not the stale ledger one) so a poisoned/rejected
+    // ledger gid can't keep the pair stuck; both legs still share it.
+    expect(outUp.sourceGroupId).not.toBe('gid-stale');
+  });
+
+  it('purges the ledger entry when Wealthfolio drops a stamped gid (echoed null → retry fresh)', async () => {
+    // Reproduces the stuck-pair bug: the save succeeds (no error) but Wealthfolio
+    // silently stores NO sourceGroupId for the row (poisoned/invalid group). The
+    // ledger must then FORGET that pair so the next heal mints a fresh, clean gid.
+    vi.mocked(fetchAccounts).mockResolvedValueOnce(transferPairAccountSet());
+    const ctx = makeCtx();
+    const existingByAccount: Record<string, any[]> = {
+      'wf-account-a': [{ id: 'act-out', comment: 'Payment to Citibank · tx-out', amount: '-500.00', activityType: 'TRANSFER_OUT', date: '2023-11-14' }],
+      'wf-account-b': [{ id: 'act-in', comment: 'PAYMENT THANK YOU · tx-in', amount: '500.00', activityType: 'TRANSFER_IN', date: '2023-11-15' }],
+    };
+    ctx.api.activities.search = vi.fn(async (_p: number, _l: number, filter: any) => ({
+      data: existingByAccount[filter.accountIds[0]] ?? [],
+    }));
+    // saveMany "succeeds" but echoes the row back with sourceGroupId dropped to null.
+    ctx.api.activities.saveMany = vi.fn(async (req: any) => ({
+      created: [],
+      updated: (req.updates ?? []).map((u: any) => ({ ...u, notes: u.comment, sourceGroupId: null })),
+      deleted: req.deleteIds ?? [],
+      createdMappings: [],
+      errors: [],
+    }));
+    const store = twoAccountStore({
+      getLinkedGroups: vi.fn(async () => ({ 'tx-out': 'gid-poisoned', 'tx-in': 'gid-poisoned' })),
+    });
+    await runSync(ctx, store as any, { heal: true });
+
+    // The dropped entries must be purged from the persisted ledger.
+    expect(store.setLinkedGroups).toHaveBeenCalled();
+    const persisted = vi.mocked(store.setLinkedGroups).mock.calls.at(-1)![0] as Record<string, string>;
+    expect(persisted['tx-out']).toBeUndefined();
+    expect(persisted['tx-in']).toBeUndefined();
+  });
+
+  it('adopts Wealthfolio\'s real gid on reconcile when it differs from what we sent (kills churn)', async () => {
+    // Already-grouped rows: Wealthfolio keeps its own gid and ignores ours. The
+    // ledger should adopt the REAL gid so future runs stop re-stamping.
+    vi.mocked(fetchAccounts).mockResolvedValueOnce(transferPairAccountSet());
+    const ctx = makeCtx();
+    const existingByAccount: Record<string, any[]> = {
+      'wf-account-a': [{ id: 'act-out', comment: 'Payment to Citibank · tx-out', amount: '-500.00', activityType: 'TRANSFER_OUT', date: '2023-11-14' }],
+      'wf-account-b': [{ id: 'act-in', comment: 'PAYMENT THANK YOU · tx-in', amount: '500.00', activityType: 'TRANSFER_IN', date: '2023-11-15' }],
+    };
+    ctx.api.activities.search = vi.fn(async (_p: number, _l: number, filter: any) => ({
+      data: existingByAccount[filter.accountIds[0]] ?? [],
+    }));
+    // Wealthfolio keeps its pre-existing 'gid-real', regardless of what we sent.
+    ctx.api.activities.saveMany = vi.fn(async (req: any) => ({
+      created: [],
+      updated: (req.updates ?? []).map((u: any) => ({ ...u, notes: u.comment, sourceGroupId: 'gid-real' })),
+      deleted: req.deleteIds ?? [],
+      createdMappings: [],
+      errors: [],
+    }));
+    const store = twoAccountStore({
+      getLinkedGroups: vi.fn(async () => ({ 'tx-out': 'gid-stale', 'tx-in': 'gid-stale' })),
+    });
+    await runSync(ctx, store as any, { heal: true });
+
+    const persisted = vi.mocked(store.setLinkedGroups).mock.calls.at(-1)![0] as Record<string, string>;
+    expect(persisted['tx-out']).toBe('gid-real');
+    expect(persisted['tx-in']).toBe('gid-real');
+  });
+
+  it('does not persist the ledger when a save errors (retries next sync)', async () => {
+    vi.mocked(fetchAccounts).mockResolvedValueOnce(transferPairAccountSet());
+    const ctx = makeCtx();
+    ctx.api.activities.saveMany = vi.fn(async (req: any) => ({
+      created: [],
+      updated: [],
+      deleted: req.deleteIds ?? [],
+      createdMappings: [],
+      errors: [{ action: 'create', message: 'boom' }],
+    }));
+    const store = twoAccountStore();
+    const result = await runSync(ctx, store as any);
+
+    // The import errored, so no rows were registered for the flush and the
+    // ledger must not be recorded as linked — the pair retries on a later sync.
+    expect(result.errors.some((e) => /save error/.test(e))).toBe(true);
     expect(store.setLinkedGroups).not.toHaveBeenCalled();
   });
 

@@ -206,9 +206,19 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
           <h2 className="sfin-title">SimpleFin Sync</h2>
           <SyncStatus lastSyncAt={lastSyncAt} imported={imported} syncing={syncing} />
         </div>
-        <Button onClick={() => doSync(false)} disabled={syncing}>
-          {syncing ? 'Syncing…' : '↻ Sync Now'}
-        </Button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          {/* Always-available reconcile: re-scans a wide window, re-links transfer
+              pairs, and self-heals the link ledger. The "Re-scan 90 days" button
+              in the drift banner only appears when an account is off-balance, so
+              this keeps reconcile reachable when everything reads "in sync". */}
+          <Button variant="outline" onClick={doHeal} disabled={healing || syncing}
+            title="Re-scan a wide window and re-link internal transfer pairs">
+            {healing ? 'Reconciling…' : '↻ Reconcile & link'}
+          </Button>
+          <Button onClick={() => doSync(false)} disabled={syncing}>
+            {syncing ? 'Syncing…' : '↻ Sync Now'}
+          </Button>
+        </div>
       </div>
 
       {error && <ErrorBox>{error}</ErrorBox>}

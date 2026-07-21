@@ -431,12 +431,37 @@ bulk payload does not override it.
 `TRANSFER_IN`/`TRANSFER_OUT` the same way it does for `DEPOSIT`/`WITHDRAWAL`, so
 an amount-only cash transfer moves both accounts' cash balances.
 
+### Second symptom — transfer pairs become UNLINKABLE (2026-07-20)
+
+Because the mis-resolved leg is a phantom `$CASH` **security** with no
+`quantity` (not real cash), it also breaks transfer *pairing*, not just
+balances. Confirmed on a real instance:
+
+- Two legs of one internal transfer (checking `TRANSFER_OUT` $1,982.19 ↔ card
+  `TRANSFER_IN` $1,982.19, 2 days apart) both show in **Data Health → "incomplete
+  transfers detected."**
+- Opening either leg's **native "Link transfer"** dialog reports **"No matches
+  within 7 days of this activity"** — Wealthfolio's own matcher will not pair
+  them, even though the exact-amount opposite leg exists 2 days away.
+- Setting a shared `sourceGroupId` via `/activities/bulk` (create or update) is
+  silently dropped — the saved row echoes back `sourceGroupId: null`.
+
+This is consistent with `validate_asset_shape` in `transfer_pairs.rs` rejecting
+a security-transfer group whose legs carry no `quantity` ("security transfer
+legs must both include quantity"). Since the legs *should* be cash (not
+securities), they should pair as an amount-only cash transfer. Fixing the
+`$CASH-<ccy>` resolution (above) fixes this too: the legs become real cash and
+both the addon's `sourceGroupId` and the native linker can pair them.
+
 ### Impact for the SimpleFin Sync addon
 
 Internal cash transfers between two synced accounts (e.g. savings → checking)
-import as linked TRANSFER_OUT/TRANSFER_IN (correctly excluded from spending) but
-leave both account balances wrong. Today the addon works around it with a
-balance-adjustment "heal" — but a native fix here removes the need entirely.
+import as TRANSFER_OUT/TRANSFER_IN but (a) leave both account balances wrong and
+(b) can't be linked into an internal-transfer group by the addon OR by
+Wealthfolio's own native linker, so they linger as "incomplete transfers" and
+the outflow leg counts against spending. Today the addon works around the
+balance side with a balance-adjustment "heal" — but a native fix here removes
+the need entirely and restores transfer linking.
 
 Workaround detail (2026-07-20): Wealthfolio classifies spending/income purely
 by `activityType` + account type, with no per-activity budget-exclusion field

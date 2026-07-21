@@ -100,6 +100,16 @@ async function hasAdjustmentToday(
 
 const PENDING_SUFFIX = ' · pending';
 
+/** Recover the SimpleFin tx id an activity comment/notes ends with — the
+ *  `… · <txId>` suffix (optionally followed by ` · pending`). Returns null when
+ *  the text doesn't carry one (e.g. a balance-adjustment or non-synced row). */
+function txIdFromComment(text: string | null | undefined): string | null {
+  let c = text ?? '';
+  if (c.endsWith(PENDING_SUFFIX)) c = c.slice(0, -PENDING_SUFFIX.length);
+  const sep = c.lastIndexOf(' · ');
+  return sep === -1 ? null : c.slice(sep + 3);
+}
+
 /**
  * Reads the existing SimpleFin-sourced activities for an account into
  * `ExistingRow`s the reconciliation planner can match against. Every imported
@@ -113,15 +123,9 @@ async function fetchExistingRows(ctx: AddonContext, wfAccountId: string): Promis
   );
   const rows: ExistingRow[] = [];
   for (const a of res.data) {
-    let comment = a.comment ?? '';
-    let pending = false;
-    if (comment.endsWith(PENDING_SUFFIX)) {
-      pending = true;
-      comment = comment.slice(0, -PENDING_SUFFIX.length);
-    }
-    const sep = comment.lastIndexOf(' · ');
-    if (sep === -1) continue;
-    const txId = comment.slice(sep + 3);
+    const pending = (a.comment ?? '').endsWith(PENDING_SUFFIX);
+    const txId = txIdFromComment(a.comment);
+    if (txId === null) continue;
     rows.push({
       wfId: a.id,
       wfAccountId,
@@ -310,6 +314,15 @@ async function runSyncOnce(
   // span two accounts, so groupByTxId is computed once here and applied inside
   // each account's build below. detection.pairs excludes pending rows (they are
   // not transfer candidates), so no pending side is ever linked.
+  //
+  // The ledger is only WRITTEN once the stamping save actually succeeds (below,
+  // after the account loop) — never here, up front — because ActivityDetails
+  // doesn't expose sourceGroupId, so the addon has no way to read back whether
+  // a link truly landed. Writing it optimistically would let a failed/partial
+  // save get permanently (and wrongly) marked "linked", with no retry. A manual
+  // Reconcile (opts.heal) re-attempts pairs the ledger already claims are
+  // linked, so a stale entry from before this fix — or a save that silently
+  // didn't take — can still self-heal.
   const ledger = await store.getLinkedGroups();
   let ledgerChanged = false;
   const groupByTxId = new Map<string, string>();
@@ -317,13 +330,19 @@ async function runSyncOnce(
     const existingGid = ledger[outTxId] ?? ledger[inTxId];
     const alreadyLinked =
       existingGid !== undefined && ledger[outTxId] === existingGid && ledger[inTxId] === existingGid;
-    if (alreadyLinked) continue;
-    const gid = existingGid ?? crypto.randomUUID();
+    if (!opts.heal && alreadyLinked) continue;
+    // A normal sync reuses the ledger gid (idempotent, no churn). A manual heal
+    // mints a FRESH gid rather than trusting the ledger: a ledger gid can be
+    // "poisoned" — left over from an earlier unstable pairing and now shared by
+    // a third, unrelated activity — which Wealthfolio silently rejects as an
+    // invalid 3+-leg group (the save succeeds but the gid comes back null).
+    // Wealthfolio refuses to move an already-grouped row (it keeps that row's
+    // existing gid), so a fresh gid can't disturb a correctly-linked pair, but
+    // it lets a stuck/unlinked pair form a clean, unique 2-leg group. The
+    // ledger is then reconciled to whatever Wealthfolio actually stored (below).
+    const gid = opts.heal ? crypto.randomUUID() : (existingGid ?? crypto.randomUUID());
     groupByTxId.set(outTxId, gid);
     groupByTxId.set(inTxId, gid);
-    ledger[outTxId] = gid;
-    ledger[inTxId] = gid;
-    ledgerChanged = true;
   }
 
   // Accounts whose starting balance couldn't run yet because no valuation
@@ -339,6 +358,13 @@ async function runSyncOnce(
   // Per-account SimpleFin balances (+ drift vs Wealthfolio) captured for the
   // Sync page. Persisted at the end of the run so the page shows them instantly.
   const accountBalances: Record<string, AccountBalanceInfo> = {};
+
+  // Every already-imported row across all accounts, keyed by SimpleFin tx id.
+  // Used by the atomic transfer-link flush AFTER the loop: both legs of a pair
+  // live in different accounts, and Wealthfolio only forms a transfer group when
+  // it sees BOTH legs in a single saveMany call — per-account calls each look
+  // like a lone 1-leg group and get dropped. So linking must span accounts.
+  const linkRowByTxId = new Map<string, ExistingRow & { currency: string }>();
 
   for (const sfAccount of accountSet.accounts) {
     const wfAccountId = mapping[sfAccount.id];
@@ -366,6 +392,7 @@ async function runSyncOnce(
     } catch {
       // search unavailable — proceed as if no rows exist
     }
+    for (const row of existing) linkRowByTxId.set(row.txId, { ...row, currency: sfAccount.currency });
     const plan = planReconciliation(feed, existing);
 
     // Feed rows that produced neither a create nor an update are already
@@ -435,65 +462,54 @@ async function runSyncOnce(
     // id gives readable, unique titles; the ` · pending` suffix marks rows that
     // haven't settled so they can be reconciled when they post.
     const cashSymbol = `$CASH-${sfAccount.currency}`;
-    const toActivityCreate = (t: FeedTx): ActivityCreate => {
-      // Only set sourceGroupId when this tx is part of a (re)linking pair —
-      // never emit an empty string for a non-member.
-      const gid = groupByTxId.get(t.txId);
-      return {
-        accountId: t.wfAccountId,
-        activityType: t.type,
-        activityDate: t.date,
-        // The /activities/bulk endpoint deserializes `symbol` as an
-        // AssetResolutionInput object (a bare string 422s with
-        // "invalid type: string, expected struct AssetResolutionInput").
-        // Resolve the reserved cash asset by its $CASH-<currency> symbol.
-        symbol: { symbol: cashSymbol },
-        amount: t.absCents / 100,
-        currency: sfAccount.currency,
-        comment: `${descByTxId.get(t.txId) ?? ''} · ${t.txId}${t.pending ? PENDING_SUFFIX : ''}`,
-        ...(gid ? { sourceGroupId: gid } : {}),
-      };
-    };
+    const toActivityCreate = (t: FeedTx): ActivityCreate => ({
+      accountId: t.wfAccountId,
+      activityType: t.type,
+      activityDate: t.date,
+      // The /activities/bulk endpoint deserializes `symbol` as an
+      // AssetResolutionInput object (a bare string 422s with
+      // "invalid type: string, expected struct AssetResolutionInput").
+      // Resolve the reserved cash asset by its $CASH-<currency> symbol.
+      symbol: { symbol: cashSymbol },
+      amount: t.absCents / 100,
+      currency: sfAccount.currency,
+      comment: `${descByTxId.get(t.txId) ?? ''} · ${t.txId}${t.pending ? PENDING_SUFFIX : ''}`,
+      // Transfer-link sourceGroupId is applied later, atomically (see flush).
+    });
     const toActivityUpdate = (wfId: string, t: FeedTx): ActivityUpdate => ({
       ...toActivityCreate(t),
       id: wfId,
     });
 
-    // Forced link updates: a pair member that is already imported and otherwise
-    // unchanged is neither a create nor a plan update, so it won't carry the
-    // gid on its own. Emit an extra update to stamp it. Guard against a txId a
-    // create or plan update already covers (those pick up the gid via
-    // toActivityCreate above) so we never emit two updates for one txId.
-    const forcedLinkUpdates: ActivityUpdate[] = [];
-    if (groupByTxId.size > 0) {
-      const covered = new Set<string>([...createdTxIds, ...updatedToTxIds]);
-      for (const row of existing) {
-        const gid = groupByTxId.get(row.txId);
-        if (!gid || covered.has(row.txId)) continue;
-        forcedLinkUpdates.push({
-          id: row.wfId,
-          accountId: row.wfAccountId,
-          activityType: row.type,
-          activityDate: row.date,
-          symbol: { symbol: cashSymbol },
-          amount: row.absCents / 100,
-          currency: sfAccount.currency,
-          comment: `${descByTxId.get(row.txId) ?? ''} · ${row.txId}`,
-          sourceGroupId: gid,
-        });
-      }
-    }
-
-    if (plan.creates.length || plan.updates.length || plan.deleteIds.length || forcedLinkUpdates.length) {
+    // Import only — NO transfer-link gids here. A transfer pair's two legs live
+    // in different accounts, so stamping them in these per-account saveMany calls
+    // never lets Wealthfolio see a complete 2-leg group (each call looks like a
+    // lone leg and the group is dropped). All linking is done atomically after
+    // the loop over `linkRowByTxId` (see the flush below).
+    if (plan.creates.length || plan.updates.length || plan.deleteIds.length) {
       const result = await ctx.api.activities.saveMany({
         creates: plan.creates.map(toActivityCreate),
-        updates: [...plan.updates.map((u) => toActivityUpdate(u.wfId, u.to)), ...forcedLinkUpdates],
+        updates: plan.updates.map((u) => toActivityUpdate(u.wfId, u.to)),
         deleteIds: plan.deleteIds,
       });
       // Only creates are new imports; updates/deletes are reconciliation.
       imported += result.created.length;
       for (const err of result.errors ?? []) {
         errors.push(`Account ${wfAccountId} save error (${err.action}): ${err.message}`);
+      }
+      // Register rows just created so a brand-new transfer pair can be linked in
+      // the same run's atomic flush (match the echoed Activity's `… · <txId>`
+      // comment back to the FeedTx it was created from, using the new id).
+      const createdFeedByTxId = new Map(plan.creates.map((t) => [t.txId, t]));
+      for (const a of (result.created ?? []) as any[]) {
+        const txId = txIdFromComment(a.notes ?? a.comment);
+        const t = txId ? createdFeedByTxId.get(txId) : undefined;
+        if (txId && t && a.id) {
+          linkRowByTxId.set(txId, {
+            wfId: a.id, wfAccountId: t.wfAccountId, txId, absCents: t.absCents,
+            type: t.type, date: t.date, pending: t.pending, currency: sfAccount.currency,
+          });
+        }
       }
     }
 
@@ -632,8 +648,63 @@ async function runSyncOnce(
     }
   }
 
-  // Persist the link ledger once, only when a pair was newly (re)linked this
-  // run, so an already-linked steady state performs no secrets write.
+  // Atomic transfer-link flush: stamp BOTH legs of each detected pair in a
+  // SINGLE saveMany so Wealthfolio sees a complete 2-leg group at write time
+  // (per-account calls each look like a lone leg → group dropped). Only pairs
+  // whose two legs are both already-imported rows are linkable here; a brand-new
+  // pair (both legs created this run) links on the next sync once they're
+  // existing rows. Non-heal reuses the ledger gid and skips already-linked pairs
+  // (groupByTxId omits them); heal re-attempts every pair with a fresh gid.
+  const linkUpdates: ActivityUpdate[] = [];
+  const flushTxIds = new Set<string>();
+  for (const { outTxId, inTxId } of detection.pairs) {
+    const gid = groupByTxId.get(outTxId);
+    if (!gid) continue; // already linked (non-heal) — nothing to do
+    const outRow = linkRowByTxId.get(outTxId);
+    const inRow = linkRowByTxId.get(inTxId);
+    if (!outRow || !inRow) continue; // a leg isn't imported yet — links next run
+    for (const row of [outRow, inRow]) {
+      flushTxIds.add(row.txId);
+      linkUpdates.push({
+        id: row.wfId,
+        accountId: row.wfAccountId,
+        activityType: row.type,
+        activityDate: row.date,
+        symbol: { symbol: `$CASH-${row.currency}` },
+        amount: row.absCents / 100,
+        currency: row.currency,
+        comment: `${descByTxId.get(row.txId) ?? ''} · ${row.txId}`,
+        sourceGroupId: gid,
+      });
+    }
+  }
+  if (linkUpdates.length > 0) {
+    const result = await ctx.api.activities.saveMany({ updates: linkUpdates });
+    for (const err of result.errors ?? []) {
+      errors.push(`Transfer-link save error (${err.action}): ${err.message}`);
+    }
+    if ((result.errors ?? []).length === 0) {
+      // Reconcile the ledger to what Wealthfolio actually stored. saveMany echoes
+      // each saved Activity (its `notes` carries our `… · <txId>` comment and the
+      // persisted `sourceGroupId`) — the one read-back channel, since the search
+      // API's ActivityDetails omits sourceGroupId. Adopt the real gid where a row
+      // came back grouped; purge any txId that came back ungrouped so it retries.
+      const echoedGidByTxId = new Map<string, string | null | undefined>();
+      for (const a of (result.updated ?? []) as any[]) {
+        const txId = txIdFromComment(a.notes ?? a.comment);
+        if (txId) echoedGidByTxId.set(txId, a.sourceGroupId);
+      }
+      for (const txId of flushTxIds) {
+        const echoed = echoedGidByTxId.get(txId);
+        if (echoed) {
+          if (ledger[txId] !== echoed) { ledger[txId] = echoed; ledgerChanged = true; }
+        } else if (txId in ledger) {
+          delete ledger[txId]; ledgerChanged = true;
+        }
+      }
+    }
+  }
+
   if (ledgerChanged) await store.setLinkedGroups(ledger);
 
   await store.setAccountBalances(accountBalances);
