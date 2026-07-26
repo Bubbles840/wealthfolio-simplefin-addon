@@ -110,7 +110,10 @@ const PENDING_SUFFIX = ' · pending';
  */
 const TRANSFER_GROUP_PREFIX = 'wf-transfer-';
 const newTransferGroupId = () => `${TRANSFER_GROUP_PREFIX}${crypto.randomUUID()}`;
-const INTERNAL_TRANSFER_METADATA = { flow: { is_external: false } } as const;
+/** Serialized, NOT an object: the server's `metadata` is `Option<String>` (a JSON
+ *  blob), so an object 422s. Mirrors what Wealthfolio itself stores —
+ *  `json!({ "flow": { "is_external": … } }).to_string()`. */
+const INTERNAL_TRANSFER_METADATA = JSON.stringify({ flow: { is_external: false } });
 
 const TRANSFER_TYPES = new Set<string>(['TRANSFER_IN', 'TRANSFER_OUT']);
 

@@ -634,7 +634,10 @@ describe('runSync', () => {
     expect(flush).toHaveLength(2);
     for (const u of flush) {
       expect(u.symbol).toBeUndefined();
-      expect(u.metadata).toEqual({ flow: { is_external: false } });
+      // Must be a JSON *string* — the server's metadata is Option<String> and
+      // an object 422s ("Unprocessable Entity").
+      expect(typeof u.metadata).toBe('string');
+      expect(JSON.parse(u.metadata)).toEqual({ flow: { is_external: false } });
       expect(String(u.sourceGroupId).startsWith('wf-transfer-')).toBe(true);
     }
     expect(flush[0].sourceGroupId).toBe(flush[1].sourceGroupId);
