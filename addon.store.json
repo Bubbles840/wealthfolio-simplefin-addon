@@ -1,0 +1,34 @@
+{
+  "$schema": "../../schemas/addon-store.schema.json",
+  "id": "simplefin-sync",
+  "name": "SimpleFin Sync",
+  "description": "Automatically import bank and credit-card transactions from SimpleFin, with correct balances, pending reconciliation, and internal-transfer linking.",
+  "author": {
+    "name": "Bubbles840",
+    "url": "https://github.com/Bubbles840"
+  },
+  "trust": "community",
+  "verification": "verified",
+  "status": "active",
+  "tags": ["banking", "import", "sync", "transactions", "spending"],
+  "repository": "https://github.com/Bubbles840/wealthfolio-simplefin-addon",
+  "supportUrl": "https://github.com/Bubbles840/wealthfolio-simplefin-addon/issues",
+  "source": {
+    "repository": "https://github.com/Bubbles840/wealthfolio-simplefin-addon",
+    "tag": "v1.0.0",
+    "commit": "702ae058ae305efb427abcb22fc5edf84c5b27a8"
+  },
+  "release": {
+    "version": "1.0.0",
+    "minWealthfolioVersion": "3.6.2",
+    "sdkVersion": "3.6.2",
+    "critical": false,
+    "breaking": false,
+    "notes": "First public release: transaction import from SimpleFin, one-time starting balances, pending-transaction reconciliation, automatic internal-transfer detection and linking, custom mapping rules, per-account balance drift display with one-click correction, and scheduled auto-sync.",
+    "changelogUrl": "https://github.com/Bubbles840/wealthfolio-simplefin-addon/releases/tag/v1.0.0"
+  },
+  "media": {
+    "coverLight": "assets/cover-light.webp",
+    "coverDark": "assets/cover-dark.webp"
+  }
+}
