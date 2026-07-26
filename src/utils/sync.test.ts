@@ -592,6 +592,54 @@ describe('runSync', () => {
     expect(store.setLinkedGroups).not.toHaveBeenCalled();
   });
 
+  it('sends transfer legs with NO asset so they book real cash and stay pairable', async () => {
+    // $CASH-<ccy> resolves to a literal "$CASH" security for TRANSFER_IN/OUT
+    // (upstream #5): the balance never moves (the holdings calculator only books
+    // cash when asset_id is empty) and the pair fails validate_asset_shape as a
+    // quantity-less security transfer, so it can't be linked. Omitting the
+    // symbol takes the cash branch in both places.
+    vi.mocked(fetchAccounts).mockResolvedValueOnce(transferPairAccountSet());
+    const ctx = makeCtx();
+    await runSync(ctx, twoAccountStore() as any);
+
+    const creates = vi.mocked(ctx.api.activities.saveMany).mock.calls.flatMap((c: any) => c[0].creates ?? []);
+    const out = creates.find((a: any) => a.comment.includes('tx-out'));
+    const inn = creates.find((a: any) => a.comment.includes('tx-in'));
+    expect(out.activityType).toBe('TRANSFER_OUT');
+    expect(inn.activityType).toBe('TRANSFER_IN');
+    expect(out.symbol).toBeUndefined();
+    expect(inn.symbol).toBeUndefined();
+    // The amount is what books the cash movement on the empty-asset path.
+    expect(out.amount).toBe(500);
+    expect(inn.amount).toBe(500);
+  });
+
+  it('link updates carry the internal-transfer marker, a wf-transfer- gid, and no asset', async () => {
+    // A shared sourceGroupId alone does NOT make Wealthfolio treat the pair as
+    // internal — activity_has_internal_transfer_marker requires
+    // metadata.flow.is_external === false (or a wf-transfer- group id).
+    vi.mocked(fetchAccounts).mockResolvedValueOnce(transferPairAccountSet());
+    const ctx = makeCtx();
+    const existingByAccount: Record<string, any[]> = {
+      'wf-account-a': [{ id: 'act-out', comment: 'Payment to Citibank · tx-out', amount: '-500.00', activityType: 'TRANSFER_OUT', date: '2023-11-14' }],
+      'wf-account-b': [{ id: 'act-in', comment: 'PAYMENT THANK YOU · tx-in', amount: '500.00', activityType: 'TRANSFER_IN', date: '2023-11-15' }],
+    };
+    ctx.api.activities.search = vi.fn(async (_p: number, _l: number, filter: any) => ({
+      data: existingByAccount[filter.accountIds[0]] ?? [],
+    }));
+    await runSync(ctx, twoAccountStore() as any);
+
+    const flush = vi.mocked(ctx.api.activities.saveMany).mock.calls
+      .find((c: any) => (c[0].updates ?? []).some((u: any) => u.sourceGroupId))![0].updates as any[];
+    expect(flush).toHaveLength(2);
+    for (const u of flush) {
+      expect(u.symbol).toBeUndefined();
+      expect(u.metadata).toEqual({ flow: { is_external: false } });
+      expect(String(u.sourceGroupId).startsWith('wf-transfer-')).toBe(true);
+    }
+    expect(flush[0].sourceGroupId).toBe(flush[1].sourceGroupId);
+  });
+
   it('does not set a sourceGroupId on a non-pair (lone) transaction', async () => {
     const tx = { id: 'tx-solo', posted: 1700000000, amount: '-12.50', description: 'Coffee' };
     vi.mocked(fetchAccounts).mockResolvedValueOnce(makeAccountSet([tx]));

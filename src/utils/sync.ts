@@ -100,6 +100,36 @@ async function hasAdjustmentToday(
 
 const PENDING_SUFFIX = ' · pending';
 
+/**
+ * Wealthfolio only treats a transfer group as a genuine *internal* transfer when
+ * both legs carry an internal-transfer marker (`activity_has_internal_transfer_marker`
+ * in `activities_service.rs`): either `metadata.flow.is_external === false`, or
+ * `metadata.transfer.source === "wealthfolio"`, or a group id starting with
+ * `wf-transfer-`. A shared `sourceGroupId` alone is NOT enough. We set the
+ * prefix and the metadata marker so the pair validates on every path.
+ */
+const TRANSFER_GROUP_PREFIX = 'wf-transfer-';
+const newTransferGroupId = () => `${TRANSFER_GROUP_PREFIX}${crypto.randomUUID()}`;
+const INTERNAL_TRANSFER_METADATA = { flow: { is_external: false } } as const;
+
+const TRANSFER_TYPES = new Set<string>(['TRANSFER_IN', 'TRANSFER_OUT']);
+
+/**
+ * Cash-transfer legs must be sent with NO asset/symbol at all.
+ *
+ * `$CASH-<ccy>` resolves to real cash for DEPOSIT/WITHDRAWAL/CREDIT, but for
+ * TRANSFER_IN/TRANSFER_OUT the bulk endpoint instead creates a literal security
+ * named "$CASH" (upstream issue #5). That breaks two things at once:
+ *   • the holdings calculator only books cash when `asset_id` is EMPTY
+ *     (`handlers/transfers.rs`), so a security-backed leg never moves the balance;
+ *   • `validate_asset_shape` (`transfer_pairs.rs`) then treats the pair as a
+ *     *security* transfer and rejects it unless both legs carry a quantity —
+ *     which is why such pairs can't be linked, even by Wealthfolio's own linker.
+ * Omitting the symbol leaves `asset_id = None`, which takes the cash branch in
+ * both places: the balance moves by `amount`, and the pair validates as cash.
+ */
+const isTransferType = (type: string) => TRANSFER_TYPES.has(type);
+
 /** Recover the SimpleFin tx id an activity comment/notes ends with — the
  *  `… · <txId>` suffix (optionally followed by ` · pending`). Returns null when
  *  the text doesn't carry one (e.g. a balance-adjustment or non-synced row). */
@@ -331,16 +361,13 @@ async function runSyncOnce(
     const alreadyLinked =
       existingGid !== undefined && ledger[outTxId] === existingGid && ledger[inTxId] === existingGid;
     if (!opts.heal && alreadyLinked) continue;
-    // A normal sync reuses the ledger gid (idempotent, no churn). A manual heal
-    // mints a FRESH gid rather than trusting the ledger: a ledger gid can be
-    // "poisoned" — left over from an earlier unstable pairing and now shared by
-    // a third, unrelated activity — which Wealthfolio silently rejects as an
-    // invalid 3+-leg group (the save succeeds but the gid comes back null).
-    // Wealthfolio refuses to move an already-grouped row (it keeps that row's
-    // existing gid), so a fresh gid can't disturb a correctly-linked pair, but
-    // it lets a stuck/unlinked pair form a clean, unique 2-leg group. The
-    // ledger is then reconciled to whatever Wealthfolio actually stored (below).
-    const gid = opts.heal ? crypto.randomUUID() : (existingGid ?? crypto.randomUUID());
+    // A normal sync reuses the ledger gid (idempotent, no churn); a manual heal
+    // mints a fresh one so a pair whose stamp never landed can retry cleanly.
+    // New gids carry the TRANSFER_GROUP_PREFIX so Wealthfolio recognises the
+    // group as an internal transfer (see the prefix's doc comment).
+    const gid = opts.heal
+      ? newTransferGroupId()
+      : (existingGid ?? newTransferGroupId());
     groupByTxId.set(outTxId, gid);
     groupByTxId.set(inTxId, gid);
   }
@@ -466,11 +493,12 @@ async function runSyncOnce(
       accountId: t.wfAccountId,
       activityType: t.type,
       activityDate: t.date,
-      // The /activities/bulk endpoint deserializes `symbol` as an
-      // AssetResolutionInput object (a bare string 422s with
-      // "invalid type: string, expected struct AssetResolutionInput").
-      // Resolve the reserved cash asset by its $CASH-<currency> symbol.
-      symbol: { symbol: cashSymbol },
+      // Transfer legs carry NO asset so they land as real cash and stay pairable
+      // (see isTransferType's note). Everything else resolves the reserved cash
+      // asset by symbol — the /activities/bulk endpoint deserializes `symbol` as
+      // an AssetResolutionInput object (a bare string 422s with "invalid type:
+      // string, expected struct AssetResolutionInput").
+      ...(isTransferType(t.type) ? {} : { symbol: { symbol: cashSymbol } }),
       amount: t.absCents / 100,
       currency: sfAccount.currency,
       comment: `${descByTxId.get(t.txId) ?? ''} · ${t.txId}${t.pending ? PENDING_SUFFIX : ''}`,
@@ -670,7 +698,11 @@ async function runSyncOnce(
         accountId: row.wfAccountId,
         activityType: row.type,
         activityDate: row.date,
-        symbol: { symbol: `$CASH-${row.currency}` },
+        // No asset on a cash-transfer leg (see isTransferType) — sending
+        // $CASH-<ccy> is what turns it into the unpairable "$CASH" security.
+        // The marker is what makes Wealthfolio treat the group as INTERNAL;
+        // a shared sourceGroupId alone does not.
+        metadata: INTERNAL_TRANSFER_METADATA,
         amount: row.absCents / 100,
         currency: row.currency,
         comment: `${descByTxId.get(row.txId) ?? ''} · ${row.txId}`,

@@ -453,6 +453,36 @@ securities), they should pair as an amount-only cash transfer. Fixing the
 `$CASH-<ccy>` resolution (above) fixes this too: the legs become real cash and
 both the addon's `sourceGroupId` and the native linker can pair them.
 
+### WORKAROUND FOUND (2026-07-21) — omit the asset entirely
+
+Thanks to a commenter on the issue (hit the same thing doing an Actual →
+Wealthfolio migration): send transfer legs with **no `symbol`/`asset` field at
+all** (amount only). The leg then stores `asset_id = None`, which is the *cash*
+path everywhere that matters — verified against the source:
+
+- `handlers/transfers.rs` — `handle_transfer_in`/`handle_transfer_out` book cash
+  **only when `asset_id` is empty**: `if asset_id.is_empty() { add_cash(state,
+  currency, amount - fee - tax) }`. So the balance moves by `amount`
+  (`quantity`/`unitPrice` are ignored on this branch).
+- `transfer_pairs.rs` — `non_cash_transfer_asset_key` returns `None`, so
+  `validate_asset_shape` returns `Ok(())` immediately and never demands a
+  quantity. The pair becomes valid and linkable.
+
+Note `is_cash_symbol("$CASH")` is **false** (it only matches `$CASH-<ccy>` /
+`CASH:<ccy>` forms), which is exactly why the mis-resolved literal `"$CASH"`
+security is treated as a *non-cash* asset and drags the pair into the
+quantity-requiring branch.
+
+Also: a shared `sourceGroupId` alone does **not** classify the pair as internal —
+`is_valid_internal_transfer_pair` → `activity_has_internal_transfer_marker`
+requires `metadata.flow.is_external === false`, or
+`metadata.transfer.source === "wealthfolio"`, or a group id starting with
+`wf-transfer-`. The addon now sets the `wf-transfer-` prefix **and** the
+metadata marker.
+
+This is a workaround, not a fix: `$CASH-<ccy>` should still resolve to cash for
+transfer legs like it does for DEPOSIT/WITHDRAWAL. See also #1356.
+
 ### Impact for the SimpleFin Sync addon
 
 Internal cash transfers between two synced accounts (e.g. savings → checking)
