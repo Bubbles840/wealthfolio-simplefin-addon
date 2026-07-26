@@ -3,7 +3,7 @@
   "name": "SimpleFin Sync",
   "version": "1.0.0",
   "description": "Sync bank transactions from SimpleFin into Wealthfolio automatically.",
-  "author": "Community",
+  "author": "Bubbles840",
   "main": "dist/addon.js",
   "sdkVersion": "3.6.2",
   "minWealthfolioVersion": "3.6.2",

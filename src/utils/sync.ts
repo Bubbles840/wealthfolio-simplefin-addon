@@ -873,12 +873,14 @@ async function runSyncOnce(
           delete ledger[txId]; ledgerChanged = true;
         }
       }
-      if (opts.heal) {
-        const linked = [...flushTxIds].filter((t) => echoedGidByTxId.get(t));
-        console.debug(
-          `[sfin-link] pairs attempted=${flushTxIds.size / 2} legs linked=${linked.length}/${flushTxIds.size}` +
-          `, re-created=${relinkCreates.length}`,
-          [...flushTxIds].map((t) => `${(descByTxId.get(t) ?? '').slice(0, 16)} → ${echoedGidByTxId.get(t) ? 'linked' : 'NOT LINKED'}`),
+      // Surface any leg the host silently refused to group, so a stuck transfer
+      // is diagnosable without instrumenting the addon. Only on an explicit
+      // Reconcile: a pair Wealthfolio keeps refusing would otherwise warn on
+      // every routine sync, and the retry is harmless in the meantime.
+      const unlinked = [...flushTxIds].filter((t) => !echoedGidByTxId.get(t));
+      if (opts.heal && unlinked.length > 0) {
+        errors.push(
+          `${unlinked.length} transfer leg(s) could not be linked — they will be retried on the next reconcile`,
         );
       }
     }

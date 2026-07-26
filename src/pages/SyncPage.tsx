@@ -35,7 +35,7 @@ function money(amount: number, currency = 'USD'): string {
   }
 }
 
-/** Two-character badge from an account name: "Spend (4937)" → "SP". */
+/** Two-character badge from an account name: "Spend (1234)" → "SP". */
 function initials(name: string): string {
   const clean = name.replace(/[^a-zA-Z0-9]/g, '');
   return (clean.slice(0, 2) || '••').toUpperCase();
