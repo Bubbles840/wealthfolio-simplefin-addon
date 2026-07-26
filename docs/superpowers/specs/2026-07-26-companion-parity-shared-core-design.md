@@ -149,12 +149,58 @@ retried on the next run.
   `WEALTHFOLIO_PASSWORD`. The SimpleFin access URL, mapping, and rules are read
   from the addon's secrets.
 
+## Security
+
+The companion handles financial data, so the posture is part of the design
+rather than an afterthought.
+
+Already in place and to be preserved: multi-stage build so build tooling stays
+out of the runtime image, `USER node` (non-root), `npm ci --omit=dev`, no
+secrets baked into the image, and `maskUrl` so the credentialed SimpleFin URL
+never reaches the logs.
+
+**Improvement this design delivers.** Today `state.json` persists the SimpleFin
+access URL in plaintext in the Docker volume. That URL embeds credentials, so
+read access to that file is read access to every bank transaction. Because the
+companion now reads the access URL from Wealthfolio's secrets at runtime, it
+never writes it to disk. `last_sync_at`, `balance_initialized`, and
+`linked_groups` also move to Wealthfolio's secrets, which leaves the local state
+file holding nothing sensitive — it can be dropped entirely.
+
+Note that encrypting a local state file would have been theater: the same
+process must hold the decryption key, so it buys nothing against an attacker
+who can read the volume. Removing the secret is the real fix. Genuine
+encryption at rest is the host's responsibility (an encrypted disk on the
+Docker host).
+
+**Residual risk, to document plainly.** `WEALTHFOLIO_PASSWORD` grants access to
+the whole Wealthfolio instance, not just this addon, and environment variables
+are visible to anyone who can run `docker inspect`. Mitigations to support and
+document:
+
+- Support `WEALTHFOLIO_PASSWORD_FILE` in addition to the plain variable, so the
+  value can come from a Docker secret or a mode-600 file rather than the
+  environment.
+- Keep `simplefin-sync.env` out of version control (already gitignored) and
+  restrict its permissions.
+- Prefer an internal Docker network or HTTPS for `WEALTHFOLIO_API_URL`. Plain
+  HTTP across an untrusted network would expose both the password and the
+  financial data in transit; a private overlay network such as Tailscale is
+  already encrypted.
+- Pin the base image by digest so image builds are reproducible.
+
 ## Out of scope
 
 - **Budget notifications** (for example, a daily "you have $20 left for food
-  this week" digest). This is budget monitoring rather than sync, and belongs
-  in its own project. The companion is a reasonable future home for it, since
-  it is already a long-running scheduled service.
-- **Removing the addon's in-browser scheduler.** Once the companion is trusted,
-  running one scheduler avoids two writers racing. Deferred until the companion
-  is proven in practice.
+  this week" digest, delivered via Telegram or a similar bot). Budget
+  monitoring rather than sync, so it ships separately — but the intended shape
+  is *additional functionality inside this same container*, reusing its
+  scheduler and its authenticated Wealthfolio client rather than standing up a
+  second service.
+- **Standing the addon's in-browser scheduler down automatically.** Deferred,
+  but the shared state makes it straightforward later: the companion writes a
+  heartbeat (for example `companion_last_run`) on each successful run, and the
+  addon skips its own scheduled sync while that heartbeat is recent, showing
+  "background sync active" instead. Nothing for the user to configure, and
+  installs without Docker are unaffected because the heartbeat is simply
+  absent. Manual Sync and Reconcile stay available either way.
