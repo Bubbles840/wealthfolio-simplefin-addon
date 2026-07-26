@@ -86,6 +86,14 @@ interface AccountBalanceSnapshot {
 }
 
 /**
+ * How many of an account's oldest rows the starting-balance lookups scan. The
+ * marker is dated a day before the account's earliest imported transaction, so
+ * it is always within the first handful of rows — a small ascending window
+ * finds it on an account of any size, where the recent-first page would not.
+ */
+const STARTING_BALANCE_SCAN = 50;
+
+/**
  * Shared-truth guard: asks Wealthfolio whether a starting-balance entry for
  * this SimpleFin account already exists (created by any syncer). Entries are
  * dated before the account's oldest imported transaction, so sorting by date
@@ -96,7 +104,7 @@ async function hasExistingStartingBalance(
   wfAccountId: string,
   sfinAccountId: string,
 ): Promise<boolean> {
-  const rows = await host.listActivities(wfAccountId);
+  const rows = await host.listOldestActivities(wfAccountId, STARTING_BALANCE_SCAN);
   const marker = `Starting balance · ${sfinAccountId}`;
   return rows.some((a) => (a.comment ?? '') === marker);
 }
@@ -116,7 +124,7 @@ async function fetchStartingBalance(
   wfAccountId: string,
   sfinAccountId: string,
 ): Promise<{ id: string; date: string; signed: number } | null> {
-  const rows = await host.listActivities(wfAccountId);
+  const rows = await host.listOldestActivities(wfAccountId, STARTING_BALANCE_SCAN);
   const marker = `Starting balance · ${sfinAccountId}`;
   const row = rows.find((a) => (a.comment ?? '') === marker);
   if (!row) return null;
@@ -309,6 +317,7 @@ export async function importAdjustmentActivity(
   // shape the starting-balance correction uses for the import endpoint.
   const adjustment: ImportRow = {
     accountId: wfAccountId,
+    sourceSystem: 'simplefin',
     activityType,
     date: today,
     symbol: `$CASH-${currency}`,
@@ -736,6 +745,7 @@ export async function runSyncCore(
       if (Number.isFinite(starting) && Math.abs(starting) >= 0.01) {
         const correction: ImportRow = {
           accountId: wfAccountId,
+          sourceSystem: 'simplefin',
           activityType: starting > 0 ? 'DEPOSIT' : 'WITHDRAWAL',
           date: dayBeforeDate,
           symbol: `$CASH-${sfAccount.currency}`,
@@ -804,6 +814,7 @@ export async function runSyncCore(
           if (!alreadyDone && Number.isFinite(starting) && Math.abs(starting) >= 0.01) {
             const correction: ImportRow = {
               accountId: p.wfAccountId,
+              sourceSystem: 'simplefin',
               activityType: starting > 0 ? 'DEPOSIT' : 'WITHDRAWAL',
               date: p.date,
               symbol: `$CASH-${p.currency}`,

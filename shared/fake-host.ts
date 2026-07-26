@@ -40,6 +40,17 @@ export interface FakeHost {
   imported: ImportRow[][];
 }
 
+/** Rows a single `listActivities` page returns — mirrors the addon adapter's
+ *  500-row search window so tests feel the same truncation the real host has. */
+export const HOST_PAGE_LIMIT = 500;
+
+/** Copy sorted by date; ties keep insertion order (Array#sort is stable). */
+function byDate(rows: HostActivity[], ascending: boolean): HostActivity[] {
+  return rows
+    .map((r) => ({ ...r }))
+    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0) * (ascending ? 1 : -1));
+}
+
 function cloneActivities(existing?: Map<string, HostActivity[]>): Map<string, HostActivity[]> {
   const map = new Map<string, HostActivity[]>();
   if (!existing) return map;
@@ -143,7 +154,15 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
     },
 
     async listActivities(wfAccountId: string) {
-      return rowsFor(wfAccountId).map((r) => ({ ...r }));
+      // Bounded, most-recent-first — the same window the real hosts read. An
+      // account with more rows than this loses its OLDEST ones off the page,
+      // which is exactly why the starting-balance marker needs the ascending
+      // read below rather than this one.
+      return byDate(rowsFor(wfAccountId), false).slice(0, HOST_PAGE_LIMIT);
+    },
+
+    async listOldestActivities(wfAccountId: string, limit: number) {
+      return byDate(rowsFor(wfAccountId), true).slice(0, limit);
     },
 
     async saveMany(req: SaveManyRequest): Promise<SaveManyResult> {

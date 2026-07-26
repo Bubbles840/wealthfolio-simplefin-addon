@@ -48,6 +48,21 @@ function toSdkWrite(w: ActivityWrite): ActivityCreate & { id?: string } {
   } as ActivityCreate & { id?: string };
 }
 
+/** Normalize an ActivityDetails row returned by `activities.search`. Shared by
+ *  both reads so the recent-first and oldest-first windows can never drift. */
+function fromSearchRow(a: any, wfAccountId: string): HostActivity {
+  return {
+    id: String(a.id ?? ''),
+    accountId: String(a.accountId ?? wfAccountId),
+    activityType: String(a.activityType ?? ''),
+    date: toIsoDate(a.date),
+    amount: a.amount ?? null,
+    comment: a.comment ?? null,
+    assetId: a.assetId ? String(a.assetId) : undefined,
+    sourceGroupId: a.sourceGroupId ?? null,
+  };
+}
+
 /** Normalize an Activity echoed back by saveMany. The host names the comment
  *  field `notes` on the echo, and it is the only channel that reports the
  *  persisted `sourceGroupId` (ActivityDetails from search omits it). */
@@ -101,16 +116,17 @@ export class AddonSyncHost implements SyncHost {
     const res = await this.ctx.api.activities.search(
       0, 500, { accountIds: [wfAccountId] }, '', { id: 'date', desc: true },
     );
-    return (res.data ?? []).map((a: any) => ({
-      id: String(a.id ?? ''),
-      accountId: String(a.accountId ?? wfAccountId),
-      activityType: String(a.activityType ?? ''),
-      date: toIsoDate(a.date),
-      amount: a.amount ?? null,
-      comment: a.comment ?? null,
-      assetId: a.assetId ? String(a.assetId) : undefined,
-      sourceGroupId: a.sourceGroupId ?? null,
-    }));
+    return (res.data ?? []).map((a: any) => fromSearchRow(a, wfAccountId));
+  }
+
+  /** Bounded ascending read for the starting-balance marker — the oldest row on
+   *  the account, which the 500-row recent-first page above would miss entirely
+   *  once the account has more than 500 activities. */
+  async listOldestActivities(wfAccountId: string, limit: number): Promise<HostActivity[]> {
+    const res = await this.ctx.api.activities.search(
+      0, limit, { accountIds: [wfAccountId] }, '', { id: 'date', desc: false },
+    );
+    return (res.data ?? []).map((a: any) => fromSearchRow(a, wfAccountId));
   }
 
   async saveMany(req: SaveManyRequest): Promise<SaveManyResult> {
@@ -130,10 +146,9 @@ export class AddonSyncHost implements SyncHost {
   }
 
   async importActivities(rows: ImportRow[]): Promise<void> {
-    // Every row this addon imports is SimpleFin-sourced; stamping it here keeps
-    // the core host-agnostic while preserving the field the SDK path always sent.
-    const activities = rows.map((r) => ({ ...r, sourceSystem: 'simplefin' as const }));
-    await this.ctx.api.activities.import(activities as any);
+    // `sourceSystem` rides on ImportRow itself, so the payload carries it
+    // without this adapter (or the companion's) having to remember to stamp it.
+    await this.ctx.api.activities.import(rows as any);
   }
 
   async linkPair(_legs: [LinkLeg, LinkLeg]): Promise<LinkResult> {

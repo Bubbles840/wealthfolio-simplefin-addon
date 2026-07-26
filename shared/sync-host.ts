@@ -58,6 +58,10 @@ export interface LinkResult {
 /** A row for the relaxed import endpoint (starting balances, plugs). */
 export interface ImportRow {
   accountId: string;
+  /** Which syncer wrote the row. Carried on the row rather than stamped inside
+   *  each host, so no adapter can silently drop it — Wealthfolio surfaces it,
+   *  and both the addon and the companion have always sent 'simplefin'. */
+  sourceSystem: 'simplefin';
   activityType: string;
   date: string;
   symbol: string;
@@ -73,7 +77,21 @@ export interface SyncHost {
   fetchSimplefin(accessUrl: string, since: Date, authKey?: string | null): Promise<SimplefinAccountSet>;
   listAccounts(): Promise<Array<{ id: string; accountType: string; name?: string }>>;
   latestValuations(accountIds: string[]): Promise<Map<string, number>>;
+  /** The account's most recent activities, newest first. Bounded by the host's
+   *  page size, so it is NOT a way to reach an old row on a busy account. */
   listActivities(wfAccountId: string): Promise<HostActivity[]>;
+  /**
+   * The account's `limit` OLDEST activities, date ascending.
+   *
+   * Deliberately a separate method rather than an option on `listActivities`:
+   * an optional argument is structurally invisible, so an adapter could ignore
+   * it, still satisfy this interface, and silently hand back a recent-first
+   * page. The starting-balance marker is by construction the oldest row on the
+   * account, so reading it through the recent-first window would miss it once
+   * the account outgrows one page — and a missed marker means a DUPLICATE
+   * baseline, which is exactly what its guard exists to prevent.
+   */
+  listOldestActivities(wfAccountId: string, limit: number): Promise<HostActivity[]>;
   saveMany(req: SaveManyRequest): Promise<SaveManyResult>;
   importActivities(rows: ImportRow[]): Promise<void>;
   /** Record that two activities are one internal transfer. */
