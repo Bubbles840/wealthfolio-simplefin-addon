@@ -82,6 +82,76 @@ async function hasExistingStartingBalance(
 }
 
 /**
+ * The account's starting-balance entry, if one exists, as a signed amount.
+ *
+ * The entry is a one-time baseline meaning "everything before this date is
+ * already reflected in the bank's balance". It's calculated from the first
+ * sync's window, so any transaction later imported with an EARLIER date (a wide
+ * re-scan reaching further back) would be counted twice — once in the baseline
+ * and again as its own activity. `adjustStartingBalanceForOlderRows` corrects
+ * the baseline when that happens; this reads the row it has to correct.
+ */
+async function fetchStartingBalance(
+  ctx: AddonContext,
+  wfAccountId: string,
+  sfinAccountId: string,
+): Promise<{ id: string; date: string; signed: number } | null> {
+  const res = await ctx.api.activities.search(
+    0, 50, { accountIds: [wfAccountId] }, '', { id: 'date', desc: false },
+  );
+  const marker = `Starting balance · ${sfinAccountId}`;
+  const row = res.data.find((a) => (a.comment ?? '') === marker);
+  if (!row) return null;
+  const abs = Math.abs(parseFloat(String(row.amount ?? '0')));
+  return {
+    id: row.id,
+    date: new Date(row.date).toISOString().slice(0, 10),
+    signed: String(row.activityType) === 'WITHDRAWAL' ? -abs : abs,
+  };
+}
+
+/**
+ * Keep the starting-balance baseline honest when a run imports transactions
+ * dated BEFORE it. Those rows are already baked into the baseline, so leaving it
+ * alone double-counts them (the classic symptom: an account drifts by exactly
+ * the sum of the newly-recovered history). Subtracting their signed total from
+ * the baseline nets them out, so the balance stays correct no matter how far
+ * back a later re-scan reaches.
+ */
+async function adjustStartingBalanceForOlderRows(
+  ctx: AddonContext,
+  args: {
+    wfAccountId: string;
+    sfinAccountId: string;
+    currency: string;
+    /** Signed amounts of the rows just created, keyed by date (YYYY-MM-DD). */
+    created: Array<{ date: string; signed: number }>;
+  },
+): Promise<number> {
+  const { wfAccountId, sfinAccountId, currency, created } = args;
+  const sb = await fetchStartingBalance(ctx, wfAccountId, sfinAccountId);
+  if (!sb) return 0;
+  const olderSum = created
+    .filter((c) => c.date < sb.date)
+    .reduce((sum, c) => sum + c.signed, 0);
+  if (!Number.isFinite(olderSum) || Math.abs(olderSum) < 0.01) return 0;
+  const nextSigned = Math.round((sb.signed - olderSum) * 100) / 100;
+  await ctx.api.activities.saveMany({
+    updates: [{
+      id: sb.id,
+      accountId: wfAccountId,
+      activityType: (nextSigned >= 0 ? 'DEPOSIT' : 'WITHDRAWAL') as ActivityType,
+      activityDate: sb.date,
+      symbol: { symbol: `$CASH-${currency}` },
+      amount: Math.abs(nextSigned),
+      currency,
+      comment: `Starting balance · ${sfinAccountId}`,
+    }],
+  });
+  return olderSum;
+}
+
+/**
  * Whether a balance-adjustment entry was already inserted for this account today
  * — the once-a-day guard that stops aggressive auto-heal from stacking a second
  * adjustment on a rapid re-sync before Wealthfolio has recomputed valuations.
@@ -542,6 +612,22 @@ async function runSyncOnce(
       imported += result.created.length;
       for (const err of result.errors ?? []) {
         errors.push(`Account ${wfAccountId} save error (${err.action}): ${err.message}`);
+      }
+      // Recovering history older than the starting-balance baseline double-counts
+      // it (the baseline already includes those rows), so net them back out.
+      if ((result.errors ?? []).length === 0) {
+        try {
+          await adjustStartingBalanceForOlderRows(ctx, {
+            wfAccountId,
+            sfinAccountId: sfAccount.id,
+            currency: sfAccount.currency,
+            created: plan.creates
+              .filter((t) => !t.pending)
+              .map((t) => ({ date: t.date, signed: signedByTxId.get(t.txId) ?? 0 })),
+          });
+        } catch (e: any) {
+          errors.push(`Account ${wfAccountId} starting-balance adjust failed: ${e?.message ?? e}`);
+        }
       }
       // Register rows just created so a brand-new transfer pair can be linked in
       // the same run's atomic flush (match the echoed Activity's `… · <txId>`

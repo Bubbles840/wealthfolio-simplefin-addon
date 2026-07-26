@@ -702,6 +702,52 @@ describe('runSync', () => {
     expect((recreate.updates ?? []).some((u: any) => u.id === 'act-out')).toBe(false);
   });
 
+  it('nets recovered pre-baseline history out of the starting balance (no double-count)', async () => {
+    // A wide re-scan reaches back past the starting-balance date. Those rows are
+    // already baked into the baseline, so importing them without adjusting it
+    // makes the account drift by exactly their sum.
+    const older = { id: 'tx-old', posted: Date.parse('2026-04-23T12:00:00Z') / 1000, amount: '-1300.00', description: 'ACH Withdrawal PNC' };
+    vi.mocked(fetchAccounts).mockResolvedValueOnce(makeAccountSet([older]));
+    const ctx = makeCtx();
+    // An existing $4,500.38 baseline dated AFTER the recovered transaction.
+    ctx.api.activities.search = vi.fn(async () => ({
+      data: [{
+        id: 'act-start', accountId: 'wf-account-a', activityType: 'DEPOSIT',
+        date: '2026-06-18', amount: '4500.38', comment: 'Starting balance · sfin-1',
+      }],
+    }));
+    await runSync(ctx, makeStore() as any);
+
+    const update = vi.mocked(ctx.api.activities.saveMany).mock.calls
+      .flatMap((c: any) => c[0].updates ?? [])
+      .find((u: any) => u.id === 'act-start');
+    expect(update).toBeTruthy();
+    // The baseline already reflects that this $1,300 withdrawal happened, so the
+    // newly-imported row would subtract it a second time. Netting it out means
+    // baseline − signed = 4500.38 − (−1300) = 5800.38, which then leaves
+    // 5800.38 − 1300 = 4500.38 — the balance the baseline always represented.
+    expect(update.amount).toBeCloseTo(5800.38, 2);
+    expect(update.activityType).toBe('DEPOSIT');
+  });
+
+  it('leaves the starting balance alone when nothing older than it was imported', async () => {
+    const recent = { id: 'tx-new', posted: Date.parse('2026-07-20T12:00:00Z') / 1000, amount: '-25.00', description: 'Coffee' };
+    vi.mocked(fetchAccounts).mockResolvedValueOnce(makeAccountSet([recent]));
+    const ctx = makeCtx();
+    ctx.api.activities.search = vi.fn(async () => ({
+      data: [{
+        id: 'act-start', accountId: 'wf-account-a', activityType: 'DEPOSIT',
+        date: '2026-06-18', amount: '4500.38', comment: 'Starting balance · sfin-1',
+      }],
+    }));
+    await runSync(ctx, makeStore() as any);
+
+    const touched = vi.mocked(ctx.api.activities.saveMany).mock.calls
+      .flatMap((c: any) => c[0].updates ?? [])
+      .some((u: any) => u.id === 'act-start');
+    expect(touched).toBe(false);
+  });
+
   it('does not set a sourceGroupId on a non-pair (lone) transaction', async () => {
     const tx = { id: 'tx-solo', posted: 1700000000, amount: '-12.50', description: 'Coffee' };
     vi.mocked(fetchAccounts).mockResolvedValueOnce(makeAccountSet([tx]));
