@@ -19,6 +19,10 @@ export interface ExistingRow {
    *  book cash and to stay pairable; legs imported before that was understood
    *  carry the phantom "$CASH" security here and need re-creating. */
   assetId?: string;
+  /** The row's stored comment, kept verbatim so a re-created leg preserves its
+   *  description even when the transaction is outside this run's fetch window
+   *  (where the SimpleFin description is no longer available to rebuild it). */
+  comment?: string;
 }
 
 export interface ReconcilePlan {

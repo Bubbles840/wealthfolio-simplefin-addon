@@ -168,6 +168,7 @@ async function fetchExistingRows(ctx: AddonContext, wfAccountId: string): Promis
       date: new Date(a.date).toISOString().slice(0, 10),
       pending,
       assetId: a.assetId ? String(a.assetId) : undefined,
+      comment: a.comment ?? undefined,
     });
   }
   return rows;
@@ -729,13 +730,30 @@ async function runSyncOnce(
         activityDate: row.date,
         amount: row.absCents / 100,
         currency: row.currency,
-        comment: `${descByTxId.get(row.txId) ?? ''} · ${row.txId}`,
+        comment: row.comment ?? `${descByTxId.get(row.txId) ?? ''} · ${row.txId}`,
         // The marker is what makes Wealthfolio treat the group as INTERNAL;
         // a shared sourceGroupId alone does not.
         metadata: INTERNAL_TRANSFER_METADATA,
         sourceGroupId: gid,
       });
     }
+  }
+  // Repair legacy transfer legs that still carry an asset but are NOT part of a
+  // detected pair — e.g. a transfer to an untracked external account. They can
+  // never book cash while an asset is attached (and an update can't clear it),
+  // so they silently understate the balance. No group id: there's nothing to
+  // pair them with; the point is purely to make them move cash.
+  for (const row of linkRowByTxId.values()) {
+    if (!isTransferType(row.type) || !row.assetId || flushTxIds.has(row.txId)) continue;
+    staleLegIds.push(row.wfId);
+    relinkCreates.push({
+      accountId: row.wfAccountId,
+      activityType: row.type as ActivityType,
+      activityDate: row.date,
+      amount: row.absCents / 100,
+      currency: row.currency,
+      comment: row.comment ?? `${descByTxId.get(row.txId) ?? ''} · ${row.txId}`,
+    });
   }
   if (relinkCreates.length > 0) {
     // Delete the old legs first so re-creating them can't collide with the
