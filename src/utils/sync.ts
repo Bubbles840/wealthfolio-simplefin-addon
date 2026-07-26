@@ -359,19 +359,32 @@ async function runSyncOnce(
   // didn't take — can still self-heal.
   const ledger = await store.getLinkedGroups();
   let ledgerChanged = false;
+  // One-time migration: entries whose gid predates TRANSFER_GROUP_PREFIX were
+  // written optimistically (before the ledger was reconciled against what
+  // Wealthfolio actually stored), so they may claim a link that never landed.
+  // Drop them so those pairs get re-attempted exactly once; every gid written
+  // from here on is echo-confirmed and therefore trustworthy.
+  for (const [txId, gid] of Object.entries(ledger)) {
+    if (!String(gid).startsWith(TRANSFER_GROUP_PREFIX)) {
+      delete ledger[txId];
+      ledgerChanged = true;
+    }
+  }
   const groupByTxId = new Map<string, string>();
   for (const { outTxId, inTxId } of detection.pairs) {
     const existingGid = ledger[outTxId] ?? ledger[inTxId];
     const alreadyLinked =
       existingGid !== undefined && ledger[outTxId] === existingGid && ledger[inTxId] === existingGid;
-    if (!opts.heal && alreadyLinked) continue;
-    // A normal sync reuses the ledger gid (idempotent, no churn); a manual heal
-    // mints a fresh one so a pair whose stamp never landed can retry cleanly.
-    // New gids carry the TRANSFER_GROUP_PREFIX so Wealthfolio recognises the
-    // group as an internal transfer (see the prefix's doc comment).
-    const gid = opts.heal
-      ? newTransferGroupId()
-      : (existingGid ?? newTransferGroupId());
+    // Confirmed-linked pairs (both legs on the same gid, adopted from a previous
+    // run's echo) are skipped — no churn, on a normal sync or a heal.
+    if (alreadyLinked) continue;
+    // Anything else gets a brand-new group id. We never try to reuse a stored
+    // one: Wealthfolio refuses to move an already-grouped row, so re-stamping a
+    // pair whose counterpart still belongs to a stale group would leave our new
+    // group with a single leg — which it then drops, leaving that leg unlinked.
+    // The flush below sidesteps this by re-creating BOTH legs, which clears any
+    // prior membership so the fresh group is always complete.
+    const gid = newTransferGroupId();
     groupByTxId.set(outTxId, gid);
     groupByTxId.set(inTxId, gid);
   }
@@ -694,21 +707,26 @@ async function runSyncOnce(
   // therefore deleted and re-created asset-free instead, which is also the only
   // way to make them book cash (handlers/transfers.rs only books cash when
   // asset_id is empty).
-  const linkUpdates: ActivityUpdate[] = [];
   const relinkCreates: ActivityCreate[] = [];
   const staleLegIds: string[] = [];
   const flushTxIds = new Set<string>();
   for (const { outTxId, inTxId } of detection.pairs) {
     const gid = groupByTxId.get(outTxId);
-    if (!gid) continue; // already linked (non-heal) — nothing to do
+    if (!gid) continue; // already linked — nothing to do
     const outRow = linkRowByTxId.get(outTxId);
     const inRow = linkRowByTxId.get(inTxId);
     if (!outRow || !inRow) continue; // a leg isn't imported yet — links next run
+    // Re-create BOTH legs rather than updating them. Two stored states resist an
+    // update: an existing asset can't be cleared (the server's `asset` is a plain
+    // Option, not its Option<Option<…>> patch shape), and an existing group can't
+    // be reassigned. Re-creating clears both, so the new 2-leg group always forms.
     for (const row of [outRow, inRow]) {
       flushTxIds.add(row.txId);
-      const shared = {
+      staleLegIds.push(row.wfId);
+      relinkCreates.push({
         accountId: row.wfAccountId,
         activityType: row.type as ActivityType,
+        activityDate: row.date,
         amount: row.absCents / 100,
         currency: row.currency,
         comment: `${descByTxId.get(row.txId) ?? ''} · ${row.txId}`,
@@ -716,30 +734,19 @@ async function runSyncOnce(
         // a shared sourceGroupId alone does not.
         metadata: INTERNAL_TRANSFER_METADATA,
         sourceGroupId: gid,
-      };
-      if (row.assetId) {
-        staleLegIds.push(row.wfId);
-        relinkCreates.push({ ...shared, activityDate: row.date });
-      } else {
-        linkUpdates.push({ ...shared, id: row.wfId, activityDate: row.date });
-      }
+      });
     }
   }
-  if (linkUpdates.length > 0 || relinkCreates.length > 0) {
-    // Delete the stale asset-bearing legs first, so re-creating them can't
-    // collide with the originals on the host's dedup.
-    if (staleLegIds.length > 0) {
-      const del = await ctx.api.activities.saveMany({ deleteIds: staleLegIds });
-      for (const err of del.errors ?? []) {
-        errors.push(`Transfer-relink delete error (${err.action}): ${err.message}`);
-      }
+  if (relinkCreates.length > 0) {
+    // Delete the old legs first so re-creating them can't collide with the
+    // originals on the host's dedup.
+    const del = await ctx.api.activities.saveMany({ deleteIds: staleLegIds });
+    for (const err of del.errors ?? []) {
+      errors.push(`Transfer-relink delete error (${err.action}): ${err.message}`);
     }
     // One call carrying BOTH legs of every pair, so each group is complete at
     // write time (a per-leg call looks like a lone leg and the group is dropped).
-    const result = await ctx.api.activities.saveMany({
-      creates: relinkCreates,
-      updates: linkUpdates,
-    });
+    const result = await ctx.api.activities.saveMany({ creates: relinkCreates });
     for (const err of result.errors ?? []) {
       errors.push(`Transfer-link save error (${err.action}): ${err.message}`);
     }
