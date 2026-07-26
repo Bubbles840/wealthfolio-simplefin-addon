@@ -12,6 +12,11 @@ import type {
 } from './sync-host.js';
 
 export interface FakeHostSeed {
+  /** Stored SimpleFin access URL. Defaults to a configured-looking placeholder
+   *  so a seeded run reaches the import path; pass `null` to exercise the
+   *  "not configured" branch. `fetchSimplefin` ignores it and returns
+   *  `accountSet`. */
+  accessUrl?: string | null;
   accountSet?: SimplefinAccountSet;
   mapping?: AccountMapping;
   accountTypes?: Record<string, string>;
@@ -58,6 +63,9 @@ function cloneActivities(existing?: Map<string, HostActivity[]>): Map<string, Ho
  *   write the way the real API might reject one.
  */
 export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
+  const accessUrl = seed.accessUrl === undefined
+    ? 'https://bridge.simplefin.org/simplefin'
+    : seed.accessUrl;
   const accountSet: SimplefinAccountSet = seed.accountSet ?? { errors: [], accounts: [] };
   const mapping: AccountMapping = seed.mapping ?? {};
   const accountTypes: Record<string, string> = seed.accountTypes ?? {};
@@ -215,7 +223,7 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
 
   const store: SyncStore = {
     async getAccessUrl() {
-      return null;
+      return accessUrl;
     },
     async getAuthB64Key() {
       return null;
