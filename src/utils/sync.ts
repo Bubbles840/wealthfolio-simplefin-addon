@@ -167,6 +167,7 @@ async function fetchExistingRows(ctx: AddonContext, wfAccountId: string): Promis
       type: String(a.activityType),
       date: new Date(a.date).toISOString().slice(0, 10),
       pending,
+      assetId: a.assetId ? String(a.assetId) : undefined,
     });
   }
   return rows;
@@ -686,7 +687,16 @@ async function runSyncOnce(
   // pair (both legs created this run) links on the next sync once they're
   // existing rows. Non-heal reuses the ledger gid and skips already-linked pairs
   // (groupByTxId omits them); heal re-attempts every pair with a fresh gid.
+  // A leg that still carries an asset can't be repaired by an update: the
+  // server's `asset` field is a plain Option (not the Option<Option<…>> "patch"
+  // shape its numeric fields use), so omitting it does not CLEAR a stored asset.
+  // Such legacy legs — created before we knew transfers must be asset-free — are
+  // therefore deleted and re-created asset-free instead, which is also the only
+  // way to make them book cash (handlers/transfers.rs only books cash when
+  // asset_id is empty).
   const linkUpdates: ActivityUpdate[] = [];
+  const relinkCreates: ActivityCreate[] = [];
+  const staleLegIds: string[] = [];
   const flushTxIds = new Set<string>();
   for (const { outTxId, inTxId } of detection.pairs) {
     const gid = groupByTxId.get(outTxId);
@@ -696,25 +706,40 @@ async function runSyncOnce(
     if (!outRow || !inRow) continue; // a leg isn't imported yet — links next run
     for (const row of [outRow, inRow]) {
       flushTxIds.add(row.txId);
-      linkUpdates.push({
-        id: row.wfId,
+      const shared = {
         accountId: row.wfAccountId,
-        activityType: row.type,
-        activityDate: row.date,
-        // No asset on a cash-transfer leg (see isTransferType) — sending
-        // $CASH-<ccy> is what turns it into the unpairable "$CASH" security.
-        // The marker is what makes Wealthfolio treat the group as INTERNAL;
-        // a shared sourceGroupId alone does not.
-        metadata: INTERNAL_TRANSFER_METADATA,
+        activityType: row.type as ActivityType,
         amount: row.absCents / 100,
         currency: row.currency,
         comment: `${descByTxId.get(row.txId) ?? ''} · ${row.txId}`,
+        // The marker is what makes Wealthfolio treat the group as INTERNAL;
+        // a shared sourceGroupId alone does not.
+        metadata: INTERNAL_TRANSFER_METADATA,
         sourceGroupId: gid,
-      });
+      };
+      if (row.assetId) {
+        staleLegIds.push(row.wfId);
+        relinkCreates.push({ ...shared, activityDate: row.date });
+      } else {
+        linkUpdates.push({ ...shared, id: row.wfId, activityDate: row.date });
+      }
     }
   }
-  if (linkUpdates.length > 0) {
-    const result = await ctx.api.activities.saveMany({ updates: linkUpdates });
+  if (linkUpdates.length > 0 || relinkCreates.length > 0) {
+    // Delete the stale asset-bearing legs first, so re-creating them can't
+    // collide with the originals on the host's dedup.
+    if (staleLegIds.length > 0) {
+      const del = await ctx.api.activities.saveMany({ deleteIds: staleLegIds });
+      for (const err of del.errors ?? []) {
+        errors.push(`Transfer-relink delete error (${err.action}): ${err.message}`);
+      }
+    }
+    // One call carrying BOTH legs of every pair, so each group is complete at
+    // write time (a per-leg call looks like a lone leg and the group is dropped).
+    const result = await ctx.api.activities.saveMany({
+      creates: relinkCreates,
+      updates: linkUpdates,
+    });
     for (const err of result.errors ?? []) {
       errors.push(`Transfer-link save error (${err.action}): ${err.message}`);
     }
@@ -725,7 +750,7 @@ async function runSyncOnce(
       // API's ActivityDetails omits sourceGroupId. Adopt the real gid where a row
       // came back grouped; purge any txId that came back ungrouped so it retries.
       const echoedGidByTxId = new Map<string, string | null | undefined>();
-      for (const a of (result.updated ?? []) as any[]) {
+      for (const a of [...(result.updated ?? []), ...(result.created ?? [])] as any[]) {
         const txId = txIdFromComment(a.notes ?? a.comment);
         if (txId) echoedGidByTxId.set(txId, a.sourceGroupId);
       }
@@ -736,6 +761,14 @@ async function runSyncOnce(
         } else if (txId in ledger) {
           delete ledger[txId]; ledgerChanged = true;
         }
+      }
+      if (opts.heal) {
+        const linked = [...flushTxIds].filter((t) => echoedGidByTxId.get(t));
+        console.debug(
+          `[sfin-link] pairs attempted=${flushTxIds.size / 2} legs linked=${linked.length}/${flushTxIds.size}` +
+          `, re-created=${relinkCreates.length}`,
+          [...flushTxIds].map((t) => `${(descByTxId.get(t) ?? '').slice(0, 16)} → ${echoedGidByTxId.get(t) ? 'linked' : 'NOT LINKED'}`),
+        );
       }
     }
   }

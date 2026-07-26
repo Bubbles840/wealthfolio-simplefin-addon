@@ -643,6 +643,41 @@ describe('runSync', () => {
     expect(flush[0].sourceGroupId).toBe(flush[1].sourceGroupId);
   });
 
+  it('re-creates legacy transfer legs that still carry an asset (an update cannot clear it)', async () => {
+    // Legs imported before we knew transfers must be asset-free hold the phantom
+    // "$CASH" security. The server's `asset` is a plain Option (not the
+    // Option<Option<…>> patch shape), so omitting it does NOT clear a stored
+    // asset — and a leg with an asset neither books cash nor passes
+    // validate_asset_shape. So they must be deleted and re-created asset-free.
+    vi.mocked(fetchAccounts).mockResolvedValueOnce(transferPairAccountSet());
+    const ctx = makeCtx();
+    const existingByAccount: Record<string, any[]> = {
+      'wf-account-a': [{ id: 'act-out', assetId: '$CASH', comment: 'Payment to Citibank · tx-out', amount: '-500.00', activityType: 'TRANSFER_OUT', date: '2023-11-14' }],
+      'wf-account-b': [{ id: 'act-in', assetId: '$CASH', comment: 'PAYMENT THANK YOU · tx-in', amount: '500.00', activityType: 'TRANSFER_IN', date: '2023-11-15' }],
+    };
+    ctx.api.activities.search = vi.fn(async (_p: number, _l: number, filter: any) => ({
+      data: existingByAccount[filter.accountIds[0]] ?? [],
+    }));
+    await runSync(ctx, twoAccountStore() as any);
+
+    const calls = vi.mocked(ctx.api.activities.saveMany).mock.calls.map((c: any) => c[0]);
+    // Stale legs deleted...
+    const del = calls.find((r: any) => (r.deleteIds ?? []).length > 0);
+    expect(del.deleteIds.sort()).toEqual(['act-in', 'act-out']);
+    // ...then both re-created asset-free, in ONE call, sharing a marked group.
+    const recreate = calls.find((r: any) =>
+      (r.creates ?? []).some((c: any) => c.sourceGroupId));
+    expect(recreate.creates).toHaveLength(2);
+    for (const c of recreate.creates) {
+      expect(c.symbol).toBeUndefined();
+      expect(typeof c.metadata).toBe('string');
+      expect(String(c.sourceGroupId).startsWith('wf-transfer-')).toBe(true);
+    }
+    expect(recreate.creates[0].sourceGroupId).toBe(recreate.creates[1].sourceGroupId);
+    // No update was attempted for these legs (it could not have worked).
+    expect((recreate.updates ?? []).some((u: any) => u.id === 'act-out')).toBe(false);
+  });
+
   it('does not set a sourceGroupId on a non-pair (lone) transaction', async () => {
     const tx = { id: 'tx-solo', posted: 1700000000, amount: '-12.50', description: 'Coffee' };
     vi.mocked(fetchAccounts).mockResolvedValueOnce(makeAccountSet([tx]));

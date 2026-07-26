@@ -15,6 +15,10 @@ export interface ExistingRow {
   type: string;
   date: string;      // YYYY-MM-DD
   pending: boolean;
+  /** Resolved asset on the stored row. A cash-transfer leg must have NO asset to
+   *  book cash and to stay pairable; legs imported before that was understood
+   *  carry the phantom "$CASH" security here and need re-creating. */
+  assetId?: string;
 }
 
 export interface ReconcilePlan {
