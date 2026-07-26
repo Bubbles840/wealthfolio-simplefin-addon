@@ -10,13 +10,19 @@
   "trust": "community",
   "verification": "verified",
   "status": "active",
-  "tags": ["banking", "import", "sync", "transactions", "spending"],
+  "tags": [
+    "banking",
+    "import",
+    "sync",
+    "transactions",
+    "spending"
+  ],
   "repository": "https://github.com/Bubbles840/wealthfolio-simplefin-addon",
   "supportUrl": "https://github.com/Bubbles840/wealthfolio-simplefin-addon/issues",
   "source": {
     "repository": "https://github.com/Bubbles840/wealthfolio-simplefin-addon",
     "tag": "v1.0.0",
-    "commit": "702ae058ae305efb427abcb22fc5edf84c5b27a8"
+    "commit": "169d6bf86b0c978b03456031e712c913fd7615bb"
   },
   "release": {
     "version": "1.0.0",
