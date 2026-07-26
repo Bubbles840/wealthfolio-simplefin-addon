@@ -1,69 +1,132 @@
-# wealthfolio-simplefin-addon
+# SimpleFin Sync for Wealthfolio
 
-A Wealthfolio addon for wealthfolio-simplefin-addon
+Import your bank and credit-card transactions into
+[Wealthfolio](https://wealthfolio.app) automatically, via
+[SimpleFin](https://beta-bridge.simplefin.org) — a privacy-focused, read-only
+bank aggregation service.
 
-## Development
-
-```bash
-# Install dependencies
-npm install
-
-# Start development server
-npm run dev:server
-
-# Build for production
-npm run build
-
-# Package addon
-npm run bundle
-```
+Your data goes from your bank to SimpleFin to your own Wealthfolio instance.
+Nothing is sent anywhere else, and SimpleFin access is read-only: nothing can
+move money.
 
 ## Features
 
-- Add your features here
+- **Automatic transaction import** from every SimpleFin-connected account —
+  checking, savings, and credit cards.
+- **Account mapping** — point each SimpleFin account at a Wealthfolio account,
+  or create the Wealthfolio account from the setup screen.
+- **Correct balances.** A one-time starting-balance entry lands each account on
+  its real bank balance rather than just the sum of imported transactions.
+- **Pending transactions**, imported and then reconciled in place when they
+  post — so a pending charge that settles at a different amount is updated, not
+  duplicated, and one that vanishes is removed.
+- **Internal transfers detected and linked.** A payment from checking to a
+  credit card is recognised as one movement and excluded from spending and
+  income, instead of double-counting as both an expense and income.
+- **Custom mapping rules** — map a description pattern to a specific activity
+  type when a bank's phrasing needs different treatment. Your rules always win
+  over automatic detection.
+- **Balance reconciliation.** The sync page shows each account's SimpleFin
+  balance and flags any drift, with a one-click correction.
+- **Auto-sync on a schedule** while Wealthfolio is open, including a catch-up
+  when you open the app.
 
-## Usage
+## Requirements
+
+- Wealthfolio **3.6.2** or newer
+- A SimpleFin account and a one-time **setup token**
+
+## Setup
+
+1. Install the addon in Wealthfolio (**Settings → Add-ons**).
+2. Open **SimpleFin Sync** in the sidebar and paste your SimpleFin setup token.
+   It is exchanged once for a long-lived access URL, which is stored in
+   Wealthfolio's encrypted secret storage — the token itself is not kept.
+3. Map each SimpleFin account to a Wealthfolio account.
+4. Press **Sync Now**.
+
+## How it works
 
 ### Syncing
 
-The addon syncs when you open Wealthfolio (a catch-up runs on startup),
-while a tab is open (on your chosen interval), and whenever you press
-**Sync Now**. A one-hour minimum interval acts as a cooldown, so reloading
-the page is a cheap no-op.
+A sync runs when you open Wealthfolio, on your chosen interval while a tab is
+open, and whenever you press **Sync Now**. A one-hour minimum interval acts as
+a cooldown, so reloading the page is a cheap no-op.
+
+Each run re-scans a two-week overlap rather than only new transactions, because
+card purchases often post days later with a backdated timestamp. Transactions
+are matched by their SimpleFin id, so re-scanning already-imported rows changes
+nothing.
 
 ### Transfers, card payments & refunds
 
-- Transfers between two synced accounts (e.g. paying a credit card from
-  checking) are detected automatically — equal amounts, opposite signs,
-  within 3 days — and imported as a Transfer Out / Transfer In pair,
-  excluded from spending and income analytics.
-- Wealthfolio does not yet expose a linking API to addons ([upstream issue
-  filed](companion/upstream-pr.md)), so link the two sides with one click in
-  the Spending tab: open the Transfer Out row's ⋮ menu → **Link transfer** →
-  pick the matching Transfer In.
-- Positive amounts on credit-card accounts import as **Credit** (refunds,
-  netted against spending) unless they look like a card payment
-  ("payment", "autopay", "thank you", "e-pay"), which become Transfer In.
-- Your mapping rules always win over automatic detection — add a rule if a
-  bank's phrasing needs different treatment.
+- Transfers between two mapped accounts (for example, paying a credit card from
+  checking) are matched on equal amounts, opposite signs, within five days, and
+  imported as a linked Transfer Out / Transfer In pair — excluded from both
+  spending and income.
+- Positive amounts on a credit-card account import as **Credit** (a refund,
+  netted against spending) unless they look like a card payment — "payment",
+  "autopay", "thank you", "e-pay" — which become Transfer In.
+- Cash-transfer legs are deliberately imported with **no asset**, which is what
+  lets Wealthfolio book the cash movement and pair the two legs. See
+  `companion/upstream-pr.md` for the underlying upstream issue.
 
 ### Starting balances
 
 On an account's first sync the addon reads its current balance from
-Wealthfolio's valuations API and adds a one-time correction so the account
-lands on its real bank balance instead of just the sum of imported
-transactions. For a brand-new account the valuation is computed
-asynchronously after the first import, so the addon polls briefly and applies
-the correction in the same run.
+Wealthfolio's valuations API and adds a one-time correction, so the account
+lands on its real bank balance. For a brand-new account the valuation is
+computed asynchronously after the first import, so the addon polls briefly and
+applies the correction in the same run.
 
-### Background sync (optional companion)
+If a later wide re-scan recovers transactions older than that entry, the
+baseline is adjusted by their total — otherwise those transactions would be
+counted twice, once in the baseline and again individually.
+
+### Reconcile & link
+
+**Reconcile & link** re-scans a wider window (about 90 days) to recover
+transactions an earlier sync missed, re-checks each account against its
+SimpleFin balance, and links any transfer pairs that aren't yet linked.
+
+Two optional toggles:
+
+- **Auto-heal** — run the wide re-scan on every sync. Balance corrections stay
+  manual.
+- **Aggressively auto-heal** — additionally insert balance corrections
+  automatically, at most one per account per day.
+
+Balance corrections are written as a spending-neutral `CREDIT`, so they move
+the balance without appearing as income or as spending in your budget.
+
+### Background sync (optional)
 
 Wealthfolio addons only run while a browser tab is open. If you want data to
-refresh without opening the app, the `companion/` folder contains an optional
-Docker service that runs the **same sync logic** on a schedule. It is not
-required — the addon is the complete product — and is documented separately
-in that folder.
+refresh without the app open, the `companion/` folder holds an optional Docker
+service that runs on a schedule. It is not required — the addon is the complete
+product — and is documented in that folder.
+
+> Note: the companion currently runs an earlier version of the sync logic and
+> does not yet include pending reconciliation, transfer linking, or the
+> balance fixes above. Use the addon for accurate results.
+
+## Privacy
+
+- SimpleFin access is **read-only**.
+- Credentials live in Wealthfolio's encrypted secret storage and are never
+  logged or included in error messages.
+- Network access is restricted to the SimpleFin bridge hosts, declared in
+  `manifest.json`.
+
+## Development
+
+```bash
+npm install
+npm test          # 196 tests
+npm run type-check
+npm run bundle    # builds and zips to dist/
+```
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
