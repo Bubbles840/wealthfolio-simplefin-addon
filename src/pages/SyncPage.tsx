@@ -687,8 +687,11 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
                     if (actDate < startOfMonth) continue; // Current month only!
 
                     const type = String(act.activityType || '').toUpperCase();
-                    // Exclude non-spending investment transactions (BUY, SELL, DEPOSIT, DIVIDEND, SPLIT)
-                    if (['BUY', 'SELL', 'DEPOSIT', 'DIVIDEND', 'INTEREST', 'SPLIT'].includes(type)) {
+                    // Exclude non-spending investment transactions and internal transfers
+                    if (
+                      ['BUY', 'SELL', 'DEPOSIT', 'DIVIDEND', 'INTEREST', 'SPLIT', 'TRANSFER_IN', 'TRANSFER_OUT', 'CREDIT'].includes(type) ||
+                      act.sourceGroupId
+                    ) {
                       continue;
                     }
 
