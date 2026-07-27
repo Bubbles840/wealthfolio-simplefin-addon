@@ -113,4 +113,41 @@ export class WealthfolioClient {
     });
     if (!res.ok) throw new Error(`importActivities failed: ${res.status}`);
   }
+
+  async getAddonSecret(addonId: string, key: string): Promise<string | null> {
+    const res = await fetch(
+      `${this.baseUrl}/api/v1/addons/${encodeURIComponent(addonId)}/secrets?key=${encodeURIComponent(key)}`,
+      { headers: this.authHeaders() },
+    );
+    if (res.status === 404) return null;
+    if (!res.ok) throw new Error(`getAddonSecret failed: ${res.status}`);
+    const json = (await res.json()) as { value?: string | null };
+    return json.value ?? null;
+  }
+
+  async setAddonSecret(addonId: string, key: string, value: string): Promise<void> {
+    const res = await fetch(
+      `${this.baseUrl}/api/v1/addons/${encodeURIComponent(addonId)}/secrets`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
+        body: JSON.stringify({ key, value }),
+      },
+    );
+    if (!res.ok) throw new Error(`setAddonSecret failed: ${res.status}`);
+  }
+
+  async saveMany(req: {
+    creates?: unknown[];
+    updates?: unknown[];
+    deleteIds?: string[];
+  }): Promise<{ created: any[]; updated: any[]; errors: any[] }> {
+    const res = await fetch(`${this.baseUrl}/api/v1/activities/bulk`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
+      body: JSON.stringify(req),
+    });
+    if (!res.ok) throw new Error(`saveMany failed: ${res.status}`);
+    return (await res.json()) as { created: any[]; updated: any[]; errors: any[] };
+  }
 }

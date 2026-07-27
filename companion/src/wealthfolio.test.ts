@@ -108,4 +108,44 @@ describe('WealthfolioClient', () => {
     expect(items).toHaveLength(1);
     expect(items[0].id).toBe('act-1');
   });
+
+  it('reads an addon secret', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ value: 'https://u:p@bridge' }),
+    });
+    const c = new WealthfolioClient('http://wf');
+    const v = await c.getAddonSecret('simplefin-sync', 'simplefin_access_url');
+    expect(v).toBe('https://u:p@bridge');
+    expect(mockFetch.mock.calls[0][0]).toBe('http://wf/api/v1/addons/simplefin-sync/secrets?key=simplefin_access_url');
+  });
+
+  it('returns null when getAddonSecret returns 404', async () => {
+    mockFetch.mockResolvedValueOnce({ ok: false, status: 404 });
+    const c = new WealthfolioClient('http://wf');
+    const v = await c.getAddonSecret('simplefin-sync', 'simplefin_access_url');
+    expect(v).toBeNull();
+  });
+
+  it('sets an addon secret', async () => {
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ success: true }) });
+    const c = new WealthfolioClient('http://wf');
+    await c.setAddonSecret('simplefin-sync', 'my_key', 'my_val');
+    const [url, opts] = mockFetch.mock.calls[0];
+    expect(url).toBe('http://wf/api/v1/addons/simplefin-sync/secrets');
+    expect(JSON.parse((opts as any).body)).toEqual({ key: 'my_key', value: 'my_val' });
+  });
+
+  it('saveMany POSTs to /api/v1/activities/bulk', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ created: [{ id: '1' }], updated: [], errors: [] }),
+    });
+    const c = new WealthfolioClient('http://wf');
+    const res = await c.saveMany({ creates: [{ accountId: 'a', activityType: 'DEPOSIT' }] });
+    const [url, opts] = mockFetch.mock.calls[0];
+    expect(url).toBe('http://wf/api/v1/activities/bulk');
+    expect(JSON.parse((opts as any).body)).toEqual({ creates: [{ accountId: 'a', activityType: 'DEPOSIT' }] });
+    expect(res.created).toHaveLength(1);
+  });
 });
