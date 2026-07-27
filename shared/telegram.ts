@@ -194,7 +194,8 @@ export function formatDailyReport(data: DailyReportData): string {
       const dailyLimit = data.daysLeftInMonth > 0 ? Math.max(0, remaining / data.daysLeftInMonth) : 0;
       msg += `• ${emoji} *${c.name}*: *${money(dailyLimit)}/day* (${money(remaining)} left in month)\n`;
     } else if (c.mode === 'weekly') {
-      const weeklyRemaining = Math.max(0, remaining / 4);
+      const weeksLeftInMonth = Math.max(1, Math.ceil(data.daysLeftInMonth / 7));
+      const weeklyRemaining = Math.max(0, remaining / weeksLeftInMonth);
       msg += `• ${emoji} *${c.name}*: *${money(weeklyRemaining)}/week* (${money(remaining)} left in month)\n`;
     } else {
       msg += `• ${emoji} *${c.name}*: *${money(remaining)} remaining* for month\n`;

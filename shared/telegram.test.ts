@@ -56,7 +56,7 @@ describe('formatDailyReport', () => {
 
     expect(text).toContain('☀️ *Daily Budget Allowance*');
     expect(text).toContain('• 🍽️ *Dining*: *$30.00/day*');
-    expect(text).toContain('• 🛒 *Groceries*: *$100.00/week*');
+    expect(text).toContain('• 🛒 *Groceries*: *$200.00/week*');
     expect(text).toContain('• 🏠 *Housing*: *$0.00 remaining*');
   });
 });
