@@ -62,7 +62,7 @@ function fromSearchRow(a: any, wfAccountId: string): HostActivity {
     activityType: String(a.activityType ?? ''),
     date: toIsoDate(a.date),
     amount: a.amount ?? null,
-    comment: a.comment ?? null,
+    comment: a.comment ?? a.notes ?? a.description ?? null,
     assetId: a.assetId ? String(a.assetId) : undefined,
     sourceGroupId: a.sourceGroupId ?? null,
   };

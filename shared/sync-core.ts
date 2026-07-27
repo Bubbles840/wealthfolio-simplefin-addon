@@ -881,16 +881,23 @@ export async function runSyncCore(
   // remember afterwards.
   const linkedTxIds = new Set<string>();
   const pairsToLink: Array<[LinkLeg, LinkLeg]> = [];
-  const toLinkLeg = (row: LinkableRow): LinkLeg => ({
-    wfId: row.wfId,
-    accountId: row.wfAccountId,
-    txId: row.txId,
-    activityType: row.type,
-    date: row.date,
-    absCents: row.absCents,
-    currency: row.currency,
-    comment: row.comment ?? `${descByTxId.get(row.txId) ?? ''} · ${row.txId}`,
-  });
+  const toLinkLeg = (row: LinkableRow): LinkLeg => {
+    let comment = row.comment ?? `${descByTxId.get(row.txId) ?? ''} · ${row.txId}`;
+    if (!comment.endsWith(` · ${row.txId}`)) {
+      const desc = descByTxId.get(row.txId) ?? (comment.includes(' · ') ? comment.split(' · ')[0] : comment);
+      comment = `${desc} · ${row.txId}`;
+    }
+    return {
+      wfId: row.wfId,
+      accountId: row.wfAccountId,
+      txId: row.txId,
+      activityType: row.type,
+      date: row.date,
+      absCents: row.absCents,
+      currency: row.currency,
+      comment,
+    };
+  };
   for (const { outTxId, inTxId } of detection.pairs) {
     const outRow = linkRowByTxId.get(outTxId);
     const inRow = linkRowByTxId.get(inTxId);
