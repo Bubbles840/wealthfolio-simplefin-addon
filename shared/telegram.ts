@@ -108,8 +108,7 @@ import type { CategoryRule } from './types.js';
 export const DEFAULT_SPENDING_KEYWORDS: Record<string, string[]> = {
   'Housing': [
     'housing', 'rent', 'mortgage', 'lease', 'apartment', 'hoa', 'property',
-    'landlord', 'realty', 'real estate', 'homes', 'residence', 'residential',
-    'check', 'zelle', 'venmo', 'ach withdrawal', 'payment', '1511'
+    'landlord', 'realty', 'real estate', 'homes', 'residence', 'residential'
   ],
   'Transportation': [
     'parc', 'parking', 'uber', 'lyft', 'transit', 'metro', 'gas', 'shell', 'bp', 'exxon',
