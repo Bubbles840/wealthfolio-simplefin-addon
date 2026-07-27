@@ -673,32 +673,59 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
                   const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
                   const daysLeft = Math.max(1, lastDay - now.getDate());
 
-                  const sampleCategories = categoryRules.map((r) => ({
+                  const res = await ctx.api.activities.search(0, 1000, {}, '', { id: 'date', desc: true }).catch(() => ({ data: [] as any[] }));
+                  const activities = res.data ?? [];
+
+                  const categorySpentMap: Record<string, number> = {};
+                  let totalSpentMonth = 0;
+
+                  for (const act of activities) {
+                    const amt = typeof act.amount === 'number' ? act.amount : parseFloat(String(act.amount ?? 0));
+                    const spent = Math.abs(amt);
+                    if (spent > 0) {
+                      const catKey = (act.category || (act as any).categoryName || (act as any).categoryId || act.comment || '').trim();
+                      let matched = false;
+                      if (catKey) {
+                        for (const rule of categoryRules) {
+                          if (catKey.toLowerCase().includes(rule.categoryName.toLowerCase()) || rule.categoryName.toLowerCase().includes(catKey.toLowerCase())) {
+                            categorySpentMap[rule.categoryName] = (categorySpentMap[rule.categoryName] ?? 0) + spent;
+                            matched = true;
+                            break;
+                          }
+                        }
+                      }
+                      if (!matched && catKey) {
+                        categorySpentMap[catKey] = (categorySpentMap[catKey] ?? 0) + spent;
+                      }
+                      totalSpentMonth += spent;
+                    }
+                  }
+
+                  const activeCategories = categoryRules.map((r) => ({
                     name: r.categoryName,
                     budget: r.monthlyBudget ?? 0,
-                    spent: Math.round((r.monthlyBudget ?? 500) * 0.65), // 65% spent
+                    spent: Math.round((categorySpentMap[r.categoryName] ?? 0) * 100) / 100,
                     mode: r.mode,
                   }));
 
-                  const totalBudget = sampleCategories.reduce((acc, c) => acc + c.budget, 0);
-                  const totalSpent = sampleCategories.reduce((acc, c) => acc + c.spent, 0);
+                  const totalBudget = activeCategories.reduce((acc, c) => acc + c.budget, 0);
 
                   const sampleDaily = formatDailyReport({
                     dateStr,
                     daysLeftInMonth: daysLeft,
-                    categories: sampleCategories,
+                    categories: activeCategories,
                   });
 
                   const sampleWeekly = formatWeeklyReport({
-                    weekSpent: Math.round(totalSpent / 4),
-                    monthSpent: totalSpent,
+                    weekSpent: Math.round((totalSpentMonth / 4) * 100) / 100,
+                    monthSpent: Math.round(totalSpentMonth * 100) / 100,
                     monthBudget: totalBudget,
-                    categories: sampleCategories,
+                    categories: activeCategories,
                   });
 
                   await sendTelegramMessage(botToken, chatId, sampleDaily, ctx.api.network);
                   await sendTelegramMessage(botToken, chatId, sampleWeekly, ctx.api.network);
-                  setTelegramStatus('✅ Daily & Weekly budget reports sent to Telegram!');
+                  setTelegramStatus('✅ Live category spending report sent to Telegram!');
                 } catch (err) {
                   setTelegramStatus(`❌ Error sending report: ${(err as Error).message}`);
                 } finally {
