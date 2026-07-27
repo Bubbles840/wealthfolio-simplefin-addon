@@ -5,7 +5,7 @@ import { fetchAccounts } from '../utils/simplefin';
 import { SyncStatus } from '../components/SyncStatus';
 import { RuleEditor } from '../components/RuleEditor';
 import { Button, Card, ErrorBox, SectionLabel } from '../components/ui';
-import { sendTelegramMessage } from '../../shared/telegram';
+import { sendTelegramMessage, formatDailyReport, formatWeeklyReport } from '../../shared/telegram';
 import type { SecretsStore, AccountBalanceInfo } from '../utils/secrets';
 import type { Scheduler } from '../utils/scheduler';
 import type { AccountMapping, MappingRule } from '../../shared/types';
@@ -575,6 +575,52 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
               }}
             >
               {testingTelegram ? 'Sending...' : 'Send Test Message'}
+            </Button>
+
+            <Button
+              variant="outline"
+              disabled={testingTelegram || !botToken || !chatId}
+              onClick={async () => {
+                setTestingTelegram(true);
+                setTelegramStatus('Sending sample budget report...');
+                try {
+                  const now = new Date();
+                  const dateStr = now.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+                  const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+                  const daysLeft = Math.max(1, lastDay - now.getDate());
+
+                  const sampleDaily = formatDailyReport({
+                    dateStr,
+                    daysLeftInMonth: daysLeft,
+                    categories: [
+                      { name: 'Dining & Restaurants', budget: 600, spent: 240, mode: 'daily' },
+                      { name: 'Groceries', budget: 900, spent: 450, mode: 'weekly' },
+                      { name: 'Shopping & Misc', budget: 400, spent: 150, mode: 'daily' },
+                      { name: 'Fixed Bills & Rent', budget: 1800, spent: 1800, mode: 'monthly' },
+                    ],
+                  });
+
+                  const sampleWeekly = formatWeeklyReport({
+                    weekSpent: 380,
+                    monthSpent: 2640,
+                    monthBudget: 3700,
+                    categories: [
+                      { name: 'Dining & Restaurants', budget: 600, spent: 240, mode: 'daily' },
+                      { name: 'Groceries', budget: 900, spent: 450, mode: 'weekly' },
+                    ],
+                  });
+
+                  await sendTelegramMessage(botToken, chatId, sampleDaily, ctx.api.network);
+                  await sendTelegramMessage(botToken, chatId, sampleWeekly, ctx.api.network);
+                  setTelegramStatus('✅ Sample Daily & Weekly budget reports sent to Telegram!');
+                } catch (err) {
+                  setTelegramStatus(`❌ Error sending report: ${(err as Error).message}`);
+                } finally {
+                  setTestingTelegram(false);
+                }
+              }}
+            >
+              Send Sample Budget Report
             </Button>
 
             <Button
