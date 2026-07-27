@@ -543,19 +543,38 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
               disabled={testingTelegram || !botToken || !chatId}
               onClick={async () => {
                 setTestingTelegram(true);
-                setTelegramStatus(null);
-                const networkReq = (ctx.api as any).network?.request?.bind((ctx.api as any).network);
-                const res = await sendTelegramMessage(
-                  botToken,
-                  chatId,
-                  '🎉 *SimpleFin Sync Telegram Integration Connected!*\n\nYour Telegram bot is configured and ready to send daily category allowances and weekly budget reports.',
-                  networkReq,
-                );
-                setTestingTelegram(false);
-                if (res.ok) {
-                  setTelegramStatus('✅ Test message sent successfully to Telegram!');
-                } else {
-                  setTelegramStatus(`❌ Error sending message: ${res.description}`);
+                setTelegramStatus('Sending test message...');
+                try {
+                  console.log('[Telegram Debug] Starting test message send');
+                  console.log('[Telegram Debug] ctx.api keys:', Object.keys(ctx.api || {}));
+                  console.log('[Telegram Debug] ctx.api.network:', (ctx.api as any).network);
+
+                  const timeoutPromise = new Promise<{ ok: false; description: string }>((_, reject) =>
+                    setTimeout(() => reject(new Error('Request timed out after 5 seconds')), 5000)
+                  );
+
+                  const sendPromise = (async () => {
+                    const net = (ctx.api as any).network;
+                    const networkReq = typeof net?.request === 'function' ? net.request.bind(net) : undefined;
+                    return sendTelegramMessage(
+                      botToken,
+                      chatId,
+                      '🎉 *SimpleFin Sync Telegram Integration Connected!*\n\nYour Telegram bot is configured and ready to send daily category allowances and weekly budget reports.',
+                      networkReq,
+                    );
+                  })();
+
+                  const res = await Promise.race([sendPromise, timeoutPromise]);
+                  if (res.ok) {
+                    setTelegramStatus('✅ Test message sent successfully to Telegram!');
+                  } else {
+                    setTelegramStatus(`❌ Error sending message: ${res.description}`);
+                  }
+                } catch (err) {
+                  console.error('[Telegram Debug Error]:', err);
+                  setTelegramStatus(`❌ Error: ${(err as Error).message}`);
+                } finally {
+                  setTestingTelegram(false);
                 }
               }}
             >
