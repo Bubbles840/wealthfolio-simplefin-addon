@@ -103,6 +103,48 @@ export const DEFAULT_CATEGORY_EMOJIS: Record<string, string> = {
   wants: '⭐',
 };
 
+export const DEFAULT_SPENDING_KEYWORDS: Record<string, string[]> = {
+  'Food & Dining': [
+    'wnb factory', 'mcdonald', 'starbucks', 'doordash', 'ubereats', 'grubhub',
+    'restaurant', 'dining', 'burger', 'pizza', 'cafe', 'coffee', 'taco', 'bar', 'grill', 'bakery'
+  ],
+  'Groceries': [
+    'grocery', 'groceries', 'walmart', 'kroger', 'target', 'trader joe', 'whole foods', 'aldi',
+    'publix', 'safeway', 'h-e-b', 'costco', 'sams club', 'supermarket', 'market'
+  ],
+  'Transportation': [
+    'parc', 'parking', 'uber', 'lyft', 'transit', 'metro', 'gas', 'shell', 'bp', 'exxon',
+    'chevron', 'speedway', 'valero', 'toll', 'ezpass'
+  ],
+  'Bills & Utilities': [
+    'anthropic', 'claude', 'openai', 'chatgpt', 'netflix', 'spotify', 'apple.com', 'google',
+    'electric', 'water', 'internet', 'verizon', 'att', 't-mobile', 'comcast', 'xfinity', 'utility', 'subscription'
+  ],
+  'Housing': [
+    'rent', 'mortgage', 'lease', 'apartment', 'housing', 'hoa', 'property'
+  ],
+  'Shopping': [
+    'amazon', 'ebay', 'best buy', 'nike', 'clothing', 'apparel', 'retail'
+  ],
+  'Health & Wellness': [
+    'pharmacy', 'cvs', 'walgreens', 'doctor', 'hospital', 'dental', 'fitness', 'gym', 'health'
+  ],
+  'Entertainment': [
+    'steam', 'playstation', 'xbox', 'cinema', 'movie', 'theater', 'event', 'ticket'
+  ],
+};
+
+export function categorizeActivity(comment?: string | null): string {
+  if (!comment) return 'Other';
+  const clean = comment.toLowerCase();
+  for (const [category, keywords] of Object.entries(DEFAULT_SPENDING_KEYWORDS)) {
+    if (keywords.some((kw) => clean.includes(kw))) {
+      return category;
+    }
+  }
+  return 'Other';
+}
+
 export function getCategoryEmoji(name: string): string {
   const clean = name.toLowerCase();
   for (const [key, emoji] of Object.entries(DEFAULT_CATEGORY_EMOJIS)) {

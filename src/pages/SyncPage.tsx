@@ -5,11 +5,10 @@ import { fetchAccounts } from '../utils/simplefin';
 import { SyncStatus } from '../components/SyncStatus';
 import { RuleEditor } from '../components/RuleEditor';
 import { Button, Card, ErrorBox, SectionLabel } from '../components/ui';
-import { sendTelegramMessage, formatDailyReport, formatWeeklyReport } from '../../shared/telegram';
+import { sendTelegramMessage, formatDailyReport, formatWeeklyReport, getCategoryEmoji, categorizeActivity } from '../../shared/telegram';
 import type { SecretsStore, AccountBalanceInfo } from '../utils/secrets';
 import type { Scheduler } from '../utils/scheduler';
 import type { AccountMapping, MappingRule, CategoryRule } from '../../shared/types';
-import { getCategoryEmoji } from '../../shared/telegram';
 
 const DEFAULT_CATEGORY_RULES: CategoryRule[] = [
   { categoryId: 'housing', categoryName: 'Housing', mode: 'monthly', monthlyBudget: 1511 },
@@ -686,7 +685,7 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
                     const spent = Math.abs(amt);
                     if (spent > 0) {
                       const meta = (act.metadata ?? {}) as Record<string, any>;
-                      const catKey = String(
+                      let catKey = String(
                         meta.categoryName ||
                         meta.category ||
                         meta.categoryId ||
@@ -694,23 +693,22 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
                         meta.spendingCategory ||
                         (act as any).category ||
                         (act as any).categoryName ||
-                        act.comment ||
                         ''
                       ).trim();
 
-                      let matched = false;
-                      if (catKey) {
-                        for (const rule of categoryRules) {
-                          if (catKey.toLowerCase().includes(rule.categoryName.toLowerCase()) || rule.categoryName.toLowerCase().includes(catKey.toLowerCase())) {
-                            categorySpentMap[rule.categoryName] = (categorySpentMap[rule.categoryName] ?? 0) + spent;
-                            matched = true;
-                            break;
-                          }
+                      if (!catKey) {
+                        catKey = categorizeActivity(act.comment);
+                      }
+
+                      let matchedRuleName = catKey;
+                      for (const rule of categoryRules) {
+                        if (catKey.toLowerCase().includes(rule.categoryName.toLowerCase()) || rule.categoryName.toLowerCase().includes(catKey.toLowerCase())) {
+                          matchedRuleName = rule.categoryName;
+                          break;
                         }
                       }
-                      if (!matched && catKey) {
-                        categorySpentMap[catKey] = (categorySpentMap[catKey] ?? 0) + spent;
-                      }
+
+                      categorySpentMap[matchedRuleName] = (categorySpentMap[matchedRuleName] ?? 0) + spent;
                       totalSpentMonth += spent;
                     }
                   }
