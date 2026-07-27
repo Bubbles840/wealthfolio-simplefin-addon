@@ -675,7 +675,23 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
                   const res = await ctx.api.activities.search(0, 1000, {}, '', { id: 'date', desc: true }).catch(() => ({ data: [] as any[] }));
                   const activities = res.data ?? [];
 
-                  console.log('[Wealthfolio Debug] Sample activity object:', activities[0]);
+                  const endpoints = [
+                    '/api/v1/categories',
+                    '/api/v1/spending',
+                    '/api/v1/spending/setup',
+                    '/api/v1/spending/summary',
+                    '/api/v1/spending/categories',
+                    '/api/v1/budgets',
+                  ];
+
+                  for (const ep of endpoints) {
+                    try {
+                      const r = await ctx.api.network.request({ url: `${window.location.origin}${ep}`, method: 'GET' });
+                      console.log(`[Wealthfolio API Endpoint Test] ${ep} (${r.status}):`, r.body);
+                    } catch (e) {
+                      console.log(`[Wealthfolio API Endpoint Test] ${ep} error:`, e);
+                    }
+                  }
 
                   const categorySpentMap: Record<string, number> = {};
                   let totalSpentMonth = 0;
