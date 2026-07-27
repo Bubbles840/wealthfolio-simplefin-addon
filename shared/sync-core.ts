@@ -343,7 +343,14 @@ export async function importAdjustmentActivity(
     isValid: true,
     isDraft: false,
   };
-  await host.importActivities([adjustment]);
+  try {
+    await host.importActivities([adjustment]);
+  } catch (e: any) {
+    const msg = String(e?.message ?? e);
+    if (!msg.toLowerCase().includes('duplicate')) {
+      throw e;
+    }
+  }
 }
 
 /**
@@ -624,13 +631,20 @@ export async function runSyncCore(
             () => false,
           );
           if (!alreadyToday) {
-            await importAdjustmentActivity(host, {
-              sfinAccountId: sfAccount.id,
-              wfAccountId,
-              currency: sfAccount.currency,
-              amount: drift,
-            });
-            imported += 1;
+            try {
+              await importAdjustmentActivity(host, {
+                sfinAccountId: sfAccount.id,
+                wfAccountId,
+                currency: sfAccount.currency,
+                amount: drift,
+              });
+              imported += 1;
+            } catch (e: any) {
+              const msg = String(e?.message ?? e);
+              if (!msg.toLowerCase().includes('duplicate')) {
+                errors.push(`Account ${wfAccountId} adjustment failed: ${msg}`);
+              }
+            }
           }
           drift = null; // healed (or already healed today)
         }
