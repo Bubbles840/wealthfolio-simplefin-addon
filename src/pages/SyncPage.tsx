@@ -553,16 +553,12 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
                     setTimeout(() => reject(new Error('Request timed out after 5 seconds')), 5000)
                   );
 
-                  const sendPromise = (async () => {
-                    const net = (ctx.api as any).network;
-                    const networkReq = typeof net?.request === 'function' ? net.request.bind(net) : undefined;
-                    return sendTelegramMessage(
-                      botToken,
-                      chatId,
-                      '🎉 *SimpleFin Sync Telegram Integration Connected!*\n\nYour Telegram bot is configured and ready to send daily category allowances and weekly budget reports.',
-                      networkReq,
-                    );
-                  })();
+                  const sendPromise = sendTelegramMessage(
+                    botToken,
+                    chatId,
+                    '🎉 *SimpleFin Sync Telegram Integration Connected!*\n\nYour Telegram bot is configured and ready to send daily category allowances and weekly budget reports.',
+                    ctx.api.network,
+                  );
 
                   const res = await Promise.race([sendPromise, timeoutPromise]);
                   if (res.ok) {

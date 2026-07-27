@@ -37,7 +37,7 @@ export async function sendTelegramMessage(
   botToken: string,
   chatId: string,
   text: string,
-  networkReq?: (req: any) => Promise<any>,
+  network?: { request: (opts: any) => Promise<{ status: number; body: string }> },
 ): Promise<TelegramSendResult> {
   const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
   const body = JSON.stringify({
@@ -49,13 +49,14 @@ export async function sendTelegramMessage(
 
   try {
     let json: any;
-    if (networkReq) {
-      json = await networkReq({
+    if (network && typeof network.request === 'function') {
+      const res = await network.request({
         url,
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body,
       });
+      json = typeof res.body === 'string' ? JSON.parse(res.body) : res.body;
     } else {
       const res = await fetch(url, {
         method: 'POST',
