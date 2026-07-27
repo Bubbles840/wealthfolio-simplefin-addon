@@ -32,6 +32,8 @@ const makeProps = () => ({
     setAutoHeal: vi.fn(),
     getAutoAdjust: vi.fn(async () => false),
     setAutoAdjust: vi.fn(),
+    getTelegramConfig: vi.fn(async () => null),
+    setTelegramConfig: vi.fn(),
   } as any,
   onReset: vi.fn(),
   scheduler: { start: vi.fn(), stop: vi.fn(), isRunning: vi.fn(() => false) } as any,

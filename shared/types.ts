@@ -41,3 +41,19 @@ export interface SimplefinAccountSet {
 export interface AccountMapping {
   [simpleFinAccountId: string]: string; // → Wealthfolio account ID
 }
+
+export interface CategoryRule {
+  categoryId: string;
+  categoryName: string;
+  mode: 'daily' | 'weekly' | 'monthly';
+  monthlyBudget?: number;
+}
+
+export interface TelegramConfig {
+  botToken: string;
+  chatId: string;
+  enabled: boolean;
+  dailyReportEnabled?: boolean;
+  weeklyReportEnabled?: boolean;
+  categoryRules?: CategoryRule[];
+}

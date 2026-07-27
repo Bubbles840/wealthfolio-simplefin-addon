@@ -5,6 +5,7 @@ import { fetchAccounts } from '../utils/simplefin';
 import { SyncStatus } from '../components/SyncStatus';
 import { RuleEditor } from '../components/RuleEditor';
 import { Button, Card, ErrorBox, SectionLabel } from '../components/ui';
+import { sendTelegramMessage } from '../../shared/telegram';
 import type { SecretsStore, AccountBalanceInfo } from '../utils/secrets';
 import type { Scheduler } from '../utils/scheduler';
 import type { AccountMapping, MappingRule } from '../../shared/types';
@@ -67,6 +68,14 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
   const [autoAdjust, setAutoAdjust] = useState(false);
   const [showDockerSetup, setShowDockerSetup] = useState(false);
 
+  const [botToken, setBotToken] = useState('');
+  const [chatId, setChatId] = useState('');
+  const [dailyReportEnabled, setDailyReportEnabled] = useState(true);
+  const [weeklyReportEnabled, setWeeklyReportEnabled] = useState(true);
+  const [testingTelegram, setTestingTelegram] = useState(false);
+  const [telegramStatus, setTelegramStatus] = useState<string | null>(null);
+  const [showTelegramInstructions, setShowTelegramInstructions] = useState(false);
+
   const loadBalances = useCallback(() => {
     store.getAccountBalances().then(setBalances).catch(() => {});
   }, [store]);
@@ -81,8 +90,9 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
       store.getAccountBalances(),
       store.getAutoHeal(),
       store.getAutoAdjust(),
+      store.getTelegramConfig(),
       ctx.api.accounts.getAll().catch(() => []),
-    ]).then(([last, m, r, h, names, bal, ah, aa, wfAccounts]) => {
+    ]).then(([last, m, r, h, names, bal, ah, aa, tg, wfAccounts]) => {
       setLastSyncAt(last);
       setMapping(m ?? {});
       setRules(r);
@@ -91,6 +101,12 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
       setBalances(bal);
       setAutoHeal(ah);
       setAutoAdjust(aa);
+      if (tg) {
+        setBotToken(tg.botToken ?? '');
+        setChatId(tg.chatId ?? '');
+        setDailyReportEnabled(tg.dailyReportEnabled ?? true);
+        setWeeklyReportEnabled(tg.weeklyReportEnabled ?? true);
+      }
       setWfNames(Object.fromEntries(wfAccounts.map((a) => [a.id, a.name])));
 
       // Backfill for installs set up before account names were captured
@@ -435,6 +451,133 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
             </pre>
           </div>
         )}
+      </Card>
+
+      <Card>
+        <div className="sfin-card-head">
+          <SectionLabel>Telegram Notifications (Optional)</SectionLabel>
+          <Button variant="ghost" onClick={() => setShowTelegramInstructions((s) => !s)}>
+            {showTelegramInstructions ? 'Hide Setup' : 'Setup Guide'}
+          </Button>
+        </div>
+        <div className="sfin-subtle" style={{ marginBottom: 12 }}>
+          Receive daily budget spending allowances and weekly budget summaries directly in Telegram. Handled by the background companion container.
+        </div>
+
+        {showTelegramInstructions && (
+          <div
+            style={{
+              background: 'var(--card-bg, rgba(0,0,0,0.2))',
+              padding: '12px 14px',
+              borderRadius: '6px',
+              marginBottom: 16,
+              fontSize: '13px',
+              lineHeight: 1.6,
+              border: '1px solid var(--border, rgba(255,255,255,0.1))',
+            }}
+          >
+            <div style={{ fontWeight: 600, marginBottom: 6 }}>📱 How to Set Up Your Telegram Bot:</div>
+            <ol style={{ paddingLeft: 20, margin: 0 }}>
+              <li>Open Telegram and search for <strong>@BotFather</strong>.</li>
+              <li>Send <code>/newbot</code> to @BotFather and follow prompts to name your bot.</li>
+              <li>Copy the HTTP API <strong>Token</strong> (e.g. <code>123456789:ABCdefGHI...</code>).</li>
+              <li>Open Telegram and send a message <code>/start</code> to your new bot.</li>
+              <li>Search Telegram for <strong>@userinfobot</strong> and send any message to get your numeric <strong>Chat ID</strong> (e.g. <code>987654321</code>).</li>
+              <li>Paste your Bot Token and Chat ID below, then click <strong>Send Test Message</strong>!</li>
+            </ol>
+          </div>
+        )}
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div>
+            <label className="sfin-subtle" style={{ display: 'block', marginBottom: 4 }}>Bot Token</label>
+            <input
+              type="password"
+              className="sfin-select"
+              style={{ width: '100%' }}
+              placeholder="e.g. 123456789:ABCdefGHI..."
+              value={botToken}
+              onChange={(e) => setBotToken(e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="sfin-subtle" style={{ display: 'block', marginBottom: 4 }}>Chat ID</label>
+            <input
+              type="text"
+              className="sfin-select"
+              style={{ width: '100%' }}
+              placeholder="e.g. 987654321"
+              value={chatId}
+              onChange={(e) => setChatId(e.target.value)}
+            />
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 4 }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={dailyReportEnabled}
+                onChange={(e) => setDailyReportEnabled(e.target.checked)}
+              />
+              <span>Daily Category Allowance Report (Morning)</span>
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={weeklyReportEnabled}
+                onChange={(e) => setWeeklyReportEnabled(e.target.checked)}
+              />
+              <span>Weekly Budget &amp; Spending Summary</span>
+            </label>
+          </div>
+
+          {telegramStatus && (
+            <div style={{ fontSize: '13px', color: telegramStatus.startsWith('✅') ? 'var(--success, #4caf50)' : 'var(--destructive, #f44336)' }}>
+              {telegramStatus}
+            </div>
+          )}
+
+          <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+            <Button
+              variant="outline"
+              disabled={testingTelegram || !botToken || !chatId}
+              onClick={async () => {
+                setTestingTelegram(true);
+                setTelegramStatus(null);
+                const res = await sendTelegramMessage(
+                  botToken,
+                  chatId,
+                  '🎉 *SimpleFin Sync Telegram Integration Connected!*\n\nYour Telegram bot is configured and ready to send daily category allowances and weekly budget reports.',
+                );
+                setTestingTelegram(false);
+                if (res.ok) {
+                  setTelegramStatus('✅ Test message sent successfully to Telegram!');
+                } else {
+                  setTelegramStatus(`❌ Error sending message: ${res.description}`);
+                }
+              }}
+            >
+              {testingTelegram ? 'Sending...' : 'Send Test Message'}
+            </Button>
+
+            <Button
+              variant="primary"
+              disabled={!botToken || !chatId}
+              onClick={async () => {
+                await store.setTelegramConfig({
+                  botToken,
+                  chatId,
+                  enabled: true,
+                  dailyReportEnabled,
+                  weeklyReportEnabled,
+                });
+                setTelegramStatus('✅ Telegram configuration saved!');
+              }}
+            >
+              Save Telegram Settings
+            </Button>
+          </div>
+        </div>
       </Card>
 
       <Card>

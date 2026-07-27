@@ -28,6 +28,7 @@ const KEYS = {
   accountBalances: 'account_balances',
   autoHeal: 'auto_heal',
   autoAdjust: 'auto_adjust',
+  telegramConfig: 'telegram_config',
 } as const;
 
 export class SecretsStore {
@@ -144,6 +145,14 @@ export class SecretsStore {
   }
   async setAccountBalances(map: Record<string, AccountBalanceInfo>): Promise<void> {
     await this.ctx.api.secrets.set(KEYS.accountBalances, JSON.stringify(map));
+  }
+
+  async getTelegramConfig(): Promise<any | null> {
+    const raw = await this.ctx.api.secrets.get(KEYS.telegramConfig);
+    return raw ? JSON.parse(raw) : null;
+  }
+  async setTelegramConfig(config: any): Promise<void> {
+    await this.ctx.api.secrets.set(KEYS.telegramConfig, JSON.stringify(config));
   }
 
   async clearAll(): Promise<void> {
