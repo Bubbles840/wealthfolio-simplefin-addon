@@ -11,14 +11,16 @@ import type { Scheduler } from '../utils/scheduler';
 import type { AccountMapping, MappingRule, CategoryRule } from '../../shared/types';
 
 const DEFAULT_CATEGORY_RULES: CategoryRule[] = [
-  { categoryId: 'housing', categoryName: 'Housing', mode: 'monthly', monthlyBudget: 1511 },
-  { categoryId: 'transportation', categoryName: 'Transportation', mode: 'monthly', monthlyBudget: 463 },
-  { categoryId: 'groceries', categoryName: 'Groceries', mode: 'weekly', monthlyBudget: 450 },
-  { categoryId: 'bills', categoryName: 'Bills & Utilities', mode: 'monthly', monthlyBudget: 250 },
+  { categoryId: 'housing', categoryName: 'Housing', mode: 'monthly', monthlyBudget: 1500 },
+  { categoryId: 'transportation', categoryName: 'Transportation', mode: 'monthly', monthlyBudget: 50 },
+  { categoryId: 'groceries', categoryName: 'Groceries', mode: 'weekly', monthlyBudget: 300 },
+  { categoryId: 'dining', categoryName: 'Food & Dining', mode: 'daily', monthlyBudget: 200 },
+  { categoryId: 'shopping', categoryName: 'Shopping', mode: 'daily', monthlyBudget: 100 },
+  { categoryId: 'entertainment', categoryName: 'Entertainment', mode: 'monthly', monthlyBudget: 100 },
   { categoryId: 'health', categoryName: 'Health & Wellness', mode: 'monthly', monthlyBudget: 100 },
-  { categoryId: 'shopping', categoryName: 'Shopping', mode: 'daily', monthlyBudget: 600 },
-  { categoryId: 'dining', categoryName: 'Food & Dining', mode: 'daily', monthlyBudget: 350 },
-  { categoryId: 'entertainment', categoryName: 'Entertainment', mode: 'monthly', monthlyBudget: 200 },
+  { categoryId: 'bills', categoryName: 'Bills & Utilities', mode: 'monthly', monthlyBudget: 0 },
+  { categoryId: 'fees', categoryName: 'Fees & Charges', mode: 'monthly', monthlyBudget: 50 },
+  { categoryId: 'education', categoryName: 'Education', mode: 'monthly', monthlyBudget: 0 },
 ];
 
 interface Props {
@@ -674,24 +676,6 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
 
                   const res = await ctx.api.activities.search(0, 1000, {}, '', { id: 'date', desc: true }).catch(() => ({ data: [] as any[] }));
                   const activities = res.data ?? [];
-
-                  const endpoints = [
-                    '/api/v1/categories',
-                    '/api/v1/spending',
-                    '/api/v1/spending/setup',
-                    '/api/v1/spending/summary',
-                    '/api/v1/spending/categories',
-                    '/api/v1/budgets',
-                  ];
-
-                  for (const ep of endpoints) {
-                    try {
-                      const r = await fetch(ep, { headers: { 'Content-Type': 'application/json' } });
-                      console.log(`[Wealthfolio Direct Fetch Test] ${ep} (${r.status}):`, await r.text());
-                    } catch (e) {
-                      console.log(`[Wealthfolio Direct Fetch Test] ${ep} error:`, e);
-                    }
-                  }
 
                   const categorySpentMap: Record<string, number> = {};
                   let totalSpentMonth = 0;
