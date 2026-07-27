@@ -367,12 +367,9 @@ export async function runSyncCore(
   opts: SyncOptions = {},
 ): Promise<SyncResult> {
   const errors: string[] = [];
-
-  // Heal is an explicit "Reconcile" click, the persistent Auto-heal setting, or
-  // Aggressive auto-heal (which also auto-plugs residual drift). Any of them
-  // triggers the wide re-scan on every sync path (scheduler, startup, Sync Now).
   const autoAdjust = await store.getAutoAdjust();
   const heal = opts.heal || autoAdjust || (await store.getAutoHeal());
+  console.log('[simplefin-sync] starting sync core', { heal, force: !!opts.force, autoAdjust });
 
   // Enforce minimum interval unless the caller forces (Sync anyway) or heals
   const lastSync = await store.getLastSyncAt();
@@ -623,6 +620,13 @@ export async function runSyncCore(
         );
         const d = sfBalance - wfValuation - windowDelta;
         if (Math.abs(d) > DRIFT_THRESHOLD_DOLLARS) drift = Math.round(d * 100) / 100;
+        console.log(`[simplefin-sync] ${sfAccount.name} (${sfAccount.id}):`, {
+          sfBalance,
+          wfValuation,
+          windowDelta,
+          calculatedDrift: drift,
+          plan: { creates: plan.creates.length, updates: plan.updates.length, deletes: plan.deleteIds.length },
+        });
         // Aggressive auto-heal: plug the residual immediately — but at most one
         // adjustment per account per day, so a stale valuation on a rapid
         // re-sync (the adjustment isn't recomputed yet) can't stack duplicates.
