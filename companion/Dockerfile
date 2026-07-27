@@ -6,7 +6,7 @@ WORKDIR /build
 
 # Install dependencies first so Docker caches this layer separately from source
 COPY companion/package*.json ./companion/
-RUN cd companion && npm ci
+RUN cd companion && npm install
 
 # Copy source files
 COPY companion/src/       ./companion/src/
@@ -26,7 +26,7 @@ COPY --from=builder /build/companion/dist/ ./dist/
 
 # Install production dependencies only
 COPY companion/package*.json ./
-RUN npm ci --omit=dev
+RUN npm install --omit=dev
 
 # Give the non-root node user write access to /app so it can persist state.json,
 # and pre-create /data so the named volume mounted there inherits node ownership
