@@ -677,10 +677,21 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
                   const res = await ctx.api.activities.search(0, 1000, {}, '', { id: 'date', desc: true }).catch(() => ({ data: [] as any[] }));
                   const activities = res.data ?? [];
 
+                  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+
                   const categorySpentMap: Record<string, number> = {};
                   let totalSpentMonth = 0;
 
                   for (const act of activities) {
+                    const actDate = new Date(act.activityDate || act.date || 0).getTime();
+                    if (actDate < startOfMonth) continue; // Current month only!
+
+                    const type = String(act.activityType || '').toUpperCase();
+                    // Exclude non-spending investment transactions (BUY, SELL, DEPOSIT, DIVIDEND, SPLIT)
+                    if (['BUY', 'SELL', 'DEPOSIT', 'DIVIDEND', 'INTEREST', 'SPLIT'].includes(type)) {
+                      continue;
+                    }
+
                     const amt = typeof act.amount === 'number' ? act.amount : parseFloat(String(act.amount ?? 0));
                     const spent = Math.abs(amt);
                     if (spent > 0) {
