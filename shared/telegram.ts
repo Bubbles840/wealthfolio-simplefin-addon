@@ -37,7 +37,7 @@ export async function sendTelegramMessage(
   botToken: string,
   chatId: string,
   text: string,
-  networkReq?: (url: string, opts?: any) => Promise<any>,
+  networkReq?: (req: any) => Promise<any>,
 ): Promise<TelegramSendResult> {
   const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
   const body = JSON.stringify({
@@ -50,7 +50,8 @@ export async function sendTelegramMessage(
   try {
     let json: any;
     if (networkReq) {
-      json = await networkReq(url, {
+      json = await networkReq({
+        url,
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body,
