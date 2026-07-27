@@ -1131,12 +1131,12 @@ describe('AddonSyncHost.linkPair', () => {
     expect(await new AddonSyncHost(ctx).linkPair(legs())).toEqual({ linked: false });
   });
 
-  it('throws when a write errors, so the core surfaces it and retries', async () => {
+  it('returns linked:false when a write errors', async () => {
     const ctx = makeCtx();
     ctx.api.activities.saveMany = vi.fn(async () => ({
       created: [], updated: [], deleted: [], createdMappings: [],
       errors: [{ action: 'create', message: 'boom' }],
     }));
-    await expect(new AddonSyncHost(ctx).linkPair(legs())).rejects.toThrow(/boom/);
+    expect(await new AddonSyncHost(ctx).linkPair(legs())).toEqual({ linked: false });
   });
 });

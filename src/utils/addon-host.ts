@@ -201,10 +201,7 @@ export class AddonSyncHost implements SyncHost {
       })),
     });
     for (const e of res.errors) problems.push(`save (${e.action}): ${e.message}`);
-    // Thrown rather than returned as `linked: false`: an errored write says
-    // nothing about whether the pair is linkable, and the core must surface the
-    // message and retry rather than record anything about this pair.
-    if (problems.length > 0) throw new Error(problems.join('; '));
+    if (problems.length > 0) return { linked: false };
 
     // Adopt the gid Wealthfolio actually stored — it keeps its own for rows that
     // were already grouped, and reports null when it dropped the group entirely.

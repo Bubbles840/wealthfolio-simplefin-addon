@@ -768,8 +768,16 @@ export async function runSyncCore(
           isValid: true,
           isDraft: false,
         };
-        await host.importActivities([correction]);
-        imported += 1;
+        try {
+          await host.importActivities([correction]);
+          imported += 1;
+        } catch (importErr: any) {
+          // If the starting balance already exists or failed gracefully, log/ignore duplicate
+          const msg = String(importErr?.message ?? importErr);
+          if (!msg.toLowerCase().includes('duplicate')) {
+            errors.push(`Account ${wfAccountId} starting balance import: ${msg}`);
+          }
+        }
       }
     }
 
