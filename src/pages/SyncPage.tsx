@@ -65,6 +65,7 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
   const [adjusting, setAdjusting] = useState<string | null>(null);
   const [autoHeal, setAutoHeal] = useState(false);
   const [autoAdjust, setAutoAdjust] = useState(false);
+  const [showDockerSetup, setShowDockerSetup] = useState(false);
 
   const loadBalances = useCallback(() => {
     store.getAccountBalances().then(setBalances).catch(() => {});
@@ -391,6 +392,49 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
             </span>
           </span>
         </label>
+      </Card>
+
+      <Card>
+        <div className="sfin-card-head">
+          <SectionLabel>Docker Background Sync (Optional)</SectionLabel>
+          <Button variant="ghost" onClick={() => setShowDockerSetup((s) => !s)}>
+            {showDockerSetup ? 'Hide Setup' : 'Show Setup'}
+          </Button>
+        </div>
+        <div className="sfin-subtle">
+          Sync transactions automatically in the background even when Wealthfolio is closed.
+        </div>
+        {showDockerSetup && (
+          <div style={{ marginTop: 12 }}>
+            <div className="sfin-subtle" style={{ marginBottom: 8 }}>
+              Add this service to your <code>docker-compose.yml</code>. You can customize the sync rate via <code>SYNC_SCHEDULE</code>:
+            </div>
+            <pre
+              style={{
+                background: 'var(--card-bg, rgba(0,0,0,0.2))',
+                padding: '12px 14px',
+                borderRadius: '6px',
+                fontSize: '12px',
+                fontFamily: 'monospace',
+                overflowX: 'auto',
+                border: '1px solid var(--border, rgba(255,255,255,0.1))',
+                lineHeight: 1.5,
+              }}
+            >
+              {`services:
+  simplefin-sync:
+    image: ghcr.io/bubbles840/wealthfolio-simplefin-sync:latest
+    container_name: simplefin-sync
+    restart: always
+    network_mode: host
+    environment:
+      - WEALTHFOLIO_API_URL=http://127.0.0.1:8088
+      - WEALTHFOLIO_PASSWORD=your_wealthfolio_password
+      - SYNC_SCHEDULE=0 */6 * * *          # Change cron schedule here (e.g. 0 */3 * * * for every 3h)
+      - MIN_SYNC_INTERVAL_HOURS=1          # Minimum interval cooldown between syncs`}
+            </pre>
+          </div>
+        )}
       </Card>
 
       <Card>
