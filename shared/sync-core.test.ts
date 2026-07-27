@@ -67,6 +67,51 @@ describe('runSyncCore', () => {
     expect(startingBalanceImports).toEqual([]);
   });
 
+  /** A matching TRANSFER_OUT (sfin-1) / TRANSFER_IN (sfin-2) inside the 3-day
+   *  pairing window — the smallest input that makes the core link something. */
+  const transferPairSeed = () => ({
+    accountSet: { errors: [], accounts: [
+      { id: 'sfin-1', name: 'Checking', currency: 'USD', balance: '0', 'balance-date': 1,
+        transactions: [{ id: 'tx-out', posted: 1700000000, amount: '-500.00', description: 'Payment to Card' }] },
+      { id: 'sfin-2', name: 'Card', currency: 'USD', balance: '0', 'balance-date': 1,
+        transactions: [{ id: 'tx-in', posted: 1700086400, amount: '500.00', description: 'PAYMENT THANK YOU' }] },
+    ] },
+    mapping: { 'sfin-1': 'wf-a', 'sfin-2': 'wf-b' },
+  });
+
+  it('asks the host to link each detected pair exactly once', async () => {
+    const { host, store, links } = createFakeHost(transferPairSeed());
+    await runSyncCore(host, store, {});
+    expect(links).toHaveLength(1);
+    const [a, b] = links[0];
+    expect(new Set([a.activityType, b.activityType]))
+      .toEqual(new Set(['TRANSFER_OUT', 'TRANSFER_IN']));
+    // Each leg carries everything a host needs to re-create it.
+    for (const leg of [a, b]) {
+      expect(leg.wfId).toBeTruthy();
+      expect(leg.absCents).toBe(50000);
+      expect(leg.currency).toBe('USD');
+      expect(leg.comment).toContain(leg.txId);
+    }
+    expect(new Set([a.accountId, b.accountId])).toEqual(new Set(['wf-a', 'wf-b']));
+  });
+
+  it('skips the ledger when the host reads sourceGroupId back', async () => {
+    const { host, store } = createFakeHost(transferPairSeed());
+    await runSyncCore(host, store, {});
+    expect(await store.getLinkedGroups()).toEqual({});
+  });
+
+  it('does not re-link a pair the host already reports as grouped', async () => {
+    const { host, store, links } = createFakeHost(transferPairSeed());
+    await runSyncCore(host, store, {});
+    expect(links).toHaveLength(1);
+    // Second run: listActivities now returns both legs carrying the gid linkPair
+    // stamped, so the capability branch recognises them without any ledger.
+    await runSyncCore(host, store, { force: true });
+    expect(links).toHaveLength(1);
+  });
+
   it('omits the asset on transfer legs', async () => {
     const { host, store, saved } = createFakeHost({
       accountSet: { errors: [], accounts: [

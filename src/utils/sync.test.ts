@@ -12,6 +12,7 @@ vi.mock('./simplefin', () => ({
 }));
 
 import { fetchAccounts } from './simplefin';
+import { AddonSyncHost } from './addon-host';
 
 const makeStore = (overrides: Record<string, unknown> = {}) => ({
   getAccessUrl: vi.fn(async () => 'https://u:p@bridge.simplefin.org/simplefin'),
@@ -1080,5 +1081,62 @@ describe('neutralAdjustmentFields', () => {
     expect(neutralAdjustmentFields('CASH', 10.129)).toEqual({
       activityType: 'CREDIT', amount: 10.13, fee: 0,
     });
+  });
+});
+
+describe('AddonSyncHost.linkPair', () => {
+  const legs = (): [any, any] => [
+    { wfId: 'act-out', accountId: 'wf-account-a', txId: 'tx-out', activityType: 'TRANSFER_OUT',
+      date: '2023-11-14', absCents: 50000, currency: 'USD', comment: 'Payment to Citibank · tx-out' },
+    { wfId: 'act-in', accountId: 'wf-account-b', txId: 'tx-in', activityType: 'TRANSFER_IN',
+      date: '2023-11-15', absCents: 50000, currency: 'USD', comment: 'PAYMENT THANK YOU · tx-in' },
+  ];
+
+  it('deletes both legs, then re-creates them together, marked and grouped', async () => {
+    const ctx = makeCtx();
+    const result = await new AddonSyncHost(ctx).linkPair(legs());
+
+    const calls = vi.mocked(ctx.api.activities.saveMany).mock.calls.map((c: any) => c[0]);
+    // Delete FIRST: an update can neither clear a stored asset nor move a row
+    // out of a stale group, and re-creating before deleting would collide with
+    // the originals on the host's dedup.
+    expect(calls[0].deleteIds.sort()).toEqual(['act-in', 'act-out']);
+    expect(calls[0].creates).toBeUndefined();
+    // Then ONE call holding BOTH legs — a per-leg call looks like a lone leg and
+    // Wealthfolio silently drops the half-formed group.
+    expect(calls).toHaveLength(2);
+    const creates = calls[1].creates as any[];
+    expect(creates).toHaveLength(2);
+    for (const c of creates) {
+      expect(c.symbol).toBeUndefined(); // any asset makes the leg unpairable
+      expect(typeof c.metadata).toBe('string'); // an object 422s
+      expect(JSON.parse(c.metadata)).toEqual({ flow: { is_external: false } });
+      expect(String(c.sourceGroupId).startsWith('wf-transfer-')).toBe(true);
+      expect(c.amount).toBe(500);
+    }
+    expect(creates[0].sourceGroupId).toBe(creates[1].sourceGroupId);
+    expect(result).toEqual({ linked: true, groupId: creates[0].sourceGroupId });
+  });
+
+  it('reports linked:false when the host silently drops the group', async () => {
+    // The save "succeeds" but the echo comes back ungrouped — the only way to
+    // learn the link never landed, since search's ActivityDetails omits the gid.
+    const ctx = makeCtx();
+    ctx.api.activities.saveMany = vi.fn(async (req: any) => ({
+      created: (req.creates ?? []).map((c: any, i: number) => ({
+        ...c, id: `new-${i}`, notes: c.comment, sourceGroupId: null,
+      })),
+      updated: [], deleted: req.deleteIds ?? [], createdMappings: [], errors: [],
+    }));
+    expect(await new AddonSyncHost(ctx).linkPair(legs())).toEqual({ linked: false });
+  });
+
+  it('throws when a write errors, so the core surfaces it and retries', async () => {
+    const ctx = makeCtx();
+    ctx.api.activities.saveMany = vi.fn(async () => ({
+      created: [], updated: [], deleted: [], createdMappings: [],
+      errors: [{ action: 'create', message: 'boom' }],
+    }));
+    await expect(new AddonSyncHost(ctx).linkPair(legs())).rejects.toThrow(/boom/);
   });
 });

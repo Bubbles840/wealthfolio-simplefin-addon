@@ -4,7 +4,7 @@ import type { TransferCandidate } from './transfers.js';
 import { planReconciliation } from './reconcile.js';
 import type { FeedTx, ExistingRow } from './reconcile.js';
 import type { ActivityType, SimplefinTransaction } from './types.js';
-import type { ActivityWrite, ImportRow, SyncHost, SyncStore } from './sync-host.js';
+import type { ActivityWrite, ImportRow, LinkLeg, SyncHost, SyncStore } from './sync-host.js';
 
 /**
  * A datable timestamp for a SimpleFin transaction: `posted` when present, else
@@ -203,7 +203,9 @@ export const PENDING_SUFFIX = ' · pending';
  * prefix and the metadata marker so the pair validates on every path.
  */
 export const TRANSFER_GROUP_PREFIX = 'wf-transfer-';
-const newTransferGroupId = () => `${TRANSFER_GROUP_PREFIX}${crypto.randomUUID()}`;
+/** Mint a group id a host can stamp on both legs of a pair. The prefix is itself
+ *  one of the internal-transfer markers, so it does double duty. */
+export const newTransferGroupId = () => `${TRANSFER_GROUP_PREFIX}${crypto.randomUUID()}`;
 /** Serialized, NOT an object: the server's `metadata` is `Option<String>` (a JSON
  *  blob), so an object 422s. Mirrors what Wealthfolio itself stores —
  *  `json!({ "flow": { "is_external": … } }).to_string()`. */
@@ -237,16 +239,28 @@ export function txIdFromComment(text: string | null | undefined): string | null 
   return sep === -1 ? null : c.slice(sep + 3);
 }
 
+/** An existing row plus the two things linking needs that reconciliation
+ *  doesn't: the account's currency, and whatever group the host says the row is
+ *  already in (only meaningful when `capabilities.readsSourceGroupId`). */
+type LinkableRow = ExistingRow & { currency: string; sourceGroupId?: string | null };
+
 /**
  * Reads the existing SimpleFin-sourced activities for an account into
  * `ExistingRow`s the reconciliation planner can match against. Every imported
  * activity carries its SimpleFin tx id at the end of the comment, optionally
  * followed by a ` · pending` marker — parse both back out so a row can be
  * matched by identity (independent of type) and recognised as still-pending.
+ *
+ * `sourceGroupId` rides along verbatim for the link step; on a host whose
+ * `readsSourceGroupId` capability is false it is meaningless (always null) and
+ * the ledger stands in for it.
  */
-async function fetchExistingRows(host: SyncHost, wfAccountId: string): Promise<ExistingRow[]> {
+async function fetchExistingRows(
+  host: SyncHost,
+  wfAccountId: string,
+): Promise<Array<ExistingRow & { sourceGroupId?: string | null }>> {
   const data = await host.listActivities(wfAccountId);
-  const rows: ExistingRow[] = [];
+  const rows: Array<ExistingRow & { sourceGroupId?: string | null }> = [];
   for (const a of data) {
     const pending = (a.comment ?? '').endsWith(PENDING_SUFFIX);
     const txId = txIdFromComment(a.comment);
@@ -261,6 +275,7 @@ async function fetchExistingRows(host: SyncHost, wfAccountId: string): Promise<E
       pending,
       assetId: a.assetId ? String(a.assetId) : undefined,
       comment: a.comment ?? undefined,
+      sourceGroupId: a.sourceGroupId ?? null,
     });
   }
   return rows;
@@ -471,52 +486,49 @@ export async function runSyncCore(
     }
   }
 
-  // Auto-link transfer pairs: stamp a shared sourceGroupId on both sides so
-  // Wealthfolio treats them as an internal transfer. A local ledger (txId → gid)
-  // makes this idempotent — a pair whose both sides already carry the same gid
-  // is skipped so already-linked pairs produce no per-sync churn. The two sides
-  // span two accounts, so groupByTxId is computed once here and applied inside
-  // each account's build below. detection.pairs excludes pending rows (they are
-  // not transfer candidates), so no pending side is ever linked.
+  // Auto-link transfer pairs: hand both sides to `host.linkPair`, which records
+  // them as one internal transfer however that host can (the addon deletes and
+  // re-creates both legs under a shared marked group; the companion has a link
+  // endpoint). detection.pairs excludes pending rows (they are not transfer
+  // candidates), so no pending side is ever linked.
   //
-  // The ledger is only WRITTEN once the stamping save actually succeeds (below,
-  // after the account loop) — never here, up front — because ActivityDetails
-  // doesn't expose sourceGroupId, so the addon has no way to read back whether
-  // a link truly landed. Writing it optimistically would let a failed/partial
-  // save get permanently (and wrongly) marked "linked", with no retry. A manual
-  // Reconcile (opts.heal) re-attempts pairs the ledger already claims are
-  // linked, so a stale entry from before this fix — or a save that silently
-  // didn't take — can still self-heal.
-  const ledger = await store.getLinkedGroups();
+  // "Already linked?" is answered one of two ways, by capability:
+  //
+  //  • readsSourceGroupId — the host hands back a trustworthy sourceGroupId on
+  //    every row, so the rows themselves are the answer and no local bookkeeping
+  //    is needed (or wanted: a second ledger could only ever go stale).
+  //  • otherwise (the addon) — ActivityDetails doesn't expose sourceGroupId, so
+  //    a local ledger (txId → gid) stands in. It is only WRITTEN once linkPair
+  //    reports the link actually landed — never optimistically, which would let
+  //    a failed/partial save get permanently (and wrongly) marked "linked", with
+  //    no retry.
+  const readsGroups = host.capabilities.readsSourceGroupId;
+  const ledger: Record<string, string> = readsGroups ? {} : await store.getLinkedGroups();
   let ledgerChanged = false;
-  // One-time migration: entries whose gid predates TRANSFER_GROUP_PREFIX were
-  // written optimistically (before the ledger was reconciled against what
-  // Wealthfolio actually stored), so they may claim a link that never landed.
-  // Drop them so those pairs get re-attempted exactly once; every gid written
-  // from here on is echo-confirmed and therefore trustworthy.
-  for (const [txId, gid] of Object.entries(ledger)) {
-    if (!String(gid).startsWith(TRANSFER_GROUP_PREFIX)) {
-      delete ledger[txId];
-      ledgerChanged = true;
+  // txIds whose pair the ledger already vouches for. Empty (and unused) when the
+  // host can read groups back off the rows.
+  const ledgerLinkedTxIds = new Set<string>();
+  if (!readsGroups) {
+    // One-time migration: entries whose gid predates TRANSFER_GROUP_PREFIX were
+    // written optimistically (before the ledger was reconciled against what
+    // Wealthfolio actually stored), so they may claim a link that never landed.
+    // Drop them so those pairs get re-attempted exactly once; every gid written
+    // from here on is echo-confirmed and therefore trustworthy.
+    for (const [txId, gid] of Object.entries(ledger)) {
+      if (!String(gid).startsWith(TRANSFER_GROUP_PREFIX)) {
+        delete ledger[txId];
+        ledgerChanged = true;
+      }
     }
-  }
-  const groupByTxId = new Map<string, string>();
-  for (const { outTxId, inTxId } of detection.pairs) {
-    const existingGid = ledger[outTxId] ?? ledger[inTxId];
-    const alreadyLinked =
-      existingGid !== undefined && ledger[outTxId] === existingGid && ledger[inTxId] === existingGid;
-    // Confirmed-linked pairs (both legs on the same gid, adopted from a previous
-    // run's echo) are skipped — no churn, on a normal sync or a heal.
-    if (alreadyLinked) continue;
-    // Anything else gets a brand-new group id. We never try to reuse a stored
-    // one: Wealthfolio refuses to move an already-grouped row, so re-stamping a
-    // pair whose counterpart still belongs to a stale group would leave our new
-    // group with a single leg — which it then drops, leaving that leg unlinked.
-    // The flush below sidesteps this by re-creating BOTH legs, which clears any
-    // prior membership so the fresh group is always complete.
-    const gid = newTransferGroupId();
-    groupByTxId.set(outTxId, gid);
-    groupByTxId.set(inTxId, gid);
+    for (const { outTxId, inTxId } of detection.pairs) {
+      const existingGid = ledger[outTxId] ?? ledger[inTxId];
+      // Confirmed-linked pairs (both legs on the same gid, adopted from a
+      // previous run's report) are skipped — no churn, on a sync or a heal.
+      if (existingGid !== undefined && ledger[outTxId] === existingGid && ledger[inTxId] === existingGid) {
+        ledgerLinkedTxIds.add(outTxId);
+        ledgerLinkedTxIds.add(inTxId);
+      }
+    }
   }
 
   // Accounts whose starting balance couldn't run yet because no valuation
@@ -534,11 +546,11 @@ export async function runSyncCore(
   const accountBalances: Record<string, AccountBalanceSnapshot> = {};
 
   // Every already-imported row across all accounts, keyed by SimpleFin tx id.
-  // Used by the atomic transfer-link flush AFTER the loop: both legs of a pair
-  // live in different accounts, and Wealthfolio only forms a transfer group when
-  // it sees BOTH legs in a single saveMany call — per-account calls each look
-  // like a lone 1-leg group and get dropped. So linking must span accounts.
-  const linkRowByTxId = new Map<string, ExistingRow & { currency: string }>();
+  // Used by the transfer-link step AFTER the loop: both legs of a pair live in
+  // different accounts, so a pair can only be assembled once every account has
+  // been read (and the host needs both legs at once — Wealthfolio only forms a
+  // transfer group when it sees them together).
+  const linkRowByTxId = new Map<string, LinkableRow>();
 
   for (const sfAccount of accountSet.accounts) {
     const wfAccountId = mapping[sfAccount.id];
@@ -699,6 +711,7 @@ export async function runSyncCore(
           linkRowByTxId.set(txId, {
             wfId: a.id, wfAccountId: t.wfAccountId, txId, absCents: t.absCents,
             type: t.type, date: t.date, pending: t.pending, currency: sfAccount.currency,
+            sourceGroupId: a.sourceGroupId ?? null,
           });
         }
       }
@@ -836,57 +849,88 @@ export async function runSyncCore(
     }
   }
 
-  // Atomic transfer-link flush: stamp BOTH legs of each detected pair in a
-  // SINGLE saveMany so Wealthfolio sees a complete 2-leg group at write time
-  // (per-account calls each look like a lone leg → group dropped). Only pairs
-  // whose two legs are both already-imported rows are linkable here; a brand-new
-  // pair (both legs created this run) links on the next sync once they're
-  // existing rows. Non-heal reuses the ledger gid and skips already-linked pairs
-  // (groupByTxId omits them); heal re-attempts every pair with a fresh gid.
-  // A leg that still carries an asset can't be repaired by an update: the
-  // server's `asset` field is a plain Option (not the Option<Option<…>> "patch"
-  // shape its numeric fields use), so omitting it does not CLEAR a stored asset.
-  // Such legacy legs — created before we knew transfers must be asset-free — are
-  // therefore deleted and re-created asset-free instead, which is also the only
-  // way to make them book cash (handlers/transfers.rs only books cash when
-  // asset_id is empty).
-  const relinkCreates: ActivityWrite[] = [];
-  const staleLegIds: string[] = [];
-  const flushTxIds = new Set<string>();
+  // Transfer linking. Only pairs whose two legs are both rows the host already
+  // holds are linkable here; a brand-new pair (both legs created this run) is
+  // registered above from the save echo, so it links in the same run.
+  //
+  // How a pair actually gets recorded is the HOST's business (`linkPair`): the
+  // addon must delete and re-create both legs in one call, the companion has a
+  // link endpoint. What the core owns is *which* pairs to hand over, and what to
+  // remember afterwards.
+  const linkedTxIds = new Set<string>();
+  const pairsToLink: Array<[LinkLeg, LinkLeg]> = [];
+  const toLinkLeg = (row: LinkableRow): LinkLeg => ({
+    wfId: row.wfId,
+    accountId: row.wfAccountId,
+    txId: row.txId,
+    activityType: row.type,
+    date: row.date,
+    absCents: row.absCents,
+    currency: row.currency,
+    comment: row.comment ?? `${descByTxId.get(row.txId) ?? ''} · ${row.txId}`,
+  });
   for (const { outTxId, inTxId } of detection.pairs) {
-    const gid = groupByTxId.get(outTxId);
-    if (!gid) continue; // already linked — nothing to do
     const outRow = linkRowByTxId.get(outTxId);
     const inRow = linkRowByTxId.get(inTxId);
     if (!outRow || !inRow) continue; // a leg isn't imported yet — links next run
-    // Re-create BOTH legs rather than updating them. Two stored states resist an
-    // update: an existing asset can't be cleared (the server's `asset` is a plain
-    // Option, not its Option<Option<…>> patch shape), and an existing group can't
-    // be reassigned. Re-creating clears both, so the new 2-leg group always forms.
-    for (const row of [outRow, inRow]) {
-      flushTxIds.add(row.txId);
-      staleLegIds.push(row.wfId);
-      relinkCreates.push({
-        accountId: row.wfAccountId,
-        activityType: row.type,
-        activityDate: row.date,
-        amount: row.absCents / 100,
-        currency: row.currency,
-        comment: row.comment ?? `${descByTxId.get(row.txId) ?? ''} · ${row.txId}`,
-        // The marker is what makes Wealthfolio treat the group as INTERNAL;
-        // a shared sourceGroupId alone does not.
-        metadata: INTERNAL_TRANSFER_METADATA,
-        sourceGroupId: gid,
-      });
+    const alreadyLinked = readsGroups
+      // The rows themselves say so: both in the same, non-empty group.
+      ? !!outRow.sourceGroupId && outRow.sourceGroupId === inRow.sourceGroupId
+      : ledgerLinkedTxIds.has(outTxId) && ledgerLinkedTxIds.has(inTxId);
+    if (alreadyLinked) continue;
+    linkedTxIds.add(outTxId);
+    linkedTxIds.add(inTxId);
+    pairsToLink.push([toLinkLeg(outRow), toLinkLeg(inRow)]);
+  }
+
+  let unlinkedLegs = 0;
+  for (const legs of pairsToLink) {
+    let result: { linked: boolean; groupId?: string };
+    try {
+      result = await host.linkPair(legs);
+    } catch (e: any) {
+      errors.push(`Transfer-link failed (${legs[0].txId}/${legs[1].txId}): ${e?.message ?? e}`);
+      continue; // leave the ledger untouched so the pair retries next run
+    }
+    if (!result.linked || !result.groupId) unlinkedLegs += legs.length;
+    if (readsGroups) continue; // nothing to remember — the rows carry the truth
+    // Reconcile the ledger to what the host reports it actually stored: adopt
+    // the real gid where the link landed, purge the txIds where it didn't so
+    // they retry rather than staying wrongly marked "linked".
+    for (const leg of legs) {
+      if (result.linked && result.groupId) {
+        if (ledger[leg.txId] !== result.groupId) {
+          ledger[leg.txId] = result.groupId;
+          ledgerChanged = true;
+        }
+      } else if (leg.txId in ledger) {
+        delete ledger[leg.txId];
+        ledgerChanged = true;
+      }
     }
   }
+  // Surface any leg the host silently refused to group, so a stuck transfer is
+  // diagnosable without instrumenting the addon. Only on an explicit Reconcile:
+  // a pair Wealthfolio keeps refusing would otherwise warn on every routine
+  // sync, and the retry is harmless in the meantime.
+  if (opts.heal && unlinkedLegs > 0) {
+    errors.push(
+      `${unlinkedLegs} transfer leg(s) could not be linked — they will be retried on the next reconcile`,
+    );
+  }
+
   // Repair legacy transfer legs that still carry an asset but are NOT part of a
-  // detected pair — e.g. a transfer to an untracked external account. They can
-  // never book cash while an asset is attached (and an update can't clear it),
-  // so they silently understate the balance. No group id: there's nothing to
-  // pair them with; the point is purely to make them move cash.
+  // pair being linked — e.g. a transfer to an untracked external account. They
+  // can never book cash while an asset is attached, and an update can't clear it
+  // (the server's `asset` field is a plain Option, not the Option<Option<…>>
+  // "patch" shape its numeric fields use, so omitting it does not CLEAR a stored
+  // asset). Delete and re-create asset-free instead, which is the only way to
+  // make them book cash (handlers/transfers.rs only books cash when asset_id is
+  // empty). No group id: there's nothing to pair them with.
+  const relinkCreates: ActivityWrite[] = [];
+  const staleLegIds: string[] = [];
   for (const row of linkRowByTxId.values()) {
-    if (!isTransferType(row.type) || !row.assetId || flushTxIds.has(row.txId)) continue;
+    if (!isTransferType(row.type) || !row.assetId || linkedTxIds.has(row.txId)) continue;
     staleLegIds.push(row.wfId);
     relinkCreates.push({
       accountId: row.wfAccountId,
@@ -904,41 +948,9 @@ export async function runSyncCore(
     for (const err of del.errors ?? []) {
       errors.push(`Transfer-relink delete error (${err.action}): ${err.message}`);
     }
-    // One call carrying BOTH legs of every pair, so each group is complete at
-    // write time (a per-leg call looks like a lone leg and the group is dropped).
     const result = await host.saveMany({ creates: relinkCreates });
     for (const err of result.errors ?? []) {
-      errors.push(`Transfer-link save error (${err.action}): ${err.message}`);
-    }
-    if ((result.errors ?? []).length === 0) {
-      // Reconcile the ledger to what Wealthfolio actually stored. saveMany echoes
-      // each saved Activity (its `notes` carries our `… · <txId>` comment and the
-      // persisted `sourceGroupId`) — the one read-back channel, since the search
-      // API's ActivityDetails omits sourceGroupId. Adopt the real gid where a row
-      // came back grouped; purge any txId that came back ungrouped so it retries.
-      const echoedGidByTxId = new Map<string, string | null | undefined>();
-      for (const a of [...(result.updated ?? []), ...(result.created ?? [])]) {
-        const txId = txIdFromComment(a.comment);
-        if (txId) echoedGidByTxId.set(txId, a.sourceGroupId);
-      }
-      for (const txId of flushTxIds) {
-        const echoed = echoedGidByTxId.get(txId);
-        if (echoed) {
-          if (ledger[txId] !== echoed) { ledger[txId] = echoed; ledgerChanged = true; }
-        } else if (txId in ledger) {
-          delete ledger[txId]; ledgerChanged = true;
-        }
-      }
-      // Surface any leg the host silently refused to group, so a stuck transfer
-      // is diagnosable without instrumenting the addon. Only on an explicit
-      // Reconcile: a pair Wealthfolio keeps refusing would otherwise warn on
-      // every routine sync, and the retry is harmless in the meantime.
-      const unlinked = [...flushTxIds].filter((t) => !echoedGidByTxId.get(t));
-      if (opts.heal && unlinked.length > 0) {
-        errors.push(
-          `${unlinked.length} transfer leg(s) could not be linked — they will be retried on the next reconcile`,
-        );
-      }
+      errors.push(`Transfer-relink save error (${err.action}): ${err.message}`);
     }
   }
 
