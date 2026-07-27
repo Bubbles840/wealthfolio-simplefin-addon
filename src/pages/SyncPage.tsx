@@ -693,11 +693,6 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
                   const res = await ctx.api.activities.search(0, 1000, {}, '', { id: 'date', desc: true }).catch(() => ({ data: [] as any[] }));
                   const activities = res.data ?? [];
 
-                  console.log('[Wealthfolio Activity Debug] Total activities returned:', activities.length);
-                  if (activities.length > 0) {
-                    console.log('[Wealthfolio Activity Debug] Sample activity objects:', JSON.stringify(activities.slice(0, 10), null, 2));
-                  }
-
                   const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
 
                   const categorySpentMap: Record<string, number> = {};
