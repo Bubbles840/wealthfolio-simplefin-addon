@@ -121,8 +121,18 @@ export class WealthfolioClient {
     );
     if (res.status === 404) return null;
     if (!res.ok) throw new Error(`getAddonSecret failed: ${res.status}`);
-    const json = (await res.json()) as { value?: string | null };
-    return json.value ?? null;
+    const raw = await res.text();
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw);
+      if (typeof parsed === 'string') return parsed;
+      if (parsed && typeof parsed === 'object' && 'value' in parsed) {
+        return (parsed as { value: string }).value;
+      }
+      return String(parsed);
+    } catch {
+      return raw.replace(/^"|"$/g, '');
+    }
   }
 
   async setAddonSecret(addonId: string, key: string, value: string): Promise<void> {

@@ -112,7 +112,8 @@ describe('WealthfolioClient', () => {
   it('reads an addon secret', async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
-      json: async () => ({ value: 'https://u:p@bridge' }),
+      text: async () => '"https://u:p@bridge"',
+      json: async () => 'https://u:p@bridge',
     });
     const c = new WealthfolioClient('http://wf');
     const v = await c.getAddonSecret('simplefin-sync', 'simplefin_access_url');
