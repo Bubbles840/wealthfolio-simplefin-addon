@@ -128,4 +128,95 @@ describe('runSyncCore', () => {
     expect(out.activityType).toBe('TRANSFER_OUT');
     expect(out.symbol).toBeUndefined();
   });
+
+  // --- Task 5: Healing + baseline correction via the core ---
+
+  it('plugs CASH drift with a spending-neutral CREDIT', async () => {
+    const { host, store, imported } = createFakeHost({
+      accountSet: { errors: [], accounts: [{
+        id: 'sfin-1', name: 'C', currency: 'USD',
+        balance: '100.00', 'balance-date': 1,
+        transactions: [],
+      }] },
+      mapping: { 'sfin-1': 'wf-a' },
+      accountTypes: { 'wf-a': 'CASH' },
+      valuations: new Map([['wf-a', 0]]),
+      autoHeal: true,
+      autoAdjust: true,
+    });
+    await runSyncCore(host, store, { heal: true });
+    const plug = imported.flat().find((r) => r.comment.startsWith('Balance adjustment'))!;
+    expect(plug).toBeTruthy();
+    expect(plug.activityType).toBe('CREDIT');
+    expect(plug.amount).toBe(100);
+    expect(plug.fee).toBe(0);
+  });
+
+  it('nets pre-baseline history out of the starting balance', async () => {
+    const { host, store, saved } = createFakeHost({
+      accountSet: { errors: [], accounts: [{
+        id: 'sfin-1', name: 'C', currency: 'USD',
+        balance: '3200.38', 'balance-date': 1,
+        transactions: [{
+          id: 'tx-old',
+          posted: Math.floor(Date.parse('2026-04-23T12:00:00Z') / 1000),
+          amount: '-1300.00',
+          description: 'ACH Withdrawal',
+        }],
+      }] },
+      mapping: { 'sfin-1': 'wf-a' },
+      existing: new Map([['wf-a', [{
+        id: 'act-start', accountId: 'wf-a', activityType: 'DEPOSIT',
+        date: '2026-06-18', amount: 4500.38, comment: 'Starting balance · sfin-1',
+        sourceGroupId: null,
+      }]]]),
+    });
+    await runSyncCore(host, store, {});
+    const update = saved.flatMap((s) => s.updates ?? []).find((u) => u.id === 'act-start')!;
+    expect(update).toBeTruthy();
+    expect(update.amount).toBeCloseTo(5800.38, 2);
+    expect(update.activityType).toBe('DEPOSIT');
+  });
+
+  it('plugs negative CASH drift with a fee-based CREDIT', async () => {
+    const { host, store, imported } = createFakeHost({
+      accountSet: { errors: [], accounts: [{
+        id: 'sfin-1', name: 'C', currency: 'USD',
+        balance: '-50.00', 'balance-date': 1,
+        transactions: [],
+      }] },
+      mapping: { 'sfin-1': 'wf-a' },
+      accountTypes: { 'wf-a': 'CASH' },
+      valuations: new Map([['wf-a', 0]]),
+      autoHeal: true,
+      autoAdjust: true,
+    });
+    await runSyncCore(host, store, { heal: true });
+    const plug = imported.flat().find((r) => r.comment.startsWith('Balance adjustment'))!;
+    expect(plug).toBeTruthy();
+    expect(plug.activityType).toBe('CREDIT');
+    expect(plug.amount).toBe(0);
+    expect(plug.fee).toBe(50);
+  });
+
+  it('uses DEPOSIT/WITHDRAWAL for non-CASH account drift plugs', async () => {
+    const { host, store, imported } = createFakeHost({
+      accountSet: { errors: [], accounts: [{
+        id: 'sfin-1', name: 'Brokerage', currency: 'USD',
+        balance: '200.00', 'balance-date': 1,
+        transactions: [],
+      }] },
+      mapping: { 'sfin-1': 'wf-a' },
+      accountTypes: { 'wf-a': 'SECURITIES' },
+      valuations: new Map([['wf-a', 0]]),
+      autoHeal: true,
+      autoAdjust: true,
+    });
+    await runSyncCore(host, store, { heal: true });
+    const plug = imported.flat().find((r) => r.comment.startsWith('Balance adjustment'))!;
+    expect(plug).toBeTruthy();
+    expect(plug.activityType).toBe('DEPOSIT');
+    expect(plug.amount).toBe(200);
+    expect(plug.fee).toBe(0);
+  });
 });
