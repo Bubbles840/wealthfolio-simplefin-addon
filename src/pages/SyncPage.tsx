@@ -676,6 +676,8 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
                   const res = await ctx.api.activities.search(0, 1000, {}, '', { id: 'date', desc: true }).catch(() => ({ data: [] as any[] }));
                   const activities = res.data ?? [];
 
+                  console.log('[Wealthfolio Debug] Sample activity object:', activities[0]);
+
                   const categorySpentMap: Record<string, number> = {};
                   let totalSpentMonth = 0;
 
@@ -683,7 +685,19 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
                     const amt = typeof act.amount === 'number' ? act.amount : parseFloat(String(act.amount ?? 0));
                     const spent = Math.abs(amt);
                     if (spent > 0) {
-                      const catKey = (act.category || (act as any).categoryName || (act as any).categoryId || act.comment || '').trim();
+                      const meta = (act.metadata ?? {}) as Record<string, any>;
+                      const catKey = String(
+                        meta.categoryName ||
+                        meta.category ||
+                        meta.categoryId ||
+                        meta.category_id ||
+                        meta.spendingCategory ||
+                        (act as any).category ||
+                        (act as any).categoryName ||
+                        act.comment ||
+                        ''
+                      ).trim();
+
                       let matched = false;
                       if (catKey) {
                         for (const rule of categoryRules) {
