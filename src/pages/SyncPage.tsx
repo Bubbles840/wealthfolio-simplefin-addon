@@ -686,10 +686,10 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
 
                   for (const ep of endpoints) {
                     try {
-                      const r = await ctx.api.network.request({ url: `${window.location.origin}${ep}`, method: 'GET' });
-                      console.log(`[Wealthfolio API Endpoint Test] ${ep} (${r.status}):`, r.body);
+                      const r = await fetch(ep, { headers: { 'Content-Type': 'application/json' } });
+                      console.log(`[Wealthfolio Direct Fetch Test] ${ep} (${r.status}):`, await r.text());
                     } catch (e) {
-                      console.log(`[Wealthfolio API Endpoint Test] ${ep} error:`, e);
+                      console.log(`[Wealthfolio Direct Fetch Test] ${ep} error:`, e);
                     }
                   }
 
