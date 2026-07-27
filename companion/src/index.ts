@@ -112,7 +112,7 @@ export async function runCompanionSync(): Promise<void> {
       const tg = JSON.parse(tgRaw);
       if (tg.botToken && tg.chatId && tg.enabled !== false) {
         log(`Telegram notifications active (chat: ${tg.chatId}).`);
-        if (result.imported > 0) {
+        if (result.imported > 0 && tg.notifyOnImport !== false) {
           await sendTelegramMessage(
             tg.botToken,
             tg.chatId,

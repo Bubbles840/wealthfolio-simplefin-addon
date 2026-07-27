@@ -8,7 +8,19 @@ import { Button, Card, ErrorBox, SectionLabel } from '../components/ui';
 import { sendTelegramMessage, formatDailyReport, formatWeeklyReport } from '../../shared/telegram';
 import type { SecretsStore, AccountBalanceInfo } from '../utils/secrets';
 import type { Scheduler } from '../utils/scheduler';
-import type { AccountMapping, MappingRule } from '../../shared/types';
+import type { AccountMapping, MappingRule, CategoryRule } from '../../shared/types';
+import { getCategoryEmoji } from '../../shared/telegram';
+
+const DEFAULT_CATEGORY_RULES: CategoryRule[] = [
+  { categoryId: 'housing', categoryName: 'Housing', mode: 'monthly', monthlyBudget: 1511 },
+  { categoryId: 'transportation', categoryName: 'Transportation', mode: 'monthly', monthlyBudget: 463 },
+  { categoryId: 'groceries', categoryName: 'Groceries', mode: 'weekly', monthlyBudget: 450 },
+  { categoryId: 'bills', categoryName: 'Bills & Utilities', mode: 'monthly', monthlyBudget: 250 },
+  { categoryId: 'health', categoryName: 'Health & Wellness', mode: 'monthly', monthlyBudget: 100 },
+  { categoryId: 'shopping', categoryName: 'Shopping', mode: 'daily', monthlyBudget: 600 },
+  { categoryId: 'dining', categoryName: 'Food & Dining', mode: 'daily', monthlyBudget: 350 },
+  { categoryId: 'entertainment', categoryName: 'Entertainment', mode: 'monthly', monthlyBudget: 200 },
+];
 
 interface Props {
   ctx: AddonContext;
@@ -70,8 +82,11 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
 
   const [botToken, setBotToken] = useState('');
   const [chatId, setChatId] = useState('');
+  const [notifyOnImport, setNotifyOnImport] = useState(true);
   const [dailyReportEnabled, setDailyReportEnabled] = useState(true);
   const [weeklyReportEnabled, setWeeklyReportEnabled] = useState(true);
+  const [categoryRules, setCategoryRules] = useState<CategoryRule[]>(DEFAULT_CATEGORY_RULES);
+  const [showCategorySettings, setShowCategorySettings] = useState(false);
   const [testingTelegram, setTestingTelegram] = useState(false);
   const [telegramStatus, setTelegramStatus] = useState<string | null>(null);
   const [showTelegramInstructions, setShowTelegramInstructions] = useState(false);
@@ -104,8 +119,12 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
       if (tg) {
         setBotToken(tg.botToken ?? '');
         setChatId(tg.chatId ?? '');
+        setNotifyOnImport(tg.notifyOnImport ?? true);
         setDailyReportEnabled(tg.dailyReportEnabled ?? true);
         setWeeklyReportEnabled(tg.weeklyReportEnabled ?? true);
+        if (Array.isArray(tg.categoryRules) && tg.categoryRules.length > 0) {
+          setCategoryRules(tg.categoryRules);
+        }
       }
       setWfNames(Object.fromEntries(wfAccounts.map((a) => [a.id, a.name])));
 
@@ -516,6 +535,14 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
             <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
               <input
                 type="checkbox"
+                checked={notifyOnImport}
+                onChange={(e) => setNotifyOnImport(e.target.checked)}
+              />
+              <span>Transaction Import Alerts (Instant when new transactions sync)</span>
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+              <input
+                type="checkbox"
                 checked={dailyReportEnabled}
                 onChange={(e) => setDailyReportEnabled(e.target.checked)}
               />
@@ -531,6 +558,67 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
             </label>
           </div>
 
+          <div style={{ marginTop: 8 }}>
+            <Button variant="ghost" onClick={() => setShowCategorySettings((s) => !s)}>
+              {showCategorySettings ? '▲ Hide Category Rules' : '▼ Customize Category Modes & Budgets'}
+            </Button>
+          </div>
+
+          {showCategorySettings && (
+            <div style={{
+              background: 'var(--card-bg, rgba(0,0,0,0.15))',
+              padding: 12,
+              borderRadius: 6,
+              border: '1px solid var(--border, rgba(255,255,255,0.1))',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 10,
+              marginTop: 4,
+            }}>
+              <div style={{ fontWeight: 600, fontSize: 11, color: 'var(--muted-foreground)', letterSpacing: '0.05em' }}>
+                CATEGORY REPORT PREFERENCES (EMOJIS &amp; ALLOWANCE MODES)
+              </div>
+
+              {categoryRules.map((rule, idx) => {
+                const emoji = getCategoryEmoji(rule.categoryName);
+                return (
+                  <div key={rule.categoryId} style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: 16, width: 24, textAlign: 'center' }}>{emoji}</span>
+                    <span style={{ minWidth: 140, fontWeight: 500, fontSize: 13 }}>{rule.categoryName}</span>
+                    <select
+                      className="sfin-select"
+                      style={{ fontSize: 12, padding: '4px 8px' }}
+                      value={rule.mode}
+                      onChange={(e) => {
+                        const updated = [...categoryRules];
+                        updated[idx] = { ...rule, mode: e.target.value as any };
+                        setCategoryRules(updated);
+                      }}
+                    >
+                      <option value="daily">Daily Allowance (/day)</option>
+                      <option value="weekly">Weekly Allowance (/week)</option>
+                      <option value="monthly">Monthly Total Remaining</option>
+                    </select>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                      <span className="sfin-subtle" style={{ fontSize: 12 }}>Budget: $</span>
+                      <input
+                        type="number"
+                        className="sfin-input"
+                        style={{ width: 85, fontSize: 12, padding: '4px 6px' }}
+                        value={rule.monthlyBudget ?? 0}
+                        onChange={(e) => {
+                          const updated = [...categoryRules];
+                          updated[idx] = { ...rule, monthlyBudget: parseFloat(e.target.value) || 0 };
+                          setCategoryRules(updated);
+                        }}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
           {telegramStatus && (
             <div style={{ fontSize: '13px', color: telegramStatus.startsWith('✅') ? 'var(--success, #4caf50)' : 'var(--destructive, #f44336)' }}>
               {telegramStatus}
@@ -545,10 +633,6 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
                 setTestingTelegram(true);
                 setTelegramStatus('Sending test message...');
                 try {
-                  console.log('[Telegram Debug] Starting test message send');
-                  console.log('[Telegram Debug] ctx.api keys:', Object.keys(ctx.api || {}));
-                  console.log('[Telegram Debug] ctx.api.network:', (ctx.api as any).network);
-
                   const timeoutPromise = new Promise<{ ok: false; description: string }>((_, reject) =>
                     setTimeout(() => reject(new Error('Request timed out after 5 seconds')), 5000)
                   );
@@ -582,37 +666,39 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
               disabled={testingTelegram || !botToken || !chatId}
               onClick={async () => {
                 setTestingTelegram(true);
-                setTelegramStatus('Sending sample budget report...');
+                setTelegramStatus('Sending budget breakdown report...');
                 try {
                   const now = new Date();
                   const dateStr = now.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
                   const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
                   const daysLeft = Math.max(1, lastDay - now.getDate());
 
+                  const sampleCategories = categoryRules.map((r) => ({
+                    name: r.categoryName,
+                    budget: r.monthlyBudget ?? 0,
+                    spent: Math.round((r.monthlyBudget ?? 500) * 0.65), // 65% spent
+                    mode: r.mode,
+                  }));
+
+                  const totalBudget = sampleCategories.reduce((acc, c) => acc + c.budget, 0);
+                  const totalSpent = sampleCategories.reduce((acc, c) => acc + c.spent, 0);
+
                   const sampleDaily = formatDailyReport({
                     dateStr,
                     daysLeftInMonth: daysLeft,
-                    categories: [
-                      { name: 'Dining & Restaurants', budget: 600, spent: 240, mode: 'daily' },
-                      { name: 'Groceries', budget: 900, spent: 450, mode: 'weekly' },
-                      { name: 'Shopping & Misc', budget: 400, spent: 150, mode: 'daily' },
-                      { name: 'Fixed Bills & Rent', budget: 1800, spent: 1800, mode: 'monthly' },
-                    ],
+                    categories: sampleCategories,
                   });
 
                   const sampleWeekly = formatWeeklyReport({
-                    weekSpent: 380,
-                    monthSpent: 2640,
-                    monthBudget: 3700,
-                    categories: [
-                      { name: 'Dining & Restaurants', budget: 600, spent: 240, mode: 'daily' },
-                      { name: 'Groceries', budget: 900, spent: 450, mode: 'weekly' },
-                    ],
+                    weekSpent: Math.round(totalSpent / 4),
+                    monthSpent: totalSpent,
+                    monthBudget: totalBudget,
+                    categories: sampleCategories,
                   });
 
                   await sendTelegramMessage(botToken, chatId, sampleDaily, ctx.api.network);
                   await sendTelegramMessage(botToken, chatId, sampleWeekly, ctx.api.network);
-                  setTelegramStatus('✅ Sample Daily & Weekly budget reports sent to Telegram!');
+                  setTelegramStatus('✅ Daily & Weekly budget reports sent to Telegram!');
                 } catch (err) {
                   setTelegramStatus(`❌ Error sending report: ${(err as Error).message}`);
                 } finally {
@@ -631,10 +717,12 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
                   botToken,
                   chatId,
                   enabled: true,
+                  notifyOnImport,
                   dailyReportEnabled,
                   weeklyReportEnabled,
+                  categoryRules,
                 });
-                setTelegramStatus('✅ Telegram configuration saved!');
+                setTelegramStatus('✅ Telegram configuration & category rules saved!');
               }}
             >
               Save Telegram Settings

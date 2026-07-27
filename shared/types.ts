@@ -53,6 +53,7 @@ export interface TelegramConfig {
   botToken: string;
   chatId: string;
   enabled: boolean;
+  notifyOnImport?: boolean;
   dailyReportEnabled?: boolean;
   weeklyReportEnabled?: boolean;
   categoryRules?: CategoryRule[];
