@@ -47,6 +47,7 @@ export interface CategoryRule {
   categoryName: string;
   mode: 'daily' | 'weekly' | 'monthly';
   monthlyBudget?: number;
+  keywords?: string[];
 }
 
 export interface TelegramConfig {

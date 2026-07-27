@@ -103,25 +103,29 @@ export const DEFAULT_CATEGORY_EMOJIS: Record<string, string> = {
   wants: '⭐',
 };
 
+import type { CategoryRule } from './types.js';
+
 export const DEFAULT_SPENDING_KEYWORDS: Record<string, string[]> = {
+  'Housing': [
+    'housing', 'rent', 'mortgage', 'lease', 'apartment', 'hoa', 'property',
+    'landlord', 'realty', 'real estate', 'homes', 'residence', 'residential',
+    'check', 'zelle', 'venmo', 'ach withdrawal', 'payment', '1511'
+  ],
+  'Transportation': [
+    'parc', 'parking', 'uber', 'lyft', 'transit', 'metro', 'gas', 'shell', 'bp', 'exxon',
+    'chevron', 'speedway', 'valero', 'toll', 'ezpass', 'auto'
+  ],
+  'Groceries': [
+    'grocery', 'groceries', 'walmart', 'kroger', 'target', 'trader joe', 'whole foods', 'aldi',
+    'publix', 'safeway', 'h-e-b', 'costco', 'sams club', 'supermarket', 'market', 'meijer'
+  ],
   'Food & Dining': [
     'wnb factory', 'mcdonald', 'starbucks', 'doordash', 'ubereats', 'grubhub',
     'restaurant', 'dining', 'burger', 'pizza', 'cafe', 'coffee', 'taco', 'bar', 'grill', 'bakery'
   ],
-  'Groceries': [
-    'grocery', 'groceries', 'walmart', 'kroger', 'target', 'trader joe', 'whole foods', 'aldi',
-    'publix', 'safeway', 'h-e-b', 'costco', 'sams club', 'supermarket', 'market'
-  ],
-  'Transportation': [
-    'parc', 'parking', 'uber', 'lyft', 'transit', 'metro', 'gas', 'shell', 'bp', 'exxon',
-    'chevron', 'speedway', 'valero', 'toll', 'ezpass'
-  ],
   'Bills & Utilities': [
     'anthropic', 'claude', 'openai', 'chatgpt', 'netflix', 'spotify', 'apple.com', 'google',
     'electric', 'water', 'internet', 'verizon', 'att', 't-mobile', 'comcast', 'xfinity', 'utility', 'subscription'
-  ],
-  'Housing': [
-    'rent', 'mortgage', 'lease', 'apartment', 'housing', 'hoa', 'property'
   ],
   'Shopping': [
     'amazon', 'ebay', 'best buy', 'nike', 'clothing', 'apparel', 'retail'
@@ -134,9 +138,20 @@ export const DEFAULT_SPENDING_KEYWORDS: Record<string, string[]> = {
   ],
 };
 
-export function categorizeActivity(comment?: string | null): string {
+export function categorizeActivity(comment?: string | null, customRules?: CategoryRule[]): string {
   if (!comment) return 'Other';
   const clean = comment.toLowerCase();
+
+  if (Array.isArray(customRules)) {
+    for (const rule of customRules) {
+      if (Array.isArray(rule.keywords) && rule.keywords.length > 0) {
+        if (rule.keywords.some((kw: string) => kw.trim() && clean.includes(kw.trim().toLowerCase()))) {
+          return rule.categoryName;
+        }
+      }
+    }
+  }
+
   for (const [category, keywords] of Object.entries(DEFAULT_SPENDING_KEYWORDS)) {
     if (keywords.some((kw) => clean.includes(kw))) {
       return category;

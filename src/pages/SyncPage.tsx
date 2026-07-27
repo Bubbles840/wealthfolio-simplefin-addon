@@ -614,6 +614,22 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
                         }}
                       />
                     </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                      <span className="sfin-subtle" style={{ fontSize: 12 }}>Keywords:</span>
+                      <input
+                        type="text"
+                        className="sfin-input"
+                        placeholder="e.g. rent, zelle, mortgage"
+                        style={{ width: 140, fontSize: 12, padding: '4px 6px' }}
+                        value={(rule.keywords ?? []).join(', ')}
+                        onChange={(e) => {
+                          const updated = [...categoryRules];
+                          const kwList = e.target.value.split(',').map((k) => k.trim()).filter(Boolean);
+                          updated[idx] = { ...rule, keywords: kwList };
+                          setCategoryRules(updated);
+                        }}
+                      />
+                    </div>
                   </div>
                 );
               })}
@@ -711,7 +727,7 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
                       ).trim();
 
                       if (!catKey) {
-                        catKey = categorizeActivity(act.comment);
+                        catKey = categorizeActivity(act.comment, categoryRules);
                       }
 
                       let matchedRuleName = catKey;
