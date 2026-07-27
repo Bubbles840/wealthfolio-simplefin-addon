@@ -89,6 +89,14 @@ export async function runCompanionSync(): Promise<void> {
   log(`Done: ${result.imported} imported, ${result.skipped} skipped`);
 }
 
+function formatError(err: unknown): string {
+  if (err instanceof Error) {
+    const cause = (err as any).cause ? ` (${(err as any).cause?.message ?? (err as any).cause})` : '';
+    return `${err.message}${cause}`;
+  }
+  return String(err);
+}
+
 // Guard ensures this block does not execute during vitest runs.
 if (!process.env.VITEST) {
   const schedule = process.env.SYNC_SCHEDULE ?? '0 */6 * * *';
@@ -103,9 +111,9 @@ if (!process.env.VITEST) {
   log(`Starting — schedule: ${schedule}`);
 
   cron.schedule(schedule, () => {
-    runCompanionSync().catch((err: Error) => log(`Sync error: ${err.message}`));
+    runCompanionSync().catch((err) => log(`Sync error: ${formatError(err)}`));
   });
 
   // Run immediately on startup
-  runCompanionSync().catch((err: Error) => log(`Initial sync error: ${err.message}`));
+  runCompanionSync().catch((err) => log(`Initial sync error: ${formatError(err)}`));
 }
