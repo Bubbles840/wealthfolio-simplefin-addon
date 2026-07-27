@@ -1,7 +1,7 @@
 # ── Stage 1: Build ────────────────────────────────────────────────────────────
 # Build context must be the monorepo root:
 #   docker build -f companion/Dockerfile -t simplefin-sync:local .
-FROM node:22-alpine AS builder
+FROM node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2 AS builder
 WORKDIR /build
 
 # Install dependencies first so Docker caches this layer separately from source
@@ -18,7 +18,7 @@ COPY shared/              ./shared/
 RUN cd companion && npm run build
 
 # ── Stage 2: Production image ─────────────────────────────────────────────────
-FROM node:22-alpine
+FROM node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2
 WORKDIR /app
 
 # Copy compiled output from builder

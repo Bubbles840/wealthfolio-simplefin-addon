@@ -1,39 +1,27 @@
 # Example: add this service alongside your existing Wealthfolio compose file.
 #
-# There is no published image — the service builds locally from this repo.
+# Image: ghcr.io/bubbles840/wealthfolio-simplefin-sync:latest
+# Or build locally:
+#   docker build -f companion/Dockerfile -t simplefin-sync:local .
 #
 # Usage:
-#   1. Copy this repo's companion/ and shared/ folders to ./simplefin-sync
-#      next to your compose file (rsync -a --exclude node_modules --exclude dist).
-#   2. In the addon's "Docker Background Sync Setup" section, copy the generated
-#      env file, save it as simplefin-sync.env, and paste a fresh SimpleFin
-#      setup token into it.
-#   3. Adjust `wealthfolio_default` below to match your Wealthfolio network name
-#      (run `docker network ls` to find it) — or drop the networks section
-#      entirely if this lives in the same compose file as Wealthfolio.
-#   4. docker compose up -d --build simplefin-sync
-#
-# IMPORTANT: never commit simplefin-sync.env. After the first successful start,
-# the one-time setup token is exchanged and stored in the Docker volume; you can
-# then delete the token line from the env file entirely.
+#   1. Set WEALTHFOLIO_API_URL and WEALTHFOLIO_PASSWORD (or WEALTHFOLIO_PASSWORD_FILE).
+#   2. The SimpleFin access credentials and account mappings are managed directly
+#      in Wealthfolio via the SimpleFin Sync addon UI.
 
 services:
   simplefin-sync:
-    build:
-      context: ./simplefin-sync
-      dockerfile: companion/Dockerfile
+    image: ghcr.io/bubbles840/wealthfolio-simplefin-sync:latest
+    # build:
+    #   context: ./simplefin-sync
+    #   dockerfile: companion/Dockerfile
     restart: unless-stopped
-    env_file: simplefin-sync.env
-    volumes:
-      # Persists the claimed SimpleFin credentials and sync state across
-      # restarts (STATE_FILE=/data/state.json in the generated env file)
-      - simplefin_sync_data:/data
+    environment:
+      - WEALTHFOLIO_API_URL=http://wealthfolio:7500
+      - WEALTHFOLIO_PASSWORD=your_wealthfolio_password
     networks:
       - wealthfolio_default         # must match your Wealthfolio network name
     user: "1000:1000"
-
-volumes:
-  simplefin_sync_data:
 
 networks:
   wealthfolio_default:
