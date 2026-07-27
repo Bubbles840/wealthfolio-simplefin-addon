@@ -60,27 +60,30 @@ export async function runCompanionSync(): Promise<void> {
 
   const wfClient = new WealthfolioClient(apiUrl);
   const apiKey = process.env.WEALTHFOLIO_API_KEY;
+  log(`Connecting to Wealthfolio at ${apiUrl}...`);
   if (apiKey) {
     (wfClient as unknown as { token: string }).token = apiKey;
     debug('Using WEALTHFOLIO_API_KEY for authentication');
   } else {
     const password = resolvePassword();
     if (password) {
+      log('Authenticating with Wealthfolio...');
       await wfClient.login(password);
-      debug('Authenticated with password');
+      log('Authenticated successfully.');
     }
   }
 
   const store = new RestSyncStore(wfClient);
   const host = new RestSyncHost(wfClient);
 
+  log('Reading SimpleFin credentials from Wealthfolio addon secrets...');
   const accessUrl = await store.getAccessUrl();
   if (!accessUrl) {
     log('No SimpleFin access URL found in Wealthfolio addon secrets. Please configure the SimpleFin Sync addon in Wealthfolio first.');
     return;
   }
 
-  debug(`Starting companion sync against ${apiUrl}`);
+  log(`Fetching SimpleFin transactions from ${maskUrl(accessUrl)}...`);
   const result = await runSyncCore(host, store, {});
 
   for (const err of result.errors) {
