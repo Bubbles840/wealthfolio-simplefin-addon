@@ -82,6 +82,35 @@ export async function sendTelegramMessage(
   return { ok: true };
 }
 
+export const DEFAULT_CATEGORY_EMOJIS: Record<string, string> = {
+  housing: '🏠',
+  transportation: '🚗',
+  groceries: '🛒',
+  grocery: '🛒',
+  'bills & utilities': '📄',
+  bills: '📄',
+  utilities: '📄',
+  'health & wellness': '🏥',
+  health: '🏥',
+  wellness: '🏥',
+  education: '🎓',
+  shopping: '🛍️',
+  'food & dining': '🍽️',
+  dining: '🍽️',
+  food: '🍽️',
+  entertainment: '🎬',
+  needs: '📌',
+  wants: '⭐',
+};
+
+export function getCategoryEmoji(name: string): string {
+  const clean = name.toLowerCase();
+  for (const [key, emoji] of Object.entries(DEFAULT_CATEGORY_EMOJIS)) {
+    if (clean.includes(key)) return emoji;
+  }
+  return '🏷️';
+}
+
 function money(amount: number): string {
   return `$${Math.abs(amount).toFixed(2)}`;
 }
@@ -100,15 +129,18 @@ export function formatDailyReport(data: DailyReportData): string {
 
   msg += `*Category Allowances:*\n`;
   for (const c of data.categories) {
+    const emoji = getCategoryEmoji(c.name);
     const remaining = c.budget - c.spent;
-    if (c.mode === 'daily') {
+    if (c.budget > 0 && remaining < 0) {
+      msg += `• ${emoji} *${c.name}*: 🚨 *${money(Math.abs(remaining))} over budget!*\n`;
+    } else if (c.mode === 'daily') {
       const dailyLimit = data.daysLeftInMonth > 0 ? Math.max(0, remaining / data.daysLeftInMonth) : 0;
-      msg += `• *${c.name}*: *${money(dailyLimit)}/day* (${money(remaining)} left in month)\n`;
+      msg += `• ${emoji} *${c.name}*: *${money(dailyLimit)}/day* (${money(remaining)} left in month)\n`;
     } else if (c.mode === 'weekly') {
       const weeklyRemaining = Math.max(0, remaining / 4);
-      msg += `• *${c.name}*: *${money(weeklyRemaining)}/week* (${money(remaining)} left in month)\n`;
+      msg += `• ${emoji} *${c.name}*: *${money(weeklyRemaining)}/week* (${money(remaining)} left in month)\n`;
     } else {
-      msg += `• *${c.name}*: *${money(remaining)} remaining* for the month\n`;
+      msg += `• ${emoji} *${c.name}*: *${money(remaining)} remaining* for month\n`;
     }
   }
 
@@ -124,15 +156,15 @@ export function formatWeeklyReport(data: WeeklyReportData): string {
   const monthRemaining = data.monthBudget - data.monthSpent;
 
   let msg = `📊 *Weekly Budget & Spending Summary*\n\n`;
-  msg += `💸 *Spent This Week*: ${money(data.weekSpent)}\n`;
-  msg += `📈 *Month-to-Date Spend*: ${money(data.monthSpent)} / ${money(data.monthBudget)} (${percentUsed}% used)\n`;
-  msg += `💰 *Remaining for Month*: ${monthRemaining >= 0 ? money(monthRemaining) : `-${money(monthRemaining)} (Over budget!)`}\n\n`;
+  msg += `💸 *Spent MTD*: ${money(data.monthSpent)}${data.monthBudget > 0 ? ` / ${money(data.monthBudget)} (${percentUsed}% used)` : ''}\n`;
+  msg += `💰 *Status*: ${monthRemaining >= 0 ? `${money(monthRemaining)} remaining` : `🚨 ${money(Math.abs(monthRemaining))} OVER BUDGET!`}\n\n`;
 
   if (data.categories.length > 0) {
-    msg += `*Top Categories Progress:*\n`;
+    msg += `*Category Breakdown:*\n`;
     for (const c of data.categories) {
+      const emoji = getCategoryEmoji(c.name);
       const pct = c.budget > 0 ? Math.round((c.spent / c.budget) * 100) : 0;
-      msg += `• *${c.name}*: ${money(c.spent)} / ${money(c.budget)} (${pct}%)\n`;
+      msg += `• ${emoji} *${c.name}*: ${money(c.spent)}${c.budget > 0 ? ` / ${money(c.budget)} (${pct}%)` : ''}\n`;
     }
   }
 

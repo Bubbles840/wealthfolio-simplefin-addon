@@ -50,14 +50,14 @@ describe('formatDailyReport', () => {
       categories: [
         { name: 'Dining', budget: 500, spent: 200, mode: 'daily' },
         { name: 'Groceries', budget: 800, spent: 400, mode: 'weekly' },
-        { name: 'Rent', budget: 1500, spent: 1500, mode: 'monthly' },
+        { name: 'Housing', budget: 1500, spent: 1500, mode: 'monthly' },
       ],
     });
 
     expect(text).toContain('☀️ *Daily Budget Allowance*');
-    expect(text).toContain('• *Dining*: *$30.00/day*');
-    expect(text).toContain('• *Groceries*: *$100.00/week*');
-    expect(text).toContain('• *Rent*: *$0.00 remaining*');
+    expect(text).toContain('• 🍽️ *Dining*: *$30.00/day*');
+    expect(text).toContain('• 🛒 *Groceries*: *$100.00/week*');
+    expect(text).toContain('• 🏠 *Housing*: *$0.00 remaining*');
   });
 });
 
@@ -73,7 +73,7 @@ describe('formatWeeklyReport', () => {
     });
 
     expect(text).toContain('📊 *Weekly Budget & Spending Summary*');
-    expect(text).toContain('Spent This Week*: $350.00');
     expect(text).toContain('60% used');
+    expect(text).toContain('🍽️ *Dining*: $300.00 / $500.00 (60%)');
   });
 });
