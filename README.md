@@ -101,14 +101,27 @@ the balance without appearing as income or as spending in your budget.
 
 ### Background sync (optional)
 
-Wealthfolio addons only run while a browser tab is open. If you want data to
-refresh without the app open, the `companion/` folder holds an optional Docker
-service that runs on a schedule. It is not required — the addon is the complete
-product — and is documented in that folder.
+Wealthfolio addons run while a browser tab is open. If you want data to
+refresh automatically without keeping a browser tab open, run the optional
+companion container:
 
-> Note: the companion currently runs an earlier version of the sync logic and
-> does not yet include pending reconciliation, transfer linking, or the
-> balance fixes above. Use the addon for accurate results.
+```bash
+docker pull ghcr.io/bubbles840/wealthfolio-simplefin-sync:latest
+```
+
+The companion runs on the exact same shared sync core as the in-app addon. Account
+mappings and credentials are configured directly in Wealthfolio via the addon UI,
+so the companion container runs as a lightweight background daemon:
+
+```yaml
+services:
+  simplefin-sync:
+    image: ghcr.io/bubbles840/wealthfolio-simplefin-sync:latest
+    restart: unless-stopped
+    environment:
+      - WEALTHFOLIO_API_URL=http://wealthfolio:7500
+      - WEALTHFOLIO_PASSWORD=your_wealthfolio_password
+```
 
 ## Privacy
 
