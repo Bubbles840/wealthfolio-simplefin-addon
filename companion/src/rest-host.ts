@@ -18,7 +18,7 @@ function toIsoDate(value: unknown): string {
   return Number.isNaN(d.getTime()) ? String(value) : d.toISOString().slice(0, 10);
 }
 
-function fromSearchItem(a: any, wfAccountId: string): HostActivity {
+function fromSearchItem(a: any, wfAccountId = ''): HostActivity {
   return {
     id: String(a.id ?? ''),
     accountId: String(a.accountId ?? wfAccountId),
@@ -90,8 +90,8 @@ export class RestSyncHost implements SyncHost {
       deleteIds: req.deleteIds,
     });
     return {
-      created: (res.created ?? []).map(fromSearchItem),
-      updated: (res.updated ?? []).map(fromSearchItem),
+      created: (res.created ?? []).map((item) => fromSearchItem(item)),
+      updated: (res.updated ?? []).map((item) => fromSearchItem(item)),
       errors: (res.errors ?? []).map((e: any) => ({
         action: String(e.action ?? ''),
         message: String(e.message ?? ''),
