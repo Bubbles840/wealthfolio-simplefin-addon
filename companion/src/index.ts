@@ -68,8 +68,19 @@ export async function runCompanionSync(): Promise<void> {
     const password = resolvePassword();
     if (password) {
       log('Authenticating with Wealthfolio...');
-      await wfClient.login(password);
-      log('Authenticated successfully.');
+      let attempts = 0;
+      while (true) {
+        try {
+          await wfClient.login(password);
+          log('Authenticated successfully.');
+          break;
+        } catch (err) {
+          attempts++;
+          if (attempts >= 5) throw err;
+          log(`Wealthfolio starting up — retrying connection in 3s (${attempts}/5)...`);
+          await new Promise((r) => setTimeout(r, 3000));
+        }
+      }
     }
   }
 
@@ -83,8 +94,11 @@ export async function runCompanionSync(): Promise<void> {
     return;
   }
 
+  const minIntervalHours = parseFloat(process.env.MIN_SYNC_INTERVAL_HOURS ?? '1');
+  const force = minIntervalHours <= 0;
+
   log(`Fetching SimpleFin transactions from ${maskUrl(accessUrl)}...`);
-  const result = await runSyncCore(host, store, {});
+  const result = await runSyncCore(host, store, { force });
 
   for (const err of result.errors) {
     log(`Sync note: ${err}`);
