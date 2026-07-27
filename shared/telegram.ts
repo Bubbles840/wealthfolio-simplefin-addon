@@ -47,9 +47,10 @@ export async function sendTelegramMessage(
     disable_web_page_preview: true,
   });
 
-  try {
-    let json: any;
-    if (network && typeof network.request === 'function') {
+  let json: any;
+
+  if (network && typeof network.request === 'function') {
+    try {
       const res = await network.request({
         url,
         method: 'POST',
@@ -57,22 +58,28 @@ export async function sendTelegramMessage(
         body,
       });
       json = typeof res.body === 'string' ? JSON.parse(res.body) : res.body;
-    } else {
+    } catch {
+      // Fallback to direct fetch if network.request fails
+    }
+  }
+
+  if (!json) {
+    try {
       const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body,
       });
       json = await res.json();
+    } catch (err) {
+      return { ok: false, description: (err as Error).message };
     }
-
-    if (!json || json.ok === false) {
-      return { ok: false, description: json?.description ?? 'Telegram API request failed' };
-    }
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, description: (err as Error).message };
   }
+
+  if (!json || json.ok === false) {
+    return { ok: false, description: json?.description ?? 'Telegram API request failed' };
+  }
+  return { ok: true };
 }
 
 function money(amount: number): string {

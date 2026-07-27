@@ -12,6 +12,7 @@ import { readFileSync, existsSync } from 'fs';
 import { runSyncCore } from '../../shared/sync-core.js';
 import { RestSyncHost, RestSyncStore } from './rest-host.js';
 import { WealthfolioClient } from './wealthfolio.js';
+import { sendTelegramMessage } from '../../shared/telegram.js';
 
 const logLevel: 'info' | 'debug' =
   process.env.LOG_LEVEL === 'debug' ? 'debug' : 'info';
@@ -104,6 +105,25 @@ export async function runCompanionSync(): Promise<void> {
     log(`Sync note: ${err}`);
   }
   log(`Done: ${result.imported} imported, ${result.skipped} skipped`);
+
+  try {
+    const tgRaw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_config');
+    if (tgRaw) {
+      const tg = JSON.parse(tgRaw);
+      if (tg.botToken && tg.chatId && tg.enabled !== false) {
+        log(`Telegram notifications active (chat: ${tg.chatId}).`);
+        if (result.imported > 0) {
+          await sendTelegramMessage(
+            tg.botToken,
+            tg.chatId,
+            `🔔 *SimpleFin Sync Update*\nImported ${result.imported} new transaction(s) into Wealthfolio!`,
+          );
+        }
+      }
+    }
+  } catch (err) {
+    debug(`Telegram check note: ${formatError(err)}`);
+  }
 }
 
 function formatError(err: unknown): string {
