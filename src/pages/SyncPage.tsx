@@ -544,10 +544,12 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
               onClick={async () => {
                 setTestingTelegram(true);
                 setTelegramStatus(null);
+                const networkReq = (ctx.api as any).network?.request?.bind((ctx.api as any).network);
                 const res = await sendTelegramMessage(
                   botToken,
                   chatId,
                   '🎉 *SimpleFin Sync Telegram Integration Connected!*\n\nYour Telegram bot is configured and ready to send daily category allowances and weekly budget reports.',
+                  networkReq,
                 );
                 setTestingTelegram(false);
                 if (res.ok) {

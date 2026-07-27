@@ -37,22 +37,35 @@ export async function sendTelegramMessage(
   botToken: string,
   chatId: string,
   text: string,
+  networkReq?: (url: string, opts?: any) => Promise<any>,
 ): Promise<TelegramSendResult> {
   const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
+  const body = JSON.stringify({
+    chat_id: chatId,
+    text,
+    parse_mode: 'Markdown',
+    disable_web_page_preview: true,
+  });
+
   try {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text,
-        parse_mode: 'Markdown',
-        disable_web_page_preview: true,
-      }),
-    });
-    const json = (await res.json()) as { ok?: boolean; description?: string };
-    if (!res.ok || !json.ok) {
-      return { ok: false, description: json.description ?? `HTTP ${res.status}` };
+    let json: any;
+    if (networkReq) {
+      json = await networkReq(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+      });
+    } else {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+      });
+      json = await res.json();
+    }
+
+    if (!json || json.ok === false) {
+      return { ok: false, description: json?.description ?? 'Telegram API request failed' };
     }
     return { ok: true };
   } catch (err) {

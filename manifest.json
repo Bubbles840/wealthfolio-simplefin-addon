@@ -9,8 +9,8 @@
   "minWealthfolioVersion": "3.6.2",
   "enabled": true,
   "network": {
-    "allowedHosts": ["bridge.simplefin.org", "beta-bridge.simplefin.org"],
-    "approvedHosts": ["bridge.simplefin.org", "beta-bridge.simplefin.org"]
+    "allowedHosts": ["bridge.simplefin.org", "beta-bridge.simplefin.org", "api.telegram.org"],
+    "approvedHosts": ["bridge.simplefin.org", "beta-bridge.simplefin.org", "api.telegram.org"]
   },
   "contributes": {
     "routes": [{ "id": "simplefin-sync" }],
