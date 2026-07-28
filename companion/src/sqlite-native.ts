@@ -47,7 +47,8 @@ export function getNativeWealthfolioSpending(dbPath: string, yearMonth: string):
 
   if (DatabaseSyncClass) {
     try {
-      const db = new DatabaseSyncClass(dbPath, { readOnly: true });
+      const uri = dbPath.startsWith('file:') ? dbPath : `file:${dbPath}?immutable=1`;
+      const db = new DatabaseSyncClass(uri);
       const rows = db.prepare(query).all() as Array<{ parent_category: string; total_spent: number }>;
       for (const r of rows) {
         if (r.parent_category) {
@@ -105,7 +106,8 @@ export function getNativeWealthfolioBudgets(dbPath: string, yearMonth: string): 
 
   if (DatabaseSyncClass) {
     try {
-      const db = new DatabaseSyncClass(dbPath, { readOnly: true });
+      const uri = dbPath.startsWith('file:') ? dbPath : `file:${dbPath}?immutable=1`;
+      const db = new DatabaseSyncClass(uri);
       const rows = db.prepare(query).all() as Array<{ parent_category: string; total_budget: number }>;
       for (const r of rows) {
         if (r.parent_category) {
