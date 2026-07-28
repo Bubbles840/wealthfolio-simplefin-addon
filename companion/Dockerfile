@@ -17,6 +17,7 @@ RUN cd companion && npm run build
 
 # ── Stage 2: Production image ─────────────────────────────────────────────────
 FROM node:22-alpine
+RUN apk add --no-cache sqlite
 WORKDIR /app
 
 # Copy compiled output from builder

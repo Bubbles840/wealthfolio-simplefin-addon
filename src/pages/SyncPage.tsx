@@ -690,6 +690,7 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
                   const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
                   const daysLeft = Math.max(1, lastDay - now.getDate());
 
+                  console.log('[Wealthfolio SDK Debug] Available SDK namespaces:', Object.keys(ctx.api));
                   const res = await ctx.api.activities.search(0, 1000, {}, '', { id: 'date', desc: true }).catch(() => ({ data: [] as any[] }));
                   const activities = res.data ?? [];
 
