@@ -272,3 +272,56 @@ export function formatNativeBudgetBreakdown(
 
   return msg;
 }
+
+export interface WeeklyDigestCategory {
+  name: string;
+  spent: number;
+  budget: number;
+}
+
+/**
+ * Formats the daily "how much left to spend this week" digest — one line per
+ * category, dividing the month's remaining budget across the weeks left in
+ * the month. A category already over budget for the month gets the 🚨 alert
+ * line instead of a (nonsensical, negative) per-week number.
+ */
+export function formatWeeklyRemainingDigest(
+  categories: WeeklyDigestCategory[],
+  weeksLeftInMonth: number,
+): string {
+  let msg = `🗓️ *Weekly Spending Update*\n\n`;
+
+  if (categories.length === 0) {
+    msg += `No budgeted categories to report. Set up budgets in Wealthfolio to see weekly allowances.`;
+    return msg;
+  }
+
+  for (const c of categories) {
+    const emoji = getCategoryEmoji(c.name);
+    const remaining = c.budget - c.spent;
+    if (remaining < 0) {
+      msg += `• ${emoji} *${c.name}*: 🚨 *${money(remaining)} over budget!*\n`;
+    } else {
+      const perWeek = weeksLeftInMonth > 0 ? remaining / weeksLeftInMonth : remaining;
+      msg += `• ${emoji} *${c.name}*: *${money(perWeek)} left this week*\n`;
+    }
+  }
+
+  return msg;
+}
+
+/**
+ * Formats the weekly (Saturday) "one number" summary: total remaining across
+ * every included category's budget for the month.
+ */
+export function formatMonthlyRemainingSummary(totalSpent: number, totalBudget: number): string {
+  const remaining = totalBudget - totalSpent;
+  const pct = totalBudget > 0 ? Math.round((totalSpent / totalBudget) * 100) : 0;
+  let msg = `📊 *Weekly Budget Check-In*\n\n`;
+  if (remaining < 0) {
+    msg += `🚨 *You're ${money(remaining)} over budget this month* (spent ${money(totalSpent)} of ${money(totalBudget)}, ${pct}%).`;
+  } else {
+    msg += `💰 *${money(remaining)} remaining* this month (spent ${money(totalSpent)} of ${money(totalBudget)}, ${pct}%).`;
+  }
+  return msg;
+}

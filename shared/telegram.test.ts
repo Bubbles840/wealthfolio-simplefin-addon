@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { sendTelegramMessage, formatDailyReport, formatWeeklyReport } from './telegram.js';
+import { sendTelegramMessage, formatDailyReport, formatWeeklyReport, formatWeeklyRemainingDigest, formatMonthlyRemainingSummary } from './telegram.js';
 
 const mockFetch = vi.fn();
 vi.stubGlobal('fetch', mockFetch);
@@ -75,5 +75,50 @@ describe('formatWeeklyReport', () => {
     expect(text).toContain('📊 *Weekly Budget & Spending Summary*');
     expect(text).toContain('60% used');
     expect(text).toContain('🍽️ *Dining*: $300.00 / $500.00 (60%)');
+  });
+});
+
+describe('formatWeeklyRemainingDigest', () => {
+  it('shows remaining budget divided across the weeks left in the month', () => {
+    const text = formatWeeklyRemainingDigest(
+      [{ name: 'Groceries', spent: 200, budget: 800 }],
+      3,
+    );
+    expect(text).toContain('🛒 *Groceries*: *$200.00 left this week*');
+  });
+
+  it('flags a category that is over budget instead of dividing a negative number', () => {
+    const text = formatWeeklyRemainingDigest(
+      [{ name: 'Dining', spent: 550, budget: 500 }],
+      2,
+    );
+    expect(text).toContain('🍽️ *Dining*: 🚨 *$50.00 over budget!*');
+  });
+
+  it('flags spending in a category with no budget set', () => {
+    const text = formatWeeklyRemainingDigest(
+      [{ name: 'Shopping', spent: 40, budget: 0 }],
+      2,
+    );
+    expect(text).toContain('🛍️ *Shopping*: 🚨 *$40.00 over budget!*');
+  });
+
+  it('shows a placeholder message with no categories', () => {
+    const text = formatWeeklyRemainingDigest([], 2);
+    expect(text).toContain('No budgeted categories to report');
+  });
+});
+
+describe('formatMonthlyRemainingSummary', () => {
+  it('shows total remaining when under budget', () => {
+    const text = formatMonthlyRemainingSummary(1200, 2000);
+    expect(text).toContain('$800.00 remaining');
+    expect(text).toContain('spent $1200.00 of $2000.00, 60%');
+  });
+
+  it('flags being over budget for the month', () => {
+    const text = formatMonthlyRemainingSummary(2200, 2000);
+    expect(text).toContain('🚨');
+    expect(text).toContain('$200.00 over budget');
   });
 });
