@@ -99,11 +99,12 @@ Two optional toggles:
 Balance corrections are written as a spending-neutral `CREDIT`, so they move
 the balance without appearing as income or as spending in your budget.
 
-### Background sync (optional)
+### Background sync & Telegram notifications (optional)
 
 Wealthfolio addons run while a browser tab is open. If you want data to
-refresh automatically without keeping a browser tab open, run the optional
-companion container:
+refresh automatically without keeping a browser tab open, or receive real-time
+Telegram import alerts and native Spending Tracker budget breakdown reports,
+run the optional companion container:
 
 ```bash
 docker pull ghcr.io/bubbles840/wealthfolio-simplefin-sync:latest
@@ -121,6 +122,9 @@ services:
     environment:
       - WEALTHFOLIO_API_URL=http://wealthfolio:7500
       - WEALTHFOLIO_PASSWORD=your_wealthfolio_password
+      - WEALTHFOLIO_DB_PATH=/mnt/wealthfolio.db
+    volumes:
+      - /path/to/wealthfolio.db:/mnt/wealthfolio.db:ro
 ```
 
 ## Privacy
