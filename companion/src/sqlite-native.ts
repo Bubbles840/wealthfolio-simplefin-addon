@@ -32,6 +32,7 @@ export function getNativeWealthfolioSpending(dbPath: string, yearMonth: string):
     LEFT JOIN taxonomy_categories parent ON tc.parent_id = parent.id
     WHERE a.activity_date >= '${yearMonth}-01' 
       AND UPPER(a.activity_type) IN ('WITHDRAWAL', 'FEE', 'TAX')
+      AND LOWER(COALESCE(parent.name, tc.name)) NOT IN ('transfers', 'transfer', 'internal transfers', 'savings & transfers')
     GROUP BY COALESCE(parent.name, tc.name);
   `;
 
