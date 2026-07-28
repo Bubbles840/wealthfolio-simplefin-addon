@@ -618,7 +618,15 @@ export async function runSyncCore(
           (sum, t) => sum + (signedByTxId.get(t.txId) ?? 0),
           0,
         );
-        const d = sfBalance - wfValuation - windowDelta;
+        // Unlinked in-transit TRANSFER_OUT rows haven't been linked to a TRANSFER_IN
+        // leg yet, so Wealthfolio's valuations API hasn't deducted them from cash.
+        // Account for them here so in-transit transfers don't trigger a false drift.
+        const unlinkedTransferOut = existing
+          .filter((r) => r.type === 'TRANSFER_OUT' && !ledgerLinkedTxIds.has(r.txId))
+          .reduce((sum, r) => sum + Math.abs(r.absCents) / 100, 0);
+
+        const adjustedWfValuation = wfValuation - unlinkedTransferOut;
+        const d = sfBalance - adjustedWfValuation - windowDelta;
         if (Math.abs(d) > DRIFT_THRESHOLD_DOLLARS) drift = Math.round(d * 100) / 100;
         console.log(`[simplefin-sync] ${sfAccount.name} (${sfAccount.id}):`, {
           sfBalance,
