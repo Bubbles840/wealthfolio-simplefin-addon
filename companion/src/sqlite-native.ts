@@ -7,15 +7,7 @@
 
 import { existsSync } from 'fs';
 import { execSync } from 'child_process';
-
-let DatabaseSyncClass: any = null;
-try {
-  // Node 22+ built-in sqlite module
-  const sqliteModule = require('node:sqlite');
-  DatabaseSyncClass = sqliteModule.DatabaseSync;
-} catch {
-  // fallback to sqlite3 cli
-}
+import { DatabaseSync } from 'node:sqlite';
 
 export interface NativeCategorySpending {
   categoryName: string;
@@ -45,21 +37,19 @@ export function getNativeWealthfolioSpending(dbPath: string, yearMonth: string):
 
   const result: Record<string, number> = {};
 
-  if (DatabaseSyncClass) {
-    try {
-      const uri = dbPath.startsWith('file:') ? dbPath : `file:${dbPath}?immutable=1`;
-      const db = new DatabaseSyncClass(uri);
-      const rows = db.prepare(query).all() as Array<{ parent_category: string; total_spent: number }>;
-      for (const r of rows) {
-        if (r.parent_category) {
-          result[r.parent_category] = typeof r.total_spent === 'number' ? r.total_spent : parseFloat(String(r.total_spent || 0));
-        }
+  try {
+    const uri = dbPath.startsWith('file:') ? dbPath : `file:${dbPath}?immutable=1`;
+    const db = new DatabaseSync(uri);
+    const rows = db.prepare(query).all() as Array<{ parent_category: string; total_spent: number }>;
+    for (const r of rows) {
+      if (r.parent_category) {
+        result[r.parent_category] = typeof r.total_spent === 'number' ? r.total_spent : parseFloat(String(r.total_spent || 0));
       }
-      db.close();
-      return result;
-    } catch {
-      // fallback to cli
     }
+    db.close();
+    return result;
+  } catch (err) {
+    console.error('[simplefin-sync] node:sqlite spending error:', err);
   }
 
   try {
@@ -104,21 +94,19 @@ export function getNativeWealthfolioBudgets(dbPath: string, yearMonth: string): 
 
   const result: Record<string, number> = {};
 
-  if (DatabaseSyncClass) {
-    try {
-      const uri = dbPath.startsWith('file:') ? dbPath : `file:${dbPath}?immutable=1`;
-      const db = new DatabaseSyncClass(uri);
-      const rows = db.prepare(query).all() as Array<{ parent_category: string; total_budget: number }>;
-      for (const r of rows) {
-        if (r.parent_category) {
-          result[r.parent_category] = typeof r.total_budget === 'number' ? r.total_budget : parseFloat(String(r.total_budget || 0));
-        }
+  try {
+    const uri = dbPath.startsWith('file:') ? dbPath : `file:${dbPath}?immutable=1`;
+    const db = new DatabaseSync(uri);
+    const rows = db.prepare(query).all() as Array<{ parent_category: string; total_budget: number }>;
+    for (const r of rows) {
+      if (r.parent_category) {
+        result[r.parent_category] = typeof r.total_budget === 'number' ? r.total_budget : parseFloat(String(r.total_budget || 0));
       }
-      db.close();
-      return result;
-    } catch {
-      // fallback to cli
     }
+    db.close();
+    return result;
+  } catch (err) {
+    console.error('[simplefin-sync] node:sqlite budget error:', err);
   }
 
   try {
