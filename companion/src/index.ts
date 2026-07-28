@@ -12,7 +12,7 @@ import { readFileSync, existsSync } from 'fs';
 import { runSyncCore } from '../../shared/sync-core.js';
 import { RestSyncHost, RestSyncStore } from './rest-host.js';
 import { WealthfolioClient } from './wealthfolio.js';
-import { sendTelegramMessage } from '../../shared/telegram.js';
+import { sendTelegramMessage, formatNativeBudgetBreakdown } from '../../shared/telegram.js';
 import { getNativeWealthfolioSpending, getNativeWealthfolioBudgets } from './sqlite-native.js';
 
 const logLevel: 'info' | 'debug' =
@@ -127,6 +127,35 @@ export async function runCompanionSync(): Promise<void> {
   }
 }
 
+export async function sendDailyTelegramReport(wfClient: WealthfolioClient): Promise<void> {
+  const tgRaw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_config');
+  if (!tgRaw) return;
+
+  const tg = JSON.parse(tgRaw);
+  if (!tg.botToken || !tg.chatId || tg.enabled === false) return;
+  if (tg.dailyReportEnabled === false) return;
+
+  const dbPath = process.env.WEALTHFOLIO_DB_PATH || '/mnt/wealthfolio.db';
+  if (!dbPath || !existsSync(dbPath)) {
+    log('WEALTHFOLIO_DB_PATH not found or missing, skipping daily budget report.');
+    return;
+  }
+
+  const now = new Date();
+  const yearMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+
+  const spentMap = getNativeWealthfolioSpending(dbPath, yearMonth);
+  const budgetMap = getNativeWealthfolioBudgets(dbPath, yearMonth);
+
+  const message = formatNativeBudgetBreakdown(spentMap, budgetMap);
+  const result = await sendTelegramMessage(tg.botToken, tg.chatId, message);
+  if (result.ok) {
+    log('Daily Telegram budget breakdown report sent successfully.');
+  } else {
+    log(`Failed to send daily Telegram report: ${result.description}`);
+  }
+}
+
 function formatError(err: unknown): string {
   if (err instanceof Error) {
     const cause = (err as any).cause ? ` (${(err as any).cause?.message ?? (err as any).cause})` : '';
@@ -138,6 +167,7 @@ function formatError(err: unknown): string {
 // Guard ensures this block does not execute during vitest runs.
 if (!process.env.VITEST) {
   const schedule = process.env.SYNC_SCHEDULE ?? '0 */6 * * *';
+  const dailySchedule = process.env.DAILY_REPORT_SCHEDULE ?? '0 8 * * *';
 
   try {
     validateStartupEnv();
@@ -146,12 +176,28 @@ if (!process.env.VITEST) {
     process.exit(1);
   }
 
-  log(`Starting — schedule: ${schedule}`);
+  const apiUrl = process.env.WEALTHFOLIO_API_URL ?? '';
+  const wfClient = new WealthfolioClient(apiUrl);
+
+  log(`Starting companion — sync schedule: ${schedule}, daily report schedule: ${dailySchedule}`);
 
   cron.schedule(schedule, () => {
     runCompanionSync().catch((err) => log(`Sync error: ${formatError(err)}`));
   });
 
-  // Run immediately on startup
+  cron.schedule(dailySchedule, () => {
+    log('Triggering scheduled daily budget breakdown report...');
+    const password = resolvePassword();
+    const apiKey = process.env.WEALTHFOLIO_API_KEY;
+    if (apiKey) {
+      (wfClient as unknown as { token: string }).token = apiKey;
+    }
+    const loginPromise = apiKey ? Promise.resolve() : (password ? wfClient.login(password) : Promise.resolve());
+    loginPromise
+      .then(() => sendDailyTelegramReport(wfClient))
+      .catch((err) => log(`Daily report error: ${formatError(err)}`));
+  });
+
+  // Run initial sync on startup
   runCompanionSync().catch((err) => log(`Initial sync error: ${formatError(err)}`));
 }
