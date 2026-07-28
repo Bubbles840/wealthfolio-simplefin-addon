@@ -80,18 +80,24 @@ export function getNativeWealthfolioBudgets(dbPath: string, yearMonth: string): 
   if (!dbPath || !existsSync(dbPath)) return {};
 
   const query = `
+    WITH ranked_budgets AS (
+      SELECT 
+        category_id,
+        CAST(amount AS REAL) as amount,
+        ROW_NUMBER() OVER (
+          PARTITION BY category_id 
+          ORDER BY updated_at DESC
+        ) as rn
+      FROM budget_targets
+      WHERE period_key = '${yearMonth}' OR period_key = 'default'
+    )
     SELECT 
       COALESCE(parent.name, tc.name) as parent_category,
-      ROUND(SUM(CAST(bt.amount AS REAL)), 2) as total_budget
-    FROM budget_targets bt
-    JOIN taxonomy_categories tc ON bt.category_id = tc.id
+      ROUND(SUM(rb.amount), 2) as total_budget
+    FROM ranked_budgets rb
+    JOIN taxonomy_categories tc ON rb.category_id = tc.id
     LEFT JOIN taxonomy_categories parent ON tc.parent_id = parent.id
-    WHERE bt.period_key = (
-      CASE 
-        WHEN EXISTS (SELECT 1 FROM budget_targets WHERE period_key = '${yearMonth}') THEN '${yearMonth}'
-        ELSE 'default'
-      END
-    )
+    WHERE rb.rn = 1
     GROUP BY COALESCE(parent.name, tc.name);
   `;
 
