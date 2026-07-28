@@ -4,7 +4,7 @@
 
 **Goal:** Replace the single, mislabeled automated Telegram report with real daily/weekly reports sourced from Wealthfolio's native budget data, fix the budget-selection bug behind it, and stop unlinked in-transit transfers from inflating the Spending Tracker.
 
-**Architecture:** All transfer/reconciliation logic lives in `shared/sync-core.ts` so both the addon and the companion pick it up identically. The companion (`companion/src/index.ts`) gains a second cron and reads/writes a few new addon-secret keys through the existing `WealthfolioClient`/`RestSyncStore` plumbing. No new services or containers.
+**Architecture:** All transfer/reconciliation logic lives in `shared/sync-core.ts` so both the addon and the companion pick it up identically. The companion (`companion/src/index.ts`) gains a second cron and reads/writes a few new addon-secret keys through the existing `WealthfolioClient`/`RestSyncStore` plumbing. No new services or containers. New code is added alongside the old in early tasks; consumers migrate onto it in the middle tasks; the old code is deleted only once nothing references it (Task 11) — so every task leaves both `npm test` and `tsc --noEmit` clean, in both the root and `companion/` projects, with no multi-task broken-build window.
 
 **Tech Stack:** TypeScript, vitest, node-cron, `node:sqlite`, Wealthfolio addon SDK.
 
@@ -13,7 +13,7 @@
 - Every new/changed function needs a passing vitest test in the same PR — this repo has no separate CI test gate, so untested code ships silently broken.
 - `shared/*.ts` files must stay host-agnostic (no `fetch`, no DOM/browser APIs, no Node-only APIs) — both the addon (browser iframe) and the companion (Node) import them directly.
 - Comments on synced activities must keep ending in `· <txId>` (optionally followed by ` · pending`) — `txIdFromComment` in `shared/sync-core.ts` parses that suffix, and every reconciliation match depends on it.
-- Run `npm test` at the repo root and `cd companion && npm test` before every commit that touches shared or companion code (they are separate vitest projects with separate `node_modules`).
+- Run `npm test` at the repo root and `cd companion && npm test` before every commit that touches shared or companion code (they are separate vitest projects with separate `node_modules`). Both must be green, and both `npx tsc --noEmit` (root) and `cd companion && npx tsc --noEmit` must be clean, at the end of **every** task, not just the plan's final task.
 
 ---
 
@@ -23,16 +23,16 @@
 |---|---|
 | `companion/package.json` | Modify: pin `vitest` explicitly |
 | `companion/src/sqlite-native.ts` | Modify: budget-row selection fix, spending date upper bound |
-| `shared/types.ts` | Modify: `TelegramConfig` new fields, remove `CategoryRule` |
-| `shared/telegram.ts` | Modify: new report formatters, remove retired ones |
+| `shared/types.ts` | Modify: `TelegramConfig` new fields (Task 3), `CategoryRule`/`categoryRules` removed (Task 11) |
+| `shared/telegram.ts` | Modify: new report formatters added (Task 4), old ones removed (Task 11) |
 | `shared/sync-host.ts` | Modify: `SyncStore` gains transfer-link-failure tracking |
 | `companion/src/rest-host.ts` | Modify: `RestSyncStore` implements the new `SyncStore` methods |
-| `src/utils/secrets.ts` | Modify: `SecretsStore` implements the same methods |
+| `src/utils/secrets.ts` | Modify: `SecretsStore` implements the same methods, plus a new read-only category-list getter |
 | `shared/reconcile.ts` | Modify: `FeedTx` gains `feeCents`/`inTransit` |
 | `shared/fake-host.ts` | Modify: test double implements the new `SyncStore` methods |
 | `shared/sync-core.ts` | Modify: in-transit placeholder classification, stuck-pair alerting |
-| `companion/src/index.ts` | Modify: second cron, category-filtered reports, sync-health tracking |
-| `src/pages/SyncPage.tsx` | Modify: replace the keyword-rule UI with a Report Categories checklist |
+| `companion/src/index.ts` | Modify: second cron, category-filtered reports (using the new formatters), sync-health tracking |
+| `src/pages/SyncPage.tsx` | Modify: replace the keyword-rule UI with a Report Categories checklist (using the new formatters/fields) |
 | `companion/Dockerfile` | Modify: add `HEALTHCHECK` |
 
 ---
@@ -47,7 +47,7 @@
 - [ ] **Step 1: Confirm the current failure**
 
 Run: `cd companion && npm test`
-Expected: `src/sqlite-native.test.ts` and `src/index.test.ts` FAIL with `Failed to load url sqlite (resolved id: sqlite)`.
+Expected: every test file fails to load (e.g. `Cannot find module '.../companion/src/test-setup.ts'`, or — depending on what a prior `npm install` cached — `Failed to load url sqlite`). Either symptom traces to the same root cause: `companion/package.json` never pins its own `vitest`, so the `vitest` binary that actually runs is whatever gets resolved from outside the `companion/` directory.
 
 - [ ] **Step 2: Pin vitest to the same major version the root project uses**
 
@@ -70,7 +70,7 @@ Expected: all 5 test files load and run (19+ tests passing, 0 failed-to-load sui
 
 ```bash
 git add companion/package.json companion/package-lock.json
-git commit -m "fix: pin companion vitest to match root, unbreaking node:sqlite test loading"
+git commit -m "fix: pin companion vitest to match root, unbreaking test loading"
 ```
 
 ---
@@ -232,32 +232,18 @@ git commit -m "fix: budget query prefers month-specific row over most-recently-e
 
 ---
 
-### Task 3: Update `TelegramConfig`, remove `CategoryRule`
+### Task 3: Add the new `TelegramConfig` fields (additive)
 
 **Files:**
 - Modify: `shared/types.ts`
 
 **Interfaces:**
-- Produces: `TelegramConfig` with `dailyReportCategories?: string[] | 'all'` and `weeklyReportCategories?: string[] | 'all'`, `categoryRules` removed.
-- Removes: `CategoryRule` (no longer exported — Task 4 and Task 11 depend on its removal being complete first, so their own imports of it fail to compile until updated).
-
-This task's own build will fail (other files still import `CategoryRule`) — that's expected here; Tasks 4 and 11 fix those imports. There is no test for a type-only change; verification is `tsc`.
+- Produces: `TelegramConfig` gains `dailyReportCategories?: string[] | 'all'` and `weeklyReportCategories?: string[] | 'all'`.
+- **Does not** remove `CategoryRule` or `TelegramConfig.categoryRules` — both are still referenced by `shared/telegram.ts` and `src/pages/SyncPage.tsx` at this point in the plan. They are deleted in Task 11, once every consumer has migrated off them. Deleting them now would leave the addon non-compiling for 7 tasks; this task is purely additive so the build stays green throughout.
 
 - [ ] **Step 1: Edit `shared/types.ts`**
 
-Remove the `CategoryRule` interface (lines 45-51):
-
-```typescript
-export interface CategoryRule {
-  categoryId: string;
-  categoryName: string;
-  mode: 'daily' | 'weekly' | 'monthly';
-  monthlyBudget?: number;
-  keywords?: string[];
-}
-```
-
-Replace `TelegramConfig` (lines 53-61):
+Add two fields to the existing `TelegramConfig` interface (do not remove anything):
 
 ```typescript
 export interface TelegramConfig {
@@ -267,6 +253,7 @@ export interface TelegramConfig {
   notifyOnImport?: boolean;
   dailyReportEnabled?: boolean;
   weeklyReportEnabled?: boolean;
+  categoryRules?: CategoryRule[];
   /** Category names to include in the daily digest. 'all' (default) means
    *  every category the companion has published via
    *  `available_report_categories`. */
@@ -276,18 +263,21 @@ export interface TelegramConfig {
 }
 ```
 
-- [ ] **Step 2: Commit**
+- [ ] **Step 2: Verify the build is unaffected**
 
-This intentionally leaves the repo non-compiling until Task 4 and Task 11 land — commit anyway so each task is a clean, reviewable diff; the working tree just isn't shippable mid-plan.
+Run: `npx tsc --noEmit && npm test`
+Expected: both clean — this change is purely additive.
+
+- [ ] **Step 3: Commit**
 
 ```bash
 git add shared/types.ts
-git commit -m "refactor: replace TelegramConfig.categoryRules with per-report category selection"
+git commit -m "feat: add per-report category selection fields to TelegramConfig"
 ```
 
 ---
 
-### Task 4: New report formatters, remove the retired ones
+### Task 4: New report formatters (additive)
 
 **Files:**
 - Modify: `shared/telegram.ts`
@@ -296,12 +286,11 @@ git commit -m "refactor: replace TelegramConfig.categoryRules with per-report ca
 **Interfaces:**
 - Produces: `formatWeeklyRemainingDigest(categories: Array<{ name: string; spent: number; budget: number }>, weeksLeftInMonth: number): string`
 - Produces: `formatMonthlyRemainingSummary(totalSpent: number, totalBudget: number): string`
-- Removes: `formatDailyReport`, `formatWeeklyReport`, `formatNativeBudgetBreakdown`, `DailyReportData`, `WeeklyReportData`, `CategoryReportItem`, `categorizeActivity`, `DEFAULT_SPENDING_KEYWORDS`.
-- Keeps unchanged: `sendTelegramMessage`, `getCategoryEmoji`, `DEFAULT_CATEGORY_EMOJIS`, `money` (still used by the new formatters and by Task 11's companion code).
+- **Does not** remove `formatDailyReport`, `formatWeeklyReport`, `formatNativeBudgetBreakdown`, `categorizeActivity`, or `DEFAULT_SPENDING_KEYWORDS` — `companion/src/index.ts` still imports `formatNativeBudgetBreakdown` and `src/pages/SyncPage.tsx` still imports the other two at this point in the plan. They're deleted in Task 11 once Tasks 8 and 10 have migrated their callers onto the new formatters.
 
 - [ ] **Step 1: Write the failing tests**
 
-Replace the `formatDailyReport`/`formatWeeklyReport` `describe` blocks in `shared/telegram.test.ts` (lines 45-79) with:
+Add to `shared/telegram.test.ts` (after the existing `describe('formatWeeklyReport', ...)` block — do not remove any existing `describe` blocks):
 
 ```typescript
 describe('formatWeeklyRemainingDigest', () => {
@@ -350,24 +339,20 @@ describe('formatMonthlyRemainingSummary', () => {
 });
 ```
 
-Update the import at the top of the test file:
+Add the two new names to the existing import line at the top of the test file (keep `formatDailyReport`/`formatWeeklyReport`, they're still tested by the `describe` blocks above this one):
 
 ```typescript
-import { sendTelegramMessage, formatWeeklyRemainingDigest, formatMonthlyRemainingSummary } from './telegram.js';
+import { sendTelegramMessage, formatDailyReport, formatWeeklyReport, formatWeeklyRemainingDigest, formatMonthlyRemainingSummary } from './telegram.js';
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `npx vitest run shared/telegram.test.ts`
-Expected: FAIL — `formatWeeklyRemainingDigest`/`formatMonthlyRemainingSummary` are not exported yet.
+Expected: FAIL — `formatWeeklyRemainingDigest`/`formatMonthlyRemainingSummary` are not exported yet. Existing `formatDailyReport`/`formatWeeklyReport` tests still pass.
 
-- [ ] **Step 3: Remove the retired code from `shared/telegram.ts`**
+- [ ] **Step 3: Add the new formatters to `shared/telegram.ts`**
 
-Delete: `DailyReportData`, `WeeklyReportData` interfaces (lines 20-31), `formatDailyReport` (lines 176-208), `formatWeeklyReport` (lines 210-231), `formatNativeBudgetBreakdown` (lines 233-274), `categorizeActivity` (lines 142-162), `DEFAULT_SPENDING_KEYWORDS` (lines 108-140), and the `import type { CategoryRule } from './types.js';` line (line 108, immediately above `DEFAULT_SPENDING_KEYWORDS`). Keep `CategoryReportItem` deleted too (lines 13-18) — nothing references it once the two report functions are gone.
-
-- [ ] **Step 4: Add the new formatters**
-
-Add at the end of `shared/telegram.ts` (after `getCategoryEmoji`, replacing the space the deleted functions left):
+Add at the end of the file (after `getCategoryEmoji`), leaving every existing export in place:
 
 ```typescript
 export interface WeeklyDigestCategory {
@@ -424,34 +409,36 @@ export function formatMonthlyRemainingSummary(totalSpent: number, totalBudget: n
 }
 ```
 
-(`money()` is the existing private helper a few lines above — unchanged, already does `Math.abs` internally, so passing a negative `remaining` to it is intentional and correct.)
+`money()` is the existing private helper a few lines above — unchanged, already does `Math.abs` internally, so passing a negative `remaining` to it is intentional and correct.
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [ ] **Step 4: Run tests to verify they pass**
 
 Run: `npx vitest run shared/telegram.test.ts`
-Expected: PASS.
+Expected: PASS — every test in the file, old and new.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add shared/telegram.ts shared/telegram.test.ts
-git commit -m "feat: add weekly-remaining daily digest and monthly summary formatters, remove retired report formatters"
+git commit -m "feat: add weekly-remaining daily digest and monthly summary formatters"
 ```
 
 ---
 
-### Task 5: `SyncStore` gains transfer-link-failure tracking; companion implements it
+### Task 5: `SyncStore` gains transfer-link-failure tracking (companion + addon together)
 
 **Files:**
 - Modify: `shared/sync-host.ts`
 - Modify: `companion/src/rest-host.ts`
 - Modify: `companion/src/rest-host.test.ts`
+- Modify: `src/utils/secrets.ts`
+- Create: `src/utils/secrets.test.ts`
 
 **Interfaces:**
 - Produces (shared/sync-host.ts): `TransferLinkFailureEntry { count: number; firstFailedAt: string; alerted: boolean }`, added to `SyncStore`:
   - `getTransferLinkFailures(): Promise<Record<string, TransferLinkFailureEntry>>`
   - `setTransferLinkFailures(map: Record<string, TransferLinkFailureEntry>): Promise<void>`
-- Consumes (companion/src/rest-host.ts): `WealthfolioClient.getAddonSecret`/`setAddonSecret` (existing, from `companion/src/wealthfolio.ts`).
+- Both implementers (`RestSyncStore` and `SecretsStore`) are updated in this same task, so `SyncStore` never has an incomplete implementer at any commit boundary.
 
 - [ ] **Step 1: Add the interface to `shared/sync-host.ts`**
 
@@ -475,9 +462,7 @@ Add two methods to the `SyncStore` interface (after `setLinkedGroups`):
   setTransferLinkFailures(map: Record<string, TransferLinkFailureEntry>): Promise<void>;
 ```
 
-This intentionally breaks the build (every `SyncStore` implementer is now incomplete) until Step 2 and Task 6 land — same rationale as Task 3.
-
-- [ ] **Step 2: Write the failing test**
+- [ ] **Step 2: Write the failing companion test**
 
 Add to `companion/src/rest-host.test.ts`, inside the `describe('RestSyncStore', ...)` block:
 
@@ -498,51 +483,7 @@ Add to `companion/src/rest-host.test.ts`, inside the `describe('RestSyncStore', 
   });
 ```
 
-- [ ] **Step 3: Run test to verify it fails**
-
-Run: `cd companion && npx vitest run src/rest-host.test.ts`
-Expected: FAIL — `store.getTransferLinkFailures` is not a function (and the file doesn't even compile yet, per Step 1's intentional break).
-
-- [ ] **Step 4: Implement in `RestSyncStore`**
-
-In `companion/src/rest-host.ts`, add to `RestSyncStore` (after `setLinkedGroups`, reusing the existing private `getJson`/`setJson` helpers):
-
-```typescript
-  async getTransferLinkFailures(): Promise<Record<string, TransferLinkFailureEntry>> {
-    return (await this.getJson<Record<string, TransferLinkFailureEntry>>('transfer_link_failures')) ?? {};
-  }
-
-  async setTransferLinkFailures(map: Record<string, TransferLinkFailureEntry>): Promise<void> {
-    await this.setJson('transfer_link_failures', map);
-  }
-```
-
-Add `TransferLinkFailureEntry` to the existing `import type { ... } from '../../shared/sync-host.js';` block at the top of the file.
-
-- [ ] **Step 5: Run test to verify it passes**
-
-Run: `cd companion && npx vitest run src/rest-host.test.ts`
-Expected: PASS.
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add shared/sync-host.ts companion/src/rest-host.ts companion/src/rest-host.test.ts
-git commit -m "feat: add transfer-link-failure tracking to SyncStore, implement in companion's RestSyncStore"
-```
-
----
-
-### Task 6: Addon implements the same `SyncStore` methods
-
-**Files:**
-- Modify: `src/utils/secrets.ts`
-- Create: `src/utils/secrets.test.ts`
-
-**Interfaces:**
-- Produces: `SecretsStore.getTransferLinkFailures(): Promise<Record<string, TransferLinkFailureEntry>>`, `SecretsStore.setTransferLinkFailures(...): Promise<void>` — completes the `SyncStore` contract on the addon side (Task 5 completed it on the companion side).
-
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 3: Write the failing addon test**
 
 There's no existing `secrets.test.ts` — create one, mirroring the `linkedGroups` behavior already implemented in the class, against a minimal fake `AddonContext`:
 
@@ -585,12 +526,28 @@ describe('SecretsStore transfer link failures', () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 4: Run both tests to verify they fail**
 
-Run: `npx vitest run src/utils/secrets.test.ts`
-Expected: FAIL — `store.getTransferLinkFailures` is not a function.
+Run: `cd companion && npx vitest run src/rest-host.test.ts && cd .. && npx vitest run src/utils/secrets.test.ts`
+Expected: both FAIL — neither `RestSyncStore` nor `SecretsStore` implements the new methods yet, and (until Step 5/6 land) the whole `SyncStore` interface is unsatisfied so these files may not even compile.
 
-- [ ] **Step 3: Implement in `SecretsStore`**
+- [ ] **Step 5: Implement in `RestSyncStore`**
+
+In `companion/src/rest-host.ts`, add to `RestSyncStore` (after `setLinkedGroups`, reusing the existing private `getJson`/`setJson` helpers):
+
+```typescript
+  async getTransferLinkFailures(): Promise<Record<string, TransferLinkFailureEntry>> {
+    return (await this.getJson<Record<string, TransferLinkFailureEntry>>('transfer_link_failures')) ?? {};
+  }
+
+  async setTransferLinkFailures(map: Record<string, TransferLinkFailureEntry>): Promise<void> {
+    await this.setJson('transfer_link_failures', map);
+  }
+```
+
+Add `TransferLinkFailureEntry` to the existing `import type { ... } from '../../shared/sync-host.js';` block at the top of the file.
+
+- [ ] **Step 6: Implement in `SecretsStore`**
 
 In `src/utils/secrets.ts`, add a key to the `KEYS` object (after `linkedGroups`):
 
@@ -616,26 +573,26 @@ Add methods (after `setLinkedGroups`), following the exact `getLinkedGroups`/`se
   }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **Step 7: Run tests to verify they pass**
 
-Run: `npx vitest run src/utils/secrets.test.ts`
-Expected: PASS.
+Run: `cd companion && npx vitest run src/rest-host.test.ts && cd .. && npx vitest run src/utils/secrets.test.ts`
+Expected: PASS, both.
 
-- [ ] **Step 5: Run the full addon and companion type-checks**
+- [ ] **Step 8: Run the full addon and companion type-checks and test suites**
 
-Run: `npx tsc --noEmit && cd companion && npx tsc --noEmit`
-Expected: both clean — this is the point where `SyncStore` becomes fully implemented on both sides again (Tasks 3 and 5's intentional breaks are now resolved for this interface).
+Run: `npx tsc --noEmit && npm test && cd companion && npx tsc --noEmit && npm test`
+Expected: all four clean — `SyncStore` is now fully implemented on both sides, in the same commit.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
-git add src/utils/secrets.ts src/utils/secrets.test.ts
-git commit -m "feat: implement transfer-link-failure tracking in the addon's SecretsStore"
+git add shared/sync-host.ts companion/src/rest-host.ts companion/src/rest-host.test.ts src/utils/secrets.ts src/utils/secrets.test.ts
+git commit -m "feat: add transfer-link-failure tracking to SyncStore, implement in both the companion and the addon"
 ```
 
 ---
 
-### Task 7: In-transit transfer placeholders in `shared/sync-core.ts`
+### Task 6: In-transit transfer placeholders in `shared/sync-core.ts`
 
 **Files:**
 - Modify: `shared/reconcile.ts`
@@ -647,6 +604,7 @@ git commit -m "feat: implement transfer-link-failure tracking in the addon's Sec
 - Produces (shared/reconcile.ts): `FeedTx` gains `feeCents?: number` and `inTransit?: boolean`.
 - Produces (shared/sync-core.ts): `IN_TRANSIT_TIMEOUT_SECONDS` exported constant (10 days, in seconds).
 - Consumes: `neutralAdjustmentFields` (already defined in `shared/sync-core.ts`), `isTransferType`, `detectTransferPairs`.
+- This task is purely additive to `shared/sync-core.ts`'s public surface — no existing export changes shape, so no other file's build is affected.
 
 **Behavior:** a transaction typed `TRANSFER_OUT`/`TRANSFER_IN` (by keyword match or pair detection) that has **no** detected pair this run imports as a spending-neutral placeholder (reusing `neutralAdjustmentFields`) instead of a bare transfer type. Once the matching leg posts on a later sync and a pair is detected, the existing row (matched by txId) updates in place to the real transfer type. Past `IN_TRANSIT_TIMEOUT_SECONDS` with still no pair, it converts to a plain `DEPOSIT`/`WITHDRAWAL` instead (never going to pair — likely external).
 
@@ -676,7 +634,7 @@ export interface FeedTx {
 
 No change needed to `changed()` — it already compares `row.type !== tx.type`, which is what flips when a placeholder promotes to a real transfer.
 
-- [ ] **Step 2: Add the new `SyncStore` methods to the fake host**
+- [ ] **Step 2: Seed the fake host's transfer-link-failures state (needed by this file to type-check against Task 5's `SyncStore`)**
 
 In `shared/fake-host.ts`, add local state (near `let linkedGroups`):
 
@@ -694,8 +652,6 @@ Add methods to the `store` object (after `setLinkedGroups`):
       transferLinkFailures = map;
     },
 ```
-
-(This is needed now because `SyncStore` is the interface `runSyncCore` depends on — without it, `createFakeHost` won't type-check against the Task 5/6 interface change, and every existing `sync-core.test.ts` test breaks.)
 
 - [ ] **Step 3: Write the failing tests**
 
@@ -716,7 +672,7 @@ Add to `shared/sync-core.test.ts`:
     // CREDIT (not TRANSFER_OUT), fee-side of the split since the amount left the account.
     expect(create.activityType).toBe('CREDIT');
     expect(create.fee).toBe(1300);
-    expect(create.amount).toBeUndefined();
+    expect(create.amount).toBe(0);
     expect(create.comment).toContain('↔️ In-transit transfer ·');
     expect(create.comment).toContain('· tx-out');
   });
@@ -780,7 +736,7 @@ import { runSyncCore, VALUATION_POLL, IN_TRANSIT_TIMEOUT_SECONDS } from './sync-
 
 - [ ] **Step 4: Run tests to verify they fail**
 
-Run: `npx vitest run shared/sync-core.test.ts -t "in-transit\|placeholder\|promotes\|timeout"`
+Run: `npx vitest run shared/sync-core.test.ts -t "in-transit|placeholder|promotes|timeout"`
 Expected: FAIL — `IN_TRANSIT_TIMEOUT_SECONDS` isn't exported, and current behavior imports these as bare `TRANSFER_OUT`/`WITHDRAWAL` without the placeholder step.
 
 - [ ] **Step 5: Implement in `shared/sync-core.ts`**
@@ -885,19 +841,17 @@ Change `toActivityCreate` to respect the fee split and comment prefix:
     });
 ```
 
-`toActivityUpdate` is unchanged — it already spreads `toActivityCreate(t)` and adds `id`, so it picks up the same fee/prefix handling automatically.
-
-One more consequence: when `amount: (t.absCents - (t.feeCents ?? 0)) / 100` evaluates to `0` (the fee-side placeholder, where the full amount moved to `fee`), the `ActivityWrite.amount` field being `0` rather than `undefined` is correct and intentional — it matches the exact shape `importAdjustmentActivity` already sends for balance-adjustment plugs elsewhere in this file (`amount: fieldAmount` where `fieldAmount` can be `0`).
+`toActivityUpdate` is unchanged — it already spreads `toActivityCreate(t)` and adds `id`, so it picks up the same fee/prefix handling automatically. When `amount` evaluates to `0` (the fee-side placeholder, where the full amount moved to `fee`), that's correct and intentional — it matches the exact shape `importAdjustmentActivity` already sends for balance-adjustment plugs elsewhere in this file.
 
 - [ ] **Step 6: Run tests to verify they pass**
 
 Run: `npx vitest run shared/sync-core.test.ts shared/reconcile.test.ts shared/fake-host.test.ts`
 Expected: PASS — including every pre-existing test in these files (the fake-host and reconcile changes are additive).
 
-- [ ] **Step 7: Run the full shared+addon test suite**
+- [ ] **Step 7: Run the full shared+addon test suite and type-check, and the companion's**
 
-Run: `npm test`
-Expected: all pass — this is the point where every prior consumer of `FeedTx`/`createFakeHost` is exercised again.
+Run: `npm test && npx tsc --noEmit && cd companion && npm test && npx tsc --noEmit`
+Expected: all clean — this is the point where every prior consumer of `FeedTx`/`createFakeHost` (in both projects) is exercised again.
 
 - [ ] **Step 8: Commit**
 
@@ -908,20 +862,40 @@ git commit -m "feat: import unpaired transfer legs as spending-neutral in-transi
 
 ---
 
-### Task 8: Stuck-transfer failure tracking and alerting
+### Task 7: Stuck-transfer failure tracking and alerting
 
 **Files:**
 - Modify: `shared/sync-core.ts`
 - Modify: `shared/sync-core.test.ts`
 
 **Interfaces:**
-- Produces: `SyncResult.stuckTransferAlerts: Array<{ description: string; amountCents: number; currency: string }>` (now a required field, always an array — no existing test asserts the full `SyncResult` shape via `toEqual`, confirmed by grep before writing this plan).
+- Produces: `SyncResult.stuckTransferAlerts: Array<{ description: string; amountCents: number; currency: string }>` (a new required field on `SyncResult`, always an array). Safe to make required: only `runSyncCore` itself constructs `SyncResult` values — every early-return and the final return are updated in this same task — and no existing test asserts the full `SyncResult` shape via `toEqual` (confirmed by grep before writing this plan). Nothing outside `shared/sync-core.ts` reads this field until Task 9, so no other file's build is affected by adding it now.
 - Produces: `STUCK_TRANSFER_ALERT_THRESHOLD` exported constant (3).
-- Consumes: `store.getTransferLinkFailures`/`setTransferLinkFailures` (Task 5/6).
+- Consumes: `store.getTransferLinkFailures`/`setTransferLinkFailures` (Task 5).
 
-**Behavior:** distinct from Task 7's ordinary in-transit case — this fires only when **both** legs of a pair are detected (`detection.pairs` contains them) but `host.linkPair()` keeps returning `linked: false`. After 3 consecutive failing sync runs on the same pair, `runSyncCore` reports it once via `stuckTransferAlerts`; the caller (Task 10) is responsible for actually sending the Telegram message.
+**Behavior:** distinct from Task 6's ordinary in-transit case — this fires only when **both** legs of a pair are detected (`detection.pairs` contains them) but `host.linkPair()` keeps returning `linked: false`. After 3 consecutive failing sync runs on the same pair, `runSyncCore` reports it once via `stuckTransferAlerts`; the caller (Task 9) is responsible for actually sending the Telegram message.
 
-- [ ] **Step 1: Write the failing tests**
+- [ ] **Step 1: Extend the fake host to accept a seeded failure map**
+
+In `shared/fake-host.ts`, add to `FakeHostSeed`:
+
+```typescript
+export interface FakeHostSeed {
+  // ...existing fields...
+  transferLinkFailures?: Record<string, { count: number; firstFailedAt: string; alerted: boolean }>;
+}
+```
+
+Change the `let transferLinkFailures = {}` added in Task 6 Step 2 to seed from it:
+
+```typescript
+  let transferLinkFailures: Record<string, { count: number; firstFailedAt: string; alerted: boolean }> =
+    seed.transferLinkFailures ?? {};
+```
+
+(the getter/setter methods on `store` added in Task 6 are unchanged — they already read/write this variable).
+
+- [ ] **Step 2: Write the failing tests**
 
 Add to `shared/sync-core.test.ts`, reusing the `transferPairSeed()` helper already defined in that file:
 
@@ -970,28 +944,12 @@ Add to `shared/sync-core.test.ts`, reusing the `transferPairSeed()` helper alrea
   });
 ```
 
-This requires `FakeHostSeed` (in `shared/fake-host.ts`) to accept a seeded `transferLinkFailures` map, and `createFakeHost`'s `store.getTransferLinkFailures`/`setTransferLinkFailures` (added in Task 7 Step 2) to read/write actual mutable state instead of always returning `{}`. Update `shared/fake-host.ts`:
+- [ ] **Step 3: Run tests to verify they fail**
 
-```typescript
-export interface FakeHostSeed {
-  // ...existing fields...
-  transferLinkFailures?: Record<string, { count: number; firstFailedAt: string; alerted: boolean }>;
-}
-```
-
-```typescript
-  let transferLinkFailures: Record<string, { count: number; firstFailedAt: string; alerted: boolean }> =
-    seed.transferLinkFailures ?? {};
-```
-
-(replacing the `let transferLinkFailures = {}` added in Task 7 Step 2 — the getter/setter methods on `store` are unchanged, they already read/write this variable).
-
-- [ ] **Step 2: Run tests to verify they fail**
-
-Run: `npx vitest run shared/sync-core.test.ts -t "stuck-transfer\|re-alert\|clears a failure"`
+Run: `npx vitest run shared/sync-core.test.ts -t "stuck-transfer|re-alert|clears a failure"`
 Expected: FAIL — `result.stuckTransferAlerts` is `undefined` (property doesn't exist yet).
 
-- [ ] **Step 3: Implement in `shared/sync-core.ts`**
+- [ ] **Step 4: Implement in `shared/sync-core.ts`**
 
 Add the constant near `IN_TRANSIT_TIMEOUT_SECONDS`:
 
@@ -1095,17 +1053,17 @@ Finally, update the function's return statement:
   return { imported, skipped, errors, stuckTransferAlerts };
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [ ] **Step 5: Run tests to verify they pass**
 
 Run: `npx vitest run shared/sync-core.test.ts`
-Expected: PASS — all tests, including Task 7's and every pre-existing one.
+Expected: PASS — all tests, including Task 6's and every pre-existing one.
 
-- [ ] **Step 5: Run the full shared+addon test suite and type-check**
+- [ ] **Step 6: Run the full shared+addon+companion test suites and type-checks**
 
-Run: `npm test && npx tsc --noEmit`
-Expected: clean.
+Run: `npm test && npx tsc --noEmit && cd companion && npm test && npx tsc --noEmit`
+Expected: clean, all four.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add shared/sync-core.ts shared/sync-core.test.ts shared/fake-host.ts
@@ -1114,7 +1072,7 @@ git commit -m "feat: alert once when a detected transfer pair fails to link 3 sy
 
 ---
 
-### Task 9: Companion — two report schedules, category filtering, published category list
+### Task 8: Companion — two report schedules, category filtering, published category list
 
 **Files:**
 - Modify: `companion/src/index.ts`
@@ -1122,7 +1080,7 @@ git commit -m "feat: alert once when a detected transfer pair fails to link 3 sy
 
 **Interfaces:**
 - Produces: `sendWeeklyTelegramReport(wfClient: WealthfolioClient): Promise<void>`
-- Modifies: `sendDailyTelegramReport` (same signature, new content/formatter).
+- Modifies: `sendDailyTelegramReport` (same signature; now built from `formatWeeklyRemainingDigest` instead of `formatNativeBudgetBreakdown` — this is where `companion/src/index.ts` migrates off the old formatter, so Task 11 can safely delete it afterward).
 - Consumes: `formatWeeklyRemainingDigest`, `formatMonthlyRemainingSummary` (Task 4), `getNativeWealthfolioSpending`, `getNativeWealthfolioBudgets` (Task 2), `TelegramConfig.dailyReportCategories`/`weeklyReportCategories` (Task 3).
 
 - [ ] **Step 1: Write the failing tests**
@@ -1205,12 +1163,12 @@ describe('sendWeeklyTelegramReport', () => {
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd companion && npx vitest run src/index.test.ts -t "sendDailyTelegramReport\|sendWeeklyTelegramReport"`
+Run: `cd companion && npx vitest run src/index.test.ts -t "sendDailyTelegramReport|sendWeeklyTelegramReport"`
 Expected: FAIL — `sendWeeklyTelegramReport` isn't exported; `sendDailyTelegramReport` doesn't publish `available_report_categories` or filter by category yet.
 
 - [ ] **Step 3: Implement in `companion/src/index.ts`**
 
-Update the import line:
+Update the telegram import line to bring in the two new formatters alongside `sendTelegramMessage` (leave `formatNativeBudgetBreakdown` out of this import — it's being replaced, and Task 11 removes it from `shared/telegram.ts` once this is the only place that used it):
 
 ```typescript
 import { sendTelegramMessage, formatWeeklyRemainingDigest, formatMonthlyRemainingSummary } from '../../shared/telegram.js';
@@ -1349,7 +1307,12 @@ Update the startup log line to mention the new schedule:
 Run: `cd companion && npx vitest run src/index.test.ts`
 Expected: PASS — all tests, including pre-existing ones.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Run the full companion type-check**
+
+Run: `cd companion && npx tsc --noEmit`
+Expected: clean — `formatNativeBudgetBreakdown` is unused here now but still exists in `shared/telegram.ts` (Task 4 kept it), so nothing is broken; it's simply no longer imported by this file.
+
+- [ ] **Step 6: Commit**
 
 ```bash
 git add companion/src/index.ts companion/src/index.test.ts
@@ -1358,15 +1321,15 @@ git commit -m "feat: add weekly Telegram report schedule, category filtering, an
 
 ---
 
-### Task 10: Companion — sync health tracking, stuck-transfer alert delivery
+### Task 9: Companion — sync health tracking, stuck-transfer alert delivery
 
 **Files:**
 - Modify: `companion/src/index.ts`
 - Modify: `companion/src/index.test.ts`
 
 **Interfaces:**
-- Modifies: `runCompanionSync(): Promise<SyncResult>` (was `Promise<void>` — now returns the result so `stuckTransferAlerts` can be consumed).
-- Consumes: `SyncResult.stuckTransferAlerts` (Task 8).
+- Modifies: `runCompanionSync(): Promise<SyncResult>` (was `Promise<void>` — now returns the result so `stuckTransferAlerts` can be consumed). No caller currently uses the resolved value, so widening it is safe.
+- Consumes: `SyncResult.stuckTransferAlerts` (Task 7).
 
 **Documented limitation:** sync-health tracking writes to Wealthfolio via the same authenticated `wfClient` the sync itself uses. If login to Wealthfolio fails outright, there is no authenticated channel left to record or alert on that failure — it still only surfaces via `docker logs`, same as today. This only covers failures *after* a successful login (SimpleFin errors, `runSyncCore` throwing, etc.).
 
@@ -1497,7 +1460,7 @@ async function sendStuckTransferAlert(
 }
 ```
 
-Import `SyncResult` type and `sendTelegramMessage` (already imported) — add to the existing `import { runSyncCore } from '../../shared/sync-core.js';` line:
+Import `SyncResult` type — add to the existing `import { runSyncCore } from '../../shared/sync-core.js';` line:
 
 ```typescript
 import { runSyncCore } from '../../shared/sync-core.js';
@@ -1614,14 +1577,16 @@ git commit -m "feat: track sync health and alert after 24h of failures, deliver 
 
 ---
 
-### Task 11: Addon UI — replace the keyword-rule editor with a Report Categories checklist
+### Task 10: Addon UI — replace the keyword-rule editor with a Report Categories checklist
 
 **Files:**
 - Modify: `src/pages/SyncPage.tsx`
 - Modify: `src/pages/SyncPage.test.tsx`
+- Modify: `src/utils/secrets.ts`
 
 **Interfaces:**
-- Consumes: `SecretsStore.getAvailableReportCategories()` — **new**, added in this task (mirrors the `linked_groups`-style pattern; the companion writes `available_report_categories` via `wfClient.setAddonSecret`, Task 9, so the addon only needs a getter, no setter).
+- Consumes: `SecretsStore.getAvailableReportCategories()` — **new**, added in this task (mirrors the `linked_groups`-style pattern; the companion writes `available_report_categories` via `wfClient.setAddonSecret`, Task 8, so the addon only needs a getter, no setter).
+- This task migrates `SyncPage.tsx` off `formatDailyReport`, `formatWeeklyReport`, `categorizeActivity`, and `CategoryRule` entirely — after this task, nothing outside `shared/telegram.ts`/`shared/types.ts` themselves references them, which is what makes Task 11's deletion safe.
 
 - [ ] **Step 1: Add the getter to `SecretsStore`**
 
@@ -1631,7 +1596,7 @@ In `src/utils/secrets.ts`, add a key:
   availableReportCategories: 'available_report_categories',
 ```
 
-Add a method (after `getTransferLinkFailures`/`setTransferLinkFailures` from Task 6):
+Add a method (after `getTransferLinkFailures`/`setTransferLinkFailures` from Task 5):
 
 ```typescript
   /** Category names the companion has seen while building its last report —
@@ -1676,16 +1641,18 @@ it('saves the selected daily/weekly category lists in Telegram config', async ()
 });
 ```
 
-(Adjust the exact `getByLabelText` matcher once Step 4's markup is in place — the label text pattern below is `"Dining — Daily"` / `"Dining — Weekly"` per-checkbox, so a regex like `/Dining.*Daily/i` matches. If this repo's existing SyncPage tests use a different render/query setup — e.g. a custom `renderPage()` helper — follow that instead of raw `render()`.)
+(Adjust the exact `getByLabelText` matcher once Step 5's markup is in place — the label text pattern below is `"Dining — Daily"` / `"Dining — Weekly"` per-checkbox, so a regex like `/Dining.*Daily/i` matches. If this repo's existing SyncPage tests use a different render/query setup — e.g. a custom `renderPage()` helper — follow that instead of raw `render()`.)
+
+Also remove (not just leave failing) any pre-existing test in this file that exercises the "Send Sample Budget Report" button or the "Customize Category Modes & Budgets" panel — both are deleted from the component in Step 4/5 below, so tests asserting their presence would otherwise fail permanently. Search for `Send Sample Budget Report`, `Customize Category`, and `categoryRules` in the file.
 
 - [ ] **Step 3: Run tests to verify they fail**
 
-Run: `npx vitest run src/pages/SyncPage.test.tsx -t "Report Categories\|categories will appear\|saves the selected"`
+Run: `npx vitest run src/pages/SyncPage.test.tsx -t "Report Categories|categories will appear|saves the selected"`
 Expected: FAIL — no such UI exists yet.
 
 - [ ] **Step 4: Remove the retired UI from `SyncPage.tsx`**
 
-Delete `DEFAULT_CATEGORY_RULES` (lines 13-24) and its now-dangling `CategoryRule` import (update the `import type { AccountMapping, MappingRule, CategoryRule } from '../../shared/types';` on line 11 to drop `CategoryRule`).
+Delete `DEFAULT_CATEGORY_RULES` (lines 13-24) and drop `CategoryRule` from the `import type { AccountMapping, MappingRule, CategoryRule } from '../../shared/types';` line (11) — leave `AccountMapping`/`MappingRule`.
 
 Delete the `categoryRules`/`showCategorySettings` state (lines 89-90) and replace with:
 
@@ -1715,7 +1682,7 @@ In the `useEffect` data-load `Promise.all` (line 100), add `store.getAvailableRe
       }
 ```
 
-(remove the old `if (Array.isArray(tg.categoryRules) ...) setCategoryRules(...)` block entirely.)
+(remove the old `if (Array.isArray(tg.categoryRules) ...) setCategoryRules(...)` block entirely — this is the point where `SyncPage.tsx` stops referencing `tg.categoryRules`, even though the field still exists on `TelegramConfig` until Task 11.)
 
 Update the import line (line 8) to drop `formatDailyReport`, `formatWeeklyReport`, `categorizeActivity`:
 
@@ -1723,7 +1690,7 @@ Update the import line (line 8) to drop `formatDailyReport`, `formatWeeklyReport
 import { sendTelegramMessage, getCategoryEmoji } from '../../shared/telegram';
 ```
 
-Delete the entire "Send Sample Budget Report" button block (lines 681-780, from `<Button variant="outline" disabled={testingTelegram || !botToken || !chatId} onClick={async () => { setTestingTelegram(true); setTelegramStatus('Sending budget breakdown report...');` through its matching `</Button>`) — its only purpose was exercising the retired formatters.
+Delete the entire "Send Sample Budget Report" button block (lines 681-780, from `<Button variant="outline" disabled={testingTelegram || !botToken || !chatId} onClick={async () => { setTestingTelegram(true); setTelegramStatus('Sending budget breakdown report...');` through its matching `</Button>`) — its only purpose was exercising the formatters this task is migrating away from.
 
 - [ ] **Step 5: Add the Report Categories checklist**
 
@@ -1810,10 +1777,12 @@ Replace the `store.setTelegramConfig({...})` call (the "primary" button, current
               }}
 ```
 
+(this call no longer sends `categoryRules` — the field still exists on the `TelegramConfig` type per Task 3/11's sequencing, but nothing writes it anymore after this task; Task 11 removes the field from the type once this is confirmed to be its last writer).
+
 - [ ] **Step 7: Run tests to verify they pass**
 
 Run: `npx vitest run src/pages/SyncPage.test.tsx`
-Expected: PASS — all tests, including pre-existing ones (any pre-existing test referencing the removed "Keywords"/"Send Sample Budget Report" UI must be deleted alongside it — search the test file for `Send Sample Budget Report`, `Customize Category`, and `categoryRules` and remove those specific tests, since the behavior no longer exists).
+Expected: PASS — all tests, including pre-existing ones.
 
 - [ ] **Step 8: Run the full addon test suite and type-check**
 
@@ -1825,6 +1794,60 @@ Expected: clean.
 ```bash
 git add src/pages/SyncPage.tsx src/pages/SyncPage.test.tsx src/utils/secrets.ts
 git commit -m "feat: replace keyword-rule category editor with a Report Categories checklist sourced from the companion"
+```
+
+---
+
+### Task 11: Remove the superseded keyword-based category system
+
+**Files:**
+- Modify: `shared/telegram.ts`
+- Modify: `shared/telegram.test.ts`
+- Modify: `shared/types.ts`
+
+**Interfaces:**
+- Removes: `formatDailyReport`, `formatWeeklyReport`, `formatNativeBudgetBreakdown`, `DailyReportData`, `WeeklyReportData`, `CategoryReportItem`, `categorizeActivity`, `DEFAULT_SPENDING_KEYWORDS` from `shared/telegram.ts`.
+- Removes: `CategoryRule`, `TelegramConfig.categoryRules` from `shared/types.ts`.
+- Keeps unchanged: `sendTelegramMessage`, `getCategoryEmoji`, `DEFAULT_CATEGORY_EMOJIS`, `money`, `formatWeeklyRemainingDigest`, `formatMonthlyRemainingSummary`.
+- Safe now because: Task 8 migrated `companion/src/index.ts` off `formatNativeBudgetBreakdown`; Task 10 migrated `src/pages/SyncPage.tsx` off `formatDailyReport`/`formatWeeklyReport`/`categorizeActivity`/`CategoryRule`. This task starts with a grep to reconfirm zero remaining references before deleting anything.
+
+- [ ] **Step 1: Confirm nothing still references the code being removed**
+
+Run: `grep -rn "formatDailyReport\|formatWeeklyReport\|formatNativeBudgetBreakdown\|categorizeActivity\|DEFAULT_SPENDING_KEYWORDS\|CategoryRule\|categoryRules" --include="*.ts" --include="*.tsx" src/ companion/src/ shared/ | grep -v "\.test\."`
+
+Expected: no output (the only remaining hits should be inside `shared/telegram.ts`/`shared/types.ts` themselves and their own test files, which this task is about to edit) — if anything else shows up, STOP and report it rather than deleting out from under a live caller.
+
+- [ ] **Step 2: Remove the retired tests first**
+
+In `shared/telegram.test.ts`, delete the `describe('formatDailyReport', ...)` and `describe('formatWeeklyReport', ...)` blocks (their formatters are about to be deleted) and drop `formatDailyReport`, `formatWeeklyReport` from the import line at the top, leaving:
+
+```typescript
+import { sendTelegramMessage, formatWeeklyRemainingDigest, formatMonthlyRemainingSummary } from './telegram.js';
+```
+
+- [ ] **Step 3: Run tests to verify the file is still green with the reduced test set**
+
+Run: `npx vitest run shared/telegram.test.ts`
+Expected: PASS (fewer tests than before, all passing — this just confirms the test file itself is internally consistent before the source deletion, which will make the *old* import line fail to compile if done in the wrong order).
+
+- [ ] **Step 4: Delete the retired code from `shared/telegram.ts`**
+
+Delete: `DailyReportData`, `WeeklyReportData`, `CategoryReportItem` interfaces, `formatDailyReport`, `formatWeeklyReport`, `formatNativeBudgetBreakdown`, `categorizeActivity`, `DEFAULT_SPENDING_KEYWORDS`, and the `import type { CategoryRule } from './types.js';` line that only `categorizeActivity`'s signature used.
+
+- [ ] **Step 5: Delete `CategoryRule` and `categoryRules` from `shared/types.ts`**
+
+Remove the `CategoryRule` interface entirely, and remove the `categoryRules?: CategoryRule[];` line from `TelegramConfig` (added in Task 3, now dead).
+
+- [ ] **Step 6: Run the full test suites and type-checks, both projects**
+
+Run: `npx tsc --noEmit && npm test && cd companion && npx tsc --noEmit && npm test`
+Expected: all four clean.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add shared/telegram.ts shared/telegram.test.ts shared/types.ts
+git commit -m "chore: remove the keyword-based category system, fully superseded by the native-DB report formatters"
 ```
 
 ---
@@ -1850,7 +1873,7 @@ HEALTHCHECK --interval=5m --timeout=10s --start-period=30s \
   CMD node -e "process.exit(0)" || exit 1
 ```
 
-This is a process-liveness check (the container's only process is this Node daemon; if it's not running, Docker already reports the container as exited). It does not (and can't, without adding an HTTP server this daemon has no other reason to run) check sync health specifically — that's what Task 10's Telegram alert covers instead.
+This is a process-liveness check (the container's only process is this Node daemon; if it's not running, Docker already reports the container as exited). It does not (and can't, without adding an HTTP server this daemon has no other reason to run) check sync health specifically — that's what Task 9's Telegram alert covers instead.
 
 - [ ] **Step 3: Verify the image still builds**
 
@@ -1868,9 +1891,9 @@ git commit -m "chore: sync companion version with root, add container healthchec
 
 ## Self-Review Notes
 
-- **Spec coverage:** every numbered component in `docs/superpowers/specs/2026-07-28-notification-system-redesign-design.md` maps to a task — budget fix (Task 2), formatters/schedules/category selection (Tasks 4, 9), in-transit transfers (Task 7), stuck-transfer alert (Task 8, delivered in Task 10), sync health (Task 10), removal of the keyword system (Tasks 3, 4, 11), test harness fix (Task 1), minor polish (Task 12).
-- **Type consistency verified:** `SyncResult.stuckTransferAlerts` shape (`{ description, amountCents, currency }`) is identical across Task 8 (producer), Task 9's test mocks, and Task 10 (consumer in `sendStuckTransferAlert`). `TransferLinkFailureEntry` shape is identical across Task 5 (interface + companion), Task 6 (addon), and Task 7/8 (fake host). `FeedTx.feeCents`/`inTransit` are only read in Task 7's `toActivityCreate` — no other task reads them, no drift risk.
-- **Ordering dependency:** Tasks 3 and 5 each intentionally leave the repo non-compiling until their paired implementation task (4/11 and 6, respectively) lands — this is called out explicitly in each task rather than silently assumed.
+- **Spec coverage:** every numbered component in `docs/superpowers/specs/2026-07-28-notification-system-redesign-design.md` maps to a task — budget fix (Task 2), formatters/schedules/category selection (Tasks 4, 8), in-transit transfers (Task 6), stuck-transfer alert (Task 7, delivered in Task 9), sync health (Task 9), removal of the keyword system (Tasks 10, 11), test harness fix (Task 1), minor polish (Task 12).
+- **Type consistency verified:** `SyncResult.stuckTransferAlerts` shape (`{ description, amountCents, currency }`) is identical across Task 7 (producer), Task 8's test mocks, and Task 9 (consumer in `sendStuckTransferAlert`). `TransferLinkFailureEntry` shape is identical across Task 5 (interface + both implementers) and Task 6/7 (fake host). `FeedTx.feeCents`/`inTransit` are only read in Task 6's `toActivityCreate` — no other task reads them, no drift risk.
+- **No broken-build windows:** every task ends its own steps with a full type-check + test run of every project it touched (see each task's verification steps), and no task leaves a dangling reference for a later task to clean up — additions (Tasks 3, 4) land before deletions (Task 11), and interface changes (Task 5) update every implementer in the same task, never split across a commit boundary.
 
 ## Execution Handoff
 
