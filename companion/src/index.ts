@@ -13,6 +13,7 @@ import { runSyncCore } from '../../shared/sync-core.js';
 import { RestSyncHost, RestSyncStore } from './rest-host.js';
 import { WealthfolioClient } from './wealthfolio.js';
 import { sendTelegramMessage } from '../../shared/telegram.js';
+import { getNativeWealthfolioSpending, getNativeWealthfolioBudgets } from './sqlite-native.js';
 
 const logLevel: 'info' | 'debug' =
   process.env.LOG_LEVEL === 'debug' ? 'debug' : 'info';

@@ -17,8 +17,11 @@ services:
     #   dockerfile: companion/Dockerfile
     restart: unless-stopped
     environment:
-      - WEALTHFOLIO_API_URL=http://wealthfolio:7500
+      - WEALTHFOLIO_API_URL=http://wealthfolio:8088
       - WEALTHFOLIO_PASSWORD=your_wealthfolio_password
+      - WEALTHFOLIO_DB_PATH=/mnt/wealthfolio.db
+    volumes:
+      - /mnt/data/media/budget/wealthfolio/wealthfolio.db:/mnt/wealthfolio.db:ro
     networks:
       - wealthfolio_default         # must match your Wealthfolio network name
     user: "1000:1000"
