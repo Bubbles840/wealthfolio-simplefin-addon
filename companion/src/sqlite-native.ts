@@ -22,15 +22,19 @@ export function getNativeWealthfolioSpending(dbPath: string, yearMonth: string):
     return {};
   }
 
+  const [y, m] = yearMonth.split('-').map(Number);
+  const nextMonth = m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, '0')}`;
+
   const query = `
-    SELECT 
+    SELECT
       COALESCE(parent.name, tc.name) as parent_category,
       ROUND(SUM(ABS(CAST(a.amount AS REAL))), 2) as total_spent
     FROM activities a
     JOIN activity_taxonomy_assignments ata ON a.id = ata.activity_id
     JOIN taxonomy_categories tc ON ata.category_id = tc.id
     LEFT JOIN taxonomy_categories parent ON tc.parent_id = parent.id
-    WHERE a.activity_date >= '${yearMonth}-01' 
+    WHERE a.activity_date >= '${yearMonth}-01'
+      AND a.activity_date < '${nextMonth}-01'
       AND UPPER(a.activity_type) IN ('WITHDRAWAL', 'FEE', 'TAX')
       AND LOWER(COALESCE(parent.name, tc.name)) NOT IN ('transfers', 'transfer', 'internal transfers', 'savings & transfers')
     GROUP BY COALESCE(parent.name, tc.name);
@@ -87,7 +91,7 @@ export function getNativeWealthfolioBudgets(dbPath: string, yearMonth: string): 
         CAST(amount AS REAL) as amount,
         ROW_NUMBER() OVER (
           PARTITION BY category_id 
-          ORDER BY updated_at DESC
+          ORDER BY (period_key = '${yearMonth}') DESC, updated_at DESC
         ) as rn
       FROM budget_targets
       WHERE period_key = '${yearMonth}' OR period_key = 'default'
