@@ -58,4 +58,10 @@ export interface TelegramConfig {
   dailyReportEnabled?: boolean;
   weeklyReportEnabled?: boolean;
   categoryRules?: CategoryRule[];
+  /** Category names to include in the daily digest. 'all' (default) means
+   *  every category the companion has published via
+   *  `available_report_categories`. */
+  dailyReportCategories?: string[] | 'all';
+  /** Same as dailyReportCategories, for the weekly total-remaining summary. */
+  weeklyReportCategories?: string[] | 'all';
 }
