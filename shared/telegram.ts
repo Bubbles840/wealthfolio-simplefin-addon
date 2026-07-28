@@ -99,6 +99,8 @@ export const DEFAULT_CATEGORY_EMOJIS: Record<string, string> = {
   dining: '🍽️',
   food: '🍽️',
   entertainment: '🎬',
+  'fees & charges': '💳',
+  fees: '💳',
   needs: '📌',
   wants: '⭐',
 };

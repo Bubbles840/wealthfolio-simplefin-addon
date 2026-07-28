@@ -77,9 +77,7 @@ export function getNativeWealthfolioSpending(dbPath: string, yearMonth: string):
  * Returns native category budget targets from wealthfolio.db for a given month or default.
  */
 export function getNativeWealthfolioBudgets(dbPath: string, yearMonth: string): Record<string, number> {
-  if (!dbPath || !existsSync(dbPath)) {
-    return {};
-  }
+  if (!dbPath || !existsSync(dbPath)) return {};
 
   const query = `
     SELECT 
@@ -88,7 +86,12 @@ export function getNativeWealthfolioBudgets(dbPath: string, yearMonth: string): 
     FROM budget_targets bt
     JOIN taxonomy_categories tc ON bt.category_id = tc.id
     LEFT JOIN taxonomy_categories parent ON tc.parent_id = parent.id
-    WHERE bt.period_key = '${yearMonth}' OR bt.period_key = 'default'
+    WHERE bt.period_key = (
+      CASE 
+        WHEN EXISTS (SELECT 1 FROM budget_targets WHERE period_key = '${yearMonth}') THEN '${yearMonth}'
+        ELSE 'default'
+      END
+    )
     GROUP BY COALESCE(parent.name, tc.name);
   `;
 
