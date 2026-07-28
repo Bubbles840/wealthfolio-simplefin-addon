@@ -229,3 +229,46 @@ export function formatWeeklyReport(data: WeeklyReportData): string {
 
   return msg;
 }
+
+/**
+ * Formats a native Wealthfolio Budget Breakdown message using exact native spending and budget target maps.
+ */
+export function formatNativeBudgetBreakdown(
+  spentMap: Record<string, number>,
+  budgetMap: Record<string, number>
+): string {
+  const customOrder = [
+    'Housing', 'Transportation', 'Groceries', 'Food & Dining', 'Shopping',
+    'Entertainment', 'Health & Wellness', 'Bills & Utilities', 'Fees & Charges', 'Education'
+  ];
+
+  const allCats = Array.from(new Set([...Object.keys(spentMap), ...Object.keys(budgetMap)]));
+  allCats.sort((a, b) => {
+    const idxA = customOrder.indexOf(a);
+    const idxB = customOrder.indexOf(b);
+    if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+    if (idxA !== -1) return -1;
+    if (idxB !== -1) return 1;
+    return a.localeCompare(b);
+  });
+
+  let msg = `📊 *Wealthfolio Budget Breakdown*\n\n`;
+  let totalSpent = 0;
+  let totalBudget = 0;
+
+  for (const cat of allCats) {
+    const spent = spentMap[cat] || 0;
+    const budget = budgetMap[cat] || 0;
+    totalSpent += spent;
+    totalBudget += budget;
+    const pct = budget > 0 ? Math.round((spent / budget) * 100) : 0;
+    const emoji = getCategoryEmoji(cat);
+    const overAlert = spent > budget && budget > 0 ? ' 🚨 *OVER BUDGET!*' : '';
+    msg += `${emoji} *${cat}*: ${money(spent)} / ${money(budget)} (${pct}%)${overAlert}\n`;
+  }
+
+  const totalPct = totalBudget > 0 ? Math.round((totalSpent / totalBudget) * 100) : 0;
+  msg += `\n💰 *Total Spent*: ${money(totalSpent)} / ${money(totalBudget)} (${totalPct}%)`;
+
+  return msg;
+}
