@@ -86,7 +86,7 @@ export function getNativeWealthfolioBudgets(dbPath: string, yearMonth: string): 
       COALESCE(parent.name, tc.name) as parent_category,
       ROUND(SUM(CAST(bt.amount AS REAL)), 2) as total_budget
     FROM budget_targets bt
-    JOIN taxonomy_categories tc ON bt.target_id = tc.id
+    JOIN taxonomy_categories tc ON bt.category_id = tc.id
     LEFT JOIN taxonomy_categories parent ON tc.parent_id = parent.id
     WHERE bt.period_key = '${yearMonth}' OR bt.period_key = 'default'
     GROUP BY COALESCE(parent.name, tc.name);
