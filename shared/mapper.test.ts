@@ -87,6 +87,13 @@ describe('mapTransactionWithSource', () => {
     expect(mapTransactionWithSource('SP THERMALTAKE', -69.85, [], 'CREDIT_CARD').type).toBe('WITHDRAWAL');
   });
 
+  it('types bank transfer descriptions on cash accounts as TRANSFER_OUT / TRANSFER_IN', () => {
+    expect(mapTransactionWithSource('PNC BANK, NATIONAL ASSOCIATION', -1300, [], 'CASH'))
+      .toEqual({ type: 'TRANSFER_OUT', fromRule: false });
+    expect(mapTransactionWithSource('ONLINE TRANSFER FROM CHECKING', 500, [], 'CASH'))
+      .toEqual({ type: 'TRANSFER_IN', fromRule: false });
+  });
+
   it('rules beat card defaults', () => {
     const rules = [{ pattern: 'cashback', matchType: 'contains' as const, activityType: 'CREDIT' as const }];
     expect(mapTransactionWithSource('CASHBACK BONUS', 12, rules, 'CREDIT_CARD'))

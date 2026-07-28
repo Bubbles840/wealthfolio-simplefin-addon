@@ -36,6 +36,8 @@ function matchRule(description: string, rules: MappingRule[]): ActivityType | nu
   return null;
 }
 
+export const BANK_TRANSFER_KEYWORDS = /pnc bank|online transfer|wire transfer|bank transfer|member transfer/i;
+
 export function mapTransactionWithSource(
   description: string,
   amount: number,
@@ -51,6 +53,13 @@ export function mapTransactionWithSource(
     // which Wealthfolio nets against spending as an expense refund)
     return {
       type: CARD_PAYMENT_KEYWORDS.test(description) ? 'TRANSFER_IN' : 'CREDIT',
+      fromRule: false,
+    };
+  }
+
+  if (BANK_TRANSFER_KEYWORDS.test(description)) {
+    return {
+      type: amount >= 0 ? 'TRANSFER_IN' : 'TRANSFER_OUT',
       fromRule: false,
     };
   }
