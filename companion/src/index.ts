@@ -13,7 +13,7 @@ import { runSyncCore } from '../../shared/sync-core.js';
 import type { SyncResult } from '../../shared/sync-core.js';
 import { RestSyncHost, RestSyncStore } from './rest-host.js';
 import { WealthfolioClient } from './wealthfolio.js';
-import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatSyncHealthFooter, formatLargeTransactionAlert, escapeMarkdown } from '../../shared/telegram.js';
+import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatSyncHealthFooter, formatLargeTransactionAlert, formatBalanceDriftAlert, escapeMarkdown } from '../../shared/telegram.js';
 import type { SyncHealth } from '../../shared/telegram.js';
 import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets } from './sqlite-native.js';
 
@@ -231,6 +231,53 @@ async function rollBackUndeliveredStuckTransferAlerts(
   }
 }
 
+/** Sends the balance-drift alert and reports whether it was actually delivered,
+ *  so the caller can roll the drift-alert ledger's `alerted` flag back on a
+ *  confirmed failure. Identical contract to `sendStuckTransferAlert`, including
+ *  reporting a non-attempt (no/unreadable config, Telegram disabled) as `true`
+ *  — see that function's note for why a non-attempt must not trigger a rollback
+ *  on every sync for a user who never set Telegram up. */
+async function sendBalanceDriftAlert(
+  wfClient: WealthfolioClient,
+  alert: SyncResult['balanceDriftAlerts'][number],
+): Promise<boolean> {
+  const tgRaw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_config').catch(() => null);
+  const tg = parseSecretJson<any>(tgRaw, 'telegram_config');
+  if (!tg) return true;
+  if (!tg.botToken || !tg.chatId || tg.enabled === false) return true;
+  const result = await sendTelegramMessage(tg.botToken, tg.chatId, formatBalanceDriftAlert(alert));
+  if (!result.ok) {
+    log(`Balance-drift alert failed to send, will retry next sync: ${result.description}`);
+    return false;
+  }
+  return true;
+}
+
+/** Re-reads the drift-alert ledger (never a stale in-memory copy — runSyncCore
+ *  already wrote it this run) and rolls `alerted` back for exactly the accounts
+ *  whose send failed, leaving `driftAmount`/`firstDetectedAt` intact so the
+ *  EPISODE survives: rolling back a delivery flag is not the same as declaring
+ *  the account healthy. Only writes on a real change. Must never throw. */
+async function rollBackUndeliveredDriftAlerts(
+  store: RestSyncStore,
+  undeliveredAccountIds: string[],
+): Promise<void> {
+  if (undeliveredAccountIds.length === 0) return;
+  try {
+    const alerts = await store.getDriftAlerts();
+    let changed = false;
+    for (const sfinAccountId of undeliveredAccountIds) {
+      if (alerts[sfinAccountId]?.alerted) {
+        alerts[sfinAccountId] = { ...alerts[sfinAccountId], alerted: false };
+        changed = true;
+      }
+    }
+    if (changed) await store.setDriftAlerts(alerts);
+  } catch (err) {
+    debug(`Balance-drift alert rollback failed (will retry as still-alerted next sync): ${formatError(err)}`);
+  }
+}
+
 /** Addon secret holding large-transaction alerts a previous run could not
  *  deliver. See `deliverLargeTransactionAlerts` for why an outbox rather than a
  *  rollback flag. */
@@ -348,7 +395,8 @@ export async function runCompanionSync(): Promise<SyncResult> {
     if (!accessUrl) {
       log('No SimpleFin access URL found in Wealthfolio addon secrets. Please configure the SimpleFin Sync addon in Wealthfolio first.');
       const empty: SyncResult = {
-        imported: 0, skipped: 0, errors: [], stuckTransferAlerts: [], largeTransactionAlerts: [],
+        imported: 0, skipped: 0, errors: [], stuckTransferAlerts: [],
+        largeTransactionAlerts: [], balanceDriftAlerts: [],
       };
       // Not-yet-configured is treated as healthy, not a failure: it's the
       // expected state before the user sets up SimpleFin, and would
@@ -381,6 +429,13 @@ export async function runCompanionSync(): Promise<SyncResult> {
     await rollBackUndeliveredStuckTransferAlerts(store, undeliveredOutTxIds);
 
     await deliverLargeTransactionAlerts(wfClient, result.largeTransactionAlerts);
+
+    const undeliveredDriftAccountIds: string[] = [];
+    for (const alert of result.balanceDriftAlerts) {
+      const delivered = await sendBalanceDriftAlert(wfClient, alert);
+      if (!delivered) undeliveredDriftAccountIds.push(alert.sfinAccountId);
+    }
+    await rollBackUndeliveredDriftAlerts(store, undeliveredDriftAccountIds);
 
     try {
       const tgRaw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_config');

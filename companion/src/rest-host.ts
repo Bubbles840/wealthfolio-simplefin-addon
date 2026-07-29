@@ -11,6 +11,7 @@ import type {
   SyncHost,
   SyncStore,
   TransferLinkFailureEntry,
+  DriftAlertEntry,
 } from '../../shared/sync-host.js';
 import type { AccountMapping, MappingRule, SimplefinAccountSet, TelegramConfig } from '../../shared/types.js';
 
@@ -232,6 +233,21 @@ export class RestSyncStore implements SyncStore {
     const tg = await this.getJson<TelegramConfig>('telegram_config');
     const raw = tg?.largeTransactionThreshold;
     return typeof raw === 'number' && Number.isFinite(raw) ? raw : null;
+  }
+
+  /** As `getLargeTransactionThreshold`: verbatim, no defaults applied here. */
+  async getDriftAlertThreshold(): Promise<number | null> {
+    const tg = await this.getJson<TelegramConfig>('telegram_config');
+    const raw = tg?.driftAlertThreshold;
+    return typeof raw === 'number' && Number.isFinite(raw) ? raw : null;
+  }
+
+  async getDriftAlerts(): Promise<Record<string, DriftAlertEntry>> {
+    return (await this.getJson<Record<string, DriftAlertEntry>>('drift_alerts')) ?? {};
+  }
+
+  async setDriftAlerts(map: Record<string, DriftAlertEntry>): Promise<void> {
+    await this.setJson('drift_alerts', map);
   }
 
   async getAccountBalances(): Promise<Record<string, unknown>> {

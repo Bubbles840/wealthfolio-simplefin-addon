@@ -774,4 +774,158 @@ describe('runSyncCore', () => {
     const result = await runSyncCore(host, store, {});
     expect(result.largeTransactionAlerts).toEqual([]);
   });
+
+  // --- Balance-drift alerts ---
+
+  /** The user's real Spend account: bank 3475.23, Wealthfolio 2175.23, so a
+   *  settled $1,300.00 of drift. No transactions, so the run creates nothing and
+   *  the drift figure is trustworthy. */
+  const driftSeed = (valuations = new Map([['wf-a', 2175.23]])): FakeHostSeed => ({
+    accountSet: { errors: [], accounts: [{
+      id: 'sfin-1', name: 'Spend Bank', currency: 'USD',
+      balance: '3475.23', 'balance-date': 1, transactions: [],
+    }] },
+    mapping: { 'sfin-1': 'wf-a' },
+    accountTypes: { 'wf-a': 'CASH' },
+    accountNames: { 'wf-a': 'Spend' },
+    valuations,
+    existing: new Map([['wf-a', [startingBalanceRow('wf-a', 'sfin-1')]]]),
+  });
+
+  it('reports a balance-drift alert with everything needed to act on it', async () => {
+    const { host, store } = createFakeHost(driftSeed());
+    const result = await runSyncCore(host, store, {});
+    expect(result.balanceDriftAlerts).toEqual([{
+      sfinAccountId: 'sfin-1',
+      accountName: 'Spend',
+      driftAmount: 1300.0,
+      currency: 'USD',
+      bankBalance: 3475.23,
+    }]);
+  });
+
+  it('records the episode so a second sync does not re-alert', async () => {
+    const seed = driftSeed();
+    const { host, store } = createFakeHost(seed);
+    await runSyncCore(host, store, {});
+    expect(await store.getDriftAlerts()).toEqual({
+      'sfin-1': { driftAmount: 1300.0, firstDetectedAt: expect.any(String), alerted: true },
+    });
+    const second = await runSyncCore(host, store, { force: true });
+    expect(second.balanceDriftAlerts).toEqual([]);
+  });
+
+  it('re-arms when the account comes back under the threshold, and alerts again on a recurrence', async () => {
+    const valuations = new Map([['wf-a', 2175.23]]);
+    const { host, store } = createFakeHost(driftSeed(valuations));
+    expect((await runSyncCore(host, store, {})).balanceDriftAlerts).toHaveLength(1);
+
+    // The user reconciled: Wealthfolio now matches the bank.
+    valuations.set('wf-a', 3475.23);
+    const healthy = await runSyncCore(host, store, { force: true });
+    expect(healthy.balanceDriftAlerts).toEqual([]);
+    expect(await store.getDriftAlerts()).toEqual({}); // re-armed, not just quiet
+
+    // It drifts again — a genuinely new episode, so it must be announced again.
+    valuations.set('wf-a', 2175.23);
+    const recurrence = await runSyncCore(host, store, { force: true });
+    expect(recurrence.balanceDriftAlerts).toHaveLength(1);
+  });
+
+  it('defaults to a $100 threshold when the user has never set one', async () => {
+    const under = createFakeHost(driftSeed(new Map([['wf-a', 3400.0]])));
+    // 3475.23 − 3400.00 = 75.23: real, shown on the Sync page, not worth a ping.
+    expect((await runSyncCore(under.host, under.store, {})).balanceDriftAlerts).toEqual([]);
+    expect(await storedDrift(under.store, 'sfin-1')).toBeCloseTo(75.23, 2);
+
+    const over = createFakeHost(driftSeed(new Map([['wf-a', 3300.0]])));
+    // 175.23 — over the default, so it pings.
+    expect((await runSyncCore(over.host, over.store, {})).balanceDriftAlerts).toHaveLength(1);
+  });
+
+  it('honours a configured threshold instead of the default', async () => {
+    const seed = driftSeed();
+    seed.driftAlertThreshold = 2000;
+    const { host, store } = createFakeHost(seed);
+    expect((await runSyncCore(host, store, {})).balanceDriftAlerts).toEqual([]);
+  });
+
+  it('is off for an explicit 0 or a negative threshold', async () => {
+    for (const threshold of [0, -50]) {
+      const seed = driftSeed();
+      seed.driftAlertThreshold = threshold;
+      const { host, store } = createFakeHost(seed);
+      const result = await runSyncCore(host, store, {});
+      expect(result.balanceDriftAlerts).toEqual([]);
+      expect(await store.getDriftAlerts()).toEqual({});
+    }
+  });
+
+  it('never alerts off the DISPLAY threshold — a $2 drift is shown, not announced', async () => {
+    // DRIFT_THRESHOLD_DOLLARS is 1, and reusing it here would ping on every
+    // rounding wobble. It decides what the Sync page SHOWS, nothing more.
+    const { host, store } = createFakeHost(driftSeed(new Map([['wf-a', 3473.23]])));
+    const result = await runSyncCore(host, store, {});
+    expect(await storedDrift(store, 'sfin-1')).toBeCloseTo(2.0, 2);
+    expect(result.balanceDriftAlerts).toEqual([]);
+  });
+
+  it('says nothing — and re-arms nothing — on a run where drift is not measurable', async () => {
+    // A pending row makes the SimpleFin posted balance and Wealthfolio's
+    // valuation incomparable, so runSyncCore leaves drift null on purpose.
+    // Treating that as "back under the threshold" would clear the episode and
+    // re-alert on the very next measurable run: alert spam via the back door.
+    const seed = driftSeed();
+    seed.accountSet!.accounts[0].transactions = [{
+      id: 'tx-p', posted: 0, transacted_at: recentEpoch(), amount: '-5.00',
+      description: 'Coffee', pending: true,
+    }];
+    seed.driftAlerts = {
+      'sfin-1': { driftAmount: 1300.0, firstDetectedAt: '2026-07-01T00:00:00Z', alerted: true },
+    };
+    const { host, store } = createFakeHost(seed);
+    const result = await runSyncCore(host, store, {});
+    expect(await storedDrift(store, 'sfin-1')).toBeNull();
+    expect(result.balanceDriftAlerts).toEqual([]);
+    expect(await store.getDriftAlerts()).toEqual({
+      'sfin-1': { driftAmount: 1300.0, firstDetectedAt: '2026-07-01T00:00:00Z', alerted: true },
+    });
+  });
+
+  it('does not alert on drift a linked TRANSFER_OUT only appears to cause', async () => {
+    // The bug fixed in e80707a reported 8650.45 of phantom drift on this exact
+    // account. The alert must never fire off a figure like that.
+    const { host, store } = createFakeHost({
+      ...driftSeed(new Map([['wf-a', 3475.23]])),
+      existing: new Map([['wf-a', [
+        startingBalanceRow('wf-a', 'sfin-1'),
+        { id: 'out-1', accountId: 'wf-a', activityType: 'TRANSFER_OUT', date: '2026-07-01',
+          amount: 6050.45, comment: 'Online Transfer to Savings · tx-a',
+          sourceGroupId: 'wf-transfer-aaa' },
+      ]]]),
+    });
+    const result = await runSyncCore(host, store, {});
+    expect(await storedDrift(store, 'sfin-1')).toBeNull();
+    expect(result.balanceDriftAlerts).toEqual([]);
+  });
+
+  it('does not alert when aggressive auto-heal already plugged the drift this run', async () => {
+    const seed = driftSeed();
+    seed.autoHeal = true;
+    seed.autoAdjust = true;
+    const { host, store, imported } = createFakeHost(seed);
+    const result = await runSyncCore(host, store, { heal: true });
+    // The plug really happened — so there is nothing left for the user to do.
+    expect(imported.flat().some((r) => r.comment.startsWith('Balance adjustment'))).toBe(true);
+    expect(result.balanceDriftAlerts).toEqual([]);
+    expect(await store.getDriftAlerts()).toEqual({});
+  });
+
+  it('names the SimpleFin account when the host reports no Wealthfolio account name', async () => {
+    const seed = driftSeed();
+    delete seed.accountNames;
+    const { host, store } = createFakeHost(seed);
+    const result = await runSyncCore(host, store, {});
+    expect(result.balanceDriftAlerts[0].accountName).toBe('Spend Bank');
+  });
 });

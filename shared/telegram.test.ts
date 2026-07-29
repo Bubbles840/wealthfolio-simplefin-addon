@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatSyncHealthFooter, escapeMarkdown, weeklyEnvelope, moneyWhole, formatLargeTransactionAlert } from './telegram.js';
+import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatSyncHealthFooter, escapeMarkdown, weeklyEnvelope, moneyWhole, formatLargeTransactionAlert, formatBalanceDriftAlert } from './telegram.js';
 
 const mockFetch = vi.fn();
 vi.stubGlobal('fetch', mockFetch);
@@ -784,5 +784,59 @@ describe('formatLargeTransactionAlert', () => {
     // ...and the bold entity wraps only the figure, which has no specials in it.
     expect(unescaped.slice(unescaped.indexOf('*'), unescaped.lastIndexOf('*') + 1))
       .toBe('*$1,240.00*');
+  });
+});
+
+describe('formatBalanceDriftAlert', () => {
+  it('states the direction in words and gives the bank figure to compare against', () => {
+    expect(formatBalanceDriftAlert({
+      accountName: 'Spend',
+      driftAmount: 1300,
+      currency: 'USD',
+      bankBalance: 3475.23,
+    })).toBe(
+      '⚠️ *Balance drift* — Spend\n'
+      + "Wealthfolio is *$1,300.00* below the bank's *$3,475.23* USD\n"
+      + 'Run "Reconcile balances" in the addon to line them up.',
+    );
+  });
+
+  it('says "above" when Wealthfolio is the higher of the two', () => {
+    // drift is SimpleFin − Wealthfolio, so a negative figure means Wealthfolio
+    // is holding MORE than the bank. "off by -$1,300" would read as a double
+    // negative, so the direction goes in the words and the figure stays positive.
+    const text = formatBalanceDriftAlert({
+      accountName: 'Spend', driftAmount: -1300, currency: 'USD', bankBalance: 3475.23,
+    });
+    expect(text).toContain("Wealthfolio is *$1,300.00* above the bank's *$3,475.23* USD");
+    expect(text).not.toContain('-$');
+  });
+
+  it('keeps the bank balance NEGATIVE when the bank reports one', () => {
+    // An overdrawn account (or a card) genuinely reports a negative balance.
+    // The drift magnitude drops its sign because a word carries the direction;
+    // this figure has no such word, and showing -$85.10 as $85.10 would misstate
+    // the one number the reader is asked to check against.
+    expect(formatBalanceDriftAlert({
+      accountName: 'Spend', driftAmount: 200, currency: 'USD', bankBalance: -85.1,
+    })).toContain("*$200.00* below the bank's *-$85.10* USD");
+  });
+
+  it('keeps the cents on both figures', () => {
+    expect(formatBalanceDriftAlert({
+      accountName: 'Savings', driftAmount: 1297.5, currency: 'USD', bankBalance: 610.65,
+    })).toContain("*$1,297.50* below the bank's *$610.65*");
+  });
+
+  it('escapes a `_`/`*`-bearing account name and keeps it out of every entity', () => {
+    const text = formatBalanceDriftAlert({
+      accountName: 'Joint_Spend *Main*', driftAmount: 1300, currency: 'USD', bankBalance: 3475.23,
+    });
+    expect(text.split('\n')[0]).toBe('⚠️ *Balance drift* — Joint\\_Spend \\*Main\\*');
+    // Only the deliberate entities survive unescaped: "Balance drift", the drift
+    // figure and the bank figure — three balanced pairs, and no stray `_`.
+    const unescaped = text.replace(/\\[_*`[]/g, '');
+    expect((unescaped.match(/\*/g) ?? [])).toHaveLength(6);
+    expect(unescaped.match(/_/g)).toBeNull();
   });
 });

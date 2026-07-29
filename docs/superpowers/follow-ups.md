@@ -4,8 +4,10 @@ Findings that survived a review cycle without being fixed, with enough context
 to act on them later. Each says why it was deferred, so a future reader can
 tell "decided against" from "not got to yet".
 
-Last updated: 2026-07-29, after fixing the companion drift inflation (former
-item 1, now under "Fixed"). Previous revision: 2026-07-28, after the
+Last updated: 2026-07-29, after adding the large-transaction and balance-drift
+Telegram alerts (which surfaced new item 3; former items 3 and 4 are now 4 and
+5). Previous revision: 2026-07-29, after fixing the companion drift inflation
+(former item 1, now under "Fixed"). Earlier: 2026-07-28, after the
 notification-system-redesign branch
 (plan: `docs/superpowers/plans/2026-07-28-notification-system-redesign.md`).
 
@@ -92,7 +94,35 @@ threshold, stop offering that pair to `linkPair` and let the *next* run's sweep
 
 ---
 
-## 3. Smaller items
+## 3. The addon consumes alerts it cannot deliver
+
+Every alert `runSyncCore` produces is marked delivered — or simply dropped — by
+whichever syncer ran, but only the **companion** can actually send a Telegram
+message. The addon runs the identical core, so an in-app sync:
+
+- writes `transfer_link_failures[key].alerted = true` and `drift_alerts[id].alerted
+  = true` for episodes nobody ever announces, which the companion then skips
+  because the ledger says the user was already told;
+- discards `largeTransactionAlerts` entirely, and since a create happens once per
+  SimpleFin tx id, a row the addon imported can never be announced afterwards.
+
+Pre-existing for the stuck-transfer alert (shipped with the notification
+redesign); the drift and large-transaction alerts added 2026-07-29 inherit it by
+following the same pattern deliberately. Only bites users who run both syncers
+against one Wealthfolio instance — which this repo's own deployment does.
+
+Fix directions, roughly in order of appeal:
+1. Have the addon deliver too (it has `ctx.api.network`, which
+   `sendTelegramMessage` already accepts as its `network` argument) — no shared/
+   change needed, the addon just calls the senders itself.
+2. Give the ledgers a `queuedBy: 'addon' | 'companion'` field so the companion
+   re-queues anything the addon marked.
+3. Have the addon pass an option telling the core not to mark or emit alerts at
+   all, leaving every notification to the companion's own sync cycle.
+
+---
+
+## 4. Smaller items
 
 - **`shared/link-pair.ts`** collects delete errors into `problems` but issues the
   creates anyway, short-circuiting only afterwards. Now that both hosts
@@ -123,7 +153,7 @@ threshold, stop offering that pair to `linkPair` and let the *next* run's sweep
 
 ---
 
-## 4. Verify on a real instance
+## 5. Verify on a real instance
 
 Not code findings — things a test suite structurally cannot answer.
 

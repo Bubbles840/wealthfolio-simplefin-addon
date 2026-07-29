@@ -59,4 +59,12 @@ export interface TelegramConfig {
    *  before it is announced. Absent (the default), `0`, or negative means off —
    *  a user who has never opened the setting gets no such alerts. */
   largeTransactionThreshold?: number;
+  /** Dollar drift (bank balance vs Wealthfolio valuation) an account has to
+   *  exceed before it is announced. Absent means the $100 default; an explicit
+   *  `0` or negative means off.
+   *
+   *  Deliberately NOT `DRIFT_THRESHOLD_DOLLARS`, which is $1 and decides whether
+   *  the Sync page DISPLAYS drift at all — alerting on that would ping on every
+   *  rounding wobble. */
+  driftAlertThreshold?: number;
 }

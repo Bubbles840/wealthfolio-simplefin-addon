@@ -10,6 +10,7 @@ import type {
   SyncHost,
   SyncStore,
   TransferLinkFailureEntry,
+  DriftAlertEntry,
 } from './sync-host.js';
 
 export interface FakeHostSeed {
@@ -37,6 +38,11 @@ export interface FakeHostSeed {
   /** Configured large-transaction alert threshold in dollars. Absent (the
    *  default) is reported as `null` — "never configured", i.e. off. */
   largeTransactionThreshold?: number;
+  /** Configured drift-alert threshold in dollars. Absent is reported as `null`,
+   *  which runSyncCore turns into its $100 default. */
+  driftAlertThreshold?: number;
+  /** Pre-loaded drift-alert ledger, keyed by SimpleFin account id. */
+  driftAlerts?: Record<string, DriftAlertEntry>;
 }
 
 export interface FakeHost {
@@ -98,6 +104,7 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
   const autoHeal = seed.autoHeal ?? false;
   const autoAdjust = seed.autoAdjust ?? false;
   const largeTransactionThreshold = seed.largeTransactionThreshold ?? null;
+  const driftAlertThreshold = seed.driftAlertThreshold ?? null;
 
   const activities = cloneActivities(seed.existing);
   const saved: SaveManyRequest[] = [];
@@ -145,6 +152,7 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
   let linkedGroups: Record<string, string> = {};
   let transferLinkFailures: Record<string, TransferLinkFailureEntry> =
     seed.transferLinkFailures ?? {};
+  let driftAlerts: Record<string, DriftAlertEntry> = seed.driftAlerts ?? {};
   let accountBalances: Record<string, unknown> = {};
   let balanceInitialized: string[] = [];
   let lastSyncAt: Date | null = null;
@@ -301,6 +309,15 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
     },
     async getLargeTransactionThreshold() {
       return largeTransactionThreshold;
+    },
+    async getDriftAlertThreshold() {
+      return driftAlertThreshold;
+    },
+    async getDriftAlerts() {
+      return driftAlerts;
+    },
+    async setDriftAlerts(map: Record<string, DriftAlertEntry>) {
+      driftAlerts = map;
     },
     async getAccountBalances() {
       return accountBalances;

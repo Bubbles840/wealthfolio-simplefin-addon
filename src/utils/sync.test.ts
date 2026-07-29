@@ -34,8 +34,17 @@ const makeStore = (overrides: Record<string, unknown> = {}) => ({
     async (_map: Record<string, { count: number; firstFailedAt: string; alerted: boolean }>) => {},
   ),
   // Null = never configured, so the large-transaction alert is off for every
-  // test that doesn't deliberately turn it on.
+  // test that doesn't deliberately turn it on. The drift threshold's null falls
+  // back to the $100 default instead, so these tests DO see drift alerting —
+  // which is the realistic default and keeps it exercised here.
   getLargeTransactionThreshold: vi.fn(async (): Promise<number | null> => null),
+  getDriftAlertThreshold: vi.fn(async (): Promise<number | null> => null),
+  getDriftAlerts: vi.fn(
+    async (): Promise<Record<string, { driftAmount: number; firstDetectedAt: string; alerted: boolean }>> => ({}),
+  ),
+  setDriftAlerts: vi.fn(
+    async (_map: Record<string, { driftAmount: number; firstDetectedAt: string; alerted: boolean }>) => {},
+  ),
   getAccountBalances: vi.fn(async (): Promise<Record<string, unknown>> => ({})),
   setAccountBalances: vi.fn(async (_map: Record<string, unknown>) => {}),
   getAutoHeal: vi.fn(async () => false),

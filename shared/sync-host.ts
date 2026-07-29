@@ -18,6 +18,18 @@ export interface TransferLinkFailureEntry {
   alerted: boolean;
 }
 
+/** One account's open balance-drift episode. Present means "currently drifting
+ *  beyond the alert threshold"; the entry is DELETED once a trustworthy
+ *  measurement comes back under it, which is what re-arms the alert for a
+ *  recurrence. Shaped like `TransferLinkFailureEntry` on purpose: same
+ *  `alerted`-only-once-delivered discipline, same rollback story. */
+export interface DriftAlertEntry {
+  /** The signed drift (bank − Wealthfolio, dollars) when the episode opened. */
+  driftAmount: number;
+  firstDetectedAt: string;
+  alerted: boolean;
+}
+
 export interface ActivityWrite {
   id?: string;
   accountId: string;
@@ -138,6 +150,19 @@ export interface SyncStore {
    * is stored; `runSyncCore` owns every default.
    */
   getLargeTransactionThreshold(): Promise<number | null>;
+  /**
+   * Dollar drift an account must exceed to be reported on
+   * `SyncResult.balanceDriftAlerts`, or `null` when the user has never set one —
+   * which `runSyncCore` turns into its $100 default. An explicit `0` or negative
+   * means off, so the two must NOT be collapsed here.
+   */
+  getDriftAlertThreshold(): Promise<number | null>;
+  /** Per-account (keyed by SimpleFin account id) record of the drift episode the
+   *  user has already been told about, so a persistently-off account is announced
+   *  once rather than every sync. An entry disappears when the account comes back
+   *  under the threshold, re-arming the alert. */
+  getDriftAlerts(): Promise<Record<string, DriftAlertEntry>>;
+  setDriftAlerts(map: Record<string, DriftAlertEntry>): Promise<void>;
   getAccountBalances(): Promise<Record<string, unknown>>;
   setAccountBalances(map: Record<string, unknown>): Promise<void>;
   getAutoHeal(): Promise<boolean>;

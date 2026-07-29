@@ -1,6 +1,6 @@
 import type { AddonContext } from '@wealthfolio/addon-sdk';
 import type { AccountMapping, MappingRule } from '../../shared/types';
-import type { TransferLinkFailureEntry } from '../../shared/sync-host';
+import type { DriftAlertEntry, TransferLinkFailureEntry } from '../../shared/sync-host';
 
 /** Per-account balance snapshot captured on each sync, for the Sync page. */
 export interface AccountBalanceInfo {
@@ -27,6 +27,7 @@ const KEYS = {
   lastSyncAt: 'last_sync_at',
   linkedGroups: 'linked_groups',
   transferLinkFailures: 'transfer_link_failures',
+  driftAlerts: 'drift_alerts',
   accountBalances: 'account_balances',
   autoHeal: 'auto_heal',
   autoAdjust: 'auto_adjust',
@@ -161,6 +162,23 @@ export class SecretsStore {
     const tg = await this.getTelegramConfig();
     const raw = tg?.largeTransactionThreshold;
     return typeof raw === 'number' && Number.isFinite(raw) ? raw : null;
+  }
+
+  /** As `getLargeTransactionThreshold`: verbatim, no defaults applied here. */
+  async getDriftAlertThreshold(): Promise<number | null> {
+    const tg = await this.getTelegramConfig();
+    const raw = tg?.driftAlertThreshold;
+    return typeof raw === 'number' && Number.isFinite(raw) ? raw : null;
+  }
+
+  /** Open balance-drift episodes, keyed by SimpleFin account ID. An entry means
+   *  the user has already been told; deleting it re-arms the alert. */
+  async getDriftAlerts(): Promise<Record<string, DriftAlertEntry>> {
+    const raw = await this.ctx.api.secrets.get(KEYS.driftAlerts);
+    return raw ? (JSON.parse(raw) as Record<string, DriftAlertEntry>) : {};
+  }
+  async setDriftAlerts(map: Record<string, DriftAlertEntry>): Promise<void> {
+    await this.ctx.api.secrets.set(KEYS.driftAlerts, JSON.stringify(map));
   }
 
   /** Latest per-account SimpleFin balance + drift, keyed by SimpleFin account

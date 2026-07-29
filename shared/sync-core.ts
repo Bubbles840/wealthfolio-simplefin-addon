@@ -39,6 +39,19 @@ export const SYNC_LOOKBACK_OVERLAP_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
  *  rounding and to keep the Sync page from crying wolf over pennies. */
 export const DRIFT_THRESHOLD_DOLLARS = 1;
 
+/**
+ * Drift an account must exceed before the user is NOTIFIED about it, when they
+ * have not configured a threshold of their own.
+ *
+ * Emphatically not DRIFT_THRESHOLD_DOLLARS. That one is a display threshold —
+ * "is this worth a line on the Sync page" — and at $1 it is tripped by ordinary
+ * rounding and by any account the user is mid-way through reconciling. A
+ * notification has a much higher bar: it should mean "something is actually
+ * wrong with this account", which in this codebase's own history has meant
+ * four-figure sums.
+ */
+export const DEFAULT_DRIFT_ALERT_THRESHOLD_DOLLARS = 100;
+
 /** Heal ("Reconcile balances") re-scans this far back — wider than a normal
  *  force sync — to recover transactions that a broken earlier sync missed.
  *  Just under SimpleFin's 90-day maximum: requesting exactly 90 days trips a
@@ -106,6 +119,21 @@ export interface SyncResult {
     /** The Wealthfolio account the row landed in, by name (falling back to the
      *  SimpleFin account name on a host that reports no name). */
     accountName: string;
+  }>;
+  /** Accounts that opened a new drift episode this run — a TRUSTWORTHY drift
+   *  measurement past the alert threshold that the user has not been told about
+   *  yet. One entry per episode, not per sync. */
+  balanceDriftAlerts: Array<{
+    /** Key into the persisted drift-alert ledger, so a failed send can be rolled
+     *  back to un-alerted (see the companion). */
+    sfinAccountId: string;
+    accountName: string;
+    /** Signed: bank balance − Wealthfolio valuation, in dollars. */
+    driftAmount: number;
+    currency: string;
+    /** What the bank says the account holds, so the message is actionable
+     *  rather than merely alarming. */
+    bankBalance: number;
   }>;
 }
 
@@ -422,17 +450,17 @@ export async function runSyncCore(
   // Enforce minimum interval unless the caller forces (Sync anyway) or heals
   const lastSync = await store.getLastSyncAt();
   if (!opts.force && !heal && lastSync && Date.now() - lastSync.getTime() < MIN_SYNC_INTERVAL_MS) {
-    return { imported: 0, skipped: 0, errors: [INTERVAL_SKIP_MESSAGE], stuckTransferAlerts: [], largeTransactionAlerts: [] };
+    return { imported: 0, skipped: 0, errors: [INTERVAL_SKIP_MESSAGE], stuckTransferAlerts: [], largeTransactionAlerts: [], balanceDriftAlerts: [] };
   }
 
   const accessUrl = await store.getAccessUrl();
   if (!accessUrl) {
-    return { imported: 0, skipped: 0, errors: ['Not configured: no access URL'], stuckTransferAlerts: [], largeTransactionAlerts: [] };
+    return { imported: 0, skipped: 0, errors: ['Not configured: no access URL'], stuckTransferAlerts: [], largeTransactionAlerts: [], balanceDriftAlerts: [] };
   }
 
   const mapping = await store.getAccountMapping();
   if (!mapping) {
-    return { imported: 0, skipped: 0, errors: ['Not configured: no account mapping'], stuckTransferAlerts: [], largeTransactionAlerts: [] };
+    return { imported: 0, skipped: 0, errors: ['Not configured: no account mapping'], stuckTransferAlerts: [], largeTransactionAlerts: [], balanceDriftAlerts: [] };
   }
 
   const rules = await store.getMappingRules();
@@ -489,6 +517,17 @@ export async function runSyncCore(
       ? Math.round(configuredLargeTxThreshold * 100)
       : 0;
   const largeTransactionAlerts: SyncResult['largeTransactionAlerts'] = [];
+
+  // Balance-drift alerting. Absent falls back to the $100 default; an explicit
+  // 0 or negative is the user turning it off, which is why the adapters report
+  // the stored value verbatim instead of normalising it.
+  const configuredDriftThreshold = await store.getDriftAlertThreshold();
+  const driftAlertThreshold = configuredDriftThreshold ?? DEFAULT_DRIFT_ALERT_THRESHOLD_DOLLARS;
+  const driftAlertThresholdCents =
+    driftAlertThreshold > 0 ? Math.round(driftAlertThreshold * 100) : 0;
+  const driftAlerts = await store.getDriftAlerts();
+  let driftAlertsChanged = false;
+  const balanceDriftAlerts: SyncResult['balanceDriftAlerts'] = [];
 
   // Current Wealthfolio balances for the one-time starting-balance
   // correction. They come from the valuations API — listAccounts() has no
@@ -714,6 +753,15 @@ export async function runSyncCore(
     const sfBalance = parseFloat(sfAccount.balance);
     const wfValuation = wfBalances?.get(wfAccountId);
     let drift: number | null = null;
+    // The same figure as `drift`, but WITHOUT the display threshold and without
+    // the "healed, so stop showing it" reset — i.e. the drift the alert may be
+    // believed off. Two separate variables because `drift` conflates three
+    // different states into `null`: not measurable, measurable and under $1
+    // (genuinely in sync), and plugged this run. The alert has to tell them
+    // apart: "in sync" must CLEAR the episode and re-arm, while "not measurable"
+    // must leave it alone — clearing there would re-arm on a run that proved
+    // nothing, and the next measurable run would alert all over again.
+    let measuredDrift: number | null = null;
     if (wfValuation !== undefined && Number.isFinite(sfBalance)) {
       // Drift compares SimpleFin's POSTED balance to Wealthfolio's valuation.
       // They're only comparable when the account is SETTLED: pending rows are in
@@ -761,6 +809,9 @@ export async function runSyncCore(
 
         const adjustedWfValuation = wfValuation - unlinkedTransferOut;
         const d = sfBalance - adjustedWfValuation - windowDelta;
+        // Settled, transfer-aware and lag-free — this is the only figure in the
+        // run the drift alert is allowed to believe.
+        measuredDrift = Math.round(d * 100) / 100;
         if (Math.abs(d) > DRIFT_THRESHOLD_DOLLARS) drift = Math.round(d * 100) / 100;
         console.log(`[simplefin-sync] ${sfAccount.name} (${sfAccount.id}):`, {
           sfBalance,
@@ -795,7 +846,13 @@ export async function runSyncCore(
               }
             }
           }
-          drift = null; // healed (or already healed today)
+          // Healed (or already healed today). `measuredDrift` is cleared too, so
+          // the alert treats an auto-plugged account as "nothing to say" rather
+          // than either alerting (the system already fixed it, and with
+          // aggressive auto-heal on it would fix-and-ping on a loop) or clearing
+          // the episode (this run did not prove the account is in sync).
+          drift = null;
+          measuredDrift = null;
         }
       }
     }
@@ -805,6 +862,51 @@ export async function runSyncCore(
       date: sfAccount['balance-date'],
       drift,
     };
+
+    // Drift episodes: open one (and announce it once) when a trustworthy figure
+    // goes past the alert threshold, close it when a trustworthy figure comes
+    // back under. Closing is what re-arms the alert, so a recurrence is heard
+    // about again. A run with no trustworthy figure (measuredDrift === null)
+    // touches nothing at all — see the note on the variable.
+    if (measuredDrift !== null && driftAlertThresholdCents > 0) {
+      const overThreshold = Math.abs(Math.round(measuredDrift * 100)) > driftAlertThresholdCents;
+      const open = driftAlerts[sfAccount.id];
+      if (overThreshold) {
+        if (!open) {
+          driftAlerts[sfAccount.id] = {
+            driftAmount: measuredDrift,
+            firstDetectedAt: new Date().toISOString(),
+            alerted: true,
+          };
+          driftAlertsChanged = true;
+          balanceDriftAlerts.push({
+            sfinAccountId: sfAccount.id,
+            accountName: wfNames.get(wfAccountId) || sfAccount.name,
+            driftAmount: measuredDrift,
+            currency: sfAccount.currency,
+            bankBalance: sfBalance,
+          });
+        } else if (!open.alerted) {
+          // A previous run queued this episode but delivery failed and the
+          // companion rolled `alerted` back. Re-queue it — same episode, so
+          // `firstDetectedAt` and the original figure stay put; retrying an
+          // identical message cannot spam, since at most one attempt happens
+          // per sync.
+          driftAlerts[sfAccount.id] = { ...open, alerted: true };
+          driftAlertsChanged = true;
+          balanceDriftAlerts.push({
+            sfinAccountId: sfAccount.id,
+            accountName: wfNames.get(wfAccountId) || sfAccount.name,
+            driftAmount: open.driftAmount,
+            currency: sfAccount.currency,
+            bankBalance: sfBalance,
+          });
+        }
+      } else if (open) {
+        delete driftAlerts[sfAccount.id];
+        driftAlertsChanged = true;
+      }
+    }
 
     // Wealthfolio shows the comment as the cash activity's title and hashes it
     // into its dedup key. Combining the bank description with the SimpleFin tx
@@ -1248,9 +1350,11 @@ export async function runSyncCore(
 
   if (ledgerChanged) await store.setLinkedGroups(ledger);
 
+  if (driftAlertsChanged) await store.setDriftAlerts(driftAlerts);
+
   await store.setAccountBalances(accountBalances);
 
   await store.setLastSyncAt(new Date());
 
-  return { imported, skipped, errors, stuckTransferAlerts, largeTransactionAlerts };
+  return { imported, skipped, errors, stuckTransferAlerts, largeTransactionAlerts, balanceDriftAlerts };
 }

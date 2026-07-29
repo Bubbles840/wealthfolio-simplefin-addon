@@ -224,4 +224,43 @@ describe('RestSyncStore', () => {
     secrets.set('telegram_config', '{"botToken":"tok","chatId"');
     expect(await store.getLargeTransactionThreshold()).toBeNull();
   });
+
+  it('reads the drift-alert threshold out of telegram_config, keeping an explicit 0', async () => {
+    const secrets = new Map<string, string>();
+    const client = {
+      getAddonSecret: vi.fn(async (_addonId: string, key: string) => secrets.get(key) ?? null),
+      setAddonSecret: vi.fn(async () => {}),
+    } as any;
+    const store = new RestSyncStore(client);
+
+    // Absent → null, which runSyncCore turns into its $100 default. Explicit 0
+    // means OFF, so it must not be reported as absent.
+    expect(await store.getDriftAlertThreshold()).toBeNull();
+    secrets.set('telegram_config', JSON.stringify({ driftAlertThreshold: 0 }));
+    expect(await store.getDriftAlertThreshold()).toBe(0);
+    secrets.set('telegram_config', JSON.stringify({ driftAlertThreshold: 250 }));
+    expect(await store.getDriftAlertThreshold()).toBe(250);
+  });
+
+  it('reads and writes drift alerts as JSON under drift_alerts', async () => {
+    const secrets = new Map<string, string>();
+    const client = {
+      getAddonSecret: vi.fn(async (_addonId: string, key: string) => secrets.get(key) ?? null),
+      setAddonSecret: vi.fn(async (_addonId: string, key: string, val: string) => { secrets.set(key, val); }),
+    } as any;
+    const store = new RestSyncStore(client);
+
+    expect(await store.getDriftAlerts()).toEqual({});
+    await store.setDriftAlerts({
+      'sfin-1': { driftAmount: 1300, firstDetectedAt: '2026-07-29T00:00:00Z', alerted: true },
+    });
+    expect(client.setAddonSecret).toHaveBeenCalledWith(
+      'simplefin-sync',
+      'drift_alerts',
+      '{"sfin-1":{"driftAmount":1300,"firstDetectedAt":"2026-07-29T00:00:00Z","alerted":true}}',
+    );
+    expect(await store.getDriftAlerts()).toEqual({
+      'sfin-1': { driftAmount: 1300, firstDetectedAt: '2026-07-29T00:00:00Z', alerted: true },
+    });
+  });
 });

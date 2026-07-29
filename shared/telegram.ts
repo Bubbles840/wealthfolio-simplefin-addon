@@ -198,6 +198,43 @@ export function formatLargeTransactionAlert(alert: {
   return `💸 *${figure}* ${escapeMarkdown(alert.currency)} — ${escapeMarkdown(alert.description)} · ${escapeMarkdown(alert.accountName)}`;
 }
 
+/**
+ * Notice that one account's balance has drifted from its bank's.
+ *
+ * The direction goes in WORDS ("below"/"above") with the figure kept positive,
+ * following the same rule the digest uses for overspend: `off by -$1,300.00`
+ * reads as a double negative, and the sign carries no information the sentence
+ * doesn't already state. `driftAmount` is bank − Wealthfolio, so a positive
+ * figure means Wealthfolio is the LOWER of the two.
+ *
+ * The bank's balance is quoted alongside because that is what makes the message
+ * actionable rather than merely alarming — the reader can compare it to what
+ * Wealthfolio shows without opening anything.
+ *
+ * The account name is user-entered, so it is escaped and sits outside every
+ * entity; the bold is on "Balance drift" (a fixed literal) and the two figures.
+ */
+export function formatBalanceDriftAlert(alert: {
+  accountName: string;
+  driftAmount: number;
+  currency: string;
+  bankBalance: number;
+}): string {
+  // `Math.abs` on the DRIFT only, and explicitly so the choice is visible: the
+  // direction word beside it is what justifies dropping the sign. The bank
+  // balance keeps its sign — an overdrawn account or a card genuinely reports a
+  // negative balance, and rendering that as a positive would misstate the one
+  // figure the reader is meant to check against.
+  const magnitude = formatDollars(Math.abs(alert.driftAmount), 2);
+  const bank = formatDollars(alert.bankBalance, 2);
+  const direction = alert.driftAmount >= 0 ? 'below' : 'above';
+  return (
+    `⚠️ *Balance drift* — ${escapeMarkdown(alert.accountName)}\n`
+    + `Wealthfolio is *${magnitude}* ${direction} the bank's *${bank}* ${escapeMarkdown(alert.currency)}\n`
+    + 'Run "Reconcile balances" in the addon to line them up.'
+  );
+}
+
 export interface DailyDigestCategory {
   name: string;
   /** Spend for the whole calendar month so far, for this category. */

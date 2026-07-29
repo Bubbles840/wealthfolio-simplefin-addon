@@ -129,4 +129,33 @@ describe('SecretsStore notification thresholds', () => {
     await store.setTelegramConfig({ largeTransactionThreshold: '750' });
     expect(await store.getLargeTransactionThreshold()).toBeNull();
   });
+
+  it('reads the drift-alert threshold out of telegram_config, keeping an explicit 0', async () => {
+    const ctx = makeCtx();
+    const store = new SecretsStore(ctx);
+
+    // Absent → null, which runSyncCore turns into its $100 default. Explicit 0
+    // means OFF, so it must not be reported as absent.
+    expect(await store.getDriftAlertThreshold()).toBeNull();
+    await store.setTelegramConfig({ driftAlertThreshold: 0 });
+    expect(await store.getDriftAlertThreshold()).toBe(0);
+    await store.setTelegramConfig({ driftAlertThreshold: 250 });
+    expect(await store.getDriftAlertThreshold()).toBe(250);
+  });
+
+  it('roundtrips drift alerts as JSON', async () => {
+    const ctx = makeCtx();
+    const store = new SecretsStore(ctx);
+    expect(await store.getDriftAlerts()).toEqual({});
+    await store.setDriftAlerts({
+      'sfin-1': { driftAmount: 1300, firstDetectedAt: '2026-07-29T00:00:00Z', alerted: true },
+    });
+    expect(ctx.api.secrets.set).toHaveBeenCalledWith(
+      'drift_alerts',
+      '{"sfin-1":{"driftAmount":1300,"firstDetectedAt":"2026-07-29T00:00:00Z","alerted":true}}',
+    );
+    expect(await store.getDriftAlerts()).toEqual({
+      'sfin-1': { driftAmount: 1300, firstDetectedAt: '2026-07-29T00:00:00Z', alerted: true },
+    });
+  });
 });
