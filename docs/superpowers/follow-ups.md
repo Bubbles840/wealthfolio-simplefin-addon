@@ -221,3 +221,33 @@ Not code findings — things a test suite structurally cannot answer.
 6. **Confirm the Saturday report is wanted by default.** Only
    `weeklyReportEnabled === false` suppresses it, so an existing
    `telegram_config` without that field opts in silently.
+
+---
+
+## Reference: name mismatches between the database, the REST API, and the SDK
+
+Every one of these cost a diagnostic cycle against the live instance on
+2026-07-29. Check here before writing a query or trusting a field name.
+
+- **The activity comment column is `notes` in SQLite, but `comment` over the REST
+  API.** `SELECT comment FROM activities` fails with `no such column: comment`.
+  `RestSyncHost`'s mapper tolerates either (`a.comment ?? a.notes ?? a.description`),
+  which is why this only bites hand-written SQL and new queries.
+- **The activity search endpoint is 0-indexed** — `page: 0` is the first page.
+  Asking for `page: 1` with `pageSize: 500` returns an *empty* list on any account
+  with under 500 activities, which reads as "nothing has ever been imported".
+- **Its account filter key is `accountIdFilter`**, not the SDK's `accountIds`.
+  Passing `accountIds` is silently ignored and returns rows from every account.
+- **It accepts no sort parameter**, so `RestSyncHost.listOldestActivities` has to
+  paginate and sort client-side; the SDK adapter passes `{ id: 'date', desc: false }`
+  and gets it server-side.
+- **The addon-secrets write endpoint wants `{ key, secret }`**, not `{ key, value }`.
+  The wrong shape 422s with `missing field 'secret'`. Reads pass the key as a query
+  parameter and were never affected, so writes can be broken while reads look fine.
+- **`/activities/bulk` rejects a colliding create with a 400 `Duplicate activity
+  detected`, and that aborts the entire batch** — one duplicate loses every create
+  in the request. Rows carry an `idempotencyKey` the server computes.
+- **Transfer cash movement depends on `asset_id` being empty, not on linking.**
+  `handlers/transfers.rs` books cash only on the `if asset_id.is_empty()` branch;
+  linking (`source_group_id` + marker) governs spending *classification* only. See
+  `companion/upstream-pr.md` issue #5.
