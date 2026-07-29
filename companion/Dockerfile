@@ -34,6 +34,9 @@ RUN chown -R node:node /app && mkdir -p /data && chown node:node /data
 
 USER node
 
+HEALTHCHECK --interval=5m --timeout=10s --start-period=30s \
+  CMD node -e "process.exit(0)" || exit 1
+
 # Entry point: dist/companion/src/index.js
 # (rootDir=".." in companion/tsconfig.json maps companion/src/ → dist/companion/src/)
 CMD ["node", "dist/companion/src/index.js"]
