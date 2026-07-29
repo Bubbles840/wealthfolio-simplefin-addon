@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatSyncHealthFooter, escapeMarkdown, weeklyEnvelope } from './telegram.js';
+import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatSyncHealthFooter, escapeMarkdown, weeklyEnvelope, moneyWhole } from './telegram.js';
 
 const mockFetch = vi.fn();
 vi.stubGlobal('fetch', mockFetch);
@@ -317,6 +317,188 @@ describe('formatDailySpendingDigest', () => {
     expect(text).toContain('💰 $12,500 left this month');
   });
 
+  // The real digest that exposed the summary-line bug: seven categories over
+  // budget, three under, summing to exactly -$1,493.66 for the month.
+  const overBudgetMonth = [
+    { name: 'Groceries', budget: 800, monthSpent: 1100, weekSpent: 120 },
+    { name: 'Food & Dining', budget: 400, monthSpent: 900, weekSpent: 210 },
+    { name: 'Shopping', budget: 300, monthSpent: 600, weekSpent: 75 },
+    { name: 'Transportation', budget: 250, monthSpent: 400, weekSpent: 40 },
+    { name: 'Entertainment', budget: 150, monthSpent: 320.5, weekSpent: 60.5 },
+    { name: 'Fees & Charges', budget: 50, monthSpent: 120.16, weekSpent: 12.16 },
+    { name: 'Health & Wellness', budget: 100, monthSpent: 250, weekSpent: 0 },
+    { name: 'Housing', budget: 1500, monthSpent: 1450, weekSpent: 0 },
+    { name: 'Bills & Utilities', budget: 300, monthSpent: 250, weekSpent: 25 },
+    { name: 'Education', budget: 100, monthSpent: 53, weekSpent: 53 },
+  ];
+  const endOfMonth = { daysFromWeekStartToMonthEnd: 3, daysLeftInMonthInclusive: 3 };
+
+  it('says OVER BUDGET when the month total is negative — never "left this month"', () => {
+    // The shipped digest printed "💰 $1,494 left this month · 3 days to go" for
+    // a true remainder of -$1,493.66: the reader was told he had ~$1,500 to
+    // spend while he was ~$1,500 past the line. For a budgeting tool that is the
+    // worst possible direction to be wrong in, so the wording has to agree with
+    // the sign, not just the magnitude.
+    const text = formatDailySpendingDigest(overBudgetMonth, endOfMonth);
+    expect(text).not.toContain('left this month');
+    expect(text).not.toContain('💰');
+    expect(text).toContain('🚨 $1,494 over budget this month · 3 days to go');
+  });
+
+  it('keeps the days-to-go tail on the over-budget summary — it is useful either way', () => {
+    const text = formatDailySpendingDigest(
+      [{ name: 'Dining', budget: 300, monthSpent: 500, weekSpent: 100 }],
+      { daysFromWeekStartToMonthEnd: 1, daysLeftInMonthInclusive: 1 },
+    );
+    expect(text).toContain('🚨 $200 over budget this month · 1 day to go');
+  });
+
+  it('never says "left this month" for a total that is really negative', () => {
+    // Guards the class of bug rather than the single instance that shipped: over
+    // a matrix of budget/spend combinations, the summary's wording must agree
+    // with the sign of the total it is describing.
+    const budgets = [0, 100, 400, 1000];
+    const spends = [0, 50, 399.99, 400, 1200.5];
+    for (const b1 of budgets) {
+      for (const s1 of spends) {
+        for (const b2 of budgets) {
+          for (const s2 of spends) {
+            const cats = [
+              { name: 'Groceries', budget: b1, monthSpent: s1, weekSpent: Math.min(s1, 25) },
+              { name: 'Dining', budget: b2, monthSpent: s2, weekSpent: Math.min(s2, 25) },
+            ];
+            const total = (b1 > 0 ? b1 - s1 : 0) + (b2 > 0 ? b2 - s2 : 0);
+            const text = formatDailySpendingDigest(cats, period);
+            const where = JSON.stringify(cats);
+            // A minus sign must never reach the screen either: every figure in
+            // the digest is either non-negative or carried by a word.
+            expect(text, where).not.toContain('-$');
+            if (b1 <= 0 && b2 <= 0) {
+              expect(text, where).not.toContain('left this month');
+              expect(text, where).not.toContain('over budget');
+            } else if (total < 0 && Math.abs(total) >= 0.5) {
+              expect(text, where).not.toContain('left this month');
+              expect(text, where).toContain('over budget this month');
+            } else {
+              expect(text, where).not.toContain('over budget');
+              expect(text, where).toContain('left this month');
+            }
+          }
+        }
+      }
+    }
+  });
+
+  it('does not raise a $0 over-budget alarm on float noise or loose change', () => {
+    // Summing 2-decimal budgets and spends leaves remainders like -1e-13, and a
+    // real overspend of 30 cents still renders as "$0" in a whole-dollar
+    // summary. "🚨 $0 over budget" is a false alarm where "$0 left" already
+    // promises nothing, so the branch keys off the figure the reader sees.
+    // (0.3 - 0.1) + (0.2 - 0.4) is -2.8e-17, not 0.
+    const noise = formatDailySpendingDigest(
+      [
+        { name: 'Groceries', budget: 0.3, monthSpent: 0.1, weekSpent: 0 },
+        { name: 'Dining', budget: 0.2, monthSpent: 0.4, weekSpent: 0 },
+      ],
+      period,
+    );
+    expect(noise).toContain('💰 $0 left this month');
+    expect(noise).not.toContain('over budget');
+
+    const loose = formatDailySpendingDigest(
+      [{ name: 'Groceries', budget: 100, monthSpent: 100.3, weekSpent: 0 }],
+      period,
+    );
+    expect(loose).toContain('💰 $0 left this month');
+    expect(loose).not.toContain('over budget');
+
+    // A dollar over is a real dollar over.
+    const real = formatDailySpendingDigest(
+      [{ name: 'Groceries', budget: 100, monthSpent: 101, weekSpent: 0 }],
+      period,
+    );
+    expect(real).toContain('🚨 $1 over budget this month');
+  });
+
+  it('groups thousands in the over-budget summary too', () => {
+    const text = formatDailySpendingDigest(
+      [{ name: 'Housing', budget: 1000, monthSpent: 13500, weekSpent: 0 }],
+      period,
+    );
+    expect(text).toContain('🚨 $12,500 over budget this month');
+  });
+
+  it('prints the per-category month overspend unsigned, with "over" carrying the sign', () => {
+    // Line 303's branch: the word does the work, so the figure must not also
+    // carry a minus — "-$2,500 over" reads as a double negative.
+    const text = formatDailySpendingDigest(
+      [{ name: 'Shopping', budget: 1000, monthSpent: 3500.4, weekSpent: 200 }],
+      period,
+    );
+    expect(text).toContain('🛍️ Shopping  🚨 *$2,500 over* for the month');
+    expect(text).not.toContain('-$');
+  });
+
+  it('only ever prints a non-negative month figure beside the word "left mo"', () => {
+    // The over-the-WEEK branch prints `remainingMonth` with the word "left", but
+    // it is only reachable once the month-overspend branch above it has been
+    // ruled out — so `remainingMonth >= 0` there by construction and there is no
+    // negative case to render. Asserted as the reachable behaviour rather than a
+    // test for a state that cannot occur.
+    const text = formatDailySpendingDigest(
+      [{ name: 'Dining', budget: 300, monthSpent: 200, weekSpent: 120 }],
+      period,
+    );
+    expect(text).toContain('⚠️ *$55.83 over* · $100 left mo');
+    expect(text).not.toContain('-$');
+    // The same input one dollar deeper into the month tips into the 🚨 branch,
+    // which is what keeps the "left mo" figure non-negative.
+    const over = formatDailySpendingDigest(
+      [{ name: 'Dining', budget: 300, monthSpent: 301, weekSpent: 120 }],
+      period,
+    );
+    expect(over).not.toContain('left mo');
+    expect(over).toContain('🚨 *$1 over* for the month');
+  });
+
+  it('reaches the bare weekly figure only with something left, so it needs no sign', () => {
+    // Line 309 prints a figure with no qualifying words at all, which is exactly
+    // where a dropped sign would be invisible. Every negative `leftThisWeek` is
+    // caught by the ⚠️ branch above it, so the bare figure is non-negative by
+    // construction — including at the boundary, where $0 is spelled out in words
+    // rather than shown bare.
+    const positive = formatDailySpendingDigest(
+      [{ name: 'Groceries', budget: 1000, monthSpent: 550, weekSpent: 50 }],
+      period,
+    );
+    expect(positive).toContain('🛒 Groceries  *$95.83*');
+    const atZero = formatDailySpendingDigest(
+      [{ name: 'Groceries', budget: 1000, monthSpent: 1000, weekSpent: 0 }],
+      period,
+    );
+    expect(atZero).toContain('*$0* · budget used up');
+    // One cent past the envelope ($1,200 × 7/24 = $350) and the ⚠️ branch takes
+    // it, sign and all.
+    const past = formatDailySpendingDigest(
+      [{ name: 'Groceries', budget: 1200, monthSpent: 350.01, weekSpent: 350.01 }],
+      period,
+    );
+    expect(past).toContain('⚠️ *$0.01 over*');
+    expect(past).not.toContain('-$');
+  });
+
+  it('reports an unbudgeted category\'s spend, which is never negative', () => {
+    // Line 295 prints `monthSpent` beside the word "spent". The host reads it as
+    // SUM(ABS(amount)) over withdrawals/fees/taxes, so it cannot arrive negative
+    // — a refund reduces the sum toward zero, never past it.
+    const text = formatDailySpendingDigest(
+      [{ name: 'Shopping', budget: 0, monthSpent: 40.6, weekSpent: 40.6 }],
+      period,
+    );
+    expect(text).toContain('🛍️ Shopping  *no budget* · $41 spent');
+    expect(text).not.toContain('-$');
+  });
+
   it('names both possible causes in the empty state', () => {
     // Reachable two ways — no budgets exist, or every category was deselected
     // in the addon — so the text must not blame only the first.
@@ -377,6 +559,32 @@ describe('formatDailySpendingDigest', () => {
     // half that.
     const lines = text.split('\n').filter((l: string) => l.startsWith('🛒'));
     expect(lines[0].length).toBeLessThan(32);
+  });
+});
+
+describe('moneyWhole', () => {
+  // The tripwire for the bug class. Every caller in the repo currently lands on
+  // a branch where the amount is non-negative, so no rendered message would
+  // change if this went back to `Math.abs()`-ing its input — which is exactly
+  // how "$1,494 left this month" came to describe a $1,493.66 overspend. These
+  // assertions fail the moment the sign is absorbed again.
+  it('keeps the sign, so a bare figure can never read as its own opposite', () => {
+    expect(moneyWhole(-1493.66)).toBe('-$1,494');
+    expect(moneyWhole(-1)).toBe('-$1');
+  });
+
+  it('formats a positive figure exactly as before', () => {
+    expect(moneyWhole(1493.66)).toBe('$1,494');
+    expect(moneyWhole(0)).toBe('$0');
+    expect(moneyWhole(12500)).toBe('$12,500');
+  });
+
+  it('does not print "-$0" for an amount that rounds to nothing', () => {
+    // A minus on a zero is noise dressed up as information, and float noise from
+    // summing 2-decimal figures produces exactly this.
+    expect(moneyWhole(-0.004)).toBe('$0');
+    expect(moneyWhole(-2.7755575615628914e-17)).toBe('$0');
+    expect(moneyWhole(-0.4)).toBe('$0');
   });
 });
 
@@ -462,6 +670,41 @@ describe('formatMonthlyRemainingSummary', () => {
     const text = formatMonthlyRemainingSummary(2200, 2000);
     expect(text).toContain('🚨 *$200 over budget* this month');
     expect(text).toContain('_spent $2,200 of $2,000 · 110%_');
+  });
+
+  it('prints the overspend unsigned — "over budget" carries the sign', () => {
+    // A minus on the figure as well would read as a double negative, and the
+    // supporting line's two figures are both non-negative by construction:
+    // `totalBudget <= 0` returns early above, and `totalSpent` is a SUM(ABS(..))
+    // of outgoing activity.
+    const text = formatMonthlyRemainingSummary(2200.4, 2000);
+    expect(text).toContain('🚨 *$200 over budget* this month');
+    expect(text).toContain('_spent $2,200 of $2,000 · 110%_');
+    expect(text).not.toContain('-$');
+  });
+
+  it('only prints a non-negative figure beside the word "left"', () => {
+    // The "left" branch is only reached once `remaining < 0` has been ruled out,
+    // so it has no negative case to render; one dollar the other way is the 🚨
+    // branch, which is what keeps that guarantee.
+    expect(formatMonthlyRemainingSummary(2000, 2000)).toContain('💰 *$0 left* this month');
+    const over = formatMonthlyRemainingSummary(2001, 2000);
+    expect(over).not.toContain('left*');
+    expect(over).toContain('🚨 *$1 over budget* this month');
+  });
+
+  it('reads as the same family as the daily digest\'s over-budget summary', () => {
+    // Both reports lead an overspend with 🚨 and the words "over budget", so the
+    // two never disagree about what a negative month looks like.
+    const weekly = formatMonthlyRemainingSummary(2200, 2000);
+    const daily = formatDailySpendingDigest(
+      [{ name: 'Groceries', budget: 2000, monthSpent: 2200, weekSpent: 0 }],
+      { daysFromWeekStartToMonthEnd: 7, daysLeftInMonthInclusive: 7 },
+    );
+    expect(weekly).toContain('🚨');
+    expect(weekly).toContain('over budget');
+    expect(daily).toContain('🚨');
+    expect(daily).toContain('over budget');
   });
 
   it('does not claim "$0 left" when no budget exists at all', () => {

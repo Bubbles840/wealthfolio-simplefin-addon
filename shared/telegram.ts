@@ -111,10 +111,30 @@ export function getCategoryEmoji(name: string): string {
   return '🏷️';
 }
 
+/**
+ * Renders a signed dollar figure: `-$1,494`, not `$1,494`.
+ *
+ * Keeping the sign is the safe default and deliberately not negotiable here.
+ * This used to `Math.abs()` unconditionally, which was correct for `money()` —
+ * whose call sites all supply a sign-carrying word — and silently wrong for
+ * every bare figure. The daily digest's summary line shipped
+ * `💰 $1,494 left this month` for a remainder of -$1,493.66: it told the reader
+ * he had ~$1,500 to spend while he was ~$1,500 past the line. A formatter that
+ * absorbs the sign can only fail in that direction, so the abs now lives in
+ * `money()`, where the surrounding words justify it, and nowhere else.
+ *
+ * Rule for new call sites: reach for `moneyWhole`/`formatDollars` unless the
+ * literal text next to the figure states the direction ("over", "spent"), in
+ * which case pass `Math.abs(...)` explicitly so the choice is visible.
+ */
 function formatDollars(amount: number, decimals: number): string {
   const [whole, frac] = Math.abs(amount).toFixed(decimals).split('.');
   const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-  return frac ? `$${grouped}.${frac}` : `$${grouped}`;
+  const body = frac ? `$${grouped}.${frac}` : `$${grouped}`;
+  // Tested against the ROUNDED magnitude, not the raw input: -$0.004 rendered in
+  // whole dollars is `$0`, and `-$0` is noise dressed up as information.
+  const negative = amount < 0 && /[1-9]/.test(grouped + (frac ?? ''));
+  return negative ? `-${body}` : body;
 }
 
 /**
@@ -138,8 +158,18 @@ function money(amount: number): string {
  * spend. Always whole dollars: nobody acts on the cents of a monthly total, and
  * two decimals on every context number was a real part of the old format's
  * bulk. The actionable weekly figures keep their cents via `money`.
+ *
+ * SIGNED, unlike `money`: this is the formatter for bare figures, where nothing
+ * in the surrounding text tells the reader which side of zero they are on. A
+ * caller that does supply that word passes `Math.abs(...)` itself.
+ *
+ * Exported only so that signedness is directly testable. Every in-repo caller
+ * lands on a branch where the value happens to be non-negative, so nothing in
+ * the rendered messages would fail if this quietly went back to absorbing the
+ * sign — and that absorbing is precisely what shipped a $1,494 overspend as
+ * $1,494 of headroom. The test on this function is the tripwire.
  */
-function moneyWhole(amount: number): string {
+export function moneyWhole(amount: number): string {
   return formatDollars(amount, 0);
 }
 
@@ -300,7 +330,9 @@ export function formatDailySpendingDigest(
     budgetedRemaining += remainingMonth;
 
     if (remainingMonth < 0) {
-      lines.push(`${emoji} ${name}  🚨 *${moneyWhole(remainingMonth)} over* for the month`);
+      // `Math.abs` explicitly: the word "over" states the direction, and
+      // `-$50 over` would read as a double negative.
+      lines.push(`${emoji} ${name}  🚨 *${moneyWhole(Math.abs(remainingMonth))} over* for the month`);
     } else if (leftThisWeek < 0) {
       lines.push(`${emoji} ${name}  ⚠️ *${money(leftThisWeek)} over* · ${moneyWhole(remainingMonth)} left mo`);
     } else if (leftThisWeek === 0 && remainingMonth === 0) {
@@ -313,9 +345,25 @@ export function formatDailySpendingDigest(
   // Summed over budgeted categories only: an unbudgeted category's spend does
   // not come out of anyone's budget, so folding it in would understate what is
   // actually left.
-  const summary = anyBudget
-    ? `💰 ${moneyWhole(budgetedRemaining)} left this month · ${days} ${dayWord} to go`
-    : `📅 ${days} ${dayWord} left in the month`;
+  //
+  // The over-budget branch is the whole point of this line existing in two
+  // forms. Without it the summary printed `💰 $1,494 left this month` for a
+  // remainder of -$1,493.66 — a phrase with no room for a negative in it, fed an
+  // unsigned figure. Worded and marked like the weekly report's overspend so the
+  // two read as one family; the days-to-go tail stays either way, since "how
+  // long until this resets" is exactly as useful when you are over.
+  //
+  // Keyed off the RENDERED magnitude rather than `budgetedRemaining < 0`:
+  // summing 2-decimal budgets and spends leaves remainders like -2.8e-17, and
+  // even a real 30-cent overspend renders as `$0` in a whole-dollar summary.
+  // `🚨 $0 over budget` is a false alarm where `$0 left` already promises
+  // nothing.
+  const overBudget = budgetedRemaining < 0 && moneyWhole(Math.abs(budgetedRemaining)) !== '$0';
+  const summary = !anyBudget
+    ? `📅 ${days} ${dayWord} left in the month`
+    : overBudget
+      ? `🚨 ${moneyWhole(Math.abs(budgetedRemaining))} over budget this month · ${days} ${dayWord} to go`
+      : `💰 ${moneyWhole(budgetedRemaining)} left this month · ${days} ${dayWord} to go`;
 
   // No trailing newline: callers append the sync-health footer as its own
   // block, and a trailing blank line would leave that footer looking like part
@@ -401,7 +449,8 @@ export function formatMonthlyRemainingSummary(totalSpent: number, totalBudget: n
     return `${header}${headline}\n${hint}`;
   }
   const headline = remaining < 0
-    ? `🚨 *${moneyWhole(remaining)} over budget* this month`
+    // `Math.abs` explicitly: "over budget" states the direction.
+    ? `🚨 *${moneyWhole(Math.abs(remaining))} over budget* this month`
     : `💰 *${moneyWhole(remaining)} left* this month`;
   return `${header}${headline}\n_spent ${moneyWhole(totalSpent)} of ${moneyWhole(totalBudget)} · ${pct}%_`;
 }
