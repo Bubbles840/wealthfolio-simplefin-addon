@@ -10,9 +10,11 @@
 import cron from 'node-cron';
 import * as fs from 'fs';
 import { runSyncCore } from '../../shared/sync-core.js';
+import type { SyncResult } from '../../shared/sync-core.js';
 import { RestSyncHost, RestSyncStore } from './rest-host.js';
 import { WealthfolioClient } from './wealthfolio.js';
-import { sendTelegramMessage, formatWeeklyRemainingDigest, formatMonthlyRemainingSummary } from '../../shared/telegram.js';
+import { sendTelegramMessage, formatWeeklyRemainingDigest, formatMonthlyRemainingSummary, formatSyncHealthFooter } from '../../shared/telegram.js';
+import type { SyncHealth } from '../../shared/telegram.js';
 import { getNativeWealthfolioSpending, getNativeWealthfolioBudgets } from './sqlite-native.js';
 
 const logLevel: 'info' | 'debug' =
@@ -56,7 +58,91 @@ export function resolvePassword(): string {
   return '';
 }
 
-export async function runCompanionSync(): Promise<void> {
+const SYNC_HEALTH_ALERT_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Persists sync outcome to the `sync_health` addon secret: `error === null`
+ * records a success and clears any in-progress failure streak; a non-null
+ * error starts (or continues) a streak, setting `firstFailedAt` only on the
+ * FIRST failure so the 24h alert clock doesn't reset on every retry.
+ *
+ * Documented limitation: this writes through the same authenticated wfClient
+ * the sync itself uses. If login to Wealthfolio fails outright, there is no
+ * authenticated channel left to record or alert on that — it still only
+ * surfaces via `docker logs`, same as today. This only covers failures
+ * *after* a successful login (SimpleFin errors, runSyncCore throwing, etc.).
+ *
+ * This function must never throw: a failure here (bad JSON, a transient
+ * write error) must not replace the real sync error in the caller's catch
+ * block, so every fallible step is individually guarded.
+ */
+async function updateSyncHealth(wfClient: WealthfolioClient, error: Error | null): Promise<void> {
+  try {
+    const raw = await wfClient.getAddonSecret('simplefin-sync', 'sync_health').catch(() => null);
+    let health: SyncHealth = {};
+    if (raw) {
+      try {
+        health = JSON.parse(raw);
+      } catch {
+        health = {};
+      }
+    }
+    const now = new Date().toISOString();
+    const next: SyncHealth = error === null
+      ? { lastSuccessAt: now }
+      : {
+          lastSuccessAt: health.lastSuccessAt ?? null,
+          firstFailedAt: health.firstFailedAt ?? now,
+          lastError: error.message,
+          alerted: health.alerted ?? false,
+        };
+    await wfClient.setAddonSecret('simplefin-sync', 'sync_health', JSON.stringify(next)).catch(() => {});
+  } catch (err) {
+    debug(`Sync health update failed (original sync error, if any, is preserved): ${formatError(err)}`);
+  }
+}
+
+/** Sends a one-time Telegram alert once a failure streak has been active for
+ *  24h, then marks the streak `alerted` so a crash between send and persist
+ *  can only re-alert (never silently under-alert), and later runs don't
+ *  repeat it. Runs in a `finally`, so it must be a no-op on a healthy streak. */
+async function checkSyncHealthAlert(wfClient: WealthfolioClient): Promise<void> {
+  const raw = await wfClient.getAddonSecret('simplefin-sync', 'sync_health').catch(() => null);
+  if (!raw) return;
+  const health = JSON.parse(raw);
+  if (!health.firstFailedAt || health.alerted) return;
+  if (Date.now() - new Date(health.firstFailedAt).getTime() < SYNC_HEALTH_ALERT_MS) return;
+
+  const tgRaw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_config').catch(() => null);
+  if (!tgRaw) return;
+  const tg = JSON.parse(tgRaw);
+  if (!tg.botToken || !tg.chatId || tg.enabled === false) return;
+
+  await sendTelegramMessage(
+    tg.botToken,
+    tg.chatId,
+    `⚠️ *SimpleFin Sync has been failing since ${new Date(health.firstFailedAt).toLocaleString()}*\nLast error: ${health.lastError}`,
+  );
+  await wfClient.setAddonSecret('simplefin-sync', 'sync_health', JSON.stringify({ ...health, alerted: true })).catch(() => {});
+}
+
+async function sendStuckTransferAlert(
+  wfClient: WealthfolioClient,
+  alert: { description: string; amountCents: number; currency: string },
+): Promise<void> {
+  const tgRaw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_config').catch(() => null);
+  if (!tgRaw) return;
+  const tg = JSON.parse(tgRaw);
+  if (!tg.botToken || !tg.chatId || tg.enabled === false) return;
+  const amount = (alert.amountCents / 100).toFixed(2);
+  await sendTelegramMessage(
+    tg.botToken,
+    tg.chatId,
+    `⚠️ *Transfer stuck — couldn't auto-link after 3 tries*\n${alert.description}\nAmount: $${amount} ${alert.currency}\nTry "Reconcile & link" in the addon, or check for a duplicate/mismatched leg.`,
+  );
+}
+
+export async function runCompanionSync(): Promise<SyncResult> {
   const apiUrl = process.env.WEALTHFOLIO_API_URL ?? '';
   if (!apiUrl) throw new Error('Missing WEALTHFOLIO_API_URL');
 
@@ -89,41 +175,60 @@ export async function runCompanionSync(): Promise<void> {
   const store = new RestSyncStore(wfClient);
   const host = new RestSyncHost(wfClient);
 
-  log('Reading SimpleFin credentials from Wealthfolio addon secrets...');
-  const accessUrl = await store.getAccessUrl();
-  if (!accessUrl) {
-    log('No SimpleFin access URL found in Wealthfolio addon secrets. Please configure the SimpleFin Sync addon in Wealthfolio first.');
-    return;
-  }
-
-  const minIntervalHours = parseFloat(process.env.MIN_SYNC_INTERVAL_HOURS ?? '1');
-  const force = minIntervalHours <= 0;
-
-  log(`Fetching SimpleFin transactions from ${maskUrl(accessUrl)}...`);
-  const result = await runSyncCore(host, store, { force });
-
-  for (const err of result.errors) {
-    log(`Sync note: ${err}`);
-  }
-  log(`Done: ${result.imported} imported, ${result.skipped} skipped`);
-
   try {
-    const tgRaw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_config');
-    if (tgRaw) {
-      const tg = JSON.parse(tgRaw);
-      if (tg.botToken && tg.chatId && tg.enabled !== false) {
-        log(`Telegram notifications active (chat: ${tg.chatId}).`);
-        if (result.imported > 0 && tg.notifyOnImport !== false) {
-          await sendTelegramMessage(
-            tg.botToken,
-            tg.chatId,
-            `🔔 *SimpleFin Sync Update*\nImported ${result.imported} new transaction(s) into Wealthfolio!`,
-          );
+    log('Reading SimpleFin credentials from Wealthfolio addon secrets...');
+    const accessUrl = await store.getAccessUrl();
+    if (!accessUrl) {
+      log('No SimpleFin access URL found in Wealthfolio addon secrets. Please configure the SimpleFin Sync addon in Wealthfolio first.');
+      const empty: SyncResult = { imported: 0, skipped: 0, errors: [], stuckTransferAlerts: [] };
+      // Not-yet-configured is treated as healthy, not a failure: it's the
+      // expected state before the user sets up SimpleFin, and would
+      // otherwise spam a "sync is broken" alert on every fresh install.
+      await updateSyncHealth(wfClient, null);
+      return empty;
+    }
+
+    const minIntervalHours = parseFloat(process.env.MIN_SYNC_INTERVAL_HOURS ?? '1');
+    const force = minIntervalHours <= 0;
+
+    log(`Fetching SimpleFin transactions from ${maskUrl(accessUrl)}...`);
+    const result = await runSyncCore(host, store, { force });
+
+    for (const err of result.errors) {
+      log(`Sync note: ${err}`);
+    }
+    log(`Done: ${result.imported} imported, ${result.skipped} skipped`);
+
+    for (const alert of result.stuckTransferAlerts) {
+      await sendStuckTransferAlert(wfClient, alert);
+    }
+
+    try {
+      const tgRaw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_config');
+      if (tgRaw) {
+        const tg = JSON.parse(tgRaw);
+        if (tg.botToken && tg.chatId && tg.enabled !== false) {
+          log(`Telegram notifications active (chat: ${tg.chatId}).`);
+          if (result.imported > 0 && tg.notifyOnImport !== false) {
+            await sendTelegramMessage(
+              tg.botToken,
+              tg.chatId,
+              `🔔 *SimpleFin Sync Update*\nImported ${result.imported} new transaction(s) into Wealthfolio!`,
+            );
+          }
         }
       }
+    } catch (err) {
+      debug(`Telegram check note: ${formatError(err)}`);
     }
+
+    await updateSyncHealth(wfClient, null);
+    return result;
   } catch (err) {
-    debug(`Telegram check note: ${formatError(err)}`);
+    await updateSyncHealth(wfClient, err instanceof Error ? err : new Error(String(err)));
+    throw err;
+  } finally {
+    await checkSyncHealthAlert(wfClient).catch(() => {});
   }
 }
 
@@ -177,7 +282,15 @@ export async function sendDailyTelegramReport(wfClient: WealthfolioClient): Prom
     name, spent: spentMap[name] ?? 0, budget: budgetMap[name] ?? 0,
   }));
   const weeksLeft = Math.max(1, Math.ceil(daysLeftInMonth(now) / 7));
-  const message = formatWeeklyRemainingDigest(categories, weeksLeft);
+  let message = formatWeeklyRemainingDigest(categories, weeksLeft);
+
+  const healthRaw = await wfClient.getAddonSecret('simplefin-sync', 'sync_health').catch(() => null);
+  const health: SyncHealth | null = healthRaw ? JSON.parse(healthRaw) : null;
+  const footer = formatSyncHealthFooter(health);
+  if (footer) {
+    message += `\n\n${footer}`;
+  }
+
   const result = await sendTelegramMessage(tg.botToken, tg.chatId, message);
   if (result.ok) {
     log('Daily Telegram weekly-remaining digest sent successfully.');

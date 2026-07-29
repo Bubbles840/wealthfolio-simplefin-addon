@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { sendTelegramMessage, formatDailyReport, formatWeeklyReport, formatWeeklyRemainingDigest, formatMonthlyRemainingSummary } from './telegram.js';
+import { sendTelegramMessage, formatDailyReport, formatWeeklyReport, formatWeeklyRemainingDigest, formatMonthlyRemainingSummary, formatSyncHealthFooter } from './telegram.js';
 
 const mockFetch = vi.fn();
 vi.stubGlobal('fetch', mockFetch);
@@ -106,6 +106,51 @@ describe('formatWeeklyRemainingDigest', () => {
   it('shows a placeholder message with no categories', () => {
     const text = formatWeeklyRemainingDigest([], 2);
     expect(text).toContain('No budgeted categories to report');
+  });
+});
+
+describe('formatSyncHealthFooter', () => {
+  it('returns an empty string when there is no health record yet', () => {
+    expect(formatSyncHealthFooter(null)).toBe('');
+    expect(formatSyncHealthFooter(undefined)).toBe('');
+  });
+
+  it('shows a success line in hours-ago form for a sync a few hours back', () => {
+    const now = new Date('2026-07-28T12:00:00.000Z');
+    const health = { lastSuccessAt: '2026-07-28T10:00:00.000Z' };
+    expect(formatSyncHealthFooter(health, now)).toBe('✅ synced 2h ago');
+  });
+
+  it('uses minutes, not "0h ago", for a sync less than an hour old', () => {
+    const now = new Date('2026-07-28T12:00:00.000Z');
+    const health = { lastSuccessAt: '2026-07-28T11:10:00.000Z' }; // 50 minutes ago
+    expect(formatSyncHealthFooter(health, now)).toBe('✅ synced 50m ago');
+  });
+
+  it('shows "just now" for a very recent success', () => {
+    const now = new Date('2026-07-28T12:00:00.000Z');
+    const health = { lastSuccessAt: '2026-07-28T11:59:30.000Z' };
+    expect(formatSyncHealthFooter(health, now)).toBe('✅ synced just now');
+  });
+
+  it('shows days-ago form for a long gap since the last success', () => {
+    const now = new Date('2026-07-28T12:00:00.000Z');
+    const health = { lastSuccessAt: '2026-07-25T12:00:00.000Z' }; // 3 days ago
+    expect(formatSyncHealthFooter(health, now)).toBe('✅ synced 3d ago');
+  });
+
+  it('shows a failing-since line with the last error during an active failure streak', () => {
+    const now = new Date('2026-07-28T12:00:00.000Z');
+    const health = {
+      lastSuccessAt: '2026-07-26T08:00:00.000Z',
+      firstFailedAt: '2026-07-27T09:15:00.000Z',
+      lastError: 'SimpleFin: token revoked',
+      alerted: true,
+    };
+    const text = formatSyncHealthFooter(health, now);
+    expect(text).toContain('⚠️ failing since');
+    expect(text).toContain(new Date(health.firstFailedAt).toLocaleString());
+    expect(text).toContain('SimpleFin: token revoked');
   });
 });
 

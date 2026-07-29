@@ -311,6 +311,52 @@ export function formatWeeklyRemainingDigest(
 }
 
 /**
+ * Persisted sync-health snapshot (companion writes this as an addon secret
+ * keyed `sync_health`). A record with neither field set is not produced by
+ * the companion, but callers should treat `null`/`undefined` — no record at
+ * all, e.g. the very first run — as "say nothing" rather than guessing.
+ */
+export interface SyncHealth {
+  lastSuccessAt?: string | null;
+  firstFailedAt?: string;
+  lastError?: string;
+  alerted?: boolean;
+}
+
+/** "Nh ago"-style relative time. Uses minutes under an hour (so a 50-minute-old
+ *  sync reads "50m ago", never a misleadingly-rounded "0h ago"), hours under two
+ *  days, and whole days beyond that. Anything under two minutes reads "just now". */
+function formatRelativeTime(fromIso: string, now: Date): string {
+  const diffMs = Math.max(0, now.getTime() - new Date(fromIso).getTime());
+  const diffMin = Math.round(diffMs / 60_000);
+  if (diffMin < 2) return 'just now';
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHours = Math.round(diffMs / 3_600_000);
+  if (diffHours < 48) return `${diffHours}h ago`;
+  const diffDays = Math.round(diffMs / 86_400_000);
+  return `${diffDays}d ago`;
+}
+
+/**
+ * Formats the sync-health footer line appended to the daily digest: a short
+ * "synced Nh ago" confirmation on success, or a "failing since ..." line
+ * while a failure streak is active. Returns '' (append nothing) when there
+ * is no health record yet — e.g. before the companion's first sync — rather
+ * than printing something that could be misread as a real status.
+ */
+export function formatSyncHealthFooter(health: SyncHealth | null | undefined, now: Date = new Date()): string {
+  if (!health) return '';
+  if (health.firstFailedAt) {
+    const since = new Date(health.firstFailedAt).toLocaleString();
+    return `⚠️ failing since ${since} — ${health.lastError ?? 'unknown error'}`;
+  }
+  if (health.lastSuccessAt) {
+    return `✅ synced ${formatRelativeTime(health.lastSuccessAt, now)}`;
+  }
+  return '';
+}
+
+/**
  * Formats the weekly (Saturday) "one number" summary: total remaining across
  * every included category's budget for the month.
  */
