@@ -1,5 +1,6 @@
 import type { AddonContext } from '@wealthfolio/addon-sdk';
 import type { AccountMapping, MappingRule } from '../../shared/types';
+import type { TransferLinkFailureEntry } from '../../shared/sync-host';
 
 /** Per-account balance snapshot captured on each sync, for the Sync page. */
 export interface AccountBalanceInfo {
@@ -25,6 +26,7 @@ const KEYS = {
   syncScheduleHours: 'sync_schedule_hours',
   lastSyncAt: 'last_sync_at',
   linkedGroups: 'linked_groups',
+  transferLinkFailures: 'transfer_link_failures',
   accountBalances: 'account_balances',
   autoHeal: 'auto_heal',
   autoAdjust: 'auto_adjust',
@@ -135,6 +137,14 @@ export class SecretsStore {
   }
   async setLinkedGroups(map: Record<string, string>): Promise<void> {
     await this.ctx.api.secrets.set(KEYS.linkedGroups, JSON.stringify(map));
+  }
+
+  async getTransferLinkFailures(): Promise<Record<string, TransferLinkFailureEntry>> {
+    const raw = await this.ctx.api.secrets.get(KEYS.transferLinkFailures);
+    return raw ? (JSON.parse(raw) as Record<string, TransferLinkFailureEntry>) : {};
+  }
+  async setTransferLinkFailures(map: Record<string, TransferLinkFailureEntry>): Promise<void> {
+    await this.ctx.api.secrets.set(KEYS.transferLinkFailures, JSON.stringify(map));
   }
 
   /** Latest per-account SimpleFin balance + drift, keyed by SimpleFin account

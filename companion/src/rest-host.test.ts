@@ -53,4 +53,19 @@ describe('RestSyncStore', () => {
     expect(client.setAddonSecret).toHaveBeenCalledWith('simplefin-sync', 'last_sync_at', '2026-07-01T12:00:00.000Z');
     expect(await store.getLastSyncAt()).toEqual(new Date('2026-07-01T12:00:00Z'));
   });
+
+  it('reads and writes transfer link failures as JSON', async () => {
+    const secrets = new Map<string, string>();
+    const client = {
+      getAddonSecret: vi.fn(async (_addonId: string, key: string) => secrets.get(key) ?? null),
+      setAddonSecret: vi.fn(async (_addonId: string, key: string, val: string) => { secrets.set(key, val); }),
+    } as any;
+    const store = new RestSyncStore(client);
+
+    expect(await store.getTransferLinkFailures()).toEqual({});
+    await store.setTransferLinkFailures({ 'tx-out-1': { count: 2, firstFailedAt: '2026-07-27T00:00:00Z', alerted: false } });
+    expect(await store.getTransferLinkFailures()).toEqual({
+      'tx-out-1': { count: 2, firstFailedAt: '2026-07-27T00:00:00Z', alerted: false },
+    });
+  });
 });

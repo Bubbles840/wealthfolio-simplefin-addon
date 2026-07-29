@@ -73,3 +73,22 @@ describe('SecretsStore', () => {
     expect(await s.getSyncScheduleHours()).toBeNull();
   });
 });
+
+describe('SecretsStore transfer link failures', () => {
+  it('returns an empty record when nothing is stored', async () => {
+    const ctx = makeCtx();
+    const store = new SecretsStore(ctx);
+    expect(await store.getTransferLinkFailures()).toEqual({});
+  });
+
+  it('round-trips a stored failure map', async () => {
+    const ctx = makeCtx();
+    const store = new SecretsStore(ctx);
+    await store.setTransferLinkFailures({
+      'tx-out-1': { count: 3, firstFailedAt: '2026-07-27T00:00:00Z', alerted: true },
+    });
+    expect(await store.getTransferLinkFailures()).toEqual({
+      'tx-out-1': { count: 3, firstFailedAt: '2026-07-27T00:00:00Z', alerted: true },
+    });
+  });
+});

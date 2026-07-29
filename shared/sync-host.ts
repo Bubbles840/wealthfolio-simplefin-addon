@@ -12,6 +12,12 @@ export interface HostActivity {
   sourceGroupId?: string | null;
 }
 
+export interface TransferLinkFailureEntry {
+  count: number;
+  firstFailedAt: string;
+  alerted: boolean;
+}
+
 export interface ActivityWrite {
   id?: string;
   accountId: string;
@@ -114,6 +120,11 @@ export interface SyncStore {
   setLastSyncAt(date: Date): Promise<void>;
   getLinkedGroups(): Promise<Record<string, string>>;
   setLinkedGroups(map: Record<string, string>): Promise<void>;
+  /** Per-pair (keyed by the OUT leg's txId) record of consecutive linkPair
+   *  failures, so a persistently-rejected transfer group — not ordinary
+   *  in-transit lag — can trigger a one-time alert. */
+  getTransferLinkFailures(): Promise<Record<string, TransferLinkFailureEntry>>;
+  setTransferLinkFailures(map: Record<string, TransferLinkFailureEntry>): Promise<void>;
   getAccountBalances(): Promise<Record<string, unknown>>;
   setAccountBalances(map: Record<string, unknown>): Promise<void>;
   getAutoHeal(): Promise<boolean>;

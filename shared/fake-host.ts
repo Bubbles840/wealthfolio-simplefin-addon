@@ -9,6 +9,7 @@ import type {
   SaveManyResult,
   SyncHost,
   SyncStore,
+  TransferLinkFailureEntry,
 } from './sync-host.js';
 
 export interface FakeHostSeed {
@@ -128,6 +129,7 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
   }
 
   let linkedGroups: Record<string, string> = {};
+  let transferLinkFailures: Record<string, TransferLinkFailureEntry> = {};
   let accountBalances: Record<string, unknown> = {};
   let balanceInitialized: string[] = [];
   let lastSyncAt: Date | null = null;
@@ -272,6 +274,12 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
     },
     async setLinkedGroups(map: Record<string, string>) {
       linkedGroups = map;
+    },
+    async getTransferLinkFailures() {
+      return transferLinkFailures;
+    },
+    async setTransferLinkFailures(map: Record<string, TransferLinkFailureEntry>) {
+      transferLinkFailures = map;
     },
     async getAccountBalances() {
       return accountBalances;

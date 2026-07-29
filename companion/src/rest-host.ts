@@ -9,6 +9,7 @@ import type {
   SaveManyResult,
   SyncHost,
   SyncStore,
+  TransferLinkFailureEntry,
 } from '../../shared/sync-host.js';
 import type { AccountMapping, MappingRule, SimplefinAccountSet } from '../../shared/types.js';
 
@@ -186,6 +187,14 @@ export class RestSyncStore implements SyncStore {
 
   async setLinkedGroups(map: Record<string, string>): Promise<void> {
     await this.setJson('linked_groups', map);
+  }
+
+  async getTransferLinkFailures(): Promise<Record<string, TransferLinkFailureEntry>> {
+    return (await this.getJson<Record<string, TransferLinkFailureEntry>>('transfer_link_failures')) ?? {};
+  }
+
+  async setTransferLinkFailures(map: Record<string, TransferLinkFailureEntry>): Promise<void> {
+    await this.setJson('transfer_link_failures', map);
   }
 
   async getAccountBalances(): Promise<Record<string, unknown>> {
