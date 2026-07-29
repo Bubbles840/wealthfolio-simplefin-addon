@@ -141,6 +141,32 @@ describe('runCompanionSync sync health', () => {
     expect(text).toContain('$1300.00');
   });
 
+  it('escapes Markdown specials in a stuck-transfer description before sending', async () => {
+    // Bank/card descriptors routinely contain `*` and `_` (e.g. card-network
+    // descriptors like "AMAZON *MKTPLACE"), so this is realistically likelier
+    // to break a send than a hand-written error message.
+    vi.mocked(runSyncCore).mockResolvedValueOnce({
+      imported: 0, skipped: 0, errors: [],
+      stuckTransferAlerts: [{ description: 'AMAZON *MKTPLACE ↔ Payment_Refund', amountCents: 500, currency: 'USD' }],
+    });
+    secrets.set('telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true }));
+
+    const { WealthfolioClient } = await import('./wealthfolio.js');
+    const client = new (WealthfolioClient as any)();
+    client.getAddonSecret = vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null);
+    client.setAddonSecret = vi.fn(async (_a: string, key: string, val: string) => { secrets.set(key, val); });
+    vi.mocked(WealthfolioClient).mockImplementation(function () { return client; } as any);
+
+    const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await runCompanionSync();
+
+    const [, sentBody] = fetchMock.mock.calls[0];
+    const text = JSON.parse((sentBody as any).body).text;
+    expect(text).toContain('AMAZON \\*MKTPLACE ↔ Payment\\_Refund');
+  });
+
   it('records a failure streak with firstFailedAt set only on the first failure', async () => {
     const err1 = new Error('SimpleFin: connection refused');
     vi.mocked(runSyncCore).mockRejectedValueOnce(err1);
@@ -208,6 +234,50 @@ describe('runCompanionSync sync health', () => {
     vi.mocked(runSyncCore).mockRejectedValueOnce(new Error('SimpleFin: still failing'));
     await expect(runCompanionSync()).rejects.toThrow();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('does not mark the streak alerted when the Telegram send itself fails, and retries next run', async () => {
+    secrets.set('telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true }));
+    secrets.set('sync_health', JSON.stringify({
+      lastSuccessAt: null,
+      firstFailedAt: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(),
+      lastError: 'old error',
+      alerted: false,
+    }));
+    vi.mocked(runSyncCore).mockRejectedValueOnce(new Error('invalid_grant: *access denied*'));
+
+    const { WealthfolioClient } = await import('./wealthfolio.js');
+    const client = new (WealthfolioClient as any)();
+    client.getAddonSecret = vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null);
+    client.setAddonSecret = vi.fn(async (_a: string, key: string, val: string) => { secrets.set(key, val); });
+    vi.mocked(WealthfolioClient).mockImplementation(function () { return client; } as any);
+
+    // Telegram itself rejects the send (rate limit, bad token, etc.) —
+    // sendTelegramMessage resolves { ok: false }, it does not throw.
+    const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: false, description: 'Too Many Requests' }) }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(runCompanionSync()).rejects.toThrow('invalid_grant');
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    let health = JSON.parse(secrets.get('sync_health')!);
+    expect(health.alerted).toBe(false); // must not be marked delivered — it wasn't
+
+    // A second failing run must retry the alert (not skip it) and, once
+    // Telegram accepts it, escape the Markdown specials in lastError so the
+    // send itself can't fail on them.
+    fetchMock.mockClear();
+    fetchMock.mockImplementation(async () => ({ json: async () => ({ ok: true }) }));
+    vi.mocked(runSyncCore).mockRejectedValueOnce(new Error('invalid_grant: *access denied*'));
+
+    await expect(runCompanionSync()).rejects.toThrow('invalid_grant');
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, sentBody] = fetchMock.mock.calls[0];
+    const text = JSON.parse((sentBody as any).body).text;
+    expect(text).toContain('invalid\\_grant: \\*access denied\\*');
+    health = JSON.parse(secrets.get('sync_health')!);
+    expect(health.alerted).toBe(true); // now actually delivered
   });
 
   it('does not fire the 24h alert on a run that just succeeded', async () => {

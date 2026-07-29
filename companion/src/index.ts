@@ -13,7 +13,7 @@ import { runSyncCore } from '../../shared/sync-core.js';
 import type { SyncResult } from '../../shared/sync-core.js';
 import { RestSyncHost, RestSyncStore } from './rest-host.js';
 import { WealthfolioClient } from './wealthfolio.js';
-import { sendTelegramMessage, formatWeeklyRemainingDigest, formatMonthlyRemainingSummary, formatSyncHealthFooter } from '../../shared/telegram.js';
+import { sendTelegramMessage, formatWeeklyRemainingDigest, formatMonthlyRemainingSummary, formatSyncHealthFooter, escapeMarkdown } from '../../shared/telegram.js';
 import type { SyncHealth } from '../../shared/telegram.js';
 import { getNativeWealthfolioSpending, getNativeWealthfolioBudgets } from './sqlite-native.js';
 
@@ -103,9 +103,20 @@ async function updateSyncHealth(wfClient: WealthfolioClient, error: Error | null
 }
 
 /** Sends a one-time Telegram alert once a failure streak has been active for
- *  24h, then marks the streak `alerted` so a crash between send and persist
- *  can only re-alert (never silently under-alert), and later runs don't
- *  repeat it. Runs in a `finally`, so it must be a no-op on a healthy streak. */
+ *  24h, then marks the streak `alerted` — but ONLY once the send is confirmed
+ *  delivered (`sendTelegramMessage` resolves `{ ok: true }`; it does not
+ *  throw on an API-level failure like a bad token, rate limit, or a 400 from
+ *  malformed Markdown). Marking `alerted` on an unconfirmed send would be
+ *  indistinguishable from a real delivery to every future run — combined
+ *  with the once-per-streak guard below, the user would then silently never
+ *  be notified for the rest of the streak, defeating the point of the
+ *  alert. Leaving `alerted` false on a failed send means the next sync
+ *  simply retries; since at most one alert attempt happens per sync run and
+ *  the message is identical each time, retrying until Telegram accepts it
+ *  cannot spam the user — it only delays the single notification until
+ *  delivery actually succeeds.
+ *
+ *  Runs in a `finally`, so it must be a no-op on a healthy streak. */
 async function checkSyncHealthAlert(wfClient: WealthfolioClient): Promise<void> {
   const raw = await wfClient.getAddonSecret('simplefin-sync', 'sync_health').catch(() => null);
   if (!raw) return;
@@ -118,11 +129,16 @@ async function checkSyncHealthAlert(wfClient: WealthfolioClient): Promise<void> 
   const tg = JSON.parse(tgRaw);
   if (!tg.botToken || !tg.chatId || tg.enabled === false) return;
 
-  await sendTelegramMessage(
+  const lastError = escapeMarkdown(health.lastError ?? 'unknown error');
+  const result = await sendTelegramMessage(
     tg.botToken,
     tg.chatId,
-    `⚠️ *SimpleFin Sync has been failing since ${new Date(health.firstFailedAt).toLocaleString()}*\nLast error: ${health.lastError}`,
+    `⚠️ *SimpleFin Sync has been failing since ${new Date(health.firstFailedAt).toLocaleString()}*\nLast error: ${lastError}`,
   );
+  if (!result.ok) {
+    log(`Sync health alert failed to send, will retry next sync: ${result.description}`);
+    return;
+  }
   await wfClient.setAddonSecret('simplefin-sync', 'sync_health', JSON.stringify({ ...health, alerted: true })).catch(() => {});
 }
 
@@ -135,10 +151,14 @@ async function sendStuckTransferAlert(
   const tg = JSON.parse(tgRaw);
   if (!tg.botToken || !tg.chatId || tg.enabled === false) return;
   const amount = (alert.amountCents / 100).toFixed(2);
+  // `alert.description` is built from bank/card transaction comments — real
+  // merchant descriptors routinely contain `*`/`_` (card-network descriptors
+  // like "AMAZON *MKTPLACE"), so this needs escaping same as any other
+  // arbitrary text reaching a Markdown-parsed message.
   await sendTelegramMessage(
     tg.botToken,
     tg.chatId,
-    `⚠️ *Transfer stuck — couldn't auto-link after 3 tries*\n${alert.description}\nAmount: $${amount} ${alert.currency}\nTry "Reconcile & link" in the addon, or check for a duplicate/mismatched leg.`,
+    `⚠️ *Transfer stuck — couldn't auto-link after 3 tries*\n${escapeMarkdown(alert.description)}\nAmount: $${amount} ${alert.currency}\nTry "Reconcile & link" in the addon, or check for a duplicate/mismatched leg.`,
   );
 }
 
@@ -184,6 +204,11 @@ export async function runCompanionSync(): Promise<SyncResult> {
       // Not-yet-configured is treated as healthy, not a failure: it's the
       // expected state before the user sets up SimpleFin, and would
       // otherwise spam a "sync is broken" alert on every fresh install.
+      // Caveat: this can't distinguish "never configured" from "the access
+      // URL secret was cleared after previously working" — either way health
+      // reports OK and the failure-streak clock never starts. Judged an
+      // acceptable blind spot since nothing in this codebase clears that
+      // secret except the addon's own setup flow.
       await updateSyncHealth(wfClient, null);
       return empty;
     }

@@ -82,6 +82,24 @@ export async function sendTelegramMessage(
   return { ok: true };
 }
 
+/**
+ * Escapes the characters Telegram's legacy Markdown `parse_mode` treats as
+ * formatting specials (`_`, `*`, `` ` ``, `[`) so arbitrary text — an error
+ * message, a bank transaction description, a user-entered category name —
+ * can't be read as (possibly unbalanced) markup. An unbalanced special
+ * anywhere in the message makes the Telegram API reject the *entire* send
+ * with a 400, not just mangle the offending word, so every place arbitrary
+ * text is interpolated into a message must run through this first.
+ *
+ * Scoped to legacy Markdown specifically: MarkdownV2 reserves a much larger
+ * character set (adds `.`, `!`, `-`, `(`, `)`, `~`, `>`, `#`, `+`, `=`, `|`,
+ * `{`, `}`), so switching `parse_mode` later must not assume this function
+ * still covers it — it would under-escape.
+ */
+export function escapeMarkdown(text: string): string {
+  return text.replace(/([_*`[])/g, '\\$1');
+}
+
 export const DEFAULT_CATEGORY_EMOJIS: Record<string, string> = {
   housing: '🏠',
   transportation: '🚗',
@@ -298,12 +316,17 @@ export function formatWeeklyRemainingDigest(
 
   for (const c of categories) {
     const emoji = getCategoryEmoji(c.name);
+    // Category names are Wealthfolio-user-controlled, not fully trusted display
+    // text: a name like "Food_Drink" has an odd (unmatched) underscore count
+    // once dropped into `*name*`, which is enough to make Telegram reject the
+    // whole digest with a 400. Escape before interpolating.
+    const name = escapeMarkdown(c.name);
     const remaining = c.budget - c.spent;
     if (remaining < 0) {
-      msg += `• ${emoji} *${c.name}*: 🚨 *${money(remaining)} over budget!*\n`;
+      msg += `• ${emoji} *${name}*: 🚨 *${money(remaining)} over budget!*\n`;
     } else {
       const perWeek = weeksLeftInMonth > 0 ? remaining / weeksLeftInMonth : remaining;
-      msg += `• ${emoji} *${c.name}*: *${money(perWeek)} left this week*\n`;
+      msg += `• ${emoji} *${name}*: *${money(perWeek)} left this week*\n`;
     }
   }
 
@@ -348,7 +371,8 @@ export function formatSyncHealthFooter(health: SyncHealth | null | undefined, no
   if (!health) return '';
   if (health.firstFailedAt) {
     const since = new Date(health.firstFailedAt).toLocaleString();
-    return `⚠️ failing since ${since} — ${health.lastError ?? 'unknown error'}`;
+    const lastError = escapeMarkdown(health.lastError ?? 'unknown error');
+    return `⚠️ failing since ${since} — ${lastError}`;
   }
   if (health.lastSuccessAt) {
     return `✅ synced ${formatRelativeTime(health.lastSuccessAt, now)}`;

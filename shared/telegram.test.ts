@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { sendTelegramMessage, formatDailyReport, formatWeeklyReport, formatWeeklyRemainingDigest, formatMonthlyRemainingSummary, formatSyncHealthFooter } from './telegram.js';
+import { sendTelegramMessage, formatDailyReport, formatWeeklyReport, formatWeeklyRemainingDigest, formatMonthlyRemainingSummary, formatSyncHealthFooter, escapeMarkdown } from './telegram.js';
 
 const mockFetch = vi.fn();
 vi.stubGlobal('fetch', mockFetch);
@@ -107,6 +107,33 @@ describe('formatWeeklyRemainingDigest', () => {
     const text = formatWeeklyRemainingDigest([], 2);
     expect(text).toContain('No budgeted categories to report');
   });
+
+  it('escapes Markdown specials in a category name so the message can still send', () => {
+    const text = formatWeeklyRemainingDigest(
+      [{ name: 'Food_Drink', spent: 40, budget: 100 }],
+      2,
+    );
+    // A lone unescaped underscore would make Telegram's legacy Markdown
+    // parser look for a matching closing `_` across the whole message and
+    // reject the entire send with a 400 — the escaped form must show up
+    // literally instead of being consumed as italic markup.
+    expect(text).toContain('Food\\_Drink');
+    expect(text).not.toMatch(/[^\\]_Drink/);
+  });
+});
+
+describe('escapeMarkdown', () => {
+  it('escapes each legacy-Markdown special character with a backslash', () => {
+    expect(escapeMarkdown('a_b*c`d[e')).toBe('a\\_b\\*c\\`d\\[e');
+  });
+
+  it('leaves text with no specials untouched', () => {
+    expect(escapeMarkdown('plain text 123')).toBe('plain text 123');
+  });
+
+  it('escapes repeated specials, not just the first occurrence', () => {
+    expect(escapeMarkdown('__bold__ *italic*')).toBe('\\_\\_bold\\_\\_ \\*italic\\*');
+  });
 });
 
 describe('formatSyncHealthFooter', () => {
@@ -151,6 +178,18 @@ describe('formatSyncHealthFooter', () => {
     expect(text).toContain('⚠️ failing since');
     expect(text).toContain(new Date(health.firstFailedAt).toLocaleString());
     expect(text).toContain('SimpleFin: token revoked');
+  });
+
+  it('escapes Markdown specials in lastError so the digest send cannot fail on them', () => {
+    const now = new Date('2026-07-28T12:00:00.000Z');
+    const health = {
+      lastSuccessAt: null,
+      firstFailedAt: '2026-07-27T09:15:00.000Z',
+      lastError: 'invalid_grant: access_denied for *user*',
+      alerted: false,
+    };
+    const text = formatSyncHealthFooter(health, now);
+    expect(text).toContain('invalid\\_grant: access\\_denied for \\*user\\*');
   });
 });
 
