@@ -7,12 +7,21 @@ describe('RestSyncHost', () => {
     expect(host.capabilities.readsSourceGroupId).toBe(true);
   });
 
-  it('links a pair with one call to linkTransferActivities and returns confirmed groupId', async () => {
+  it('links a pair by deleting and re-creating both legs via saveMany, returning the echoed groupId', async () => {
     const client = {
-      linkTransferActivities: vi.fn(async () => {}),
-      searchActivities: vi.fn(async () => [
-        { id: 'act-out', sourceGroupId: 'gid-123' },
-      ]),
+      saveMany: vi.fn(async (req: any) => ({
+        created: (req.creates ?? []).map((c: any, i: number) => ({
+          id: `new-${i}`,
+          accountId: c.accountId,
+          activityType: c.activityType,
+          date: c.activityDate,
+          amount: c.amount ?? null,
+          comment: c.comment,
+          sourceGroupId: 'gid-123',
+        })),
+        updated: [],
+        errors: [],
+      })),
     } as any;
     const host = new RestSyncHost(client);
     const leg = (wfId: string) => ({
@@ -20,14 +29,20 @@ describe('RestSyncHost', () => {
       date: '2026-07-01', absCents: 100, currency: 'USD', comment: `x · ${wfId}`,
     });
     const result = await host.linkPair([leg('act-out'), leg('act-in')]);
-    expect(client.linkTransferActivities).toHaveBeenCalledWith('act-out', 'act-in');
+    expect(client.saveMany).toHaveBeenCalledTimes(2);
+    expect(client.saveMany.mock.calls[0][0].deleteIds).toEqual(['act-out', 'act-in']);
+    expect(client.saveMany.mock.calls[1][0].creates).toHaveLength(2);
     expect(result.linked).toBe(true);
     expect(result.groupId).toBe('gid-123');
   });
 
-  it('returns linked: false if linkTransferActivities throws', async () => {
+  it('returns linked: false when saveMany reports errors', async () => {
     const client = {
-      linkTransferActivities: vi.fn(async () => { throw new Error('fail'); }),
+      saveMany: vi.fn(async () => ({
+        created: [],
+        updated: [],
+        errors: [{ action: 'create', message: 'boom' }],
+      })),
     } as any;
     const host = new RestSyncHost(client);
     const leg = (wfId: string) => ({

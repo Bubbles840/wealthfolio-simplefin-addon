@@ -1,4 +1,5 @@
 import { fetchAccountsNode } from './simplefin.js';
+import { linkPairByRecreate } from '../../shared/link-pair.js';
 import type { WealthfolioClient } from './wealthfolio.js';
 import type {
   HostActivity,
@@ -105,21 +106,7 @@ export class RestSyncHost implements SyncHost {
   }
 
   async linkPair(legs: [LinkLeg, LinkLeg]): Promise<LinkResult> {
-    try {
-      await this.client.linkTransferActivities(legs[0].wfId, legs[1].wfId);
-      const items = await this.client.searchActivities({
-        page: 1,
-        pageSize: 10,
-        accountIdFilter: [legs[0].accountId],
-      });
-      const match = items.find((i) => i.id === legs[0].wfId);
-      if (match && match.sourceGroupId) {
-        return { linked: true, groupId: match.sourceGroupId };
-      }
-      return { linked: true, groupId: `linked-${legs[0].wfId}` };
-    } catch {
-      return { linked: false };
-    }
+    return linkPairByRecreate((req) => this.saveMany(req), legs);
   }
 }
 
