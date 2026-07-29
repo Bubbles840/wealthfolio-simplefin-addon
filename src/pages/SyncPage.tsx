@@ -42,6 +42,14 @@ function initials(name: string): string {
   return (clean.slice(0, 2) || '••').toUpperCase();
 }
 
+/** Tone class for the Telegram status line. Keyed off the ✅/❌ prefix the
+ *  message already carries, so nothing is signalled by colour alone. */
+function telegramStatusTone(status: string): string {
+  if (status.startsWith('✅')) return 'sfin-status--ok';
+  if (status.startsWith('❌')) return 'sfin-status--err';
+  return 'sfin-status--busy';
+}
+
 function formatAsOf(unixSeconds: number): string {
   return new Date(unixSeconds * 1000).toLocaleString(undefined, {
     month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
@@ -310,7 +318,9 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
 
       <Card>
         <div className="sfin-card-head">
-          <SectionLabel>Accounts ({mappedCount} mapped)</SectionLabel>
+          {/* Just "Accounts": the count is already the first stat tile, and
+              printing it twice within 100px of itself read as clutter. */}
+          <SectionLabel>Accounts</SectionLabel>
           {asOf && <span className="sfin-subtle" style={{ fontSize: 11.5 }}>balances as of {formatAsOf(asOf)}</span>}
         </div>
         {mappedEntries.map(([sfinId, wfId]) => {
@@ -360,92 +370,88 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
         })}
       </Card>
 
+      {/* One card for "when does it sync on its own", covering both engines:
+          the in-page scheduler and the background container. They were two
+          cards asking the same question, a card's worth of chrome apart. */}
       <Card>
-        <label htmlFor="sfin-interval" className="sfin-section-label" style={{ display: 'block' }}>
-          Auto-Sync interval
-        </label>
-        <div className="sfin-subtle" style={{ marginBottom: 8 }}>
+        <div className="sfin-field-row">
+          <label htmlFor="sfin-interval" className="sfin-section-label">
+            Auto-Sync interval
+          </label>
+          <select
+            id="sfin-interval"
+            className="sfin-select"
+            value={scheduleHours ?? 0}
+            onChange={(e) => changeInterval(Number(e.target.value))}
+          >
+            <option value={0}>Off</option>
+            <option value={1}>Every 1 hour</option>
+            <option value={4}>Every 4 hours</option>
+            <option value={8}>Every 8 hours</option>
+            <option value={24}>Every 24 hours</option>
+          </select>
+        </div>
+        <div className="sfin-subtle" style={{ marginTop: 6 }}>
           Syncs when this page is open and it&apos;s been this long since the last run.
         </div>
-        <select
-          id="sfin-interval"
-          className="sfin-select"
-          value={scheduleHours ?? 0}
-          onChange={(e) => changeInterval(Number(e.target.value))}
-        >
-          <option value={0}>Off</option>
-          <option value={1}>Every 1 hour</option>
-          <option value={4}>Every 4 hours</option>
-          <option value={8}>Every 8 hours</option>
-          <option value={24}>Every 24 hours</option>
-        </select>
 
-        <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginTop: 16, cursor: 'pointer' }}>
-          <input
-            type="checkbox"
-            checked={autoHeal}
-            style={{ marginTop: 2 }}
-            onChange={async (e) => {
-              setAutoHeal(e.target.checked);
-              await store.setAutoHeal(e.target.checked);
-            }}
-          />
-          <span>
-            <span style={{ fontWeight: 550 }}>Auto-heal</span>
-            <span className="sfin-subtle">
-              {' '}— re-scan ~45 days each sync to catch missing transactions and check
-              balances. Balance adjustments stay manual.
+        <div className="sfin-checks" style={{ marginTop: 14 }}>
+          <label className="sfin-check">
+            <input
+              type="checkbox"
+              checked={autoHeal}
+              onChange={async (e) => {
+                setAutoHeal(e.target.checked);
+                await store.setAutoHeal(e.target.checked);
+              }}
+            />
+            <span>
+              <span className="sfin-check-name">Auto-heal</span>
+              <span className="sfin-subtle">
+                {' '}— re-scan ~45 days each sync to catch missing transactions and check
+                balances. Balance adjustments stay manual.
+              </span>
             </span>
-          </span>
-        </label>
+          </label>
 
-        <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginTop: 10, cursor: 'pointer' }}>
-          <input
-            type="checkbox"
-            checked={autoAdjust}
-            style={{ marginTop: 2 }}
-            onChange={async (e) => {
-              setAutoAdjust(e.target.checked);
-              await store.setAutoAdjust(e.target.checked);
-            }}
-          />
-          <span>
-            <span style={{ fontWeight: 550 }}>Aggressively auto-heal</span>
-            <span className="sfin-subtle">
-              {' '}— also auto-insert balance adjustments for any residual, without asking
-              (includes the re-scan). Forces balances to match your bank on every sync.
+          <label className="sfin-check">
+            <input
+              type="checkbox"
+              checked={autoAdjust}
+              onChange={async (e) => {
+                setAutoAdjust(e.target.checked);
+                await store.setAutoAdjust(e.target.checked);
+              }}
+            />
+            <span>
+              <span className="sfin-check-name">Aggressively auto-heal</span>
+              <span className="sfin-subtle">
+                {' '}— also auto-insert balance adjustments for any residual, without asking
+                (includes the re-scan). Forces balances to match your bank on every sync.
+              </span>
             </span>
-          </span>
-        </label>
-      </Card>
+          </label>
+        </div>
 
-      <Card>
-        <div className="sfin-card-head">
-          <SectionLabel>Docker Background Sync (Optional)</SectionLabel>
-          <Button variant="ghost" onClick={() => setShowDockerSetup((s) => !s)}>
-            {showDockerSetup ? 'Hide Setup' : 'Show Setup'}
+        <div className="sfin-divider" />
+
+        <div className="sfin-field-row">
+          <div style={{ minWidth: 0 }}>
+            <SectionLabel>Background sync (Docker, optional)</SectionLabel>
+            <div className="sfin-subtle" style={{ marginTop: 3 }}>
+              Keeps syncing even when Wealthfolio is closed.
+            </div>
+          </div>
+          <Button variant="ghost" aria-expanded={showDockerSetup} onClick={() => setShowDockerSetup((s) => !s)}>
+            {showDockerSetup ? 'Hide setup' : 'Show setup'}
           </Button>
         </div>
-        <div className="sfin-subtle">
-          Sync transactions automatically in the background even when Wealthfolio is closed.
-        </div>
         {showDockerSetup && (
-          <div style={{ marginTop: 12 }}>
-            <div className="sfin-subtle" style={{ marginBottom: 8 }}>
+          <div style={{ marginTop: 10 }}>
+            <div className="sfin-subtle" style={{ marginBottom: 6 }}>
               Add this service to your <code>docker-compose.yml</code>. You can customize the sync rate via <code>SYNC_SCHEDULE</code>:
             </div>
-            <pre
-              style={{
-                background: 'var(--card-bg, rgba(0,0,0,0.2))',
-                padding: '12px 14px',
-                borderRadius: '6px',
-                fontSize: '12px',
-                fontFamily: 'monospace',
-                overflowX: 'auto',
-                border: '1px solid var(--border, rgba(255,255,255,0.1))',
-                lineHeight: 1.5,
-              }}
-            >
+            <pre className="sfin-pre" style={{ margin: 0 }}>
               {`services:
   simplefin-sync:
     image: ghcr.io/bubbles840/wealthfolio-simplefin-sync:latest
@@ -465,28 +471,24 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
       <Card>
         <div className="sfin-card-head">
           <SectionLabel>Telegram Notifications (Optional)</SectionLabel>
-          <Button variant="ghost" onClick={() => setShowTelegramInstructions((s) => !s)}>
-            {showTelegramInstructions ? 'Hide Setup' : 'Setup Guide'}
+          <Button
+            variant="ghost"
+            aria-expanded={showTelegramInstructions}
+            onClick={() => setShowTelegramInstructions((s) => !s)}
+          >
+            {showTelegramInstructions ? 'Hide guide' : 'Setup guide'}
           </Button>
         </div>
         <div className="sfin-subtle" style={{ marginBottom: 12 }}>
-          Receive daily budget spending allowances and weekly budget summaries directly in Telegram. Handled by the background companion container.
+          Daily spending allowances and weekly budget summaries, sent by the companion container.
         </div>
 
+        {/* Read once, ever — so it stays behind the disclosure it already had
+            rather than costing every later visit ~130px of scrolling. */}
         {showTelegramInstructions && (
-          <div
-            style={{
-              background: 'var(--card-bg, rgba(0,0,0,0.2))',
-              padding: '12px 14px',
-              borderRadius: '6px',
-              marginBottom: 16,
-              fontSize: '13px',
-              lineHeight: 1.6,
-              border: '1px solid var(--border, rgba(255,255,255,0.1))',
-            }}
-          >
-            <div style={{ fontWeight: 600, marginBottom: 6 }}>📱 How to Set Up Your Telegram Bot:</div>
-            <ol style={{ paddingLeft: 20, margin: 0 }}>
+          <div className="sfin-inset" style={{ marginBottom: 12 }}>
+            <div style={{ fontWeight: 600, marginBottom: 4 }}>📱 How to set up your Telegram bot</div>
+            <ol>
               <li>Open Telegram and search for <strong>@BotFather</strong>.</li>
               <li>Send <code>/newbot</code> to @BotFather and follow prompts to name your bot.</li>
               <li>Copy the HTTP API <strong>Token</strong> (e.g. <code>123456789:ABCdefGHI...</code>).</li>
@@ -498,31 +500,35 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
         )}
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <div>
-            <label className="sfin-subtle" style={{ display: 'block', marginBottom: 4 }}>Bot Token</label>
-            <input
-              type="password"
-              className="sfin-select"
-              style={{ width: '100%' }}
-              placeholder="e.g. 123456789:ABCdefGHI..."
-              value={botToken}
-              onChange={(e) => setBotToken(e.target.value)}
-            />
-          </div>
-          <div>
-            <label className="sfin-subtle" style={{ display: 'block', marginBottom: 4 }}>Chat ID</label>
-            <input
-              type="text"
-              className="sfin-select"
-              style={{ width: '100%' }}
-              placeholder="e.g. 987654321"
-              value={chatId}
-              onChange={(e) => setChatId(e.target.value)}
-            />
+          {/* Two short, related fields: side by side on a normal window, and the
+              labels are now actually tied to their inputs. */}
+          <div className="sfin-fields">
+            <div>
+              <label htmlFor="sfin-bot-token" className="sfin-subtle">Bot Token</label>
+              <input
+                id="sfin-bot-token"
+                type="password"
+                className="sfin-select"
+                placeholder="e.g. 123456789:ABCdefGHI..."
+                value={botToken}
+                onChange={(e) => setBotToken(e.target.value)}
+              />
+            </div>
+            <div>
+              <label htmlFor="sfin-chat-id" className="sfin-subtle">Chat ID</label>
+              <input
+                id="sfin-chat-id"
+                type="text"
+                className="sfin-select"
+                placeholder="e.g. 987654321"
+                value={chatId}
+                onChange={(e) => setChatId(e.target.value)}
+              />
+            </div>
           </div>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 4 }}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+          <div className="sfin-checks">
+            <label className="sfin-check">
               <input
                 type="checkbox"
                 checked={notifyOnImport}
@@ -530,7 +536,7 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
               />
               <span>Transaction Import Alerts (Instant when new transactions sync)</span>
             </label>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+            <label className="sfin-check">
               <input
                 type="checkbox"
                 checked={dailyReportEnabled}
@@ -538,7 +544,7 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
               />
               <span>Daily Category Allowance Report (Morning)</span>
             </label>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+            <label className="sfin-check">
               <input
                 type="checkbox"
                 checked={weeklyReportEnabled}
@@ -548,21 +554,21 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
             </label>
           </div>
 
-          <div style={{
-            background: 'var(--card-bg, rgba(0,0,0,0.15))',
-            padding: 12,
-            borderRadius: 6,
-            border: '1px solid var(--border, rgba(255,255,255,0.1))',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 10,
-            marginTop: 4,
-          }}>
-            <div style={{ fontWeight: 600, fontSize: 11, color: 'var(--muted-foreground)', letterSpacing: '0.05em' }}>
-              REPORT CATEGORIES
-            </div>
+          {/* A two-column matrix rather than a "Daily"/"Weekly" word beside
+              every checkbox: the column heading says it once, the boxes line up,
+              and each row loses ~10px of height. The per-checkbox aria-label
+              still carries both the category and the report, so the accessible
+              name never depends on reading the column heading. */}
+          <div className="sfin-inset sfin-cats">
+            <div className="sfin-section-label sfin-cats-head">Report categories</div>
+            {availableCategories.length > 0 && (
+              <>
+                <div className="sfin-cats-col sfin-cats-head">Daily</div>
+                <div className="sfin-cats-col sfin-cats-head">Weekly</div>
+              </>
+            )}
             {availableCategories.length === 0 ? (
-              <div className="sfin-subtle" style={{ fontSize: 12 }}>
+              <div className="sfin-subtle" style={{ gridColumn: '1 / -1', fontSize: 12 }}>
                 Categories will appear here after the companion's first sync.
               </div>
             ) : (
@@ -603,40 +609,40 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
                   });
                 };
                 return (
-                  <div key={name} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <span style={{ fontSize: 16, width: 24, textAlign: 'center' }}>{emoji}</span>
-                    <span style={{ minWidth: 120, fontWeight: 500, fontSize: 13 }}>{name}</span>
-                    <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, cursor: 'pointer' }}>
-                      <input
-                        type="checkbox"
-                        aria-label={`${name} — Daily`}
-                        checked={inDaily}
-                        onChange={() => toggle(setDailyReportCategories)}
-                      />
-                      Daily
-                    </label>
-                    <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, cursor: 'pointer' }}>
-                      <input
-                        type="checkbox"
-                        aria-label={`${name} — Weekly`}
-                        checked={inWeekly}
-                        onChange={() => toggle(setWeeklyReportCategories)}
-                      />
-                      Weekly
-                    </label>
-                  </div>
+                  <React.Fragment key={name}>
+                    <div className="sfin-cat-name">
+                      <span aria-hidden style={{ fontSize: 15 }}>{emoji}</span>
+                      <span>{name}</span>
+                    </div>
+                    <input
+                      type="checkbox"
+                      aria-label={`${name} — Daily`}
+                      checked={inDaily}
+                      onChange={() => toggle(setDailyReportCategories)}
+                    />
+                    <input
+                      type="checkbox"
+                      aria-label={`${name} — Weekly`}
+                      checked={inWeekly}
+                      onChange={() => toggle(setWeeklyReportCategories)}
+                    />
+                  </React.Fragment>
                 );
               })
             )}
           </div>
 
+          {/* role="status" so the send/save result is announced, and the ✅/❌
+              prefix stays: the colour is a reinforcement, never the only signal.
+              The in-flight "Sending…" message carries neither prefix and is no
+              longer painted destructive-red for having failed no test yet. */}
           {telegramStatus && (
-            <div style={{ fontSize: '13px', color: telegramStatus.startsWith('✅') ? 'var(--success, #4caf50)' : 'var(--destructive, #f44336)' }}>
+            <div role="status" className={`sfin-status ${telegramStatusTone(telegramStatus)}`}>
               {telegramStatus}
             </div>
           )}
 
-          <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', gap: 8, marginTop: 4, flexWrap: 'wrap' }}>
             <Button
               variant="outline"
               disabled={testingTelegram || !botToken || !chatId}
@@ -698,7 +704,7 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
       <Card>
         <div className="sfin-card-head">
           <SectionLabel>Transaction Rules</SectionLabel>
-          <Button variant="ghost" onClick={() => setEditingRules((e) => !e)}>
+          <Button variant="ghost" aria-expanded={editingRules} onClick={() => setEditingRules((e) => !e)}>
             {editingRules ? 'Done' : 'Edit'}
           </Button>
         </div>
@@ -726,7 +732,7 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
         your mapped accounts: <strong>Settings → Spending Tracker</strong>.
       </div>
 
-      <div style={{ marginTop: 24 }}>
+      <div style={{ marginTop: 16 }}>
         {confirmingReset ? (
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <span className="sfin-subtle">Reset all SimpleFin Sync settings? You will need to reconnect.</span>

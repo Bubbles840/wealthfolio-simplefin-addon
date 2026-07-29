@@ -35,6 +35,7 @@ const css = `
   margin-top: 16px;
 }
 .sfin-section-label {
+  display: block;
   font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
@@ -142,16 +143,17 @@ const css = `
 /* ── Redesign: header, stat tiles, account rows, chips, drift banner ────── */
 .sfin-head {
   display: flex; align-items: flex-start; justify-content: space-between;
-  gap: 16px; margin-bottom: 20px;
+  gap: 16px; margin-bottom: 16px;
 }
 .sfin-live { color: var(--primary); }
-.sfin-strip { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.sfin-strip { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
 .sfin-tile {
   background: var(--card); border: 1px solid var(--border);
-  border-radius: var(--radius); padding: 14px 16px;
+  border-radius: var(--radius); padding: 11px 14px;
 }
+.sfin-tile .sfin-section-label { margin-bottom: 3px; }
 .sfin-tile-val {
-  font-size: 22px; font-weight: 650; letter-spacing: -0.02em; margin-top: 5px;
+  font-size: 20px; font-weight: 650; letter-spacing: -0.02em;
   font-variant-numeric: tabular-nums;
 }
 .sfin-card-head {
@@ -203,6 +205,64 @@ const css = `
   padding: 12px 14px; font-size: 13px; line-height: 1.5; margin-top: 16px;
 }
 .sfin-banner-warn b { color: var(--foreground); font-weight: 600; }
+
+/* ── Settings primitives: label/control rows, field grids, checkbox lists,
+      inset panels, the report-category matrix. All themed off the host's own
+      tokens — a hardcoded colour here would survive a theme switch and stop
+      matching everything around it. ───────────────────────────────────────── */
+.sfin-field-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap;
+}
+.sfin-field-row .sfin-section-label { margin-bottom: 0; }
+/* Two inputs side by side on a normal window, stacked before they get too
+   narrow to read the placeholder in. */
+.sfin-fields {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 10px 12px;
+}
+.sfin-fields label { display: block; margin-bottom: 3px; }
+.sfin-fields input { width: 100%; }
+.sfin-checks { display: flex; flex-direction: column; gap: 8px; }
+.sfin-check {
+  display: flex; align-items: flex-start; gap: 8px;
+  cursor: pointer; line-height: 1.45;
+}
+.sfin-check input { flex: none; margin: 2px 0 0; }
+.sfin-check-name { font-weight: 550; }
+/* Quiet inset panel for read-once content: the setup guide, the category
+   matrix. Same tokens as .sfin-callout, without its outer margin. */
+.sfin-inset {
+  background: var(--muted); color: var(--foreground);
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
+  padding: 10px 12px; font-size: 13px; line-height: 1.55;
+}
+.sfin-inset ol { margin: 0; padding-left: 18px; }
+.sfin-inset ol li + li { margin-top: 2px; }
+.sfin-divider { border-top: 1px solid var(--border); margin: 14px 0 12px; }
+.sfin-cats {
+  display: grid; grid-template-columns: 1fr auto auto;
+  align-items: center; row-gap: 5px; column-gap: 12px;
+}
+.sfin-cats-col {
+  width: 46px; text-align: center;
+  font-size: 10.5px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.06em; color: var(--muted-foreground);
+}
+.sfin-cats input[type='checkbox'] { justify-self: center; margin: 0; }
+/* Heading row: one shared pad so the column captions and the section label sit
+   on the same baseline and the first category row isn't jammed under them. */
+.sfin-cats-head { margin-bottom: 0; padding-bottom: 4px; }
+.sfin-cat-name {
+  display: flex; align-items: center; gap: 8px; min-width: 0;
+  font-size: 13px; font-weight: 500;
+}
+.sfin-cat-name span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sfin-status { font-size: 12.5px; }
+.sfin-status--ok { color: var(--success, var(--primary)); }
+.sfin-status--err { color: var(--destructive); }
+.sfin-status--busy { color: var(--muted-foreground); }
 `;
 
 /** Injects the stylesheet once. Render at the addon root. */
