@@ -42,14 +42,6 @@ export interface AccountMapping {
   [simpleFinAccountId: string]: string; // → Wealthfolio account ID
 }
 
-export interface CategoryRule {
-  categoryId: string;
-  categoryName: string;
-  mode: 'daily' | 'weekly' | 'monthly';
-  monthlyBudget?: number;
-  keywords?: string[];
-}
-
 export interface TelegramConfig {
   botToken: string;
   chatId: string;
@@ -57,7 +49,6 @@ export interface TelegramConfig {
   notifyOnImport?: boolean;
   dailyReportEnabled?: boolean;
   weeklyReportEnabled?: boolean;
-  categoryRules?: CategoryRule[];
   /** Category names to include in the daily digest. 'all' (default) means
    *  every category the companion has published via
    *  `available_report_categories`. */

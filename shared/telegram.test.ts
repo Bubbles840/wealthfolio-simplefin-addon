@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { sendTelegramMessage, formatDailyReport, formatWeeklyReport, formatWeeklyRemainingDigest, formatMonthlyRemainingSummary, formatSyncHealthFooter, escapeMarkdown } from './telegram.js';
+import { sendTelegramMessage, formatWeeklyRemainingDigest, formatMonthlyRemainingSummary, formatSyncHealthFooter, escapeMarkdown } from './telegram.js';
 
 const mockFetch = vi.fn();
 vi.stubGlobal('fetch', mockFetch);
@@ -39,42 +39,6 @@ describe('sendTelegramMessage', () => {
     const res = await sendTelegramMessage('123:TOKEN', 'invalid', 'Test');
     expect(res.ok).toBe(false);
     expect(res.description).toBe('Bad Request: chat not found');
-  });
-});
-
-describe('formatDailyReport', () => {
-  it('formats daily category allowances correctly', () => {
-    const text = formatDailyReport({
-      dateStr: 'Jul 27, 2026',
-      daysLeftInMonth: 10,
-      categories: [
-        { name: 'Dining', budget: 500, spent: 200, mode: 'daily' },
-        { name: 'Groceries', budget: 800, spent: 400, mode: 'weekly' },
-        { name: 'Housing', budget: 1500, spent: 1500, mode: 'monthly' },
-      ],
-    });
-
-    expect(text).toContain('☀️ *Daily Budget Allowance*');
-    expect(text).toContain('• 🍽️ *Dining*: *$30.00/day*');
-    expect(text).toContain('• 🛒 *Groceries*: *$200.00/week*');
-    expect(text).toContain('• 🏠 *Housing*: *$0.00 remaining*');
-  });
-});
-
-describe('formatWeeklyReport', () => {
-  it('formats weekly budget summary correctly', () => {
-    const text = formatWeeklyReport({
-      weekSpent: 350,
-      monthSpent: 1200,
-      monthBudget: 2000,
-      categories: [
-        { name: 'Dining', budget: 500, spent: 300, mode: 'daily' },
-      ],
-    });
-
-    expect(text).toContain('📊 *Weekly Budget & Spending Summary*');
-    expect(text).toContain('60% used');
-    expect(text).toContain('🍽️ *Dining*: $300.00 / $500.00 (60%)');
   });
 });
 
