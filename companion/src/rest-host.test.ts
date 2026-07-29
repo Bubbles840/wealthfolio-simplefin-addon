@@ -7,6 +7,34 @@ describe('RestSyncHost', () => {
     expect(host.capabilities.readsSourceGroupId).toBe(true);
   });
 
+  // Regression test: the REST activity-search endpoint is 0-INDEXED (verified
+  // against a live server: page 0 and page 1 return different rows). Asking for
+  // page 1 with pageSize 500 returned an EMPTY list on every account with fewer
+  // than 500 activities, so the sync core believed nothing had ever been
+  // imported, planned a create for every transaction, and Wealthfolio's dedup
+  // rejected the whole batch with "Duplicate activity detected". Assert the
+  // outgoing request, not just the mapped result - mocking the client wholesale
+  // is exactly how this survived.
+  it('listActivities asks for page 0 (the first page), not page 1', async () => {
+    const client = {
+      searchActivities: vi.fn(async () => [
+        { id: 'act-1', accountId: 'wf-a', activityType: 'DEPOSIT', date: '2026-07-05', amount: '10' },
+      ]),
+    } as any;
+    const host = new RestSyncHost(client);
+    const rows = await host.listActivities('wf-a');
+
+    expect(client.searchActivities).toHaveBeenCalledTimes(1);
+    expect(client.searchActivities.mock.calls[0][0]).toEqual({
+      page: 0,
+      pageSize: 500,
+      accountIdFilter: ['wf-a'],
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].id).toBe('act-1');
+    expect(rows[0].accountId).toBe('wf-a');
+  });
+
   it('links a pair by deleting and re-creating both legs via saveMany, returning the echoed groupId', async () => {
     const client = {
       saveMany: vi.fn(async (req: any) => ({

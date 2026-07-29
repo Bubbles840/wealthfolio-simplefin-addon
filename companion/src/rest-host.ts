@@ -67,9 +67,14 @@ export class RestSyncHost implements SyncHost {
     return map;
   }
 
+  /** The account's recent activities. `page` is 0-INDEXED on this endpoint (the
+   *  SDK adapter's `activities.search` calls pass 0 too) — asking for page 1
+   *  returned an empty list on every account with fewer than `pageSize` rows,
+   *  which made the sync core plan a create for every transaction and get the
+   *  whole batch rejected as duplicates. */
   async listActivities(wfAccountId: string): Promise<HostActivity[]> {
     const items = await this.client.searchActivities({
-      page: 1,
+      page: 0,
       pageSize: 500,
       accountIdFilter: [wfAccountId],
     });
