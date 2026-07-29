@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { maskUrl, validateStartupEnv, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport } from './index.js';
 import { runSyncCore } from '../../shared/sync-core.js';
+import { getNativeWealthfolioSpendingBetween } from './sqlite-native.js';
 
 vi.mock('../../shared/sync-core.js', () => ({
   runSyncCore: vi.fn(async () => ({ imported: 2, skipped: 1, errors: [], stuckTransferAlerts: [] })),
@@ -21,6 +22,8 @@ vi.mock('./wealthfolio.js', () => {
 
 vi.mock('./sqlite-native.js', () => ({
   getNativeWealthfolioSpending: vi.fn(() => ({ Groceries: 200, Dining: 550 })),
+  // Week-scoped spend: a subset of the month totals above.
+  getNativeWealthfolioSpendingBetween: vi.fn(() => ({ Groceries: 50, Dining: 100 })),
   getNativeWealthfolioBudgets: vi.fn(() => ({ Groceries: 800, Dining: 500 })),
 }));
 
@@ -617,13 +620,120 @@ describe('sendDailyTelegramReport', () => {
     expect(client.setAddonSecret).not.toHaveBeenCalled();
   });
 
-  it('titles the digest as daily and shows monthly remaining with a weekly pace', async () => {
-    // Mocked spending/budgets: Groceries 200/800, Dining 550/500.
+  it('titles the digest as daily and headlines what is left this week', async () => {
+    // Mocked month spend/budgets: Groceries 200/800, Dining 550/500; mocked
+    // week spend: Groceries 50, Dining 100. Tuesday 2026-07-14, so the week
+    // began Monday the 13th and July has 31 days:
+    //   daysFromWeekStartToMonthEnd = 31 - 13 + 1 = 19
+    //   Groceries: spentBeforeWeek 150 -> budgetAtWeekStart 650
+    //              envelope = 650 * 7 / 19 = 239.47, left = 189.47
+    //   Dining:    over budget for the month by 50
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 6, 14, 9, 0, 0));
+    try {
+      const secrets = new Map<string, string>();
+      secrets.set('telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true }));
+      const client = {
+        getAddonSecret: vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null),
+        setAddonSecret: vi.fn(async (_a: string, key: string, val: string) => { secrets.set(key, val); }),
+      } as any;
+      const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+      vi.stubGlobal('fetch', fetchMock);
+
+      await sendDailyTelegramReport(client);
+
+      const [, sentBody] = fetchMock.mock.calls[0];
+      const text = JSON.parse((sentBody as any).body).text;
+      expect(text).toContain('☀️ *Daily Spending Check*');
+      expect(text).toContain('_left to spend this week_');
+      expect(text).not.toContain('Weekly Spending Update');
+      expect(text).toContain('🛒 Groceries  *$189.47*');
+      expect(text).toContain('🍽️ Dining  🚨 *$50 over* for the month');
+      // One month-context line at the end, 18 days left counting today.
+      expect(text).toContain('💰 $550 left this month · 18 days to go');
+      expect(text).not.toContain('/wk pace');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reads the week window from the week start, clamped to the 1st of the month', async () => {
+    // Wednesday 2026-07-01: the most recent Monday is 2026-06-29, in the
+    // previous month. A monthly budget cannot be spent before the month began,
+    // so the window must start on the 1st.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 6, 1, 9, 0, 0));
+    try {
+      const secrets = new Map<string, string>();
+      secrets.set('telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true }));
+      const client = {
+        getAddonSecret: vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null),
+        setAddonSecret: vi.fn(async () => {}),
+      } as any;
+      vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ ok: true }) })));
+
+      await sendDailyTelegramReport(client);
+
+      expect(vi.mocked(getNativeWealthfolioSpendingBetween)).toHaveBeenCalledWith(
+        expect.any(String), '2026-07-01', '2026-08-01',
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('asks for the week-scoped spend from the week start through the end of the month', async () => {
+    // The upper bound matches the month reader's rather than stopping at today,
+    // so `monthSpent - weekSpent` is exactly "spent earlier this month" even if
+    // an activity is dated later in the month.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 6, 14, 9, 0, 0));
+    try {
+      const secrets = new Map<string, string>();
+      secrets.set('telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true }));
+      const client = {
+        getAddonSecret: vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null),
+        setAddonSecret: vi.fn(async () => {}),
+      } as any;
+      vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ ok: true }) })));
+
+      await sendDailyTelegramReport(client);
+
+      expect(vi.mocked(getNativeWealthfolioSpendingBetween)).toHaveBeenCalledWith(
+        expect.any(String), '2026-07-13', '2026-08-01',
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('publishes the category checklist from the MONTH maps, not the week-scoped ones', async () => {
+    // A week-scoped list would make categories vanish from the addon's Report
+    // Categories checklist mid-month simply because nothing was spent on them
+    // this week.
+    vi.mocked(getNativeWealthfolioSpendingBetween).mockReturnValueOnce({ Groceries: 50 });
     const secrets = new Map<string, string>();
     secrets.set('telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true }));
     const client = {
       getAddonSecret: vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null),
       setAddonSecret: vi.fn(async (_a: string, key: string, val: string) => { secrets.set(key, val); }),
+    } as any;
+    vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ ok: true }) })));
+
+    await sendDailyTelegramReport(client);
+
+    expect(client.setAddonSecret).toHaveBeenCalledWith(
+      'simplefin-sync', 'available_report_categories', JSON.stringify(['Dining', 'Groceries']),
+    );
+  });
+
+  it('keeps the sync-health footer as its own block, separated from the summary line', async () => {
+    const secrets = new Map<string, string>();
+    secrets.set('telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true }));
+    secrets.set('sync_health', JSON.stringify({ lastSuccessAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString() }));
+    const client = {
+      getAddonSecret: vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null),
+      setAddonSecret: vi.fn(async () => {}),
     } as any;
     const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
     vi.stubGlobal('fetch', fetchMock);
@@ -632,12 +742,9 @@ describe('sendDailyTelegramReport', () => {
 
     const [, sentBody] = fetchMock.mock.calls[0];
     const text = JSON.parse((sentBody as any).body).text;
-    expect(text).toContain('☀️ *Daily Spending Check*');
-    expect(text).not.toContain('Weekly Spending Update');
-    expect(text).toContain('*$600.00 left this month*');
-    expect(text).toContain('/wk pace');
-    expect(text).toContain('🚨 *$50.00 over budget* this month');
-    expect(text).not.toContain('left this week');
+    // Blank line between the digest's last line and the health footer, and the
+    // footer is the final line — never run on to the money summary.
+    expect(text).toMatch(/ to go\n\n✅ synced 2h ago$/);
   });
 });
 
@@ -658,7 +765,8 @@ describe('sendWeeklyTelegramReport', () => {
     const [, sentBody] = fetchMock.mock.calls[0];
     const text = JSON.parse((sentBody as any).body).text;
     // totalSpent = 750, totalBudget = 1300, remaining = 550
-    expect(text).toContain('$550.00 remaining');
+    expect(text).toContain('💰 *$550 left* this month');
+    expect(text).toContain('_spent $750 of $1,300 · 58%_');
   });
 
   it('does nothing when weeklyReportEnabled is false', async () => {

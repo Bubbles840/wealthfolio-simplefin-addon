@@ -13,9 +13,9 @@ import { runSyncCore } from '../../shared/sync-core.js';
 import type { SyncResult } from '../../shared/sync-core.js';
 import { RestSyncHost, RestSyncStore } from './rest-host.js';
 import { WealthfolioClient } from './wealthfolio.js';
-import { sendTelegramMessage, formatWeeklyRemainingDigest, formatMonthlyRemainingSummary, formatSyncHealthFooter, escapeMarkdown } from '../../shared/telegram.js';
+import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatSyncHealthFooter, escapeMarkdown } from '../../shared/telegram.js';
 import type { SyncHealth } from '../../shared/telegram.js';
-import { getNativeWealthfolioSpending, getNativeWealthfolioBudgets } from './sqlite-native.js';
+import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets } from './sqlite-native.js';
 
 const logLevel: 'info' | 'debug' =
   process.env.LOG_LEVEL === 'debug' ? 'debug' : 'info';
@@ -337,12 +337,43 @@ function filterCategories(names: string[], selection: string[] | 'all' | undefin
   return names.filter((n) => allowed.has(n));
 }
 
-/** Days remaining in the month AFTER today — 0 on the last day. The digest's
- *  pace maths adds today back in itself (see `weeklyPace`); clamping the floor
- *  to 1 here, as this used to, silently halved the final day's figure. */
-function daysLeftInMonth(now: Date): number {
-  const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-  return Math.max(0, lastDay - now.getDate());
+function lastDayOfMonth(now: Date): number {
+  return new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+}
+
+/** Days remaining in the month COUNTING TODAY — 1 on the last day, because
+ *  today is still a day money can be spent. The digest divides by this kind of
+ *  inclusive horizon directly, so an off-by-one here silently mis-sizes every
+ *  figure in the message. */
+function daysLeftInMonthInclusive(now: Date): number {
+  return Math.max(1, lastDayOfMonth(now) - now.getDate() + 1);
+}
+
+/**
+ * The start of the week the weekly envelope is measured from: the most recent
+ * Monday on or before today, clamped to the 1st of the month.
+ *
+ * The clamp is not cosmetic. A monthly budget cannot be spent before the month
+ * started, so a week reaching back into the previous month would size the
+ * envelope over days that no part of this budget covers — in a month starting
+ * mid-week, that understates the first week's allowance and makes
+ * `monthSpent - weekSpent` meaningless.
+ *
+ * Exported for tests; the date arithmetic deliberately lives here rather than
+ * in `shared/`, which stays a pure string builder fed plain numbers.
+ */
+export function weekStartDate(now: Date): Date {
+  const backToMonday = (now.getDay() + 6) % 7; // Monday -> 0, Sunday -> 6
+  const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - backToMonday);
+  const firstOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  return monday.getTime() < firstOfMonth.getTime() ? firstOfMonth : monday;
+}
+
+/** Local-time `YYYY-MM-DD`. Deliberately not `toISOString()`, which converts to
+ *  UTC and would shift the date by a day for anyone west of Greenwich —
+ *  `activity_date` in wealthfolio.db is a plain local date string. */
+function toDateString(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
 async function publishAvailableCategories(
@@ -372,13 +403,32 @@ export async function sendDailyTelegramReport(wfClient: WealthfolioClient): Prom
   const yearMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
   const spentMap = getNativeWealthfolioSpending(dbPath, yearMonth);
   const budgetMap = getNativeWealthfolioBudgets(dbPath, yearMonth);
+
+  const weekStart = weekStartDate(now);
+  const nextMonthStart = toDateString(new Date(now.getFullYear(), now.getMonth() + 1, 1));
+  // Same upper bound as the month reader, not "up to today": that keeps
+  // `monthSpent - weekSpent` exactly equal to "spent earlier this month", even
+  // when an activity carries a date later in the month. A tighter bound here
+  // would push such an activity into `spentBeforeWeek` and shrink the week's
+  // envelope for a purchase that has not happened yet.
+  const weekSpentMap = getNativeWealthfolioSpendingBetween(dbPath, toDateString(weekStart), nextMonthStart);
+
+  // Fed from the MONTH maps on purpose: a week-scoped list would make
+  // categories disappear from the addon's Report Categories checklist mid-month
+  // just because nothing was spent on them this week.
   const allNames = await publishAvailableCategories(wfClient, spentMap, budgetMap);
 
   const names = filterCategories(allNames, tg.dailyReportCategories);
   const categories = names.map((name) => ({
-    name, spent: spentMap[name] ?? 0, budget: budgetMap[name] ?? 0,
+    name,
+    monthSpent: spentMap[name] ?? 0,
+    weekSpent: weekSpentMap[name] ?? 0,
+    budget: budgetMap[name] ?? 0,
   }));
-  let message = formatWeeklyRemainingDigest(categories, daysLeftInMonth(now));
+  let message = formatDailySpendingDigest(categories, {
+    daysFromWeekStartToMonthEnd: lastDayOfMonth(now) - weekStart.getDate() + 1,
+    daysLeftInMonthInclusive: daysLeftInMonthInclusive(now),
+  });
 
   const healthRaw = await wfClient.getAddonSecret('simplefin-sync', 'sync_health').catch(() => null);
   // Guarded parse: this secret only supplies a decorative one-line footer, so
@@ -459,7 +509,7 @@ if (!process.env.VITEST) {
   });
 
   cron.schedule(dailySchedule, () => {
-    log('Triggering scheduled daily spending check (per-category remaining + weekly pace)...');
+    log('Triggering scheduled daily spending check (per-category weekly envelope)...');
     const password = resolvePassword();
     const apiKey = process.env.WEALTHFOLIO_API_KEY;
     if (apiKey) {
