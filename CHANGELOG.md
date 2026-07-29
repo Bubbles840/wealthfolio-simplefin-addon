@@ -7,6 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Budget targets read from Wealthfolio's database picked whichever row was
+  edited most recently, so editing a category's `default` budget after setting
+  a month-specific one silently reported the wrong number. Month-specific rows
+  now always win, with `updated_at` only breaking ties between rows of the same
+  kind.
+- The monthly spending query had no upper date bound, so a future-dated
+  transaction leaked into the current month's total.
+- A transfer whose second leg had not posted at the bank yet counted as
+  spending, because Wealthfolio only excludes a transfer once both legs are
+  *linked* and a solo leg can never be linked. Unpaired transfer legs now
+  import as spending-neutral placeholders that promote to a real linked
+  transfer when the other leg arrives, or expire to ordinary spending after
+  10 days if it never does.
+- On the Docker companion, a promoted transfer leg kept a phantom `$CASH`
+  asset (an update cannot clear a stored asset), which made the pair
+  permanently unlinkable. Both syncers now share one delete-and-re-create
+  linking path.
+- Report messages no longer break when a category name, error message, or bank
+  description contains Markdown characters — previously a single `_` or `*`
+  could make Telegram reject an entire report.
+- A corrupt addon secret no longer destroys a whole report or aborts alert
+  delivery mid-run.
+- Unchecking one report category could silently re-enable *all* of them, because
+  the "everything selected" check compared list lengths rather than membership
+  and the available-category list legitimately shrinks month to month.
+
+### Added
+
+- Two independent scheduled reports: a daily per-category spending check
+  (`DAILY_REPORT_SCHEDULE`) and a weekly month-to-date summary
+  (`WEEKLY_REPORT_SCHEDULE`, default Saturday). Previously one schedule existed
+  and the weekly toggle was stored but never read.
+- Per-report category selection, configured in the addon's Telegram section.
+- Sync health tracking: a footer on the daily report, plus a one-time Telegram
+  alert once syncs have been failing for 24 hours.
+- A one-time alert when a transfer pair repeatedly fails to link, rolled back
+  and retried if the alert itself fails to deliver.
+- `HEALTHCHECK` in the companion image.
+
+### Changed
+
+- Reports are built entirely from Wealthfolio's own category and budget data.
+  The keyword-based categoriser that guessed categories from transaction text
+  (and its settings UI) has been removed — it was a second, hand-maintained
+  guess that disagreed with Wealthfolio's real assignments.
+- The daily report leads with the true amount left this month and presents the
+  weekly figure as an explicitly approximate pace. The previous
+  `remaining ÷ weeks-left` figure doubled overnight mid-month and moved by only
+  a fraction of what was actually spent.
+
 ## [1.0.0] - 2026-07-26
 
 First public release.
