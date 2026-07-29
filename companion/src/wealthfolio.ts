@@ -141,7 +141,7 @@ export class WealthfolioClient {
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
-        body: JSON.stringify({ key, value }),
+        body: JSON.stringify({ key, secret: value }),
       },
     );
     if (!res.ok) throw new Error(`setAddonSecret failed: ${res.status}`);

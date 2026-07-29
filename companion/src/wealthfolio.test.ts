@@ -64,7 +64,9 @@ describe('WealthfolioClient', () => {
     const [url, opts] = mockFetch.mock.calls[1];
     expect(url).toBe('http://wealthfolio:8088/api/v1/activities/import');
     expect((opts as any).headers.Authorization).toBe('Bearer jwt-abc');
-    expect(JSON.parse((opts as any).body).activities).toHaveLength(1);
+    expect(JSON.parse((opts as any).body)).toEqual({
+      activities: [{ accountId: 'wf-a', activityType: 'DEPOSIT' }],
+    });
   });
 
   it('works without credentials when no auth configured (unauthenticated mode)', async () => {
@@ -128,13 +130,41 @@ describe('WealthfolioClient', () => {
     expect(v).toBeNull();
   });
 
-  it('sets an addon secret', async () => {
+  it('setAddonSecret POSTs { key, secret } (not { key, value }) with auth headers', async () => {
+    // Regression test: the real server rejects { key, value } with HTTP 422
+    // ("missing field `secret`"). Pin the exact wire shape so a future
+    // "helpful" rename can't silently reintroduce the bug.
+    mockFetch.mockResolvedValueOnce(loginResponse());
     mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ success: true }) });
-    const c = new WealthfolioClient('http://wf');
-    await c.setAddonSecret('simplefin-sync', 'my_key', 'my_val');
-    const [url, opts] = mockFetch.mock.calls[0];
+
+    const client = new WealthfolioClient('http://wf');
+    await client.login('password');
+    await client.setAddonSecret('simplefin-sync', 'my_key', 'my_val');
+
+    const [url, opts] = mockFetch.mock.calls[1];
     expect(url).toBe('http://wf/api/v1/addons/simplefin-sync/secrets');
-    expect(JSON.parse((opts as any).body)).toEqual({ key: 'my_key', value: 'my_val' });
+    expect((opts as any).method).toBe('POST');
+    expect((opts as any).headers['Content-Type']).toBe('application/json');
+    expect((opts as any).headers.Authorization).toBe('Bearer jwt-abc');
+    expect(JSON.parse((opts as any).body)).toEqual({ key: 'my_key', secret: 'my_val' });
+  });
+
+  it('checkImport POSTs { accountId, activities } to /activities/import/check', async () => {
+    mockFetch.mockResolvedValueOnce(loginResponse());
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => [] });
+
+    const client = new WealthfolioClient('http://wf');
+    await client.login('password');
+    await client.checkImport('wf-a', [{ activityType: 'DEPOSIT' }]);
+
+    const [url, opts] = mockFetch.mock.calls[1];
+    expect(url).toBe('http://wf/api/v1/activities/import/check');
+    expect((opts as any).method).toBe('POST');
+    expect((opts as any).headers.Authorization).toBe('Bearer jwt-abc');
+    expect(JSON.parse((opts as any).body)).toEqual({
+      accountId: 'wf-a',
+      activities: [{ activityType: 'DEPOSIT' }],
+    });
   });
 
   it('saveMany POSTs to /api/v1/activities/bulk', async () => {
