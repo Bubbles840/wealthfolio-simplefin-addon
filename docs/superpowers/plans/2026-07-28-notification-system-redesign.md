@@ -432,13 +432,14 @@ git commit -m "feat: add weekly-remaining daily digest and monthly summary forma
 - Modify: `companion/src/rest-host.ts`
 - Modify: `companion/src/rest-host.test.ts`
 - Modify: `src/utils/secrets.ts`
-- Create: `src/utils/secrets.test.ts`
+- Modify: `src/utils/secrets.test.ts` (already exists with ~7 tests — append a new `describe` block, do not overwrite)
+- Modify: `shared/fake-host.ts`
 
 **Interfaces:**
 - Produces (shared/sync-host.ts): `TransferLinkFailureEntry { count: number; firstFailedAt: string; alerted: boolean }`, added to `SyncStore`:
   - `getTransferLinkFailures(): Promise<Record<string, TransferLinkFailureEntry>>`
   - `setTransferLinkFailures(map: Record<string, TransferLinkFailureEntry>): Promise<void>`
-- Both implementers (`RestSyncStore` and `SecretsStore`) are updated in this same task, so `SyncStore` never has an incomplete implementer at any commit boundary.
+- **All THREE `SyncStore` implementers are updated in this same task**, so `SyncStore` never has an incomplete implementer at any commit boundary: `RestSyncStore` (`companion/src/rest-host.ts:126`), `SecretsStore` (`src/utils/secrets.ts`), and the test double at `shared/fake-host.ts:243`. Adding the interface methods without all three makes `tsc --noEmit` fail in BOTH projects (`shared/` is compiled by each), which would violate this plan's every-task-green constraint.
 
 - [ ] **Step 1: Add the interface to `shared/sync-host.ts`**
 
@@ -573,21 +574,42 @@ Add methods (after `setLinkedGroups`), following the exact `getLinkedGroups`/`se
   }
 ```
 
-- [ ] **Step 7: Run tests to verify they pass**
+- [ ] **Step 7: Implement in the `shared/fake-host.ts` test double (the third implementer)**
+
+`shared/fake-host.ts:243` declares `const store: SyncStore = { … }`, so it must satisfy the interface too or `tsc` fails in both projects. Add local state near the existing `let linkedGroups`:
+
+```typescript
+  let transferLinkFailures: Record<string, TransferLinkFailureEntry> = {};
+```
+
+and two methods on the `store` object, after `setLinkedGroups`:
+
+```typescript
+    async getTransferLinkFailures() {
+      return transferLinkFailures;
+    },
+    async setTransferLinkFailures(map: Record<string, TransferLinkFailureEntry>) {
+      transferLinkFailures = map;
+    },
+```
+
+Add `TransferLinkFailureEntry` to the existing `import type { … } from './sync-host.js';` block at the top. Task 7 later changes the initializer to seed from `seed.transferLinkFailures`; a plain `{}` is correct for now.
+
+- [ ] **Step 8: Run tests to verify they pass**
 
 Run: `cd companion && npx vitest run src/rest-host.test.ts && cd .. && npx vitest run src/utils/secrets.test.ts`
 Expected: PASS, both.
 
-- [ ] **Step 8: Run the full addon and companion type-checks and test suites**
+- [ ] **Step 9: Run the full addon and companion type-checks and test suites**
 
 Run: `npx tsc --noEmit && npm test && cd companion && npx tsc --noEmit && npm test`
-Expected: all four clean — `SyncStore` is now fully implemented on both sides, in the same commit.
+Expected: all four clean — `SyncStore` is now fully implemented across all three implementers, in the same commit.
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
-git add shared/sync-host.ts companion/src/rest-host.ts companion/src/rest-host.test.ts src/utils/secrets.ts src/utils/secrets.test.ts
-git commit -m "feat: add transfer-link-failure tracking to SyncStore, implement in both the companion and the addon"
+git add shared/sync-host.ts companion/src/rest-host.ts companion/src/rest-host.test.ts src/utils/secrets.ts src/utils/secrets.test.ts shared/fake-host.ts
+git commit -m "feat: add transfer-link-failure tracking to SyncStore, implement in all three implementers"
 ```
 
 ---
@@ -634,24 +656,9 @@ export interface FeedTx {
 
 No change needed to `changed()` — it already compares `row.type !== tx.type`, which is what flips when a placeholder promotes to a real transfer.
 
-- [ ] **Step 2: Seed the fake host's transfer-link-failures state (needed by this file to type-check against Task 5's `SyncStore`)**
+- [ ] **Step 2: (Already done in Task 5 — verify only, do not re-add)**
 
-In `shared/fake-host.ts`, add local state (near `let linkedGroups`):
-
-```typescript
-  let transferLinkFailures: Record<string, { count: number; firstFailedAt: string; alerted: boolean }> = {};
-```
-
-Add methods to the `store` object (after `setLinkedGroups`):
-
-```typescript
-    async getTransferLinkFailures() {
-      return transferLinkFailures;
-    },
-    async setTransferLinkFailures(map: Record<string, { count: number; firstFailedAt: string; alerted: boolean }>) {
-      transferLinkFailures = map;
-    },
-```
+`shared/fake-host.ts` already implements `getTransferLinkFailures`/`setTransferLinkFailures`; Task 5 added them because that file is the third `SyncStore` implementer and `tsc` fails in both projects without it. Confirm they are present (`grep -n "TransferLinkFailures" shared/fake-host.ts` → 2 method definitions plus the `let transferLinkFailures` state) and move on. If they are missing, STOP and report — a prior task regressed.
 
 - [ ] **Step 3: Write the failing tests**
 
@@ -886,14 +893,14 @@ export interface FakeHostSeed {
 }
 ```
 
-Change the `let transferLinkFailures = {}` added in Task 6 Step 2 to seed from it:
+Change the `let transferLinkFailures = {}` initializer added in **Task 5** to seed from it:
 
 ```typescript
-  let transferLinkFailures: Record<string, { count: number; firstFailedAt: string; alerted: boolean }> =
+  let transferLinkFailures: Record<string, TransferLinkFailureEntry> =
     seed.transferLinkFailures ?? {};
 ```
 
-(the getter/setter methods on `store` added in Task 6 are unchanged — they already read/write this variable).
+(the getter/setter methods on `store` added in Task 5 are unchanged — they already read/write this variable). Use the imported `TransferLinkFailureEntry` type in the `FakeHostSeed` field too, rather than re-spelling the inline object shape — it is already imported in this file as of Task 5.
 
 - [ ] **Step 2: Write the failing tests**
 
