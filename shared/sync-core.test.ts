@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { runSyncCore, VALUATION_POLL } from './sync-core.js';
+import { runSyncCore, VALUATION_POLL, IN_TRANSIT_TIMEOUT_SECONDS } from './sync-core.js';
 import { createFakeHost } from './fake-host.js';
 
 describe('runSyncCore', () => {
@@ -218,5 +218,193 @@ describe('runSyncCore', () => {
     expect(plug.activityType).toBe('DEPOSIT');
     expect(plug.amount).toBe(200);
     expect(plug.fee).toBe(0);
+  });
+
+  // --- Task 6: in-transit transfer placeholders ---
+
+  /** Posted an hour ago: recent enough that the other leg is still plausibly in
+   *  flight, so an unpaired transfer-typed row lands as a placeholder rather
+   *  than timing out. Must be relative to now — the timeout is measured against
+   *  the wall clock, so a fixed epoch would silently expire as time passes. */
+  const recentEpoch = () => Math.floor(Date.now() / 1000) - 3600;
+
+  /** One CASH account holding a single unpaired outbound transfer leg. */
+  const soloOutLegSeed = () => ({
+    accountSet: { errors: [], accounts: [{
+      id: 'sfin-1', name: 'Checking', currency: 'USD', balance: '0', 'balance-date': 1,
+      transactions: [{
+        id: 'tx-out', posted: recentEpoch(), amount: '-1300.00',
+        description: 'Online Transfer to Savings',
+      }],
+    }] },
+    mapping: { 'sfin-1': 'wf-a' } as Record<string, string>,
+    accountTypes: { 'wf-a': 'CASH' } as Record<string, string>,
+  });
+
+  it('imports a solo transfer-typed leg as a spending-neutral placeholder, not a bare transfer', async () => {
+    const { host, store, saved } = createFakeHost(soloOutLegSeed());
+    const result = await runSyncCore(host, store, {});
+    expect(result.imported).toBe(1);
+    const create = saved[0].creates![0];
+    // CREDIT (not TRANSFER_OUT), fee-side of the split since the amount left the account.
+    expect(create.activityType).toBe('CREDIT');
+    expect(create.fee).toBe(1300);
+    expect(create.amount).toBe(0);
+    // CREDIT books real cash only with the reserved cash asset attached.
+    expect(create.symbol).toEqual({ symbol: '$CASH-USD' });
+    expect(create.comment).toContain('↔️ In-transit transfer · ');
+    expect(create.comment).toContain('· tx-out');
+  });
+
+  it('adds cash for a solo INBOUND CASH transfer leg (amount side of the split)', async () => {
+    const { host, store, saved } = createFakeHost({
+      accountSet: { errors: [], accounts: [{
+        id: 'sfin-1', name: 'Checking', currency: 'USD', balance: '0', 'balance-date': 1,
+        transactions: [{
+          id: 'tx-in', posted: recentEpoch(), amount: '1300.00',
+          description: 'Online Transfer from Savings',
+        }],
+      }] },
+      mapping: { 'sfin-1': 'wf-a' },
+      accountTypes: { 'wf-a': 'CASH' },
+    });
+    await runSyncCore(host, store, {});
+    const create = saved[0].creates![0];
+    expect(create.activityType).toBe('CREDIT');
+    expect(create.amount).toBe(1300);
+    expect(create.fee).toBeUndefined();
+    expect(create.comment).toContain('↔️ In-transit transfer · ');
+  });
+
+  it('uses the card-shaped DEPOSIT for a solo CREDIT_CARD payment leg (no CREDIT, no fee split)', async () => {
+    // mapper types a positive, payment-shaped card amount as TRANSFER_IN, so an
+    // unpaid-off card payment reaches the placeholder path. On a card the proven
+    // spending-neutral shape is a plain DEPOSIT — CREDIT is only established for CASH.
+    const { host, store, saved } = createFakeHost({
+      accountSet: { errors: [], accounts: [{
+        id: 'sfin-1', name: 'Card', currency: 'USD', balance: '0', 'balance-date': 1,
+        transactions: [{
+          id: 'tx-pay', posted: recentEpoch(), amount: '1300.00',
+          description: 'PAYMENT THANK YOU',
+        }],
+      }] },
+      mapping: { 'sfin-1': 'wf-a' },
+      accountTypes: { 'wf-a': 'CREDIT_CARD' },
+    });
+    await runSyncCore(host, store, {});
+    const create = saved[0].creates![0];
+    expect(create.activityType).toBe('DEPOSIT');
+    expect(create.amount).toBe(1300);
+    expect(create.fee).toBeUndefined();
+    expect(create.symbol).toEqual({ symbol: '$CASH-USD' });
+    expect(create.comment).toContain('↔️ In-transit transfer · ');
+    expect(create.comment).toContain('· tx-pay');
+  });
+
+  it('promotes a placeholder to a real linked transfer once the matching leg appears on a later sync', async () => {
+    const seed = soloOutLegSeed();
+    const { host, store, saved, activities, links } = createFakeHost(seed);
+    await runSyncCore(host, store, {}); // first run: other leg not posted yet
+    expect(saved[0].creates![0].activityType).toBe('CREDIT');
+    const placeholderId = activities.get('wf-a')![0].id;
+
+    // Second run: the savings side has posted and that account is mapped too.
+    seed.accountSet.accounts.push({
+      id: 'sfin-2', name: 'Savings', currency: 'USD', balance: '0', 'balance-date': 1,
+      transactions: [{
+        id: 'tx-in', posted: recentEpoch(), amount: '1300.00',
+        description: 'Online Transfer from Checking',
+      }],
+    });
+    seed.mapping['sfin-2'] = 'wf-b';
+    await runSyncCore(host, store, { force: true });
+
+    // Updated in place — same row id, no second row.
+    expect(activities.get('wf-a')).toHaveLength(1);
+    const promoted = activities.get('wf-a')!.find((a) => a.id === placeholderId)!;
+    expect(promoted.activityType).toBe('TRANSFER_OUT');
+    expect(promoted.comment).not.toContain('In-transit');
+
+    // ...and the leg handed to linkPair reflects the promotion, not the stale
+    // placeholder: a host that re-creates both legs (the addon does) would
+    // otherwise resurrect a $0 CREDIT.
+    // The promoting update must state fee: 0 — the server leaves an omitted
+    // numeric field unchanged, so the fee-side split would otherwise survive.
+    const update = saved.flatMap((s) => s.updates ?? []).find((u) => u.id === placeholderId)!;
+    expect(update.amount).toBe(1300);
+    expect(update.fee).toBe(0);
+
+    expect(links).toHaveLength(1);
+    const outLeg = links[0].find((l) => l.txId === 'tx-out')!;
+    expect(outLeg.wfId).toBe(placeholderId);
+    expect(outLeg.activityType).toBe('TRANSFER_OUT');
+    expect(outLeg.absCents).toBe(130000);
+    expect(outLeg.comment).toBe('Online Transfer to Savings · tx-out');
+  });
+
+  it('converts a solo transfer-typed leg to plain WITHDRAWAL once it is older than the in-transit timeout', async () => {
+    const staleEpoch = Math.floor(Date.now() / 1000) - (IN_TRANSIT_TIMEOUT_SECONDS + 3600);
+    const { host, store, saved } = createFakeHost({
+      accountSet: { errors: [], accounts: [{
+        id: 'sfin-1', name: 'Checking', currency: 'USD', balance: '0', 'balance-date': 1,
+        transactions: [{
+          id: 'tx-out', posted: staleEpoch, amount: '-1300.00',
+          description: 'Online Transfer to Savings',
+        }],
+      }] },
+      mapping: { 'sfin-1': 'wf-a' },
+      accountTypes: { 'wf-a': 'CASH' },
+    });
+    const result = await runSyncCore(host, store, { force: true });
+    expect(result.imported).toBe(1);
+    const create = saved[0].creates![0];
+    expect(create.activityType).toBe('WITHDRAWAL');
+    expect(create.amount).toBe(1300);
+    expect(create.fee).toBeUndefined();
+    expect(create.comment).not.toContain('In-transit');
+  });
+
+  it('converts an already-imported placeholder in place when it times out, clearing the fee side', async () => {
+    const staleEpoch = Math.floor(Date.now() / 1000) - (IN_TRANSIT_TIMEOUT_SECONDS + 3600);
+    const staleDate = new Date(staleEpoch * 1000).toISOString().split('T')[0];
+    const { host, store, saved, activities } = createFakeHost({
+      accountSet: { errors: [], accounts: [{
+        id: 'sfin-1', name: 'Checking', currency: 'USD', balance: '0', 'balance-date': 1,
+        transactions: [{
+          id: 'tx-out', posted: staleEpoch, amount: '-1300.00',
+          description: 'Online Transfer to Savings',
+        }],
+      }] },
+      mapping: { 'sfin-1': 'wf-a' },
+      accountTypes: { 'wf-a': 'CASH' },
+      // The placeholder as an earlier run wrote it: the whole amount sits in
+      // `fee`, so the row a host reads back carries amount 0.
+      existing: new Map([['wf-a', [{
+        id: 'ph-1', accountId: 'wf-a', activityType: 'CREDIT', date: staleDate,
+        amount: 0, comment: '↔️ In-transit transfer · Online Transfer to Savings · tx-out',
+        sourceGroupId: null,
+      }]]]),
+    });
+    await runSyncCore(host, store, { force: true });
+
+    const update = saved.flatMap((s) => s.updates ?? []).find((u) => u.id === 'ph-1')!;
+    expect(update).toBeTruthy();
+    expect(update.activityType).toBe('WITHDRAWAL');
+    expect(update.amount).toBe(1300);
+    expect(update.fee).toBe(0); // the fee side must be zeroed, not left as-is
+    expect(update.comment).toBe('Online Transfer to Savings · tx-out');
+    expect(activities.get('wf-a')).toHaveLength(1); // converted, not duplicated
+  });
+
+  it('leaves an unchanged in-transit placeholder alone on the next sync (no update churn)', async () => {
+    const { host, store, saved } = createFakeHost(soloOutLegSeed());
+    await runSyncCore(host, store, {});
+    saved.length = 0;
+    // The fee-side placeholder stores amount 0, so reconciliation has to compare
+    // the BOOKED amount (absCents − feeCents) or it re-updates the row forever.
+    const second = await runSyncCore(host, store, { force: true });
+    expect(saved).toEqual([]);
+    expect(second.imported).toBe(0);
+    expect(second.skipped).toBe(1);
   });
 });

@@ -49,6 +49,12 @@ export const HEAL_WINDOW_MS = 89 * 24 * 60 * 60 * 1000; // ~90 days, under Simpl
  *  needs the full 89-day reach, and that's the manual button. */
 export const AUTO_HEAL_WINDOW_MS = 44 * 24 * 60 * 60 * 1000; // under SimpleFin's 45-day recommendation
 
+/** How long a transfer-typed transaction may sit without a detected pair
+ *  before we give up waiting and let it count as ordinary spending — wider
+ *  than TRANSFER_MATCH_WINDOW_SECONDS (5 days) so it never fires while a
+ *  normal pairing is still plausible. */
+export const IN_TRANSIT_TIMEOUT_SECONDS = 10 * 24 * 60 * 60; // 10 days
+
 /** Polling for freshly computed valuations after a first import (see the
  *  second-pass block in runSyncCore). Exported so tests can shrink the delay. */
 export const VALUATION_POLL = { attempts: 6, delayMs: 2500 };
@@ -193,6 +199,11 @@ async function hasAdjustmentToday(
 }
 
 export const PENDING_SUFFIX = ' · pending';
+
+/** Marks a spending-neutral placeholder standing in for a transfer leg whose
+ *  other side hasn't posted yet. A PREFIX, deliberately: the `… · <txId>`
+ *  suffix is what txIdFromComment reads, so nothing may follow it. */
+export const IN_TRANSIT_COMMENT_PREFIX = '↔️ In-transit transfer · ';
 
 /**
  * Wealthfolio only treats a transfer group as a genuine *internal* transfer when
@@ -445,6 +456,12 @@ export async function runSyncCore(
     sfAccountId: string;
     tx: SimplefinTransaction;
     type: ActivityType;
+    /** Cents to book as `fee` rather than `amount` — set only for an in-transit
+     *  placeholder, from the same neutralAdjustmentFields split balance plugs use. */
+    feeCents?: number;
+    /** Spending-neutral placeholder standing in for a transfer leg whose other
+     *  side hasn't posted yet (drives the comment prefix). */
+    inTransit?: boolean;
   }
   const preparedByAccount = new Map<string, PreparedTx[]>();
   const candidates: TransferCandidate[] = [];
@@ -487,6 +504,43 @@ export async function runSyncCore(
     for (const p of prepared) {
       const override = detection.typeByTxId.get(p.tx.id);
       if (override) p.type = override;
+    }
+  }
+
+  // A transfer-typed transaction with no detected pair yet is either still in
+  // transit (the other leg hasn't posted) or was never going to pair (a
+  // transfer-shaped description to an untracked external account). Either way a
+  // BARE transfer leg is the worst outcome: Wealthfolio only excludes a transfer
+  // from spending once both legs are LINKED, and a solo leg can never be linked,
+  // so it lands as spending. Import it as a spending-neutral placeholder while
+  // waiting; past the timeout give up and let it count as ordinary spending.
+  //
+  // The placeholder's shape comes wholly from neutralAdjustmentFields, per
+  // account type — CREDIT with the amount/fee split on CASH (the only place a
+  // subtype-less CREDIT is established as "Ignored by the spending classifier
+  // while still moving cash"), and the plain DEPOSIT/WITHDRAWAL that is already
+  // Ignored on a CREDIT_CARD or investment-style account. A card genuinely
+  // reaches here: mapper types a positive, payment-shaped card amount TRANSFER_IN.
+  const pairedTxIds = new Set<string>();
+  for (const pair of detection.pairs) {
+    pairedTxIds.add(pair.outTxId);
+    pairedTxIds.add(pair.inTxId);
+  }
+  const nowSec = Math.floor(Date.now() / 1000);
+  for (const prepared of preparedByAccount.values()) {
+    for (const p of prepared) {
+      if (!isTransferType(p.type) || pairedTxIds.has(p.tx.id)) continue;
+      const signed = signedByTxId.get(p.tx.id) ?? 0;
+      const postedAt = txEpoch(p.tx) ?? nowSec;
+      if (nowSec - postedAt > IN_TRANSIT_TIMEOUT_SECONDS) {
+        p.type = (signed >= 0 ? 'DEPOSIT' : 'WITHDRAWAL') as ActivityType;
+        continue;
+      }
+      const accountType = wfTypes.get(mapping[p.sfAccountId] ?? '') ?? '';
+      const { activityType, fee } = neutralAdjustmentFields(accountType, signed);
+      p.type = activityType;
+      p.feeCents = Math.round(fee * 100);
+      p.inTransit = true;
     }
   }
 
@@ -568,13 +622,15 @@ export async function runSyncCore(
     // in place rather than re-importing). A failed read of existing rows is
     // treated as "none" — the planner then creates everything and the host's
     // own dedup remains the backstop.
-    const feed: FeedTx[] = preparedAll.map(({ tx, type }) => ({
+    const feed: FeedTx[] = preparedAll.map(({ tx, type, feeCents, inTransit }) => ({
       txId: tx.id,
       wfAccountId,
       absCents: Math.round(Math.abs(parseFloat(tx.amount)) * 100),
       type,
       date: new Date(txEpoch(tx)! * 1000).toISOString().split('T')[0],
       pending: !!tx.pending,
+      ...(feeCents ? { feeCents } : {}),
+      ...(inTransit ? { inTransit: true } : {}),
     }));
     let existing: ExistingRow[] = [];
     try {
@@ -684,13 +740,26 @@ export async function runSyncCore(
       // an AssetResolutionInput object (a bare string 422s with "invalid type:
       // string, expected struct AssetResolutionInput").
       ...(isTransferType(t.type) ? {} : { symbol: { symbol: cashSymbol } }),
-      amount: t.absCents / 100,
+      // An in-transit placeholder books part (CASH outflow: all) of its amount as
+      // `fee` — the exact shape importAdjustmentActivity uses for a spending-
+      // neutral plug, where cash moves by `amount − fee − tax`. amount === 0 on
+      // that side is correct and intentional.
+      amount: (t.absCents - (t.feeCents ?? 0)) / 100,
+      ...(t.feeCents ? { fee: t.feeCents / 100 } : {}),
       currency: sfAccount.currency,
-      comment: `${descByTxId.get(t.txId) ?? ''} · ${t.txId}${t.pending ? PENDING_SUFFIX : ''}`,
+      // The in-transit marker goes at the FRONT: txIdFromComment parses the
+      // `… · <txId>` SUFFIX, and every reconciliation match depends on it.
+      comment: `${t.inTransit ? IN_TRANSIT_COMMENT_PREFIX : ''}${descByTxId.get(t.txId) ?? ''} · ${t.txId}${t.pending ? PENDING_SUFFIX : ''}`,
       // Transfer-link sourceGroupId is applied later, atomically (see flush).
     });
     const toActivityUpdate = (wfId: string, t: FeedTx): ActivityWrite => ({
       ...toActivityCreate(t),
+      // State the fee explicitly, even when it is 0. The server's numeric fields
+      // are patch-shaped (an omitted key means "leave unchanged"), so a
+      // placeholder promoting to a real transfer — or expiring to a plain
+      // WITHDRAWAL — would otherwise keep its fee-side split and book the
+      // wrong amount.
+      fee: (t.feeCents ?? 0) / 100,
       id: wfId,
     });
 
@@ -740,6 +809,32 @@ export async function runSyncCore(
             sourceGroupId: a.sourceGroupId ?? null,
           });
         }
+      }
+      // Same for rows updated IN PLACE: the snapshot registered above was read
+      // before the plan ran, so it still describes the row as it was. That matters
+      // most for an in-transit placeholder promoting to a real transfer — linkPair
+      // re-creates both legs verbatim from what it's handed (the addon must), so a
+      // stale snapshot would resurrect the placeholder's type and fee-side amount.
+      // Driven off the echo, so only rows the host confirms it wrote are refreshed.
+      const updatedFeedByTxId = new Map(plan.updates.map((u) => [u.to.txId, u.to]));
+      for (const a of result.updated ?? []) {
+        const txId = txIdFromComment(a.comment);
+        const t = txId ? updatedFeedByTxId.get(txId) : undefined;
+        if (!txId || !t || !a.id) continue;
+        const prior = linkRowByTxId.get(txId);
+        linkRowByTxId.set(txId, {
+          // `comment` is deliberately left unset so toLinkLeg rebuilds a clean
+          // `<description> · <txId>` — a promoted row must not keep the
+          // placeholder's in-transit prefix. absCents is the FULL amount: every
+          // row that reaches linkPair or the relink sweep is a real transfer leg
+          // (a placeholder is never paired), which books its whole amount.
+          wfId: a.id, wfAccountId: t.wfAccountId, txId, absCents: t.absCents,
+          type: t.type, date: t.date, pending: t.pending, currency: sfAccount.currency,
+          // An update cannot clear a stored asset, so a phantom one survives the
+          // promotion — keep it visible to the relink sweep below.
+          assetId: prior?.assetId,
+          sourceGroupId: a.sourceGroupId ?? prior?.sourceGroupId ?? null,
+        });
       }
     }
 
