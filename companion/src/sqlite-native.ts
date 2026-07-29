@@ -8,10 +8,109 @@
 import { existsSync } from 'fs';
 import { execSync } from 'child_process';
 import { DatabaseSync } from 'node:sqlite';
+import { descriptionFromComment } from '../../shared/sync-core.js';
 
 export interface NativeCategorySpending {
   categoryName: string;
   spent: number;
+}
+
+/** One individual spending transaction, ready to print. */
+export interface NativeSpendingTransaction {
+  /** Magnitude in dollars — always positive, like the aggregate reader's totals. */
+  amount: number;
+  /** Display-ready bank description: the stored note with the SimpleFin tx id,
+   *  the pending marker and the in-transit prefix removed (see
+   *  `descriptionFromComment`). Empty when the bank sent no description. */
+  description: string;
+  /** Parent category name where one exists, so the label matches every other
+   *  category figure in the reports. */
+  categoryName: string;
+}
+
+/**
+ * Runs one read-only query against wealthfolio.db, preferring `node:sqlite` and
+ * falling back to the `sqlite3` CLI.
+ *
+ * Every reader in this file shares this body, so the immutable-open URI, the
+ * two-path fallback and the "log and give up empty" behaviour exist once. The
+ * two paths return different shapes — `node:sqlite` gives objects keyed by the
+ * SELECT aliases, the CLI gives `|`-delimited text — so callers supply
+ * `fromCliParts` to rebuild a row from the split line, and alias their columns to
+ * the field names they want.
+ *
+ * `label` only names the reader in log lines.
+ */
+function queryNativeDb<Row>(
+  dbPath: string,
+  label: string,
+  query: string,
+  fromCliParts: (parts: string[]) => Row | null,
+): Row[] {
+  try {
+    const uri = dbPath.startsWith('file:') ? dbPath : `file:${dbPath}?immutable=1`;
+    const db = new DatabaseSync(uri);
+    const rows = db.prepare(query).all() as Row[];
+    db.close();
+    return rows;
+  } catch (err) {
+    console.error(`[simplefin-sync] node:sqlite ${label} error:`, err);
+  }
+
+  try {
+    const cmd = `sqlite3 "${dbPath}" "${query.replace(/\n/g, ' ')}"`;
+    const output = execSync(cmd, { encoding: 'utf8' });
+    const rows: Row[] = [];
+    for (const line of output.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      const row = fromCliParts(trimmed.split('|'));
+      if (row) rows.push(row);
+    }
+    return rows;
+  } catch (err) {
+    console.error(`[simplefin-sync] Failed to read native sqlite ${label}:`, err);
+    return [];
+  }
+}
+
+/**
+ * The date bounds are interpolated into SQL rather than bound as parameters (the
+ * sqlite3-CLI fallback path has no parameter binding), so they are validated
+ * rather than trusted. Every caller builds them from date arithmetic, so a
+ * failure here means a bug, not user input — refusing to run is the safe
+ * response either way.
+ */
+function validDateBounds(startInclusive: string, endExclusive: string): boolean {
+  const isDate = (s: string) => /^\d{4}-\d{2}-\d{2}$/.test(s);
+  if (isDate(startInclusive) && isDate(endExclusive)) return true;
+  console.error(`[simplefin-sync] Refusing spending query with malformed date bounds: ${startInclusive}..${endExclusive}`);
+  return false;
+}
+
+/**
+ * The joins and predicates that define "spending", shared verbatim by the
+ * aggregate reader and the biggest-transactions reader so the two can never
+ * disagree about what counts. In particular the transfers exclusion has to apply
+ * to both: a transfer miscategorised as spending is typically the largest row of
+ * the week and would otherwise top the list.
+ */
+const SPENDING_FROM = `
+    FROM activities a
+    JOIN activity_taxonomy_assignments ata ON a.id = ata.activity_id
+    JOIN taxonomy_categories tc ON ata.category_id = tc.id
+    LEFT JOIN taxonomy_categories parent ON tc.parent_id = parent.id`;
+
+/** The rolled-up label: the parent category where there is one, else the
+ *  category itself. Both readers select and filter on this same expression. */
+const SPENDING_CATEGORY = `COALESCE(parent.name, tc.name)`;
+
+function spendingWhere(startInclusive: string, endExclusive: string): string {
+  return `
+    WHERE a.activity_date >= '${startInclusive}'
+      AND a.activity_date < '${endExclusive}'
+      AND UPPER(a.activity_type) IN ('WITHDRAWAL', 'FEE', 'TAX')
+      AND LOWER(${SPENDING_CATEGORY}) NOT IN ('transfers', 'transfer', 'internal transfers', 'savings & transfers')`;
 }
 
 /**
@@ -21,8 +120,8 @@ export interface NativeCategorySpending {
  *
  * This is the single implementation of the spending query; the month-scoped
  * reader below computes its own bounds and delegates here, so the type filter,
- * the transfers exclusion, the parent-category rollup and the
- * node:sqlite-then-sqlite3-CLI fallback exist in exactly one place.
+ * the transfers exclusion and the parent-category rollup exist in exactly one
+ * place.
  */
 export function getNativeWealthfolioSpendingBetween(
   dbPath: string,
@@ -32,69 +131,35 @@ export function getNativeWealthfolioSpendingBetween(
   if (!dbPath || !existsSync(dbPath)) {
     return {};
   }
-
-  // The bounds are interpolated into SQL rather than bound as parameters (the
-  // sqlite3-CLI fallback path has no parameter binding), so they are validated
-  // rather than trusted. Every caller builds them from date arithmetic, so a
-  // failure here means a bug, not user input — refusing to run is the safe
-  // response either way.
-  const isDate = (s: string) => /^\d{4}-\d{2}-\d{2}$/.test(s);
-  if (!isDate(startInclusive) || !isDate(endExclusive)) {
-    console.error(`[simplefin-sync] Refusing spending query with malformed date bounds: ${startInclusive}..${endExclusive}`);
+  if (!validDateBounds(startInclusive, endExclusive)) {
     return {};
   }
 
   const query = `
     SELECT
-      COALESCE(parent.name, tc.name) as parent_category,
+      ${SPENDING_CATEGORY} as parent_category,
       ROUND(SUM(ABS(CAST(a.amount AS REAL))), 2) as total_spent
-    FROM activities a
-    JOIN activity_taxonomy_assignments ata ON a.id = ata.activity_id
-    JOIN taxonomy_categories tc ON ata.category_id = tc.id
-    LEFT JOIN taxonomy_categories parent ON tc.parent_id = parent.id
-    WHERE a.activity_date >= '${startInclusive}'
-      AND a.activity_date < '${endExclusive}'
-      AND UPPER(a.activity_type) IN ('WITHDRAWAL', 'FEE', 'TAX')
-      AND LOWER(COALESCE(parent.name, tc.name)) NOT IN ('transfers', 'transfer', 'internal transfers', 'savings & transfers')
-    GROUP BY COALESCE(parent.name, tc.name);
+    ${SPENDING_FROM}
+    ${spendingWhere(startInclusive, endExclusive)}
+    GROUP BY ${SPENDING_CATEGORY};
   `;
 
+  const rows = queryNativeDb<{ parent_category: string; total_spent: number }>(
+    dbPath,
+    'spending',
+    query,
+    (parts) => (parts.length === 2
+      ? { parent_category: parts[0].trim(), total_spent: parseFloat(parts[1]) || 0 }
+      : null),
+  );
+
   const result: Record<string, number> = {};
-
-  try {
-    const uri = dbPath.startsWith('file:') ? dbPath : `file:${dbPath}?immutable=1`;
-    const db = new DatabaseSync(uri);
-    const rows = db.prepare(query).all() as Array<{ parent_category: string; total_spent: number }>;
-    for (const r of rows) {
-      if (r.parent_category) {
-        result[r.parent_category] = typeof r.total_spent === 'number' ? r.total_spent : parseFloat(String(r.total_spent || 0));
-      }
+  for (const r of rows) {
+    if (r.parent_category) {
+      result[r.parent_category] = typeof r.total_spent === 'number' ? r.total_spent : parseFloat(String(r.total_spent || 0));
     }
-    db.close();
-    return result;
-  } catch (err) {
-    console.error('[simplefin-sync] node:sqlite spending error:', err);
   }
-
-  try {
-    const cmd = `sqlite3 "${dbPath}" "${query.replace(/\n/g, ' ')}"`;
-    const output = execSync(cmd, { encoding: 'utf8' });
-
-    for (const line of output.split('\n')) {
-      const parts = line.trim().split('|');
-      if (parts.length === 2) {
-        const catName = parts[0].trim();
-        const spent = parseFloat(parts[1]) || 0;
-        if (catName) {
-          result[catName] = spent;
-        }
-      }
-    }
-    return result;
-  } catch (err) {
-    console.error('[simplefin-sync] Failed to read native sqlite database:', err);
-    return {};
-  }
+  return result;
 }
 
 /**
@@ -107,6 +172,80 @@ export function getNativeWealthfolioSpending(dbPath: string, yearMonth: string):
 }
 
 /**
+ * The `limit` biggest INDIVIDUAL spending transactions in `[startInclusive,
+ * endExclusive)` — largest first — rather than the per-category rollup the
+ * readers above produce. Feeds the Saturday report's "biggest this week"
+ * section, which exists to say WHY the month's remaining figure moved.
+ *
+ * Shares the type filter, the transfers exclusion, the parent-category rollup,
+ * the half-open bounds and the dual execution path with
+ * `getNativeWealthfolioSpendingBetween` (see `SPENDING_FROM` / `spendingWhere` /
+ * `queryNativeDb`), so the list can only ever contain rows the headline total
+ * also counted.
+ *
+ * Two things worth knowing about the description:
+ *  - the column is `notes`. `comment` is the REST API's name for the same field
+ *    and `SELECT comment FROM activities` fails outright with `no such column`.
+ *  - what is stored there is not display text; `descriptionFromComment` takes
+ *    the bookkeeping decorations back off.
+ *
+ * `limit` is interpolated (the CLI fallback cannot bind parameters), so it is
+ * floored to an integer and a non-positive or non-finite value returns `[]`
+ * without touching the database — the same "refuse rather than guess" stance the
+ * date bounds take.
+ */
+export function getNativeWealthfolioTopSpending(
+  dbPath: string,
+  startInclusive: string,
+  endExclusive: string,
+  limit: number,
+): NativeSpendingTransaction[] {
+  if (!dbPath || !existsSync(dbPath)) {
+    return [];
+  }
+  if (!validDateBounds(startInclusive, endExclusive)) {
+    return [];
+  }
+  const n = Number.isFinite(limit) ? Math.floor(limit) : 0;
+  if (n < 1) return [];
+
+  const query = `
+    SELECT
+      ROUND(ABS(CAST(a.amount AS REAL)), 2) as amount,
+      COALESCE(a.notes, '') as notes,
+      ${SPENDING_CATEGORY} as parent_category
+    ${SPENDING_FROM}
+    ${spendingWhere(startInclusive, endExclusive)}
+    ORDER BY ABS(CAST(a.amount AS REAL)) DESC
+    LIMIT ${n};
+  `;
+
+  // The CLI fallback splits on `|`, which a bank description can legitimately
+  // contain, so the DESCRIPTION is read as "everything between the first and
+  // last field" rather than by index. (A `|` in a category name would still
+  // confuse it; the aggregate reader has the same exposure, and the node:sqlite
+  // path — the one that actually runs — is unaffected.)
+  const rows = queryNativeDb<{ amount: number | string; notes: string; parent_category: string }>(
+    dbPath,
+    'top spending',
+    query,
+    (parts) => (parts.length >= 3
+      ? {
+          amount: parseFloat(parts[0]) || 0,
+          notes: parts.slice(1, -1).join('|'),
+          parent_category: parts[parts.length - 1].trim(),
+        }
+      : null),
+  );
+
+  return rows.map((r) => ({
+    amount: typeof r.amount === 'number' ? r.amount : parseFloat(String(r.amount || 0)),
+    description: descriptionFromComment(r.notes),
+    categoryName: r.parent_category,
+  }));
+}
+
+/**
  * Returns native category budget targets from wealthfolio.db for a given month or default.
  */
 export function getNativeWealthfolioBudgets(dbPath: string, yearMonth: string): Record<string, number> {
@@ -114,17 +253,17 @@ export function getNativeWealthfolioBudgets(dbPath: string, yearMonth: string): 
 
   const query = `
     WITH ranked_budgets AS (
-      SELECT 
+      SELECT
         category_id,
         CAST(amount AS REAL) as amount,
         ROW_NUMBER() OVER (
-          PARTITION BY category_id 
+          PARTITION BY category_id
           ORDER BY (period_key = '${yearMonth}') DESC, updated_at DESC
         ) as rn
       FROM budget_targets
       WHERE period_key = '${yearMonth}' OR period_key = 'default'
     )
-    SELECT 
+    SELECT
       COALESCE(parent.name, tc.name) as parent_category,
       ROUND(SUM(rb.amount), 2) as total_budget
     FROM ranked_budgets rb
@@ -134,40 +273,20 @@ export function getNativeWealthfolioBudgets(dbPath: string, yearMonth: string): 
     GROUP BY COALESCE(parent.name, tc.name);
   `;
 
+  const rows = queryNativeDb<{ parent_category: string; total_budget: number }>(
+    dbPath,
+    'budget',
+    query,
+    (parts) => (parts.length === 2
+      ? { parent_category: parts[0].trim(), total_budget: parseFloat(parts[1]) || 0 }
+      : null),
+  );
+
   const result: Record<string, number> = {};
-
-  try {
-    const uri = dbPath.startsWith('file:') ? dbPath : `file:${dbPath}?immutable=1`;
-    const db = new DatabaseSync(uri);
-    const rows = db.prepare(query).all() as Array<{ parent_category: string; total_budget: number }>;
-    for (const r of rows) {
-      if (r.parent_category) {
-        result[r.parent_category] = typeof r.total_budget === 'number' ? r.total_budget : parseFloat(String(r.total_budget || 0));
-      }
+  for (const r of rows) {
+    if (r.parent_category) {
+      result[r.parent_category] = typeof r.total_budget === 'number' ? r.total_budget : parseFloat(String(r.total_budget || 0));
     }
-    db.close();
-    return result;
-  } catch (err) {
-    console.error('[simplefin-sync] node:sqlite budget error:', err);
   }
-
-  try {
-    const cmd = `sqlite3 "${dbPath}" "${query.replace(/\n/g, ' ')}"`;
-    const output = execSync(cmd, { encoding: 'utf8' });
-
-    for (const line of output.split('\n')) {
-      const parts = line.trim().split('|');
-      if (parts.length === 2) {
-        const catName = parts[0].trim();
-        const budget = parseFloat(parts[1]) || 0;
-        if (catName) {
-          result[catName] = budget;
-        }
-      }
-    }
-    return result;
-  } catch (err) {
-    console.error('[simplefin-sync] Failed to read native sqlite budget targets:', err);
-    return {};
-  }
+  return result;
 }

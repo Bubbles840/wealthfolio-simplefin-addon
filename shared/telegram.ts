@@ -497,24 +497,90 @@ export function formatSyncHealthFooter(health: SyncHealth | null | undefined, no
  * with the supporting arithmetic on one quiet italic line beneath instead of a
  * parenthetical trailing the headline.
  */
-export function formatMonthlyRemainingSummary(totalSpent: number, totalBudget: number): string {
+export function formatMonthlyRemainingSummary(
+  totalSpent: number,
+  totalBudget: number,
+  topSpends: WeeklyTopSpend[] = [],
+): string {
   const remaining = totalBudget - totalSpent;
   const pct = totalBudget > 0 ? Math.round((totalSpent / totalBudget) * 100) : 0;
   const header = `📊 *Weekly Budget Check-In*\n\n`;
   const hint = `_Add budgets in Wealthfolio, or check which categories are selected for the weekly report._`;
+  // Appended to BOTH branches below: "what were my biggest spends" is a fact
+  // that does not depend on a budget existing, and the zero-budget branch —
+  // reachable by deselecting every weekly category, or before any budget is
+  // created — is exactly where the reader has least else to go on.
+  const biggest = formatBiggestThisWeek(topSpends);
   // Whole dollars throughout: every figure in this report is a month-level
   // total, and none of them is a number the reader spends against directly.
   if (totalBudget <= 0) {
     const headline = totalSpent > 0
       ? `🏷️ *${moneyWhole(totalSpent)} spent* · no budget set`
       : `🏷️ Nothing spent, no budgets set this month.`;
-    return `${header}${headline}\n${hint}`;
+    return `${header}${headline}\n${hint}${biggest}`;
   }
   const headline = remaining < 0
     // `Math.abs` explicitly: "over budget" states the direction.
     ? `🚨 *${moneyWhole(Math.abs(remaining))} over budget* this month`
     : `💰 *${moneyWhole(remaining)} left* this month`;
-  return `${header}${headline}\n_spent ${moneyWhole(totalSpent)} of ${moneyWhole(totalBudget)} · ${pct}%_`;
+  return `${header}${headline}\n_spent ${moneyWhole(totalSpent)} of ${moneyWhole(totalBudget)} · ${pct}%_${biggest}`;
+}
+
+/** One individual spending transaction for the weekly report's "biggest this
+ *  week" section. Plain data: the caller decides the window and does the date
+ *  arithmetic, this module only renders. */
+export interface WeeklyTopSpend {
+  /** Dollars. Rendered unsigned — the heading already says these are spends — so
+   *  a caller may pass either sign. */
+  amount: number;
+  /** Display-ready bank description, already stripped of the stored note's tx id
+   *  and markers. UNTRUSTED: card-network descriptors routinely contain `*` and
+   *  `_`. May be empty when the bank sent no description. */
+  description: string;
+  /** Rolled-up category label, matching the names used everywhere else in the
+   *  reports. User-entered, so equally untrusted. */
+  category: string;
+}
+
+/**
+ * The weekly report's supporting section: the few biggest individual spends of
+ * the current week, which is what gives the one headline number its "why".
+ *
+ * Returns '' — appended to nothing — when the week held no spending. A heading
+ * with no rows under it announces a fact and then fails to deliver it, and an
+ * empty week is a real state (a holiday, a fresh install, a card not yet linked).
+ *
+ * Layout notes, all in service of one glance on a phone:
+ *  - `amount · merchant · category`, three fields, no bullet and no per-row
+ *    emoji: at five rows the emoji column reads as decoration rather than
+ *    information, and the section heading already groups them.
+ *  - whole dollars, like every other figure in this report. These are
+ *    retrospective context, not an allowance anyone spends against, so `money`'s
+ *    cents (kept precisely because an allowance must never be rounded UP) would
+ *    add a ragged decimal column for nothing.
+ *  - no bold on the rows. Bold is reserved for the single figure the report is
+ *    about; five more bold figures would compete with it.
+ *  - a row whose description is empty renders as `amount · category` rather than
+ *    leaving a hollow ` ·  · ` where the merchant should be.
+ *
+ * SAFETY, and the reason the bold placement above is not merely taste: both the
+ * description and the category are escaped AND kept outside every Markdown
+ * entity. Legacy Markdown does not honour a backslash escape inside an entity,
+ * so `*SQ \*BLUE BOTTLE*` still leaves an unbalanced entity and Telegram rejects
+ * the ENTIRE message with a 400 — the whole report silently fails to arrive.
+ * Card descriptors are the likeliest text in this system to contain a `*`, and
+ * this section prints five of them.
+ */
+function formatBiggestThisWeek(spends: WeeklyTopSpend[]): string {
+  if (spends.length === 0) return '';
+  const lines = spends.map((s) => {
+    // `Math.abs` explicitly, per the rule in `formatDollars`' comment: the
+    // heading is what states the direction.
+    const figure = moneyWhole(Math.abs(s.amount));
+    const fields = [figure, escapeMarkdown(s.description), escapeMarkdown(s.category)].filter((f) => f !== '');
+    return fields.join(' · ');
+  });
+  return `\n\n*Biggest this week*\n${lines.join('\n')}`;
 }
 
 export interface MonthlyWrapUpCategory {

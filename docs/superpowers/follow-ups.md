@@ -4,8 +4,10 @@ Findings that survived a review cycle without being fixed, with enough context
 to act on them later. Each says why it was deferred, so a future reader can
 tell "decided against" from "not got to yet".
 
-Last updated: 2026-07-29, after adding the monthly wrap-up report (three new
-entries under "Smaller items"). Previous revision: 2026-07-29, after adding the
+Last updated: 2026-07-29, after adding the weekly report's "biggest this week"
+section (two new entries under "Smaller items"). Previous revision: 2026-07-29,
+after adding the monthly wrap-up report (three new
+entries under "Smaller items"). Earlier: 2026-07-29, after adding the
 large-transaction and balance-drift Telegram alerts (which surfaced new item 3;
 former items 3 and 4 are now 4 and 5). Earlier: 2026-07-29, after fixing the
 companion drift inflation
@@ -203,6 +205,25 @@ Fix directions, roughly in order of appeal:
   monthly wrap-up can currently only be disabled or narrowed by hand-editing the
   `telegram_config` secret. Deliberate — the settings UI was scoped out of the
   report's own task.
+- **`weeklyTopSpendCount` has no UI,** same as `monthlyReportEnabled` above: the
+  Saturday report's "biggest this week" section defaults to 5 rows and can only
+  be resized or switched off (`0`) by hand-editing the `telegram_config` secret.
+  Deliberate — the settings UI was scoped out of the section's own task.
+- **The "biggest this week" list is NOT narrowed by `weeklyReportCategories`,**
+  while the headline total above it is. Deliberate: the section answers "where
+  did the money go this week", and suppressing the week's largest charge because
+  its category is not budgeted would mislead. Each row carries its category, so
+  a reader can see when a listed spend is outside the budgeted set — but the two
+  halves of the message do describe slightly different populations. If this ever
+  needs to change, filter in SQL by category ID (never by interpolating
+  user-entered category NAMES into the query) and over-fetch, since the `LIMIT`
+  applies before any post-filter.
+- **A multi-category activity is listed once per assignment.** The
+  `activity_taxonomy_assignments` join can match an activity more than once, so
+  such a row would appear twice in the top-N list (and is already double-counted
+  by the two aggregate readers). Not observed in practice — Wealthfolio's UI
+  assigns one category per activity — and fixing it properly means deciding
+  which category owns the spend.
 - **All three reports write `available_report_categories`,** and the monthly one
   publishes the union for the month it reports — i.e. the PREVIOUS month. On the
   1st the checklist therefore reflects last month until the next morning's daily

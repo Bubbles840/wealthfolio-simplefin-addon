@@ -315,6 +315,40 @@ export function txIdFromComment(text: string | null | undefined): string | null 
   return sep === -1 ? null : c.slice(sep + 3);
 }
 
+/**
+ * The human half of a stored comment/note: the bank's description, with every
+ * bookkeeping decoration this module writes taken back off — the exact inverse of
+ * `txIdFromComment`, which reads the id from the other side of the same
+ * separator.
+ *
+ * Needed because a stored note is never display-ready. Every synced activity's
+ * note is `<bank description> · <SimpleFin tx id>`, optionally with
+ * ` · pending`, and an in-transit placeholder additionally carries
+ * `IN_TRANSIT_COMMENT_PREFIX` in front. Rendering that raw shows a reader
+ * `WHOLEFOODS #123 · TRN-a1b2c3d4-…`, which is ugly and leaks an internal id.
+ *
+ * `lastIndexOf`, matching `txIdFromComment` — and the side matters: everything
+ * BEFORE the final separator is the description, so a description that itself
+ * contains ` · ` (`COSTCO GAS · PUMP 4 · TRN-x`) survives intact and only the
+ * trailing id field is dropped. Splitting on the FIRST separator instead would
+ * truncate the merchant AND disagree with `txIdFromComment` about where the id
+ * begins.
+ *
+ * A note carrying no separator at all (a hand-entered Wealthfolio activity) has
+ * no id to strip and is returned as-is. A blank result is legitimate — the
+ * SimpleFin description can be empty, leaving nothing but the id — so callers
+ * must be able to render a row without one rather than printing an empty field.
+ */
+export function descriptionFromComment(text: string | null | undefined): string {
+  let c = text ?? '';
+  // Prefix first: it ENDS with ' · ', so leaving it on would be harmless here
+  // (lastIndexOf looks at the other end) but only by luck.
+  if (c.startsWith(IN_TRANSIT_COMMENT_PREFIX)) c = c.slice(IN_TRANSIT_COMMENT_PREFIX.length);
+  if (c.endsWith(PENDING_SUFFIX)) c = c.slice(0, -PENDING_SUFFIX.length);
+  const sep = c.lastIndexOf(' · ');
+  return (sep === -1 ? c : c.slice(0, sep)).trim();
+}
+
 /** An existing row plus the two things linking needs that reconciliation
  *  doesn't: the account's currency, and whatever group the host says the row is
  *  already in (only meaningful when `capabilities.readsSourceGroupId`). */

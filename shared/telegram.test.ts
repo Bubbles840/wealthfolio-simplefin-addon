@@ -749,6 +749,101 @@ describe('formatMonthlyRemainingSummary', () => {
   });
 });
 
+describe('formatMonthlyRemainingSummary — biggest spends this week', () => {
+  const spends = [
+    { amount: 412.37, description: 'WHOLE FOODS', category: 'Food & Dining' },
+    { amount: 180, description: 'DELTA AIR LINES', category: 'Transportation' },
+    { amount: 95.5, description: 'TARGET', category: 'Shopping' },
+  ];
+
+  it('appends the section below the headline, one scannable line per transaction', () => {
+    expect(formatMonthlyRemainingSummary(1850, 2400, spends)).toBe(
+      '📊 *Weekly Budget Check-In*\n'
+      + '\n'
+      + '💰 *$550 left* this month\n'
+      + '_spent $1,850 of $2,400 · 77%_\n'
+      + '\n'
+      + '*Biggest this week*\n'
+      + '$412 · WHOLE FOODS · Food & Dining\n'
+      + '$180 · DELTA AIR LINES · Transportation\n'
+      + '$96 · TARGET · Shopping',
+    );
+  });
+
+  it('omits the section entirely when nothing was spent this week', () => {
+    // An empty heading is noise: it states a fact ("here are the biggest") and
+    // then fails to deliver it.
+    const text = formatMonthlyRemainingSummary(1850, 2400, []);
+    expect(text).not.toContain('Biggest');
+    expect(text).toBe(formatMonthlyRemainingSummary(1850, 2400));
+    // No trailing blank line left behind where the section would have gone —
+    // callers may append a block of their own.
+    expect(text).toBe(text.trimEnd());
+  });
+
+  it('shows however many there are — fewer than five is normal', () => {
+    const text = formatMonthlyRemainingSummary(1850, 2400, spends.slice(0, 1));
+    expect(text).toContain('*Biggest this week*\n$412 · WHOLE FOODS · Food & Dining');
+    expect(text).not.toContain('DELTA');
+  });
+
+  it('still lists the week\'s biggest spends when no budget is set', () => {
+    // The zero-budget branch returns early, so this is the one that regresses if
+    // the section is appended in only one place. "What did I spend" is a fact
+    // that does not depend on a budget existing.
+    const text = formatMonthlyRemainingSummary(507.87, 0, spends);
+    expect(text).toContain('🏷️ *$508 spent* · no budget set');
+    expect(text).toContain('*Biggest this week*');
+    expect(text).toContain('$412 · WHOLE FOODS · Food & Dining');
+  });
+
+  it('escapes a `*`-laden card descriptor and leaves the whole message balanced', () => {
+    // The single most dangerous input in this system. Legacy Markdown does NOT
+    // honour a backslash escape inside an entity, so a bolded `*SQ \*BLUE
+    // BOTTLE*` would still leave an unbalanced entity and Telegram would reject
+    // the ENTIRE message with a 400 — the report would simply never arrive.
+    // Hence: escaped, and outside every entity.
+    const text = formatMonthlyRemainingSummary(1850, 2400, [
+      { amount: 42, description: 'SQ *BLUE BOTTLE **COFFEE*', category: 'Food_Dining' },
+      { amount: 12, description: 'PAYPAL *WIKIPEDIA', category: 'Charity' },
+    ]);
+    expect(text).toContain('$42 · SQ \\*BLUE BOTTLE \\*\\*COFFEE\\* · Food\\_Dining');
+    expect(text).toContain('$12 · PAYPAL \\*WIKIPEDIA · Charity');
+
+    // Strip the escapes, then count what Telegram would actually parse: only the
+    // report's own deliberate entities survive — the header, the headline figure
+    // and the section heading make three balanced bold pairs — and no stray `_`
+    // from the category name.
+    const unescaped = text.replace(/\\[_*`[]/g, '');
+    expect((unescaped.match(/\*/g) ?? [])).toHaveLength(6);
+    expect((unescaped.match(/_/g) ?? [])).toHaveLength(2); // the italic arithmetic line
+  });
+
+  it('renders the amount unsigned and in whole dollars, with no bold on the rows', () => {
+    // Unsigned: these are spends, which the heading already says. Whole dollars:
+    // the rest of this report is whole-dollar context and cents on a 3-field row
+    // wrap on a phone. No bold: five bold figures would fight the one figure the
+    // report is actually about.
+    const text = formatMonthlyRemainingSummary(1850, 2400, [
+      { amount: -412.37, description: 'WHOLE FOODS', category: 'Food & Dining' },
+    ]);
+    expect(text).toContain('\n$412 · WHOLE FOODS · Food & Dining');
+    expect(text).not.toContain('-$412');
+    expect(text).not.toContain('*$412');
+  });
+
+  it('falls back to the category alone when the bank sent no description', () => {
+    // A SimpleFin transaction can carry an empty description, which leaves the
+    // stored note as nothing but the tx id. ` ·  · Shopping` would read as a
+    // rendering bug.
+    const text = formatMonthlyRemainingSummary(1850, 2400, [
+      { amount: 30, description: '', category: 'Shopping' },
+    ]);
+    expect(text).toContain('\n$30 · Shopping');
+    expect(text).not.toContain('·  ·');
+  });
+});
+
 describe('formatLargeTransactionAlert', () => {
   it('renders the figure in bold with the description and account beside it', () => {
     expect(formatLargeTransactionAlert({

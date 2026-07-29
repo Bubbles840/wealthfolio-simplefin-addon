@@ -15,7 +15,7 @@ import { RestSyncHost, RestSyncStore } from './rest-host.js';
 import { WealthfolioClient } from './wealthfolio.js';
 import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatMonthlyWrapUp, formatSyncHealthFooter, formatLargeTransactionAlert, formatBalanceDriftAlert, escapeMarkdown } from '../../shared/telegram.js';
 import type { SyncHealth } from '../../shared/telegram.js';
-import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets } from './sqlite-native.js';
+import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending } from './sqlite-native.js';
 
 const logLevel: 'info' | 'debug' =
   process.env.LOG_LEVEL === 'debug' ? 'debug' : 'info';
@@ -487,6 +487,20 @@ function daysLeftInMonthInclusive(now: Date): number {
 }
 
 /**
+ * The most recent Monday on or before `now` — the calendar week, with no month
+ * boundary applied.
+ *
+ * Split out of `weekStartDate` so the two consumers can differ on the clamp
+ * without either recomputing "which Monday": the daily digest needs the clamped
+ * start (a budget cannot be spent before its month), the weekly report's
+ * biggest-spends window needs the true week (see `sendWeeklyTelegramReport`).
+ */
+export function mondayOnOrBefore(now: Date): Date {
+  const backToMonday = (now.getDay() + 6) % 7; // Monday -> 0, Sunday -> 6
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate() - backToMonday);
+}
+
+/**
  * The start of the week the weekly envelope is measured from: the most recent
  * Monday on or before today, clamped to the 1st of the month.
  *
@@ -500,8 +514,7 @@ function daysLeftInMonthInclusive(now: Date): number {
  * in `shared/`, which stays a pure string builder fed plain numbers.
  */
 export function weekStartDate(now: Date): Date {
-  const backToMonday = (now.getDay() + 6) % 7; // Monday -> 0, Sunday -> 6
-  const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - backToMonday);
+  const monday = mondayOnOrBefore(now);
   const firstOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
   return monday.getTime() < firstOfMonth.getTime() ? firstOfMonth : monday;
 }
@@ -621,6 +634,26 @@ export async function sendDailyTelegramReport(wfClient: WealthfolioClient): Prom
   }
 }
 
+/** How many of the week's biggest spends the Saturday report lists when the
+ *  config says nothing. Five fits a phone screen under the headline without
+ *  turning the report into a statement. */
+const DEFAULT_WEEKLY_TOP_SPEND_COUNT = 5;
+
+/**
+ * Sends the Saturday check-in: the month's remaining figure, plus the week's
+ * biggest individual spends underneath it so that one number has a "why".
+ *
+ * The window for those spends is the TRUE calendar week — `mondayOnOrBefore`,
+ * NOT the digest's `weekStartDate`. The digest clamps its week to the 1st of the
+ * month because a monthly budget cannot be spent before the month began; that
+ * reasoning does not apply to "what did I spend this week", and the clamp would
+ * do real damage here. This report is scheduled for Saturday, so on any month
+ * whose 1st falls Tue–Sat the clamp would silently shrink the window — on
+ * Saturday 1 August 2026 to a single day — while the heading still said
+ * "this week". The bound stays half-open and runs a full seven days from that
+ * Monday, so the section covers exactly Monday–Sunday however the month falls
+ * and whatever day the report is triggered on.
+ */
 export async function sendWeeklyTelegramReport(wfClient: WealthfolioClient): Promise<void> {
   const tgRaw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_config');
   const tg = parseSecretJson<any>(tgRaw, 'telegram_config');
@@ -643,7 +676,30 @@ export async function sendWeeklyTelegramReport(wfClient: WealthfolioClient): Pro
   const names = filterCategories(allNames, tg.weeklyReportCategories);
   const totalSpent = names.reduce((sum, n) => sum + (spentMap[n] ?? 0), 0);
   const totalBudget = names.reduce((sum, n) => sum + (budgetMap[n] ?? 0), 0);
-  const message = formatMonthlyRemainingSummary(totalSpent, totalBudget);
+
+  // `0` (or negative) turns the section off without touching the rest of the
+  // report; absent means the default, so a config written before this section
+  // existed gets it.
+  const topCount = typeof tg.weeklyTopSpendCount === 'number'
+    ? tg.weeklyTopSpendCount
+    : DEFAULT_WEEKLY_TOP_SPEND_COUNT;
+  const weekStart = mondayOnOrBefore(now);
+  const weekEnd = new Date(weekStart.getFullYear(), weekStart.getMonth(), weekStart.getDate() + 7);
+  // Deliberately NOT filtered by `weeklyReportCategories`: the categories list
+  // narrows which BUDGETS the headline totals, whereas this section answers
+  // "where did the money go this week", and hiding the week's largest charge
+  // because its category is not budgeted would make the section quietly
+  // misleading. Its rows are labelled with their category, so nothing is
+  // ambiguous.
+  const topSpends = topCount > 0
+    ? getNativeWealthfolioTopSpending(dbPath, toDateString(weekStart), toDateString(weekEnd), topCount)
+    : [];
+
+  const message = formatMonthlyRemainingSummary(
+    totalSpent,
+    totalBudget,
+    topSpends.map((t) => ({ amount: t.amount, description: t.description, category: t.categoryName })),
+  );
   const result = await sendTelegramMessage(tg.botToken, tg.chatId, message);
   if (result.ok) {
     log('Weekly Telegram total-remaining summary sent successfully.');

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { runSyncCore, VALUATION_POLL, IN_TRANSIT_TIMEOUT_SECONDS } from './sync-core.js';
+import { runSyncCore, VALUATION_POLL, IN_TRANSIT_TIMEOUT_SECONDS, descriptionFromComment, txIdFromComment, IN_TRANSIT_COMMENT_PREFIX } from './sync-core.js';
 import { createFakeHost, type FakeHostSeed } from './fake-host.js';
 
 describe('runSyncCore', () => {
@@ -1013,5 +1013,60 @@ describe('runSyncCore', () => {
     const { host, store } = createFakeHost(seed);
     const result = await runSyncCore(host, store, {});
     expect(result.balanceDriftAlerts[0].accountName).toBe('Spend Bank');
+  });
+});
+
+describe('descriptionFromComment', () => {
+  // The inverse of `txIdFromComment`: what a stored note looks like to a HUMAN.
+  // Every synced activity's note is `<bank description> · <SimpleFin tx id>`,
+  // optionally ` · pending`, optionally behind the in-transit marker — so the raw
+  // value is never display-ready. Rendering it as-is would show a reader
+  // `WHOLEFOODS #123 · TRN-a1b2c3d4-…`, leaking an internal id.
+  it('drops the tx-id suffix from a plain synced note', () => {
+    expect(descriptionFromComment('WHOLEFOODS #123 · TRN-a1b2c3d4')).toBe('WHOLEFOODS #123');
+  });
+
+  it('drops the pending marker as well as the tx id', () => {
+    expect(descriptionFromComment('WHOLEFOODS #123 · TRN-a1b2c3d4 · pending')).toBe('WHOLEFOODS #123');
+  });
+
+  it('strips the in-transit prefix, which sits in FRONT of the description', () => {
+    expect(descriptionFromComment(`${IN_TRANSIT_COMMENT_PREFIX}Online Transfer to Savings · tx-a`))
+      .toBe('Online Transfer to Savings');
+  });
+
+  it('handles the in-transit prefix and the pending marker together', () => {
+    expect(descriptionFromComment(`${IN_TRANSIT_COMMENT_PREFIX}Online Transfer to Savings · tx-a · pending`))
+      .toBe('Online Transfer to Savings');
+  });
+
+  it('keeps a ` · ` that is part of the description itself', () => {
+    // `lastIndexOf` is what makes this work, and the side matters: everything
+    // BEFORE the final separator is the description, so only the trailing field
+    // (the id) is removed. Taking everything before the FIRST separator instead
+    // would silently truncate the merchant to "COSTCO GAS", and `txIdFromComment`
+    // — which reads the same separator from the same end — would disagree with
+    // this helper about where the id begins.
+    expect(descriptionFromComment('COSTCO GAS · PUMP 4 · TRN-a1b2c3d4')).toBe('COSTCO GAS · PUMP 4');
+    expect(txIdFromComment('COSTCO GAS · PUMP 4 · TRN-a1b2c3d4')).toBe('TRN-a1b2c3d4');
+  });
+
+  it('returns a note that carries no separator unchanged', () => {
+    // A hand-entered Wealthfolio activity is not a synced row and has no id to
+    // strip; showing its note verbatim is right.
+    expect(descriptionFromComment('Lunch with Ana')).toBe('Lunch with Ana');
+  });
+
+  it('returns an empty string for a missing note rather than throwing', () => {
+    expect(descriptionFromComment(null)).toBe('');
+    expect(descriptionFromComment(undefined)).toBe('');
+    expect(descriptionFromComment('')).toBe('');
+  });
+
+  it('returns an empty string when the note is only an id', () => {
+    // Reachable: the SimpleFin description can be blank, in which case the note
+    // is written as ` · <txId>`. Callers render the category alone rather than a
+    // blank merchant.
+    expect(descriptionFromComment(' · TRN-a1b2c3d4')).toBe('');
   });
 });

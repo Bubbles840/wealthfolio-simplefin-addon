@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { maskUrl, validateStartupEnv, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth } from './index.js';
 import { runSyncCore } from '../../shared/sync-core.js';
-import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets } from './sqlite-native.js';
+import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending } from './sqlite-native.js';
 
 vi.mock('../../shared/sync-core.js', () => ({
   runSyncCore: vi.fn(async () => ({ imported: 2, skipped: 1, errors: [], largeTransactionAlerts: [], balanceDriftAlerts: [], stuckTransferAlerts: [] })),
@@ -25,6 +25,13 @@ vi.mock('./sqlite-native.js', () => ({
   // Week-scoped spend: a subset of the month totals above.
   getNativeWealthfolioSpendingBetween: vi.fn(() => ({ Groceries: 50, Dining: 100 })),
   getNativeWealthfolioBudgets: vi.fn(() => ({ Groceries: 800, Dining: 500 })),
+  // The week's biggest individual spends, display-ready (the reader strips the
+  // stored note's tx id, pending marker and in-transit prefix).
+  getNativeWealthfolioTopSpending: vi.fn(() => ([
+    { amount: 412.37, description: 'WHOLE FOODS MKT', categoryName: 'Dining' },
+    { amount: 95.5, description: 'SQ *BLUE BOTTLE', categoryName: 'Dining' },
+    { amount: 63, description: 'COSTCO GAS · PUMP 4', categoryName: 'Groceries' },
+  ])),
 }));
 
 vi.mock('fs', async (importOriginal) => {
@@ -1057,6 +1064,115 @@ describe('sendWeeklyTelegramReport', () => {
 
     expect(client.setAddonSecret).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  describe('biggest spends this week', () => {
+    function weeklyClient(config: Record<string, unknown> = {}) {
+      const secrets = new Map<string, string>([
+        ['telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true, ...config })],
+      ]);
+      return {
+        getAddonSecret: vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null),
+        setAddonSecret: vi.fn(async (_a: string, key: string, val: string) => { secrets.set(key, val); }),
+      } as any;
+    }
+
+    beforeEach(() => vi.mocked(getNativeWealthfolioTopSpending).mockClear());
+    afterEach(() => vi.useRealTimers());
+
+    it('appends the week\'s biggest spends to the outgoing message body', async () => {
+      const client = weeklyClient();
+      const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+      vi.stubGlobal('fetch', fetchMock);
+
+      await sendWeeklyTelegramReport(client);
+
+      const [, sentBody] = fetchMock.mock.calls[0];
+      const text = JSON.parse((sentBody as any).body).text;
+      expect(text).toContain('💰 *$550 left* this month');
+      expect(text).toContain('*Biggest this week*');
+      // The `*`-laden card descriptor arrives escaped, and outside every entity.
+      expect(text).toContain('$412 · WHOLE FOODS MKT · Dining');
+      expect(text).toContain('$96 · SQ \\*BLUE BOTTLE · Dining');
+      expect(text).toContain('$63 · COSTCO GAS · PUMP 4 · Groceries');
+      // Whatever Telegram would actually parse is balanced: only the report's own
+      // three bold pairs survive unescaped.
+      const unescaped = text.replace(/\\[_*`[]/g, '');
+      expect((unescaped.match(/\*/g) ?? [])).toHaveLength(6);
+    });
+
+    it('reads the week from Monday WITHOUT clamping to the 1st of the month', async () => {
+      // Saturday 2026-08-01 — the report's own schedule lands on a day that is
+      // both a Saturday and the 1st. The daily digest clamps its week to the 1st
+      // because a monthly budget cannot be spent before the month began; doing
+      // that here would leave a heading that says "this week" over a single day
+      // of data.
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(2026, 7, 1, 9, 0, 0));
+      vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ ok: true }) })));
+
+      await sendWeeklyTelegramReport(weeklyClient());
+
+      expect(vi.mocked(getNativeWealthfolioTopSpending)).toHaveBeenCalledWith(
+        expect.any(String), '2026-07-27', '2026-08-03', 5,
+      );
+    });
+
+    it('asks for the whole Monday-to-Sunday week, half-open', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(2026, 6, 11, 9, 0, 0)); // Saturday 2026-07-11
+      vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ ok: true }) })));
+
+      await sendWeeklyTelegramReport(weeklyClient());
+
+      expect(vi.mocked(getNativeWealthfolioTopSpending)).toHaveBeenCalledWith(
+        expect.any(String), '2026-07-06', '2026-07-13', 5,
+      );
+    });
+
+    it('omits the section when nothing was spent this week', async () => {
+      vi.mocked(getNativeWealthfolioTopSpending).mockReturnValueOnce([]);
+      const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+      vi.stubGlobal('fetch', fetchMock);
+
+      await sendWeeklyTelegramReport(weeklyClient());
+
+      const [, sentBody] = fetchMock.mock.calls[0];
+      const text = JSON.parse((sentBody as any).body).text;
+      expect(text).toContain('💰 *$550 left* this month');
+      expect(text).not.toContain('Biggest');
+      expect(text).toBe(text.trimEnd());
+    });
+
+    it('honours weeklyTopSpendCount, and skips the query entirely when it is 0', async () => {
+      const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+      vi.stubGlobal('fetch', fetchMock);
+
+      await sendWeeklyTelegramReport(weeklyClient({ weeklyTopSpendCount: 3 }));
+      expect(vi.mocked(getNativeWealthfolioTopSpending)).toHaveBeenCalledWith(
+        expect.any(String), expect.any(String), expect.any(String), 3,
+      );
+
+      vi.mocked(getNativeWealthfolioTopSpending).mockClear();
+      await sendWeeklyTelegramReport(weeklyClient({ weeklyTopSpendCount: 0 }));
+      expect(vi.mocked(getNativeWealthfolioTopSpending)).not.toHaveBeenCalled();
+      const text = JSON.parse((fetchMock.mock.calls[1][1] as any).body).text;
+      expect(text).not.toContain('Biggest');
+    });
+
+    it('logs a rejected send instead of assuming it arrived', async () => {
+      // `sendTelegramMessage` reports an API-level failure — a 400 from
+      // unbalanced Markdown being the one this section could plausibly cause —
+      // by RESOLVING `{ ok: false }`, not throwing.
+      const logs = vi.spyOn(console, 'log').mockImplementation(() => {});
+      vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ ok: false, description: "can't parse entities" }) })));
+      try {
+        await expect(sendWeeklyTelegramReport(weeklyClient())).resolves.toBeUndefined();
+        expect(logs.mock.calls.flat().join('\n')).toContain('Failed to send weekly Telegram report');
+      } finally {
+        logs.mockRestore();
+      }
+    });
   });
 });
 

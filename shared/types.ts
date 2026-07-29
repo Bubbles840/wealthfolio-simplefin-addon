@@ -59,6 +59,13 @@ export interface TelegramConfig {
   dailyReportCategories?: string[] | 'all';
   /** Same as dailyReportCategories, for the weekly total-remaining summary. */
   weeklyReportCategories?: string[] | 'all';
+  /** How many of the week's biggest individual spends the Saturday report lists
+   *  beneath its headline. Absent means the default of 5; `0` or negative turns
+   *  the section off (and skips the query) without affecting the headline.
+   *
+   *  No UI: like `monthlyReportEnabled`, this is settable only by hand-editing
+   *  the `telegram_config` secret for now. */
+  weeklyTopSpendCount?: number;
   /** Same as dailyReportCategories, for the monthly wrap-up. */
   monthlyReportCategories?: string[] | 'all';
   /** Dollar amount a single newly-imported SPENDING transaction has to exceed
