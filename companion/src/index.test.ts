@@ -434,6 +434,47 @@ describe('stuck-transfer alert delivery confirmation', () => {
     expect(failures['tx-out'].alerted).toBe(false);
     expect(failures['tx-out-2'].alerted).toBe(true);
   });
+
+  it('does not fail a successful sync when telegram_config is corrupt', async () => {
+    // The unguarded JSON.parse in sendStuckTransferAlert threw straight out of
+    // the alert loop in runCompanionSync: remaining alerts went undelivered,
+    // the rollback sweep was skipped entirely, and updateSyncHealth then
+    // recorded a FAILURE for a sync that had actually succeeded.
+    secrets.set('telegram_config', '{"botToken":"tok","chatId"'); // truncated
+    secrets.set('transfer_link_failures', JSON.stringify({
+      'tx-out': { count: 3, firstFailedAt: '2026-07-01T00:00:00Z', alerted: true },
+    }));
+    vi.mocked(runSyncCore).mockResolvedValueOnce({
+      imported: 0, skipped: 0, errors: [],
+      stuckTransferAlerts: [
+        { outTxId: 'tx-out', description: 'Payment ↔ Payment', amountCents: 50000, currency: 'USD' },
+        { outTxId: 'tx-out-2', description: 'Other ↔ Other', amountCents: 20000, currency: 'USD' },
+      ],
+    });
+
+    const { WealthfolioClient } = await import('./wealthfolio.js');
+    const client = new (WealthfolioClient as any)();
+    client.getAddonSecret = vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null);
+    client.setAddonSecret = vi.fn(async (_a: string, key: string, val: string) => { secrets.set(key, val); });
+    vi.mocked(WealthfolioClient).mockImplementation(function () { return client; } as any);
+
+    const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    // The sync itself must still resolve, not reject.
+    await expect(runCompanionSync()).resolves.toMatchObject({ imported: 0, skipped: 0 });
+
+    // ...and health must record the success, not a phantom failure streak.
+    const health = JSON.parse(secrets.get('sync_health')!);
+    expect(health.lastSuccessAt).toBeTruthy();
+    expect(health.firstFailedAt).toBeUndefined();
+
+    // No token to send with, so nothing was sent and the ledger is untouched —
+    // a non-attempt, not a delivery failure to roll back.
+    expect(fetchMock).not.toHaveBeenCalled();
+    const failures = JSON.parse(secrets.get('transfer_link_failures')!);
+    expect(failures['tx-out'].alerted).toBe(true);
+  });
 });
 
 describe('sendDailyTelegramReport', () => {
@@ -534,6 +575,69 @@ describe('sendDailyTelegramReport', () => {
     const text = JSON.parse((sentBody as any).body).text;
     expect(text).not.toContain('synced');
     expect(text).not.toContain('failing since');
+  });
+
+  it('still sends the digest, minus the footer, when sync_health is corrupt', async () => {
+    // `sync_health` supplies a decorative one-line footer. An unguarded
+    // JSON.parse there threw synchronously and destroyed the ENTIRE daily
+    // digest over a value the digest does not depend on.
+    const secrets = new Map<string, string>();
+    secrets.set('telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true }));
+    secrets.set('sync_health', '{"lastSuccessAt":"2026-07-2'); // truncated
+    const client = {
+      getAddonSecret: vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null),
+      setAddonSecret: vi.fn(async (_a: string, key: string, val: string) => { secrets.set(key, val); }),
+    } as any;
+
+    const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(sendDailyTelegramReport(client)).resolves.toBeUndefined();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, sentBody] = fetchMock.mock.calls[0];
+    const text = JSON.parse((sentBody as any).body).text;
+    expect(text).toContain('Daily Spending Check');
+    expect(text).toContain('Groceries');
+    expect(text).not.toContain('synced');
+    expect(text).not.toContain('failing since');
+  });
+
+  it('sends nothing and does not throw when telegram_config itself is corrupt', async () => {
+    const secrets = new Map<string, string>([['telegram_config', 'not json at all']]);
+    const client = {
+      getAddonSecret: vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null),
+      setAddonSecret: vi.fn(async () => {}),
+    } as any;
+    const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(sendDailyTelegramReport(client)).resolves.toBeUndefined();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(client.setAddonSecret).not.toHaveBeenCalled();
+  });
+
+  it('titles the digest as daily and shows monthly remaining with a weekly pace', async () => {
+    // Mocked spending/budgets: Groceries 200/800, Dining 550/500.
+    const secrets = new Map<string, string>();
+    secrets.set('telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true }));
+    const client = {
+      getAddonSecret: vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null),
+      setAddonSecret: vi.fn(async (_a: string, key: string, val: string) => { secrets.set(key, val); }),
+    } as any;
+    const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await sendDailyTelegramReport(client);
+
+    const [, sentBody] = fetchMock.mock.calls[0];
+    const text = JSON.parse((sentBody as any).body).text;
+    expect(text).toContain('☀️ *Daily Spending Check*');
+    expect(text).not.toContain('Weekly Spending Update');
+    expect(text).toContain('*$600.00 left this month*');
+    expect(text).toContain('/wk pace');
+    expect(text).toContain('🚨 *$50.00 over budget* this month');
+    expect(text).not.toContain('left this week');
   });
 });
 

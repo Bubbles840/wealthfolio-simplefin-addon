@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { sendTelegramMessage, formatWeeklyRemainingDigest, formatMonthlyRemainingSummary, formatSyncHealthFooter, escapeMarkdown } from './telegram.js';
+import { sendTelegramMessage, formatWeeklyRemainingDigest, formatMonthlyRemainingSummary, formatSyncHealthFooter, escapeMarkdown, weeklyPace } from './telegram.js';
 
 const mockFetch = vi.fn();
 vi.stubGlobal('fetch', mockFetch);
@@ -43,39 +43,96 @@ describe('sendTelegramMessage', () => {
 });
 
 describe('formatWeeklyRemainingDigest', () => {
-  it('shows remaining budget divided across the weeks left in the month', () => {
+  it('is titled unmistakably as a daily report, not a weekly one', () => {
+    // The user's original complaint was a report that "looked like a weekly
+    // summary going out on the wrong day". A daily message titled "Weekly
+    // Spending Update" recreates exactly that confusion.
+    const text = formatWeeklyRemainingDigest([{ name: 'Groceries', spent: 200, budget: 800 }], 14);
+    expect(text).toContain('☀️ *Daily Spending Check*');
+    expect(text).not.toContain('Weekly Spending Update');
+  });
+
+  it('leads with the true monthly remaining and offers the weekly figure only as a pace', () => {
+    // 22 days after today -> horizon 23 -> 600 * 7 / 23 = 182.6
     const text = formatWeeklyRemainingDigest(
       [{ name: 'Groceries', spent: 200, budget: 800 }],
-      3,
+      22,
     );
-    expect(text).toContain('🛒 *Groceries*: *$200.00 left this week*');
+    expect(text).toContain('• 🛒 Groceries: *$600.00 left this month* · ≈$182.61/wk pace');
+    // "left this week" was the dishonest label: it was month-to-date remaining
+    // spread over a week, so spending $100 today moved it by only ~$20.
+    expect(text).not.toContain('left this week');
   });
 
-  it('flags a category that is over budget instead of dividing a negative number', () => {
+  it('drops the headline figure by exactly what was spent', () => {
+    const before = formatWeeklyRemainingDigest([{ name: 'Groceries', spent: 200, budget: 800 }], 22);
+    const after = formatWeeklyRemainingDigest([{ name: 'Groceries', spent: 300, budget: 800 }], 22);
+    expect(before).toContain('*$600.00 left this month*');
+    expect(after).toContain('*$500.00 left this month*');
+  });
+
+  it('does not jump across a week boundary — day 23 vs day 24 of a 31-day month', () => {
+    // The old `ceil(daysLeft / 7)` denominator stepped 2 -> 1 here, doubling
+    // the displayed number overnight. Day 23 leaves 8 days after today, day 24
+    // leaves 7.
+    const cat = [{ name: 'Groceries', spent: 200, budget: 800 }];
+    const day23 = weeklyPace(600, 8);
+    const day24 = weeklyPace(600, 7);
+    expect(day23).toBeCloseTo(466.67, 2);
+    expect(day24).toBeCloseTo(525, 2);
+    // Day-over-day movement stays well under the 2x jump the old formula made.
+    expect(day24 / day23).toBeLessThan(1.2);
+    expect(formatWeeklyRemainingDigest(cat, 8)).toContain('≈$466.67/wk pace');
+    expect(formatWeeklyRemainingDigest(cat, 7)).toContain('≈$525.00/wk pace');
+  });
+
+  it('never advertises a pace larger than the money that actually remains', () => {
+    // Last day of the month: 600 * 7 / 1 = 4200 uncapped, which would read as
+    // permission to spend seven times the remaining budget.
+    const text = formatWeeklyRemainingDigest([{ name: 'Groceries', spent: 200, budget: 800 }], 0);
+    expect(text).toContain('*$600.00 left this month* · ≈$600.00/wk pace');
+  });
+
+  it('is not understated at the start of the month', () => {
+    // Day 1 of a 31-day month: 30 days after today. The old formula divided by
+    // ceil(30/7) = 5 weeks when ~4.4 weeks actually exist, understating the
+    // pace; the day-proportional form gives 800 * 7 / 31.
+    expect(weeklyPace(800, 30)).toBeCloseTo(180.65, 2);
+    expect(weeklyPace(800, 30)).toBeGreaterThan(800 / 5);
+  });
+
+  it('flags a category that is over budget instead of showing a negative pace', () => {
     const text = formatWeeklyRemainingDigest(
       [{ name: 'Dining', spent: 550, budget: 500 }],
-      2,
+      10,
     );
-    expect(text).toContain('🍽️ *Dining*: 🚨 *$50.00 over budget!*');
+    expect(text).toContain('• 🍽️ Dining: 🚨 *$50.00 over budget* this month');
+    expect(text).not.toContain('pace');
   });
 
-  it('flags spending in a category with no budget set', () => {
+  it('reports spending with no budget as exactly that, not as "over budget"', () => {
+    // You cannot be over a budget you never set — the old text claimed
+    // "🚨 *$40.00 over budget!*" for a category with no budget row at all.
     const text = formatWeeklyRemainingDigest(
       [{ name: 'Shopping', spent: 40, budget: 0 }],
-      2,
+      10,
     );
-    expect(text).toContain('🛍️ *Shopping*: 🚨 *$40.00 over budget!*');
+    expect(text).toContain('• 🛍️ Shopping: *$40.00 spent* · no budget set');
+    expect(text).not.toContain('over budget');
   });
 
-  it('shows a placeholder message with no categories', () => {
-    const text = formatWeeklyRemainingDigest([], 2);
-    expect(text).toContain('No budgeted categories to report');
+  it('names both possible causes in the empty state', () => {
+    // Reachable two ways — no budgets exist, or every category was deselected
+    // in the addon — so the text must not blame only the first.
+    const text = formatWeeklyRemainingDigest([], 10);
+    expect(text).toContain('Set up budgets in Wealthfolio');
+    expect(text).toContain('categories are selected');
   });
 
   it('escapes Markdown specials in a category name so the message can still send', () => {
     const text = formatWeeklyRemainingDigest(
       [{ name: 'Food_Drink', spent: 40, budget: 100 }],
-      2,
+      10,
     );
     // A lone unescaped underscore would make Telegram's legacy Markdown
     // parser look for a matching closing `_` across the whole message and
@@ -83,6 +140,19 @@ describe('formatWeeklyRemainingDigest', () => {
     // literally instead of being consumed as italic markup.
     expect(text).toContain('Food\\_Drink');
     expect(text).not.toMatch(/[^\\]_Drink/);
+  });
+
+  it('keeps the escaped category name outside every Markdown entity', () => {
+    // Legacy Markdown does not honour a backslash escape *inside* an entity —
+    // the entity must be closed and reopened — so `*Food\_Drink*` still leaves
+    // a live italic opener with no closer and Telegram 400s the whole digest.
+    const text = formatWeeklyRemainingDigest(
+      [{ name: 'Food_Drink', spent: 40, budget: 100 }],
+      10,
+    );
+    expect(text).not.toContain('*Food\\_Drink*');
+    // Bold sits on the figures, which never contain Markdown specials.
+    expect(text).toContain('Food\\_Drink: *$60.00 left this month*');
   });
 });
 
@@ -168,5 +238,35 @@ describe('formatMonthlyRemainingSummary', () => {
     const text = formatMonthlyRemainingSummary(2200, 2000);
     expect(text).toContain('🚨');
     expect(text).toContain('$200.00 over budget');
+  });
+
+  it('does not claim "$0.00 remaining" when no budget exists at all', () => {
+    // Reachable by deselecting every weekly category, or before any budget is
+    // created. This report is one number, so the old
+    // "💰 *$0.00 remaining* this month (spent $0.00 of $0.00, 0%)" read as a
+    // real, calmly-reported result.
+    const text = formatMonthlyRemainingSummary(0, 0);
+    expect(text).not.toContain('remaining');
+    expect(text).not.toContain('of $0.00');
+    expect(text).toContain('No budgets set and no spending recorded');
+  });
+
+  it('reports the spend, not a "remaining" figure, when money went out with no budget set', () => {
+    const text = formatMonthlyRemainingSummary(40, 0);
+    expect(text).toContain('$40.00 spent');
+    expect(text).toContain('no budget set');
+    expect(text).not.toContain('remaining');
+    expect(text).not.toContain('over budget');
+  });
+
+  it('points at both possible causes of a zero budget', () => {
+    for (const text of [formatMonthlyRemainingSummary(0, 0), formatMonthlyRemainingSummary(40, 0)]) {
+      expect(text).toContain('Add budgets in Wealthfolio');
+      expect(text).toContain('selected for the weekly report');
+    }
+  });
+
+  it('keeps the weekly report clearly labelled as weekly', () => {
+    expect(formatMonthlyRemainingSummary(1200, 2000)).toContain('📊 *Weekly Budget Check-In*');
   });
 });

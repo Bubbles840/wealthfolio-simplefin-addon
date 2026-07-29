@@ -101,9 +101,30 @@ Two new formatters replace `formatDailyReport`, `formatWeeklyReport`, and
   week." No per-category mode — every category uses the same weekly-remaining
   math (the old per-category `daily`/`weekly`/`monthly` mode concept goes
   away with `CategoryRule`).
+
+  > **CORRECTED after whole-branch review (finding W5).** The spec above was
+  > wrong on both the formula and the label, and shipped as specified before
+  > being fixed. `remaining / ceil(daysLeft / 7)` jumps discontinuously (in a
+  > 31-day month it doubled overnight between the 23rd and the 24th) and is
+  > understated early in the month; and the result is not "left this week" —
+  > it is month-to-date remaining spread over a week, so spending $100 today
+  > moved the displayed figure by only ~$20. The shipped signature is
+  > `(categories, daysLeftInMonth)` — days AFTER today — and each line leads
+  > with the true monthly remaining, with a day-proportional `weeklyPace()`
+  > (`min(remaining, remaining * 7 / (daysLeftInMonth + 1))`) shown as a
+  > hedged secondary figure. Three branches, not two: over budget, spending
+  > with no budget set (you cannot be over a budget never created), and under
+  > budget. The escaped category name sits OUTSIDE every Markdown entity —
+  > legacy Markdown does not honour a backslash escape inside one.
 - `formatMonthlyRemainingSummary(totalSpent: number, totalBudget: number): string`
   One line: total remaining this month across the included categories (🚨
   style if negative).
+
+  > **CORRECTED after whole-branch review (finding W3).** Needs an explicit
+  > `totalBudget <= 0` branch: this report is a single number, so the
+  > `$0.00 remaining ... of $0.00, 0%` it otherwise emitted read as a real
+  > result. Reachable by deselecting every weekly category, or before any
+  > budget exists.
 
 Both keep using `getCategoryEmoji`/`DEFAULT_CATEGORY_EMOJIS` and the existing
 `money()` helper.

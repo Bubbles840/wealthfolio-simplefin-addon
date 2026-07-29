@@ -61,6 +61,33 @@ export function resolvePassword(): string {
 const SYNC_HEALTH_ALERT_MS = 24 * 60 * 60 * 1000;
 
 /**
+ * Parses an addon-secret payload, treating a corrupt one as absent.
+ *
+ * Every secret this daemon reads is JSON it wrote itself, so a parse failure
+ * means the value was truncated or hand-edited — a state no amount of retrying
+ * fixes. A bare `JSON.parse` there throws *synchronously* out of whatever loop
+ * it sits in, and the blast radius was wildly out of proportion to the cause:
+ * a corrupt `sync_health` secret, read only to decorate the daily digest with
+ * a one-line footer, destroyed the entire digest; a corrupt `telegram_config`
+ * read inside the stuck-transfer alert loop aborted the remaining alerts, skipped
+ * the un-alert rollback for entries already marked delivered, and made
+ * `updateSyncHealth` record a *failure* for a sync that had actually succeeded.
+ *
+ * Returning `null` collapses "no secret" and "unreadable secret" into the one
+ * case every caller already handles. `updateSyncHealth` guarded its own parse
+ * for exactly this reason; this makes that the rule rather than the exception.
+ */
+function parseSecretJson<T>(raw: string | null | undefined, label: string): T | null {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as T;
+  } catch (err) {
+    log(`Ignoring unreadable ${label} secret (treating as unset): ${formatError(err)}`);
+    return null;
+  }
+}
+
+/**
  * Persists sync outcome to the `sync_health` addon secret: `error === null`
  * records a success and clears any in-progress failure streak; a non-null
  * error starts (or continues) a streak, setting `firstFailedAt` only on the
@@ -79,14 +106,7 @@ const SYNC_HEALTH_ALERT_MS = 24 * 60 * 60 * 1000;
 async function updateSyncHealth(wfClient: WealthfolioClient, error: Error | null): Promise<void> {
   try {
     const raw = await wfClient.getAddonSecret('simplefin-sync', 'sync_health').catch(() => null);
-    let health: SyncHealth = {};
-    if (raw) {
-      try {
-        health = JSON.parse(raw);
-      } catch {
-        health = {};
-      }
-    }
+    const health: SyncHealth = parseSecretJson<SyncHealth>(raw, 'sync_health') ?? {};
     const now = new Date().toISOString();
     const next: SyncHealth = error === null
       ? { lastSuccessAt: now }
@@ -119,14 +139,14 @@ async function updateSyncHealth(wfClient: WealthfolioClient, error: Error | null
  *  Runs in a `finally`, so it must be a no-op on a healthy streak. */
 async function checkSyncHealthAlert(wfClient: WealthfolioClient): Promise<void> {
   const raw = await wfClient.getAddonSecret('simplefin-sync', 'sync_health').catch(() => null);
-  if (!raw) return;
-  const health = JSON.parse(raw);
+  const health = parseSecretJson<SyncHealth>(raw, 'sync_health');
+  if (!health) return;
   if (!health.firstFailedAt || health.alerted) return;
   if (Date.now() - new Date(health.firstFailedAt).getTime() < SYNC_HEALTH_ALERT_MS) return;
 
   const tgRaw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_config').catch(() => null);
-  if (!tgRaw) return;
-  const tg = JSON.parse(tgRaw);
+  const tg = parseSecretJson<any>(tgRaw, 'telegram_config');
+  if (!tg) return;
   if (!tg.botToken || !tg.chatId || tg.enabled === false) return;
 
   const lastError = escapeMarkdown(health.lastError ?? 'unknown error');
@@ -161,8 +181,11 @@ async function sendStuckTransferAlert(
   alert: { description: string; amountCents: number; currency: string },
 ): Promise<boolean> {
   const tgRaw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_config').catch(() => null);
-  if (!tgRaw) return true;
-  const tg = JSON.parse(tgRaw);
+  // An unreadable config counts as a non-attempt (`true`), same as a missing
+  // one: there is no token to send with, so this is not a delivery failure to
+  // roll the ledger back for. See the doc comment above for why.
+  const tg = parseSecretJson<any>(tgRaw, 'telegram_config');
+  if (!tg) return true;
   if (!tg.botToken || !tg.chatId || tg.enabled === false) return true;
   const amount = (alert.amountCents / 100).toFixed(2);
   // `alert.description` is built from bank/card transaction comments — real
@@ -279,17 +302,15 @@ export async function runCompanionSync(): Promise<SyncResult> {
 
     try {
       const tgRaw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_config');
-      if (tgRaw) {
-        const tg = JSON.parse(tgRaw);
-        if (tg.botToken && tg.chatId && tg.enabled !== false) {
-          log(`Telegram notifications active (chat: ${tg.chatId}).`);
-          if (result.imported > 0 && tg.notifyOnImport !== false) {
-            await sendTelegramMessage(
-              tg.botToken,
-              tg.chatId,
-              `🔔 *SimpleFin Sync Update*\nImported ${result.imported} new transaction(s) into Wealthfolio!`,
-            );
-          }
+      const tg = parseSecretJson<any>(tgRaw, 'telegram_config');
+      if (tg && tg.botToken && tg.chatId && tg.enabled !== false) {
+        log(`Telegram notifications active (chat: ${tg.chatId}).`);
+        if (result.imported > 0 && tg.notifyOnImport !== false) {
+          await sendTelegramMessage(
+            tg.botToken,
+            tg.chatId,
+            `🔔 *SimpleFin Sync Update*\nImported ${result.imported} new transaction(s) into Wealthfolio!`,
+          );
         }
       }
     } catch (err) {
@@ -316,9 +337,12 @@ function filterCategories(names: string[], selection: string[] | 'all' | undefin
   return names.filter((n) => allowed.has(n));
 }
 
+/** Days remaining in the month AFTER today — 0 on the last day. The digest's
+ *  pace maths adds today back in itself (see `weeklyPace`); clamping the floor
+ *  to 1 here, as this used to, silently halved the final day's figure. */
 function daysLeftInMonth(now: Date): number {
   const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-  return Math.max(1, lastDay - now.getDate());
+  return Math.max(0, lastDay - now.getDate());
 }
 
 async function publishAvailableCategories(
@@ -333,9 +357,8 @@ async function publishAvailableCategories(
 
 export async function sendDailyTelegramReport(wfClient: WealthfolioClient): Promise<void> {
   const tgRaw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_config');
-  if (!tgRaw) return;
-
-  const tg = JSON.parse(tgRaw);
+  const tg = parseSecretJson<any>(tgRaw, 'telegram_config');
+  if (!tg) return;
   if (!tg.botToken || !tg.chatId || tg.enabled === false) return;
   if (tg.dailyReportEnabled === false) return;
 
@@ -355,11 +378,12 @@ export async function sendDailyTelegramReport(wfClient: WealthfolioClient): Prom
   const categories = names.map((name) => ({
     name, spent: spentMap[name] ?? 0, budget: budgetMap[name] ?? 0,
   }));
-  const weeksLeft = Math.max(1, Math.ceil(daysLeftInMonth(now) / 7));
-  let message = formatWeeklyRemainingDigest(categories, weeksLeft);
+  let message = formatWeeklyRemainingDigest(categories, daysLeftInMonth(now));
 
   const healthRaw = await wfClient.getAddonSecret('simplefin-sync', 'sync_health').catch(() => null);
-  const health: SyncHealth | null = healthRaw ? JSON.parse(healthRaw) : null;
+  // Guarded parse: this secret only supplies a decorative one-line footer, so
+  // an unreadable one must cost the footer, never the digest it hangs off.
+  const health = parseSecretJson<SyncHealth>(healthRaw, 'sync_health');
   const footer = formatSyncHealthFooter(health);
   if (footer) {
     message += `\n\n${footer}`;
@@ -367,7 +391,7 @@ export async function sendDailyTelegramReport(wfClient: WealthfolioClient): Prom
 
   const result = await sendTelegramMessage(tg.botToken, tg.chatId, message);
   if (result.ok) {
-    log('Daily Telegram weekly-remaining digest sent successfully.');
+    log('Daily Telegram spending check sent successfully.');
   } else {
     log(`Failed to send daily Telegram report: ${result.description}`);
   }
@@ -375,9 +399,8 @@ export async function sendDailyTelegramReport(wfClient: WealthfolioClient): Prom
 
 export async function sendWeeklyTelegramReport(wfClient: WealthfolioClient): Promise<void> {
   const tgRaw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_config');
-  if (!tgRaw) return;
-
-  const tg = JSON.parse(tgRaw);
+  const tg = parseSecretJson<any>(tgRaw, 'telegram_config');
+  if (!tg) return;
   if (!tg.botToken || !tg.chatId || tg.enabled === false) return;
   if (tg.weeklyReportEnabled === false) return;
 
@@ -436,7 +459,7 @@ if (!process.env.VITEST) {
   });
 
   cron.schedule(dailySchedule, () => {
-    log('Triggering scheduled daily budget breakdown report...');
+    log('Triggering scheduled daily spending check (per-category remaining + weekly pace)...');
     const password = resolvePassword();
     const apiKey = process.env.WEALTHFOLIO_API_KEY;
     if (apiKey) {

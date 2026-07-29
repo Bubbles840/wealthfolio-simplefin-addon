@@ -122,35 +122,79 @@ export interface WeeklyDigestCategory {
 }
 
 /**
- * Formats the daily "how much left to spend this week" digest — one line per
- * category, dividing the month's remaining budget across the weeks left in
- * the month. A category already over budget for the month gets the 🚨 alert
- * line instead of a (nonsensical, negative) per-week number.
+ * Converts the month's remaining budget into a *pace* — a "roughly this much
+ * per week keeps you inside the budget" figure — using the days actually left
+ * rather than a whole-week count.
+ *
+ * `daysLeftInMonth` counts days AFTER today (0 on the last day of the month),
+ * so the inclusive horizon is `daysLeftInMonth + 1`. Dividing by days rather
+ * than `ceil(days / 7)` matters: the week-count version steps from 2 to 1 on
+ * a single day boundary, doubling the displayed number overnight (in a 31-day
+ * month, the 23rd showed `remaining / 2` and the 24th `remaining / 1`). The
+ * day-proportional form moves by a few percent a day instead.
+ *
+ * Capped at `remaining`: with a week or less left in the month, `remaining
+ * * 7 / horizon` exceeds the money that actually exists, and printing a pace
+ * larger than the budget it comes from reads as permission to overspend. The
+ * cap is continuous — it engages exactly where `horizon === 7` — so the
+ * figure stays smooth through the end of the month, flattening out at the
+ * true remaining rather than spiking.
+ */
+export function weeklyPace(remaining: number, daysLeftInMonth: number): number {
+  const horizon = Math.max(1, daysLeftInMonth + 1);
+  return Math.min(remaining, (remaining * 7) / horizon);
+}
+
+/**
+ * Formats the daily spending check — one line per category.
+ *
+ * Every line shows the *true* month-to-date remaining as its headline number,
+ * with the weekly pace (see `weeklyPace`) as a clearly-approximate secondary
+ * figure. The earlier version printed only `remaining / weeksLeft` labelled
+ * "left this week", which was a lie in a message people read daily: spending
+ * $100 today moved that number by ~$20, so the label promised something the
+ * arithmetic never delivered. Remaining-first fixes that — the headline drops
+ * by exactly what was spent — and the `≈…/wk pace` suffix is hedged in both
+ * wording and symbol so it can't be read as a spendable allowance.
+ *
+ * Three branches, because they are three different situations:
+ *  - over budget for the month → 🚨, no pace (there is nothing left to pace)
+ *  - spending with no budget set → report the spend and say no budget exists;
+ *    "over budget" is meaningless for a budget that was never created
+ *  - under budget → remaining + pace
  */
 export function formatWeeklyRemainingDigest(
   categories: WeeklyDigestCategory[],
-  weeksLeftInMonth: number,
+  daysLeftInMonth: number,
 ): string {
-  let msg = `🗓️ *Weekly Spending Update*\n\n`;
+  let msg = `☀️ *Daily Spending Check*\n\n`;
 
   if (categories.length === 0) {
-    msg += `No budgeted categories to report. Set up budgets in Wealthfolio to see weekly allowances.`;
+    // Two distinct causes land here — no budgets exist yet, or every category
+    // was deselected in the addon's Report Categories list — so the text must
+    // not assert either one.
+    msg += `Nothing to report. Set up budgets in Wealthfolio, or check that categories are selected for the daily report in the SimpleFin Sync addon.`;
     return msg;
   }
 
   for (const c of categories) {
     const emoji = getCategoryEmoji(c.name);
     // Category names are Wealthfolio-user-controlled, not fully trusted display
-    // text: a name like "Food_Drink" has an odd (unmatched) underscore count
-    // once dropped into `*name*`, which is enough to make Telegram reject the
-    // whole digest with a 400. Escape before interpolating.
+    // text: a name like "Food_Drink" carries an odd (unmatched) underscore
+    // count, which is enough to make Telegram reject the whole digest with a
+    // 400. Escape before interpolating — and keep the escaped name OUTSIDE any
+    // Markdown entity, because legacy Markdown does not honour a backslash
+    // escape inside one (the entity has to be closed and reopened instead), so
+    // `*Food\_Drink*` would still leave a live italic opener. The bold sits on
+    // the figures, which contain no specials.
     const name = escapeMarkdown(c.name);
     const remaining = c.budget - c.spent;
-    if (remaining < 0) {
-      msg += `• ${emoji} *${name}*: 🚨 *${money(remaining)} over budget!*\n`;
+    if (c.budget <= 0) {
+      msg += `• ${emoji} ${name}: *${money(c.spent)} spent* · no budget set\n`;
+    } else if (remaining < 0) {
+      msg += `• ${emoji} ${name}: 🚨 *${money(remaining)} over budget* this month\n`;
     } else {
-      const perWeek = weeksLeftInMonth > 0 ? remaining / weeksLeftInMonth : remaining;
-      msg += `• ${emoji} *${name}*: *${money(perWeek)} left this week*\n`;
+      msg += `• ${emoji} ${name}: *${money(remaining)} left this month* · ≈${money(weeklyPace(remaining, daysLeftInMonth))}/wk pace\n`;
     }
   }
 
@@ -207,11 +251,28 @@ export function formatSyncHealthFooter(health: SyncHealth | null | undefined, no
 /**
  * Formats the weekly (Saturday) "one number" summary: total remaining across
  * every included category's budget for the month.
+ *
+ * The zero-budget branch is load-bearing rather than defensive. This report is
+ * a single number, so a wrong number IS the whole message — and `totalBudget
+ * === 0` is genuinely reachable (deselect every weekly category in the addon,
+ * or run before any budget has been created). Without the branch it emitted
+ * `💰 *$0.00 remaining* this month (spent $0.00 of $0.00, 0%)`, which reads as
+ * a real, calmly-reported result. It also distinguishes "no budget, but money
+ * went out" from "nothing happened at all": with spending and no budget there
+ * is a fact worth stating, just not one about "remaining".
  */
 export function formatMonthlyRemainingSummary(totalSpent: number, totalBudget: number): string {
   const remaining = totalBudget - totalSpent;
   const pct = totalBudget > 0 ? Math.round((totalSpent / totalBudget) * 100) : 0;
   let msg = `📊 *Weekly Budget Check-In*\n\n`;
+  if (totalBudget <= 0) {
+    if (totalSpent > 0) {
+      msg += `🏷️ *${money(totalSpent)} spent* this month, no budget set — there's nothing to measure it against yet. Add budgets in Wealthfolio, or check which categories are selected for the weekly report.`;
+    } else {
+      msg += `🏷️ No budgets set and no spending recorded this month for the selected categories. Add budgets in Wealthfolio, or check which categories are selected for the weekly report.`;
+    }
+    return msg;
+  }
   if (remaining < 0) {
     msg += `🚨 *You're ${money(remaining)} over budget this month* (spent ${money(totalSpent)} of ${money(totalBudget)}, ${pct}%).`;
   } else {
