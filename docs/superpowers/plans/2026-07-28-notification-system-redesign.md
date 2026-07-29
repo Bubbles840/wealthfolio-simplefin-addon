@@ -1896,6 +1896,234 @@ git commit -m "chore: sync companion version with root, add container healthchec
 
 ---
 
+### Task 13: Make the companion's `linkPair` clear a promoted leg's phantom asset
+
+**Added mid-execution.** Task 6's implementer surfaced this and the controller confirmed it: an in-transit placeholder is imported with `symbol: $CASH-<ccy>` (its type is `CREDIT`/`DEPOSIT`, not a transfer type, so `toActivityCreate` attaches the cash asset). When the second leg posts and the row is promoted to `TRANSFER_OUT`/`TRANSFER_IN`, the update **cannot clear** that stored asset — the server's `asset` field is a plain `Option`, not the `Option<Option<…>>` patch shape its numeric fields use.
+
+The addon is unaffected: `AddonSyncHost.linkPair` deletes both legs and re-creates them asset-free, so promotion self-heals. **The companion is not:** `RestSyncHost.linkPair` (`companion/src/rest-host.ts`) calls `/activities/link` by id and never re-creates, so the phantom `$CASH` survives — and per this repo's own `companion/upstream-pr.md` (issue #5, "Second symptom"), `validate_asset_shape` in `transfer_pairs.rs` then treats the pair as a *security* transfer and refuses it for lacking quantities. Worse, a leg being linked this run is in `linkedTxIds`, so the end-of-run relink sweep skips it — the pair sticks permanently on the companion, which is precisely the bug Task 6 exists to fix.
+
+Rather than copy the addon's ~30-line delete-and-re-create block into the companion (verbatim duplication of a logic block, which this plan's review rubric treats as a defect), extract it once and have both hosts delegate.
+
+**Files:**
+- Create: `shared/link-pair.ts`
+- Create: `shared/link-pair.test.ts`
+- Modify: `src/utils/addon-host.ts` (delegate)
+- Modify: `companion/src/rest-host.ts` (delegate)
+- Modify: `companion/src/rest-host.test.ts` (update the two `linkPair` tests — they currently assert `linkTransferActivities` is called, which is exactly the behavior being replaced)
+
+**Interfaces:**
+- Produces: `linkPairByRecreate(saveMany: (req: SaveManyRequest) => Promise<SaveManyResult>, legs: [LinkLeg, LinkLeg]): Promise<LinkResult>`
+- Consumes: `newTransferGroupId`, `INTERNAL_TRANSFER_METADATA`, `txIdFromComment` (all already exported from `shared/sync-core.ts`).
+
+- [ ] **Step 1: Write the failing test**
+
+Create `shared/link-pair.test.ts`. Drive the helper with a fake `saveMany` that records requests and echoes created rows, so the test verifies real behavior rather than asserting on a spy:
+
+```typescript
+import { describe, it, expect } from 'vitest';
+import { linkPairByRecreate } from './link-pair.js';
+import { TRANSFER_GROUP_PREFIX } from './sync-core.js';
+import type { LinkLeg, SaveManyRequest, SaveManyResult } from './sync-host.js';
+
+const leg = (wfId: string, accountId: string, type: string): LinkLeg => ({
+  wfId, accountId, txId: `tx-${wfId}`, activityType: type,
+  date: '2026-07-20', absCents: 198219, currency: 'USD',
+  comment: `Transfer · tx-${wfId}`,
+});
+
+/** Fake host: echoes creates back with the gid it was sent, like a host that accepts the group. */
+function acceptingHost() {
+  const requests: SaveManyRequest[] = [];
+  const saveMany = async (req: SaveManyRequest): Promise<SaveManyResult> => {
+    requests.push(req);
+    return {
+      created: (req.creates ?? []).map((c, i) => ({
+        id: `new-${i}`, accountId: c.accountId, activityType: c.activityType,
+        date: c.activityDate, amount: c.amount ?? null, comment: c.comment,
+        sourceGroupId: c.sourceGroupId ?? null,
+      })),
+      updated: [], errors: [],
+    };
+  };
+  return { requests, saveMany };
+}
+
+describe('linkPairByRecreate', () => {
+  it('deletes both legs before re-creating them, so a stored asset cannot survive', async () => {
+    const { requests, saveMany } = acceptingHost();
+    await linkPairByRecreate(saveMany, [leg('a', 'wf-a', 'TRANSFER_OUT'), leg('b', 'wf-b', 'TRANSFER_IN')]);
+    expect(requests[0].deleteIds).toEqual(['a', 'b']);
+    expect(requests[1].creates).toHaveLength(2);
+  });
+
+  it('re-creates both legs with NO symbol, so they book cash and stay pairable', async () => {
+    const { requests, saveMany } = acceptingHost();
+    await linkPairByRecreate(saveMany, [leg('a', 'wf-a', 'TRANSFER_OUT'), leg('b', 'wf-b', 'TRANSFER_IN')]);
+    for (const c of requests[1].creates!) {
+      expect(c.symbol).toBeUndefined();
+      expect(c.amount).toBe(1982.19);
+    }
+  });
+
+  it('sends both legs in ONE saveMany carrying a shared wf-transfer- gid and the internal marker', async () => {
+    const { requests, saveMany } = acceptingHost();
+    await linkPairByRecreate(saveMany, [leg('a', 'wf-a', 'TRANSFER_OUT'), leg('b', 'wf-b', 'TRANSFER_IN')]);
+    const creates = requests[1].creates!;
+    expect(creates[0].sourceGroupId).toBe(creates[1].sourceGroupId);
+    expect(creates[0].sourceGroupId!.startsWith(TRANSFER_GROUP_PREFIX)).toBe(true);
+    for (const c of creates) expect(c.metadata).toBeTruthy();
+  });
+
+  it('reports the gid the host actually stored, not the one we sent', async () => {
+    const requests: SaveManyRequest[] = [];
+    const saveMany = async (req: SaveManyRequest): Promise<SaveManyResult> => {
+      requests.push(req);
+      return {
+        created: (req.creates ?? []).map((c, i) => ({
+          id: `new-${i}`, accountId: c.accountId, activityType: c.activityType,
+          date: c.activityDate, amount: c.amount ?? null, comment: c.comment,
+          sourceGroupId: 'gid-the-host-chose',
+        })),
+        updated: [], errors: [],
+      };
+    };
+    const res = await linkPairByRecreate(saveMany, [leg('a', 'wf-a', 'TRANSFER_OUT'), leg('b', 'wf-b', 'TRANSFER_IN')]);
+    expect(res).toEqual({ linked: true, groupId: 'gid-the-host-chose' });
+  });
+
+  it('reports linked: false when the host silently drops the group', async () => {
+    const saveMany = async (req: SaveManyRequest): Promise<SaveManyResult> => ({
+      created: (req.creates ?? []).map((c, i) => ({
+        id: `new-${i}`, accountId: c.accountId, activityType: c.activityType,
+        date: c.activityDate, amount: c.amount ?? null, comment: c.comment,
+        sourceGroupId: null,
+      })),
+      updated: [], errors: [],
+    });
+    const res = await linkPairByRecreate(saveMany, [leg('a', 'wf-a', 'TRANSFER_OUT'), leg('b', 'wf-b', 'TRANSFER_IN')]);
+    expect(res.linked).toBe(false);
+  });
+
+  it('reports linked: false when a save returns errors', async () => {
+    const saveMany = async (): Promise<SaveManyResult> => ({
+      created: [], updated: [], errors: [{ action: 'create', message: 'boom' }],
+    });
+    const res = await linkPairByRecreate(saveMany, [leg('a', 'wf-a', 'TRANSFER_OUT'), leg('b', 'wf-b', 'TRANSFER_IN')]);
+    expect(res.linked).toBe(false);
+  });
+});
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `npx vitest run shared/link-pair.test.ts`
+Expected: FAIL — `shared/link-pair.ts` does not exist.
+
+- [ ] **Step 3: Create `shared/link-pair.ts`**
+
+Move the body of `AddonSyncHost.linkPair` here verbatim, parameterized on `saveMany`. Keep its full explanatory comment — every clause in it was established the hard way and must not be lost in the move:
+
+```typescript
+import { INTERNAL_TRANSFER_METADATA, newTransferGroupId, txIdFromComment } from './sync-core.js';
+import type { LinkLeg, LinkResult, SaveManyRequest, SaveManyResult } from './sync-host.js';
+
+/**
+ * Link two legs as one internal transfer by DELETING both rows and re-creating
+ * them together under a shared marked group. Shared by both hosts so they
+ * cannot drift.
+ *
+ * Every part of this is load-bearing, and each was established the hard way:
+ *  • DELETE, don't update. An existing row's stored asset cannot be cleared by
+ *    an update (the server's `asset` field is a plain Option, not the
+ *    Option<Option<…>> patch shape its numeric fields use), and Wealthfolio
+ *    refuses to move an already-grouped row into a different group. Deleting
+ *    first clears both states, so the fresh group always forms — and the
+ *    delete goes first so the re-creates can't collide with the originals on
+ *    the host's dedup. This is also what clears the phantom `$CASH` asset an
+ *    in-transit placeholder leaves behind when it is promoted to a real leg.
+ *  • NO `symbol`. A transfer leg carrying any asset resolves to a literal
+ *    "$CASH" security, which neither moves the cash balance nor passes
+ *    `validate_asset_shape` — so it can never be paired.
+ *  • The `metadata` marker AND the `wf-transfer-` prefix. A shared
+ *    sourceGroupId alone does NOT classify a pair as internal; a marker is
+ *    also required, and metadata must be the JSON *string* (an object 422s).
+ *  • ONE saveMany carrying BOTH legs. A per-leg call looks like a lone leg and
+ *    Wealthfolio silently drops the half-formed group.
+ *
+ * The echo is the only channel that reports the persisted `sourceGroupId`
+ * (search's ActivityDetails omits it), so the return value is read from there
+ * rather than assumed: a save can "succeed" with the group silently dropped.
+ */
+export async function linkPairByRecreate(
+  saveMany: (req: SaveManyRequest) => Promise<SaveManyResult>,
+  legs: [LinkLeg, LinkLeg],
+): Promise<LinkResult> {
+  const groupId = newTransferGroupId();
+  const problems: string[] = [];
+
+  const del = await saveMany({ deleteIds: legs.map((l) => l.wfId) });
+  for (const e of del.errors) problems.push(`delete (${e.action}): ${e.message}`);
+
+  const res = await saveMany({
+    creates: legs.map((leg) => ({
+      accountId: leg.accountId,
+      activityType: leg.activityType,
+      activityDate: leg.date,
+      amount: leg.absCents / 100,
+      currency: leg.currency,
+      comment: leg.comment,
+      metadata: INTERNAL_TRANSFER_METADATA,
+      sourceGroupId: groupId,
+    })),
+  });
+  for (const e of res.errors) problems.push(`save (${e.action}): ${e.message}`);
+  if (problems.length > 0) return { linked: false };
+
+  // Adopt the gid Wealthfolio actually stored — it keeps its own for rows that
+  // were already grouped, and reports null when it dropped the group entirely.
+  const echoed = new Map<string, string | null | undefined>();
+  for (const a of [...res.updated, ...res.created]) {
+    const txId = txIdFromComment(a.comment);
+    if (txId) echoed.set(txId, a.sourceGroupId);
+  }
+  const stored = legs.map((l) => echoed.get(l.txId));
+  const linked = !!stored[0] && stored[0] === stored[1];
+  return linked ? { linked: true, groupId: stored[0]! } : { linked: false };
+}
+```
+
+- [ ] **Step 4: Delegate from both hosts**
+
+In `src/utils/addon-host.ts`, replace `AddonSyncHost.linkPair`'s body (and move its comment to the shared file per Step 3) with:
+
+```typescript
+  async linkPair(legs: [LinkLeg, LinkLeg]): Promise<LinkResult> {
+    return linkPairByRecreate((req) => this.saveMany(req), legs);
+  }
+```
+
+adding `import { linkPairByRecreate } from '../../shared/link-pair';` at the top.
+
+In `companion/src/rest-host.ts`, replace `RestSyncHost.linkPair`'s entire `/activities/link`-based body with the same two-line delegation (importing from `'../../shared/link-pair.js'`). Leave `WealthfolioClient.linkTransferActivities` in place — it is no longer called by the sync path, but it is a thin API wrapper and deleting it is out of scope for this task.
+
+- [ ] **Step 5: Update the companion's `linkPair` tests**
+
+`companion/src/rest-host.test.ts` has two tests asserting the old id-based behavior (`expect(client.linkTransferActivities).toHaveBeenCalledWith('act-out', 'act-in')` and a throws-→-`linked:false` case). Replace them with tests against the new delegation: a fake client whose `saveMany` echoes a shared gid should yield `{ linked: true, groupId }`, and one returning `errors` should yield `{ linked: false }`. Keep every other test in the file.
+
+- [ ] **Step 6: Verify**
+
+Run: `npx vitest run shared/link-pair.test.ts && npm test && npx tsc --noEmit && cd companion && npm test && npx tsc --noEmit`
+Expected: all green/clean. Note `src/utils/sync.test.ts` has an existing test asserting the addon's link behavior — it should still pass, since the delegation preserves semantics exactly; if it fails, the move was not faithful.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add shared/link-pair.ts shared/link-pair.test.ts src/utils/addon-host.ts companion/src/rest-host.ts companion/src/rest-host.test.ts
+git commit -m "fix: companion linkPair now deletes and re-creates legs, clearing a promoted placeholder's phantom asset"
+```
+
+---
+
 ## Self-Review Notes
 
 - **Spec coverage:** every numbered component in `docs/superpowers/specs/2026-07-28-notification-system-redesign-design.md` maps to a task — budget fix (Task 2), formatters/schedules/category selection (Tasks 4, 8), in-transit transfers (Task 6), stuck-transfer alert (Task 7, delivered in Task 9), sync health (Task 9), removal of the keyword system (Tasks 10, 11), test harness fix (Task 1), minor polish (Task 12).
