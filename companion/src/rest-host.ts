@@ -33,6 +33,13 @@ function fromSearchItem(a: any, wfAccountId = ''): HostActivity {
   };
 }
 
+/** Page size for the `listOldestActivities` sweep, and the number of pages it
+ *  will pull before giving up. 20 × 500 = 10,000 activities on one account —
+ *  far beyond a personal-finance dataset, but a finite bound so a server that
+ *  never returns a short page cannot spin forever. */
+const OLDEST_SWEEP_PAGE_SIZE = 500;
+const OLDEST_SWEEP_MAX_PAGES = 20;
+
 export class RestSyncHost implements SyncHost {
   constructor(private client: WealthfolioClient) {}
 
@@ -81,13 +88,42 @@ export class RestSyncHost implements SyncHost {
     return items.map((a) => fromSearchItem(a, wfAccountId));
   }
 
+  /**
+   * The account's `limit` OLDEST activities, date ascending — the ordering the
+   * starting-balance marker lookup depends on (see `SyncHost`).
+   *
+   * The REST search endpoint's request body carries no sort field, so a single
+   * page arrives in the server's default order, which is newest-first. This
+   * adapter therefore does not trust the server's ordering at all: it sweeps
+   * every page and sorts ascending itself. Sorting one page client-side would
+   * NOT do — the newest N rows sorted ascending are still the newest N rows, and
+   * the marker (by construction the oldest row) would still be missed.
+   *
+   * The only way this can now come back incomplete is the page cap, and hitting
+   * it logs a warning naming this method.
+   */
   async listOldestActivities(wfAccountId: string, limit: number): Promise<HostActivity[]> {
-    const items = await this.client.searchActivities({
-      page: 1,
-      pageSize: limit,
-      accountIdFilter: [wfAccountId],
-    });
-    return items.map((a) => fromSearchItem(a, wfAccountId));
+    const all: HostActivity[] = [];
+    let page = 0;
+    for (; page < OLDEST_SWEEP_MAX_PAGES; page++) {
+      const items = await this.client.searchActivities({
+        page,
+        pageSize: OLDEST_SWEEP_PAGE_SIZE,
+        accountIdFilter: [wfAccountId],
+      });
+      for (const a of items) all.push(fromSearchItem(a, wfAccountId));
+      // A short (or empty) page is the last page.
+      if (items.length < OLDEST_SWEEP_PAGE_SIZE) break;
+    }
+    if (page >= OLDEST_SWEEP_MAX_PAGES) {
+      console.warn(
+        `[simplefin-sync] listOldestActivities hit its ${OLDEST_SWEEP_MAX_PAGES}-page cap ` +
+          `(${OLDEST_SWEEP_MAX_PAGES * OLDEST_SWEEP_PAGE_SIZE} rows) on account ${wfAccountId}; ` +
+          'the oldest rows may be beyond the sweep, so the starting-balance marker could be missed.',
+      );
+    }
+    all.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+    return all.slice(0, limit);
   }
 
   async saveMany(req: SaveManyRequest): Promise<SaveManyResult> {

@@ -99,14 +99,22 @@ describe('WealthfolioClient', () => {
     });
     const client = new WealthfolioClient('http://wealthfolio:8088');
     const items = await client.searchActivities({
-      page: 1, pageSize: 200,
+      page: 0, pageSize: 200,
       accountIdFilter: ['wf-a'],
       activityTypeFilter: ['TRANSFER_IN', 'TRANSFER_OUT'],
       dateFrom: '2026-06-28',
     });
     const [url, opts] = mockFetch.mock.calls[0];
     expect(url).toBe('http://wealthfolio:8088/api/v1/activities/search');
-    expect(JSON.parse((opts as any).body).activityTypeFilter).toEqual(['TRANSFER_IN', 'TRANSFER_OUT']);
+    // The whole body goes to the wire verbatim - in particular `page`, which is
+    // 0-indexed on this endpoint. A client that "helpfully" adjusted the page
+    // number would resurrect the empty-first-page bug.
+    expect(JSON.parse((opts as any).body)).toEqual({
+      page: 0, pageSize: 200,
+      accountIdFilter: ['wf-a'],
+      activityTypeFilter: ['TRANSFER_IN', 'TRANSFER_OUT'],
+      dateFrom: '2026-06-28',
+    });
     expect(items).toHaveLength(1);
     expect(items[0].id).toBe('act-1');
   });

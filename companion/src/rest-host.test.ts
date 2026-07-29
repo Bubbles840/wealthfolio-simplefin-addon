@@ -80,6 +80,87 @@ describe('RestSyncHost', () => {
     const result = await host.linkPair([leg('act-out'), leg('act-in')]);
     expect(result.linked).toBe(false);
   });
+  it('listOldestActivities starts its sweep at page 0 (the first page), not page 1', async () => {
+    const client = { searchActivities: vi.fn(async () => []) } as any;
+    const host = new RestSyncHost(client);
+    await host.listOldestActivities('wf-a', 50);
+
+    expect(client.searchActivities.mock.calls[0][0].page).toBe(0);
+    expect(client.searchActivities.mock.calls[0][0].accountIdFilter).toEqual(['wf-a']);
+  });
+
+  // Regression test: the search endpoint's request body has no sort field, so a
+  // single page comes back in the server's default order (newest first). The
+  // starting-balance marker is by construction the OLDEST row on the account, so
+  // reading a newest-first page as if it were oldest-first can miss it - and a
+  // missed marker means a DUPLICATE starting-balance baseline, which silently
+  // corrupts the account's balance.
+  describe('listOldestActivities really returns the oldest rows', () => {
+    /** A server that pages in its default NEWEST-first order. */
+    function newestFirstClient(dates: string[], pageSize = 500) {
+      const newestFirst = [...dates]
+        .sort((a, b) => (a < b ? 1 : a > b ? -1 : 0))
+        .map((date, i) => ({ id: `act-${date}-${i}`, accountId: 'wf-a', activityType: 'DEPOSIT', date, amount: '1' }));
+      return {
+        searchActivities: vi.fn(async (body: any) => {
+          expect(body.pageSize).toBe(pageSize);
+          const start = body.page * body.pageSize;
+          return newestFirst.slice(start, start + body.pageSize);
+        }),
+      } as any;
+    }
+
+    it('returns ascending-by-date rows given a server that responds newest-first', async () => {
+      const client = newestFirstClient(['2026-01-05', '2026-03-01', '2025-06-30', '2026-07-05']);
+      const host = new RestSyncHost(client);
+      const rows = await host.listOldestActivities('wf-a', 50);
+
+      expect(rows.map((r) => r.date)).toEqual(['2025-06-30', '2026-01-05', '2026-03-01', '2026-07-05']);
+      // A single page was enough: the page was short, so the sweep stopped.
+      expect(client.searchActivities).toHaveBeenCalledTimes(1);
+    });
+
+    it('sweeps every page so the oldest row is found even when it is on the last page', async () => {
+      // 1200 rows on a newest-first server: the oldest row lives on page 2.
+      const dates = Array.from({ length: 1200 }, (_, i) => {
+        const d = new Date(Date.UTC(2020, 0, 1) + i * 86400000);
+        return d.toISOString().slice(0, 10);
+      });
+      const client = newestFirstClient(dates);
+      const host = new RestSyncHost(client);
+      const rows = await host.listOldestActivities('wf-a', 3);
+
+      expect(client.searchActivities.mock.calls.map((c: any[]) => c[0].page)).toEqual([0, 1, 2]);
+      expect(rows).toHaveLength(3);
+      expect(rows.map((r) => r.date)).toEqual(['2020-01-01', '2020-01-02', '2020-01-03']);
+    });
+
+    it('stops at a page cap and warns rather than looping forever on a pathological account', async () => {
+      // A server that never returns a short page.
+      const client = {
+        searchActivities: vi.fn(async (body: any) =>
+          Array.from({ length: body.pageSize }, (_, i) => ({
+            id: `act-${body.page}-${i}`,
+            accountId: 'wf-a',
+            activityType: 'DEPOSIT',
+            date: '2026-07-05',
+            amount: '1',
+          })),
+        ),
+      } as any;
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const host = new RestSyncHost(client);
+        const rows = await host.listOldestActivities('wf-a', 5);
+        expect(rows).toHaveLength(5);
+        expect(client.searchActivities.mock.calls.length).toBeLessThanOrEqual(20);
+        expect(warn).toHaveBeenCalled();
+        expect(String(warn.mock.calls[0][0])).toMatch(/oldest/i);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+  });
 });
 
 describe('RestSyncStore', () => {
