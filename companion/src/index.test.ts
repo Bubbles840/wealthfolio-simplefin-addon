@@ -117,7 +117,7 @@ describe('runCompanionSync sync health', () => {
   it('sends one Telegram alert per stuck-transfer entry in the result', async () => {
     vi.mocked(runSyncCore).mockResolvedValueOnce({
       imported: 0, skipped: 0, errors: [],
-      stuckTransferAlerts: [{ description: 'Payment ↔ Payment', amountCents: 130000, currency: 'USD' }],
+      stuckTransferAlerts: [{ outTxId: 'tx-out', description: 'Payment ↔ Payment', amountCents: 130000, currency: 'USD' }],
     });
     secrets.set('telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true }));
 
@@ -147,7 +147,7 @@ describe('runCompanionSync sync health', () => {
     // to break a send than a hand-written error message.
     vi.mocked(runSyncCore).mockResolvedValueOnce({
       imported: 0, skipped: 0, errors: [],
-      stuckTransferAlerts: [{ description: 'AMAZON *MKTPLACE ↔ Payment_Refund', amountCents: 500, currency: 'USD' }],
+      stuckTransferAlerts: [{ outTxId: 'tx-out', description: 'AMAZON *MKTPLACE ↔ Payment_Refund', amountCents: 500, currency: 'USD' }],
     });
     secrets.set('telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true }));
 
@@ -331,6 +331,108 @@ describe('runCompanionSync sync health', () => {
     vi.mocked(WealthfolioClient).mockImplementation(function () { return client; } as any);
 
     await expect(runCompanionSync()).rejects.toThrow('SimpleFin: token revoked');
+  });
+});
+
+describe('stuck-transfer alert delivery confirmation', () => {
+  let secrets: Map<string, string>;
+
+  beforeEach(() => {
+    process.env.WEALTHFOLIO_API_URL = 'http://wf';
+    process.env.WEALTHFOLIO_PASSWORD = 'pw';
+    secrets = new Map();
+    secrets.set('simplefin_access_url', 'https://user:pass@bridge.simplefin.org/simplefin');
+    secrets.set('telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true }));
+    vi.mocked(runSyncCore).mockClear();
+  });
+
+  it('rolls the ledger entry back to un-alerted when the Telegram send fails', async () => {
+    // runSyncCore has already persisted alerted:true for this pair when it
+    // queued the alert. A failed delivery must undo that so the next sync
+    // re-alerts.
+    secrets.set('transfer_link_failures', JSON.stringify({
+      'tx-out': { count: 3, firstFailedAt: '2026-07-01T00:00:00Z', alerted: true },
+    }));
+    vi.mocked(runSyncCore).mockResolvedValueOnce({
+      imported: 0, skipped: 0, errors: [],
+      stuckTransferAlerts: [{ outTxId: 'tx-out', description: 'Payment ↔ Payment', amountCents: 50000, currency: 'USD' }],
+    });
+
+    const { WealthfolioClient } = await import('./wealthfolio.js');
+    const client = new (WealthfolioClient as any)();
+    client.getAddonSecret = vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null);
+    client.setAddonSecret = vi.fn(async (_a: string, key: string, val: string) => { secrets.set(key, val); });
+    // NOTE: must be a `function` (not an arrow fn) — runCompanionSync calls
+    // `new WealthfolioClient(apiUrl)`, and mockImplementation with an arrow
+    // fn throws "is not a constructor" when invoked via `new`.
+    vi.mocked(WealthfolioClient).mockImplementation(function () { return client; } as any);
+
+    const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: false, description: 'Bad Request' }) }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await runCompanionSync();
+
+    const failures = JSON.parse(secrets.get('transfer_link_failures')!);
+    expect(failures['tx-out'].alerted).toBe(false);
+    expect(failures['tx-out'].count).toBe(3);
+    expect(failures['tx-out'].firstFailedAt).toBe('2026-07-01T00:00:00Z');
+  });
+
+  it('leaves the ledger entry alerted when the send succeeds', async () => {
+    secrets.set('transfer_link_failures', JSON.stringify({
+      'tx-out': { count: 3, firstFailedAt: '2026-07-01T00:00:00Z', alerted: true },
+    }));
+    vi.mocked(runSyncCore).mockResolvedValueOnce({
+      imported: 0, skipped: 0, errors: [],
+      stuckTransferAlerts: [{ outTxId: 'tx-out', description: 'Payment ↔ Payment', amountCents: 50000, currency: 'USD' }],
+    });
+
+    const { WealthfolioClient } = await import('./wealthfolio.js');
+    const client = new (WealthfolioClient as any)();
+    client.getAddonSecret = vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null);
+    client.setAddonSecret = vi.fn(async (_a: string, key: string, val: string) => { secrets.set(key, val); });
+    vi.mocked(WealthfolioClient).mockImplementation(function () { return client; } as any);
+
+    const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await runCompanionSync();
+
+    const failures = JSON.parse(secrets.get('transfer_link_failures')!);
+    expect(failures['tx-out'].alerted).toBe(true);
+    expect(failures['tx-out'].count).toBe(3);
+    expect(failures['tx-out'].firstFailedAt).toBe('2026-07-01T00:00:00Z');
+  });
+
+  it('rolls back only the entry whose send failed', async () => {
+    secrets.set('transfer_link_failures', JSON.stringify({
+      'tx-out': { count: 3, firstFailedAt: '2026-07-01T00:00:00Z', alerted: true },
+      'tx-out-2': { count: 3, firstFailedAt: '2026-07-02T00:00:00Z', alerted: true },
+    }));
+    vi.mocked(runSyncCore).mockResolvedValueOnce({
+      imported: 0, skipped: 0, errors: [],
+      stuckTransferAlerts: [
+        { outTxId: 'tx-out', description: 'Payment ↔ Payment', amountCents: 50000, currency: 'USD' },
+        { outTxId: 'tx-out-2', description: 'Other ↔ Other', amountCents: 20000, currency: 'USD' },
+      ],
+    });
+
+    const { WealthfolioClient } = await import('./wealthfolio.js');
+    const client = new (WealthfolioClient as any)();
+    client.getAddonSecret = vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null);
+    client.setAddonSecret = vi.fn(async (_a: string, key: string, val: string) => { secrets.set(key, val); });
+    vi.mocked(WealthfolioClient).mockImplementation(function () { return client; } as any);
+
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(async () => ({ json: async () => ({ ok: false, description: 'Bad Request' }) }))
+      .mockImplementationOnce(async () => ({ json: async () => ({ ok: true }) }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await runCompanionSync();
+
+    const failures = JSON.parse(secrets.get('transfer_link_failures')!);
+    expect(failures['tx-out'].alerted).toBe(false);
+    expect(failures['tx-out-2'].alerted).toBe(true);
   });
 });
 

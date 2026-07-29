@@ -458,6 +458,7 @@ describe('runSyncCore', () => {
         expect(result.stuckTransferAlerts).toEqual([]);
       } else {
         expect(result.stuckTransferAlerts).toHaveLength(1);
+        expect(result.stuckTransferAlerts[0].outTxId).toBe('tx-out');
         expect(result.stuckTransferAlerts[0].amountCents).toBe(50000);
         expect(result.stuckTransferAlerts[0].currency).toBe('USD');
       }

@@ -142,24 +142,70 @@ async function checkSyncHealthAlert(wfClient: WealthfolioClient): Promise<void> 
   await wfClient.setAddonSecret('simplefin-sync', 'sync_health', JSON.stringify({ ...health, alerted: true })).catch(() => {});
 }
 
+/** Sends the stuck-transfer Telegram alert and reports whether it was
+ *  actually delivered, so the caller can roll back the ledger's `alerted`
+ *  flag on a confirmed failure (see the rollback loop in runCompanionSync).
+ *
+ *  A "non-attempt" — no telegram_config secret, or Telegram deliberately
+ *  disabled/unconfigured — reports `true` (not a failure) rather than
+ *  `false`. Reporting `false` here would make the caller roll the ledger
+ *  back to `alerted: false` on every single sync for a user who simply
+ *  hasn't set up Telegram, which would re-queue (and rewrite the ledger
+ *  secret for) an alert that can never be delivered — churn with no
+ *  possible upside. Reporting `true` means the alert is silently consumed
+ *  without being sent, but only for a user who has deliberately not
+ *  configured or has disabled notifications; that tradeoff only applies to
+ *  users who opted out, not to a delivery failure they'd want to know about. */
 async function sendStuckTransferAlert(
   wfClient: WealthfolioClient,
   alert: { description: string; amountCents: number; currency: string },
-): Promise<void> {
+): Promise<boolean> {
   const tgRaw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_config').catch(() => null);
-  if (!tgRaw) return;
+  if (!tgRaw) return true;
   const tg = JSON.parse(tgRaw);
-  if (!tg.botToken || !tg.chatId || tg.enabled === false) return;
+  if (!tg.botToken || !tg.chatId || tg.enabled === false) return true;
   const amount = (alert.amountCents / 100).toFixed(2);
   // `alert.description` is built from bank/card transaction comments — real
   // merchant descriptors routinely contain `*`/`_` (card-network descriptors
   // like "AMAZON *MKTPLACE"), so this needs escaping same as any other
   // arbitrary text reaching a Markdown-parsed message.
-  await sendTelegramMessage(
+  const result = await sendTelegramMessage(
     tg.botToken,
     tg.chatId,
     `⚠️ *Transfer stuck — couldn't auto-link after 3 tries*\n${escapeMarkdown(alert.description)}\nAmount: $${amount} ${alert.currency}\nTry "Reconcile & link" in the addon, or check for a duplicate/mismatched leg.`,
   );
+  if (!result.ok) {
+    log(`Stuck-transfer alert failed to send, will retry next sync: ${result.description}`);
+    return false;
+  }
+  return true;
+}
+
+/** Re-reads the transfer-link-failures ledger (rather than reusing any
+ *  in-memory copy — runSyncCore already wrote it this run, so a stale copy
+ *  here would clobber that) and rolls back `alerted` for exactly the entries
+ *  whose delivery failed, preserving `count`/`firstFailedAt` so the 3-strike
+ *  streak isn't reset. Only writes when something actually changed, matching
+ *  the `linkFailuresChanged` discipline runSyncCore itself uses. Must never
+ *  throw: a failure here must not abort the sync or mask a real error. */
+async function rollBackUndeliveredStuckTransferAlerts(
+  store: RestSyncStore,
+  undeliveredOutTxIds: string[],
+): Promise<void> {
+  if (undeliveredOutTxIds.length === 0) return;
+  try {
+    const failures = await store.getTransferLinkFailures();
+    let changed = false;
+    for (const outTxId of undeliveredOutTxIds) {
+      if (failures[outTxId]?.alerted) {
+        failures[outTxId] = { ...failures[outTxId], alerted: false };
+        changed = true;
+      }
+    }
+    if (changed) await store.setTransferLinkFailures(failures);
+  } catch (err) {
+    debug(`Stuck-transfer alert rollback failed (will retry as still-alerted next sync): ${formatError(err)}`);
+  }
 }
 
 export async function runCompanionSync(): Promise<SyncResult> {
@@ -224,9 +270,12 @@ export async function runCompanionSync(): Promise<SyncResult> {
     }
     log(`Done: ${result.imported} imported, ${result.skipped} skipped`);
 
+    const undeliveredOutTxIds: string[] = [];
     for (const alert of result.stuckTransferAlerts) {
-      await sendStuckTransferAlert(wfClient, alert);
+      const delivered = await sendStuckTransferAlert(wfClient, alert);
+      if (!delivered) undeliveredOutTxIds.push(alert.outTxId);
     }
+    await rollBackUndeliveredStuckTransferAlerts(store, undeliveredOutTxIds);
 
     try {
       const tgRaw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_config');

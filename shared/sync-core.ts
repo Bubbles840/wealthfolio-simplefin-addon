@@ -73,7 +73,7 @@ export interface SyncResult {
   imported: number;
   skipped: number;
   errors: string[];
-  stuckTransferAlerts: Array<{ description: string; amountCents: number; currency: string }>;
+  stuckTransferAlerts: Array<{ outTxId: string; description: string; amountCents: number; currency: string }>;
 }
 
 export interface SyncOptions {
@@ -1061,6 +1061,7 @@ export async function runSyncCore(
       if (count >= STUCK_TRANSFER_ALERT_THRESHOLD && !alerted) {
         linkFailures[failureKey].alerted = true;
         stuckTransferAlerts.push({
+          outTxId: failureKey,
           description: `${legs[0].comment} ↔ ${legs[1].comment}`,
           amountCents: legs[0].absCents,
           currency: legs[0].currency,
