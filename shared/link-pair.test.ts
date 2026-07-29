@@ -49,7 +49,15 @@ describe('linkPairByRecreate', () => {
     const creates = requests[1].creates!;
     expect(creates[0].sourceGroupId).toBe(creates[1].sourceGroupId);
     expect(creates[0].sourceGroupId!.startsWith(TRANSFER_GROUP_PREFIX)).toBe(true);
-    for (const c of creates) expect(c.metadata).toBeTruthy();
+    // Must be the JSON *string*, not the object: the server 422s on an object
+    // metadata, so every link would fail. `toBeTruthy()` passed either way, so
+    // the clause was only pinned by INTERNAL_TRANSFER_METADATA's own
+    // definition — assert the type here so a refactor there can't silently
+    // break every link.
+    for (const c of creates) {
+      expect(typeof c.metadata).toBe('string');
+      expect(JSON.parse(c.metadata as unknown as string)).toBeTruthy();
+    }
   });
 
   it('reports the gid the host actually stored, not the one we sent', async () => {

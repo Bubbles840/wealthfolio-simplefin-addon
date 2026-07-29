@@ -1022,6 +1022,16 @@ export async function runSyncCore(
       ? !!outRow.sourceGroupId && outRow.sourceGroupId === inRow.sourceGroupId
       : ledgerLinkedTxIds.has(outTxId) && ledgerLinkedTxIds.has(inTxId);
     if (alreadyLinked) continue;
+    // KNOWN GAP (accepted, tracked as a follow-up — not fixed here):
+    // `linkedTxIds` is populated BEFORE `host.linkPair` runs below, so on a
+    // ledger-backed host (`readsGroups === false`) a link that then fails is
+    // still recorded as linked. The relink sweep uses this same ledger to
+    // decide what needs attention, so it permanently skips that pair, leaving
+    // an asset-backed leg in place. The user-visible symptom is a wrong
+    // account balance appearing months later with no obvious cause — which is
+    // exactly why this note is here rather than left to be rediscovered from
+    // the balance. Fix shape: move these two adds to after a confirmed
+    // successful `linkPair`, alongside the existing `linkFailures` handling.
     linkedTxIds.add(outTxId);
     linkedTxIds.add(inTxId);
     pairsToLink.push([toLinkLeg(outRow), toLinkLeg(inRow)]);
