@@ -6,6 +6,9 @@ import { SyncStatus } from '../components/SyncStatus';
 import { RuleEditor } from '../components/RuleEditor';
 import { Button, Card, CollapsibleCard, Disclosure, ErrorBox, SectionLabel } from '../components/ui';
 import { sendTelegramMessage, getCategoryEmoji } from '../../shared/telegram';
+// The real default the sync engine applies when driftAlertThreshold is absent,
+// imported rather than re-typed so the field can never disagree with it.
+import { DEFAULT_DRIFT_ALERT_THRESHOLD_DOLLARS } from '../../shared/sync-core';
 import type { SecretsStore, AccountBalanceInfo } from '../utils/secrets';
 import type { Scheduler } from '../utils/scheduler';
 import type { AccountMapping, MappingRule } from '../../shared/types';
@@ -56,6 +59,38 @@ function formatAsOf(unixSeconds: number): string {
   });
 }
 
+/** Amount the "Large transaction alerts" field is seeded with. Purely a UI
+ *  suggestion: the stored default is OFF (see `largeTransactionThreshold`), so
+ *  this number only ever reaches storage once the user ticks the box. */
+const SUGGESTED_LARGE_TX_THRESHOLD = 500;
+
+/** Mirrors the companion's `DEFAULT_WEEKLY_TOP_SPEND_COUNT`, which is module-
+ *  private in companion/src/index.ts and so cannot be imported across the
+ *  package boundary. Keep the two in step. */
+const DEFAULT_WEEKLY_TOP_SPEND_COUNT = 5;
+
+/**
+ * The two dollar thresholds mean opposite things when absent — `largeTransaction`
+ * is OFF, `driftAlert` is ON at $100 — so neither can be expressed by an empty
+ * number field. Each gets an explicit checkbox instead, and saving always writes
+ * a number: the amount when on, `0` (which both readers treat as off) when off.
+ * That is what lets a user actually turn drift alerts off instead of clearing
+ * the field and silently getting the $100 default back.
+ */
+function thresholdToSave(on: boolean, raw: string, fallback: number): number {
+  if (!on) return 0;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+/** `weeklyTopSpendCount` differs again: `0` is a meaningful value the user can
+ *  type (hide the section), so only a BLANK field falls back to the default. */
+function countToSave(raw: string, fallback: number): number {
+  if (raw.trim() === '') return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : fallback;
+}
+
 /** Ids for the collapsible config cards. Doubles as the persisted key set, so
  *  renaming one silently forgets that card's last state — which is fine. */
 const CARD = {
@@ -93,9 +128,21 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
   const [notifyOnImport, setNotifyOnImport] = useState(true);
   const [dailyReportEnabled, setDailyReportEnabled] = useState(true);
   const [weeklyReportEnabled, setWeeklyReportEnabled] = useState(true);
+  // Absent means ON, like its daily/weekly siblings: a config written before the
+  // monthly report existed opts into it.
+  const [monthlyReportEnabled, setMonthlyReportEnabled] = useState(true);
   const [dailyReportCategories, setDailyReportCategories] = useState<string[] | 'all'>('all');
   const [weeklyReportCategories, setWeeklyReportCategories] = useState<string[] | 'all'>('all');
+  const [monthlyReportCategories, setMonthlyReportCategories] = useState<string[] | 'all'>('all');
   const [availableCategories, setAvailableCategories] = useState<string[]>([]);
+  // Each threshold is a checkbox plus an amount, never an amount alone — see
+  // `thresholdToSave`. The amounts are held as strings so a half-typed field
+  // isn't coerced to 0 mid-keystroke.
+  const [largeTxAlerts, setLargeTxAlerts] = useState(false);
+  const [largeTxAmount, setLargeTxAmount] = useState(String(SUGGESTED_LARGE_TX_THRESHOLD));
+  const [driftAlertsOn, setDriftAlertsOn] = useState(true);
+  const [driftAmount, setDriftAmount] = useState(String(DEFAULT_DRIFT_ALERT_THRESHOLD_DOLLARS));
+  const [topSpendCount, setTopSpendCount] = useState(String(DEFAULT_WEEKLY_TOP_SPEND_COUNT));
   const [testingTelegram, setTestingTelegram] = useState(false);
   const [telegramStatus, setTelegramStatus] = useState<string | null>(null);
 
@@ -133,8 +180,30 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
         setNotifyOnImport(tg.notifyOnImport ?? true);
         setDailyReportEnabled(tg.dailyReportEnabled ?? true);
         setWeeklyReportEnabled(tg.weeklyReportEnabled ?? true);
+        setMonthlyReportEnabled(tg.monthlyReportEnabled ?? true);
         setDailyReportCategories(tg.dailyReportCategories ?? 'all');
         setWeeklyReportCategories(tg.weeklyReportCategories ?? 'all');
+        setMonthlyReportCategories(tg.monthlyReportCategories ?? 'all');
+
+        // A stored number is authoritative; anything else (absent, null, a
+        // string) reads as "never configured" and takes the field's default.
+        const num = (v: unknown): number | null =>
+          typeof v === 'number' && Number.isFinite(v) ? v : null;
+
+        // Absent → off. Only a positive amount turns it on.
+        const largeTx = num(tg.largeTransactionThreshold);
+        setLargeTxAlerts(largeTx !== null && largeTx > 0);
+        if (largeTx !== null && largeTx > 0) setLargeTxAmount(String(largeTx));
+
+        // Absent → ON at the engine's default. Only an explicit 0-or-negative
+        // is the user having turned it off, which is why the amount field keeps
+        // its default rather than showing the stored 0.
+        const drift = num(tg.driftAlertThreshold);
+        setDriftAlertsOn(drift === null || drift > 0);
+        if (drift !== null && drift > 0) setDriftAmount(String(drift));
+
+        const top = num(tg.weeklyTopSpendCount);
+        if (top !== null && top >= 0) setTopSpendCount(String(Math.floor(top)));
       }
       setWfNames(Object.fromEntries(wfAccounts.map((a) => [a.id, a.name])));
       setOpenCards(cards);
@@ -269,17 +338,32 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
   const activeReports = [
     dailyReportEnabled && 'daily',
     weeklyReportEnabled && 'weekly',
+    monthlyReportEnabled && 'monthly',
   ].filter((r): r is string => typeof r === 'string');
   const telegramSummary = !telegramConnected
     ? 'Not connected'
-    : `Connected · ${activeReports.length > 0 ? `${activeReports.join(', ')} reports` : 'no reports'}`;
+    : [
+        'Connected',
+        activeReports.length > 0 ? `${activeReports.join(', ')} reports` : 'no reports',
+        // Only the non-default alert states earn a slot: large-tx alerts are off
+        // unless asked for, drift alerts are on unless refused, so these two
+        // segments are exactly the settings you would forget you had changed.
+        largeTxAlerts
+          ? `$${thresholdToSave(true, largeTxAmount, SUGGESTED_LARGE_TX_THRESHOLD)}+ alerts`
+          : null,
+        driftAlertsOn ? null : 'drift alerts off',
+      ]
+        .filter((s): s is string => typeof s === 'string')
+        .join(' · ');
 
   // Count only names the companion still publishes: a saved selection can hold
   // categories that vanished at month rollover, and counting those would report
   // more checked boxes than the matrix actually shows.
   const catCount = (sel: string[] | 'all') =>
     sel === 'all' ? 'all' : String(sel.filter((n) => availableCategories.includes(n)).length);
-  const categoriesSummary = `Daily ${catCount(dailyReportCategories)} · Weekly ${catCount(weeklyReportCategories)}`;
+  const categoriesSummary =
+    `Daily ${catCount(dailyReportCategories)} · Weekly ${catCount(weeklyReportCategories)}` +
+    ` · Monthly ${catCount(monthlyReportCategories)}`;
 
   const rulesSummary =
     rules.length === 0
@@ -611,6 +695,104 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
               />
               <span>Weekly Budget &amp; Spending Summary</span>
             </label>
+            <label className="sfin-check">
+              <input
+                type="checkbox"
+                checked={monthlyReportEnabled}
+                onChange={(e) => setMonthlyReportEnabled(e.target.checked)}
+              />
+              <span>Monthly Wrap-Up (on the 1st, for the month just ended)</span>
+            </label>
+          </div>
+
+          <div className="sfin-divider" />
+          <SectionLabel>Alerts &amp; amounts</SectionLabel>
+
+          <div className="sfin-nums">
+            <div className="sfin-thresh">
+              {/* paddingLeft matches a checkbox + its gap, so this row's label
+                  starts on the same left edge as the two below it and every
+                  hint lines up under its own setting. */}
+              <label htmlFor="sfin-top-spend" style={{ minWidth: 0, paddingLeft: 22 }}>
+                <span className="sfin-check-name">Biggest spends in the weekly report</span>
+              </label>
+              <div className="sfin-thresh-amt">
+                {/* `0` is a value the user can legitimately type here, so this
+                    one needs no on/off checkbox — unlike the two thresholds. */}
+                <input
+                  id="sfin-top-spend"
+                  type="number"
+                  min={0}
+                  step={1}
+                  className="sfin-select sfin-num"
+                  value={topSpendCount}
+                  onChange={(e) => setTopSpendCount(e.target.value)}
+                />
+              </div>
+            </div>
+            <div className="sfin-num-hint sfin-subtle">
+              How many individual charges the Saturday report lists. 0 hides the
+              section; blank means the default of {DEFAULT_WEEKLY_TOP_SPEND_COUNT}.
+            </div>
+
+            <div className="sfin-thresh">
+              <label className="sfin-check">
+                <input
+                  type="checkbox"
+                  checked={largeTxAlerts}
+                  onChange={(e) => setLargeTxAlerts(e.target.checked)}
+                />
+                <span className="sfin-check-name">Large transaction alerts</span>
+              </label>
+              <div className="sfin-thresh-amt">
+                <span className="sfin-subtle" aria-hidden>over $</span>
+                <input
+                  type="number"
+                  min={1}
+                  step={1}
+                  className="sfin-select sfin-num"
+                  // A distinct aria-label: both threshold fields would otherwise
+                  // share the visible "over $" and be indistinguishable by name.
+                  aria-label="Large transaction alert threshold in dollars"
+                  value={largeTxAmount}
+                  disabled={!largeTxAlerts}
+                  onChange={(e) => setLargeTxAmount(e.target.value)}
+                />
+              </div>
+            </div>
+            <div className="sfin-num-hint sfin-subtle">
+              Announces a single newly-imported spend over this amount. Off until
+              you turn it on.
+            </div>
+
+            <div className="sfin-thresh">
+              <label className="sfin-check">
+                <input
+                  type="checkbox"
+                  checked={driftAlertsOn}
+                  onChange={(e) => setDriftAlertsOn(e.target.checked)}
+                />
+                <span className="sfin-check-name">Balance drift alerts</span>
+              </label>
+              <div className="sfin-thresh-amt">
+                <span className="sfin-subtle" aria-hidden>over $</span>
+                <input
+                  type="number"
+                  min={1}
+                  step={1}
+                  className="sfin-select sfin-num"
+                  aria-label="Balance drift alert threshold in dollars"
+                  value={driftAmount}
+                  disabled={!driftAlertsOn}
+                  onChange={(e) => setDriftAmount(e.target.value)}
+                />
+              </div>
+            </div>
+            <div className="sfin-num-hint sfin-subtle">
+              Announces an account whose bank balance and Wealthfolio valuation
+              differ by more than this. On at ${DEFAULT_DRIFT_ALERT_THRESHOLD_DOLLARS}{' '}
+              unless you untick it — clearing the amount alone will not turn it off.
+            </div>
           </div>
 
           {/* A matrix rather than a "Daily"/"Weekly" word beside every checkbox:
@@ -645,6 +827,7 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
                 <div aria-hidden />
                 <div className="sfin-cats-col sfin-cats-head">Daily</div>
                 <div className="sfin-cats-col sfin-cats-head">Weekly</div>
+                <div className="sfin-cats-col sfin-cats-head">Monthly</div>
               </>
             )}
             {availableCategories.length === 0 ? (
@@ -656,6 +839,7 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
                 const emoji = getCategoryEmoji(name);
                 const inDaily = dailyReportCategories === 'all' || dailyReportCategories.includes(name);
                 const inWeekly = weeklyReportCategories === 'all' || weeklyReportCategories.includes(name);
+                const inMonthly = monthlyReportCategories === 'all' || monthlyReportCategories.includes(name);
                 // Functional updater, and membership read from `prev` rather
                 // than the closed-over `inDaily`/`inWeekly`: two toggles
                 // batched into one React tick would otherwise both start from
@@ -705,6 +889,12 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
                       aria-label={`${name} — Weekly`}
                       checked={inWeekly}
                       onChange={() => toggle(setWeeklyReportCategories)}
+                    />
+                    <input
+                      type="checkbox"
+                      aria-label={`${name} — Monthly`}
+                      checked={inMonthly}
+                      onChange={() => toggle(setMonthlyReportCategories)}
                     />
                   </React.Fragment>
                 );
@@ -771,8 +961,20 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
                   notifyOnImport,
                   dailyReportEnabled,
                   weeklyReportEnabled,
+                  monthlyReportEnabled,
                   dailyReportCategories,
                   weeklyReportCategories,
+                  monthlyReportCategories,
+                  weeklyTopSpendCount: countToSave(topSpendCount, DEFAULT_WEEKLY_TOP_SPEND_COUNT),
+                  // Always an explicit number, never omitted: `0` is how both
+                  // readers spell "off", and omitting driftAlertThreshold would
+                  // hand the user back the $100 default they just switched off.
+                  largeTransactionThreshold: thresholdToSave(
+                    largeTxAlerts, largeTxAmount, SUGGESTED_LARGE_TX_THRESHOLD,
+                  ),
+                  driftAlertThreshold: thresholdToSave(
+                    driftAlertsOn, driftAmount, DEFAULT_DRIFT_ALERT_THRESHOLD_DOLLARS,
+                  ),
                 });
                 setTelegramStatus('✅ Telegram configuration saved!');
               }}

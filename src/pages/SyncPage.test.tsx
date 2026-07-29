@@ -292,7 +292,8 @@ describe('SyncPage', () => {
     render(<SyncPage {...props} />);
     await screen.findByText('Every 4h \u00b7 auto-heal on');
     expect(screen.getByText('2 rules')).toBeInTheDocument();
-    expect(screen.getByText('Connected \u00b7 daily, weekly reports')).toBeInTheDocument();
+    // All three reports default to on for a config that predates them.
+    expect(screen.getByText('Connected \u00b7 daily, weekly, monthly reports')).toBeInTheDocument();
   });
 
   it('summarises an off / unconfigured state distinguishably', async () => {
@@ -323,6 +324,218 @@ describe('SyncPage', () => {
     expect(screen.getAllByLabelText(/auto-sync interval/i).length).toBe(1);
     // Cards absent from the blob stay closed.
     expect(screen.queryByText('Save Telegram Settings')).not.toBeInTheDocument();
+  });
+
+  // ── Settings that shipped without UI ───────────────────────────────────
+  /** Opens the Telegram card and returns the Save button, which commits every
+   *  field in it. */
+  async function openTelegram() {
+    await openSection(/^Telegram Notifications/i);
+    return screen.getByText('Save Telegram Settings');
+  }
+
+  const savedConfig = (props: ReturnType<typeof makeProps>) =>
+    (props.store.setTelegramConfig as any).mock.calls[0][0];
+
+  /** A config that exists but predates all five fields. */
+  const bareConfig = () => ({ botToken: 't', chatId: 'c', enabled: true });
+
+  it('offers the monthly wrap-up, defaulting to on when the stored config predates it', async () => {
+    const props = makeProps();
+    props.store.getTelegramConfig = vi.fn(async () => bareConfig());
+    props.store.setTelegramConfig = vi.fn(async () => {});
+    render(<SyncPage {...props} />);
+    const save = await openTelegram();
+    const monthly = screen.getByLabelText(/Monthly Wrap-Up/i) as HTMLInputElement;
+    // Absent means ON, like its daily/weekly siblings.
+    expect(monthly.checked).toBe(true);
+    fireEvent.click(save);
+    await waitFor(() => expect(props.store.setTelegramConfig).toHaveBeenCalled());
+    expect(savedConfig(props).monthlyReportEnabled).toBe(true);
+
+    // Unticking has to store an explicit false — the only value the companion
+    // treats as "don't send this".
+    props.store.setTelegramConfig = vi.fn(async () => {});
+    fireEvent.click(monthly);
+    fireEvent.click(save);
+    await waitFor(() => expect(props.store.setTelegramConfig).toHaveBeenCalled());
+    expect(savedConfig(props).monthlyReportEnabled).toBe(false);
+  });
+
+  it('round-trips an explicitly disabled monthly report', async () => {
+    const props = makeProps();
+    props.store.getTelegramConfig = vi.fn(async () => ({ ...bareConfig(), monthlyReportEnabled: false }));
+    props.store.setTelegramConfig = vi.fn(async () => {});
+    render(<SyncPage {...props} />);
+    const save = await openTelegram();
+    const monthly = screen.getByLabelText(/Monthly Wrap-Up/i) as HTMLInputElement;
+    expect(monthly.checked).toBe(false);
+    fireEvent.click(monthly);
+    fireEvent.click(save);
+    await waitFor(() => expect(props.store.setTelegramConfig).toHaveBeenCalled());
+    expect(savedConfig(props).monthlyReportEnabled).toBe(true);
+  });
+
+  it('adds a Monthly column to the category matrix without disturbing Daily or Weekly', async () => {
+    const props = makeProps();
+    props.store.getAvailableReportCategories = vi.fn(async () => ['Dining', 'Groceries']);
+    props.store.getTelegramConfig = vi.fn(async () => ({
+      ...bareConfig(), monthlyReportCategories: ['Groceries'],
+    }));
+    props.store.setTelegramConfig = vi.fn(async () => {});
+    render(<SyncPage {...props} />);
+    await openReportCategories();
+    await screen.findByText('Dining');
+    // The pre-existing Daily/Weekly labels still resolve, and still default to all.
+    expect((screen.getByLabelText(/Dining.*Daily/i) as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByLabelText(/Dining.*Weekly/i) as HTMLInputElement).checked).toBe(true);
+    // Monthly reads its own saved subset.
+    expect((screen.getByLabelText(/Dining.*Monthly/i) as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByLabelText(/Groceries.*Monthly/i) as HTMLInputElement).checked).toBe(true);
+
+    fireEvent.click(screen.getByLabelText(/Dining.*Monthly/i)); // now covers everything
+    fireEvent.click(screen.getByText('Save Telegram Settings'));
+    await waitFor(() => expect(props.store.setTelegramConfig).toHaveBeenCalled());
+    const saved = savedConfig(props);
+    expect(saved.monthlyReportCategories).toBe('all');
+    expect(saved.dailyReportCategories).toBe('all');
+    expect(saved.weeklyReportCategories).toBe('all');
+  });
+
+  it('stores the weekly top-spend count, treating 0 as "hide" and blank as the default', async () => {
+    const props = makeProps();
+    props.store.getTelegramConfig = vi.fn(async () => ({ ...bareConfig(), weeklyTopSpendCount: 3 }));
+    props.store.setTelegramConfig = vi.fn(async () => {});
+    render(<SyncPage {...props} />);
+    const save = await openTelegram();
+    const field = screen.getByLabelText(/Biggest spends in the weekly report/i) as HTMLInputElement;
+    expect(field.value).toBe('3');
+
+    // 0 is a value the user can mean, so it must survive as 0.
+    fireEvent.change(field, { target: { value: '0' } });
+    fireEvent.click(save);
+    await waitFor(() => expect(props.store.setTelegramConfig).toHaveBeenCalled());
+    expect(savedConfig(props).weeklyTopSpendCount).toBe(0);
+
+    // Blank is not 0 — it means "I have no opinion", i.e. the default of 5.
+    props.store.setTelegramConfig = vi.fn(async () => {});
+    fireEvent.change(field, { target: { value: '' } });
+    fireEvent.click(save);
+    await waitFor(() => expect(props.store.setTelegramConfig).toHaveBeenCalled());
+    expect(savedConfig(props).weeklyTopSpendCount).toBe(5);
+  });
+
+  it('large-transaction alerts: absent reads as off, and off stores 0 rather than a number', async () => {
+    const props = makeProps();
+    props.store.getTelegramConfig = vi.fn(async () => bareConfig());
+    props.store.setTelegramConfig = vi.fn(async () => {});
+    render(<SyncPage {...props} />);
+    const save = await openTelegram();
+    const toggle = screen.getByLabelText(/Large transaction alerts/i) as HTMLInputElement;
+    const amount = screen.getByLabelText(/Large transaction alert threshold/i) as HTMLInputElement;
+    // Absent → OFF, and the amount is a disabled suggestion, not a stored value.
+    expect(toggle.checked).toBe(false);
+    expect(amount.disabled).toBe(true);
+
+    fireEvent.click(save);
+    await waitFor(() => expect(props.store.setTelegramConfig).toHaveBeenCalled());
+    expect(savedConfig(props).largeTransactionThreshold).toBe(0);
+  });
+
+  it('large-transaction alerts: on with an amount stores that amount, and reloads showing it', async () => {
+    const props = makeProps();
+    props.store.getTelegramConfig = vi.fn(async () => ({ ...bareConfig(), largeTransactionThreshold: 750 }));
+    props.store.setTelegramConfig = vi.fn(async () => {});
+    render(<SyncPage {...props} />);
+    const save = await openTelegram();
+    const toggle = screen.getByLabelText(/Large transaction alerts/i) as HTMLInputElement;
+    const amount = screen.getByLabelText(/Large transaction alert threshold/i) as HTMLInputElement;
+    expect(toggle.checked).toBe(true);
+    expect(amount.disabled).toBe(false);
+    expect(amount.value).toBe('750');
+
+    fireEvent.change(amount, { target: { value: '250' } });
+    fireEvent.click(save);
+    await waitFor(() => expect(props.store.setTelegramConfig).toHaveBeenCalled());
+    expect(savedConfig(props).largeTransactionThreshold).toBe(250);
+  });
+
+  it('drift alerts: absent reads as ON at the $100 default, and stores it explicitly', async () => {
+    const props = makeProps();
+    props.store.getTelegramConfig = vi.fn(async () => bareConfig());
+    props.store.setTelegramConfig = vi.fn(async () => {});
+    render(<SyncPage {...props} />);
+    const save = await openTelegram();
+    const toggle = screen.getByLabelText(/Balance drift alerts/i) as HTMLInputElement;
+    const amount = screen.getByLabelText(/Balance drift alert threshold/i) as HTMLInputElement;
+    // The opposite default to large-tx, from the same "absent" state.
+    expect(toggle.checked).toBe(true);
+    expect(amount.value).toBe('100');
+
+    fireEvent.click(save);
+    await waitFor(() => expect(props.store.setTelegramConfig).toHaveBeenCalled());
+    expect(savedConfig(props).driftAlertThreshold).toBe(100);
+  });
+
+  it('drift alerts: unticking really turns them off, storing 0 rather than the default', async () => {
+    // The trap this guards: absent ALSO means "on at 100", so a UI that
+    // expressed off by clearing the number would hand the $100 default straight
+    // back and the user could never switch drift alerts off at all.
+    const props = makeProps();
+    props.store.getTelegramConfig = vi.fn(async () => bareConfig());
+    props.store.setTelegramConfig = vi.fn(async () => {});
+    render(<SyncPage {...props} />);
+    const save = await openTelegram();
+    const toggle = screen.getByLabelText(/Balance drift alerts/i) as HTMLInputElement;
+    const amount = screen.getByLabelText(/Balance drift alert threshold/i) as HTMLInputElement;
+
+    fireEvent.click(toggle);
+    expect(amount.disabled).toBe(true);
+    fireEvent.click(save);
+    await waitFor(() => expect(props.store.setTelegramConfig).toHaveBeenCalled());
+    const saved = savedConfig(props);
+    expect(saved.driftAlertThreshold).toBe(0);
+    // "Off" and "default" must be distinguishable in what gets stored, and the
+    // field must never be simply omitted (absent would read as ON at 100).
+    expect(saved.driftAlertThreshold).not.toBe(100);
+    expect('driftAlertThreshold' in saved).toBe(true);
+  });
+
+  it('drift alerts: a stored 0 reloads as off, not as the default', async () => {
+    const props = makeProps();
+    props.store.getTelegramConfig = vi.fn(async () => ({ ...bareConfig(), driftAlertThreshold: 0 }));
+    render(<SyncPage {...props} />);
+    await openTelegram();
+    expect((screen.getByLabelText(/Balance drift alerts/i) as HTMLInputElement).checked).toBe(false);
+    // Surfaced on the collapsed header too, since it is a non-default state.
+    expect(screen.getByText(/drift alerts off/)).toBeInTheDocument();
+  });
+
+  it('clearing an enabled threshold falls back to its default instead of storing a contradictory 0', async () => {
+    const props = makeProps();
+    props.store.getTelegramConfig = vi.fn(async () => ({
+      ...bareConfig(), largeTransactionThreshold: 750, driftAlertThreshold: 250,
+    }));
+    props.store.setTelegramConfig = vi.fn(async () => {});
+    render(<SyncPage {...props} />);
+    const save = await openTelegram();
+    fireEvent.change(screen.getByLabelText(/Large transaction alert threshold/i), { target: { value: '' } });
+    fireEvent.change(screen.getByLabelText(/Balance drift alert threshold/i), { target: { value: '' } });
+    fireEvent.click(save);
+    await waitFor(() => expect(props.store.setTelegramConfig).toHaveBeenCalled());
+    const saved = savedConfig(props);
+    // Both boxes are still ticked, so storing 0 (= off) would contradict the UI.
+    expect(saved.largeTransactionThreshold).toBe(500);
+    expect(saved.driftAlertThreshold).toBe(100);
+  });
+
+  it('names where the category list comes from, so an empty matrix is not a mystery', async () => {
+    const props = makeProps();
+    props.store.getAvailableReportCategories = vi.fn(async () => []);
+    render(<SyncPage {...props} />);
+    await openReportCategories();
+    await screen.findByText(/published by the companion/i);
+    await screen.findByText(/categories will appear here/i);
   });
 
   it('composes two successive toggles instead of dropping the first', async () => {

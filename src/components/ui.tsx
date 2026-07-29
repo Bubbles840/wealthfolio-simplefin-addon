@@ -228,8 +228,9 @@ const css = `
 .sfin-check input { flex: none; margin: 2px 0 0; }
 .sfin-check-name { font-weight: 550; }
 .sfin-divider { border-top: 1px solid var(--border); margin: 14px 0 12px; }
+/* Name + Daily + Weekly + Monthly. */
 .sfin-cats {
-  display: grid; grid-template-columns: 1fr auto auto;
+  display: grid; grid-template-columns: 1fr auto auto auto;
   align-items: center; row-gap: 5px; column-gap: 12px;
   font-size: 13px; line-height: 1.55;
 }
@@ -291,6 +292,28 @@ const css = `
   border-radius: calc(var(--radius) - 2px);
   overflow: hidden; font-size: 13px; line-height: 1.55;
 }
+/* ── Numeric settings: a label on the left, an amount on the right ─────────
+      The two dollar thresholds pair a checkbox with the amount, because absent
+      means OFF for one and ON-at-$100 for the other — so an empty field cannot
+      express "off" for both and the checkbox has to. A disabled amount is
+      exposed to assistive tech as disabled, so the on/off state never rests on
+      the greying alone. */
+.sfin-nums { display: flex; flex-direction: column; }
+.sfin-thresh {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap; min-height: 30px;
+}
+.sfin-thresh .sfin-check { align-items: center; }
+.sfin-thresh label { cursor: pointer; min-width: 0; }
+.sfin-thresh-amt { display: flex; align-items: center; gap: 6px; flex: none; }
+.sfin-num {
+  width: 88px; text-align: right; font-variant-numeric: tabular-nums;
+}
+.sfin-num:disabled { opacity: 0.5; cursor: not-allowed; }
+/* Indented to line up under the checkbox's label, and given the bottom margin
+   that separates one setting from the next. */
+.sfin-num-hint { font-size: 12px; margin: 1px 0 12px 22px; line-height: 1.45; }
+.sfin-nums .sfin-num-hint:last-child { margin-bottom: 0; }
 .sfin-status { font-size: 12.5px; }
 .sfin-status--ok { color: var(--success, var(--primary)); }
 .sfin-status--err { color: var(--destructive); }

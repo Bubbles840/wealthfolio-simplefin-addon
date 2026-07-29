@@ -63,8 +63,8 @@ export interface TelegramConfig {
    *  beneath its headline. Absent means the default of 5; `0` or negative turns
    *  the section off (and skips the query) without affecting the headline.
    *
-   *  No UI: like `monthlyReportEnabled`, this is settable only by hand-editing
-   *  the `telegram_config` secret for now. */
+   *  The Sync page writes this whenever Telegram settings are saved, so only a
+   *  BLANK field means the default — a typed `0` is stored as `0`. */
   weeklyTopSpendCount?: number;
   /** Same as dailyReportCategories, for the monthly wrap-up. */
   monthlyReportCategories?: string[] | 'all';
