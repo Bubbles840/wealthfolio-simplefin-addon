@@ -179,4 +179,64 @@ describe('WealthfolioClient', () => {
     expect(JSON.parse((opts as any).body)).toEqual({ creates: [{ accountId: 'a', activityType: 'DEPOSIT' }] });
     expect(res.created).toHaveLength(1);
   });
+
+  describe('error detail on non-ok responses', () => {
+    it('surfaces the server response body, not just the status code', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 422,
+        text: async () =>
+          'Failed to deserialize the JSON body into the target type: missing field `secret` at line 1 column 36',
+      });
+      const client = new WealthfolioClient('http://wf');
+      await expect(client.setAddonSecret('simplefin-sync', 'my_key', 'super-secret-value')).rejects.toThrow(
+        /missing field `secret`/,
+      );
+    });
+
+    it('never echoes the secret value into a setAddonSecret error, even on failure', async () => {
+      // Only the *response* body may appear in the error - never the request
+      // body, which is where the secret being written lives.
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        text: async () => 'internal server error',
+      });
+      const client = new WealthfolioClient('http://wf');
+      let caught: Error | undefined;
+      try {
+        await client.setAddonSecret('simplefin-sync', 'my_key', 'super-secret-value');
+      } catch (err) {
+        caught = err as Error;
+      }
+      expect(caught).toBeDefined();
+      expect(caught!.message).toContain('internal server error');
+      expect(caught!.message).not.toContain('super-secret-value');
+    });
+
+    it('bounds a large response body so a huge HTML error page cannot flood the logs', async () => {
+      mockFetch.mockResolvedValueOnce({ ok: false, status: 500, text: async () => 'x'.repeat(5000) });
+      const client = new WealthfolioClient('http://wf');
+      let caught: Error | undefined;
+      try {
+        await client.getAccounts();
+      } catch (err) {
+        caught = err as Error;
+      }
+      expect(caught).toBeDefined();
+      expect(caught!.message.length).toBeLessThan(400);
+    });
+
+    it('falls back to a status-only message when the body cannot be read', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 503,
+        text: async () => {
+          throw new Error('stream already consumed');
+        },
+      });
+      const client = new WealthfolioClient('http://wf');
+      await expect(client.getAccounts()).rejects.toThrow('getAccounts failed: 503');
+    });
+  });
 });

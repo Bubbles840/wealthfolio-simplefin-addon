@@ -26,7 +26,7 @@ export class WealthfolioClient {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ password }),
     });
-    if (!res.ok) throw new Error(`Wealthfolio login failed: ${res.status}`);
+    if (!res.ok) throw await this.httpError('Wealthfolio login', res);
 
     const setCookies: string[] =
       typeof (res.headers as any).getSetCookie === 'function'
@@ -47,13 +47,34 @@ export class WealthfolioClient {
     return { Authorization: `Bearer ${this.token}` };
   }
 
+  /**
+   * Builds an error that carries the server's explanation, not just the
+   * status code. Only ever reads the *response* body (never a request
+   * body, so a secret being written can't be echoed back into a log) and
+   * bounds it so a large HTML error page can't flood the logs.
+   */
+  private async httpError(action: string, res: Response): Promise<Error> {
+    const MAX_BODY_CHARS = 300;
+    let body = '';
+    try {
+      body = (await res.text()).trim();
+    } catch {
+      // response body not readable (e.g. already consumed) - fall back to status only
+    }
+    if (body.length > MAX_BODY_CHARS) {
+      body = `${body.slice(0, MAX_BODY_CHARS)}…`;
+    }
+    const detail = body ? ` - ${body}` : '';
+    return new Error(`${action} failed: ${res.status}${detail}`);
+  }
+
   async checkImport(accountId: string, activities: unknown[]): Promise<unknown[]> {
     const res = await fetch(`${this.baseUrl}/api/v1/activities/import/check`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
       body: JSON.stringify({ accountId, activities }),
     });
-    if (!res.ok) throw new Error(`checkImport failed: ${res.status}`);
+    if (!res.ok) throw await this.httpError('checkImport', res);
     return res.json() as Promise<unknown[]>;
   }
 
@@ -61,7 +82,7 @@ export class WealthfolioClient {
     const res = await fetch(`${this.baseUrl}/api/v1/accounts`, {
       headers: this.authHeaders(),
     });
-    if (!res.ok) throw new Error(`getAccounts failed: ${res.status}`);
+    if (!res.ok) throw await this.httpError('getAccounts', res);
     return res.json() as Promise<Array<{ id: string; accountType?: string }>>;
   }
 
@@ -73,7 +94,7 @@ export class WealthfolioClient {
     const res = await fetch(`${this.baseUrl}/api/v1/valuations/latest`, {
       headers: this.authHeaders(),
     });
-    if (!res.ok) throw new Error(`getLatestValuations failed: ${res.status}`);
+    if (!res.ok) throw await this.httpError('getLatestValuations', res);
     return res.json() as Promise<Array<{ accountId: string; totalValue: string | number }>>;
   }
 
@@ -100,7 +121,7 @@ export class WealthfolioClient {
       headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
       body: JSON.stringify(body),
     });
-    if (!res.ok) throw new Error(`searchActivities failed: ${res.status}`);
+    if (!res.ok) throw await this.httpError('searchActivities', res);
     const json = (await res.json()) as { data: ActivitySearchItem[] };
     return json.data;
   }
@@ -111,7 +132,7 @@ export class WealthfolioClient {
       headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
       body: JSON.stringify({ activities }),
     });
-    if (!res.ok) throw new Error(`importActivities failed: ${res.status}`);
+    if (!res.ok) throw await this.httpError('importActivities', res);
   }
 
   async getAddonSecret(addonId: string, key: string): Promise<string | null> {
@@ -120,7 +141,7 @@ export class WealthfolioClient {
       { headers: this.authHeaders() },
     );
     if (res.status === 404) return null;
-    if (!res.ok) throw new Error(`getAddonSecret failed: ${res.status}`);
+    if (!res.ok) throw await this.httpError('getAddonSecret', res);
     const raw = await res.text();
     if (!raw) return null;
     try {
@@ -144,7 +165,9 @@ export class WealthfolioClient {
         body: JSON.stringify({ key, secret: value }),
       },
     );
-    if (!res.ok) throw new Error(`setAddonSecret failed: ${res.status}`);
+    // Only the server's response body is ever included here - never the
+    // request body, which contains the secret we just tried to write.
+    if (!res.ok) throw await this.httpError('setAddonSecret', res);
   }
 
   async saveMany(req: {
@@ -157,7 +180,7 @@ export class WealthfolioClient {
       headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
       body: JSON.stringify(req),
     });
-    if (!res.ok) throw new Error(`saveMany failed: ${res.status}`);
+    if (!res.ok) throw await this.httpError('saveMany', res);
     return (await res.json()) as { created: any[]; updated: any[]; errors: any[] };
   }
 }
