@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { sendTelegramMessage, formatWeeklyRemainingDigest, formatMonthlyRemainingSummary, formatSyncHealthFooter, escapeMarkdown, weeklyPace } from './telegram.js';
+import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatSyncHealthFooter, escapeMarkdown, weeklyEnvelope } from './telegram.js';
 
 const mockFetch = vi.fn();
 vi.stubGlobal('fetch', mockFetch);
@@ -42,97 +42,252 @@ describe('sendTelegramMessage', () => {
   });
 });
 
-describe('formatWeeklyRemainingDigest', () => {
+describe('weeklyEnvelope', () => {
+  // All four worked examples share a 31-day month and a $1,000 monthly budget.
+  // `daysFromWeekStartToMonthEnd` is inclusive of both ends: for a week
+  // starting on the 8th of a 31-day month it is 31 - 8 + 1 = 24.
+
+  it('day 1 (Monday), nothing spent yet — a day-proportional slice of the whole budget', () => {
+    // 1000 * 7 / 31 = 225.81. Dividing by whole weeks (ceil(31/7) = 5) would
+    // give 200, understating the week by ~11% in a 31-day month.
+    const e = weeklyEnvelope({ budget: 1000, monthSpent: 0, weekSpent: 0, daysFromWeekStartToMonthEnd: 31 });
+    expect(e.weekEnvelope).toBeCloseTo(225.81, 2);
+    expect(e.leftThisWeek).toBeCloseTo(225.81, 2);
+    expect(e.remainingMonth).toBe(1000);
+  });
+
+  it('day 8 (Monday) after a $500 week 1 — the envelope re-derives from what is left', () => {
+    // A blown week tightens every later week: (1000 - 500) * 7 / 24 = 145.83,
+    // not the 225.81 the untouched budget would have allowed.
+    const e = weeklyEnvelope({ budget: 1000, monthSpent: 500, weekSpent: 0, daysFromWeekStartToMonthEnd: 24 });
+    expect(e.weekEnvelope).toBeCloseTo(145.83, 2);
+    expect(e.leftThisWeek).toBeCloseTo(145.83, 2);
+    expect(e.remainingMonth).toBe(500);
+  });
+
+  it('day 9 (Tuesday) — the envelope is unchanged and the remainder counts down', () => {
+    // Same week as the previous case plus $50 spent today. Deriving the
+    // envelope from the WEEK-START state (budget - spentBeforeWeek) is what
+    // makes this count down; deriving it from today's remaining would reset it
+    // to a fresh, larger allowance every morning.
+    const e = weeklyEnvelope({ budget: 1000, monthSpent: 550, weekSpent: 50, daysFromWeekStartToMonthEnd: 24 });
+    expect(e.weekEnvelope).toBeCloseTo(145.83, 2);
+    expect(e.leftThisWeek).toBeCloseTo(95.83, 2);
+    expect(e.remainingMonth).toBe(450);
+  });
+
+  it('day 29 (Monday) with 3 days left — capped at the money that actually exists', () => {
+    // Uncapped this is 100 * 7 / 3 = 233.33, promising more than the whole
+    // remaining budget over a stretch of the month that is only 3 days long.
+    const e = weeklyEnvelope({ budget: 1000, monthSpent: 900, weekSpent: 0, daysFromWeekStartToMonthEnd: 3 });
+    expect(e.weekEnvelope).toBeCloseTo(100, 2);
+    expect(e.leftThisWeek).toBeCloseTo(100, 2);
+    expect(e.remainingMonth).toBe(100);
+  });
+
+  it('counts down within the week: same envelope, more spent, less left', () => {
+    const base = { budget: 1000, monthSpent: 500, daysFromWeekStartToMonthEnd: 24 };
+    const mon = weeklyEnvelope({ ...base, monthSpent: 500, weekSpent: 0 });
+    const tue = weeklyEnvelope({ ...base, monthSpent: 550, weekSpent: 50 });
+    const wed = weeklyEnvelope({ ...base, monthSpent: 620, weekSpent: 120 });
+    expect(tue.weekEnvelope).toBeCloseTo(mon.weekEnvelope, 6);
+    expect(wed.weekEnvelope).toBeCloseTo(mon.weekEnvelope, 6);
+    expect(tue.leftThisWeek).toBeLessThan(mon.leftThisWeek);
+    expect(wed.leftThisWeek).toBeLessThan(tue.leftThisWeek);
+    // The drop equals what was spent, exactly — the number is a real envelope,
+    // not a pace that moves by a fraction of each purchase.
+    expect(mon.leftThisWeek - tue.leftThisWeek).toBeCloseTo(50, 6);
+    expect(tue.leftThisWeek - wed.leftThisWeek).toBeCloseTo(70, 6);
+  });
+
+  it('is continuous at the cap boundary — no jump where the two branches meet', () => {
+    // At exactly 7 days from week start to month end, budgetAtWeekStart and
+    // budgetAtWeekStart * 7 / 7 are the same number, so the cap engages without
+    // a step.
+    const at7 = weeklyEnvelope({ budget: 700, monthSpent: 0, weekSpent: 0, daysFromWeekStartToMonthEnd: 7 });
+    const at8 = weeklyEnvelope({ budget: 700, monthSpent: 0, weekSpent: 0, daysFromWeekStartToMonthEnd: 8 });
+    expect(at7.weekEnvelope).toBeCloseTo(700, 6);
+    expect(at8.weekEnvelope).toBeCloseTo(612.5, 2);
+  });
+
+  it('never promises more than remains once the week is already overspent', () => {
+    const e = weeklyEnvelope({ budget: 1000, monthSpent: 400, weekSpent: 300, daysFromWeekStartToMonthEnd: 24 });
+    // budgetAtWeekStart 900 -> envelope 262.50 -> left -37.50, still $600 for
+    // the month: over for the week but inside the month.
+    expect(e.weekEnvelope).toBeCloseTo(262.5, 2);
+    expect(e.leftThisWeek).toBeCloseTo(-37.5, 2);
+    expect(e.remainingMonth).toBe(600);
+  });
+});
+
+describe('formatDailySpendingDigest', () => {
+  const period = { daysFromWeekStartToMonthEnd: 24, daysLeftInMonthInclusive: 23 };
+
   it('is titled unmistakably as a daily report, not a weekly one', () => {
-    // The user's original complaint was a report that "looked like a weekly
-    // summary going out on the wrong day". A daily message titled "Weekly
-    // Spending Update" recreates exactly that confusion.
-    const text = formatWeeklyRemainingDigest([{ name: 'Groceries', spent: 200, budget: 800 }], 14);
+    const text = formatDailySpendingDigest(
+      [{ name: 'Groceries', monthSpent: 200, weekSpent: 50, budget: 800 }],
+      period,
+    );
     expect(text).toContain('☀️ *Daily Spending Check*');
     expect(text).not.toContain('Weekly Spending Update');
   });
 
-  it('leads with the true monthly remaining and offers the weekly figure only as a pace', () => {
-    // 22 days after today -> horizon 23 -> 600 * 7 / 23 = 182.6
-    const text = formatWeeklyRemainingDigest(
-      [{ name: 'Groceries', spent: 200, budget: 800 }],
-      22,
+  it('leads every category line with what is left THIS WEEK', () => {
+    // budgetAtWeekStart = 1000 - 500 = 500; envelope = 500 * 7 / 24 = 145.83;
+    // 50 already spent this week leaves 95.83.
+    const text = formatDailySpendingDigest(
+      [{ name: 'Groceries', monthSpent: 550, weekSpent: 50, budget: 1000 }],
+      period,
     );
-    expect(text).toContain('• 🛒 Groceries: *$600.00 left this month* · ≈$182.61/wk pace');
-    // "left this week" was the dishonest label: it was month-to-date remaining
-    // spread over a week, so spending $100 today moved it by only ~$20.
-    expect(text).not.toContain('left this week');
+    expect(text).toContain('🛒 Groceries  *$95.83*');
   });
 
-  it('drops the headline figure by exactly what was spent', () => {
-    const before = formatWeeklyRemainingDigest([{ name: 'Groceries', spent: 200, budget: 800 }], 22);
-    const after = formatWeeklyRemainingDigest([{ name: 'Groceries', spent: 300, budget: 800 }], 22);
-    expect(before).toContain('*$600.00 left this month*');
-    expect(after).toContain('*$500.00 left this month*');
-  });
-
-  it('does not jump across a week boundary — day 23 vs day 24 of a 31-day month', () => {
-    // The old `ceil(daysLeft / 7)` denominator stepped 2 -> 1 here, doubling
-    // the displayed number overnight. Day 23 leaves 8 days after today, day 24
-    // leaves 7.
-    const cat = [{ name: 'Groceries', spent: 200, budget: 800 }];
-    const day23 = weeklyPace(600, 8);
-    const day24 = weeklyPace(600, 7);
-    expect(day23).toBeCloseTo(466.67, 2);
-    expect(day24).toBeCloseTo(525, 2);
-    // Day-over-day movement stays well under the 2x jump the old formula made.
-    expect(day24 / day23).toBeLessThan(1.2);
-    expect(formatWeeklyRemainingDigest(cat, 8)).toContain('≈$466.67/wk pace');
-    expect(formatWeeklyRemainingDigest(cat, 7)).toContain('≈$525.00/wk pace');
-  });
-
-  it('never advertises a pace larger than the money that actually remains', () => {
-    // Last day of the month: 600 * 7 / 1 = 4200 uncapped, which would read as
-    // permission to spend seven times the remaining budget.
-    const text = formatWeeklyRemainingDigest([{ name: 'Groceries', spent: 200, budget: 800 }], 0);
-    expect(text).toContain('*$600.00 left this month* · ≈$600.00/wk pace');
-  });
-
-  it('is not understated at the start of the month', () => {
-    // Day 1 of a 31-day month: 30 days after today. The old formula divided by
-    // ceil(30/7) = 5 weeks when ~4.4 weeks actually exist, understating the
-    // pace; the day-proportional form gives 800 * 7 / 31.
-    expect(weeklyPace(800, 30)).toBeCloseTo(180.65, 2);
-    expect(weeklyPace(800, 30)).toBeGreaterThan(800 / 5);
-  });
-
-  it('flags a category that is over budget instead of showing a negative pace', () => {
-    const text = formatWeeklyRemainingDigest(
-      [{ name: 'Dining', spent: 550, budget: 500 }],
-      10,
+  it('states the unit once in the header instead of repeating it per line', () => {
+    const text = formatDailySpendingDigest(
+      [
+        { name: 'Groceries', monthSpent: 550, weekSpent: 50, budget: 1000 },
+        { name: 'Dining', monthSpent: 100, weekSpent: 20, budget: 400 },
+        { name: 'Entertainment', monthSpent: 10, weekSpent: 10, budget: 200 },
+      ],
+      period,
     );
-    expect(text).toContain('• 🍽️ Dining: 🚨 *$50.00 over budget* this month');
-    expect(text).not.toContain('pace');
+    expect(text).toContain('_left to spend this week_');
+    // Exactly one mention of the week across the whole digest — the header's.
+    expect(text.match(/this week/g)).toHaveLength(1);
+    // The `• ` bullet is gone; the category emoji reads as the bullet.
+    expect(text).not.toContain('• ');
+  });
+
+  it('closes with a single month-context summary line rather than per-line month figures', () => {
+    const text = formatDailySpendingDigest(
+      [
+        { name: 'Groceries', monthSpent: 550, weekSpent: 50, budget: 1000 },
+        { name: 'Dining', monthSpent: 100, weekSpent: 20, budget: 400 },
+      ],
+      period,
+    );
+    // Remaining for the month: (1000 - 550) + (400 - 100) = 750.
+    expect(text).toContain('💰 $750 left this month · 23 days to go');
+    expect(text.match(/left this month/g)).toHaveLength(1);
+  });
+
+  it('counts the day it is sent as one of the days to go', () => {
+    const text = formatDailySpendingDigest(
+      [{ name: 'Groceries', monthSpent: 0, weekSpent: 0, budget: 100 }],
+      { daysFromWeekStartToMonthEnd: 1, daysLeftInMonthInclusive: 1 },
+    );
+    expect(text).toContain('· 1 day to go');
+  });
+
+  it('flags a category over budget for the MONTH, which dominates the weekly view', () => {
+    const text = formatDailySpendingDigest(
+      [{ name: 'Dining', monthSpent: 550, weekSpent: 100, budget: 500 }],
+      period,
+    );
+    expect(text).toContain('🍽️ Dining  🚨 *$50 over* for the month');
+  });
+
+  it('lets the month-level overspend win when both the week and the month are blown', () => {
+    // Once spentBeforeWeek exceeds the budget, budgetAtWeekStart goes negative
+    // and the envelope arithmetic produces a meaningless figure (here about
+    // -$29). The month branch must take precedence so that number never
+    // reaches the screen.
+    const text = formatDailySpendingDigest(
+      [{ name: 'Shopping', monthSpent: 315.5, weekSpent: 90, budget: 250 }],
+      period,
+    );
+    expect(text).toContain('🛍️ Shopping  🚨 *$66 over* for the month');
+    expect(text).not.toContain('this week ·');
+  });
+
+  it('distinguishes over-for-the-week from over-for-the-month', () => {
+    // budgetAtWeekStart = 300 - 80 = 220; envelope = 220 * 7 / 24 = 64.17;
+    // 120 spent this week leaves -55.83, yet $100 remains for the month.
+    const text = formatDailySpendingDigest(
+      [{ name: 'Dining', monthSpent: 200, weekSpent: 120, budget: 300 }],
+      period,
+    );
+    expect(text).toContain('🍽️ Dining  ⚠️ *$55.83 over* this week · $100 left this month');
+    expect(text).not.toContain('🚨');
   });
 
   it('reports spending with no budget as exactly that, not as "over budget"', () => {
-    // You cannot be over a budget you never set — the old text claimed
-    // "🚨 *$40.00 over budget!*" for a category with no budget row at all.
-    const text = formatWeeklyRemainingDigest(
-      [{ name: 'Shopping', spent: 40, budget: 0 }],
-      10,
+    // You cannot be over a budget you never set.
+    const text = formatDailySpendingDigest(
+      [{ name: 'Shopping', monthSpent: 40, weekSpent: 40, budget: 0 }],
+      period,
     );
-    expect(text).toContain('• 🛍️ Shopping: *$40.00 spent* · no budget set');
-    expect(text).not.toContain('over budget');
+    expect(text).toContain('🛍️ Shopping  *no budget* · $40 spent');
+    expect(text).not.toContain('over');
+  });
+
+  it('omits the money summary when nothing in the digest has a budget', () => {
+    // Summing "remaining" across only-unbudgeted categories would report a
+    // negative month remaining against a budget of zero.
+    const text = formatDailySpendingDigest(
+      [{ name: 'Shopping', monthSpent: 40, weekSpent: 40, budget: 0 }],
+      period,
+    );
+    expect(text).not.toContain('left this month');
+    expect(text).toContain('📅 23 days left in the month');
+  });
+
+  it('sums the month summary over budgeted categories only', () => {
+    const text = formatDailySpendingDigest(
+      [
+        { name: 'Groceries', monthSpent: 550, weekSpent: 50, budget: 1000 },
+        { name: 'Shopping', monthSpent: 40, weekSpent: 40, budget: 0 },
+      ],
+      period,
+    );
+    // 450, not 410 — the unbudgeted $40 is not spent out of anyone's budget.
+    expect(text).toContain('💰 $450 left this month');
+  });
+
+  it('keeps cents on the spendable weekly figure and drops them on month context', () => {
+    // budgetAtWeekStart = 900 - 354 = 546; envelope = 546 * 7 / 24 = 159.25;
+    // left = 159.25 - 65.4 = 93.85, a number the reader spends against, so the
+    // cents stay. Month remaining 480.60 is context, so it rounds to $481.
+    const text = formatDailySpendingDigest(
+      [{ name: 'Groceries', monthSpent: 419.4, weekSpent: 65.4, budget: 900 }],
+      period,
+    );
+    expect(text).toContain('🛒 Groceries  *$93.85*');
+    expect(text).toContain('💰 $481 left this month');
+  });
+
+  it('groups thousands so a big figure stays readable', () => {
+    const text = formatDailySpendingDigest(
+      [{ name: 'Housing', monthSpent: 0, weekSpent: 0, budget: 12500 }],
+      period,
+    );
+    expect(text).toContain('💰 $12,500 left this month');
   });
 
   it('names both possible causes in the empty state', () => {
     // Reachable two ways — no budgets exist, or every category was deselected
     // in the addon — so the text must not blame only the first.
-    const text = formatWeeklyRemainingDigest([], 10);
+    const text = formatDailySpendingDigest([], period);
     expect(text).toContain('Set up budgets in Wealthfolio');
     expect(text).toContain('categories are selected');
+    // No "left to spend this week" promise when there is nothing to show.
+    expect(text).not.toContain('_left to spend this week_');
+  });
+
+  it('ends without trailing whitespace so an appended footer stays a separate block', () => {
+    const text = formatDailySpendingDigest(
+      [{ name: 'Groceries', monthSpent: 550, weekSpent: 50, budget: 1000 }],
+      period,
+    );
+    expect(text).toBe(text.trimEnd());
+    // A blank line separates the category list from the summary line.
+    expect(text).toMatch(/\n\n💰 /);
   });
 
   it('escapes Markdown specials in a category name so the message can still send', () => {
-    const text = formatWeeklyRemainingDigest(
-      [{ name: 'Food_Drink', spent: 40, budget: 100 }],
-      10,
+    const text = formatDailySpendingDigest(
+      [{ name: 'Food_Drink', monthSpent: 40, weekSpent: 10, budget: 100 }],
+      period,
     );
     // A lone unescaped underscore would make Telegram's legacy Markdown
     // parser look for a matching closing `_` across the whole message and
@@ -146,13 +301,29 @@ describe('formatWeeklyRemainingDigest', () => {
     // Legacy Markdown does not honour a backslash escape *inside* an entity —
     // the entity must be closed and reopened — so `*Food\_Drink*` still leaves
     // a live italic opener with no closer and Telegram 400s the whole digest.
-    const text = formatWeeklyRemainingDigest(
-      [{ name: 'Food_Drink', spent: 40, budget: 100 }],
-      10,
+    const text = formatDailySpendingDigest(
+      [{ name: 'Food_Drink', monthSpent: 40, weekSpent: 10, budget: 100 }],
+      period,
     );
     expect(text).not.toContain('*Food\\_Drink*');
     // Bold sits on the figures, which never contain Markdown specials.
-    expect(text).toContain('Food\\_Drink: *$60.00 left this month*');
+    expect(text).toMatch(/Food\\_Drink {2}\*\$/);
+  });
+
+  it('is materially shorter than the one-line-per-unit format it replaces', () => {
+    const text = formatDailySpendingDigest(
+      [
+        { name: 'Groceries', monthSpent: 550, weekSpent: 50, budget: 1000 },
+        { name: 'Dining', monthSpent: 200, weekSpent: 120, budget: 300 },
+        { name: 'Shopping', monthSpent: 40, weekSpent: 40, budget: 0 },
+      ],
+      period,
+    );
+    // The old format spent ~62 chars per category line ("• 🛒 Groceries:
+    // *$600.00 left this month* · ≈$200.00/wk pace"). Budget the normal line at
+    // half that.
+    const lines = text.split('\n').filter((l: string) => l.startsWith('🛒'));
+    expect(lines[0].length).toBeLessThan(32);
   });
 });
 
@@ -228,34 +399,33 @@ describe('formatSyncHealthFooter', () => {
 });
 
 describe('formatMonthlyRemainingSummary', () => {
-  it('shows total remaining when under budget', () => {
+  it('leads with the one number and puts the arithmetic on a single quiet line', () => {
     const text = formatMonthlyRemainingSummary(1200, 2000);
-    expect(text).toContain('$800.00 remaining');
-    expect(text).toContain('spent $1200.00 of $2000.00, 60%');
+    expect(text).toContain('💰 *$800 left* this month');
+    expect(text).toContain('_spent $1,200 of $2,000 · 60%_');
   });
 
   it('flags being over budget for the month', () => {
     const text = formatMonthlyRemainingSummary(2200, 2000);
-    expect(text).toContain('🚨');
-    expect(text).toContain('$200.00 over budget');
+    expect(text).toContain('🚨 *$200 over budget* this month');
+    expect(text).toContain('_spent $2,200 of $2,000 · 110%_');
   });
 
-  it('does not claim "$0.00 remaining" when no budget exists at all', () => {
+  it('does not claim "$0 left" when no budget exists at all', () => {
     // Reachable by deselecting every weekly category, or before any budget is
     // created. This report is one number, so the old
     // "💰 *$0.00 remaining* this month (spent $0.00 of $0.00, 0%)" read as a
     // real, calmly-reported result.
     const text = formatMonthlyRemainingSummary(0, 0);
-    expect(text).not.toContain('remaining');
-    expect(text).not.toContain('of $0.00');
-    expect(text).toContain('No budgets set and no spending recorded');
+    expect(text).not.toContain('left* this month');
+    expect(text).not.toContain('of $0');
+    expect(text).toContain('Nothing spent, no budgets set');
   });
 
-  it('reports the spend, not a "remaining" figure, when money went out with no budget set', () => {
+  it('reports the spend, not a "left" figure, when money went out with no budget set', () => {
     const text = formatMonthlyRemainingSummary(40, 0);
-    expect(text).toContain('$40.00 spent');
-    expect(text).toContain('no budget set');
-    expect(text).not.toContain('remaining');
+    expect(text).toContain('🏷️ *$40 spent* · no budget set');
+    expect(text).not.toContain('left* this month');
     expect(text).not.toContain('over budget');
   });
 
@@ -268,5 +438,17 @@ describe('formatMonthlyRemainingSummary', () => {
 
   it('keeps the weekly report clearly labelled as weekly', () => {
     expect(formatMonthlyRemainingSummary(1200, 2000)).toContain('📊 *Weekly Budget Check-In*');
+  });
+
+  it('rounds to whole dollars — every figure here is month-level context', () => {
+    const text = formatMonthlyRemainingSummary(1550.75, 2400);
+    expect(text).toContain('💰 *$849 left* this month');
+    expect(text).toContain('_spent $1,551 of $2,400 · 65%_');
+  });
+
+  it('reads as the same family as the daily digest — emoji-led figure, no parenthetical', () => {
+    const text = formatMonthlyRemainingSummary(1200, 2000);
+    expect(text).not.toContain('(spent');
+    expect(text).toBe(text.trimEnd());
   });
 });

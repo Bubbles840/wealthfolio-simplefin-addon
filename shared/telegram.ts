@@ -111,71 +111,159 @@ export function getCategoryEmoji(name: string): string {
   return '🏷️';
 }
 
-function money(amount: number): string {
-  return `$${Math.abs(amount).toFixed(2)}`;
+function formatDollars(amount: number, decimals: number): string {
+  const [whole, frac] = Math.abs(amount).toFixed(decimals).split('.');
+  const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return frac ? `$${grouped}.${frac}` : `$${grouped}`;
 }
 
-export interface WeeklyDigestCategory {
+/**
+ * A figure the reader might spend against: cents kept, because rounding a
+ * spendable allowance up by as much as 50 cents would over-promise, which is
+ * the one thing these messages must never do. Cents are still dropped where
+ * they carry nothing — a whole amount, or anything from $1,000 up, where two
+ * decimals are noise no one acts on.
+ *
+ * Always the absolute value; the surrounding words ("over", "left") carry the
+ * sign, and a bare `-$23.16` next to the word "over" reads as a double
+ * negative.
+ */
+function money(amount: number): string {
+  const abs = Math.abs(amount);
+  return formatDollars(abs, abs >= 1000 || Number.isInteger(abs) ? 0 : 2);
+}
+
+/**
+ * A month-level context figure — a total, a month remainder, a month-to-date
+ * spend. Always whole dollars: nobody acts on the cents of a monthly total, and
+ * two decimals on every context number was a real part of the old format's
+ * bulk. The actionable weekly figures keep their cents via `money`.
+ */
+function moneyWhole(amount: number): string {
+  return formatDollars(amount, 0);
+}
+
+export interface DailyDigestCategory {
   name: string;
-  spent: number;
+  /** Spend for the whole calendar month so far, for this category. */
+  monthSpent: number;
+  /** Spend since the current week's start (see `weeklyEnvelope`), a subset of
+   *  `monthSpent`. */
+  weekSpent: number;
+  /** Monthly budget; `<= 0` means no budget row exists for this category. */
   budget: number;
 }
 
-/**
- * Converts the month's remaining budget into a *pace* — a "roughly this much
- * per week keeps you inside the budget" figure — using the days actually left
- * rather than a whole-week count.
- *
- * `daysLeftInMonth` counts days AFTER today (0 on the last day of the month),
- * so the inclusive horizon is `daysLeftInMonth + 1`. Dividing by days rather
- * than `ceil(days / 7)` matters: the week-count version steps from 2 to 1 on
- * a single day boundary, doubling the displayed number overnight (in a 31-day
- * month, the 23rd showed `remaining / 2` and the 24th `remaining / 1`). The
- * day-proportional form moves by a few percent a day instead.
- *
- * Capped at `remaining`: with a week or less left in the month, `remaining
- * * 7 / horizon` exceeds the money that actually exists, and printing a pace
- * larger than the budget it comes from reads as permission to overspend. The
- * cap is continuous — it engages exactly where `horizon === 7` — so the
- * figure stays smooth through the end of the month, flattening out at the
- * true remaining rather than spiking.
- */
-export function weeklyPace(remaining: number, daysLeftInMonth: number): number {
-  const horizon = Math.max(1, daysLeftInMonth + 1);
-  return Math.min(remaining, (remaining * 7) / horizon);
+export interface WeeklyEnvelopeInput {
+  budget: number;
+  monthSpent: number;
+  weekSpent: number;
+  /** Days from the current week's start through the last day of the month,
+   *  inclusive of both ends. For a week starting on the 8th of a 31-day month
+   *  that is `31 - 8 + 1 = 24`. */
+  daysFromWeekStartToMonthEnd: number;
+}
+
+export interface WeeklyEnvelopeResult {
+  /** The whole week's allowance, fixed for the duration of the week. */
+  weekEnvelope: number;
+  /** What is still spendable inside that allowance right now. Negative means
+   *  the week's allowance is already blown. */
+  leftThisWeek: number;
+  /** Budget minus month-to-date spend. Negative means over budget outright. */
+  remainingMonth: number;
 }
 
 /**
- * Formats the daily spending check — one line per category.
+ * Turns a monthly budget into a real weekly envelope — money that counts down
+ * as it is spent — rather than a pace.
  *
- * Every line shows the *true* month-to-date remaining as its headline number,
- * with the weekly pace (see `weeklyPace`) as a clearly-approximate secondary
- * figure. The earlier version printed only `remaining / weeksLeft` labelled
- * "left this week", which was a lie in a message people read daily: spending
- * $100 today moved that number by ~$20, so the label promised something the
- * arithmetic never delivered. Remaining-first fixes that — the headline drops
- * by exactly what was spent — and the `≈…/wk pace` suffix is hedged in both
- * wording and symbol so it can't be read as a spendable allowance.
+ * Two properties make this behave the way a spending envelope should:
  *
- * Three branches, because they are three different situations:
- *  - over budget for the month → 🚨, no pace (there is nothing left to pace)
- *  - spending with no budget set → report the spend and say no budget exists;
- *    "over budget" is meaningless for a budget that was never created
- *  - under budget → remaining + pace
+ * 1. It is derived from the budget as it stood at the START of the week
+ *    (`budget - spentBeforeWeek`), not from what is left today. Deriving it
+ *    from today's remaining would re-issue a fresh, larger allowance every
+ *    morning: spend $100 on Monday and Tuesday's "left this week" would barely
+ *    move, which is exactly the dishonesty the previous pace-based figure was
+ *    hedged to avoid. Fixing the envelope at week start means `leftThisWeek`
+ *    drops by exactly what was spent, and a blown week automatically tightens
+ *    the weeks that follow, because the next week's `budgetAtWeekStart` is
+ *    smaller.
+ *
+ * 2. It is day-proportional (`× 7 / daysFromWeekStartToMonthEnd`) rather than
+ *    divided by a whole number of weeks. `ceil(days / 7)` overshoots a 31-day
+ *    month by ~11% (four weeks of `budget / 4` spends the budget by day 28 with
+ *    three days still to fund) and steps discontinuously as the week count
+ *    ticks down.
+ *
+ * The `min(...)` cap is load-bearing in the final, short week of a month: with
+ * 3 days to go, `× 7 / 3` would promise more than 2x the money that actually
+ * exists. The cap is continuous — at `daysFromWeekStartToMonthEnd === 7` both
+ * branches are equal — so nothing jumps when it engages.
  */
-export function formatWeeklyRemainingDigest(
-  categories: WeeklyDigestCategory[],
-  daysLeftInMonth: number,
+export function weeklyEnvelope(input: WeeklyEnvelopeInput): WeeklyEnvelopeResult {
+  const { budget, monthSpent, weekSpent } = input;
+  const horizon = Math.max(1, input.daysFromWeekStartToMonthEnd);
+  const spentBeforeWeek = monthSpent - weekSpent;
+  const budgetAtWeekStart = budget - spentBeforeWeek;
+  const weekEnvelope = Math.min(budgetAtWeekStart, (budgetAtWeekStart * 7) / horizon);
+  return {
+    weekEnvelope,
+    leftThisWeek: weekEnvelope - weekSpent,
+    remainingMonth: budget - monthSpent,
+  };
+}
+
+export interface DailyDigestWindow {
+  /** See `WeeklyEnvelopeInput.daysFromWeekStartToMonthEnd`. */
+  daysFromWeekStartToMonthEnd: number;
+  /** Days left in the month COUNTING TODAY — 1 on the last day, since today is
+   *  still a day money can be spent. */
+  daysLeftInMonthInclusive: number;
+}
+
+/**
+ * Formats the daily spending check: one short line per category carrying the
+ * single actionable number — what is left to spend this week — plus one
+ * month-context line at the end.
+ *
+ * The layout is built for a phone glance. The unit ("left to spend this week")
+ * is stated once in the header instead of being repeated on every row, which is
+ * where most of the previous format's bulk went; there is no `• ` bullet,
+ * because the category emoji already reads as one; and month-level figures are
+ * summarised once at the bottom rather than per line.
+ *
+ * Four branches, because these are four genuinely different situations:
+ *  - no budget → report the spend and say so; you cannot be over a budget that
+ *    was never created
+ *  - over budget for the MONTH → 🚨. This dominates the weekly view: the
+ *    week's allowance is moot once the month itself is blown
+ *  - over the WEEK's allowance but still inside the monthly budget → ⚠️, with
+ *    the month figure inline. This is the state worth acting on, so it must not
+ *    be collapsed into the one above
+ *  - otherwise → the plain figure
+ */
+export function formatDailySpendingDigest(
+  categories: DailyDigestCategory[],
+  // Not named `window`: this module also runs inside the addon's browser
+  // bundle, where that shadows the DOM global.
+  period: DailyDigestWindow,
 ): string {
-  let msg = `☀️ *Daily Spending Check*\n\n`;
+  const { daysFromWeekStartToMonthEnd, daysLeftInMonthInclusive } = period;
+  const days = Math.max(1, daysLeftInMonthInclusive);
+  const dayWord = days === 1 ? 'day' : 'days';
 
   if (categories.length === 0) {
     // Two distinct causes land here — no budgets exist yet, or every category
     // was deselected in the addon's Report Categories list — so the text must
-    // not assert either one.
-    msg += `Nothing to report. Set up budgets in Wealthfolio, or check that categories are selected for the daily report in the SimpleFin Sync addon.`;
-    return msg;
+    // not assert either one. No "left to spend this week" subtitle either:
+    // there is nothing to promise.
+    return `☀️ *Daily Spending Check*\n\nNothing to report. Set up budgets in Wealthfolio, or check that categories are selected for the daily report in the SimpleFin Sync addon.`;
   }
+
+  const lines: string[] = [];
+  let budgetedRemaining = 0;
+  let anyBudget = false;
 
   for (const c of categories) {
     const emoji = getCategoryEmoji(c.name);
@@ -188,17 +276,41 @@ export function formatWeeklyRemainingDigest(
     // `*Food\_Drink*` would still leave a live italic opener. The bold sits on
     // the figures, which contain no specials.
     const name = escapeMarkdown(c.name);
-    const remaining = c.budget - c.spent;
+    const { leftThisWeek, remainingMonth } = weeklyEnvelope({
+      budget: c.budget,
+      monthSpent: c.monthSpent,
+      weekSpent: c.weekSpent,
+      daysFromWeekStartToMonthEnd,
+    });
+
     if (c.budget <= 0) {
-      msg += `• ${emoji} ${name}: *${money(c.spent)} spent* · no budget set\n`;
-    } else if (remaining < 0) {
-      msg += `• ${emoji} ${name}: 🚨 *${money(remaining)} over budget* this month\n`;
+      lines.push(`${emoji} ${name}  *no budget* · ${moneyWhole(c.monthSpent)} spent`);
+      continue;
+    }
+
+    anyBudget = true;
+    budgetedRemaining += remainingMonth;
+
+    if (remainingMonth < 0) {
+      lines.push(`${emoji} ${name}  🚨 *${moneyWhole(remainingMonth)} over* for the month`);
+    } else if (leftThisWeek < 0) {
+      lines.push(`${emoji} ${name}  ⚠️ *${money(leftThisWeek)} over* this week · ${moneyWhole(remainingMonth)} left this month`);
     } else {
-      msg += `• ${emoji} ${name}: *${money(remaining)} left this month* · ≈${money(weeklyPace(remaining, daysLeftInMonth))}/wk pace\n`;
+      lines.push(`${emoji} ${name}  *${money(leftThisWeek)}*`);
     }
   }
 
-  return msg;
+  // Summed over budgeted categories only: an unbudgeted category's spend does
+  // not come out of anyone's budget, so folding it in would understate what is
+  // actually left.
+  const summary = anyBudget
+    ? `💰 ${moneyWhole(budgetedRemaining)} left this month · ${days} ${dayWord} to go`
+    : `📅 ${days} ${dayWord} left in the month`;
+
+  // No trailing newline: callers append the sync-health footer as its own
+  // block, and a trailing blank line would leave that footer looking like part
+  // of this summary line.
+  return `☀️ *Daily Spending Check*\n_left to spend this week_\n\n${lines.join('\n')}\n\n${summary}`;
 }
 
 /**
@@ -259,24 +371,27 @@ export function formatSyncHealthFooter(health: SyncHealth | null | undefined, no
  * `💰 *$0.00 remaining* this month (spent $0.00 of $0.00, 0%)`, which reads as
  * a real, calmly-reported result. It also distinguishes "no budget, but money
  * went out" from "nothing happened at all": with spending and no budget there
- * is a fact worth stating, just not one about "remaining".
+ * is a fact worth stating, just not one about what is left.
+ *
+ * Laid out to match the daily digest: an emoji-led bold figure on its own line,
+ * with the supporting arithmetic on one quiet italic line beneath instead of a
+ * parenthetical trailing the headline.
  */
 export function formatMonthlyRemainingSummary(totalSpent: number, totalBudget: number): string {
   const remaining = totalBudget - totalSpent;
   const pct = totalBudget > 0 ? Math.round((totalSpent / totalBudget) * 100) : 0;
-  let msg = `📊 *Weekly Budget Check-In*\n\n`;
+  const header = `📊 *Weekly Budget Check-In*\n\n`;
+  const hint = `_Add budgets in Wealthfolio, or check which categories are selected for the weekly report._`;
+  // Whole dollars throughout: every figure in this report is a month-level
+  // total, and none of them is a number the reader spends against directly.
   if (totalBudget <= 0) {
-    if (totalSpent > 0) {
-      msg += `🏷️ *${money(totalSpent)} spent* this month, no budget set — there's nothing to measure it against yet. Add budgets in Wealthfolio, or check which categories are selected for the weekly report.`;
-    } else {
-      msg += `🏷️ No budgets set and no spending recorded this month for the selected categories. Add budgets in Wealthfolio, or check which categories are selected for the weekly report.`;
-    }
-    return msg;
+    const headline = totalSpent > 0
+      ? `🏷️ *${moneyWhole(totalSpent)} spent* · no budget set`
+      : `🏷️ Nothing spent, no budgets set this month.`;
+    return `${header}${headline}\n${hint}`;
   }
-  if (remaining < 0) {
-    msg += `🚨 *You're ${money(remaining)} over budget this month* (spent ${money(totalSpent)} of ${money(totalBudget)}, ${pct}%).`;
-  } else {
-    msg += `💰 *${money(remaining)} remaining* this month (spent ${money(totalSpent)} of ${money(totalBudget)}, ${pct}%).`;
-  }
-  return msg;
+  const headline = remaining < 0
+    ? `🚨 *${moneyWhole(remaining)} over budget* this month`
+    : `💰 *${moneyWhole(remaining)} left* this month`;
+  return `${header}${headline}\n_spent ${moneyWhole(totalSpent)} of ${moneyWhole(totalBudget)} · ${pct}%_`;
 }
