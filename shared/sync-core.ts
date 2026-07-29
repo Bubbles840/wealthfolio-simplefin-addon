@@ -727,8 +727,9 @@ export async function runSyncCore(
       ...(feeCents ? { feeCents } : {}),
       ...(inTransit ? { inTransit: true } : {}),
     }));
-    // Typed to match what fetchExistingRows returns: the drift measurement below
-    // reads `sourceGroupId` off a row, so it must survive into this variable.
+    // Typed to match what fetchExistingRows returns: these rows feed
+    // `linkRowByTxId`, and the link step after the loop reads `sourceGroupId` off
+    // them, so it must survive into this variable.
     let existing: Array<ExistingRow & { sourceGroupId?: string | null }> = [];
     try {
       existing = await fetchExistingRows(host, wfAccountId);
@@ -780,34 +781,38 @@ export async function runSyncCore(
           (sum, t) => sum + (signedByTxId.get(t.txId) ?? 0),
           0,
         );
-        // A TRANSFER_OUT with no TRANSFER_IN partner yet hasn't had its cash
-        // deducted by Wealthfolio's valuations API, so it must be netted out or
-        // it reads as drift.
+        // Which TRANSFER_OUT legs never moved cash, and so must be netted out of
+        // the valuation or they read as drift? The answer is decided by the leg's
+        // ASSET, not by whether it is linked: handlers/transfers.rs's
+        // handle_transfer_out books cash on the `if asset_id.is_empty()` branch
+        // only (`add_cash(state, currency, amount − fee − tax)`), and takes the
+        // non-cash branch otherwise — see companion/upstream-pr.md, issue #5
+        // ("WORKAROUND FOUND"), which is source-verified against upstream.
         //
-        // "Is this leg linked?" is answered by CAPABILITY, exactly as the linking
-        // step below decides it — get this wrong and every linked leg is double-
-        // counted as missing cash:
-        //  • readsSourceGroupId — the row's own sourceGroupId is authoritative
-        //    (fetchExistingRows carries it through verbatim). The ledger is empty
-        //    on such a host by design, so consulting it would mark EVERY leg
-        //    unlinked and report multi-thousand-dollar phantom drift — which
-        //    aggressive auto-heal would then plug into a real account.
-        //  • otherwise (the addon) — ActivityDetails hides sourceGroupId, so
-        //    whatever a row appears to carry is untrustworthy and only the ledger
-        //    may vouch for a pair.
+        // So:
+        //  • asset-free leg — booked its cash the moment it was written, linked
+        //    or not. Subtracting it double-counts money already gone.
+        //  • leg carrying an asset (typically the mis-resolved literal `$CASH`
+        //    security, which is_cash_symbol() does NOT treat as cash) — booked
+        //    nothing, so it genuinely needs compensating.
+        //
+        // Linking governs how Wealthfolio CLASSIFIES the pair (internal transfer
+        // vs. spending), never the balance — which is why no capability check,
+        // sourceGroupId, or ledger lookup belongs in this predicate. This is the
+        // same property the relink sweep below keys on (`!row.assetId → skip`),
+        // so the two now agree about what a broken leg is.
         //
         // LEGACY-ONLY, deliberately kept: since in-transit placeholders landed,
         // an unpaired leg is imported as a spending-neutral CREDIT/DEPOSIT, never
-        // as a bare TRANSFER_OUT — so no NEW data reaches this subtraction. It
-        // still fires for rows imported before that change, which exist in
-        // production. Do not remove either the block or its capability guard.
-        const isLinked = (r: { txId: string; sourceGroupId?: string | null }): boolean =>
-          readsGroups ? !!r.sourceGroupId : ledgerLinkedTxIds.has(r.txId);
-        const unlinkedTransferOut = existing
-          .filter((r) => r.type === 'TRANSFER_OUT' && !isLinked(r))
+        // as a bare TRANSFER_OUT, and the relink sweep deletes and re-creates
+        // asset-carrying legs asset-free — so no NEW data reaches this
+        // subtraction. It still fires for rows written before those changes,
+        // which exist in production. Do not remove the block.
+        const assetBackedTransferOut = existing
+          .filter((r) => r.type === 'TRANSFER_OUT' && !!r.assetId)
           .reduce((sum, r) => sum + Math.abs(r.absCents) / 100, 0);
 
-        const adjustedWfValuation = wfValuation - unlinkedTransferOut;
+        const adjustedWfValuation = wfValuation - assetBackedTransferOut;
         const d = sfBalance - adjustedWfValuation - windowDelta;
         // Settled, transfer-aware and lag-free — this is the only figure in the
         // run the drift alert is allowed to believe.
@@ -818,7 +823,7 @@ export async function runSyncCore(
           wfValuation,
           // Logged because it is subtracted from the valuation: without it the
           // reported drift can't be reconciled against the two balances above.
-          unlinkedTransferOut,
+          assetBackedTransferOut,
           windowDelta,
           calculatedDrift: drift,
           plan: { creates: plan.creates.length, updates: plan.updates.length, deletes: plan.deleteIds.length },

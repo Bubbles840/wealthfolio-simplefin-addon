@@ -443,7 +443,13 @@ describe('runSyncCore', () => {
     expect(second.skipped).toBe(1);
   });
 
-  // --- Drift: which signal says a TRANSFER_OUT is already linked ---
+  // --- Drift: which TRANSFER_OUT legs never booked their cash ---
+  //
+  // The property that decides it is the leg's ASSET, not its link state:
+  // handlers/transfers.rs books cash only when asset_id is empty (see
+  // companion/upstream-pr.md issue #5). Linking classifies the pair; it does not
+  // move money. So an asset-free leg is never compensated for and an
+  // asset-carrying one always is, on either host capability.
 
   /** The drift the run stored for an account, as the Sync page reads it. */
   const storedDrift = async (
@@ -461,12 +467,17 @@ describe('runSyncCore', () => {
     amount: 0.01, comment: `Starting balance · ${sfinAccountId}`, sourceGroupId: null,
   });
 
-  it("does not inflate drift with a LINKED TRANSFER_OUT on a host that reads sourceGroupId (the user's Spend account)", async () => {
-    // Real figures from the live companion: bank 3475.23, Wealthfolio 2175.23,
-    // 7350.45 of correctly-linked TRANSFER_OUT rows whose cash Wealthfolio has
-    // ALREADY deducted. True drift is 1300.00; treating those legs as unlinked
+  it("does not inflate drift with the user's Spend-account TRANSFER_OUT rows, linked or not", async () => {
+    // Regression for e80707a: real figures from the live companion — bank
+    // 3475.23, Wealthfolio 2175.23, 7350.45 of TRANSFER_OUT rows whose cash
+    // Wealthfolio has ALREADY deducted. True drift is 1300.00; the original bug
     // reported 8650.45 and would have plugged that much into a real account.
-    const { host, store } = createFakeHost({
+    //
+    // e80707a made that pass by trusting the rows' sourceGroupId. That was the
+    // wrong property: these legs carry no asset, which is what actually booked
+    // their cash. The second pass below strips the group ids and demands the very
+    // same figure, so this test can no longer pass for the old reason alone.
+    const seed = (sourceGroupIds: [string | null, string | null]): FakeHostSeed => ({
       accountSet: { errors: [], accounts: [{
         id: 'sfin-1', name: 'Spend', currency: 'USD',
         balance: '3475.23', 'balance-date': 1, transactions: [],
@@ -478,39 +489,73 @@ describe('runSyncCore', () => {
         startingBalanceRow('wf-a', 'sfin-1'),
         { id: 'out-1', accountId: 'wf-a', activityType: 'TRANSFER_OUT', date: '2026-07-01',
           amount: 6050.45, comment: 'Online Transfer to Savings · tx-a',
-          sourceGroupId: 'wf-transfer-aaa' },
+          sourceGroupId: sourceGroupIds[0] },
         { id: 'out-2', accountId: 'wf-a', activityType: 'TRANSFER_OUT', date: '2026-07-02',
           amount: 1300.0, comment: 'Online Transfer to Savings · tx-b',
-          sourceGroupId: 'wf-transfer-bbb' },
+          sourceGroupId: sourceGroupIds[1] },
       ]]]),
     });
-    await runSyncCore(host, store, {});
-    expect(await storedDrift(store, 'sfin-1')).toBeCloseTo(1300.0, 2);
+
+    const linked = createFakeHost(seed(['wf-transfer-aaa', 'wf-transfer-bbb']));
+    await runSyncCore(linked.host, linked.store, {});
+    expect(await storedDrift(linked.store, 'sfin-1')).toBeCloseTo(1300.0, 2);
+
+    const unlinked = createFakeHost(seed([null, null]));
+    await runSyncCore(unlinked.host, unlinked.store, {});
+    expect(await storedDrift(unlinked.store, 'sfin-1')).toBeCloseTo(1300.0, 2);
   });
 
-  it('still accounts for an UNLINKED TRANSFER_OUT (null sourceGroupId) on a host that reads groups', async () => {
-    // Nothing has deducted this leg's 500 from Wealthfolio's valuation yet, so
-    // subtracting it is what keeps an in-flight transfer from reading as drift.
+  it("reproduces the user's live database: asset-free legs booked their cash, linked or not", async () => {
+    // Straight off the production database. Every one of his 18 TRANSFER_OUT
+    // legs carries NO asset, so every one of them booked cash (handlers/
+    // transfers.rs books cash only on the `asset_id.is_empty()` branch —
+    // upstream-pr.md issue #5). Four of them (4000.00 across two accounts) were
+    // merely UNLINKED, and subtracting those double-counted money already gone:
+    // Spend read 2700.00 instead of 1300.00, Save 3897.50 instead of 1297.50.
     const { host, store } = createFakeHost({
-      accountSet: { errors: [], accounts: [{
-        id: 'sfin-1', name: 'Spend', currency: 'USD',
-        balance: '3475.23', 'balance-date': 1, transactions: [],
-      }] },
-      mapping: { 'sfin-1': 'wf-a' },
-      accountTypes: { 'wf-a': 'CASH' },
-      valuations: new Map([['wf-a', 2675.23]]),
-      existing: new Map([['wf-a', [
-        startingBalanceRow('wf-a', 'sfin-1'),
-        { id: 'out-1', accountId: 'wf-a', activityType: 'TRANSFER_OUT', date: '2026-07-01',
-          amount: 500.0, comment: 'Online Transfer to Savings · tx-a', sourceGroupId: null },
-      ]]]),
+      accountSet: { errors: [], accounts: [
+        { id: 'sfin-1', name: 'Spend', currency: 'USD',
+          balance: '3475.23', 'balance-date': 1, transactions: [] },
+        { id: 'sfin-2', name: 'Save', currency: 'USD',
+          balance: '5297.50', 'balance-date': 1, transactions: [] },
+      ] },
+      mapping: { 'sfin-1': 'wf-a', 'sfin-2': 'wf-b' },
+      accountTypes: { 'wf-a': 'CASH', 'wf-b': 'CASH' },
+      valuations: new Map([['wf-a', 2175.23], ['wf-b', 4000.0]]),
+      existing: new Map([
+        ['wf-a', [
+          startingBalanceRow('wf-a', 'sfin-1'),
+          { id: 'out-1', accountId: 'wf-a', activityType: 'TRANSFER_OUT', date: '2026-07-01',
+            amount: 900.0, comment: 'Online Transfer to Savings · tx-a', sourceGroupId: null },
+          { id: 'out-2', accountId: 'wf-a', activityType: 'TRANSFER_OUT', date: '2026-07-02',
+            amount: 500.0, comment: 'Online Transfer to Savings · tx-b', sourceGroupId: null },
+        ]],
+        ['wf-b', [
+          startingBalanceRow('wf-b', 'sfin-2'),
+          { id: 'out-3', accountId: 'wf-b', activityType: 'TRANSFER_OUT', date: '2026-07-01',
+            amount: 2000.0, comment: 'Online Transfer to Spend · tx-c', sourceGroupId: null },
+          { id: 'out-4', accountId: 'wf-b', activityType: 'TRANSFER_OUT', date: '2026-07-02',
+            amount: 600.0, comment: 'Online Transfer to Spend · tx-d', sourceGroupId: null },
+        ]],
+      ]),
     });
-    await runSyncCore(host, store, {});
-    // 2675.23 − 500 = 2175.23 adjusted, so 3475.23 − 2175.23 = 1300.00.
+    const result = await runSyncCore(host, store, {});
+    // Plain sfBalance − wfValuation, no adjustment: the cash is already out.
     expect(await storedDrift(store, 'sfin-1')).toBeCloseTo(1300.0, 2);
+    expect(await storedDrift(store, 'sfin-2')).toBeCloseTo(1297.5, 2);
+    // Both are past the $100 default, so he is legitimately alerted — off the
+    // CORRECTED figure, which is the same one the Sync page shows.
+    expect(result.balanceDriftAlerts.map((a) => [a.sfinAccountId, a.driftAmount])).toEqual([
+      ['sfin-1', 1300.0],
+      ['sfin-2', 1297.5],
+    ]);
   });
 
-  it('ignores a row-level sourceGroupId on a ledger-backed host (the addon), where it is not trustworthy', async () => {
+  it('still compensates for a TRANSFER_OUT that CARRIES an asset (it booked no cash)', async () => {
+    // An asset-carrying leg takes the non-cash branch in handlers/transfers.rs,
+    // so Wealthfolio's valuation never moved — netting it out is what keeps it
+    // from reading as drift. (The relink sweep re-creates it asset-free, so this
+    // compensation applies to the run that finds it.)
     const { host, store } = createFakeHost({
       accountSet: { errors: [], accounts: [{
         id: 'sfin-1', name: 'Spend', currency: 'USD',
@@ -523,18 +568,52 @@ describe('runSyncCore', () => {
         startingBalanceRow('wf-a', 'sfin-1'),
         { id: 'out-1', accountId: 'wf-a', activityType: 'TRANSFER_OUT', date: '2026-07-01',
           amount: 500.0, comment: 'Online Transfer to Savings · tx-a',
-          sourceGroupId: 'wf-transfer-aaa' },
+          assetId: '$CASH', sourceGroupId: null },
       ]]]),
     });
-    // The addon's profile: ActivityDetails hides sourceGroupId, so whatever a row
-    // appears to carry must not be believed — only the ledger may vouch.
-    host.capabilities.readsSourceGroupId = false;
     await runSyncCore(host, store, {});
-    // Ledger is empty → the leg still counts as unlinked, exactly as before.
+    // 2675.23 − 500 = 2175.23 adjusted, so 3475.23 − 2175.23 = 1300.00.
     expect(await storedDrift(store, 'sfin-1')).toBeCloseTo(1300.0, 2);
   });
 
-  it('lets the ledger clear a TRANSFER_OUT on a ledger-backed host', async () => {
+  it.each([
+    { readsGroups: true, linked: true },
+    { readsGroups: true, linked: false },
+    { readsGroups: false, linked: true },
+    { readsGroups: false, linked: false },
+  ])(
+    'never compensates for an asset-free TRANSFER_OUT (readsGroups=$readsGroups, linked=$linked)',
+    async ({ readsGroups, linked }) => {
+      // Link state is irrelevant to cash: an asset-free leg books cash either
+      // way, so all four combinations must land on the same unadjusted figure.
+      const { host, store } = createFakeHost({
+        accountSet: { errors: [], accounts: [{
+          id: 'sfin-1', name: 'Spend', currency: 'USD',
+          balance: '3475.23', 'balance-date': 1, transactions: [],
+        }] },
+        mapping: { 'sfin-1': 'wf-a' },
+        accountTypes: { 'wf-a': 'CASH' },
+        valuations: new Map([['wf-a', 2675.23]]),
+        existing: new Map([['wf-a', [
+          startingBalanceRow('wf-a', 'sfin-1'),
+          { id: 'out-1', accountId: 'wf-a', activityType: 'TRANSFER_OUT', date: '2026-07-01',
+            amount: 500.0, comment: 'Online Transfer to Savings · tx-a',
+            sourceGroupId: linked ? 'wf-transfer-aaa' : null },
+        ]]]),
+      });
+      host.capabilities.readsSourceGroupId = readsGroups;
+      if (linked && !readsGroups) {
+        // On the addon a row's apparent group means nothing and only the ledger
+        // may vouch — seeded here so neither signal is left untried.
+        await store.setLinkedGroups({ 'tx-a': 'wf-transfer-aaa' });
+      }
+      await runSyncCore(host, store, {});
+      // 3475.23 − 2675.23, with nothing netted out.
+      expect(await storedDrift(store, 'sfin-1')).toBeCloseTo(800.0, 2);
+    },
+  );
+
+  it('reads no drift from a ledger-vouched, asset-free pair on a ledger-backed host', async () => {
     const { host, store } = createFakeHost({
       accountSet: { errors: [], accounts: [
         { id: 'sfin-1', name: 'Checking', currency: 'USD', balance: '1010.00', 'balance-date': 1,
@@ -559,11 +638,17 @@ describe('runSyncCore', () => {
       ]),
     });
     host.capabilities.readsSourceGroupId = false;
-    // Both legs already recorded under one echo-confirmed group id.
+    // Both legs already recorded under one echo-confirmed group id, so the
+    // linking step leaves the pair alone (no churn on a re-sync).
     await store.setLinkedGroups({ 'tx-out': 'wf-transfer-g1', 'tx-in': 'wf-transfer-g1' });
     await runSyncCore(host, store, {});
-    // Ledger vouches → the 500 is NOT subtracted: 1010.00 − 1000 = 10.00.
+    // The out leg carries no asset, so its 500 is already out of Wealthfolio's
+    // valuation and is NOT subtracted: 1010.00 − 1000 = 10.00.
     expect(await storedDrift(store, 'sfin-1')).toBeCloseTo(10.0, 2);
+    expect(await store.getLinkedGroups()).toEqual({
+      'tx-out': 'wf-transfer-g1',
+      'tx-in': 'wf-transfer-g1',
+    });
   });
 
   // --- Task 7: stuck-transfer failure tracking and alerting ---
@@ -892,9 +977,10 @@ describe('runSyncCore', () => {
     });
   });
 
-  it('does not alert on drift a linked TRANSFER_OUT only appears to cause', async () => {
+  it('does not alert on drift an already-cashed TRANSFER_OUT only appears to cause', async () => {
     // The bug fixed in e80707a reported 8650.45 of phantom drift on this exact
-    // account. The alert must never fire off a figure like that.
+    // account. The alert must never fire off a figure like that — the leg is
+    // asset-free, so its cash left the valuation when it was written.
     const { host, store } = createFakeHost({
       ...driftSeed(new Map([['wf-a', 3475.23]])),
       existing: new Map([['wf-a', [

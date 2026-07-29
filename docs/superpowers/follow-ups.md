@@ -36,14 +36,58 @@ Confirmed live against the user's real accounts before the fix
 With **Aggressively auto-heal** on, those figures would have been written into
 real accounts as spending-neutral `CREDIT` balance adjustments.
 
-The test is now capability-aware, mirroring the linking step: on a host that
-reads groups the row's own `sourceGroupId` is authoritative; only where that
-field is unreadable (the addon) does the ledger stand in. Regression tests in
-`shared/sync-core.test.ts` cover both hosts, including a reproduction of the
-Spend figures above. Note the block is now **legacy-only** — an unpaired leg is
-imported as an in-transit placeholder (`CREDIT`/`DEPOSIT`), so no new data
-reaches it — but production still holds pre-placeholder `TRANSFER_OUT` rows, so
-neither the block nor its guard should be "cleaned up".
+First fix (e80707a) made the test capability-aware, mirroring the linking step:
+on a host that reads groups the row's own `sourceGroupId` was treated as
+authoritative; only where that field is unreadable (the addon) did the ledger
+stand in. That took Spend from 8650.45 to 2700.00 — a real improvement, but it
+treated the symptom.
+
+### …and then the predicate itself was measuring the wrong property
+
+Fixed 2026-07-29, same file. "Is the leg linked?" was never the right question.
+Cash movement depends on whether the leg carries an **asset**:
+`handlers/transfers.rs`'s `handle_transfer_in`/`handle_transfer_out` book cash
+**only** on the `if asset_id.is_empty()` branch (`companion/upstream-pr.md`,
+issue #5, "WORKAROUND FOUND" — source-verified). So an asset-free leg moves cash
+whether or not it is linked, and a leg carrying the mis-resolved literal `$CASH`
+*security* moves nothing. Linking governs spending **classification**, not the
+balance.
+
+Proven against the live database — every one of his 18 transfer-out legs is
+asset-free, so all 18 booked cash, yet the 4 unlinked ones were still being
+subtracted, double-counting money already gone:
+
+```
+grp       asset       n   total
+UNLINKED  (no asset)   4   4000.00
+linked    (no asset)  14  12850.45
+```
+
+| Account | Bank | Wealthfolio | True drift | Reported after e80707a |
+|---|---|---|---|---|
+| Spend | 3475.23 | 2175.23 | 1300.00 | 2700.00 |
+| Savings | — | — | 1297.50 | 3897.50 |
+
+The predicate is now `r.type === 'TRANSFER_OUT' && !!r.assetId`, and the variable
+is `assetBackedTransferOut` (the old name described the wrong property). Two
+consequences: it agrees with the relink sweep below it, which keys on exactly the
+same property (`!row.assetId → skip`) to decide which legs are broken; and the
+`isLinked` helper e80707a introduced here is gone, along with any capability
+check in this expression. `ledgerLinkedTxIds` stays — the linking step still needs
+it.
+
+Regression tests in `shared/sync-core.test.ts` now pin the property rather than
+the symptom: asset-free legs are never compensated for (linked or not, on both
+host capabilities), an asset-carrying leg still is, and the live two-account case
+above is reproduced end to end down to the figure reaching
+`store.setAccountBalances` and the balance-drift alert. The user's true drift is
+over the alert's $100 default, so he is legitimately alerted for 1300.00 /
+1297.50 — that is correct behaviour.
+
+Note the block is **legacy-only** — an unpaired leg is imported as an in-transit
+placeholder (`CREDIT`/`DEPOSIT`) and the relink sweep re-creates asset-carrying
+legs asset-free, so no new data reaches it — but production still holds
+pre-placeholder `TRANSFER_OUT` rows, so it should not be "cleaned up".
 
 ---
 
