@@ -1,8 +1,12 @@
 import { mapTransactionWithSource } from './mapper.js';
 import { detectTransferPairs } from './transfers.js';
 import type { TransferCandidate } from './transfers.js';
-import { planReconciliation } from './reconcile.js';
+import { planReconciliation, IN_TRANSIT_COMMENT_PREFIX } from './reconcile.js';
 import type { FeedTx, ExistingRow } from './reconcile.js';
+/** Re-exported from reconcile.ts (which defines it, so `changed()` can recognise
+ *  the marker without importing sync-core and creating a cycle). This module owns
+ *  WRITING the prefix, so importers keep finding the name here. */
+export { IN_TRANSIT_COMMENT_PREFIX };
 import type { ActivityType, SimplefinTransaction } from './types.js';
 import type { ActivityWrite, ImportRow, LinkLeg, SyncHost, SyncStore } from './sync-host.js';
 
@@ -199,11 +203,6 @@ async function hasAdjustmentToday(
 }
 
 export const PENDING_SUFFIX = ' · pending';
-
-/** Marks a spending-neutral placeholder standing in for a transfer leg whose
- *  other side hasn't posted yet. A PREFIX, deliberately: the `… · <txId>`
- *  suffix is what txIdFromComment reads, so nothing may follow it. */
-export const IN_TRANSIT_COMMENT_PREFIX = '↔️ In-transit transfer · ';
 
 /**
  * Wealthfolio only treats a transfer group as a genuine *internal* transfer when

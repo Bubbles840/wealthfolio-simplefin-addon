@@ -396,6 +396,41 @@ describe('runSyncCore', () => {
     expect(activities.get('wf-a')).toHaveLength(1); // converted, not duplicated
   });
 
+  it('drops the in-transit prefix when a NON-CASH placeholder times out (the only field that differs)', async () => {
+    // On a card, neutralAdjustmentFields and the expiry branch produce the SAME
+    // DEPOSIT with no fee split — so type, amount, date and pending are all
+    // identical and only the comment marks the row as still in transit. Without
+    // comparing placeholder-ness, no update is planned and the row wears
+    // "In-transit" forever on a payment that will never pair.
+    const staleEpoch = Math.floor(Date.now() / 1000) - (IN_TRANSIT_TIMEOUT_SECONDS + 3600);
+    const staleDate = new Date(staleEpoch * 1000).toISOString().split('T')[0];
+    const { host, store, saved, activities } = createFakeHost({
+      accountSet: { errors: [], accounts: [{
+        id: 'sfin-1', name: 'Card', currency: 'USD', balance: '0', 'balance-date': 1,
+        transactions: [{
+          id: 'tx-pay', posted: staleEpoch, amount: '1300.00',
+          description: 'PAYMENT THANK YOU',
+        }],
+      }] },
+      mapping: { 'sfin-1': 'wf-a' },
+      accountTypes: { 'wf-a': 'CREDIT_CARD' },
+      existing: new Map([['wf-a', [{
+        id: 'ph-card', accountId: 'wf-a', activityType: 'DEPOSIT', date: staleDate,
+        amount: 1300, comment: '↔️ In-transit transfer · PAYMENT THANK YOU · tx-pay',
+        sourceGroupId: null,
+      }]]]),
+    });
+    await runSyncCore(host, store, { force: true });
+
+    const update = saved.flatMap((s) => s.updates ?? []).find((u) => u.id === 'ph-card')!;
+    expect(update).toBeTruthy();
+    expect(update.comment).toBe('PAYMENT THANK YOU · tx-pay');
+    expect(update.comment).not.toContain('In-transit');
+    expect(update.activityType).toBe('DEPOSIT');
+    expect(update.amount).toBe(1300);
+    expect(activities.get('wf-a')).toHaveLength(1); // rewritten, not duplicated
+  });
+
   it('leaves an unchanged in-transit placeholder alone on the next sync (no update churn)', async () => {
     const { host, store, saved } = createFakeHost(soloOutLegSeed());
     await runSyncCore(host, store, {});

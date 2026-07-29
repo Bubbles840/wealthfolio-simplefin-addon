@@ -1,3 +1,14 @@
+/**
+ * Marks a spending-neutral placeholder standing in for a transfer leg whose
+ * other side hasn't posted yet. A PREFIX, deliberately: the `… · <txId>` suffix
+ * is what `txIdFromComment` reads, so nothing may follow it.
+ *
+ * Defined HERE, in the module that imports nothing, and re-exported from
+ * sync-core.ts (which owns writing it) — `changed()` has to recognise the marker
+ * on a stored row, and importing it the other way round would make a cycle.
+ */
+export const IN_TRANSIT_COMMENT_PREFIX = '↔️ In-transit transfer · ';
+
 export interface FeedTx {
   txId: string;
   wfAccountId: string;
@@ -10,9 +21,10 @@ export interface FeedTx {
    *  same amount/fee split neutralAdjustmentFields uses for balance plugs. */
   feeCents?: number;
   /** True when this row is a spending-neutral placeholder for a transfer leg
-   *  whose other side hasn't posted yet. Only affects the comment prefix —
-   *  `type` (CREDIT/DEPOSIT/WITHDRAWAL vs TRANSFER_OUT/IN) is what
-   *  `changed()` uses to detect the transition to a real linked transfer. */
+   *  whose other side hasn't posted yet. Written as the comment prefix, and
+   *  compared by `changed()` — on a non-CASH account the placeholder and the
+   *  expired row are the SAME DEPOSIT/WITHDRAWAL, so the marker is the only
+   *  thing that differs when such a placeholder times out. */
   inTransit?: boolean;
 }
 
@@ -57,12 +69,23 @@ function bookedCents(tx: FeedTx): number {
   return tx.absCents - (tx.feeCents ?? 0);
 }
 
+/** Whether the STORED row is already marked as an in-transit placeholder. The
+ *  comment is optional, and a row without one is not a placeholder. */
+function isInTransitRow(row: ExistingRow): boolean {
+  return (row.comment ?? '').startsWith(IN_TRANSIT_COMMENT_PREFIX);
+}
+
 function changed(row: ExistingRow, tx: FeedTx): boolean {
   return (
     row.absCents !== bookedCents(tx) ||
     row.type !== tx.type ||
     row.date !== tx.date ||
-    row.pending !== tx.pending
+    row.pending !== tx.pending ||
+    // Placeholder-ness is a real difference even when nothing else moved: a
+    // non-CASH placeholder expires into the identical DEPOSIT/WITHDRAWAL, so
+    // without this the row would keep its in-transit marker forever on a leg
+    // that will never pair.
+    isInTransitRow(row) !== !!tx.inTransit
   );
 }
 
