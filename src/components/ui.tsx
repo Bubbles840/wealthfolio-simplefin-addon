@@ -128,9 +128,6 @@ const css = `
   border-bottom: 1px solid var(--border);
 }
 .sfin-row:last-of-type { border-bottom: none; }
-.sfin-list { margin: 8px 0 0; padding: 0; list-style: none; }
-.sfin-list li { padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
-.sfin-list li:last-child { border-bottom: none; }
 .sfin-step {
   font-size: 12px;
   font-weight: 600;
@@ -230,20 +227,11 @@ const css = `
 }
 .sfin-check input { flex: none; margin: 2px 0 0; }
 .sfin-check-name { font-weight: 550; }
-/* Quiet inset panel for read-once content: the setup guide, the category
-   matrix. Same tokens as .sfin-callout, without its outer margin. */
-.sfin-inset {
-  background: var(--muted); color: var(--foreground);
-  border: 1px solid var(--border);
-  border-radius: calc(var(--radius) - 2px);
-  padding: 10px 12px; font-size: 13px; line-height: 1.55;
-}
-.sfin-inset ol { margin: 0; padding-left: 18px; }
-.sfin-inset ol li + li { margin-top: 2px; }
 .sfin-divider { border-top: 1px solid var(--border); margin: 14px 0 12px; }
 .sfin-cats {
   display: grid; grid-template-columns: 1fr auto auto;
   align-items: center; row-gap: 5px; column-gap: 12px;
+  font-size: 13px; line-height: 1.55;
 }
 .sfin-cats-col {
   width: 46px; text-align: center;
@@ -259,6 +247,50 @@ const css = `
   font-size: 13px; font-weight: 500;
 }
 .sfin-cat-name span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* ── Disclosure: the ONE collapse pattern on the page ─────────────────────
+      A single <button> spanning the whole header row, so the click target is
+      the row (not a 10px chevron) and aria-expanded lives on the element
+      that actually takes focus — keyboard operation comes free from the
+      native button. Two flavours, same shape: "card" for a top-level
+      collapsible card, "inline" for one nested inside a card's body.
+      The chevron rotates, but it is aria-hidden and never the only signal:
+      the header's summary line carries the state as text. */
+.sfin-card--collapsible { padding: 0; overflow: hidden; }
+.sfin-disclosure {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  width: 100%; box-sizing: border-box;
+  background: transparent; border: 0; border-radius: 0;
+  font: inherit; color: inherit; text-align: left; cursor: pointer;
+}
+.sfin-disclosure:hover { background: var(--muted); }
+.sfin-disclosure:focus-visible { outline: 2px solid var(--ring, var(--primary)); outline-offset: -2px; }
+.sfin-disclosure--card { padding: 13px 16px; }
+.sfin-disclosure--inline { padding: 9px 11px; }
+.sfin-disclosure-text { min-width: 0; }
+.sfin-disclosure-text .sfin-section-label { margin-bottom: 0; }
+/* The summary line: what makes collapsing safe rather than hiding state. */
+.sfin-disclosure-sum {
+  display: block; margin-top: 3px; font-size: 12.5px; line-height: 1.4;
+  color: var(--muted-foreground);
+}
+.sfin-chevron {
+  flex: none; font-size: 10px; line-height: 1; color: var(--muted-foreground);
+  transition: transform 0.15s;
+}
+.sfin-chevron[data-open='true'] { transform: rotate(180deg); }
+.sfin-disclosure-body--card { padding: 2px 16px 16px; }
+.sfin-disclosure-body--inline { padding: 0 11px 10px; }
+.sfin-disclosure-body ol { margin: 0; padding-left: 18px; }
+.sfin-disclosure-body ol li + li { margin-top: 2px; }
+/* Quiet container for a nested (inline) disclosure: the read-once setup guide,
+   the category matrix. Same tokens as .sfin-callout, but the padding lives on
+   the disclosure so the clickable header reaches the panel's edges. */
+.sfin-disc-inset {
+  background: var(--muted); color: var(--foreground);
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
+  overflow: hidden; font-size: 13px; line-height: 1.55;
+}
 .sfin-status { font-size: 12.5px; }
 .sfin-status--ok { color: var(--success, var(--primary)); }
 .sfin-status--err { color: var(--destructive); }
@@ -301,6 +333,69 @@ export function Card({ children, style }: { children: React.ReactNode; style?: R
 
 export function SectionLabel({ children }: { children: React.ReactNode }) {
   return <div className="sfin-section-label">{children}</div>;
+}
+
+interface DisclosureProps {
+  /** Unique on the page — used to id the panel for `aria-controls`. */
+  id: string;
+  title: React.ReactNode;
+  /** State-bearing line under the title, shown open OR closed. This is the
+   *  point of the pattern: a collapsed card still says what it is set to, so
+   *  collapsing hides chrome rather than hiding state. */
+  summary?: React.ReactNode;
+  open: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+  variant?: 'card' | 'inline';
+}
+
+/**
+ * The page's single collapse primitive.
+ *
+ * Deliberately a real <button> wrapping the entire header row: that gives the
+ * whole row as a click target, focus and Enter/Space for free, and puts
+ * `aria-expanded` on the focused element rather than on a decorative span.
+ * The panel is unmounted when closed (not just hidden), so nothing inside a
+ * collapsed card is tabbable or reachable by assistive tech — which also
+ * means a test touching a collapsed control has to open the card first.
+ */
+export function Disclosure({
+  id, title, summary, open, onToggle, children, variant = 'card',
+}: DisclosureProps) {
+  const panelId = `${id}-panel`;
+  return (
+    <>
+      <button
+        type="button"
+        className={`sfin-disclosure sfin-disclosure--${variant}`}
+        aria-expanded={open}
+        // Only while the panel exists: aria-controls pointing at nothing is
+        // worse than no aria-controls at all.
+        {...(open ? { 'aria-controls': panelId } : {})}
+        onClick={onToggle}
+      >
+        <span className="sfin-disclosure-text">
+          <span className="sfin-section-label">{title}</span>
+          {summary != null && <span className="sfin-disclosure-sum">{summary}</span>}
+        </span>
+        <span className="sfin-chevron" data-open={open} aria-hidden>▼</span>
+      </button>
+      {open && (
+        <div id={panelId} className={`sfin-disclosure-body sfin-disclosure-body--${variant}`}>
+          {children}
+        </div>
+      )}
+    </>
+  );
+}
+
+/** A `Card` whose entire header is the disclosure control. */
+export function CollapsibleCard(props: Omit<DisclosureProps, 'variant'>) {
+  return (
+    <div className="sfin-card sfin-card--collapsible">
+      <Disclosure {...props} variant="card" />
+    </div>
+  );
 }
 
 export function ErrorBox({ children }: { children: React.ReactNode }) {

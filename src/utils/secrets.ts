@@ -33,6 +33,7 @@ const KEYS = {
   autoAdjust: 'auto_adjust',
   telegramConfig: 'telegram_config',
   availableReportCategories: 'available_report_categories',
+  openCards: 'ui_open_cards',
 } as const;
 
 export class SecretsStore {
@@ -189,6 +190,25 @@ export class SecretsStore {
   }
   async setAccountBalances(map: Record<string, AccountBalanceInfo>): Promise<void> {
     await this.ctx.api.secrets.set(KEYS.accountBalances, JSON.stringify(map));
+  }
+
+  /** Which collapsible config cards the user left open, keyed by card id.
+   *  Purely cosmetic, so a malformed value degrades to "everything closed"
+   *  rather than surfacing an error — but it is worth storing: the account
+   *  rows navigate away from the page, so without this every trip back to a
+   *  half-configured card starts from collapsed. */
+  async getOpenCards(): Promise<Record<string, boolean>> {
+    const raw = await this.ctx.api.secrets.get(KEYS.openCards);
+    if (!raw) return {};
+    try {
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+  async setOpenCards(open: Record<string, boolean>): Promise<void> {
+    await this.ctx.api.secrets.set(KEYS.openCards, JSON.stringify(open));
   }
 
   async getTelegramConfig(): Promise<any | null> {

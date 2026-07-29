@@ -4,7 +4,7 @@ import { runSync, INTERVAL_SKIP_MESSAGE, applyBalanceAdjustment } from '../utils
 import { fetchAccounts } from '../utils/simplefin';
 import { SyncStatus } from '../components/SyncStatus';
 import { RuleEditor } from '../components/RuleEditor';
-import { Button, Card, ErrorBox, SectionLabel } from '../components/ui';
+import { Button, Card, CollapsibleCard, Disclosure, ErrorBox, SectionLabel } from '../components/ui';
 import { sendTelegramMessage, getCategoryEmoji } from '../../shared/telegram';
 import type { SecretsStore, AccountBalanceInfo } from '../utils/secrets';
 import type { Scheduler } from '../utils/scheduler';
@@ -56,6 +56,17 @@ function formatAsOf(unixSeconds: number): string {
   });
 }
 
+/** Ids for the collapsible config cards. Doubles as the persisted key set, so
+ *  renaming one silently forgets that card's last state — which is fine. */
+const CARD = {
+  autoSync: 'auto-sync',
+  docker: 'docker',
+  telegram: 'telegram',
+  telegramGuide: 'telegram-guide',
+  categories: 'report-categories',
+  rules: 'rules',
+} as const;
+
 export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
   const [lastSyncAt, setLastSyncAt] = useState<Date | null>(null);
   const [imported, setImported] = useState<number | null>(null);
@@ -65,7 +76,6 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
   const [scheduleHours, setScheduleHours] = useState<number | null>(null);
   const [error, setError] = useState('');
   const [intervalBlocked, setIntervalBlocked] = useState(false);
-  const [editingRules, setEditingRules] = useState(false);
   const [sfinNames, setSfinNames] = useState<Record<string, string>>({});
   const [wfNames, setWfNames] = useState<Record<string, string>>({});
   const [balances, setBalances] = useState<Record<string, AccountBalanceInfo>>({});
@@ -74,7 +84,9 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
   const [adjusting, setAdjusting] = useState<string | null>(null);
   const [autoHeal, setAutoHeal] = useState(false);
   const [autoAdjust, setAutoAdjust] = useState(false);
-  const [showDockerSetup, setShowDockerSetup] = useState(false);
+  // Every collapsible section's open state in one map, replacing the three
+  // one-off `show*` booleans this page used to carry.
+  const [openCards, setOpenCards] = useState<Record<string, boolean>>({});
 
   const [botToken, setBotToken] = useState('');
   const [chatId, setChatId] = useState('');
@@ -86,7 +98,6 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
   const [availableCategories, setAvailableCategories] = useState<string[]>([]);
   const [testingTelegram, setTestingTelegram] = useState(false);
   const [telegramStatus, setTelegramStatus] = useState<string | null>(null);
-  const [showTelegramInstructions, setShowTelegramInstructions] = useState(false);
 
   const loadBalances = useCallback(() => {
     store.getAccountBalances().then(setBalances).catch(() => {});
@@ -105,7 +116,8 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
       store.getTelegramConfig(),
       store.getAvailableReportCategories(),
       ctx.api.accounts.getAll().catch(() => []),
-    ]).then(([last, m, r, h, names, bal, ah, aa, tg, availableCats, wfAccounts]) => {
+      store.getOpenCards(),
+    ]).then(([last, m, r, h, names, bal, ah, aa, tg, availableCats, wfAccounts, cards]) => {
       setLastSyncAt(last);
       setMapping(m ?? {});
       setRules(r);
@@ -125,6 +137,7 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
         setWeeklyReportCategories(tg.weeklyReportCategories ?? 'all');
       }
       setWfNames(Object.fromEntries(wfAccounts.map((a) => [a.id, a.name])));
+      setOpenCards(cards);
 
       // Backfill for installs set up before account names were captured
       if (Object.keys(names).length === 0 && m && Object.keys(m).length > 0) {
@@ -225,6 +238,17 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
     }
   };
 
+  // Toggling persists, so the page doesn't reset every visit — the account rows
+  // navigate away, so "come back and re-open the same three cards" was the
+  // realistic cost of not storing this. `next` is computed outside the state
+  // updater: writing a secret from inside one would fire twice under StrictMode.
+  const toggleCard = (id: string) => {
+    const next = { ...openCards, [id]: !openCards[id] };
+    setOpenCards(next);
+    store.setOpenCards(next).catch(() => {});
+  };
+  const isOpen = (id: string) => openCards[id] === true;
+
   const mappedEntries = Object.entries(mapping);
   const mappedCount = mappedEntries.length;
   const driftAccounts = mappedEntries.filter(([sfinId]) => balances[sfinId]?.drift != null);
@@ -232,6 +256,35 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
     .map(([sfinId]) => balances[sfinId]?.date)
     .filter((d): d is number => typeof d === 'number')
     .sort((a, b) => b - a)[0];
+
+  // ── Collapsed-header summaries ───────────────────────────────────────────
+  // Each collapsible card reports its own configuration as text in its header,
+  // so a closed card still answers "is this on, and set to what?". Without
+  // these, collapsing would be hiding state rather than hiding chrome.
+  const autoSyncSummary = `${scheduleHours ? `Every ${scheduleHours}h` : 'Off'} · ${
+    autoAdjust ? 'aggressive auto-heal' : autoHeal ? 'auto-heal on' : 'auto-heal off'
+  }`;
+
+  const telegramConnected = !!botToken && !!chatId;
+  const activeReports = [
+    dailyReportEnabled && 'daily',
+    weeklyReportEnabled && 'weekly',
+  ].filter((r): r is string => typeof r === 'string');
+  const telegramSummary = !telegramConnected
+    ? 'Not connected'
+    : `Connected · ${activeReports.length > 0 ? `${activeReports.join(', ')} reports` : 'no reports'}`;
+
+  // Count only names the companion still publishes: a saved selection can hold
+  // categories that vanished at month rollover, and counting those would report
+  // more checked boxes than the matrix actually shows.
+  const catCount = (sel: string[] | 'all') =>
+    sel === 'all' ? 'all' : String(sel.filter((n) => availableCategories.includes(n)).length);
+  const categoriesSummary = `Daily ${catCount(dailyReportCategories)} · Weekly ${catCount(weeklyReportCategories)}`;
+
+  const rulesSummary =
+    rules.length === 0
+      ? 'None — using the +/− defaults'
+      : `${rules.length} rule${rules.length === 1 ? '' : 's'}`;
 
   return (
     <div className="sfin-page">
@@ -370,10 +423,16 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
         })}
       </Card>
 
-      {/* One card for "when does it sync on its own", covering both engines:
-          the in-page scheduler and the background container. They were two
-          cards asking the same question, a card's worth of chrome apart. */}
-      <Card>
+      {/* Everything below here is configured once and then only checked, so it
+          collapses. The header summary is the compensation: you can read the
+          setting without opening the card. */}
+      <CollapsibleCard
+        id={CARD.autoSync}
+        title="Auto-Sync"
+        summary={autoSyncSummary}
+        open={isOpen(CARD.autoSync)}
+        onToggle={() => toggleCard(CARD.autoSync)}
+      >
         <div className="sfin-field-row">
           <label htmlFor="sfin-interval" className="sfin-section-label">
             Auto-Sync interval
@@ -432,27 +491,26 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
             </span>
           </label>
         </div>
+      </CollapsibleCard>
 
-        <div className="sfin-divider" />
-
-        <div className="sfin-field-row">
-          <div style={{ minWidth: 0 }}>
-            <SectionLabel>Background sync (Docker, optional)</SectionLabel>
-            <div className="sfin-subtle" style={{ marginTop: 3 }}>
-              Keeps syncing even when Wealthfolio is closed.
-            </div>
+      {/* Its own card rather than a nested disclosure inside Auto-Sync: with
+          both collapsed the two headers cost less than a card containing a
+          second collapse control, and each gets a summary of its own. There is
+          no state to report here — the addon cannot see whether the container
+          is running — so the summary says what it is for. */}
+      <CollapsibleCard
+        id={CARD.docker}
+        title="Background sync (Docker, optional)"
+        summary="Keeps syncing even when Wealthfolio is closed"
+        open={isOpen(CARD.docker)}
+        onToggle={() => toggleCard(CARD.docker)}
+      >
+        <div>
+          <div className="sfin-subtle" style={{ marginBottom: 6 }}>
+            Add this service to your <code>docker-compose.yml</code>. You can customize the sync rate via <code>SYNC_SCHEDULE</code>:
           </div>
-          <Button variant="ghost" aria-expanded={showDockerSetup} onClick={() => setShowDockerSetup((s) => !s)}>
-            {showDockerSetup ? 'Hide setup' : 'Show setup'}
-          </Button>
-        </div>
-        {showDockerSetup && (
-          <div style={{ marginTop: 10 }}>
-            <div className="sfin-subtle" style={{ marginBottom: 6 }}>
-              Add this service to your <code>docker-compose.yml</code>. You can customize the sync rate via <code>SYNC_SCHEDULE</code>:
-            </div>
-            <pre className="sfin-pre" style={{ margin: 0 }}>
-              {`services:
+          <pre className="sfin-pre" style={{ margin: 0 }}>
+            {`services:
   simplefin-sync:
     image: ghcr.io/bubbles840/wealthfolio-simplefin-sync:latest
     container_name: simplefin-sync
@@ -463,31 +521,32 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
       - WEALTHFOLIO_PASSWORD=your_wealthfolio_password
       - SYNC_SCHEDULE=0 */6 * * *          # Change cron schedule here (e.g. 0 */3 * * * for every 3h)
       - MIN_SYNC_INTERVAL_HOURS=1          # Minimum interval cooldown between syncs`}
-            </pre>
-          </div>
-        )}
-      </Card>
-
-      <Card>
-        <div className="sfin-card-head">
-          <SectionLabel>Telegram Notifications (Optional)</SectionLabel>
-          <Button
-            variant="ghost"
-            aria-expanded={showTelegramInstructions}
-            onClick={() => setShowTelegramInstructions((s) => !s)}
-          >
-            {showTelegramInstructions ? 'Hide guide' : 'Setup guide'}
-          </Button>
+          </pre>
         </div>
+      </CollapsibleCard>
+
+      <CollapsibleCard
+        id={CARD.telegram}
+        title="Telegram Notifications (Optional)"
+        summary={telegramSummary}
+        open={isOpen(CARD.telegram)}
+        onToggle={() => toggleCard(CARD.telegram)}
+      >
         <div className="sfin-subtle" style={{ marginBottom: 12 }}>
           Daily spending allowances and weekly budget summaries, sent by the companion container.
         </div>
 
-        {/* Read once, ever — so it stays behind the disclosure it already had
-            rather than costing every later visit ~130px of scrolling. */}
-        {showTelegramInstructions && (
-          <div className="sfin-inset" style={{ marginBottom: 12 }}>
-            <div style={{ fontWeight: 600, marginBottom: 4 }}>📱 How to set up your Telegram bot</div>
+        {/* Read once, ever — so it stays behind a disclosure rather than costing
+            every later visit ~130px of scrolling. Same `Disclosure` primitive as
+            the cards, in its nested flavour, so there is one pattern to learn. */}
+        <div className="sfin-disc-inset" style={{ marginBottom: 12 }}>
+          <Disclosure
+            id={CARD.telegramGuide}
+            variant="inline"
+            title="📱 How to set up your Telegram bot"
+            open={isOpen(CARD.telegramGuide)}
+            onToggle={() => toggleCard(CARD.telegramGuide)}
+          >
             <ol>
               <li>Open Telegram and search for <strong>@BotFather</strong>.</li>
               <li>Send <code>/newbot</code> to @BotFather and follow prompts to name your bot.</li>
@@ -496,8 +555,8 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
               <li>Search Telegram for <strong>@userinfobot</strong> and send any message to get your numeric <strong>Chat ID</strong> (e.g. <code>987654321</code>).</li>
               <li>Paste your Bot Token and Chat ID below, then click <strong>Send Test Message</strong>!</li>
             </ol>
-          </div>
-        )}
+          </Disclosure>
+        </div>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           {/* Two short, related fields: side by side on a normal window, and the
@@ -554,15 +613,36 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
             </label>
           </div>
 
-          {/* A two-column matrix rather than a "Daily"/"Weekly" word beside
-              every checkbox: the column heading says it once, the boxes line up,
-              and each row loses ~10px of height. The per-checkbox aria-label
-              still carries both the category and the report, so the accessible
-              name never depends on reading the column heading. */}
-          <div className="sfin-inset sfin-cats">
-            <div className="sfin-section-label sfin-cats-head">Report categories</div>
+          {/* A matrix rather than a "Daily"/"Weekly" word beside every checkbox:
+              the column heading says it once, the boxes line up, and each row
+              loses ~10px of height. The per-checkbox aria-label still carries
+              both the category and the report, so the accessible name never
+              depends on reading the column heading.
+
+              The matrix is the tallest thing in this card (one row per
+              category), so it sits behind its own nested disclosure — inside
+              the Telegram card rather than as a card of its own, because
+              "Save Telegram Settings" is what commits these lists and splitting
+              them apart would leave the selection with no save button. */}
+          <div className="sfin-disc-inset">
+            <Disclosure
+              id={CARD.categories}
+              variant="inline"
+              title="Report categories"
+              summary={categoriesSummary}
+              open={isOpen(CARD.categories)}
+              onToggle={() => toggleCard(CARD.categories)}
+            >
+              <div className="sfin-subtle" style={{ fontSize: 12, marginBottom: 8 }}>
+                This list is published by the companion — whichever report ran
+                last — so it appears only after the companion's first run.
+              </div>
+              <div className="sfin-cats">
             {availableCategories.length > 0 && (
               <>
+                {/* Spacer holding grid column 1 so the captions sit above the
+                    checkbox columns rather than sliding left one cell. */}
+                <div aria-hidden />
                 <div className="sfin-cats-col sfin-cats-head">Daily</div>
                 <div className="sfin-cats-col sfin-cats-head">Weekly</div>
               </>
@@ -630,6 +710,8 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
                 );
               })
             )}
+              </div>
+            </Disclosure>
           </div>
 
           {/* role="status" so the send/save result is announced, and the ✅/❌
@@ -699,32 +781,28 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
             </Button>
           </div>
         </div>
-      </Card>
+      </CollapsibleCard>
 
-      <Card>
-        <div className="sfin-card-head">
-          <SectionLabel>Transaction Rules</SectionLabel>
-          <Button variant="ghost" aria-expanded={editingRules} onClick={() => setEditingRules((e) => !e)}>
-            {editingRules ? 'Done' : 'Edit'}
-          </Button>
-        </div>
-        {editingRules ? (
-          <RuleEditor
-            rules={rules}
-            onChange={async (r) => {
-              setRules(r);
-              await store.setMappingRules(r);
-            }}
-          />
-        ) : (
-          <ul className="sfin-list">
-            {rules.map((r, i) => (
-              <li key={i}>"{r.pattern}" → {r.activityType}</li>
-            ))}
-            <li className="sfin-subtle">+ → DEPOSIT, - → WITHDRAWAL (defaults)</li>
-          </ul>
-        )}
-      </Card>
+      {/* The card's own open state replaces the old "Edit"/"Done" toggle: this
+          card had a read-only list AND a disclosure to reach the editor, which
+          was two controls for one question. The header summary now answers "do
+          I have rules?", and opening goes straight to the editor — which lists
+          every rule and restates the +/− defaults itself, so nothing is lost. */}
+      <CollapsibleCard
+        id={CARD.rules}
+        title="Transaction Rules"
+        summary={rulesSummary}
+        open={isOpen(CARD.rules)}
+        onToggle={() => toggleCard(CARD.rules)}
+      >
+        <RuleEditor
+          rules={rules}
+          onChange={async (r) => {
+            setRules(r);
+            await store.setMappingRules(r);
+          }}
+        />
+      </CollapsibleCard>
 
       <div className="sfin-callout" style={{ marginTop: 16, marginBottom: 0 }}>
         💡 Imported bank transactions appear under <strong>Activities</strong>. To see them in the{' '}

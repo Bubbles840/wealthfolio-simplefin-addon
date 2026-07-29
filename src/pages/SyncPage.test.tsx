@@ -35,10 +35,33 @@ const makeProps = () => ({
     getTelegramConfig: vi.fn(async () => null),
     setTelegramConfig: vi.fn(),
     getAvailableReportCategories: vi.fn(async () => [] as string[]),
+    getOpenCards: vi.fn(async () => ({}) as Record<string, boolean>),
+    // async, like the real SecretsStore method — the page fires it and forgets,
+    // so it has to be thenable
+    setOpenCards: vi.fn(async () => {}),
   } as any,
   onReset: vi.fn(),
   scheduler: { start: vi.fn(), stop: vi.fn(), isRunning: vi.fn(() => false) } as any,
 });
+
+/**
+ * The config cards ship collapsed, and a collapsed panel is unmounted — so a
+ * test that touches a control inside one has to open it first, exactly as the
+ * user does. Matches the disclosure header by its accessible name, which is the
+ * title plus its summary line, hence the anchored patterns. Idempotent.
+ */
+async function openSection(name: RegExp) {
+  const header = await screen.findByRole('button', { name });
+  if (header.getAttribute('aria-expanded') !== 'true') fireEvent.click(header);
+  return header;
+}
+
+/** The category matrix sits behind two disclosures: its own, nested in the
+ *  Telegram card (where its Save button lives). */
+async function openReportCategories() {
+  await openSection(/^Telegram Notifications/i);
+  await openSection(/^Report categories/i);
+}
 
 describe('SyncPage', () => {
   it('renders Sync Now button', async () => {
@@ -73,6 +96,7 @@ describe('SyncPage', () => {
   it('changing the interval saves it and restarts the scheduler', async () => {
     const props = makeProps();
     render(<SyncPage {...props} />);
+    await openSection(/^Auto-Sync/i);
     const select = await screen.findByLabelText(/auto-sync interval/i);
     fireEvent.change(select, { target: { value: '8' } });
     await waitFor(() => expect(props.store.setSyncScheduleHours).toHaveBeenCalledWith(8));
@@ -83,6 +107,7 @@ describe('SyncPage', () => {
     const props = makeProps();
     props.store.getAvailableReportCategories = vi.fn(async () => ['Dining', 'Groceries']);
     render(<SyncPage {...props} />);
+    await openReportCategories();
     await screen.findByText('Dining');
     const dailyCheckbox = screen.getByLabelText(/Dining.*Daily/i) as HTMLInputElement;
     expect(dailyCheckbox.checked).toBe(true);
@@ -94,6 +119,7 @@ describe('SyncPage', () => {
     const props = makeProps();
     props.store.getAvailableReportCategories = vi.fn(async () => []);
     render(<SyncPage {...props} />);
+    await openReportCategories();
     await screen.findByText(/categories will appear here/i);
   });
 
@@ -103,6 +129,7 @@ describe('SyncPage', () => {
     props.store.getTelegramConfig = vi.fn(async () => ({ botToken: 't', chatId: 'c', enabled: true }));
     props.store.setTelegramConfig = vi.fn(async () => {});
     render(<SyncPage {...props} />);
+    await openReportCategories();
     await screen.findByText('Dining');
     fireEvent.click(screen.getByLabelText(/Dining.*Daily/i)); // uncheck
     fireEvent.click(screen.getByText('Save Telegram Settings'));
@@ -119,6 +146,7 @@ describe('SyncPage', () => {
     props.store.getTelegramConfig = vi.fn(async () => ({ botToken: 't', chatId: 'c', enabled: true }));
     props.store.setTelegramConfig = vi.fn(async () => {});
     render(<SyncPage {...props} />);
+    await openReportCategories();
     await screen.findByText('Dining');
     fireEvent.click(screen.getByLabelText(/Dining.*Daily/i)); // uncheck the only category
     fireEvent.click(screen.getByText('Save Telegram Settings'));
@@ -140,6 +168,7 @@ describe('SyncPage', () => {
       weeklyReportCategories: 'all',
     }));
     render(<SyncPage {...props} />);
+    await openReportCategories();
     await screen.findByText('Dining');
     const dailyDining = screen.getByLabelText(/Dining.*Daily/i) as HTMLInputElement;
     const dailyGroceries = screen.getByLabelText(/Groceries.*Daily/i) as HTMLInputElement;
@@ -170,6 +199,7 @@ describe('SyncPage', () => {
     }));
     props.store.setTelegramConfig = vi.fn(async () => {});
     render(<SyncPage {...props} />);
+    await openReportCategories();
     await screen.findByText('Groceries');
     fireEvent.click(screen.getByLabelText(/Groceries.*Daily/i)); // uncheck
     fireEvent.click(screen.getByText('Save Telegram Settings'));
@@ -192,6 +222,7 @@ describe('SyncPage', () => {
     }));
     props.store.setTelegramConfig = vi.fn(async () => {});
     render(<SyncPage {...props} />);
+    await openReportCategories();
     await screen.findByText('Groceries');
     fireEvent.click(screen.getByLabelText(/Dining.*Daily/i)); // check the last missing one
     fireEvent.click(screen.getByText('Save Telegram Settings'));
@@ -200,6 +231,98 @@ describe('SyncPage', () => {
         expect.objectContaining({ dailyReportCategories: 'all' }),
       );
     });
+  });
+
+  // ── Collapsible config cards ───────────────────────────────────────────
+  it('keeps the daily-driver view visible and every config card collapsed', async () => {
+    const props = makeProps();
+    render(<SyncPage {...props} />);
+    // Always visible: status, actions, stat tiles, accounts with balances.
+    await waitFor(() => expect(screen.getByRole('button', { name: /sync now/i })).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: /reconcile & link/i })).toBeInTheDocument();
+    expect(screen.getByText('Accounts synced')).toBeInTheDocument();
+    expect(screen.getByText(/Growth/)).toBeInTheDocument();
+    expect(screen.getByText('$1,234.56')).toBeInTheDocument();
+    // The drift banner is a needs-attention signal, so it never collapses.
+    expect(screen.getByText(/is off by/)).toBeInTheDocument();
+
+    // Collapsed: the controls inside each config card are absent from the DOM,
+    // not merely hidden.
+    expect(screen.queryByLabelText(/auto-sync interval/i)).not.toBeInTheDocument();
+    expect(screen.queryByText('Save Telegram Settings')).not.toBeInTheDocument();
+    expect(screen.queryByText('+ Add rule')).not.toBeInTheDocument();
+    expect(screen.queryByText(/docker-compose\.yml/)).not.toBeInTheDocument();
+    for (const name of [/^Auto-Sync/i, /^Background sync/i, /^Telegram Notifications/i, /^Transaction Rules/i]) {
+      expect(screen.getByRole('button', { name }).getAttribute('aria-expanded')).toBe('false');
+    }
+  });
+
+  it('gives every collapsible card one disclosure shape: a real button, whole-header hit target, aria-expanded', async () => {
+    render(<SyncPage {...makeProps()} />);
+    const header = await screen.findByRole('button', { name: /^Auto-Sync/i });
+    // A native <button> is what makes the header keyboard-operable (focus +
+    // Enter/Space) without any hand-rolled key handling, and the title AND the
+    // summary line are both inside it, so the whole row is the hit target.
+    expect(header.tagName).toBe('BUTTON');
+    expect(header.querySelector('.sfin-disclosure-text')).toBeTruthy();
+    expect(header).toHaveAttribute('aria-expanded', 'false');
+    // Closed: no dangling aria-controls pointing at an unmounted panel.
+    expect(header).not.toHaveAttribute('aria-controls');
+
+    fireEvent.click(header);
+    await waitFor(() => expect(header).toHaveAttribute('aria-expanded', 'true'));
+    const panelId = header.getAttribute('aria-controls');
+    expect(panelId).toBeTruthy();
+    expect(document.getElementById(panelId!)).toBeTruthy();
+    expect(screen.getByLabelText(/auto-sync interval/i)).toBeInTheDocument();
+
+    fireEvent.click(header);
+    await waitFor(() => expect(header).toHaveAttribute('aria-expanded', 'false'));
+  });
+
+  it('reports each collapsed card\u2019s state in its header summary, so collapsing hides chrome and not state', async () => {
+    const props = makeProps();
+    props.store.getSyncScheduleHours = vi.fn(async () => 4);
+    props.store.getAutoHeal = vi.fn(async () => true);
+    props.store.getMappingRules = vi.fn(async () => [
+      { pattern: 'PAYROLL', matchType: 'contains', activityType: 'DEPOSIT' },
+      { pattern: 'ATM', matchType: 'contains', activityType: 'WITHDRAWAL' },
+    ]);
+    props.store.getTelegramConfig = vi.fn(async () => ({ botToken: 't', chatId: 'c', enabled: true }));
+    render(<SyncPage {...props} />);
+    await screen.findByText('Every 4h \u00b7 auto-heal on');
+    expect(screen.getByText('2 rules')).toBeInTheDocument();
+    expect(screen.getByText('Connected \u00b7 daily, weekly reports')).toBeInTheDocument();
+  });
+
+  it('summarises an off / unconfigured state distinguishably', async () => {
+    const props = makeProps();
+    props.store.getSyncScheduleHours = vi.fn(async () => null);
+    props.store.getAutoAdjust = vi.fn(async () => true);
+    render(<SyncPage {...props} />);
+    // Interval off, but aggressive auto-heal on — the summary has to say both.
+    await screen.findByText('Off \u00b7 aggressive auto-heal');
+    // No token/chat id in the default mock.
+    expect(screen.getByText('Not connected')).toBeInTheDocument();
+    expect(screen.getByText(/using the \+\/\u2212 defaults/)).toBeInTheDocument();
+  });
+
+  it('persists which cards are open, and restores them on the next visit', async () => {
+    const props = makeProps();
+    render(<SyncPage {...props} />);
+    fireEvent.click(await screen.findByRole('button', { name: /^Transaction Rules/i }));
+    await waitFor(() =>
+      expect(props.store.setOpenCards).toHaveBeenCalledWith(expect.objectContaining({ rules: true })),
+    );
+
+    // Next visit: the stored blob decides, so the page does not reset.
+    const revisit = makeProps();
+    revisit.store.getOpenCards = vi.fn(async () => ({ rules: true, 'auto-sync': true }));
+    render(<SyncPage {...revisit} />);
+    await waitFor(() => expect(screen.getAllByText('+ Add rule').length).toBe(1));
+    expect(screen.getAllByLabelText(/auto-sync interval/i).length).toBe(1);
+    // Cards absent from the blob stay closed.
+    expect(screen.queryByText('Save Telegram Settings')).not.toBeInTheDocument();
   });
 
   it('composes two successive toggles instead of dropping the first', async () => {
@@ -213,6 +336,7 @@ describe('SyncPage', () => {
     props.store.getTelegramConfig = vi.fn(async () => ({ botToken: 't', chatId: 'c', enabled: true }));
     props.store.setTelegramConfig = vi.fn(async () => {});
     render(<SyncPage {...props} />);
+    await openReportCategories();
     await screen.findByText('Groceries');
     const groceries = screen.getByLabelText(/Groceries.*Daily/i);
     const dining = screen.getByLabelText(/Dining.*Daily/i);

@@ -159,3 +159,36 @@ describe('SecretsStore notification thresholds', () => {
     });
   });
 });
+
+describe('SecretsStore open-card state', () => {
+  it('roundtrips which collapsible cards are open', async () => {
+    const ctx = makeCtx();
+    const store = new SecretsStore(ctx);
+    // Never stored → nothing open, which is the page's default anyway.
+    expect(await store.getOpenCards()).toEqual({});
+    await store.setOpenCards({ telegram: true, rules: false });
+    expect(ctx.api.secrets.set).toHaveBeenCalledWith('ui_open_cards', '{"telegram":true,"rules":false}');
+    expect(await store.getOpenCards()).toEqual({ telegram: true, rules: false });
+  });
+
+  it('degrades to "everything closed" on a malformed or non-object value', async () => {
+    // Purely cosmetic state: a corrupt value must not throw out of the page's
+    // load Promise.all and take the whole Sync page down with it.
+    const ctx = makeCtx();
+    const store = new SecretsStore(ctx);
+    await ctx.api.secrets.set('ui_open_cards', 'not json{');
+    expect(await store.getOpenCards()).toEqual({});
+    await ctx.api.secrets.set('ui_open_cards', '["telegram"]');
+    expect(await store.getOpenCards()).toEqual({});
+    await ctx.api.secrets.set('ui_open_cards', 'null');
+    expect(await store.getOpenCards()).toEqual({});
+  });
+
+  it('is wiped by clearAll, like every other addon key', async () => {
+    const ctx = makeCtx();
+    const store = new SecretsStore(ctx);
+    await store.setOpenCards({ telegram: true });
+    await store.clearAll();
+    expect(await store.getOpenCards()).toEqual({});
+  });
+});
