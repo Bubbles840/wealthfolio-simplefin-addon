@@ -15,15 +15,34 @@ export interface NativeCategorySpending {
 }
 
 /**
- * Returns native category spent totals directly from wealthfolio.db for a given month (e.g. '2026-07').
+ * Returns native category spent totals for an arbitrary date window —
+ * `[startInclusive, endExclusive)`, both `YYYY-MM-DD` — matching the format
+ * `activities.activity_date` is stored in.
+ *
+ * This is the single implementation of the spending query; the month-scoped
+ * reader below computes its own bounds and delegates here, so the type filter,
+ * the transfers exclusion, the parent-category rollup and the
+ * node:sqlite-then-sqlite3-CLI fallback exist in exactly one place.
  */
-export function getNativeWealthfolioSpending(dbPath: string, yearMonth: string): Record<string, number> {
+export function getNativeWealthfolioSpendingBetween(
+  dbPath: string,
+  startInclusive: string,
+  endExclusive: string,
+): Record<string, number> {
   if (!dbPath || !existsSync(dbPath)) {
     return {};
   }
 
-  const [y, m] = yearMonth.split('-').map(Number);
-  const nextMonth = m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, '0')}`;
+  // The bounds are interpolated into SQL rather than bound as parameters (the
+  // sqlite3-CLI fallback path has no parameter binding), so they are validated
+  // rather than trusted. Every caller builds them from date arithmetic, so a
+  // failure here means a bug, not user input — refusing to run is the safe
+  // response either way.
+  const isDate = (s: string) => /^\d{4}-\d{2}-\d{2}$/.test(s);
+  if (!isDate(startInclusive) || !isDate(endExclusive)) {
+    console.error(`[simplefin-sync] Refusing spending query with malformed date bounds: ${startInclusive}..${endExclusive}`);
+    return {};
+  }
 
   const query = `
     SELECT
@@ -33,8 +52,8 @@ export function getNativeWealthfolioSpending(dbPath: string, yearMonth: string):
     JOIN activity_taxonomy_assignments ata ON a.id = ata.activity_id
     JOIN taxonomy_categories tc ON ata.category_id = tc.id
     LEFT JOIN taxonomy_categories parent ON tc.parent_id = parent.id
-    WHERE a.activity_date >= '${yearMonth}-01'
-      AND a.activity_date < '${nextMonth}-01'
+    WHERE a.activity_date >= '${startInclusive}'
+      AND a.activity_date < '${endExclusive}'
       AND UPPER(a.activity_type) IN ('WITHDRAWAL', 'FEE', 'TAX')
       AND LOWER(COALESCE(parent.name, tc.name)) NOT IN ('transfers', 'transfer', 'internal transfers', 'savings & transfers')
     GROUP BY COALESCE(parent.name, tc.name);
@@ -76,6 +95,15 @@ export function getNativeWealthfolioSpending(dbPath: string, yearMonth: string):
     console.error('[simplefin-sync] Failed to read native sqlite database:', err);
     return {};
   }
+}
+
+/**
+ * Returns native category spent totals directly from wealthfolio.db for a given month (e.g. '2026-07').
+ */
+export function getNativeWealthfolioSpending(dbPath: string, yearMonth: string): Record<string, number> {
+  const [y, m] = yearMonth.split('-').map(Number);
+  const nextMonth = m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, '0')}`;
+  return getNativeWealthfolioSpendingBetween(dbPath, `${yearMonth}-01`, `${nextMonth}-01`);
 }
 
 /**
