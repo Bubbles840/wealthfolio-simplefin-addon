@@ -49,12 +49,18 @@ export interface TelegramConfig {
   notifyOnImport?: boolean;
   dailyReportEnabled?: boolean;
   weeklyReportEnabled?: boolean;
+  /** Monthly wrap-up, sent on the 1st about the month that just ended. Like its
+   *  two siblings, only an explicit `false` suppresses it — a config written
+   *  before this report existed opts in. */
+  monthlyReportEnabled?: boolean;
   /** Category names to include in the daily digest. 'all' (default) means
    *  every category the companion has published via
    *  `available_report_categories`. */
   dailyReportCategories?: string[] | 'all';
   /** Same as dailyReportCategories, for the weekly total-remaining summary. */
   weeklyReportCategories?: string[] | 'all';
+  /** Same as dailyReportCategories, for the monthly wrap-up. */
+  monthlyReportCategories?: string[] | 'all';
   /** Dollar amount a single newly-imported SPENDING transaction has to exceed
    *  before it is announced. Absent (the default), `0`, or negative means off —
    *  a user who has never opened the setting gets no such alerts. */

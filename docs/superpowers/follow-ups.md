@@ -4,9 +4,11 @@ Findings that survived a review cycle without being fixed, with enough context
 to act on them later. Each says why it was deferred, so a future reader can
 tell "decided against" from "not got to yet".
 
-Last updated: 2026-07-29, after adding the large-transaction and balance-drift
-Telegram alerts (which surfaced new item 3; former items 3 and 4 are now 4 and
-5). Previous revision: 2026-07-29, after fixing the companion drift inflation
+Last updated: 2026-07-29, after adding the monthly wrap-up report (three new
+entries under "Smaller items"). Previous revision: 2026-07-29, after adding the
+large-transaction and balance-drift Telegram alerts (which surfaced new item 3;
+former items 3 and 4 are now 4 and 5). Earlier: 2026-07-29, after fixing the
+companion drift inflation
 (former item 1, now under "Fixed"). Earlier: 2026-07-28, after the
 notification-system-redesign branch
 (plan: `docs/superpowers/plans/2026-07-28-notification-system-redesign.md`).
@@ -193,7 +195,20 @@ Fix directions, roughly in order of appeal:
 - **`addon.store.json`** version still trails `package.json` / `manifest.json` /
   `companion/package.json`.
 - **README / `docker-compose.example.yml`** do not document
-  `DAILY_REPORT_SCHEDULE`, `WEEKLY_REPORT_SCHEDULE`, or `TZ`.
+  `DAILY_REPORT_SCHEDULE`, `WEEKLY_REPORT_SCHEDULE`, `MONTHLY_REPORT_SCHEDULE`,
+  or `TZ`.
+- **`monthlyReportEnabled` / `monthlyReportCategories` have no UI.** The fields
+  exist on `TelegramConfig` and the companion honours them, but
+  `src/pages/SyncPage.tsx` renders only the daily and weekly toggles, so the
+  monthly wrap-up can currently only be disabled or narrowed by hand-editing the
+  `telegram_config` secret. Deliberate — the settings UI was scoped out of the
+  report's own task.
+- **All three reports write `available_report_categories`,** and the monthly one
+  publishes the union for the month it reports — i.e. the PREVIOUS month. On the
+  1st the checklist therefore reflects last month until the next morning's daily
+  digest republishes the current one. Harmless in practice (a closed month's
+  union is usually a superset of a day-old one), but it does mean the secret's
+  meaning depends on which report wrote it last.
 
 ---
 

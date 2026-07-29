@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatSyncHealthFooter, escapeMarkdown, weeklyEnvelope, moneyWhole, formatLargeTransactionAlert, formatBalanceDriftAlert } from './telegram.js';
+import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatMonthlyWrapUp, formatSyncHealthFooter, escapeMarkdown, weeklyEnvelope, moneyWhole, formatLargeTransactionAlert, formatBalanceDriftAlert } from './telegram.js';
 
 const mockFetch = vi.fn();
 vi.stubGlobal('fetch', mockFetch);
@@ -838,5 +838,168 @@ describe('formatBalanceDriftAlert', () => {
     const unescaped = text.replace(/\\[_*`[]/g, '');
     expect((unescaped.match(/\*/g) ?? [])).toHaveLength(6);
     expect(unescaped.match(/_/g)).toBeNull();
+  });
+});
+
+describe('formatMonthlyWrapUp', () => {
+  const mixed = [
+    { name: 'Groceries', spent: 280, budget: 300 },
+    { name: 'Food & Dining', spent: 412, budget: 300 },
+    { name: 'Transportation', spent: 45, budget: 50 },
+    { name: 'Education', spent: 6, budget: 0 },
+  ];
+
+  it('renders a mixed month: under, over, and no-budget, with a total line', () => {
+    // Budgeted only: spent 280 + 412 + 45 = 737 of 300 + 300 + 50 = 650, so the
+    // month finished 87 over. Education's 6 is deliberately outside both totals
+    // (see the "does not fold unbudgeted spend" test below).
+    expect(formatMonthlyWrapUp(mixed, 'July')).toBe(
+      '📅 *July wrap-up*\n'
+      + '\n'
+      + '✅ 🛒 Groceries  *$280* of $300\n'
+      + '🚨 🍽️ Food & Dining  $412 of $300 · *$112 over*\n'
+      + '✅ 🚗 Transportation  *$45* of $50\n'
+      + '🏷️ 🎓 Education  *$6* · no budget\n'
+      + '\n'
+      + '🚨 Finished *$87 over budget* · spent $737 of $650',
+    );
+  });
+
+  it('names the month it is reporting in the header', () => {
+    expect(formatMonthlyWrapUp(mixed, 'December')).toContain('📅 *December wrap-up*');
+  });
+
+  it('says "under budget" and never "over" when the month came in under', () => {
+    const text = formatMonthlyWrapUp(
+      [{ name: 'Groceries', spent: 2312, budget: 2400 }],
+      'July',
+    );
+    expect(text).toContain('💰 Finished *$88 under budget* · spent $2,312 of $2,400');
+    expect(text).not.toContain('over budget');
+  });
+
+  it('states the DIRECTION on an over-budget total — never a bare figure that reads as headroom', () => {
+    // The bug this pins shipped for real: a shared formatter absorbed the sign and
+    // the summary line printed "$1,494 left" to a reader who was $1,494 OVER. A
+    // total line for a finished month has exactly two directions and the words
+    // must pick one, so the assertions here are as much about what must NOT
+    // appear as what must.
+    const text = formatMonthlyWrapUp(
+      [{ name: 'Groceries', spent: 3894, budget: 2400 }],
+      'July',
+    );
+    expect(text).toContain('🚨 Finished *$1,494 over budget* · spent $3,894 of $2,400');
+    expect(text).not.toContain('under budget');
+    expect(text).not.toContain('left');
+    expect(text).not.toContain('💰');
+  });
+
+  it('does not fold unbudgeted spend into the under/over verdict', () => {
+    // An unbudgeted category's spend comes out of nobody's budget, so counting it
+    // against the total would turn a month that finished under into one that
+    // finished over. Same reasoning, and the same choice, as the daily digest's
+    // month-context line.
+    const text = formatMonthlyWrapUp(
+      [
+        { name: 'Groceries', spent: 200, budget: 300 },
+        { name: 'Education', spent: 5000, budget: 0 },
+      ],
+      'July',
+    );
+    expect(text).toContain('💰 Finished *$100 under budget* · spent $200 of $300');
+  });
+
+  it('never calls an unbudgeted category "over" — there is nothing to be over', () => {
+    const text = formatMonthlyWrapUp([{ name: 'Education', spent: 6, budget: 0 }], 'July');
+    expect(text).toContain('🏷️ 🎓 Education  *$6* · no budget');
+    expect(text).not.toContain('over');
+    expect(text).not.toContain('🚨');
+  });
+
+  it('reads "right on budget" rather than "$0 under" when the month landed level', () => {
+    const text = formatMonthlyWrapUp([{ name: 'Groceries', spent: 300, budget: 300 }], 'July');
+    expect(text).toContain('💰 Finished *right on budget* · spent $300 of $300');
+    expect(text).not.toContain('$0 under');
+  });
+
+  it('does not raise 🚨 for an overspend that rounds to $0', () => {
+    // Keyed off the RENDERED magnitude, like the daily digest's summary: summing
+    // 2-decimal budgets leaves remainders like -2.8e-17, and "$0 over budget" is
+    // a false alarm dressed up as a result.
+    const text = formatMonthlyWrapUp([{ name: 'Groceries', spent: 300.4, budget: 300 }], 'July');
+    expect(text).not.toContain('🚨');
+    expect(text).not.toContain('$0 over');
+    expect(text).toContain('✅ 🛒 Groceries  *$300* of $300');
+    expect(text).toContain('💰 Finished *right on budget*');
+  });
+
+  it('reports the spend, not a verdict, when nothing was budgeted all month', () => {
+    const text = formatMonthlyWrapUp(
+      [{ name: 'Education', spent: 40, budget: 0 }],
+      'July',
+    );
+    expect(text).toContain('🏷️ *$40 spent* · no budgets set');
+    expect(text).not.toContain('under budget');
+    expect(text).not.toContain('over budget');
+    expect(text).toContain('selected for the monthly report');
+  });
+
+  it('does not claim a verdict for a month with no budgets and no spending', () => {
+    const text = formatMonthlyWrapUp([{ name: 'Education', spent: 0, budget: 0 }], 'July');
+    expect(text).toContain('Nothing spent, no budgets set in July.');
+    expect(text).not.toContain('of $0');
+    expect(text).not.toContain('budget*');
+  });
+
+  it('says nothing to report — pointing at both causes — when no categories are included', () => {
+    // Two distinct causes: no budgets and no spending exist for that month, or
+    // every category was deselected for this report. The text must not assert
+    // either one, matching the daily digest's empty branch.
+    const text = formatMonthlyWrapUp([], 'July');
+    expect(text).toBe(
+      '📅 *July wrap-up*\n'
+      + '\n'
+      + 'Nothing to report. Set up budgets in Wealthfolio, or check that categories are selected for the monthly report in the SimpleFin Sync addon.',
+    );
+  });
+
+  it('escapes `_`/`*`-bearing category names and keeps them OUTSIDE every entity', () => {
+    // Legacy Markdown does not honour a backslash escape inside an entity, so
+    // `*Food\_Drink*` still leaves a live italic opener and Telegram rejects the
+    // WHOLE message with a 400. The bold therefore sits only on the figures.
+    const text = formatMonthlyWrapUp(
+      [
+        { name: 'Food_Drink', spent: 412, budget: 300 },
+        { name: 'Wants *only*', spent: 6, budget: 0 },
+      ],
+      'July',
+    );
+    expect(text).toContain('🚨 🍽️ Food\\_Drink  $412 of $300 · *$112 over*');
+    expect(text).toContain('🏷️ ⭐ Wants \\*only\\*  *$6* · no budget');
+    expect(text).not.toContain('*Food\\_Drink*');
+    // Every surviving `*` belongs to a deliberate entity, and no `_` survives at
+    // all: header (2), the over figure (2), the no-budget figure (2), the total
+    // verdict (2).
+    const unescaped = text.replace(/\\[_*`[]/g, '');
+    expect((unescaped.match(/\*/g) ?? [])).toHaveLength(8);
+    expect(unescaped.match(/_/g)).toBeNull();
+  });
+
+  it('is host-agnostic: the month is data, never derived from the clock', () => {
+    // `shared/*` must not call `new Date()`; the companion passes the month it is
+    // reporting so the header can name a month that is not the current one.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2027, 0, 1, 9, 0, 0));
+    try {
+      expect(formatMonthlyWrapUp([{ name: 'Groceries', spent: 10, budget: 20 }], 'December'))
+        .toContain('📅 *December wrap-up*');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('leaves no trailing whitespace, so a caller can append a block cleanly', () => {
+    const text = formatMonthlyWrapUp(mixed, 'July');
+    expect(text).toBe(text.trimEnd());
   });
 });

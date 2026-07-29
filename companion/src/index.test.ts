@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { maskUrl, validateStartupEnv, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport } from './index.js';
+import { maskUrl, validateStartupEnv, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth } from './index.js';
 import { runSyncCore } from '../../shared/sync-core.js';
-import { getNativeWealthfolioSpendingBetween } from './sqlite-native.js';
+import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets } from './sqlite-native.js';
 
 vi.mock('../../shared/sync-core.js', () => ({
   runSyncCore: vi.fn(async () => ({ imported: 2, skipped: 1, errors: [], largeTransactionAlerts: [], balanceDriftAlerts: [], stuckTransferAlerts: [] })),
@@ -1057,5 +1057,251 @@ describe('sendWeeklyTelegramReport', () => {
 
     expect(client.setAddonSecret).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('previousYearMonth', () => {
+  it('names the calendar month before the given date', () => {
+    expect(previousYearMonth(new Date(2026, 6, 1, 9, 0, 0))).toEqual({
+      yearMonth: '2026-06', monthName: 'June',
+    });
+  });
+
+  it('rolls back to December of the PREVIOUS year on 1 January', () => {
+    // The case that silently produces an empty report if it is got wrong: naive
+    // arithmetic asks for `2027-00`, which matches no `activity_date` and no
+    // `period_key`, so the wrap-up would render as "nothing to report" once a
+    // year with nothing to indicate anything had gone wrong.
+    expect(previousYearMonth(new Date(2027, 0, 1, 9, 0, 0))).toEqual({
+      yearMonth: '2026-12', monthName: 'December',
+    });
+  });
+
+  it('zero-pads the month', () => {
+    expect(previousYearMonth(new Date(2026, 9, 1)).yearMonth).toBe('2026-09');
+    expect(previousYearMonth(new Date(2026, 1, 1)).yearMonth).toBe('2026-01');
+  });
+
+  it('is unaffected by the day of the month it is asked on', () => {
+    // The cron fires on the 1st, but nothing should depend on that — a manual run
+    // mid-month must still describe the month that ended.
+    for (const day of [1, 15, 28, 31]) {
+      expect(previousYearMonth(new Date(2026, 6, day)).yearMonth).toBe('2026-06');
+    }
+  });
+});
+
+describe('sendMonthlyTelegramReport', () => {
+  it('reads the PREVIOUS month from both native readers, rolling the year back on 1 January', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2027, 0, 1, 9, 0, 0));
+    try {
+      const secrets = new Map<string, string>([
+        ['telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true })],
+      ]);
+      const client = {
+        getAddonSecret: vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null),
+        setAddonSecret: vi.fn(async () => {}),
+      } as any;
+      const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+      vi.stubGlobal('fetch', fetchMock);
+
+      await sendMonthlyTelegramReport(client);
+
+      expect(vi.mocked(getNativeWealthfolioSpending)).toHaveBeenCalledWith(expect.any(String), '2026-12');
+      expect(vi.mocked(getNativeWealthfolioBudgets)).toHaveBeenCalledWith(expect.any(String), '2026-12');
+      const [, sentBody] = fetchMock.mock.calls[0];
+      const text = JSON.parse((sentBody as any).body).text;
+      expect(text).toContain('📅 *December wrap-up*');
+      expect(text).not.toContain('January');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('sends a per-category budgeted-vs-spent wrap-up with a total verdict', async () => {
+    // Mocked month figures: Groceries 200 of 800, Dining 550 of 500.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 7, 1, 9, 0, 0));
+    try {
+      const secrets = new Map<string, string>([
+        ['telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true })],
+      ]);
+      const client = {
+        getAddonSecret: vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null),
+        setAddonSecret: vi.fn(async (_a: string, key: string, val: string) => { secrets.set(key, val); }),
+      } as any;
+      const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+      vi.stubGlobal('fetch', fetchMock);
+
+      await sendMonthlyTelegramReport(client);
+
+      const [, sentBody] = fetchMock.mock.calls[0];
+      const text = JSON.parse((sentBody as any).body).text;
+      expect(text).toBe(
+        '📅 *July wrap-up*\n'
+        + '\n'
+        + '🚨 🍽️ Dining  $550 of $500 · *$50 over*\n'
+        + '✅ 🛒 Groceries  *$200* of $800\n'
+        + '\n'
+        + '💰 Finished *$550 under budget* · spent $750 of $1,300',
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('states the direction when the month finished OVER budget overall', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 7, 1, 9, 0, 0));
+    try {
+      vi.mocked(getNativeWealthfolioSpending).mockReturnValueOnce({ Groceries: 1100, Dining: 3794 });
+      vi.mocked(getNativeWealthfolioBudgets).mockReturnValueOnce({ Groceries: 900, Dining: 2500 });
+      const secrets = new Map<string, string>([
+        ['telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true })],
+      ]);
+      const client = {
+        getAddonSecret: vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null),
+        setAddonSecret: vi.fn(async () => {}),
+      } as any;
+      const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+      vi.stubGlobal('fetch', fetchMock);
+
+      await sendMonthlyTelegramReport(client);
+
+      const [, sentBody] = fetchMock.mock.calls[0];
+      const text = JSON.parse((sentBody as any).body).text;
+      // spent 4894 of 3400 → $1,494 OVER. The exact figure that once shipped as
+      // "$1,494 left" when a shared formatter absorbed the sign.
+      expect(text).toContain('🚨 Finished *$1,494 over budget* · spent $4,894 of $3,400');
+      expect(text).not.toContain('under budget');
+      expect(text).not.toContain('left');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('publishes the available category list and filters to monthlyReportCategories', async () => {
+    const secrets = new Map<string, string>([
+      ['telegram_config', JSON.stringify({
+        botToken: 'tok', chatId: '1', enabled: true, monthlyReportCategories: ['Groceries'],
+      })],
+    ]);
+    const client = {
+      getAddonSecret: vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null),
+      setAddonSecret: vi.fn(async (_a: string, key: string, val: string) => { secrets.set(key, val); }),
+    } as any;
+    const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await sendMonthlyTelegramReport(client);
+
+    expect(client.setAddonSecret).toHaveBeenCalledWith(
+      'simplefin-sync', 'available_report_categories', JSON.stringify(['Dining', 'Groceries']),
+    );
+    const [, sentBody] = fetchMock.mock.calls[0];
+    const text = JSON.parse((sentBody as any).body).text;
+    expect(text).toContain('Groceries');
+    expect(text).not.toContain('Dining');
+  });
+
+  it('escapes a `_`-bearing category name so Telegram cannot reject the whole send', async () => {
+    vi.mocked(getNativeWealthfolioSpending).mockReturnValueOnce({ Food_Drink: 550 });
+    vi.mocked(getNativeWealthfolioBudgets).mockReturnValueOnce({ Food_Drink: 500 });
+    const secrets = new Map<string, string>([
+      ['telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true })],
+    ]);
+    const client = {
+      getAddonSecret: vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null),
+      setAddonSecret: vi.fn(async () => {}),
+    } as any;
+    const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await sendMonthlyTelegramReport(client);
+
+    const [, sentBody] = fetchMock.mock.calls[0];
+    const text = JSON.parse((sentBody as any).body).text;
+    expect(text).toContain('Food\\_Drink');
+    // Outside every entity: an escape inside one is ignored by legacy Markdown,
+    // leaving a live opener and a 400 on the WHOLE message.
+    expect(text).not.toContain('*Food\\_Drink*');
+    expect(text.replace(/\\[_*`[]/g, '').match(/_/g)).toBeNull();
+  });
+
+  it('does nothing when monthlyReportEnabled is false', async () => {
+    const secrets = new Map<string, string>([
+      ['telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true, monthlyReportEnabled: false })],
+    ]);
+    const client = {
+      getAddonSecret: vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null),
+      setAddonSecret: vi.fn(async () => {}),
+    } as any;
+    const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await sendMonthlyTelegramReport(client);
+
+    expect(client.setAddonSecret).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('opts an existing config without the field IN', async () => {
+    // Only an explicit `false` suppresses it, matching its two siblings: a user
+    // whose telegram_config predates this report should get it.
+    const secrets = new Map<string, string>([
+      ['telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true })],
+    ]);
+    const client = {
+      getAddonSecret: vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null),
+      setAddonSecret: vi.fn(async () => {}),
+    } as any;
+    const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await sendMonthlyTelegramReport(client);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('sends nothing and does not throw when telegram_config is corrupt', async () => {
+    const secrets = new Map<string, string>([['telegram_config', 'not json at all']]);
+    const client = {
+      getAddonSecret: vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null),
+      setAddonSecret: vi.fn(async () => {}),
+    } as any;
+    const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(sendMonthlyTelegramReport(client)).resolves.toBeUndefined();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(client.setAddonSecret).not.toHaveBeenCalled();
+  });
+
+  it('logs a rejected send instead of discarding the result', async () => {
+    // `sendTelegramMessage` reports an API-level failure by RESOLVING
+    // `{ ok: false }` — a 400 from malformed Markdown, a bad token, a rate limit.
+    // Discarding it would lose the wrap-up silently, and it is only produced once
+    // a month.
+    const secrets = new Map<string, string>([
+      ['telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true })],
+    ]);
+    const client = {
+      getAddonSecret: vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null),
+      setAddonSecret: vi.fn(async () => {}),
+    } as any;
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      json: async () => ({ ok: false, description: "can't parse entities" }),
+    })));
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    try {
+      await expect(sendMonthlyTelegramReport(client)).resolves.toBeUndefined();
+      const logged = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(logged).toContain('Failed to send monthly Telegram report');
+      expect(logged).toContain("can't parse entities");
+    } finally {
+      logSpy.mockRestore();
+    }
   });
 });

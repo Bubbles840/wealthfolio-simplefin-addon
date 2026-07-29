@@ -13,7 +13,7 @@ import { runSyncCore } from '../../shared/sync-core.js';
 import type { SyncResult } from '../../shared/sync-core.js';
 import { RestSyncHost, RestSyncStore } from './rest-host.js';
 import { WealthfolioClient } from './wealthfolio.js';
-import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatSyncHealthFooter, formatLargeTransactionAlert, formatBalanceDriftAlert, escapeMarkdown } from '../../shared/telegram.js';
+import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatMonthlyWrapUp, formatSyncHealthFooter, formatLargeTransactionAlert, formatBalanceDriftAlert, escapeMarkdown } from '../../shared/telegram.js';
 import type { SyncHealth } from '../../shared/telegram.js';
 import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets } from './sqlite-native.js';
 
@@ -506,6 +506,43 @@ export function weekStartDate(now: Date): Date {
   return monday.getTime() < firstOfMonth.getTime() ? firstOfMonth : monday;
 }
 
+const MONTH_NAMES = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+];
+
+/**
+ * The calendar month BEFORE `now`: the `YYYY-MM` key the native readers take,
+ * plus its display name.
+ *
+ * The monthly wrap-up runs on the 1st and describes the month that just ended,
+ * so every figure and the header both hang off this one computation. The
+ * year rollover is the case worth a helper of its own: on 1 January the answer
+ * is December of the PREVIOUS year, and the naive `month - 1` asks for
+ * `2027-00`, which matches no `activity_date` and no `period_key`. That failure
+ * is silent — the report renders as "nothing to report" — and it happens once a
+ * year, so it would be noticed, if at all, long after the data was gone.
+ * `new Date(y, m - 1, 1)` normalises `-1` to the previous December for free.
+ *
+ * Both fields come from the same `Date` deliberately: a header naming a
+ * different month from the figures beneath it is the other way this goes wrong.
+ * Month names are a literal table rather than `toLocaleString`, so the output
+ * cannot shift with the container's locale.
+ *
+ * The day of `now` is irrelevant — a manual run mid-month still describes the
+ * month that ended — which is why the 1st is nowhere in this arithmetic.
+ *
+ * Exported for tests; like `weekStartDate`, the date arithmetic lives here
+ * rather than in `shared/`, which stays a pure string builder fed plain data.
+ */
+export function previousYearMonth(now: Date): { yearMonth: string; monthName: string } {
+  const d = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  return {
+    yearMonth: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`,
+    monthName: MONTH_NAMES[d.getMonth()],
+  };
+}
+
 /** Local-time `YYYY-MM-DD`. Deliberately not `toISOString()`, which converts to
  *  UTC and would shift the date by a day for anyone west of Greenwich —
  *  `activity_date` in wealthfolio.db is a plain local date string. */
@@ -615,6 +652,71 @@ export async function sendWeeklyTelegramReport(wfClient: WealthfolioClient): Pro
   }
 }
 
+/**
+ * Sends the monthly wrap-up: how the month that just ended actually finished,
+ * per category and in total. Third of the three scheduled reports, and the only
+ * retrospective one — the daily digest and the Saturday check-in both describe
+ * the month in progress.
+ *
+ * The one thing this does differently from its two siblings is WHICH month it
+ * asks for. It runs on the 1st, so every read is for the PREVIOUS month (see
+ * `previousYearMonth`, including the 1-January rollover). Both native readers
+ * take that same `YYYY-MM`:
+ *
+ *  - `getNativeWealthfolioSpending` derives its own `[month-01, nextMonth-01)`
+ *    bounds internally, rollover included, so the month string is all it needs.
+ *  - `getNativeWealthfolioBudgets` selects `period_key = <month> OR 'default'`
+ *    and ranks `(period_key = <month>) DESC, updated_at DESC`, taking the top row
+ *    per category. Asking it for a past month is therefore right: a
+ *    month-specific budget for that month wins, and only in its absence does
+ *    `'default'` stand in. Caveat worth knowing: `'default'` is read as it
+ *    stands TODAY, so a default the user has since raised or lowered is applied
+ *    retroactively to a closed month. Storing history is the budget table's job,
+ *    not this report's.
+ *
+ * Gated on `monthlyReportEnabled !== false`, matching its siblings: a
+ * `telegram_config` written before this report existed opts in rather than
+ * silently never firing.
+ */
+export async function sendMonthlyTelegramReport(wfClient: WealthfolioClient): Promise<void> {
+  const tgRaw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_config');
+  // Guarded parse: a corrupt secret costs the report that needs it, never a throw
+  // escaping into the cron callback.
+  const tg = parseSecretJson<any>(tgRaw, 'telegram_config');
+  if (!tg) return;
+  if (!tg.botToken || !tg.chatId || tg.enabled === false) return;
+  if (tg.monthlyReportEnabled === false) return;
+
+  const dbPath = process.env.WEALTHFOLIO_DB_PATH || '/mnt/wealthfolio.db';
+  if (!dbPath || !existsSync(dbPath)) {
+    log('WEALTHFOLIO_DB_PATH not found or missing, skipping monthly wrap-up.');
+    return;
+  }
+
+  const { yearMonth, monthName } = previousYearMonth(new Date());
+  const spentMap = getNativeWealthfolioSpending(dbPath, yearMonth);
+  const budgetMap = getNativeWealthfolioBudgets(dbPath, yearMonth);
+  const allNames = await publishAvailableCategories(wfClient, spentMap, budgetMap);
+
+  const names = filterCategories(allNames, tg.monthlyReportCategories);
+  const categories = names.map((name) => ({
+    name,
+    spent: spentMap[name] ?? 0,
+    budget: budgetMap[name] ?? 0,
+  }));
+  const message = formatMonthlyWrapUp(categories, monthName);
+  // The result is inspected, not discarded: `sendTelegramMessage` reports an
+  // API-level failure (bad token, rate limit, a 400 from malformed Markdown) by
+  // RESOLVING `{ ok: false }`, and this report is produced once a month — a
+  // silently swallowed failure is a month-long gap nobody is told about.
+  const result = await sendTelegramMessage(tg.botToken, tg.chatId, message);
+  if (result.ok) {
+    log('Monthly Telegram wrap-up sent successfully.');
+  } else {
+    log(`Failed to send monthly Telegram report: ${result.description}`);
+  }
+}
+
 function formatError(err: unknown): string {
   if (err instanceof Error) {
     const cause = (err as any).cause ? ` (${(err as any).cause?.message ?? (err as any).cause})` : '';
@@ -628,6 +730,7 @@ if (!process.env.VITEST) {
   const schedule = process.env.SYNC_SCHEDULE ?? '0 */6 * * *';
   const dailySchedule = process.env.DAILY_REPORT_SCHEDULE ?? '0 8 * * *';
   const weeklySchedule = process.env.WEEKLY_REPORT_SCHEDULE ?? '0 9 * * 6'; // Saturday 9am
+  const monthlySchedule = process.env.MONTHLY_REPORT_SCHEDULE ?? '0 9 1 * *'; // 1st of the month, 9am
 
   try {
     validateStartupEnv();
@@ -639,7 +742,7 @@ if (!process.env.VITEST) {
   const apiUrl = process.env.WEALTHFOLIO_API_URL ?? '';
   const wfClient = new WealthfolioClient(apiUrl);
 
-  log(`Starting companion — sync schedule: ${schedule}, daily report schedule: ${dailySchedule}, weekly report schedule: ${weeklySchedule}`);
+  log(`Starting companion — sync schedule: ${schedule}, daily report schedule: ${dailySchedule}, weekly report schedule: ${weeklySchedule}, monthly report schedule: ${monthlySchedule}`);
 
   cron.schedule(schedule, () => {
     runCompanionSync().catch((err) => log(`Sync error: ${formatError(err)}`));
@@ -669,6 +772,22 @@ if (!process.env.VITEST) {
     loginPromise
       .then(() => sendWeeklyTelegramReport(wfClient))
       .catch((err) => log(`Weekly report error: ${formatError(err)}`));
+  });
+
+  cron.schedule(monthlySchedule, () => {
+    log('Triggering scheduled monthly wrap-up report (previous month)...');
+    const password = resolvePassword();
+    const apiKey = process.env.WEALTHFOLIO_API_KEY;
+    if (apiKey) {
+      (wfClient as unknown as { token: string }).token = apiKey;
+    }
+    const loginPromise = apiKey ? Promise.resolve() : (password ? wfClient.login(password) : Promise.resolve());
+    // The `.catch` is the whole point of the chain: a rejection escaping a cron
+    // callback is an unhandled rejection, which takes the daemon down and stops
+    // syncing entirely over a failed report.
+    loginPromise
+      .then(() => sendMonthlyTelegramReport(wfClient))
+      .catch((err) => log(`Monthly report error: ${formatError(err)}`));
   });
 
   // Run initial sync on startup

@@ -516,3 +516,120 @@ export function formatMonthlyRemainingSummary(totalSpent: number, totalBudget: n
     : `💰 *${moneyWhole(remaining)} left* this month`;
   return `${header}${headline}\n_spent ${moneyWhole(totalSpent)} of ${moneyWhole(totalBudget)} · ${pct}%_`;
 }
+
+export interface MonthlyWrapUpCategory {
+  name: string;
+  /** Total spend for the whole month being reported. */
+  spent: number;
+  /** Monthly budget for that month; `<= 0` means no budget row existed. */
+  budget: number;
+}
+
+/**
+ * Formats the monthly wrap-up (sent on the 1st, about the month that just
+ * ended): one line per category stating what was budgeted and what was
+ * actually spent, then one verdict line for the month as a whole.
+ *
+ * This is the retrospective of the three reports, so unlike the daily digest
+ * (one actionable figure per category) and the weekly check-in (one figure,
+ * full stop) it carries budget AND spend per row. Whole dollars throughout:
+ * nothing here is a number anyone spends against — the month is closed.
+ *
+ * `monthName` is a PARAMETER, not derived from the clock. This module also runs
+ * inside the addon's browser bundle and must stay host-agnostic, and more
+ * importantly the caller runs on the 1st reporting the PREVIOUS month, so a
+ * `new Date()` in here would name the wrong month every single time.
+ *
+ * Three per-category states, because they are three genuinely different facts:
+ *  - no budget → report the spend and say so. A category cannot be "over"
+ *    something that was never set, and calling it over would invent a target the
+ *    user never agreed to
+ *  - over budget → 🚨 plus the overage, which is the number worth reading
+ *  - otherwise → ✅ and the plain spend-of-budget
+ *
+ * The verdict line has three, for the same reason plus one:
+ *  - nothing budgeted anywhere → no verdict is possible, so it states the spend
+ *    (or that there wasn't any) and points at both causes, exactly as
+ *    `formatMonthlyRemainingSummary` does for its zero-budget month
+ *  - finished level → "right on budget". `$0 under budget` is a verdict-shaped
+ *    non-verdict, and this branch also absorbs float noise and sub-dollar
+ *    overspends (see the rounding note below)
+ *  - otherwise → *under* or *over*, in WORDS
+ *
+ * That last point is the one non-negotiable. A shared formatter that absorbed
+ * the sign once shipped `💰 $1,494 left this month` to a reader who was $1,494
+ * OVER: a phrase with no room for a negative, handed an unsigned figure. Here
+ * the direction is chosen by branch and stated in words, so the figure beside
+ * it is deliberately `Math.abs` — visible at the call site, per the rule in
+ * `formatDollars`' comment — and there is no path on which an overspend can
+ * render as headroom.
+ */
+export function formatMonthlyWrapUp(categories: MonthlyWrapUpCategory[], monthName: string): string {
+  const header = `📅 *${escapeMarkdown(monthName)} wrap-up*`;
+
+  if (categories.length === 0) {
+    // Two distinct causes land here — that month had no budgets and no spending,
+    // or every category was deselected for the monthly report — so the text must
+    // not assert either one.
+    return `${header}\n\nNothing to report. Set up budgets in Wealthfolio, or check that categories are selected for the monthly report in the SimpleFin Sync addon.`;
+  }
+
+  const lines: string[] = [];
+  let budgetedSpent = 0;
+  let budgetedBudget = 0;
+  let allSpent = 0;
+
+  for (const c of categories) {
+    const emoji = getCategoryEmoji(c.name);
+    // Category names are Wealthfolio-user-controlled. Escaped AND kept outside
+    // every Markdown entity: legacy Markdown does not honour a backslash escape
+    // inside one, so `*Food\_Drink*` would still leave a live italic opener and
+    // Telegram would reject the WHOLE message with a 400. The bold sits on the
+    // figures, which contain no specials.
+    const name = escapeMarkdown(c.name);
+    allSpent += c.spent;
+
+    if (c.budget <= 0) {
+      lines.push(`🏷️ ${emoji} ${name}  *${moneyWhole(c.spent)}* · no budget`);
+      continue;
+    }
+
+    budgetedSpent += c.spent;
+    budgetedBudget += c.budget;
+    const over = c.spent - c.budget;
+    // Keyed off the RENDERED overage, not `over > 0`: a 40-cent overspend shown
+    // in whole dollars is `$0 over`, which is a false alarm beside real figures.
+    if (over > 0 && moneyWhole(over) !== '$0') {
+      // `Math.abs` is unnecessary here (`over > 0`) but the figure is deliberately
+      // rendered from the positive difference and labelled "over" — the word is
+      // what carries the direction.
+      lines.push(`🚨 ${emoji} ${name}  ${moneyWhole(c.spent)} of ${moneyWhole(c.budget)} · *${moneyWhole(over)} over*`);
+    } else {
+      lines.push(`✅ ${emoji} ${name}  *${moneyWhole(c.spent)}* of ${moneyWhole(c.budget)}`);
+    }
+  }
+
+  let verdict: string;
+  if (budgetedBudget <= 0) {
+    // No budget anywhere: there is no line to be under or over. Uses the
+    // all-category spend, since the budgeted subset is empty by definition.
+    verdict = allSpent > 0
+      ? `🏷️ *${moneyWhole(allSpent)} spent* · no budgets set\n_Add budgets in Wealthfolio, or check which categories are selected for the monthly report._`
+      : `🏷️ Nothing spent, no budgets set in ${escapeMarkdown(monthName)}.\n_Add budgets in Wealthfolio, or check which categories are selected for the monthly report._`;
+  } else {
+    // Budgeted categories only. An unbudgeted category's spend comes out of
+    // nobody's budget, so folding it in could flip a month that finished under
+    // into one that reads as over — the same choice, for the same reason, as the
+    // daily digest's month-context line.
+    const remaining = budgetedBudget - budgetedSpent;
+    const magnitude = moneyWhole(Math.abs(remaining));
+    const arithmetic = `spent ${moneyWhole(budgetedSpent)} of ${moneyWhole(budgetedBudget)}`;
+    verdict = magnitude === '$0'
+      ? `💰 Finished *right on budget* · ${arithmetic}`
+      : remaining < 0
+        ? `🚨 Finished *${magnitude} over budget* · ${arithmetic}`
+        : `💰 Finished *${magnitude} under budget* · ${arithmetic}`;
+  }
+
+  return `${header}\n\n${lines.join('\n')}\n\n${verdict}`;
+}
