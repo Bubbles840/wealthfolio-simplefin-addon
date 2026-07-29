@@ -34,6 +34,7 @@ const makeProps = () => ({
     setAutoAdjust: vi.fn(),
     getTelegramConfig: vi.fn(async () => null),
     setTelegramConfig: vi.fn(),
+    getAvailableReportCategories: vi.fn(async () => [] as string[]),
   } as any,
   onReset: vi.fn(),
   scheduler: { start: vi.fn(), stop: vi.fn(), isRunning: vi.fn(() => false) } as any,
@@ -76,5 +77,77 @@ describe('SyncPage', () => {
     fireEvent.change(select, { target: { value: '8' } });
     await waitFor(() => expect(props.store.setSyncScheduleHours).toHaveBeenCalledWith(8));
     expect(props.scheduler.start).toHaveBeenCalledWith(8, expect.any(Function), expect.any(Function));
+  });
+
+  it('renders a Report Categories checklist populated from the companion-published list, defaulting to all selected', async () => {
+    const props = makeProps();
+    props.store.getAvailableReportCategories = vi.fn(async () => ['Dining', 'Groceries']);
+    render(<SyncPage {...props} />);
+    await screen.findByText('Dining');
+    const dailyCheckbox = screen.getByLabelText(/Dining.*Daily/i) as HTMLInputElement;
+    expect(dailyCheckbox.checked).toBe(true);
+    const weeklyCheckbox = screen.getByLabelText(/Groceries.*Weekly/i) as HTMLInputElement;
+    expect(weeklyCheckbox.checked).toBe(true);
+  });
+
+  it('shows a placeholder before the companion has published any categories', async () => {
+    const props = makeProps();
+    props.store.getAvailableReportCategories = vi.fn(async () => []);
+    render(<SyncPage {...props} />);
+    await screen.findByText(/categories will appear here/i);
+  });
+
+  it('saves the selected daily/weekly category lists in Telegram config', async () => {
+    const props = makeProps();
+    props.store.getAvailableReportCategories = vi.fn(async () => ['Dining', 'Groceries']);
+    props.store.getTelegramConfig = vi.fn(async () => ({ botToken: 't', chatId: 'c', enabled: true }));
+    props.store.setTelegramConfig = vi.fn(async () => {});
+    render(<SyncPage {...props} />);
+    await screen.findByText('Dining');
+    fireEvent.click(screen.getByLabelText(/Dining.*Daily/i)); // uncheck
+    fireEvent.click(screen.getByText('Save Telegram Settings'));
+    await waitFor(() => {
+      expect(props.store.setTelegramConfig).toHaveBeenCalledWith(
+        expect.objectContaining({ dailyReportCategories: ['Groceries'] }),
+      );
+    });
+  });
+
+  it('unchecking every category saves an empty array, not the "all" sentinel', async () => {
+    const props = makeProps();
+    props.store.getAvailableReportCategories = vi.fn(async () => ['Dining']);
+    props.store.getTelegramConfig = vi.fn(async () => ({ botToken: 't', chatId: 'c', enabled: true }));
+    props.store.setTelegramConfig = vi.fn(async () => {});
+    render(<SyncPage {...props} />);
+    await screen.findByText('Dining');
+    fireEvent.click(screen.getByLabelText(/Dining.*Daily/i)); // uncheck the only category
+    fireEvent.click(screen.getByText('Save Telegram Settings'));
+    await waitFor(() => {
+      expect(props.store.setTelegramConfig).toHaveBeenCalledWith(
+        expect.objectContaining({ dailyReportCategories: [] }),
+      );
+    });
+  });
+
+  it('preserves a saved subset selection when the published category list grows', async () => {
+    const props = makeProps();
+    props.store.getAvailableReportCategories = vi.fn(async () => ['Dining', 'Groceries', 'Travel']);
+    props.store.getTelegramConfig = vi.fn(async () => ({
+      botToken: 't',
+      chatId: 'c',
+      enabled: true,
+      dailyReportCategories: ['Groceries'],
+      weeklyReportCategories: 'all',
+    }));
+    render(<SyncPage {...props} />);
+    await screen.findByText('Dining');
+    const dailyDining = screen.getByLabelText(/Dining.*Daily/i) as HTMLInputElement;
+    const dailyGroceries = screen.getByLabelText(/Groceries.*Daily/i) as HTMLInputElement;
+    const dailyTravel = screen.getByLabelText(/Travel.*Daily/i) as HTMLInputElement;
+    expect(dailyDining.checked).toBe(false);
+    expect(dailyGroceries.checked).toBe(true);
+    expect(dailyTravel.checked).toBe(false);
+    const weeklyTravel = screen.getByLabelText(/Travel.*Weekly/i) as HTMLInputElement;
+    expect(weeklyTravel.checked).toBe(true);
   });
 });

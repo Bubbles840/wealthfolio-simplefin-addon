@@ -31,6 +31,7 @@ const KEYS = {
   autoHeal: 'auto_heal',
   autoAdjust: 'auto_adjust',
   telegramConfig: 'telegram_config',
+  availableReportCategories: 'available_report_categories',
 } as const;
 
 export class SecretsStore {
@@ -145,6 +146,13 @@ export class SecretsStore {
   }
   async setTransferLinkFailures(map: Record<string, TransferLinkFailureEntry>): Promise<void> {
     await this.ctx.api.secrets.set(KEYS.transferLinkFailures, JSON.stringify(map));
+  }
+
+  /** Category names the companion has seen while building its last report —
+   *  read-only from the addon's side, published by the companion. */
+  async getAvailableReportCategories(): Promise<string[]> {
+    const raw = await this.ctx.api.secrets.get(KEYS.availableReportCategories);
+    return raw ? (JSON.parse(raw) as string[]) : [];
   }
 
   /** Latest per-account SimpleFin balance + drift, keyed by SimpleFin account

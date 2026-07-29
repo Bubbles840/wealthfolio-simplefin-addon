@@ -5,23 +5,10 @@ import { fetchAccounts } from '../utils/simplefin';
 import { SyncStatus } from '../components/SyncStatus';
 import { RuleEditor } from '../components/RuleEditor';
 import { Button, Card, ErrorBox, SectionLabel } from '../components/ui';
-import { sendTelegramMessage, formatDailyReport, formatWeeklyReport, getCategoryEmoji, categorizeActivity } from '../../shared/telegram';
+import { sendTelegramMessage, getCategoryEmoji } from '../../shared/telegram';
 import type { SecretsStore, AccountBalanceInfo } from '../utils/secrets';
 import type { Scheduler } from '../utils/scheduler';
-import type { AccountMapping, MappingRule, CategoryRule } from '../../shared/types';
-
-const DEFAULT_CATEGORY_RULES: CategoryRule[] = [
-  { categoryId: 'housing', categoryName: 'Housing', mode: 'monthly', monthlyBudget: 1500 },
-  { categoryId: 'transportation', categoryName: 'Transportation', mode: 'monthly', monthlyBudget: 50 },
-  { categoryId: 'groceries', categoryName: 'Groceries', mode: 'weekly', monthlyBudget: 300 },
-  { categoryId: 'dining', categoryName: 'Food & Dining', mode: 'daily', monthlyBudget: 200 },
-  { categoryId: 'shopping', categoryName: 'Shopping', mode: 'daily', monthlyBudget: 100 },
-  { categoryId: 'entertainment', categoryName: 'Entertainment', mode: 'monthly', monthlyBudget: 100 },
-  { categoryId: 'health', categoryName: 'Health & Wellness', mode: 'monthly', monthlyBudget: 100 },
-  { categoryId: 'bills', categoryName: 'Bills & Utilities', mode: 'monthly', monthlyBudget: 0 },
-  { categoryId: 'fees', categoryName: 'Fees & Charges', mode: 'monthly', monthlyBudget: 50 },
-  { categoryId: 'education', categoryName: 'Education', mode: 'monthly', monthlyBudget: 0 },
-];
+import type { AccountMapping, MappingRule } from '../../shared/types';
 
 interface Props {
   ctx: AddonContext;
@@ -86,8 +73,9 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
   const [notifyOnImport, setNotifyOnImport] = useState(true);
   const [dailyReportEnabled, setDailyReportEnabled] = useState(true);
   const [weeklyReportEnabled, setWeeklyReportEnabled] = useState(true);
-  const [categoryRules, setCategoryRules] = useState<CategoryRule[]>(DEFAULT_CATEGORY_RULES);
-  const [showCategorySettings, setShowCategorySettings] = useState(false);
+  const [dailyReportCategories, setDailyReportCategories] = useState<string[] | 'all'>('all');
+  const [weeklyReportCategories, setWeeklyReportCategories] = useState<string[] | 'all'>('all');
+  const [availableCategories, setAvailableCategories] = useState<string[]>([]);
   const [testingTelegram, setTestingTelegram] = useState(false);
   const [telegramStatus, setTelegramStatus] = useState<string | null>(null);
   const [showTelegramInstructions, setShowTelegramInstructions] = useState(false);
@@ -107,8 +95,9 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
       store.getAutoHeal(),
       store.getAutoAdjust(),
       store.getTelegramConfig(),
+      store.getAvailableReportCategories(),
       ctx.api.accounts.getAll().catch(() => []),
-    ]).then(([last, m, r, h, names, bal, ah, aa, tg, wfAccounts]) => {
+    ]).then(([last, m, r, h, names, bal, ah, aa, tg, availableCats, wfAccounts]) => {
       setLastSyncAt(last);
       setMapping(m ?? {});
       setRules(r);
@@ -117,15 +106,15 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
       setBalances(bal);
       setAutoHeal(ah);
       setAutoAdjust(aa);
+      setAvailableCategories(availableCats);
       if (tg) {
         setBotToken(tg.botToken ?? '');
         setChatId(tg.chatId ?? '');
         setNotifyOnImport(tg.notifyOnImport ?? true);
         setDailyReportEnabled(tg.dailyReportEnabled ?? true);
         setWeeklyReportEnabled(tg.weeklyReportEnabled ?? true);
-        if (Array.isArray(tg.categoryRules) && tg.categoryRules.length > 0) {
-          setCategoryRules(tg.categoryRules);
-        }
+        setDailyReportCategories(tg.dailyReportCategories ?? 'all');
+        setWeeklyReportCategories(tg.weeklyReportCategories ?? 'all');
       }
       setWfNames(Object.fromEntries(wfAccounts.map((a) => [a.id, a.name])));
 
@@ -559,82 +548,64 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
             </label>
           </div>
 
-          <div style={{ marginTop: 8 }}>
-            <Button variant="ghost" onClick={() => setShowCategorySettings((s) => !s)}>
-              {showCategorySettings ? '▲ Hide Category Rules' : '▼ Customize Category Modes & Budgets'}
-            </Button>
-          </div>
-
-          {showCategorySettings && (
-            <div style={{
-              background: 'var(--card-bg, rgba(0,0,0,0.15))',
-              padding: 12,
-              borderRadius: 6,
-              border: '1px solid var(--border, rgba(255,255,255,0.1))',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 10,
-              marginTop: 4,
-            }}>
-              <div style={{ fontWeight: 600, fontSize: 11, color: 'var(--muted-foreground)', letterSpacing: '0.05em' }}>
-                CATEGORY REPORT PREFERENCES (EMOJIS &amp; ALLOWANCE MODES)
+          <div style={{
+            background: 'var(--card-bg, rgba(0,0,0,0.15))',
+            padding: 12,
+            borderRadius: 6,
+            border: '1px solid var(--border, rgba(255,255,255,0.1))',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 10,
+            marginTop: 4,
+          }}>
+            <div style={{ fontWeight: 600, fontSize: 11, color: 'var(--muted-foreground)', letterSpacing: '0.05em' }}>
+              REPORT CATEGORIES
+            </div>
+            {availableCategories.length === 0 ? (
+              <div className="sfin-subtle" style={{ fontSize: 12 }}>
+                Categories will appear here after the companion's first sync.
               </div>
-
-              {categoryRules.map((rule, idx) => {
-                const emoji = getCategoryEmoji(rule.categoryName);
+            ) : (
+              availableCategories.map((name) => {
+                const emoji = getCategoryEmoji(name);
+                const inDaily = dailyReportCategories === 'all' || dailyReportCategories.includes(name);
+                const inWeekly = weeklyReportCategories === 'all' || weeklyReportCategories.includes(name);
+                const toggle = (
+                  current: string[] | 'all',
+                  setCurrent: (v: string[] | 'all') => void,
+                  checked: boolean,
+                ) => {
+                  const base = current === 'all' ? availableCategories : current;
+                  const next = checked ? base.filter((n) => n !== name) : [...base, name];
+                  setCurrent(next.length === availableCategories.length ? 'all' : next);
+                };
                 return (
-                  <div key={rule.categoryId} style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                  <div key={name} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                     <span style={{ fontSize: 16, width: 24, textAlign: 'center' }}>{emoji}</span>
-                    <span style={{ minWidth: 140, fontWeight: 500, fontSize: 13 }}>{rule.categoryName}</span>
-                    <select
-                      className="sfin-select"
-                      style={{ fontSize: 12, padding: '4px 8px' }}
-                      value={rule.mode}
-                      onChange={(e) => {
-                        const updated = [...categoryRules];
-                        updated[idx] = { ...rule, mode: e.target.value as any };
-                        setCategoryRules(updated);
-                      }}
-                    >
-                      <option value="daily">Daily Allowance (/day)</option>
-                      <option value="weekly">Weekly Allowance (/week)</option>
-                      <option value="monthly">Monthly Total Remaining</option>
-                    </select>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                      <span className="sfin-subtle" style={{ fontSize: 12 }}>Budget: $</span>
+                    <span style={{ minWidth: 120, fontWeight: 500, fontSize: 13 }}>{name}</span>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, cursor: 'pointer' }}>
                       <input
-                        type="number"
-                        className="sfin-input"
-                        style={{ width: 85, fontSize: 12, padding: '4px 6px' }}
-                        value={rule.monthlyBudget ?? 0}
-                        onChange={(e) => {
-                          const updated = [...categoryRules];
-                          updated[idx] = { ...rule, monthlyBudget: parseFloat(e.target.value) || 0 };
-                          setCategoryRules(updated);
-                        }}
+                        type="checkbox"
+                        aria-label={`${name} — Daily`}
+                        checked={inDaily}
+                        onChange={() => toggle(dailyReportCategories, setDailyReportCategories, inDaily)}
                       />
-                    </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                      <span className="sfin-subtle" style={{ fontSize: 12 }}>Keywords:</span>
+                      Daily
+                    </label>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, cursor: 'pointer' }}>
                       <input
-                        type="text"
-                        className="sfin-input"
-                        placeholder="e.g. rent, zelle, mortgage"
-                        style={{ width: 140, fontSize: 12, padding: '4px 6px' }}
-                        value={(rule.keywords ?? []).join(', ')}
-                        onChange={(e) => {
-                          const updated = [...categoryRules];
-                          const kwList = e.target.value.split(',').map((k) => k.trim()).filter(Boolean);
-                          updated[idx] = { ...rule, keywords: kwList };
-                          setCategoryRules(updated);
-                        }}
+                        type="checkbox"
+                        aria-label={`${name} — Weekly`}
+                        checked={inWeekly}
+                        onChange={() => toggle(weeklyReportCategories, setWeeklyReportCategories, inWeekly)}
                       />
-                    </div>
+                      Weekly
+                    </label>
                   </div>
                 );
-              })}
-            </div>
-          )}
+              })
+            )}
+          </div>
 
           {telegramStatus && (
             <div style={{ fontSize: '13px', color: telegramStatus.startsWith('✅') ? 'var(--success, #4caf50)' : 'var(--destructive, #f44336)' }}>
@@ -679,107 +650,6 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
             </Button>
 
             <Button
-              variant="outline"
-              disabled={testingTelegram || !botToken || !chatId}
-              onClick={async () => {
-                setTestingTelegram(true);
-                setTelegramStatus('Sending budget breakdown report...');
-                try {
-                  const now = new Date();
-                  const dateStr = now.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
-                  const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-                  const daysLeft = Math.max(1, lastDay - now.getDate());
-
-                  console.log('[Wealthfolio SDK Debug] Available SDK namespaces:', Object.keys(ctx.api));
-                  const res = await ctx.api.activities.search(0, 1000, {}, '', { id: 'date', desc: true }).catch(() => ({ data: [] as any[] }));
-                  const activities = res.data ?? [];
-
-                  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
-
-                  const categorySpentMap: Record<string, number> = {};
-                  let totalSpentMonth = 0;
-
-                  for (const act of activities) {
-                    const actDate = new Date(act.activityDate || act.date || 0).getTime();
-                    if (actDate < startOfMonth) continue; // Current month only!
-
-                    const type = String(act.activityType || '').toUpperCase();
-                    // Exclude non-spending investment transactions and internal transfers
-                    if (
-                      ['BUY', 'SELL', 'DEPOSIT', 'DIVIDEND', 'INTEREST', 'SPLIT', 'TRANSFER_IN', 'TRANSFER_OUT', 'CREDIT'].includes(type) ||
-                      act.sourceGroupId
-                    ) {
-                      continue;
-                    }
-
-                    const amt = typeof act.amount === 'number' ? act.amount : parseFloat(String(act.amount ?? 0));
-                    const spent = Math.abs(amt);
-                    if (spent > 0) {
-                      const meta = (act.metadata ?? {}) as Record<string, any>;
-                      let catKey = String(
-                        meta.categoryName ||
-                        meta.category ||
-                        meta.categoryId ||
-                        meta.category_id ||
-                        meta.spendingCategory ||
-                        (act as any).category ||
-                        (act as any).categoryName ||
-                        ''
-                      ).trim();
-
-                      if (!catKey) {
-                        catKey = categorizeActivity(act.comment, categoryRules);
-                      }
-
-                      let matchedRuleName = catKey;
-                      for (const rule of categoryRules) {
-                        if (catKey.toLowerCase().includes(rule.categoryName.toLowerCase()) || rule.categoryName.toLowerCase().includes(catKey.toLowerCase())) {
-                          matchedRuleName = rule.categoryName;
-                          break;
-                        }
-                      }
-
-                      categorySpentMap[matchedRuleName] = (categorySpentMap[matchedRuleName] ?? 0) + spent;
-                      totalSpentMonth += spent;
-                    }
-                  }
-
-                  const activeCategories = categoryRules.map((r) => ({
-                    name: r.categoryName,
-                    budget: r.monthlyBudget ?? 0,
-                    spent: Math.round((categorySpentMap[r.categoryName] ?? 0) * 100) / 100,
-                    mode: r.mode,
-                  }));
-
-                  const totalBudget = activeCategories.reduce((acc, c) => acc + c.budget, 0);
-
-                  const sampleDaily = formatDailyReport({
-                    dateStr,
-                    daysLeftInMonth: daysLeft,
-                    categories: activeCategories,
-                  });
-
-                  const sampleWeekly = formatWeeklyReport({
-                    weekSpent: Math.round((totalSpentMonth / 4) * 100) / 100,
-                    monthSpent: Math.round(totalSpentMonth * 100) / 100,
-                    monthBudget: totalBudget,
-                    categories: activeCategories,
-                  });
-
-                  await sendTelegramMessage(botToken, chatId, sampleDaily, ctx.api.network);
-                  await sendTelegramMessage(botToken, chatId, sampleWeekly, ctx.api.network);
-                  setTelegramStatus('✅ Live category spending report sent to Telegram!');
-                } catch (err) {
-                  setTelegramStatus(`❌ Error sending report: ${(err as Error).message}`);
-                } finally {
-                  setTestingTelegram(false);
-                }
-              }}
-            >
-              Send Sample Budget Report
-            </Button>
-
-            <Button
               variant="primary"
               disabled={!botToken || !chatId}
               onClick={async () => {
@@ -790,9 +660,10 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
                   notifyOnImport,
                   dailyReportEnabled,
                   weeklyReportEnabled,
-                  categoryRules,
+                  dailyReportCategories,
+                  weeklyReportCategories,
                 });
-                setTelegramStatus('✅ Telegram configuration & category rules saved!');
+                setTelegramStatus('✅ Telegram configuration saved!');
               }}
             >
               Save Telegram Settings

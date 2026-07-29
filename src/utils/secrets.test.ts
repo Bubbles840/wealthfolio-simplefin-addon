@@ -92,3 +92,20 @@ describe('SecretsStore transfer link failures', () => {
     });
   });
 });
+
+describe('SecretsStore available report categories', () => {
+  it('returns an empty array when the companion has never published categories', async () => {
+    const ctx = makeCtx();
+    const store = new SecretsStore(ctx);
+    expect(await store.getAvailableReportCategories()).toEqual([]);
+  });
+
+  it('parses the category-name array published by the companion', async () => {
+    const ctx = makeCtx();
+    const store = new SecretsStore(ctx);
+    // The companion publishes this secret directly via wfClient.setAddonSecret,
+    // not through a SecretsStore setter — simulate that by writing the raw key.
+    await ctx.api.secrets.set('available_report_categories', JSON.stringify(['Dining', 'Groceries']));
+    expect(await store.getAvailableReportCategories()).toEqual(['Dining', 'Groceries']);
+  });
+});
