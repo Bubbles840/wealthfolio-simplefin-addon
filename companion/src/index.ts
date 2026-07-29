@@ -8,7 +8,7 @@
  */
 
 import cron from 'node-cron';
-import * as fs from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import { runSyncCore } from '../../shared/sync-core.js';
 import type { SyncResult } from '../../shared/sync-core.js';
 import { RestSyncHost, RestSyncStore } from './rest-host.js';
@@ -52,8 +52,8 @@ export function validateStartupEnv(): void {
 export function resolvePassword(): string {
   if (process.env.WEALTHFOLIO_PASSWORD) return process.env.WEALTHFOLIO_PASSWORD;
   const file = process.env.WEALTHFOLIO_PASSWORD_FILE;
-  if (file && fs.existsSync(file)) {
-    return fs.readFileSync(file, 'utf8').trim();
+  if (file && existsSync(file)) {
+    return readFileSync(file, 'utf8').trim();
   }
   return '';
 }
@@ -291,7 +291,7 @@ export async function sendDailyTelegramReport(wfClient: WealthfolioClient): Prom
   if (tg.dailyReportEnabled === false) return;
 
   const dbPath = process.env.WEALTHFOLIO_DB_PATH || '/mnt/wealthfolio.db';
-  if (!dbPath || !fs.existsSync(dbPath)) {
+  if (!dbPath || !existsSync(dbPath)) {
     log('WEALTHFOLIO_DB_PATH not found or missing, skipping daily digest.');
     return;
   }
@@ -333,7 +333,7 @@ export async function sendWeeklyTelegramReport(wfClient: WealthfolioClient): Pro
   if (tg.weeklyReportEnabled === false) return;
 
   const dbPath = process.env.WEALTHFOLIO_DB_PATH || '/mnt/wealthfolio.db';
-  if (!dbPath || !fs.existsSync(dbPath)) {
+  if (!dbPath || !existsSync(dbPath)) {
     log('WEALTHFOLIO_DB_PATH not found or missing, skipping weekly summary.');
     return;
   }
