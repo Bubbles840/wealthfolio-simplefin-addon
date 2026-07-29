@@ -2205,6 +2205,101 @@ git commit -m "test: stop the root vitest project from collecting companion test
 
 ---
 
+### Task 15: Don't mark a stuck-transfer pair "alerted" until the alert is actually delivered
+
+**Added mid-execution.** Task 9's implementer found this while fixing the identical bug one layer down, and correctly flagged it rather than reaching into another task's file. Controller-confirmed.
+
+`runSyncCore` sets `linkFailures[failureKey].alerted = true` at the moment it *queues* an alert into `stuckTransferAlerts` (`shared/sync-core.ts:1061-1062`), and that flag is persisted at the end of the run (`:1087`). But delivery happens later and elsewhere — the companion's `sendStuckTransferAlert`. If that send fails (Telegram down, bad token, rate limit, a 400), the ledger already claims the user was notified, and because the emit is guarded by `!alerted` the pair will never alert again. The user silently never learns about a permanently stuck transfer.
+
+This is exactly the bug Task 9 fixed in `checkSyncHealthAlert`; leaving the sibling unfixed would be inconsistent. Note `sendTelegramMessage` returns `{ ok: false }` rather than throwing, so a failed send is invisible unless the result is inspected.
+
+**Design constraint:** `shared/sync-core.ts` is host-agnostic and must not learn about Telegram, so the confirmation cannot move into it. Keep the emit-and-mark where it is and have the *delivering* side roll the flag back on failure — the store is already reachable from the companion, and a rollback is idempotent and safe to retry.
+
+**Files:**
+- Modify: `companion/src/index.ts`
+- Modify: `companion/src/index.test.ts`
+
+**Interfaces:**
+- Consumes: `RestSyncStore.getTransferLinkFailures` / `setTransferLinkFailures` (exists), `SyncResult.stuckTransferAlerts` (exists).
+- Produces: no new exported surface — `sendStuckTransferAlert` gains a return value indicating delivery.
+
+- [ ] **Step 1: Write the failing tests**
+
+Add to `companion/src/index.test.ts`. These need the alert entry keyed the way `runSyncCore` keys it — by the OUT leg's `txId` — so `stuckTransferAlerts` entries must carry that key for the rollback to find its entry. **That is the crux of this task:** check whether the alert payload currently includes the key. `SyncResult.stuckTransferAlerts` is `{ description, amountCents, currency }` — no txId. If it has no key, the companion cannot identify which ledger entry to roll back, and you must add the key to the payload in `shared/sync-core.ts` (and its type) as part of this task, updating Task 7's tests accordingly. Decide and report which you did.
+
+```typescript
+describe('stuck-transfer alert delivery confirmation', () => {
+  it('rolls the ledger entry back to un-alerted when the Telegram send fails', async () => {
+    // runSyncCore has already persisted alerted:true for this pair when it queued the alert.
+    // A failed delivery must undo that so the next sync re-alerts.
+    // Seed: transfer_link_failures = { 'tx-out': { count: 3, firstFailedAt: <iso>, alerted: true } }
+    // Mock fetch to resolve { ok: false, description: 'Bad Request' }.
+    // Assert: after runCompanionSync, the persisted entry for 'tx-out' has alerted === false,
+    // and count/firstFailedAt are unchanged.
+  });
+
+  it('leaves the ledger entry alerted when the send succeeds', async () => {
+    // Same seed, but fetch resolves { ok: true }.
+    // Assert: the persisted entry still has alerted === true (no spurious write is also fine —
+    // assert the final state, not the number of writes).
+  });
+
+  it('rolls back only the entry whose send failed', async () => {
+    // Two alerts queued; first send fails, second succeeds.
+    // Assert: first entry alerted === false, second alerted === true.
+  });
+});
+```
+
+Write these out fully against the file's existing mock conventions (the `WealthfolioClient` mock must use a regular function, not an arrow — arrow functions cannot be `new`-targeted, a trap that already bit this file once).
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `cd companion && npx vitest run src/index.test.ts -t "stuck-transfer alert delivery"`
+Expected: FAIL — no rollback exists, so a failed send leaves `alerted: true`.
+
+- [ ] **Step 3: Implement**
+
+Have `sendStuckTransferAlert` report delivery, e.g. return `Promise<boolean>` (`false` when it did not send — including the "no telegram config" early returns, or `true` for those if you decide a non-attempt shouldn't trigger rollback; **state your choice and why**, since rolling back when Telegram simply isn't configured would re-queue an alert nobody can receive on every single sync).
+
+In `runCompanionSync`, collect the alerts whose delivery failed and roll their ledger entries back in one read-modify-write through `RestSyncStore`:
+
+```typescript
+    const undelivered: string[] = [];
+    for (const alert of result.stuckTransferAlerts) {
+      const ok = await sendStuckTransferAlert(wfClient, alert);
+      if (!ok) undelivered.push(alert.<key>);
+    }
+    if (undelivered.length > 0) {
+      const failures = await store.getTransferLinkFailures();
+      let changed = false;
+      for (const key of undelivered) {
+        if (failures[key]?.alerted) {
+          failures[key] = { ...failures[key], alerted: false };
+          changed = true;
+        }
+      }
+      if (changed) await store.setTransferLinkFailures(failures);
+    }
+```
+
+Read-modify-write rather than reusing an in-memory map: `runSyncCore` already wrote the ledger by this point, so re-read to avoid clobbering anything it changed.
+
+- [ ] **Step 4: Verify**
+
+Run: `cd companion && npx vitest run src/index.test.ts && npm test && npx tsc --noEmit && cd .. && npm test && npx tsc --noEmit`
+Expected: all clean. If you added a key to `stuckTransferAlerts`, `shared/sync-core.test.ts` must also still pass.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add companion/src/index.ts companion/src/index.test.ts
+# plus shared/sync-core.ts shared/sync-core.test.ts if you added the key to the payload
+git commit -m "fix: re-alert a stuck transfer when its Telegram alert failed to deliver"
+```
+
+---
+
 ## Self-Review Notes
 
 - **Spec coverage:** every numbered component in `docs/superpowers/specs/2026-07-28-notification-system-redesign-design.md` maps to a task — budget fix (Task 2), formatters/schedules/category selection (Tasks 4, 8), in-transit transfers (Task 6), stuck-transfer alert (Task 7, delivered in Task 9), sync health (Task 9), removal of the keyword system (Tasks 10, 11), test harness fix (Task 1), minor polish (Task 12).
