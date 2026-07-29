@@ -109,3 +109,24 @@ describe('SecretsStore available report categories', () => {
     expect(await store.getAvailableReportCategories()).toEqual(['Dining', 'Groceries']);
   });
 });
+
+describe('SecretsStore notification thresholds', () => {
+  it('reads the large-transaction threshold out of telegram_config', async () => {
+    const ctx = makeCtx();
+    const store = new SecretsStore(ctx);
+
+    // Never configured → null, which runSyncCore reads as "off".
+    expect(await store.getLargeTransactionThreshold()).toBeNull();
+
+    await store.setTelegramConfig({ botToken: 'tok', chatId: '1', enabled: true, largeTransactionThreshold: 750 });
+    expect(await store.getLargeTransactionThreshold()).toBe(750);
+
+    // An explicit 0 must survive as 0 rather than being collapsed into null —
+    // see the same note on RestSyncStore.
+    await store.setTelegramConfig({ largeTransactionThreshold: 0 });
+    expect(await store.getLargeTransactionThreshold()).toBe(0);
+
+    await store.setTelegramConfig({ largeTransactionThreshold: '750' });
+    expect(await store.getLargeTransactionThreshold()).toBeNull();
+  });
+});

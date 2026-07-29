@@ -125,6 +125,19 @@ export interface SyncStore {
    *  in-transit lag — can trigger a one-time alert. */
   getTransferLinkFailures(): Promise<Record<string, TransferLinkFailureEntry>>;
   setTransferLinkFailures(map: Record<string, TransferLinkFailureEntry>): Promise<void>;
+  /**
+   * Dollar amount a single newly-imported spending transaction must exceed to
+   * be reported on `SyncResult.largeTransactionAlerts`, or `null` when the user
+   * has never configured one.
+   *
+   * `null` and `0` both mean off here, but they are deliberately kept distinct
+   * rather than collapsed in the adapters: the sibling drift threshold DOES
+   * distinguish them (absent means "use the default", explicit `0` means off),
+   * and an adapter that quietly turned one into the other would make the two
+   * settings behave differently for the same stored value. Adapters report what
+   * is stored; `runSyncCore` owns every default.
+   */
+  getLargeTransactionThreshold(): Promise<number | null>;
   getAccountBalances(): Promise<Record<string, unknown>>;
   setAccountBalances(map: Record<string, unknown>): Promise<void>;
   getAutoHeal(): Promise<boolean>;

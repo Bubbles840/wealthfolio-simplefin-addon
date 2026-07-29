@@ -173,6 +173,31 @@ export function moneyWhole(amount: number): string {
   return formatDollars(amount, 0);
 }
 
+/**
+ * One-line notice for a single large newly-imported spending transaction.
+ *
+ * Every piece of untrusted text — the bank's description and the Wealthfolio
+ * account name — is escaped AND kept outside every Markdown entity. That is not
+ * belt-and-braces: legacy Markdown does not honour a backslash escape inside an
+ * entity, so `*AMAZON \*MKTPLACE*` still leaves a live opener and Telegram
+ * rejects the WHOLE message with a 400. Card-network descriptors are full of
+ * `*`, which makes this the likeliest input in the whole system to break a send.
+ * The bold therefore sits only on the figure, which contains no specials.
+ *
+ * Cents are always kept: this is one exact transaction the reader will go and
+ * look at, not a rounded month-level total, so `money()`'s cents-dropping rules
+ * (which would render $1,240.00 as `$1,240`) are deliberately not used.
+ */
+export function formatLargeTransactionAlert(alert: {
+  description: string;
+  amountCents: number;
+  currency: string;
+  accountName: string;
+}): string {
+  const figure = formatDollars(Math.abs(alert.amountCents) / 100, 2);
+  return `💸 *${figure}* ${escapeMarkdown(alert.currency)} — ${escapeMarkdown(alert.description)} · ${escapeMarkdown(alert.accountName)}`;
+}
+
 export interface DailyDigestCategory {
   name: string;
   /** Spend for the whole calendar month so far, for this category. */

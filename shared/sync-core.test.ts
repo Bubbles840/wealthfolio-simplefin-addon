@@ -611,4 +611,167 @@ describe('runSyncCore', () => {
     await runSyncCore(host, store, { force: true }); // fake host's default linkPair succeeds
     expect(await store.getTransferLinkFailures()).toEqual({});
   });
+
+  // --- Large-transaction alerts ---
+
+  /** One $1,240 card purchase on a CASH account whose Wealthfolio account is
+   *  named "Spend", with the alert threshold set to $1,000. The descriptor
+   *  carries a literal `*` on purpose: real card-network descriptors do, and it
+   *  is the input most likely to break a Markdown-parsed send. */
+  const largeSpendSeed = (): FakeHostSeed => ({
+    accountSet: { errors: [], accounts: [{
+      id: 'sfin-1', name: 'Spend Bank', currency: 'USD', balance: '0', 'balance-date': 1,
+      transactions: [{
+        id: 'tx-1', posted: recentEpoch(), amount: '-1240.00',
+        description: 'AMAZON *MKTPLACE',
+      }],
+    }] },
+    mapping: { 'sfin-1': 'wf-a' },
+    accountTypes: { 'wf-a': 'CASH' },
+    accountNames: { 'wf-a': 'Spend' },
+    largeTransactionThreshold: 1000,
+  });
+
+  it('reports a large-transaction alert for a newly-created spending row over the threshold', async () => {
+    const { host, store } = createFakeHost(largeSpendSeed());
+    const result = await runSyncCore(host, store, {});
+    expect(result.largeTransactionAlerts).toEqual([{
+      txId: 'tx-1',
+      description: 'AMAZON *MKTPLACE',
+      amountCents: 124000,
+      currency: 'USD',
+      accountName: 'Spend',
+    }]);
+  });
+
+  it('names the SimpleFin account when the host reports no Wealthfolio account name', async () => {
+    const seed = largeSpendSeed();
+    delete seed.accountNames;
+    const { host, store } = createFakeHost(seed);
+    const result = await runSyncCore(host, store, {});
+    expect(result.largeTransactionAlerts[0].accountName).toBe('Spend Bank');
+  });
+
+  it('does not alert on a large DEPOSIT — a big inflow is not alarming', async () => {
+    const seed = largeSpendSeed();
+    seed.accountSet!.accounts[0].transactions = [{
+      id: 'tx-1', posted: recentEpoch(), amount: '4200.00', description: 'PAYROLL ACME',
+    }];
+    const { host, store } = createFakeHost(seed);
+    const result = await runSyncCore(host, store, {});
+    expect(result.largeTransactionAlerts).toEqual([]);
+  });
+
+  it('alerts on a rule-typed FEE, matching the spending query’s WITHDRAWAL/FEE/TAX set', async () => {
+    const seed = largeSpendSeed();
+    seed.mappingRules = [{ pattern: 'WIRE FEE', matchType: 'contains', activityType: 'FEE' }];
+    seed.accountSet!.accounts[0].transactions = [{
+      id: 'tx-1', posted: recentEpoch(), amount: '-1500.00', description: 'WIRE FEE',
+    }];
+    const { host, store } = createFakeHost(seed);
+    const result = await runSyncCore(host, store, {});
+    expect(result.largeTransactionAlerts.map((a) => a.amountCents)).toEqual([150000]);
+  });
+
+  it('does not alert on an in-transit transfer placeholder that happens to be a WITHDRAWAL', async () => {
+    // On a non-CASH account the spending-neutral placeholder IS a WITHDRAWAL, so
+    // the activity type alone would let a plain internal transfer read as a large
+    // purchase.
+    const seed = largeSpendSeed();
+    seed.accountTypes = { 'wf-a': 'SECURITIES' };
+    seed.accountSet!.accounts[0].transactions = [{
+      id: 'tx-1', posted: recentEpoch(), amount: '-1240.00',
+      description: 'Online Transfer to Savings',
+    }];
+    const { host, store, saved } = createFakeHost(seed);
+    const result = await runSyncCore(host, store, {});
+    expect(saved[0].creates![0].activityType).toBe('WITHDRAWAL'); // the trap
+    expect(saved[0].creates![0].comment).toContain('↔️ In-transit transfer · ');
+    expect(result.largeTransactionAlerts).toEqual([]);
+  });
+
+  it('is off when no threshold has ever been set', async () => {
+    const seed = largeSpendSeed();
+    delete seed.largeTransactionThreshold;
+    const { host, store } = createFakeHost(seed);
+    const result = await runSyncCore(host, store, {});
+    expect(result.largeTransactionAlerts).toEqual([]);
+  });
+
+  it('is off for an explicit 0 or a negative threshold', async () => {
+    for (const threshold of [0, -50]) {
+      const seed = largeSpendSeed();
+      seed.largeTransactionThreshold = threshold;
+      const { host, store } = createFakeHost(seed);
+      const result = await runSyncCore(host, store, {});
+      expect(result.largeTransactionAlerts).toEqual([]);
+    }
+  });
+
+  it('takes "exceeds" literally — an amount exactly on the threshold does not alert', async () => {
+    const seed = largeSpendSeed();
+    seed.largeTransactionThreshold = 1240;
+    const { host, store } = createFakeHost(seed);
+    const result = await runSyncCore(host, store, {});
+    expect(result.largeTransactionAlerts).toEqual([]);
+  });
+
+  it('does not re-alert when a pending row posts under the SAME tx id', async () => {
+    const seed = largeSpendSeed();
+    const pendingEpoch = recentEpoch();
+    seed.accountSet!.accounts[0].transactions = [{
+      id: 'tx-1', posted: 0, transacted_at: pendingEpoch, amount: '-1240.00',
+      description: 'AMAZON *MKTPLACE', pending: true,
+    }];
+    const { host, store, saved } = createFakeHost(seed);
+    const first = await runSyncCore(host, store, {});
+    expect(first.largeTransactionAlerts).toHaveLength(1);
+
+    // The same transaction, now settled. Reconciliation matches it by tx id and
+    // UPDATES the stored row in place, so it never reaches plan.creates again.
+    saved.length = 0;
+    seed.accountSet!.accounts[0].transactions = [{
+      id: 'tx-1', posted: pendingEpoch, amount: '-1240.00', description: 'AMAZON *MKTPLACE',
+    }];
+    const second = await runSyncCore(host, store, { force: true });
+    expect(saved[0].updates).toHaveLength(1);   // it really was promoted, not skipped
+    expect(saved[0].creates).toEqual([]);
+    expect(second.largeTransactionAlerts).toEqual([]);
+  });
+
+  it('does not re-alert when a pending row posts under a NEW tx id', async () => {
+    const seed = largeSpendSeed();
+    const pendingEpoch = recentEpoch();
+    seed.accountSet!.accounts[0].transactions = [{
+      id: 'tx-pending', posted: 0, transacted_at: pendingEpoch, amount: '-1240.00',
+      description: 'AMAZON *MKTPLACE', pending: true,
+    }];
+    const { host, store, saved } = createFakeHost(seed);
+    const first = await runSyncCore(host, store, {});
+    expect(first.largeTransactionAlerts).toHaveLength(1);
+
+    // The bank dropped the pending row and re-issued it posted under a fresh id.
+    // planReconciliation claims the create as an in-place update of the pending
+    // row, so it must not be counted as a new import either.
+    saved.length = 0;
+    seed.accountSet!.accounts[0].transactions = [{
+      id: 'tx-posted', posted: pendingEpoch, amount: '-1240.00', description: 'AMAZON *MKTPLACE',
+    }];
+    const second = await runSyncCore(host, store, { force: true });
+    expect(saved[0].updates).toHaveLength(1);
+    expect(saved[0].creates).toEqual([]);
+    expect(second.largeTransactionAlerts).toEqual([]);
+  });
+
+  it('does not alert for a create the host reported an error on', async () => {
+    const { host, store } = createFakeHost(largeSpendSeed());
+    const realSaveMany = host.saveMany.bind(host);
+    host.saveMany = async (req) => {
+      const res = await realSaveMany(req);
+      // The row was rejected: nothing was created, so nothing may be announced.
+      return { ...res, created: [], errors: [{ action: 'create', message: 'rejected' }] };
+    };
+    const result = await runSyncCore(host, store, {});
+    expect(result.largeTransactionAlerts).toEqual([]);
+  });
 });

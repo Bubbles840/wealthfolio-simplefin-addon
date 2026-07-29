@@ -192,4 +192,36 @@ describe('RestSyncStore', () => {
       'tx-out-1': { count: 2, firstFailedAt: '2026-07-27T00:00:00Z', alerted: false },
     });
   });
+
+  it('reads the large-transaction threshold out of telegram_config', async () => {
+    const secrets = new Map<string, string>();
+    const client = {
+      getAddonSecret: vi.fn(async (_addonId: string, key: string) => secrets.get(key) ?? null),
+      setAddonSecret: vi.fn(async () => {}),
+    } as any;
+    const store = new RestSyncStore(client);
+
+    // Never configured → null, which runSyncCore reads as "off".
+    expect(await store.getLargeTransactionThreshold()).toBeNull();
+    expect(client.getAddonSecret).toHaveBeenCalledWith('simplefin-sync', 'telegram_config');
+
+    secrets.set('telegram_config', JSON.stringify({
+      botToken: 'tok', chatId: '1', enabled: true, largeTransactionThreshold: 750,
+    }));
+    expect(await store.getLargeTransactionThreshold()).toBe(750);
+
+    // An explicit 0 must survive as 0, NOT be collapsed into null: the sibling
+    // drift threshold distinguishes the two, and one adapter quietly normalising
+    // would make the same stored value mean different things.
+    secrets.set('telegram_config', JSON.stringify({ largeTransactionThreshold: 0 }));
+    expect(await store.getLargeTransactionThreshold()).toBe(0);
+
+    // A hand-edited string is not a threshold.
+    secrets.set('telegram_config', JSON.stringify({ largeTransactionThreshold: '750' }));
+    expect(await store.getLargeTransactionThreshold()).toBeNull();
+
+    // A truncated config must not throw out of a sync.
+    secrets.set('telegram_config', '{"botToken":"tok","chatId"');
+    expect(await store.getLargeTransactionThreshold()).toBeNull();
+  });
 });

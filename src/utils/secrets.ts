@@ -155,6 +155,14 @@ export class SecretsStore {
     return raw ? (JSON.parse(raw) as string[]) : [];
   }
 
+  /** Reported verbatim from `telegram_config`; `runSyncCore` owns what an absent
+   *  value means (see `SyncStore`). A non-numeric stored value reads as absent. */
+  async getLargeTransactionThreshold(): Promise<number | null> {
+    const tg = await this.getTelegramConfig();
+    const raw = tg?.largeTransactionThreshold;
+    return typeof raw === 'number' && Number.isFinite(raw) ? raw : null;
+  }
+
   /** Latest per-account SimpleFin balance + drift, keyed by SimpleFin account
    *  ID. Captured each sync so the Sync page can show balances instantly. */
   async getAccountBalances(): Promise<Record<string, AccountBalanceInfo>> {

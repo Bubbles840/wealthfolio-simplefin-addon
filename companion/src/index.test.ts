@@ -4,7 +4,7 @@ import { runSyncCore } from '../../shared/sync-core.js';
 import { getNativeWealthfolioSpendingBetween } from './sqlite-native.js';
 
 vi.mock('../../shared/sync-core.js', () => ({
-  runSyncCore: vi.fn(async () => ({ imported: 2, skipped: 1, errors: [], stuckTransferAlerts: [] })),
+  runSyncCore: vi.fn(async () => ({ imported: 2, skipped: 1, errors: [], largeTransactionAlerts: [], stuckTransferAlerts: [] })),
 }));
 
 vi.mock('./wealthfolio.js', () => {
@@ -120,7 +120,7 @@ describe('runCompanionSync sync health', () => {
   it('sends one Telegram alert per stuck-transfer entry in the result', async () => {
     vi.mocked(runSyncCore).mockResolvedValueOnce({
       imported: 0, skipped: 0, errors: [],
-      stuckTransferAlerts: [{ outTxId: 'tx-out', description: 'Payment ↔ Payment', amountCents: 130000, currency: 'USD' }],
+      largeTransactionAlerts: [], stuckTransferAlerts: [{ outTxId: 'tx-out', description: 'Payment ↔ Payment', amountCents: 130000, currency: 'USD' }],
     });
     secrets.set('telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true }));
 
@@ -150,7 +150,7 @@ describe('runCompanionSync sync health', () => {
     // to break a send than a hand-written error message.
     vi.mocked(runSyncCore).mockResolvedValueOnce({
       imported: 0, skipped: 0, errors: [],
-      stuckTransferAlerts: [{ outTxId: 'tx-out', description: 'AMAZON *MKTPLACE ↔ Payment_Refund', amountCents: 500, currency: 'USD' }],
+      largeTransactionAlerts: [], stuckTransferAlerts: [{ outTxId: 'tx-out', description: 'AMAZON *MKTPLACE ↔ Payment_Refund', amountCents: 500, currency: 'USD' }],
     });
     secrets.set('telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true }));
 
@@ -293,7 +293,7 @@ describe('runCompanionSync sync health', () => {
     }));
     // imported: 0 so the unrelated "new transactions imported" notification
     // doesn't also fire and confuse the "no alert was sent" assertion below.
-    vi.mocked(runSyncCore).mockResolvedValueOnce({ imported: 0, skipped: 0, errors: [], stuckTransferAlerts: [] });
+    vi.mocked(runSyncCore).mockResolvedValueOnce({ imported: 0, skipped: 0, errors: [], largeTransactionAlerts: [], stuckTransferAlerts: [] });
 
     const { WealthfolioClient } = await import('./wealthfolio.js');
     const client = new (WealthfolioClient as any)();
@@ -358,7 +358,7 @@ describe('stuck-transfer alert delivery confirmation', () => {
     }));
     vi.mocked(runSyncCore).mockResolvedValueOnce({
       imported: 0, skipped: 0, errors: [],
-      stuckTransferAlerts: [{ outTxId: 'tx-out', description: 'Payment ↔ Payment', amountCents: 50000, currency: 'USD' }],
+      largeTransactionAlerts: [], stuckTransferAlerts: [{ outTxId: 'tx-out', description: 'Payment ↔ Payment', amountCents: 50000, currency: 'USD' }],
     });
 
     const { WealthfolioClient } = await import('./wealthfolio.js');
@@ -387,7 +387,7 @@ describe('stuck-transfer alert delivery confirmation', () => {
     }));
     vi.mocked(runSyncCore).mockResolvedValueOnce({
       imported: 0, skipped: 0, errors: [],
-      stuckTransferAlerts: [{ outTxId: 'tx-out', description: 'Payment ↔ Payment', amountCents: 50000, currency: 'USD' }],
+      largeTransactionAlerts: [], stuckTransferAlerts: [{ outTxId: 'tx-out', description: 'Payment ↔ Payment', amountCents: 50000, currency: 'USD' }],
     });
 
     const { WealthfolioClient } = await import('./wealthfolio.js');
@@ -414,7 +414,7 @@ describe('stuck-transfer alert delivery confirmation', () => {
     }));
     vi.mocked(runSyncCore).mockResolvedValueOnce({
       imported: 0, skipped: 0, errors: [],
-      stuckTransferAlerts: [
+      largeTransactionAlerts: [], stuckTransferAlerts: [
         { outTxId: 'tx-out', description: 'Payment ↔ Payment', amountCents: 50000, currency: 'USD' },
         { outTxId: 'tx-out-2', description: 'Other ↔ Other', amountCents: 20000, currency: 'USD' },
       ],
@@ -449,7 +449,7 @@ describe('stuck-transfer alert delivery confirmation', () => {
     }));
     vi.mocked(runSyncCore).mockResolvedValueOnce({
       imported: 0, skipped: 0, errors: [],
-      stuckTransferAlerts: [
+      largeTransactionAlerts: [], stuckTransferAlerts: [
         { outTxId: 'tx-out', description: 'Payment ↔ Payment', amountCents: 50000, currency: 'USD' },
         { outTxId: 'tx-out-2', description: 'Other ↔ Other', amountCents: 20000, currency: 'USD' },
       ],
@@ -477,6 +477,147 @@ describe('stuck-transfer alert delivery confirmation', () => {
     expect(fetchMock).not.toHaveBeenCalled();
     const failures = JSON.parse(secrets.get('transfer_link_failures')!);
     expect(failures['tx-out'].alerted).toBe(true);
+  });
+});
+
+describe('large-transaction alert delivery', () => {
+  let secrets: Map<string, string>;
+
+  /** Wires the mocked WealthfolioClient to a plain secrets map, the way every
+   *  other delivery test in this file does. */
+  async function client() {
+    const { WealthfolioClient } = await import('./wealthfolio.js');
+    const c = new (WealthfolioClient as any)();
+    c.getAddonSecret = vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null);
+    c.setAddonSecret = vi.fn(async (_a: string, key: string, val: string) => { secrets.set(key, val); });
+    // NOTE: must be a `function` (not an arrow fn) — runCompanionSync calls
+    // `new WealthfolioClient(apiUrl)`, and mockImplementation with an arrow
+    // fn throws "is not a constructor" when invoked via `new`.
+    vi.mocked(WealthfolioClient).mockImplementation(function () { return c; } as any);
+    return c;
+  }
+
+  beforeEach(() => {
+    process.env.WEALTHFOLIO_API_URL = 'http://wf';
+    process.env.WEALTHFOLIO_PASSWORD = 'pw';
+    secrets = new Map();
+    secrets.set('simplefin_access_url', 'https://user:pass@bridge.simplefin.org/simplefin');
+    secrets.set('telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true }));
+    vi.mocked(runSyncCore).mockClear();
+  });
+
+  it('sends the rendered alert, with a `*`-laden bank descriptor escaped, on the real request body', async () => {
+    vi.mocked(runSyncCore).mockResolvedValueOnce({
+      imported: 0, skipped: 0, errors: [], stuckTransferAlerts: [],
+      largeTransactionAlerts: [{
+        txId: 'tx-1', description: 'SQ *BLUE BOTTLE_COFFEE', amountCents: 124000,
+        currency: 'USD', accountName: 'Spend',
+      }],
+    });
+    await client();
+    const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await runCompanionSync();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, sentBody] = fetchMock.mock.calls[0];
+    expect(url).toBe('https://api.telegram.org/bottok/sendMessage');
+    const payload = JSON.parse((sentBody as any).body);
+    expect(payload.chat_id).toBe('1');
+    expect(payload.parse_mode).toBe('Markdown');
+    expect(payload.text).toBe('💸 *$1,240.00* USD — SQ \\*BLUE BOTTLE\\_COFFEE · Spend');
+  });
+
+  it('keeps an undelivered alert queued and re-sends it on the next sync', async () => {
+    // A large transaction is announced because its row was CREATED this run, and
+    // a create happens once per SimpleFin tx id — so a dropped send could never
+    // be re-derived. The outbox is the only thing standing between a Telegram
+    // 429 and a permanently lost notification.
+    const alert = {
+      txId: 'tx-1', description: 'DELTA AIR LINES', amountCents: 124000,
+      currency: 'USD', accountName: 'Spend',
+    };
+    vi.mocked(runSyncCore).mockResolvedValueOnce({
+      imported: 0, skipped: 0, errors: [], stuckTransferAlerts: [], largeTransactionAlerts: [alert],
+    });
+    await client();
+    const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: false, description: 'Too Many Requests' }) }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await runCompanionSync();
+
+    expect(JSON.parse(secrets.get('pending_large_tx_alerts')!)).toEqual([alert]);
+
+    // Next sync reports nothing new, but the queued alert must still go out.
+    vi.mocked(runSyncCore).mockResolvedValueOnce({
+      imported: 0, skipped: 0, errors: [], stuckTransferAlerts: [], largeTransactionAlerts: [],
+    });
+    fetchMock.mockClear();
+    fetchMock.mockImplementation(async () => ({ json: async () => ({ ok: true }) }));
+
+    await runCompanionSync();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const text = JSON.parse((fetchMock.mock.calls[0][1] as any).body).text;
+    expect(text).toBe('💸 *$1,240.00* USD — DELTA AIR LINES · Spend');
+    expect(JSON.parse(secrets.get('pending_large_tx_alerts')!)).toEqual([]);
+  });
+
+  it('does not queue a delivered alert', async () => {
+    vi.mocked(runSyncCore).mockResolvedValueOnce({
+      imported: 0, skipped: 0, errors: [], stuckTransferAlerts: [],
+      largeTransactionAlerts: [{
+        txId: 'tx-1', description: 'DELTA AIR LINES', amountCents: 124000,
+        currency: 'USD', accountName: 'Spend',
+      }],
+    });
+    await client();
+    vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ ok: true }) })));
+
+    await runCompanionSync();
+
+    expect(secrets.get('pending_large_tx_alerts')).toBeUndefined();
+  });
+
+  it('queues nothing when Telegram is disabled — an opted-out user must not accumulate a backlog', async () => {
+    secrets.set('telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: false }));
+    secrets.set('pending_large_tx_alerts', JSON.stringify([{
+      txId: 'old', description: 'Older alert', amountCents: 500000, currency: 'USD', accountName: 'Spend',
+    }]));
+    vi.mocked(runSyncCore).mockResolvedValueOnce({
+      imported: 0, skipped: 0, errors: [], stuckTransferAlerts: [],
+      largeTransactionAlerts: [{
+        txId: 'tx-1', description: 'DELTA AIR LINES', amountCents: 124000,
+        currency: 'USD', accountName: 'Spend',
+      }],
+    });
+    await client();
+    const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await runCompanionSync();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(JSON.parse(secrets.get('pending_large_tx_alerts')!)).toEqual([]);
+  });
+
+  it('does not send the same transaction twice when it is both queued and re-reported', async () => {
+    const alert = {
+      txId: 'tx-1', description: 'DELTA AIR LINES', amountCents: 124000,
+      currency: 'USD', accountName: 'Spend',
+    };
+    secrets.set('pending_large_tx_alerts', JSON.stringify([alert]));
+    vi.mocked(runSyncCore).mockResolvedValueOnce({
+      imported: 0, skipped: 0, errors: [], stuckTransferAlerts: [], largeTransactionAlerts: [alert],
+    });
+    await client();
+    const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await runCompanionSync();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
 

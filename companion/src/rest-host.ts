@@ -12,7 +12,7 @@ import type {
   SyncStore,
   TransferLinkFailureEntry,
 } from '../../shared/sync-host.js';
-import type { AccountMapping, MappingRule, SimplefinAccountSet } from '../../shared/types.js';
+import type { AccountMapping, MappingRule, SimplefinAccountSet, TelegramConfig } from '../../shared/types.js';
 
 function toIsoDate(value: unknown): string {
   if (value === null || value === undefined) return '';
@@ -223,6 +223,15 @@ export class RestSyncStore implements SyncStore {
 
   async setTransferLinkFailures(map: Record<string, TransferLinkFailureEntry>): Promise<void> {
     await this.setJson('transfer_link_failures', map);
+  }
+
+  /** Reported verbatim from `telegram_config`, defaults included nowhere here —
+   *  `runSyncCore` owns what an absent value means (see `SyncStore`). A
+   *  non-numeric stored value is treated as absent. */
+  async getLargeTransactionThreshold(): Promise<number | null> {
+    const tg = await this.getJson<TelegramConfig>('telegram_config');
+    const raw = tg?.largeTransactionThreshold;
+    return typeof raw === 'number' && Number.isFinite(raw) ? raw : null;
   }
 
   async getAccountBalances(): Promise<Record<string, unknown>> {

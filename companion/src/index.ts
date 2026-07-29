@@ -13,7 +13,7 @@ import { runSyncCore } from '../../shared/sync-core.js';
 import type { SyncResult } from '../../shared/sync-core.js';
 import { RestSyncHost, RestSyncStore } from './rest-host.js';
 import { WealthfolioClient } from './wealthfolio.js';
-import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatSyncHealthFooter, escapeMarkdown } from '../../shared/telegram.js';
+import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatSyncHealthFooter, formatLargeTransactionAlert, escapeMarkdown } from '../../shared/telegram.js';
 import type { SyncHealth } from '../../shared/telegram.js';
 import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets } from './sqlite-native.js';
 
@@ -231,6 +231,84 @@ async function rollBackUndeliveredStuckTransferAlerts(
   }
 }
 
+/** Addon secret holding large-transaction alerts a previous run could not
+ *  deliver. See `deliverLargeTransactionAlerts` for why an outbox rather than a
+ *  rollback flag. */
+const LARGE_TX_OUTBOX_KEY = 'pending_large_tx_alerts';
+
+/**
+ * Sends this run's large-transaction alerts, retrying anything an earlier run
+ * failed to deliver, and persists exactly what is still undelivered.
+ *
+ * An outbox rather than the stuck-transfer alert's roll-back-a-flag pattern,
+ * because the two have different re-derivability. A stuck transfer is
+ * re-detected on every sync, so clearing `alerted` is enough to make the next
+ * run rebuild the alert. A large transaction is announced only because its row
+ * was CREATED this run, and `planReconciliation` creates a given SimpleFin tx id
+ * exactly once — by the next sync the row is an existing, unchanged row and
+ * nothing can re-derive the alert. `sendTelegramMessage` reports an API-level
+ * failure by RESOLVING `{ ok: false }` rather than throwing, so discarding the
+ * result here would silently lose the notification forever, which is precisely
+ * the failure this queue exists to prevent.
+ *
+ * A non-attempt (no `telegram_config`, unreadable config, or Telegram
+ * deliberately disabled) DROPS the queue instead of growing it: there is no
+ * token to send with, so retrying can never succeed, and a user who has opted
+ * out would otherwise accumulate an unbounded backlog. Same tradeoff, and the
+ * same reasoning, as `sendStuckTransferAlert` reporting a non-attempt as
+ * delivered.
+ *
+ * Must never throw: it runs after a sync that already succeeded, and a
+ * notification problem must not be recorded as a sync failure.
+ */
+async function deliverLargeTransactionAlerts(
+  wfClient: WealthfolioClient,
+  alerts: SyncResult['largeTransactionAlerts'],
+): Promise<void> {
+  type Alert = SyncResult['largeTransactionAlerts'][number];
+  try {
+    const raw = await wfClient.getAddonSecret('simplefin-sync', LARGE_TX_OUTBOX_KEY).catch(() => null);
+    const queued = parseSecretJson<Alert[]>(raw, LARGE_TX_OUTBOX_KEY) ?? [];
+    // Keyed by tx id so a queued retry and a re-reported alert for the same
+    // transaction can only be sent once.
+    const pending = [...queued];
+    for (const alert of alerts) {
+      if (!pending.some((q) => q.txId === alert.txId)) pending.push(alert);
+    }
+    if (pending.length === 0) return;
+
+    const tgRaw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_config').catch(() => null);
+    const tg = parseSecretJson<any>(tgRaw, 'telegram_config');
+    const canSend = !!tg && !!tg.botToken && !!tg.chatId && tg.enabled !== false;
+
+    const undelivered: Alert[] = [];
+    if (canSend) {
+      for (const alert of pending) {
+        const result = await sendTelegramMessage(
+          tg.botToken,
+          tg.chatId,
+          formatLargeTransactionAlert(alert),
+        );
+        if (!result.ok) {
+          log(`Large-transaction alert failed to send, will retry next sync: ${result.description}`);
+          undelivered.push(alert);
+        }
+      }
+    }
+
+    // Only write when the stored queue actually changes, matching the
+    // `linkFailuresChanged` discipline runSyncCore uses for its own ledger.
+    const changed =
+      undelivered.length !== queued.length ||
+      undelivered.some((a, i) => a.txId !== queued[i]?.txId);
+    if (changed) {
+      await wfClient.setAddonSecret('simplefin-sync', LARGE_TX_OUTBOX_KEY, JSON.stringify(undelivered));
+    }
+  } catch (err) {
+    debug(`Large-transaction alert delivery failed: ${formatError(err)}`);
+  }
+}
+
 export async function runCompanionSync(): Promise<SyncResult> {
   const apiUrl = process.env.WEALTHFOLIO_API_URL ?? '';
   if (!apiUrl) throw new Error('Missing WEALTHFOLIO_API_URL');
@@ -269,7 +347,9 @@ export async function runCompanionSync(): Promise<SyncResult> {
     const accessUrl = await store.getAccessUrl();
     if (!accessUrl) {
       log('No SimpleFin access URL found in Wealthfolio addon secrets. Please configure the SimpleFin Sync addon in Wealthfolio first.');
-      const empty: SyncResult = { imported: 0, skipped: 0, errors: [], stuckTransferAlerts: [] };
+      const empty: SyncResult = {
+        imported: 0, skipped: 0, errors: [], stuckTransferAlerts: [], largeTransactionAlerts: [],
+      };
       // Not-yet-configured is treated as healthy, not a failure: it's the
       // expected state before the user sets up SimpleFin, and would
       // otherwise spam a "sync is broken" alert on every fresh install.
@@ -299,6 +379,8 @@ export async function runCompanionSync(): Promise<SyncResult> {
       if (!delivered) undeliveredOutTxIds.push(alert.outTxId);
     }
     await rollBackUndeliveredStuckTransferAlerts(store, undeliveredOutTxIds);
+
+    await deliverLargeTransactionAlerts(wfClient, result.largeTransactionAlerts);
 
     try {
       const tgRaw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_config');

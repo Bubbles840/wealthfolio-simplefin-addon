@@ -33,6 +33,9 @@ const makeStore = (overrides: Record<string, unknown> = {}) => ({
   setTransferLinkFailures: vi.fn(
     async (_map: Record<string, { count: number; firstFailedAt: string; alerted: boolean }>) => {},
   ),
+  // Null = never configured, so the large-transaction alert is off for every
+  // test that doesn't deliberately turn it on.
+  getLargeTransactionThreshold: vi.fn(async (): Promise<number | null> => null),
   getAccountBalances: vi.fn(async (): Promise<Record<string, unknown>> => ({})),
   setAccountBalances: vi.fn(async (_map: Record<string, unknown>) => {}),
   getAutoHeal: vi.fn(async () => false),

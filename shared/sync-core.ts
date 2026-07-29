@@ -69,11 +69,44 @@ export const VALUATION_POLL = { attempts: 6, delayMs: 2500 };
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/**
+ * Activity types that count as SPENDING for the large-transaction alert.
+ *
+ * Deliberately the same set the companion's spending query uses
+ * (`getNativeWealthfolioSpendingBetween`: `WITHDRAWAL`, `FEE`, `TAX`), so "large
+ * transaction" means the same thing as "large line on the Spending page". Every
+ * omission is load-bearing rather than incidental:
+ *  - `DEPOSIT` / `CREDIT` — money arriving. A big payday is not alarming, and
+ *    `CREDIT` is the type `neutralAdjustmentFields` picks precisely BECAUSE
+ *    Wealthfolio classifies it as Ignored (neither spending nor income), so it
+ *    is also what every balance plug and CASH in-transit placeholder looks like.
+ *    Alerting on it would ping the user about the sync's own bookkeeping.
+ *  - `TRANSFER_IN` / `TRANSFER_OUT` — moving your own money between accounts,
+ *    which the spending query excludes and Wealthfolio nets out once linked.
+ *  - `ADJUSTMENT` / `UNKNOWN` and the investment types — not cash spending.
+ *
+ * `FEE`/`TAX` are only reachable through a user mapping rule (`mapper.ts` never
+ * infers them), but a $2,000 wire fee is exactly the sort of thing this alert
+ * exists for, so they are in.
+ */
+const SPENDING_TYPES = new Set<string>(['WITHDRAWAL', 'FEE', 'TAX']);
+
 export interface SyncResult {
   imported: number;
   skipped: number;
   errors: string[];
   stuckTransferAlerts: Array<{ outTxId: string; description: string; amountCents: number; currency: string }>;
+  /** Newly-created spending rows over the user's configured dollar threshold,
+   *  for the caller to announce. Always empty when no threshold is set. */
+  largeTransactionAlerts: Array<{
+    txId: string;
+    description: string;
+    amountCents: number;
+    currency: string;
+    /** The Wealthfolio account the row landed in, by name (falling back to the
+     *  SimpleFin account name on a host that reports no name). */
+    accountName: string;
+  }>;
 }
 
 export interface SyncOptions {
@@ -389,17 +422,17 @@ export async function runSyncCore(
   // Enforce minimum interval unless the caller forces (Sync anyway) or heals
   const lastSync = await store.getLastSyncAt();
   if (!opts.force && !heal && lastSync && Date.now() - lastSync.getTime() < MIN_SYNC_INTERVAL_MS) {
-    return { imported: 0, skipped: 0, errors: [INTERVAL_SKIP_MESSAGE], stuckTransferAlerts: [] };
+    return { imported: 0, skipped: 0, errors: [INTERVAL_SKIP_MESSAGE], stuckTransferAlerts: [], largeTransactionAlerts: [] };
   }
 
   const accessUrl = await store.getAccessUrl();
   if (!accessUrl) {
-    return { imported: 0, skipped: 0, errors: ['Not configured: no access URL'], stuckTransferAlerts: [] };
+    return { imported: 0, skipped: 0, errors: ['Not configured: no access URL'], stuckTransferAlerts: [], largeTransactionAlerts: [] };
   }
 
   const mapping = await store.getAccountMapping();
   if (!mapping) {
-    return { imported: 0, skipped: 0, errors: ['Not configured: no account mapping'], stuckTransferAlerts: [] };
+    return { imported: 0, skipped: 0, errors: ['Not configured: no account mapping'], stuckTransferAlerts: [], largeTransactionAlerts: [] };
   }
 
   const rules = await store.getMappingRules();
@@ -441,6 +474,21 @@ export async function runSyncCore(
   const wfTypes = new Map<string, string>(
     wfAccounts.map((a): [string, string] => [a.id, String(a.accountType ?? '')]),
   );
+  // Names, for the alerts: `name` is optional on the SyncHost contract, so an
+  // empty one falls back to the SimpleFin account name at the use site.
+  const wfNames = new Map<string, string>(
+    wfAccounts.map((a): [string, string] => [a.id, String(a.name ?? '')]),
+  );
+
+  // Large-transaction alerting. Absent, zero or negative means off — and off
+  // means no work at all, not "collect then discard": the threshold is read once
+  // here and every later step is guarded by it.
+  const configuredLargeTxThreshold = await store.getLargeTransactionThreshold();
+  const largeTxThresholdCents =
+    configuredLargeTxThreshold != null && configuredLargeTxThreshold > 0
+      ? Math.round(configuredLargeTxThreshold * 100)
+      : 0;
+  const largeTransactionAlerts: SyncResult['largeTransactionAlerts'] = [];
 
   // Current Wealthfolio balances for the one-time starting-balance
   // correction. They come from the valuations API — listAccounts() has no
@@ -841,6 +889,38 @@ export async function runSyncCore(
             type: t.type, date: t.date, pending: t.pending, currency: sfAccount.currency,
             sourceGroupId: a.sourceGroupId ?? null,
           });
+          // Announce a large spend exactly once, off the CREATE echo.
+          //
+          // Fires once per SimpleFin transaction id with no ledger of its own,
+          // because `planReconciliation` guarantees a given tx id can only be
+          // created once: a row that already exists is matched by tx id and
+          // becomes an UPDATE (so a pending row settling under the same id never
+          // re-creates), and a pending row that vanishes and re-posts under a
+          // FRESH id has that create *claimed* as an in-place update of the
+          // pending row and removed from `plan.creates` entirely. Driven off the
+          // echo rather than the plan so a create the host rejected — which is
+          // not in `result.created` — says nothing.
+          //
+          // Both branches are pinned by tests; if either changes, this alert
+          // starts repeating, so they are the ones to look at first.
+          if (
+            largeTxThresholdCents > 0 &&
+            t.absCents > largeTxThresholdCents &&
+            SPENDING_TYPES.has(t.type) &&
+            // An in-transit placeholder is a transfer wearing a spending type: on
+            // a non-CASH account `neutralAdjustmentFields` books it as a plain
+            // WITHDRAWAL, so the type alone would let an internal transfer read
+            // as a large purchase.
+            !t.inTransit
+          ) {
+            largeTransactionAlerts.push({
+              txId,
+              description: descByTxId.get(txId) ?? '',
+              amountCents: t.absCents,
+              currency: sfAccount.currency,
+              accountName: wfNames.get(t.wfAccountId) || sfAccount.name,
+            });
+          }
         }
       }
       // Same for rows updated IN PLACE: the snapshot registered above was read
@@ -1172,5 +1252,5 @@ export async function runSyncCore(
 
   await store.setLastSyncAt(new Date());
 
-  return { imported, skipped, errors, stuckTransferAlerts };
+  return { imported, skipped, errors, stuckTransferAlerts, largeTransactionAlerts };
 }

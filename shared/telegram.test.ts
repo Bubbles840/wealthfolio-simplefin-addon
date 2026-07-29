@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatSyncHealthFooter, escapeMarkdown, weeklyEnvelope, moneyWhole } from './telegram.js';
+import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatSyncHealthFooter, escapeMarkdown, weeklyEnvelope, moneyWhole, formatLargeTransactionAlert } from './telegram.js';
 
 const mockFetch = vi.fn();
 vi.stubGlobal('fetch', mockFetch);
@@ -746,5 +746,43 @@ describe('formatMonthlyRemainingSummary', () => {
     const text = formatMonthlyRemainingSummary(1200, 2000);
     expect(text).not.toContain('(spent');
     expect(text).toBe(text.trimEnd());
+  });
+});
+
+describe('formatLargeTransactionAlert', () => {
+  it('renders the figure in bold with the description and account beside it', () => {
+    expect(formatLargeTransactionAlert({
+      description: 'DELTA AIR LINES',
+      amountCents: 124000,
+      currency: 'USD',
+      accountName: 'Spend',
+    })).toBe('💸 *$1,240.00* USD — DELTA AIR LINES · Spend');
+  });
+
+  it('keeps the cents — this is one exact transaction, not a rounded total', () => {
+    expect(formatLargeTransactionAlert({
+      description: 'Roof repair', amountCents: 250099, currency: 'USD', accountName: 'Spend',
+    })).toContain('*$2,500.99*');
+  });
+
+  it('escapes a `*`/`_`-laden card descriptor and keeps it out of every entity', () => {
+    // The exact failure mode this guards: legacy Markdown ignores a backslash
+    // escape INSIDE an entity, so `*AMAZON \*MKTPLACE*` still leaves a live
+    // opener and Telegram rejects the whole message with a 400.
+    const text = formatLargeTransactionAlert({
+      description: 'AMAZON *MKTPLACE_2',
+      amountCents: 124000,
+      currency: 'USD',
+      accountName: 'Joint_Spend',
+    });
+    expect(text).toBe('💸 *$1,240.00* USD — AMAZON \\*MKTPLACE\\_2 · Joint\\_Spend');
+    // Every `*`/`_` that is not part of the bold entity is backslash-escaped, and
+    // the entity itself is balanced: exactly two unescaped `*`, no unescaped `_`.
+    const unescaped = text.replace(/\\[_*`[]/g, '');
+    expect((unescaped.match(/\*/g) ?? [])).toHaveLength(2);
+    expect(unescaped.match(/_/g)).toBeNull();
+    // ...and the bold entity wraps only the figure, which has no specials in it.
+    expect(unescaped.slice(unescaped.indexOf('*'), unescaped.lastIndexOf('*') + 1))
+      .toBe('*$1,240.00*');
   });
 });

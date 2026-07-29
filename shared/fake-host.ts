@@ -21,6 +21,11 @@ export interface FakeHostSeed {
   accountSet?: SimplefinAccountSet;
   mapping?: AccountMapping;
   accountTypes?: Record<string, string>;
+  /** Wealthfolio account display names, keyed by Wealthfolio account id. Absent
+   *  entries make `listAccounts` report no name, which is what a host that
+   *  cannot supply one looks like. */
+  accountNames?: Record<string, string>;
+  mappingRules?: MappingRule[];
   valuations?: Map<string, number>;
   autoHeal?: boolean;
   autoAdjust?: boolean;
@@ -29,6 +34,9 @@ export interface FakeHostSeed {
   /** Pre-loaded transfer-link failure ledger, keyed by the failing pair's
    *  OUT-leg txId. */
   transferLinkFailures?: Record<string, TransferLinkFailureEntry>;
+  /** Configured large-transaction alert threshold in dollars. Absent (the
+   *  default) is reported as `null` — "never configured", i.e. off. */
+  largeTransactionThreshold?: number;
 }
 
 export interface FakeHost {
@@ -84,9 +92,12 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
   const accountSet: SimplefinAccountSet = seed.accountSet ?? { errors: [], accounts: [] };
   const mapping: AccountMapping = seed.mapping ?? {};
   const accountTypes: Record<string, string> = seed.accountTypes ?? {};
+  const accountNames: Record<string, string> = seed.accountNames ?? {};
+  const mappingRules: MappingRule[] = seed.mappingRules ?? [];
   const valuations: Map<string, number> = seed.valuations ?? new Map();
   const autoHeal = seed.autoHeal ?? false;
   const autoAdjust = seed.autoAdjust ?? false;
+  const largeTransactionThreshold = seed.largeTransactionThreshold ?? null;
 
   const activities = cloneActivities(seed.existing);
   const saved: SaveManyRequest[] = [];
@@ -148,6 +159,9 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
       return Array.from(ids).map((id) => ({
         id,
         accountType: accountTypes[id] ?? 'CASH',
+        // Key absent rather than `undefined` when unseeded, so an unnamed
+        // account looks exactly like one the real host reports no name for.
+        ...(accountNames[id] !== undefined ? { name: accountNames[id] } : {}),
       }));
     },
 
@@ -257,7 +271,7 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
       return mapping;
     },
     async getMappingRules(): Promise<MappingRule[]> {
-      return [];
+      return mappingRules;
     },
     async getBalanceInitialized() {
       return balanceInitialized;
@@ -284,6 +298,9 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
     },
     async setTransferLinkFailures(map: Record<string, TransferLinkFailureEntry>) {
       transferLinkFailures = map;
+    },
+    async getLargeTransactionThreshold() {
+      return largeTransactionThreshold;
     },
     async getAccountBalances() {
       return accountBalances;

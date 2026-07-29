@@ -55,4 +55,8 @@ export interface TelegramConfig {
   dailyReportCategories?: string[] | 'all';
   /** Same as dailyReportCategories, for the weekly total-remaining summary. */
   weeklyReportCategories?: string[] | 'all';
+  /** Dollar amount a single newly-imported SPENDING transaction has to exceed
+   *  before it is announced. Absent (the default), `0`, or negative means off —
+   *  a user who has never opened the setting gets no such alerts. */
+  largeTransactionThreshold?: number;
 }
