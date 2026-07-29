@@ -4,43 +4,48 @@ Findings that survived a review cycle without being fixed, with enough context
 to act on them later. Each says why it was deferred, so a future reader can
 tell "decided against" from "not got to yet".
 
-Last updated: 2026-07-28, after the notification-system-redesign branch
+Last updated: 2026-07-29, after fixing the companion drift inflation (former
+item 1, now under "Fixed"). Previous revision: 2026-07-28, after the
+notification-system-redesign branch
 (plan: `docs/superpowers/plans/2026-07-28-notification-system-redesign.md`).
 
 ---
 
-## 1. Companion drift is inflated by every linked TRANSFER_OUT
+## Fixed
 
-**Priority: highest — this one can write wrong numbers into real accounts.**
-Pre-existing; predates the notification redesign and was verified unmodified by
-it.
+### Companion drift was inflated by every linked TRANSFER_OUT (was item 1)
 
-`shared/sync-core.ts`, drift measurement: `unlinkedTransferOut` subtracts every
-`TRANSFER_OUT` not present in `ledgerLinkedTxIds` from Wealthfolio's valuation
-before computing drift. But `ledgerLinkedTxIds` is only ever populated inside
-`if (!readsGroups)`, and `RestSyncHost.capabilities.readsSourceGroupId` is
-`true` — so **on the companion that set is always empty and every
-`TRANSFER_OUT` reads as unlinked**, including correctly-linked legs whose cash
-has already moved.
+Fixed 2026-07-29 in `shared/sync-core.ts`. The drift measurement decided
+"is this leg linked?" by consulting `ledgerLinkedTxIds`, which is only ever
+populated inside `if (!readsGroups)` — so on the companion
+(`RestSyncHost.capabilities.readsSourceGroupId === true`) the set was
+permanently empty and **every** `TRANSFER_OUT` was subtracted from
+Wealthfolio's valuation, including correctly-linked legs whose cash had already
+moved.
 
-Consequence: on a settled run (no pending rows, no updates or deletes) the
-computed drift is inflated by the transfer amount. With **Aggressively
-auto-heal** enabled that inserts a bogus spending-neutral `CREDIT` balance
-adjustment, up to once per account per day, for as long as the leg stays within
-the 500-row `listActivities` page.
+Confirmed live against the user's real accounts before the fix
+(`reported = sfBalance − wfValuation + unlinkedTransferOut`):
 
-Fingerprint to look for: unexplained `Balance adjustment · <account> · <date>`
-rows on a CASH account that also has linked transfers.
+| Account | Bank | Wealthfolio | True drift | Reported drift | Wrongly subtracted |
+|---|---|---|---|---|---|
+| Spend | 3475.23 | 2175.23 | 1300.00 | 8650.45 | 7350.45 |
+| Savings | 610.65 | −686.85 | 1297.50 | 10797.50 | 9500.00 |
 
-Fix direction: the guard needs a capability-aware equivalent for hosts that read
-`sourceGroupId` off the rows — on those hosts a leg's own `sourceGroupId` already
-says whether it is linked, so the ledger is the wrong source of truth. Until
-then, prefer plain **Auto-heal** over **Aggressively auto-heal** on the
-companion.
+With **Aggressively auto-heal** on, those figures would have been written into
+real accounts as spending-neutral `CREDIT` balance adjustments.
+
+The test is now capability-aware, mirroring the linking step: on a host that
+reads groups the row's own `sourceGroupId` is authoritative; only where that
+field is unreadable (the addon) does the ledger stand in. Regression tests in
+`shared/sync-core.test.ts` cover both hosts, including a reproduction of the
+Spend figures above. Note the block is now **legacy-only** — an unpaired leg is
+imported as an in-transit placeholder (`CREDIT`/`DEPOSIT`), so no new data
+reaches it — but production still holds pre-placeholder `TRANSFER_OUT` rows, so
+neither the block nor its guard should be "cleaned up".
 
 ---
 
-## 2. The test double models the server's update semantics backwards
+## 1. The test double models the server's update semantics backwards
 
 `shared/fake-host.ts`: `saveMany` **replaces** a row on update
 (`rows[idx] = toHostActivity(w.id, w)`), so an omitted `symbol` clears
@@ -67,7 +72,7 @@ final row has no asset and the full amount.
 
 ---
 
-## 3. A failed `linkPair` leaves a leg the relink sweep will never repair
+## 2. A failed `linkPair` leaves a leg the relink sweep will never repair
 
 `shared/sync-core.ts` (a comment at the site records this too): both legs are
 added to `linkedTxIds` *before* `host.linkPair(legs)` is called. When linking
@@ -87,7 +92,7 @@ threshold, stop offering that pair to `linkPair` and let the *next* run's sweep
 
 ---
 
-## 4. Smaller items
+## 3. Smaller items
 
 - **`shared/link-pair.ts`** collects delete errors into `problems` but issues the
   creates anyway, short-circuiting only afterwards. Now that both hosts
@@ -118,7 +123,7 @@ threshold, stop offering that pair to `linkPair` and let the *next* run's sweep
 
 ---
 
-## 5. Verify on a real instance
+## 4. Verify on a real instance
 
 Not code findings — things a test suite structurally cannot answer.
 
@@ -136,7 +141,9 @@ Not code findings — things a test suite structurally cannot answer.
    both legs carry no asset, the account balance moved by the transfer amount
    exactly once, and neither leg appears on the Spending page.
 5. **Audit for stray `Balance adjustment ·` rows** on cash accounts that have
-   linked transfers — that is item 1's fingerprint.
+   linked transfers — the fingerprint of the now-fixed drift inflation (see
+   "Fixed"). The fix stops new ones; any written before it are still there and
+   have to be removed by hand.
 6. **Confirm the Saturday report is wanted by default.** Only
    `weeklyReportEnabled === false` suppresses it, so an existing
    `telegram_config` without that field opts in silently.

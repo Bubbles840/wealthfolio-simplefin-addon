@@ -443,6 +443,129 @@ describe('runSyncCore', () => {
     expect(second.skipped).toBe(1);
   });
 
+  // --- Drift: which signal says a TRANSFER_OUT is already linked ---
+
+  /** The drift the run stored for an account, as the Sync page reads it. */
+  const storedDrift = async (
+    store: { getAccountBalances(): Promise<Record<string, unknown>> },
+    sfinAccountId: string,
+  ): Promise<number | null> => {
+    const balances = await store.getAccountBalances();
+    return (balances[sfinAccountId] as { drift: number | null } | undefined)?.drift ?? null;
+  };
+
+  /** A seeded starting-balance marker: its presence stops the one-time baseline
+   *  correction from firing, keeping these tests about drift only. */
+  const startingBalanceRow = (accountId: string, sfinAccountId: string) => ({
+    id: `sb-${accountId}`, accountId, activityType: 'DEPOSIT', date: '2026-01-01',
+    amount: 0.01, comment: `Starting balance · ${sfinAccountId}`, sourceGroupId: null,
+  });
+
+  it("does not inflate drift with a LINKED TRANSFER_OUT on a host that reads sourceGroupId (the user's Spend account)", async () => {
+    // Real figures from the live companion: bank 3475.23, Wealthfolio 2175.23,
+    // 7350.45 of correctly-linked TRANSFER_OUT rows whose cash Wealthfolio has
+    // ALREADY deducted. True drift is 1300.00; treating those legs as unlinked
+    // reported 8650.45 and would have plugged that much into a real account.
+    const { host, store } = createFakeHost({
+      accountSet: { errors: [], accounts: [{
+        id: 'sfin-1', name: 'Spend', currency: 'USD',
+        balance: '3475.23', 'balance-date': 1, transactions: [],
+      }] },
+      mapping: { 'sfin-1': 'wf-a' },
+      accountTypes: { 'wf-a': 'CASH' },
+      valuations: new Map([['wf-a', 2175.23]]),
+      existing: new Map([['wf-a', [
+        startingBalanceRow('wf-a', 'sfin-1'),
+        { id: 'out-1', accountId: 'wf-a', activityType: 'TRANSFER_OUT', date: '2026-07-01',
+          amount: 6050.45, comment: 'Online Transfer to Savings · tx-a',
+          sourceGroupId: 'wf-transfer-aaa' },
+        { id: 'out-2', accountId: 'wf-a', activityType: 'TRANSFER_OUT', date: '2026-07-02',
+          amount: 1300.0, comment: 'Online Transfer to Savings · tx-b',
+          sourceGroupId: 'wf-transfer-bbb' },
+      ]]]),
+    });
+    await runSyncCore(host, store, {});
+    expect(await storedDrift(store, 'sfin-1')).toBeCloseTo(1300.0, 2);
+  });
+
+  it('still accounts for an UNLINKED TRANSFER_OUT (null sourceGroupId) on a host that reads groups', async () => {
+    // Nothing has deducted this leg's 500 from Wealthfolio's valuation yet, so
+    // subtracting it is what keeps an in-flight transfer from reading as drift.
+    const { host, store } = createFakeHost({
+      accountSet: { errors: [], accounts: [{
+        id: 'sfin-1', name: 'Spend', currency: 'USD',
+        balance: '3475.23', 'balance-date': 1, transactions: [],
+      }] },
+      mapping: { 'sfin-1': 'wf-a' },
+      accountTypes: { 'wf-a': 'CASH' },
+      valuations: new Map([['wf-a', 2675.23]]),
+      existing: new Map([['wf-a', [
+        startingBalanceRow('wf-a', 'sfin-1'),
+        { id: 'out-1', accountId: 'wf-a', activityType: 'TRANSFER_OUT', date: '2026-07-01',
+          amount: 500.0, comment: 'Online Transfer to Savings · tx-a', sourceGroupId: null },
+      ]]]),
+    });
+    await runSyncCore(host, store, {});
+    // 2675.23 − 500 = 2175.23 adjusted, so 3475.23 − 2175.23 = 1300.00.
+    expect(await storedDrift(store, 'sfin-1')).toBeCloseTo(1300.0, 2);
+  });
+
+  it('ignores a row-level sourceGroupId on a ledger-backed host (the addon), where it is not trustworthy', async () => {
+    const { host, store } = createFakeHost({
+      accountSet: { errors: [], accounts: [{
+        id: 'sfin-1', name: 'Spend', currency: 'USD',
+        balance: '3475.23', 'balance-date': 1, transactions: [],
+      }] },
+      mapping: { 'sfin-1': 'wf-a' },
+      accountTypes: { 'wf-a': 'CASH' },
+      valuations: new Map([['wf-a', 2675.23]]),
+      existing: new Map([['wf-a', [
+        startingBalanceRow('wf-a', 'sfin-1'),
+        { id: 'out-1', accountId: 'wf-a', activityType: 'TRANSFER_OUT', date: '2026-07-01',
+          amount: 500.0, comment: 'Online Transfer to Savings · tx-a',
+          sourceGroupId: 'wf-transfer-aaa' },
+      ]]]),
+    });
+    // The addon's profile: ActivityDetails hides sourceGroupId, so whatever a row
+    // appears to carry must not be believed — only the ledger may vouch.
+    host.capabilities.readsSourceGroupId = false;
+    await runSyncCore(host, store, {});
+    // Ledger is empty → the leg still counts as unlinked, exactly as before.
+    expect(await storedDrift(store, 'sfin-1')).toBeCloseTo(1300.0, 2);
+  });
+
+  it('lets the ledger clear a TRANSFER_OUT on a ledger-backed host', async () => {
+    const { host, store } = createFakeHost({
+      accountSet: { errors: [], accounts: [
+        { id: 'sfin-1', name: 'Checking', currency: 'USD', balance: '1010.00', 'balance-date': 1,
+          transactions: [{ id: 'tx-out', posted: 1700000000, amount: '-500.00', description: 'Payment to Card' }] },
+        { id: 'sfin-2', name: 'Card', currency: 'USD', balance: '0', 'balance-date': 1,
+          transactions: [{ id: 'tx-in', posted: 1700086400, amount: '500.00', description: 'PAYMENT THANK YOU' }] },
+      ] },
+      mapping: { 'sfin-1': 'wf-a', 'sfin-2': 'wf-b' },
+      accountTypes: { 'wf-a': 'CASH', 'wf-b': 'CREDIT_CARD' },
+      valuations: new Map([['wf-a', 1000], ['wf-b', 0]]),
+      existing: new Map([
+        ['wf-a', [
+          startingBalanceRow('wf-a', 'sfin-1'),
+          { id: 'act-out', accountId: 'wf-a', activityType: 'TRANSFER_OUT', date: '2023-11-14',
+            amount: 500.0, comment: 'Payment to Card · tx-out', sourceGroupId: null },
+        ]],
+        ['wf-b', [
+          startingBalanceRow('wf-b', 'sfin-2'),
+          { id: 'act-in', accountId: 'wf-b', activityType: 'TRANSFER_IN', date: '2023-11-15',
+            amount: 500.0, comment: 'PAYMENT THANK YOU · tx-in', sourceGroupId: null },
+        ]],
+      ]),
+    });
+    host.capabilities.readsSourceGroupId = false;
+    // Both legs already recorded under one echo-confirmed group id.
+    await store.setLinkedGroups({ 'tx-out': 'wf-transfer-g1', 'tx-in': 'wf-transfer-g1' });
+    await runSyncCore(host, store, {});
+    // Ledger vouches → the 500 is NOT subtracted: 1010.00 − 1000 = 10.00.
+    expect(await storedDrift(store, 'sfin-1')).toBeCloseTo(10.0, 2);
+  });
+
   // --- Task 7: stuck-transfer failure tracking and alerting ---
 
   it('reports a stuck-transfer alert after 3 consecutive failed link attempts on the same pair', async () => {

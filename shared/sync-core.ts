@@ -640,7 +640,9 @@ export async function runSyncCore(
       ...(feeCents ? { feeCents } : {}),
       ...(inTransit ? { inTransit: true } : {}),
     }));
-    let existing: ExistingRow[] = [];
+    // Typed to match what fetchExistingRows returns: the drift measurement below
+    // reads `sourceGroupId` off a row, so it must survive into this variable.
+    let existing: Array<ExistingRow & { sourceGroupId?: string | null }> = [];
     try {
       existing = await fetchExistingRows(host, wfAccountId);
     } catch {
@@ -682,11 +684,31 @@ export async function runSyncCore(
           (sum, t) => sum + (signedByTxId.get(t.txId) ?? 0),
           0,
         );
-        // Unlinked in-transit TRANSFER_OUT rows haven't been linked to a TRANSFER_IN
-        // leg yet, so Wealthfolio's valuations API hasn't deducted them from cash.
-        // Account for them here so in-transit transfers don't trigger a false drift.
+        // A TRANSFER_OUT with no TRANSFER_IN partner yet hasn't had its cash
+        // deducted by Wealthfolio's valuations API, so it must be netted out or
+        // it reads as drift.
+        //
+        // "Is this leg linked?" is answered by CAPABILITY, exactly as the linking
+        // step below decides it — get this wrong and every linked leg is double-
+        // counted as missing cash:
+        //  • readsSourceGroupId — the row's own sourceGroupId is authoritative
+        //    (fetchExistingRows carries it through verbatim). The ledger is empty
+        //    on such a host by design, so consulting it would mark EVERY leg
+        //    unlinked and report multi-thousand-dollar phantom drift — which
+        //    aggressive auto-heal would then plug into a real account.
+        //  • otherwise (the addon) — ActivityDetails hides sourceGroupId, so
+        //    whatever a row appears to carry is untrustworthy and only the ledger
+        //    may vouch for a pair.
+        //
+        // LEGACY-ONLY, deliberately kept: since in-transit placeholders landed,
+        // an unpaired leg is imported as a spending-neutral CREDIT/DEPOSIT, never
+        // as a bare TRANSFER_OUT — so no NEW data reaches this subtraction. It
+        // still fires for rows imported before that change, which exist in
+        // production. Do not remove either the block or its capability guard.
+        const isLinked = (r: { txId: string; sourceGroupId?: string | null }): boolean =>
+          readsGroups ? !!r.sourceGroupId : ledgerLinkedTxIds.has(r.txId);
         const unlinkedTransferOut = existing
-          .filter((r) => r.type === 'TRANSFER_OUT' && !ledgerLinkedTxIds.has(r.txId))
+          .filter((r) => r.type === 'TRANSFER_OUT' && !isLinked(r))
           .reduce((sum, r) => sum + Math.abs(r.absCents) / 100, 0);
 
         const adjustedWfValuation = wfValuation - unlinkedTransferOut;
@@ -695,6 +717,9 @@ export async function runSyncCore(
         console.log(`[simplefin-sync] ${sfAccount.name} (${sfAccount.id}):`, {
           sfBalance,
           wfValuation,
+          // Logged because it is subtracted from the valuation: without it the
+          // reported drift can't be reconciled against the two balances above.
+          unlinkedTransferOut,
           windowDelta,
           calculatedDrift: drift,
           plan: { creates: plan.creates.length, updates: plan.updates.length, deletes: plan.deleteIds.length },
