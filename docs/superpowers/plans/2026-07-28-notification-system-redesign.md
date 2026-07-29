@@ -2124,6 +2124,87 @@ git commit -m "fix: companion linkPair now deletes and re-creates legs, clearing
 
 ---
 
+### Task 14: Stop the root vitest project from collecting companion tests
+
+**Added mid-execution.** Task 8's implementer hit this and the controller confirmed it: the root `vitest.config.ts` declares no `exclude`, so `npx vitest list` shows the root project collecting all five `companion/src/*.test.ts` files — 35 tests — under `environment: 'jsdom'`, *in addition to* the companion's own node-environment run. That is why the same three new tests appeared in both the root total (218→221) and the companion total (32→35).
+
+Consequences, in order of importance:
+
+1. **Production code is being shaped by the misconfiguration.** Task 8 had to change `companion/src/index.ts` from `import { readFileSync, existsSync } from 'fs'` to `import * as fs from 'fs'`, because `vi.mock('fs', …)` does not propagate to named imports consumed in another module under the accidental jsdom run. That workaround is invisible at the call site and will break mysteriously the first time someone "tidies" the import back.
+2. **Two runs of the same file can disagree**, since each resolves mocks under a different config. A developer fixing one can silently break the other.
+3. Test counts are misleading, and every companion file runs twice.
+
+`environment: 'jsdom'` is right for the addon (a browser iframe) and wrong for the companion (a Node daemon using `node:sqlite`, `child_process`, `fs`). Each project already has its own correct config; the root just needs to stop reaching into the other one.
+
+**Files:**
+- Modify: `vitest.config.ts`
+- Modify: `companion/src/index.ts` (revisit the `fs` import once the constraint is gone)
+
+**Interfaces:** None.
+
+- [ ] **Step 1: Confirm the defect before changing anything**
+
+Run: `npx vitest list | awk -F' > ' '{print $1}' | sort -u`
+Expected: the list includes `companion/src/index.test.ts`, `companion/src/rest-host.test.ts`, `companion/src/simplefin.test.ts`, `companion/src/sqlite-native.test.ts`, and `companion/src/wealthfolio.test.ts` alongside the `src/` and `shared/` files. Record the full root test count (`npm test`) so you can prove the delta afterwards.
+
+- [ ] **Step 2: Exclude the companion from the root project**
+
+In `vitest.config.ts`, add an `exclude` that keeps vitest's defaults and adds the companion. Do not hand-write a bare `exclude: ['companion/**']` — that would drop vitest's built-in `node_modules`/`dist` exclusions and start collecting tests out of dependencies:
+
+```typescript
+import { defineConfig, configDefaults } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    environment: 'jsdom',
+    setupFiles: ['./src/test-setup.ts'],
+    globals: true,
+    // The companion is a separate vitest project with its own node-environment
+    // config. Without this the root project also collects companion/src/*.test.ts
+    // and runs them under jsdom, so every companion file ran twice under two
+    // different configs — which is how a `vi.mock('fs')` that only works for
+    // namespace imports came to dictate the shape of production code.
+    exclude: [...configDefaults.exclude, 'companion/**'],
+  },
+});
+```
+
+Verify `configDefaults` is importable from `vitest/config` at the installed version (4.1.x); if it is not, import it from `vitest/config`'s named exports per that version's docs rather than inlining a guessed default list, and say what you used in your report.
+
+- [ ] **Step 3: Verify the split is clean**
+
+Run: `npx vitest list | awk -F' > ' '{print $1}' | sort -u`
+Expected: no `companion/` entries. Then `npm test` — expected to pass with the root count reduced by exactly the 35 companion tests versus Step 1's baseline (i.e. 221 → 186); and `cd companion && npm test` — expected still 35 passing, unchanged.
+
+- [ ] **Step 4: Revisit the `fs` import now that the constraint is gone**
+
+With the companion no longer running under the root's jsdom config, `vi.mock('fs', …)` in `companion/src/index.test.ts` runs only under the companion's own config. Try restoring the conventional named import in `companion/src/index.ts`:
+
+```typescript
+import { readFileSync, existsSync } from 'fs';
+```
+
+and updating its use sites back from `fs.readFileSync`/`fs.existsSync`. Then run `cd companion && npm test`.
+
+- If the companion suite stays green, keep the named import — it is the codebase's prevailing style and removes an unexplained shape.
+- If it fails, **revert to the namespace import** and leave a one-line comment at the import site saying it must stay a namespace import for `vi.mock('fs')` to intercept it. An unexplained workaround is the actual hazard; a documented one is fine.
+
+Report which branch you landed on and the evidence.
+
+- [ ] **Step 5: Full verification**
+
+Run: `npm test && npx tsc --noEmit && cd companion && npm test && npx tsc --noEmit`
+Expected: all four clean.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add vitest.config.ts companion/src/index.ts
+git commit -m "test: stop the root vitest project from collecting companion tests"
+```
+
+---
+
 ## Self-Review Notes
 
 - **Spec coverage:** every numbered component in `docs/superpowers/specs/2026-07-28-notification-system-redesign-design.md` maps to a task — budget fix (Task 2), formatters/schedules/category selection (Tasks 4, 8), in-transit transfers (Task 6), stuck-transfer alert (Task 7, delivered in Task 9), sync health (Task 9), removal of the keyword system (Tasks 10, 11), test harness fix (Task 1), minor polish (Task 12).
