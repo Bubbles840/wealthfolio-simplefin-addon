@@ -207,8 +207,61 @@ describe('formatDailySpendingDigest', () => {
       [{ name: 'Dining', monthSpent: 200, weekSpent: 120, budget: 300 }],
       period,
     );
-    expect(text).toContain('🍽️ Dining  ⚠️ *$55.83 over* this week · $100 left this month');
+    expect(text).toContain('🍽️ Dining  ⚠️ *$55.83 over* · $100 left mo');
     expect(text).not.toContain('🚨');
+  });
+
+  it('keeps the over-the-week line short enough not to wrap on a phone', () => {
+    // Spelled out ("$55.83 over* this week · $100 left this month") this line
+    // ran to ~66 characters and wrapped beside neighbours of ~25, which reads
+    // as broken markup. The per-category month figure still has to survive the
+    // trim — it is what says "you can absorb this, just slow down", and it is a
+    // different number from the footer's cross-category total.
+    const text = formatDailySpendingDigest(
+      [{ name: 'Food & Dining', monthSpent: 200, weekSpent: 120, budget: 300 }],
+      period,
+    );
+    const line = text.split('\n').find((l: string) => l.includes('over'))!;
+    expect(line).toContain('$100');
+    // Measured as rendered: Telegram eats the bold markers, and a variation
+    // selector is a zero-width modifier, not a column.
+    const rendered = line.replace(/\*/g, '').replace(/\uFE0F/g, '');
+    expect(rendered.length).toBeLessThanOrEqual(48);
+    // The week is stated once, in the header — not repeated on the row.
+    expect(text.match(/this week/g)).toHaveLength(1);
+  });
+
+  it('says a fully-used budget is used up rather than showing a bare $0', () => {
+    // A fixed monthly bill paid before this week started: $350 of a $350 budget
+    // is gone, so there is genuinely $0 of weekly allowance AND $0 left for the
+    // month. Arithmetically right, but a bare "*$0*" beside real figures reads
+    // as a failure rather than as a budget that is fully spent.
+    const text = formatDailySpendingDigest(
+      [{ name: 'Bills & Utilities', monthSpent: 350, weekSpent: 0, budget: 350 }],
+      period,
+    );
+    expect(text).toContain('📄 Bills & Utilities  *$0* · budget used up');
+    // Not overspending: neither over-budget marker belongs on this state.
+    expect(text).not.toContain('⚠️');
+    expect(text).not.toContain('🚨');
+    expect(text).not.toContain('over');
+  });
+
+  it('keeps "budget used up" distinct from being over budget', () => {
+    // $0 left for the month with the week's allowance blown is a different
+    // situation and keeps its own branch.
+    const overWeek = formatDailySpendingDigest(
+      [{ name: 'Bills', monthSpent: 350, weekSpent: 350, budget: 350 }],
+      period,
+    );
+    expect(overWeek).not.toContain('budget used up');
+    expect(overWeek).toContain('over*');
+    const overMonth = formatDailySpendingDigest(
+      [{ name: 'Bills', monthSpent: 400, weekSpent: 0, budget: 350 }],
+      period,
+    );
+    expect(overMonth).not.toContain('budget used up');
+    expect(overMonth).toContain('🚨 *$50 over* for the month');
   });
 
   it('reports spending with no budget as exactly that, not as "over budget"', () => {

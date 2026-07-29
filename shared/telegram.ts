@@ -233,14 +233,22 @@ export interface DailyDigestWindow {
  * because the category emoji already reads as one; and month-level figures are
  * summarised once at the bottom rather than per line.
  *
- * Four branches, because these are four genuinely different situations:
+ * Five branches, because these are five genuinely different situations:
  *  - no budget → report the spend and say so; you cannot be over a budget that
  *    was never created
  *  - over budget for the MONTH → 🚨. This dominates the weekly view: the
  *    week's allowance is moot once the month itself is blown
  *  - over the WEEK's allowance but still inside the monthly budget → ⚠️, with
  *    the month figure inline. This is the state worth acting on, so it must not
- *    be collapsed into the one above
+ *    be collapsed into the one above. The month figure is abbreviated ("left
+ *    mo") and the week is left implicit — the header already states the unit
+ *    once — because the spelled-out form ran to ~66 characters and wrapped on a
+ *    phone, next to neighbours of ~25
+ *  - budget exactly used up (nothing left for the week AND nothing left for the
+ *    month, e.g. a fixed monthly bill paid early in the month) → the figure is
+ *    correct but a bare `*$0*` beside real figures reads as a failure, so this
+ *    state says so in words. Kept distinct from both over-budget branches: this
+ *    is not overspending
  *  - otherwise → the plain figure
  */
 export function formatDailySpendingDigest(
@@ -294,7 +302,9 @@ export function formatDailySpendingDigest(
     if (remainingMonth < 0) {
       lines.push(`${emoji} ${name}  🚨 *${moneyWhole(remainingMonth)} over* for the month`);
     } else if (leftThisWeek < 0) {
-      lines.push(`${emoji} ${name}  ⚠️ *${money(leftThisWeek)} over* this week · ${moneyWhole(remainingMonth)} left this month`);
+      lines.push(`${emoji} ${name}  ⚠️ *${money(leftThisWeek)} over* · ${moneyWhole(remainingMonth)} left mo`);
+    } else if (leftThisWeek === 0 && remainingMonth === 0) {
+      lines.push(`${emoji} ${name}  *${money(0)}* · budget used up`);
     } else {
       lines.push(`${emoji} ${name}  *${money(leftThisWeek)}*`);
     }
