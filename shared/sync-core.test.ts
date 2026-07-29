@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { runSyncCore, VALUATION_POLL, IN_TRANSIT_TIMEOUT_SECONDS } from './sync-core.js';
-import { createFakeHost } from './fake-host.js';
+import { createFakeHost, type FakeHostSeed } from './fake-host.js';
 
 describe('runSyncCore', () => {
   beforeEach(() => {
@@ -69,7 +69,7 @@ describe('runSyncCore', () => {
 
   /** A matching TRANSFER_OUT (sfin-1) / TRANSFER_IN (sfin-2) inside the 3-day
    *  pairing window — the smallest input that makes the core link something. */
-  const transferPairSeed = () => ({
+  const transferPairSeed = (): FakeHostSeed => ({
     accountSet: { errors: [], accounts: [
       { id: 'sfin-1', name: 'Checking', currency: 'USD', balance: '0', 'balance-date': 1,
         transactions: [{ id: 'tx-out', posted: 1700000000, amount: '-500.00', description: 'Payment to Card' }] },
@@ -441,5 +441,50 @@ describe('runSyncCore', () => {
     expect(saved).toEqual([]);
     expect(second.imported).toBe(0);
     expect(second.skipped).toBe(1);
+  });
+
+  // --- Task 7: stuck-transfer failure tracking and alerting ---
+
+  it('reports a stuck-transfer alert after 3 consecutive failed link attempts on the same pair', async () => {
+    let attempt = 0;
+    const seed = transferPairSeed();
+
+    for (let i = 0; i < 3; i++) {
+      const { host, store } = createFakeHost(seed);
+      host.linkPair = async () => ({ linked: false });
+      const result = await runSyncCore(host, store, { force: true });
+      attempt++;
+      if (attempt < 3) {
+        expect(result.stuckTransferAlerts).toEqual([]);
+      } else {
+        expect(result.stuckTransferAlerts).toHaveLength(1);
+        expect(result.stuckTransferAlerts[0].amountCents).toBe(50000);
+        expect(result.stuckTransferAlerts[0].currency).toBe('USD');
+      }
+      // Persist the failure ledger to the next iteration's fresh host, the
+      // way the real companion persists addon secrets across cron runs.
+      seed.transferLinkFailures = await store.getTransferLinkFailures();
+    }
+  });
+
+  it('does not re-alert on the same pair after it has already alerted once', async () => {
+    const seed = transferPairSeed();
+    seed.transferLinkFailures = {
+      'tx-out': { count: 5, firstFailedAt: '2026-07-01T00:00:00Z', alerted: true },
+    };
+    const { host, store } = createFakeHost(seed);
+    host.linkPair = async () => ({ linked: false });
+    const result = await runSyncCore(host, store, { force: true });
+    expect(result.stuckTransferAlerts).toEqual([]);
+  });
+
+  it('clears a failure entry once the pair successfully links', async () => {
+    const seed = transferPairSeed();
+    seed.transferLinkFailures = {
+      'tx-out': { count: 2, firstFailedAt: '2026-07-01T00:00:00Z', alerted: false },
+    };
+    const { host, store } = createFakeHost(seed);
+    await runSyncCore(host, store, { force: true }); // fake host's default linkPair succeeds
+    expect(await store.getTransferLinkFailures()).toEqual({});
   });
 });

@@ -27,6 +27,12 @@ const makeStore = (overrides: Record<string, unknown> = {}) => ({
   addBalanceInitialized: vi.fn(async () => {}),
   getLinkedGroups: vi.fn(async (): Promise<Record<string, string>> => ({})),
   setLinkedGroups: vi.fn(async (_map: Record<string, string>) => {}),
+  getTransferLinkFailures: vi.fn(
+    async (): Promise<Record<string, { count: number; firstFailedAt: string; alerted: boolean }>> => ({}),
+  ),
+  setTransferLinkFailures: vi.fn(
+    async (_map: Record<string, { count: number; firstFailedAt: string; alerted: boolean }>) => {},
+  ),
   getAccountBalances: vi.fn(async (): Promise<Record<string, unknown>> => ({})),
   setAccountBalances: vi.fn(async (_map: Record<string, unknown>) => {}),
   getAutoHeal: vi.fn(async () => false),

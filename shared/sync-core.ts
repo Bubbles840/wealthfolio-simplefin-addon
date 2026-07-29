@@ -59,6 +59,10 @@ export const AUTO_HEAL_WINDOW_MS = 44 * 24 * 60 * 60 * 1000; // under SimpleFin'
  *  normal pairing is still plausible. */
 export const IN_TRANSIT_TIMEOUT_SECONDS = 10 * 24 * 60 * 60; // 10 days
 
+/** Consecutive failed linkPair attempts on the same pair before we alert —
+ *  roughly 3 sync cycles (≈18h at the default 6h SYNC_SCHEDULE). */
+export const STUCK_TRANSFER_ALERT_THRESHOLD = 3;
+
 /** Polling for freshly computed valuations after a first import (see the
  *  second-pass block in runSyncCore). Exported so tests can shrink the delay. */
 export const VALUATION_POLL = { attempts: 6, delayMs: 2500 };
@@ -69,6 +73,7 @@ export interface SyncResult {
   imported: number;
   skipped: number;
   errors: string[];
+  stuckTransferAlerts: Array<{ description: string; amountCents: number; currency: string }>;
 }
 
 export interface SyncOptions {
@@ -384,14 +389,18 @@ export async function runSyncCore(
   // Enforce minimum interval unless the caller forces (Sync anyway) or heals
   const lastSync = await store.getLastSyncAt();
   if (!opts.force && !heal && lastSync && Date.now() - lastSync.getTime() < MIN_SYNC_INTERVAL_MS) {
-    return { imported: 0, skipped: 0, errors: [INTERVAL_SKIP_MESSAGE] };
+    return { imported: 0, skipped: 0, errors: [INTERVAL_SKIP_MESSAGE], stuckTransferAlerts: [] };
   }
 
   const accessUrl = await store.getAccessUrl();
-  if (!accessUrl) return { imported: 0, skipped: 0, errors: ['Not configured: no access URL'] };
+  if (!accessUrl) {
+    return { imported: 0, skipped: 0, errors: ['Not configured: no access URL'], stuckTransferAlerts: [] };
+  }
 
   const mapping = await store.getAccountMapping();
-  if (!mapping) return { imported: 0, skipped: 0, errors: ['Not configured: no account mapping'] };
+  if (!mapping) {
+    return { imported: 0, skipped: 0, errors: ['Not configured: no account mapping'], stuckTransferAlerts: [] };
+  }
 
   const rules = await store.getMappingRules();
 
@@ -1018,6 +1027,10 @@ export async function runSyncCore(
     pairsToLink.push([toLinkLeg(outRow), toLinkLeg(inRow)]);
   }
 
+  const linkFailures = await store.getTransferLinkFailures();
+  let linkFailuresChanged = false;
+  const stuckTransferAlerts: SyncResult['stuckTransferAlerts'] = [];
+
   let unlinkedLegs = 0;
   for (const legs of pairsToLink) {
     let result: { linked: boolean; groupId?: string };
@@ -1028,6 +1041,33 @@ export async function runSyncCore(
       continue; // leave the ledger untouched so the pair retries next run
     }
     if (!result.linked || !result.groupId) unlinkedLegs += legs.length;
+
+    // Track repeated failures on a genuinely-detected pair (both legs
+    // present) so a persistently-rejected group — not ordinary in-transit
+    // lag, which never reaches this loop — surfaces as a one-time alert.
+    const failureKey = legs[0].txId;
+    if (result.linked && result.groupId) {
+      if (failureKey in linkFailures) {
+        delete linkFailures[failureKey];
+        linkFailuresChanged = true;
+      }
+    } else {
+      const prior = linkFailures[failureKey];
+      const count = (prior?.count ?? 0) + 1;
+      const firstFailedAt = prior?.firstFailedAt ?? new Date().toISOString();
+      const alerted = prior?.alerted ?? false;
+      linkFailures[failureKey] = { count, firstFailedAt, alerted };
+      linkFailuresChanged = true;
+      if (count >= STUCK_TRANSFER_ALERT_THRESHOLD && !alerted) {
+        linkFailures[failureKey].alerted = true;
+        stuckTransferAlerts.push({
+          description: `${legs[0].comment} ↔ ${legs[1].comment}`,
+          amountCents: legs[0].absCents,
+          currency: legs[0].currency,
+        });
+      }
+    }
+
     if (readsGroups) continue; // nothing to remember — the rows carry the truth
     // Reconcile the ledger to what the host reports it actually stored: adopt
     // the real gid where the link landed, purge the txIds where it didn't so
@@ -1044,6 +1084,7 @@ export async function runSyncCore(
       }
     }
   }
+  if (linkFailuresChanged) await store.setTransferLinkFailures(linkFailures);
   // Surface any leg the host silently refused to group, so a stuck transfer is
   // diagnosable without instrumenting the addon. Only on an explicit Reconcile:
   // a pair Wealthfolio keeps refusing would otherwise warn on every routine
@@ -1095,5 +1136,5 @@ export async function runSyncCore(
 
   await store.setLastSyncAt(new Date());
 
-  return { imported, skipped, errors };
+  return { imported, skipped, errors, stuckTransferAlerts };
 }

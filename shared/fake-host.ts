@@ -26,6 +26,9 @@ export interface FakeHostSeed {
   autoAdjust?: boolean;
   /** Pre-loaded activities, keyed by Wealthfolio account id. */
   existing?: Map<string, HostActivity[]>;
+  /** Pre-loaded transfer-link failure ledger, keyed by the failing pair's
+   *  OUT-leg txId. */
+  transferLinkFailures?: Record<string, TransferLinkFailureEntry>;
 }
 
 export interface FakeHost {
@@ -129,7 +132,8 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
   }
 
   let linkedGroups: Record<string, string> = {};
-  let transferLinkFailures: Record<string, TransferLinkFailureEntry> = {};
+  let transferLinkFailures: Record<string, TransferLinkFailureEntry> =
+    seed.transferLinkFailures ?? {};
   let accountBalances: Record<string, unknown> = {};
   let balanceInitialized: string[] = [];
   let lastSyncAt: Date | null = null;
