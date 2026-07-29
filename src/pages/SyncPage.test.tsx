@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
 import { SyncPage } from './SyncPage';
 
@@ -149,5 +149,84 @@ describe('SyncPage', () => {
     expect(dailyTravel.checked).toBe(false);
     const weeklyTravel = screen.getByLabelText(/Travel.*Weekly/i) as HTMLInputElement;
     expect(weeklyTravel.checked).toBe(true);
+  });
+
+  it('does not re-enable every category when the saved selection is longer than the published list', async () => {
+    // `availableCategories` is the union of *this month's* spending and
+    // budgets, so it legitimately shrinks — a category with spending but no
+    // budget vanishes at month rollover — while the saved selection still
+    // holds the older, longer list. The old collapse-to-'all' test compared
+    // lengths only: unchecking Groceries here left a 2-element array whose
+    // length matched the published list, so it stored 'all' and silently put
+    // every category back into the user's reports.
+    const props = makeProps();
+    props.store.getAvailableReportCategories = vi.fn(async () => ['Groceries', 'Dining']);
+    props.store.getTelegramConfig = vi.fn(async () => ({
+      botToken: 't',
+      chatId: 'c',
+      enabled: true,
+      dailyReportCategories: ['Groceries', 'Dining', 'Fun'],
+      weeklyReportCategories: 'all',
+    }));
+    props.store.setTelegramConfig = vi.fn(async () => {});
+    render(<SyncPage {...props} />);
+    await screen.findByText('Groceries');
+    fireEvent.click(screen.getByLabelText(/Groceries.*Daily/i)); // uncheck
+    fireEvent.click(screen.getByText('Save Telegram Settings'));
+    await waitFor(() => expect(props.store.setTelegramConfig).toHaveBeenCalled());
+    const saved = (props.store.setTelegramConfig as any).mock.calls[0][0];
+    expect(saved.dailyReportCategories).not.toBe('all');
+    expect(Array.isArray(saved.dailyReportCategories)).toBe(true);
+    expect(saved.dailyReportCategories).not.toContain('Groceries');
+    expect(saved.dailyReportCategories).toContain('Dining');
+    // The no-longer-published name is preserved, not pruned, so the user's
+    // original intent survives the category reappearing next month.
+    expect(saved.dailyReportCategories).toContain('Fun');
+  });
+
+  it('collapses to the "all" sentinel only when the selection really covers every published category', async () => {
+    const props = makeProps();
+    props.store.getAvailableReportCategories = vi.fn(async () => ['Groceries', 'Dining']);
+    props.store.getTelegramConfig = vi.fn(async () => ({
+      botToken: 't', chatId: 'c', enabled: true, dailyReportCategories: ['Groceries'],
+    }));
+    props.store.setTelegramConfig = vi.fn(async () => {});
+    render(<SyncPage {...props} />);
+    await screen.findByText('Groceries');
+    fireEvent.click(screen.getByLabelText(/Dining.*Daily/i)); // check the last missing one
+    fireEvent.click(screen.getByText('Save Telegram Settings'));
+    await waitFor(() => {
+      expect(props.store.setTelegramConfig).toHaveBeenCalledWith(
+        expect.objectContaining({ dailyReportCategories: 'all' }),
+      );
+    });
+  });
+
+  it('composes two successive toggles instead of dropping the first', async () => {
+    // Guards the functional-updater conversion: the handler now derives both
+    // membership and the next value from `prev` rather than from closed-over
+    // state. NOTE this cannot prove the batching case on its own — React
+    // flushes each discrete DOM event, so two fireEvent clicks can't share a
+    // render snapshot. It pins the composition result the updater must produce.
+    const props = makeProps();
+    props.store.getAvailableReportCategories = vi.fn(async () => ['Groceries', 'Dining', 'Travel']);
+    props.store.getTelegramConfig = vi.fn(async () => ({ botToken: 't', chatId: 'c', enabled: true }));
+    props.store.setTelegramConfig = vi.fn(async () => {});
+    render(<SyncPage {...props} />);
+    await screen.findByText('Groceries');
+    const groceries = screen.getByLabelText(/Groceries.*Daily/i);
+    const dining = screen.getByLabelText(/Dining.*Daily/i);
+    // One outer act() so both updates are dispatched off the SAME render —
+    // bare consecutive fireEvent calls each flush, which hides the bug.
+    act(() => {
+      fireEvent.click(groceries);
+      fireEvent.click(dining);
+    });
+    fireEvent.click(screen.getByText('Save Telegram Settings'));
+    await waitFor(() => {
+      expect(props.store.setTelegramConfig).toHaveBeenCalledWith(
+        expect.objectContaining({ dailyReportCategories: ['Travel'] }),
+      );
+    });
   });
 });

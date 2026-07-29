@@ -570,14 +570,37 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
                 const emoji = getCategoryEmoji(name);
                 const inDaily = dailyReportCategories === 'all' || dailyReportCategories.includes(name);
                 const inWeekly = weeklyReportCategories === 'all' || weeklyReportCategories.includes(name);
+                // Functional updater, and membership read from `prev` rather
+                // than the closed-over `inDaily`/`inWeekly`: two toggles
+                // batched into one React tick would otherwise both start from
+                // the same stale snapshot and the first would be dropped.
                 const toggle = (
-                  current: string[] | 'all',
-                  setCurrent: (v: string[] | 'all') => void,
-                  checked: boolean,
+                  setCurrent: React.Dispatch<React.SetStateAction<string[] | 'all'>>,
                 ) => {
-                  const base = current === 'all' ? availableCategories : current;
-                  const next = checked ? base.filter((n) => n !== name) : [...base, name];
-                  setCurrent(next.length === availableCategories.length ? 'all' : next);
+                  setCurrent((prev) => {
+                    const base = prev === 'all' ? availableCategories : prev;
+                    const wasIncluded = prev === 'all' || prev.includes(name);
+                    const next = wasIncluded ? base.filter((n) => n !== name) : [...base, name];
+                    // Collapse to the 'all' sentinel only when the selection
+                    // genuinely covers every published category — a SET test,
+                    // not a length test. `availableCategories` is the union of
+                    // *this month's* spending and budgets, so it legitimately
+                    // shrinks (a category with spending but no budget vanishes
+                    // at month rollover) while a saved selection still holds
+                    // the older, longer list. Comparing lengths then matched
+                    // by coincidence: with saved ['Groceries','Dining','Fun']
+                    // and a published ['Groceries','Dining'], unchecking
+                    // Groceries left a 2-element array whose length equalled
+                    // the published list, stored 'all', and silently put every
+                    // category back into the user's reports.
+                    //
+                    // Names no longer published are kept in `next` rather than
+                    // pruned, so a category that reappears next month comes
+                    // back with the user's original intent intact.
+                    const chosen = new Set(next);
+                    const coversEverything = availableCategories.every((n) => chosen.has(n));
+                    return coversEverything ? 'all' : next;
+                  });
                 };
                 return (
                   <div key={name} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -588,7 +611,7 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
                         type="checkbox"
                         aria-label={`${name} — Daily`}
                         checked={inDaily}
-                        onChange={() => toggle(dailyReportCategories, setDailyReportCategories, inDaily)}
+                        onChange={() => toggle(setDailyReportCategories)}
                       />
                       Daily
                     </label>
@@ -597,7 +620,7 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
                         type="checkbox"
                         aria-label={`${name} — Weekly`}
                         checked={inWeekly}
-                        onChange={() => toggle(weeklyReportCategories, setWeeklyReportCategories, inWeekly)}
+                        onChange={() => toggle(setWeeklyReportCategories)}
                       />
                       Weekly
                     </label>
