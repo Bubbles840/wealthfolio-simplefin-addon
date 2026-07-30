@@ -34,6 +34,41 @@ export const MIN_SYNC_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
  */
 export const DUPLICATE_FEED_TX_LOG_TAG = 'duplicate-feed-tx';
 
+/** Grep token for the "deleted an already-stored duplicate" log line. Every
+ *  deletion is logged individually, so the record of what vanished survives even
+ *  when the user has no Telegram configured and never opens the Sync page. */
+export const DUPLICATE_PRUNE_LOG_TAG = 'duplicate-prune';
+
+/**
+ * Note prefixes marking an activity this module wrote for its OWN bookkeeping
+ * rather than as a copy of a bank transaction.
+ *
+ * Both are matched as prefixes and both are load-bearing for the duplicate
+ * sweep, because `txIdFromComment` is naive — it hands back whatever follows the
+ * last ` · `:
+ *   • `Starting balance · <sfinAccountId>`   → the ACCOUNT ID as a "tx id"
+ *   • `Balance adjustment · <acct> · <date>` → the DATE as a "tx id"
+ * So two adjustments written on one day are indistinguishable from a duplicated
+ * transaction by id alone, and a starting-balance baseline is the one row on the
+ * account whose deletion would silently rewrite its entire history. They are
+ * excluded by these prefixes and never by the shape of the parsed id.
+ *
+ * Exported (and used by the writers below) so a renamed marker cannot leave the
+ * exclusion matching a string nothing writes any more.
+ */
+export const STARTING_BALANCE_COMMENT_PREFIX = 'Starting balance · ';
+export const BALANCE_ADJUSTMENT_COMMENT_PREFIX = 'Balance adjustment · ';
+
+/** True for an activity note this module wrote as bookkeeping — never a bank
+ *  transaction, and never a candidate for the duplicate sweep. */
+export function isInternalMarkerComment(text: string | null | undefined): boolean {
+  const c = text ?? '';
+  return (
+    c.startsWith(STARTING_BALANCE_COMMENT_PREFIX) ||
+    c.startsWith(BALANCE_ADJUSTMENT_COMMENT_PREFIX)
+  );
+}
+
 /**
  * Which of two feed copies of ONE transaction id survives.
  *
@@ -85,6 +120,61 @@ function preferFeedCopy(
  * it is only here to be logged, but its presence in the signature is the reminder
  * that a caller has to hold one account at a time.
  */
+/**
+ * Which of ONE account's stored rows are surplus copies of the same SimpleFin
+ * transaction — i.e. what the reconcile sweep should delete. Returns the rows to
+ * remove; every group keeps exactly one survivor.
+ *
+ * Pure and host-agnostic so the delete list is testable without a host: this is
+ * the function that decides to destroy financial records, and it should be
+ * possible to interrogate that decision directly.
+ *
+ * KEEP RULE — the lexicographically LOWEST activity id. It is a property of the
+ * rows themselves, so repeated runs converge on the same survivor instead of
+ * oscillating between copies (which, since each run deletes "the others", would
+ * churn the account's ids forever). It is also stable under the host's paging
+ * order, unlike "the first one we happened to read". Wealthfolio ids are UUIDs,
+ * so lowest-id is not literally oldest — what matters is that it is DETERMINISTIC,
+ * and the survivor is reconciled against this run's feed in the same pass, so
+ * keeping a copy that turns out to be stale is self-correcting.
+ *
+ * TWO INDEPENDENT SAFETY FILTERS, both required:
+ *  1. Internal marker rows are excluded by NOTE PREFIX
+ *     (`isInternalMarkerComment`). See that constant's note: a starting-balance
+ *     baseline parses to the account id and same-day balance adjustments parse to
+ *     one shared date, so id-based reasoning alone would delete real bookkeeping.
+ *  2. The transaction id must be one SimpleFin reported for THIS account on THIS
+ *     run (`feedTxIds`). Any Wealthfolio activity whose note contains ' · ' —
+ *     including hand-entered ones like `Lunch · Tuesday` and `Coffee · Tuesday` —
+ *     parses to a "tx id", and two of those are indistinguishable from a
+ *     duplicated import. Demanding that the bank just vouched for the id is what
+ *     keeps rows this sync never wrote out of a delete list.
+ *
+ * The cost of filter 2 is reach: a duplicate whose transaction has aged out of
+ * even the 89-day heal window is not pruned. Accepted deliberately — the sweep
+ * exists for duplicates a *feed* produced, so they are recent by construction,
+ * and the alternative is a sweep that can delete rows it cannot identify.
+ */
+export function planDuplicatePrune<
+  T extends { wfId: string; txId: string; comment?: string },
+>(rows: T[], feedTxIds: Set<string>): T[] {
+  const byTxId = new Map<string, T[]>();
+  for (const row of rows) {
+    if (isInternalMarkerComment(row.comment)) continue;
+    if (!feedTxIds.has(row.txId)) continue;
+    const group = byTxId.get(row.txId);
+    if (group) group.push(row);
+    else byTxId.set(row.txId, [row]);
+  }
+  const remove: T[] = [];
+  for (const group of byTxId.values()) {
+    if (group.length < 2) continue;
+    const sorted = [...group].sort((a, b) => (a.wfId < b.wfId ? -1 : a.wfId > b.wfId ? 1 : 0));
+    remove.push(...sorted.slice(1));
+  }
+  return remove;
+}
+
 export function dedupeAccountTransactions(
   sfAccountId: string,
   transactions: SimplefinTransaction[],
@@ -229,6 +319,33 @@ export interface SyncResult {
      *  rather than merely alarming. */
     bankBalance: number;
   }>;
+  /**
+   * Activities the reconcile sweep DELETED as surplus copies of a transaction the
+   * account already held (see `planDuplicatePrune`). One entry per deleted row,
+   * carrying enough to recognise what vanished without opening Wealthfolio.
+   *
+   * Always empty on a routine sync — the sweep only runs on heal/reconcile. It is
+   * reported (and separately logged, and messaged) because automatic deletion of
+   * a financial record must never be silent, even when the deletion is correct.
+   */
+  prunedDuplicates: Array<{
+    sfinAccountId: string;
+    /** Wealthfolio account name, falling back to the SimpleFin one. */
+    accountName: string;
+    txId: string;
+    /** Bank description, with the tx-id suffix and any in-transit prefix taken
+     *  back off — what the row was CALLED in Wealthfolio. */
+    description: string;
+    /** YYYY-MM-DD. */
+    date: string;
+    /** The transaction's full magnitude, taken from the FEED rather than the
+     *  deleted row: an in-transit placeholder books its amount as `fee`, so the
+     *  stored `amount` is 0 and reporting it would claim "$0.00 removed". */
+    amountCents: number;
+    currency: string;
+    /** The deleted Wealthfolio activity id, so the deletion is traceable. */
+    wfId: string;
+  }>;
 }
 
 export interface SyncOptions {
@@ -275,7 +392,7 @@ async function hasExistingStartingBalance(
   sfinAccountId: string,
 ): Promise<boolean> {
   const rows = await host.listOldestActivities(wfAccountId, STARTING_BALANCE_SCAN);
-  const marker = `Starting balance · ${sfinAccountId}`;
+  const marker = `${STARTING_BALANCE_COMMENT_PREFIX}${sfinAccountId}`;
   return rows.some((a) => (a.comment ?? '') === marker);
 }
 
@@ -295,7 +412,7 @@ async function fetchStartingBalance(
   sfinAccountId: string,
 ): Promise<{ id: string; date: string; signed: number } | null> {
   const rows = await host.listOldestActivities(wfAccountId, STARTING_BALANCE_SCAN);
-  const marker = `Starting balance · ${sfinAccountId}`;
+  const marker = `${STARTING_BALANCE_COMMENT_PREFIX}${sfinAccountId}`;
   const row = rows.find((a) => (a.comment ?? '') === marker);
   if (!row) return null;
   const abs = Math.abs(parseFloat(String(row.amount ?? '0')));
@@ -341,7 +458,7 @@ async function adjustStartingBalanceForOlderRows(
       symbol: { symbol: `$CASH-${currency}` },
       amount: Math.abs(nextSigned),
       currency,
-      comment: `Starting balance · ${sfinAccountId}`,
+      comment: `${STARTING_BALANCE_COMMENT_PREFIX}${sfinAccountId}`,
     }],
   });
   return olderSum;
@@ -358,7 +475,7 @@ async function hasAdjustmentToday(
   sfinAccountId: string,
 ): Promise<boolean> {
   const rows = await host.listActivities(wfAccountId);
-  const marker = `Balance adjustment · ${sfinAccountId} · ${new Date().toISOString().split('T')[0]}`;
+  const marker = `${BALANCE_ADJUSTMENT_COMMENT_PREFIX}${sfinAccountId} · ${new Date().toISOString().split('T')[0]}`;
   return rows.some((a) => (a.comment ?? '') === marker);
 }
 
@@ -543,7 +660,7 @@ export async function importAdjustmentActivity(
     amount: fieldAmount,
     fee,
     currency,
-    comment: `Balance adjustment · ${sfinAccountId} · ${today}`,
+    comment: `${BALANCE_ADJUSTMENT_COMMENT_PREFIX}${sfinAccountId} · ${today}`,
     isValid: true,
     isDraft: false,
   };
@@ -578,17 +695,17 @@ export async function runSyncCore(
   // Enforce minimum interval unless the caller forces (Sync anyway) or heals
   const lastSync = await store.getLastSyncAt();
   if (!opts.force && !heal && lastSync && Date.now() - lastSync.getTime() < MIN_SYNC_INTERVAL_MS) {
-    return { imported: 0, skipped: 0, errors: [INTERVAL_SKIP_MESSAGE], stuckTransferAlerts: [], largeTransactionAlerts: [], balanceDriftAlerts: [] };
+    return { imported: 0, skipped: 0, errors: [INTERVAL_SKIP_MESSAGE], stuckTransferAlerts: [], largeTransactionAlerts: [], balanceDriftAlerts: [], prunedDuplicates: [] };
   }
 
   const accessUrl = await store.getAccessUrl();
   if (!accessUrl) {
-    return { imported: 0, skipped: 0, errors: ['Not configured: no access URL'], stuckTransferAlerts: [], largeTransactionAlerts: [], balanceDriftAlerts: [] };
+    return { imported: 0, skipped: 0, errors: ['Not configured: no access URL'], stuckTransferAlerts: [], largeTransactionAlerts: [], balanceDriftAlerts: [], prunedDuplicates: [] };
   }
 
   const mapping = await store.getAccountMapping();
   if (!mapping) {
-    return { imported: 0, skipped: 0, errors: ['Not configured: no account mapping'], stuckTransferAlerts: [], largeTransactionAlerts: [], balanceDriftAlerts: [] };
+    return { imported: 0, skipped: 0, errors: ['Not configured: no account mapping'], stuckTransferAlerts: [], largeTransactionAlerts: [], balanceDriftAlerts: [], prunedDuplicates: [] };
   }
 
   const rules = await store.getMappingRules();
@@ -656,6 +773,10 @@ export async function runSyncCore(
   const driftAlerts = await store.getDriftAlerts();
   let driftAlertsChanged = false;
   const balanceDriftAlerts: SyncResult['balanceDriftAlerts'] = [];
+
+  // Rows the reconcile sweep deletes as surplus copies (see the prune block in
+  // the per-account loop). Stays empty on a routine sync.
+  const prunedDuplicates: SyncResult['prunedDuplicates'] = [];
 
   // Current Wealthfolio balances for the one-time starting-balance
   // correction. They come from the valuations API — listAccounts() has no
@@ -871,6 +992,85 @@ export async function runSyncCore(
     } catch {
       // read unavailable — proceed as if no rows exist
     }
+
+    // ── Duplicate prune (heal/reconcile only) ────────────────────────────────
+    //
+    // Delete rows that are surplus copies of a transaction this account already
+    // holds — the wreckage the feed dedup above now prevents, but which is
+    // already sitting in production databases (a savings account reading
+    // $1,297.50 low off two duplicated rows).
+    //
+    // ORDERING. This runs on the freshly-read snapshot and BEFORE anything else
+    // in the account's pass, and the deleted rows are dropped from `existing`
+    // first. That is what keeps every later step out of contact with a dead
+    // `wfId`:
+    //   • `linkRowByTxId` is populated from `existing` below, so it only ever
+    //     learns about the survivor — the transfer-link flush and the relink
+    //     sweep at the end of the run cannot hand a deleted id to `linkPair`.
+    //   • `planReconciliation` sees the survivor as the account's only row for
+    //     that tx id, so this run's update (or a pending-row match) targets a row
+    //     that still exists — and the survivor gets reconciled against the feed
+    //     in the same pass, which is why "keep the lowest id" needs no opinion
+    //     about which copy is the more current.
+    //   • nothing the sweep deletes can be re-created afterwards: the survivor
+    //     still matches by tx id, so the feed tx does not become a create.
+    // The deletes are issued as their own `saveMany({ deleteIds })` — the same
+    // path the relink sweep uses — before the plan's own save, so a re-create
+    // could never collide with a row being removed.
+    //
+    // Only on heal (`↻ Reconcile & link`, or auto-heal). `heal` rather than
+    // `opts.heal` deliberately: a user who turned auto-heal on has asked for
+    // exactly this kind of repair to happen unattended, and both paths re-scan a
+    // wide window, which is what gives the sweep the feed evidence it needs. A
+    // routine sync never deletes anything.
+    let prunedThisAccount = 0;
+    if (heal) {
+      const feedByTxId = new Map(feed.map((t) => [t.txId, t]));
+      const surplus = planDuplicatePrune(existing, new Set(feedByTxId.keys()));
+      if (surplus.length > 0) {
+        const surplusIds = new Set(surplus.map((r) => r.wfId));
+        // Drop them from the snapshot even if the delete below fails: a row we
+        // have asked the host to remove must not be a target for this run's
+        // updates or links. A failed delete leaves an orphan the next reconcile
+        // re-finds, which is the cheap direction to be wrong in.
+        existing = existing.filter((r) => !surplusIds.has(r.wfId));
+        prunedThisAccount = surplus.length;
+        const del = await host.saveMany({ deleteIds: surplus.map((r) => r.wfId) });
+        if ((del.errors ?? []).length > 0) {
+          // The error shape doesn't say WHICH id failed, so nothing is reported
+          // as pruned — claiming a deletion that may not have happened is worse
+          // than reporting none and surfacing the error.
+          for (const err of del.errors ?? []) {
+            errors.push(`Account ${wfAccountId} duplicate-prune delete error (${err.action}): ${err.message}`);
+          }
+        } else {
+          for (const row of surplus) {
+            const feedTx = feedByTxId.get(row.txId);
+            const entry = {
+              sfinAccountId: sfAccount.id,
+              accountName: wfNames.get(wfAccountId) || sfAccount.name,
+              txId: row.txId,
+              // The ROW's own description, not `descByTxId` — that map is keyed by
+              // tx id across all accounts, so it can hold another account's text
+              // for a shared id.
+              description: descriptionFromComment(row.comment) || (descByTxId.get(row.txId) ?? ''),
+              date: row.date,
+              amountCents: feedTx?.absCents ?? row.absCents,
+              currency: sfAccount.currency,
+              wfId: row.wfId,
+            };
+            prunedDuplicates.push(entry);
+            // Logged per row, so the record of what was deleted exists even for a
+            // user with no Telegram who never opens the Sync page.
+            console.warn(
+              `[simplefin-sync] ${DUPLICATE_PRUNE_LOG_TAG}: deleted activity ${row.wfId} — a surplus copy of transaction ${row.txId} in account ${sfAccount.id}`,
+              entry,
+            );
+          }
+        }
+      }
+    }
+
     for (const row of existing) linkRowByTxId.set(row.txId, { ...row, currency: sfAccount.currency });
     const plan = planReconciliation(feed, existing);
 
@@ -906,7 +1106,14 @@ export async function runSyncCore(
       // delta wouldn't capture. So measure only with no pending anywhere and no
       // updates/deletes this run.
       const noPending = !feed.some((t) => t.pending) && !existing.some((r) => r.pending);
-      const createOnly = plan.updates.length === 0 && plan.deleteIds.length === 0;
+      // A duplicate pruned above moves the valuation exactly as an update or a
+      // delete does, and `wfValuation` was read BEFORE the prune ran — so it
+      // still counts the rows just deleted. Trusting it would report the
+      // duplicate's own amount as drift, and with aggressive auto-heal on would
+      // then write that amount into the account as a balance adjustment: the very
+      // figure the prune just removed, put straight back. Not measurable this run.
+      const createOnly =
+        plan.updates.length === 0 && plan.deleteIds.length === 0 && prunedThisAccount === 0;
       // Heal re-scans wide and imports, so it must subtract what it creates
       // (lag-free: WF's balance becomes wfValuation + creates). A normal sync
       // only trusts drift when nothing was created (valuation is otherwise
@@ -1240,7 +1447,7 @@ export async function runSyncCore(
           symbol: `$CASH-${sfAccount.currency}`,
           amount: Math.abs(Math.round(starting * 100) / 100),
           currency: sfAccount.currency,
-          comment: `Starting balance · ${sfAccount.id}`,
+          comment: `${STARTING_BALANCE_COMMENT_PREFIX}${sfAccount.id}`,
           isValid: true,
           isDraft: false,
         };
@@ -1317,7 +1524,7 @@ export async function runSyncCore(
               symbol: `$CASH-${p.currency}`,
               amount: Math.abs(Math.round(starting * 100) / 100),
               currency: p.currency,
-              comment: `Starting balance · ${p.sfinAccountId}`,
+              comment: `${STARTING_BALANCE_COMMENT_PREFIX}${p.sfinAccountId}`,
               isValid: true,
               isDraft: false,
             };
@@ -1496,5 +1703,8 @@ export async function runSyncCore(
 
   await store.setLastSyncAt(new Date());
 
-  return { imported, skipped, errors, stuckTransferAlerts, largeTransactionAlerts, balanceDriftAlerts };
+  return {
+    imported, skipped, errors, stuckTransferAlerts, largeTransactionAlerts,
+    balanceDriftAlerts, prunedDuplicates,
+  };
 }

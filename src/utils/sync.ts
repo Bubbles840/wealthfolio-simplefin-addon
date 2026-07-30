@@ -6,6 +6,7 @@ import {
   formatStuckTransferAlert,
   formatBalanceDriftAlert,
   formatLargeTransactionAlert,
+  formatDuplicatePruneAlert,
 } from '../../shared/telegram';
 import type { PendingLargeTxAlert, SecretsStore } from './secrets';
 import type { AddonContext } from '@wealthfolio/addon-sdk';
@@ -126,7 +127,7 @@ export async function deliverAddonAlerts(
   store: SecretsStore,
   result: SyncResult,
 ): Promise<void> {
-  const { stuckTransferAlerts, largeTransactionAlerts, balanceDriftAlerts } = result;
+  const { stuckTransferAlerts, largeTransactionAlerts, balanceDriftAlerts, prunedDuplicates } = result;
   try {
     // Nothing to say and nothing queued: don't spend a secret read on it. The
     // outbox is only consulted when this run has an alert of its own, which is
@@ -135,6 +136,7 @@ export async function deliverAddonAlerts(
       stuckTransferAlerts.length === 0
       && largeTransactionAlerts.length === 0
       && balanceDriftAlerts.length === 0
+      && prunedDuplicates.length === 0
     ) return;
 
     const target = await telegramTarget(store);
@@ -177,6 +179,21 @@ export async function deliverAddonAlerts(
       }
     }
     await rollBackUndeliveredDriftAlerts(store, undeliveredDriftAccountIds);
+
+    // ── Pruned duplicates ───────────────────────────────────────────────────
+    // ONE message for the whole sweep, not one per row: a reconcile that cleans
+    // up a long-neglected account would otherwise arrive as a burst of pings.
+    // No ledger and no rollback — unlike the three alerts above there is no
+    // episode to re-arm and nothing to mark, and the rows themselves are already
+    // gone. A failed send is logged and not retried; the deletions are also
+    // logged line-by-line by the core and shown on the Sync page, so Telegram is
+    // not the only record.
+    if (prunedDuplicates.length > 0) {
+      const res = await send(formatDuplicatePruneAlert(prunedDuplicates));
+      if (!res.ok) {
+        console.warn(`[simplefin-sync] duplicate-prune notice not delivered: ${res.description}`);
+      }
+    }
   } catch (err) {
     console.warn('[simplefin-sync] alert delivery failed', err);
   }

@@ -11,6 +11,7 @@ import {
   formatStuckTransferAlert,
   formatBalanceDriftAlert,
   formatLargeTransactionAlert,
+  formatDuplicatePruneAlert,
 } from '../../shared/telegram';
 
 vi.mock('./simplefin', () => ({
@@ -1146,6 +1147,7 @@ describe('deliverAddonAlerts', () => {
   const emptyResult = (over: Partial<any> = {}) => ({
     imported: 0, skipped: 0, errors: [],
     stuckTransferAlerts: [], largeTransactionAlerts: [], balanceDriftAlerts: [],
+    prunedDuplicates: [],
     ...over,
   });
 
@@ -1320,6 +1322,43 @@ describe('deliverAddonAlerts', () => {
         stuckTransferAlerts: [{ outTxId: 'tx-out', description: 'x', amountCents: 1, currency: 'USD' }],
       })),
     ).resolves.toBeUndefined();
+  });
+
+  it('announces the duplicates the reconcile sweep deleted', async () => {
+    // Automatic deletion of financial rows must not be silent, so the prune gets
+    // its own message — one send for the whole sweep, not one per row.
+    const request = okNet();
+    const store = tgStore();
+    const pruned = [
+      { sfinAccountId: 'sfin-1', accountName: 'Savings', txId: 'TRN-3917f117',
+        description: 'PNC BANK 1234 Transfer', date: '2026-07-27', amountCents: 130000,
+        currency: 'USD', wfId: 'act-2' },
+      { sfinAccountId: 'sfin-1', accountName: 'Savings', txId: 'TRN-ce426394',
+        description: 'Monthly Interest Paid', date: '2026-06-30', amountCents: 250,
+        currency: 'USD', wfId: 'act-4' },
+    ];
+
+    await deliverAddonAlerts(alertCtx(request), store as any, emptyResult({
+      prunedDuplicates: pruned,
+    }));
+
+    expect(request).toHaveBeenCalledOnce();
+    // Byte-identical to the companion's: one shared formatter.
+    expect(sentTexts(request)[0]).toBe(formatDuplicatePruneAlert(pruned));
+  });
+
+  it('sends nothing for a prune when Telegram is disabled', async () => {
+    const request = okNet();
+    const store = tgStore({
+      getTelegramConfig: vi.fn(async () => ({ botToken: 'tok', chatId: '42', enabled: false })),
+    });
+    await deliverAddonAlerts(alertCtx(request), store as any, emptyResult({
+      prunedDuplicates: [{
+        sfinAccountId: 'sfin-1', accountName: 'Savings', txId: 'TRN-1', description: 'x',
+        date: '2026-07-27', amountCents: 250, currency: 'USD', wfId: 'act-2',
+      }],
+    }));
+    expect(request).not.toHaveBeenCalled();
   });
 
   it('runSync delivers the alerts its own core produced', async () => {

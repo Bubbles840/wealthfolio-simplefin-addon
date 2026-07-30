@@ -4,9 +4,11 @@ Findings that survived a review cycle without being fixed, with enough context
 to act on them later. Each says why it was deferred, so a future reader can
 tell "decided against" from "not got to yet".
 
-Last updated: 2026-07-29, after adding the weekly report's "biggest this week"
-section (two new entries under "Smaller items"). Previous revision: 2026-07-29,
-after adding the monthly wrap-up report (three new
+Last updated: 2026-07-29, after fixing the duplicate-transaction import
+(new item 1, which pushed former items 1-5 down to 2-6, plus three new entries
+under "Smaller items"). Previous revision: 2026-07-29, after adding the weekly
+report's "biggest this week" section (two new entries under "Smaller items").
+Earlier: 2026-07-29, after adding the monthly wrap-up report (three new
 entries under "Smaller items"). Earlier: 2026-07-29, after adding the
 large-transaction and balance-drift Telegram alerts (which surfaced new item 3;
 former items 3 and 4 are now 4 and 5). Earlier: 2026-07-29, after fixing the
@@ -95,7 +97,50 @@ pre-placeholder `TRANSFER_OUT` rows, so it should not be "cleaned up".
 
 ---
 
-## 1. The test double models the server's update semantics backwards
+## 1. One transaction id in two accounts corrupts everything keyed by tx id
+
+`shared/sync-core.ts` and `shared/transfers.ts`. Found while fixing the feed
+dedup (2026-07-29) and **left unfixed deliberately** — it is a separate change
+with its own blast radius. Confirmed by running the case, not by reading:
+
+```
+detectTransferPairs([{TRN-x, sfin-1, -1300}, {TRN-x, sfin-2, +1300}])
+  pairs      → [{ outTxId: 'TRN-x', inTxId: 'TRN-x' }]     ← a "pair" of one id
+  typeByTxId → [['TRN-x', 'TRANSFER_IN']]                  ← TRANSFER_OUT lost
+```
+
+Four maps in the run are keyed by SimpleFin tx id **across all accounts**, so a
+second account's row overwrites the first's:
+
+| Map | Consequence of the collision |
+|---|---|
+| `detection.typeByTxId` | `TRANSFER_OUT` is overwritten by `TRANSFER_IN`, so the −$1,300 outflow is written as a $1,300 **inflow**. A $2,600 error on one transfer. |
+| `linkRowByTxId` | `outRow` and `inRow` resolve to the SAME row, so `linkPair` is handed `[leg, leg]`. `linkPairByRecreate` then deletes that one row and creates **two** in one account — manufacturing exactly the duplicate this branch exists to remove — while the other account's leg is never touched or linked. |
+| `descByTxId` | The leg in account A is written with account B's bank description. |
+| `signedByTxId` | Feeds `windowDelta` for drift measurement and the starting-balance baseline with the wrong sign. |
+
+`shared/fake-host.ts`'s `linkPair` only stamps a `sourceGroupId` (it does not
+delete and re-create), which is why no existing test notices any of this — the
+same hole described in item 2 below.
+
+Caveat worth checking against the live database before prioritising: the user's
+data reportedly holds `TRN-41fee96e` as a `TRANSFER_IN` in one account and a
+`TRANSFER_OUT` in another. If those two rows really shared a full transaction id
+the collision above would have typed **both** `TRANSFER_IN`, so either the full
+ids differ beyond the logged prefix, or the two legs were imported on different
+runs (each with only one account's side in the window). Worth resolving, because
+it decides whether this is live or latent.
+
+The feed dedup shipped in this branch is per account and does **not** touch any
+of the above — it neither causes nor hides it.
+
+Fix shape: key everything per (account, tx id) — `Map<string, Map<string,…>>` or
+a composite key — and make `detectTransferPairs` reject a candidate pairing with
+itself. `typeByTxId` needs the account in its key too.
+
+---
+
+## 2. The test double models the server's update semantics backwards
 
 `shared/fake-host.ts`: `saveMany` **replaces** a row on update
 (`rows[idx] = toHostActivity(w.id, w)`), so an omitted `symbol` clears
@@ -122,7 +167,7 @@ final row has no asset and the full amount.
 
 ---
 
-## 2. A failed `linkPair` leaves a leg the relink sweep will never repair
+## 3. A failed `linkPair` leaves a leg the relink sweep will never repair
 
 `shared/sync-core.ts` (a comment at the site records this too): both legs are
 added to `linkedTxIds` *before* `host.linkPair(legs)` is called. When linking
@@ -142,7 +187,7 @@ threshold, stop offering that pair to `linkPair` and let the *next* run's sweep
 
 ---
 
-## 3. ~~The addon consumes alerts it cannot deliver~~ — FIXED
+## 4. ~~The addon consumes alerts it cannot deliver~~ — FIXED
 
 Fixed 2026-07-29 via direction 1 below. `src/utils/sync.ts` now exports
 `deliverAddonAlerts`, called from `runSync` inside the single-flight lock and
@@ -195,8 +240,31 @@ Original text follows, for the reasoning.
 
 ---
 
-## 4. Smaller items
+## 5. Smaller items
 
+- **The duplicate sweep only reaches ids in the current fetch window.**
+  `planDuplicatePrune` requires the transaction id to be one SimpleFin reported
+  for that account on the same run, so a duplicate whose transaction has aged past
+  even the 89-day heal window is never pruned. Deliberate: any Wealthfolio note
+  containing ` · ` parses to a "tx id" (`Lunch · Tuesday`, `Coffee · Tuesday`), and
+  without the bank vouching for the id, a sweep that deletes financial rows cannot
+  tell a duplicated import from two unrelated hand-entered activities. Reachable
+  fix if it ever bites: read the account's full history and require the note to
+  match the exact `<description> · <txId>` shape the syncers write, with the id
+  matching the `TRN-`/UUID form SimpleFin actually issues.
+- **A failed duplicate-prune Telegram notice is not retried.** Unlike a
+  large-transaction alert (which has the `pending_large_tx_alerts` outbox) the
+  prune has no queue: the rows are already deleted, so the message is not
+  re-derivable on the next run. The deletions are still recorded by the per-row
+  `duplicate-prune` log line and on the Sync page, so the information is not lost
+  — only the push. An outbox keyed on the deleted `wfId`s would close it.
+- **Pruning an account makes its drift unmeasurable for that one run,** because
+  `wfValuation` is read before the sweep and so still counts the deleted rows
+  (`createOnly` includes `prunedThisAccount === 0` for exactly this reason). The
+  account reads "in sync" on the Sync page for one cycle even if it is not, and an
+  open drift episode is neither opened nor closed. Same tradeoff the existing
+  update/delete guard already makes; a re-read of the valuation after the sweep
+  would fix it at the cost of another round trip and the same async-recompute lag.
 - **`shared/link-pair.ts`** collects delete errors into `problems` but issues the
   creates anyway, short-circuiting only afterwards. Now that both hosts
   delete-and-re-create, two concurrent syncers can double-create legs. Moving
@@ -258,7 +326,7 @@ Original text follows, for the reasoning.
 
 ---
 
-## 5. Verify on a real instance
+## 6. Verify on a real instance
 
 Not code findings — things a test suite structurally cannot answer.
 

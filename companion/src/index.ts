@@ -13,7 +13,7 @@ import { runSyncCore } from '../../shared/sync-core.js';
 import type { SyncResult } from '../../shared/sync-core.js';
 import { RestSyncHost, RestSyncStore } from './rest-host.js';
 import { WealthfolioClient } from './wealthfolio.js';
-import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatMonthlyWrapUp, formatSyncHealthFooter, formatLargeTransactionAlert, formatBalanceDriftAlert, formatStuckTransferAlert, escapeMarkdown, LARGE_TX_OUTBOX_SECRET_KEY } from '../../shared/telegram.js';
+import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatMonthlyWrapUp, formatSyncHealthFooter, formatLargeTransactionAlert, formatBalanceDriftAlert, formatStuckTransferAlert, formatDuplicatePruneAlert, escapeMarkdown, LARGE_TX_OUTBOX_SECRET_KEY } from '../../shared/telegram.js';
 import type { SyncHealth } from '../../shared/telegram.js';
 import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending } from './sqlite-native.js';
 
@@ -276,6 +276,42 @@ async function rollBackUndeliveredDriftAlerts(
   }
 }
 
+/**
+ * Announces what the reconcile sweep DELETED as surplus copies of transactions
+ * the account already held.
+ *
+ * One message for the whole sweep rather than one per row — a reconcile cleaning
+ * up a long-neglected account would otherwise arrive as a burst of pings — and no
+ * ledger or rollback, unlike the three alerts above: there is no episode to
+ * re-arm, nothing to mark as told, and the rows are already gone. A failed send is
+ * logged and not retried; `runSyncCore` also logs every deletion individually and
+ * the addon's Sync page shows them, so Telegram is not the only record of what
+ * vanished.
+ *
+ * Text comes from `shared/telegram.ts`, the same builder the addon calls, so both
+ * syncers say exactly the same thing — and the escaping of bank descriptions and
+ * account names travels with it.
+ *
+ * Must never throw: it runs after a sync that already succeeded.
+ */
+async function deliverDuplicatePruneNotice(
+  wfClient: WealthfolioClient,
+  pruned: SyncResult['prunedDuplicates'],
+): Promise<void> {
+  if (pruned.length === 0) return;
+  try {
+    const tgRaw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_config').catch(() => null);
+    const tg = parseSecretJson<any>(tgRaw, 'telegram_config');
+    if (!tg || !tg.botToken || !tg.chatId || tg.enabled === false) return;
+    const result = await sendTelegramMessage(tg.botToken, tg.chatId, formatDuplicatePruneAlert(pruned));
+    if (!result.ok) {
+      log(`Duplicate-prune notice failed to send: ${result.description}`);
+    }
+  } catch (err) {
+    debug(`Duplicate-prune notice delivery failed: ${formatError(err)}`);
+  }
+}
+
 /** Addon secret holding large-transaction alerts a previous run could not
  *  deliver — the name comes from `shared/telegram.ts` because the addon drains
  *  the same queue. See `deliverLargeTransactionAlerts` for why an outbox rather
@@ -395,7 +431,7 @@ export async function runCompanionSync(): Promise<SyncResult> {
       log('No SimpleFin access URL found in Wealthfolio addon secrets. Please configure the SimpleFin Sync addon in Wealthfolio first.');
       const empty: SyncResult = {
         imported: 0, skipped: 0, errors: [], stuckTransferAlerts: [],
-        largeTransactionAlerts: [], balanceDriftAlerts: [],
+        largeTransactionAlerts: [], balanceDriftAlerts: [], prunedDuplicates: [],
       };
       // Not-yet-configured is treated as healthy, not a failure: it's the
       // expected state before the user sets up SimpleFin, and would
@@ -435,6 +471,8 @@ export async function runCompanionSync(): Promise<SyncResult> {
       if (!delivered) undeliveredDriftAccountIds.push(alert.sfinAccountId);
     }
     await rollBackUndeliveredDriftAlerts(store, undeliveredDriftAccountIds);
+
+    await deliverDuplicatePruneNotice(wfClient, result.prunedDuplicates);
 
     try {
       const tgRaw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_config');

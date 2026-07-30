@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { runSyncCore, VALUATION_POLL, IN_TRANSIT_TIMEOUT_SECONDS, descriptionFromComment, txIdFromComment, IN_TRANSIT_COMMENT_PREFIX } from './sync-core.js';
+import { runSyncCore, VALUATION_POLL, IN_TRANSIT_TIMEOUT_SECONDS, descriptionFromComment, txIdFromComment, planDuplicatePrune, IN_TRANSIT_COMMENT_PREFIX } from './sync-core.js';
 import { createFakeHost, type FakeHostSeed } from './fake-host.js';
 
 describe('runSyncCore', () => {
@@ -1153,6 +1153,229 @@ describe('runSyncCore', () => {
     expect(creates.filter((c) => c.comment.includes('TRN-41fee96e'))).toHaveLength(2);
     expect(new Set(creates.map((c) => c.accountId))).toEqual(new Set(['wf-a', 'wf-b']));
     expect(result.imported).toBe(2);
+  });
+
+  // ── Pruning duplicates already in the database (heal/reconcile only) ──────
+
+  /** Recent enough that the unpaired PNC transfer is still "in transit" (the
+   *  placeholder window is 10 days), so the stored rows below are exactly the
+   *  spending-neutral CREDIT shape production holds. */
+  const pncEpoch = () => Math.floor(Date.now() / 1000) - 2 * 24 * 60 * 60;
+  const INTEREST_EPOCH = Math.floor(Date.parse('2026-06-30T12:00:00Z') / 1000);
+  const INTEREST_DATE = '2026-06-30';
+
+  /**
+   * The live incident, reproduced: the user's savings account holding TWO copies
+   * of each of two SimpleFin transactions — the $1,300 in-transit PNC transfer
+   * (stored as a CREDIT with the amount on the FEE side, hence `amount: 0`) and
+   * the $2.50 monthly interest. Net effect on his balance was −$1,297.50.
+   *
+   * The duplicate ids are deliberately stored with the HIGHER activity id first,
+   * so "keep the lowest id" is tested against insertion order rather than
+   * accidentally agreeing with it.
+   */
+  const duplicateSeed = (): FakeHostSeed => {
+    const pnc = pncEpoch();
+    const pncDate = new Date(pnc * 1000).toISOString().slice(0, 10);
+    const inTransitComment =
+      '↔️ In-transit transfer · PNC BANK 1234 Transfer · TRN-3917f117';
+    return {
+      accountSet: { errors: [], accounts: [{
+        id: 'sfin-savings', name: 'Savings Bank', currency: 'USD',
+        balance: '610.65', 'balance-date': 1,
+        transactions: [
+          { id: 'TRN-3917f117', posted: pnc, amount: '-1300.00', description: 'PNC BANK 1234 Transfer' },
+          { id: 'TRN-ce426394', posted: INTEREST_EPOCH, amount: '2.50', description: 'Monthly Interest Paid' },
+        ],
+      }] },
+      mapping: { 'sfin-savings': 'wf-sav' },
+      accountTypes: { 'wf-sav': 'CASH' },
+      accountNames: { 'wf-sav': 'Savings' },
+      existing: new Map([['wf-sav', [
+        { id: 'act-2', accountId: 'wf-sav', activityType: 'CREDIT', date: pncDate,
+          amount: 0, comment: inTransitComment, sourceGroupId: null },
+        { id: 'act-1', accountId: 'wf-sav', activityType: 'CREDIT', date: pncDate,
+          amount: 0, comment: inTransitComment, sourceGroupId: null },
+        { id: 'act-4', accountId: 'wf-sav', activityType: 'DEPOSIT', date: INTEREST_DATE,
+          amount: 2.5, comment: 'Monthly Interest Paid · TRN-ce426394', sourceGroupId: null },
+        { id: 'act-3', accountId: 'wf-sav', activityType: 'DEPOSIT', date: INTEREST_DATE,
+          amount: 2.5, comment: 'Monthly Interest Paid · TRN-ce426394', sourceGroupId: null },
+      ]]]),
+    };
+  };
+
+  it('prunes the live duplicate pair down to one row each on a reconcile', async () => {
+    const { host, store, saved, activities } = createFakeHost(duplicateSeed());
+    const result = await runSyncCore(host, store, { heal: true });
+
+    const deleted = saved.flatMap((s) => s.deleteIds ?? []);
+    expect(deleted).toEqual(['act-2', 'act-4']);
+    // One copy of each transaction survives, and it is the lowest-id one.
+    const left = activities.get('wf-sav')!.map((r) => r.id).sort();
+    expect(left).toEqual(['act-1', 'act-3']);
+
+    expect(result.prunedDuplicates).toEqual([
+      {
+        sfinAccountId: 'sfin-savings',
+        accountName: 'Savings',
+        txId: 'TRN-3917f117',
+        // Stripped of both the in-transit prefix and the tx-id suffix.
+        description: 'PNC BANK 1234 Transfer',
+        date: new Date(pncEpoch() * 1000).toISOString().slice(0, 10),
+        // The FULL magnitude, from the feed: the stored row books it as `fee`, so
+        // its own `amount` is 0 and reporting that would say "$0.00 removed".
+        amountCents: 130000,
+        currency: 'USD',
+        wfId: 'act-2',
+      },
+      {
+        sfinAccountId: 'sfin-savings',
+        accountName: 'Savings',
+        txId: 'TRN-ce426394',
+        description: 'Monthly Interest Paid',
+        date: INTEREST_DATE,
+        amountCents: 250,
+        currency: 'USD',
+        wfId: 'act-4',
+      },
+    ]);
+  });
+
+  it('does NOT prune on a routine sync — only heal/reconcile deletes rows', async () => {
+    const { host, store, saved, activities } = createFakeHost(duplicateSeed());
+    const result = await runSyncCore(host, store, {});
+    expect(saved.flatMap((s) => s.deleteIds ?? [])).toEqual([]);
+    expect(result.prunedDuplicates).toEqual([]);
+    expect(activities.get('wf-sav')).toHaveLength(4);
+  });
+
+  it('converges: a second reconcile finds nothing left to prune', async () => {
+    const { host, store, saved } = createFakeHost(duplicateSeed());
+    await runSyncCore(host, store, { heal: true });
+    const deletesAfterFirst = saved.flatMap((s) => s.deleteIds ?? []).length;
+    await runSyncCore(host, store, { heal: true });
+    expect(saved.flatMap((s) => s.deleteIds ?? []).length).toBe(deletesAfterFirst);
+  });
+
+  it('never deletes a starting-balance baseline or two same-date balance adjustments', async () => {
+    // The sharpest trap in this sweep: `txIdFromComment` reads the segment after
+    // the last ' · ', so a starting-balance row yields the ACCOUNT ID as its
+    // "transaction id" and a balance adjustment yields its DATE — so two
+    // adjustments written on one day look exactly like a duplicate pair, and
+    // deleting the baseline would silently corrupt the account's whole history.
+    const seed = duplicateSeed();
+    seed.existing = new Map([['wf-sav', [
+      { id: 'sb-1', accountId: 'wf-sav', activityType: 'DEPOSIT', date: '2026-01-01',
+        amount: 500, comment: 'Starting balance · sfin-savings', sourceGroupId: null },
+      { id: 'adj-1', accountId: 'wf-sav', activityType: 'CREDIT', date: '2026-07-29',
+        amount: 12.34, comment: 'Balance adjustment · sfin-savings · 2026-07-29', sourceGroupId: null },
+      { id: 'adj-2', accountId: 'wf-sav', activityType: 'CREDIT', date: '2026-07-29',
+        amount: 56.78, comment: 'Balance adjustment · sfin-savings · 2026-07-29', sourceGroupId: null },
+    ]]]);
+    const { host, store, saved, activities } = createFakeHost(seed);
+    const result = await runSyncCore(host, store, { heal: true });
+    expect(saved.flatMap((s) => s.deleteIds ?? [])).toEqual([]);
+    expect(result.prunedDuplicates).toEqual([]);
+    expect(activities.get('wf-sav')!.map((r) => r.id)).toEqual(
+      expect.arrayContaining(['sb-1', 'adj-1', 'adj-2']),
+    );
+  });
+
+  it('leaves one transaction id that legitimately sits in two accounts alone', async () => {
+    // Confirmed live (TRN-41fee96e). The sweep is per account, so a single copy
+    // in each of two accounts is not a duplicate — deleting one would destroy
+    // half of a transfer pair.
+    const shared = {
+      id: 'TRN-41fee96e', posted: INTEREST_EPOCH, amount: '25.00',
+      description: 'Interest Paid',
+    };
+    const row = (id: string, accountId: string) => ({
+      id, accountId, activityType: 'DEPOSIT', date: INTEREST_DATE, amount: 25,
+      comment: 'Interest Paid · TRN-41fee96e', sourceGroupId: null,
+    });
+    const { host, store, saved } = createFakeHost({
+      accountSet: { errors: [], accounts: [
+        { id: 'sfin-1', name: 'Savings', currency: 'USD', balance: '0', 'balance-date': 1,
+          transactions: [{ ...shared }] },
+        { id: 'sfin-2', name: 'Spend', currency: 'USD', balance: '0', 'balance-date': 1,
+          transactions: [{ ...shared }] },
+      ] },
+      mapping: { 'sfin-1': 'wf-a', 'sfin-2': 'wf-b' },
+      accountTypes: { 'wf-a': 'CASH', 'wf-b': 'CASH' },
+      existing: new Map([
+        ['wf-a', [row('act-a', 'wf-a')]],
+        ['wf-b', [row('act-b', 'wf-b')]],
+      ]),
+    });
+    const result = await runSyncCore(host, store, { heal: true });
+    expect(saved.flatMap((s) => s.deleteIds ?? [])).toEqual([]);
+    expect(result.prunedDuplicates).toEqual([]);
+  });
+
+  it('does not measure drift (or plug it) on an account it pruned this run', async () => {
+    // `wfValuation` was read BEFORE the prune, so it still counts the rows just
+    // deleted — exactly as stale as it is after an update or a delete, which the
+    // measurement already refuses to trust. With aggressive auto-heal on,
+    // believing it would write the duplicate's own amount into the account as a
+    // balance adjustment.
+    const seed = duplicateSeed();
+    seed.valuations = new Map([['wf-sav', -686.85]]);
+    seed.autoHeal = true;
+    seed.autoAdjust = true;
+    const { host, store, imported } = createFakeHost(seed);
+    const result = await runSyncCore(host, store, { heal: true });
+    expect(result.prunedDuplicates).toHaveLength(2);
+    expect(imported.flat().filter((r) => r.comment.startsWith('Balance adjustment · '))).toEqual([]);
+    const balances = (await store.getAccountBalances()) as Record<string, { drift: number | null }>;
+    expect(balances['sfin-savings'].drift).toBeNull();
+    expect(result.balanceDriftAlerts).toEqual([]);
+  });
+});
+
+describe('planDuplicatePrune', () => {
+  const row = (wfId: string, txId: string, comment: string) => ({
+    wfId, wfAccountId: 'wf-a', txId, absCents: 100, type: 'DEPOSIT',
+    date: '2026-07-01', pending: false, comment,
+  });
+
+  it('keeps the lowest activity id and returns every other copy', () => {
+    const rows = [
+      row('c', 'TRN-1', 'Coffee · TRN-1'),
+      row('a', 'TRN-1', 'Coffee · TRN-1'),
+      row('b', 'TRN-1', 'Coffee · TRN-1'),
+    ];
+    const removed = planDuplicatePrune(rows, new Set(['TRN-1']));
+    expect(removed.map((r) => r.wfId)).toEqual(['b', 'c']);
+  });
+
+  it('refuses to touch internal marker rows even when the feed claims their parsed id', () => {
+    // `txIdFromComment` gives the ACCOUNT ID for a starting balance and the DATE
+    // for a balance adjustment. Both are excluded by NOTE PREFIX, never by the
+    // shape of the parsed id — so even a feed that somehow contained those exact
+    // strings cannot make the sweep delete bookkeeping rows.
+    const rows = [
+      row('sb-1', 'sfin-1', 'Starting balance · sfin-1'),
+      row('sb-2', 'sfin-1', 'Starting balance · sfin-1'),
+      row('adj-1', '2026-07-29', 'Balance adjustment · sfin-1 · 2026-07-29'),
+      row('adj-2', '2026-07-29', 'Balance adjustment · sfin-1 · 2026-07-29'),
+    ];
+    expect(planDuplicatePrune(rows, new Set(['sfin-1', '2026-07-29']))).toEqual([]);
+  });
+
+  it('ignores duplicates whose id this run\'s feed does not vouch for', () => {
+    // A hand-entered Wealthfolio note ending in the same word parses to the same
+    // "tx id" ("Lunch · Tuesday" / "Coffee · Tuesday"). Requiring SimpleFin to
+    // have just reported the id for this account is what keeps such rows out.
+    const rows = [
+      row('h-1', 'Tuesday', 'Lunch · Tuesday'),
+      row('h-2', 'Tuesday', 'Coffee · Tuesday'),
+    ];
+    expect(planDuplicatePrune(rows, new Set(['TRN-1']))).toEqual([]);
+  });
+
+  it('returns nothing when every id appears once', () => {
+    const rows = [row('a', 'TRN-1', 'Coffee · TRN-1'), row('b', 'TRN-2', 'Tea · TRN-2')];
+    expect(planDuplicatePrune(rows, new Set(['TRN-1', 'TRN-2']))).toEqual([]);
   });
 });
 

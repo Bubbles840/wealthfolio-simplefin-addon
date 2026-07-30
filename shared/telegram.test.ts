@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatMonthlyWrapUp, formatSyncHealthFooter, escapeMarkdown, weeklyEnvelope, moneyWhole, formatLargeTransactionAlert, formatBalanceDriftAlert, formatStuckTransferAlert } from './telegram.js';
+import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatMonthlyWrapUp, formatSyncHealthFooter, escapeMarkdown, weeklyEnvelope, moneyWhole, formatLargeTransactionAlert, formatBalanceDriftAlert, formatStuckTransferAlert, formatDuplicatePruneAlert } from './telegram.js';
 
 const mockFetch = vi.fn();
 vi.stubGlobal('fetch', mockFetch);
@@ -975,6 +975,70 @@ describe('formatBalanceDriftAlert', () => {
     const unescaped = text.replace(/\\[_*`[]/g, '');
     expect((unescaped.match(/\*/g) ?? [])).toHaveLength(6);
     expect(unescaped.match(/_/g)).toBeNull();
+  });
+});
+
+describe('formatDuplicatePruneAlert', () => {
+  /** The two rows the sweep removed from the user's live savings account. */
+  const liveRows = [
+    {
+      accountName: 'Savings', description: 'PNC BANK 1234 Transfer',
+      date: '2026-07-27', amountCents: 130000, currency: 'USD',
+    },
+    {
+      accountName: 'Savings', description: 'Monthly Interest Paid',
+      date: '2026-06-30', amountCents: 250, currency: 'USD',
+    },
+  ];
+
+  it('lists every removed row with its figure, date, description and account', () => {
+    expect(formatDuplicatePruneAlert(liveRows)).toBe(
+      '🧹 *Duplicate activities removed* — 2 rows\n'
+      + 'Each of these was stored twice, so the extra copy was deleted during reconcile:\n'
+      + '• *$1,300.00* USD · 2026-07-27 · PNC BANK 1234 Transfer · Savings\n'
+      + '• *$2.50* USD · 2026-06-30 · Monthly Interest Paid · Savings\n'
+      + 'Nothing to do — your balances should line up again.',
+    );
+  });
+
+  it('says "1 row" for a single removal', () => {
+    expect(formatDuplicatePruneAlert([liveRows[1]])).toContain(
+      '🧹 *Duplicate activities removed* — 1 row\n',
+    );
+  });
+
+  it('renders a row whose bank description is empty without an empty field', () => {
+    const text = formatDuplicatePruneAlert([{ ...liveRows[1], description: '' }]);
+    expect(text).toContain('• *$2.50* USD · 2026-06-30 · Savings');
+  });
+
+  it('escapes a `*`/`_`-bearing description and account name, outside every entity', () => {
+    // Card-network descriptors are full of `*`, and legacy Markdown ignores a
+    // backslash escape INSIDE an entity — so an unescaped one would leave a live
+    // opener and Telegram would reject the whole message with a 400.
+    const text = formatDuplicatePruneAlert([{
+      accountName: 'Joint_Savings', description: 'AMAZON *MKTPLACE_US',
+      date: '2026-07-27', amountCents: 130000, currency: 'USD',
+    }]);
+    expect(text).toContain('• *$1,300.00* USD · 2026-07-27 · AMAZON \\*MKTPLACE\\_US · Joint\\_Savings');
+    // Two deliberate entities only: the fixed heading and the figure.
+    const unescaped = text.replace(/\\[_*`[]/g, '');
+    expect(unescaped.match(/\*/g) ?? []).toHaveLength(4);
+    expect(unescaped.match(/_/g)).toBeNull();
+  });
+
+  it('caps the list so a big sweep cannot blow the message length limit', () => {
+    const many = Array.from({ length: 14 }, (_, i) => ({
+      ...liveRows[1], description: `Row ${i}`,
+    }));
+    const text = formatDuplicatePruneAlert(many);
+    expect(text).toContain('— 14 rows');
+    expect((text.match(/^• /gm) ?? [])).toHaveLength(10);
+    expect(text).toContain('…and 4 more');
+  });
+
+  it('renders nothing for an empty list — there is no news to send', () => {
+    expect(formatDuplicatePruneAlert([])).toBe('');
   });
 });
 

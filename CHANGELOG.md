@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A SimpleFin payload that reported the same transaction twice for one account
+  imported it twice. Both copies were planned as creates and landed in a single
+  bulk request, which is the one place Wealthfolio's duplicate guard cannot
+  compare rows against each other, so a savings account silently read $1,297.50
+  low. Each account's transaction list is now collapsed to one entry per
+  transaction id before anything is planned from it — preferring a posted copy
+  over a pending one, and otherwise the last occurrence — and every dropped copy
+  is logged. Deduplication is per account: one transaction id legitimately
+  appears in two accounts as the two legs of an internal transfer.
+
+### Added
+
+- `↻ Reconcile & link` (and auto-heal) now removes activities that are surplus
+  copies of a transaction the account already holds, keeping one of each. It
+  reports exactly what it deleted — on the Sync page, as a Telegram message, and
+  as a log line per row — because automatic deletion of a financial record must
+  not be silent. Starting-balance baselines and balance-adjustment entries are
+  excluded by their note prefixes and can never be swept, and only transaction
+  ids the bank reported for that account on the same run are eligible.
+
 - Budget targets read from Wealthfolio's database picked whichever row was
   edited most recently, so editing a category's `default` budget after setting
   a month-specific one silently reported the wrong number. Month-specific rows

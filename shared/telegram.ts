@@ -289,6 +289,72 @@ export function formatBalanceDriftAlert(alert: {
   );
 }
 
+/** One activity the reconcile sweep deleted. Structurally the display half of
+ *  `SyncResult.prunedDuplicates` — the ids stay behind in the log. */
+export interface PrunedDuplicateRow {
+  accountName: string;
+  description: string;
+  /** YYYY-MM-DD, quoted verbatim so it matches what Wealthfolio shows. */
+  date: string;
+  amountCents: number;
+  currency: string;
+}
+
+/** How many removed rows the message itemises before summarising the rest.
+ *  Telegram rejects a message over 4096 characters outright, and a sweep over a
+ *  long-neglected account could in principle find dozens. */
+export const DUPLICATE_PRUNE_LIST_LIMIT = 10;
+
+/**
+ * Notice that the reconcile sweep DELETED activities as surplus copies of
+ * transactions the account already held.
+ *
+ * This message exists because the deletion is automatic. Removing a financial
+ * record without saying so is not acceptable even when the removal is correct, so
+ * every swept row is itemised with the figure, date, description and account —
+ * enough for the reader to go and confirm that what is gone is what they expected
+ * to be gone.
+ *
+ * Sent by BOTH hosts (the companion from its cron cycle, the addon from
+ * `runSync`), which is why it is built here rather than in either one.
+ *
+ * Bank descriptions and account names are escaped AND kept outside every Markdown
+ * entity. Legacy Markdown does not honour a backslash escape inside one, so
+ * `*AMAZON \*MKTPLACE*` still leaves a live opener and Telegram rejects the WHOLE
+ * message with a 400 — the descriptions here come from card-network descriptors,
+ * which are the likeliest text in the system to carry a stray `*`. Bold sits only
+ * on the fixed heading and on the figures, which contain no specials.
+ *
+ * An empty list renders the empty string: there is no news, and a caller must not
+ * send it (Telegram 400s on empty text). Both delivery paths guard on length.
+ */
+export function formatDuplicatePruneAlert(rows: PrunedDuplicateRow[]): string {
+  if (rows.length === 0) return '';
+  const shown = rows.slice(0, DUPLICATE_PRUNE_LIST_LIMIT);
+  const lines = shown.map((r) => {
+    // Cents always kept: these are exact rows the reader may go and look for, the
+    // same reasoning as formatLargeTransactionAlert.
+    const figure = formatDollars(Math.abs(r.amountCents) / 100, 2);
+    const fields = [
+      escapeMarkdown(r.currency),
+      escapeMarkdown(r.date),
+      // A SimpleFin description can legitimately be empty — render the row
+      // without the field rather than with a blank one.
+      escapeMarkdown(r.description),
+      escapeMarkdown(r.accountName),
+    ].filter((f) => f !== '');
+    return `• *${figure}* ${fields.join(' · ')}`;
+  });
+  const overflow = rows.length - shown.length;
+  if (overflow > 0) lines.push(`…and ${overflow} more`);
+  return (
+    `🧹 *Duplicate activities removed* — ${rows.length} row${rows.length === 1 ? '' : 's'}\n`
+    + 'Each of these was stored twice, so the extra copy was deleted during reconcile:\n'
+    + `${lines.join('\n')}\n`
+    + 'Nothing to do — your balances should line up again.'
+  );
+}
+
 export interface DailyDigestCategory {
   name: string;
   /** Spend for the whole calendar month so far, for this category. */

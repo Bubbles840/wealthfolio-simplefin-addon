@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import type { AddonContext } from '@wealthfolio/addon-sdk';
 import { runSync, INTERVAL_SKIP_MESSAGE, applyBalanceAdjustment } from '../utils/sync';
+import type { SyncResult } from '../utils/sync';
 import { fetchAccounts } from '../utils/simplefin';
 import { SyncStatus } from '../components/SyncStatus';
 import { RuleEditor } from '../components/RuleEditor';
@@ -128,6 +129,10 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
   // readable message WITHOUT the diagnosis being discarded.
   const [errorDetail, setErrorDetail] = useState<string | undefined>(undefined);
   const [intervalBlocked, setIntervalBlocked] = useState(false);
+  // What the last run's reconcile sweep DELETED as duplicate copies. Shown
+  // because the deletion is automatic and Telegram is optional: the page is the
+  // one place a user is guaranteed to be able to see what vanished.
+  const [prunedDuplicates, setPrunedDuplicates] = useState<SyncResult['prunedDuplicates']>([]);
   const [sfinNames, setSfinNames] = useState<Record<string, string>>({});
   const [wfNames, setWfNames] = useState<Record<string, string>>({});
   const [balances, setBalances] = useState<Record<string, AccountBalanceInfo>>({});
@@ -303,6 +308,11 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
       }
       if (result.errors.length > 0) setError(result.errors.join('; '));
       setImported(result.imported);
+      // Always assigned, never appended: the banner describes THIS run, so a
+      // clean run has to clear a previous one's list rather than leave it on
+      // screen looking current. (The sweep is heal-only, so a routine sync
+      // legitimately clears it.)
+      setPrunedDuplicates(result.prunedDuplicates ?? []);
       // runSync stamps lastSyncAt and the balances itself; mirror them
       const last = await store.getLastSyncAt();
       setLastSyncAt(last);
@@ -323,6 +333,7 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
       const result = await runSync(ctx, store, { heal: true });
       if (result.errors.length > 0) setError(result.errors.join('; '));
       setImported(result.imported);
+      setPrunedDuplicates(result.prunedDuplicates ?? []);
       setLastSyncAt(await store.getLastSyncAt());
       loadBalances();
     } catch (e: any) {
@@ -461,6 +472,31 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
           <Button variant="ghost" onClick={() => doSync(true)} disabled={syncing} style={{ marginLeft: 4 }}>
             Sync anyway
           </Button>
+        </div>
+      )}
+
+      {/* What the reconcile sweep deleted. A needs-to-be-seen notice rather than
+          a collapsible detail: rows were removed from the user's ledger without
+          being asked about, so each one is itemised with the figure, date,
+          description and account — enough to go and verify in Wealthfolio. */}
+      {prunedDuplicates.length > 0 && (
+        <div className="sfin-banner-warn">
+          <span aria-hidden>🧹</span>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div>
+              Removed {prunedDuplicates.length} duplicate{' '}
+              {prunedDuplicates.length === 1 ? 'activity' : 'activities'} — each of these
+              was stored twice, so the extra copy was deleted.
+            </div>
+            <ul style={{ margin: '8px 0 0', paddingLeft: 18 }}>
+              {prunedDuplicates.map((p) => (
+                <li key={p.wfId}>
+                  <b>{money(p.amountCents / 100, p.currency)}</b> · {p.date}
+                  {p.description ? ` · ${p.description}` : ''} · {p.accountName}
+                </li>
+              ))}
+            </ul>
+          </div>
         </div>
       )}
 

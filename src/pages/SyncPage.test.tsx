@@ -242,6 +242,43 @@ describe('SyncPage', () => {
     });
   });
 
+  // ── Pruned duplicates ──────────────────────────────────────────────────
+  it('reports the duplicate rows a reconcile deleted, with what each one was', async () => {
+    // Automatic deletion of financial records must not be silent, and Telegram
+    // is optional — so the page itself has to say what vanished.
+    vi.mocked(runSync).mockResolvedValueOnce({
+      imported: 0, skipped: 2, errors: [],
+      prunedDuplicates: [
+        { sfinAccountId: 'sfin-1', accountName: 'Savings', txId: 'TRN-3917f117',
+          description: 'PNC BANK 1234 Transfer', date: '2026-07-27', amountCents: 130000,
+          currency: 'USD', wfId: 'act-2' },
+        { sfinAccountId: 'sfin-1', accountName: 'Savings', txId: 'TRN-ce426394',
+          description: 'Monthly Interest Paid', date: '2026-06-30', amountCents: 250,
+          currency: 'USD', wfId: 'act-4' },
+      ],
+    } as any);
+    render(<SyncPage {...makeProps()} />);
+    await waitFor(() => screen.getByRole('button', { name: /reconcile & link/i }));
+    fireEvent.click(screen.getByRole('button', { name: /reconcile & link/i }));
+
+    const banner = await screen.findByText(/Removed 2 duplicate activities/i);
+    const box = banner.closest('.sfin-banner-warn')!;
+    expect(box.textContent).toContain('$1,300.00');
+    expect(box.textContent).toContain('PNC BANK 1234 Transfer');
+    expect(box.textContent).toContain('2026-07-27');
+    expect(box.textContent).toContain('$2.50');
+    expect(box.textContent).toContain('Monthly Interest Paid');
+    expect(box.textContent).toContain('Savings');
+  });
+
+  it('says nothing about duplicates when a sync pruned none', async () => {
+    render(<SyncPage {...makeProps()} />);
+    await waitFor(() => screen.getByRole('button', { name: /sync now/i }));
+    fireEvent.click(screen.getByRole('button', { name: /sync now/i }));
+    await waitFor(() => expect(screen.getByText(/5 transactions/i)).toBeInTheDocument());
+    expect(screen.queryByText(/duplicate activit/i)).not.toBeInTheDocument();
+  });
+
   // ── Collapsible config cards ───────────────────────────────────────────
   it('keeps the daily-driver view visible and every config card collapsed', async () => {
     const props = makeProps();
