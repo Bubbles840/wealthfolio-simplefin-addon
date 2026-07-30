@@ -653,6 +653,32 @@ describe('runSyncCore', () => {
     });
   });
 
+  /**
+   * The ledger is the ONLY thing a host that can't read `sourceGroupId` back
+   * (the companion) has to decide whether a pair is already linked. Keyed by
+   * bare tx id, a shared-id pair collapses to ONE entry — and that entry cannot
+   * distinguish "both legs confirmed" from "the echo collapsed and only one leg
+   * was grouped", because the writer that produced it could not tell either.
+   * Trusting it means the companion skips a half-linked pair forever, which
+   * silently leaves a transfer leg counting as spending.
+   */
+  it('re-verifies a shared-id pair that only a legacy bare-txId entry vouches for', async () => {
+    const sharedId = (): FakeHostSeed => ({
+      accountSet: { errors: [], accounts: [
+        { id: 'sfin-1', name: 'Checking', currency: 'USD', balance: '0', 'balance-date': 1,
+          transactions: [{ id: 'TRN-shared', posted: 1700000000, amount: '-500.00', description: 'Payment to Card' }] },
+        { id: 'sfin-2', name: 'Card', currency: 'USD', balance: '0', 'balance-date': 1,
+          transactions: [{ id: 'TRN-shared', posted: 1700086400, amount: '500.00', description: 'PAYMENT THANK YOU' }] },
+      ] },
+      mapping: { 'sfin-1': 'wf-a', 'sfin-2': 'wf-b' },
+    });
+    const { host, store, links } = createFakeHost(sharedId());
+    host.capabilities.readsSourceGroupId = false;
+    await store.setLinkedGroups({ 'TRN-shared': 'wf-transfer-g1' });
+    await runSyncCore(host, store, {});
+    expect(links).toHaveLength(1);
+  });
+
   // --- Task 7: stuck-transfer failure tracking and alerting ---
 
   it('reports a stuck-transfer alert after 3 consecutive failed link attempts on the same pair', async () => {
@@ -676,6 +702,23 @@ describe('runSyncCore', () => {
       // way the real companion persists addon secrets across cron runs.
       seed.transferLinkFailures = await store.getTransferLinkFailures();
     }
+  });
+
+  /**
+   * `linkPair` deletes both rows before re-creating them, so a refused re-create
+   * loses financial rows. Reporting only "1 transfer leg(s) could not be linked"
+   * gives no way to tell a rejected duplicate from a validation error from a
+   * silently dropped group — and that message is heal-gated, so a routine sync
+   * could lose rows and say nothing at all. The reason travels with the failure.
+   */
+  it('surfaces WHY a link failed, not just that one did', async () => {
+    const { host, store } = createFakeHost(transferPairSeed());
+    host.linkPair = async () => ({
+      linked: false,
+      problems: ['save (create): duplicate activity'],
+    });
+    const result = await runSyncCore(host, store, { force: true });
+    expect(result.errors.join('\n')).toContain('duplicate activity');
   });
 
   it('does not re-alert on the same pair after it has already alerted once', async () => {

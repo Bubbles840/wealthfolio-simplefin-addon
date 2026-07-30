@@ -71,6 +71,13 @@ export interface LinkLeg {
 export interface LinkResult {
   linked: boolean;
   groupId?: string;
+  /** Why the link failed, when it did. Present only on `linked: false`.
+   *
+   *  Linking DELETES both rows before re-creating them, so a refused re-create
+   *  loses financial rows — the reason has to reach the caller. It used to be
+   *  collected and discarded, leaving "a leg could not be linked" as the only
+   *  evidence anywhere. */
+  problems?: string[];
 }
 
 /** A row for the relaxed import endpoint (starting balances, plugs). */

@@ -127,4 +127,43 @@ describe('linkPairByRecreate', () => {
     const res = await linkPairByRecreate(saveMany, [leg('a', 'wf-a', 'TRANSFER_OUT'), leg('b', 'wf-b', 'TRANSFER_IN')]);
     expect(res.linked).toBe(false);
   });
+
+  /**
+   * This function DELETES two financial rows before re-creating them. When the
+   * re-create is refused the rows are already gone, which makes it the highest-
+   * consequence failure in the whole sync — and it used to collect every host
+   * error into a local `problems` array and then throw it away, returning a bare
+   * `{ linked: false }`. The caller could report only "a leg could not be
+   * linked", so the actual reason (a rejected duplicate, a validation error)
+   * never reached a log, a UI banner, or Telegram.
+   */
+  it('returns the host errors that caused the failure, so the reason is not lost', async () => {
+    const saveMany = async (req: SaveManyRequest): Promise<SaveManyResult> =>
+      req.deleteIds
+        ? { created: [], updated: [], errors: [] }
+        : { created: [], updated: [], errors: [{ action: 'create', message: 'duplicate activity' }] };
+    const res = await linkPairByRecreate(saveMany, [
+      leg('a', 'wf-a', 'TRANSFER_OUT'),
+      leg('b', 'wf-b', 'TRANSFER_IN'),
+    ]);
+    expect(res.linked).toBe(false);
+    expect(res.problems).toEqual(['save (create): duplicate activity']);
+  });
+
+  it('explains a silently dropped group, so no failure is reasonless', async () => {
+    const saveMany = async (req: SaveManyRequest): Promise<SaveManyResult> => ({
+      created: (req.creates ?? []).map((c, i) => ({
+        id: `new-${i}`, accountId: c.accountId, activityType: c.activityType,
+        date: c.activityDate, amount: c.amount ?? null, comment: c.comment,
+        sourceGroupId: null,
+      })),
+      updated: [], errors: [],
+    });
+    const res = await linkPairByRecreate(saveMany, [
+      leg('a', 'wf-a', 'TRANSFER_OUT'),
+      leg('b', 'wf-b', 'TRANSFER_IN'),
+    ]);
+    expect(res.linked).toBe(false);
+    expect(res.problems?.join(' ')).toMatch(/group/i);
+  });
 });

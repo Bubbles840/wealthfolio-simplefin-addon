@@ -8,7 +8,7 @@ import type { FeedTx, ExistingRow } from './reconcile.js';
  *  WRITING the prefix, so importers keep finding the name here. */
 export { IN_TRANSIT_COMMENT_PREFIX };
 import type { ActivityType, SimplefinTransaction } from './types.js';
-import type { ActivityWrite, ImportRow, LinkLeg, SyncHost, SyncStore } from './sync-host.js';
+import type { ActivityWrite, ImportRow, LinkLeg, LinkResult, SyncHost, SyncStore } from './sync-host.js';
 
 /**
  * A datable timestamp for a SimpleFin transaction: `posted` when present, else
@@ -959,7 +959,7 @@ export async function runSyncCore(
   let ledgerChanged = false;
   // txIds whose pair the ledger already vouches for. Empty (and unused) when the
   // host can read groups back off the rows.
-  const ledgerLinkedTxIds = new Set<string>();
+  const ledgerLinkedKeys = new Set<string>();
   if (!readsGroups) {
     // One-time migration: entries whose gid predates TRANSFER_GROUP_PREFIX were
     // written optimistically (before the ledger was reconciled against what
@@ -973,14 +973,26 @@ export async function runSyncCore(
       }
     }
     for (const { out, in: inLeg } of detection.pairs) {
-      const existingGid = ledger[out.txId] ?? ledger[inLeg.txId];
+      const outKey = accountTxKey(out.accountId, out.txId);
+      const inKey = accountTxKey(inLeg.accountId, inLeg.txId);
       // Confirmed-linked pairs (both legs on the same gid, adopted from a
-      // previous run's report) are skipped — no churn, on a sync or a heal. When
-      // the two legs share one id these are the same lookup, which is exactly
-      // right: one entry vouches for the one pair that id can belong to.
-      if (existingGid !== undefined && ledger[out.txId] === existingGid && ledger[inLeg.txId] === existingGid) {
-        ledgerLinkedTxIds.add(out.txId);
-        ledgerLinkedTxIds.add(inLeg.txId);
+      // previous run's report) are skipped — no churn, on a sync or a heal.
+      //
+      // Per-leg entries are unambiguous: one key per leg, always.
+      const perLeg = ledger[outKey] !== undefined && ledger[outKey] === ledger[inKey];
+      // A LEGACY bare-txId entry is trusted only where the two legs carry
+      // DIFFERENT ids, because there one entry per id still means one per leg.
+      // When SimpleFin issues ONE id for both sides, the two lookups collapse
+      // into a single entry that cannot distinguish "both legs confirmed" from
+      // "the echo collapsed and only one leg was grouped" — and the writer that
+      // produced it could not tell either, so it is not evidence. Such a pair is
+      // re-verified exactly once and rewritten in the per-leg shape below.
+      const legacy = out.txId !== inLeg.txId
+        && ledger[out.txId] !== undefined
+        && ledger[out.txId] === ledger[inLeg.txId];
+      if (perLeg || legacy) {
+        ledgerLinkedKeys.add(outKey);
+        ledgerLinkedKeys.add(inKey);
       }
     }
   }
@@ -1614,7 +1626,10 @@ export async function runSyncCore(
   // sweep at the end of the run, which asks "was THIS ROW already dealt with" —
   // a question a bare tx id cannot answer once two accounts share one.
   const linkedKeys = new Set<string>();
-  const pairsToLink: Array<[LinkLeg, LinkLeg]> = [];
+  // Each entry carries the two per-leg ledger keys alongside the legs, because
+  // `LinkLeg.accountId` is the WEALTHFOLIO id while these keys are SimpleFin-
+  // scoped — the leg alone cannot rebuild its own key.
+  const pairsToLink: Array<{ legs: [LinkLeg, LinkLeg]; keys: [string, string] }> = [];
   const toLinkLeg = (row: LinkableRow): LinkLeg => {
     const descKey = accountTxKey(row.sfAccountId, row.txId);
     let comment = row.comment ?? `${descByKey.get(descKey) ?? ''} · ${row.txId}`;
@@ -1645,7 +1660,7 @@ export async function runSyncCore(
     const alreadyLinked = readsGroups
       // The rows themselves say so: both in the same, non-empty group.
       ? !!outRow.sourceGroupId && outRow.sourceGroupId === inRow.sourceGroupId
-      : ledgerLinkedTxIds.has(out.txId) && ledgerLinkedTxIds.has(inLeg.txId);
+      : ledgerLinkedKeys.has(outKey) && ledgerLinkedKeys.has(inKey);
     if (alreadyLinked) continue;
     // KNOWN GAP (accepted, tracked as a follow-up — not fixed here):
     // `linkedKeys` is populated BEFORE `host.linkPair` runs below, so on a
@@ -1659,7 +1674,7 @@ export async function runSyncCore(
     // successful `linkPair`, alongside the existing `linkFailures` handling.
     linkedKeys.add(outKey);
     linkedKeys.add(inKey);
-    pairsToLink.push([toLinkLeg(outRow), toLinkLeg(inRow)]);
+    pairsToLink.push({ legs: [toLinkLeg(outRow), toLinkLeg(inRow)], keys: [outKey, inKey] });
   }
 
   const linkFailures = await store.getTransferLinkFailures();
@@ -1667,15 +1682,32 @@ export async function runSyncCore(
   const stuckTransferAlerts: SyncResult['stuckTransferAlerts'] = [];
 
   let unlinkedLegs = 0;
-  for (const legs of pairsToLink) {
-    let result: { linked: boolean; groupId?: string };
+  // Reporting the REASON a link failed is bounded, because a systematically
+  // broken account would otherwise push one error per pair per sync. The
+  // reasons are the diagnosis; the `unlinkedLegs` count below is the scale.
+  const LINK_PROBLEM_REPORT_LIMIT = 3;
+  let pairsWithReportedProblems = 0;
+  for (const { legs, keys } of pairsToLink) {
+    let result: LinkResult;
     try {
       result = await host.linkPair(legs);
     } catch (e: any) {
       errors.push(`Transfer-link failed (${legs[0].txId}/${legs[1].txId}): ${e?.message ?? e}`);
       continue; // leave the ledger untouched so the pair retries next run
     }
-    if (!result.linked || !result.groupId) unlinkedLegs += legs.length;
+    if (!result.linked || !result.groupId) {
+      unlinkedLegs += legs.length;
+      // Linking is delete-then-re-create, so a refused re-create has ALREADY
+      // removed both rows. That is never acceptable to report as a bare count,
+      // and — unlike the summary line below — it must not wait for a heal: a
+      // routine sync can lose rows too.
+      if ((result.problems?.length ?? 0) > 0 && pairsWithReportedProblems < LINK_PROBLEM_REPORT_LIMIT) {
+        pairsWithReportedProblems++;
+        for (const p of result.problems!) {
+          errors.push(`Transfer-link failed (${legs[0].txId}/${legs[1].txId}): ${p}`);
+        }
+      }
+    }
 
     // Track repeated failures on a genuinely-detected pair (both legs
     // present) so a persistently-rejected group — not ordinary in-transit
@@ -1708,15 +1740,29 @@ export async function runSyncCore(
     // Reconcile the ledger to what the host reports it actually stored: adopt
     // the real gid where the link landed, purge the txIds where it didn't so
     // they retry rather than staying wrongly marked "linked".
-    for (const leg of legs) {
+    for (const [i, leg] of legs.entries()) {
+      const key = keys[i];
       if (result.linked && result.groupId) {
-        if (ledger[leg.txId] !== result.groupId) {
-          ledger[leg.txId] = result.groupId;
+        if (ledger[key] !== result.groupId) {
+          ledger[key] = result.groupId;
           ledgerChanged = true;
         }
-      } else if (leg.txId in ledger) {
-        delete ledger[leg.txId];
-        ledgerChanged = true;
+        // Retire the bare-txId entry this per-leg key supersedes, so the legacy
+        // shape drains as pairs are confirmed rather than shadowing the new one
+        // indefinitely.
+        if (leg.txId in ledger) {
+          delete ledger[leg.txId];
+          ledgerChanged = true;
+        }
+      } else {
+        // Purge BOTH shapes, or a stale legacy entry would keep vouching for a
+        // pair whose link just failed.
+        for (const stale of [key, leg.txId]) {
+          if (stale in ledger) {
+            delete ledger[stale];
+            ledgerChanged = true;
+          }
+        }
       }
     }
   }

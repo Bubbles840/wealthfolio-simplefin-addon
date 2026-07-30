@@ -568,8 +568,14 @@ describe('runSync', () => {
 
     expect(store.setLinkedGroups).toHaveBeenCalled();
     const persisted = vi.mocked(store.setLinkedGroups).mock.calls.at(-1)![0] as Record<string, string>;
-    expect(persisted['tx-out']).toBe(out.sourceGroupId);
-    expect(persisted['tx-in']).toBe(out.sourceGroupId);
+    // Keyed PER LEG (account + tx id), not by tx id alone: SimpleFin issues one
+    // id for both sides of a transfer it can see end to end, and a bare-txId
+    // ledger collapses such a pair into a single entry that cannot say whether
+    // both legs were grouped.
+    const keys = Object.keys(persisted);
+    expect(keys).toHaveLength(2);
+    expect(keys.filter((k) => k.endsWith('\u0000tx-out') || k.endsWith('\u0000tx-in'))).toHaveLength(2);
+    expect(new Set(Object.values(persisted))).toEqual(new Set([out.sourceGroupId]));
   });
 
   it('re-links an already-imported transfer pair by deleting and re-creating both legs', async () => {
@@ -874,8 +880,13 @@ describe('runSync', () => {
     await runSync(ctx, store as any, { heal: true });
 
     const persisted = vi.mocked(store.setLinkedGroups).mock.calls.at(-1)![0] as Record<string, string>;
-    expect(persisted['tx-out']).toBe('gid-real');
-    expect(persisted['tx-in']).toBe('gid-real');
+    // The REAL gid is adopted, under one PER-LEG key each...
+    expect(Object.keys(persisted)).toHaveLength(2);
+    expect(new Set(Object.values(persisted))).toEqual(new Set(['gid-real']));
+    // ...and the legacy bare-txId entries are drained rather than left behind to
+    // shadow the per-leg ones on the next run.
+    expect(persisted['tx-out']).toBeUndefined();
+    expect(persisted['tx-in']).toBeUndefined();
   });
 
   it('does not persist the ledger when a save errors (retries next sync)', async () => {
@@ -1422,15 +1433,22 @@ describe('AddonSyncHost.linkPair', () => {
       })),
       updated: [], deleted: req.deleteIds ?? [], createdMappings: [], errors: [],
     }));
-    expect(await new AddonSyncHost(ctx).linkPair(legs())).toEqual({ linked: false });
+    const res = await new AddonSyncHost(ctx).linkPair(legs());
+    expect(res.linked).toBe(false);
+    // Not a bare `{ linked: false }`: both rows have already been deleted by
+    // this point, so the caller has to be able to say why re-creating them
+    // didn't restore the group.
+    expect(res.problems?.join(' ')).toMatch(/group/i);
   });
 
-  it('returns linked:false when a write errors', async () => {
+  it('returns linked:false when a write errors, carrying the host message', async () => {
     const ctx = makeCtx();
     ctx.api.activities.saveMany = vi.fn(async () => ({
       created: [], updated: [], deleted: [], createdMappings: [],
       errors: [{ action: 'create', message: 'boom' }],
     }));
-    expect(await new AddonSyncHost(ctx).linkPair(legs())).toEqual({ linked: false });
+    const res = await new AddonSyncHost(ctx).linkPair(legs());
+    expect(res.linked).toBe(false);
+    expect(res.problems?.join(' ')).toContain('boom');
   });
 });

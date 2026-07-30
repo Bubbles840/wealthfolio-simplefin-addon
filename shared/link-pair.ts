@@ -52,7 +52,7 @@ export async function linkPairByRecreate(
     })),
   });
   for (const e of res.errors) problems.push(`save (${e.action}): ${e.message}`);
-  if (problems.length > 0) return { linked: false };
+  if (problems.length > 0) return { linked: false, problems };
 
   // Adopt the gid Wealthfolio actually stored — it keeps its own for rows that
   // were already grouped, and reports null when it dropped the group entirely.
@@ -70,5 +70,12 @@ export async function linkPairByRecreate(
   }
   const stored = legs.map((l) => echoed.get(accountTxKey(l.accountId, l.txId)));
   const linked = !!stored[0] && stored[0] === stored[1];
-  return linked ? { linked: true, groupId: stored[0]! } : { linked: false };
+  if (linked) return { linked: true, groupId: stored[0]! };
+  // Both saves reported success and the group still isn't there — the silent
+  // drop this echo exists to catch. Name it, or the caller has a failure with
+  // no host error to explain it.
+  problems.push(
+    `the host stored no shared group for both legs (got ${stored[0] ?? 'none'} / ${stored[1] ?? 'none'})`,
+  );
+  return { linked: false, problems };
 }
