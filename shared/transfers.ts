@@ -36,13 +36,46 @@ export interface TransferCandidate {
   accountType?: string;
 }
 
+/**
+ * Composite identity for a row inside a sync run: WHICH ACCOUNT plus WHICH
+ * SimpleFin transaction.
+ *
+ * A bare transaction id is NOT an identity across accounts. SimpleFin issues ONE
+ * transaction id for BOTH sides of a transfer between two accounts it connects
+ * (confirmed against real feeds), so any map or set keyed by tx id alone that
+ * spans accounts has one leg silently overwrite the other. What that cost, before
+ * this key existed: an outflow written back as an inflow, both legs of a pair
+ * resolving to the SAME stored row, one account's leg labelled with the other's
+ * bank description, and the wrong sign fed into drift and the starting-balance
+ * baseline.
+ *
+ * NUL as the separator, deliberately: it cannot occur in a SimpleFin account id
+ * or transaction id (nor in any Wealthfolio id), so no pair of real ids can
+ * collide with another pair, however either id is punctuated. Keys are never
+ * parsed back apart — always rebuilt from the two components — so the separator
+ * only has to be unambiguous, not readable.
+ *
+ * The `accountId` component is the SIMPLEFIN account id throughout the sync core,
+ * matching `TransferCandidate.accountId`, so one convention holds everywhere.
+ */
+export const accountTxKey = (accountId: string, txId: string) => `${accountId}\u0000${txId}`;
+
+/** One side of a pair. Both fields are needed: with a shared transaction id the
+ *  `txId` alone does not say which of the two legs is meant. */
+export interface TransferLegRef {
+  accountId: string;
+  txId: string;
+}
+
 export interface TransferPair {
-  outTxId: string;
-  inTxId: string;
+  out: TransferLegRef;
+  in: TransferLegRef;
 }
 
 export interface TransferDetection {
-  typeByTxId: Map<string, 'TRANSFER_OUT' | 'TRANSFER_IN'>;
+  /** Resolved type per LEG, keyed by `accountTxKey(accountId, txId)` — never by
+   *  tx id alone, or a shared-id pair would record only its second leg. */
+  typeByAccountTx: Map<string, 'TRANSFER_OUT' | 'TRANSFER_IN'>;
   pairs: TransferPair[];
 }
 
@@ -56,9 +89,12 @@ export function detectTransferPairs(candidates: TransferCandidate[]): TransferDe
   const negatives = eligible.filter((c) => c.amount < 0 && c.accountType !== 'CREDIT_CARD');
   const positives = eligible.filter((c) => c.amount > 0);
 
+  // Keyed per LEG, not per tx id: a positive in account B must not be marked
+  // "already used" by an unrelated positive that happens to carry the same
+  // transaction id in account C.
   const usedPositives = new Set<string>();
   const pairs: TransferPair[] = [];
-  const typeByTxId = new Map<string, 'TRANSFER_OUT' | 'TRANSFER_IN'>();
+  const typeByAccountTx = new Map<string, 'TRANSFER_OUT' | 'TRANSFER_IN'>();
 
   for (const neg of negatives) {
     const negCents = Math.round(Math.abs(neg.amount) * 100);
@@ -67,7 +103,12 @@ export function detectTransferPairs(candidates: TransferCandidate[]): TransferDe
     // positives are pre-sorted by (posted, txId): the first candidate at a
     // given gap wins, which makes tie-breaking deterministic
     for (const pos of positives) {
-      if (usedPositives.has(pos.txId)) continue;
+      if (usedPositives.has(accountTxKey(pos.accountId, pos.txId))) continue;
+      // Different ACCOUNTS is the whole test — a shared transaction id is not
+      // only allowed here, it is the strongest possible evidence of a genuine
+      // internal transfer, since SimpleFin issues one id for both sides of a
+      // transfer it can see end to end. The same-account guard is also what
+      // makes "a leg cannot pair with itself" true by construction.
       if (pos.accountId === neg.accountId) continue;
       if (Math.round(pos.amount * 100) !== negCents) continue;
       const gap = Math.abs(pos.posted - neg.posted);
@@ -78,12 +119,15 @@ export function detectTransferPairs(candidates: TransferCandidate[]): TransferDe
       }
     }
     if (best) {
-      usedPositives.add(best.txId);
-      pairs.push({ outTxId: neg.txId, inTxId: best.txId });
-      typeByTxId.set(neg.txId, 'TRANSFER_OUT');
-      typeByTxId.set(best.txId, 'TRANSFER_IN');
+      usedPositives.add(accountTxKey(best.accountId, best.txId));
+      pairs.push({
+        out: { accountId: neg.accountId, txId: neg.txId },
+        in: { accountId: best.accountId, txId: best.txId },
+      });
+      typeByAccountTx.set(accountTxKey(neg.accountId, neg.txId), 'TRANSFER_OUT');
+      typeByAccountTx.set(accountTxKey(best.accountId, best.txId), 'TRANSFER_IN');
     }
   }
 
-  return { typeByTxId, pairs };
+  return { typeByAccountTx, pairs };
 }

@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { runSyncCore, VALUATION_POLL, IN_TRANSIT_TIMEOUT_SECONDS, descriptionFromComment, txIdFromComment, planDuplicatePrune, IN_TRANSIT_COMMENT_PREFIX } from './sync-core.js';
 import { createFakeHost, type FakeHostSeed } from './fake-host.js';
+import { linkPairByRecreate } from './link-pair.js';
+import type { LinkLeg, SyncHost } from './sync-host.js';
 
 describe('runSyncCore', () => {
   beforeEach(() => {
@@ -1432,4 +1434,248 @@ describe('descriptionFromComment', () => {
     // blank merchant.
     expect(descriptionFromComment(' · TRN-a1b2c3d4')).toBe('');
   });
+});
+
+/**
+ * SimpleFin issues ONE transaction id for BOTH sides of a transfer between two
+ * accounts it connects. Everything the sync core keys by tx id ACROSS accounts —
+ * the resolved type, the bank description, the signed amount, the row to link —
+ * therefore had one leg silently overwrite the other.
+ *
+ * These drive the whole of `runSyncCore`, not `detectTransferPairs` in isolation,
+ * because the isolated call is not evidence about the end-to-end path: it was the
+ * end-to-end run that showed the savings leg being UPDATED from TRANSFER_OUT to
+ * TRANSFER_IN and relabelled with the other account's description, `linkPair`
+ * being handed the same row twice, and the starting-balance baseline taking the
+ * wrong sign.
+ */
+describe('runSyncCore with ONE SimpleFin tx id in two accounts', () => {
+  beforeEach(() => {
+    VALUATION_POLL.delayMs = 1;
+    VALUATION_POLL.attempts = 1;
+  });
+
+  const DAY = 24 * 60 * 60;
+  /** Recent, so the in-transit timeout (10 days) is never what decides a type. */
+  const nowSec = () => Math.floor(Date.now() / 1000);
+  const day = (epoch: number) => new Date(epoch * 1000).toISOString().split('T')[0];
+
+  /** The live shape: one id, two mapped accounts, opposite signs, and the two
+   *  stored legs ALREADY correctly typed and already grouped together. */
+  const liveSharedIdSeed = (txId: string): FakeHostSeed => {
+    const outAt = nowSec() - 3 * DAY;
+    const inAt = outAt + 3600;
+    return {
+      accountSet: { errors: [], accounts: [
+        { id: 'sfin-sav', name: '360 Performance Savings', currency: 'USD', balance: '610.65',
+          'balance-date': nowSec(),
+          transactions: [{ id: txId, posted: outAt, amount: '-1300.00', description: 'Online Transfer to Spend' }] },
+        { id: 'sfin-spend', name: 'Spend', currency: 'USD', balance: '3475.23',
+          'balance-date': nowSec(),
+          transactions: [{ id: txId, posted: inAt, amount: '1300.00', description: 'Online Transfer from Savings' }] },
+      ] },
+      mapping: { 'sfin-sav': 'wf-sav', 'sfin-spend': 'wf-spend' },
+      accountTypes: { 'wf-sav': 'CASH', 'wf-spend': 'CASH' },
+      valuations: new Map([['wf-sav', 610.65], ['wf-spend', 3475.23]]),
+      existing: new Map([
+        ['wf-sav', [{ id: 'row-out', accountId: 'wf-sav', activityType: 'TRANSFER_OUT',
+          date: day(outAt), amount: 1300, comment: `Online Transfer to Spend · ${txId}`,
+          sourceGroupId: 'wf-transfer-live' }]],
+        ['wf-spend', [{ id: 'row-in', accountId: 'wf-spend', activityType: 'TRANSFER_IN',
+          date: day(inAt), amount: 1300, comment: `Online Transfer from Savings · ${txId}`,
+          sourceGroupId: 'wf-transfer-live' }]],
+      ]),
+    };
+  };
+
+  // The three ids the user's live database actually holds this way.
+  for (const txId of ['TRN-41fee96e', 'TRN-50be7d51', 'TRN-61654a76']) {
+    it(`leaves a correctly-typed live pair (${txId}) completely untouched on a heal`, async () => {
+      const { host, store, saved, links, activities } = createFakeHost(liveSharedIdSeed(txId));
+
+      const result = await runSyncCore(host, store, { heal: true });
+
+      // Nothing written at all: no update, no create, no delete, no relink, and
+      // no re-link of a pair the rows already report as grouped. Before the fix
+      // the savings leg was updated to TRANSFER_IN.
+      expect(saved).toEqual([]);
+      expect(links).toEqual([]);
+      expect(result.errors).toEqual([]);
+      expect(result.imported).toBe(0);
+      expect(result.skipped).toBe(2);
+
+      // Each leg keeps its OWN type and its OWN bank description.
+      expect(activities.get('wf-sav')).toEqual([{
+        id: 'row-out', accountId: 'wf-sav', activityType: 'TRANSFER_OUT',
+        date: expect.any(String), amount: 1300,
+        comment: `Online Transfer to Spend · ${txId}`, sourceGroupId: 'wf-transfer-live',
+      }]);
+      expect(activities.get('wf-spend')).toEqual([{
+        id: 'row-in', accountId: 'wf-spend', activityType: 'TRANSFER_IN',
+        date: expect.any(String), amount: 1300,
+        comment: `Online Transfer from Savings · ${txId}`, sourceGroupId: 'wf-transfer-live',
+      }]);
+
+      // Both accounts measured as in sync, and neither was alerted about.
+      expect(await store.getAccountBalances()).toEqual({
+        'sfin-sav': { balance: 610.65, currency: 'USD', date: expect.any(Number), drift: null },
+        'sfin-spend': { balance: 3475.23, currency: 'USD', date: expect.any(Number), drift: null },
+      });
+      expect(result.balanceDriftAlerts).toEqual([]);
+    });
+  }
+
+  it('imports a shared-id transfer as one correctly-signed leg per account', async () => {
+    const outAt = nowSec() - 2 * DAY;
+    const inAt = outAt + 3600;
+    const TX = 'TRN-50be7d51';
+    const { host, store, saved, activities } = createFakeHost({
+      accountSet: { errors: [], accounts: [
+        { id: 'sfin-spend', name: 'Spend', currency: 'USD', balance: '0.00', 'balance-date': nowSec(),
+          transactions: [{ id: TX, posted: outAt, amount: '-700.00', description: 'Online Transfer to Citi' }] },
+        { id: 'sfin-citi', name: 'Citi Double Cash Card', currency: 'USD', balance: '0.00', 'balance-date': nowSec(),
+          transactions: [{ id: TX, posted: inAt, amount: '700.00', description: 'PAYMENT THANK YOU' }] },
+      ] },
+      mapping: { 'sfin-spend': 'wf-spend', 'sfin-citi': 'wf-citi' },
+      accountTypes: { 'wf-spend': 'CASH', 'wf-citi': 'CREDIT_CARD' },
+      valuations: new Map([['wf-spend', 0], ['wf-citi', 0]]),
+    });
+
+    await runSyncCore(host, store, {});
+
+    const creates = saved.flatMap((r) => r.creates ?? []);
+    // One leg per account, each with its OWN type and its OWN description.
+    expect(creates.map((c) => [c.accountId, c.activityType, c.comment])).toEqual([
+      ['wf-spend', 'TRANSFER_OUT', `Online Transfer to Citi · ${TX}`],
+      ['wf-citi', 'TRANSFER_IN', `PAYMENT THANK YOU · ${TX}`],
+    ]);
+    // …and no create landed in the wrong account.
+    for (const [wfId, rows] of activities) {
+      expect(rows.filter((r) => (r.comment ?? '').endsWith(TX)).length,
+        `one synced row expected in ${wfId}`).toBe(1);
+    }
+  });
+
+  it('feeds each account its OWN sign into the starting-balance baseline', async () => {
+    // `signedByTxId` was shared across accounts, so the OUT account's baseline was
+    // computed from the IN account's +700: a $1,400 error on one transfer.
+    const outAt = nowSec() - 2 * DAY;
+    const TX = 'TRN-61654a76';
+    const { host, store, imported } = createFakeHost({
+      accountSet: { errors: [], accounts: [
+        { id: 'sfin-spend', name: 'Spend', currency: 'USD', balance: '0.00', 'balance-date': nowSec(),
+          transactions: [{ id: TX, posted: outAt, amount: '-700.00', description: 'Online Transfer to Citi' }] },
+        { id: 'sfin-citi', name: 'Citi', currency: 'USD', balance: '0.00', 'balance-date': nowSec(),
+          transactions: [{ id: TX, posted: outAt + 3600, amount: '700.00', description: 'PAYMENT THANK YOU' }] },
+      ] },
+      mapping: { 'sfin-spend': 'wf-spend', 'sfin-citi': 'wf-citi' },
+      accountTypes: { 'wf-spend': 'CASH', 'wf-citi': 'CREDIT_CARD' },
+      valuations: new Map([['wf-spend', 0], ['wf-citi', 0]]),
+    });
+
+    await runSyncCore(host, store, {});
+
+    // target − windowDelta − currentValuation, per account:
+    //   Spend: 0 − (−700) − 0 = +700 → DEPOSIT
+    //   Citi:  0 − (+700) − 0 = −700 → WITHDRAWAL
+    const baselines = imported.flat().filter((r) => r.comment.startsWith('Starting balance · '));
+    expect(baselines.map((r) => [r.accountId, r.activityType, r.amount])).toEqual([
+      ['wf-spend', 'DEPOSIT', 700],
+      ['wf-citi', 'WITHDRAWAL', 700],
+    ]);
+  });
+
+  it('measures drift per account with each leg\'s own sign', async () => {
+    // A heal subtracts what it creates from the valuation, using signedByTxId. With
+    // the sign shared across accounts the savings account read $2,600 out — enough
+    // to trip the drift alert and, with aggressive auto-heal, be written in.
+    const outAt = nowSec() - 2 * DAY;
+    const TX = 'TRN-41fee96e';
+    const { host, store } = createFakeHost({
+      accountSet: { errors: [], accounts: [
+        { id: 'sfin-sav', name: 'Savings', currency: 'USD', balance: '610.65', 'balance-date': nowSec(),
+          transactions: [{ id: TX, posted: outAt, amount: '-1300.00', description: 'Online Transfer to Spend' }] },
+        { id: 'sfin-spend', name: 'Spend', currency: 'USD', balance: '3475.23', 'balance-date': nowSec(),
+          transactions: [{ id: TX, posted: outAt + 3600, amount: '1300.00', description: 'Online Transfer from Savings' }] },
+      ] },
+      mapping: { 'sfin-sav': 'wf-sav', 'sfin-spend': 'wf-spend' },
+      accountTypes: { 'wf-sav': 'CASH', 'wf-spend': 'CASH' },
+      // Valuations chosen so BOTH accounts are exactly in sync once this run's
+      // own creates are accounted for: 610.65 − (V − 1300) = 0 and
+      // 3475.23 − (V + 1300) = 0.
+      valuations: new Map([['wf-sav', 1910.65], ['wf-spend', 2175.23]]),
+    });
+
+    const result = await runSyncCore(host, store, { heal: true });
+
+    expect(await store.getAccountBalances()).toEqual({
+      'sfin-sav': { balance: 610.65, currency: 'USD', date: expect.any(Number), drift: null },
+      'sfin-spend': { balance: 3475.23, currency: 'USD', date: expect.any(Number), drift: null },
+    });
+    expect(result.balanceDriftAlerts).toEqual([]);
+  });
+
+  it('hands linkPair two DIFFERENT rows, and leaves one row per account', async () => {
+    // The failure this pins is the expensive one: `linkRowByTxId` resolved both
+    // legs of a shared-id pair to the SAME row, so `linkPair` got [leg, leg] and a
+    // delete-and-re-create host removed one row and created TWO in one account —
+    // manufacturing the duplicate the prune sweep exists to remove — while the
+    // other account's leg was never touched.
+    //
+    // The fake's own linkPair only stamps a gid, which is why no existing test
+    // notices; this one swaps in the real `linkPairByRecreate` over the fake's
+    // saveMany, which is what both production hosts do.
+    const outAt = nowSec() - 2 * DAY;
+    const TX = 'TRN-50be7d51';
+    const fake = createFakeHost({
+      accountSet: { errors: [], accounts: [
+        { id: 'sfin-spend', name: 'Spend', currency: 'USD', balance: '0.00', 'balance-date': nowSec(),
+          transactions: [{ id: TX, posted: outAt, amount: '-700.00', description: 'Online Transfer to Citi' }] },
+        { id: 'sfin-citi', name: 'Citi', currency: 'USD', balance: '0.00', 'balance-date': nowSec(),
+          transactions: [{ id: TX, posted: outAt + 3600, amount: '700.00', description: 'PAYMENT THANK YOU' }] },
+      ] },
+      mapping: { 'sfin-spend': 'wf-spend', 'sfin-citi': 'wf-citi' },
+      accountTypes: { 'wf-spend': 'CASH', 'wf-citi': 'CREDIT_CARD' },
+      valuations: new Map([['wf-spend', 0], ['wf-citi', 0]]),
+    });
+    const links: Array<[LinkLeg, LinkLeg]> = [];
+    const host: SyncHost = {
+      ...fake.host,
+      async linkPair(legs) {
+        links.push(legs);
+        return linkPairByRecreate((req) => fake.host.saveMany(req), legs);
+      },
+    };
+
+    const result = await runSyncCore(host, store2(fake), { heal: true });
+
+    expect(result.errors).toEqual([]);
+    expect(links).toHaveLength(1);
+    const [a, b] = links[0];
+    expect(a.wfId).not.toBe(b.wfId);
+    expect(new Set([a.accountId, b.accountId])).toEqual(new Set(['wf-spend', 'wf-citi']));
+    expect(new Set([a.activityType, b.activityType]))
+      .toEqual(new Set(['TRANSFER_OUT', 'TRANSFER_IN']));
+    // Each leg re-created in its OWN account, with its OWN description, exactly once.
+    const legRows = [...fake.activities].map(([wfId, rows]) =>
+      [wfId, rows.filter((r) => (r.comment ?? '').endsWith(TX))] as const);
+    for (const [wfId, rows] of legRows) {
+      expect(rows.length, `one leg expected in ${wfId}`).toBe(1);
+    }
+    expect(legRows.map(([wfId, rows]) => [wfId, rows[0].activityType, rows[0].comment])).toEqual([
+      ['wf-spend', 'TRANSFER_OUT', `Online Transfer to Citi · ${TX}`],
+      ['wf-citi', 'TRANSFER_IN', `PAYMENT THANK YOU · ${TX}`],
+    ]);
+    // Both legs really landed in ONE group, which is what makes them an internal
+    // transfer rather than two unrelated rows.
+    const gids = legRows.map(([, rows]) => rows[0].sourceGroupId);
+    expect(gids[0]).toBeTruthy();
+    expect(gids[0]).toBe(gids[1]);
+  });
+
+  /** The fake's store, unchanged — a named helper only so the host override above
+   *  reads as the one thing that differs from a plain `createFakeHost` run. */
+  function store2(fake: ReturnType<typeof createFakeHost>) {
+    return fake.store;
+  }
 });

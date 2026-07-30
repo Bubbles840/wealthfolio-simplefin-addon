@@ -90,6 +90,36 @@ describe('linkPairByRecreate', () => {
     expect(res.linked).toBe(false);
   });
 
+  /**
+   * SimpleFin issues ONE transaction id for BOTH sides of a transfer between two
+   * accounts it connects, so the echo cannot be keyed by tx id: the two legs
+   * collapsed into one entry, and "both legs came back on the same gid" then
+   * compared the surviving leg's gid with ITSELF and reported success. That is the
+   * one failure this echo exists to catch, so it must not be blind to it exactly
+   * where the bank is telling us outright that the two rows are one transfer.
+   */
+  it('still notices a dropped group when both legs share one transaction id', async () => {
+    const shared = (wfId: string, accountId: string, type: string): LinkLeg => ({
+      ...leg(wfId, accountId, type), txId: 'TRN-shared', comment: 'Transfer · TRN-shared',
+    });
+    const saveMany = async (req: SaveManyRequest): Promise<SaveManyResult> => ({
+      // The FIRST leg's group is silently dropped and the second's lands. That
+      // order matters: a tx-id-keyed echo is last-write-wins, so the surviving
+      // second leg overwrote the first's `null` and the pair read as linked.
+      created: (req.creates ?? []).map((c, i) => ({
+        id: `new-${i}`, accountId: c.accountId, activityType: c.activityType,
+        date: c.activityDate, amount: c.amount ?? null, comment: c.comment,
+        sourceGroupId: i === 0 ? null : (c.sourceGroupId ?? null),
+      })),
+      updated: [], errors: [],
+    });
+    const res = await linkPairByRecreate(saveMany, [
+      shared('a', 'wf-a', 'TRANSFER_OUT'),
+      shared('b', 'wf-b', 'TRANSFER_IN'),
+    ]);
+    expect(res.linked).toBe(false);
+  });
+
   it('reports linked: false when a save returns errors', async () => {
     const saveMany = async (): Promise<SaveManyResult> => ({
       created: [], updated: [], errors: [{ action: 'create', message: 'boom' }],

@@ -1,5 +1,5 @@
 import { mapTransactionWithSource } from './mapper.js';
-import { detectTransferPairs } from './transfers.js';
+import { accountTxKey, detectTransferPairs } from './transfers.js';
 import type { TransferCandidate } from './transfers.js';
 import { planReconciliation, IN_TRANSIT_COMMENT_PREFIX } from './reconcile.js';
 import type { FeedTx, ExistingRow } from './reconcile.js';
@@ -560,10 +560,18 @@ export function descriptionFromComment(text: string | null | undefined): string 
   return (sep === -1 ? c : c.slice(0, sep)).trim();
 }
 
-/** An existing row plus the two things linking needs that reconciliation
- *  doesn't: the account's currency, and whatever group the host says the row is
- *  already in (only meaningful when `capabilities.readsSourceGroupId`). */
-type LinkableRow = ExistingRow & { currency: string; sourceGroupId?: string | null };
+/** An existing row plus the three things linking needs that reconciliation
+ *  doesn't: the account's currency, whatever group the host says the row is
+ *  already in (only meaningful when `capabilities.readsSourceGroupId`), and the
+ *  SIMPLEFIN account id. The last one is what makes the row identifiable at all
+ *  once the run leaves the per-account loop: `wfAccountId` alone cannot look
+ *  anything up in the `accountTxKey`-keyed maps, which are keyed by SimpleFin
+ *  account id, and `txId` alone is not unique across accounts. */
+type LinkableRow = ExistingRow & {
+  currency: string;
+  sourceGroupId?: string | null;
+  sfAccountId: string;
+};
 
 /**
  * Reads the existing SimpleFin-sourced activities for an account into
@@ -811,8 +819,15 @@ export async function runSyncCore(
   const candidates: TransferCandidate[] = [];
   // Rebuild activity comments (create/update) from the tx id, and recover the
   // signed amount for the starting-balance window delta.
-  const descByTxId = new Map<string, string>();
-  const signedByTxId = new Map<string, number>();
+  //
+  // Keyed by `accountTxKey(sfAccountId, txId)` — NEVER by tx id alone. SimpleFin
+  // issues one transaction id for both sides of a transfer between two connected
+  // accounts, and these maps span every mapped account, so a bare key had the
+  // second leg overwrite the first: one account's row written with the OTHER
+  // account's bank description, and the wrong SIGN fed into both the drift
+  // measurement and the starting-balance baseline.
+  const descByKey = new Map<string, string>();
+  const signedByKey = new Map<string, number>();
 
   for (const sfAccount of accountSet.accounts) {
     const wfAccountId = mapping[sfAccount.id];
@@ -837,8 +852,9 @@ export async function runSyncCore(
         tx.description, amount, rules, wfTypes.get(wfAccountId),
       );
       prepared.push({ sfAccountId: sfAccount.id, tx, type });
-      descByTxId.set(tx.id, tx.description);
-      signedByTxId.set(tx.id, amount);
+      const key = accountTxKey(sfAccount.id, tx.id);
+      descByKey.set(key, tx.description);
+      signedByKey.set(key, amount);
       // Pending transactions are provisional — exclude them from transfer
       // pairing so a not-yet-settled row can't lock in a TRANSFER typing.
       if (tx.pending) continue;
@@ -853,7 +869,7 @@ export async function runSyncCore(
   const detection = detectTransferPairs(candidates);
   for (const prepared of preparedByAccount.values()) {
     for (const p of prepared) {
-      const override = detection.typeByTxId.get(p.tx.id);
+      const override = detection.typeByAccountTx.get(accountTxKey(p.sfAccountId, p.tx.id));
       if (override) p.type = override;
     }
   }
@@ -872,16 +888,19 @@ export async function runSyncCore(
   // while still moving cash"), and the plain DEPOSIT/WITHDRAWAL that is already
   // Ignored on a CREDIT_CARD or investment-style account. A card genuinely
   // reaches here: mapper types a positive, payment-shaped card amount TRANSFER_IN.
-  const pairedTxIds = new Set<string>();
+  // Per LEG, not per tx id: with a shared id a bare set could not tell "this
+  // account's side of the pair is accounted for" from "some account's is".
+  const pairedKeys = new Set<string>();
   for (const pair of detection.pairs) {
-    pairedTxIds.add(pair.outTxId);
-    pairedTxIds.add(pair.inTxId);
+    pairedKeys.add(accountTxKey(pair.out.accountId, pair.out.txId));
+    pairedKeys.add(accountTxKey(pair.in.accountId, pair.in.txId));
   }
   const nowSec = Math.floor(Date.now() / 1000);
   for (const prepared of preparedByAccount.values()) {
     for (const p of prepared) {
-      if (!isTransferType(p.type) || pairedTxIds.has(p.tx.id)) continue;
-      const signed = signedByTxId.get(p.tx.id) ?? 0;
+      const key = accountTxKey(p.sfAccountId, p.tx.id);
+      if (!isTransferType(p.type) || pairedKeys.has(key)) continue;
+      const signed = signedByKey.get(key) ?? 0;
       const postedAt = txEpoch(p.tx) ?? nowSec;
       if (nowSec - postedAt > IN_TRANSIT_TIMEOUT_SECONDS) {
         p.type = (signed >= 0 ? 'DEPOSIT' : 'WITHDRAWAL') as ActivityType;
@@ -911,6 +930,30 @@ export async function runSyncCore(
   //    reports the link actually landed — never optimistically, which would let
   //    a failed/partial save get permanently (and wrongly) marked "linked", with
   //    no retry.
+  //
+  // KEYED BY BARE TX ID, DELIBERATELY — the one cross-account map that is not
+  // being re-keyed by (account, tx id), because it does not need to be and the
+  // change would cost real user state.
+  //
+  //  • It cannot be ambiguous in practice. SimpleFin issues a shared id for the
+  //    two sides of ONE transfer, so a shared id identifies exactly one pair; the
+  //    ledger's job is "is this pair already grouped", and one entry answers it
+  //    for both legs. A third occurrence of the same id — which is what it would
+  //    take for two different pairs to collide here — is not a thing SimpleFin
+  //    does.
+  //  • Re-keying would be a MIGRATION with teeth. `linked_groups` is a persisted
+  //    addon secret with live entries; under a new key format every one of them
+  //    stops matching, so every already-linked pair reads as unlinked and gets
+  //    re-attempted — and on the addon `linkPair` DELETES AND RE-CREATES both
+  //    legs. That is a mass delete/re-create of correctly-linked financial rows
+  //    to buy precision that is not needed. Same reasoning for
+  //    `transfer_link_failures` below (keyed by the OUT leg's txId), where a
+  //    reset would additionally throw away strike counts and re-announce a stuck
+  //    pair the user has already been told about.
+  //
+  // If a future SimpleFin ever does reuse one id across three accounts, this is
+  // the line to revisit — and it becomes a read-both-shapes/write-new migration,
+  // not a silent re-key.
   const readsGroups = host.capabilities.readsSourceGroupId;
   const ledger: Record<string, string> = readsGroups ? {} : await store.getLinkedGroups();
   let ledgerChanged = false;
@@ -929,13 +972,15 @@ export async function runSyncCore(
         ledgerChanged = true;
       }
     }
-    for (const { outTxId, inTxId } of detection.pairs) {
-      const existingGid = ledger[outTxId] ?? ledger[inTxId];
+    for (const { out, in: inLeg } of detection.pairs) {
+      const existingGid = ledger[out.txId] ?? ledger[inLeg.txId];
       // Confirmed-linked pairs (both legs on the same gid, adopted from a
-      // previous run's report) are skipped — no churn, on a sync or a heal.
-      if (existingGid !== undefined && ledger[outTxId] === existingGid && ledger[inTxId] === existingGid) {
-        ledgerLinkedTxIds.add(outTxId);
-        ledgerLinkedTxIds.add(inTxId);
+      // previous run's report) are skipped — no churn, on a sync or a heal. When
+      // the two legs share one id these are the same lookup, which is exactly
+      // right: one entry vouches for the one pair that id can belong to.
+      if (existingGid !== undefined && ledger[out.txId] === existingGid && ledger[inLeg.txId] === existingGid) {
+        ledgerLinkedTxIds.add(out.txId);
+        ledgerLinkedTxIds.add(inLeg.txId);
       }
     }
   }
@@ -954,12 +999,19 @@ export async function runSyncCore(
   // Sync page. Persisted at the end of the run so the page shows them instantly.
   const accountBalances: Record<string, AccountBalanceSnapshot> = {};
 
-  // Every already-imported row across all accounts, keyed by SimpleFin tx id.
-  // Used by the transfer-link step AFTER the loop: both legs of a pair live in
-  // different accounts, so a pair can only be assembled once every account has
-  // been read (and the host needs both legs at once — Wealthfolio only forms a
-  // transfer group when it sees them together).
-  const linkRowByTxId = new Map<string, LinkableRow>();
+  // Every already-imported row across all accounts, keyed by
+  // `accountTxKey(sfAccountId, txId)`. Used by the transfer-link step AFTER the
+  // loop: both legs of a pair live in different accounts, so a pair can only be
+  // assembled once every account has been read (and the host needs both legs at
+  // once — Wealthfolio only forms a transfer group when it sees them together).
+  //
+  // THIS is the map whose collision was the expensive one. Keyed by bare tx id,
+  // a shared-id pair resolved BOTH legs to the same stored row, so `linkPair` was
+  // handed [leg, leg] — and a delete-and-re-create host then removed that one row
+  // and created TWO in one account, manufacturing exactly the duplicate the prune
+  // sweep exists to remove, while the other account's leg was never touched or
+  // linked.
+  const linkRowByKey = new Map<string, LinkableRow>();
 
   for (const sfAccount of accountSet.accounts) {
     const wfAccountId = mapping[sfAccount.id];
@@ -1050,10 +1102,12 @@ export async function runSyncCore(
               sfinAccountId: sfAccount.id,
               accountName: wfNames.get(wfAccountId) || sfAccount.name,
               txId: row.txId,
-              // The ROW's own description, not `descByTxId` — that map is keyed by
-              // tx id across all accounts, so it can hold another account's text
-              // for a shared id.
-              description: descriptionFromComment(row.comment) || (descByTxId.get(row.txId) ?? ''),
+              // The ROW's own description first; `descByKey` is the fallback for a
+              // row whose stored note has no readable description left. The
+              // account is part of that key precisely so a shared tx id cannot
+              // hand back the other account's text.
+              description: descriptionFromComment(row.comment)
+                || (descByKey.get(accountTxKey(sfAccount.id, row.txId)) ?? ''),
               date: row.date,
               amountCents: feedTx?.absCents ?? row.absCents,
               currency: sfAccount.currency,
@@ -1071,7 +1125,11 @@ export async function runSyncCore(
       }
     }
 
-    for (const row of existing) linkRowByTxId.set(row.txId, { ...row, currency: sfAccount.currency });
+    for (const row of existing) {
+      linkRowByKey.set(accountTxKey(sfAccount.id, row.txId), {
+        ...row, currency: sfAccount.currency, sfAccountId: sfAccount.id,
+      });
+    }
     const plan = planReconciliation(feed, existing);
 
     // Feed rows that produced neither a create nor an update are already
@@ -1120,7 +1178,7 @@ export async function runSyncCore(
       // stale), so its windowDelta is 0 by construction.
       if (noPending && createOnly && (heal || plan.creates.length === 0)) {
         const windowDelta = plan.creates.reduce(
-          (sum, t) => sum + (signedByTxId.get(t.txId) ?? 0),
+          (sum, t) => sum + (signedByKey.get(accountTxKey(sfAccount.id, t.txId)) ?? 0),
           0,
         );
         // Which TRANSFER_OUT legs never moved cash, and so must be netted out of
@@ -1279,7 +1337,7 @@ export async function runSyncCore(
       currency: sfAccount.currency,
       // The in-transit marker goes at the FRONT: txIdFromComment parses the
       // `… · <txId>` SUFFIX, and every reconciliation match depends on it.
-      comment: `${t.inTransit ? IN_TRANSIT_COMMENT_PREFIX : ''}${descByTxId.get(t.txId) ?? ''} · ${t.txId}${t.pending ? PENDING_SUFFIX : ''}`,
+      comment: `${t.inTransit ? IN_TRANSIT_COMMENT_PREFIX : ''}${descByKey.get(accountTxKey(sfAccount.id, t.txId)) ?? ''} · ${t.txId}${t.pending ? PENDING_SUFFIX : ''}`,
       // Transfer-link sourceGroupId is applied later, atomically (see flush).
     });
     const toActivityUpdate = (wfId: string, t: FeedTx): ActivityWrite => ({
@@ -1319,7 +1377,10 @@ export async function runSyncCore(
             currency: sfAccount.currency,
             created: plan.creates
               .filter((t) => !t.pending)
-              .map((t) => ({ date: t.date, signed: signedByTxId.get(t.txId) ?? 0 })),
+              .map((t) => ({
+                date: t.date,
+                signed: signedByKey.get(accountTxKey(sfAccount.id, t.txId)) ?? 0,
+              })),
           });
         } catch (e: any) {
           errors.push(`Account ${wfAccountId} starting-balance adjust failed: ${e?.message ?? e}`);
@@ -1333,10 +1394,10 @@ export async function runSyncCore(
         const txId = txIdFromComment(a.comment);
         const t = txId ? createdFeedByTxId.get(txId) : undefined;
         if (txId && t && a.id) {
-          linkRowByTxId.set(txId, {
+          linkRowByKey.set(accountTxKey(sfAccount.id, txId), {
             wfId: a.id, wfAccountId: t.wfAccountId, txId, absCents: t.absCents,
             type: t.type, date: t.date, pending: t.pending, currency: sfAccount.currency,
-            sourceGroupId: a.sourceGroupId ?? null,
+            sourceGroupId: a.sourceGroupId ?? null, sfAccountId: sfAccount.id,
           });
           // Announce a large spend exactly once, off the CREATE echo.
           //
@@ -1364,7 +1425,7 @@ export async function runSyncCore(
           ) {
             largeTransactionAlerts.push({
               txId,
-              description: descByTxId.get(txId) ?? '',
+              description: descByKey.get(accountTxKey(sfAccount.id, txId)) ?? '',
               amountCents: t.absCents,
               currency: sfAccount.currency,
               accountName: wfNames.get(t.wfAccountId) || sfAccount.name,
@@ -1383,8 +1444,8 @@ export async function runSyncCore(
         const txId = txIdFromComment(a.comment);
         const t = txId ? updatedFeedByTxId.get(txId) : undefined;
         if (!txId || !t || !a.id) continue;
-        const prior = linkRowByTxId.get(txId);
-        linkRowByTxId.set(txId, {
+        const prior = linkRowByKey.get(accountTxKey(sfAccount.id, txId));
+        linkRowByKey.set(accountTxKey(sfAccount.id, txId), {
           // `comment` is deliberately left unset so toLinkLeg rebuilds a clean
           // `<description> · <txId>` — a promoted row must not keep the
           // placeholder's in-transit prefix. absCents is the FULL amount: every
@@ -1396,6 +1457,7 @@ export async function runSyncCore(
           // promotion — keep it visible to the relink sweep below.
           assetId: prior?.assetId,
           sourceGroupId: a.sourceGroupId ?? prior?.sourceGroupId ?? null,
+          sfAccountId: sfAccount.id,
         });
       }
     }
@@ -1435,7 +1497,7 @@ export async function runSyncCore(
       // move the balance.
       const windowDelta = plan.creates
         .filter((t) => !t.pending)
-        .reduce((sum, t) => sum + (signedByTxId.get(t.txId) ?? 0), 0);
+        .reduce((sum, t) => sum + (signedByKey.get(accountTxKey(sfAccount.id, t.txId)) ?? 0), 0);
       const currentWfBalance = wfBalances!.get(wfAccountId)!;
       const starting = targetBalance - windowDelta - currentWfBalance;
       if (Number.isFinite(starting) && Math.abs(starting) >= 0.01) {
@@ -1548,12 +1610,16 @@ export async function runSyncCore(
   // addon must delete and re-create both legs in one call, the companion has a
   // link endpoint. What the core owns is *which* pairs to hand over, and what to
   // remember afterwards.
-  const linkedTxIds = new Set<string>();
+  // Legs handed to `linkPair` this run, keyed per LEG. Consulted by the relink
+  // sweep at the end of the run, which asks "was THIS ROW already dealt with" —
+  // a question a bare tx id cannot answer once two accounts share one.
+  const linkedKeys = new Set<string>();
   const pairsToLink: Array<[LinkLeg, LinkLeg]> = [];
   const toLinkLeg = (row: LinkableRow): LinkLeg => {
-    let comment = row.comment ?? `${descByTxId.get(row.txId) ?? ''} · ${row.txId}`;
+    const descKey = accountTxKey(row.sfAccountId, row.txId);
+    let comment = row.comment ?? `${descByKey.get(descKey) ?? ''} · ${row.txId}`;
     if (!comment.endsWith(` · ${row.txId}`)) {
-      const desc = descByTxId.get(row.txId) ?? (comment.includes(' · ') ? comment.split(' · ')[0] : comment);
+      const desc = descByKey.get(descKey) ?? (comment.includes(' · ') ? comment.split(' · ')[0] : comment);
       comment = `${desc} · ${row.txId}`;
     }
     return {
@@ -1567,17 +1633,22 @@ export async function runSyncCore(
       comment,
     };
   };
-  for (const { outTxId, inTxId } of detection.pairs) {
-    const outRow = linkRowByTxId.get(outTxId);
-    const inRow = linkRowByTxId.get(inTxId);
+  for (const { out, in: inLeg } of detection.pairs) {
+    // Resolved per (account, tx id). When SimpleFin gave both sides of the
+    // transfer ONE id these two keys still differ — by account — which is what
+    // keeps them two distinct rows in two accounts instead of one row twice.
+    const outKey = accountTxKey(out.accountId, out.txId);
+    const inKey = accountTxKey(inLeg.accountId, inLeg.txId);
+    const outRow = linkRowByKey.get(outKey);
+    const inRow = linkRowByKey.get(inKey);
     if (!outRow || !inRow) continue; // a leg isn't imported yet — links next run
     const alreadyLinked = readsGroups
       // The rows themselves say so: both in the same, non-empty group.
       ? !!outRow.sourceGroupId && outRow.sourceGroupId === inRow.sourceGroupId
-      : ledgerLinkedTxIds.has(outTxId) && ledgerLinkedTxIds.has(inTxId);
+      : ledgerLinkedTxIds.has(out.txId) && ledgerLinkedTxIds.has(inLeg.txId);
     if (alreadyLinked) continue;
     // KNOWN GAP (accepted, tracked as a follow-up — not fixed here):
-    // `linkedTxIds` is populated BEFORE `host.linkPair` runs below, so on a
+    // `linkedKeys` is populated BEFORE `host.linkPair` runs below, so on a
     // ledger-backed host (`readsGroups === false`) a link that then fails is
     // still recorded as linked. The relink sweep uses this same ledger to
     // decide what needs attention, so it permanently skips that pair, leaving
@@ -1586,8 +1657,8 @@ export async function runSyncCore(
     // exactly why this note is here rather than left to be rediscovered from
     // the balance. Fix shape: move these two adds to after a confirmed
     // successful `linkPair`, alongside the existing `linkFailures` handling.
-    linkedTxIds.add(outTxId);
-    linkedTxIds.add(inTxId);
+    linkedKeys.add(outKey);
+    linkedKeys.add(inKey);
     pairsToLink.push([toLinkLeg(outRow), toLinkLeg(inRow)]);
   }
 
@@ -1670,8 +1741,8 @@ export async function runSyncCore(
   // empty). No group id: there's nothing to pair them with.
   const relinkCreates: ActivityWrite[] = [];
   const staleLegIds: string[] = [];
-  for (const row of linkRowByTxId.values()) {
-    if (!isTransferType(row.type) || !row.assetId || linkedTxIds.has(row.txId)) continue;
+  for (const [key, row] of linkRowByKey) {
+    if (!isTransferType(row.type) || !row.assetId || linkedKeys.has(key)) continue;
     staleLegIds.push(row.wfId);
     relinkCreates.push({
       accountId: row.wfAccountId,
@@ -1679,7 +1750,7 @@ export async function runSyncCore(
       activityDate: row.date,
       amount: row.absCents / 100,
       currency: row.currency,
-      comment: row.comment ?? `${descByTxId.get(row.txId) ?? ''} · ${row.txId}`,
+      comment: row.comment ?? `${descByKey.get(key) ?? ''} · ${row.txId}`,
     });
   }
   if (relinkCreates.length > 0) {

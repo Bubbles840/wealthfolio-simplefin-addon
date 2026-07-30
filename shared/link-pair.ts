@@ -1,4 +1,5 @@
 import { INTERNAL_TRANSFER_METADATA, newTransferGroupId, txIdFromComment } from './sync-core.js';
+import { accountTxKey } from './transfers.js';
 import type { LinkLeg, LinkResult, SaveManyRequest, SaveManyResult } from './sync-host.js';
 
 /**
@@ -55,12 +56,19 @@ export async function linkPairByRecreate(
 
   // Adopt the gid Wealthfolio actually stored — it keeps its own for rows that
   // were already grouped, and reports null when it dropped the group entirely.
+  //
+  // Keyed by (ACCOUNT, tx id), not tx id alone: SimpleFin issues one transaction
+  // id for both sides of a transfer between two accounts it connects, so a
+  // tx-id-keyed echo collapsed the two legs into one entry — and the check below
+  // ("both legs came back on the same gid") would then compare the second leg's
+  // gid with itself and report `linked: true` even where one leg's group had been
+  // silently dropped. Precisely the failure this echo exists to catch.
   const echoed = new Map<string, string | null | undefined>();
   for (const a of [...res.updated, ...res.created]) {
     const txId = txIdFromComment(a.comment);
-    if (txId) echoed.set(txId, a.sourceGroupId);
+    if (txId) echoed.set(accountTxKey(a.accountId, txId), a.sourceGroupId);
   }
-  const stored = legs.map((l) => echoed.get(l.txId));
+  const stored = legs.map((l) => echoed.get(accountTxKey(l.accountId, l.txId)));
   const linked = !!stored[0] && stored[0] === stored[1];
   return linked ? { linked: true, groupId: stored[0]! } : { linked: false };
 }
