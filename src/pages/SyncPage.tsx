@@ -123,6 +123,10 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
   const [rules, setRules] = useState<MappingRule[]>([]);
   const [scheduleHours, setScheduleHours] = useState<number | null>(null);
   const [error, setError] = useState('');
+  // The raw underlying text behind a classified error (see
+  // `SimplefinRequestError.detail`). Held separately so the box can show a
+  // readable message WITHOUT the diagnosis being discarded.
+  const [errorDetail, setErrorDetail] = useState<string | undefined>(undefined);
   const [intervalBlocked, setIntervalBlocked] = useState(false);
   const [sfinNames, setSfinNames] = useState<Record<string, string>>({});
   const [wfNames, setWfNames] = useState<Record<string, string>>({});
@@ -165,6 +169,31 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
   const loadBalances = useCallback(() => {
     store.getAccountBalances().then(setBalances).catch(() => {});
   }, [store]);
+
+  const clearError = useCallback(() => {
+    setError('');
+    setErrorDetail(undefined);
+  }, []);
+
+  /**
+   * Surfaces a thrown error: its (possibly classified) message as the headline,
+   * and any raw underlying text as a collapsed detail.
+   *
+   * The case this exists for: a network-level SimpleFin failure used to put the
+   * broker's own rejection straight in the box — `error sending request for url
+   * (https://…/accounts?start-date=…&pending=1)` — which exposed an internal URL
+   * and told the reader nothing they could act on. `fetchAccounts` now classifies
+   * that into a sentence and hands the raw text over on `detail`; nothing is
+   * swallowed, it is just no longer the headline. An error with no `detail` (every
+   * other error in the app) renders exactly as before.
+   */
+  const showThrownError = useCallback((e: any, fallback: string) => {
+    setError(e?.message ?? fallback);
+    const detail = typeof e?.detail === 'string' ? e.detail.trim() : '';
+    // Never repeat the message as its own "detail" — a disclosure that reveals
+    // the line above it is pure noise.
+    setErrorDetail(detail && detail !== e?.message ? detail : undefined);
+  }, []);
 
   useEffect(() => {
     Promise.all([
@@ -252,13 +281,24 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
 
   const doSync = useCallback(async (force = false) => {
     setSyncing(true);
-    setError('');
+    clearError();
     setIntervalBlocked(false);
     try {
       const result = await runSync(ctx, store, { force });
       // A pure interval skip isn't an error — offer to force instead
       if (result.errors.length === 1 && result.errors[0] === INTERVAL_SKIP_MESSAGE) {
         setIntervalBlocked(true);
+        // ...and re-read the timestamp, because the skip is precisely the moment
+        // we learn our copy of it is stale. The header and this callout both read
+        // `last_sync_at`, so "Last synced 4 hours ago" beside "Last sync was under
+        // an hour ago, so Sync Now was skipped" cannot both be current: the page
+        // loaded a value, the COMPANION then synced against the same instance and
+        // updated the secret, and nothing re-read it. Without this the two
+        // statements on screen contradict each other.
+        // Only on a real value: a failed read must not blank the header into
+        // "Never synced", which would be a worse lie than a stale timestamp.
+        const refreshed = await store.getLastSyncAt().catch(() => null);
+        if (refreshed) setLastSyncAt(refreshed);
         return;
       }
       if (result.errors.length > 0) setError(result.errors.join('; '));
@@ -268,17 +308,17 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
       setLastSyncAt(last);
       loadBalances();
     } catch (e: any) {
-      setError(e.message ?? 'Sync failed');
+      showThrownError(e, 'Sync failed');
     } finally {
       setSyncing(false);
     }
-  }, [ctx, store, loadBalances]);
+  }, [ctx, store, loadBalances, clearError, showThrownError]);
 
   // Heal: re-scan a wide window to recover missing transactions, then re-measure
   // drift so any residual can be plugged.
   const doHeal = useCallback(async () => {
     setHealing(true);
-    setError('');
+    clearError();
     try {
       const result = await runSync(ctx, store, { heal: true });
       if (result.errors.length > 0) setError(result.errors.join('; '));
@@ -286,27 +326,27 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
       setLastSyncAt(await store.getLastSyncAt());
       loadBalances();
     } catch (e: any) {
-      setError(e.message ?? 'Reconcile failed');
+      showThrownError(e, 'Reconcile failed');
     } finally {
       setHealing(false);
     }
-  }, [ctx, store, loadBalances]);
+  }, [ctx, store, loadBalances, clearError, showThrownError]);
 
   // Plug the residual: add a one-time balance-adjustment entry for an account.
   const doAdjust = useCallback(
     async (sfinId: string, wfId: string, currency: string, amount: number) => {
       setAdjusting(sfinId);
-      setError('');
+      clearError();
       try {
         await applyBalanceAdjustment(ctx, store, { sfinAccountId: sfinId, wfAccountId: wfId, currency, amount });
         loadBalances();
       } catch (e: any) {
-        setError(e.message ?? 'Adjustment failed');
+        showThrownError(e, 'Adjustment failed');
       } finally {
         setAdjusting(null);
       }
     },
-    [ctx, store, loadBalances],
+    [ctx, store, loadBalances, clearError, showThrownError],
   );
 
   // window.confirm is silently suppressed in the addon sandbox (iframe has
@@ -412,7 +452,7 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
         </div>
       </div>
 
-      {error && <ErrorBox>{error}</ErrorBox>}
+      {error && <ErrorBox detail={errorDetail}>{error}</ErrorBox>}
 
       {intervalBlocked && (
         <div className="sfin-callout" style={{ marginBottom: 16 }}>

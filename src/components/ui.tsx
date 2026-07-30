@@ -421,6 +421,31 @@ export function CollapsibleCard(props: Omit<DisclosureProps, 'variant'>) {
   );
 }
 
-export function ErrorBox({ children }: { children: React.ReactNode }) {
-  return <div className="sfin-error">{children}</div>;
+/**
+ * The page's error surface.
+ *
+ * `detail` exists so a classified message can be kind WITHOUT discarding the
+ * underlying text. A raw broker rejection ("error sending request for url
+ * (https://…?start-date=…)") is the wrong headline — it exposes an internal URL
+ * and gives the reader nothing to do — but it is exactly what a diagnosis needs,
+ * so it goes in a collapsed, copyable line under the message instead of being
+ * thrown away. Also mirrored onto `title`, so hovering the box surfaces it
+ * without a click.
+ *
+ * Native `<details>` rather than the page's `Disclosure`: this needs no state,
+ * no id, and nothing to persist, and an error box that required a `useState` to
+ * render would be a worse trade than the browser's own default styling.
+ */
+export function ErrorBox({ children, detail }: { children: React.ReactNode; detail?: string }) {
+  return (
+    <div className="sfin-error" {...(detail ? { title: detail } : {})}>
+      {children}
+      {detail && (
+        <details style={{ marginTop: 6 }}>
+          <summary className="sfin-subtle" style={{ cursor: 'pointer' }}>Technical details</summary>
+          <div className="sfin-subtle" style={{ marginTop: 4, wordBreak: 'break-all' }}>{detail}</div>
+        </details>
+      )}
+    </div>
+  );
 }
