@@ -402,13 +402,79 @@ describe('SyncPage', () => {
     expect(saved.weeklyReportCategories).toBe('all');
   });
 
+  it('gives the biggest-spends row the same checkbox its two siblings have', async () => {
+    // Three sibling rows in ALERTS & AMOUNTS where one lacked the control its
+    // neighbours had. `0` being a meaningful value made that defensible, but a
+    // missing control reads as a defect regardless of the logic behind it.
+    const props = makeProps();
+    props.store.getTelegramConfig = vi.fn(async () => bareConfig());
+    props.store.setTelegramConfig = vi.fn(async () => {});
+    render(<SyncPage {...props} />);
+    const save = await openTelegram();
+    const toggle = screen.getByLabelText(/Biggest spends in the weekly report/i) as HTMLInputElement;
+    const count = screen.getByLabelText(/how many biggest spends/i) as HTMLInputElement;
+    expect(toggle.type).toBe('checkbox');
+    // Absent → ON at the default of 5, which is what the companion already did.
+    expect(toggle.checked).toBe(true);
+    expect(count.disabled).toBe(false);
+    expect(count.value).toBe('5');
+
+    fireEvent.click(save);
+    await waitFor(() => expect(props.store.setTelegramConfig).toHaveBeenCalled());
+    expect(savedConfig(props).weeklyTopSpendCount).toBe(5);
+  });
+
+  it('unticking biggest spends stores 0 rather than omitting the field', async () => {
+    const props = makeProps();
+    props.store.getTelegramConfig = vi.fn(async () => bareConfig());
+    props.store.setTelegramConfig = vi.fn(async () => {});
+    render(<SyncPage {...props} />);
+    const save = await openTelegram();
+    const toggle = screen.getByLabelText(/Biggest spends in the weekly report/i) as HTMLInputElement;
+
+    fireEvent.click(toggle);
+    expect((screen.getByLabelText(/how many biggest spends/i) as HTMLInputElement).disabled).toBe(true);
+    fireEvent.click(save);
+    await waitFor(() => expect(props.store.setTelegramConfig).toHaveBeenCalled());
+    const saved = savedConfig(props);
+    expect(saved.weeklyTopSpendCount).toBe(0);
+    // Never simply omitted: absent reads as ON at the default of 5, so omitting
+    // it would hand back the section the user just switched off.
+    expect('weeklyTopSpendCount' in saved).toBe(true);
+  });
+
+  it('a stored 0 reloads as unticked, not as the default', async () => {
+    // The other half of the round trip, and the reason the collapse of "unticked"
+    // onto "0" is safe: unticking, saving and reloading must not come back ticked.
+    const props = makeProps();
+    props.store.getTelegramConfig = vi.fn(async () => ({ ...bareConfig(), weeklyTopSpendCount: 0 }));
+    props.store.setTelegramConfig = vi.fn(async () => {});
+    render(<SyncPage {...props} />);
+    const save = await openTelegram();
+    expect((screen.getByLabelText(/Biggest spends in the weekly report/i) as HTMLInputElement).checked)
+      .toBe(false);
+    // The count keeps its default rather than showing the stored 0, exactly as
+    // the drift row does: 0 is the checkbox's business, not the number field's.
+    const count = screen.getByLabelText(/how many biggest spends/i) as HTMLInputElement;
+    expect(count.value).toBe('5');
+    expect(count.disabled).toBe(true);
+
+    // ...and re-saving that reloaded state stores 0 again — a fixed point, not a
+    // value that drifts back to 5 the moment the page is revisited.
+    fireEvent.click(save);
+    await waitFor(() => expect(props.store.setTelegramConfig).toHaveBeenCalled());
+    expect(savedConfig(props).weeklyTopSpendCount).toBe(0);
+  });
+
   it('stores the weekly top-spend count, treating 0 as "hide" and blank as the default', async () => {
     const props = makeProps();
     props.store.getTelegramConfig = vi.fn(async () => ({ ...bareConfig(), weeklyTopSpendCount: 3 }));
     props.store.setTelegramConfig = vi.fn(async () => {});
     render(<SyncPage {...props} />);
     const save = await openTelegram();
-    const field = screen.getByLabelText(/Biggest spends in the weekly report/i) as HTMLInputElement;
+    // Queried by the number field's own accessible name: the visible row label
+    // now belongs to the checkbox beside it, matching the two sibling rows.
+    const field = screen.getByLabelText(/how many biggest spends/i) as HTMLInputElement;
     expect(field.value).toBe('3');
 
     // 0 is a value the user can mean, so it must survive as 0.

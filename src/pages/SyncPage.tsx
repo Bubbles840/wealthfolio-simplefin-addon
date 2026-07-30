@@ -83,9 +83,22 @@ function thresholdToSave(on: boolean, raw: string, fallback: number): number {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
-/** `weeklyTopSpendCount` differs again: `0` is a meaningful value the user can
- *  type (hide the section), so only a BLANK field falls back to the default. */
-function countToSave(raw: string, fallback: number): number {
+/**
+ * `weeklyTopSpendCount` sits between the two: absent means ON at the default of
+ * 5 (like the drift threshold), but `0` is also a value the user can legitimately
+ * type, and it already means "hide the section" to every reader — so unticking
+ * and "ticked, with 0 in the box" deliberately collapse onto the same stored `0`.
+ *
+ * That collapse is safe because the round trip is stable in one step: a stored 0
+ * reloads UNTICKED with the number field back at its default (never showing the
+ * 0, exactly as the drift row doesn't), and saving again from there stores 0. So
+ * unticking, saving and reloading can never come back ticked.
+ *
+ * A BLANK field still falls back to the default rather than to 0 — blank is "I
+ * have no opinion", which is a different statement from "none".
+ */
+function countToSave(on: boolean, raw: string, fallback: number): number {
+  if (!on) return 0;
   if (raw.trim() === '') return fallback;
   const n = Number(raw);
   return Number.isFinite(n) && n >= 0 ? Math.floor(n) : fallback;
@@ -142,6 +155,9 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
   const [largeTxAmount, setLargeTxAmount] = useState(String(SUGGESTED_LARGE_TX_THRESHOLD));
   const [driftAlertsOn, setDriftAlertsOn] = useState(true);
   const [driftAmount, setDriftAmount] = useState(String(DEFAULT_DRIFT_ALERT_THRESHOLD_DOLLARS));
+  // Absent means ON at the default of 5 — what the companion has always done —
+  // so this starts true and only an explicit stored 0 unticks it.
+  const [topSpendsOn, setTopSpendsOn] = useState(true);
   const [topSpendCount, setTopSpendCount] = useState(String(DEFAULT_WEEKLY_TOP_SPEND_COUNT));
   const [testingTelegram, setTestingTelegram] = useState(false);
   const [telegramStatus, setTelegramStatus] = useState<string | null>(null);
@@ -202,8 +218,12 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
         setDriftAlertsOn(drift === null || drift > 0);
         if (drift !== null && drift > 0) setDriftAmount(String(drift));
 
+        // Same shape as the drift threshold above: absent → ON at the default,
+        // an explicit 0 (or negative) is the user having switched it off, which
+        // is why the count field keeps its default rather than showing that 0.
         const top = num(tg.weeklyTopSpendCount);
-        if (top !== null && top >= 0) setTopSpendCount(String(Math.floor(top)));
+        setTopSpendsOn(top === null || top > 0);
+        if (top !== null && top > 0) setTopSpendCount(String(Math.floor(top)));
       }
       setWfNames(Object.fromEntries(wfAccounts.map((a) => [a.id, a.name])));
       setOpenCards(cards);
@@ -710,29 +730,40 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
 
           <div className="sfin-nums">
             <div className="sfin-thresh">
-              {/* paddingLeft matches a checkbox + its gap, so this row's label
-                  starts on the same left edge as the two below it and every
-                  hint lines up under its own setting. */}
-              <label htmlFor="sfin-top-spend" style={{ minWidth: 0, paddingLeft: 22 }}>
+              {/* Its own checkbox, matching the two rows below. `0` still means
+                  "hide the section" to every reader, so this control and typing 0
+                  are two spellings of one stored value — but three sibling rows
+                  where only one lacked the neighbours' control read as broken,
+                  whatever the logic underneath said. */}
+              <label className="sfin-check">
+                <input
+                  type="checkbox"
+                  checked={topSpendsOn}
+                  onChange={(e) => setTopSpendsOn(e.target.checked)}
+                />
                 <span className="sfin-check-name">Biggest spends in the weekly report</span>
               </label>
               <div className="sfin-thresh-amt">
-                {/* `0` is a value the user can legitimately type here, so this
-                    one needs no on/off checkbox — unlike the two thresholds. */}
                 <input
                   id="sfin-top-spend"
                   type="number"
                   min={0}
                   step={1}
                   className="sfin-select sfin-num"
+                  // Its own accessible name, for the same reason the two
+                  // threshold fields have one: the visible row label now belongs
+                  // to the checkbox beside it.
+                  aria-label="How many biggest spends to list"
                   value={topSpendCount}
+                  disabled={!topSpendsOn}
                   onChange={(e) => setTopSpendCount(e.target.value)}
                 />
               </div>
             </div>
             <div className="sfin-num-hint sfin-subtle">
-              How many individual charges the Saturday report lists. 0 hides the
-              section; blank means the default of {DEFAULT_WEEKLY_TOP_SPEND_COUNT}.
+              How many individual charges the Saturday report lists. Untick to
+              leave the section out — as does a count of 0; blank means the
+              default of {DEFAULT_WEEKLY_TOP_SPEND_COUNT}.
             </div>
 
             <div className="sfin-thresh">
@@ -965,7 +996,9 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
                   dailyReportCategories,
                   weeklyReportCategories,
                   monthlyReportCategories,
-                  weeklyTopSpendCount: countToSave(topSpendCount, DEFAULT_WEEKLY_TOP_SPEND_COUNT),
+                  weeklyTopSpendCount: countToSave(
+                    topSpendsOn, topSpendCount, DEFAULT_WEEKLY_TOP_SPEND_COUNT,
+                  ),
                   // Always an explicit number, never omitted: `0` is how both
                   // readers spell "off", and omitting driftAlertThreshold would
                   // hand the user back the $100 default they just switched off.
