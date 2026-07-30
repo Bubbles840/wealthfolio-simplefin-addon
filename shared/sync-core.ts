@@ -224,6 +224,17 @@ export const SYNC_LOOKBACK_OVERLAP_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
 export const DRIFT_THRESHOLD_DOLLARS = 1;
 
 /**
+ * How long a drift episode must have been standing before a `Fix baseline`
+ * offer is allowed. A wrong baseline has been wrong since the day it was
+ * written and never resolves itself; a balance that includes a posted
+ * transaction the feed hasn't reported yet produces the identical constant-gap
+ * signature but clears within days. Ten days — matching IN_TRANSIT_TIMEOUT's
+ * notion of "longer than any ordinary settlement lag" — is long enough that
+ * only the permanent kind survives.
+ */
+export const BASELINE_FIX_MIN_DRIFT_AGE_MS = 10 * 24 * 60 * 60 * 1000;
+
+/**
  * Drift an account must exceed before the user is NOTIFIED about it, when they
  * have not configured a threshold of their own.
  *
@@ -1306,16 +1317,30 @@ export async function runSyncCore(
           calculatedDrift: drift,
           plan: { creates: plan.creates.length, updates: plan.updates.length, deletes: plan.deleteIds.length },
         });
-        // An EMPTY plan over the heal window is the proof: every transaction the
-        // bank reports is already stored and already matches, so no transaction
-        // can account for the gap. The remaining candidate is the baseline, and
-        // correcting it is exact — `drift` is by construction the amount the
-        // baseline is wrong by. Gated on `heal` because only a wide re-scan has
+        // An EMPTY plan over the heal window says no STORED transaction can
+        // account for the gap. Gated on `heal` because only a wide re-scan has
         // looked at enough of the feed for an empty plan to mean anything; on a
         // short routine window it would prove nothing.
+        //
+        // But an empty plan alone is NOT proof the baseline is wrong — learned
+        // live on 2026-07-30, the day this feature shipped. A bank had POSTED a
+        // $1,300 deposit that SimpleFin's transaction list had not reported yet:
+        // the balance included it, the feed didn't, and the gap was constant
+        // across the whole window — the exact signature this reads as a bad
+        // baseline. The offer was made, taken, and the feed caught up the same
+        // day: $1,300 counted twice. What tells the two apart is TIME. A wrong
+        // baseline has been wrong since the day it was written and never
+        // resolves itself; feed lag is new and clears in days. So the drift
+        // episode must have been standing longer than lag can plausibly last
+        // before the baseline gets the blame. No episode means the drift can't
+        // be dated, which is treated as young, not as old.
         const planIsEmpty =
           plan.creates.length === 0 && plan.updates.length === 0 && plan.deleteIds.length === 0;
-        if (heal && planIsEmpty && drift != null) {
+        const episode = driftAlerts[sfAccount.id];
+        const driftIsLongStanding =
+          episode != null &&
+          Date.now() - Date.parse(episode.firstDetectedAt) >= BASELINE_FIX_MIN_DRIFT_AGE_MS;
+        if (heal && planIsEmpty && driftIsLongStanding && drift != null) {
           const baseline = await fetchStartingBalance(host, wfAccountId, sfAccount.id).catch(
             () => null,
           );

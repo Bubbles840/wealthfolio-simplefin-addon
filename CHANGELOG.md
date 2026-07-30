@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-07-30
+
+### Fixed
+
+- `Fix baseline` could blame the baseline for feed lag. A bank balance that
+  already includes a posted transaction SimpleFin's transaction list has not
+  reported yet produces the exact signature 1.3.0 read as a wrong baseline: a
+  gap no stored transaction explains, constant across the whole window. Found
+  live the day the feature shipped — the offer was taken, the feed caught up
+  hours later, and the account double-counted $1,300. What tells the two apart
+  is time: a wrong baseline has been wrong since the day it was written and
+  never resolves itself, while feed lag clears in days. The offer now also
+  requires the drift to have been standing for at least 10 days.
+
 ## [1.3.0] - 2026-07-30
 
 Balance accuracy and transfer correctness, driven almost entirely by

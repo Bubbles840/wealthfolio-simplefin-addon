@@ -480,21 +480,27 @@ describe('runSyncCore', () => {
    * Real figures from the live 360 Savings account: bank $10.65, Wealthfolio
    * $1,310.65, baseline $11,355.12 — which should have been $10,055.12.
    */
-  it('offers a baseline correction when a drift is provably baseline-shaped', async () => {
-    const { host, store } = createFakeHost({
-      accountSet: { errors: [], accounts: [
-        { id: 'sfin-1', name: 'Savings', currency: 'USD', balance: '10.65', 'balance-date': 1,
-          transactions: [{ id: 'tx-1', posted: 1700000000, amount: '-1300.00', description: 'GROCERY STORE' }] },
-      ] },
-      mapping: { 'sfin-1': 'wf-a' },
-      valuations: new Map([['wf-a', 1310.65]]),
-      existing: new Map([['wf-a', [
-        { id: 'sb-wf-a', accountId: 'wf-a', activityType: 'DEPOSIT', date: '2023-11-01',
-          amount: 11355.12, comment: 'Starting balance · sfin-1', sourceGroupId: null },
-        { id: 'act-1', accountId: 'wf-a', activityType: 'WITHDRAWAL', date: '2023-11-14',
-          amount: 1300.0, comment: 'GROCERY STORE · tx-1', sourceGroupId: null },
-      ]]]),
-    });
+  const baselineDriftSeed = (extra: Partial<FakeHostSeed> = {}): FakeHostSeed => ({
+    accountSet: { errors: [], accounts: [
+      { id: 'sfin-1', name: 'Savings', currency: 'USD', balance: '10.65', 'balance-date': 1,
+        transactions: [{ id: 'tx-1', posted: 1700000000, amount: '-1300.00', description: 'GROCERY STORE' }] },
+    ] },
+    mapping: { 'sfin-1': 'wf-a' },
+    valuations: new Map([['wf-a', 1310.65]]),
+    existing: new Map([['wf-a', [
+      { id: 'sb-wf-a', accountId: 'wf-a', activityType: 'DEPOSIT', date: '2023-11-01',
+        amount: 11355.12, comment: 'Starting balance · sfin-1', sourceGroupId: null },
+      { id: 'act-1', accountId: 'wf-a', activityType: 'WITHDRAWAL', date: '2023-11-14',
+        amount: 1300.0, comment: 'GROCERY STORE · tx-1', sourceGroupId: null },
+    ]]]),
+    ...extra,
+  });
+  const daysAgo = (n: number) => new Date(Date.now() - n * 86400_000).toISOString();
+
+  it('offers a baseline correction when a drift is provably baseline-shaped AND long-standing', async () => {
+    const { host, store } = createFakeHost(baselineDriftSeed({
+      driftAlerts: { 'sfin-1': { driftAmount: -1300, firstDetectedAt: daysAgo(11), alerted: true } },
+    }));
     await runSyncCore(host, store, { heal: true });
     const balances = await store.getAccountBalances();
     const snap = balances['sfin-1'] as { drift: number | null; baselineFix?: unknown };
@@ -504,6 +510,35 @@ describe('runSyncCore', () => {
       currentAmount: 11355.12,
       suggestedAmount: 10055.12,
     });
+  });
+
+  /**
+   * Live counter-example, 2026-07-30, same day the feature shipped. A bank had
+   * POSTED a $1,300 deposit that SimpleFin's transaction list had not reported
+   * yet: the balance included it, the feed didn't, and the resulting gap was
+   * constant across the whole window — indistinguishable, on one run's
+   * evidence, from a wrong baseline. The offer was made, the baseline "fixed",
+   * the feed caught up the same day, and the account double-counted $1,300.
+   *
+   * What DOES tell the two apart is time: a wrong baseline has been wrong since
+   * the day it was written and never resolves itself, while feed lag is new and
+   * clears in days. So the offer additionally requires the drift episode to
+   * have been standing longer than feed lag can plausibly last.
+   */
+  it('does NOT offer a baseline correction for a young drift — it may be feed lag', async () => {
+    const { host, store } = createFakeHost(baselineDriftSeed({
+      driftAlerts: { 'sfin-1': { driftAmount: -1300, firstDetectedAt: daysAgo(3), alerted: true } },
+    }));
+    await runSyncCore(host, store, { heal: true });
+    const snap = (await store.getAccountBalances())['sfin-1'] as { baselineFix?: unknown };
+    expect(snap.baselineFix).toBeUndefined();
+  });
+
+  it('does NOT offer a baseline correction when no drift episode exists to date the drift', async () => {
+    const { host, store } = createFakeHost(baselineDriftSeed());
+    await runSyncCore(host, store, { heal: true });
+    const snap = (await store.getAccountBalances())['sfin-1'] as { baselineFix?: unknown };
+    expect(snap.baselineFix).toBeUndefined();
   });
 
   /**
