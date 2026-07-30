@@ -21,20 +21,20 @@
   "supportUrl": "https://github.com/Bubbles840/wealthfolio-simplefin-addon/issues",
   "source": {
     "repository": "https://github.com/Bubbles840/wealthfolio-simplefin-addon",
-    "tag": "v1.3.0",
-    "commit": "4c8ad0d4645d98d862d22ae7ee7e76df957a539b"
+    "tag": "v1.3.1",
+    "commit": "52c0c4329ebab7ff7bcc09ddec659d6ab1354354"
   },
   "release": {
-    "version": "1.3.0",
+    "version": "1.3.1",
     "minWealthfolioVersion": "3.6.2",
     "sdkVersion": "3.6.2",
     "critical": false,
     "breaking": false,
     "notes": "Balance accuracy and transfer correctness. Fixes a class of corruption where one SimpleFin transaction id appearing in two accounts collapsed both legs of a transfer into one — mistyping rows, mis-linking pairs, and skewing starting balances. Adds Fix baseline, which attributes a drift that no transaction can explain to the account's starting balance and corrects it in one click instead of adding a balance-adjustment plug. Reconcile & link now removes surplus duplicate activities and reports exactly what it deleted. Also adds daily and weekly spending reports with per-report category selection, sync-health alerting, and a stuck-transfer alert.",
-    "changelogUrl": "https://github.com/Bubbles840/wealthfolio-simplefin-addon/releases/tag/v1.3.0"
+    "changelogUrl": "https://github.com/Bubbles840/wealthfolio-simplefin-addon/releases/tag/v1.3.1"
   },
   "distribution": {
-    "r2Path": "simplefin-sync/1.3.0/simplefin-sync.zip"
+    "r2Path": "simplefin-sync/1.3.1/simplefin-sync.zip"
   },
   "media": {
     "coverLight": "assets/cover-light.webp",
