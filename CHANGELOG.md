@@ -7,8 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-07-30
+
+Balance accuracy and transfer correctness, driven almost entirely by
+discrepancies found on a live install. Every figure quoted below is a real one.
+
 ### Fixed
 
+- One SimpleFin transaction id appearing in **two** accounts corrupted
+  everything keyed by that id alone. SimpleFin issues a single id for both sides
+  of a transfer between two accounts it can see end to end, so the two legs
+  collapsed into one entry: a savings `TRANSFER_OUT` could be rewritten as a
+  +$1,300 inflow carrying the other account's description, `linkPair` could be
+  handed the same row twice, and an account's starting-balance baseline could
+  take the wrong sign. Identity is now `(account, transaction id)` everywhere it
+  matters. On the live install this had already half-linked three transfer pairs
+  — one leg grouped, the other not — leaving $2,700 of transfers out counted as
+  spending; a reconcile repairs them.
+- A failed transfer link reported no reason. Linking deletes both rows before
+  re-creating them, so a refused re-create loses financial rows, yet every host
+  error was collected and then discarded behind a generic "could not be linked"
+  that only appeared during a reconcile. The reason now travels with the failure,
+  a silently dropped group says so explicitly, and both are reported on ordinary
+  syncs too.
+- The Docker companion could never repair a half-linked transfer pair. Its
+  record of "already linked" was keyed by bare transaction id, so a shared-id
+  pair collapsed to one entry that could not distinguish "both legs confirmed"
+  from "only one leg was grouped". Entries are now per leg, while still reading
+  the old format so existing records are neither lost nor needlessly re-linked.
 - A SimpleFin payload that reported the same transaction twice for one account
   imported it twice. Both copies were planned as creates and landed in a single
   bulk request, which is the one place Wealthfolio's duplicate guard cannot
@@ -18,17 +44,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   over a pending one, and otherwise the last occurrence — and every dropped copy
   is logged. Deduplication is per account: one transaction id legitimately
   appears in two accounts as the two legs of an internal transfer.
-
-### Added
-
-- `↻ Reconcile & link` (and auto-heal) now removes activities that are surplus
-  copies of a transaction the account already holds, keeping one of each. It
-  reports exactly what it deleted — on the Sync page, as a Telegram message, and
-  as a log line per row — because automatic deletion of a financial record must
-  not be silent. Starting-balance baselines and balance-adjustment entries are
-  excluded by their note prefixes and can never be swept, and only transaction
-  ids the bank reported for that account on the same run are eligible.
-
 - Budget targets read from Wealthfolio's database picked whichever row was
   edited most recently, so editing a category's `default` budget after setting
   a month-specific one silently reported the wrong number. Month-specific rows
@@ -57,6 +72,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `↻ Reconcile & link` (and auto-heal) now removes activities that are surplus
+  copies of a transaction the account already holds, keeping one of each. It
+  reports exactly what it deleted — on the Sync page, as a Telegram message, and
+  as a log line per row — because automatic deletion of a financial record must
+  not be silent. Starting-balance baselines and balance-adjustment entries are
+  excluded by their note prefixes and can never be swept, and only transaction
+  ids the bank reported for that account on the same run are eligible.
+
+- A drift that no transaction can explain is now attributed to the account's
+  starting balance, and offered as a one-click correction rather than a plug.
+  When a wide re-scan finds every transaction the bank reports already stored and
+  already matching, nothing inside the window can account for the gap — so the
+  remaining candidate is the baseline row that stands in for history the sync
+  never saw, and the drift is exactly the amount it is wrong by. The Sync page
+  shows `Fix baseline: $11,355.12 → $10,055.12` and demotes the balance
+  adjustment to `(plug instead)`. Never applied automatically, and never offered
+  while any transaction is still unaccounted for — folding a genuinely missing
+  transaction into the baseline would hide it permanently.
+
+  This came from two live accounts sitting $1,300 out in mirror image, one
+  baseline overstated and the other understated, from a transfer in flight
+  across two baselines captured five days apart. Both feeds reconciled
+  completely; a balance adjustment would have been a four-figure fabrication
+  about where the money came from.
+
 - Two independent scheduled reports: a daily per-category spending check
   (`DAILY_REPORT_SCHEDULE`) and a weekly month-to-date summary
   (`WEEKLY_REPORT_SCHEDULE`, default Saturday). Previously one schedule existed
@@ -78,6 +118,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   weekly figure as an explicitly approximate pace. The previous
   `remaining ÷ weeks-left` figure doubled overnight mid-month and moved by only
   a fraction of what was actually spent.
+
+## [1.0.1] - 2026-07-28
+
+### Added
+
+- Telegram notifications, spending and budget figures read natively from
+  Wealthfolio's SQLite database, and exact Spending Tracker integration.
 
 ## [1.0.0] - 2026-07-26
 
