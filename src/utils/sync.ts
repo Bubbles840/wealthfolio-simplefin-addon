@@ -1,5 +1,5 @@
 import { AddonSyncHost } from './addon-host';
-import { importAdjustmentActivity, runSyncCore } from '../../shared/sync-core';
+import { applyBaselineFix, importAdjustmentActivity, runSyncCore } from '../../shared/sync-core';
 import type { SyncOptions, SyncResult } from '../../shared/sync-core';
 import {
   sendTelegramMessage,
@@ -317,6 +317,37 @@ export async function applyBalanceAdjustment(
   const balances = await store.getAccountBalances();
   if (balances[args.sfinAccountId]) {
     balances[args.sfinAccountId] = { ...balances[args.sfinAccountId], drift: null };
+    await store.setAccountBalances(balances);
+  }
+}
+
+/**
+ * Accept the baseline correction a sync offered: rewrite the account's
+ * starting-balance row to the amount that makes it agree with the bank.
+ *
+ * Only reachable from the user clicking it. The offer itself is only ever made
+ * when a heal proved no transaction can explain the drift — see
+ * `AccountBalanceSnapshot.baselineFix`.
+ */
+export async function applyBaselineCorrection(
+  ctx: AddonContext,
+  store: SecretsStore,
+  args: { sfinAccountId: string; wfAccountId: string; currency: string; suggestedAmount: number },
+): Promise<void> {
+  const res = await applyBaselineFix(new AddonSyncHost(ctx), {
+    wfAccountId: args.wfAccountId,
+    sfAccountId: args.sfinAccountId,
+    suggestedAmount: args.suggestedAmount,
+    currency: args.currency,
+  });
+  if (!res.applied) throw new Error(res.error ?? 'Baseline correction failed');
+  // Drop the drift AND the now-spent offer, so the page stops showing both
+  // without waiting for the next sync to recompute them.
+  const balances = await store.getAccountBalances();
+  const snap = balances[args.sfinAccountId];
+  if (snap) {
+    const { baselineFix: _spent, ...rest } = snap as typeof snap & { baselineFix?: unknown };
+    balances[args.sfinAccountId] = { ...rest, drift: null };
     await store.setAccountBalances(balances);
   }
 }

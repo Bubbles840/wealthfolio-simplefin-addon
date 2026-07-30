@@ -168,6 +168,49 @@ properly is item 1 below.
 
 ---
 
+### A link failure reported no reason, and a shared tx id vouched for both legs (was items 2-adjacent and 4)
+
+Two failures that were invisible rather than wrong.
+
+`linkPairByRecreate` collected every host error into a local `problems` array and
+then **discarded it**, returning a bare `{ linked: false }`. That function deletes
+both rows before re-creating them, so a refused re-create loses financial rows —
+and the only trace anywhere was a heal-gated `N transfer leg(s) could not be
+linked`. It cost a full diagnostic cycle on 2026-07-30, chasing a create failure
+that had never happened. `LinkResult.problems` now carries the reason, a silently
+dropped group names itself rather than failing reasonlessly, and `runSyncCore`
+surfaces it on **every** sync rather than only a heal (bounded to 3 pairs, so a
+systematically broken account cannot flood `errors`).
+
+The `linked_groups` ledger — the only evidence a host that cannot read
+`sourceGroupId` back has for "is this pair already linked" — was keyed by bare tx
+id. A shared-id pair collapses to ONE entry, and that entry cannot distinguish
+"both legs confirmed" from "the echo collapsed and only one leg was grouped",
+because the writer that produced it could not tell either. The companion
+therefore skipped a half-linked pair forever, leaving a transfer leg counted as
+spending. Writes are now per-leg (`accountTxKey`); reads accept **both** shapes,
+still trusting a legacy bare entry where the two legs carry different ids, so
+live ledgers are neither orphaned nor churned — only the ambiguous shared-id case
+is re-verified, once, and the legacy entry is drained as each pair is confirmed.
+
+### Drift that no transaction can explain is now attributed to the baseline
+
+A drift with an **empty reconciliation plan** over the heal window is a proof:
+every transaction the bank reports is already stored and already matches, so
+nothing inside the window accounts for the gap. The remaining candidate is the
+starting-balance row — the one row standing in for history never seen — and
+`drift` is by construction exactly the amount it is wrong by.
+`AccountBalanceSnapshot.baselineFix` now carries that offer and the Sync page
+renders `Fix baseline: $X → $Y`, demoting the plug to `(plug instead)`.
+
+Never automatic, by explicit decision: rewriting a baseline moves a real balance.
+A `Balance adjustment` plug was the only remedy before, and it dates the
+correction today, shows as its own activity, accumulates a row per use, and
+leaves the wrong constant in place — for the live case (two accounts off by
+$1,300 in mirror image, from a transfer in flight across two baselines captured
+five days apart) it would have been a four-figure lie about where money came
+from.
+
 ## 1. The test double models the server's update semantics backwards
 
 `shared/fake-host.ts`: `saveMany` **replaces** a row on update
@@ -297,7 +340,21 @@ Original text follows, for the reasoning.
   creates anyway, short-circuiting only afterwards. Now that both hosts
   delete-and-re-create, two concurrent syncers can double-create legs. Moving
   the `if (problems.length > 0) return { linked: false };` above the create
-  block is two lines and removes the question entirely.
+  block is two lines and removes the question entirely. (The `problems` array
+  now reaches the caller — see Fixed — so a failure here is at least
+  diagnosable; the ordering itself is untouched.)
+- **A hand-entered row cannot be deduped against a later feed backfill.** Both
+  the feed dedup and `planDuplicatePrune` match on the SimpleFin transaction id,
+  and a row the user typed (or a `Balance adjustment` plug) has none — so if
+  SimpleFin later reports the transaction it was standing in for, the account
+  double-counts and the drift swings by that amount in the opposite direction.
+  Exposed on 2026-07-30 while deciding whether to enter a missing $1,300 by
+  hand. Not a code defect so much as a structural blind spot in an id-based
+  scheme; the detectable pattern is a marker-less row whose amount matches an
+  incoming feed transaction within a few days, which is exactly the shape a
+  "possible duplicate" prompt would need. Worth building only if it recurs —
+  amount-and-date proximity is also how the transfer matcher produces its false
+  positives.
 - **`companion/src/wealthfolio.ts`** — `linkTransferActivities` is dead
   production code since linking moved to `shared/link-pair.ts`; two tests still
   pin it. Delete all three.

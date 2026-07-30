@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { runSyncCore, VALUATION_POLL, IN_TRANSIT_TIMEOUT_SECONDS, descriptionFromComment, txIdFromComment, planDuplicatePrune, IN_TRANSIT_COMMENT_PREFIX } from './sync-core.js';
+import { runSyncCore, applyBaselineFix, VALUATION_POLL, IN_TRANSIT_TIMEOUT_SECONDS, descriptionFromComment, txIdFromComment, planDuplicatePrune, IN_TRANSIT_COMMENT_PREFIX } from './sync-core.js';
 import { createFakeHost, type FakeHostSeed } from './fake-host.js';
 import { linkPairByRecreate } from './link-pair.js';
 import type { LinkLeg, SyncHost } from './sync-host.js';
@@ -467,6 +467,128 @@ describe('runSyncCore', () => {
   const startingBalanceRow = (accountId: string, sfinAccountId: string) => ({
     id: `sb-${accountId}`, accountId, activityType: 'DEPOSIT', date: '2026-01-01',
     amount: 0.01, comment: `Starting balance · ${sfinAccountId}`, sourceGroupId: null,
+  });
+
+  /**
+   * A drift with an EMPTY reconciliation plan is a proof, not a guess: every
+   * transaction the bank reports over the heal window is already present and
+   * already matches, so nothing inside the window can explain the gap. What's
+   * left is the starting-balance baseline — the one row that stands for history
+   * we never saw. Correcting THAT is right; plugging a `Balance adjustment`
+   * invents a transaction dated today to paper over a wrong constant.
+   *
+   * Real figures from the live 360 Savings account: bank $10.65, Wealthfolio
+   * $1,310.65, baseline $11,355.12 — which should have been $10,055.12.
+   */
+  it('offers a baseline correction when a drift is provably baseline-shaped', async () => {
+    const { host, store } = createFakeHost({
+      accountSet: { errors: [], accounts: [
+        { id: 'sfin-1', name: 'Savings', currency: 'USD', balance: '10.65', 'balance-date': 1,
+          transactions: [{ id: 'tx-1', posted: 1700000000, amount: '-1300.00', description: 'GROCERY STORE' }] },
+      ] },
+      mapping: { 'sfin-1': 'wf-a' },
+      valuations: new Map([['wf-a', 1310.65]]),
+      existing: new Map([['wf-a', [
+        { id: 'sb-wf-a', accountId: 'wf-a', activityType: 'DEPOSIT', date: '2023-11-01',
+          amount: 11355.12, comment: 'Starting balance · sfin-1', sourceGroupId: null },
+        { id: 'act-1', accountId: 'wf-a', activityType: 'WITHDRAWAL', date: '2023-11-14',
+          amount: 1300.0, comment: 'GROCERY STORE · tx-1', sourceGroupId: null },
+      ]]]),
+    });
+    await runSyncCore(host, store, { heal: true });
+    const balances = await store.getAccountBalances();
+    const snap = balances['sfin-1'] as { drift: number | null; baselineFix?: unknown };
+    expect(snap.drift).toBeCloseTo(-1300.0, 2);
+    expect(snap.baselineFix).toEqual({
+      activityId: 'sb-wf-a',
+      currentAmount: 11355.12,
+      suggestedAmount: 10055.12,
+    });
+  });
+
+  /**
+   * The dangerous case. If ANY transaction is still unaccounted for, the drift
+   * may simply be that transaction — and folding it into the baseline would bake
+   * a missing row into a constant, making it permanently invisible and wrong in
+   * the same breath. The empty plan is the whole licence for this feature.
+   */
+  it('does NOT offer a baseline correction while a transaction could still explain the drift', async () => {
+    const { host, store } = createFakeHost({
+      accountSet: { errors: [], accounts: [
+        { id: 'sfin-1', name: 'Savings', currency: 'USD', balance: '10.65', 'balance-date': 1,
+          transactions: [
+            { id: 'tx-1', posted: 1700000000, amount: '-1300.00', description: 'GROCERY STORE' },
+            // Reported by the bank, never imported — so the plan has a create.
+            { id: 'tx-2', posted: 1700086400, amount: '-25.00', description: 'COFFEE' },
+          ] },
+      ] },
+      mapping: { 'sfin-1': 'wf-a' },
+      valuations: new Map([['wf-a', 1310.65]]),
+      existing: new Map([['wf-a', [
+        { id: 'sb-wf-a', accountId: 'wf-a', activityType: 'DEPOSIT', date: '2023-11-01',
+          amount: 11355.12, comment: 'Starting balance · sfin-1', sourceGroupId: null },
+        { id: 'act-1', accountId: 'wf-a', activityType: 'WITHDRAWAL', date: '2023-11-14',
+          amount: 1300.0, comment: 'GROCERY STORE · tx-1', sourceGroupId: null },
+      ]]]),
+    });
+    await runSyncCore(host, store, { heal: true });
+    const snap = (await store.getAccountBalances())['sfin-1'] as { baselineFix?: unknown };
+    expect(snap.baselineFix).toBeUndefined();
+  });
+
+  /** Only the baseline row itself: enough to correct it, nothing else to disturb. */
+  const baselineOnlySeed = (): FakeHostSeed => ({
+    accountSet: { errors: [], accounts: [
+      { id: 'sfin-1', name: 'Savings', currency: 'USD', balance: '10.65', 'balance-date': 1, transactions: [] },
+    ] },
+    mapping: { 'sfin-1': 'wf-a' },
+    existing: new Map([['wf-a', [
+      { id: 'sb-wf-a', accountId: 'wf-a', activityType: 'DEPOSIT', date: '2023-11-01',
+        amount: 11355.12, comment: 'Starting balance · sfin-1', sourceGroupId: null },
+    ]]]),
+  });
+
+  it('rewrites the baseline row in place, keeping its date and marker comment', async () => {
+    const { host, saved } = createFakeHost(baselineOnlySeed());
+    const res = await applyBaselineFix(host, {
+      wfAccountId: 'wf-a', sfAccountId: 'sfin-1', suggestedAmount: 10055.12, currency: 'USD',
+    });
+    expect(res.applied).toBe(true);
+    // In place, so the account keeps ONE baseline row: a delete-and-re-create
+    // would lose the marker's identity and a second plug row would accumulate.
+    const updates = saved.flatMap((r) => r.updates ?? []);
+    expect(updates).toHaveLength(1);
+    expect(updates[0]).toMatchObject({
+      id: 'sb-wf-a',
+      accountId: 'wf-a',
+      activityType: 'DEPOSIT',
+      activityDate: '2023-11-01',
+      amount: 10055.12,
+      comment: 'Starting balance · sfin-1',
+    });
+    expect(saved.flatMap((r) => r.creates ?? [])).toEqual([]);
+    expect(saved.flatMap((r) => r.deleteIds ?? [])).toEqual([]);
+  });
+
+  it('flips the baseline to WITHDRAWAL when the correction takes it negative', async () => {
+    const { host, saved } = createFakeHost(baselineOnlySeed());
+    await applyBaselineFix(host, {
+      wfAccountId: 'wf-a', sfAccountId: 'sfin-1', suggestedAmount: -42.5, currency: 'USD',
+    });
+    // `amount` is a magnitude; the sign lives in the type, so a correction that
+    // crosses zero has to change the type or it silently lands as +42.50.
+    expect(saved.flatMap((r) => r.updates ?? [])[0]).toMatchObject({
+      activityType: 'WITHDRAWAL', amount: 42.5,
+    });
+  });
+
+  it('writes nothing and reports failure when the account has no baseline row', async () => {
+    const { host, saved } = createFakeHost({ mapping: { 'sfin-1': 'wf-a' } });
+    const res = await applyBaselineFix(host, {
+      wfAccountId: 'wf-a', sfAccountId: 'sfin-1', suggestedAmount: 1, currency: 'USD',
+    });
+    expect(res.applied).toBe(false);
+    expect(saved).toEqual([]);
   });
 
   it("does not inflate drift with the user's Spend-account TRANSFER_OUT rows, linked or not", async () => {

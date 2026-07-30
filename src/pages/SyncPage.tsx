@@ -1,6 +1,14 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import type { AddonContext } from '@wealthfolio/addon-sdk';
-import { runSync, INTERVAL_SKIP_MESSAGE, applyBalanceAdjustment } from '../utils/sync';
+import { runSync, INTERVAL_SKIP_MESSAGE, applyBalanceAdjustment, applyBaselineCorrection } from '../utils/sync';
+
+/** The offer a sync attaches to an account when it proved the drift belongs to
+ *  the starting-balance baseline rather than to any transaction. */
+type BaselineFixOffer = {
+  activityId: string;
+  currentAmount: number;
+  suggestedAmount: number;
+};
 import type { SyncResult } from '../utils/sync';
 import { fetchAccounts } from '../utils/simplefin';
 import { SyncStatus } from '../components/SyncStatus';
@@ -141,6 +149,7 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
   const [adjusting, setAdjusting] = useState<string | null>(null);
   const [autoHeal, setAutoHeal] = useState(false);
   const [autoAdjust, setAutoAdjust] = useState(false);
+  const [fixingBaseline, setFixingBaseline] = useState<string | null>(null);
   // Every collapsible section's open state in one map, replacing the three
   // one-off `show*` booleans this page used to carry.
   const [openCards, setOpenCards] = useState<Record<string, boolean>>({});
@@ -344,6 +353,27 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
   }, [ctx, store, loadBalances, clearError, showThrownError]);
 
   // Plug the residual: add a one-time balance-adjustment entry for an account.
+  const doFixBaseline = useCallback(
+    async (sfinId: string, wfId: string, currency: string, suggestedAmount: number) => {
+      setFixingBaseline(sfinId);
+      clearError();
+      try {
+        await applyBaselineCorrection(ctx, store, {
+          sfinAccountId: sfinId,
+          wfAccountId: wfId,
+          currency,
+          suggestedAmount,
+        });
+        loadBalances();
+      } catch (e: any) {
+        showThrownError(e, 'Baseline correction failed');
+      } finally {
+        setFixingBaseline(null);
+      }
+    },
+    [ctx, store, loadBalances, clearError, showThrownError],
+  );
+
   const doAdjust = useCallback(
     async (sfinId: string, wfId: string, currency: string, amount: number) => {
       setAdjusting(sfinId);
@@ -503,6 +533,11 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
       {driftAccounts.map(([sfinId, wfId]) => {
         const info = balances[sfinId];
         const drift = info.drift as number;
+        // Offered only when a heal proved every transaction reconciles, which
+        // makes the starting balance the only thing left that can be wrong. When
+        // it's present the plug is demoted: it would date this correction today
+        // and leave the wrong baseline in place.
+        const baselineFix = (info as { baselineFix?: BaselineFixOffer }).baselineFix;
         return (
           <div className="sfin-banner-warn" key={sfinId}>
             <span aria-hidden>⚠</span>
@@ -512,19 +547,43 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
                 <b>{money(Math.abs(drift), info.currency)}</b> — SimpleFin reports{' '}
                 <b>{money(info.balance ?? 0, info.currency)}</b>.
               </div>
+              {baselineFix && (
+                <div style={{ marginTop: 4, opacity: 0.85 }}>
+                  Every transaction reconciles — the starting balance looks wrong, not your
+                  history.
+                </div>
+              )}
               <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
                 <Button variant="outline" onClick={doHeal} disabled={healing || syncing}>
                   {healing ? 'Re-scanning…' : 'Re-scan 90 days'}
                 </Button>
+                {baselineFix && (
+                  <Button
+                    variant="outline"
+                    title="Correct this account's starting balance, which stands for everything that happened before the first sync"
+                    onClick={() =>
+                      doFixBaseline(sfinId, wfId, info.currency, baselineFix.suggestedAmount)
+                    }
+                    disabled={fixingBaseline === sfinId || healing || syncing}
+                  >
+                    {fixingBaseline === sfinId
+                      ? 'Fixing baseline…'
+                      : `Fix baseline: ${money(baselineFix.currentAmount, info.currency)} → ${money(baselineFix.suggestedAmount, info.currency)}`}
+                  </Button>
+                )}
                 <Button
                   variant="ghost"
-                  title="Add a one-time balance adjustment so this account matches your bank"
+                  title={
+                    baselineFix
+                      ? 'Add a one-time adjustment dated today instead. Leaves the wrong starting balance in place.'
+                      : 'Add a one-time balance adjustment so this account matches your bank'
+                  }
                   onClick={() => doAdjust(sfinId, wfId, info.currency, drift)}
-                  disabled={adjusting === sfinId || healing}
+                  disabled={adjusting === sfinId || healing || fixingBaseline === sfinId}
                 >
                   {adjusting === sfinId
                     ? 'Adjusting…'
-                    : `${drift > 0 ? 'Add' : 'Subtract'} ${money(Math.abs(drift), info.currency)}`}
+                    : `${drift > 0 ? 'Add' : 'Subtract'} ${money(Math.abs(drift), info.currency)}${baselineFix ? ' (plug instead)' : ''}`}
                 </Button>
               </div>
             </div>

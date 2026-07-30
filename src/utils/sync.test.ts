@@ -3,6 +3,7 @@ import {
   runSync,
   deliverAddonAlerts,
   applyBalanceAdjustment,
+  applyBaselineCorrection,
   neutralAdjustmentFields,
   MIN_SYNC_INTERVAL_MS,
   VALUATION_POLL,
@@ -367,6 +368,60 @@ describe('runSync', () => {
     expect(imported[0].comment).toMatch(/^Balance adjustment · sfin-1 · /);
     const persisted = vi.mocked(store.setAccountBalances).mock.calls.at(-1)![0] as any;
     expect(persisted['sfin-1'].drift).toBeNull();
+  });
+
+  it('applyBaselineCorrection rewrites the baseline row and clears both the drift and the spent offer', async () => {
+    const ctx = makeCtx();
+    ctx.api.activities.search = vi.fn(async () => ({
+      data: [{
+        id: 'sb-1', accountId: 'wf-account-a', activityType: 'DEPOSIT', date: '2026-06-19',
+        amount: '11355.12', comment: 'Starting balance · sfin-1',
+      }],
+    }));
+    const store = makeStore({
+      getAccountBalances: vi.fn(async () => ({
+        'sfin-1': {
+          balance: 10.65, currency: 'USD', date: 1700000000, drift: -1300,
+          baselineFix: { activityId: 'sb-1', currentAmount: 11355.12, suggestedAmount: 10055.12 },
+        },
+      })),
+    });
+    await applyBaselineCorrection(ctx, store as any, {
+      sfinAccountId: 'sfin-1', wfAccountId: 'wf-account-a', currency: 'USD',
+      suggestedAmount: 10055.12,
+    });
+    const update = vi.mocked(ctx.api.activities.saveMany).mock.calls.at(-1)![0].updates![0] as any;
+    expect(update.id).toBe('sb-1');
+    expect(update.amount).toBe(10055.12);
+    const persisted = vi.mocked(store.setAccountBalances).mock.calls.at(-1)![0] as any;
+    expect(persisted['sfin-1'].drift).toBeNull();
+    // The offer has been spent. Leaving it would re-render the button for a
+    // correction that has already been applied — one more click, one more $1,300.
+    expect(persisted['sfin-1'].baselineFix).toBeUndefined();
+  });
+
+  it('applyBaselineCorrection throws instead of reporting success when the write is refused', async () => {
+    const ctx = makeCtx();
+    ctx.api.activities.search = vi.fn(async () => ({
+      data: [{
+        id: 'sb-1', accountId: 'wf-account-a', activityType: 'DEPOSIT', date: '2026-06-19',
+        amount: '11355.12', comment: 'Starting balance · sfin-1',
+      }],
+    }));
+    ctx.api.activities.saveMany = vi.fn(async () => ({
+      created: [], updated: [], deleted: [], createdMappings: [],
+      errors: [{ action: 'update', message: 'validation failed' }],
+    }));
+    const store = makeStore({ setAccountBalances: vi.fn(async () => {}) });
+    await expect(
+      applyBaselineCorrection(ctx, store as any, {
+        sfinAccountId: 'sfin-1', wfAccountId: 'wf-account-a', currency: 'USD',
+        suggestedAmount: 10055.12,
+      }),
+    ).rejects.toThrow(/validation failed/);
+    // Nothing may be cleared on a failed write, or the page would show the
+    // account as fixed while the wrong baseline is still in place.
+    expect(store.setAccountBalances).not.toHaveBeenCalled();
   });
 
   it('applyBalanceAdjustment imports a spending-neutral CREDIT+fee for a negative drift on a CASH account', async () => {

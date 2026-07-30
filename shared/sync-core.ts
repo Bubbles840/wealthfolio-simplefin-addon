@@ -370,6 +370,23 @@ interface AccountBalanceSnapshot {
   currency: string;
   date: number;
   drift: number | null;
+  /**
+   * Present when this run PROVED the drift belongs to the starting-balance
+   * baseline rather than to any transaction: the reconciliation plan came back
+   * empty over the heal window, so every transaction the bank reports is already
+   * stored and already matches, and nothing inside the window can account for
+   * the gap. What remains is the one row that stands in for history we never
+   * saw — so the honest repair is to correct that row, not to add a
+   * `Balance adjustment` plug, which invents a transaction dated today to hide a
+   * wrong constant and leaves the account permanently misattributed.
+   *
+   * Signed, in dollars. Offered to the user; never applied automatically.
+   */
+  baselineFix?: {
+    activityId: string;
+    currentAmount: number;
+    suggestedAmount: number;
+  };
 }
 
 /**
@@ -421,6 +438,50 @@ async function fetchStartingBalance(
     date: new Date(row.date).toISOString().slice(0, 10),
     signed: String(row.activityType) === 'WITHDRAWAL' ? -abs : abs,
   };
+}
+
+/**
+ * Correct an account's starting-balance baseline to `suggestedAmount`.
+ *
+ * The baseline stands for everything that predates the first sync, so a drift no
+ * transaction can explain is a wrong baseline — and the fix is to rewrite that
+ * one row IN PLACE. Deliberately not a `Balance adjustment` plug: a plug dates
+ * the correction today, shows up as its own activity, and adds another row every
+ * time it is used, while the error it covers is a constant reaching back to
+ * before the account had any history at all.
+ *
+ * Never called from the sync. Rewriting a baseline moves a real balance, so it
+ * only runs when the user accepts the offer carried on
+ * `AccountBalanceSnapshot.baselineFix`.
+ */
+export async function applyBaselineFix(
+  host: SyncHost,
+  args: { wfAccountId: string; sfAccountId: string; suggestedAmount: number; currency: string },
+): Promise<{ applied: boolean; error?: string }> {
+  const { wfAccountId, sfAccountId, suggestedAmount, currency } = args;
+  // Re-read instead of trusting the id the snapshot was built with: that
+  // snapshot can be minutes old, and this writes to a financial row by id.
+  const baseline = await fetchStartingBalance(host, wfAccountId, sfAccountId).catch(() => null);
+  if (!baseline) return { applied: false, error: 'no starting-balance row on this account' };
+  const res = await host.saveMany({
+    updates: [
+      {
+        id: baseline.id,
+        accountId: wfAccountId,
+        // `amount` is a magnitude — the sign lives in the type, so a correction
+        // that crosses zero has to change the type or it lands with the old one.
+        activityType: suggestedAmount < 0 ? 'WITHDRAWAL' : 'DEPOSIT',
+        activityDate: baseline.date,
+        amount: Math.abs(Math.round(suggestedAmount * 100) / 100),
+        currency,
+        comment: `${STARTING_BALANCE_COMMENT_PREFIX}${sfAccountId}`,
+      },
+    ],
+  });
+  if (res.errors.length > 0) {
+    return { applied: false, error: res.errors.map((e) => `${e.action}: ${e.message}`).join('; ') };
+  }
+  return { applied: true };
 }
 
 /**
@@ -1168,6 +1229,11 @@ export async function runSyncCore(
     // must leave it alone — clearing there would re-arm on a run that proved
     // nothing, and the next measurable run would alert all over again.
     let measuredDrift: number | null = null;
+    // A correction to the starting-balance baseline, offered only when the drift
+    // is PROVABLY the baseline's fault (see where it is set). Never applied here:
+    // rewriting a baseline changes a real balance, so it stays an offer the user
+    // accepts explicitly.
+    let baselineFix: AccountBalanceSnapshot['baselineFix'];
     if (wfValuation !== undefined && Number.isFinite(sfBalance)) {
       // Drift compares SimpleFin's POSTED balance to Wealthfolio's valuation.
       // They're only comparable when the account is SETTLED: pending rows are in
@@ -1240,6 +1306,29 @@ export async function runSyncCore(
           calculatedDrift: drift,
           plan: { creates: plan.creates.length, updates: plan.updates.length, deletes: plan.deleteIds.length },
         });
+        // An EMPTY plan over the heal window is the proof: every transaction the
+        // bank reports is already stored and already matches, so no transaction
+        // can account for the gap. The remaining candidate is the baseline, and
+        // correcting it is exact — `drift` is by construction the amount the
+        // baseline is wrong by. Gated on `heal` because only a wide re-scan has
+        // looked at enough of the feed for an empty plan to mean anything; on a
+        // short routine window it would prove nothing.
+        const planIsEmpty =
+          plan.creates.length === 0 && plan.updates.length === 0 && plan.deleteIds.length === 0;
+        if (heal && planIsEmpty && drift != null) {
+          const baseline = await fetchStartingBalance(host, wfAccountId, sfAccount.id).catch(
+            () => null,
+          );
+          // No baseline row means there is nothing to correct — the drift is
+          // real and unexplained, and a plug stays the only remedy.
+          if (baseline) {
+            baselineFix = {
+              activityId: baseline.id,
+              currentAmount: baseline.signed,
+              suggestedAmount: Math.round((baseline.signed + drift) * 100) / 100,
+            };
+          }
+        }
         // Aggressive auto-heal: plug the residual immediately — but at most one
         // adjustment per account per day, so a stale valuation on a rapid
         // re-sync (the adjustment isn't recomputed yet) can't stack duplicates.
@@ -1270,6 +1359,10 @@ export async function runSyncCore(
           // the episode (this run did not prove the account is in sync).
           drift = null;
           measuredDrift = null;
+          // Already plugged, so there is nothing left for the user to accept —
+          // and offering a baseline correction for a gap this run just filled
+          // would double the fix.
+          baselineFix = undefined;
         }
       }
     }
@@ -1278,6 +1371,7 @@ export async function runSyncCore(
       currency: sfAccount.currency,
       date: sfAccount['balance-date'],
       drift,
+      ...(baselineFix ? { baselineFix } : {}),
     };
 
     // Drift episodes: open one (and announce it once) when a trustworthy figure
