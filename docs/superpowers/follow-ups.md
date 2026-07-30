@@ -4,9 +4,11 @@ Findings that survived a review cycle without being fixed, with enough context
 to act on them later. Each says why it was deferred, so a future reader can
 tell "decided against" from "not got to yet".
 
-Last updated: 2026-07-29, after fixing the duplicate-transaction import
-(new item 1, which pushed former items 1-5 down to 2-6, plus three new entries
-under "Smaller items"). Previous revision: 2026-07-29, after adding the weekly
+Last updated: 2026-07-30, after fixing the shared-transaction-id collision
+(former item 1, now under "Fixed"; former items 2-6 are now 1-5). Previous
+revision: 2026-07-29, after fixing the duplicate-transaction import
+(then-new item 1, which pushed former items 1-5 down to 2-6, plus three new
+entries under "Smaller items"). Earlier: 2026-07-29, after adding the weekly
 report's "biggest this week" section (two new entries under "Smaller items").
 Earlier: 2026-07-29, after adding the monthly wrap-up report (three new
 entries under "Smaller items"). Earlier: 2026-07-29, after adding the
@@ -95,52 +97,78 @@ placeholder (`CREDIT`/`DEPOSIT`) and the relink sweep re-creates asset-carrying
 legs asset-free, so no new data reaches it — but production still holds
 pre-placeholder `TRANSFER_OUT` rows, so it should not be "cleaned up".
 
----
 
-## 1. One transaction id in two accounts corrupts everything keyed by tx id
+### One transaction id in two accounts corrupted everything keyed by tx id (was item 1)
 
-`shared/sync-core.ts` and `shared/transfers.ts`. Found while fixing the feed
-dedup (2026-07-29) and **left unfixed deliberately** — it is a separate change
-with its own blast radius. Confirmed by running the case, not by reading:
+Fixed 2026-07-30 in `shared/transfers.ts`, `shared/sync-core.ts` and
+`shared/link-pair.ts` (commit e8603f1). SimpleFin issues ONE transaction id for
+BOTH sides of a transfer between two accounts it connects, so every map and set
+in the run keyed by transaction id **across accounts** had the second leg
+silently overwrite the first.
 
-```
-detectTransferPairs([{TRN-x, sfin-1, -1300}, {TRN-x, sfin-2, +1300}])
-  pairs      → [{ outTxId: 'TRN-x', inTxId: 'TRN-x' }]     ← a "pair" of one id
-  typeByTxId → [['TRN-x', 'TRANSFER_IN']]                  ← TRANSFER_OUT lost
-```
+**The write-up's open question — is this live or latent? — is answered, and the
+answer changes what the evidence was worth.** The original entry rested on
+calling `detectTransferPairs` in isolation, and flagged that the user's live rows
+(correctly typed, and a heal reporting `plan: { creates: 0, updates: 0, deletes: 0 }`
+on both accounts) did not match. Driving the whole of `runSyncCore` settled it:
+the end-to-end path is **not** safe, and it is worse than the isolated call
+suggested. With two mapped accounts whose feeds carry one id with opposite signs
+and both legs already stored, correctly typed and grouped, a heal:
 
-Four maps in the run are keyed by SimpleFin tx id **across all accounts**, so a
-second account's row overwrites the first's:
-
-| Map | Consequence of the collision |
+| | What actually happened |
 |---|---|
-| `detection.typeByTxId` | `TRANSFER_OUT` is overwritten by `TRANSFER_IN`, so the −$1,300 outflow is written as a $1,300 **inflow**. A $2,600 error on one transfer. |
-| `linkRowByTxId` | `outRow` and `inRow` resolve to the SAME row, so `linkPair` is handed `[leg, leg]`. `linkPairByRecreate` then deletes that one row and creates **two** in one account — manufacturing exactly the duplicate this branch exists to remove — while the other account's leg is never touched or linked. |
-| `descByTxId` | The leg in account A is written with account B's bank description. |
-| `signedByTxId` | Feeds `windowDelta` for drift measurement and the starting-balance baseline with the wrong sign. |
+| `detection.typeByTxId` | Both legs resolved to `TRANSFER_IN`, so the stored `TRANSFER_OUT` was **UPDATED** into a +$1,300 inflow — a $2,600 error — and relabelled with the *other* account's bank description. |
+| `linkRowByTxId` | Both legs of the pair resolved to the SAME row. `linkPair` got `[leg, leg]`, and `linkPairByRecreate` deleted that one row and created **two in one account**, while the other account's leg was never linked. |
+| `signedByTxId` | The OUT account's baseline was computed from the IN account's `+700`: `WITHDRAWAL 700` where `DEPOSIT 700` was correct, off by $1,400. Drift took the same wrong sign. |
 
-`shared/fake-host.ts`'s `linkPair` only stamps a `sourceGroupId` (it does not
-delete and re-create), which is why no existing test notices any of this — the
-same hole described in item 2 below.
+So the live rows being clean does **not** mean the code is. Note the shape of the
+`plan: { … }` log line that made them look clean: it prints inside
+`if (noPending && createOnly && …)`, so it can only ever *print* `updates: 0` —
+an account that planned an update produces no line at all. Both accounts printing
+one really does mean neither was updated, and since a truly-shared id makes an
+update on exactly one of the two accounts unavoidable, the most likely reading is
+that **the three ids collide only in the 8-hex prefix that was logged**
+(`TRN-<uuid>` truncated), not in full. Not confirmable from here — the local
+`app.db` holds 0 activities, the live database is on the deployed server — so it
+stays a reading, not a finding. Either way the code path was broken and is the
+kind that fires the first time a full id really is reused.
 
-Caveat worth checking against the live database before prioritising: the user's
-data reportedly holds `TRN-41fee96e` as a `TRANSFER_IN` in one account and a
-`TRANSFER_OUT` in another. If those two rows really shared a full transaction id
-the collision above would have typed **both** `TRANSFER_IN`, so either the full
-ids differ beyond the logged prefix, or the two legs were imported on different
-runs (each with only one account's side in the window). Worth resolving, because
-it decides whether this is live or latent.
+Now keyed on `accountTxKey(sfAccountId, txId)`: `detection.typeByAccountTx` (was
+`typeByTxId`), `descByKey`, `signedByKey`, `pairedKeys`, `linkRowByKey`,
+`linkedKeys`, `detectTransferPairs`'s own `usedPositives`, and
+`linkPairByRecreate`'s echo map — where the tx-id key made "did both legs come
+back on one gid" compare the surviving leg's gid with **itself** and report
+success on a dropped group, which is the single failure that echo exists to
+catch. `detectTransferPairs` returns `pairs: [{ out, in }]` with each side an
+`{ accountId, txId }`; a pair whose legs share an id is a legitimate transfer —
+arguably the most legitimate kind — and "a leg cannot pair with itself" remains
+true through the existing same-account guard rather than a new check.
 
-The feed dedup shipped in this branch is per account and does **not** touch any
-of the above — it neither causes nor hides it.
+Left keyed by bare tx id, deliberately: `fetchExistingRows`,
+`planReconciliation`, `planDuplicatePrune`, `dedupeAccountTransactions` and the
+per-account created/updated echo maps, all of which operate inside ONE account.
+And both PERSISTED ledgers, `linked_groups` and `transfer_link_failures`: a
+shared id identifies exactly one pair (SimpleFin does not put a third occurrence
+in a third account), so one entry answers for both legs, while re-keying would
+orphan live entries — every already-linked pair would read as unlinked and be
+re-attempted, which on the addon means deleting and re-creating correctly-linked
+financial rows, and a stuck pair's strike count and `alerted` flag would reset and
+re-announce. If a shared id ever does span three accounts, that is the line to
+revisit, and it becomes a read-both-shapes/write-new migration rather than a
+silent re-key.
 
-Fix shape: key everything per (account, tx id) — `Map<string, Map<string,…>>` or
-a composite key — and make `detectTransferPairs` reject a candidate pairing with
-itself. `typeByTxId` needs the account in its key too.
+Eleven new tests, nine of which fail the moment `accountTxKey` is collapsed back
+to a bare tx id (verified by mutation), including the three live pairs' exact
+shape surviving a heal with zero writes. No pre-existing test needed weakening;
+`shared/transfers.test.ts`'s assertions were rewritten for the new return shape
+only. The one thing still NOT covered end to end is the same-id case through the
+fake's own `linkPair` — it only stamps a gid — so the duplicate-row assertion
+swaps in the real `linkPairByRecreate` over the fake's `saveMany`. Fixing the fake
+properly is item 1 below.
 
 ---
 
-## 2. The test double models the server's update semantics backwards
+## 1. The test double models the server's update semantics backwards
 
 `shared/fake-host.ts`: `saveMany` **replaces** a row on update
 (`rows[idx] = toHostActivity(w.id, w)`), so an omitted `symbol` clears
@@ -167,13 +195,13 @@ final row has no asset and the full amount.
 
 ---
 
-## 3. A failed `linkPair` leaves a leg the relink sweep will never repair
+## 2. A failed `linkPair` leaves a leg the relink sweep will never repair
 
 `shared/sync-core.ts` (a comment at the site records this too): both legs are
-added to `linkedTxIds` *before* `host.linkPair(legs)` is called. When linking
+added to `linkedKeys` *before* `host.linkPair(legs)` is called. When linking
 fails, the promoted leg keeps its phantom `$CASH` asset, and the end-of-run
 relink sweep — the one mechanism that could repair it — skips it precisely
-because it is in `linkedTxIds`. It does not self-heal on later runs either: the
+because it is in `linkedKeys`. It does not self-heal on later runs either: the
 pair is re-detected, re-added, and re-skipped every time.
 
 The stuck-transfer alert does fire after three consecutive failures, so the
@@ -187,7 +215,7 @@ threshold, stop offering that pair to `linkPair` and let the *next* run's sweep
 
 ---
 
-## 4. ~~The addon consumes alerts it cannot deliver~~ — FIXED
+## 3. ~~The addon consumes alerts it cannot deliver~~ — FIXED
 
 Fixed 2026-07-29 via direction 1 below. `src/utils/sync.ts` now exports
 `deliverAddonAlerts`, called from `runSync` inside the single-flight lock and
@@ -240,7 +268,7 @@ Original text follows, for the reasoning.
 
 ---
 
-## 5. Smaller items
+## 4. Smaller items
 
 - **The duplicate sweep only reaches ids in the current fetch window.**
   `planDuplicatePrune` requires the transaction id to be one SimpleFin reported
@@ -326,7 +354,7 @@ Original text follows, for the reasoning.
 
 ---
 
-## 6. Verify on a real instance
+## 5. Verify on a real instance
 
 Not code findings — things a test suite structurally cannot answer.
 
