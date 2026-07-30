@@ -142,31 +142,56 @@ threshold, stop offering that pair to `linkPair` and let the *next* run's sweep
 
 ---
 
-## 3. The addon consumes alerts it cannot deliver
+## 3. ~~The addon consumes alerts it cannot deliver~~ — FIXED
 
-Every alert `runSyncCore` produces is marked delivered — or simply dropped — by
-whichever syncer ran, but only the **companion** can actually send a Telegram
-message. The addon runs the identical core, so an in-app sync:
+Fixed 2026-07-29 via direction 1 below. `src/utils/sync.ts` now exports
+`deliverAddonAlerts`, called from `runSync` inside the single-flight lock and
+inside the returned promise, so an in-app sync sends its own three alert arrays
+through `ctx.api.network`. The message builders moved to `shared/telegram.ts`
+(`formatStuckTransferAlert` joined the two already there), so both hosts render
+identical text from one place and only sending + ledger bookkeeping differ.
 
-- writes `transfer_link_failures[key].alerted = true` and `drift_alerts[id].alerted
-  = true` for episodes nobody ever announces, which the companion then skips
-  because the ledger says the user was already told;
-- discards `largeTransactionAlerts` entirely, and since a create happens once per
-  SimpleFin tx id, a row the addon imported can never be announced afterwards.
+The addon mirrors the companion's delivery discipline: `alerted` is rolled back
+on a confirmed failed send for the stuck-transfer and drift ledgers, and
+large-transaction alerts go through the shared `pending_large_tx_alerts` outbox
+(key now `LARGE_TX_OUTBOX_SECRET_KEY` in `shared/telegram.ts`, imported by both)
+because that alert is not re-derivable. A non-attempt — no Telegram config, an
+unreadable one, or `enabled === false` — does nothing at all: no sends, no
+rollbacks, no outbox write, exactly as before.
 
-Pre-existing for the stuck-transfer alert (shipped with the notification
-redesign); the drift and large-transaction alerts added 2026-07-29 inherit it by
-following the same pattern deliberately. Only bites users who run both syncers
-against one Wealthfolio instance — which this repo's own deployment does.
+Duplicates stay impossible because the ledger is the interlock and both syncers
+share it: the core emits a stuck-transfer or drift alert only when `alerted` is
+false and flips it true in the same pass, and a large-transaction alert is
+emitted once per SimpleFin tx id by whichever syncer created the row, with the
+outbox merged by tx id. Residual caveat, inherent to the shared secret rather
+than to the fix: these are read-modify-write cycles with no compare-and-swap, so
+two syncers running in the same instant could both observe `alerted: false`.
 
-Fix directions, roughly in order of appeal:
-1. Have the addon deliver too (it has `ctx.api.network`, which
-   `sendTelegramMessage` already accepts as its `network` argument) — no shared/
-   change needed, the addon just calls the senders itself.
-2. Give the ledgers a `queuedBy: 'addon' | 'companion'` field so the companion
-   re-queues anything the addon marked.
-3. Have the addon pass an option telling the core not to mark or emit alerts at
-   all, leaving every notification to the companion's own sync cycle.
+Original text follows, for the reasoning.
+
+> Every alert `runSyncCore` produces is marked delivered — or simply dropped — by
+> whichever syncer ran, but only the **companion** can actually send a Telegram
+> message. The addon runs the identical core, so an in-app sync:
+>
+> - writes `transfer_link_failures[key].alerted = true` and `drift_alerts[id].alerted
+>   = true` for episodes nobody ever announces, which the companion then skips
+>   because the ledger says the user was already told;
+> - discards `largeTransactionAlerts` entirely, and since a create happens once per
+>   SimpleFin tx id, a row the addon imported can never be announced afterwards.
+>
+> Pre-existing for the stuck-transfer alert (shipped with the notification
+> redesign); the drift and large-transaction alerts added 2026-07-29 inherit it by
+> following the same pattern deliberately. Only bites users who run both syncers
+> against one Wealthfolio instance — which this repo's own deployment does.
+>
+> Fix directions, roughly in order of appeal:
+> 1. Have the addon deliver too (it has `ctx.api.network`, which
+>    `sendTelegramMessage` already accepts as its `network` argument) — no shared/
+>    change needed, the addon just calls the senders itself.
+> 2. Give the ledgers a `queuedBy: 'addon' | 'companion'` field so the companion
+>    re-queues anything the addon marked.
+> 3. Have the addon pass an option telling the core not to mark or emit alerts at
+>    all, leaving every notification to the companion's own sync cycle.
 
 ---
 

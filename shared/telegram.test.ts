@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatMonthlyWrapUp, formatSyncHealthFooter, escapeMarkdown, weeklyEnvelope, moneyWhole, formatLargeTransactionAlert, formatBalanceDriftAlert } from './telegram.js';
+import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatMonthlyWrapUp, formatSyncHealthFooter, escapeMarkdown, weeklyEnvelope, moneyWhole, formatLargeTransactionAlert, formatBalanceDriftAlert, formatStuckTransferAlert } from './telegram.js';
 
 const mockFetch = vi.fn();
 vi.stubGlobal('fetch', mockFetch);
@@ -879,6 +879,48 @@ describe('formatLargeTransactionAlert', () => {
     // ...and the bold entity wraps only the figure, which has no specials in it.
     expect(unescaped.slice(unescaped.indexOf('*'), unescaped.lastIndexOf('*') + 1))
       .toBe('*$1,240.00*');
+  });
+});
+
+describe('formatStuckTransferAlert', () => {
+  // Lives here rather than in either host because BOTH syncers send it now (the
+  // addon delivers the alerts it consumes), and two copies of a message builder
+  // is exactly how the two would drift in what they say.
+  it('names the pair, the amount and the next step', () => {
+    expect(formatStuckTransferAlert({
+      description: 'Payment ↔ Payment',
+      amountCents: 130000,
+      currency: 'USD',
+    })).toBe(
+      "⚠️ *Transfer stuck — couldn't auto-link after 3 tries*\n"
+      + 'Payment ↔ Payment\n'
+      + 'Amount: $1300.00 USD\n'
+      + 'Try "Reconcile & link" in the addon, or check for a duplicate/mismatched leg.',
+    );
+  });
+
+  it('escapes a `*`/`_`-laden pair description and keeps it out of every entity', () => {
+    // Moved from companion/src/index.test.ts's end-to-end send test, which still
+    // pins the same escaping through the companion's actual delivery path. The
+    // failure mode: legacy Markdown ignores a backslash escape INSIDE an entity,
+    // and card-network descriptors ("AMAZON *MKTPLACE") reach this string.
+    const text = formatStuckTransferAlert({
+      description: 'AMAZON *MKTPLACE ↔ Payment_Refund',
+      amountCents: 500,
+      currency: 'USD',
+    });
+    expect(text).toContain('AMAZON \\*MKTPLACE ↔ Payment\\_Refund');
+    // Exactly one balanced bold pair (the fixed heading), and no stray `_`.
+    const unescaped = text.replace(/\\[_*`[]/g, '');
+    expect((unescaped.match(/\*/g) ?? [])).toHaveLength(2);
+    expect(unescaped.match(/_/g)).toBeNull();
+  });
+
+  it('escapes the currency too — it is bank-supplied, not a literal', () => {
+    const text = formatStuckTransferAlert({
+      description: 'Payment ↔ Payment', amountCents: 500, currency: 'US_D',
+    });
+    expect(text).toContain('Amount: $5.00 US\\_D');
   });
 });
 

@@ -13,7 +13,7 @@ import { runSyncCore } from '../../shared/sync-core.js';
 import type { SyncResult } from '../../shared/sync-core.js';
 import { RestSyncHost, RestSyncStore } from './rest-host.js';
 import { WealthfolioClient } from './wealthfolio.js';
-import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatMonthlyWrapUp, formatSyncHealthFooter, formatLargeTransactionAlert, formatBalanceDriftAlert, escapeMarkdown } from '../../shared/telegram.js';
+import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatMonthlyWrapUp, formatSyncHealthFooter, formatLargeTransactionAlert, formatBalanceDriftAlert, formatStuckTransferAlert, escapeMarkdown, LARGE_TX_OUTBOX_SECRET_KEY } from '../../shared/telegram.js';
 import type { SyncHealth } from '../../shared/telegram.js';
 import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending } from './sqlite-native.js';
 
@@ -187,15 +187,13 @@ async function sendStuckTransferAlert(
   const tg = parseSecretJson<any>(tgRaw, 'telegram_config');
   if (!tg) return true;
   if (!tg.botToken || !tg.chatId || tg.enabled === false) return true;
-  const amount = (alert.amountCents / 100).toFixed(2);
-  // `alert.description` is built from bank/card transaction comments — real
-  // merchant descriptors routinely contain `*`/`_` (card-network descriptors
-  // like "AMAZON *MKTPLACE"), so this needs escaping same as any other
-  // arbitrary text reaching a Markdown-parsed message.
+  // Text built by `shared/telegram.ts` — including the escaping of the
+  // bank-supplied description — so the addon, which now delivers these too,
+  // cannot say anything different about the same episode.
   const result = await sendTelegramMessage(
     tg.botToken,
     tg.chatId,
-    `⚠️ *Transfer stuck — couldn't auto-link after 3 tries*\n${escapeMarkdown(alert.description)}\nAmount: $${amount} ${alert.currency}\nTry "Reconcile & link" in the addon, or check for a duplicate/mismatched leg.`,
+    formatStuckTransferAlert(alert),
   );
   if (!result.ok) {
     log(`Stuck-transfer alert failed to send, will retry next sync: ${result.description}`);
@@ -279,9 +277,10 @@ async function rollBackUndeliveredDriftAlerts(
 }
 
 /** Addon secret holding large-transaction alerts a previous run could not
- *  deliver. See `deliverLargeTransactionAlerts` for why an outbox rather than a
- *  rollback flag. */
-const LARGE_TX_OUTBOX_KEY = 'pending_large_tx_alerts';
+ *  deliver — the name comes from `shared/telegram.ts` because the addon drains
+ *  the same queue. See `deliverLargeTransactionAlerts` for why an outbox rather
+ *  than a rollback flag. */
+const LARGE_TX_OUTBOX_KEY = LARGE_TX_OUTBOX_SECRET_KEY;
 
 /**
  * Sends this run's large-transaction alerts, retrying anything an earlier run

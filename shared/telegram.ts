@@ -174,6 +174,24 @@ export function moneyWhole(amount: number): string {
 }
 
 /**
+ * Addon-secret key holding large-transaction alerts a run could not deliver.
+ *
+ * Defined here, host-agnostically, because both syncers queue into and drain the
+ * SAME secret on the one Wealthfolio instance — that shared queue is what makes
+ * "sent exactly once" hold when either syncer can be the one that imported the
+ * row. Two private copies of the string in two packages is one typo away from
+ * two independent outboxes, and the symptom would be a duplicate alert rather
+ * than an error.
+ *
+ * Why an outbox rather than the `alerted`-flag rollback the other two alerts use:
+ * a stuck transfer and a drift episode are re-detected on every sync, so clearing
+ * a flag is enough to rebuild the alert. A large transaction is announced only
+ * because its row was CREATED this run, and `planReconciliation` creates a given
+ * SimpleFin tx id exactly once — by the next sync nothing can re-derive it.
+ */
+export const LARGE_TX_OUTBOX_SECRET_KEY = 'pending_large_tx_alerts';
+
+/**
  * One-line notice for a single large newly-imported spending transaction.
  *
  * Every piece of untrusted text — the bank's description and the Wealthfolio
@@ -196,6 +214,42 @@ export function formatLargeTransactionAlert(alert: {
 }): string {
   const figure = formatDollars(Math.abs(alert.amountCents) / 100, 2);
   return `💸 *${figure}* ${escapeMarkdown(alert.currency)} — ${escapeMarkdown(alert.description)} · ${escapeMarkdown(alert.accountName)}`;
+}
+
+/**
+ * Notice that a transfer pair has failed to auto-link three runs in a row.
+ *
+ * Lives here, beside the other two sync alerts, because BOTH hosts send it: the
+ * companion from its cron cycle and the addon from `runSync`. A message builder
+ * duplicated per host is precisely how the two syncers would come to say
+ * different things about the same episode, so the formatting is shared and only
+ * the sending and the ledger bookkeeping differ.
+ *
+ * `description` is `"<out leg comment> ↔ <in leg comment>"`, built from bank
+ * transaction comments — card-network descriptors routinely carry `*` and `_` —
+ * and the currency comes from SimpleFin, so neither is a trusted literal. Both
+ * are escaped AND kept outside every Markdown entity: legacy Markdown does not
+ * honour a backslash escape inside one, so `*AMAZON \*MKTPLACE*` would still
+ * leave a live opener and Telegram would reject the WHOLE message with a 400.
+ * The only entity here wraps the fixed heading, which contains no specials.
+ *
+ * The amount is deliberately `toFixed(2)` rather than `formatDollars` — no
+ * thousands separator — because that is the string this alert has always sent
+ * and the figure is a diagnostic to match against a row in Wealthfolio, not a
+ * headline figure.
+ */
+export function formatStuckTransferAlert(alert: {
+  description: string;
+  amountCents: number;
+  currency: string;
+}): string {
+  const amount = (alert.amountCents / 100).toFixed(2);
+  return (
+    "⚠️ *Transfer stuck — couldn't auto-link after 3 tries*\n"
+    + `${escapeMarkdown(alert.description)}\n`
+    + `Amount: $${amount} ${escapeMarkdown(alert.currency)}\n`
+    + 'Try "Reconcile & link" in the addon, or check for a duplicate/mismatched leg.'
+  );
 }
 
 /**

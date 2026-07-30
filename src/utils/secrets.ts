@@ -1,6 +1,8 @@
 import type { AddonContext } from '@wealthfolio/addon-sdk';
 import type { AccountMapping, MappingRule } from '../../shared/types';
 import type { DriftAlertEntry, TransferLinkFailureEntry } from '../../shared/sync-host';
+import type { SyncResult } from '../../shared/sync-core';
+import { LARGE_TX_OUTBOX_SECRET_KEY } from '../../shared/telegram';
 
 /** Per-account balance snapshot captured on each sync, for the Sync page. */
 export interface AccountBalanceInfo {
@@ -34,7 +36,13 @@ const KEYS = {
   telegramConfig: 'telegram_config',
   availableReportCategories: 'available_report_categories',
   openCards: 'ui_open_cards',
+  pendingLargeTxAlerts: LARGE_TX_OUTBOX_SECRET_KEY,
 } as const;
+
+/** One entry in the shared large-transaction outbox. Derived from `SyncResult`
+ *  rather than re-typed so the queued shape can never drift from the emitted one
+ *  — a mismatch would only surface as an alert rendered with `undefined` in it. */
+export type PendingLargeTxAlert = SyncResult['largeTransactionAlerts'][number];
 
 export class SecretsStore {
   constructor(private ctx: AddonContext) {}
@@ -180,6 +188,31 @@ export class SecretsStore {
   }
   async setDriftAlerts(map: Record<string, DriftAlertEntry>): Promise<void> {
     await this.ctx.api.secrets.set(KEYS.driftAlerts, JSON.stringify(map));
+  }
+
+  /**
+   * Large-transaction alerts nobody has managed to deliver yet — the SAME secret
+   * the companion queues into, so whichever syncer imported the row, exactly one
+   * of them ends up announcing it.
+   *
+   * A malformed value degrades to an empty queue rather than throwing: the only
+   * writer is this codebase, so a parse failure means the secret was truncated or
+   * hand-edited, and no amount of retrying fixes that. Throwing here would abort
+   * alert delivery for the whole run (and, before the caller's guard, get recorded
+   * as a sync failure) over a state that is already unrecoverable.
+   */
+  async getPendingLargeTxAlerts(): Promise<PendingLargeTxAlert[]> {
+    const raw = await this.ctx.api.secrets.get(KEYS.pendingLargeTxAlerts);
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? (parsed as PendingLargeTxAlert[]) : [];
+    } catch {
+      return [];
+    }
+  }
+  async setPendingLargeTxAlerts(alerts: PendingLargeTxAlert[]): Promise<void> {
+    await this.ctx.api.secrets.set(KEYS.pendingLargeTxAlerts, JSON.stringify(alerts));
   }
 
   /** Latest per-account SimpleFin balance + drift, keyed by SimpleFin account

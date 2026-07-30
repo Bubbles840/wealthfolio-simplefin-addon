@@ -1,11 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   runSync,
+  deliverAddonAlerts,
   applyBalanceAdjustment,
   neutralAdjustmentFields,
   MIN_SYNC_INTERVAL_MS,
   VALUATION_POLL,
 } from './sync';
+import {
+  formatStuckTransferAlert,
+  formatBalanceDriftAlert,
+  formatLargeTransactionAlert,
+} from '../../shared/telegram';
 
 vi.mock('./simplefin', () => ({
   fetchAccounts: vi.fn(),
@@ -51,6 +57,10 @@ const makeStore = (overrides: Record<string, unknown> = {}) => ({
   setAutoHeal: vi.fn(async (_on: boolean) => {}),
   getAutoAdjust: vi.fn(async () => false),
   setAutoAdjust: vi.fn(async (_on: boolean) => {}),
+  // No Telegram: `runSync` now delivers the alerts its core produced, and the
+  // default store must exercise the real "not configured" branch (which does
+  // nothing) rather than an absent method. The delivery tests below override it.
+  getTelegramConfig: vi.fn(async (): Promise<any | null> => null),
   ...overrides,
 });
 
@@ -1099,6 +1109,233 @@ describe('neutralAdjustmentFields', () => {
     expect(neutralAdjustmentFields('CASH', 10.129)).toEqual({
       activityType: 'CREDIT', amount: 10.13, fee: 0,
     });
+  });
+});
+
+describe('deliverAddonAlerts', () => {
+  // The addon runs the identical core, so it consumes the same three alert
+  // arrays the companion does — marking `alerted` in the shared ledger and, for
+  // large transactions, permanently spending the only chance to announce a row
+  // (a create happens once per SimpleFin tx id). Before this, an in-app sync that
+  // won the race against the companion silently swallowed all three.
+
+  /** A network whose Telegram POSTs succeed. `sendTelegramMessage` prefers this
+   *  over `fetch`, which is the whole point of the addon path: the SDK broker is
+   *  what `manifest.json`'s allowedHosts actually permits. */
+  const okNet = () =>
+    vi.fn(async (_opts: any) => ({ status: 200, headers: {}, body: JSON.stringify({ ok: true }) }));
+  /** A network whose POSTs are ACCEPTED by the transport but rejected by the
+   *  Telegram API — the failure `sendTelegramMessage` reports by resolving
+   *  `{ ok: false }` rather than throwing, which is the one a naive caller loses. */
+  const rejectingNet = () =>
+    vi.fn(async (_opts: any) => ({
+      status: 200, headers: {},
+      body: JSON.stringify({ ok: false, description: "can't parse entities" }),
+    }));
+
+  const alertCtx = (request: any) => ({ api: { network: { request } } }) as any;
+
+  const tgStore = (overrides: Record<string, unknown> = {}) =>
+    makeStore({
+      getTelegramConfig: vi.fn(async () => ({ botToken: 'tok', chatId: '42', enabled: true })),
+      getPendingLargeTxAlerts: vi.fn(async (): Promise<any[]> => []),
+      setPendingLargeTxAlerts: vi.fn(async (_a: any[]) => {}),
+      ...overrides,
+    }) as any;
+
+  const emptyResult = (over: Partial<any> = {}) => ({
+    imported: 0, skipped: 0, errors: [],
+    stuckTransferAlerts: [], largeTransactionAlerts: [], balanceDriftAlerts: [],
+    ...over,
+  });
+
+  const sentTexts = (request: any) =>
+    request.mock.calls.map((c: any[]) => JSON.parse(c[0].body).text);
+
+  it('sends a stuck-transfer alert through the SDK network, not bare fetch', async () => {
+    const request = okNet();
+    const store = tgStore();
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await deliverAddonAlerts(alertCtx(request), store as any, emptyResult({
+      stuckTransferAlerts: [
+        { outTxId: 'tx-out', description: 'AMAZON *MKTPLACE ↔ Payment', amountCents: 130000, currency: 'USD' },
+      ],
+    }));
+
+    expect(request).toHaveBeenCalledOnce();
+    expect(request.mock.calls[0][0].url).toContain('https://api.telegram.org/bottok/sendMessage');
+    // Byte-identical to what the companion sends: one shared formatter, so the
+    // escaping travels with it.
+    expect(sentTexts(request)[0]).toBe(formatStuckTransferAlert({
+      description: 'AMAZON *MKTPLACE ↔ Payment', amountCents: 130000, currency: 'USD',
+    }));
+    expect(fetchMock).not.toHaveBeenCalled();
+    // Delivered, so the `alerted: true` runSyncCore already wrote is correct and
+    // there is nothing left to write.
+    expect(store.setTransferLinkFailures).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  it('rolls back the stuck-transfer ledger when Telegram rejects the send', async () => {
+    const store = tgStore({
+      getTransferLinkFailures: vi.fn(async () => ({
+        'tx-out': { count: 3, firstFailedAt: '2026-07-01T00:00:00.000Z', alerted: true },
+        'tx-other': { count: 1, firstFailedAt: '2026-07-02T00:00:00.000Z', alerted: false },
+      })),
+    });
+
+    await deliverAddonAlerts(alertCtx(rejectingNet()), store as any, emptyResult({
+      stuckTransferAlerts: [
+        { outTxId: 'tx-out', description: 'Payment ↔ Payment', amountCents: 50000, currency: 'USD' },
+      ],
+    }));
+
+    const written = (store.setTransferLinkFailures as any).mock.calls[0][0];
+    expect(written['tx-out'].alerted).toBe(false);
+    // The 3-strike streak survives — a rollback re-arms delivery, it does not
+    // declare the transfer healthy.
+    expect(written['tx-out'].count).toBe(3);
+    expect(written['tx-out'].firstFailedAt).toBe('2026-07-01T00:00:00.000Z');
+    expect(written['tx-other']).toEqual({ count: 1, firstFailedAt: '2026-07-02T00:00:00.000Z', alerted: false });
+  });
+
+  it('rolls back the drift ledger when Telegram rejects the send, keeping the episode', async () => {
+    const store = tgStore({
+      getDriftAlerts: vi.fn(async () => ({
+        'sfin-1': { driftAmount: 1300, firstDetectedAt: '2026-07-01T00:00:00.000Z', alerted: true },
+      })),
+    });
+
+    await deliverAddonAlerts(alertCtx(rejectingNet()), store as any, emptyResult({
+      balanceDriftAlerts: [
+        { sfinAccountId: 'sfin-1', accountName: 'Spend', driftAmount: 1300, currency: 'USD', bankBalance: 3475.23 },
+      ],
+    }));
+
+    const written = (store.setDriftAlerts as any).mock.calls[0][0];
+    expect(written['sfin-1'].alerted).toBe(false);
+    expect(written['sfin-1'].driftAmount).toBe(1300);
+    expect(written['sfin-1'].firstDetectedAt).toBe('2026-07-01T00:00:00.000Z');
+  });
+
+  it('sends the drift alert with the shared formatter and writes no ledger on success', async () => {
+    const request = okNet();
+    const store = tgStore();
+    await deliverAddonAlerts(alertCtx(request), store as any, emptyResult({
+      balanceDriftAlerts: [
+        { sfinAccountId: 'sfin-1', accountName: 'Joint_Spend', driftAmount: 1300, currency: 'USD', bankBalance: 3475.23 },
+      ],
+    }));
+    expect(sentTexts(request)[0]).toBe(formatBalanceDriftAlert({
+      accountName: 'Joint_Spend', driftAmount: 1300, currency: 'USD', bankBalance: 3475.23,
+    }));
+    expect(store.setDriftAlerts).not.toHaveBeenCalled();
+  });
+
+  it('queues an undelivered large-transaction alert into the shared outbox', async () => {
+    // Nothing can re-derive this alert: the row is created once per SimpleFin tx
+    // id, so a dropped result is a notification lost forever.
+    const store = tgStore();
+    const alert = { txId: 'tx-1', description: 'SQ *BLUE BOTTLE', amountCents: 124000, currency: 'USD', accountName: 'Spend' };
+
+    await deliverAddonAlerts(alertCtx(rejectingNet()), store as any, emptyResult({
+      largeTransactionAlerts: [alert],
+    }));
+
+    expect((store.setPendingLargeTxAlerts as any).mock.calls[0][0]).toEqual([alert]);
+  });
+
+  it('drains the outbox a previous run (or the companion) left behind', async () => {
+    const queued = { txId: 'tx-old', description: 'Roof repair', amountCents: 250099, currency: 'USD', accountName: 'Spend' };
+    const fresh = { txId: 'tx-new', description: 'DELTA AIR LINES', amountCents: 124000, currency: 'USD', accountName: 'Spend' };
+    const request = okNet();
+    const store = tgStore({ getPendingLargeTxAlerts: vi.fn(async () => [queued]) });
+
+    await deliverAddonAlerts(alertCtx(request), store as any, emptyResult({
+      largeTransactionAlerts: [fresh],
+    }));
+
+    expect(sentTexts(request)).toEqual([
+      formatLargeTransactionAlert(queued), formatLargeTransactionAlert(fresh),
+    ]);
+    expect((store.setPendingLargeTxAlerts as any).mock.calls[0][0]).toEqual([]);
+  });
+
+  it('never sends the same large transaction twice when a queued entry is re-reported', async () => {
+    const alert = { txId: 'tx-1', description: 'DELTA AIR LINES', amountCents: 124000, currency: 'USD', accountName: 'Spend' };
+    const request = okNet();
+    const store = tgStore({ getPendingLargeTxAlerts: vi.fn(async () => [alert]) });
+    await deliverAddonAlerts(alertCtx(request), store as any, emptyResult({
+      largeTransactionAlerts: [alert],
+    }));
+    expect(request).toHaveBeenCalledOnce();
+  });
+
+  it('does nothing at all — no sends, no ledger writes — when Telegram is not configured', async () => {
+    // This is the "behaves exactly as before" case. A ledger write here would
+    // suppress the companion for an episode nobody announced, and growing the
+    // outbox for a user who opted out is an unbounded backlog that can never drain.
+    const request = okNet();
+    const store = tgStore({ getTelegramConfig: vi.fn(async () => null) });
+
+    await deliverAddonAlerts(alertCtx(request), store as any, emptyResult({
+      stuckTransferAlerts: [{ outTxId: 'tx-out', description: 'x', amountCents: 1, currency: 'USD' }],
+      balanceDriftAlerts: [{ sfinAccountId: 'sfin-1', accountName: 'Spend', driftAmount: 200, currency: 'USD', bankBalance: 1 }],
+      largeTransactionAlerts: [{ txId: 'tx-1', description: 'x', amountCents: 1, currency: 'USD', accountName: 'Spend' }],
+    }));
+
+    expect(request).not.toHaveBeenCalled();
+    expect(store.setTransferLinkFailures).not.toHaveBeenCalled();
+    expect(store.setDriftAlerts).not.toHaveBeenCalled();
+    expect(store.setPendingLargeTxAlerts).not.toHaveBeenCalled();
+  });
+
+  it('treats an explicitly disabled Telegram config the same way', async () => {
+    const request = okNet();
+    const store = tgStore({
+      getTelegramConfig: vi.fn(async () => ({ botToken: 'tok', chatId: '42', enabled: false })),
+    });
+    await deliverAddonAlerts(alertCtx(request), store as any, emptyResult({
+      largeTransactionAlerts: [{ txId: 'tx-1', description: 'x', amountCents: 1, currency: 'USD', accountName: 'Spend' }],
+    }));
+    expect(request).not.toHaveBeenCalled();
+    expect(store.setPendingLargeTxAlerts).not.toHaveBeenCalled();
+  });
+
+  it('reads no secrets when the run produced no alerts and the outbox is untouched', async () => {
+    // A sync with nothing to say must not cost two secret reads and a write.
+    const store = tgStore();
+    await deliverAddonAlerts(alertCtx(okNet()), store as any, emptyResult());
+    expect(store.getTelegramConfig).not.toHaveBeenCalled();
+  });
+
+  it('never throws — a notification problem must not be reported as a sync failure', async () => {
+    const store = tgStore({
+      getTelegramConfig: vi.fn(async () => { throw new Error('unreadable secret'); }),
+    });
+    await expect(
+      deliverAddonAlerts(alertCtx(okNet()), store as any, emptyResult({
+        stuckTransferAlerts: [{ outTxId: 'tx-out', description: 'x', amountCents: 1, currency: 'USD' }],
+      })),
+    ).resolves.toBeUndefined();
+  });
+
+  it('runSync delivers the alerts its own core produced', async () => {
+    // The seam: without this, everything above is dead code. A quiet account
+    // whose bank balance is $1000 against a $0 Wealthfolio valuation drifts past
+    // the $100 default, so the core emits a real balance-drift alert here.
+    vi.mocked(fetchAccounts).mockResolvedValueOnce(makeAccountSet([]));
+    const request = okNet();
+    const ctx = makeCtx();
+    ctx.api.network = { request };
+    const store = tgStore();
+
+    await runSync(ctx, store as any);
+
+    expect(sentTexts(request)).toHaveLength(1);
+    expect(sentTexts(request)[0]).toContain('Balance drift');
   });
 });
 
