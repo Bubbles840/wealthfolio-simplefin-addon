@@ -24,6 +24,100 @@ export function txEpoch(tx: SimplefinTransaction): number | null {
 export const MIN_SYNC_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 
 /**
+ * Grep token for the "SimpleFin sent us the same transaction twice" log line.
+ *
+ * Exported so the log's own tests pin the literal rather than re-typing it: this
+ * string is the only instrument we have for finding out whether SimpleFin really
+ * does repeat a transaction inside one payload, or whether the duplicate rows
+ * seen in production came from two syncers racing each other (tracked as a
+ * separate follow-up). A silently renamed token is a silently blinded diagnostic.
+ */
+export const DUPLICATE_FEED_TX_LOG_TAG = 'duplicate-feed-tx';
+
+/**
+ * Which of two feed copies of ONE transaction id survives.
+ *
+ * They may not be byte-identical, so the choice has to be a rule rather than an
+ * accident of iteration order:
+ *  1. **A posted copy always beats a pending one.** A pending row is the bank's
+ *     provisional guess — its `posted` is frequently 0, its amount can still
+ *     move, and importing it writes the ` · pending` suffix that a later run then
+ *     has to reconcile away. If the payload already contains the settled version
+ *     of the same id, taking the provisional one would be choosing strictly less
+ *     information.
+ *  2. **Otherwise the LAST occurrence wins.** Where both copies are equally
+ *     settled the only difference that matters is a restatement (SimpleFin
+ *     re-reporting an amount or a date), and a feed lists a transaction's newest
+ *     word last. It is also the tie-break `Map#set`-style overwriting would give,
+ *     so nothing surprising happens in the (overwhelmingly common) case where the
+ *     two copies are identical.
+ *
+ * Either way the survivor is reconciled against the account's stored row in the
+ * same pass, so picking the copy that turns out to be stale self-corrects on the
+ * next sync rather than sticking.
+ */
+function preferFeedCopy(
+  kept: SimplefinTransaction,
+  next: SimplefinTransaction,
+): SimplefinTransaction {
+  if (!!kept.pending !== !!next.pending) return kept.pending ? next : kept;
+  return next;
+}
+
+/**
+ * Collapse one account's transaction list to a single entry per SimpleFin
+ * transaction id, in feed order.
+ *
+ * WHY. `runSyncCore` plans creates by iterating this list against the rows the
+ * account already holds (matched by tx id). Two copies of one id both match
+ * "nothing stored yet", so both are planned as creates and both land in the SAME
+ * `saveMany` batch — and Wealthfolio's duplicate guard, which does reject a
+ * colliding create across requests with a 400, cannot compare two rows inside one
+ * request against each other. The result is exactly what production showed on
+ * 2026-07-27: two activities sharing one transaction id, reading a savings account
+ * $1,297.50 low.
+ *
+ * PER ACCOUNT, NEVER GLOBALLY. One transaction id legitimately appears in two
+ * different accounts — the two halves of an internal transfer (confirmed live:
+ * `TRN-41fee96e` is the TRANSFER_OUT in one account and the TRANSFER_IN in
+ * another). A global dedup would delete one half of every such pair, which is a
+ * strictly worse bug than the one being fixed. Hence the `sfAccountId` argument:
+ * it is only here to be logged, but its presence in the signature is the reminder
+ * that a caller has to hold one account at a time.
+ */
+export function dedupeAccountTransactions(
+  sfAccountId: string,
+  transactions: SimplefinTransaction[],
+): SimplefinTransaction[] {
+  const byId = new Map<string, SimplefinTransaction>();
+  // Ids in first-seen order, so the surviving list keeps the feed's ordering even
+  // when a later copy replaces an earlier one.
+  const order: string[] = [];
+  for (const tx of transactions) {
+    const prior = byId.get(tx.id);
+    if (!prior) {
+      byId.set(tx.id, tx);
+      order.push(tx.id);
+      continue;
+    }
+    const kept = preferFeedCopy(prior, tx);
+    const dropped = kept === prior ? tx : prior;
+    byId.set(tx.id, kept);
+    const describe = (t: SimplefinTransaction) => ({
+      amount: t.amount,
+      pending: !!t.pending,
+      posted: t.posted ?? null,
+      transacted_at: t.transacted_at ?? null,
+    });
+    console.warn(
+      `[simplefin-sync] ${DUPLICATE_FEED_TX_LOG_TAG}: SimpleFin returned transaction ${tx.id} more than once for account ${sfAccountId} — dropping the extra copy`,
+      { txId: tx.id, sfAccountId, kept: describe(kept), dropped: describe(dropped) },
+    );
+  }
+  return order.map((id) => byId.get(id)!);
+}
+
+/**
  * How far before lastSyncAt an incremental sync re-scans. Card purchases post
  * a few days late, frequently with a `posted` timestamp backdated to the
  * purchase date — earlier than lastSyncAt. SimpleFin's start-date filter is on
@@ -605,8 +699,15 @@ export async function runSyncCore(
     // Keep pending rows now (they import and reconcile), dropping only rows we
     // can't date at all — no `posted` and no `transacted_at` — since those
     // would produce a 1970 date the server rejects.
-    const transactions = (sfAccount.transactions ?? []).filter(
-      (tx) => txEpoch(tx) !== null,
+    //
+    // Then collapse repeated transaction ids, BEFORE anything is planned from the
+    // list: two copies of one id would otherwise both plan a create and both land
+    // in one saveMany batch, which is the only way past Wealthfolio's duplicate
+    // guard (see dedupeAccountTransactions). Per account — the same id is a
+    // legitimate sight in two accounts, as the two legs of one transfer.
+    const transactions = dedupeAccountTransactions(
+      sfAccount.id,
+      (sfAccount.transactions ?? []).filter((tx) => txEpoch(tx) !== null),
     );
     const prepared: PreparedTx[] = [];
     for (const tx of transactions) {

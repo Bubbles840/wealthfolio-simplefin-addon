@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { runSyncCore, VALUATION_POLL, IN_TRANSIT_TIMEOUT_SECONDS, descriptionFromComment, txIdFromComment, IN_TRANSIT_COMMENT_PREFIX } from './sync-core.js';
 import { createFakeHost, type FakeHostSeed } from './fake-host.js';
 
@@ -1013,6 +1013,146 @@ describe('runSyncCore', () => {
     const { host, store } = createFakeHost(seed);
     const result = await runSyncCore(host, store, {});
     expect(result.balanceDriftAlerts[0].accountName).toBe('Spend Bank');
+  });
+
+  // ── Feed dedup by SimpleFin transaction id ───────────────────────────────
+  //
+  // Live incident (2026-07-27, the user's savings account): two activities with
+  // the SAME SimpleFin transaction id, both created in one batch, reading the
+  // account $1,297.50 too low. Wealthfolio's own duplicate guard rejects a
+  // colliding create ACROSS batches with a 400, but cannot compare two rows
+  // inside a single request against each other — so the feed itself has to be
+  // collapsed before the plan is built.
+
+  it('creates ONE row when SimpleFin returns the same transaction id twice in one account', async () => {
+    const repeated = {
+      id: 'TRN-ce426394', posted: 1751328000, amount: '2.50',
+      description: 'Monthly Interest Paid',
+    };
+    const { host, store, saved } = createFakeHost({
+      accountSet: { errors: [], accounts: [{
+        id: 'sfin-1', name: 'Savings', currency: 'USD', balance: '610.65',
+        'balance-date': 1,
+        transactions: [{ ...repeated }, { ...repeated }],
+      }] },
+      mapping: { 'sfin-1': 'wf-a' },
+      accountTypes: { 'wf-a': 'CASH' },
+    });
+    const result = await runSyncCore(host, store, {});
+    const creates = saved.flatMap((s) => s.creates ?? []);
+    expect(creates.filter((c) => c.comment.includes('TRN-ce426394'))).toHaveLength(1);
+    expect(result.imported).toBe(1);
+  });
+
+  it('keeps the POSTED copy when the same transaction id arrives pending and posted', async () => {
+    const { host, store, saved } = createFakeHost({
+      accountSet: { errors: [], accounts: [{
+        id: 'sfin-1', name: 'Savings', currency: 'USD', balance: '0', 'balance-date': 1,
+        transactions: [
+          { id: 'TRN-dup', posted: 0, transacted_at: 1751328000, amount: '2.50',
+            description: 'Monthly Interest Paid', pending: true },
+          { id: 'TRN-dup', posted: 1751500000, amount: '2.50',
+            description: 'Monthly Interest Paid' },
+        ],
+      }] },
+      mapping: { 'sfin-1': 'wf-a' },
+      accountTypes: { 'wf-a': 'CASH' },
+    });
+    await runSyncCore(host, store, {});
+    const creates = saved.flatMap((s) => s.creates ?? []);
+    expect(creates).toHaveLength(1);
+    // No ` · pending` suffix: the settled copy won regardless of feed order.
+    expect(creates[0].comment).toBe('Monthly Interest Paid · TRN-dup');
+  });
+
+  it('keeps the posted copy even when the pending one comes last', async () => {
+    const { host, store, saved } = createFakeHost({
+      accountSet: { errors: [], accounts: [{
+        id: 'sfin-1', name: 'Savings', currency: 'USD', balance: '0', 'balance-date': 1,
+        transactions: [
+          { id: 'TRN-dup', posted: 1751500000, amount: '2.50', description: 'Interest' },
+          { id: 'TRN-dup', posted: 0, transacted_at: 1751328000, amount: '2.50',
+            description: 'Interest', pending: true },
+        ],
+      }] },
+      mapping: { 'sfin-1': 'wf-a' },
+      accountTypes: { 'wf-a': 'CASH' },
+    });
+    await runSyncCore(host, store, {});
+    const creates = saved.flatMap((s) => s.creates ?? []);
+    expect(creates).toHaveLength(1);
+    expect(creates[0].comment).toBe('Interest · TRN-dup');
+  });
+
+  it('keeps the LAST copy when a restated amount arrives under the same id', async () => {
+    const { host, store, saved } = createFakeHost({
+      accountSet: { errors: [], accounts: [{
+        id: 'sfin-1', name: 'Savings', currency: 'USD', balance: '0', 'balance-date': 1,
+        transactions: [
+          { id: 'TRN-dup', posted: 1751500000, amount: '-12.50', description: 'Coffee' },
+          { id: 'TRN-dup', posted: 1751500000, amount: '-14.75', description: 'Coffee' },
+        ],
+      }] },
+      mapping: { 'sfin-1': 'wf-a' },
+      accountTypes: { 'wf-a': 'CASH' },
+    });
+    await runSyncCore(host, store, {});
+    const creates = saved.flatMap((s) => s.creates ?? []);
+    expect(creates).toHaveLength(1);
+    expect(creates[0].amount).toBe(14.75);
+  });
+
+  it('logs a greppable line naming the dropped transaction id and its account', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const repeated = {
+        id: 'TRN-3917f117', posted: 1753574400, amount: '-1300.00',
+        description: 'PNC BANK Transfer',
+      };
+      const { host, store } = createFakeHost({
+        accountSet: { errors: [], accounts: [{
+          id: 'sfin-savings', name: 'Savings', currency: 'USD', balance: '0',
+          'balance-date': 1, transactions: [{ ...repeated }, { ...repeated }],
+        }] },
+        mapping: { 'sfin-savings': 'wf-a' },
+        accountTypes: { 'wf-a': 'CASH' },
+      });
+      await runSyncCore(host, store, {});
+      const line = warn.mock.calls
+        .map((c) => String(c[0]))
+        .find((m) => m.includes('duplicate-feed-tx'));
+      expect(line).toBeDefined();
+      expect(line).toContain('TRN-3917f117');
+      expect(line).toContain('sfin-savings');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('does NOT dedup across accounts — one transaction id can legitimately be in two', async () => {
+    // Confirmed in the user's live data (TRN-41fee96e sits in two accounts as the
+    // two halves of one transfer). Deduplicating globally would destroy the pair.
+    // Same-sign amounts here so no transfer pairing runs and the assertion is
+    // purely about the dedup's per-account keying.
+    const shared = {
+      id: 'TRN-41fee96e', posted: 1753574400, amount: '25.00',
+      description: 'Interest Paid',
+    };
+    const { host, store, saved } = createFakeHost({
+      accountSet: { errors: [], accounts: [
+        { id: 'sfin-1', name: 'Savings', currency: 'USD', balance: '0', 'balance-date': 1,
+          transactions: [{ ...shared }] },
+        { id: 'sfin-2', name: 'Spend', currency: 'USD', balance: '0', 'balance-date': 1,
+          transactions: [{ ...shared }] },
+      ] },
+      mapping: { 'sfin-1': 'wf-a', 'sfin-2': 'wf-b' },
+      accountTypes: { 'wf-a': 'CASH', 'wf-b': 'CASH' },
+    });
+    const result = await runSyncCore(host, store, {});
+    const creates = saved.flatMap((s) => s.creates ?? []);
+    expect(creates.filter((c) => c.comment.includes('TRN-41fee96e'))).toHaveLength(2);
+    expect(new Set(creates.map((c) => c.accountId))).toEqual(new Set(['wf-a', 'wf-b']));
+    expect(result.imported).toBe(2);
   });
 });
 
