@@ -1,10 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { maskUrl, validateStartupEnv, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth } from './index.js';
+import { maskUrl, validateStartupEnv, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice } from './index.js';
 import { runSyncCore } from '../../shared/sync-core.js';
-import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending } from './sqlite-native.js';
+import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending } from './sqlite-native.js';
 
-vi.mock('../../shared/sync-core.js', () => ({
-  runSyncCore: vi.fn(async () => ({ imported: 2, skipped: 1, errors: [], prunedDuplicates: [], largeTransactionAlerts: [], balanceDriftAlerts: [], stuckTransferAlerts: [] })),
+vi.mock('../../shared/sync-core.js', async (importOriginal) => ({
+  // The real module's parsers (descriptionFromComment etc.) stay real; only the
+  // sync engine itself is faked.
+  ...(await importOriginal<object>()),
+  runSyncCore: vi.fn(async () => ({ imported: 2, skipped: 1, errors: [], prunedDuplicates: [], importedTransactions: [], largeTransactionAlerts: [], balanceDriftAlerts: [], stuckTransferAlerts: [] })),
 }));
 
 vi.mock('./wealthfolio.js', () => {
@@ -21,6 +24,7 @@ vi.mock('./wealthfolio.js', () => {
 });
 
 vi.mock('./sqlite-native.js', () => ({
+  getNativeUncategorizedSpending: vi.fn(() => []),
   getNativeWealthfolioSpending: vi.fn(() => ({ Groceries: 200, Dining: 550 })),
   // Week-scoped spend: a subset of the month totals above.
   getNativeWealthfolioSpendingBetween: vi.fn(() => ({ Groceries: 50, Dining: 100 })),
@@ -1516,5 +1520,81 @@ describe('sendMonthlyTelegramReport', () => {
     } finally {
       logSpy.mockRestore();
     }
+  });
+});
+
+describe('sendImportNotice', () => {
+  const uncatRow = (activityId: string, desc: string) => ({
+    activityId, wfAccountId: 'wf-a', notes: `${desc} \u00b7 TRN-${activityId}`,
+    amountCents: 4516, date: '2026-07-09', accountName: 'Spend (4937)',
+  });
+  const importedTx = {
+    txId: 'tx-a', sfAccountId: 'sfin-1', description: 'TRADER JOE S #628',
+    amountCents: 6774, currency: 'USD', accountName: 'Spend (4937)',
+    activityType: 'WITHDRAWAL', pending: false, inTransit: false,
+  };
+
+  it('lists the imports, sweeps uncategorized minus dismissed, and honours a button press from THIS poll', async () => {
+    vi.mocked(getNativeUncategorizedSpending).mockReturnValue([
+      uncatRow('act-1', 'VENMO PAYMENT'),
+      uncatRow('act-old', 'DISMISSED EARLIER'),
+      uncatRow('act-9', 'DISMISSED BY BUTTON'),
+    ]);
+    const fetchMock = vi.fn((url: any) => {
+      if (String(url).includes('getUpdates')) {
+        return Promise.resolve({ ok: true, json: async () => ({ ok: true, result: [
+          { update_id: 60, callback_query: { id: 'cb', data: 'd:act-9' } },
+        ] }) });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({ ok: true }) });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const secrets = new Map<string, string>([
+      ['uncategorized_dismissals', JSON.stringify({ 'act-old': '2026-07-20T00:00:00Z' })],
+      ['telegram_update_offset', '41'],
+    ]);
+    const client: any = {
+      getAddonSecret: vi.fn(async (_a: string, k: string) => secrets.get(k) ?? null),
+      setAddonSecret: vi.fn(async (_a: string, k: string, v: string) => { secrets.set(k, v); }),
+    };
+
+    await sendImportNotice(client, { botToken: 'T', chatId: '9' }, {
+      imported: 1, importedTransactions: [importedTx],
+    } as any);
+
+    const sendCall = fetchMock.mock.calls.find((c) => String(c[0]).includes('sendMessage'));
+    expect(sendCall).toBeTruthy();
+    const body = JSON.parse((sendCall![1] as any).body);
+    expect(body.text).toContain('1 new transaction');
+    expect(body.text).toContain('TRADER JOE S');
+    expect(body.text).toContain('VENMO PAYMENT');
+    // Dismissed rows are out — including the one dismissed by the button press
+    // this very poll just collected.
+    expect(body.text).not.toContain('DISMISSED EARLIER');
+    expect(body.text).not.toContain('DISMISSED BY BUTTON');
+    // One dismiss button per SHOWN needs-category row.
+    expect(body.reply_markup.inline_keyboard).toHaveLength(1);
+    expect(body.reply_markup.inline_keyboard[0][0].callback_data).toBe('d:act-1');
+    // The press is recorded and the poll offset advanced past its update.
+    expect(JSON.parse(secrets.get('uncategorized_dismissals')!)).toHaveProperty('act-9');
+    expect(secrets.get('telegram_update_offset')).toBe('61');
+    // The getUpdates call resumed from the stored offset.
+    expect(String(fetchMock.mock.calls.find((c) => String(c[0]).includes('getUpdates'))![0])).toContain('offset=41');
+  });
+
+  it('sends no keyboard when nothing is uncategorized', async () => {
+    vi.mocked(getNativeUncategorizedSpending).mockReturnValue([]);
+    const fetchMock = vi.fn(() => Promise.resolve({ ok: true, json: async () => ({ ok: true, result: [] }) }));
+    vi.stubGlobal('fetch', fetchMock);
+    const client: any = {
+      getAddonSecret: vi.fn(async () => null),
+      setAddonSecret: vi.fn(async () => {}),
+    };
+    await sendImportNotice(client, { botToken: 'T', chatId: '9' }, {
+      imported: 1, importedTransactions: [importedTx],
+    } as any);
+    const body = JSON.parse((fetchMock.mock.calls.find((c: any[]) => String(c[0]).includes('sendMessage'))![1] as any).body);
+    expect(body).not.toHaveProperty('reply_markup');
+    expect(body.text).not.toContain('Needs a category');
   });
 });

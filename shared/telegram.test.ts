@@ -1,12 +1,105 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatMonthlyWrapUp, formatSyncHealthFooter, escapeMarkdown, weeklyEnvelope, moneyWhole, formatLargeTransactionAlert, formatBalanceDriftAlert, formatStuckTransferAlert, formatDuplicatePruneAlert } from './telegram.js';
+import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatMonthlyWrapUp, formatSyncHealthFooter, escapeMarkdown, weeklyEnvelope, moneyWhole, formatLargeTransactionAlert, formatBalanceDriftAlert, formatStuckTransferAlert, formatDuplicatePruneAlert, formatImportNotice } from './telegram.js';
+import { buildDismissKeyboard } from './telegram.js';
+import type { ImportNoticeTx, UncategorizedTx } from './telegram.js';
 
 const mockFetch = vi.fn();
 vi.stubGlobal('fetch', mockFetch);
 
 beforeEach(() => mockFetch.mockReset());
 
+describe('formatImportNotice', () => {
+  const tx = (over: Partial<ImportNoticeTx> = {}): ImportNoticeTx => ({
+    description: 'TRADER JOE S #628',
+    amountCents: 6774,
+    currency: 'USD',
+    accountName: 'Spend (4937)',
+    pending: false,
+    inTransit: false,
+    ...over,
+  });
+  const uncat = (over: Partial<UncategorizedTx> = {}): UncategorizedTx => ({
+    description: 'VENMO PAYMENT',
+    amountCents: 4516,
+    date: '2026-07-09',
+    accountName: 'Spend (4937)',
+    ...over,
+  });
+
+  it('lists each transaction with amount, description, and account', () => {
+    const text = formatImportNotice([tx(), tx({ description: 'NETFLIX.COM', amountCents: 2258, accountName: 'Citi' })], []);
+    expect(text).toContain('*2 new transactions*');
+    expect(text).toContain('• $67.74  TRADER JOE S #628 — Spend (4937)');
+    expect(text).toContain('• $22.58  NETFLIX.COM — Citi');
+  });
+
+  it('uses the singular for one transaction', () => {
+    expect(formatImportNotice([tx()], [])).toContain('*1 new transaction*');
+  });
+
+  it('marks pending and in-transit rows', () => {
+    const text = formatImportNotice(
+      [tx({ pending: true }), tx({ description: 'XFER', inTransit: true })],
+      [],
+    );
+    expect(text).toContain('TRADER JOE S #628 — Spend (4937) · pending');
+    expect(text).toContain('XFER — Spend (4937) · in transit');
+  });
+
+  it('caps the list at 10 lines with a +N more tail', () => {
+    const many = Array.from({ length: 13 }, (_, i) => tx({ description: `TX ${i}` }));
+    const text = formatImportNotice(many, []);
+    expect(text.match(/^• /gm)).toHaveLength(10);
+    expect(text).toContain('+3 more');
+  });
+
+  it('omits the needs-a-category section entirely when there is nothing to nag about', () => {
+    expect(formatImportNotice([tx()], [])).not.toContain('Needs a category');
+  });
+
+  it('lists uncategorized transactions with their date, capped at 5', () => {
+    const six = Array.from({ length: 6 }, (_, i) => uncat({ description: `ROW ${i}`, date: `2026-07-0${i + 1}` }));
+    const text = formatImportNotice([tx()], six);
+    expect(text).toContain('🏷️ *Needs a category* (6):');
+    expect(text).toContain('• $45.16  ROW 0 · Jul 1 — Spend (4937)');
+    expect(text).toContain('+1 more');
+  });
+
+  it('escapes Markdown in every bank-supplied string, outside any entity', () => {
+    const text = formatImportNotice(
+      [tx({ description: 'AMAZON_MKTPL*X1', accountName: 'My_Spend' })],
+      [uncat({ description: 'VENMO *DYLAN_W' })],
+    );
+    expect(text).toContain('AMAZON\\_MKTPL\\*X1');
+    expect(text).toContain('My\\_Spend');
+    expect(text).toContain('VENMO \\*DYLAN\\_W');
+  });
+});
+
+describe('buildDismissKeyboard', () => {
+  it('builds one button per row, keyed d:<activityId>, within the 64-byte callback limit', () => {
+    const kb = buildDismissKeyboard([
+      { activityId: 'a'.repeat(36), description: 'VENMO PAYMENT LONG DESCRIPTION HERE', amountCents: 4516 },
+      { activityId: 'b-2', description: 'CHECK', amountCents: 2258 },
+    ]);
+    expect(kb.inline_keyboard).toHaveLength(2);
+    expect(kb.inline_keyboard[0][0].callback_data).toBe(`d:${'a'.repeat(36)}`);
+    expect(Buffer.byteLength(kb.inline_keyboard[0][0].callback_data)).toBeLessThanOrEqual(64);
+    expect(kb.inline_keyboard[1][0].text).toContain('CHECK');
+    expect(kb.inline_keyboard[1][0].text).toContain('$22.58');
+  });
+});
+
 describe('sendTelegramMessage', () => {
+  it('sends reply_markup when a keyboard is supplied, and omits it otherwise', async () => {
+    mockFetch.mockResolvedValue({ ok: true, json: async () => ({ ok: true }) });
+    await sendTelegramMessage('123:TOKEN', '999', 'Hi', undefined, { inline_keyboard: [[{ text: 'Dismiss', callback_data: 'd:x' }]] });
+    const withKb = JSON.parse(mockFetch.mock.calls.at(-1)![1].body);
+    expect(withKb.reply_markup.inline_keyboard[0][0].callback_data).toBe('d:x');
+    await sendTelegramMessage('123:TOKEN', '999', 'Hi');
+    expect(JSON.parse(mockFetch.mock.calls.at(-1)![1].body)).not.toHaveProperty('reply_markup');
+  });
+
   it('posts to Telegram bot API and returns ok: true on success', async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
@@ -264,14 +357,43 @@ describe('formatDailySpendingDigest', () => {
     expect(overMonth).toContain('🚨 *$50 over* for the month');
   });
 
-  it('reports spending with no budget as exactly that, not as "over budget"', () => {
+  it('reports spending with no budget under "Off budget", not as "over budget"', () => {
     // You cannot be over a budget you never set.
     const text = formatDailySpendingDigest(
       [{ name: 'Shopping', monthSpent: 40, weekSpent: 40, budget: 0 }],
       period,
     );
-    expect(text).toContain('🛍️ Shopping  *no budget* · $40 spent');
+    expect(text).toContain('Off budget:');
+    expect(text).toContain('🛍️ Shopping  $40 spent');
     expect(text).not.toContain('over');
+  });
+
+  it('renders an unbudgeted category with no spend not at all', () => {
+    // The live report printed `📄 Bills & Utilities  no budget · $0 spent` —
+    // a category with a leftover zero-amount budget row in Wealthfolio. True,
+    // and pure noise: nothing is budgeted and nothing happened.
+    const text = formatDailySpendingDigest(
+      [
+        { name: 'Groceries', monthSpent: 10, weekSpent: 10, budget: 300 },
+        { name: 'Bills & Utilities', monthSpent: 0, weekSpent: 0, budget: 0 },
+      ],
+      period,
+    );
+    expect(text).not.toContain('Bills & Utilities');
+    expect(text).not.toContain('Off budget');
+  });
+
+  it('lists budgeted categories first, then the Off budget block', () => {
+    const text = formatDailySpendingDigest(
+      [
+        { name: 'Fees', monthSpent: 3, weekSpent: 3, budget: 0 },
+        { name: 'Groceries', monthSpent: 10, weekSpent: 10, budget: 300 },
+      ],
+      period,
+    );
+    expect(text.indexOf('Groceries')).toBeGreaterThan(-1);
+    expect(text.indexOf('Groceries')).toBeLessThan(text.indexOf('Off budget:'));
+    expect(text.indexOf('Off budget:')).toBeLessThan(text.indexOf('Fees'));
   });
 
   it('omits the money summary when nothing in the digest has a budget', () => {
@@ -495,7 +617,7 @@ describe('formatDailySpendingDigest', () => {
       [{ name: 'Shopping', budget: 0, monthSpent: 40.6, weekSpent: 40.6 }],
       period,
     );
-    expect(text).toContain('🛍️ Shopping  *no budget* · $41 spent');
+    expect(text).toContain('🛍️ Shopping  $41 spent');
     expect(text).not.toContain('-$');
   });
 

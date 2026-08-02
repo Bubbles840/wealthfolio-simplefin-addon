@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-07-30
+
+### Added
+
+- The per-sync import notice now lists what arrived — description, amount, and
+  account per transaction, with pending and in-transit rows marked — instead of
+  a bare count. Gated by the same `notifyOnImport` toggle as before.
+- The notice also carries a `🏷️ Needs a category` section: every spending
+  transaction from the last 30 days with no category in Wealthfolio's spending
+  tracker, however and whenever it was imported. Sweeping rather than flagging
+  this run's rows makes the companion's read-snapshot lag harmless (a row
+  invisible at send time is caught by the next notice) and covers transactions
+  imported by the addon, which produce no notice of their own. Rows the sync
+  itself writes — starting balances, adjustments, in-transit placeholders —
+  are never nagged about.
+- Each listed uncategorized row gets a Telegram **Dismiss** button, for a
+  transaction deliberately left uncategorized. Presses are collected once per
+  sync run, so a dismissal takes effect on the next notice rather than
+  instantly; categorizing the transaction in Wealthfolio remains the natural
+  way to clear a nag.
+
+### Changed
+
+- The daily spending digest now splits budgeted from unbudgeted categories:
+  budgeted ones always render, unbudgeted ones appear under `Off budget:` only
+  when money actually moved this month. A category with a leftover zero-amount
+  budget row and no spending — previously rendered as `no budget · $0 spent` —
+  no longer appears at all.
+
 ## [1.3.1] - 2026-07-30
 
 ### Fixed

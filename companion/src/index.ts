@@ -9,13 +9,15 @@
 
 import cron from 'node-cron';
 import { readFileSync, existsSync } from 'fs';
-import { runSyncCore } from '../../shared/sync-core.js';
+import { runSyncCore, descriptionFromComment } from '../../shared/sync-core.js';
 import type { SyncResult } from '../../shared/sync-core.js';
 import { RestSyncHost, RestSyncStore } from './rest-host.js';
 import { WealthfolioClient } from './wealthfolio.js';
-import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatMonthlyWrapUp, formatSyncHealthFooter, formatLargeTransactionAlert, formatBalanceDriftAlert, formatStuckTransferAlert, formatDuplicatePruneAlert, escapeMarkdown, LARGE_TX_OUTBOX_SECRET_KEY } from '../../shared/telegram.js';
+import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatMonthlyWrapUp, formatSyncHealthFooter, formatLargeTransactionAlert, formatBalanceDriftAlert, formatStuckTransferAlert, formatDuplicatePruneAlert, formatImportNotice, buildDismissKeyboard, IMPORT_NOTICE_UNCATEGORIZED_CAP, escapeMarkdown, LARGE_TX_OUTBOX_SECRET_KEY } from '../../shared/telegram.js';
+import { pollTelegramDismissals, pruneDismissals } from './dismissals.js';
+import type { DismissalLedger } from './dismissals.js';
 import type { SyncHealth } from '../../shared/telegram.js';
-import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending } from './sqlite-native.js';
+import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending } from './sqlite-native.js';
 
 const logLevel: 'info' | 'debug' =
   process.env.LOG_LEVEL === 'debug' ? 'debug' : 'info';
@@ -431,7 +433,8 @@ export async function runCompanionSync(): Promise<SyncResult> {
       log('No SimpleFin access URL found in Wealthfolio addon secrets. Please configure the SimpleFin Sync addon in Wealthfolio first.');
       const empty: SyncResult = {
         imported: 0, skipped: 0, errors: [], stuckTransferAlerts: [],
-        largeTransactionAlerts: [], balanceDriftAlerts: [], prunedDuplicates: [],
+        importedTransactions: [], largeTransactionAlerts: [], balanceDriftAlerts: [],
+        prunedDuplicates: [],
       };
       // Not-yet-configured is treated as healthy, not a failure: it's the
       // expected state before the user sets up SimpleFin, and would
@@ -480,11 +483,7 @@ export async function runCompanionSync(): Promise<SyncResult> {
       if (tg && tg.botToken && tg.chatId && tg.enabled !== false) {
         log(`Telegram notifications active (chat: ${tg.chatId}).`);
         if (result.imported > 0 && tg.notifyOnImport !== false) {
-          await sendTelegramMessage(
-            tg.botToken,
-            tg.chatId,
-            `🔔 *SimpleFin Sync Update*\nImported ${result.imported} new transaction(s) into Wealthfolio!`,
-          );
+          await sendImportNotice(wfClient, tg, result);
         }
       }
     } catch (err) {
@@ -596,6 +595,86 @@ export function previousYearMonth(now: Date): { yearMonth: string; monthName: st
 /** Local-time `YYYY-MM-DD`. Deliberately not `toISOString()`, which converts to
  *  UTC and would shift the date by a day for anyone west of Greenwich —
  *  `activity_date` in wealthfolio.db is a plain local date string. */
+
+const UNCATEGORIZED_SWEEP_DAYS = 30;
+
+/**
+ * The per-sync import notice: what this run imported, plus a sweep of EVERY
+ * spending row from the last 30 days that still has no category — not just this
+ * run's rows. The sweep is what makes the DB snapshot's write lag harmless (an
+ * invisible row is caught by the next notice instead of being mislabelled now)
+ * and what covers addon-imported transactions, which have no notice of their
+ * own. Design: docs/superpowers/specs/2026-07-30-import-notice-and-daily-split-design.md
+ */
+export async function sendImportNotice(
+  wfClient: WealthfolioClient,
+  tg: { botToken: string; chatId: string },
+  result: Pick<SyncResult, 'imported' | 'importedTransactions'>,
+): Promise<void> {
+  // Collect button presses BEFORE the sweep, so a dismissal pressed since the
+  // last run is honoured in this very notice rather than one later.
+  let ledger: DismissalLedger =
+    parseSecretJson<DismissalLedger>(
+      await wfClient.getAddonSecret('simplefin-sync', 'uncategorized_dismissals'),
+      'uncategorized_dismissals',
+    ) ?? {};
+  const offsetRaw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_update_offset');
+  const offset = offsetRaw != null && offsetRaw !== '' && Number.isFinite(Number(offsetRaw))
+    ? Number(offsetRaw)
+    : null;
+  const poll = await pollTelegramDismissals({ botToken: tg.botToken, offset });
+
+  const nowIso = new Date().toISOString();
+  let ledgerChanged = false;
+  for (const id of poll.dismissedActivityIds) {
+    if (!(id in ledger)) {
+      ledger[id] = nowIso;
+      ledgerChanged = true;
+    }
+  }
+  const pruned = pruneDismissals(ledger, new Date());
+  if (Object.keys(pruned).length !== Object.keys(ledger).length) ledgerChanged = true;
+  ledger = pruned;
+  if (ledgerChanged) {
+    await wfClient.setAddonSecret('simplefin-sync', 'uncategorized_dismissals', JSON.stringify(ledger));
+  }
+  if (poll.nextOffset !== null && poll.nextOffset !== offset) {
+    await wfClient.setAddonSecret('simplefin-sync', 'telegram_update_offset', String(poll.nextOffset));
+  }
+
+  // End bound is TOMORROW: activity_date carries a time component, so a
+  // same-day row would fall outside a today-exclusive window.
+  const dbPath = process.env.WEALTHFOLIO_DB_PATH || '/mnt/wealthfolio.db';
+  const now = Date.now();
+  const uncategorized = getNativeUncategorizedSpending(
+    dbPath,
+    toDateString(new Date(now - UNCATEGORIZED_SWEEP_DAYS * 86400_000)),
+    toDateString(new Date(now + 86400_000)),
+  ).filter((r) => !(r.activityId in ledger));
+
+  const display = (notes: string) => descriptionFromComment(notes) || notes;
+  const text = formatImportNotice(
+    result.importedTransactions,
+    uncategorized.map((r) => ({
+      description: display(r.notes),
+      amountCents: r.amountCents,
+      date: r.date,
+      accountName: r.accountName,
+    })),
+  );
+  // Buttons for exactly the rows the notice SHOWS — a button for a "+N more"
+  // row would dismiss something the user never saw.
+  const shown = uncategorized.slice(0, IMPORT_NOTICE_UNCATEGORIZED_CAP);
+  const keyboard = shown.length > 0
+    ? buildDismissKeyboard(shown.map((r) => ({
+        activityId: r.activityId,
+        description: display(r.notes),
+        amountCents: r.amountCents,
+      })))
+    : undefined;
+  await sendTelegramMessage(tg.botToken, tg.chatId, text, undefined, keyboard);
+}
+
 function toDateString(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }

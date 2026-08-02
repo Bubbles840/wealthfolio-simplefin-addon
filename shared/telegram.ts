@@ -13,11 +13,17 @@ export interface TelegramSendResult {
 /**
  * Sends a message via the Telegram Bot API.
  */
+/** Telegram inline keyboard, as the Bot API expects it under `reply_markup`. */
+export interface InlineKeyboard {
+  inline_keyboard: Array<Array<{ text: string; callback_data: string }>>;
+}
+
 export async function sendTelegramMessage(
   botToken: string,
   chatId: string,
   text: string,
   network?: { request: (opts: any) => Promise<{ status: number; body: string }> },
+  replyMarkup?: InlineKeyboard,
 ): Promise<TelegramSendResult> {
   const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
   const body = JSON.stringify({
@@ -25,6 +31,7 @@ export async function sendTelegramMessage(
     text,
     parse_mode: 'Markdown',
     disable_web_page_preview: true,
+    ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
   });
 
   let json: any;
@@ -355,6 +362,101 @@ export function formatDuplicatePruneAlert(rows: PrunedDuplicateRow[]): string {
   );
 }
 
+/** One confirmed create for the import notice — SyncResult.importedTransactions
+ *  minus the fields the notice does not render. */
+export interface ImportNoticeTx {
+  description: string;
+  amountCents: number;
+  currency: string;
+  accountName: string;
+  pending: boolean;
+  inTransit: boolean;
+}
+
+/** One row of the needs-a-category sweep: any spending transaction from the
+ *  last 30 days with no taxonomy assignment, minus dismissed ones. */
+export interface UncategorizedTx {
+  description: string;
+  amountCents: number;
+  /** ISO date (yyyy-mm-dd). */
+  date: string;
+  accountName: string;
+}
+
+const MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/** `2026-07-09` → `Jul 9`. Parsed as UTC so the label can't shift a day on a
+ *  host west of UTC. */
+function shortDate(isoDate: string): string {
+  const d = new Date(`${isoDate.slice(0, 10)}T00:00:00Z`);
+  return `${MONTHS_SHORT[d.getUTCMonth()]} ${d.getUTCDate()}`;
+}
+
+const IMPORT_NOTICE_TX_CAP = 10;
+/** Exported so the companion builds dismiss buttons for exactly the rows the
+ *  notice SHOWS — a button for a `+N more` row would dismiss something the
+ *  user never saw. */
+export const IMPORT_NOTICE_UNCATEGORIZED_CAP = 5;
+
+/**
+ * The per-sync import notice: what this run imported, and what — new or weeks
+ * old — still has no category in Wealthfolio's spending tracker.
+ *
+ * The category block is a SWEEP over the last 30 days, deliberately not a flag
+ * on this run's rows: the companion's DB snapshot can lag the rows it just
+ * imported, so a per-row flag at send time would misreport, while a sweep just
+ * catches the row in the next notice. It also covers addon-imported
+ * transactions, which produce no notice of their own.
+ */
+export function formatImportNotice(
+  txs: ImportNoticeTx[],
+  uncategorized: UncategorizedTx[],
+): string {
+  const head = `🔔 *${txs.length} new transaction${txs.length === 1 ? '' : 's'}*`;
+
+  // Escaped text stays OUTSIDE every Markdown entity (legacy Markdown ignores
+  // backslash escapes inside one); the bold sits on counts, which have none.
+  const txLine = (t: ImportNoticeTx) => {
+    const tail = t.inTransit ? ' · in transit' : t.pending ? ' · pending' : '';
+    return `• ${money(t.amountCents / 100)}  ${escapeMarkdown(t.description)} — ${escapeMarkdown(t.accountName)}${tail}`;
+  };
+  const shown = txs.slice(0, IMPORT_NOTICE_TX_CAP).map(txLine);
+  if (txs.length > IMPORT_NOTICE_TX_CAP) shown.push(`  +${txs.length - IMPORT_NOTICE_TX_CAP} more`);
+
+  const blocks = [head, shown.join('\n')];
+
+  if (uncategorized.length > 0) {
+    const rows = uncategorized
+      .slice(0, IMPORT_NOTICE_UNCATEGORIZED_CAP)
+      .map((u) => `• ${money(u.amountCents / 100)}  ${escapeMarkdown(u.description)} · ${shortDate(u.date)} — ${escapeMarkdown(u.accountName)}`);
+    if (uncategorized.length > IMPORT_NOTICE_UNCATEGORIZED_CAP) {
+      rows.push(`  +${uncategorized.length - IMPORT_NOTICE_UNCATEGORIZED_CAP} more`);
+    }
+    blocks.push(`🏷️ *Needs a category* (${uncategorized.length}):\n${rows.join('\n')}`);
+  }
+
+  return blocks.filter(Boolean).join('\n\n');
+}
+
+/**
+ * One dismiss button per needs-a-category row shown in the import notice.
+ *
+ * Keyed by ACTIVITY id, not `(account, txId)`: Telegram caps `callback_data`
+ * at 64 BYTES, and two uuids plus a prefix run ~85. The activity id is unique,
+ * fits, and is what the dismissal ledger stores. Button labels are plain text
+ * (no Markdown parsing there), so descriptions go in unescaped, truncated.
+ */
+export function buildDismissKeyboard(
+  rows: Array<{ activityId: string; description: string; amountCents: number }>,
+): InlineKeyboard {
+  return {
+    inline_keyboard: rows.map((r) => [{
+      text: `Dismiss: ${r.description.slice(0, 24)} ${money(r.amountCents / 100)}`,
+      callback_data: `d:${r.activityId}`,
+    }]),
+  };
+}
+
 export interface DailyDigestCategory {
   name: string;
   /** Spend for the whole calendar month so far, for this category. */
@@ -482,6 +584,10 @@ export function formatDailySpendingDigest(
   }
 
   const lines: string[] = [];
+  // Unbudgeted categories render separately, after every budgeted one, and only
+  // when money actually moved: a category with a leftover zero-amount budget row
+  // and no spend used to print `no budget · $0 spent` — true, and pure noise.
+  const offBudgetLines: string[] = [];
   let budgetedRemaining = 0;
   let anyBudget = false;
 
@@ -504,7 +610,9 @@ export function formatDailySpendingDigest(
     });
 
     if (c.budget <= 0) {
-      lines.push(`${emoji} ${name}  *no budget* · ${moneyWhole(c.monthSpent)} spent`);
+      if (c.monthSpent > 0) {
+        offBudgetLines.push(`${emoji} ${name}  ${moneyWhole(c.monthSpent)} spent`);
+      }
       continue;
     }
 
@@ -547,10 +655,15 @@ export function formatDailySpendingDigest(
       ? `🚨 ${moneyWhole(Math.abs(budgetedRemaining))} over budget this month · ${days} ${dayWord} to go`
       : `💰 ${moneyWhole(budgetedRemaining)} left this month · ${days} ${dayWord} to go`;
 
+  // An empty budgeted block can happen while off-budget lines exist (every
+  // budget deleted, spending continues); joining blocks that exist avoids a
+  // stray blank gap in that case.
+  const blocks = [lines.join('\n')];
+  if (offBudgetLines.length > 0) blocks.push(`Off budget:\n${offBudgetLines.join('\n')}`);
   // No trailing newline: callers append the sync-health footer as its own
   // block, and a trailing blank line would leave that footer looking like part
   // of this summary line.
-  return `☀️ *Daily Spending Check*\n_left to spend this week_\n\n${lines.join('\n')}\n\n${summary}`;
+  return `☀️ *Daily Spending Check*\n_left to spend this week_\n\n${blocks.filter(Boolean).join('\n\n')}\n\n${summary}`;
 }
 
 /**

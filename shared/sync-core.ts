@@ -304,6 +304,23 @@ export interface SyncResult {
   skipped: number;
   errors: string[];
   stuckTransferAlerts: Array<{ outTxId: string; description: string; amountCents: number; currency: string }>;
+  /** Every feed transaction this run CONFIRMED as created, for the companion's
+   *  import notice. Driven off the create echo, so a rejected create is not
+   *  announced. Internal rows (starting balances, adjustments, plugs) never
+   *  appear — they are imported outside the reconciliation plan. */
+  importedTransactions: Array<{
+    txId: string;
+    /** SimpleFin account id — with `txId`, the account-scoped identity. */
+    sfAccountId: string;
+    description: string;
+    amountCents: number;
+    currency: string;
+    accountName: string;
+    activityType: string;
+    pending: boolean;
+    /** An unpaired transfer leg imported as a spending-neutral placeholder. */
+    inTransit: boolean;
+  }>;
   /** Newly-created spending rows over the user's configured dollar threshold,
    *  for the caller to announce. Always empty when no threshold is set. */
   largeTransactionAlerts: Array<{
@@ -775,17 +792,17 @@ export async function runSyncCore(
   // Enforce minimum interval unless the caller forces (Sync anyway) or heals
   const lastSync = await store.getLastSyncAt();
   if (!opts.force && !heal && lastSync && Date.now() - lastSync.getTime() < MIN_SYNC_INTERVAL_MS) {
-    return { imported: 0, skipped: 0, errors: [INTERVAL_SKIP_MESSAGE], stuckTransferAlerts: [], largeTransactionAlerts: [], balanceDriftAlerts: [], prunedDuplicates: [] };
+    return { imported: 0, skipped: 0, errors: [INTERVAL_SKIP_MESSAGE], stuckTransferAlerts: [], importedTransactions: [], largeTransactionAlerts: [], balanceDriftAlerts: [], prunedDuplicates: [] };
   }
 
   const accessUrl = await store.getAccessUrl();
   if (!accessUrl) {
-    return { imported: 0, skipped: 0, errors: ['Not configured: no access URL'], stuckTransferAlerts: [], largeTransactionAlerts: [], balanceDriftAlerts: [], prunedDuplicates: [] };
+    return { imported: 0, skipped: 0, errors: ['Not configured: no access URL'], stuckTransferAlerts: [], importedTransactions: [], largeTransactionAlerts: [], balanceDriftAlerts: [], prunedDuplicates: [] };
   }
 
   const mapping = await store.getAccountMapping();
   if (!mapping) {
-    return { imported: 0, skipped: 0, errors: ['Not configured: no account mapping'], stuckTransferAlerts: [], largeTransactionAlerts: [], balanceDriftAlerts: [], prunedDuplicates: [] };
+    return { imported: 0, skipped: 0, errors: ['Not configured: no account mapping'], stuckTransferAlerts: [], importedTransactions: [], largeTransactionAlerts: [], balanceDriftAlerts: [], prunedDuplicates: [] };
   }
 
   const rules = await store.getMappingRules();
@@ -842,6 +859,7 @@ export async function runSyncCore(
       ? Math.round(configuredLargeTxThreshold * 100)
       : 0;
   const largeTransactionAlerts: SyncResult['largeTransactionAlerts'] = [];
+  const importedTransactions: SyncResult['importedTransactions'] = [];
 
   // Balance-drift alerting. Absent falls back to the $100 default; an explicit
   // 0 or negative is the user turning it off, which is why the adapters report
@@ -1530,6 +1548,20 @@ export async function runSyncCore(
             type: t.type, date: t.date, pending: t.pending, currency: sfAccount.currency,
             sourceGroupId: a.sourceGroupId ?? null, sfAccountId: sfAccount.id,
           });
+          // Every confirmed create is announced on the import notice. Off the
+          // echo for the same reason as the large-spend alert below: a create
+          // the host rejected is not in `result.created` and says nothing.
+          importedTransactions.push({
+            txId,
+            sfAccountId: sfAccount.id,
+            description: descByKey.get(accountTxKey(sfAccount.id, txId)) ?? '',
+            amountCents: t.absCents,
+            currency: sfAccount.currency,
+            accountName: wfNames.get(t.wfAccountId) || sfAccount.name,
+            activityType: t.type,
+            pending: !!t.pending,
+            inTransit: !!t.inTransit,
+          });
           // Announce a large spend exactly once, off the CREATE echo.
           //
           // Fires once per SimpleFin transaction id with no ledger of its own,
@@ -1940,7 +1972,7 @@ export async function runSyncCore(
   await store.setLastSyncAt(new Date());
 
   return {
-    imported, skipped, errors, stuckTransferAlerts, largeTransactionAlerts,
-    balanceDriftAlerts, prunedDuplicates,
+    imported, skipped, errors, stuckTransferAlerts, importedTransactions,
+    largeTransactionAlerts, balanceDriftAlerts, prunedDuplicates,
   };
 }

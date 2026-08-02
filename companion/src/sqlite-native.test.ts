@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending } from './sqlite-native.js';
+import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending } from './sqlite-native.js';
 import { DatabaseSync } from 'node:sqlite';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
@@ -14,9 +14,10 @@ function makeTestDb(): { path: string; cleanup: () => void } {
     -- "notes" is the real column name for what the REST API calls "comment";
     -- SELECT comment FROM activities fails with "no such column: comment", so
     -- the fixture carries the SQLite name deliberately.
-    CREATE TABLE activities (id TEXT PRIMARY KEY, amount TEXT, activity_date TEXT, activity_type TEXT, notes TEXT);
+    CREATE TABLE activities (id TEXT PRIMARY KEY, amount TEXT, activity_date TEXT, activity_type TEXT, notes TEXT, account_id TEXT);
     CREATE TABLE activity_taxonomy_assignments (activity_id TEXT, category_id TEXT);
     CREATE TABLE budget_targets (category_id TEXT, amount TEXT, period_key TEXT, updated_at TEXT);
+    CREATE TABLE accounts (id TEXT PRIMARY KEY, name TEXT);
   `);
   db.close();
   return { path, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
@@ -311,6 +312,61 @@ describe('sqlite-native', () => {
       try {
         seedWeek(path);
         expect(getNativeWealthfolioTopSpending(path, '2026-06-01', '2026-06-08', 5)).toEqual([]);
+      } finally {
+        cleanup();
+      }
+    });
+  });
+
+  describe('getNativeUncategorizedSpending', () => {
+    const seed = (path: string) => {
+      const db = new DatabaseSync(path);
+      db.exec(`
+        INSERT INTO accounts (id, name) VALUES ('wf-a', 'Spend (4937)');
+        INSERT INTO taxonomy_categories (id, name, parent_id) VALUES ('cat-1', 'Groceries', NULL);
+        -- Uncategorized spending: the one row the sweep exists to find.
+        INSERT INTO activities VALUES ('act-1', '45.16', '2026-07-09T00:00:00Z', 'WITHDRAWAL', 'VENMO PAYMENT · TRN-aaa', 'wf-a');
+        -- Categorized: has an assignment, must not appear.
+        INSERT INTO activities VALUES ('act-2', '12.00', '2026-07-10T00:00:00Z', 'WITHDRAWAL', 'KROGER · TRN-bbb', 'wf-a');
+        INSERT INTO activity_taxonomy_assignments VALUES ('act-2', 'cat-1');
+        -- Non-spending types: transfers and deposits need no category.
+        INSERT INTO activities VALUES ('act-3', '700.00', '2026-07-11T00:00:00Z', 'TRANSFER_OUT', 'Payment · TRN-ccc', 'wf-a');
+        INSERT INTO activities VALUES ('act-4', '61.05', '2026-07-11T00:00:00Z', 'DEPOSIT', 'Venmo in · TRN-ddd', 'wf-a');
+        -- Internal markers: never nag about rows the sync itself wrote.
+        INSERT INTO activities VALUES ('act-5', '1169.56', '2026-07-12T00:00:00Z', 'WITHDRAWAL', 'Starting balance · ACT-x', 'wf-a');
+        INSERT INTO activities VALUES ('act-6', '10.00', '2026-07-12T00:00:00Z', 'WITHDRAWAL', 'Balance adjustment · sfin-1 · 2026-07-12', 'wf-a');
+        INSERT INTO activities VALUES ('act-7', '1300.00', '2026-07-13T00:00:00Z', 'WITHDRAWAL', '↔️ In-transit transfer · PNC · TRN-eee', 'wf-a');
+        -- Outside the window.
+        INSERT INTO activities VALUES ('act-8', '9.99', '2026-05-01T00:00:00Z', 'WITHDRAWAL', 'OLD ROW · TRN-fff', 'wf-a');
+      `);
+      db.close();
+    };
+
+    it('returns only uncategorized spending rows inside the window, newest first', () => {
+      const { path, cleanup } = makeTestDb();
+      try {
+        seed(path);
+        const rows = getNativeUncategorizedSpending(path, '2026-07-01', '2026-08-01');
+        expect(rows).toEqual([
+          {
+            activityId: 'act-1',
+            wfAccountId: 'wf-a',
+            notes: 'VENMO PAYMENT · TRN-aaa',
+            amountCents: 4516,
+            date: '2026-07-09',
+            accountName: 'Spend (4937)',
+          },
+        ]);
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('returns [] on malformed date bounds rather than querying with them', () => {
+      const { path, cleanup } = makeTestDb();
+      try {
+        seed(path);
+        expect(getNativeUncategorizedSpending(path, "2026-07-01' OR 1=1 --", '2026-08-01')).toEqual([]);
       } finally {
         cleanup();
       }

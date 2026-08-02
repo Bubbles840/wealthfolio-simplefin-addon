@@ -290,3 +290,76 @@ export function getNativeWealthfolioBudgets(dbPath: string, yearMonth: string): 
   }
   return result;
 }
+
+/** One uncategorized spending row from the needs-a-category sweep. */
+export interface NativeUncategorizedTx {
+  activityId: string;
+  wfAccountId: string;
+  /** The raw stored note (`<description> · <txId>[ · pending]`) — the caller
+   *  strips it down with `descriptionFromComment`/`txIdFromComment`. */
+  notes: string;
+  amountCents: number;
+  /** ISO date (yyyy-mm-dd). */
+  date: string;
+  accountName: string;
+}
+
+/**
+ * Spending rows in `[startInclusive, endExclusive)` with NO taxonomy
+ * assignment — the needs-a-category sweep behind the import notice.
+ *
+ * Spending types only (`WITHDRAWAL`/`FEE`/`TAX`, matching the reports'
+ * definition): transfers, deposits, and income need no category. Rows the sync
+ * itself writes — starting balances, balance adjustments, in-transit
+ * placeholders — are excluded by their note prefixes: nagging the user to
+ * categorize a row the machine created would be absurd.
+ */
+export function getNativeUncategorizedSpending(
+  dbPath: string,
+  startInclusive: string,
+  endExclusive: string,
+): NativeUncategorizedTx[] {
+  if (!dbPath || !existsSync(dbPath)) return [];
+  if (!validDateBounds(startInclusive, endExclusive)) return [];
+
+  const query = `
+    SELECT a.id, COALESCE(a.account_id, ''), COALESCE(a.notes, ''),
+           ROUND(ABS(CAST(a.amount AS REAL)) * 100),
+           substr(a.activity_date, 1, 10), COALESCE(ac.name, '')
+    FROM activities a
+    LEFT JOIN activity_taxonomy_assignments ata ON a.id = ata.activity_id
+    LEFT JOIN accounts ac ON a.account_id = ac.id
+    WHERE ata.activity_id IS NULL
+      AND a.activity_date >= '${startInclusive}'
+      AND a.activity_date < '${endExclusive}'
+      AND UPPER(a.activity_type) IN ('WITHDRAWAL', 'FEE', 'TAX')
+      AND COALESCE(a.notes, '') NOT LIKE 'Starting balance · %'
+      AND COALESCE(a.notes, '') NOT LIKE 'Balance adjustment · %'
+      AND COALESCE(a.notes, '') NOT LIKE '↔️ In-transit transfer · %'
+    ORDER BY a.activity_date DESC, a.id;
+  `;
+
+  type Raw = [string, string, string, number, string, string];
+  const rows = queryNativeDb<Record<string, unknown>>(
+    dbPath,
+    'uncategorized',
+    query,
+    (parts) => (parts.length === 6
+      ? { c0: parts[0], c1: parts[1], c2: parts[2], c3: parseFloat(parts[3]) || 0, c4: parts[4], c5: parts[5] }
+      : null),
+  );
+
+  return rows.map((r) => {
+    // node:sqlite returns column-named objects; the CLI fallback returns the
+    // c0..c5 shape built above. Read positionally either way.
+    const vals = Object.values(r) as Raw;
+    return {
+      activityId: String(vals[0]),
+      wfAccountId: String(vals[1]),
+      notes: String(vals[2]),
+      amountCents: Math.round(Number(vals[3]) || 0),
+      date: String(vals[4]).slice(0, 10),
+      accountName: String(vals[5]),
+    };
+  });
+}

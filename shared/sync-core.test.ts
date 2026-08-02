@@ -836,6 +836,63 @@ describe('runSyncCore', () => {
     expect(links).toHaveLength(1);
   });
 
+  // --- Imported-transactions list (the companion's import notice) ---
+
+  it('reports each confirmed create on importedTransactions, and nothing on a no-op re-sync', async () => {
+    const seed = (): FakeHostSeed => ({
+      accountSet: { errors: [], accounts: [
+        { id: 'sfin-1', name: 'Checking', currency: 'USD', balance: '100', 'balance-date': 1,
+          transactions: [
+            { id: 'tx-a', posted: 1700000000, amount: '-67.74', description: 'TRADER JOE S #628' },
+            { id: 'tx-b', posted: 1700086400, amount: '-22.58', description: 'NETFLIX.COM', pending: true },
+          ] },
+      ] },
+      mapping: { 'sfin-1': 'wf-a' },
+      accountNames: { 'wf-a': 'Spend (4937)' },
+    });
+    const first = createFakeHost(seed());
+    const r1 = await runSyncCore(first.host, first.store, { force: true });
+    expect(r1.importedTransactions).toHaveLength(2);
+    const byId = new Map(r1.importedTransactions.map((t) => [t.txId, t]));
+    expect(byId.get('tx-a')).toMatchObject({
+      sfAccountId: 'sfin-1',
+      description: 'TRADER JOE S #628',
+      amountCents: 6774,
+      currency: 'USD',
+      accountName: 'Spend (4937)',
+      pending: false,
+    });
+    expect(byId.get('tx-b')).toMatchObject({ pending: true });
+
+    // Re-sync with the rows already present: every feed tx matches, no creates,
+    // so the notice has nothing to announce.
+    const again = createFakeHost({
+      ...seed(),
+      existing: new Map([['wf-a', first.activities.get('wf-a') ?? []]]),
+    });
+    const r2 = await runSyncCore(again.host, again.store, { force: true });
+    expect(r2.importedTransactions).toEqual([]);
+  });
+
+  it('does not report a create the host rejected', async () => {
+    const { host, store } = createFakeHost({
+      accountSet: { errors: [], accounts: [
+        { id: 'sfin-1', name: 'Checking', currency: 'USD', balance: '100', 'balance-date': 1,
+          transactions: [{ id: 'tx-a', posted: 1700000000, amount: '-67.74', description: 'TRADER JOE S' }] },
+      ] },
+      mapping: { 'sfin-1': 'wf-a' },
+    });
+    const realSave = host.saveMany.bind(host);
+    host.saveMany = async (req) => {
+      if (req.creates?.length) {
+        return { created: [], updated: [], errors: [{ action: 'create', message: 'rejected' }] };
+      }
+      return realSave(req);
+    };
+    const r = await runSyncCore(host, store, { force: true });
+    expect(r.importedTransactions).toEqual([]);
+  });
+
   // --- Task 7: stuck-transfer failure tracking and alerting ---
 
   it('reports a stuck-transfer alert after 3 consecutive failed link attempts on the same pair', async () => {
