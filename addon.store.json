@@ -21,20 +21,20 @@
   "supportUrl": "https://github.com/Bubbles840/wealthfolio-simplefin-addon/issues",
   "source": {
     "repository": "https://github.com/Bubbles840/wealthfolio-simplefin-addon",
-    "tag": "v1.4.0",
-    "commit": "c39f2b01b6cca5c1cd592f4c8ba08143aabf5baf"
+    "tag": "v1.5.0",
+    "commit": "f2ae2d8978ca14a1aaa5a07445c1de83a0ef79d5"
   },
   "release": {
-    "version": "1.4.0",
+    "version": "1.5.0",
     "minWealthfolioVersion": "3.6.2",
     "sdkVersion": "3.6.2",
     "critical": false,
     "breaking": false,
-    "notes": "Import notices now list each new transaction and sweep the last 30 days for spending still needing a category in Wealthfolio's spending tracker, with a Telegram Dismiss button per row. The daily digest splits budgeted categories from an Off budget section that only appears when unbudgeted money moved.",
-    "changelogUrl": "https://github.com/Bubbles840/wealthfolio-simplefin-addon/releases/tag/v1.4.0"
+    "notes": "Drift handling now tells bank-feed lag apart from a real desync: a young unexplainable drift renders as a calm waiting notice with no one-click plug, aggressive auto-heal waits out the same 10-day window, and Telegram sends an informational notice first with a one-time alarm escalation only if the drift survives 10 days. Also includes 1.4.0's import notices with a needs-a-category sweep and dismiss buttons, and the daily digest's on/off-budget split.",
+    "changelogUrl": "https://github.com/Bubbles840/wealthfolio-simplefin-addon/releases/tag/v1.5.0"
   },
   "distribution": {
-    "r2Path": "simplefin-sync/1.4.0/simplefin-sync.zip"
+    "r2Path": "simplefin-sync/1.5.0/simplefin-sync.zip"
   },
   "media": {
     "coverLight": "assets/cover-light.webp",
