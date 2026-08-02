@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatMonthlyWrapUp, formatSyncHealthFooter, escapeMarkdown, weeklyEnvelope, moneyWhole, formatLargeTransactionAlert, formatBalanceDriftAlert, formatStuckTransferAlert, formatDuplicatePruneAlert, formatImportNotice } from './telegram.js';
-import { buildDismissKeyboard } from './telegram.js';
+import { buildDismissKeyboard, formatFeedLagNotice } from './telegram.js';
 import type { ImportNoticeTx, UncategorizedTx } from './telegram.js';
 
 const mockFetch = vi.fn();
@@ -73,6 +73,30 @@ describe('formatImportNotice', () => {
     expect(text).toContain('AMAZON\\_MKTPL\\*X1');
     expect(text).toContain('My\\_Spend');
     expect(text).toContain('VENMO \\*DYLAN\\_W');
+  });
+});
+
+describe('formatFeedLagNotice', () => {
+  it('reads as informational — no alarm emoji, no instruction to adjust', () => {
+    const text = formatFeedLagNotice({
+      accountName: 'Spend (4937)',
+      driftAmount: 490.75,
+      currency: 'USD',
+      bankBalance: 3965.98,
+    });
+    expect(text).toContain('⏳');
+    expect(text).toContain('Spend (4937)');
+    expect(text).toContain('$490.75');
+    expect(text).toMatch(/clears? .* on its own|usually clears/i);
+    expect(text).not.toContain('🚨');
+    expect(text).not.toMatch(/adjust|add \$/i);
+  });
+
+  it('escapes Markdown in the account name, outside any entity', () => {
+    const text = formatFeedLagNotice({
+      accountName: 'My_Spend', driftAmount: -12.5, currency: 'USD', bankBalance: 100,
+    });
+    expect(text).toContain('My\\_Spend');
   });
 });
 

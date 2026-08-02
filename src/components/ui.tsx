@@ -202,6 +202,17 @@ const css = `
   padding: 12px 14px; font-size: 13px; line-height: 1.5; margin-top: 16px;
 }
 .sfin-banner-warn b { color: var(--foreground); font-weight: 600; }
+/* The calm sibling: a drift the sync expects to resolve itself (the bank's
+   balance ahead of its own feed). Deliberately NOT destructive-tinted — red is
+   what goaded users into plugging feed lag. */
+.sfin-banner-wait {
+  display: flex; gap: 10px; align-items: flex-start;
+  background: color-mix(in srgb, var(--muted-foreground) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--muted-foreground) 25%, transparent);
+  border-radius: calc(var(--radius) - 2px);
+  padding: 12px 14px; font-size: 13px; line-height: 1.5; margin-top: 16px;
+}
+.sfin-banner-wait b { color: var(--foreground); font-weight: 600; }
 
 /* ── Settings primitives: label/control rows, field grids, checkbox lists,
       inset panels, the report-category matrix. All themed off the host's own

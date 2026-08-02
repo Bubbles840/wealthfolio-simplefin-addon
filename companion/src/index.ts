@@ -13,7 +13,7 @@ import { runSyncCore, descriptionFromComment } from '../../shared/sync-core.js';
 import type { SyncResult } from '../../shared/sync-core.js';
 import { RestSyncHost, RestSyncStore } from './rest-host.js';
 import { WealthfolioClient } from './wealthfolio.js';
-import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatMonthlyWrapUp, formatSyncHealthFooter, formatLargeTransactionAlert, formatBalanceDriftAlert, formatStuckTransferAlert, formatDuplicatePruneAlert, formatImportNotice, buildDismissKeyboard, IMPORT_NOTICE_UNCATEGORIZED_CAP, escapeMarkdown, LARGE_TX_OUTBOX_SECRET_KEY } from '../../shared/telegram.js';
+import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatMonthlyWrapUp, formatSyncHealthFooter, formatLargeTransactionAlert, formatBalanceDriftAlert, formatFeedLagNotice, formatStuckTransferAlert, formatDuplicatePruneAlert, formatImportNotice, buildDismissKeyboard, IMPORT_NOTICE_UNCATEGORIZED_CAP, escapeMarkdown, LARGE_TX_OUTBOX_SECRET_KEY } from '../../shared/telegram.js';
 import { pollTelegramDismissals, pruneDismissals } from './dismissals.js';
 import type { DismissalLedger } from './dismissals.js';
 import type { SyncHealth } from '../../shared/telegram.js';
@@ -245,7 +245,10 @@ async function sendBalanceDriftAlert(
   const tg = parseSecretJson<any>(tgRaw, 'telegram_config');
   if (!tg) return true;
   if (!tg.botToken || !tg.chatId || tg.enabled === false) return true;
-  const result = await sendTelegramMessage(tg.botToken, tg.chatId, formatBalanceDriftAlert(alert));
+  // Phase picks the voice — see the addon's deliverAddonAlerts, which makes
+  // the identical choice: young informs (feed lag resolves itself), aged alarms.
+  const text = alert.phase === 'aged' ? formatBalanceDriftAlert(alert) : formatFeedLagNotice(alert);
+  const result = await sendTelegramMessage(tg.botToken, tg.chatId, text);
   if (!result.ok) {
     log(`Balance-drift alert failed to send, will retry next sync: ${result.description}`);
     return false;
@@ -260,15 +263,23 @@ async function sendBalanceDriftAlert(
  *  the account healthy. Only writes on a real change. Must never throw. */
 async function rollBackUndeliveredDriftAlerts(
   store: RestSyncStore,
-  undeliveredAccountIds: string[],
+  undelivered: Array<{ sfinAccountId: string; phase: 'young' | 'aged' }>,
 ): Promise<void> {
-  if (undeliveredAccountIds.length === 0) return;
+  if (undelivered.length === 0) return;
   try {
     const alerts = await store.getDriftAlerts();
     let changed = false;
-    for (const sfinAccountId of undeliveredAccountIds) {
-      if (alerts[sfinAccountId]?.alerted) {
-        alerts[sfinAccountId] = { ...alerts[sfinAccountId], alerted: false };
+    for (const { sfinAccountId, phase } of undelivered) {
+      const entry = alerts[sfinAccountId];
+      if (!entry) continue;
+      // An undelivered AGED escalation rolls back only `alertedAged`: its young
+      // notice was already delivered, and re-arming that too would re-send the
+      // soft message alongside the retried alarm.
+      if (phase === 'aged' && entry.alertedAged) {
+        alerts[sfinAccountId] = { ...entry, alertedAged: false };
+        changed = true;
+      } else if (phase === 'young' && entry.alerted) {
+        alerts[sfinAccountId] = { ...entry, alerted: false };
         changed = true;
       }
     }
@@ -468,12 +479,12 @@ export async function runCompanionSync(): Promise<SyncResult> {
 
     await deliverLargeTransactionAlerts(wfClient, result.largeTransactionAlerts);
 
-    const undeliveredDriftAccountIds: string[] = [];
+    const undeliveredDrift: Array<{ sfinAccountId: string; phase: 'young' | 'aged' }> = [];
     for (const alert of result.balanceDriftAlerts) {
       const delivered = await sendBalanceDriftAlert(wfClient, alert);
-      if (!delivered) undeliveredDriftAccountIds.push(alert.sfinAccountId);
+      if (!delivered) undeliveredDrift.push({ sfinAccountId: alert.sfinAccountId, phase: alert.phase });
     }
-    await rollBackUndeliveredDriftAlerts(store, undeliveredDriftAccountIds);
+    await rollBackUndeliveredDriftAlerts(store, undeliveredDrift);
 
     await deliverDuplicatePruneNotice(wfClient, result.prunedDuplicates);
 

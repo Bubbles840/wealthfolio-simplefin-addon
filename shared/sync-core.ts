@@ -346,6 +346,12 @@ export interface SyncResult {
     /** What the bank says the account holds, so the message is actionable
      *  rather than merely alarming. */
     bankBalance: number;
+    /** `young` — the episode just opened; usually the bank balance running
+     *  ahead of its transaction feed, which resolves itself, so the messenger
+     *  should inform rather than alarm. `aged` — the same episode has stood
+     *  past the baseline-fix age without resolving, which lag does not do;
+     *  sent once, with the alarm styling. */
+    phase: 'young' | 'aged';
   }>;
   /**
    * Activities the reconcile sweep DELETED as surplus copies of a transaction the
@@ -415,6 +421,14 @@ interface AccountBalanceSnapshot {
     currentAmount: number;
     suggestedAmount: number;
   };
+  /**
+   * When the displayed drift's episode opened (the drift-alert ledger's
+   * `firstDetectedAt`), or null when the drift is under the alert threshold and
+   * has no episode to date it by. The UI uses the age to render a young drift
+   * as "waiting on the bank's feed" — with NO plug button — instead of a red
+   * banner whose Add button bakes feed lag into a fake transaction.
+   */
+  driftSince?: string | null;
 }
 
 /**
@@ -1372,10 +1386,28 @@ export async function runSyncCore(
             };
           }
         }
-        // Aggressive auto-heal: plug the residual immediately — but at most one
-        // adjustment per account per day, so a stale valuation on a rapid
-        // re-sync (the adjustment isn't recomputed yet) can't stack duplicates.
-        if (heal && autoAdjust && drift != null) {
+        // Aggressive auto-heal: plug the residual — but never a YOUNG episode.
+        // A bank balance that includes posted activity the feed hasn't
+        // published yet reads as drift; plugging it "fixes" the number today
+        // and double-counts it when the feed catches up, whereupon the flipped
+        // drift gets plugged the other way: two garbage rows, no human
+        // involved. An episode has to out-live plausible lag before the plug
+        // fires. Drifts too small to open an episode (under the alert
+        // threshold) plug immediately — the $2-divergence case this feature
+        // was built for, where waiting 10 days would make it useless.
+        // At most one adjustment per account per day either way, so a stale
+        // valuation on a rapid re-sync can't stack duplicates.
+        const openEpisode = driftAlerts[sfAccount.id];
+        // No episode yet + over the alert threshold = an episode is about to
+        // open at age ZERO later this run — the youngest possible drift, not a
+        // datable-as-old one. Treating it as plug-eligible would fire on the
+        // very first sight of every large drift, which is the exact reflex this
+        // gate exists to stop.
+        const youngEpisode = openEpisode != null
+          ? Date.now() - Date.parse(openEpisode.firstDetectedAt) < BASELINE_FIX_MIN_DRIFT_AGE_MS
+          : driftAlertThresholdCents > 0 &&
+            Math.abs(Math.round((drift ?? 0) * 100)) > driftAlertThresholdCents;
+        if (heal && autoAdjust && drift != null && !youngEpisode) {
           const alreadyToday = await hasAdjustmentToday(host, wfAccountId, sfAccount.id).catch(
             () => false,
           );
@@ -1439,6 +1471,9 @@ export async function runSyncCore(
             driftAmount: measuredDrift,
             currency: sfAccount.currency,
             bankBalance: sfBalance,
+            // Just opened, so by definition young — and a young unexplainable
+            // drift is usually the bank's balance ahead of its own feed.
+            phase: 'young',
           });
         } else if (!open.alerted) {
           // A previous run queued this episode but delivery failed and the
@@ -1454,6 +1489,25 @@ export async function runSyncCore(
             driftAmount: open.driftAmount,
             currency: sfAccount.currency,
             bankBalance: sfBalance,
+            phase: 'young',
+          });
+        } else if (
+          !open.alertedAged &&
+          Date.now() - Date.parse(open.firstDetectedAt) >= BASELINE_FIX_MIN_DRIFT_AGE_MS
+        ) {
+          // The episode has out-lived what feed lag can plausibly last — the
+          // soft young notice was wrong to be calm, so say so once, with the
+          // alarm styling. The CURRENT figure, not the opening one: ten days
+          // on, the original is stale.
+          driftAlerts[sfAccount.id] = { ...open, alertedAged: true };
+          driftAlertsChanged = true;
+          balanceDriftAlerts.push({
+            sfinAccountId: sfAccount.id,
+            accountName: wfNames.get(wfAccountId) || sfAccount.name,
+            driftAmount: measuredDrift,
+            currency: sfAccount.currency,
+            bankBalance: sfBalance,
+            phase: 'aged',
           });
         }
       } else if (open) {
@@ -1461,6 +1515,10 @@ export async function runSyncCore(
         driftAlertsChanged = true;
       }
     }
+    // Dated AFTER the episode update, so a drift whose episode opened THIS run
+    // still reads as young (age zero) rather than undatable.
+    accountBalances[sfAccount.id].driftSince =
+      driftAlerts[sfAccount.id]?.firstDetectedAt ?? null;
 
     // Wealthfolio shows the comment as the cash activity's title and hashes it
     // into its dedup key. Combining the bank description with the SimpleFin tx

@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import type { AddonContext } from '@wealthfolio/addon-sdk';
 import { runSync, INTERVAL_SKIP_MESSAGE, applyBalanceAdjustment, applyBaselineCorrection } from '../utils/sync';
+import { BASELINE_FIX_MIN_DRIFT_AGE_MS } from '../../shared/sync-core';
 
 /** The offer a sync attaches to an account when it proved the drift belongs to
  *  the starting-balance baseline rather than to any transaction. */
@@ -538,6 +539,39 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
         // it's present the plug is demoted: it would date this correction today
         // and leave the wrong baseline in place.
         const baselineFix = (info as { baselineFix?: BaselineFixOffer }).baselineFix;
+        // A YOUNG dated drift is usually the bank's balance running ahead of its
+        // own transaction feed — posted activity SimpleFin hasn't published yet,
+        // which resolves itself in days. It gets the calm banner with NO plug
+        // button: the red banner's `Add $X` was a loaded gun, since plugging lag
+        // double-counts the moment the feed catches up. An undatable drift
+        // (under the alert threshold, so no episode) keeps the old treatment —
+        // that's the small-divergence case the plug exists for.
+        const driftSince = (info as { driftSince?: string | null }).driftSince;
+        const waitingOnFeed =
+          !!driftSince && Date.now() - Date.parse(driftSince) < BASELINE_FIX_MIN_DRIFT_AGE_MS;
+        if (waitingOnFeed) {
+          return (
+            <div className="sfin-banner-wait" key={sfinId}>
+              <span aria-hidden>⏳</span>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div>
+                  <b>{sfinNames[sfinId] ?? sfinId}</b> is ahead of SimpleFin&apos;s feed by{' '}
+                  <b>{money(Math.abs(drift), info.currency)}</b> — the bank reports{' '}
+                  <b>{money(info.balance ?? 0, info.currency)}</b>.
+                </div>
+                <div style={{ marginTop: 4, opacity: 0.85 }}>
+                  The bank&apos;s balance usually includes recent activity its transaction list
+                  hasn&apos;t published yet. This typically clears in a few days on its own.
+                </div>
+                <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+                  <Button variant="outline" onClick={doHeal} disabled={healing || syncing}>
+                    {healing ? 'Re-scanning…' : 'Re-scan 90 days'}
+                  </Button>
+                </div>
+              </div>
+            </div>
+          );
+        }
         return (
           <div className="sfin-banner-warn" key={sfinId}>
             <span aria-hidden>⚠</span>

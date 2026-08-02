@@ -28,6 +28,11 @@ export interface DriftAlertEntry {
   driftAmount: number;
   firstDetectedAt: string;
   alerted: boolean;
+  /** Set once the episode has out-lived the baseline-fix age and the one-time
+   *  "this is no longer lag" escalation went out. Absent on ledgers written
+   *  before this field existed, which reads as false — exactly right, since
+   *  those episodes have not escalated. */
+  alertedAged?: boolean;
 }
 
 export interface ActivityWrite {

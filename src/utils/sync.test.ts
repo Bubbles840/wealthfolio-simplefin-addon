@@ -11,6 +11,7 @@ import {
 import {
   formatStuckTransferAlert,
   formatBalanceDriftAlert,
+  formatFeedLagNotice,
   formatLargeTransactionAlert,
   formatDuplicatePruneAlert,
 } from '../../shared/telegram';
@@ -301,8 +302,16 @@ describe('runSync', () => {
 
   it('aggressive auto-heal auto-inserts the adjustment and leaves no residual drift', async () => {
     // Quiet account: SimpleFin 1000, valuation 0 → residual 1000 in heal mode.
+    // The episode is seeded AGED: a fresh over-threshold drift is deliberately
+    // not plugged (the feed-lag gate); this test is about the plug happening
+    // and the drift clearing once it legitimately fires.
     vi.mocked(fetchAccounts).mockResolvedValueOnce(makeAccountSet([]));
-    const store = makeStore({ getAutoAdjust: vi.fn(async () => true) });
+    const store = makeStore({
+      getAutoAdjust: vi.fn(async () => true),
+      getDriftAlerts: vi.fn(async () => ({
+        'sfin-1': { driftAmount: 1000, firstDetectedAt: new Date(Date.now() - 11 * 86400_000).toISOString(), alerted: true },
+      })),
+    });
     const ctx = makeCtx();
     await runSync(ctx, store as any);
     // A spending-neutral CREDIT of 1000 was imported (wf-account-a is CASH)...
@@ -342,7 +351,14 @@ describe('runSync', () => {
         { id: 'act-adj', accountId: 'wf-account-a', activityType: 'DEPOSIT', date: today, amount: '1000', comment: `Balance adjustment · sfin-1 · ${today}` },
       ],
     }));
-    const store = makeStore({ getAutoAdjust: vi.fn(async () => true) });
+    // Aged episode so the plug path actually runs — the once-per-day guard is
+    // what this test is about, and a young drift never reaches it.
+    const store = makeStore({
+      getAutoAdjust: vi.fn(async () => true),
+      getDriftAlerts: vi.fn(async () => ({
+        'sfin-1': { driftAmount: 1000, firstDetectedAt: new Date(Date.now() - 11 * 86400_000).toISOString(), alerted: true },
+      })),
+    });
     await runSync(ctx, store as any);
     const imports = vi.mocked(ctx.api.activities.import).mock.calls.flatMap((c: any) => c[0]);
     const adjustments = imports.filter((a: any) => String(a.comment).startsWith('Balance adjustment'));
@@ -1278,7 +1294,7 @@ describe('deliverAddonAlerts', () => {
 
     await deliverAddonAlerts(alertCtx(rejectingNet()), store as any, emptyResult({
       balanceDriftAlerts: [
-        { sfinAccountId: 'sfin-1', accountName: 'Spend', driftAmount: 1300, currency: 'USD', bankBalance: 3475.23 },
+        { sfinAccountId: 'sfin-1', accountName: 'Spend', driftAmount: 1300, currency: 'USD', bankBalance: 3475.23, phase: 'young' },
       ],
     }));
 
@@ -1288,18 +1304,51 @@ describe('deliverAddonAlerts', () => {
     expect(written['sfin-1'].firstDetectedAt).toBe('2026-07-01T00:00:00.000Z');
   });
 
-  it('sends the drift alert with the shared formatter and writes no ledger on success', async () => {
+  it('sends a YOUNG drift as the soft feed-lag notice, not the alarm', async () => {
+    // A young unexplainable drift is usually the bank's balance ahead of its
+    // own feed. The alarm styling goaded users toward the Add button, which
+    // bakes lag into a fake transaction that double-counts days later.
     const request = okNet();
     const store = tgStore();
     await deliverAddonAlerts(alertCtx(request), store as any, emptyResult({
       balanceDriftAlerts: [
-        { sfinAccountId: 'sfin-1', accountName: 'Joint_Spend', driftAmount: 1300, currency: 'USD', bankBalance: 3475.23 },
+        { sfinAccountId: 'sfin-1', accountName: 'Joint_Spend', driftAmount: 1300, currency: 'USD', bankBalance: 3475.23, phase: 'young' },
+      ],
+    }));
+    expect(sentTexts(request)[0]).toBe(formatFeedLagNotice({
+      accountName: 'Joint_Spend', driftAmount: 1300, currency: 'USD', bankBalance: 3475.23,
+    }));
+    expect(store.setDriftAlerts).not.toHaveBeenCalled();
+  });
+
+  it('sends an AGED drift with the alarm formatter', async () => {
+    const request = okNet();
+    const store = tgStore();
+    await deliverAddonAlerts(alertCtx(request), store as any, emptyResult({
+      balanceDriftAlerts: [
+        { sfinAccountId: 'sfin-1', accountName: 'Joint_Spend', driftAmount: 1300, currency: 'USD', bankBalance: 3475.23, phase: 'aged' },
       ],
     }));
     expect(sentTexts(request)[0]).toBe(formatBalanceDriftAlert({
       accountName: 'Joint_Spend', driftAmount: 1300, currency: 'USD', bankBalance: 3475.23,
     }));
-    expect(store.setDriftAlerts).not.toHaveBeenCalled();
+  });
+
+  it('rolls back only alertedAged when an AGED send fails, keeping the young alert delivered', async () => {
+    const store = tgStore({
+      getDriftAlerts: vi.fn(async () => ({
+        'sfin-1': { driftAmount: 1300, firstDetectedAt: '2026-07-01T00:00:00.000Z', alerted: true, alertedAged: true },
+      })),
+    });
+    await deliverAddonAlerts(alertCtx(rejectingNet()), store as any, emptyResult({
+      balanceDriftAlerts: [
+        { sfinAccountId: 'sfin-1', accountName: 'Spend', driftAmount: 1300, currency: 'USD', bankBalance: 3475.23, phase: 'aged' },
+      ],
+    }));
+    const written = (store.setDriftAlerts as any).mock.calls[0][0];
+    // The escalation retries next sync; the original young delivery does not.
+    expect(written['sfin-1'].alertedAged).toBe(false);
+    expect(written['sfin-1'].alerted).toBe(true);
   });
 
   it('queues an undelivered large-transaction alert into the shared outbox', async () => {
@@ -1440,7 +1489,9 @@ describe('deliverAddonAlerts', () => {
     await runSync(ctx, store as any);
 
     expect(sentTexts(request)).toHaveLength(1);
-    expect(sentTexts(request)[0]).toContain('Balance drift');
+    // A just-opened episode is YOUNG, so the seam delivers the soft feed-lag
+    // notice — the alarm only ever arrives via the 10-day escalation.
+    expect(sentTexts(request)[0]).toContain('Waiting on the bank feed');
   });
 });
 

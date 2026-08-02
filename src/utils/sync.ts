@@ -5,6 +5,7 @@ import {
   sendTelegramMessage,
   formatStuckTransferAlert,
   formatBalanceDriftAlert,
+  formatFeedLagNotice,
   formatLargeTransactionAlert,
   formatDuplicatePruneAlert,
 } from '../../shared/telegram';
@@ -170,15 +171,20 @@ export async function deliverAddonAlerts(
     await deliverLargeTransactionAlerts(store, send, largeTransactionAlerts);
 
     // ── Balance drift ───────────────────────────────────────────────────────
-    const undeliveredDriftAccountIds: string[] = [];
+    // Phase picks the voice: a YOUNG episode is usually the bank's balance
+    // ahead of its own feed — informational, self-resolving, no alarm — while
+    // an AGED one has outlived plausible lag and gets the alarm styling.
+    const undeliveredDrift: Array<{ sfinAccountId: string; phase: 'young' | 'aged' }> = [];
     for (const alert of balanceDriftAlerts) {
-      const res = await send(formatBalanceDriftAlert(alert));
+      const res = await send(
+        alert.phase === 'aged' ? formatBalanceDriftAlert(alert) : formatFeedLagNotice(alert),
+      );
       if (!res.ok) {
         console.warn(`[simplefin-sync] balance-drift alert not delivered, will retry next sync: ${res.description}`);
-        undeliveredDriftAccountIds.push(alert.sfinAccountId);
+        undeliveredDrift.push({ sfinAccountId: alert.sfinAccountId, phase: alert.phase });
       }
     }
-    await rollBackUndeliveredDriftAlerts(store, undeliveredDriftAccountIds);
+    await rollBackUndeliveredDriftAlerts(store, undeliveredDrift);
 
     // ── Pruned duplicates ───────────────────────────────────────────────────
     // ONE message for the whole sweep, not one per row: a reconcile that cleans
@@ -231,18 +237,26 @@ async function rollBackUndeliveredStuckTransfers(
 }
 
 /** As above for the drift ledger, keyed by SimpleFin account id.
- *  `driftAmount`/`firstDetectedAt` stay put so the EPISODE survives the rollback. */
+ *  `driftAmount`/`firstDetectedAt` stay put so the EPISODE survives the
+ *  rollback. Phase-aware: an undelivered AGED escalation rolls back only
+ *  `alertedAged` — its young notice was already delivered, and re-arming that
+ *  flag too would re-send the soft message alongside the retried alarm. */
 async function rollBackUndeliveredDriftAlerts(
   store: SecretsStore,
-  undeliveredAccountIds: string[],
+  undelivered: Array<{ sfinAccountId: string; phase: 'young' | 'aged' }>,
 ): Promise<void> {
-  if (undeliveredAccountIds.length === 0) return;
+  if (undelivered.length === 0) return;
   try {
     const alerts = await store.getDriftAlerts();
     let changed = false;
-    for (const sfinAccountId of undeliveredAccountIds) {
-      if (alerts[sfinAccountId]?.alerted) {
-        alerts[sfinAccountId] = { ...alerts[sfinAccountId], alerted: false };
+    for (const { sfinAccountId, phase } of undelivered) {
+      const entry = alerts[sfinAccountId];
+      if (!entry) continue;
+      if (phase === 'aged' && entry.alertedAged) {
+        alerts[sfinAccountId] = { ...entry, alertedAged: false };
+        changed = true;
+      } else if (phase === 'young' && entry.alerted) {
+        alerts[sfinAccountId] = { ...entry, alerted: false };
         changed = true;
       }
     }

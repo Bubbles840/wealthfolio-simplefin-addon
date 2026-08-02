@@ -213,6 +213,9 @@ describe('runSyncCore', () => {
       valuations: new Map([['wf-a', 0]]),
       autoHeal: true,
       autoAdjust: true,
+      // Aged episode: a fresh over-threshold drift is deliberately not plugged
+      // (the feed-lag gate); this test is about the plug's SHAPE.
+      driftAlerts: { 'sfin-1': { driftAmount: 200, firstDetectedAt: new Date(Date.now() - 11 * 86400_000).toISOString(), alerted: true } },
     });
     await runSyncCore(host, store, { heal: true });
     const plug = imported.flat().find((r) => r.comment.startsWith('Balance adjustment'))!;
@@ -1145,7 +1148,79 @@ describe('runSyncCore', () => {
       driftAmount: 1300.0,
       currency: 'USD',
       bankBalance: 3475.23,
+      // A drift is YOUNG when its episode opens — and a young unexplainable
+      // drift is usually the bank's balance running ahead of its transaction
+      // feed, which resolves itself. The phase lets the messenger say so
+      // instead of sounding an alarm that goads the user into plugging lag.
+      phase: 'young',
     }]);
+  });
+
+  it('escalates a drift that has stood past the baseline-fix age, exactly once', async () => {
+    const seed = driftSeed();
+    const eleven = new Date(Date.now() - 11 * 86400_000).toISOString();
+    seed.driftAlerts = { 'sfin-1': { driftAmount: 1300.0, firstDetectedAt: eleven, alerted: true } };
+    const { host, store } = createFakeHost(seed);
+    const result = await runSyncCore(host, store, {});
+    expect(result.balanceDriftAlerts).toEqual([expect.objectContaining({ phase: 'aged', driftAmount: 1300.0 })]);
+    // Marked so the escalation cannot repeat on every later sync.
+    const second = await runSyncCore(host, store, { force: true });
+    expect(second.balanceDriftAlerts).toEqual([]);
+  });
+
+  it('dates the displayed drift on the snapshot, so the UI can tell lag from a real desync', async () => {
+    const { host, store } = createFakeHost(driftSeed());
+    await runSyncCore(host, store, {});
+    const snap = (await store.getAccountBalances())['sfin-1'] as { driftSince?: string | null };
+    const ledger = await store.getDriftAlerts();
+    expect(snap.driftSince).toBe(ledger['sfin-1'].firstDetectedAt);
+    // Under the alert threshold there is no episode to date it by.
+    const small = createFakeHost(driftSeed(new Map([['wf-a', 3400.0]])));
+    await runSyncCore(small.host, small.store, {});
+    const smallSnap = (await small.store.getAccountBalances())['sfin-1'] as { driftSince?: string | null };
+    expect(smallSnap.driftSince).toBeNull();
+  });
+
+  it('aggressive auto-heal does NOT plug a drift younger than the baseline-fix age', async () => {
+    // The failure this prevents, observed live: a bank balance that includes a
+    // posted transaction the feed has not published yet reads as drift. Plugging
+    // it "fixes" the number today and double-counts it the day the feed catches
+    // up — then the flipped drift gets plugged the other way. Two garbage rows,
+    // no human involved.
+    const seed = driftSeed();
+    seed.autoHeal = true;
+    seed.autoAdjust = true;
+    const { host, store, imported } = createFakeHost(seed);
+    const result = await runSyncCore(host, store, { heal: true });
+    expect(imported.flat().some((r) => r.comment.startsWith('Balance adjustment'))).toBe(false);
+    // Unplugged, so the drift stays visible and its young alert still goes out.
+    expect(result.balanceDriftAlerts).toEqual([expect.objectContaining({ phase: 'young' })]);
+    expect(await storedDrift(store, 'sfin-1')).toBeCloseTo(1300.0, 2);
+  });
+
+  it('aggressive auto-heal still plugs a drift once its episode is old', async () => {
+    const seed = driftSeed();
+    seed.autoHeal = true;
+    seed.autoAdjust = true;
+    const eleven = new Date(Date.now() - 11 * 86400_000).toISOString();
+    seed.driftAlerts = { 'sfin-1': { driftAmount: 1300.0, firstDetectedAt: eleven, alerted: true } };
+    const { host, store, imported } = createFakeHost(seed);
+    const result = await runSyncCore(host, store, { heal: true });
+    expect(imported.flat().some((r) => r.comment.startsWith('Balance adjustment'))).toBe(true);
+    // Plugged, so nothing is left to escalate about.
+    expect(result.balanceDriftAlerts).toEqual([]);
+  });
+
+  it('aggressive auto-heal still plugs a small sub-alert-threshold drift immediately', async () => {
+    // The $2-divergence case the plug was built for: too small to open an
+    // episode, so it can never age — and waiting 10 days to reconcile pennies
+    // would make auto-adjust useless for its original purpose.
+    const seed = driftSeed(new Map([['wf-a', 3400.0]])); // drift 75.23, under $100
+    seed.autoHeal = true;
+    seed.autoAdjust = true;
+    const { host, store, imported } = createFakeHost(seed);
+    await runSyncCore(host, store, { heal: true });
+    expect(imported.flat().some((r) => r.comment.startsWith('Balance adjustment'))).toBe(true);
   });
 
   it('records the episode so a second sync does not re-alert', async () => {
@@ -1255,15 +1330,17 @@ describe('runSyncCore', () => {
   });
 
   it('does not alert when aggressive auto-heal already plugged the drift this run', async () => {
+    // An AGED episode, since a young one is deliberately not plugged at all.
     const seed = driftSeed();
     seed.autoHeal = true;
     seed.autoAdjust = true;
+    const eleven = new Date(Date.now() - 11 * 86400_000).toISOString();
+    seed.driftAlerts = { 'sfin-1': { driftAmount: 1300.0, firstDetectedAt: eleven, alerted: true } };
     const { host, store, imported } = createFakeHost(seed);
     const result = await runSyncCore(host, store, { heal: true });
     // The plug really happened — so there is nothing left for the user to do.
     expect(imported.flat().some((r) => r.comment.startsWith('Balance adjustment'))).toBe(true);
     expect(result.balanceDriftAlerts).toEqual([]);
-    expect(await store.getDriftAlerts()).toEqual({});
   });
 
   it('names the SimpleFin account when the host reports no Wealthfolio account name', async () => {
@@ -1775,8 +1852,8 @@ describe('runSyncCore with ONE SimpleFin tx id in two accounts', () => {
 
       // Both accounts measured as in sync, and neither was alerted about.
       expect(await store.getAccountBalances()).toEqual({
-        'sfin-sav': { balance: 610.65, currency: 'USD', date: expect.any(Number), drift: null },
-        'sfin-spend': { balance: 3475.23, currency: 'USD', date: expect.any(Number), drift: null },
+        'sfin-sav': { balance: 610.65, currency: 'USD', date: expect.any(Number), drift: null, driftSince: null },
+        'sfin-spend': { balance: 3475.23, currency: 'USD', date: expect.any(Number), drift: null, driftSince: null },
       });
       expect(result.balanceDriftAlerts).toEqual([]);
     });
@@ -1866,8 +1943,8 @@ describe('runSyncCore with ONE SimpleFin tx id in two accounts', () => {
     const result = await runSyncCore(host, store, { heal: true });
 
     expect(await store.getAccountBalances()).toEqual({
-      'sfin-sav': { balance: 610.65, currency: 'USD', date: expect.any(Number), drift: null },
-      'sfin-spend': { balance: 3475.23, currency: 'USD', date: expect.any(Number), drift: null },
+      'sfin-sav': { balance: 610.65, currency: 'USD', date: expect.any(Number), drift: null, driftSince: null },
+      'sfin-spend': { balance: 3475.23, currency: 'USD', date: expect.any(Number), drift: null, driftSince: null },
     });
     expect(result.balanceDriftAlerts).toEqual([]);
   });

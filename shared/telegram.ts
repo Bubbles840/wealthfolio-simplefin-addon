@@ -296,6 +296,32 @@ export function formatBalanceDriftAlert(alert: {
   );
 }
 
+/**
+ * The YOUNG-phase counterpart to `formatBalanceDriftAlert`: a drift whose
+ * episode just opened is usually the bank's balance running ahead of its own
+ * transaction feed — posted activity SimpleFin has not published yet — which
+ * resolves itself in days. Alarming the user here goads them into plugging
+ * lag, which double-counts the moment the feed catches up. So this informs,
+ * names the likely cause, and asks for nothing. The alarm styling arrives via
+ * the one-time `aged` escalation if the drift outlives plausible lag.
+ */
+export function formatFeedLagNotice(alert: {
+  accountName: string;
+  driftAmount: number;
+  currency: string;
+  bankBalance: number;
+}): string {
+  const magnitude = formatDollars(Math.abs(alert.driftAmount), 2);
+  const bank = formatDollars(alert.bankBalance, 2);
+  const direction = alert.driftAmount >= 0 ? 'ahead of' : 'behind';
+  return (
+    `⏳ *Waiting on the bank feed* — ${escapeMarkdown(alert.accountName)}\n`
+    + `The bank reports *${bank}* ${escapeMarkdown(alert.currency)}, *${magnitude}* ${direction} Wealthfolio — `
+    + `its balance usually includes recent activity its transaction list hasn't published yet.\n`
+    + `This typically clears in a few days on its own. Nothing to do.`
+  );
+}
+
 /** One activity the reconcile sweep deleted. Structurally the display half of
  *  `SyncResult.prunedDuplicates` — the ids stay behind in the log. */
 export interface PrunedDuplicateRow {

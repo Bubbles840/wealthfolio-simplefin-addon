@@ -648,9 +648,11 @@ describe('balance-drift alert delivery', () => {
     return c;
   }
 
+  // AGED, so these tests keep exercising the alarm formatter and the
+  // `alerted` rollback; the young/soft path is pinned separately below.
   const driftAlert = {
     sfinAccountId: 'sfin-1', accountName: 'Spend', driftAmount: 1300,
-    currency: 'USD', bankBalance: 3475.23,
+    currency: 'USD', bankBalance: 3475.23, phase: 'aged' as const,
   };
 
   beforeEach(() => {
@@ -662,7 +664,7 @@ describe('balance-drift alert delivery', () => {
     // runSyncCore has already persisted alerted:true for this episode when it
     // queued the alert; the companion's job is to undo that if delivery fails.
     secrets.set('drift_alerts', JSON.stringify({
-      'sfin-1': { driftAmount: 1300, firstDetectedAt: '2026-07-01T00:00:00Z', alerted: true },
+      'sfin-1': { driftAmount: 1300, firstDetectedAt: '2026-07-01T00:00:00Z', alerted: true, alertedAged: true },
     }));
     vi.mocked(runSyncCore).mockClear();
   });
@@ -688,6 +690,22 @@ describe('balance-drift alert delivery', () => {
     );
     // Delivered, so the episode stays marked and no second ping goes out.
     expect(JSON.parse(secrets.get('drift_alerts')!)['sfin-1'].alerted).toBe(true);
+  });
+
+  it('sends a YOUNG drift as the soft feed-lag notice, not the alarm', async () => {
+    vi.mocked(runSyncCore).mockResolvedValueOnce({
+      imported: 0, skipped: 0, errors: [], prunedDuplicates: [], importedTransactions: [], stuckTransferAlerts: [], largeTransactionAlerts: [],
+      balanceDriftAlerts: [{ ...driftAlert, phase: 'young' as const }],
+    });
+    await client();
+    const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await runCompanionSync();
+
+    const text = JSON.parse((fetchMock.mock.calls[0][1] as any).body).text;
+    expect(text).toContain('⏳ *Waiting on the bank feed* — Spend');
+    expect(text).not.toContain('Balance drift');
   });
 
   it('escapes a `_`-bearing account name so the send cannot 400', async () => {
@@ -716,7 +734,11 @@ describe('balance-drift alert delivery', () => {
     await runCompanionSync();
 
     const stored = JSON.parse(secrets.get('drift_alerts')!)['sfin-1'];
-    expect(stored.alerted).toBe(false);
+    // An aged escalation rolls back ONLY its own flag: the young notice was
+    // already delivered, and re-arming it too would re-send the soft message
+    // alongside the retried alarm.
+    expect(stored.alertedAged).toBe(false);
+    expect(stored.alerted).toBe(true);
     // The episode itself must survive intact — rolling back the delivery flag
     // is not the same as declaring the account healthy again.
     expect(stored.driftAmount).toBe(1300);
@@ -725,14 +747,14 @@ describe('balance-drift alert delivery', () => {
 
   it('rolls back only the account whose send failed', async () => {
     secrets.set('drift_alerts', JSON.stringify({
-      'sfin-1': { driftAmount: 1300, firstDetectedAt: '2026-07-01T00:00:00Z', alerted: true },
+      'sfin-1': { driftAmount: 1300, firstDetectedAt: '2026-07-01T00:00:00Z', alerted: true, alertedAged: true },
       'sfin-2': { driftAmount: 500, firstDetectedAt: '2026-07-02T00:00:00Z', alerted: true },
     }));
     vi.mocked(runSyncCore).mockResolvedValueOnce({
       imported: 0, skipped: 0, errors: [], prunedDuplicates: [], stuckTransferAlerts: [], largeTransactionAlerts: [],
       balanceDriftAlerts: [
         driftAlert,
-        { sfinAccountId: 'sfin-2', accountName: 'Savings', driftAmount: 500, currency: 'USD', bankBalance: 610.65 },
+        { sfinAccountId: 'sfin-2', accountName: 'Savings', driftAmount: 500, currency: 'USD', bankBalance: 610.65, phase: 'young' as const },
       ],
     });
     await client();
@@ -743,7 +765,7 @@ describe('balance-drift alert delivery', () => {
     await runCompanionSync();
 
     const stored = JSON.parse(secrets.get('drift_alerts')!);
-    expect(stored['sfin-1'].alerted).toBe(false);
+    expect(stored['sfin-1'].alertedAged).toBe(false);
     expect(stored['sfin-2'].alerted).toBe(true);
   });
 

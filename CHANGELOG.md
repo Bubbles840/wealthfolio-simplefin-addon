@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-08-01
+
+### Changed
+
+- **A young drift no longer looks like an emergency.** A drift that no
+  transaction can explain and that appeared within the last 10 days is almost
+  always the bank's balance running ahead of SimpleFin's transaction list —
+  posted activity the feed hasn't published yet, which resolves itself in days
+  (observed twice on a live account, at $1,300 and $490.75). That case now
+  renders as a calm "waiting on the bank's feed" banner with **no Add button at
+  all** — the red banner's one-click plug was a loaded gun that would
+  double-count the moment the feed caught up. The red banner, the plug, and the
+  `Fix baseline` offer return only once the drift has stood for 10 days.
+  Drifts too small to alert (under the drift-alert threshold) keep the old
+  immediate treatment — that's the small-divergence case the plug exists for.
+- **Aggressive auto-heal respects the same 10-day gate.** It previously would
+  have plugged feed lag automatically and then plugged the flipped drift again
+  when the feed caught up — two garbage rows, no human involved. Small
+  sub-threshold divergences still plug immediately.
+- **The Telegram drift alert now matches the diagnosis.** A new episode sends
+  an informational ⏳ notice naming feed lag as the likely cause and asking for
+  nothing. If the same episode is still unresolved after 10 days, a one-time 🚨
+  escalation with the original alarm styling follows.
+
 ## [1.4.0] - 2026-07-30
 
 ### Added
