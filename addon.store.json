@@ -21,20 +21,20 @@
   "supportUrl": "https://github.com/Bubbles840/wealthfolio-simplefin-addon/issues",
   "source": {
     "repository": "https://github.com/Bubbles840/wealthfolio-simplefin-addon",
-    "tag": "v1.5.0",
-    "commit": "f2ae2d8978ca14a1aaa5a07445c1de83a0ef79d5"
+    "tag": "v1.6.0",
+    "commit": "2976715fd7a08c1d4a49fad734e775989bbc33a2"
   },
   "release": {
-    "version": "1.5.0",
+    "version": "1.6.0",
     "minWealthfolioVersion": "3.6.2",
     "sdkVersion": "3.6.2",
     "critical": false,
     "breaking": false,
-    "notes": "Drift handling now tells bank-feed lag apart from a real desync: a young unexplainable drift renders as a calm waiting notice with no one-click plug, aggressive auto-heal waits out the same 10-day window, and Telegram sends an informational notice first with a one-time alarm escalation only if the drift survives 10 days. Also includes 1.4.0's import notices with a needs-a-category sweep and dismiss buttons, and the daily digest's on/off-budget split.",
-    "changelogUrl": "https://github.com/Bubbles840/wealthfolio-simplefin-addon/releases/tag/v1.5.0"
+    "notes": "The companion now reads Wealthfolio's database live through the write-ahead log instead of a snapshot that could run days stale — fixing missed needs-a-category rows and stale daily/weekly report figures. The category sweep also covers income (deposits, credits, interest), not just spending. Deployment note: bind-mount the Wealthfolio directory rather than the bare .db file so the WAL is visible.",
+    "changelogUrl": "https://github.com/Bubbles840/wealthfolio-simplefin-addon/releases/tag/v1.6.0"
   },
   "distribution": {
-    "r2Path": "simplefin-sync/1.5.0/simplefin-sync.zip"
+    "r2Path": "simplefin-sync/1.6.0/simplefin-sync.zip"
   },
   "media": {
     "coverLight": "assets/cover-light.webp",
