@@ -332,6 +332,7 @@ describe('sqlite-native', () => {
         -- Non-spending types: transfers and deposits need no category.
         INSERT INTO activities VALUES ('act-3', '700.00', '2026-07-11T00:00:00Z', 'TRANSFER_OUT', 'Payment · TRN-ccc', 'wf-a');
         INSERT INTO activities VALUES ('act-4', '61.05', '2026-07-11T00:00:00Z', 'DEPOSIT', 'Venmo in · TRN-ddd', 'wf-a');
+        INSERT INTO activities VALUES ('act-4b', '70.00', '2026-07-11T00:00:00Z', 'CREDIT', 'Thankyou Points · TRN-ddd2', 'wf-a');
         -- Internal markers: never nag about rows the sync itself wrote.
         INSERT INTO activities VALUES ('act-5', '1169.56', '2026-07-12T00:00:00Z', 'WITHDRAWAL', 'Starting balance · ACT-x', 'wf-a');
         INSERT INTO activities VALUES ('act-6', '10.00', '2026-07-12T00:00:00Z', 'WITHDRAWAL', 'Balance adjustment · sfin-1 · 2026-07-12', 'wf-a');
@@ -342,21 +343,43 @@ describe('sqlite-native', () => {
       db.close();
     };
 
-    it('returns only uncategorized spending rows inside the window, newest first', () => {
+    it('returns uncategorized spending AND income inside the window, never transfers or markers', () => {
       const { path, cleanup } = makeTestDb();
       try {
         seed(path);
         const rows = getNativeUncategorizedSpending(path, '2026-07-01', '2026-08-01');
-        expect(rows).toEqual([
-          {
-            activityId: 'act-1',
-            wfAccountId: 'wf-a',
-            notes: 'VENMO PAYMENT · TRN-aaa',
-            amountCents: 4516,
-            date: '2026-07-09',
-            accountName: 'Spend (4937)',
-          },
-        ]);
+        expect(rows.map((r) => r.activityId)).toEqual(['act-4', 'act-4b', 'act-1']);
+        expect(rows[2]).toEqual({
+          activityId: 'act-1',
+          wfAccountId: 'wf-a',
+          notes: 'VENMO PAYMENT · TRN-aaa',
+          amountCents: 4516,
+          date: '2026-07-09',
+          accountName: 'Spend (4937)',
+        });
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('reads rows a live writer has not checkpointed yet (the two-day-stale snapshot bug)', () => {
+      // The live incident: the main DB file was last checkpointed 07-31, the
+      // write-ahead log held TWO DAYS of newer activity, and the immutable-mode
+      // read the companion used sees only the checkpointed file — so the sweep
+      // missed every recent uncategorized row and the daily reports were stale.
+      // The reader must see through the WAL while a writer holds it open.
+      const { path, cleanup } = makeTestDb();
+      try {
+        seed(path);
+        const writer = new DatabaseSync(path);
+        writer.exec("PRAGMA journal_mode=WAL;");
+        writer.exec("INSERT INTO activities VALUES ('act-wal', '4.99', '2026-07-14T00:00:00Z', 'WITHDRAWAL', 'QR LIBRARY · TRN-wal', 'wf-a');");
+        try {
+          const rows = getNativeUncategorizedSpending(path, '2026-07-01', '2026-08-01');
+          expect(rows.map((r) => r.activityId)).toContain('act-wal');
+        } finally {
+          writer.close();
+        }
       } finally {
         cleanup();
       }

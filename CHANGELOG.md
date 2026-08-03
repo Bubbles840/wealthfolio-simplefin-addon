@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-08-02
+
+### Fixed
+
+- **The companion's database reads were up to days stale.** It read
+  Wealthfolio's SQLite file in `immutable` mode, which sees only data
+  checkpointed into the main file — and a live instance was observed with
+  **two days** of writes (2.4 MB) still sitting in the write-ahead log. Every
+  consumer was affected: the needs-a-category sweep missed all recent rows
+  (four uncategorized transactions went unreported on a live install), and the
+  daily/weekly reports served days-old spending and budget figures. Reads now
+  attach the WAL (`mode=ro`, with `readonly_shm=1` for the read-only mount),
+  falling back to the old snapshot mode if the WAL files aren't visible.
+  **Requires a compose change**: bind-mount the Wealthfolio *directory* rather
+  than the bare `.db` file, so the companion can see `-wal`/`-shm`.
+
+### Changed
+
+- The needs-a-category sweep now covers income too — deposits, credits,
+  interest, dividends — not just spending. A live user's interest payment and a
+  card-points credit both wanted categorizing. Transfers stay excluded (they
+  are classified by linking, not by category), as do all machine-written rows.
+
 ## [1.5.0] - 2026-08-01
 
 ### Changed

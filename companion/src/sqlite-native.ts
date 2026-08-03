@@ -47,14 +47,34 @@ function queryNativeDb<Row>(
   query: string,
   fromCliParts: (parts: string[]) => Row | null,
 ): Row[] {
-  try {
-    const uri = dbPath.startsWith('file:') ? dbPath : `file:${dbPath}?immutable=1`;
-    const db = new DatabaseSync(uri);
-    const rows = db.prepare(query).all() as Row[];
-    db.close();
-    return rows;
-  } catch (err) {
-    console.error(`[simplefin-sync] node:sqlite ${label} error:`, err);
+  // LIVE read first, snapshot only as a fallback. `immutable=1` reads the main
+  // DB file alone and ignores the write-ahead log — and Wealthfolio checkpoints
+  // rarely (a live instance was observed 2 DAYS behind, 2.4 MB of WAL), so an
+  // immutable read silently served days-old budgets, spending, and category
+  // data. `mode=ro` attaches the WAL; `readonly_shm=1` covers the read-only
+  // bind mount, where the shm index can't be created but CAN be read as long as
+  // Wealthfolio itself keeps one alive — which a running instance always does.
+  // Requires the -wal/-shm files to be visible, i.e. the DIRECTORY mounted, not
+  // the bare .db file; with a file-only mount both live opens fail and the
+  // immutable fallback preserves the old (stale but working) behaviour.
+  const uris = dbPath.startsWith('file:')
+    ? [dbPath]
+    : [
+        `file:${dbPath}?mode=ro`,
+        `file:${dbPath}?mode=ro&readonly_shm=1`,
+        `file:${dbPath}?immutable=1`,
+      ];
+  for (const uri of uris) {
+    try {
+      const db = new DatabaseSync(uri);
+      try {
+        return db.prepare(query).all() as Row[];
+      } finally {
+        db.close();
+      }
+    } catch (err) {
+      console.error(`[simplefin-sync] node:sqlite ${label} error on ${uri.slice(uri.indexOf('?'))}:`, err);
+    }
   }
 
   try {
@@ -308,11 +328,14 @@ export interface NativeUncategorizedTx {
  * Spending rows in `[startInclusive, endExclusive)` with NO taxonomy
  * assignment — the needs-a-category sweep behind the import notice.
  *
- * Spending types only (`WITHDRAWAL`/`FEE`/`TAX`, matching the reports'
- * definition): transfers, deposits, and income need no category. Rows the sync
- * itself writes — starting balances, balance adjustments, in-transit
- * placeholders — are excluded by their note prefixes: nagging the user to
- * categorize a row the machine created would be absurd.
+ * Spending AND income types: a live user's interest deposit and card-points
+ * CREDIT both wanted categorizing (2026-08-02), so only transfers — which
+ * Wealthfolio classifies by linking, not by category — are excluded by type.
+ * Rows the sync itself writes — starting balances, balance adjustments,
+ * in-transit placeholders — are excluded by their note prefixes: nagging the
+ * user to categorize a row the machine created would be absurd, and the
+ * in-transit prefix is also what keeps placeholder CREDITs out now that the
+ * CREDIT type is swept.
  */
 export function getNativeUncategorizedSpending(
   dbPath: string,
@@ -332,7 +355,7 @@ export function getNativeUncategorizedSpending(
     WHERE ata.activity_id IS NULL
       AND a.activity_date >= '${startInclusive}'
       AND a.activity_date < '${endExclusive}'
-      AND UPPER(a.activity_type) IN ('WITHDRAWAL', 'FEE', 'TAX')
+      AND UPPER(a.activity_type) IN ('WITHDRAWAL', 'FEE', 'TAX', 'DEPOSIT', 'CREDIT', 'INTEREST', 'DIVIDEND', 'INCOME')
       AND COALESCE(a.notes, '') NOT LIKE 'Starting balance · %'
       AND COALESCE(a.notes, '') NOT LIKE 'Balance adjustment · %'
       AND COALESCE(a.notes, '') NOT LIKE '↔️ In-transit transfer · %'
