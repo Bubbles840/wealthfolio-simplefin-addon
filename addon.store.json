@@ -21,20 +21,20 @@
   "supportUrl": "https://github.com/Bubbles840/wealthfolio-simplefin-addon/issues",
   "source": {
     "repository": "https://github.com/Bubbles840/wealthfolio-simplefin-addon",
-    "tag": "v1.6.0",
-    "commit": "2976715fd7a08c1d4a49fad734e775989bbc33a2"
+    "tag": "v1.6.1",
+    "commit": "b6eaf236bc53b5bcfafd4f4a386ec3d9727c01d0"
   },
   "release": {
-    "version": "1.6.0",
+    "version": "1.6.1",
     "minWealthfolioVersion": "3.6.2",
     "sdkVersion": "3.6.2",
     "critical": false,
     "breaking": false,
-    "notes": "The companion now reads Wealthfolio's database live through the write-ahead log instead of a snapshot that could run days stale — fixing missed needs-a-category rows and stale daily/weekly report figures. The category sweep also covers income (deposits, credits, interest), not just spending. Deployment note: bind-mount the Wealthfolio directory rather than the bare .db file so the WAL is visible.",
-    "changelogUrl": "https://github.com/Bubbles840/wealthfolio-simplefin-addon/releases/tag/v1.6.0"
+    "notes": "Fixes a case where one un-importable transaction could silently strand an entire account's import: Wealthfolio's bulk save is all-or-nothing, so a single row it considers a duplicate discarded the whole batch while the sync reported zero imported. A refused batch is now retried row by row, skipping anything already stored, and errors name the specific transaction refused.",
+    "changelogUrl": "https://github.com/Bubbles840/wealthfolio-simplefin-addon/releases/tag/v1.6.1"
   },
   "distribution": {
-    "r2Path": "simplefin-sync/1.6.0/simplefin-sync.zip"
+    "r2Path": "simplefin-sync/1.6.1/simplefin-sync.zip"
   },
   "media": {
     "coverLight": "assets/cover-light.webp",
