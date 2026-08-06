@@ -839,6 +839,103 @@ describe('runSyncCore', () => {
     expect(links).toHaveLength(1);
   });
 
+  // --- All-or-nothing bulk saves: row-by-row fallback ---
+
+  /**
+   * Wealthfolio's bulk endpoint is ALL-OR-NOTHING: one row it calls a duplicate
+   * discards the ENTIRE batch. Live on a Citi card (2026-08-06) that
+   * legitimately had two identical same-day charges — the account reported
+   * `0 imported` while real transactions sat unimported, and the run still
+   * looked like a success, so nothing surfaced but a stale error banner.
+   */
+  const dupSeed = (): FakeHostSeed => ({
+    accountSet: { errors: [], accounts: [
+      { id: 'sfin-1', name: 'Card', currency: 'USD', balance: '0', 'balance-date': 1,
+        transactions: [
+          { id: 'tx-ok1', posted: 1700000000, amount: '-21.20', description: 'ANTHROPIC' },
+          { id: 'tx-dup', posted: 1700000000, amount: '-21.20', description: 'ANTHROPIC' },
+          { id: 'tx-ok2', posted: 1700086400, amount: '-9.99', description: 'KROGER' },
+        ] },
+    ] },
+    mapping: { 'sfin-1': 'wf-a' },
+  });
+
+  /** Refuses any multi-create batch (the real all-or-nothing behaviour) and
+   *  refuses `tx-dup` even on its own; everything else saves normally. */
+  const refuseBulkAndOneRow = (fake: ReturnType<typeof createFakeHost>) => {
+    const real = fake.host.saveMany.bind(fake.host);
+    const calls = { bulk: 0, single: 0 };
+    fake.host.saveMany = async (req) => {
+      const n = (req.creates ?? []).length;
+      if (n > 1) {
+        calls.bulk++;
+        return { created: [], updated: [], errors: [
+          { action: 'create', message: 'Duplicate activity detected. A matching activity already exists.' },
+        ] };
+      }
+      if (n === 1) {
+        calls.single++;
+        if ((req.creates![0].comment ?? '').includes('tx-dup')) {
+          return { created: [], updated: [], errors: [{ action: 'create', message: 'Duplicate activity detected' }] };
+        }
+      }
+      return real(req);
+    };
+    return calls;
+  };
+
+  it('retries row-by-row when a bulk save is refused, so one bad row cannot strand the rest', async () => {
+    const fake = createFakeHost(dupSeed());
+    const calls = refuseBulkAndOneRow(fake);
+    const result = await runSyncCore(fake.host, fake.store, { force: true });
+    // The two good rows land despite the batch refusal.
+    expect(result.imported).toBe(2);
+    expect(result.importedTransactions.map((t) => t.txId).sort()).toEqual(['tx-ok1', 'tx-ok2']);
+    expect(calls.bulk).toBe(1);
+    expect(calls.single).toBe(3);
+  });
+
+  it('names the row that was actually refused, not just the batch', async () => {
+    const fake = createFakeHost(dupSeed());
+    refuseBulkAndOneRow(fake);
+    const result = await runSyncCore(fake.host, fake.store, { force: true });
+    const text = result.errors.join('\n');
+    expect(text).toMatch(/Duplicate activity/);
+    // The identifying detail: WHICH transaction, so it is actionable.
+    expect(text).toContain('tx-dup');
+    expect(text).not.toContain('tx-ok1');
+  });
+
+  it('adds no extra save calls when the bulk save succeeds', async () => {
+    const fake = createFakeHost(dupSeed());
+    const real = fake.host.saveMany.bind(fake.host);
+    let calls = 0;
+    fake.host.saveMany = async (req) => { calls++; return real(req); };
+    const result = await runSyncCore(fake.host, fake.store, { force: true });
+    expect(result.imported).toBe(3);
+    // One batch, no per-row follow-up: the fallback must cost nothing on the
+    // happy path, which is every path but this one bug.
+    expect(calls).toBe(1);
+  });
+
+  it('does not re-create rows a partially-successful batch already stored', async () => {
+    const fake = createFakeHost(dupSeed());
+    const real = fake.host.saveMany.bind(fake.host);
+    fake.host.saveMany = async (req) => {
+      const creates = req.creates ?? [];
+      if (creates.length > 1) {
+        // Partial success: the first row landed, then the batch errored.
+        const first = await real({ creates: [creates[0]] });
+        return { created: first.created, updated: [], errors: [{ action: 'create', message: 'Duplicate activity detected' }] };
+      }
+      return real(req);
+    };
+    const result = await runSyncCore(fake.host, fake.store, { force: true });
+    const ids = result.importedTransactions.map((t) => t.txId);
+    expect(ids).toHaveLength(new Set(ids).size); // no duplicates
+    expect(new Set(ids)).toEqual(new Set(['tx-ok1', 'tx-dup', 'tx-ok2']));
+  });
+
   // --- Imported-transactions list (the companion's import notice) ---
 
   it('reports each confirmed create on importedTransactions, and nothing on a no-op re-sync', async () => {

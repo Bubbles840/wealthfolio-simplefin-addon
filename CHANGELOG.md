@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.1] - 2026-08-06
+
+### Fixed
+
+- **One un-importable transaction could silently strand an entire account's
+  import.** Wealthfolio's bulk save endpoint is all-or-nothing: a single row it
+  considers a duplicate discards the whole batch. The run still completed and
+  reported `0 imported`, indistinguishable from a day with no activity, so
+  nothing surfaced. Found live on a Citi card holding two legitimately
+  identical same-day charges — the same merchant for the same amount twice,
+  which Wealthfolio's duplicate detection cannot tell apart because it does not
+  key on the SimpleFin transaction id.
+
+  A refused batch is now re-sent one row at a time — deletes, then updates, then
+  creates — skipping anything the batch already stored so a partial success
+  cannot become a double-create. The reported errors name the specific row
+  refused, with its description, instead of a bare batch failure. The happy path
+  is unchanged at exactly one call.
+
 ## [1.6.0] - 2026-08-02
 
 ### Fixed

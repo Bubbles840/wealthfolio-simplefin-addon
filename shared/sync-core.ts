@@ -8,7 +8,7 @@ import type { FeedTx, ExistingRow } from './reconcile.js';
  *  WRITING the prefix, so importers keep finding the name here. */
 export { IN_TRANSIT_COMMENT_PREFIX };
 import type { ActivityType, SimplefinTransaction } from './types.js';
-import type { ActivityWrite, ImportRow, LinkLeg, LinkResult, SyncHost, SyncStore } from './sync-host.js';
+import type { ActivityWrite, ImportRow, LinkLeg, LinkResult, SaveManyRequest, SaveManyResult, SyncHost, SyncStore } from './sync-host.js';
 
 /**
  * A datable timestamp for a SimpleFin transaction: `posted` when present, else
@@ -480,6 +480,75 @@ async function fetchStartingBalance(
     date: new Date(row.date).toISOString().slice(0, 10),
     signed: String(row.activityType) === 'WITHDRAWAL' ? -abs : abs,
   };
+}
+
+/**
+ * Save a plan, falling back to ROW-BY-ROW when the host refuses the batch.
+ *
+ * Wealthfolio's bulk endpoint is ALL-OR-NOTHING: one row it considers a
+ * duplicate discards the entire batch. So a single un-importable transaction
+ * strands every other transaction for that account — and silently, because the
+ * run still completes, reporting `0 imported` exactly like a quiet day. Seen
+ * live on 2026-08-06: a Citi card with two legitimately identical same-day
+ * charges (the same $21.20 merchant twice) had its whole account batch refused.
+ *
+ * On any refusal the batch is re-sent one row at a time: deletes first (id-
+ * addressed, so they cannot collide), then updates, then creates. Rows the bulk
+ * call already stored are skipped — a partial success must not become a
+ * double-create. The returned `errors` name ONLY the rows genuinely refused,
+ * each with its comment so the failure is actionable rather than just a count,
+ * which also keeps the caller's existing "did anything fail?" guard honest: a
+ * refused row still suppresses the starting-balance adjustment, since that
+ * adjustment reasons over the whole plan.
+ *
+ * Costs nothing on the happy path — one call, no follow-up.
+ */
+async function saveWithRowFallback(
+  host: SyncHost,
+  req: SaveManyRequest,
+): Promise<SaveManyResult> {
+  const bulk = await host.saveMany(req);
+  if ((bulk.errors ?? []).length === 0) return bulk;
+
+  const created = [...(bulk.created ?? [])];
+  const updated = [...(bulk.updated ?? [])];
+  const errors: SaveManyResult['errors'] = [];
+
+  // What the refused batch nonetheless managed to store.
+  const landedCreates = new Set(
+    created.map((a) => txIdFromComment(a.comment)).filter((t): t is string => !!t),
+  );
+  const landedUpdates = new Set(updated.map((a) => a.id).filter((id): id is string => !!id));
+
+  if ((req.deleteIds ?? []).length > 0) {
+    const del = await host.saveMany({ deleteIds: req.deleteIds });
+    for (const e of del.errors ?? []) errors.push(e);
+  }
+
+  for (const u of req.updates ?? []) {
+    if (u.id && landedUpdates.has(u.id)) continue;
+    const one = await host.saveMany({ updates: [u] });
+    if ((one.errors ?? []).length === 0) {
+      updated.push(...(one.updated ?? []));
+    } else {
+      const msg = (one.errors ?? []).map((e) => e.message).join('; ') || 'host returned no row';
+      errors.push({ action: 'update', message: `${msg} [${u.comment}]` });
+    }
+  }
+
+  for (const c of req.creates ?? []) {
+    const txId = txIdFromComment(c.comment);
+    if (txId && landedCreates.has(txId)) continue;
+    const one = await host.saveMany({ creates: [c] });
+    if ((one.errors ?? []).length === 0 && (one.created ?? []).length > 0) {
+      created.push(...one.created);
+    } else {
+      const msg = (one.errors ?? []).map((e) => e.message).join('; ') || 'host returned no row';
+      errors.push({ action: 'create', message: `${msg} [${c.comment}]` });
+    }
+  }
+
+  return { created, updated, errors };
 }
 
 /**
@@ -1564,7 +1633,10 @@ export async function runSyncCore(
     // lone leg and the group is dropped). All linking is done atomically after
     // the loop over `linkRowByTxId` (see the flush below).
     if (plan.creates.length || plan.updates.length || plan.deleteIds.length) {
-      const result = await host.saveMany({
+      // Row-by-row fallback on a refusal: the bulk endpoint is all-or-nothing,
+      // so one un-importable row would otherwise discard this account's whole
+      // batch and report it as a quiet `0 imported`.
+      const result = await saveWithRowFallback(host, {
         creates: plan.creates.map(toActivityCreate),
         updates: plan.updates.map((u) => toActivityUpdate(u.wfId, u.to)),
         deleteIds: plan.deleteIds,
