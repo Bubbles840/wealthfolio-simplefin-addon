@@ -92,9 +92,11 @@ async function main(): Promise<void> {
       const orders = parseAmazonEmail(msg.text);
       const date = msg.date.slice(0, 10);
       if (orders.length === 0) {
-        // The actionable failure. Print enough of the body to see WHY, because
-        // "unrecognised" on its own is not something anyone can act on.
-        console.log(`✗ ${date} — not recognised`);
+        // The actionable failure. Print the sender AND enough of the body to see
+        // why: a sender that is not one of Amazon's order addresses means the
+        // forwarding filter is too broad, while an order address that stopped
+        // parsing means Amazon changed the format. Same symptom, opposite fixes.
+        console.log(`✗ ${date} — not recognised (from ${msg.from ?? 'unknown'})`);
         console.log('    First lines of the body:');
         for (const line of msg.text.split('\n').map((l) => l.trim()).filter(Boolean).slice(0, 8)) {
           console.log(`      ${line}`);
@@ -118,6 +120,15 @@ async function main(): Promise<void> {
     }
 
     console.log(`${understood}/${messages.length} message(s) understood.`);
+    if (understood < messages.length) {
+      console.log(
+        '\nUnrecognised mail is not necessarily broken. Amazon only puts a category\n' +
+        'label on physical-goods order and shipment emails — Prime, Kindle, digital\n' +
+        'orders, returns and marketing carry no label and cannot be categorized from\n' +
+        'email at all. If the senders above are those, narrow your forwarding filter\n' +
+        'so they stop arriving; noise here hides a real format change.',
+      );
+    }
     console.log(
       '\nNothing was changed: no message was marked read and no order was recorded.\n' +
       'The next sync will read these for real.',
