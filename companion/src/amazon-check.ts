@@ -56,10 +56,15 @@ async function main(): Promise<void> {
     console.error(
       '\nThe usual causes, in order:\n' +
       '  1. This is your normal password, not an APP password. Gmail rejects the\n' +
-      '     normal one for IMAP outright.\n' +
-      '  2. IMAP is switched off on the account (Gmail: Settings → Forwarding and\n' +
-      '     POP/IMAP → Enable IMAP).\n' +
-      '  3. The host is wrong. Gmail is imap.gmail.com; GMX is imap.gmx.com.',
+      '     normal one for IMAP outright. Get one at\n' +
+      '     https://myaccount.google.com/apppasswords (2-Step Verification must be\n' +
+      '     on first, or that page will not offer the option).\n' +
+      '  2. The app password was typed with its spaces stripped or a character\n' +
+      '     wrong. Paste all 16 characters; the spaces are ignored either way.\n' +
+      '  3. The host is wrong. Gmail is imap.gmail.com; GMX is imap.gmx.com.\n' +
+      '\nNot a cause: IMAP being "switched off". Google removed that toggle, so IMAP\n' +
+      'is always on — the Forwarding and POP/IMAP page now shows only its\n' +
+      'sub-settings, with no enable option to miss.',
     );
     process.exit(1);
   }
