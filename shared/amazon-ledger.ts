@@ -129,6 +129,8 @@ export interface AmazonChargeQuery {
 export interface AmazonMatch {
   orderId: string;
   labels: string[];
+  /** Amazon withheld part of the category list (`…, and other items`). */
+  partial?: boolean;
   /** Every ledger key that describes this order, so all of them can be consumed. */
   keys: string[];
 }
@@ -161,7 +163,7 @@ export function matchAmazonCharge(
   if (!isAmazonDescription(query.description)) return null;
   const window = windowDays * DAY_MS;
 
-  const byOrder = new Map<string, { labels: string[]; keys: string[] }>();
+  const byOrder = new Map<string, { labels: string[]; partial?: boolean; keys: string[] }>();
   for (const [key, rec] of Object.entries(ledger)) {
     if (rec.totalCents !== query.amountCents) continue;
     if (rec.consumedBy && rec.consumedBy !== query.txKey) continue;
@@ -170,12 +172,12 @@ export function matchAmazonCharge(
     if (Math.abs(query.postedMs - emailMs) > window) continue;
     const seen = byOrder.get(rec.orderId);
     if (seen) seen.keys.push(key);
-    else byOrder.set(rec.orderId, { labels: rec.labels, keys: [key] });
+    else byOrder.set(rec.orderId, { labels: rec.labels, partial: rec.partial, keys: [key] });
   }
 
   if (byOrder.size !== 1) return null;
   const [orderId, hit] = [...byOrder.entries()][0];
-  return { orderId, labels: hit.labels, keys: hit.keys };
+  return { orderId, labels: hit.labels, partial: hit.partial, keys: hit.keys };
 }
 
 /** Record that an order's charge was found, so it is not offered to another. */
@@ -202,8 +204,27 @@ export function consumeAmazonMatch(
  * `Amazon:` prefixes the label so the one-time Wealthfolio categorization rule can
  * match something unmistakable. A bare `Lawn & Garden` would also match a genuine
  * garden centre's charge.
+ *
+ * A MIXED order is deliberately written differently — `Amazon: mixed — A + B` —
+ * and the reason is mechanical, not cosmetic. Wealthfolio's rules match on
+ * substrings, so `Amazon: Home Improvement + Bath` would fire the
+ * `Amazon: Home Improvement` rule and file the whole charge under Housing. But the
+ * per-label amounts do not exist in the email, so that is a guess: a $200 order
+ * could be $190 of electronics and $10 of groceries or the reverse, and nothing
+ * here can tell. Putting `mixed` immediately after the colon means no
+ * single-category rule can match, so the charge keeps its readable categories and
+ * lands in the needs-a-category sweep for a human to split — which is honest,
+ * where an invisible guess on real money is not.
  */
-export function amazonDescription(description: string, labels: string[]): string {
+export function amazonDescription(
+  description: string,
+  labels: string[],
+  partial = false,
+): string {
   if (labels.length === 0) return description;
-  return `${description} · Amazon: ${labels.join(' + ')}`;
+  if (labels.length === 1 && !partial) {
+    return `${description} · Amazon: ${labels[0]}`;
+  }
+  // "+ more" when Amazon withheld the rest, so the list never looks exhaustive.
+  return `${description} · Amazon: mixed — ${labels.join(' + ')}${partial ? ' + more' : ''}`;
 }

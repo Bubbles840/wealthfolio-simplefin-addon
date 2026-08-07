@@ -113,6 +113,81 @@ describe('parseAmazonEmail', () => {
     expect(rows[0].labels).toEqual(['Lawn & Garden']);
   });
 
+  it('reads the "N items: 1 A, 1 B, and 4 others" body a 3+ category order uses', () => {
+    // VERBATIM from the live account, marks included. This is the body form, and it
+    // is nothing like the subject line ("6 Home Improvement, Bath, and other
+    // items"): the count comes first, the line ends with "others" rather than
+    // "items", and every category carries its OWN item count.
+    const rows = parseAmazonEmail(`   Your Orders       Your Account       Buy Again
+Thanks for your order!
+Completed
+Ordered
+Pending
+Shipped
+Pending
+Out for delivery
+Pending
+Delivered
+Arriving Monday
+
+Nicholas - LOUISVILLE, KY
+Order # ‫114-2207730-9919412
+⁦6⁩ items: ⁦1⁩ Home Improvement, ⁦1⁩ Bath, and ⁦4⁩ others
+
+
+View or edit order
+
+
+Grand Total:	$120.52
+`);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      orderId: '114-2207730-9919412',
+      kind: 'ordered',
+      totalCents: 12052,
+      // The LEADING count is the order's item count, not the first category's.
+      itemCount: 6,
+      labels: ['Home Improvement', 'Bath'],
+      // "4 others" — four of the six items are in categories Amazon did not name.
+      partial: true,
+    });
+  });
+
+  it('reads the same body form when nothing was withheld', () => {
+    const rows = parseAmazonEmail(
+      `Thanks for your order!\nOrder # ‫111-2223334-4445556\n⁦2⁩ items: ⁦1⁩ Grocery, and ⁦1⁩ Skincare\nGrand Total:\t$18.40`,
+    );
+    expect(rows[0].labels).toEqual(['Grocery', 'Skincare']);
+    expect(rows[0].partial).toBeFalsy();
+    expect(rows[0].itemCount).toBe(2);
+  });
+
+  it('splits the comma form a three-plus-category order uses', () => {
+    // REAL subjects from the live account: "Ordered: 6 Home Improvement, Bath, and
+    // other items" and "5 Bath, Grocery, and other items". Three or more categories
+    // are comma-separated, not " and "-separated, and splitting on " and " alone
+    // produced the garbage label "Home Improvement, Bath," plus a bogus "other".
+    const rows = parseAmazonEmail(
+      `Thanks for your order!\nOrder # ‫111-2223334-4445556\n⁦6⁩ Home Improvement, Bath, and other items\nGrand Total:\t$132.44`,
+    );
+    expect(rows[0].labels).toEqual(['Home Improvement', 'Bath']);
+    // "other" is not a category — it is Amazon declining to list the rest. Recorded
+    // as a flag so the label list is known to be incomplete rather than looking
+    // exhaustive.
+    expect(rows[0].partial).toBe(true);
+    expect(rows[0].itemCount).toBe(6);
+  });
+
+  it('marks a two-category order complete, since nothing was withheld', () => {
+    // "Ordered: 2 Lawn & Garden and Nutrition & Wellness items" — also real. Both
+    // categories are named, so this list IS exhaustive.
+    const rows = parseAmazonEmail(
+      `Thanks for your order!\nOrder # ‫111-2223334-4445556\n⁦2⁩ Lawn & Garden and Nutrition & Wellness items\nGrand Total:\t$29.13`,
+    );
+    expect(rows[0].labels).toEqual(['Lawn & Garden', 'Nutrition & Wellness']);
+    expect(rows[0].partial).toBeFalsy();
+  });
+
   it('parses thousands separators in the total', () => {
     const rows = parseAmazonEmail(
       `Thanks for your order!\nOrder # ‫111-2223334-4445556\n⁦1⁩ Electronics item\nGrand Total:\t$1,299.00`,

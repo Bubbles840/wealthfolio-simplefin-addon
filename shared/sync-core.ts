@@ -1067,7 +1067,7 @@ export async function runSyncCore(
           txKey: key,
         });
         if (hit) {
-          description = amazonDescription(description, hit.labels);
+          description = amazonDescription(description, hit.labels, hit.partial);
           // Consumed even when this row already exists in Wealthfolio and so
           // won't be re-written: the charge for that order HAS been found, and
           // leaving the record live would offer it to the next charge of the
