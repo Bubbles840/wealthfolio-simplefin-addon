@@ -3,6 +3,7 @@ import {
   ingestAmazonMail,
   resolveAmazonCategory,
   amazonMailConfigured,
+  isAmazonMessage,
   type MailMessage,
   type MailSource,
   type IngestStore,
@@ -130,6 +131,38 @@ describe('ingestAmazonMail', () => {
     const r = await ingestAmazonMail(fakeSource([]).source, store, {}, NOW);
     expect(r.pruned).toBe(1);
     expect(state.ledger).toEqual({});
+  });
+});
+
+describe('isAmazonMessage', () => {
+  it('accepts Amazon envelope senders', () => {
+    expect(isAmazonMessage('auto-confirm@amazon.com', 'anything')).toBe(true);
+    expect(isAmazonMessage('shipment-tracking@amazon.com', '')).toBe(true);
+    // Any amazon.com address, since the sender set is undocumented and varies by
+    // order type; the parser is the real gate.
+    expect(isAmazonMessage('order-update-2@amazon.com', '')).toBe(true);
+  });
+
+  it('accepts an order a human forwarded by hand', () => {
+    // The ONLY way to seed past orders or test the setup without waiting days for a
+    // purchase: Gmail's "also apply to matching conversations" does not forward
+    // existing mail. A hand forward rewrites From: to the forwarder, so an
+    // envelope-only check would skip exactly the messages used to verify it works.
+    const body = [
+      '---------- Forwarded message ---------',
+      'From: Amazon.com <auto-confirm@amazon.com>',
+      'Date: Tue, 4 Aug 2026 at 18:22',
+      'Subject: Ordered: "Garden Hose"',
+      '',
+      'Thanks for your order!',
+    ].join('\n');
+    expect(isAmazonMessage('nick@gmail.com', body)).toBe(true);
+  });
+
+  it('rejects mail that merely mentions Amazon', () => {
+    expect(isAmazonMessage('phish@example.com', 'Your amazon.com order needs attention'))
+      .toBe(false);
+    expect(isAmazonMessage(undefined, 'no headers here')).toBe(false);
   });
 });
 

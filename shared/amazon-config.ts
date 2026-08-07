@@ -63,6 +63,27 @@ export function resolveAmazonCategory(
   return strict ? { category: strict, matched: true } : { category: fallback, matched: false };
 }
 
+/**
+ * Whether a message came from Amazon — by envelope sender, or by the header of a
+ * message a human forwarded by hand.
+ *
+ * The second half is not a nicety. Gmail's "also apply to matching conversations"
+ * does NOT forward existing mail — only newly arriving mail is forwarded — so the
+ * only way to seed the mailbox with past orders, or to test the setup at all
+ * without waiting days for a purchase, is to forward a few by hand. And a hand
+ * forward rewrites `From:` to the person forwarding, so an envelope-only check
+ * skips exactly the messages someone is using to verify the thing works.
+ *
+ * Still a real check, not a rubber stamp: the parser must independently find an
+ * order id, a category label and a total, so a forwarded message that merely
+ * mentions Amazon yields nothing.
+ */
+export function isAmazonMessage(from: string | undefined, body: string): boolean {
+  if (from && (AMAZON_SENDERS.includes(from) || from.endsWith('@amazon.com'))) return true;
+  // `From: "Amazon.com" <auto-confirm@amazon.com>` inside a forwarded block.
+  return /^\s*From:.*@amazon\.[a-z.]+/im.test(body);
+}
+
 /** Whether the user has supplied enough for the companion to poll a mailbox. */
 export function amazonMailConfigured(cfg: AmazonMailConfig | null | undefined): boolean {
   return !!(cfg && cfg.enabled !== false && cfg.host && cfg.user && cfg.password);

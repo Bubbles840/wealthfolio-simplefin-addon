@@ -21,14 +21,14 @@ import {
 } from '../../shared/amazon-ledger.js';
 import { parseAmazonEmail } from '../../shared/amazon.js';
 import {
-  resolveAmazonCategory, amazonMailConfigured, AMAZON_SENDERS,
+  resolveAmazonCategory, amazonMailConfigured, AMAZON_SENDERS, isAmazonMessage,
   AMAZON_CONFIG_SECRET_KEY, AMAZON_LABELS_SECRET_KEY, DEFAULT_AMAZON_CATEGORY,
 } from '../../shared/amazon-config.js';
 import type { AmazonMailConfig, AmazonLabelCatalog } from '../../shared/amazon-config.js';
 // Re-exported so the companion's own modules keep one import site for all of
 // this, even though the host-agnostic half now lives in shared/.
 export {
-  resolveAmazonCategory, amazonMailConfigured, AMAZON_SENDERS,
+  resolveAmazonCategory, amazonMailConfigured, AMAZON_SENDERS, isAmazonMessage,
   AMAZON_CONFIG_SECRET_KEY, AMAZON_LABELS_SECRET_KEY, DEFAULT_AMAZON_CATEGORY,
 };
 export type { AmazonMailConfig, AmazonLabelCatalog };
@@ -183,14 +183,15 @@ export async function createImapSource(cfg: AmazonMailConfig): Promise<MailSourc
       )) {
         const from = (msg.envelope?.from ?? [])
           .map((a) => String(a.address ?? '').toLowerCase());
-        // Sender check here rather than in the IMAP search: the forwarding mailbox
-        // should contain nothing else, but "should" is not a reason to parse
-        // whatever else lands in it.
-        if (!from.some((a) => AMAZON_SENDERS.includes(a) || a.endsWith('@amazon.com'))) continue;
         const parsed = await simpleParser(msg.source!);
         // Prefer text/plain. Amazon sends the same fields in both parts, and the
         // HTML part would need tag-stripping that can join words together.
         const text = parsed.text ?? (parsed.html ? String(parsed.html).replace(/<[^>]+>/g, '\n') : '');
+        // Sender check here rather than in the IMAP search: the forwarding mailbox
+        // should contain nothing else, but "should" is not a reason to parse
+        // whatever else lands in it. Needs the decoded body too, so a hand-forwarded
+        // order — whose From: is the person who forwarded it — still counts.
+        if (!isAmazonMessage(from[0], text)) continue;
         out.push({
           uid: msg.uid,
           date: (parsed.date ?? new Date()).toISOString(),
