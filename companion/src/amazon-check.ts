@@ -1,0 +1,128 @@
+/**
+ * companion/src/amazon-check.ts
+ *
+ * "Does my mailbox work, and does the parser understand MY emails?" — answered
+ * without touching anything.
+ *
+ * This exists because the two ways Amazon categorization can silently do nothing
+ * are both invisible from the outside: a mailbox that will not connect, and a
+ * message shape the parser does not recognise. Both present identically to the user
+ * ("it's just not labelling anything"), so there has to be a way to look.
+ *
+ * READ-ONLY BY CONSTRUCTION. It does not mark anything seen, does not write the
+ * ledger, and does not touch Wealthfolio — so the real poll still picks up every
+ * message afterwards, and running this twenty times in a row changes nothing.
+ *
+ *   docker exec simplefin-sync node dist/companion/src/amazon-check.js \
+ *     --host imap.gmail.com --user you@gmail.com --password 'xxxx xxxx xxxx xxxx'
+ *
+ * With no flags it reads the same env vars the companion does.
+ */
+
+import { parseAmazonEmail } from '../../shared/amazon.js';
+import { resolveAmazonCategory } from '../../shared/amazon-config.js';
+import { createImapSource } from './amazon-mail.js';
+import type { AmazonMailConfig } from '../../shared/amazon-config.js';
+
+const argv = process.argv.slice(2);
+const flag = (name: string, fallback?: string): string | undefined => {
+  const i = argv.indexOf(`--${name}`);
+  return i === -1 ? fallback : argv[i + 1];
+};
+
+const cfg: AmazonMailConfig = {
+  host: flag('host', process.env.AMAZON_IMAP_HOST),
+  port: Number(flag('port', process.env.AMAZON_IMAP_PORT ?? '993')),
+  user: flag('user', process.env.AMAZON_IMAP_USER),
+  password: flag('password', process.env.AMAZON_IMAP_PASSWORD),
+};
+
+if (!cfg.host || !cfg.user || !cfg.password) {
+  console.error(
+    'Usage: node amazon-check.js --host imap.gmail.com --user you@gmail.com --password "app password"',
+  );
+  process.exit(1);
+}
+
+async function main(): Promise<void> {
+  console.log(`Connecting to ${cfg.host}:${cfg.port} as ${cfg.user} ...`);
+  let source;
+  try {
+    source = await createImapSource(cfg);
+  } catch (err) {
+    // The single most likely failure, and the message providers give is unhelpful,
+    // so name the two real causes rather than echoing "Invalid credentials".
+    console.error(`\n❌ Could not connect or log in: ${(err as Error).message}`);
+    console.error(
+      '\nThe usual causes, in order:\n' +
+      '  1. This is your normal password, not an APP password. Gmail rejects the\n' +
+      '     normal one for IMAP outright.\n' +
+      '  2. IMAP is switched off on the account (Gmail: Settings → Forwarding and\n' +
+      '     POP/IMAP → Enable IMAP).\n' +
+      '  3. The host is wrong. Gmail is imap.gmail.com; GMX is imap.gmx.com.',
+    );
+    process.exit(1);
+  }
+
+  console.log('✅ Connected and logged in.\n');
+
+  try {
+    const messages = await source.fetch();
+    if (messages.length === 0) {
+      console.log(
+        'No unread Amazon messages in the mailbox.\n\n' +
+        'If you expected some:\n' +
+        '  • Check they are actually there and UNREAD — this only looks at unread\n' +
+        '    mail, and opening one in a webmail client marks it read.\n' +
+        '  • Check the forwarding filter fired. Forwarded mail keeps Amazon as the\n' +
+        '    sender, which is what this looks for; a filter that forwards as YOU\n' +
+        '    instead will be skipped.',
+      );
+      return;
+    }
+
+    console.log(`Found ${messages.length} unread Amazon message(s).\n`);
+    let understood = 0;
+    for (const msg of messages) {
+      const orders = parseAmazonEmail(msg.text);
+      const date = msg.date.slice(0, 10);
+      if (orders.length === 0) {
+        // The actionable failure. Print enough of the body to see WHY, because
+        // "unrecognised" on its own is not something anyone can act on.
+        console.log(`✗ ${date} — not recognised`);
+        console.log('    First lines of the body:');
+        for (const line of msg.text.split('\n').map((l) => l.trim()).filter(Boolean).slice(0, 8)) {
+          console.log(`      ${line}`);
+        }
+        console.log('');
+        continue;
+      }
+      understood += 1;
+      for (const o of orders) {
+        const cats = o.labels.map((l) => {
+          const { category, matched } = resolveAmazonCategory(l, {});
+          return `${l} → ${category}${matched ? '' : ' (no rule yet — would use the default)'}`;
+        });
+        console.log(
+          `✓ ${date} — order ${o.orderId}, ${o.kind}, ` +
+          `$${(o.totalCents / 100).toFixed(2)}, ${o.itemCount} item(s)`,
+        );
+        for (const c of cats) console.log(`    ${c}`);
+      }
+      console.log('');
+    }
+
+    console.log(`${understood}/${messages.length} message(s) understood.`);
+    console.log(
+      '\nNothing was changed: no message was marked read and no order was recorded.\n' +
+      'The next sync will read these for real.',
+    );
+  } finally {
+    await source.close().catch(() => {});
+  }
+}
+
+main().catch((err) => {
+  console.error(`Failed: ${err?.message ?? err}`);
+  process.exit(1);
+});

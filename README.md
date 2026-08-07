@@ -158,6 +158,20 @@ orders share an amount inside the ±5 day window, neither is applied: an ambiguo
 match is worse than none, since a wrong category is invisible while a missing one
 surfaces in the needs-a-category sweep.
 
+To check it works before waiting on a real order, forward one Amazon email to the
+mailbox and run the read-only diagnostic — it marks nothing read and records
+nothing, so the real poll still picks the message up:
+
+```bash
+docker exec simplefin-sync node dist/companion/src/amazon-check.js \
+  --host imap.gmail.com --user you@gmail.com --password 'xxxx xxxx xxxx xxxx'
+```
+
+**Proton Mail does not work for this**, for two reasons. An alias delivers into the
+same mailbox, so credentials for it reach everything in the account — no isolation
+at all. And Proton has no plain IMAP: it requires Proton Mail Bridge, which is a
+paid, desktop-only app. Use a separate free Gmail or GMX account instead.
+
 Labels are matched by pattern rather than a lookup table, so a label Amazon
 invents next month files itself. Anything unmatched goes to a configurable default
 *and* is announced once in Telegram. `companion/scripts/amazon-rules.mjs` inserts
