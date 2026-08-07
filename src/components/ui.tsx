@@ -268,8 +268,12 @@ const css = `
   border-radius: calc(var(--radius) - 4px);
 }
 .sfin-glyph-btn:hover { border-color: var(--primary); }
+/* FIXED, not absolute: two ancestors (.sfin-disc-inset, .sfin-card--collapsible)
+   set overflow:hidden for their rounded corners, which clipped an absolutely-
+   positioned panel out of existence. The component supplies top/left from the
+   button's viewport rect. */
 .sfin-glyph-pop {
-  position: absolute; top: 26px; left: 0; z-index: 30;
+  position: fixed; z-index: 60;
   width: 232px; max-height: 240px; overflow-y: auto; padding: 8px;
   background: var(--popover, var(--background)); color: var(--foreground);
   border: 1px solid color-mix(in srgb, var(--muted-foreground) 30%, transparent);

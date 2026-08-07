@@ -206,6 +206,33 @@ describe('SyncPage', () => {
     ));
   });
 
+  it('positions the emoji panel in viewport coordinates, so clipping ancestors cannot hide it', async () => {
+    // The live symptom: clicking the emoji button did nothing visible. The panel
+    // WAS rendering — it was clipped out of existence by two ancestors that set
+    // `overflow: hidden` for their rounded corners (.sfin-disc-inset and
+    // .sfin-card--collapsible). jsdom has no layout, so this asserts the escape
+    // hatch rather than the pixels: a fixed-position panel carrying explicit
+    // coordinates cannot be clipped by an ancestor's overflow.
+    const props = makeProps();
+    props.store.getReportGlyphStyle = vi.fn(async () => ({ mode: 'glyphs' as const, overrides: {} }));
+    props.store.getReportCategoryCatalog = vi.fn(async () => ([
+      { name: 'Groceries', parent: null, icon: 'ShoppingCart', color: null,
+        hasBudget: true, hasSpend: true, group: 'Needs', groupIcon: 'Home', groupSort: 1 },
+    ] as any));
+    render(<SyncPage {...props} />);
+    await openReportCategories();
+
+    fireEvent.click(await screen.findByLabelText('Groceries — report emoji'));
+    const panel = await screen.findByRole('dialog', { name: 'Groceries — report emoji' });
+    // jsdom does not compute class-based CSS, so the assertion is on what the
+    // component controls: the class that carries `position: fixed`, and the inline
+    // coordinates it derives from the button's rect. Together those are the escape
+    // from ancestor clipping; neither alone would be.
+    expect(panel.className).toContain('sfin-glyph-pop');
+    expect(panel.style.top).not.toBe('');
+    expect(panel.style.left).not.toBe('');
+  });
+
   it('clears an override back to the category default', async () => {
     const props = makeProps();
     props.store.getReportGlyphStyle = vi.fn(async () => ({

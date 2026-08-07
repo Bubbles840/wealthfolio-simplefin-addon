@@ -30,9 +30,39 @@ interface Props {
   onChange: (glyph: string) => void;
 }
 
+const POP_WIDTH = 232;
+const POP_MAX_HEIGHT = 240;
+
 export function GlyphPicker({ value, fallback, label, onChange }: Props) {
   const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
   const wrap = useRef<HTMLSpanElement>(null);
+  const btn = useRef<HTMLButtonElement>(null);
+
+  /**
+   * Positioned in VIEWPORT coordinates, not relative to the button.
+   *
+   * The panel is rendered inside two containers that set `overflow: hidden` for
+   * their rounded corners — `.sfin-disc-inset` and `.sfin-card--collapsible` — and
+   * an absolutely-positioned child of those is clipped away entirely. That is
+   * exactly what happened: the button toggled, the panel rendered, and nothing
+   * was visible. `position: fixed` escapes ancestor clipping (no ancestor
+   * establishes a containing block via transform/filter), so the coordinates come
+   * from the button's own rect instead.
+   *
+   * Flips above the button when there is not room below, and clamps to the right
+   * edge, so a category near the bottom of a long list is still usable.
+   */
+  const place = () => {
+    const r = btn.current?.getBoundingClientRect();
+    if (!r) return;
+    const below = window.innerHeight - r.bottom;
+    const top = below >= POP_MAX_HEIGHT + 8
+      ? r.bottom + 4
+      : Math.max(8, r.top - POP_MAX_HEIGHT - 4);
+    const left = Math.min(r.left, Math.max(8, window.innerWidth - POP_WIDTH - 8));
+    setPos({ top, left });
+  };
 
   // Close on outside click and on Escape. Without this the panel survives a click
   // elsewhere in the card, and several open at once reads as a broken layout.
@@ -42,11 +72,18 @@ export function GlyphPicker({ value, fallback, label, onChange }: Props) {
       if (wrap.current && !wrap.current.contains(e.target as Node)) setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    // Fixed coordinates go stale the moment anything scrolls, and a panel floating
+    // away from its button is worse than one that closed.
+    const onScrollOrResize = () => setOpen(false);
     document.addEventListener('mousedown', onDown);
     document.addEventListener('keydown', onKey);
+    window.addEventListener('scroll', onScrollOrResize, true);
+    window.addEventListener('resize', onScrollOrResize);
     return () => {
       document.removeEventListener('mousedown', onDown);
       document.removeEventListener('keydown', onKey);
+      window.removeEventListener('scroll', onScrollOrResize, true);
+      window.removeEventListener('resize', onScrollOrResize);
     };
   }, [open]);
 
@@ -62,13 +99,22 @@ export function GlyphPicker({ value, fallback, label, onChange }: Props) {
         aria-label={label}
         aria-expanded={open}
         title="Choose the emoji for this category in Telegram reports"
-        onClick={() => setOpen((o) => !o)}
+        ref={btn}
+        onClick={() => {
+          if (!open) place();
+          setOpen((o) => !o);
+        }}
         className="sfin-glyph-btn"
       >
         {value || fallback}
       </button>
       {open && (
-        <div className="sfin-glyph-pop" role="dialog" aria-label={label}>
+        <div
+          className="sfin-glyph-pop"
+          role="dialog"
+          aria-label={label}
+          style={pos ? { top: pos.top, left: pos.left } : undefined}
+        >
           <button type="button" className="sfin-glyph-clear" onClick={() => pick('')}>
             Default ({fallback})
           </button>

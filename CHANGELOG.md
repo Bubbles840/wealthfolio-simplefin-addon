@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.1] - 2026-08-07
+
+### Fixed
+
+- **The emoji picker never appeared.** Clicking a category's emoji toggled the
+  button but showed nothing: the panel was rendering and then being clipped out of
+  existence by two ancestors that set `overflow: hidden` for their rounded corners
+  (`.sfin-disc-inset` and `.sfin-card--collapsible`), which an absolutely-
+  positioned child cannot escape. It is now positioned in viewport coordinates
+  taken from the button's own rect, which ancestor overflow cannot clip. It also
+  flips above the button when there is no room below, clamps to the right edge, and
+  closes on scroll or resize rather than floating away from the button it belongs
+  to.
+
 ## [1.8.0] - 2026-08-07
 
 ### Added
