@@ -26,6 +26,15 @@ export interface AmazonOrderRecord {
   itemCount: number;
   /** One entry, or several for a mixed order (`Home Improvement and Skincare`). */
   labels: string[];
+  /**
+   * True when Amazon withheld part of the category list.
+   *
+   * A three-plus-category order reads `6 Home Improvement, Bath, and other items`
+   * — `other` is not a category, it is Amazon declining to name the rest. Without
+   * this flag two known labels would look like the complete set, and a caller
+   * would confidently categorize an order it can only partly see.
+   */
+  partial?: boolean;
 }
 
 /**
@@ -37,8 +46,29 @@ export interface AmazonOrderRecord {
 const BIDI_CONTROLS = /[‪-‮⁦-⁩‎‏]/g;
 
 const ORDER_ID = /Order\s*#\s*(\d{3}-\d{7}-\d{7})/;
-/** `1 Lawn & Garden item` / `2 Home Improvement and Skincare items`. */
-const ITEM_LINE = /^\s*(\d+)\s+(.+?)\s+items?\s*$/im;
+
+/**
+ * Amazon writes the category line two different ways, and they are not variations
+ * on one shape — they need separate patterns.
+ *
+ *   SUFFIX form, one or two categories:
+ *     1 Lawn & Garden item
+ *     2 Home Improvement and Skincare items
+ *
+ *   BREAKDOWN form, three or more:
+ *     6 items: 1 Home Improvement, 1 Bath, and 4 others
+ *
+ * The breakdown form ends with "others", not "items", so the suffix pattern misses
+ * it completely and the whole order was silently dropped. It also puts the ORDER's
+ * item count first and gives each category its own count — so reading the leading
+ * number as the first category's count would be wrong too.
+ *
+ * Note the subject line is a THIRD wording ("6 Home Improvement, Bath, and other
+ * items"). Only the body is parsed, so it does not matter — worth recording because
+ * writing a pattern from the subject produces something that never matches.
+ */
+const ITEM_BREAKDOWN = /^\s*(\d+)\s+items?\s*:\s*(.+?)\s*$/im;
+const ITEM_SUFFIX = /^\s*(\d+)\s+(.+?)\s+items?\s*$/im;
 /** `Grand Total:\t$21.18` on a confirmation, `Total\t$10.55` on a shipment. */
 const TOTAL = /(?:Grand\s+)?Total:?\s*\$\s*([\d,]+\.\d{2})/i;
 
@@ -50,18 +80,41 @@ function detectKind(text: string): AmazonOrderRecord['kind'] | null {
 }
 
 /**
- * Split a label into its categories.
+ * Split a label blob into its categories.
  *
- * " and " separates categories; "&" does NOT. `Lawn & Garden` is one label, and
- * splitting on the ampersand as well would make every garden order look mixed and
- * stop it being auto-categorized — the exact failure this whole feature exists to
- * avoid.
+ * Amazon uses THREE forms, and only the first two were obvious from a single
+ * sample:
+ *   1 Lawn & Garden item
+ *   2 Lawn & Garden and Nutrition & Wellness items
+ *   6 Home Improvement, Bath, and other items      ← three or more
+ *
+ * So both "," and " and " separate. Handling only " and " turned the third form
+ * into the garbage label `Home Improvement, Bath,` plus a bogus `other`.
+ *
+ * "&" does NOT separate. `Lawn & Garden` is one label, and splitting on the
+ * ampersand would make every garden order look mixed and stop it being
+ * auto-categorized — the exact failure this feature exists to avoid.
+ *
+ * `other` is dropped and reported: it is Amazon declining to name the remaining
+ * categories, not a category called "other".
  */
-function splitLabels(raw: string): string[] {
-  return raw
-    .split(/\s+and\s+/i)
-    .map((s) => s.trim())
+function splitLabels(raw: string, stripCounts = false): { labels: string[]; partial: boolean } {
+  const parts = raw
+    .split(/\s*,\s*|\s+and\s+/i)
+    // Amazon writes an Oxford comma — `1 Home Improvement, 1 Bath, and 4 others` —
+    // so the comma consumes the separator and the final entry keeps its leading
+    // "and". Without stripping it the last category of every 3+ order is mis-read
+    // ("and 4 others", "and Skincare").
+    .map((s) => s.trim().replace(/^and\s+/i, '').trim())
+    // In the breakdown form each entry is prefixed with its own item count
+    // ("1 Home Improvement"). Dropped rather than kept: per-category counts cannot
+    // apportion the total — a 1-item camera and a 4-item pack of batteries tell you
+    // nothing about which held the money — so recording them would invite exactly
+    // the guess this module refuses to make.
+    .map((s) => (stripCounts ? s.replace(/^\d+\s+/, '').trim() : s))
     .filter(Boolean);
+  const labels = parts.filter((p) => !/^others?$/i.test(p));
+  return { labels, partial: labels.length !== parts.length };
 }
 
 /**
@@ -96,12 +149,16 @@ export function parseAmazonEmail(body: string): AmazonOrderRecord[] {
   const records: AmazonOrderRecord[] = [];
   for (const part of parts) {
     const id = ORDER_ID.exec(part)?.[1];
-    const item = ITEM_LINE.exec(part);
+    // Breakdown FIRST. `6 items: 1 Home Improvement, …` also satisfies nothing in
+    // the suffix pattern, but checking the more specific shape first keeps the two
+    // from ever competing as Amazon's wording drifts again.
+    const breakdown = ITEM_BREAKDOWN.exec(part);
+    const item = breakdown ?? ITEM_SUFFIX.exec(part);
     const total = TOTAL.exec(part)?.[1];
     // All three or nothing: an order with no total cannot be matched to a charge,
     // and half a record would sit in the ledger forever pretending to be usable.
     if (!id || !item || !total) continue;
-    const labels = splitLabels(item[2]);
+    const { labels, partial } = splitLabels(item[2], !!breakdown);
     if (labels.length === 0) continue;
     records.push({
       orderId: id,
@@ -109,6 +166,7 @@ export function parseAmazonEmail(body: string): AmazonOrderRecord[] {
       totalCents: Math.round(parseFloat(total.replace(/,/g, '')) * 100),
       itemCount: Number(item[1]) || 1,
       labels,
+      ...(partial ? { partial: true } : {}),
     });
   }
   return records;

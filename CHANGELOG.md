@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Three-plus-category Amazon orders were dropped entirely.** The body form for
+  those is `6 items: 1 Home Improvement, 1 Bath, and 4 others` — count first, line
+  ending in "others" rather than "items", and a per-category count on each entry.
+  The original pattern required the line to END with `item`/`items`, so it matched
+  nothing and every such order was silently skipped. Now parsed, with `4 others`
+  recorded as "part of the list was withheld" rather than treated as a category
+  called "other".
+
+  Worth recording that the subject line is a *third* wording (`6 Home Improvement,
+  Bath, and other items`), so a pattern written from the subject — as the first fix
+  attempt was — produces something that never matches the body it has to read.
+
+- **A mixed order no longer fires a single-category rule.** Wealthfolio matches
+  rules on substrings, so `Amazon: Home Improvement + Bath` would have triggered
+  the `Amazon: Home Improvement` rule and filed the whole charge under Housing. The
+  per-label amounts do not exist in the email, so that is a guess — a $200 order
+  could be $190 of electronics and $10 of groceries, or the reverse. Mixed orders
+  are now written `Amazon: mixed — Home Improvement + Bath + more`, which no
+  single-category rule can match, so they keep their readable categories and reach
+  the needs-a-category sweep for a human to split.
+
+- **Hand-forwarded order emails are now accepted.** Gmail's "also apply filter to
+  matching conversations" does not forward existing mail, so seeding the mailbox or
+  testing the setup at all means forwarding a few by hand — and a hand forward
+  rewrites `From:` to the forwarder, which the envelope-only sender check rejected.
+  The `From:` line inside the forwarded block now counts. The parser is still the
+  real gate, so mail that merely mentions Amazon yields nothing.
+
 ## [1.9.0] - 2026-08-07
 
 ### Added
