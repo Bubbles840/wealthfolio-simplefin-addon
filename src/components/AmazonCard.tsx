@@ -133,6 +133,17 @@ export function AmazonCard({
                 it is always on.
               </span>
             </li>
+            <li>
+              Still on the new account, add a filter so Google stops treating the
+              forwards as spam: search <code>from:amazon.com</code> → Create filter →
+              tick <strong>Never send it to Spam</strong>. Forwarded mail gets
+              spam-flagged routinely, and Google deletes spam after 30 days.
+              <br />
+              <span className="sfin-subtle">
+                Spam is read anyway, so a missed filter costs you nothing immediately
+                — this is about Google not deleting the receipts.
+              </span>
+            </li>
             <li>Paste that address and app password below, and save.</li>
           </ol>
           <div className="sfin-callout" style={{ marginTop: 8 }}>
