@@ -35,6 +35,7 @@ const KEYS = {
   autoAdjust: 'auto_adjust',
   telegramConfig: 'telegram_config',
   availableReportCategories: 'available_report_categories',
+  companionVersion: 'companion_version',
   openCards: 'ui_open_cards',
   pendingLargeTxAlerts: LARGE_TX_OUTBOX_SECRET_KEY,
 } as const;
@@ -160,6 +161,14 @@ export class SecretsStore {
 
   /** Category names the companion has seen while building its last report —
    *  read-only from the addon's side, published by the companion. */
+  /** Which companion build last synced this instance, or null when no companion
+   *  has ever run. The two halves deploy separately and can legitimately differ,
+   *  which is exactly why this is worth showing. */
+  async getCompanionVersion(): Promise<string | null> {
+    const raw = await this.ctx.api.secrets.get(KEYS.companionVersion);
+    return raw && raw.trim() ? raw.trim() : null;
+  }
+
   async getAvailableReportCategories(): Promise<string[]> {
     const raw = await this.ctx.api.secrets.get(KEYS.availableReportCategories);
     return raw ? (JSON.parse(raw) as string[]) : [];

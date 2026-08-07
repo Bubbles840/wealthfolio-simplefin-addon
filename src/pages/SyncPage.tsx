@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import type { AddonContext } from '@wealthfolio/addon-sdk';
 import { runSync, INTERVAL_SKIP_MESSAGE, applyBalanceAdjustment, applyBaselineCorrection } from '../utils/sync';
 import { BASELINE_FIX_MIN_DRIFT_AGE_MS } from '../../shared/sync-core';
+import { SIMPLEFIN_SYNC_VERSION } from '../../shared/version';
 
 /** The offer a sync attaches to an account when it proved the drift belongs to
  *  the starting-balance baseline rather than to any transaction. */
@@ -151,6 +152,9 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
   const [autoHeal, setAutoHeal] = useState(false);
   const [autoAdjust, setAutoAdjust] = useState(false);
   const [fixingBaseline, setFixingBaseline] = useState<string | null>(null);
+  // Which companion build last synced this instance. Null until one has run —
+  // the addon works standalone, so no companion is a normal state, not an error.
+  const [companionVersion, setCompanionVersion] = useState<string | null>(null);
   // Every collapsible section's open state in one map, replacing the three
   // one-off `show*` booleans this page used to carry.
   const [openCards, setOpenCards] = useState<Record<string, boolean>>({});
@@ -184,6 +188,37 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
   const loadBalances = useCallback(() => {
     store.getAccountBalances().then(setBalances).catch(() => {});
   }, [store]);
+
+  /**
+   * Re-read everything the COMPANION can change behind this page's back.
+   *
+   * The page used to render once, so a tab left open froze at whatever it read
+   * on mount. On 2026-08-06 that produced a false alarm: `Last synced 1 day ago`
+   * and a resolved error banner were still on screen while the companion had
+   * synced 33 minutes earlier and cleared the error, which sent us through the
+   * logs looking for a fault that no longer existed.
+   *
+   * Cheap by construction — these are local addon secrets, not SimpleFin calls,
+   * so nothing here touches the network or the bank.
+   */
+  const refreshLiveState = useCallback(() => {
+    store.getLastSyncAt().then((d) => { if (d) setLastSyncAt(d); }).catch(() => {});
+    store.getAccountBalances().then(setBalances).catch(() => {});
+    store.getCompanionVersion().then(setCompanionVersion).catch(() => {});
+  }, [store]);
+
+  useEffect(() => {
+    // Focus is the high-value trigger: the stale-tab case is precisely someone
+    // coming back to a window they left open. The interval covers a tab that
+    // stays focused while the companion's cron fires.
+    const onFocus = () => refreshLiveState();
+    window.addEventListener('focus', onFocus);
+    const timer = window.setInterval(refreshLiveState, 60_000);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      window.clearInterval(timer);
+    };
+  }, [refreshLiveState]);
 
   const clearError = useCallback(() => {
     setError('');
@@ -1223,6 +1258,21 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
           </div>
         ) : (
           <Button variant="destructive" onClick={() => setConfirmingReset(true)}>Reset Setup</Button>
+        )}
+      </div>
+
+      {/* Both versions, because the two halves deploy separately and a mismatch
+          is the first thing worth knowing when behaviour looks wrong. A missing
+          companion is normal (the addon syncs on its own), so it reads "not
+          running" rather than as a fault. */}
+      <div className="sfin-subtle" style={{ marginTop: 20, fontSize: 11 }}>
+        addon v{SIMPLEFIN_SYNC_VERSION}
+        {' · '}
+        companion {companionVersion ? `v${companionVersion}` : 'not running'}
+        {companionVersion && companionVersion !== SIMPLEFIN_SYNC_VERSION && (
+          <span style={{ marginLeft: 6, opacity: 0.9 }}>
+            — versions differ; rebuild the companion to match
+          </span>
         )}
       </div>
     </div>

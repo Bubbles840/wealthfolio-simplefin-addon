@@ -17,6 +17,7 @@ import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingS
 import { pollTelegramDismissals, pruneDismissals } from './dismissals.js';
 import type { DismissalLedger } from './dismissals.js';
 import type { SyncHealth } from '../../shared/telegram.js';
+import { SIMPLEFIN_SYNC_VERSION, COMPANION_VERSION_SECRET_KEY } from '../../shared/version.js';
 import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending } from './sqlite-native.js';
 
 const logLevel: 'info' | 'debug' =
@@ -469,6 +470,12 @@ export async function runCompanionSync(): Promise<SyncResult> {
       log(`Sync note: ${err}`);
     }
     log(`Done: ${result.imported} imported, ${result.skipped} skipped`);
+
+    // Record which companion build produced this run, so the Sync page can show
+    // it. Best-effort: a failure here must never affect the sync.
+    await wfClient
+      .setAddonSecret('simplefin-sync', COMPANION_VERSION_SECRET_KEY, SIMPLEFIN_SYNC_VERSION)
+      .catch(() => {});
 
     const undeliveredOutTxIds: string[] = [];
     for (const alert of result.stuckTransferAlerts) {
@@ -925,7 +932,10 @@ if (!process.env.VITEST) {
   const apiUrl = process.env.WEALTHFOLIO_API_URL ?? '';
   const wfClient = new WealthfolioClient(apiUrl);
 
-  log(`Starting companion — sync schedule: ${schedule}, daily report schedule: ${dailySchedule}, weekly report schedule: ${weeklySchedule}, monthly report schedule: ${monthlySchedule}`);
+  // Version FIRST in the banner: "which build is running?" is the first
+  // question any live diagnosis asks, and until 1.7.0 the only answer was
+  // grepping compiled JavaScript inside the container.
+  log(`Starting companion v${SIMPLEFIN_SYNC_VERSION} — sync schedule: ${schedule}, daily report schedule: ${dailySchedule}, weekly report schedule: ${weeklySchedule}, monthly report schedule: ${monthlySchedule}`);
 
   cron.schedule(schedule, () => {
     runCompanionSync().catch((err) => log(`Sync error: ${formatError(err)}`));
