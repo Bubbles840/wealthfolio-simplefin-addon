@@ -156,6 +156,9 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
   // Which companion build last synced this instance. Null until one has run —
   // the addon works standalone, so no companion is a normal state, not an error.
   const [companionVersion, setCompanionVersion] = useState<string | null>(null);
+  const [glyphMode, setGlyphMode] = useState<'clean' | 'glyphs'>('clean');
+  const [glyphOverrides, setGlyphOverrides] = useState<Record<string, string>>({});
+  const [subcategoryDisplay, setSubcategoryDisplay] = useState<'rollup' | 'breakdown'>('rollup');
   // Every collapsible section's open state in one map, replacing the three
   // one-off `show*` booleans this page used to carry.
   const [openCards, setOpenCards] = useState<Record<string, boolean>>({});
@@ -260,9 +263,11 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
       store.getAutoAdjust(),
       store.getTelegramConfig(),
       store.getReportCategoryCatalog(),
+      store.getReportGlyphStyle(),
+      store.getSubcategoryDisplay(),
       ctx.api.accounts.getAll().catch(() => []),
       store.getOpenCards(),
-    ]).then(([last, m, r, h, names, bal, ah, aa, tg, catalog, wfAccounts, cards]) => {
+    ]).then(([last, m, r, h, names, bal, ah, aa, tg, catalog, glyphStyle, subcatMode, wfAccounts, cards]) => {
       setLastSyncAt(last);
       setMapping(m ?? {});
       setRules(r);
@@ -272,6 +277,9 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
       setAutoHeal(ah);
       setAutoAdjust(aa);
       setCategoryCatalog(catalog);
+      setGlyphMode(glyphStyle.mode);
+      setGlyphOverrides(glyphStyle.overrides);
+      setSubcategoryDisplay(subcatMode);
       if (tg) {
         setBotToken(tg.botToken ?? '');
         setChatId(tg.chatId ?? '');
@@ -1084,9 +1092,44 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
               onToggle={() => toggleCard(CARD.categories)}
             >
               <div className="sfin-subtle" style={{ fontSize: 12, marginBottom: 8 }}>
-                This list is published by the companion — whichever report ran
-                last — so it appears only after the companion's first run.
+                Every category Wealthfolio knows is listed. Reports still only print
+                the ones with a budget or spending this month.
               </div>
+
+              <div className="sfin-field-row">
+                <label htmlFor="sfin-glyph-mode">Report icons</label>
+                <select
+                  id="sfin-glyph-mode"
+                  value={glyphMode}
+                  onChange={(e) => {
+                    const mode = e.target.value as 'clean' | 'glyphs';
+                    setGlyphMode(mode);
+                    store.setReportGlyphStyle({ mode, overrides: glyphOverrides }).catch(() => {});
+                  }}
+                >
+                  {/* Telegram renders neither colour nor Wealthfolio's own icons,
+                      so a report can only be plain or carry an emoji. */}
+                  <option value="clean">Clean — no icons</option>
+                  <option value="glyphs">Emoji per category</option>
+                </select>
+              </div>
+
+              <div className="sfin-field-row">
+                <label htmlFor="sfin-subcat-mode">Subcategories</label>
+                <select
+                  id="sfin-subcat-mode"
+                  value={subcategoryDisplay}
+                  onChange={(e) => {
+                    const mode = e.target.value as 'rollup' | 'breakdown';
+                    setSubcategoryDisplay(mode);
+                    store.setSubcategoryDisplay(mode).catch(() => {});
+                  }}
+                >
+                  <option value="rollup">Roll up into the parent</option>
+                  <option value="breakdown">Break down under the parent</option>
+                </select>
+              </div>
+
               <div className="sfin-cats">
             {availableCategories.length > 0 && (
               <>
@@ -1151,6 +1194,23 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
                     >
                       <CategoryIcon name={entry.icon} color={entry.color} size={isChild ? 13 : 15} />
                       <span style={isChild ? undefined : { fontWeight: 600 }}>{name}</span>
+                      {/* An override applies in EITHER mode, so a single category
+                          can carry a glyph without turning them on everywhere. */}
+                      <input
+                        type="text"
+                        aria-label={`${name} — report icon`}
+                        value={glyphOverrides[name] ?? ''}
+                        placeholder="—"
+                        maxLength={4}
+                        style={{ width: 34, textAlign: 'center', padding: '1px 2px', fontSize: 13 }}
+                        onChange={(e) => {
+                          const next = { ...glyphOverrides };
+                          const v = e.target.value.trim();
+                          if (v) next[name] = v; else delete next[name];
+                          setGlyphOverrides(next);
+                          store.setReportGlyphStyle({ mode: glyphMode, overrides: next }).catch(() => {});
+                        }}
+                      />
                     </div>
                     <input
                       type="checkbox"

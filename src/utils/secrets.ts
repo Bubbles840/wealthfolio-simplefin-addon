@@ -8,6 +8,13 @@ import { LARGE_TX_OUTBOX_SECRET_KEY } from '../../shared/telegram';
 /** One spending category as the companion published it. Mirrors
  *  `NativeCategoryCatalogEntry`; kept structural rather than imported because the
  *  browser bundle must not pull in the companion's node:sqlite module. */
+/** Mirrors `GlyphStyle` in shared/telegram; declared here so the store's public
+ *  surface does not depend on the report module. */
+export interface GlyphStylePref {
+  mode: 'clean' | 'glyphs';
+  overrides: Record<string, string>;
+}
+
 export interface CategoryCatalogEntry {
   name: string;
   parent: string | null;
@@ -50,6 +57,8 @@ const KEYS = {
   availableReportCategories: 'available_report_categories',
   companionVersion: 'companion_version',
   reportCategoryCatalog: 'report_category_catalog',
+  reportGlyphStyle: 'report_glyph_style',
+  subcategoryDisplay: 'subcategory_display',
   openCards: 'ui_open_cards',
   pendingLargeTxAlerts: LARGE_TX_OUTBOX_SECRET_KEY,
 } as const;
@@ -301,6 +310,37 @@ export class SecretsStore {
   }
   async setTelegramConfig(config: any): Promise<void> {
     await this.ctx.api.secrets.set(KEYS.telegramConfig, JSON.stringify(config));
+  }
+
+  /** How much decoration the Telegram reports carry. Own secret rather than a
+   *  field on `telegram_config`, because it describes report PRESENTATION and is
+   *  read by the companion on every report — mixing it into the credentials blob
+   *  would mean a token edit and a style edit racing the same value. */
+  async getReportGlyphStyle(): Promise<GlyphStylePref> {
+    const raw = await this.ctx.api.secrets.get(KEYS.reportGlyphStyle);
+    if (!raw) return { mode: 'clean', overrides: {} };
+    try {
+      const p = JSON.parse(raw) as Partial<GlyphStylePref>;
+      return {
+        mode: p.mode === 'glyphs' ? 'glyphs' : 'clean',
+        overrides: p.overrides && typeof p.overrides === 'object' ? p.overrides : {},
+      };
+    } catch {
+      return { mode: 'clean', overrides: {} };
+    }
+  }
+  async setReportGlyphStyle(style: GlyphStylePref): Promise<void> {
+    await this.ctx.api.secrets.set(KEYS.reportGlyphStyle, JSON.stringify(style));
+  }
+
+  /** `rollup` sums subcategories into their parent (the long-standing behaviour);
+   *  `breakdown` lists children under the parent's budget line. */
+  async getSubcategoryDisplay(): Promise<'rollup' | 'breakdown'> {
+    const raw = await this.ctx.api.secrets.get(KEYS.subcategoryDisplay);
+    return raw === 'breakdown' ? 'breakdown' : 'rollup';
+  }
+  async setSubcategoryDisplay(mode: 'rollup' | 'breakdown'): Promise<void> {
+    await this.ctx.api.secrets.set(KEYS.subcategoryDisplay, mode);
   }
 
   async clearAll(): Promise<void> {

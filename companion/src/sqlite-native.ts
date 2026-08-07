@@ -477,3 +477,63 @@ export function getNativeCategoryCatalog(
     };
   }).filter((c) => !!c.name);
 }
+
+/** One category's spend at CHILD granularity. `child` is null when the money was
+ *  booked directly on the parent, which keeps a breakdown's parts summing to the
+ *  parent's total. */
+export interface NativeSubcategorySpend {
+  parent: string;
+  child: string | null;
+  spent: number;
+}
+
+/**
+ * Spending split by subcategory, for the `breakdown` report mode.
+ *
+ * The rolled-up reader collapses children into parents inside SQL via
+ * `COALESCE(parent.name, tc.name)`, so a Transportation envelope can never show
+ * where the money actually went. This returns both levels and leaves the
+ * rollup-vs-breakdown choice to the formatter — which is why the existing reader
+ * is left exactly as it was: the default path must not change, and a second
+ * query cannot regress the first.
+ *
+ * Shares `SPENDING_FROM` and `spendingWhere` with the rolled-up reader, so the
+ * type filter and the transfers exclusion cannot drift between the two views —
+ * a test pins that their totals agree.
+ */
+export function getNativeSubcategorySpending(
+  dbPath: string,
+  startInclusive: string,
+  endExclusive: string,
+): NativeSubcategorySpend[] {
+  if (!dbPath || !existsSync(dbPath)) return [];
+  if (!validDateBounds(startInclusive, endExclusive)) return [];
+
+  const query = `
+    SELECT ${SPENDING_CATEGORY} as parent_name,
+           CASE WHEN parent.name IS NULL THEN '' ELSE tc.name END as child_name,
+           ROUND(SUM(ABS(CAST(a.amount AS REAL))), 2) as total_spent
+    ${SPENDING_FROM}
+    ${spendingWhere(startInclusive, endExclusive)}
+    GROUP BY parent_name, child_name
+    ORDER BY parent_name, child_name;
+  `;
+
+  const rows = queryNativeDb<Record<string, unknown>>(
+    dbPath,
+    'subcategory spending',
+    query,
+    (parts) => (parts.length === 3
+      ? { c0: parts[0], c1: parts[1], c2: parseFloat(parts[2]) || 0 }
+      : null),
+  );
+
+  return rows.map((r) => {
+    const v = Object.values(r) as Array<string | number>;
+    return {
+      parent: String(v[0]),
+      child: String(v[1] ?? '') || null,
+      spent: Number(v[2]) || 0,
+    };
+  }).filter((r) => !!r.parent);
+}

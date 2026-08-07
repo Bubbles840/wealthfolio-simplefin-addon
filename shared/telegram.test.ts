@@ -1,5 +1,19 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatMonthlyWrapUp, formatSyncHealthFooter, escapeMarkdown, weeklyEnvelope, moneyWhole, formatLargeTransactionAlert, formatBalanceDriftAlert, formatStuckTransferAlert, formatDuplicatePruneAlert, formatImportNotice } from './telegram.js';
+
+/**
+ * Every expectation written before 1.7.0 was against the glyph style, which is no
+ * longer the default. They now pass it EXPLICITLY rather than being rewritten to
+ * the clean output, so both styles stay pinned: switching the toggle cannot
+ * silently break the mode nobody is looking at.
+ */
+const GLYPHS = { mode: 'glyphs' as const, overrides: {} };
+const dailyGlyphs = (c: Parameters<typeof formatDailySpendingDigest>[0], p: Parameters<typeof formatDailySpendingDigest>[1]) =>
+  formatDailySpendingDigest(c, p, GLYPHS);
+const weeklyGlyphs = (spent: number, budget: number, top?: Parameters<typeof formatMonthlyRemainingSummary>[2]) =>
+  formatMonthlyRemainingSummary(spent, budget, top ?? [], GLYPHS);
+const wrapUpGlyphs = (c: Parameters<typeof formatMonthlyWrapUp>[0], m: string) =>
+  formatMonthlyWrapUp(c, m, GLYPHS);
 import { buildDismissKeyboard, formatFeedLagNotice } from './telegram.js';
 import type { ImportNoticeTx, UncategorizedTx } from './telegram.js';
 
@@ -73,6 +87,108 @@ describe('formatImportNotice', () => {
     expect(text).toContain('AMAZON\\_MKTPL\\*X1');
     expect(text).toContain('My\\_Spend');
     expect(text).toContain('VENMO \\*DYLAN\\_W');
+  });
+});
+
+describe('subcategory breakdown', () => {
+  const period = { daysFromWeekStartToMonthEnd: 26, daysLeftInMonthInclusive: 20 };
+  const withChildren = [{
+    name: 'Transportation', budget: 300, monthSpent: 120, weekSpent: 40,
+    children: [
+      { name: 'Gas & Fuel', monthSpent: 71 },
+      { name: 'Parking', monthSpent: 34 },
+      { name: 'Car Maintenance', monthSpent: 15 },
+    ],
+  }];
+
+  it('ignores children by default, so the long-standing rollup output is unchanged', () => {
+    const text = formatDailySpendingDigest(withChildren, period);
+    expect(text).toContain('Transportation');
+    expect(text).not.toContain('Gas & Fuel');
+  });
+
+  it('lists children indented under the parent when asked to break down', () => {
+    const text = formatDailySpendingDigest(withChildren, period, undefined, 'breakdown');
+    // Parent keeps its envelope line; children are spend-only, because the budget
+    // lives on the parent.
+    expect(text).toContain('Transportation');
+    expect(text).toMatch(/ {3}Gas & Fuel {2}\$71/);
+    expect(text).toMatch(/ {3}Parking {2}\$34/);
+  });
+
+  it('orders children by spend, biggest first — the useful order for "where did it go"', () => {
+    const text = formatDailySpendingDigest(withChildren, period, undefined, 'breakdown');
+    expect(text.indexOf('Gas & Fuel')).toBeLessThan(text.indexOf('Parking'));
+    expect(text.indexOf('Parking')).toBeLessThan(text.indexOf('Car Maintenance'));
+  });
+
+  it('omits a child that spent nothing, and the whole block when none did', () => {
+    const text = formatDailySpendingDigest(
+      [{ name: 'Transportation', budget: 300, monthSpent: 71, weekSpent: 0,
+         children: [{ name: 'Gas & Fuel', monthSpent: 71 }, { name: 'Parking', monthSpent: 0 }] }],
+      period, undefined, 'breakdown',
+    );
+    expect(text).toContain('Gas & Fuel');
+    expect(text).not.toContain('Parking');
+  });
+});
+
+describe('glyph style', () => {
+  const period = { daysFromWeekStartToMonthEnd: 26, daysLeftInMonthInclusive: 20 };
+  const cats = [
+    { name: 'Groceries', budget: 300, monthSpent: 67, weekSpent: 20 },
+    { name: 'Shopping', budget: 0, monthSpent: 40, weekSpent: 40 },
+  ];
+
+  /**
+   * `clean` is the default because the decorative glyphs were the complaint:
+   * a sun over a spending report, a moneybag on the summary, a label on every
+   * category line. Glyphs that encode STATE survive — being over budget is
+   * information, and stripping it would cost the reader something.
+   */
+  it('renders no decorative glyphs by default, keeping only the ones that mean something', () => {
+    const over = formatDailySpendingDigest(
+      [{ name: 'Bills', budget: 350, monthSpent: 400, weekSpent: 0 }], period,
+    );
+    expect(over).not.toContain('☀️');
+    expect(over).not.toContain('💰');
+    expect(over).not.toContain('📅');
+    // State, not decoration.
+    expect(over).toContain('🚨');
+  });
+
+  it('keeps every glyph when the style asks for them', () => {
+    const text = formatDailySpendingDigest(cats, period, { mode: 'glyphs', overrides: {} });
+    expect(text).toContain('☀️');
+    expect(text).toContain('🛒'); // Groceries, from the keyword defaults
+  });
+
+  it('honours a per-category override in either mode', () => {
+    const style = { mode: 'clean' as const, overrides: { Groceries: '🥕' } };
+    const text = formatDailySpendingDigest(cats, period, style);
+    expect(text).toContain('🥕 Groceries');
+    // Other categories stay clean — an override is per category, not a mode switch.
+    expect(text).not.toContain('🛍️');
+  });
+
+  it('applies the style to the weekly check-in and monthly wrap-up headers too', () => {
+    expect(formatMonthlyRemainingSummary(40, 100)).not.toContain('📊');
+    expect(formatMonthlyRemainingSummary(40, 100)).not.toContain('💰');
+    expect(formatMonthlyRemainingSummary(40, 100, [], { mode: 'glyphs', overrides: {} }))
+      .toContain('📊');
+
+    const wrapCats = [{ name: 'Groceries', budget: 300, spent: 250 }];
+    expect(formatMonthlyWrapUp(wrapCats, 'July')).not.toContain('📅');
+    expect(formatMonthlyWrapUp(wrapCats, 'July', { mode: 'glyphs', overrides: {} }))
+      .toContain('📅');
+  });
+
+  it('leaves alert messages alone — they are not reports', () => {
+    // The drift/stuck/feed-lag alerts carry state glyphs only, so the style has
+    // no business touching them.
+    expect(formatFeedLagNotice({
+      accountName: 'Spend', driftAmount: 490.75, currency: 'USD', bankBalance: 3965.98,
+    })).toContain('⏳');
   });
 });
 
@@ -241,7 +357,7 @@ describe('formatDailySpendingDigest', () => {
   const period = { daysFromWeekStartToMonthEnd: 24, daysLeftInMonthInclusive: 23 };
 
   it('is titled unmistakably as a daily report, not a weekly one', () => {
-    const text = formatDailySpendingDigest(
+    const text = dailyGlyphs(
       [{ name: 'Groceries', monthSpent: 200, weekSpent: 50, budget: 800 }],
       period,
     );
@@ -252,7 +368,7 @@ describe('formatDailySpendingDigest', () => {
   it('leads every category line with what is left THIS WEEK', () => {
     // budgetAtWeekStart = 1000 - 500 = 500; envelope = 500 * 7 / 24 = 145.83;
     // 50 already spent this week leaves 95.83.
-    const text = formatDailySpendingDigest(
+    const text = dailyGlyphs(
       [{ name: 'Groceries', monthSpent: 550, weekSpent: 50, budget: 1000 }],
       period,
     );
@@ -260,7 +376,7 @@ describe('formatDailySpendingDigest', () => {
   });
 
   it('states the unit once in the header instead of repeating it per line', () => {
-    const text = formatDailySpendingDigest(
+    const text = dailyGlyphs(
       [
         { name: 'Groceries', monthSpent: 550, weekSpent: 50, budget: 1000 },
         { name: 'Dining', monthSpent: 100, weekSpent: 20, budget: 400 },
@@ -276,7 +392,7 @@ describe('formatDailySpendingDigest', () => {
   });
 
   it('closes with a single month-context summary line rather than per-line month figures', () => {
-    const text = formatDailySpendingDigest(
+    const text = dailyGlyphs(
       [
         { name: 'Groceries', monthSpent: 550, weekSpent: 50, budget: 1000 },
         { name: 'Dining', monthSpent: 100, weekSpent: 20, budget: 400 },
@@ -289,7 +405,7 @@ describe('formatDailySpendingDigest', () => {
   });
 
   it('counts the day it is sent as one of the days to go', () => {
-    const text = formatDailySpendingDigest(
+    const text = dailyGlyphs(
       [{ name: 'Groceries', monthSpent: 0, weekSpent: 0, budget: 100 }],
       { daysFromWeekStartToMonthEnd: 1, daysLeftInMonthInclusive: 1 },
     );
@@ -297,7 +413,7 @@ describe('formatDailySpendingDigest', () => {
   });
 
   it('flags a category over budget for the MONTH, which dominates the weekly view', () => {
-    const text = formatDailySpendingDigest(
+    const text = dailyGlyphs(
       [{ name: 'Dining', monthSpent: 550, weekSpent: 100, budget: 500 }],
       period,
     );
@@ -309,7 +425,7 @@ describe('formatDailySpendingDigest', () => {
     // and the envelope arithmetic produces a meaningless figure (here about
     // -$29). The month branch must take precedence so that number never
     // reaches the screen.
-    const text = formatDailySpendingDigest(
+    const text = dailyGlyphs(
       [{ name: 'Shopping', monthSpent: 315.5, weekSpent: 90, budget: 250 }],
       period,
     );
@@ -320,7 +436,7 @@ describe('formatDailySpendingDigest', () => {
   it('distinguishes over-for-the-week from over-for-the-month', () => {
     // budgetAtWeekStart = 300 - 80 = 220; envelope = 220 * 7 / 24 = 64.17;
     // 120 spent this week leaves -55.83, yet $100 remains for the month.
-    const text = formatDailySpendingDigest(
+    const text = dailyGlyphs(
       [{ name: 'Dining', monthSpent: 200, weekSpent: 120, budget: 300 }],
       period,
     );
@@ -334,7 +450,7 @@ describe('formatDailySpendingDigest', () => {
     // as broken markup. The per-category month figure still has to survive the
     // trim — it is what says "you can absorb this, just slow down", and it is a
     // different number from the footer's cross-category total.
-    const text = formatDailySpendingDigest(
+    const text = dailyGlyphs(
       [{ name: 'Food & Dining', monthSpent: 200, weekSpent: 120, budget: 300 }],
       period,
     );
@@ -353,7 +469,7 @@ describe('formatDailySpendingDigest', () => {
     // is gone, so there is genuinely $0 of weekly allowance AND $0 left for the
     // month. Arithmetically right, but a bare "*$0*" beside real figures reads
     // as a failure rather than as a budget that is fully spent.
-    const text = formatDailySpendingDigest(
+    const text = dailyGlyphs(
       [{ name: 'Bills & Utilities', monthSpent: 350, weekSpent: 0, budget: 350 }],
       period,
     );
@@ -367,13 +483,13 @@ describe('formatDailySpendingDigest', () => {
   it('keeps "budget used up" distinct from being over budget', () => {
     // $0 left for the month with the week's allowance blown is a different
     // situation and keeps its own branch.
-    const overWeek = formatDailySpendingDigest(
+    const overWeek = dailyGlyphs(
       [{ name: 'Bills', monthSpent: 350, weekSpent: 350, budget: 350 }],
       period,
     );
     expect(overWeek).not.toContain('budget used up');
     expect(overWeek).toContain('over*');
-    const overMonth = formatDailySpendingDigest(
+    const overMonth = dailyGlyphs(
       [{ name: 'Bills', monthSpent: 400, weekSpent: 0, budget: 350 }],
       period,
     );
@@ -383,7 +499,7 @@ describe('formatDailySpendingDigest', () => {
 
   it('reports spending with no budget under "Off budget", not as "over budget"', () => {
     // You cannot be over a budget you never set.
-    const text = formatDailySpendingDigest(
+    const text = dailyGlyphs(
       [{ name: 'Shopping', monthSpent: 40, weekSpent: 40, budget: 0 }],
       period,
     );
@@ -396,7 +512,7 @@ describe('formatDailySpendingDigest', () => {
     // The live report printed `📄 Bills & Utilities  no budget · $0 spent` —
     // a category with a leftover zero-amount budget row in Wealthfolio. True,
     // and pure noise: nothing is budgeted and nothing happened.
-    const text = formatDailySpendingDigest(
+    const text = dailyGlyphs(
       [
         { name: 'Groceries', monthSpent: 10, weekSpent: 10, budget: 300 },
         { name: 'Bills & Utilities', monthSpent: 0, weekSpent: 0, budget: 0 },
@@ -408,7 +524,7 @@ describe('formatDailySpendingDigest', () => {
   });
 
   it('lists budgeted categories first, then the Off budget block', () => {
-    const text = formatDailySpendingDigest(
+    const text = dailyGlyphs(
       [
         { name: 'Fees', monthSpent: 3, weekSpent: 3, budget: 0 },
         { name: 'Groceries', monthSpent: 10, weekSpent: 10, budget: 300 },
@@ -423,7 +539,7 @@ describe('formatDailySpendingDigest', () => {
   it('omits the money summary when nothing in the digest has a budget', () => {
     // Summing "remaining" across only-unbudgeted categories would report a
     // negative month remaining against a budget of zero.
-    const text = formatDailySpendingDigest(
+    const text = dailyGlyphs(
       [{ name: 'Shopping', monthSpent: 40, weekSpent: 40, budget: 0 }],
       period,
     );
@@ -432,7 +548,7 @@ describe('formatDailySpendingDigest', () => {
   });
 
   it('sums the month summary over budgeted categories only', () => {
-    const text = formatDailySpendingDigest(
+    const text = dailyGlyphs(
       [
         { name: 'Groceries', monthSpent: 550, weekSpent: 50, budget: 1000 },
         { name: 'Shopping', monthSpent: 40, weekSpent: 40, budget: 0 },
@@ -447,7 +563,7 @@ describe('formatDailySpendingDigest', () => {
     // budgetAtWeekStart = 900 - 354 = 546; envelope = 546 * 7 / 24 = 159.25;
     // left = 159.25 - 65.4 = 93.85, a number the reader spends against, so the
     // cents stay. Month remaining 480.60 is context, so it rounds to $481.
-    const text = formatDailySpendingDigest(
+    const text = dailyGlyphs(
       [{ name: 'Groceries', monthSpent: 419.4, weekSpent: 65.4, budget: 900 }],
       period,
     );
@@ -456,7 +572,7 @@ describe('formatDailySpendingDigest', () => {
   });
 
   it('groups thousands so a big figure stays readable', () => {
-    const text = formatDailySpendingDigest(
+    const text = dailyGlyphs(
       [{ name: 'Housing', monthSpent: 0, weekSpent: 0, budget: 12500 }],
       period,
     );
@@ -485,14 +601,14 @@ describe('formatDailySpendingDigest', () => {
     // spend while he was ~$1,500 past the line. For a budgeting tool that is the
     // worst possible direction to be wrong in, so the wording has to agree with
     // the sign, not just the magnitude.
-    const text = formatDailySpendingDigest(overBudgetMonth, endOfMonth);
+    const text = dailyGlyphs(overBudgetMonth, endOfMonth);
     expect(text).not.toContain('left this month');
     expect(text).not.toContain('💰');
     expect(text).toContain('🚨 $1,494 over budget this month · 3 days to go');
   });
 
   it('keeps the days-to-go tail on the over-budget summary — it is useful either way', () => {
-    const text = formatDailySpendingDigest(
+    const text = dailyGlyphs(
       [{ name: 'Dining', budget: 300, monthSpent: 500, weekSpent: 100 }],
       { daysFromWeekStartToMonthEnd: 1, daysLeftInMonthInclusive: 1 },
     );
@@ -514,7 +630,7 @@ describe('formatDailySpendingDigest', () => {
               { name: 'Dining', budget: b2, monthSpent: s2, weekSpent: Math.min(s2, 25) },
             ];
             const total = (b1 > 0 ? b1 - s1 : 0) + (b2 > 0 ? b2 - s2 : 0);
-            const text = formatDailySpendingDigest(cats, period);
+            const text = dailyGlyphs(cats, period);
             const where = JSON.stringify(cats);
             // A minus sign must never reach the screen either: every figure in
             // the digest is either non-negative or carried by a word.
@@ -541,7 +657,7 @@ describe('formatDailySpendingDigest', () => {
     // summary. "🚨 $0 over budget" is a false alarm where "$0 left" already
     // promises nothing, so the branch keys off the figure the reader sees.
     // (0.3 - 0.1) + (0.2 - 0.4) is -2.8e-17, not 0.
-    const noise = formatDailySpendingDigest(
+    const noise = dailyGlyphs(
       [
         { name: 'Groceries', budget: 0.3, monthSpent: 0.1, weekSpent: 0 },
         { name: 'Dining', budget: 0.2, monthSpent: 0.4, weekSpent: 0 },
@@ -551,7 +667,7 @@ describe('formatDailySpendingDigest', () => {
     expect(noise).toContain('💰 $0 left this month');
     expect(noise).not.toContain('over budget');
 
-    const loose = formatDailySpendingDigest(
+    const loose = dailyGlyphs(
       [{ name: 'Groceries', budget: 100, monthSpent: 100.3, weekSpent: 0 }],
       period,
     );
@@ -559,7 +675,7 @@ describe('formatDailySpendingDigest', () => {
     expect(loose).not.toContain('over budget');
 
     // A dollar over is a real dollar over.
-    const real = formatDailySpendingDigest(
+    const real = dailyGlyphs(
       [{ name: 'Groceries', budget: 100, monthSpent: 101, weekSpent: 0 }],
       period,
     );
@@ -567,7 +683,7 @@ describe('formatDailySpendingDigest', () => {
   });
 
   it('groups thousands in the over-budget summary too', () => {
-    const text = formatDailySpendingDigest(
+    const text = dailyGlyphs(
       [{ name: 'Housing', budget: 1000, monthSpent: 13500, weekSpent: 0 }],
       period,
     );
@@ -577,7 +693,7 @@ describe('formatDailySpendingDigest', () => {
   it('prints the per-category month overspend unsigned, with "over" carrying the sign', () => {
     // Line 303's branch: the word does the work, so the figure must not also
     // carry a minus — "-$2,500 over" reads as a double negative.
-    const text = formatDailySpendingDigest(
+    const text = dailyGlyphs(
       [{ name: 'Shopping', budget: 1000, monthSpent: 3500.4, weekSpent: 200 }],
       period,
     );
@@ -591,7 +707,7 @@ describe('formatDailySpendingDigest', () => {
     // ruled out — so `remainingMonth >= 0` there by construction and there is no
     // negative case to render. Asserted as the reachable behaviour rather than a
     // test for a state that cannot occur.
-    const text = formatDailySpendingDigest(
+    const text = dailyGlyphs(
       [{ name: 'Dining', budget: 300, monthSpent: 200, weekSpent: 120 }],
       period,
     );
@@ -599,7 +715,7 @@ describe('formatDailySpendingDigest', () => {
     expect(text).not.toContain('-$');
     // The same input one dollar deeper into the month tips into the 🚨 branch,
     // which is what keeps the "left mo" figure non-negative.
-    const over = formatDailySpendingDigest(
+    const over = dailyGlyphs(
       [{ name: 'Dining', budget: 300, monthSpent: 301, weekSpent: 120 }],
       period,
     );
@@ -613,19 +729,19 @@ describe('formatDailySpendingDigest', () => {
     // caught by the ⚠️ branch above it, so the bare figure is non-negative by
     // construction — including at the boundary, where $0 is spelled out in words
     // rather than shown bare.
-    const positive = formatDailySpendingDigest(
+    const positive = dailyGlyphs(
       [{ name: 'Groceries', budget: 1000, monthSpent: 550, weekSpent: 50 }],
       period,
     );
     expect(positive).toContain('🛒 Groceries  *$95.83*');
-    const atZero = formatDailySpendingDigest(
+    const atZero = dailyGlyphs(
       [{ name: 'Groceries', budget: 1000, monthSpent: 1000, weekSpent: 0 }],
       period,
     );
     expect(atZero).toContain('*$0* · budget used up');
     // One cent past the envelope ($1,200 × 7/24 = $350) and the ⚠️ branch takes
     // it, sign and all.
-    const past = formatDailySpendingDigest(
+    const past = dailyGlyphs(
       [{ name: 'Groceries', budget: 1200, monthSpent: 350.01, weekSpent: 350.01 }],
       period,
     );
@@ -637,7 +753,7 @@ describe('formatDailySpendingDigest', () => {
     // Line 295 prints `monthSpent` beside the word "spent". The host reads it as
     // SUM(ABS(amount)) over withdrawals/fees/taxes, so it cannot arrive negative
     // — a refund reduces the sum toward zero, never past it.
-    const text = formatDailySpendingDigest(
+    const text = dailyGlyphs(
       [{ name: 'Shopping', budget: 0, monthSpent: 40.6, weekSpent: 40.6 }],
       period,
     );
@@ -648,7 +764,7 @@ describe('formatDailySpendingDigest', () => {
   it('names both possible causes in the empty state', () => {
     // Reachable two ways — no budgets exist, or every category was deselected
     // in the addon — so the text must not blame only the first.
-    const text = formatDailySpendingDigest([], period);
+    const text = dailyGlyphs([], period);
     expect(text).toContain('Set up budgets in Wealthfolio');
     expect(text).toContain('categories are selected');
     // No "left to spend this week" promise when there is nothing to show.
@@ -656,7 +772,7 @@ describe('formatDailySpendingDigest', () => {
   });
 
   it('ends without trailing whitespace so an appended footer stays a separate block', () => {
-    const text = formatDailySpendingDigest(
+    const text = dailyGlyphs(
       [{ name: 'Groceries', monthSpent: 550, weekSpent: 50, budget: 1000 }],
       period,
     );
@@ -666,7 +782,7 @@ describe('formatDailySpendingDigest', () => {
   });
 
   it('escapes Markdown specials in a category name so the message can still send', () => {
-    const text = formatDailySpendingDigest(
+    const text = dailyGlyphs(
       [{ name: 'Food_Drink', monthSpent: 40, weekSpent: 10, budget: 100 }],
       period,
     );
@@ -682,7 +798,7 @@ describe('formatDailySpendingDigest', () => {
     // Legacy Markdown does not honour a backslash escape *inside* an entity —
     // the entity must be closed and reopened — so `*Food\_Drink*` still leaves
     // a live italic opener with no closer and Telegram 400s the whole digest.
-    const text = formatDailySpendingDigest(
+    const text = dailyGlyphs(
       [{ name: 'Food_Drink', monthSpent: 40, weekSpent: 10, budget: 100 }],
       period,
     );
@@ -692,7 +808,7 @@ describe('formatDailySpendingDigest', () => {
   });
 
   it('is materially shorter than the one-line-per-unit format it replaces', () => {
-    const text = formatDailySpendingDigest(
+    const text = dailyGlyphs(
       [
         { name: 'Groceries', monthSpent: 550, weekSpent: 50, budget: 1000 },
         { name: 'Dining', monthSpent: 200, weekSpent: 120, budget: 300 },
@@ -807,13 +923,13 @@ describe('formatSyncHealthFooter', () => {
 
 describe('formatMonthlyRemainingSummary', () => {
   it('leads with the one number and puts the arithmetic on a single quiet line', () => {
-    const text = formatMonthlyRemainingSummary(1200, 2000);
+    const text = weeklyGlyphs(1200, 2000);
     expect(text).toContain('💰 *$800 left* this month');
     expect(text).toContain('_spent $1,200 of $2,000 · 60%_');
   });
 
   it('flags being over budget for the month', () => {
-    const text = formatMonthlyRemainingSummary(2200, 2000);
+    const text = weeklyGlyphs(2200, 2000);
     expect(text).toContain('🚨 *$200 over budget* this month');
     expect(text).toContain('_spent $2,200 of $2,000 · 110%_');
   });
@@ -823,7 +939,7 @@ describe('formatMonthlyRemainingSummary', () => {
     // supporting line's two figures are both non-negative by construction:
     // `totalBudget <= 0` returns early above, and `totalSpent` is a SUM(ABS(..))
     // of outgoing activity.
-    const text = formatMonthlyRemainingSummary(2200.4, 2000);
+    const text = weeklyGlyphs(2200.4, 2000);
     expect(text).toContain('🚨 *$200 over budget* this month');
     expect(text).toContain('_spent $2,200 of $2,000 · 110%_');
     expect(text).not.toContain('-$');
@@ -833,8 +949,8 @@ describe('formatMonthlyRemainingSummary', () => {
     // The "left" branch is only reached once `remaining < 0` has been ruled out,
     // so it has no negative case to render; one dollar the other way is the 🚨
     // branch, which is what keeps that guarantee.
-    expect(formatMonthlyRemainingSummary(2000, 2000)).toContain('💰 *$0 left* this month');
-    const over = formatMonthlyRemainingSummary(2001, 2000);
+    expect(weeklyGlyphs(2000, 2000)).toContain('💰 *$0 left* this month');
+    const over = weeklyGlyphs(2001, 2000);
     expect(over).not.toContain('left*');
     expect(over).toContain('🚨 *$1 over budget* this month');
   });
@@ -842,8 +958,8 @@ describe('formatMonthlyRemainingSummary', () => {
   it('reads as the same family as the daily digest\'s over-budget summary', () => {
     // Both reports lead an overspend with 🚨 and the words "over budget", so the
     // two never disagree about what a negative month looks like.
-    const weekly = formatMonthlyRemainingSummary(2200, 2000);
-    const daily = formatDailySpendingDigest(
+    const weekly = weeklyGlyphs(2200, 2000);
+    const daily = dailyGlyphs(
       [{ name: 'Groceries', budget: 2000, monthSpent: 2200, weekSpent: 0 }],
       { daysFromWeekStartToMonthEnd: 7, daysLeftInMonthInclusive: 7 },
     );
@@ -858,38 +974,38 @@ describe('formatMonthlyRemainingSummary', () => {
     // created. This report is one number, so the old
     // "💰 *$0.00 remaining* this month (spent $0.00 of $0.00, 0%)" read as a
     // real, calmly-reported result.
-    const text = formatMonthlyRemainingSummary(0, 0);
+    const text = weeklyGlyphs(0, 0);
     expect(text).not.toContain('left* this month');
     expect(text).not.toContain('of $0');
     expect(text).toContain('Nothing spent, no budgets set');
   });
 
   it('reports the spend, not a "left" figure, when money went out with no budget set', () => {
-    const text = formatMonthlyRemainingSummary(40, 0);
+    const text = weeklyGlyphs(40, 0);
     expect(text).toContain('🏷️ *$40 spent* · no budget set');
     expect(text).not.toContain('left* this month');
     expect(text).not.toContain('over budget');
   });
 
   it('points at both possible causes of a zero budget', () => {
-    for (const text of [formatMonthlyRemainingSummary(0, 0), formatMonthlyRemainingSummary(40, 0)]) {
+    for (const text of [weeklyGlyphs(0, 0), weeklyGlyphs(40, 0)]) {
       expect(text).toContain('Add budgets in Wealthfolio');
       expect(text).toContain('selected for the weekly report');
     }
   });
 
   it('keeps the weekly report clearly labelled as weekly', () => {
-    expect(formatMonthlyRemainingSummary(1200, 2000)).toContain('📊 *Weekly Budget Check-In*');
+    expect(weeklyGlyphs(1200, 2000)).toContain('📊 *Weekly Budget Check-In*');
   });
 
   it('rounds to whole dollars — every figure here is month-level context', () => {
-    const text = formatMonthlyRemainingSummary(1550.75, 2400);
+    const text = weeklyGlyphs(1550.75, 2400);
     expect(text).toContain('💰 *$849 left* this month');
     expect(text).toContain('_spent $1,551 of $2,400 · 65%_');
   });
 
   it('reads as the same family as the daily digest — emoji-led figure, no parenthetical', () => {
-    const text = formatMonthlyRemainingSummary(1200, 2000);
+    const text = weeklyGlyphs(1200, 2000);
     expect(text).not.toContain('(spent');
     expect(text).toBe(text.trimEnd());
   });
@@ -903,7 +1019,7 @@ describe('formatMonthlyRemainingSummary — biggest spends this week', () => {
   ];
 
   it('appends the section below the headline, one scannable line per transaction', () => {
-    expect(formatMonthlyRemainingSummary(1850, 2400, spends)).toBe(
+    expect(weeklyGlyphs(1850, 2400, spends)).toBe(
       '📊 *Weekly Budget Check-In*\n'
       + '\n'
       + '💰 *$550 left* this month\n'
@@ -919,16 +1035,16 @@ describe('formatMonthlyRemainingSummary — biggest spends this week', () => {
   it('omits the section entirely when nothing was spent this week', () => {
     // An empty heading is noise: it states a fact ("here are the biggest") and
     // then fails to deliver it.
-    const text = formatMonthlyRemainingSummary(1850, 2400, []);
+    const text = weeklyGlyphs(1850, 2400, []);
     expect(text).not.toContain('Biggest');
-    expect(text).toBe(formatMonthlyRemainingSummary(1850, 2400));
+    expect(text).toBe(weeklyGlyphs(1850, 2400));
     // No trailing blank line left behind where the section would have gone —
     // callers may append a block of their own.
     expect(text).toBe(text.trimEnd());
   });
 
   it('shows however many there are — fewer than five is normal', () => {
-    const text = formatMonthlyRemainingSummary(1850, 2400, spends.slice(0, 1));
+    const text = weeklyGlyphs(1850, 2400, spends.slice(0, 1));
     expect(text).toContain('*Biggest this week*\n$412 · WHOLE FOODS · Food & Dining');
     expect(text).not.toContain('DELTA');
   });
@@ -937,7 +1053,7 @@ describe('formatMonthlyRemainingSummary — biggest spends this week', () => {
     // The zero-budget branch returns early, so this is the one that regresses if
     // the section is appended in only one place. "What did I spend" is a fact
     // that does not depend on a budget existing.
-    const text = formatMonthlyRemainingSummary(507.87, 0, spends);
+    const text = weeklyGlyphs(507.87, 0, spends);
     expect(text).toContain('🏷️ *$508 spent* · no budget set');
     expect(text).toContain('*Biggest this week*');
     expect(text).toContain('$412 · WHOLE FOODS · Food & Dining');
@@ -949,7 +1065,7 @@ describe('formatMonthlyRemainingSummary — biggest spends this week', () => {
     // BOTTLE*` would still leave an unbalanced entity and Telegram would reject
     // the ENTIRE message with a 400 — the report would simply never arrive.
     // Hence: escaped, and outside every entity.
-    const text = formatMonthlyRemainingSummary(1850, 2400, [
+    const text = weeklyGlyphs(1850, 2400, [
       { amount: 42, description: 'SQ *BLUE BOTTLE **COFFEE*', category: 'Food_Dining' },
       { amount: 12, description: 'PAYPAL *WIKIPEDIA', category: 'Charity' },
     ]);
@@ -970,7 +1086,7 @@ describe('formatMonthlyRemainingSummary — biggest spends this week', () => {
     // the rest of this report is whole-dollar context and cents on a 3-field row
     // wrap on a phone. No bold: five bold figures would fight the one figure the
     // report is actually about.
-    const text = formatMonthlyRemainingSummary(1850, 2400, [
+    const text = weeklyGlyphs(1850, 2400, [
       { amount: -412.37, description: 'WHOLE FOODS', category: 'Food & Dining' },
     ]);
     expect(text).toContain('\n$412 · WHOLE FOODS · Food & Dining');
@@ -982,7 +1098,7 @@ describe('formatMonthlyRemainingSummary — biggest spends this week', () => {
     // A SimpleFin transaction can carry an empty description, which leaves the
     // stored note as nothing but the tx id. ` ·  · Shopping` would read as a
     // rendering bug.
-    const text = formatMonthlyRemainingSummary(1850, 2400, [
+    const text = weeklyGlyphs(1850, 2400, [
       { amount: 30, description: '', category: 'Shopping' },
     ]);
     expect(text).toContain('\n$30 · Shopping');
@@ -1200,7 +1316,7 @@ describe('formatMonthlyWrapUp', () => {
     // Budgeted only: spent 280 + 412 + 45 = 737 of 300 + 300 + 50 = 650, so the
     // month finished 87 over. Education's 6 is deliberately outside both totals
     // (see the "does not fold unbudgeted spend" test below).
-    expect(formatMonthlyWrapUp(mixed, 'July')).toBe(
+    expect(wrapUpGlyphs(mixed, 'July')).toBe(
       '📅 *July wrap-up*\n'
       + '\n'
       + '✅ 🛒 Groceries  *$280* of $300\n'
@@ -1213,11 +1329,11 @@ describe('formatMonthlyWrapUp', () => {
   });
 
   it('names the month it is reporting in the header', () => {
-    expect(formatMonthlyWrapUp(mixed, 'December')).toContain('📅 *December wrap-up*');
+    expect(wrapUpGlyphs(mixed, 'December')).toContain('📅 *December wrap-up*');
   });
 
   it('says "under budget" and never "over" when the month came in under', () => {
-    const text = formatMonthlyWrapUp(
+    const text = wrapUpGlyphs(
       [{ name: 'Groceries', spent: 2312, budget: 2400 }],
       'July',
     );
@@ -1231,7 +1347,7 @@ describe('formatMonthlyWrapUp', () => {
     // total line for a finished month has exactly two directions and the words
     // must pick one, so the assertions here are as much about what must NOT
     // appear as what must.
-    const text = formatMonthlyWrapUp(
+    const text = wrapUpGlyphs(
       [{ name: 'Groceries', spent: 3894, budget: 2400 }],
       'July',
     );
@@ -1246,7 +1362,7 @@ describe('formatMonthlyWrapUp', () => {
     // against the total would turn a month that finished under into one that
     // finished over. Same reasoning, and the same choice, as the daily digest's
     // month-context line.
-    const text = formatMonthlyWrapUp(
+    const text = wrapUpGlyphs(
       [
         { name: 'Groceries', spent: 200, budget: 300 },
         { name: 'Education', spent: 5000, budget: 0 },
@@ -1257,14 +1373,14 @@ describe('formatMonthlyWrapUp', () => {
   });
 
   it('never calls an unbudgeted category "over" — there is nothing to be over', () => {
-    const text = formatMonthlyWrapUp([{ name: 'Education', spent: 6, budget: 0 }], 'July');
+    const text = wrapUpGlyphs([{ name: 'Education', spent: 6, budget: 0 }], 'July');
     expect(text).toContain('🏷️ 🎓 Education  *$6* · no budget');
     expect(text).not.toContain('over');
     expect(text).not.toContain('🚨');
   });
 
   it('reads "right on budget" rather than "$0 under" when the month landed level', () => {
-    const text = formatMonthlyWrapUp([{ name: 'Groceries', spent: 300, budget: 300 }], 'July');
+    const text = wrapUpGlyphs([{ name: 'Groceries', spent: 300, budget: 300 }], 'July');
     expect(text).toContain('💰 Finished *right on budget* · spent $300 of $300');
     expect(text).not.toContain('$0 under');
   });
@@ -1273,7 +1389,7 @@ describe('formatMonthlyWrapUp', () => {
     // Keyed off the RENDERED magnitude, like the daily digest's summary: summing
     // 2-decimal budgets leaves remainders like -2.8e-17, and "$0 over budget" is
     // a false alarm dressed up as a result.
-    const text = formatMonthlyWrapUp([{ name: 'Groceries', spent: 300.4, budget: 300 }], 'July');
+    const text = wrapUpGlyphs([{ name: 'Groceries', spent: 300.4, budget: 300 }], 'July');
     expect(text).not.toContain('🚨');
     expect(text).not.toContain('$0 over');
     expect(text).toContain('✅ 🛒 Groceries  *$300* of $300');
@@ -1281,7 +1397,7 @@ describe('formatMonthlyWrapUp', () => {
   });
 
   it('reports the spend, not a verdict, when nothing was budgeted all month', () => {
-    const text = formatMonthlyWrapUp(
+    const text = wrapUpGlyphs(
       [{ name: 'Education', spent: 40, budget: 0 }],
       'July',
     );
@@ -1292,7 +1408,7 @@ describe('formatMonthlyWrapUp', () => {
   });
 
   it('does not claim a verdict for a month with no budgets and no spending', () => {
-    const text = formatMonthlyWrapUp([{ name: 'Education', spent: 0, budget: 0 }], 'July');
+    const text = wrapUpGlyphs([{ name: 'Education', spent: 0, budget: 0 }], 'July');
     expect(text).toContain('Nothing spent, no budgets set in July.');
     expect(text).not.toContain('of $0');
     expect(text).not.toContain('budget*');
@@ -1302,7 +1418,7 @@ describe('formatMonthlyWrapUp', () => {
     // Two distinct causes: no budgets and no spending exist for that month, or
     // every category was deselected for this report. The text must not assert
     // either one, matching the daily digest's empty branch.
-    const text = formatMonthlyWrapUp([], 'July');
+    const text = wrapUpGlyphs([], 'July');
     expect(text).toBe(
       '📅 *July wrap-up*\n'
       + '\n'
@@ -1314,7 +1430,7 @@ describe('formatMonthlyWrapUp', () => {
     // Legacy Markdown does not honour a backslash escape inside an entity, so
     // `*Food\_Drink*` still leaves a live italic opener and Telegram rejects the
     // WHOLE message with a 400. The bold therefore sits only on the figures.
-    const text = formatMonthlyWrapUp(
+    const text = wrapUpGlyphs(
       [
         { name: 'Food_Drink', spent: 412, budget: 300 },
         { name: 'Wants *only*', spent: 6, budget: 0 },
@@ -1338,7 +1454,7 @@ describe('formatMonthlyWrapUp', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(2027, 0, 1, 9, 0, 0));
     try {
-      expect(formatMonthlyWrapUp([{ name: 'Groceries', spent: 10, budget: 20 }], 'December'))
+      expect(wrapUpGlyphs([{ name: 'Groceries', spent: 10, budget: 20 }], 'December'))
         .toContain('📅 *December wrap-up*');
     } finally {
       vi.useRealTimers();
@@ -1346,7 +1462,7 @@ describe('formatMonthlyWrapUp', () => {
   });
 
   it('leaves no trailing whitespace, so a caller can append a block cleanly', () => {
-    const text = formatMonthlyWrapUp(mixed, 'July');
+    const text = wrapUpGlyphs(mixed, 'July');
     expect(text).toBe(text.trimEnd());
   });
 });

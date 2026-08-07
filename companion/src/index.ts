@@ -15,10 +15,12 @@ import { RestSyncHost, RestSyncStore } from './rest-host.js';
 import { WealthfolioClient } from './wealthfolio.js';
 import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatMonthlyWrapUp, formatSyncHealthFooter, formatLargeTransactionAlert, formatBalanceDriftAlert, formatFeedLagNotice, formatStuckTransferAlert, formatDuplicatePruneAlert, formatImportNotice, buildDismissKeyboard, IMPORT_NOTICE_UNCATEGORIZED_CAP, escapeMarkdown, LARGE_TX_OUTBOX_SECRET_KEY } from '../../shared/telegram.js';
 import { pollTelegramDismissals, pruneDismissals } from './dismissals.js';
+import { DEFAULT_GLYPH_STYLE } from '../../shared/telegram.js';
+import type { GlyphStyle } from '../../shared/telegram.js';
 import type { DismissalLedger } from './dismissals.js';
 import type { SyncHealth } from '../../shared/telegram.js';
 import { SIMPLEFIN_SYNC_VERSION, COMPANION_VERSION_SECRET_KEY } from '../../shared/version.js';
-import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeCategoryCatalog } from './sqlite-native.js';
+import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeCategoryCatalog, getNativeSubcategorySpending } from './sqlite-native.js';
 
 const logLevel: 'info' | 'debug' =
   process.env.LOG_LEVEL === 'debug' ? 'debug' : 'info';
@@ -693,6 +695,37 @@ export async function sendImportNotice(
   await sendTelegramMessage(tg.botToken, tg.chatId, text, undefined, keyboard);
 }
 
+
+/**
+ * The user's chosen report decoration, or the clean default.
+ *
+ * Read per report rather than cached: the companion is long-lived and the setting
+ * is edited in the addon, so a cached copy would ignore a change until the next
+ * container restart. A corrupt or absent secret reads as the default, which is
+ * the same "treat unreadable as unset" rule every other secret here follows.
+ */
+async function readGlyphStyle(wfClient: WealthfolioClient): Promise<GlyphStyle> {
+  const raw = await wfClient
+    .getAddonSecret('simplefin-sync', 'report_glyph_style')
+    .catch(() => null);
+  const parsed = parseSecretJson<Partial<GlyphStyle>>(raw, 'report_glyph_style');
+  if (!parsed) return DEFAULT_GLYPH_STYLE;
+  return {
+    mode: parsed.mode === 'glyphs' ? 'glyphs' : 'clean',
+    overrides: parsed.overrides && typeof parsed.overrides === 'object' ? parsed.overrides : {},
+  };
+}
+
+
+/** The user's subcategory display choice; `rollup` unless explicitly set, so the
+ *  default report shape is unchanged. */
+async function readSubcategoryDisplay(wfClient: WealthfolioClient): Promise<'rollup' | 'breakdown'> {
+  const raw = await wfClient
+    .getAddonSecret('simplefin-sync', 'subcategory_display')
+    .catch(() => null);
+  return raw === 'breakdown' ? 'breakdown' : 'rollup';
+}
+
 function toDateString(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
@@ -765,16 +798,30 @@ export async function sendDailyTelegramReport(wfClient: WealthfolioClient): Prom
   const allNames = await publishAvailableCategories(wfClient, spentMap, budgetMap, yearMonth);
 
   const names = filterCategories(allNames, tg.dailyReportCategories);
+  // Children are gathered ONLY when the breakdown is asked for: the extra query
+  // buys nothing in rollup mode, which is the default.
+  const subcategoryDisplay = await readSubcategoryDisplay(wfClient);
+  const childrenByParent = new Map<string, Array<{ name: string; monthSpent: number }>>();
+  if (subcategoryDisplay === 'breakdown') {
+    for (const row of getNativeSubcategorySpending(dbPath, `${yearMonth}-01`, nextMonthStart)) {
+      if (!row.child) continue; // booked on the parent itself — already in its total
+      const list = childrenByParent.get(row.parent) ?? [];
+      list.push({ name: row.child, monthSpent: row.spent });
+      childrenByParent.set(row.parent, list);
+    }
+  }
+
   const categories = names.map((name) => ({
     name,
     monthSpent: spentMap[name] ?? 0,
     weekSpent: weekSpentMap[name] ?? 0,
     budget: budgetMap[name] ?? 0,
+    children: childrenByParent.get(name),
   }));
   let message = formatDailySpendingDigest(categories, {
     daysFromWeekStartToMonthEnd: lastDayOfMonth(now) - weekStart.getDate() + 1,
     daysLeftInMonthInclusive: daysLeftInMonthInclusive(now),
-  });
+  }, await readGlyphStyle(wfClient), subcategoryDisplay);
 
   const healthRaw = await wfClient.getAddonSecret('simplefin-sync', 'sync_health').catch(() => null);
   // Guarded parse: this secret only supplies a decorative one-line footer, so
@@ -858,6 +905,7 @@ export async function sendWeeklyTelegramReport(wfClient: WealthfolioClient): Pro
     totalSpent,
     totalBudget,
     topSpends.map((t) => ({ amount: t.amount, description: t.description, category: t.categoryName })),
+    await readGlyphStyle(wfClient),
   );
   const result = await sendTelegramMessage(tg.botToken, tg.chatId, message);
   if (result.ok) {
@@ -919,7 +967,7 @@ export async function sendMonthlyTelegramReport(wfClient: WealthfolioClient): Pr
     spent: spentMap[name] ?? 0,
     budget: budgetMap[name] ?? 0,
   }));
-  const message = formatMonthlyWrapUp(categories, monthName);
+  const message = formatMonthlyWrapUp(categories, monthName, await readGlyphStyle(wfClient));
   // The result is inspected, not discarded: `sendTelegramMessage` reports an
   // API-level failure (bad token, rate limit, a 400 from malformed Markdown) by
   // RESOLVING `{ ok: false }`, and this report is produced once a month — a

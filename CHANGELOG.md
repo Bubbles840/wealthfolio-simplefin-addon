@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-08-06
+
+### Added
+
+- **Every category is now selectable, not just budgeted-or-spent ones.** The
+  addon's list came from a companion-published union of this month's spending and
+  budgets, so a category like Personal Care could not be chosen until money
+  happened to move through it. A new catalog publishes all of them with their
+  parent, and reports keep printing only the ones with a budget or spending — two
+  separate questions, now answered separately.
+- **Categories carry Wealthfolio's own icons and colours** in the addon. Those
+  come straight from `taxonomy_categories.icon`, which holds lucide-react export
+  names, so there is no mapping of ours to drift and a category Wealthfolio gives
+  a new icon to simply renders. The selector is grouped, with subcategories
+  indented under their parent — 52 rows flat was unreadable.
+- **A subcategory display toggle.** `Roll up into the parent` is unchanged and
+  remains the default; `Break down under the parent` lists children beneath the
+  parent's envelope line, spend-only and biggest first, so a Transportation
+  budget can show where the money actually went.
+- **The companion reports its version** in its startup banner and to the addon,
+  which shows both halves in its footer and flags a mismatch. `shared/version.ts`
+  is now the single source, pinned by a test against `manifest.json` and
+  `package.json`. Previously the only honest way to identify a running companion
+  was grepping compiled JavaScript, because `companion/package.json` is a
+  dependency manifest that has read `1.0.1` since the project began.
+
+### Changed
+
+- **Reports are clean by default.** The decorative glyphs are gone — no sun over
+  the daily check, no moneybag on the summary, no label on every category line.
+  Glyphs that encode STATE remain, because Telegram renders neither colour nor
+  Wealthfolio's icons and they are the only way left to mark a line: `🚨` over
+  budget, `⚠️` over the week's pace, `⏳` waiting on the bank feed. `Emoji per
+  category` restores the old style, and any single category can be given a glyph
+  in either mode.
+- **The Sync page stays current.** It re-reads last-synced, balances and the
+  companion version on window focus and every 60 seconds. It previously rendered
+  once, so a tab left open froze — on 2026-08-06 it showed a day-old sync time and
+  an already-resolved error, prompting a hunt for a fault that no longer existed.
+
 ## [1.6.1] - 2026-08-06
 
 ### Fixed

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeCategoryCatalog } from './sqlite-native.js';
+import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeCategoryCatalog, getNativeSubcategorySpending } from './sqlite-native.js';
 import { DatabaseSync } from 'node:sqlite';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
@@ -464,6 +464,70 @@ describe('sqlite-native', () => {
 
     it('returns [] rather than throwing when the database is missing', () => {
       expect(getNativeCategoryCatalog('/nonexistent/wealthfolio.db', '2026-07')).toEqual([]);
+    });
+  });
+
+  describe('getNativeSubcategorySpending', () => {
+    it('returns child-level rows keyed by parent, so the caller can choose rollup or breakdown', () => {
+      const { path, cleanup } = makeTestDb();
+      try {
+        const db = new DatabaseSync(path);
+        db.exec(`
+          INSERT INTO taxonomy_categories (id,name,parent_id,taxonomy_id) VALUES
+            ('p1','Transportation',NULL,'spending_categories'),
+            ('c1','Gas & Fuel','p1','spending_categories'),
+            ('c2','Parking','p1','spending_categories'),
+            ('p2','Groceries',NULL,'spending_categories');
+          INSERT INTO activities (id,amount,activity_date,activity_type) VALUES
+            ('a1','-71.00','2026-07-06','WITHDRAWAL'),
+            ('a2','-34.00','2026-07-07','WITHDRAWAL'),
+            ('a3','-15.00','2026-07-08','WITHDRAWAL'),
+            ('a4','-60.00','2026-07-09','WITHDRAWAL');
+          INSERT INTO activity_taxonomy_assignments VALUES
+            ('a1','c1'),('a2','c2'),('a3','c1'),('a4','p2');
+        `);
+        db.close();
+
+        const rows = getNativeSubcategorySpending(path, '2026-07-01', '2026-08-01');
+        // Children carry their parent; spend booked straight on a parent reports
+        // with a null child, so no money can go missing from a breakdown.
+        expect(rows).toEqual(expect.arrayContaining([
+          { parent: 'Transportation', child: 'Gas & Fuel', spent: 86 },
+          { parent: 'Transportation', child: 'Parking', spent: 34 },
+          { parent: 'Groceries', child: null, spent: 60 },
+        ]));
+        expect(rows).toHaveLength(3);
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('sums to the same totals as the rolled-up reader, so the two views cannot disagree', () => {
+      const { path, cleanup } = makeTestDb();
+      try {
+        const db = new DatabaseSync(path);
+        db.exec(`
+          INSERT INTO taxonomy_categories (id,name,parent_id,taxonomy_id) VALUES
+            ('p1','Transportation',NULL,'spending_categories'),
+            ('c1','Gas & Fuel','p1','spending_categories');
+          INSERT INTO activities (id,amount,activity_date,activity_type) VALUES
+            ('a1','-71.00','2026-07-06','WITHDRAWAL'),('a2','-9.00','2026-07-07','FEE');
+          INSERT INTO activity_taxonomy_assignments VALUES ('a1','c1'),('a2','c1');
+        `);
+        db.close();
+
+        const rolled = getNativeWealthfolioSpendingBetween(path, '2026-07-01', '2026-08-01');
+        const split = getNativeSubcategorySpending(path, '2026-07-01', '2026-08-01');
+        const byParent: Record<string, number> = {};
+        for (const r of split) byParent[r.parent] = (byParent[r.parent] ?? 0) + r.spent;
+        expect(byParent).toEqual(rolled);
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('returns [] on a missing database or malformed bounds', () => {
+      expect(getNativeSubcategorySpending('/nonexistent/x.db', '2026-07-01', '2026-08-01')).toEqual([]);
     });
   });
 });

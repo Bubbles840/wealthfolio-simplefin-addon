@@ -1023,6 +1023,34 @@ describe('sendDailyTelegramReport', () => {
     expect(client.setAddonSecret).not.toHaveBeenCalled();
   });
 
+  it('turns glyphs back on when the style secret asks for them', async () => {
+    // The default is clean, but the toggle has to actually reach the builders —
+    // and it is read per report rather than cached, so editing it in the addon
+    // takes effect without restarting the container.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 6, 14, 9, 0, 0));
+    try {
+      const secrets = new Map<string, string>();
+      secrets.set('telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true }));
+      secrets.set('report_glyph_style', JSON.stringify({ mode: 'glyphs', overrides: { Groceries: '🥕' } }));
+      const client = {
+        getAddonSecret: vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null),
+        setAddonSecret: vi.fn(async () => {}),
+      } as any;
+      const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+      vi.stubGlobal('fetch', fetchMock);
+
+      await sendDailyTelegramReport(client);
+      const text = JSON.parse((fetchMock.mock.calls[0][1] as any).body).text;
+      expect(text).toContain('☀️ *Daily Spending Check*');
+      // The override wins over the keyword default for that one category.
+      expect(text).toContain('🥕 Groceries');
+      expect(text).toContain('🍽️ Dining');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('titles the digest as daily and headlines what is left this week', async () => {
     // Mocked month spend/budgets: Groceries 200/800, Dining 550/500; mocked
     // week spend: Groceries 50, Dining 100. Tuesday 2026-07-14, so the week
@@ -1047,13 +1075,13 @@ describe('sendDailyTelegramReport', () => {
 
       const [, sentBody] = fetchMock.mock.calls[0];
       const text = JSON.parse((sentBody as any).body).text;
-      expect(text).toContain('☀️ *Daily Spending Check*');
+      expect(text).toContain('*Daily Spending Check*');
       expect(text).toContain('_left to spend this week_');
       expect(text).not.toContain('Weekly Spending Update');
-      expect(text).toContain('🛒 Groceries  *$189.47*');
-      expect(text).toContain('🍽️ Dining  🚨 *$50 over* for the month');
+      expect(text).toContain('Groceries  *$189.47*');
+      expect(text).toContain('Dining  🚨 *$50 over* for the month');
       // One month-context line at the end, 18 days left counting today.
-      expect(text).toContain('💰 $550 left this month · 18 days to go');
+      expect(text).toContain('$550 left this month · 18 days to go');
       expect(text).not.toContain('/wk pace');
     } finally {
       vi.useRealTimers();
@@ -1168,7 +1196,7 @@ describe('sendWeeklyTelegramReport', () => {
     const [, sentBody] = fetchMock.mock.calls[0];
     const text = JSON.parse((sentBody as any).body).text;
     // totalSpent = 750, totalBudget = 1300, remaining = 550
-    expect(text).toContain('💰 *$550 left* this month');
+    expect(text).toContain('*$550 left* this month');
     expect(text).toContain('_spent $750 of $1,300 · 58%_');
   });
 
@@ -1212,7 +1240,7 @@ describe('sendWeeklyTelegramReport', () => {
 
       const [, sentBody] = fetchMock.mock.calls[0];
       const text = JSON.parse((sentBody as any).body).text;
-      expect(text).toContain('💰 *$550 left* this month');
+      expect(text).toContain('*$550 left* this month');
       expect(text).toContain('*Biggest this week*');
       // The `*`-laden card descriptor arrives escaped, and outside every entity.
       expect(text).toContain('$412 · WHOLE FOODS MKT · Dining');
@@ -1262,7 +1290,7 @@ describe('sendWeeklyTelegramReport', () => {
 
       const [, sentBody] = fetchMock.mock.calls[0];
       const text = JSON.parse((sentBody as any).body).text;
-      expect(text).toContain('💰 *$550 left* this month');
+      expect(text).toContain('*$550 left* this month');
       expect(text).not.toContain('Biggest');
       expect(text).toBe(text.trimEnd());
     });
@@ -1351,7 +1379,7 @@ describe('sendMonthlyTelegramReport', () => {
       expect(vi.mocked(getNativeWealthfolioBudgets)).toHaveBeenCalledWith(expect.any(String), '2026-12');
       const [, sentBody] = fetchMock.mock.calls[0];
       const text = JSON.parse((sentBody as any).body).text;
-      expect(text).toContain('📅 *December wrap-up*');
+      expect(text).toContain('*December wrap-up*');
       expect(text).not.toContain('January');
     } finally {
       vi.useRealTimers();
@@ -1378,10 +1406,10 @@ describe('sendMonthlyTelegramReport', () => {
       const [, sentBody] = fetchMock.mock.calls[0];
       const text = JSON.parse((sentBody as any).body).text;
       expect(text).toBe(
-        '📅 *July wrap-up*\n'
+        '*July wrap-up*\n'
         + '\n'
-        + '🚨 🍽️ Dining  $550 of $500 · *$50 over*\n'
-        + '✅ 🛒 Groceries  *$200* of $800\n'
+        + '🚨 Dining  $550 of $500 · *$50 over*\n'
+        + '✅ Groceries  *$200* of $800\n'
         + '\n'
         + '💰 Finished *$550 under budget* · spent $750 of $1,300',
       );

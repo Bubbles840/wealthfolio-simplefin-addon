@@ -45,6 +45,10 @@ const makeProps = () => ({
     setTelegramConfig: vi.fn(),
     getAvailableReportCategories: vi.fn(async () => [] as string[]),
     getReportCategoryCatalog: vi.fn(async () => [] as any[]),
+    getReportGlyphStyle: vi.fn(async () => ({ mode: 'clean' as const, overrides: {} })),
+    setReportGlyphStyle: vi.fn(async () => {}),
+    getSubcategoryDisplay: vi.fn(async () => 'rollup' as const),
+    setSubcategoryDisplay: vi.fn(async () => {}),
     getCompanionVersion: vi.fn(async () => null),
     getOpenCards: vi.fn(async () => ({}) as Record<string, boolean>),
     // async, like the real SecretsStore method — the page fires it and forgets,
@@ -739,12 +743,14 @@ describe('SyncPage', () => {
     expect(screen.queryByText(/Last synced 4 hours ago/)).not.toBeInTheDocument();
   });
 
-  it('names where the category list comes from, so an empty matrix is not a mystery', async () => {
+  it('explains an empty matrix, and that the list is broader than the reports', async () => {
     const props = makeProps();
     props.store.getReportCategoryCatalog = vi.fn(async () => []);
     render(<SyncPage {...props} />);
     await openReportCategories();
-    await screen.findByText(/published by the companion/i);
+    // The hint has to carry the distinction the catalog introduced: everything is
+    // selectable here, but a report still only prints budgeted-or-spent ones.
+    await screen.findByText(/budget or spending this month/i);
     await screen.findByText(/categories will appear here/i);
   });
 

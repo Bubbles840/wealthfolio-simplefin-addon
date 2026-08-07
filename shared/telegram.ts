@@ -119,6 +119,40 @@ export function getCategoryEmoji(name: string): string {
 }
 
 /**
+ * How much decoration the reports carry.
+ *
+ * `clean` (the default) drops decorative glyphs entirely — the sun over a
+ * spending report, the moneybag on a summary, the label on every category line.
+ * Glyphs that encode STATE are deliberately unaffected: `🚨` over budget and
+ * `⚠️` over the week's pace are information, and Telegram gives no other way to
+ * mark a line, since it renders neither colour nor Wealthfolio's own icons.
+ *
+ * `overrides` wins in either mode, so a category can carry a glyph without
+ * turning them on everywhere.
+ */
+export interface GlyphStyle {
+  mode: 'clean' | 'glyphs';
+  overrides: Record<string, string>;
+}
+
+export const DEFAULT_GLYPH_STYLE: GlyphStyle = { mode: 'clean', overrides: {} };
+
+/** A category's leading glyph plus its trailing space, or '' in clean mode —
+ *  returned together so call sites never manage the spacing themselves and a
+ *  clean line cannot end up with a stray leading gap. */
+function categoryGlyph(name: string, style: GlyphStyle): string {
+  const override = style.overrides?.[name];
+  if (override) return `${override} `;
+  return style.mode === 'glyphs' ? `${getCategoryEmoji(name)} ` : '';
+}
+
+/** A report header's glyph, e.g. the daily check's sun. Headers have no
+ *  per-category override, so this is purely the mode. */
+function headerGlyph(glyph: string, style: GlyphStyle): string {
+  return style.mode === 'glyphs' ? `${glyph} ` : '';
+}
+
+/**
  * Renders a signed dollar figure: `-$1,494`, not `$1,494`.
  *
  * Keeping the sign is the safe default and deliberately not negotiable here.
@@ -492,7 +526,15 @@ export interface DailyDigestCategory {
   weekSpent: number;
   /** Monthly budget; `<= 0` means no budget row exists for this category. */
   budget: number;
+  /** Child categories and their month spend, for `breakdown` mode. Optional and
+   *  ignored entirely in `rollup`, so a caller that never asks for a breakdown
+   *  need not gather them. */
+  children?: Array<{ name: string; monthSpent: number }>;
 }
+
+/** `rollup` sums children into the parent (long-standing behaviour); `breakdown`
+ *  lists them beneath the parent's envelope line. */
+export type SubcategoryDisplay = 'rollup' | 'breakdown';
 
 export interface WeeklyEnvelopeInput {
   budget: number;
@@ -596,6 +638,8 @@ export function formatDailySpendingDigest(
   // Not named `window`: this module also runs inside the addon's browser
   // bundle, where that shadows the DOM global.
   period: DailyDigestWindow,
+  style: GlyphStyle = DEFAULT_GLYPH_STYLE,
+  subcategories: SubcategoryDisplay = 'rollup',
 ): string {
   const { daysFromWeekStartToMonthEnd, daysLeftInMonthInclusive } = period;
   const days = Math.max(1, daysLeftInMonthInclusive);
@@ -606,7 +650,7 @@ export function formatDailySpendingDigest(
     // was deselected in the addon's Report Categories list — so the text must
     // not assert either one. No "left to spend this week" subtitle either:
     // there is nothing to promise.
-    return `☀️ *Daily Spending Check*\n\nNothing to report. Set up budgets in Wealthfolio, or check that categories are selected for the daily report in the SimpleFin Sync addon.`;
+    return `${headerGlyph('☀️', style)}*Daily Spending Check*\n\nNothing to report. Set up budgets in Wealthfolio, or check that categories are selected for the daily report in the SimpleFin Sync addon.`;
   }
 
   const lines: string[] = [];
@@ -618,7 +662,7 @@ export function formatDailySpendingDigest(
   let anyBudget = false;
 
   for (const c of categories) {
-    const emoji = getCategoryEmoji(c.name);
+    const glyph = categoryGlyph(c.name, style);
     // Category names are Wealthfolio-user-controlled, not fully trusted display
     // text: a name like "Food_Drink" carries an odd (unmatched) underscore
     // count, which is enough to make Telegram reject the whole digest with a
@@ -637,7 +681,7 @@ export function formatDailySpendingDigest(
 
     if (c.budget <= 0) {
       if (c.monthSpent > 0) {
-        offBudgetLines.push(`${emoji} ${name}  ${moneyWhole(c.monthSpent)} spent`);
+        offBudgetLines.push(`${glyph}${name}  ${moneyWhole(c.monthSpent)} spent`);
       }
       continue;
     }
@@ -648,13 +692,24 @@ export function formatDailySpendingDigest(
     if (remainingMonth < 0) {
       // `Math.abs` explicitly: the word "over" states the direction, and
       // `-$50 over` would read as a double negative.
-      lines.push(`${emoji} ${name}  🚨 *${moneyWhole(Math.abs(remainingMonth))} over* for the month`);
+      lines.push(`${glyph}${name}  🚨 *${moneyWhole(Math.abs(remainingMonth))} over* for the month`);
     } else if (leftThisWeek < 0) {
-      lines.push(`${emoji} ${name}  ⚠️ *${money(leftThisWeek)} over* · ${moneyWhole(remainingMonth)} left mo`);
+      lines.push(`${glyph}${name}  ⚠️ *${money(leftThisWeek)} over* · ${moneyWhole(remainingMonth)} left mo`);
     } else if (leftThisWeek === 0 && remainingMonth === 0) {
-      lines.push(`${emoji} ${name}  *${money(0)}* · budget used up`);
+      lines.push(`${glyph}${name}  *${money(0)}* · budget used up`);
     } else {
-      lines.push(`${emoji} ${name}  *${money(leftThisWeek)}*`);
+      lines.push(`${glyph}${name}  *${money(leftThisWeek)}*`);
+    }
+
+    // Children hang off whichever parent line was just pushed. Spend-only: the
+    // budget is the parent's, and repeating an envelope per child would imply
+    // each has one. Zero-spend children are dropped — "where did it go" is the
+    // question, and a list of untouched categories does not answer it.
+    if (subcategories === 'breakdown' && c.children && c.children.length > 0) {
+      for (const child of [...c.children].sort((a, b) => b.monthSpent - a.monthSpent)) {
+        if (child.monthSpent <= 0) continue;
+        lines.push(`   ${categoryGlyph(child.name, style)}${escapeMarkdown(child.name)}  ${moneyWhole(child.monthSpent)}`);
+      }
     }
   }
 
@@ -676,10 +731,10 @@ export function formatDailySpendingDigest(
   // nothing.
   const overBudget = budgetedRemaining < 0 && moneyWhole(Math.abs(budgetedRemaining)) !== '$0';
   const summary = !anyBudget
-    ? `📅 ${days} ${dayWord} left in the month`
+    ? `${headerGlyph('📅', style)}${days} ${dayWord} left in the month`
     : overBudget
       ? `🚨 ${moneyWhole(Math.abs(budgetedRemaining))} over budget this month · ${days} ${dayWord} to go`
-      : `💰 ${moneyWhole(budgetedRemaining)} left this month · ${days} ${dayWord} to go`;
+      : `${headerGlyph('💰', style)}${moneyWhole(budgetedRemaining)} left this month · ${days} ${dayWord} to go`;
 
   // An empty budgeted block can happen while off-budget lines exist (every
   // budget deleted, spending continues); joining blocks that exist avoids a
@@ -689,7 +744,7 @@ export function formatDailySpendingDigest(
   // No trailing newline: callers append the sync-health footer as its own
   // block, and a trailing blank line would leave that footer looking like part
   // of this summary line.
-  return `☀️ *Daily Spending Check*\n_left to spend this week_\n\n${blocks.filter(Boolean).join('\n\n')}\n\n${summary}`;
+  return `${headerGlyph('☀️', style)}*Daily Spending Check*\n_left to spend this week_\n\n${blocks.filter(Boolean).join('\n\n')}\n\n${summary}`;
 }
 
 /**
@@ -760,10 +815,11 @@ export function formatMonthlyRemainingSummary(
   totalSpent: number,
   totalBudget: number,
   topSpends: WeeklyTopSpend[] = [],
+  style: GlyphStyle = DEFAULT_GLYPH_STYLE,
 ): string {
   const remaining = totalBudget - totalSpent;
   const pct = totalBudget > 0 ? Math.round((totalSpent / totalBudget) * 100) : 0;
-  const header = `📊 *Weekly Budget Check-In*\n\n`;
+  const header = `${headerGlyph('📊', style)}*Weekly Budget Check-In*\n\n`;
   const hint = `_Add budgets in Wealthfolio, or check which categories are selected for the weekly report._`;
   // Appended to BOTH branches below: "what were my biggest spends" is a fact
   // that does not depend on a budget existing, and the zero-budget branch —
@@ -774,14 +830,14 @@ export function formatMonthlyRemainingSummary(
   // total, and none of them is a number the reader spends against directly.
   if (totalBudget <= 0) {
     const headline = totalSpent > 0
-      ? `🏷️ *${moneyWhole(totalSpent)} spent* · no budget set`
-      : `🏷️ Nothing spent, no budgets set this month.`;
+      ? `${headerGlyph('🏷️', style)}*${moneyWhole(totalSpent)} spent* · no budget set`
+      : `${headerGlyph('🏷️', style)}Nothing spent, no budgets set this month.`;
     return `${header}${headline}\n${hint}${biggest}`;
   }
   const headline = remaining < 0
     // `Math.abs` explicitly: "over budget" states the direction.
     ? `🚨 *${moneyWhole(Math.abs(remaining))} over budget* this month`
-    : `💰 *${moneyWhole(remaining)} left* this month`;
+    : `${headerGlyph('💰', style)}*${moneyWhole(remaining)} left* this month`;
   return `${header}${headline}\n_spent ${moneyWhole(totalSpent)} of ${moneyWhole(totalBudget)} · ${pct}%_${biggest}`;
 }
 
@@ -889,8 +945,12 @@ export interface MonthlyWrapUpCategory {
  * `formatDollars`' comment — and there is no path on which an overspend can
  * render as headroom.
  */
-export function formatMonthlyWrapUp(categories: MonthlyWrapUpCategory[], monthName: string): string {
-  const header = `📅 *${escapeMarkdown(monthName)} wrap-up*`;
+export function formatMonthlyWrapUp(
+  categories: MonthlyWrapUpCategory[],
+  monthName: string,
+  style: GlyphStyle = DEFAULT_GLYPH_STYLE,
+): string {
+  const header = `${headerGlyph('📅', style)}*${escapeMarkdown(monthName)} wrap-up*`;
 
   if (categories.length === 0) {
     // Two distinct causes land here — that month had no budgets and no spending,
@@ -905,7 +965,7 @@ export function formatMonthlyWrapUp(categories: MonthlyWrapUpCategory[], monthNa
   let allSpent = 0;
 
   for (const c of categories) {
-    const emoji = getCategoryEmoji(c.name);
+    const glyph = categoryGlyph(c.name, style);
     // Category names are Wealthfolio-user-controlled. Escaped AND kept outside
     // every Markdown entity: legacy Markdown does not honour a backslash escape
     // inside one, so `*Food\_Drink*` would still leave a live italic opener and
@@ -915,7 +975,7 @@ export function formatMonthlyWrapUp(categories: MonthlyWrapUpCategory[], monthNa
     allSpent += c.spent;
 
     if (c.budget <= 0) {
-      lines.push(`🏷️ ${emoji} ${name}  *${moneyWhole(c.spent)}* · no budget`);
+      lines.push(`${headerGlyph('🏷️', style)}${glyph}${name}  *${moneyWhole(c.spent)}* · no budget`);
       continue;
     }
 
@@ -928,9 +988,9 @@ export function formatMonthlyWrapUp(categories: MonthlyWrapUpCategory[], monthNa
       // `Math.abs` is unnecessary here (`over > 0`) but the figure is deliberately
       // rendered from the positive difference and labelled "over" — the word is
       // what carries the direction.
-      lines.push(`🚨 ${emoji} ${name}  ${moneyWhole(c.spent)} of ${moneyWhole(c.budget)} · *${moneyWhole(over)} over*`);
+      lines.push(`🚨 ${glyph}${name}  ${moneyWhole(c.spent)} of ${moneyWhole(c.budget)} · *${moneyWhole(over)} over*`);
     } else {
-      lines.push(`✅ ${emoji} ${name}  *${moneyWhole(c.spent)}* of ${moneyWhole(c.budget)}`);
+      lines.push(`✅ ${glyph}${name}  *${moneyWhole(c.spent)}* of ${moneyWhole(c.budget)}`);
     }
   }
 
