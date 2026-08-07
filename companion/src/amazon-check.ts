@@ -50,9 +50,20 @@ async function main(): Promise<void> {
   try {
     source = await createImapSource(cfg);
   } catch (err) {
-    // The single most likely failure, and the message providers give is unhelpful,
-    // so name the two real causes rather than echoing "Invalid credentials".
     console.error(`\n❌ Could not connect or log in: ${(err as Error).message}`);
+    // imapflow reduces an IMAP rejection to "Command failed" and hangs the real
+    // answer off the error object, so printing only `.message` throws away the one
+    // thing that identifies the problem. Gmail is specific when asked —
+    // "[AUTHENTICATIONFAILED] Invalid credentials" versus
+    // "[ALERT] Application-specific password required" are different fixes — and
+    // guessing between them is exactly what this tool exists to avoid.
+    const e = err as Record<string, unknown>;
+    for (const key of [
+      'authenticationFailed', 'serverResponseCode', 'responseStatus',
+      'response', 'responseText', 'code', 'command',
+    ]) {
+      if (e[key] !== undefined) console.error(`   ${key}: ${String(e[key])}`);
+    }
     console.error(
       '\nThe usual causes, in order:\n' +
       '  1. This is your normal password, not an APP password. Gmail rejects the\n' +
