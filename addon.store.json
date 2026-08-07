@@ -21,20 +21,20 @@
   "supportUrl": "https://github.com/Bubbles840/wealthfolio-simplefin-addon/issues",
   "source": {
     "repository": "https://github.com/Bubbles840/wealthfolio-simplefin-addon",
-    "tag": "v1.6.1",
-    "commit": "b6eaf236bc53b5bcfafd4f4a386ec3d9727c01d0"
+    "tag": "v1.7.0",
+    "commit": "0f58f5570944efd18ee7665f657a059375dd28bc"
   },
   "release": {
-    "version": "1.6.1",
+    "version": "1.7.0",
     "minWealthfolioVersion": "3.6.2",
     "sdkVersion": "3.6.2",
     "critical": false,
     "breaking": false,
-    "notes": "Fixes a case where one un-importable transaction could silently strand an entire account's import: Wealthfolio's bulk save is all-or-nothing, so a single row it considers a duplicate discarded the whole batch while the sync reported zero imported. A refused batch is now retried row by row, skipping anything already stored, and errors name the specific transaction refused.",
-    "changelogUrl": "https://github.com/Bubbles840/wealthfolio-simplefin-addon/releases/tag/v1.6.1"
+    "notes": "Every spending category is now selectable in the addon, not just ones with a budget or spending, and each shows Wealthfolio's own icon and colour with subcategories grouped under their parent. Telegram reports are clean by default — decorative emoji removed, state markers kept — with an optional per-category glyph and a new toggle to break subcategories out under their parent. The companion also reports its version so a mismatched deployment is visible.",
+    "changelogUrl": "https://github.com/Bubbles840/wealthfolio-simplefin-addon/releases/tag/v1.7.0"
   },
   "distribution": {
-    "r2Path": "simplefin-sync/1.6.1/simplefin-sync.zip"
+    "r2Path": "simplefin-sync/1.7.0/simplefin-sync.zip"
   },
   "media": {
     "coverLight": "assets/cover-light.webp",
