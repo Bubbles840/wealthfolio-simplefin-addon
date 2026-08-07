@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.2] - 2026-08-07
+
+### Changed
+
+- **The category selector lists parents only.** Wealthfolio budgets at the parent
+  level — its own Spending Tracker has no subcategory amount field — and the
+  reports aggregate children into their parent, so a per-child checkbox controlled
+  nothing a report could act on while making the list 52 rows long. Subcategory
+  detail now lives solely in the `Break down under the parent` report mode, and the
+  hint says so and counts how many are hiding in there.
+- **Per-category emoji is a palette, not a text field.** The input assumed the user
+  knows how to type an emoji on their platform; it is now a click-to-pick grid of
+  ~80 budget-relevant glyphs grouped by theme, with a `Default` option to clear an
+  override. Curated rather than a picker dependency, because the addon runs in a
+  sandboxed iframe under a strict CSP.
+- **The emoji column disappears entirely in `Clean` mode**, where an override does
+  nothing — and where the old input's `—` placeholder read as a missing budget
+  figure rather than an empty setting.
+- **Overrides apply in `glyphs` mode only.** They previously applied in both, which
+  made `Clean` a lie: a report could carry glyphs while the setting said none. One
+  rule is easier to hold than an exception.
+- The `Report icons` label now reads `Telegram report icons`, since it never
+  affected the addon's own icons — those always come from Wealthfolio.
+
 ## [1.7.1] - 2026-08-07
 
 ### Fixed

@@ -127,8 +127,8 @@ export function getCategoryEmoji(name: string): string {
  * `⚠️` over the week's pace are information, and Telegram gives no other way to
  * mark a line, since it renders neither colour nor Wealthfolio's own icons.
  *
- * `overrides` wins in either mode, so a category can carry a glyph without
- * turning them on everywhere.
+ * `overrides` replaces a category's default glyph, and applies in `glyphs` mode
+ * only — `clean` means no glyphs at all, with no exceptions to remember.
  */
 export interface GlyphStyle {
   mode: 'clean' | 'glyphs';
@@ -139,11 +139,16 @@ export const DEFAULT_GLYPH_STYLE: GlyphStyle = { mode: 'clean', overrides: {} };
 
 /** A category's leading glyph plus its trailing space, or '' in clean mode —
  *  returned together so call sites never manage the spacing themselves and a
- *  clean line cannot end up with a stray leading gap. */
+ *  clean line cannot end up with a stray leading gap.
+ *
+ *  Overrides apply in `glyphs` mode ONLY. They used to apply in both, which made
+ *  `clean` a lie — a report could carry glyphs while the setting read "no icons" —
+ *  and left the addon choosing between an input that does nothing in the default
+ *  mode or a hidden setting that still had an effect. One rule holds better. */
 function categoryGlyph(name: string, style: GlyphStyle): string {
+  if (style.mode !== 'glyphs') return '';
   const override = style.overrides?.[name];
-  if (override) return `${override} `;
-  return style.mode === 'glyphs' ? `${getCategoryEmoji(name)} ` : '';
+  return `${override || getCategoryEmoji(name)} `;
 }
 
 /** A report header's glyph, e.g. the daily check's sun. Headers have no

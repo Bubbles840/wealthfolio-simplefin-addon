@@ -259,6 +259,40 @@ const css = `
   font-size: 13px; font-weight: 500;
 }
 .sfin-cat-name span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* ── Emoji picker: a curated palette, because the input it replaces assumed the
+      user knows how to type an emoji on their platform. ───────────────────── */
+.sfin-glyph-btn {
+  width: 26px; height: 22px; padding: 0; font-size: 14px; line-height: 1;
+  background: var(--muted); color: inherit; cursor: pointer;
+  border: 1px solid color-mix(in srgb, var(--muted-foreground) 28%, transparent);
+  border-radius: calc(var(--radius) - 4px);
+}
+.sfin-glyph-btn:hover { border-color: var(--primary); }
+.sfin-glyph-pop {
+  position: absolute; top: 26px; left: 0; z-index: 30;
+  width: 232px; max-height: 240px; overflow-y: auto; padding: 8px;
+  background: var(--popover, var(--background)); color: var(--foreground);
+  border: 1px solid color-mix(in srgb, var(--muted-foreground) 30%, transparent);
+  border-radius: var(--radius); box-shadow: 0 8px 24px rgb(0 0 0 / 0.28);
+}
+.sfin-glyph-group {
+  font-size: 10px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.06em; color: var(--muted-foreground); margin: 6px 0 3px;
+}
+.sfin-glyph-grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 2px; }
+.sfin-glyph-cell {
+  height: 24px; padding: 0; font-size: 15px; line-height: 1; cursor: pointer;
+  background: transparent; border: 1px solid transparent; border-radius: 4px;
+}
+.sfin-glyph-cell:hover { background: var(--muted); }
+.sfin-glyph-cell--on { border-color: var(--primary); background: var(--muted); }
+.sfin-glyph-clear {
+  width: 100%; padding: 4px 6px; font-size: 11.5px; cursor: pointer;
+  background: transparent; color: var(--muted-foreground);
+  border: 1px solid color-mix(in srgb, var(--muted-foreground) 24%, transparent);
+  border-radius: calc(var(--radius) - 4px);
+}
+.sfin-glyph-clear:hover { color: var(--foreground); border-color: var(--primary); }
 /* ── Disclosure: the ONE collapse pattern on the page ─────────────────────
       A single <button> spanning the whole header row, so the click target is
       the row (not a 10px chevron) and aria-expanded lives on the element

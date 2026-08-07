@@ -163,12 +163,20 @@ describe('glyph style', () => {
     expect(text).toContain('🛒'); // Groceries, from the keyword defaults
   });
 
-  it('honours a per-category override in either mode', () => {
-    const style = { mode: 'clean' as const, overrides: { Groceries: '🥕' } };
-    const text = formatDailySpendingDigest(cats, period, style);
-    expect(text).toContain('🥕 Groceries');
-    // Other categories stay clean — an override is per category, not a mode switch.
-    expect(text).not.toContain('🛍️');
+  it('applies overrides only in glyphs mode, so clean means clean', () => {
+    // Overrides used to apply in either mode. That made `clean` a lie — a report
+    // could carry glyphs while the setting said none — and it made the addon
+    // choose between showing a per-category input that does nothing in the
+    // default mode, or hiding a setting that still had an effect. One rule is
+    // simpler to hold: clean has no glyphs at all.
+    const overrides = { Groceries: '🥕' };
+    expect(formatDailySpendingDigest(cats, period, { mode: 'clean', overrides }))
+      .not.toContain('🥕');
+    const glyphs = formatDailySpendingDigest(cats, period, { mode: 'glyphs', overrides });
+    expect(glyphs).toContain('🥕 Groceries');
+    // The override replaces that category's default, and only that one.
+    expect(glyphs).not.toContain('🛒');
+    expect(glyphs).toContain('🛍️ Shopping');
   });
 
   it('applies the style to the weekly check-in and monthly wrap-up headers too', () => {

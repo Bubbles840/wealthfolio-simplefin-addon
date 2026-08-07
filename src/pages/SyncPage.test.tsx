@@ -102,7 +102,12 @@ describe('SyncPage', () => {
     expect(await screen.findByLabelText('Personal Care — Daily')).toBeTruthy();
   });
 
-  it('indents a subcategory under its parent rather than listing it flat', async () => {
+  it('offers parents only, because Wealthfolio budgets at the parent level', async () => {
+    // Was 'indents a subcategory under its parent'. Wealthfolio's own Spending
+    // Tracker has no subcategory budget field, and the reports aggregate children
+    // into their parent — so a per-child checkbox controlled nothing a report
+    // could act on, while making the list 52 rows long. Subcategory detail moved
+    // to the `breakdown` report mode instead.
     const props = makeProps();
     props.store.getReportCategoryCatalog = vi.fn(async () => ([
       { name: 'Transportation', parent: null, icon: 'Car', color: null, hasBudget: true, hasSpend: false },
@@ -110,10 +115,52 @@ describe('SyncPage', () => {
     ] as any));
     render(<SyncPage {...props} />);
     await openReportCategories();
-    const child = await screen.findByText('Gas & Fuel');
-    // 52 categories flat is unreadable; the catalog carries `parent` so the
-    // selector can mirror how they are actually organised.
-    expect((child.parentElement as HTMLElement).style.paddingLeft).toBe('18px');
+    expect(await screen.findByLabelText('Transportation — Daily')).toBeTruthy();
+    expect(screen.queryByLabelText('Gas & Fuel — Daily')).toBeNull();
+    // The children still exist in the catalog, and the hint says where they went.
+    expect(await screen.findByText(/1 subcategor/i)).toBeTruthy();
+  });
+
+  it('shows the emoji override only when Telegram reports actually use emoji', async () => {
+    // In clean mode the input's placeholder read as a missing amount, and an
+    // override does nothing there — overrides apply in glyphs mode only.
+    const props = makeProps();
+    props.store.getReportCategoryCatalog = vi.fn(async () => ([
+      { name: 'Groceries', parent: null, icon: 'ShoppingCart', color: null, hasBudget: true, hasSpend: true },
+    ] as any));
+    render(<SyncPage {...props} />);
+    await openReportCategories();
+    expect(screen.queryByLabelText('Groceries — report emoji')).toBeNull();
+
+    fireEvent.change(await screen.findByLabelText(/telegram report icons/i), {
+      target: { value: 'glyphs' },
+    });
+    const trigger = await screen.findByLabelText('Groceries — report emoji');
+    expect(trigger).toBeTruthy();
+    // It opens a palette rather than asking the user to type an emoji, which is
+    // the whole reason it stopped being a text field.
+    fireEvent.click(trigger);
+    fireEvent.click(await screen.findByLabelText('🥕'));
+    await waitFor(() => expect(props.store.setReportGlyphStyle).toHaveBeenCalledWith(
+      { mode: 'glyphs', overrides: { Groceries: '🥕' } },
+    ));
+  });
+
+  it('clears an override back to the category default', async () => {
+    const props = makeProps();
+    props.store.getReportGlyphStyle = vi.fn(async () => ({
+      mode: 'glyphs' as const, overrides: { Groceries: '🥕' },
+    }));
+    props.store.getReportCategoryCatalog = vi.fn(async () => ([
+      { name: 'Groceries', parent: null, icon: 'ShoppingCart', color: null, hasBudget: true, hasSpend: true },
+    ] as any));
+    render(<SyncPage {...props} />);
+    await openReportCategories();
+    fireEvent.click(await screen.findByLabelText('Groceries — report emoji'));
+    fireEvent.click(await screen.findByText(/^Default/));
+    await waitFor(() => expect(props.store.setReportGlyphStyle).toHaveBeenCalledWith(
+      { mode: 'glyphs', overrides: {} },
+    ));
   });
 
   it('renders Sync Now button', async () => {

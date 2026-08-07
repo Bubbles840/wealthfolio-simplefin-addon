@@ -15,6 +15,7 @@ import type { SyncResult } from '../utils/sync';
 import { fetchAccounts } from '../utils/simplefin';
 import { SyncStatus } from '../components/SyncStatus';
 import { CategoryIcon } from '../components/CategoryIcon';
+import { GlyphPicker } from '../components/GlyphPicker';
 import { RuleEditor } from '../components/RuleEditor';
 import { Button, Card, CollapsibleCard, Disclosure, ErrorBox, SectionLabel } from '../components/ui';
 import { sendTelegramMessage, getCategoryEmoji } from '../../shared/telegram';
@@ -468,37 +469,21 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
 
   const mappedEntries = Object.entries(mapping);
   const mappedCount = mappedEntries.length;
-  const availableCategories = categoryCatalog.map((c) => c.name);
   const driftAccounts = mappedEntries.filter(([sfinId]) => balances[sfinId]?.drift != null);
 
-  // Flattened for render: every top-level category followed by its own children,
-  // so one `.map` walks a grouped list. Sorted by name at each level rather than
-  // trusting insertion order, because the catalog's own ordering follows
-  // Wealthfolio's sort_order and can change under us.
-  const categoryRows = (() => {
-    const tops = categoryCatalog.filter((c) => !c.parent).sort((a, b) => a.name.localeCompare(b.name));
-    const childrenOf = new Map<string, typeof categoryCatalog>();
-    for (const c of categoryCatalog) {
-      if (!c.parent) continue;
-      const list = childrenOf.get(c.parent) ?? [];
-      list.push(c);
-      childrenOf.set(c.parent, list);
-    }
-    const rows: Array<{ entry: (typeof categoryCatalog)[number]; isChild: boolean }> = [];
-    for (const top of tops) {
-      rows.push({ entry: top, isChild: false });
-      for (const child of (childrenOf.get(top.name) ?? []).sort((a, b) => a.name.localeCompare(b.name))) {
-        rows.push({ entry: child, isChild: true });
-      }
-    }
-    // A child whose parent is absent from the catalog would otherwise vanish
-    // entirely; surface it at top level rather than dropping it silently.
-    const placed = new Set(rows.map((r) => r.entry.name));
-    for (const c of categoryCatalog) {
-      if (!placed.has(c.name)) rows.push({ entry: c, isChild: false });
-    }
-    return rows;
-  })();
+  // PARENTS ONLY. Wealthfolio budgets at the parent level — its own Spending
+  // Tracker has no subcategory amount field — and the reports aggregate children
+  // into their parent, so a per-child checkbox selected nothing a report could act
+  // on while making this list 52 rows long. Children still travel in the catalog:
+  // the companion needs them for the `breakdown` report mode, which is where
+  // subcategory detail belongs.
+  const categoryRows = categoryCatalog
+    .filter((c) => !c.parent)
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((entry) => ({ entry, isChild: false }));
+  const childCount = categoryCatalog.length - categoryRows.length;
+  // Only what the selector offers, so the 'all' sentinel stays reachable.
+  const availableCategories = categoryRows.map((r) => r.entry.name);
   const asOf = mappedEntries
     .map(([sfinId]) => balances[sfinId]?.date)
     .filter((d): d is number => typeof d === 'number')
@@ -1092,12 +1077,17 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
               onToggle={() => toggleCard(CARD.categories)}
             >
               <div className="sfin-subtle" style={{ fontSize: 12, marginBottom: 8 }}>
-                Every category Wealthfolio knows is listed. Reports still only print
+                Every budgetable category is listed — Wealthfolio budgets at this level,
+                so subcategories aren't selected individually. Reports still only print
                 the ones with a budget or spending this month.
+                {childCount > 0 && (
+                  <> Set <em>Subcategories</em> to <em>Break down</em> to see the {childCount}{' '}
+                  subcategories inside these in your reports.</>
+                )}
               </div>
 
               <div className="sfin-field-row">
-                <label htmlFor="sfin-glyph-mode">Report icons</label>
+                <label htmlFor="sfin-glyph-mode">Telegram report icons</label>
                 <select
                   id="sfin-glyph-mode"
                   value={glyphMode}
@@ -1194,23 +1184,24 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
                     >
                       <CategoryIcon name={entry.icon} color={entry.color} size={isChild ? 13 : 15} />
                       <span style={isChild ? undefined : { fontWeight: 600 }}>{name}</span>
-                      {/* An override applies in EITHER mode, so a single category
-                          can carry a glyph without turning them on everywhere. */}
-                      <input
-                        type="text"
-                        aria-label={`${name} — report icon`}
-                        value={glyphOverrides[name] ?? ''}
-                        placeholder="—"
-                        maxLength={4}
-                        style={{ width: 34, textAlign: 'center', padding: '1px 2px', fontSize: 13 }}
-                        onChange={(e) => {
-                          const next = { ...glyphOverrides };
-                          const v = e.target.value.trim();
-                          if (v) next[name] = v; else delete next[name];
-                          setGlyphOverrides(next);
-                          store.setReportGlyphStyle({ mode: glyphMode, overrides: next }).catch(() => {});
-                        }}
-                      />
+                      {/* A palette, not a text field: the input this replaces
+                          required knowing how to type an emoji on your platform.
+                          Only shown in glyphs mode, where an override does
+                          something — and where its placeholder no longer reads as
+                          a missing amount. */}
+                      {glyphMode === 'glyphs' && (
+                        <GlyphPicker
+                          label={`${name} — report emoji`}
+                          value={glyphOverrides[name] ?? ''}
+                          fallback={getCategoryEmoji(name)}
+                          onChange={(glyph) => {
+                            const next = { ...glyphOverrides };
+                            if (glyph) next[name] = glyph; else delete next[name];
+                            setGlyphOverrides(next);
+                            store.setReportGlyphStyle({ mode: glyphMode, overrides: next }).catch(() => {});
+                          }}
+                        />
+                      )}
                     </div>
                     <input
                       type="checkbox"
