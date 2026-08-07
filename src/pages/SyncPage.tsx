@@ -14,13 +14,14 @@ type BaselineFixOffer = {
 import type { SyncResult } from '../utils/sync';
 import { fetchAccounts } from '../utils/simplefin';
 import { SyncStatus } from '../components/SyncStatus';
+import { CategoryIcon } from '../components/CategoryIcon';
 import { RuleEditor } from '../components/RuleEditor';
 import { Button, Card, CollapsibleCard, Disclosure, ErrorBox, SectionLabel } from '../components/ui';
 import { sendTelegramMessage, getCategoryEmoji } from '../../shared/telegram';
 // The real default the sync engine applies when driftAlertThreshold is absent,
 // imported rather than re-typed so the field can never disagree with it.
 import { DEFAULT_DRIFT_ALERT_THRESHOLD_DOLLARS } from '../../shared/sync-core';
-import type { SecretsStore, AccountBalanceInfo } from '../utils/secrets';
+import type { SecretsStore, AccountBalanceInfo, CategoryCatalogEntry } from '../utils/secrets';
 import type { Scheduler } from '../utils/scheduler';
 import type { AccountMapping, MappingRule } from '../../shared/types';
 
@@ -170,7 +171,9 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
   const [dailyReportCategories, setDailyReportCategories] = useState<string[] | 'all'>('all');
   const [weeklyReportCategories, setWeeklyReportCategories] = useState<string[] | 'all'>('all');
   const [monthlyReportCategories, setMonthlyReportCategories] = useState<string[] | 'all'>('all');
-  const [availableCategories, setAvailableCategories] = useState<string[]>([]);
+  // The full catalog (all 52 spending categories) drives the SELECTOR; the
+  // derived name list below drives selection bookkeeping and the 'all' collapse.
+  const [categoryCatalog, setCategoryCatalog] = useState<CategoryCatalogEntry[]>([]);
   // Each threshold is a checkbox plus an amount, never an amount alone — see
   // `thresholdToSave`. The amounts are held as strings so a half-typed field
   // isn't coerced to 0 mid-keystroke.
@@ -256,10 +259,10 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
       store.getAutoHeal(),
       store.getAutoAdjust(),
       store.getTelegramConfig(),
-      store.getAvailableReportCategories(),
+      store.getReportCategoryCatalog(),
       ctx.api.accounts.getAll().catch(() => []),
       store.getOpenCards(),
-    ]).then(([last, m, r, h, names, bal, ah, aa, tg, availableCats, wfAccounts, cards]) => {
+    ]).then(([last, m, r, h, names, bal, ah, aa, tg, catalog, wfAccounts, cards]) => {
       setLastSyncAt(last);
       setMapping(m ?? {});
       setRules(r);
@@ -268,7 +271,7 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
       setBalances(bal);
       setAutoHeal(ah);
       setAutoAdjust(aa);
-      setAvailableCategories(availableCats);
+      setCategoryCatalog(catalog);
       if (tg) {
         setBotToken(tg.botToken ?? '');
         setChatId(tg.chatId ?? '');
@@ -457,7 +460,37 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
 
   const mappedEntries = Object.entries(mapping);
   const mappedCount = mappedEntries.length;
+  const availableCategories = categoryCatalog.map((c) => c.name);
   const driftAccounts = mappedEntries.filter(([sfinId]) => balances[sfinId]?.drift != null);
+
+  // Flattened for render: every top-level category followed by its own children,
+  // so one `.map` walks a grouped list. Sorted by name at each level rather than
+  // trusting insertion order, because the catalog's own ordering follows
+  // Wealthfolio's sort_order and can change under us.
+  const categoryRows = (() => {
+    const tops = categoryCatalog.filter((c) => !c.parent).sort((a, b) => a.name.localeCompare(b.name));
+    const childrenOf = new Map<string, typeof categoryCatalog>();
+    for (const c of categoryCatalog) {
+      if (!c.parent) continue;
+      const list = childrenOf.get(c.parent) ?? [];
+      list.push(c);
+      childrenOf.set(c.parent, list);
+    }
+    const rows: Array<{ entry: (typeof categoryCatalog)[number]; isChild: boolean }> = [];
+    for (const top of tops) {
+      rows.push({ entry: top, isChild: false });
+      for (const child of (childrenOf.get(top.name) ?? []).sort((a, b) => a.name.localeCompare(b.name))) {
+        rows.push({ entry: child, isChild: true });
+      }
+    }
+    // A child whose parent is absent from the catalog would otherwise vanish
+    // entirely; surface it at top level rather than dropping it silently.
+    const placed = new Set(rows.map((r) => r.entry.name));
+    for (const c of categoryCatalog) {
+      if (!placed.has(c.name)) rows.push({ entry: c, isChild: false });
+    }
+    return rows;
+  })();
   const asOf = mappedEntries
     .map(([sfinId]) => balances[sfinId]?.date)
     .filter((d): d is number => typeof d === 'number')
@@ -1070,8 +1103,8 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
                 Categories will appear here after the companion's first sync.
               </div>
             ) : (
-              availableCategories.map((name) => {
-                const emoji = getCategoryEmoji(name);
+              categoryRows.map(({ entry, isChild }) => {
+                const name = entry.name;
                 const inDaily = dailyReportCategories === 'all' || dailyReportCategories.includes(name);
                 const inWeekly = weeklyReportCategories === 'all' || weeklyReportCategories.includes(name);
                 const inMonthly = monthlyReportCategories === 'all' || monthlyReportCategories.includes(name);
@@ -1109,9 +1142,15 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
                 };
                 return (
                   <React.Fragment key={name}>
-                    <div className="sfin-cat-name">
-                      <span aria-hidden style={{ fontSize: 15 }}>{emoji}</span>
-                      <span>{name}</span>
+                    <div
+                      className="sfin-cat-name"
+                      // Children indent under their parent. With 52 categories a
+                      // flat list is unreadable, and the catalog carries `parent`
+                      // precisely so the shape can match how they're thought of.
+                      style={isChild ? { paddingLeft: 18 } : undefined}
+                    >
+                      <CategoryIcon name={entry.icon} color={entry.color} size={isChild ? 13 : 15} />
+                      <span style={isChild ? undefined : { fontWeight: 600 }}>{name}</span>
                     </div>
                     <input
                       type="checkbox"

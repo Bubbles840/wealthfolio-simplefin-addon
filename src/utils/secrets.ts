@@ -5,6 +5,19 @@ import type { SyncResult } from '../../shared/sync-core';
 import { LARGE_TX_OUTBOX_SECRET_KEY } from '../../shared/telegram';
 
 /** Per-account balance snapshot captured on each sync, for the Sync page. */
+/** One spending category as the companion published it. Mirrors
+ *  `NativeCategoryCatalogEntry`; kept structural rather than imported because the
+ *  browser bundle must not pull in the companion's node:sqlite module. */
+export interface CategoryCatalogEntry {
+  name: string;
+  parent: string | null;
+  /** lucide-react export name, straight from Wealthfolio. */
+  icon: string | null;
+  color: string | null;
+  hasBudget: boolean;
+  hasSpend: boolean;
+}
+
 export interface AccountBalanceInfo {
   /** SimpleFin's reported balance, or null when SimpleFin didn't provide a
    *  numeric balance for the account (shown as "—" rather than a false $0.00). */
@@ -36,6 +49,7 @@ const KEYS = {
   telegramConfig: 'telegram_config',
   availableReportCategories: 'available_report_categories',
   companionVersion: 'companion_version',
+  reportCategoryCatalog: 'report_category_catalog',
   openCards: 'ui_open_cards',
   pendingLargeTxAlerts: LARGE_TX_OUTBOX_SECRET_KEY,
 } as const;
@@ -161,6 +175,34 @@ export class SecretsStore {
 
   /** Category names the companion has seen while building its last report —
    *  read-only from the addon's side, published by the companion. */
+  /**
+   * Every spending category Wealthfolio knows, with its parent, icon, colour and
+   * whether a budget or spending touched it this month.
+   *
+   * Falls back to the legacy `available_report_categories` string array — which
+   * only ever held budgeted-or-spent names — so an addon running against a
+   * companion that predates the catalog still lists something rather than
+   * nothing. Those entries carry no parent or icon and are marked as having a
+   * budget, because that is the only reason the old publisher would have
+   * included them.
+   */
+  async getReportCategoryCatalog(): Promise<CategoryCatalogEntry[]> {
+    const raw = await this.ctx.api.secrets.get(KEYS.reportCategoryCatalog);
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw) as CategoryCatalogEntry[];
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      } catch {
+        // Unreadable secret: fall through to the legacy list rather than
+        // rendering an empty selector.
+      }
+    }
+    const legacy = await this.getAvailableReportCategories();
+    return legacy.map((name) => ({
+      name, parent: null, icon: null, color: null, hasBudget: true, hasSpend: false,
+    }));
+  }
+
   /** Which companion build last synced this instance, or null when no companion
    *  has ever run. The two halves deploy separately and can legitimately differ,
    *  which is exactly why this is worth showing. */

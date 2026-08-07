@@ -182,13 +182,18 @@ export function getNativeWealthfolioSpendingBetween(
   return result;
 }
 
+/** First day of the month AFTER `yearMonth` (`2026-12` -> `2027-01-01`), as the
+ *  exclusive upper bound every month-scoped query needs. */
+function nextMonthStart(yearMonth: string): string {
+  const [y, m] = yearMonth.split('-').map(Number);
+  return m === 12 ? `${y + 1}-01-01` : `${y}-${String(m + 1).padStart(2, '0')}-01`;
+}
+
 /**
  * Returns native category spent totals directly from wealthfolio.db for a given month (e.g. '2026-07').
  */
 export function getNativeWealthfolioSpending(dbPath: string, yearMonth: string): Record<string, number> {
-  const [y, m] = yearMonth.split('-').map(Number);
-  const nextMonth = m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, '0')}`;
-  return getNativeWealthfolioSpendingBetween(dbPath, `${yearMonth}-01`, `${nextMonth}-01`);
+  return getNativeWealthfolioSpendingBetween(dbPath, `${yearMonth}-01`, nextMonthStart(yearMonth));
 }
 
 /**
@@ -385,4 +390,90 @@ export function getNativeUncategorizedSpending(
       accountName: String(vals[5]),
     };
   });
+}
+
+/** One spending category as Wealthfolio defines it, plus whether it matters to
+ *  this month's report. */
+export interface NativeCategoryCatalogEntry {
+  name: string;
+  /** Parent's display name, or null for a top-level category. */
+  parent: string | null;
+  /** lucide-react export name, straight from Wealthfolio (`Fuel`, `Gamepad2`). */
+  icon: string | null;
+  /** Hex, straight from Wealthfolio. */
+  color: string | null;
+  hasBudget: boolean;
+  hasSpend: boolean;
+}
+
+/**
+ * EVERY spending category, whether or not money or a budget touched it.
+ *
+ * The addon's selection list used to come from `unionCategoryNames(spent, budget)`
+ * — categories with a budget or spending — so a category like Personal Care
+ * could not be selected until money happened to move through it. That conflated
+ * two separate questions: "what can I choose to report on?" (all of them) and
+ * "what is worth printing this month?" (budgeted or spent). This answers the
+ * first; `hasBudget`/`hasSpend` let the caller answer the second.
+ *
+ * Scoped to `spending_categories`, so income and savings taxonomies cannot leak
+ * into a spending report. Icon and colour come from Wealthfolio's own columns
+ * rather than a mapping of ours, so a category it adds an icon for renders
+ * correctly with no change here.
+ */
+export function getNativeCategoryCatalog(
+  dbPath: string,
+  yearMonth: string,
+): NativeCategoryCatalogEntry[] {
+  if (!dbPath || !existsSync(dbPath)) return [];
+  if (!/^\d{4}-\d{2}$/.test(yearMonth)) return [];
+  const start = `${yearMonth}-01`;
+  const end = nextMonthStart(yearMonth);
+
+  const query = `
+    SELECT tc.name,
+           COALESCE(parent.name, ''),
+           COALESCE(tc.icon, ''),
+           COALESCE(tc.color, ''),
+           CASE WHEN EXISTS (
+             SELECT 1 FROM budget_targets bt
+             WHERE bt.category_id = tc.id
+               AND (bt.period_key = '${yearMonth}' OR bt.period_key = 'default')
+               AND CAST(bt.amount AS REAL) > 0
+           ) THEN 1 ELSE 0 END,
+           CASE WHEN EXISTS (
+             SELECT 1 FROM activity_taxonomy_assignments ata
+             JOIN activities a ON a.id = ata.activity_id
+             WHERE ata.category_id = tc.id
+               AND a.activity_date >= '${start}' AND a.activity_date < '${end}'
+               AND UPPER(a.activity_type) IN ('WITHDRAWAL', 'FEE', 'TAX')
+           ) THEN 1 ELSE 0 END
+    FROM taxonomy_categories tc
+    LEFT JOIN taxonomy_categories parent ON tc.parent_id = parent.id
+    WHERE tc.taxonomy_id = 'spending_categories'
+    ORDER BY COALESCE(parent.name, tc.name), tc.parent_id IS NOT NULL, tc.sort_order, tc.name;
+  `;
+
+  const rows = queryNativeDb<Record<string, unknown>>(
+    dbPath,
+    'category catalog',
+    query,
+    (parts) => (parts.length === 6
+      ? { c0: parts[0], c1: parts[1], c2: parts[2], c3: parts[3], c4: parts[4], c5: parts[5] }
+      : null),
+  );
+
+  // node:sqlite yields column-named objects, the CLI fallback the c0..c5 shape
+  // above; read positionally so one mapping serves both.
+  return rows.map((r) => {
+    const v = Object.values(r) as Array<string | number>;
+    return {
+      name: String(v[0]),
+      parent: String(v[1] ?? '') || null,
+      icon: String(v[2] ?? '') || null,
+      color: String(v[3] ?? '') || null,
+      hasBudget: Number(v[4]) === 1,
+      hasSpend: Number(v[5]) === 1,
+    };
+  }).filter((c) => !!c.name);
 }

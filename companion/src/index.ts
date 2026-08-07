@@ -18,7 +18,7 @@ import { pollTelegramDismissals, pruneDismissals } from './dismissals.js';
 import type { DismissalLedger } from './dismissals.js';
 import type { SyncHealth } from '../../shared/telegram.js';
 import { SIMPLEFIN_SYNC_VERSION, COMPANION_VERSION_SECRET_KEY } from '../../shared/version.js';
-import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending } from './sqlite-native.js';
+import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeCategoryCatalog } from './sqlite-native.js';
 
 const logLevel: 'info' | 'debug' =
   process.env.LOG_LEVEL === 'debug' ? 'debug' : 'info';
@@ -701,9 +701,34 @@ async function publishAvailableCategories(
   wfClient: WealthfolioClient,
   spentMap: Record<string, number>,
   budgetMap: Record<string, number>,
+  yearMonth?: string,
 ): Promise<string[]> {
   const names = unionCategoryNames(spentMap, budgetMap);
   await wfClient.setAddonSecret('simplefin-sync', 'available_report_categories', JSON.stringify(names));
+
+  // The CATALOG is what the addon's selection list should use: every spending
+  // category Wealthfolio knows, not just the ones a budget or a purchase touched
+  // this month. Those are different questions, and conflating them is why a
+  // category like Personal Care could not be selected until money moved through
+  // it. Reports keep filtering on hasBudget/hasSpend.
+  //
+  // Best-effort and additive: the old string array above is still written, so an
+  // addon build that predates the catalog keeps working unchanged.
+  if (yearMonth) {
+    try {
+      const dbPath = process.env.WEALTHFOLIO_DB_PATH || '/mnt/wealthfolio/wealthfolio.db';
+      const catalog = getNativeCategoryCatalog(dbPath, yearMonth);
+      if (catalog.length > 0) {
+        await wfClient.setAddonSecret(
+          'simplefin-sync',
+          'report_category_catalog',
+          JSON.stringify(catalog),
+        );
+      }
+    } catch (err) {
+      debug(`Category catalog publish skipped: ${formatError(err)}`);
+    }
+  }
   return names;
 }
 
@@ -737,7 +762,7 @@ export async function sendDailyTelegramReport(wfClient: WealthfolioClient): Prom
   // Fed from the MONTH maps on purpose: a week-scoped list would make
   // categories disappear from the addon's Report Categories checklist mid-month
   // just because nothing was spent on them this week.
-  const allNames = await publishAvailableCategories(wfClient, spentMap, budgetMap);
+  const allNames = await publishAvailableCategories(wfClient, spentMap, budgetMap, yearMonth);
 
   const names = filterCategories(allNames, tg.dailyReportCategories);
   const categories = names.map((name) => ({
@@ -805,7 +830,7 @@ export async function sendWeeklyTelegramReport(wfClient: WealthfolioClient): Pro
   const yearMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
   const spentMap = getNativeWealthfolioSpending(dbPath, yearMonth);
   const budgetMap = getNativeWealthfolioBudgets(dbPath, yearMonth);
-  const allNames = await publishAvailableCategories(wfClient, spentMap, budgetMap);
+  const allNames = await publishAvailableCategories(wfClient, spentMap, budgetMap, yearMonth);
 
   const names = filterCategories(allNames, tg.weeklyReportCategories);
   const totalSpent = names.reduce((sum, n) => sum + (spentMap[n] ?? 0), 0);
@@ -886,7 +911,7 @@ export async function sendMonthlyTelegramReport(wfClient: WealthfolioClient): Pr
   const { yearMonth, monthName } = previousYearMonth(new Date());
   const spentMap = getNativeWealthfolioSpending(dbPath, yearMonth);
   const budgetMap = getNativeWealthfolioBudgets(dbPath, yearMonth);
-  const allNames = await publishAvailableCategories(wfClient, spentMap, budgetMap);
+  const allNames = await publishAvailableCategories(wfClient, spentMap, budgetMap, yearMonth);
 
   const names = filterCategories(allNames, tg.monthlyReportCategories);
   const categories = names.map((name) => ({

@@ -44,6 +44,8 @@ const makeProps = () => ({
     getTelegramConfig: vi.fn(async () => null),
     setTelegramConfig: vi.fn(),
     getAvailableReportCategories: vi.fn(async () => [] as string[]),
+    getReportCategoryCatalog: vi.fn(async () => [] as any[]),
+    getCompanionVersion: vi.fn(async () => null),
     getOpenCards: vi.fn(async () => ({}) as Record<string, boolean>),
     // async, like the real SecretsStore method — the page fires it and forgets,
     // so it has to be thenable
@@ -73,6 +75,43 @@ async function openReportCategories() {
 }
 
 describe('SyncPage', () => {
+
+  /** Catalog entries for the selector. `hasBudget: false, hasSpend: false` is the
+   *  case the old name-array publisher could not express: a category the user can
+   *  choose to report on even though nothing has touched it yet. */
+  const catalog = (...names: string[]) =>
+    names.map((name) => ({
+      name, parent: null, icon: null, color: null, hasBudget: false, hasSpend: false,
+    }));
+
+
+  it('lists a category with no budget and no spending, which the old name list could not', async () => {
+    // The live gap: "Personal Care" existed in Wealthfolio but could not be
+    // selected, because the published list was budget-or-spend only.
+    const props = makeProps();
+    props.store.getReportCategoryCatalog = vi.fn(async () => ([
+      { name: 'Transportation', parent: null, icon: 'Car', color: '#24837B', hasBudget: true, hasSpend: true },
+      { name: 'Personal Care', parent: null, icon: 'Sparkles', color: '#B0552E', hasBudget: false, hasSpend: false },
+    ] as any));
+    render(<SyncPage {...props} />);
+    await openReportCategories();
+    expect(await screen.findByLabelText('Personal Care — Daily')).toBeTruthy();
+  });
+
+  it('indents a subcategory under its parent rather than listing it flat', async () => {
+    const props = makeProps();
+    props.store.getReportCategoryCatalog = vi.fn(async () => ([
+      { name: 'Transportation', parent: null, icon: 'Car', color: null, hasBudget: true, hasSpend: false },
+      { name: 'Gas & Fuel', parent: 'Transportation', icon: 'Fuel', color: null, hasBudget: false, hasSpend: true },
+    ] as any));
+    render(<SyncPage {...props} />);
+    await openReportCategories();
+    const child = await screen.findByText('Gas & Fuel');
+    // 52 categories flat is unreadable; the catalog carries `parent` so the
+    // selector can mirror how they are actually organised.
+    expect((child.parentElement as HTMLElement).style.paddingLeft).toBe('18px');
+  });
+
   it('renders Sync Now button', async () => {
     render(<SyncPage {...makeProps()} />);
     await waitFor(() => expect(screen.getByRole('button', { name: /sync now/i })).toBeInTheDocument());
@@ -114,7 +153,7 @@ describe('SyncPage', () => {
 
   it('renders a Report Categories checklist populated from the companion-published list, defaulting to all selected', async () => {
     const props = makeProps();
-    props.store.getAvailableReportCategories = vi.fn(async () => ['Dining', 'Groceries']);
+    props.store.getReportCategoryCatalog = vi.fn(async () => catalog('Dining', 'Groceries'));
     render(<SyncPage {...props} />);
     await openReportCategories();
     await screen.findByText('Dining');
@@ -126,7 +165,7 @@ describe('SyncPage', () => {
 
   it('shows a placeholder before the companion has published any categories', async () => {
     const props = makeProps();
-    props.store.getAvailableReportCategories = vi.fn(async () => []);
+    props.store.getReportCategoryCatalog = vi.fn(async () => []);
     render(<SyncPage {...props} />);
     await openReportCategories();
     await screen.findByText(/categories will appear here/i);
@@ -134,7 +173,7 @@ describe('SyncPage', () => {
 
   it('saves the selected daily/weekly category lists in Telegram config', async () => {
     const props = makeProps();
-    props.store.getAvailableReportCategories = vi.fn(async () => ['Dining', 'Groceries']);
+    props.store.getReportCategoryCatalog = vi.fn(async () => catalog('Dining', 'Groceries'));
     props.store.getTelegramConfig = vi.fn(async () => ({ botToken: 't', chatId: 'c', enabled: true }));
     props.store.setTelegramConfig = vi.fn(async () => {});
     render(<SyncPage {...props} />);
@@ -151,7 +190,7 @@ describe('SyncPage', () => {
 
   it('unchecking every category saves an empty array, not the "all" sentinel', async () => {
     const props = makeProps();
-    props.store.getAvailableReportCategories = vi.fn(async () => ['Dining']);
+    props.store.getReportCategoryCatalog = vi.fn(async () => catalog('Dining'));
     props.store.getTelegramConfig = vi.fn(async () => ({ botToken: 't', chatId: 'c', enabled: true }));
     props.store.setTelegramConfig = vi.fn(async () => {});
     render(<SyncPage {...props} />);
@@ -168,7 +207,7 @@ describe('SyncPage', () => {
 
   it('preserves a saved subset selection when the published category list grows', async () => {
     const props = makeProps();
-    props.store.getAvailableReportCategories = vi.fn(async () => ['Dining', 'Groceries', 'Travel']);
+    props.store.getReportCategoryCatalog = vi.fn(async () => catalog('Dining', 'Groceries', 'Travel'));
     props.store.getTelegramConfig = vi.fn(async () => ({
       botToken: 't',
       chatId: 'c',
@@ -198,7 +237,7 @@ describe('SyncPage', () => {
     // length matched the published list, so it stored 'all' and silently put
     // every category back into the user's reports.
     const props = makeProps();
-    props.store.getAvailableReportCategories = vi.fn(async () => ['Groceries', 'Dining']);
+    props.store.getReportCategoryCatalog = vi.fn(async () => catalog('Groceries', 'Dining'));
     props.store.getTelegramConfig = vi.fn(async () => ({
       botToken: 't',
       chatId: 'c',
@@ -225,7 +264,7 @@ describe('SyncPage', () => {
 
   it('collapses to the "all" sentinel only when the selection really covers every published category', async () => {
     const props = makeProps();
-    props.store.getAvailableReportCategories = vi.fn(async () => ['Groceries', 'Dining']);
+    props.store.getReportCategoryCatalog = vi.fn(async () => catalog('Groceries', 'Dining'));
     props.store.getTelegramConfig = vi.fn(async () => ({
       botToken: 't', chatId: 'c', enabled: true, dailyReportCategories: ['Groceries'],
     }));
@@ -424,7 +463,7 @@ describe('SyncPage', () => {
 
   it('adds a Monthly column to the category matrix without disturbing Daily or Weekly', async () => {
     const props = makeProps();
-    props.store.getAvailableReportCategories = vi.fn(async () => ['Dining', 'Groceries']);
+    props.store.getReportCategoryCatalog = vi.fn(async () => catalog('Dining', 'Groceries'));
     props.store.getTelegramConfig = vi.fn(async () => ({
       ...bareConfig(), monthlyReportCategories: ['Groceries'],
     }));
@@ -702,7 +741,7 @@ describe('SyncPage', () => {
 
   it('names where the category list comes from, so an empty matrix is not a mystery', async () => {
     const props = makeProps();
-    props.store.getAvailableReportCategories = vi.fn(async () => []);
+    props.store.getReportCategoryCatalog = vi.fn(async () => []);
     render(<SyncPage {...props} />);
     await openReportCategories();
     await screen.findByText(/published by the companion/i);
@@ -716,7 +755,7 @@ describe('SyncPage', () => {
     // flushes each discrete DOM event, so two fireEvent clicks can't share a
     // render snapshot. It pins the composition result the updater must produce.
     const props = makeProps();
-    props.store.getAvailableReportCategories = vi.fn(async () => ['Groceries', 'Dining', 'Travel']);
+    props.store.getReportCategoryCatalog = vi.fn(async () => catalog('Groceries', 'Dining', 'Travel'));
     props.store.getTelegramConfig = vi.fn(async () => ({ botToken: 't', chatId: 'c', enabled: true }));
     props.store.setTelegramConfig = vi.fn(async () => {});
     render(<SyncPage {...props} />);

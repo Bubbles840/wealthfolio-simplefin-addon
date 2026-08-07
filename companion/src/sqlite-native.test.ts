@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending } from './sqlite-native.js';
+import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeCategoryCatalog } from './sqlite-native.js';
 import { DatabaseSync } from 'node:sqlite';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
@@ -10,7 +10,7 @@ function makeTestDb(): { path: string; cleanup: () => void } {
   const path = join(dir, 'wealthfolio.db');
   const db = new DatabaseSync(path);
   db.exec(`
-    CREATE TABLE taxonomy_categories (id TEXT PRIMARY KEY, name TEXT, parent_id TEXT);
+    CREATE TABLE taxonomy_categories (id TEXT PRIMARY KEY, name TEXT, parent_id TEXT, taxonomy_id TEXT, icon TEXT, color TEXT, sort_order INTEGER);
     -- "notes" is the real column name for what the REST API calls "comment";
     -- SELECT comment FROM activities fails with "no such column: comment", so
     -- the fixture carries the SQLite name deliberately.
@@ -393,6 +393,77 @@ describe('sqlite-native', () => {
       } finally {
         cleanup();
       }
+    });
+  });
+
+  describe('getNativeCategoryCatalog', () => {
+    const seed = (path: string) => {
+      const db = new DatabaseSync(path);
+      db.exec(`
+        INSERT INTO taxonomy_categories (id,name,parent_id,taxonomy_id,icon,color,sort_order) VALUES
+          ('cat_transport','Transportation',NULL,'spending_categories','Car','#24837B',1),
+          ('cat_transport_gas','Gas & Fuel','cat_transport','spending_categories','Fuel','#24837B',1),
+          ('cat_transport_park','Parking','cat_transport','spending_categories','SquareParking','#24837B',2),
+          -- Neither budgeted nor spent: the whole point. Personal Care was
+          -- invisible in the addon because the old list was budget-or-spend only.
+          ('cat_personal','Personal Care',NULL,'spending_categories','Sparkles','#B0552E',2),
+          -- A different taxonomy must not leak in.
+          ('inc_other','Other Income',NULL,'income_sources','Wallet','#4F6B92',1);
+        INSERT INTO accounts (id,name) VALUES ('wf-a','Spend');
+        INSERT INTO activities VALUES ('a1','71.00','2026-07-06T00:00:00Z','WITHDRAWAL','GAS','wf-a');
+        INSERT INTO activity_taxonomy_assignments VALUES ('a1','cat_transport_gas');
+        INSERT INTO budget_targets (category_id,amount,period_key,updated_at)
+          VALUES ('cat_transport','300','2026-07','2026-07-01T00:00:00Z');
+      `);
+      db.close();
+    };
+
+    it('returns every spending category, including ones with no budget and no spending', () => {
+      const { path, cleanup } = makeTestDb();
+      try {
+        seed(path);
+        const cat = getNativeCategoryCatalog(path, '2026-07');
+        expect(cat.map((c) => c.name).sort()).toEqual(
+          ['Gas & Fuel', 'Parking', 'Personal Care', 'Transportation'],
+        );
+        // Income lives in a different taxonomy and is not a spending category.
+        expect(cat.map((c) => c.name)).not.toContain('Other Income');
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('carries the parent, and Wealthfolio own icon and colour', () => {
+      const { path, cleanup } = makeTestDb();
+      try {
+        seed(path);
+        const byName = new Map(getNativeCategoryCatalog(path, '2026-07').map((c) => [c.name, c]));
+        expect(byName.get('Gas & Fuel')).toMatchObject({
+          parent: 'Transportation', icon: 'Fuel', color: '#24837B',
+        });
+        expect(byName.get('Transportation')).toMatchObject({ parent: null, icon: 'Car' });
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('flags which categories have a budget and which saw money move', () => {
+      const { path, cleanup } = makeTestDb();
+      try {
+        seed(path);
+        const byName = new Map(getNativeCategoryCatalog(path, '2026-07').map((c) => [c.name, c]));
+        // Budget sits on the parent; the spend sits on the child.
+        expect(byName.get('Transportation')).toMatchObject({ hasBudget: true, hasSpend: false });
+        expect(byName.get('Gas & Fuel')).toMatchObject({ hasBudget: false, hasSpend: true });
+        // The flags are what the REPORT filters on; the addon shows all of them.
+        expect(byName.get('Personal Care')).toMatchObject({ hasBudget: false, hasSpend: false });
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('returns [] rather than throwing when the database is missing', () => {
+      expect(getNativeCategoryCatalog('/nonexistent/wealthfolio.db', '2026-07')).toEqual([]);
     });
   });
 });
