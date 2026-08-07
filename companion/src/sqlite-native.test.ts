@@ -18,6 +18,8 @@ function makeTestDb(): { path: string; cleanup: () => void } {
     CREATE TABLE activity_taxonomy_assignments (activity_id TEXT, category_id TEXT);
     CREATE TABLE budget_targets (category_id TEXT, amount TEXT, period_key TEXT, updated_at TEXT);
     CREATE TABLE accounts (id TEXT PRIMARY KEY, name TEXT);
+    CREATE TABLE budget_groups (id TEXT PRIMARY KEY, name TEXT, key TEXT, color TEXT, icon TEXT, sort_order INTEGER);
+    CREATE TABLE budget_group_assignments (id TEXT PRIMARY KEY, group_id TEXT, taxonomy_id TEXT, category_id TEXT);
   `);
   db.close();
   return { path, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
@@ -457,6 +459,78 @@ describe('sqlite-native', () => {
         expect(byName.get('Gas & Fuel')).toMatchObject({ hasBudget: false, hasSpend: true });
         // The flags are what the REPORT filters on; the addon shows all of them.
         expect(byName.get('Personal Care')).toMatchObject({ hasBudget: false, hasSpend: false });
+      } finally {
+        cleanup();
+      }
+    });
+
+
+    it('carries the budget group each category belongs to, with its own icon and order', () => {
+      const { path, cleanup } = makeTestDb();
+      try {
+        const db = new DatabaseSync(path);
+        db.exec(`
+          INSERT INTO taxonomy_categories (id,name,parent_id,taxonomy_id,icon,color,sort_order) VALUES
+            ('cat_housing','Housing',NULL,'spending_categories','Home','#B0552E',1),
+            ('cat_fun','Entertainment',NULL,'spending_categories','Film','#24837B',2),
+            ('cat_loose','Uncategorised Thing',NULL,'spending_categories','Tag',NULL,3);
+          INSERT INTO budget_groups (id,name,key,color,icon,sort_order) VALUES
+            ('grp_needs','Needs','needs','#4F6B92','Home',1),
+            ('grp_wants','Wants','wants','#B0552E','Tag',2);
+          INSERT INTO budget_group_assignments (id,group_id,taxonomy_id,category_id) VALUES
+            ('a1','grp_needs','spending_categories','cat_housing'),
+            ('a2','grp_wants','spending_categories','cat_fun');
+        `);
+        db.close();
+
+        const byName = new Map(getNativeCategoryCatalog(path, '2026-07').map((c) => [c.name, c]));
+        expect(byName.get('Housing')).toMatchObject({ group: 'Needs', groupSort: 1 });
+        expect(byName.get('Entertainment')).toMatchObject({ group: 'Wants', groupSort: 2 });
+        // A category nobody assigned must still appear — dropping it would hide a
+        // real category from the selector, which is the bug this catalog fixed.
+        expect(byName.get('Uncategorised Thing')).toMatchObject({ group: null });
+      } finally {
+        cleanup();
+      }
+    });
+
+
+    it('picks up a group and a category added later, with no code change', () => {
+      // Groups are user-editable in Wealthfolio just like categories, so nothing
+      // here may hardcode the six defaults: the catalog reads whatever exists at
+      // query time and inherits Wealthfolio's own ordering.
+      const { path, cleanup } = makeTestDb();
+      try {
+        const db = new DatabaseSync(path);
+        db.exec(`
+          INSERT INTO budget_groups (id,name,key,color,icon,sort_order) VALUES
+            ('grp_needs','Needs','needs',NULL,'Home',1);
+          INSERT INTO taxonomy_categories (id,name,parent_id,taxonomy_id,icon,color,sort_order)
+            VALUES ('cat_housing','Housing',NULL,'spending_categories','Home',NULL,1);
+          INSERT INTO budget_group_assignments (id,group_id,taxonomy_id,category_id)
+            VALUES ('a1','grp_needs','spending_categories','cat_housing');
+        `);
+        db.close();
+        expect(getNativeCategoryCatalog(path, '2026-07').map((c) => c.group)).toEqual(['Needs']);
+
+        // The user adds a group AND a category, and assigns one to the other.
+        const db2 = new DatabaseSync(path);
+        db2.exec(`
+          INSERT INTO budget_groups (id,name,key,color,icon,sort_order) VALUES
+            ('grp_pets','Pet Care','pet_care',NULL,'PawPrint',2);
+          INSERT INTO taxonomy_categories (id,name,parent_id,taxonomy_id,icon,color,sort_order)
+            VALUES ('cat_vet','Vet',NULL,'spending_categories','Stethoscope',NULL,1);
+          INSERT INTO budget_group_assignments (id,group_id,taxonomy_id,category_id)
+            VALUES ('a2','grp_pets','spending_categories','cat_vet');
+        `);
+        db2.close();
+
+        const after = getNativeCategoryCatalog(path, '2026-07');
+        expect(after.map((c) => [c.name, c.group])).toEqual([
+          ['Housing', 'Needs'],   // group sort_order 1 first...
+          ['Vet', 'Pet Care'],    // ...then the new group at 2
+        ]);
+        expect(after.find((c) => c.name === 'Vet')!.groupIcon).toBe('PawPrint');
       } finally {
         cleanup();
       }

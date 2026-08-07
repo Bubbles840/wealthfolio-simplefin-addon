@@ -404,6 +404,14 @@ export interface NativeCategoryCatalogEntry {
   color: string | null;
   hasBudget: boolean;
   hasSpend: boolean;
+  /** Wealthfolio's budget group — `Needs`, `Wants`, `Savings`, … — from
+   *  `budget_group_assignments`. Null when nothing has assigned this category,
+   *  which is a real state its own Spending Tracker also shows. */
+  group: string | null;
+  /** The group's own icon (lucide name) and display order, so a grouped UI can
+   *  match Wealthfolio's without a second query. */
+  groupIcon: string | null;
+  groupSort: number | null;
 }
 
 /**
@@ -447,19 +455,27 @@ export function getNativeCategoryCatalog(
              WHERE ata.category_id = tc.id
                AND a.activity_date >= '${start}' AND a.activity_date < '${end}'
                AND UPPER(a.activity_type) IN ('WITHDRAWAL', 'FEE', 'TAX')
-           ) THEN 1 ELSE 0 END
+           ) THEN 1 ELSE 0 END,
+           COALESCE(bg.name, ''), COALESCE(bg.icon, ''), COALESCE(bg.sort_order, -1)
     FROM taxonomy_categories tc
     LEFT JOIN taxonomy_categories parent ON tc.parent_id = parent.id
+    LEFT JOIN budget_group_assignments bga
+           ON bga.category_id = tc.id AND bga.taxonomy_id = tc.taxonomy_id
+    LEFT JOIN budget_groups bg ON bg.id = bga.group_id
     WHERE tc.taxonomy_id = 'spending_categories'
-    ORDER BY COALESCE(parent.name, tc.name), tc.parent_id IS NOT NULL, tc.sort_order, tc.name;
+    ORDER BY COALESCE(bg.sort_order, 9999), COALESCE(parent.name, tc.name),
+             tc.parent_id IS NOT NULL, tc.sort_order, tc.name;
   `;
 
   const rows = queryNativeDb<Record<string, unknown>>(
     dbPath,
     'category catalog',
     query,
-    (parts) => (parts.length === 6
-      ? { c0: parts[0], c1: parts[1], c2: parts[2], c3: parts[3], c4: parts[4], c5: parts[5] }
+    (parts) => (parts.length === 9
+      ? {
+          c0: parts[0], c1: parts[1], c2: parts[2], c3: parts[3], c4: parts[4],
+          c5: parts[5], c6: parts[6], c7: parts[7], c8: parts[8],
+        }
       : null),
   );
 
@@ -474,6 +490,9 @@ export function getNativeCategoryCatalog(
       color: String(v[3] ?? '') || null,
       hasBudget: Number(v[4]) === 1,
       hasSpend: Number(v[5]) === 1,
+      group: String(v[6] ?? '') || null,
+      groupIcon: String(v[7] ?? '') || null,
+      groupSort: Number(v[8]) >= 0 ? Number(v[8]) : null,
     };
   }).filter((c) => !!c.name);
 }

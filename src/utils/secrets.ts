@@ -23,6 +23,10 @@ export interface CategoryCatalogEntry {
   color: string | null;
   hasBudget: boolean;
   hasSpend: boolean;
+  /** Wealthfolio's budget group (`Needs`, `Wants`, …), null when unassigned. */
+  group?: string | null;
+  groupIcon?: string | null;
+  groupSort?: number | null;
 }
 
 export interface AccountBalanceInfo {

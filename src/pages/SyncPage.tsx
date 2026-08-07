@@ -82,6 +82,10 @@ const SUGGESTED_LARGE_TX_THRESHOLD = 500;
  *  package boundary. Keep the two in step. */
 const DEFAULT_WEEKLY_TOP_SPEND_COUNT = 5;
 
+/** Bucket for categories no budget group claims. Wealthfolio allows that state,
+ *  so the selector has to show them somewhere rather than dropping them. */
+const UNGROUPED = 'Ungrouped';
+
 /**
  * The two dollar thresholds mean opposite things when absent — `largeTransaction`
  * is OFF, `driftAlert` is ON at $100 — so neither can be expressed by an empty
@@ -471,17 +475,40 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
   const mappedCount = mappedEntries.length;
   const driftAccounts = mappedEntries.filter(([sfinId]) => balances[sfinId]?.drift != null);
 
-  // PARENTS ONLY. Wealthfolio budgets at the parent level — its own Spending
-  // Tracker has no subcategory amount field — and the reports aggregate children
-  // into their parent, so a per-child checkbox selected nothing a report could act
-  // on while making this list 52 rows long. Children still travel in the catalog:
-  // the companion needs them for the `breakdown` report mode, which is where
-  // subcategory detail belongs.
+  // PARENTS ONLY, GROUPED. Wealthfolio budgets at the parent level — its own
+  // Spending Tracker has no subcategory amount field — and the reports aggregate
+  // children into their parent, so a per-child checkbox controlled nothing a
+  // report could act on while making this list 52 rows long. Children still
+  // travel in the catalog: the companion needs them for the `breakdown` report
+  // mode, which is where subcategory detail belongs.
+  //
+  // Groups come from `budget_groups`, so a group the user adds or reorders in
+  // Wealthfolio shows up here with no change on our side. Unassigned categories
+  // land in a trailing bucket rather than vanishing.
   const categoryRows = categoryCatalog
     .filter((c) => !c.parent)
     .sort((a, b) => a.name.localeCompare(b.name))
     .map((entry) => ({ entry, isChild: false }));
   const childCount = categoryCatalog.length - categoryRows.length;
+
+  const categoryGroups = (() => {
+    const order = new Map<string, number>();
+    const icons = new Map<string, string | null>();
+    for (const { entry } of categoryRows) {
+      const g = entry.group ?? UNGROUPED;
+      if (!order.has(g)) {
+        order.set(g, entry.group ? (entry.groupSort ?? 9998) : 9999);
+        icons.set(g, entry.group ? (entry.groupIcon ?? null) : null);
+      }
+    }
+    return [...order.keys()]
+      .sort((a, b) => (order.get(a)! - order.get(b)!) || a.localeCompare(b))
+      .map((name) => ({
+        name,
+        icon: icons.get(name) ?? null,
+        rows: categoryRows.filter((r) => (r.entry.group ?? UNGROUPED) === name),
+      }));
+  })();
   // Only what the selector offers, so the 'all' sentinel stays reachable.
   const availableCategories = categoryRows.map((r) => r.entry.name);
   const asOf = mappedEntries
@@ -1120,23 +1147,32 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
                 </select>
               </div>
 
-              <div className="sfin-cats">
-            {availableCategories.length > 0 && (
-              <>
+              {availableCategories.length === 0 && (
+                <div className="sfin-subtle" style={{ fontSize: 12 }}>
+                  Categories will appear here after the companion's first sync.
+                </div>
+              )}
+              {categoryGroups.map((group) => (
+                <Disclosure
+                  key={group.name}
+                  id={`cat-group-${group.name}`}
+                  variant="inline"
+                  title={group.name}
+                  summary={`${group.rows.length} ${group.rows.length === 1 ? 'category' : 'categories'}`}
+                  open={isOpen(`cat-group-${group.name}`)}
+                  onToggle={() => toggleCard(`cat-group-${group.name}`)}
+                >
+                  <div className="sfin-cats">
+            <>
                 {/* Spacer holding grid column 1 so the captions sit above the
                     checkbox columns rather than sliding left one cell. */}
                 <div aria-hidden />
                 <div className="sfin-cats-col sfin-cats-head">Daily</div>
                 <div className="sfin-cats-col sfin-cats-head">Weekly</div>
                 <div className="sfin-cats-col sfin-cats-head">Monthly</div>
-              </>
-            )}
-            {availableCategories.length === 0 ? (
-              <div className="sfin-subtle" style={{ gridColumn: '1 / -1', fontSize: 12 }}>
-                Categories will appear here after the companion's first sync.
-              </div>
-            ) : (
-              categoryRows.map(({ entry, isChild }) => {
+            </>
+            {(
+              group.rows.map(({ entry, isChild }) => {
                 const name = entry.name;
                 const inDaily = dailyReportCategories === 'all' || dailyReportCategories.includes(name);
                 const inWeekly = weeklyReportCategories === 'all' || weeklyReportCategories.includes(name);
@@ -1225,7 +1261,9 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
                 );
               })
             )}
-              </div>
+                  </div>
+                </Disclosure>
+              ))}
             </Disclosure>
           </div>
 

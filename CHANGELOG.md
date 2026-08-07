@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-08-07
+
+### Added
+
+- **Categories are grouped the way Wealthfolio groups them** — one collapsible
+  section per budget group (Needs, Wants, Savings, Giving, Personal, Other), each
+  showing how many categories it holds. Read from `budget_groups` and
+  `budget_group_assignments`, so a group you add, rename or reorder in
+  Wealthfolio appears here on the next sync with nothing hardcoded on our side;
+  the same is already true of categories. A category no group claims lands under
+  `Ungrouped` rather than disappearing, because Wealthfolio permits that state.
+  Group order follows Wealthfolio's own `sort_order`, not alphabetical.
+
 ## [1.7.2] - 2026-08-07
 
 ### Changed

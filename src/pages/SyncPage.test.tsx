@@ -76,6 +76,18 @@ async function openSection(name: RegExp) {
 async function openReportCategories() {
   await openSection(/^Telegram Notifications/i);
   await openSection(/^Report categories/i);
+  // Categories now sit inside one collapsible section per budget group (Needs,
+  // Wants, …), mirroring Wealthfolio's own Spending Tracker. Expand whatever
+  // groups this test's catalog produced — their names vary by fixture, so this
+  // opens every still-collapsed disclosure inside the panel rather than naming
+  // them.
+  for (let pass = 0; pass < 3; pass++) {
+    const collapsed = document.querySelectorAll<HTMLElement>(
+      '.sfin-disclosure[aria-expanded="false"]',
+    );
+    if (collapsed.length === 0) break;
+    collapsed.forEach((el) => fireEvent.click(el));
+  }
 }
 
 describe('SyncPage', () => {
@@ -88,6 +100,54 @@ describe('SyncPage', () => {
       name, parent: null, icon: null, color: null, hasBudget: false, hasSpend: false,
     }));
 
+
+  it('groups categories the way Wealthfolio does, one collapsible section per budget group', async () => {
+    const props = makeProps();
+    props.store.getReportCategoryCatalog = vi.fn(async () => ([
+      { name: 'Housing', parent: null, icon: 'Home', color: null, hasBudget: true, hasSpend: true,
+        group: 'Needs', groupIcon: 'Home', groupSort: 1 },
+      { name: 'Entertainment', parent: null, icon: 'Film', color: null, hasBudget: false, hasSpend: true,
+        group: 'Wants', groupIcon: 'Tag', groupSort: 2 },
+      // Wealthfolio permits an unassigned category, so it must land somewhere
+      // rather than disappearing from the selector.
+      { name: 'Orphan', parent: null, icon: null, color: null, hasBudget: false, hasSpend: false,
+        group: null, groupIcon: null, groupSort: null },
+    ] as any));
+    render(<SyncPage {...props} />);
+    await openSection(/^Telegram Notifications/i);
+    await openSection(/^Report categories/i);
+
+    // Group headers exist and are collapsed until asked for — the point of the
+    // change, since a flat list of every category was the complaint.
+    const needs = await screen.findByRole('button', { name: /^Needs/ });
+    expect(needs.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByLabelText('Housing — Daily')).toBeNull();
+
+    fireEvent.click(needs);
+    expect(await screen.findByLabelText('Housing — Daily')).toBeTruthy();
+    // Opening Needs does not reveal another group's categories.
+    expect(screen.queryByLabelText('Entertainment — Daily')).toBeNull();
+
+    await screen.findByRole('button', { name: /^Wants/ });
+    await screen.findByRole('button', { name: /^Ungrouped/ });
+  });
+
+  it('orders groups by Wealthfolio own sort order, not alphabetically', async () => {
+    const props = makeProps();
+    props.store.getReportCategoryCatalog = vi.fn(async () => ([
+      { name: 'Zebra', parent: null, icon: null, color: null, hasBudget: true, hasSpend: false,
+        group: 'Needs', groupIcon: null, groupSort: 1 },
+      { name: 'Apple', parent: null, icon: null, color: null, hasBudget: true, hasSpend: false,
+        group: 'Wants', groupIcon: null, groupSort: 2 },
+    ] as any));
+    render(<SyncPage {...props} />);
+    await openSection(/^Telegram Notifications/i);
+    await openSection(/^Report categories/i);
+    const html = document.body.innerHTML;
+    // Needs before Wants because sort_order says so, even though W < N is false
+    // alphabetically — the ordering has to be Wealthfolio's, not ours.
+    expect(html.indexOf('Needs')).toBeLessThan(html.indexOf('Wants'));
+  });
 
   it('lists a category with no budget and no spending, which the old name list could not', async () => {
     // The live gap: "Personal Care" existed in Wealthfolio but could not be
