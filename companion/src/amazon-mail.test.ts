@@ -14,14 +14,15 @@ import type { AmazonLedger } from '../../shared/amazon-ledger.js';
 const email = (orderId: string, label: string, total: string) =>
   `Thanks for your order!\nOrder # ‫${orderId}\n⁦1⁩ ${label} item\nGrand Total:\t$${total}`;
 
-function fakeSource(messages: MailMessage[]) {
-  const seen: number[] = [];
+function fakeSource(messages: Array<Omit<MailMessage, 'mailbox'> & { mailbox?: string }>) {
+  const full: MailMessage[] = messages.map((m) => ({ mailbox: 'INBOX', ...m }));
+  const seen: MailMessage[] = [];
   const source: MailSource = {
-    async fetch() { return messages; },
-    async markSeen(uids) { seen.push(...uids); },
+    async fetch() { return full; },
+    async markSeen(msgs) { seen.push(...msgs); },
     async close() {},
   };
-  return { source, seen };
+  return { source, seen: () => seen };
 }
 
 function fakeStore(ledger: AmazonLedger = {}, labels: AmazonLabelCatalog = {}) {
@@ -82,7 +83,24 @@ describe('ingestAmazonMail', () => {
     const { store } = fakeStore();
     const r = await ingestAmazonMail(source, store, {}, NOW);
     expect(r.unparsed).toBe(1);
-    expect(seen).toEqual([11]);
+    expect(seen().map((m) => m.uid)).toEqual([11]);
+  });
+
+  it('flags by mailbox as well as uid, since uids collide across folders', async () => {
+    // IMAP uids are scoped per mailbox, and this poll reads INBOX *and* Spam
+    // (forwarded mail gets spam-flagged routinely — it happened on the very first
+    // test forward). Two different messages can both be uid 5, so flagging by uid
+    // alone marks the wrong one read: the parsed order re-ingests forever while an
+    // unrelated message is hidden from the next poll.
+    const { source, seen } = fakeSource([
+      { uid: 5, mailbox: 'INBOX', date: '2026-08-04T00:00:00Z', text: email('113-0728509-1925031', 'Electronics', '10.55') },
+      { uid: 5, mailbox: '[Gmail]/Spam', date: '2026-08-05T00:00:00Z', text: email('222-2222222-2222222', 'Grocery', '8.20') },
+    ]);
+    const { store } = fakeStore();
+    const r = await ingestAmazonMail(source, store, {}, NOW);
+    expect(r.added).toBe(2);
+    expect(seen().map((m) => `${m.mailbox}:${m.uid}`))
+      .toEqual(['INBOX:5', '[Gmail]/Spam:5']);
   });
 
   it('reports a label the first time it is seen, and not again', async () => {

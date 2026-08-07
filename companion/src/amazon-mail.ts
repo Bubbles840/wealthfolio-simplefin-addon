@@ -36,6 +36,15 @@ export type { AmazonMailConfig, AmazonLabelCatalog };
 /** One message, already MIME-decoded to plain text. */
 export interface MailMessage {
   uid: number;
+  /**
+   * The folder it came from.
+   *
+   * Required, not decorative: IMAP UIDs are scoped PER MAILBOX, so uid 5 in Spam
+   * and uid 5 in INBOX are different messages. Flagging by uid alone once more than
+   * one folder is scanned marks the wrong message read — the parsed order gets
+   * re-ingested forever while an unrelated one is hidden from the next poll.
+   */
+  mailbox: string;
   /** The message's own date — the anchor the ±5 day match window measures from. */
   date: string;
   text: string;
@@ -54,8 +63,9 @@ export interface MailMessage {
 export interface MailSource {
   /** Amazon messages not yet ingested, oldest first. */
   fetch(): Promise<MailMessage[]>;
-  /** Flag messages as read so the next poll skips them. */
-  markSeen(uids: number[]): Promise<void>;
+  /** Flag messages as read so the next poll skips them. Takes whole messages
+   *  rather than uids, because a uid means nothing without its mailbox. */
+  markSeen(messages: MailMessage[]): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -102,7 +112,7 @@ export async function ingestAmazonMail(
     scanned: messages.length, added: 0, unparsed: 0, pruned: 0, newLabels: [],
     unparsedSenders: {},
   };
-  const consumedUids: number[] = [];
+  const consumed: MailMessage[] = [];
 
   for (const msg of messages) {
     const orders = parseAmazonEmail(msg.text);
@@ -119,7 +129,7 @@ export async function ingestAmazonMail(
     const merged = mergeAmazonOrders(ledger, orders, emailDate);
     ledger = merged.ledger;
     result.added += merged.added;
-    consumedUids.push(msg.uid);
+    consumed.push(msg);
 
     for (const order of orders) {
       for (const label of order.labels) {
@@ -138,7 +148,7 @@ export async function ingestAmazonMail(
 
   if (result.added > 0 || pruned.removed > 0) await store.setAmazonLedger(pruned.ledger);
   if (result.newLabels.length > 0) await store.setAmazonLabels(labels);
-  if (consumedUids.length > 0) await source.markSeen(consumedUids);
+  if (consumed.length > 0) await source.markSeen(consumed);
 
   return result;
 }
@@ -167,14 +177,42 @@ export async function createImapSource(cfg: AmazonMailConfig): Promise<MailSourc
     logger: false,
   });
   await client.connect();
-  const lock = await client.getMailboxLock('INBOX');
 
-  return {
-    async fetch(): Promise<MailMessage[]> {
-      const out: MailMessage[] = [];
+  /**
+   * INBOX **and** the spam folder.
+   *
+   * Forwarded mail gets spam-flagged routinely — Amazon's own message arriving from
+   * a different account is exactly the pattern spam heuristics dislike, and it
+   * happened on the very first test forward. Reading INBOX only meant those orders
+   * were invisible, which is indistinguishable from "the parser broke" and is the
+   * kind of thing a user hits before they have any reason to trust the feature.
+   *
+   * A `never send it to Spam` filter on the receipts mailbox is still the better
+   * fix, and the setup guide asks for one. But a feature that silently does nothing
+   * when the user forgets one optional filter is a feature that silently does
+   * nothing, so this covers it either way.
+   *
+   * The risk accepted: spam CAN contain a forged Amazon receipt. The cost of one is
+   * a wrong category on a charge whose amount it happened to guess — never money
+   * moved — and the mailbox is an address nobody but Amazon and the user's own
+   * filter writes to.
+   */
+  const mailboxes = ['INBOX'];
+  try {
+    for (const box of await client.list()) {
+      if (box.specialUse === '\\Junk' && box.path !== 'INBOX') mailboxes.push(box.path);
+    }
+  } catch {
+    // No LIST support, or a server that hides folders: INBOX alone still works.
+  }
+
+  /** Scan one mailbox. Holds its lock only while reading it. */
+  async function scan(mailbox: string): Promise<MailMessage[]> {
+    const out: MailMessage[] = [];
+    const lock = await client.getMailboxLock(mailbox);
+    try {
       // UNSEEN only. The ledger's own key makes re-ingestion harmless, so this is
-      // purely about not re-downloading and re-parsing the whole mailbox every
-      // fifteen minutes.
+      // purely about not re-downloading and re-parsing everything every sync.
       const uids = await client.search({ seen: false }, { uid: true });
       if (!uids || uids.length === 0) return out;
       for await (const msg of client.fetch(
@@ -194,19 +232,49 @@ export async function createImapSource(cfg: AmazonMailConfig): Promise<MailSourc
         if (!isAmazonMessage(from[0], text)) continue;
         out.push({
           uid: msg.uid,
+          mailbox,
           date: (parsed.date ?? new Date()).toISOString(),
           text,
           from: from[0],
         });
       }
+    } finally {
+      lock.release();
+    }
+    return out;
+  }
+
+  return {
+    async fetch(): Promise<MailMessage[]> {
+      const out: MailMessage[] = [];
+      for (const mailbox of mailboxes) {
+        // One unreadable folder must not lose the others.
+        try {
+          out.push(...(await scan(mailbox)));
+        } catch {
+          // Ignored: the mailbox may have vanished between LIST and SELECT.
+        }
+      }
       return out;
     },
-    async markSeen(uids: number[]): Promise<void> {
-      if (uids.length === 0) return;
-      await client.messageFlagsAdd({ uid: uids.join(',') }, ['\\Seen'], { uid: true });
+    async markSeen(messages: MailMessage[]): Promise<void> {
+      // Grouped by mailbox, because uids only mean anything inside one.
+      const byBox = new Map<string, number[]>();
+      for (const m of messages) {
+        const list = byBox.get(m.mailbox);
+        if (list) list.push(m.uid);
+        else byBox.set(m.mailbox, [m.uid]);
+      }
+      for (const [mailbox, uids] of byBox) {
+        const lock = await client.getMailboxLock(mailbox);
+        try {
+          await client.messageFlagsAdd({ uid: uids.join(',') }, ['\\Seen'], { uid: true });
+        } finally {
+          lock.release();
+        }
+      }
     },
     async close(): Promise<void> {
-      lock.release();
       await client.logout().catch(() => {});
     },
   };

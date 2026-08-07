@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Forwarded order emails land in Spam, and the poll only read INBOX.** Amazon's
+  own message arriving from a different account is exactly the pattern spam
+  heuristics dislike, and it happened on the very first test forward — so those
+  orders were invisible, which is indistinguishable from "the parser broke" and is
+  the kind of wall a user hits before they have any reason to trust the feature.
+  The poll now scans INBOX *and* the spam folder. A `never send it to Spam` filter
+  on the receipts mailbox is still worth adding — Google deletes spam after 30 days
+  — and the setup guide asks for one, but forgetting it no longer breaks anything.
+
+  Flagging messages read is now keyed by **mailbox and uid**, not uid alone. IMAP
+  uids are scoped per mailbox, so uid 5 in Spam and uid 5 in INBOX are different
+  messages; the old code would have marked the wrong one read the moment a second
+  folder was in play — re-ingesting one order forever while hiding an unrelated
+  message from the next poll.
+
 - **Three-plus-category Amazon orders were dropped entirely.** The body form for
   those is `6 items: 1 Home Improvement, 1 Bath, and 4 others` — count first, line
   ending in "others" rather than "items", and a per-category count on each entry.

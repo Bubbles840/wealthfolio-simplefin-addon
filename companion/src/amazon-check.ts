@@ -75,18 +75,31 @@ async function main(): Promise<void> {
     const messages = await source.fetch();
     if (messages.length === 0) {
       console.log(
-        'No unread Amazon messages in the mailbox.\n\n' +
+        'No unread Amazon messages in INBOX or Spam.\n\n' +
         'If you expected some:\n' +
-        '  • Check they are actually there and UNREAD — this only looks at unread\n' +
-        '    mail, and opening one in a webmail client marks it read.\n' +
-        '  • Check the forwarding filter fired. Forwarded mail keeps Amazon as the\n' +
-        '    sender, which is what this looks for; a filter that forwards as YOU\n' +
-        '    instead will be skipped.',
+        '  • Check they are actually UNREAD — opening one in a webmail client marks\n' +
+        '    it read, and this only looks at unread mail.\n' +
+        '  • Check the forwarding filter fired at all. A Gmail filter with anything\n' +
+        '    in its "To" field matches nothing, since Amazon addresses its mail to\n' +
+        '    you, not to the receipts mailbox.\n' +
+        '  • Gmail\'s "also apply to matching conversations" does NOT forward old\n' +
+        '    mail. Only newly arriving mail is forwarded; hand-forward a few to test.',
       );
       return;
     }
 
-    console.log(`Found ${messages.length} unread Amazon message(s).\n`);
+    const inSpam = messages.filter((m) => /spam|junk/i.test(m.mailbox)).length;
+    console.log(`Found ${messages.length} unread Amazon message(s).`);
+    if (inSpam > 0) {
+      // Read anyway, but say so: a spam-flagged receipts mailbox is worth one
+      // "never send it to Spam" filter, and the user cannot fix what they cannot see.
+      console.log(
+        `  ${inSpam} of them are in Spam. They are read regardless, but add a filter\n` +
+        '  on this mailbox — from:amazon.com → Never send it to Spam — so Google does\n' +
+        '  not start deleting them after 30 days.',
+      );
+    }
+    console.log('');
     let understood = 0;
     for (const msg of messages) {
       const orders = parseAmazonEmail(msg.text);
@@ -96,7 +109,7 @@ async function main(): Promise<void> {
         // why: a sender that is not one of Amazon's order addresses means the
         // forwarding filter is too broad, while an order address that stopped
         // parsing means Amazon changed the format. Same symptom, opposite fixes.
-        console.log(`✗ ${date} — not recognised (from ${msg.from ?? 'unknown'})`);
+        console.log(`✗ ${date} — not recognised (from ${msg.from ?? 'unknown'}, in ${msg.mailbox})`);
         console.log('    First lines of the body:');
         for (const line of msg.text.split('\n').map((l) => l.trim()).filter(Boolean).slice(0, 8)) {
           console.log(`      ${line}`);
