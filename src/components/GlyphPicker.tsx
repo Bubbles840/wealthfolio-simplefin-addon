@@ -72,18 +72,26 @@ export function GlyphPicker({ value, fallback, label, onChange }: Props) {
       if (wrap.current && !wrap.current.contains(e.target as Node)) setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
-    // Fixed coordinates go stale the moment anything scrolls, and a panel floating
-    // away from its button is worse than one that closed.
-    const onScrollOrResize = () => setOpen(false);
+    // Fixed coordinates go stale when the PAGE scrolls, and a panel floating away
+    // from its button is worse than one that closed. But this listener is
+    // capturing, so it also sees the panel's OWN scroll — which closed the picker
+    // the instant the user scrolled it to reach the emoji they wanted, including
+    // by dragging its scrollbar. Scrolls originating inside the panel are its
+    // business, not a signal that the button moved.
+    const onScroll = (e: Event) => {
+      if (wrap.current && e.target instanceof Node && wrap.current.contains(e.target)) return;
+      setOpen(false);
+    };
+    const onResize = () => setOpen(false);
     document.addEventListener('mousedown', onDown);
     document.addEventListener('keydown', onKey);
-    window.addEventListener('scroll', onScrollOrResize, true);
-    window.addEventListener('resize', onScrollOrResize);
+    window.addEventListener('scroll', onScroll, true);
+    window.addEventListener('resize', onResize);
     return () => {
       document.removeEventListener('mousedown', onDown);
       document.removeEventListener('keydown', onKey);
-      window.removeEventListener('scroll', onScrollOrResize, true);
-      window.removeEventListener('resize', onScrollOrResize);
+      window.removeEventListener('scroll', onScroll, true);
+      window.removeEventListener('resize', onResize);
     };
   }, [open]);
 

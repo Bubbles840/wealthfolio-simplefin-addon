@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.2] - 2026-08-07
+
+### Fixed
+
+- **Scrolling the emoji panel closed it.** 1.8.1 closes the panel on page scroll,
+  because its coordinates are fixed and would otherwise drift away from the button
+  — but that listener is capturing, so it also saw the panel's own scroll and shut
+  it the instant the user reached for an emoji further down, dragging its scrollbar
+  included. Scrolls originating inside the panel are now ignored; a scroll anywhere
+  else still closes it.
+
 ## [1.8.1] - 2026-08-07
 
 ### Fixed

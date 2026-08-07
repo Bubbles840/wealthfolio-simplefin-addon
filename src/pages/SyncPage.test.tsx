@@ -233,6 +233,33 @@ describe('SyncPage', () => {
     expect(panel.style.left).not.toBe('');
   });
 
+  it('stays open while the emoji panel itself is scrolled', async () => {
+    // The scroll listener is CAPTURING (page scroll must close the panel, since
+    // its coordinates are fixed and would drift from the button). That also made
+    // it see the panel's own scroll, so the picker closed the moment the user
+    // scrolled to reach an emoji further down — including by dragging its
+    // scrollbar. Scrolls from inside the panel are not the page moving.
+    const props = makeProps();
+    props.store.getReportGlyphStyle = vi.fn(async () => ({ mode: 'glyphs' as const, overrides: {} }));
+    props.store.getReportCategoryCatalog = vi.fn(async () => ([
+      { name: 'Groceries', parent: null, icon: 'ShoppingCart', color: null,
+        hasBudget: true, hasSpend: true, group: 'Needs', groupIcon: 'Home', groupSort: 1 },
+    ] as any));
+    render(<SyncPage {...props} />);
+    await openReportCategories();
+    fireEvent.click(await screen.findByLabelText('Groceries — report emoji'));
+
+    const panel = await screen.findByRole('dialog', { name: 'Groceries — report emoji' });
+    fireEvent.scroll(panel);
+    expect(screen.queryByRole('dialog', { name: 'Groceries — report emoji' })).toBeTruthy();
+
+    // A scroll anywhere else still closes it: the button has moved under it.
+    fireEvent.scroll(document.body);
+    await waitFor(() => expect(
+      screen.queryByRole('dialog', { name: 'Groceries — report emoji' }),
+    ).toBeNull());
+  });
+
   it('clears an override back to the category default', async () => {
     const props = makeProps();
     props.store.getReportGlyphStyle = vi.fn(async () => ({
