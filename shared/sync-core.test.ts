@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { runSyncCore, applyBaselineFix, VALUATION_POLL, IN_TRANSIT_TIMEOUT_SECONDS, descriptionFromComment, txIdFromComment, planDuplicatePrune, IN_TRANSIT_COMMENT_PREFIX } from './sync-core.js';
+import { runSyncCore, applyBaselineFix, neutralAdjustmentFields, VALUATION_POLL, IN_TRANSIT_TIMEOUT_SECONDS, descriptionFromComment, txIdFromComment, planDuplicatePrune, IN_TRANSIT_COMMENT_PREFIX } from './sync-core.js';
 import { createFakeHost, type FakeHostSeed } from './fake-host.js';
 import { linkPairByRecreate } from './link-pair.js';
 import type { LinkLeg, SyncHost } from './sync-host.js';
@@ -281,10 +281,12 @@ describe('runSyncCore', () => {
     expect(create.comment).toContain('↔️ In-transit transfer · ');
   });
 
-  it('uses the card-shaped DEPOSIT for a solo CREDIT_CARD payment leg (no CREDIT, no fee split)', async () => {
+  it('uses CREDIT for a solo CREDIT_CARD payment leg, because the API rejects DEPOSIT there', async () => {
     // mapper types a positive, payment-shaped card amount as TRANSFER_IN, so an
-    // unpaid-off card payment reaches the placeholder path. On a card the proven
-    // spending-neutral shape is a plain DEPOSIT — CREDIT is only established for CASH.
+    // unpaid-off card payment reaches the placeholder path. This test asserted a
+    // plain DEPOSIT on the theory that CREDIT was "only established for CASH" —
+    // and that shape was rejected live on 2026-08-07 with "DEPOSIT activities are
+    // not supported for credit card accounts", stranding the row every sync.
     const { host, store, saved } = createFakeHost({
       accountSet: { errors: [], accounts: [{
         id: 'sfin-1', name: 'Card', currency: 'USD', balance: '0', 'balance-date': 1,
@@ -298,9 +300,9 @@ describe('runSyncCore', () => {
     });
     await runSyncCore(host, store, {});
     const create = saved[0].creates![0];
-    expect(create.activityType).toBe('DEPOSIT');
+    expect(create.activityType).toBe('CREDIT');
     expect(create.amount).toBe(1300);
-    expect(create.fee).toBeUndefined();
+    expect(create.fee).toBeUndefined(); // inflow: nothing on the fee side
     expect(create.symbol).toEqual({ symbol: '$CASH-USD' });
     expect(create.comment).toContain('↔️ In-transit transfer · ');
     expect(create.comment).toContain('· tx-pay');
@@ -399,6 +401,35 @@ describe('runSyncCore', () => {
     expect(update.fee).toBe(0); // the fee side must be zeroed, not left as-is
     expect(update.comment).toBe('Online Transfer to Savings · tx-out');
     expect(activities.get('wf-a')).toHaveLength(1); // converted, not duplicated
+  });
+
+  it('never uses DEPOSIT on a credit card, which Wealthfolio refuses outright', () => {
+    // Live rejection (2026-08-07): "Invalid data: DEPOSIT activities are not
+    // supported for credit card accounts", on the in-transit placeholder for an
+    // AUTOPAY arriving at a Citi card. The comment here previously asserted that
+    // DEPOSIT was fine on a card because it classifies as Ignored — true of the
+    // classifier, but the API rejects the type before it ever gets classified.
+    //
+    // CREDIT is proven accepted on a card: the same account already holds a
+    // `Thankyou Points Redeemed` CREDIT row that Wealthfolio wrote itself.
+    const inflow = neutralAdjustmentFields('CREDIT_CARD', 1300);
+    expect(inflow.activityType).not.toBe('DEPOSIT');
+    expect(inflow.activityType).toBe('CREDIT');
+    expect(inflow.amount).toBe(1300);
+
+    const outflow = neutralAdjustmentFields('CREDIT_CARD', -1300);
+    expect(outflow.activityType).toBe('CREDIT');
+    // Same amount/fee split CASH uses: cash moves by `amount - fee - tax`, so the
+    // fee side is how an outflow stays spending-neutral.
+    expect(outflow.amount).toBe(0);
+    expect(outflow.fee).toBe(1300);
+  });
+
+  it('leaves investment-style accounts on DEPOSIT/WITHDRAWAL', () => {
+    // Only cards reject DEPOSIT; narrowing the change to CREDIT_CARD keeps the
+    // brokerage plug shape (pinned by its own test) untouched.
+    expect(neutralAdjustmentFields('SECURITIES', 200).activityType).toBe('DEPOSIT');
+    expect(neutralAdjustmentFields('SECURITIES', -200).activityType).toBe('WITHDRAWAL');
   });
 
   it('drops the in-transit prefix when a NON-CASH placeholder times out (the only field that differs)', async () => {

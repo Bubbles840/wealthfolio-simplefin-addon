@@ -456,7 +456,11 @@ describe('runSync', () => {
     expect(imported[0].fee).toBe(2635.26);
   });
 
-  it('applyBalanceAdjustment keeps DEPOSIT/WITHDRAWAL on a non-CASH account', async () => {
+  it('applyBalanceAdjustment uses the card-safe CREDIT shape on a credit card', async () => {
+    // Was "keeps DEPOSIT/WITHDRAWAL on a non-CASH account" and asserted
+    // WITHDRAWAL. Cards now share CASH's CREDIT shape because Wealthfolio rejects
+    // DEPOSIT on them, and the plug follows `neutralAdjustmentFields` — which is
+    // the coupling this test exists to hold.
     const ctx = makeCtx();
     const store = makeStore({
       getAccountBalances: vi.fn(async () => ({
@@ -467,9 +471,9 @@ describe('runSync', () => {
       sfinAccountId: 'sfin-2', wfAccountId: 'wf-account-b', currency: 'USD', amount: -80,
     });
     const imported = vi.mocked(ctx.api.activities.import).mock.calls.at(-1)![0] as any[];
-    expect(imported[0].activityType).toBe('WITHDRAWAL');
-    expect(imported[0].amount).toBe(80);
-    expect(imported[0].fee).toBe(0);
+    expect(imported[0].activityType).toBe('CREDIT');
+    expect(imported[0].amount).toBe(0);
+    expect(imported[0].fee).toBe(80);
   });
 
   it('drops only transactions with neither posted nor transacted_at', async () => {
@@ -1170,12 +1174,15 @@ describe('neutralAdjustmentFields', () => {
     expect(result.amount - result.fee).toBeCloseTo(-2635.26);
   });
 
-  it('CREDIT_CARD: keeps DEPOSIT/WITHDRAWAL', () => {
+  it('CREDIT_CARD: uses the CASH-shaped CREDIT, because the API rejects DEPOSIT on a card', () => {
+    // This test previously pinned DEPOSIT/WITHDRAWAL, encoding an assumption
+    // Wealthfolio does not share: it rejects the type outright with "DEPOSIT
+    // activities are not supported for credit card accounts" (live, 2026-08-07).
     expect(neutralAdjustmentFields('CREDIT_CARD', 40)).toEqual({
-      activityType: 'DEPOSIT', amount: 40, fee: 0,
+      activityType: 'CREDIT', amount: 40, fee: 0,
     });
     expect(neutralAdjustmentFields('CREDIT_CARD', -40)).toEqual({
-      activityType: 'WITHDRAWAL', amount: 40, fee: 0,
+      activityType: 'CREDIT', amount: 0, fee: 40,
     });
   });
 

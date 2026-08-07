@@ -25,6 +25,11 @@ vi.mock('./wealthfolio.js', () => {
 
 vi.mock('./sqlite-native.js', () => ({
   getNativeUncategorizedSpending: vi.fn(() => []),
+  getNativeSubcategorySpending: vi.fn(() => []),
+  getNativeCategoryCatalog: vi.fn(() => ([
+    { name: 'Transportation', parent: null, icon: 'Car', color: '#24837B', hasBudget: true, hasSpend: false },
+    { name: 'Personal Care', parent: null, icon: 'Sparkles', color: '#B0552E', hasBudget: false, hasSpend: false },
+  ])),
   getNativeWealthfolioSpending: vi.fn(() => ({ Groceries: 200, Dining: 550 })),
   // Week-scoped spend: a subset of the month totals above.
   getNativeWealthfolioSpendingBetween: vi.fn(() => ({ Groceries: 50, Dining: 100 })),
@@ -1646,5 +1651,34 @@ describe('sendImportNotice', () => {
     const body = JSON.parse((fetchMock.mock.calls.find((c: any[]) => String(c[0]).includes('sendMessage'))![1] as any).body);
     expect(body).not.toHaveProperty('reply_markup');
     expect(body.text).not.toContain('Needs a category');
+  });
+});
+
+describe('category catalog publishing', () => {
+  it('publishes the catalog on a SYNC, not only when a report runs', async () => {
+    // Live symptom (2026-08-07): after deploying 1.7.0 the addon showed 9
+    // budget-or-spent categories with identical fallback icons and no
+    // subcategories — the legacy list. The catalog was only written by the daily,
+    // weekly and monthly report paths, so it did not exist until 8am, and the
+    // addon's fallback carries no icon or parent.
+    const secrets = new Map<string, string>();
+    secrets.set('simplefin_access_url', 'https://user:pass@bridge.simplefin.org/simplefin');
+    const client: any = {
+      login: vi.fn(async () => {}),
+      getAddonSecret: vi.fn(async (_a: string, k: string) => secrets.get(k) ?? null),
+      setAddonSecret: vi.fn(async (_a: string, k: string, v: string) => { secrets.set(k, v); }),
+    };
+    const { WealthfolioClient } = await import('./wealthfolio.js');
+    vi.mocked(WealthfolioClient).mockImplementation(function () { return client; } as any);
+
+    await runCompanionSync();
+
+    const written = secrets.get('report_category_catalog');
+    expect(written).toBeTruthy();
+    const parsed = JSON.parse(written!);
+    // Carries what the fallback cannot: the icon, and a category with neither a
+    // budget nor spending.
+    expect(parsed.find((c: any) => c.name === 'Transportation').icon).toBe('Car');
+    expect(parsed.map((c: any) => c.name)).toContain('Personal Care');
   });
 });

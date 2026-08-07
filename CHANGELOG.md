@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.1] - 2026-08-07
+
+### Fixed
+
+- **`DEPOSIT` is not a valid activity type on a credit card**, and the in-transit
+  placeholder used it — so an unpaired card payment (an AUTOPAY arriving at a Citi
+  card) was refused every sync with `Invalid data: DEPOSIT activities are not
+  supported for credit card accounts`. The old reasoning was that DEPOSIT is safe
+  on a card because the spending classifier ignores it: true, and beside the point,
+  since the API rejects the type before anything classifies it. Cards now use the
+  same `CREDIT` shape as cash accounts — demonstrably accepted, since Wealthfolio
+  writes `CREDIT` rows to that account itself — which is spending-neutral in both
+  directions. 1.6.1's row-by-row fallback is what surfaced this cleanly instead of
+  failing the whole account's batch.
+- **The category catalog was only published when a report ran**, so a fresh
+  deployment showed the legacy budget-or-spent list — no icons, no subcategories —
+  until the next morning's 8am report. It is now published on every sync, which is
+  where it belongs: what categories exist has nothing to do with report
+  scheduling.
+
 ## [1.7.0] - 2026-08-06
 
 ### Added

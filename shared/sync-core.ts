@@ -800,7 +800,19 @@ export function neutralAdjustmentFields(
   signedAmount: number,
 ): { activityType: ActivityType; amount: number; fee: number } {
   const mag = Math.abs(Math.round(signedAmount * 100) / 100);
-  if (accountType === 'CASH') {
+  // CREDIT_CARD shares CASH's shape, and NOT because of the spending classifier
+  // — because Wealthfolio's API rejects the type outright: "Invalid data: DEPOSIT
+  // activities are not supported for credit card accounts", hit live on
+  // 2026-08-07 by the in-transit placeholder for an AUTOPAY arriving at a Citi
+  // card. The old note here reasoned that DEPOSIT was safe on a card since the
+  // classifier already ignores it, which was true and beside the point: the row
+  // never reaches the classifier.
+  //
+  // CREDIT is demonstrably accepted on a card — Wealthfolio writes
+  // `Thankyou Points Redeemed` CREDIT rows to that same account — and the
+  // amount/fee split is how cash moves for any type (`amount − fee − tax`),
+  // which is what keeps the placeholder spending-neutral in both directions.
+  if (accountType === 'CASH' || accountType === 'CREDIT_CARD') {
     return signedAmount > 0
       ? { activityType: 'CREDIT' as ActivityType, amount: mag, fee: 0 }
       : { activityType: 'CREDIT' as ActivityType, amount: 0, fee: mag };

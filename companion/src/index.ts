@@ -479,6 +479,10 @@ export async function runCompanionSync(): Promise<SyncResult> {
       .setAddonSecret('simplefin-sync', COMPANION_VERSION_SECRET_KEY, SIMPLEFIN_SYNC_VERSION)
       .catch(() => {});
 
+    // Every sync, not just report runs: the addon's category selector is
+    // unusable without this, and a sync happens far more often than a report.
+    await publishCategoryCatalog(wfClient, currentYearMonth(new Date()));
+
     const undeliveredOutTxIds: string[] = [];
     for (const alert of result.stuckTransferAlerts) {
       const delivered = await sendStuckTransferAlert(wfClient, alert);
@@ -730,6 +734,40 @@ function toDateString(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
+/**
+ * Publish the category catalog the addon's selector reads.
+ *
+ * Separate from the report paths because it belongs to neither: it describes what
+ * categories EXIST, which is true whether or not a report is due. Living only
+ * inside the daily/weekly/monthly functions meant a fresh deployment showed the
+ * legacy budget-or-spent list — no icons, no subcategories — until 8am the next
+ * morning (observed 2026-08-07).
+ *
+ * Best-effort: a failure here must never affect a sync or a report.
+ */
+async function publishCategoryCatalog(
+  wfClient: WealthfolioClient,
+  yearMonth: string,
+): Promise<void> {
+  try {
+    const dbPath = process.env.WEALTHFOLIO_DB_PATH || '/mnt/wealthfolio/wealthfolio.db';
+    const catalog = getNativeCategoryCatalog(dbPath, yearMonth);
+    if (catalog.length === 0) return;
+    await wfClient.setAddonSecret(
+      'simplefin-sync',
+      'report_category_catalog',
+      JSON.stringify(catalog),
+    );
+  } catch (err) {
+    debug(`Category catalog publish skipped: ${formatError(err)}`);
+  }
+}
+
+/** `YYYY-MM` for the given moment, matching how budgets are keyed. */
+function currentYearMonth(now: Date): string {
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+}
+
 async function publishAvailableCategories(
   wfClient: WealthfolioClient,
   spentMap: Record<string, number>,
@@ -739,29 +777,9 @@ async function publishAvailableCategories(
   const names = unionCategoryNames(spentMap, budgetMap);
   await wfClient.setAddonSecret('simplefin-sync', 'available_report_categories', JSON.stringify(names));
 
-  // The CATALOG is what the addon's selection list should use: every spending
-  // category Wealthfolio knows, not just the ones a budget or a purchase touched
-  // this month. Those are different questions, and conflating them is why a
-  // category like Personal Care could not be selected until money moved through
-  // it. Reports keep filtering on hasBudget/hasSpend.
-  //
-  // Best-effort and additive: the old string array above is still written, so an
-  // addon build that predates the catalog keeps working unchanged.
-  if (yearMonth) {
-    try {
-      const dbPath = process.env.WEALTHFOLIO_DB_PATH || '/mnt/wealthfolio/wealthfolio.db';
-      const catalog = getNativeCategoryCatalog(dbPath, yearMonth);
-      if (catalog.length > 0) {
-        await wfClient.setAddonSecret(
-          'simplefin-sync',
-          'report_category_catalog',
-          JSON.stringify(catalog),
-        );
-      }
-    } catch (err) {
-      debug(`Category catalog publish skipped: ${formatError(err)}`);
-    }
-  }
+  // The old string array above is still written so an addon that predates the
+  // catalog keeps working; the catalog itself is what the current selector reads.
+  if (yearMonth) await publishCategoryCatalog(wfClient, yearMonth);
   return names;
 }
 
