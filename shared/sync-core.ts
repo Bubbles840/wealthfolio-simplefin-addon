@@ -7,6 +7,10 @@ import type { FeedTx, ExistingRow } from './reconcile.js';
  *  the marker without importing sync-core and creating a cycle). This module owns
  *  WRITING the prefix, so importers keep finding the name here. */
 export { IN_TRANSIT_COMMENT_PREFIX };
+import {
+  matchAmazonCharge, consumeAmazonMatch, amazonDescription,
+} from './amazon-ledger.js';
+import type { AmazonLedger } from './amazon-ledger.js';
 import type { ActivityType, SimplefinTransaction } from './types.js';
 import type { ActivityWrite, ImportRow, LinkLeg, LinkResult, SaveManyRequest, SaveManyResult, SyncHost, SyncStore } from './sync-host.js';
 
@@ -1014,6 +1018,15 @@ export async function runSyncCore(
   const descByKey = new Map<string, string>();
   const signedByKey = new Map<string, number>();
 
+  // Amazon order categories, folded into the description below.
+  //
+  // An empty ledger — every user who hasn't set up mail forwarding — costs one
+  // read and then nothing: `matchAmazonCharge` is skipped entirely rather than
+  // called per transaction against an empty map.
+  let amazonLedger = await store.getAmazonLedger().catch(() => ({} as AmazonLedger));
+  let amazonLedgerChanged = false;
+  const amazonEnabled = Object.keys(amazonLedger).length > 0;
+
   for (const sfAccount of accountSet.accounts) {
     const wfAccountId = mapping[sfAccount.id];
     if (!wfAccountId) continue;
@@ -1038,7 +1051,32 @@ export async function runSyncCore(
       );
       prepared.push({ sfAccountId: sfAccount.id, tx, type });
       const key = accountTxKey(sfAccount.id, tx.id);
-      descByKey.set(key, tx.description);
+      // Amazon categories go on AFTER typing: `mapTransactionWithSource` above
+      // matches the user's merchant rules against the bank's own text, and
+      // enriching first would change what those rules see.
+      let description = tx.description;
+      if (amazonEnabled) {
+        const hit = matchAmazonCharge(amazonLedger, {
+          description: tx.description,
+          amountCents: Math.round(Math.abs(amount) * 100),
+          // txEpoch hands back SimpleFin's native SECONDS. Passing that as ms puts
+          // every charge in 1970, outside every window, so Amazon matching just
+          // silently never fires — which is precisely the failure this feature is
+          // built to avoid, and is invisible without an end-to-end test.
+          postedMs: txEpoch(tx)! * 1000,
+          txKey: key,
+        });
+        if (hit) {
+          description = amazonDescription(description, hit.labels);
+          // Consumed even when this row already exists in Wealthfolio and so
+          // won't be re-written: the charge for that order HAS been found, and
+          // leaving the record live would offer it to the next charge of the
+          // same amount.
+          amazonLedger = consumeAmazonMatch(amazonLedger, hit, key);
+          amazonLedgerChanged = true;
+        }
+      }
+      descByKey.set(key, description);
       signedByKey.set(key, amount);
       // Pending transactions are provisional — exclude them from transfer
       // pairing so a not-yet-settled row can't lock in a TRANSFER typing.
@@ -2108,6 +2146,15 @@ export async function runSyncCore(
   if (ledgerChanged) await store.setLinkedGroups(ledger);
 
   if (driftAlertsChanged) await store.setDriftAlerts(driftAlerts);
+  // Written only when a match consumed something, so the common no-Amazon run
+  // never touches the secret. A failure here is not worth failing the sync over:
+  // the cost is that a record stays live and may be re-offered next run, which
+  // the unique-match rule already makes safe.
+  if (amazonLedgerChanged) {
+    await store.setAmazonLedger(amazonLedger).catch((e) => {
+      errors.push(`Could not save Amazon order ledger: ${String(e?.message ?? e)}`);
+    });
+  }
 
   await store.setAccountBalances(accountBalances);
 

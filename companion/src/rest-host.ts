@@ -1,4 +1,8 @@
 import { fetchAccountsNode } from './simplefin.js';
+import { AMAZON_LEDGER_SECRET_KEY } from '../../shared/amazon-ledger.js';
+import { AMAZON_CONFIG_SECRET_KEY, AMAZON_LABELS_SECRET_KEY } from './amazon-mail.js';
+import type { AmazonLabelCatalog, AmazonMailConfig } from './amazon-mail.js';
+import type { AmazonLedger } from '../../shared/amazon-ledger.js';
 import { linkPairByRecreate } from '../../shared/link-pair.js';
 import type { WealthfolioClient } from './wealthfolio.js';
 import type {
@@ -256,6 +260,29 @@ export class RestSyncStore implements SyncStore {
 
   async setAccountBalances(map: Record<string, unknown>): Promise<void> {
     await this.setJson('account_balances', map);
+  }
+
+  async getAmazonLedger(): Promise<AmazonLedger> {
+    return (await this.getJson<AmazonLedger>(AMAZON_LEDGER_SECRET_KEY)) ?? {};
+  }
+
+  async setAmazonLedger(map: AmazonLedger): Promise<void> {
+    await this.setJson(AMAZON_LEDGER_SECRET_KEY, map);
+  }
+
+  /** Every Amazon label ever received, and the category it resolved to. Read by
+   *  the addon card so it can show the user their REAL label set. */
+  async getAmazonLabels(): Promise<AmazonLabelCatalog> {
+    return (await this.getJson<AmazonLabelCatalog>(AMAZON_LABELS_SECRET_KEY)) ?? {};
+  }
+
+  async setAmazonLabels(map: AmazonLabelCatalog): Promise<void> {
+    await this.setJson(AMAZON_LABELS_SECRET_KEY, map);
+  }
+
+  /** Mailbox credentials and label overrides, written by the addon card. */
+  async getAmazonConfig(): Promise<AmazonMailConfig | null> {
+    return (await this.getJson<AmazonMailConfig>(AMAZON_CONFIG_SECRET_KEY)) ?? null;
   }
 
   async getAutoHeal(): Promise<boolean> {

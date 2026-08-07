@@ -21,20 +21,20 @@
   "supportUrl": "https://github.com/Bubbles840/wealthfolio-simplefin-addon/issues",
   "source": {
     "repository": "https://github.com/Bubbles840/wealthfolio-simplefin-addon",
-    "tag": "v1.8.2",
+    "tag": "v1.9.0",
     "commit": "6a804a3af4890a29ee1d42b16945cf58b741e54b"
   },
   "release": {
-    "version": "1.8.2",
+    "version": "1.9.0",
     "minWealthfolioVersion": "3.6.2",
     "sdkVersion": "3.6.2",
     "critical": false,
     "breaking": false,
     "notes": "Fixes the emoji picker closing when you scrolled inside it. Includes 1.8.x's collapsible budget groups matching Wealthfolio's Spending Tracker, a click-to-pick emoji palette, and clean-by-default Telegram report styling.",
-    "changelogUrl": "https://github.com/Bubbles840/wealthfolio-simplefin-addon/releases/tag/v1.8.2"
+    "changelogUrl": "https://github.com/Bubbles840/wealthfolio-simplefin-addon/releases/tag/v1.9.0"
   },
   "distribution": {
-    "r2Path": "simplefin-sync/1.8.2/simplefin-sync.zip"
+    "r2Path": "simplefin-sync/1.9.0/simplefin-sync.zip"
   },
   "media": {
     "coverLight": "assets/cover-light.webp",

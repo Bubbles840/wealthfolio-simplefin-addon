@@ -1,4 +1,5 @@
 import type { AccountMapping, MappingRule, SimplefinAccountSet } from './types.js';
+import type { AmazonLedger } from './amazon-ledger.js';
 
 /** A Wealthfolio activity row, normalized across the SDK and REST shapes. */
 export interface HostActivity {
@@ -179,4 +180,15 @@ export interface SyncStore {
   setAccountBalances(map: Record<string, unknown>): Promise<void>;
   getAutoHeal(): Promise<boolean>;
   getAutoAdjust(): Promise<boolean>;
+  /**
+   * Amazon orders parsed from forwarded order emails, awaiting the charge they
+   * belong to (see `shared/amazon-ledger.ts`).
+   *
+   * An EMPTY ledger is the whole off-switch: a user who has not set up mail
+   * forwarding never gets a record, so the matcher is skipped and no separate
+   * enabled flag has to be threaded through the sync. Written back only when a
+   * match consumes a record.
+   */
+  getAmazonLedger(): Promise<AmazonLedger>;
+  setAmazonLedger(map: AmazonLedger): Promise<void>;
 }

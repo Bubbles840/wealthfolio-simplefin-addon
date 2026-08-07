@@ -56,6 +56,9 @@ const makeStore = (overrides: Record<string, unknown> = {}) => ({
   ),
   getAccountBalances: vi.fn(async (): Promise<Record<string, unknown>> => ({})),
   setAccountBalances: vi.fn(async (_map: Record<string, unknown>) => {}),
+  // Empty ledger = Amazon categorization off, which is what every test here wants.
+  getAmazonLedger: vi.fn(async () => ({})),
+  setAmazonLedger: vi.fn(async () => {}),
   getAutoHeal: vi.fn(async () => false),
   setAutoHeal: vi.fn(async (_on: boolean) => {}),
   getAutoAdjust: vi.fn(async () => false),

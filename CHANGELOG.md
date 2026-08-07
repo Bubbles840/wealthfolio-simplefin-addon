@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-08-07
+
+### Added
+
+- **Automatic categorization of Amazon charges.** A bank charge reads
+  `AMAZON.COM*MB3T81` and says nothing about what you bought, so every Amazon
+  purchase landed uncategorized. Amazon's order emails *do* name the category, so
+  forwarding those to a throwaway mailbox lets the companion label each Amazon
+  charge on its way in — `AMAZON.COM*MB3T81 · Amazon: Lawn & Garden · TRN-…` — and
+  Wealthfolio's own rule engine files it from there.
+
+  Set up in the new **Amazon auto-categorization** card, below the Docker card:
+  three fields, one Gmail filter, one throwaway address. No new container — the
+  mailbox is read at the start of each sync, since that is the only moment the
+  data is used. Entirely optional; an empty ledger is the off switch.
+
+  Labels are matched by **pattern, not by lookup table**. Amazon's label
+  vocabulary is unpublished, includes mid-level categories (`Baking`, `Skincare`)
+  as well as departments, and grows whenever Amazon feels like it — so ~12 regex
+  patterns cover more ground than 200 exact entries, and a label invented next
+  month (`Vitamins & Supplements`) files itself with no change. Anything unmatched
+  goes to a configurable default *and* is announced once in Telegram, so it is
+  visible and one rule away from correct rather than silently wrong. The card
+  lists the labels your own orders have actually used, with a dropdown to fix any
+  that were filed wrong.
+
+  **This cannot double-count a purchase.** Order emails never create a
+  transaction — they only add text to the comment of a row SimpleFin itself
+  imported. An email with no matching charge does nothing at all and is pruned
+  after 90 days. Amounts, types and dates are never touched, and where two Amazon
+  orders share an amount inside the window, neither is applied: an ambiguous match
+  is worse than none, because a wrong category is invisible while a missing one
+  shows up in the needs-a-category sweep.
+
+- **`companion/scripts/amazon-rules.mjs`**, a one-time helper that inserts the
+  Wealthfolio categorization rules for your discovered labels. Dry-run by default,
+  introspects the real schema instead of hard-coding an INSERT, and refuses to
+  write while Wealthfolio is running.
+
+### Note
+
+- **Amazon itemization is not possible**, and this is not a limitation of the
+  addon. Until 2026-07-08 the order emails carried item names, quantities and unit
+  prices; Amazon removed all of it, leaving a category label, a total and an item
+  count. Splitting one charge into per-item rows needs per-item prices, so that
+  half of the original idea is dead at the source. Category tagging is what
+  remains — and it needs no splitting, which is also why it cannot affect
+  reconciliation.
+
 ## [1.8.2] - 2026-08-07
 
 ### Fixed
