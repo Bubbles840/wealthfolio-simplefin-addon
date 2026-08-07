@@ -41,6 +41,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is worse than none, because a wrong category is invisible while a missing one
   shows up in the needs-a-category sweep.
 
+- **`amazon-check`**, a read-only diagnostic. The two ways Amazon categorization
+  can silently do nothing — a mailbox that will not connect, and a message shape
+  the parser does not recognise — look identical from the outside, so this connects,
+  parses whatever is unread, and prints the category each order would get. It marks
+  nothing read and records nothing, so the real poll still picks the messages up:
+
+  ```
+  docker exec simplefin-sync node dist/companion/src/amazon-check.js \
+    --host imap.gmail.com --user you@gmail.com --password 'xxxx xxxx xxxx xxxx'
+  ```
+
 - **`companion/scripts/amazon-rules.mjs`**, a one-time helper that inserts the
   Wealthfolio categorization rules for your discovered labels. Dry-run by default,
   introspects the real schema instead of hard-coding an INSERT, and refuses to
