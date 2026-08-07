@@ -124,9 +124,14 @@ export function AmazonCard({
               Settings → Filters → Create a new filter.
             </li>
             <li>
-              On the new account, turn on IMAP (Gmail: Settings → Forwarding and POP/IMAP)
-              and create an <strong>app password</strong> (Google Account → Security →
-              2-Step Verification → App passwords).
+              On the new account, create an <strong>app password</strong>:{' '}
+              <code>myaccount.google.com/apppasswords</code>. You need 2-Step
+              Verification switched on first, or that page won't offer the option.
+              <br />
+              <span className="sfin-subtle">
+                There is nothing to enable for IMAP — Google removed that toggle, so
+                it is always on.
+              </span>
             </li>
             <li>Paste that address and app password below, and save.</li>
           </ol>

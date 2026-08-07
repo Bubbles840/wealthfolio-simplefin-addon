@@ -167,6 +167,10 @@ docker exec simplefin-sync node dist/companion/src/amazon-check.js \
   --host imap.gmail.com --user you@gmail.com --password 'xxxx xxxx xxxx xxxx'
 ```
 
+A Gmail app password (`myaccount.google.com/apppasswords`, with 2-Step
+Verification on) is all the mailbox needs — there is no IMAP setting to enable,
+since Google removed that toggle and IMAP is always on.
+
 **Proton Mail does not work for this**, for two reasons. An alias delivers into the
 same mailbox, so credentials for it reach everything in the account — no isolation
 at all. And Proton has no plain IMAP: it requires Proton Mail Bridge, which is a
