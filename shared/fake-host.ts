@@ -1,4 +1,5 @@
 import type { AccountMapping, MappingRule, SimplefinAccountSet } from './types.js';
+import type { AmazonLedger } from './amazon-ledger.js';
 import type {
   ActivityWrite,
   HostActivity,
@@ -43,6 +44,9 @@ export interface FakeHostSeed {
   driftAlertThreshold?: number;
   /** Pre-loaded drift-alert ledger, keyed by SimpleFin account id. */
   driftAlerts?: Record<string, DriftAlertEntry>;
+  /** Amazon orders awaiting their charge. Empty means Amazon categorization is
+   *  off, which is what every test that doesn't care about it wants. */
+  amazonLedger?: AmazonLedger;
 }
 
 export interface FakeHost {
@@ -56,6 +60,8 @@ export interface FakeHost {
   links: Array<[LinkLeg, LinkLeg]>;
   /** Every importActivities call, in call order. */
   imported: ImportRow[][];
+  /** The Amazon ledger as the run left it, for asserting what got consumed. */
+  amazon: () => AmazonLedger;
 }
 
 /** Rows a single `listActivities` page returns — mirrors the addon adapter's
@@ -153,6 +159,7 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
   let transferLinkFailures: Record<string, TransferLinkFailureEntry> =
     seed.transferLinkFailures ?? {};
   let driftAlerts: Record<string, DriftAlertEntry> = seed.driftAlerts ?? {};
+  let amazonLedger: AmazonLedger = seed.amazonLedger ?? {};
   let accountBalances: Record<string, unknown> = {};
   let balanceInitialized: string[] = [];
   let lastSyncAt: Date | null = null;
@@ -325,6 +332,12 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
     async setAccountBalances(map: Record<string, unknown>) {
       accountBalances = map;
     },
+    async getAmazonLedger() {
+      return amazonLedger;
+    },
+    async setAmazonLedger(map: AmazonLedger) {
+      amazonLedger = map;
+    },
     async getAutoHeal() {
       return autoHeal;
     },
@@ -333,5 +346,5 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
     },
   };
 
-  return { host, store, activities, saved, links, imported };
+  return { host, store, activities, saved, links, imported, amazon: () => amazonLedger };
 }

@@ -15,6 +15,8 @@ import { RestSyncHost, RestSyncStore } from './rest-host.js';
 import { WealthfolioClient } from './wealthfolio.js';
 import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatMonthlyWrapUp, formatSyncHealthFooter, formatLargeTransactionAlert, formatBalanceDriftAlert, formatFeedLagNotice, formatStuckTransferAlert, formatDuplicatePruneAlert, formatImportNotice, buildDismissKeyboard, IMPORT_NOTICE_UNCATEGORIZED_CAP, escapeMarkdown, LARGE_TX_OUTBOX_SECRET_KEY } from '../../shared/telegram.js';
 import { pollTelegramDismissals, pruneDismissals } from './dismissals.js';
+import { createImapSource, ingestAmazonMail, amazonMailConfigured } from './amazon-mail.js';
+import type { AmazonIngestResult, AmazonMailConfig, MailSource } from './amazon-mail.js';
 import { DEFAULT_GLYPH_STYLE } from '../../shared/telegram.js';
 import type { GlyphStyle } from '../../shared/telegram.js';
 import type { DismissalLedger } from './dismissals.js';
@@ -407,6 +409,87 @@ async function deliverLargeTransactionAlerts(
   }
 }
 
+/**
+ * Read the Amazon forwarding mailbox into the order ledger.
+ *
+ * Entirely optional and entirely non-fatal: an unconfigured mailbox returns
+ * nothing, and a mailbox that will not connect logs and returns nothing. Neither
+ * may stop a sync — bank data is the product, Amazon categories are a nicety, and
+ * a wrong app password must not cost the user their transactions.
+ */
+async function pollAmazonMail(
+  store: RestSyncStore,
+): Promise<AmazonIngestResult['newLabels']> {
+  let cfg: AmazonMailConfig | null = null;
+  try {
+    cfg = await store.getAmazonConfig();
+  } catch {
+    return [];
+  }
+  // Env wins over the addon card, for anyone who would rather keep credentials in
+  // their compose file than in Wealthfolio's secrets.
+  const merged: AmazonMailConfig = {
+    ...(cfg ?? {}),
+    host: process.env.AMAZON_IMAP_HOST ?? cfg?.host,
+    port: process.env.AMAZON_IMAP_PORT ? Number(process.env.AMAZON_IMAP_PORT) : cfg?.port,
+    user: process.env.AMAZON_IMAP_USER ?? cfg?.user,
+    password: process.env.AMAZON_IMAP_PASSWORD ?? cfg?.password,
+  };
+  if (!amazonMailConfigured(merged)) return [];
+
+  let source: MailSource | null = null;
+  try {
+    source = await createImapSource(merged);
+    const result = await ingestAmazonMail(source, store, merged, Date.now());
+    log(
+      `Amazon mail: ${result.scanned} scanned, ${result.added} orders added` +
+      `${result.unparsed ? `, ${result.unparsed} unrecognised` : ''}` +
+      `${result.pruned ? `, ${result.pruned} pruned` : ''}`,
+    );
+    return result.newLabels;
+  } catch (err) {
+    log(`Amazon mail error (categorization skipped this run): ${formatError(err)}`);
+    return [];
+  } finally {
+    await source?.close().catch(() => {});
+  }
+}
+
+/**
+ * Announce labels Amazon has used for the first time.
+ *
+ * Sent once per label, ever. An unmatched one is the actionable case — it went to
+ * the default and wants a pattern — so it is called out explicitly rather than
+ * listed alongside the ones that filed themselves correctly.
+ */
+async function sendAmazonNewLabelNotice(
+  wfClient: WealthfolioClient,
+  labels: AmazonIngestResult['newLabels'],
+): Promise<void> {
+  try {
+    const tgRaw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_config').catch(() => null);
+    const tg = parseSecretJson<any>(tgRaw, 'telegram_config');
+    if (!tg?.botToken || !tg?.chatId) return;
+    const lines = labels.map((l) =>
+      l.matched
+        ? `• ${escapeMarkdown(l.label)} → ${escapeMarkdown(l.category)}`
+        : `• ${escapeMarkdown(l.label)} → ${escapeMarkdown(l.category)} (no rule yet)`,
+    );
+    const unmatched = labels.filter((l) => !l.matched).length;
+    const message = [
+      `*New Amazon categor${labels.length === 1 ? 'y' : 'ies'}*`,
+      '',
+      ...lines,
+      ...(unmatched
+        ? ['', escapeMarkdown('Anything marked "no rule yet" landed in the default category. Add a rule for it on the Sync page.')]
+        : []),
+    ].join('\n');
+    await sendTelegramMessage(tg.botToken, tg.chatId, message);
+  } catch (err) {
+    log(`Amazon label notice error: ${formatError(err)}`);
+  }
+}
+
 export async function runCompanionSync(): Promise<SyncResult> {
   const apiUrl = process.env.WEALTHFOLIO_API_URL ?? '';
   if (!apiUrl) throw new Error('Missing WEALTHFOLIO_API_URL');
@@ -465,6 +548,13 @@ export async function runCompanionSync(): Promise<SyncResult> {
     const minIntervalHours = parseFloat(process.env.MIN_SYNC_INTERVAL_HOURS ?? '1');
     const force = minIntervalHours <= 0;
 
+    // Amazon mail is read here rather than on a cron of its own. The ledger is
+    // only ever READ during a sync, so polling more often buys nothing but
+    // another moving part — and Amazon's order emails arrive a day or two ahead
+    // of the charge anyway. Doing it immediately before the sync also makes the
+    // ordering guaranteed instead of a race between two schedules.
+    const amazonNewLabels = await pollAmazonMail(store);
+
     log(`Fetching SimpleFin transactions from ${maskUrl(accessUrl)}...`);
     const result = await runSyncCore(host, store, { force });
 
@@ -491,6 +581,10 @@ export async function runCompanionSync(): Promise<SyncResult> {
     await rollBackUndeliveredStuckTransferAlerts(store, undeliveredOutTxIds);
 
     await deliverLargeTransactionAlerts(wfClient, result.largeTransactionAlerts);
+
+    if (amazonNewLabels.length > 0) {
+      await sendAmazonNewLabelNotice(wfClient, amazonNewLabels);
+    }
 
     const undeliveredDrift: Array<{ sfinAccountId: string; phase: 'young' | 'aged' }> = [];
     for (const alert of result.balanceDriftAlerts) {

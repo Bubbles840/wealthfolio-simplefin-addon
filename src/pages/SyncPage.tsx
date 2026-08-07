@@ -18,6 +18,7 @@ import { CategoryIcon } from '../components/CategoryIcon';
 import { GlyphPicker } from '../components/GlyphPicker';
 import { RuleEditor } from '../components/RuleEditor';
 import { Button, Card, CollapsibleCard, Disclosure, ErrorBox, SectionLabel } from '../components/ui';
+import { AmazonCard } from '../components/AmazonCard';
 import { sendTelegramMessage, getCategoryEmoji } from '../../shared/telegram';
 // The real default the sync engine applies when driftAlertThreshold is absent,
 // imported rather than re-typed so the field can never disagree with it.
@@ -126,6 +127,8 @@ function countToSave(on: boolean, raw: string, fallback: number): number {
 const CARD = {
   autoSync: 'auto-sync',
   docker: 'docker',
+  amazon: 'amazon',
+  amazonGuide: 'amazon-guide',
   telegram: 'telegram',
   telegramGuide: 'telegram-guide',
   categories: 'report-categories',
@@ -885,6 +888,19 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
           </pre>
         </div>
       </CollapsibleCard>
+
+      {/* Directly below the Docker card: it is the companion that reads the
+          mailbox, so this is only useful to someone who has just set that up. */}
+      <AmazonCard
+        store={store}
+        cardId={CARD.amazon}
+        guideId={CARD.amazonGuide}
+        open={isOpen(CARD.amazon)}
+        guideOpen={isOpen(CARD.amazonGuide)}
+        onToggle={() => toggleCard(CARD.amazon)}
+        onToggleGuide={() => toggleCard(CARD.amazonGuide)}
+        categories={categoryCatalog}
+      />
 
       <CollapsibleCard
         id={CARD.telegram}

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { runSyncCore, applyBaselineFix, neutralAdjustmentFields, VALUATION_POLL, IN_TRANSIT_TIMEOUT_SECONDS, descriptionFromComment, txIdFromComment, planDuplicatePrune, IN_TRANSIT_COMMENT_PREFIX } from './sync-core.js';
 import { createFakeHost, type FakeHostSeed } from './fake-host.js';
+import { accountTxKey } from './transfers.js';
 import { linkPairByRecreate } from './link-pair.js';
 import type { LinkLeg, SyncHost } from './sync-host.js';
 
@@ -2140,4 +2141,191 @@ describe('runSyncCore with ONE SimpleFin tx id in two accounts', () => {
   function store2(fake: ReturnType<typeof createFakeHost>) {
     return fake.store;
   }
+});
+
+describe('runSyncCore + Amazon order categories', () => {
+  beforeEach(() => {
+    VALUATION_POLL.delayMs = 1;
+    VALUATION_POLL.attempts = 3;
+  });
+
+  /** A feed with one Amazon charge, dated near the ledger fixture's email. */
+  const amazonSeed = (
+    amazonLedger: FakeHostSeed['amazonLedger'],
+    description = 'AMAZON.COM*MB3T81',
+    amount = '-21.18',
+  ): FakeHostSeed => ({
+    accountSet: { errors: [], accounts: [{
+      id: 'sfin-1', name: 'Checking', currency: 'USD', balance: '100.00',
+      'balance-date': Date.parse('2026-08-06T00:00:00Z') / 1000,
+      transactions: [{
+        id: 'tx-amz', posted: Date.parse('2026-08-06T00:00:00Z') / 1000,
+        amount, description,
+      }],
+    }] },
+    mapping: { 'sfin-1': 'wf-a' },
+    amazonLedger,
+  });
+
+  const ledgerFixture = () => ({
+    '113-0728509-1925031|shipped|2118': {
+      orderId: '113-0728509-1925031', kind: 'shipped' as const, totalCents: 2118,
+      itemCount: 1, labels: ['Lawn & Garden'], emailDate: '2026-08-04',
+    },
+  });
+
+  it('folds the order category into the comment of the row it creates', async () => {
+    const { host, store, saved } = createFakeHost(amazonSeed(ledgerFixture()));
+    const result = await runSyncCore(host, store, {});
+    expect(result.imported).toBe(1);
+    expect(saved[0].creates![0].comment).toBe(
+      'AMAZON.COM*MB3T81 · Amazon: Lawn & Garden · tx-amz',
+    );
+    // The tx-id suffix is still the LAST field: txIdFromComment reads it and
+    // every reconciliation match depends on that.
+    expect(txIdFromComment(saved[0].creates![0].comment)).toBe('tx-amz');
+    // And the human half still renders, enrichment included.
+    expect(descriptionFromComment(saved[0].creates![0].comment))
+      .toBe('AMAZON.COM*MB3T81 · Amazon: Lawn & Garden');
+  });
+
+  it('marks the order consumed so a later charge cannot reuse it', async () => {
+    const { host, store, amazon } = createFakeHost(amazonSeed(ledgerFixture()));
+    await runSyncCore(host, store, {});
+    expect(amazon()['113-0728509-1925031|shipped|2118'].consumedBy)
+      .toBe(accountTxKey('sfin-1', 'tx-amz'));
+  });
+
+  it('leaves the comment alone when no order matches the amount', async () => {
+    const { host, store, saved } = createFakeHost(
+      amazonSeed(ledgerFixture(), 'AMAZON.COM*MB3T81', '-99.99'),
+    );
+    await runSyncCore(host, store, {});
+    expect(saved[0].creates![0].comment).toBe('AMAZON.COM*MB3T81 · tx-amz');
+  });
+
+  it('leaves a non-Amazon merchant alone even at an identical amount', async () => {
+    const { host, store, saved } = createFakeHost(
+      amazonSeed(ledgerFixture(), 'WHOLEFOODS #10251'),
+    );
+    await runSyncCore(host, store, {});
+    expect(saved[0].creates![0].comment).toBe('WHOLEFOODS #10251 · tx-amz');
+  });
+
+  it('does nothing at all when the ledger is empty', async () => {
+    // The off-switch for every user who never set up mail forwarding: no flag and
+    // no config, just an empty ledger.
+    const { host, store, saved } = createFakeHost(amazonSeed({}));
+    await runSyncCore(host, store, {});
+    expect(saved[0].creates![0].comment).toBe('AMAZON.COM*MB3T81 · tx-amz');
+  });
+});
+
+describe('Amazon order emails never become transactions', () => {
+  beforeEach(() => {
+    VALUATION_POLL.delayMs = 1;
+    VALUATION_POLL.attempts = 3;
+  });
+
+  /**
+   * The structural guarantee behind this whole feature.
+   *
+   * The email arrives BEFORE the charge — Amazon bills on shipment, SimpleFin sees
+   * the charge a day or two later — so for a while the ledger holds an order the
+   * bank has never mentioned. That order must contribute nothing: no activity, no
+   * amount, no balance movement. Enrichment only ever edits the `comment` STRING of
+   * a row SimpleFin itself reported, so there is no code path from a ledger record
+   * to a created row. This test is what keeps that true.
+   */
+  it('imports nothing from a ledger full of orders when the feed is empty', async () => {
+    const { host, store, saved, imported } = createFakeHost({
+      accountSet: { errors: [], accounts: [{
+        id: 'sfin-1', name: 'Checking', currency: 'USD', balance: '100.00',
+        'balance-date': Date.parse('2026-08-06T00:00:00Z') / 1000,
+        transactions: [],
+      }] },
+      mapping: { 'sfin-1': 'wf-a' },
+      amazonLedger: {
+        '113-0728509-1925031|shipped|2118': {
+          orderId: '113-0728509-1925031', kind: 'shipped', totalCents: 2118,
+          itemCount: 1, labels: ['Lawn & Garden'], emailDate: '2026-08-04',
+        },
+        '222-2222222-2222222|ordered|9999': {
+          orderId: '222-2222222-2222222', kind: 'ordered', totalCents: 9999,
+          itemCount: 3, labels: ['Electronics'], emailDate: '2026-08-05',
+        },
+      },
+    });
+
+    const result = await runSyncCore(host, store, {});
+
+    expect(result.imported).toBe(0);
+    expect(saved.flatMap((s) => s.creates ?? [])).toEqual([]);
+    expect(imported.flat()).toEqual([]);
+  });
+
+  it('does not change the amount of the row it categorizes', async () => {
+    // The other half of the same guarantee: matching edits text, never money. If
+    // enrichment could touch `amount` or `fee` it would move a balance and the
+    // drift detector would start chasing its own tail.
+    const { host, store, saved } = createFakeHost({
+      accountSet: { errors: [], accounts: [{
+        id: 'sfin-1', name: 'Checking', currency: 'USD', balance: '100.00',
+        'balance-date': Date.parse('2026-08-06T00:00:00Z') / 1000,
+        transactions: [{
+          id: 'tx-amz', posted: Date.parse('2026-08-06T00:00:00Z') / 1000,
+          amount: '-21.18', description: 'AMAZON.COM*MB3T81',
+        }],
+      }] },
+      mapping: { 'sfin-1': 'wf-a' },
+      amazonLedger: {
+        '113-0728509-1925031|shipped|2118': {
+          orderId: '113-0728509-1925031', kind: 'shipped', totalCents: 2118,
+          itemCount: 1, labels: ['Lawn & Garden'], emailDate: '2026-08-04',
+        },
+      },
+    });
+
+    await runSyncCore(host, store, {});
+
+    const creates = saved.flatMap((s) => s.creates ?? []);
+    // Exactly one row for one charge — the order did not add a second.
+    expect(creates).toHaveLength(1);
+    expect(creates[0].amount).toBe(21.18);
+    expect(creates[0].fee ?? 0).toBe(0);
+    expect(creates[0].activityType).toBe('WITHDRAWAL');
+  });
+
+  it('one charge for two orders of the same amount stays one charge, uncategorized', async () => {
+    // Two orders, one bank charge that could be either. It gets imported once,
+    // with no category — never twice, and never with a guessed one.
+    const { host, store, saved } = createFakeHost({
+      accountSet: { errors: [], accounts: [{
+        id: 'sfin-1', name: 'Checking', currency: 'USD', balance: '100.00',
+        'balance-date': Date.parse('2026-08-06T00:00:00Z') / 1000,
+        transactions: [{
+          id: 'tx-amz', posted: Date.parse('2026-08-06T00:00:00Z') / 1000,
+          amount: '-21.18', description: 'AMAZON.COM*MB3T81',
+        }],
+      }] },
+      mapping: { 'sfin-1': 'wf-a' },
+      amazonLedger: {
+        '111-1111111-1111111|shipped|2118': {
+          orderId: '111-1111111-1111111', kind: 'shipped', totalCents: 2118,
+          itemCount: 1, labels: ['Electronics'], emailDate: '2026-08-04',
+        },
+        '222-2222222-2222222|shipped|2118': {
+          orderId: '222-2222222-2222222', kind: 'shipped', totalCents: 2118,
+          itemCount: 1, labels: ['Groceries'], emailDate: '2026-08-05',
+        },
+      },
+    });
+
+    const result = await runSyncCore(host, store, {});
+
+    expect(result.imported).toBe(1);
+    const creates = saved.flatMap((s) => s.creates ?? []);
+    expect(creates).toHaveLength(1);
+    expect(creates[0].comment).toBe('AMAZON.COM*MB3T81 · tx-amz');
+  });
 });

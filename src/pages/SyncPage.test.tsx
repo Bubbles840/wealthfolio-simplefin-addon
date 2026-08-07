@@ -45,6 +45,11 @@ const makeProps = () => ({
     setTelegramConfig: vi.fn(),
     getAvailableReportCategories: vi.fn(async () => [] as string[]),
     getReportCategoryCatalog: vi.fn(async () => [] as any[]),
+    // Amazon categorization unconfigured, which is every test here except the
+    // Amazon card ones.
+    getAmazonConfig: vi.fn(async () => null),
+    setAmazonConfig: vi.fn(async () => {}),
+    getAmazonLabels: vi.fn(async () => ({})),
     getReportGlyphStyle: vi.fn(async () => ({ mode: 'clean' as const, overrides: {} })),
     setReportGlyphStyle: vi.fn(async () => {}),
     getSubcategoryDisplay: vi.fn(async () => 'rollup' as const),
@@ -81,8 +86,16 @@ async function openReportCategories() {
   // groups this test's catalog produced — their names vary by fixture, so this
   // opens every still-collapsed disclosure inside the panel rather than naming
   // them.
+  //
+  // Scoped to the panel, which is what the line above always meant. Querying the
+  // whole document also opened every OTHER card on the page, so any card that
+  // happened to render a category name — the Amazon one lists them in a
+  // dropdown — turned a `findByText('Dining')` here into "found multiple
+  // elements". A helper for one panel must not reach outside it.
+  const panel = document.querySelector<HTMLElement>('#report-categories-panel')
+    ?? document.body;
   for (let pass = 0; pass < 3; pass++) {
-    const collapsed = document.querySelectorAll<HTMLElement>(
+    const collapsed = panel.querySelectorAll<HTMLElement>(
       '.sfin-disclosure[aria-expanded="false"]',
     );
     if (collapsed.length === 0) break;

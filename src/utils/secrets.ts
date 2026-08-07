@@ -1,4 +1,8 @@
 import type { AddonContext } from '@wealthfolio/addon-sdk';
+import { AMAZON_LEDGER_SECRET_KEY } from '../../shared/amazon-ledger';
+import { AMAZON_CONFIG_SECRET_KEY, AMAZON_LABELS_SECRET_KEY } from '../../shared/amazon-config';
+import type { AmazonLabelCatalog, AmazonMailConfig } from '../../shared/amazon-config';
+import type { AmazonLedger } from '../../shared/amazon-ledger';
 import type { AccountMapping, MappingRule } from '../../shared/types';
 import type { DriftAlertEntry, TransferLinkFailureEntry } from '../../shared/sync-host';
 import type { SyncResult } from '../../shared/sync-core';
@@ -277,6 +281,65 @@ export class SecretsStore {
   }
   async setPendingLargeTxAlerts(alerts: PendingLargeTxAlert[]): Promise<void> {
     await this.ctx.api.secrets.set(KEYS.pendingLargeTxAlerts, JSON.stringify(alerts));
+  }
+
+  /**
+   * Amazon orders awaiting their charge. The COMPANION writes this (it reads the
+   * mailbox); the addon reads it here so an addon-side sync enriches identically.
+   *
+   * A malformed value degrades to an empty ledger, which switches Amazon
+   * categorization off for the run — the same failure mode as never having set it
+   * up. Throwing would abort the whole sync over an optional nicety.
+   */
+  async getAmazonLedger(): Promise<AmazonLedger> {
+    const raw = await this.ctx.api.secrets.get(AMAZON_LEDGER_SECRET_KEY);
+    if (!raw) return {};
+    try {
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? (parsed as AmazonLedger)
+        : {};
+    } catch {
+      return {};
+    }
+  }
+  async setAmazonLedger(map: AmazonLedger): Promise<void> {
+    await this.ctx.api.secrets.set(AMAZON_LEDGER_SECRET_KEY, JSON.stringify(map));
+  }
+
+  /**
+   * Amazon forwarding-mailbox settings, written by the Sync page and read by the
+   * companion (which is the only thing that connects to a mailbox).
+   */
+  async getAmazonConfig(): Promise<AmazonMailConfig | null> {
+    const raw = await this.ctx.api.secrets.get(AMAZON_CONFIG_SECRET_KEY);
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw) as AmazonMailConfig;
+    } catch {
+      return null;
+    }
+  }
+  async setAmazonConfig(cfg: AmazonMailConfig): Promise<void> {
+    await this.ctx.api.secrets.set(AMAZON_CONFIG_SECRET_KEY, JSON.stringify(cfg));
+  }
+
+  /**
+   * Every Amazon label the user has actually received, and where it was filed.
+   *
+   * Read-only here — the companion discovers these. Showing the user their OWN
+   * label set matters more than any global list would: Amazon's vocabulary is
+   * unpublished and probably hundreds long, but a given household sees a dozen.
+   */
+  async getAmazonLabels(): Promise<AmazonLabelCatalog> {
+    const raw = await this.ctx.api.secrets.get(AMAZON_LABELS_SECRET_KEY);
+    if (!raw) return {};
+    try {
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    } catch {
+      return {};
+    }
   }
 
   /** Latest per-account SimpleFin balance + drift, keyed by SimpleFin account

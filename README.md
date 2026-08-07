@@ -127,6 +127,48 @@ services:
       - /path/to/wealthfolio.db:/mnt/wealthfolio.db:ro
 ```
 
+### Amazon auto-categorization (optional)
+
+A bank charge reads `AMAZON.COM*MB3T81` and says nothing about what you bought.
+Amazon's order emails name the category, so forwarding those to a mailbox the
+companion can read lets it label each Amazon charge automatically:
+
+```
+Email:  Order 113-0728509 · 1 Lawn & Garden item · $21.18
+Bank:   AMAZON.COM*MB3T81 · $21.18
+   →    comment becomes "AMAZON.COM*MB3T81 · Amazon: Lawn & Garden · TRN-…"
+   →    Wealthfolio's own rule files it under Housing
+```
+
+Set up in the **Amazon auto-categorization** card on the Sync page (three fields).
+No extra container: the mailbox is read at the start of each sync, which is the
+only moment the data is used.
+
+**Use a separate, empty mailbox.** No email provider offers a per-sender scope —
+an app password grants the whole account — so instead of handing over your real
+inbox, you add one filter forwarding `auto-confirm@amazon.com` and
+`shipment-tracking@amazon.com` to a throwaway address that contains nothing but
+receipts. If that password ever leaked, receipts are all it could reach, and you
+revoke it by deleting one filter.
+
+**It cannot double-count a purchase.** Order emails never create a transaction —
+they only add text to the comment of a row SimpleFin already imported. An email
+with no matching charge does nothing and is pruned after 90 days. Where two Amazon
+orders share an amount inside the ±5 day window, neither is applied: an ambiguous
+match is worse than none, since a wrong category is invisible while a missing one
+surfaces in the needs-a-category sweep.
+
+Labels are matched by pattern rather than a lookup table, so a label Amazon
+invents next month files itself. Anything unmatched goes to a configurable default
+*and* is announced once in Telegram. `companion/scripts/amazon-rules.mjs` inserts
+the matching Wealthfolio rules (dry-run by default).
+
+**Itemization is not possible.** Amazon removed item names, quantities and unit
+prices from these emails on 2026-07-08; only a category label, a total and an item
+count remain. Splitting a charge into per-item rows needs per-item prices, so that
+is dead at the source — which is also why category tagging is safe: with nothing
+to split, reconciliation is never involved.
+
 ## Privacy
 
 - SimpleFin access is **read-only**.
@@ -134,6 +176,8 @@ services:
   logged or included in error messages.
 - Network access is restricted to the SimpleFin bridge hosts, declared in
   `manifest.json`.
+- Amazon categorization is off unless configured, and reads only the mailbox you
+  point it at — deliberately a throwaway one holding nothing but receipts.
 
 ## Development
 
