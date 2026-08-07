@@ -21,20 +21,20 @@
   "supportUrl": "https://github.com/Bubbles840/wealthfolio-simplefin-addon/issues",
   "source": {
     "repository": "https://github.com/Bubbles840/wealthfolio-simplefin-addon",
-    "tag": "v1.7.1",
-    "commit": "83d3321771ba435c72008fc3259993cf91eeade2"
+    "tag": "v1.7.2",
+    "commit": "511a15662c59ae23677e648a5ec48e705a325fba"
   },
   "release": {
-    "version": "1.7.1",
+    "version": "1.7.2",
     "minWealthfolioVersion": "3.6.2",
     "sdkVersion": "3.6.2",
     "critical": false,
     "breaking": false,
-    "notes": "Fixes two issues found immediately after 1.7.0: credit-card in-transit placeholders used DEPOSIT, which Wealthfolio rejects on card accounts, so an unpaired card payment was refused on every sync; and the category catalog was only published when a report ran, leaving the addon on its legacy list — without icons or subcategories — until the next morning. Cards now use the accepted CREDIT shape and the catalog publishes on every sync.",
-    "changelogUrl": "https://github.com/Bubbles840/wealthfolio-simplefin-addon/releases/tag/v1.7.1"
+    "notes": "The category selector now lists only the parent categories Wealthfolio actually budgets, with subcategory detail moved into an optional report breakdown. Per-category emoji is a click-to-pick palette rather than a text field, and it disappears entirely in clean mode where overrides have no effect.",
+    "changelogUrl": "https://github.com/Bubbles840/wealthfolio-simplefin-addon/releases/tag/v1.7.2"
   },
   "distribution": {
-    "r2Path": "simplefin-sync/1.7.1/simplefin-sync.zip"
+    "r2Path": "simplefin-sync/1.7.2/simplefin-sync.zip"
   },
   "media": {
     "coverLight": "assets/cover-light.webp",
