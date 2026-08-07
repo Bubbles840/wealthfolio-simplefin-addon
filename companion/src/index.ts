@@ -446,6 +446,13 @@ async function pollAmazonMail(
       `${result.unparsed ? `, ${result.unparsed} unrecognised` : ''}` +
       `${result.pruned ? `, ${result.pruned} pruned` : ''}`,
     );
+    // Named senders, not just a count. Unrecognised mail from a marketing address
+    // means the forwarding filter is too broad; unrecognised mail from an ORDER
+    // address means Amazon changed the format and categorization has stopped
+    // working. The count alone cannot distinguish those.
+    for (const [who, n] of Object.entries(result.unparsedSenders)) {
+      log(`Amazon mail: ${n} unrecognised message(s) from ${who}`);
+    }
     return result.newLabels;
   } catch (err) {
     log(`Amazon mail error (categorization skipped this run): ${formatError(err)}`);

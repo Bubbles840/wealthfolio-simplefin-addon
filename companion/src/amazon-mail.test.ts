@@ -52,6 +52,24 @@ describe('ingestAmazonMail', () => {
     });
   });
 
+  it('names the sender of an unrecognised message, not just a count', async () => {
+    // "The parser broke" and "a sender I never meant to forward is arriving" look
+    // identical from a count — messages that yield no orders — and the fixes are
+    // opposite. The sender is the only thing that tells them apart.
+    const { source } = fakeSource([
+      { uid: 11, date: '2026-08-04T00:00:00Z', text: 'Deals of the day!', from: 'store-news@amazon.com' },
+      { uid: 12, date: '2026-08-05T00:00:00Z', text: 'More deals!', from: 'store-news@amazon.com' },
+      { uid: 13, date: '2026-08-05T00:00:00Z', text: 'Nothing useful', from: 'auto-confirm@amazon.com' },
+    ]);
+    const { store } = fakeStore();
+    const r = await ingestAmazonMail(source, store, {}, NOW);
+    expect(r.unparsed).toBe(3);
+    expect(r.unparsedSenders).toEqual({
+      'store-news@amazon.com': 2,
+      'auto-confirm@amazon.com': 1,
+    });
+  });
+
   it('flags ingested messages read but leaves an unparsed one unread', async () => {
     // An unrecognised message must stay visible. Amazon changed this format five
     // weeks ago; marking the failure read would turn the next change into

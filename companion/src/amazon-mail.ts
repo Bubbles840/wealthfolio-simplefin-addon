@@ -39,6 +39,16 @@ export interface MailMessage {
   /** The message's own date — the anchor the ±5 day match window measures from. */
   date: string;
   text: string;
+  /**
+   * Sender, lowercased.
+   *
+   * Carried purely for diagnostics, and it earns its keep: "the parser broke" and
+   * "a sender I never forwarded started carrying order emails" are the same
+   * symptom — messages arriving that yield no orders — and without the sender
+   * there is no way to tell them apart. Amazon uses a dozen addresses and the set
+   * is not documented anywhere.
+   */
+  from?: string;
 }
 
 export interface MailSource {
@@ -59,6 +69,8 @@ export interface AmazonIngestResult {
   pruned: number;
   /** Labels seen for the first time ever, with where they were filed. */
   newLabels: Array<{ label: string; category: string; matched: boolean }>;
+  /** Senders whose messages yielded no orders, with a count each. */
+  unparsedSenders: Record<string, number>;
 }
 
 export interface IngestStore {
@@ -88,12 +100,18 @@ export async function ingestAmazonMail(
 
   const result: AmazonIngestResult = {
     scanned: messages.length, added: 0, unparsed: 0, pruned: 0, newLabels: [],
+    unparsedSenders: {},
   };
   const consumedUids: number[] = [];
 
   for (const msg of messages) {
     const orders = parseAmazonEmail(msg.text);
-    if (orders.length === 0) { result.unparsed += 1; continue; }
+    if (orders.length === 0) {
+      result.unparsed += 1;
+      const who = msg.from ?? 'unknown sender';
+      result.unparsedSenders[who] = (result.unparsedSenders[who] ?? 0) + 1;
+      continue;
+    }
     // Date only: the window is measured in days, and keeping a time-of-day would
     // make a purchase near midnight behave differently from the same purchase at
     // noon for no reason a user could ever predict.
@@ -177,6 +195,7 @@ export async function createImapSource(cfg: AmazonMailConfig): Promise<MailSourc
           uid: msg.uid,
           date: (parsed.date ?? new Date()).toISOString(),
           text,
+          from: from[0],
         });
       }
       return out;
