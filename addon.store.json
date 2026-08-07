@@ -21,20 +21,20 @@
   "supportUrl": "https://github.com/Bubbles840/wealthfolio-simplefin-addon/issues",
   "source": {
     "repository": "https://github.com/Bubbles840/wealthfolio-simplefin-addon",
-    "tag": "v1.7.2",
-    "commit": "511a15662c59ae23677e648a5ec48e705a325fba"
+    "tag": "v1.8.0",
+    "commit": "93340e6f3fa8154ec51969068f855a8d9af3a308"
   },
   "release": {
-    "version": "1.7.2",
+    "version": "1.8.0",
     "minWealthfolioVersion": "3.6.2",
     "sdkVersion": "3.6.2",
     "critical": false,
     "breaking": false,
-    "notes": "The category selector now lists only the parent categories Wealthfolio actually budgets, with subcategory detail moved into an optional report breakdown. Per-category emoji is a click-to-pick palette rather than a text field, and it disappears entirely in clean mode where overrides have no effect.",
-    "changelogUrl": "https://github.com/Bubbles840/wealthfolio-simplefin-addon/releases/tag/v1.7.2"
+    "notes": "Categories in the addon are now organised into collapsible budget groups matching Wealthfolio's own Spending Tracker (Needs, Wants, Savings, Giving, Personal, Other), read live from its budget-group tables so groups and categories added, renamed or reordered in Wealthfolio appear automatically.",
+    "changelogUrl": "https://github.com/Bubbles840/wealthfolio-simplefin-addon/releases/tag/v1.8.0"
   },
   "distribution": {
-    "r2Path": "simplefin-sync/1.7.2/simplefin-sync.zip"
+    "r2Path": "simplefin-sync/1.8.0/simplefin-sync.zip"
   },
   "media": {
     "coverLight": "assets/cover-light.webp",
