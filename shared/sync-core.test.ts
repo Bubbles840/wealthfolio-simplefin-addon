@@ -1996,8 +1996,8 @@ describe('runSyncCore with ONE SimpleFin tx id in two accounts', () => {
 
       // Both accounts measured as in sync, and neither was alerted about.
       expect(await store.getAccountBalances()).toEqual({
-        'sfin-sav': { balance: 610.65, currency: 'USD', date: expect.any(Number), drift: null, driftSince: null },
-        'sfin-spend': { balance: 3475.23, currency: 'USD', date: expect.any(Number), drift: null, driftSince: null },
+        'sfin-sav': { balance: 610.65, currency: 'USD', date: expect.any(Number), drift: null, driftSince: null, measured: true },
+        'sfin-spend': { balance: 3475.23, currency: 'USD', date: expect.any(Number), drift: null, driftSince: null, measured: true },
       });
       expect(result.balanceDriftAlerts).toEqual([]);
     });
@@ -2086,9 +2086,12 @@ describe('runSyncCore with ONE SimpleFin tx id in two accounts', () => {
 
     const result = await runSyncCore(host, store, { heal: true });
 
+    // `measured: true` is asserted, not tolerated: both accounts were genuinely
+    // comparable here, and "verified in sync" is now a different claim from
+    // "nothing to report".
     expect(await store.getAccountBalances()).toEqual({
-      'sfin-sav': { balance: 610.65, currency: 'USD', date: expect.any(Number), drift: null, driftSince: null },
-      'sfin-spend': { balance: 3475.23, currency: 'USD', date: expect.any(Number), drift: null, driftSince: null },
+      'sfin-sav': { balance: 610.65, currency: 'USD', date: expect.any(Number), drift: null, driftSince: null, measured: true },
+      'sfin-spend': { balance: 3475.23, currency: 'USD', date: expect.any(Number), drift: null, driftSince: null, measured: true },
     });
     expect(result.balanceDriftAlerts).toEqual([]);
   });
@@ -2537,5 +2540,79 @@ describe('runSyncCore drift when a planned create does not land', () => {
     // No baseline rewrite for a row that never landed.
     const adjustments = imported.flat().filter((r) => /Starting balance|Balance adjustment/.test(r.comment ?? ''));
     expect(adjustments).toEqual([]);
+  });
+});
+
+describe('runSyncCore reports whether drift was actually measured', () => {
+  beforeEach(() => {
+    VALUATION_POLL.delayMs = 1;
+    VALUATION_POLL.attempts = 3;
+  });
+
+  const base = (over: Partial<FakeHostSeed> = {}): FakeHostSeed => ({
+    accountSet: { errors: [], accounts: [{
+      id: 'sfin-1', name: 'Savings', currency: 'USD', balance: '1000.00',
+      'balance-date': 1700000000, transactions: [],
+    }] },
+    mapping: { 'sfin-1': 'wf-a' },
+    valuations: new Map([['wf-a', 1000]]),
+    existing: new Map([['wf-a', [{
+      id: 'sb', accountId: 'wf-a', activityType: 'DEPOSIT', date: '2020-01-01',
+      amount: 1000, comment: 'Starting balance · sfin-1', sourceGroupId: null,
+    }]]]),
+    ...over,
+  });
+
+  const snapshot = async (store: Awaited<ReturnType<typeof createFakeHost>>['store']) =>
+    (await store.getAccountBalances())['sfin-1'] as { drift: number | null; measured?: boolean };
+
+  it('marks a genuinely in-sync account measured', async () => {
+    // `drift: null` alone cannot say "verified". It is also what "could not check"
+    // looks like, and the account list showed both as a green "in sync" chip — which
+    // is how two phantom drift episodes got mistaken for verified balances.
+    const { host, store } = createFakeHost(base());
+    await runSyncCore(host, store, {});
+    const snap = await snapshot(store);
+    expect(snap.drift).toBeNull();
+    expect(snap.measured).toBe(true);
+  });
+
+  it('marks an account unmeasured when a pending row makes it incomparable', async () => {
+    // Pending rows sit in Wealthfolio's valuation but not in SimpleFin's posted
+    // balance, so the two are not comparable. Nothing was proved.
+    const { host, store } = createFakeHost(base({
+      accountSet: { errors: [], accounts: [{
+        id: 'sfin-1', name: 'Savings', currency: 'USD', balance: '1000.00',
+        'balance-date': 1700000000,
+        transactions: [{
+          id: 'tx-p', posted: 1700000000, amount: '-5.00',
+          description: 'PENDING THING', pending: true,
+        }],
+      }] },
+    }));
+    await runSyncCore(host, store, {});
+    expect((await snapshot(store)).measured).toBe(false);
+  });
+
+  it('marks an account unmeasured when a planned create did not land', async () => {
+    // The live case: the figure was computed, then invalidated because the create it
+    // assumed never happened. It must not read as verified.
+    const { host, store } = createFakeHost(base({
+      accountSet: { errors: [], accounts: [{
+        id: 'sfin-1', name: 'Savings', currency: 'USD', balance: '1000.00',
+        'balance-date': 1700000000,
+        transactions: [{ id: 'tx-dup', posted: 1700000000, amount: '-300.00', description: 'PNC' }],
+      }] },
+      autoHeal: true,
+      saveManyHook: (req) => {
+        if ((req.creates ?? []).some((c) => String(c.comment).includes('tx-dup'))) {
+          throw new Error('Duplicate activity detected. A matching activity already exists.');
+        }
+      },
+    }));
+    await runSyncCore(host, store, {});
+    const snap = await snapshot(store);
+    expect(snap.drift).toBeNull();
+    expect(snap.measured).toBe(false);
   });
 });

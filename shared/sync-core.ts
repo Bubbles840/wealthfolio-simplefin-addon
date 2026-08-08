@@ -424,6 +424,21 @@ interface AccountBalanceSnapshot {
   date: number;
   drift: number | null;
   /**
+   * Whether this run actually obtained a trustworthy drift figure.
+   *
+   * `drift: null` cannot answer that on its own — it is ALSO what "could not check"
+   * looks like, and the two were rendered identically as a green "in sync" chip. An
+   * account can be incomparable for several ordinary reasons (a pending row, a run
+   * that updated or deleted anything, a pruned duplicate, a planned create that never
+   * landed), and calling any of those "in sync" claims a verification that did not
+   * happen. Two phantom drift episodes on the same account were read as verified
+   * balances before this existed.
+   *
+   * Absent means unmeasured: a snapshot written by an older build has proved nothing
+   * about the current state either, and every sync rewrites it.
+   */
+  measured?: boolean;
+  /**
    * Present when this run PROVED the drift belongs to the starting-balance
    * baseline rather than to any transaction: the reconciliation plan came back
    * empty over the heal window, so every transaction the bank reports is already
@@ -1638,6 +1653,10 @@ export async function runSyncCore(
       currency: sfAccount.currency,
       date: sfAccount['balance-date'],
       drift,
+      // `measuredDrift` is the run's only trustworthy figure — non-null exactly when
+      // the account was comparable — so it, not `drift`, decides this. `drift`
+      // additionally goes null for "in sync" and for "plugged this run".
+      measured: measuredDrift !== null,
       ...(baselineFix ? { baselineFix } : {}),
     };
 
@@ -1792,6 +1811,9 @@ export async function runSyncCore(
         const snapshot = accountBalances[sfAccount.id];
         if (snapshot) {
           snapshot.drift = null;
+          // Not just "no drift to report" — nothing was verified, and the account
+          // list must not claim otherwise.
+          snapshot.measured = false;
           snapshot.baselineFix = undefined;
           snapshot.driftSince = driftAlertBefore?.firstDetectedAt ?? null;
         }

@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **An account that could not be checked now says "not checked", not "in sync".**
+  The account list showed a green *in sync* chip whenever no drift was reported —
+  but "no drift reported" covers both *the two balances were compared and matched*
+  and *they could not be compared at all* (a pending transaction, a run that
+  reconciled anything, a pruned duplicate, a create the host refused). The second
+  case was claiming a verification that never happened, and it is how two phantom
+  drift episodes on one account were read as verified balances.
+
+  The snapshot now carries `measured`, so the three states render distinctly: `off
+  by $X` (a real figure), `in sync` (compared and matched), and a muted `not
+  checked` with an explanation on hover. Deliberately neither green nor red —
+  absence of information should not be coloured like a verdict. A snapshot written
+  by an older build reads as not checked, since it proves nothing about the current
+  state either.
+
 ### Fixed
 
 - **A refused create produced phantom drift equal to its own amount.** `windowDelta`

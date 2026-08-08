@@ -44,6 +44,10 @@ export interface AccountBalanceInfo {
    *  measurable (no imports that run) and exceeds the drift threshold; null
    *  means "in sync" (or not measurable this run). */
   drift: number | null;
+  /** Whether the run obtained a trustworthy figure at all — the half `drift: null`
+   *  cannot express, since it covers both "verified in sync" and "could not check".
+   *  Absent means unmeasured (an older build's snapshot proves nothing either). */
+  measured?: boolean;
 }
 
 const KEYS = {

@@ -801,10 +801,31 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
               </div>
               <div className="sfin-acct-right">
                 <div className="sfin-bal">{info && info.balance != null ? money(info.balance, info.currency) : '—'}</div>
-                {info && info.balance != null && (info.drift == null ? (
+                {/* THREE states, not two. `drift == null` used to render a green
+                    "in sync" chip, but it is also what "could not check" looks
+                    like — an account is incomparable for several ordinary reasons
+                    (a pending row, a run that updated or deleted anything, a
+                    pruned duplicate, a planned create that never landed). Calling
+                    those "in sync" claims a verification that did not happen, and
+                    two phantom drift episodes on one account were read as verified
+                    balances because of it. `measured` distinguishes them; absent
+                    means unmeasured, since a snapshot from an older build has
+                    proved nothing about the current state either. */}
+                {info && info.balance != null && (info.drift != null ? (
+                  <span className="sfin-chip sfin-chip--off"><AlertIcon /> off by {money(Math.abs(info.drift), info.currency)}</span>
+                ) : (info as { measured?: boolean }).measured ? (
                   <span className="sfin-chip"><CheckIcon /> in sync</span>
                 ) : (
-                  <span className="sfin-chip sfin-chip--off"><AlertIcon /> off by {money(Math.abs(info.drift), info.currency)}</span>
+                  <span
+                    className="sfin-chip sfin-chip--muted"
+                    title={
+                      'This sync could not compare the two balances — usually a pending '
+                      + 'transaction, or a row it reconciled or could not write. Nothing is '
+                      + 'wrong; it just was not checked. The next sync normally can.'
+                    }
+                  >
+                    not checked
+                  </span>
                 ))}
               </div>
             </div>
