@@ -144,9 +144,31 @@ function categoryId(name) {
   return row?.id ?? null;
 }
 
-const existing = new Set(
-  db.prepare(`SELECT ${patternCol} AS p FROM ${RULES_TABLE}`).all().map((r) => String(r.p)),
-);
+const allPatterns = db.prepare(`SELECT ${patternCol} AS p FROM ${RULES_TABLE}`).all()
+  .map((r) => String(r.p));
+const existing = new Set(allPatterns);
+
+/**
+ * Rules that already mention Amazon, reported before anything is planned.
+ *
+ * This matters because a broad existing rule COMPETES with the specific ones this
+ * script adds. Every Amazon charge in the live database was already categorized,
+ * which means something already claims them — and if a blanket `Amazon` rule wins,
+ * the label rules never fire and the whole feature quietly does nothing while
+ * appearing installed. Wealthfolio's precedence between two matching rules is not
+ * documented, so this refuses to guess and shows the conflict instead.
+ */
+const competing = allPatterns.filter((p) => /amazon|amzn/i.test(p) && !p.startsWith('Amazon: '));
+if (competing.length > 0) {
+  console.log('\n⚠ Existing rules that already match Amazon charges:\n');
+  for (const p of competing) console.log(`    ${p}`);
+  console.log(
+    '\n  These compete with the label rules below. If a broad one wins, the specific\n' +
+    '  categories never get applied — and it will look installed while doing nothing.\n' +
+    '  Narrow or delete the broad rule in Wealthfolio, or verify on one real charge\n' +
+    '  that the label rule takes effect before trusting this.',
+  );
+}
 
 const plan = [];
 for (const { label, category } of labels) {
