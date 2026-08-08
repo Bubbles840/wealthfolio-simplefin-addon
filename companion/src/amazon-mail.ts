@@ -19,7 +19,7 @@
 import {
   mergeAmazonOrders, pruneAmazonLedger, type AmazonLedger,
 } from '../../shared/amazon-ledger.js';
-import { parseAmazonEmail } from '../../shared/amazon.js';
+import { parseAmazonEmail, isAmazonNoticeWithoutTotal } from '../../shared/amazon.js';
 import {
   resolveAmazonCategory, amazonMailConfigured, AMAZON_SENDERS, isAmazonMessage,
   AMAZON_CONFIG_SECRET_KEY, AMAZON_LABELS_SECRET_KEY, DEFAULT_AMAZON_CATEGORY,
@@ -74,8 +74,11 @@ export interface AmazonIngestResult {
   scanned: number;
   /** Orders added to the ledger this poll. */
   added: number;
-  /** Messages whose shape the parser did not recognise. */
+  /** Messages whose shape the parser did not recognise — a possible format change. */
   unparsed: number;
+  /** Amazon notices that by their nature carry no total (delivery confirmations).
+   *  Expected, not failures, and flagged read so they stop accumulating. */
+  ignored: number;
   pruned: number;
   /** Labels seen for the first time ever, with where they were filed. */
   newLabels: Array<{ label: string; category: string; matched: boolean }>;
@@ -109,14 +112,23 @@ export async function ingestAmazonMail(
   const labels = { ...(await store.getAmazonLabels()) };
 
   const result: AmazonIngestResult = {
-    scanned: messages.length, added: 0, unparsed: 0, pruned: 0, newLabels: [],
-    unparsedSenders: {},
+    scanned: messages.length, added: 0, unparsed: 0, ignored: 0, pruned: 0,
+    newLabels: [], unparsedSenders: {},
   };
   const consumed: MailMessage[] = [];
 
   for (const msg of messages) {
     const orders = parseAmazonEmail(msg.text);
     if (orders.length === 0) {
+      // A delivery notice restates no price, so it can never match a charge. Read
+      // and dropped rather than counted as a failure: every order produces one, and
+      // leaving them unread would fill the mailbox and bury a real format change
+      // under permanent noise.
+      if (isAmazonNoticeWithoutTotal(msg.text)) {
+        result.ignored += 1;
+        consumed.push(msg);
+        continue;
+      }
       result.unparsed += 1;
       const who = msg.from ?? 'unknown sender';
       result.unparsedSenders[who] = (result.unparsedSenders[who] ?? 0) + 1;

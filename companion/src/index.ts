@@ -443,6 +443,7 @@ async function pollAmazonMail(
     const result = await ingestAmazonMail(source, store, merged, Date.now());
     log(
       `Amazon mail: ${result.scanned} scanned, ${result.added} orders added` +
+      `${result.ignored ? `, ${result.ignored} delivery notices skipped` : ''}` +
       `${result.unparsed ? `, ${result.unparsed} unrecognised` : ''}` +
       `${result.pruned ? `, ${result.pruned} pruned` : ''}`,
     );

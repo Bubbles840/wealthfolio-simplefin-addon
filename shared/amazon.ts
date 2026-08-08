@@ -118,6 +118,35 @@ function splitLabels(raw: string, stripCounts = false): { labels: string[]; part
 }
 
 /**
+ * True when this is a recognisable Amazon notice whose TYPE never carries a total.
+ *
+ * A delivery notice names the categories but restates no price — Amazon already
+ * billed on shipment — so it can never be matched to a charge. That is a fact about
+ * the message, not a parse failure, and the difference matters operationally:
+ * anything treated as "unrecognised" is deliberately left unread so a real format
+ * change stays visible. Delivery notices arrive for every order, so classing them
+ * as failures would leave the mailbox filling with permanently-unread mail, re-read
+ * on every sync, and would bury the one signal that says the parser broke.
+ *
+ * Deliberately narrow, on BOTH conditions.
+ *
+ * The wording list excludes "arriving" even though delivery notices say it, because
+ * ORDER CONFIRMATIONS say it too — the live sample reads "Arriving Monday" a few
+ * lines above its Grand Total. Matching on that would mean a confirmation whose
+ * total stopped parsing got quietly filed as an ignorable notice, which is the one
+ * outcome this module must never produce: a real format change made invisible.
+ *
+ * And the absence of a total is required, not assumed. An email that starts carrying
+ * one again stops being ignorable, which is the safe direction if Amazon changes its
+ * mind about what a delivery notice contains.
+ */
+export function isAmazonNoticeWithoutTotal(body: string): boolean {
+  const text = (body ?? '').replace(BIDI_CONTROLS, '');
+  if (!/was delivered|Delivered:|out for delivery/i.test(text)) return false;
+  return !TOTAL.test(text);
+}
+
+/**
  * Every order an email describes.
  *
  * Returns an ARRAY because one message legitimately covers several orders — the

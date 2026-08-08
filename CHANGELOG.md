@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Delivery notices are now skipped as expected rather than counted as failures.**
+  A delivery notice names the categories but restates no price — Amazon billed on
+  shipment — so it can never be matched to a charge. They were being treated as
+  parse failures, which meant left deliberately unread so a real format change stays
+  visible. But every order produces one, so the mailbox would fill with
+  permanently-unread mail, re-read on every sync, burying the one signal that says
+  the parser actually broke.
+
+  The check excludes the word "arriving" on purpose, even though delivery notices use
+  it: order CONFIRMATIONS say `Arriving Monday` a few lines above their Grand Total,
+  so matching on it would file a confirmation whose total stopped parsing as an
+  ignorable notice — making a real format change invisible, the one outcome this must
+  never produce. It also requires the total to be genuinely absent, so a notice that
+  starts carrying one becomes usable again.
+
 - **Forwarded order emails land in Spam, and the poll only read INBOX.** Amazon's
   own message arriving from a different account is exactly the pattern spam
   heuristics dislike, and it happened on the very first test forward — so those
