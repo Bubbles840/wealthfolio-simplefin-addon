@@ -140,7 +140,24 @@ if (columns.length === 0) {
 
 console.log(`${RULES_TABLE} columns: ${columns.map((c) => c.name).join(', ')}`);
 
-const template = db.prepare(`SELECT * FROM ${RULES_TABLE} LIMIT 1`).get();
+/**
+ * Template: a USER-WRITTEN rule for preference, a preset one only as a fallback.
+ *
+ * `SELECT * LIMIT 1` picked whatever came first, which on a real install is a preset
+ * row — and a preset row's `preset_*` columns describe Wealthfolio's ownership of it.
+ * Blanking them looked like the fix, and it failed outright: `preset_modified` is NOT
+ * NULL. Patching that one column would have been guessing at its meaning.
+ *
+ * A rule the USER wrote already carries the correct values for every one of those
+ * columns — that is exactly what "a user-written rule" means in this schema — along
+ * with the right `is_global`, `activity_type` and taxonomy shape. So copy one of
+ * those and there is nothing left to blank.
+ */
+const template = db.prepare(
+  `SELECT * FROM ${RULES_TABLE} WHERE preset_id IS NULL LIMIT 1`,
+).get()
+  ?? db.prepare(`SELECT * FROM ${RULES_TABLE} LIMIT 1`).get();
+const templateIsUserRule = !!template && template.preset_id == null;
 if (!template) {
   console.error(
     `No existing rule in ${RULES_TABLE} to use as a template.\n` +
@@ -168,6 +185,12 @@ if (!patternCol || !categoryCol) {
   process.exit(1);
 }
 console.log(`Using pattern column "${patternCol}", category column "${categoryCol}".`);
+console.log(
+  templateIsUserRule
+    ? `Copying the shape of your own rule "${template.name ?? template[idCol]}".`
+    : 'No user-written rule to copy — falling back to a preset row and clearing its\n' +
+      'preset markers, so these are still owned by you.',
+);
 
 /**
  * The pattern text to store for a label.
@@ -398,8 +421,19 @@ try {
     // A rule wearing Wealthfolio's preset markers is a rule Wealthfolio believes it
     // owns, and can plausibly reset or overwrite when it updates its built-in preset
     // — silently undoing all of this months later. These must be OUR rules.
-    for (const c of ['preset_id', 'preset_rule_key', 'preset_version', 'preset_modified']) {
-      if (names.includes(c)) row[c] = null;
+    //
+    // Only needed when the template WAS a preset row (no user-written rule existed to
+    // copy). Clearing respects each column's NOT NULL: `preset_modified` is NOT NULL
+    // on the real schema, so nulling it blindly aborts the whole insert. A declared
+    // type decides the empty value rather than any assumption about meaning.
+    if (!templateIsUserRule) {
+      for (const c of ['preset_id', 'preset_rule_key', 'preset_version', 'preset_modified']) {
+        const col = columns.find((x) => x.name === c);
+        if (!col) continue;
+        row[c] = col.notnull
+          ? (/INT|REAL|NUM|BOOL/i.test(String(col.type)) ? 0 : '')
+          : null;
+      }
     }
     // Named for a human reading the rules list, rather than inheriting whatever the
     // template rule was called.
