@@ -201,6 +201,39 @@ export function parseAmazonEmail(body: string): AmazonOrderRecord[] {
   return records;
 }
 
+/** What a message turned out to be. */
+export type AmazonEmailStatus =
+  /** Yielded at least one usable order. */
+  | 'orders'
+  /** Recognisably Amazon, but of a kind that carries no matchable total. */
+  | 'ignored'
+  /** Should have parsed and did not — a possible format change. */
+  | 'unrecognised';
+
+export interface AmazonEmailClassification {
+  orders: AmazonOrderRecord[];
+  status: AmazonEmailStatus;
+}
+
+/**
+ * THE single definition of what a message is.
+ *
+ * Exists because the poll and the `amazon-check` diagnostic each classified
+ * messages independently, and drifted the moment one of them learned about
+ * delivery notices: the check reported a message as an unrecognised failure while
+ * the poll would have skipped it as expected. A diagnostic whose whole purpose is
+ * "tell me what the sync will do" is worse than useless when it disagrees with the
+ * sync — it sends you looking for a bug that is not there.
+ *
+ * Anything that needs to know what a message is calls this, so there is exactly one
+ * answer.
+ */
+export function classifyAmazonEmail(body: string): AmazonEmailClassification {
+  const orders = parseAmazonEmail(body);
+  if (orders.length > 0) return { orders, status: 'orders' };
+  return { orders, status: isAmazonNoticeWithoutTotal(body) ? 'ignored' : 'unrecognised' };
+}
+
 /** One label→category rule. `test` is matched against the lowercased label. */
 export interface AmazonLabelRule {
   test: RegExp;

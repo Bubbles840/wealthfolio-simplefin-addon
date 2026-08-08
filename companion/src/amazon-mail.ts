@@ -19,7 +19,7 @@
 import {
   mergeAmazonOrders, pruneAmazonLedger, type AmazonLedger,
 } from '../../shared/amazon-ledger.js';
-import { parseAmazonEmail, isAmazonNoticeWithoutTotal } from '../../shared/amazon.js';
+import { classifyAmazonEmail } from '../../shared/amazon.js';
 import {
   resolveAmazonCategory, amazonMailConfigured, AMAZON_SENDERS, isAmazonMessage,
   AMAZON_CONFIG_SECRET_KEY, AMAZON_LABELS_SECRET_KEY, DEFAULT_AMAZON_CATEGORY,
@@ -118,13 +118,13 @@ export async function ingestAmazonMail(
   const consumed: MailMessage[] = [];
 
   for (const msg of messages) {
-    const orders = parseAmazonEmail(msg.text);
-    if (orders.length === 0) {
+    const { orders, status } = classifyAmazonEmail(msg.text);
+    if (status !== 'orders') {
       // A delivery notice restates no price, so it can never match a charge. Read
       // and dropped rather than counted as a failure: every order produces one, and
       // leaving them unread would fill the mailbox and bury a real format change
       // under permanent noise.
-      if (isAmazonNoticeWithoutTotal(msg.text)) {
+      if (status === 'ignored') {
         result.ignored += 1;
         consumed.push(msg);
         continue;
