@@ -193,6 +193,13 @@ const css = `
   background: color-mix(in srgb, var(--destructive) 14%, transparent);
   color: var(--destructive);
 }
+/* Deliberately NEITHER green nor red: "not checked" is an absence of information,
+   and colouring it either way would state something. Muted foreground on a faint
+   neutral, so it reads as quieter than both siblings rather than as a third alarm. */
+.sfin-chip--muted {
+  background: color-mix(in srgb, var(--muted-foreground) 12%, transparent);
+  color: var(--muted-foreground);
+}
 .sfin-chip svg { width: 11px; height: 11px; }
 .sfin-banner-warn {
   display: flex; gap: 10px; align-items: flex-start;

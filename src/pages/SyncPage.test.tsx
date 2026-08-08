@@ -956,4 +956,59 @@ describe('SyncPage', () => {
       );
     });
   });
+
+  describe('account balance chips', () => {
+    /**
+     * `drift: null` used to render a green "in sync" chip whichever reason it was
+     * null for — and it is null both when the balances were compared and matched
+     * AND when they could not be compared at all (a pending row, a run that
+     * reconciled anything, a create the host refused). Claiming "in sync" for the
+     * second case is asserting a verification that never happened, and it is how
+     * two phantom drift episodes on one account got read as verified balances.
+     */
+    it('says "in sync" only when the run actually compared the balances', async () => {
+      const props = makeProps();
+      props.store.getAccountBalances = vi.fn(async () => ({
+        'sfin-1': { balance: 1234.56, currency: 'USD', date: 1700000000, drift: null, measured: true },
+        'sfin-2': { balance: 10, currency: 'USD', date: 1700000000, drift: null, measured: false },
+      })) as any;
+      render(<SyncPage {...props} />);
+
+      expect(await screen.findByText('in sync')).toBeTruthy();
+      expect(screen.getByText('not checked')).toBeTruthy();
+      // One of each — the two states are not collapsed back together.
+      expect(screen.getAllByText('in sync')).toHaveLength(1);
+      expect(screen.getAllByText('not checked')).toHaveLength(1);
+    });
+
+    it('treats a snapshot with no `measured` field as not checked', async () => {
+      // Written by an older build, which proves nothing about the current state
+      // either. Absent must not read as verified.
+      const props = makeProps();
+      props.store.getAccountBalances = vi.fn(async () => ({
+        'sfin-1': { balance: 1234.56, currency: 'USD', date: 1700000000, drift: null },
+      })) as any;
+      render(<SyncPage {...props} />);
+
+      expect(await screen.findByText('not checked')).toBeTruthy();
+      expect(screen.queryByText('in sync')).toBeNull();
+    });
+
+    it('still shows a real drift as off-by, whatever `measured` says', async () => {
+      // A reported figure outranks the flag: it was measurable by definition, and
+      // the amount is the actionable part.
+      const props = makeProps();
+      props.store.getAccountBalances = vi.fn(async () => ({
+        'sfin-1': { balance: 100, currency: 'USD', date: 1700000000, drift: 15.22, measured: true },
+      })) as any;
+      render(<SyncPage {...props} />);
+
+      // getAllBy, because the drift banner above the list says "off by" too — the
+      // point here is the CHIP, and that it is not the muted one.
+      expect((await screen.findAllByText(/off by/)).length).toBeGreaterThan(0);
+      expect(screen.queryByText('not checked')).toBeNull();
+      expect(screen.queryByText('in sync')).toBeNull();
+    });
+  });
+
 });
