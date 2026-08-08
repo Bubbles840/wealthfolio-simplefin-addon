@@ -248,11 +248,18 @@ if (inspect) {
 if (competing.length > 0) {
   console.log('\n⚠ Existing rules that already match Amazon charges:\n');
   for (const p of competing) console.log(`    ${p}`);
+  // Priority-aware, because the unconditional version told a user who HAD passed
+  // --priority to go and pass --priority, which reads exactly like a refusal.
   console.log(
-    '\n  These compete with the label rules below. Wealthfolio resolves that with the\n' +
-    '  `priority` column, and nothing documents whether low or high wins — so this\n' +
-    '  script will NOT guess. Run with --inspect to see their priorities, then pass\n' +
-    '  --priority <n> explicitly.',
+    priorityArg !== null
+      ? `\n  These compete with the label rules below. Yours will be written at priority\n` +
+        `  ${priorityArg}; whether that wins depends on the convention in your data (--inspect\n` +
+        '  shows every rule ordered by priority). Verify on one real charge before\n' +
+        '  trusting it.'
+      : '\n  These compete with the label rules below. Wealthfolio resolves that with the\n' +
+        '  `priority` column, and nothing documents whether low or high wins — so this\n' +
+        '  script will NOT guess. Run with --inspect to see their priorities, then pass\n' +
+        '  --priority <n> explicitly.',
   );
 }
 
