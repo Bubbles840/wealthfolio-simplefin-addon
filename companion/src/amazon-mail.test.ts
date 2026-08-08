@@ -103,6 +103,22 @@ describe('ingestAmazonMail', () => {
       .toEqual(['INBOX:5', '[Gmail]/Spam:5']);
   });
 
+  it('skips a delivery notice as expected, not as a parse failure', async () => {
+    // Every order produces one, and they carry no total so they can never match a
+    // charge. Counting them as failures would leave the mailbox filling with
+    // permanently-unread mail and bury the one signal that says the parser broke.
+    const { source, seen } = fakeSource([
+      { uid: 21, date: '2026-08-06T00:00:00Z', text: 'Delivered: ⁦1⁩ Electronics item', from: 'order-update@amazon.com' },
+    ]);
+    const { store } = fakeStore();
+    const r = await ingestAmazonMail(source, store, {}, NOW);
+    expect(r.ignored).toBe(1);
+    expect(r.unparsed).toBe(0);
+    expect(r.unparsedSenders).toEqual({});
+    // Flagged read, unlike a genuine parse failure, so they stop accumulating.
+    expect(seen().map((m) => m.uid)).toEqual([21]);
+  });
+
   it('reports a label the first time it is seen, and not again', async () => {
     const msgs = [{ uid: 11, date: '2026-08-04T00:00:00Z', text: email('113-0728509-1925031', 'Lawn & Garden', '21.18') }];
     const { store, state } = fakeStore();

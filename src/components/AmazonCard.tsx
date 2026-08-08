@@ -121,7 +121,14 @@ export function AmazonCard({
               In your <strong>main</strong> inbox, add a filter that forwards mail from{' '}
               <code>auto-confirm@amazon.com</code> and{' '}
               <code>shipment-tracking@amazon.com</code> to that new address. In Gmail:
-              Settings → Filters → Create a new filter.
+              Settings → Filters → Create a new filter, and put those addresses in{' '}
+              <strong>From</strong> only.
+              <br />
+              <span className="sfin-subtle">
+                Leave the <strong>To</strong> field empty — it means "addressed to",
+                and Amazon addresses its mail to you, so anything there makes the
+                filter match nothing at all.
+              </span>
             </li>
             <li>
               On the new account, create an <strong>app password</strong>:{' '}

@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { parseAmazonEmail, mapAmazonLabel, DEFAULT_AMAZON_LABEL_RULES } from './amazon.js';
+import {
+  parseAmazonEmail, mapAmazonLabel, isAmazonNoticeWithoutTotal,
+  DEFAULT_AMAZON_LABEL_RULES,
+} from './amazon.js';
 
 /**
  * Fixtures are the REAL text of Nick's forwarded emails, directional marks and
@@ -206,6 +209,48 @@ Grand Total:	$120.52
     expect(parseAmazonEmail(
       `Thanks for your order!\nOrder # ‫111-2223334-4445556\n⁦1⁩ Electronics item`,
     )).toEqual([]);
+  });
+});
+
+describe('isAmazonNoticeWithoutTotal', () => {
+  it('recognises a delivery notice, which restates no price', () => {
+    // Real forwarded message from the live mailbox. Amazon billed on shipment, so a
+    // delivery notice carries no total and can never match a charge. Expected, not
+    // a parse failure — every order produces one.
+    const body = [
+      '---------- Forwarded message ---------',
+      'From: Amazon.com <order-update@amazon.com>',
+      'Subject: Delivered: ⁦1⁩ Electronics item',
+      'Delivered: ⁦1⁩ Electronics item',
+    ].join('\n');
+    expect(parseAmazonEmail(body)).toEqual([]);
+    expect(isAmazonNoticeWithoutTotal(body)).toBe(true);
+  });
+
+  it('does NOT swallow an order confirmation that says "Arriving"', () => {
+    // THE trap. Confirmations say "Arriving Monday" a few lines above their Grand
+    // Total, so matching on "arriving" would file a confirmation whose total stopped
+    // parsing as an ignorable notice — turning a real format change invisible, which
+    // is the one outcome this module must never produce.
+    const body = 'Thanks for your order!\nArriving Monday\nOrder # ‫114-2207730-9919412\n⁦1⁩ Bath item';
+    expect(parseAmazonEmail(body)).toEqual([]);
+    expect(isAmazonNoticeWithoutTotal(body)).toBe(false);
+  });
+
+  it('stops ignoring a delivery notice that does carry a total', () => {
+    // If Amazon changes its mind and starts including a price, that notice becomes
+    // usable and must not be silently dropped.
+    // Item line AFTER the order number, as real emails lay it out: the parser
+    // slices per-order at each `Order #` marker, so anything above the first one
+    // belongs to no order.
+    const body = 'Delivered: item shipped\nOrder # ‫114-7332240-9157866\n⁦1⁩ Electronics item\nTotal\t$10.55';
+    expect(isAmazonNoticeWithoutTotal(body)).toBe(false);
+    expect(parseAmazonEmail(body)[0]).toMatchObject({ kind: 'delivered', totalCents: 1055 });
+  });
+
+  it('is not fooled by non-Amazon text', () => {
+    expect(isAmazonNoticeWithoutTotal('Your package was shipped!')).toBe(false);
+    expect(isAmazonNoticeWithoutTotal('')).toBe(false);
   });
 });
 
