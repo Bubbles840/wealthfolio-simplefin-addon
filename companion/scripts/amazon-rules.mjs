@@ -21,10 +21,35 @@
  * Dry run by default: prints the SQL and exits. Nothing is written without
  * --apply, and --apply refuses to run while Wealthfolio is up.
  *
+ * Re-runnable. A label whose mapping the user CHANGED on the Sync page gets its rule
+ * re-pointed, because otherwise that dropdown would be a lie once rules exist: the
+ * card, the catalog and the reports would all show the new category while the rule
+ * doing the actual filing still pointed at the old one. A pattern that is NOT one of
+ * ours is never touched — the user wrote it, and repurposing it silently would be
+ * worse than doing nothing.
+ *
  * Usage:
- *   node amazon-rules.mjs --db /path/to/app.db                      # show the plan
- *   node amazon-rules.mjs --db /path/to/app.db --labels labels.json # explicit labels
- *   node amazon-rules.mjs --db /path/to/app.db --apply              # write it
+ *   node amazon-rules.mjs --db /path/to/app.db --labels labels.json  # show the plan
+ *   node amazon-rules.mjs --db /path/to/app.db --labels … --apply    # write it
+ *
+ * ON A SERVER WITH NO NODE INSTALLED — which is the normal case, since the companion
+ * ships Node inside its image — use a throwaway container. NOT `docker exec` into the
+ * companion: its database mount is read-only by design, so `--apply` cannot work
+ * there, and discovering that only at the write step is worse than not offering it.
+ *
+ *   # dry run (:ro mount, cannot modify anything)
+ *   docker run --rm \
+ *     -v /path/to/wealthfolio-dir:/db:ro \
+ *     -v ~/wealthfolio-simplefin-addon/companion/scripts:/s:ro \
+ *     -v /tmp/labels.json:/labels.json:ro \
+ *     node:22-alpine node /s/amazon-rules.mjs --db /db/wealthfolio.db --labels /labels.json
+ *
+ *   # apply — WEALTHFOLIO MUST BE STOPPED, and note :ro is gone from the db mount
+ *   docker run --rm \
+ *     -v /path/to/wealthfolio-dir:/db \
+ *     -v ~/wealthfolio-simplefin-addon/companion/scripts:/s:ro \
+ *     -v /tmp/labels.json:/labels.json:ro \
+ *     node:22-alpine node /s/amazon-rules.mjs --db /db/wealthfolio.db --labels /labels.json --apply
  */
 
 import { DatabaseSync } from 'node:sqlite';
@@ -170,29 +195,64 @@ if (competing.length > 0) {
   );
 }
 
+/**
+ * Existing `Amazon: …` rules and the category each points at, so a mapping the user
+ * CHANGED can be corrected rather than skipped.
+ *
+ * Without this the addon card's dropdown would be a lie the moment rules exist:
+ * switching "Nutrition & Wellness" from Health & Wellness to Groceries would update
+ * the card, the label catalog and every future report, while the rule that actually
+ * files the charge kept pointing at the old category — with nothing anywhere saying
+ * so. The card has to be the authority.
+ */
+const ourRules = new Map();
+for (const row of db.prepare(
+  `SELECT ${patternCol} AS p, ${categoryCol} AS c FROM ${RULES_TABLE}`,
+).all()) {
+  const p = String(row.p);
+  if (p.startsWith('Amazon: ')) ourRules.set(p, row.c);
+}
+
 const plan = [];
+const updates = [];
 for (const { label, category } of labels) {
   // `Amazon: <label>` and not the bare label. A rule for "Lawn & Garden" alone
   // would also fire on a real garden centre; the prefix is written by the sync and
   // appears nowhere else.
   const pattern = `Amazon: ${label}`;
-  if (existing.has(pattern)) continue;
   const catId = categoryId(category);
   if (!catId) {
     console.log(`SKIP  ${pattern} → "${category}" (no such category in Wealthfolio)`);
     continue;
   }
+  if (ourRules.has(pattern)) {
+    // Already ours. Re-point it only if the user changed the mapping.
+    if (String(ourRules.get(pattern)) !== String(catId)) {
+      updates.push({ pattern, category, catId });
+    }
+    continue;
+  }
+  // A pattern that exists but is NOT one of ours is left completely alone — it is
+  // something the user wrote, and silently repurposing it would be worse than
+  // doing nothing.
+  if (existing.has(pattern)) continue;
   plan.push({ pattern, category, catId });
 }
 
-if (plan.length === 0) {
-  console.log('Every label already has a rule. Nothing to do.');
+if (plan.length === 0 && updates.length === 0) {
+  console.log('Every label already has a rule pointing at the right category. Nothing to do.');
   process.exit(0);
 }
 
 const insertCols = names.filter((n) => n !== idCol || typeof template[idCol] === 'string');
-console.log(`\n${plan.length} rule(s) to insert:\n`);
-for (const p of plan) console.log(`  ${p.pattern}  →  ${p.category}`);
+if (plan.length > 0) {
+  console.log(`\n${plan.length} rule(s) to insert:\n`);
+  for (const p of plan) console.log(`  ${p.pattern}  →  ${p.category}`);
+}
+if (updates.length > 0) {
+  console.log(`\n${updates.length} rule(s) to re-point (you changed these on the Sync page):\n`);
+  for (const p of updates) console.log(`  ${p.pattern}  →  ${p.category}`);
+}
 
 if (!apply) {
   console.log(
@@ -218,8 +278,18 @@ if (existsSync(`${dbPath}-wal`)) {
 
 const nowIso = new Date().toISOString();
 let written = 0;
+let repointed = 0;
 db.exec('BEGIN');
 try {
+  for (const p of updates) {
+    const sets = [`${categoryCol} = ?`];
+    const args = [p.catId];
+    if (names.includes('updated_at')) { sets.push('updated_at = ?'); args.push(nowIso); }
+    db.prepare(
+      `UPDATE ${RULES_TABLE} SET ${sets.join(', ')} WHERE ${patternCol} = ?`,
+    ).run(...args, p.pattern);
+    repointed += 1;
+  }
   for (const p of plan) {
     const row = { ...template };
     if (idCol && typeof template[idCol] === 'string') {
@@ -246,5 +316,9 @@ try {
   process.exit(1);
 }
 
-console.log(`\nWrote ${written} rule(s). Start Wealthfolio and re-categorize to apply them.`);
+console.log(
+  `\nWrote ${written} new rule(s)` +
+  `${repointed ? ` and re-pointed ${repointed}` : ''}. ` +
+  'Start Wealthfolio and re-categorize to apply them.',
+);
 db.close();
