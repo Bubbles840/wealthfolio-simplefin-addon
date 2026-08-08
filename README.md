@@ -176,6 +176,22 @@ same mailbox, so credentials for it reach everything in the account — no isola
 at all. And Proton has no plain IMAP: it requires Proton Mail Bridge, which is a
 paid, desktop-only app. Use a separate free Gmail or GMX account instead.
 
+To change where a label files, use the dropdown on the Sync page and save — then
+re-run the rules script, which re-points the existing rule rather than skipping it.
+
+`companion/scripts/amazon-rules.mjs` needs Node and write access to the database, so
+run it in a throwaway container rather than via `docker exec` into the companion —
+the companion's database mount is read-only by design. Dry-run first (it is the
+default), and **stop Wealthfolio before `--apply`**:
+
+```bash
+docker run --rm \
+  -v /path/to/wealthfolio-dir:/db:ro \
+  -v ~/wealthfolio-simplefin-addon/companion/scripts:/s:ro \
+  -v /tmp/labels.json:/labels.json:ro \
+  node:22-alpine node /s/amazon-rules.mjs --db /db/wealthfolio.db --labels /labels.json
+```
+
 Labels are matched by pattern rather than a lookup table, so a label Amazon
 invents next month files itself. Anything unmatched goes to a configurable default
 *and* is announced once in Telegram. `companion/scripts/amazon-rules.mjs` inserts
