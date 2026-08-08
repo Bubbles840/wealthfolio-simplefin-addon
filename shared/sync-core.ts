@@ -44,6 +44,21 @@ export const DUPLICATE_FEED_TX_LOG_TAG = 'duplicate-feed-tx';
 export const DUPLICATE_PRUNE_LOG_TAG = 'duplicate-prune';
 
 /**
+ * Grep token for "the host refused a row because it already had one".
+ *
+ * Logged rather than surfaced. A duplicate refusal is not a failure — the row is
+ * there, which is what the create wanted — so putting it on `errors` paints a red
+ * "Account … failed" banner over a non-problem, which is exactly what happened when
+ * a bank republished its history.
+ *
+ * But it is not nothing either: it means reconciliation did not recognise a row that
+ * exists, so the tx-id match missed or something outside this addon wrote it. That
+ * is worth being able to find later, and a log line costs nothing when nobody is
+ * looking.
+ */
+export const DUPLICATE_REFUSAL_LOG_TAG = 'duplicate-refused';
+
+/**
  * Note prefixes marking an activity this module wrote for its OWN bookkeeping
  * rather than as a copy of a bank transaction.
  *
@@ -507,11 +522,45 @@ async function fetchStartingBalance(
  *
  * Costs nothing on the happy path — one call, no follow-up.
  */
+/**
+ * "A matching activity already exists" — Wealthfolio's own dedup guard.
+ *
+ * NOT a failure. It means the row is there, which is the end state the create was
+ * asking for. Reporting it sends the user hunting for data that was never lost, and
+ * buries the refusals that ARE problems in noise that arrives every time a feed
+ * republishes history.
+ */
+function isDuplicateRefusal(message: string): boolean {
+  return /duplicate|already exists/i.test(message);
+}
+
+/** One saveMany attempt, with a THROW normalised into the returned-errors shape.
+ *
+ *  The two hosts fail differently and it mattered: the companion's REST adapter
+ *  returns `{errors}`, while the addon's SDK adapter lets
+ *  `ctx.api.activities.saveMany` throw. Handling only the first shape meant the
+ *  addon path threw out of this function on its very first call — so the row-by-row
+ *  fallback never ran and a whole account's batch was discarded. */
+async function attemptSave(
+  host: SyncHost,
+  req: SaveManyRequest,
+): Promise<SaveManyResult> {
+  try {
+    return await host.saveMany(req);
+  } catch (e: any) {
+    return {
+      created: [],
+      updated: [],
+      errors: [{ action: 'save', message: String(e?.message ?? e) }],
+    };
+  }
+}
+
 async function saveWithRowFallback(
   host: SyncHost,
   req: SaveManyRequest,
 ): Promise<SaveManyResult> {
-  const bulk = await host.saveMany(req);
+  const bulk = await attemptSave(host, req);
   if ((bulk.errors ?? []).length === 0) return bulk;
 
   const created = [...(bulk.created ?? [])];
@@ -525,30 +574,41 @@ async function saveWithRowFallback(
   const landedUpdates = new Set(updated.map((a) => a.id).filter((id): id is string => !!id));
 
   if ((req.deleteIds ?? []).length > 0) {
-    const del = await host.saveMany({ deleteIds: req.deleteIds });
+    const del = await attemptSave(host, { deleteIds: req.deleteIds });
     for (const e of del.errors ?? []) errors.push(e);
   }
 
   for (const u of req.updates ?? []) {
     if (u.id && landedUpdates.has(u.id)) continue;
-    const one = await host.saveMany({ updates: [u] });
+    const one = await attemptSave(host, { updates: [u] });
     if ((one.errors ?? []).length === 0) {
       updated.push(...(one.updated ?? []));
     } else {
       const msg = (one.errors ?? []).map((e) => e.message).join('; ') || 'host returned no row';
-      errors.push({ action: 'update', message: `${msg} [${u.comment}]` });
+      if (isDuplicateRefusal(msg)) {
+        console.log(`[simplefin-sync] ${DUPLICATE_REFUSAL_LOG_TAG} (update): ${u.comment}`);
+      } else {
+        errors.push({ action: 'update', message: `${msg} [${u.comment}]` });
+      }
     }
   }
 
   for (const c of req.creates ?? []) {
     const txId = txIdFromComment(c.comment);
     if (txId && landedCreates.has(txId)) continue;
-    const one = await host.saveMany({ creates: [c] });
+    const one = await attemptSave(host, { creates: [c] });
     if ((one.errors ?? []).length === 0 && (one.created ?? []).length > 0) {
       created.push(...one.created);
     } else {
       const msg = (one.errors ?? []).map((e) => e.message).join('; ') || 'host returned no row';
-      errors.push({ action: 'create', message: `${msg} [${c.comment}]` });
+      // A duplicate means the row is already there — the create's goal is met, so
+      // it is neither an import (not counted in `created`) nor a failure. Logged so
+      // the fact that reconcile missed an existing row is still findable.
+      if (isDuplicateRefusal(msg)) {
+        console.log(`[simplefin-sync] ${DUPLICATE_REFUSAL_LOG_TAG} (create): ${c.comment}`);
+      } else {
+        errors.push({ action: 'create', message: `${msg} [${c.comment}]` });
+      }
     }
   }
 
