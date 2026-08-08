@@ -272,6 +272,15 @@ export class RestSyncStore implements SyncStore {
 
   /** Every Amazon label ever received, and the category it resolved to. Read by
    *  the addon card so it can show the user their REAL label set. */
+  async getLastSyncImported(): Promise<number | null> {
+    const n = await this.getJson<number>('last_sync_imported');
+    return typeof n === 'number' && Number.isFinite(n) ? n : null;
+  }
+
+  async setLastSyncImported(count: number): Promise<void> {
+    await this.setJson('last_sync_imported', count);
+  }
+
   async getAmazonLabels(): Promise<AmazonLabelCatalog> {
     return (await this.getJson<AmazonLabelCatalog>(AMAZON_LABELS_SECRET_KEY)) ?? {};
   }

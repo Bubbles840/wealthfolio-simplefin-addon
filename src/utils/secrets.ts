@@ -62,6 +62,7 @@ const KEYS = {
   linkedGroups: 'linked_groups',
   transferLinkFailures: 'transfer_link_failures',
   driftAlerts: 'drift_alerts',
+  lastSyncImported: 'last_sync_imported',
   accountBalances: 'account_balances',
   autoHeal: 'auto_heal',
   autoAdjust: 'auto_adjust',
@@ -309,6 +310,18 @@ export class SecretsStore {
   }
   async setAmazonLedger(map: AmazonLedger): Promise<void> {
     await this.ctx.api.secrets.set(AMAZON_LEDGER_SECRET_KEY, JSON.stringify(map));
+  }
+
+  /** How many activities the last completed run imported. Written by both syncers,
+   *  so the Sync page's tile reports whichever ran last rather than only the runs
+   *  the user triggered in the current page session. */
+  async getLastSyncImported(): Promise<number | null> {
+    const raw = await this.ctx.api.secrets.get(KEYS.lastSyncImported);
+    const n = raw == null ? NaN : Number(raw);
+    return Number.isFinite(n) ? n : null;
+  }
+  async setLastSyncImported(count: number): Promise<void> {
+    await this.ctx.api.secrets.set(KEYS.lastSyncImported, String(count));
   }
 
   /**

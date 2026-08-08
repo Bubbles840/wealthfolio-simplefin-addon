@@ -47,6 +47,8 @@ const makeProps = () => ({
     getReportCategoryCatalog: vi.fn(async () => [] as any[]),
     // Amazon categorization unconfigured, which is every test here except the
     // Amazon card ones.
+    getLastSyncImported: vi.fn(async () => null),
+    setLastSyncImported: vi.fn(async () => {}),
     getAmazonConfig: vi.fn(async () => null),
     setAmazonConfig: vi.fn(async () => {}),
     getAmazonLabels: vi.fn(async () => ({})),
@@ -1008,6 +1010,43 @@ describe('SyncPage', () => {
       expect((await screen.findAllByText(/off by/)).length).toBeGreaterThan(0);
       expect(screen.queryByText('not checked')).toBeNull();
       expect(screen.queryByText('in sync')).toBeNull();
+    });
+  });
+
+
+  describe('imported-last-run tile', () => {
+    it('shows the stored count on mount, without a sync in this session', async () => {
+      // It used to be React state only, set when the user clicked Sync Now — so the
+      // tile read "—" after every reload, and permanently for anyone whose syncing
+      // is done by the companion. The label says "Imported last run", and the last
+      // run is usually not one this page performed.
+      const props = makeProps();
+      props.store.getLastSyncImported = vi.fn(async () => 7) as any;
+      render(<SyncPage {...props} />);
+
+      const tile = (await screen.findByText(/Imported last run/i)).closest('.sfin-tile');
+      expect(tile?.textContent).toContain('7');
+    });
+
+    it('shows a stored zero as 0, not as unknown', async () => {
+      // "The last run imported nothing" is information, and distinct from "no run
+      // has ever reported".
+      const props = makeProps();
+      props.store.getLastSyncImported = vi.fn(async () => 0) as any;
+      render(<SyncPage {...props} />);
+
+      const tile = (await screen.findByText(/Imported last run/i)).closest('.sfin-tile');
+      expect(tile?.textContent).toContain('0');
+      expect(tile?.textContent).not.toContain('—');
+    });
+
+    it('falls back to — when nothing has ever been recorded', async () => {
+      const props = makeProps();
+      props.store.getLastSyncImported = vi.fn(async () => null) as any;
+      render(<SyncPage {...props} />);
+
+      const tile = (await screen.findByText(/Imported last run/i)).closest('.sfin-tile');
+      expect(tile?.textContent).toContain('—');
     });
   });
 

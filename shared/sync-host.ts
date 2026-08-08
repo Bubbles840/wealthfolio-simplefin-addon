@@ -143,6 +143,17 @@ export interface SyncStore {
   addBalanceInitialized(sfinAccountId: string): Promise<void>;
   getLastSyncAt(): Promise<Date | null>;
   setLastSyncAt(date: Date): Promise<void>;
+  /**
+   * How many activities the last completed run imported, or `null` if none has.
+   *
+   * Persisted because the Sync page's "Imported last run" tile held it in React
+   * state only, set when the user clicked Sync Now — so it read "—" after every
+   * reload, and permanently for anyone whose syncing is done by the companion. Both
+   * syncers write it, so whichever ran last is the one the tile reports, which is
+   * what the label already claimed.
+   */
+  getLastSyncImported(): Promise<number | null>;
+  setLastSyncImported(count: number): Promise<void>;
   getLinkedGroups(): Promise<Record<string, string>>;
   setLinkedGroups(map: Record<string, string>): Promise<void>;
   /** Per-pair (keyed by the OUT leg's txId) record of consecutive linkPair

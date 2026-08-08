@@ -2295,6 +2295,11 @@ export async function runSyncCore(
   await store.setAccountBalances(accountBalances);
 
   await store.setLastSyncAt(new Date());
+  // Alongside the timestamp, and only here: an interval skip returns long before
+  // this point, so the last REAL run's figure survives one. A genuine 0 is recorded
+  // rather than left at the previous number — "nothing to import" is information,
+  // and keeping the old count would report activity that did not happen.
+  await store.setLastSyncImported(imported).catch(() => {});
 
   return {
     imported, skipped, errors, stuckTransferAlerts, importedTransactions,

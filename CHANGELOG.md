@@ -7,6 +7,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-08-08
+
+### Added
+
+- **`amazon-descriptors`**, a read-only check for the one assumption in Amazon
+  categorization that no fixture can test: whether the matcher recognises *your
+  bank's* Amazon descriptor. That string is whatever the issuer writes and varies
+  between them — `AMAZON.COM*MB3T81`, `AMZN Mktp US*XY7Q2`, `AMAZON MKTPLACE PMTS`
+  are all real — and if the pattern misses the form a user actually gets, nothing
+  matches and there is no error at all. Amazon charges simply stay uncategorized,
+  indistinguishable from never having set the feature up.
+
+  It casts wider than the matcher does and shows both lists, so the gap between them
+  is the answer. Prime/AWS appearing under "not recognised" is correct and the output
+  says so.
+
+  ```
+  docker exec simplefin-sync node dist/companion/src/amazon-descriptors.js
+  ```
+
+
+- **Automatic categorization of Amazon charges.** A bank charge reads
+  `AMAZON.COM*MB3T81` and says nothing about what you bought, so every Amazon
+  purchase landed uncategorized. Amazon's order emails *do* name the category, so
+  forwarding those to a throwaway mailbox lets the companion label each Amazon
+  charge on its way in — `AMAZON.COM*MB3T81 · Amazon: Lawn & Garden · TRN-…` — and
+  Wealthfolio's own rule engine files it from there.
+
+  Set up in the new **Amazon auto-categorization** card, below the Docker card:
+  three fields, one Gmail filter, one throwaway address. No new container — the
+  mailbox is read at the start of each sync, since that is the only moment the
+  data is used. Entirely optional; an empty ledger is the off switch.
+
+  Labels are matched by **pattern, not by lookup table**. Amazon's label
+  vocabulary is unpublished, includes mid-level categories (`Baking`, `Skincare`)
+  as well as departments, and grows whenever Amazon feels like it — so ~12 regex
+  patterns cover more ground than 200 exact entries, and a label invented next
+  month (`Vitamins & Supplements`) files itself with no change. Anything unmatched
+  goes to a configurable default *and* is announced once in Telegram, so it is
+  visible and one rule away from correct rather than silently wrong. The card
+  lists the labels your own orders have actually used, with a dropdown to fix any
+  that were filed wrong.
+
+  **This cannot double-count a purchase.** Order emails never create a
+  transaction — they only add text to the comment of a row SimpleFin itself
+  imported. An email with no matching charge does nothing at all and is pruned
+  after 90 days. Amounts, types and dates are never touched, and where two Amazon
+  orders share an amount inside the window, neither is applied: an ambiguous match
+  is worse than none, because a wrong category is invisible while a missing one
+  shows up in the needs-a-category sweep.
+
+- **`amazon-check`**, a read-only diagnostic. The two ways Amazon categorization
+  can silently do nothing — a mailbox that will not connect, and a message shape
+  the parser does not recognise — look identical from the outside, so this connects,
+  parses whatever is unread, and prints the category each order would get. It marks
+  nothing read and records nothing, so the real poll still picks the messages up:
+
+  ```
+  docker exec simplefin-sync node dist/companion/src/amazon-check.js \
+    --host imap.gmail.com --user you@gmail.com --password 'xxxx xxxx xxxx xxxx'
+  ```
+
+- **`companion/scripts/amazon-rules.mjs`**, a one-time helper that inserts the
+  Wealthfolio categorization rules for your discovered labels. Dry-run by default,
+  introspects the real schema instead of hard-coding an INSERT, and refuses to
+  write while Wealthfolio is running.
+
 ### Changed
 
 - **An account that could not be checked now says "not checked", not "in sync".**
@@ -71,25 +138,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a few days" was advice to wait out a real problem. Each direction now gets its own
   explanation, and the negative one explicitly says not to add a plug.
 
-### Added
-
-- **`amazon-descriptors`**, a read-only check for the one assumption in Amazon
-  categorization that no fixture can test: whether the matcher recognises *your
-  bank's* Amazon descriptor. That string is whatever the issuer writes and varies
-  between them — `AMAZON.COM*MB3T81`, `AMZN Mktp US*XY7Q2`, `AMAZON MKTPLACE PMTS`
-  are all real — and if the pattern misses the form a user actually gets, nothing
-  matches and there is no error at all. Amazon charges simply stay uncategorized,
-  indistinguishable from never having set the feature up.
-
-  It casts wider than the matcher does and shows both lists, so the gap between them
-  is the answer. Prime/AWS appearing under "not recognised" is correct and the output
-  says so.
-
-  ```
-  docker exec simplefin-sync node dist/companion/src/amazon-descriptors.js
-  ```
-
-### Fixed
 
 - **Delivery notices are now skipped as expected rather than counted as failures.**
   A delivery notice names the categories but restates no price — Amazon billed on
@@ -148,56 +196,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rewrites `From:` to the forwarder, which the envelope-only sender check rejected.
   The `From:` line inside the forwarded block now counts. The parser is still the
   real gate, so mail that merely mentions Amazon yields nothing.
-
-## [1.9.0] - 2026-08-07
-
-### Added
-
-- **Automatic categorization of Amazon charges.** A bank charge reads
-  `AMAZON.COM*MB3T81` and says nothing about what you bought, so every Amazon
-  purchase landed uncategorized. Amazon's order emails *do* name the category, so
-  forwarding those to a throwaway mailbox lets the companion label each Amazon
-  charge on its way in — `AMAZON.COM*MB3T81 · Amazon: Lawn & Garden · TRN-…` — and
-  Wealthfolio's own rule engine files it from there.
-
-  Set up in the new **Amazon auto-categorization** card, below the Docker card:
-  three fields, one Gmail filter, one throwaway address. No new container — the
-  mailbox is read at the start of each sync, since that is the only moment the
-  data is used. Entirely optional; an empty ledger is the off switch.
-
-  Labels are matched by **pattern, not by lookup table**. Amazon's label
-  vocabulary is unpublished, includes mid-level categories (`Baking`, `Skincare`)
-  as well as departments, and grows whenever Amazon feels like it — so ~12 regex
-  patterns cover more ground than 200 exact entries, and a label invented next
-  month (`Vitamins & Supplements`) files itself with no change. Anything unmatched
-  goes to a configurable default *and* is announced once in Telegram, so it is
-  visible and one rule away from correct rather than silently wrong. The card
-  lists the labels your own orders have actually used, with a dropdown to fix any
-  that were filed wrong.
-
-  **This cannot double-count a purchase.** Order emails never create a
-  transaction — they only add text to the comment of a row SimpleFin itself
-  imported. An email with no matching charge does nothing at all and is pruned
-  after 90 days. Amounts, types and dates are never touched, and where two Amazon
-  orders share an amount inside the window, neither is applied: an ambiguous match
-  is worse than none, because a wrong category is invisible while a missing one
-  shows up in the needs-a-category sweep.
-
-- **`amazon-check`**, a read-only diagnostic. The two ways Amazon categorization
-  can silently do nothing — a mailbox that will not connect, and a message shape
-  the parser does not recognise — look identical from the outside, so this connects,
-  parses whatever is unread, and prints the category each order would get. It marks
-  nothing read and records nothing, so the real poll still picks the messages up:
-
-  ```
-  docker exec simplefin-sync node dist/companion/src/amazon-check.js \
-    --host imap.gmail.com --user you@gmail.com --password 'xxxx xxxx xxxx xxxx'
-  ```
-
-- **`companion/scripts/amazon-rules.mjs`**, a one-time helper that inserts the
-  Wealthfolio categorization rules for your discovered labels. Dry-run by default,
-  introspects the real schema instead of hard-coding an INSERT, and refuses to
-  write while Wealthfolio is running.
 
 ### Note
 
