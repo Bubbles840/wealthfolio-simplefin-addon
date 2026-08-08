@@ -47,6 +47,15 @@ export interface FakeHostSeed {
   /** Amazon orders awaiting their charge. Empty means Amazon categorization is
    *  off, which is what every test that doesn't care about it wants. */
   amazonLedger?: AmazonLedger;
+  /**
+   * Called before every `saveMany`, so a test can make it THROW.
+   *
+   * Needed because the two hosts fail differently and the difference mattered: the
+   * companion's REST adapter returns `{errors}`, while the addon's SDK adapter lets
+   * `ctx.api.activities.saveMany` throw. Code that only handled the returned-errors
+   * shape silently lost a whole account's batch on the SDK path.
+   */
+  saveManyHook?: (req: SaveManyRequest, callIndex: number) => void;
 }
 
 export interface FakeHost {
@@ -202,6 +211,7 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
 
     async saveMany(req: SaveManyRequest): Promise<SaveManyResult> {
       saved.push(req);
+      seed.saveManyHook?.(req, saved.length - 1);
       const created: HostActivity[] = [];
       const updated: HostActivity[] = [];
 

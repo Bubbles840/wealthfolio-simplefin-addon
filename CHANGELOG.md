@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A thrown bulk save discarded the whole account's batch.** The row-by-row
+  fallback added in 1.8.0 only handled a host that RETURNS `{errors}` — the
+  companion's REST adapter. The addon's SDK adapter lets
+  `ctx.api.activities.saveMany` throw, so on that path the very first call threw,
+  escaped to the per-account catch, and every good row in the batch was lost.
+  Surfaced as one red `Account … failed: Duplicate activity detected`, naming the
+  symptom and hiding the damage. Hit live when a bank came back online and
+  republished history. A thrown save is now normalised into the same shape as a
+  reported one, so the fallback runs on both hosts.
+
+- **A duplicate refusal is no longer reported as a failure.** "A matching activity
+  already exists" means the row is there — the create's goal is met. A red banner
+  over it sends the user hunting transactions that were never lost, and buries the
+  refusals that are real problems. Still logged (grep `duplicate-refused`) with the
+  transaction named, since reconciliation not recognising an existing row means the
+  tx-id match missed or something outside this addon wrote it.
+
+- **The feed-lag banner asserted a direction it had not checked.** It read "is ahead
+  of SimpleFin's feed" for either sign, off `Math.abs(drift)`. Positive drift means
+  the bank is ahead of its own feed — genuine lag, clears itself, which is what the
+  reassuring copy is for. Negative means Wealthfolio holds MORE than the bank, which
+  lag cannot cause and which does not clear on its own, so "this typically clears in
+  a few days" was advice to wait out a real problem. Each direction now gets its own
+  explanation, and the negative one explicitly says not to add a plug.
+
 ### Added
 
 - **`amazon-descriptors`**, a read-only check for the one assumption in Amazon

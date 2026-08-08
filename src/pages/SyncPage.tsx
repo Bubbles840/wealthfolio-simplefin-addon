@@ -645,15 +645,40 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
             <div className="sfin-banner-wait" key={sfinId}>
               <span aria-hidden>⏳</span>
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div>
-                  <b>{sfinNames[sfinId] ?? sfinId}</b> is ahead of SimpleFin&apos;s feed by{' '}
-                  <b>{money(Math.abs(drift), info.currency)}</b> — the bank reports{' '}
-                  <b>{money(info.balance ?? 0, info.currency)}</b>.
-                </div>
-                <div style={{ marginTop: 4, opacity: 0.85 }}>
-                  The bank&apos;s balance usually includes recent activity its transaction list
-                  hasn&apos;t published yet. This typically clears in a few days on its own.
-                </div>
+                {/* Direction matters, and this used to assert one regardless of sign.
+                    `drift = bankBalance − wealthfolioValuation`, so POSITIVE means the
+                    bank is ahead of what its own feed explains — real lag, clears
+                    itself. NEGATIVE means Wealthfolio holds more than the bank does,
+                    which lag cannot cause and which does NOT clear on its own; telling
+                    someone to wait it out is then advice to ignore a real problem. */}
+                {drift > 0 ? (
+                  <>
+                    <div>
+                      <b>{sfinNames[sfinId] ?? sfinId}</b>: the bank is ahead of its own
+                      transaction feed by <b>{money(drift, info.currency)}</b> — it reports{' '}
+                      <b>{money(info.balance ?? 0, info.currency)}</b>.
+                    </div>
+                    <div style={{ marginTop: 4, opacity: 0.85 }}>
+                      The bank&apos;s balance usually includes recent activity its transaction
+                      list hasn&apos;t published yet — a transfer still in flight is the common
+                      one. This typically clears in a few days on its own.
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div>
+                      <b>{sfinNames[sfinId] ?? sfinId}</b>: Wealthfolio holds{' '}
+                      <b>{money(Math.abs(drift), info.currency)}</b> more than the bank
+                      reports (<b>{money(info.balance ?? 0, info.currency)}</b>).
+                    </div>
+                    <div style={{ marginTop: 4, opacity: 0.85 }}>
+                      Feed lag cannot cause this direction — lag makes the bank look ahead,
+                      not behind. Something is likely recorded twice, or a withdrawal
+                      hasn&apos;t imported. Re-scanning is the first thing to try; don&apos;t
+                      add a plug, which would only widen the gap.
+                    </div>
+                  </>
+                )}
                 <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
                   <Button variant="outline" onClick={doHeal} disabled={healing || syncing}>
                     {healing ? 'Re-scanning…' : 'Re-scan 90 days'}

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { runSyncCore, applyBaselineFix, neutralAdjustmentFields, VALUATION_POLL, IN_TRANSIT_TIMEOUT_SECONDS, descriptionFromComment, txIdFromComment, planDuplicatePrune, IN_TRANSIT_COMMENT_PREFIX } from './sync-core.js';
+import { runSyncCore, applyBaselineFix, neutralAdjustmentFields, VALUATION_POLL, IN_TRANSIT_TIMEOUT_SECONDS, descriptionFromComment, txIdFromComment, planDuplicatePrune, IN_TRANSIT_COMMENT_PREFIX, DUPLICATE_REFUSAL_LOG_TAG } from './sync-core.js';
 import { createFakeHost, type FakeHostSeed } from './fake-host.js';
 import { accountTxKey } from './transfers.js';
 import { linkPairByRecreate } from './link-pair.js';
@@ -927,15 +927,30 @@ describe('runSyncCore', () => {
     expect(calls.single).toBe(3);
   });
 
-  it('names the row that was actually refused, not just the batch', async () => {
-    const fake = createFakeHost(dupSeed());
-    refuseBulkAndOneRow(fake);
-    const result = await runSyncCore(fake.host, fake.store, { force: true });
-    const text = result.errors.join('\n');
-    expect(text).toMatch(/Duplicate activity/);
-    // The identifying detail: WHICH transaction, so it is actionable.
-    expect(text).toContain('tx-dup');
-    expect(text).not.toContain('tx-ok1');
+  it('logs the row a duplicate refusal named, without surfacing it as a failure', async () => {
+    // A duplicate refusal means the row IS there — the create's goal is met. It used
+    // to land on `errors`, which paints a red "Account … failed" banner over a
+    // non-problem; a bank republishing its history triggered exactly that on a live
+    // install and sent the user looking for lost transactions.
+    //
+    // Still logged, and still naming the transaction: reconcile not recognising a row
+    // that exists means the tx-id match missed, or something outside this addon wrote
+    // it. Worth finding later, worth nobody's alarm now.
+    const logs: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+      logs.push(args.map(String).join(' '));
+    });
+    try {
+      const fake = createFakeHost(dupSeed());
+      refuseBulkAndOneRow(fake);
+      const result = await runSyncCore(fake.host, fake.store, { force: true });
+      expect(result.errors).toEqual([]);
+      const refusals = logs.filter((l) => l.includes(DUPLICATE_REFUSAL_LOG_TAG));
+      expect(refusals.join('\n')).toContain('tx-dup');
+      expect(refusals.join('\n')).not.toContain('tx-ok1');
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('adds no extra save calls when the bulk save succeeds', async () => {
@@ -2327,5 +2342,81 @@ describe('Amazon order emails never become transactions', () => {
     const creates = saved.flatMap((s) => s.creates ?? []);
     expect(creates).toHaveLength(1);
     expect(creates[0].comment).toBe('AMAZON.COM*MB3T81 · tx-amz');
+  });
+});
+
+describe('runSyncCore save failures', () => {
+  beforeEach(() => {
+    VALUATION_POLL.delayMs = 1;
+    VALUATION_POLL.attempts = 3;
+  });
+
+  const twoTxSeed = (hook: FakeHostSeed['saveManyHook']): FakeHostSeed => ({
+    accountSet: { errors: [], accounts: [{
+      id: 'sfin-1', name: 'Checking', currency: 'USD', balance: '100.00',
+      'balance-date': 1700000000,
+      transactions: [
+        { id: 'tx-dup', posted: 1700000000, amount: '-12.50', description: 'Coffee' },
+        { id: 'tx-ok', posted: 1700000000, amount: '-5.00', description: 'Tea' },
+      ],
+    }] },
+    mapping: { 'sfin-1': 'wf-a' },
+    saveManyHook: hook,
+  });
+
+  it('falls back row-by-row when the bulk save THROWS, not just when it reports errors', async () => {
+    // The addon's SDK adapter lets `ctx.api.activities.saveMany` throw; the
+    // companion's REST adapter returns `{errors}`. The fallback only handled the
+    // second shape, so on the addon path the very first call threw, escaped to the
+    // per-account catch, and discarded the WHOLE batch — reported as one red
+    // "Account … failed" line while every good row in it was silently lost.
+    let calls = 0;
+    const { host, store, saved } = createFakeHost(twoTxSeed((req) => {
+      calls += 1;
+      // Only the multi-row bulk attempt throws; single-row retries succeed.
+      if ((req.creates ?? []).length > 1) throw new Error('Activity error: Invalid data: Boom');
+    }));
+
+    const result = await runSyncCore(host, store, {});
+
+    // Both rows land via the row-by-row pass.
+    expect(result.imported).toBe(2);
+    expect(saved.length).toBeGreaterThan(1);
+    expect(calls).toBeGreaterThan(1);
+    expect(result.errors.filter((e) => /failed/i.test(e))).toEqual([]);
+  });
+
+  it('treats a duplicate refusal as already-present, not as an error', async () => {
+    // "A matching activity already exists" means the row IS there, which is the
+    // desired end state. Reporting it as a failure sent the user hunting for lost
+    // data that was never lost — and buries any refusal that IS a real problem.
+    const { host, store } = createFakeHost(twoTxSeed((req) => {
+      if ((req.creates ?? []).length > 1) throw new Error('bulk refused');
+      const c = (req.creates ?? [])[0];
+      if (c && String(c.comment).includes('tx-dup')) {
+        throw new Error('Activity error: Invalid data: Duplicate activity detected. A matching activity already exists.');
+      }
+    }));
+
+    const result = await runSyncCore(host, store, {});
+
+    expect(result.errors).toEqual([]);
+    // The non-duplicate row still imported.
+    expect(result.imported).toBe(1);
+  });
+
+  it('still reports a refusal that is NOT a duplicate', async () => {
+    const { host, store } = createFakeHost(twoTxSeed((req) => {
+      if ((req.creates ?? []).length > 1) throw new Error('bulk refused');
+      const c = (req.creates ?? [])[0];
+      if (c && String(c.comment).includes('tx-dup')) {
+        throw new Error('Activity error: Invalid data: currency mismatch');
+      }
+    }));
+
+    const result = await runSyncCore(host, store, {});
+
+    expect(result.errors.some((e) => /currency mismatch/.test(e))).toBe(true);
+    expect(result.imported).toBe(1);
   });
 });

@@ -1136,10 +1136,19 @@ describe('runSync', () => {
     });
     const result = await runSync(ctx, store as any);
 
-    // Good account still imported; error recorded for the bad one
+    // Good account still imported; the bad row is still reported.
     const creates = vi.mocked(ctx.api.activities.saveMany).mock.calls.flatMap((c: any) => c[0].creates ?? []);
     expect(creates.some((a: any) => a.comment.includes('tx-good'))).toBe(true);
-    expect(result.errors.some((e) => /failed/i.test(e))).toBe(true);
+    // Matched on the host's own message rather than the word "failed": the error now
+    // comes from the row-by-row retry ("save error … boom") instead of the
+    // whole-account catch, which is the point. A thrown saveMany used to escape
+    // before the fallback ran and take the entire account's batch with it.
+    expect(result.errors.some((e) => /boom/.test(e))).toBe(true);
+    // Proof the fallback actually ran: the refused row was retried on its own.
+    const singleRetries = vi.mocked(ctx.api.activities.saveMany).mock.calls
+      .filter((c: any) => (c[0].creates ?? []).length === 1
+        && (c[0].creates ?? [])[0].comment.includes('tx-bad'));
+    expect(singleRetries.length).toBeGreaterThan(0);
   });
 
   it('coalesces concurrent calls into a single run (single-flight)', async () => {
