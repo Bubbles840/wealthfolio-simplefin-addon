@@ -556,3 +556,69 @@ export function getNativeSubcategorySpending(
     };
   }).filter((r) => !!r.parent);
 }
+
+/** One Amazon-looking row as Wealthfolio stores it. */
+export interface NativeAmazonRow {
+  notes: string;
+  date: string;
+  amountCents: number;
+  categorized: boolean;
+}
+
+/**
+ * Every Amazon-looking activity, for checking the descriptor patterns against
+ * REALITY rather than against a guess.
+ *
+ * The bank descriptor is the one input to this feature that cannot be derived,
+ * inferred, or tested from a fixture — it is whatever the user's own bank writes,
+ * and it varies by institution. `AMAZON.COM*MB3T81`, `AMZN Mktp US*XY7Q2`,
+ * `AMAZON MKTPLACE PMTS` and `Amazon.com*RT4KL` are all real forms from different
+ * issuers. If `isAmazonDescription` does not recognise the one a user actually
+ * gets, nothing ever matches and there is NO error — Amazon charges simply stay
+ * uncategorized forever, which looks identical to never having set the feature up.
+ *
+ * So this deliberately casts wider than the matcher does (a bare LIKE on
+ * amazon/amzn, which SQLite matches case-insensitively) and lets the caller show
+ * which rows the matcher would and would not accept. The gap between the two lists
+ * is the answer.
+ */
+export function getNativeAmazonRows(dbPath: string, limit = 80): NativeAmazonRow[] {
+  if (!dbPath || !existsSync(dbPath)) return [];
+  const capped = Math.max(1, Math.floor(limit));
+
+  const query = `
+    SELECT COALESCE(a.notes, ''),
+           substr(a.activity_date, 1, 10),
+           ROUND(ABS(CAST(a.amount AS REAL)) * 100),
+           CASE WHEN ata.activity_id IS NULL THEN 0 ELSE 1 END
+    FROM activities a
+    LEFT JOIN activity_taxonomy_assignments ata ON a.id = ata.activity_id
+    WHERE COALESCE(a.notes, '') LIKE '%amazon%'
+       OR COALESCE(a.notes, '') LIKE '%amzn%'
+    ORDER BY a.activity_date DESC
+    LIMIT ${capped};
+  `;
+
+  return queryNativeDb<NativeAmazonRow>(
+    dbPath,
+    'amazon-descriptors',
+    query,
+    (parts) => (parts.length === 4
+      ? {
+          notes: parts[0],
+          date: parts[1],
+          amountCents: Number(parts[2]) || 0,
+          categorized: parts[3] === '1',
+        }
+      : null),
+  ).map((r: any) => (
+    Array.isArray(r)
+      ? { notes: r[0], date: r[1], amountCents: Number(r[2]) || 0, categorized: r[3] === 1 }
+      : {
+          notes: String(Object.values(r)[0] ?? ''),
+          date: String(Object.values(r)[1] ?? ''),
+          amountCents: Number(Object.values(r)[2]) || 0,
+          categorized: Number(Object.values(r)[3]) === 1,
+        }
+  ));
+}
