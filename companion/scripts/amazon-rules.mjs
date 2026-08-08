@@ -65,7 +65,9 @@ const has = (name) => argv.includes(`--${name}`);
 
 const dbPath = flag('db');
 const apply = has('apply');
+const inspect = has('inspect');
 const labelsPath = flag('labels');
+const priorityArg = flag('priority');
 
 if (!dbPath) {
   console.error('Missing --db /path/to/app.db');
@@ -104,8 +106,8 @@ function loadLabels() {
   process.exit(1);
 }
 
-const labels = loadLabels();
-if (labels.length === 0) {
+const labels = inspect ? [] : loadLabels();
+if (!inspect && labels.length === 0) {
   console.log('No labels to map — nothing to do.');
   process.exit(0);
 }
@@ -159,6 +161,26 @@ if (!patternCol || !categoryCol) {
 }
 console.log(`Using pattern column "${patternCol}", category column "${categoryCol}".`);
 
+/**
+ * The pattern text to store for a label.
+ *
+ * Wealthfolio's built-in Amazon rules use `match_type = "regex"`, and a new rule
+ * inherits that from the template — so the stored text is COMPILED, not compared
+ * literally. `Amazon: Bath` happens to be a valid regex for itself, which is why
+ * this looked fine; a label carrying a metacharacter would not be. Amazon has
+ * merchandising categories like `Health (OTC)` and `Baby + Toddler`, and those would
+ * become a different regex than intended, or an invalid one.
+ *
+ * So the metacharacters get escaped whenever the rule is a regex rule. Used for the
+ * duplicate check as well as the insert, or a re-run would fail to recognise its own
+ * previous output and write a second copy every time.
+ */
+const isRegexRule = String(template.match_type ?? '').toLowerCase().includes('regex');
+function rulePattern(label) {
+  const raw = `Amazon: ${label}`;
+  return isRegexRule ? raw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : raw;
+}
+
 /** Resolve a category NAME to whatever id the rules table references. */
 function categoryId(name) {
   if (categoryCol === 'category') return name; // stores the name directly
@@ -184,14 +206,53 @@ const existing = new Set(allPatterns);
  * documented, so this refuses to guess and shows the conflict instead.
  */
 const competing = allPatterns.filter((p) => /amazon|amzn/i.test(p) && !p.startsWith('Amazon: '));
+
+/**
+ * `--inspect`: dump what precedence and matching actually depend on, and stop.
+ *
+ * The schema turned out to carry `priority`, `match_type` and a set of `preset_*`
+ * columns, none of which a template-copy can handle correctly:
+ *  - `priority` is how Wealthfolio decides between two matching rules, and nothing
+ *    says whether lower or higher wins.
+ *  - `match_type` decides whether the pattern is a literal or a regex; the built-in
+ *    Amazon rules are regexes.
+ *  - `preset_*` marks a rule as one of Wealthfolio's own presets, and a rule wearing
+ *    those fields can plausibly be reset or overwritten when the app updates its
+ *    presets — silently undoing the whole thing.
+ * Guessing at any of them means writing plausible-looking rows into a live financial
+ * database, so this prints the evidence and lets a human decide instead.
+ */
+if (inspect) {
+  const cols = ['id', 'name', 'pattern', 'match_type', 'category_id', 'taxonomy_id',
+    'activity_type', 'priority', 'is_global', 'account_id', 'preset_id',
+    'preset_rule_key'].filter((c) => names.includes(c));
+  const rows = db.prepare(
+    `SELECT ${cols.join(', ')} FROM ${RULES_TABLE} ORDER BY ${names.includes('priority') ? 'priority' : 'rowid'}`,
+  ).all();
+  console.log(`\nAll ${rows.length} rule(s), ordered by priority:\n`);
+  for (const r of rows) {
+    const amazonish = /amazon|amzn/i.test(String(r.pattern ?? ''));
+    console.log(`${amazonish ? '  →' : '   '} ${cols.map((c) => `${c}=${JSON.stringify(r[c])}`).join('  ')}`);
+  }
+  console.log(
+    '\nRows marked → already match Amazon charges. What to read off this:\n' +
+    '  • the priority values those rules use, and whether low or high appears to win\n' +
+    '  • the match_type value (literal vs regex) the Amazon rules use\n' +
+    '  • whether they carry preset_id / preset_rule_key (Wealthfolio-owned) or null\n' +
+    '    (user-owned)\n' +
+    '\nNothing was read beyond this table and nothing was written.',
+  );
+  process.exit(0);
+}
+
 if (competing.length > 0) {
   console.log('\n⚠ Existing rules that already match Amazon charges:\n');
   for (const p of competing) console.log(`    ${p}`);
   console.log(
-    '\n  These compete with the label rules below. If a broad one wins, the specific\n' +
-    '  categories never get applied — and it will look installed while doing nothing.\n' +
-    '  Narrow or delete the broad rule in Wealthfolio, or verify on one real charge\n' +
-    '  that the label rule takes effect before trusting this.',
+    '\n  These compete with the label rules below. Wealthfolio resolves that with the\n' +
+    '  `priority` column, and nothing documents whether low or high wins — so this\n' +
+    '  script will NOT guess. Run with --inspect to see their priorities, then pass\n' +
+    '  --priority <n> explicitly.',
   );
 }
 
@@ -210,6 +271,8 @@ for (const row of db.prepare(
   `SELECT ${patternCol} AS p, ${categoryCol} AS c FROM ${RULES_TABLE}`,
 ).all()) {
   const p = String(row.p);
+  // Matches both the literal and the regex-escaped form (`Amazon\\: …` is not
+  // produced, but a label's own escapes are), so a re-run recognises its own rows.
   if (p.startsWith('Amazon: ')) ourRules.set(p, row.c);
 }
 
@@ -219,7 +282,7 @@ for (const { label, category } of labels) {
   // `Amazon: <label>` and not the bare label. A rule for "Lawn & Garden" alone
   // would also fire on a real garden centre; the prefix is written by the sync and
   // appears nowhere else.
-  const pattern = `Amazon: ${label}`;
+  const pattern = rulePattern(label);
   const catId = categoryId(category);
   if (!catId) {
     console.log(`SKIP  ${pattern} → "${category}" (no such category in Wealthfolio)`);
@@ -263,6 +326,20 @@ if (!apply) {
   process.exit(0);
 }
 
+// Competing rules + no explicit priority = refuse. Inserting at whatever priority a
+// template happened to carry would tie with the broad rule and let an undefined
+// ordering decide, which is the same as not knowing whether it worked.
+if (competing.length > 0 && names.includes('priority') && priorityArg === null) {
+  console.error(
+    '\nRefusing to write: there are existing rules matching Amazon charges, and no\n' +
+    '--priority was given. These new rules would land at an arbitrary priority and\n' +
+    'might never fire.\n\n' +
+    '  1. node amazon-rules.mjs --db … --inspect      (see what priorities are in use)\n' +
+    '  2. node amazon-rules.mjs --db … --labels … --priority <n> --apply',
+  );
+  process.exit(1);
+}
+
 // A crude but effective liveness check: a hot WAL means Wealthfolio is very likely
 // still running. Being wrong in the cautious direction costs one message.
 if (existsSync(`${dbPath}-wal`)) {
@@ -302,6 +379,28 @@ try {
     }
     row[patternCol] = p.pattern;
     row[categoryCol] = p.catId;
+
+    // A rule wearing Wealthfolio's preset markers is a rule Wealthfolio believes it
+    // owns, and can plausibly reset or overwrite when it updates its built-in preset
+    // — silently undoing all of this months later. These must be OUR rules.
+    for (const c of ['preset_id', 'preset_rule_key', 'preset_version', 'preset_modified']) {
+      if (names.includes(c)) row[c] = null;
+    }
+    // Named for a human reading the rules list, rather than inheriting whatever the
+    // template rule was called.
+    if (names.includes('name')) row.name = p.pattern;
+    // Scoped to no single account: an Amazon charge can land on any card.
+    if (names.includes('account_id')) row.account_id = null;
+    // The category's OWN taxonomy, not the template's — they can differ, and a rule
+    // pointing a category at the wrong taxonomy is a rule that never fires.
+    if (names.includes('taxonomy_id')) {
+      const tx = db.prepare('SELECT taxonomy_id FROM taxonomy_categories WHERE id = ?')
+        .get(p.catId);
+      if (tx?.taxonomy_id != null) row.taxonomy_id = tx.taxonomy_id;
+    }
+    if (priorityArg !== null && names.includes('priority')) {
+      row.priority = Number(priorityArg);
+    }
     for (const c of ['created_at', 'updated_at']) if (names.includes(c)) row[c] = nowIso;
     const cols = insertCols;
     db.prepare(
