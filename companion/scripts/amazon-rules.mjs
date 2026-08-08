@@ -56,6 +56,14 @@ import { DatabaseSync } from 'node:sqlite';
 import { readFileSync, existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 
+// `--inspect | head` closes stdout early, and Node's default behaviour is to throw
+// EPIPE all over the output the user was trying to read. Piping to head is the
+// obvious way to use --inspect, so the noise would be routine.
+process.stdout.on('error', (err) => {
+  if (err.code === 'EPIPE') process.exit(0);
+  throw err;
+});
+
 const argv = process.argv.slice(2);
 const flag = (name, fallback = null) => {
   const i = argv.indexOf(`--${name}`);
