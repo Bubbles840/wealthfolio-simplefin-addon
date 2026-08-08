@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`amazon-descriptors`**, a read-only check for the one assumption in Amazon
+  categorization that no fixture can test: whether the matcher recognises *your
+  bank's* Amazon descriptor. That string is whatever the issuer writes and varies
+  between them — `AMAZON.COM*MB3T81`, `AMZN Mktp US*XY7Q2`, `AMAZON MKTPLACE PMTS`
+  are all real — and if the pattern misses the form a user actually gets, nothing
+  matches and there is no error at all. Amazon charges simply stay uncategorized,
+  indistinguishable from never having set the feature up.
+
+  It casts wider than the matcher does and shows both lists, so the gap between them
+  is the answer. Prime/AWS appearing under "not recognised" is correct and the output
+  says so.
+
+  ```
+  docker exec simplefin-sync node dist/companion/src/amazon-descriptors.js
+  ```
+
 ### Fixed
 
 - **Delivery notices are now skipped as expected rather than counted as failures.**
