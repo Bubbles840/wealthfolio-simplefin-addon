@@ -417,7 +417,11 @@ try {
 
 console.log(
   `\nWrote ${written} new rule(s)` +
-  `${repointed ? ` and re-pointed ${repointed}` : ''}. ` +
-  'Start Wealthfolio and re-categorize to apply them.',
+  `${repointed ? ` and re-pointed ${repointed}` : ''}. Start Wealthfolio.\n\n` +
+  'These apply to charges imported FROM NOW ON. Re-categorizing existing rows will\n' +
+  'not use them: the label is added to a charge\'s note when the row is created, and\n' +
+  'rows that already exist do not carry one. The first proof is the next Amazon\n' +
+  'purchase — its note will read "… · Amazon: <label> · TRN-…" and the rule will file\n' +
+  'it from there.',
 );
 db.close();
