@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A refused create produced phantom drift equal to its own amount.** `windowDelta`
+  — the term that keeps a heal run's drift measurement lag-free — is computed from
+  `plan.creates`, i.e. what the sync INTENDS to write. It assumes every planned
+  create lands. Seen live: a re-authorised bank re-issued one $1,300 transaction
+  under a new id, Wealthfolio refused the create as a duplicate, and the account
+  reported $1,300 of drift while its ledger matched the bank to the penny
+  (`sfBalance: 3014.78, wfValuation: 3014.78, windowDelta: -1300`).
+
+  Such a run is now declared **not measurable** — the meaning `null` already carries
+  here, and what every normal sync with creates already does — and any drift episode
+  it opened is rolled back, so a phantom cannot announce itself or leave state a
+  later run has to reason about. The next run measures accurately against a fresh
+  valuation. The heal path still measures drift when its creates all land.
+
+- **`adjustStartingBalanceForOlderRows` could net out a create that never landed.**
+  It rewrites the starting balance, so a refused row moved real money for a row that
+  does not exist. Previously shielded by the error a duplicate refusal raised — which
+  the fix above (correctly) stopped raising — so it now filters on what actually
+  landed.
+
 - **A thrown bulk save discarded the whole account's batch.** The row-by-row
   fallback added in 1.8.0 only handled a host that RETURNS `{errors}` — the
   companion's REST adapter. The addon's SDK adapter lets
