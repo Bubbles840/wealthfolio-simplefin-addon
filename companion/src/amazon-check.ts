@@ -19,7 +19,7 @@
  * With no flags it reads the same env vars the companion does.
  */
 
-import { parseAmazonEmail } from '../../shared/amazon.js';
+import { classifyAmazonEmail } from '../../shared/amazon.js';
 import { resolveAmazonCategory } from '../../shared/amazon-config.js';
 import { createImapSource } from './amazon-mail.js';
 import type { AmazonMailConfig } from '../../shared/amazon-config.js';
@@ -112,10 +112,22 @@ async function main(): Promise<void> {
     }
     console.log('');
     let understood = 0;
+    let ignored = 0;
     for (const msg of messages) {
-      const orders = parseAmazonEmail(msg.text);
+      // Same classifier the sync uses, deliberately. This tool's only job is to say
+      // what the sync will do, so a second opinion here would be a bug even when it
+      // happened to agree.
+      const { orders, status } = classifyAmazonEmail(msg.text);
       const date = msg.date.slice(0, 10);
-      if (orders.length === 0) {
+      if (status === 'ignored') {
+        // Expected, not a failure: a delivery notice restates no price, so it can
+        // never match a charge. Every order produces one.
+        ignored += 1;
+        console.log(`— ${date} — delivery notice, skipped (no total to match)`);
+        console.log('');
+        continue;
+      }
+      if (status === 'unrecognised') {
         // The actionable failure. Print the sender AND enough of the body to see
         // why: a sender that is not one of Amazon's order addresses means the
         // forwarding filter is too broad, while an order address that stopped
@@ -143,8 +155,11 @@ async function main(): Promise<void> {
       console.log('');
     }
 
-    console.log(`${understood}/${messages.length} message(s) understood.`);
-    if (understood < messages.length) {
+    console.log(
+      `${understood}/${messages.length} message(s) understood` +
+      `${ignored ? `, ${ignored} delivery notice(s) skipped as expected` : ''}.`,
+    );
+    if (understood + ignored < messages.length) {
       console.log(
         '\nUnrecognised mail is not necessarily broken. Amazon only puts a category\n' +
         'label on physical-goods order and shipment emails — Prime, Kindle, digital\n' +

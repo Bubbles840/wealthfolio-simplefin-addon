@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  parseAmazonEmail, mapAmazonLabel, isAmazonNoticeWithoutTotal,
+  parseAmazonEmail, mapAmazonLabel, isAmazonNoticeWithoutTotal, classifyAmazonEmail,
   DEFAULT_AMAZON_LABEL_RULES,
 } from './amazon.js';
 
@@ -251,6 +251,36 @@ describe('isAmazonNoticeWithoutTotal', () => {
   it('is not fooled by non-Amazon text', () => {
     expect(isAmazonNoticeWithoutTotal('Your package was shipped!')).toBe(false);
     expect(isAmazonNoticeWithoutTotal('')).toBe(false);
+  });
+});
+
+describe('classifyAmazonEmail', () => {
+  // This function exists to be the ONE answer. The poll and the amazon-check
+  // diagnostic each used to classify independently, and drifted the moment one
+  // learned about delivery notices — the check called a message an unrecognised
+  // failure while the sync would have skipped it as expected. A diagnostic whose
+  // whole job is "tell me what the sync will do" is worse than useless when it
+  // disagrees, because it sends you hunting a bug that is not there.
+  it('separates orders, expected skips, and real failures', () => {
+    expect(classifyAmazonEmail(
+      `Thanks for your order!\nOrder # ‫113-0728509-1925031\n⁦1⁩ Lawn & Garden item\nGrand Total:\t$21.18`,
+    ).status).toBe('orders');
+
+    expect(classifyAmazonEmail('Delivered: ⁦1⁩ Electronics item').status).toBe('ignored');
+
+    // Amazon-shaped but broken: a confirmation whose total no longer parses must
+    // stay a visible failure, never get filed as a harmless notice.
+    expect(classifyAmazonEmail(
+      'Thanks for your order!\nArriving Monday\nOrder # ‫114-2207730-9919412\n⁦1⁩ Bath item',
+    ).status).toBe('unrecognised');
+
+    expect(classifyAmazonEmail('Your account was accessed from a new device').status)
+      .toBe('unrecognised');
+  });
+
+  it('returns the same orders parseAmazonEmail does', () => {
+    const body = `Thanks for your order!\nOrder # ‫113-0728509-1925031\n⁦1⁩ Lawn & Garden item\nGrand Total:\t$21.18`;
+    expect(classifyAmazonEmail(body).orders).toEqual(parseAmazonEmail(body));
   });
 });
 
