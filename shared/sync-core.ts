@@ -1427,6 +1427,15 @@ export async function runSyncCore(
     }
     const plan = planReconciliation(feed, existing);
 
+    // State the post-save drift correction needs (see "windowDelta assumed" below).
+    // Captured BEFORE the measurement so a rollback can put the episode ledger back
+    // exactly as it was, rather than approximating it.
+    const driftAlertBefore = driftAlerts[sfAccount.id];
+    const driftAlertsCountBefore = balanceDriftAlerts.length;
+    /** Planned-create tx ids the drift figure assumed would land, or null when the
+     *  measurement did not depend on any (a normal sync, where creates are 0). */
+    let driftAssumedCreates: string[] | null = null;
+
     // Feed rows that produced neither a create nor an update are already
     // imported and unchanged — count them as skipped.
     const createdTxIds = new Set(plan.creates.map((t) => t.txId));
@@ -1481,6 +1490,10 @@ export async function runSyncCore(
           (sum, t) => sum + (signedByKey.get(accountTxKey(sfAccount.id, t.txId)) ?? 0),
           0,
         );
+        // Remembered because windowDelta is a PREDICTION: it assumes every planned
+        // create lands. A refused one makes the figure wrong by exactly its amount,
+        // and the save has not happened yet, so the check has to wait for it.
+        if (plan.creates.length > 0) driftAssumedCreates = plan.creates.map((t) => t.txId);
         // Which TRANSFER_OUT legs never moved cash, and so must be netted out of
         // the valuation or they read as drift? The answer is decided by the leg's
         // ASSET, not by whether it is linked: handlers/transfers.rs's
@@ -1756,6 +1769,43 @@ export async function runSyncCore(
       for (const err of result.errors ?? []) {
         errors.push(`Account ${wfAccountId} save error (${err.action}): ${err.message}`);
       }
+
+      /** The creates that actually reached the host — the only ones any later
+       *  reasoning about "what this run changed" may believe. */
+      const landedTxIds = new Set(
+        result.created.map((a) => txIdFromComment(a.comment)).filter((t): t is string => !!t),
+      );
+
+      // windowDelta assumed every planned create would land, so a refused one leaves
+      // the drift figure wrong by exactly its amount — reported as a gap on an
+      // account whose ledger matches the bank to the penny. Seen live: a
+      // re-authorised bank re-issued one $1,300 transaction under a new id, the
+      // create was refused as a duplicate, and the account showed $1,300 of drift
+      // that did not exist.
+      //
+      // The run is declared NOT MEASURABLE rather than corrected arithmetically.
+      // `null` already means exactly that here, every normal sync with creates uses
+      // it, and the next run measures accurately against a fresh valuation — where
+      // re-deriving the figure would mean re-running the whole episode decision on a
+      // number this run has not earned the right to state.
+      if (driftAssumedCreates && driftAssumedCreates.some((id) => !landedTxIds.has(id))) {
+        const snapshot = accountBalances[sfAccount.id];
+        if (snapshot) {
+          snapshot.drift = null;
+          snapshot.baselineFix = undefined;
+          snapshot.driftSince = driftAlertBefore?.firstDetectedAt ?? null;
+        }
+        // Put the episode ledger back, so a phantom cannot open an episode (or
+        // announce one) that a later run then has to reason about.
+        if (driftAlertBefore === undefined) delete driftAlerts[sfAccount.id];
+        else driftAlerts[sfAccount.id] = driftAlertBefore;
+        balanceDriftAlerts.length = driftAlertsCountBefore;
+        console.log(
+          `[simplefin-sync] ${sfAccount.name}: drift not measurable — ` +
+          `${driftAssumedCreates.filter((id) => !landedTxIds.has(id)).length} planned ` +
+          'create(s) did not land, so the window delta it assumed is wrong.',
+        );
+      }
       // Recovering history older than the starting-balance baseline double-counts
       // it (the baseline already includes those rows), so net them back out.
       if ((result.errors ?? []).length === 0) {
@@ -1764,8 +1814,12 @@ export async function runSyncCore(
             wfAccountId,
             sfinAccountId: sfAccount.id,
             currency: sfAccount.currency,
+            // LANDED creates only. This rewrites the starting balance, so netting
+            // out a row that was refused moves real money for a row that does not
+            // exist. It used to be shielded by the error a duplicate raised; now
+            // that a duplicate is (correctly) not an error, the filter is the guard.
             created: plan.creates
-              .filter((t) => !t.pending)
+              .filter((t) => !t.pending && landedTxIds.has(t.txId))
               .map((t) => ({
                 date: t.date,
                 signed: signedByKey.get(accountTxKey(sfAccount.id, t.txId)) ?? 0,

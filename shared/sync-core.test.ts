@@ -2420,3 +2420,122 @@ describe('runSyncCore save failures', () => {
     expect(result.imported).toBe(1);
   });
 });
+
+describe('runSyncCore drift when a planned create does not land', () => {
+  beforeEach(() => {
+    VALUATION_POLL.delayMs = 1;
+    VALUATION_POLL.attempts = 3;
+  });
+
+  /**
+   * The live failure. An auto-heal run planned one $1,300 create; Wealthfolio refused
+   * it as a duplicate (a re-authorised bank had re-issued the same transaction under
+   * a new id); it never landed. But `windowDelta` is computed from `plan.creates` —
+   * what the sync INTENDS to write — so the drift math had already subtracted it, and
+   * reported a $1,300 gap on an account whose ledger matched the bank to the penny:
+   *
+   *   sfBalance: 3014.78, wfValuation: 3014.78, windowDelta: -1300 → drift 1300
+   */
+  const healSeed = (): FakeHostSeed => ({
+    accountSet: { errors: [], accounts: [{
+      id: 'sfin-1', name: '360 Savings', currency: 'USD', balance: '3014.78',
+      'balance-date': 1700000000,
+      transactions: [
+        { id: 'tx-reissued', posted: 1700000000, amount: '-1300.00', description: 'PNC BANK' },
+      ],
+    }] },
+    mapping: { 'sfin-1': 'wf-a' },
+    // Wealthfolio's valuation ALREADY includes the refused row.
+    valuations: new Map([['wf-a', 3014.78]]),
+    autoHeal: true,
+    driftAlertThreshold: 100,
+    // A baseline already exists, so the run does not import one of its own — which
+    // would land in `imported` and obscure the point.
+    existing: new Map([['wf-a', [{
+      id: 'sb', accountId: 'wf-a', activityType: 'DEPOSIT', date: '2020-01-01',
+      amount: 100, comment: 'Starting balance · sfin-1', sourceGroupId: null,
+    }]]]),
+    saveManyHook: (req) => {
+      if ((req.creates ?? []).some((c) => String(c.comment).includes('tx-reissued'))) {
+        throw new Error('Duplicate activity detected. A matching activity already exists.');
+      }
+    },
+  });
+
+  it('does not report drift for a create the host refused', async () => {
+    const { host, store } = createFakeHost(healSeed());
+    const result = await runSyncCore(host, store, {});
+
+    expect(result.imported).toBe(0);
+    // Not 1300. The row never landed, so the valuation is already final and the
+    // subtraction was pure fiction.
+    expect(result.balanceDriftAlerts).toEqual([]);
+    const balances = await store.getAccountBalances();
+    expect((balances['sfin-1'] as { drift: number | null }).drift).toBeNull();
+  });
+
+  it('still reports drift on a heal whose creates all land', async () => {
+    // The heal path exists so an import and a drift measurement can happen in one
+    // run; this must keep working, or the fix above is just a feature removal.
+    const { host, store } = createFakeHost({
+      accountSet: { errors: [], accounts: [{
+        id: 'sfin-1', name: '360 Savings', currency: 'USD', balance: '1000.00',
+        'balance-date': 1700000000,
+        transactions: [
+          { id: 'tx-new', posted: 1700000000, amount: '-100.00', description: 'PNC BANK' },
+        ],
+      }] },
+      mapping: { 'sfin-1': 'wf-a' },
+      // Pre-import valuation 1600; after the -100 create it becomes 1500, so the
+      // bank's 1000 leaves a real 500 gap.
+      valuations: new Map([['wf-a', 1600]]),
+      autoHeal: true,
+      driftAlertThreshold: 100,
+      // A baseline already exists, so the run does not also import one — which
+      // would otherwise show up in `imported` and confuse what is being asserted.
+      existing: new Map([['wf-a', [{
+        id: 'sb', accountId: 'wf-a', activityType: 'DEPOSIT', date: '2020-01-01',
+        amount: 100, comment: 'Starting balance · sfin-1', sourceGroupId: null,
+      }]]]),
+    });
+    const result = await runSyncCore(host, store, {});
+
+    expect(result.imported).toBe(1);
+    const balances = await store.getAccountBalances();
+    expect((balances['sfin-1'] as { drift: number | null }).drift).toBe(-500);
+  });
+
+  it('nets only LANDED creates out of the starting balance', async () => {
+    // adjustStartingBalanceForOlderRows rewrites the baseline, so feeding it a
+    // create that was refused moves real money for a row that does not exist. It
+    // was previously shielded by the duplicate error that suppression removed.
+    const { host, store, imported } = createFakeHost({
+      accountSet: { errors: [], accounts: [{
+        id: 'sfin-1', name: '360 Savings', currency: 'USD', balance: '500.00',
+        'balance-date': 1700000000,
+        transactions: [
+          // Dated well before the baseline, so it is a netting candidate.
+          { id: 'tx-old-refused', posted: Date.parse('2020-01-05T00:00:00Z') / 1000,
+            amount: '-250.00', description: 'OLD PNC' },
+        ],
+      }] },
+      mapping: { 'sfin-1': 'wf-a' },
+      valuations: new Map([['wf-a', 500]]),
+      existing: new Map([['wf-a', [{
+        id: 'sb', accountId: 'wf-a', activityType: 'DEPOSIT', date: '2020-06-01',
+        amount: 500, comment: 'Starting balance · sfin-1', sourceGroupId: null,
+      }]]]),
+      saveManyHook: (req) => {
+        if ((req.creates ?? []).some((c) => String(c.comment).includes('tx-old-refused'))) {
+          throw new Error('Duplicate activity detected. A matching activity already exists.');
+        }
+      },
+    });
+
+    await runSyncCore(host, store, {});
+
+    // No baseline rewrite for a row that never landed.
+    const adjustments = imported.flat().filter((r) => /Starting balance|Balance adjustment/.test(r.comment ?? ''));
+    expect(adjustments).toEqual([]);
+  });
+});
