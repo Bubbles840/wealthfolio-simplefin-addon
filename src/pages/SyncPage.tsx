@@ -275,8 +275,12 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
       store.getSubcategoryDisplay(),
       ctx.api.accounts.getAll().catch(() => []),
       store.getOpenCards(),
-    ]).then(([last, m, r, h, names, bal, ah, aa, tg, catalog, glyphStyle, subcatMode, wfAccounts, cards]) => {
+      store.getLastSyncImported(),
+    ]).then(([last, m, r, h, names, bal, ah, aa, tg, catalog, glyphStyle, subcatMode, wfAccounts, cards, lastImported]) => {
       setLastSyncAt(last);
+      // From storage, not just from a sync in this page session: the tile says
+      // "Imported last run", and the last run is usually the companion's.
+      setImported(lastImported);
       setMapping(m ?? {});
       setRules(r);
       setScheduleHours(h);

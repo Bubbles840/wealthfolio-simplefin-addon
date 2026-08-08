@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { runSyncCore, applyBaselineFix, neutralAdjustmentFields, VALUATION_POLL, IN_TRANSIT_TIMEOUT_SECONDS, descriptionFromComment, txIdFromComment, planDuplicatePrune, IN_TRANSIT_COMMENT_PREFIX, DUPLICATE_REFUSAL_LOG_TAG } from './sync-core.js';
+import { runSyncCore, applyBaselineFix, neutralAdjustmentFields, VALUATION_POLL, IN_TRANSIT_TIMEOUT_SECONDS, descriptionFromComment, txIdFromComment, planDuplicatePrune, IN_TRANSIT_COMMENT_PREFIX, DUPLICATE_REFUSAL_LOG_TAG, INTERVAL_SKIP_MESSAGE } from './sync-core.js';
 import { createFakeHost, type FakeHostSeed } from './fake-host.js';
 import { accountTxKey } from './transfers.js';
 import { linkPairByRecreate } from './link-pair.js';
@@ -2614,5 +2614,66 @@ describe('runSyncCore reports whether drift was actually measured', () => {
     const snap = await snapshot(store);
     expect(snap.drift).toBeNull();
     expect(snap.measured).toBe(false);
+  });
+});
+
+describe('runSyncCore persists the last run import count', () => {
+  beforeEach(() => {
+    VALUATION_POLL.delayMs = 1;
+    VALUATION_POLL.attempts = 3;
+  });
+
+  const seed = (transactions: any[]): FakeHostSeed => ({
+    accountSet: { errors: [], accounts: [{
+      id: 'sfin-1', name: 'Checking', currency: 'USD', balance: '100.00',
+      'balance-date': 1700000000, transactions,
+    }] },
+    mapping: { 'sfin-1': 'wf-a' },
+    existing: new Map([['wf-a', [{
+      id: 'sb', accountId: 'wf-a', activityType: 'DEPOSIT', date: '2020-01-01',
+      amount: 100, comment: 'Starting balance · sfin-1', sourceGroupId: null,
+    }]]]),
+  });
+
+  it('stores the count, so the page can show it after a reload', async () => {
+    // The Sync page held this in React state only, set when the user clicked Sync
+    // Now. So it read "—" after every reload, and permanently for anyone whose
+    // syncing is done by the companion — which the tile's own label ("Imported last
+    // run") flatly contradicts.
+    const { host, store } = createFakeHost(seed([
+      { id: 'tx-1', posted: 1700000000, amount: '-12.50', description: 'Coffee' },
+      { id: 'tx-2', posted: 1700000000, amount: '-5.00', description: 'Tea' },
+    ]));
+    const result = await runSyncCore(host, store, {});
+    expect(result.imported).toBe(2);
+    expect(await store.getLastSyncImported()).toBe(2);
+  });
+
+  it('records a genuine zero rather than leaving the old number', async () => {
+    // "Nothing to import" is information. Keeping the previous run's count would
+    // report activity that did not happen.
+    const { host, store } = createFakeHost(seed([
+      { id: 'tx-1', posted: 1700000000, amount: '-12.50', description: 'Coffee' },
+    ]));
+    await runSyncCore(host, store, {});
+    expect(await store.getLastSyncImported()).toBe(1);
+
+    const again = createFakeHost({ ...seed([]), });
+    await runSyncCore(again.host, again.store, {});
+    expect(await again.store.getLastSyncImported()).toBe(0);
+  });
+
+  it('does not overwrite the count on an interval skip', async () => {
+    // An interval skip is not a run. It returns before anything is measured, so the
+    // last real run's figure has to survive it.
+    const { host, store } = createFakeHost(seed([
+      { id: 'tx-1', posted: 1700000000, amount: '-12.50', description: 'Coffee' },
+    ]));
+    await runSyncCore(host, store, {});
+    expect(await store.getLastSyncImported()).toBe(1);
+
+    const skipped = await runSyncCore(host, store, {});
+    expect(skipped.errors).toEqual([INTERVAL_SKIP_MESSAGE]);
+    expect(await store.getLastSyncImported()).toBe(1);
   });
 });

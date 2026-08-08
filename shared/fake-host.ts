@@ -172,6 +172,7 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
   let accountBalances: Record<string, unknown> = {};
   let balanceInitialized: string[] = [];
   let lastSyncAt: Date | null = null;
+  let lastSyncImported: number | null = null;
 
   const host: SyncHost = {
     async fetchSimplefin() {
@@ -341,6 +342,12 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
     },
     async setAccountBalances(map: Record<string, unknown>) {
       accountBalances = map;
+    },
+    async getLastSyncImported() {
+      return lastSyncImported;
+    },
+    async setLastSyncImported(count: number) {
+      lastSyncImported = count;
     },
     async getAmazonLedger() {
       return amazonLedger;
