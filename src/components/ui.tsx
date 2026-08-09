@@ -409,7 +409,33 @@ const css = `
   border: 1px solid color-mix(in srgb, var(--destructive) 40%, transparent);
   border-radius: 14px; padding: 14px 16px; margin-top: 18px;
 }
+
+/* ── "Finish setting up" checklist: first-run guidance without a wizard ─── */
+.sfin-checklist { border-left: 3px solid #60a5fa; }
+.sfin-checklist-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.sfin-checklist-x { border: none; background: transparent; color: var(--muted-foreground); font-size: 16px; cursor: pointer; }
+.sfin-checklist-row { display: flex; align-items: center; gap: 10px; padding: 5px 0; }
+.sfin-checklist-dot {
+  width: 16px; height: 16px; border-radius: 50%; flex: none;
+  border: 1.5px solid var(--muted-foreground); display: inline-flex;
+  align-items: center; justify-content: center;
+}
+.sfin-checklist-dot--done { border-color: #4ade80; color: #4ade80; }
+.sfin-checklist-dot svg { width: 10px; height: 10px; }
+.sfin-checklist-label { flex: 1; font-size: 13px; }
+.sfin-checklist-link { border: none; background: transparent; color: #60a5fa; cursor: pointer; font-size: 12px; }
 `;
+
+export const CheckIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round">
+    <path d="M5 13l4 4L19 7" />
+  </svg>
+);
+export const AlertIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round">
+    <path d="M12 8v5M12 16h.01" />
+  </svg>
+);
 
 /** Injects the stylesheet once. Render at the addon root. */
 export function ThemeStyles() {

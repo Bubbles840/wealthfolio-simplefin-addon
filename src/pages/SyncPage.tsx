@@ -17,7 +17,7 @@ import { SyncStatus } from '../components/SyncStatus';
 import { CategoryIcon } from '../components/CategoryIcon';
 import { GlyphPicker } from '../components/GlyphPicker';
 import { RuleEditor } from '../components/RuleEditor';
-import { Button, Card, CollapsibleCard, Disclosure, ErrorBox, SectionLabel } from '../components/ui';
+import { Button, Card, CollapsibleCard, Disclosure, ErrorBox, SectionLabel, CheckIcon, AlertIcon } from '../components/ui';
 import { AmazonCard } from '../components/AmazonCard';
 import { sendTelegramMessage, getCategoryEmoji } from '../../shared/telegram';
 // The real default the sync engine applies when driftAlertThreshold is absent,
@@ -33,17 +33,6 @@ interface Props {
   onReset: () => void;
   scheduler: Scheduler;
 }
-
-const CheckIcon = () => (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round">
-    <path d="M5 13l4 4L19 7" />
-  </svg>
-);
-const AlertIcon = () => (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round">
-    <path d="M12 8v5M12 16h.01" />
-  </svg>
-);
 
 function money(amount: number, currency = 'USD'): string {
   try {
