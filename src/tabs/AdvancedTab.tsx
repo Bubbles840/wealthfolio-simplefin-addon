@@ -239,17 +239,22 @@ export function AdvancedTab({ ctx, store, scheduler, onReset, categories, isOpen
       {/* A destructive boundary, not a bare button under unrelated settings:
           the old layout put "Reset Setup" directly below the Spending-Tracker
           callout with nothing to mark it apart from everything else on the
-          page. */}
+          page.
+
+          The copy below has to match what `clearAll` actually deletes: every
+          key in `SecretsStore`'s KEYS map, which is everything this tab (and
+          Notifications) configures — not just the account mapping. */}
       <div className="sfin-danger-card">
         <b>Reset connection</b>
         <div className="sfin-subtle sfin-danger-note">
-          Disconnects SimpleFin and clears the account mapping. Transactions already
-          imported into Wealthfolio stay.
+          Clears every SimpleFin Sync setting — the connection, account mapping, sync
+          schedule, transaction rules, and any Telegram or Amazon setup. Transactions
+          already imported into Wealthfolio stay.
         </div>
         <div className="sfin-danger-actions">
           {!confirmingReset ? (
             <Button variant="destructive" onClick={() => setConfirmingReset(true)}>
-              Reset Setup
+              Reset…
             </Button>
           ) : (
             <>
