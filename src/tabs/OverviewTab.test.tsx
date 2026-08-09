@@ -3,6 +3,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { SyncPage } from '../pages/SyncPage';
 import { ThemeStyles } from '../components/ui';
 import { runSync } from '../utils/sync';
+import { OVERVIEW_CARD } from './OverviewTab';
 
 /**
  * Integration-level, on purpose: OverviewTab owns none of its data, so every
@@ -391,7 +392,73 @@ describe('uncategorized list', () => {
     const props = makeProps();
     props.store.getUncategorizedStatus = vi.fn(async () => statusWith([r('a'), r('b')])) as any;
     render(<SyncPage {...props} />);
-    expect(await screen.findByText(/2 need a category/i)).toBeTruthy();
+    // The count now lives only in the tile's accessible name, not as its own
+    // line of visible text — opening it is what proves the rows are there.
+    const tile = await screen.findByRole('button', { name: /2 need a category/i });
+    fireEvent.click(tile);
+    expect(await screen.findByText('Row a')).toBeTruthy();
+    expect(screen.getByText('Row b')).toBeTruthy();
+  });
+
+  it('is a real button whose aria-expanded reflects open state, toggling the panel', async () => {
+    // This tile used to be a plain <div> sitting above a SEPARATE disclosure bar
+    // that repeated the same count — two surfaces, one number. The tile itself
+    // is now the control.
+    const props = makeProps();
+    props.store.getUncategorizedStatus = vi.fn(async () => statusWith([r('a'), r('b')])) as any;
+    render(<SyncPage {...props} />);
+    const tile = await screen.findByRole('button', { name: /^2 need/i });
+    expect(tile.tagName).toBe('BUTTON');
+    expect(tile).toHaveAttribute('aria-expanded', 'false');
+
+    fireEvent.click(tile);
+    expect(tile).toHaveAttribute('aria-expanded', 'true');
+    expect(await screen.findByText('Row a')).toBeTruthy();
+
+    fireEvent.click(tile);
+    expect(tile).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByText('Row a')).toBeNull();
+  });
+
+  it("the tile's aria-controls matches the panel it opens", async () => {
+    const props = makeProps();
+    props.store.getUncategorizedStatus = vi.fn(async () => statusWith([r('a')])) as any;
+    render(<SyncPage {...props} />);
+    const tile = await screen.findByRole('button', { name: /^1 needs/i });
+    fireEvent.click(tile);
+
+    const panelId = tile.getAttribute('aria-controls');
+    expect(panelId).toBe(OVERVIEW_CARD.uncategorized);
+    const panel = document.getElementById(panelId!);
+    expect(panel).toBeTruthy();
+    expect(panel!.textContent).toContain('Row a');
+  });
+
+  it('is not a button, and shows no chevron, when the count has no rows behind it', async () => {
+    // v1.10.0 companion: a count with nothing to disclose. A tile that expands
+    // onto nothing is worse than no chevron at all.
+    const props = makeProps();
+    props.store.getUncategorizedStatus = vi.fn(async () => (
+      { count: 3, asOf: '2026-08-09T12:00:00.000Z', rows: [] }
+    )) as any;
+    render(<SyncPage {...props} />);
+    const tile = (await screen.findByText(/Needs a category/i)).closest('.sfin-tile')!;
+    expect(tile.tagName).not.toBe('BUTTON');
+    expect(tile.querySelector('.sfin-chevron')).toBeNull();
+    expect(screen.queryByRole('button', { name: /need.*a category/i })).toBeNull();
+  });
+
+  it('announces the count exactly once, with the list open — one header, not two', async () => {
+    // The regression this whole change closes: the tile used to sit above a
+    // separate disclosure bar repeating the same "N need(s) a category" text.
+    const props = makeProps();
+    props.store.getUncategorizedStatus = vi.fn(async () => statusWith([r('a'), r('b')])) as any;
+    render(<SyncPage {...props} />);
+    const tile = await screen.findByRole('button', { name: /^2 need/i });
+    fireEvent.click(tile);
+    await screen.findByText('Row a');
+
+    expect(screen.getAllByText(/need(s)? a category/i)).toHaveLength(1);
   });
 
   it('dismissing hides the row and drops the tile in the same tick', async () => {

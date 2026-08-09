@@ -10,8 +10,8 @@ const row = (over: Partial<UncategorizedRow> = {}): UncategorizedRow => ({
 });
 
 const base = {
-  rows: [row()], total: 1, id: 'uncat', open: true,
-  onToggle: vi.fn(), onDismiss: vi.fn(), justDismissed: null, onUndo: vi.fn(),
+  rows: [row()], total: 1, id: 'uncat',
+  onDismiss: vi.fn(), justDismissed: null, onUndo: vi.fn(),
 };
 
 describe('UncategorizedList', () => {
@@ -58,11 +58,6 @@ describe('UncategorizedList', () => {
     // heading that says 63 without explanation would read as a bug.
     render(<UncategorizedList {...base} rows={[row(), row({ activityId: 'b' })]} total={63} />);
     expect(screen.getByText(/showing 2 of 63/i)).toBeTruthy();
-  });
-
-  it('summarises the count in its header', () => {
-    render(<UncategorizedList {...base} rows={[row(), row({ activityId: 'b' })]} total={2} open={false} />);
-    expect(screen.getByText(/2 need a category/i)).toBeTruthy();
   });
 
   it('offers a way to reach the page where a category can actually be set', () => {
