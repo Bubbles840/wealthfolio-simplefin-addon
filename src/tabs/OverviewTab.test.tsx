@@ -478,4 +478,35 @@ describe('uncategorized list', () => {
     fireEvent.click(await screen.findByRole('button', { name: /Categorize in Wealthfolio/i }));
     expect(props.ctx.api.navigation.navigate).toHaveBeenCalledWith('/activities');
   });
+
+  it('a dismissal is not undone by the mount load resolving after it', async () => {
+    // The mount `Promise.all` waits on an IPC round-trip, so "resolves after the
+    // first click" is ordinary rather than a race you have to try to hit. Its
+    // pre-dismissal ledger snapshot must not land on top of a dismissal the user
+    // has already made and the store has already persisted — that would put the
+    // row and the count back and read as the button not working. Guarded by
+    // `hasUserActed.dismissals`, the same mechanism the checklist and tab use.
+    const props = makeProps();
+    let saved: any = {};
+    let releaseAccounts: (v: any[]) => void = () => {};
+    props.store.getUncategorizedStatus = vi.fn(async () => statusWith([r('a'), r('b')])) as any;
+    props.store.getDismissals = vi.fn(async () => saved) as any;
+    props.store.setDismissals = vi.fn(async (l: any) => { saved = l; }) as any;
+    // Hold the whole mount load open on the one call that really is slow.
+    props.ctx.api.accounts.getAll = vi.fn(
+      () => new Promise<any[]>((resolve) => { releaseAccounts = resolve; }),
+    ) as any;
+    render(<SyncPage {...props} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /^2 need/i }));
+    fireEvent.click((await screen.findAllByRole('button', { name: /^Dismiss Row a/i }))[0]);
+    await waitFor(() => expect(props.store.setDismissals).toHaveBeenCalled());
+
+    releaseAccounts([{ id: 'wf-a', name: 'Checking' }]);
+
+    await waitFor(() => expect(props.store.getAccountMapping).toHaveBeenCalled());
+    expect(screen.queryByText('Row a')).toBeNull();
+    const tile = (await screen.findByText('Needs a category')).closest('.sfin-tile');
+    expect(tile?.textContent).toContain('1');
+  });
 });
