@@ -5,18 +5,25 @@ import type { UiState } from './secrets';
 import { UNCATEGORIZED_STATUS_SECRET_KEY } from '../../shared/status-keys';
 import { AMAZON_LABELS_SECRET_KEY } from '../../shared/amazon-config';
 
-const makeCtx = () => {
-  const store: Record<string, string> = {};
-  return {
+/** Builds a ctx plus its backing secrets map. `makeCtx` (below) wraps this and
+ *  discards the map, for the ~40 call sites that only need the ctx; tests that
+ *  need to read/write raw key strings directly — e.g. asserting the dismissal
+ *  ledger lands under the exact key the companion reads — use this instead. */
+const makeCtxWithData = () => {
+  const data: Record<string, string> = {};
+  const ctx = {
     api: {
       secrets: {
-        get: vi.fn(async (k: string) => store[k] ?? null),
-        set: vi.fn(async (k: string, v: string) => { store[k] = v; }),
-        delete: vi.fn(async (k: string) => { delete store[k]; }),
+        get: vi.fn(async (k: string) => data[k] ?? null),
+        set: vi.fn(async (k: string, v: string) => { data[k] = v; }),
+        delete: vi.fn(async (k: string) => { delete data[k]; }),
       },
     },
   } as any;
+  return { ctx, data };
 };
+
+const makeCtx = () => makeCtxWithData().ctx;
 
 describe('SecretsStore', () => {
   it('roundtrips access URL', async () => {
@@ -84,7 +91,7 @@ describe('SecretsStore', () => {
     const ctx = makeCtx();
     const s = new SecretsStore(ctx);
     await ctx.api.secrets.set(UNCATEGORIZED_STATUS_SECRET_KEY, JSON.stringify({ count: 4, asOf: '2026-08-08' }));
-    expect(await s.getUncategorizedStatus()).toEqual({ count: 4, asOf: '2026-08-08' });
+    expect(await s.getUncategorizedStatus()).toEqual({ count: 4, asOf: '2026-08-08', rows: [] });
     await s.clearAll();
     expect(await s.getUncategorizedStatus()).toBeNull();
   });
@@ -261,7 +268,7 @@ describe('uncategorized_status', () => {
     const ctx = makeCtx();
     await ctx.api.secrets.set('uncategorized_status', JSON.stringify({ count: 3, asOf: '2026-08-08T12:00:00.000Z' }));
     const store = new SecretsStore(ctx);
-    expect(await store.getUncategorizedStatus()).toEqual({ count: 3, asOf: '2026-08-08T12:00:00.000Z' });
+    expect(await store.getUncategorizedStatus()).toEqual({ count: 3, asOf: '2026-08-08T12:00:00.000Z', rows: [] });
   });
 
   it('returns null for absent, corrupt, or count-less values — the tile must hide, not crash', async () => {
@@ -272,5 +279,63 @@ describe('uncategorized_status', () => {
     expect(await store.getUncategorizedStatus()).toBeNull();
     await ctx.api.secrets.set('uncategorized_status', 'garbage');
     expect(await store.getUncategorizedStatus()).toBeNull();
+  });
+});
+
+describe('uncategorized rows and dismissals', () => {
+  const row = { activityId: 'a', date: '2026-08-01', amountCents: 7000,
+    description: 'Thankyou Points Redeemed', accountName: 'Citi Double Cash' };
+
+  it('reads the published rows', async () => {
+    const { ctx, data } = makeCtxWithData();
+    data['uncategorized_status'] = JSON.stringify({ count: 1, asOf: 'x', rows: [row] });
+    const store = new SecretsStore(ctx);
+    expect((await store.getUncategorizedStatus())?.rows).toEqual([row]);
+  });
+
+  it('treats a companion that publishes no rows as an empty list, not a failure', async () => {
+    // Version skew: a v1.10.0 companion publishes only count+asOf. The tile must
+    // still render; only the list is absent.
+    const { ctx, data } = makeCtxWithData();
+    data['uncategorized_status'] = JSON.stringify({ count: 3, asOf: 'x' });
+    const store = new SecretsStore(ctx);
+    const status = await store.getUncategorizedStatus();
+    expect(status?.count).toBe(3);
+    expect(status?.rows).toEqual([]);
+  });
+
+  it('ignores a rows field that is not an array', async () => {
+    const { ctx, data } = makeCtxWithData();
+    data['uncategorized_status'] = JSON.stringify({ count: 1, asOf: 'x', rows: 'nope' });
+    const store = new SecretsStore(ctx);
+    expect((await store.getUncategorizedStatus())?.rows).toEqual([]);
+  });
+
+  it('round-trips the dismissal ledger through the SAME key the companion reads', async () => {
+    const { ctx, data } = makeCtxWithData();
+    const store = new SecretsStore(ctx);
+    expect(await store.getDismissals()).toEqual({});
+    await store.setDismissals({ a: '2026-08-09T00:00:00.000Z' });
+    // Asserted on the raw key, not just the round trip: a typo here means the
+    // addon and the companion keep separate ledgers and neither notices.
+    expect(JSON.parse(data['uncategorized_dismissals'])).toEqual({ a: '2026-08-09T00:00:00.000Z' });
+    expect(await store.getDismissals()).toEqual({ a: '2026-08-09T00:00:00.000Z' });
+  });
+
+  it('reads a corrupt ledger as empty rather than throwing', async () => {
+    const { ctx, data } = makeCtxWithData();
+    data['uncategorized_dismissals'] = 'not json{';
+    const store = new SecretsStore(ctx);
+    expect(await store.getDismissals()).toEqual({});
+  });
+
+  it('clearAll deletes the dismissal ledger', async () => {
+    // clearAll iterates the KEYS map; three secrets were previously absent from
+    // it and survived a reset that claimed to clear everything.
+    const { ctx, data } = makeCtxWithData();
+    const store = new SecretsStore(ctx);
+    await store.setDismissals({ a: '2026-08-09T00:00:00.000Z' });
+    await store.clearAll();
+    expect(data['uncategorized_dismissals']).toBeUndefined();
   });
 });
