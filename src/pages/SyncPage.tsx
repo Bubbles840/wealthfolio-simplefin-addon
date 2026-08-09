@@ -154,7 +154,7 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
    * every future session, permanently. A ref rather than state because it must
    * not re-render and must be readable from inside the resolved promise.
    */
-  const hasUserActed = useRef({ tab: false, checklist: false, cards: false });
+  const hasUserActed = useRef({ tab: false, checklist: false, cards: false, dismissals: false });
 
   const loadBalances = useCallback(() => {
     store.getAccountBalances().then(setBalances).catch(() => {});
@@ -168,14 +168,27 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
       .then((tg) => setTelegramConfigured(!!tg?.botToken && !!tg?.chatId))
       .catch(() => {});
     store.getAmazonConfig().then((a) => setAmazonConfigured(!!a)).catch(() => {});
-    // Refreshed on the SAME path as the status, not separately: the list and the
-    // count must never come from different moments, or a dismissal or a
-    // companion republish could make the two disagree.
-    store.getUncategorizedStatus().then(setUncategorized).catch(() => {});
-    store.getDismissals().then(setDismissals).catch(() => {});
+    // Read TOGETHER and applied in one commit, not as two independent `.then`s:
+    // the tile subtracts the ledger from the status, so a render that saw one
+    // updated and the other not would show a count that disagrees with its own
+    // list.
+    //
+    // Deliberately NOT guarded by `hasUserActed.dismissals`, unlike the mount
+    // load: this is the only path that ever picks up a dismissal made somewhere
+    // else — a Telegram button, another device — and freezing it after the first
+    // in-addon dismissal would cost that for the whole session. The race it
+    // leaves is a dismissal landing in the microtask between `setDismissals` and
+    // its persist, which self-heals on the next refresh.
+    Promise.all([store.getUncategorizedStatus(), store.getDismissals()])
+      .then(([status, ledger]) => {
+        setUncategorized(status);
+        setDismissals(ledger);
+      })
+      .catch(() => {});
   }, [store]);
 
   const onDismissalsChange = useCallback((next: DismissalLedger) => {
+    hasUserActed.current.dismissals = true;
     setDismissals(next);
     // Pruned on write so the secret cannot grow without bound; the companion
     // prunes on its own schedule too and the two agree because both use the
@@ -268,7 +281,7 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
       // same path as the status (`refreshDerivedSignals`) — see `dismissals`.
       store.getDismissals(),
     ]).then(([m, names, catalog, wfAccounts, cards, lastImported, ui, loadedDismissals]) => {
-      // The three the user can beat to the punch — this waits on an IPC
+      // The four the user can beat to the punch — this waits on an IPC
       // round-trip, so "resolves after the first click" is ordinary, not a race
       // you have to try to hit. A stored value must never overwrite a deliberate
       // action; see `hasUserActed`. Everything below them is load-only data no
@@ -276,10 +289,14 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
       if (!hasUserActed.current.checklist) setChecklistDismissed(ui.checklistDismissed === true);
       if (!hasUserActed.current.tab && isKnownTab(ui.activeTab)) setActiveTab(ui.activeTab);
       if (!hasUserActed.current.cards) setOpenCards(cards);
+      // Guarded for the same reason, one step further: a dismissal made while
+      // this was in flight is already persisted, so letting the pre-dismissal
+      // snapshot land would put the row and the count back for up to a minute
+      // and read as the button not working.
+      if (!hasUserActed.current.dismissals) setDismissals(loadedDismissals ?? {});
       // From storage, not just from a sync in this session: the tile says
       // "Imported last run", and the last run is usually the companion's.
       setImported(lastImported);
-      setDismissals(loadedDismissals ?? {});
       setMapping(m ?? {});
       setSfinNames(names);
       setCategoryCatalog(catalog);
