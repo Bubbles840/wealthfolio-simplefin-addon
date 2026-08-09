@@ -22,14 +22,28 @@ const TABS: Array<{ id: TabId; label: string }> = [
   { id: 'advanced', label: 'Advanced' },
 ];
 
+/** Guards the hydration path. `ui_state` is an unvalidated stored blob (see
+ *  `getUiState`) that now decides what renders, so a hand-edited secret — or a
+ *  fourth tab written by a newer build the user then downgrades away from — would
+ *  select no tab and mount no panel. A blank page with no way back is far worse
+ *  than the wrong tab, so anything unrecognised falls back to Overview. */
+function isKnownTab(id: unknown): id is TabId {
+  return TABS.some((t) => t.id === id);
+}
+
 /** The panel half of the tabs contract: `TabBar` points each button at
- *  `sfin-panel-<id>`, and an inactive tab renders NOTHING — not a hidden div. */
+ *  `sfin-panel-<id>`, and an inactive tab renders NOTHING — not a hidden div.
+ *  `tabIndex={0}` because a panel whose content starts with plain text has
+ *  nothing focusable in it, and tabbing off the tablist would skip the panel
+ *  entirely rather than entering it (WAI-ARIA tabs pattern). */
 function TabPanel({ tab, active, children }: {
   tab: TabId; active: TabId; children: React.ReactNode;
 }) {
   if (tab !== active) return null;
   return (
-    <div role="tabpanel" id={`sfin-panel-${tab}`} aria-labelledby={`sfin-tab-${tab}`}>{children}</div>
+    <div role="tabpanel" id={`sfin-panel-${tab}`} aria-labelledby={`sfin-tab-${tab}`} tabIndex={0}>
+      {children}
+    </div>
   );
 }
 
@@ -186,7 +200,7 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
       store.getUiState(),
     ]).then(([m, names, catalog, wfAccounts, cards, lastImported, ui]) => {
       setChecklistDismissed(ui.checklistDismissed === true);
-      if (ui.activeTab) setActiveTab(ui.activeTab);
+      if (isKnownTab(ui.activeTab)) setActiveTab(ui.activeTab);
       // From storage, not just from a sync in this session: the tile says
       // "Imported last run", and the last run is usually the companion's.
       setImported(lastImported);
@@ -229,6 +243,11 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
     // Always assigned, never appended: the banner describes THIS run, so a clean
     // run clears a previous one's list rather than leave it looking current.
     setPrunedDuplicates(pruned);
+    // Through `navigate`, so this also PERSISTS `activeTab: 'overview'`: it
+    // overwrites the tab the user deliberately chose, and survives a reload.
+    // Deliberate — the notice describes only the last run, so a reload that put
+    // them back on Advanced would hide it again with no way to get it back. One
+    // forgotten tab preference is the right price for not losing that record.
     if (pruned.length > 0) navigate('overview');
   }, [navigate]);
 
@@ -243,7 +262,7 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
         setIntervalBlocked(true);
         // ...and re-read the timestamp: the skip is the moment we learn our copy
         // is stale. Header and callout both read `last_sync_at`, so "Last synced
-        // 4 hours ago" beside "Last sync was under an hour ago, so Sync Now was
+        // 4 hours ago" beside "Last sync was under an hour ago, so Sync now was
         // skipped" cannot both be current — the COMPANION synced against the same
         // instance and nothing re-read the secret. Only on a real value: a failed
         // read must not blank the header into "Never synced".
@@ -321,7 +340,7 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
               term the docs, the logs and the companion use. */}
           <Button variant="outline" onClick={doHeal} disabled={healing || syncing}
             title="Re-scans the last 90 days and re-links transfer pairs (reconcile & link)">
-            {healing ? 'Reconciling…' : 'Deep scan'}
+            {healing ? 'Deep scanning…' : 'Deep scan'}
           </Button>
           <Button onClick={() => doSync(false)} disabled={syncing}>
             {syncing ? 'Syncing…' : 'Sync now'}
@@ -335,7 +354,7 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
 
       {intervalBlocked && (
         <div className="sfin-callout">
-          Last sync was under an hour ago, so Sync Now was skipped to avoid
+          Last sync was under an hour ago, so Sync now was skipped to avoid
           hammering SimpleFin.{' '}
           <Button variant="ghost" className="sfin-callout-action" onClick={() => doSync(true)} disabled={syncing}>
             Sync anyway

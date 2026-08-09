@@ -124,6 +124,20 @@ describe('SyncPage', () => {
     );
   });
 
+  it('names its own busy state after the button, not after the old label', async () => {
+    // The rename left `Reconciling…` behind, so the button changed its name to a
+    // word that appears nowhere else in the UI the moment it was pressed.
+    let release: (v: any) => void = () => {};
+    vi.mocked(runSync).mockImplementationOnce(() => new Promise((res) => { release = res; }));
+    render(<SyncPage {...makeProps()} />);
+    fireEvent.click(await screen.findByRole('button', { name: /deep scan/i }));
+
+    expect(await screen.findByRole('button', { name: 'Deep scanning…' })).toBeTruthy();
+    expect(screen.queryByText(/Reconciling/i)).toBeNull();
+    release({ imported: 0, skipped: 0, errors: [] });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Deep scan' })).toBeTruthy());
+  });
+
   // ── The sync error path ────────────────────────────────────────────────
   it('shows the classified sync error and keeps the raw text as a collapsed detail', async () => {
     // What the user actually saw was the broker's raw rejection, URL and query
@@ -160,7 +174,7 @@ describe('SyncPage', () => {
 
   it('refreshes the displayed last-synced time when a sync reports the interval skip', async () => {
     // Both statements read the same `last_sync_at`, so "Last synced 4 hours ago"
-    // beside "Last sync was under an hour ago, so Sync Now was skipped" cannot
+    // beside "Last sync was under an hour ago, so Sync now was skipped" cannot
     // both be current: the page loaded a value and the COMPANION then synced.
     // The skip is the moment we learn our copy is stale.
     const props = makeProps();
@@ -177,7 +191,7 @@ describe('SyncPage', () => {
     await waitFor(() => expect(screen.getByText(/Last synced 4 hours ago/)).toBeInTheDocument());
     fireEvent.click(screen.getByRole('button', { name: /sync now/i }));
 
-    await waitFor(() => expect(screen.getByText(/so Sync Now was skipped/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/so Sync now was skipped/)).toBeInTheDocument());
     // The two statements now agree.
     expect(screen.getByText(/Last synced 10 minutes ago/)).toBeInTheDocument();
     expect(screen.queryByText(/Last synced 4 hours ago/)).not.toBeInTheDocument();
@@ -194,6 +208,10 @@ describe('SyncPage', () => {
 
     const panel = document.querySelector('#sfin-panel-overview')!;
     expect(panel.getAttribute('aria-labelledby')).toBe('sfin-tab-overview');
+    // Focusable, so tabbing off the tablist ENTERS the panel. A panel whose
+    // content starts with plain text has nothing focusable of its own, and
+    // without this the whole panel is skipped.
+    expect(panel.getAttribute('tabindex')).toBe('0');
     expect(screen.getByRole('tab', { name: /overview/i }).getAttribute('aria-controls'))
       .toBe('sfin-panel-overview');
     // The other two tabs' content is unmounted.
@@ -229,6 +247,25 @@ describe('SyncPage', () => {
     await waitFor(() => expect(
       screen.getByRole('tab', { name: /advanced/i }).getAttribute('aria-selected'),
     ).toBe('true'));
+  });
+
+  it('falls back to Overview when the stored tab is not one we can render', async () => {
+    // `ui_state` is an unvalidated stored blob that now decides what renders. A
+    // hand-edited secret — or a fourth tab written by a newer build the user then
+    // downgrades away from — would otherwise select no tab and mount no panel:
+    // a blank page with no way back.
+    const props = makeProps();
+    props.store.getUiState = vi.fn(async () => ({ activeTab: 'reports' }) as any);
+    render(<SyncPage {...props} />);
+
+    expect(await screen.findByText('Accounts synced')).toBeTruthy();
+    expect(document.querySelector('#sfin-panel-overview')).toBeTruthy();
+    await waitFor(() => expect(
+      screen.getByRole('tab', { name: /overview/i }).getAttribute('aria-selected'),
+    ).toBe('true'));
+    // Exactly one panel and exactly one selected tab — never zero of either.
+    expect(document.querySelectorAll('[role="tabpanel"]')).toHaveLength(1);
+    expect(document.querySelectorAll('[role="tab"][aria-selected="true"]')).toHaveLength(1);
   });
 
   it('remembers the tab without forgetting the dismissed checklist', async () => {
