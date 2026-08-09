@@ -486,7 +486,7 @@ describe('SyncPage', () => {
     // once on mount — unlike the balances and the companion version beside it —
     // so it could sit stale for an entire session.
     const props = makeProps();
-    let status: any = { count: 3, asOf: '2026-08-08T12:00:00Z' };
+    let status: any = { count: 3, asOf: '2026-08-08T12:00:00Z', rows: [] };
     props.store.getUncategorizedStatus = vi.fn(async () => status) as any;
     render(<SyncPage {...props} />);
     const tile = (await screen.findByText(/Needs a category/i)).closest('.sfin-tile')!;
@@ -494,7 +494,7 @@ describe('SyncPage', () => {
 
     // What the companion published since. Focus is the refresh trigger the
     // balances already use.
-    status = { count: 11, asOf: '2026-08-09T09:00:00Z' };
+    status = { count: 11, asOf: '2026-08-09T09:00:00Z', rows: [] };
     fireEvent.focus(window);
     await waitFor(() => expect(tile.textContent).toContain('11'));
     expect(tile.getAttribute('title')).toContain('2026-08-09T09:00:00Z');

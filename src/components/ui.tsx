@@ -493,6 +493,10 @@ const css = `
 .sfin-uncat-what { flex: 1; min-width: 0; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sfin-uncat-amt { flex: none; font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .sfin-uncat-undo { display: flex; align-items: center; gap: 8px; padding: 4px 0 8px; }
+/* Same rules as .sfin-uncat-undo — a distinct class because the cap notice and
+   "Categorize in Wealthfolio" button are an unrelated footer, not the undo
+   banner, even though they happen to want identical layout. */
+.sfin-uncat-foot { display: flex; align-items: center; gap: 8px; padding: 4px 0 8px; }
 
 /* ── Setup wizard: spacing that used to be inline style props on every step
       of the first-run flow (SetupPage), now sourced from the one stylesheet

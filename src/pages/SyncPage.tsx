@@ -14,6 +14,7 @@ import { useAmazonDraft } from '../components/AmazonCard';
 import type { SecretsStore, AccountBalanceInfo, CategoryCatalogEntry } from '../utils/secrets';
 import type { Scheduler } from '../utils/scheduler';
 import type { AccountMapping } from '../../shared/types';
+import { pruneDismissals, type DismissalLedger } from '../../shared/uncategorized';
 
 /** Outside the component: a fresh literal each render would be a new `TabBar`
  *  prop identity for nothing. */
@@ -105,7 +106,15 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
   // whatever it last said. See `refreshDerivedSignals`.
   const [telegramConfigured, setTelegramConfigured] = useState(false);
   const [amazonConfigured, setAmazonConfigured] = useState(false);
-  const [uncategorized, setUncategorized] = useState<{ count: number; asOf: string } | null>(null);
+  const [uncategorized, setUncategorized] = useState<
+    Awaited<ReturnType<SecretsStore['getUncategorizedStatus']>>
+  >(null);
+  // Which uncategorized rows the user has dismissed. Lives HERE, not in
+  // OverviewTab: `TabPanel` truly unmounts an inactive tab, and a dismissal held
+  // in the tab would resurrect the moment someone came back from Advanced — the
+  // same defect class that used to silently destroy typed Telegram/Amazon
+  // credentials (see the drafts above).
+  const [dismissals, setDismissals] = useState<DismissalLedger>({});
 
   /**
    * The two config tabs' UNSAVED DRAFTS, held here rather than inside the tabs
@@ -159,7 +168,19 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
       .then((tg) => setTelegramConfigured(!!tg?.botToken && !!tg?.chatId))
       .catch(() => {});
     store.getAmazonConfig().then((a) => setAmazonConfigured(!!a)).catch(() => {});
+    // Refreshed on the SAME path as the status, not separately: the list and the
+    // count must never come from different moments, or a dismissal or a
+    // companion republish could make the two disagree.
     store.getUncategorizedStatus().then(setUncategorized).catch(() => {});
+    store.getDismissals().then(setDismissals).catch(() => {});
+  }, [store]);
+
+  const onDismissalsChange = useCallback((next: DismissalLedger) => {
+    setDismissals(next);
+    // Pruned on write so the secret cannot grow without bound; the companion
+    // prunes on its own schedule too and the two agree because both use the
+    // shared helper.
+    store.setDismissals(pruneDismissals(next, new Date())).catch(() => {});
   }, [store]);
 
   /** Re-read everything the COMPANION can change behind this page's back. The
@@ -243,7 +264,10 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
       // Which tab was last open, and whether the checklist was dismissed. One-shot:
       // nothing outside this page writes `ui_state`, so it cannot go stale.
       store.getUiState(),
-    ]).then(([m, names, catalog, wfAccounts, cards, lastImported, ui]) => {
+      // The dismissal ledger, loaded once here and refreshed thereafter on the
+      // same path as the status (`refreshDerivedSignals`) — see `dismissals`.
+      store.getDismissals(),
+    ]).then(([m, names, catalog, wfAccounts, cards, lastImported, ui, loadedDismissals]) => {
       // The three the user can beat to the punch — this waits on an IPC
       // round-trip, so "resolves after the first click" is ordinary, not a race
       // you have to try to hit. A stored value must never overwrite a deliberate
@@ -255,6 +279,7 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
       // From storage, not just from a sync in this session: the tile says
       // "Imported last run", and the last run is usually the companion's.
       setImported(lastImported);
+      setDismissals(loadedDismissals ?? {});
       setMapping(m ?? {});
       setSfinNames(names);
       setCategoryCatalog(catalog);
@@ -441,6 +466,10 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
           imported={imported}
           prunedDuplicates={prunedDuplicates}
           uncategorized={uncategorized}
+          dismissals={dismissals}
+          onDismissalsChange={onDismissalsChange}
+          isOpen={isOpen}
+          toggleCard={toggleCard}
           onBalancesChanged={loadBalances}
           onClearError={clearError}
           onError={showThrownError}
