@@ -5,6 +5,7 @@ import { SyncPage } from './SyncPage';
 // The same props the behaviour tests use, so this proves the policy against the
 // page as it actually renders rather than against a fixture tuned to pass.
 import { makeProps } from './test-props';
+import { SetupPage } from './SetupPage';
 import { BASELINE_FIX_MIN_DRIFT_AGE_MS } from '../../shared/sync-core';
 
 vi.mock('../utils/sync', async (importOriginal) => {
@@ -157,6 +158,36 @@ function configuredWithFreshDrift() {
  * `(optional)` has no legitimate form anywhere, so that half is checked against
  * the whole panel.
  */
+/**
+ * Minimal props to mount `SetupPage`, borrowed from `SetupPage.test.tsx`'s
+ * shape — nothing here is exercised by a bare render; the wizard's first
+ * render (step 1) calls none of these, they just need to exist to satisfy
+ * the component's props.
+ */
+const makeSetupProps = () => ({
+  ctx: {
+    api: {
+      secrets: { get: vi.fn(async () => null), set: vi.fn(), delete: vi.fn() },
+      accounts: { getAll: vi.fn(async () => []) },
+    },
+  } as any,
+  store: {
+    getAccessUrl: vi.fn(async () => null),
+    setAccessUrl: vi.fn(async () => {}),
+    setAuthB64: vi.fn(async () => {}),
+    getAuthB64Key: vi.fn(async () => 'simplefin_auth_b64'),
+    setAccountNames: vi.fn(async () => {}),
+    getAccountNames: vi.fn(async () => ({})),
+    getAccountMapping: vi.fn(async () => null),
+    setAccountMapping: vi.fn(async () => {}),
+    getMappingRules: vi.fn(async () => []),
+    setMappingRules: vi.fn(async () => {}),
+    getSyncScheduleHours: vi.fn(async () => null),
+    setSyncScheduleHours: vi.fn(async () => {}),
+  } as any,
+  onComplete: vi.fn(),
+});
+
 describe('copy policy', () => {
   const chromeText = (): string[] => {
     const nodes = document.querySelectorAll(
@@ -251,5 +282,21 @@ describe('copy policy', () => {
     await screen.findByText(/Imported last run/i);
 
     await walkTabs(LOADED_CONFIGURED, true);
+  });
+
+  /**
+   * SetupPage renders ONLY while setup is incomplete, so none of the SyncPage
+   * cases above — which all mount `SyncPage`, the post-setup screen — can ever
+   * reach it. Without this case the first-run wizard, the very first screen a
+   * new user sees, would be the one unpoliced surface in the addon.
+   *
+   * `assertClean` and `EMOJI` are reused as-is: both operate on whatever is in
+   * the DOM and know nothing about tabs, so no fork of the SyncPage machinery
+   * (`walkTabs`, load anchors, disclosure-opening) is needed here — a plain
+   * render is enough to reach step 1's heading, intro line, and button.
+   */
+  it('renders no "(optional)" and no chrome emoji on the setup wizard', () => {
+    render(<SetupPage {...makeSetupProps()} />);
+    assertClean('setup');
   });
 });
