@@ -1,6 +1,7 @@
 import type { AddonContext } from '@wealthfolio/addon-sdk';
 import { AMAZON_LEDGER_SECRET_KEY } from '../../shared/amazon-ledger';
 import { AMAZON_CONFIG_SECRET_KEY, AMAZON_LABELS_SECRET_KEY } from '../../shared/amazon-config';
+import { UNCATEGORIZED_STATUS_SECRET_KEY } from '../../shared/status-keys';
 import type { AmazonLabelCatalog, AmazonMailConfig } from '../../shared/amazon-config';
 import type { AmazonLedger } from '../../shared/amazon-ledger';
 import type { AccountMapping, MappingRule } from '../../shared/types';
@@ -17,6 +18,11 @@ import { LARGE_TX_OUTBOX_SECRET_KEY } from '../../shared/telegram';
 export interface GlyphStylePref {
   mode: 'clean' | 'glyphs';
   overrides: Record<string, string>;
+}
+
+export interface UiState {
+  activeTab?: 'overview' | 'notifications' | 'advanced';
+  checklistDismissed?: boolean;
 }
 
 export interface CategoryCatalogEntry {
@@ -73,6 +79,7 @@ const KEYS = {
   reportGlyphStyle: 'report_glyph_style',
   subcategoryDisplay: 'subcategory_display',
   openCards: 'ui_open_cards',
+  uiState: 'ui_state',
   pendingLargeTxAlerts: LARGE_TX_OUTBOX_SECRET_KEY,
 } as const;
 
@@ -386,6 +393,38 @@ export class SecretsStore {
   }
   async setOpenCards(open: Record<string, boolean>): Promise<void> {
     await this.ctx.api.secrets.set(KEYS.openCards, JSON.stringify(open));
+  }
+
+  /** Page-level UI state (active tab, checklist dismissal). Separate from
+   *  `open_cards`, which keeps per-disclosure open state inside tabs. */
+  async getUiState(): Promise<UiState> {
+    const raw = await this.ctx.api.secrets.get(KEYS.uiState);
+    if (!raw) return {};
+    try {
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+  async setUiState(state: UiState): Promise<void> {
+    await this.ctx.api.secrets.set(KEYS.uiState, JSON.stringify(state));
+  }
+
+  /** Companion-published count of uncategorized spending (last 90 days).
+   *  `null` (absent/corrupt) hides the Overview tile — the addon cannot compute
+   *  this itself: the SDK exposes no category data. */
+  async getUncategorizedStatus(): Promise<{ count: number; asOf: string } | null> {
+    const raw = await this.ctx.api.secrets.get(UNCATEGORIZED_STATUS_SECRET_KEY);
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw);
+      return typeof parsed?.count === 'number' && Number.isFinite(parsed.count)
+        ? { count: parsed.count, asOf: String(parsed.asOf ?? '') }
+        : null;
+    } catch {
+      return null;
+    }
   }
 
   async getTelegramConfig(): Promise<any | null> {

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { SecretsStore } from './secrets';
 import type { MappingRule, AccountMapping } from '../../shared/types';
+import type { UiState } from './secrets';
 
 const makeCtx = () => {
   const store: Record<string, string> = {};
@@ -190,5 +191,41 @@ describe('SecretsStore open-card state', () => {
     await store.setOpenCards({ telegram: true });
     await store.clearAll();
     expect(await store.getOpenCards()).toEqual({});
+  });
+});
+
+describe('ui_state', () => {
+  it('round-trips the active tab and checklist dismissal', async () => {
+    const ctx = makeCtx();
+    const store = new SecretsStore(ctx);
+    await store.setUiState({ activeTab: 'advanced', checklistDismissed: true } satisfies UiState);
+    expect(await store.getUiState()).toEqual({ activeTab: 'advanced', checklistDismissed: true });
+  });
+
+  it('reads absent or corrupt state as {} rather than throwing', async () => {
+    const ctx = makeCtx();
+    const store = new SecretsStore(ctx);
+    expect(await store.getUiState()).toEqual({});
+    await ctx.api.secrets.set('ui_state', 'not json{');
+    expect(await store.getUiState()).toEqual({});
+  });
+});
+
+describe('uncategorized_status', () => {
+  it('parses the companion-published count', async () => {
+    const ctx = makeCtx();
+    await ctx.api.secrets.set('uncategorized_status', JSON.stringify({ count: 3, asOf: '2026-08-08T12:00:00.000Z' }));
+    const store = new SecretsStore(ctx);
+    expect(await store.getUncategorizedStatus()).toEqual({ count: 3, asOf: '2026-08-08T12:00:00.000Z' });
+  });
+
+  it('returns null for absent, corrupt, or count-less values — the tile must hide, not crash', async () => {
+    const ctx = makeCtx();
+    const store = new SecretsStore(ctx);
+    expect(await store.getUncategorizedStatus()).toBeNull();
+    await ctx.api.secrets.set('uncategorized_status', '{"asOf":"x"}');
+    expect(await store.getUncategorizedStatus()).toBeNull();
+    await ctx.api.secrets.set('uncategorized_status', 'garbage');
+    expect(await store.getUncategorizedStatus()).toBeNull();
   });
 });
