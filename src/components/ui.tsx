@@ -201,6 +201,18 @@ const css = `
   color: var(--muted-foreground);
 }
 .sfin-chip svg { width: 11px; height: 11px; }
+/* Tab pills — active is a filled pill, inactive stay quiet (treatment C). */
+.sfin-tabbar { display: flex; gap: 6px; margin: 14px 0 16px; }
+.sfin-tab {
+  border: none; background: transparent; color: var(--muted-foreground);
+  font-size: 13px; font-weight: 550; padding: 6px 16px; border-radius: 999px;
+  cursor: pointer;
+}
+.sfin-tab:hover { background: color-mix(in srgb, var(--muted-foreground) 10%, transparent); }
+.sfin-tab--active {
+  background: var(--primary); color: var(--primary-foreground, #111);
+  font-weight: 600;
+}
 .sfin-banner-warn {
   display: flex; gap: 10px; align-items: flex-start;
   background: color-mix(in srgb, var(--destructive) 10%, transparent);
