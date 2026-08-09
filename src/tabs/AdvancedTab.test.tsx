@@ -178,7 +178,7 @@ describe('AdvancedTab', () => {
     props.store.getTelegramConfig = vi.fn(async () => ({ botToken: 't', chatId: 'c', enabled: true }));
     render(<SyncPage {...props} />);
     await switchTab(/advanced/i);
-    await screen.findByText('Every 4h · auto-heal on');
+    await screen.findByText('Every 4h · auto re-scan on');
     expect(screen.getByText('2 rules')).toBeInTheDocument();
 
     await switchTab(/notifications/i);
@@ -192,8 +192,8 @@ describe('AdvancedTab', () => {
     props.store.getAutoAdjust = vi.fn(async () => true);
     render(<SyncPage {...props} />);
     await switchTab(/advanced/i);
-    // Interval off, but aggressive auto-heal on — the summary has to say both.
-    await screen.findByText('Off · aggressive auto-heal');
+    // Interval off, but aggressive auto re-scan on — the summary has to say both.
+    await screen.findByText('Off · aggressive auto re-scan');
     expect(screen.getByText(/using the \+\/− defaults/)).toBeInTheDocument();
     // No token/chat id in the default mock — same "collapsed still says its
     // state" contract, for the Telegram card.

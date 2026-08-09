@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
 import { SyncPage } from '../pages/SyncPage';
 import { ThemeStyles } from '../components/ui';
@@ -201,8 +201,13 @@ describe('OverviewTab', () => {
         ],
       } as any);
       render(<SyncPage {...makeProps()} />);
-      await waitFor(() => screen.getByRole('button', { name: /deep scan/i }));
-      fireEvent.click(screen.getByRole('button', { name: /deep scan/i }));
+      // The header's button, specifically: the off-balance banner below now
+      // offers the same operation under the same name, which is the point — one
+      // `healing` flag must not have two labels.
+      const header = await waitFor(
+        () => document.querySelector('.sfin-head-actions') as HTMLElement,
+      );
+      fireEvent.click(within(header).getByRole('button', { name: /deep scan/i }));
 
       const banner = await screen.findByText(/Removed 2 duplicate activities/i);
       const box = banner.closest('.sfin-banner-warn')!;

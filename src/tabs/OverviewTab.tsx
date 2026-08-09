@@ -144,7 +144,6 @@ export function OverviewTab({
           description and account — enough to go and verify in Wealthfolio. */}
       {prunedDuplicates.length > 0 && (
         <div className="sfin-banner-warn">
-          <span aria-hidden>🧹</span>
           <div className="sfin-banner-body">
             <div>
               Removed {prunedDuplicates.length} duplicate{' '}
@@ -184,7 +183,6 @@ export function OverviewTab({
         if (waitingOnFeed) {
           return (
             <div className="sfin-banner-wait" key={sfinId}>
-              <span aria-hidden>⏳</span>
               <div className="sfin-banner-body">
                 {/* Direction matters, and this used to assert one regardless of sign.
                     `drift = bankBalance − wealthfolioValuation`, so POSITIVE means the
@@ -202,7 +200,8 @@ export function OverviewTab({
                     <div className="sfin-banner-note">
                       The bank&apos;s balance usually includes recent activity its transaction
                       list hasn&apos;t published yet — a transfer still in flight is the common
-                      one. This typically clears in a few days on its own.
+                      one. This typically clears in a few days on its own. A deep scan
+                      re-checks the last 90 days if you would rather not wait.
                     </div>
                   </>
                 ) : (
@@ -215,14 +214,18 @@ export function OverviewTab({
                     <div className="sfin-banner-note">
                       Feed lag cannot cause this direction — lag makes the bank look ahead,
                       not behind. Something is likely recorded twice, or a withdrawal
-                      hasn&apos;t imported. Re-scanning is the first thing to try; don&apos;t
-                      add a plug, which would only widen the gap.
+                      hasn&apos;t imported. A deep scan of the last 90 days is the first thing
+                      to try; don&apos;t add a plug, which would only widen the gap.
                     </div>
                   </>
                 )}
+                {/* Same operation, same name as the header button — one flag
+                    (`healing`) drives both, so two labels for it read as two
+                    different features. The 90-day window it re-scans is stated in
+                    the note above rather than crammed into the label. */}
                 <div className="sfin-banner-actions">
                   <Button variant="outline" onClick={doHeal} disabled={healing || syncing}>
-                    {healing ? 'Re-scanning…' : 'Re-scan 90 days'}
+                    {healing ? 'Deep scanning…' : 'Deep scan'}
                   </Button>
                 </div>
               </div>
@@ -231,42 +234,48 @@ export function OverviewTab({
         }
         return (
           <div className="sfin-banner-warn" key={sfinId}>
-            <span aria-hidden>⚠</span>
             <div className="sfin-banner-body">
               <div>
                 <b>{sfinNames[sfinId] ?? sfinId}</b> is off by{' '}
                 <b>{money(Math.abs(drift), info.currency)}</b> — SimpleFin reports{' '}
                 <b>{money(info.balance ?? 0, info.currency)}</b>.
               </div>
-              {baselineFix && (
+              {/* Either way, say what a deep scan would do — including the window
+                  it covers, which used to be carried by the button's own label. */}
+              {baselineFix ? (
                 <div className="sfin-banner-note">
-                  Every transaction reconciles — the starting balance looks wrong, not your
+                  Every transaction reconciles — the opening balance looks wrong, not your
                   history.
+                </div>
+              ) : (
+                <div className="sfin-banner-note">
+                  A deep scan re-checks the last 90 days for anything missing before you
+                  adjust the balance by hand.
                 </div>
               )}
               <div className="sfin-banner-actions">
                 <Button variant="outline" onClick={doHeal} disabled={healing || syncing}>
-                  {healing ? 'Re-scanning…' : 'Re-scan 90 days'}
+                  {healing ? 'Deep scanning…' : 'Deep scan'}
                 </Button>
                 {baselineFix && (
                   <Button
                     variant="outline"
-                    title="Correct this account's starting balance, which stands for everything that happened before the first sync"
+                    title="Correct this account's opening balance — the starting-balance baseline that stands for everything that happened before the first sync"
                     onClick={() =>
                       doFixBaseline(sfinId, wfId, info.currency, baselineFix.suggestedAmount)
                     }
                     disabled={fixingBaseline === sfinId || healing || syncing}
                   >
                     {fixingBaseline === sfinId
-                      ? 'Fixing baseline…'
-                      : `Fix baseline: ${money(baselineFix.currentAmount, info.currency)} → ${money(baselineFix.suggestedAmount, info.currency)}`}
+                      ? 'Fixing opening balance…'
+                      : `Fix opening balance: ${money(baselineFix.currentAmount, info.currency)} → ${money(baselineFix.suggestedAmount, info.currency)}`}
                   </Button>
                 )}
                 <Button
                   variant="ghost"
                   title={
                     baselineFix
-                      ? 'Add a one-time adjustment dated today instead. Leaves the wrong starting balance in place.'
+                      ? 'Add a one-time adjustment dated today instead. Leaves the wrong opening balance in place.'
                       : 'Add a one-time balance adjustment so this account matches your bank'
                   }
                   onClick={() => doAdjust(sfinId, wfId, info.currency, drift)}

@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import type { AddonContext } from '@wealthfolio/addon-sdk';
 import { Button } from '../components/ui';
+import type { StatusMessage } from '../components/ui';
 import { TelegramConnect } from '../components/TelegramConnect';
 import { ReportSettings } from '../components/ReportSettings';
 import { ReportContent } from '../components/ReportContent';
@@ -260,7 +261,9 @@ export function NotificationsTab({
   /** What is actually in storage. Same value as `cfg` on load and after a save,
    *  so `dirty` is false at both. */
   const [savedCfg, setSavedCfg] = useState<TelegramCfgDraft>(EMPTY_DRAFT);
-  const [status, setStatus] = useState<string | null>(null);
+  /** The connection card's status line. `{ text, tone }` so the colour is data
+   *  rather than something re-derived from the wording — see `statusToneClass`. */
+  const [status, setStatus] = useState<StatusMessage | null>(null);
 
   useEffect(() => {
     Promise.all([
@@ -369,7 +372,7 @@ export function NotificationsTab({
             onClick={async () => {
               await store.setTelegramConfig(buildConfig(cfg));
               setSavedCfg(cfg);
-              setStatus('✅ Telegram configuration saved!');
+              setStatus({ text: 'Telegram settings saved.', tone: 'ok' });
             }}
           >
             Save

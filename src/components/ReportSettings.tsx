@@ -39,7 +39,7 @@ export function ReportSettings({ cfg, onChange, isOpen, toggleCard }: Props) {
     cfg.largeTxAlerts
       ? `$${thresholdToSave(true, cfg.largeTxAmount, SUGGESTED_LARGE_TX_THRESHOLD)}+ alerts`
       : null,
-    cfg.driftAlertsOn ? null : 'drift alerts off',
+    cfg.driftAlertsOn ? null : 'balance alerts off',
   ]
     .filter((s): s is string => typeof s === 'string')
     .join(' · ');
@@ -60,7 +60,7 @@ export function ReportSettings({ cfg, onChange, isOpen, toggleCard }: Props) {
               checked={cfg.notifyOnImport}
               onChange={(e) => onChange({ notifyOnImport: e.target.checked })}
             />
-            <span>Transaction Import Alerts (Instant when new transactions sync)</span>
+            <span>Transaction import alerts (instant when new transactions sync)</span>
           </label>
           <label className="sfin-check">
             <input
@@ -68,7 +68,7 @@ export function ReportSettings({ cfg, onChange, isOpen, toggleCard }: Props) {
               checked={cfg.dailyReportEnabled}
               onChange={(e) => onChange({ dailyReportEnabled: e.target.checked })}
             />
-            <span>Daily Category Allowance Report (Morning)</span>
+            <span>Daily category allowance report (morning)</span>
           </label>
           <label className="sfin-check">
             <input
@@ -76,7 +76,7 @@ export function ReportSettings({ cfg, onChange, isOpen, toggleCard }: Props) {
               checked={cfg.weeklyReportEnabled}
               onChange={(e) => onChange({ weeklyReportEnabled: e.target.checked })}
             />
-            <span>Weekly Budget &amp; Spending Summary</span>
+            <span>Weekly budget &amp; spending summary</span>
           </label>
           <label className="sfin-check">
             <input
@@ -84,7 +84,7 @@ export function ReportSettings({ cfg, onChange, isOpen, toggleCard }: Props) {
               checked={cfg.monthlyReportEnabled}
               onChange={(e) => onChange({ monthlyReportEnabled: e.target.checked })}
             />
-            <span>Monthly Wrap-Up (on the 1st, for the month just ended)</span>
+            <span>Monthly wrap-up (on the 1st, for the month just ended)</span>
           </label>
         </div>
 
@@ -166,7 +166,7 @@ export function ReportSettings({ cfg, onChange, isOpen, toggleCard }: Props) {
                 checked={cfg.driftAlertsOn}
                 onChange={(e) => onChange({ driftAlertsOn: e.target.checked })}
               />
-              <span className="sfin-check-name">Balance drift alerts</span>
+              <span className="sfin-check-name" title="Called a balance-drift alert in the logs and in the Telegram message itself">Balance difference alerts</span>
             </label>
             <div className="sfin-thresh-amt">
               <span className="sfin-subtle" aria-hidden>over $</span>
@@ -175,7 +175,7 @@ export function ReportSettings({ cfg, onChange, isOpen, toggleCard }: Props) {
                 min={1}
                 step={1}
                 className="sfin-select sfin-num"
-                aria-label="Balance drift alert threshold in dollars"
+                aria-label="Balance difference alert threshold in dollars"
                 value={cfg.driftAmount}
                 disabled={!cfg.driftAlertsOn}
                 onChange={(e) => onChange({ driftAmount: e.target.value })}

@@ -83,17 +83,18 @@ If a later wide re-scan recovers transactions older than that entry, the
 baseline is adjusted by their total — otherwise those transactions would be
 counted twice, once in the baseline and again individually.
 
-### Reconcile & link
+### Deep scan
 
-**Reconcile & link** re-scans a wider window (about 90 days) to recover
+**Deep scan** (the header button; "reconcile & link" in the logs) re-scans a
+wider window (about 90 days) to recover
 transactions an earlier sync missed, re-checks each account against its
 SimpleFin balance, and links any transfer pairs that aren't yet linked.
 
 Two optional toggles:
 
-- **Auto-heal** — run the wide re-scan on every sync. Balance corrections stay
-  manual.
-- **Aggressively auto-heal** — additionally insert balance corrections
+- **Auto re-scan** (`auto-heal` in the logs) — run the wide re-scan on every
+  sync. Balance corrections stay manual.
+- **Aggressively auto re-scan** — additionally insert balance corrections
   automatically, at most one per account per day.
 
 Balance corrections are written as a spending-neutral `CREDIT`, so they move

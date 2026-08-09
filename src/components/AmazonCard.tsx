@@ -87,7 +87,7 @@ export function AmazonCard({
       defaultCategory,
       labelOverrides: overrides,
     } satisfies AmazonMailConfig);
-    setStatus('✅ Saved. The companion will read the mailbox on its next sync.');
+    setStatus('Saved. The companion will read the mailbox on its next sync.');
   };
 
   return (
@@ -108,7 +108,7 @@ export function AmazonCard({
         <Disclosure
           id={guideId}
           variant="inline"
-          title="📦 How to set this up (one time)"
+          title="How to set this up (one time)"
           open={guideOpen}
           onToggle={onToggleGuide}
         >
@@ -154,7 +154,7 @@ export function AmazonCard({
             <li>Paste that address and app password below, and save.</li>
           </ol>
           <div className="sfin-callout" style={{ marginTop: 8 }}>
-            🔒 <strong>Why a separate account.</strong> No email provider lets an app read
+            <strong>Why a separate account.</strong> No email provider lets an app read
             mail from one sender only — an app password grants the entire mailbox. So the
             companion gets a mailbox that contains <em>nothing but Amazon receipts</em>. If
             the password ever leaked, that is all it could reach, and you switch it off by
@@ -279,7 +279,7 @@ export function AmazonCard({
 
         <div>
           <Button variant="primary" disabled={!configured} onClick={save}>
-            Save Amazon Settings
+            Save Amazon settings
           </Button>
         </div>
       </div>

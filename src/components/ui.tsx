@@ -482,6 +482,30 @@ const css = `
 .sfin-checklist-link { border: none; background: transparent; color: #60a5fa; cursor: pointer; font-size: 12px; }
 `;
 
+/**
+ * A status line's message and its tone, carried as DATA.
+ *
+ * The tone used to be inferred by sniffing a ✅/❌ prefix off the message text,
+ * which quietly made those emoji load-bearing: dropping them from the copy would
+ * have painted every error the neutral "busy" grey instead of destructive red —
+ * a regression no emoji-grep test could see. The tone now travels with the
+ * message, so the words and the colour are independent.
+ */
+export type StatusTone = 'ok' | 'error' | 'busy';
+export interface StatusMessage {
+  text: string;
+  tone: StatusTone;
+}
+
+/** Tone → the class that colours it. Lives beside the CSS that defines them.
+ *  `busy` is the in-flight tone: a send that has not finished is not a failure,
+ *  so it is never painted destructive-red. */
+export function statusToneClass(tone: StatusTone): string {
+  if (tone === 'ok') return 'sfin-status--ok';
+  if (tone === 'error') return 'sfin-status--err';
+  return 'sfin-status--busy';
+}
+
 export const CheckIcon = () => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round">
     <path d="M5 13l4 4L19 7" />

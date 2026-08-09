@@ -99,7 +99,7 @@ export function SetupPage({ ctx, store, onComplete }: Props) {
 
   return (
     <div className="sfin-page">
-      <h2 className="sfin-title">SimpleFin Sync Setup</h2>
+      <h2 className="sfin-title">SimpleFin Sync setup</h2>
 
       {error && <ErrorBox>{error}</ErrorBox>}
 
@@ -125,7 +125,7 @@ export function SetupPage({ ctx, store, onComplete }: Props) {
       {step === 2 && (
         <Card>
           <div className="sfin-step">Step 2 of 4</div>
-          <h3 style={{ margin: '0 0 8px' }}>Map Accounts</h3>
+          <h3 style={{ margin: '0 0 8px' }}>Map accounts</h3>
           <AccountMapper
             ctx={ctx}
             simplefinAccounts={sfAccounts}
@@ -138,10 +138,10 @@ export function SetupPage({ ctx, store, onComplete }: Props) {
       {step === 3 && (
         <Card>
           <div className="sfin-step">Step 3 of 4</div>
-          <h3 style={{ margin: '0 0 8px' }}>Transaction Rules</h3>
+          <h3 style={{ margin: '0 0 8px' }}>Transaction rules</h3>
           <RuleEditor rules={rules} onChange={setRules} />
           <Button onClick={handleSaveRules} style={{ marginTop: 16 }}>
-            Save Rules &amp; Continue
+            Save rules &amp; continue
           </Button>
         </Card>
       )}
@@ -177,7 +177,7 @@ export function SetupPage({ ctx, store, onComplete }: Props) {
             </div>
           )}
           <div style={{ marginTop: 16 }}>
-            <Button onClick={handleFinish}>Finish Setup</Button>
+            <Button onClick={handleFinish}>Finish setup</Button>
           </div>
         </Card>
       )}

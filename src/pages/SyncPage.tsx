@@ -334,10 +334,11 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
           <SyncStatus lastSyncAt={lastSyncAt} imported={imported} syncing={syncing} />
         </div>
         <div className="sfin-head-actions">
-          {/* Always-available reconcile: the drift banner's "Re-scan 90 days" only
+          {/* Always-available reconcile: the drift banner's own "Deep scan" only
               appears on an off-balance account, so this keeps it reachable when
-              everything reads "in sync". Plain-language label; the title keeps the
-              term the docs, the logs and the companion use. */}
+              everything reads "in sync". Same label in both places — one operation
+              (one `healing` flag) must not have two names. Plain-language label;
+              the title keeps the term the docs, the logs and the companion use. */}
           <Button variant="outline" onClick={doHeal} disabled={healing || syncing}
             title="Re-scans the last 90 days and re-links transfer pairs (reconcile & link)">
             {healing ? 'Deep scanning…' : 'Deep scan'}

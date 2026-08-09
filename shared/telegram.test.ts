@@ -1165,7 +1165,7 @@ describe('formatStuckTransferAlert', () => {
       "⚠️ *Transfer stuck — couldn't auto-link after 3 tries*\n"
       + 'Payment ↔ Payment\n'
       + 'Amount: $1300.00 USD\n'
-      + 'Try "Reconcile & link" in the addon, or check for a duplicate/mismatched leg.',
+      + 'Try "Deep scan" in the addon, or check for a duplicate/mismatched leg.',
     );
   });
 

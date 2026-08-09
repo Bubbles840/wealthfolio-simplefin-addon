@@ -294,7 +294,7 @@ export function formatStuckTransferAlert(alert: {
     "⚠️ *Transfer stuck — couldn't auto-link after 3 tries*\n"
     + `${escapeMarkdown(alert.description)}\n`
     + `Amount: $${amount} ${escapeMarkdown(alert.currency)}\n`
-    + 'Try "Reconcile & link" in the addon, or check for a duplicate/mismatched leg.'
+    + 'Try "Deep scan" in the addon, or check for a duplicate/mismatched leg.'
   );
 }
 
