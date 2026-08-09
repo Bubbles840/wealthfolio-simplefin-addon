@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Button, Disclosure } from './ui';
+import { Button } from './ui';
 import type { DismissalLedger, UncategorizedRow } from '../../shared/uncategorized';
 
 function money(cents: number): string {
@@ -65,8 +65,13 @@ export function useDismissals(
 }
 
 /**
- * The transactions behind the "Needs a category" tile, and a way to stop caring
- * about one.
+ * The panel behind the "Needs a category" tile — the undo banner, the rows,
+ * and the footer — and a way to stop caring about one row.
+ *
+ * The tile itself (in `OverviewTab`) is the disclosure trigger; this component
+ * is mounted only while that tile's toggle is open, and renders nothing else
+ * that announces the count — the old inline `Disclosure` header duplicated the
+ * tile above it, which is the whole reason this split changed.
  *
  * Purely presentational: the parent owns the ledger, the optimistic count and the
  * undo window. A row that hid itself would leave the tile disagreeing with the
@@ -76,13 +81,12 @@ export function useDismissals(
  * size target.
  */
 export function UncategorizedList({
-  rows, total, id, open, onToggle, onDismiss, justDismissed, onUndo, onOpenActivities,
+  rows, total, id, onDismiss, justDismissed, onUndo, onOpenActivities,
 }: {
   rows: UncategorizedRow[];
   total: number;
+  /** Matches the tile button's `aria-controls` in `OverviewTab`. */
   id: string;
-  open: boolean;
-  onToggle: () => void;
   onDismiss: (activityId: string) => void;
   justDismissed: string | null;
   onUndo: () => void;
@@ -92,7 +96,9 @@ export function UncategorizedList({
   onOpenActivities?: () => void;
 }) {
   // Gated on ROWS, not on `total`: a v1.10.0 companion publishes a count with no
-  // rows, and a disclosure that opens onto nothing is worse than no disclosure.
+  // rows, and the tile that opens onto this panel already refuses to be a
+  // trigger in that case — but a stale open toggle from before the rows
+  // disappeared could still try to mount this, so the guard stays here too.
   //
   // EXCEPT while an undo window is open: dismissing the last visible row makes
   // `rows` empty too, and unmounting right then would take the undo banner down
@@ -103,54 +109,46 @@ export function UncategorizedList({
   if (rows.length === 0 && !justDismissed) return null;
   const capped = rows.length < total;
   return (
-    <div className="sfin-disc-inset">
-      <Disclosure
-        id={id}
-        variant="inline"
-        title={`${total} need${total === 1 ? 's' : ''} a category`}
-        open={open}
-        onToggle={onToggle}
-      >
-        {justDismissed && (
-          <div className="sfin-uncat-undo" role="status">
-            <span className="sfin-subtle">Dismissed.</span>
-            <Button variant="ghost" onClick={onUndo}>Undo</Button>
-          </div>
-        )}
-        {rows.map((r) => (
-          <div className="sfin-uncat-row" key={r.activityId}>
-            <span className="sfin-uncat-when">{r.date}</span>
-            <span className="sfin-uncat-what">
-              {r.description}
-              <span className="sfin-subtle"> · {r.accountName}</span>
+    <div id={id} className="sfin-disc-inset sfin-uncat-panel">
+      {justDismissed && (
+        <div className="sfin-uncat-undo" role="status">
+          <span className="sfin-subtle">Dismissed.</span>
+          <Button variant="ghost" onClick={onUndo}>Undo</Button>
+        </div>
+      )}
+      {rows.map((r) => (
+        <div className="sfin-uncat-row" key={r.activityId}>
+          <span className="sfin-uncat-when">{r.date}</span>
+          <span className="sfin-uncat-what">
+            {r.description}
+            <span className="sfin-subtle"> · {r.accountName}</span>
+          </span>
+          <span className="sfin-uncat-amt">{money(r.amountCents)}</span>
+          <Button
+            variant="ghost"
+            onClick={() => onDismiss(r.activityId)}
+            title="Stop counting this transaction as needing a category"
+            // Nine rows otherwise announce nine identical "Dismiss, button"s to
+            // assistive tech. Visible text stays "Dismiss" — only the accessible
+            // name carries the distinguishing detail.
+            aria-label={`Dismiss ${r.description}, ${money(r.amountCents)} on ${r.date}`}
+          >
+            Dismiss
+          </Button>
+        </div>
+      ))}
+      {(capped || onOpenActivities) && (
+        <div className="sfin-uncat-foot">
+          {capped && (
+            <span className="sfin-subtle">
+              Showing {rows.length} of {total}. Categorize or dismiss some to see the rest.
             </span>
-            <span className="sfin-uncat-amt">{money(r.amountCents)}</span>
-            <Button
-              variant="ghost"
-              onClick={() => onDismiss(r.activityId)}
-              title="Stop counting this transaction as needing a category"
-              // Nine rows otherwise announce nine identical "Dismiss, button"s to
-              // assistive tech. Visible text stays "Dismiss" — only the accessible
-              // name carries the distinguishing detail.
-              aria-label={`Dismiss ${r.description}, ${money(r.amountCents)} on ${r.date}`}
-            >
-              Dismiss
-            </Button>
-          </div>
-        ))}
-        {(capped || onOpenActivities) && (
-          <div className="sfin-uncat-foot">
-            {capped && (
-              <span className="sfin-subtle">
-                Showing {rows.length} of {total}. Categorize or dismiss some to see the rest.
-              </span>
-            )}
-            {onOpenActivities && (
-              <Button variant="ghost" onClick={onOpenActivities}>Categorize in Wealthfolio</Button>
-            )}
-          </div>
-        )}
-      </Disclosure>
+          )}
+          {onOpenActivities && (
+            <Button variant="ghost" onClick={onOpenActivities}>Categorize in Wealthfolio</Button>
+          )}
+        </div>
+      )}
     </div>
   );
 }

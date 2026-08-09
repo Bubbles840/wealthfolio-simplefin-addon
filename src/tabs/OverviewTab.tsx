@@ -349,22 +349,52 @@ export function OverviewTab({
               read as a dollar amount often enough to be worth spelling out. */}
           <div className="sfin-tile-sub">transactions</div>
         </div>
+        {/* Doubles as the disclosure trigger once there is a list to show — one
+            surface for the number instead of the tile plus a separate bar
+            repeating it underneath. Gated on ROWS, not on the count: a v1.10.0
+            companion can publish a count with no rows, and a chevron that
+            expands onto nothing is worse than no chevron — that case keeps the
+            plain, non-interactive tile it always had. */}
         {uncategorized && (
-          <div className="sfin-tile sfin-tile--purple" title={`As of ${uncategorized.asOf}`}>
-            <SectionLabel>Needs a category</SectionLabel>
-            <div className="sfin-tile-val">{uncatCount}</div>
-            <div className="sfin-tile-sub">from your companion</div>
-          </div>
+          visibleRows.length > 0 ? (
+            <button
+              type="button"
+              className="sfin-tile sfin-tile--purple sfin-tile--toggle"
+              title={`As of ${uncategorized.asOf}`}
+              aria-expanded={isOpen(OVERVIEW_CARD.uncategorized)}
+              // Same rule as the page's Disclosure: only points at the panel
+              // while the panel actually exists.
+              {...(isOpen(OVERVIEW_CARD.uncategorized)
+                ? { 'aria-controls': OVERVIEW_CARD.uncategorized }
+                : {})}
+              // The tile's own contents ("Needs a category" / "7" / "from your
+              // companion") read as a fragmented accessible name; this is the
+              // same wording the separate disclosure header used to carry.
+              aria-label={`${uncatCount} need${uncatCount === 1 ? 's' : ''} a category`}
+              onClick={() => toggleCard(OVERVIEW_CARD.uncategorized)}
+            >
+              <div className="sfin-tile-head">
+                <SectionLabel>Needs a category</SectionLabel>
+                <span className="sfin-chevron" data-open={isOpen(OVERVIEW_CARD.uncategorized)} aria-hidden>▼</span>
+              </div>
+              <div className="sfin-tile-val">{uncatCount}</div>
+              <div className="sfin-tile-sub">from your companion</div>
+            </button>
+          ) : (
+            <div className="sfin-tile sfin-tile--purple" title={`As of ${uncategorized.asOf}`}>
+              <SectionLabel>Needs a category</SectionLabel>
+              <div className="sfin-tile-val">{uncatCount}</div>
+              <div className="sfin-tile-sub">from your companion</div>
+            </div>
+          )
         )}
       </div>
 
-      {uncategorized && (
+      {uncategorized && isOpen(OVERVIEW_CARD.uncategorized) && (
         <UncategorizedList
           rows={visibleRows}
           total={uncatCount}
           id={OVERVIEW_CARD.uncategorized}
-          open={isOpen(OVERVIEW_CARD.uncategorized)}
-          onToggle={() => toggleCard(OVERVIEW_CARD.uncategorized)}
           onDismiss={dismiss}
           justDismissed={justDismissed}
           onUndo={undo}

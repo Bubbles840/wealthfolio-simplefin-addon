@@ -175,6 +175,30 @@ const css = `
 .sfin-tile--green  { border-left-color: #4ade80; }
 .sfin-tile--blue   { border-left-color: #60a5fa; }
 .sfin-tile--purple { border-left-color: #a78bfa; }
+/* The "Needs a category" tile doubles as a disclosure trigger once there is a
+   list to show. Background, border and left-accent colour keep coming from
+   .sfin-tile/.sfin-tile--purple above — this rule only resets the parts of
+   a native <button> that would otherwise fight them (appearance, centered
+   text, the pointer). */
+.sfin-tile--toggle {
+  appearance: none;
+  -webkit-appearance: none;
+  display: block;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.sfin-tile--toggle:hover { background: var(--muted); }
+.sfin-tile--toggle:focus-visible { outline: 2px solid var(--ring, var(--primary)); outline-offset: -2px; }
+/* Label + chevron on one line, header-style. */
+.sfin-tile-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.sfin-tile-head .sfin-section-label { margin-bottom: 0; }
+/* The panel under the tile. Padding used to come from
+   .sfin-disclosure-body--inline, gone now that the tile is the trigger and
+   this component is the panel alone. */
+.sfin-uncat-panel { margin-top: 8px; padding: 8px 11px 10px; }
 .sfin-card-head {
   display: flex; align-items: center; justify-content: space-between;
   gap: 12px; margin-bottom: 2px;
