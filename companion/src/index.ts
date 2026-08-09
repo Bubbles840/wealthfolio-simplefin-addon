@@ -596,7 +596,11 @@ export async function runCompanionSync(): Promise<SyncResult> {
     await publishUncategorizedStatusForDbPath(
       process.env.WEALTHFOLIO_DB_PATH || '/mnt/wealthfolio.db',
       (key, value) => wfClient.setAddonSecret('simplefin-sync', key, value),
-      (dbPath, start, end) => getNativeUncategorizedSpending(dbPath, start, end).length,
+      (dbPath, start, end) => getNativeUncategorizedSpending(dbPath, start, end),
+      async () => parseSecretJson<DismissalLedger>(
+        await wfClient.getAddonSecret('simplefin-sync', 'uncategorized_dismissals'),
+        'uncategorized_dismissals',
+      ) ?? {},
     );
 
     const undeliveredOutTxIds: string[] = [];
