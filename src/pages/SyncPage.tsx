@@ -1,24 +1,16 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import type { AddonContext } from '@wealthfolio/addon-sdk';
-import { runSync, INTERVAL_SKIP_MESSAGE, applyBalanceAdjustment, applyBaselineCorrection } from '../utils/sync';
-import { BASELINE_FIX_MIN_DRIFT_AGE_MS } from '../../shared/sync-core';
+import { runSync, INTERVAL_SKIP_MESSAGE } from '../utils/sync';
 import { SIMPLEFIN_SYNC_VERSION } from '../../shared/version';
-
-/** The offer a sync attaches to an account when it proved the drift belongs to
- *  the starting-balance baseline rather than to any transaction. */
-type BaselineFixOffer = {
-  activityId: string;
-  currentAmount: number;
-  suggestedAmount: number;
-};
 import type { SyncResult } from '../utils/sync';
 import { fetchAccounts } from '../utils/simplefin';
 import { SyncStatus } from '../components/SyncStatus';
 import { CategoryIcon } from '../components/CategoryIcon';
 import { GlyphPicker } from '../components/GlyphPicker';
 import { RuleEditor } from '../components/RuleEditor';
-import { Button, Card, CollapsibleCard, Disclosure, ErrorBox, SectionLabel, CheckIcon, AlertIcon } from '../components/ui';
+import { Button, CollapsibleCard, Disclosure, ErrorBox, SectionLabel } from '../components/ui';
 import { AmazonCard } from '../components/AmazonCard';
+import { OverviewTab } from '../tabs/OverviewTab';
 import { sendTelegramMessage, getCategoryEmoji } from '../../shared/telegram';
 // The real default the sync engine applies when driftAlertThreshold is absent,
 // imported rather than re-typed so the field can never disagree with it.
@@ -34,32 +26,12 @@ interface Props {
   scheduler: Scheduler;
 }
 
-function money(amount: number, currency = 'USD'): string {
-  try {
-    return new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(amount);
-  } catch {
-    return `${amount.toFixed(2)} ${currency}`;
-  }
-}
-
-/** Two-character badge from an account name: "Spend (1234)" → "SP". */
-function initials(name: string): string {
-  const clean = name.replace(/[^a-zA-Z0-9]/g, '');
-  return (clean.slice(0, 2) || '••').toUpperCase();
-}
-
 /** Tone class for the Telegram status line. Keyed off the ✅/❌ prefix the
  *  message already carries, so nothing is signalled by colour alone. */
 function telegramStatusTone(status: string): string {
   if (status.startsWith('✅')) return 'sfin-status--ok';
   if (status.startsWith('❌')) return 'sfin-status--err';
   return 'sfin-status--busy';
-}
-
-function formatAsOf(unixSeconds: number): string {
-  return new Date(unixSeconds * 1000).toLocaleString(undefined, {
-    month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
-  });
 }
 
 /** Amount the "Large transaction alerts" field is seeded with. Purely a UI
@@ -146,10 +118,12 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
   const [balances, setBalances] = useState<Record<string, AccountBalanceInfo>>({});
   const [confirmingReset, setConfirmingReset] = useState(false);
   const [healing, setHealing] = useState(false);
-  const [adjusting, setAdjusting] = useState<string | null>(null);
   const [autoHeal, setAutoHeal] = useState(false);
   const [autoAdjust, setAutoAdjust] = useState(false);
-  const [fixingBaseline, setFixingBaseline] = useState<string | null>(null);
+  // Both only feed the Overview checklist, which self-completes from real
+  // signals rather than from steps the user ticked off.
+  const [amazonConfigured, setAmazonConfigured] = useState(false);
+  const [checklistDismissed, setChecklistDismissed] = useState(false);
   // Which companion build last synced this instance. Null until one has run —
   // the addon works standalone, so no companion is a normal state, not an error.
   const [companionVersion, setCompanionVersion] = useState<string | null>(null);
@@ -265,8 +239,20 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
       ctx.api.accounts.getAll().catch(() => []),
       store.getOpenCards(),
       store.getLastSyncImported(),
-    ]).then(([last, m, r, h, names, bal, ah, aa, tg, catalog, glyphStyle, subcatMode, wfAccounts, cards, lastImported]) => {
+      // The first two answer a checklist row: "is Amazon categorization set up?"
+      // and "has this checklist already been dismissed?". The companion version
+      // was previously read ONLY by `refreshLiveState`, so for the first minute
+      // after mount the footer said "companion not running" and the checklist
+      // would have claimed background sync was unconfigured on a machine where
+      // it has been running for months. Same state, read one moment earlier.
+      store.getAmazonConfig(),
+      store.getUiState(),
+      store.getCompanionVersion(),
+    ]).then(([last, m, r, h, names, bal, ah, aa, tg, catalog, glyphStyle, subcatMode, wfAccounts, cards, lastImported, amazon, ui, companion]) => {
       setLastSyncAt(last);
+      setAmazonConfigured(!!amazon);
+      setChecklistDismissed(ui.checklistDismissed === true);
+      setCompanionVersion(companion);
       // From storage, not just from a sync in this page session: the tile says
       // "Imported last run", and the last run is usually the companion's.
       setImported(lastImported);
@@ -400,43 +386,18 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
     }
   }, [ctx, store, loadBalances, clearError, showThrownError]);
 
-  // Plug the residual: add a one-time balance-adjustment entry for an account.
-  const doFixBaseline = useCallback(
-    async (sfinId: string, wfId: string, currency: string, suggestedAmount: number) => {
-      setFixingBaseline(sfinId);
-      clearError();
-      try {
-        await applyBaselineCorrection(ctx, store, {
-          sfinAccountId: sfinId,
-          wfAccountId: wfId,
-          currency,
-          suggestedAmount,
-        });
-        loadBalances();
-      } catch (e: any) {
-        showThrownError(e, 'Baseline correction failed');
-      } finally {
-        setFixingBaseline(null);
-      }
-    },
-    [ctx, store, loadBalances, clearError, showThrownError],
-  );
-
-  const doAdjust = useCallback(
-    async (sfinId: string, wfId: string, currency: string, amount: number) => {
-      setAdjusting(sfinId);
-      clearError();
-      try {
-        await applyBalanceAdjustment(ctx, store, { sfinAccountId: sfinId, wfAccountId: wfId, currency, amount });
-        loadBalances();
-      } catch (e: any) {
-        showThrownError(e, 'Adjustment failed');
-      } finally {
-        setAdjusting(null);
-      }
-    },
-    [ctx, store, loadBalances, clearError, showThrownError],
-  );
+  /** Read-modify-write: `ui_state` also holds the active tab, which a blind
+   *  overwrite would reset to "overview" the moment a checklist is dismissed. */
+  const dismissChecklist = useCallback(async () => {
+    setChecklistDismissed(true);
+    try {
+      const prev = await store.getUiState();
+      await store.setUiState({ ...prev, checklistDismissed: true });
+    } catch {
+      // Cosmetic state — a failed write costs the user one re-dismissal, and an
+      // error box about it would be noisier than the checklist coming back.
+    }
+  }, [store]);
 
   // window.confirm is silently suppressed in the addon sandbox (iframe has
   // sandbox="allow-scripts" without allow-modals), so confirmation must be
@@ -466,10 +427,6 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
     store.setOpenCards(next).catch(() => {});
   };
   const isOpen = (id: string) => openCards[id] === true;
-
-  const mappedEntries = Object.entries(mapping);
-  const mappedCount = mappedEntries.length;
-  const driftAccounts = mappedEntries.filter(([sfinId]) => balances[sfinId]?.drift != null);
 
   // PARENTS ONLY, GROUPED. Wealthfolio budgets at the parent level — its own
   // Spending Tracker has no subcategory amount field — and the reports aggregate
@@ -507,10 +464,6 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
   })();
   // Only what the selector offers, so the 'all' sentinel stays reachable.
   const availableCategories = categoryRows.map((r) => r.entry.name);
-  const asOf = mappedEntries
-    .map(([sfinId]) => balances[sfinId]?.date)
-    .filter((d): d is number => typeof d === 'number')
-    .sort((a, b) => b - a)[0];
 
   // ── Collapsed-header summaries ───────────────────────────────────────────
   // Each collapsible card reports its own configuration as text in its header,
@@ -590,241 +543,32 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
         </div>
       )}
 
-      {/* What the reconcile sweep deleted. A needs-to-be-seen notice rather than
-          a collapsible detail: rows were removed from the user's ledger without
-          being asked about, so each one is itemised with the figure, date,
-          description and account — enough to go and verify in Wealthfolio. */}
-      {prunedDuplicates.length > 0 && (
-        <div className="sfin-banner-warn">
-          <span aria-hidden>🧹</span>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div>
-              Removed {prunedDuplicates.length} duplicate{' '}
-              {prunedDuplicates.length === 1 ? 'activity' : 'activities'} — each of these
-              was stored twice, so the extra copy was deleted.
-            </div>
-            <ul style={{ margin: '8px 0 0', paddingLeft: 18 }}>
-              {prunedDuplicates.map((p) => (
-                <li key={p.wfId}>
-                  <b>{money(p.amountCents / 100, p.currency)}</b> · {p.date}
-                  {p.description ? ` · ${p.description}` : ''} · {p.accountName}
-                </li>
-              ))}
-            </ul>
-          </div>
-        </div>
-      )}
-
-      {driftAccounts.map(([sfinId, wfId]) => {
-        const info = balances[sfinId];
-        const drift = info.drift as number;
-        // Offered only when a heal proved every transaction reconciles, which
-        // makes the starting balance the only thing left that can be wrong. When
-        // it's present the plug is demoted: it would date this correction today
-        // and leave the wrong baseline in place.
-        const baselineFix = (info as { baselineFix?: BaselineFixOffer }).baselineFix;
-        // A YOUNG dated drift is usually the bank's balance running ahead of its
-        // own transaction feed — posted activity SimpleFin hasn't published yet,
-        // which resolves itself in days. It gets the calm banner with NO plug
-        // button: the red banner's `Add $X` was a loaded gun, since plugging lag
-        // double-counts the moment the feed catches up. An undatable drift
-        // (under the alert threshold, so no episode) keeps the old treatment —
-        // that's the small-divergence case the plug exists for.
-        const driftSince = (info as { driftSince?: string | null }).driftSince;
-        const waitingOnFeed =
-          !!driftSince && Date.now() - Date.parse(driftSince) < BASELINE_FIX_MIN_DRIFT_AGE_MS;
-        if (waitingOnFeed) {
-          return (
-            <div className="sfin-banner-wait" key={sfinId}>
-              <span aria-hidden>⏳</span>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                {/* Direction matters, and this used to assert one regardless of sign.
-                    `drift = bankBalance − wealthfolioValuation`, so POSITIVE means the
-                    bank is ahead of what its own feed explains — real lag, clears
-                    itself. NEGATIVE means Wealthfolio holds more than the bank does,
-                    which lag cannot cause and which does NOT clear on its own; telling
-                    someone to wait it out is then advice to ignore a real problem. */}
-                {drift > 0 ? (
-                  <>
-                    <div>
-                      <b>{sfinNames[sfinId] ?? sfinId}</b>: the bank is ahead of its own
-                      transaction feed by <b>{money(drift, info.currency)}</b> — it reports{' '}
-                      <b>{money(info.balance ?? 0, info.currency)}</b>.
-                    </div>
-                    <div style={{ marginTop: 4, opacity: 0.85 }}>
-                      The bank&apos;s balance usually includes recent activity its transaction
-                      list hasn&apos;t published yet — a transfer still in flight is the common
-                      one. This typically clears in a few days on its own.
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div>
-                      <b>{sfinNames[sfinId] ?? sfinId}</b>: Wealthfolio holds{' '}
-                      <b>{money(Math.abs(drift), info.currency)}</b> more than the bank
-                      reports (<b>{money(info.balance ?? 0, info.currency)}</b>).
-                    </div>
-                    <div style={{ marginTop: 4, opacity: 0.85 }}>
-                      Feed lag cannot cause this direction — lag makes the bank look ahead,
-                      not behind. Something is likely recorded twice, or a withdrawal
-                      hasn&apos;t imported. Re-scanning is the first thing to try; don&apos;t
-                      add a plug, which would only widen the gap.
-                    </div>
-                  </>
-                )}
-                <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
-                  <Button variant="outline" onClick={doHeal} disabled={healing || syncing}>
-                    {healing ? 'Re-scanning…' : 'Re-scan 90 days'}
-                  </Button>
-                </div>
-              </div>
-            </div>
-          );
-        }
-        return (
-          <div className="sfin-banner-warn" key={sfinId}>
-            <span aria-hidden>⚠</span>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div>
-                <b>{sfinNames[sfinId] ?? sfinId}</b> is off by{' '}
-                <b>{money(Math.abs(drift), info.currency)}</b> — SimpleFin reports{' '}
-                <b>{money(info.balance ?? 0, info.currency)}</b>.
-              </div>
-              {baselineFix && (
-                <div style={{ marginTop: 4, opacity: 0.85 }}>
-                  Every transaction reconciles — the starting balance looks wrong, not your
-                  history.
-                </div>
-              )}
-              <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
-                <Button variant="outline" onClick={doHeal} disabled={healing || syncing}>
-                  {healing ? 'Re-scanning…' : 'Re-scan 90 days'}
-                </Button>
-                {baselineFix && (
-                  <Button
-                    variant="outline"
-                    title="Correct this account's starting balance, which stands for everything that happened before the first sync"
-                    onClick={() =>
-                      doFixBaseline(sfinId, wfId, info.currency, baselineFix.suggestedAmount)
-                    }
-                    disabled={fixingBaseline === sfinId || healing || syncing}
-                  >
-                    {fixingBaseline === sfinId
-                      ? 'Fixing baseline…'
-                      : `Fix baseline: ${money(baselineFix.currentAmount, info.currency)} → ${money(baselineFix.suggestedAmount, info.currency)}`}
-                  </Button>
-                )}
-                <Button
-                  variant="ghost"
-                  title={
-                    baselineFix
-                      ? 'Add a one-time adjustment dated today instead. Leaves the wrong starting balance in place.'
-                      : 'Add a one-time balance adjustment so this account matches your bank'
-                  }
-                  onClick={() => doAdjust(sfinId, wfId, info.currency, drift)}
-                  disabled={adjusting === sfinId || healing || fixingBaseline === sfinId}
-                >
-                  {adjusting === sfinId
-                    ? 'Adjusting…'
-                    : `${drift > 0 ? 'Add' : 'Subtract'} ${money(Math.abs(drift), info.currency)}${baselineFix ? ' (plug instead)' : ''}`}
-                </Button>
-              </div>
-            </div>
-          </div>
-        );
-      })}
-
-      <div className="sfin-strip" style={{ marginTop: 16 }}>
-        <div className="sfin-tile">
-          <SectionLabel>Accounts synced</SectionLabel>
-          <div className="sfin-tile-val">{mappedCount}</div>
-        </div>
-        <div className="sfin-tile">
-          <SectionLabel>Imported last run</SectionLabel>
-          <div className="sfin-tile-val">{imported ?? '—'}</div>
-        </div>
-        <div className="sfin-tile">
-          <SectionLabel>Auto-sync</SectionLabel>
-          <div className="sfin-tile-val" style={{ fontSize: 16 }}>
-            {scheduleHours ? `Every ${scheduleHours}h` : 'Off'}
-          </div>
-        </div>
-      </div>
-
-      <Card>
-        <div className="sfin-card-head">
-          {/* Just "Accounts": the count is already the first stat tile, and
-              printing it twice within 100px of itself read as clutter. */}
-          <SectionLabel>Accounts</SectionLabel>
-          {asOf && <span className="sfin-subtle" style={{ fontSize: 11.5 }}>balances as of {formatAsOf(asOf)}</span>}
-        </div>
-        {mappedEntries.map(([sfinId, wfId]) => {
-          const info = balances[sfinId];
-          const name = sfinNames[sfinId] ?? sfinId;
-          const exists = !!wfNames[wfId];
-          const open = () => { if (exists) ctx.api.navigation.navigate(`/accounts/${wfId}`).catch(() => {}); };
-          return (
-            <div
-              className={`sfin-acct${exists ? ' sfin-acct--link' : ''}`}
-              key={sfinId}
-              {...(exists
-                ? {
-                    role: 'button',
-                    tabIndex: 0,
-                    title: 'Open this account in Wealthfolio',
-                    onClick: open,
-                    onKeyDown: (e: React.KeyboardEvent) => {
-                      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
-                    },
-                  }
-                : {})}
-            >
-              <div className="sfin-acct-left">
-                <div className="sfin-avatar">{initials(name)}</div>
-                <div style={{ minWidth: 0 }}>
-                  <div className="sfin-acct-name">{name}</div>
-                  <div className="sfin-acct-map">
-                    {exists ? (
-                      `→ ${wfNames[wfId]}`
-                    ) : (
-                      <span style={{ color: 'var(--destructive)' }}>account no longer exists — reset &amp; re-map</span>
-                    )}
-                  </div>
-                </div>
-              </div>
-              <div className="sfin-acct-right">
-                <div className="sfin-bal">{info && info.balance != null ? money(info.balance, info.currency) : '—'}</div>
-                {/* THREE states, not two. `drift == null` used to render a green
-                    "in sync" chip, but it is also what "could not check" looks
-                    like — an account is incomparable for several ordinary reasons
-                    (a pending row, a run that updated or deleted anything, a
-                    pruned duplicate, a planned create that never landed). Calling
-                    those "in sync" claims a verification that did not happen, and
-                    two phantom drift episodes on one account were read as verified
-                    balances because of it. `measured` distinguishes them; absent
-                    means unmeasured, since a snapshot from an older build has
-                    proved nothing about the current state either. */}
-                {info && info.balance != null && (info.drift != null ? (
-                  <span className="sfin-chip sfin-chip--off"><AlertIcon /> off by {money(Math.abs(info.drift), info.currency)}</span>
-                ) : (info as { measured?: boolean }).measured ? (
-                  <span className="sfin-chip"><CheckIcon /> in sync</span>
-                ) : (
-                  <span
-                    className="sfin-chip sfin-chip--muted"
-                    title={
-                      'This sync could not compare the two balances — usually a pending '
-                      + 'transaction, or a row it reconciled or could not write. Nothing is '
-                      + 'wrong; it just was not checked. The next sync normally can.'
-                    }
-                  >
-                    not checked
-                  </span>
-                ))}
-              </div>
-            </div>
-          );
-        })}
-      </Card>
+      {/* Everything a daily visit is for — what needs attention, what is still
+          unfinished, the headline numbers, the accounts — in one component.
+          Rendered inline for now: the tab bar arrives in a later task, at which
+          point `onNavigate` starts switching tabs instead of doing nothing. */}
+      <OverviewTab
+        ctx={ctx}
+        store={store}
+        mapping={mapping}
+        sfinNames={sfinNames}
+        wfNames={wfNames}
+        balances={balances}
+        syncing={syncing}
+        healing={healing}
+        doHeal={doHeal}
+        imported={imported}
+        prunedDuplicates={prunedDuplicates}
+        onBalancesChanged={loadBalances}
+        onClearError={clearError}
+        onError={showThrownError}
+        companionVersion={companionVersion}
+        telegramConfigured={telegramConnected}
+        amazonConfigured={amazonConfigured}
+        checklistDismissed={checklistDismissed}
+        onDismissChecklist={dismissChecklist}
+        onNavigate={() => {}}
+      />
 
       {/* Everything below here is configured once and then only checked, so it
           collapses. The header summary is the compensation: you can read the
