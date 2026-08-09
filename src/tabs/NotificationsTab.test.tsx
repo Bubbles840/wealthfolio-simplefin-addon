@@ -1,6 +1,7 @@
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
 import { SyncPage } from '../pages/SyncPage';
+import { sendTelegramMessage } from '../../shared/telegram';
 
 /**
  * Integration-level, on purpose — and moved here wholesale from
@@ -19,6 +20,14 @@ vi.mock('../utils/sync', async (importOriginal) => {
     INTERVAL_SKIP_MESSAGE: actual.INTERVAL_SKIP_MESSAGE,
     runSync: vi.fn(async () => ({ imported: 5, skipped: 1, errors: [] })),
   };
+});
+
+// The one network call this tab can make. Mocked so the status line's tone can be
+// driven through every branch — success, refusal, throw, still-in-flight — from
+// the real component rather than by calling the tone helper directly.
+vi.mock('../../shared/telegram', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../shared/telegram')>();
+  return { ...actual, sendTelegramMessage: vi.fn(async () => ({ ok: true })) };
 });
 
 const makeProps = () => ({
@@ -232,6 +241,110 @@ describe('NotificationsTab', () => {
     fireEvent.change(screen.getByLabelText(/Chat ID/i), { target: { value: '42' } });
     expect(send.disabled).toBe(false);
     expect(props.store.setTelegramConfig).not.toHaveBeenCalled();
+  });
+
+  // ── The status line's tone ─────────────────────────────────────────────
+  /**
+   * The tone used to be recovered by SNIFFING a ✅/❌ prefix off the status
+   * message's own text. That made those emoji load-bearing: removing them from
+   * the copy — which is exactly what a "no emoji in chrome" pass does — would
+   * have downgraded every failed send from destructive red to the neutral "busy"
+   * grey, silently. Nothing caught it, because the string is gone, the class is
+   * still applied and the page still renders.
+   *
+   * These drive the REAL components (a producer that forgets to pass a tone is
+   * both a type error and a failure here), assert the CLASS rather than the
+   * wording, and assert the wording carries no emoji — so the colour and the
+   * words can never be re-coupled without one of these failing.
+   */
+  describe("the credentials status line's tone", () => {
+    const EMOJI = /\p{Extended_Pictographic}/u;
+    const statusLine = () =>
+      document.querySelector('.sfin-status[role="status"]') as HTMLElement;
+
+    /** Open the connection card with a token and chat id typed in, which is what
+     *  enables Send test message. */
+    async function readyToSend() {
+      const props = makeProps();
+      render(<SyncPage {...props} />);
+      await openSection(/^Telegram connection/i);
+      fireEvent.change(await screen.findByLabelText(/Bot token/i), { target: { value: 'tok' } });
+      fireEvent.change(screen.getByLabelText(/Chat ID/i), { target: { value: '42' } });
+      return props;
+    }
+
+    const send = () =>
+      fireEvent.click(screen.getByRole('button', { name: /send test message/i }));
+
+    it('paints a refused send as an error', async () => {
+      vi.mocked(sendTelegramMessage).mockResolvedValueOnce({
+        ok: false, description: 'chat not found',
+      } as any);
+      await readyToSend();
+      send();
+
+      await waitFor(() => expect(statusLine()).toBeTruthy());
+      await waitFor(() => expect(statusLine().className).toContain('sfin-status--err'));
+      expect(statusLine().className).not.toContain('sfin-status--ok');
+      expect(statusLine().className).not.toContain('sfin-status--busy');
+      // The reason survives, and it does so without an emoji carrying the colour.
+      expect(statusLine().textContent).toContain('chat not found');
+      expect(statusLine().textContent).not.toMatch(EMOJI);
+    });
+
+    it('paints a send that threw as an error', async () => {
+      vi.mocked(sendTelegramMessage).mockRejectedValueOnce(new Error('network down'));
+      await readyToSend();
+      send();
+
+      await waitFor(() => expect(statusLine()?.className).toContain('sfin-status--err'));
+      expect(statusLine().textContent).toContain('network down');
+      expect(statusLine().textContent).not.toMatch(EMOJI);
+    });
+
+    it('paints a successful send as ok', async () => {
+      vi.mocked(sendTelegramMessage).mockResolvedValueOnce({ ok: true } as any);
+      await readyToSend();
+      send();
+
+      await waitFor(() => expect(statusLine()?.className).toContain('sfin-status--ok'));
+      expect(statusLine().className).not.toContain('sfin-status--err');
+      expect(statusLine().textContent).not.toMatch(EMOJI);
+    });
+
+    it('paints the in-flight message as NEITHER ok nor error', async () => {
+      // The whole reason the tone is three-valued: a send that has not finished
+      // is not a failure, and the old code only got that right because "Sending…"
+      // happened to start with neither prefix.
+      let release: (v: any) => void = () => {};
+      vi.mocked(sendTelegramMessage).mockImplementationOnce(
+        () => new Promise((res) => { release = res; }),
+      );
+      await readyToSend();
+      send();
+
+      await waitFor(() => expect(statusLine()).toBeTruthy());
+      expect(statusLine().className).toContain('sfin-status--busy');
+      expect(statusLine().className).not.toContain('sfin-status--err');
+      expect(statusLine().className).not.toContain('sfin-status--ok');
+      expect(statusLine().textContent).not.toMatch(EMOJI);
+
+      // ...and it resolves into a real tone rather than staying grey.
+      await act(async () => { release({ ok: true }); });
+      await waitFor(() => expect(statusLine().className).toContain('sfin-status--ok'));
+    });
+
+    it('paints a saved config as ok', async () => {
+      // The other producer on this channel: the save bar reports through the same
+      // status line, so it has to pass a tone too.
+      await readyToSend();
+      fireEvent.click(await screen.findByRole('button', { name: /^Save$/ }));
+
+      await waitFor(() => expect(statusLine()?.className).toContain('sfin-status--ok'));
+      expect(statusLine().className).not.toContain('sfin-status--err');
+      expect(statusLine().textContent).toMatch(/saved/i);
+      expect(statusLine().textContent).not.toMatch(EMOJI);
+    });
   });
 
   // ── The category matrix ────────────────────────────────────────────────

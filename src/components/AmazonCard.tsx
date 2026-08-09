@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { Button, CollapsibleCard, Disclosure } from './ui';
+import { Button, CollapsibleCard, Disclosure, statusToneClass } from './ui';
+import type { StatusMessage } from './ui';
 import { CategoryIcon } from './CategoryIcon';
 import {
   DEFAULT_AMAZON_CATEGORY,
@@ -42,7 +43,11 @@ export function AmazonCard({
   const [defaultCategory, setDefaultCategory] = useState(DEFAULT_AMAZON_CATEGORY);
   const [overrides, setOverrides] = useState<Record<string, string>>({});
   const [labels, setLabels] = useState<AmazonLabelCatalog>({});
-  const [status, setStatus] = useState('');
+  /** `{ text, tone }` like every other status line in the addon: the ✅ this
+   *  message used to open with was its only success signal, so dropping the
+   *  emoji without a tone would have left it the one status that says nothing
+   *  about whether it went well. */
+  const [status, setStatus] = useState<StatusMessage | null>(null);
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
@@ -87,7 +92,10 @@ export function AmazonCard({
       defaultCategory,
       labelOverrides: overrides,
     } satisfies AmazonMailConfig);
-    setStatus('Saved. The companion will read the mailbox on its next sync.');
+    setStatus({
+      text: 'Saved. The companion will read the mailbox on its next sync.',
+      tone: 'ok',
+    });
   };
 
   return (
@@ -275,7 +283,11 @@ export function AmazonCard({
           </div>
         )}
 
-        {status && <div role="status" className="sfin-status">{status}</div>}
+        {status && (
+          <div role="status" className={`sfin-status ${statusToneClass(status.tone)}`}>
+            {status.text}
+          </div>
+        )}
 
         <div>
           <Button variant="primary" disabled={!configured} onClick={save}>

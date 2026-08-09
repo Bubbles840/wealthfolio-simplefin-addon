@@ -60,6 +60,30 @@ describe('AmazonCard', () => {
     });
   });
 
+  it('confirms a save with an ok-toned status line, and no emoji in the words', async () => {
+    // This message used to open with a ✅, which was its ONLY success signal —
+    // the div carried no tone class at all. Dropping the emoji without giving it
+    // a tone would have left it the one status line in the addon that says
+    // nothing about whether what just happened went well.
+    const EMOJI = /\p{Extended_Pictographic}/u;
+    const props = makeProps();
+    render(<AmazonCard {...props} />);
+    await screen.findByLabelText(/IMAP server/i);
+    fireEvent.change(screen.getByLabelText(/Mailbox address/i), {
+      target: { value: 'receipts@gmail.com' },
+    });
+    fireEvent.change(screen.getByLabelText(/App password/i), {
+      target: { value: 'abcd efgh ijkl mnop' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Save Amazon settings/i }));
+
+    const status = await screen.findByRole('status');
+    expect(status.className).toContain('sfin-status--ok');
+    expect(status.className).not.toContain('sfin-status--err');
+    expect(status.textContent).toMatch(/^Saved\./);
+    expect(status.textContent).not.toMatch(EMOJI);
+  });
+
   it('cannot be saved half-filled', async () => {
     // A host and a username with no password would have the companion attempt a
     // login every sync and log a failure every time.
