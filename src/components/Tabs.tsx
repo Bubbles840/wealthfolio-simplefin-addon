@@ -19,12 +19,11 @@ export function TabBar({ tabs, active, onChange }: {
     const i = tabs.findIndex((t) => t.id === active);
     const nextId = tabs[(i + delta + tabs.length) % tabs.length].id;
     onChange(nextId);
-    // Focus the target tab after onChange, since parent owns active state
-    // and re-render is async. Target the element by id directly.
-    setTimeout(() => {
-      const btn = document.getElementById(`sfin-tab-${nextId}`) as HTMLButtonElement;
-      if (btn) btn.focus();
-    }, 0);
+    // Focus the target tab synchronously from the ref Map. No setTimeout needed:
+    // tabindex="-1" means not in sequential tab order but still programmatically
+    // focusable. The button is already mounted in DOM; .focus() succeeds immediately
+    // without waiting for React's re-render to move the roving tabindex.
+    tabRefs.current.get(nextId)?.focus();
   };
 
   return (
