@@ -43,14 +43,14 @@ move money.
    It is exchanged once for a long-lived access URL, which is stored in
    Wealthfolio's encrypted secret storage — the token itself is not kept.
 3. Map each SimpleFin account to a Wealthfolio account.
-4. Press **Sync Now**.
+4. Press **Sync now**.
 
 ## How it works
 
 ### Syncing
 
 A sync runs when you open Wealthfolio, on your chosen interval while a tab is
-open, and whenever you press **Sync Now**. A one-hour minimum interval acts as
+open, and whenever you press **Sync now**. A one-hour minimum interval acts as
 a cooldown, so reloading the page is a cheap no-op.
 
 Each run re-scans a two-week overlap rather than only new transactions, because
@@ -86,9 +86,9 @@ counted twice, once in the baseline and again individually.
 ### Deep scan
 
 **Deep scan** (the header button; "reconcile & link" in the logs) re-scans a
-wider window (about 90 days) to recover
-transactions an earlier sync missed, re-checks each account against its
-SimpleFin balance, and links any transfer pairs that aren't yet linked.
+wider window (about 90 days) to recover transactions an earlier sync missed,
+re-checks each account against its SimpleFin balance, and links any transfer
+pairs that aren't yet linked.
 
 Two optional toggles:
 
@@ -100,7 +100,7 @@ Two optional toggles:
 Balance corrections are written as a spending-neutral `CREDIT`, so they move
 the balance without appearing as income or as spending in your budget.
 
-### Background sync & Telegram notifications (optional)
+### Background sync & Telegram notifications
 
 Wealthfolio addons run while a browser tab is open. If you want data to
 refresh automatically without keeping a browser tab open, or receive real-time
@@ -128,7 +128,7 @@ services:
       - /path/to/wealthfolio.db:/mnt/wealthfolio.db:ro
 ```
 
-### Amazon auto-categorization (optional)
+### Amazon auto-categorization
 
 A bank charge reads `AMAZON.COM*MB3T81` and says nothing about what you bought.
 Amazon's order emails name the category, so forwarding those to a mailbox the
@@ -141,7 +141,7 @@ Bank:   AMAZON.COM*MB3T81 · $21.18
    →    Wealthfolio's own rule files it under Housing
 ```
 
-Set up in the **Amazon auto-categorization** card on the Sync page (three fields).
+Set up in the **Amazon categorization** card on the Sync page (three fields).
 No extra container: the mailbox is read at the start of each sync, which is the
 only moment the data is used.
 
