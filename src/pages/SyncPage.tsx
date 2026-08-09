@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import type { AddonContext } from '@wealthfolio/addon-sdk';
 import { runSync, INTERVAL_SKIP_MESSAGE } from '../utils/sync';
 import { SIMPLEFIN_SYNC_VERSION } from '../../shared/version';
@@ -8,8 +8,9 @@ import { SyncStatus } from '../components/SyncStatus';
 import { Button, ErrorBox } from '../components/ui';
 import { TabBar, type TabId } from '../components/Tabs';
 import { OverviewTab } from '../tabs/OverviewTab';
-import { NotificationsTab } from '../tabs/NotificationsTab';
+import { NotificationsTab, useTelegramDraft } from '../tabs/NotificationsTab';
 import { AdvancedTab } from '../tabs/AdvancedTab';
+import { useAmazonDraft } from '../components/AmazonCard';
 import type { SecretsStore, AccountBalanceInfo, CategoryCatalogEntry } from '../utils/secrets';
 import type { Scheduler } from '../utils/scheduler';
 import type { AccountMapping } from '../../shared/types';
@@ -62,9 +63,11 @@ interface Props {
  * right, what did the last run import — with setup done once and never again
  * (Docker, Telegram credentials, Amazon mail, reset). Scrolling past ten
  * collapsed config cards to read two numbers was the daily cost of one long
- * page. Tabs also UNMOUNT the inactive ones, so three things that quietly relied
- * on a sibling staying mounted now live here: `reportPruned`,
- * `refreshDerivedSignals`, `uncategorized`.
+ * page. Tabs also UNMOUNT the inactive ones, so everything that cannot survive
+ * its own panel disappearing lives here instead: `reportPruned`,
+ * `refreshDerivedSignals`, `uncategorized`, and — because losing typed input is
+ * in a different class of bad from losing a derived number — both config tabs'
+ * unsaved drafts (`useTelegramDraft`, `useAmazonDraft`).
  */
 export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
   const [activeTab, setActiveTab] = useState<TabId>('overview');
@@ -103,6 +106,46 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
   const [telegramConfigured, setTelegramConfigured] = useState(false);
   const [amazonConfigured, setAmazonConfigured] = useState(false);
   const [uncategorized, setUncategorized] = useState<{ count: number; asOf: string } | null>(null);
+
+  /**
+   * The two config tabs' UNSAVED DRAFTS, held here rather than inside the tabs
+   * that edit them.
+   *
+   * `TabPanel` unmounts an inactive tab — that is the whole point of it — so a
+   * draft owned by a tab dies on any tab switch, and re-reads storage on the way
+   * back. What that cost in practice: a bot token or an IMAP app password typed,
+   * the save bar saying "You have unsaved changes", one click on Overview to
+   * check a balance, and back to an empty field with the bar now claiming
+   * nothing was pending. Silent loss of something the user had typed, including
+   * a credential they may have had to go and generate.
+   *
+   * Hoisting is the fix rather than a navigation guard: a guard has to be
+   * remembered at every exit (the tab bar, the checklist deep links,
+   * `reportPruned`), and the sandbox forbids the usual escape hatch —
+   * `window.confirm` is silently suppressed here (iframe `sandbox="allow-scripts"`
+   * with no `allow-modals`), so a "discard changes?" prompt would never appear
+   * at all. Nothing is lost, so nothing needs to warn.
+   */
+  const telegramDraft = useTelegramDraft(store);
+  const amazonDraft = useAmazonDraft(store);
+
+  /**
+   * Which hydrated fields the user has already acted on, so the mount load can
+   * skip them.
+   *
+   * The load below is a `Promise.all` that includes an IPC round-trip
+   * (`accounts.getAll`), so it can resolve hundreds of milliseconds after the
+   * page is interactive — and it used to assign `activeTab`, `checklistDismissed`
+   * and `openCards` unconditionally. Click Advanced, or the checklist's dismiss
+   * button, inside that window and you were snapped back, with storage now
+   * disagreeing with the screen.
+   *
+   * The dismissal was the case that could not recover: nothing else ever writes
+   * `checklistDismissed`, so a dropped dismissal brings the checklist back on
+   * every future session, permanently. A ref rather than state because it must
+   * not re-render and must be readable from inside the resolved promise.
+   */
+  const hasUserActed = useRef({ tab: false, checklist: false, cards: false });
 
   const loadBalances = useCallback(() => {
     store.getAccountBalances().then(setBalances).catch(() => {});
@@ -164,6 +207,8 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
    *  carries `checklistDismissed` and a blind overwrite would bring a dismissed
    *  checklist back every time a tab is clicked. */
   const navigate = useCallback((tab: TabId) => {
+    // Before the state change, so a load that resolves later leaves it alone.
+    hasUserActed.current.tab = true;
     setActiveTab(tab);
     store.getUiState()
       .then((prev) => store.setUiState({ ...prev, activeTab: tab }))
@@ -199,8 +244,14 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
       // nothing outside this page writes `ui_state`, so it cannot go stale.
       store.getUiState(),
     ]).then(([m, names, catalog, wfAccounts, cards, lastImported, ui]) => {
-      setChecklistDismissed(ui.checklistDismissed === true);
-      if (isKnownTab(ui.activeTab)) setActiveTab(ui.activeTab);
+      // The three the user can beat to the punch — this waits on an IPC
+      // round-trip, so "resolves after the first click" is ordinary, not a race
+      // you have to try to hit. A stored value must never overwrite a deliberate
+      // action; see `hasUserActed`. Everything below them is load-only data no
+      // interaction can contradict, so it is assigned unconditionally.
+      if (!hasUserActed.current.checklist) setChecklistDismissed(ui.checklistDismissed === true);
+      if (!hasUserActed.current.tab && isKnownTab(ui.activeTab)) setActiveTab(ui.activeTab);
+      if (!hasUserActed.current.cards) setOpenCards(cards);
       // From storage, not just from a sync in this session: the tile says
       // "Imported last run", and the last run is usually the companion's.
       setImported(lastImported);
@@ -208,7 +259,6 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
       setSfinNames(names);
       setCategoryCatalog(catalog);
       setWfNames(Object.fromEntries(wfAccounts.map((a) => [a.id, a.name])));
-      setOpenCards(cards);
 
       // Backfill for installs set up before account names were captured
       if (Object.keys(names).length === 0 && m && Object.keys(m).length > 0) {
@@ -248,6 +298,14 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
     // Deliberate — the notice describes only the last run, so a reload that put
     // them back on Advanced would hide it again with no way to get it back. One
     // forgotten tab preference is the right price for not losing that record.
+    //
+    // And a forgotten tab preference is now the WHOLE price. `Sync now` sits in
+    // the shell header and fires from any tab, so this can yank someone off a
+    // half-filled form — which used to mean unmounting their draft and losing it.
+    // It no longer can: both config drafts are held here in the shell (see
+    // `useTelegramDraft` / `useAmazonDraft`), so the panel unmounting costs
+    // nothing but the panel, and going back to the tab shows every field and the
+    // unsaved-changes bar exactly as they were left.
     if (pruned.length > 0) navigate('overview');
   }, [navigate]);
 
@@ -306,6 +364,7 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
   /** Read-modify-write, like `navigate`: `ui_state` also holds the active tab,
    *  which a blind overwrite would reset the moment a checklist is dismissed. */
   const dismissChecklist = useCallback(async () => {
+    hasUserActed.current.checklist = true;
     setChecklistDismissed(true);
     try {
       const prev = await store.getUiState();
@@ -320,6 +379,7 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
   // cost of not storing it. `next` is computed outside the state updater: writing
   // a secret from inside one would fire twice under StrictMode.
   const toggleCard = (id: string) => {
+    hasUserActed.current.cards = true;
     const next = { ...openCards, [id]: !openCards[id] };
     setOpenCards(next);
     store.setOpenCards(next).catch(() => {});
@@ -398,7 +458,7 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
       <TabPanel tab="notifications" active={activeTab}>
         <NotificationsTab
           ctx={ctx}
-          store={store}
+          draft={telegramDraft}
           categories={categoryCatalog}
           isOpen={isOpen}
           toggleCard={toggleCard}
@@ -412,6 +472,7 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
           store={store}
           scheduler={scheduler}
           onReset={onReset}
+          amazon={amazonDraft}
           categories={categoryCatalog}
           isOpen={isOpen}
           toggleCard={toggleCard}

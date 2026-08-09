@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import type { AddonContext } from '@wealthfolio/addon-sdk';
 import { runSync } from '../utils/sync';
 import { Button, CollapsibleCard } from '../components/ui';
-import { AmazonCard } from '../components/AmazonCard';
+import { AmazonCard, type AmazonDraftState } from '../components/AmazonCard';
 import { RuleEditor } from '../components/RuleEditor';
 import type { SecretsStore, CategoryCatalogEntry } from '../utils/secrets';
 import type { Scheduler } from '../utils/scheduler';
@@ -25,6 +25,10 @@ interface Props {
   store: SecretsStore;
   scheduler: Scheduler;
   onReset: () => void;
+  /** The Amazon card's draft, owned by the page: it holds an app password, and
+   *  this panel is unmounted the moment another tab is selected. Passed straight
+   *  through — nothing else on this tab reads it. */
+  amazon: AmazonDraftState;
   /** Loaded once by the page (the Notifications tab needs it too), so it
    *  arrives as a prop rather than being fetched a second time here. */
   categories: CategoryCatalogEntry[];
@@ -41,7 +45,9 @@ interface Props {
  * it (the scheduler itself is (re)started elsewhere — see `addon.tsx` — so a
  * tab that has never been opened still keeps syncing on schedule).
  */
-export function AdvancedTab({ ctx, store, scheduler, onReset, categories, isOpen, toggleCard }: Props) {
+export function AdvancedTab({
+  ctx, store, scheduler, onReset, amazon, categories, isOpen, toggleCard,
+}: Props) {
   const [scheduleHours, setScheduleHours] = useState<number | null>(null);
   const [autoHeal, setAutoHeal] = useState(false);
   const [autoAdjust, setAutoAdjust] = useState(false);
@@ -190,6 +196,16 @@ export function AdvancedTab({ ctx, store, scheduler, onReset, categories, isOpen
           <div className="sfin-subtle sfin-docker-intro">
             Add this service to your <code>docker-compose.yml</code>. You can customize the sync rate via <code>SYNC_SCHEDULE</code>:
           </div>
+          {/* The snippet has to be COMPLETE, because it is the only setup
+              instruction most people will ever read. It used to set neither
+              WEALTHFOLIO_DB_PATH nor a mount for the database, so following it
+              exactly produced a companion that synced fine and a "Needs a
+              category" tile that never appeared, with nothing on screen to say
+              why. The directory is mounted, not the .db file: reading live data
+              needs the -wal/-shm files beside it — see the comment in
+              companion/src/sqlite-native.ts — and a file-only mount silently
+              serves whatever was last checkpointed, which has been observed two
+              days stale. */}
           <pre className="sfin-pre sfin-docker-pre">
             {`services:
   simplefin-sync:
@@ -200,16 +216,26 @@ export function AdvancedTab({ ctx, store, scheduler, onReset, categories, isOpen
     environment:
       - WEALTHFOLIO_API_URL=http://127.0.0.1:8088
       - WEALTHFOLIO_PASSWORD=your_wealthfolio_password
+      - WEALTHFOLIO_DB_PATH=/mnt/wealthfolio/wealthfolio.db
       - SYNC_SCHEDULE=0 */6 * * *          # Change cron schedule here (e.g. 0 */3 * * * for every 3h)
-      - MIN_SYNC_INTERVAL_HOURS=1          # Minimum interval cooldown between syncs`}
+      - MIN_SYNC_INTERVAL_HOURS=1          # Minimum interval cooldown between syncs
+    volumes:
+      # The FOLDER holding wealthfolio.db, read-only — not the .db file itself,
+      # which hides the -wal file and serves stale data.
+      - /path/to/wealthfolio:/mnt/wealthfolio:ro`}
           </pre>
+          <div className="sfin-subtle sfin-docker-note">
+            The database mount is what lets the companion count spending that still
+            needs a category, and fill in category names and budgets in its reports.
+            Point it at the folder that contains <code>wealthfolio.db</code>.
+          </div>
         </div>
       </CollapsibleCard>
 
       {/* Directly below the Docker card: it is the companion that reads the
           mailbox, so this is only useful to someone who has just set that up. */}
       <AmazonCard
-        store={store}
+        amazon={amazon}
         cardId={CARD.amazon}
         guideId={CARD.amazonGuide}
         open={isOpen(CARD.amazon)}

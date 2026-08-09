@@ -585,8 +585,16 @@ export async function runCompanionSync(): Promise<SyncResult> {
     // Guarded inside publishUncategorizedStatusForDbPath on the path existing:
     // with no database there is no count, and publishing 0 would claim "nothing
     // needs a category", which is false rather than unknown.
+    //
+    // Same `|| '/mnt/wealthfolio.db'` default as every other db reader in this
+    // file, not a bare `?? ''`. `''` never exists, so an install that mounted the
+    // database but did not set the variable — which the compose snippets have not
+    // always asked for — published nothing at all and the "Needs a category" tile
+    // simply never appeared, with no error to explain why. The default is safe
+    // precisely because of the guard: a wrong path publishes nothing, exactly as
+    // an empty one did, rather than a confident zero.
     await publishUncategorizedStatusForDbPath(
-      process.env.WEALTHFOLIO_DB_PATH ?? '',
+      process.env.WEALTHFOLIO_DB_PATH || '/mnt/wealthfolio.db',
       (key, value) => wfClient.setAddonSecret('simplefin-sync', key, value),
       (dbPath, start, end) => getNativeUncategorizedSpending(dbPath, start, end).length,
     );

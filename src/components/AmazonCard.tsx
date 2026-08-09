@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Button, CollapsibleCard, Disclosure, statusToneClass } from './ui';
 import type { StatusMessage } from './ui';
 import { CategoryIcon } from './CategoryIcon';
@@ -22,8 +22,116 @@ import type { CategoryCatalogEntry, SecretsStore } from '../utils/secrets';
  * know it reaches a mailbox that holds only receipts. The guide is the feature's
  * real surface area; the three fields are the easy part.
  */
+/** The four fields plus the per-label overrides: everything the card edits and
+ *  commits as one `amazon_config` secret. */
+export interface AmazonDraft {
+  host: string;
+  user: string;
+  password: string;
+  defaultCategory: string;
+  overrides: Record<string, string>;
+}
+
+const EMPTY_AMAZON_DRAFT: AmazonDraft = {
+  host: 'imap.gmail.com',
+  user: '',
+  password: '',
+  defaultCategory: DEFAULT_AMAZON_CATEGORY,
+  overrides: {},
+};
+
+/**
+ * The card's draft and everything derived from it, owned by the shell.
+ *
+ * Same hazard as the Telegram draft, with a worse payload: this card holds a real
+ * IMAP **app password**, and it lived in `useState` inside a tab that `TabPanel`
+ * genuinely unmounts. Paste the password, click Overview, come back — gone, and
+ * unlike the Telegram tab there was not even a save bar to hint that something
+ * had been pending. So the state lives in `SyncPage` and arrives as a prop.
+ */
+export interface AmazonDraftState {
+  draft: AmazonDraft;
+  /** A patch, or a function of the previous draft producing one — the label
+   *  dropdowns need the functional form, since several can be changed before
+   *  React re-renders. */
+  patch: (p: Partial<AmazonDraft> | ((prev: AmazonDraft) => Partial<AmazonDraft>)) => void;
+  /** Amazon's own label vocabulary as seen on this user's orders. */
+  labels: AmazonLabelCatalog;
+  /** Has the stored config been read yet? Distinguishes "loading" from "not set
+   *  up", which the collapsed summary says out loud. */
+  loaded: boolean;
+  dirty: boolean;
+  configured: boolean;
+  save: () => Promise<void>;
+}
+
+/**
+ * Holds the Amazon draft, called by the shell. One-shot load on `[store]`: the
+ * shell polls `getAmazonConfig` every 60 seconds for Overview's checklist, and a
+ * draft that re-hydrated on that timer would overwrite a half-typed password.
+ */
+export function useAmazonDraft(store: SecretsStore): AmazonDraftState {
+  const [draft, setDraft] = useState<AmazonDraft>(EMPTY_AMAZON_DRAFT);
+  /** What is actually stored — the other half of `dirty`, exactly as the
+   *  Telegram tab's `savedCfg` is. */
+  const [saved, setSaved] = useState<AmazonDraft>(EMPTY_AMAZON_DRAFT);
+  const [labels, setLabels] = useState<AmazonLabelCatalog>({});
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    Promise.all([store.getAmazonConfig(), store.getAmazonLabels()])
+      .then(([cfg, seen]) => {
+        if (cfg) {
+          const stored: AmazonDraft = {
+            host: cfg.host || 'imap.gmail.com',
+            user: cfg.user ?? '',
+            password: cfg.password ?? '',
+            defaultCategory: cfg.defaultCategory || DEFAULT_AMAZON_CATEGORY,
+            overrides: cfg.labelOverrides ?? {},
+          };
+          setDraft(stored);
+          setSaved(stored);
+        }
+        setLabels(seen);
+      })
+      .catch(() => {})
+      .finally(() => setLoaded(true));
+  }, [store]);
+
+  const patch = useCallback(
+    (p: Partial<AmazonDraft> | ((prev: AmazonDraft) => Partial<AmazonDraft>)) => {
+      setDraft((prev) => ({ ...prev, ...(typeof p === 'function' ? p(prev) : p) }));
+    },
+    [],
+  );
+
+  const save = useCallback(async () => {
+    await store.setAmazonConfig({
+      enabled: true,
+      host: draft.host,
+      user: draft.user,
+      password: draft.password,
+      defaultCategory: draft.defaultCategory,
+      labelOverrides: draft.overrides,
+    } satisfies AmazonMailConfig);
+    setSaved(draft);
+  }, [draft, store]);
+
+  return {
+    draft,
+    patch,
+    labels,
+    loaded,
+    dirty: JSON.stringify(draft) !== JSON.stringify(saved),
+    configured: !!(draft.host && draft.user && draft.password),
+    save,
+  };
+}
+
 interface Props {
-  store: SecretsStore;
+  /** The draft, owned by the shell so it outlives the Advanced panel
+   *  unmounting. */
+  amazon: AmazonDraftState;
   cardId: string;
   guideId: string;
   open: boolean;
@@ -35,38 +143,16 @@ interface Props {
 }
 
 export function AmazonCard({
-  store, cardId, guideId, open, guideOpen, onToggle, onToggleGuide, categories,
+  amazon, cardId, guideId, open, guideOpen, onToggle, onToggleGuide, categories,
 }: Props) {
-  const [host, setHost] = useState('imap.gmail.com');
-  const [user, setUser] = useState('');
-  const [password, setPassword] = useState('');
-  const [defaultCategory, setDefaultCategory] = useState(DEFAULT_AMAZON_CATEGORY);
-  const [overrides, setOverrides] = useState<Record<string, string>>({});
-  const [labels, setLabels] = useState<AmazonLabelCatalog>({});
+  const { draft, patch, labels, loaded, dirty, configured } = amazon;
+  const { host, user, password, defaultCategory, overrides } = draft;
   /** `{ text, tone }` like every other status line in the addon: the ✅ this
    *  message used to open with was its only success signal, so dropping the
    *  emoji without a tone would have left it the one status that says nothing
    *  about whether it went well. */
   const [status, setStatus] = useState<StatusMessage | null>(null);
-  const [loaded, setLoaded] = useState(false);
 
-  useEffect(() => {
-    Promise.all([store.getAmazonConfig(), store.getAmazonLabels()])
-      .then(([cfg, seen]) => {
-        if (cfg) {
-          setHost(cfg.host || 'imap.gmail.com');
-          setUser(cfg.user ?? '');
-          setPassword(cfg.password ?? '');
-          setDefaultCategory(cfg.defaultCategory || DEFAULT_AMAZON_CATEGORY);
-          setOverrides(cfg.labelOverrides ?? {});
-        }
-        setLabels(seen);
-      })
-      .catch(() => {})
-      .finally(() => setLoaded(true));
-  }, [store]);
-
-  const configured = !!(host && user && password);
   const labelNames = Object.keys(labels).sort((a, b) => a.localeCompare(b));
   // Parents only. Wealthfolio's budgets live at parent level, so offering a
   // subcategory here would let a user pick something no budget can ever show.
@@ -84,14 +170,7 @@ export function AmazonCard({
         : `On · ${labelNames.length} Amazon categories mapped`;
 
   const save = async () => {
-    await store.setAmazonConfig({
-      enabled: true,
-      host,
-      user,
-      password,
-      defaultCategory,
-      labelOverrides: overrides,
-    } satisfies AmazonMailConfig);
+    await amazon.save();
     setStatus({
       text: 'Saved. The companion will read the mailbox on its next sync.',
       tone: 'ok',
@@ -186,7 +265,7 @@ export function AmazonCard({
               className="sfin-select"
               placeholder="imap.gmail.com"
               value={host}
-              onChange={(e) => setHost(e.target.value)}
+              onChange={(e) => patch({ host: e.target.value })}
             />
           </div>
           <div>
@@ -197,7 +276,7 @@ export function AmazonCard({
               className="sfin-select"
               placeholder="my-amazon-receipts@gmail.com"
               value={user}
-              onChange={(e) => setUser(e.target.value)}
+              onChange={(e) => patch({ user: e.target.value })}
             />
           </div>
         </div>
@@ -211,7 +290,7 @@ export function AmazonCard({
               className="sfin-select"
               placeholder="16-character app password"
               value={password}
-              onChange={(e) => setPassword(e.target.value)}
+              onChange={(e) => patch({ password: e.target.value })}
             />
           </div>
           <div>
@@ -222,7 +301,7 @@ export function AmazonCard({
               id="sfin-amz-default"
               className="sfin-select"
               value={defaultCategory}
-              onChange={(e) => setDefaultCategory(e.target.value)}
+              onChange={(e) => patch({ defaultCategory: e.target.value })}
             >
               {(options.includes(defaultCategory) ? options : [defaultCategory, ...options])
                 .map((name) => <option key={name} value={name}>{name}</option>)}
@@ -269,7 +348,11 @@ export function AmazonCard({
                       aria-label={`Wealthfolio category for Amazon's ${label}`}
                       style={{ flex: '1 1 140px' }}
                       value={resolved.category}
-                      onChange={(e) => setOverrides((o) => ({ ...o, [label]: e.target.value }))}
+                      onChange={(e) =>
+                        patch((prev) => ({
+                          overrides: { ...prev.overrides, [label]: e.target.value },
+                        }))
+                      }
                     >
                       {(options.includes(resolved.category)
                         ? options
@@ -289,7 +372,19 @@ export function AmazonCard({
           </div>
         )}
 
-        <div>
+        {/* The same pill the Notifications tab uses, for the same reason: an app
+            password typed and not saved is the one thing in this card worth
+            losing sleep over, and the card used to give no sign at all that
+            anything was pending. Only shown while something IS pending — its
+            appearing is the notification, its going away the confirmation.
+
+            `aria-live` rather than a second `role="status"`: this card already
+            owns one status region (the save confirmation just above), and two
+            live regions in one card announce over each other. */}
+        <div className={dirty ? 'sfin-savebar' : undefined}>
+          <div className="sfin-savebar-msg" aria-live="polite">
+            {dirty && <span className="sfin-subtle">You have unsaved changes</span>}
+          </div>
           <Button variant="primary" disabled={!configured} onClick={save}>
             Save Amazon settings
           </Button>

@@ -33,11 +33,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   accounts. The old single Telegram mega-card is now three focused cards in
   Notifications, sharing one save bar that appears only once something is
   actually dirty. Advanced holds Auto-sync, Docker, Amazon categorization,
-  transaction rules, and a Reset connection card that now requires an
-  explicit confirmation step before it does anything destructive.
-- **New dashboard look**, built on Wealthfolio's own theme variables rather
-  than a palette baked into the addon, so light and dark still follow
-  whatever the host is set to. No emoji anywhere in the chrome — icons
+  transaction rules, and Reset connection — which keeps the two-step
+  confirmation it already had, now inside a marked-off destructive boundary
+  with a title and a description of what it actually clears.
+- **New dashboard look**, built mostly on Wealthfolio's own theme variables,
+  so light and dark still follow whatever the host is set to (a few accent
+  hues and shadows are the addon's own). No emoji anywhere in the chrome — icons
   only — and this is now enforced by a test that renders every surface,
   including the first-run setup page, and fails on any emoji or the phrase
   "(optional)".
