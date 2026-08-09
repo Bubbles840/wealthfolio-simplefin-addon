@@ -14,7 +14,7 @@ import type { SyncResult } from '../../shared/sync-core.js';
 import { RestSyncHost, RestSyncStore } from './rest-host.js';
 import { WealthfolioClient } from './wealthfolio.js';
 import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatMonthlyWrapUp, formatSyncHealthFooter, formatLargeTransactionAlert, formatBalanceDriftAlert, formatFeedLagNotice, formatStuckTransferAlert, formatDuplicatePruneAlert, formatImportNotice, buildDismissKeyboard, IMPORT_NOTICE_UNCATEGORIZED_CAP, escapeMarkdown, LARGE_TX_OUTBOX_SECRET_KEY } from '../../shared/telegram.js';
-import { pollTelegramDismissals, pruneDismissals } from './dismissals.js';
+import { pollTelegramDismissals, pruneDismissals, mergeDismissals } from './dismissals.js';
 import { createImapSource, ingestAmazonMail, amazonMailConfigured } from './amazon-mail.js';
 import type { AmazonIngestResult, AmazonMailConfig, MailSource } from './amazon-mail.js';
 import { DEFAULT_GLYPH_STYLE } from '../../shared/telegram.js';
@@ -766,6 +766,11 @@ export async function sendImportNotice(
       await wfClient.getAddonSecret('simplefin-sync', 'uncategorized_dismissals'),
       'uncategorized_dismissals',
     ) ?? {};
+  // Unmutated copy of that first read, taken before the loop below mutates
+  // `ledger` in place — this is `base` for the merge at write time: what this
+  // run's delta (the button presses it collects) is measured against, not what
+  // ends up on disk.
+  const base: DismissalLedger = { ...ledger };
   const offsetRaw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_update_offset');
   const offset = offsetRaw != null && offsetRaw !== '' && Number.isFinite(Number(offsetRaw))
     ? Number(offsetRaw)
@@ -784,7 +789,20 @@ export async function sendImportNotice(
   if (Object.keys(pruned).length !== Object.keys(ledger).length) ledgerChanged = true;
   ledger = pruned;
   if (ledgerChanged) {
-    await wfClient.setAddonSecret('simplefin-sync', 'uncategorized_dismissals', JSON.stringify(ledger));
+    // Re-read immediately before writing rather than reuse the read from
+    // above: `pollTelegramDismissals` is a network round trip that takes
+    // seconds, and the addon writes this same secret with no
+    // compare-and-swap, so persisting the pre-poll snapshot would silently
+    // erase an addon dismissal made during the poll — the row would just
+    // reappear as needing a category. Merge this run's own delta (`base` →
+    // `ledger`) onto whatever is persisted right now instead.
+    const persisted =
+      parseSecretJson<DismissalLedger>(
+        await wfClient.getAddonSecret('simplefin-sync', 'uncategorized_dismissals'),
+        'uncategorized_dismissals',
+      ) ?? {};
+    const merged = pruneDismissals(mergeDismissals(persisted, base, ledger), new Date());
+    await wfClient.setAddonSecret('simplefin-sync', 'uncategorized_dismissals', JSON.stringify(merged));
   }
   if (poll.nextOffset !== null && poll.nextOffset !== offset) {
     await wfClient.setAddonSecret('simplefin-sync', 'telegram_update_offset', String(poll.nextOffset));

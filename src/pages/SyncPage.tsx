@@ -14,7 +14,7 @@ import { useAmazonDraft } from '../components/AmazonCard';
 import type { SecretsStore, AccountBalanceInfo, CategoryCatalogEntry } from '../utils/secrets';
 import type { Scheduler } from '../utils/scheduler';
 import type { AccountMapping } from '../../shared/types';
-import { pruneDismissals, type DismissalLedger } from '../../shared/uncategorized';
+import { pruneDismissals, mergeDismissals, type DismissalLedger } from '../../shared/uncategorized';
 
 /** Outside the component: a fresh literal each render would be a new `TabBar`
  *  prop identity for nothing. */
@@ -189,12 +189,19 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
 
   const onDismissalsChange = useCallback((next: DismissalLedger) => {
     hasUserActed.current.dismissals = true;
+    const base = dismissals;
     setDismissals(next);
-    // Pruned on write so the secret cannot grow without bound; the companion
-    // prunes on its own schedule too and the two agree because both use the
-    // shared helper.
-    store.setDismissals(pruneDismissals(next, new Date())).catch(() => {});
-  }, [store]);
+    // Merged against what is persisted RIGHT NOW rather than written whole: the
+    // companion writes this same secret, and there is no compare-and-swap, so a
+    // whole-object write from this page's snapshot would erase a dismissal the
+    // Telegram half made since the last refresh. Pruned on write so the secret
+    // cannot grow without bound; both hosts prune through the same helper.
+    store.getDismissals()
+      .then((persisted) => store.setDismissals(
+        pruneDismissals(mergeDismissals(persisted, base, next), new Date()),
+      ))
+      .catch(() => {});
+  }, [store, dismissals]);
 
   /** Re-read everything the COMPANION can change behind this page's back. The
    *  page used to render once, so a tab left open froze at what it read on mount.
