@@ -286,10 +286,13 @@ const css = `
 /* Heading row: one shared pad so the column captions and the section label sit
    on the same baseline and the first category row isn't jammed under them. */
 .sfin-cats-head { margin-bottom: 0; padding-bottom: 4px; }
+.sfin-cats-hint { font-size: 12px; margin-bottom: 8px; }
 .sfin-cat-name {
   display: flex; align-items: center; gap: 8px; min-width: 0;
   font-size: 13px; font-weight: 500;
 }
+/* The category itself, distinguished from the emoji override beside it. */
+.sfin-cat-label { font-weight: 600; }
 .sfin-cat-name span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* ── Emoji picker: a curated palette, because the input it replaces assumed the
       user knows how to type an emoji on their platform. ───────────────────── */
@@ -413,6 +416,13 @@ const css = `
 .sfin-acct-card--link { cursor: pointer; transition: background 0.12s; }
 .sfin-acct-card--link:hover { background: var(--muted); }
 .sfin-acct-card--link:focus-visible { outline: 2px solid var(--ring, var(--primary)); outline-offset: -2px; }
+/* Notifications-tab card bodies: a vertical rhythm and the row a lone action
+   button sits in. Both were inline styles on the mega-card this replaced. */
+.sfin-stack { display: flex; flex-direction: column; gap: 12px; }
+.sfin-stack-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+/* Spacing under the things that introduce a card: the one-line description and
+   the read-once setup guide. */
+.sfin-notif-intro { margin-bottom: 12px; }
 /* Sticky save bar (Notifications tab). */
 .sfin-savebar {
   position: sticky; bottom: 8px; display: flex; justify-content: space-between;
