@@ -462,6 +462,8 @@ const css = `
 .sfin-autosync-checks { margin-top: 14px; }
 .sfin-docker-intro { margin-bottom: 6px; }
 .sfin-docker-pre { margin: 0; }
+/* The line under the compose snippet explaining what the database mount buys. */
+.sfin-docker-note { margin-top: 8px; }
 /* Last thing in the tab before the danger card, which supplies its own
    margin-top — so this callout's bottom margin is zeroed to avoid doubling up. */
 .sfin-advanced-callout { margin-top: 16px; margin-bottom: 0; }

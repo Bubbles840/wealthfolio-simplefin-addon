@@ -139,6 +139,29 @@ describe('AdvancedTab', () => {
     }
   });
 
+  it('gives the companion everything it needs in the compose snippet, database included', async () => {
+    // This snippet IS the setup instruction for most people, and it used to set
+    // neither WEALTHFOLIO_DB_PATH nor any mount for the database. Following it
+    // exactly produced a companion that synced fine and a "Needs a category" tile
+    // that never appeared, with nothing on screen explaining why.
+    render(<SyncPage {...makeProps()} />);
+    await switchTab(/advanced/i);
+    await openSection(/^Background sync/i);
+    const snippet = (await screen.findByText(/services:/)).textContent!;
+
+    expect(snippet).toContain('WEALTHFOLIO_API_URL');
+    expect(snippet).toContain('WEALTHFOLIO_PASSWORD');
+    // The variable and a mount that actually satisfies it, agreeing with each
+    // other: the path inside the container has to be under the mount point.
+    expect(snippet).toContain('WEALTHFOLIO_DB_PATH=/mnt/wealthfolio/wealthfolio.db');
+    expect(snippet).toMatch(/volumes:/);
+    expect(snippet).toContain(':/mnt/wealthfolio:ro');
+    // The DIRECTORY, never the bare .db file: the live read needs the -wal/-shm
+    // files beside it, and a file-only mount silently serves whatever was last
+    // checkpointed — observed two days stale. See companion/src/sqlite-native.ts.
+    expect(snippet).not.toMatch(/wealthfolio\.db:\/mnt/);
+  });
+
   it('gives every collapsible card one disclosure shape: a real button, whole-header hit target, aria-expanded', async () => {
     render(<SyncPage {...makeProps()} />);
     await switchTab(/advanced/i);

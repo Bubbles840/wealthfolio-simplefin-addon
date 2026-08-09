@@ -319,6 +319,167 @@ describe('SyncPage', () => {
     expect(await screen.findByText(/Telegram reports — connected/)).toBeTruthy();
   });
 
+  // ── Hazard 4: typed input that used to die with its panel ──────────────
+  //
+  // The drafts were `useState` inside the tabs, and `TabPanel` genuinely
+  // unmounts an inactive tab. So a bot token or an IMAP app password typed and
+  // not yet saved was destroyed by one click on another tab — with no warning,
+  // and with the save bar afterwards reporting that nothing was pending. Both
+  // drafts now live in the shell.
+  it('keeps a half-typed bot token when the user glances at another tab', async () => {
+    const props = makeProps();
+    render(<SyncPage {...props} />);
+    await switchTab(/notifications/i);
+    fireEvent.click(await screen.findByRole('button', { name: /^Telegram connection/i }));
+    fireEvent.change(await screen.findByLabelText(/Bot Token/i), {
+      target: { value: '123456:half-typed-token' },
+    });
+    fireEvent.change(screen.getByLabelText(/Chat ID/i), { target: { value: '42' } });
+    expect(await screen.findByText(/You have unsaved changes/i)).toBeTruthy();
+
+    // The exact trip that lost it: over to Overview to check a balance, back.
+    await switchTab(/overview/i);
+    await screen.findByText('Accounts synced');
+    await switchTab(/notifications/i);
+
+    const token = await screen.findByLabelText(/Bot Token/i);
+    expect((token as HTMLInputElement).value).toBe('123456:half-typed-token');
+    expect((screen.getByLabelText(/Chat ID/i) as HTMLInputElement).value).toBe('42');
+    // ...and the bar still says so. Silently reverting to "nothing to save" was
+    // half the damage: it told the user the field had never been filled in.
+    expect(screen.getByText(/You have unsaved changes/i)).toBeTruthy();
+    // Nothing was written on the way past — the draft survived UNSAVED, which is
+    // the state the user left it in. (Auto-saving a credential the user has not
+    // committed would be a different bug, not a fix.)
+    expect(props.store.setTelegramConfig).not.toHaveBeenCalled();
+  });
+
+  it('keeps a pasted Amazon app password when the user glances at another tab', async () => {
+    // Worse than the token: an app password has to be generated at Google, so
+    // losing it silently costs a trip back through that flow.
+    render(<SyncPage {...makeProps()} />);
+    await switchTab(/advanced/i);
+    fireEvent.click(await screen.findByRole('button', { name: /^Amazon categorization/i }));
+    fireEvent.change(await screen.findByLabelText(/Mailbox address/i), {
+      target: { value: 'receipts@gmail.com' },
+    });
+    fireEvent.change(screen.getByLabelText(/App password/i), {
+      target: { value: 'abcd efgh ijkl mnop' },
+    });
+    expect(await screen.findByText(/You have unsaved changes/i)).toBeTruthy();
+
+    await switchTab(/overview/i);
+    await screen.findByText('Accounts synced');
+    await switchTab(/advanced/i);
+
+    const pass = await screen.findByLabelText(/App password/i);
+    expect((pass as HTMLInputElement).value).toBe('abcd efgh ijkl mnop');
+    expect((screen.getByLabelText(/Mailbox address/i) as HTMLInputElement).value)
+      .toBe('receipts@gmail.com');
+    expect(screen.getByText(/You have unsaved changes/i)).toBeTruthy();
+  });
+
+  it('keeps the draft when a pruning sync forces the tab out from under it', async () => {
+    // `reportPruned` deliberately yanks the user to Overview so the record of
+    // what was DELETED is visible — and `Sync now` is in the header, so it fires
+    // while someone is mid-edit. That forced switch used to unmount the draft
+    // with it. It costs a tab preference now, and nothing else.
+    vi.mocked(runSync).mockResolvedValueOnce({
+      imported: 0, skipped: 2, errors: [],
+      prunedDuplicates: [
+        { sfinAccountId: 'sfin-1', accountName: 'Savings', txId: 'TRN-3917f117',
+          description: 'PNC BANK 1234 Transfer', date: '2026-07-27', amountCents: 130000,
+          currency: 'USD', wfId: 'act-2' },
+      ],
+    } as any);
+    render(<SyncPage {...makeProps()} />);
+    await switchTab(/notifications/i);
+    fireEvent.click(await screen.findByRole('button', { name: /^Telegram connection/i }));
+    fireEvent.change(await screen.findByLabelText(/Bot Token/i), {
+      target: { value: 'tok-mid-edit' },
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /sync now/i }));
+    await screen.findByText(/Removed 1 duplicate activity/i);
+    expect(screen.getByRole('tab', { name: /overview/i }).getAttribute('aria-selected'))
+      .toBe('true');
+
+    await switchTab(/notifications/i);
+    expect(((await screen.findByLabelText(/Bot Token/i)) as HTMLInputElement).value)
+      .toBe('tok-mid-edit');
+    expect(screen.getByText(/You have unsaved changes/i)).toBeTruthy();
+  });
+
+  // ── Hazard 5: a late mount load overwriting what the user already did ──
+  //
+  // The mount `Promise.all` waits on an IPC round-trip, so resolving after the
+  // first click is ordinary rather than a race you have to try to hit — and it
+  // used to assign the tab, the checklist dismissal and the open cards
+  // unconditionally when it landed.
+  it('keeps the tab the user picked before the mount load resolved', async () => {
+    const props = makeProps();
+    let release: (v: any) => void = () => {};
+    props.ctx.api.accounts.getAll = vi.fn(() => new Promise((res) => { release = res; }));
+    // Storage says Notifications, the user says Advanced, and the user is the one
+    // who is right.
+    props.store.getUiState = vi.fn(async () => ({ activeTab: 'notifications' })) as any;
+    props.store.getLastSyncImported = vi.fn(async () => 7) as any;
+
+    render(<SyncPage {...props} />);
+    await switchTab(/advanced/i);
+    expect(await screen.findByRole('button', { name: /^Auto-sync/i })).toBeTruthy();
+
+    release([{ id: 'wf-a', name: 'Checking' }]);
+    // Proves the hydration actually ran: `imported` comes from the same load.
+    await screen.findByText(/7 transactions/i);
+
+    expect(screen.getByRole('tab', { name: /advanced/i }).getAttribute('aria-selected'))
+      .toBe('true');
+    expect(screen.getByRole('button', { name: /^Auto-sync/i })).toBeTruthy();
+  });
+
+  it('keeps a checklist dismissed before the mount load resolved', async () => {
+    // The case that could never recover: nothing else ever writes
+    // `checklistDismissed`, so a dropped dismissal brings the checklist back on
+    // every future session, permanently.
+    const props = makeProps();
+    let release: (v: any) => void = () => {};
+    props.ctx.api.accounts.getAll = vi.fn(() => new Promise((res) => { release = res; }));
+    props.store.getUiState = vi.fn(async () => ({})) as any;
+    props.store.getLastSyncImported = vi.fn(async () => 7) as any;
+
+    render(<SyncPage {...props} />);
+    fireEvent.click(await screen.findByRole('button', { name: /Dismiss setup checklist/i }));
+    expect(screen.queryByText(/Finish setting up/i)).toBeNull();
+
+    release([{ id: 'wf-a', name: 'Checking' }]);
+    await screen.findByText(/7 transactions/i);
+
+    expect(screen.queryByText(/Finish setting up/i)).toBeNull();
+    // ...and it was persisted, so the next session agrees with the screen.
+    await waitFor(() => expect(props.store.setUiState)
+      .toHaveBeenCalledWith(expect.objectContaining({ checklistDismissed: true })));
+  });
+
+  it('keeps a card the user opened before the mount load resolved', async () => {
+    const props = makeProps();
+    let release: (v: any) => void = () => {};
+    props.ctx.api.accounts.getAll = vi.fn(() => new Promise((res) => { release = res; }));
+    // Stored state that opens a DIFFERENT card, so a blind assignment is visible.
+    props.store.getOpenCards = vi.fn(async () => ({ docker: true })) as any;
+    props.store.getLastSyncImported = vi.fn(async () => 7) as any;
+
+    render(<SyncPage {...props} />);
+    await switchTab(/advanced/i);
+    fireEvent.click(await screen.findByRole('button', { name: /^Auto-sync/i }));
+    expect(await screen.findByLabelText(/Auto-sync interval/i)).toBeTruthy();
+
+    release([{ id: 'wf-a', name: 'Checking' }]);
+    await screen.findByText(/7 transactions/i);
+
+    expect(screen.getByLabelText(/Auto-sync interval/i)).toBeTruthy();
+  });
+
   // ── Hazard 3: live data that only ever loaded once ─────────────────────
   it('refreshes the needs-a-category count with the rest of the live state', async () => {
     // The companion republishes this every sync, and the tile used to read it

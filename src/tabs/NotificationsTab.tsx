@@ -230,40 +230,48 @@ function draftFromStored(
   };
 }
 
-interface Props {
-  ctx: AddonContext;
-  store: SecretsStore;
-  /** Loaded by the page (the Amazon card needs it too), so it arrives as a prop
-   *  rather than being read a second time. */
-  categories: CategoryCatalogEntry[];
-  isOpen: (id: string) => boolean;
-  toggleCard: (id: string) => void;
+/**
+ * The draft, and everything derived from it, as ONE value owned by the shell.
+ *
+ * It used to be `useState` inside the tab — which was silent data loss, because
+ * `TabPanel` genuinely unmounts an inactive tab. Type a bot token, click Overview
+ * to glance at a balance, come back: the token was gone, the draft had been
+ * re-read from storage, and the save bar now reported that nothing was pending.
+ * No warning, no way to get it back.
+ *
+ * So the state lives in `SyncPage` (see `useTelegramDraft`) and arrives here as a
+ * prop. Same reasoning the shell already documents for the derived signals: the
+ * tab is unmounted at exactly the moments that matter, so anything that has to
+ * outlive a tab switch cannot be the tab's.
+ */
+export interface TelegramDraftState {
+  cfg: TelegramCfgDraft;
+  /** Patch the draft. Nothing reaches storage until `save`. */
+  change: (patch: CfgPatch) => void;
+  /** The three fields that are their own stored values and write immediately. */
+  changeNow: (patch: Partial<TelegramCfgDraft>) => void;
+  /** Does what is on screen differ from what is stored? */
+  dirty: boolean;
+  /** Bot token AND chat ID present — what makes the config sendable at all. */
+  configured: boolean;
+  save: () => Promise<void>;
 }
 
 /**
- * Everything Telegram, in three cards and one save bar.
+ * Holds the draft for `NotificationsTab`, called by the shell so it survives the
+ * tab unmounting. Lives in this file because everything it needs — `EMPTY_DRAFT`,
+ * `draftFromStored`, `buildConfig` — is this tab's knowledge; only the `useState`
+ * calls moved out of the component.
  *
- * It was one card holding six unrelated things — credentials, which reports to
- * send, alert amounts, a 50-row category matrix, emoji styling, subcategory
- * display — with a single Save button at the very bottom. Splitting it means
- * each card answers one question and can be collapsed once answered; hoisting
- * the commit into a sticky save bar means the control that saves is never
- * hundreds of pixels below the control you changed.
- *
- * The three cards are CONTROLLED: they hold no settings state of their own, so
- * the draft and the "what is stored" snapshot exist in exactly one place and
- * `dirty` is a comparison rather than a flag anyone has to remember to set.
+ * The load is one-shot on `[store]`, deliberately: the shell re-reads the stored
+ * Telegram config every 60 seconds for Overview's derived signals, and a draft
+ * that re-hydrated on that timer would wipe whatever the user was typing.
  */
-export function NotificationsTab({
-  ctx, store, categories, isOpen, toggleCard,
-}: Props) {
+export function useTelegramDraft(store: SecretsStore): TelegramDraftState {
   const [cfg, setCfg] = useState<TelegramCfgDraft>(EMPTY_DRAFT);
   /** What is actually in storage. Same value as `cfg` on load and after a save,
    *  so `dirty` is false at both. */
   const [savedCfg, setSavedCfg] = useState<TelegramCfgDraft>(EMPTY_DRAFT);
-  /** The connection card's status line. `{ text, tone }` so the colour is data
-   *  rather than something re-derived from the wording — see `statusToneClass`. */
-  const [status, setStatus] = useState<StatusMessage | null>(null);
 
   useEffect(() => {
     Promise.all([
@@ -276,13 +284,6 @@ export function NotificationsTab({
       setSavedCfg(loaded);
     }).catch(() => {});
   }, [store]);
-
-  // Local to this tab now: it only gates the Save button and the line that says
-  // why Save is unavailable. It used to ALSO be reported up to the page's setup
-  // checklist — which broke the moment inactive tabs started unmounting, since
-  // the effect that reported it stops firing and the checklist keeps a value
-  // that may be months out of date. The page reads the stored config instead.
-  const configured = !!cfg.botToken && !!cfg.chatId;
 
   const change = useCallback((patch: CfgPatch) => {
     setCfg((prev) => ({ ...prev, ...(typeof patch === 'function' ? patch(prev) : patch) }));
@@ -310,10 +311,61 @@ export function NotificationsTab({
     }
   }, [cfg, store]);
 
+  const save = useCallback(async () => {
+    await store.setTelegramConfig(buildConfig(cfg));
+    setSavedCfg(cfg);
+  }, [cfg, store]);
+
   // A comparison, not a flag: every path that changes a setting goes through
   // `change`, so there is nothing to remember to mark dirty. The immediate
   // fields cannot show up here — `changeNow` moves both copies at once.
   const dirty = JSON.stringify(cfg) !== JSON.stringify(savedCfg);
+  // Local to the draft now: it only gates the Save button and the line that says
+  // why Save is unavailable. It used to ALSO be reported up to the page's setup
+  // checklist — which broke the moment inactive tabs started unmounting, since
+  // the effect that reported it stops firing and the checklist keeps a value
+  // that may be months out of date. The page reads the stored config instead.
+  const configured = !!cfg.botToken && !!cfg.chatId;
+
+  return { cfg, change, changeNow, dirty, configured, save };
+}
+
+interface Props {
+  ctx: AddonContext;
+  /** The draft, owned by the shell so it outlives this panel unmounting. */
+  draft: TelegramDraftState;
+  /** Loaded by the page (the Amazon card needs it too), so it arrives as a prop
+   *  rather than being read a second time. */
+  categories: CategoryCatalogEntry[];
+  isOpen: (id: string) => boolean;
+  toggleCard: (id: string) => void;
+}
+
+/**
+ * Everything Telegram, in three cards and one save bar.
+ *
+ * It was one card holding six unrelated things — credentials, which reports to
+ * send, alert amounts, a 50-row category matrix, emoji styling, subcategory
+ * display — with a single Save button at the very bottom. Splitting it means
+ * each card answers one question and can be collapsed once answered; hoisting
+ * the commit into a sticky save bar means the control that saves is never
+ * hundreds of pixels below the control you changed.
+ *
+ * The three cards are CONTROLLED: they hold no settings state of their own, so
+ * the draft and the "what is stored" snapshot exist in exactly one place and
+ * `dirty` is a comparison rather than a flag anyone has to remember to set.
+ *
+ * That one place is the SHELL, not this component — see `useTelegramDraft`. The
+ * only state left here is the transient status line, which describes the last
+ * action taken on this tab and is worth nothing once you have left it.
+ */
+export function NotificationsTab({
+  ctx, draft, categories, isOpen, toggleCard,
+}: Props) {
+  const { cfg, change, changeNow, dirty, configured, save } = draft;
+  /** The connection card's status line. `{ text, tone }` so the colour is data
+   *  rather than something re-derived from the wording — see `statusToneClass`. */
+  const [status, setStatus] = useState<StatusMessage | null>(null);
 
   return (
     <>
@@ -370,8 +422,7 @@ export function NotificationsTab({
             // refused to be.
             disabled={!configured}
             onClick={async () => {
-              await store.setTelegramConfig(buildConfig(cfg));
-              setSavedCfg(cfg);
+              await save();
               setStatus({ text: 'Telegram settings saved.', tone: 'ok' });
             }}
           >
