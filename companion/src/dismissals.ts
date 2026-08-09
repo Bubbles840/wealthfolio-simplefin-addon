@@ -17,23 +17,13 @@
  * to outlive the window, not the account.
  */
 
-export interface DismissalLedger {
-  [activityId: string]: string;
-}
+import { pruneDismissals, type DismissalLedger } from '../../shared/uncategorized.js';
 
-const DISMISSAL_MAX_AGE_DAYS = 60;
-
-/** Drop ledger entries old enough to be inert (their row left the sweep window
- *  weeks ago), so the secret cannot grow forever. */
-export function pruneDismissals(ledger: DismissalLedger, now: Date): DismissalLedger {
-  const cutoff = now.getTime() - DISMISSAL_MAX_AGE_DAYS * 86400_000;
-  const pruned: DismissalLedger = {};
-  for (const [id, at] of Object.entries(ledger)) {
-    const t = Date.parse(at);
-    if (Number.isFinite(t) && t >= cutoff) pruned[id] = at;
-  }
-  return pruned;
-}
+// Re-exported so this module stays the one import site for the Telegram half of
+// dismissals, even though the ledger's shape and retention now live in shared/
+// (the addon needs them too, and two copies would drift).
+export { pruneDismissals };
+export type { DismissalLedger };
 
 /**
  * Fetch pending button presses. Never throws: a dead network returns no ids
