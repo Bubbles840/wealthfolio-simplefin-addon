@@ -210,7 +210,7 @@ const css = `
 }
 .sfin-tab:hover { background: color-mix(in srgb, var(--muted-foreground) 10%, transparent); }
 .sfin-tab--active {
-  background: var(--primary); color: var(--primary-foreground, #111);
+  background: var(--primary); color: var(--primary-foreground);
   font-weight: 600;
 }
 .sfin-banner-warn {
