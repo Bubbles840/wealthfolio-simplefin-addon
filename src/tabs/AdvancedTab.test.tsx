@@ -89,11 +89,23 @@ async function openSection(name: RegExp) {
   return header;
 }
 
+/**
+ * The page is a tabbed shell and only the ACTIVE tab is mounted, so reaching
+ * anything in this tab means selecting it first — exactly as the user does.
+ * Overview is the tab a fresh install lands on. Idempotent, like `openSection`.
+ */
+async function switchTab(name: RegExp) {
+  const tab = await screen.findByRole('tab', { name });
+  if (tab.getAttribute('aria-selected') !== 'true') fireEvent.click(tab);
+  return tab;
+}
+
 describe('AdvancedTab', () => {
 
   it('changing the interval saves it and restarts the scheduler', async () => {
     const props = makeProps();
     render(<SyncPage {...props} />);
+    await switchTab(/advanced/i);
     await openSection(/^Auto-sync/i);
     const select = await screen.findByLabelText(/auto-sync interval/i);
     fireEvent.change(select, { target: { value: '8' } });
@@ -108,23 +120,28 @@ describe('AdvancedTab', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: /sync now/i })).toBeInTheDocument());
 
     // Collapsed: the controls inside each config card are absent from the DOM,
-    // not merely hidden.
+    // not merely hidden. Asserted per tab, since a tab the user is not on is
+    // unmounted outright — a stronger form of the same guarantee.
+    await switchTab(/advanced/i);
     expect(screen.queryByLabelText(/auto-sync interval/i)).not.toBeInTheDocument();
-    expect(screen.queryByLabelText(/Bot Token/i)).not.toBeInTheDocument();
-    expect(screen.queryByLabelText(/Monthly Wrap-Up/i)).not.toBeInTheDocument();
     expect(screen.queryByText('+ Add rule')).not.toBeInTheDocument();
     expect(screen.queryByText(/docker-compose\.yml/)).not.toBeInTheDocument();
+    for (const name of [/^Auto-sync/i, /^Background sync/i, /^Transaction rules/i]) {
+      expect(screen.getByRole('button', { name }).getAttribute('aria-expanded')).toBe('false');
+    }
+
+    await switchTab(/notifications/i);
+    expect(screen.queryByLabelText(/Bot Token/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/Monthly Wrap-Up/i)).not.toBeInTheDocument();
     // The Telegram card became three, so three headers here rather than one.
-    for (const name of [
-      /^Auto-sync/i, /^Background sync/i, /^Telegram connection/i, /^Reports/i,
-      /^Report content/i, /^Transaction rules/i,
-    ]) {
+    for (const name of [/^Telegram connection/i, /^Reports/i, /^Report content/i]) {
       expect(screen.getByRole('button', { name }).getAttribute('aria-expanded')).toBe('false');
     }
   });
 
   it('gives every collapsible card one disclosure shape: a real button, whole-header hit target, aria-expanded', async () => {
     render(<SyncPage {...makeProps()} />);
+    await switchTab(/advanced/i);
     const header = await screen.findByRole('button', { name: /^Auto-sync/i });
     // A native <button> is what makes the header keyboard-operable (focus +
     // Enter/Space) without any hand-rolled key handling, and the title AND the
@@ -155,12 +172,16 @@ describe('AdvancedTab', () => {
       { pattern: 'ATM', matchType: 'contains', activityType: 'WITHDRAWAL' },
     ]);
     // Same page, so the Telegram card (NotificationsTab) reports its own
-    // summary in the same render — asserted here too since the point of this
-    // test is that collapsing hides chrome and not state, for every card type.
+    // summary — asserted here too since the point of this test is that
+    // collapsing hides chrome and not state, for every card type. One tab at a
+    // time now, so its half is asserted after the switch.
     props.store.getTelegramConfig = vi.fn(async () => ({ botToken: 't', chatId: 'c', enabled: true }));
     render(<SyncPage {...props} />);
+    await switchTab(/advanced/i);
     await screen.findByText('Every 4h · auto-heal on');
     expect(screen.getByText('2 rules')).toBeInTheDocument();
+
+    await switchTab(/notifications/i);
     expect(await screen.findByText('Connected')).toBeInTheDocument();
     expect(screen.getByText('daily, weekly, monthly reports')).toBeInTheDocument();
   });
@@ -170,29 +191,37 @@ describe('AdvancedTab', () => {
     props.store.getSyncScheduleHours = vi.fn(async () => null);
     props.store.getAutoAdjust = vi.fn(async () => true);
     render(<SyncPage {...props} />);
+    await switchTab(/advanced/i);
     // Interval off, but aggressive auto-heal on — the summary has to say both.
     await screen.findByText('Off · aggressive auto-heal');
     expect(screen.getByText(/using the \+\/− defaults/)).toBeInTheDocument();
     // No token/chat id in the default mock — same "collapsed still says its
     // state" contract, for the Telegram card.
-    expect(screen.getByText('Not connected')).toBeInTheDocument();
+    await switchTab(/notifications/i);
+    expect(await screen.findByText('Not connected')).toBeInTheDocument();
   });
 
   it('persists which cards are open, and restores them on the next visit', async () => {
     const props = makeProps();
-    render(<SyncPage {...props} />);
+    const first = render(<SyncPage {...props} />);
+    await switchTab(/advanced/i);
     fireEvent.click(await screen.findByRole('button', { name: /^Transaction rules/i }));
     await waitFor(() =>
       expect(props.store.setOpenCards).toHaveBeenCalledWith(expect.objectContaining({ rules: true })),
     );
+    // Unmounted before the revisit, so "the next visit" really is one page and
+    // the counts below cannot be satisfied by the first render's DOM.
+    first.unmount();
 
     // Next visit: the stored blob decides, so the page does not reset.
     const revisit = makeProps();
     revisit.store.getOpenCards = vi.fn(async () => ({ rules: true, 'auto-sync': true }));
+    revisit.store.getUiState = vi.fn(async () => ({ activeTab: 'advanced' }) as any);
     render(<SyncPage {...revisit} />);
     await waitFor(() => expect(screen.getAllByText('+ Add rule').length).toBe(1));
     expect(screen.getAllByLabelText(/auto-sync interval/i).length).toBe(1);
     // Cards absent from the blob stay closed.
+    await switchTab(/notifications/i);
     expect(screen.queryByLabelText(/Bot Token/i)).not.toBeInTheDocument();
   });
 
@@ -206,6 +235,7 @@ describe('AdvancedTab', () => {
       { name: 'Housing', parent: null, icon: null, color: null, hasBudget: true, hasSpend: false },
     ] as any));
     render(<SyncPage {...props} />);
+    await switchTab(/advanced/i);
     const header = await screen.findByRole('button', { name: /^Amazon categorization/i });
     fireEvent.click(header);
     expect(await screen.findByLabelText(/IMAP server/i)).toBeInTheDocument();
@@ -215,6 +245,7 @@ describe('AdvancedTab', () => {
   // ── Reset ───────────────────────────────────────────────────────────────
   it('gives the destructive reset flow a boundary card with the stated consequences', async () => {
     render(<SyncPage {...makeProps()} />);
+    await switchTab(/advanced/i);
     const card = (await screen.findByText('Reset connection')).closest('.sfin-danger-card');
     expect(card).toBeTruthy();
     // Has to name everything `clearAll` actually deletes — not just the
@@ -229,6 +260,7 @@ describe('AdvancedTab', () => {
   it('reset requires an explicit confirmation step', async () => {
     const props = makeProps();
     render(<SyncPage {...props} />);
+    await switchTab(/advanced/i);
     fireEvent.click(await screen.findByRole('button', { name: /^Reset…$/ }));
     expect(props.onReset).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: /yes, reset/i }));
@@ -238,6 +270,7 @@ describe('AdvancedTab', () => {
   it('reset stops the scheduler and clears every stored secret before handing off', async () => {
     const props = makeProps();
     render(<SyncPage {...props} />);
+    await switchTab(/advanced/i);
     fireEvent.click(await screen.findByRole('button', { name: /^Reset…$/ }));
     fireEvent.click(screen.getByRole('button', { name: /yes, reset/i }));
     await waitFor(() => expect(props.onReset).toHaveBeenCalled());

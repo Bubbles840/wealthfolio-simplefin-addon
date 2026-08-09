@@ -237,9 +237,6 @@ interface Props {
   categories: CategoryCatalogEntry[];
   isOpen: (id: string) => boolean;
   toggleCard: (id: string) => void;
-  /** Whether a bot token AND a chat id are present. The page's setup checklist
-   *  asks that question, and the answer now lives in here. */
-  onConfiguredChange: (configured: boolean) => void;
 }
 
 /**
@@ -257,7 +254,7 @@ interface Props {
  * `dirty` is a comparison rather than a flag anyone has to remember to set.
  */
 export function NotificationsTab({
-  ctx, store, categories, isOpen, toggleCard, onConfiguredChange,
+  ctx, store, categories, isOpen, toggleCard,
 }: Props) {
   const [cfg, setCfg] = useState<TelegramCfgDraft>(EMPTY_DRAFT);
   /** What is actually in storage. Same value as `cfg` on load and after a save,
@@ -277,11 +274,12 @@ export function NotificationsTab({
     }).catch(() => {});
   }, [store]);
 
-  // Reported up rather than read up: the page renders the checklist, and this
-  // has always tracked the FIELDS (typing a token ticks the row immediately),
-  // not the last save.
+  // Local to this tab now: it only gates the Save button and the line that says
+  // why Save is unavailable. It used to ALSO be reported up to the page's setup
+  // checklist — which broke the moment inactive tabs started unmounting, since
+  // the effect that reported it stops firing and the checklist keeps a value
+  // that may be months out of date. The page reads the stored config instead.
   const configured = !!cfg.botToken && !!cfg.chatId;
-  useEffect(() => { onConfiguredChange(configured); }, [configured, onConfiguredChange]);
 
   const change = useCallback((patch: CfgPatch) => {
     setCfg((prev) => ({ ...prev, ...(typeof patch === 'function' ? patch(prev) : patch) }));

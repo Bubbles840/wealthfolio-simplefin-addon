@@ -140,6 +140,14 @@ const css = `
   display: flex; align-items: flex-start; justify-content: space-between;
   gap: 16px; margin-bottom: 16px;
 }
+/* Deep scan + Sync now. Never shrinks, so the pair keeps its width and the
+   title beside it is what gives way on a narrow window. */
+.sfin-head-actions { display: flex; gap: 8px; flex: none; }
+/* "Sync anyway", which sits inline at the end of the interval-skip sentence. */
+.sfin-callout-action { margin-left: 4px; }
+/* The addon/companion version line, below the tab panel. */
+.sfin-foot { margin-top: 20px; font-size: 11px; }
+.sfin-foot-warn { margin-left: 6px; opacity: 0.9; }
 .sfin-live { color: var(--primary); }
 /* Columns come from the tiles that are actually rendered, never from a fixed
    count. Overview shows two tiles or three — "Needs a category" only exists once

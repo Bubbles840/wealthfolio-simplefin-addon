@@ -72,12 +72,28 @@ const makeProps = () => ({
 });
 
 /**
+ * The page is a tabbed shell and only the ACTIVE tab is mounted, so reaching
+ * anything in this tab means selecting it first — exactly as the user does.
+ * Idempotent, like `openSection` below.
+ */
+async function switchTab(name: RegExp) {
+  const tab = await screen.findByRole('tab', { name });
+  if (tab.getAttribute('aria-selected') !== 'true') fireEvent.click(tab);
+  return tab;
+}
+
+/**
  * The config cards ship collapsed, and a collapsed panel is unmounted — so a
  * test that touches a control inside one has to open it first, exactly as the
  * user does. Matches the disclosure header by its accessible name, which is the
  * title plus its summary line, hence the anchored patterns. Idempotent.
+ *
+ * Switches to the Notifications tab on the way in: every card this file names
+ * lives there, and these three helpers are the only route into any of them, so
+ * the tab switch belongs here rather than repeated in forty tests.
  */
 async function openSection(name: RegExp) {
+  await switchTab(/notifications/i);
   const header = await screen.findByRole('button', { name });
   if (header.getAttribute('aria-expanded') !== 'true') fireEvent.click(header);
   return header;

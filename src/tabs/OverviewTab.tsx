@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import type { AddonContext } from '@wealthfolio/addon-sdk';
 import { applyBalanceAdjustment, applyBaselineCorrection } from '../utils/sync';
 import type { SyncResult } from '../utils/sync';
@@ -51,6 +51,12 @@ interface Props {
   doHeal: () => void;
   imported: number | null;
   prunedDuplicates: SyncResult['prunedDuplicates'];
+  /** The companion's uncategorized count. Read by the PAGE, on the same refresh
+   *  path as the balances: the companion republishes it every sync, so a count
+   *  this tab loaded once on mount sat stale for the whole session. `null` is the
+   *  standalone-addon case — the SDK exposes no category data, so the tile is
+   *  simply absent rather than guessing. */
+  uncategorized: { count: number; asOf: string } | null;
   /** Re-read the balance snapshots. The page owns `balances` (a sync writes
    *  them too), so an adjustment made here has to ask for the refresh. */
   onBalancesChanged: () => void;
@@ -77,18 +83,12 @@ interface Props {
  */
 export function OverviewTab({
   ctx, store, mapping, sfinNames, wfNames, balances, syncing, healing, doHeal,
-  imported, prunedDuplicates, onBalancesChanged, onClearError, onError,
+  imported, prunedDuplicates, uncategorized, onBalancesChanged, onClearError, onError,
   companionVersion, telegramConfigured, amazonConfigured, checklistDismissed,
   onDismissChecklist, onNavigate,
 }: Props) {
   const [fixingBaseline, setFixingBaseline] = useState<string | null>(null);
   const [adjusting, setAdjusting] = useState<string | null>(null);
-  // Published by the companion, which is the only half that can see categories.
-  const [uncat, setUncat] = useState<{ count: number; asOf: string } | null>(null);
-
-  useEffect(() => {
-    store.getUncategorizedStatus().then(setUncat).catch(() => {});
-  }, [store]);
 
   // Plug the residual: add a one-time balance-adjustment entry for an account.
   const doFixBaseline = useCallback(
@@ -307,10 +307,10 @@ export function OverviewTab({
               read as a dollar amount often enough to be worth spelling out. */}
           <div className="sfin-tile-sub">transactions</div>
         </div>
-        {uncat && (
-          <div className="sfin-tile sfin-tile--purple" title={`As of ${uncat.asOf}`}>
+        {uncategorized && (
+          <div className="sfin-tile sfin-tile--purple" title={`As of ${uncategorized.asOf}`}>
             <SectionLabel>Needs a category</SectionLabel>
-            <div className="sfin-tile-val">{uncat.count}</div>
+            <div className="sfin-tile-val">{uncategorized.count}</div>
             <div className="sfin-tile-sub">from your companion</div>
           </div>
         )}
