@@ -1637,6 +1637,52 @@ describe('sendImportNotice', () => {
     expect(String(fetchMock.mock.calls.find((c) => String(c[0]).includes('getUpdates'))![0])).toContain('offset=41');
   });
 
+  it('does not erase a dismissal the addon wrote after this run\'s first read', async () => {
+    // The addon writes this same secret, and there is no compare-and-swap. This
+    // run reads the ledger BEFORE the Telegram poll (a seconds-long network
+    // round trip), so a dismissal the addon makes during that poll must still
+    // survive this run's own write at the end — the write has to merge onto
+    // whatever is persisted right now, not overwrite with the stale first read.
+    // The poll itself collects a button press for 'act-1', so this run DOES
+    // have its own change to write (a no-op run writes nothing, and would prove
+    // nothing about the merge).
+    vi.mocked(getNativeUncategorizedSpending).mockReturnValue([
+      uncatRow('act-1', 'VENMO PAYMENT'),
+    ]);
+    const secrets = new Map<string, string>([
+      ['uncategorized_dismissals', JSON.stringify({ 'act-old': '2026-07-20T00:00:00Z' })],
+    ]);
+    const fetchMock = vi.fn((url: any) => {
+      if (String(url).includes('getUpdates')) {
+        // While this poll is "in flight", the addon writes its own dismissal
+        // straight into the secret store — simulated by mutating `secrets`
+        // before the poll's response resolves.
+        secrets.set('uncategorized_dismissals', JSON.stringify({
+          ...JSON.parse(secrets.get('uncategorized_dismissals')!),
+          'act-addon': '2026-08-09T00:00:00.000Z',
+        }));
+        return Promise.resolve({ ok: true, json: async () => ({ ok: true, result: [
+          { update_id: 60, callback_query: { id: 'cb', data: 'd:act-1' } },
+        ] }) });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({ ok: true }) });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client: any = {
+      getAddonSecret: vi.fn(async (_a: string, k: string) => secrets.get(k) ?? null),
+      setAddonSecret: vi.fn(async (_a: string, k: string, v: string) => { secrets.set(k, v); }),
+    };
+
+    await sendImportNotice(client, { botToken: 'T', chatId: '9' }, {
+      imported: 1, importedTransactions: [importedTx],
+    } as any);
+
+    const written = JSON.parse(secrets.get('uncategorized_dismissals')!);
+    expect(written).toHaveProperty('act-addon');
+    expect(written).toHaveProperty('act-old');
+    expect(written).toHaveProperty('act-1');
+  });
+
   it('sends no keyboard when nothing is uncategorized', async () => {
     vi.mocked(getNativeUncategorizedSpending).mockReturnValue([]);
     const fetchMock = vi.fn(() => Promise.resolve({ ok: true, json: async () => ({ ok: true, result: [] }) }));

@@ -5,9 +5,16 @@ import type { SyncResult } from '../utils/sync';
 import { BASELINE_FIX_MIN_DRIFT_AGE_MS } from '../../shared/sync-core';
 import { Button, SectionLabel, CheckIcon, AlertIcon } from '../components/ui';
 import { SetupChecklist } from '../components/SetupChecklist';
+import { UncategorizedList, useDismissals } from '../components/UncategorizedList';
+import { visibleUncategorized, type DismissalLedger } from '../../shared/uncategorized';
 import type { TabId } from '../components/Tabs';
 import type { SecretsStore, AccountBalanceInfo } from '../utils/secrets';
 import type { AccountMapping } from '../../shared/types';
+
+/** Ids for this tab's collapsible sections. Following the `NOTIF_CARD`
+ *  precedent (`src/tabs/NotificationsTab.tsx`): the page owns the open-state
+ *  map, this tab owns the keys into it. */
+export const OVERVIEW_CARD = { uncategorized: 'uncategorized-list' } as const;
 
 /** The offer a sync attaches to an account when it proved the drift belongs to
  *  the starting-balance baseline rather than to any transaction. */
@@ -51,12 +58,21 @@ interface Props {
   doHeal: () => void;
   imported: number | null;
   prunedDuplicates: SyncResult['prunedDuplicates'];
-  /** The companion's uncategorized count. Read by the PAGE, on the same refresh
-   *  path as the balances: the companion republishes it every sync, so a count
-   *  this tab loaded once on mount sat stale for the whole session. `null` is the
-   *  standalone-addon case — the SDK exposes no category data, so the tile is
-   *  simply absent rather than guessing. */
-  uncategorized: { count: number; asOf: string } | null;
+  /** The companion's uncategorized count AND the rows behind it. Read by the
+   *  PAGE, on the same refresh path as the balances: the companion republishes
+   *  it every sync, so a count this tab loaded once on mount sat stale for the
+   *  whole session. `null` is the standalone-addon case — the SDK exposes no
+   *  category data, so the tile is simply absent rather than guessing. Typed off
+   *  the store method rather than hand-widened, so this shape can never drift
+   *  from what `getUncategorizedStatus` actually returns. */
+  uncategorized: Awaited<ReturnType<SecretsStore['getUncategorizedStatus']>>;
+  /** Which rows the user has chosen to stop seeing. Lives in the SHELL
+   *  (`SyncPage`), not this tab: inactive tabs unmount (see `TabPanel`), and a
+   *  dismissal held here would resurrect on a trip to another tab and back. */
+  dismissals: DismissalLedger;
+  onDismissalsChange: (next: DismissalLedger) => void;
+  isOpen: (id: string) => boolean;
+  toggleCard: (id: string) => void;
   /** Re-read the balance snapshots. The page owns `balances` (a sync writes
    *  them too), so an adjustment made here has to ask for the refresh. */
   onBalancesChanged: () => void;
@@ -83,12 +99,14 @@ interface Props {
  */
 export function OverviewTab({
   ctx, store, mapping, sfinNames, wfNames, balances, syncing, healing, doHeal,
-  imported, prunedDuplicates, uncategorized, onBalancesChanged, onClearError, onError,
+  imported, prunedDuplicates, uncategorized, dismissals, onDismissalsChange,
+  isOpen, toggleCard, onBalancesChanged, onClearError, onError,
   companionVersion, telegramConfigured, amazonConfigured, checklistDismissed,
   onDismissChecklist, onNavigate,
 }: Props) {
   const [fixingBaseline, setFixingBaseline] = useState<string | null>(null);
   const [adjusting, setAdjusting] = useState<string | null>(null);
+  const { justDismissed, dismiss, undo } = useDismissals(dismissals, onDismissalsChange);
 
   // Plug the residual: add a one-time balance-adjustment entry for an account.
   const doFixBaseline = useCallback(
@@ -127,6 +145,21 @@ export function OverviewTab({
     },
     [ctx, store, onBalancesChanged, onClearError, onError],
   );
+
+  const visibleRows = uncategorized
+    ? visibleUncategorized(uncategorized.rows, dismissals)
+    : [];
+  // The tile subtracts locally-known dismissals so it can never disagree with
+  // the list under it. `count` is the companion's true total as of its last
+  // publish; dismissals made since then are not in it yet, so this can only
+  // subtract a dismissal it can SEE is still counted (i.e. its row is present in
+  // this publish) — otherwise a dismissal of a row the companion had already
+  // dropped (recategorized, or simply not republished) would double-subtract and
+  // understate the backlog.
+  const uncatCount = uncategorized
+    ? Math.max(0, uncategorized.count - Object.keys(dismissals)
+        .filter((id) => uncategorized.rows.some((r) => r.activityId === id)).length)
+    : 0;
 
   const mappedEntries = Object.entries(mapping);
   const mappedCount = mappedEntries.length;
@@ -319,11 +352,25 @@ export function OverviewTab({
         {uncategorized && (
           <div className="sfin-tile sfin-tile--purple" title={`As of ${uncategorized.asOf}`}>
             <SectionLabel>Needs a category</SectionLabel>
-            <div className="sfin-tile-val">{uncategorized.count}</div>
+            <div className="sfin-tile-val">{uncatCount}</div>
             <div className="sfin-tile-sub">from your companion</div>
           </div>
         )}
       </div>
+
+      {uncategorized && (
+        <UncategorizedList
+          rows={visibleRows}
+          total={uncatCount}
+          id={OVERVIEW_CARD.uncategorized}
+          open={isOpen(OVERVIEW_CARD.uncategorized)}
+          onToggle={() => toggleCard(OVERVIEW_CARD.uncategorized)}
+          onDismiss={dismiss}
+          justDismissed={justDismissed}
+          onUndo={undo}
+          onOpenActivities={() => { ctx.api.navigation.navigate('/activities').catch(() => {}); }}
+        />
+      )}
 
       <div className="sfin-accts">
         <div className="sfin-card-head">

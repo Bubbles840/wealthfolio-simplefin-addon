@@ -14,6 +14,7 @@ import { useAmazonDraft } from '../components/AmazonCard';
 import type { SecretsStore, AccountBalanceInfo, CategoryCatalogEntry } from '../utils/secrets';
 import type { Scheduler } from '../utils/scheduler';
 import type { AccountMapping } from '../../shared/types';
+import { pruneDismissals, mergeDismissals, type DismissalLedger } from '../../shared/uncategorized';
 
 /** Outside the component: a fresh literal each render would be a new `TabBar`
  *  prop identity for nothing. */
@@ -105,7 +106,15 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
   // whatever it last said. See `refreshDerivedSignals`.
   const [telegramConfigured, setTelegramConfigured] = useState(false);
   const [amazonConfigured, setAmazonConfigured] = useState(false);
-  const [uncategorized, setUncategorized] = useState<{ count: number; asOf: string } | null>(null);
+  const [uncategorized, setUncategorized] = useState<
+    Awaited<ReturnType<SecretsStore['getUncategorizedStatus']>>
+  >(null);
+  // Which uncategorized rows the user has dismissed. Lives HERE, not in
+  // OverviewTab: `TabPanel` truly unmounts an inactive tab, and a dismissal held
+  // in the tab would resurrect the moment someone came back from Advanced — the
+  // same defect class that used to silently destroy typed Telegram/Amazon
+  // credentials (see the drafts above).
+  const [dismissals, setDismissals] = useState<DismissalLedger>({});
 
   /**
    * The two config tabs' UNSAVED DRAFTS, held here rather than inside the tabs
@@ -145,7 +154,7 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
    * every future session, permanently. A ref rather than state because it must
    * not re-render and must be readable from inside the resolved promise.
    */
-  const hasUserActed = useRef({ tab: false, checklist: false, cards: false });
+  const hasUserActed = useRef({ tab: false, checklist: false, cards: false, dismissals: false });
 
   const loadBalances = useCallback(() => {
     store.getAccountBalances().then(setBalances).catch(() => {});
@@ -159,8 +168,40 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
       .then((tg) => setTelegramConfigured(!!tg?.botToken && !!tg?.chatId))
       .catch(() => {});
     store.getAmazonConfig().then((a) => setAmazonConfigured(!!a)).catch(() => {});
-    store.getUncategorizedStatus().then(setUncategorized).catch(() => {});
+    // Read TOGETHER and applied in one commit, not as two independent `.then`s:
+    // the tile subtracts the ledger from the status, so a render that saw one
+    // updated and the other not would show a count that disagrees with its own
+    // list.
+    //
+    // Deliberately NOT guarded by `hasUserActed.dismissals`, unlike the mount
+    // load: this is the only path that ever picks up a dismissal made somewhere
+    // else — a Telegram button, another device — and freezing it after the first
+    // in-addon dismissal would cost that for the whole session. The race it
+    // leaves is a dismissal landing in the microtask between `setDismissals` and
+    // its persist, which self-heals on the next refresh.
+    Promise.all([store.getUncategorizedStatus(), store.getDismissals()])
+      .then(([status, ledger]) => {
+        setUncategorized(status);
+        setDismissals(ledger);
+      })
+      .catch(() => {});
   }, [store]);
+
+  const onDismissalsChange = useCallback((next: DismissalLedger) => {
+    hasUserActed.current.dismissals = true;
+    const base = dismissals;
+    setDismissals(next);
+    // Merged against what is persisted RIGHT NOW rather than written whole: the
+    // companion writes this same secret, and there is no compare-and-swap, so a
+    // whole-object write from this page's snapshot would erase a dismissal the
+    // Telegram half made since the last refresh. Pruned on write so the secret
+    // cannot grow without bound; both hosts prune through the same helper.
+    store.getDismissals()
+      .then((persisted) => store.setDismissals(
+        pruneDismissals(mergeDismissals(persisted, base, next), new Date()),
+      ))
+      .catch(() => {});
+  }, [store, dismissals]);
 
   /** Re-read everything the COMPANION can change behind this page's back. The
    *  page used to render once, so a tab left open froze at what it read on mount.
@@ -243,8 +284,11 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
       // Which tab was last open, and whether the checklist was dismissed. One-shot:
       // nothing outside this page writes `ui_state`, so it cannot go stale.
       store.getUiState(),
-    ]).then(([m, names, catalog, wfAccounts, cards, lastImported, ui]) => {
-      // The three the user can beat to the punch — this waits on an IPC
+      // The dismissal ledger, loaded once here and refreshed thereafter on the
+      // same path as the status (`refreshDerivedSignals`) — see `dismissals`.
+      store.getDismissals(),
+    ]).then(([m, names, catalog, wfAccounts, cards, lastImported, ui, loadedDismissals]) => {
+      // The four the user can beat to the punch — this waits on an IPC
       // round-trip, so "resolves after the first click" is ordinary, not a race
       // you have to try to hit. A stored value must never overwrite a deliberate
       // action; see `hasUserActed`. Everything below them is load-only data no
@@ -252,6 +296,11 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
       if (!hasUserActed.current.checklist) setChecklistDismissed(ui.checklistDismissed === true);
       if (!hasUserActed.current.tab && isKnownTab(ui.activeTab)) setActiveTab(ui.activeTab);
       if (!hasUserActed.current.cards) setOpenCards(cards);
+      // Guarded for the same reason, one step further: a dismissal made while
+      // this was in flight is already persisted, so letting the pre-dismissal
+      // snapshot land would put the row and the count back for up to a minute
+      // and read as the button not working.
+      if (!hasUserActed.current.dismissals) setDismissals(loadedDismissals ?? {});
       // From storage, not just from a sync in this session: the tile says
       // "Imported last run", and the last run is usually the companion's.
       setImported(lastImported);
@@ -441,6 +490,10 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
           imported={imported}
           prunedDuplicates={prunedDuplicates}
           uncategorized={uncategorized}
+          dismissals={dismissals}
+          onDismissalsChange={onDismissalsChange}
+          isOpen={isOpen}
+          toggleCard={toggleCard}
           onBalancesChanged={loadBalances}
           onClearError={clearError}
           onError={showThrownError}

@@ -5,6 +5,7 @@ import { UNCATEGORIZED_STATUS_SECRET_KEY } from '../../shared/status-keys';
 import type { AmazonLabelCatalog, AmazonMailConfig } from '../../shared/amazon-config';
 import type { AmazonLedger } from '../../shared/amazon-ledger';
 import type { AccountMapping, MappingRule } from '../../shared/types';
+import type { DismissalLedger, UncategorizedRow } from '../../shared/uncategorized';
 import type { DriftAlertEntry, TransferLinkFailureEntry } from '../../shared/sync-host';
 import type { SyncResult } from '../../shared/sync-core';
 import { LARGE_TX_OUTBOX_SECRET_KEY } from '../../shared/telegram';
@@ -96,6 +97,7 @@ const KEYS = {
   amazonConfig: AMAZON_CONFIG_SECRET_KEY,
   amazonLabels: AMAZON_LABELS_SECRET_KEY,
   amazonLedger: AMAZON_LEDGER_SECRET_KEY,
+  dismissals: 'uncategorized_dismissals',
 } as const;
 
 /** One entry in the shared large-transaction outbox. Derived from `SyncResult`
@@ -429,17 +431,40 @@ export class SecretsStore {
   /** Companion-published count of uncategorized spending (last 90 days).
    *  `null` (absent/corrupt) hides the Overview tile — the addon cannot compute
    *  this itself: the SDK exposes no category data. */
-  async getUncategorizedStatus(): Promise<{ count: number; asOf: string } | null> {
+  async getUncategorizedStatus(): Promise<{ count: number; asOf: string; rows: UncategorizedRow[] } | null> {
     const raw = await this.ctx.api.secrets.get(UNCATEGORIZED_STATUS_SECRET_KEY);
     if (!raw) return null;
     try {
       const parsed = JSON.parse(raw);
       return typeof parsed?.count === 'number' && Number.isFinite(parsed.count)
-        ? { count: parsed.count, asOf: String(parsed.asOf ?? '') }
+        ? {
+            count: parsed.count,
+            asOf: String(parsed.asOf ?? ''),
+            // Absent on a v1.10.0 companion — an empty list, not a failure. The
+            // tile renders from `count`; only the disclosure needs `rows`.
+            rows: Array.isArray(parsed.rows) ? (parsed.rows as UncategorizedRow[]) : [],
+          }
         : null;
     } catch {
       return null;
     }
+  }
+
+  /** Transactions the user has chosen to leave uncategorized. The SAME secret
+   *  the Telegram dismiss buttons write and the companion sweep filters on —
+   *  two ledgers answering one question is the defect this shares it to avoid. */
+  async getDismissals(): Promise<DismissalLedger> {
+    const raw = await this.ctx.api.secrets.get(KEYS.dismissals);
+    if (!raw) return {};
+    try {
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+  async setDismissals(ledger: DismissalLedger): Promise<void> {
+    await this.ctx.api.secrets.set(KEYS.dismissals, JSON.stringify(ledger));
   }
 
   async getTelegramConfig(): Promise<any | null> {

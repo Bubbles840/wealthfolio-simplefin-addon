@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.10.1] - 2026-08-09
+
+### Added
+
+- **You can now see and dismiss what needs a category.** The Overview tile
+  reported a number with nothing to act on, so a transaction you had
+  deliberately decided to leave uncategorized counted forever. The tile now opens
+  into the actual transactions — date, description, amount, account — each with a
+  dismiss control, and dismissing takes effect immediately rather than waiting up
+  to an hour for the companion's next sync. A short undo window follows each
+  dismissal, because without one a misclick silently hides a transaction for 60
+  days. For the ones worth categorizing, a **Categorize in Wealthfolio** button
+  opens the Activities page, where a category can actually be set.
+
+  Dismissals share the same ledger the Telegram notice's buttons already wrote,
+  so a dismissal holds in both places. Behaviour matches what Telegram already
+  did: keyed by transaction, kept 60 days.
+
+  Needs the matching companion rebuild — the addon SDK exposes no category data,
+  so the list can only come from the companion. Against an older companion the
+  tile still shows its count, just without the list.
+
+### Fixed
+
+- **The needs-a-category tile ignored dismissals.** The Telegram sweep filtered
+  them out; the tile did not, so a transaction dismissed from Telegram still
+  counted. Harmless while nobody used those buttons, and the exact reason the
+  addon's own dismiss button had to come with this fix rather than after it.
+- **A reset left the dismissal ledger behind.** `uncategorized_dismissals` was
+  not registered in the map `clearAll()` iterates, so it survived a reset that
+  said it cleared everything — the same gap that previously left an Amazon
+  mailbox password in storage.
+
 ## [1.10.0] - 2026-08-09
 
 ### Added

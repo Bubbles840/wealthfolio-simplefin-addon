@@ -73,6 +73,8 @@ const makeProps = () => ({
     getUiState: vi.fn(async () => ({}) as any),
     setUiState: vi.fn(async () => {}),
     getUncategorizedStatus: vi.fn(async () => null as any),
+    getDismissals: vi.fn(async () => ({}) as any),
+    setDismissals: vi.fn(async () => {}),
   } as any,
   onReset: vi.fn(),
   scheduler: { start: vi.fn(), stop: vi.fn(), isRunning: vi.fn(() => false) } as any,
@@ -285,7 +287,7 @@ describe('OverviewTab', () => {
     it('shows the needs-a-category tile only when the companion has published a count', async () => {
       const props = makeProps();
       props.store.getUncategorizedStatus = vi.fn(async () => (
-        { count: 3, asOf: '2026-08-08T12:00:00Z' }
+        { count: 3, asOf: '2026-08-08T12:00:00Z', rows: [] }
       )) as any;
       render(<SyncPage {...props} />);
       const tile = (await screen.findByText(/Needs a category/i)).closest('.sfin-tile');
@@ -373,5 +375,185 @@ describe('OverviewTab', () => {
       await screen.findByText(/Imported last run/i);
       expect(screen.queryByText(/Finish setting up/i)).toBeNull();
     });
+  });
+});
+
+describe('uncategorized list', () => {
+  const statusWith = (rows: any[], count = rows.length) => ({
+    count, asOf: '2026-08-09T12:00:00.000Z', rows,
+  });
+  const r = (id: string, over: any = {}) => ({
+    activityId: id, date: '2026-08-01', amountCents: 7000,
+    description: `Row ${id}`, accountName: 'Citi Double Cash', ...over,
+  });
+
+  it('lists the published rows under the tile', async () => {
+    const props = makeProps();
+    props.store.getUncategorizedStatus = vi.fn(async () => statusWith([r('a'), r('b')])) as any;
+    render(<SyncPage {...props} />);
+    expect(await screen.findByText(/2 need a category/i)).toBeTruthy();
+  });
+
+  it('dismissing hides the row and drops the tile in the same tick', async () => {
+    // The whole point of holding both numbers in the addon: waiting for the
+    // companion's next publish would leave the button looking broken for an hour.
+    const props = makeProps();
+    let saved: any = {};
+    // Otherwise the checklist's own "Dismiss setup checklist" button — which
+    // also matches /dismiss/i and sits earlier in the DOM — is what gets found.
+    props.store.getUiState = vi.fn(async () => ({ checklistDismissed: true })) as any;
+    props.store.getUncategorizedStatus = vi.fn(async () => statusWith([r('a'), r('b')])) as any;
+    props.store.getDismissals = vi.fn(async () => saved) as any;
+    props.store.setDismissals = vi.fn(async (l: any) => { saved = l; }) as any;
+    render(<SyncPage {...props} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /^2 need/i }));
+    const dismissButtons = await screen.findAllByRole('button', { name: /dismiss/i });
+    fireEvent.click(dismissButtons[0]);
+
+    await waitFor(() => expect(props.store.setDismissals).toHaveBeenCalled());
+    expect(screen.queryByText('Row a')).toBeNull();
+    const tile = (await screen.findByText('Needs a category')).closest('.sfin-tile');
+    expect(tile?.textContent).toContain('1');
+  });
+
+  it('undo puts the row back and restores the count', async () => {
+    const props = makeProps();
+    let saved: any = {};
+    props.store.getUiState = vi.fn(async () => ({ checklistDismissed: true })) as any;
+    props.store.getUncategorizedStatus = vi.fn(async () => statusWith([r('a')])) as any;
+    props.store.getDismissals = vi.fn(async () => saved) as any;
+    props.store.setDismissals = vi.fn(async (l: any) => { saved = l; }) as any;
+    render(<SyncPage {...props} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /^1 needs/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /dismiss/i }));
+    await screen.findByText(/Dismissed\./i);
+    fireEvent.click(screen.getByRole('button', { name: /undo/i }));
+
+    expect(await screen.findByText('Row a')).toBeTruthy();
+    const tile = (await screen.findByText('Needs a category')).closest('.sfin-tile');
+    expect(tile?.textContent).toContain('1');
+  });
+
+  it('a dismissal survives switching tabs and coming back', async () => {
+    // Inactive tabs unmount. State kept in the tab would resurrect the row.
+    const props = makeProps();
+    let saved: any = {};
+    props.store.getUiState = vi.fn(async () => ({ checklistDismissed: true })) as any;
+    props.store.getUncategorizedStatus = vi.fn(async () => statusWith([r('a'), r('b')])) as any;
+    props.store.getDismissals = vi.fn(async () => saved) as any;
+    props.store.setDismissals = vi.fn(async (l: any) => { saved = l; }) as any;
+    render(<SyncPage {...props} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /^2 need/i }));
+    fireEvent.click((await screen.findAllByRole('button', { name: /dismiss/i }))[0]);
+    await waitFor(() => expect(props.store.setDismissals).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByRole('tab', { name: /advanced/i }));
+    fireEvent.click(screen.getByRole('tab', { name: /overview/i }));
+
+    const tile = (await screen.findByText('Needs a category')).closest('.sfin-tile');
+    expect(tile?.textContent).toContain('1');
+  });
+
+  it('shows the tile with no list when the companion published no rows', async () => {
+    // Version skew against a v1.10.0 companion.
+    const props = makeProps();
+    props.store.getUncategorizedStatus = vi.fn(async () => (
+      { count: 3, asOf: '2026-08-09T12:00:00.000Z', rows: [] }
+    )) as any;
+    render(<SyncPage {...props} />);
+    const tile = (await screen.findByText(/Needs a category/i)).closest('.sfin-tile');
+    expect(tile?.textContent).toContain('3');
+    expect(screen.queryByText(/need a category$/i)).toBeNull();
+  });
+
+  it('opens Wealthfolio Activities from the list footer', async () => {
+    const props = makeProps();
+    props.store.getUncategorizedStatus = vi.fn(async () => statusWith([r('a')])) as any;
+    render(<SyncPage {...props} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /^1 needs/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /Categorize in Wealthfolio/i }));
+    expect(props.ctx.api.navigation.navigate).toHaveBeenCalledWith('/activities');
+  });
+
+  it('a dismissal is not undone by the mount load resolving after it', async () => {
+    // The mount `Promise.all` waits on an IPC round-trip, so "resolves after the
+    // first click" is ordinary rather than a race you have to try to hit. Its
+    // pre-dismissal ledger snapshot must not land on top of a dismissal the user
+    // has already made and the store has already persisted — that would put the
+    // row and the count back and read as the button not working. Guarded by
+    // `hasUserActed.dismissals`, the same mechanism the checklist and tab use.
+    const props = makeProps();
+    let saved: any = {};
+    let releaseAccounts: (v: any[]) => void = () => {};
+    props.store.getUncategorizedStatus = vi.fn(async () => statusWith([r('a'), r('b')])) as any;
+    props.store.getDismissals = vi.fn(async () => saved) as any;
+    props.store.setDismissals = vi.fn(async (l: any) => { saved = l; }) as any;
+    // Hold the whole mount load open on the one call that really is slow.
+    props.ctx.api.accounts.getAll = vi.fn(
+      () => new Promise<any[]>((resolve) => { releaseAccounts = resolve; }),
+    ) as any;
+    render(<SyncPage {...props} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /^2 need/i }));
+    fireEvent.click((await screen.findAllByRole('button', { name: /^Dismiss Row a/i }))[0]);
+    await waitFor(() => expect(props.store.setDismissals).toHaveBeenCalled());
+
+    releaseAccounts([{ id: 'wf-a', name: 'Checking' }]);
+
+    await waitFor(() => expect(props.store.getAccountMapping).toHaveBeenCalled());
+    expect(screen.queryByText('Row a')).toBeNull();
+    const tile = (await screen.findByText('Needs a category')).closest('.sfin-tile');
+    expect(tile?.textContent).toContain('1');
+  });
+
+  it('dismissing writes the id the ledger gained since this page last read it, not just the new one', async () => {
+    // The companion (Telegram half) can write a dismissal to the shared secret
+    // between this page's last refresh and this write. The old whole-object
+    // write from React state would erase it; the write must merge onto whatever
+    // is persisted right now.
+    const props = makeProps();
+    let saved: any = {};
+    let otherHostWrote = false;
+    props.store.getUiState = vi.fn(async () => ({ checklistDismissed: true })) as any;
+    props.store.getUncategorizedStatus = vi.fn(async () => statusWith([r('a'), r('b')])) as any;
+    props.store.getDismissals = vi.fn(async () => (
+      otherHostWrote ? { ...saved, other: '2026-08-09T00:00:00.000Z' } : saved
+    )) as any;
+    props.store.setDismissals = vi.fn(async (l: any) => { saved = l; }) as any;
+    render(<SyncPage {...props} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /^2 need/i }));
+    // From here on, the persisted secret has an entry this page's own state has
+    // never seen — simulating the companion's write landing mid-flight.
+    otherHostWrote = true;
+    fireEvent.click((await screen.findAllByRole('button', { name: /^Dismiss Row a/i }))[0]);
+
+    await waitFor(() => expect(props.store.setDismissals).toHaveBeenCalled());
+    expect(saved).toHaveProperty('a');
+    expect(saved).toHaveProperty('other');
+  });
+
+  it('undo removes the id from the write even though the re-read still has it persisted', async () => {
+    const props = makeProps();
+    let saved: any = {};
+    props.store.getUiState = vi.fn(async () => ({ checklistDismissed: true })) as any;
+    props.store.getUncategorizedStatus = vi.fn(async () => statusWith([r('a')])) as any;
+    props.store.getDismissals = vi.fn(async () => saved) as any;
+    props.store.setDismissals = vi.fn(async (l: any) => { saved = l; }) as any;
+    render(<SyncPage {...props} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /^1 needs/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /dismiss/i }));
+    await screen.findByText(/Dismissed\./i);
+    await waitFor(() => expect(saved).toHaveProperty('a'));
+
+    fireEvent.click(screen.getByRole('button', { name: /undo/i }));
+
+    await waitFor(() => expect(props.store.setDismissals).toHaveBeenCalledTimes(2));
+    expect(saved).not.toHaveProperty('a');
   });
 });
