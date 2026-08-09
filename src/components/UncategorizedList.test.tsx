@@ -1,8 +1,8 @@
-import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, fireEvent, renderHook, act } from '@testing-library/react';
 import React from 'react';
-import { UncategorizedList } from './UncategorizedList';
-import type { UncategorizedRow } from '../../shared/uncategorized';
+import { UncategorizedList, useDismissals } from './UncategorizedList';
+import type { DismissalLedger, UncategorizedRow } from '../../shared/uncategorized';
 
 const row = (over: Partial<UncategorizedRow> = {}): UncategorizedRow => ({
   activityId: 'a', date: '2026-08-01', amountCents: 7000,
@@ -76,5 +76,96 @@ describe('UncategorizedList', () => {
     // A button that does nothing is worse than no button.
     render(<UncategorizedList {...base} />);
     expect(screen.queryByRole('button', { name: /Categorize in Wealthfolio/i })).toBeNull();
+  });
+
+  it('keeps the undo banner up even when dismissing empties the row list', () => {
+    // Dismissing the ONLY visible row makes `rows` empty too. Gating purely on
+    // `rows.length` (as the version-skew case does) would unmount the whole
+    // disclosure right when the undo banner is most needed — there would be
+    // nothing left to click "Dismiss" on again, and `window.confirm` doesn't
+    // work in this sandbox, so undo IS the confirmation.
+    render(<UncategorizedList {...base} rows={[]} total={0} justDismissed="a" />);
+    expect(screen.getByText(/Dismissed\./i)).toBeTruthy();
+    expect(screen.getByRole('button', { name: /undo/i })).toBeTruthy();
+  });
+});
+
+describe('useDismissals', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('clears the undo banner on its own after ~6 seconds', () => {
+    let ledger: DismissalLedger = {};
+    const onChange = vi.fn((next: DismissalLedger) => { ledger = next; });
+    const { result, rerender } = renderHook(
+      ({ dismissals }) => useDismissals(dismissals, onChange),
+      { initialProps: { dismissals: ledger } },
+    );
+
+    act(() => { result.current.dismiss('a'); });
+    rerender({ dismissals: ledger });
+    expect(result.current.justDismissed).toBe('a');
+
+    act(() => { vi.advanceTimersByTime(5999); });
+    rerender({ dismissals: ledger });
+    expect(result.current.justDismissed).toBe('a');
+
+    act(() => { vi.advanceTimersByTime(1); });
+    rerender({ dismissals: ledger });
+    expect(result.current.justDismissed).toBeNull();
+    // The banner clearing itself is purely local UI state — it must not have
+    // undone the dismissal or written to the ledger a second time.
+    expect(onChange).toHaveBeenCalledTimes(1);
+  });
+
+  it('a second dismissal inside the window resets the timer to the new row', () => {
+    let ledger: DismissalLedger = {};
+    const onChange = vi.fn((next: DismissalLedger) => { ledger = next; });
+    const { result, rerender } = renderHook(
+      ({ dismissals }) => useDismissals(dismissals, onChange),
+      { initialProps: { dismissals: ledger } },
+    );
+
+    act(() => { result.current.dismiss('a'); });
+    rerender({ dismissals: ledger });
+    act(() => { vi.advanceTimersByTime(4000); });
+    act(() => { result.current.dismiss('b'); });
+    rerender({ dismissals: ledger });
+    // The first timer would have fired at 6000ms; it must not clear the SECOND
+    // row's banner early.
+    act(() => { vi.advanceTimersByTime(2000); });
+    rerender({ dismissals: ledger });
+    expect(result.current.justDismissed).toBe('b');
+
+    act(() => { vi.advanceTimersByTime(4000); });
+    rerender({ dismissals: ledger });
+    expect(result.current.justDismissed).toBeNull();
+  });
+
+  it('cancels the pending timer on unmount, so a dead component is never told to update', () => {
+    const onChange = vi.fn();
+    const onError = vi.fn();
+    window.addEventListener('error', onError);
+    const clearSpy = vi.spyOn(window, 'clearTimeout');
+
+    const { result, unmount } = renderHook(() => useDismissals({}, onChange));
+    act(() => { result.current.dismiss('a'); });
+    // Cleanup runs synchronously as part of unmount — proves the pending
+    // `window.setTimeout` was actually cancelled, not just that nothing
+    // observable happened to crash the test.
+    unmount();
+    expect(clearSpy).toHaveBeenCalled();
+
+    // Advancing past when the (now-cancelled) timer would have fired must
+    // produce no error — no update reaching a dead component.
+    act(() => { vi.advanceTimersByTime(6000); });
+    expect(onError).not.toHaveBeenCalled();
+
+    window.removeEventListener('error', onError);
+    clearSpy.mockRestore();
   });
 });
