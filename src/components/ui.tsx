@@ -483,6 +483,17 @@ const css = `
 .sfin-checklist-label { flex: 1; font-size: 13px; }
 .sfin-checklist-link { border: none; background: transparent; color: #60a5fa; cursor: pointer; font-size: 12px; }
 
+/* ── "Needs a category" list: the transactions behind the Overview tile ──── */
+.sfin-uncat-row {
+  display: flex; align-items: center; gap: 10px; padding: 5px 0;
+  border-top: 1px solid color-mix(in srgb, var(--muted-foreground) 14%, transparent);
+}
+.sfin-uncat-row:first-of-type { border-top: none; }
+.sfin-uncat-when { flex: none; font-size: 11px; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+.sfin-uncat-what { flex: 1; min-width: 0; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sfin-uncat-amt { flex: none; font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.sfin-uncat-undo { display: flex; align-items: center; gap: 8px; padding: 4px 0 8px; }
+
 /* ── Setup wizard: spacing that used to be inline style props on every step
       of the first-run flow (SetupPage), now sourced from the one stylesheet
       instead of scattered style props. */
