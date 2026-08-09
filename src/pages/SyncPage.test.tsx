@@ -72,8 +72,17 @@ const makeProps = () => ({
 });
 
 /**
- * The page's own behaviour: sync actions, the interval-skip banner, and the
- * error surface.
+ * Only one tab panel is mounted at a time, so a test that touches content on
+ * another tab has to switch to it first — exactly as the user does. Matched by
+ * the tab's accessible name (its label).
+ */
+async function switchTab(name: RegExp) {
+  fireEvent.click(await screen.findByRole('tab', { name }));
+}
+
+/**
+ * The page's own behaviour: sync actions, the interval-skip banner, the error
+ * surface, and the tabbed shell itself.
  *
  * Everything about the Telegram cards lives in NotificationsTab.test.tsx, and
  * everything about Auto-sync / Docker / Amazon / Transaction rules / Reset
@@ -100,8 +109,19 @@ describe('SyncPage', () => {
     // still wired into the page and the page's own controls render beside it.)
     render(<SyncPage {...makeProps()} />);
     await waitFor(() => expect(screen.getByRole('button', { name: /sync now/i })).toBeInTheDocument());
-    expect(screen.getByRole('button', { name: /reconcile & link/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /deep scan/i })).toBeInTheDocument();
     expect(screen.getByText('Accounts synced')).toBeInTheDocument();
+  });
+
+  it('keeps the technical meaning of the renamed reconcile button in its tooltip', async () => {
+    // The label went plain-language, but "reconcile & link" is the name in the
+    // logs, the docs and the companion — so it stays reachable on hover rather
+    // than being deleted outright.
+    render(<SyncPage {...makeProps()} />);
+    const deepScan = await screen.findByRole('button', { name: /deep scan/i });
+    expect(deepScan.getAttribute('title')).toBe(
+      'Re-scans the last 90 days and re-links transfer pairs (reconcile & link)',
+    );
   });
 
   // ── The sync error path ────────────────────────────────────────────────
@@ -161,6 +181,163 @@ describe('SyncPage', () => {
     // The two statements now agree.
     expect(screen.getByText(/Last synced 10 minutes ago/)).toBeInTheDocument();
     expect(screen.queryByText(/Last synced 4 hours ago/)).not.toBeInTheDocument();
+  });
+
+  // ── The tabbed shell ───────────────────────────────────────────────────
+  it('mounts only the active tab, with the header and both page-wide surfaces outside it', async () => {
+    // The whole point of the shell: the page mixed a daily glance with
+    // once-ever setup, so the setup half must be absent — not merely hidden —
+    // while Overview is on screen.
+    render(<SyncPage {...makeProps()} />);
+    await screen.findByText('Accounts synced');
+    expect(document.querySelectorAll('[role="tabpanel"]')).toHaveLength(1);
+
+    const panel = document.querySelector('#sfin-panel-overview')!;
+    expect(panel.getAttribute('aria-labelledby')).toBe('sfin-tab-overview');
+    expect(screen.getByRole('tab', { name: /overview/i }).getAttribute('aria-controls'))
+      .toBe('sfin-panel-overview');
+    // The other two tabs' content is unmounted.
+    expect(screen.queryByRole('button', { name: /^Telegram connection/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Auto-sync/i })).toBeNull();
+    // ...and the header/footer are the shell's, not the panel's.
+    expect(panel.contains(screen.getByRole('button', { name: /sync now/i }))).toBe(false);
+    expect(panel.contains(screen.getByRole('tablist'))).toBe(false);
+
+    await switchTab(/advanced/i);
+    expect(await screen.findByRole('button', { name: /^Auto-sync/i })).toBeTruthy();
+    expect(document.querySelectorAll('[role="tabpanel"]')).toHaveLength(1);
+    expect(document.querySelector('#sfin-panel-advanced')).toBeTruthy();
+    expect(screen.queryByText('Accounts synced')).toBeNull();
+    // The header buttons work from every tab, which is what makes hazard 1 below
+    // possible in the first place.
+    expect(screen.getByRole('button', { name: /sync now/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /deep scan/i })).toBeInTheDocument();
+  });
+
+  it('persists the active tab across mounts', async () => {
+    const props = makeProps();
+    let saved: any = {};
+    props.store.getUiState = vi.fn(async () => saved) as any;
+    props.store.setUiState = vi.fn(async (s: any) => { saved = s; }) as any;
+
+    const { unmount } = render(<SyncPage {...props} />);
+    await switchTab(/advanced/i);
+    await waitFor(() => expect(saved.activeTab).toBe('advanced'));
+    unmount();
+
+    render(<SyncPage {...props} />);
+    await waitFor(() => expect(
+      screen.getByRole('tab', { name: /advanced/i }).getAttribute('aria-selected'),
+    ).toBe('true'));
+  });
+
+  it('remembers the tab without forgetting the dismissed checklist', async () => {
+    // Read-modify-write both ways: `ui_state` is one blob, so switching tabs
+    // must not resurrect a checklist the user dismissed.
+    const props = makeProps();
+    props.store.getUiState = vi.fn(async () => ({ checklistDismissed: true })) as any;
+    render(<SyncPage {...props} />);
+    await switchTab(/notifications/i);
+    await waitFor(() => expect(props.store.setUiState).toHaveBeenCalledWith(
+      { checklistDismissed: true, activeTab: 'notifications' },
+    ));
+  });
+
+  it('checklist deep-link lands on the right tab', async () => {
+    // What `onNavigate` was built for — it was a no-op until the tab bar existed.
+    render(<SyncPage {...makeProps()} />);
+    const checklist = (await screen.findByText(/Finish setting up/i)).closest('.sfin-checklist')!;
+    const telegramRow = Array.from(checklist.querySelectorAll('.sfin-checklist-row'))
+      .find((row) => /Telegram/i.test(row.textContent ?? ''))!;
+    fireEvent.click(telegramRow.querySelector('.sfin-checklist-link')!);
+
+    expect(screen.getByRole('tab', { name: /notifications/i }).getAttribute('aria-selected'))
+      .toBe('true');
+    // Landed somewhere useful, not just on the right tab index.
+    expect(await screen.findByRole('button', { name: /^Telegram connection/i })).toBeTruthy();
+  });
+
+  // ── Hazard 1: a notice that would have been reported into an unmounted tab ──
+  it('brings the pruned-duplicates notice on screen when the sync ran from another tab', async () => {
+    // `Sync now` fires from any tab, but the itemised list of what was DELETED
+    // renders inside Overview. Without this, a run started from Advanced would
+    // remove rows from the user's ledger and say so into a component that is not
+    // mounted — silent data loss.
+    vi.mocked(runSync).mockResolvedValueOnce({
+      imported: 0, skipped: 2, errors: [],
+      prunedDuplicates: [
+        { sfinAccountId: 'sfin-1', accountName: 'Savings', txId: 'TRN-3917f117',
+          description: 'PNC BANK 1234 Transfer', date: '2026-07-27', amountCents: 130000,
+          currency: 'USD', wfId: 'act-2' },
+      ],
+    } as any);
+    render(<SyncPage {...makeProps()} />);
+    await switchTab(/advanced/i);
+    await screen.findByRole('button', { name: /^Auto-sync/i });
+
+    fireEvent.click(screen.getByRole('button', { name: /sync now/i }));
+
+    const banner = await screen.findByText(/Removed 1 duplicate activity/i);
+    expect(banner.closest('.sfin-banner-warn')!.textContent).toContain('$1,300.00');
+    expect(screen.getByRole('tab', { name: /overview/i }).getAttribute('aria-selected'))
+      .toBe('true');
+  });
+
+  it('leaves the tab alone when a sync pruned nothing', async () => {
+    // The forced switch is for something the user MUST see. A routine run from
+    // the Advanced tab must not yank them off the card they were reading.
+    render(<SyncPage {...makeProps()} />);
+    await switchTab(/advanced/i);
+    await screen.findByRole('button', { name: /^Auto-sync/i });
+    fireEvent.click(screen.getByRole('button', { name: /sync now/i }));
+
+    await waitFor(() => expect(screen.getByText(/5 transactions/i)).toBeInTheDocument());
+    expect(screen.getByRole('tab', { name: /advanced/i }).getAttribute('aria-selected'))
+      .toBe('true');
+  });
+
+  // ── Hazard 2: a checklist signal that used to be reported by a mounted tab ──
+  it('keeps the checklist Telegram row accurate after it is configured on another tab', async () => {
+    // NotificationsTab used to report "configured" upward from an effect. Once
+    // it unmounts that stops firing, so the checklist on Overview kept saying
+    // "get a daily digest" for a user who had just connected a bot. The page
+    // derives the row from the stored config instead.
+    const props = makeProps();
+    let stored: any = null;
+    props.store.getTelegramConfig = vi.fn(async () => stored) as any;
+    props.store.setTelegramConfig = vi.fn(async (c: any) => { stored = c; }) as any;
+    render(<SyncPage {...props} />);
+    expect(await screen.findByText(/Telegram reports — get a daily digest/)).toBeTruthy();
+
+    await switchTab(/notifications/i);
+    fireEvent.click(await screen.findByRole('button', { name: /^Telegram connection/i }));
+    fireEvent.change(await screen.findByLabelText(/Bot Token/i), { target: { value: 'tok' } });
+    fireEvent.change(screen.getByLabelText(/Chat ID/i), { target: { value: '42' } });
+    fireEvent.click(await screen.findByRole('button', { name: /^Save$/ }));
+    await waitFor(() => expect(props.store.setTelegramConfig).toHaveBeenCalled());
+
+    await switchTab(/overview/i);
+    expect(await screen.findByText(/Telegram reports — connected/)).toBeTruthy();
+  });
+
+  // ── Hazard 3: live data that only ever loaded once ─────────────────────
+  it('refreshes the needs-a-category count with the rest of the live state', async () => {
+    // The companion republishes this every sync, and the tile used to read it
+    // once on mount — unlike the balances and the companion version beside it —
+    // so it could sit stale for an entire session.
+    const props = makeProps();
+    let status: any = { count: 3, asOf: '2026-08-08T12:00:00Z' };
+    props.store.getUncategorizedStatus = vi.fn(async () => status) as any;
+    render(<SyncPage {...props} />);
+    const tile = (await screen.findByText(/Needs a category/i)).closest('.sfin-tile')!;
+    expect(tile.textContent).toContain('3');
+
+    // What the companion published since. Focus is the refresh trigger the
+    // balances already use.
+    status = { count: 11, asOf: '2026-08-09T09:00:00Z' };
+    fireEvent.focus(window);
+    await waitFor(() => expect(tile.textContent).toContain('11'));
+    expect(tile.getAttribute('title')).toContain('2026-08-09T09:00:00Z');
   });
 
 });

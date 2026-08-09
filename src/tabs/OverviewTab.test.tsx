@@ -78,6 +78,15 @@ const makeProps = () => ({
   scheduler: { start: vi.fn(), stop: vi.fn(), isRunning: vi.fn(() => false) } as any,
 });
 
+/**
+ * Only one tab panel is mounted at a time. Overview is the default tab, so
+ * almost nothing here needs this — the exception is a test whose stored
+ * `ui_state` deliberately opens on another tab.
+ */
+async function switchTab(name: RegExp) {
+  fireEvent.click(await screen.findByRole('tab', { name }));
+}
+
 describe('OverviewTab', () => {
   describe('account list', () => {
     it('shows account names instead of raw IDs in the mapping list', async () => {
@@ -192,8 +201,8 @@ describe('OverviewTab', () => {
         ],
       } as any);
       render(<SyncPage {...makeProps()} />);
-      await waitFor(() => screen.getByRole('button', { name: /reconcile & link/i }));
-      fireEvent.click(screen.getByRole('button', { name: /reconcile & link/i }));
+      await waitFor(() => screen.getByRole('button', { name: /deep scan/i }));
+      fireEvent.click(screen.getByRole('button', { name: /deep scan/i }));
 
       const banner = await screen.findByText(/Removed 2 duplicate activities/i);
       const box = banner.closest('.sfin-banner-warn')!;
@@ -341,6 +350,9 @@ describe('OverviewTab', () => {
       const props = makeProps();
       props.store.getUiState = vi.fn(async () => ({ activeTab: 'advanced' })) as any;
       render(<SyncPage {...props} />);
+      // The stored state opens on Advanced, so the checklist has to be reached
+      // the way a user would.
+      await switchTab(/overview/i);
       fireEvent.click(await screen.findByRole('button', { name: /Dismiss setup checklist/i }));
 
       await waitFor(() => expect(props.store.setUiState).toHaveBeenCalledWith(
