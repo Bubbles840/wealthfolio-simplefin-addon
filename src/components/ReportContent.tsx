@@ -161,6 +161,17 @@ export function ReportContent({
             </div>
           )}
 
+          {/* The seam falls INSIDE a row: the emoji button beside a category is
+              stored the instant it is picked, while the three checkboxes next to
+              it wait for Save. Two adjacent controls behaving differently has to
+              be said, not inferred. */}
+          {cfg.glyphMode === 'glyphs' && availableCategories.length > 0 && (
+            <div className="sfin-subtle sfin-cats-hint">
+              Emoji choices apply immediately. The Daily, Weekly and Monthly
+              checkboxes are saved with the rest of your settings.
+            </div>
+          )}
+
           {categoryGroups.map((group) => (
             <Disclosure
               key={group.name}
@@ -260,6 +271,13 @@ export function ReportContent({
           <option value="rollup">Roll up into the parent</option>
           <option value="breakdown">Break down under the parent</option>
         </select>
+      </div>
+
+      {/* These two are their own stored settings, written on change — so they
+          never reach the save bar, and a card that otherwise waits for Save has
+          to say which of its controls does not. */}
+      <div className="sfin-subtle sfin-applies-now">
+        Both of these apply immediately — no need to save.
       </div>
     </CollapsibleCard>
   );

@@ -174,6 +174,36 @@ describe('NotificationsTab', () => {
     await waitFor(() => expect(screen.queryByText(/unsaved changes/i)).toBeNull());
   });
 
+  it('says in the bar why Save is unavailable, not only in a tooltip', async () => {
+    // A fresh install with no credentials can still change a report toggle, and
+    // then the bar appears beside a Save that can never be clicked. A `title` on
+    // a disabled button is invisible to keyboard and touch users, so the reason
+    // is text.
+    const props = makeProps();
+    render(<SyncPage {...props} />);
+    await openReports();
+    nudge();
+    expect(await screen.findByText(/unsaved changes/i)).toBeTruthy();
+    expect(screen.getByText(/add a bot token and chat id first/i)).toBeTruthy();
+    expect((screen.getByRole('button', { name: /^Save$/ }) as HTMLButtonElement).disabled)
+      .toBe(true);
+  });
+
+  it('keeps the save bar live region mounted while there is nothing to say', async () => {
+    // A role="status" inserted into the DOM already populated is announced
+    // unreliably or not at all: the region has to exist BEFORE its content
+    // changes. So the wrapper stays, empty, and only the message appears.
+    render(<SyncPage {...makeProps()} />);
+    await openReports();
+    const region = document.querySelector('.sfin-savebar-msg[role="status"]');
+    expect(region).toBeTruthy();
+    expect(region!.textContent).toBe('');
+    expect(screen.queryByText(/unsaved changes/i)).toBeNull();
+
+    nudge();
+    await waitFor(() => expect(region!.textContent).toMatch(/unsaved changes/i));
+  });
+
   it('lets a token be tested before it is ever saved', async () => {
     // Otherwise the only way to find out a pasted token is wrong would be to
     // store the wrong one first.
@@ -479,6 +509,10 @@ describe('NotificationsTab', () => {
     });
     await waitFor(() => expect(props.store.setReportGlyphStyle).toHaveBeenCalled());
     expect(screen.queryByText(/unsaved changes/i)).toBeNull();
+    // ...and the card says so, because the seam falls inside a matrix row: the
+    // emoji button is immediate, the three checkboxes beside it are not.
+    expect(screen.getByText(/no need to save/i)).toBeTruthy();
+    expect(await screen.findByText(/emoji choices apply immediately/i)).toBeTruthy();
 
     fireEvent.change(screen.getByLabelText(/subcategories/i), { target: { value: 'breakdown' } });
     await waitFor(() => expect(props.store.setSubcategoryDisplay).toHaveBeenCalledWith('breakdown'));
