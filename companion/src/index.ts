@@ -23,6 +23,7 @@ import type { DismissalLedger } from './dismissals.js';
 import type { SyncHealth } from '../../shared/telegram.js';
 import { SIMPLEFIN_SYNC_VERSION, COMPANION_VERSION_SECRET_KEY } from '../../shared/version.js';
 import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeCategoryCatalog, getNativeSubcategorySpending } from './sqlite-native.js';
+import { publishUncategorizedStatus, uncategorizedWindow } from './uncategorized-status.js';
 
 const logLevel: 'info' | 'debug' =
   process.env.LOG_LEVEL === 'debug' ? 'debug' : 'info';
@@ -580,6 +581,17 @@ export async function runCompanionSync(): Promise<SyncResult> {
     // Every sync, not just report runs: the addon's category selector is
     // unusable without this, and a sync happens far more often than a report.
     await publishCategoryCatalog(wfClient, currentYearMonth(new Date()));
+
+    const dbPathForStatus = process.env.WEALTHFOLIO_DB_PATH ?? '';
+    if (dbPathForStatus) {
+      // Guarded on dbPath: with no database there is no count, and publishing 0
+      // would claim "nothing needs a category", which is false rather than unknown.
+      const { start, end } = uncategorizedWindow(new Date());
+      await publishUncategorizedStatus(
+        (key, value) => wfClient.setAddonSecret('simplefin-sync', key, value),
+        () => getNativeUncategorizedSpending(dbPathForStatus, start, end).length,
+      );
+    }
 
     const undeliveredOutTxIds: string[] = [];
     for (const alert of result.stuckTransferAlerts) {
