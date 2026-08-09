@@ -56,6 +56,48 @@ export function pruneDismissals(ledger: DismissalLedger, now: Date): DismissalLe
 }
 
 /**
+ * Apply a caller's delta onto whatever is persisted RIGHT NOW, instead of
+ * overwriting the secret with a stale snapshot.
+ *
+ * Both the addon and the companion read `uncategorized_dismissals`, let the user
+ * act, and write it back — and there is no compare-and-swap on an addon secret,
+ * just `get` then `set`. A plain "write what I have" from either side silently
+ * erases whatever the OTHER side wrote in between: the addon overwrites with a
+ * snapshot `refreshDerivedSignals` only re-reads on an interval or focus, and the
+ * companion's write follows a seconds-long Telegram poll that gives the addon a
+ * whole window to dismiss something the companion's copy has never seen. The
+ * symptom is a row the user already dismissed reappearing as needing a category
+ * — quietly, because nothing errors, one host just clobbers the other's ledger
+ * entry.
+ *
+ * `base` is the ledger the caller read before acting; `next` is what the caller
+ * wants the ledger to become. The DIFFERENCE between them is the caller's
+ * intent — an id added, or an id removed (an undo, or a prune) — and only that
+ * intent is replayed onto `persisted`:
+ *  - in `next` but not `base`: added, so set it on the result (`next`'s value).
+ *  - in `base` but not `next`: removed, so delete it from the result.
+ *  - anything else — including an id `persisted` has that neither snapshot ever
+ *    saw, and an id present in both `base` and `next` even with a different
+ *    timestamp — is left exactly as `persisted` already has it. An id in both
+ *    is not a delta; re-asserting it would let a stale `next` timestamp
+ *    overwrite a fresher one the other host just wrote.
+ */
+export function mergeDismissals(
+  persisted: DismissalLedger,
+  base: DismissalLedger,
+  next: DismissalLedger,
+): DismissalLedger {
+  const merged: DismissalLedger = { ...persisted };
+  for (const id of Object.keys(next)) {
+    if (!(id in base)) merged[id] = next[id];
+  }
+  for (const id of Object.keys(base)) {
+    if (!(id in next)) delete merged[id];
+  }
+  return merged;
+}
+
+/**
  * The rows that still need a category: everything not dismissed.
  *
  * Generic over the row shape so the companion can pass its richer native row and

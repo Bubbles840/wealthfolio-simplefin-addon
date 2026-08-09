@@ -509,4 +509,51 @@ describe('uncategorized list', () => {
     const tile = (await screen.findByText('Needs a category')).closest('.sfin-tile');
     expect(tile?.textContent).toContain('1');
   });
+
+  it('dismissing writes the id the ledger gained since this page last read it, not just the new one', async () => {
+    // The companion (Telegram half) can write a dismissal to the shared secret
+    // between this page's last refresh and this write. The old whole-object
+    // write from React state would erase it; the write must merge onto whatever
+    // is persisted right now.
+    const props = makeProps();
+    let saved: any = {};
+    let otherHostWrote = false;
+    props.store.getUiState = vi.fn(async () => ({ checklistDismissed: true })) as any;
+    props.store.getUncategorizedStatus = vi.fn(async () => statusWith([r('a'), r('b')])) as any;
+    props.store.getDismissals = vi.fn(async () => (
+      otherHostWrote ? { ...saved, other: '2026-08-09T00:00:00.000Z' } : saved
+    )) as any;
+    props.store.setDismissals = vi.fn(async (l: any) => { saved = l; }) as any;
+    render(<SyncPage {...props} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /^2 need/i }));
+    // From here on, the persisted secret has an entry this page's own state has
+    // never seen — simulating the companion's write landing mid-flight.
+    otherHostWrote = true;
+    fireEvent.click((await screen.findAllByRole('button', { name: /^Dismiss Row a/i }))[0]);
+
+    await waitFor(() => expect(props.store.setDismissals).toHaveBeenCalled());
+    expect(saved).toHaveProperty('a');
+    expect(saved).toHaveProperty('other');
+  });
+
+  it('undo removes the id from the write even though the re-read still has it persisted', async () => {
+    const props = makeProps();
+    let saved: any = {};
+    props.store.getUiState = vi.fn(async () => ({ checklistDismissed: true })) as any;
+    props.store.getUncategorizedStatus = vi.fn(async () => statusWith([r('a')])) as any;
+    props.store.getDismissals = vi.fn(async () => saved) as any;
+    props.store.setDismissals = vi.fn(async (l: any) => { saved = l; }) as any;
+    render(<SyncPage {...props} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /^1 needs/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /dismiss/i }));
+    await screen.findByText(/Dismissed\./i);
+    await waitFor(() => expect(saved).toHaveProperty('a'));
+
+    fireEvent.click(screen.getByRole('button', { name: /undo/i }));
+
+    await waitFor(() => expect(props.store.setDismissals).toHaveBeenCalledTimes(2));
+    expect(saved).not.toHaveProperty('a');
+  });
 });

@@ -17,12 +17,12 @@
  * to outlive the window, not the account.
  */
 
-import { pruneDismissals, type DismissalLedger } from '../../shared/uncategorized.js';
+import { pruneDismissals, mergeDismissals, type DismissalLedger } from '../../shared/uncategorized.js';
 
 // Re-exported so this module stays the one import site for the Telegram half of
-// dismissals, even though the ledger's shape and retention now live in shared/
-// (the addon needs them too, and two copies would drift).
-export { pruneDismissals };
+// dismissals, even though the ledger's shape, retention and merge now live in
+// shared/ (the addon needs them too, and two copies would drift).
+export { pruneDismissals, mergeDismissals };
 export type { DismissalLedger };
 
 /**

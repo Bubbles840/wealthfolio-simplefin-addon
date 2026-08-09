@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
-  pruneDismissals, visibleUncategorized, DISMISSAL_MAX_AGE_DAYS, UNCATEGORIZED_ROWS_CAP,
+  pruneDismissals, visibleUncategorized, mergeDismissals,
+  DISMISSAL_MAX_AGE_DAYS, UNCATEGORIZED_ROWS_CAP,
   type DismissalLedger, type UncategorizedRow,
 } from './uncategorized.js';
 
@@ -56,6 +57,52 @@ describe('pruneDismissals', () => {
   it('drops an unparseable timestamp rather than keeping it forever', () => {
     const now = new Date('2026-08-09T12:00:00.000Z');
     expect(pruneDismissals({ bad: 'not a date' }, now)).toEqual({});
+  });
+});
+
+describe('mergeDismissals', () => {
+  // Both the addon and the companion do read-act-write against this same
+  // secret with no compare-and-swap, so the real bug this guards is one host's
+  // write silently erasing a dismissal the other host made in between.
+
+  it('keeps an addition even when persisted gained an unrelated id in the meantime', () => {
+    const base: DismissalLedger = {};
+    const next: DismissalLedger = { a: '2026-08-09T00:00:00.000Z' };
+    // The companion dismissed 'b' after this caller read `base` but before it writes.
+    const persisted: DismissalLedger = { b: '2026-08-09T00:05:00.000Z' };
+    expect(mergeDismissals(persisted, base, next)).toEqual({
+      a: '2026-08-09T00:00:00.000Z',
+      b: '2026-08-09T00:05:00.000Z',
+    });
+  });
+
+  it('removes an undone id even though persisted still has it, and does not resurrect it', () => {
+    const base: DismissalLedger = { a: '2026-08-09T00:00:00.000Z' };
+    const next: DismissalLedger = {};
+    const persisted: DismissalLedger = { a: '2026-08-09T00:00:00.000Z' };
+    expect(mergeDismissals(persisted, base, next)).toEqual({});
+  });
+
+  it('preserves an id present only in persisted, untouched', () => {
+    const base: DismissalLedger = {};
+    const next: DismissalLedger = {};
+    const persisted: DismissalLedger = { z: '2026-08-01T00:00:00.000Z' };
+    expect(mergeDismissals(persisted, base, next)).toEqual({ z: '2026-08-01T00:00:00.000Z' });
+  });
+
+  it('is a no-op when base and next are the same (no delta)', () => {
+    const ledger: DismissalLedger = { a: '2026-08-09T00:00:00.000Z' };
+    const persisted: DismissalLedger = { a: '2026-08-09T00:00:00.000Z', z: '2026-08-01T00:00:00.000Z' };
+    expect(mergeDismissals(persisted, ledger, ledger)).toEqual(persisted);
+  });
+
+  it('does not overwrite an id present in both base and next, even with a different timestamp', () => {
+    const base: DismissalLedger = { a: '2026-08-01T00:00:00.000Z' };
+    const next: DismissalLedger = { a: '2026-08-09T00:00:00.000Z' };
+    // Persisted has a THIRD timestamp — the other host's own write — which must
+    // survive since this id is not a delta between base and next.
+    const persisted: DismissalLedger = { a: '2026-08-05T00:00:00.000Z' };
+    expect(mergeDismissals(persisted, base, next)).toEqual({ a: '2026-08-05T00:00:00.000Z' });
   });
 });
 
