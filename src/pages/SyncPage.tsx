@@ -5,16 +5,11 @@ import { SIMPLEFIN_SYNC_VERSION } from '../../shared/version';
 import type { SyncResult } from '../utils/sync';
 import { fetchAccounts } from '../utils/simplefin';
 import { SyncStatus } from '../components/SyncStatus';
-import { CategoryIcon } from '../components/CategoryIcon';
-import { GlyphPicker } from '../components/GlyphPicker';
 import { RuleEditor } from '../components/RuleEditor';
-import { Button, CollapsibleCard, Disclosure, ErrorBox, SectionLabel } from '../components/ui';
+import { Button, CollapsibleCard, ErrorBox } from '../components/ui';
 import { AmazonCard } from '../components/AmazonCard';
 import { OverviewTab } from '../tabs/OverviewTab';
-import { sendTelegramMessage, getCategoryEmoji } from '../../shared/telegram';
-// The real default the sync engine applies when driftAlertThreshold is absent,
-// imported rather than re-typed so the field can never disagree with it.
-import { DEFAULT_DRIFT_ALERT_THRESHOLD_DOLLARS } from '../../shared/sync-core';
+import { NotificationsTab } from '../tabs/NotificationsTab';
 import type { SecretsStore, AccountBalanceInfo, CategoryCatalogEntry } from '../utils/secrets';
 import type { Scheduler } from '../utils/scheduler';
 import type { AccountMapping, MappingRule } from '../../shared/types';
@@ -26,73 +21,14 @@ interface Props {
   scheduler: Scheduler;
 }
 
-/** Tone class for the Telegram status line. Keyed off the ✅/❌ prefix the
- *  message already carries, so nothing is signalled by colour alone. */
-function telegramStatusTone(status: string): string {
-  if (status.startsWith('✅')) return 'sfin-status--ok';
-  if (status.startsWith('❌')) return 'sfin-status--err';
-  return 'sfin-status--busy';
-}
-
-/** Amount the "Large transaction alerts" field is seeded with. Purely a UI
- *  suggestion: the stored default is OFF (see `largeTransactionThreshold`), so
- *  this number only ever reaches storage once the user ticks the box. */
-const SUGGESTED_LARGE_TX_THRESHOLD = 500;
-
-/** Mirrors the companion's `DEFAULT_WEEKLY_TOP_SPEND_COUNT`, which is module-
- *  private in companion/src/index.ts and so cannot be imported across the
- *  package boundary. Keep the two in step. */
-const DEFAULT_WEEKLY_TOP_SPEND_COUNT = 5;
-
-/** Bucket for categories no budget group claims. Wealthfolio allows that state,
- *  so the selector has to show them somewhere rather than dropping them. */
-const UNGROUPED = 'Ungrouped';
-
-/**
- * The two dollar thresholds mean opposite things when absent — `largeTransaction`
- * is OFF, `driftAlert` is ON at $100 — so neither can be expressed by an empty
- * number field. Each gets an explicit checkbox instead, and saving always writes
- * a number: the amount when on, `0` (which both readers treat as off) when off.
- * That is what lets a user actually turn drift alerts off instead of clearing
- * the field and silently getting the $100 default back.
- */
-function thresholdToSave(on: boolean, raw: string, fallback: number): number {
-  if (!on) return 0;
-  const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? n : fallback;
-}
-
-/**
- * `weeklyTopSpendCount` sits between the two: absent means ON at the default of
- * 5 (like the drift threshold), but `0` is also a value the user can legitimately
- * type, and it already means "hide the section" to every reader — so unticking
- * and "ticked, with 0 in the box" deliberately collapse onto the same stored `0`.
- *
- * That collapse is safe because the round trip is stable in one step: a stored 0
- * reloads UNTICKED with the number field back at its default (never showing the
- * 0, exactly as the drift row doesn't), and saving again from there stores 0. So
- * unticking, saving and reloading can never come back ticked.
- *
- * A BLANK field still falls back to the default rather than to 0 — blank is "I
- * have no opinion", which is a different statement from "none".
- */
-function countToSave(on: boolean, raw: string, fallback: number): number {
-  if (!on) return 0;
-  if (raw.trim() === '') return fallback;
-  const n = Number(raw);
-  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : fallback;
-}
-
 /** Ids for the collapsible config cards. Doubles as the persisted key set, so
- *  renaming one silently forgets that card's last state — which is fine. */
+ *  renaming one silently forgets that card's last state — which is fine. The
+ *  Telegram cards own their own ids; see `NOTIF_CARD` in NotificationsTab. */
 const CARD = {
   autoSync: 'auto-sync',
   docker: 'docker',
   amazon: 'amazon',
   amazonGuide: 'amazon-guide',
-  telegram: 'telegram',
-  telegramGuide: 'telegram-guide',
-  categories: 'report-categories',
   rules: 'rules',
 } as const;
 
@@ -127,40 +63,16 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
   // Which companion build last synced this instance. Null until one has run —
   // the addon works standalone, so no companion is a normal state, not an error.
   const [companionVersion, setCompanionVersion] = useState<string | null>(null);
-  const [glyphMode, setGlyphMode] = useState<'clean' | 'glyphs'>('clean');
-  const [glyphOverrides, setGlyphOverrides] = useState<Record<string, string>>({});
-  const [subcategoryDisplay, setSubcategoryDisplay] = useState<'rollup' | 'breakdown'>('rollup');
   // Every collapsible section's open state in one map, replacing the three
-  // one-off `show*` booleans this page used to carry.
+  // one-off `show*` booleans this page used to carry. Shared with the
+  // Notifications tab, whose cards persist their open state the same way.
   const [openCards, setOpenCards] = useState<Record<string, boolean>>({});
-
-  const [botToken, setBotToken] = useState('');
-  const [chatId, setChatId] = useState('');
-  const [notifyOnImport, setNotifyOnImport] = useState(true);
-  const [dailyReportEnabled, setDailyReportEnabled] = useState(true);
-  const [weeklyReportEnabled, setWeeklyReportEnabled] = useState(true);
-  // Absent means ON, like its daily/weekly siblings: a config written before the
-  // monthly report existed opts into it.
-  const [monthlyReportEnabled, setMonthlyReportEnabled] = useState(true);
-  const [dailyReportCategories, setDailyReportCategories] = useState<string[] | 'all'>('all');
-  const [weeklyReportCategories, setWeeklyReportCategories] = useState<string[] | 'all'>('all');
-  const [monthlyReportCategories, setMonthlyReportCategories] = useState<string[] | 'all'>('all');
-  // The full catalog (all 52 spending categories) drives the SELECTOR; the
-  // derived name list below drives selection bookkeeping and the 'all' collapse.
+  // The full catalog (all 52 spending categories). Read once here because two
+  // things need it: the Amazon card's per-label pickers and the report matrix.
   const [categoryCatalog, setCategoryCatalog] = useState<CategoryCatalogEntry[]>([]);
-  // Each threshold is a checkbox plus an amount, never an amount alone — see
-  // `thresholdToSave`. The amounts are held as strings so a half-typed field
-  // isn't coerced to 0 mid-keystroke.
-  const [largeTxAlerts, setLargeTxAlerts] = useState(false);
-  const [largeTxAmount, setLargeTxAmount] = useState(String(SUGGESTED_LARGE_TX_THRESHOLD));
-  const [driftAlertsOn, setDriftAlertsOn] = useState(true);
-  const [driftAmount, setDriftAmount] = useState(String(DEFAULT_DRIFT_ALERT_THRESHOLD_DOLLARS));
-  // Absent means ON at the default of 5 — what the companion has always done —
-  // so this starts true and only an explicit stored 0 unticks it.
-  const [topSpendsOn, setTopSpendsOn] = useState(true);
-  const [topSpendCount, setTopSpendCount] = useState(String(DEFAULT_WEEKLY_TOP_SPEND_COUNT));
-  const [testingTelegram, setTestingTelegram] = useState(false);
-  const [telegramStatus, setTelegramStatus] = useState<string | null>(null);
+  // Reported up by the Notifications tab, which owns the Telegram fields. Only
+  // the Overview checklist consumes it.
+  const [telegramConfigured, setTelegramConfigured] = useState(false);
 
   const loadBalances = useCallback(() => {
     store.getAccountBalances().then(setBalances).catch(() => {});
@@ -232,10 +144,7 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
       store.getAccountBalances(),
       store.getAutoHeal(),
       store.getAutoAdjust(),
-      store.getTelegramConfig(),
       store.getReportCategoryCatalog(),
-      store.getReportGlyphStyle(),
-      store.getSubcategoryDisplay(),
       ctx.api.accounts.getAll().catch(() => []),
       store.getOpenCards(),
       store.getLastSyncImported(),
@@ -248,7 +157,7 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
       store.getAmazonConfig(),
       store.getUiState(),
       store.getCompanionVersion(),
-    ]).then(([last, m, r, h, names, bal, ah, aa, tg, catalog, glyphStyle, subcatMode, wfAccounts, cards, lastImported, amazon, ui, companion]) => {
+    ]).then(([last, m, r, h, names, bal, ah, aa, catalog, wfAccounts, cards, lastImported, amazon, ui, companion]) => {
       setLastSyncAt(last);
       setAmazonConfigured(!!amazon);
       setChecklistDismissed(ui.checklistDismissed === true);
@@ -264,44 +173,6 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
       setAutoHeal(ah);
       setAutoAdjust(aa);
       setCategoryCatalog(catalog);
-      setGlyphMode(glyphStyle.mode);
-      setGlyphOverrides(glyphStyle.overrides);
-      setSubcategoryDisplay(subcatMode);
-      if (tg) {
-        setBotToken(tg.botToken ?? '');
-        setChatId(tg.chatId ?? '');
-        setNotifyOnImport(tg.notifyOnImport ?? true);
-        setDailyReportEnabled(tg.dailyReportEnabled ?? true);
-        setWeeklyReportEnabled(tg.weeklyReportEnabled ?? true);
-        setMonthlyReportEnabled(tg.monthlyReportEnabled ?? true);
-        setDailyReportCategories(tg.dailyReportCategories ?? 'all');
-        setWeeklyReportCategories(tg.weeklyReportCategories ?? 'all');
-        setMonthlyReportCategories(tg.monthlyReportCategories ?? 'all');
-
-        // A stored number is authoritative; anything else (absent, null, a
-        // string) reads as "never configured" and takes the field's default.
-        const num = (v: unknown): number | null =>
-          typeof v === 'number' && Number.isFinite(v) ? v : null;
-
-        // Absent → off. Only a positive amount turns it on.
-        const largeTx = num(tg.largeTransactionThreshold);
-        setLargeTxAlerts(largeTx !== null && largeTx > 0);
-        if (largeTx !== null && largeTx > 0) setLargeTxAmount(String(largeTx));
-
-        // Absent → ON at the engine's default. Only an explicit 0-or-negative
-        // is the user having turned it off, which is why the amount field keeps
-        // its default rather than showing the stored 0.
-        const drift = num(tg.driftAlertThreshold);
-        setDriftAlertsOn(drift === null || drift > 0);
-        if (drift !== null && drift > 0) setDriftAmount(String(drift));
-
-        // Same shape as the drift threshold above: absent → ON at the default,
-        // an explicit 0 (or negative) is the user having switched it off, which
-        // is why the count field keeps its default rather than showing that 0.
-        const top = num(tg.weeklyTopSpendCount);
-        setTopSpendsOn(top === null || top > 0);
-        if (top !== null && top > 0) setTopSpendCount(String(Math.floor(top)));
-      }
       setWfNames(Object.fromEntries(wfAccounts.map((a) => [a.id, a.name])));
       setOpenCards(cards);
 
@@ -428,43 +299,6 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
   };
   const isOpen = (id: string) => openCards[id] === true;
 
-  // PARENTS ONLY, GROUPED. Wealthfolio budgets at the parent level — its own
-  // Spending Tracker has no subcategory amount field — and the reports aggregate
-  // children into their parent, so a per-child checkbox controlled nothing a
-  // report could act on while making this list 52 rows long. Children still
-  // travel in the catalog: the companion needs them for the `breakdown` report
-  // mode, which is where subcategory detail belongs.
-  //
-  // Groups come from `budget_groups`, so a group the user adds or reorders in
-  // Wealthfolio shows up here with no change on our side. Unassigned categories
-  // land in a trailing bucket rather than vanishing.
-  const categoryRows = categoryCatalog
-    .filter((c) => !c.parent)
-    .sort((a, b) => a.name.localeCompare(b.name))
-    .map((entry) => ({ entry, isChild: false }));
-  const childCount = categoryCatalog.length - categoryRows.length;
-
-  const categoryGroups = (() => {
-    const order = new Map<string, number>();
-    const icons = new Map<string, string | null>();
-    for (const { entry } of categoryRows) {
-      const g = entry.group ?? UNGROUPED;
-      if (!order.has(g)) {
-        order.set(g, entry.group ? (entry.groupSort ?? 9998) : 9999);
-        icons.set(g, entry.group ? (entry.groupIcon ?? null) : null);
-      }
-    }
-    return [...order.keys()]
-      .sort((a, b) => (order.get(a)! - order.get(b)!) || a.localeCompare(b))
-      .map((name) => ({
-        name,
-        icon: icons.get(name) ?? null,
-        rows: categoryRows.filter((r) => (r.entry.group ?? UNGROUPED) === name),
-      }));
-  })();
-  // Only what the selector offers, so the 'all' sentinel stays reachable.
-  const availableCategories = categoryRows.map((r) => r.entry.name);
-
   // ── Collapsed-header summaries ───────────────────────────────────────────
   // Each collapsible card reports its own configuration as text in its header,
   // so a closed card still answers "is this on, and set to what?". Without
@@ -472,37 +306,6 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
   const autoSyncSummary = `${scheduleHours ? `Every ${scheduleHours}h` : 'Off'} · ${
     autoAdjust ? 'aggressive auto-heal' : autoHeal ? 'auto-heal on' : 'auto-heal off'
   }`;
-
-  const telegramConnected = !!botToken && !!chatId;
-  const activeReports = [
-    dailyReportEnabled && 'daily',
-    weeklyReportEnabled && 'weekly',
-    monthlyReportEnabled && 'monthly',
-  ].filter((r): r is string => typeof r === 'string');
-  const telegramSummary = !telegramConnected
-    ? 'Not connected'
-    : [
-        'Connected',
-        activeReports.length > 0 ? `${activeReports.join(', ')} reports` : 'no reports',
-        // Only the non-default alert states earn a slot: large-tx alerts are off
-        // unless asked for, drift alerts are on unless refused, so these two
-        // segments are exactly the settings you would forget you had changed.
-        largeTxAlerts
-          ? `$${thresholdToSave(true, largeTxAmount, SUGGESTED_LARGE_TX_THRESHOLD)}+ alerts`
-          : null,
-        driftAlertsOn ? null : 'drift alerts off',
-      ]
-        .filter((s): s is string => typeof s === 'string')
-        .join(' · ');
-
-  // Count only names the companion still publishes: a saved selection can hold
-  // categories that vanished at month rollover, and counting those would report
-  // more checked boxes than the matrix actually shows.
-  const catCount = (sel: string[] | 'all') =>
-    sel === 'all' ? 'all' : String(sel.filter((n) => availableCategories.includes(n)).length);
-  const categoriesSummary =
-    `Daily ${catCount(dailyReportCategories)} · Weekly ${catCount(weeklyReportCategories)}` +
-    ` · Monthly ${catCount(monthlyReportCategories)}`;
 
   const rulesSummary =
     rules.length === 0
@@ -563,7 +366,7 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
         onClearError={clearError}
         onError={showThrownError}
         companionVersion={companionVersion}
-        telegramConfigured={telegramConnected}
+        telegramConfigured={telegramConfigured}
         amazonConfigured={amazonConfigured}
         checklistDismissed={checklistDismissed}
         onDismissChecklist={dismissChecklist}
@@ -685,469 +488,18 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
         categories={categoryCatalog}
       />
 
-      <CollapsibleCard
-        id={CARD.telegram}
-        title="Telegram Notifications (Optional)"
-        summary={telegramSummary}
-        open={isOpen(CARD.telegram)}
-        onToggle={() => toggleCard(CARD.telegram)}
-      >
-        <div className="sfin-subtle" style={{ marginBottom: 12 }}>
-          Daily spending allowances and weekly budget summaries, sent by the companion container.
-        </div>
-
-        {/* Read once, ever — so it stays behind a disclosure rather than costing
-            every later visit ~130px of scrolling. Same `Disclosure` primitive as
-            the cards, in its nested flavour, so there is one pattern to learn. */}
-        <div className="sfin-disc-inset" style={{ marginBottom: 12 }}>
-          <Disclosure
-            id={CARD.telegramGuide}
-            variant="inline"
-            title="📱 How to set up your Telegram bot"
-            open={isOpen(CARD.telegramGuide)}
-            onToggle={() => toggleCard(CARD.telegramGuide)}
-          >
-            <ol>
-              <li>Open Telegram and search for <strong>@BotFather</strong>.</li>
-              <li>Send <code>/newbot</code> to @BotFather and follow prompts to name your bot.</li>
-              <li>Copy the HTTP API <strong>Token</strong> (e.g. <code>123456789:ABCdefGHI...</code>).</li>
-              <li>Open Telegram and send a message <code>/start</code> to your new bot.</li>
-              <li>Search Telegram for <strong>@userinfobot</strong> and send any message to get your numeric <strong>Chat ID</strong> (e.g. <code>987654321</code>).</li>
-              <li>Paste your Bot Token and Chat ID below, then click <strong>Send Test Message</strong>!</li>
-            </ol>
-          </Disclosure>
-        </div>
-
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          {/* Two short, related fields: side by side on a normal window, and the
-              labels are now actually tied to their inputs. */}
-          <div className="sfin-fields">
-            <div>
-              <label htmlFor="sfin-bot-token" className="sfin-subtle">Bot Token</label>
-              <input
-                id="sfin-bot-token"
-                type="password"
-                className="sfin-select"
-                placeholder="e.g. 123456789:ABCdefGHI..."
-                value={botToken}
-                onChange={(e) => setBotToken(e.target.value)}
-              />
-            </div>
-            <div>
-              <label htmlFor="sfin-chat-id" className="sfin-subtle">Chat ID</label>
-              <input
-                id="sfin-chat-id"
-                type="text"
-                className="sfin-select"
-                placeholder="e.g. 987654321"
-                value={chatId}
-                onChange={(e) => setChatId(e.target.value)}
-              />
-            </div>
-          </div>
-
-          <div className="sfin-checks">
-            <label className="sfin-check">
-              <input
-                type="checkbox"
-                checked={notifyOnImport}
-                onChange={(e) => setNotifyOnImport(e.target.checked)}
-              />
-              <span>Transaction Import Alerts (Instant when new transactions sync)</span>
-            </label>
-            <label className="sfin-check">
-              <input
-                type="checkbox"
-                checked={dailyReportEnabled}
-                onChange={(e) => setDailyReportEnabled(e.target.checked)}
-              />
-              <span>Daily Category Allowance Report (Morning)</span>
-            </label>
-            <label className="sfin-check">
-              <input
-                type="checkbox"
-                checked={weeklyReportEnabled}
-                onChange={(e) => setWeeklyReportEnabled(e.target.checked)}
-              />
-              <span>Weekly Budget &amp; Spending Summary</span>
-            </label>
-            <label className="sfin-check">
-              <input
-                type="checkbox"
-                checked={monthlyReportEnabled}
-                onChange={(e) => setMonthlyReportEnabled(e.target.checked)}
-              />
-              <span>Monthly Wrap-Up (on the 1st, for the month just ended)</span>
-            </label>
-          </div>
-
-          <div className="sfin-divider" />
-          <SectionLabel>Alerts &amp; amounts</SectionLabel>
-
-          <div className="sfin-nums">
-            <div className="sfin-thresh">
-              {/* Its own checkbox, matching the two rows below. `0` still means
-                  "hide the section" to every reader, so this control and typing 0
-                  are two spellings of one stored value — but three sibling rows
-                  where only one lacked the neighbours' control read as broken,
-                  whatever the logic underneath said. */}
-              <label className="sfin-check">
-                <input
-                  type="checkbox"
-                  checked={topSpendsOn}
-                  onChange={(e) => setTopSpendsOn(e.target.checked)}
-                />
-                <span className="sfin-check-name">Biggest spends in the weekly report</span>
-              </label>
-              <div className="sfin-thresh-amt">
-                <input
-                  id="sfin-top-spend"
-                  type="number"
-                  min={0}
-                  step={1}
-                  className="sfin-select sfin-num"
-                  // Its own accessible name, for the same reason the two
-                  // threshold fields have one: the visible row label now belongs
-                  // to the checkbox beside it.
-                  aria-label="How many biggest spends to list"
-                  value={topSpendCount}
-                  disabled={!topSpendsOn}
-                  onChange={(e) => setTopSpendCount(e.target.value)}
-                />
-              </div>
-            </div>
-            <div className="sfin-num-hint sfin-subtle">
-              How many individual charges the Saturday report lists. Untick to
-              leave the section out — as does a count of 0; blank means the
-              default of {DEFAULT_WEEKLY_TOP_SPEND_COUNT}.
-            </div>
-
-            <div className="sfin-thresh">
-              <label className="sfin-check">
-                <input
-                  type="checkbox"
-                  checked={largeTxAlerts}
-                  onChange={(e) => setLargeTxAlerts(e.target.checked)}
-                />
-                <span className="sfin-check-name">Large transaction alerts</span>
-              </label>
-              <div className="sfin-thresh-amt">
-                <span className="sfin-subtle" aria-hidden>over $</span>
-                <input
-                  type="number"
-                  min={1}
-                  step={1}
-                  className="sfin-select sfin-num"
-                  // A distinct aria-label: both threshold fields would otherwise
-                  // share the visible "over $" and be indistinguishable by name.
-                  aria-label="Large transaction alert threshold in dollars"
-                  value={largeTxAmount}
-                  disabled={!largeTxAlerts}
-                  onChange={(e) => setLargeTxAmount(e.target.value)}
-                />
-              </div>
-            </div>
-            <div className="sfin-num-hint sfin-subtle">
-              Announces a single newly-imported spend over this amount. Off until
-              you turn it on.
-            </div>
-
-            <div className="sfin-thresh">
-              <label className="sfin-check">
-                <input
-                  type="checkbox"
-                  checked={driftAlertsOn}
-                  onChange={(e) => setDriftAlertsOn(e.target.checked)}
-                />
-                <span className="sfin-check-name">Balance drift alerts</span>
-              </label>
-              <div className="sfin-thresh-amt">
-                <span className="sfin-subtle" aria-hidden>over $</span>
-                <input
-                  type="number"
-                  min={1}
-                  step={1}
-                  className="sfin-select sfin-num"
-                  aria-label="Balance drift alert threshold in dollars"
-                  value={driftAmount}
-                  disabled={!driftAlertsOn}
-                  onChange={(e) => setDriftAmount(e.target.value)}
-                />
-              </div>
-            </div>
-            <div className="sfin-num-hint sfin-subtle">
-              Announces an account whose bank balance and Wealthfolio valuation
-              differ by more than this. On at ${DEFAULT_DRIFT_ALERT_THRESHOLD_DOLLARS}{' '}
-              unless you untick it — clearing the amount alone will not turn it off.
-            </div>
-          </div>
-
-          {/* A matrix rather than a "Daily"/"Weekly" word beside every checkbox:
-              the column heading says it once, the boxes line up, and each row
-              loses ~10px of height. The per-checkbox aria-label still carries
-              both the category and the report, so the accessible name never
-              depends on reading the column heading.
-
-              The matrix is the tallest thing in this card (one row per
-              category), so it sits behind its own nested disclosure — inside
-              the Telegram card rather than as a card of its own, because
-              "Save Telegram Settings" is what commits these lists and splitting
-              them apart would leave the selection with no save button. */}
-          <div className="sfin-disc-inset">
-            <Disclosure
-              id={CARD.categories}
-              variant="inline"
-              title="Report categories"
-              summary={categoriesSummary}
-              open={isOpen(CARD.categories)}
-              onToggle={() => toggleCard(CARD.categories)}
-            >
-              <div className="sfin-subtle" style={{ fontSize: 12, marginBottom: 8 }}>
-                Every budgetable category is listed — Wealthfolio budgets at this level,
-                so subcategories aren't selected individually. Reports still only print
-                the ones with a budget or spending this month.
-                {childCount > 0 && (
-                  <> Set <em>Subcategories</em> to <em>Break down</em> to see the {childCount}{' '}
-                  subcategories inside these in your reports.</>
-                )}
-              </div>
-
-              <div className="sfin-field-row">
-                <label htmlFor="sfin-glyph-mode">Telegram report icons</label>
-                <select
-                  id="sfin-glyph-mode"
-                  value={glyphMode}
-                  onChange={(e) => {
-                    const mode = e.target.value as 'clean' | 'glyphs';
-                    setGlyphMode(mode);
-                    store.setReportGlyphStyle({ mode, overrides: glyphOverrides }).catch(() => {});
-                  }}
-                >
-                  {/* Telegram renders neither colour nor Wealthfolio's own icons,
-                      so a report can only be plain or carry an emoji. */}
-                  <option value="clean">Clean — no icons</option>
-                  <option value="glyphs">Emoji per category</option>
-                </select>
-              </div>
-
-              <div className="sfin-field-row">
-                <label htmlFor="sfin-subcat-mode">Subcategories</label>
-                <select
-                  id="sfin-subcat-mode"
-                  value={subcategoryDisplay}
-                  onChange={(e) => {
-                    const mode = e.target.value as 'rollup' | 'breakdown';
-                    setSubcategoryDisplay(mode);
-                    store.setSubcategoryDisplay(mode).catch(() => {});
-                  }}
-                >
-                  <option value="rollup">Roll up into the parent</option>
-                  <option value="breakdown">Break down under the parent</option>
-                </select>
-              </div>
-
-              {availableCategories.length === 0 && (
-                <div className="sfin-subtle" style={{ fontSize: 12 }}>
-                  Categories will appear here after the companion's first sync.
-                </div>
-              )}
-              {categoryGroups.map((group) => (
-                <Disclosure
-                  key={group.name}
-                  id={`cat-group-${group.name}`}
-                  variant="inline"
-                  title={group.name}
-                  summary={`${group.rows.length} ${group.rows.length === 1 ? 'category' : 'categories'}`}
-                  open={isOpen(`cat-group-${group.name}`)}
-                  onToggle={() => toggleCard(`cat-group-${group.name}`)}
-                >
-                  <div className="sfin-cats">
-            <>
-                {/* Spacer holding grid column 1 so the captions sit above the
-                    checkbox columns rather than sliding left one cell. */}
-                <div aria-hidden />
-                <div className="sfin-cats-col sfin-cats-head">Daily</div>
-                <div className="sfin-cats-col sfin-cats-head">Weekly</div>
-                <div className="sfin-cats-col sfin-cats-head">Monthly</div>
-            </>
-            {(
-              group.rows.map(({ entry, isChild }) => {
-                const name = entry.name;
-                const inDaily = dailyReportCategories === 'all' || dailyReportCategories.includes(name);
-                const inWeekly = weeklyReportCategories === 'all' || weeklyReportCategories.includes(name);
-                const inMonthly = monthlyReportCategories === 'all' || monthlyReportCategories.includes(name);
-                // Functional updater, and membership read from `prev` rather
-                // than the closed-over `inDaily`/`inWeekly`: two toggles
-                // batched into one React tick would otherwise both start from
-                // the same stale snapshot and the first would be dropped.
-                const toggle = (
-                  setCurrent: React.Dispatch<React.SetStateAction<string[] | 'all'>>,
-                ) => {
-                  setCurrent((prev) => {
-                    const base = prev === 'all' ? availableCategories : prev;
-                    const wasIncluded = prev === 'all' || prev.includes(name);
-                    const next = wasIncluded ? base.filter((n) => n !== name) : [...base, name];
-                    // Collapse to the 'all' sentinel only when the selection
-                    // genuinely covers every published category — a SET test,
-                    // not a length test. `availableCategories` is the union of
-                    // *this month's* spending and budgets, so it legitimately
-                    // shrinks (a category with spending but no budget vanishes
-                    // at month rollover) while a saved selection still holds
-                    // the older, longer list. Comparing lengths then matched
-                    // by coincidence: with saved ['Groceries','Dining','Fun']
-                    // and a published ['Groceries','Dining'], unchecking
-                    // Groceries left a 2-element array whose length equalled
-                    // the published list, stored 'all', and silently put every
-                    // category back into the user's reports.
-                    //
-                    // Names no longer published are kept in `next` rather than
-                    // pruned, so a category that reappears next month comes
-                    // back with the user's original intent intact.
-                    const chosen = new Set(next);
-                    const coversEverything = availableCategories.every((n) => chosen.has(n));
-                    return coversEverything ? 'all' : next;
-                  });
-                };
-                return (
-                  <React.Fragment key={name}>
-                    <div
-                      className="sfin-cat-name"
-                      // Children indent under their parent. With 52 categories a
-                      // flat list is unreadable, and the catalog carries `parent`
-                      // precisely so the shape can match how they're thought of.
-                      style={isChild ? { paddingLeft: 18 } : undefined}
-                    >
-                      <CategoryIcon name={entry.icon} color={entry.color} size={isChild ? 13 : 15} />
-                      <span style={isChild ? undefined : { fontWeight: 600 }}>{name}</span>
-                      {/* A palette, not a text field: the input this replaces
-                          required knowing how to type an emoji on your platform.
-                          Only shown in glyphs mode, where an override does
-                          something — and where its placeholder no longer reads as
-                          a missing amount. */}
-                      {glyphMode === 'glyphs' && (
-                        <GlyphPicker
-                          label={`${name} — report emoji`}
-                          value={glyphOverrides[name] ?? ''}
-                          fallback={getCategoryEmoji(name)}
-                          onChange={(glyph) => {
-                            const next = { ...glyphOverrides };
-                            if (glyph) next[name] = glyph; else delete next[name];
-                            setGlyphOverrides(next);
-                            store.setReportGlyphStyle({ mode: glyphMode, overrides: next }).catch(() => {});
-                          }}
-                        />
-                      )}
-                    </div>
-                    <input
-                      type="checkbox"
-                      aria-label={`${name} — Daily`}
-                      checked={inDaily}
-                      onChange={() => toggle(setDailyReportCategories)}
-                    />
-                    <input
-                      type="checkbox"
-                      aria-label={`${name} — Weekly`}
-                      checked={inWeekly}
-                      onChange={() => toggle(setWeeklyReportCategories)}
-                    />
-                    <input
-                      type="checkbox"
-                      aria-label={`${name} — Monthly`}
-                      checked={inMonthly}
-                      onChange={() => toggle(setMonthlyReportCategories)}
-                    />
-                  </React.Fragment>
-                );
-              })
-            )}
-                  </div>
-                </Disclosure>
-              ))}
-            </Disclosure>
-          </div>
-
-          {/* role="status" so the send/save result is announced, and the ✅/❌
-              prefix stays: the colour is a reinforcement, never the only signal.
-              The in-flight "Sending…" message carries neither prefix and is no
-              longer painted destructive-red for having failed no test yet. */}
-          {telegramStatus && (
-            <div role="status" className={`sfin-status ${telegramStatusTone(telegramStatus)}`}>
-              {telegramStatus}
-            </div>
-          )}
-
-          <div style={{ display: 'flex', gap: 8, marginTop: 4, flexWrap: 'wrap' }}>
-            <Button
-              variant="outline"
-              disabled={testingTelegram || !botToken || !chatId}
-              onClick={async () => {
-                setTestingTelegram(true);
-                setTelegramStatus('Sending test message...');
-                try {
-                  const timeoutPromise = new Promise<{ ok: false; description: string }>((_, reject) =>
-                    setTimeout(() => reject(new Error('Request timed out after 5 seconds')), 5000)
-                  );
-
-                  const sendPromise = sendTelegramMessage(
-                    botToken,
-                    chatId,
-                    '🎉 *SimpleFin Sync Telegram Integration Connected!*\n\nYour Telegram bot is configured and ready to send daily category allowances and weekly budget reports.',
-                    ctx.api.network,
-                  );
-
-                  const res = await Promise.race([sendPromise, timeoutPromise]);
-                  if (res.ok) {
-                    setTelegramStatus('✅ Test message sent successfully to Telegram!');
-                  } else {
-                    setTelegramStatus(`❌ Error sending message: ${res.description}`);
-                  }
-                } catch (err) {
-                  console.error('[Telegram Debug Error]:', err);
-                  setTelegramStatus(`❌ Error: ${(err as Error).message}`);
-                } finally {
-                  setTestingTelegram(false);
-                }
-              }}
-            >
-              {testingTelegram ? 'Sending...' : 'Send Test Message'}
-            </Button>
-
-            <Button
-              variant="primary"
-              disabled={!botToken || !chatId}
-              onClick={async () => {
-                await store.setTelegramConfig({
-                  botToken,
-                  chatId,
-                  enabled: true,
-                  notifyOnImport,
-                  dailyReportEnabled,
-                  weeklyReportEnabled,
-                  monthlyReportEnabled,
-                  dailyReportCategories,
-                  weeklyReportCategories,
-                  monthlyReportCategories,
-                  weeklyTopSpendCount: countToSave(
-                    topSpendsOn, topSpendCount, DEFAULT_WEEKLY_TOP_SPEND_COUNT,
-                  ),
-                  // Always an explicit number, never omitted: `0` is how both
-                  // readers spell "off", and omitting driftAlertThreshold would
-                  // hand the user back the $100 default they just switched off.
-                  largeTransactionThreshold: thresholdToSave(
-                    largeTxAlerts, largeTxAmount, SUGGESTED_LARGE_TX_THRESHOLD,
-                  ),
-                  driftAlertThreshold: thresholdToSave(
-                    driftAlertsOn, driftAmount, DEFAULT_DRIFT_ALERT_THRESHOLD_DOLLARS,
-                  ),
-                });
-                setTelegramStatus('✅ Telegram configuration saved!');
-              }}
-            >
-              Save Telegram Settings
-            </Button>
-          </div>
-        </div>
-      </CollapsibleCard>
+      {/* Was ONE card called "Telegram Notifications (Optional)" holding six
+          unrelated concerns and a Save button at the very bottom. Now three
+          cards and a dirty-state save bar, inside a tab component. Rendered
+          inline for now: the tab bar arrives in a later task. */}
+      <NotificationsTab
+        ctx={ctx}
+        store={store}
+        categories={categoryCatalog}
+        isOpen={isOpen}
+        toggleCard={toggleCard}
+        onConfiguredChange={setTelegramConfigured}
+      />
 
       {/* The card's own open state replaces the old "Edit"/"Done" toggle: this
           card had a read-only list AND a disclosure to reach the editor, which
