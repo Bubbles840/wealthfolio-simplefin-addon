@@ -423,6 +423,9 @@ const css = `
 /* Spacing under the things that introduce a card: the one-line description and
    the read-once setup guide. */
 .sfin-notif-intro { margin-bottom: 12px; }
+/* Marks the controls that are stored on change, in a card whose other controls
+   wait for the save bar. */
+.sfin-applies-now { font-size: 12px; margin-top: 6px; }
 /* Sticky save bar (Notifications tab). */
 .sfin-savebar {
   position: sticky; bottom: 8px; display: flex; justify-content: space-between;
@@ -431,6 +434,11 @@ const css = `
   border: 1px solid var(--border, color-mix(in srgb, var(--muted-foreground) 30%, transparent));
   box-shadow: 0 4px 16px color-mix(in srgb, #000 35%, transparent);
 }
+/* The message half of the bar: "You have unsaved changes", plus the reason Save
+   is unavailable when it is. Stacked, because the second line explains the
+   first. It is also the live region, and stays mounted (empty) when the bar is
+   not showing — a role="status" only announces changes made after it exists. */
+.sfin-savebar-msg { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 /* Destructive-boundary card for Reset. */
 .sfin-danger-card {
   border: 1px solid color-mix(in srgb, var(--destructive) 40%, transparent);

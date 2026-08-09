@@ -71,9 +71,6 @@ export type CfgPatch =
   | Partial<TelegramCfgDraft>
   | ((prev: TelegramCfgDraft) => Partial<TelegramCfgDraft>);
 
-/** Written straight to their own secrets on change, so they are never "unsaved". */
-const IMMEDIATE_FIELDS = ['glyphMode', 'glyphOverrides', 'subcategoryDisplay'] as const;
-
 /** Ids for this tab's collapsible sections. Doubles as the persisted key set
  *  (the page owns the map), so `connection` keeps the old card's `telegram` key
  *  and `categories` keeps `report-categories`: a user who left either open
@@ -345,19 +342,32 @@ export function NotificationsTab({
         toggleCard={toggleCard}
       />
 
-      {/* Only while there is something to save. A permanent bar would be a
-          permanent claim that something is pending; this one appearing IS the
-          notification, and its disappearing is the confirmation. */}
-      {dirty && (
-        <div className="sfin-savebar" role="status">
-          <span className="sfin-subtle">You have unsaved changes</span>
+      {/* The PILL is only there while something is pending — a permanent bar
+          would be a permanent claim that something needs saving; this one
+          appearing IS the notification, and its disappearing is the
+          confirmation. The wrapper, however, is mounted always and collapses to
+          nothing when idle, because the live region inside it has to pre-exist
+          its own content: a role="status" element inserted into the DOM already
+          populated is announced unreliably or not at all. */}
+      <div className={dirty ? 'sfin-savebar' : undefined}>
+        {/* Scoped to the message, deliberately excluding the button: with the
+            region around both, the announcement picked up the word "Save" as if
+            it were part of the sentence. */}
+        <div className="sfin-savebar-msg" role="status">
+          {dirty && <span className="sfin-subtle">You have unsaved changes</span>}
+          {/* Why the button is dead, said out loud. It used to be a `title` on
+              the disabled button, which keyboard and touch users never see. */}
+          {dirty && !configured && (
+            <span className="sfin-subtle">Add a bot token and chat ID first</span>
+          )}
+        </div>
+        {dirty && (
           <Button
             variant="primary"
             // The credentials are what make the config sendable at all, so an
             // incomplete pair cannot be committed — as the old Save button also
             // refused to be.
             disabled={!configured}
-            title={configured ? undefined : 'Add a bot token and chat ID first'}
             onClick={async () => {
               await store.setTelegramConfig(buildConfig(cfg));
               setSavedCfg(cfg);
@@ -366,8 +376,8 @@ export function NotificationsTab({
           >
             Save
           </Button>
-        </div>
-      )}
+        )}
+      </div>
     </>
   );
 }
