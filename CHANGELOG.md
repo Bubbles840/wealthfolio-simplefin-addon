@@ -7,6 +7,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-08-09
+
+### Added
+
+- **A self-completing setup checklist** on Overview, covering the three
+  optional features — background sync, Telegram alerts, Amazon
+  categorization. Each row ticks itself off a real stored signal (a
+  companion version, a saved Telegram token, a saved Amazon config) rather
+  than tracking wizard progress, so it can't say "done" when the underlying
+  setting was reset, or "not done" when it was configured some other way.
+  Dismissible once you no longer need it.
+- **A "Needs a category" tile** on Overview, counting uncategorized spending
+  from the last 90 days. The addon SDK exposes no category data at all, so
+  the companion now publishes the count itself on every sync
+  (`uncategorized_status`); the tile stays hidden until a companion has
+  actually published a count, rather than showing a misleading zero to
+  anyone not running one yet.
+
+### Changed
+
+- **The addon is reorganized into three tabs — Overview, Notifications,
+  Advanced — with the active tab persisted.** Overview is the daily glance:
+  alerts only when something needs you, the setup checklist, stat tiles, and
+  accounts. The old single Telegram mega-card is now three focused cards in
+  Notifications, sharing one save bar that appears only once something is
+  actually dirty. Advanced holds Auto-sync, Docker, Amazon categorization,
+  transaction rules, and a Reset connection card that now requires an
+  explicit confirmation step before it does anything destructive.
+- **New dashboard look**, built on Wealthfolio's own theme variables rather
+  than a palette baked into the addon, so light and dark still follow
+  whatever the host is set to. No emoji anywhere in the chrome — icons
+  only — and this is now enforced by a test that renders every surface,
+  including the first-run setup page, and fails on any emoji or the phrase
+  "(optional)".
+- **Plainer language throughout.** "Deep scan" replaces "Reconcile & link"
+  (the technical term survives in the button's tooltip for anyone who knows
+  it from the logs or old docs), "off by $X" replaces drift, and "opening
+  balance" replaces starting balance. The underlying stored data markers
+  were deliberately left untouched — only display copy changed, so nothing
+  about how data is written or matched shifted underneath the wording.
+
+### Fixed
+
+- **"Reset everything" left the Amazon mailbox app password sitting in
+  storage.** Three secret keys (`amazon_config`, `amazon_labels`,
+  `amazon_order_ledger`) read and write their key constants directly instead
+  of going through the map `clearAll()` iterates, so a reset that claimed to
+  clear everything quietly skipped all three — a real credential survived a
+  reset that said it removed it. The same gap left a stale "needs a
+  category" count on screen afterward. All three keys are now registered and
+  cleared like everything else.
+- **The reset confirmation understated what it does.** It said reset "clears
+  the account mapping"; it actually clears every setting — connection,
+  account mapping, sync schedule, transaction rules, and any Telegram or
+  Amazon setup. The copy now lists what's actually cleared, so nobody
+  confirms expecting to keep something that's about to be wiped.
+- **A Telegram stuck-transfer alert told users to press a button that no
+  longer exists**, saying to try "Reconcile & link" when that control is now
+  named "Deep scan". Fixed in the alert text itself and in the README
+  references that still named the old label.
+- **The setup checklist could claim background sync was unconfigured for up
+  to a minute after opening the page.** The companion's version was only
+  re-read on the 60-second refresh timer, not when the page first mounted,
+  so opening the page against a perfectly healthy companion could show the
+  background-sync row unticked until the first refresh caught up.
+
 ## [1.9.0] - 2026-08-08
 
 ### Added
