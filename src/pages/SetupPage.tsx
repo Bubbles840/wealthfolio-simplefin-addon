@@ -105,79 +105,85 @@ export function SetupPage({ ctx, store, onComplete }: Props) {
 
       {step === 1 && (
         <Card>
-          <div className="sfin-step">Step 1 of 4</div>
-          <h3 style={{ margin: '0 0 8px' }}>Connect SimpleFin</h3>
-          <p className="sfin-subtle" style={{ marginTop: 0 }}>
-            Paste your SimpleFin setup token below. Get it from your bank's SimpleFin Bridge page.
-          </p>
-          <Input
-            value={token}
-            onChange={(e) => setToken(e.target.value)}
-            placeholder="Paste setup token here"
-            style={{ width: '100%', marginBottom: 12 }}
-          />
-          <Button onClick={handleConnect} disabled={!token || loading}>
-            {loading ? 'Connecting…' : 'Connect'}
-          </Button>
+          <div className="sfin-setup-step">
+            <div className="sfin-step">Step 1 of 4</div>
+            <h3>Connect SimpleFin</h3>
+            <p className="sfin-subtle">
+              Paste your SimpleFin setup token below. Get it from your bank's SimpleFin Bridge page.
+            </p>
+            <Input
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+              placeholder="Paste setup token here"
+            />
+            <Button onClick={handleConnect} disabled={!token || loading}>
+              {loading ? 'Connecting…' : 'Connect'}
+            </Button>
+          </div>
         </Card>
       )}
 
       {step === 2 && (
         <Card>
-          <div className="sfin-step">Step 2 of 4</div>
-          <h3 style={{ margin: '0 0 8px' }}>Map accounts</h3>
-          <AccountMapper
-            ctx={ctx}
-            simplefinAccounts={sfAccounts}
-            initialMapping={mapping}
-            onSave={handleSaveMapping}
-          />
+          <div className="sfin-setup-step">
+            <div className="sfin-step">Step 2 of 4</div>
+            <h3>Map accounts</h3>
+            <AccountMapper
+              ctx={ctx}
+              simplefinAccounts={sfAccounts}
+              initialMapping={mapping}
+              onSave={handleSaveMapping}
+            />
+          </div>
         </Card>
       )}
 
       {step === 3 && (
         <Card>
-          <div className="sfin-step">Step 3 of 4</div>
-          <h3 style={{ margin: '0 0 8px' }}>Transaction rules</h3>
-          <RuleEditor rules={rules} onChange={setRules} />
-          <Button onClick={handleSaveRules} style={{ marginTop: 16 }}>
-            Save rules &amp; continue
-          </Button>
+          <div className="sfin-setup-step">
+            <div className="sfin-step">Step 3 of 4</div>
+            <h3>Transaction rules</h3>
+            <RuleEditor rules={rules} onChange={setRules} />
+            <Button onClick={handleSaveRules} className="sfin-setup-save-btn">
+              Save rules &amp; continue
+            </Button>
+          </div>
         </Card>
       )}
 
       {step === 4 && (
         <Card>
-          <div className="sfin-step">Step 4 of 4</div>
-          <h3 style={{ margin: '0 0 8px' }}>Schedule</h3>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <input
-              type="checkbox"
-              checked={autoSync}
-              onChange={(e) => setAutoSync(e.target.checked)}
-            />
-            Enable auto-sync
-          </label>
-          {autoSync && (
-            <div style={{ marginTop: 12 }}>
-              <label>Sync every:</label>
-              <Select
-                value={scheduleHours}
-                onChange={(e) => setScheduleHours(Number(e.target.value))}
-                style={{ marginLeft: 8 }}
-              >
-                <option value={4}>4 hours</option>
-                <option value={6}>6 hours</option>
-                <option value={12}>12 hours</option>
-                <option value={24}>24 hours</option>
-              </Select>
-              <p className="sfin-subtle" style={{ fontSize: 12 }}>
-                SimpleFin Bridge refreshes from your bank every few hours — syncing more than 4×/day returns no new data.
-              </p>
+          <div className="sfin-setup-step">
+            <div className="sfin-step">Step 4 of 4</div>
+            <h3>Schedule</h3>
+            <label className="sfin-setup-autosync">
+              <input
+                type="checkbox"
+                checked={autoSync}
+                onChange={(e) => setAutoSync(e.target.checked)}
+              />
+              Enable auto-sync
+            </label>
+            {autoSync && (
+              <div className="sfin-setup-schedule">
+                <label>Sync every:</label>
+                <Select
+                  value={scheduleHours}
+                  onChange={(e) => setScheduleHours(Number(e.target.value))}
+                >
+                  <option value={4}>4 hours</option>
+                  <option value={6}>6 hours</option>
+                  <option value={12}>12 hours</option>
+                  <option value={24}>24 hours</option>
+                </Select>
+                <p className="sfin-subtle">
+                  SimpleFin Bridge refreshes from your bank every few hours — syncing more than 4×/day returns no new data.
+                </p>
+              </div>
+            )}
+            <div className="sfin-setup-finish">
+              <Button onClick={handleFinish}>Finish setup</Button>
             </div>
-          )}
-          <div style={{ marginTop: 16 }}>
-            <Button onClick={handleFinish}>Finish setup</Button>
           </div>
         </Card>
       )}

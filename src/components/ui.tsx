@@ -480,6 +480,20 @@ const css = `
 .sfin-checklist-dot svg { width: 10px; height: 10px; }
 .sfin-checklist-label { flex: 1; font-size: 13px; }
 .sfin-checklist-link { border: none; background: transparent; color: #60a5fa; cursor: pointer; font-size: 12px; }
+
+/* ── Setup wizard: spacing that used to be inline style props on every step
+      of the first-run flow (SetupPage), now sourced from the one stylesheet
+      instead of scattered style props. */
+.sfin-setup-step h3 { margin: 0 0 8px; }
+/* The one-line instruction directly under a step heading. */
+.sfin-setup-step h3 + .sfin-subtle { margin-top: 0; }
+.sfin-setup-step .sfin-input { width: 100%; margin-bottom: 12px; }
+.sfin-setup-save-btn { margin-top: 16px; }
+.sfin-setup-autosync { display: flex; align-items: center; gap: 8px; }
+.sfin-setup-schedule { margin-top: 12px; }
+.sfin-setup-schedule .sfin-select { margin-left: 8px; }
+.sfin-setup-schedule .sfin-subtle { font-size: 12px; }
+.sfin-setup-finish { margin-top: 16px; }
 `;
 
 /**
