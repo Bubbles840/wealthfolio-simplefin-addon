@@ -71,6 +71,8 @@ const makeProps = () => ({
     getUiState: vi.fn(async () => ({}) as any),
     setUiState: vi.fn(async () => {}),
     getUncategorizedStatus: vi.fn(async () => null as any),
+    getDismissals: vi.fn(async () => ({}) as any),
+    setDismissals: vi.fn(async () => {}),
     clearAll: vi.fn(async () => {}),
   } as any,
   onReset: vi.fn(),
