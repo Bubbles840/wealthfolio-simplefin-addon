@@ -86,6 +86,16 @@ const KEYS = {
   // clearAll skipped it and a reset account kept showing the stale "Needs a
   // category" count from before the reset.
   uncategorizedStatus: UNCATEGORIZED_STATUS_SECRET_KEY,
+  // Same bug, same fix, for the Amazon mailbox credentials: these three read
+  // and write their key constants directly (see `getAmazonConfig` etc.) rather
+  // than through KEYS, so they were also missing from `clearAll`. That meant
+  // "Reset" — which now promises to clear "any Telegram or Amazon setup" —
+  // left the Amazon app password sitting in storage. `amazonLedger` isn't
+  // credentials, but it references the same reset mailbox and should not
+  // survive one either.
+  amazonConfig: AMAZON_CONFIG_SECRET_KEY,
+  amazonLabels: AMAZON_LABELS_SECRET_KEY,
+  amazonLedger: AMAZON_LEDGER_SECRET_KEY,
 } as const;
 
 /** One entry in the shared large-transaction outbox. Derived from `SyncResult`

@@ -3,6 +3,7 @@ import { SecretsStore } from './secrets';
 import type { MappingRule, AccountMapping } from '../../shared/types';
 import type { UiState } from './secrets';
 import { UNCATEGORIZED_STATUS_SECRET_KEY } from '../../shared/status-keys';
+import { AMAZON_LABELS_SECRET_KEY } from '../../shared/amazon-config';
 
 const makeCtx = () => {
   const store: Record<string, string> = {};
@@ -86,6 +87,36 @@ describe('SecretsStore', () => {
     expect(await s.getUncategorizedStatus()).toEqual({ count: 4, asOf: '2026-08-08' });
     await s.clearAll();
     expect(await s.getUncategorizedStatus()).toBeNull();
+  });
+
+  it('clearAll deletes the Amazon mailbox config, ledger and label catalog too', async () => {
+    // Same class of bug as uncategorized_status above: getAmazonConfig,
+    // getAmazonLabels and getAmazonLedger all read/write their key constants
+    // directly rather than through KEYS, so "Reset" used to leave the Amazon
+    // app password (and everything else Amazon) sitting in storage even
+    // though the reset copy promised to clear "any Amazon setup".
+    const ctx = makeCtx();
+    const s = new SecretsStore(ctx);
+    await s.setAmazonConfig({
+      enabled: true, host: 'imap.gmail.com', user: 'r@g.com', password: 'app-pass',
+      defaultCategory: 'Shopping', labelOverrides: {},
+    });
+    await s.setAmazonLedger({ 'order-1': { orderDate: '2026-08-01', category: 'Shopping' } } as any);
+    // No SecretsStore setter for labels — the companion writes this one
+    // directly, like uncategorized_status.
+    await ctx.api.secrets.set(AMAZON_LABELS_SECRET_KEY, JSON.stringify({
+      'Lawn & Garden': { category: 'Housing', matched: true },
+    }));
+
+    expect(await s.getAmazonConfig()).not.toBeNull();
+    expect(await s.getAmazonLedger()).not.toEqual({});
+    expect(await s.getAmazonLabels()).not.toEqual({});
+
+    await s.clearAll();
+
+    expect(await s.getAmazonConfig()).toBeNull();
+    expect(await s.getAmazonLedger()).toEqual({});
+    expect(await s.getAmazonLabels()).toEqual({});
   });
 });
 

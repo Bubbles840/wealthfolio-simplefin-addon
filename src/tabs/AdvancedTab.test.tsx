@@ -217,15 +217,19 @@ describe('AdvancedTab', () => {
     render(<SyncPage {...makeProps()} />);
     const card = (await screen.findByText('Reset connection')).closest('.sfin-danger-card');
     expect(card).toBeTruthy();
+    // Has to name everything `clearAll` actually deletes — not just the
+    // account mapping — since it undersells a destructive action otherwise.
     expect(card!.textContent).toContain(
-      'Disconnects SimpleFin and clears the account mapping. Transactions already imported into Wealthfolio stay.',
+      'Clears every SimpleFin Sync setting — the connection, account mapping, sync '
+      + 'schedule, transaction rules, and any Telegram or Amazon setup. Transactions '
+      + 'already imported into Wealthfolio stay.',
     );
   });
 
   it('reset requires an explicit confirmation step', async () => {
     const props = makeProps();
     render(<SyncPage {...props} />);
-    fireEvent.click(await screen.findByRole('button', { name: /^Reset Setup$/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /^Reset…$/ }));
     expect(props.onReset).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: /yes, reset/i }));
     await waitFor(() => expect(props.onReset).toHaveBeenCalled());
@@ -234,7 +238,7 @@ describe('AdvancedTab', () => {
   it('reset stops the scheduler and clears every stored secret before handing off', async () => {
     const props = makeProps();
     render(<SyncPage {...props} />);
-    fireEvent.click(await screen.findByRole('button', { name: /^Reset Setup$/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /^Reset…$/ }));
     fireEvent.click(screen.getByRole('button', { name: /yes, reset/i }));
     await waitFor(() => expect(props.onReset).toHaveBeenCalled());
     expect(props.scheduler.stop).toHaveBeenCalled();

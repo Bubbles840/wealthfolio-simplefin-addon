@@ -114,6 +114,16 @@ describe('OverviewTab', () => {
 
   describe('account balance chips', () => {
     /**
+     * Guards the `money()` formatter actually being used on the account row —
+     * a raw `1234.56` slipping through unformatted (no currency symbol, no
+     * thousands separator) is exactly the regression this catches.
+     */
+    it('formats the balance as currency, not as a raw number', async () => {
+      render(<SyncPage {...makeProps()} />);
+      expect(await screen.findByText('$1,234.56')).toBeInTheDocument();
+    });
+
+    /**
      * `drift: null` used to render a green "in sync" chip whichever reason it was
      * null for — and it is null both when the balances were compared and matched
      * AND when they could not be compared at all (a pending row, a run that
