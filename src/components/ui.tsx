@@ -27,12 +27,10 @@ const css = `
 }
 .sfin-subtle { color: var(--muted-foreground); font-size: 13px; }
 .sfin-card {
-  background: var(--card);
-  color: var(--card-foreground);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 16px;
-  margin-top: 16px;
+  background: var(--card, var(--background));
+  border: 1px solid var(--border, color-mix(in srgb, var(--muted-foreground) 22%, transparent));
+  border-radius: 14px; padding: 14px 16px; margin-bottom: 10px;
+  box-shadow: 0 2px 8px color-mix(in srgb, #000 24%, transparent);
 }
 .sfin-section-label {
   display: block;
@@ -47,7 +45,7 @@ const css = `
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  border-radius: calc(var(--radius) - 2px);
+  border-radius: 999px;
   border: 1px solid transparent;
   padding: 7px 14px;
   font-size: 13px;
@@ -145,14 +143,21 @@ const css = `
 .sfin-live { color: var(--primary); }
 .sfin-strip { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
 .sfin-tile {
-  background: var(--card); border: 1px solid var(--border);
-  border-radius: var(--radius); padding: 11px 14px;
+  flex: 1; border-radius: 14px; padding: 12px 14px;
+  background: var(--card, var(--background));
+  border: 1px solid var(--border, color-mix(in srgb, var(--muted-foreground) 22%, transparent));
+  border-left-width: 3px;
+  box-shadow: 0 2px 8px color-mix(in srgb, #000 24%, transparent);
 }
 .sfin-tile .sfin-section-label { margin-bottom: 3px; }
 .sfin-tile-val {
-  font-size: 20px; font-weight: 650; letter-spacing: -0.02em;
+  font-size: 21px; font-weight: 700; letter-spacing: -0.02em;
   font-variant-numeric: tabular-nums;
 }
+.sfin-tile-sub { font-size: 10px; color: var(--muted-foreground); margin-top: 2px; }
+.sfin-tile--green  { border-left-color: #4ade80; }
+.sfin-tile--blue   { border-left-color: #60a5fa; }
+.sfin-tile--purple { border-left-color: #a78bfa; }
 .sfin-card-head {
   display: flex; align-items: center; justify-content: space-between;
   gap: 12px; margin-bottom: 2px;
@@ -386,6 +391,24 @@ const css = `
 .sfin-status--ok { color: var(--success, var(--primary)); }
 .sfin-status--err { color: var(--destructive); }
 .sfin-status--busy { color: var(--muted-foreground); }
+
+/* ── Dashboard treatment additions: floating account rows, sticky save bar,
+      destructive-boundary card. New selectors — consumed by later tasks. ──── */
+/* One account per row, floating. */
+.sfin-acct-card { display: flex; justify-content: space-between; align-items: center; }
+/* Sticky save bar (Notifications tab). */
+.sfin-savebar {
+  position: sticky; bottom: 8px; display: flex; justify-content: space-between;
+  align-items: center; gap: 12px; padding: 10px 16px; border-radius: 999px;
+  background: var(--card, var(--background));
+  border: 1px solid var(--border, color-mix(in srgb, var(--muted-foreground) 30%, transparent));
+  box-shadow: 0 4px 16px color-mix(in srgb, #000 35%, transparent);
+}
+/* Destructive-boundary card for Reset. */
+.sfin-danger-card {
+  border: 1px solid color-mix(in srgb, var(--destructive) 40%, transparent);
+  border-radius: 14px; padding: 14px 16px; margin-top: 18px;
+}
 `;
 
 /** Injects the stylesheet once. Render at the addon root. */
