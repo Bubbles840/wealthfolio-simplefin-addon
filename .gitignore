@@ -5,3 +5,4 @@ companion/node_modules/
 companion/dist/
 simplefin-sync.env
 .env
+.superpowers/
