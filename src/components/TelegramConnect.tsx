@@ -1,26 +1,21 @@
 import React, { useState } from 'react';
 import type { AddonContext } from '@wealthfolio/addon-sdk';
-import { Button, CollapsibleCard, Disclosure } from './ui';
+import { Button, CollapsibleCard, Disclosure, statusToneClass } from './ui';
+import type { StatusMessage } from './ui';
 import { sendTelegramMessage } from '../../shared/telegram';
 import { NOTIF_CARD } from '../tabs/NotificationsTab';
 import type { TelegramCfgDraft, CfgPatch } from '../tabs/NotificationsTab';
-
-/** Tone class for the Telegram status line. Keyed off the ✅/❌ prefix the
- *  message already carries, so nothing is signalled by colour alone. */
-function telegramStatusTone(status: string): string {
-  if (status.startsWith('✅')) return 'sfin-status--ok';
-  if (status.startsWith('❌')) return 'sfin-status--err';
-  return 'sfin-status--busy';
-}
 
 interface Props {
   cfg: TelegramCfgDraft;
   onChange: (patch: CfgPatch) => void;
   ctx: AddonContext;
   /** Owned by the tab because a save reports through it too, and the save bar
-   *  lives outside this card. */
-  status: string | null;
-  onStatus: (status: string | null) => void;
+   *  lives outside this card. `{ text, tone }` rather than a bare string: the
+   *  tone used to be recovered by sniffing a ✅/❌ prefix off the text, which
+   *  made the emoji load-bearing — see `statusToneClass`. */
+  status: StatusMessage | null;
+  onStatus: (status: StatusMessage | null) => void;
   isOpen: (id: string) => boolean;
   toggleCard: (id: string) => void;
 }
@@ -68,7 +63,7 @@ export function TelegramConnect({
             <li>Copy the HTTP API <strong>Token</strong> (e.g. <code>123456789:ABCdefGHI...</code>).</li>
             <li>Open Telegram and send a message <code>/start</code> to your new bot.</li>
             <li>Search Telegram for <strong>@userinfobot</strong> and send any message to get your numeric <strong>Chat ID</strong> (e.g. <code>987654321</code>).</li>
-            <li>Paste your Bot Token and Chat ID below, then click <strong>Send Test Message</strong>!</li>
+            <li>Paste your bot token and chat ID below, then click <strong>Send test message</strong>.</li>
           </ol>
         </Disclosure>
       </div>
@@ -78,7 +73,7 @@ export function TelegramConnect({
             labels are actually tied to their inputs. */}
         <div className="sfin-fields">
           <div>
-            <label htmlFor="sfin-bot-token" className="sfin-subtle">Bot Token</label>
+            <label htmlFor="sfin-bot-token" className="sfin-subtle">Bot token</label>
             <input
               id="sfin-bot-token"
               type="password"
@@ -101,13 +96,13 @@ export function TelegramConnect({
           </div>
         </div>
 
-        {/* role="status" so the send/save result is announced, and the ✅/❌
-            prefix stays: the colour is a reinforcement, never the only signal.
-            The in-flight "Sending…" message carries neither prefix and is not
-            painted destructive-red for having failed no test yet. */}
+        {/* role="status" so the send/save result is announced — the words say
+            what happened, and the colour only reinforces it. The in-flight
+            "Sending…" message carries the `busy` tone and so is never painted
+            destructive-red for having failed no test yet. */}
         {status && (
-          <div role="status" className={`sfin-status ${telegramStatusTone(status)}`}>
-            {status}
+          <div role="status" className={`sfin-status ${statusToneClass(status.tone)}`}>
+            {status.text}
           </div>
         )}
 
@@ -117,7 +112,7 @@ export function TelegramConnect({
             disabled={testing || !connected}
             onClick={async () => {
               setTesting(true);
-              onStatus('Sending test message...');
+              onStatus({ text: 'Sending test message…', tone: 'busy' });
               try {
                 const timeoutPromise = new Promise<{ ok: false; description: string }>((_, reject) =>
                   setTimeout(() => reject(new Error('Request timed out after 5 seconds')), 5000)
@@ -132,19 +127,19 @@ export function TelegramConnect({
 
                 const res = await Promise.race([sendPromise, timeoutPromise]);
                 if (res.ok) {
-                  onStatus('✅ Test message sent successfully to Telegram!');
+                  onStatus({ text: 'Test message sent.', tone: 'ok' });
                 } else {
-                  onStatus(`❌ Error sending message: ${res.description}`);
+                  onStatus({ text: `Error sending message: ${res.description}`, tone: 'error' });
                 }
               } catch (err) {
                 console.error('[Telegram Debug Error]:', err);
-                onStatus(`❌ Error: ${(err as Error).message}`);
+                onStatus({ text: `Error: ${(err as Error).message}`, tone: 'error' });
               } finally {
                 setTesting(false);
               }
             }}
           >
-            {testing ? 'Sending...' : 'Send Test Message'}
+            {testing ? 'Sending…' : 'Send test message'}
           </Button>
         </div>
       </div>

@@ -1,7 +1,10 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
 import { SyncPage } from './SyncPage';
 import { runSync, INTERVAL_SKIP_MESSAGE } from '../utils/sync';
+// Shared with copy-policy.test.tsx, so the copy policy is proved against the
+// same page state the behaviour tests use.
+import { makeProps } from './test-props';
 
 // The real INTERVAL_SKIP_MESSAGE has to travel through the mock: SyncPage
 // compares the sync's single error against it to tell "skipped, offer to force"
@@ -15,62 +18,6 @@ vi.mock('../utils/sync', async (importOriginal) => {
   };
 });
 
-const makeProps = () => ({
-  ctx: {
-    api: {
-      accounts: { getAll: vi.fn(async () => [{ id: 'wf-a', name: 'Checking' }]) },
-      navigation: { navigate: vi.fn(async () => {}) },
-    },
-  } as any,
-  store: {
-    getLastSyncAt: vi.fn(async () => new Date('2024-01-01T10:00:00Z')),
-    getAccountMapping: vi.fn(async () => ({ 'sfin-1': 'wf-a', 'sfin-2': 'wf-b' })),
-    getMappingRules: vi.fn(async () => []),
-    getSyncScheduleHours: vi.fn(async () => 6),
-    getAccessUrl: vi.fn(async () => 'https://u:p@bridge.simplefin.org/simplefin'),
-    getAccountNames: vi.fn(async () => ({ 'sfin-1': 'Growth', 'sfin-2': 'Spend' })),
-    setAccountNames: vi.fn(),
-    getAccountBalances: vi.fn(async () => ({
-      'sfin-1': { balance: 1234.56, currency: 'USD', date: 1700000000, drift: null },
-      'sfin-2': { balance: -420.1, currency: 'USD', date: 1700000000, drift: 15.22 },
-    })),
-    getAuthB64Key: vi.fn(async () => 'simplefin_auth_b64'),
-    setLastSyncAt: vi.fn(),
-    setSyncScheduleHours: vi.fn(),
-    getAutoHeal: vi.fn(async () => false),
-    setAutoHeal: vi.fn(),
-    getAutoAdjust: vi.fn(async () => false),
-    setAutoAdjust: vi.fn(),
-    getTelegramConfig: vi.fn(async () => null),
-    setTelegramConfig: vi.fn(),
-    getAvailableReportCategories: vi.fn(async () => [] as string[]),
-    getReportCategoryCatalog: vi.fn(async () => [] as any[]),
-    // Amazon categorization unconfigured, which is every test here except the
-    // Amazon card ones.
-    getLastSyncImported: vi.fn(async () => null),
-    setLastSyncImported: vi.fn(async () => {}),
-    getAmazonConfig: vi.fn(async () => null),
-    setAmazonConfig: vi.fn(async () => {}),
-    getAmazonLabels: vi.fn(async () => ({})),
-    getReportGlyphStyle: vi.fn(async () => ({ mode: 'clean' as const, overrides: {} })),
-    setReportGlyphStyle: vi.fn(async () => {}),
-    getSubcategoryDisplay: vi.fn(async () => 'rollup' as const),
-    setSubcategoryDisplay: vi.fn(async () => {}),
-    getCompanionVersion: vi.fn(async () => null),
-    getOpenCards: vi.fn(async () => ({}) as Record<string, boolean>),
-    // async, like the real SecretsStore method — the page fires it and forgets,
-    // so it has to be thenable
-    setOpenCards: vi.fn(async () => {}),
-    // Page-level UI state (active tab, checklist dismissal) and the companion's
-    // uncategorized count. Overview reads all three; see OverviewTab.test.tsx.
-    getUiState: vi.fn(async () => ({}) as any),
-    setUiState: vi.fn(async () => {}),
-    getUncategorizedStatus: vi.fn(async () => null as any),
-  } as any,
-  onReset: vi.fn(),
-  scheduler: { start: vi.fn(), stop: vi.fn(), isRunning: vi.fn(() => false) } as any,
-});
-
 /**
  * Only one tab panel is mounted at a time, so a test that touches content on
  * another tab has to switch to it first — exactly as the user does. Matched by
@@ -78,6 +25,20 @@ const makeProps = () => ({
  */
 async function switchTab(name: RegExp) {
   fireEvent.click(await screen.findByRole('tab', { name }));
+}
+
+/**
+ * A button in the shell header, specifically.
+ *
+ * `Deep scan` is now the name in BOTH places that fire it — the header and the
+ * off-balance banner — because one operation (one `healing` flag) must not have
+ * two names. That makes a bare `getByRole('button', { name: /deep scan/i })`
+ * ambiguous whenever a drift banner is on screen, which the default props put
+ * there. Scoping to the header is the fix; the ambiguity itself is the feature.
+ */
+function headerButton(name: RegExp | string): HTMLElement {
+  return within(document.querySelector('.sfin-head-actions') as HTMLElement)
+    .getByRole('button', { name });
 }
 
 /**
@@ -109,7 +70,7 @@ describe('SyncPage', () => {
     // still wired into the page and the page's own controls render beside it.)
     render(<SyncPage {...makeProps()} />);
     await waitFor(() => expect(screen.getByRole('button', { name: /sync now/i })).toBeInTheDocument());
-    expect(screen.getByRole('button', { name: /deep scan/i })).toBeInTheDocument();
+    expect(headerButton(/deep scan/i)).toBeInTheDocument();
     expect(screen.getByText('Accounts synced')).toBeInTheDocument();
   });
 
@@ -118,8 +79,8 @@ describe('SyncPage', () => {
     // logs, the docs and the companion — so it stays reachable on hover rather
     // than being deleted outright.
     render(<SyncPage {...makeProps()} />);
-    const deepScan = await screen.findByRole('button', { name: /deep scan/i });
-    expect(deepScan.getAttribute('title')).toBe(
+    await screen.findByText('Accounts synced');
+    expect(headerButton(/deep scan/i).getAttribute('title')).toBe(
       'Re-scans the last 90 days and re-links transfer pairs (reconcile & link)',
     );
   });
@@ -130,12 +91,13 @@ describe('SyncPage', () => {
     let release: (v: any) => void = () => {};
     vi.mocked(runSync).mockImplementationOnce(() => new Promise((res) => { release = res; }));
     render(<SyncPage {...makeProps()} />);
-    fireEvent.click(await screen.findByRole('button', { name: /deep scan/i }));
+    await screen.findByText('Accounts synced');
+    fireEvent.click(headerButton(/deep scan/i));
 
-    expect(await screen.findByRole('button', { name: 'Deep scanning…' })).toBeTruthy();
+    await waitFor(() => expect(headerButton('Deep scanning…')).toBeTruthy());
     expect(screen.queryByText(/Reconciling/i)).toBeNull();
     release({ imported: 0, skipped: 0, errors: [] });
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Deep scan' })).toBeTruthy());
+    await waitFor(() => expect(headerButton('Deep scan')).toBeTruthy());
   });
 
   // ── The sync error path ────────────────────────────────────────────────
@@ -229,7 +191,7 @@ describe('SyncPage', () => {
     // The header buttons work from every tab, which is what makes hazard 1 below
     // possible in the first place.
     expect(screen.getByRole('button', { name: /sync now/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /deep scan/i })).toBeInTheDocument();
+    expect(headerButton(/deep scan/i)).toBeInTheDocument();
   });
 
   it('persists the active tab across mounts', async () => {

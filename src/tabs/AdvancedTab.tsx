@@ -87,7 +87,7 @@ export function AdvancedTab({ ctx, store, scheduler, onReset, categories, isOpen
   // Auto-sync summary also replaces the Overview's old auto-sync stat tile,
   // deleted on the understanding that this header carries that information now.
   const autoSyncSummary = `${scheduleHours ? `Every ${scheduleHours}h` : 'Off'} · ${
-    autoAdjust ? 'aggressive auto-heal' : autoHeal ? 'auto-heal on' : 'auto-heal off'
+    autoAdjust ? 'aggressive auto re-scan' : autoHeal ? 'auto re-scan on' : 'auto re-scan off'
   }`;
 
   const rulesSummary =
@@ -106,7 +106,7 @@ export function AdvancedTab({ ctx, store, scheduler, onReset, categories, isOpen
       >
         <div className="sfin-field-row">
           <label htmlFor="sfin-interval" className="sfin-section-label">
-            Auto-Sync interval
+            Auto-sync interval
           </label>
           <select
             id="sfin-interval"
@@ -136,7 +136,12 @@ export function AdvancedTab({ ctx, store, scheduler, onReset, categories, isOpen
               }}
             />
             <span>
-              <span className="sfin-check-name">Auto-heal</span>
+              {/* Plain label; the title keeps the term the logs, the docs and the
+                  companion's own setting use, exactly as the header's Deep scan
+                  button does. */}
+              <span className="sfin-check-name" title="Called auto-heal in the logs and in the companion">
+                Auto re-scan
+              </span>
               <span className="sfin-subtle">
                 {' '}— re-scan ~45 days each sync to catch missing transactions and check
                 balances. Balance adjustments stay manual.
@@ -154,7 +159,12 @@ export function AdvancedTab({ ctx, store, scheduler, onReset, categories, isOpen
               }}
             />
             <span>
-              <span className="sfin-check-name">Aggressively auto-heal</span>
+              <span
+                className="sfin-check-name"
+                title="Called aggressive auto-heal in the logs and in the companion"
+              >
+                Aggressively auto re-scan
+              </span>
               <span className="sfin-subtle">
                 {' '}— also auto-insert balance adjustments for any residual, without asking
                 (includes the re-scan). Forces balances to match your bank on every sync.
@@ -231,7 +241,7 @@ export function AdvancedTab({ ctx, store, scheduler, onReset, categories, isOpen
       </CollapsibleCard>
 
       <div className="sfin-callout sfin-advanced-callout">
-        💡 Imported bank transactions appear under <strong>Activities</strong>. To see them in the{' '}
+        Imported bank transactions appear under <strong>Activities</strong>. To see them in the{' '}
         <strong>Spending</strong> tab with categories and budgets, enable the Spending Tracker for
         your mapped accounts: <strong>Settings → Spending Tracker</strong>.
       </div>

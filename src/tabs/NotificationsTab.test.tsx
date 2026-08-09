@@ -803,8 +803,8 @@ describe('NotificationsTab', () => {
     props.store.setTelegramConfig = vi.fn(async () => {});
     render(<SyncPage {...props} />);
     await openReports();
-    const toggle = screen.getByLabelText(/Balance drift alerts/i) as HTMLInputElement;
-    const amount = screen.getByLabelText(/Balance drift alert threshold/i) as HTMLInputElement;
+    const toggle = screen.getByLabelText(/Balance difference alerts/i) as HTMLInputElement;
+    const amount = screen.getByLabelText(/Balance difference alert threshold/i) as HTMLInputElement;
     // The opposite default to large-tx, from the same "absent" state.
     expect(toggle.checked).toBe(true);
     expect(amount.value).toBe('100');
@@ -824,8 +824,8 @@ describe('NotificationsTab', () => {
     props.store.setTelegramConfig = vi.fn(async () => {});
     render(<SyncPage {...props} />);
     await openReports();
-    const toggle = screen.getByLabelText(/Balance drift alerts/i) as HTMLInputElement;
-    const amount = screen.getByLabelText(/Balance drift alert threshold/i) as HTMLInputElement;
+    const toggle = screen.getByLabelText(/Balance difference alerts/i) as HTMLInputElement;
+    const amount = screen.getByLabelText(/Balance difference alert threshold/i) as HTMLInputElement;
 
     fireEvent.click(toggle);
     expect(amount.disabled).toBe(true);
@@ -844,9 +844,9 @@ describe('NotificationsTab', () => {
     props.store.getTelegramConfig = vi.fn(async () => ({ ...bareConfig(), driftAlertThreshold: 0 }));
     render(<SyncPage {...props} />);
     await openReports();
-    expect((screen.getByLabelText(/Balance drift alerts/i) as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByLabelText(/Balance difference alerts/i) as HTMLInputElement).checked).toBe(false);
     // Surfaced on the collapsed header too, since it is a non-default state.
-    expect(screen.getByText(/drift alerts off/)).toBeInTheDocument();
+    expect(screen.getByText(/balance alerts off/)).toBeInTheDocument();
   });
 
   it('clearing an enabled threshold falls back to its default instead of storing a contradictory 0', async () => {
@@ -858,7 +858,7 @@ describe('NotificationsTab', () => {
     render(<SyncPage {...props} />);
     await openReports();
     fireEvent.change(screen.getByLabelText(/Large transaction alert threshold/i), { target: { value: '' } });
-    fireEvent.change(screen.getByLabelText(/Balance drift alert threshold/i), { target: { value: '' } });
+    fireEvent.change(screen.getByLabelText(/Balance difference alert threshold/i), { target: { value: '' } });
     await save();
     await waitFor(() => expect(props.store.setTelegramConfig).toHaveBeenCalled());
     const saved = savedConfig(props);

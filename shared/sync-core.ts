@@ -1380,7 +1380,7 @@ export async function runSyncCore(
     // path the relink sweep uses — before the plan's own save, so a re-create
     // could never collide with a row being removed.
     //
-    // Only on heal (`↻ Reconcile & link`, or auto-heal). `heal` rather than
+    // Only on heal (the `Deep scan` button, or auto re-scan). `heal` rather than
     // `opts.heal` deliberately: a user who turned auto-heal on has asked for
     // exactly this kind of repair to happen unattended, and both paths re-scan a
     // wide window, which is what gives the sweep the feed evidence it needs. A
