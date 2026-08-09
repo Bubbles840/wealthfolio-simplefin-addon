@@ -141,7 +141,16 @@ const css = `
   gap: 16px; margin-bottom: 16px;
 }
 .sfin-live { color: var(--primary); }
-.sfin-strip { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+/* Columns come from the tiles that are actually rendered, never from a fixed
+   count. Overview shows two tiles or three — "Needs a category" only exists once
+   the companion has published one — and a repeat(3, 1fr) template left the
+   two-tile case filling 2/3 of the width beside a phantom empty column. Column
+   auto-flow with no template gives one equal column per child, so it fits
+   either case (and any future tile) without a modifier class or inline style. */
+.sfin-strip {
+  display: grid; grid-auto-flow: column; grid-auto-columns: 1fr;
+  gap: 10px; margin-top: 16px;
+}
 .sfin-tile {
   flex: 1; border-radius: 14px; padding: 12px 14px;
   background: var(--card, var(--background));
@@ -162,17 +171,10 @@ const css = `
   display: flex; align-items: center; justify-content: space-between;
   gap: 12px; margin-bottom: 2px;
 }
-.sfin-acct {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: 16px; padding: 12px 0; border-top: 1px solid var(--border);
-}
-.sfin-acct--link {
-  cursor: pointer; margin: 0 -10px; padding-left: 10px; padding-right: 10px;
-  border-radius: 10px; transition: background 0.12s;
-}
-.sfin-acct--link:hover { background: var(--muted); }
-.sfin-acct--link:focus-visible { outline: 2px solid var(--ring, var(--primary)); outline-offset: -2px; }
 .sfin-acct-left { display: flex; align-items: center; gap: 12px; min-width: 0; }
+/* Lets the name ellipsis rather than push the balance off the row. */
+.sfin-acct-ident { min-width: 0; }
+.sfin-acct-gone { color: var(--destructive); }
 .sfin-avatar {
   width: 34px; height: 34px; flex: none; border-radius: 9px;
   background: color-mix(in srgb, var(--primary) 16%, transparent);
@@ -237,6 +239,12 @@ const css = `
   padding: 12px 14px; font-size: 13px; line-height: 1.5; margin-top: 16px;
 }
 .sfin-banner-wait b { color: var(--foreground); font-weight: 600; }
+/* Shared innards of both banners, previously repeated as inline styles on every
+   one of them. Same values, so the banners look exactly as they did. */
+.sfin-banner-body { flex: 1; min-width: 0; }
+.sfin-banner-note { margin-top: 4px; opacity: 0.85; }
+.sfin-banner-actions { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.sfin-banner-list { margin: 8px 0 0; padding-left: 18px; }
 
 /* ── Settings primitives: label/control rows, field grids, checkbox lists,
       inset panels, the report-category matrix. All themed off the host's own
@@ -394,8 +402,17 @@ const css = `
 
 /* ── Dashboard treatment additions: floating account rows, sticky save bar,
       destructive-boundary card. New selectors — consumed by later tasks. ──── */
-/* One account per row, floating. */
-.sfin-acct-card { display: flex; justify-content: space-between; align-items: center; }
+/* One account per row, floating. Stacked rather than a grid: each row spans the
+   width, so a balance and its chip sit under nothing but their own account. */
+.sfin-acct-card { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+.sfin-accts { margin-top: 16px; }
+.sfin-accts .sfin-card-head { margin-bottom: 8px; }
+.sfin-accts-asof { font-size: 11.5px; }
+/* Only a row whose Wealthfolio account still exists is clickable, so only that
+   row advertises it. */
+.sfin-acct-card--link { cursor: pointer; transition: background 0.12s; }
+.sfin-acct-card--link:hover { background: var(--muted); }
+.sfin-acct-card--link:focus-visible { outline: 2px solid var(--ring, var(--primary)); outline-offset: -2px; }
 /* Sticky save bar (Notifications tab). */
 .sfin-savebar {
   position: sticky; bottom: 8px; display: flex; justify-content: space-between;

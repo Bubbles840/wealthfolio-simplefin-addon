@@ -61,6 +61,11 @@ const makeProps = () => ({
     // async, like the real SecretsStore method — the page fires it and forgets,
     // so it has to be thenable
     setOpenCards: vi.fn(async () => {}),
+    // Page-level UI state (active tab, checklist dismissal) and the companion's
+    // uncategorized count. Overview reads all three; see OverviewTab.test.tsx.
+    getUiState: vi.fn(async () => ({}) as any),
+    setUiState: vi.fn(async () => {}),
+    getUncategorizedStatus: vi.fn(async () => null as any),
   } as any,
   onReset: vi.fn(),
   scheduler: { start: vi.fn(), stop: vi.fn(), isRunning: vi.fn(() => false) } as any,
@@ -304,23 +309,6 @@ describe('SyncPage', () => {
     await waitFor(() => expect(screen.getByText(/5 transactions/i)).toBeInTheDocument());
   });
 
-  it('shows account names instead of raw IDs in the mapping list', async () => {
-    render(<SyncPage {...makeProps()} />);
-    await waitFor(() => expect(screen.getByText(/Growth/)).toBeInTheDocument());
-    expect(screen.getByText(/Checking/)).toBeInTheDocument();
-    // The account row must show the name, not the raw SimpleFin ID
-    const growthRow = screen.getByText(/Growth/).closest('.sfin-acct');
-    expect(growthRow?.textContent).not.toContain('sfin-1');
-  });
-
-  it('navigates to the Wealthfolio account when a mapped row is clicked', async () => {
-    const props = makeProps();
-    render(<SyncPage {...props} />);
-    await waitFor(() => expect(screen.getByText(/Growth/)).toBeInTheDocument());
-    fireEvent.click(screen.getByText(/Growth/).closest('.sfin-acct')!);
-    expect(props.ctx.api.navigation.navigate).toHaveBeenCalledWith('/accounts/wf-a');
-  });
-
   it('changing the interval saves it and restarts the scheduler', async () => {
     const props = makeProps();
     render(<SyncPage {...props} />);
@@ -459,43 +447,6 @@ describe('SyncPage', () => {
         expect.objectContaining({ dailyReportCategories: 'all' }),
       );
     });
-  });
-
-  // ── Pruned duplicates ──────────────────────────────────────────────────
-  it('reports the duplicate rows a reconcile deleted, with what each one was', async () => {
-    // Automatic deletion of financial records must not be silent, and Telegram
-    // is optional — so the page itself has to say what vanished.
-    vi.mocked(runSync).mockResolvedValueOnce({
-      imported: 0, skipped: 2, errors: [],
-      prunedDuplicates: [
-        { sfinAccountId: 'sfin-1', accountName: 'Savings', txId: 'TRN-3917f117',
-          description: 'PNC BANK 1234 Transfer', date: '2026-07-27', amountCents: 130000,
-          currency: 'USD', wfId: 'act-2' },
-        { sfinAccountId: 'sfin-1', accountName: 'Savings', txId: 'TRN-ce426394',
-          description: 'Monthly Interest Paid', date: '2026-06-30', amountCents: 250,
-          currency: 'USD', wfId: 'act-4' },
-      ],
-    } as any);
-    render(<SyncPage {...makeProps()} />);
-    await waitFor(() => screen.getByRole('button', { name: /reconcile & link/i }));
-    fireEvent.click(screen.getByRole('button', { name: /reconcile & link/i }));
-
-    const banner = await screen.findByText(/Removed 2 duplicate activities/i);
-    const box = banner.closest('.sfin-banner-warn')!;
-    expect(box.textContent).toContain('$1,300.00');
-    expect(box.textContent).toContain('PNC BANK 1234 Transfer');
-    expect(box.textContent).toContain('2026-07-27');
-    expect(box.textContent).toContain('$2.50');
-    expect(box.textContent).toContain('Monthly Interest Paid');
-    expect(box.textContent).toContain('Savings');
-  });
-
-  it('says nothing about duplicates when a sync pruned none', async () => {
-    render(<SyncPage {...makeProps()} />);
-    await waitFor(() => screen.getByRole('button', { name: /sync now/i }));
-    fireEvent.click(screen.getByRole('button', { name: /sync now/i }));
-    await waitFor(() => expect(screen.getByText(/5 transactions/i)).toBeInTheDocument());
-    expect(screen.queryByText(/duplicate activit/i)).not.toBeInTheDocument();
   });
 
   // ── Collapsible config cards ───────────────────────────────────────────
@@ -956,97 +907,6 @@ describe('SyncPage', () => {
       expect(props.store.setTelegramConfig).toHaveBeenCalledWith(
         expect.objectContaining({ dailyReportCategories: ['Travel'] }),
       );
-    });
-  });
-
-  describe('account balance chips', () => {
-    /**
-     * `drift: null` used to render a green "in sync" chip whichever reason it was
-     * null for — and it is null both when the balances were compared and matched
-     * AND when they could not be compared at all (a pending row, a run that
-     * reconciled anything, a create the host refused). Claiming "in sync" for the
-     * second case is asserting a verification that never happened, and it is how
-     * two phantom drift episodes on one account got read as verified balances.
-     */
-    it('says "in sync" only when the run actually compared the balances', async () => {
-      const props = makeProps();
-      props.store.getAccountBalances = vi.fn(async () => ({
-        'sfin-1': { balance: 1234.56, currency: 'USD', date: 1700000000, drift: null, measured: true },
-        'sfin-2': { balance: 10, currency: 'USD', date: 1700000000, drift: null, measured: false },
-      })) as any;
-      render(<SyncPage {...props} />);
-
-      expect(await screen.findByText('in sync')).toBeTruthy();
-      expect(screen.getByText('not checked')).toBeTruthy();
-      // One of each — the two states are not collapsed back together.
-      expect(screen.getAllByText('in sync')).toHaveLength(1);
-      expect(screen.getAllByText('not checked')).toHaveLength(1);
-    });
-
-    it('treats a snapshot with no `measured` field as not checked', async () => {
-      // Written by an older build, which proves nothing about the current state
-      // either. Absent must not read as verified.
-      const props = makeProps();
-      props.store.getAccountBalances = vi.fn(async () => ({
-        'sfin-1': { balance: 1234.56, currency: 'USD', date: 1700000000, drift: null },
-      })) as any;
-      render(<SyncPage {...props} />);
-
-      expect(await screen.findByText('not checked')).toBeTruthy();
-      expect(screen.queryByText('in sync')).toBeNull();
-    });
-
-    it('still shows a real drift as off-by, whatever `measured` says', async () => {
-      // A reported figure outranks the flag: it was measurable by definition, and
-      // the amount is the actionable part.
-      const props = makeProps();
-      props.store.getAccountBalances = vi.fn(async () => ({
-        'sfin-1': { balance: 100, currency: 'USD', date: 1700000000, drift: 15.22, measured: true },
-      })) as any;
-      render(<SyncPage {...props} />);
-
-      // getAllBy, because the drift banner above the list says "off by" too — the
-      // point here is the CHIP, and that it is not the muted one.
-      expect((await screen.findAllByText(/off by/)).length).toBeGreaterThan(0);
-      expect(screen.queryByText('not checked')).toBeNull();
-      expect(screen.queryByText('in sync')).toBeNull();
-    });
-  });
-
-
-  describe('imported-last-run tile', () => {
-    it('shows the stored count on mount, without a sync in this session', async () => {
-      // It used to be React state only, set when the user clicked Sync Now — so the
-      // tile read "—" after every reload, and permanently for anyone whose syncing
-      // is done by the companion. The label says "Imported last run", and the last
-      // run is usually not one this page performed.
-      const props = makeProps();
-      props.store.getLastSyncImported = vi.fn(async () => 7) as any;
-      render(<SyncPage {...props} />);
-
-      const tile = (await screen.findByText(/Imported last run/i)).closest('.sfin-tile');
-      expect(tile?.textContent).toContain('7');
-    });
-
-    it('shows a stored zero as 0, not as unknown', async () => {
-      // "The last run imported nothing" is information, and distinct from "no run
-      // has ever reported".
-      const props = makeProps();
-      props.store.getLastSyncImported = vi.fn(async () => 0) as any;
-      render(<SyncPage {...props} />);
-
-      const tile = (await screen.findByText(/Imported last run/i)).closest('.sfin-tile');
-      expect(tile?.textContent).toContain('0');
-      expect(tile?.textContent).not.toContain('—');
-    });
-
-    it('falls back to — when nothing has ever been recorded', async () => {
-      const props = makeProps();
-      props.store.getLastSyncImported = vi.fn(async () => null) as any;
-      render(<SyncPage {...props} />);
-
-      const tile = (await screen.findByText(/Imported last run/i)).closest('.sfin-tile');
-      expect(tile?.textContent).toContain('—');
     });
   });
 
