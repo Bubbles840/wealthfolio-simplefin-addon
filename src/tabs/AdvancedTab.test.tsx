@@ -1,0 +1,244 @@
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { describe, it, expect, vi } from 'vitest';
+import { SyncPage } from '../pages/SyncPage';
+
+/**
+ * Integration-level, on purpose — moved here wholesale from SyncPage.test.tsx
+ * when the Auto-sync/Docker/Amazon/Transaction-rules cards and the Reset flow
+ * became this tab.
+ *
+ * These still render `<SyncPage/>`: the tab owns none of its data loading
+ * independent of the page's open-card map and category catalog, so mounting
+ * the tab alone would prove only that props render. What regressed
+ * historically was always the whole path from a stored secret through the
+ * controls and back — which is exactly what these assert, unchanged from
+ * before the split.
+ */
+vi.mock('../utils/sync', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../utils/sync')>();
+  return {
+    INTERVAL_SKIP_MESSAGE: actual.INTERVAL_SKIP_MESSAGE,
+    runSync: vi.fn(async () => ({ imported: 5, skipped: 1, errors: [] })),
+  };
+});
+
+const makeProps = () => ({
+  ctx: {
+    api: {
+      accounts: { getAll: vi.fn(async () => [{ id: 'wf-a', name: 'Checking' }]) },
+      navigation: { navigate: vi.fn(async () => {}) },
+    },
+  } as any,
+  store: {
+    getLastSyncAt: vi.fn(async () => new Date('2024-01-01T10:00:00Z')),
+    getAccountMapping: vi.fn(async () => ({ 'sfin-1': 'wf-a', 'sfin-2': 'wf-b' })),
+    getMappingRules: vi.fn(async () => []),
+    getSyncScheduleHours: vi.fn(async () => 6),
+    getAccessUrl: vi.fn(async () => 'https://u:p@bridge.simplefin.org/simplefin'),
+    getAccountNames: vi.fn(async () => ({ 'sfin-1': 'Growth', 'sfin-2': 'Spend' })),
+    setAccountNames: vi.fn(),
+    getAccountBalances: vi.fn(async () => ({
+      'sfin-1': { balance: 1234.56, currency: 'USD', date: 1700000000, drift: null },
+      'sfin-2': { balance: -420.1, currency: 'USD', date: 1700000000, drift: 15.22 },
+    })),
+    getAuthB64Key: vi.fn(async () => 'simplefin_auth_b64'),
+    setLastSyncAt: vi.fn(),
+    setSyncScheduleHours: vi.fn(),
+    getAutoHeal: vi.fn(async () => false),
+    setAutoHeal: vi.fn(),
+    getAutoAdjust: vi.fn(async () => false),
+    setAutoAdjust: vi.fn(),
+    getTelegramConfig: vi.fn(async () => null),
+    setTelegramConfig: vi.fn(),
+    getAvailableReportCategories: vi.fn(async () => [] as string[]),
+    getReportCategoryCatalog: vi.fn(async () => [] as any[]),
+    // Amazon categorization unconfigured, which is every test here except the
+    // Amazon card ones.
+    getLastSyncImported: vi.fn(async () => null),
+    setLastSyncImported: vi.fn(async () => {}),
+    getAmazonConfig: vi.fn(async () => null),
+    setAmazonConfig: vi.fn(async () => {}),
+    getAmazonLabels: vi.fn(async () => ({})),
+    getReportGlyphStyle: vi.fn(async () => ({ mode: 'clean' as const, overrides: {} })),
+    setReportGlyphStyle: vi.fn(async () => {}),
+    getSubcategoryDisplay: vi.fn(async () => 'rollup' as const),
+    setSubcategoryDisplay: vi.fn(async () => {}),
+    getCompanionVersion: vi.fn(async () => null),
+    getOpenCards: vi.fn(async () => ({}) as Record<string, boolean>),
+    // async, like the real SecretsStore method — the page fires it and forgets,
+    // so it has to be thenable
+    setOpenCards: vi.fn(async () => {}),
+    getUiState: vi.fn(async () => ({}) as any),
+    setUiState: vi.fn(async () => {}),
+    getUncategorizedStatus: vi.fn(async () => null as any),
+    clearAll: vi.fn(async () => {}),
+  } as any,
+  onReset: vi.fn(),
+  scheduler: { start: vi.fn(), stop: vi.fn(), isRunning: vi.fn(() => false) } as any,
+});
+
+/**
+ * The config cards ship collapsed, and a collapsed panel is unmounted — so a
+ * test that touches a control inside one has to open it first, exactly as the
+ * user does. Matches the disclosure header by its accessible name, which is the
+ * title plus its summary line, hence the anchored patterns. Idempotent.
+ */
+async function openSection(name: RegExp) {
+  const header = await screen.findByRole('button', { name });
+  if (header.getAttribute('aria-expanded') !== 'true') fireEvent.click(header);
+  return header;
+}
+
+describe('AdvancedTab', () => {
+
+  it('changing the interval saves it and restarts the scheduler', async () => {
+    const props = makeProps();
+    render(<SyncPage {...props} />);
+    await openSection(/^Auto-sync/i);
+    const select = await screen.findByLabelText(/auto-sync interval/i);
+    fireEvent.change(select, { target: { value: '8' } });
+    await waitFor(() => expect(props.store.setSyncScheduleHours).toHaveBeenCalledWith(8));
+    expect(props.scheduler.start).toHaveBeenCalledWith(8, expect.any(Function), expect.any(Function));
+  });
+
+  // ── Collapsible config cards ───────────────────────────────────────────
+  it('keeps every config card collapsed until asked for', async () => {
+    const props = makeProps();
+    render(<SyncPage {...props} />);
+    await waitFor(() => expect(screen.getByRole('button', { name: /sync now/i })).toBeInTheDocument());
+
+    // Collapsed: the controls inside each config card are absent from the DOM,
+    // not merely hidden.
+    expect(screen.queryByLabelText(/auto-sync interval/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/Bot Token/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/Monthly Wrap-Up/i)).not.toBeInTheDocument();
+    expect(screen.queryByText('+ Add rule')).not.toBeInTheDocument();
+    expect(screen.queryByText(/docker-compose\.yml/)).not.toBeInTheDocument();
+    // The Telegram card became three, so three headers here rather than one.
+    for (const name of [
+      /^Auto-sync/i, /^Background sync/i, /^Telegram connection/i, /^Reports/i,
+      /^Report content/i, /^Transaction rules/i,
+    ]) {
+      expect(screen.getByRole('button', { name }).getAttribute('aria-expanded')).toBe('false');
+    }
+  });
+
+  it('gives every collapsible card one disclosure shape: a real button, whole-header hit target, aria-expanded', async () => {
+    render(<SyncPage {...makeProps()} />);
+    const header = await screen.findByRole('button', { name: /^Auto-sync/i });
+    // A native <button> is what makes the header keyboard-operable (focus +
+    // Enter/Space) without any hand-rolled key handling, and the title AND the
+    // summary line are both inside it, so the whole row is the hit target.
+    expect(header.tagName).toBe('BUTTON');
+    expect(header.querySelector('.sfin-disclosure-text')).toBeTruthy();
+    expect(header).toHaveAttribute('aria-expanded', 'false');
+    // Closed: no dangling aria-controls pointing at an unmounted panel.
+    expect(header).not.toHaveAttribute('aria-controls');
+
+    fireEvent.click(header);
+    await waitFor(() => expect(header).toHaveAttribute('aria-expanded', 'true'));
+    const panelId = header.getAttribute('aria-controls');
+    expect(panelId).toBeTruthy();
+    expect(document.getElementById(panelId!)).toBeTruthy();
+    expect(screen.getByLabelText(/auto-sync interval/i)).toBeInTheDocument();
+
+    fireEvent.click(header);
+    await waitFor(() => expect(header).toHaveAttribute('aria-expanded', 'false'));
+  });
+
+  it('reports each collapsed card’s state in its header summary, so collapsing hides chrome and not state', async () => {
+    const props = makeProps();
+    props.store.getSyncScheduleHours = vi.fn(async () => 4);
+    props.store.getAutoHeal = vi.fn(async () => true);
+    props.store.getMappingRules = vi.fn(async () => [
+      { pattern: 'PAYROLL', matchType: 'contains', activityType: 'DEPOSIT' },
+      { pattern: 'ATM', matchType: 'contains', activityType: 'WITHDRAWAL' },
+    ]);
+    // Same page, so the Telegram card (NotificationsTab) reports its own
+    // summary in the same render — asserted here too since the point of this
+    // test is that collapsing hides chrome and not state, for every card type.
+    props.store.getTelegramConfig = vi.fn(async () => ({ botToken: 't', chatId: 'c', enabled: true }));
+    render(<SyncPage {...props} />);
+    await screen.findByText('Every 4h · auto-heal on');
+    expect(screen.getByText('2 rules')).toBeInTheDocument();
+    expect(await screen.findByText('Connected')).toBeInTheDocument();
+    expect(screen.getByText('daily, weekly, monthly reports')).toBeInTheDocument();
+  });
+
+  it('summarises an off / unconfigured state distinguishably', async () => {
+    const props = makeProps();
+    props.store.getSyncScheduleHours = vi.fn(async () => null);
+    props.store.getAutoAdjust = vi.fn(async () => true);
+    render(<SyncPage {...props} />);
+    // Interval off, but aggressive auto-heal on — the summary has to say both.
+    await screen.findByText('Off · aggressive auto-heal');
+    expect(screen.getByText(/using the \+\/− defaults/)).toBeInTheDocument();
+    // No token/chat id in the default mock — same "collapsed still says its
+    // state" contract, for the Telegram card.
+    expect(screen.getByText('Not connected')).toBeInTheDocument();
+  });
+
+  it('persists which cards are open, and restores them on the next visit', async () => {
+    const props = makeProps();
+    render(<SyncPage {...props} />);
+    fireEvent.click(await screen.findByRole('button', { name: /^Transaction rules/i }));
+    await waitFor(() =>
+      expect(props.store.setOpenCards).toHaveBeenCalledWith(expect.objectContaining({ rules: true })),
+    );
+
+    // Next visit: the stored blob decides, so the page does not reset.
+    const revisit = makeProps();
+    revisit.store.getOpenCards = vi.fn(async () => ({ rules: true, 'auto-sync': true }));
+    render(<SyncPage {...revisit} />);
+    await waitFor(() => expect(screen.getAllByText('+ Add rule').length).toBe(1));
+    expect(screen.getAllByLabelText(/auto-sync interval/i).length).toBe(1);
+    // Cards absent from the blob stay closed.
+    expect(screen.queryByLabelText(/Bot Token/i)).not.toBeInTheDocument();
+  });
+
+  // ── Amazon card mount ───────────────────────────────────────────────────
+  it('mounts the Amazon card, renamed and wired to the shared category catalog', async () => {
+    // AmazonCard itself is unit-tested in AmazonCard.test.tsx; this only proves
+    // it is actually wired into the tab under its new title, with the page's
+    // category catalog reaching it.
+    const props = makeProps();
+    props.store.getReportCategoryCatalog = vi.fn(async () => ([
+      { name: 'Housing', parent: null, icon: null, color: null, hasBudget: true, hasSpend: false },
+    ] as any));
+    render(<SyncPage {...props} />);
+    const header = await screen.findByRole('button', { name: /^Amazon categorization/i });
+    fireEvent.click(header);
+    expect(await screen.findByLabelText(/IMAP server/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Category for anything unrecognized/i)).toBeInTheDocument();
+  });
+
+  // ── Reset ───────────────────────────────────────────────────────────────
+  it('gives the destructive reset flow a boundary card with the stated consequences', async () => {
+    render(<SyncPage {...makeProps()} />);
+    const card = (await screen.findByText('Reset connection')).closest('.sfin-danger-card');
+    expect(card).toBeTruthy();
+    expect(card!.textContent).toContain(
+      'Disconnects SimpleFin and clears the account mapping. Transactions already imported into Wealthfolio stay.',
+    );
+  });
+
+  it('reset requires an explicit confirmation step', async () => {
+    const props = makeProps();
+    render(<SyncPage {...props} />);
+    fireEvent.click(await screen.findByRole('button', { name: /^Reset Setup$/ }));
+    expect(props.onReset).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: /yes, reset/i }));
+    await waitFor(() => expect(props.onReset).toHaveBeenCalled());
+  });
+
+  it('reset stops the scheduler and clears every stored secret before handing off', async () => {
+    const props = makeProps();
+    render(<SyncPage {...props} />);
+    fireEvent.click(await screen.findByRole('button', { name: /^Reset Setup$/ }));
+    fireEvent.click(screen.getByRole('button', { name: /yes, reset/i }));
+    await waitFor(() => expect(props.onReset).toHaveBeenCalled());
+    expect(props.scheduler.stop).toHaveBeenCalled();
+    expect(props.store.clearAll).toHaveBeenCalled();
+  });
+
+});

@@ -444,6 +444,19 @@ const css = `
   border: 1px solid color-mix(in srgb, var(--destructive) 40%, transparent);
   border-radius: 14px; padding: 14px 16px; margin-top: 18px;
 }
+.sfin-danger-note { margin-top: 4px; }
+.sfin-danger-actions { margin-top: 10px; display: flex; gap: 8px; }
+
+/* Advanced tab: spacing that used to be an inline style prop on SyncPage,
+   carried over on the move to AdvancedTab (no layout style props outside
+   this file). */
+.sfin-autosync-hint { margin-top: 6px; }
+.sfin-autosync-checks { margin-top: 14px; }
+.sfin-docker-intro { margin-bottom: 6px; }
+.sfin-docker-pre { margin: 0; }
+/* Last thing in the tab before the danger card, which supplies its own
+   margin-top — so this callout's bottom margin is zeroed to avoid doubling up. */
+.sfin-advanced-callout { margin-top: 16px; margin-bottom: 0; }
 
 /* ── "Finish setting up" checklist: first-run guidance without a wizard ─── */
 .sfin-checklist { border-left: 3px solid #60a5fa; }

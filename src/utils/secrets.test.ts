@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { SecretsStore } from './secrets';
 import type { MappingRule, AccountMapping } from '../../shared/types';
 import type { UiState } from './secrets';
+import { UNCATEGORIZED_STATUS_SECRET_KEY } from '../../shared/status-keys';
 
 const makeCtx = () => {
   const store: Record<string, string> = {};
@@ -72,6 +73,19 @@ describe('SecretsStore', () => {
     await s.clearAll();
     expect(await s.getAccessUrl()).toBeNull();
     expect(await s.getSyncScheduleHours()).toBeNull();
+  });
+
+  it('clearAll deletes the companion-published uncategorized-status secret too', async () => {
+    // uncategorized_status has no SecretsStore setter (the companion writes it
+    // directly), which is exactly why it was easy to leave out of KEYS — and
+    // doing so meant a reset left the stale "Needs a category" tile visible
+    // against a freshly-disconnected account.
+    const ctx = makeCtx();
+    const s = new SecretsStore(ctx);
+    await ctx.api.secrets.set(UNCATEGORIZED_STATUS_SECRET_KEY, JSON.stringify({ count: 4, asOf: '2026-08-08' }));
+    expect(await s.getUncategorizedStatus()).toEqual({ count: 4, asOf: '2026-08-08' });
+    await s.clearAll();
+    expect(await s.getUncategorizedStatus()).toBeNull();
   });
 });
 
