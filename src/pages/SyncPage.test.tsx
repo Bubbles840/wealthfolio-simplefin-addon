@@ -72,24 +72,12 @@ const makeProps = () => ({
 });
 
 /**
- * The config cards ship collapsed, and a collapsed panel is unmounted — so a
- * test that touches a control inside one has to open it first, exactly as the
- * user does. Matches the disclosure header by its accessible name, which is the
- * title plus its summary line, hence the anchored patterns. Idempotent.
- */
-async function openSection(name: RegExp) {
-  const header = await screen.findByRole('button', { name });
-  if (header.getAttribute('aria-expanded') !== 'true') fireEvent.click(header);
-  return header;
-}
-
-/**
- * The page's own behaviour: sync actions, the interval, the collapsible-card
- * contract, and the error surface.
+ * The page's own behaviour: sync actions, the interval-skip banner, and the
+ * error surface.
  *
- * Everything about the Telegram cards — reports, alert amounts, the category
- * matrix, emoji styling — lives in NotificationsTab.test.tsx now, still rendered
- * through this page.
+ * Everything about the Telegram cards lives in NotificationsTab.test.tsx, and
+ * everything about Auto-sync / Docker / Amazon / Transaction rules / Reset
+ * lives in AdvancedTab.test.tsx — both still rendered through this page.
  */
 describe('SyncPage', () => {
 
@@ -105,115 +93,15 @@ describe('SyncPage', () => {
     await waitFor(() => expect(screen.getByText(/5 transactions/i)).toBeInTheDocument());
   });
 
-  it('changing the interval saves it and restarts the scheduler', async () => {
-    const props = makeProps();
-    render(<SyncPage {...props} />);
-    await openSection(/^Auto-Sync/i);
-    const select = await screen.findByLabelText(/auto-sync interval/i);
-    fireEvent.change(select, { target: { value: '8' } });
-    await waitFor(() => expect(props.store.setSyncScheduleHours).toHaveBeenCalledWith(8));
-    expect(props.scheduler.start).toHaveBeenCalledWith(8, expect.any(Function), expect.any(Function));
-  });
-
-  // ── Collapsible config cards ───────────────────────────────────────────
-  it('keeps the daily-driver view visible and every config card collapsed', async () => {
-    const props = makeProps();
-    render(<SyncPage {...props} />);
-    // Always visible: status, actions, stat tiles, accounts with balances.
+  it('keeps the daily-driver view visible alongside the collapsed config cards', async () => {
+    // The always-on half of the page: status, actions, stat tiles, accounts
+    // with balances. (The account rows, balances and drift banner get their own
+    // dedicated coverage in OverviewTab.test.tsx; this just proves the tab is
+    // still wired into the page and the page's own controls render beside it.)
+    render(<SyncPage {...makeProps()} />);
     await waitFor(() => expect(screen.getByRole('button', { name: /sync now/i })).toBeInTheDocument());
     expect(screen.getByRole('button', { name: /reconcile & link/i })).toBeInTheDocument();
     expect(screen.getByText('Accounts synced')).toBeInTheDocument();
-    expect(screen.getByText(/Growth/)).toBeInTheDocument();
-    expect(screen.getByText('$1,234.56')).toBeInTheDocument();
-    // The drift banner is a needs-attention signal, so it never collapses.
-    expect(screen.getByText(/is off by/)).toBeInTheDocument();
-
-    // Collapsed: the controls inside each config card are absent from the DOM,
-    // not merely hidden.
-    expect(screen.queryByLabelText(/auto-sync interval/i)).not.toBeInTheDocument();
-    expect(screen.queryByLabelText(/Bot Token/i)).not.toBeInTheDocument();
-    expect(screen.queryByLabelText(/Monthly Wrap-Up/i)).not.toBeInTheDocument();
-    expect(screen.queryByText('+ Add rule')).not.toBeInTheDocument();
-    expect(screen.queryByText(/docker-compose\.yml/)).not.toBeInTheDocument();
-    // The Telegram card became three, so three headers here rather than one.
-    for (const name of [
-      /^Auto-Sync/i, /^Background sync/i, /^Telegram connection/i, /^Reports/i,
-      /^Report content/i, /^Transaction Rules/i,
-    ]) {
-      expect(screen.getByRole('button', { name }).getAttribute('aria-expanded')).toBe('false');
-    }
-  });
-
-  it('gives every collapsible card one disclosure shape: a real button, whole-header hit target, aria-expanded', async () => {
-    render(<SyncPage {...makeProps()} />);
-    const header = await screen.findByRole('button', { name: /^Auto-Sync/i });
-    // A native <button> is what makes the header keyboard-operable (focus +
-    // Enter/Space) without any hand-rolled key handling, and the title AND the
-    // summary line are both inside it, so the whole row is the hit target.
-    expect(header.tagName).toBe('BUTTON');
-    expect(header.querySelector('.sfin-disclosure-text')).toBeTruthy();
-    expect(header).toHaveAttribute('aria-expanded', 'false');
-    // Closed: no dangling aria-controls pointing at an unmounted panel.
-    expect(header).not.toHaveAttribute('aria-controls');
-
-    fireEvent.click(header);
-    await waitFor(() => expect(header).toHaveAttribute('aria-expanded', 'true'));
-    const panelId = header.getAttribute('aria-controls');
-    expect(panelId).toBeTruthy();
-    expect(document.getElementById(panelId!)).toBeTruthy();
-    expect(screen.getByLabelText(/auto-sync interval/i)).toBeInTheDocument();
-
-    fireEvent.click(header);
-    await waitFor(() => expect(header).toHaveAttribute('aria-expanded', 'false'));
-  });
-
-  it('reports each collapsed card’s state in its header summary, so collapsing hides chrome and not state', async () => {
-    const props = makeProps();
-    props.store.getSyncScheduleHours = vi.fn(async () => 4);
-    props.store.getAutoHeal = vi.fn(async () => true);
-    props.store.getMappingRules = vi.fn(async () => [
-      { pattern: 'PAYROLL', matchType: 'contains', activityType: 'DEPOSIT' },
-      { pattern: 'ATM', matchType: 'contains', activityType: 'WITHDRAWAL' },
-    ]);
-    props.store.getTelegramConfig = vi.fn(async () => ({ botToken: 't', chatId: 'c', enabled: true }));
-    render(<SyncPage {...props} />);
-    await screen.findByText('Every 4h · auto-heal on');
-    expect(screen.getByText('2 rules')).toBeInTheDocument();
-    // The credentials and the reports are now two cards, so the one summary that
-    // said both is now one each: connection state, then which reports are on.
-    // All three default to on for a config that predates them.
-    expect(await screen.findByText('Connected')).toBeInTheDocument();
-    expect(screen.getByText('daily, weekly, monthly reports')).toBeInTheDocument();
-  });
-
-  it('summarises an off / unconfigured state distinguishably', async () => {
-    const props = makeProps();
-    props.store.getSyncScheduleHours = vi.fn(async () => null);
-    props.store.getAutoAdjust = vi.fn(async () => true);
-    render(<SyncPage {...props} />);
-    // Interval off, but aggressive auto-heal on — the summary has to say both.
-    await screen.findByText('Off · aggressive auto-heal');
-    // No token/chat id in the default mock.
-    expect(screen.getByText('Not connected')).toBeInTheDocument();
-    expect(screen.getByText(/using the \+\/− defaults/)).toBeInTheDocument();
-  });
-
-  it('persists which cards are open, and restores them on the next visit', async () => {
-    const props = makeProps();
-    render(<SyncPage {...props} />);
-    fireEvent.click(await screen.findByRole('button', { name: /^Transaction Rules/i }));
-    await waitFor(() =>
-      expect(props.store.setOpenCards).toHaveBeenCalledWith(expect.objectContaining({ rules: true })),
-    );
-
-    // Next visit: the stored blob decides, so the page does not reset.
-    const revisit = makeProps();
-    revisit.store.getOpenCards = vi.fn(async () => ({ rules: true, 'auto-sync': true }));
-    render(<SyncPage {...revisit} />);
-    await waitFor(() => expect(screen.getAllByText('+ Add rule').length).toBe(1));
-    expect(screen.getAllByLabelText(/auto-sync interval/i).length).toBe(1);
-    // Cards absent from the blob stay closed.
-    expect(screen.queryByLabelText(/Bot Token/i)).not.toBeInTheDocument();
   });
 
   // ── The sync error path ────────────────────────────────────────────────

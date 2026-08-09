@@ -93,7 +93,7 @@ export function AmazonCard({
   return (
     <CollapsibleCard
       id={cardId}
-      title="Amazon auto-categorization (optional)"
+      title="Amazon categorization"
       summary={summary}
       open={open}
       onToggle={onToggle}

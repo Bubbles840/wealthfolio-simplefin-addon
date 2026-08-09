@@ -81,6 +81,11 @@ const KEYS = {
   openCards: 'ui_open_cards',
   uiState: 'ui_state',
   pendingLargeTxAlerts: LARGE_TX_OUTBOX_SECRET_KEY,
+  // Companion-published, addon-read-only (see `getUncategorizedStatus`) — but
+  // still an addon secret, so a reset has to clear it too. Left out of KEYS,
+  // clearAll skipped it and a reset account kept showing the stale "Needs a
+  // category" count from before the reset.
+  uncategorizedStatus: UNCATEGORIZED_STATUS_SECRET_KEY,
 } as const;
 
 /** One entry in the shared large-transaction outbox. Derived from `SyncResult`
