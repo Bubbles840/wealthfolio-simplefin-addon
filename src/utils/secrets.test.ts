@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { SecretsStore } from './secrets';
 import type { MappingRule, AccountMapping } from '../../shared/types';
 import type { UiState } from './secrets';
-import { UNCATEGORIZED_STATUS_SECRET_KEY } from '../../shared/status-keys';
+import { UNCATEGORIZED_STATUS_SECRET_KEY, AMAZON_MAIL_STATUS_SECRET_KEY } from '../../shared/status-keys';
 import { AMAZON_LABELS_SECRET_KEY } from '../../shared/amazon-config';
 
 /** Builds a ctx plus its backing secrets map. `makeCtx` (below) wraps this and
@@ -124,6 +124,18 @@ describe('SecretsStore', () => {
     expect(await s.getAmazonConfig()).toBeNull();
     expect(await s.getAmazonLedger()).toEqual({});
     expect(await s.getAmazonLabels()).toEqual({});
+  });
+
+  it('clearAll deletes the companion-published Amazon mail status too', async () => {
+    // Same class of bug as uncategorized_status: no SecretsStore setter (the
+    // companion writes it directly), so it is exactly the kind of key that is
+    // easy to leave out of KEYS and have survive a reset.
+    const ctx = makeCtx();
+    const s = new SecretsStore(ctx);
+    await ctx.api.secrets.set(AMAZON_MAIL_STATUS_SECRET_KEY, JSON.stringify({ unparsed: 2, asOf: '2026-08-08' }));
+    expect(await s.getAmazonMailStatus()).toEqual({ unparsed: 2, asOf: '2026-08-08' });
+    await s.clearAll();
+    expect(await s.getAmazonMailStatus()).toBeNull();
   });
 });
 
@@ -279,6 +291,34 @@ describe('uncategorized_status', () => {
     expect(await store.getUncategorizedStatus()).toBeNull();
     await ctx.api.secrets.set('uncategorized_status', 'garbage');
     expect(await store.getUncategorizedStatus()).toBeNull();
+  });
+});
+
+describe('amazon_mail_status', () => {
+  it('parses the companion-published unparsed count', async () => {
+    const ctx = makeCtx();
+    await ctx.api.secrets.set('amazon_mail_status', JSON.stringify({ unparsed: 2, asOf: '2026-08-08T12:00:00.000Z' }));
+    const store = new SecretsStore(ctx);
+    expect(await store.getAmazonMailStatus()).toEqual({ unparsed: 2, asOf: '2026-08-08T12:00:00.000Z' });
+  });
+
+  it('reports a clean scan as unparsed: 0, not absent — a fix must clear the warning', async () => {
+    const ctx = makeCtx();
+    await ctx.api.secrets.set('amazon_mail_status', JSON.stringify({ unparsed: 0, asOf: '2026-08-08T12:00:00.000Z' }));
+    const store = new SecretsStore(ctx);
+    expect(await store.getAmazonMailStatus()).toEqual({ unparsed: 0, asOf: '2026-08-08T12:00:00.000Z' });
+  });
+
+  it('returns null for absent, corrupt, or non-numeric values — the card must hide, not crash', async () => {
+    const ctx = makeCtx();
+    const store = new SecretsStore(ctx);
+    expect(await store.getAmazonMailStatus()).toBeNull();
+    await ctx.api.secrets.set('amazon_mail_status', '{"asOf":"x"}');
+    expect(await store.getAmazonMailStatus()).toBeNull();
+    await ctx.api.secrets.set('amazon_mail_status', JSON.stringify({ unparsed: 'two', asOf: 'x' }));
+    expect(await store.getAmazonMailStatus()).toBeNull();
+    await ctx.api.secrets.set('amazon_mail_status', 'garbage');
+    expect(await store.getAmazonMailStatus()).toBeNull();
   });
 });
 

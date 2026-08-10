@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { maskUrl, validateStartupEnv, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice } from './index.js';
 import { runSyncCore } from '../../shared/sync-core.js';
 import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending } from './sqlite-native.js';
+import { ingestAmazonMail } from './amazon-mail.js';
+import { AMAZON_MAIL_STATUS_SECRET_KEY } from '../../shared/status-keys.js';
 
 vi.mock('../../shared/sync-core.js', async (importOriginal) => ({
   // The real module's parsers (descriptionFromComment etc.) stay real; only the
@@ -41,6 +43,16 @@ vi.mock('./sqlite-native.js', () => ({
     { amount: 95.5, description: 'SQ *BLUE BOTTLE', categoryName: 'Dining' },
     { amount: 63, description: 'COSTCO GAS · PUMP 4', categoryName: 'Groceries' },
   ])),
+}));
+
+vi.mock('./amazon-mail.js', async (importOriginal) => ({
+  // Real `amazonMailConfigured`, `htmlToText`, etc. stay real; only the two
+  // functions that would otherwise try a real IMAP connection are faked.
+  ...(await importOriginal<object>()),
+  createImapSource: vi.fn(async () => ({ close: vi.fn(async () => {}) })),
+  ingestAmazonMail: vi.fn(async () => ({
+    scanned: 0, added: 0, unparsed: 0, ignored: 0, pruned: 0, newLabels: [], unparsedSenders: {},
+  })),
 }));
 
 vi.mock('fs', async (importOriginal) => {
@@ -1726,5 +1738,100 @@ describe('category catalog publishing', () => {
     // budget nor spending.
     expect(parsed.find((c: any) => c.name === 'Transportation').icon).toBe('Car');
     expect(parsed.map((c: any) => c.name)).toContain('Personal Care');
+  });
+});
+
+describe('Amazon mail status publishing', () => {
+  // Amazon changed its email format on 2026-08-07 and the companion silently
+  // mis-filed order confirmations for two days — `ingestAmazonMail` already
+  // counted `unparsed`, but the only place it went was a log line nobody
+  // reads. This publishes it as an addon secret every run, so the warning
+  // reaches the UI instead.
+  beforeEach(() => {
+    process.env.WEALTHFOLIO_API_URL = 'http://wf';
+    process.env.WEALTHFOLIO_PASSWORD = 'pw';
+    vi.mocked(runSyncCore).mockClear();
+    vi.mocked(ingestAmazonMail).mockClear();
+  });
+
+  const configuredSecrets = () => {
+    const secrets = new Map<string, string>();
+    secrets.set('simplefin_access_url', 'https://user:pass@bridge.simplefin.org/simplefin');
+    secrets.set('amazon_config', JSON.stringify({
+      enabled: true, host: 'imap.gmail.com', user: 'r@g.com', password: 'app-pass',
+    }));
+    return secrets;
+  };
+
+  const clientFor = async (secrets: Map<string, string>) => {
+    const { WealthfolioClient } = await import('./wealthfolio.js');
+    const client: any = {
+      login: vi.fn(async () => {}),
+      getAddonSecret: vi.fn(async (_a: string, k: string) => secrets.get(k) ?? null),
+      setAddonSecret: vi.fn(async (_a: string, k: string, v: string) => { secrets.set(k, v); }),
+    };
+    vi.mocked(WealthfolioClient).mockImplementation(function () { return client; } as any);
+    return client;
+  };
+
+  it('publishes the unparsed count after a scan that found unrecognised mail', async () => {
+    const secrets = configuredSecrets();
+    await clientFor(secrets);
+    vi.mocked(ingestAmazonMail).mockResolvedValueOnce({
+      scanned: 5, added: 1, unparsed: 2, ignored: 1, pruned: 0, newLabels: [], unparsedSenders: {},
+    });
+
+    await runCompanionSync();
+
+    const published = JSON.parse(secrets.get(AMAZON_MAIL_STATUS_SECRET_KEY)!);
+    expect(published.unparsed).toBe(2);
+    expect(published.asOf).toBeTruthy();
+  });
+
+  it('publishes unparsed: 0 after a clean scan, so a parser fix clears the warning', async () => {
+    const secrets = configuredSecrets();
+    await clientFor(secrets);
+    vi.mocked(ingestAmazonMail).mockResolvedValueOnce({
+      scanned: 3, added: 3, unparsed: 0, ignored: 0, pruned: 0, newLabels: [], unparsedSenders: {},
+    });
+
+    await runCompanionSync();
+
+    const published = JSON.parse(secrets.get(AMAZON_MAIL_STATUS_SECRET_KEY)!);
+    expect(published.unparsed).toBe(0);
+  });
+
+  it('does not publish when the ingest itself failed to run', async () => {
+    // A connection error is not "0 problems" — publishing here would overwrite
+    // a real, standing warning with a false all-clear.
+    const secrets = configuredSecrets();
+    await clientFor(secrets);
+    vi.mocked(ingestAmazonMail).mockRejectedValueOnce(new Error('ECONNREFUSED'));
+
+    await runCompanionSync();
+
+    expect(secrets.has(AMAZON_MAIL_STATUS_SECRET_KEY)).toBe(false);
+  });
+
+  it('does not fail the sync when the status write itself throws', async () => {
+    const secrets = configuredSecrets();
+    const { WealthfolioClient } = await import('./wealthfolio.js');
+    const client: any = {
+      login: vi.fn(async () => {}),
+      getAddonSecret: vi.fn(async (_a: string, k: string) => secrets.get(k) ?? null),
+      setAddonSecret: vi.fn(async (_a: string, k: string, v: string) => {
+        if (k === AMAZON_MAIL_STATUS_SECRET_KEY) throw new Error('write failed');
+        secrets.set(k, v);
+      }),
+    };
+    vi.mocked(WealthfolioClient).mockImplementation(function () { return client; } as any);
+    vi.mocked(ingestAmazonMail).mockResolvedValueOnce({
+      scanned: 1, added: 0, unparsed: 1, ignored: 0, pruned: 0, newLabels: [], unparsedSenders: {},
+    });
+
+    const result = await runCompanionSync();
+
+    expect(result.imported).toBe(2); // the mocked runSyncCore's usual result
+    expect(secrets.has(AMAZON_MAIL_STATUS_SECRET_KEY)).toBe(false);
   });
 });
