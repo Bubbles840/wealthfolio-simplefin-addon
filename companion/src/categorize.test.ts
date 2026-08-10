@@ -1,0 +1,577 @@
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { createCategorizeController, SPENDING_TAXONOMY_ID, type CategorizeDeps } from './categorize.js';
+import type { InlineKeyboard } from '../../shared/telegram.js';
+import type { DismissalLedger } from '../../shared/uncategorized.js';
+
+const CHAT = 987654;
+const DB = '/mnt/wealthfolio.db';
+
+/** A row shaped like `getNativeUncategorizedSpending`'s output, including the
+ *  RAW stored note (`<description> · <txId>`) the controller has to clean. */
+interface Row {
+  activityId: string;
+  wfAccountId: string;
+  notes: string;
+  amountCents: number;
+  date: string;
+  accountName: string;
+}
+
+const row = (id: string, over: Partial<Row> = {}): Row => ({
+  activityId: id,
+  wfAccountId: 'wf-1',
+  notes: `BOOK STORES ${id} · TRN-${id}`,
+  amountCents: -1200,
+  date: '2026-08-08',
+  accountName: 'Citi Double Cash',
+  ...over,
+});
+
+/** `Food & Dining` has children (so tapping it drills down); `Entertainment`
+ *  has none (so tapping it files immediately). Both paths are exercised. */
+const CATEGORIES = [
+  { id: 'cat-food', name: 'Food & Dining', parentId: null, parentName: null },
+  { id: 'cat-rest', name: 'Restaurants', parentId: 'cat-food', parentName: 'Food & Dining' },
+  { id: 'cat-fun', name: 'Entertainment', parentId: null, parentName: null },
+];
+
+type Recorded = [string, InlineKeyboard | undefined];
+
+function setup(opts: { rows?: Row[]; ledger?: DismissalLedger; dbPath?: string | null } = {}) {
+  const state = {
+    rows: opts.rows ?? [row('a'), row('b')],
+    /** Rows a fake `assign` has taken out of the uncategorized set, so `unassign`
+     *  can put them back — the DB is the thing that changes under the menu. */
+    filed: [] as Row[],
+    categories: [...CATEGORIES],
+    ledger: { ...(opts.ledger ?? {}) } as DismissalLedger,
+  };
+  const readArgs: Array<[string, string, string]> = [];
+  const logs: string[] = [];
+  const writes: Array<{ base: DismissalLedger; next: DismissalLedger }> = [];
+
+  const deps = {
+    dbPath: vi.fn((): string | null => (opts.dbPath === undefined ? DB : opts.dbPath)),
+    readRows: vi.fn((p: string, s: string, e: string) => {
+      readArgs.push([p, s, e]);
+      return state.rows.map((r) => ({ ...r }));
+    }),
+    readCategories: vi.fn((_p: string) => state.categories.map((c) => ({ ...c }))),
+    readLedger: vi.fn(async () => ({ ...state.ledger })),
+    writeLedgerMerged: vi.fn(async (base: DismissalLedger, next: DismissalLedger) => {
+      writes.push({ base, next });
+      state.ledger = { ...next };
+    }),
+    assign: vi.fn(async (activityId: string, _categoryId: string) => {
+      const hit = state.rows.find((r) => r.activityId === activityId);
+      if (hit) {
+        state.filed.push(hit);
+        state.rows = state.rows.filter((r) => r.activityId !== activityId);
+      }
+    }),
+    unassign: vi.fn(async (activityId: string) => {
+      const hit = state.filed.find((r) => r.activityId === activityId);
+      if (hit) {
+        state.filed = state.filed.filter((r) => r.activityId !== activityId);
+        state.rows = [hit, ...state.rows];
+      }
+    }),
+    createRule: vi.fn(async (_r: { name: string; pattern: string; categoryId: string }) => {}),
+    republish: vi.fn(async () => {}),
+    log: (m: string) => { logs.push(m); },
+  } satisfies CategorizeDeps;
+
+  const ui = {
+    edit: vi.fn(async (_t: string, _k?: InlineKeyboard) => {}),
+    answer: vi.fn(async (_t?: string) => {}),
+    send: vi.fn(async (_t: string, _k?: InlineKeyboard) => {}),
+  };
+  const send = vi.fn(async (_t: string, _k?: InlineKeyboard) => {});
+  const controller = createCategorizeController(deps);
+
+  const tap = (data: string) => controller.onCallback({ data, chatId: CHAT, messageId: 55 }, ui);
+
+  return { state, deps, ui, send, controller, tap, logs, writes, readArgs };
+}
+
+const lastCall = (fn: { mock: { calls: unknown[][] } }): Recorded => {
+  const call = fn.mock.calls.at(-1);
+  if (!call) throw new Error('nothing was sent');
+  return call as Recorded;
+};
+const keyboardOf = (call: Recorded): InlineKeyboard => {
+  if (!call[1]) throw new Error(`no keyboard on: ${call[0]}`);
+  return call[1];
+};
+const labels = (k: InlineKeyboard): string[] => k.inline_keyboard.flat().map((b) => b.text);
+const dataFor = (k: InlineKeyboard, label: string): string => {
+  const btn = k.inline_keyboard.flat().find((b) => b.text.includes(label));
+  if (!btn) throw new Error(`no button matching "${label}" among: ${labels(k).join(' | ')}`);
+  return btn.callback_data;
+};
+
+/** open → tap the first row → we are on that row's category picker. */
+async function openAtTxn(h: ReturnType<typeof setup>, label = 'BOOK STORES a') {
+  await h.controller.open(h.send);
+  await h.tap(dataFor(keyboardOf(lastCall(h.send)), label));
+  return keyboardOf(lastCall(h.ui.edit));
+}
+
+/** open → row → `Entertainment` (childless, so it files) → the `filed` screen. */
+async function openAtFiled(h: ReturnType<typeof setup>, label = 'BOOK STORES a') {
+  const picker = await openAtTxn(h, label);
+  await h.tap(dataFor(picker, 'Entertainment'));
+  return keyboardOf(lastCall(h.ui.edit));
+}
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+describe('the taxonomy the whole feature writes into', () => {
+  it('is Wealthfolio\'s spending taxonomy', () => {
+    expect(SPENDING_TAXONOMY_ID).toBe('spending_categories');
+  });
+});
+
+describe('open', () => {
+  it('lists what needs a category, with the stored note cleaned up', async () => {
+    const h = setup();
+    await h.controller.open(h.send);
+    const call = lastCall(h.send);
+    expect(call[0]).toBe('2 transactions need a category:');
+    expect(labels(keyboardOf(call))).toEqual([
+      'Aug 8 · BOOK STORES a · -$12',
+      'Aug 8 · BOOK STORES b · -$12',
+      'Done',
+    ]);
+    // The ` · TRN-…` bookkeeping suffix is internal. A button label carrying it
+    // is a visible defect, and using the raw note is how it gets there.
+    expect(call[0] + labels(keyboardOf(call)).join()).not.toContain('TRN-');
+  });
+
+  it('reads the same 90-day window the status tile publishes', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-08T15:30:00Z'));
+    const h = setup();
+    await h.controller.open(h.send);
+    expect(h.readArgs).toEqual([[DB, '2026-05-10', '2026-08-09']]);
+  });
+
+  it('falls back to the raw note when the description strips to nothing', async () => {
+    // Mirrors uncategorized-status.ts: an empty SimpleFin description is a real
+    // state, and an empty button label says less than the stored note does.
+    const h = setup({ rows: [row('a', { notes: ' · TRN-a' })] });
+    await h.controller.open(h.send);
+    expect(labels(keyboardOf(lastCall(h.send)))[0]).toBe('Aug 8 ·  · TRN-a · -$12');
+  });
+
+  it('leaves dismissed rows out of the list', async () => {
+    const h = setup({ ledger: { b: '2026-08-01T00:00:00.000Z' } });
+    await h.controller.open(h.send);
+    const call = lastCall(h.send);
+    expect(call[0]).toBe('1 transaction needs a category:');
+    expect(labels(keyboardOf(call))).toEqual(['Aug 8 · BOOK STORES a · -$12', 'Done']);
+  });
+
+  it('says so when nothing needs a category', async () => {
+    const h = setup({ rows: [] });
+    await h.controller.open(h.send);
+    const call = lastCall(h.send);
+    expect(call[0]).toBe('Nothing needs a category right now.');
+    expect(labels(keyboardOf(call))).toEqual(['Done']);
+  });
+
+  it('reports missing database access instead of an empty list, and stores no session', async () => {
+    // `readRows` answers [] for a path that is not there, so a menu built anyway
+    // would claim "nothing needs a category" — false rather than unknown.
+    const h = setup({ dbPath: null });
+    await h.controller.open(h.send);
+    // No keyboard argument at all: there is no session for one to resolve into.
+    expect(h.send.mock.calls.at(-1)).toEqual([
+      'The companion has no database access right now, so it can\'t tell what needs a category.',
+    ]);
+    expect(h.deps.readRows).not.toHaveBeenCalled();
+    await h.tap('cz:0');
+    expect(h.ui.answer).toHaveBeenCalledWith('That menu expired — send /categorize again.');
+    expect(h.ui.edit).not.toHaveBeenCalled();
+  });
+
+  it('reports a failed read rather than an empty menu', async () => {
+    const h = setup();
+    h.deps.readRows.mockImplementation(() => { throw new Error('database is locked'); });
+    await h.controller.open(h.send);
+    expect(h.send.mock.calls.at(-1)).toEqual([
+      'Couldn\'t check what needs a category — database is locked',
+    ]);
+    expect(h.logs.join('\n')).toContain('database is locked');
+  });
+
+  it('does not reject when a dependency throws', async () => {
+    const h = setup();
+    h.deps.readLedger.mockRejectedValue(new Error('secret unreadable'));
+    await expect(h.controller.open(h.send)).resolves.toBeUndefined();
+  });
+});
+
+describe('taps that cannot be resolved', () => {
+  it('answers with the expiry notice when there is no session at all', async () => {
+    const h = setup();
+    await h.tap('cz:0');
+    expect(h.ui.answer).toHaveBeenCalledWith('That menu expired — send /categorize again.');
+    expect(h.ui.edit).not.toHaveBeenCalled();
+    expect(h.deps.readRows).not.toHaveBeenCalled();
+    expect(h.deps.assign).not.toHaveBeenCalled();
+    expect(h.deps.writeLedgerMerged).not.toHaveBeenCalled();
+  });
+
+  it('answers with the expiry notice for a token the current screen no longer has', async () => {
+    const h = setup();
+    await h.controller.open(h.send);
+    await h.tap('cz:99');
+    expect(h.ui.answer).toHaveBeenCalledWith('That menu expired — send /categorize again.');
+    expect(h.ui.edit).not.toHaveBeenCalled();
+    expect(h.deps.assign).not.toHaveBeenCalled();
+  });
+
+  it('re-renders the current screen from fresh reads for a token it cannot parse', async () => {
+    const h = setup();
+    await h.controller.open(h.send);
+    h.state.rows = [row('a'), row('b'), row('c')];
+    await h.tap('cz:open');
+    expect(h.ui.answer).toHaveBeenCalledWith('That button is stale — refreshing.');
+    expect(lastCall(h.ui.edit)[0]).toBe('3 transactions need a category:');
+  });
+});
+
+describe('filing a transaction', () => {
+  it('files under a top-level category that has no subcategories', async () => {
+    const h = setup();
+    const filed = await openAtFiled(h);
+    expect(h.deps.assign).toHaveBeenCalledWith('a', 'cat-fun');
+    expect(h.deps.republish).toHaveBeenCalledTimes(1);
+    // The row has left the uncategorized set by now — the confirmation still
+    // names it, which is only possible because the controller keeps it.
+    expect(lastCall(h.ui.edit)[0]).toBe('Filed BOOK STORES a → Entertainment.');
+    expect(labels(filed)).toEqual(['Undo', 'Make this a rule', 'Next transaction', 'Done']);
+  });
+
+  it('drills into subcategories first when the category has children', async () => {
+    const h = setup();
+    const picker = await openAtTxn(h);
+    expect(lastCall(h.ui.edit)[0]).toBe('BOOK STORES a\n-$12 · Aug 8 · Citi Double Cash');
+    await h.tap(dataFor(picker, 'Food & Dining'));
+    const subcats = keyboardOf(lastCall(h.ui.edit));
+    expect(lastCall(h.ui.edit)[0]).toBe('Choose a subcategory of Food & Dining:');
+    expect(labels(subcats)).toEqual(['Restaurants', 'Just Food & Dining itself', '« Back']);
+    await h.tap(dataFor(subcats, 'Restaurants'));
+    expect(h.deps.assign).toHaveBeenCalledWith('a', 'cat-rest');
+  });
+
+  it('clears the button spinner on a tap that worked', async () => {
+    const h = setup();
+    await openAtFiled(h);
+    expect(h.ui.answer).toHaveBeenLastCalledWith();
+  });
+
+  it('renders what Wealthfolio said and keeps the previous screen for Back', async () => {
+    const h = setup();
+    const picker = await openAtTxn(h);
+    h.deps.assign.mockRejectedValue(new Error('403 Forbidden: token *expired*'));
+    await h.tap(dataFor(picker, 'Entertainment'));
+    const failure = lastCall(h.ui.edit);
+    // Escaped: the text is Markdown-parsed, and an unbalanced `*` from an API
+    // body makes Telegram refuse the edit outright — a screen that never appears.
+    expect(failure[0]).toBe('Couldn\'t file that — Wealthfolio said: 403 Forbidden: token \\*expired\\*');
+    expect(labels(keyboardOf(failure))).toEqual(['« Back', 'Done']);
+    expect(h.deps.republish).not.toHaveBeenCalled();
+    expect(h.logs.join('\n')).toContain('403 Forbidden');
+    // Back returns to the picker the tap came from — nothing is retried on its own.
+    await h.tap(dataFor(keyboardOf(failure), '« Back'));
+    expect(lastCall(h.ui.edit)[0]).toBe('BOOK STORES a\n-$12 · Aug 8 · Citi Double Cash');
+  });
+
+  it('does not file a row that stopped being uncategorized between taps', async () => {
+    const h = setup();
+    const picker = await openAtTxn(h);
+    // A rule (or the addon) filed it while the picker sat on screen.
+    h.state.rows = [row('b')];
+    await h.tap(dataFor(picker, 'Entertainment'));
+    expect(h.deps.assign).not.toHaveBeenCalled();
+    expect(lastCall(h.ui.edit)[0]).toBe(
+      'That transaction is no longer uncategorized.\n\n1 transaction needs a category:',
+    );
+    expect(labels(keyboardOf(lastCall(h.ui.edit)))).toEqual(['Aug 8 · BOOK STORES b · -$12', 'Done']);
+  });
+
+  it('undoes a filing through unassign', async () => {
+    const h = setup();
+    const filed = await openAtFiled(h);
+    await h.tap(dataFor(filed, 'Undo'));
+    expect(h.deps.unassign).toHaveBeenCalledWith('a');
+    expect(h.deps.republish).toHaveBeenCalledTimes(2);
+    const undone = lastCall(h.ui.edit);
+    expect(undone[0]).toBe('Filing undone — BOOK STORES a is uncategorized again.');
+    expect(labels(keyboardOf(undone))).toEqual(['Back to list', 'Done']);
+  });
+
+  it('reports a refused undo without claiming it worked', async () => {
+    const h = setup();
+    const filed = await openAtFiled(h);
+    h.deps.unassign.mockRejectedValue(new Error('500 Internal Server Error'));
+    await h.tap(dataFor(filed, 'Undo'));
+    expect(lastCall(h.ui.edit)[0]).toBe('Couldn\'t undo that — Wealthfolio said: 500 Internal Server Error');
+    expect(h.deps.republish).toHaveBeenCalledTimes(1);
+    expect(h.logs.join('\n')).toContain('500 Internal Server Error');
+  });
+});
+
+describe('dismissing from the menu', () => {
+  it('records the dismissal as a delta and confirms it', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-08T15:30:00Z'));
+    const h = setup();
+    const picker = await openAtTxn(h);
+    await h.tap(dataFor(picker, 'Keep uncategorized'));
+    expect(h.writes).toHaveLength(1);
+    expect(h.writes[0].base).toEqual({});
+    expect(h.writes[0].next).toEqual({ a: '2026-08-08T15:30:00.000Z' });
+    expect(h.deps.republish).toHaveBeenCalledTimes(1);
+    const dismissed = lastCall(h.ui.edit);
+    expect(dismissed[0]).toBe('BOOK STORES a will stay uncategorized.');
+    expect(labels(keyboardOf(dismissed))).toEqual(['Undo', 'Back to list', 'Done']);
+  });
+
+  it('bases the merge on the ledger it just read, not the one the menu opened with', async () => {
+    // `base` → `next` is the delta another writer's entry survives. A base read
+    // when the menu opened would replay "delete everything added since" onto it.
+    const h = setup();
+    const picker = await openAtTxn(h);
+    h.state.ledger = { z: '2026-08-02T00:00:00.000Z' };
+    await h.tap(dataFor(picker, 'Keep uncategorized'));
+    expect(h.writes[0].base).toEqual({ z: '2026-08-02T00:00:00.000Z' });
+    expect(Object.keys(h.writes[0].next).sort()).toEqual(['a', 'z']);
+    expect(h.writes[0].base).not.toBe(h.writes[0].next);
+    expect(h.writes[0].base).not.toHaveProperty('a');
+  });
+
+  it('does not dismiss a row that stopped being uncategorized between taps', async () => {
+    const h = setup();
+    const picker = await openAtTxn(h);
+    h.state.rows = [row('b')];
+    await h.tap(dataFor(picker, 'Keep uncategorized'));
+    expect(h.deps.writeLedgerMerged).not.toHaveBeenCalled();
+    expect(lastCall(h.ui.edit)[0]).toContain('That transaction is no longer uncategorized.');
+  });
+
+  it('reports a failed ledger write without confirming the dismissal', async () => {
+    const h = setup();
+    const picker = await openAtTxn(h);
+    h.deps.writeLedgerMerged.mockRejectedValue(new Error('secret write refused'));
+    await h.tap(dataFor(picker, 'Keep uncategorized'));
+    const failure = lastCall(h.ui.edit);
+    expect(failure[0]).toBe('Couldn\'t save that — Wealthfolio said: secret write refused');
+    expect(labels(keyboardOf(failure))).toEqual(['« Back', 'Done']);
+    expect(h.deps.republish).not.toHaveBeenCalled();
+  });
+
+  it('undoes a dismissal by removing the id through the same merged write', async () => {
+    const h = setup();
+    const picker = await openAtTxn(h);
+    await h.tap(dataFor(picker, 'Keep uncategorized'));
+    const dismissed = keyboardOf(lastCall(h.ui.edit));
+    await h.tap(dataFor(dismissed, 'Undo'));
+    expect(h.writes).toHaveLength(2);
+    expect(Object.keys(h.writes[1].base)).toEqual(['a']);
+    expect(h.writes[1].next).toEqual({});
+    expect(lastCall(h.ui.edit)[0]).toBe('Dismissal undone — BOOK STORES a is uncategorized again.');
+  });
+});
+
+describe('rules', () => {
+  const ODD = row('a', { notes: 'TRADER JOE*S (#123) · TRN-a' });
+
+  it('previews the rule with the disclosure copy', async () => {
+    const h = setup({ rows: [ODD] });
+    const filed = await openAtFiled(h, 'TRADER JOE*S');
+    await h.tap(dataFor(filed, 'Make this a rule'));
+    expect(lastCall(h.ui.edit)[0]).toBe(
+      'Create this rule?\n'
+      + 'Descriptions containing "TRADER JOE\\*S (#123)" → Entertainment\n'
+      + 'It will also file any other uncategorized transactions that match, now and on every future import. '
+      + 'Already-categorized transactions are never touched.',
+    );
+    expect(labels(keyboardOf(lastCall(h.ui.edit)))).toEqual(['Create rule', '« Back']);
+  });
+
+  it('creates a contains-rule with the description verbatim', async () => {
+    const h = setup({ rows: [ODD] });
+    const filed = await openAtFiled(h, 'TRADER JOE*S');
+    await h.tap(dataFor(filed, 'Make this a rule'));
+    await h.tap(dataFor(keyboardOf(lastCall(h.ui.edit)), 'Create rule'));
+    // Verbatim: `*` and `(` are literal text to a contains-match, and escaping
+    // them here would create a rule that matches nothing.
+    expect(h.deps.createRule).toHaveBeenCalledWith({
+      name: 'Telegram: TRADER JOE*S (#123)',
+      pattern: 'TRADER JOE*S (#123)',
+      categoryId: 'cat-fun',
+    });
+    const created = lastCall(h.ui.edit);
+    expect(created[0]).toBe('Rule created — future matches will file automatically under Entertainment.');
+    expect(labels(keyboardOf(created))).toEqual(['Back to list', 'Done']);
+    // The server files every other uncategorized match, so the tile is stale now.
+    expect(h.deps.republish).toHaveBeenCalledTimes(2);
+  });
+
+  it('truncates the rule name to 60 characters', async () => {
+    const long = 'COSTCO WHOLESALE #1123 SEATTLE WA CARD PURCHASE 08/08 RECURRING BILLING';
+    const h = setup({ rows: [row('a', { notes: `${long} · TRN-a` })] });
+    const filed = await openAtFiled(h, 'COSTCO');
+    await h.tap(dataFor(filed, 'Make this a rule'));
+    await h.tap(dataFor(keyboardOf(lastCall(h.ui.edit)), 'Create rule'));
+    const rule = h.deps.createRule.mock.calls[0][0];
+    expect(rule.name).toBe('Telegram: COSTCO WHOLESALE #1123 SEATTLE WA CARD PURCHASE 08');
+    expect(rule.name).toHaveLength(60);
+    // The PATTERN is never truncated — a clipped pattern matches the wrong rows.
+    expect(rule.pattern).toBe(long);
+  });
+
+  it('reports a refused rule without claiming it was created', async () => {
+    const h = setup();
+    const filed = await openAtFiled(h);
+    h.deps.createRule.mockRejectedValue(new Error('422 duplicate rule'));
+    await h.tap(dataFor(filed, 'Make this a rule'));
+    await h.tap(dataFor(keyboardOf(lastCall(h.ui.edit)), 'Create rule'));
+    expect(lastCall(h.ui.edit)[0]).toBe('Couldn\'t create that rule — Wealthfolio said: 422 duplicate rule');
+    expect(labels(keyboardOf(lastCall(h.ui.edit)))).toEqual(['« Back', 'Done']);
+  });
+});
+
+describe('the freshness rule', () => {
+  it('re-reads rows, the ledger and the categories before every render', async () => {
+    const h = setup();
+    await h.controller.open(h.send);
+    const picker = keyboardOf(lastCall(h.send));
+    await h.tap(dataFor(picker, 'BOOK STORES a'));
+    await h.tap(dataFor(keyboardOf(lastCall(h.ui.edit)), '« Back'));
+    expect(h.deps.readRows).toHaveBeenCalledTimes(3);
+    expect(h.deps.readLedger).toHaveBeenCalledTimes(3);
+    expect(h.deps.readCategories).toHaveBeenCalledTimes(3);
+  });
+
+  it('drops a row categorized elsewhere from the next list render', async () => {
+    const h = setup();
+    await h.controller.open(h.send);
+    const list = keyboardOf(lastCall(h.send));
+    expect(labels(list)).toHaveLength(3);
+    // The addon (or an import rule) filed row b between the two taps.
+    h.state.rows = [row('a')];
+    await h.tap(dataFor(list, 'BOOK STORES a'));
+    await h.tap(dataFor(keyboardOf(lastCall(h.ui.edit)), '« Back'));
+    const refreshed = lastCall(h.ui.edit);
+    expect(refreshed[0]).toBe('1 transaction needs a category:');
+    expect(labels(keyboardOf(refreshed))).toEqual(['Aug 8 · BOOK STORES a · -$12', 'Done']);
+  });
+});
+
+describe('sessions', () => {
+  it('replaces the session on a second /categorize, so old buttons go stale', async () => {
+    const h = setup({ rows: Array.from({ length: 9 }, (_, i) => row(`r${i}`)) });
+    await h.controller.open(h.send);
+    const old = keyboardOf(lastCall(h.send));
+    const oldDone = dataFor(old, 'Done');
+    h.state.rows = [row('r0')];
+    await h.controller.open(h.send);
+    expect(labels(keyboardOf(lastCall(h.send)))).toEqual(['Aug 8 · BOOK STORES r0 · -$12', 'Done']);
+
+    await h.tap(oldDone);
+    expect(h.ui.answer).toHaveBeenCalledWith('That menu expired — send /categorize again.');
+    expect(h.ui.edit).not.toHaveBeenCalled();
+    expect(h.deps.assign).not.toHaveBeenCalled();
+    expect(h.deps.writeLedgerMerged).not.toHaveBeenCalled();
+  });
+
+  it('closes the menu with no keyboard left behind, and forgets the session', async () => {
+    const h = setup();
+    await h.controller.open(h.send);
+    const list = keyboardOf(lastCall(h.send));
+    await h.tap(dataFor(list, 'Done'));
+    // No reply_markup on an edit is how Telegram is told to strip the buttons.
+    expect(lastCall(h.ui.edit)).toEqual(['Menu closed.', undefined]);
+    await h.tap(dataFor(list, 'Done'));
+    expect(h.ui.answer).toHaveBeenLastCalledWith('That menu expired — send /categorize again.');
+  });
+
+  it('never uses the callback message id, which can arrive undefined', async () => {
+    // Typed `number` on the callback, but the listener reads it off an untrusted
+    // payload; the UI it hands over is already bound to the message anyway.
+    const h = setup();
+    await h.controller.open(h.send);
+    const list = keyboardOf(lastCall(h.send));
+    await h.controller.onCallback(
+      { data: dataFor(list, 'BOOK STORES a'), chatId: CHAT, messageId: undefined as unknown as number },
+      h.ui,
+    );
+    expect(lastCall(h.ui.edit)[0]).toBe('BOOK STORES a\n-$12 · Aug 8 · Citi Double Cash');
+  });
+});
+
+describe('nothing escapes to the listener', () => {
+  it('keeps the flow when republishing the status fails', async () => {
+    const h = setup();
+    h.deps.republish.mockRejectedValue(new Error('addon secret 401'));
+    const filed = await openAtFiled(h);
+    expect(lastCall(h.ui.edit)[0]).toBe('Filed BOOK STORES a → Entertainment.');
+    expect(labels(filed)).toEqual(['Undo', 'Make this a rule', 'Next transaction', 'Done']);
+    expect(h.logs.join('\n')).toContain('addon secret 401');
+  });
+
+  it('renders an error screen when a read fails mid-flow', async () => {
+    const h = setup();
+    await h.controller.open(h.send);
+    const list = keyboardOf(lastCall(h.send));
+    h.deps.readCategories.mockImplementation(() => { throw new Error('db vanished'); });
+    await h.tap(dataFor(list, 'BOOK STORES a'));
+    expect(lastCall(h.ui.edit)[0]).toBe('Couldn\'t check what needs a category — db vanished');
+    expect(labels(keyboardOf(lastCall(h.ui.edit)))).toEqual(['« Back', 'Done']);
+  });
+
+  it('reports lost database access mid-flow', async () => {
+    const h = setup();
+    await h.controller.open(h.send);
+    const list = keyboardOf(lastCall(h.send));
+    h.deps.dbPath.mockReturnValue(null);
+    await h.tap(dataFor(list, 'BOOK STORES a'));
+    expect(lastCall(h.ui.edit)[0]).toBe(
+      'The companion has no database access right now, so it can\'t tell what needs a category.',
+    );
+  });
+
+  it('resolves rather than rejects whatever a dependency does', async () => {
+    const h = setup();
+    await h.controller.open(h.send);
+    const list = keyboardOf(lastCall(h.send));
+    const rowToken = dataFor(list, 'BOOK STORES a');
+    h.deps.dbPath.mockImplementation(() => { throw new Error('existsSync exploded'); });
+    await expect(h.tap(rowToken)).resolves.toBeUndefined();
+    h.deps.dbPath.mockReturnValue(DB);
+    h.deps.readLedger.mockRejectedValue(new Error('secret 500'));
+    await expect(h.tap(rowToken)).resolves.toBeUndefined();
+  });
+
+  it('survives a logger that throws while reporting a failure', async () => {
+    // Every log call in this file sits in a catch that exists to stop something
+    // worse; a throwing logger inside one would recreate exactly that failure.
+    const h = setup();
+    const deps: CategorizeDeps = { ...h.deps, log: () => { throw new Error('logger down'); } };
+    const controller = createCategorizeController(deps);
+    await controller.open(h.send);
+    const list = keyboardOf(lastCall(h.send));
+    h.deps.assign.mockRejectedValue(new Error('403'));
+    const picker = dataFor(list, 'BOOK STORES a');
+    await expect(controller.onCallback({ data: picker, chatId: CHAT, messageId: 1 }, h.ui)).resolves.toBeUndefined();
+    const catToken = dataFor(keyboardOf(lastCall(h.ui.edit)), 'Entertainment');
+    await expect(controller.onCallback({ data: catToken, chatId: CHAT, messageId: 1 }, h.ui)).resolves.toBeUndefined();
+    expect(lastCall(h.ui.edit)[0]).toBe('Couldn\'t file that — Wealthfolio said: 403');
+  });
+});
