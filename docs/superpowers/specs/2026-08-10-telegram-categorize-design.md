@@ -49,9 +49,18 @@ no new mounts, no new permissions.
    (`descriptions containing "TRADER JOE S #628" → Groceries`) and asks for one
    more tap to create it. Priority 50 — below Nick's hand-made rules (60) and
    Wealthfolio's presets (70–90), where LOWER wins — so a tapped rule never
-   outranks a deliberate one. The pattern is the cleaned descriptor as an
-   escaped, case-insensitive literal: narrow and honest beats clever and
-   wrong, and rules are editable in Wealthfolio's settings afterwards.
+   outranks a deliberate one. The pattern is the cleaned descriptor with
+   `matchType: "contains"` — the API's native substring match, so no regex
+   and nothing to escape. Narrow and honest beats clever and wrong; rules are
+   editable in Wealthfolio's settings afterwards.
+
+   Verified upstream side effect, disclosed in the confirmation copy: creating
+   a rule makes Wealthfolio immediately apply it to existing UNCATEGORIZED
+   rows in spending-enabled accounts (`rerun_all` with
+   `only_uncategorized: true` — categorized rows are never touched). That is
+   the desirable half of retroactivity: "make this a rule" also files the
+   OTHER uncategorized Trader Joe's charges, while rewriting anything already
+   filed remains impossible through this endpoint.
 5. **The addon hears about it in seconds.** After every assignment, dismissal,
    or undo made from Telegram, the companion republishes
    `uncategorized_status`, so the purple tile and its list update on the next
@@ -108,8 +117,10 @@ tap a category
 
 ## Known consequences, stated rather than discovered later
 
-- A rule created from the button applies at IMPORT time, to future
-  transactions only. Existing history is untouched (see non-goals).
+- A rule created from the button applies to future imports AND — by
+  Wealthfolio's own design — sweeps currently-uncategorized rows in
+  spending-enabled accounts the moment it is created. Rows that already have
+  a category are never touched by that sweep.
 - Store-numbered descriptors (`#628`) make narrow rules. Accepted: narrow
   rules never mis-file, and widening one is a settings edit in Wealthfolio.
 - The in-memory menu session does not survive a companion restart. Accepted:
