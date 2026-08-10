@@ -528,7 +528,17 @@ async function sendAmazonNewLabelNotice(
   }
 }
 
-export async function runCompanionSync(): Promise<SyncResult> {
+/**
+ * One companion sync run.
+ *
+ * `opts.force` overrides the `MIN_SYNC_INTERVAL_HOURS` guard below. Absent — the
+ * cron tick, the startup sync — the guard applies exactly as it always has; a
+ * user who explicitly ASKED for a sync passes `true`, because the interval guard
+ * exists to stop a schedule from hammering SimpleFin, not to refuse a person.
+ * The addon's Sync Now button makes the same distinction: it forces, and offers
+ * a "Sync anyway" retry when a scheduled run was skipped (src/pages/SyncPage.tsx).
+ */
+export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<SyncResult> {
   const apiUrl = process.env.WEALTHFOLIO_API_URL ?? '';
   if (!apiUrl) throw new Error('Missing WEALTHFOLIO_API_URL');
 
@@ -584,7 +594,8 @@ export async function runCompanionSync(): Promise<SyncResult> {
     }
 
     const minIntervalHours = parseFloat(process.env.MIN_SYNC_INTERVAL_HOURS ?? '1');
-    const force = minIntervalHours <= 0;
+    // Env-derived unless the caller asked for a forced run — see the doc comment.
+    const force = opts.force ?? minIntervalHours <= 0;
 
     // Amazon mail is read here rather than on a cron of its own. The ledger is
     // only ever READ during a sync, so polling more often buys nothing but
@@ -687,9 +698,15 @@ let syncInFlight: Promise<SyncResult> | null = null;
  * Starts `runner()` unless a previous call is still in flight, in which case
  * it hands back the SAME promise instead of starting a second run.
  *
- * `runner` defaults to `runCompanionSync` and only exists as a parameter so
- * tests can control exactly when a run settles (a plain `vi.mock` cannot fake
- * one export of this module from another export of the SAME module).
+ * `runner` defaults to `runCompanionSync`. `/sync` passes
+ * `() => runCompanionSync({ force: true })` through it — the lock is about how
+ * many syncs run at once, not about how any one of them is configured — and
+ * tests pass one to control exactly when a run settles (a plain `vi.mock` cannot
+ * fake one export of this module from another export of the SAME module).
+ *
+ * A joined run keeps the settings of whoever STARTED it: a `/sync` that arrives
+ * mid-run reports that run's outcome rather than forcing a second one, which is
+ * what the design asks for ("Already syncing" and no second run).
  *
  * The slot is cleared in `.finally`, not just on success: a rejected sync
  * that left the slot occupied would wedge `/sync` and the cron schedule
@@ -834,9 +851,11 @@ export async function sendImportNotice(
   // not what ends up on disk.
   const base: DismissalLedger = { ...ledger };
 
-  // Pruning stays on the sync path, and this is the only place it happens: the
-  // listener's per-tap write deliberately only ever ADDS one id, so without
-  // this the ledger would grow forever.
+  // Pruning stays on the sync path. It is not the only place it happens —
+  // `applyTelegramDismissal` prunes the ledger it writes on a button tap too —
+  // but a tap is an occasional, user-driven event: a ledger nobody touches for
+  // months would age out nothing at all without this. The sync is the one clock
+  // that ticks regardless, which is why the guaranteed prune lives here.
   const pruned = pruneDismissals(ledger, new Date());
   const prunedAnything = Object.keys(pruned).length !== Object.keys(ledger).length;
   ledger = pruned;
@@ -1020,17 +1039,32 @@ export function readBudgetSnapshot(dbPath: string, now: Date): {
 
 /**
  * Builds the daily digest message — everything `sendDailyTelegramReport` used
- * to do, minus the send — so a command handler (Task 6) can obtain the exact
- * same text without a Telegram config in hand. Returns `null` when telegram is
+ * to do, minus the send — so a command handler can obtain the exact same text
+ * without a Telegram config in hand. Returns `null` when telegram is
  * unconfigured/disabled or the database is missing, mirroring the conditions
  * that used to make `sendDailyTelegramReport` return early without sending.
+ *
+ * `honorDailyReportSwitch` defaults to TRUE, which is the 8am schedule's gate
+ * and must stay exactly as it was: unchecking "Daily" on the Notifications tab
+ * silences the scheduled send.
+ *
+ * `/report` passes `false`, because that switch answers "send me one every
+ * morning", not "give me one now". With it honored, a user who turned the
+ * scheduled digest off got `REPORT_UNAVAILABLE_REPLY` from every `/report` —
+ * "not configured" for a bot that was configured perfectly. The design lists
+ * `/report` as an on-demand command explicitly separate from the schedule, so
+ * the only things it needs are a Telegram config and a readable database, both
+ * still checked below.
  */
-export async function composeDailyDigestMessage(wfClient: WealthfolioClient): Promise<string | null> {
+export async function composeDailyDigestMessage(
+  wfClient: WealthfolioClient,
+  opts: { honorDailyReportSwitch?: boolean } = {},
+): Promise<string | null> {
   const tgRaw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_config');
   const tg = parseSecretJson<any>(tgRaw, 'telegram_config');
   if (!tg) return null;
   if (!tg.botToken || !tg.chatId || tg.enabled === false) return null;
-  if (tg.dailyReportEnabled === false) return null;
+  if ((opts.honorDailyReportSwitch ?? true) && tg.dailyReportEnabled === false) return null;
 
   const dbPath = process.env.WEALTHFOLIO_DB_PATH || '/mnt/wealthfolio.db';
   if (!dbPath || !existsSync(dbPath)) {
@@ -1294,10 +1328,22 @@ export async function applyTelegramDismissal(
 
 /** `/report`'s footer needs the last sync as an ISO string. Read through
  *  `RestSyncStore` rather than the raw secret so the "unparseable date reads as
- *  never" rule lives in exactly one place (see `getLastSyncAt`). */
-async function readLastSyncAtIso(wfClient: WealthfolioClient): Promise<string | null> {
-  const at = await new RestSyncStore(wfClient).getLastSyncAt().catch(() => null);
-  return at ? at.toISOString() : null;
+ *  never" rule lives in exactly one place (see `getLastSyncAt`).
+ *
+ *  A FAILED read is reported as `read: false`, not folded into `iso: null`. The
+ *  two produce different footers on purpose: `formatReportFooter(null, …)` says
+ *  "No sync has run yet", which is a confident claim about a signal nobody
+ *  managed to read — and the digest above it is real data whose freshness is
+ *  then simply unknown. */
+async function readLastSyncAt(
+  wfClient: WealthfolioClient,
+): Promise<{ read: true; iso: string | null } | { read: false }> {
+  try {
+    const at = await new RestSyncStore(wfClient).getLastSyncAt();
+    return { read: true, iso: at ? at.toISOString() : null };
+  } catch {
+    return { read: false };
+  }
 }
 
 /** The `account_balances` snapshot as this file READS it. Structurally the
@@ -1317,9 +1363,18 @@ interface StoredAccountBalance {
 /**
  * Assembles `/status` from the secrets the companion already publishes.
  *
- * Every read is guarded INDIVIDUALLY and degrades to omitting its own line: a
- * status command that fails because one optional signal is unreadable is worse
- * than a status command that admits it does not know that one thing.
+ * Every read is guarded INDIVIDUALLY and never fails the command: a status
+ * command that dies because one optional signal is unreadable is worse than one
+ * that admits it does not know that one thing.
+ *
+ * How a failed read degrades depends on what the reply would otherwise CLAIM:
+ *
+ *  - the counts simply omit their line, because a missing count and an
+ *    unreadable one both mean "no number to show" and neither is a claim;
+ *  - `sync_health` and `account_balances` instead report that they could not be
+ *    read, because their absence is rendered as a positive statement —
+ *    "Last sync: never" and an empty account list — and a 401 is not evidence
+ *    for either.
  *
  * A missing count becomes `null`, never `0`. `formatStatusReply` renders the two
  * differently on purpose — "Needs a category: 0" is a clean bill of health, and
@@ -1329,9 +1384,24 @@ interface StoredAccountBalance {
 async function readStatusReplyInput(wfClient: WealthfolioClient): Promise<StatusReplyInput> {
   const secret = (key: string) => wfClient.getAddonSecret('simplefin-sync', key).catch(() => null);
 
-  const health = parseSecretJson<SyncHealth>(await secret('sync_health'), 'sync_health');
+  /** As `secret`, but for the two reads whose ABSENCE the reply makes a positive
+   *  claim about ("Last sync: never", an empty account list). For those, a failed
+   *  read has to stay distinguishable from a missing value, or a transient 401
+   *  renders as a confident negative — see the two `*Unreadable` flags on
+   *  `StatusReplyInput`. Everything else genuinely does just omit a line. */
+  const readableSecret = async (key: string): Promise<{ read: boolean; raw: string | null }> => {
+    try {
+      return { read: true, raw: await wfClient.getAddonSecret('simplefin-sync', key) };
+    } catch {
+      return { read: false, raw: null };
+    }
+  };
+
+  const healthRead = await readableSecret('sync_health');
+  const health = parseSecretJson<SyncHealth>(healthRead.raw, 'sync_health');
+  const balancesRead = await readableSecret('account_balances');
   const balances =
-    parseSecretJson<Record<string, StoredAccountBalance>>(await secret('account_balances'), 'account_balances') ?? {};
+    parseSecretJson<Record<string, StoredAccountBalance>>(balancesRead.raw, 'account_balances') ?? {};
   const names = parseSecretJson<Record<string, string>>(await secret('account_names'), 'account_names') ?? {};
   const uncategorized = parseSecretJson<{ count?: number }>(
     await secret(UNCATEGORIZED_STATUS_SECRET_KEY),
@@ -1369,6 +1439,9 @@ async function readStatusReplyInput(wfClient: WealthfolioClient): Promise<Status
   return {
     version: SIMPLEFIN_SYNC_VERSION,
     lastSyncAt: health?.lastSuccessAt ?? null,
+    // Only when the READ failed. An unparseable or absent record is a genuine
+    // "never synced"; a 401 is not.
+    lastSyncUnreadable: !healthRead.read,
     // Nothing persists a per-run import/skip summary today — `sync_health`
     // carries timings and the last error, not counts — so this is honestly
     // `null` rather than a reconstructed guess. `/sync` reports its own run's
@@ -1377,16 +1450,28 @@ async function readStatusReplyInput(wfClient: WealthfolioClient): Promise<Status
     lastSyncSummary: null,
     accounts,
     accountsWithoutBalance,
+    // Same distinction one step further out: an empty `accounts` because the
+    // snapshot said nothing, versus because it could not be read at all.
+    accountBalancesUnreadable: !balancesRead.read,
     uncategorizedCount: typeof uncategorized?.count === 'number' ? uncategorized.count : null,
     amazonUnparsed: typeof amazon?.unparsed === 'number' ? amazon.unparsed : null,
   };
 }
 
-/** Sent when `/report` has no digest to send: Telegram unconfigured or
- *  disabled, the daily report switched off, or no readable database. Names both
- *  places the fix lives, since neither is discoverable from a chat window. */
+/** Sent when `/report` has no digest to build: Telegram unconfigured or
+ *  disabled, or no readable database. Names both places the fix lives, since
+ *  neither is discoverable from a chat window. Deliberately NOT reachable from
+ *  the daily-report switch any more — `/report` is on-demand and ignores it. */
 const REPORT_UNAVAILABLE_REPLY =
   "Telegram reports are not configured — check budgets and the addon's Notifications tab.";
+
+/** `/report`'s footer when the last-sync timestamp could not be READ. The digest
+ *  above it is real; how fresh it is, we cannot say. `formatReportFooter`'s
+ *  never-synced line would claim otherwise, which is the one thing this must not
+ *  do — see `readLastSyncAt`. Keeps the `/sync` call to action, since pulling now
+ *  is the answer either way. */
+const REPORT_FOOTER_UNREADABLE_SYNC =
+  'Could not read the last sync time, so how fresh this is unknown — /sync to pull new charges.';
 
 /** One line for every way `/afford`'s arguments can fail to parse — see
  *  `parseAffordArgs`, which deliberately does not distinguish them. */
@@ -1423,7 +1508,9 @@ export function buildTelegramCommandHandler(
   return async (cmd, reply) => {
     switch (cmd.command) {
       case 'report': {
-        const digest = await composeDailyDigestMessage(wfClient);
+        // `honorDailyReportSwitch: false` — the 8am schedule's off switch is not
+        // an answer to "give me a report now". See composeDailyDigestMessage.
+        const digest = await composeDailyDigestMessage(wfClient, { honorDailyReportSwitch: false });
         if (digest === null) {
           await reply(REPORT_UNAVAILABLE_REPLY);
           return;
@@ -1431,7 +1518,10 @@ export function buildTelegramCommandHandler(
         // The footer reads `last_sync_at` — the timestamp the sync itself
         // stamps — not `sync_health`, so it describes how fresh the DATA behind
         // the digest is rather than when a run last reported success.
-        const footer = formatReportFooter(await readLastSyncAtIso(wfClient), new Date());
+        const lastSync = await readLastSyncAt(wfClient);
+        const footer = lastSync.read
+          ? formatReportFooter(lastSync.iso, new Date())
+          : REPORT_FOOTER_UNREADABLE_SYNC;
         await reply(`${digest}\n\n${footer}`);
         return;
       }
@@ -1459,7 +1549,13 @@ export function buildTelegramCommandHandler(
         return;
 
       case 'sync': {
-        const { started, result } = runCompanionSyncExclusive();
+        // FORCED, unlike the cron tick: `MIN_SYNC_INTERVAL_HOURS` (1h by default)
+        // would otherwise refuse a `/sync` typed twenty minutes after a scheduled
+        // run with "0 imported, 0 skipped" plus "minimum sync interval of 1 hour
+        // not yet elapsed". The addon's Sync Now answers that with a "Sync
+        // anyway" button; a chat command has no second click, so an explicit
+        // request forces — which is what the design and the changelog promise.
+        const { started, result } = runCompanionSyncExclusive(() => runCompanionSync({ force: true }));
         // Both handlers are attached to `result` synchronously, BEFORE the first
         // `await`, and in BOTH branches. That ordering is the point: a sync that
         // rejects while this function is suspended would otherwise be an

@@ -110,7 +110,9 @@ export function startTelegramListener(deps: TelegramListenerDeps): { stop: () =>
 
   /** The offset is read from storage ONCE and carried in memory after that:
    *  this loop is the stream's only consumer, so storage cannot be more current
-   *  than memory, and re-reading a secret per poll buys nothing. */
+   *  than memory, and re-reading a secret per poll buys nothing. The one thing
+   *  that invalidates it is the bot TOKEN changing — an offset is only meaningful
+   *  against the bot that issued it — so `run` clears both halves in that case. */
   let offset: number | null = null;
   let offsetLoaded = false;
 
@@ -395,6 +397,32 @@ export function startTelegramListener(deps: TelegramListenerDeps): { stop: () =>
           offsetLoaded = true;
         }
         if (registeredToken !== config.botToken) {
+          // A DIFFERENT bot, not merely the first one. The stored offset belongs
+          // to the token that produced it: a new bot's `update_id`s come from its
+          // own sequence, typically far BELOW the previous bot's, so carrying the
+          // old offset over tells Telegram every update is already confirmed and
+          // the bot ignores every command forever — the same invisible symptom
+          // the 409 message above exists to make diagnosable, with no log line at
+          // all. So the offset is dropped from memory AND from storage.
+          //
+          // `registeredToken === null` is the FIRST config read of the process,
+          // not a change: resetting there would wipe the stored offset on every
+          // container start and re-serve whatever Telegram still held.
+          if (registeredToken !== null) {
+            offset = null;
+            // 0 is Telegram's own "no offset": `getUpdates` treats it as
+            // unspecified and serves the oldest update it still holds, which is
+            // exactly what a fresh bot should start from. Written BEFORE the
+            // token is marked as registered (`registerCommandMenu` does that
+            // first), so a failed write throws into the loop's backoff and the
+            // reset is retried on the next cycle instead of leaving storage
+            // poisoned for the next container start.
+            await deps.writeOffset(0);
+            safeLog(
+              'Telegram listener: bot token changed — the stored update offset belonged to the previous bot '
+              + 'and has been reset, so this bot\'s updates are not confirmed away unseen.',
+            );
+          }
           await registerCommandMenu(config.botToken);
         }
 

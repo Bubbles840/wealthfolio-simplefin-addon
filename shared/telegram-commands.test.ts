@@ -381,6 +381,29 @@ describe('formatStatusReply', () => {
     expect(formatStatusReply(baseInput, now)).not.toContain('no balance yet');
   });
 
+  it('escapes a summary carrying Markdown specials, or Telegram refuses the whole reply', () => {
+    // Only `null` reaches this field today, but it is the one caller-supplied
+    // string in this file that was interpolated raw — and unbalanced entities
+    // make Telegram answer `ok: false`, i.e. total silence.
+    const reply = formatStatusReply({ ...baseInput, lastSyncSummary: '0 imported, 1 skipped (*odd_case*)' }, now);
+    expect(reply).toContain('Last sync: 2h ago — 0 imported, 1 skipped (\\*odd\\_case\\*)');
+  });
+
+  it('says the sync record could not be READ rather than claiming nothing has ever synced', () => {
+    // "never" is a confident negative. An unreadable signal does not support one.
+    const reply = formatStatusReply({ ...baseInput, lastSyncAt: null, lastSyncUnreadable: true }, now);
+    expect(reply).not.toContain('Last sync: never');
+    expect(reply).toContain('Last sync: unknown — the sync record could not be read.');
+  });
+
+  it('says the balance snapshot could not be read, so an empty account list is explained', () => {
+    const reply = formatStatusReply(
+      { ...baseInput, accounts: [], accountsWithoutBalance: 0, accountBalancesUnreadable: true },
+      now,
+    );
+    expect(reply).toContain('Account balances could not be read — this list is missing, not empty.');
+  });
+
   it('a full render with one of each account state assembles as one message', () => {
     const reply = formatStatusReply(baseInput, now);
     expect(reply).toBe(

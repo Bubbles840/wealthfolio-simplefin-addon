@@ -18,6 +18,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   attention), /sync (pull new transactions now), /help. Commands work only from
   your configured chat and answer in a second or two.
 
+  /report works even if you have the 8am daily digest switched off — asking for
+  one now is a different question from wanting one every morning. /sync always
+  forces a fresh pull, the same as the addon's Sync Now button, so a command
+  typed minutes after a scheduled sync still fetches. It acknowledges
+  immediately and reports the outcome when the run finishes, so a sync in
+  progress never stops the bot answering anything else. /status now says when
+  accounts have no balance yet, instead of quietly leaving them out of the list,
+  and says when a signal could not be read rather than reporting it as absent.
+
+  Needs the matching companion rebuild — the bot lives entirely in the
+  companion, so a zip-only reinstall shows v1.11.0 with a bot that answers
+  nothing. Against an older companion the addon behaves exactly as before.
+
 ### Changed
 
 - **Dismiss buttons act immediately.** The companion now listens to Telegram

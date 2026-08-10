@@ -137,6 +137,31 @@ describe('runCompanionSync', () => {
     await runCompanionSync();
     expect(runSyncCore).toHaveBeenCalledTimes(1);
   });
+
+  it('derives force from MIN_SYNC_INTERVAL_HOURS when called with no options, so the cron tick is unchanged', async () => {
+    delete process.env.MIN_SYNC_INTERVAL_HOURS;
+    await runCompanionSync();
+    expect(vi.mocked(runSyncCore).mock.calls[0][2]).toMatchObject({ force: false });
+
+    vi.mocked(runSyncCore).mockClear();
+    process.env.MIN_SYNC_INTERVAL_HOURS = '0';
+    try {
+      await runCompanionSync();
+      expect(vi.mocked(runSyncCore).mock.calls[0][2]).toMatchObject({ force: true });
+    } finally {
+      delete process.env.MIN_SYNC_INTERVAL_HOURS;
+    }
+  });
+
+  it('forces the run when asked, whatever the interval says — an explicitly requested sync is never refused', async () => {
+    process.env.MIN_SYNC_INTERVAL_HOURS = '1';
+    try {
+      await runCompanionSync({ force: true });
+      expect(vi.mocked(runSyncCore).mock.calls[0][2]).toMatchObject({ force: true });
+    } finally {
+      delete process.env.MIN_SYNC_INTERVAL_HOURS;
+    }
+  });
 });
 
 describe('runCompanionSync sync health', () => {
@@ -1444,6 +1469,47 @@ describe('buildTelegramCommandHandler', () => {
     expect(sent[0]).toMatch(/No sync has run yet — \/sync to pull transactions\.$/);
   });
 
+  it('answers /report even when the scheduled daily digest is switched off, while 8am stays silent', async () => {
+    // Unchecking "Daily" on the Notifications tab turns off the 8am SEND. It is
+    // not an answer to "give me a report now": /report is an on-demand command,
+    // gated on Telegram being configured and the database being readable.
+    const { client } = clientFor([
+      ['telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true, dailyReportEnabled: false })],
+      ['last_sync_at', ISO_2H_AGO()],
+    ]);
+
+    const sent = await run(client, 'report');
+
+    expect(sent[0]).toContain('Groceries');
+    expect(sent[0]).toMatch(/Data as of last sync, 2h ago — \/sync to pull new charges\.$/);
+
+    // …and the schedule still honours the unchecked box, unchanged.
+    const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+    vi.stubGlobal('fetch', fetchMock);
+    await sendDailyTelegramReport(client);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('does not claim /report has never synced when the last-sync read itself failed', async () => {
+    const secrets = new Map<string, string>([
+      ['telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true })],
+    ]);
+    const client = {
+      getAddonSecret: vi.fn(async (_a: string, k: string) => {
+        if (k === 'last_sync_at') throw new Error('401 unauthorized');
+        return secrets.get(k) ?? null;
+      }),
+      setAddonSecret: vi.fn(async (_a: string, k: string, v: string) => { secrets.set(k, v); }),
+    } as any;
+
+    const sent = await run(client, 'report');
+
+    // "No sync has run yet" is a confident claim about a signal that could not
+    // be read at all — the digest above it is real, its freshness is unknown.
+    expect(sent[0]).not.toContain('No sync has run yet');
+    expect(sent[0]).toContain('Could not read the last sync time');
+  });
+
   it('answers bare /left with one line per budgeted category', async () => {
     const { client } = clientFor();
     const sent = await run(client, 'left');
@@ -1507,7 +1573,10 @@ describe('buildTelegramCommandHandler', () => {
 
     expect(sent).toHaveLength(1);
     expect(sent[0]).toContain(`companion v${SIMPLEFIN_SYNC_VERSION}`);
-    expect(sent[0]).toContain('Last sync: never');
+    // Was `Last sync: never` — a confident negative derived from a read that
+    // threw. The command still ANSWERS (this test's actual subject), it just no
+    // longer claims a fact it could not check. See the two tests below.
+    expect(sent[0]).toContain('Last sync: unknown — the sync record could not be read.');
     // A missing signal is omitted, never rendered as a confident zero.
     expect(sent[0]).not.toContain('Needs a category');
     expect(sent[0]).not.toContain('Amazon');
@@ -1528,6 +1597,50 @@ describe('buildTelegramCommandHandler', () => {
     expect(sent[0]).toContain('Save: $100 · in sync');
     // A quietly SHORT account list is worse than one that admits the gap.
     expect(sent[0]).toContain('1 account(s) have no balance yet');
+  });
+
+  it('says the sync record could not be read instead of claiming the companion has never synced', async () => {
+    const secrets = new Map<string, string>([
+      ['account_balances', JSON.stringify({
+        'sfin-2': { balance: 100, currency: 'USD', date: 1_760_000_000, drift: null, measured: true },
+      })],
+      ['account_names', JSON.stringify({ 'sfin-2': 'Save' })],
+    ]);
+    const client = {
+      getAddonSecret: vi.fn(async (_a: string, k: string) => {
+        if (k === 'sync_health') throw new Error('401 unauthorized');
+        return secrets.get(k) ?? null;
+      }),
+      setAddonSecret: vi.fn(async () => {}),
+    } as any;
+
+    const sent = await run(client, 'status');
+
+    // A transient 401 is not evidence that no sync ever ran.
+    expect(sent[0]).not.toContain('Last sync: never');
+    expect(sent[0]).toContain('Last sync: unknown — the sync record could not be read.');
+    // Everything else still answers.
+    expect(sent[0]).toContain('Save: $100 · in sync');
+  });
+
+  it('says the balance snapshot could not be read instead of showing an unexplained empty list', async () => {
+    const secrets = new Map<string, string>([
+      ['sync_health', JSON.stringify({ lastSuccessAt: ISO_2H_AGO() })],
+    ]);
+    const client = {
+      getAddonSecret: vi.fn(async (_a: string, k: string) => {
+        if (k === 'account_balances') throw new Error('401 unauthorized');
+        return secrets.get(k) ?? null;
+      }),
+      setAddonSecret: vi.fn(async () => {}),
+    } as any;
+
+    const sent = await run(client, 'status');
+
+    expect(sent[0]).toContain('Last sync: 2h ago');
+    // Zero account lines AND `0 accounts have no balance` explained nothing.
+    expect(sent[0]).toContain('Account balances could not be read');
+    expect(sent[0]).not.toContain('have no balance yet');
   });
 
   it('acknowledges /sync immediately, returns without waiting, and reports the run when it lands', async () => {
@@ -1586,6 +1699,36 @@ describe('buildTelegramCommandHandler', () => {
     expect(sent[0]).toBe('Already syncing — hang on.');
     await waitFor('the error summary', () => sent.length >= 2);
     expect(sent[1]).toContain('Sync finished with errors: SimpleFin: token revoked');
+  });
+
+  it('runs /sync FORCED, so a command typed minutes after the cron tick is not refused by the interval guard', async () => {
+    // The addon's Sync Now offers a "Sync anyway" button when the interval guard
+    // skips a run. A chat command has no second click, so an explicitly
+    // requested sync must force — otherwise /sync answers
+    // "0 imported, 0 skipped" plus "minimum sync interval not yet elapsed".
+    process.env.MIN_SYNC_INTERVAL_HOURS = '1';
+    vi.mocked(runSyncCore).mockClear();
+
+    const secrets = new Map<string, string>([
+      ['simplefin_access_url', 'https://user:pass@bridge.simplefin.org/simplefin'],
+    ]);
+    const client: any = {
+      login: vi.fn(async () => {}),
+      getAddonSecret: vi.fn(async (_a: string, k: string) => secrets.get(k) ?? null),
+      setAddonSecret: vi.fn(async (_a: string, k: string, v: string) => { secrets.set(k, v); }),
+    };
+    const { WealthfolioClient } = await import('./wealthfolio.js');
+    vi.mocked(WealthfolioClient).mockImplementation(function () { return client; } as any);
+
+    try {
+      const { sent, reply } = collector();
+      await buildTelegramCommandHandler(client)({ command: 'sync', args: '' }, reply);
+      await waitFor('the sync summary', () => sent.length >= 2);
+
+      expect(vi.mocked(runSyncCore).mock.calls[0][2]).toMatchObject({ force: true });
+    } finally {
+      delete process.env.MIN_SYNC_INTERVAL_HOURS;
+    }
   });
 });
 
