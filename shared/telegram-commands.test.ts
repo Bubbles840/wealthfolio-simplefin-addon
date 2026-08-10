@@ -1,7 +1,18 @@
 import { describe, it, expect } from 'vitest';
-import { parseCommand, formatHelpReply, TELEGRAM_COMMAND_MENU, resolveCategoryQuery, parseAffordArgs, formatLeftReply, formatAffordReply } from './telegram-commands';
-import type { CategoryBudgetSnapshot, BudgetPeriod } from './telegram-commands';
-import { DEFAULT_GLYPH_STYLE } from './telegram.js';
+import {
+  parseCommand,
+  formatHelpReply,
+  TELEGRAM_COMMAND_MENU,
+  resolveCategoryQuery,
+  parseAffordArgs,
+  formatLeftReply,
+  formatAffordReply,
+  formatStatusReply,
+  formatReportFooter,
+  formatSyncReply,
+} from './telegram-commands';
+import type { CategoryBudgetSnapshot, BudgetPeriod, StatusReplyInput } from './telegram-commands';
+import { DEFAULT_GLYPH_STYLE, formatRelativeTime } from './telegram.js';
 
 describe('parseCommand', () => {
   it('parses a bare command', () => {
@@ -230,5 +241,173 @@ describe('formatAffordReply', () => {
   it('no matching prefix names the query, same as /left', () => {
     const reply = formatAffordReply(cats, period, DEFAULT_GLYPH_STYLE, 10, 'zzz');
     expect(reply).toBe('No category starts with "zzz". /left lists them all.');
+  });
+});
+
+// formatRelativeTime's real boundaries (shared/telegram.ts), verified against the
+// live implementation rather than the task brief's illustrative "119s/121s" pair:
+// Math.round on `diffMs / 60_000` means the just-now/minutes cutover actually
+// lands at 90s (round(1.5) rounds up to 2), not at a clean 120s. These values
+// are the ones formatStatusReply and formatReportFooter actually observe.
+const now = new Date('2026-08-10T12:00:00.000Z');
+function agoIso(deltaSeconds: number): string {
+  return new Date(now.getTime() - deltaSeconds * 1000).toISOString();
+}
+
+describe('formatRelativeTime boundaries (sanity check for the reused formatter)', () => {
+  it('89s reads just now, 91s reads 2m ago', () => {
+    expect(formatRelativeTime(agoIso(89), now)).toBe('just now');
+    expect(formatRelativeTime(agoIso(91), now)).toBe('2m ago');
+  });
+  it('59min reads Nm ago, 61min crosses into Nh ago', () => {
+    expect(formatRelativeTime(agoIso(59 * 60), now)).toBe('59m ago');
+    expect(formatRelativeTime(agoIso(61 * 60), now)).toBe('1h ago');
+  });
+  it('47h reads Nh ago, 49h crosses into Nd ago', () => {
+    expect(formatRelativeTime(agoIso(47 * 3600), now)).toBe('47h ago');
+    expect(formatRelativeTime(agoIso(49 * 3600), now)).toBe('2d ago');
+  });
+});
+
+describe('formatStatusReply', () => {
+  const baseInput: StatusReplyInput = {
+    version: '1.10.1',
+    lastSyncAt: agoIso(2 * 3600),
+    lastSyncSummary: '0 imported, 105 skipped',
+    accounts: [
+      { name: 'Checking', balance: 1234, currency: 'USD', drift: null, measured: true }, // in sync
+      { name: 'Savings', balance: 500, currency: 'USD', drift: -20, measured: true }, // $20 off
+      { name: 'Credit Card', balance: -300, currency: 'USD', drift: null, measured: false }, // not checked
+    ],
+    uncategorizedCount: 7,
+    amazonUnparsed: 2,
+  };
+
+  it('renders the header with the companion version', () => {
+    const reply = formatStatusReply(baseInput, now);
+    expect(reply).toContain('*SimpleFin Sync* — companion v1.10.1');
+  });
+
+  it('renders last sync as relative time plus the summary', () => {
+    const reply = formatStatusReply(baseInput, now);
+    expect(reply).toContain('Last sync: 2h ago — 0 imported, 105 skipped');
+  });
+
+  it('renders "Last sync: never" when lastSyncAt is null', () => {
+    const reply = formatStatusReply({ ...baseInput, lastSyncAt: null }, now);
+    expect(reply).toContain('Last sync: never');
+  });
+
+  it('measured with no drift renders "in sync"', () => {
+    const reply = formatStatusReply(baseInput, now);
+    expect(reply).toContain('Checking: $1,234 · in sync');
+  });
+
+  it('a non-null drift renders "$N off" using the absolute value, drift takes precedence over measured', () => {
+    const reply = formatStatusReply(baseInput, now);
+    // measured is true AND drift is set: drift !== null must win, per the addon's
+    // own precedence (drift check happens before the measured check).
+    expect(reply).toContain('Savings: $500 · $20 off');
+  });
+
+  it('drift null and measured false renders "not checked" — never claims a verification that never ran', () => {
+    const reply = formatStatusReply(baseInput, now);
+    expect(reply).toContain('Credit Card: -$300 · not checked');
+  });
+
+  it('a negative drift value still renders unsigned "$N off"', () => {
+    const input: StatusReplyInput = {
+      ...baseInput,
+      accounts: [{ name: 'Odd', balance: 10, currency: 'USD', drift: -5, measured: true }],
+    };
+    expect(formatStatusReply(input, now)).toContain('Odd: $10 · $5 off');
+  });
+
+  it('escapes an account name that carries Markdown specials', () => {
+    const input: StatusReplyInput = {
+      ...baseInput,
+      accounts: [{ name: 'Joint_Checking', balance: 10, currency: 'USD', drift: null, measured: true }],
+    };
+    expect(formatStatusReply(input, now)).toContain('Joint\\_Checking: $10 · in sync');
+  });
+
+  it('null uncategorizedCount omits the needs-a-category line entirely', () => {
+    const reply = formatStatusReply({ ...baseInput, uncategorizedCount: null }, now);
+    expect(reply).not.toContain('Needs a category');
+  });
+
+  it('zero uncategorizedCount also omits the line — 0 problems still reads as nothing to report', () => {
+    const reply = formatStatusReply({ ...baseInput, uncategorizedCount: 0 }, now);
+    expect(reply).not.toContain('Needs a category');
+  });
+
+  it('a positive uncategorizedCount renders the needs-a-category line', () => {
+    const reply = formatStatusReply({ ...baseInput, uncategorizedCount: 7 }, now);
+    expect(reply).toContain('Needs a category: 7');
+  });
+
+  it('null amazonUnparsed omits the Amazon warning line', () => {
+    const reply = formatStatusReply({ ...baseInput, amazonUnparsed: null }, now);
+    expect(reply).not.toContain('Amazon email');
+  });
+
+  it('zero amazonUnparsed omits the Amazon warning line', () => {
+    const reply = formatStatusReply({ ...baseInput, amazonUnparsed: 0 }, now);
+    expect(reply).not.toContain('Amazon email');
+  });
+
+  it('a positive amazonUnparsed renders the warning', () => {
+    const reply = formatStatusReply({ ...baseInput, amazonUnparsed: 3 }, now);
+    expect(reply).toContain('⚠️ 3 Amazon email(s) unread — format may have changed');
+  });
+
+  it('a full render with one of each account state assembles as one message', () => {
+    const reply = formatStatusReply(baseInput, now);
+    expect(reply).toBe(
+      '*SimpleFin Sync* — companion v1.10.1\n'
+      + 'Last sync: 2h ago — 0 imported, 105 skipped\n'
+      + 'Checking: $1,234 · in sync\n'
+      + 'Savings: $500 · $20 off\n'
+      + 'Credit Card: -$300 · not checked\n'
+      + 'Needs a category: 7\n'
+      + '⚠️ 2 Amazon email(s) unread — format may have changed',
+    );
+  });
+});
+
+describe('formatReportFooter', () => {
+  it('states relative time since the last sync', () => {
+    expect(formatReportFooter(agoIso(2 * 3600), now)).toBe(
+      'Data as of last sync, 2h ago — /sync to pull new charges.',
+    );
+  });
+
+  it('null lastSyncAt reports no sync has ever run', () => {
+    expect(formatReportFooter(null, now)).toBe('No sync has run yet — /sync to pull transactions.');
+  });
+});
+
+describe('formatSyncReply', () => {
+  it('a plain success reports imported and skipped counts', () => {
+    const reply = formatSyncReply({ imported: 4, skipped: 12, driftAlerts: 0, errors: [] });
+    expect(reply).toBe('Synced: 4 imported, 12 skipped.');
+  });
+
+  it('drift alerts append a warning line pointing at /status', () => {
+    const reply = formatSyncReply({ imported: 4, skipped: 12, driftAlerts: 2, errors: [] });
+    expect(reply).toBe(
+      'Synced: 4 imported, 12 skipped.\n⚠️ 2 account(s) showed drift — check /status.',
+    );
+  });
+
+  it('errors append only the first one — Telegram is not a log file', () => {
+    const reply = formatSyncReply({
+      imported: 0,
+      skipped: 0,
+      driftAlerts: 0,
+      errors: ['timeout talking to SimpleFin', 'second error should not appear'],
+    });
+    expect(reply).toContain('Sync finished with errors: timeout talking to SimpleFin');
+    expect(reply).not.toContain('second error should not appear');
   });
 });

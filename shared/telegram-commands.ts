@@ -7,7 +7,7 @@
  * testable without a network lives here.
  */
 
-import { weeklyEnvelope, moneyWhole, escapeMarkdown } from './telegram.js';
+import { weeklyEnvelope, moneyWhole, escapeMarkdown, formatRelativeTime } from './telegram.js';
 import type { GlyphStyle } from './telegram.js';
 
 export interface ParsedCommand {
@@ -283,4 +283,142 @@ export function formatAffordReply(
     + `This month: ${moneyWhole(before.remainingMonth)} left → ${moneyWhole(after.remainingMonth)} left\n`
     + verdict
   );
+}
+
+/**
+ * `/status`'s inputs — one snapshot of everything the bot can currently say
+ * about sync health, assembled by the companion (Task 6) from the addon
+ * secrets it already owns: `sync_health` for the timing fields, a live
+ * balance/drift read per account, and whatever counts the categorizer and
+ * Amazon-email parser last published.
+ *
+ * Every "count" field is nullable INDEPENDENTLY of being zero, and the two
+ * must render differently: `null` means the companion has never published
+ * that signal (an older companion build, or a check that has not run yet),
+ * while `0` is a real, reported "nothing to do here". Collapsing null into 0
+ * would make a companion that has simply never counted uncategorized
+ * transactions read as "zero uncategorized transactions" — a clean bill of
+ * health it never issued.
+ */
+export interface StatusReplyInput {
+  version: string;
+  /** ISO; null = never synced. */
+  lastSyncAt: string | null;
+  /** e.g. '0 imported, 105 skipped'; null = no summary recorded for the last run. */
+  lastSyncSummary: string | null;
+  accounts: Array<{
+    name: string;
+    balance: number;
+    currency: string;
+    /** Signed difference from the bank's reported balance; null = not compared. */
+    drift: number | null;
+    /** Whether a comparison was actually attempted this run — see the chip
+     *  precedence below for why this can't be inferred from `drift` alone. */
+    measured: boolean;
+  }>;
+  /** null = the companion never published this signal. */
+  uncategorizedCount: number | null;
+  amazonUnparsed: number | null;
+}
+
+/**
+ * One account's sync-state chip, in the exact precedence the addon's own
+ * balance card uses (src/tabs/OverviewTab.tsx): drift beats measured beats
+ * neither.
+ *
+ * `drift: null` is ambiguous on its own — it means BOTH "compared and it
+ * matched" and "could not be compared at all" (no bank figure to diff
+ * against). `measured` is the only field that tells them apart, which is why
+ * it must be checked, and why a non-null drift must be checked FIRST: a
+ * companion could in principle report both a stale `measured: true` and a
+ * fresh `drift`, and the drift is the more current fact either way. Reporting
+ * "in sync" for the "could not compare" case previously read as a verified
+ * balance when nothing had actually been checked — the mistake behind two
+ * phantom-drift incidents.
+ */
+function accountStateChip(account: StatusReplyInput['accounts'][number]): string {
+  if (account.drift !== null) {
+    // Math.abs explicitly: "off" states the direction, same rule as everywhere
+    // else a bare moneyWhole figure sits next to a direction word.
+    return `${moneyWhole(Math.abs(account.drift))} off`;
+  }
+  if (account.measured === true) return 'in sync';
+  return 'not checked';
+}
+
+/**
+ * Formats `/status`'s reply: version, last sync, one line per account, then
+ * whatever attention-needed counts the companion has actually published.
+ *
+ * The two trailing lines (uncategorized count, unparsed Amazon emails) are
+ * omitted rather than printed as zero/none when their source is `null` — see
+ * `StatusReplyInput`'s doc comment for why that distinction matters.
+ */
+export function formatStatusReply(input: StatusReplyInput, now: Date): string {
+  const lines: string[] = [`*SimpleFin Sync* — companion v${input.version}`];
+
+  if (input.lastSyncAt === null) {
+    lines.push('Last sync: never');
+  } else {
+    const ago = formatRelativeTime(input.lastSyncAt, now);
+    lines.push(
+      input.lastSyncSummary !== null ? `Last sync: ${ago} — ${input.lastSyncSummary}` : `Last sync: ${ago}`,
+    );
+  }
+
+  for (const account of input.accounts) {
+    // Account names are Wealthfolio-user-controlled text, not trusted display
+    // strings — same reasoning as every other place a name is interpolated
+    // into a Markdown message in this file.
+    const name = escapeMarkdown(account.name);
+    lines.push(`${name}: ${moneyWhole(account.balance)} · ${accountStateChip(account)}`);
+  }
+
+  if (input.uncategorizedCount !== null && input.uncategorizedCount > 0) {
+    lines.push(`Needs a category: ${input.uncategorizedCount}`);
+  }
+
+  if (input.amazonUnparsed !== null && input.amazonUnparsed > 0) {
+    lines.push(`⚠️ ${input.amazonUnparsed} Amazon email(s) unread — format may have changed`);
+  }
+
+  return lines.join('\n');
+}
+
+/**
+ * The one-line footer `/report` appends below the digest, so a reply built
+ * from cached/last-known data still tells the reader how fresh it is —
+ * without this, a report sent hours after the last sync could be mistaken for
+ * a live read.
+ */
+export function formatReportFooter(lastSyncAt: string | null, now: Date): string {
+  if (lastSyncAt === null) return 'No sync has run yet — /sync to pull transactions.';
+  return `Data as of last sync, ${formatRelativeTime(lastSyncAt, now)} — /sync to pull new charges.`;
+}
+
+/**
+ * Formats `/sync`'s reply once a run completes. Lines are additive, in the
+ * same "state the headline, then whatever needs attention" shape as
+ * `formatStatusReply`: the import/skip counts always render, a drift warning
+ * follows when any account drifted, and — last, and first-only — an error
+ * line when the run hit one. Only the first error: Telegram is not a log
+ * file, and a wall of stack-adjacent text in a chat message helps no one
+ * decide what to do next; `/status` is where the fuller picture lives.
+ */
+export function formatSyncReply(r: { imported: number; skipped: number; driftAlerts: number; errors: string[] }): string {
+  const lines = [`Synced: ${r.imported} imported, ${r.skipped} skipped.`];
+
+  if (r.driftAlerts > 0) {
+    lines.push(`⚠️ ${r.driftAlerts} account(s) showed drift — check /status.`);
+  }
+
+  if (r.errors.length > 0) {
+    // Escaped like formatSyncHealthFooter's lastError: an error message can
+    // originate from a bank API or an exception's own text, not from anything
+    // this codebase controls, so it gets the same treatment as any other
+    // untrusted string landing in a Markdown message.
+    lines.push(`Sync finished with errors: ${escapeMarkdown(r.errors[0])}`);
+  }
+
+  return lines.join('\n');
 }
