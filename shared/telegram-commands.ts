@@ -307,8 +307,18 @@ export function formatAffordReply(
  */
 export interface StatusReplyInput {
   version: string;
-  /** ISO; null = never synced. */
+  /** ISO; null = never synced — but see `lastSyncUnreadable`, which is the
+   *  difference between "no sync has run" and "we could not find out". */
   lastSyncAt: string | null;
+  /**
+   * The sync record itself could not be read (a 401, a dead session, a
+   * connectivity blip), so `lastSyncAt: null` above carries NO information.
+   *
+   * Separate from `lastSyncAt: null` on purpose: "Last sync: never" is a
+   * confident negative, and a signal that could not be read does not support
+   * one. Optional so every existing caller keeps its current rendering.
+   */
+  lastSyncUnreadable?: boolean;
   /** e.g. '0 imported, 105 skipped'; null = no summary recorded for the last run. */
   lastSyncSummary: string | null;
   accounts: Array<{
@@ -332,6 +342,15 @@ export interface StatusReplyInput {
    * one that says what it could not price. Absent or `0` renders nothing.
    */
   accountsWithoutBalance?: number;
+  /**
+   * The balance snapshot could not be read at all, so `accounts` is empty for a
+   * reason that has nothing to do with how many accounts exist.
+   *
+   * Without this, an unreadable snapshot renders as zero account lines AND
+   * `accountsWithoutBalance: 0` — a list that is silently missing, with nothing
+   * in the reply to explain the gap. Optional, same as above.
+   */
+  accountBalancesUnreadable?: boolean;
   /** null = the companion never published this signal. */
   uncategorizedCount: number | null;
   amazonUnparsed: number | null;
@@ -369,16 +388,31 @@ function accountStateChip(account: StatusReplyInput['accounts'][number]): string
  * The two trailing lines (uncategorized count, unparsed Amazon emails) are
  * omitted rather than printed as zero/none when their source is `null` — see
  * `StatusReplyInput`'s doc comment for why that distinction matters.
+ *
+ * The two `*Unreadable` flags are the same idea one step further: a signal that
+ * could not be READ gets a line saying so, instead of borrowing the wording for
+ * "there is genuinely nothing here" (`Last sync: never`, an empty account list).
  */
 export function formatStatusReply(input: StatusReplyInput, now: Date): string {
   const lines: string[] = [`*SimpleFin Sync* — companion v${input.version}`];
 
-  if (input.lastSyncAt === null) {
+  if (input.lastSyncUnreadable === true) {
+    // Checked BEFORE the null branch: a read that failed says nothing about
+    // whether a sync ever ran, and "never" would be a claim derived from a
+    // signal nobody managed to look at.
+    lines.push('Last sync: unknown — the sync record could not be read.');
+  } else if (input.lastSyncAt === null) {
     lines.push('Last sync: never');
   } else {
     const ago = formatRelativeTime(input.lastSyncAt, now);
     lines.push(
-      input.lastSyncSummary !== null ? `Last sync: ${ago} — ${input.lastSyncSummary}` : `Last sync: ${ago}`,
+      input.lastSyncSummary !== null
+        // Escaped like every other caller-supplied string in this file (see
+        // `errors[0]` in formatSyncReply): a summary can carry a bank's or an
+        // exception's own text, and Telegram refuses a message with unbalanced
+        // Markdown entities outright — the reply would silently never arrive.
+        ? `Last sync: ${ago} — ${escapeMarkdown(input.lastSyncSummary)}`
+        : `Last sync: ${ago}`,
     );
   }
 
@@ -396,6 +430,13 @@ export function formatStatusReply(input: StatusReplyInput, now: Date): string {
   const unpriced = input.accountsWithoutBalance ?? 0;
   if (unpriced > 0) {
     lines.push(`${unpriced} account(s) have no balance yet — SimpleFin did not report one.`);
+  }
+
+  // Same place, same reason, for the harder case: the snapshot could not be read
+  // at all. Without this line the account list is simply absent and the reply
+  // reads as "you have no accounts" — a claim nothing here can support.
+  if (input.accountBalancesUnreadable === true) {
+    lines.push('Account balances could not be read — this list is missing, not empty.');
   }
 
   if (input.uncategorizedCount !== null && input.uncategorizedCount > 0) {

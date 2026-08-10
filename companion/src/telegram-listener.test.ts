@@ -502,6 +502,41 @@ describe('startTelegramListener — setMyCommands', () => {
     expect(registrations[1]).toContain('/botTOK-B/setMyCommands');
   });
 
+  it('resets the offset when the token changes, so the new bot\'s updates are not confirmed away unseen', async () => {
+    // A new bot's update_ids start from ITS own sequence, which is typically far
+    // BELOW the previous bot's. Carrying the old offset over means every update
+    // this bot sends is already "confirmed" — the bot ignores you, forever, with
+    // nothing in the log to explain it.
+    let reads = 0;
+    const h = harness({
+      readOffset: vi.fn(async () => 900_000),
+      readConfig: vi.fn(async () => {
+        reads += 1;
+        return { botToken: reads <= 2 ? 'TOK-A' : 'TOK-B', chatId: CHAT_ID };
+      }) as any,
+    });
+    h.fetchImpl.mockResolvedValue(updatesResponse([]));
+
+    const listener = start(h.deps);
+    await waitFor('token B registered', () => h.calls('/setMyCommands').length >= 2);
+    await waitFor('a poll on the new token', () => h.calls('/botTOK-B/getUpdates').length >= 1);
+    await listener.stop();
+
+    // The previous bot's offset is neither sent to the new bot…
+    for (const call of h.calls('/botTOK-B/getUpdates')) {
+      expect(new URL(String(call[0])).searchParams.get('offset')).toBeNull();
+    }
+    // …nor left in storage for the next container start to read back.
+    expect(h.writeOffset).toHaveBeenCalledWith(0);
+    // And it is SAID, because this failure is otherwise invisible.
+    expect(h.logs.some((l) => /token changed/i.test(l) && /offset/i.test(l))).toBe(true);
+    // The first token must NOT trigger a reset: that would wipe the stored
+    // offset on every single container start.
+    expect(h.calls('/botTOK-A/getUpdates').every(
+      (call) => new URL(String(call[0])).searchParams.get('offset') === '900000',
+    )).toBe(true);
+  });
+
   it('treats a failed registration as cosmetic: logged, non-fatal, not retried', async () => {
     const h = harness();
     h.fetchImpl
