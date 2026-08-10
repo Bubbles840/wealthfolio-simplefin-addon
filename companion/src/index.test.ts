@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { maskUrl, validateStartupEnv, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, runCompanionSyncExclusive, buildTelegramCommandHandler, applyTelegramDismissal } from './index.js';
+import { maskUrl, validateStartupEnv, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, runCompanionSyncExclusive, buildTelegramCommandHandler, applyTelegramDismissal, buildTelegramListenerDeps } from './index.js';
 import { formatHelpReply } from '../../shared/telegram-commands.js';
 import { SIMPLEFIN_SYNC_VERSION } from '../../shared/version.js';
 import { runSyncCore } from '../../shared/sync-core.js';
@@ -1387,6 +1387,16 @@ describe('buildTelegramCommandHandler', () => {
     return sent;
   };
 
+  /** `/sync` deliberately returns BEFORE its summary is sent (the poll loop must
+   *  keep running), so its tests wait on the reply rather than on the handler. */
+  const waitFor = async (what: string, predicate: () => boolean): Promise<void> => {
+    for (let i = 0; i < 500; i += 1) {
+      if (predicate()) return;
+      await new Promise((r) => setTimeout(r, 2));
+    }
+    throw new Error(`timed out waiting for ${what}`);
+  };
+
   beforeEach(() => {
     process.env.WEALTHFOLIO_API_URL = 'http://wf';
     process.env.WEALTHFOLIO_PASSWORD = 'pw';
@@ -1503,7 +1513,7 @@ describe('buildTelegramCommandHandler', () => {
     expect(sent[0]).not.toContain('Amazon');
   });
 
-  it('omits an account SimpleFin reported no numeric balance for, rather than claiming $0', async () => {
+  it('counts the accounts SimpleFin reported no numeric balance for instead of claiming $0 — or hiding them', async () => {
     const { client } = clientFor([
       ['account_balances', JSON.stringify({
         'sfin-1': { balance: null, currency: 'USD', date: 1_760_000_000, drift: null, measured: false },
@@ -1514,11 +1524,13 @@ describe('buildTelegramCommandHandler', () => {
 
     const sent = await run(client, 'status');
 
-    expect(sent[0]).not.toContain('No Balance');
+    expect(sent[0]).not.toContain('No Balance: $0');
     expect(sent[0]).toContain('Save: $100 · in sync');
+    // A quietly SHORT account list is worse than one that admits the gap.
+    expect(sent[0]).toContain('1 account(s) have no balance yet');
   });
 
-  it('acknowledges /sync immediately and reports the run when it lands', async () => {
+  it('acknowledges /sync immediately, returns without waiting, and reports the run when it lands', async () => {
     const secrets = new Map<string, string>([
       ['simplefin_access_url', 'https://user:pass@bridge.simplefin.org/simplefin'],
     ]);
@@ -1530,29 +1542,34 @@ describe('buildTelegramCommandHandler', () => {
     const { WealthfolioClient } = await import('./wealthfolio.js');
     vi.mocked(WealthfolioClient).mockImplementation(function () { return client; } as any);
 
-    const sent = await run(client, 'sync');
+    const { sent, reply } = collector();
+    await buildTelegramCommandHandler(client)({ command: 'sync', args: '' }, reply);
+
+    // Returned already: the listener's poll loop is free again, so a /status sent
+    // during a sync is still answered instead of queueing behind it.
+    expect(sent).toEqual(['Syncing…']);
 
     // The mocked runSyncCore's usual result: 2 imported, 1 skipped.
-    expect(sent).toEqual(['Syncing…', 'Synced: 2 imported, 1 skipped.']);
+    await waitFor('the sync summary', () => sent.length >= 2);
+    expect(sent[1]).toBe('Synced: 2 imported, 1 skipped.');
   });
 
-  it('tells a second /sync that one is already running, then reports the shared result', async () => {
+  it('tells a second /sync that one is already running, returns, then reports the shared result', async () => {
     const deferred = createDeferred<SyncResult>();
     const occupying = runCompanionSyncExclusive(() => deferred.promise);
     expect(occupying.started).toBe(true);
 
     const { client } = clientFor();
     const { sent, reply } = collector();
-    const handling = buildTelegramCommandHandler(client)({ command: 'sync', args: '' }, reply);
-
-    await new Promise((r) => setTimeout(r, 0));
+    // Awaited to completion — and it completes while the sync is still pending.
+    await buildTelegramCommandHandler(client)({ command: 'sync', args: '' }, reply);
     expect(sent).toEqual(['Already syncing — hang on.']);
 
     deferred.resolve({ ...FAKE_SYNC_RESULT, imported: 4, skipped: 9 });
-    await handling;
-
-    expect(sent[1]).toBe('Synced: 4 imported, 9 skipped.');
     await occupying.result;
+
+    await waitFor('the shared run summary', () => sent.length >= 2);
+    expect(sent[1]).toBe('Synced: 4 imported, 9 skipped.');
   });
 
   it('reports a failed shared run through the reply, leaving no rejection unhandled', async () => {
@@ -1561,14 +1578,110 @@ describe('buildTelegramCommandHandler', () => {
 
     const { client } = clientFor();
     const { sent, reply } = collector();
-    const handling = buildTelegramCommandHandler(client)({ command: 'sync', args: '' }, reply);
+    await buildTelegramCommandHandler(client)({ command: 'sync', args: '' }, reply);
 
     deferred.reject(new Error('SimpleFin: token revoked'));
-    await handling;
+    await expect(occupying.result).rejects.toThrow('token revoked');
 
     expect(sent[0]).toBe('Already syncing — hang on.');
+    await waitFor('the error summary', () => sent.length >= 2);
     expect(sent[1]).toContain('Sync finished with errors: SimpleFin: token revoked');
-    await expect(occupying.result).rejects.toThrow('token revoked');
+  });
+});
+
+describe('buildTelegramListenerDeps', () => {
+  const configured = JSON.stringify({ botToken: 'tok', chatId: '4242', enabled: true });
+
+  beforeEach(() => {
+    process.env.WEALTHFOLIO_API_URL = 'http://wf';
+    process.env.WEALTHFOLIO_PASSWORD = 'pw';
+    delete process.env.WEALTHFOLIO_API_KEY;
+  });
+
+  const clientWith = (impl: (key: string) => Promise<string | null>) => ({
+    login: vi.fn(async () => {}),
+    getAddonSecret: vi.fn(async (_a: string, k: string) => impl(k)),
+    setAddonSecret: vi.fn(async () => {}),
+  } as any);
+
+  it('reads the config and authenticates once, reusing the session while it is fresh', async () => {
+    const client = clientWith(async (k) => (k === 'telegram_config' ? configured : null));
+    const deps = buildTelegramListenerDeps(client);
+
+    await expect(deps.readConfig()).resolves.toEqual({ botToken: 'tok', chatId: '4242', botName: undefined });
+    await deps.readConfig();
+
+    // One login for two cycles: the loop wakes every ~50s and a login per wake
+    // would be ~1,700 pointless authentications a day.
+    expect(client.login).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports an unreadable telegram_config as an auth/connectivity failure, never as "not configured"', async () => {
+    // Returning null here is what the listener treats as "no Telegram
+    // configuration yet": it logs that ONCE and idles forever, which is exactly
+    // the healthy-looking silent bot this must not become.
+    const client = clientWith(async () => { throw new Error('getAddonSecret failed: 401'); });
+    const deps = buildTelegramListenerDeps(client);
+
+    await expect(deps.readConfig()).rejects.toThrow(/could not read telegram_config/);
+    await expect(deps.readConfig()).rejects.toThrow(/not a missing configuration/);
+  });
+
+  it('re-authenticates on the very next cycle after a failed read, rather than waiting out the session window', async () => {
+    const client = clientWith(async () => { throw new Error('getAddonSecret failed: 401'); });
+    const deps = buildTelegramListenerDeps(client);
+
+    await expect(deps.readConfig()).rejects.toThrow();
+    await expect(deps.readConfig()).rejects.toThrow();
+
+    // An expired token is the likeliest cause, so the session is discarded and
+    // retried immediately — not cached as fresh for another 30 minutes.
+    expect(client.login).toHaveBeenCalledTimes(2);
+  });
+
+  it('names the missing credential and keeps retrying when there is nothing to log in with', async () => {
+    // Startup validation already proved one of the three credentials was set, so
+    // this state means WEALTHFOLIO_PASSWORD_FILE is unreadable right now — and
+    // `resolvePassword` re-reads it from disk every call, so it can come back.
+    delete process.env.WEALTHFOLIO_PASSWORD;
+    const client = clientWith(async () => configured);
+    const deps = buildTelegramListenerDeps(client);
+
+    await expect(deps.readConfig()).rejects.toThrow(/no Wealthfolio password/i);
+    await expect(deps.readConfig()).rejects.toThrow(/no Wealthfolio password/i);
+    expect(client.getAddonSecret).not.toHaveBeenCalled();
+  });
+
+  it('still reports a genuinely absent configuration as null, so the listener idles quietly', async () => {
+    const client = clientWith(async () => null);
+    const deps = buildTelegramListenerDeps(client);
+
+    await expect(deps.readConfig()).resolves.toBeNull();
+  });
+
+  it('treats a disabled Telegram config as unconfigured', async () => {
+    const client = clientWith(async () => JSON.stringify({ botToken: 't', chatId: '1', enabled: false }));
+    const deps = buildTelegramListenerDeps(client);
+
+    await expect(deps.readConfig()).resolves.toBeNull();
+  });
+
+  it('reads and writes the stored update offset, treating junk as absent', async () => {
+    const client = clientWith(async () => 'not a number');
+    const deps = buildTelegramListenerDeps(client);
+    await expect(deps.readOffset()).resolves.toBeNull();
+
+    const numeric = clientWith(async () => '77');
+    const numericDeps = buildTelegramListenerDeps(numeric);
+    await expect(numericDeps.readOffset()).resolves.toBe(77);
+
+    await numericDeps.writeOffset(78);
+    expect(numeric.setAddonSecret).toHaveBeenCalledWith('simplefin-sync', 'telegram_update_offset', '78');
+  });
+
+  it('uses a sleep that cannot reject', async () => {
+    const deps = buildTelegramListenerDeps(clientWith(async () => null));
+    await expect(deps.sleep(1)).resolves.toBeUndefined();
   });
 });
 
@@ -1578,19 +1691,37 @@ describe('applyTelegramDismissal', () => {
     setAddonSecret: vi.fn(async (_a: string, k: string, v: string) => { secrets.set(k, v); }),
   } as any);
 
-  it('adds the tapped id without erasing anything already in the ledger', async () => {
-    // The 1.10.1 bug: a whole-object write from a stale snapshot silently erased
-    // dismissals the addon had made, and the row reappeared as uncategorized.
+  it('merges onto a re-read ledger, so a dismissal written between the read and the write survives', async () => {
+    // The 1.10.1 bug: a whole-object write from a snapshot read moments earlier
+    // silently erased a dismissal the OTHER host made in between, and the row
+    // reappeared as needing a category. Reading once and calling
+    // `mergeDismissals(base, base, next)` would pass a test that only checks
+    // "existing entries survive" — the merge has to be against a FRESH read to
+    // mean anything, which is what this asserts.
     const secrets = new Map<string, string>([
-      ['uncategorized_dismissals', JSON.stringify({ 'act-addon': '2026-08-09T00:00:00.000Z' })],
+      ['uncategorized_dismissals', JSON.stringify({ 'act-earlier': '2026-08-09T00:00:00.000Z' })],
     ]);
-    const client = clientOver(secrets);
+    let ledgerReads = 0;
+    const client: any = {
+      getAddonSecret: vi.fn(async (_a: string, k: string) => {
+        if (k !== 'uncategorized_dismissals') return secrets.get(k) ?? null;
+        ledgerReads += 1;
+        const current = secrets.get(k)!;
+        if (ledgerReads === 1) {
+          // The addon dismisses something of its own right after this read.
+          secrets.set(k, JSON.stringify({ ...JSON.parse(current), 'act-addon': new Date().toISOString() }));
+          return current;
+        }
+        return secrets.get(k)!;
+      }),
+      setAddonSecret: vi.fn(async (_a: string, k: string, v: string) => { secrets.set(k, v); }),
+    };
 
     await applyTelegramDismissal(client, 'act-tapped');
 
     const written = JSON.parse(secrets.get('uncategorized_dismissals')!);
-    expect(Object.keys(written).sort()).toEqual(['act-addon', 'act-tapped']);
-    expect(written['act-addon']).toBe('2026-08-09T00:00:00.000Z');
+    expect(Object.keys(written).sort()).toEqual(['act-addon', 'act-earlier', 'act-tapped']);
+    expect(written['act-earlier']).toBe('2026-08-09T00:00:00.000Z');
   });
 
   it('writes nothing at all when the id is already dismissed', async () => {

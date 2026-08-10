@@ -47,7 +47,12 @@ export const TELEGRAM_COMMAND_MENU = [
 
 export function formatHelpReply(unknownCommand?: string): string {
   const lines = TELEGRAM_COMMAND_MENU.map((c) => `/${c.command} — ${c.description}`);
-  const head = unknownCommand ? `Unknown command: /${unknownCommand}\n\n` : '';
+  // Escaped like every other caller-supplied string in this file: the "unknown
+  // command" is whatever the user typed, so `/a*b` would leave an unbalanced
+  // entity, Telegram would refuse the whole message (`ok: false`, 400) — and the
+  // one person guaranteed to see this reply is the one who just made a typo.
+  // Silence is the worst possible answer to that.
+  const head = unknownCommand ? `Unknown command: /${escapeMarkdown(unknownCommand)}\n\n` : '';
   return `${head}${lines.join('\n')}`;
 }
 
@@ -316,6 +321,17 @@ export interface StatusReplyInput {
      *  precedence below for why this can't be inferred from `drift` alone. */
     measured: boolean;
   }>;
+  /**
+   * How many accounts the snapshot HAS but could not be priced — SimpleFin
+   * reported no numeric balance for them, so they cannot appear in `accounts`
+   * above (whose `balance` is a plain number, because inventing a `$0` for one
+   * is the one thing here a reader could act on wrongly).
+   *
+   * Counted rather than dropped: the addon's own balance card renders those
+   * accounts with a `—`, and a status list that is quietly SHORT is worse than
+   * one that says what it could not price. Absent or `0` renders nothing.
+   */
+  accountsWithoutBalance?: number;
   /** null = the companion never published this signal. */
   uncategorizedCount: number | null;
   amazonUnparsed: number | null;
@@ -372,6 +388,14 @@ export function formatStatusReply(input: StatusReplyInput, now: Date): string {
     // into a Markdown message in this file.
     const name = escapeMarkdown(account.name);
     lines.push(`${name}: ${moneyWhole(account.balance)} · ${accountStateChip(account)}`);
+  }
+
+  // Directly beneath the account lines, because it is a statement ABOUT that
+  // list — it explains why the list is shorter than the user's account count,
+  // which is only obvious while the two are adjacent.
+  const unpriced = input.accountsWithoutBalance ?? 0;
+  if (unpriced > 0) {
+    lines.push(`${unpriced} account(s) have no balance yet — SimpleFin did not report one.`);
   }
 
   if (input.uncategorizedCount !== null && input.uncategorizedCount > 0) {

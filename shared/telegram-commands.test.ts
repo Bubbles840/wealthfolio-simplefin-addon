@@ -53,6 +53,12 @@ describe('formatHelpReply', () => {
     expect(help).toMatch(/^Unknown command/);
     expect(help).toContain('/bogus');
   });
+  it('escapes Markdown specials in the unknown command, or the reply never reaches the user', () => {
+    // Telegram REFUSES a message with unbalanced entities (`ok: false`, 400), and
+    // this reply is the one sent to someone who has just mistyped — so an
+    // unescaped `/a*b` means the bot answers a typo with total silence.
+    expect(formatHelpReply('a*b_c')).toContain('Unknown command: /a\\*b\\_c');
+  });
 });
 
 describe('resolveCategoryQuery', () => {
@@ -359,6 +365,20 @@ describe('formatStatusReply', () => {
   it('a positive amazonUnparsed renders the warning', () => {
     const reply = formatStatusReply({ ...baseInput, amazonUnparsed: 3 }, now);
     expect(reply).toContain('⚠️ 3 Amazon email(s) unread — format may have changed');
+  });
+
+  it('accounts the companion could not price are counted in a line of their own', () => {
+    // The companion omits an account whose stored balance is null (SimpleFin
+    // reported no number), and a status list that is quietly SHORT is worse than
+    // one that admits the gap: the addon shows those accounts as "—".
+    const reply = formatStatusReply({ ...baseInput, accountsWithoutBalance: 2 }, now);
+    expect(reply).toContain('2 account(s) have no balance yet — SimpleFin did not report one.');
+  });
+
+  it('omits that line when every account has a balance', () => {
+    expect(formatStatusReply({ ...baseInput, accountsWithoutBalance: 0 }, now)).not.toContain('no balance yet');
+    // Absent behaves as zero: a caller that has never counted them says nothing.
+    expect(formatStatusReply(baseInput, now)).not.toContain('no balance yet');
   });
 
   it('a full render with one of each account state assembles as one message', () => {
