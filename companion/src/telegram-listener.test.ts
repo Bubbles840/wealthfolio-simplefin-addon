@@ -4,6 +4,12 @@ import { TELEGRAM_COMMAND_MENU } from '../../shared/telegram-commands.js';
 
 const CHAT_ID = '42';
 
+/** Derived from the dep, never re-declared, so a test cannot assert against a
+ *  shape the listener no longer hands out. */
+type MenuHandler = NonNullable<TelegramListenerDeps['onMenuCallback']>;
+type MenuCallback = Parameters<MenuHandler>[0];
+type MenuUi = Parameters<MenuHandler>[1];
+
 /** Same fake-fetch shape `dismissals.test.ts` uses: an object with `json()`. */
 const jsonResponse = (body: unknown) => ({ ok: true, json: async () => body });
 const updatesResponse = (result: unknown[]) => jsonResponse({ ok: true, result });
@@ -31,6 +37,31 @@ async function waitFor(label: string, predicate: () => boolean, budgetTicks = 50
 /** Lets the listener make whatever progress it can, for proving that it makes NONE. */
 async function drainTicks(ticks: number): Promise<void> {
   for (let i = 0; i < ticks; i++) await Promise.resolve();
+}
+
+/**
+ * A fetch implementation that answers by URL instead of by call order.
+ *
+ * The menu-callback tests interleave `editMessageText` / `answerCallbackQuery` /
+ * `sendMessage` requests BETWEEN polls, and an ordered `mockResolvedValueOnce`
+ * chain would bake that interleaving into the test — so a harmless change in how
+ * many calls a screen makes would break tests that are not about ordering.
+ * `batches` are served to successive `getUpdates` calls; every later poll gets an
+ * empty batch, which is the normal long-poll timeout.
+ */
+function pollingRoute(
+  batches: unknown[][],
+  overrides: Record<string, () => Promise<unknown>> = {},
+): (url: unknown) => Promise<unknown> {
+  const queue = [...batches];
+  return async (url: unknown) => {
+    const u = String(url);
+    for (const [fragment, handler] of Object.entries(overrides)) {
+      if (u.includes(fragment)) return handler();
+    }
+    if (u.includes('/getUpdates')) return updatesResponse(queue.shift() ?? []);
+    return apiOkResponse();
+  };
 }
 
 function harness(overrides: Partial<TelegramListenerDeps> = {}) {
@@ -88,6 +119,16 @@ function start(deps: TelegramListenerDeps): { stop: () => Promise<void> } {
 const messageUpdate = (updateId: number, text: string, chatId: number | undefined = Number(CHAT_ID)) => ({
   update_id: updateId,
   message: { chat: chatId === undefined ? undefined : { id: chatId }, text },
+});
+
+/** A button tap as Telegram sends one, carrying the message it was tapped on. */
+const callbackUpdate = (
+  updateId: number,
+  data: string,
+  { id = 'cb-1', chatId = Number(CHAT_ID), messageId = 909 }: { id?: string; chatId?: number; messageId?: number } = {},
+) => ({
+  update_id: updateId,
+  callback_query: { id, data, message: { chat: { id: chatId }, message_id: messageId } },
 });
 
 /** The body of the Nth matching POST, parsed. */
@@ -281,6 +322,274 @@ describe('startTelegramListener — dismiss callbacks', () => {
 
     expect(h.writeOffset).toHaveBeenCalledWith(21);
     expect(h.logs.some((l) => l.includes('secret write refused'))).toBe(true);
+  });
+});
+
+// The `cz:` payload is a data contract with shared/categorize-menu.ts
+// (MENU_CALLBACK_PREFIX). These cases pin the ROUTING and the never-rejecting UI
+// only: what a screen says and which button does what lives in that module and
+// its own tests.
+describe('startTelegramListener — categorize menu callbacks', () => {
+  it('routes a cz: tap to onMenuCallback with its data, chat id and message id', async () => {
+    const taps: MenuCallback[] = [];
+    const onMenuCallback = vi.fn(async (cb: MenuCallback) => { taps.push(cb); });
+    const h = harness({ onMenuCallback });
+    h.fetchImpl.mockImplementation(pollingRoute([[callbackUpdate(200, 'cz:3', { id: 'cb-7', messageId: 909 })]]));
+
+    const listener = start(h.deps);
+    await waitFor('tap routed', () => taps.length >= 1);
+    await listener.stop();
+
+    expect(taps[0]).toEqual({ data: 'cz:3', chatId: Number(CHAT_ID), messageId: 909 });
+    // A menu tap is not a dismissal: the ledger must not be touched.
+    expect(h.applyDismissal).not.toHaveBeenCalled();
+    expect(h.writeOffset).toHaveBeenCalledWith(201);
+  });
+
+  it('answers a cz: tap with an expiry notice when no menu controller is wired up', async () => {
+    // What ships before the controller exists: the button must not spin forever.
+    const h = harness();
+    h.fetchImpl.mockImplementation(pollingRoute([[callbackUpdate(210, 'cz:1', { id: 'cb-8' })]]));
+
+    const listener = start(h.deps);
+    await waitFor('tap answered', () => h.calls('/answerCallbackQuery').length >= 1);
+    await waitFor('offset advanced', () => h.writeOffset.mock.calls.length >= 1);
+    await listener.stop();
+
+    const url = new URL(String(h.calls('/answerCallbackQuery')[0][0]));
+    expect(url.searchParams.get('callback_query_id')).toBe('cb-8');
+    expect(url.searchParams.get('text')).toBe('That menu expired — send /categorize again.');
+    expect(h.writeOffset).toHaveBeenCalledWith(211);
+    expect(h.applyDismissal).not.toHaveBeenCalled();
+  });
+
+  it('survives a throwing menu controller: logged, offset advances, polling continues', async () => {
+    const onMenuCallback = vi.fn(async () => { throw new Error('menu controller exploded'); });
+    const h = harness({ onMenuCallback });
+    h.fetchImpl.mockImplementation(pollingRoute([[callbackUpdate(220, 'cz:2')]]));
+
+    const listener = start(h.deps);
+    await waitFor('polling continued', () => h.calls('/getUpdates').length >= 3);
+    await listener.stop();
+
+    expect(h.logs.some((l) => l.includes('menu controller exploded'))).toBe(true);
+    expect(h.writeOffset).toHaveBeenCalledWith(221);
+    // A handler failure is not a transport failure: nothing to back off from.
+    expect(h.sleeps).toEqual([]);
+  });
+
+  it('hands the controller edit/answer/send callbacks that never reject when every request fails', async () => {
+    // The Task 5 pattern: a controller may fire these without awaiting them, so a
+    // rejection here would be an unhandled rejection — which kills the daemon.
+    let fired: Promise<void>[] = [];
+    const onMenuCallback = vi.fn(async (_cb: MenuCallback, ui: MenuUi) => {
+      fired = [ui.edit('new screen'), ui.answer('toast'), ui.send('a fresh message')];
+    });
+    const h = harness({ onMenuCallback });
+    h.fetchImpl.mockImplementation(pollingRoute([[callbackUpdate(230, 'cz:4')]], {
+      '/editMessageText': async () => { throw new Error('editMessageText unreachable'); },
+      '/answerCallbackQuery': async () => { throw new Error('answerCallbackQuery unreachable'); },
+      '/sendMessage': async () => { throw new Error('sendMessage unreachable'); },
+    }));
+
+    const listener = start(h.deps);
+    await waitFor('all three fired', () => fired.length === 3);
+    for (const p of fired) await expect(p).resolves.toBeUndefined();
+    await waitFor('polling continued', () => h.calls('/getUpdates').length >= 3);
+    await listener.stop();
+
+    expect(h.logs.some((l) => l.includes('editMessageText unreachable'))).toBe(true);
+    expect(h.logs.some((l) => l.includes('answerCallbackQuery unreachable'))).toBe(true);
+    expect(h.logs.some((l) => l.includes('sendMessage unreachable'))).toBe(true);
+    expect(h.writeOffset).toHaveBeenCalledWith(231);
+  });
+
+  it('swallows Telegram\'s "message is not modified" refusal on a no-op edit, with no retry', async () => {
+    // Routine, not exceptional: a user double-tapping the same button produces it.
+    let edit: Promise<void> | null = null;
+    const onMenuCallback = vi.fn(async (_cb: MenuCallback, ui: MenuUi) => { edit = ui.edit('the same text'); });
+    const h = harness({ onMenuCallback });
+    h.fetchImpl.mockImplementation(pollingRoute([[callbackUpdate(240, 'cz:5')]], {
+      '/editMessageText': async () => jsonResponse({
+        ok: false,
+        error_code: 400,
+        description: 'Bad Request: message is not modified',
+      }),
+    }));
+
+    const listener = start(h.deps);
+    await waitFor('edit fired', () => edit !== null);
+    await expect(edit!).resolves.toBeUndefined();
+    await waitFor('polling continued', () => h.calls('/getUpdates').length >= 3);
+    await listener.stop();
+
+    expect(h.calls('/editMessageText')).toHaveLength(1);
+    expect(h.sleeps).toEqual([]);
+  });
+
+  it('edits the tapped message in place, sending reply_markup only when given a keyboard', async () => {
+    const keyboard = { inline_keyboard: [[{ text: 'Groceries', callback_data: 'cz:1' }]] };
+    const onMenuCallback = vi.fn(async (_cb: MenuCallback, ui: MenuUi) => {
+      await ui.edit('*Pick a category*', keyboard);
+      await ui.edit('Filed.');
+    });
+    const h = harness({ onMenuCallback });
+    h.fetchImpl.mockImplementation(pollingRoute([[callbackUpdate(250, 'cz:6', { messageId: 4321 })]]));
+
+    const listener = start(h.deps);
+    await waitFor('both edits sent', () => h.calls('/editMessageText').length >= 2);
+    await listener.stop();
+
+    expect(String(h.calls('/editMessageText')[0][0])).toContain('/botT/editMessageText');
+    const bodies = h.calls('/editMessageText').map(bodyOf);
+    expect(bodies[0]).toEqual({
+      chat_id: Number(CHAT_ID),
+      message_id: 4321,
+      text: '*Pick a category*',
+      parse_mode: 'Markdown',
+      reply_markup: keyboard,
+    });
+    // A final screen drops the keyboard by OMITTING the key, which is what
+    // Telegram reads as "no buttons" — `reply_markup: undefined` is not.
+    expect('reply_markup' in bodies[1]).toBe(false);
+    expect(bodies[1]).toEqual({
+      chat_id: Number(CHAT_ID),
+      message_id: 4321,
+      text: 'Filed.',
+      parse_mode: 'Markdown',
+    });
+  });
+
+  it('answers with no text at all when the controller only needs the spinner cleared', async () => {
+    const onMenuCallback = vi.fn(async (_cb: MenuCallback, ui: MenuUi) => { await ui.answer(); });
+    const h = harness({ onMenuCallback });
+    h.fetchImpl.mockImplementation(pollingRoute([[callbackUpdate(260, 'cz:7', { id: 'cb-11' })]]));
+
+    const listener = start(h.deps);
+    await waitFor('answered', () => h.calls('/answerCallbackQuery').length >= 1);
+    await listener.stop();
+
+    const url = new URL(String(h.calls('/answerCallbackQuery')[0][0]));
+    expect(url.searchParams.get('callback_query_id')).toBe('cb-11');
+    expect(url.searchParams.has('text')).toBe(false);
+  });
+
+  it('sends a fresh message through ui.send, mirroring reply plus an optional keyboard', async () => {
+    const keyboard = { inline_keyboard: [[{ text: 'Next', callback_data: 'cz:2' }]] };
+    const onMenuCallback = vi.fn(async (_cb: MenuCallback, ui: MenuUi) => { await ui.send('a new menu', keyboard); });
+    const h = harness({ onMenuCallback });
+    h.fetchImpl.mockImplementation(pollingRoute([[callbackUpdate(270, 'cz:8')]]));
+
+    const listener = start(h.deps);
+    await waitFor('message sent', () => h.calls('/sendMessage').length >= 1);
+    await listener.stop();
+
+    expect(bodyOf(h.calls('/sendMessage')[0])).toEqual({
+      chat_id: CHAT_ID,
+      text: 'a new menu',
+      parse_mode: 'Markdown',
+      disable_web_page_preview: true,
+      reply_markup: keyboard,
+    });
+  });
+
+  it('never routes a cz: tap from a foreign chat, and still advances the offset', async () => {
+    const onMenuCallback = vi.fn(async () => {});
+    const h = harness({ onMenuCallback });
+    h.fetchImpl.mockImplementation(pollingRoute([[callbackUpdate(280, 'cz:9', { chatId: 99 })]]));
+
+    const listener = start(h.deps);
+    await waitFor('batch consumed', () => h.writeOffset.mock.calls.length >= 1);
+    await listener.stop();
+
+    expect(onMenuCallback).not.toHaveBeenCalled();
+    expect(h.calls('/answerCallbackQuery')).toHaveLength(0);
+    expect(h.calls('/editMessageText')).toHaveLength(0);
+    // A stranger cannot wedge the update stream by tapping a button.
+    expect(h.writeOffset).toHaveBeenCalledWith(281);
+    expect(h.logs.filter((l) => l.includes('99'))).toHaveLength(1);
+  });
+
+  it('drops a cz: tap that carries no chat at all, unlike a dismissal', async () => {
+    // A menu tap is answered by EDITING the message it came from, so a callback
+    // with no message is both unauthorizable and unactionable. A dismissal is
+    // neither — it only needs the activity id — and keeps its existing behavior.
+    const onMenuCallback = vi.fn(async () => {});
+    const h = harness({ onMenuCallback });
+    h.fetchImpl.mockImplementation(pollingRoute([
+      [{ update_id: 290, callback_query: { id: 'cb-12', data: 'cz:10' } }],
+    ]));
+
+    const listener = start(h.deps);
+    await waitFor('batch consumed', () => h.writeOffset.mock.calls.length >= 1);
+    await listener.stop();
+
+    expect(onMenuCallback).not.toHaveBeenCalled();
+    expect(h.writeOffset).toHaveBeenCalledWith(291);
+  });
+
+  it('routes d: to the dismissal ledger and cz: to the menu, never crossing over', async () => {
+    const onMenuCallback = vi.fn(async () => {});
+    const h = harness({ onMenuCallback });
+    h.fetchImpl.mockImplementation(pollingRoute([[
+      callbackUpdate(300, 'd:act-42', { id: 'cb-a' }),
+      callbackUpdate(301, 'cz:11', { id: 'cb-b' }),
+      callbackUpdate(302, 'something-else', { id: 'cb-c' }),
+    ]]));
+
+    const listener = start(h.deps);
+    await waitFor('both routed', () => h.applyDismissal.mock.calls.length >= 1 && onMenuCallback.mock.calls.length >= 1);
+    await listener.stop();
+
+    expect(h.applyDismissal.mock.calls.map((c) => c[0])).toEqual(['act-42']);
+    expect(onMenuCallback.mock.calls.map((c) => (c[0] as MenuCallback).data)).toEqual(['cz:11']);
+    expect(h.writeOffset).toHaveBeenCalledWith(303);
+  });
+});
+
+describe('startTelegramListener — replies that carry a keyboard', () => {
+  it('threads a handler\'s keyboard into sendMessage as reply_markup', async () => {
+    const keyboard = { inline_keyboard: [[{ text: 'Coffee', callback_data: 'cz:0' }]] };
+    const h = harness({
+      onCommand: vi.fn(async (_cmd: any, reply: (t: string, k?: unknown) => Promise<void>) => {
+        await reply('*3 need a category*', keyboard);
+      }) as any,
+    });
+    h.fetchImpl.mockImplementation(pollingRoute([[messageUpdate(310, '/categorize')]]));
+
+    const listener = start(h.deps);
+    await waitFor('reply sent', () => h.calls('/sendMessage').length >= 1);
+    await listener.stop();
+
+    expect(bodyOf(h.calls('/sendMessage')[0])).toEqual({
+      chat_id: CHAT_ID,
+      text: '*3 need a category*',
+      parse_mode: 'Markdown',
+      disable_web_page_preview: true,
+      reply_markup: keyboard,
+    });
+  });
+
+  it('omits reply_markup entirely for the one-argument reply every existing handler uses', async () => {
+    // Byte-identical to what the shipped build sends: the key is ABSENT, not
+    // present-and-undefined, so no existing command's message changes shape.
+    const h = harness({
+      onCommand: vi.fn(async (_cmd: any, reply: (t: string) => Promise<void>) => { await reply('plain'); }) as any,
+    });
+    h.fetchImpl.mockImplementation(pollingRoute([[messageUpdate(320, '/report')]]));
+
+    const listener = start(h.deps);
+    await waitFor('reply sent', () => h.calls('/sendMessage').length >= 1);
+    await listener.stop();
+
+    const body = bodyOf(h.calls('/sendMessage')[0]);
+    expect('reply_markup' in body).toBe(false);
+    expect(body).toEqual({
+      chat_id: CHAT_ID,
+      text: 'plain',
+      parse_mode: 'Markdown',
+      disable_web_page_preview: true,
+    });
   });
 });
 
