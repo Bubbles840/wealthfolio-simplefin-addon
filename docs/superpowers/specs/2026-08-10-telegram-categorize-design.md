@@ -61,6 +61,14 @@ no new mounts, no new permissions.
    the desirable half of retroactivity: "make this a rule" also files the
    OTHER uncategorized Trader Joe's charges, while rewriting anything already
    filed remains impossible through this endpoint.
+
+   Rules can also be typed from nothing: `/newrule trader joes = groceries`
+   (also accepts `→`). Left of the `=` is the match text, taken verbatim as a
+   case-insensitive contains-match — no regex, nothing to escape; right is a
+   category, resolved with the same forgiving prefix matching `/left` uses
+   (ambiguous → the choices; unknown → say so). The reply is the SAME
+   preview-then-Create-button screen as the tap path, so a typo never becomes
+   a rule. Garbled input gets a usage line, not a shrug.
 5. **The addon hears about it in seconds.** After every assignment, dismissal,
    or undo made from Telegram, the companion republishes
    `uncategorized_status`, so the purple tile and its list update on the next
