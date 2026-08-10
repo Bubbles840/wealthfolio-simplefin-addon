@@ -16,6 +16,7 @@ import { WealthfolioClient } from './wealthfolio.js';
 import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatMonthlyWrapUp, formatSyncHealthFooter, formatLargeTransactionAlert, formatBalanceDriftAlert, formatFeedLagNotice, formatStuckTransferAlert, formatDuplicatePruneAlert, formatImportNotice, buildDismissKeyboard, IMPORT_NOTICE_UNCATEGORIZED_CAP, escapeMarkdown, LARGE_TX_OUTBOX_SECRET_KEY } from '../../shared/telegram.js';
 import { pruneDismissals, mergeDismissals } from './dismissals.js';
 import { startTelegramListener } from './telegram-listener.js';
+import type { TelegramListenerDeps } from './telegram-listener.js';
 import { createImapSource, ingestAmazonMail, amazonMailConfigured } from './amazon-mail.js';
 import type { AmazonIngestResult, AmazonMailConfig, MailSource } from './amazon-mail.js';
 import { DEFAULT_GLYPH_STYLE } from '../../shared/telegram.js';
@@ -1258,9 +1259,12 @@ export async function sendMonthlyTelegramReport(wfClient: WealthfolioClient): Pr
  * 1.10.1 bug; `mergeDismissals` exists so it cannot come back. Only the delta
  * (`base` → `next`, i.e. this one id) is replayed onto what is persisted.
  *
- * One read, not two: unlike the sync path's write — which follows a database
- * sweep — nothing slow happens between this read and its write, so a second
- * read immediately after the first would buy nothing but another round trip.
+ * TWO reads, and the second one is what makes the merge mean anything. Passing
+ * the FIRST read as `persisted` would reduce `mergeDismissals(base, base, next)`
+ * to `{...base, id}` — the whole-object write above, just with a smaller window.
+ * The re-read is deliberately taken as late as possible, mirroring
+ * `sendImportNotice`'s write; one extra round trip on a rare button tap is a
+ * cheap price for not erasing someone else's dismissal.
  *
  * An id the ledger already holds writes nothing at all: a second tap on the same
  * button is not a change, and re-writing it would only move its timestamp
@@ -1274,14 +1278,17 @@ export async function applyTelegramDismissal(
   wfClient: WealthfolioClient,
   activityId: string,
 ): Promise<void> {
-  const base: DismissalLedger =
+  const readLedger = async (): Promise<DismissalLedger> =>
     parseSecretJson<DismissalLedger>(
       await wfClient.getAddonSecret('simplefin-sync', 'uncategorized_dismissals'),
       'uncategorized_dismissals',
     ) ?? {};
+
+  const base = await readLedger();
   if (activityId in base) return;
   const next: DismissalLedger = { ...base, [activityId]: new Date().toISOString() };
-  const merged = pruneDismissals(mergeDismissals(base, base, next), new Date());
+  const persisted = await readLedger();
+  const merged = pruneDismissals(mergeDismissals(persisted, base, next), new Date());
   await wfClient.setAddonSecret('simplefin-sync', 'uncategorized_dismissals', JSON.stringify(merged));
 }
 
@@ -1336,13 +1343,16 @@ async function readStatusReplyInput(wfClient: WealthfolioClient): Promise<Status
   );
 
   const accounts: StatusReplyInput['accounts'] = [];
+  let accountsWithoutBalance = 0;
   for (const [sfinAccountId, info] of Object.entries(balances)) {
-    // An account SimpleFin gave no numeric balance for is OMITTED rather than
-    // reported as $0.00 — the addon shows "—" for exactly this state, and a
-    // chat line has no room for the distinction. `/status` is a "what do I need
-    // to look at" summary, and an invented zero balance is the one thing here
-    // that could be acted on wrongly.
-    if (!info || typeof info.balance !== 'number') continue;
+    // An account SimpleFin gave no numeric balance for gets no line of its own —
+    // an invented $0.00 is the one thing here a reader could act on wrongly — but
+    // it IS counted, and `formatStatusReply` says so beneath the list. Silently
+    // dropping it would leave the list short with nothing to explain the gap.
+    if (!info || typeof info.balance !== 'number') {
+      if (info) accountsWithoutBalance += 1;
+      continue;
+    }
     accounts.push({
       // The SimpleFin id as a last resort: an unnamed account is still a real
       // one, and dropping it would silently shorten the list.
@@ -1366,6 +1376,7 @@ async function readStatusReplyInput(wfClient: WealthfolioClient): Promise<Status
     // addon also reads, which is not this task's to change.
     lastSyncSummary: null,
     accounts,
+    accountsWithoutBalance,
     uncategorizedCount: typeof uncategorized?.count === 'number' ? uncategorized.count : null,
     amazonUnparsed: typeof amazon?.unparsed === 'number' ? amazon.unparsed : null,
   };
@@ -1449,13 +1460,12 @@ export function buildTelegramCommandHandler(
 
       case 'sync': {
         const { started, result } = runCompanionSyncExclusive();
-        // Both handlers are attached to `result` BEFORE the first `await`, and
-        // in BOTH branches. That ordering is the point: a sync that rejects
-        // while this function is suspended on its acknowledgement reply would
-        // otherwise be an unhandled rejection, which kills the daemon and stops
-        // bank syncing — the same hazard the cron callbacks' `.catch` guards.
-        // Mapping to a string rather than replying inside the callbacks also
-        // keeps the order deterministic: the acknowledgement always lands first.
+        // Both handlers are attached to `result` synchronously, BEFORE the first
+        // `await`, and in BOTH branches. That ordering is the point: a sync that
+        // rejects while this function is suspended would otherwise be an
+        // unhandled rejection, which kills the daemon and stops bank syncing —
+        // the same hazard the cron callbacks' `.catch` guards. It also makes
+        // `summary` a promise that can only ever FULFIL, with a string.
         const summary = result.then(
           (r) => formatSyncReply({
             imported: r.imported,
@@ -1466,11 +1476,21 @@ export function buildTelegramCommandHandler(
           // RAW error text: `formatSyncReply` escapes it itself.
           (err) => formatSyncReply({ imported: 0, skipped: 0, driftAlerts: 0, errors: [formatError(err)] }),
         );
+
         await reply(started ? SYNC_STARTED_REPLY : SYNC_ALREADY_RUNNING_REPLY);
-        // Awaited in both branches, including `started: false` — a second
-        // `/sync` still deserves the outcome of the run it joined, and awaiting
-        // is what makes the promise observed rather than floating.
-        await reply(await summary);
+
+        // NOT awaited, in either branch. A sync takes tens of seconds, and this
+        // function runs inside the listener's poll loop — awaiting it would stop
+        // the bot answering anything else for the whole run, including the
+        // `/status` a user naturally sends next. Firing the follow-up is exactly
+        // what `onCommand`'s contract blesses: the injected `reply` never
+        // rejects (the listener wraps it), and `summary` cannot reject either,
+        // so nothing here can become an unhandled rejection. The `.catch` is
+        // belt-and-braces only because that guarantee lives in another module —
+        // it logs rather than swallows, and cannot itself throw.
+        void summary
+          .then((text) => reply(text))
+          .catch((err) => log(`Telegram /sync summary could not be delivered: ${formatError(err)}`));
         return;
       }
 
@@ -1480,6 +1500,116 @@ export function buildTelegramCommandHandler(
         // understood — a typo is the likeliest reason anyone lands here.
         await reply(formatHelpReply(cmd.command === 'help' ? undefined : cmd.command));
     }
+  };
+}
+
+/** How long a Wealthfolio session is reused before `ensureSession` refreshes it.
+ *  The listener wakes roughly every 50 seconds, so a login per wake would be
+ *  ~1,700 pointless authentications a day; a wf_session JWT, meanwhile, does not
+ *  outlive a process that runs for weeks. Half an hour sits between the two. */
+const LISTENER_SESSION_MAX_AGE_MS = 30 * 60 * 1000;
+
+/**
+ * Everything `startTelegramListener` needs, built around one `wfClient`.
+ *
+ * A function rather than an object literal inside the startup block for one
+ * reason: the startup block never runs under vitest, and the auth handling below
+ * is the part most likely to fail silently in production, so it has to be
+ * reachable from a test.
+ *
+ * The session handling is the substance here. The cron callbacks re-login on
+ * every tick because the JWT does not outlive a long-running process; the
+ * listener has no ticks — it starts once and reads secrets forever — so it
+ * refreshes its own session, and distinguishes THREE outcomes that a naive
+ * implementation collapses into one silent idle:
+ *
+ *  - the config secret is absent or Telegram is off → `null`, the listener's
+ *    "idle, re-check in 60s" state, logged once as unconfigured;
+ *  - the config secret cannot be READ → throw, so the listener's backoff path
+ *    logs it in words that name the cause, and the session is discarded so the
+ *    next cycle re-authenticates instead of waiting out the 30-minute window.
+ *    Returning `null` here was the trap: the listener would log "no Telegram
+ *    configuration yet" ONCE and then idle forever on a 401 — a bot that looks
+ *    perfectly healthy and answers nothing, which is exactly what the session
+ *    refresh exists to prevent;
+ *  - there is nothing to log in WITH → throw, and never mark the session
+ *    established, so it is retried. `validateStartupEnv` already proved one of
+ *    the three credentials was configured, so this state means
+ *    `WEALTHFOLIO_PASSWORD_FILE` is unreadable right now — and `resolvePassword`
+ *    re-reads that file on every call, so it can become readable later.
+ */
+export function buildTelegramListenerDeps(wfClient: WealthfolioClient): TelegramListenerDeps {
+  let sessionEstablishedAt = 0;
+
+  const ensureSession = async (): Promise<void> => {
+    if (Date.now() - sessionEstablishedAt < LISTENER_SESSION_MAX_AGE_MS) return;
+    const key = process.env.WEALTHFOLIO_API_KEY;
+    if (key) {
+      (wfClient as unknown as { token: string }).token = key;
+      sessionEstablishedAt = Date.now();
+      return;
+    }
+    const password = resolvePassword();
+    if (!password) {
+      throw new Error(
+        'no Wealthfolio password available (WEALTHFOLIO_PASSWORD / WEALTHFOLIO_PASSWORD_FILE unreadable) '
+        + '— the Telegram bot cannot read its own configuration until it can authenticate',
+      );
+    }
+    await wfClient.login(password);
+    sessionEstablishedAt = Date.now();
+  };
+
+  return {
+    fetchImpl: fetch,
+    // The companion's own SYNCHRONOUS logger, and never wrapped in an `async`
+    // function: the listener's `safeLog` guards a THROWN error, and a rejected
+    // promise from an async logger would sail straight past that guard —
+    // void-return bivariance lets one through the type unnoticed.
+    log,
+    // Re-read every idle cycle, so configuring or disabling Telegram in the
+    // addon takes effect within a minute instead of at the next restart.
+    readConfig: async () => {
+      await ensureSession();
+      let raw: string | null;
+      try {
+        raw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_config');
+      } catch (err) {
+        // Discarded, not kept: an expired token is the likeliest cause, and the
+        // next cycle must be allowed to re-authenticate immediately.
+        sessionEstablishedAt = 0;
+        throw new Error(
+          `could not read telegram_config from Wealthfolio — a session or connectivity problem, `
+          + `not a missing configuration: ${formatError(err)}`,
+        );
+      }
+      const tg = parseSecretJson<any>(raw, 'telegram_config');
+      // `enabled === false` idles the listener for the same reason it silences
+      // every other Telegram path in this file: the user turned the bot off.
+      if (!tg?.botToken || !tg?.chatId || tg.enabled === false) return null;
+      return {
+        botToken: String(tg.botToken),
+        chatId: String(tg.chatId),
+        // Nothing writes this today; it is read so that a config which later
+        // carries the bot's @name makes `/cmd@SomeOtherBot` fall through
+        // instead of being answered. Undefined means "answer any @suffix".
+        botName: tg.botName ? String(tg.botName) : undefined,
+      };
+    },
+    readOffset: async () => {
+      const raw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_update_offset');
+      const n = Number(raw);
+      return raw != null && raw !== '' && Number.isFinite(n) ? n : null;
+    },
+    writeOffset: async (n) => {
+      await wfClient.setAddonSecret('simplefin-sync', 'telegram_update_offset', String(n));
+    },
+    applyDismissal: (activityId) => applyTelegramDismissal(wfClient, activityId),
+    onCommand: buildTelegramCommandHandler(wfClient),
+    // A plain `setTimeout` promise, which cannot reject. The listener hardened
+    // itself against a rejecting `sleep` precisely so nobody makes this one
+    // abortable to shorten `stop()`; see `pause` in telegram-listener.ts.
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   };
 }
 
@@ -1563,34 +1693,6 @@ if (!process.env.VITEST) {
   });
 
   /**
-   * Keeps the session behind the listener's reads usable.
-   *
-   * The cron callbacks above re-login on every tick because the wf_session JWT
-   * does not outlive a process that runs for weeks. The listener has no ticks —
-   * it starts once and reads secrets forever — so it needs its own refresh, and
-   * without one every read would eventually 401 and the bot would answer
-   * nothing while looking perfectly healthy.
-   *
-   * Bounded by age rather than done per poll: the loop wakes roughly every 50
-   * seconds, and a login on each of those would be ~1,700 pointless
-   * authentications a day. A throw propagates to `readConfig`, which is exactly
-   * where the listener's backoff-and-log path wants it.
-   */
-  const SESSION_MAX_AGE_MS = 30 * 60 * 1000;
-  let sessionEstablishedAt = 0;
-  const ensureSession = async (): Promise<void> => {
-    if (Date.now() - sessionEstablishedAt < SESSION_MAX_AGE_MS) return;
-    const key = process.env.WEALTHFOLIO_API_KEY;
-    if (key) {
-      (wfClient as unknown as { token: string }).token = key;
-    } else {
-      const password = resolvePassword();
-      if (password) await wfClient.login(password);
-    }
-    sessionEstablishedAt = Date.now();
-  };
-
-  /**
    * The bot's slash commands, and now the ONLY consumer of this token's
    * `getUpdates` stream, dismiss buttons included. Telegram serves that
    * stream to exactly ONE reader, so the once-per-sync poll this replaces had to
@@ -1603,46 +1705,7 @@ if (!process.env.VITEST) {
    * finishes waiting for. The process exiting drops the connection, which is all
    * the shutdown this loop needs.
    */
-  startTelegramListener({
-    fetchImpl: fetch,
-    // The companion's own SYNCHRONOUS logger, and never wrapped in an `async`
-    // function: the listener's `safeLog` guards a THROWN error, and a rejected
-    // promise from an async logger would sail straight past that guard —
-    // void-return bivariance lets one through the type unnoticed.
-    log,
-    // Re-read every idle cycle, so configuring or disabling Telegram in the
-    // addon takes effect within a minute instead of at the next restart.
-    readConfig: async () => {
-      await ensureSession();
-      const raw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_config').catch(() => null);
-      const tg = parseSecretJson<any>(raw, 'telegram_config');
-      // `enabled === false` idles the listener for the same reason it silences
-      // every other Telegram path in this file: the user turned the bot off.
-      if (!tg?.botToken || !tg?.chatId || tg.enabled === false) return null;
-      return {
-        botToken: String(tg.botToken),
-        chatId: String(tg.chatId),
-        // Nothing writes this today; it is read so that a config which later
-        // carries the bot's @name makes `/cmd@SomeOtherBot` fall through
-        // instead of being answered. Undefined means "answer any @suffix".
-        botName: tg.botName ? String(tg.botName) : undefined,
-      };
-    },
-    readOffset: async () => {
-      const raw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_update_offset');
-      const n = Number(raw);
-      return raw != null && raw !== '' && Number.isFinite(n) ? n : null;
-    },
-    writeOffset: async (n) => {
-      await wfClient.setAddonSecret('simplefin-sync', 'telegram_update_offset', String(n));
-    },
-    applyDismissal: (activityId) => applyTelegramDismissal(wfClient, activityId),
-    onCommand: buildTelegramCommandHandler(wfClient),
-    // A plain `setTimeout` promise, which cannot reject. The listener hardened
-    // itself against a rejecting `sleep` precisely so nobody makes this one
-    // abortable to shorten `stop()`; see `pause` in telegram-listener.ts.
-    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-  });
+  startTelegramListener(buildTelegramListenerDeps(wfClient));
 
   // Run initial sync on startup — through the same guard as the cron tick and
   // `/sync`, so a command arriving while this is still running joins it instead
