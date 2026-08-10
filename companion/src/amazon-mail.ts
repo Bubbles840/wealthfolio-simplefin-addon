@@ -86,6 +86,86 @@ export interface AmazonIngestResult {
   unparsedSenders: Record<string, number>;
 }
 
+/**
+ * Turn one HTML entity's inner name/code into the character it represents.
+ *
+ * Only the handful Amazon's mail actually uses are named explicitly; anything else
+ * numeric is decoded via `String.fromCodePoint`, guarded so a malformed or
+ * out-of-range code point cannot throw and take the whole ingest down with it —
+ * it is returned unresolved instead.
+ */
+function decodeHtmlEntity(entity: string): string {
+  switch (entity.toLowerCase()) {
+    case 'amp': return '&';
+    case 'lt': return '<';
+    case 'gt': return '>';
+    case 'quot': return '"';
+    case 'apos':
+    case '#39': return '\'';
+    case 'nbsp': return ' ';
+    case 'zwnj':
+    case 'shy': return '';
+    default: {
+      const hex = /^#x([0-9a-f]+)$/i.exec(entity);
+      const dec = /^#(\d+)$/.exec(entity);
+      const code = hex ? parseInt(hex[1], 16) : dec ? parseInt(dec[1], 10) : NaN;
+      if (!Number.isFinite(code) || code < 0 || code > 0x10ffff) return `&${entity};`;
+      try {
+        return String.fromCodePoint(code);
+      } catch {
+        return `&${entity};`;
+      }
+    }
+  }
+}
+
+/**
+ * Crude HTML→text, good enough for Amazon's mail: drop `<style>`/`<script>`
+ * blocks (their content is not text a person reads), turn every remaining tag
+ * into a newline so words in adjacent table cells do not run together, then
+ * decode entities.
+ *
+ * Decoding is load-bearing, not cosmetic. The HTML writes labels like
+ * `Lawn &amp; Garden`; an undecoded label is a different string from its
+ * text/plain twin, and `mapAmazonLabel` would silently see two labels where
+ * there is one.
+ */
+export function htmlToText(html: string | undefined | null): string {
+  return String(html ?? '')
+    .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, '\n')
+    .replace(/<[^>]+>/g, '\n')
+    .replace(/&([a-zA-Z]+|#\d+|#x[0-9a-fA-F]+);/g, (_m, ent: string) => decodeHtmlEntity(ent));
+}
+
+/**
+ * The document `classifyAmazonEmail` actually reads: subject, then the
+ * text/plain part, then the HTML part reduced to text — each included only when
+ * present.
+ *
+ * ALL THREE, not "plain text, falling back to HTML only when plain is absent".
+ * As of ~Aug 2026 Amazon moved the category label out of text/plain entirely —
+ * it now lives only in the subject (`Ordered: ⁦1⁩ Essentials item`) and the HTML
+ * (`<span class="rio-text ...">⁦1⁩ Essentials item</span>`) — so a single message
+ * can need parts from more than one source at once, and "prefer plain, fall back
+ * to HTML" would keep reading a plain part that no longer has what is needed.
+ *
+ * Reading every source risks nothing extra: the same order parsed twice — once
+ * from the subject, once from the HTML — reduces to the same
+ * `orderId|kind|totalCents` ledger key (see `shared/amazon-ledger.ts`), and
+ * `mergeAmazonOrders` already dedupes on that key. `matchAmazonCharge`'s
+ * ambiguity handling is measured per ORDER, not per source that mentioned it, so
+ * re-deriving one order from three places changes nothing about matching.
+ */
+export function buildAmazonMailText(
+  subject: string | undefined | null,
+  textPlain: string | undefined | null,
+  html: string | undefined | null,
+): string {
+  return [subject, textPlain, html ? htmlToText(html) : undefined]
+    .filter((part): part is string => !!part)
+    .join('\n');
+}
+
 export interface IngestStore {
   getAmazonLedger(): Promise<AmazonLedger>;
   setAmazonLedger(map: AmazonLedger): Promise<void>;
@@ -234,9 +314,12 @@ export async function createImapSource(cfg: AmazonMailConfig): Promise<MailSourc
         const from = (msg.envelope?.from ?? [])
           .map((a) => String(a.address ?? '').toLowerCase());
         const parsed = await simpleParser(msg.source!);
-        // Prefer text/plain. Amazon sends the same fields in both parts, and the
-        // HTML part would need tag-stripping that can join words together.
-        const text = parsed.text ?? (parsed.html ? String(parsed.html).replace(/<[^>]+>/g, '\n') : '');
+        // Subject + text/plain + HTML-as-text. Since ~Aug 2026 the category label
+        // lives only in the subject and the HTML (see `buildAmazonMailText`), so
+        // text/plain alone is no longer enough to classify the message.
+        const text = buildAmazonMailText(
+          parsed.subject, parsed.text, parsed.html ? String(parsed.html) : undefined,
+        );
         // Sender check here rather than in the IMAP search: the forwarding mailbox
         // should contain nothing else, but "should" is not a reason to parse
         // whatever else lands in it. Needs the decoded body too, so a hand-forwarded
