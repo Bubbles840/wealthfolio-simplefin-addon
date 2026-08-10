@@ -62,6 +62,186 @@ Total\t$10.55
 info icon\tView related transactions in Your Transactions.
 `;
 
+/**
+ * ~Aug 2026 format change, verified against two real forwarded emails ("Ordered:
+ * ⁦1⁩ Essentials item" / "Shipped: ⁦1⁩ Essentials item"). Sanitized: the person/city
+ * line and the order id are fake (consistently, everywhere the id appears);
+ * everything else — the bare four-line shipping tracker, the split
+ * `Grand Total:` / `4.23 USD` with no `$`, and the exact subject wording — is
+ * byte-real.
+ *
+ * The category label is GONE from text/plain entirely in this format; it now
+ * lives only in the subject and the HTML (see the *_HTML_AS_TEXT fixtures below).
+ */
+const CONFIRMATION_SUBJECT = 'Ordered: ⁦1⁩ Essentials item';
+const SHIPPED_SUBJECT = 'Shipped: ⁦1⁩ Essentials item';
+
+const CONFIRMATION_NEW_FORMAT_TEXT_PLAIN = `
+   Your Orders       Your Account       Buy Again
+
+    Thanks for your order!
+Ordered
+
+Shipped
+
+Out for delivery
+
+Delivered
+
+Arriving Monday
+
+Jordan - SPRINGFIELD, IL
+
+Order #
+111-1234567-7654321
+
+
+Grand Total:
+4.23 USD
+`;
+
+const SHIPMENT_NEW_FORMAT_TEXT_PLAIN = `
+   Your Orders       Your Account       Buy Again
+
+    Your package was shipped!
+Ordered
+
+Shipped
+
+Out for delivery
+
+Delivered
+
+Arriving tomorrow
+
+Jordan - SPRINGFIELD, IL
+
+Order #
+111-1234567-7654321
+
+
+Total
+4.23 USD
+`;
+
+/**
+ * What `htmlToText` (companion/src/amazon-mail.ts) reduces the real HTML part to
+ * — written as a literal here rather than imported, since shared/ never depends
+ * on the companion. Byte-real: the BIDI marks around the "1", the preheader's
+ * `&#847; &zwnj; &nbsp; &#8199; &shy;` entity junk (already decoded — `&zwnj;`
+ * and `&shy;` vanish, `&nbsp;` becomes a space, `&#847;` becomes the invisible
+ * combining mark it names), the bare tracker labels, and the lone space token
+ * sitting between the `<mj-raw>` cells that wrap the total.
+ */
+const CONFIRMATION_HTML_AS_TEXT = `
+Ordered: ⁦1⁩ Essentials item͏      ͏      ͏
+
+Ordered
+
+Shipped
+
+Out for delivery
+
+Delivered
+
+Arriving Monday
+
+Jordan - SPRINGFIELD, IL
+
+Order #
+111-1234567-7654321
+
+⁦1⁩ Essentials item
+
+Grand Total:
+
+  $4.23
+`;
+
+const SHIPPED_HTML_AS_TEXT = `
+Shipped: ⁦1⁩ Essentials item͏      ͏      ͏
+
+Ordered
+
+Shipped
+
+Out for delivery
+
+Delivered
+
+Arriving tomorrow
+
+Jordan - SPRINGFIELD, IL
+
+Order #
+111-1234567-7654321
+
+⁦1⁩ Essentials item
+
+Total
+
+  $4.23
+`;
+
+const CONFIRMATION_COMBINED_DOCUMENT =
+  `${CONFIRMATION_SUBJECT}\n${CONFIRMATION_NEW_FORMAT_TEXT_PLAIN}\n${CONFIRMATION_HTML_AS_TEXT}`;
+const SHIPPED_COMBINED_DOCUMENT =
+  `${SHIPPED_SUBJECT}\n${SHIPMENT_NEW_FORMAT_TEXT_PLAIN}\n${SHIPPED_HTML_AS_TEXT}`;
+
+describe('the ~Aug 2026 format change', () => {
+  it('does not silently swallow a new-format confirmation as an ignorable notice', () => {
+    // THE regression this whole fix is about. Before it: the plain-text total
+    // ("4.23 USD", no "$") failed TOTAL, and the bare tracker line "Out for
+    // delivery" satisfied the old (too broad) notice wording — so an ORDER
+    // CONFIRMATION was misclassified `ignored` and marked read, silently. text/plain
+    // alone carries no category label in this format, so there is nothing to
+    // recover it from here — `unrecognised` is the correct, LOUD failure.
+    const result = classifyAmazonEmail(CONFIRMATION_NEW_FORMAT_TEXT_PLAIN);
+    expect(result.status).toBe('unrecognised');
+    expect(result.orders).toEqual([]);
+  });
+
+  it('recovers the order from the combined document (subject + plain + stripped html)', () => {
+    const result = classifyAmazonEmail(CONFIRMATION_COMBINED_DOCUMENT);
+    expect(result.status).toBe('orders');
+    expect(result.orders).toEqual([expect.objectContaining({
+      orderId: '111-1234567-7654321',
+      kind: 'ordered',
+      totalCents: 423,
+      itemCount: 1,
+      labels: ['Essentials'],
+    })]);
+  });
+
+  it('reads the shipment the same way', () => {
+    const result = classifyAmazonEmail(SHIPPED_COMBINED_DOCUMENT);
+    expect(result.status).toBe('orders');
+    expect(result.orders).toEqual([expect.objectContaining({
+      orderId: '111-1234567-7654321',
+      kind: 'shipped',
+      totalCents: 423,
+      itemCount: 1,
+      labels: ['Essentials'],
+    })]);
+  });
+
+  it('still ignores a genuine delivery notice, tracker lines and all', () => {
+    // The safety net must still work: a real notice, distinguished from the
+    // confirmation above only by saying "was delivered" and carrying no total.
+    const body = [
+      'Ordered',
+      'Shipped',
+      'Out for delivery',
+      'Delivered',
+      'Your package was delivered!',
+      'Jordan - SPRINGFIELD, IL',
+      'Order #',
+      '111-1234567-7654321',
+    ].join('\n');
+    expect(classifyAmazonEmail(body).status).toBe('ignored');
+  });
+});
+
 describe('parseAmazonEmail', () => {
   it('returns one record per order, because a single email can carry several', () => {
     const rows = parseAmazonEmail(CONFIRMATION_TWO_ORDERS);
@@ -198,6 +378,21 @@ Grand Total:	$120.52
     expect(rows[0].totalCents).toBe(129900);
   });
 
+  it('accepts the "N.NN USD" total ~Aug 2026 introduced alongside the "$N.NN" form', () => {
+    const rows = parseAmazonEmail(
+      `Thanks for your order!\nOrder # ‫111-2223334-4445556\n⁦1⁩ Electronics item\nTotal 4.23 USD`,
+    );
+    expect(rows[0].totalCents).toBe(423);
+  });
+
+  it('still refuses a bare number with neither $ nor USD as a total', () => {
+    // A number alone is not a price — it could be anything else on the line. Only
+    // a currency-marked figure is trusted.
+    expect(parseAmazonEmail(
+      `Thanks for your order!\nOrder # ‫111-2223334-4445556\n⁦1⁩ Electronics item\nTotal 4.23`,
+    )).toEqual([]);
+  });
+
   it('skips an email it does not recognise instead of guessing', () => {
     // Amazon changed this format on 2026-07-08 and may again. A parser that
     // guesses puts a wrong category on real money — silently, since a wrong
@@ -251,6 +446,20 @@ describe('isAmazonNoticeWithoutTotal', () => {
   it('is not fooled by non-Amazon text', () => {
     expect(isAmazonNoticeWithoutTotal('Your package was shipped!')).toBe(false);
     expect(isAmazonNoticeWithoutTotal('')).toBe(false);
+  });
+
+  it('does not treat the bare shipping-tracker labels as notice wording', () => {
+    // The 2026-08 loophole, isolated from the total question. Every Amazon email
+    // — confirmations included — now carries the four-line progress tracker as
+    // bare labels with no colon: "Ordered" / "Shipped" / "Out for delivery" /
+    // "Delivered". The old wording list matched the bare substring "out for
+    // delivery", which every one of these lines satisfies regardless of total. If
+    // this ever regresses, a confirmation whose total genuinely fails to parse for
+    // some unrelated reason gets filed as an ignorable notice instead of staying a
+    // loud "unrecognised" — so this must be false on tracker lines alone, total or
+    // no total.
+    const trackerOnly = 'Ordered\nShipped\nOut for delivery\nDelivered\nThanks for your order!';
+    expect(isAmazonNoticeWithoutTotal(trackerOnly)).toBe(false);
   });
 });
 

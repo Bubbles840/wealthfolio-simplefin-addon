@@ -69,8 +69,15 @@ const ORDER_ID = /Order\s*#\s*(\d{3}-\d{7}-\d{7})/;
  */
 const ITEM_BREAKDOWN = /^\s*(\d+)\s+items?\s*:\s*(.+?)\s*$/im;
 const ITEM_SUFFIX = /^\s*(\d+)\s+(.+?)\s+items?\s*$/im;
-/** `Grand Total:\t$21.18` on a confirmation, `Total\t$10.55` on a shipment. */
-const TOTAL = /(?:Grand\s+)?Total:?\s*\$\s*([\d,]+\.\d{2})/i;
+/**
+ * `Grand Total:\t$21.18` on a confirmation, `Total\t$10.55` on a shipment — the
+ * `$` form used until ~Aug 2026. Since then Amazon also writes the amount with no
+ * dollar sign and a `USD` suffix instead, on the NEXT line: `Grand Total:` then
+ * `4.23 USD`. The `\s*` already spans the newline, so only the currency marker
+ * needed widening. One of `$` or `USD` is required either way — a bare number
+ * must never be read as a total, or `Total items shipped: 4` would misparse.
+ */
+const TOTAL = /(?:Grand\s+)?Total:?\s*(?:\$\s*([\d,]+\.\d{2})|([\d,]+\.\d{2})\s*USD\b)/i;
 
 function detectKind(text: string): AmazonOrderRecord['kind'] | null {
   if (/your package was shipped|has shipped|Shipped:/i.test(text)) return 'shipped';
@@ -139,10 +146,23 @@ function splitLabels(raw: string, stripCounts = false): { labels: string[]; part
  * And the absence of a total is required, not assumed. An email that starts carrying
  * one again stops being ignorable, which is the safe direction if Amazon changes its
  * mind about what a delivery notice contains.
+ *
+ * 2026-08 lesson: every Amazon email — including order CONFIRMATIONS — started
+ * carrying a shipping progress tracker as four bare lines, `Ordered` / `Shipped` /
+ * `Out for delivery` / `Delivered`, with no colon and no surrounding sentence.
+ * The wording list used to include the bare substring "out for delivery", which
+ * the tracker satisfies on every single message. Combined with the same change
+ * dropping the `$` from the total (making it briefly unparseable until that was
+ * fixed too), a fresh order confirmation — tracker line present, total not yet
+ * recognised — matched both conditions and was filed as an ignorable notice: the
+ * exact "format change made invisible" failure this function exists to prevent.
+ * So the wording list only matches phrasing a real notice actually uses — a full
+ * sentence (`was delivered`, `is out for delivery`) or subject-style wording WITH
+ * its colon (`Delivered: …`, `Out for delivery: …`) — never the bare tracker label.
  */
 export function isAmazonNoticeWithoutTotal(body: string): boolean {
   const text = (body ?? '').replace(BIDI_CONTROLS, '');
-  if (!/was delivered|Delivered:|out for delivery/i.test(text)) return false;
+  if (!/was delivered|Delivered:|Out for delivery:|is out for delivery/i.test(text)) return false;
   return !TOTAL.test(text);
 }
 
@@ -183,7 +203,8 @@ export function parseAmazonEmail(body: string): AmazonOrderRecord[] {
     // from ever competing as Amazon's wording drifts again.
     const breakdown = ITEM_BREAKDOWN.exec(part);
     const item = breakdown ?? ITEM_SUFFIX.exec(part);
-    const total = TOTAL.exec(part)?.[1];
+    const totalMatch = TOTAL.exec(part);
+    const total = totalMatch?.[1] ?? totalMatch?.[2];
     // All three or nothing: an order with no total cannot be matched to a charge,
     // and half a record would sit in the ledger forever pretending to be usable.
     if (!id || !item || !total) continue;

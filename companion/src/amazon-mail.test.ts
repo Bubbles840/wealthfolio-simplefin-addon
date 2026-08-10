@@ -4,6 +4,8 @@ import {
   resolveAmazonCategory,
   amazonMailConfigured,
   isAmazonMessage,
+  htmlToText,
+  buildAmazonMailText,
   type MailMessage,
   type MailSource,
   type IngestStore,
@@ -209,6 +211,48 @@ describe('resolveAmazonCategory', () => {
   it('uses the configured default for an unmatched label', () => {
     expect(resolveAmazonCategory('Industrial & Scientific', { defaultCategory: 'Misc' }))
       .toEqual({ category: 'Misc', matched: false });
+  });
+});
+
+describe('htmlToText', () => {
+  it('decodes an ampersand entity, since the HTML writes labels as "Lawn &amp; Garden"', () => {
+    // Load-bearing, not cosmetic: as of ~Aug 2026 the category label lives only in
+    // the subject and the HTML. If this label came out undecoded ("Lawn &amp;
+    // Garden") it would be a different string than its text/plain-era twin
+    // ("Lawn & Garden"), and every rule in DEFAULT_AMAZON_LABEL_RULES matches on
+    // the decoded text.
+    const html = '<span class="rio-text rio-text-339">Lawn &amp; Garden item</span>';
+    expect(htmlToText(html)).toContain('Lawn & Garden item');
+  });
+
+  it('turns tags into newlines so adjacent table cells do not run together', () => {
+    const html = '<td>Grand Total:</td><td>$4.23</td>';
+    expect(htmlToText(html)).toBe('\nGrand Total:\n\n$4.23\n');
+  });
+
+  it('drops style and script blocks instead of emitting their contents as text', () => {
+    const html = '<style>.rio-text{color:#fff}</style><span>Essentials item</span>';
+    const text = htmlToText(html);
+    expect(text).not.toContain('color');
+    expect(text).toContain('Essentials item');
+  });
+});
+
+describe('buildAmazonMailText', () => {
+  it('combines subject, plain text and html-derived text, each only when present', () => {
+    const text = buildAmazonMailText(
+      'Ordered: ⁦1⁩ Essentials item',
+      'Thanks for your order!',
+      '<span class="rio-text rio-text-339">⁦1⁩ Essentials item</span>',
+    );
+    expect(text).toContain('Ordered: ⁦1⁩ Essentials item');
+    expect(text).toContain('Thanks for your order!');
+    expect(text).toContain('⁦1⁩ Essentials item');
+  });
+
+  it('omits a part entirely when the message did not carry it', () => {
+    expect(buildAmazonMailText(undefined, 'plain only', undefined)).toBe('plain only');
+    expect(buildAmazonMailText('subject only', undefined, undefined)).toBe('subject only');
   });
 });
 
