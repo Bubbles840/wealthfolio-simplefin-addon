@@ -36,8 +36,8 @@
 
 import {
   applyTap,
+  layoutScreen,
   renderScreen,
-  MENU_CALLBACK_PREFIX,
   type CategorizeTxn,
   type MenuAction,
   type MenuScreen,
@@ -223,6 +223,18 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
   const sessions = new Map<number, ChatSession>();
 
   /**
+   * Stamped onto every keyboard this controller emits, and never reset — not by
+   * `close`, and deliberately not by a second `/categorize`. Per PROCESS, not
+   * per session: a counter that restarted with each new session would reissue
+   * generations that older messages still hold, which is exactly the confusion
+   * it exists to prevent (see `MenuSession.generation`). A restart does reset
+   * it, and that is safe because it also drops every session, so every
+   * pre-restart button answers "that menu expired" from `takeSession` instead.
+   */
+  let generation = 0;
+  const nextGeneration = (): number => ++generation;
+
+  /**
    * The only way this module logs. `deps.log` is an injected dependency like any
    * other, so it is treated as hostile: every log call here sits in a catch
    * block that exists to stop something worse, and a throwing logger inside one
@@ -240,8 +252,11 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
 
   /** A stored note carries ` · <txId>` and possibly ` · pending`; the menu shows
    *  this string, so the bookkeeping is stripped first. A blank strip result (a
-   *  legitimately empty SimpleFin description) falls back to the raw note rather
-   *  than rendering an empty button — the `uncategorized-status.ts` rule. */
+   *  legitimately empty SimpleFin description) falls back to the RAW note, the
+   *  `uncategorized-status.ts` rule: the label template always carries the date
+   *  and the amount, so the alternative is not a blank button but a button that
+   *  reads `Aug 8 ·  · -$12` — one with a hole where the only identifying text
+   *  it had should be. A visible ` · TRN-…` is the better of the two. */
   function toTxn(r: CategorizeSourceRow): CategorizeTxn {
     return {
       activityId: r.activityId,
@@ -321,24 +336,31 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
     };
   }
 
-  /** Rebuilds the session around a fresh sweep, splicing the pinned row back in
-   *  when the screen names a row the sweep no longer returns (a confirmation for
-   *  something just filed or dismissed). Callers decide whether a pin applies —
-   *  see `PINNED_SCREEN_KINDS` — because splicing one into a LIST screen would
-   *  show a row that no longer needs a category. */
+  /** A session around a fresh sweep, at a NEW generation — every one of these is
+   *  a render about to happen, and a render is what invalidates the last one's
+   *  tokens. The pinned row is spliced back in when the screen names a row the
+   *  sweep no longer returns (a confirmation for something just filed or
+   *  dismissed). Callers decide whether a pin applies — see
+   *  `PINNED_SCREEN_KINDS` — because splicing one into a LIST screen would show
+   *  a row that no longer needs a category. */
+  function buildSession(screen: MenuScreen, pin: CategorizeTxn | null, fresh: Fresh): MenuSession {
+    const missing = pin !== null && !fresh.txns.some((t) => t.activityId === pin.activityId);
+    return {
+      txns: missing && pin !== null ? [pin, ...fresh.txns] : fresh.txns,
+      categories: fresh.categories,
+      screen,
+      buttons: [],
+      generation: nextGeneration(),
+    };
+  }
+
   function show(
     chat: ChatSession,
     screen: MenuScreen,
     pin: CategorizeTxn | null,
     fresh: Fresh,
   ): { text: string; keyboard: InlineKeyboard | undefined } {
-    const missing = pin !== null && !fresh.txns.some((t) => t.activityId === pin.activityId);
-    chat.session = {
-      txns: missing && pin !== null ? [pin, ...fresh.txns] : fresh.txns,
-      categories: fresh.categories,
-      screen,
-      buttons: [],
-    };
+    chat.session = buildSession(screen, pin, fresh);
     chat.pinned = pin;
     return present(chat);
   }
@@ -351,19 +373,21 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
    *
    * The session's `screen` is deliberately left alone: `« Back` returns to
    * wherever the failed tap came from, and nothing is retried on its own — a
-   * second tap is the retry.
+   * second tap is the retry. The GENERATION does advance, because this is a
+   * render like any other and the keyboard it replaces must stop resolving.
+   *
+   * The token format comes from `layoutScreen`, never from a local template: a
+   * hand-rolled second copy is how a change to the format reaches some screens
+   * and not others.
    */
   async function showError(chat: ChatSession, text: string, ui: CategorizeUi): Promise<void> {
-    const buttons: MenuAction[] = [];
-    const rows: Array<Array<{ text: string; callback_data: string }>> = [];
-    const add = (label: string, action: MenuAction): void => {
-      rows.push([{ text: label, callback_data: `${MENU_CALLBACK_PREFIX}${buttons.length}` }]);
-      buttons.push(action);
-    };
-    add('« Back', { kind: 'goto', screen: chat.session.screen });
-    add('Done', { kind: 'close' });
+    chat.session.generation = nextGeneration();
+    const { keyboard, buttons } = layoutScreen(chat.session.generation, [
+      [{ text: '« Back', action: { kind: 'goto', screen: chat.session.screen } }],
+      [{ text: 'Done', action: { kind: 'close' } }],
+    ]);
     chat.session.buttons = buttons;
-    await ui.edit(text, { inline_keyboard: rows });
+    await ui.edit(text, keyboard);
   }
 
   /** The row a tap named is no longer uncategorized. Rendering ITS screen against
@@ -461,7 +485,7 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
         // there is nothing left to be fresh about.
         sessions.delete(chatId);
         const closed: ChatSession = {
-          session: { txns: [], categories: [], screen: { kind: 'closed' }, buttons: [] },
+          session: buildSession({ kind: 'closed' }, null, { txns: [], categories: [], ledger: {} }),
           pinned: null,
         };
         const { text, keyboard } = present(closed);
@@ -504,7 +528,26 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
       case 'unassign': {
         // NO visibility precondition, unlike `assign`: this row was just filed,
         // so a fresh sweep no longer lists it — that is the state Undo is for.
-        // The tap can only have come from the `filed` screen's own button table.
+        // The tap can only have come from the `filed` screen's own button table,
+        // at the current generation, so it is this menu's own filing being undone.
+        //
+        // KNOWN HAZARD, accepted deliberately: this is the one write here with no
+        // read behind it, so if something else re-filed the row under a DIFFERENT
+        // category between the filing and this tap, Undo clears that assignment
+        // instead of the one it was offered for. The check that would close it is
+        // "is the current assignment still `action.categoryId`?", and nothing
+        // available here can answer it — `readRows` returns only UNCATEGORIZED
+        // rows and carries no category id, and the REST client has no
+        // read-assignment call. Closing it properly means a new native reader over
+        // `activity_taxonomy_assignments` (or a GET on the assignment), i.e. a
+        // change in sqlite-native.ts/wealthfolio.ts rather than here.
+        //
+        // Bounded and cheap in practice: the window is one tap on a confirmation
+        // screen the user is looking at, the other writer would have to be the
+        // addon or a rule import touching that same row inside it, and the loss is
+        // one assignment the user can redo from the menu — against a guaranteed
+        // cost of leaving Undo broken for the common case. A test pins this
+        // behavior so the next reader knows it is a decision, not an oversight.
         const row = rowFor(chat, action.activityId);
         try {
           await deps.unassign(action.activityId);
@@ -656,12 +699,16 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
       // the NEW session, where the index is either out of range (expired) or
       // simply whatever now sits at that position. Neither can act on the row
       // the old message showed.
+      // The older message's tokens carry an older GENERATION, which no session
+      // will ever hold again, so every one of its buttons answers "that menu
+      // expired" — including the ones whose index is still in range on the new
+      // screen (see `MenuSession.generation`).
       sessions.clear();
       const chat: ChatSession = {
-        session: { txns: [], categories: [], screen: { kind: 'list', page: 0 }, buttons: [] },
+        session: buildSession({ kind: 'list', page: 0 }, null, loaded.fresh),
         pinned: null,
       };
-      const { text, keyboard } = show(chat, { kind: 'list', page: 0 }, null, loaded.fresh);
+      const { text, keyboard } = present(chat);
       sessions.set(PENDING_CHAT_ID, chat);
       await send(text, keyboard);
     },

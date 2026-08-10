@@ -49,20 +49,32 @@ function setup(opts: { rows?: Row[]; ledger?: DismissalLedger; dbPath?: string |
   const readArgs: Array<[string, string, string]> = [];
   const logs: string[] = [];
   const writes: Array<{ base: DismissalLedger; next: DismissalLedger }> = [];
+  /** Reads and writes in the order they happened — what proves a write had (or
+   *  had not) a fresh read behind it. */
+  const order: string[] = [];
 
   const deps = {
     dbPath: vi.fn((): string | null => (opts.dbPath === undefined ? DB : opts.dbPath)),
     readRows: vi.fn((p: string, s: string, e: string) => {
+      order.push('readRows');
       readArgs.push([p, s, e]);
       return state.rows.map((r) => ({ ...r }));
     }),
-    readCategories: vi.fn((_p: string) => state.categories.map((c) => ({ ...c }))),
-    readLedger: vi.fn(async () => ({ ...state.ledger })),
+    readCategories: vi.fn((_p: string) => {
+      order.push('readCategories');
+      return state.categories.map((c) => ({ ...c }));
+    }),
+    readLedger: vi.fn(async () => {
+      order.push('readLedger');
+      return { ...state.ledger };
+    }),
     writeLedgerMerged: vi.fn(async (base: DismissalLedger, next: DismissalLedger) => {
+      order.push('writeLedgerMerged');
       writes.push({ base, next });
       state.ledger = { ...next };
     }),
     assign: vi.fn(async (activityId: string, _categoryId: string) => {
+      order.push('assign');
       const hit = state.rows.find((r) => r.activityId === activityId);
       if (hit) {
         state.filed.push(hit);
@@ -70,13 +82,16 @@ function setup(opts: { rows?: Row[]; ledger?: DismissalLedger; dbPath?: string |
       }
     }),
     unassign: vi.fn(async (activityId: string) => {
+      order.push('unassign');
       const hit = state.filed.find((r) => r.activityId === activityId);
       if (hit) {
         state.filed = state.filed.filter((r) => r.activityId !== activityId);
         state.rows = [hit, ...state.rows];
       }
     }),
-    createRule: vi.fn(async (_r: { name: string; pattern: string; categoryId: string }) => {}),
+    createRule: vi.fn(async (_r: { name: string; pattern: string; categoryId: string }) => {
+      order.push('createRule');
+    }),
     republish: vi.fn(async () => {}),
     log: (m: string) => { logs.push(m); },
   } satisfies CategorizeDeps;
@@ -91,7 +106,7 @@ function setup(opts: { rows?: Row[]; ledger?: DismissalLedger; dbPath?: string |
 
   const tap = (data: string) => controller.onCallback({ data, chatId: CHAT, messageId: 55 }, ui);
 
-  return { state, deps, ui, send, controller, tap, logs, writes, readArgs };
+  return { state, deps, ui, send, controller, tap, logs, writes, readArgs, order };
 }
 
 const lastCall = (fn: { mock: { calls: unknown[][] } }): Recorded => {
@@ -207,10 +222,17 @@ describe('open', () => {
     expect(h.logs.join('\n')).toContain('database is locked');
   });
 
-  it('does not reject when a dependency throws', async () => {
+  it('reports an unreadable ledger instead of a list that ignores dismissals', async () => {
     const h = setup();
     h.deps.readLedger.mockRejectedValue(new Error('secret unreadable'));
-    await expect(h.controller.open(h.send)).resolves.toBeUndefined();
+    await h.controller.open(h.send);
+    expect(h.send.mock.calls.at(-1)).toEqual([
+      'Couldn\'t check what needs a category — secret unreadable',
+    ]);
+    // No session either, so nothing can be tapped into a write from here.
+    await h.tap('cz:1:0');
+    expect(h.ui.answer).toHaveBeenCalledWith('That menu expired — send /categorize again.');
+    expect(h.deps.assign).not.toHaveBeenCalled();
   });
 });
 
@@ -225,10 +247,12 @@ describe('taps that cannot be resolved', () => {
     expect(h.deps.writeLedgerMerged).not.toHaveBeenCalled();
   });
 
-  it('answers with the expiry notice for a token the current screen no longer has', async () => {
+  it('answers with the expiry notice for a token from a superseded render', async () => {
     const h = setup();
     await h.controller.open(h.send);
-    await h.tap('cz:99');
+    // Generation 0 is one no render ever carried (the counter starts at 1), so
+    // this stands in for any button from a message the menu has moved past.
+    await h.tap('cz:0:0');
     expect(h.ui.answer).toHaveBeenCalledWith('That menu expired — send /categorize again.');
     expect(h.ui.edit).not.toHaveBeenCalled();
     expect(h.deps.assign).not.toHaveBeenCalled();
@@ -313,6 +337,23 @@ describe('filing a transaction', () => {
     const undone = lastCall(h.ui.edit);
     expect(undone[0]).toBe('Filing undone — BOOK STORES a is uncategorized again.');
     expect(labels(keyboardOf(undone))).toEqual(['Back to list', 'Done']);
+  });
+
+  it('undoes without reading which category is assigned now — a pinned, known hazard', async () => {
+    // Deliberate, and pinned so the next reader knows it is a decision: this is
+    // the one write on this path with no read behind it. Nothing available to
+    // the controller can report the CURRENT assignment (`readRows` returns only
+    // uncategorized rows and carries no category id), so if something else
+    // re-filed this row under a different category in between, Undo clears that
+    // instead. See the hazard note on the `unassign` case in categorize.ts.
+    const h = setup();
+    const filed = await openAtFiled(h);
+    const mark = h.order.length;
+    await h.tap(dataFor(filed, 'Undo'));
+    // The write comes FIRST — no read precedes it — and the reads that follow
+    // are the fresh sweep the confirmation screen is rendered from.
+    expect(h.order.slice(mark)).toEqual(['unassign', 'readRows', 'readLedger', 'readCategories']);
+    expect(h.deps.unassign.mock.calls[0]).toEqual(['a']);
   });
 
   it('reports a refused undo without claiming it worked', async () => {
@@ -491,6 +532,51 @@ describe('sessions', () => {
     expect(h.deps.writeLedgerMerged).not.toHaveBeenCalled();
   });
 
+  it('refuses a tap from an older message even when its index still resolves', async () => {
+    // THE wrong-row case, and the reason tokens carry a generation. Replacing
+    // `buttons` on every render only catches an out-of-range index; two renders
+    // of the same SHAPE — two category pickers — have identically sized arrays
+    // holding different activity ids, so an in-range index from the older
+    // message would resolve position-for-position against the newer picker and
+    // file a transaction the user never tapped. No freshness check can see it:
+    // the row it lands on genuinely is uncategorized.
+    const h = setup();
+    const pickerA = await openAtTxn(h, 'BOOK STORES a');
+    const tokenFromOldMessage = dataFor(pickerA, 'Entertainment');
+
+    // Meanwhile row a is filed elsewhere and row c arrives; a second
+    // /categorize opens a new message, drilled into a DIFFERENT row's picker.
+    h.state.rows = [row('b'), row('c')];
+    await h.controller.open(h.send);
+    await h.tap(dataFor(keyboardOf(lastCall(h.send)), 'BOOK STORES b'));
+    const pickerB = keyboardOf(lastCall(h.ui.edit));
+    expect(lastCall(h.ui.edit)[0]).toContain('BOOK STORES b');
+    // Same button, same index, different transaction — only the generation differs.
+    expect(dataFor(pickerB, 'Entertainment').split(':')[2])
+      .toBe(tokenFromOldMessage.split(':')[2]);
+    expect(dataFor(pickerB, 'Entertainment')).not.toBe(tokenFromOldMessage);
+
+    const editsBefore = h.ui.edit.mock.calls.length;
+    await h.tap(tokenFromOldMessage);
+    expect(h.deps.assign).not.toHaveBeenCalled();
+    expect(h.deps.writeLedgerMerged).not.toHaveBeenCalled();
+    expect(h.ui.answer).toHaveBeenLastCalledWith('That menu expired — send /categorize again.');
+    expect(h.ui.edit.mock.calls.length).toBe(editsBefore);
+  });
+
+  it('gives every emitted keyboard a fresh generation, so the last one stops resolving', async () => {
+    const h = setup();
+    await h.controller.open(h.send);
+    const list = keyboardOf(lastCall(h.send));
+    await h.tap(dataFor(list, 'BOOK STORES a'));
+    const picker = keyboardOf(lastCall(h.ui.edit));
+    const generationOf = (k: InlineKeyboard) => k.inline_keyboard.flat()[0].callback_data.split(':')[1];
+    expect(Number(generationOf(picker))).toBeGreaterThan(Number(generationOf(list)));
+    // Even the list's `Done` — still in range on the picker — is dead now.
+    await h.tap(dataFor(list, 'Done'));
+    expect(h.ui.answer).toHaveBeenLastCalledWith('That menu expired — send /categorize again.');
+  });
+
   it('closes the menu with no keyboard left behind, and forgets the session', async () => {
     const h = setup();
     await h.controller.open(h.send);
@@ -547,16 +633,19 @@ describe('nothing escapes to the listener', () => {
     );
   });
 
-  it('resolves rather than rejects whatever a dependency does', async () => {
+  it('renders, never rejects, when the path lookup itself throws', async () => {
     const h = setup();
     await h.controller.open(h.send);
     const list = keyboardOf(lastCall(h.send));
     const rowToken = dataFor(list, 'BOOK STORES a');
     h.deps.dbPath.mockImplementation(() => { throw new Error('existsSync exploded'); });
     await expect(h.tap(rowToken)).resolves.toBeUndefined();
-    h.deps.dbPath.mockReturnValue(DB);
-    h.deps.readLedger.mockRejectedValue(new Error('secret 500'));
-    await expect(h.tap(rowToken)).resolves.toBeUndefined();
+    expect(lastCall(h.ui.edit)[0]).toBe(
+      'The companion has no database access right now, so it can\'t tell what needs a category.',
+    );
+    expect(h.logs.join('\n')).toContain('existsSync exploded');
+    expect(h.deps.assign).not.toHaveBeenCalled();
+    expect(h.deps.writeLedgerMerged).not.toHaveBeenCalled();
   });
 
   it('survives a logger that throws while reporting a failure', async () => {
