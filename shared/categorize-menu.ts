@@ -64,6 +64,28 @@ export interface MenuSession {
    *  tokens against this, so a tap on an outdated message can never act on the
    *  wrong row. */
   buttons: MenuAction[];
+  /**
+   * Which render these `buttons` belong to. Every emitted `callback_data`
+   * carries it (`cz:<generation>:<index>`), and `applyTap` refuses any token
+   * whose generation is not the current one — BEFORE it resolves the index.
+   *
+   * Replacing `buttons` wholesale is NOT enough on its own, and that gap was a
+   * real defect: two renders of the same SHAPE (two category pickers, say) have
+   * identical button layouts and different `activityId`s, so an index from the
+   * older message resolves position-for-position against the newer screen and
+   * files a transaction the user never tapped — a wrong write to a financial
+   * record, invisible to any freshness check, because the row it lands on
+   * genuinely is uncategorized. Out-of-range indices were the only stale taps
+   * the index alone could catch.
+   *
+   * Assigning it is the CONTROLLER's job (`companion/src/categorize.ts` stamps a
+   * strictly increasing counter onto the session every time it emits a
+   * keyboard, and that counter outlives any one session, so reopening the menu
+   * cannot reissue a generation an older message still holds). This module only
+   * reads it: it is pure, and a counter it incremented itself would make
+   * rendering the same screen twice produce two different keyboards.
+   */
+  generation: number;
 }
 
 export type MenuAction =
@@ -99,14 +121,19 @@ export function parseNewRuleArgs(args: string): { pattern: string; categoryQuery
 export const MENU_PAGE_SIZE = 8;
 
 /**
- * Every button's `callback_data`, regardless of screen. Kept short and
- * numeric on purpose: Telegram caps `callback_data` at 64 BYTES, and a
- * button that carried a real activity/category id (or two) would eat most
- * of that budget on its own — `MENU_PAGE_SIZE` rows of long bank
- * descriptors plus a decent-sized category tree would blow it instantly.
- * Indexing into `session.buttons` instead means the token's size is fixed
- * by how many buttons exist on ONE screen (never more than a few dozen),
- * not by the length of anything a user or a bank ever typed.
+ * Every button's `callback_data`, regardless of screen: `cz:<generation>:<index>`.
+ *
+ * Kept short and numeric on purpose: Telegram caps `callback_data` at 64 BYTES,
+ * and a button that carried a real activity/category id (or two) would eat most
+ * of that budget on its own — `MENU_PAGE_SIZE` rows of long bank descriptors
+ * plus a decent-sized category tree would blow it instantly. Indexing into
+ * `session.buttons` instead means the token's size is fixed by how many buttons
+ * exist on ONE screen (never more than a few dozen) and by the render count,
+ * not by the length of anything a user or a bank ever typed. Two numbers plus
+ * two separators leave the cap barely touched (a pinned test proves it).
+ *
+ * The generation half is what makes an index safe to trust at all — see
+ * `MenuSession.generation`.
  */
 export const MENU_CALLBACK_PREFIX = 'cz:';
 
@@ -139,13 +166,17 @@ function findCategory(session: MenuSession, categoryId: string): SpendingCategor
  *  reader why they landed back at the top instead of where they tapped. */
 const GONE_NOTE = 'That transaction is no longer uncategorized.';
 
-// A keyboard button paired with the action it fires — the layout-neutral
-// unit every screen builds, before `layout` turns it into an
-// InlineKeyboard + a parallel MenuAction[] addressed by index.
-interface Btn {
+/** A keyboard button paired with the action it fires — the layout-neutral
+ *  unit every screen builds, before `layout` turns it into an
+ *  InlineKeyboard + a parallel MenuAction[] addressed by index. Exported for
+ *  `layoutScreen`, so a caller adding a screen of its own (the controller's
+ *  error screens) cannot end up hand-writing the token format. */
+export interface MenuButton {
   text: string;
   action: MenuAction;
 }
+
+type Btn = MenuButton;
 
 interface RenderResult {
   text: string;
@@ -158,20 +189,35 @@ interface RenderResult {
  *  Telegram does not Markdown-parse them — so, matching `buildDismissKeyboard`
  *  in ./telegram.ts, they are not run through `escapeMarkdown`; only the
  *  message `text` (which IS Markdown-parsed) needs that treatment. */
-function layout(rows: Btn[][]): { keyboard: InlineKeyboard; buttons: MenuAction[] } {
+function layout(generation: number, rows: Btn[][]): { keyboard: InlineKeyboard; buttons: MenuAction[] } {
   const buttons: MenuAction[] = [];
   const inline_keyboard = rows.map((row) =>
     row.map((btn) => {
       const index = buttons.length;
       buttons.push(btn.action);
-      return { text: btn.text, callback_data: `${MENU_CALLBACK_PREFIX}${index}` };
+      return { text: btn.text, callback_data: `${MENU_CALLBACK_PREFIX}${generation}:${index}` };
     }),
   );
   return { keyboard: { inline_keyboard }, buttons };
 }
 
-function finish(text: string, rows: Btn[][]): RenderResult {
-  const { keyboard, buttons } = layout(rows);
+/**
+ * The token format, for a caller that builds a screen this module does not know
+ * about — today the controller's error screens, which the pure machine has no
+ * notion of. Exported so that the `cz:<generation>:<index>` shape and the
+ * `buttons` table it indexes into exist in exactly ONE place: a second
+ * hand-rolled copy is how a change to the format (like adding the generation)
+ * gets applied to some screens and not others.
+ */
+export function layoutScreen(
+  generation: number,
+  rows: MenuButton[][],
+): { keyboard: InlineKeyboard; buttons: MenuAction[] } {
+  return layout(generation, rows);
+}
+
+function finish(generation: number, text: string, rows: Btn[][]): RenderResult {
+  const { keyboard, buttons } = layout(generation, rows);
   return { text, keyboard, buttons };
 }
 
@@ -189,7 +235,7 @@ function renderList(session: MenuSession, page: number, note?: string): RenderRe
   const { txns } = session;
 
   if (txns.length === 0) {
-    return finish(`${prefix}Nothing needs a category right now.`, [[DONE_BTN]]);
+    return finish(session.generation, `${prefix}Nothing needs a category right now.`, [[DONE_BTN]]);
   }
 
   const start = page * MENU_PAGE_SIZE;
@@ -215,7 +261,7 @@ function renderList(session: MenuSession, page: number, note?: string): RenderRe
 
   const count = txns.length;
   const text = `${prefix}${count} transaction${count === 1 ? '' : 's'} need${count === 1 ? 's' : ''} a category:`;
-  return finish(text, rows);
+  return finish(session.generation, text, rows);
 }
 
 function renderTxn(session: MenuSession, activityId: string): RenderResult {
@@ -245,7 +291,7 @@ function renderTxn(session: MenuSession, activityId: string): RenderResult {
     `${moneyWhole(txn.amountCents / 100)} · ${shortDate(txn.date)} · ${escapeMarkdown(txn.accountName)}`,
   ].join('\n');
 
-  return finish(text, rows);
+  return finish(session.generation, text, rows);
 }
 
 function renderSubcats(session: MenuSession, activityId: string, parentId: string): RenderResult {
@@ -266,7 +312,7 @@ function renderSubcats(session: MenuSession, activityId: string, parentId: strin
   ];
 
   const text = `Choose a subcategory of ${escapeMarkdown(parent.name)}:`;
-  return finish(text, rows);
+  return finish(session.generation, text, rows);
 }
 
 function renderFiled(
@@ -279,7 +325,7 @@ function renderFiled(
 
   if (screen.undone) {
     const text = `Filing undone — ${escapeMarkdown(txn.description)} is uncategorized again.`;
-    return finish(text, [[BACK_TO_LIST_BTN], [DONE_BTN]]);
+    return finish(session.generation, text, [[BACK_TO_LIST_BTN], [DONE_BTN]]);
   }
 
   const text = `Filed ${escapeMarkdown(txn.description)} → ${escapeMarkdown(category.name)}.`;
@@ -295,7 +341,7 @@ function renderFiled(
     [{ text: 'Next transaction', action: { kind: 'goto', screen: { kind: 'list', page: 0 } } }],
     [DONE_BTN],
   ];
-  return finish(text, rows);
+  return finish(session.generation, text, rows);
 }
 
 function renderDismissed(
@@ -307,7 +353,7 @@ function renderDismissed(
 
   if (screen.undone) {
     const text = `Dismissal undone — ${escapeMarkdown(txn.description)} is uncategorized again.`;
-    return finish(text, [[BACK_TO_LIST_BTN], [DONE_BTN]]);
+    return finish(session.generation, text, [[BACK_TO_LIST_BTN], [DONE_BTN]]);
   }
 
   const text = `${escapeMarkdown(txn.description)} will stay uncategorized.`;
@@ -316,7 +362,7 @@ function renderDismissed(
     [BACK_TO_LIST_BTN],
     [DONE_BTN],
   ];
-  return finish(text, rows);
+  return finish(session.generation, text, rows);
 }
 
 /** Copy shared verbatim by `rulePreview` (a description-matched rule) and
@@ -342,7 +388,7 @@ function renderRulePreview(session: MenuSession, activityId: string, categoryId:
     [{ text: 'Create rule', action: { kind: 'createRule', activityId, categoryId } }],
     [{ text: '« Back', action: { kind: 'goto', screen: { kind: 'txn', activityId } } }],
   ];
-  return finish(text, rows);
+  return finish(session.generation, text, rows);
 }
 
 function renderFreeRulePreview(session: MenuSession, pattern: string, categoryId: string): RenderResult {
@@ -356,7 +402,7 @@ function renderFreeRulePreview(session: MenuSession, pattern: string, categoryId
     [{ text: 'Create rule', action: { kind: 'createFreeRule', pattern, categoryId } }],
     [{ text: 'Cancel', action: { kind: 'close' } }],
   ];
-  return finish(text, rows);
+  return finish(session.generation, text, rows);
 }
 
 function renderRuleCreated(session: MenuSession, activityId: string | null, categoryId: string): RenderResult {
@@ -367,11 +413,11 @@ function renderRuleCreated(session: MenuSession, activityId: string | null, cate
   // Only Done from /newrule (activityId: null): there is no in-flight
   // transaction to return to the list FOR, since this path never showed one.
   const rows: Btn[][] = activityId !== null ? [[BACK_TO_LIST_BTN], [DONE_BTN]] : [[DONE_BTN]];
-  return finish(text, rows);
+  return finish(session.generation, text, rows);
 }
 
-function renderClosed(): RenderResult {
-  return finish('Menu closed.', []);
+function renderClosed(generation: number): RenderResult {
+  return finish(generation, 'Menu closed.', []);
 }
 
 /**
@@ -406,37 +452,46 @@ export function renderScreen(session: MenuSession): RenderResult {
     case 'ruleCreated':
       return renderRuleCreated(session, screen.activityId, screen.categoryId);
     case 'closed':
-      return renderClosed();
+      return renderClosed(session.generation);
   }
 }
 
 /**
  * Resolves a tapped button's `callback_data` back to the `MenuAction` it
- * represents — but ONLY against `session.buttons`, the array `renderScreen`
- * produced for the CURRENT screen. That is what makes a tap on a stale
- * Telegram message safe: `session.buttons` is replaced wholesale on every
- * render, so an old message's index either falls outside the current array
- * (→ `expired`) or resolves to whatever now sits at that position on the
- * CURRENT screen — never to the row the old message actually showed. Callers
- * (the controller, a later task) are expected to re-read fresh data and
- * re-render rather than trust a tap's implied state, which is exactly why
- * this function's contract stops at "resolve the index or say why not".
+ * represents — but ONLY when the token was minted by the session's CURRENT
+ * render, and then only against `session.buttons`, the array that render
+ * produced.
  *
- * Two distinct failure reasons: `unknown` for anything that isn't even a
- * `cz:<digits>` token (wrong prefix, or garbage after it — not a menu tap at
- * all, e.g. the unrelated `d:<activityId>` dismiss buttons from the import
- * notice in ./telegram.ts), and `expired` for a well-formed token whose
- * index no longer exists in the current render (a stale message from a
- * screen that has since moved on).
+ * The generation is checked FIRST, before the index is looked at, and that
+ * order is the safety property. `session.buttons` is replaced wholesale on
+ * every render, which catches a stale index that falls outside the new array —
+ * but two renders of the same SHAPE (two category pickers, two pages of the
+ * list) have arrays of the same LENGTH holding different ids, so an in-range
+ * index from an older message would otherwise resolve position-for-position
+ * against the current screen and act on a row the user never tapped. With the
+ * generation, an old message's every button is `expired` no matter what now
+ * sits at its index. See `MenuSession.generation`.
+ *
+ * Two distinct failure reasons, because the controller answers them
+ * differently — "that menu expired, ask again" versus "that isn't a button I
+ * issued, here is your screen again":
+ *  - `expired`: a well-formed token from a render that has been superseded.
+ *  - `unknown`: not a `cz:<generation>:<index>` token at all (a wrong prefix,
+ *    e.g. the unrelated `d:<activityId>` dismiss buttons from the import notice
+ *    in ./telegram.ts; the older single-number form; anything non-numeric), or
+ *    an index the CURRENT render does not have — which nothing this module
+ *    emitted can produce, so it is a payload from somewhere else rather than a
+ *    menu that moved on.
  */
 export function applyTap(
   session: MenuSession,
   callbackData: string,
 ): { ok: true; action: MenuAction } | { ok: false; reason: 'expired' | 'unknown' } {
   if (!callbackData.startsWith(MENU_CALLBACK_PREFIX)) return { ok: false, reason: 'unknown' };
-  const indexPart = callbackData.slice(MENU_CALLBACK_PREFIX.length);
-  if (!/^\d+$/.test(indexPart)) return { ok: false, reason: 'unknown' };
-  const index = Number(indexPart);
-  if (index >= session.buttons.length) return { ok: false, reason: 'expired' };
+  const token = /^(\d+):(\d+)$/.exec(callbackData.slice(MENU_CALLBACK_PREFIX.length));
+  if (!token) return { ok: false, reason: 'unknown' };
+  if (Number(token[1]) !== session.generation) return { ok: false, reason: 'expired' };
+  const index = Number(token[2]);
+  if (index >= session.buttons.length) return { ok: false, reason: 'unknown' };
   return { ok: true, action: session.buttons[index] };
 }

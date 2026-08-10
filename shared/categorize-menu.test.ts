@@ -42,6 +42,8 @@ function session(overrides: Partial<MenuSession> = {}): MenuSession {
     categories: [groceries, dining, diningFastFood, diningCoffee],
     screen: { kind: 'list', page: 0 },
     buttons: [],
+    // Any non-zero value would do; a fixed one keeps the tokens below readable.
+    generation: 7,
     ...overrides,
   };
 }
@@ -66,7 +68,7 @@ describe('renderScreen — list', () => {
     const s = session({ txns: [] });
     const { text, keyboard } = renderScreen(s);
     expect(text).toBe('Nothing needs a category right now.');
-    expect(keyboard.inline_keyboard).toEqual([[{ text: 'Done', callback_data: `${MENU_CALLBACK_PREFIX}0` }]]);
+    expect(keyboard.inline_keyboard).toEqual([[{ text: 'Done', callback_data: `${MENU_CALLBACK_PREFIX}7:0` }]]);
   });
 
   it('renders one row per transaction as date · description · amount', () => {
@@ -180,7 +182,7 @@ describe('renderScreen — txn', () => {
     const s = session({ txns: [], screen: { kind: 'txn', activityId: 'gone' } });
     const { text, keyboard } = renderScreen(s);
     expect(text.split('\n')[0]).toBe('That transaction is no longer uncategorized.');
-    expect(keyboard.inline_keyboard).toEqual([[{ text: 'Done', callback_data: `${MENU_CALLBACK_PREFIX}0` }]]);
+    expect(keyboard.inline_keyboard).toEqual([[{ text: 'Done', callback_data: `${MENU_CALLBACK_PREFIX}7:0` }]]);
   });
 });
 
@@ -398,18 +400,53 @@ describe('renderScreen — ruleCreated', () => {
 // ---- token codec / applyTap -------------------------------------------------
 
 describe('applyTap', () => {
-  it('resolves a cz:<index> token against the buttons most recently rendered', () => {
+  it('resolves a cz:<generation>:<index> token against the buttons most recently rendered', () => {
     const s = session({ screen: { kind: 'list', page: 0 } });
     const { buttons } = renderScreen(s);
     s.buttons = buttons;
-    const result = applyTap(s, `${MENU_CALLBACK_PREFIX}0`);
+    const result = applyTap(s, `${MENU_CALLBACK_PREFIX}7:0`);
     expect(result).toEqual({ ok: true, action: buttons[0] });
   });
 
-  it('is out of range -> expired, when the index no longer exists in the current buttons', () => {
+  it('every emitted token carries the session generation', () => {
+    const s = session({ generation: 12, screen: { kind: 'list', page: 0 } });
+    const { keyboard } = renderScreen(s);
+    for (const button of keyboard.inline_keyboard.flat()) {
+      expect(button.callback_data).toMatch(/^cz:12:\d+$/);
+    }
+  });
+
+  it('a token from an EARLIER generation is expired, whatever sits at its index now', () => {
+    // The defect this exists for: two renders of the same SHAPE have identically
+    // sized button arrays holding different ids, so an in-range index from the
+    // older message would resolve position-for-position against the newer screen
+    // and act on a row the user never tapped. The generation is checked before
+    // the index precisely so that cannot happen.
+    const first = session({ generation: 7, screen: { kind: 'txn', activityId: 'act-1' } });
+    const rendered = renderScreen(first);
+    const staleToken = rendered.keyboard.inline_keyboard.flat()[0].callback_data;
+    expect(staleToken).toBe(`${MENU_CALLBACK_PREFIX}7:0`);
+
+    // Same screen shape, one render later, about a DIFFERENT transaction.
+    const second = session({
+      generation: 8,
+      txns: [txn({ activityId: 'act-2' })],
+      screen: { kind: 'txn', activityId: 'act-2' },
+    });
+    second.buttons = renderScreen(second).buttons;
+    expect(second.buttons.length).toBeGreaterThan(0);
+
+    expect(applyTap(second, staleToken)).toEqual({ ok: false, reason: 'expired' });
+  });
+
+  it('a LATER generation than the session holds is expired too', () => {
+    const s = session({ generation: 7, buttons: [{ kind: 'close' }] });
+    expect(applyTap(s, `${MENU_CALLBACK_PREFIX}8:0`)).toEqual({ ok: false, reason: 'expired' });
+  });
+
+  it('is out of range -> unknown: the current render cannot have emitted it', () => {
     const s = session({ buttons: [{ kind: 'close' }] });
-    const result = applyTap(s, `${MENU_CALLBACK_PREFIX}5`);
-    expect(result).toEqual({ ok: false, reason: 'expired' });
+    expect(applyTap(s, `${MENU_CALLBACK_PREFIX}7:5`)).toEqual({ ok: false, reason: 'unknown' });
   });
 
   it('rejects callback_data with no cz: prefix as unknown', () => {
@@ -417,9 +454,12 @@ describe('applyTap', () => {
     expect(applyTap(s, 'd:some-other-id')).toEqual({ ok: false, reason: 'unknown' });
   });
 
-  it('rejects a malformed index after the prefix as unknown', () => {
+  it('rejects a malformed token after the prefix as unknown', () => {
     const s = session({ buttons: [{ kind: 'close' }] });
     expect(applyTap(s, `${MENU_CALLBACK_PREFIX}abc`)).toEqual({ ok: false, reason: 'unknown' });
+    // The single-number form this module used to emit is no longer one of ours.
+    expect(applyTap(s, `${MENU_CALLBACK_PREFIX}0`)).toEqual({ ok: false, reason: 'unknown' });
+    expect(applyTap(s, `${MENU_CALLBACK_PREFIX}7:0:1`)).toEqual({ ok: false, reason: 'unknown' });
   });
 
   it('never resolves against a stale render — buttons are replaced wholesale on every render', () => {
@@ -429,13 +469,13 @@ describe('applyTap', () => {
     // Session moves on to a screen with fewer buttons (list, empty)...
     s.txns = [];
     s.screen = { kind: 'list', page: 0 };
+    s.generation += 1; // ...which the controller stamps as a new render
     const second = renderScreen(s);
     s.buttons = second.buttons; // caller always re-stores buttons after rendering
     // A tap referencing an index that only existed on the old (larger) screen:
     const staleIndex = first.buttons.length - 1;
-    if (staleIndex >= second.buttons.length) {
-      expect(applyTap(s, `${MENU_CALLBACK_PREFIX}${staleIndex}`)).toEqual({ ok: false, reason: 'expired' });
-    }
+    expect(staleIndex).toBeGreaterThanOrEqual(second.buttons.length);
+    expect(applyTap(s, `${MENU_CALLBACK_PREFIX}7:${staleIndex}`)).toEqual({ ok: false, reason: 'expired' });
   });
 });
 
@@ -465,7 +505,10 @@ describe('callback_data byte cap', () => {
     const categories = [...longParents, ...longChildren];
     expect(categories.length).toBe(60);
 
-    const base = { txns: longTxns, categories, buttons: [] as MenuAction[] };
+    // A deliberately huge generation: the counter climbs for the life of the
+    // process, so the widest token the format can ever produce is the one to
+    // measure, not the one a fresh session happens to start at.
+    const base = { txns: longTxns, categories, buttons: [] as MenuAction[], generation: 4294967295 };
 
     assertCallbackBytesFit(renderScreen({ ...base, screen: { kind: 'list', page: 0 } }).keyboard);
     assertCallbackBytesFit(renderScreen({ ...base, screen: { kind: 'list', page: 5 } }).keyboard);
