@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, onTestFinished } from 'vitest';
 import { startTelegramListener, type TelegramListenerDeps } from './telegram-listener.js';
 import { TELEGRAM_COMMAND_MENU } from '../../shared/telegram-commands.js';
 
@@ -72,6 +72,19 @@ function harness(overrides: Partial<TelegramListenerDeps> = {}) {
   };
 }
 
+/**
+ * Starts the listener and guarantees it is stopped even when an assertion throws
+ * first. A listener left running is an infinite loop that keeps allocating into
+ * the fetch spy's call list, which OOMs the whole FILE instead of failing one
+ * test — observed while producing the RED evidence for this fix round. `stop()`
+ * is idempotent, so tests that stop explicitly still work.
+ */
+function start(deps: TelegramListenerDeps): { stop: () => Promise<void> } {
+  const listener = startTelegramListener(deps);
+  onTestFinished(() => listener.stop());
+  return listener;
+}
+
 const messageUpdate = (updateId: number, text: string, chatId: number | undefined = Number(CHAT_ID)) => ({
   update_id: updateId,
   message: { chat: chatId === undefined ? undefined : { id: chatId }, text },
@@ -83,7 +96,7 @@ const bodyOf = (call: unknown[]) => JSON.parse(String((call[1] as { body?: strin
 describe('startTelegramListener — no config', () => {
   it('sleeps 60s and re-reads instead of ever touching the network', async () => {
     const h = harness({ readConfig: vi.fn(async () => null) });
-    const listener = startTelegramListener(h.deps);
+    const listener = start(h.deps);
 
     await waitFor('two idle sleeps', () => h.sleeps.length >= 2);
     await listener.stop();
@@ -102,7 +115,7 @@ describe('startTelegramListener — polling and the offset', () => {
       .mockResolvedValueOnce(updatesResponse([messageUpdate(700, 'hi')]))
       .mockResolvedValue(updatesResponse([]));
 
-    const listener = startTelegramListener(h.deps);
+    const listener = start(h.deps);
     await waitFor('offset written', () => h.writeOffset.mock.calls.length >= 1);
     await listener.stop();
 
@@ -122,7 +135,7 @@ describe('startTelegramListener — polling and the offset', () => {
       .mockResolvedValueOnce(updatesResponse([messageUpdate(11, 'hi')]))
       .mockResolvedValue(updatesResponse([]));
 
-    const listener = startTelegramListener(h.deps);
+    const listener = start(h.deps);
     await waitFor('two polls', () => h.calls('/getUpdates').length >= 2);
     await listener.stop();
 
@@ -142,7 +155,7 @@ describe('startTelegramListener — polling and the offset', () => {
       .mockResolvedValueOnce(updatesResponse([messageUpdate(3, '/status', 99)]))
       .mockResolvedValue(updatesResponse([]));
 
-    const listener = startTelegramListener(h.deps);
+    const listener = start(h.deps);
     await waitFor('both batches consumed', () => h.writeOffset.mock.calls.length >= 2);
     await listener.stop();
 
@@ -164,7 +177,7 @@ describe('startTelegramListener — command dispatch', () => {
       .mockResolvedValueOnce(updatesResponse([messageUpdate(5, '/afford  20 shopping ')]))
       .mockResolvedValue(updatesResponse([]));
 
-    const listener = startTelegramListener(h.deps);
+    const listener = start(h.deps);
     await waitFor('reply sent', () => h.calls('/sendMessage').length >= 1);
     await listener.stop();
 
@@ -181,7 +194,7 @@ describe('startTelegramListener — command dispatch', () => {
       .mockResolvedValueOnce(updatesResponse([messageUpdate(6, '/report@SomeoneElsesBot')]))
       .mockResolvedValue(updatesResponse([]));
 
-    const listener = startTelegramListener(h.deps);
+    const listener = start(h.deps);
     await waitFor('batch consumed', () => h.writeOffset.mock.calls.length >= 1);
     await listener.stop();
 
@@ -196,7 +209,7 @@ describe('startTelegramListener — command dispatch', () => {
       .mockResolvedValueOnce(updatesResponse([messageUpdate(8, 'what is left?')]))
       .mockResolvedValue(updatesResponse([]));
 
-    const listener = startTelegramListener(h.deps);
+    const listener = start(h.deps);
     await waitFor('batch consumed', () => h.writeOffset.mock.calls.length >= 1);
     await listener.stop();
 
@@ -220,7 +233,7 @@ describe('startTelegramListener — dismiss callbacks', () => {
       ]))
       .mockResolvedValue(updatesResponse([]));
 
-    const listener = startTelegramListener(h.deps);
+    const listener = start(h.deps);
     await waitFor('both dismissals applied', () => h.applyDismissal.mock.calls.length >= 2);
     await listener.stop();
 
@@ -245,7 +258,7 @@ describe('startTelegramListener — dismiss callbacks', () => {
       ]))
       .mockResolvedValue(updatesResponse([]));
 
-    const listener = startTelegramListener(h.deps);
+    const listener = start(h.deps);
     await waitFor('batch consumed', () => h.writeOffset.mock.calls.length >= 1);
     await listener.stop();
 
@@ -262,7 +275,7 @@ describe('startTelegramListener — dismiss callbacks', () => {
       .mockResolvedValueOnce(updatesResponse([{ update_id: 20, callback_query: { id: 'cb-9', data: 'd:act-9' } }]))
       .mockResolvedValue(updatesResponse([]));
 
-    const listener = startTelegramListener(h.deps);
+    const listener = start(h.deps);
     await waitFor('two polls after the failure', () => h.calls('/getUpdates').length >= 3);
     await listener.stop();
 
@@ -283,7 +296,7 @@ describe('startTelegramListener — a throwing handler cannot kill the loop', ()
       .mockResolvedValueOnce(updatesResponse([messageUpdate(31, '/status')]))
       .mockResolvedValue(updatesResponse([]));
 
-    const listener = startTelegramListener(h.deps);
+    const listener = start(h.deps);
     await waitFor('second command dispatched', () => h.onCommand.mock.calls.length >= 2);
     await listener.stop();
 
@@ -302,7 +315,7 @@ describe('startTelegramListener — a throwing handler cannot kill the loop', ()
       .mockRejectedValueOnce(new Error('sendMessage unreachable'))
       .mockResolvedValue(updatesResponse([]));
 
-    const listener = startTelegramListener(h.deps);
+    const listener = start(h.deps);
     await waitFor('polling resumed', () => h.calls('/getUpdates').length >= 3);
     await listener.stop();
 
@@ -322,7 +335,7 @@ describe('startTelegramListener — backoff', () => {
       .mockRejectedValueOnce(new Error('network down again'))
       .mockResolvedValue(updatesResponse([]));
 
-    const listener = startTelegramListener(h.deps);
+    const listener = start(h.deps);
     await waitFor('four backoff sleeps', () => h.sleeps.length >= 4);
     await listener.stop();
 
@@ -336,7 +349,7 @@ describe('startTelegramListener — backoff', () => {
       .mockResolvedValueOnce(apiOkResponse())
       .mockRejectedValue(new Error('network down'));
 
-    const listener = startTelegramListener(h.deps);
+    const listener = start(h.deps);
     await waitFor('eight backoff sleeps', () => h.sleeps.length >= 8);
     await listener.stop();
 
@@ -354,13 +367,73 @@ describe('startTelegramListener — backoff', () => {
       }))
       .mockResolvedValue(updatesResponse([]));
 
-    const listener = startTelegramListener(h.deps);
+    const listener = start(h.deps);
     await waitFor('one backoff sleep', () => h.sleeps.length >= 1);
     await listener.stop();
 
     expect(h.logs.some((l) => l.includes('another getUpdates consumer'))).toBe(true);
     expect(h.sleeps[0]).toBe(1_000);
     expect(h.writeOffset).not.toHaveBeenCalled();
+  });
+});
+
+describe('startTelegramListener — the loop outlives its own dependencies', () => {
+  it('keeps looping when sleep itself rejects, instead of dying inside the catch', async () => {
+    // A rejecting sleep awaited inside the loop's catch would take control out of
+    // the while entirely: dead listener, one log line, nothing to restart it.
+    const h = harness({ sleep: vi.fn(async () => { throw new Error('sleep aborted'); }) });
+    h.fetchImpl
+      .mockResolvedValueOnce(apiOkResponse())
+      .mockRejectedValueOnce(new Error('network down'))
+      .mockResolvedValue(updatesResponse([messageUpdate(60, '/report')]));
+
+    const listener = start(h.deps);
+    await waitFor('polling after the failed sleep', () => h.onCommand.mock.calls.length >= 1);
+    await listener.stop();
+
+    expect(h.logs.some((l) => l.includes('sleep aborted'))).toBe(true);
+    expect(h.calls('/getUpdates').length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('never hands a handler a reply callback that can reject', async () => {
+    // A handler firing a reply without awaiting it must not leave a rejected
+    // promise behind — that is an unhandled rejection, which kills the daemon.
+    let fireAndForget: Promise<void> | null = null;
+    const h = harness({
+      onCommand: vi.fn(async (_cmd: any, reply: (t: string) => Promise<void>) => {
+        fireAndForget = reply('never arrives');
+      }) as any,
+    });
+    h.fetchImpl
+      .mockResolvedValueOnce(apiOkResponse())
+      .mockResolvedValueOnce(updatesResponse([messageUpdate(70, '/report')]))
+      .mockRejectedValueOnce(new Error('sendMessage unreachable'))
+      .mockResolvedValue(updatesResponse([]));
+
+    const listener = start(h.deps);
+    await waitFor('polling continued', () => h.calls('/getUpdates').length >= 3);
+    await listener.stop();
+
+    await expect(fireAndForget!).resolves.toBeUndefined();
+    expect(h.logs.some((l) => l.includes('sendMessage unreachable'))).toBe(true);
+    // Not an apology case: the handler itself never threw.
+    expect(h.writeOffset).toHaveBeenCalledWith(71);
+  });
+
+  it('throttles a batch whose updates carry no update_id instead of re-fetching hot', async () => {
+    const h = harness();
+    h.fetchImpl
+      .mockResolvedValueOnce(apiOkResponse())
+      .mockResolvedValueOnce(updatesResponse([{ message: { chat: { id: Number(CHAT_ID) }, text: '/report' } }]))
+      .mockResolvedValue(updatesResponse([]));
+
+    const listener = start(h.deps);
+    await waitFor('the spin was throttled', () => h.sleeps.length >= 1);
+    await listener.stop();
+
+    expect(h.sleeps[0]).toBe(1_000);
+    expect(h.writeOffset).not.toHaveBeenCalled();
+    expect(h.logs.some((l) => l.includes('no update_id'))).toBe(true);
   });
 });
 
@@ -371,7 +444,7 @@ describe('startTelegramListener — setMyCommands', () => {
       .mockResolvedValueOnce(apiOkResponse())
       .mockResolvedValue(updatesResponse([]));
 
-    const listener = startTelegramListener(h.deps);
+    const listener = start(h.deps);
     await waitFor('several polls', () => h.calls('/getUpdates').length >= 3);
     await listener.stop();
 
@@ -393,7 +466,7 @@ describe('startTelegramListener — setMyCommands', () => {
     });
     h.fetchImpl.mockResolvedValue(updatesResponse([]));
 
-    const listener = startTelegramListener(h.deps);
+    const listener = start(h.deps);
     await waitFor('token B registered', () => h.calls('/setMyCommands').length >= 2);
     await listener.stop();
 
@@ -408,7 +481,7 @@ describe('startTelegramListener — setMyCommands', () => {
       .mockRejectedValueOnce(new Error('setMyCommands refused'))
       .mockResolvedValue(updatesResponse([]));
 
-    const listener = startTelegramListener(h.deps);
+    const listener = start(h.deps);
     await waitFor('polling anyway', () => h.calls('/getUpdates').length >= 3);
     await listener.stop();
 
@@ -427,7 +500,7 @@ describe('startTelegramListener — stop', () => {
       .mockImplementationOnce(() => new Promise((resolve) => { releasePoll = resolve; }))
       .mockResolvedValue(updatesResponse([]));
 
-    const listener = startTelegramListener(h.deps);
+    const listener = start(h.deps);
     await waitFor('poll in flight', () => releasePoll !== null);
 
     let settled = false;
@@ -448,7 +521,7 @@ describe('startTelegramListener — stop', () => {
     const h = harness();
     h.fetchImpl.mockResolvedValueOnce(apiOkResponse()).mockResolvedValue(updatesResponse([]));
 
-    const listener = startTelegramListener(h.deps);
+    const listener = start(h.deps);
     await waitFor('first poll', () => h.calls('/getUpdates').length >= 1);
     await Promise.all([listener.stop(), listener.stop()]);
     // Reaching here at all is the assertion: a second stop() must not hang on a

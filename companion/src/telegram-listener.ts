@@ -44,6 +44,14 @@ export interface TelegramListenerDeps {
    * exactly the 1.10.1 bug (`mergeDismissals` exists for this).
    */
   applyDismissal: (activityId: string) => Promise<void>;
+  /**
+   * Runs one command. The `reply` callback NEVER rejects — a transport failure is
+   * logged inside the listener instead — so a handler is free to send a reply
+   * without awaiting it. That guarantee exists because the alternative is an
+   * unhandled promise rejection, which kills the daemon and stops bank syncing.
+   * The trade is that a handler cannot observe whether a send succeeded; nothing
+   * needs to, since the listener logs every failure itself.
+   */
   onCommand: (cmd: ParsedCommand, reply: (text: string) => Promise<void>) => Promise<void>;
   sleep: (ms: number) => Promise<void>;
 }
@@ -97,6 +105,7 @@ export function startTelegramListener(deps: TelegramListenerDeps): { stop: () =>
 
   let registeredToken: string | null = null;
   let announcedUnconfigured = false;
+  let sleepFailureLogged = false;
 
   /** Foreign senders are logged once per chat id per process. A stranger who
    *  finds the bot can send messages indefinitely; one line per message would
@@ -104,6 +113,29 @@ export function startTelegramListener(deps: TelegramListenerDeps): { stop: () =>
   const loggedForeignChats = new Set<string>();
 
   const api = (token: string, method: string) => `https://api.telegram.org/bot${token}/${method}`;
+
+  /**
+   * The only way this module ever waits, because `deps.sleep` REJECTING must not
+   * be fatal. An `await deps.sleep(...)` inside the loop's own catch would take
+   * control out of the `while` on rejection: the listener would be dead for the
+   * rest of the process lifetime with one log line and nothing to restart it.
+   * Unreachable with a `setTimeout`-based sleep, but exactly the trap waiting for
+   * whoever makes `sleep` abortable to shorten `stop()`.
+   *
+   * Logged once: a sleep that always rejects means the backoff no longer
+   * throttles, and one line per iteration would then be the loudest thing in the
+   * log while saying nothing new.
+   */
+  async function pause(ms: number): Promise<void> {
+    try {
+      await deps.sleep(ms);
+    } catch (err) {
+      if (!sleepFailureLogged) {
+        sleepFailureLogged = true;
+        deps.log(`Telegram listener: sleep(${ms}) rejected — continuing unthrottled rather than dying: ${formatError(err)}`);
+      }
+    }
+  }
 
   const readJson = async (res: unknown): Promise<any> => {
     try {
@@ -154,8 +186,22 @@ export function startTelegramListener(deps: TelegramListenerDeps): { stop: () =>
     const parsed = parseCommand(message?.text, config.botName);
     if (!parsed) return;
 
+    // The callback handed to a handler can NEVER reject — see `onCommand`'s doc
+    // comment. A handler that fires a reply without awaiting it (`void reply(…)`,
+    // a reply sent from a `.then`, a reply after the handler's own return) would
+    // otherwise leave a rejected promise nobody holds, and an unhandled rejection
+    // takes the whole daemon down and stops bank syncing. Guaranteed here, in the
+    // code, rather than in a comment the next implementer has to read.
+    const safeReply = async (text: string): Promise<void> => {
+      try {
+        await reply(config, text);
+      } catch (err) {
+        deps.log(`Telegram listener: reply to /${parsed.command} was not delivered: ${formatError(err)}`);
+      }
+    };
+
     try {
-      await deps.onCommand(parsed, (text) => reply(config, text));
+      await deps.onCommand(parsed, safeReply);
     } catch (err) {
       deps.log(`Telegram listener: /${parsed.command} failed: ${formatError(err)}`);
       try {
@@ -254,7 +300,17 @@ export function startTelegramListener(deps: TelegramListenerDeps): { stop: () =>
       }
       await processUpdate(config, update);
     }
-    if (maxUpdateId === null) return;
+    if (maxUpdateId === null) {
+      // An EMPTY batch is the normal long-poll timeout. A NON-empty batch with no
+      // usable `update_id` is not something this bot can advance past, so it would
+      // be re-served immediately and forever: treated as an error purely so the
+      // backoff throttles it, because a tight unthrottled loop against a remote
+      // host is the worse failure. Only reachable from a non-Telegram response.
+      if (updates.length > 0) {
+        throw new Error(`Telegram returned ${updates.length} update(s) carrying no update_id — cannot advance the offset past them.`);
+      }
+      return;
+    }
 
     // In-memory first, then persisted: a failed secret write must not make this
     // process re-handle updates it already handled (a duplicate /sync from one
@@ -299,7 +355,7 @@ export function startTelegramListener(deps: TelegramListenerDeps): { stop: () =>
             announcedUnconfigured = true;
             deps.log('Telegram listener idle: no Telegram configuration yet — re-checking every 60s.');
           }
-          await deps.sleep(IDLE_CONFIG_RECHECK_MS);
+          await pause(IDLE_CONFIG_RECHECK_MS);
           continue;
         }
         announcedUnconfigured = false;
@@ -318,7 +374,7 @@ export function startTelegramListener(deps: TelegramListenerDeps): { stop: () =>
         backoffMs = BACKOFF_FLOOR_MS;
       } catch (err) {
         deps.log(`Telegram listener error (retrying in ${Math.round(backoffMs / 1000)}s): ${formatError(err)}`);
-        await deps.sleep(backoffMs);
+        await pause(backoffMs);
         backoffMs = Math.min(backoffMs * 2, BACKOFF_CEILING_MS);
       }
     }
