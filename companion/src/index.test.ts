@@ -1,9 +1,29 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { maskUrl, validateStartupEnv, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice } from './index.js';
+import { maskUrl, validateStartupEnv, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, runCompanionSyncExclusive } from './index.js';
 import { runSyncCore } from '../../shared/sync-core.js';
 import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending } from './sqlite-native.js';
 import { ingestAmazonMail } from './amazon-mail.js';
 import { AMAZON_MAIL_STATUS_SECRET_KEY } from '../../shared/status-keys.js';
+import { existsSync } from 'fs';
+import type { SyncResult } from '../../shared/sync-core.js';
+
+/** A promise plus its resolve/reject, for tests that need to control exactly
+ *  when an in-flight async operation settles. */
+function createDeferred<T>(): { promise: Promise<T>; resolve: (v: T) => void; reject: (e: unknown) => void } {
+  let resolve!: (v: T) => void;
+  let reject!: (e: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+const FAKE_SYNC_RESULT: SyncResult = {
+  imported: 0, skipped: 0, errors: [], stuckTransferAlerts: [],
+  importedTransactions: [], largeTransactionAlerts: [], balanceDriftAlerts: [],
+  prunedDuplicates: [],
+};
 
 vi.mock('../../shared/sync-core.js', async (importOriginal) => ({
   // The real module's parsers (descriptionFromComment etc.) stay real; only the
@@ -1193,6 +1213,147 @@ describe('sendDailyTelegramReport', () => {
     // Blank line between the digest's last line and the health footer, and the
     // footer is the final line — never run on to the money summary.
     expect(text).toMatch(/ to go\n\n✅ synced 2h ago$/);
+  });
+});
+
+describe('readBudgetSnapshot', () => {
+  it('zips spend/budget/week maps into a snapshot covering every category from either map', () => {
+    vi.mocked(getNativeWealthfolioSpending).mockReturnValueOnce({ Groceries: 200, OnlyInSpend: 300 });
+    vi.mocked(getNativeWealthfolioBudgets).mockReturnValueOnce({ Groceries: 800, OnlyInBudget: 100 });
+    vi.mocked(getNativeWealthfolioSpendingBetween).mockReturnValueOnce({ Groceries: 50 });
+
+    const { categories } = readBudgetSnapshot('/mnt/wealthfolio.db', new Date(2026, 6, 14, 9, 0, 0));
+
+    expect(categories).toEqual([
+      { name: 'Groceries', budget: 800, monthSpent: 200, weekSpent: 50 },
+      { name: 'OnlyInBudget', budget: 100, monthSpent: 0, weekSpent: 0 },
+      { name: 'OnlyInSpend', budget: 0, monthSpent: 300, weekSpent: 0 },
+    ]);
+  });
+
+  it('computes the period the same way the daily digest does, for a known fixture date', () => {
+    // Tuesday 2026-07-14: week began Monday the 13th, July has 31 days.
+    //   daysFromWeekStartToMonthEnd = 31 - 13 + 1 = 19
+    //   daysLeftInMonthInclusive (counting today) = 31 - 14 + 1 = 18
+    const { period } = readBudgetSnapshot('/mnt/wealthfolio.db', new Date(2026, 6, 14, 9, 0, 0));
+
+    expect(period).toEqual({ daysFromWeekStartToMonthEnd: 19, daysLeftInMonthInclusive: 18 });
+  });
+
+  it('asks for the week-scoped spend using the same nextMonthStart upper bound as the digest', () => {
+    readBudgetSnapshot('/mnt/wealthfolio.db', new Date(2026, 6, 14, 9, 0, 0));
+
+    expect(vi.mocked(getNativeWealthfolioSpendingBetween)).toHaveBeenCalledWith(
+      '/mnt/wealthfolio.db', '2026-07-13', '2026-08-01',
+    );
+  });
+
+  it('does not filter by any category selection — every category from spend or budget is present', () => {
+    vi.mocked(getNativeWealthfolioSpending).mockReturnValueOnce({ Groceries: 200 });
+    vi.mocked(getNativeWealthfolioBudgets).mockReturnValueOnce({ Dining: 500 });
+
+    const { categories } = readBudgetSnapshot('/mnt/wealthfolio.db', new Date(2026, 6, 14, 9, 0, 0));
+
+    expect(categories.map((c) => c.name)).toEqual(['Dining', 'Groceries']);
+  });
+});
+
+describe('composeDailyDigestMessage', () => {
+  it('returns the same message text sendDailyTelegramReport sends', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 6, 14, 9, 0, 0));
+    try {
+      const secrets = new Map<string, string>();
+      secrets.set('telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true }));
+      const client = {
+        getAddonSecret: vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null),
+        setAddonSecret: vi.fn(async (_a: string, key: string, val: string) => { secrets.set(key, val); }),
+      } as any;
+
+      const message = await composeDailyDigestMessage(client);
+
+      const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+      vi.stubGlobal('fetch', fetchMock);
+      await sendDailyTelegramReport(client);
+      const sentText = JSON.parse((fetchMock.mock.calls[0][1] as any).body).text;
+
+      expect(message).toBe(sentText);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('returns null when telegram is not configured', async () => {
+    const client = {
+      getAddonSecret: vi.fn(async () => null),
+      setAddonSecret: vi.fn(async () => {}),
+    } as any;
+
+    await expect(composeDailyDigestMessage(client)).resolves.toBeNull();
+  });
+
+  it('returns null when the database is missing', async () => {
+    vi.mocked(existsSync).mockReturnValueOnce(false);
+    const secrets = new Map<string, string>([
+      ['telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true })],
+    ]);
+    const client = {
+      getAddonSecret: vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null),
+      setAddonSecret: vi.fn(async () => {}),
+    } as any;
+
+    await expect(composeDailyDigestMessage(client)).resolves.toBeNull();
+  });
+});
+
+describe('runCompanionSyncExclusive', () => {
+  it('returns the same promise identity to a second caller while the first sync is pending', async () => {
+    const deferred = createDeferred<SyncResult>();
+    const runner = vi.fn(() => deferred.promise);
+
+    const first = runCompanionSyncExclusive(runner);
+    const second = runCompanionSyncExclusive(runner);
+
+    expect(first.started).toBe(true);
+    expect(second.started).toBe(false);
+    expect(second.result).toBe(first.result);
+    expect(runner).toHaveBeenCalledTimes(1);
+
+    // Drain the in-flight slot: it is module-level state shared across every
+    // test in this file, and an unsettled promise here would make the NEXT
+    // test's call see a stale "still running" sync instead of starting fresh.
+    deferred.resolve(FAKE_SYNC_RESULT);
+    await first.result;
+  });
+
+  it('starts a fresh sync once the in-flight one resolves', async () => {
+    const deferred = createDeferred<SyncResult>();
+    const runner = vi.fn(() => deferred.promise);
+
+    const first = runCompanionSyncExclusive(runner);
+    deferred.resolve(FAKE_SYNC_RESULT);
+    await first.result;
+
+    const secondRunner = vi.fn(async () => FAKE_SYNC_RESULT);
+    const third = runCompanionSyncExclusive(secondRunner);
+
+    expect(third.started).toBe(true);
+    expect(secondRunner).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears the in-flight slot even when the sync rejects, so the next call can start', async () => {
+    const deferred = createDeferred<SyncResult>();
+    const runner = vi.fn(() => deferred.promise);
+
+    const first = runCompanionSyncExclusive(runner);
+    deferred.reject(new Error('sync failed'));
+    await expect(first.result).rejects.toThrow('sync failed');
+
+    const secondRunner = vi.fn(async () => FAKE_SYNC_RESULT);
+    const second = runCompanionSyncExclusive(secondRunner);
+
+    expect(second.started).toBe(true);
+    expect(secondRunner).toHaveBeenCalledTimes(1);
   });
 });
 

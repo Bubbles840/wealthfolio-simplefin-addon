@@ -25,6 +25,7 @@ import { SIMPLEFIN_SYNC_VERSION, COMPANION_VERSION_SECRET_KEY } from '../../shar
 import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeCategoryCatalog, getNativeSubcategorySpending } from './sqlite-native.js';
 import { publishUncategorizedStatusForDbPath } from './uncategorized-status.js';
 import { AMAZON_MAIL_STATUS_SECRET_KEY } from '../../shared/status-keys.js';
+import type { CategoryBudgetSnapshot, BudgetPeriod } from '../../shared/telegram-commands.js';
 
 const logLevel: 'info' | 'debug' =
   process.env.LOG_LEVEL === 'debug' ? 'debug' : 'info';
@@ -665,6 +666,37 @@ export async function runCompanionSync(): Promise<SyncResult> {
   }
 }
 
+/** The currently in-flight sync, or `null` when none is running. Module-level
+ *  so `/sync` (Task 6) and the cron schedule genuinely share one lock instead
+ *  of each starting its own overlapping run against the same SimpleFin
+ *  session and database. */
+let syncInFlight: Promise<SyncResult> | null = null;
+
+/**
+ * Starts `runner()` unless a previous call is still in flight, in which case
+ * it hands back the SAME promise instead of starting a second run.
+ *
+ * `runner` defaults to `runCompanionSync` and only exists as a parameter so
+ * tests can control exactly when a run settles (a plain `vi.mock` cannot fake
+ * one export of this module from another export of the SAME module).
+ *
+ * The slot is cleared in `.finally`, not just on success: a rejected sync
+ * that left the slot occupied would wedge `/sync` and the cron schedule
+ * behind a permanently "in flight" run until the container restarts.
+ */
+export function runCompanionSyncExclusive(
+  runner: () => Promise<SyncResult> = runCompanionSync,
+): { started: boolean; result: Promise<SyncResult> } {
+  if (syncInFlight) {
+    return { started: false, result: syncInFlight };
+  }
+  const result = runner().finally(() => {
+    syncInFlight = null;
+  });
+  syncInFlight = result;
+  return { started: true, result };
+}
+
 function unionCategoryNames(spentMap: Record<string, number>, budgetMap: Record<string, number>): string[] {
   return Array.from(new Set([...Object.keys(spentMap), ...Object.keys(budgetMap)])).sort();
 }
@@ -942,21 +974,22 @@ async function publishAvailableCategories(
   return names;
 }
 
-export async function sendDailyTelegramReport(wfClient: WealthfolioClient): Promise<void> {
-  const tgRaw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_config');
-  const tg = parseSecretJson<any>(tgRaw, 'telegram_config');
-  if (!tg) return;
-  if (!tg.botToken || !tg.chatId || tg.enabled === false) return;
-  if (tg.dailyReportEnabled === false) return;
-
-  const dbPath = process.env.WEALTHFOLIO_DB_PATH || '/mnt/wealthfolio.db';
-  if (!dbPath || !existsSync(dbPath)) {
-    log('WEALTHFOLIO_DB_PATH not found or missing, skipping daily digest.');
-    return;
-  }
-
-  const now = new Date();
-  const yearMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+/**
+ * The raw per-category budget/spend numbers for `now`'s month, EVERY category
+ * seen in either the spend or the budget map — never filtered by the digest's
+ * `dailyReportCategories` selection, which is a presentation choice that
+ * belongs to the digest path, not this data seam. `/left` (Task 6) deliberately
+ * sees every category, configured or not.
+ *
+ * Pure and synchronous: no `wfClient`, no secret reads, no awaits. The daily
+ * digest below and the command handlers both build on this same assembly so
+ * the two can never disagree about what "this week" or "this month" means.
+ */
+export function readBudgetSnapshot(dbPath: string, now: Date): {
+  categories: CategoryBudgetSnapshot[];
+  period: BudgetPeriod;
+} {
+  const yearMonth = currentYearMonth(now);
   const spentMap = getNativeWealthfolioSpending(dbPath, yearMonth);
   const budgetMap = getNativeWealthfolioBudgets(dbPath, yearMonth);
 
@@ -969,6 +1002,55 @@ export async function sendDailyTelegramReport(wfClient: WealthfolioClient): Prom
   // envelope for a purchase that has not happened yet.
   const weekSpentMap = getNativeWealthfolioSpendingBetween(dbPath, toDateString(weekStart), nextMonthStart);
 
+  const names = unionCategoryNames(spentMap, budgetMap);
+  const categories: CategoryBudgetSnapshot[] = names.map((name) => ({
+    name,
+    budget: budgetMap[name] ?? 0,
+    monthSpent: spentMap[name] ?? 0,
+    weekSpent: weekSpentMap[name] ?? 0,
+  }));
+
+  return {
+    categories,
+    period: {
+      daysFromWeekStartToMonthEnd: lastDayOfMonth(now) - weekStart.getDate() + 1,
+      daysLeftInMonthInclusive: daysLeftInMonthInclusive(now),
+    },
+  };
+}
+
+/**
+ * Builds the daily digest message — everything `sendDailyTelegramReport` used
+ * to do, minus the send — so a command handler (Task 6) can obtain the exact
+ * same text without a Telegram config in hand. Returns `null` when telegram is
+ * unconfigured/disabled or the database is missing, mirroring the conditions
+ * that used to make `sendDailyTelegramReport` return early without sending.
+ */
+export async function composeDailyDigestMessage(wfClient: WealthfolioClient): Promise<string | null> {
+  const tgRaw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_config');
+  const tg = parseSecretJson<any>(tgRaw, 'telegram_config');
+  if (!tg) return null;
+  if (!tg.botToken || !tg.chatId || tg.enabled === false) return null;
+  if (tg.dailyReportEnabled === false) return null;
+
+  const dbPath = process.env.WEALTHFOLIO_DB_PATH || '/mnt/wealthfolio.db';
+  if (!dbPath || !existsSync(dbPath)) {
+    log('WEALTHFOLIO_DB_PATH not found or missing, skipping daily digest.');
+    return null;
+  }
+
+  const now = new Date();
+  const yearMonth = currentYearMonth(now);
+  const { categories: snapshot, period } = readBudgetSnapshot(dbPath, now);
+  const spentMap: Record<string, number> = {};
+  const budgetMap: Record<string, number> = {};
+  const weekSpentMap: Record<string, number> = {};
+  for (const c of snapshot) {
+    spentMap[c.name] = c.monthSpent;
+    budgetMap[c.name] = c.budget;
+    weekSpentMap[c.name] = c.weekSpent;
+  }
+
   // Fed from the MONTH maps on purpose: a week-scoped list would make
   // categories disappear from the addon's Report Categories checklist mid-month
   // just because nothing was spent on them this week.
@@ -980,6 +1062,7 @@ export async function sendDailyTelegramReport(wfClient: WealthfolioClient): Prom
   const subcategoryDisplay = await readSubcategoryDisplay(wfClient);
   const childrenByParent = new Map<string, Array<{ name: string; monthSpent: number }>>();
   if (subcategoryDisplay === 'breakdown') {
+    const nextMonthStart = toDateString(new Date(now.getFullYear(), now.getMonth() + 1, 1));
     for (const row of getNativeSubcategorySpending(dbPath, `${yearMonth}-01`, nextMonthStart)) {
       if (!row.child) continue; // booked on the parent itself — already in its total
       const list = childrenByParent.get(row.parent) ?? [];
@@ -995,10 +1078,7 @@ export async function sendDailyTelegramReport(wfClient: WealthfolioClient): Prom
     budget: budgetMap[name] ?? 0,
     children: childrenByParent.get(name),
   }));
-  let message = formatDailySpendingDigest(categories, {
-    daysFromWeekStartToMonthEnd: lastDayOfMonth(now) - weekStart.getDate() + 1,
-    daysLeftInMonthInclusive: daysLeftInMonthInclusive(now),
-  }, await readGlyphStyle(wfClient), subcategoryDisplay);
+  let message = formatDailySpendingDigest(categories, period, await readGlyphStyle(wfClient), subcategoryDisplay);
 
   const healthRaw = await wfClient.getAddonSecret('simplefin-sync', 'sync_health').catch(() => null);
   // Guarded parse: this secret only supplies a decorative one-line footer, so
@@ -1008,6 +1088,17 @@ export async function sendDailyTelegramReport(wfClient: WealthfolioClient): Prom
   if (footer) {
     message += `\n\n${footer}`;
   }
+
+  return message;
+}
+
+export async function sendDailyTelegramReport(wfClient: WealthfolioClient): Promise<void> {
+  const message = await composeDailyDigestMessage(wfClient);
+  if (message === null) return;
+
+  const tgRaw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_config');
+  const tg = parseSecretJson<any>(tgRaw, 'telegram_config');
+  if (!tg || !tg.botToken || !tg.chatId) return;
 
   const result = await sendTelegramMessage(tg.botToken, tg.chatId, message);
   if (result.ok) {
@@ -1188,7 +1279,10 @@ if (!process.env.VITEST) {
   log(`Starting companion v${SIMPLEFIN_SYNC_VERSION} — sync schedule: ${schedule}, daily report schedule: ${dailySchedule}, weekly report schedule: ${weeklySchedule}, monthly report schedule: ${monthlySchedule}`);
 
   cron.schedule(schedule, () => {
-    runCompanionSync().catch((err) => log(`Sync error: ${formatError(err)}`));
+    // Exclusive: `/sync` (Task 6) can fire in between two schedule ticks, and
+    // the two must share one lock rather than run two syncs against the same
+    // SimpleFin session and database at once.
+    runCompanionSyncExclusive().result.catch((err) => log(`Sync error: ${formatError(err)}`));
   });
 
   cron.schedule(dailySchedule, () => {
