@@ -64,8 +64,10 @@ export function pruneDismissals(ledger: DismissalLedger, now: Date): DismissalLe
  * just `get` then `set`. A plain "write what I have" from either side silently
  * erases whatever the OTHER side wrote in between: the addon overwrites with a
  * snapshot `refreshDerivedSignals` only re-reads on an interval or focus, and the
- * companion's write follows a seconds-long Telegram poll that gives the addon a
- * whole window to dismiss something the companion's copy has never seen. The
+ * companion writes from TWO places at once — a Telegram button tap the listener
+ * records the moment it happens, and a sync's own prune, whose snapshot was read
+ * before a database sweep that takes as long as it takes. Either can be holding
+ * a copy that has never seen what the other just wrote. The
  * symptom is a row the user already dismissed reappearing as needing a category
  * — quietly, because nothing errors, one host just clobbers the other's ledger
  * entry.

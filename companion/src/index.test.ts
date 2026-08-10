@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { maskUrl, validateStartupEnv, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, runCompanionSyncExclusive } from './index.js';
+import { maskUrl, validateStartupEnv, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, runCompanionSyncExclusive, buildTelegramCommandHandler, applyTelegramDismissal } from './index.js';
+import { formatHelpReply } from '../../shared/telegram-commands.js';
+import { SIMPLEFIN_SYNC_VERSION } from '../../shared/version.js';
 import { runSyncCore } from '../../shared/sync-core.js';
 import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending } from './sqlite-native.js';
 import { ingestAmazonMail } from './amazon-mail.js';
@@ -1357,6 +1359,261 @@ describe('runCompanionSyncExclusive', () => {
   });
 });
 
+describe('buildTelegramCommandHandler', () => {
+  const ISO_2H_AGO = () => new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+
+  /** The store every handler test reads through: a Map behind the two secret
+   *  methods, exactly as the report tests above fake it. */
+  const clientFor = (entries: Array<[string, string]> = []) => {
+    const secrets = new Map<string, string>(entries);
+    const client = {
+      getAddonSecret: vi.fn(async (_a: string, k: string) => secrets.get(k) ?? null),
+      setAddonSecret: vi.fn(async (_a: string, k: string, v: string) => { secrets.set(k, v); }),
+    } as any;
+    return { client, secrets };
+  };
+
+  /** Collects what the handler replies. Mirrors the listener's guarantee that a
+   *  reply callback never rejects, so a test can never mask a handler bug as a
+   *  transport failure. */
+  const collector = () => {
+    const sent: string[] = [];
+    return { sent, reply: async (text: string) => { sent.push(text); } };
+  };
+
+  const run = async (client: any, command: string, args = '') => {
+    const { sent, reply } = collector();
+    await buildTelegramCommandHandler(client)({ command, args }, reply);
+    return sent;
+  };
+
+  beforeEach(() => {
+    process.env.WEALTHFOLIO_API_URL = 'http://wf';
+    process.env.WEALTHFOLIO_PASSWORD = 'pw';
+  });
+
+  it('answers /help with the registered command menu', async () => {
+    const { client } = clientFor();
+    const sent = await run(client, 'help');
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toBe(formatHelpReply());
+  });
+
+  it('answers an unknown command with the menu and names what it did not understand', async () => {
+    const { client } = clientFor();
+    const sent = await run(client, 'wat', 'now');
+    expect(sent[0]).toBe(formatHelpReply('wat'));
+  });
+
+  it('answers /report with the daily digest plus a freshness footer', async () => {
+    const { client } = clientFor([
+      ['telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true })],
+      ['last_sync_at', ISO_2H_AGO()],
+    ]);
+
+    const sent = await run(client, 'report');
+
+    expect(sent).toHaveLength(1);
+    // The digest itself — same text composeDailyDigestMessage builds.
+    expect(sent[0]).toContain('Groceries');
+    // …and the footer, last, so a cached report cannot read as a live one.
+    expect(sent[0]).toMatch(/Data as of last sync, 2h ago — \/sync to pull new charges\.$/);
+  });
+
+  it('tells /report why there is nothing to send when the digest cannot be built', async () => {
+    const { client } = clientFor();
+    const sent = await run(client, 'report');
+    expect(sent[0]).toBe("Telegram reports are not configured — check budgets and the addon's Notifications tab.");
+  });
+
+  it('answers /report with the never-synced footer when no sync has run', async () => {
+    const { client } = clientFor([
+      ['telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true })],
+    ]);
+    const sent = await run(client, 'report');
+    expect(sent[0]).toMatch(/No sync has run yet — \/sync to pull transactions\.$/);
+  });
+
+  it('answers bare /left with one line per budgeted category', async () => {
+    const { client } = clientFor();
+    const sent = await run(client, 'left');
+    // Mocked fixtures: Groceries 200/800, Dining 550/500.
+    expect(sent[0]).toContain('Groceries');
+    expect(sent[0]).toContain('Dining');
+  });
+
+  it('answers /left <query> with just the category that matched', async () => {
+    const { client } = clientFor();
+    const sent = await run(client, 'left', 'groc');
+    expect(sent[0]).toContain('Groceries');
+    expect(sent[0]).not.toContain('Dining');
+  });
+
+  it('answers an unparseable /afford with the one usage line', async () => {
+    const { client } = clientFor();
+    const sent = await run(client, 'afford', 'shopping');
+    expect(sent[0]).toBe('Usage: /afford 20 shopping');
+  });
+
+  it('answers /afford <amount> <category> with the before → after pair', async () => {
+    const { client } = clientFor();
+    const sent = await run(client, 'afford', '20 groceries');
+    expect(sent[0]).toContain('This week:');
+    expect(sent[0]).toContain('This month:');
+  });
+
+  it('assembles /status from sync_health, the balance snapshot and the published counts', async () => {
+    const { client } = clientFor([
+      ['sync_health', JSON.stringify({ lastSuccessAt: ISO_2H_AGO() })],
+      ['account_balances', JSON.stringify({
+        'sfin-1': { balance: 3475.23, currency: 'USD', date: 1_760_000_000, drift: 13, measured: true },
+        'sfin-2': { balance: 100, currency: 'USD', date: 1_760_000_000, drift: null, measured: true },
+        'sfin-3': { balance: 40, currency: 'USD', date: 1_760_000_000, drift: null },
+      })],
+      ['account_names', JSON.stringify({ 'sfin-1': 'Spend (4937)', 'sfin-2': 'Save', 'sfin-3': 'Old' })],
+      ['uncategorized_status', JSON.stringify({ count: 3, asOf: ISO_2H_AGO(), rows: [] })],
+      ['amazon_mail_status', JSON.stringify({ unparsed: 2, asOf: ISO_2H_AGO() })],
+    ]);
+
+    const sent = await run(client, 'status');
+
+    expect(sent[0]).toContain(`*SimpleFin Sync* — companion v${SIMPLEFIN_SYNC_VERSION}`);
+    expect(sent[0]).toContain('Last sync: 2h ago');
+    expect(sent[0]).toContain('Spend (4937): $3,475 · $13 off');
+    expect(sent[0]).toContain('Save: $100 · in sync');
+    // `measured` absent — an older build's snapshot proves nothing about drift.
+    expect(sent[0]).toContain('Old: $40 · not checked');
+    expect(sent[0]).toContain('Needs a category: 3');
+    expect(sent[0]).toContain('2 Amazon email(s) unread');
+  });
+
+  it('still answers /status when every single secret read fails', async () => {
+    const client = {
+      getAddonSecret: vi.fn(async () => { throw new Error('wealthfolio unreachable'); }),
+      setAddonSecret: vi.fn(async () => {}),
+    } as any;
+
+    const sent = await run(client, 'status');
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toContain(`companion v${SIMPLEFIN_SYNC_VERSION}`);
+    expect(sent[0]).toContain('Last sync: never');
+    // A missing signal is omitted, never rendered as a confident zero.
+    expect(sent[0]).not.toContain('Needs a category');
+    expect(sent[0]).not.toContain('Amazon');
+  });
+
+  it('omits an account SimpleFin reported no numeric balance for, rather than claiming $0', async () => {
+    const { client } = clientFor([
+      ['account_balances', JSON.stringify({
+        'sfin-1': { balance: null, currency: 'USD', date: 1_760_000_000, drift: null, measured: false },
+        'sfin-2': { balance: 100, currency: 'USD', date: 1_760_000_000, drift: null, measured: true },
+      })],
+      ['account_names', JSON.stringify({ 'sfin-1': 'No Balance', 'sfin-2': 'Save' })],
+    ]);
+
+    const sent = await run(client, 'status');
+
+    expect(sent[0]).not.toContain('No Balance');
+    expect(sent[0]).toContain('Save: $100 · in sync');
+  });
+
+  it('acknowledges /sync immediately and reports the run when it lands', async () => {
+    const secrets = new Map<string, string>([
+      ['simplefin_access_url', 'https://user:pass@bridge.simplefin.org/simplefin'],
+    ]);
+    const client: any = {
+      login: vi.fn(async () => {}),
+      getAddonSecret: vi.fn(async (_a: string, k: string) => secrets.get(k) ?? null),
+      setAddonSecret: vi.fn(async (_a: string, k: string, v: string) => { secrets.set(k, v); }),
+    };
+    const { WealthfolioClient } = await import('./wealthfolio.js');
+    vi.mocked(WealthfolioClient).mockImplementation(function () { return client; } as any);
+
+    const sent = await run(client, 'sync');
+
+    // The mocked runSyncCore's usual result: 2 imported, 1 skipped.
+    expect(sent).toEqual(['Syncing…', 'Synced: 2 imported, 1 skipped.']);
+  });
+
+  it('tells a second /sync that one is already running, then reports the shared result', async () => {
+    const deferred = createDeferred<SyncResult>();
+    const occupying = runCompanionSyncExclusive(() => deferred.promise);
+    expect(occupying.started).toBe(true);
+
+    const { client } = clientFor();
+    const { sent, reply } = collector();
+    const handling = buildTelegramCommandHandler(client)({ command: 'sync', args: '' }, reply);
+
+    await new Promise((r) => setTimeout(r, 0));
+    expect(sent).toEqual(['Already syncing — hang on.']);
+
+    deferred.resolve({ ...FAKE_SYNC_RESULT, imported: 4, skipped: 9 });
+    await handling;
+
+    expect(sent[1]).toBe('Synced: 4 imported, 9 skipped.');
+    await occupying.result;
+  });
+
+  it('reports a failed shared run through the reply, leaving no rejection unhandled', async () => {
+    const deferred = createDeferred<SyncResult>();
+    const occupying = runCompanionSyncExclusive(() => deferred.promise);
+
+    const { client } = clientFor();
+    const { sent, reply } = collector();
+    const handling = buildTelegramCommandHandler(client)({ command: 'sync', args: '' }, reply);
+
+    deferred.reject(new Error('SimpleFin: token revoked'));
+    await handling;
+
+    expect(sent[0]).toBe('Already syncing — hang on.');
+    expect(sent[1]).toContain('Sync finished with errors: SimpleFin: token revoked');
+    await expect(occupying.result).rejects.toThrow('token revoked');
+  });
+});
+
+describe('applyTelegramDismissal', () => {
+  const clientOver = (secrets: Map<string, string>) => ({
+    getAddonSecret: vi.fn(async (_a: string, k: string) => secrets.get(k) ?? null),
+    setAddonSecret: vi.fn(async (_a: string, k: string, v: string) => { secrets.set(k, v); }),
+  } as any);
+
+  it('adds the tapped id without erasing anything already in the ledger', async () => {
+    // The 1.10.1 bug: a whole-object write from a stale snapshot silently erased
+    // dismissals the addon had made, and the row reappeared as uncategorized.
+    const secrets = new Map<string, string>([
+      ['uncategorized_dismissals', JSON.stringify({ 'act-addon': '2026-08-09T00:00:00.000Z' })],
+    ]);
+    const client = clientOver(secrets);
+
+    await applyTelegramDismissal(client, 'act-tapped');
+
+    const written = JSON.parse(secrets.get('uncategorized_dismissals')!);
+    expect(Object.keys(written).sort()).toEqual(['act-addon', 'act-tapped']);
+    expect(written['act-addon']).toBe('2026-08-09T00:00:00.000Z');
+  });
+
+  it('writes nothing at all when the id is already dismissed', async () => {
+    const secrets = new Map<string, string>([
+      ['uncategorized_dismissals', JSON.stringify({ 'act-1': '2026-08-09T00:00:00.000Z' })],
+    ]);
+    const client = clientOver(secrets);
+
+    await applyTelegramDismissal(client, 'act-1');
+
+    expect(client.setAddonSecret).not.toHaveBeenCalled();
+  });
+
+  it('records a tap even when no ledger exists yet', async () => {
+    const secrets = new Map<string, string>();
+    const client = clientOver(secrets);
+
+    await applyTelegramDismissal(client, 'act-first');
+
+    expect(JSON.parse(secrets.get('uncategorized_dismissals')!)).toHaveProperty('act-first');
+  });
+});
+
 describe('sendWeeklyTelegramReport', () => {
   it('sends the total-remaining summary across all included categories', async () => {
     const secrets = new Map<string, string>([
@@ -1762,24 +2019,21 @@ describe('sendImportNotice', () => {
     activityType: 'WITHDRAWAL', pending: false, inTransit: false,
   };
 
-  it('lists the imports, sweeps uncategorized minus dismissed, and honours a button press from THIS poll', async () => {
+  it('lists the imports and sweeps uncategorized minus whatever the ledger already holds', async () => {
     vi.mocked(getNativeUncategorizedSpending).mockReturnValue([
       uncatRow('act-1', 'VENMO PAYMENT'),
       uncatRow('act-old', 'DISMISSED EARLIER'),
       uncatRow('act-9', 'DISMISSED BY BUTTON'),
     ]);
-    const fetchMock = vi.fn((url: any) => {
-      if (String(url).includes('getUpdates')) {
-        return Promise.resolve({ ok: true, json: async () => ({ ok: true, result: [
-          { update_id: 60, callback_query: { id: 'cb', data: 'd:act-9' } },
-        ] }) });
-      }
-      return Promise.resolve({ ok: true, json: async () => ({ ok: true }) });
-    });
+    const fetchMock = vi.fn((_url: any, _init?: any) => Promise.resolve({ ok: true, json: async () => ({ ok: true }) }));
     vi.stubGlobal('fetch', fetchMock);
+    // 'act-9' is a button press the LISTENER recorded, seconds after the tap and
+    // long before this notice ran — this path no longer polls for it.
     const secrets = new Map<string, string>([
-      ['uncategorized_dismissals', JSON.stringify({ 'act-old': '2026-07-20T00:00:00Z' })],
-      ['telegram_update_offset', '41'],
+      ['uncategorized_dismissals', JSON.stringify({
+        'act-old': '2026-07-20T00:00:00Z',
+        'act-9': new Date().toISOString(),
+      })],
     ]);
     const client: any = {
       getAddonSecret: vi.fn(async (_a: string, k: string) => secrets.get(k) ?? null),
@@ -1790,59 +2044,55 @@ describe('sendImportNotice', () => {
       imported: 1, importedTransactions: [importedTx],
     } as any);
 
-    const sendCall = fetchMock.mock.calls.find((c) => String(c[0]).includes('sendMessage'));
+    const sendCall = fetchMock.mock.calls.find((c: any[]) => String(c[0]).includes('sendMessage'));
     expect(sendCall).toBeTruthy();
     const body = JSON.parse((sendCall![1] as any).body);
     expect(body.text).toContain('1 new transaction');
     expect(body.text).toContain('TRADER JOE S');
     expect(body.text).toContain('VENMO PAYMENT');
-    // Dismissed rows are out — including the one dismissed by the button press
-    // this very poll just collected.
+    // Dismissed rows are out — including the one dismissed by a button press.
     expect(body.text).not.toContain('DISMISSED EARLIER');
     expect(body.text).not.toContain('DISMISSED BY BUTTON');
     // One dismiss button per SHOWN needs-category row.
     expect(body.reply_markup.inline_keyboard).toHaveLength(1);
     expect(body.reply_markup.inline_keyboard[0][0].callback_data).toBe('d:act-1');
-    // The press is recorded and the poll offset advanced past its update.
-    expect(JSON.parse(secrets.get('uncategorized_dismissals')!)).toHaveProperty('act-9');
-    expect(secrets.get('telegram_update_offset')).toBe('61');
-    // The getUpdates call resumed from the stored offset.
-    expect(String(fetchMock.mock.calls.find((c) => String(c[0]).includes('getUpdates'))![0])).toContain('offset=41');
+    // The listener is the bot's ONLY getUpdates consumer now: a second one here
+    // would take 409s and make the bot look like it ignores every command.
+    expect(fetchMock.mock.calls.filter((c: any[]) => String(c[0]).includes('getUpdates'))).toHaveLength(0);
+    expect(client.getAddonSecret).not.toHaveBeenCalledWith('simplefin-sync', 'telegram_update_offset');
+    expect(client.setAddonSecret).not.toHaveBeenCalledWith('simplefin-sync', 'telegram_update_offset', expect.anything());
   });
 
   it('does not erase a dismissal the addon wrote after this run\'s first read', async () => {
     // The addon writes this same secret, and there is no compare-and-swap. This
-    // run reads the ledger BEFORE the Telegram poll (a seconds-long network
-    // round trip), so a dismissal the addon makes during that poll must still
-    // survive this run's own write at the end — the write has to merge onto
-    // whatever is persisted right now, not overwrite with the stale first read.
-    // The poll itself collects a button press for 'act-1', so this run DOES
-    // have its own change to write (a no-op run writes nothing, and would prove
-    // nothing about the merge).
+    // run reads the ledger, prunes it, and writes it back, so a dismissal the
+    // addon makes in between must still survive that write — it has to merge
+    // onto whatever is persisted right now, not overwrite with the stale first
+    // read. The pruning of a 61-day-old entry is this run's own change (a no-op
+    // run writes nothing, and would prove nothing about the merge).
     vi.mocked(getNativeUncategorizedSpending).mockReturnValue([
       uncatRow('act-1', 'VENMO PAYMENT'),
     ]);
+    const ancient = new Date(Date.now() - 61 * 86400_000).toISOString();
     const secrets = new Map<string, string>([
-      ['uncategorized_dismissals', JSON.stringify({ 'act-old': '2026-07-20T00:00:00Z' })],
+      ['uncategorized_dismissals', JSON.stringify({ 'act-ancient': ancient })],
     ]);
-    const fetchMock = vi.fn((url: any) => {
-      if (String(url).includes('getUpdates')) {
-        // While this poll is "in flight", the addon writes its own dismissal
-        // straight into the secret store — simulated by mutating `secrets`
-        // before the poll's response resolves.
-        secrets.set('uncategorized_dismissals', JSON.stringify({
-          ...JSON.parse(secrets.get('uncategorized_dismissals')!),
-          'act-addon': '2026-08-09T00:00:00.000Z',
-        }));
-        return Promise.resolve({ ok: true, json: async () => ({ ok: true, result: [
-          { update_id: 60, callback_query: { id: 'cb', data: 'd:act-1' } },
-        ] }) });
-      }
-      return Promise.resolve({ ok: true, json: async () => ({ ok: true }) });
-    });
-    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: true, json: async () => ({ ok: true }) })));
+    let ledgerReads = 0;
     const client: any = {
-      getAddonSecret: vi.fn(async (_a: string, k: string) => secrets.get(k) ?? null),
+      getAddonSecret: vi.fn(async (_a: string, k: string) => {
+        if (k === 'uncategorized_dismissals') {
+          ledgerReads += 1;
+          // After the FIRST read, the addon writes its own dismissal straight
+          // into the secret store — the race this merge exists for.
+          if (ledgerReads === 1) {
+            const now = JSON.parse(secrets.get(k)!);
+            secrets.set(k, JSON.stringify({ ...now, 'act-addon': new Date().toISOString() }));
+            return JSON.stringify(now);
+          }
+        }
+        return secrets.get(k) ?? null;
+      }),
       setAddonSecret: vi.fn(async (_a: string, k: string, v: string) => { secrets.set(k, v); }),
     };
 
@@ -1852,8 +2102,8 @@ describe('sendImportNotice', () => {
 
     const written = JSON.parse(secrets.get('uncategorized_dismissals')!);
     expect(written).toHaveProperty('act-addon');
-    expect(written).toHaveProperty('act-old');
-    expect(written).toHaveProperty('act-1');
+    // This run's own delta still applied: the aged-out entry is gone.
+    expect(written).not.toHaveProperty('act-ancient');
   });
 
   it('sends no keyboard when nothing is uncategorized', async () => {
