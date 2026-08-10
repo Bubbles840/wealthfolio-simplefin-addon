@@ -6,3 +6,7 @@ companion/dist/
 simplefin-sync.env
 .env
 .superpowers/
+
+# macOS Finder metadata. Was tracked until 2026-08-10; a local Finder write
+# could be swept into any `git add -A` commit in this public repo.
+.DS_Store
