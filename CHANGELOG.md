@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.11.0] - 2026-08-10
+
+### Added
+
+- **The Telegram bot now answers.** Six commands, listed in Telegram's ☰ menu:
+  /report (today's digest, fresh from the database), /left (what's left per
+  category — /left groceries narrows it), /afford 20 shopping (before/after for
+  the week and month, with a verdict), /status (last sync, balances, what needs
+  attention), /sync (pull new transactions now), /help. Commands work only from
+  your configured chat and answer in a second or two.
+
+### Changed
+
+- **Dismiss buttons act immediately.** The companion now listens to Telegram
+  continuously instead of collecting button presses at the next sync, so
+  dismissing an uncategorized transaction takes effect within a second instead
+  of within six hours. Same ledger, same rules — just no waiting.
+
 ## [1.10.2] - 2026-08-09
 
 ### Fixed
