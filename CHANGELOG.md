@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.10.2] - 2026-08-09
+
+### Fixed
+
+- **Amazon changed their order-email format, and categorization silently stopped.**
+  The new emails no longer carry the category line in their plain-text part (it
+  now exists only in the subject and the HTML), the total lost its dollar sign
+  (`4.23 USD` instead of `$4.23`), and every email gained a shipping progress
+  tracker whose bare `Out for delivery` line made order confirmations look like
+  ignorable delivery notices — so they were skipped and marked read without a
+  word. Classification now reads the subject, the plain text, AND the HTML part
+  (Amazon has yet to change all three at once), understands both total forms, and
+  the delivery-notice check only accepts wording a real notice actually uses.
+  Fixed against the raw captured emails, which are now sanitized test fixtures.
+
+### Added
+
+- **The addon now tells you when Amazon mail stops parsing.** Unreadable emails
+  deliberately stay unread in the mailbox; that count now surfaces as a warning
+  on the Amazon card (and in its collapsed summary) instead of only in a server
+  log. It clears itself on the first clean scan. The failure above was invisible
+  for two days; this is what would have made it loud on day one.
+
+### Changed
+
+- **The "Needs a category" tile is now the dropdown.** v1.10.1 shipped the tile
+  and a separate disclosure bar underneath saying the same number twice; the tile
+  itself now expands into the transaction list, and the extra bar is gone.
+
 ## [1.10.1] - 2026-08-09
 
 ### Added
