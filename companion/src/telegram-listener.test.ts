@@ -420,6 +420,33 @@ describe('startTelegramListener — the loop outlives its own dependencies', () 
     expect(h.writeOffset).toHaveBeenCalledWith(71);
   });
 
+  it('survives a logger that throws on every call, stacked on a rejecting sleep', async () => {
+    // Pins all three places a throwing `deps.log` could escape at once: the catch
+    // inside pause(), the loop's own catch, and the fire-and-forget reply's catch.
+    // Each of those catches exists to stop something worse, so a throw from the
+    // log call inside one re-creates exactly what it was written to prevent.
+    let fireAndForget: Promise<void> | null = null;
+    const h = harness({
+      log: () => { throw new Error('logger is broken'); },
+      sleep: vi.fn(async () => { throw new Error('sleep aborted'); }),
+      onCommand: vi.fn(async (_cmd: any, reply: (t: string) => Promise<void>) => {
+        fireAndForget = reply('never arrives');
+      }) as any,
+    });
+    h.fetchImpl
+      .mockResolvedValueOnce(apiOkResponse())                               // setMyCommands
+      .mockRejectedValueOnce(new Error('network down'))                     // loop catch → log throws → pause → sleep rejects → log throws
+      .mockResolvedValueOnce(updatesResponse([messageUpdate(80, '/report')]))
+      .mockRejectedValueOnce(new Error('sendMessage unreachable'))          // safeReply catch → log throws
+      .mockResolvedValue(updatesResponse([]));
+
+    const listener = start(h.deps);
+    await waitFor('still polling past all three', () => h.calls('/getUpdates').length >= 3);
+
+    await expect(fireAndForget!).resolves.toBeUndefined();
+    await expect(listener.stop()).resolves.toBeUndefined();
+  });
+
   it('throttles a batch whose updates carry no update_id instead of re-fetching hot', async () => {
     const h = harness();
     h.fetchImpl

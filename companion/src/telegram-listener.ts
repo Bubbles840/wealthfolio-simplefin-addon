@@ -83,14 +83,25 @@ const HANDLER_FAILURE_REPLY = 'Something went wrong running that command — che
 const DISMISS_PAYLOAD_PREFIX = 'd:';
 const DISMISS_ANSWER_TEXT = 'Dismissed — dropped from future notices';
 
-/** index.ts has its own copy and cannot be imported here: it is the daemon entry
- *  point and will import THIS module, so the dependency only runs one way. */
+/**
+ * index.ts has its own copy and cannot be imported here: it is the daemon entry
+ * point and will import THIS module, so the dependency only runs one way.
+ *
+ * Total by construction, for the same reason `safeLog` is: a rejection value is
+ * dependency-supplied data, and stringifying one whose `toString` throws would
+ * throw while BUILDING a log message — before the log call it was going to be
+ * passed to, and therefore outside every guard downstream of it.
+ */
 function formatError(err: unknown): string {
-  if (err instanceof Error) {
-    const cause = (err as { cause?: { message?: string } }).cause;
-    return cause ? `${err.message} (${cause.message ?? cause})` : err.message;
+  try {
+    if (err instanceof Error) {
+      const cause = (err as { cause?: { message?: string } }).cause;
+      return cause ? `${err.message} (${cause.message ?? cause})` : err.message;
+    }
+    return String(err);
+  } catch {
+    return 'an error that could not be stringified';
   }
-  return String(err);
 }
 
 export function startTelegramListener(deps: TelegramListenerDeps): { stop: () => Promise<void> } {
@@ -115,6 +126,25 @@ export function startTelegramListener(deps: TelegramListenerDeps): { stop: () =>
   const api = (token: string, method: string) => `https://api.telegram.org/bot${token}/${method}`;
 
   /**
+   * The only way this module ever logs. `deps.log` is an injected dependency like
+   * any other, so it is treated as hostile: EVERY log call in this file sits in a
+   * catch block that exists to stop something worse, and a throwing `log` inside
+   * one of those catches escapes it and re-creates the exact failure the catch was
+   * written to prevent — a dead loop, or an unhandled rejection that takes the
+   * daemon down with it. Reporting a problem must never be able to cause one.
+   *
+   * The swallow is total and silent by necessity: there is no second channel to
+   * report a broken reporting channel on.
+   */
+  function safeLog(msg: string): void {
+    try {
+      deps.log(msg);
+    } catch {
+      /* a logger that throws cannot be told about it */
+    }
+  }
+
+  /**
    * The only way this module ever waits, because `deps.sleep` REJECTING must not
    * be fatal. An `await deps.sleep(...)` inside the loop's own catch would take
    * control out of the `while` on rejection: the listener would be dead for the
@@ -132,7 +162,7 @@ export function startTelegramListener(deps: TelegramListenerDeps): { stop: () =>
     } catch (err) {
       if (!sleepFailureLogged) {
         sleepFailureLogged = true;
-        deps.log(`Telegram listener: sleep(${ms}) rejected — continuing unthrottled rather than dying: ${formatError(err)}`);
+        safeLog(`Telegram listener: sleep(${ms}) rejected — continuing unthrottled rather than dying: ${formatError(err)}`);
       }
     }
   }
@@ -165,7 +195,7 @@ export function startTelegramListener(deps: TelegramListenerDeps): { stop: () =>
     });
     const json = await readJson(res);
     if (json && json.ok === false) {
-      deps.log(`Telegram listener: reply refused by Telegram: ${json.description ?? 'no description given'}`);
+      safeLog(`Telegram listener: reply refused by Telegram: ${json.description ?? 'no description given'}`);
     }
   }
 
@@ -173,7 +203,7 @@ export function startTelegramListener(deps: TelegramListenerDeps): { stop: () =>
     const key = String(chatId);
     if (loggedForeignChats.has(key)) return;
     loggedForeignChats.add(key);
-    deps.log(`Telegram listener: ignoring updates from chat ${key} — only the configured chat is honored.`);
+    safeLog(`Telegram listener: ignoring updates from chat ${key} — only the configured chat is honored.`);
   }
 
   async function handleMessage(config: ListenerConfig, message: any): Promise<void> {
@@ -196,21 +226,21 @@ export function startTelegramListener(deps: TelegramListenerDeps): { stop: () =>
       try {
         await reply(config, text);
       } catch (err) {
-        deps.log(`Telegram listener: reply to /${parsed.command} was not delivered: ${formatError(err)}`);
+        safeLog(`Telegram listener: reply to /${parsed.command} was not delivered: ${formatError(err)}`);
       }
     };
 
     try {
       await deps.onCommand(parsed, safeReply);
     } catch (err) {
-      deps.log(`Telegram listener: /${parsed.command} failed: ${formatError(err)}`);
+      safeLog(`Telegram listener: /${parsed.command} failed: ${formatError(err)}`);
       try {
         await reply(config, HANDLER_FAILURE_REPLY);
       } catch (replyErr) {
         // Both the command AND the apology failed, which means the network is
         // the problem. Logged, swallowed: there is nothing left to tell the user
         // with, and the loop must outlive it.
-        deps.log(`Telegram listener: could not deliver the failure notice: ${formatError(replyErr)}`);
+        safeLog(`Telegram listener: could not deliver the failure notice: ${formatError(replyErr)}`);
       }
     }
   }
@@ -235,7 +265,7 @@ export function startTelegramListener(deps: TelegramListenerDeps): { stop: () =>
       // failed ledger write must not wedge the stream on one un-acknowledged
       // update. No answerCallbackQuery either: confirming "Dismissed" for
       // something that was not recorded would be a lie the user acts on.
-      deps.log(`Telegram listener: dismissal of ${activityId} failed: ${formatError(err)}`);
+      safeLog(`Telegram listener: dismissal of ${activityId} failed: ${formatError(err)}`);
       return;
     }
 
@@ -262,7 +292,7 @@ export function startTelegramListener(deps: TelegramListenerDeps): { stop: () =>
         await handleCallbackQuery(config, update.callback_query);
       }
     } catch (err) {
-      deps.log(`Telegram listener: update ${update?.update_id} could not be processed: ${formatError(err)}`);
+      safeLog(`Telegram listener: update ${update?.update_id} could not be processed: ${formatError(err)}`);
     }
   }
 
@@ -337,10 +367,10 @@ export function startTelegramListener(deps: TelegramListenerDeps): { stop: () =>
       });
       const json = await readJson(res);
       if (json && json.ok === false) {
-        deps.log(`Telegram listener: command menu refused by Telegram (commands still work): ${json.description ?? 'no description given'}`);
+        safeLog(`Telegram listener: command menu refused by Telegram (commands still work): ${json.description ?? 'no description given'}`);
       }
     } catch (err) {
-      deps.log(`Telegram listener: command menu registration failed (commands still work, the menu just will not list them): ${formatError(err)}`);
+      safeLog(`Telegram listener: command menu registration failed (commands still work, the menu just will not list them): ${formatError(err)}`);
     }
   }
 
@@ -353,7 +383,7 @@ export function startTelegramListener(deps: TelegramListenerDeps): { stop: () =>
           // Telegram would otherwise write 1,440 identical lines a day.
           if (!announcedUnconfigured) {
             announcedUnconfigured = true;
-            deps.log('Telegram listener idle: no Telegram configuration yet — re-checking every 60s.');
+            safeLog('Telegram listener idle: no Telegram configuration yet — re-checking every 60s.');
           }
           await pause(IDLE_CONFIG_RECHECK_MS);
           continue;
@@ -373,7 +403,7 @@ export function startTelegramListener(deps: TelegramListenerDeps): { stop: () =>
         // does not restart the ladder at 1s on every other attempt.
         backoffMs = BACKOFF_FLOOR_MS;
       } catch (err) {
-        deps.log(`Telegram listener error (retrying in ${Math.round(backoffMs / 1000)}s): ${formatError(err)}`);
+        safeLog(`Telegram listener error (retrying in ${Math.round(backoffMs / 1000)}s): ${formatError(err)}`);
         await pause(backoffMs);
         backoffMs = Math.min(backoffMs * 2, BACKOFF_CEILING_MS);
       }
@@ -384,8 +414,15 @@ export function startTelegramListener(deps: TelegramListenerDeps): { stop: () =>
   // the `.catch` is the same guard the cron callbacks in index.ts carry, and for
   // the same reason: a rejection escaping this promise is an unhandled
   // rejection, which kills the daemon and stops bank syncing over a bot bug.
+  //
+  // `finished` therefore ALWAYS fulfils, never rejects, which is what makes
+  // `stop()` total: this handler's only two statements are `formatError` and
+  // `safeLog`, and neither can throw by construction (see both). A throwing
+  // handler here would leave `finished` rejected and unobserved until some later
+  // `stop()` — a rejection nobody is waiting for, i.e. the very thing the
+  // `.catch` is here to prevent.
   const finished = run().catch((err) => {
-    deps.log(`Telegram listener stopped unexpectedly: ${formatError(err)}`);
+    safeLog(`Telegram listener stopped unexpectedly: ${formatError(err)}`);
   });
 
   return {
@@ -396,6 +433,9 @@ export function startTelegramListener(deps: TelegramListenerDeps): { stop: () =>
      * faster than the work already in flight (up to the long-poll timeout, or
      * the current backoff sleep); nothing in the daemon blocks on it, and tests
      * await it so no test can end with the loop still scheduled.
+     *
+     * Cannot reject: setting a boolean cannot throw and `finished` cannot reject
+     * (see above), so no caller of `stop()` needs a `.catch` of its own.
      */
     stop: async () => {
       stopped = true;
