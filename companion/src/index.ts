@@ -24,6 +24,7 @@ import type { SyncHealth } from '../../shared/telegram.js';
 import { SIMPLEFIN_SYNC_VERSION, COMPANION_VERSION_SECRET_KEY } from '../../shared/version.js';
 import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeCategoryCatalog, getNativeSubcategorySpending } from './sqlite-native.js';
 import { publishUncategorizedStatusForDbPath } from './uncategorized-status.js';
+import { AMAZON_MAIL_STATUS_SECRET_KEY } from '../../shared/status-keys.js';
 
 const logLevel: 'info' | 'debug' =
   process.env.LOG_LEVEL === 'debug' ? 'debug' : 'info';
@@ -420,6 +421,7 @@ async function deliverLargeTransactionAlerts(
  */
 async function pollAmazonMail(
   store: RestSyncStore,
+  wfClient: WealthfolioClient,
 ): Promise<AmazonIngestResult['newLabels']> {
   let cfg: AmazonMailConfig | null = null;
   try {
@@ -455,6 +457,21 @@ async function pollAmazonMail(
     for (const [who, n] of Object.entries(result.unparsedSenders)) {
       log(`Amazon mail: ${n} unrecognised message(s) from ${who}`);
     }
+    // Published EVERY run the scan actually completed — including
+    // `unparsed: 0` — so a parser fix clears the addon's warning instead of
+    // leaving it stuck once the format breaks again. Reaching this line at
+    // all already proves the scan ran; a connection error below skips it
+    // entirely rather than overwriting a real warning with a false all-clear.
+    // Wrapped in its own catch, same swallow-and-continue posture as every
+    // other status publish here (see `publishUncategorizedStatus`): a stats
+    // secret must never be able to fail a sync.
+    await wfClient
+      .setAddonSecret(
+        'simplefin-sync',
+        AMAZON_MAIL_STATUS_SECRET_KEY,
+        JSON.stringify({ unparsed: result.unparsed, asOf: new Date().toISOString() }),
+      )
+      .catch(() => {});
     return result.newLabels;
   } catch (err) {
     log(`Amazon mail error (categorization skipped this run): ${formatError(err)}`);
@@ -562,7 +579,7 @@ export async function runCompanionSync(): Promise<SyncResult> {
     // another moving part — and Amazon's order emails arrive a day or two ahead
     // of the charge anyway. Doing it immediately before the sync also makes the
     // ordering guaranteed instead of a race between two schedules.
-    const amazonNewLabels = await pollAmazonMail(store);
+    const amazonNewLabels = await pollAmazonMail(store, wfClient);
 
     log(`Fetching SimpleFin transactions from ${maskUrl(accessUrl)}...`);
     const result = await runSyncCore(host, store, { force });

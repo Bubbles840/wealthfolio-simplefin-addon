@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Button, CollapsibleCard, Disclosure, statusToneClass } from './ui';
+import { Button, CollapsibleCard, Disclosure, ErrorBox, statusToneClass } from './ui';
 import type { StatusMessage } from './ui';
 import { CategoryIcon } from './CategoryIcon';
 import {
@@ -57,6 +57,13 @@ export interface AmazonDraftState {
   patch: (p: Partial<AmazonDraft> | ((prev: AmazonDraft) => Partial<AmazonDraft>)) => void;
   /** Amazon's own label vocabulary as seen on this user's orders. */
   labels: AmazonLabelCatalog;
+  /**
+   * Companion-published count of order emails the parser could not read on
+   * the last mail scan — a possible Amazon format change. `null` means either
+   * nothing to report or an older companion that never publishes this key;
+   * the two must be visually identical (see `getAmazonMailStatus`).
+   */
+  mailStatus: { unparsed: number; asOf: string } | null;
   /** Has the stored config been read yet? Distinguishes "loading" from "not set
    *  up", which the collapsed summary says out loud. */
   loaded: boolean;
@@ -76,11 +83,15 @@ export function useAmazonDraft(store: SecretsStore): AmazonDraftState {
    *  Telegram tab's `savedCfg` is. */
   const [saved, setSaved] = useState<AmazonDraft>(EMPTY_AMAZON_DRAFT);
   const [labels, setLabels] = useState<AmazonLabelCatalog>({});
+  const [mailStatus, setMailStatus] = useState<{ unparsed: number; asOf: string } | null>(null);
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
-    Promise.all([store.getAmazonConfig(), store.getAmazonLabels()])
-      .then(([cfg, seen]) => {
+    // Loaded alongside config + labels, on the same one-shot mount effect —
+    // not its own poll, for the same reason the draft itself is one-shot: a
+    // re-hydrate on a timer would fight a half-typed password.
+    Promise.all([store.getAmazonConfig(), store.getAmazonLabels(), store.getAmazonMailStatus()])
+      .then(([cfg, seen, status]) => {
         if (cfg) {
           const stored: AmazonDraft = {
             host: cfg.host || 'imap.gmail.com',
@@ -93,6 +104,7 @@ export function useAmazonDraft(store: SecretsStore): AmazonDraftState {
           setSaved(stored);
         }
         setLabels(seen);
+        setMailStatus(status);
       })
       .catch(() => {})
       .finally(() => setLoaded(true));
@@ -121,6 +133,7 @@ export function useAmazonDraft(store: SecretsStore): AmazonDraftState {
     draft,
     patch,
     labels,
+    mailStatus,
     loaded,
     dirty: JSON.stringify(draft) !== JSON.stringify(saved),
     configured: !!(draft.host && draft.user && draft.password),
@@ -145,7 +158,7 @@ interface Props {
 export function AmazonCard({
   amazon, cardId, guideId, open, guideOpen, onToggle, onToggleGuide, categories,
 }: Props) {
-  const { draft, patch, labels, loaded, dirty, configured } = amazon;
+  const { draft, patch, labels, mailStatus, loaded, dirty, configured } = amazon;
   const { host, user, password, defaultCategory, overrides } = draft;
   /** `{ text, tone }` like every other status line in the addon: the ✅ this
    *  message used to open with was its only success signal, so dropping the
@@ -161,13 +174,23 @@ export function AmazonCard({
     (l) => !resolveAmazonCategory(l, { defaultCategory, labelOverrides: overrides }).matched,
   ).length;
 
-  const summary = !loaded
+  // Only meaningful once the mailbox is actually configured: an `unparsed`
+  // count with no configured mailbox is a stale value left over from before a
+  // reset, not a live problem to surface.
+  const unparsed = configured ? (mailStatus?.unparsed ?? 0) : 0;
+
+  const summaryBase = !loaded
     ? 'Loading…'
     : !configured
       ? 'Not set up — Amazon charges stay uncategorized'
       : unmatched > 0
         ? `On · ${labelNames.length} categories seen, ${unmatched} need a rule`
         : `On · ${labelNames.length} Amazon categories mapped`;
+  // Appended, not replacing: a collapsed card is the one place this warning
+  // could otherwise hide entirely, so the summary line has to carry it too.
+  const summary = unparsed > 0
+    ? `${summaryBase} · ${unparsed} email${unparsed === 1 ? '' : 's'} unread`
+    : summaryBase;
 
   const save = async () => {
     await amazon.save();
@@ -185,6 +208,14 @@ export function AmazonCard({
       open={open}
       onToggle={onToggle}
     >
+      {unparsed > 0 && (
+        <ErrorBox>
+          {unparsed} recent email{unparsed === 1 ? '' : 's'} could not be read — Amazon
+          may have changed their email format. They stay unread in the mailbox, and
+          charges from them stay uncategorized until this addon gets an update.
+        </ErrorBox>
+      )}
+
       <div className="sfin-subtle" style={{ marginBottom: 12 }}>
         A bank charge reads <code>AMAZON.COM*MB3T81</code> and says nothing about what
         you bought. Amazon's order emails name the category, so forwarding those to a

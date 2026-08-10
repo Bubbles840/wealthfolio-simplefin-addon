@@ -1,7 +1,7 @@
 import type { AddonContext } from '@wealthfolio/addon-sdk';
 import { AMAZON_LEDGER_SECRET_KEY } from '../../shared/amazon-ledger';
 import { AMAZON_CONFIG_SECRET_KEY, AMAZON_LABELS_SECRET_KEY } from '../../shared/amazon-config';
-import { UNCATEGORIZED_STATUS_SECRET_KEY } from '../../shared/status-keys';
+import { UNCATEGORIZED_STATUS_SECRET_KEY, AMAZON_MAIL_STATUS_SECRET_KEY } from '../../shared/status-keys';
 import type { AmazonLabelCatalog, AmazonMailConfig } from '../../shared/amazon-config';
 import type { AmazonLedger } from '../../shared/amazon-ledger';
 import type { AccountMapping, MappingRule } from '../../shared/types';
@@ -87,6 +87,11 @@ const KEYS = {
   // clearAll skipped it and a reset account kept showing the stale "Needs a
   // category" count from before the reset.
   uncategorizedStatus: UNCATEGORIZED_STATUS_SECRET_KEY,
+  // Same bug, same fix, for the Amazon "mail unparsed" warning: no SecretsStore
+  // setter (the companion writes it directly), which is exactly the shape of
+  // key that is easy to leave out of KEYS. Left out here, a reset account would
+  // keep showing a stale "emails unread" warning from before the reset.
+  amazonMailStatus: AMAZON_MAIL_STATUS_SECRET_KEY,
   // Same bug, same fix, for the Amazon mailbox credentials: these three read
   // and write their key constants directly (see `getAmazonConfig` etc.) rather
   // than through KEYS, so they were also missing from `clearAll`. That meant
@@ -444,6 +449,28 @@ export class SecretsStore {
             // tile renders from `count`; only the disclosure needs `rows`.
             rows: Array.isArray(parsed.rows) ? (parsed.rows as UncategorizedRow[]) : [],
           }
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Companion-published count of Amazon order emails whose shape the parser
+   * did not recognise on the last mail scan — the persistent signal that
+   * Amazon changed its email format (see `AMAZON_MAIL_STATUS_SECRET_KEY`).
+   *
+   * `null` (absent/corrupt/non-numeric) hides the warning rather than
+   * throwing: a companion that predates this key, or one whose Amazon mail
+   * isn't configured, must look identical to "no problem" — never an error.
+   */
+  async getAmazonMailStatus(): Promise<{ unparsed: number; asOf: string } | null> {
+    const raw = await this.ctx.api.secrets.get(AMAZON_MAIL_STATUS_SECRET_KEY);
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw);
+      return typeof parsed?.unparsed === 'number' && Number.isFinite(parsed.unparsed)
+        ? { unparsed: parsed.unparsed, asOf: String(parsed.asOf ?? '') }
         : null;
     } catch {
       return null;

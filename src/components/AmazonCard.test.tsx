@@ -27,6 +27,7 @@ function makeProps(over: Record<string, any> = {}) {
     getAmazonConfig: vi.fn(async () => null as any),
     setAmazonConfig: vi.fn(async () => {}),
     getAmazonLabels: vi.fn(async () => ({} as any)),
+    getAmazonMailStatus: vi.fn(async () => null as any),
   } as unknown as SecretsStore;
   return {
     store,
@@ -216,5 +217,73 @@ describe('AmazonCard', () => {
     const props = makeProps({ guideOpen: true });
     render(<Harness {...props} />);
     expect(await screen.findByText(/nothing but Amazon receipts/i)).toBeTruthy();
+  });
+});
+
+describe('AmazonCard unparsed-mail warning', () => {
+  // Amazon changed its email format on 2026-08-07 and the companion silently
+  // mis-filed order confirmations for two days — the parser leaves unreadable
+  // mail unread and counts it, but that count used to reach only a server log
+  // line nobody reads. This surfaces it in the card so it can't be missed.
+  const EMOJI = /\p{Extended_Pictographic}/u;
+
+  function configuredProps(over: Record<string, any> = {}) {
+    const props = makeProps(over);
+    props.store.getAmazonConfig = vi.fn(async () => ({
+      host: 'imap.gmail.com', user: 'r@g.com', password: 'x',
+    })) as any;
+    return props;
+  }
+
+  it('warns with the count when the companion reports unparsed mail', async () => {
+    const props = configuredProps();
+    props.store.getAmazonMailStatus = vi.fn(async () => ({ unparsed: 2, asOf: '2026-08-08T12:00:00.000Z' })) as any;
+    render(<Harness {...props} />);
+
+    const warning = await screen.findByText(/2 recent emails could not be read/i);
+    expect(warning.textContent).toMatch(/Amazon may have changed their email format/i);
+    expect(warning.textContent).toMatch(/stay unread in the mailbox/i);
+    expect(warning.textContent).toMatch(/stay uncategorized until this addon gets an update/i);
+    expect(warning.textContent).not.toMatch(EMOJI);
+    expect(warning.closest('.sfin-error')).toBeTruthy();
+  });
+
+  it('uses the singular for exactly one unparsed message', async () => {
+    const props = configuredProps();
+    props.store.getAmazonMailStatus = vi.fn(async () => ({ unparsed: 1, asOf: '2026-08-08T12:00:00.000Z' })) as any;
+    render(<Harness {...props} />);
+    expect(await screen.findByText(/1 recent email could not be read/i)).toBeTruthy();
+    expect(screen.queryByText(/1 recent emails/i)).toBeNull();
+  });
+
+  it('shows nothing when the status is null — version skew must look like no problem', async () => {
+    const props = configuredProps();
+    props.store.getAmazonMailStatus = vi.fn(async () => null) as any;
+    render(<Harness {...props} />);
+    await screen.findByLabelText(/IMAP server/i);
+    expect(screen.queryByText(/could not be read/i)).toBeNull();
+  });
+
+  it('shows nothing when unparsed is 0 — a fixed format must clear the warning', async () => {
+    const props = configuredProps();
+    props.store.getAmazonMailStatus = vi.fn(async () => ({ unparsed: 0, asOf: '2026-08-08T12:00:00.000Z' })) as any;
+    render(<Harness {...props} />);
+    await screen.findByLabelText(/IMAP server/i);
+    expect(screen.queryByText(/could not be read/i)).toBeNull();
+  });
+
+  it('shows nothing when the feature is not configured, even if a stale status remains', async () => {
+    const props = makeProps({ open: false });
+    props.store.getAmazonMailStatus = vi.fn(async () => ({ unparsed: 3, asOf: '2026-08-08T12:00:00.000Z' })) as any;
+    render(<Harness {...props} />);
+    await screen.findByText(/Not set up/i);
+    expect(screen.queryByText(/could not be read/i)).toBeNull();
+  });
+
+  it('mentions the unread count in the collapsed summary, so it cannot be hidden', async () => {
+    const props = configuredProps({ open: false });
+    props.store.getAmazonMailStatus = vi.fn(async () => ({ unparsed: 2, asOf: '2026-08-08T12:00:00.000Z' })) as any;
+    render(<Harness {...props} />);
+    expect(await screen.findByText(/2 emails unread/i)).toBeTruthy();
   });
 });
