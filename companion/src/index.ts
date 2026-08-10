@@ -14,7 +14,8 @@ import type { SyncResult } from '../../shared/sync-core.js';
 import { RestSyncHost, RestSyncStore } from './rest-host.js';
 import { WealthfolioClient } from './wealthfolio.js';
 import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatMonthlyWrapUp, formatSyncHealthFooter, formatLargeTransactionAlert, formatBalanceDriftAlert, formatFeedLagNotice, formatStuckTransferAlert, formatDuplicatePruneAlert, formatImportNotice, buildDismissKeyboard, IMPORT_NOTICE_UNCATEGORIZED_CAP, escapeMarkdown, LARGE_TX_OUTBOX_SECRET_KEY } from '../../shared/telegram.js';
-import { pollTelegramDismissals, pruneDismissals, mergeDismissals } from './dismissals.js';
+import { pruneDismissals, mergeDismissals } from './dismissals.js';
+import { startTelegramListener } from './telegram-listener.js';
 import { createImapSource, ingestAmazonMail, amazonMailConfigured } from './amazon-mail.js';
 import type { AmazonIngestResult, AmazonMailConfig, MailSource } from './amazon-mail.js';
 import { DEFAULT_GLYPH_STYLE } from '../../shared/telegram.js';
@@ -24,8 +25,17 @@ import type { SyncHealth } from '../../shared/telegram.js';
 import { SIMPLEFIN_SYNC_VERSION, COMPANION_VERSION_SECRET_KEY } from '../../shared/version.js';
 import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeCategoryCatalog, getNativeSubcategorySpending } from './sqlite-native.js';
 import { publishUncategorizedStatusForDbPath } from './uncategorized-status.js';
-import { AMAZON_MAIL_STATUS_SECRET_KEY } from '../../shared/status-keys.js';
-import type { CategoryBudgetSnapshot, BudgetPeriod } from '../../shared/telegram-commands.js';
+import { AMAZON_MAIL_STATUS_SECRET_KEY, UNCATEGORIZED_STATUS_SECRET_KEY } from '../../shared/status-keys.js';
+import {
+  formatHelpReply,
+  formatLeftReply,
+  formatAffordReply,
+  formatStatusReply,
+  formatReportFooter,
+  formatSyncReply,
+  parseAffordArgs,
+} from '../../shared/telegram-commands.js';
+import type { CategoryBudgetSnapshot, BudgetPeriod, ParsedCommand, StatusReplyInput } from '../../shared/telegram-commands.js';
 
 const logLevel: 'info' | 'debug' =
   process.env.LOG_LEVEL === 'debug' ? 'debug' : 'info';
@@ -808,43 +818,34 @@ export async function sendImportNotice(
   tg: { botToken: string; chatId: string },
   result: Pick<SyncResult, 'imported' | 'importedTransactions'>,
 ): Promise<void> {
-  // Collect button presses BEFORE the sweep, so a dismissal pressed since the
-  // last run is honoured in this very notice rather than one later.
+  // Read the ledger BEFORE the sweep, because it is what filters the notice.
+  // Button presses are already in it: the always-on listener
+  // (companion/src/telegram-listener.ts) records a tap within about a second, so
+  // this path no longer polls Telegram for them — and must not, since Telegram
+  // serves `getUpdates` to exactly one reader per bot token.
   let ledger: DismissalLedger =
     parseSecretJson<DismissalLedger>(
       await wfClient.getAddonSecret('simplefin-sync', 'uncategorized_dismissals'),
       'uncategorized_dismissals',
     ) ?? {};
-  // Unmutated copy of that first read, taken before the loop below mutates
-  // `ledger` in place — this is `base` for the merge at write time: what this
-  // run's delta (the button presses it collects) is measured against, not what
-  // ends up on disk.
+  // Unmutated copy of that first read — this is `base` for the merge at write
+  // time: what this run's delta (the entries it ages out) is measured against,
+  // not what ends up on disk.
   const base: DismissalLedger = { ...ledger };
-  const offsetRaw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_update_offset');
-  const offset = offsetRaw != null && offsetRaw !== '' && Number.isFinite(Number(offsetRaw))
-    ? Number(offsetRaw)
-    : null;
-  const poll = await pollTelegramDismissals({ botToken: tg.botToken, offset });
 
-  const nowIso = new Date().toISOString();
-  let ledgerChanged = false;
-  for (const id of poll.dismissedActivityIds) {
-    if (!(id in ledger)) {
-      ledger[id] = nowIso;
-      ledgerChanged = true;
-    }
-  }
+  // Pruning stays on the sync path, and this is the only place it happens: the
+  // listener's per-tap write deliberately only ever ADDS one id, so without
+  // this the ledger would grow forever.
   const pruned = pruneDismissals(ledger, new Date());
-  if (Object.keys(pruned).length !== Object.keys(ledger).length) ledgerChanged = true;
+  const prunedAnything = Object.keys(pruned).length !== Object.keys(ledger).length;
   ledger = pruned;
-  if (ledgerChanged) {
-    // Re-read immediately before writing rather than reuse the read from
-    // above: `pollTelegramDismissals` is a network round trip that takes
-    // seconds, and the addon writes this same secret with no
-    // compare-and-swap, so persisting the pre-poll snapshot would silently
-    // erase an addon dismissal made during the poll — the row would just
-    // reappear as needing a category. Merge this run's own delta (`base` →
-    // `ledger`) onto whatever is persisted right now instead.
+  if (prunedAnything) {
+    // Re-read immediately before writing rather than reuse the read from above.
+    // Both the addon AND the listener write this same secret with no
+    // compare-and-swap, so persisting the earlier snapshot would silently erase
+    // a dismissal made in between — the row would just reappear as needing a
+    // category. Merge this run's own delta (`base` → `ledger`) onto whatever is
+    // persisted right now instead.
     const persisted =
       parseSecretJson<DismissalLedger>(
         await wfClient.getAddonSecret('simplefin-sync', 'uncategorized_dismissals'),
@@ -852,9 +853,6 @@ export async function sendImportNotice(
       ) ?? {};
     const merged = pruneDismissals(mergeDismissals(persisted, base, ledger), new Date());
     await wfClient.setAddonSecret('simplefin-sync', 'uncategorized_dismissals', JSON.stringify(merged));
-  }
-  if (poll.nextOffset !== null && poll.nextOffset !== offset) {
-    await wfClient.setAddonSecret('simplefin-sync', 'telegram_update_offset', String(poll.nextOffset));
   }
 
   // End bound is TOMORROW: activity_date carries a time component, so a
@@ -1248,6 +1246,243 @@ export async function sendMonthlyTelegramReport(wfClient: WealthfolioClient): Pr
   }
 }
 
+/**
+ * Records one dismiss-button tap in `uncategorized_dismissals` — the listener's
+ * `applyDismissal` dependency.
+ *
+ * MERGES, never overwrites, and that is the whole point of the function. The
+ * addon writes this same secret, and there is no compare-and-swap on an addon
+ * secret: a whole-object write from a snapshot read moments earlier silently
+ * erases whatever the other host wrote in between, and the symptom is a row the
+ * user already dismissed quietly reappearing as needing a category. That was the
+ * 1.10.1 bug; `mergeDismissals` exists so it cannot come back. Only the delta
+ * (`base` → `next`, i.e. this one id) is replayed onto what is persisted.
+ *
+ * One read, not two: unlike the sync path's write — which follows a database
+ * sweep — nothing slow happens between this read and its write, so a second
+ * read immediately after the first would buy nothing but another round trip.
+ *
+ * An id the ledger already holds writes nothing at all: a second tap on the same
+ * button is not a change, and re-writing it would only move its timestamp
+ * forward and delay its eventual pruning.
+ *
+ * Deliberately NOT guarded against a failed write — the listener catches that,
+ * logs it, and skips the "Dismissed" confirmation, because confirming a
+ * dismissal that was never recorded is a lie the user acts on.
+ */
+export async function applyTelegramDismissal(
+  wfClient: WealthfolioClient,
+  activityId: string,
+): Promise<void> {
+  const base: DismissalLedger =
+    parseSecretJson<DismissalLedger>(
+      await wfClient.getAddonSecret('simplefin-sync', 'uncategorized_dismissals'),
+      'uncategorized_dismissals',
+    ) ?? {};
+  if (activityId in base) return;
+  const next: DismissalLedger = { ...base, [activityId]: new Date().toISOString() };
+  const merged = pruneDismissals(mergeDismissals(base, base, next), new Date());
+  await wfClient.setAddonSecret('simplefin-sync', 'uncategorized_dismissals', JSON.stringify(merged));
+}
+
+/** `/report`'s footer needs the last sync as an ISO string. Read through
+ *  `RestSyncStore` rather than the raw secret so the "unparseable date reads as
+ *  never" rule lives in exactly one place (see `getLastSyncAt`). */
+async function readLastSyncAtIso(wfClient: WealthfolioClient): Promise<string | null> {
+  const at = await new RestSyncStore(wfClient).getLastSyncAt().catch(() => null);
+  return at ? at.toISOString() : null;
+}
+
+/** The `account_balances` snapshot as this file READS it. Structurally the
+ *  addon's `AccountBalanceInfo` and `sync-core`'s `AccountBalanceSnapshot`,
+ *  neither of which is importable here (one is addon-side React code, the other
+ *  is not exported). Both nullable fields are load-bearing: `balance` is null
+ *  when SimpleFin reported no numeric balance, and `measured` is absent in a
+ *  snapshot written by an older companion build. */
+interface StoredAccountBalance {
+  balance: number | null;
+  currency: string;
+  date: number;
+  drift: number | null;
+  measured?: boolean;
+}
+
+/**
+ * Assembles `/status` from the secrets the companion already publishes.
+ *
+ * Every read is guarded INDIVIDUALLY and degrades to omitting its own line: a
+ * status command that fails because one optional signal is unreadable is worse
+ * than a status command that admits it does not know that one thing.
+ *
+ * A missing count becomes `null`, never `0`. `formatStatusReply` renders the two
+ * differently on purpose — "Needs a category: 0" is a clean bill of health, and
+ * an unpublished secret does not support one (see `StatusReplyInput`'s doc
+ * comment).
+ */
+async function readStatusReplyInput(wfClient: WealthfolioClient): Promise<StatusReplyInput> {
+  const secret = (key: string) => wfClient.getAddonSecret('simplefin-sync', key).catch(() => null);
+
+  const health = parseSecretJson<SyncHealth>(await secret('sync_health'), 'sync_health');
+  const balances =
+    parseSecretJson<Record<string, StoredAccountBalance>>(await secret('account_balances'), 'account_balances') ?? {};
+  const names = parseSecretJson<Record<string, string>>(await secret('account_names'), 'account_names') ?? {};
+  const uncategorized = parseSecretJson<{ count?: number }>(
+    await secret(UNCATEGORIZED_STATUS_SECRET_KEY),
+    UNCATEGORIZED_STATUS_SECRET_KEY,
+  );
+  const amazon = parseSecretJson<{ unparsed?: number }>(
+    await secret(AMAZON_MAIL_STATUS_SECRET_KEY),
+    AMAZON_MAIL_STATUS_SECRET_KEY,
+  );
+
+  const accounts: StatusReplyInput['accounts'] = [];
+  for (const [sfinAccountId, info] of Object.entries(balances)) {
+    // An account SimpleFin gave no numeric balance for is OMITTED rather than
+    // reported as $0.00 — the addon shows "—" for exactly this state, and a
+    // chat line has no room for the distinction. `/status` is a "what do I need
+    // to look at" summary, and an invented zero balance is the one thing here
+    // that could be acted on wrongly.
+    if (!info || typeof info.balance !== 'number') continue;
+    accounts.push({
+      // The SimpleFin id as a last resort: an unnamed account is still a real
+      // one, and dropping it would silently shorten the list.
+      name: names[sfinAccountId] ?? sfinAccountId,
+      balance: info.balance,
+      currency: typeof info.currency === 'string' ? info.currency : 'USD',
+      drift: typeof info.drift === 'number' ? info.drift : null,
+      // Absent reads as false: an older build's snapshot proves nothing about
+      // whether a comparison actually happened.
+      measured: info.measured === true,
+    });
+  }
+
+  return {
+    version: SIMPLEFIN_SYNC_VERSION,
+    lastSyncAt: health?.lastSuccessAt ?? null,
+    // Nothing persists a per-run import/skip summary today — `sync_health`
+    // carries timings and the last error, not counts — so this is honestly
+    // `null` rather than a reconstructed guess. `/sync` reports its own run's
+    // counts; adding a stored summary would mean a new field in a secret the
+    // addon also reads, which is not this task's to change.
+    lastSyncSummary: null,
+    accounts,
+    uncategorizedCount: typeof uncategorized?.count === 'number' ? uncategorized.count : null,
+    amazonUnparsed: typeof amazon?.unparsed === 'number' ? amazon.unparsed : null,
+  };
+}
+
+/** Sent when `/report` has no digest to send: Telegram unconfigured or
+ *  disabled, the daily report switched off, or no readable database. Names both
+ *  places the fix lives, since neither is discoverable from a chat window. */
+const REPORT_UNAVAILABLE_REPLY =
+  "Telegram reports are not configured — check budgets and the addon's Notifications tab.";
+
+/** One line for every way `/afford`'s arguments can fail to parse — see
+ *  `parseAffordArgs`, which deliberately does not distinguish them. */
+const AFFORD_USAGE_REPLY = 'Usage: /afford 20 shopping';
+
+const SYNC_STARTED_REPLY = 'Syncing…';
+const SYNC_ALREADY_RUNNING_REPLY = 'Already syncing — hang on.';
+
+/**
+ * The bot's command handler: the listener's `onCommand` dependency.
+ *
+ * Every reply is produced by a formatter in shared/telegram-commands.ts, and
+ * every value handed to one is RAW — those formatters own their own
+ * `escapeMarkdown` calls, so pre-escaping here would double-escape and show the
+ * user backslashes.
+ *
+ * Nothing is caught: the listener wraps this call, logs whatever escapes, and
+ * apologises in the chat. A local catch per command would only duplicate that
+ * and risk swallowing something the log needs.
+ */
+export function buildTelegramCommandHandler(
+  wfClient: WealthfolioClient,
+): (cmd: ParsedCommand, reply: (text: string) => Promise<void>) => Promise<void> {
+  /** `/left` and `/afford` read the same snapshot the daily digest is built
+   *  from, so the three can never disagree about what "this week" means. */
+  const budgetSnapshot = async () => {
+    const dbPath = process.env.WEALTHFOLIO_DB_PATH || '/mnt/wealthfolio.db';
+    return {
+      ...readBudgetSnapshot(dbPath, new Date()),
+      style: await readGlyphStyle(wfClient),
+    };
+  };
+
+  return async (cmd, reply) => {
+    switch (cmd.command) {
+      case 'report': {
+        const digest = await composeDailyDigestMessage(wfClient);
+        if (digest === null) {
+          await reply(REPORT_UNAVAILABLE_REPLY);
+          return;
+        }
+        // The footer reads `last_sync_at` — the timestamp the sync itself
+        // stamps — not `sync_health`, so it describes how fresh the DATA behind
+        // the digest is rather than when a run last reported success.
+        const footer = formatReportFooter(await readLastSyncAtIso(wfClient), new Date());
+        await reply(`${digest}\n\n${footer}`);
+        return;
+      }
+
+      case 'left': {
+        const { categories, period, style } = await budgetSnapshot();
+        // Empty args mean the bare listing, not a query for "".
+        await reply(formatLeftReply(categories, period, style, cmd.args || undefined));
+        return;
+      }
+
+      case 'afford': {
+        const parsed = parseAffordArgs(cmd.args);
+        if (!parsed) {
+          await reply(AFFORD_USAGE_REPLY);
+          return;
+        }
+        const { categories, period, style } = await budgetSnapshot();
+        await reply(formatAffordReply(categories, period, style, parsed.amount, parsed.query));
+        return;
+      }
+
+      case 'status':
+        await reply(formatStatusReply(await readStatusReplyInput(wfClient), new Date()));
+        return;
+
+      case 'sync': {
+        const { started, result } = runCompanionSyncExclusive();
+        // Both handlers are attached to `result` BEFORE the first `await`, and
+        // in BOTH branches. That ordering is the point: a sync that rejects
+        // while this function is suspended on its acknowledgement reply would
+        // otherwise be an unhandled rejection, which kills the daemon and stops
+        // bank syncing — the same hazard the cron callbacks' `.catch` guards.
+        // Mapping to a string rather than replying inside the callbacks also
+        // keeps the order deterministic: the acknowledgement always lands first.
+        const summary = result.then(
+          (r) => formatSyncReply({
+            imported: r.imported,
+            skipped: r.skipped,
+            driftAlerts: r.balanceDriftAlerts.length,
+            errors: r.errors,
+          }),
+          // RAW error text: `formatSyncReply` escapes it itself.
+          (err) => formatSyncReply({ imported: 0, skipped: 0, driftAlerts: 0, errors: [formatError(err)] }),
+        );
+        await reply(started ? SYNC_STARTED_REPLY : SYNC_ALREADY_RUNNING_REPLY);
+        // Awaited in both branches, including `started: false` — a second
+        // `/sync` still deserves the outcome of the run it joined, and awaiting
+        // is what makes the promise observed rather than floating.
+        await reply(await summary);
+        return;
+      }
+
+      case 'help':
+      default:
+        // An unknown command gets the same menu, with a line naming what was not
+        // understood — a typo is the likeliest reason anyone lands here.
+        await reply(formatHelpReply(cmd.command === 'help' ? undefined : cmd.command));
+    }
+  };
+}
+
 function formatError(err: unknown): string {
   if (err instanceof Error) {
     const cause = (err as any).cause ? ` (${(err as any).cause?.message ?? (err as any).cause})` : '';
@@ -1327,6 +1562,92 @@ if (!process.env.VITEST) {
       .catch((err) => log(`Monthly report error: ${formatError(err)}`));
   });
 
-  // Run initial sync on startup
-  runCompanionSync().catch((err) => log(`Initial sync error: ${formatError(err)}`));
+  /**
+   * Keeps the session behind the listener's reads usable.
+   *
+   * The cron callbacks above re-login on every tick because the wf_session JWT
+   * does not outlive a process that runs for weeks. The listener has no ticks —
+   * it starts once and reads secrets forever — so it needs its own refresh, and
+   * without one every read would eventually 401 and the bot would answer
+   * nothing while looking perfectly healthy.
+   *
+   * Bounded by age rather than done per poll: the loop wakes roughly every 50
+   * seconds, and a login on each of those would be ~1,700 pointless
+   * authentications a day. A throw propagates to `readConfig`, which is exactly
+   * where the listener's backoff-and-log path wants it.
+   */
+  const SESSION_MAX_AGE_MS = 30 * 60 * 1000;
+  let sessionEstablishedAt = 0;
+  const ensureSession = async (): Promise<void> => {
+    if (Date.now() - sessionEstablishedAt < SESSION_MAX_AGE_MS) return;
+    const key = process.env.WEALTHFOLIO_API_KEY;
+    if (key) {
+      (wfClient as unknown as { token: string }).token = key;
+    } else {
+      const password = resolvePassword();
+      if (password) await wfClient.login(password);
+    }
+    sessionEstablishedAt = Date.now();
+  };
+
+  /**
+   * The bot's slash commands, and now the ONLY consumer of this token's
+   * `getUpdates` stream, dismiss buttons included. Telegram serves that
+   * stream to exactly ONE reader, so the once-per-sync poll this replaces had to
+   * go in the same commit: two readers means 409s and a bot that appears to
+   * ignore every command, none means dismiss buttons stop working.
+   *
+   * Deliberately never stopped. `stop()` waits out the in-flight long poll — up
+   * to ~60 seconds — so hanging a SIGTERM handler on it would either delay
+   * every container restart by a minute or, with a timeout, be a promise nobody
+   * finishes waiting for. The process exiting drops the connection, which is all
+   * the shutdown this loop needs.
+   */
+  startTelegramListener({
+    fetchImpl: fetch,
+    // The companion's own SYNCHRONOUS logger, and never wrapped in an `async`
+    // function: the listener's `safeLog` guards a THROWN error, and a rejected
+    // promise from an async logger would sail straight past that guard —
+    // void-return bivariance lets one through the type unnoticed.
+    log,
+    // Re-read every idle cycle, so configuring or disabling Telegram in the
+    // addon takes effect within a minute instead of at the next restart.
+    readConfig: async () => {
+      await ensureSession();
+      const raw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_config').catch(() => null);
+      const tg = parseSecretJson<any>(raw, 'telegram_config');
+      // `enabled === false` idles the listener for the same reason it silences
+      // every other Telegram path in this file: the user turned the bot off.
+      if (!tg?.botToken || !tg?.chatId || tg.enabled === false) return null;
+      return {
+        botToken: String(tg.botToken),
+        chatId: String(tg.chatId),
+        // Nothing writes this today; it is read so that a config which later
+        // carries the bot's @name makes `/cmd@SomeOtherBot` fall through
+        // instead of being answered. Undefined means "answer any @suffix".
+        botName: tg.botName ? String(tg.botName) : undefined,
+      };
+    },
+    readOffset: async () => {
+      const raw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_update_offset');
+      const n = Number(raw);
+      return raw != null && raw !== '' && Number.isFinite(n) ? n : null;
+    },
+    writeOffset: async (n) => {
+      await wfClient.setAddonSecret('simplefin-sync', 'telegram_update_offset', String(n));
+    },
+    applyDismissal: (activityId) => applyTelegramDismissal(wfClient, activityId),
+    onCommand: buildTelegramCommandHandler(wfClient),
+    // A plain `setTimeout` promise, which cannot reject. The listener hardened
+    // itself against a rejecting `sleep` precisely so nobody makes this one
+    // abortable to shorten `stop()`; see `pause` in telegram-listener.ts.
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  });
+
+  // Run initial sync on startup — through the same guard as the cron tick and
+  // `/sync`, so a command arriving while this is still running joins it instead
+  // of starting a second sync against the same SimpleFin session and database.
+  // The `.catch` is not optional: an unhandled rejection here takes the daemon
+  // down and stops syncing entirely.
+  runCompanionSyncExclusive().result.catch((err) => log(`Initial sync error: ${formatError(err)}`));
 }
