@@ -768,7 +768,7 @@ export interface SyncHealth {
 /** "Nh ago"-style relative time. Uses minutes under an hour (so a 50-minute-old
  *  sync reads "50m ago", never a misleadingly-rounded "0h ago"), hours under two
  *  days, and whole days beyond that. Anything under two minutes reads "just now". */
-function formatRelativeTime(fromIso: string, now: Date): string {
+export function formatRelativeTime(fromIso: string, now: Date): string {
   const diffMs = Math.max(0, now.getTime() - new Date(fromIso).getTime());
   const diffMin = Math.round(diffMs / 60_000);
   if (diffMin < 2) return 'just now';
