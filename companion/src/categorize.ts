@@ -67,19 +67,30 @@ import {
   type MenuSession,
   type SpendingCategory,
 } from '../../shared/categorize-menu.js';
-import { assignabilityOf, type BucketInput } from '../../shared/cash-flow-bucket.js';
+import {
+  assignabilityOf,
+  refundSubtypeWouldMakeSpending,
+  SPENDING_TAXONOMY_ID,
+  type BucketInput,
+} from '../../shared/cash-flow-bucket.js';
 import { escapeMarkdown, CATEGORIZE_ENTRY_CALLBACK, type InlineKeyboard } from '../../shared/telegram.js';
 import { visibleUncategorized, type DismissalLedger } from '../../shared/uncategorized.js';
 import { descriptionFromComment, txIdFromComment } from '../../shared/sync-core.js';
 import { uncategorizedWindow } from './uncategorized-status.js';
 
 /**
- * The taxonomy every write in this feature targets. Wealthfolio also has income
- * and savings taxonomies, and its API takes the id explicitly, so the constant
- * lives with the feature that owns it rather than being retyped at each of the
- * three call sites that bind it into `assign`/`unassign`/`createRule`.
+ * The taxonomy every write in this feature targets, re-exported for the callers
+ * that bind it into `assign`/`unassign`/`createRule` (index.ts) and for the tests
+ * that name it.
+ *
+ * Re-exported rather than declared here, which it used to be: the gate below
+ * asks `assignabilityOf` whether THIS id may be assigned, and that predicate
+ * compares it against the taxonomy ids ported from upstream's own migration. Two
+ * independent copies of the literal that must agree for the gate to mean anything
+ * is one typo away from a gate that refuses every move (or, worse, permits one
+ * the server rejects), so there is now exactly one — ./../../shared/cash-flow-bucket.js's.
  */
-export const SPENDING_TAXONOMY_ID = 'spending_categories';
+export { SPENDING_TAXONOMY_ID };
 
 /**
  * What this feature CALLS the other side of the ledger, for the sentences and
@@ -859,7 +870,7 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
   async function showRefused(
     chat: ChatSession,
     activityId: string,
-    reason: 'neutral' | 'wrong-bucket',
+    reason: 'neutral' | 'neutral-subtype' | 'wrong-bucket',
     fresh: Fresh,
     ui: CategorizeUi,
   ): Promise<void> {
@@ -1190,6 +1201,42 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
         // transaction was left with NO category at all. That happened to a real
         // user's books, which is why this is a prediction and not a retry.
         //
+        // WHAT THIS GATE DOES NOT PREDICT. `assignabilityOf` ports the BUCKET
+        // check only, not upstream's `ensure_activity_in_spending_scope`
+        // (docs/upstream-spending-buckets.md §1, §7): spending tracking globally
+        // off, an account not in the opted-in list, an archived account, or an
+        // account type that does not support spending tracking are all still
+        // server-side 400s this code cannot see coming — which is also why
+        // `refused`'s `'scope'` reason has no producer here. Passing the gate
+        // therefore means "the bucket is right", never "this will succeed", and
+        // the failure screens below stay the real answer for everything else.
+        //
+        // That residual failure is NON-DESTRUCTIVE, and worth knowing before
+        // worrying about it: upstream runs the scope check on every assignment
+        // operation INCLUDING the unassign (§1 lists `unassign_category` as a
+        // caller of `ensure_activity_assignment_allowed`, with only the bucket
+        // half skipped), so a scope problem refuses the FIRST write in the
+        // sequence — the DELETE — leaving `cleared === 0` and the honest
+        // "Nothing changed" suffix. It cannot produce the half-finished state
+        // this gate exists to prevent.
+        //
+        // TWO DELIBERATE OVER-REFUSALS, both chosen rather than overlooked:
+        //  1. The gate is unconditional, not `needsAssign && !assignable.ok`. A
+        //     tap that would only DELETE (an income-bucketed row that somehow
+        //     already carries the tapped spending category) cannot produce the
+        //     delete-then-400, so a narrower gate was available and would let
+        //     that tap clear the income side and remove a double count. One
+        //     condition is harder to get wrong later than two, and the tap IS a
+        //     request to put a spending category on the row; the release's answer
+        //     for such a row is the reimbursement rule, which moves its bucket
+        //     and makes the same tap work.
+        //  2. Any account type outside CASH/CREDIT_CARD (SECURITIES, or one this
+        //     build has never heard of) is `neutral`, so EVERY row on it is
+        //     refused here. Upstream refuses those too (§7: only those two types
+        //     support spending tracking), so the outcome matches — but this gate
+        //     reaches it from the account type rather than from the scope check
+        //     it does not port.
+        //
         // A row with no bucket data at all cannot be reasoned about, so it is
         // treated as the empty input the predicate reads as `neutral` — refuse,
         // never write blind. Unreachable in practice: `buckets` is populated
@@ -1198,11 +1245,18 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
           ?? { accountType: '', activityType: '', subtype: null };
         const assignable = assignabilityOf(bucketInput, SPENDING_TAXONOMY_ID);
         if (!assignable.ok) {
+          // `neutral` splits here, and only here: the predicate's one answer
+          // covers a CASH credit a rule can fix AND account types nothing can,
+          // and the screen must not offer the reimbursement route to someone it
+          // cannot help (see `refused`'s doc comment in the pure machine).
+          const reason = assignable.reason === 'neutral' && refundSubtypeWouldMakeSpending(bucketInput)
+            ? 'neutral-subtype'
+            : assignable.reason;
           safeLog(
             `Categorize menu: refusing to move ${action.activityId} — its cash-flow bucket is `
-            + `${assignable.bucket}, so Wealthfolio would not accept a spending category (${assignable.reason})`,
+            + `${assignable.bucket}, so Wealthfolio would not accept a spending category (${reason})`,
           );
-          await showRefused(chat, action.activityId, assignable.reason, fresh, ui);
+          await showRefused(chat, action.activityId, reason, fresh, ui);
           return;
         }
         const assignments = fresh.assignments.get(action.activityId) ?? [];

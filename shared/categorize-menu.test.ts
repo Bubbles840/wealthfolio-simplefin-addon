@@ -867,13 +867,33 @@ describe('renderScreen — refused', () => {
    *  reader can act on — so both screens carry it verbatim. */
   const HINT = 'A payback can be turned into a spending offset by marking it a reimbursement in Advanced → Transaction Rules.';
 
-  it('neutral: states the transaction is not counted as spending or income at all, then the way out', () => {
+  it('neutral: states the constraint and offers NO way out, because a subtype has none to offer', () => {
+    // This reason is reached when the ACCOUNT TYPE decides — a SECURITIES
+    // account, an account type this build does not know, a CREDIT_CARD
+    // non-expense type. Naming the reimbursement rule there would send its
+    // reader to a setting that cannot move their transaction, which is the same
+    // reason `scope` gets no hint either.
     const s = session({ screen: { kind: 'refused', activityId: 'act-1', reason: 'neutral' } });
+    const { text } = renderScreen(s);
+    expect(text).toBe(
+      'The transaction is not counted as spending or income at all, so no category can be attached to it as it stands.',
+    );
+    expect(text).not.toContain('reimbursement');
+    expect(text).not.toContain('Transaction Rules');
+  });
+
+  it('neutral-subtype: the SAME constraint, plus the way out, for a row a refund subtype would lift', () => {
+    // A CASH credit that has simply not been marked a refund yet. Identical
+    // first sentence — the constraint really is the same — and the second line
+    // is the whole difference between the two reasons.
+    const s = session({ screen: { kind: 'refused', activityId: 'act-1', reason: 'neutral-subtype' } });
     const { text } = renderScreen(s);
     expect(text).toBe(
       'The transaction is not counted as spending or income at all, so no category can be attached to it as it stands.'
       + `\n${HINT}`,
     );
+    const bare = renderScreen(session({ screen: { kind: 'refused', activityId: 'act-1', reason: 'neutral' } }));
+    expect(text.split('\n')[0]).toBe(bare.text);
   });
 
   it('wrong-bucket: states it is recorded as money in and can only take an income category, then the way out', () => {
@@ -899,7 +919,7 @@ describe('renderScreen — refused', () => {
     // implied "tap here and we will fix it" would be a promise it cannot keep —
     // and this refusal exists precisely because a promise like that once cost a
     // user their category.
-    for (const reason of ['neutral', 'wrong-bucket'] as const) {
+    for (const reason of ['neutral-subtype', 'wrong-bucket'] as const) {
       const s = session({ screen: { kind: 'refused', activityId: 'act-1', reason } });
       const { text } = renderScreen(s);
       expect(text).toContain('Advanced → Transaction Rules');
@@ -910,7 +930,7 @@ describe('renderScreen — refused', () => {
   });
 
   it('offers only « Back (to the txn screen) and Done, for every reason', () => {
-    for (const reason of ['neutral', 'wrong-bucket', 'scope'] as const) {
+    for (const reason of ['neutral', 'neutral-subtype', 'wrong-bucket', 'scope'] as const) {
       const s = session({ screen: { kind: 'refused', activityId: 'act-1', reason } });
       const { keyboard, buttons } = renderScreen(s);
       const labels = keyboard.inline_keyboard.flat().map((b) => b.text);
@@ -929,7 +949,7 @@ describe('renderScreen — refused', () => {
     // {taxonomy} categories. Categories label the cash-flow bucket; they do
     // not change it.", "Activity account is not opted into spending
     // tracking", "Activity account does not support spending tracking".
-    for (const reason of ['neutral', 'wrong-bucket', 'scope'] as const) {
+    for (const reason of ['neutral', 'neutral-subtype', 'wrong-bucket', 'scope'] as const) {
       const s = session({ screen: { kind: 'refused', activityId: 'act-1', reason } });
       const { text } = renderScreen(s);
       expect(text).not.toContain('Neutral transfers cannot be categorized');

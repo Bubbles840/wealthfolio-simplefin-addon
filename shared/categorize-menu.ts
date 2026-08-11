@@ -99,8 +99,17 @@ export type MenuScreen =
    *  (`'neutral' | 'wrong-bucket'`, ./cash-flow-bucket.ts) plus `'scope'` for
    *  the separate opted-in-account check — never upstream's own error
    *  sentence (see `REFUSED_TEXT`'s doc comment for why forwarding it would
-   *  mislead here). */
-  | { kind: 'refused'; activityId: string; reason: 'neutral' | 'wrong-bucket' | 'scope' }
+   *  mislead here).
+   *
+   *  `'neutral'` is SPLIT in two, because that one predicate answer covers two
+   *  situations a reader can do opposite things about: a CASH credit that has
+   *  simply not been marked a refund yet (`'neutral-subtype'` — a rule fixes
+   *  it), and everything else neutral, where the ACCOUNT TYPE decides and no
+   *  subtype will ever change the answer (`'neutral'` — a SECURITIES account,
+   *  an account type this build does not know, a CREDIT_CARD non-expense type).
+   *  The caller picks between them with `refundSubtypeWouldMakeSpending`; the
+   *  same reasoning keeps the fix off `'scope'`. */
+  | { kind: 'refused'; activityId: string; reason: 'neutral' | 'neutral-subtype' | 'wrong-bucket' | 'scope' }
   /** The recategorize confirmation. `fromName` (not an id) is what the row
    *  showed BEFORE the tap, because it may name an income-side category that
    *  never appears in `session.categories` (the spending tree) — the whole
@@ -772,6 +781,12 @@ function renderConfirmCross(
  * short of a promise — "can be turned into", not "will offset once you" — and
  * it names where the setting lives rather than describing the mechanism, which
  * is the addon's own screen to explain.
+ *
+ * Appended to exactly the two refusals a subtype can actually lift, and to no
+ * others: not to `'neutral'` (the account type decides those, and no subtype
+ * moves them) and not to `'scope'` (a subtype cannot opt an account into
+ * spending tracking). A fix offered where it cannot work costs its reader a trip
+ * to a settings screen and leaves them where they started.
  */
 const REIMBURSEMENT_HINT =
   'A payback can be turned into a spending offset by marking it a reimbursement in Advanced → Transaction Rules.';
@@ -790,7 +805,11 @@ const REIMBURSEMENT_HINT =
  * route out.
  */
 const REFUSED_TEXT: Record<Extract<MenuScreen, { kind: 'refused' }>['reason'], string> = {
-  neutral: `The transaction is not counted as spending or income at all, so no category can be attached to it as it stands.\n${REIMBURSEMENT_HINT}`,
+  // The account type decides this one, so it states the constraint and stops.
+  // No route out is offered because there is none a subtype could open.
+  neutral: 'The transaction is not counted as spending or income at all, so no category can be attached to it as it stands.',
+  // The same constraint, on a row where a refund subtype WOULD lift it.
+  'neutral-subtype': `The transaction is not counted as spending or income at all, so no category can be attached to it as it stands.\n${REIMBURSEMENT_HINT}`,
   'wrong-bucket': `It is recorded as money in and can only take an income category while that is true.\n${REIMBURSEMENT_HINT}`,
   // No hint: a subtype cannot opt an account into spending tracking, so
   // offering the reimbursement route here would send its reader somewhere that
