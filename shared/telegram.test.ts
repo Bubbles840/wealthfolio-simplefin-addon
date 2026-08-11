@@ -14,8 +14,9 @@ const weeklyGlyphs = (spent: number, budget: number, top?: Parameters<typeof for
   formatMonthlyRemainingSummary(spent, budget, top ?? [], GLYPHS);
 const wrapUpGlyphs = (c: Parameters<typeof formatMonthlyWrapUp>[0], m: string) =>
   formatMonthlyWrapUp(c, m, GLYPHS);
-import { buildDismissKeyboard, formatFeedLagNotice } from './telegram.js';
+import { buildDismissKeyboard, formatFeedLagNotice, CATEGORIZE_ENTRY_CALLBACK } from './telegram.js';
 import type { ImportNoticeTx, UncategorizedTx } from './telegram.js';
+import { MENU_CALLBACK_PREFIX } from './categorize-menu.js';
 
 const mockFetch = vi.fn();
 vi.stubGlobal('fetch', mockFetch);
@@ -230,11 +231,40 @@ describe('buildDismissKeyboard', () => {
       { activityId: 'a'.repeat(36), description: 'VENMO PAYMENT LONG DESCRIPTION HERE', amountCents: 4516 },
       { activityId: 'b-2', description: 'CHECK', amountCents: 2258 },
     ]);
-    expect(kb.inline_keyboard).toHaveLength(2);
+    // Two dismiss rows plus the appended `Categorize these` row (below).
+    expect(kb.inline_keyboard).toHaveLength(3);
     expect(kb.inline_keyboard[0][0].callback_data).toBe(`d:${'a'.repeat(36)}`);
     expect(Buffer.byteLength(kb.inline_keyboard[0][0].callback_data)).toBeLessThanOrEqual(64);
     expect(kb.inline_keyboard[1][0].text).toContain('CHECK');
     expect(kb.inline_keyboard[1][0].text).toContain('$22.58');
+  });
+
+  it('appends one full-width Categorize these row, after the dismiss buttons', () => {
+    const kb = buildDismissKeyboard([
+      { activityId: 'act-1', description: 'VENMO PAYMENT', amountCents: 4516 },
+    ]);
+    // The dismiss buttons and their payloads are frozen; this is an APPEND.
+    expect(kb.inline_keyboard[0]).toEqual([
+      { text: 'Dismiss: VENMO PAYMENT $45.16', callback_data: 'd:act-1' },
+    ]);
+    expect(kb.inline_keyboard.at(-1)).toEqual([
+      { text: 'Categorize these', callback_data: CATEGORIZE_ENTRY_CALLBACK },
+    ]);
+    expect(kb.inline_keyboard).toHaveLength(2);
+  });
+
+  it('adds no Categorize these row when there is nothing to list', () => {
+    // "Categorize these" with no `these` is a button that can only disappoint.
+    expect(buildDismissKeyboard([])).toEqual({ inline_keyboard: [] });
+  });
+
+  it('uses a payload the listener routes to the menu controller', () => {
+    // The listener sends `cz:`-prefixed callbacks to `onMenuCallback` and
+    // everything else to the dismissal path; a payload that missed this prefix
+    // would be a button that silently does nothing.
+    expect(CATEGORIZE_ENTRY_CALLBACK.startsWith(MENU_CALLBACK_PREFIX)).toBe(true);
+    expect(CATEGORIZE_ENTRY_CALLBACK).toBe('cz:open');
+    expect(Buffer.byteLength(CATEGORIZE_ENTRY_CALLBACK)).toBeLessThanOrEqual(64);
   });
 });
 

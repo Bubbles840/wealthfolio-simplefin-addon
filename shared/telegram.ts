@@ -504,22 +504,50 @@ export function formatImportNotice(
 }
 
 /**
- * One dismiss button per needs-a-category row shown in the import notice.
+ * The import notice's way into the `/categorize` menu — the payload behind its
+ * `Categorize these` button.
+ *
+ * MUST keep the `cz:` prefix of `MENU_CALLBACK_PREFIX` in ./categorize-menu.ts:
+ * that prefix is how the listener decides a tap belongs to the menu controller
+ * rather than to the dismissal path, so a payload missing it would be a button
+ * that silently does nothing. The literal is written out rather than imported
+ * because ./categorize-menu.ts imports THIS module (for `InlineKeyboard`,
+ * `moneyWhole`, `escapeMarkdown`), and the dependency has to run one way only.
+ * A test asserts the two agree.
+ *
+ * Deliberately NOT a `cz:<generation>:<index>` token: this button outlives
+ * every menu render and every daemon restart, so the controller special-cases
+ * it before any session lookup (see `onCallback` in companion/src/categorize.ts)
+ * and answers with a FRESH message — the notice is not the menu, and rendering
+ * over it would destroy the only record of what just imported.
+ */
+export const CATEGORIZE_ENTRY_CALLBACK = 'cz:open';
+
+/**
+ * One dismiss button per needs-a-category row shown in the import notice, plus
+ * a final full-width `Categorize these` row when there is anything to list.
  *
  * Keyed by ACTIVITY id, not `(account, txId)`: Telegram caps `callback_data`
  * at 64 BYTES, and two uuids plus a prefix run ~85. The activity id is unique,
  * fits, and is what the dismissal ledger stores. Button labels are plain text
  * (no Markdown parsing there), so descriptions go in unescaped, truncated.
+ *
+ * The dismiss buttons' text and payloads are FROZEN — the entry row is an
+ * APPEND below them, and it is omitted entirely for an empty `rows`: an empty
+ * keyboard is what tells the caller there are no buttons to attach at all, and
+ * "Categorize these" with no `these` is a button that can only disappoint.
  */
 export function buildDismissKeyboard(
   rows: Array<{ activityId: string; description: string; amountCents: number }>,
 ): InlineKeyboard {
-  return {
-    inline_keyboard: rows.map((r) => [{
-      text: `Dismiss: ${r.description.slice(0, 24)} ${money(r.amountCents / 100)}`,
-      callback_data: `d:${r.activityId}`,
-    }]),
-  };
+  const inline_keyboard = rows.map((r) => [{
+    text: `Dismiss: ${r.description.slice(0, 24)} ${money(r.amountCents / 100)}`,
+    callback_data: `d:${r.activityId}`,
+  }]);
+  if (inline_keyboard.length > 0) {
+    inline_keyboard.push([{ text: 'Categorize these', callback_data: CATEGORIZE_ENTRY_CALLBACK }]);
+  }
+  return { inline_keyboard };
 }
 
 export interface DailyDigestCategory {

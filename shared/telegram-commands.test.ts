@@ -4,6 +4,7 @@ import {
   formatHelpReply,
   TELEGRAM_COMMAND_MENU,
   resolveCategoryQuery,
+  formatCategoryQueryMiss,
   parseAffordArgs,
   formatLeftReply,
   formatAffordReply,
@@ -44,9 +45,9 @@ describe('formatHelpReply', () => {
       expect(help).toContain(`/${command}`);
     }
   });
-  it('menu covers exactly the six shipped commands', () => {
+  it('menu covers exactly the eight shipped commands', () => {
     expect(TELEGRAM_COMMAND_MENU.map((c) => c.command).sort())
-      .toEqual(['afford', 'help', 'left', 'report', 'status', 'sync']);
+      .toEqual(['afford', 'categorize', 'help', 'left', 'newrule', 'report', 'status', 'sync']);
   });
   it('prefixes with Unknown command when asked about junk', () => {
     const help = formatHelpReply('bogus');
@@ -85,6 +86,37 @@ describe('resolveCategoryQuery', () => {
 
   it('no matching prefix resolves to none', () => {
     expect(resolveCategoryQuery(cats, 'xyz')).toEqual({ kind: 'none' });
+  });
+
+  it('resolves any named thing, so /newrule can match id-carrying categories', () => {
+    // `/newrule trader joes = restaurants` has to land on a category ID, and the
+    // tree it searches includes CHILD categories — which carry no budget figures
+    // at all. Same prefix semantics, one implementation.
+    const spending = [
+      { id: 'cat-food', name: 'Food & Dining' },
+      { id: 'cat-rest', name: 'Restaurants' },
+      { id: 'cat-fun', name: 'Entertainment' },
+    ];
+    expect(resolveCategoryQuery(spending, 'restaur')).toEqual({ kind: 'one', category: spending[1] });
+    expect(resolveCategoryQuery(spending, 'nope')).toEqual({ kind: 'none' });
+  });
+});
+
+describe('formatCategoryQueryMiss', () => {
+  it('asks which one, naming every prefix match', () => {
+    expect(formatCategoryQueryMiss({ kind: 'ambiguous', names: ['Home', 'Home Improvement'] }, 'hom'))
+      .toBe('Which one? Home, Home Improvement');
+  });
+
+  it('says nothing starts with the query, and escapes what the user typed', () => {
+    // Telegram refuses a message with unbalanced Markdown entities outright, and
+    // the one person guaranteed to see this reply just mistyped a category.
+    expect(formatCategoryQueryMiss({ kind: 'none' }, 'a*b'))
+      .toBe('No category starts with "a\\*b". /left lists them all.');
+  });
+
+  it('leaves a resolved query to the caller', () => {
+    expect(formatCategoryQueryMiss({ kind: 'one', category: { name: 'Groceries' } }, 'grocer')).toBeNull();
   });
 });
 
