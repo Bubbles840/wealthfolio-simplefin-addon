@@ -846,38 +846,33 @@ export async function sendImportNotice(
   // (companion/src/telegram-listener.ts) records a tap within about a second, so
   // this path no longer polls Telegram for them — and must not, since Telegram
   // serves `getUpdates` to exactly one reader per bot token.
-  let ledger: DismissalLedger =
-    parseSecretJson<DismissalLedger>(
-      await wfClient.getAddonSecret('simplefin-sync', 'uncategorized_dismissals'),
-      'uncategorized_dismissals',
-    ) ?? {};
+  const { readLedger, prune, writeLedgerMerged } = dismissalLedgerAccess(wfClient);
+  let ledger: DismissalLedger = await readLedger();
   // Unmutated copy of that first read — this is `base` for the merge at write
   // time: what this run's delta (the entries it ages out) is measured against,
   // not what ends up on disk.
   const base: DismissalLedger = { ...ledger };
 
   // Pruning stays on the sync path. It is not the only place it happens —
-  // `applyTelegramDismissal` prunes the ledger it writes on a button tap too —
-  // but a tap is an occasional, user-driven event: a ledger nobody touches for
+  // every ledger WRITE prunes what it persists (see `dismissalLedgerAccess`) —
+  // but those are occasional, user-driven events: a ledger nobody touches for
   // months would age out nothing at all without this. The sync is the one clock
   // that ticks regardless, which is why the guaranteed prune lives here.
-  const pruned = pruneDismissals(ledger, new Date());
+  const pruned = prune(ledger);
   const prunedAnything = Object.keys(pruned).length !== Object.keys(ledger).length;
   ledger = pruned;
   if (prunedAnything) {
-    // Re-read immediately before writing rather than reuse the read from above.
-    // Both the addon AND the listener write this same secret with no
-    // compare-and-swap, so persisting the earlier snapshot would silently erase
-    // a dismissal made in between — the row would just reappear as needing a
-    // category. Merge this run's own delta (`base` → `ledger`) onto whatever is
-    // persisted right now instead.
-    const persisted =
-      parseSecretJson<DismissalLedger>(
-        await wfClient.getAddonSecret('simplefin-sync', 'uncategorized_dismissals'),
-        'uncategorized_dismissals',
-      ) ?? {};
-    const merged = pruneDismissals(mergeDismissals(persisted, base, ledger), new Date());
-    await wfClient.setAddonSecret('simplefin-sync', 'uncategorized_dismissals', JSON.stringify(merged));
+    // Only when this run actually aged something out: a no-op run must not write
+    // at all, because a write is a chance to clobber for no gain.
+    //
+    // The write itself is `dismissalLedgerAccess`'s — it re-reads immediately
+    // before writing and replays only this run's delta (`base` → `ledger`) onto
+    // what is persisted right now. Both the addon AND the listener write this
+    // same secret with no compare-and-swap, so persisting the earlier snapshot
+    // would silently erase a dismissal made in between and the row would just
+    // reappear as needing a category. That merge exists in exactly one place on
+    // purpose; see the doc comment there.
+    await writeLedgerMerged(base, ledger);
   }
 
   // End bound is TOMORROW: activity_date carries a time component, so a
@@ -1323,10 +1318,11 @@ export async function applyTelegramDismissal(
 }
 
 /**
- * The read-fresh → merge → prune → write core of the dismissal ledger, in ONE
- * place, for the TWO Telegram paths that write it: the import notice's dismiss
- * buttons (`applyTelegramDismissal`, above) and the `/categorize` menu's "Keep
- * uncategorized" / its Undo (`buildCategorizeDeps.writeLedgerMerged`, below).
+ * The dismissal ledger's read, retention rule and read-fresh → merge → prune →
+ * write, in ONE place, for every path in this file that touches the secret: the
+ * import notice's sweep and prune (`sendImportNotice`), its dismiss buttons
+ * (`applyTelegramDismissal`), and the `/categorize` menu's "Keep uncategorized"
+ * and its Undo (`buildCategorizeDeps`).
  *
  * Shared rather than copied because the invariant existing twice is exactly how
  * it broke before: the whole-object write shipped in 1.10.1, was reintroduced
@@ -1335,6 +1331,8 @@ export async function applyTelegramDismissal(
  * next)` again — which is a plain overwrite that erases whatever the addon (or
  * the other button) recorded in between. See `mergeDismissals` in
  * shared/uncategorized.ts for why there is no compare-and-swap to lean on.
+ * `mergeDismissals` and `pruneDismissals` are each called from exactly one place
+ * in this file, and it is here.
  *
  * TWO reads, and the second is what makes the merge mean anything: `base` is
  * what the caller read BEFORE acting, and it must never be passed as
@@ -1343,13 +1341,14 @@ export async function applyTelegramDismissal(
  * as small as a round trip allows. One extra request per button tap is a cheap
  * price for not erasing someone else's dismissal.
  *
- * Deliberately unguarded: the listener catches a failed dismissal write and
- * skips its "Dismissed" confirmation, and the menu controller turns one into a
- * "Couldn't save that" screen. Confirming a dismissal that was never recorded is
- * a lie the user acts on.
+ * `writeLedgerMerged` is deliberately unguarded: the listener catches a failed
+ * dismissal write and skips its "Dismissed" confirmation, and the menu
+ * controller turns one into a "Couldn't save that" screen. Confirming a
+ * dismissal that was never recorded is a lie the user acts on.
  */
 function dismissalLedgerAccess(wfClient: WealthfolioClient): {
   readLedger: () => Promise<DismissalLedger>;
+  prune: (ledger: DismissalLedger) => DismissalLedger;
   writeLedgerMerged: (base: DismissalLedger, next: DismissalLedger) => Promise<void>;
 } {
   const readLedger = async (): Promise<DismissalLedger> =>
@@ -1358,11 +1357,27 @@ function dismissalLedgerAccess(wfClient: WealthfolioClient): {
       'uncategorized_dismissals',
     ) ?? {};
 
+  /**
+   * The retention rule with its clock, for the TWO distinct prunes this file
+   * needs — and they are distinct, which is why one is exposed:
+   *
+   *  - `sendImportNotice` prunes the ledger it READ, because that pruned copy is
+   *    what filters the notice and what makes this run's ageing-out its delta;
+   *  - every write prunes what it PERSISTS, below, so the secret cannot grow
+   *    without bound.
+   *
+   * Both are "drop entries past the retention window, as of now", so they share
+   * one expression of it: a second `pruneDismissals(x, new Date())` spelled out
+   * by hand is how the two could come to disagree about the window or its clock.
+   */
+  const prune = (ledger: DismissalLedger): DismissalLedger => pruneDismissals(ledger, new Date());
+
   return {
     readLedger,
+    prune,
     writeLedgerMerged: async (base, next) => {
       const persisted = await readLedger();
-      const merged = pruneDismissals(mergeDismissals(persisted, base, next), new Date());
+      const merged = prune(mergeDismissals(persisted, base, next));
       await wfClient.setAddonSecret('simplefin-sync', 'uncategorized_dismissals', JSON.stringify(merged));
     },
   };
@@ -1713,12 +1728,25 @@ export function buildTelegramCommandHandler(
           await reply(NEWRULE_NO_DATABASE_REPLY);
           return;
         }
+        // Guarded, and with the SAME sentence as a missing database: a locked or
+        // corrupt file is another way of not being able to look the categories
+        // up, and it must not surface as the listener's generic "Something went
+        // wrong running that command" — which names neither the cause nor
+        // anything the reader could do about it.
+        let categories;
+        try {
+          categories = getNativeSpendingCategories(dbPath);
+        } catch (err) {
+          log(`Categorize menu: reading spending categories for /newrule failed: ${formatError(err)}`);
+          await reply(NEWRULE_NO_DATABASE_REPLY);
+          return;
+        }
         // The SAME resolver `/left` and `/afford` use, over the whole tree —
         // parents AND children, since "restaurants" is a child and is exactly
         // the kind of thing a rule targets. `formatCategoryQueryMiss` supplies
         // the ambiguous/none replies verbatim, so a fragment that misses reads
         // the same here as it does there.
-        const result = resolveCategoryQuery(getNativeSpendingCategories(dbPath), parsed.categoryQuery);
+        const result = resolveCategoryQuery(categories, parsed.categoryQuery);
         const miss = formatCategoryQueryMiss(result, parsed.categoryQuery);
         if (miss !== null) {
           await reply(miss);

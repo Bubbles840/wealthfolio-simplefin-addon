@@ -2875,6 +2875,19 @@ describe('the /categorize wiring', () => {
       );
     });
 
+    it('says the same thing when the category read throws rather than answering []', async () => {
+      // A locked or corrupt database is another way of not being able to look the
+      // categories up. Unwrapped, it would surface as the listener's generic
+      // "Something went wrong running that command", which names neither the
+      // cause nor anything the reader can do about it.
+      vi.mocked(getNativeSpendingCategories).mockImplementation(() => { throw new Error('database is locked'); });
+      const { sent, client } = await runNewRule('trader joes = groceries');
+      expect(sent[0][0]).toBe(
+        'The companion has no database access right now, so it can\'t look up your categories.',
+      );
+      expect(client.createCategorizationRule).not.toHaveBeenCalled();
+    });
+
     it('says the database is unreachable instead of "no category starts with"', async () => {
       // `getNativeSpendingCategories` answers [] for a path that is not there, so
       // every query would otherwise resolve to a confident "no such category".
