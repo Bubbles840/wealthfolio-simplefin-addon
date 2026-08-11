@@ -235,6 +235,16 @@ function findCategory(session: MenuSession, categoryId: string): SpendingCategor
  *  reader why they landed back at the top instead of where they tapped. */
 const GONE_NOTE = 'That transaction is no longer uncategorized.';
 
+/** `GONE_NOTE`'s recategorize counterpart. `GONE_NOTE` says "no longer
+ *  uncategorized" — true for the categorize flow, where a row that vanished
+ *  from the sweep did so BY BECOMING categorized. On a recategorize screen
+ *  that sentence is simply false: the transaction was never uncategorized,
+ *  it had a category and the user was moving it to a different one. Reusing
+ *  `GONE_NOTE` there would flatly contradict what the reader was just doing,
+ *  so this states the same underlying fact — the menu refreshed and this row
+ *  isn't where it expected — without invoking "uncategorized" at all. */
+const RECATEGORIZE_GONE_NOTE = 'That transaction is no longer available to recategorize.';
+
 /** A keyboard button paired with the action it fires — the layout-neutral
  *  unit every screen builds, before `layout` turns it into an
  *  InlineKeyboard + a parallel MenuAction[] addressed by index. Exported for
@@ -548,7 +558,9 @@ function renderRuleCreated(session: MenuSession, activityId: string | null, cate
  * Undo button needs somewhere with real ids to put the transaction back, and
  * `currentCategory` is the only place those ids live (see its doc comment).
  * Missing means the controller's fresh sweep no longer has this row at all —
- * the same staleness `GONE_NOTE` exists for everywhere else.
+ * the same staleness `GONE_NOTE`/`RECATEGORIZE_GONE_NOTE` exist for
+ * everywhere else, with the recategorize-worded one used here since this
+ * screen only ever renders mid-recategorize.
  */
 function renderRefiled(
   session: MenuSession,
@@ -556,7 +568,10 @@ function renderRefiled(
 ): RenderResult {
   const txn = findTxn(session, screen.activityId);
   const toCategory = findCategory(session, screen.toCategoryId);
-  if (!txn || !toCategory || !txn.currentCategory) return renderList(session, 0, GONE_NOTE);
+  if (!txn || !toCategory || !txn.currentCategory) {
+    const note = session.mode === 'recategorize' ? RECATEGORIZE_GONE_NOTE : GONE_NOTE;
+    return renderList(session, 0, note);
+  }
 
   const toName = escapeMarkdown(toCategory.name);
   const fromName = escapeMarkdown(screen.fromName);
@@ -584,7 +599,9 @@ function renderRefiled(
         toRestore: { taxonomyId: txn.currentCategory.taxonomyId, categoryId: txn.currentCategory.categoryId },
       },
     }],
-    [{ text: 'Next', action: { kind: 'goto', screen: { kind: 'list', page: 0 } } }],
+    // Same label as `filed`'s identical goto-list button — same action, same
+    // position, no reason for the two screens to say it differently.
+    [{ text: 'Next transaction', action: { kind: 'goto', screen: { kind: 'list', page: 0 } } }],
     [DONE_BTN],
   ];
   return finish(session.generation, lines.join('\n'), rows);
