@@ -1206,15 +1206,29 @@ describe('callback_data byte cap', () => {
       }).keyboard,
     );
 
-    // refused: fixed « Back/Done buttons regardless of reason. Included for
-    // completeness even though nothing about this screen could plausibly
-    // grow a token past the cap.
-    assertCallbackBytesFit(
-      renderScreen({
-        ...base,
-        screen: { kind: 'refused', activityId: longTxns[0].activityId, reason: 'wrong-bucket' },
-      }).keyboard,
-    );
+    // refused: fixed « Back/Done buttons regardless of reason. Looped over
+    // EVERY reason `refused` can carry, via a Record (not a plain array) keyed
+    // by the reason union — the same exhaustiveness trick `REFUSED_TEXT` uses
+    // in categorize-menu.ts — so a future reason added to the union is a
+    // compile error here until this list grows too, rather than a silently
+    // uncovered case. This passes trivially today and is expected to: the
+    // reason string never reaches callback_data, only the screen's TEXT does
+    // (checked elsewhere), so a green result here is not evidence about the
+    // text — only that the fixed buttons stay fixed regardless of reason.
+    const everyRefusedReason: Record<Extract<MenuScreen, { kind: 'refused' }>['reason'], true> = {
+      neutral: true,
+      'neutral-subtype': true,
+      'wrong-bucket': true,
+      scope: true,
+    };
+    for (const reason of Object.keys(everyRefusedReason) as Array<keyof typeof everyRefusedReason>) {
+      assertCallbackBytesFit(
+        renderScreen({
+          ...base,
+          screen: { kind: 'refused', activityId: longTxns[0].activityId, reason },
+        }).keyboard,
+      );
+    }
   });
 });
 
