@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { createCategorizeController, SPENDING_TAXONOMY_ID, type CategorizeDeps } from './categorize.js';
-import type { InlineKeyboard } from '../../shared/telegram.js';
+import { CATEGORIZE_ENTRY_CALLBACK, type InlineKeyboard } from '../../shared/telegram.js';
 import type { DismissalLedger } from '../../shared/uncategorized.js';
 
 const CHAT = 987654;
@@ -262,9 +262,139 @@ describe('taps that cannot be resolved', () => {
     const h = setup();
     await h.controller.open(h.send);
     h.state.rows = [row('a'), row('b'), row('c')];
-    await h.tap('cz:open');
+    // Any `cz:` payload that is not `<generation>:<index>` and not the import
+    // notice's own entry token (see the `cz:open` block below).
+    await h.tap('cz:nope');
     expect(h.ui.answer).toHaveBeenCalledWith('That button is stale — refreshing.');
     expect(lastCall(h.ui.edit)[0]).toBe('3 transactions need a category:');
+  });
+});
+
+describe('the import notice\'s Categorize these button', () => {
+  it('sends a FRESH message rather than editing the notice it was tapped from', async () => {
+    // The notice lists what needs a category and carries its own dismiss
+    // buttons; rendering the menu over it would destroy a message the user still
+    // needs — and there is nothing else in the chat that says what just imported.
+    const h = setup();
+    await h.tap(CATEGORIZE_ENTRY_CALLBACK);
+    const sent = lastCall(h.ui.send);
+    expect(sent[0]).toBe('2 transactions need a category:');
+    expect(labels(keyboardOf(sent))).toEqual([
+      'Aug 8 · BOOK STORES a · -$12',
+      'Aug 8 · BOOK STORES b · -$12',
+      'Done',
+    ]);
+    expect(h.ui.edit).not.toHaveBeenCalled();
+    // The spinner is cleared, with no toast: the new message IS the feedback.
+    expect(h.ui.answer).toHaveBeenLastCalledWith();
+  });
+
+  it('does not need a session, and never answers "that menu expired"', async () => {
+    // The notice's buttons outlive any menu — and every daemon restart.
+    const h = setup();
+    await h.tap(CATEGORIZE_ENTRY_CALLBACK);
+    expect(h.ui.answer).not.toHaveBeenCalledWith('That menu expired — send /categorize again.');
+    expect(h.deps.readRows).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves a live menu\'s message alone and opens a new one that taps work in', async () => {
+    const h = setup();
+    await h.controller.open(h.send);
+    const editsBefore = h.ui.edit.mock.calls.length;
+    h.state.rows = [row('c')];
+    await h.tap(CATEGORIZE_ENTRY_CALLBACK);
+    expect(h.ui.edit.mock.calls.length).toBe(editsBefore);
+    const fresh = keyboardOf(lastCall(h.ui.send));
+    expect(labels(fresh)).toEqual(['Aug 8 · BOOK STORES c · -$12', 'Done']);
+    // The new message's buttons resolve — the session went to this chat, not to
+    // the pending slot a /categorize reply parks it in.
+    await h.tap(dataFor(fresh, 'BOOK STORES c'));
+    expect(lastCall(h.ui.edit)[0]).toBe('BOOK STORES c\n-$12 · Aug 8 · Citi Double Cash');
+  });
+
+  it('reports missing database access on a fresh message too', async () => {
+    const h = setup({ dbPath: null });
+    await h.tap(CATEGORIZE_ENTRY_CALLBACK);
+    expect(h.ui.send.mock.calls.at(-1)).toEqual([
+      'The companion has no database access right now, so it can\'t tell what needs a category.',
+    ]);
+    expect(h.ui.edit).not.toHaveBeenCalled();
+  });
+
+  it('clears the spinner even when opening the menu fails outright', async () => {
+    // `open` deliberately has no catch-all of its own (the command path's
+    // listener guard is better than anything it could invent), but here a throw
+    // would leave the tapped button spinning forever.
+    const h = setup();
+    h.deps.readLedger.mockImplementation(() => { throw new Error('secret store down'); });
+    await expect(h.tap(CATEGORIZE_ENTRY_CALLBACK)).resolves.toBeUndefined();
+    expect(h.ui.answer).toHaveBeenLastCalledWith();
+  });
+});
+
+describe('openRulePreview — /newrule\'s entry point', () => {
+  it('sends the same disclosure copy, with Cancel instead of Back', async () => {
+    const h = setup();
+    await h.controller.openRulePreview('trader joe*s', 'cat-fun', h.send);
+    const sent = lastCall(h.send);
+    expect(sent[0]).toBe(
+      'Create this rule?\n'
+      + 'Descriptions containing "trader joe\\*s" → Entertainment\n'
+      + 'It will also file any other uncategorized transactions that match, now and on every future import. '
+      + 'Already-categorized transactions are never touched.',
+    );
+    expect(labels(keyboardOf(sent))).toEqual(['Create rule', 'Cancel']);
+  });
+
+  it('creates the typed pattern verbatim through the same rule write', async () => {
+    const h = setup();
+    await h.controller.openRulePreview('TRADER JOE*S (#123)', 'cat-fun', h.send);
+    await h.tap(dataFor(keyboardOf(lastCall(h.send)), 'Create rule'));
+    expect(h.deps.createRule).toHaveBeenCalledWith({
+      name: 'Telegram: TRADER JOE*S (#123)',
+      pattern: 'TRADER JOE*S (#123)',
+      categoryId: 'cat-fun',
+    });
+    const created = lastCall(h.ui.edit);
+    expect(created[0]).toBe('Rule created — future matches will file automatically under Entertainment.');
+    // No "Back to list": this path never showed a transaction to go back to.
+    expect(labels(keyboardOf(created))).toEqual(['Done']);
+    expect(h.deps.republish).toHaveBeenCalledTimes(1);
+  });
+
+  it('truncates the rule NAME and never the pattern, exactly as the tapped path does', async () => {
+    const long = 'COSTCO WHOLESALE #1123 SEATTLE WA CARD PURCHASE 08/08 RECURRING BILLING';
+    const h = setup();
+    await h.controller.openRulePreview(long, 'cat-fun', h.send);
+    await h.tap(dataFor(keyboardOf(lastCall(h.send)), 'Create rule'));
+    const rule = h.deps.createRule.mock.calls[0][0];
+    expect(rule.name).toBe('Telegram: COSTCO WHOLESALE #1123 SEATTLE WA CARD PURCHASE 08');
+    expect(rule.pattern).toBe(long);
+  });
+
+  it('reports a refused rule without claiming it was created', async () => {
+    const h = setup();
+    h.deps.createRule.mockRejectedValue(new Error('422 duplicate rule'));
+    await h.controller.openRulePreview('trader joes', 'cat-fun', h.send);
+    await h.tap(dataFor(keyboardOf(lastCall(h.send)), 'Create rule'));
+    expect(lastCall(h.ui.edit)[0]).toBe('Couldn\'t create that rule — Wealthfolio said: 422 duplicate rule');
+  });
+
+  it('cancels without writing anything', async () => {
+    const h = setup();
+    await h.controller.openRulePreview('trader joes', 'cat-fun', h.send);
+    await h.tap(dataFor(keyboardOf(lastCall(h.send)), 'Cancel'));
+    expect(lastCall(h.ui.edit)).toEqual(['Menu closed.', undefined]);
+    expect(h.deps.createRule).not.toHaveBeenCalled();
+  });
+
+  it('reports missing database access instead of previewing a rule it cannot name', async () => {
+    const h = setup({ dbPath: null });
+    await h.controller.openRulePreview('trader joes', 'cat-fun', h.send);
+    expect(h.send.mock.calls.at(-1)).toEqual([
+      'The companion has no database access right now, so it can\'t tell what needs a category.',
+    ]);
+    expect(h.deps.createRule).not.toHaveBeenCalled();
   });
 });
 

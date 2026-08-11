@@ -42,6 +42,8 @@ export const TELEGRAM_COMMAND_MENU = [
   { command: 'afford', description: 'Can I afford it? — /afford 20 shopping' },
   { command: 'status', description: 'Last sync, balances, what needs attention' },
   { command: 'sync', description: 'Pull new bank transactions now' },
+  { command: 'categorize', description: 'File uncategorized transactions, right from here' },
+  { command: 'newrule', description: 'Always file a match — /newrule trader joes = groceries' },
   { command: 'help', description: 'This list' },
 ] as const;
 
@@ -80,9 +82,16 @@ export interface BudgetPeriod {
 }
 
 /** Result of resolving a user-typed category fragment (`/left grocer`)
- *  against the real category list. */
-export type CategoryQueryResult =
-  | { kind: 'one'; category: CategoryBudgetSnapshot }
+ *  against the real category list.
+ *
+ *  Generic over the row shape, defaulting to the budget snapshot `/left` and
+ *  `/afford` pass: `/newrule` resolves the same way but needs the matched
+ *  category's ID back (a rule is written against an id, not a name), and its
+ *  tree includes CHILD categories, which carry no budget figures at all.
+ *  Parameterising is what lets both use ONE resolver — a second prefix matcher
+ *  for id-carrying categories would be the same semantics written twice. */
+export type CategoryQueryResult<T extends { name: string } = CategoryBudgetSnapshot> =
+  | { kind: 'one'; category: T }
   | { kind: 'ambiguous'; names: string[] }
   | { kind: 'none' };
 
@@ -94,8 +103,14 @@ export type CategoryQueryResult =
  * Improvement", because the exact name is the one case a typing user is most
  * likely to hit and it must never require a longer query to disambiguate
  * against its own child-ish sibling.
+ *
+ * Only `name` is read, so the matched element is handed BACK untouched: a
+ * caller passing categories with ids gets its id-carrying object out again.
  */
-export function resolveCategoryQuery(cats: CategoryBudgetSnapshot[], query: string): CategoryQueryResult {
+export function resolveCategoryQuery<T extends { name: string }>(
+  cats: T[],
+  query: string,
+): CategoryQueryResult<T> {
   const q = query.trim().toLowerCase();
   const exact = cats.find((c) => c.name.toLowerCase() === q);
   if (exact) return { kind: 'one', category: exact };
@@ -171,12 +186,22 @@ function noBudgetReply(cat: CategoryBudgetSnapshot): string {
   return `${name}: ${moneyWhole(cat.monthSpent)} spent this month\nNo budget set for ${name} — nothing to be over.`;
 }
 
-/** Shared by `/left` and `/afford`: once a query resolves to `ambiguous` or
- *  `none`, both commands reply identically — the reader typed the same
- *  fragment either way and needs the same nudge regardless of which command
- *  they used. Returns `null` for `'one'`, leaving that case to the caller,
- *  which needs the resolved category for command-specific work. */
-function queryMissReply(result: CategoryQueryResult, query: string): string | null {
+/** Shared by `/left`, `/afford` and `/newrule`: once a query resolves to
+ *  `ambiguous` or `none`, every command replies identically — the reader typed
+ *  the same fragment either way and needs the same nudge regardless of which
+ *  command exposed the miss. Returns `null` for `'one'`, leaving that case to
+ *  the caller, which needs the resolved category for command-specific work.
+ *
+ *  Exported (unlike the rest of this file's private helpers) because
+ *  `/newrule`'s handler lives in the companion: it resolves against
+ *  id-carrying categories and then hands the match to the menu controller, so
+ *  it has no formatter of its own here to hide behind. Typed against the
+ *  minimal `{ name }` row for the same reason `resolveCategoryQuery` is
+ *  generic — a child category has no budget figures. */
+export function formatCategoryQueryMiss(
+  result: CategoryQueryResult<{ name: string }>,
+  query: string,
+): string | null {
   if (result.kind === 'ambiguous') {
     return `Which one? ${result.names.map((n) => escapeMarkdown(n)).join(', ')}`;
   }
@@ -214,7 +239,7 @@ export function formatLeftReply(
 ): string {
   if (query) {
     const result = resolveCategoryQuery(cats, query);
-    const miss = queryMissReply(result, query);
+    const miss = formatCategoryQueryMiss(result, query);
     if (miss !== null) return miss;
     const cat = (result as { kind: 'one'; category: CategoryBudgetSnapshot }).category;
     if (cat.budget <= 0) return noBudgetReply(cat);
@@ -258,7 +283,7 @@ export function formatAffordReply(
   query: string,
 ): string {
   const result = resolveCategoryQuery(cats, query);
-  const miss = queryMissReply(result, query);
+  const miss = formatCategoryQueryMiss(result, query);
   if (miss !== null) return miss;
   const cat = (result as { kind: 'one'; category: CategoryBudgetSnapshot }).category;
   if (cat.budget <= 0) return noBudgetReply(cat);

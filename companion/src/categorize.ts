@@ -44,7 +44,7 @@ import {
   type MenuSession,
   type SpendingCategory,
 } from '../../shared/categorize-menu.js';
-import { escapeMarkdown, type InlineKeyboard } from '../../shared/telegram.js';
+import { escapeMarkdown, CATEGORIZE_ENTRY_CALLBACK, type InlineKeyboard } from '../../shared/telegram.js';
 import { visibleUncategorized, type DismissalLedger } from '../../shared/uncategorized.js';
 import { descriptionFromComment } from '../../shared/sync-core.js';
 import { uncategorizedWindow } from './uncategorized-status.js';
@@ -123,9 +123,27 @@ export interface CategorizeDeps {
   log: (msg: string) => void;
 }
 
+/** What both entry points send with: `reply` from the command handler, or the
+ *  `ui.send` of the message a `cz:open` tap arrived on. Called with ONE argument
+ *  when there is no keyboard to attach, so a caller can distinguish "no
+ *  keyboard" from "an empty one". */
+type MenuSend = (text: string, keyboard?: InlineKeyboard) => Promise<void>;
+
 export interface CategorizeController {
   /** `/categorize`: builds a fresh session and sends the list screen. */
-  open(send: (text: string, keyboard?: InlineKeyboard) => Promise<void>): Promise<void>;
+  open(send: MenuSend): Promise<void>;
+  /**
+   * `/newrule <pattern> = <category>`: builds a fresh session parked on the
+   * free-rule confirmation screen and sends it. The category is already
+   * RESOLVED to an id by the caller (`resolveCategoryQuery` over the same
+   * native category read this controller uses), because the miss cases —
+   * ambiguous, none — are plain replies with no menu behind them at all.
+   *
+   * The `Create rule` button flows through the same `deps.createRule` as the
+   * tapped-off-a-transaction path, with the same name truncation and the same
+   * disclosure copy: one rule write, two ways in.
+   */
+  openRulePreview(pattern: string, categoryId: string, send: MenuSend): Promise<void>;
   /** One `cz:` tap. */
   onCallback(cb: { data: string; chatId: number; messageId: number }, ui: CategorizeUi): Promise<void>;
 }
@@ -677,6 +695,38 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
     return pending;
   }
 
+  /**
+   * Every entry point, in one function: load fresh, park a NEW session on
+   * `screen` under `chatId`, and send it.
+   *
+   * A second entry REPLACES the menu rather than adding one. The listener
+   * honours exactly one chat, so clearing the map is that replacement — and it
+   * means an older message's buttons resolve against the NEW session, where the
+   * index is either out of range (expired) or simply whatever now sits at that
+   * position. Neither can act on the row the old message showed.
+   * The older message's tokens carry an older GENERATION, which no session will
+   * ever hold again, so every one of its buttons answers "that menu expired" —
+   * including the ones whose index is still in range on the new screen (see
+   * `MenuSession.generation`).
+   *
+   * On a failed load NO session is stored: there is nothing to tap, and a
+   * keyboard that resolved against a session from a previous menu would be
+   * worse. `send` is called with ONE argument there, so the caller can tell the
+   * difference between "no keyboard" and "an empty keyboard".
+   */
+  async function openScreen(chatId: number, screen: MenuScreen, send: MenuSend): Promise<void> {
+    const loaded = await load();
+    if (!loaded.ok) {
+      await send(loaded.text);
+      return;
+    }
+    sessions.clear();
+    const chat: ChatSession = { session: buildSession(screen, null, loaded.fresh), pinned: null };
+    const { text, keyboard } = present(chat);
+    sessions.set(chatId, chat);
+    await send(text, keyboard);
+  }
+
   return {
     /**
      * Deliberately NOT wrapped in a catch-all, unlike `onCallback`: a throw from
@@ -684,33 +734,19 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
      * "Something went wrong running that command" — a better outcome than
      * anything this function could invent, and the reason the failures it CAN
      * anticipate are returned as text instead.
+     *
+     * The session is parked under `PENDING_CHAT_ID` because a command's `reply`
+     * carries no chat id — the first tap adopts it (see `takeSession`).
      */
     async open(send): Promise<void> {
-      const loaded = await load();
-      if (!loaded.ok) {
-        // No session is stored: there is nothing to tap, and a keyboard that
-        // resolved against a session from a previous menu would be worse.
-        await send(loaded.text);
-        return;
-      }
-      // A second `/categorize` REPLACES the menu rather than adding one. The
-      // listener honours exactly one chat, so clearing the map is that
-      // replacement — and it means the older message's buttons resolve against
-      // the NEW session, where the index is either out of range (expired) or
-      // simply whatever now sits at that position. Neither can act on the row
-      // the old message showed.
-      // The older message's tokens carry an older GENERATION, which no session
-      // will ever hold again, so every one of its buttons answers "that menu
-      // expired" — including the ones whose index is still in range on the new
-      // screen (see `MenuSession.generation`).
-      sessions.clear();
-      const chat: ChatSession = {
-        session: buildSession({ kind: 'list', page: 0 }, null, loaded.fresh),
-        pinned: null,
-      };
-      const { text, keyboard } = present(chat);
-      sessions.set(PENDING_CHAT_ID, chat);
-      await send(text, keyboard);
+      await openScreen(PENDING_CHAT_ID, { kind: 'list', page: 0 }, send);
+    },
+
+    /** Same parking as `open`, and uncaught for the same reason — this is a
+     *  command path too (`/newrule`), reached with the category already
+     *  resolved. */
+    async openRulePreview(pattern, categoryId, send): Promise<void> {
+      await openScreen(PENDING_CHAT_ID, { kind: 'freeRulePreview', pattern, categoryId }, send);
     },
 
     /**
@@ -720,6 +756,29 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
      * response can supply `undefined` under its `number` type.
      */
     async onCallback(cb, ui): Promise<void> {
+      // BEFORE any session lookup, and rendered with `send` rather than `edit`.
+      // This payload is the import notice's `Categorize these` button, which
+      // outlives every menu render and every restart, so it must never answer
+      // "that menu expired" — and it sits on a message that LISTS what needs a
+      // category and carries its own dismiss buttons. Editing the menu over it
+      // would destroy the only record in the chat of what just imported.
+      if (cb.data === CATEGORIZE_ENTRY_CALLBACK) {
+        try {
+          // `ui.send` verbatim, not a wrapper: `openScreen` calls it with one
+          // argument when there is no keyboard, and that arity is observable.
+          await openScreen(cb.chatId, { kind: 'list', page: 0 }, ui.send);
+        } catch (err) {
+          // `openScreen` returns its anticipated failures as text, so reaching
+          // here means something unforeseen threw. The spinner still has to
+          // stop, or the tapped button spins until Telegram gives up on it.
+          safeLog(`Categorize menu: opening from the import notice failed: ${formatError(err)}`);
+        }
+        // No toast: the new message IS the feedback, and a toast on top of it
+        // would be a second notification for one tap.
+        await ui.answer();
+        return;
+      }
+
       const chat = takeSession(cb.chatId);
       if (!chat) {
         // No session at all: a restart wiped it, or these buttons predate the
