@@ -28,9 +28,11 @@ export interface CategorizeTxn {
 }
 
 /** One node of Wealthfolio's spending category tree. `parentId === null`
- *  marks a top-level category; `parentName` rides along so a screen that
- *  only has a child in hand (never happens today, but cheaper to carry than
- *  to re-derive) doesn't need a second lookup. */
+ *  marks a top-level category — the menu's parent filter, so a reader that
+ *  hands back `''` for a NULL parent (the sqlite3-CLI fallback does) empties
+ *  the whole category picker. `parentName` is what `categoryDisplayName` shows
+ *  on the rule screens, where two same-named children are otherwise
+ *  indistinguishable. */
 export interface SpendingCategory {
   id: string;
   name: string;
@@ -96,7 +98,6 @@ export type MenuAction =
   | { kind: 'undismiss'; activityId: string }
   | { kind: 'createRule'; activityId: string; categoryId: string }
   | { kind: 'createFreeRule'; pattern: string; categoryId: string }
-  | { kind: 'refresh' }
   | { kind: 'close' };
 
 /**
@@ -116,6 +117,28 @@ export function parseNewRuleArgs(args: string): { pattern: string; categoryQuery
   const categoryQuery = args.slice(sepIndex + 1).trim();
   if (!pattern || !categoryQuery) return null;
   return { pattern, categoryQuery };
+}
+
+/**
+ * How a category is NAMED wherever naming the wrong one would be expensive:
+ * `Restaurants (Food & Dining)` for a child, plain `Home` for a top-level
+ * category.
+ *
+ * Wealthfolio's own preset tree ships duplicate leaf names — an `Other` under
+ * several parents, a `Gas` under both Transportation and Bills — and
+ * `/newrule`'s resolver matches on NAME over the FLAT tree. So a bare name on a
+ * rule preview can describe two different categories while looking perfectly
+ * correct, and confirming it writes a rule that sweeps every matching
+ * uncategorized row into whichever one the resolver happened to reach first.
+ * The parent is the cheapest thing that tells them apart, and it is already
+ * read from SQLite (`parentName`) for exactly this.
+ *
+ * Takes the minimal shape rather than `SpendingCategory` so the budget-shaped
+ * rows in ./telegram-commands.ts — which have no parent at all — can share it
+ * and come out unchanged.
+ */
+export function categoryDisplayName(cat: { name: string; parentName?: string | null }): string {
+  return cat.parentName ? `${cat.name} (${cat.parentName})` : cat.name;
 }
 
 export const MENU_PAGE_SIZE = 8;
@@ -383,7 +406,7 @@ function renderRulePreview(session: MenuSession, activityId: string, categoryId:
   const category = findCategory(session, categoryId);
   if (!txn || !category) return renderList(session, 0, GONE_NOTE);
 
-  const text = ruleCopy(escapeMarkdown(txn.description), escapeMarkdown(category.name));
+  const text = ruleCopy(escapeMarkdown(txn.description), escapeMarkdown(categoryDisplayName(category)));
   const rows: Btn[][] = [
     [{ text: 'Create rule', action: { kind: 'createRule', activityId, categoryId } }],
     [{ text: '« Back', action: { kind: 'goto', screen: { kind: 'txn', activityId } } }],
@@ -395,7 +418,10 @@ function renderFreeRulePreview(session: MenuSession, pattern: string, categoryId
   const category = findCategory(session, categoryId);
   if (!category) return renderList(session, 0, GONE_NOTE);
 
-  const text = ruleCopy(escapeMarkdown(pattern), escapeMarkdown(category.name));
+  // `categoryDisplayName`, not the bare name: this screen is the ONLY thing
+  // between a typed `/newrule x = other` and a rule against whichever `Other`
+  // the flat-tree resolver reached first.
+  const text = ruleCopy(escapeMarkdown(pattern), escapeMarkdown(categoryDisplayName(category)));
   // No « Back: this screen is reachable only from /newrule, a free-standing
   // command with no prior menu screen to return to. Cancel closes instead.
   const rows: Btn[][] = [
@@ -409,7 +435,7 @@ function renderRuleCreated(session: MenuSession, activityId: string | null, cate
   const category = findCategory(session, categoryId);
   if (!category) return renderList(session, 0, GONE_NOTE);
 
-  const text = `Rule created — future matches will file automatically under ${escapeMarkdown(category.name)}.`;
+  const text = `Rule created — future matches will file automatically under ${escapeMarkdown(categoryDisplayName(category))}.`;
   // Only Done from /newrule (activityId: null): there is no in-flight
   // transaction to return to the list FOR, since this path never showed one.
   const rows: Btn[][] = activityId !== null ? [[BACK_TO_LIST_BTN], [DONE_BTN]] : [[DONE_BTN]];

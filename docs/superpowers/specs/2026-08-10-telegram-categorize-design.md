@@ -47,9 +47,13 @@ no new mounts, no new permissions.
 4. **"Always file it here" is offered, never assumed.** After filing, the
    confirmation offers `Make this a rule`. Tapping shows the EXACT rule
    (`descriptions containing "TRADER JOE S #628" → Groceries`) and asks for one
-   more tap to create it. Priority 50 — below Nick's hand-made rules (60) and
-   Wealthfolio's presets (70–90), where LOWER wins — so a tapped rule never
-   outranks a deliberate one. The pattern is the cleaned descriptor with
+   more tap to create it. Priority 50, where HIGHER WINS — verified in upstream
+   source (`crates/spending/src/categorization_rules/matcher.rs` keeps the match
+   with `rule.priority > current.priority`, under a unit test named
+   `higher_priority_wins`), not assumed. So 50 sits BELOW Nick's hand-made rules
+   (60) and below Wealthfolio's presets (70–90) on the winning scale: a tapped
+   rule loses to both, and never outranks a deliberate one. The pattern is the
+   cleaned descriptor with
    `matchType: "contains"` — the API's native substring match, so no regex
    and nothing to escape. Narrow and honest beats clever and wrong; rules are
    editable in Wealthfolio's settings afterwards.
