@@ -600,8 +600,27 @@ describe('renderScreen — refiled', () => {
     const { text } = renderScreen(s);
     expect(text).toBe(
       'PAYPAL REFUND: Refunds → Groceries.\n'
-      + 'This payment now offsets Groceries instead of counting as income.',
+      + 'This payment now offsets Groceries instead of counting toward its previous category.',
     );
+  });
+
+  it('the offset line says nothing income-specific when the cleared assignment was a savings one', () => {
+    // crossTaxonomy is set from "cleared some non-spending taxonomy", not
+    // "cleared income specifically" — a savings-taxonomy clear must not be
+    // described as if it stopped counting as income, since it never did.
+    const s = session({
+      txns: [refiledTxn({
+        description: 'HOUSE FUND TRANSFER',
+        currentCategory: { taxonomyId: 'savings', categoryId: 'cat-savings-house', name: 'House Fund' },
+      })],
+      screen: { ...refiledScreen, fromName: 'House Fund', crossTaxonomy: true },
+    });
+    const { text } = renderScreen(s);
+    expect(text).toBe(
+      'HOUSE FUND TRANSFER: House Fund → Groceries.\n'
+      + 'This payment now offsets Groceries instead of counting toward its previous category.',
+    );
+    expect(text).not.toContain('income');
   });
 
   it('omits the offset line when crossTaxonomy is false', () => {
@@ -851,10 +870,11 @@ describe('callback_data byte cap', () => {
     // process, so the widest token the format can ever produce is the one to
     // measure, not the one a fresh session happens to start at.
     //
-    // `mode: 'categorize'` is spelled out explicitly now that MenuSession
-    // requires it — this session predates recategorize, and the value below is
-    // exactly what an omitted field defaulted to before the type made it
-    // mandatory, so nothing about this test's behaviour changes.
+    // `mode: 'categorize'` is spelled out explicitly even though the field is
+    // optional (every read treats a missing value as `'categorize'`) — this
+    // session predates recategorize, and the value below is exactly what an
+    // omitted field defaults to, so nothing about this test's behaviour
+    // changes.
     const base = {
       txns: longTxns, categories, buttons: [] as MenuAction[], generation: 4294967295,
       mode: 'categorize' as const,

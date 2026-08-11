@@ -1274,7 +1274,7 @@ describe('reassign — the cross-taxonomy move', () => {
     expect(h.deps.republish).toHaveBeenCalledTimes(1);
     expect(lastCall(h.ui.edit)[0]).toBe(
       'VENMO PAYMENT a: Reimbursements → Entertainment.\n'
-      + 'This payment now offsets Entertainment instead of counting as income.',
+      + 'This payment now offsets Entertainment instead of counting toward its previous category.',
     );
     expect(labels(refiled)).toEqual(['Undo', 'Next transaction', 'Done']);
   });
@@ -1324,7 +1324,7 @@ describe('reassign — the cross-taxonomy move', () => {
     await openRecatAtRefiled(h);
     expect(h.deps.unassignTaxonomy).toHaveBeenCalledWith('a', INCOME_TAXONOMY_ID);
     expect(h.deps.assign).not.toHaveBeenCalled();
-    expect(lastCall(h.ui.edit)[0]).toContain('now offsets Entertainment instead of counting as income');
+    expect(lastCall(h.ui.edit)[0]).toContain('now offsets Entertainment instead of counting toward its previous category');
   });
 
   it('writes NOTHING when the row\'s category changed between the render and the tap', async () => {

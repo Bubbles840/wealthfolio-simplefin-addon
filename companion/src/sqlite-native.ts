@@ -410,7 +410,14 @@ export interface NativeCategorizedTx {
   /** ISO date (yyyy-mm-dd). */
   date: string;
   accountName: string;
-  /** UPPERCASED (`WITHDRAWAL`, `DEPOSIT`, ...). */
+  /** UPPERCASED (`WITHDRAWAL`, `DEPOSIT`, ...). Not read by any caller today —
+   *  `/recategorize` tells a credit from a spend by category name, not sign
+   *  (see `renderList`'s comment in shared/categorize-menu.ts) — but it costs
+   *  nothing to carry alongside the row this reader already fetched, and it is
+   *  the one column a future "show the amount's real sign" feature for this
+   *  list would otherwise have to add a whole extra query to get. Left in
+   *  rather than removed so as not to touch the exact-shape assertion in
+   *  sqlite-native.test.ts for a field with no behavioural cost. */
   activityType: string;
   /** Every taxonomy's assignment on this activity, 1 or more entries. */
   assignments: NativeAssignment[];
