@@ -766,7 +766,18 @@ function renderConfirmCross(
 }
 
 /**
- * The three sentences `refused` can show — written fresh rather than
+ * The one thing a reader CAN do about the two refusals a subtype governs, said
+ * in the passive: the bot does not set subtypes and must not imply it will (a
+ * transaction rule is the only thing that does, since v1.14.0). Deliberately
+ * short of a promise — "can be turned into", not "will offset once you" — and
+ * it names where the setting lives rather than describing the mechanism, which
+ * is the addon's own screen to explain.
+ */
+const REIMBURSEMENT_HINT =
+  'A payback can be turned into a spending offset by marking it a reimbursement in Advanced → Transaction Rules.';
+
+/**
+ * The three refusals `refused` can show — written fresh rather than
  * forwarding Wealthfolio's own error text. Upstream reuses ONE Rust string
  * ("Neutral transfers cannot be categorized. Change or unlink the transfer if
  * it should count as spending.") for both an actual internal transfer AND a
@@ -774,12 +785,16 @@ function renderConfirmCross(
  * which would misdescribe the latter; its other messages either name internal
  * enum labels ("Income activities can only use income categories...") or are
  * written for a developer, not a reader trying to file a transaction. Each
- * sentence here states the constraint plainly, blames nobody, and promises
- * nothing beyond what is true right now.
+ * states the constraint plainly, blames nobody, and promises nothing beyond
+ * what is true right now — then, for the two a subtype governs, names the one
+ * route out.
  */
 const REFUSED_TEXT: Record<Extract<MenuScreen, { kind: 'refused' }>['reason'], string> = {
-  neutral: 'The transaction is not counted as spending or income at all, so no category can be attached to it as it stands.',
-  'wrong-bucket': 'It is recorded as money in and can only take an income category while that is true.',
+  neutral: `The transaction is not counted as spending or income at all, so no category can be attached to it as it stands.\n${REIMBURSEMENT_HINT}`,
+  'wrong-bucket': `It is recorded as money in and can only take an income category while that is true.\n${REIMBURSEMENT_HINT}`,
+  // No hint: a subtype cannot opt an account into spending tracking, so
+  // offering the reimbursement route here would send its reader somewhere that
+  // changes nothing for them.
   scope: 'Its account is not set up for spending tracking.',
 };
 

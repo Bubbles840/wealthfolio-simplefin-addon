@@ -67,6 +67,7 @@ import {
   type MenuSession,
   type SpendingCategory,
 } from '../../shared/categorize-menu.js';
+import { assignabilityOf, type BucketInput } from '../../shared/cash-flow-bucket.js';
 import { escapeMarkdown, CATEGORIZE_ENTRY_CALLBACK, type InlineKeyboard } from '../../shared/telegram.js';
 import { visibleUncategorized, type DismissalLedger } from '../../shared/uncategorized.js';
 import { descriptionFromComment, txIdFromComment } from '../../shared/sync-core.js';
@@ -129,6 +130,18 @@ export interface CategorizedSourceRow {
   accountName: string;
   /** EVERY taxonomy's assignment on this activity. */
   assignments: CategorizeAssignment[];
+  /**
+   * The three columns `assignabilityOf` needs, and the only reason this
+   * interface names them: they decide whether Wealthfolio will ACCEPT a
+   * spending category on the row, which the reassign gate has to know before it
+   * deletes anything (see the `reassign` case). `subtype` and `accountType` are
+   * `''` rather than absent when the database has no value — the native reader's
+   * own convention, and `bucketFor` reads an unknown account type as `neutral`,
+   * which refuses rather than writes.
+   */
+  activityType: string;
+  subtype: string;
+  accountType: string;
 }
 
 /** The three transport calls the listener binds to one tap. NONE of them ever
@@ -437,9 +450,16 @@ interface Fresh {
    *  move was checked against cannot come from two different moments. Empty in
    *  categorize mode. */
   assignments: ReadonlyMap<string, CategorizeAssignment[]>;
+  /** Recategorize only, and from that same read for the same reason: what
+   *  `assignabilityOf` needs to say whether a spending category is legal on this
+   *  row. Populated for exactly the activities in `txns`, so a row the scope or
+   *  the query excluded cannot have a write decided about it. Empty in
+   *  categorize mode, where no `reassign` is reachable. */
+  buckets: ReadonlyMap<string, BucketInput>;
 }
 
 const NO_ASSIGNMENTS: ReadonlyMap<string, CategorizeAssignment[]> = new Map();
+const NO_BUCKETS: ReadonlyMap<string, BucketInput> = new Map();
 
 /** The spending assignment among a row's assignments, which is the one both Undo
  *  verifications and the same-category check are about. */
@@ -606,6 +626,7 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
         const rows = deps.readCategorized(path, start, end);
         const categories = deps.readCategories(path);
         const assignments = new Map<string, CategorizeAssignment[]>();
+        const buckets = new Map<string, BucketInput>();
         const txns: CategorizeTxn[] = [];
         for (const r of rows) {
           // Scope first, then the query, then the shape: all three are reasons a
@@ -619,9 +640,17 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
           // entire history.
           if (mode.query && !txn.description.toLowerCase().includes(mode.query)) continue;
           assignments.set(r.activityId, r.assignments);
+          // Recorded next to the assignments, from the same row, so the gate and
+          // the deletes it guards can never be talking about two different
+          // moments of the same transaction.
+          buckets.set(r.activityId, {
+            accountType: r.accountType,
+            activityType: r.activityType,
+            subtype: r.subtype,
+          });
           txns.push(txn);
         }
-        return { ok: true, fresh: { txns, categories, ledger: {}, assignments } };
+        return { ok: true, fresh: { txns, categories, ledger: {}, assignments, buckets } };
       }
       const rows = deps.readRows(path, start, end);
       const ledger = await deps.readLedger();
@@ -635,6 +664,7 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
           categories,
           ledger,
           assignments: NO_ASSIGNMENTS,
+          buckets: NO_BUCKETS,
         },
       };
     } catch (err) {
@@ -815,6 +845,28 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
     await ui.edit(`${CHANGED_ELSEWHERE_TEXT}\n\n${text}`, keyboard);
   }
 
+  /**
+   * A move Wealthfolio would reject, refused BEFORE anything is written — the
+   * one screen in this controller that is rendered instead of a write rather
+   * than after one.
+   *
+   * Rendered off the sweep the decision was made from, with no second read: the
+   * reason is a property of the row that sweep returned, and re-reading could
+   * only introduce a moment in which the screen and the decision disagree. Same
+   * `show` + `edit` shape as `showDeclined` and `showGone`, which are the other
+   * two "nothing was written, here is why" paths.
+   */
+  async function showRefused(
+    chat: ChatSession,
+    activityId: string,
+    reason: 'neutral' | 'wrong-bucket',
+    fresh: Fresh,
+    ui: CategorizeUi,
+  ): Promise<void> {
+    const { text, keyboard } = show(chat, { kind: 'refused', activityId, reason }, null, fresh);
+    await ui.edit(text, keyboard);
+  }
+
   /** Load fresh, then render `screen`. The freshness rule, in one function. */
   async function transition(
     chat: ChatSession,
@@ -906,7 +958,7 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
           session: buildSession(
             { kind: 'closed' },
             null,
-            { txns: [], categories: [], ledger: {}, assignments: NO_ASSIGNMENTS },
+            { txns: [], categories: [], ledger: {}, assignments: NO_ASSIGNMENTS, buckets: NO_BUCKETS },
             chat.mode.kind,
           ),
           pinned: null,
@@ -1122,6 +1174,35 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
         // category the row had already left.
         if (!row || !row.currentCategory || !shown || row.currentCategory.categoryId !== shown.categoryId) {
           await showDeclined(chat, fresh, ui);
+          return;
+        }
+        // THE GATE, and the reason it stands HERE: after the freshness check
+        // (which owns its own refusal — a row somebody else moved is not a
+        // bucket problem) and before the first `unassignTaxonomy`, the `assign`
+        // and the `republish` below.
+        //
+        // Wealthfolio refuses a spending category on an activity whose cash-flow
+        // bucket is not spending, and there is no endpoint that answers "would
+        // this be accepted" — so the only way to know is to ask the port of its
+        // own rule (../../shared/cash-flow-bucket.js) before writing. Without
+        // this, a Venmo payback filed under income took the whole delete-then-
+        // assign sequence: the DELETE succeeded, the PUT came back 400, and the
+        // transaction was left with NO category at all. That happened to a real
+        // user's books, which is why this is a prediction and not a retry.
+        //
+        // A row with no bucket data at all cannot be reasoned about, so it is
+        // treated as the empty input the predicate reads as `neutral` — refuse,
+        // never write blind. Unreachable in practice: `buckets` is populated
+        // from the same rows `txns` is, and the row was just found in `txns`.
+        const bucketInput: BucketInput = fresh.buckets.get(action.activityId)
+          ?? { accountType: '', activityType: '', subtype: null };
+        const assignable = assignabilityOf(bucketInput, SPENDING_TAXONOMY_ID);
+        if (!assignable.ok) {
+          safeLog(
+            `Categorize menu: refusing to move ${action.activityId} — its cash-flow bucket is `
+            + `${assignable.bucket}, so Wealthfolio would not accept a spending category (${assignable.reason})`,
+          );
+          await showRefused(chat, action.activityId, assignable.reason, fresh, ui);
           return;
         }
         const assignments = fresh.assignments.get(action.activityId) ?? [];
