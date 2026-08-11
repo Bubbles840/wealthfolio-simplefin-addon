@@ -572,6 +572,7 @@ describe('renderScreen — refiled', () => {
   const refiledScreen: MenuScreen = {
     kind: 'refiled', activityId: 'act-1', fromName: 'Dining', toCategoryId: 'cat-groceries',
     crossTaxonomy: false, undone: false,
+    restore: [{ taxonomyId: 'spending', categoryId: 'cat-dining' }],
   };
 
   function refiledTxn(overrides: Partial<CategorizeTxn> = {}): CategorizeTxn {
@@ -619,7 +620,7 @@ describe('renderScreen — refiled', () => {
     expect(undo).toEqual({
       kind: 'undoReassign',
       activityId: 'act-1',
-      toRestore: { taxonomyId: 'spending', categoryId: 'cat-dining' },
+      toRestore: [{ taxonomyId: 'spending', categoryId: 'cat-dining' }],
     });
 
     const next = buttons[labels.indexOf('Next transaction')];
@@ -627,6 +628,49 @@ describe('renderScreen — refiled', () => {
 
     const done = buttons[labels.indexOf('Done')];
     expect(done).toEqual({ kind: 'close' });
+  });
+
+  it('hands Undo EVERY assignment the move cleared, not the one the screen displays', () => {
+    // The defect this list shape exists for: a row holding a spending category
+    // AND an income one loses the income assignment to the move, and an undo
+    // built from the displayed category alone would never put it back — while
+    // this screen said "back under Dining" as if it had.
+    const s = session({
+      txns: [refiledTxn()],
+      screen: {
+        ...refiledScreen,
+        crossTaxonomy: true,
+        restore: [
+          { taxonomyId: 'spending', categoryId: 'cat-dining' },
+          { taxonomyId: 'income', categoryId: 'cat-income-refunds' },
+          { taxonomyId: 'savings', categoryId: 'cat-house' },
+        ],
+      },
+    });
+    const { keyboard, buttons } = renderScreen(s);
+    const labels = keyboard.inline_keyboard.flat().map((b) => b.text);
+    expect(buttons[labels.indexOf('Undo')]).toEqual({
+      kind: 'undoReassign',
+      activityId: 'act-1',
+      toRestore: [
+        { taxonomyId: 'spending', categoryId: 'cat-dining' },
+        { taxonomyId: 'income', categoryId: 'cat-income-refunds' },
+        { taxonomyId: 'savings', categoryId: 'cat-house' },
+      ],
+    });
+  });
+
+  it('offers NO Undo button when there is nothing to restore', () => {
+    // A move that wrote nothing (re-filing to the category the row already had)
+    // has nothing to reverse. An Undo here could only either do nothing and
+    // claim success, or write a category the row already carries.
+    const s = session({ txns: [refiledTxn()], screen: { ...refiledScreen, restore: [] } });
+    const { keyboard, buttons } = renderScreen(s);
+    const labels = keyboard.inline_keyboard.flat().map((b) => b.text);
+    expect(labels).toEqual(['Next transaction', 'Done']);
+    expect(buttons.some((b) => b.kind === 'undoReassign')).toBe(false);
+    // The confirmation itself still renders — the move is still what happened.
+    expect(renderScreen(s).text).toBe('BOOK STORES: Dining → Groceries.');
   });
 
   it('undone: true mirrors the existing undo wording pattern and offers only Back to list / Done', () => {
@@ -666,19 +710,26 @@ describe('renderScreen — refiled', () => {
     expect(text).not.toContain('uncategorized');
   });
 
-  it('falls back to the list with the recategorize-worded note when the transaction has no currentCategory to restore', () => {
-    // `refiledTxn()` always sets `currentCategory`; this drops it to exercise
-    // the third branch of the guard — a txn that DOES resolve, but carries no
-    // data for `undoReassign.toRestore` to use, which is just as much a "this
-    // row isn't in a state this screen can render" case as the other two.
+  it('renders and still offers Undo when the transaction carries no currentCategory', () => {
+    // This used to be a third fallback branch: while the undo was derived from
+    // `txn.currentCategory`, a txn without one could not render this screen at
+    // all. The restore data lives on the SCREEN now — which is the only place
+    // that knows the state BEFORE the move — so the display-only field being
+    // absent no longer costs the reader their confirmation or their Undo.
     const s = session({
       mode: 'recategorize',
       txns: [txn({ description: 'BOOK STORES' })],
       screen: refiledScreen,
     });
-    const { text } = renderScreen(s);
-    expect(text.split('\n')[0]).toBe('That transaction is no longer available to recategorize.');
-    expect(text).not.toContain('uncategorized');
+    const { text, keyboard, buttons } = renderScreen(s);
+    expect(text).toBe('BOOK STORES: Dining → Groceries.');
+    const labels = keyboard.inline_keyboard.flat().map((b) => b.text);
+    expect(labels).toEqual(['Undo', 'Next transaction', 'Done']);
+    expect(buttons[labels.indexOf('Undo')]).toEqual({
+      kind: 'undoReassign',
+      activityId: 'act-1',
+      toRestore: [{ taxonomyId: 'spending', categoryId: 'cat-dining' }],
+    });
   });
 
   it('falls back with the ORIGINAL GONE_NOTE wording in categorize mode (defensive: this screen should never actually render there)', () => {
@@ -877,6 +928,13 @@ describe('callback_data byte cap', () => {
           toCategoryId: longParents[0].id,
           crossTaxonomy: true,
           undone: false,
+          // Several assignments, every id long: the restore list rides on the
+          // SCREEN, never in a token, so none of this can reach callback_data.
+          restore: [
+            { taxonomyId: 'spending_categories', categoryId: longParents[0].id },
+            { taxonomyId: 'income_categories', categoryId: `income-category-id-${'i'.repeat(40)}` },
+            { taxonomyId: 'savings_categories', categoryId: `savings-category-id-${'s'.repeat(40)}` },
+          ],
         },
       }).keyboard,
     );

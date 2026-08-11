@@ -25,15 +25,28 @@ export interface CategorizeTxn {
   amountCents: number;
   description: string;
   accountName: string;
-  /** Present in recategorize mode: the category this transaction is CURRENTLY
-   *  filed under, before any tap on this render. Serves two purposes — the
-   *  ` · <name>` suffix on its list row, and the "old" half of the `refiled`
-   *  confirmation's `undoReassign` action (`toRestore`) — which is why it
-   *  carries the taxonomy/category ids and not just a display name: the name
-   *  alone (as `refiled.fromName` is) is enough to render text, but undoing a
-   *  reassignment needs somewhere real to put the transaction back. Absent in
-   *  categorize mode, where nothing is filed yet. */
+  /** Present in recategorize mode: the ONE category this transaction is
+   *  currently filed under that a reader would recognise — the spending
+   *  assignment when it has one (their budgets are about it), else whatever it
+   *  does have. Purely for display: the ` · <name>` suffix on its list row and
+   *  the `Currently: <name>` line on its detail screen. Absent in categorize
+   *  mode, where nothing is filed yet.
+   *
+   *  Deliberately NOT what an undo is built from. A transaction can hold one
+   *  assignment PER TAXONOMY, so "the category it is under" is a display
+   *  simplification, and restoring a move from it would put back the one
+   *  assignment that happened to be shown while silently dropping the rest —
+   *  see `refiled.restore`, which carries all of them. */
   currentCategory?: { taxonomyId: string; categoryId: string; name: string };
+}
+
+/** One taxonomy's assignment, as the ids a write needs and nothing else. No
+ *  display name: the only name any screen shows for a previous category is
+ *  `refiled.fromName`, and a name repeated per assignment would be a second
+ *  copy of it that could disagree. */
+export interface TaxonomyAssignment {
+  taxonomyId: string;
+  categoryId: string;
 }
 
 /** One node of Wealthfolio's spending category tree. `parentId === null`
@@ -65,8 +78,25 @@ export type MenuScreen =
    *  reason `crossTaxonomy` exists as its own flag rather than something
    *  derivable by looking the old category up. `toCategoryId` IS looked up,
    *  same as `filed.categoryId`, since the new category is always a spending
-   *  category and always in that list. */
-  | { kind: 'refiled'; activityId: string; fromName: string; toCategoryId: string; crossTaxonomy: boolean; undone: boolean };
+   *  category and always in that list.
+   *
+   *  `restore` is the COMPLETE set of assignments the row held before the move
+   *  — every taxonomy, the spending one included — and it is what the Undo
+   *  button replays. It lives on the SCREEN rather than being derived from the
+   *  transaction because by the time this screen renders, a fresh sweep already
+   *  reports the row's NEW state; only the controller that performed the move
+   *  knows what preceded it. Empty means there is nothing to put back, and the
+   *  Undo button is not offered at all: a button that reported success while
+   *  restoring nothing would be worse than no button. */
+  | {
+      kind: 'refiled';
+      activityId: string;
+      fromName: string;
+      toCategoryId: string;
+      crossTaxonomy: boolean;
+      undone: boolean;
+      restore: readonly TaxonomyAssignment[];
+    };
 
 export interface MenuSession {
   /** Fresh read, already ledger-filtered — whatever the caller passes is
@@ -114,11 +144,13 @@ export interface MenuSession {
    *  than the controller building two parallel menus, so those two flows
    *  cannot drift apart the way a copy-pasted module would let them.
    *
-   * Optional, and every read of it treats a missing value as `'categorize'`:
-   * the controller's existing session-building call sites (this task does not
-   * touch `companion/`, wiring is a later task) predate this field and do not
-   * set it, so making it required would fail their build the moment this file
-   * changed underneath them for a mode they never asked for. */
+   * Optional, and every read of it treats a missing value as `'categorize'` —
+   * the long-standing behaviour, so a session built without one degrades to what
+   * this module always did rather than to something new. The companion's
+   * controller now sets it EXPLICITLY at every construction (`buildSession`
+   * takes it as a required argument), so nothing in production relies on the
+   * default; it remains optional for this module's own callers, which build
+   * sessions by hand and mostly exercise the categorize flow. */
   mode?: 'categorize' | 'recategorize';
 }
 
@@ -137,14 +169,20 @@ export type MenuAction =
    *  filing" and "moving an existing filing" apart without inspecting the
    *  session's mode itself — the action alone says which happened. */
   | { kind: 'reassign'; activityId: string; categoryId: string }
-  /** Undo for `reassign`: puts the transaction back on the category it held
-   *  before the tap. Carries the FULL old category (taxonomy + id), not just
-   *  the new category's id the way `unassign` does, because the old category
-   *  may be on the income side of the ledger — outside the spending tree
-   *  `unassign` implicitly restores to "no category in this tree" — so there
-   *  is no id space the controller could look the restore target up in on
-   *  its own. */
-  | { kind: 'undoReassign'; activityId: string; toRestore: { taxonomyId: string; categoryId: string } };
+  /** Undo for `reassign`: puts the transaction back in the state it was in
+   *  before the tap.
+   *
+   *  `toRestore` is a LIST, and that plurality is the whole point. A row can
+   *  hold one assignment per taxonomy, and a cross-system move clears every
+   *  non-spending one before setting the spending category — so reversing it
+   *  means replaying all of them, and clearing the spending assignment again
+   *  when the row had none to begin with (which the controller reads off this
+   *  same list: no spending entry means there was no spending assignment).
+   *  A single pair here was a real defect: it restored whichever category the
+   *  confirmation happened to be displaying and dropped the others, while the
+   *  screen reported the undo as complete. Never empty — the button that emits
+   *  this is not rendered when there is nothing to restore. */
+  | { kind: 'undoReassign'; activityId: string; toRestore: readonly TaxonomyAssignment[] };
 
 /**
  * Parses `/newrule <pattern> = <category>` (or `→` in place of `=`) — the
@@ -553,14 +591,18 @@ function renderRuleCreated(session: MenuSession, activityId: string | null, cate
  * of consequence a silent recategorize could leave the reader misreading
  * their own reports over.
  *
- * `txn.currentCategory` (not `screen.fromName` alone) has to still be present
- * for this to render: `fromName` is enough to WRITE the sentence, but the
- * Undo button needs somewhere with real ids to put the transaction back, and
- * `currentCategory` is the only place those ids live (see its doc comment).
- * Missing means the controller's fresh sweep no longer has this row at all —
- * the same staleness `GONE_NOTE`/`RECATEGORIZE_GONE_NOTE` exist for
- * everywhere else, with the recategorize-worded one used here since this
- * screen only ever renders mid-recategorize.
+ * The Undo button is built from `screen.restore` — every assignment the move
+ * cleared or replaced — and is omitted entirely when that list is empty. It is
+ * deliberately NOT built from `txn.currentCategory`: that field holds the ONE
+ * category a reader recognises, so an undo derived from it would put back the
+ * assignment that happened to be displayed and silently drop whatever else the
+ * move cleared, while this screen reported the undo as done.
+ *
+ * The transaction and the target category do still have to resolve, since the
+ * sentence names both. Missing means the controller's fresh sweep no longer has
+ * this row — the same staleness `GONE_NOTE`/`RECATEGORIZE_GONE_NOTE` exist for
+ * everywhere else, with the recategorize-worded one used here since this screen
+ * only ever renders mid-recategorize.
  */
 function renderRefiled(
   session: MenuSession,
@@ -568,7 +610,7 @@ function renderRefiled(
 ): RenderResult {
   const txn = findTxn(session, screen.activityId);
   const toCategory = findCategory(session, screen.toCategoryId);
-  if (!txn || !toCategory || !txn.currentCategory) {
+  if (!txn || !toCategory) {
     const note = session.mode === 'recategorize' ? RECATEGORIZE_GONE_NOTE : GONE_NOTE;
     return renderList(session, 0, note);
   }
@@ -591,14 +633,18 @@ function renderRefiled(
   }
 
   const rows: Btn[][] = [
-    [{
-      text: 'Undo',
-      action: {
-        kind: 'undoReassign',
-        activityId: screen.activityId,
-        toRestore: { taxonomyId: txn.currentCategory.taxonomyId, categoryId: txn.currentCategory.categoryId },
-      },
-    }],
+    // No restore data, no Undo button: the alternative is a button that reports a
+    // restore it could not perform, which is worse than not offering one.
+    ...(screen.restore.length > 0
+      ? [[{
+        text: 'Undo',
+        action: {
+          kind: 'undoReassign' as const,
+          activityId: screen.activityId,
+          toRestore: screen.restore,
+        },
+      }]]
+      : []),
     // Same label as `filed`'s identical goto-list button — same action, same
     // position, no reason for the two screens to say it differently.
     [{ text: 'Next transaction', action: { kind: 'goto', screen: { kind: 'list', page: 0 } } }],
