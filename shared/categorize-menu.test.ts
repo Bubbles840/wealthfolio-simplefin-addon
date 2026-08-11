@@ -863,24 +863,50 @@ describe('renderScreen — confirmCross', () => {
 // ---- renderScreen: refused ---------------------------------------------------
 
 describe('renderScreen — refused', () => {
-  it('neutral: states the transaction is not counted as spending or income at all', () => {
+  /** The one route out of both subtype-governed refusals, and the only thing a
+   *  reader can act on — so both screens carry it verbatim. */
+  const HINT = 'A payback can be turned into a spending offset by marking it a reimbursement in Advanced → Transaction Rules.';
+
+  it('neutral: states the transaction is not counted as spending or income at all, then the way out', () => {
     const s = session({ screen: { kind: 'refused', activityId: 'act-1', reason: 'neutral' } });
     const { text } = renderScreen(s);
     expect(text).toBe(
-      'The transaction is not counted as spending or income at all, so no category can be attached to it as it stands.',
+      'The transaction is not counted as spending or income at all, so no category can be attached to it as it stands.'
+      + `\n${HINT}`,
     );
   });
 
-  it('wrong-bucket: states it is recorded as money in and can only take an income category while that is true', () => {
+  it('wrong-bucket: states it is recorded as money in and can only take an income category, then the way out', () => {
     const s = session({ screen: { kind: 'refused', activityId: 'act-1', reason: 'wrong-bucket' } });
     const { text } = renderScreen(s);
-    expect(text).toBe('It is recorded as money in and can only take an income category while that is true.');
+    expect(text).toBe(
+      'It is recorded as money in and can only take an income category while that is true.'
+      + `\n${HINT}`,
+    );
   });
 
-  it('scope: states the account is not set up for spending tracking', () => {
+  it('scope: states the account is not set up for spending tracking, and offers NO subtype route', () => {
+    // A subtype cannot opt an account into spending tracking, so the
+    // reimbursement hint would send this reader somewhere that changes nothing.
     const s = session({ screen: { kind: 'refused', activityId: 'act-1', reason: 'scope' } });
     const { text } = renderScreen(s);
     expect(text).toBe('Its account is not set up for spending tracking.');
+    expect(text).not.toContain('reimbursement');
+  });
+
+  it('promises nothing the bot does: the way out is a rule the reader sets, stated in the passive', () => {
+    // The menu writes no subtypes at all (rules own that), so any wording that
+    // implied "tap here and we will fix it" would be a promise it cannot keep —
+    // and this refusal exists precisely because a promise like that once cost a
+    // user their category.
+    for (const reason of ['neutral', 'wrong-bucket'] as const) {
+      const s = session({ screen: { kind: 'refused', activityId: 'act-1', reason } });
+      const { text } = renderScreen(s);
+      expect(text).toContain('Advanced → Transaction Rules');
+      expect(text).not.toMatch(/\bI(?:'| w)ll\b|we(?:'| w)ill|tap|press/i);
+      // And it never tells the reader they did something wrong.
+      expect(text).not.toMatch(/you (?:should|need to|must)|instead of what you/i);
+    }
   });
 
   it('offers only « Back (to the txn screen) and Done, for every reason', () => {
