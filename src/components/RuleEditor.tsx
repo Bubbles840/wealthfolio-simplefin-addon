@@ -8,6 +8,20 @@ const ACTIVITY_TYPES: ActivityType[] = [
   'TRANSFER_IN','TRANSFER_OUT','FEE','TAX','CREDIT','ADJUSTMENT','UNKNOWN',
 ];
 
+/** Wealthfolio reads `subtype` only on the CREDIT branch of its bucket
+ *  classifier (docs/upstream-spending-buckets.md §2) — a DEPOSIT is Income
+ *  unconditionally, subtype or not. Offering the field for any other
+ *  activityType would offer something that silently does nothing, so the
+ *  field (and its explainer copy below) only ever appears for CREDIT. */
+const SUBTYPE_ELIGIBLE_TYPES = new Set<ActivityType>(['CREDIT']);
+
+/** The three values Wealthfolio's classifier folds into the spending bucket,
+ *  plus the none option. Named plainly rather than left as free text: a
+ *  typo'd subtype (e.g. "Reimbursment") is accepted by Wealthfolio and
+ *  silently classified as Ignored — exactly the failure this feature exists
+ *  to eliminate. */
+const REFUND_SUBTYPES = ['REFUND', 'REBATE', 'REIMBURSEMENT'] as const;
+
 interface Props {
   rules: MappingRule[];
   onChange: (rules: MappingRule[]) => void;
@@ -27,6 +41,8 @@ export function RuleEditor({ rules, onChange }: Props) {
   const updateRule = (i: number, patch: Partial<MappingRule>) => {
     onChange(rules.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
   };
+
+  const hasCreditRule = rules.some((r) => SUBTYPE_ELIGIBLE_TYPES.has(r.activityType));
 
   let testResult: string | null = null;
   if (testDesc) {
@@ -55,12 +71,32 @@ export function RuleEditor({ rules, onChange }: Props) {
             style={{ flex: 1 }}
           />
           <span className="sfin-subtle">→</span>
-          <Select value={rule.activityType} onChange={(e) => updateRule(i, { activityType: e.target.value as ActivityType })}>
+          <Select
+            value={rule.activityType}
+            onChange={(e) => updateRule(i, { activityType: e.target.value as ActivityType, subtype: undefined })}
+          >
             {ACTIVITY_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
           </Select>
+          {SUBTYPE_ELIGIBLE_TYPES.has(rule.activityType) && (
+            <Select
+              aria-label="Subtype"
+              value={rule.subtype ?? ''}
+              onChange={(e) => updateRule(i, { subtype: e.target.value || undefined })}
+            >
+              <option value="">No subtype</option>
+              {REFUND_SUBTYPES.map((s) => <option key={s} value={s}>{s}</option>)}
+            </Select>
+          )}
           <Button variant="ghost" onClick={() => removeRule(i)} aria-label="Remove rule">✕</Button>
         </div>
       ))}
+      {hasCreditRule && (
+        <p className="sfin-subtle" style={{ fontSize: 12, margin: '0 0 8px' }}>
+          Setting REFUND, REBATE, or REIMBURSEMENT on a CREDIT rule makes it reduce whatever
+          category you file it under instead of counting as income — and updates transactions
+          you&rsquo;ve already imported, the next time you sync.
+        </p>
+      )}
       <Button variant="outline" onClick={addRule}>+ Add rule</Button>
 
       <div style={{ marginTop: 16, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>

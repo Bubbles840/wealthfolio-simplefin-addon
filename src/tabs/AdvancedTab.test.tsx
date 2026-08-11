@@ -33,6 +33,7 @@ const makeProps = () => ({
     getLastSyncAt: vi.fn(async () => new Date('2024-01-01T10:00:00Z')),
     getAccountMapping: vi.fn(async () => ({ 'sfin-1': 'wf-a', 'sfin-2': 'wf-b' })),
     getMappingRules: vi.fn(async () => []),
+    setMappingRules: vi.fn(async () => {}),
     getSyncScheduleHours: vi.fn(async () => 6),
     getAccessUrl: vi.fn(async () => 'https://u:p@bridge.simplefin.org/simplefin'),
     getAccountNames: vi.fn(async () => ({ 'sfin-1': 'Growth', 'sfin-2': 'Spend' })),
@@ -225,6 +226,48 @@ describe('AdvancedTab', () => {
     // state" contract, for the Telegram card.
     await switchTab(/notifications/i);
     expect(await screen.findByText('Not connected')).toBeInTheDocument();
+  });
+
+  it('sets a CREDIT rule\'s subtype through the real store, and hides the control for a non-CREDIT rule', async () => {
+    // Integration, not unit: proves the subtype control reaches
+    // `store.setMappingRules` through the tab's own onChange wiring
+    // (`AdvancedTab.tsx`'s `RuleEditor` `onChange`), not just component state.
+    // Component-level behaviour (options offered, round-trip shape, the
+    // absent-for-non-CREDIT case) is covered in `RuleEditor.test.tsx`.
+    const props = makeProps();
+    props.store.getMappingRules = vi.fn(async () => [
+      { pattern: 'VENMO', matchType: 'contains', activityType: 'CREDIT' },
+      { pattern: 'ATM', matchType: 'contains', activityType: 'WITHDRAWAL' },
+    ]);
+    render(<SyncPage {...props} />);
+    await switchTab(/advanced/i);
+    await openSection(/^Transaction rules/i);
+
+    // Only the CREDIT row offers a subtype — the WITHDRAWAL row does not, since
+    // Wealthfolio never reads subtype off it.
+    const subtypeSelects = screen.getAllByLabelText(/subtype/i);
+    expect(subtypeSelects).toHaveLength(1);
+
+    fireEvent.change(subtypeSelects[0], { target: { value: 'REIMBURSEMENT' } });
+    await waitFor(() => expect(props.store.setMappingRules).toHaveBeenCalledWith([
+      { pattern: 'VENMO', matchType: 'contains', activityType: 'CREDIT', subtype: 'REIMBURSEMENT' },
+      { pattern: 'ATM', matchType: 'contains', activityType: 'WITHDRAWAL' },
+    ]));
+  });
+
+  it('renders and saves an existing subtype-less rule unchanged when an unrelated field is edited', async () => {
+    const props = makeProps();
+    props.store.getMappingRules = vi.fn(async () => [
+      { pattern: 'PAYROLL', matchType: 'contains', activityType: 'DEPOSIT' },
+    ]);
+    render(<SyncPage {...props} />);
+    await switchTab(/advanced/i);
+    await openSection(/^Transaction rules/i);
+
+    fireEvent.change(screen.getByPlaceholderText('pattern'), { target: { value: 'PAYCHECK' } });
+    await waitFor(() => expect(props.store.setMappingRules).toHaveBeenCalledWith([
+      { pattern: 'PAYCHECK', matchType: 'contains', activityType: 'DEPOSIT' },
+    ]));
   });
 
   it('persists which cards are open, and restores them on the next visit', async () => {

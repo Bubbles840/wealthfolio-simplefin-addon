@@ -186,50 +186,6 @@ export class WealthfolioClient {
     if (!res.ok) throw await this.httpError('assignActivityCategory', res);
   }
 
-  /**
-   * Sets or clears one activity's `subtype` via `PUT /activities`. That
-   * endpoint takes a whole `ActivityUpdate`, not a patch, but upstream
-   * hydrates every field this call omits from the stored row (see
-   * `hydrate_and_validate_update_against_existing` in
-   * `crates/core/src/activities/activities_service.rs`) — so the safe way to
-   * change ONE field is to send only that field plus the handful upstream
-   * requires as non-optional, never a full resend.
-   *
-   * `ActivityUpdate`'s required fields are `id`, `accountId`, `activityType`,
-   * `activityDate`, `currency` — those five plus `subtype` are the entire
-   * body. In particular this must NEVER send `comment`: our stored comment
-   * (`<description> · TRN-<txId>[ · pending]`) is the sync's identity marker
-   * for the row (`txIdFromComment`, reconciliation, the Amazon ledger, the
-   * import-notice read-back all depend on it), and `comment` is optional on
-   * `ActivityUpdate` — omitting it leaves it untouched, while resending a
-   * dropped-or-altered copy would silently destroy that identity.
-   *
-   * To CLEAR the subtype (what Undo needs), send the empty string `''`, not
-   * `null` and not an omitted key: upstream's
-   * `effective_subtype` match treats `Some("")` as "clear" and `None`
-   * (omitted) as "leave unchanged" — `null` happens to also decode to
-   * `Some("")` via `deserialize_patch_subtype`, but `''` is the
-   * documented-by-code path, so that's what this sends.
-   */
-  async updateActivitySubtype(
-    activity: { id: string; accountId: string; activityType: string; activityDate: string; currency: string },
-    subtype: string,
-  ): Promise<void> {
-    const res = await fetch(`${this.baseUrl}/api/v1/activities`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
-      body: JSON.stringify({
-        id: activity.id,
-        accountId: activity.accountId,
-        activityType: activity.activityType,
-        activityDate: activity.activityDate,
-        currency: activity.currency,
-        subtype,
-      }),
-    });
-    if (!res.ok) throw await this.httpError('updateActivitySubtype', res);
-  }
-
   /** Removes a taxonomy's category assignment from one activity - the undo
    *  side of `assignActivityCategory`. No request body: the taxonomy to clear
    *  is a path segment, matching the server's DELETE route shape. */
