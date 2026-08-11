@@ -407,7 +407,9 @@ export interface NativeCategorizedTx {
   /** RAW stored note — callers clean via `descriptionFromComment`. */
   notes: string;
   amountCents: number;
-  /** ISO date (yyyy-mm-dd). */
+  /** ISO date (yyyy-mm-dd), truncated from the stored value for DISPLAY —
+   *  every row-label screen depends on this exact truncated form. NOT what an
+   *  `ActivityUpdate` write should send: see `activityDateRaw`. */
   date: string;
   accountName: string;
   /** UPPERCASED (`WITHDRAWAL`, `DEPOSIT`, ...). Not read by any caller today —
@@ -427,11 +429,17 @@ export interface NativeCategorizedTx {
   accountType: string;
   /** Wealthfolio's account id for this activity — one of the fields
    *  `ActivityUpdate` requires on every write, alongside `currency` and
-   *  `date` above (already in the `ActivityUpdate`-compatible `YYYY-MM-DD`
-   *  form via `substr`). */
+   *  `activityDateRaw` below. */
   accountId: string;
   /** ISO currency code the activity was recorded in, '' when unset. */
   currency: string;
+  /** The UNTRUNCATED stored `activity_date` — Wealthfolio keeps a full
+   *  timestamp (e.g. `2026-08-08T20:00:00Z`), not a bare date. This is what
+   *  an `ActivityUpdate` write (`WealthfolioClient.updateActivitySubtype`)
+   *  must send as `activityDate`: that field is REQUIRED on every write, and
+   *  sending `date` above instead would silently rewrite the activity's
+   *  time-of-day to midnight, changing data the user never asked to change. */
+  activityDateRaw: string;
 }
 
 /**
@@ -453,13 +461,17 @@ export interface NativeCategorizedTx {
  * name) would silently drop one — see `getNativeSpendingCategories` for the
  * bug this already shipped once.
  *
- * `subtype`, `account_id`, `currency` and `account_type` exist for one
- * consumer: a caller that wants to write `subtype` back via
+ * `subtype`, `account_id`, `currency`, `account_type` and `activity_date_raw`
+ * exist for one consumer: a caller that wants to write `subtype` back via
  * `WealthfolioClient.updateActivitySubtype` needs `ActivityUpdate`'s five
  * required fields (id, accountId, activityType, activityDate, currency) plus
  * the account's type to evaluate the reimbursement bucket predicate — all of
  * which this reader already has on hand from the same joined row, at no
- * extra query cost.
+ * extra query cost. `activity_date_raw` is deliberately a SEPARATE column
+ * from the `activity_date` alias above, which is `substr`'d to a bare date
+ * for display: sending that truncated form as `ActivityUpdate.activityDate`
+ * would silently rewrite the activity's stored time-of-day to midnight, so
+ * the write path must read the untruncated column instead.
  */
 export function getNativeCategorizedSpending(
   dbPath: string,
@@ -482,7 +494,8 @@ export function getNativeCategorizedSpending(
            COALESCE(a.subtype, '')          AS subtype,
            COALESCE(a.account_id, '')       AS account_id,
            COALESCE(a.currency, '')         AS currency,
-           COALESCE(ac.account_type, '')    AS account_type
+           COALESCE(ac.account_type, '')    AS account_type,
+           a.activity_date                  AS activity_date_raw
     FROM activities a
     JOIN activity_taxonomy_assignments ata ON a.id = ata.activity_id
     LEFT JOIN accounts ac ON a.account_id = ac.id
@@ -500,17 +513,17 @@ export function getNativeCategorizedSpending(
     dbPath,
     'categorized',
     query,
-    (parts) => (parts.length === 13
+    (parts) => (parts.length === 14
       ? {
           c0: parts[0], c1: parts[1], c2: parseFloat(parts[2]) || 0, c3: parts[3],
           c4: parts[4], c5: parts[5], c6: parts[6], c7: parts[7], c8: parts[8],
-          c9: parts[9], c10: parts[10], c11: parts[11], c12: parts[12],
+          c9: parts[9], c10: parts[10], c11: parts[11], c12: parts[12], c13: parts[13],
         }
       : null),
   );
 
   // node:sqlite returns column-named objects; the CLI fallback returns the
-  // c0..c12 shape built above. Read positionally either way. Rows for the
+  // c0..c13 shape built above. Read positionally either way. Rows for the
   // same activity are consecutive (ORDER BY ... a.id, ata.taxonomy_id), so
   // folding by activityId is a single linear pass, not a second sort.
   const byId = new Map<string, NativeCategorizedTx>();
@@ -538,6 +551,7 @@ export function getNativeCategorizedSpending(
         accountId: String(v[10] ?? ''),
         currency: String(v[11] ?? ''),
         accountType: String(v[12] ?? ''),
+        activityDateRaw: String(v[13] ?? ''),
       };
       byId.set(activityId, tx);
       result.push(tx);

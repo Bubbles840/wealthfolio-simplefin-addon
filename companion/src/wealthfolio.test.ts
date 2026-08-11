@@ -273,15 +273,22 @@ describe('WealthfolioClient', () => {
   });
 
   describe('updateActivitySubtype', () => {
+    // Full-precision timestamp on purpose, not a bare date: this pins that the
+    // client forwards `activityDate` byte-for-byte. Wealthfolio stores full
+    // timestamps (`getNativeCategorizedSpending`'s `activityDateRaw`, not its
+    // truncated `date`, is what a real caller must pass here) — if this method
+    // ever reformatted or truncated the value on its way to the wire, a
+    // reimbursement-offset write would silently rewrite the activity's
+    // time-of-day to midnight.
     const activity = {
       id: 'act-1',
       accountId: 'wf-cash',
       activityType: 'CREDIT',
-      activityDate: '2026-07-12',
+      activityDate: '2026-08-08T20:00:00Z',
       currency: 'USD',
     };
 
-    it('PUTs exactly the five identifying fields plus subtype to /api/v1/activities — no comment, no amount', async () => {
+    it('PUTs exactly the five identifying fields plus subtype to /api/v1/activities — no comment, no amount, activityDate unmodified', async () => {
       mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({}) });
       const client = new WealthfolioClient('http://wf');
       await client.updateActivitySubtype(activity, 'REIMBURSEMENT');
@@ -297,11 +304,13 @@ describe('WealthfolioClient', () => {
       expect(Object.keys(body).sort()).toEqual(
         ['accountId', 'activityDate', 'activityType', 'currency', 'id', 'subtype'].sort(),
       );
+      // The full-precision value, verbatim — not truncated to a bare date.
+      expect(body.activityDate).toBe('2026-08-08T20:00:00Z');
       expect(body).toEqual({
         id: 'act-1',
         accountId: 'wf-cash',
         activityType: 'CREDIT',
-        activityDate: '2026-07-12',
+        activityDate: '2026-08-08T20:00:00Z',
         currency: 'USD',
         subtype: 'REIMBURSEMENT',
       });
