@@ -307,16 +307,16 @@ describe('the taxonomy the whole feature writes into', () => {
     expect(SPENDING_TAXONOMY_ID).toBe('spending_categories');
   });
 
-  it('names the income side without giving it an id to match on', () => {
-    // Prose, not a key: `income` is what the feature CALLS the other side of the
-    // ledger, and it is deliberately not usable as a taxonomy id — a Wealthfolio
-    // instance's income taxonomy is `income_categories`, there is a savings one
-    // too, and any of them can appear. Detection is the inequality below, so a
-    // taxonomy nobody anticipated is still cleared rather than silently kept.
+  it('names the income side in prose, with no id anyone could match on', () => {
+    // `income` is what the feature CALLS the other side of the ledger, and it is
+    // deliberately not usable as a taxonomy id: a Wealthfolio instance's income
+    // taxonomy is `income_categories`, there is a savings one too, and a release
+    // can add more. Detection is `taxonomyId !== SPENDING_TAXONOMY_ID`, which the
+    // cross-taxonomy tests below pin behaviourally — their fixture taxonomies are
+    // real ids that this constant does not match, so an implementation comparing
+    // against it clears nothing and those tests fail.
     expect(INCOME_TAXONOMY_NOTE).toBe('income');
     expect(INCOME_TAXONOMY_NOTE).not.toBe(SPENDING_TAXONOMY_ID);
-    expect(INCOME_TAXONOMY_ID).not.toBe(SPENDING_TAXONOMY_ID);
-    expect(SAVINGS_TAXONOMY_ID).not.toBe(SPENDING_TAXONOMY_ID);
   });
 });
 
@@ -1300,14 +1300,18 @@ describe('reassign — the cross-taxonomy move', () => {
     expect(lastCall(h.ui.edit)[0]).toBe('TRADER JOES b: Restaurants → Entertainment.');
   });
 
-  it('re-filing to the identical category writes nothing at all', async () => {
+  it('re-filing to the identical category writes nothing at all, and offers no Undo', async () => {
     const h = setup({ categorized: [catRow('a', [spendingAt('cat-fun', 'Entertainment')])] });
-    await openRecatAtRefiled(h);
+    const refiled = await openRecatAtRefiled(h);
     expect(h.deps.assign).not.toHaveBeenCalled();
     expect(h.deps.unassignTaxonomy).not.toHaveBeenCalled();
     expect(h.deps.republish).not.toHaveBeenCalled();
     // Honest rather than clever: the confirmation still says where it sits.
     expect(lastCall(h.ui.edit)[0]).toBe('VENMO PAYMENT a: Entertainment → Entertainment.');
+    // Nothing was written, so there is nothing to reverse — and an Undo that
+    // rewrote the category the row already has would report a restore it did not
+    // perform.
+    expect(labels(refiled)).toEqual(['Next transaction', 'Done']);
   });
 
   it('still clears the income side when the spending category is already the tapped one', async () => {
@@ -1463,13 +1467,21 @@ describe('undoing a reassignment', () => {
     ]);
   });
 
-  it('restores a spending category with a plain assign and no delete', async () => {
+  it('restores a spending category with one PUT and no delete', async () => {
+    // The row had a spending assignment before the move, so the move replaced it
+    // rather than adding one: replacing it back is a single PUT with no window in
+    // which the row is uncategorized, and nothing to clear.
     const h = setup({ categorized: [GROCERIES] });
     const refiled = await openRecatAtRefiled(h, 'TRADER JOES b');
     await h.tap(dataFor(refiled, 'Undo'));
     expect(h.deps.unassignTaxonomy).not.toHaveBeenCalled();
-    expect(h.deps.assign).toHaveBeenLastCalledWith('b', 'cat-rest');
+    // The replay always names the taxonomy it recorded, spending included — one
+    // loop over the restore list, no special case to get wrong.
+    expect(h.deps.assign).toHaveBeenLastCalledWith('b', 'cat-rest', SPENDING_TAXONOMY_ID);
     expect(lastCall(h.ui.edit)[0]).toBe('Refiling undone — TRADER JOES b is back under Restaurants.');
+    expect(h.state.categorized[0].assignments).toEqual([
+      { taxonomyId: SPENDING_TAXONOMY_ID, categoryId: 'cat-rest', categoryName: 'Restaurants' },
+    ]);
   });
 
   it('declines when the row is no longer where this menu put it', async () => {
@@ -1496,17 +1508,96 @@ describe('undoing a reassignment', () => {
     expect(lastCall(h.ui.edit)[0]).toContain('That transaction changed elsewhere — leaving it as is.');
   });
 
-  it('reports a refused restore, and says so when the spending side is already cleared', async () => {
+  it('reports a refused restore in UNDO\'s words, not the move\'s', async () => {
+    // The move's copy says "the new category was NOT set, and the old one is
+    // already cleared". On an undo both halves are the other way round: it is the
+    // OLD category that failed to be set and the NEW one that is already gone.
+    // Only the actionable half survives that swap, which is how inverted copy
+    // ships unnoticed.
     const h = setup({ categorized: [VENMO_INCOME] });
     const refiled = await openRecatAtRefiled(h);
     h.deps.assign.mockRejectedValue(new Error('500 Internal Server Error'));
     await h.tap(dataFor(refiled, 'Undo'));
     expect(lastCall(h.ui.edit)[0]).toBe(
       'Couldn\'t undo that — Wealthfolio said: 500 Internal Server Error'
-      + '\n\nThe new category was NOT set, and the old one is already cleared — '
+      + '\n\nThe old category was NOT restored, and the one the move set is already cleared — '
       + 'this transaction is uncategorized now, so /categorize will offer it.',
     );
+    expect(lastCall(h.ui.edit)[0]).not.toContain('The new category was NOT set');
     expect(h.logs.join('\n')).toContain('500 Internal Server Error');
+  });
+
+  it('says nothing was restored when the first write of the undo is refused', async () => {
+    const h = setup({ categorized: [VENMO_INCOME] });
+    const refiled = await openRecatAtRefiled(h);
+    h.deps.unassignTaxonomy.mockRejectedValue(new Error('403 Forbidden'));
+    await h.tap(dataFor(refiled, 'Undo'));
+    const assignsBefore = h.deps.assign.mock.calls.length;
+    expect(lastCall(h.ui.edit)[0]).toBe(
+      'Couldn\'t undo that — Wealthfolio said: 403 Forbidden'
+      + '\n\nNothing was restored — this transaction is still under the category the move set.',
+    );
+    // And it really did stop: no PUT went out after the refused DELETE.
+    expect(h.deps.assign.mock.calls.length).toBe(assignsBefore);
+  });
+
+  it('restores EVERY assignment the move cleared, not just the displayed one', async () => {
+    // The defect the restore LIST exists for. This row was double counted to
+    // begin with — spending Entertainment AND income Reimbursements — so the move
+    // cleared the income side without setting anything. An undo built from the
+    // displayed category alone would have PUT Entertainment (which the row already
+    // had), left Reimbursements deleted, and still said "undone".
+    const h = setup({
+      categorized: [catRow('a', [incomeAt('inc-reimb', 'Reimbursements'), spendingAt('cat-fun', 'Entertainment')])],
+    });
+    const refiled = await openRecatAtRefiled(h);
+    const mark = h.order.length;
+    await h.tap(dataFor(refiled, 'Undo'));
+    // The spending assignment survived the move, so there is nothing to delete:
+    // it is replayed first (a single PUT, no window), then the income side.
+    expect(h.order.slice(mark)).toEqual([
+      'readCategorized', 'readCategories',
+      `assign:${SPENDING_TAXONOMY_ID}`,
+      `assign:${INCOME_TAXONOMY_ID}`,
+      'readCategorized', 'readCategories',
+    ]);
+    expect(h.state.categorized[0].assignments).toEqual([
+      { taxonomyId: SPENDING_TAXONOMY_ID, categoryId: 'cat-fun', categoryName: 'Entertainment' },
+      { taxonomyId: INCOME_TAXONOMY_ID, categoryId: 'inc-reimb', categoryName: 'Reimbursements' },
+    ]);
+  });
+
+  it('restores both non-spending taxonomies, and clears the one the move set', async () => {
+    // Two assignments on the other side of the ledger and none on the spending
+    // one: the faithful reverse is to delete what the move added and put both back.
+    const h = setup({
+      categorized: [catRow('a', [incomeAt('inc-reimb', 'Reimbursements'), savingsAt('sav-goal', 'House Fund')])],
+    });
+    const refiled = await openRecatAtRefiled(h);
+    const mark = h.order.length;
+    await h.tap(dataFor(refiled, 'Undo'));
+    expect(h.order.slice(mark)).toEqual([
+      'readCategorized', 'readCategories',
+      `unassignTaxonomy:${SPENDING_TAXONOMY_ID}`,
+      `assign:${INCOME_TAXONOMY_ID}`,
+      `assign:${SAVINGS_TAXONOMY_ID}`,
+      'readCategorized', 'readCategories',
+    ]);
+    expect(h.state.categorized[0].assignments).toEqual([
+      { taxonomyId: INCOME_TAXONOMY_ID, categoryId: 'inc-reimb', categoryName: 'Reimbursements' },
+      { taxonomyId: SAVINGS_TAXONOMY_ID, categoryId: 'sav-goal', categoryName: 'House Fund' },
+    ]);
+    // Byte-for-byte the state the menu started from.
+    expect(h.state.categorized[0].assignments).toHaveLength(2);
+  });
+
+  it('offers no Undo at all when the move wrote nothing', async () => {
+    const h = setup({ categorized: [catRow('a', [spendingAt('cat-fun', 'Entertainment')])] });
+    const refiled = await openRecatAtRefiled(h);
+    expect(labels(refiled)).not.toContain('Undo');
+    expect(h.state.categorized[0].assignments).toEqual([
+      { taxonomyId: SPENDING_TAXONOMY_ID, categoryId: 'cat-fun', categoryName: 'Entertainment' },
+    ]);
   });
 
   it('keeps offering the OLD category as the restore target after the refile', async () => {

@@ -312,6 +312,17 @@ const REFILE_CLEARED_SUFFIX = '\n\nThe new category was NOT set, and the old one
 const REFILE_PARTIAL_SUFFIX = '\n\nThe new category was NOT set. Some of the old assignments were already cleared — check this transaction in Wealthfolio.';
 
 /**
+ * The same three outcomes for a failed UNDO, in undo's own words. Not the three
+ * above: on this path it is the OLD category that failed to be set and the NEW
+ * one that got cleared, so reusing them would state the failure backwards. Only
+ * the actionable half survives such a swap, which is exactly how inverted copy
+ * lives for a release without anyone noticing.
+ */
+const UNDO_UNCHANGED_SUFFIX = '\n\nNothing was restored — this transaction is still under the category the move set.';
+const UNDO_CLEARED_SUFFIX = '\n\nThe old category was NOT restored, and the one the move set is already cleared — this transaction is uncategorized now, so /categorize will offer it.';
+const UNDO_PARTIAL_SUFFIX = '\n\nThe old category was only partly restored — check this transaction in Wealthfolio.';
+
+/**
  * A write declined because the row is no longer in the state the button
  * described. Says what was NOT done and why, in one sentence, for all three
  * verified writes (a reassign, its undo, and `/categorize`'s undo): the
@@ -1120,6 +1131,11 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
         // assignment, which is the double count itself (see INCOME_TAXONOMY_NOTE).
         const toClear = assignments.filter((a) => a.taxonomyId !== SPENDING_TAXONOMY_ID);
         const needsAssign = spendingAssignmentOf(assignments)?.categoryId !== action.categoryId;
+        // Nothing to write means nothing to undo, and `refiled.restore` says so
+        // with an empty list (the pure machine then renders no Undo button). A
+        // button offered here could only rewrite the category the row already
+        // carries and call it a restore.
+        const writes = toClear.length > 0 || needsAssign;
         const refiled: MenuScreen = {
           kind: 'refiled',
           activityId: action.activityId,
@@ -1129,9 +1145,17 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
           toCategoryId: action.categoryId,
           crossTaxonomy: toClear.length > 0,
           undone: false,
+          // EVERY assignment the row holds right now, spending included — the
+          // complete state this move is about to replace, which is the only thing
+          // an undo can faithfully replay. Read from the same sweep the checks
+          // above used, and captured BEFORE the writes, because afterwards no
+          // reader can report it any more.
+          restore: writes
+            ? assignments.map((a) => ({ taxonomyId: a.taxonomyId, categoryId: a.categoryId }))
+            : [],
         };
 
-        if (toClear.length === 0 && !needsAssign) {
+        if (!writes) {
           // Already exactly where the tap asked for, with nothing on the other
           // side of the ledger to clear. A no-op write would be a lie in the
           // request log and an identical outcome; the confirmation still states
@@ -1208,27 +1232,44 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
           return;
         }
         const pin = rowFor(chat, action.activityId);
-        const restoreToSpending = action.toRestore.taxonomyId === SPENDING_TAXONOMY_ID;
+        // The whole previous state, replayed — not just the category the
+        // confirmation displayed. A row can hold one assignment per taxonomy, so
+        // restoring one of several would leave the user's data changed while this
+        // menu reported the undo as done.
+        //
+        // Spending first, and only when the previous state HAD a spending
+        // assignment: replacing it is a single PUT with no window at all. When it
+        // had none (the Venmo-under-income case), the spending assignment the move
+        // added has to GO, and that delete comes before the other PUTs for the same
+        // reason it does on the way in — the interruptible moment leaves the row
+        // uncategorized rather than counted twice.
+        const keepsSpending = action.toRestore.some((a) => a.taxonomyId === SPENDING_TAXONOMY_ID);
+        const replay = [
+          ...action.toRestore.filter((a) => a.taxonomyId === SPENDING_TAXONOMY_ID),
+          ...action.toRestore.filter((a) => a.taxonomyId !== SPENDING_TAXONOMY_ID),
+        ];
         let cleared = false;
+        let restored = 0;
         try {
-          if (restoreToSpending) {
-            // One PUT replaces the spending assignment in place; nothing to clear.
-            await deps.assign(action.activityId, action.toRestore.categoryId);
-          } else {
-            // The move, mirrored — and in the same order, for the same reason:
-            // this leaves at worst an uncategorized row, never one counted twice.
+          if (!keepsSpending) {
             await deps.unassignTaxonomy(action.activityId, SPENDING_TAXONOMY_ID);
             cleared = true;
-            await deps.assign(action.activityId, action.toRestore.categoryId, action.toRestore.taxonomyId);
+          }
+          for (const a of replay) {
+            await deps.assign(action.activityId, a.categoryId, a.taxonomyId);
+            restored += 1;
           }
         } catch (err) {
           const message = formatError(err);
           safeLog(`Categorize menu: restoring ${action.activityId} to its previous category failed: ${message}`);
-          await showError(
-            chat,
-            `${UNDO_FAILED_PREFIX}${escapeMarkdown(message)}${cleared ? REFILE_CLEARED_SUFFIX : ''}`,
-            ui,
-          );
+          // Exactly what stands, in undo's own words: nothing restored and
+          // nothing cleared is "unchanged"; nothing restored after the clear is an
+          // uncategorized row; anything in between is a partial restore, and none
+          // of the three may read as if the old category came back.
+          const suffix = restored === 0
+            ? (cleared ? UNDO_CLEARED_SUFFIX : UNDO_UNCHANGED_SUFFIX)
+            : UNDO_PARTIAL_SUFFIX;
+          await showError(chat, `${UNDO_FAILED_PREFIX}${escapeMarkdown(message)}${suffix}`, ui);
           return;
         }
         await republishQuietly();
