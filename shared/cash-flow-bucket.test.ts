@@ -113,6 +113,32 @@ describe('bucketFor', () => {
   });
 });
 
+describe('bucketFor never returns "saving" — pins an assumption REFUSED_TEXT relies on', () => {
+  // `REFUSED_TEXT['wrong-bucket']` (shared/categorize-menu.ts) hardcodes "It
+  // is recorded as money in" instead of branching on the bucket, because the
+  // only caller that reaches that reason always asks about
+  // SPENDING_TAXONOMY_ID, and — per docs/upstream-spending-buckets.md §2 —
+  // `classify_activity` (activity_classification.rs:97-130, what `bucketFor`
+  // ports) has exactly three outer arms: CASH, CREDIT_CARD, and a wildcard
+  // that falls to `Ignored`/neutral. None of the three ever constructs
+  // `SpendingClassification::Saving`, so `taxonomyForBucket('saving')` — which
+  // does exist, and maps to SAVINGS_TAXONOMY_ID — is dead code from
+  // `bucketFor`'s side: nothing this port can classify ever reaches it, for
+  // ANY account type, activity type, or subtype.
+  //
+  // 'SAVINGS' is the most literal guess for what an eventual Saving arm would
+  // key its account type off of; `bucketFor` has none, so this exercises the
+  // same `_ => neutral` fallback as any other account type this port does not
+  // recognize (SECURITIES, tested above). The day upstream's rule — and this
+  // port of it — grows an arm that actually returns 'saving', this test
+  // starts failing, which is the signal that REFUSED_TEXT['wrong-bucket']
+  // needs to branch on `bucket` instead of assuming 'income'.
+  it('an account type named for savings still falls through to neutral, not saving', () => {
+    expect(bucketFor({ accountType: 'SAVINGS', activityType: 'DEPOSIT' })).toBe('neutral');
+    expect(bucketFor({ accountType: 'SAVINGS', activityType: 'CREDIT', subtype: 'REIMBURSEMENT' })).toBe('neutral');
+  });
+});
+
 describe('REFUND_SUBTYPES', () => {
   it('is exactly REFUND, REBATE, REIMBURSEMENT', () => {
     expect(REFUND_SUBTYPES).toEqual(['REFUND', 'REBATE', 'REIMBURSEMENT']);
