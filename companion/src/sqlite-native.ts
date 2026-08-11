@@ -421,6 +421,17 @@ export interface NativeCategorizedTx {
   activityType: string;
   /** Every taxonomy's assignment on this activity, 1 or more entries. */
   assignments: NativeAssignment[];
+  /** Raw stored subtype, '' when absent. Feeds the bucket predicate. */
+  subtype: string;
+  /** The account's Wealthfolio type (CASH, CREDIT_CARD, …), '' when unknown. */
+  accountType: string;
+  /** Wealthfolio's account id for this activity — one of the fields
+   *  `ActivityUpdate` requires on every write, alongside `currency` and
+   *  `date` above (already in the `ActivityUpdate`-compatible `YYYY-MM-DD`
+   *  form via `substr`). */
+  accountId: string;
+  /** ISO currency code the activity was recorded in, '' when unset. */
+  currency: string;
 }
 
 /**
@@ -441,6 +452,14 @@ export interface NativeCategorizedTx {
  * column elsewhere in the row and `node:sqlite` (which keys results by column
  * name) would silently drop one — see `getNativeSpendingCategories` for the
  * bug this already shipped once.
+ *
+ * `subtype`, `account_id`, `currency` and `account_type` exist for one
+ * consumer: a caller that wants to write `subtype` back via
+ * `WealthfolioClient.updateActivitySubtype` needs `ActivityUpdate`'s five
+ * required fields (id, accountId, activityType, activityDate, currency) plus
+ * the account's type to evaluate the reimbursement bucket predicate — all of
+ * which this reader already has on hand from the same joined row, at no
+ * extra query cost.
  */
 export function getNativeCategorizedSpending(
   dbPath: string,
@@ -459,7 +478,11 @@ export function getNativeCategorizedSpending(
            UPPER(COALESCE(a.activity_type,'')) AS activity_type,
            ata.taxonomy_id                  AS taxonomy_id,
            ata.category_id                  AS category_id,
-           COALESCE(tc.name, '')            AS category_name
+           COALESCE(tc.name, '')            AS category_name,
+           COALESCE(a.subtype, '')          AS subtype,
+           COALESCE(a.account_id, '')       AS account_id,
+           COALESCE(a.currency, '')         AS currency,
+           COALESCE(ac.account_type, '')    AS account_type
     FROM activities a
     JOIN activity_taxonomy_assignments ata ON a.id = ata.activity_id
     LEFT JOIN accounts ac ON a.account_id = ac.id
@@ -477,18 +500,19 @@ export function getNativeCategorizedSpending(
     dbPath,
     'categorized',
     query,
-    (parts) => (parts.length === 9
+    (parts) => (parts.length === 13
       ? {
           c0: parts[0], c1: parts[1], c2: parseFloat(parts[2]) || 0, c3: parts[3],
           c4: parts[4], c5: parts[5], c6: parts[6], c7: parts[7], c8: parts[8],
+          c9: parts[9], c10: parts[10], c11: parts[11], c12: parts[12],
         }
       : null),
   );
 
   // node:sqlite returns column-named objects; the CLI fallback returns the
-  // c0..c8 shape built above. Read positionally either way. Rows for the same
-  // activity are consecutive (ORDER BY ... a.id, ata.taxonomy_id), so folding
-  // by activityId is a single linear pass, not a second sort.
+  // c0..c12 shape built above. Read positionally either way. Rows for the
+  // same activity are consecutive (ORDER BY ... a.id, ata.taxonomy_id), so
+  // folding by activityId is a single linear pass, not a second sort.
   const byId = new Map<string, NativeCategorizedTx>();
   const result: NativeCategorizedTx[] = [];
   for (const r of rows) {
@@ -510,6 +534,10 @@ export function getNativeCategorizedSpending(
         accountName: String(v[4] ?? ''),
         activityType: String(v[5] ?? ''),
         assignments: [],
+        subtype: String(v[9] ?? ''),
+        accountId: String(v[10] ?? ''),
+        currency: String(v[11] ?? ''),
+        accountType: String(v[12] ?? ''),
       };
       byId.set(activityId, tx);
       result.push(tx);

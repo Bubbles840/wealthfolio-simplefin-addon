@@ -14,10 +14,10 @@ function makeTestDb(): { path: string; cleanup: () => void } {
     -- "notes" is the real column name for what the REST API calls "comment";
     -- SELECT comment FROM activities fails with "no such column: comment", so
     -- the fixture carries the SQLite name deliberately.
-    CREATE TABLE activities (id TEXT PRIMARY KEY, amount TEXT, activity_date TEXT, activity_type TEXT, notes TEXT, account_id TEXT);
+    CREATE TABLE activities (id TEXT PRIMARY KEY, amount TEXT, activity_date TEXT, activity_type TEXT, notes TEXT, account_id TEXT, subtype TEXT, currency TEXT);
     CREATE TABLE activity_taxonomy_assignments (activity_id TEXT, category_id TEXT, taxonomy_id TEXT);
     CREATE TABLE budget_targets (category_id TEXT, amount TEXT, period_key TEXT, updated_at TEXT);
-    CREATE TABLE accounts (id TEXT PRIMARY KEY, name TEXT);
+    CREATE TABLE accounts (id TEXT PRIMARY KEY, name TEXT, account_type TEXT);
     CREATE TABLE budget_groups (id TEXT PRIMARY KEY, name TEXT, key TEXT, color TEXT, icon TEXT, sort_order INTEGER);
     CREATE TABLE budget_group_assignments (id TEXT PRIMARY KEY, group_id TEXT, taxonomy_id TEXT, category_id TEXT);
   `);
@@ -327,20 +327,20 @@ describe('sqlite-native', () => {
         INSERT INTO accounts (id, name) VALUES ('wf-a', 'Spend (4937)');
         INSERT INTO taxonomy_categories (id, name, parent_id) VALUES ('cat-1', 'Groceries', NULL);
         -- Uncategorized spending: the one row the sweep exists to find.
-        INSERT INTO activities VALUES ('act-1', '45.16', '2026-07-09T00:00:00Z', 'WITHDRAWAL', 'VENMO PAYMENT · TRN-aaa', 'wf-a');
+        INSERT INTO activities (id, amount, activity_date, activity_type, notes, account_id) VALUES ('act-1', '45.16', '2026-07-09T00:00:00Z', 'WITHDRAWAL', 'VENMO PAYMENT · TRN-aaa', 'wf-a');
         -- Categorized: has an assignment, must not appear.
-        INSERT INTO activities VALUES ('act-2', '12.00', '2026-07-10T00:00:00Z', 'WITHDRAWAL', 'KROGER · TRN-bbb', 'wf-a');
+        INSERT INTO activities (id, amount, activity_date, activity_type, notes, account_id) VALUES ('act-2', '12.00', '2026-07-10T00:00:00Z', 'WITHDRAWAL', 'KROGER · TRN-bbb', 'wf-a');
         INSERT INTO activity_taxonomy_assignments (activity_id, category_id) VALUES ('act-2', 'cat-1');
         -- Non-spending types: transfers and deposits need no category.
-        INSERT INTO activities VALUES ('act-3', '700.00', '2026-07-11T00:00:00Z', 'TRANSFER_OUT', 'Payment · TRN-ccc', 'wf-a');
-        INSERT INTO activities VALUES ('act-4', '61.05', '2026-07-11T00:00:00Z', 'DEPOSIT', 'Venmo in · TRN-ddd', 'wf-a');
-        INSERT INTO activities VALUES ('act-4b', '70.00', '2026-07-11T00:00:00Z', 'CREDIT', 'Thankyou Points · TRN-ddd2', 'wf-a');
+        INSERT INTO activities (id, amount, activity_date, activity_type, notes, account_id) VALUES ('act-3', '700.00', '2026-07-11T00:00:00Z', 'TRANSFER_OUT', 'Payment · TRN-ccc', 'wf-a');
+        INSERT INTO activities (id, amount, activity_date, activity_type, notes, account_id) VALUES ('act-4', '61.05', '2026-07-11T00:00:00Z', 'DEPOSIT', 'Venmo in · TRN-ddd', 'wf-a');
+        INSERT INTO activities (id, amount, activity_date, activity_type, notes, account_id) VALUES ('act-4b', '70.00', '2026-07-11T00:00:00Z', 'CREDIT', 'Thankyou Points · TRN-ddd2', 'wf-a');
         -- Internal markers: never nag about rows the sync itself wrote.
-        INSERT INTO activities VALUES ('act-5', '1169.56', '2026-07-12T00:00:00Z', 'WITHDRAWAL', 'Starting balance · ACT-x', 'wf-a');
-        INSERT INTO activities VALUES ('act-6', '10.00', '2026-07-12T00:00:00Z', 'WITHDRAWAL', 'Balance adjustment · sfin-1 · 2026-07-12', 'wf-a');
-        INSERT INTO activities VALUES ('act-7', '1300.00', '2026-07-13T00:00:00Z', 'WITHDRAWAL', '↔️ In-transit transfer · PNC · TRN-eee', 'wf-a');
+        INSERT INTO activities (id, amount, activity_date, activity_type, notes, account_id) VALUES ('act-5', '1169.56', '2026-07-12T00:00:00Z', 'WITHDRAWAL', 'Starting balance · ACT-x', 'wf-a');
+        INSERT INTO activities (id, amount, activity_date, activity_type, notes, account_id) VALUES ('act-6', '10.00', '2026-07-12T00:00:00Z', 'WITHDRAWAL', 'Balance adjustment · sfin-1 · 2026-07-12', 'wf-a');
+        INSERT INTO activities (id, amount, activity_date, activity_type, notes, account_id) VALUES ('act-7', '1300.00', '2026-07-13T00:00:00Z', 'WITHDRAWAL', '↔️ In-transit transfer · PNC · TRN-eee', 'wf-a');
         -- Outside the window.
-        INSERT INTO activities VALUES ('act-8', '9.99', '2026-05-01T00:00:00Z', 'WITHDRAWAL', 'OLD ROW · TRN-fff', 'wf-a');
+        INSERT INTO activities (id, amount, activity_date, activity_type, notes, account_id) VALUES ('act-8', '9.99', '2026-05-01T00:00:00Z', 'WITHDRAWAL', 'OLD ROW · TRN-fff', 'wf-a');
       `);
       db.close();
     };
@@ -375,7 +375,7 @@ describe('sqlite-native', () => {
         seed(path);
         const writer = new DatabaseSync(path);
         writer.exec("PRAGMA journal_mode=WAL;");
-        writer.exec("INSERT INTO activities VALUES ('act-wal', '4.99', '2026-07-14T00:00:00Z', 'WITHDRAWAL', 'QR LIBRARY · TRN-wal', 'wf-a');");
+        writer.exec("INSERT INTO activities (id, amount, activity_date, activity_type, notes, account_id) VALUES ('act-wal', '4.99', '2026-07-14T00:00:00Z', 'WITHDRAWAL', 'QR LIBRARY · TRN-wal', 'wf-a');");
         try {
           const rows = getNativeUncategorizedSpending(path, '2026-07-01', '2026-08-01');
           expect(rows.map((r) => r.activityId)).toContain('act-wal');
@@ -412,7 +412,7 @@ describe('sqlite-native', () => {
           -- A different taxonomy must not leak in.
           ('inc_other','Other Income',NULL,'income_sources','Wallet','#4F6B92',1);
         INSERT INTO accounts (id,name) VALUES ('wf-a','Spend');
-        INSERT INTO activities VALUES ('a1','71.00','2026-07-06T00:00:00Z','WITHDRAWAL','GAS','wf-a');
+        INSERT INTO activities (id, amount, activity_date, activity_type, notes, account_id) VALUES ('a1','71.00','2026-07-06T00:00:00Z','WITHDRAWAL','GAS','wf-a');
         INSERT INTO activity_taxonomy_assignments (activity_id, category_id) VALUES ('a1','cat_transport_gas');
         INSERT INTO budget_targets (category_id,amount,period_key,updated_at)
           VALUES ('cat_transport','300','2026-07','2026-07-01T00:00:00Z');
@@ -754,6 +754,12 @@ describe('sqlite-native', () => {
           date: '2026-07-09',
           accountName: 'Spend (4937)',
           activityType: 'WITHDRAWAL',
+          // Neither the activity nor its account set these — must default to
+          // '', not null/undefined, so the bucket predicate never sees a gap.
+          accountId: 'wf-a',
+          currency: '',
+          subtype: '',
+          accountType: '',
           assignments: [
             { taxonomyId: 'spending_categories', categoryId: 'cat-spend-2', categoryName: 'Restaurants' },
           ],
@@ -820,6 +826,33 @@ describe('sqlite-native', () => {
       try {
         seed(path);
         expect(getNativeCategorizedSpending(path, "2026-07-01' OR 1=1 --", '2026-08-01')).toEqual([]);
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('carries subtype, accountId, currency and the account type — the inputs the reimbursement bucket predicate needs', () => {
+      const { path, cleanup } = makeTestDb();
+      try {
+        const db = new DatabaseSync(path);
+        db.exec(`
+          INSERT INTO accounts (id, name, account_type) VALUES ('wf-cash', 'Checking', 'CASH');
+          INSERT INTO taxonomy_categories (id, name, parent_id, taxonomy_id) VALUES ('cat-spend', 'Groceries', NULL, 'spending_categories');
+          INSERT INTO activities (id, amount, activity_date, activity_type, notes, account_id, subtype, currency)
+            VALUES ('act-reimb', '-25.00', '2026-07-12', 'CREDIT', 'VENMO PAYBACK · TRN-reimb', 'wf-cash', 'REIMBURSEMENT', 'USD');
+          INSERT INTO activity_taxonomy_assignments (activity_id, category_id, taxonomy_id) VALUES ('act-reimb', 'cat-spend', 'spending_categories');
+        `);
+        db.close();
+
+        const rows = getNativeCategorizedSpending(path, '2026-07-01', '2026-08-01');
+        const reimb = rows.find((r) => r.activityId === 'act-reimb');
+        expect(reimb).toBeDefined();
+        expect(reimb).toMatchObject({
+          accountId: 'wf-cash',
+          currency: 'USD',
+          subtype: 'REIMBURSEMENT',
+          accountType: 'CASH',
+        });
       } finally {
         cleanup();
       }

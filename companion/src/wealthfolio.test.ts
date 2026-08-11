@@ -272,6 +272,63 @@ describe('WealthfolioClient', () => {
     ).rejects.toThrow('createCategorizationRule failed: 400 - duplicate pattern');
   });
 
+  describe('updateActivitySubtype', () => {
+    const activity = {
+      id: 'act-1',
+      accountId: 'wf-cash',
+      activityType: 'CREDIT',
+      activityDate: '2026-07-12',
+      currency: 'USD',
+    };
+
+    it('PUTs exactly the five identifying fields plus subtype to /api/v1/activities — no comment, no amount', async () => {
+      mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({}) });
+      const client = new WealthfolioClient('http://wf');
+      await client.updateActivitySubtype(activity, 'REIMBURSEMENT');
+
+      const [url, opts] = mockFetch.mock.calls[0];
+      expect(url).toBe('http://wf/api/v1/activities');
+      expect((opts as any).method).toBe('PUT');
+      const body = JSON.parse((opts as any).body);
+      // Pin the exact key set: a later edit that adds `comment` (the sync's
+      // `<description> · TRN-<txId>[ · pending]` identity marker) or `amount`
+      // would silently destroy that identity via hydrate-from-existing-row,
+      // rather than fail loudly — this assertion is what makes it fail loudly.
+      expect(Object.keys(body).sort()).toEqual(
+        ['accountId', 'activityDate', 'activityType', 'currency', 'id', 'subtype'].sort(),
+      );
+      expect(body).toEqual({
+        id: 'act-1',
+        accountId: 'wf-cash',
+        activityType: 'CREDIT',
+        activityDate: '2026-07-12',
+        currency: 'USD',
+        subtype: 'REIMBURSEMENT',
+      });
+    });
+
+    it('sends subtype: "" to clear — upstream treats explicit empty string as clear, omitted/undefined as leave-alone', async () => {
+      mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({}) });
+      const client = new WealthfolioClient('http://wf');
+      await client.updateActivitySubtype(activity, '');
+
+      const [, opts] = mockFetch.mock.calls[0];
+      const body = JSON.parse((opts as any).body);
+      expect(body.subtype).toBe('');
+      expect(Object.keys(body).sort()).toEqual(
+        ['accountId', 'activityDate', 'activityType', 'currency', 'id', 'subtype'].sort(),
+      );
+    });
+
+    it('throws through httpError on a non-ok response', async () => {
+      mockFetch.mockResolvedValueOnce({ ok: false, status: 422, text: async () => 'bad subtype' });
+      const client = new WealthfolioClient('http://wf');
+      await expect(client.updateActivitySubtype(activity, 'REIMBURSEMENT')).rejects.toThrow(
+        'updateActivitySubtype failed: 422 - bad subtype',
+      );
+    });
+  });
+
   describe('error detail on non-ok responses', () => {
     it('surfaces the server response body, not just the status code', async () => {
       mockFetch.mockResolvedValueOnce({
