@@ -77,4 +77,46 @@ describe('planReconciliation', () => {
     expect(plan.deleteIds).toEqual(['w1']);
     expect(plan.creates.map((c) => c.txId)).toEqual(['t2']);
   });
+
+  describe('subtype', () => {
+    // The feed omits `subtype` entirely when a rule has no subtype (undefined),
+    // while a stored row's adapter normalizes absent subtype to `null` — and some
+    // rows predate the field entirely and may read back `''`. All three must be
+    // treated as the same "no subtype" so an unrelated sync does not report a
+    // difference (and therefore a rewrite) on every row that never had one.
+    it('is unchanged when the row has no subtype (undefined) and the feed has none', () => {
+      const plan = planReconciliation([feed({})], [row({ subtype: undefined })]);
+      expect(plan.updates).toEqual([]);
+    });
+
+    it('is unchanged when the row subtype is null and the feed has none', () => {
+      const plan = planReconciliation([feed({})], [row({ subtype: null })]);
+      expect(plan.updates).toEqual([]);
+    });
+
+    it('is unchanged when the row subtype is the empty string and the feed has none', () => {
+      const plan = planReconciliation([feed({})], [row({ subtype: '' })]);
+      expect(plan.updates).toEqual([]);
+    });
+
+    it('backfills in place when a rule newly assigns a subtype to an already-imported row', () => {
+      const plan = planReconciliation([feed({ subtype: 'REIMBURSEMENT' })], [row({})]);
+      expect(plan.updates).toEqual([{ wfId: 'w1', to: expect.objectContaining({ subtype: 'REIMBURSEMENT' }) }]);
+    });
+
+    it('is unchanged when the stored and feed subtype already match', () => {
+      const plan = planReconciliation([feed({ subtype: 'REIMBURSEMENT' })], [row({ subtype: 'REIMBURSEMENT' })]);
+      expect(plan.updates).toEqual([]);
+    });
+
+    it('is unchanged on a case-only subtype difference (upstream canonicalizes case-insensitively)', () => {
+      const plan = planReconciliation([feed({ subtype: 'REIMBURSEMENT' })], [row({ subtype: 'reimbursement' })]);
+      expect(plan.updates).toEqual([]);
+    });
+
+    it('updates in place when a rule change removes the subtype', () => {
+      const plan = planReconciliation([feed({})], [row({ subtype: 'REIMBURSEMENT' })]);
+      expect(plan.updates).toEqual([{ wfId: 'w1', to: expect.objectContaining({ txId: 't1' }) }]);
+    });
+  });
 });
