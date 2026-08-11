@@ -25,6 +25,15 @@ export interface CategorizeTxn {
   amountCents: number;
   description: string;
   accountName: string;
+  /** Present in recategorize mode: the category this transaction is CURRENTLY
+   *  filed under, before any tap on this render. Serves two purposes — the
+   *  ` · <name>` suffix on its list row, and the "old" half of the `refiled`
+   *  confirmation's `undoReassign` action (`toRestore`) — which is why it
+   *  carries the taxonomy/category ids and not just a display name: the name
+   *  alone (as `refiled.fromName` is) is enough to render text, but undoing a
+   *  reassignment needs somewhere real to put the transaction back. Absent in
+   *  categorize mode, where nothing is filed yet. */
+  currentCategory?: { taxonomyId: string; categoryId: string; name: string };
 }
 
 /** One node of Wealthfolio's spending category tree. `parentId === null`
@@ -49,7 +58,15 @@ export type MenuScreen =
   | { kind: 'rulePreview'; activityId: string; categoryId: string }
   | { kind: 'freeRulePreview'; pattern: string; categoryId: string }
   | { kind: 'ruleCreated'; activityId: string | null; categoryId: string }
-  | { kind: 'closed' };
+  | { kind: 'closed' }
+  /** The recategorize confirmation. `fromName` (not an id) is what the row
+   *  showed BEFORE the tap, because it may name an income-side category that
+   *  never appears in `session.categories` (the spending tree) — the whole
+   *  reason `crossTaxonomy` exists as its own flag rather than something
+   *  derivable by looking the old category up. `toCategoryId` IS looked up,
+   *  same as `filed.categoryId`, since the new category is always a spending
+   *  category and always in that list. */
+  | { kind: 'refiled'; activityId: string; fromName: string; toCategoryId: string; crossTaxonomy: boolean; undone: boolean };
 
 export interface MenuSession {
   /** Fresh read, already ledger-filtered — whatever the caller passes is
@@ -88,6 +105,21 @@ export interface MenuSession {
    * rendering the same screen twice produce two different keyboards.
    */
   generation: number;
+  /** `categorize` files an UNcategorized transaction (the long-standing
+   *  behaviour); `recategorize` moves an ALREADY-filed one to a different
+   *  category. The two share every screen and every code path down to the
+   *  category picker itself — this flag is read at the handful of places
+   *  that differ (the list's row label and header, the txn screen's "Keep
+   *  uncategorized" button, and which MenuAction a category tap emits) rather
+   *  than the controller building two parallel menus, so those two flows
+   *  cannot drift apart the way a copy-pasted module would let them.
+   *
+   * Optional, and every read of it treats a missing value as `'categorize'`:
+   * the controller's existing session-building call sites (this task does not
+   * touch `companion/`, wiring is a later task) predate this field and do not
+   * set it, so making it required would fail their build the moment this file
+   * changed underneath them for a mode they never asked for. */
+  mode?: 'categorize' | 'recategorize';
 }
 
 export type MenuAction =
@@ -98,7 +130,21 @@ export type MenuAction =
   | { kind: 'undismiss'; activityId: string }
   | { kind: 'createRule'; activityId: string; categoryId: string }
   | { kind: 'createFreeRule'; pattern: string; categoryId: string }
-  | { kind: 'close' };
+  | { kind: 'close' }
+  /** `assign`'s recategorize-mode counterpart: files onto a transaction that
+   *  already has a category, rather than one with none. A separate kind
+   *  (rather than reusing `assign`) is what lets the controller tell "first
+   *  filing" and "moving an existing filing" apart without inspecting the
+   *  session's mode itself — the action alone says which happened. */
+  | { kind: 'reassign'; activityId: string; categoryId: string }
+  /** Undo for `reassign`: puts the transaction back on the category it held
+   *  before the tap. Carries the FULL old category (taxonomy + id), not just
+   *  the new category's id the way `unassign` does, because the old category
+   *  may be on the income side of the ledger — outside the spending tree
+   *  `unassign` implicitly restores to "no category in this tree" — so there
+   *  is no id space the controller could look the restore target up in on
+   *  its own. */
+  | { kind: 'undoReassign'; activityId: string; toRestore: { taxonomyId: string; categoryId: string } };
 
 /**
  * Parses `/newrule <pattern> = <category>` (or `→` in place of `=`) — the
@@ -253,12 +299,36 @@ function pairUp<T>(items: T[]): T[][] {
   return rows;
 }
 
+/**
+ * The one place a category tap turns into an action, for BOTH modes. Called
+ * from every spot that used to hand-write `{ kind: 'assign', ... }` — the txn
+ * screen's childless-parent buttons, and the subcats screen's child and
+ * "Just X itself" buttons. Keeping it here, branched on `mode`, is what a
+ * copy of the whole category-picker block per mode would not give: the two
+ * flows can add a category-tree feature (a new button shape, say) exactly
+ * once and have it apply to both, instead of one of two copies quietly
+ * falling behind.
+ */
+function assignAction(mode: MenuSession['mode'], activityId: string, categoryId: string): MenuAction {
+  return mode === 'recategorize'
+    ? { kind: 'reassign', activityId, categoryId }
+    : { kind: 'assign', activityId, categoryId };
+}
+
 function renderList(session: MenuSession, page: number, note?: string): RenderResult {
   const prefix = note ? `${note}\n\n` : '';
-  const { txns } = session;
+  const { txns, mode } = session;
 
   if (txns.length === 0) {
-    return finish(session.generation, `${prefix}Nothing needs a category right now.`, [[DONE_BTN]]);
+    // Two different empty states for two different questions: "categorize"
+    // asks whether anything is UNfiled (nothing needs attention), while
+    // "recategorize" asks whether anything filed in the lookback window
+    // MATCHES what was searched for — a filter can legitimately come up
+    // empty even when plenty of transactions are categorized.
+    const emptyText = mode === 'recategorize'
+      ? 'Nothing categorized in the last 90 days matches.'
+      : 'Nothing needs a category right now.';
+    return finish(session.generation, `${prefix}${emptyText}`, [[DONE_BTN]]);
   }
 
   const start = page * MENU_PAGE_SIZE;
@@ -266,14 +336,19 @@ function renderList(session: MenuSession, page: number, note?: string): RenderRe
   const hasPrev = page > 0;
   const hasNext = start + MENU_PAGE_SIZE < txns.length;
 
-  const rows: Btn[][] = pageTxns.map((t) => [{
-    // Label only — never Markdown-parsed, so the raw description is fine here
-    // (see `layout`'s doc comment). moneyWhole takes DOLLARS, so cents are
-    // divided down first, and it keeps the sign deliberately (see its doc
-    // comment in ./telegram.ts) — a spend reads as `-$10` here, not `$10`.
-    text: `${shortDate(t.date)} · ${t.description} · ${moneyWhole(t.amountCents / 100)}`,
-    action: { kind: 'goto', screen: { kind: 'txn', activityId: t.activityId } },
-  }]);
+  const rows: Btn[][] = pageTxns.map((t) => {
+    // Recategorize appends the current category so the list itself answers
+    // "categorized as what" without a tap — label only, never Markdown-parsed
+    // (see `layout`'s doc comment), so the raw name is fine unescaped here.
+    const currentSuffix = mode === 'recategorize' && t.currentCategory ? ` · ${t.currentCategory.name}` : '';
+    return [{
+      // moneyWhole takes DOLLARS, so cents are divided down first, and it
+      // keeps the sign deliberately (see its doc comment in ./telegram.ts) —
+      // a spend reads as `-$10` here, not `$10`.
+      text: `${shortDate(t.date)} · ${t.description} · ${moneyWhole(t.amountCents / 100)}${currentSuffix}`,
+      action: { kind: 'goto', screen: { kind: 'txn', activityId: t.activityId } },
+    }];
+  });
 
   const navRow: Btn[] = [];
   if (hasPrev) navRow.push({ text: '« Prev', action: { kind: 'goto', screen: { kind: 'list', page: page - 1 } } });
@@ -283,7 +358,13 @@ function renderList(session: MenuSession, page: number, note?: string): RenderRe
   rows.push([DONE_BTN]);
 
   const count = txns.length;
-  const text = `${prefix}${count} transaction${count === 1 ? '' : 's'} need${count === 1 ? 's' : ''} a category:`;
+  // Recategorize has no natural count-based header — the caller already knows
+  // roughly how much history it's searching, and "N transactions match" would
+  // just repeat the row count sitting right below it — so it states the
+  // screen's PURPOSE instead, fixed regardless of how many rows are showing.
+  const text = mode === 'recategorize'
+    ? `${prefix}Recategorize — tap a transaction`
+    : `${prefix}${count} transaction${count === 1 ? '' : 's'} need${count === 1 ? 's' : ''} a category:`;
   return finish(session.generation, text, rows);
 }
 
@@ -291,28 +372,40 @@ function renderTxn(session: MenuSession, activityId: string): RenderResult {
   const txn = findTxn(session, activityId);
   if (!txn) return renderList(session, 0, GONE_NOTE);
 
+  const isRecategorize = session.mode === 'recategorize';
+
   const parents = session.categories.filter((c) => c.parentId === null);
   const catButtons: Btn[] = parents.map((c) => {
     const hasChildren = session.categories.some((k) => k.parentId === c.id);
     const action: MenuAction = hasChildren
       ? { kind: 'goto', screen: { kind: 'subcats', activityId, parentId: c.id } }
-      : { kind: 'assign', activityId, categoryId: c.id };
+      : assignAction(session.mode, activityId, c.id);
     return { text: c.name, action };
   });
 
   const rows: Btn[][] = [
     ...pairUp(catButtons),
-    [{ text: 'Keep uncategorized', action: { kind: 'dismiss', activityId } }],
+    // "Keep uncategorized" only makes sense before a first filing — a
+    // recategorize is choosing among categories, not opting out of having
+    // one, and the transaction already has one. The current category's OWN
+    // button is deliberately still in the grid above, unfiltered: re-filing
+    // to the same category is a harmless no-op for the controller to shrug
+    // off, not a state this screen needs to special-case.
+    ...(isRecategorize ? [] : [[{ text: 'Keep uncategorized', action: { kind: 'dismiss' as const, activityId } }]]),
     [{ text: '« Back', action: { kind: 'goto', screen: { kind: 'list', page: 0 } } }],
   ];
 
   // Text IS Markdown-parsed, unlike button labels, so every interpolated
   // field here goes through escapeMarkdown — card-network descriptors and
   // Wealthfolio account names both routinely carry `_`/`*`.
-  const text = [
+  const lines = [
     escapeMarkdown(txn.description),
     `${moneyWhole(txn.amountCents / 100)} · ${shortDate(txn.date)} · ${escapeMarkdown(txn.accountName)}`,
-  ].join('\n');
+  ];
+  if (isRecategorize && txn.currentCategory) {
+    lines.push(`Currently: ${escapeMarkdown(txn.currentCategory.name)}`);
+  }
+  const text = lines.join('\n');
 
   return finish(session.generation, text, rows);
 }
@@ -325,12 +418,12 @@ function renderSubcats(session: MenuSession, activityId: string, parentId: strin
   const children = session.categories.filter((c) => c.parentId === parentId);
   const childButtons: Btn[] = children.map((c) => ({
     text: c.name,
-    action: { kind: 'assign', activityId, categoryId: c.id },
+    action: assignAction(session.mode, activityId, c.id),
   }));
 
   const rows: Btn[][] = [
     ...childButtons.map((b) => [b]),
-    [{ text: `Just ${parent.name} itself`, action: { kind: 'assign', activityId, categoryId: parent.id } }],
+    [{ text: `Just ${parent.name} itself`, action: assignAction(session.mode, activityId, parent.id) }],
     [{ text: '« Back', action: { kind: 'goto', screen: { kind: 'txn', activityId } } }],
   ];
 
@@ -442,6 +535,61 @@ function renderRuleCreated(session: MenuSession, activityId: string | null, cate
   return finish(session.generation, text, rows);
 }
 
+/**
+ * Confirms a `reassign`: `<description>: <old> → <new>.`, plus a warning line
+ * when the move crosses taxonomies (spending ↔ income) — that crossing
+ * changes what the number MEANS (an income entry stops counting as income and
+ * starts offsetting a spending category instead), which is exactly the kind
+ * of consequence a silent recategorize could leave the reader misreading
+ * their own reports over.
+ *
+ * `txn.currentCategory` (not `screen.fromName` alone) has to still be present
+ * for this to render: `fromName` is enough to WRITE the sentence, but the
+ * Undo button needs somewhere with real ids to put the transaction back, and
+ * `currentCategory` is the only place those ids live (see its doc comment).
+ * Missing means the controller's fresh sweep no longer has this row at all —
+ * the same staleness `GONE_NOTE` exists for everywhere else.
+ */
+function renderRefiled(
+  session: MenuSession,
+  screen: Extract<MenuScreen, { kind: 'refiled' }>,
+): RenderResult {
+  const txn = findTxn(session, screen.activityId);
+  const toCategory = findCategory(session, screen.toCategoryId);
+  if (!txn || !toCategory || !txn.currentCategory) return renderList(session, 0, GONE_NOTE);
+
+  const toName = escapeMarkdown(toCategory.name);
+  const fromName = escapeMarkdown(screen.fromName);
+
+  if (screen.undone) {
+    // Mirrors `filed`/`dismissed`'s "<X> undone — ..." shape, but the state
+    // undoing returns to is the OLD category, not "uncategorized" — this
+    // transaction was already filed before the reassign, so "uncategorized
+    // again" would misstate what undo just did.
+    const text = `Refiling undone — ${escapeMarkdown(txn.description)} is back under ${fromName}.`;
+    return finish(session.generation, text, [[BACK_TO_LIST_BTN], [DONE_BTN]]);
+  }
+
+  const lines = [`${escapeMarkdown(txn.description)}: ${fromName} → ${toName}.`];
+  if (screen.crossTaxonomy) {
+    lines.push(`This payment now offsets ${toName} instead of counting as income.`);
+  }
+
+  const rows: Btn[][] = [
+    [{
+      text: 'Undo',
+      action: {
+        kind: 'undoReassign',
+        activityId: screen.activityId,
+        toRestore: { taxonomyId: txn.currentCategory.taxonomyId, categoryId: txn.currentCategory.categoryId },
+      },
+    }],
+    [{ text: 'Next', action: { kind: 'goto', screen: { kind: 'list', page: 0 } } }],
+    [DONE_BTN],
+  ];
+  return finish(session.generation, lines.join('\n'), rows);
+}
+
 function renderClosed(generation: number): RenderResult {
   return finish(generation, 'Menu closed.', []);
 }
@@ -477,6 +625,8 @@ export function renderScreen(session: MenuSession): RenderResult {
       return renderFreeRulePreview(session, screen.pattern, screen.categoryId);
     case 'ruleCreated':
       return renderRuleCreated(session, screen.activityId, screen.categoryId);
+    case 'refiled':
+      return renderRefiled(session, screen);
     case 'closed':
       return renderClosed(session.generation);
   }
