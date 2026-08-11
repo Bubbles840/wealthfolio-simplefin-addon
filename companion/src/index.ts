@@ -24,7 +24,7 @@ import type { GlyphStyle, InlineKeyboard } from '../../shared/telegram.js';
 import type { DismissalLedger } from './dismissals.js';
 import type { SyncHealth } from '../../shared/telegram.js';
 import { SIMPLEFIN_SYNC_VERSION, COMPANION_VERSION_SECRET_KEY } from '../../shared/version.js';
-import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeSpendingCategories, getNativeCategoryCatalog, getNativeSubcategorySpending } from './sqlite-native.js';
+import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeCategorizedSpending, getNativeSpendingCategories, getNativeCategoryCatalog, getNativeSubcategorySpending } from './sqlite-native.js';
 import { publishUncategorizedStatusForDbPath } from './uncategorized-status.js';
 import { createCategorizeController, SPENDING_TAXONOMY_ID } from './categorize.js';
 import type { CategorizeController, CategorizeDeps } from './categorize.js';
@@ -1585,14 +1585,27 @@ export function buildCategorizeDeps(wfClient: WealthfolioClient): CategorizeDeps
   return {
     dbPath: categorizeDbPath,
     readRows: getNativeUncategorizedSpending,
+    // The mirror reader, straight through for the same reason: it answers "what
+    // is this row filed under right now", which is what both menus' Undo checks
+    // before they un-file anything.
+    readCategorized: getNativeCategorizedSpending,
     readCategories: getNativeSpendingCategories,
     readLedger,
     // The shared core, with its fresh second read — NOT a local copy, and never
     // `base` as `persisted`. See `dismissalLedgerAccess`.
     writeLedgerMerged,
-    assign: (activityId, categoryId) =>
-      wfClient.assignActivityCategory(activityId, SPENDING_TAXONOMY_ID, categoryId),
+    // The taxonomy DEFAULTS here rather than being required of the caller: every
+    // path but one writes a spending category, and the exception — restoring a
+    // reassignment that came from the income side — passes the taxonomy it read
+    // off the row. Honouring the third argument is not optional: dropping it
+    // would file an income restore as a spending assignment, which is the state
+    // the restore exists to undo.
+    assign: (activityId, categoryId, taxonomyId = SPENDING_TAXONOMY_ID) =>
+      wfClient.assignActivityCategory(activityId, taxonomyId, categoryId),
     unassign: (activityId) => wfClient.unassignActivityCategory(activityId, SPENDING_TAXONOMY_ID),
+    // The same DELETE, with the taxonomy chosen per call: a recategorize clears
+    // whatever non-spending taxonomies the row turns out to be carrying.
+    unassignTaxonomy: (activityId, taxonomyId) => wfClient.unassignActivityCategory(activityId, taxonomyId),
     createRule: (rule) => wfClient.createCategorizationRule({
       ...rule,
       taxonomyId: SPENDING_TAXONOMY_ID,

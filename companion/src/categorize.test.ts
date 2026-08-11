@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { createCategorizeController, SPENDING_TAXONOMY_ID, type CategorizeDeps } from './categorize.js';
+import {
+  createCategorizeController,
+  INCOME_TAXONOMY_NOTE,
+  SPENDING_TAXONOMY_ID,
+  type CategorizeDeps,
+} from './categorize.js';
 import { CATEGORIZE_ENTRY_CALLBACK, type InlineKeyboard } from '../../shared/telegram.js';
 import type { DismissalLedger } from '../../shared/uncategorized.js';
 
@@ -35,30 +40,131 @@ const CATEGORIES = [
   { id: 'cat-fun', name: 'Entertainment', parentId: null, parentName: null },
 ];
 
+/** A non-spending taxonomy id, deliberately NOT the literal string `income`:
+ *  the controller has to detect the income side by
+ *  `taxonomyId !== SPENDING_TAXONOMY_ID`, never by matching a name (see
+ *  `INCOME_TAXONOMY_NOTE`, which is prose, not an id). */
+const INCOME_TAXONOMY_ID = 'income_categories';
+/** A THIRD taxonomy, so "clear every non-spending assignment" can be shown to
+ *  mean every one of them rather than "the first". */
+const SAVINGS_TAXONOMY_ID = 'savings_categories';
+
+/** Non-spending category names live outside `CATEGORIES` (the spending tree the
+ *  picker renders) — that separation is the whole point of `currentCategory`
+ *  carrying a taxonomy id and a display name rather than an index into it. */
+const OFF_TREE_CATEGORY_NAMES: Record<string, string> = {
+  'inc-reimb': 'Reimbursements',
+  'sav-goal': 'House Fund',
+};
+
+interface Assignment { taxonomyId: string; categoryId: string; categoryName: string }
+
+/** A row shaped like `getNativeCategorizedSpending`'s output: the RAW note plus
+ *  EVERY taxonomy's assignment on that activity. */
+interface CatRow {
+  activityId: string;
+  notes: string;
+  amountCents: number;
+  date: string;
+  accountName: string;
+  activityType: string;
+  assignments: Assignment[];
+}
+
+const spendingAt = (categoryId: string, categoryName: string): Assignment =>
+  ({ taxonomyId: SPENDING_TAXONOMY_ID, categoryId, categoryName });
+const incomeAt = (categoryId: string, categoryName: string): Assignment =>
+  ({ taxonomyId: INCOME_TAXONOMY_ID, categoryId, categoryName });
+const savingsAt = (categoryId: string, categoryName: string): Assignment =>
+  ({ taxonomyId: SAVINGS_TAXONOMY_ID, categoryId, categoryName });
+
+const catRow = (id: string, assignments: Assignment[], over: Partial<CatRow> = {}): CatRow => ({
+  activityId: id,
+  notes: `VENMO PAYMENT ${id} · TRN-${id}`,
+  amountCents: 2400,
+  date: '2026-08-09',
+  accountName: 'Citi Double Cash',
+  activityType: 'DEPOSIT',
+  assignments,
+  ...over,
+});
+
 type Recorded = [string, InlineKeyboard | undefined];
 
-function setup(opts: { rows?: Row[]; ledger?: DismissalLedger; dbPath?: string | null } = {}) {
+function setup(
+  opts: { rows?: Row[]; categorized?: CatRow[]; ledger?: DismissalLedger; dbPath?: string | null } = {},
+) {
+  /** The invariant the two native readers guarantee: an activity is in EXACTLY
+   *  one of the two sweeps. Enforced on the fixtures as well as at read time
+   *  (see `readRows`) because the fake WRITES read `state.rows` too — one
+   *  activity in both sets would let a filing take its description from the
+   *  wrong copy of itself. */
+  const categorizedIds = new Set((opts.categorized ?? []).map((r) => r.activityId));
   const state = {
-    rows: opts.rows ?? [row('a'), row('b')],
+    rows: (opts.rows ?? [row('a'), row('b')]).filter((r) => !categorizedIds.has(r.activityId)),
     /** Rows a fake `assign` has taken out of the uncategorized set, so `unassign`
      *  can put them back — the DB is the thing that changes under the menu. */
     filed: [] as Row[],
+    /** The categorized side of the same database. The two sets PARTITION the
+     *  rows, exactly as the two native readers do, so a fake write that files a
+     *  row moves it from one to the other — which is what lets a test observe
+     *  "a delete succeeded and the assign did not, so /categorize sees it now". */
+    categorized: (opts.categorized ?? []).map((r) => ({ ...r, assignments: r.assignments.map((a) => ({ ...a })) })),
     categories: [...CATEGORIES],
     ledger: { ...(opts.ledger ?? {}) } as DismissalLedger,
   };
   const readArgs: Array<[string, string, string]> = [];
+  /** Kept apart from `readArgs` so the categorize window assertions keep
+   *  measuring only the uncategorized sweep. */
+  const recatArgs: Array<[string, string, string]> = [];
   const logs: string[] = [];
   const writes: Array<{ base: DismissalLedger; next: DismissalLedger }> = [];
   /** Reads and writes in the order they happened — what proves a write had (or
    *  had not) a fresh read behind it. */
   const order: string[] = [];
 
+  /** The name a category id shows up under — the spending tree first, then the
+   *  off-tree (income/savings) names, so a fake write records what the real
+   *  reader would read back. */
+  const nameFor = (categoryId: string): string =>
+    state.categories.find((c) => c.id === categoryId)?.name ?? OFF_TREE_CATEGORY_NAMES[categoryId] ?? categoryId;
+
+  /** A row that has lost its LAST assignment is uncategorized, so it leaves the
+   *  categorized set and joins the one `/categorize` sweeps. Modelling this is
+   *  what makes the delete-then-assign ordering observable end to end. */
+  const dropIfBare = (activityId: string): void => {
+    const cat = state.categorized.find((r) => r.activityId === activityId);
+    if (!cat || cat.assignments.length > 0) return;
+    state.categorized = state.categorized.filter((r) => r.activityId !== activityId);
+    if (!state.rows.some((r) => r.activityId === activityId)) {
+      state.rows = [{
+        activityId,
+        wfAccountId: 'wf-1',
+        notes: cat.notes,
+        amountCents: cat.amountCents,
+        date: cat.date,
+        accountName: cat.accountName,
+      }, ...state.rows];
+    }
+  };
+
   const deps = {
     dbPath: vi.fn((): string | null => (opts.dbPath === undefined ? DB : opts.dbPath)),
     readRows: vi.fn((p: string, s: string, e: string) => {
       order.push('readRows');
       readArgs.push([p, s, e]);
-      return state.rows.map((r) => ({ ...r }));
+      // The real reader's `LEFT JOIN ... IS NULL`: a row that HAS an assignment is
+      // not part of the uncategorized sweep. Applied at read time rather than at
+      // setup so a test that changes what a row is filed under mid-flow — which is
+      // most of the freshness ones — moves it between the two sweeps the way the
+      // database would.
+      const assigned = new Set(state.categorized.filter((c) => c.assignments.length > 0).map((c) => c.activityId));
+      return state.rows.filter((r) => !assigned.has(r.activityId)).map((r) => ({ ...r }));
+    }),
+    readCategorized: vi.fn((p: string, s: string, e: string) => {
+      order.push('readCategorized');
+      recatArgs.push([p, s, e]);
+      return state.categorized.map((r) => ({ ...r, assignments: r.assignments.map((a) => ({ ...a })) }));
     }),
     readCategories: vi.fn((_p: string) => {
       order.push('readCategories');
@@ -73,13 +179,36 @@ function setup(opts: { rows?: Row[]; ledger?: DismissalLedger; dbPath?: string |
       writes.push({ base, next });
       state.ledger = { ...next };
     }),
-    assign: vi.fn(async (activityId: string, _categoryId: string) => {
-      order.push('assign');
+    assign: vi.fn(async (activityId: string, categoryId: string, taxonomyId: string = SPENDING_TAXONOMY_ID) => {
+      // The taxonomy is recorded in the order log: an assign that dropped it on
+      // the floor and wrote the spending taxonomy for an income restore is
+      // exactly the silent failure this dep's third parameter exists to prevent.
+      order.push(`assign:${taxonomyId}`);
       const hit = state.rows.find((r) => r.activityId === activityId);
       if (hit) {
         state.filed.push(hit);
         state.rows = state.rows.filter((r) => r.activityId !== activityId);
       }
+      let cat = state.categorized.find((r) => r.activityId === activityId);
+      if (!cat) {
+        const src = hit ?? state.filed.find((r) => r.activityId === activityId);
+        cat = {
+          activityId,
+          notes: src?.notes ?? `ROW ${activityId} · TRN-${activityId}`,
+          amountCents: src?.amountCents ?? 0,
+          date: src?.date ?? '2026-08-08',
+          accountName: src?.accountName ?? 'Citi Double Cash',
+          activityType: 'WITHDRAWAL',
+          assignments: [],
+        };
+        state.categorized = [...state.categorized, cat];
+      }
+      // One assignment per taxonomy — the server's own shape, and the reason a
+      // cross-taxonomy move has to DELETE rather than overwrite.
+      cat.assignments = [
+        ...cat.assignments.filter((a) => a.taxonomyId !== taxonomyId),
+        { taxonomyId, categoryId, categoryName: nameFor(categoryId) },
+      ];
     }),
     unassign: vi.fn(async (activityId: string) => {
       order.push('unassign');
@@ -88,6 +217,18 @@ function setup(opts: { rows?: Row[]; ledger?: DismissalLedger; dbPath?: string |
         state.filed = state.filed.filter((r) => r.activityId !== activityId);
         state.rows = [hit, ...state.rows];
       }
+      const cat = state.categorized.find((r) => r.activityId === activityId);
+      if (cat) {
+        cat.assignments = cat.assignments.filter((a) => a.taxonomyId !== SPENDING_TAXONOMY_ID);
+        dropIfBare(activityId);
+      }
+    }),
+    unassignTaxonomy: vi.fn(async (activityId: string, taxonomyId: string) => {
+      order.push(`unassignTaxonomy:${taxonomyId}`);
+      const cat = state.categorized.find((r) => r.activityId === activityId);
+      if (!cat) return;
+      cat.assignments = cat.assignments.filter((a) => a.taxonomyId !== taxonomyId);
+      dropIfBare(activityId);
     }),
     createRule: vi.fn(async (_r: { name: string; pattern: string; categoryId: string }) => {
       order.push('createRule');
@@ -106,7 +247,7 @@ function setup(opts: { rows?: Row[]; ledger?: DismissalLedger; dbPath?: string |
 
   const tap = (data: string) => controller.onCallback({ data, chatId: CHAT, messageId: 55 }, ui);
 
-  return { state, deps, ui, send, controller, tap, logs, writes, readArgs, order };
+  return { state, deps, ui, send, controller, tap, logs, writes, readArgs, recatArgs, order };
 }
 
 const lastCall = (fn: { mock: { calls: unknown[][] } }): Recorded => {
@@ -139,6 +280,24 @@ async function openAtFiled(h: ReturnType<typeof setup>, label = 'BOOK STORES a')
   return keyboardOf(lastCall(h.ui.edit));
 }
 
+/** /recategorize → tap the named row → that row's picker. */
+async function openRecatAtTxn(h: ReturnType<typeof setup>, label = 'VENMO PAYMENT a') {
+  await h.controller.openRecategorize(undefined, h.send);
+  await h.tap(dataFor(keyboardOf(lastCall(h.send)), label));
+  return keyboardOf(lastCall(h.ui.edit));
+}
+
+/** /recategorize → row → a childless category → the `refiled` screen. */
+async function openRecatAtRefiled(
+  h: ReturnType<typeof setup>,
+  label = 'VENMO PAYMENT a',
+  category = 'Entertainment',
+) {
+  const picker = await openRecatAtTxn(h, label);
+  await h.tap(dataFor(picker, category));
+  return keyboardOf(lastCall(h.ui.edit));
+}
+
 afterEach(() => {
   vi.useRealTimers();
 });
@@ -146,6 +305,18 @@ afterEach(() => {
 describe('the taxonomy the whole feature writes into', () => {
   it('is Wealthfolio\'s spending taxonomy', () => {
     expect(SPENDING_TAXONOMY_ID).toBe('spending_categories');
+  });
+
+  it('names the income side without giving it an id to match on', () => {
+    // Prose, not a key: `income` is what the feature CALLS the other side of the
+    // ledger, and it is deliberately not usable as a taxonomy id — a Wealthfolio
+    // instance's income taxonomy is `income_categories`, there is a savings one
+    // too, and any of them can appear. Detection is the inequality below, so a
+    // taxonomy nobody anticipated is still cleared rather than silently kept.
+    expect(INCOME_TAXONOMY_NOTE).toBe('income');
+    expect(INCOME_TAXONOMY_NOTE).not.toBe(SPENDING_TAXONOMY_ID);
+    expect(INCOME_TAXONOMY_ID).not.toBe(SPENDING_TAXONOMY_ID);
+    expect(SAVINGS_TAXONOMY_ID).not.toBe(SPENDING_TAXONOMY_ID);
   });
 });
 
@@ -522,21 +693,45 @@ describe('filing a transaction', () => {
     expect(labels(keyboardOf(undone))).toEqual(['Back to list', 'Done']);
   });
 
-  it('undoes without reading which category is assigned now — a pinned, known hazard', async () => {
-    // Deliberate, and pinned so the next reader knows it is a decision: this is
-    // the one write on this path with no read behind it. Nothing available to
-    // the controller can report the CURRENT assignment (`readRows` returns only
-    // uncategorized rows and carries no category id), so if something else
-    // re-filed this row under a different category in between, Undo clears that
-    // instead. See the hazard note on the `unassign` case in categorize.ts.
+  it('reads the row\'s CURRENT assignment before un-filing it — the closed v1.12.0 blind spot', async () => {
+    // This test used to pin the opposite: until a reader for a row's current
+    // assignment existed, Undo wrote with no read behind it, and the hazard was
+    // documented rather than fixed. `readCategorized` closes it, so the order
+    // now starts with a verification read — the write can no longer be the first
+    // thing that happens on this path.
     const h = setup();
     const filed = await openAtFiled(h);
     const mark = h.order.length;
     await h.tap(dataFor(filed, 'Undo'));
-    // The write comes FIRST — no read precedes it — and the reads that follow
-    // are the fresh sweep the confirmation screen is rendered from.
-    expect(h.order.slice(mark)).toEqual(['unassign', 'readRows', 'readLedger', 'readCategories']);
+    expect(h.order.slice(mark)).toEqual([
+      'readCategorized', 'unassign', 'readRows', 'readLedger', 'readCategories',
+    ]);
     expect(h.deps.unassign.mock.calls[0]).toEqual(['a']);
+  });
+
+  it('declines the undo when something else re-filed the row under a different category', async () => {
+    // The erasure the blind write could cause: a rule (or the addon, or the
+    // other host) moved this row to Restaurants between the filing and the tap.
+    // Un-filing now would delete THAT category, not the one this menu set.
+    const h = setup();
+    const filed = await openAtFiled(h);
+    h.state.categorized = [catRow('a', [spendingAt('cat-rest', 'Restaurants')], { notes: 'BOOK STORES a · TRN-a' })];
+    await h.tap(dataFor(filed, 'Undo'));
+    expect(h.deps.unassign).not.toHaveBeenCalled();
+    expect(lastCall(h.ui.edit)[0]).toContain('That transaction changed elsewhere — leaving it as is.');
+    // Refreshed, not left on a dead screen: what the list shows now is the truth.
+    expect(lastCall(h.ui.edit)[0]).toContain('need');
+  });
+
+  it('declines the undo when the row carries no assignment at all any more', async () => {
+    // Someone already un-filed it. There is nothing this menu set left to undo,
+    // and clearing an empty assignment would report success for a no-op.
+    const h = setup();
+    const filed = await openAtFiled(h);
+    h.state.categorized = [];
+    await h.tap(dataFor(filed, 'Undo'));
+    expect(h.deps.unassign).not.toHaveBeenCalled();
+    expect(lastCall(h.ui.edit)[0]).toContain('That transaction changed elsewhere — leaving it as is.');
   });
 
   it('reports a refused undo without claiming it worked', async () => {
@@ -845,5 +1040,485 @@ describe('nothing escapes to the listener', () => {
     const catToken = dataFor(keyboardOf(lastCall(h.ui.edit)), 'Entertainment');
     await expect(controller.onCallback({ data: catToken, chatId: CHAT, messageId: 1 }, h.ui)).resolves.toBeUndefined();
     expect(lastCall(h.ui.edit)[0]).toBe('Couldn\'t file that — Wealthfolio said: 403');
+  });
+});
+
+// ---- /recategorize ---------------------------------------------------------
+
+/** The realistic case the whole feature exists for: a Venmo payback that
+ *  auto-filed under an INCOME category, which the user wants to offset a
+ *  spending category instead. */
+const VENMO_INCOME = catRow('a', [incomeAt('inc-reimb', 'Reimbursements')]);
+/** The same-taxonomy case: already a spending category, just the wrong one. */
+const GROCERIES = catRow('b', [spendingAt('cat-rest', 'Restaurants')], {
+  notes: 'TRADER JOES b · TRN-b',
+  amountCents: -4500,
+  date: '2026-08-07',
+});
+
+describe('openRecategorize', () => {
+  it('lists categorized rows with their current category, notes cleaned', async () => {
+    const h = setup({ categorized: [VENMO_INCOME, GROCERIES] });
+    await h.controller.openRecategorize(undefined, h.send);
+    const call = lastCall(h.send);
+    expect(call[0]).toBe('Recategorize — tap a transaction');
+    expect(labels(keyboardOf(call))).toEqual([
+      'Aug 9 · VENMO PAYMENT a · $24 · Reimbursements',
+      'Aug 7 · TRADER JOES b · -$45 · Restaurants',
+      'Done',
+    ]);
+    // The bookkeeping suffix is internal here too.
+    expect(call[0] + labels(keyboardOf(call)).join()).not.toContain('TRN-');
+  });
+
+  it('reads the categorized sweep over the same 90-day window, and never the dismissal ledger', async () => {
+    // The ledger answers "does this still need a category", which is not a
+    // question /recategorize asks — every row it lists already has one.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-08T15:30:00Z'));
+    const h = setup({ categorized: [VENMO_INCOME] });
+    await h.controller.openRecategorize(undefined, h.send);
+    expect(h.recatArgs).toEqual([[DB, '2026-05-10', '2026-08-09']]);
+    expect(h.deps.readRows).not.toHaveBeenCalled();
+    expect(h.deps.readLedger).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the raw note when the description strips to nothing', async () => {
+    const h = setup({ categorized: [catRow('a', [spendingAt('cat-fun', 'Entertainment')], { notes: ' · TRN-a' })] });
+    await h.controller.openRecategorize(undefined, h.send);
+    expect(labels(keyboardOf(lastCall(h.send)))[0]).toBe('Aug 9 ·  · TRN-a · $24 · Entertainment');
+  });
+
+  it('filters case-insensitively on the CLEANED description', async () => {
+    const h = setup({ categorized: [VENMO_INCOME, GROCERIES] });
+    await h.controller.openRecategorize('vEnMo', h.send);
+    expect(labels(keyboardOf(lastCall(h.send)))).toEqual([
+      'Aug 9 · VENMO PAYMENT a · $24 · Reimbursements',
+      'Done',
+    ]);
+  });
+
+  it('does not match on the stored note\'s bookkeeping suffix', async () => {
+    // Proof the filter runs on the cleaned description, not the raw note: the
+    // tx id is in every note and would otherwise make `trn` match everything.
+    const h = setup({ categorized: [VENMO_INCOME, GROCERIES] });
+    await h.controller.openRecategorize('trn-a', h.send);
+    expect(lastCall(h.send)[0]).toBe('Nothing categorized in the last 90 days matches.');
+  });
+
+  it('treats a blank argument as no filter at all', async () => {
+    const h = setup({ categorized: [VENMO_INCOME, GROCERIES] });
+    await h.controller.openRecategorize('   ', h.send);
+    expect(labels(keyboardOf(lastCall(h.send)))).toHaveLength(3);
+  });
+
+  it('says nothing matches rather than showing an empty menu', async () => {
+    const h = setup({ categorized: [VENMO_INCOME] });
+    await h.controller.openRecategorize('costco', h.send);
+    const call = lastCall(h.send);
+    expect(call[0]).toBe('Nothing categorized in the last 90 days matches.');
+    expect(labels(keyboardOf(call))).toEqual(['Done']);
+  });
+
+  it('shows the SPENDING assignment as the current category when a row carries both', async () => {
+    // The user recognises the spending category — it is the one their budgets
+    // and every /left figure are about.
+    const h = setup({
+      categorized: [catRow('a', [incomeAt('inc-reimb', 'Reimbursements'), spendingAt('cat-rest', 'Restaurants')])],
+    });
+    await h.controller.openRecategorize(undefined, h.send);
+    expect(labels(keyboardOf(lastCall(h.send)))[0]).toContain('· Restaurants');
+    await h.tap(dataFor(keyboardOf(lastCall(h.send)), 'VENMO PAYMENT a'));
+    expect(lastCall(h.ui.edit)[0]).toContain('Currently: Restaurants');
+  });
+
+  it('offers no Keep uncategorized button — the row already has a category', async () => {
+    const h = setup({ categorized: [VENMO_INCOME] });
+    const picker = await openRecatAtTxn(h);
+    expect(labels(picker)).not.toContain('Keep uncategorized');
+    expect(labels(picker)).toEqual(['Food & Dining', 'Entertainment', '« Back']);
+    expect(lastCall(h.ui.edit)[0]).toBe(
+      'VENMO PAYMENT a\n$24 · Aug 9 · Citi Double Cash\nCurrently: Reimbursements',
+    );
+  });
+
+  it('leaves out a row that carries no assignment at all', async () => {
+    // It belongs to /categorize, and a row with nothing to move FROM cannot
+    // render the old → new confirmation this menu is built around.
+    const h = setup({ categorized: [VENMO_INCOME, catRow('z', [])] });
+    await h.controller.openRecategorize(undefined, h.send);
+    expect(labels(keyboardOf(lastCall(h.send)))).toEqual([
+      'Aug 9 · VENMO PAYMENT a · $24 · Reimbursements',
+      'Done',
+    ]);
+  });
+
+  it('reports missing database access in its own words, and stores no session', async () => {
+    const h = setup({ categorized: [VENMO_INCOME], dbPath: null });
+    await h.controller.openRecategorize(undefined, h.send);
+    expect(h.send.mock.calls.at(-1)).toEqual([
+      'The companion has no database access right now, so it can\'t look up your transactions.',
+    ]);
+    expect(h.deps.readCategorized).not.toHaveBeenCalled();
+    await h.tap('cz:1:0');
+    expect(h.ui.answer).toHaveBeenCalledWith('That menu expired — send /categorize again.');
+  });
+
+  it('reports a failed read in its own words rather than an empty menu', async () => {
+    const h = setup({ categorized: [VENMO_INCOME] });
+    h.deps.readCategorized.mockImplementation(() => { throw new Error('database is locked'); });
+    await h.controller.openRecategorize(undefined, h.send);
+    expect(h.send.mock.calls.at(-1)).toEqual([
+      'Couldn\'t look up your transactions — database is locked',
+    ]);
+    expect(h.logs.join('\n')).toContain('database is locked');
+  });
+
+  it('replaces a live /categorize menu, so its buttons go stale', async () => {
+    const h = setup({ categorized: [VENMO_INCOME] });
+    await h.controller.open(h.send);
+    const oldList = keyboardOf(lastCall(h.send));
+    await h.controller.openRecategorize(undefined, h.send);
+    expect(lastCall(h.send)[0]).toBe('Recategorize — tap a transaction');
+    await h.tap(dataFor(oldList, 'BOOK STORES b'));
+    expect(h.ui.answer).toHaveBeenLastCalledWith('That menu expired — send /categorize again.');
+    expect(h.deps.assign).not.toHaveBeenCalled();
+  });
+
+  it('re-renders the recategorize list — not the categorize one — on every transition', async () => {
+    const h = setup({ categorized: [VENMO_INCOME, GROCERIES] });
+    const picker = await openRecatAtTxn(h);
+    await h.tap(dataFor(picker, '« Back'));
+    expect(lastCall(h.ui.edit)[0]).toBe('Recategorize — tap a transaction');
+    expect(labels(keyboardOf(lastCall(h.ui.edit)))).toEqual([
+      'Aug 9 · VENMO PAYMENT a · $24 · Reimbursements',
+      'Aug 7 · TRADER JOES b · -$45 · Restaurants',
+      'Done',
+    ]);
+    expect(h.deps.readRows).not.toHaveBeenCalled();
+  });
+
+  it('keeps the search scope across every later render', async () => {
+    // The list the user is looking at must not silently widen under them.
+    const h = setup({ categorized: [VENMO_INCOME, GROCERIES] });
+    await h.controller.openRecategorize('venmo', h.send);
+    await h.tap(dataFor(keyboardOf(lastCall(h.send)), 'VENMO PAYMENT a'));
+    await h.tap(dataFor(keyboardOf(lastCall(h.ui.edit)), '« Back'));
+    expect(labels(keyboardOf(lastCall(h.ui.edit)))).toEqual([
+      'Aug 9 · VENMO PAYMENT a · $24 · Reimbursements',
+      'Done',
+    ]);
+  });
+});
+
+describe('openRecategorizeForTxIds — the import notice\'s button', () => {
+  it('scopes the list to the given tx ids, matched on the note\'s id suffix', async () => {
+    const h = setup({ categorized: [VENMO_INCOME, GROCERIES] });
+    await h.controller.openRecategorizeForTxIds(['TRN-b'], h.send);
+    expect(labels(keyboardOf(lastCall(h.send)))).toEqual([
+      'Aug 7 · TRADER JOES b · -$45 · Restaurants',
+      'Done',
+    ]);
+  });
+
+  it('falls back to the plain recent list when the import\'s identity is gone', async () => {
+    // A companion restart loses which rows an old notice was about; the honest
+    // degradation is the same list a bare /recategorize shows.
+    const h = setup({ categorized: [VENMO_INCOME, GROCERIES] });
+    await h.controller.openRecategorizeForTxIds(null, h.send);
+    expect(labels(keyboardOf(lastCall(h.send)))).toEqual([
+      'Aug 9 · VENMO PAYMENT a · $24 · Reimbursements',
+      'Aug 7 · TRADER JOES b · -$45 · Restaurants',
+      'Done',
+    ]);
+  });
+
+  it('matches nothing for an import that brought nothing categorized', async () => {
+    const h = setup({ categorized: [VENMO_INCOME] });
+    await h.controller.openRecategorizeForTxIds([], h.send);
+    expect(lastCall(h.send)[0]).toBe('Nothing categorized in the last 90 days matches.');
+  });
+
+  it('keeps the scope across later renders, and its taps write', async () => {
+    const h = setup({ categorized: [VENMO_INCOME, GROCERIES] });
+    await h.controller.openRecategorizeForTxIds(['TRN-a'], h.send);
+    await h.tap(dataFor(keyboardOf(lastCall(h.send)), 'VENMO PAYMENT a'));
+    await h.tap(dataFor(keyboardOf(lastCall(h.ui.edit)), 'Entertainment'));
+    expect(h.deps.assign).toHaveBeenCalledWith('a', 'cat-fun');
+    await h.tap(dataFor(keyboardOf(lastCall(h.ui.edit)), 'Next transaction'));
+    expect(labels(keyboardOf(lastCall(h.ui.edit)))).toEqual([
+      'Aug 9 · VENMO PAYMENT a · $24 · Entertainment',
+      'Done',
+    ]);
+  });
+});
+
+describe('reassign — the cross-taxonomy move', () => {
+  it('DELETES the income assignment and only then assigns the spending one', async () => {
+    // THE ordering of this feature. The other order leaves a window in which the
+    // row counts as income AND as a spending offset — a silent double count no
+    // freshness check can see. This one leaves at worst an uncategorized row,
+    // which /categorize offers back in a single tap.
+    const h = setup({ categorized: [VENMO_INCOME] });
+    const refiled = await openRecatAtRefiled(h);
+    expect(h.order).toEqual([
+      'readCategorized', 'readCategories',          // the list
+      'readCategorized', 'readCategories',          // the txn screen
+      'readCategorized', 'readCategories',          // the tap's freshness re-read
+      `unassignTaxonomy:${INCOME_TAXONOMY_ID}`,
+      `assign:${SPENDING_TAXONOMY_ID}`,
+      'readCategorized', 'readCategories',          // the confirmation's fresh sweep
+    ]);
+    expect(h.deps.unassignTaxonomy).toHaveBeenCalledWith('a', INCOME_TAXONOMY_ID);
+    expect(h.deps.assign).toHaveBeenCalledWith('a', 'cat-fun');
+    expect(h.deps.republish).toHaveBeenCalledTimes(1);
+    expect(lastCall(h.ui.edit)[0]).toBe(
+      'VENMO PAYMENT a: Reimbursements → Entertainment.\n'
+      + 'This payment now offsets Entertainment instead of counting as income.',
+    );
+    expect(labels(refiled)).toEqual(['Undo', 'Next transaction', 'Done']);
+  });
+
+  it('clears EVERY non-spending taxonomy, not just the first', async () => {
+    const h = setup({
+      categorized: [catRow('a', [incomeAt('inc-reimb', 'Reimbursements'), savingsAt('sav-goal', 'House Fund')])],
+    });
+    await openRecatAtRefiled(h);
+    expect(h.deps.unassignTaxonomy.mock.calls).toEqual([
+      ['a', INCOME_TAXONOMY_ID],
+      ['a', SAVINGS_TAXONOMY_ID],
+    ]);
+    expect(h.deps.assign).toHaveBeenCalledWith('a', 'cat-fun');
+  });
+
+  it('deletes nothing when the move stays inside the spending taxonomy', async () => {
+    const h = setup({ categorized: [GROCERIES] });
+    await openRecatAtRefiled(h, 'TRADER JOES b');
+    expect(h.deps.unassignTaxonomy).not.toHaveBeenCalled();
+    expect(h.deps.assign).toHaveBeenCalledWith('b', 'cat-fun');
+    // No offset warning: nothing stopped counting as income.
+    expect(lastCall(h.ui.edit)[0]).toBe('TRADER JOES b: Restaurants → Entertainment.');
+  });
+
+  it('re-filing to the identical category writes nothing at all', async () => {
+    const h = setup({ categorized: [catRow('a', [spendingAt('cat-fun', 'Entertainment')])] });
+    await openRecatAtRefiled(h);
+    expect(h.deps.assign).not.toHaveBeenCalled();
+    expect(h.deps.unassignTaxonomy).not.toHaveBeenCalled();
+    expect(h.deps.republish).not.toHaveBeenCalled();
+    // Honest rather than clever: the confirmation still says where it sits.
+    expect(lastCall(h.ui.edit)[0]).toBe('VENMO PAYMENT a: Entertainment → Entertainment.');
+  });
+
+  it('still clears the income side when the spending category is already the tapped one', async () => {
+    // The double-counted state itself: spending Entertainment AND income
+    // Reimbursements at once. "Same category" is not a no-op here — the income
+    // assignment is exactly what has to go.
+    const h = setup({
+      categorized: [catRow('a', [incomeAt('inc-reimb', 'Reimbursements'), spendingAt('cat-fun', 'Entertainment')])],
+    });
+    await openRecatAtRefiled(h);
+    expect(h.deps.unassignTaxonomy).toHaveBeenCalledWith('a', INCOME_TAXONOMY_ID);
+    expect(h.deps.assign).not.toHaveBeenCalled();
+    expect(lastCall(h.ui.edit)[0]).toContain('now offsets Entertainment instead of counting as income');
+  });
+
+  it('writes NOTHING when the row\'s category changed between the render and the tap', async () => {
+    // The freshness rule at its sharpest: the picker on screen describes a move
+    // FROM Reimbursements, and that is no longer where the row is.
+    const h = setup({ categorized: [VENMO_INCOME] });
+    const picker = await openRecatAtTxn(h);
+    h.state.categorized = [catRow('a', [spendingAt('cat-rest', 'Restaurants')])];
+    await h.tap(dataFor(picker, 'Entertainment'));
+    expect(h.deps.assign).not.toHaveBeenCalled();
+    expect(h.deps.unassignTaxonomy).not.toHaveBeenCalled();
+    expect(h.deps.unassign).not.toHaveBeenCalled();
+    expect(h.deps.republish).not.toHaveBeenCalled();
+    const declined = lastCall(h.ui.edit);
+    expect(declined[0]).toBe(
+      'That transaction changed elsewhere — leaving it as is.\n\nRecategorize — tap a transaction',
+    );
+    expect(labels(keyboardOf(declined))).toEqual([
+      'Aug 9 · VENMO PAYMENT a · $24 · Restaurants',
+      'Done',
+    ]);
+  });
+
+  it('writes nothing when the row became uncategorized between the render and the tap', async () => {
+    const h = setup({ categorized: [VENMO_INCOME] });
+    const picker = await openRecatAtTxn(h);
+    h.state.categorized = [];
+    await h.tap(dataFor(picker, 'Entertainment'));
+    expect(h.deps.assign).not.toHaveBeenCalled();
+    expect(h.deps.unassignTaxonomy).not.toHaveBeenCalled();
+    expect(lastCall(h.ui.edit)[0]).toContain('That transaction changed elsewhere — leaving it as is.');
+  });
+
+  it('reports a refused DELETE without touching the category', async () => {
+    const h = setup({ categorized: [VENMO_INCOME] });
+    const picker = await openRecatAtTxn(h);
+    h.deps.unassignTaxonomy.mockRejectedValue(new Error('403 Forbidden: token *expired*'));
+    await h.tap(dataFor(picker, 'Entertainment'));
+    expect(h.deps.assign).not.toHaveBeenCalled();
+    expect(h.deps.republish).not.toHaveBeenCalled();
+    const failure = lastCall(h.ui.edit);
+    expect(failure[0]).toBe(
+      'Couldn\'t move that — Wealthfolio said: 403 Forbidden: token \\*expired\\*'
+      + '\n\nNothing changed — this transaction still has the category it had.',
+    );
+    expect(labels(keyboardOf(failure))).toEqual(['« Back', 'Done']);
+    expect(h.logs.join('\n')).toContain('403 Forbidden');
+  });
+
+  it('says the new category was NOT set when the delete worked and the assign did not', async () => {
+    // The one state the pinned ordering can leave behind, stated plainly rather
+    // than discovered from a wrong budget figure later.
+    const h = setup({ categorized: [VENMO_INCOME] });
+    const picker = await openRecatAtTxn(h);
+    h.deps.assign.mockRejectedValue(new Error('500 Internal Server Error'));
+    await h.tap(dataFor(picker, 'Entertainment'));
+    expect(h.deps.unassignTaxonomy).toHaveBeenCalledWith('a', INCOME_TAXONOMY_ID);
+    const failure = lastCall(h.ui.edit);
+    expect(failure[0]).toBe(
+      'Couldn\'t move that — Wealthfolio said: 500 Internal Server Error'
+      + '\n\nThe new category was NOT set, and the old one is already cleared — '
+      + 'this transaction is uncategorized now, so /categorize will offer it.',
+    );
+    expect(failure[0]).not.toContain('Nothing changed');
+  });
+
+  it('leaves the row where /categorize can fix it in one tap after that failure', async () => {
+    // The reason delete-then-assign is the safe order: the worst case is a row
+    // with no category, which the other menu already exists to file.
+    const h = setup({ rows: [], categorized: [VENMO_INCOME] });
+    const picker = await openRecatAtTxn(h);
+    h.deps.assign.mockRejectedValue(new Error('500 Internal Server Error'));
+    await h.tap(dataFor(picker, 'Entertainment'));
+    await h.controller.open(h.send);
+    expect(lastCall(h.send)[0]).toBe('1 transaction needs a category:');
+    expect(labels(keyboardOf(lastCall(h.send)))).toEqual([
+      'Aug 9 · VENMO PAYMENT a · $24',
+      'Done',
+    ]);
+  });
+
+  it('reports the truth when one of several deletes fails after another succeeded', async () => {
+    const h = setup({
+      categorized: [catRow('a', [incomeAt('inc-reimb', 'Reimbursements'), savingsAt('sav-goal', 'House Fund')])],
+    });
+    const picker = await openRecatAtTxn(h);
+    h.deps.unassignTaxonomy.mockImplementation(async (_id: string, taxonomyId: string) => {
+      if (taxonomyId === SAVINGS_TAXONOMY_ID) throw new Error('409 Conflict');
+    });
+    await h.tap(dataFor(picker, 'Entertainment'));
+    expect(h.deps.assign).not.toHaveBeenCalled();
+    expect(lastCall(h.ui.edit)[0]).toBe(
+      'Couldn\'t move that — Wealthfolio said: 409 Conflict'
+      + '\n\nThe new category was NOT set. Some of the old assignments were already cleared — '
+      + 'check this transaction in Wealthfolio.',
+    );
+  });
+
+  it('renders an error screen when the freshness re-read itself fails', async () => {
+    const h = setup({ categorized: [VENMO_INCOME] });
+    const picker = await openRecatAtTxn(h);
+    h.deps.readCategorized.mockImplementation(() => { throw new Error('db vanished'); });
+    await h.tap(dataFor(picker, 'Entertainment'));
+    expect(lastCall(h.ui.edit)[0]).toBe('Couldn\'t look up your transactions — db vanished');
+    expect(h.deps.assign).not.toHaveBeenCalled();
+    expect(h.deps.unassignTaxonomy).not.toHaveBeenCalled();
+  });
+
+  it('drills through subcategories in recategorize mode too', async () => {
+    const h = setup({ categorized: [VENMO_INCOME] });
+    const picker = await openRecatAtTxn(h);
+    await h.tap(dataFor(picker, 'Food & Dining'));
+    await h.tap(dataFor(keyboardOf(lastCall(h.ui.edit)), 'Restaurants'));
+    expect(h.deps.unassignTaxonomy).toHaveBeenCalledWith('a', INCOME_TAXONOMY_ID);
+    expect(h.deps.assign).toHaveBeenCalledWith('a', 'cat-rest');
+    expect(lastCall(h.ui.edit)[0]).toContain('VENMO PAYMENT a: Reimbursements → Restaurants.');
+  });
+});
+
+describe('undoing a reassignment', () => {
+  it('puts an income category back where a plain unassign could not', async () => {
+    // `unassign` restores "no spending category", which is NOT where this row
+    // came from. Restoring an income assignment is a delete plus an assign under
+    // the other taxonomy — and in that order, for the same reason as the move.
+    const h = setup({ categorized: [VENMO_INCOME] });
+    const refiled = await openRecatAtRefiled(h);
+    const mark = h.order.length;
+    await h.tap(dataFor(refiled, 'Undo'));
+    expect(h.order.slice(mark)).toEqual([
+      'readCategorized', 'readCategories',
+      `unassignTaxonomy:${SPENDING_TAXONOMY_ID}`,
+      `assign:${INCOME_TAXONOMY_ID}`,
+      'readCategorized', 'readCategories',
+    ]);
+    expect(h.deps.assign).toHaveBeenLastCalledWith('a', 'inc-reimb', INCOME_TAXONOMY_ID);
+    expect(lastCall(h.ui.edit)[0]).toBe('Refiling undone — VENMO PAYMENT a is back under Reimbursements.');
+    expect(labels(keyboardOf(lastCall(h.ui.edit)))).toEqual(['Back to list', 'Done']);
+    expect(h.state.categorized[0].assignments).toEqual([
+      { taxonomyId: INCOME_TAXONOMY_ID, categoryId: 'inc-reimb', categoryName: 'Reimbursements' },
+    ]);
+  });
+
+  it('restores a spending category with a plain assign and no delete', async () => {
+    const h = setup({ categorized: [GROCERIES] });
+    const refiled = await openRecatAtRefiled(h, 'TRADER JOES b');
+    await h.tap(dataFor(refiled, 'Undo'));
+    expect(h.deps.unassignTaxonomy).not.toHaveBeenCalled();
+    expect(h.deps.assign).toHaveBeenLastCalledWith('b', 'cat-rest');
+    expect(lastCall(h.ui.edit)[0]).toBe('Refiling undone — TRADER JOES b is back under Restaurants.');
+  });
+
+  it('declines when the row is no longer where this menu put it', async () => {
+    const h = setup({ categorized: [VENMO_INCOME] });
+    const refiled = await openRecatAtRefiled(h);
+    // Something else moved it on again after the confirmation was drawn.
+    h.state.categorized = [catRow('a', [spendingAt('cat-rest', 'Restaurants')])];
+    const assignsBefore = h.deps.assign.mock.calls.length;
+    await h.tap(dataFor(refiled, 'Undo'));
+    expect(h.deps.assign.mock.calls.length).toBe(assignsBefore);
+    expect(h.deps.unassignTaxonomy).toHaveBeenCalledTimes(1); // just the original move
+    expect(lastCall(h.ui.edit)[0]).toBe(
+      'That transaction changed elsewhere — leaving it as is.\n\nRecategorize — tap a transaction',
+    );
+  });
+
+  it('declines when the row lost its category entirely', async () => {
+    const h = setup({ categorized: [VENMO_INCOME] });
+    const refiled = await openRecatAtRefiled(h);
+    h.state.categorized = [];
+    const assignsBefore = h.deps.assign.mock.calls.length;
+    await h.tap(dataFor(refiled, 'Undo'));
+    expect(h.deps.assign.mock.calls.length).toBe(assignsBefore);
+    expect(lastCall(h.ui.edit)[0]).toContain('That transaction changed elsewhere — leaving it as is.');
+  });
+
+  it('reports a refused restore, and says so when the spending side is already cleared', async () => {
+    const h = setup({ categorized: [VENMO_INCOME] });
+    const refiled = await openRecatAtRefiled(h);
+    h.deps.assign.mockRejectedValue(new Error('500 Internal Server Error'));
+    await h.tap(dataFor(refiled, 'Undo'));
+    expect(lastCall(h.ui.edit)[0]).toBe(
+      'Couldn\'t undo that — Wealthfolio said: 500 Internal Server Error'
+      + '\n\nThe new category was NOT set, and the old one is already cleared — '
+      + 'this transaction is uncategorized now, so /categorize will offer it.',
+    );
+    expect(h.logs.join('\n')).toContain('500 Internal Server Error');
+  });
+
+  it('keeps offering the OLD category as the restore target after the refile', async () => {
+    // The confirmation is rendered from a sweep in which the row already carries
+    // its NEW category; the Undo button has to name the one it had BEFORE, or it
+    // restores the state it was meant to reverse.
+    const h = setup({ categorized: [VENMO_INCOME] });
+    const refiled = await openRecatAtRefiled(h);
+    // A stale token forces a re-render of the same screen — the old category has
+    // to survive that too.
+    await h.tap('cz:nope');
+    await h.tap(dataFor(keyboardOf(lastCall(h.ui.edit)), 'Undo'));
+    expect(h.deps.assign).toHaveBeenLastCalledWith('a', 'inc-reimb', INCOME_TAXONOMY_ID);
   });
 });

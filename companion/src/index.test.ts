@@ -3,7 +3,7 @@ import { maskUrl, validateStartupEnv, runCompanionSync, resolvePassword, sendDai
 import { formatHelpReply, parseCommand } from '../../shared/telegram-commands.js';
 import { SIMPLEFIN_SYNC_VERSION } from '../../shared/version.js';
 import { runSyncCore } from '../../shared/sync-core.js';
-import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeSpendingCategories } from './sqlite-native.js';
+import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeCategorizedSpending, getNativeSpendingCategories } from './sqlite-native.js';
 import { ingestAmazonMail } from './amazon-mail.js';
 import { AMAZON_MAIL_STATUS_SECRET_KEY, UNCATEGORIZED_STATUS_SECRET_KEY } from '../../shared/status-keys.js';
 import { CATEGORIZE_ENTRY_CALLBACK } from '../../shared/telegram.js';
@@ -50,6 +50,10 @@ vi.mock('./wealthfolio.js', () => {
 
 vi.mock('./sqlite-native.js', () => ({
   getNativeUncategorizedSpending: vi.fn(() => []),
+  // The categorized mirror: read by both menus' Undo before it un-files
+  // anything, and by /recategorize's list. Must be listed here for the same
+  // reason as the categories reader below — index.ts imports it.
+  getNativeCategorizedSpending: vi.fn(() => []),
   // Read by the /categorize menu's category picker and by /newrule's resolver.
   // Present in this factory even though most tests never touch it: vi.mock
   // replaces the WHOLE module, so an export index.ts imports but the factory
@@ -2604,6 +2608,8 @@ describe('the /categorize wiring', () => {
     // missing, so nothing was read" assertions below are about this test's calls
     // rather than every earlier test's.
     vi.mocked(getNativeUncategorizedSpending).mockClear();
+    vi.mocked(getNativeCategorizedSpending).mockClear();
+    vi.mocked(getNativeCategorizedSpending).mockReturnValue([]);
     vi.mocked(getNativeSpendingCategories).mockClear();
     vi.mocked(getNativeUncategorizedSpending).mockReturnValue([
       uncatRow('act-1', 'BOOK STORES'),
@@ -2692,6 +2698,19 @@ describe('the /categorize wiring', () => {
     await buildTelegramCommandHandler(client, controller)({ command: 'categorize', args: '' }, reply);
     const ui = fakeUi();
     const cb = (data: string) => controller.onCallback({ data, chatId: 4242, messageId: 7 }, ui);
+    // What the row is filed under AFTER the tap below files it. The module mock
+    // has no notion of writes, so the post-filing state is stated up front; only
+    // the Undo's verification reads it, and it declines rather than un-filing if
+    // the category is not the one this menu set.
+    vi.mocked(getNativeCategorizedSpending).mockReturnValue([{
+      activityId: 'act-1',
+      notes: 'BOOK STORES · TRN-act-1',
+      amountCents: 1200,
+      date: '2026-08-08',
+      accountName: 'Citi Double Cash',
+      activityType: 'WITHDRAWAL',
+      assignments: [{ taxonomyId: 'spending_categories', categoryId: 'cat-fun', categoryName: 'Entertainment' }],
+    }] as any);
     await cb(dataFor(sent[0][1], 'BOOK STORES'));
     await cb(dataFor(lastOf(ui.edit)[1], 'Entertainment'));
     await cb(dataFor(lastOf(ui.edit)[1], 'Undo'));
