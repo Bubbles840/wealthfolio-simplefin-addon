@@ -1150,9 +1150,15 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
           // an undo can faithfully replay. Read from the same sweep the checks
           // above used, and captured BEFORE the writes, because afterwards no
           // reader can report it any more.
+          //
+          // `subtype: null` here, not a captured previous value: this ordinary
+          // `reassign` path never writes a subtype (only the reimbursement flow
+          // does — a later task), so there is nothing of that kind for its own
+          // Undo to put back yet. Wiring a real captured value through is that
+          // task's job, not a mechanical shape fix's.
           restore: writes
-            ? assignments.map((a) => ({ taxonomyId: a.taxonomyId, categoryId: a.categoryId }))
-            : [],
+            ? { assignments: assignments.map((a) => ({ taxonomyId: a.taxonomyId, categoryId: a.categoryId })), subtype: null }
+            : { assignments: [], subtype: null },
         };
 
         if (!writes) {
