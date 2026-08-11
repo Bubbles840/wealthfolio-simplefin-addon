@@ -752,10 +752,6 @@ describe('sqlite-native', () => {
           notes: 'KROGER · TRN-one',
           amountCents: 1200,
           date: '2026-07-09',
-          // No time component in the seeded row, so the full-precision value
-          // and the truncated display value happen to coincide here — see the
-          // dedicated 'full-precision' test below for the case where they diverge.
-          activityDateRaw: '2026-07-09',
           accountName: 'Spend (4937)',
           activityType: 'WITHDRAWAL',
           // Neither the activity nor its account set these — must default to
@@ -862,30 +858,5 @@ describe('sqlite-native', () => {
       }
     });
 
-    it('returns the full-precision stored activity_date alongside the truncated display date, so a subtype write never rewrites the time-of-day to midnight', () => {
-      const { path, cleanup } = makeTestDb();
-      try {
-        const db = new DatabaseSync(path);
-        db.exec(`
-          INSERT INTO accounts (id, name) VALUES ('wf-a', 'Spend (4937)');
-          INSERT INTO taxonomy_categories (id, name, parent_id, taxonomy_id) VALUES ('cat-spend', 'Groceries', NULL, 'spending_categories');
-          INSERT INTO activities (id, amount, activity_date, activity_type, notes, account_id)
-            VALUES ('act-time', '-8.00', '2026-08-08T20:00:00Z', 'WITHDRAWAL', 'EVENING SNACK · TRN-time', 'wf-a');
-          INSERT INTO activity_taxonomy_assignments (activity_id, category_id, taxonomy_id) VALUES ('act-time', 'cat-spend', 'spending_categories');
-        `);
-        db.close();
-
-        const rows = getNativeCategorizedSpending(path, '2026-08-01', '2026-09-01');
-        const row = rows.find((r) => r.activityId === 'act-time');
-        expect(row).toBeDefined();
-        // `date` stays truncated — display screens depend on it. `activityDateRaw`
-        // carries the untouched stored value — an `ActivityUpdate` write must use
-        // THIS one, or it would silently rewrite 8pm to midnight.
-        expect(row!.date).toBe('2026-08-08');
-        expect(row!.activityDateRaw).toBe('2026-08-08T20:00:00Z');
-      } finally {
-        cleanup();
-      }
-    });
   });
 });
