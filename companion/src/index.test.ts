@@ -3159,6 +3159,11 @@ describe('the /recategorize wiring', () => {
   afterEach(() => {
     vi.mocked(existsSync).mockReturnValue(true);
     delete process.env.WEALTHFOLIO_DB_PATH;
+    // Restored like the two above rather than relying on this describe being last
+    // in the file: a categorized row leaking out of here would put a
+    // `Recategorize` button on notices other tests assert have no keyboard.
+    vi.mocked(getNativeCategorizedSpending).mockReset();
+    vi.mocked(getNativeCategorizedSpending).mockReturnValue([]);
   });
 
   it('answers /recategorize with what is already filed, each row naming its category', async () => {
@@ -3256,16 +3261,36 @@ describe('the /recategorize wiring', () => {
       expect(ui.answer).not.toHaveBeenCalledWith('That menu expired — send /categorize again.');
     });
 
-    it('answers the tap and logs rather than throwing when the menu cannot be opened', async () => {
-      // The listener sends nothing of its own for a thrown menu tap, so a button
-      // whose handler throws would spin until Telegram gave up on it.
+    it('puts a database failure on the fresh message as text, not as an exception', async () => {
+      // Anticipated failures come back from the menu as a SCREEN, so this never
+      // reaches the route's catch — it is the controller's own guard, seen from
+      // this entry point. Named for what it actually proves.
       vi.mocked(getNativeSpendingCategories).mockImplementationOnce(() => { throw new Error('database is locked'); });
       const deps = buildTelegramListenerDeps(clientFor());
       const ui = fakeUi();
+      await deps.onMenuCallback!({ data: 'cz:recat', chatId: 4242, messageId: 7 }, ui);
+      expect(ui.send.mock.calls.at(-1)![0]).toBe('Couldn\'t look up your transactions — database is locked');
+      expect(ui.answer).toHaveBeenCalledWith();
+    });
+
+    it('still clears the spinner when the fresh message itself cannot be delivered', async () => {
+      // The one failure that DOES reach this route's catch: `ui.send` rejecting is
+      // outside every guard the controller has. The listener's own `ui.send`
+      // cannot reject — it catches internally — so this is a dep breaking its
+      // contract, and the cost of not handling it is the real point: the
+      // rejection would escape into the listener, which deliberately sends
+      // nothing for a thrown menu tap, leaving the tapped button spinning until
+      // Telegram gave up on it. The answer below is the only thing that stops
+      // that, so it has to survive a throw on the way to it.
+      const deps = buildTelegramListenerDeps(clientFor());
+      const ui = fakeUi();
+      ui.send.mockRejectedValueOnce(new Error('Telegram unreachable'));
       await expect(
         deps.onMenuCallback!({ data: 'cz:recat', chatId: 4242, messageId: 7 }, ui),
       ).resolves.toBeUndefined();
-      expect(ui.answer).toHaveBeenCalled();
+      // No toast, exactly as on the success path: there is no screen to explain,
+      // and inventing one here would contradict a message that may yet arrive.
+      expect(ui.answer).toHaveBeenCalledWith();
     });
   });
 });

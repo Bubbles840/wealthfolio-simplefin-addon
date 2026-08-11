@@ -553,11 +553,14 @@ export const CATEGORIZE_ENTRY_CALLBACK = 'cz:open';
  * The import notice's way into the `/recategorize` menu, scoped to the rows THAT
  * import brought in — the payload behind its `Recategorize` button.
  *
- * Everything said about `CATEGORIZE_ENTRY_CALLBACK` above applies verbatim: the
- * `cz:` prefix is what routes a tap to the menu controller, the literal is
- * written out rather than imported to keep the dependency running one way, and
- * the tap is answered with a FRESH message because this button sits on the
- * notice — the one record in the chat of what just imported.
+ * The `cz:` prefix, the written-out literal and the FRESH-message answer are all
+ * for the reasons given for `CATEGORIZE_ENTRY_CALLBACK` above. The POINTER is the
+ * one thing that differs, and it matters: this payload is NOT handled by
+ * `onCallback` in companion/src/categorize.ts. It is matched — before any session
+ * lookup, exactly as that function matches `cz:open` — in `onMenuCallback`, built
+ * by `buildTelegramListenerDeps` in companion/src/index.ts, because the scope it
+ * opens (which transactions the last import notice announced) is module state
+ * there and the menu controller knows nothing about imports.
  *
  * Distinct from `cz:open` so the two buttons on one notice cannot open each
  * other's menu, and short for the same reason every payload here is: Telegram
