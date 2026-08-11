@@ -7,6 +7,7 @@ export interface ActivitySearchItem {
   amount?: string | number | null;
   sourceGroupId?: string | null;
   comment?: string | null;
+  subtype?: string | null;
 }
 
 export class WealthfolioClient {

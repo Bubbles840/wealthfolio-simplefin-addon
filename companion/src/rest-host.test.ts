@@ -80,6 +80,33 @@ describe('RestSyncHost', () => {
     const result = await host.linkPair([leg('act-out'), leg('act-in')]);
     expect(result.linked).toBe(false);
   });
+  // Round-trip fidelity: a rule-set subtype must survive a read/write cycle
+  // through this adapter unchanged, and a row that never had one must not
+  // acquire an explicit value that a later comparison could mistake for one.
+  it('listActivities carries subtype through from the search result, defaulting absent subtype to null', async () => {
+    const client = {
+      searchActivities: vi.fn(async () => [
+        { id: 'act-1', accountId: 'wf-a', activityType: 'CREDIT', date: '2026-07-05', amount: '10', subtype: 'REIMBURSEMENT' },
+        { id: 'act-2', accountId: 'wf-a', activityType: 'DEPOSIT', date: '2026-07-05', amount: '5' },
+      ]),
+    } as any;
+    const host = new RestSyncHost(client);
+    const rows = await host.listActivities('wf-a');
+
+    expect(rows[0].subtype).toBe('REIMBURSEMENT');
+    expect(rows[1].subtype).toBeNull();
+  });
+
+  it('saveMany sends a create/update subtype straight through to the client', async () => {
+    const client = { saveMany: vi.fn(async () => ({ created: [], updated: [], errors: [] })) } as any;
+    const host = new RestSyncHost(client);
+    await host.saveMany({
+      creates: [{ accountId: 'wf-a', activityType: 'CREDIT', activityDate: '2026-07-05', currency: 'USD', comment: 'x', subtype: 'REIMBURSEMENT' }],
+    });
+
+    expect(client.saveMany.mock.calls[0][0].creates[0].subtype).toBe('REIMBURSEMENT');
+  });
+
   it('listOldestActivities starts its sweep at page 0 (the first page), not page 1', async () => {
     const client = { searchActivities: vi.fn(async () => []) } as any;
     const host = new RestSyncHost(client);
