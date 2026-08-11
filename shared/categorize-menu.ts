@@ -390,9 +390,11 @@ function renderList(session: MenuSession, page: number, note?: string): RenderRe
     // (see `layout`'s doc comment), so the raw name is fine unescaped here.
     const currentSuffix = mode === 'recategorize' && t.currentCategory ? ` · ${t.currentCategory.name}` : '';
     return [{
-      // moneyWhole takes DOLLARS, so cents are divided down first, and it
-      // keeps the sign deliberately (see its doc comment in ./telegram.ts) —
-      // a spend reads as `-$10` here, not `$10`.
+      // moneyWhole takes DOLLARS, so cents are divided down first. Both native
+      // readers ABS() the amount before it ever reaches this module, so the
+      // sign never distinguishes a credit from a spend here — every row renders
+      // positive (`$10`); it is `currentSuffix`'s category name, not the sign,
+      // that tells the two apart in recategorize mode.
       text: `${shortDate(t.date)} · ${t.description} · ${moneyWhole(t.amountCents / 100)}${currentSuffix}`,
       action: { kind: 'goto', screen: { kind: 'txn', activityId: t.activityId } },
     }];
@@ -585,11 +587,16 @@ function renderRuleCreated(session: MenuSession, activityId: string | null, cate
 
 /**
  * Confirms a `reassign`: `<description>: <old> → <new>.`, plus a warning line
- * when the move crosses taxonomies (spending ↔ income) — that crossing
- * changes what the number MEANS (an income entry stops counting as income and
- * starts offsetting a spending category instead), which is exactly the kind
- * of consequence a silent recategorize could leave the reader misreading
- * their own reports over.
+ * when the move crosses taxonomies (spending clearing some OTHER taxonomy —
+ * income, savings, or whatever else a Wealthfolio instance defines) — that
+ * crossing changes what the number MEANS (it stops counting toward whatever
+ * taxonomy it was filed under and starts offsetting a spending category
+ * instead), which is exactly the kind of consequence a silent recategorize
+ * could leave the reader misreading their own reports over. The line is
+ * deliberately taxonomy-agnostic: `crossTaxonomy` is set from "cleared
+ * something", not "cleared income specifically" (see `reassign`'s `toClear`
+ * in companion/src/categorize.ts), so the wording can never claim an income
+ * clear that did not happen.
  *
  * The Undo button is built from `screen.restore` — every assignment the move
  * cleared or replaced — and is omitted entirely when that list is empty. It is
@@ -629,7 +636,7 @@ function renderRefiled(
 
   const lines = [`${escapeMarkdown(txn.description)}: ${fromName} → ${toName}.`];
   if (screen.crossTaxonomy) {
-    lines.push(`This payment now offsets ${toName} instead of counting as income.`);
+    lines.push(`This payment now offsets ${toName} instead of counting toward its previous category.`);
   }
 
   const rows: Btn[][] = [

@@ -14,10 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **/recategorize — fix a filed transaction from Telegram.** Lists recent
   transactions with their current categories; /recategorize venmo narrows to
   matching ones. Tap a transaction, tap the right category, done — with an
-  Undo that restores exactly the previous category. Moving a payment out of an
-  income category (a Venmo payback filed under Reimbursements, say) into a
-  spending category clears the income side in the same act, so it offsets that
-  category's budget instead of counting as income — the confirmation says so.
+  Undo that restores every assignment the move cleared, not just the one
+  category shown. Moving a payment out of an income category (a Venmo payback
+  filed under Reimbursements, say) into a spending category clears the income
+  side in the same act, so it offsets that category's budget instead of
+  counting as income — the confirmation says so.
 - **The import notice now shows where each transaction was filed** ("→ filed
   under Groceries"), read back from the database after the import so rules are
   reflected, plus a Recategorize button scoped to just that import.
