@@ -1211,14 +1211,25 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
         // therefore means "the bucket is right", never "this will succeed", and
         // the failure screens below stay the real answer for everything else.
         //
-        // That residual failure is NON-DESTRUCTIVE, and worth knowing before
-        // worrying about it: upstream runs the scope check on every assignment
-        // operation INCLUDING the unassign (§1 lists `unassign_category` as a
-        // caller of `ensure_activity_assignment_allowed`, with only the bucket
-        // half skipped), so a scope problem refuses the FIRST write in the
-        // sequence — the DELETE — leaving `cleared === 0` and the honest
-        // "Nothing changed" suffix. It cannot produce the half-finished state
-        // this gate exists to prevent.
+        // That residual failure is believed NON-DESTRUCTIVE — worth knowing
+        // before worrying about it, but built from one quoted fact plus one
+        // inferred step, and the two are kept separate here on purpose.
+        // Quoted, from docs/upstream-spending-buckets.md: §1 lists
+        // `unassign_category` as a caller of `ensure_activity_assignment_allowed`
+        // with `enforce_bucket=false` ("bucket check skipped on unassign"); §7
+        // says `ensure_activity_in_spending_scope` is "called for every
+        // assignment operation". INFERRED (not in the doc's words): that
+        // `enforce_bucket=false` disables only the bucket comparison and not
+        // the scope prerequisite, i.e. that the unassign call still runs the
+        // scope check §7 describes. If that inference is wrong — if
+        // `enforce_bucket=false` (or something else about the unassign path)
+        // also skips the scope check — a scope failure would be DESTRUCTIVE:
+        // the DELETE would land and the assign would not, the exact
+        // half-finished state this gate exists to prevent, reached through the
+        // one failure mode the gate cannot see coming (see WHAT THIS GATE DOES
+        // NOT PREDICT above). Taking the inference as true, a scope problem
+        // instead refuses the FIRST write in the sequence — the DELETE —
+        // leaving `cleared === 0` and the honest "Nothing changed" suffix.
         //
         // TWO DELIBERATE OVER-REFUSALS, both chosen rather than overlooked:
         //  1. The gate is unconditional, not `needsAssign && !assignable.ok`. A
