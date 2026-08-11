@@ -2804,6 +2804,26 @@ describe('runSyncCore carries a rule-assigned subtype', () => {
     expect(Object.prototype.hasOwnProperty.call(plug, 'subtype')).toBe(false);
   });
 
+  it('does not re-update an already-subtyped row on a second sync over an unchanged feed', async () => {
+    // The regression net for a churn path the unit-level reconcile.test.ts
+    // cannot see: it goes through the REAL saveMany -> listActivities round
+    // trip via the fake host, not a hand-seeded `existing` row. Sync 1 creates
+    // the row WITH a subtype; if the host "forgets" it on read-back (as
+    // fake-host.ts's toHostActivity used to), sync 2 sees a row with no
+    // subtype and treats the still-unruled-looking row as a fresh backfill —
+    // re-issuing the identical update every single sync, forever, on a row
+    // that already agrees with the feed.
+    const { host, store, saved } = createFakeHost(paybackSeed());
+    await runSyncCore(host, store, {});
+    expect(saved[0].creates).toHaveLength(1);
+    expect(saved[0].creates![0].subtype).toBe('REIMBURSEMENT');
+
+    saved.length = 0;
+    const second = await runSyncCore(host, store, { force: true });
+    expect(saved.flatMap((s) => s.updates ?? [])).toEqual([]);
+    expect(second.imported).toBe(0);
+  });
+
   it('never lets an in-transit placeholder inherit the subtype of the rule that typed it', async () => {
     // A rule-typed transfer leg is excluded from pair detection outright
     // (transfers.ts drops `ruleTyped` candidates), so it can NEVER pair and it
