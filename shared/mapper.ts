@@ -11,13 +11,14 @@ export interface MappedType {
   type: ActivityType;
   /** True when a user mapping rule decided the type (never auto-overridden) */
   fromRule: boolean;
+  subtype?: string;
 }
 
-function matchRule(description: string, rules: MappingRule[]): ActivityType | null {
+function matchRule(description: string, rules: MappingRule[]): MappingRule | null {
   for (const rule of rules) {
     if (rule.matchType === 'contains') {
       if (description.toLowerCase().includes(rule.pattern.toLowerCase())) {
-        return rule.activityType;
+        return rule;
       }
     } else {
       // Skip rules with invalid regex rather than crashing a whole sync run.
@@ -29,7 +30,7 @@ function matchRule(description: string, rules: MappingRule[]): ActivityType | nu
         continue;
       }
       if (re.test(description)) {
-        return rule.activityType;
+        return rule;
       }
     }
   }
@@ -45,7 +46,7 @@ export function mapTransactionWithSource(
   accountType?: string,
 ): MappedType {
   const ruled = matchRule(description, rules);
-  if (ruled) return { type: ruled, fromRule: true };
+  if (ruled) return { type: ruled.activityType, fromRule: true, ...(ruled.subtype ? { subtype: ruled.subtype } : {}) };
 
   if (accountType === 'CREDIT_CARD') {
     if (amount < 0) return { type: 'WITHDRAWAL', fromRule: false };

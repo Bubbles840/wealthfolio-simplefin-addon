@@ -100,3 +100,58 @@ describe('mapTransactionWithSource', () => {
       .toEqual({ type: 'CREDIT', fromRule: true });
   });
 });
+
+describe('mapTransactionWithSource subtype', () => {
+  it('rule match includes subtype when the rule specifies one (contains)', () => {
+    const rules: MappingRule[] = [
+      { pattern: 'venmo', matchType: 'contains', activityType: 'CREDIT', subtype: 'REIMBURSEMENT' },
+    ];
+    expect(mapTransactionWithSource('VENMO PAYMENT FROM JOE', 25, rules)).toEqual({
+      type: 'CREDIT',
+      fromRule: true,
+      subtype: 'REIMBURSEMENT',
+    });
+  });
+
+  it('rule match includes subtype when the rule specifies one (regex)', () => {
+    const rules: MappingRule[] = [
+      { pattern: '^VENMO', matchType: 'regex', activityType: 'CREDIT', subtype: 'REIMBURSEMENT' },
+    ];
+    expect(mapTransactionWithSource('VENMO PAYMENT', 25, rules)).toEqual({
+      type: 'CREDIT',
+      fromRule: true,
+      subtype: 'REIMBURSEMENT',
+    });
+  });
+
+  it('rule match without a subtype omits the key entirely (not subtype: undefined)', () => {
+    const rules: MappingRule[] = [
+      { pattern: 'dividend', matchType: 'contains', activityType: 'DIVIDEND' },
+    ];
+    const result = mapTransactionWithSource('AAPL DIVIDEND', 5, rules);
+    expect('subtype' in result).toBe(false);
+  });
+
+  it('skips invalid regex rule even when it carries a subtype', () => {
+    const rules: MappingRule[] = [
+      { pattern: '[invalid', matchType: 'regex', activityType: 'CREDIT', subtype: 'REIMBURSEMENT' },
+    ];
+    const result = mapTransactionWithSource('test', 1, rules);
+    expect(result).toEqual({ type: 'DEPOSIT', fromRule: false });
+    expect('subtype' in result).toBe(false);
+  });
+
+  it('no-rule branches never include a subtype key', () => {
+    expect('subtype' in mapTransactionWithSource('UNIQLO REFUND', 66.45, [], 'CREDIT_CARD')).toBe(false);
+    expect('subtype' in mapTransactionWithSource('PAYMENT THANK YOU', 1982.19, [], 'CREDIT_CARD')).toBe(false);
+    expect('subtype' in mapTransactionWithSource('PNC BANK, NATIONAL ASSOCIATION', -1300, [], 'CASH')).toBe(false);
+    expect('subtype' in mapTransactionWithSource('Coffee', -4.5, [], 'CASH')).toBe(false);
+  });
+
+  it('returns bare ActivityType even when the matched rule carries a subtype', () => {
+    const rules: MappingRule[] = [
+      { pattern: 'venmo', matchType: 'contains', activityType: 'CREDIT', subtype: 'REIMBURSEMENT' },
+    ];
+    expect(mapTransaction('VENMO PAYMENT', 25, rules)).toBe('CREDIT');
+  });
+});
