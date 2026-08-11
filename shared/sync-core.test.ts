@@ -2677,3 +2677,159 @@ describe('runSyncCore persists the last run import count', () => {
     expect(await store.getLastSyncImported()).toBe(1);
   });
 });
+
+describe('runSyncCore carries a rule-assigned subtype', () => {
+  beforeEach(() => {
+    VALUATION_POLL.delayMs = 1;
+    VALUATION_POLL.attempts = 3;
+  });
+
+  /** The date the feed derives for the fixture transaction below. Computed, not
+   *  hard-coded, so a seeded existing row lines up with the feed in every
+   *  timezone — a mismatch here would plan an update for the wrong reason and
+   *  make the no-churn test pass or fail by accident. */
+  const TX_DATE = new Date(1700000000 * 1000).toISOString().split('T')[0];
+
+  /** One CASH account holding a single Venmo payback, plus the rule that types it
+   *  CREDIT + REIMBURSEMENT — the case the whole feature exists for: upstream
+   *  books a CASH CREDIT with a refund subtype against spending, while a bare
+   *  CREDIT is Ignored and a DEPOSIT would be income. */
+  const paybackSeed = (): FakeHostSeed => ({
+    accountSet: { errors: [], accounts: [{
+      id: 'sfin-1', name: 'Checking', currency: 'USD', balance: '0', 'balance-date': 1,
+      transactions: [{
+        id: 'tx-venmo', posted: 1700000000, amount: '42.00', description: 'VENMO CASHOUT',
+      }],
+    }] },
+    mapping: { 'sfin-1': 'wf-a' },
+    accountTypes: { 'wf-a': 'CASH' },
+    mappingRules: [{
+      pattern: 'VENMO', matchType: 'contains', activityType: 'CREDIT', subtype: 'REIMBURSEMENT',
+    }],
+  });
+
+  it('sends the rule subtype on the create', async () => {
+    const { host, store, saved } = createFakeHost(paybackSeed());
+    const result = await runSyncCore(host, store, {});
+    expect(result.imported).toBe(1);
+    const create = saved[0].creates![0];
+    expect(create.activityType).toBe('CREDIT');
+    expect(create.subtype).toBe('REIMBURSEMENT');
+  });
+
+  it('omits the subtype KEY entirely on a row no rule subtyped', async () => {
+    // Not `''`: the field is patch-shaped, so an explicit empty string CLEARS
+    // whatever subtype Wealthfolio (or the user) set for its own reasons, on
+    // every sync, forever. Absent means "no opinion".
+    const { host, store, saved } = createFakeHost({
+      accountSet: { errors: [], accounts: [{
+        id: 'sfin-1', name: 'Checking', currency: 'USD', balance: '0', 'balance-date': 1,
+        transactions: [{
+          id: 'tx-1', posted: 1700000000, amount: '-12.50', description: 'Coffee',
+        }],
+      }] },
+      mapping: { 'sfin-1': 'wf-a' },
+      accountTypes: { 'wf-a': 'CASH' },
+    });
+    await runSyncCore(host, store, {});
+    const create = saved[0].creates![0];
+    expect(Object.prototype.hasOwnProperty.call(create, 'subtype')).toBe(false);
+  });
+
+  it('leaves an already-subtyped row alone (the stored subtype reaches ExistingRow)', async () => {
+    // The no-churn test for this field, and the only one that pins BOTH halves of
+    // the comparison: `changed()` measures the feed's subtype against the stored
+    // one, so if either side is dropped the row differs on every sync and gets
+    // rewritten forever.
+    const { host, store, saved } = createFakeHost({
+      ...paybackSeed(),
+      existing: new Map([['wf-a', [{
+        id: 'wf-row-1', accountId: 'wf-a', activityType: 'CREDIT', date: TX_DATE,
+        amount: 42, comment: 'VENMO CASHOUT · tx-venmo', sourceGroupId: null,
+        subtype: 'REIMBURSEMENT',
+      }]]]),
+    });
+    const result = await runSyncCore(host, store, {});
+    expect(saved).toEqual([]);
+    expect(result.imported).toBe(0);
+    expect(result.skipped).toBe(1);
+  });
+
+  it('updates a row in place when the rule newly assigns a subtype', async () => {
+    // The retro-fit path: the row was imported before the rule existed, so the
+    // host reports no subtype. Nothing else about it moved, which is why the
+    // subtype has to be part of `changed()` for this update to be planned at all.
+    const { host, store, saved, activities } = createFakeHost({
+      ...paybackSeed(),
+      existing: new Map([['wf-a', [{
+        id: 'wf-row-1', accountId: 'wf-a', activityType: 'CREDIT', date: TX_DATE,
+        amount: 42, comment: 'VENMO CASHOUT · tx-venmo', sourceGroupId: null,
+        subtype: null,
+      }]]]),
+    });
+    await runSyncCore(host, store, {});
+    const update = saved.flatMap((s) => s.updates ?? []).find((u) => u.id === 'wf-row-1');
+    expect(update).toBeTruthy();
+    expect(update!.subtype).toBe('REIMBURSEMENT');
+    expect(update!.activityType).toBe('CREDIT');
+    // In place — the row keeps its id, and its user-assigned category with it.
+    expect(activities.get('wf-a')).toHaveLength(1);
+    expect(saved.flatMap((s) => s.creates ?? [])).toEqual([]);
+  });
+
+  it('never puts a subtype on a balance-adjustment plug, however broadly a rule matches', async () => {
+    // The plug is spending-neutral precisely BECAUSE it is a bare CREDIT: give it
+    // a refund subtype and upstream books it against spending, so the row that
+    // exists only to reconcile a balance starts moving the Spending page. The plug
+    // is built by importAdjustmentActivity, which never consults the rules — this
+    // pins that, with a regex rule that matches every possible description.
+    const { host, store, imported } = createFakeHost({
+      accountSet: { errors: [], accounts: [{
+        id: 'sfin-1', name: 'C', currency: 'USD', balance: '100.00', 'balance-date': 1,
+        transactions: [],
+      }] },
+      mapping: { 'sfin-1': 'wf-a' },
+      accountTypes: { 'wf-a': 'CASH' },
+      valuations: new Map([['wf-a', 0]]),
+      autoHeal: true,
+      autoAdjust: true,
+      mappingRules: [{
+        pattern: '.*', matchType: 'regex', activityType: 'CREDIT', subtype: 'REIMBURSEMENT',
+      }],
+    });
+    await runSyncCore(host, store, { heal: true });
+    const plug = imported.flat().find((r) => r.comment.startsWith('Balance adjustment'))!;
+    expect(plug).toBeTruthy();
+    expect(plug.activityType).toBe('CREDIT');
+    expect(Object.prototype.hasOwnProperty.call(plug, 'subtype')).toBe(false);
+  });
+
+  it('never lets an in-transit placeholder inherit the subtype of the rule that typed it', async () => {
+    // A rule-typed transfer leg is excluded from pair detection outright
+    // (transfers.ts drops `ruleTyped` candidates), so it can NEVER pair and it
+    // ALWAYS reaches the placeholder branch while it is young. The placeholder's
+    // whole point is a bare CREDIT that moves cash without touching spending, so
+    // carrying the rule's REIMBURSEMENT here would book a balance-holding
+    // placeholder against a spending category.
+    const recentEpoch = Math.floor(Date.now() / 1000) - 3600;
+    const { host, store, saved } = createFakeHost({
+      accountSet: { errors: [], accounts: [{
+        id: 'sfin-1', name: 'Checking', currency: 'USD', balance: '0', 'balance-date': 1,
+        transactions: [{
+          id: 'tx-move', posted: recentEpoch, amount: '42.00', description: 'VENMO CASHOUT',
+        }],
+      }] },
+      mapping: { 'sfin-1': 'wf-a' },
+      accountTypes: { 'wf-a': 'CASH' },
+      mappingRules: [{
+        pattern: 'VENMO', matchType: 'contains', activityType: 'TRANSFER_IN',
+        subtype: 'REIMBURSEMENT',
+      }],
+    });
+    await runSyncCore(host, store, {});
+    const create = saved[0].creates![0];
+    expect(create.comment).toContain(IN_TRANSIT_COMMENT_PREFIX);
+    expect(create.activityType).toBe('CREDIT');
+    expect(Object.prototype.hasOwnProperty.call(create, 'subtype')).toBe(false);
+  });
+});
