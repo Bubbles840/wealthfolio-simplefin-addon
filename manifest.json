@@ -1,7 +1,7 @@
 {
   "id": "simplefin-sync",
   "name": "SimpleFin Sync",
-  "version": "1.13.0",
+  "version": "1.14.0",
   "description": "Sync bank transactions from SimpleFin into Wealthfolio automatically.",
   "author": "Bubbles840",
   "main": "dist/addon.js",
