@@ -149,6 +149,13 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
       comment: w.comment ?? null,
       assetId: w.symbol?.symbol,
       sourceGroupId: w.sourceGroupId ?? null,
+      // Matches both real adapters: an absent subtype reads back as `null`,
+      // never dropped. Dropping it here used to mask the second churn path in
+      // `changed()` — a subtype written on create would vanish on the next
+      // sync's read-back, making a stable row look unruled and re-trigger the
+      // exact same "backfill" update forever, which is invisible unless a test
+      // reads a row back through this function rather than a hand-seeded one.
+      subtype: w.subtype ?? null,
     };
   }
 

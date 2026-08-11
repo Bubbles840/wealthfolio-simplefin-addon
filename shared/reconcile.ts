@@ -102,7 +102,19 @@ function changed(row: ExistingRow, tx: FeedTx): boolean {
     // without this the row would keep its in-transit marker forever on a leg
     // that will never pair.
     isInTransitRow(row) !== !!tx.inTransit ||
-    normSubtype(row.subtype) !== normSubtype(tx.subtype)
+    // Subtype only ever gets ADDED here, never removed. The write path omits
+    // the `subtype` key entirely whenever the feed has none (see
+    // toActivityCreate in sync-core.ts) — it deliberately never sends `''`,
+    // because an explicit empty string is indistinguishable from a genuine
+    // instruction to clear a subtype the user (or Wealthfolio) set by hand.
+    // If this compared symmetrically, a row whose rule stopped assigning a
+    // subtype would look "changed" forever: the update that gets issued can
+    // never actually clear the stored value, so the row differs again next
+    // sync, and the one issued before it, and so on — an identical no-op
+    // update, every sync, forever. The accepted trade (the user's call):
+    // removing a rule's subtype does not reach rows already imported; those
+    // get cleared by hand in Wealthfolio.
+    (!!tx.subtype && normSubtype(row.subtype) !== normSubtype(tx.subtype))
   );
 }
 
