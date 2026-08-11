@@ -2837,16 +2837,26 @@ describe('the /categorize wiring', () => {
       expect(sent[0][0]).toBe('Which one? Home, Home Improvement');
     });
 
-    it('says nothing starts with the query when it matches no category', async () => {
+    it('says nothing starts with the query, pointing at a list that includes subcategories', async () => {
+      // NOT "/left lists them all": `/left` shows budgeted PARENTS, and this
+      // command resolves the whole tree, so a mistyped subcategory can never
+      // appear in the list the default pointer names.
       const { sent } = await runNewRule('trader joes = xyzzy');
-      expect(sent[0][0]).toBe('No category starts with "xyzzy". /left lists them all.');
+      expect(sent[0][0]).toBe(
+        'No category starts with "xyzzy". '
+        + 'Subcategories count too — Wealthfolio\'s category settings list them all.',
+      );
     });
 
-    it('previews the rule for a unique match, including a CHILD category', async () => {
+    it('names the PARENT in the preview, so two same-named children cannot be confused', async () => {
+      // `resolveCategoryQuery` matches on name over the FLAT tree, and
+      // Wealthfolio's presets ship duplicate leaf names. The preview is the only
+      // thing between a typo and a rule that sweeps rows into the wrong
+      // category, so it has to say which `Restaurants` it means.
       const { sent } = await runNewRule('trader joes = restaur');
       expect(sent[0][0]).toBe(
         'Create this rule?\n'
-        + 'Descriptions containing "trader joes" → Restaurants\n'
+        + 'Descriptions containing "trader joes" → Restaurants (Food & Dining)\n'
         + 'It will also file any other uncategorized transactions that match, now and on every future import. '
         + 'Already-categorized transactions are never touched.',
       );
@@ -2871,8 +2881,30 @@ describe('the /categorize wiring', () => {
         priority: 50,
       });
       expect(lastOf(ui.edit)[0]).toBe(
-        'Rule created — future matches will file automatically under Restaurants.',
+        'Rule created — future matches will file automatically under Restaurants (Food & Dining).',
       );
+    });
+
+    it('pins the rule priority at 50 — higher wins upstream, so a tapped rule yields', async () => {
+      // Verified against upstream source, not inferred:
+      // `crates/spending/src/categorization_rules/matcher.rs` picks
+      // `rule.priority > current.priority`, with a unit test named
+      // `higher_priority_wins`. HIGHER WINS. 50 therefore loses to a hand-tuned
+      // rule (60) AND to the presets Wealthfolio ships (70–90) — the conservative
+      // direction for something created by one tap. Upstream's ordering lives in
+      // another repo and is not tested here; the NUMBER is, so it cannot drift
+      // silently and quietly start outranking deliberate rules.
+      const { client } = clientFor();
+      const rules: Array<{ priority: number }> = [];
+      client.createCategorizationRule.mockImplementation(async (r: any) => { rules.push(r); });
+      const controller = buildCategorizeController(client);
+      const { sent, reply } = collect();
+      await buildTelegramCommandHandler(client, controller)({ command: 'newrule', args: 'trader joes = restaur' }, reply);
+      await controller.onCallback(
+        { data: dataFor(sent[0][1], 'Create rule'), chatId: 4242, messageId: 7 },
+        fakeUi(),
+      );
+      expect(rules.map((r) => r.priority)).toEqual([50]);
     });
 
     it('says the same thing when the category read throws rather than answering []', async () => {

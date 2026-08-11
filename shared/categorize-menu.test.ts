@@ -397,6 +397,58 @@ describe('renderScreen — ruleCreated', () => {
   });
 });
 
+// ---- rule screens name the parent, so two same-named children differ --------
+
+describe('renderScreen — same-named categories on the rule screens', () => {
+  // Wealthfolio's own preset tree ships duplicates like this (an `Other` under
+  // several parents, a `Gas` under both Transportation and Bills), and
+  // `/newrule`'s resolver matches on NAME over the flat tree: it returns the
+  // FIRST of two `Other`s. The preview is the only thing standing between a
+  // typo and a rule that sweeps every matching row into the wrong category, so
+  // it has to say WHICH `Other` it means.
+  const home: SpendingCategory = { id: 'cat-home', name: 'Home', parentId: null, parentName: null };
+  const auto: SpendingCategory = { id: 'cat-auto', name: 'Auto', parentId: null, parentName: null };
+  const homeOther: SpendingCategory = {
+    id: 'cat-home-other', name: 'Other', parentId: 'cat-home', parentName: 'Home',
+  };
+  const autoOther: SpendingCategory = {
+    id: 'cat-auto-other', name: 'Other', parentId: 'cat-auto', parentName: 'Auto',
+  };
+  const cats = [home, auto, homeOther, autoOther];
+
+  const previewText = (categoryId: string): string => renderScreen(session({
+    categories: cats,
+    screen: { kind: 'freeRulePreview', pattern: 'lowes', categoryId },
+  })).text;
+
+  it('distinguishes two children that share a name in the /newrule preview', () => {
+    expect(previewText('cat-home-other')).toContain('Descriptions containing "lowes" → Other (Home)');
+    expect(previewText('cat-auto-other')).toContain('Descriptions containing "lowes" → Other (Auto)');
+    expect(previewText('cat-home-other')).not.toBe(previewText('cat-auto-other'));
+  });
+
+  it('names the parent on the created-confirmation too', () => {
+    const text = renderScreen(session({
+      categories: cats,
+      screen: { kind: 'ruleCreated', activityId: null, categoryId: 'cat-auto-other' },
+    })).text;
+    expect(text).toBe('Rule created — future matches will file automatically under Other (Auto).');
+  });
+
+  it('names the parent on the tapped-off-a-transaction preview as well', () => {
+    const text = renderScreen(session({
+      txns: [txn({ description: 'BOOK STORES' })],
+      categories: cats,
+      screen: { kind: 'rulePreview', activityId: 'act-1', categoryId: 'cat-home-other' },
+    })).text;
+    expect(text).toContain('Descriptions containing "BOOK STORES" → Other (Home)');
+  });
+
+  it('leaves a TOP-LEVEL category bare — there is no parent to name', () => {
+    expect(previewText('cat-home')).toContain('Descriptions containing "lowes" → Home\n');
+  });
+});
+
 // ---- token codec / applyTap -------------------------------------------------
 
 describe('applyTap', () => {

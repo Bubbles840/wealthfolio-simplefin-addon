@@ -541,13 +541,21 @@ export function getNativeSpendingCategories(dbPath: string): NativeSpendingCateg
       : null),
   );
 
+  // Read positionally so ONE mapping serves both paths, and normalise the two
+  // spellings of NULL: node:sqlite gives `null`, the sqlite3 CLI fallback gives
+  // an EMPTY STRING (its `|`-delimited output cannot spell null). `?? null`
+  // alone therefore leaves `''` standing on the CLI path, and `''` is not
+  // `null` — the menu's parent filter is `parentId === null`, so every category
+  // would read as a child of a parent that does not exist and the picker would
+  // offer no categories at all, silently. Same idiom as every neighbouring
+  // reader (`String(v[n] ?? '') || null`).
   return rows.map((r) => {
     const v = Object.values(r) as Array<string | null>;
     return {
       id: String(v[0]),
       name: String(v[1]),
-      parentId: v[2] ?? null,
-      parentName: v[3] ?? null,
+      parentId: String(v[2] ?? '') || null,
+      parentName: String(v[3] ?? '') || null,
     };
   });
 }

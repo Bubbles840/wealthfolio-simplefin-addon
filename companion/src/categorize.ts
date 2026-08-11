@@ -159,6 +159,15 @@ const STALE_TOKEN_ANSWER = 'That button is stale — refreshing.';
 
 const NO_DATABASE_TEXT = 'The companion has no database access right now, so it can\'t tell what needs a category.';
 const READ_FAILED_PREFIX = 'Couldn\'t check what needs a category — ';
+/** The same two failures on the `/newrule` path, which shows NO list at all: it
+ *  was handed a pattern and a category, and what it needs the database for is
+ *  looking that category up. Telling its reader the companion "can't tell what
+ *  needs a category" describes a screen they never asked for and cannot see.
+ *  The no-database sentence is byte-identical to `NEWRULE_NO_DATABASE_REPLY` in
+ *  index.ts — the command's own pre-check answers the same failure a moment
+ *  earlier, and the two must read the same. Pinned by tests on both sides. */
+const RULE_NO_DATABASE_TEXT = 'The companion has no database access right now, so it can\'t look up your categories.';
+const RULE_READ_FAILED_PREFIX = 'Couldn\'t set that rule up — ';
 const ASSIGN_FAILED_PREFIX = 'Couldn\'t file that — Wealthfolio said: ';
 const UNDO_FAILED_PREFIX = 'Couldn\'t undo that — Wealthfolio said: ';
 const DISMISS_FAILED_PREFIX = 'Couldn\'t save that — Wealthfolio said: ';
@@ -235,7 +244,37 @@ interface Fresh {
   ledger: DismissalLedger;
 }
 
-type Loaded = { ok: true; fresh: Fresh } | { ok: false; text: string };
+/** Why a load failed, kept as a REASON rather than as finished text: which
+ *  sentence says it depends on the screen the render was for (see
+ *  `failureText`), and only the caller knows that. `detail` is raw — escaping
+ *  belongs with the formatting. */
+interface LoadFailure {
+  kind: 'no-database' | 'read-failed';
+  detail: string;
+}
+
+type Loaded = { ok: true; fresh: Fresh } | { ok: false; failure: LoadFailure };
+
+/**
+ * The sentence a failed load gets, chosen by the SCREEN the render was for.
+ *
+ * The two `/newrule` screens (`freeRulePreview`, and the `ruleCreated`
+ * confirmation reached from it — the one with no activityId) list nothing, so
+ * the menu's own copy would describe a list their reader never asked for.
+ * Everything else is the menu, where "what needs a category" is exactly what
+ * the failed read was for.
+ *
+ * `escapeMarkdown` is applied HERE because the reply is Markdown-parsed on its
+ * way to Telegram, and an API error carrying an unbalanced `*` or `_` gets the
+ * whole message refused — a screen that simply never appears.
+ */
+function failureText(failure: LoadFailure, screen: MenuScreen): string {
+  const rulePath = screen.kind === 'freeRulePreview'
+    || (screen.kind === 'ruleCreated' && screen.activityId === null);
+  if (failure.kind === 'no-database') return rulePath ? RULE_NO_DATABASE_TEXT : NO_DATABASE_TEXT;
+  const prefix = rulePath ? RULE_READ_FAILED_PREFIX : READ_FAILED_PREFIX;
+  return `${prefix}${escapeMarkdown(failure.detail)}`;
+}
 
 export function createCategorizeController(deps: CategorizeDeps): CategorizeController {
   const sessions = new Map<number, ChatSession>();
@@ -290,19 +329,22 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
    * again before every write that has a precondition — never cached, because a
    * cached answer is the bug this whole file is arranged to avoid.
    *
-   * A failure is returned as ready-to-render TEXT rather than thrown: the caller
-   * always has a screen to put it on, and there is no path from here on which
-   * throwing would be more informative than saying so on the phone.
+   * A failure is returned as a REASON rather than thrown: the caller always has a
+   * screen to put it on, and there is no path from here on which throwing would
+   * be more informative than saying so on the phone. Turning the reason into a
+   * sentence is `failureText`'s job, because which sentence is honest depends on
+   * the screen the caller was rendering.
    */
   async function load(): Promise<Loaded> {
     let path: string | null;
     try {
       path = deps.dbPath();
     } catch (err) {
-      safeLog(`Categorize menu: could not locate the database: ${formatError(err)}`);
-      return { ok: false, text: NO_DATABASE_TEXT };
+      const detail = formatError(err);
+      safeLog(`Categorize menu: could not locate the database: ${detail}`);
+      return { ok: false, failure: { kind: 'no-database', detail } };
     }
-    if (!path) return { ok: false, text: NO_DATABASE_TEXT };
+    if (!path) return { ok: false, failure: { kind: 'no-database', detail: 'no database path' } };
 
     try {
       const { start, end } = uncategorizedWindow(new Date());
@@ -316,12 +358,9 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
         fresh: { txns: visibleUncategorized(rows, ledger).map(toTxn), categories, ledger },
       };
     } catch (err) {
-      const message = formatError(err);
-      safeLog(`Categorize menu: could not read what needs a category: ${message}`);
-      // Escaped because the message is Markdown-parsed on its way to Telegram,
-      // and an API body carrying an unbalanced `*` or `_` gets the whole edit
-      // refused — a screen that simply never appears.
-      return { ok: false, text: `${READ_FAILED_PREFIX}${escapeMarkdown(message)}` };
+      const detail = formatError(err);
+      safeLog(`Categorize menu: could not read what needs a category: ${detail}`);
+      return { ok: false, failure: { kind: 'read-failed', detail } };
     }
   }
 
@@ -431,7 +470,9 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
   ): Promise<void> {
     const loaded = await load();
     if (!loaded.ok) {
-      await showError(chat, loaded.text, ui);
+      // The TARGET screen names the copy: a render on its way to the typed-rule
+      // confirmation must not report a failure in the menu's words.
+      await showError(chat, failureText(loaded.failure, screen), ui);
       return;
     }
     const { text, keyboard } = show(chat, screen, pin, loaded.fresh);
@@ -477,6 +518,15 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
       await showError(chat, `${RULE_FAILED_PREFIX}${escapeMarkdown(message)}`, ui);
       return;
     }
+    // The rule EXISTS from here on, so the session leaves the preview screen
+    // before anything else can fail. `showError` offers `« Back` to whatever
+    // `chat.session.screen` still says, and a preview left standing there hands
+    // back a `Create rule` button for a rule already created — one lost
+    // confirmation (a failed republish-then-render) and the obvious retry writes
+    // an identical duplicate into Wealthfolio's rules list. The confirmation
+    // screen itself offers no `Create rule` at all, which is the same guarantee
+    // from the other side.
+    chat.session.screen = done;
     // Creating a rule makes Wealthfolio file every other UNCATEGORIZED match at
     // once, so the published count is stale the moment this returns.
     await republishQuietly();
@@ -492,10 +542,6 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
     switch (action.kind) {
       case 'goto':
         await transition(chat, action.screen, carryPin(chat, action.screen), ui);
-        return;
-
-      case 'refresh':
-        await transition(chat, chat.session.screen, carryPin(chat, chat.session.screen), ui);
         return;
 
       case 'close': {
@@ -514,7 +560,7 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
       case 'assign': {
         const loaded = await load();
         if (!loaded.ok) {
-          await showError(chat, loaded.text, ui);
+          await showError(chat, failureText(loaded.failure, chat.session.screen), ui);
           return;
         }
         const row = loaded.fresh.txns.find((t) => t.activityId === action.activityId) ?? null;
@@ -588,7 +634,7 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
       case 'dismiss': {
         const loaded = await load();
         if (!loaded.ok) {
-          await showError(chat, loaded.text, ui);
+          await showError(chat, failureText(loaded.failure, chat.session.screen), ui);
           return;
         }
         const row = loaded.fresh.txns.find((t) => t.activityId === action.activityId) ?? null;
@@ -622,7 +668,7 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
         // so requiring it there would make Undo impossible.
         const loaded = await load();
         if (!loaded.ok) {
-          await showError(chat, loaded.text, ui);
+          await showError(chat, failureText(loaded.failure, chat.session.screen), ui);
           return;
         }
         const row = rowFor(chat, action.activityId)
@@ -650,7 +696,7 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
         if (!row) {
           const loaded = await load();
           if (!loaded.ok) {
-            await showError(chat, loaded.text, ui);
+            await showError(chat, failureText(loaded.failure, chat.session.screen), ui);
             return;
           }
           await showGone(chat, action.activityId, loaded.fresh, ui);
@@ -717,7 +763,10 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
   async function openScreen(chatId: number, screen: MenuScreen, send: MenuSend): Promise<void> {
     const loaded = await load();
     if (!loaded.ok) {
-      await send(loaded.text);
+      // In the words of the screen that was being opened: `/newrule` shows no
+      // list, so the menu's "can't tell what needs a category" would name
+      // something its reader never asked for (see `failureText`).
+      await send(failureText(loaded.failure, screen));
       return;
     }
     sessions.clear();

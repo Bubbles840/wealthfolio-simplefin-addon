@@ -39,6 +39,7 @@ import {
   parseAffordArgs,
   resolveCategoryQuery,
   formatCategoryQueryMiss,
+  NEWRULE_CATEGORY_LIST_HINT,
 } from '../../shared/telegram-commands.js';
 import { parseNewRuleArgs } from '../../shared/categorize-menu.js';
 import type { CategoryBudgetSnapshot, BudgetPeriod, ParsedCommand, StatusReplyInput } from '../../shared/telegram-commands.js';
@@ -1595,9 +1596,23 @@ export function buildCategorizeDeps(wfClient: WealthfolioClient): CategorizeDeps
     createRule: (rule) => wfClient.createCategorizationRule({
       ...rule,
       taxonomyId: SPENDING_TAXONOMY_ID,
-      // Above the presets Wealthfolio ships (which sit near the default 100) and
-      // below anything a user hand-tunes: a rule the user asked for by name
-      // should win against a generic preset, and lose to a deliberate override.
+      // HIGHER PRIORITY WINS. Verified in upstream source rather than inferred:
+      // `crates/spending/src/categorization_rules/matcher.rs` keeps the best
+      // match with `Some(current) if rule.priority > current.priority => best =
+      // Some(rule)`, and its unit test for that line is named
+      // `higher_priority_wins`.
+      //
+      // So 50 is the LOSING end of the scale, which is the whole point: a rule
+      // created by ONE TAP off a single transaction yields to anything the user
+      // hand-tuned (60) and to the presets Wealthfolio ships (70–90). Nothing
+      // deliberate is ever overridden by something tapped in a hurry; the tapped
+      // rule only decides rows no other rule claims. Widening or promoting one is
+      // a two-field edit in Wealthfolio's settings.
+      //
+      // A test pins this number (companion/src/index.test.ts) precisely because
+      // the reasoning is invisible from here — upstream's ordering lives in
+      // another repo, so a silent drift to, say, 150 would quietly start
+      // outranking every rule Nick wrote by hand.
       priority: 50,
     }),
     // Exactly as the sync path publishes it, so the tile the addon renders cannot
@@ -1743,11 +1758,16 @@ export function buildTelegramCommandHandler(
         }
         // The SAME resolver `/left` and `/afford` use, over the whole tree —
         // parents AND children, since "restaurants" is a child and is exactly
-        // the kind of thing a rule targets. `formatCategoryQueryMiss` supplies
-        // the ambiguous/none replies verbatim, so a fragment that misses reads
-        // the same here as it does there.
+        // the kind of thing a rule targets. Two categories sharing a name (the
+        // presets ship several `Other`s) come back AMBIGUOUS rather than as
+        // whichever one the tree lists first, and the reply names each one's
+        // parent so the reader can type one back qualified.
         const result = resolveCategoryQuery(categories, parsed.categoryQuery);
-        const miss = formatCategoryQueryMiss(result, parsed.categoryQuery);
+        // With THIS command's pointer, not `/left`'s: the tree resolved here
+        // includes children, which `/left` never lists, so its default "…/left
+        // lists them all" would send a reader who mistyped a subcategory to a
+        // list that cannot contain it.
+        const miss = formatCategoryQueryMiss(result, parsed.categoryQuery, NEWRULE_CATEGORY_LIST_HINT);
         if (miss !== null) {
           await reply(miss);
           return;

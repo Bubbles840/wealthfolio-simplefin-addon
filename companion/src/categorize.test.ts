@@ -404,13 +404,50 @@ describe('openRulePreview — /newrule\'s entry point', () => {
     expect(h.deps.createRule).not.toHaveBeenCalled();
   });
 
-  it('reports missing database access instead of previewing a rule it cannot name', async () => {
+  it('reports missing database access in ITS OWN words — /newrule lists nothing', async () => {
+    // The menu's sentence ("can't tell what needs a category") describes a list
+    // this path never shows: `/newrule` was given a pattern and a category, and
+    // what the database is needed for is looking that category up.
     const h = setup({ dbPath: null });
     await h.controller.openRulePreview('trader joes', 'cat-fun', h.send);
     expect(h.send.mock.calls.at(-1)).toEqual([
-      'The companion has no database access right now, so it can\'t tell what needs a category.',
+      'The companion has no database access right now, so it can\'t look up your categories.',
     ]);
     expect(h.deps.createRule).not.toHaveBeenCalled();
+  });
+
+  it('names the rule, not a list, when the read itself fails', async () => {
+    const h = setup();
+    h.deps.readLedger.mockRejectedValueOnce(new Error('secret store down'));
+    await h.controller.openRulePreview('trader joes', 'cat-fun', h.send);
+    expect(h.send.mock.calls.at(-1)).toEqual([
+      'Couldn\'t set that rule up — secret store down',
+    ]);
+    expect(h.deps.createRule).not.toHaveBeenCalled();
+  });
+
+  it('does not re-offer Create rule once the rule exists, so the obvious retry cannot duplicate it', async () => {
+    // The write succeeds and the render that would CONFIRM it fails, leaving the
+    // reader on an error screen with `« Back`. Back used to return to the PREVIEW,
+    // whose `Create rule` button writes the very same rule again — harmless in
+    // outcome (the second rule is identical) but it clutters Wealthfolio's rules
+    // list with duplicates nobody asked for.
+    const h = setup();
+    await h.controller.openRulePreview('trader joes', 'cat-fun', h.send);
+    h.deps.readLedger.mockRejectedValueOnce(new Error('secret store down'));
+    await h.tap(dataFor(keyboardOf(lastCall(h.send)), 'Create rule'));
+
+    expect(h.deps.createRule).toHaveBeenCalledTimes(1);
+    const failed = lastCall(h.ui.edit);
+    expect(failed[0]).toBe('Couldn\'t set that rule up — secret store down');
+    expect(labels(keyboardOf(failed))).toEqual(['« Back', 'Done']);
+
+    await h.tap(dataFor(keyboardOf(failed), '« Back'));
+    expect(labels(keyboardOf(lastCall(h.ui.edit)))).not.toContain('Create rule');
+    expect(lastCall(h.ui.edit)[0]).toBe(
+      'Rule created — future matches will file automatically under Entertainment.',
+    );
+    expect(h.deps.createRule).toHaveBeenCalledTimes(1);
   });
 });
 
