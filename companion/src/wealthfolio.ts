@@ -170,6 +170,67 @@ export class WealthfolioClient {
     if (!res.ok) throw await this.httpError('setAddonSecret', res);
   }
 
+  /** Assigns a spending category to one activity. `taxonomyId` is always the
+   *  literal `'spending_categories'` today, but the server takes it explicitly
+   *  because Wealthfolio also has income/savings taxonomies. */
+  async assignActivityCategory(activityId: string, taxonomyId: string, categoryId: string): Promise<void> {
+    const res = await fetch(
+      `${this.baseUrl}/api/v1/spending/activities/${encodeURIComponent(activityId)}/assignments`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
+        body: JSON.stringify({ taxonomyId, categoryId }),
+      },
+    );
+    if (!res.ok) throw await this.httpError('assignActivityCategory', res);
+  }
+
+  /** Removes a taxonomy's category assignment from one activity - the undo
+   *  side of `assignActivityCategory`. No request body: the taxonomy to clear
+   *  is a path segment, matching the server's DELETE route shape. */
+  async unassignActivityCategory(activityId: string, taxonomyId: string): Promise<void> {
+    const res = await fetch(
+      `${this.baseUrl}/api/v1/spending/activities/${encodeURIComponent(activityId)}/assignments/${encodeURIComponent(taxonomyId)}`,
+      {
+        method: 'DELETE',
+        headers: this.authHeaders(),
+      },
+    );
+    if (!res.ok) throw await this.httpError('unassignActivityCategory', res);
+  }
+
+  /**
+   * Creates a "contains"-match auto-categorisation rule. `matchType` is
+   * hardcoded to `'contains'` because that's the only pattern kind this
+   * feature ever generates. The preset fields (`presetId`, `presetRuleKey`,
+   * `presetVersion`) are omitted entirely rather than sent as null - upstream
+   * (`apps/server/src/api/spending.rs`) documents that user-facing rule
+   * creation leaves them None, and it's the presence of the keys, not just
+   * their value, that marks a rule as preset-derived to the server.
+   */
+  async createCategorizationRule(rule: {
+    name: string;
+    pattern: string;
+    categoryId: string;
+    taxonomyId: string;
+    priority: number;
+  }): Promise<void> {
+    const res = await fetch(`${this.baseUrl}/api/v1/spending/rules`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
+      body: JSON.stringify({
+        name: rule.name,
+        pattern: rule.pattern,
+        matchType: 'contains',
+        taxonomyId: rule.taxonomyId,
+        categoryId: rule.categoryId,
+        priority: rule.priority,
+        isGlobal: true,
+      }),
+    });
+    if (!res.ok) throw await this.httpError('createCategorizationRule', res);
+  }
+
   async saveMany(req: {
     creates?: unknown[];
     updates?: unknown[];

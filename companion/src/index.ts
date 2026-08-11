@@ -20,12 +20,14 @@ import type { TelegramListenerDeps } from './telegram-listener.js';
 import { createImapSource, ingestAmazonMail, amazonMailConfigured } from './amazon-mail.js';
 import type { AmazonIngestResult, AmazonMailConfig, MailSource } from './amazon-mail.js';
 import { DEFAULT_GLYPH_STYLE } from '../../shared/telegram.js';
-import type { GlyphStyle } from '../../shared/telegram.js';
+import type { GlyphStyle, InlineKeyboard } from '../../shared/telegram.js';
 import type { DismissalLedger } from './dismissals.js';
 import type { SyncHealth } from '../../shared/telegram.js';
 import { SIMPLEFIN_SYNC_VERSION, COMPANION_VERSION_SECRET_KEY } from '../../shared/version.js';
-import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeCategoryCatalog, getNativeSubcategorySpending } from './sqlite-native.js';
+import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeSpendingCategories, getNativeCategoryCatalog, getNativeSubcategorySpending } from './sqlite-native.js';
 import { publishUncategorizedStatusForDbPath } from './uncategorized-status.js';
+import { createCategorizeController, SPENDING_TAXONOMY_ID } from './categorize.js';
+import type { CategorizeController, CategorizeDeps } from './categorize.js';
 import { AMAZON_MAIL_STATUS_SECRET_KEY, UNCATEGORIZED_STATUS_SECRET_KEY } from '../../shared/status-keys.js';
 import {
   formatHelpReply,
@@ -35,7 +37,11 @@ import {
   formatReportFooter,
   formatSyncReply,
   parseAffordArgs,
+  resolveCategoryQuery,
+  formatCategoryQueryMiss,
+  NEWRULE_CATEGORY_LIST_HINT,
 } from '../../shared/telegram-commands.js';
+import { parseNewRuleArgs } from '../../shared/categorize-menu.js';
 import type { CategoryBudgetSnapshot, BudgetPeriod, ParsedCommand, StatusReplyInput } from '../../shared/telegram-commands.js';
 
 const logLevel: 'info' | 'debug' =
@@ -841,38 +847,33 @@ export async function sendImportNotice(
   // (companion/src/telegram-listener.ts) records a tap within about a second, so
   // this path no longer polls Telegram for them — and must not, since Telegram
   // serves `getUpdates` to exactly one reader per bot token.
-  let ledger: DismissalLedger =
-    parseSecretJson<DismissalLedger>(
-      await wfClient.getAddonSecret('simplefin-sync', 'uncategorized_dismissals'),
-      'uncategorized_dismissals',
-    ) ?? {};
+  const { readLedger, prune, writeLedgerMerged } = dismissalLedgerAccess(wfClient);
+  let ledger: DismissalLedger = await readLedger();
   // Unmutated copy of that first read — this is `base` for the merge at write
   // time: what this run's delta (the entries it ages out) is measured against,
   // not what ends up on disk.
   const base: DismissalLedger = { ...ledger };
 
   // Pruning stays on the sync path. It is not the only place it happens —
-  // `applyTelegramDismissal` prunes the ledger it writes on a button tap too —
-  // but a tap is an occasional, user-driven event: a ledger nobody touches for
+  // every ledger WRITE prunes what it persists (see `dismissalLedgerAccess`) —
+  // but those are occasional, user-driven events: a ledger nobody touches for
   // months would age out nothing at all without this. The sync is the one clock
   // that ticks regardless, which is why the guaranteed prune lives here.
-  const pruned = pruneDismissals(ledger, new Date());
+  const pruned = prune(ledger);
   const prunedAnything = Object.keys(pruned).length !== Object.keys(ledger).length;
   ledger = pruned;
   if (prunedAnything) {
-    // Re-read immediately before writing rather than reuse the read from above.
-    // Both the addon AND the listener write this same secret with no
-    // compare-and-swap, so persisting the earlier snapshot would silently erase
-    // a dismissal made in between — the row would just reappear as needing a
-    // category. Merge this run's own delta (`base` → `ledger`) onto whatever is
-    // persisted right now instead.
-    const persisted =
-      parseSecretJson<DismissalLedger>(
-        await wfClient.getAddonSecret('simplefin-sync', 'uncategorized_dismissals'),
-        'uncategorized_dismissals',
-      ) ?? {};
-    const merged = pruneDismissals(mergeDismissals(persisted, base, ledger), new Date());
-    await wfClient.setAddonSecret('simplefin-sync', 'uncategorized_dismissals', JSON.stringify(merged));
+    // Only when this run actually aged something out: a no-op run must not write
+    // at all, because a write is a chance to clobber for no gain.
+    //
+    // The write itself is `dismissalLedgerAccess`'s — it re-reads immediately
+    // before writing and replays only this run's delta (`base` → `ledger`) onto
+    // what is persisted right now. Both the addon AND the listener write this
+    // same secret with no compare-and-swap, so persisting the earlier snapshot
+    // would silently erase a dismissal made in between and the row would just
+    // reappear as needing a category. That merge exists in exactly one place on
+    // purpose; see the doc comment there.
+    await writeLedgerMerged(base, ledger);
   }
 
   // End bound is TOMORROW: activity_date carries a time component, so a
@@ -1293,16 +1294,15 @@ export async function sendMonthlyTelegramReport(wfClient: WealthfolioClient): Pr
  * 1.10.1 bug; `mergeDismissals` exists so it cannot come back. Only the delta
  * (`base` → `next`, i.e. this one id) is replayed onto what is persisted.
  *
- * TWO reads, and the second one is what makes the merge mean anything. Passing
- * the FIRST read as `persisted` would reduce `mergeDismissals(base, base, next)`
- * to `{...base, id}` — the whole-object write above, just with a smaller window.
- * The re-read is deliberately taken as late as possible, mirroring
- * `sendImportNotice`'s write; one extra round trip on a rare button tap is a
- * cheap price for not erasing someone else's dismissal.
+ * The read-merge-prune-write itself lives in `dismissalLedgerAccess`, shared with
+ * the `/categorize` menu's own ledger writes — see there for why the second read
+ * is the load-bearing part and why there is exactly one copy of it.
  *
  * An id the ledger already holds writes nothing at all: a second tap on the same
  * button is not a change, and re-writing it would only move its timestamp
- * forward and delay its eventual pruning.
+ * forward and delay its eventual pruning. That check is THIS function's, not the
+ * shared core's: the menu's Undo legitimately writes an id-removal delta, and
+ * the addon's own prune rewrites entries it kept.
  *
  * Deliberately NOT guarded against a failed write — the listener catches that,
  * logs it, and skips the "Dismissed" confirmation, because confirming a
@@ -1312,18 +1312,76 @@ export async function applyTelegramDismissal(
   wfClient: WealthfolioClient,
   activityId: string,
 ): Promise<void> {
+  const { readLedger, writeLedgerMerged } = dismissalLedgerAccess(wfClient);
+  const base = await readLedger();
+  if (activityId in base) return;
+  await writeLedgerMerged(base, { ...base, [activityId]: new Date().toISOString() });
+}
+
+/**
+ * The dismissal ledger's read, retention rule and read-fresh → merge → prune →
+ * write, in ONE place, for every path in this file that touches the secret: the
+ * import notice's sweep and prune (`sendImportNotice`), its dismiss buttons
+ * (`applyTelegramDismissal`), and the `/categorize` menu's "Keep uncategorized"
+ * and its Undo (`buildCategorizeDeps`).
+ *
+ * Shared rather than copied because the invariant existing twice is exactly how
+ * it broke before: the whole-object write shipped in 1.10.1, was reintroduced
+ * later, and a second hand-written copy of `mergeDismissals(persisted, base,
+ * next)` is one careless edit away from being `mergeDismissals(base, base,
+ * next)` again — which is a plain overwrite that erases whatever the addon (or
+ * the other button) recorded in between. See `mergeDismissals` in
+ * shared/uncategorized.ts for why there is no compare-and-swap to lean on.
+ * `mergeDismissals` and `pruneDismissals` are each called from exactly one place
+ * in this file, and it is here.
+ *
+ * TWO reads, and the second is what makes the merge mean anything: `base` is
+ * what the caller read BEFORE acting, and it must never be passed as
+ * `persisted`. The re-read is taken as late as possible — immediately before the
+ * write, with nothing in between — so the window another writer can slip into is
+ * as small as a round trip allows. One extra request per button tap is a cheap
+ * price for not erasing someone else's dismissal.
+ *
+ * `writeLedgerMerged` is deliberately unguarded: the listener catches a failed
+ * dismissal write and skips its "Dismissed" confirmation, and the menu
+ * controller turns one into a "Couldn't save that" screen. Confirming a
+ * dismissal that was never recorded is a lie the user acts on.
+ */
+function dismissalLedgerAccess(wfClient: WealthfolioClient): {
+  readLedger: () => Promise<DismissalLedger>;
+  prune: (ledger: DismissalLedger) => DismissalLedger;
+  writeLedgerMerged: (base: DismissalLedger, next: DismissalLedger) => Promise<void>;
+} {
   const readLedger = async (): Promise<DismissalLedger> =>
     parseSecretJson<DismissalLedger>(
       await wfClient.getAddonSecret('simplefin-sync', 'uncategorized_dismissals'),
       'uncategorized_dismissals',
     ) ?? {};
 
-  const base = await readLedger();
-  if (activityId in base) return;
-  const next: DismissalLedger = { ...base, [activityId]: new Date().toISOString() };
-  const persisted = await readLedger();
-  const merged = pruneDismissals(mergeDismissals(persisted, base, next), new Date());
-  await wfClient.setAddonSecret('simplefin-sync', 'uncategorized_dismissals', JSON.stringify(merged));
+  /**
+   * The retention rule with its clock, for the TWO distinct prunes this file
+   * needs — and they are distinct, which is why one is exposed:
+   *
+   *  - `sendImportNotice` prunes the ledger it READ, because that pruned copy is
+   *    what filters the notice and what makes this run's ageing-out its delta;
+   *  - every write prunes what it PERSISTS, below, so the secret cannot grow
+   *    without bound.
+   *
+   * Both are "drop entries past the retention window, as of now", so they share
+   * one expression of it: a second `pruneDismissals(x, new Date())` spelled out
+   * by hand is how the two could come to disagree about the window or its clock.
+   */
+  const prune = (ledger: DismissalLedger): DismissalLedger => pruneDismissals(ledger, new Date());
+
+  return {
+    readLedger,
+    prune,
+    writeLedgerMerged: async (base, next) => {
+      const persisted = await readLedger();
+      const merged = prune(mergeDismissals(persisted, base, next));
+      await wfClient.setAddonSecret('simplefin-sync', 'uncategorized_dismissals', JSON.stringify(merged));
+    },
+  };
 }
 
 /** `/report`'s footer needs the last sync as an ISO string. Read through
@@ -1480,6 +1538,113 @@ const AFFORD_USAGE_REPLY = 'Usage: /afford 20 shopping';
 const SYNC_STARTED_REPLY = 'Syncing…';
 const SYNC_ALREADY_RUNNING_REPLY = 'Already syncing — hang on.';
 
+/** One line for every way `/newrule`'s arguments can fail to parse — see
+ *  `parseNewRuleArgs`, which deliberately does not distinguish them. */
+const NEWRULE_USAGE_REPLY = 'Usage: /newrule trader joes = groceries';
+
+/** `/newrule` with no readable database. NOT the controller's "can't tell what
+ *  needs a category": this command never lists transactions, it looks up the
+ *  category the user named — and `getNativeSpendingCategories` answers `[]` for a
+ *  path that is not there, so without this the reply would be a confident
+ *  "No category starts with …" about a tree nobody managed to read. */
+const NEWRULE_NO_DATABASE_REPLY =
+  "The companion has no database access right now, so it can't look up your categories.";
+
+/**
+ * The Wealthfolio database path, or `null` when there is no usable database
+ * access at all. Same `|| '/mnt/wealthfolio.db'` default and same `existsSync`
+ * guard as every other db reader in this file (see the sync path's
+ * `publishUncategorizedStatusForDbPath` call for why the default is safe).
+ *
+ * The `null` matters: the native readers return `[]` for a path that is not
+ * there, so a caller that skipped this check would state — confidently and
+ * falsely — that nothing needs a category, or that no such category exists.
+ */
+function categorizeDbPath(): string | null {
+  const dbPath = process.env.WEALTHFOLIO_DB_PATH || '/mnt/wealthfolio.db';
+  return existsSync(dbPath) ? dbPath : null;
+}
+
+/**
+ * Everything the `/categorize` menu controller reads and writes, bound to one
+ * `wfClient`. Exported for its own tests: `writeLedgerMerged`'s two reads are the
+ * property this feature's worst historical bug turns on, and asserting them
+ * needs the dep in hand rather than the controller wrapped around it.
+ *
+ * The two native readers are passed STRAIGHT THROUGH, not adapted: the
+ * controller's `readRows`/`readCategories` signatures were written to match
+ * `getNativeUncategorizedSpending`/`getNativeSpendingCategories` byte for byte,
+ * and an adapter would be a second place for the window arguments to drift.
+ *
+ * The three writes bind the taxonomy (and, for a rule, the priority) here rather
+ * than in the controller, so the menu machine never names a Wealthfolio taxonomy
+ * id at all.
+ */
+export function buildCategorizeDeps(wfClient: WealthfolioClient): CategorizeDeps {
+  const { readLedger, writeLedgerMerged } = dismissalLedgerAccess(wfClient);
+  return {
+    dbPath: categorizeDbPath,
+    readRows: getNativeUncategorizedSpending,
+    readCategories: getNativeSpendingCategories,
+    readLedger,
+    // The shared core, with its fresh second read — NOT a local copy, and never
+    // `base` as `persisted`. See `dismissalLedgerAccess`.
+    writeLedgerMerged,
+    assign: (activityId, categoryId) =>
+      wfClient.assignActivityCategory(activityId, SPENDING_TAXONOMY_ID, categoryId),
+    unassign: (activityId) => wfClient.unassignActivityCategory(activityId, SPENDING_TAXONOMY_ID),
+    createRule: (rule) => wfClient.createCategorizationRule({
+      ...rule,
+      taxonomyId: SPENDING_TAXONOMY_ID,
+      // HIGHER PRIORITY WINS. Verified in upstream source rather than inferred:
+      // `crates/spending/src/categorization_rules/matcher.rs` keeps the best
+      // match with `Some(current) if rule.priority > current.priority => best =
+      // Some(rule)`, and its unit test for that line is named
+      // `higher_priority_wins`.
+      //
+      // So 50 is the LOSING end of the scale, which is the whole point: a rule
+      // created by ONE TAP off a single transaction yields to anything the user
+      // hand-tuned (60) and to the presets Wealthfolio ships (70–90). Nothing
+      // deliberate is ever overridden by something tapped in a hurry; the tapped
+      // rule only decides rows no other rule claims. Widening or promoting one is
+      // a two-field edit in Wealthfolio's settings.
+      //
+      // A test pins this number (companion/src/index.test.ts) precisely because
+      // the reasoning is invisible from here — upstream's ordering lives in
+      // another repo, so a silent drift to, say, 150 would quietly start
+      // outranking every rule Nick wrote by hand.
+      priority: 50,
+    }),
+    // Exactly as the sync path publishes it, so the tile the addon renders cannot
+    // disagree with itself depending on which host last wrote it. Wrapped so it
+    // can never throw: the controller already swallows a failure here, and this
+    // keeps the "never throws" property true at the boundary too — a stale tile
+    // must never cost the user the flow they are in.
+    republish: async () => {
+      try {
+        await publishUncategorizedStatusForDbPath(
+          process.env.WEALTHFOLIO_DB_PATH || '/mnt/wealthfolio.db',
+          (key, value) => wfClient.setAddonSecret('simplefin-sync', key, value),
+          (dbPath, start, end) => getNativeUncategorizedSpending(dbPath, start, end),
+          readLedger,
+        );
+      } catch (err) {
+        log(`Categorize menu: republishing the uncategorized status failed: ${formatError(err)}`);
+      }
+    },
+    log,
+  };
+}
+
+/** The menu controller, holding the chat's live session in memory. ONE per
+ *  process in production (`buildTelegramListenerDeps` builds it once and gives it
+ *  to both `onCommand` and `onMenuCallback`): a second instance would have its
+ *  own session map, so a `/categorize` sent through one and a tap routed to the
+ *  other could never find each other. */
+export function buildCategorizeController(wfClient: WealthfolioClient): CategorizeController {
+  return createCategorizeController(buildCategorizeDeps(wfClient));
+}
+
 /**
  * The bot's command handler: the listener's `onCommand` dependency.
  *
@@ -1491,10 +1656,17 @@ const SYNC_ALREADY_RUNNING_REPLY = 'Already syncing — hang on.';
  * Nothing is caught: the listener wraps this call, logs whatever escapes, and
  * apologises in the chat. A local catch per command would only duplicate that
  * and risk swallowing something the log needs.
+ *
+ * `controller` is a parameter so that the ONE instance
+ * `buildTelegramListenerDeps` builds can serve both this handler and
+ * `onMenuCallback` — a menu opened here and a tap routed there have to find the
+ * same in-memory session. It defaults to a fresh one purely for callers that only
+ * ever send commands (the tests that never tap a button).
  */
 export function buildTelegramCommandHandler(
   wfClient: WealthfolioClient,
-): (cmd: ParsedCommand, reply: (text: string) => Promise<void>) => Promise<void> {
+  controller: CategorizeController = buildCategorizeController(wfClient),
+): (cmd: ParsedCommand, reply: (text: string, keyboard?: InlineKeyboard) => Promise<void>) => Promise<void> {
   /** `/left` and `/afford` read the same snapshot the daily digest is built
    *  from, so the three can never disagree about what "this week" means. */
   const budgetSnapshot = async () => {
@@ -1547,6 +1719,66 @@ export function buildTelegramCommandHandler(
       case 'status':
         await reply(formatStatusReply(await readStatusReplyInput(wfClient), new Date()));
         return;
+
+      case 'categorize':
+        // `reply` carries the keyboard now (Task 3's optional second argument),
+        // so the menu arrives as a tappable message rather than a list of things
+        // the user would have to answer in words. Everything the controller can
+        // anticipate — no database, an unreadable ledger — it renders as text
+        // through this same callback.
+        await controller.open((text, keyboard) => reply(text, keyboard));
+        return;
+
+      case 'newrule': {
+        const parsed = parseNewRuleArgs(cmd.args);
+        if (!parsed) {
+          await reply(NEWRULE_USAGE_REPLY);
+          return;
+        }
+        // Checked BEFORE the read, not after: `getNativeSpendingCategories`
+        // answers `[]` for a path that is not there, and `[]` resolves every
+        // query to a confident "no category starts with …".
+        const dbPath = categorizeDbPath();
+        if (dbPath === null) {
+          await reply(NEWRULE_NO_DATABASE_REPLY);
+          return;
+        }
+        // Guarded, and with the SAME sentence as a missing database: a locked or
+        // corrupt file is another way of not being able to look the categories
+        // up, and it must not surface as the listener's generic "Something went
+        // wrong running that command" — which names neither the cause nor
+        // anything the reader could do about it.
+        let categories;
+        try {
+          categories = getNativeSpendingCategories(dbPath);
+        } catch (err) {
+          log(`Categorize menu: reading spending categories for /newrule failed: ${formatError(err)}`);
+          await reply(NEWRULE_NO_DATABASE_REPLY);
+          return;
+        }
+        // The SAME resolver `/left` and `/afford` use, over the whole tree —
+        // parents AND children, since "restaurants" is a child and is exactly
+        // the kind of thing a rule targets. Two categories sharing a name (the
+        // presets ship several `Other`s) come back AMBIGUOUS rather than as
+        // whichever one the tree lists first, and the reply names each one's
+        // parent so the reader can type one back qualified.
+        const result = resolveCategoryQuery(categories, parsed.categoryQuery);
+        // With THIS command's pointer, not `/left`'s: the tree resolved here
+        // includes children, which `/left` never lists, so its default "…/left
+        // lists them all" would send a reader who mistyped a subcategory to a
+        // list that cannot contain it.
+        const miss = formatCategoryQueryMiss(result, parsed.categoryQuery, NEWRULE_CATEGORY_LIST_HINT);
+        if (miss !== null) {
+          await reply(miss);
+          return;
+        }
+        const category = (result as { kind: 'one'; category: { id: string } }).category;
+        // Never creates the rule outright: a rule files every uncategorized
+        // match now AND on every future import, so the confirmation screen is
+        // where that gets disclosed before anything is written.
+        await controller.openRulePreview(parsed.pattern, category.id, (text, keyboard) => reply(text, keyboard));
+        return;
+      }
 
       case 'sync': {
         // FORCED, unlike the cron tick: `MIN_SYNC_INTERVAL_HOURS` (1h by default)
@@ -1637,6 +1869,12 @@ const LISTENER_SESSION_MAX_AGE_MS = 30 * 60 * 1000;
 export function buildTelegramListenerDeps(wfClient: WealthfolioClient): TelegramListenerDeps {
   let sessionEstablishedAt = 0;
 
+  /** ONE controller for both entry points below: it holds the chat's menu
+   *  session in memory, so a `/categorize` answered through `onCommand` and the
+   *  tap that arrives through `onMenuCallback` must reach the same instance or
+   *  every button would answer "that menu expired". */
+  const categorize = buildCategorizeController(wfClient);
+
   const ensureSession = async (): Promise<void> => {
     if (Date.now() - sessionEstablishedAt < LISTENER_SESSION_MAX_AGE_MS) return;
     const key = process.env.WEALTHFOLIO_API_KEY;
@@ -1701,7 +1939,14 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
       await wfClient.setAddonSecret('simplefin-sync', 'telegram_update_offset', String(n));
     },
     applyDismissal: (activityId) => applyTelegramDismissal(wfClient, activityId),
-    onCommand: buildTelegramCommandHandler(wfClient),
+    onCommand: buildTelegramCommandHandler(wfClient, categorize),
+    // Every `cz:` tap, including the import notice's `Categorize these` (which
+    // the controller special-cases into a FRESH message — the notice is not the
+    // menu). Written as a lambda rather than `categorize.onCallback` so the
+    // controller keeps its own `this`, and so `messageId` — which the listener
+    // lifts off an untrusted payload and can therefore be `undefined` under its
+    // `number` type — is passed straight through and never branched on here.
+    onMenuCallback: (cb, ui) => categorize.onCallback(cb, ui),
     // A plain `setTimeout` promise, which cannot reject. The listener hardened
     // itself against a rejecting `sleep` precisely so nobody makes this one
     // abortable to shorten `stop()`; see `pause` in telegram-listener.ts.

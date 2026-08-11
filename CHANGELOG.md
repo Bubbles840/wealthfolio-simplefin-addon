@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.12.0] - 2026-08-10
+
+### Added
+
+- **/categorize — file transactions without leaving Telegram.** The bot lists
+  what needs a category as tappable buttons; tap a transaction, tap a category
+  (subcategories included), done — one message that edits itself in place,
+  with Back buttons all the way down. You can dismiss ("keep uncategorized")
+  from the same menu, and both paths offer Undo. Every write goes through
+  Wealthfolio's own spending API — the companion's database access stays
+  read-only.
+- **Make it a rule, from the confirmation — or from thin air.** After filing
+  something, one tap previews and creates a categorization rule (priority 50,
+  below your hand-made rules). Or type one directly: `/newrule trader joes =
+  groceries` — plain text matching, no patterns to learn, same
+  preview-before-create. Either way Wealthfolio then also files any other
+  *uncategorized* matches — it never touches transactions that already have a
+  category.
+- The import notice's needs-a-category list now ends with a **Categorize
+  these** button that opens the same menu.
+
+### Changed
+
+- Categorizing or dismissing from Telegram updates the addon's "Needs a
+  category" tile within about a minute, instead of at the next sync.
+
+Needs the companion rebuild; the addon zip is unchanged apart from the
+version string.
+
 ## [1.11.0] - 2026-08-10
 
 ### Added

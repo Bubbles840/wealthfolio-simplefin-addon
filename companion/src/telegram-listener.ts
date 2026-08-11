@@ -29,6 +29,8 @@
  */
 
 import { parseCommand, TELEGRAM_COMMAND_MENU, type ParsedCommand } from '../../shared/telegram-commands.js';
+import { MENU_CALLBACK_PREFIX } from '../../shared/categorize-menu.js';
+import type { InlineKeyboard } from '../../shared/telegram.js';
 
 export interface TelegramListenerDeps {
   fetchImpl: typeof fetch;
@@ -52,7 +54,25 @@ export interface TelegramListenerDeps {
    * The trade is that a handler cannot observe whether a send succeeded; nothing
    * needs to, since the listener logs every failure itself.
    */
-  onCommand: (cmd: ParsedCommand, reply: (text: string) => Promise<void>) => Promise<void>;
+  onCommand: (cmd: ParsedCommand, reply: (text: string, keyboard?: InlineKeyboard) => Promise<void>) => Promise<void>;
+  /**
+   * Menu-button taps (callback_data starting with 'cz:'). OPTIONAL: absent
+   * means such callbacks are answered with a generic expiry notice. `ui`
+   * mirrors `reply`'s guarantee: NONE of its methods ever reject — transport
+   * failures are logged in the listener — because a rejecting UI callback in a
+   * fire-and-forget position is an unhandled rejection, which kills the daemon.
+   */
+  onMenuCallback?: (
+    cb: { data: string; chatId: number; messageId: number },
+    ui: {
+      /** Replaces the tapped message's text and keyboard in place. */
+      edit: (text: string, keyboard?: InlineKeyboard) => Promise<void>;
+      /** Clears the button's spinner, with an optional toast. */
+      answer: (text?: string) => Promise<void>;
+      /** A NEW message in the configured chat, for when editing is wrong. */
+      send: (text: string, keyboard?: InlineKeyboard) => Promise<void>;
+    },
+  ) => Promise<void>;
   sleep: (ms: number) => Promise<void>;
 }
 
@@ -82,6 +102,14 @@ const HANDLER_FAILURE_REPLY = 'Something went wrong running that command — che
  *  are pinned by tests; changing either one alone silently breaks the button. */
 const DISMISS_PAYLOAD_PREFIX = 'd:';
 const DISMISS_ANSWER_TEXT = 'Dismissed — dropped from future notices';
+
+/** Shown when a `cz:` tap arrives with nothing wired up to interpret it —
+ *  either the build predates the menu controller, or the daemon restarted and
+ *  the in-memory session behind those buttons is gone. Either way the honest
+ *  and actionable thing to say is "ask again", not "internal error". The prefix
+ *  itself is imported from shared/categorize-menu.ts rather than copied, since a
+ *  second literal is the drift `DISMISS_PAYLOAD_PREFIX`'s comment warns about. */
+const MENU_EXPIRED_ANSWER_TEXT = 'That menu expired — send /categorize again.';
 
 /**
  * index.ts has its own copy and cannot be imported here: it is the daemon entry
@@ -183,8 +211,14 @@ export function startTelegramListener(deps: TelegramListenerDeps): { stop: () =>
    * module's whole testability rests on the transport being injected. A `ok:
    * false` response is logged because the likeliest cause — Markdown the
    * formatters did not escape — is otherwise a reply that vanishes silently.
+   *
+   * `keyboard` is spread in only when supplied, so a one-argument call — which is
+   * every existing handler — produces the byte-identical body it always has. A
+   * `reply_markup: undefined` key would not be: Telegram's parser reads the key's
+   * presence, and JSON.stringify's dropping of undefined values is an
+   * implementation detail to lean on, not a contract.
    */
-  async function reply(config: ListenerConfig, text: string): Promise<void> {
+  async function reply(config: ListenerConfig, text: string, keyboard?: InlineKeyboard): Promise<void> {
     const res = await deps.fetchImpl(api(config.botToken, 'sendMessage'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -193,6 +227,7 @@ export function startTelegramListener(deps: TelegramListenerDeps): { stop: () =>
         text,
         parse_mode: 'Markdown',
         disable_web_page_preview: true,
+        ...(keyboard ? { reply_markup: keyboard } : {}),
       }),
     });
     const json = await readJson(res);
@@ -224,9 +259,9 @@ export function startTelegramListener(deps: TelegramListenerDeps): { stop: () =>
     // otherwise leave a rejected promise nobody holds, and an unhandled rejection
     // takes the whole daemon down and stops bank syncing. Guaranteed here, in the
     // code, rather than in a comment the next implementer has to read.
-    const safeReply = async (text: string): Promise<void> => {
+    const safeReply = async (text: string, keyboard?: InlineKeyboard): Promise<void> => {
       try {
-        await reply(config, text);
+        await reply(config, text, keyboard);
       } catch (err) {
         safeLog(`Telegram listener: reply to /${parsed.command} was not delivered: ${formatError(err)}`);
       }
@@ -247,6 +282,102 @@ export function startTelegramListener(deps: TelegramListenerDeps): { stop: () =>
     }
   }
 
+  /**
+   * Builds the UI a menu controller acts through. Bound to ONE tap: the message
+   * to edit and the callback query to answer are closed over, so a controller
+   * cannot address someone else's message and the callback query id never becomes
+   * part of the public dep shape.
+   *
+   * None of the three can reject — see `onMenuCallback`'s doc comment for why
+   * that is a hard requirement rather than a convenience. Each awaits its own
+   * request inside a try, and its catch does nothing but `safeLog`, which cannot
+   * throw by construction. That makes every method safe in a fire-and-forget
+   * position, which is how the controller uses them.
+   */
+  function buildMenuUi(config: ListenerConfig, chatId: number, messageId: number, callbackQueryId: string) {
+    return {
+      /**
+       * The whole point of a tappable menu: one message that becomes the next
+       * screen, instead of a chat filling with dead keyboards.
+       *
+       * Telegram refuses a no-op edit with 400 "message is not modified", which a
+       * user double-tapping one button produces routinely. It is deliberately NOT
+       * special-cased: it lands in the same `ok: false` log as a real refusal
+       * (unescaped Markdown, most likely) and is otherwise ignored. Retrying it
+       * would be retrying a request whose desired state already holds.
+       */
+      edit: async (text: string, keyboard?: InlineKeyboard): Promise<void> => {
+        try {
+          const res = await deps.fetchImpl(api(config.botToken, 'editMessageText'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              chat_id: chatId,
+              message_id: messageId,
+              text,
+              parse_mode: 'Markdown',
+              // Omitted, not `undefined`: for an EDIT, no `reply_markup` is how
+              // Telegram is told to leave the message with no buttons at all —
+              // which is exactly what a final screen wants.
+              ...(keyboard ? { reply_markup: keyboard } : {}),
+            }),
+          });
+          const json = await readJson(res);
+          if (json && json.ok === false) {
+            safeLog(`Telegram listener: menu edit refused by Telegram: ${json.description ?? 'no description given'}`);
+          }
+        } catch (err) {
+          safeLog(`Telegram listener: menu edit was not delivered: ${formatError(err)}`);
+        }
+      },
+      /**
+       * Clears the tapped button's spinner, optionally with a toast. The response
+       * body is not inspected: a query Telegram considers too old is refused, and
+       * that is a non-event next to whatever the tap actually did.
+       */
+      answer: async (text?: string): Promise<void> => {
+        try {
+          const params = new URLSearchParams({ callback_query_id: callbackQueryId });
+          if (text !== undefined) params.set('text', text);
+          await deps.fetchImpl(`${api(config.botToken, 'answerCallbackQuery')}?${params}`);
+        } catch (err) {
+          safeLog(`Telegram listener: callback answer was not delivered: ${formatError(err)}`);
+        }
+      },
+      /** For the cases editing cannot express — a screen that should not replace
+       *  the one the user tapped. Mirrors `reply`, including its `ok: false` log. */
+      send: async (text: string, keyboard?: InlineKeyboard): Promise<void> => {
+        try {
+          await reply(config, text, keyboard);
+        } catch (err) {
+          safeLog(`Telegram listener: menu message was not delivered: ${formatError(err)}`);
+        }
+      },
+    };
+  }
+
+  async function handleMenuCallback(config: ListenerConfig, cq: any, chatId: number): Promise<void> {
+    const ui = buildMenuUi(config, chatId, cq?.message?.message_id, String(cq?.id));
+
+    // Shippable before the controller exists, and the honest answer after a
+    // restart wipes the session those buttons belonged to.
+    if (!deps.onMenuCallback) {
+      await ui.answer(MENU_EXPIRED_ANSWER_TEXT);
+      return;
+    }
+
+    try {
+      await deps.onMenuCallback({ data: cq.data, chatId, messageId: cq?.message?.message_id }, ui);
+    } catch (err) {
+      // Logged and swallowed, exactly like a thrown command — but with NO
+      // consolation message of its own. The controller owns the screen and may
+      // already have answered this query or edited an apology into it; a second
+      // answerCallbackQuery from out here would be refused by Telegram anyway,
+      // and a message the controller did not choose would contradict its screen.
+      safeLog(`Telegram listener: menu tap ${cq.data} failed: ${formatError(err)}`);
+    }
+  }
+
   async function handleCallbackQuery(config: ListenerConfig, cq: any): Promise<void> {
     // A callback_query carries its originating message only while that message
     // still exists, so an ABSENT chat is honored here (unlike a message's) —
@@ -257,7 +388,24 @@ export function startTelegramListener(deps: TelegramListenerDeps): { stop: () =>
       noteForeignChat(chatId);
       return;
     }
-    if (typeof cq?.data !== 'string' || !cq.data.startsWith(DISMISS_PAYLOAD_PREFIX)) return;
+    if (typeof cq?.data !== 'string') return;
+
+    if (cq.data.startsWith(MENU_CALLBACK_PREFIX)) {
+      // A menu tap authorizes like a MESSAGE does, not like a dismissal: an
+      // absent chat id is treated as foreign rather than assumed to be ours.
+      // Nothing is lost by being stricter here — the reply to a menu tap is an
+      // edit of the message it came from, so a callback with no message is not
+      // actionable in the first place. The caller advances the offset either way,
+      // so a stranger still cannot wedge the update stream.
+      if (typeof chatId !== 'number') {
+        noteForeignChat(chatId);
+        return;
+      }
+      await handleMenuCallback(config, cq, chatId);
+      return;
+    }
+
+    if (!cq.data.startsWith(DISMISS_PAYLOAD_PREFIX)) return;
     const activityId = cq.data.slice(DISMISS_PAYLOAD_PREFIX.length);
 
     try {

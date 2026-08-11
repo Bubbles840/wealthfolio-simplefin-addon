@@ -4,6 +4,8 @@ import {
   formatHelpReply,
   TELEGRAM_COMMAND_MENU,
   resolveCategoryQuery,
+  formatCategoryQueryMiss,
+  NEWRULE_CATEGORY_LIST_HINT,
   parseAffordArgs,
   formatLeftReply,
   formatAffordReply,
@@ -44,9 +46,9 @@ describe('formatHelpReply', () => {
       expect(help).toContain(`/${command}`);
     }
   });
-  it('menu covers exactly the six shipped commands', () => {
+  it('menu covers exactly the eight shipped commands', () => {
     expect(TELEGRAM_COMMAND_MENU.map((c) => c.command).sort())
-      .toEqual(['afford', 'help', 'left', 'report', 'status', 'sync']);
+      .toEqual(['afford', 'categorize', 'help', 'left', 'newrule', 'report', 'status', 'sync']);
   });
   it('prefixes with Unknown command when asked about junk', () => {
     const help = formatHelpReply('bogus');
@@ -85,6 +87,84 @@ describe('resolveCategoryQuery', () => {
 
   it('no matching prefix resolves to none', () => {
     expect(resolveCategoryQuery(cats, 'xyz')).toEqual({ kind: 'none' });
+  });
+
+  it('resolves any named thing, so /newrule can match id-carrying categories', () => {
+    // `/newrule trader joes = restaurants` has to land on a category ID, and the
+    // tree it searches includes CHILD categories — which carry no budget figures
+    // at all. Same prefix semantics, one implementation.
+    const spending = [
+      { id: 'cat-food', name: 'Food & Dining' },
+      { id: 'cat-rest', name: 'Restaurants' },
+      { id: 'cat-fun', name: 'Entertainment' },
+    ];
+    expect(resolveCategoryQuery(spending, 'restaur')).toEqual({ kind: 'one', category: spending[1] });
+    expect(resolveCategoryQuery(spending, 'nope')).toEqual({ kind: 'none' });
+  });
+
+  it('two categories with the SAME name are ambiguous, not silently the first one', () => {
+    // Wealthfolio's preset tree really does ship duplicate leaf names (an `Other`
+    // under several parents). Returning the first would have `/newrule x = other`
+    // write a rule against a category the user never picked, and sweep every
+    // matching uncategorized row into it.
+    const spending = [
+      { id: 'cat-home', name: 'Home', parentId: null, parentName: null },
+      { id: 'cat-home-other', name: 'Other', parentId: 'cat-home', parentName: 'Home' },
+      { id: 'cat-auto-other', name: 'Other', parentId: 'cat-auto', parentName: 'Auto' },
+    ];
+    expect(resolveCategoryQuery(spending, 'other')).toEqual({
+      kind: 'ambiguous',
+      // Qualified, or the reply would read "Which one? Other, Other" — a question
+      // with no answer in it.
+      names: ['Other (Home)', 'Other (Auto)'],
+    });
+  });
+
+  it('accepts back the qualified name it printed, so the ambiguity is answerable', () => {
+    // Otherwise "Which one? Other (Home), Other (Auto)" is a question with no
+    // typable answer: retyping either one would resolve against the bare name
+    // and go ambiguous all over again.
+    const spending = [
+      { id: 'cat-home-other', name: 'Other', parentId: 'cat-home', parentName: 'Home' },
+      { id: 'cat-auto-other', name: 'Other', parentId: 'cat-auto', parentName: 'Auto' },
+    ];
+    expect(resolveCategoryQuery(spending, 'Other (Auto)')).toEqual({ kind: 'one', category: spending[1] });
+    expect(resolveCategoryQuery(spending, 'other (home)')).toEqual({ kind: 'one', category: spending[0] });
+  });
+
+  it('still qualifies nothing for rows that carry no parent — /left is untouched', () => {
+    expect(resolveCategoryQuery(cats, 'hom')).toEqual({
+      kind: 'ambiguous',
+      names: ['Home', 'Home Improvement'],
+    });
+  });
+});
+
+describe('formatCategoryQueryMiss', () => {
+  it('asks which one, naming every prefix match', () => {
+    expect(formatCategoryQueryMiss({ kind: 'ambiguous', names: ['Home', 'Home Improvement'] }, 'hom'))
+      .toBe('Which one? Home, Home Improvement');
+  });
+
+  it('says nothing starts with the query, and escapes what the user typed', () => {
+    // Telegram refuses a message with unbalanced Markdown entities outright, and
+    // the one person guaranteed to see this reply just mistyped a category.
+    expect(formatCategoryQueryMiss({ kind: 'none' }, 'a*b'))
+      .toBe('No category starts with "a\\*b". /left lists them all.');
+  });
+
+  it('leaves a resolved query to the caller', () => {
+    expect(formatCategoryQueryMiss({ kind: 'one', category: { name: 'Groceries' } }, 'grocer')).toBeNull();
+  });
+
+  it('points the reader at a list that can actually contain what they typed', () => {
+    // `/left` lists BUDGETED PARENTS only, and `/newrule` resolves over the whole
+    // tree — children included. Telling a reader who mistyped a subcategory to
+    // run `/left` sends them somewhere it can never appear.
+    expect(formatCategoryQueryMiss({ kind: 'none' }, 'xyzzy', NEWRULE_CATEGORY_LIST_HINT)).toBe(
+      'No category starts with "xyzzy". '
+      + 'Subcategories count too — Wealthfolio\'s category settings list them all.',
+    );
   });
 });
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeCategoryCatalog, getNativeSubcategorySpending } from './sqlite-native.js';
+import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeCategoryCatalog, getNativeSubcategorySpending, getNativeSpendingCategories } from './sqlite-native.js';
 import { DatabaseSync } from 'node:sqlite';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
@@ -538,6 +538,78 @@ describe('sqlite-native', () => {
 
     it('returns [] rather than throwing when the database is missing', () => {
       expect(getNativeCategoryCatalog('/nonexistent/wealthfolio.db', '2026-07')).toEqual([]);
+    });
+  });
+
+  describe('getNativeSpendingCategories', () => {
+    it('returns id, name and parent for every spending category, parents before their children', () => {
+      const { path, cleanup } = makeTestDb();
+      try {
+        const db = new DatabaseSync(path);
+        db.exec(`
+          INSERT INTO taxonomy_categories (id,name,parent_id,taxonomy_id,sort_order) VALUES
+            ('p1','Food & Dining',NULL,'spending_categories',1),
+            ('c1','Restaurants','p1','spending_categories',1),
+            ('c2','Groceries','p1','spending_categories',2),
+            ('t1','Transportation',NULL,'spending_categories',2);
+        `);
+        db.close();
+
+        const cats = getNativeSpendingCategories(path);
+        // Grouped by parent name (own name for top-level rows), parent row
+        // first within its group, then children by sort_order.
+        expect(cats.map((c) => c.name)).toEqual([
+          'Food & Dining', 'Restaurants', 'Groceries', 'Transportation',
+        ]);
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('carries id, parentId and parentName for a child, and nulls for a top-level category', () => {
+      const { path, cleanup } = makeTestDb();
+      try {
+        const db = new DatabaseSync(path);
+        db.exec(`
+          INSERT INTO taxonomy_categories (id,name,parent_id,taxonomy_id,sort_order) VALUES
+            ('p1','Food & Dining',NULL,'spending_categories',1),
+            ('c1','Restaurants','p1','spending_categories',1);
+        `);
+        db.close();
+
+        const byName = new Map(getNativeSpendingCategories(path).map((c) => [c.name, c]));
+        expect(byName.get('Restaurants')).toEqual({
+          id: 'c1', name: 'Restaurants', parentId: 'p1', parentName: 'Food & Dining',
+        });
+        expect(byName.get('Food & Dining')).toEqual({
+          id: 'p1', name: 'Food & Dining', parentId: null, parentName: null,
+        });
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('excludes categories from other taxonomies, e.g. income_sources', () => {
+      const { path, cleanup } = makeTestDb();
+      try {
+        const db = new DatabaseSync(path);
+        db.exec(`
+          INSERT INTO taxonomy_categories (id,name,parent_id,taxonomy_id,sort_order) VALUES
+            ('cat-1','Groceries',NULL,'spending_categories',1),
+            ('inc-1','Salary',NULL,'income_sources',1);
+        `);
+        db.close();
+
+        const names = getNativeSpendingCategories(path).map((c) => c.name);
+        expect(names).toContain('Groceries');
+        expect(names).not.toContain('Salary');
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('returns [] rather than throwing when the database is missing', () => {
+      expect(getNativeSpendingCategories('/nonexistent/wealthfolio.db')).toEqual([]);
     });
   });
 

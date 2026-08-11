@@ -188,6 +188,90 @@ describe('WealthfolioClient', () => {
     expect(res.created).toHaveLength(1);
   });
 
+  it('assignActivityCategory PUTs {taxonomyId, categoryId} to the assignments path, percent-encoding the activity id', async () => {
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({}) });
+    const client = new WealthfolioClient('http://wf');
+    await client.assignActivityCategory('act/1', 'spending_categories', 'cat-1');
+    const [url, opts] = mockFetch.mock.calls[0];
+    expect(url).toBe('http://wf/api/v1/spending/activities/act%2F1/assignments');
+    expect((opts as any).method).toBe('PUT');
+    expect(JSON.parse((opts as any).body)).toEqual({
+      taxonomyId: 'spending_categories',
+      categoryId: 'cat-1',
+    });
+  });
+
+  it('assignActivityCategory throws through httpError on a non-ok response', async () => {
+    mockFetch.mockResolvedValueOnce({ ok: false, status: 422, text: async () => 'bad category' });
+    const client = new WealthfolioClient('http://wf');
+    await expect(client.assignActivityCategory('act-1', 'spending_categories', 'cat-1')).rejects.toThrow(
+      'assignActivityCategory failed: 422 - bad category',
+    );
+  });
+
+  it('unassignActivityCategory DELETEs the taxonomy off the assignments path, with no body', async () => {
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({}) });
+    const client = new WealthfolioClient('http://wf');
+    await client.unassignActivityCategory('act 1', 'spending categories');
+    const [url, opts] = mockFetch.mock.calls[0];
+    expect(url).toBe('http://wf/api/v1/spending/activities/act%201/assignments/spending%20categories');
+    expect((opts as any).method).toBe('DELETE');
+    expect((opts as any).body).toBeUndefined();
+  });
+
+  it('unassignActivityCategory throws through httpError on a non-ok response', async () => {
+    mockFetch.mockResolvedValueOnce({ ok: false, status: 404, text: async () => 'not found' });
+    const client = new WealthfolioClient('http://wf');
+    await expect(client.unassignActivityCategory('act-1', 'spending_categories')).rejects.toThrow(
+      'unassignActivityCategory failed: 404 - not found',
+    );
+  });
+
+  it('createCategorizationRule POSTs to /spending/rules with matchType "contains", isGlobal true, and no preset fields', async () => {
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({}) });
+    const client = new WealthfolioClient('http://wf');
+    await client.createCategorizationRule({
+      name: 'Amazon groceries',
+      pattern: 'AMAZON',
+      categoryId: 'cat-1',
+      taxonomyId: 'spending_categories',
+      priority: 10,
+    });
+    const [url, opts] = mockFetch.mock.calls[0];
+    expect(url).toBe('http://wf/api/v1/spending/rules');
+    expect((opts as any).method).toBe('POST');
+    const body = JSON.parse((opts as any).body);
+    expect(body).toEqual({
+      name: 'Amazon groceries',
+      pattern: 'AMAZON',
+      matchType: 'contains',
+      taxonomyId: 'spending_categories',
+      categoryId: 'cat-1',
+      priority: 10,
+      isGlobal: true,
+    });
+    // Upstream's own doc comment: user-facing rule creation leaves the preset
+    // fields None - sending them (even as null/undefined) is a coupling to
+    // preset-import internals this feature must not create.
+    expect(body).not.toHaveProperty('presetId');
+    expect(body).not.toHaveProperty('presetRuleKey');
+    expect(body).not.toHaveProperty('presetVersion');
+  });
+
+  it('createCategorizationRule throws through httpError on a non-ok response', async () => {
+    mockFetch.mockResolvedValueOnce({ ok: false, status: 400, text: async () => 'duplicate pattern' });
+    const client = new WealthfolioClient('http://wf');
+    await expect(
+      client.createCategorizationRule({
+        name: 'Amazon groceries',
+        pattern: 'AMAZON',
+        categoryId: 'cat-1',
+        taxonomyId: 'spending_categories',
+        priority: 10,
+      }),
+    ).rejects.toThrow('createCategorizationRule failed: 400 - duplicate pattern');
+  });
+
   describe('error detail on non-ok responses', () => {
     it('surfaces the server response body, not just the status code', async () => {
       mockFetch.mockResolvedValueOnce({

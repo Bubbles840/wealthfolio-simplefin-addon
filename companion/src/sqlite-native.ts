@@ -497,6 +497,69 @@ export function getNativeCategoryCatalog(
   }).filter((c) => !!c.name);
 }
 
+/** One spending category id, ready to send back to the assignment/rule APIs -
+ *  `getNativeCategoryCatalog` deliberately drops ids (it only ever feeds a
+ *  report label), so a caller that needs to WRITE a categorisation back to
+ *  Wealthfolio needs this instead. */
+export interface NativeSpendingCategory {
+  id: string;
+  name: string;
+  parentId: string | null;
+  /** Parent's display name, so a picker can show "Restaurants (Food & Dining)"
+   *  without a second query. Null for a top-level category. */
+  parentName: string | null;
+}
+
+/**
+ * Every category in the `spending_categories` taxonomy, with ids - the
+ * simpler, id-carrying sibling of `getNativeCategoryCatalog` above (which is
+ * report-shaped and intentionally has no ids to send back to Wealthfolio).
+ *
+ * `tc.name` and `parent.name` are aliased to distinct column names
+ * (`name`/`parent_name`): node:sqlite keys each result row by column name, so
+ * two unaliased columns both called `name` collide into one JS property and
+ * the child's own name is silently lost - this is why the same query in the
+ * task brief needed the aliases added, not just copied.
+ */
+export function getNativeSpendingCategories(dbPath: string): NativeSpendingCategory[] {
+  if (!dbPath || !existsSync(dbPath)) return [];
+
+  const query = `
+    SELECT tc.id AS id, tc.name AS name, tc.parent_id AS parent_id, parent.name AS parent_name
+    FROM taxonomy_categories tc
+    LEFT JOIN taxonomy_categories parent ON tc.parent_id = parent.id
+    WHERE tc.taxonomy_id = 'spending_categories'
+    ORDER BY COALESCE(parent.name, tc.name), tc.parent_id IS NOT NULL, tc.sort_order, tc.name;
+  `;
+
+  const rows = queryNativeDb<Record<string, unknown>>(
+    dbPath,
+    'spending categories',
+    query,
+    (parts) => (parts.length === 4
+      ? { id: parts[0], name: parts[1], parent_id: parts[2], parent_name: parts[3] }
+      : null),
+  );
+
+  // Read positionally so ONE mapping serves both paths, and normalise the two
+  // spellings of NULL: node:sqlite gives `null`, the sqlite3 CLI fallback gives
+  // an EMPTY STRING (its `|`-delimited output cannot spell null). `?? null`
+  // alone therefore leaves `''` standing on the CLI path, and `''` is not
+  // `null` — the menu's parent filter is `parentId === null`, so every category
+  // would read as a child of a parent that does not exist and the picker would
+  // offer no categories at all, silently. Same idiom as every neighbouring
+  // reader (`String(v[n] ?? '') || null`).
+  return rows.map((r) => {
+    const v = Object.values(r) as Array<string | null>;
+    return {
+      id: String(v[0]),
+      name: String(v[1]),
+      parentId: String(v[2] ?? '') || null,
+      parentName: String(v[3] ?? '') || null,
+    };
+  });
+}
+
 /** One category's spend at CHILD granularity. `child` is null when the money was
  *  booked directly on the parent, which keeps a breakdown's parts summing to the
  *  parent's total. */

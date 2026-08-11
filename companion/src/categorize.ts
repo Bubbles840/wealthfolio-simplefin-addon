@@ -1,0 +1,868 @@
+/**
+ * companion/src/categorize.ts
+ *
+ * The controller behind `/categorize`: it holds the chat's menu session, turns a
+ * tapped button into a write against Wealthfolio, and renders the next screen.
+ * `shared/categorize-menu.ts` is the pure machine (screens in, text + keyboard
+ * out) and knows nothing about the world; the listener owns the transport and
+ * hands over an `edit`/`answer`/`send` UI. This file is the only place where
+ * those two meet, which is why it is also the only place that can get the
+ * ordering wrong.
+ *
+ * WHY EVERY READ AND WRITE IS INJECTED. Two reasons, both structural. The menu's
+ * data comes from a read-only SQLite file and its writes go over Wealthfolio's
+ * REST API, and neither is reachable in a test; and the whole feature's safety
+ * property is an ORDER — read fresh, decide, write, read fresh again, render —
+ * which is only observable if the reads and writes are things a test can count.
+ * So `dbPath`, the two native readers, the ledger read/write, the three writes
+ * and the republish are all parameters. This module reads no environment
+ * variable, names no secret key, opens no socket and touches no file itself.
+ *
+ * THE FRESHNESS RULE, which is the reason this file exists at all. Every screen
+ * transition re-reads the rows, the dismissal ledger and the categories BEFORE
+ * rendering, and any tap that would WRITE to a row first checks that the row is
+ * still uncategorized. A menu is a message that sits on a phone for minutes: in
+ * the meantime the addon, an import, or a categorization rule can file the very
+ * row the buttons describe. A row filed elsewhere must simply disappear from the
+ * next render (see `showGone`) rather than be written to a second time.
+ *
+ * WHY NOTHING HERE CAN THROW AT THE LISTENER. A tap is dispatched from the
+ * long-poll loop that also runs bank syncing; every `deps.*` call that can fail
+ * is caught and rendered as a screen the user can act on, and `republish` — a
+ * status tile, never worth a lost flow — is swallowed with a log. The `ui`
+ * callbacks are guaranteed never to reject by the listener, so they are called
+ * without `.catch` and their return values are ignored.
+ */
+
+import {
+  applyTap,
+  layoutScreen,
+  renderScreen,
+  type CategorizeTxn,
+  type MenuAction,
+  type MenuScreen,
+  type MenuSession,
+  type SpendingCategory,
+} from '../../shared/categorize-menu.js';
+import { escapeMarkdown, CATEGORIZE_ENTRY_CALLBACK, type InlineKeyboard } from '../../shared/telegram.js';
+import { visibleUncategorized, type DismissalLedger } from '../../shared/uncategorized.js';
+import { descriptionFromComment } from '../../shared/sync-core.js';
+import { uncategorizedWindow } from './uncategorized-status.js';
+
+/**
+ * The taxonomy every write in this feature targets. Wealthfolio also has income
+ * and savings taxonomies, and its API takes the id explicitly, so the constant
+ * lives with the feature that owns it rather than being retyped at each of the
+ * three call sites that bind it into `assign`/`unassign`/`createRule`.
+ */
+export const SPENDING_TAXONOMY_ID = 'spending_categories';
+
+/** What the menu needs from one native uncategorized row. `NativeUncategorizedTx`
+ *  from ./sqlite-native.js satisfies this structurally; this module deliberately
+ *  does not import that reader (see the header — every read is injected), and
+ *  mirrors how `publishUncategorizedStatusForDbPath` takes its own row reader. */
+export interface CategorizeSourceRow {
+  activityId: string;
+  /** RAW stored note (`<description> · <txId>[ · pending]`), cleaned below. */
+  notes: string;
+  amountCents: number;
+  date: string;
+  accountName: string;
+}
+
+/** The three transport calls the listener binds to one tap. NONE of them ever
+ *  rejects — that is the listener's guarantee, and it is what makes them safe to
+ *  call without a `.catch` from inside this controller's own catch blocks. */
+export interface CategorizeUi {
+  /** Replaces the tapped message's text and keyboard in place. */
+  edit: (text: string, keyboard?: InlineKeyboard) => Promise<void>;
+  /** Clears the tapped button's spinner, with an optional toast. */
+  answer: (text?: string) => Promise<void>;
+  /** A NEW message, for when replacing the tapped one is wrong. */
+  send: (text: string, keyboard?: InlineKeyboard) => Promise<void>;
+}
+
+export interface CategorizeDeps {
+  /**
+   * Where the Wealthfolio database is, or `null` when the companion has no
+   * usable database access at all (unset path, container mount missing, file
+   * moved). `null` is a distinct answer from "nothing needs a category": the
+   * native readers return `[]` for a path that is not there, so a menu built
+   * anyway would state — confidently and falsely — that there is nothing to do.
+   */
+  dbPath: () => string | null;
+  /** `getNativeUncategorizedSpending`, over `uncategorizedWindow(new Date())`. */
+  readRows: (dbPath: string, startInclusive: string, endExclusive: string) => CategorizeSourceRow[];
+  /** `getNativeSpendingCategories`. */
+  readCategories: (dbPath: string) => SpendingCategory[];
+  readLedger: () => Promise<DismissalLedger>;
+  /**
+   * Persists a dismissal delta. `base` is the ledger THIS controller read a
+   * moment ago; `next` is what it wants the ledger to become; the difference is
+   * the intent (one id added, or one id removed).
+   *
+   * The implementation MUST re-read the ledger immediately before writing and
+   * replay only that delta — `pruneDismissals(mergeDismissals(persisted, base,
+   * next), now)`, the `applyTelegramDismissal` pattern in index.ts. TWO reads:
+   * the addon writes this same secret and there is no compare-and-swap on it, so
+   * passing `base` as `persisted` reduces the merge to a whole-object write that
+   * silently erases whatever the other host recorded in between. That was the
+   * 1.10.1 bug, and its symptom is a row the user already dismissed quietly
+   * reappearing as needing a category.
+   */
+  writeLedgerMerged: (base: DismissalLedger, next: DismissalLedger) => Promise<void>;
+  /** Files one activity under one category (taxonomy applied by the caller). */
+  assign: (activityId: string, categoryId: string) => Promise<void>;
+  /** Clears the spending assignment — the undo side of `assign`. */
+  unassign: (activityId: string) => Promise<void>;
+  /** Creates a contains-match rule (priority + taxonomy applied by the caller). */
+  createRule: (rule: { name: string; pattern: string; categoryId: string }) => Promise<void>;
+  /** Republishes the addon's needs-a-category status. May throw; a failure here
+   *  costs a stale tile, never the flow the user is in (see `republishQuietly`). */
+  republish: () => Promise<void>;
+  log: (msg: string) => void;
+}
+
+/** What both entry points send with: `reply` from the command handler, or the
+ *  `ui.send` of the message a `cz:open` tap arrived on. Called with ONE argument
+ *  when there is no keyboard to attach, so a caller can distinguish "no
+ *  keyboard" from "an empty one". */
+type MenuSend = (text: string, keyboard?: InlineKeyboard) => Promise<void>;
+
+export interface CategorizeController {
+  /** `/categorize`: builds a fresh session and sends the list screen. */
+  open(send: MenuSend): Promise<void>;
+  /**
+   * `/newrule <pattern> = <category>`: builds a fresh session parked on the
+   * free-rule confirmation screen and sends it. The category is already
+   * RESOLVED to an id by the caller (`resolveCategoryQuery` over the same
+   * native category read this controller uses), because the miss cases —
+   * ambiguous, none — are plain replies with no menu behind them at all.
+   *
+   * The `Create rule` button flows through the same `deps.createRule` as the
+   * tapped-off-a-transaction path, with the same name truncation and the same
+   * disclosure copy: one rule write, two ways in.
+   */
+  openRulePreview(pattern: string, categoryId: string, send: MenuSend): Promise<void>;
+  /** One `cz:` tap. */
+  onCallback(cb: { data: string; chatId: number; messageId: number }, ui: CategorizeUi): Promise<void>;
+}
+
+/** Byte-identical to the listener's own notice, and imported by neither: the
+ *  listener answers with this string when no controller is wired up at all, and
+ *  the two must read the same to the user. Pinned by tests on both sides. */
+const MENU_EXPIRED_ANSWER = 'That menu expired — send /categorize again.';
+
+/** A `cz:` payload that is not a token this module ever emitted. Not an error to
+ *  the user — the honest thing is to redraw the screen they are looking at. */
+const STALE_TOKEN_ANSWER = 'That button is stale — refreshing.';
+
+const NO_DATABASE_TEXT = 'The companion has no database access right now, so it can\'t tell what needs a category.';
+const READ_FAILED_PREFIX = 'Couldn\'t check what needs a category — ';
+/** The same two failures on the `/newrule` path, which shows NO list at all: it
+ *  was handed a pattern and a category, and what it needs the database for is
+ *  looking that category up. Telling its reader the companion "can't tell what
+ *  needs a category" describes a screen they never asked for and cannot see.
+ *  The no-database sentence is byte-identical to `NEWRULE_NO_DATABASE_REPLY` in
+ *  index.ts — the command's own pre-check answers the same failure a moment
+ *  earlier, and the two must read the same. Pinned by tests on both sides. */
+const RULE_NO_DATABASE_TEXT = 'The companion has no database access right now, so it can\'t look up your categories.';
+const RULE_READ_FAILED_PREFIX = 'Couldn\'t set that rule up — ';
+const ASSIGN_FAILED_PREFIX = 'Couldn\'t file that — Wealthfolio said: ';
+const UNDO_FAILED_PREFIX = 'Couldn\'t undo that — Wealthfolio said: ';
+const DISMISS_FAILED_PREFIX = 'Couldn\'t save that — Wealthfolio said: ';
+const RULE_FAILED_PREFIX = 'Couldn\'t create that rule — Wealthfolio said: ';
+
+/** Rule names are shown in Wealthfolio's own rules list, which is not a place
+ *  for a 200-character card descriptor. The PATTERN is never truncated — a
+ *  clipped pattern silently matches the wrong transactions. */
+const RULE_NAME_PREFIX = 'Telegram: ';
+const RULE_NAME_MAX = 60;
+
+/**
+ * Where `open`'s session waits until the first tap tells us the chat id.
+ *
+ * Sessions are keyed by chat id, but `open` is called from the command handler,
+ * whose reply callback is already bound to the configured chat and carries no id
+ * — while a callback query DOES carry one. So `open` parks the session under
+ * this key and the first tap re-keys it (see `takeSession`). Zero is never a
+ * real Telegram chat id, and the listener honours exactly one chat, so the
+ * adoption can only ever hand the session to the chat it was built for.
+ */
+const PENDING_CHAT_ID = 0;
+
+/** Screens that NAME a row a fresh sweep no longer returns — the confirmations
+ *  for something just done (filed, dismissed) and the rule screens reached from
+ *  them. `renderScreen` looks every id up in the session it is given and falls
+ *  back to the list when it misses, so the controller has to carry the acted-on
+ *  row forward for exactly these (see `MenuSession`'s doc comment). Any other
+ *  screen gets the fresh data alone — that is what makes a row filed elsewhere
+ *  disappear instead of lingering. */
+const PINNED_SCREEN_KINDS: ReadonlySet<MenuScreen['kind']> = new Set([
+  'filed', 'dismissed', 'rulePreview', 'ruleCreated',
+]);
+
+function pinnedActivityId(screen: MenuScreen): string | null {
+  if (!PINNED_SCREEN_KINDS.has(screen.kind)) return null;
+  return 'activityId' in screen ? screen.activityId : null;
+}
+
+/**
+ * The listener and index.ts each carry their own copy of this; a fourth is
+ * cheaper than an import cycle between the daemon's entry point and its parts.
+ *
+ * Total by construction: an error value is dependency-supplied data, and
+ * stringifying one whose `toString` throws would throw while BUILDING the log
+ * message it was going to be passed to — outside every guard downstream of it.
+ */
+function formatError(err: unknown): string {
+  try {
+    if (err instanceof Error) {
+      const cause = (err as { cause?: { message?: string } }).cause;
+      return cause ? `${err.message} (${cause.message ?? cause})` : err.message;
+    }
+    return String(err);
+  } catch {
+    return 'an error that could not be stringified';
+  }
+}
+
+/** One chat's live menu. `session` is replaced wholesale on every render, which
+ *  is what makes a tap on an outdated message safe (see `applyTap`); `pinned`
+ *  survives across renders for as long as a screen still needs it. */
+interface ChatSession {
+  session: MenuSession;
+  pinned: CategorizeTxn | null;
+}
+
+/** One fresh sweep: the visible rows, the categories, and the ledger those rows
+ *  were filtered with — the same object then serves as the merge `base`, so a
+ *  dismissal cannot be based on a ledger older than the list it acted on. */
+interface Fresh {
+  txns: CategorizeTxn[];
+  categories: SpendingCategory[];
+  ledger: DismissalLedger;
+}
+
+/** Why a load failed, kept as a REASON rather than as finished text: which
+ *  sentence says it depends on the screen the render was for (see
+ *  `failureText`), and only the caller knows that. `detail` is raw — escaping
+ *  belongs with the formatting. */
+interface LoadFailure {
+  kind: 'no-database' | 'read-failed';
+  detail: string;
+}
+
+type Loaded = { ok: true; fresh: Fresh } | { ok: false; failure: LoadFailure };
+
+/**
+ * The sentence a failed load gets, chosen by the SCREEN the render was for.
+ *
+ * The two `/newrule` screens (`freeRulePreview`, and the `ruleCreated`
+ * confirmation reached from it — the one with no activityId) list nothing, so
+ * the menu's own copy would describe a list their reader never asked for.
+ * Everything else is the menu, where "what needs a category" is exactly what
+ * the failed read was for.
+ *
+ * `escapeMarkdown` is applied HERE because the reply is Markdown-parsed on its
+ * way to Telegram, and an API error carrying an unbalanced `*` or `_` gets the
+ * whole message refused — a screen that simply never appears.
+ */
+function failureText(failure: LoadFailure, screen: MenuScreen): string {
+  const rulePath = screen.kind === 'freeRulePreview'
+    || (screen.kind === 'ruleCreated' && screen.activityId === null);
+  if (failure.kind === 'no-database') return rulePath ? RULE_NO_DATABASE_TEXT : NO_DATABASE_TEXT;
+  const prefix = rulePath ? RULE_READ_FAILED_PREFIX : READ_FAILED_PREFIX;
+  return `${prefix}${escapeMarkdown(failure.detail)}`;
+}
+
+export function createCategorizeController(deps: CategorizeDeps): CategorizeController {
+  const sessions = new Map<number, ChatSession>();
+
+  /**
+   * Stamped onto every keyboard this controller emits, and never reset — not by
+   * `close`, and deliberately not by a second `/categorize`. Per PROCESS, not
+   * per session: a counter that restarted with each new session would reissue
+   * generations that older messages still hold, which is exactly the confusion
+   * it exists to prevent (see `MenuSession.generation`). A restart does reset
+   * it, and that is safe because it also drops every session, so every
+   * pre-restart button answers "that menu expired" from `takeSession` instead.
+   */
+  let generation = 0;
+  const nextGeneration = (): number => ++generation;
+
+  /**
+   * The only way this module logs. `deps.log` is an injected dependency like any
+   * other, so it is treated as hostile: every log call here sits in a catch
+   * block that exists to stop something worse, and a throwing logger inside one
+   * of those would re-create the exact failure the catch was written to prevent.
+   * Mirrors the listener's `safeLog`, including the silent swallow — there is no
+   * second channel on which to report a broken reporting channel.
+   */
+  function safeLog(msg: string): void {
+    try {
+      deps.log(msg);
+    } catch {
+      /* a logger that throws cannot be told about it */
+    }
+  }
+
+  /** A stored note carries ` · <txId>` and possibly ` · pending`; the menu shows
+   *  this string, so the bookkeeping is stripped first. A blank strip result (a
+   *  legitimately empty SimpleFin description) falls back to the RAW note, the
+   *  `uncategorized-status.ts` rule: the label template always carries the date
+   *  and the amount, so the alternative is not a blank button but a button that
+   *  reads `Aug 8 ·  · -$12` — one with a hole where the only identifying text
+   *  it had should be. A visible ` · TRN-…` is the better of the two. */
+  function toTxn(r: CategorizeSourceRow): CategorizeTxn {
+    return {
+      activityId: r.activityId,
+      date: r.date,
+      amountCents: r.amountCents,
+      description: descriptionFromComment(r.notes) || r.notes,
+      accountName: r.accountName,
+    };
+  }
+
+  /**
+   * One fresh sweep of everything a render needs. Called before EVERY render and
+   * again before every write that has a precondition — never cached, because a
+   * cached answer is the bug this whole file is arranged to avoid.
+   *
+   * A failure is returned as a REASON rather than thrown: the caller always has a
+   * screen to put it on, and there is no path from here on which throwing would
+   * be more informative than saying so on the phone. Turning the reason into a
+   * sentence is `failureText`'s job, because which sentence is honest depends on
+   * the screen the caller was rendering.
+   */
+  async function load(): Promise<Loaded> {
+    let path: string | null;
+    try {
+      path = deps.dbPath();
+    } catch (err) {
+      const detail = formatError(err);
+      safeLog(`Categorize menu: could not locate the database: ${detail}`);
+      return { ok: false, failure: { kind: 'no-database', detail } };
+    }
+    if (!path) return { ok: false, failure: { kind: 'no-database', detail: 'no database path' } };
+
+    try {
+      const { start, end } = uncategorizedWindow(new Date());
+      const rows = deps.readRows(path, start, end);
+      const ledger = await deps.readLedger();
+      const categories = deps.readCategories(path);
+      return {
+        ok: true,
+        // ONE definition of "needs a category", shared with the status tile and
+        // the addon: the native rows minus whatever the ledger dismissed.
+        fresh: { txns: visibleUncategorized(rows, ledger).map(toTxn), categories, ledger },
+      };
+    } catch (err) {
+      const detail = formatError(err);
+      safeLog(`Categorize menu: could not read what needs a category: ${detail}`);
+      return { ok: false, failure: { kind: 'read-failed', detail } };
+    }
+  }
+
+  /** Republishing the addon's tile is a courtesy, never a step of the flow: a
+   *  failure here would otherwise turn a completed filing into an error screen
+   *  for something that already worked. */
+  async function republishQuietly(): Promise<void> {
+    try {
+      await deps.republish();
+    } catch (err) {
+      safeLog(`Categorize menu: republishing the uncategorized status failed: ${formatError(err)}`);
+    }
+  }
+
+  /**
+   * Renders the session's current screen and stores the button table `applyTap`
+   * will resolve the NEXT tap against — replaced wholesale every time, so an old
+   * message's index can never address the row it used to show.
+   *
+   * A screen with no buttons yields NO keyboard rather than an empty one: on an
+   * edit, an omitted `reply_markup` is how Telegram is told to leave the message
+   * with no buttons at all, which is exactly what a final screen wants.
+   */
+  function present(chat: ChatSession): { text: string; keyboard: InlineKeyboard | undefined } {
+    const rendered = renderScreen(chat.session);
+    chat.session.buttons = rendered.buttons;
+    return {
+      text: rendered.text,
+      keyboard: rendered.keyboard.inline_keyboard.length > 0 ? rendered.keyboard : undefined,
+    };
+  }
+
+  /** A session around a fresh sweep, at a NEW generation — every one of these is
+   *  a render about to happen, and a render is what invalidates the last one's
+   *  tokens. The pinned row is spliced back in when the screen names a row the
+   *  sweep no longer returns (a confirmation for something just filed or
+   *  dismissed). Callers decide whether a pin applies — see
+   *  `PINNED_SCREEN_KINDS` — because splicing one into a LIST screen would show
+   *  a row that no longer needs a category. */
+  function buildSession(screen: MenuScreen, pin: CategorizeTxn | null, fresh: Fresh): MenuSession {
+    const missing = pin !== null && !fresh.txns.some((t) => t.activityId === pin.activityId);
+    return {
+      txns: missing && pin !== null ? [pin, ...fresh.txns] : fresh.txns,
+      categories: fresh.categories,
+      screen,
+      buttons: [],
+      generation: nextGeneration(),
+    };
+  }
+
+  function show(
+    chat: ChatSession,
+    screen: MenuScreen,
+    pin: CategorizeTxn | null,
+    fresh: Fresh,
+  ): { text: string; keyboard: InlineKeyboard | undefined } {
+    chat.session = buildSession(screen, pin, fresh);
+    chat.pinned = pin;
+    return present(chat);
+  }
+
+  /**
+   * An error screen, with a keyboard this controller builds itself — the pure
+   * machine has no failure screens, and a screen whose buttons were not stored
+   * back onto the session would resolve the next tap against the PREVIOUS
+   * screen's table.
+   *
+   * The session's `screen` is deliberately left alone: `« Back` returns to
+   * wherever the failed tap came from, and nothing is retried on its own — a
+   * second tap is the retry. The GENERATION does advance, because this is a
+   * render like any other and the keyboard it replaces must stop resolving.
+   *
+   * The token format comes from `layoutScreen`, never from a local template: a
+   * hand-rolled second copy is how a change to the format reaches some screens
+   * and not others.
+   */
+  async function showError(chat: ChatSession, text: string, ui: CategorizeUi): Promise<void> {
+    chat.session.generation = nextGeneration();
+    const { keyboard, buttons } = layoutScreen(chat.session.generation, [
+      [{ text: '« Back', action: { kind: 'goto', screen: chat.session.screen } }],
+      [{ text: 'Done', action: { kind: 'close' } }],
+    ]);
+    chat.session.buttons = buttons;
+    await ui.edit(text, keyboard);
+  }
+
+  /** The row a tap named is no longer uncategorized. Rendering ITS screen against
+   *  fresh data is what makes the machine produce its own "no longer
+   *  uncategorized" list — the same sentence a stale message gets anywhere else,
+   *  written in exactly one place. No write happens on this path. */
+  async function showGone(
+    chat: ChatSession,
+    activityId: string,
+    fresh: Fresh,
+    ui: CategorizeUi,
+  ): Promise<void> {
+    const { text, keyboard } = show(chat, { kind: 'txn', activityId }, null, fresh);
+    await ui.edit(text, keyboard);
+  }
+
+  /** Load fresh, then render `screen`. The freshness rule, in one function. */
+  async function transition(
+    chat: ChatSession,
+    screen: MenuScreen,
+    pin: CategorizeTxn | null,
+    ui: CategorizeUi,
+  ): Promise<void> {
+    const loaded = await load();
+    if (!loaded.ok) {
+      // The TARGET screen names the copy: a render on its way to the typed-rule
+      // confirmation must not report a failure in the menu's words.
+      await showError(chat, failureText(loaded.failure, screen), ui);
+      return;
+    }
+    const { text, keyboard } = show(chat, screen, pin, loaded.fresh);
+    await ui.edit(text, keyboard);
+  }
+
+  /** The pin a `goto` should carry into its target screen: only for the screens
+   *  that name a row, and only the row that screen is actually about. */
+  function carryPin(chat: ChatSession, screen: MenuScreen): CategorizeTxn | null {
+    const activityId = pinnedActivityId(screen);
+    if (activityId === null) return null;
+    return rowFor(chat, activityId);
+  }
+
+  /** The row a screen is about, from what the session already holds — the pin
+   *  first, since a just-filed row has left the visible set by definition. */
+  function rowFor(chat: ChatSession, activityId: string): CategorizeTxn | null {
+    if (chat.pinned && chat.pinned.activityId === activityId) return chat.pinned;
+    return chat.session.txns.find((t) => t.activityId === activityId) ?? null;
+  }
+
+  /** Shared by the two rule actions: `createRule` off a filed transaction and
+   *  `createFreeRule` off a typed `/newrule` pattern. The pattern is used
+   *  VERBATIM — it is a contains-match against the description, so escaping or
+   *  clipping it would build a rule that matches nothing. */
+  async function runCreateRule(
+    chat: ChatSession,
+    pattern: string,
+    categoryId: string,
+    done: MenuScreen,
+    pin: CategorizeTxn | null,
+    ui: CategorizeUi,
+  ): Promise<void> {
+    try {
+      await deps.createRule({
+        name: `${RULE_NAME_PREFIX}${pattern}`.slice(0, RULE_NAME_MAX),
+        pattern,
+        categoryId,
+      });
+    } catch (err) {
+      const message = formatError(err);
+      safeLog(`Categorize menu: creating a rule for "${pattern}" failed: ${message}`);
+      await showError(chat, `${RULE_FAILED_PREFIX}${escapeMarkdown(message)}`, ui);
+      return;
+    }
+    // The rule EXISTS from here on, so the session leaves the preview screen
+    // before anything else can fail. `showError` offers `« Back` to whatever
+    // `chat.session.screen` still says, and a preview left standing there hands
+    // back a `Create rule` button for a rule already created — one lost
+    // confirmation (a failed republish-then-render) and the obvious retry writes
+    // an identical duplicate into Wealthfolio's rules list. The confirmation
+    // screen itself offers no `Create rule` at all, which is the same guarantee
+    // from the other side.
+    chat.session.screen = done;
+    // Creating a rule makes Wealthfolio file every other UNCATEGORIZED match at
+    // once, so the published count is stale the moment this returns.
+    await republishQuietly();
+    await transition(chat, done, pin, ui);
+  }
+
+  async function perform(
+    chatId: number,
+    chat: ChatSession,
+    action: MenuAction,
+    ui: CategorizeUi,
+  ): Promise<void> {
+    switch (action.kind) {
+      case 'goto':
+        await transition(chat, action.screen, carryPin(chat, action.screen), ui);
+        return;
+
+      case 'close': {
+        // No reads: closing must work even when the database has gone away, and
+        // there is nothing left to be fresh about.
+        sessions.delete(chatId);
+        const closed: ChatSession = {
+          session: buildSession({ kind: 'closed' }, null, { txns: [], categories: [], ledger: {} }),
+          pinned: null,
+        };
+        const { text, keyboard } = present(closed);
+        await ui.edit(text, keyboard);
+        return;
+      }
+
+      case 'assign': {
+        const loaded = await load();
+        if (!loaded.ok) {
+          await showError(chat, failureText(loaded.failure, chat.session.screen), ui);
+          return;
+        }
+        const row = loaded.fresh.txns.find((t) => t.activityId === action.activityId) ?? null;
+        // The precondition, checked against data read microseconds ago: a row
+        // filed by a rule or by the addon while this menu sat on screen must not
+        // be written to a second time.
+        if (!row) {
+          await showGone(chat, action.activityId, loaded.fresh, ui);
+          return;
+        }
+        try {
+          await deps.assign(action.activityId, action.categoryId);
+        } catch (err) {
+          const message = formatError(err);
+          safeLog(`Categorize menu: filing ${action.activityId} failed: ${message}`);
+          await showError(chat, `${ASSIGN_FAILED_PREFIX}${escapeMarkdown(message)}`, ui);
+          return;
+        }
+        await republishQuietly();
+        await transition(
+          chat,
+          { kind: 'filed', activityId: action.activityId, categoryId: action.categoryId, undone: false },
+          row,
+          ui,
+        );
+        return;
+      }
+
+      case 'unassign': {
+        // NO visibility precondition, unlike `assign`: this row was just filed,
+        // so a fresh sweep no longer lists it — that is the state Undo is for.
+        // The tap can only have come from the `filed` screen's own button table,
+        // at the current generation, so it is this menu's own filing being undone.
+        //
+        // KNOWN HAZARD, accepted deliberately: this is the one write here with no
+        // read behind it, so if something else re-filed the row under a DIFFERENT
+        // category between the filing and this tap, Undo clears that assignment
+        // instead of the one it was offered for. The check that would close it is
+        // "is the current assignment still `action.categoryId`?", and nothing
+        // available here can answer it — `readRows` returns only UNCATEGORIZED
+        // rows and carries no category id, and the REST client has no
+        // read-assignment call. Closing it properly means a new native reader over
+        // `activity_taxonomy_assignments` (or a GET on the assignment), i.e. a
+        // change in sqlite-native.ts/wealthfolio.ts rather than here.
+        //
+        // Bounded and cheap in practice: the window is one tap on a confirmation
+        // screen the user is looking at, the other writer would have to be the
+        // addon or a rule import touching that same row inside it, and the loss is
+        // one assignment the user can redo from the menu — against a guaranteed
+        // cost of leaving Undo broken for the common case. A test pins this
+        // behavior so the next reader knows it is a decision, not an oversight.
+        const row = rowFor(chat, action.activityId);
+        try {
+          await deps.unassign(action.activityId);
+        } catch (err) {
+          const message = formatError(err);
+          safeLog(`Categorize menu: undoing the filing of ${action.activityId} failed: ${message}`);
+          await showError(chat, `${UNDO_FAILED_PREFIX}${escapeMarkdown(message)}`, ui);
+          return;
+        }
+        await republishQuietly();
+        await transition(
+          chat,
+          { kind: 'filed', activityId: action.activityId, categoryId: action.categoryId, undone: true },
+          row,
+          ui,
+        );
+        return;
+      }
+
+      case 'dismiss': {
+        const loaded = await load();
+        if (!loaded.ok) {
+          await showError(chat, failureText(loaded.failure, chat.session.screen), ui);
+          return;
+        }
+        const row = loaded.fresh.txns.find((t) => t.activityId === action.activityId) ?? null;
+        if (!row) {
+          await showGone(chat, action.activityId, loaded.fresh, ui);
+          return;
+        }
+        // `base` is the ledger this very tap read, and `next` differs from it by
+        // exactly one id: that difference is the whole intent, and it is what
+        // survives another writer's concurrent entry (see `writeLedgerMerged`).
+        const next: DismissalLedger = {
+          ...loaded.fresh.ledger,
+          [action.activityId]: new Date().toISOString(),
+        };
+        try {
+          await deps.writeLedgerMerged(loaded.fresh.ledger, next);
+        } catch (err) {
+          const message = formatError(err);
+          safeLog(`Categorize menu: dismissing ${action.activityId} failed: ${message}`);
+          await showError(chat, `${DISMISS_FAILED_PREFIX}${escapeMarkdown(message)}`, ui);
+          return;
+        }
+        await republishQuietly();
+        await transition(chat, { kind: 'dismissed', activityId: action.activityId, undone: false }, row, ui);
+        return;
+      }
+
+      case 'undismiss': {
+        // Loaded for the ledger, which is the merge base — not for a visibility
+        // check: a dismissed row is by definition absent from the visible set,
+        // so requiring it there would make Undo impossible.
+        const loaded = await load();
+        if (!loaded.ok) {
+          await showError(chat, failureText(loaded.failure, chat.session.screen), ui);
+          return;
+        }
+        const row = rowFor(chat, action.activityId)
+          ?? loaded.fresh.txns.find((t) => t.activityId === action.activityId)
+          ?? null;
+        const next: DismissalLedger = { ...loaded.fresh.ledger };
+        delete next[action.activityId];
+        try {
+          await deps.writeLedgerMerged(loaded.fresh.ledger, next);
+        } catch (err) {
+          const message = formatError(err);
+          safeLog(`Categorize menu: undoing the dismissal of ${action.activityId} failed: ${message}`);
+          await showError(chat, `${UNDO_FAILED_PREFIX}${escapeMarkdown(message)}`, ui);
+          return;
+        }
+        await republishQuietly();
+        await transition(chat, { kind: 'dismissed', activityId: action.activityId, undone: true }, row, ui);
+        return;
+      }
+
+      case 'createRule': {
+        // The pattern IS the description, so without the row there is nothing to
+        // create — and no reason to guess one.
+        const row = rowFor(chat, action.activityId);
+        if (!row) {
+          const loaded = await load();
+          if (!loaded.ok) {
+            await showError(chat, failureText(loaded.failure, chat.session.screen), ui);
+            return;
+          }
+          await showGone(chat, action.activityId, loaded.fresh, ui);
+          return;
+        }
+        await runCreateRule(
+          chat,
+          row.description,
+          action.categoryId,
+          { kind: 'ruleCreated', activityId: action.activityId, categoryId: action.categoryId },
+          row,
+          ui,
+        );
+        return;
+      }
+
+      case 'createFreeRule':
+        // Reachable once a `/newrule` entry point parks a session on the
+        // `freeRulePreview` screen; the write and its copy are identical either
+        // way, which is why both actions share `runCreateRule`.
+        await runCreateRule(
+          chat,
+          action.pattern,
+          action.categoryId,
+          { kind: 'ruleCreated', activityId: null, categoryId: action.categoryId },
+          null,
+          ui,
+        );
+        return;
+    }
+  }
+
+  /** The session for a tap's chat, adopting `open`'s parked one the first time a
+   *  chat id is known (see `PENDING_CHAT_ID`). */
+  function takeSession(chatId: number): ChatSession | null {
+    const own = sessions.get(chatId);
+    if (own) return own;
+    const pending = sessions.get(PENDING_CHAT_ID);
+    if (!pending) return null;
+    sessions.delete(PENDING_CHAT_ID);
+    sessions.set(chatId, pending);
+    return pending;
+  }
+
+  /**
+   * Every entry point, in one function: load fresh, park a NEW session on
+   * `screen` under `chatId`, and send it.
+   *
+   * A second entry REPLACES the menu rather than adding one. The listener
+   * honours exactly one chat, so clearing the map is that replacement — and it
+   * means an older message's buttons resolve against the NEW session, where the
+   * index is either out of range (expired) or simply whatever now sits at that
+   * position. Neither can act on the row the old message showed.
+   * The older message's tokens carry an older GENERATION, which no session will
+   * ever hold again, so every one of its buttons answers "that menu expired" —
+   * including the ones whose index is still in range on the new screen (see
+   * `MenuSession.generation`).
+   *
+   * On a failed load NO session is stored: there is nothing to tap, and a
+   * keyboard that resolved against a session from a previous menu would be
+   * worse. `send` is called with ONE argument there, so the caller can tell the
+   * difference between "no keyboard" and "an empty keyboard".
+   */
+  async function openScreen(chatId: number, screen: MenuScreen, send: MenuSend): Promise<void> {
+    const loaded = await load();
+    if (!loaded.ok) {
+      // In the words of the screen that was being opened: `/newrule` shows no
+      // list, so the menu's "can't tell what needs a category" would name
+      // something its reader never asked for (see `failureText`).
+      await send(failureText(loaded.failure, screen));
+      return;
+    }
+    sessions.clear();
+    const chat: ChatSession = { session: buildSession(screen, null, loaded.fresh), pinned: null };
+    const { text, keyboard } = present(chat);
+    sessions.set(chatId, chat);
+    await send(text, keyboard);
+  }
+
+  return {
+    /**
+     * Deliberately NOT wrapped in a catch-all, unlike `onCallback`: a throw from
+     * here lands in the listener's `onCommand` guard, which logs it AND replies
+     * "Something went wrong running that command" — a better outcome than
+     * anything this function could invent, and the reason the failures it CAN
+     * anticipate are returned as text instead.
+     *
+     * The session is parked under `PENDING_CHAT_ID` because a command's `reply`
+     * carries no chat id — the first tap adopts it (see `takeSession`).
+     */
+    async open(send): Promise<void> {
+      await openScreen(PENDING_CHAT_ID, { kind: 'list', page: 0 }, send);
+    },
+
+    /** Same parking as `open`, and uncaught for the same reason — this is a
+     *  command path too (`/newrule`), reached with the category already
+     *  resolved. */
+    async openRulePreview(pattern, categoryId, send): Promise<void> {
+      await openScreen(PENDING_CHAT_ID, { kind: 'freeRulePreview', pattern, categoryId }, send);
+    },
+
+    /**
+     * `cb.messageId` is never read: the `ui` handed in is already bound to the
+     * message this tap came from. That is deliberate — the listener lifts the id
+     * off an untrusted payload (`cq?.message?.message_id`), so a non-Telegram
+     * response can supply `undefined` under its `number` type.
+     */
+    async onCallback(cb, ui): Promise<void> {
+      // BEFORE any session lookup, and rendered with `send` rather than `edit`.
+      // This payload is the import notice's `Categorize these` button, which
+      // outlives every menu render and every restart, so it must never answer
+      // "that menu expired" — and it sits on a message that LISTS what needs a
+      // category and carries its own dismiss buttons. Editing the menu over it
+      // would destroy the only record in the chat of what just imported.
+      if (cb.data === CATEGORIZE_ENTRY_CALLBACK) {
+        try {
+          // `ui.send` verbatim, not a wrapper: `openScreen` calls it with one
+          // argument when there is no keyboard, and that arity is observable.
+          await openScreen(cb.chatId, { kind: 'list', page: 0 }, ui.send);
+        } catch (err) {
+          // `openScreen` returns its anticipated failures as text, so reaching
+          // here means something unforeseen threw. The spinner still has to
+          // stop, or the tapped button spins until Telegram gives up on it.
+          safeLog(`Categorize menu: opening from the import notice failed: ${formatError(err)}`);
+        }
+        // No toast: the new message IS the feedback, and a toast on top of it
+        // would be a second notification for one tap.
+        await ui.answer();
+        return;
+      }
+
+      const chat = takeSession(cb.chatId);
+      if (!chat) {
+        // No session at all: a restart wiped it, or these buttons predate the
+        // current menu. "Ask again" is both honest and actionable.
+        await ui.answer(MENU_EXPIRED_ANSWER);
+        return;
+      }
+
+      const tap = applyTap(chat.session, cb.data);
+      if (!tap.ok) {
+        if (tap.reason === 'expired') {
+          await ui.answer(MENU_EXPIRED_ANSWER);
+          return;
+        }
+        await ui.answer(STALE_TOKEN_ANSWER);
+        await transition(chat, chat.session.screen, carryPin(chat, chat.session.screen), ui);
+        return;
+      }
+
+      try {
+        await perform(cb.chatId, chat, tap.action, ui);
+        // Last, not first: the spinner on the tapped button is the only progress
+        // indicator a slow write has, and clearing it early would report "done"
+        // while the request is still out.
+        await ui.answer();
+      } catch (err) {
+        // Every `deps.*` call above is already guarded individually, so this is
+        // the belt to their braces — kept because the listener's own catch
+        // deliberately sends nothing (it will not contradict a screen this
+        // controller may have drawn), which would leave the tapped button
+        // spinning forever. `ui.answer` cannot reject, by the listener's
+        // contract, so this handler cannot fail either.
+        safeLog(`Categorize menu: tap ${cb.data} could not be handled: ${formatError(err)}`);
+        await ui.answer();
+      }
+    },
+  };
+}
