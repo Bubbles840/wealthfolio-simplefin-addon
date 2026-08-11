@@ -9,11 +9,11 @@
 
 import cron from 'node-cron';
 import { readFileSync, existsSync } from 'fs';
-import { runSyncCore, descriptionFromComment } from '../../shared/sync-core.js';
+import { runSyncCore, descriptionFromComment, txIdFromComment } from '../../shared/sync-core.js';
 import type { SyncResult } from '../../shared/sync-core.js';
 import { RestSyncHost, RestSyncStore } from './rest-host.js';
 import { WealthfolioClient } from './wealthfolio.js';
-import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatMonthlyWrapUp, formatSyncHealthFooter, formatLargeTransactionAlert, formatBalanceDriftAlert, formatFeedLagNotice, formatStuckTransferAlert, formatDuplicatePruneAlert, formatImportNotice, buildDismissKeyboard, IMPORT_NOTICE_UNCATEGORIZED_CAP, escapeMarkdown, LARGE_TX_OUTBOX_SECRET_KEY } from '../../shared/telegram.js';
+import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatMonthlyWrapUp, formatSyncHealthFooter, formatLargeTransactionAlert, formatBalanceDriftAlert, formatFeedLagNotice, formatStuckTransferAlert, formatDuplicatePruneAlert, formatImportNotice, buildDismissKeyboard, IMPORT_NOTICE_UNCATEGORIZED_CAP, escapeMarkdown, LARGE_TX_OUTBOX_SECRET_KEY, RECATEGORIZE_ENTRY_CALLBACK } from '../../shared/telegram.js';
 import { pruneDismissals, mergeDismissals } from './dismissals.js';
 import { startTelegramListener } from './telegram-listener.js';
 import type { TelegramListenerDeps } from './telegram-listener.js';
@@ -830,6 +830,33 @@ export function previousYearMonth(now: Date): { yearMonth: string; monthName: st
 const UNCATEGORIZED_SWEEP_DAYS = 30;
 
 /**
+ * The txIds the most recent import notice announced, or `null` when this process
+ * has not sent one — which is also what it means after a restart, since this is
+ * plain module state and dies with the process.
+ *
+ * It exists so the notice's `Recategorize` button can scope its menu to the rows
+ * THAT import brought in. Deliberately not persisted: a button tapped days later
+ * would otherwise open a menu about an import nobody remembers, and `null`
+ * degrades to the plain recent list (see `openRecategorizeForTxIds`), which is
+ * honest and still useful. ONE slot, not a map keyed by message: a second notice
+ * replaces the first, so a tap on an older notice opens the newest import's
+ * scope — acceptable because both lists are drawn from the same 90-day sweep and
+ * the screen says what it is showing, and because the alternative is unbounded
+ * per-message state in a daemon that runs for weeks.
+ */
+let lastImportTxIds: string[] | null = null;
+
+/**
+ * `sendImportNotice`'s own recorder for the scope above. A function rather than a
+ * bare assignment so a test can put this process into either of its two real
+ * states — fresh from a restart (`null`) or holding a notice's rows — without
+ * reloading the module.
+ */
+export function rememberImportScope(txIds: string[] | null): void {
+  lastImportTxIds = txIds;
+}
+
+/**
  * The per-sync import notice: what this run imported, plus a sweep of EVERY
  * spending row from the last 30 days that still has no category — not just this
  * run's rows. The sweep is what makes the DB snapshot's write lag harmless (an
@@ -886,6 +913,41 @@ export async function sendImportNotice(
     toDateString(new Date(now + 86400_000)),
   ).filter((r) => !(r.activityId in ledger));
 
+  // Which of this run's rows are ALREADY filed, and under what. The mirror image
+  // of the sweep above, over the same window, and matched to the notice's rows by
+  // the stored note's txId — NEVER by description, which repeats (two $4.23
+  // Amazon charges in a week is normal) and would attribute one transaction's
+  // category to another.
+  //
+  // Guarded and best-effort on purpose: this read is a courtesy on top of a
+  // message that must arrive. A locked database, a missing mount or a rule that
+  // has not fired yet all mean the same thing here — no suffix and no
+  // Recategorize button — and none of them may cost the notice itself.
+  const filedByTxId = new Map<string, string>();
+  try {
+    for (const row of getNativeCategorizedSpending(
+      dbPath,
+      toDateString(new Date(now - UNCATEGORIZED_SWEEP_DAYS * 86400_000)),
+      toDateString(new Date(now + 86400_000)),
+    )) {
+      const txId = txIdFromComment(row.notes);
+      if (!txId) continue;
+      // The SPENDING assignment when there is one, the first otherwise — the same
+      // rule the recategorize menu shows a row's current category by, so the
+      // notice and the menu its button opens cannot name different categories for
+      // one row. A row can carry an income assignment as well as a spending one.
+      const current = row.assignments.find((a) => a.taxonomyId === SPENDING_TAXONOMY_ID)
+        ?? row.assignments[0];
+      if (current?.categoryName) filedByTxId.set(txId, current.categoryName);
+    }
+  } catch (err) {
+    // `log`, not `debug`: the native reader answers `[]` for a path that is not
+    // there, so reaching this catch means a real anomaly (a locked or corrupt
+    // database), not the routine case of a companion with no mount. The notice
+    // still goes out, so this line is the only trace it would leave.
+    log(`Import notice: could not read where this run's rows were filed: ${formatError(err)}`);
+  }
+
   const display = (notes: string) => descriptionFromComment(notes) || notes;
   const text = formatImportNotice(
     result.importedTransactions,
@@ -895,18 +957,42 @@ export async function sendImportNotice(
       date: r.date,
       accountName: r.accountName,
     })),
+    filedByTxId,
   );
   // Buttons for exactly the rows the notice SHOWS — a button for a "+N more"
   // row would dismiss something the user never saw.
   const shown = uncategorized.slice(0, IMPORT_NOTICE_UNCATEGORIZED_CAP);
-  const keyboard = shown.length > 0
-    ? buildDismissKeyboard(shown.map((r) => ({
-        activityId: r.activityId,
-        description: display(r.notes),
-        amountCents: r.amountCents,
-      })))
-    : undefined;
-  await sendTelegramMessage(tg.botToken, tg.chatId, text, undefined, keyboard);
+  // The `Recategorize` row rides on a different condition from the dismiss rows:
+  // at least one row THIS notice announced is already filed, so there is
+  // something for that menu to move. An import whose rows a rule filed
+  // completely has nothing to dismiss and is exactly when it is wanted.
+  const anyFiled = result.importedTransactions.some((t) => filedByTxId.has(t.txId));
+  const keyboard = buildDismissKeyboard(
+    shown.map((r) => ({
+      activityId: r.activityId,
+      description: display(r.notes),
+      amountCents: r.amountCents,
+    })),
+    anyFiled,
+  );
+  // Remembered BEFORE the send, so the scope is in place no matter how the send
+  // goes: Telegram can deliver the message and still fail the response we read.
+  // Every row this notice announced, not just the filed ones — the menu is drawn
+  // fresh at tap time and a row filed in between belongs in it. Nothing to scope
+  // to is recorded as `null`, not as an empty scope: an older notice's button
+  // would otherwise open a screen reading "nothing matches" when the truth is
+  // that this notice had no rows of its own to talk about.
+  const noticeTxIds = result.importedTransactions.map((t) => t.txId).filter((id) => !!id);
+  rememberImportScope(noticeTxIds.length > 0 ? noticeTxIds : null);
+  await sendTelegramMessage(
+    tg.botToken,
+    tg.chatId,
+    text,
+    undefined,
+    // An empty keyboard is how the caller says "no buttons at all"; Telegram
+    // renders `{inline_keyboard: []}` as an empty markup rather than none.
+    keyboard.inline_keyboard.length > 0 ? keyboard : undefined,
+  );
 }
 
 
@@ -1742,6 +1828,20 @@ export function buildTelegramCommandHandler(
         await controller.open((text, keyboard) => reply(text, keyboard));
         return;
 
+      case 'recategorize':
+        // No database guard HERE, unlike `/newrule` below: this command reads
+        // nothing itself. The controller's `dbPath` dep is `categorizeDbPath`,
+        // which returns `null` for a missing mount, and the menu answers that
+        // with its own recategorize-worded sentence ("…can't look up your
+        // transactions") before it reads a single row. A second guard here would
+        // need a second copy of that sentence, and two copies of one user-visible
+        // string are how the two come to disagree.
+        //
+        // `args || undefined` for the same reason `/left` uses it: an empty
+        // argument means the whole list, not a search for "".
+        await controller.openRecategorize(cmd.args || undefined, (text, keyboard) => reply(text, keyboard));
+        return;
+
       case 'newrule': {
         const parsed = parseNewRuleArgs(cmd.args);
         if (!parsed) {
@@ -1959,7 +2059,35 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
     // controller keeps its own `this`, and so `messageId` — which the listener
     // lifts off an untrusted payload and can therefore be `undefined` under its
     // `number` type — is passed straight through and never branched on here.
-    onMenuCallback: (cb, ui) => categorize.onCallback(cb, ui),
+    //
+    // The notice's OTHER button is answered here rather than in the controller
+    // for one reason: the scope it opens (`lastImportTxIds`) is this module's
+    // state, and the controller names no import at all. It gets the same
+    // treatment `cz:open` gets inside the controller — matched BEFORE any session
+    // lookup, because this button outlives every menu render and every restart
+    // and must never answer "that menu expired", and rendered with `ui.send`
+    // because editing would draw the menu over the notice and destroy the only
+    // record in the chat of what just imported.
+    onMenuCallback: async (cb, ui) => {
+      if (cb.data !== RECATEGORIZE_ENTRY_CALLBACK) {
+        await categorize.onCallback(cb, ui);
+        return;
+      }
+      try {
+        // `ui.send` verbatim, not a wrapper: the menu calls it with ONE argument
+        // when there is no keyboard, and that arity is observable.
+        await categorize.openRecategorizeForTxIds(lastImportTxIds, ui.send);
+      } catch (err) {
+        // The menu returns its anticipated failures as text, so reaching here
+        // means something unforeseen threw. The listener's own catch deliberately
+        // sends nothing, so without the `answer` below the tapped button would
+        // spin until Telegram gave up on it.
+        log(`Categorize menu: opening the recategorize list from the import notice failed: ${formatError(err)}`);
+      }
+      // No toast: the new message IS the feedback, and a toast on top of it would
+      // be a second notification for one tap.
+      await ui.answer();
+    },
     // A plain `setTimeout` promise, which cannot reject. The listener hardened
     // itself against a rejecting `sleep` precisely so nobody makes this one
     // abortable to shorten `stop()`; see `pause` in telegram-listener.ts.

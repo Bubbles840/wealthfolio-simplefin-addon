@@ -14,7 +14,7 @@ const weeklyGlyphs = (spent: number, budget: number, top?: Parameters<typeof for
   formatMonthlyRemainingSummary(spent, budget, top ?? [], GLYPHS);
 const wrapUpGlyphs = (c: Parameters<typeof formatMonthlyWrapUp>[0], m: string) =>
   formatMonthlyWrapUp(c, m, GLYPHS);
-import { buildDismissKeyboard, formatFeedLagNotice, CATEGORIZE_ENTRY_CALLBACK } from './telegram.js';
+import { buildDismissKeyboard, formatFeedLagNotice, CATEGORIZE_ENTRY_CALLBACK, RECATEGORIZE_ENTRY_CALLBACK } from './telegram.js';
 import type { ImportNoticeTx, UncategorizedTx } from './telegram.js';
 import { MENU_CALLBACK_PREFIX } from './categorize-menu.js';
 
@@ -88,6 +88,52 @@ describe('formatImportNotice', () => {
     expect(text).toContain('AMAZON\\_MKTPL\\*X1');
     expect(text).toContain('My\\_Spend');
     expect(text).toContain('VENMO \\*DYLAN\\_W');
+  });
+
+  describe('where each import was filed', () => {
+    it('appends the category a row was filed under, keyed by txId', () => {
+      const text = formatImportNotice(
+        [tx({ txId: 'tx-a' })],
+        [],
+        new Map([['tx-a', 'Groceries']]),
+      );
+      expect(text).toContain('• $67.74  TRADER JOE S #628 — Spend (4937) → filed under Groceries');
+    });
+
+    it('renders a row with no mapping byte-identically to a notice with no map at all', () => {
+      // The whole point of the optional parameter: every caller and every notice
+      // that predates this feature must be unchanged, and a row a rule did not
+      // file must not grow a dangling "filed under" with nothing after it.
+      const rows = [tx({ txId: 'tx-a' }), tx({ txId: 'tx-b', description: 'NETFLIX.COM' })];
+      const uncategorized = [uncat()];
+      const withMap = formatImportNotice(rows, uncategorized, new Map([['tx-zzz', 'Groceries']]));
+      expect(withMap).toBe(formatImportNotice(rows, uncategorized));
+      expect(withMap).not.toContain('filed under');
+    });
+
+    it('ignores a txId-less row rather than looking one up under undefined', () => {
+      // `txId` is optional on the type; a caller that has not threaded it through
+      // must get today's line, not a lookup on `undefined`.
+      const text = formatImportNotice([tx()], [], new Map([['tx-a', 'Groceries']]));
+      expect(text).not.toContain('filed under');
+    });
+
+    it('keeps the pending marker before the category, so the state reads first', () => {
+      const text = formatImportNotice(
+        [tx({ txId: 'tx-a', pending: true })],
+        [],
+        new Map([['tx-a', 'Groceries']]),
+      );
+      expect(text).toContain('— Spend (4937) · pending → filed under Groceries');
+    });
+
+    it('escapes the category name, which is user-typed like every other name here', () => {
+      // A category called `Food_Dining` would otherwise open a Markdown entity
+      // and get the WHOLE notice refused by Telegram — the notice is the message
+      // that must arrive.
+      const text = formatImportNotice([tx({ txId: 'tx-a' })], [], new Map([['tx-a', 'Food_Dining*']]));
+      expect(text).toContain('→ filed under Food\\_Dining\\*');
+    });
   });
 });
 
@@ -265,6 +311,47 @@ describe('buildDismissKeyboard', () => {
     expect(CATEGORIZE_ENTRY_CALLBACK.startsWith(MENU_CALLBACK_PREFIX)).toBe(true);
     expect(CATEGORIZE_ENTRY_CALLBACK).toBe('cz:open');
     expect(Buffer.byteLength(CATEGORIZE_ENTRY_CALLBACK)).toBeLessThanOrEqual(64);
+  });
+
+  it('appends a Recategorize row LAST when asked, leaving every frozen row where it was', () => {
+    const rows = [{ activityId: 'act-1', description: 'VENMO PAYMENT', amountCents: 4516 }];
+    const kb = buildDismissKeyboard(rows, true);
+    expect(kb.inline_keyboard).toHaveLength(3);
+    // Frozen: same dismiss button, same payload, same `Categorize these` row in
+    // the same position it has always been in.
+    expect(kb.inline_keyboard[0]).toEqual([
+      { text: 'Dismiss: VENMO PAYMENT $45.16', callback_data: 'd:act-1' },
+    ]);
+    expect(kb.inline_keyboard[1]).toEqual([
+      { text: 'Categorize these', callback_data: CATEGORIZE_ENTRY_CALLBACK },
+    ]);
+    expect(kb.inline_keyboard[2]).toEqual([
+      { text: 'Recategorize', callback_data: RECATEGORIZE_ENTRY_CALLBACK },
+    ]);
+  });
+
+  it('omits the Recategorize row unless asked, so today\'s notices are unchanged', () => {
+    const rows = [{ activityId: 'act-1', description: 'VENMO PAYMENT', amountCents: 4516 }];
+    expect(buildDismissKeyboard(rows)).toEqual(buildDismissKeyboard(rows, false));
+    expect(JSON.stringify(buildDismissKeyboard(rows))).not.toContain('Recategorize');
+  });
+
+  it('offers Recategorize even with nothing to dismiss — the two conditions are independent', () => {
+    // `Categorize these` needs `these`; `Recategorize` needs a row this import
+    // FILED, which is a different question. An import that a rule filed
+    // completely leaves nothing uncategorized and is exactly the case where
+    // moving one of those filings is what the reader wants.
+    expect(buildDismissKeyboard([], true)).toEqual({
+      inline_keyboard: [[{ text: 'Recategorize', callback_data: RECATEGORIZE_ENTRY_CALLBACK }]],
+    });
+  });
+
+  it('routes the Recategorize payload to the menu controller too', () => {
+    expect(RECATEGORIZE_ENTRY_CALLBACK.startsWith(MENU_CALLBACK_PREFIX)).toBe(true);
+    expect(RECATEGORIZE_ENTRY_CALLBACK).toBe('cz:recat');
+    // Distinct from the entry payload, or one button would open the other's menu.
+    expect(RECATEGORIZE_ENTRY_CALLBACK).not.toBe(CATEGORIZE_ENTRY_CALLBACK);
+    expect(Buffer.byteLength(RECATEGORIZE_ENTRY_CALLBACK)).toBeLessThanOrEqual(64);
   });
 });
 

@@ -46,9 +46,20 @@ describe('formatHelpReply', () => {
       expect(help).toContain(`/${command}`);
     }
   });
-  it('menu covers exactly the eight shipped commands', () => {
+  it('menu covers exactly the nine shipped commands', () => {
     expect(TELEGRAM_COMMAND_MENU.map((c) => c.command).sort())
-      .toEqual(['afford', 'categorize', 'help', 'left', 'newrule', 'report', 'status', 'sync']);
+      .toEqual(['afford', 'categorize', 'help', 'left', 'newrule', 'recategorize', 'report', 'status', 'sync']);
+  });
+  it('lists /recategorize directly after /categorize, and says a query narrows it', () => {
+    // Adjacent because they are one pair — file an unfiled row, move a filed
+    // one — and the ☰ menu is the only place most readers will ever see either
+    // name. The description carries an EXAMPLE for the same reason `/left`'s
+    // and `/newrule`'s do: the optional argument is invisible otherwise, and a
+    // reader who does not know about it will scroll a 90-day list by hand.
+    const names = TELEGRAM_COMMAND_MENU.map((c) => c.command);
+    expect(names.indexOf('recategorize')).toBe(names.indexOf('categorize') + 1);
+    expect(TELEGRAM_COMMAND_MENU.find((c) => c.command === 'recategorize')?.description)
+      .toBe('Move a filed transaction — /recategorize venmo narrows it');
   });
   it('prefixes with Unknown command when asked about junk', () => {
     const help = formatHelpReply('bogus');
