@@ -572,7 +572,7 @@ describe('renderScreen — refiled', () => {
   const refiledScreen: MenuScreen = {
     kind: 'refiled', activityId: 'act-1', fromName: 'Dining', toCategoryId: 'cat-groceries',
     crossTaxonomy: false, undone: false,
-    restore: [{ taxonomyId: 'spending', categoryId: 'cat-dining' }],
+    restore: { assignments: [{ taxonomyId: 'spending', categoryId: 'cat-dining' }], subtype: null },
   };
 
   function refiledTxn(overrides: Partial<CategorizeTxn> = {}): CategorizeTxn {
@@ -629,6 +629,42 @@ describe('renderScreen — refiled', () => {
     expect(text).not.toContain('offsets');
   });
 
+  it('adds the reimbursement-specific line ADDITIONALLY when subtypeSet is true and the move also crossed taxonomies', () => {
+    const s = session({
+      txns: [refiledTxn({
+        description: 'VENMO PAYBACK',
+        currentCategory: { taxonomyId: 'income', categoryId: 'cat-income-refunds', name: 'Refunds' },
+      })],
+      screen: { ...refiledScreen, fromName: 'Refunds', crossTaxonomy: true, subtypeSet: true },
+    });
+    const { text } = renderScreen(s);
+    expect(text).toBe(
+      'VENMO PAYBACK: Refunds → Groceries.\n'
+      + 'This payment now offsets Groceries instead of counting toward its previous category.\n'
+      + 'It now offsets Groceries instead of counting as income.',
+    );
+  });
+
+  it('adds ONLY the reimbursement-specific line, with no generic crossTaxonomy line, when nothing was cleared (a previously-neutral credit gaining a subtype has no prior assignment to clear)', () => {
+    const s = session({
+      txns: [refiledTxn({ description: 'VENMO PAYBACK' })],
+      screen: {
+        ...refiledScreen, crossTaxonomy: false, subtypeSet: true, restore: { assignments: [], subtype: null },
+      },
+    });
+    const { text } = renderScreen(s);
+    expect(text).toBe(
+      'VENMO PAYBACK: Dining → Groceries.\n'
+      + 'It now offsets Groceries instead of counting as income.',
+    );
+  });
+
+  it('omits the reimbursement-specific line when subtypeSet is absent — regression: every refiled screen built before the reimbursement flow existed keeps rendering exactly as before', () => {
+    const s = session({ txns: [refiledTxn()], screen: refiledScreen });
+    const { text } = renderScreen(s);
+    expect(text).not.toContain('counting as income');
+  });
+
   it('offers Undo, Next transaction, Done — same goto-list label as the filed screen — with Undo yielding undoReassign back to the old category', () => {
     const s = session({ txns: [refiledTxn()], screen: refiledScreen });
     const { keyboard, buttons } = renderScreen(s);
@@ -659,11 +695,14 @@ describe('renderScreen — refiled', () => {
       screen: {
         ...refiledScreen,
         crossTaxonomy: true,
-        restore: [
-          { taxonomyId: 'spending', categoryId: 'cat-dining' },
-          { taxonomyId: 'income', categoryId: 'cat-income-refunds' },
-          { taxonomyId: 'savings', categoryId: 'cat-house' },
-        ],
+        restore: {
+          assignments: [
+            { taxonomyId: 'spending', categoryId: 'cat-dining' },
+            { taxonomyId: 'income', categoryId: 'cat-income-refunds' },
+            { taxonomyId: 'savings', categoryId: 'cat-house' },
+          ],
+          subtype: null,
+        },
       },
     });
     const { keyboard, buttons } = renderScreen(s);
@@ -683,7 +722,7 @@ describe('renderScreen — refiled', () => {
     // A move that wrote nothing (re-filing to the category the row already had)
     // has nothing to reverse. An Undo here could only either do nothing and
     // claim success, or write a category the row already carries.
-    const s = session({ txns: [refiledTxn()], screen: { ...refiledScreen, restore: [] } });
+    const s = session({ txns: [refiledTxn()], screen: { ...refiledScreen, restore: { assignments: [], subtype: null } } });
     const { keyboard, buttons } = renderScreen(s);
     const labels = keyboard.inline_keyboard.flat().map((b) => b.text);
     expect(labels).toEqual(['Next transaction', 'Done']);
@@ -755,6 +794,155 @@ describe('renderScreen — refiled', () => {
     const s = session({ mode: 'categorize', txns: [], screen: refiledScreen });
     const { text } = renderScreen(s);
     expect(text.split('\n')[0]).toBe('That transaction is no longer uncategorized.');
+  });
+});
+
+// ---- renderScreen: confirmCross ---------------------------------------------
+
+describe('renderScreen — confirmCross', () => {
+  const confirmScreen: MenuScreen = { kind: 'confirmCross', activityId: 'act-1', categoryId: 'cat-groceries' };
+
+  it('renders the exact locked three-line copy, naming the target category and the amount', () => {
+    const s = session({
+      mode: 'recategorize',
+      txns: [txn({ description: 'VENMO PAYBACK', amountCents: 2500 })],
+      screen: confirmScreen,
+    });
+    const { text } = renderScreen(s);
+    expect(text).toBe(
+      'Mark as a reimbursement and file under Groceries?\n'
+      + 'Your Groceries spend drops by $25 for that week and month.\n'
+      + 'It stops counting as income.',
+    );
+  });
+
+  it('offers "Do it" (yields reassignCross) and « Back (returns to the txn screen)', () => {
+    const s = session({ mode: 'recategorize', screen: confirmScreen });
+    const { keyboard, buttons } = renderScreen(s);
+    const labels = keyboard.inline_keyboard.flat().map((b) => b.text);
+    expect(labels).toEqual(['Do it', '« Back']);
+
+    const doIt = buttons[labels.indexOf('Do it')];
+    expect(doIt).toEqual({ kind: 'reassignCross', activityId: 'act-1', categoryId: 'cat-groceries' });
+
+    const back = buttons[labels.indexOf('« Back')];
+    expect(back).toEqual({ kind: 'goto', screen: { kind: 'txn', activityId: 'act-1' } });
+  });
+
+  it('escapes Markdown specials in the category name, everywhere it is named', () => {
+    const s = session({
+      mode: 'recategorize',
+      categories: [{ id: 'cat-groceries', name: 'Foo_Bar', parentId: null, parentName: null }],
+      screen: confirmScreen,
+    });
+    const { text } = renderScreen(s);
+    const lines = text.split('\n');
+    expect(lines[0]).toBe('Mark as a reimbursement and file under Foo\\_Bar?');
+    expect(lines[1]).toContain('Your Foo\\_Bar spend drops by');
+  });
+
+  it('falls back to the list with the recategorize-worded note when the transaction is gone', () => {
+    const s = session({ mode: 'recategorize', txns: [], screen: confirmScreen });
+    const { text } = renderScreen(s);
+    expect(text.split('\n')[0]).toBe('That transaction is no longer available to recategorize.');
+  });
+
+  it('falls back to the list with the recategorize-worded note when the target category is gone', () => {
+    const s = session({ mode: 'recategorize', categories: [], screen: confirmScreen });
+    const { text } = renderScreen(s);
+    expect(text.split('\n')[0]).toBe('That transaction is no longer available to recategorize.');
+  });
+
+  it('falls back with the ORIGINAL GONE_NOTE wording in categorize mode', () => {
+    const s = session({ mode: 'categorize', txns: [], screen: confirmScreen });
+    const { text } = renderScreen(s);
+    expect(text.split('\n')[0]).toBe('That transaction is no longer uncategorized.');
+  });
+});
+
+// ---- renderScreen: refused ---------------------------------------------------
+
+describe('renderScreen — refused', () => {
+  it('neutral: states the transaction is not counted as spending or income at all', () => {
+    const s = session({ screen: { kind: 'refused', activityId: 'act-1', reason: 'neutral' } });
+    const { text } = renderScreen(s);
+    expect(text).toBe(
+      'The transaction is not counted as spending or income at all, so no category can be attached to it as it stands.',
+    );
+  });
+
+  it('wrong-bucket: states it is recorded as money in and can only take an income category while that is true', () => {
+    const s = session({ screen: { kind: 'refused', activityId: 'act-1', reason: 'wrong-bucket' } });
+    const { text } = renderScreen(s);
+    expect(text).toBe('It is recorded as money in and can only take an income category while that is true.');
+  });
+
+  it('scope: states the account is not set up for spending tracking', () => {
+    const s = session({ screen: { kind: 'refused', activityId: 'act-1', reason: 'scope' } });
+    const { text } = renderScreen(s);
+    expect(text).toBe('Its account is not set up for spending tracking.');
+  });
+
+  it('offers only « Back (to the txn screen) and Done, for every reason', () => {
+    for (const reason of ['neutral', 'wrong-bucket', 'scope'] as const) {
+      const s = session({ screen: { kind: 'refused', activityId: 'act-1', reason } });
+      const { keyboard, buttons } = renderScreen(s);
+      const labels = keyboard.inline_keyboard.flat().map((b) => b.text);
+      expect(labels).toEqual(['« Back', 'Done']);
+      expect(buttons[labels.indexOf('« Back')]).toEqual({
+        kind: 'goto', screen: { kind: 'txn', activityId: 'act-1' },
+      });
+      expect(buttons[labels.indexOf('Done')]).toEqual({ kind: 'close' });
+    }
+  });
+
+  it('never pastes Wealthfolio’s raw API sentence, for any reason', () => {
+    // The real upstream strings (docs/upstream-spending-buckets.md §1, §7):
+    // "Neutral transfers cannot be categorized. Change or unlink the transfer
+    // if it should count as spending.", "{bucket} activities can only use
+    // {taxonomy} categories. Categories label the cash-flow bucket; they do
+    // not change it.", "Activity account is not opted into spending
+    // tracking", "Activity account does not support spending tracking".
+    for (const reason of ['neutral', 'wrong-bucket', 'scope'] as const) {
+      const s = session({ screen: { kind: 'refused', activityId: 'act-1', reason } });
+      const { text } = renderScreen(s);
+      expect(text).not.toContain('Neutral transfers cannot be categorized');
+      expect(text).not.toContain('do not change it');
+      expect(text).not.toContain('opted into spending tracking');
+      expect(text).not.toContain('does not support spending tracking');
+    }
+  });
+});
+
+// ---- the cross-bucket confirmation never leaks onto an ordinary tap --------
+
+describe('renderScreen — confirmCross cannot leak onto the ordinary category-tap path', () => {
+  // This module has none of the data (account type, activity type, subtype)
+  // that assignabilityOf needs to decide whether a tap crosses buckets — only
+  // the controller can compute that and choose to route to confirmCross
+  // first. So every ordinary category tap must keep emitting a plain
+  // reassign regardless of mode or screen; layering the confirmation on top
+  // is entirely the controller's decision, never something this module
+  // infers for itself. If this ever started emitting reassignCross or a
+  // confirmCross goto on its own, the extra step would have leaked onto
+  // every recategorize tap, confirmed or not.
+  it('a leaf category tap on the txn screen still yields reassign, never reassignCross', () => {
+    const s = session({ mode: 'recategorize', screen: { kind: 'txn', activityId: 'act-1' } });
+    const { keyboard, buttons } = renderScreen(s);
+    const idx = keyboard.inline_keyboard.flat().findIndex((b) => b.text === 'Groceries');
+    expect(buttons[idx]).toEqual({ kind: 'reassign', activityId: 'act-1', categoryId: 'cat-groceries' });
+    expect(buttons.some((b) => b.kind === 'reassignCross')).toBe(false);
+  });
+
+  it('a child category tap on the subcats screen still yields reassign, never reassignCross', () => {
+    const s = session({
+      mode: 'recategorize',
+      screen: { kind: 'subcats', activityId: 'act-1', parentId: 'cat-dining' },
+    });
+    const { keyboard, buttons } = renderScreen(s);
+    const idx = keyboard.inline_keyboard.flat().findIndex((b) => b.text === 'Fast Food');
+    expect(buttons[idx]).toEqual({ kind: 'reassign', activityId: 'act-1', categoryId: 'cat-dining-fastfood' });
+    expect(buttons.some((b) => b.kind === 'reassignCross')).toBe(false);
   });
 });
 
@@ -950,12 +1138,35 @@ describe('callback_data byte cap', () => {
           undone: false,
           // Several assignments, every id long: the restore list rides on the
           // SCREEN, never in a token, so none of this can reach callback_data.
-          restore: [
-            { taxonomyId: 'spending_categories', categoryId: longParents[0].id },
-            { taxonomyId: 'income_categories', categoryId: `income-category-id-${'i'.repeat(40)}` },
-            { taxonomyId: 'savings_categories', categoryId: `savings-category-id-${'s'.repeat(40)}` },
-          ],
+          restore: {
+            assignments: [
+              { taxonomyId: 'spending_categories', categoryId: longParents[0].id },
+              { taxonomyId: 'income_categories', categoryId: `income-category-id-${'i'.repeat(40)}` },
+              { taxonomyId: 'savings_categories', categoryId: `savings-category-id-${'s'.repeat(40)}` },
+            ],
+            subtype: null,
+          },
         },
+      }).keyboard,
+    );
+
+    // confirmCross: a new screen KIND, not just a new mode on an existing
+    // one — "Do it"/« Back are index-only buttons, so an enormous category
+    // name reaching the TEXT still can't reach callback_data.
+    assertCallbackBytesFit(
+      renderScreen({
+        ...base,
+        screen: { kind: 'confirmCross', activityId: longTxns[0].activityId, categoryId: longParents[0].id },
+      }).keyboard,
+    );
+
+    // refused: fixed « Back/Done buttons regardless of reason. Included for
+    // completeness even though nothing about this screen could plausibly
+    // grow a token past the cap.
+    assertCallbackBytesFit(
+      renderScreen({
+        ...base,
+        screen: { kind: 'refused', activityId: longTxns[0].activityId, reason: 'wrong-bucket' },
       }).keyboard,
     );
   });
