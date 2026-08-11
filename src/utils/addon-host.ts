@@ -46,6 +46,7 @@ function toSdkWrite(w: ActivityWrite): ActivityCreate & { id?: string } {
     comment: w.comment,
     ...(w.metadata !== undefined ? { metadata: w.metadata } : {}),
     ...(w.sourceGroupId !== undefined ? { sourceGroupId: w.sourceGroupId } : {}),
+    ...(w.subtype !== undefined ? { subtype: w.subtype } : {}),
   } as ActivityCreate & { id?: string };
 }
 
@@ -61,12 +62,16 @@ function fromSearchRow(a: any, wfAccountId: string): HostActivity {
     comment: a.comment ?? a.notes ?? a.description ?? null,
     assetId: a.assetId ? String(a.assetId) : undefined,
     sourceGroupId: a.sourceGroupId ?? null,
+    subtype: a.subtype ?? null,
   };
 }
 
 /** Normalize an Activity echoed back by saveMany. The host names the comment
  *  field `notes` on the echo, and it is the only channel that reports the
- *  persisted `sourceGroupId` (ActivityDetails from search omits it). */
+ *  persisted `sourceGroupId` (ActivityDetails from search omits it). Also the
+ *  only channel that confirms a just-written `subtype` actually persisted -
+ *  worth copying here too so a caller inspecting a saveMany result sees the
+ *  same truth `listActivities` would. */
 function fromSdkEcho(a: any): HostActivity {
   return {
     id: String(a?.id ?? ''),
@@ -77,6 +82,7 @@ function fromSdkEcho(a: any): HostActivity {
     comment: a?.notes ?? a?.comment ?? null,
     assetId: a?.assetId ? String(a.assetId) : undefined,
     sourceGroupId: a?.sourceGroupId ?? null,
+    subtype: a?.subtype ?? null,
   };
 }
 
