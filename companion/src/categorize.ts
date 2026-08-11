@@ -1,7 +1,8 @@
 /**
  * companion/src/categorize.ts
  *
- * The controller behind `/categorize`: it holds the chat's menu session, turns a
+ * The controller behind `/categorize` AND `/recategorize`: it holds the chat's
+ * menu session, turns a
  * tapped button into a write against Wealthfolio, and renders the next screen.
  * `shared/categorize-menu.ts` is the pure machine (screens in, text + keyboard
  * out) and knows nothing about the world; the listener owns the transport and
@@ -26,6 +27,28 @@
  * row the buttons describe. A row filed elsewhere must simply disappear from the
  * next render (see `showGone`) rather than be written to a second time.
  *
+ * THE TWO MODES, one machine. `categorize` files a row that has NO category;
+ * `recategorize` moves one that already has one. They share every screen, every
+ * token, every guard — the difference is which sweep a render re-reads
+ * (`readRows` vs `readCategorized`) and which write a category tap performs. A
+ * chat's `MenuMode` records that choice, plus the search/import scope a
+ * `/recategorize` was opened with, so every later refresh reproduces the SAME
+ * list the user is looking at instead of silently widening it.
+ *
+ * WHY A CROSS-TAXONOMY MOVE DELETES BEFORE IT ASSIGNS. Wealthfolio keeps one
+ * assignment PER TAXONOMY per activity (its DELETE route is
+ * `/assignments/{taxonomy_id}`), so a row can hold an income assignment and a
+ * spending one at the same time, and setting the spending one does NOT clear the
+ * income one. The move therefore deletes every non-spending assignment FIRST and
+ * assigns the spending category SECOND. That order is deliberate, and it is
+ * chosen for its failure mode: interrupted between the two steps, the row ends up
+ * with NO category — visible in `/categorize`, one tap from fixed. The reverse
+ * order would leave a window in which the row counts as income AND as a spending
+ * offset at once, which is the silent double count this whole feature exists to
+ * remove, invisible to every freshness check because both assignments are real.
+ * A test pins the order; the error screen never claims the category was set when
+ * only the delete succeeded.
+ *
  * WHY NOTHING HERE CAN THROW AT THE LISTENER. A tap is dispatched from the
  * long-poll loop that also runs bank syncing; every `deps.*` call that can fail
  * is caught and rendered as a screen the user can act on, and `republish` — a
@@ -46,7 +69,7 @@ import {
 } from '../../shared/categorize-menu.js';
 import { escapeMarkdown, CATEGORIZE_ENTRY_CALLBACK, type InlineKeyboard } from '../../shared/telegram.js';
 import { visibleUncategorized, type DismissalLedger } from '../../shared/uncategorized.js';
-import { descriptionFromComment } from '../../shared/sync-core.js';
+import { descriptionFromComment, txIdFromComment } from '../../shared/sync-core.js';
 import { uncategorizedWindow } from './uncategorized-status.js';
 
 /**
@@ -56,6 +79,20 @@ import { uncategorizedWindow } from './uncategorized-status.js';
  * three call sites that bind it into `assign`/`unassign`/`createRule`.
  */
 export const SPENDING_TAXONOMY_ID = 'spending_categories';
+
+/**
+ * What this feature CALLS the other side of the ledger, for the sentences and
+ * comments that have to name it — deliberately not a taxonomy id, and never
+ * compared against one.
+ *
+ * A Wealthfolio instance's income taxonomy is `income_categories`, there is a
+ * savings one as well, and a future release can add more. So "the old category
+ * is on the other side" is detected as `taxonomyId !== SPENDING_TAXONOMY_ID`,
+ * which clears a taxonomy nobody anticipated rather than silently leaving it
+ * behind next to a new spending assignment — the double count again. An exported
+ * id would invite exactly the equality check that gets that wrong.
+ */
+export const INCOME_TAXONOMY_NOTE = 'income';
 
 /** What the menu needs from one native uncategorized row. `NativeUncategorizedTx`
  *  from ./sqlite-native.js satisfies this structurally; this module deliberately
@@ -68,6 +105,30 @@ export interface CategorizeSourceRow {
   amountCents: number;
   date: string;
   accountName: string;
+}
+
+/** One taxonomy's assignment on a row — `NativeAssignment` from
+ *  ./sqlite-native.js satisfies this structurally. A row can carry several, one
+ *  per taxonomy, which is the fact the whole recategorize write is arranged
+ *  around. */
+export interface CategorizeAssignment {
+  taxonomyId: string;
+  categoryId: string;
+  categoryName: string;
+}
+
+/** What the recategorize menu needs from one native CATEGORIZED row —
+ *  `NativeCategorizedTx` satisfies this structurally, and is not imported here
+ *  for the same reason `CategorizeSourceRow` is not: every read is injected. */
+export interface CategorizedSourceRow {
+  activityId: string;
+  /** RAW stored note, cleaned for display and parsed for the tx id. */
+  notes: string;
+  amountCents: number;
+  date: string;
+  accountName: string;
+  /** EVERY taxonomy's assignment on this activity. */
+  assignments: CategorizeAssignment[];
 }
 
 /** The three transport calls the listener binds to one tap. NONE of them ever
@@ -93,6 +154,16 @@ export interface CategorizeDeps {
   dbPath: () => string | null;
   /** `getNativeUncategorizedSpending`, over `uncategorizedWindow(new Date())`. */
   readRows: (dbPath: string, startInclusive: string, endExclusive: string) => CategorizeSourceRow[];
+  /**
+   * `getNativeCategorizedSpending`, over the SAME window as `readRows` — the two
+   * partition one universe, so a row is in exactly one of them.
+   *
+   * Read on three paths: the `/recategorize` list, the freshness check behind a
+   * reassign, and (since it exists at all) both menus' Undo verifications. That
+   * last one is why it is not optional: without it `/categorize`'s Undo is the
+   * blind write it was until v1.13.0.
+   */
+  readCategorized: (dbPath: string, startInclusive: string, endExclusive: string) => CategorizedSourceRow[];
   /** `getNativeSpendingCategories`. */
   readCategories: (dbPath: string) => SpendingCategory[];
   readLedger: () => Promise<DismissalLedger>;
@@ -111,10 +182,33 @@ export interface CategorizeDeps {
    * reappearing as needing a category.
    */
   writeLedgerMerged: (base: DismissalLedger, next: DismissalLedger) => Promise<void>;
-  /** Files one activity under one category (taxonomy applied by the caller). */
-  assign: (activityId: string, categoryId: string) => Promise<void>;
+  /**
+   * Files one activity under one category.
+   *
+   * `taxonomyId` is OPTIONAL and defaults — in the IMPLEMENTATION, not here — to
+   * the spending taxonomy, which is what every path but one passes nothing for.
+   * The exception is undoing a reassignment that came from the income side:
+   * restoring it means writing under that other taxonomy, and one dep that takes
+   * the taxonomy is better than a second dep that only ever writes income,
+   * because the two would be free to disagree about the order the surrounding
+   * delete happens in.
+   *
+   * An implementation that ignores the third argument is a silent defect, not a
+   * type error: it would file an income restore as a SPENDING assignment, which
+   * is the very state the restore is undoing. The order log in the tests asserts
+   * the taxonomy each call carried for that reason.
+   */
+  assign: (activityId: string, categoryId: string, taxonomyId?: string) => Promise<void>;
   /** Clears the spending assignment — the undo side of `assign`. */
   unassign: (activityId: string) => Promise<void>;
+  /**
+   * Clears ONE taxonomy's assignment (`unassignActivityCategory`, whose route is
+   * per-taxonomy). Distinct from `unassign` — which is the spending-only undo of
+   * a `/categorize` filing and is bound to that taxonomy by its caller — because
+   * the taxonomies a recategorize has to clear are whatever the row turns out to
+   * be carrying, discovered from `readCategorized` at tap time.
+   */
+  unassignTaxonomy: (activityId: string, taxonomyId: string) => Promise<void>;
   /** Creates a contains-match rule (priority + taxonomy applied by the caller). */
   createRule: (rule: { name: string; pattern: string; categoryId: string }) => Promise<void>;
   /** Republishes the addon's needs-a-category status. May throw; a failure here
@@ -144,6 +238,32 @@ export interface CategorizeController {
    * disclosure copy: one rule write, two ways in.
    */
   openRulePreview(pattern: string, categoryId: string, send: MenuSend): Promise<void>;
+  /**
+   * `/recategorize [text]`: builds a fresh session over the CATEGORIZED sweep and
+   * sends the list screen.
+   *
+   * `query` filters case-insensitively on the CLEANED description — the string
+   * the buttons show, not the stored note, so the ` · <txId>` suffix every note
+   * carries cannot make a search match everything. A blank or whitespace-only
+   * argument is no filter at all rather than a filter nothing matches: the
+   * command handler cannot tell `/recategorize` from `/recategorize ` , and
+   * "nothing matches" for an empty search would be a lie.
+   *
+   * The scope is remembered for the whole session, so every later refresh
+   * reproduces the same list instead of quietly widening to everything.
+   */
+  openRecategorize(query: string | undefined, send: MenuSend): Promise<void>;
+  /**
+   * The import notice's `Recategorize` button: the same menu, scoped to the
+   * transactions THAT import brought in, matched by the stored note's tx id (the
+   * sync's own identity mechanism — never by description).
+   *
+   * `null` means the scope is gone: the companion restarted and the memory of
+   * which rows an old notice was about died with it. That degrades to the plain
+   * recent list, which is honest and still useful, rather than to an empty screen
+   * that would read as "that import filed nothing".
+   */
+  openRecategorizeForTxIds(txIds: string[] | null, send: MenuSend): Promise<void>;
   /** One `cz:` tap. */
   onCallback(cb: { data: string; chatId: number; messageId: number }, ui: CategorizeUi): Promise<void>;
 }
@@ -168,10 +288,51 @@ const READ_FAILED_PREFIX = 'Couldn\'t check what needs a category — ';
  *  earlier, and the two must read the same. Pinned by tests on both sides. */
 const RULE_NO_DATABASE_TEXT = 'The companion has no database access right now, so it can\'t look up your categories.';
 const RULE_READ_FAILED_PREFIX = 'Couldn\'t set that rule up — ';
+/** The same two failures on the `/recategorize` path, where "what needs a
+ *  category" names a question its reader did not ask: every row that menu lists
+ *  already HAS a category. Same reason the two `/newrule` sentences exist above,
+ *  and the same reason `RECATEGORIZE_GONE_NOTE` exists in the pure machine. */
+const RECATEGORIZE_NO_DATABASE_TEXT = 'The companion has no database access right now, so it can\'t look up your transactions.';
+const RECATEGORIZE_READ_FAILED_PREFIX = 'Couldn\'t look up your transactions — ';
 const ASSIGN_FAILED_PREFIX = 'Couldn\'t file that — Wealthfolio said: ';
 const UNDO_FAILED_PREFIX = 'Couldn\'t undo that — Wealthfolio said: ';
 const DISMISS_FAILED_PREFIX = 'Couldn\'t save that — Wealthfolio said: ';
 const RULE_FAILED_PREFIX = 'Couldn\'t create that rule — Wealthfolio said: ';
+const REFILE_FAILED_PREFIX = 'Couldn\'t move that — Wealthfolio said: ';
+
+/**
+ * What a half-finished move left behind, appended to the failure above. Three
+ * outcomes rather than one sentence, because which of them is TRUE depends on how
+ * far the delete-then-assign sequence got, and a reader who is told "nothing
+ * changed" about a row that is now uncategorized has been misinformed about their
+ * own books.
+ */
+const REFILE_UNCHANGED_SUFFIX = '\n\nNothing changed — this transaction still has the category it had.';
+const REFILE_CLEARED_SUFFIX = '\n\nThe new category was NOT set, and the old one is already cleared — this transaction is uncategorized now, so /categorize will offer it.';
+const REFILE_PARTIAL_SUFFIX = '\n\nThe new category was NOT set. Some of the old assignments were already cleared — check this transaction in Wealthfolio.';
+
+/**
+ * The same three outcomes for a failed UNDO, in undo's own words. Not the three
+ * above: on this path it is the OLD category that failed to be set and the NEW
+ * one that got cleared, so reusing them would state the failure backwards. Only
+ * the actionable half survives such a swap, which is exactly how inverted copy
+ * lives for a release without anyone noticing.
+ */
+const UNDO_UNCHANGED_SUFFIX = '\n\nNothing was restored — this transaction is still under the category the move set.';
+const UNDO_CLEARED_SUFFIX = '\n\nThe old category was NOT restored, and the one the move set is already cleared — this transaction is uncategorized now, so /categorize will offer it.';
+const UNDO_PARTIAL_SUFFIX = '\n\nThe old category was only partly restored — check this transaction in Wealthfolio.';
+
+/**
+ * A write declined because the row is no longer in the state the button
+ * described. Says what was NOT done and why, in one sentence, for all three
+ * verified writes (a reassign, its undo, and `/categorize`'s undo): the
+ * alternative — acting anyway — erases a category somebody else just set.
+ *
+ * Rendered as the message, not as a toast, matching `showGone`: a toast is gone
+ * in three seconds, and the refreshed list underneath it is the part that
+ * explains what the row's category actually is now.
+ */
+const CHANGED_ELSEWHERE_TEXT = 'That transaction changed elsewhere — leaving it as is.';
 
 /** Rule names are shown in Wealthfolio's own rules list, which is not a place
  *  for a 200-character card descriptor. The PATTERN is never truncated — a
@@ -199,7 +360,7 @@ const PENDING_CHAT_ID = 0;
  *  screen gets the fresh data alone — that is what makes a row filed elsewhere
  *  disappear instead of lingering. */
 const PINNED_SCREEN_KINDS: ReadonlySet<MenuScreen['kind']> = new Set([
-  'filed', 'dismissed', 'rulePreview', 'ruleCreated',
+  'filed', 'dismissed', 'rulePreview', 'ruleCreated', 'refiled',
 ]);
 
 function pinnedActivityId(screen: MenuScreen): string | null {
@@ -227,12 +388,36 @@ function formatError(err: unknown): string {
   }
 }
 
+/**
+ * Which sweep a chat's every render re-reads, and — for `recategorize` — the
+ * scope the menu was opened with.
+ *
+ * Held per CHAT rather than passed per call because it has to survive between
+ * taps: a `/recategorize venmo` whose second render forgot the query would widen
+ * to every categorized transaction under the reader's fingers, and one whose
+ * second render forgot the MODE would show the uncategorized list instead. Both
+ * halves are read-only once set — a new list means a new session.
+ */
+type MenuMode =
+  | { kind: 'categorize' }
+  | {
+      kind: 'recategorize';
+      /** Already lower-cased, matched against the CLEANED description. `null` is
+       *  no filter (including for a blank argument). */
+      query: string | null;
+      /** Stored-note tx ids from one import; `null` is no scope. */
+      txIds: ReadonlySet<string> | null;
+    };
+
+const CATEGORIZE_MODE: MenuMode = { kind: 'categorize' };
+
 /** One chat's live menu. `session` is replaced wholesale on every render, which
  *  is what makes a tap on an outdated message safe (see `applyTap`); `pinned`
  *  survives across renders for as long as a screen still needs it. */
 interface ChatSession {
   session: MenuSession;
   pinned: CategorizeTxn | null;
+  mode: MenuMode;
 }
 
 /** One fresh sweep: the visible rows, the categories, and the ledger those rows
@@ -241,7 +426,27 @@ interface ChatSession {
 interface Fresh {
   txns: CategorizeTxn[];
   categories: SpendingCategory[];
+  /** EMPTY in recategorize mode, where the ledger is not read at all: it records
+   *  which rows the user stopped being nagged about, and every row this menu
+   *  lists already has a category, so it has no say in what appears here. The
+   *  actions that use it as a merge base are unreachable there (the pure machine
+   *  renders no `Keep uncategorized` button in recategorize mode). */
   ledger: DismissalLedger;
+  /** Recategorize only: every taxonomy's assignment per activity, from the SAME
+   *  read the rows came from — so the deletes a move performs and the row that
+   *  move was checked against cannot come from two different moments. Empty in
+   *  categorize mode. */
+  assignments: ReadonlyMap<string, CategorizeAssignment[]>;
+}
+
+const NO_ASSIGNMENTS: ReadonlyMap<string, CategorizeAssignment[]> = new Map();
+
+/** The spending assignment among a row's assignments, which is the one both Undo
+ *  verifications and the same-category check are about. */
+function spendingAssignmentOf(
+  assignments: readonly CategorizeAssignment[] | undefined,
+): CategorizeAssignment | null {
+  return assignments?.find((a) => a.taxonomyId === SPENDING_TAXONOMY_ID) ?? null;
 }
 
 /** Why a load failed, kept as a REASON rather than as finished text: which
@@ -256,24 +461,32 @@ interface LoadFailure {
 type Loaded = { ok: true; fresh: Fresh } | { ok: false; failure: LoadFailure };
 
 /**
- * The sentence a failed load gets, chosen by the SCREEN the render was for.
+ * The sentence a failed load gets, chosen by the SCREEN the render was for and
+ * the MODE it was in — three pairs of sentences for three questions the reader
+ * could have asked.
  *
  * The two `/newrule` screens (`freeRulePreview`, and the `ruleCreated`
  * confirmation reached from it — the one with no activityId) list nothing, so
- * the menu's own copy would describe a list their reader never asked for.
- * Everything else is the menu, where "what needs a category" is exactly what
- * the failed read was for.
+ * the menu's own copy would describe a list their reader never asked for; they
+ * win over the mode because a `/newrule` is always a categorize-mode session.
+ * `/recategorize` lists plenty, but not "what needs a category" — everything on
+ * it has one. Everything else is `/categorize`, where "what needs a category" is
+ * exactly what the failed read was for.
  *
  * `escapeMarkdown` is applied HERE because the reply is Markdown-parsed on its
  * way to Telegram, and an API error carrying an unbalanced `*` or `_` gets the
  * whole message refused — a screen that simply never appears.
  */
-function failureText(failure: LoadFailure, screen: MenuScreen): string {
+function failureText(failure: LoadFailure, screen: MenuScreen, mode: MenuMode): string {
   const rulePath = screen.kind === 'freeRulePreview'
     || (screen.kind === 'ruleCreated' && screen.activityId === null);
-  if (failure.kind === 'no-database') return rulePath ? RULE_NO_DATABASE_TEXT : NO_DATABASE_TEXT;
-  const prefix = rulePath ? RULE_READ_FAILED_PREFIX : READ_FAILED_PREFIX;
-  return `${prefix}${escapeMarkdown(failure.detail)}`;
+  const [noDatabase, readFailedPrefix] = rulePath
+    ? [RULE_NO_DATABASE_TEXT, RULE_READ_FAILED_PREFIX]
+    : mode.kind === 'recategorize'
+      ? [RECATEGORIZE_NO_DATABASE_TEXT, RECATEGORIZE_READ_FAILED_PREFIX]
+      : [NO_DATABASE_TEXT, READ_FAILED_PREFIX];
+  if (failure.kind === 'no-database') return noDatabase;
+  return `${readFailedPrefix}${escapeMarkdown(failure.detail)}`;
 }
 
 export function createCategorizeController(deps: CategorizeDeps): CategorizeController {
@@ -325,6 +538,51 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
   }
 
   /**
+   * The same mapping for a CATEGORIZED row, plus the category the menu shows and
+   * undoes back to.
+   *
+   * `currentCategory` is the SPENDING assignment when there is one, and the first
+   * assignment otherwise: the spending category is the name the reader recognises
+   * (it is what their budgets and every `/left` figure are about), while a row
+   * that has only an income assignment has nothing else to show. `null` for a row
+   * with NO assignment at all — the native reader's inner join cannot produce
+   * one, but a row with nothing to move FROM could not render the old → new
+   * confirmation this menu is built on, and it belongs to `/categorize` anyway.
+   */
+  function toCategorizedTxn(r: CategorizedSourceRow): CategorizeTxn | null {
+    const current = spendingAssignmentOf(r.assignments) ?? r.assignments[0];
+    if (!current) return null;
+    return {
+      activityId: r.activityId,
+      date: r.date,
+      amountCents: r.amountCents,
+      description: descriptionFromComment(r.notes) || r.notes,
+      accountName: r.accountName,
+      currentCategory: {
+        taxonomyId: current.taxonomyId,
+        categoryId: current.categoryId,
+        name: current.categoryName,
+      },
+    };
+  }
+
+  /** The database path, or the reason there isn't one — shared by the two reads
+   *  below so a missing mount is reported identically whichever of them needed
+   *  it. */
+  function resolvePath(): { ok: true; path: string } | { ok: false; failure: LoadFailure } {
+    let path: string | null;
+    try {
+      path = deps.dbPath();
+    } catch (err) {
+      const detail = formatError(err);
+      safeLog(`Categorize menu: could not locate the database: ${detail}`);
+      return { ok: false, failure: { kind: 'no-database', detail } };
+    }
+    if (!path) return { ok: false, failure: { kind: 'no-database', detail: 'no database path' } };
+    return { ok: true, path };
+  }
+
+  /**
    * One fresh sweep of everything a render needs. Called before EVERY render and
    * again before every write that has a precondition — never cached, because a
    * cached answer is the bug this whole file is arranged to avoid.
@@ -335,19 +593,36 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
    * sentence is `failureText`'s job, because which sentence is honest depends on
    * the screen the caller was rendering.
    */
-  async function load(): Promise<Loaded> {
-    let path: string | null;
-    try {
-      path = deps.dbPath();
-    } catch (err) {
-      const detail = formatError(err);
-      safeLog(`Categorize menu: could not locate the database: ${detail}`);
-      return { ok: false, failure: { kind: 'no-database', detail } };
-    }
-    if (!path) return { ok: false, failure: { kind: 'no-database', detail: 'no database path' } };
+  async function load(mode: MenuMode): Promise<Loaded> {
+    const resolved = resolvePath();
+    if (!resolved.ok) return resolved;
+    const path = resolved.path;
 
     try {
+      // The same 90-day window for both sweeps: they partition one universe, and
+      // a row that moved between them must not be able to fall out of both.
       const { start, end } = uncategorizedWindow(new Date());
+      if (mode.kind === 'recategorize') {
+        const rows = deps.readCategorized(path, start, end);
+        const categories = deps.readCategories(path);
+        const assignments = new Map<string, CategorizeAssignment[]>();
+        const txns: CategorizeTxn[] = [];
+        for (const r of rows) {
+          // Scope first, then the query, then the shape: all three are reasons a
+          // row is not part of THIS list, and a row that is not in the list must
+          // not leave its assignments behind for a write to find.
+          if (mode.txIds && !mode.txIds.has(txIdFromComment(r.notes) ?? '')) continue;
+          const txn = toCategorizedTxn(r);
+          if (!txn) continue;
+          // The CLEANED description, never the raw note: every note ends in
+          // ` · <txId>`, so searching the raw string would make `trn` match the
+          // entire history.
+          if (mode.query && !txn.description.toLowerCase().includes(mode.query)) continue;
+          assignments.set(r.activityId, r.assignments);
+          txns.push(txn);
+        }
+        return { ok: true, fresh: { txns, categories, ledger: {}, assignments } };
+      }
       const rows = deps.readRows(path, start, end);
       const ledger = await deps.readLedger();
       const categories = deps.readCategories(path);
@@ -355,11 +630,48 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
         ok: true,
         // ONE definition of "needs a category", shared with the status tile and
         // the addon: the native rows minus whatever the ledger dismissed.
-        fresh: { txns: visibleUncategorized(rows, ledger).map(toTxn), categories, ledger },
+        fresh: {
+          txns: visibleUncategorized(rows, ledger).map(toTxn),
+          categories,
+          ledger,
+          assignments: NO_ASSIGNMENTS,
+        },
       };
     } catch (err) {
       const detail = formatError(err);
       safeLog(`Categorize menu: could not read what needs a category: ${detail}`);
+      return { ok: false, failure: { kind: 'read-failed', detail } };
+    }
+  }
+
+  /**
+   * JUST the current assignments, for a verification that has to know what a row
+   * is filed under RIGHT NOW.
+   *
+   * Narrower than `load` on purpose: `/categorize`'s Undo runs in categorize mode,
+   * whose sweep is the UNcategorized rows — which by definition cannot report the
+   * category the row was just given. So that one guard reads the categorized side
+   * directly, and reads nothing else: no ledger, no category tree, and no second
+   * question it does not need answered before a write.
+   *
+   * A row outside the window is reported as having no assignments, which declines
+   * the undo. That is the safe direction (no write on an unverifiable row), and it
+   * is unreachable for a row this menu just filed, since the filing came from the
+   * very same window.
+   */
+  async function loadAssignments(): Promise<
+    { ok: true; byId: ReadonlyMap<string, CategorizeAssignment[]> } | { ok: false; failure: LoadFailure }
+  > {
+    const resolved = resolvePath();
+    if (!resolved.ok) return resolved;
+    try {
+      const { start, end } = uncategorizedWindow(new Date());
+      const byId = new Map<string, CategorizeAssignment[]>();
+      for (const r of deps.readCategorized(resolved.path, start, end)) byId.set(r.activityId, r.assignments);
+      return { ok: true, byId };
+    } catch (err) {
+      const detail = formatError(err);
+      safeLog(`Categorize menu: could not read what a transaction is filed under: ${detail}`);
       return { ok: false, failure: { kind: 'read-failed', detail } };
     }
   }
@@ -393,21 +705,47 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
     };
   }
 
-  /** A session around a fresh sweep, at a NEW generation — every one of these is
-   *  a render about to happen, and a render is what invalidates the last one's
-   *  tokens. The pinned row is spliced back in when the screen names a row the
-   *  sweep no longer returns (a confirmation for something just filed or
-   *  dismissed). Callers decide whether a pin applies — see
-   *  `PINNED_SCREEN_KINDS` — because splicing one into a LIST screen would show
-   *  a row that no longer needs a category. */
-  function buildSession(screen: MenuScreen, pin: CategorizeTxn | null, fresh: Fresh): MenuSession {
-    const missing = pin !== null && !fresh.txns.some((t) => t.activityId === pin.activityId);
+  /**
+   * A session around a fresh sweep, at a NEW generation — every one of these is a
+   * render about to happen, and a render is what invalidates the last one's
+   * tokens.
+   *
+   * The pinned row TAKES PRECEDENCE over the fresh one, and is spliced in when the
+   * sweep no longer returns it at all. Callers decide whether a pin applies — see
+   * `PINNED_SCREEN_KINDS` — because splicing one into a LIST screen would show a
+   * row that no longer needs a category.
+   *
+   * Precedence, not just splicing, because of `refiled`: a just-moved row is still
+   * categorized, so the fresh sweep DOES return it — carrying its NEW category.
+   * The confirmation's Undo button is built from `currentCategory`, and it has to
+   * name the category the row held BEFORE the move or it "restores" the state it
+   * was meant to reverse. For every other pinned screen the row has left the
+   * visible set by definition, so precedence and splicing are the same thing.
+   *
+   * `mode` is set explicitly on every session, in both modes, rather than left to
+   * `MenuSession.mode`'s `'categorize'` default: the default exists so that the
+   * pure machine could gain the field without breaking callers that predate it,
+   * and a controller relying on it would be one refactor away from rendering a
+   * recategorize list as a needs-a-category one.
+   */
+  function buildSession(
+    screen: MenuScreen,
+    pin: CategorizeTxn | null,
+    fresh: Fresh,
+    mode: MenuMode['kind'],
+  ): MenuSession {
+    const txns = pin === null
+      ? fresh.txns
+      : fresh.txns.some((t) => t.activityId === pin.activityId)
+        ? fresh.txns.map((t) => (t.activityId === pin.activityId ? pin : t))
+        : [pin, ...fresh.txns];
     return {
-      txns: missing && pin !== null ? [pin, ...fresh.txns] : fresh.txns,
+      txns,
       categories: fresh.categories,
       screen,
       buttons: [],
       generation: nextGeneration(),
+      mode,
     };
   }
 
@@ -417,7 +755,7 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
     pin: CategorizeTxn | null,
     fresh: Fresh,
   ): { text: string; keyboard: InlineKeyboard | undefined } {
-    chat.session = buildSession(screen, pin, fresh);
+    chat.session = buildSession(screen, pin, fresh, chat.mode.kind);
     chat.pinned = pin;
     return present(chat);
   }
@@ -461,6 +799,22 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
     await ui.edit(text, keyboard);
   }
 
+  /**
+   * A verified write declined: the row is no longer in the state the button
+   * described, so nothing was written and the reader is put back on a list built
+   * from the data that made that decision.
+   *
+   * The note goes in front of the LIST rather than of the screen the tap came
+   * from, because the row's own screen would keep describing the move that is no
+   * longer available. The `<note>\n\n<text>` shape is the pure machine's own note
+   * format (see `renderList`'s `note` parameter), reproduced here because that
+   * parameter is internal to the module and no screen kind carries a note.
+   */
+  async function showDeclined(chat: ChatSession, fresh: Fresh, ui: CategorizeUi): Promise<void> {
+    const { text, keyboard } = show(chat, { kind: 'list', page: 0 }, null, fresh);
+    await ui.edit(`${CHANGED_ELSEWHERE_TEXT}\n\n${text}`, keyboard);
+  }
+
   /** Load fresh, then render `screen`. The freshness rule, in one function. */
   async function transition(
     chat: ChatSession,
@@ -468,11 +822,11 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
     pin: CategorizeTxn | null,
     ui: CategorizeUi,
   ): Promise<void> {
-    const loaded = await load();
+    const loaded = await load(chat.mode);
     if (!loaded.ok) {
       // The TARGET screen names the copy: a render on its way to the typed-rule
       // confirmation must not report a failure in the menu's words.
-      await showError(chat, failureText(loaded.failure, screen), ui);
+      await showError(chat, failureText(loaded.failure, screen, chat.mode), ui);
       return;
     }
     const { text, keyboard } = show(chat, screen, pin, loaded.fresh);
@@ -549,8 +903,14 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
         // there is nothing left to be fresh about.
         sessions.delete(chatId);
         const closed: ChatSession = {
-          session: buildSession({ kind: 'closed' }, null, { txns: [], categories: [], ledger: {} }),
+          session: buildSession(
+            { kind: 'closed' },
+            null,
+            { txns: [], categories: [], ledger: {}, assignments: NO_ASSIGNMENTS },
+            chat.mode.kind,
+          ),
           pinned: null,
+          mode: chat.mode,
         };
         const { text, keyboard } = present(closed);
         await ui.edit(text, keyboard);
@@ -558,9 +918,9 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
       }
 
       case 'assign': {
-        const loaded = await load();
+        const loaded = await load(chat.mode);
         if (!loaded.ok) {
-          await showError(chat, failureText(loaded.failure, chat.session.screen), ui);
+          await showError(chat, failureText(loaded.failure, chat.session.screen, chat.mode), ui);
           return;
         }
         const row = loaded.fresh.txns.find((t) => t.activityId === action.activityId) ?? null;
@@ -591,27 +951,36 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
 
       case 'unassign': {
         // NO visibility precondition, unlike `assign`: this row was just filed,
-        // so a fresh sweep no longer lists it — that is the state Undo is for.
-        // The tap can only have come from the `filed` screen's own button table,
-        // at the current generation, so it is this menu's own filing being undone.
+        // so a fresh sweep of what needs a category no longer lists it — that is
+        // the state Undo is for. What IS checked is the assignment itself.
         //
-        // KNOWN HAZARD, accepted deliberately: this is the one write here with no
-        // read behind it, so if something else re-filed the row under a DIFFERENT
-        // category between the filing and this tap, Undo clears that assignment
-        // instead of the one it was offered for. The check that would close it is
-        // "is the current assignment still `action.categoryId`?", and nothing
-        // available here can answer it — `readRows` returns only UNCATEGORIZED
-        // rows and carries no category id, and the REST client has no
-        // read-assignment call. Closing it properly means a new native reader over
-        // `activity_taxonomy_assignments` (or a GET on the assignment), i.e. a
-        // change in sqlite-native.ts/wealthfolio.ts rather than here.
-        //
-        // Bounded and cheap in practice: the window is one tap on a confirmation
-        // screen the user is looking at, the other writer would have to be the
-        // addon or a rule import touching that same row inside it, and the loss is
-        // one assignment the user can redo from the menu — against a guaranteed
-        // cost of leaving Undo broken for the common case. A test pins this
-        // behavior so the next reader knows it is a decision, not an oversight.
+        // This is the v1.12.0 hazard, closed. Until `readCategorized` existed,
+        // nothing here could answer "what is this row filed under right now?":
+        // `readRows` returns only UNCATEGORIZED rows and carries no category id,
+        // and the REST client has no read-assignment call. So Undo wrote blind,
+        // and if something else re-filed the row under a DIFFERENT category
+        // between the filing and this tap, it cleared THAT assignment instead of
+        // the one it was offered for — erasing a category somebody else had just
+        // set. The reader closes it: the row's spending assignment must still be
+        // the category this menu set, or the tap declines and refreshes.
+        const verified = await loadAssignments();
+        if (!verified.ok) {
+          await showError(chat, failureText(verified.failure, chat.session.screen, chat.mode), ui);
+          return;
+        }
+        const filedAs = spendingAssignmentOf(verified.byId.get(action.activityId));
+        if (!filedAs || filedAs.categoryId !== action.categoryId) {
+          // Also covers "already unfiled by someone else" (no assignment at all):
+          // there is nothing this menu set left to undo, and clearing nothing
+          // would report success for a no-op.
+          const loaded = await load(chat.mode);
+          if (!loaded.ok) {
+            await showError(chat, failureText(loaded.failure, chat.session.screen, chat.mode), ui);
+            return;
+          }
+          await showDeclined(chat, loaded.fresh, ui);
+          return;
+        }
         const row = rowFor(chat, action.activityId);
         try {
           await deps.unassign(action.activityId);
@@ -632,9 +1001,14 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
       }
 
       case 'dismiss': {
-        const loaded = await load();
+        // Categorize-only, as is `undismiss` below: the ledger records which rows
+        // the user stopped being nagged about, and the pure machine renders no
+        // `Keep uncategorized` button in recategorize mode, where every row
+        // already has a category. Loading with `chat.mode` regardless keeps the
+        // render coherent with the session it is drawn into.
+        const loaded = await load(chat.mode);
         if (!loaded.ok) {
-          await showError(chat, failureText(loaded.failure, chat.session.screen), ui);
+          await showError(chat, failureText(loaded.failure, chat.session.screen, chat.mode), ui);
           return;
         }
         const row = loaded.fresh.txns.find((t) => t.activityId === action.activityId) ?? null;
@@ -666,9 +1040,9 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
         // Loaded for the ledger, which is the merge base — not for a visibility
         // check: a dismissed row is by definition absent from the visible set,
         // so requiring it there would make Undo impossible.
-        const loaded = await load();
+        const loaded = await load(chat.mode);
         if (!loaded.ok) {
-          await showError(chat, failureText(loaded.failure, chat.session.screen), ui);
+          await showError(chat, failureText(loaded.failure, chat.session.screen, chat.mode), ui);
           return;
         }
         const row = rowFor(chat, action.activityId)
@@ -694,9 +1068,9 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
         // create — and no reason to guess one.
         const row = rowFor(chat, action.activityId);
         if (!row) {
-          const loaded = await load();
+          const loaded = await load(chat.mode);
           if (!loaded.ok) {
-            await showError(chat, failureText(loaded.failure, chat.session.screen), ui);
+            await showError(chat, failureText(loaded.failure, chat.session.screen, chat.mode), ui);
             return;
           }
           await showGone(chat, action.activityId, loaded.fresh, ui);
@@ -726,6 +1100,182 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
           ui,
         );
         return;
+
+      case 'reassign': {
+        const loaded = await load(chat.mode);
+        if (!loaded.ok) {
+          await showError(chat, failureText(loaded.failure, chat.session.screen, chat.mode), ui);
+          return;
+        }
+        const fresh = loaded.fresh;
+        const row = fresh.txns.find((t) => t.activityId === action.activityId) ?? null;
+        // The row as the tapped KEYBOARD's session held it: what the screen said
+        // it was filed under, and — carried forward as the pin below — the old
+        // category the confirmation's Undo restores to.
+        const pin = rowFor(chat, action.activityId);
+        const shown = pin?.currentCategory ?? null;
+        // THE precondition, and a stricter one than `assign`'s: not just "is the
+        // row still there" but "is it still where the button said it was". A menu
+        // sits on a phone for minutes; a rule or the addon can move the row inside
+        // that window, and writing anyway would silently discard whatever category
+        // that other writer chose — while the confirmation narrated a move FROM a
+        // category the row had already left.
+        if (!row || !row.currentCategory || !shown || row.currentCategory.categoryId !== shown.categoryId) {
+          await showDeclined(chat, fresh, ui);
+          return;
+        }
+        const assignments = fresh.assignments.get(action.activityId) ?? [];
+        // Every taxonomy that is not the spending one, whatever it turns out to
+        // be: an id-equality test against a known income taxonomy would leave a
+        // taxonomy nobody anticipated in place next to the new spending
+        // assignment, which is the double count itself (see INCOME_TAXONOMY_NOTE).
+        const toClear = assignments.filter((a) => a.taxonomyId !== SPENDING_TAXONOMY_ID);
+        const needsAssign = spendingAssignmentOf(assignments)?.categoryId !== action.categoryId;
+        // Nothing to write means nothing to undo, and `refiled.restore` says so
+        // with an empty list (the pure machine then renders no Undo button). A
+        // button offered here could only rewrite the category the row already
+        // carries and call it a restore.
+        const writes = toClear.length > 0 || needsAssign;
+        const refiled: MenuScreen = {
+          kind: 'refiled',
+          activityId: action.activityId,
+          // The name the reader SAW, not the one just re-read: the sentence
+          // narrates the move they asked for. The ids are equal by the check above.
+          fromName: shown.name,
+          toCategoryId: action.categoryId,
+          crossTaxonomy: toClear.length > 0,
+          undone: false,
+          // EVERY assignment the row holds right now, spending included — the
+          // complete state this move is about to replace, which is the only thing
+          // an undo can faithfully replay. Read from the same sweep the checks
+          // above used, and captured BEFORE the writes, because afterwards no
+          // reader can report it any more.
+          restore: writes
+            ? assignments.map((a) => ({ taxonomyId: a.taxonomyId, categoryId: a.categoryId }))
+            : [],
+        };
+
+        if (!writes) {
+          // Already exactly where the tap asked for, with nothing on the other
+          // side of the ledger to clear. A no-op write would be a lie in the
+          // request log and an identical outcome; the confirmation still states
+          // where the row sits, which is what was asked.
+          await transition(chat, refiled, pin, ui);
+          return;
+        }
+
+        let cleared = 0;
+        try {
+          // DELETE FIRST, ASSIGN SECOND. See the module header: interrupted here
+          // the row ends up uncategorized (recoverable in one tap from
+          // /categorize), where the other order would leave it counted as income
+          // AND as a spending offset at once.
+          for (const a of toClear) {
+            await deps.unassignTaxonomy(action.activityId, a.taxonomyId);
+            cleared += 1;
+          }
+        } catch (err) {
+          const message = formatError(err);
+          safeLog(`Categorize menu: clearing an assignment on ${action.activityId} failed: ${message}`);
+          await showError(
+            chat,
+            `${REFILE_FAILED_PREFIX}${escapeMarkdown(message)}`
+            + (cleared === 0 ? REFILE_UNCHANGED_SUFFIX : REFILE_PARTIAL_SUFFIX),
+            ui,
+          );
+          return;
+        }
+        if (needsAssign) {
+          try {
+            await deps.assign(action.activityId, action.categoryId);
+          } catch (err) {
+            const message = formatError(err);
+            safeLog(`Categorize menu: moving ${action.activityId} to ${action.categoryId} failed: ${message}`);
+            // Never "filed": the new category is precisely what did NOT happen,
+            // and when a delete did land the row has no category at all now.
+            await showError(
+              chat,
+              `${REFILE_FAILED_PREFIX}${escapeMarkdown(message)}`
+              + (cleared === 0 ? REFILE_UNCHANGED_SUFFIX : REFILE_CLEARED_SUFFIX),
+              ui,
+            );
+            return;
+          }
+        }
+        // Harmless when nothing UNcategorized changed, and necessary when the
+        // clear left the row without a category for a moment.
+        await republishQuietly();
+        await transition(chat, refiled, pin, ui);
+        return;
+      }
+
+      case 'undoReassign': {
+        const loaded = await load(chat.mode);
+        if (!loaded.ok) {
+          await showError(chat, failureText(loaded.failure, chat.session.screen, chat.mode), ui);
+          return;
+        }
+        // The screen the button was rendered on is where the category THIS menu
+        // set is recorded — the action carries only where to put the row BACK.
+        // The tap resolved at the current generation, so this is that screen.
+        const screen = chat.session.screen;
+        if (screen.kind !== 'refiled') {
+          await showDeclined(chat, loaded.fresh, ui);
+          return;
+        }
+        const filedAs = spendingAssignmentOf(loaded.fresh.assignments.get(action.activityId));
+        // Same guarantee as `/categorize`'s Undo: only this menu's own write is
+        // undone. Anything else — moved on again, or un-filed entirely — is left
+        // alone rather than overwritten with a category that is now historical.
+        if (!filedAs || filedAs.categoryId !== screen.toCategoryId) {
+          await showDeclined(chat, loaded.fresh, ui);
+          return;
+        }
+        const pin = rowFor(chat, action.activityId);
+        // The whole previous state, replayed — not just the category the
+        // confirmation displayed. A row can hold one assignment per taxonomy, so
+        // restoring one of several would leave the user's data changed while this
+        // menu reported the undo as done.
+        //
+        // Spending first, and only when the previous state HAD a spending
+        // assignment: replacing it is a single PUT with no window at all. When it
+        // had none (the Venmo-under-income case), the spending assignment the move
+        // added has to GO, and that delete comes before the other PUTs for the same
+        // reason it does on the way in — the interruptible moment leaves the row
+        // uncategorized rather than counted twice.
+        const keepsSpending = action.toRestore.some((a) => a.taxonomyId === SPENDING_TAXONOMY_ID);
+        const replay = [
+          ...action.toRestore.filter((a) => a.taxonomyId === SPENDING_TAXONOMY_ID),
+          ...action.toRestore.filter((a) => a.taxonomyId !== SPENDING_TAXONOMY_ID),
+        ];
+        let cleared = false;
+        let restored = 0;
+        try {
+          if (!keepsSpending) {
+            await deps.unassignTaxonomy(action.activityId, SPENDING_TAXONOMY_ID);
+            cleared = true;
+          }
+          for (const a of replay) {
+            await deps.assign(action.activityId, a.categoryId, a.taxonomyId);
+            restored += 1;
+          }
+        } catch (err) {
+          const message = formatError(err);
+          safeLog(`Categorize menu: restoring ${action.activityId} to its previous category failed: ${message}`);
+          // Exactly what stands, in undo's own words: nothing restored and
+          // nothing cleared is "unchanged"; nothing restored after the clear is an
+          // uncategorized row; anything in between is a partial restore, and none
+          // of the three may read as if the old category came back.
+          const suffix = restored === 0
+            ? (cleared ? UNDO_CLEARED_SUFFIX : UNDO_UNCHANGED_SUFFIX)
+            : UNDO_PARTIAL_SUFFIX;
+          await showError(chat, `${UNDO_FAILED_PREFIX}${escapeMarkdown(message)}${suffix}`, ui);
+          return;
+        }
+        await republishQuietly();
+        await transition(chat, { ...screen, undone: true }, pin, ui);
+        return;
+      }
     }
   }
 
@@ -760,17 +1310,27 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
    * worse. `send` is called with ONE argument there, so the caller can tell the
    * difference between "no keyboard" and "an empty keyboard".
    */
-  async function openScreen(chatId: number, screen: MenuScreen, send: MenuSend): Promise<void> {
-    const loaded = await load();
+  async function openScreen(
+    chatId: number,
+    screen: MenuScreen,
+    send: MenuSend,
+    mode: MenuMode,
+  ): Promise<void> {
+    const loaded = await load(mode);
     if (!loaded.ok) {
-      // In the words of the screen that was being opened: `/newrule` shows no
-      // list, so the menu's "can't tell what needs a category" would name
-      // something its reader never asked for (see `failureText`).
-      await send(failureText(loaded.failure, screen));
+      // In the words of the screen and mode that were being opened: `/newrule`
+      // shows no list and `/recategorize` shows one of already-filed rows, so the
+      // menu's "can't tell what needs a category" would name something neither
+      // reader asked for (see `failureText`).
+      await send(failureText(loaded.failure, screen, mode));
       return;
     }
     sessions.clear();
-    const chat: ChatSession = { session: buildSession(screen, null, loaded.fresh), pinned: null };
+    const chat: ChatSession = {
+      session: buildSession(screen, null, loaded.fresh, mode.kind),
+      pinned: null,
+      mode,
+    };
     const { text, keyboard } = present(chat);
     sessions.set(chatId, chat);
     await send(text, keyboard);
@@ -788,14 +1348,39 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
      * carries no chat id — the first tap adopts it (see `takeSession`).
      */
     async open(send): Promise<void> {
-      await openScreen(PENDING_CHAT_ID, { kind: 'list', page: 0 }, send);
+      await openScreen(PENDING_CHAT_ID, { kind: 'list', page: 0 }, send, CATEGORIZE_MODE);
     },
 
     /** Same parking as `open`, and uncaught for the same reason — this is a
      *  command path too (`/newrule`), reached with the category already
      *  resolved. */
     async openRulePreview(pattern, categoryId, send): Promise<void> {
-      await openScreen(PENDING_CHAT_ID, { kind: 'freeRulePreview', pattern, categoryId }, send);
+      await openScreen(PENDING_CHAT_ID, { kind: 'freeRulePreview', pattern, categoryId }, send, CATEGORIZE_MODE);
+    },
+
+    /** Same parking and the same uncaught contract as `open` — `/recategorize` is
+     *  a command path too. The query is lower-cased once, here, rather than at
+     *  each render. */
+    async openRecategorize(query, send): Promise<void> {
+      const trimmed = (query ?? '').trim();
+      await openScreen(
+        PENDING_CHAT_ID,
+        { kind: 'list', page: 0 },
+        send,
+        { kind: 'recategorize', query: trimmed ? trimmed.toLowerCase() : null, txIds: null },
+      );
+    },
+
+    /** The import notice's button. Parked under `PENDING_CHAT_ID` like the command
+     *  entries, so the first tap adopts it (see `takeSession`) — the notice hands
+     *  over a `send`, not a chat id. */
+    async openRecategorizeForTxIds(txIds, send): Promise<void> {
+      await openScreen(
+        PENDING_CHAT_ID,
+        { kind: 'list', page: 0 },
+        send,
+        { kind: 'recategorize', query: null, txIds: txIds === null ? null : new Set(txIds) },
+      );
     },
 
     /**
@@ -815,7 +1400,7 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
         try {
           // `ui.send` verbatim, not a wrapper: `openScreen` calls it with one
           // argument when there is no keyboard, and that arity is observable.
-          await openScreen(cb.chatId, { kind: 'list', page: 0 }, ui.send);
+          await openScreen(cb.chatId, { kind: 'list', page: 0 }, ui.send, CATEGORIZE_MODE);
         } catch (err) {
           // `openScreen` returns its anticipated failures as text, so reaching
           // here means something unforeseen threw. The spinner still has to

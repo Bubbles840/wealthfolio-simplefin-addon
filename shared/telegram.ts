@@ -436,6 +436,17 @@ export interface ImportNoticeTx {
   accountName: string;
   pending: boolean;
   inTransit: boolean;
+  /**
+   * The sync's own identity for this row — the id its stored note ends in — used
+   * to look the row up in `formatImportNotice`'s `categoriesByTxId`. NEVER the
+   * description: two $4.23 Amazon charges in a week is normal, and matching on
+   * text would attribute one transaction's category to another.
+   *
+   * OPTIONAL only so that every caller and test written before the read-back
+   * existed still type-checks; `SyncResult.importedTransactions` has carried it
+   * all along. A row without one renders exactly as it did before this feature.
+   */
+  txId?: string;
 }
 
 /** One row of the needs-a-category sweep: any spending transaction from the
@@ -472,10 +483,17 @@ export const IMPORT_NOTICE_UNCATEGORIZED_CAP = 5;
  * imported, so a per-row flag at send time would misreport, while a sweep just
  * catches the row in the next notice. It also covers addon-imported
  * transactions, which produce no notice of their own.
+ *
+ * `categoriesByTxId` — where each imported row was FILED, keyed by `txId` — is
+ * optional, and a row it does not mention renders byte-identically to a notice
+ * sent before this parameter existed. That is the whole contract: the read-back
+ * behind it is a database query that can fail or lag (a rule files the row
+ * moments after the import), and a notice must never wait on it or invent one.
  */
 export function formatImportNotice(
   txs: ImportNoticeTx[],
   uncategorized: UncategorizedTx[],
+  categoriesByTxId?: Map<string, string>,
 ): string {
   const head = `🔔 *${txs.length} new transaction${txs.length === 1 ? '' : 's'}*`;
 
@@ -483,7 +501,15 @@ export function formatImportNotice(
   // backslash escapes inside one); the bold sits on counts, which have none.
   const txLine = (t: ImportNoticeTx) => {
     const tail = t.inTransit ? ' · in transit' : t.pending ? ' · pending' : '';
-    return `• ${money(t.amountCents / 100)}  ${escapeMarkdown(t.description)} — ${escapeMarkdown(t.accountName)}${tail}`;
+    // AFTER the pending/in-transit marker: that marker is about the transaction
+    // itself and reads first. Escaped like every other name here — a category
+    // called `Food_Dining` would otherwise open a Markdown entity and get the
+    // whole notice refused by Telegram, which is the one message that must
+    // arrive. An empty mapped name is treated as no mapping at all: ` → filed
+    // under ` with nothing after it states nothing.
+    const filed = t.txId ? categoriesByTxId?.get(t.txId) : undefined;
+    const filedTail = filed ? ` → filed under ${escapeMarkdown(filed)}` : '';
+    return `• ${money(t.amountCents / 100)}  ${escapeMarkdown(t.description)} — ${escapeMarkdown(t.accountName)}${tail}${filedTail}`;
   };
   const shown = txs.slice(0, IMPORT_NOTICE_TX_CAP).map(txLine);
   if (txs.length > IMPORT_NOTICE_TX_CAP) shown.push(`  +${txs.length - IMPORT_NOTICE_TX_CAP} more`);
@@ -524,6 +550,25 @@ export function formatImportNotice(
 export const CATEGORIZE_ENTRY_CALLBACK = 'cz:open';
 
 /**
+ * The import notice's way into the `/recategorize` menu, scoped to the rows THAT
+ * import brought in — the payload behind its `Recategorize` button.
+ *
+ * The `cz:` prefix, the written-out literal and the FRESH-message answer are all
+ * for the reasons given for `CATEGORIZE_ENTRY_CALLBACK` above. The POINTER is the
+ * one thing that differs, and it matters: this payload is NOT handled by
+ * `onCallback` in companion/src/categorize.ts. It is matched — before any session
+ * lookup, exactly as that function matches `cz:open` — in `onMenuCallback`, built
+ * by `buildTelegramListenerDeps` in companion/src/index.ts, because the scope it
+ * opens (which transactions the last import notice announced) is module state
+ * there and the menu controller knows nothing about imports.
+ *
+ * Distinct from `cz:open` so the two buttons on one notice cannot open each
+ * other's menu, and short for the same reason every payload here is: Telegram
+ * caps `callback_data` at 64 bytes.
+ */
+export const RECATEGORIZE_ENTRY_CALLBACK = 'cz:recat';
+
+/**
  * One dismiss button per needs-a-category row shown in the import notice, plus
  * a final full-width `Categorize these` row when there is anything to list.
  *
@@ -536,9 +581,17 @@ export const CATEGORIZE_ENTRY_CALLBACK = 'cz:open';
  * APPEND below them, and it is omitted entirely for an empty `rows`: an empty
  * keyboard is what tells the caller there are no buttons to attach at all, and
  * "Categorize these" with no `these` is a button that can only disappoint.
+ *
+ * `withRecategorize` appends one more row BELOW all of that, on its own
+ * condition: the caller passes `true` when at least one row this notice
+ * announced turned out to be FILED already. That is a different question from
+ * whether anything is uncategorized, so the row can be the only one on the
+ * keyboard — an import a rule filed completely leaves nothing to dismiss and is
+ * exactly the case where moving one of those filings is what the reader wants.
  */
 export function buildDismissKeyboard(
   rows: Array<{ activityId: string; description: string; amountCents: number }>,
+  withRecategorize = false,
 ): InlineKeyboard {
   const inline_keyboard = rows.map((r) => [{
     text: `Dismiss: ${r.description.slice(0, 24)} ${money(r.amountCents / 100)}`,
@@ -546,6 +599,9 @@ export function buildDismissKeyboard(
   }]);
   if (inline_keyboard.length > 0) {
     inline_keyboard.push([{ text: 'Categorize these', callback_data: CATEGORIZE_ENTRY_CALLBACK }]);
+  }
+  if (withRecategorize) {
+    inline_keyboard.push([{ text: 'Recategorize', callback_data: RECATEGORIZE_ENTRY_CALLBACK }]);
   }
   return { inline_keyboard };
 }
