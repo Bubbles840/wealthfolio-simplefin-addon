@@ -3,6 +3,7 @@ import {
   bucketFor,
   taxonomyForBucket,
   assignabilityOf,
+  refundSubtypeWouldMakeSpending,
   SPENDING_TAXONOMY_ID,
   INCOME_TAXONOMY_ID,
   SAVINGS_TAXONOMY_ID,
@@ -187,5 +188,41 @@ describe('assignabilityOf', () => {
       bucket: 'spending',
       expected: SPENDING_TAXONOMY_ID,
     });
+  });
+});
+
+describe('refundSubtypeWouldMakeSpending — is the refusal one a subtype can lift?', () => {
+  it('yes for a CASH credit, the one row a refund subtype moves', () => {
+    // Bare, and with a subtype upstream does not recognize: both are `neutral`
+    // today and both become `spending` the moment the subtype is a refund one.
+    expect(refundSubtypeWouldMakeSpending({ accountType: 'CASH', activityType: 'CREDIT' })).toBe(true);
+    expect(refundSubtypeWouldMakeSpending({
+      accountType: 'CASH', activityType: 'CREDIT', subtype: 'Venmo',
+    })).toBe(true);
+    // Case-insensitive, like every other read of these fields.
+    expect(refundSubtypeWouldMakeSpending({ accountType: 'cash', activityType: 'credit' })).toBe(true);
+  });
+
+  it('no when the ACCOUNT TYPE is what decides, so no subtype could ever help', () => {
+    // The reason this predicate exists: `neutral` covers all of these, and a
+    // message offering the reimbursement fix would send their reader to a
+    // setting that cannot move the transaction.
+    for (const accountType of ['SECURITIES', 'CRYPTOCURRENCY', 'SOMETHING_NEW', '']) {
+      expect(refundSubtypeWouldMakeSpending({ accountType, activityType: 'CREDIT' })).toBe(false);
+      expect(refundSubtypeWouldMakeSpending({ accountType, activityType: 'DEPOSIT' })).toBe(false);
+    }
+    // A CREDIT_CARD non-expense type is neutral for the same kind of reason.
+    expect(refundSubtypeWouldMakeSpending({ accountType: 'CREDIT_CARD', activityType: 'DEPOSIT' })).toBe(false);
+  });
+
+  it('no for money IN on a cash account — a subtype does not turn a deposit into a spend', () => {
+    // A CASH DEPOSIT is income even carrying REIMBURSEMENT: the income arm is
+    // matched before the subtype is ever read. This is why the rule sets the
+    // activity TYPE as well, and why the wrong-bucket copy names the rule rather
+    // than the subtype on its own.
+    expect(refundSubtypeWouldMakeSpending({ accountType: 'CASH', activityType: 'DEPOSIT' })).toBe(false);
+    expect(refundSubtypeWouldMakeSpending({
+      accountType: 'CASH', activityType: 'DEPOSIT', subtype: REIMBURSEMENT_SUBTYPE,
+    })).toBe(false);
   });
 });

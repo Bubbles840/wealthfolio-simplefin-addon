@@ -150,3 +150,26 @@ export function assignabilityOf(
   }
   return { ok: true };
 }
+
+/**
+ * Would a refund subtype move THIS row into the spending bucket? Asked of a
+ * row that has just been refused, to decide whether telling its reader about
+ * the reimbursement route would help them or waste their time.
+ *
+ * `neutral` is a much wider answer than "a credit that has not been marked a
+ * refund yet": it is also every activity on a SECURITIES account, every account
+ * type this port does not know (including an EMPTY one, which is what the native
+ * reader hands over when it cannot resolve the account), and every non-expense
+ * type on a CREDIT_CARD. No subtype changes any of those — the account type
+ * decides them — so a message offering the subtype fix there would send someone
+ * to a setting that cannot move their transaction.
+ *
+ * Answered by asking `bucketFor` itself, with the subtype swapped, rather than
+ * by re-listing the account/type arms above: a second copy of that table is
+ * exactly how this file would come to disagree with itself. Only meaningful for
+ * a row `assignabilityOf` has already refused — an ordinary card purchase
+ * answers `true` here and needs no fix at all.
+ */
+export function refundSubtypeWouldMakeSpending(input: BucketInput): boolean {
+  return bucketFor({ ...input, subtype: REIMBURSEMENT_SUBTYPE }) === 'spending';
+}

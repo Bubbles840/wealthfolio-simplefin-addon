@@ -1306,15 +1306,23 @@ describe('openRecategorizeForTxIds — the import notice\'s button', () => {
   });
 });
 
-/** The two refusal screens, verbatim. Written out here rather than imported so
- *  a change to either sentence has to be made twice, deliberately — this is the
- *  copy a user sees instead of losing a category. */
+/** The three refusal screens, verbatim. Written out here rather than imported so
+ *  a change to any of these sentences has to be made twice, deliberately — this
+ *  is the copy a user sees instead of losing a category.
+ *
+ *  Two of the three end with the reimbursement line and one does not, which is
+ *  the whole point: it is offered only where a refund subtype could actually
+ *  lift the refusal. */
 const REFUSED_INCOME_TEXT =
   'It is recorded as money in and can only take an income category while that is true.\n'
   + 'A payback can be turned into a spending offset by marking it a reimbursement in Advanced → Transaction Rules.';
-const REFUSED_NEUTRAL_TEXT =
+const REFUSED_NEUTRAL_SUBTYPE_TEXT =
   'The transaction is not counted as spending or income at all, so no category can be attached to it as it stands.\n'
   + 'A payback can be turned into a spending offset by marking it a reimbursement in Advanced → Transaction Rules.';
+/** No second line: on these rows the ACCOUNT TYPE decides, and no subtype moves
+ *  them — see the SECURITIES/unknown-account test below. */
+const REFUSED_NEUTRAL_TEXT =
+  'The transaction is not counted as spending or income at all, so no category can be attached to it as it stands.';
 
 describe('reassign — the gate that refuses a move Wealthfolio would reject', () => {
   it('writes NOTHING for an income-bucketed row, the failure that destroyed a real category', async () => {
@@ -1361,9 +1369,33 @@ describe('reassign — the gate that refuses a move Wealthfolio would reject', (
     expect(h.deps.assign).not.toHaveBeenCalled();
     expect(h.deps.republish).not.toHaveBeenCalled();
     const refusal = lastCall(h.ui.edit);
-    expect(refusal[0]).toBe(REFUSED_NEUTRAL_TEXT);
+    // A CASH credit IS the row a refund subtype lifts, so this one keeps the
+    // reimbursement line — the account-type cases below do not.
+    expect(refusal[0]).toBe(REFUSED_NEUTRAL_SUBTYPE_TEXT);
     expect(refusal[0]).not.toContain('can only take an income category');
     expect(labels(keyboardOf(refusal))).toEqual(['« Back', 'Done']);
+  });
+
+  it('offers NO reimbursement route when the account type is what refuses the row', async () => {
+    // `neutral` is much wider than "a credit not yet marked a refund": it is also
+    // every activity on an account type outside CASH/CREDIT_CARD, and every row
+    // whose account type could not be resolved at all (the native reader hands
+    // over `''`). No subtype moves any of those, so naming the reimbursement rule
+    // would cost its reader a trip to a settings screen and change nothing —
+    // exactly the reasoning that keeps the hint off the `scope` refusal.
+    for (const accountType of ['SECURITIES', 'SOMETHING_NEW', '']) {
+      const h = setup({ categorized: [catRow('a', [incomeAt('inc-reimb', 'Reimbursements')], { accountType })] });
+      const picker = await openRecatAtTxn(h);
+      await h.tap(dataFor(picker, 'Entertainment'));
+      expect(h.deps.unassignTaxonomy).not.toHaveBeenCalled();
+      expect(h.deps.assign).not.toHaveBeenCalled();
+      expect(h.deps.republish).not.toHaveBeenCalled();
+      const refusal = lastCall(h.ui.edit);
+      expect(refusal[0]).toBe(REFUSED_NEUTRAL_TEXT);
+      expect(refusal[0]).not.toContain('reimbursement');
+      expect(refusal[0]).not.toContain('Transaction Rules');
+      expect(labels(keyboardOf(refusal))).toEqual(['« Back', 'Done']);
+    }
   });
 
   it('never pastes Wealthfolio\'s own API sentence into either refusal', async () => {
@@ -1371,11 +1403,16 @@ describe('reassign — the gate that refuses a move Wealthfolio would reject', (
     // enum labels and reads as a developer's error, and the neutral one
     // ("Neutral transfers cannot be categorized") describes an internal transfer
     // the row is not.
-    for (const fixture of [VENMO_INCOME, BARE_CREDIT]) {
+    const expected = [REFUSED_INCOME_TEXT, REFUSED_NEUTRAL_SUBTYPE_TEXT];
+    for (const [i, fixture] of [VENMO_INCOME, BARE_CREDIT].entries()) {
       const h = setup({ categorized: [fixture] });
       const picker = await openRecatAtTxn(h);
       await h.tap(dataFor(picker, 'Entertainment'));
       const text = lastCall(h.ui.edit)[0];
+      // The positive anchor first: absences alone would also hold on the
+      // CONFIRMATION screen, so this test has to know it is looking at a
+      // refusal at all.
+      expect(text).toBe(expected[i]);
       expect(text).not.toContain('Income activities can only use income categories');
       expect(text).not.toContain('Categories label the cash-flow bucket');
       expect(text).not.toContain('do not change it');
