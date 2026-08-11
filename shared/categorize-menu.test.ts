@@ -515,10 +515,15 @@ describe('renderScreen — recategorize mode: txn', () => {
     expect(keyboard.inline_keyboard.flat().map((b) => b.text)).not.toContain('Keep uncategorized');
   });
 
-  it('a leaf category tap yields reassign, not assign', () => {
+  it('a leaf category tap yields reassign, not assign — including the CURRENT category’s own button, which is not suppressed or special-cased', () => {
+    // recatTxn()'s currentCategory IS cat-groceries, so this same tap also
+    // proves the current category's own button is still offered rather than
+    // filtered out: re-filing to the same category is a no-op the controller
+    // shrugs off, not a state this screen needs to special-case.
     const s = session({ mode: 'recategorize', txns: [recatTxn()], screen: { kind: 'txn', activityId: 'act-1' } });
     const { keyboard, buttons } = renderScreen(s);
     const idx = keyboard.inline_keyboard.flat().findIndex((b) => b.text === 'Groceries');
+    expect(idx).toBeGreaterThanOrEqual(0);
     expect(buttons[idx]).toEqual({ kind: 'reassign', activityId: 'act-1', categoryId: 'cat-groceries' });
   });
 
@@ -530,14 +535,6 @@ describe('renderScreen — recategorize mode: txn', () => {
       kind: 'goto',
       screen: { kind: 'subcats', activityId: 'act-1', parentId: 'cat-dining' },
     });
-  });
-
-  it('the current category’s own button is still offered, not suppressed or special-cased', () => {
-    const s = session({ mode: 'recategorize', txns: [recatTxn()], screen: { kind: 'txn', activityId: 'act-1' } });
-    const { keyboard, buttons } = renderScreen(s);
-    const idx = keyboard.inline_keyboard.flat().findIndex((b) => b.text === 'Groceries');
-    expect(idx).toBeGreaterThanOrEqual(0);
-    expect(buttons[idx]).toEqual({ kind: 'reassign', activityId: 'act-1', categoryId: 'cat-groceries' });
   });
 });
 
@@ -612,11 +609,11 @@ describe('renderScreen — refiled', () => {
     expect(text).not.toContain('offsets');
   });
 
-  it('offers Undo, Next, Done, with Undo yielding undoReassign back to the old category', () => {
+  it('offers Undo, Next transaction, Done — same goto-list label as the filed screen — with Undo yielding undoReassign back to the old category', () => {
     const s = session({ txns: [refiledTxn()], screen: refiledScreen });
     const { keyboard, buttons } = renderScreen(s);
     const labels = keyboard.inline_keyboard.flat().map((b) => b.text);
-    expect(labels).toEqual(['Undo', 'Next', 'Done']);
+    expect(labels).toEqual(['Undo', 'Next transaction', 'Done']);
 
     const undo = buttons[labels.indexOf('Undo')];
     expect(undo).toEqual({
@@ -625,7 +622,7 @@ describe('renderScreen — refiled', () => {
       toRestore: { taxonomyId: 'spending', categoryId: 'cat-dining' },
     });
 
-    const next = buttons[labels.indexOf('Next')];
+    const next = buttons[labels.indexOf('Next transaction')];
     expect(next).toEqual({ kind: 'goto', screen: { kind: 'list', page: 0 } });
 
     const done = buttons[labels.indexOf('Done')];
@@ -652,14 +649,40 @@ describe('renderScreen — refiled', () => {
     expect(text).toBe('A\\*B\\_C: Foo\\_Bar → Baz\\*Qux.');
   });
 
-  it('falls back to the list when the transaction is gone', () => {
-    const s = session({ txns: [], screen: refiledScreen });
+  it('falls back to the list with the recategorize-worded note (not "uncategorized") when the transaction is gone', () => {
+    const s = session({ mode: 'recategorize', txns: [], screen: refiledScreen });
     const { text } = renderScreen(s);
-    expect(text.split('\n')[0]).toBe('That transaction is no longer uncategorized.');
+    expect(text.split('\n')[0]).toBe('That transaction is no longer available to recategorize.');
+    // The whole point of this fallback existing separately from GONE_NOTE: the
+    // transaction was never uncategorized, it was being MOVED, so the fallback
+    // must not claim otherwise.
+    expect(text).not.toContain('uncategorized');
   });
 
-  it('falls back to the list when the target category is gone', () => {
-    const s = session({ txns: [refiledTxn()], categories: [], screen: refiledScreen });
+  it('falls back to the list with the recategorize-worded note when the target category is gone', () => {
+    const s = session({ mode: 'recategorize', txns: [refiledTxn()], categories: [], screen: refiledScreen });
+    const { text } = renderScreen(s);
+    expect(text.split('\n')[0]).toBe('That transaction is no longer available to recategorize.');
+    expect(text).not.toContain('uncategorized');
+  });
+
+  it('falls back to the list with the recategorize-worded note when the transaction has no currentCategory to restore', () => {
+    // `refiledTxn()` always sets `currentCategory`; this drops it to exercise
+    // the third branch of the guard — a txn that DOES resolve, but carries no
+    // data for `undoReassign.toRestore` to use, which is just as much a "this
+    // row isn't in a state this screen can render" case as the other two.
+    const s = session({
+      mode: 'recategorize',
+      txns: [txn({ description: 'BOOK STORES' })],
+      screen: refiledScreen,
+    });
+    const { text } = renderScreen(s);
+    expect(text.split('\n')[0]).toBe('That transaction is no longer available to recategorize.');
+    expect(text).not.toContain('uncategorized');
+  });
+
+  it('falls back with the ORIGINAL GONE_NOTE wording in categorize mode (defensive: this screen should never actually render there)', () => {
+    const s = session({ mode: 'categorize', txns: [], screen: refiledScreen });
     const { text } = renderScreen(s);
     expect(text.split('\n')[0]).toBe('That transaction is no longer uncategorized.');
   });
