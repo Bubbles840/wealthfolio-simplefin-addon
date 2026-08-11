@@ -392,6 +392,133 @@ export function getNativeUncategorizedSpending(
   });
 }
 
+/** One taxonomy's assignment on a transaction — a transaction can carry more
+ *  than one (an income assignment AND a spending one), which is why this is
+ *  its own type rather than a single categoryId/categoryName pair. */
+export interface NativeAssignment {
+  taxonomyId: string;
+  categoryId: string;
+  categoryName: string;
+}
+
+/** One categorized transaction, with every taxonomy's assignment attached. */
+export interface NativeCategorizedTx {
+  activityId: string;
+  /** RAW stored note — callers clean via `descriptionFromComment`. */
+  notes: string;
+  amountCents: number;
+  /** ISO date (yyyy-mm-dd). */
+  date: string;
+  accountName: string;
+  /** UPPERCASED (`WITHDRAWAL`, `DEPOSIT`, ...). Not read by any caller today —
+   *  `/recategorize` tells a credit from a spend by category name, not sign
+   *  (see `renderList`'s comment in shared/categorize-menu.ts) — but it costs
+   *  nothing to carry alongside the row this reader already fetched, and it is
+   *  the one column a future "show the amount's real sign" feature for this
+   *  list would otherwise have to add a whole extra query to get. Left in
+   *  rather than removed so as not to touch the exact-shape assertion in
+   *  sqlite-native.test.ts for a field with no behavioural cost. */
+  activityType: string;
+  /** Every taxonomy's assignment on this activity, 1 or more entries. */
+  assignments: NativeAssignment[];
+}
+
+/**
+ * Categorized spending AND income rows in `[startInclusive, endExclusive)` —
+ * the mirror image of `getNativeUncategorizedSpending` above: an INNER JOIN on
+ * `activity_taxonomy_assignments` instead of a `LEFT JOIN ... IS NULL`, so the
+ * two readers partition the same universe (same type list, same note-marker
+ * exclusions — see that function's comment for why both spending AND income
+ * types count, and why sync-written rows are excluded by note prefix).
+ *
+ * `/recategorize` needs every taxonomy's assignment on a row — a transaction
+ * can carry both an income assignment and a spending one — so this returns
+ * `assignments[]` rather than a single category. One row per assignment comes
+ * back from SQL and is folded here in JS by `activity_id`; the ORDER BY keeps
+ * an activity's rows consecutive, so the fold is a single linear pass.
+ *
+ * Every column is aliased: `tc.name` would otherwise collide with a same-named
+ * column elsewhere in the row and `node:sqlite` (which keys results by column
+ * name) would silently drop one — see `getNativeSpendingCategories` for the
+ * bug this already shipped once.
+ */
+export function getNativeCategorizedSpending(
+  dbPath: string,
+  startInclusive: string,
+  endExclusive: string,
+): NativeCategorizedTx[] {
+  if (!dbPath || !existsSync(dbPath)) return [];
+  if (!validDateBounds(startInclusive, endExclusive)) return [];
+
+  const query = `
+    SELECT a.id            AS activity_id,
+           COALESCE(a.notes, '')            AS notes,
+           ROUND(ABS(CAST(a.amount AS REAL)) * 100) AS amount_cents,
+           substr(a.activity_date, 1, 10)   AS activity_date,
+           COALESCE(ac.name, '')            AS account_name,
+           UPPER(COALESCE(a.activity_type,'')) AS activity_type,
+           ata.taxonomy_id                  AS taxonomy_id,
+           ata.category_id                  AS category_id,
+           COALESCE(tc.name, '')            AS category_name
+    FROM activities a
+    JOIN activity_taxonomy_assignments ata ON a.id = ata.activity_id
+    LEFT JOIN accounts ac ON a.account_id = ac.id
+    LEFT JOIN taxonomy_categories tc
+           ON tc.id = ata.category_id AND tc.taxonomy_id = ata.taxonomy_id
+    WHERE a.activity_date >= '${startInclusive}' AND a.activity_date < '${endExclusive}'
+      AND UPPER(a.activity_type) IN ('WITHDRAWAL', 'FEE', 'TAX', 'DEPOSIT', 'CREDIT', 'INTEREST', 'DIVIDEND', 'INCOME')
+      AND COALESCE(a.notes, '') NOT LIKE 'Starting balance · %'
+      AND COALESCE(a.notes, '') NOT LIKE 'Balance adjustment · %'
+      AND COALESCE(a.notes, '') NOT LIKE '↔️ In-transit transfer · %'
+    ORDER BY a.activity_date DESC, a.id, ata.taxonomy_id;
+  `;
+
+  const rows = queryNativeDb<Record<string, unknown>>(
+    dbPath,
+    'categorized',
+    query,
+    (parts) => (parts.length === 9
+      ? {
+          c0: parts[0], c1: parts[1], c2: parseFloat(parts[2]) || 0, c3: parts[3],
+          c4: parts[4], c5: parts[5], c6: parts[6], c7: parts[7], c8: parts[8],
+        }
+      : null),
+  );
+
+  // node:sqlite returns column-named objects; the CLI fallback returns the
+  // c0..c8 shape built above. Read positionally either way. Rows for the same
+  // activity are consecutive (ORDER BY ... a.id, ata.taxonomy_id), so folding
+  // by activityId is a single linear pass, not a second sort.
+  const byId = new Map<string, NativeCategorizedTx>();
+  const result: NativeCategorizedTx[] = [];
+  for (const r of rows) {
+    const v = Object.values(r) as Array<string | number>;
+    const activityId = String(v[0]);
+    const assignment: NativeAssignment = {
+      taxonomyId: String(v[6] ?? ''),
+      categoryId: String(v[7] ?? ''),
+      categoryName: String(v[8] ?? ''),
+    };
+
+    let tx = byId.get(activityId);
+    if (!tx) {
+      tx = {
+        activityId,
+        notes: String(v[1] ?? ''),
+        amountCents: Math.round(Number(v[2]) || 0),
+        date: String(v[3]).slice(0, 10),
+        accountName: String(v[4] ?? ''),
+        activityType: String(v[5] ?? ''),
+        assignments: [],
+      };
+      byId.set(activityId, tx);
+      result.push(tx);
+    }
+    tx.assignments.push(assignment);
+  }
+  return result;
+}
+
 /** One spending category as Wealthfolio defines it, plus whether it matters to
  *  this month's report. */
 export interface NativeCategoryCatalogEntry {

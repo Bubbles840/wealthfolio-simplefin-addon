@@ -16,7 +16,7 @@
  * so a release that bumps those and forgets this one fails the suite instead of
  * shipping a lie.
  */
-export const SIMPLEFIN_SYNC_VERSION = '1.12.0';
+export const SIMPLEFIN_SYNC_VERSION = '1.13.0';
 
 /** Addon secret the companion writes its version to, so the Sync page can show
  *  which daemon build is actually running against this instance — the two are

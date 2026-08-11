@@ -48,6 +48,12 @@ export const TELEGRAM_COMMAND_MENU = [
   { command: 'status', description: 'Last sync, balances, what needs attention' },
   { command: 'sync', description: 'Pull new bank transactions now' },
   { command: 'categorize', description: 'File uncategorized transactions, right from here' },
+  // Directly after `/categorize`, because the two are one pair — file an unfiled
+  // row, move a filed one — and this menu is the only place most readers will
+  // ever see either name. The description carries an EXAMPLE like `/left`'s and
+  // `/newrule`'s do: the optional query is invisible otherwise, and a reader who
+  // does not know about it scrolls 90 days of history by hand.
+  { command: 'recategorize', description: 'Move a filed transaction — /recategorize venmo narrows it' },
   { command: 'newrule', description: 'Always file a match — /newrule trader joes = groceries' },
   { command: 'help', description: 'This list' },
 ] as const;

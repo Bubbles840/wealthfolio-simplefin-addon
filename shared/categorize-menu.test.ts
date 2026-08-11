@@ -44,6 +44,9 @@ function session(overrides: Partial<MenuSession> = {}): MenuSession {
     buttons: [],
     // Any non-zero value would do; a fixed one keeps the tokens below readable.
     generation: 7,
+    // Defaulted to the long-standing behaviour so every test written before
+    // recategorize existed keeps exercising exactly what it always did.
+    mode: 'categorize',
     ...overrides,
   };
 }
@@ -449,6 +452,312 @@ describe('renderScreen — same-named categories on the rule screens', () => {
   });
 });
 
+// ---- renderScreen: recategorize mode — list ---------------------------------
+
+describe('renderScreen — recategorize mode: list', () => {
+  it('appends the current category to the row label', () => {
+    const s = session({
+      mode: 'recategorize',
+      txns: [txn({
+        date: '2026-08-08',
+        description: 'BOOK STORES',
+        amountCents: -1000,
+        currentCategory: { taxonomyId: 'spending', categoryId: 'cat-dining', name: 'Dining' },
+      })],
+    });
+    const { keyboard } = renderScreen(s);
+    expect(keyboard.inline_keyboard[0][0].text).toBe('Aug 8 · BOOK STORES · -$10 · Dining');
+  });
+
+  it('regression: categorize-mode row label is byte-identical to before recategorize existed', () => {
+    const s = session({
+      mode: 'categorize',
+      txns: [txn({ date: '2026-08-08', description: 'BOOK STORES', amountCents: -1000 })],
+    });
+    const { keyboard } = renderScreen(s);
+    expect(keyboard.inline_keyboard[0][0].text).toBe('Aug 8 · BOOK STORES · -$10');
+  });
+
+  it('header says "Recategorize — tap a transaction" instead of the categorize count line', () => {
+    const s = session({
+      mode: 'recategorize',
+      txns: [txn({ currentCategory: { taxonomyId: 'spending', categoryId: 'cat-dining', name: 'Dining' } })],
+    });
+    const { text } = renderScreen(s);
+    expect(text).toBe('Recategorize — tap a transaction');
+  });
+
+  it('empty list uses the recategorize-specific empty state with only Done', () => {
+    const s = session({ mode: 'recategorize', txns: [] });
+    const { text, keyboard } = renderScreen(s);
+    expect(text).toBe('Nothing categorized in the last 90 days matches.');
+    expect(keyboard.inline_keyboard).toEqual([[{ text: 'Done', callback_data: `${MENU_CALLBACK_PREFIX}7:0` }]]);
+  });
+});
+
+// ---- renderScreen: recategorize mode — txn ----------------------------------
+
+describe('renderScreen — recategorize mode: txn', () => {
+  const recatTxn = () => txn({
+    description: 'BOOK STORES',
+    currentCategory: { taxonomyId: 'spending', categoryId: 'cat-groceries', name: 'Groceries' },
+  });
+
+  it('shows the current category in the text', () => {
+    const s = session({ mode: 'recategorize', txns: [recatTxn()], screen: { kind: 'txn', activityId: 'act-1' } });
+    const { text } = renderScreen(s);
+    expect(text).toContain('Groceries');
+  });
+
+  it('has no "Keep uncategorized" button', () => {
+    const s = session({ mode: 'recategorize', txns: [recatTxn()], screen: { kind: 'txn', activityId: 'act-1' } });
+    const { keyboard } = renderScreen(s);
+    expect(keyboard.inline_keyboard.flat().map((b) => b.text)).not.toContain('Keep uncategorized');
+  });
+
+  it('a leaf category tap yields reassign, not assign — including the CURRENT category’s own button, which is not suppressed or special-cased', () => {
+    // recatTxn()'s currentCategory IS cat-groceries, so this same tap also
+    // proves the current category's own button is still offered rather than
+    // filtered out: re-filing to the same category is a no-op the controller
+    // shrugs off, not a state this screen needs to special-case.
+    const s = session({ mode: 'recategorize', txns: [recatTxn()], screen: { kind: 'txn', activityId: 'act-1' } });
+    const { keyboard, buttons } = renderScreen(s);
+    const idx = keyboard.inline_keyboard.flat().findIndex((b) => b.text === 'Groceries');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(buttons[idx]).toEqual({ kind: 'reassign', activityId: 'act-1', categoryId: 'cat-groceries' });
+  });
+
+  it('a parent with children still goes to the subcats screen (unchanged by mode)', () => {
+    const s = session({ mode: 'recategorize', txns: [recatTxn()], screen: { kind: 'txn', activityId: 'act-1' } });
+    const { keyboard, buttons } = renderScreen(s);
+    const idx = keyboard.inline_keyboard.flat().findIndex((b) => b.text === 'Dining');
+    expect(buttons[idx]).toEqual({
+      kind: 'goto',
+      screen: { kind: 'subcats', activityId: 'act-1', parentId: 'cat-dining' },
+    });
+  });
+});
+
+// ---- renderScreen: recategorize mode — subcats ------------------------------
+
+describe('renderScreen — recategorize mode: subcats', () => {
+  const subcatsScreen: MenuScreen = { kind: 'subcats', activityId: 'act-1', parentId: 'cat-dining' };
+
+  it('a child category tap yields reassign', () => {
+    const s = session({
+      mode: 'recategorize',
+      txns: [txn({ currentCategory: { taxonomyId: 'spending', categoryId: 'cat-groceries', name: 'Groceries' } })],
+      screen: subcatsScreen,
+    });
+    const { keyboard, buttons } = renderScreen(s);
+    const idx = keyboard.inline_keyboard.flat().findIndex((b) => b.text === 'Fast Food');
+    expect(buttons[idx]).toEqual({ kind: 'reassign', activityId: 'act-1', categoryId: 'cat-dining-fastfood' });
+  });
+
+  it('"Just <parent> itself" also yields reassign', () => {
+    const s = session({
+      mode: 'recategorize',
+      txns: [txn({ currentCategory: { taxonomyId: 'spending', categoryId: 'cat-groceries', name: 'Groceries' } })],
+      screen: subcatsScreen,
+    });
+    const { keyboard, buttons } = renderScreen(s);
+    const idx = keyboard.inline_keyboard.flat().findIndex((b) => b.text === 'Just Dining itself');
+    expect(buttons[idx]).toEqual({ kind: 'reassign', activityId: 'act-1', categoryId: 'cat-dining' });
+  });
+});
+
+// ---- renderScreen: refiled ---------------------------------------------------
+
+describe('renderScreen — refiled', () => {
+  const refiledScreen: MenuScreen = {
+    kind: 'refiled', activityId: 'act-1', fromName: 'Dining', toCategoryId: 'cat-groceries',
+    crossTaxonomy: false, undone: false,
+    restore: [{ taxonomyId: 'spending', categoryId: 'cat-dining' }],
+  };
+
+  function refiledTxn(overrides: Partial<CategorizeTxn> = {}): CategorizeTxn {
+    return txn({
+      description: 'BOOK STORES',
+      currentCategory: { taxonomyId: 'spending', categoryId: 'cat-dining', name: 'Dining' },
+      ...overrides,
+    });
+  }
+
+  it('confirms with the exact "X: old → new." wording', () => {
+    const s = session({ txns: [refiledTxn()], screen: refiledScreen });
+    const { text } = renderScreen(s);
+    expect(text).toBe('BOOK STORES: Dining → Groceries.');
+  });
+
+  it('adds the exact cross-taxonomy offset line when crossTaxonomy is true', () => {
+    const s = session({
+      txns: [refiledTxn({
+        description: 'PAYPAL REFUND',
+        currentCategory: { taxonomyId: 'income', categoryId: 'cat-income-refunds', name: 'Refunds' },
+      })],
+      screen: { ...refiledScreen, fromName: 'Refunds', crossTaxonomy: true },
+    });
+    const { text } = renderScreen(s);
+    expect(text).toBe(
+      'PAYPAL REFUND: Refunds → Groceries.\n'
+      + 'This payment now offsets Groceries instead of counting toward its previous category.',
+    );
+  });
+
+  it('the offset line says nothing income-specific when the cleared assignment was a savings one', () => {
+    // crossTaxonomy is set from "cleared some non-spending taxonomy", not
+    // "cleared income specifically" — a savings-taxonomy clear must not be
+    // described as if it stopped counting as income, since it never did.
+    const s = session({
+      txns: [refiledTxn({
+        description: 'HOUSE FUND TRANSFER',
+        currentCategory: { taxonomyId: 'savings', categoryId: 'cat-savings-house', name: 'House Fund' },
+      })],
+      screen: { ...refiledScreen, fromName: 'House Fund', crossTaxonomy: true },
+    });
+    const { text } = renderScreen(s);
+    expect(text).toBe(
+      'HOUSE FUND TRANSFER: House Fund → Groceries.\n'
+      + 'This payment now offsets Groceries instead of counting toward its previous category.',
+    );
+    expect(text).not.toContain('income');
+  });
+
+  it('omits the offset line when crossTaxonomy is false', () => {
+    const s = session({ txns: [refiledTxn()], screen: refiledScreen });
+    const { text } = renderScreen(s);
+    expect(text).not.toContain('offsets');
+  });
+
+  it('offers Undo, Next transaction, Done — same goto-list label as the filed screen — with Undo yielding undoReassign back to the old category', () => {
+    const s = session({ txns: [refiledTxn()], screen: refiledScreen });
+    const { keyboard, buttons } = renderScreen(s);
+    const labels = keyboard.inline_keyboard.flat().map((b) => b.text);
+    expect(labels).toEqual(['Undo', 'Next transaction', 'Done']);
+
+    const undo = buttons[labels.indexOf('Undo')];
+    expect(undo).toEqual({
+      kind: 'undoReassign',
+      activityId: 'act-1',
+      toRestore: [{ taxonomyId: 'spending', categoryId: 'cat-dining' }],
+    });
+
+    const next = buttons[labels.indexOf('Next transaction')];
+    expect(next).toEqual({ kind: 'goto', screen: { kind: 'list', page: 0 } });
+
+    const done = buttons[labels.indexOf('Done')];
+    expect(done).toEqual({ kind: 'close' });
+  });
+
+  it('hands Undo EVERY assignment the move cleared, not the one the screen displays', () => {
+    // The defect this list shape exists for: a row holding a spending category
+    // AND an income one loses the income assignment to the move, and an undo
+    // built from the displayed category alone would never put it back — while
+    // this screen said "back under Dining" as if it had.
+    const s = session({
+      txns: [refiledTxn()],
+      screen: {
+        ...refiledScreen,
+        crossTaxonomy: true,
+        restore: [
+          { taxonomyId: 'spending', categoryId: 'cat-dining' },
+          { taxonomyId: 'income', categoryId: 'cat-income-refunds' },
+          { taxonomyId: 'savings', categoryId: 'cat-house' },
+        ],
+      },
+    });
+    const { keyboard, buttons } = renderScreen(s);
+    const labels = keyboard.inline_keyboard.flat().map((b) => b.text);
+    expect(buttons[labels.indexOf('Undo')]).toEqual({
+      kind: 'undoReassign',
+      activityId: 'act-1',
+      toRestore: [
+        { taxonomyId: 'spending', categoryId: 'cat-dining' },
+        { taxonomyId: 'income', categoryId: 'cat-income-refunds' },
+        { taxonomyId: 'savings', categoryId: 'cat-house' },
+      ],
+    });
+  });
+
+  it('offers NO Undo button when there is nothing to restore', () => {
+    // A move that wrote nothing (re-filing to the category the row already had)
+    // has nothing to reverse. An Undo here could only either do nothing and
+    // claim success, or write a category the row already carries.
+    const s = session({ txns: [refiledTxn()], screen: { ...refiledScreen, restore: [] } });
+    const { keyboard, buttons } = renderScreen(s);
+    const labels = keyboard.inline_keyboard.flat().map((b) => b.text);
+    expect(labels).toEqual(['Next transaction', 'Done']);
+    expect(buttons.some((b) => b.kind === 'undoReassign')).toBe(false);
+    // The confirmation itself still renders — the move is still what happened.
+    expect(renderScreen(s).text).toBe('BOOK STORES: Dining → Groceries.');
+  });
+
+  it('undone: true mirrors the existing undo wording pattern and offers only Back to list / Done', () => {
+    const s = session({
+      txns: [refiledTxn()],
+      screen: { ...refiledScreen, undone: true },
+    });
+    const { text, keyboard } = renderScreen(s);
+    expect(text).toBe('Refiling undone — BOOK STORES is back under Dining.');
+    expect(keyboard.inline_keyboard.flat().map((b) => b.text)).toEqual(['Back to list', 'Done']);
+  });
+
+  it('escapes Markdown specials in the description, old name, and new category name', () => {
+    const s = session({
+      txns: [refiledTxn({ description: 'A*B_C' })],
+      categories: [{ id: 'cat-groceries', name: 'Baz*Qux', parentId: null, parentName: null }],
+      screen: { ...refiledScreen, fromName: 'Foo_Bar' },
+    });
+    const { text } = renderScreen(s);
+    expect(text).toBe('A\\*B\\_C: Foo\\_Bar → Baz\\*Qux.');
+  });
+
+  it('falls back to the list with the recategorize-worded note (not "uncategorized") when the transaction is gone', () => {
+    const s = session({ mode: 'recategorize', txns: [], screen: refiledScreen });
+    const { text } = renderScreen(s);
+    expect(text.split('\n')[0]).toBe('That transaction is no longer available to recategorize.');
+    // The whole point of this fallback existing separately from GONE_NOTE: the
+    // transaction was never uncategorized, it was being MOVED, so the fallback
+    // must not claim otherwise.
+    expect(text).not.toContain('uncategorized');
+  });
+
+  it('falls back to the list with the recategorize-worded note when the target category is gone', () => {
+    const s = session({ mode: 'recategorize', txns: [refiledTxn()], categories: [], screen: refiledScreen });
+    const { text } = renderScreen(s);
+    expect(text.split('\n')[0]).toBe('That transaction is no longer available to recategorize.');
+    expect(text).not.toContain('uncategorized');
+  });
+
+  it('renders and still offers Undo when the transaction carries no currentCategory', () => {
+    // This used to be a third fallback branch: while the undo was derived from
+    // `txn.currentCategory`, a txn without one could not render this screen at
+    // all. The restore data lives on the SCREEN now — which is the only place
+    // that knows the state BEFORE the move — so the display-only field being
+    // absent no longer costs the reader their confirmation or their Undo.
+    const s = session({
+      mode: 'recategorize',
+      txns: [txn({ description: 'BOOK STORES' })],
+      screen: refiledScreen,
+    });
+    const { text, keyboard, buttons } = renderScreen(s);
+    expect(text).toBe('BOOK STORES: Dining → Groceries.');
+    const labels = keyboard.inline_keyboard.flat().map((b) => b.text);
+    expect(labels).toEqual(['Undo', 'Next transaction', 'Done']);
+    expect(buttons[labels.indexOf('Undo')]).toEqual({
+      kind: 'undoReassign',
+      activityId: 'act-1',
+      toRestore: [{ taxonomyId: 'spending', categoryId: 'cat-dining' }],
+    });
+  });
+
+  it('falls back with the ORIGINAL GONE_NOTE wording in categorize mode (defensive: this screen should never actually render there)', () => {
+    const s = session({ mode: 'categorize', txns: [], screen: refiledScreen });
+    const { text } = renderScreen(s);
+    expect(text.split('\n')[0]).toBe('That transaction is no longer uncategorized.');
+  });
+});
+
 // ---- token codec / applyTap -------------------------------------------------
 
 describe('applyTap', () => {
@@ -560,7 +869,16 @@ describe('callback_data byte cap', () => {
     // A deliberately huge generation: the counter climbs for the life of the
     // process, so the widest token the format can ever produce is the one to
     // measure, not the one a fresh session happens to start at.
-    const base = { txns: longTxns, categories, buttons: [] as MenuAction[], generation: 4294967295 };
+    //
+    // `mode: 'categorize'` is spelled out explicitly even though the field is
+    // optional (every read treats a missing value as `'categorize'`) — this
+    // session predates recategorize, and the value below is exactly what an
+    // omitted field defaults to, so nothing about this test's behaviour
+    // changes.
+    const base = {
+      txns: longTxns, categories, buttons: [] as MenuAction[], generation: 4294967295,
+      mode: 'categorize' as const,
+    };
 
     assertCallbackBytesFit(renderScreen({ ...base, screen: { kind: 'list', page: 0 } }).keyboard);
     assertCallbackBytesFit(renderScreen({ ...base, screen: { kind: 'list', page: 5 } }).keyboard);
@@ -571,6 +889,73 @@ describe('callback_data byte cap', () => {
       renderScreen({
         ...base,
         screen: { kind: 'subcats', activityId: longTxns[0].activityId, parentId: longParents[0].id },
+      }).keyboard,
+    );
+  });
+
+  it('every emitted callback_data fits the 64-byte limit for recategorize screens too, even with long current-category names', () => {
+    const longTxns: CategorizeTxn[] = Array.from({ length: 50 }, (_, i) => ({
+      activityId: `activity-id-that-is-quite-long-${'x'.repeat(20)}-${i}`,
+      date: '2026-08-08',
+      amountCents: -123456,
+      description: `A VERY LONG MERCHANT DESCRIPTOR THAT GOES ON AND ON #${i} ${'Y'.repeat(40)}`,
+      accountName: `Some Long Account Name For A Household Member ${'Z'.repeat(30)} #${i}`,
+      currentCategory: {
+        taxonomyId: 'spending',
+        categoryId: `current-category-id-that-is-long-${'p'.repeat(20)}-${i}`,
+        name: `A Really Long Current Category Name Number ${'Q'.repeat(30)} #${i}`,
+      },
+    }));
+    const longParents: SpendingCategory[] = Array.from({ length: 20 }, (_, i) => ({
+      id: `category-id-that-is-long-${'p'.repeat(20)}-${i}`,
+      name: `A Really Long Parent Category Name Number ${'Q'.repeat(30)} #${i}`,
+      parentId: null,
+      parentName: null,
+    }));
+    const longChildren: SpendingCategory[] = Array.from({ length: 40 }, (_, i) => ({
+      id: `child-category-id-that-is-long-${'c'.repeat(20)}-${i}`,
+      name: `A Really Long Child Category Name Number ${'R'.repeat(30)} #${i}`,
+      parentId: longParents[i % longParents.length].id,
+      parentName: longParents[i % longParents.length].name,
+    }));
+    const categories = [...longParents, ...longChildren];
+
+    const base = {
+      txns: longTxns, categories, buttons: [] as MenuAction[], generation: 4294967295,
+      mode: 'recategorize' as const,
+    };
+
+    assertCallbackBytesFit(renderScreen({ ...base, screen: { kind: 'list', page: 0 } }).keyboard);
+    assertCallbackBytesFit(
+      renderScreen({ ...base, screen: { kind: 'txn', activityId: longTxns[0].activityId } }).keyboard,
+    );
+    assertCallbackBytesFit(
+      renderScreen({
+        ...base,
+        screen: { kind: 'subcats', activityId: longTxns[0].activityId, parentId: longParents[0].id },
+      }).keyboard,
+    );
+    // The refiled confirmation is a new screen KIND, not just a new mode on an
+    // existing one — worth its own check that a long fromName/category name
+    // still never reaches callback_data (buttons there stay index-only).
+    assertCallbackBytesFit(
+      renderScreen({
+        ...base,
+        screen: {
+          kind: 'refiled',
+          activityId: longTxns[0].activityId,
+          fromName: `A Really Long Old Category Name ${'O'.repeat(40)}`,
+          toCategoryId: longParents[0].id,
+          crossTaxonomy: true,
+          undone: false,
+          // Several assignments, every id long: the restore list rides on the
+          // SCREEN, never in a token, so none of this can reach callback_data.
+          restore: [
+            { taxonomyId: 'spending_categories', categoryId: longParents[0].id },
+            { taxonomyId: 'income_categories', categoryId: `income-category-id-${'i'.repeat(40)}` },
+            { taxonomyId: 'savings_categories', categoryId: `savings-category-id-${'s'.repeat(40)}` },
+          ],
+        },
       }).keyboard,
     );
   });
