@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { maskUrl, validateStartupEnv, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, runCompanionSyncExclusive, buildTelegramCommandHandler, applyTelegramDismissal, buildTelegramListenerDeps, buildCategorizeController, buildCategorizeDeps } from './index.js';
+import { maskUrl, validateStartupEnv, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, runCompanionSyncExclusive, buildTelegramCommandHandler, applyTelegramDismissal, buildTelegramListenerDeps, buildCategorizeController, buildCategorizeDeps, rememberImportScope } from './index.js';
 import { formatHelpReply, parseCommand } from '../../shared/telegram-commands.js';
 import { SIMPLEFIN_SYNC_VERSION } from '../../shared/version.js';
 import { runSyncCore } from '../../shared/sync-core.js';
@@ -2394,6 +2394,130 @@ describe('sendImportNotice', () => {
     expect(written).not.toHaveProperty('act-ancient');
   });
 
+  /** Shaped like `getNativeCategorizedSpending`'s rows: the note still carries the
+   *  ` · <txId>` bookkeeping the read-back matches on. */
+  const catRow = (activityId: string, desc: string, txId: string, categoryName: string) => ({
+    activityId,
+    notes: `${desc} · ${txId}`,
+    amountCents: 6774,
+    date: '2026-07-09',
+    accountName: 'Spend (4937)',
+    activityType: 'WITHDRAWAL',
+    assignments: [{ taxonomyId: 'spending_categories', categoryId: 'cat-g', categoryName }],
+  });
+
+  /** Sends one notice for `importedTx` and hands back the parsed sendMessage body. */
+  const noticeBody = async (): Promise<any> => {
+    const fetchMock = vi.fn((_url: any, _init?: any) => Promise.resolve({ ok: true, json: async () => ({ ok: true }) }));
+    vi.stubGlobal('fetch', fetchMock);
+    const client: any = {
+      getAddonSecret: vi.fn(async () => null),
+      setAddonSecret: vi.fn(async () => {}),
+    };
+    await sendImportNotice(client, { botToken: 'T', chatId: '9' }, {
+      imported: 1, importedTransactions: [importedTx],
+    } as any);
+    const call = fetchMock.mock.calls.find((c: any[]) => String(c[0]).includes('sendMessage'));
+    return JSON.parse((call![1] as any).body);
+  };
+
+  describe('where the import was filed', () => {
+    beforeEach(() => {
+      vi.mocked(getNativeUncategorizedSpending).mockReturnValue([]);
+      vi.mocked(getNativeCategorizedSpending).mockReset();
+      vi.mocked(getNativeCategorizedSpending).mockReturnValue([]);
+    });
+
+    afterEach(() => {
+      // Left as every other describe in this file expects to find it: nothing
+      // else in here has ever had a reason to stub the categorized mirror, and a
+      // row leaking out of this block would put a `Recategorize` button on
+      // notices those tests assert have no keyboard at all.
+      vi.mocked(getNativeCategorizedSpending).mockReset();
+      vi.mocked(getNativeCategorizedSpending).mockReturnValue([]);
+    });
+
+    it('names the category each imported row landed in and offers a Recategorize button', async () => {
+      vi.mocked(getNativeCategorizedSpending).mockReturnValue([
+        catRow('act-1', 'TRADER JOE S #628', 'tx-a', 'Groceries'),
+      ] as any);
+      const body = await noticeBody();
+      expect(body.text).toContain('TRADER JOE S #628 — Spend (4937) → filed under Groceries');
+      // Nothing is uncategorized here, so there are no dismiss rows and no
+      // `Categorize these` — the Recategorize row stands on its own condition.
+      expect(body.reply_markup.inline_keyboard).toEqual([
+        [{ text: 'Recategorize', callback_data: 'cz:recat' }],
+      ]);
+    });
+
+    it('matches the read-back by txId, never by description', async () => {
+      // Two $4.23 Amazon charges in a week is normal. Matching on the description
+      // would attribute one transaction's category to another — the row below has
+      // the SAME description as the import and a DIFFERENT txId, so the notice
+      // must say nothing about where the import was filed.
+      vi.mocked(getNativeCategorizedSpending).mockReturnValue([
+        catRow('act-2', 'TRADER JOE S #628', 'tx-other', 'Shopping'),
+      ] as any);
+      const body = await noticeBody();
+      expect(body.text).not.toContain('filed under');
+      expect(body).not.toHaveProperty('reply_markup');
+    });
+
+    it('picks the row with the matching txId out of same-description siblings', async () => {
+      vi.mocked(getNativeCategorizedSpending).mockReturnValue([
+        catRow('act-2', 'TRADER JOE S #628', 'tx-other', 'Shopping'),
+        catRow('act-1', 'TRADER JOE S #628', 'tx-a', 'Groceries'),
+      ] as any);
+      const body = await noticeBody();
+      expect(body.text).toContain('filed under Groceries');
+      expect(body.text).not.toContain('Shopping');
+    });
+
+    it('reports the SPENDING category when a row carries more than one taxonomy', async () => {
+      // The name the reader recognises: it is what their budgets and every /left
+      // figure are about, and it is what the recategorize menu will show as the
+      // row's current category — the two must not disagree.
+      vi.mocked(getNativeCategorizedSpending).mockReturnValue([{
+        ...catRow('act-1', 'TRADER JOE S #628', 'tx-a', 'Groceries'),
+        assignments: [
+          { taxonomyId: 'income_categories', categoryId: 'inc-1', categoryName: 'Reimbursement' },
+          { taxonomyId: 'spending_categories', categoryId: 'cat-g', categoryName: 'Groceries' },
+        ],
+      }] as any);
+      const body = await noticeBody();
+      expect(body.text).toContain('filed under Groceries');
+      expect(body.text).not.toContain('Reimbursement');
+    });
+
+    it('sends the notice anyway when the read-back cannot be done', async () => {
+      // A locked database costs the ` → filed under` suffix and the button. It
+      // must never cost the notice, which is the only record of what imported.
+      vi.mocked(getNativeCategorizedSpending).mockImplementationOnce(() => { throw new Error('database is locked'); });
+      const body = await noticeBody();
+      expect(body.text).toContain('1 new transaction');
+      expect(body.text).toContain('TRADER JOE S #628 — Spend (4937)');
+      expect(body.text).not.toContain('filed under');
+      expect(body).not.toHaveProperty('reply_markup');
+    });
+
+    it('adds the Recategorize row after the frozen dismiss and Categorize these rows', async () => {
+      vi.mocked(getNativeUncategorizedSpending).mockReturnValue([uncatRow('act-9', 'VENMO PAYMENT')] as any);
+      vi.mocked(getNativeCategorizedSpending).mockReturnValue([
+        catRow('act-1', 'TRADER JOE S #628', 'tx-a', 'Groceries'),
+      ] as any);
+      const body = await noticeBody();
+      expect(body.reply_markup.inline_keyboard[0][0].callback_data).toBe('d:act-9');
+      expect(body.reply_markup.inline_keyboard[1]).toEqual([
+        { text: 'Categorize these', callback_data: CATEGORIZE_ENTRY_CALLBACK },
+      ]);
+      expect(body.reply_markup.inline_keyboard[2]).toEqual([
+        { text: 'Recategorize', callback_data: 'cz:recat' },
+      ]);
+      // Frozen copy, still exactly as it was.
+      expect(body.reply_markup.inline_keyboard[0][0].text).toBe('Dismiss: VENMO PAYMENT $45.16');
+    });
+  });
+
   it('sends no keyboard when nothing is uncategorized', async () => {
     vi.mocked(getNativeUncategorizedSpending).mockReturnValue([]);
     const fetchMock = vi.fn(() => Promise.resolve({ ok: true, json: async () => ({ ok: true, result: [] }) }));
@@ -2970,5 +3094,178 @@ describe('the /categorize wiring', () => {
     const { sent, reply } = collect();
     await deps.onCommand(parsed!, reply);
     expect(sent[0][0]).toBe('2 transactions need a category:');
+  });
+});
+
+describe('the /recategorize wiring', () => {
+  const CATS = [
+    { id: 'cat-food', name: 'Food & Dining', parentId: null, parentName: null },
+    { id: 'cat-rest', name: 'Restaurants', parentId: 'cat-food', parentName: 'Food & Dining' },
+    { id: 'cat-fun', name: 'Entertainment', parentId: null, parentName: null },
+  ];
+
+  /** Shaped like `getNativeCategorizedSpending`'s rows — the note keeps its
+   *  ` · <txId>` bookkeeping, which is what the import scope matches on. */
+  const catRow = (activityId: string, description: string, txId: string, categoryName: string) => ({
+    activityId,
+    notes: `${description} · ${txId}`,
+    amountCents: 1200,
+    date: '2026-08-08',
+    accountName: 'Citi Double Cash',
+    activityType: 'WITHDRAWAL',
+    assignments: [{ taxonomyId: 'spending_categories', categoryId: 'cat-fun', categoryName }],
+  });
+
+  const clientFor = () => ({
+    login: vi.fn(async () => {}),
+    getAddonSecret: vi.fn(async () => null),
+    setAddonSecret: vi.fn(async () => {}),
+    assignActivityCategory: vi.fn(async () => {}),
+    unassignActivityCategory: vi.fn(async () => {}),
+  } as any);
+
+  const collect = () => {
+    const sent: Array<[string, any]> = [];
+    return { sent, reply: async (text: string, keyboard?: any) => { sent.push([text, keyboard]); } };
+  };
+  const labels = (kb: any): string[] => kb.inline_keyboard.flat().map((b: any) => b.text);
+  const fakeUi = () => ({
+    edit: vi.fn(async (_t: string, _k?: any) => {}),
+    answer: vi.fn(async (_t?: string) => {}),
+    send: vi.fn(async (_t: string, _k?: any) => {}),
+  });
+
+  const runCommand = async (client: any, args = '') => {
+    const { sent, reply } = collect();
+    await buildTelegramCommandHandler(client)({ command: 'recategorize', args }, reply);
+    return sent;
+  };
+
+  beforeEach(() => {
+    process.env.WEALTHFOLIO_API_URL = 'http://wf';
+    process.env.WEALTHFOLIO_PASSWORD = 'pw';
+    process.env.WEALTHFOLIO_DB_PATH = '/mnt/wealthfolio.db';
+    vi.mocked(existsSync).mockReturnValue(true);
+    vi.mocked(getNativeCategorizedSpending).mockReset();
+    vi.mocked(getNativeCategorizedSpending).mockReturnValue([
+      catRow('act-1', 'TRADER JOE S #628', 'tx-a', 'Groceries'),
+      catRow('act-2', 'VENMO PAYMENT', 'tx-b', 'Entertainment'),
+    ] as any);
+    vi.mocked(getNativeSpendingCategories).mockReturnValue(CATS as any);
+    // Boot state: no import notice has been sent in this process yet.
+    rememberImportScope(null);
+  });
+
+  afterEach(() => {
+    vi.mocked(existsSync).mockReturnValue(true);
+    delete process.env.WEALTHFOLIO_DB_PATH;
+  });
+
+  it('answers /recategorize with what is already filed, each row naming its category', async () => {
+    const sent = await runCommand(clientFor());
+    expect(sent).toHaveLength(1);
+    expect(sent[0][0]).toBe('Recategorize — tap a transaction');
+    expect(labels(sent[0][1])).toEqual([
+      'Aug 8 · TRADER JOE S #628 · $12 · Groceries',
+      'Aug 8 · VENMO PAYMENT · $12 · Entertainment',
+      'Done',
+    ]);
+  });
+
+  it('narrows the list to the argument', async () => {
+    const sent = await runCommand(clientFor(), 'venmo');
+    expect(labels(sent[0][1])).toEqual(['Aug 8 · VENMO PAYMENT · $12 · Entertainment', 'Done']);
+  });
+
+  it('treats a whitespace-only argument as no filter at all', async () => {
+    // The handler cannot tell `/recategorize` from `/recategorize `, and
+    // "nothing matches" for an empty search would be a lie.
+    const sent = await runCommand(clientFor(), '   ');
+    expect(labels(sent[0][1])).toHaveLength(3);
+  });
+
+  it('says it cannot look up transactions when the database is missing', async () => {
+    // `getNativeCategorizedSpending` answers [] for a path that is not there, so
+    // without the guard this would read as "nothing is categorized".
+    vi.mocked(existsSync).mockReturnValue(false);
+    const sent = await runCommand(clientFor());
+    expect(sent[0][0]).toBe(
+      'The companion has no database access right now, so it can\'t look up your transactions.',
+    );
+    expect(vi.mocked(getNativeCategorizedSpending)).not.toHaveBeenCalled();
+  });
+
+  describe('the import notice\'s Recategorize button', () => {
+    const sendNotice = async (client: any, txIds: string[]) => {
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: true, json: async () => ({ ok: true }) })));
+      await sendImportNotice(client, { botToken: 'T', chatId: '9' }, {
+        imported: txIds.length,
+        importedTransactions: txIds.map((txId) => ({
+          txId, sfAccountId: 'sfin-1', description: 'TRADER JOE S #628', amountCents: 1200,
+          currency: 'USD', accountName: 'Citi Double Cash', activityType: 'WITHDRAWAL',
+          pending: false, inTransit: false,
+        })),
+      } as any);
+    };
+
+    it('opens a FRESH message scoped to the transactions that import brought in', async () => {
+      const client = clientFor();
+      await sendNotice(client, ['tx-a']);
+      const deps = buildTelegramListenerDeps(client);
+      const ui = fakeUi();
+      await deps.onMenuCallback!({ data: 'cz:recat', chatId: 4242, messageId: 7 }, ui);
+      // A new message, never an edit: the notice lists what imported and carries
+      // its own dismiss buttons, and rendering the menu over it would destroy it.
+      expect(ui.edit).not.toHaveBeenCalled();
+      expect(ui.send.mock.calls.at(-1)![0]).toBe('Recategorize — tap a transaction');
+      expect(labels(ui.send.mock.calls.at(-1)![1])).toEqual([
+        'Aug 8 · TRADER JOE S #628 · $12 · Groceries',
+        'Done',
+      ]);
+      // The spinner has to stop, and the new message is the only feedback.
+      expect(ui.answer).toHaveBeenCalledWith();
+    });
+
+    it('falls back to the recent list when a restart lost what the notice was about', async () => {
+      // `null` scope: the companion restarted, the memory died with it. An empty
+      // screen would read as "that import filed nothing".
+      rememberImportScope(null);
+      const deps = buildTelegramListenerDeps(clientFor());
+      const ui = fakeUi();
+      await deps.onMenuCallback!({ data: 'cz:recat', chatId: 4242, messageId: 7 }, ui);
+      expect(ui.send.mock.calls.at(-1)![0]).toBe('Recategorize — tap a transaction');
+      expect(labels(ui.send.mock.calls.at(-1)![1])).toHaveLength(3);
+    });
+
+    it('works with no messageId at all, which the listener cannot promise', async () => {
+      // The listener types `messageId` as `number` but lifts it off an untrusted
+      // payload (`cq?.message?.message_id`), so `undefined` arrives under that type.
+      await sendNotice(clientFor(), ['tx-a']);
+      const deps = buildTelegramListenerDeps(clientFor());
+      const ui = fakeUi();
+      await deps.onMenuCallback!({ data: 'cz:recat', chatId: 4242, messageId: undefined as any }, ui);
+      expect(ui.send.mock.calls.at(-1)![0]).toBe('Recategorize — tap a transaction');
+      expect(ui.answer).toHaveBeenCalled();
+    });
+
+    it('never falls through to "that menu expired" — no session exists yet', async () => {
+      await sendNotice(clientFor(), ['tx-a']);
+      const deps = buildTelegramListenerDeps(clientFor());
+      const ui = fakeUi();
+      await deps.onMenuCallback!({ data: 'cz:recat', chatId: 4242, messageId: 7 }, ui);
+      expect(ui.answer).not.toHaveBeenCalledWith('That menu expired — send /categorize again.');
+    });
+
+    it('answers the tap and logs rather than throwing when the menu cannot be opened', async () => {
+      // The listener sends nothing of its own for a thrown menu tap, so a button
+      // whose handler throws would spin until Telegram gave up on it.
+      vi.mocked(getNativeSpendingCategories).mockImplementationOnce(() => { throw new Error('database is locked'); });
+      const deps = buildTelegramListenerDeps(clientFor());
+      const ui = fakeUi();
+      await expect(
+        deps.onMenuCallback!({ data: 'cz:recat', chatId: 4242, messageId: 7 }, ui),
+      ).resolves.toBeUndefined();
+      expect(ui.answer).toHaveBeenCalled();
+    });
   });
 });
