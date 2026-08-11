@@ -9,6 +9,11 @@
 
 import { weeklyEnvelope, moneyWhole, escapeMarkdown, formatRelativeTime } from './telegram.js';
 import type { GlyphStyle } from './telegram.js';
+// ONE way of naming a category where naming the wrong one is expensive. It lives
+// with the menu because that is where the type carrying `parentName` lives; a
+// second copy of the `Name (Parent)` rule is how the preview and the miss reply
+// would come to disagree about which category they are talking about.
+import { categoryDisplayName } from './categorize-menu.js';
 
 export interface ParsedCommand {
   /** Lowercased, without the slash: 'report', 'left', … */
@@ -42,6 +47,8 @@ export const TELEGRAM_COMMAND_MENU = [
   { command: 'afford', description: 'Can I afford it? — /afford 20 shopping' },
   { command: 'status', description: 'Last sync, balances, what needs attention' },
   { command: 'sync', description: 'Pull new bank transactions now' },
+  { command: 'categorize', description: 'File uncategorized transactions, right from here' },
+  { command: 'newrule', description: 'Always file a match — /newrule trader joes = groceries' },
   { command: 'help', description: 'This list' },
 ] as const;
 
@@ -79,10 +86,27 @@ export interface BudgetPeriod {
   daysLeftInMonthInclusive: number;
 }
 
+/** The minimum a resolvable category has to carry. `parentName` is optional
+ *  because `/left` and `/afford` resolve BUDGET rows, which have no parent at
+ *  all; `/newrule` resolves the spending tree, whose rows do — and where two of
+ *  its rows share a name, the parent is the only thing that tells them apart
+ *  (see `categoryDisplayName`). */
+export interface ResolvableCategory {
+  name: string;
+  parentName?: string | null;
+}
+
 /** Result of resolving a user-typed category fragment (`/left grocer`)
- *  against the real category list. */
-export type CategoryQueryResult =
-  | { kind: 'one'; category: CategoryBudgetSnapshot }
+ *  against the real category list.
+ *
+ *  Generic over the row shape, defaulting to the budget snapshot `/left` and
+ *  `/afford` pass: `/newrule` resolves the same way but needs the matched
+ *  category's ID back (a rule is written against an id, not a name), and its
+ *  tree includes CHILD categories, which carry no budget figures at all.
+ *  Parameterising is what lets both use ONE resolver — a second prefix matcher
+ *  for id-carrying categories would be the same semantics written twice. */
+export type CategoryQueryResult<T extends ResolvableCategory = CategoryBudgetSnapshot> =
+  | { kind: 'one'; category: T }
   | { kind: 'ambiguous'; names: string[] }
   | { kind: 'none' };
 
@@ -94,14 +118,43 @@ export type CategoryQueryResult =
  * Improvement", because the exact name is the one case a typing user is most
  * likely to hit and it must never require a longer query to disambiguate
  * against its own child-ish sibling.
+ *
+ * But an exact match on a name TWO categories share is not a resolution, it is
+ * a coin toss. Wealthfolio's preset tree ships duplicate leaf names (an `Other`
+ * under several parents, a `Gas` under both Transportation and Bills), and
+ * `/newrule` resolves over the FLAT tree, so `= other` would otherwise silently
+ * take the first one and write a rule that sweeps every matching uncategorized
+ * row into a category the user never picked. Duplicates are reported the same
+ * way an ambiguous PREFIX is — the reader retypes, nothing is guessed. `/left`
+ * and `/afford` are unaffected: their rows are budgeted parents, whose names are
+ * unique, and a single match still resolves to `one` exactly as before.
+ *
+ * Only `name` and `parentName` are read, so the matched element is handed BACK
+ * untouched: a caller passing categories with ids gets its id-carrying object
+ * out again.
  */
-export function resolveCategoryQuery(cats: CategoryBudgetSnapshot[], query: string): CategoryQueryResult {
+export function resolveCategoryQuery<T extends ResolvableCategory>(
+  cats: T[],
+  query: string,
+): CategoryQueryResult<T> {
   const q = query.trim().toLowerCase();
-  const exact = cats.find((c) => c.name.toLowerCase() === q);
-  if (exact) return { kind: 'one', category: exact };
+  // The QUALIFIED name first — `other (home)`, exactly as an ambiguity reply
+  // prints it. Without this the duplicate report below would be a question with
+  // no typable answer: retyping either name resolves against the bare name and
+  // goes ambiguous all over again. Rows with no parent display as their own name,
+  // so for `/left` and `/afford` this is the same test as the one below and
+  // changes nothing for them.
+  const qualified = cats.filter((c) => categoryDisplayName(c).toLowerCase() === q);
+  if (qualified.length === 1) return { kind: 'one', category: qualified[0] };
+  if (qualified.length > 1) return { kind: 'ambiguous', names: qualified.map(categoryDisplayName) };
+  const exact = cats.filter((c) => c.name.toLowerCase() === q);
+  if (exact.length === 1) return { kind: 'one', category: exact[0] };
+  if (exact.length > 1) return { kind: 'ambiguous', names: exact.map(categoryDisplayName) };
   const matches = cats.filter((c) => c.name.toLowerCase().startsWith(q));
   if (matches.length === 1) return { kind: 'one', category: matches[0] };
-  if (matches.length > 1) return { kind: 'ambiguous', names: matches.map((c) => c.name) };
+  // Qualified by parent where there is one, so two `Other`s do not produce the
+  // unanswerable question "Which one? Other, Other".
+  if (matches.length > 1) return { kind: 'ambiguous', names: matches.map(categoryDisplayName) };
   return { kind: 'none' };
 }
 
@@ -171,17 +224,44 @@ function noBudgetReply(cat: CategoryBudgetSnapshot): string {
   return `${name}: ${moneyWhole(cat.monthSpent)} spent this month\nNo budget set for ${name} — nothing to be over.`;
 }
 
-/** Shared by `/left` and `/afford`: once a query resolves to `ambiguous` or
- *  `none`, both commands reply identically — the reader typed the same
- *  fragment either way and needs the same nudge regardless of which command
- *  they used. Returns `null` for `'one'`, leaving that case to the caller,
- *  which needs the resolved category for command-specific work. */
-function queryMissReply(result: CategoryQueryResult, query: string): string | null {
+/** The default pointer: right for `/left` and `/afford`, whose queries are
+ *  resolved against exactly the categories `/left` lists. */
+const LEFT_CATEGORY_LIST_HINT = '/left lists them all.';
+
+/** `/newrule`'s pointer. `/left` is the wrong place to send this reader twice
+ *  over: it lists only BUDGETED PARENTS, while `/newrule` resolves over the whole
+ *  tree — a mistyped SUBCATEGORY can never appear in `/left`'s output at all, so
+ *  the default hint would have them checking a list that cannot contain what they
+ *  are looking for. Wealthfolio's own category settings are the list that can. */
+export const NEWRULE_CATEGORY_LIST_HINT =
+  'Subcategories count too — Wealthfolio\'s category settings list them all.';
+
+/** Shared by `/left`, `/afford` and `/newrule`: once a query resolves to
+ *  `ambiguous` or `none`, every command says the same thing about the miss
+ *  itself — the reader typed the same fragment either way. Only the POINTER at
+ *  the end differs, because the commands resolve against different lists (see
+ *  `listHint`). Returns `null` for `'one'`, leaving that case to the caller,
+ *  which needs the resolved category for command-specific work.
+ *
+ *  Exported (unlike the rest of this file's private helpers) because
+ *  `/newrule`'s handler lives in the companion: it resolves against
+ *  id-carrying categories and then hands the match to the menu controller, so
+ *  it has no formatter of its own here to hide behind. Typed against
+ *  `ResolvableCategory` for the same reason `resolveCategoryQuery` is
+ *  generic — a child category has no budget figures. */
+export function formatCategoryQueryMiss(
+  result: CategoryQueryResult<ResolvableCategory>,
+  query: string,
+  /** Where to go to see the real list. Defaults to `/left`'s own pointer, which
+   *  is right for `/left` and `/afford` and wrong for `/newrule` — see
+   *  `NEWRULE_CATEGORY_LIST_HINT`. */
+  listHint: string = LEFT_CATEGORY_LIST_HINT,
+): string | null {
   if (result.kind === 'ambiguous') {
     return `Which one? ${result.names.map((n) => escapeMarkdown(n)).join(', ')}`;
   }
   if (result.kind === 'none') {
-    return `No category starts with "${escapeMarkdown(query)}". /left lists them all.`;
+    return `No category starts with "${escapeMarkdown(query)}". ${listHint}`;
   }
   return null;
 }
@@ -214,7 +294,7 @@ export function formatLeftReply(
 ): string {
   if (query) {
     const result = resolveCategoryQuery(cats, query);
-    const miss = queryMissReply(result, query);
+    const miss = formatCategoryQueryMiss(result, query);
     if (miss !== null) return miss;
     const cat = (result as { kind: 'one'; category: CategoryBudgetSnapshot }).category;
     if (cat.budget <= 0) return noBudgetReply(cat);
@@ -258,7 +338,7 @@ export function formatAffordReply(
   query: string,
 ): string {
   const result = resolveCategoryQuery(cats, query);
-  const miss = queryMissReply(result, query);
+  const miss = formatCategoryQueryMiss(result, query);
   if (miss !== null) return miss;
   const cat = (result as { kind: 'one'; category: CategoryBudgetSnapshot }).category;
   if (cat.budget <= 0) return noBudgetReply(cat);

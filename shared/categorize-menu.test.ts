@@ -1,0 +1,631 @@
+import { describe, it, expect } from 'vitest';
+import {
+  renderScreen,
+  applyTap,
+  parseNewRuleArgs,
+  MENU_PAGE_SIZE,
+  MENU_CALLBACK_PREFIX,
+} from './categorize-menu';
+import type { CategorizeTxn, SpendingCategory, MenuSession, MenuScreen, MenuAction } from './categorize-menu';
+
+// ---- fixtures -------------------------------------------------------------
+
+function txn(overrides: Partial<CategorizeTxn> = {}): CategorizeTxn {
+  return {
+    activityId: 'act-1',
+    date: '2026-08-08',
+    amountCents: -1000,
+    description: 'BOOK STORES',
+    accountName: 'Checking',
+    ...overrides,
+  };
+}
+
+const groceries: SpendingCategory = { id: 'cat-groceries', name: 'Groceries', parentId: null, parentName: null };
+const dining: SpendingCategory = { id: 'cat-dining', name: 'Dining', parentId: null, parentName: null };
+const diningFastFood: SpendingCategory = {
+  id: 'cat-dining-fastfood',
+  name: 'Fast Food',
+  parentId: 'cat-dining',
+  parentName: 'Dining',
+};
+const diningCoffee: SpendingCategory = {
+  id: 'cat-dining-coffee',
+  name: 'Coffee',
+  parentId: 'cat-dining',
+  parentName: 'Dining',
+};
+
+function session(overrides: Partial<MenuSession> = {}): MenuSession {
+  return {
+    txns: [txn()],
+    categories: [groceries, dining, diningFastFood, diningCoffee],
+    screen: { kind: 'list', page: 0 },
+    buttons: [],
+    // Any non-zero value would do; a fixed one keeps the tokens below readable.
+    generation: 7,
+    ...overrides,
+  };
+}
+
+// Every callback_data must byte-fit under Telegram's 64-byte cap. Checked with
+// TextEncoder (not .length) because a name with multi-byte characters would
+// under-count on .length — though here it's ASCII, this is the honest way to
+// measure what Telegram actually caps.
+function assertCallbackBytesFit(keyboard: { inline_keyboard: Array<Array<{ callback_data: string }>> }) {
+  for (const row of keyboard.inline_keyboard) {
+    for (const button of row) {
+      const bytes = new TextEncoder().encode(button.callback_data).length;
+      expect(bytes).toBeLessThanOrEqual(64);
+    }
+  }
+}
+
+// ---- renderScreen: list ----------------------------------------------------
+
+describe('renderScreen — list', () => {
+  it('empty list renders the fixed empty-state text and only a Done button', () => {
+    const s = session({ txns: [] });
+    const { text, keyboard } = renderScreen(s);
+    expect(text).toBe('Nothing needs a category right now.');
+    expect(keyboard.inline_keyboard).toEqual([[{ text: 'Done', callback_data: `${MENU_CALLBACK_PREFIX}7:0` }]]);
+  });
+
+  it('renders one row per transaction as date · description · amount', () => {
+    const s = session({ txns: [txn({ date: '2026-08-08', description: 'BOOK STORES', amountCents: -1000 })] });
+    const { keyboard, buttons } = renderScreen(s);
+    const rowLabel = keyboard.inline_keyboard[0][0].text;
+    expect(rowLabel).toBe('Aug 8 · BOOK STORES · -$10');
+    expect(buttons[0]).toEqual({ kind: 'goto', screen: { kind: 'txn', activityId: 'act-1' } });
+  });
+
+  it('short-formats the date from the raw YYYY-MM-DD string (no Date parsing)', () => {
+    const s = session({ txns: [txn({ date: '2026-01-31' })] });
+    const { keyboard } = renderScreen(s);
+    expect(keyboard.inline_keyboard[0][0].text).toContain('Jan 31');
+  });
+
+  it('Done is always present and closes the menu', () => {
+    const s = session();
+    const { keyboard, buttons } = renderScreen(s);
+    const doneIndex = keyboard.inline_keyboard.flat().findIndex((b) => b.text === 'Done');
+    expect(doneIndex).toBeGreaterThanOrEqual(0);
+    expect(buttons[doneIndex]).toEqual({ kind: 'close' });
+  });
+
+  it('shows only More » (no Prev) on the first of several pages', () => {
+    const txns = Array.from({ length: MENU_PAGE_SIZE + 2 }, (_, i) => txn({ activityId: `act-${i}`, date: '2026-08-08' }));
+    const s = session({ txns, screen: { kind: 'list', page: 0 } });
+    const { keyboard } = renderScreen(s);
+    const labels = keyboard.inline_keyboard.flat().map((b) => b.text);
+    expect(labels).toContain('More »');
+    expect(labels).not.toContain('« Prev');
+    // exactly MENU_PAGE_SIZE row buttons on this page
+    expect(keyboard.inline_keyboard.filter((row) => row.length === 1 && row[0].text.includes('·')).length).toBe(MENU_PAGE_SIZE);
+  });
+
+  it('shows only « Prev (no More) on the last page', () => {
+    const txns = Array.from({ length: MENU_PAGE_SIZE + 2 }, (_, i) => txn({ activityId: `act-${i}`, date: '2026-08-08' }));
+    const s = session({ txns, screen: { kind: 'list', page: 1 } });
+    const { keyboard } = renderScreen(s);
+    const labels = keyboard.inline_keyboard.flat().map((b) => b.text);
+    expect(labels).toContain('« Prev');
+    expect(labels).not.toContain('More »');
+  });
+
+  it('neither paging button appears when everything fits on one page', () => {
+    const s = session({ txns: [txn()] });
+    const { keyboard } = renderScreen(s);
+    const labels = keyboard.inline_keyboard.flat().map((b) => b.text);
+    expect(labels).not.toContain('More »');
+    expect(labels).not.toContain('« Prev');
+  });
+});
+
+// ---- renderScreen: txn -----------------------------------------------------
+
+describe('renderScreen — txn', () => {
+  it('shows description, amount, date, and account in the text', () => {
+    const s = session({
+      txns: [txn({ description: 'BOOK STORES', amountCents: -1000, date: '2026-08-08', accountName: 'Checking' })],
+      screen: { kind: 'txn', activityId: 'act-1' },
+    });
+    const { text } = renderScreen(s);
+    expect(text).toContain('BOOK STORES');
+    expect(text).toContain('-$10');
+    expect(text).toContain('Aug 8');
+    expect(text).toContain('Checking');
+  });
+
+  it('lays out parent categories two per row', () => {
+    const s = session({ screen: { kind: 'txn', activityId: 'act-1' } });
+    const { keyboard } = renderScreen(s);
+    // Two parents (Groceries, Dining) -> one row of two buttons.
+    const categoryRow = keyboard.inline_keyboard.find((row) => row.some((b) => b.text === 'Groceries'));
+    expect(categoryRow).toBeDefined();
+    expect(categoryRow!.length).toBe(2);
+    expect(categoryRow!.map((b) => b.text)).toEqual(['Groceries', 'Dining']);
+  });
+
+  it('a parent with children goes to the subcats screen', () => {
+    const s = session({ screen: { kind: 'txn', activityId: 'act-1' } });
+    const { keyboard, buttons } = renderScreen(s);
+    const idx = keyboard.inline_keyboard.flat().findIndex((b) => b.text === 'Dining');
+    expect(buttons[idx]).toEqual({
+      kind: 'goto',
+      screen: { kind: 'subcats', activityId: 'act-1', parentId: 'cat-dining' },
+    });
+  });
+
+  it('a parent with no children assigns directly', () => {
+    const s = session({ screen: { kind: 'txn', activityId: 'act-1' } });
+    const { keyboard, buttons } = renderScreen(s);
+    const idx = keyboard.inline_keyboard.flat().findIndex((b) => b.text === 'Groceries');
+    expect(buttons[idx]).toEqual({ kind: 'assign', activityId: 'act-1', categoryId: 'cat-groceries' });
+  });
+
+  it('has a Keep uncategorized button that dismisses', () => {
+    const s = session({ screen: { kind: 'txn', activityId: 'act-1' } });
+    const { keyboard, buttons } = renderScreen(s);
+    const idx = keyboard.inline_keyboard.flat().findIndex((b) => b.text === 'Keep uncategorized');
+    expect(buttons[idx]).toEqual({ kind: 'dismiss', activityId: 'act-1' });
+  });
+
+  it('has a « Back button that returns to the list', () => {
+    const s = session({ screen: { kind: 'txn', activityId: 'act-1' } });
+    const { keyboard, buttons } = renderScreen(s);
+    const idx = keyboard.inline_keyboard.flat().findIndex((b) => b.text === '« Back');
+    expect(buttons[idx]).toEqual({ kind: 'goto', screen: { kind: 'list', page: 0 } });
+  });
+
+  it('falls back to the list when the transaction is no longer present', () => {
+    const s = session({ txns: [], screen: { kind: 'txn', activityId: 'gone' } });
+    const { text, keyboard } = renderScreen(s);
+    expect(text.split('\n')[0]).toBe('That transaction is no longer uncategorized.');
+    expect(keyboard.inline_keyboard).toEqual([[{ text: 'Done', callback_data: `${MENU_CALLBACK_PREFIX}7:0` }]]);
+  });
+});
+
+// ---- renderScreen: subcats --------------------------------------------------
+
+describe('renderScreen — subcats', () => {
+  const subcatsScreen: MenuScreen = { kind: 'subcats', activityId: 'act-1', parentId: 'cat-dining' };
+
+  it('lists the parent’s children as assign buttons', () => {
+    const s = session({ screen: subcatsScreen });
+    const { keyboard, buttons } = renderScreen(s);
+    const idx = keyboard.inline_keyboard.flat().findIndex((b) => b.text === 'Fast Food');
+    expect(buttons[idx]).toEqual({ kind: 'assign', activityId: 'act-1', categoryId: 'cat-dining-fastfood' });
+    const idx2 = keyboard.inline_keyboard.flat().findIndex((b) => b.text === 'Coffee');
+    expect(buttons[idx2]).toEqual({ kind: 'assign', activityId: 'act-1', categoryId: 'cat-dining-coffee' });
+  });
+
+  it('offers "Just <parent> itself" which assigns the parent', () => {
+    const s = session({ screen: subcatsScreen });
+    const { keyboard, buttons } = renderScreen(s);
+    const idx = keyboard.inline_keyboard.flat().findIndex((b) => b.text === 'Just Dining itself');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(buttons[idx]).toEqual({ kind: 'assign', activityId: 'act-1', categoryId: 'cat-dining' });
+  });
+
+  it('« Back returns to the txn screen', () => {
+    const s = session({ screen: subcatsScreen });
+    const { keyboard, buttons } = renderScreen(s);
+    const idx = keyboard.inline_keyboard.flat().findIndex((b) => b.text === '« Back');
+    expect(buttons[idx]).toEqual({ kind: 'goto', screen: { kind: 'txn', activityId: 'act-1' } });
+  });
+
+  it('falls back to the list when the parent category is gone', () => {
+    const s = session({ screen: { kind: 'subcats', activityId: 'act-1', parentId: 'nonexistent' } });
+    const { text } = renderScreen(s);
+    expect(text.split('\n')[0]).toBe('That transaction is no longer uncategorized.');
+  });
+});
+
+// ---- renderScreen: filed ----------------------------------------------------
+
+describe('renderScreen — filed', () => {
+  const filedScreen: MenuScreen = { kind: 'filed', activityId: 'act-1', categoryId: 'cat-groceries', undone: false };
+
+  it('confirms the filing with the exact "Filed X → Y." wording', () => {
+    const s = session({
+      txns: [txn({ description: 'BOOK STORES' })],
+      screen: filedScreen,
+    });
+    const { text } = renderScreen(s);
+    expect(text).toBe('Filed BOOK STORES → Groceries.');
+  });
+
+  it('offers Undo, Make this a rule, Next transaction, and Done', () => {
+    const s = session({ screen: filedScreen });
+    const { keyboard, buttons } = renderScreen(s);
+    const labels = keyboard.inline_keyboard.flat().map((b) => b.text);
+    expect(labels).toEqual(['Undo', 'Make this a rule', 'Next transaction', 'Done']);
+
+    const undo = buttons[keyboard.inline_keyboard.flat().findIndex((b) => b.text === 'Undo')];
+    expect(undo).toEqual({ kind: 'unassign', activityId: 'act-1', categoryId: 'cat-groceries' });
+
+    const rule = buttons[keyboard.inline_keyboard.flat().findIndex((b) => b.text === 'Make this a rule')];
+    expect(rule).toEqual({
+      kind: 'goto',
+      screen: { kind: 'rulePreview', activityId: 'act-1', categoryId: 'cat-groceries' },
+    });
+
+    const next = buttons[keyboard.inline_keyboard.flat().findIndex((b) => b.text === 'Next transaction')];
+    expect(next).toEqual({ kind: 'goto', screen: { kind: 'list', page: 0 } });
+
+    const done = buttons[keyboard.inline_keyboard.flat().findIndex((b) => b.text === 'Done')];
+    expect(done).toEqual({ kind: 'close' });
+  });
+
+  it('after undo, states the filing was undone and offers only Back to list / Done', () => {
+    const s = session({
+      txns: [txn({ description: 'BOOK STORES' })],
+      screen: { kind: 'filed', activityId: 'act-1', categoryId: 'cat-groceries', undone: true },
+    });
+    const { text, keyboard } = renderScreen(s);
+    expect(text).toBe('Filing undone — BOOK STORES is uncategorized again.');
+    expect(keyboard.inline_keyboard.flat().map((b) => b.text)).toEqual(['Back to list', 'Done']);
+  });
+
+  it('escapes Markdown specials in the description and category name', () => {
+    const s = session({
+      txns: [txn({ description: 'A*B_C' })],
+      categories: [{ id: 'cat-groceries', name: 'Foo_Bar', parentId: null, parentName: null }],
+      screen: filedScreen,
+    });
+    const { text } = renderScreen(s);
+    expect(text).toBe('Filed A\\*B\\_C → Foo\\_Bar.');
+  });
+});
+
+// ---- renderScreen: dismissed -------------------------------------------------
+
+describe('renderScreen — dismissed', () => {
+  const dismissedScreen: MenuScreen = { kind: 'dismissed', activityId: 'act-1', undone: false };
+
+  it('states the transaction will stay uncategorized', () => {
+    const s = session({ txns: [txn({ description: 'BOOK STORES' })], screen: dismissedScreen });
+    const { text } = renderScreen(s);
+    expect(text).toBe('BOOK STORES will stay uncategorized.');
+  });
+
+  it('offers Undo, Back to list, Done', () => {
+    const s = session({ screen: dismissedScreen });
+    const { keyboard, buttons } = renderScreen(s);
+    expect(keyboard.inline_keyboard.flat().map((b) => b.text)).toEqual(['Undo', 'Back to list', 'Done']);
+    const undo = buttons[keyboard.inline_keyboard.flat().findIndex((b) => b.text === 'Undo')];
+    expect(undo).toEqual({ kind: 'undismiss', activityId: 'act-1' });
+  });
+
+  it('mirrors filed’s undone wording and buttons', () => {
+    const s = session({
+      txns: [txn({ description: 'BOOK STORES' })],
+      screen: { kind: 'dismissed', activityId: 'act-1', undone: true },
+    });
+    const { text, keyboard } = renderScreen(s);
+    expect(text).toBe('Dismissal undone — BOOK STORES is uncategorized again.');
+    expect(keyboard.inline_keyboard.flat().map((b) => b.text)).toEqual(['Back to list', 'Done']);
+  });
+});
+
+// ---- renderScreen: rulePreview / freeRulePreview (locked copy) --------------
+
+describe('renderScreen — rulePreview', () => {
+  const ruleScreen: MenuScreen = { kind: 'rulePreview', activityId: 'act-1', categoryId: 'cat-groceries' };
+
+  it('renders the exact locked rule-preview copy', () => {
+    const s = session({ txns: [txn({ description: 'BOOK STORES' })], screen: ruleScreen });
+    const { text } = renderScreen(s);
+    expect(text).toBe(
+      'Create this rule?\n'
+      + 'Descriptions containing "BOOK STORES" → Groceries\n'
+      + 'It will also file any other uncategorized transactions that match, now and on every future import. Already-categorized transactions are never touched.',
+    );
+  });
+
+  it('offers Create rule and « Back', () => {
+    const s = session({ screen: ruleScreen });
+    const { keyboard, buttons } = renderScreen(s);
+    expect(keyboard.inline_keyboard.flat().map((b) => b.text)).toEqual(['Create rule', '« Back']);
+    const create = buttons[keyboard.inline_keyboard.flat().findIndex((b) => b.text === 'Create rule')];
+    expect(create).toEqual({ kind: 'createRule', activityId: 'act-1', categoryId: 'cat-groceries' });
+    const back = buttons[keyboard.inline_keyboard.flat().findIndex((b) => b.text === '« Back')];
+    expect(back).toEqual({ kind: 'goto', screen: { kind: 'txn', activityId: 'act-1' } });
+  });
+
+  it('falls back to the list when the transaction or category is gone', () => {
+    const s = session({ txns: [], screen: ruleScreen });
+    const { text } = renderScreen(s);
+    expect(text.split('\n')[0]).toBe('That transaction is no longer uncategorized.');
+  });
+});
+
+describe('renderScreen — freeRulePreview', () => {
+  const freeScreen: MenuScreen = { kind: 'freeRulePreview', pattern: 'trader joes', categoryId: 'cat-groceries' };
+
+  it('renders the exact locked copy with the typed pattern in place of a description', () => {
+    const s = session({ screen: freeScreen });
+    const { text } = renderScreen(s);
+    expect(text).toBe(
+      'Create this rule?\n'
+      + 'Descriptions containing "trader joes" → Groceries\n'
+      + 'It will also file any other uncategorized transactions that match, now and on every future import. Already-categorized transactions are never touched.',
+    );
+  });
+
+  it('offers Create rule and Cancel — no Back, since there is no prior screen', () => {
+    const s = session({ screen: freeScreen });
+    const { keyboard, buttons } = renderScreen(s);
+    expect(keyboard.inline_keyboard.flat().map((b) => b.text)).toEqual(['Create rule', 'Cancel']);
+    expect(keyboard.inline_keyboard.flat().map((b) => b.text)).not.toContain('« Back');
+    const create = buttons[keyboard.inline_keyboard.flat().findIndex((b) => b.text === 'Create rule')];
+    expect(create).toEqual({ kind: 'createFreeRule', pattern: 'trader joes', categoryId: 'cat-groceries' });
+  });
+
+  it('falls back to the list when the category is gone', () => {
+    const s = session({ screen: { kind: 'freeRulePreview', pattern: 'x', categoryId: 'nonexistent' } });
+    const { text } = renderScreen(s);
+    expect(text.split('\n')[0]).toBe('That transaction is no longer uncategorized.');
+  });
+});
+
+describe('renderScreen — ruleCreated', () => {
+  it('with an activityId, offers Back to list and Done', () => {
+    const s = session({ screen: { kind: 'ruleCreated', activityId: 'act-1', categoryId: 'cat-groceries' } });
+    const { keyboard } = renderScreen(s);
+    expect(keyboard.inline_keyboard.flat().map((b) => b.text)).toEqual(['Back to list', 'Done']);
+  });
+
+  it('confirms the category by name in the text', () => {
+    const s = session({ screen: { kind: 'ruleCreated', activityId: 'act-1', categoryId: 'cat-groceries' } });
+    const { text } = renderScreen(s);
+    expect(text).toContain('Groceries');
+  });
+
+  it('from /newrule (activityId: null), offers only Done', () => {
+    const s = session({ screen: { kind: 'ruleCreated', activityId: null, categoryId: 'cat-groceries' } });
+    const { keyboard, buttons } = renderScreen(s);
+    expect(keyboard.inline_keyboard.flat().map((b) => b.text)).toEqual(['Done']);
+    expect(buttons[0]).toEqual({ kind: 'close' });
+  });
+
+  it('falls back to the list when the category is gone', () => {
+    const s = session({ screen: { kind: 'ruleCreated', activityId: 'act-1', categoryId: 'nonexistent' } });
+    const { text } = renderScreen(s);
+    expect(text.split('\n')[0]).toBe('That transaction is no longer uncategorized.');
+  });
+});
+
+// ---- rule screens name the parent, so two same-named children differ --------
+
+describe('renderScreen — same-named categories on the rule screens', () => {
+  // Wealthfolio's own preset tree ships duplicates like this (an `Other` under
+  // several parents, a `Gas` under both Transportation and Bills), and
+  // `/newrule`'s resolver matches on NAME over the flat tree: it returns the
+  // FIRST of two `Other`s. The preview is the only thing standing between a
+  // typo and a rule that sweeps every matching row into the wrong category, so
+  // it has to say WHICH `Other` it means.
+  const home: SpendingCategory = { id: 'cat-home', name: 'Home', parentId: null, parentName: null };
+  const auto: SpendingCategory = { id: 'cat-auto', name: 'Auto', parentId: null, parentName: null };
+  const homeOther: SpendingCategory = {
+    id: 'cat-home-other', name: 'Other', parentId: 'cat-home', parentName: 'Home',
+  };
+  const autoOther: SpendingCategory = {
+    id: 'cat-auto-other', name: 'Other', parentId: 'cat-auto', parentName: 'Auto',
+  };
+  const cats = [home, auto, homeOther, autoOther];
+
+  const previewText = (categoryId: string): string => renderScreen(session({
+    categories: cats,
+    screen: { kind: 'freeRulePreview', pattern: 'lowes', categoryId },
+  })).text;
+
+  it('distinguishes two children that share a name in the /newrule preview', () => {
+    expect(previewText('cat-home-other')).toContain('Descriptions containing "lowes" → Other (Home)');
+    expect(previewText('cat-auto-other')).toContain('Descriptions containing "lowes" → Other (Auto)');
+    expect(previewText('cat-home-other')).not.toBe(previewText('cat-auto-other'));
+  });
+
+  it('names the parent on the created-confirmation too', () => {
+    const text = renderScreen(session({
+      categories: cats,
+      screen: { kind: 'ruleCreated', activityId: null, categoryId: 'cat-auto-other' },
+    })).text;
+    expect(text).toBe('Rule created — future matches will file automatically under Other (Auto).');
+  });
+
+  it('names the parent on the tapped-off-a-transaction preview as well', () => {
+    const text = renderScreen(session({
+      txns: [txn({ description: 'BOOK STORES' })],
+      categories: cats,
+      screen: { kind: 'rulePreview', activityId: 'act-1', categoryId: 'cat-home-other' },
+    })).text;
+    expect(text).toContain('Descriptions containing "BOOK STORES" → Other (Home)');
+  });
+
+  it('leaves a TOP-LEVEL category bare — there is no parent to name', () => {
+    expect(previewText('cat-home')).toContain('Descriptions containing "lowes" → Home\n');
+  });
+});
+
+// ---- token codec / applyTap -------------------------------------------------
+
+describe('applyTap', () => {
+  it('resolves a cz:<generation>:<index> token against the buttons most recently rendered', () => {
+    const s = session({ screen: { kind: 'list', page: 0 } });
+    const { buttons } = renderScreen(s);
+    s.buttons = buttons;
+    const result = applyTap(s, `${MENU_CALLBACK_PREFIX}7:0`);
+    expect(result).toEqual({ ok: true, action: buttons[0] });
+  });
+
+  it('every emitted token carries the session generation', () => {
+    const s = session({ generation: 12, screen: { kind: 'list', page: 0 } });
+    const { keyboard } = renderScreen(s);
+    for (const button of keyboard.inline_keyboard.flat()) {
+      expect(button.callback_data).toMatch(/^cz:12:\d+$/);
+    }
+  });
+
+  it('a token from an EARLIER generation is expired, whatever sits at its index now', () => {
+    // The defect this exists for: two renders of the same SHAPE have identically
+    // sized button arrays holding different ids, so an in-range index from the
+    // older message would resolve position-for-position against the newer screen
+    // and act on a row the user never tapped. The generation is checked before
+    // the index precisely so that cannot happen.
+    const first = session({ generation: 7, screen: { kind: 'txn', activityId: 'act-1' } });
+    const rendered = renderScreen(first);
+    const staleToken = rendered.keyboard.inline_keyboard.flat()[0].callback_data;
+    expect(staleToken).toBe(`${MENU_CALLBACK_PREFIX}7:0`);
+
+    // Same screen shape, one render later, about a DIFFERENT transaction.
+    const second = session({
+      generation: 8,
+      txns: [txn({ activityId: 'act-2' })],
+      screen: { kind: 'txn', activityId: 'act-2' },
+    });
+    second.buttons = renderScreen(second).buttons;
+    expect(second.buttons.length).toBeGreaterThan(0);
+
+    expect(applyTap(second, staleToken)).toEqual({ ok: false, reason: 'expired' });
+  });
+
+  it('a LATER generation than the session holds is expired too', () => {
+    const s = session({ generation: 7, buttons: [{ kind: 'close' }] });
+    expect(applyTap(s, `${MENU_CALLBACK_PREFIX}8:0`)).toEqual({ ok: false, reason: 'expired' });
+  });
+
+  it('is out of range -> unknown: the current render cannot have emitted it', () => {
+    const s = session({ buttons: [{ kind: 'close' }] });
+    expect(applyTap(s, `${MENU_CALLBACK_PREFIX}7:5`)).toEqual({ ok: false, reason: 'unknown' });
+  });
+
+  it('rejects callback_data with no cz: prefix as unknown', () => {
+    const s = session({ buttons: [{ kind: 'close' }] });
+    expect(applyTap(s, 'd:some-other-id')).toEqual({ ok: false, reason: 'unknown' });
+  });
+
+  it('rejects a malformed token after the prefix as unknown', () => {
+    const s = session({ buttons: [{ kind: 'close' }] });
+    expect(applyTap(s, `${MENU_CALLBACK_PREFIX}abc`)).toEqual({ ok: false, reason: 'unknown' });
+    // The single-number form this module used to emit is no longer one of ours.
+    expect(applyTap(s, `${MENU_CALLBACK_PREFIX}0`)).toEqual({ ok: false, reason: 'unknown' });
+    expect(applyTap(s, `${MENU_CALLBACK_PREFIX}7:0:1`)).toEqual({ ok: false, reason: 'unknown' });
+  });
+
+  it('never resolves against a stale render — buttons are replaced wholesale on every render', () => {
+    const s = session({ screen: { kind: 'txn', activityId: 'act-1' } });
+    const first = renderScreen(s);
+    s.buttons = first.buttons;
+    // Session moves on to a screen with fewer buttons (list, empty)...
+    s.txns = [];
+    s.screen = { kind: 'list', page: 0 };
+    s.generation += 1; // ...which the controller stamps as a new render
+    const second = renderScreen(s);
+    s.buttons = second.buttons; // caller always re-stores buttons after rendering
+    // A tap referencing an index that only existed on the old (larger) screen:
+    const staleIndex = first.buttons.length - 1;
+    expect(staleIndex).toBeGreaterThanOrEqual(second.buttons.length);
+    expect(applyTap(s, `${MENU_CALLBACK_PREFIX}7:${staleIndex}`)).toEqual({ ok: false, reason: 'expired' });
+  });
+});
+
+// ---- 64-byte callback invariant ---------------------------------------------
+
+describe('callback_data byte cap', () => {
+  it('every emitted callback_data fits Telegram’s 64-byte limit, even for a large session with long names', () => {
+    const longTxns: CategorizeTxn[] = Array.from({ length: 50 }, (_, i) => ({
+      activityId: `activity-id-that-is-quite-long-${'x'.repeat(20)}-${i}`,
+      date: '2026-08-08',
+      amountCents: -123456,
+      description: `A VERY LONG MERCHANT DESCRIPTOR THAT GOES ON AND ON #${i} ${'Y'.repeat(40)}`,
+      accountName: `Some Long Account Name For A Household Member ${'Z'.repeat(30)} #${i}`,
+    }));
+    const longParents: SpendingCategory[] = Array.from({ length: 20 }, (_, i) => ({
+      id: `category-id-that-is-long-${'p'.repeat(20)}-${i}`,
+      name: `A Really Long Parent Category Name Number ${'Q'.repeat(30)} #${i}`,
+      parentId: null,
+      parentName: null,
+    }));
+    const longChildren: SpendingCategory[] = Array.from({ length: 40 }, (_, i) => ({
+      id: `child-category-id-that-is-long-${'c'.repeat(20)}-${i}`,
+      name: `A Really Long Child Category Name Number ${'R'.repeat(30)} #${i}`,
+      parentId: longParents[i % longParents.length].id,
+      parentName: longParents[i % longParents.length].name,
+    }));
+    const categories = [...longParents, ...longChildren];
+    expect(categories.length).toBe(60);
+
+    // A deliberately huge generation: the counter climbs for the life of the
+    // process, so the widest token the format can ever produce is the one to
+    // measure, not the one a fresh session happens to start at.
+    const base = { txns: longTxns, categories, buttons: [] as MenuAction[], generation: 4294967295 };
+
+    assertCallbackBytesFit(renderScreen({ ...base, screen: { kind: 'list', page: 0 } }).keyboard);
+    assertCallbackBytesFit(renderScreen({ ...base, screen: { kind: 'list', page: 5 } }).keyboard);
+    assertCallbackBytesFit(
+      renderScreen({ ...base, screen: { kind: 'txn', activityId: longTxns[0].activityId } }).keyboard,
+    );
+    assertCallbackBytesFit(
+      renderScreen({
+        ...base,
+        screen: { kind: 'subcats', activityId: longTxns[0].activityId, parentId: longParents[0].id },
+      }).keyboard,
+    );
+  });
+});
+
+// ---- parseNewRuleArgs -------------------------------------------------------
+
+describe('parseNewRuleArgs', () => {
+  it('splits on the first "="', () => {
+    expect(parseNewRuleArgs('trader joes = groceries')).toEqual({ pattern: 'trader joes', categoryQuery: 'groceries' });
+  });
+
+  it('splits on the first "→"', () => {
+    expect(parseNewRuleArgs('trader joes → groceries')).toEqual({ pattern: 'trader joes', categoryQuery: 'groceries' });
+  });
+
+  it('trims both sides', () => {
+    expect(parseNewRuleArgs('  trader joes   =   groceries  ')).toEqual({
+      pattern: 'trader joes',
+      categoryQuery: 'groceries',
+    });
+  });
+
+  it('keeps special characters in the pattern verbatim', () => {
+    expect(parseNewRuleArgs('trader joe*s (west) = Groceries')).toEqual({
+      pattern: 'trader joe*s (west)',
+      categoryQuery: 'Groceries',
+    });
+  });
+
+  it('an "=" embedded in the category side does not cause a second split', () => {
+    expect(parseNewRuleArgs('pattern = cat = ory')).toEqual({ pattern: 'pattern', categoryQuery: 'cat = ory' });
+  });
+
+  it('an empty pattern side returns null', () => {
+    expect(parseNewRuleArgs('= groceries')).toBeNull();
+  });
+
+  it('an empty category side returns null', () => {
+    expect(parseNewRuleArgs('trader joes =')).toBeNull();
+  });
+
+  it('no separator at all returns null', () => {
+    expect(parseNewRuleArgs('just some text')).toBeNull();
+  });
+});
+
+// ---- constants ---------------------------------------------------------------
+
+describe('constants', () => {
+  it('MENU_PAGE_SIZE is 8', () => {
+    expect(MENU_PAGE_SIZE).toBe(8);
+  });
+
+  it('MENU_CALLBACK_PREFIX is "cz:"', () => {
+    expect(MENU_CALLBACK_PREFIX).toBe('cz:');
+  });
+});

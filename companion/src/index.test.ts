@@ -1,11 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { maskUrl, validateStartupEnv, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, runCompanionSyncExclusive, buildTelegramCommandHandler, applyTelegramDismissal, buildTelegramListenerDeps } from './index.js';
-import { formatHelpReply } from '../../shared/telegram-commands.js';
+import { maskUrl, validateStartupEnv, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, runCompanionSyncExclusive, buildTelegramCommandHandler, applyTelegramDismissal, buildTelegramListenerDeps, buildCategorizeController, buildCategorizeDeps } from './index.js';
+import { formatHelpReply, parseCommand } from '../../shared/telegram-commands.js';
 import { SIMPLEFIN_SYNC_VERSION } from '../../shared/version.js';
 import { runSyncCore } from '../../shared/sync-core.js';
-import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending } from './sqlite-native.js';
+import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeSpendingCategories } from './sqlite-native.js';
 import { ingestAmazonMail } from './amazon-mail.js';
-import { AMAZON_MAIL_STATUS_SECRET_KEY } from '../../shared/status-keys.js';
+import { AMAZON_MAIL_STATUS_SECRET_KEY, UNCATEGORIZED_STATUS_SECRET_KEY } from '../../shared/status-keys.js';
+import { CATEGORIZE_ENTRY_CALLBACK } from '../../shared/telegram.js';
 import { existsSync } from 'fs';
 import type { SyncResult } from '../../shared/sync-core.js';
 
@@ -49,6 +50,11 @@ vi.mock('./wealthfolio.js', () => {
 
 vi.mock('./sqlite-native.js', () => ({
   getNativeUncategorizedSpending: vi.fn(() => []),
+  // Read by the /categorize menu's category picker and by /newrule's resolver.
+  // Present in this factory even though most tests never touch it: vi.mock
+  // replaces the WHOLE module, so an export index.ts imports but the factory
+  // omits fails at import time and takes every test in this file with it.
+  getNativeSpendingCategories: vi.fn(() => []),
   getNativeSubcategorySpending: vi.fn(() => []),
   getNativeCategoryCatalog: vi.fn(() => ([
     { name: 'Transportation', parent: null, icon: 'Car', color: '#24837B', hasBudget: true, hasSpend: false },
@@ -2327,9 +2333,13 @@ describe('sendImportNotice', () => {
     // Dismissed rows are out — including the one dismissed by a button press.
     expect(body.text).not.toContain('DISMISSED EARLIER');
     expect(body.text).not.toContain('DISMISSED BY BUTTON');
-    // One dismiss button per SHOWN needs-category row.
-    expect(body.reply_markup.inline_keyboard).toHaveLength(1);
+    // One dismiss button per SHOWN needs-category row, plus the appended
+    // `Categorize these` row that opens the menu (see buildDismissKeyboard).
+    expect(body.reply_markup.inline_keyboard).toHaveLength(2);
     expect(body.reply_markup.inline_keyboard[0][0].callback_data).toBe('d:act-1');
+    expect(body.reply_markup.inline_keyboard[1]).toEqual([
+      { text: 'Categorize these', callback_data: CATEGORIZE_ENTRY_CALLBACK },
+    ]);
     // The listener is the bot's ONLY getUpdates consumer now: a second one here
     // would take 409s and make the bot look like it ignores every command.
     expect(fetchMock.mock.calls.filter((c: any[]) => String(c[0]).includes('getUpdates'))).toHaveLength(0);
@@ -2518,5 +2528,428 @@ describe('Amazon mail status publishing', () => {
 
     expect(result.imported).toBe(2); // the mocked runSyncCore's usual result
     expect(secrets.has(AMAZON_MAIL_STATUS_SECRET_KEY)).toBe(false);
+  });
+});
+
+describe('the /categorize wiring', () => {
+  /** Two childless top-level categories and one parent with a child, so both the
+   *  file-immediately and the drill-down paths are reachable. */
+  const CATS = [
+    { id: 'cat-food', name: 'Food & Dining', parentId: null, parentName: null },
+    { id: 'cat-rest', name: 'Restaurants', parentId: 'cat-food', parentName: 'Food & Dining' },
+    { id: 'cat-fun', name: 'Entertainment', parentId: null, parentName: null },
+  ];
+
+  /** Shaped like `getNativeUncategorizedSpending`'s rows: the note still carries
+   *  its ` · <txId>` bookkeeping, and the amount is a magnitude. */
+  const uncatRow = (activityId: string, description: string) => ({
+    activityId,
+    wfAccountId: 'wf-a',
+    notes: `${description} · TRN-${activityId}`,
+    amountCents: 1200,
+    date: '2026-08-08',
+    accountName: 'Citi Double Cash',
+  });
+
+  const LEDGER_KEY = 'uncategorized_dismissals';
+
+  /** The whole client surface this feature touches: the two secret methods over a
+   *  Map, plus the three spending writes. `ops` records every secret read/write in
+   *  order, which is what proves a write had a FRESH read behind it. */
+  const clientFor = (entries: Array<[string, string]> = []) => {
+    const secrets = new Map<string, string>(entries);
+    const ops: string[] = [];
+    const client = {
+      login: vi.fn(async () => {}),
+      getAddonSecret: vi.fn(async (_a: string, k: string) => {
+        ops.push(`get:${k}`);
+        return secrets.get(k) ?? null;
+      }),
+      setAddonSecret: vi.fn(async (_a: string, k: string, v: string) => {
+        ops.push(`set:${k}`);
+        secrets.set(k, v);
+      }),
+      assignActivityCategory: vi.fn(async () => {}),
+      unassignActivityCategory: vi.fn(async () => {}),
+      createCategorizationRule: vi.fn(async () => {}),
+    } as any;
+    return { client, secrets, ops };
+  };
+
+  type Sent = [string, any];
+  const collect = () => {
+    const sent: Sent[] = [];
+    return { sent, reply: async (text: string, keyboard?: any) => { sent.push([text, keyboard]); } };
+  };
+  const labels = (kb: any): string[] => kb.inline_keyboard.flat().map((b: any) => b.text);
+  const dataFor = (kb: any, label: string): string => {
+    const btn = kb.inline_keyboard.flat().find((b: any) => b.text.includes(label));
+    if (!btn) throw new Error(`no button matching "${label}" among: ${labels(kb).join(' | ')}`);
+    return btn.callback_data;
+  };
+  const fakeUi = () => ({
+    edit: vi.fn(async (_t: string, _k?: any) => {}),
+    answer: vi.fn(async (_t?: string) => {}),
+    send: vi.fn(async (_t: string, _k?: any) => {}),
+  });
+  const lastOf = (fn: any): Sent => fn.mock.calls.at(-1) as Sent;
+
+  beforeEach(() => {
+    process.env.WEALTHFOLIO_API_URL = 'http://wf';
+    process.env.WEALTHFOLIO_PASSWORD = 'pw';
+    process.env.WEALTHFOLIO_DB_PATH = '/mnt/wealthfolio.db';
+    vi.mocked(existsSync).mockReturnValue(true);
+    // Cleared per test, this file's convention for a module mock whose CALLS are
+    // asserted: nothing resets them between tests, and the two "the database is
+    // missing, so nothing was read" assertions below are about this test's calls
+    // rather than every earlier test's.
+    vi.mocked(getNativeUncategorizedSpending).mockClear();
+    vi.mocked(getNativeSpendingCategories).mockClear();
+    vi.mocked(getNativeUncategorizedSpending).mockReturnValue([
+      uncatRow('act-1', 'BOOK STORES'),
+      uncatRow('act-2', 'VENMO PAYMENT'),
+    ] as any);
+    vi.mocked(getNativeSpendingCategories).mockReturnValue(CATS as any);
+  });
+
+  afterEach(() => {
+    // Left as every other describe in this file expects to find it.
+    vi.mocked(existsSync).mockReturnValue(true);
+    delete process.env.WEALTHFOLIO_DB_PATH;
+  });
+
+  it('answers /categorize with the list and a keyboard to tap', async () => {
+    const { client } = clientFor();
+    const { sent, reply } = collect();
+    await buildTelegramCommandHandler(client)({ command: 'categorize', args: '' }, reply);
+    expect(sent).toHaveLength(1);
+    expect(sent[0][0]).toBe('2 transactions need a category:');
+    expect(labels(sent[0][1])).toEqual([
+      'Aug 8 · BOOK STORES · $12',
+      'Aug 8 · VENMO PAYMENT · $12',
+      'Done',
+    ]);
+  });
+
+  it('leaves an already-dismissed row out of what /categorize lists', async () => {
+    const { client } = clientFor([[LEDGER_KEY, JSON.stringify({ 'act-2': '2026-08-09T00:00:00.000Z' })]]);
+    const { sent, reply } = collect();
+    await buildTelegramCommandHandler(client)({ command: 'categorize', args: '' }, reply);
+    expect(sent[0][0]).toBe('1 transaction needs a category:');
+    expect(labels(sent[0][1])).toEqual(['Aug 8 · BOOK STORES · $12', 'Done']);
+  });
+
+  it('says so rather than claiming nothing needs a category when the database is missing', async () => {
+    vi.mocked(existsSync).mockReturnValue(false);
+    const { client } = clientFor();
+    const { sent, reply } = collect();
+    await buildTelegramCommandHandler(client)({ command: 'categorize', args: '' }, reply);
+    expect(sent[0][0]).toBe(
+      'The companion has no database access right now, so it can\'t tell what needs a category.',
+    );
+    expect(vi.mocked(getNativeUncategorizedSpending)).not.toHaveBeenCalled();
+  });
+
+  it('files a tapped transaction through the spending API and republishes the status tile', async () => {
+    const { client, secrets } = clientFor();
+    const controller = buildCategorizeController(client);
+    const { sent, reply } = collect();
+    await buildTelegramCommandHandler(client, controller)({ command: 'categorize', args: '' }, reply);
+
+    const ui = fakeUi();
+    const cb = (data: string) => controller.onCallback({ data, chatId: 4242, messageId: 7 }, ui);
+    await cb(dataFor(sent[0][1], 'BOOK STORES'));
+    // Entertainment has no children, so tapping it files immediately.
+    await cb(dataFor(lastOf(ui.edit)[1], 'Entertainment'));
+
+    expect(client.assignActivityCategory).toHaveBeenCalledWith('act-1', 'spending_categories', 'cat-fun');
+    expect(lastOf(ui.edit)[0]).toBe('Filed BOOK STORES → Entertainment.');
+
+    // The tile the addon renders is stale the moment a row is filed, so the
+    // controller's `republish` has to have run — assert the secret it writes.
+    const status = JSON.parse(secrets.get(UNCATEGORIZED_STATUS_SECRET_KEY)!);
+    expect(status.count).toBe(2);
+    expect(status.rows.map((r: any) => r.description)).toEqual(['BOOK STORES', 'VENMO PAYMENT']);
+  });
+
+  it('drills into subcategories and files the child id', async () => {
+    const { client } = clientFor();
+    const controller = buildCategorizeController(client);
+    const { sent, reply } = collect();
+    await buildTelegramCommandHandler(client, controller)({ command: 'categorize', args: '' }, reply);
+    const ui = fakeUi();
+    const cb = (data: string) => controller.onCallback({ data, chatId: 4242, messageId: 7 }, ui);
+    await cb(dataFor(sent[0][1], 'BOOK STORES'));
+    await cb(dataFor(lastOf(ui.edit)[1], 'Food & Dining'));
+    await cb(dataFor(lastOf(ui.edit)[1], 'Restaurants'));
+    expect(client.assignActivityCategory).toHaveBeenCalledWith('act-1', 'spending_categories', 'cat-rest');
+  });
+
+  it('undoes a filing through the taxonomy-scoped delete', async () => {
+    const { client } = clientFor();
+    const controller = buildCategorizeController(client);
+    const { sent, reply } = collect();
+    await buildTelegramCommandHandler(client, controller)({ command: 'categorize', args: '' }, reply);
+    const ui = fakeUi();
+    const cb = (data: string) => controller.onCallback({ data, chatId: 4242, messageId: 7 }, ui);
+    await cb(dataFor(sent[0][1], 'BOOK STORES'));
+    await cb(dataFor(lastOf(ui.edit)[1], 'Entertainment'));
+    await cb(dataFor(lastOf(ui.edit)[1], 'Undo'));
+    expect(client.unassignActivityCategory).toHaveBeenCalledWith('act-1', 'spending_categories');
+  });
+
+  it('creates a rule from a filed row at priority 50 in the spending taxonomy', async () => {
+    const { client } = clientFor();
+    const controller = buildCategorizeController(client);
+    const { sent, reply } = collect();
+    await buildTelegramCommandHandler(client, controller)({ command: 'categorize', args: '' }, reply);
+    const ui = fakeUi();
+    const cb = (data: string) => controller.onCallback({ data, chatId: 4242, messageId: 7 }, ui);
+    await cb(dataFor(sent[0][1], 'BOOK STORES'));
+    await cb(dataFor(lastOf(ui.edit)[1], 'Entertainment'));
+    await cb(dataFor(lastOf(ui.edit)[1], 'Make this a rule'));
+    await cb(dataFor(lastOf(ui.edit)[1], 'Create rule'));
+    expect(client.createCategorizationRule).toHaveBeenCalledWith({
+      name: 'Telegram: BOOK STORES',
+      pattern: 'BOOK STORES',
+      categoryId: 'cat-fun',
+      taxonomyId: 'spending_categories',
+      priority: 50,
+    });
+  });
+
+  describe('writeLedgerMerged', () => {
+    it('re-reads the ledger immediately before writing, so a third party\'s dismissal survives', async () => {
+      // THE 1.10.1 bug, in the shape this dep can reintroduce it: passing the
+      // controller's `base` snapshot as `persisted` collapses the merge into a
+      // whole-object write and erases whatever the other host recorded in
+      // between. Two reads are the only thing that makes the merge mean anything.
+      const { client, secrets } = clientFor([
+        [LEDGER_KEY, JSON.stringify({ 'act-earlier': '2026-08-09T00:00:00.000Z' })],
+      ]);
+      const deps = buildCategorizeDeps(client);
+
+      const base = await deps.readLedger();
+      // …and now the addon (or the notice's own Dismiss button) writes its own
+      // entry, after the controller read but before the menu's write.
+      secrets.set(LEDGER_KEY, JSON.stringify({ ...base, 'act-thirdparty': '2026-08-10T00:00:00.000Z' }));
+
+      await deps.writeLedgerMerged(base, { ...base, 'act-menu': '2026-08-10T01:00:00.000Z' });
+
+      const written = JSON.parse(secrets.get(LEDGER_KEY)!);
+      expect(Object.keys(written).sort()).toEqual(['act-earlier', 'act-menu', 'act-thirdparty']);
+      expect(written['act-earlier']).toBe('2026-08-09T00:00:00.000Z');
+    });
+
+    it('replays a REMOVAL as a delta, leaving a third party\'s entry alone', async () => {
+      const { client, secrets } = clientFor([
+        [LEDGER_KEY, JSON.stringify({ 'act-menu': '2026-08-10T01:00:00.000Z' })],
+      ]);
+      const deps = buildCategorizeDeps(client);
+      const base = await deps.readLedger();
+      secrets.set(LEDGER_KEY, JSON.stringify({ ...base, 'act-thirdparty': '2026-08-10T00:00:00.000Z' }));
+
+      const next = { ...base };
+      delete (next as any)['act-menu'];
+      await deps.writeLedgerMerged(base, next);
+
+      expect(Object.keys(JSON.parse(secrets.get(LEDGER_KEY)!))).toEqual(['act-thirdparty']);
+    });
+
+    it('prunes entries too old to matter while it is there', async () => {
+      const ancient = new Date(Date.now() - 61 * 86400_000).toISOString();
+      const { client, secrets } = clientFor([[LEDGER_KEY, JSON.stringify({ 'act-ancient': ancient })]]);
+      const deps = buildCategorizeDeps(client);
+      const base = await deps.readLedger();
+      await deps.writeLedgerMerged(base, { ...base, 'act-menu': new Date().toISOString() });
+      expect(Object.keys(JSON.parse(secrets.get(LEDGER_KEY)!))).toEqual(['act-menu']);
+    });
+
+    it('survives a ledger secret that is not JSON, treating it as empty', async () => {
+      const { client, secrets } = clientFor([[LEDGER_KEY, 'not json at all']]);
+      const deps = buildCategorizeDeps(client);
+      await expect(deps.readLedger()).resolves.toEqual({});
+      await deps.writeLedgerMerged({}, { 'act-menu': '2026-08-10T01:00:00.000Z' });
+      expect(JSON.parse(secrets.get(LEDGER_KEY)!)).toEqual({ 'act-menu': '2026-08-10T01:00:00.000Z' });
+    });
+
+    it('keeps a concurrent dismissal when the menu\'s Keep uncategorized button is tapped', async () => {
+      // The same guarantee, end to end through the controller: the fresh read
+      // sits immediately before the write, with nothing in between.
+      const { client, secrets, ops } = clientFor();
+      const controller = buildCategorizeController(client);
+      const { sent, reply } = collect();
+      await buildTelegramCommandHandler(client, controller)({ command: 'categorize', args: '' }, reply);
+      const ui = fakeUi();
+      const cb = (data: string) => controller.onCallback({ data, chatId: 4242, messageId: 7 }, ui);
+      await cb(dataFor(sent[0][1], 'BOOK STORES'));
+
+      // From here on, the FIRST ledger read is the controller's own; the addon
+      // writes its dismissal straight afterwards, which only a second read can see.
+      let reads = 0;
+      client.getAddonSecret.mockImplementation(async (_a: string, k: string) => {
+        if (k !== LEDGER_KEY) { ops.push(`get:${k}`); return secrets.get(k) ?? null; }
+        ops.push(`get:${k}`);
+        reads += 1;
+        const current = secrets.get(k) ?? '{}';
+        if (reads === 1) {
+          secrets.set(k, JSON.stringify({ ...JSON.parse(current), 'act-addon': '2026-08-10T00:00:00.000Z' }));
+          return current;
+        }
+        return secrets.get(k) ?? null;
+      });
+
+      const mark = ops.length;
+      await cb(dataFor(lastOf(ui.edit)[1], 'Keep uncategorized'));
+
+      const written = JSON.parse(secrets.get(LEDGER_KEY)!);
+      expect(Object.keys(written).sort()).toEqual(['act-1', 'act-addon']);
+      // Two reads, back to back, then the write: nothing else touches the ledger
+      // between the read the merge is based on and the write itself.
+      expect(ops.slice(mark, mark + 3)).toEqual([`get:${LEDGER_KEY}`, `get:${LEDGER_KEY}`, `set:${LEDGER_KEY}`]);
+      expect(lastOf(ui.edit)[0]).toBe('BOOK STORES will stay uncategorized.');
+    });
+  });
+
+  describe('/newrule', () => {
+    const runNewRule = async (args: string, controller?: any) => {
+      const { client } = clientFor();
+      const { sent, reply } = collect();
+      await buildTelegramCommandHandler(client, controller ?? buildCategorizeController(client))(
+        { command: 'newrule', args }, reply,
+      );
+      return { sent, client };
+    };
+
+    it('answers one usage line for anything that does not parse', async () => {
+      for (const args of ['', 'just some text', '= groceries', 'trader joes =']) {
+        const { sent } = await runNewRule(args);
+        expect(sent).toEqual([['Usage: /newrule trader joes = groceries', undefined]]);
+      }
+    });
+
+    it('asks which one when the category query is ambiguous', async () => {
+      vi.mocked(getNativeSpendingCategories).mockReturnValue([
+        { id: 'c1', name: 'Home', parentId: null, parentName: null },
+        { id: 'c2', name: 'Home Improvement', parentId: null, parentName: null },
+      ] as any);
+      const { sent } = await runNewRule('lowes = hom');
+      expect(sent[0][0]).toBe('Which one? Home, Home Improvement');
+    });
+
+    it('says nothing starts with the query, pointing at a list that includes subcategories', async () => {
+      // NOT "/left lists them all": `/left` shows budgeted PARENTS, and this
+      // command resolves the whole tree, so a mistyped subcategory can never
+      // appear in the list the default pointer names.
+      const { sent } = await runNewRule('trader joes = xyzzy');
+      expect(sent[0][0]).toBe(
+        'No category starts with "xyzzy". '
+        + 'Subcategories count too — Wealthfolio\'s category settings list them all.',
+      );
+    });
+
+    it('names the PARENT in the preview, so two same-named children cannot be confused', async () => {
+      // `resolveCategoryQuery` matches on name over the FLAT tree, and
+      // Wealthfolio's presets ship duplicate leaf names. The preview is the only
+      // thing between a typo and a rule that sweeps rows into the wrong
+      // category, so it has to say which `Restaurants` it means.
+      const { sent } = await runNewRule('trader joes = restaur');
+      expect(sent[0][0]).toBe(
+        'Create this rule?\n'
+        + 'Descriptions containing "trader joes" → Restaurants (Food & Dining)\n'
+        + 'It will also file any other uncategorized transactions that match, now and on every future import. '
+        + 'Already-categorized transactions are never touched.',
+      );
+      expect(labels(sent[0][1])).toEqual(['Create rule', 'Cancel']);
+    });
+
+    it('creates the rule when the preview is confirmed', async () => {
+      const { client } = clientFor();
+      const controller = buildCategorizeController(client);
+      const { sent, reply } = collect();
+      await buildTelegramCommandHandler(client, controller)({ command: 'newrule', args: 'trader joes = restaur' }, reply);
+      const ui = fakeUi();
+      await controller.onCallback(
+        { data: dataFor(sent[0][1], 'Create rule'), chatId: 4242, messageId: 7 },
+        ui,
+      );
+      expect(client.createCategorizationRule).toHaveBeenCalledWith({
+        name: 'Telegram: trader joes',
+        pattern: 'trader joes',
+        categoryId: 'cat-rest',
+        taxonomyId: 'spending_categories',
+        priority: 50,
+      });
+      expect(lastOf(ui.edit)[0]).toBe(
+        'Rule created — future matches will file automatically under Restaurants (Food & Dining).',
+      );
+    });
+
+    it('pins the rule priority at 50 — higher wins upstream, so a tapped rule yields', async () => {
+      // Verified against upstream source, not inferred:
+      // `crates/spending/src/categorization_rules/matcher.rs` picks
+      // `rule.priority > current.priority`, with a unit test named
+      // `higher_priority_wins`. HIGHER WINS. 50 therefore loses to a hand-tuned
+      // rule (60) AND to the presets Wealthfolio ships (70–90) — the conservative
+      // direction for something created by one tap. Upstream's ordering lives in
+      // another repo and is not tested here; the NUMBER is, so it cannot drift
+      // silently and quietly start outranking deliberate rules.
+      const { client } = clientFor();
+      const rules: Array<{ priority: number }> = [];
+      client.createCategorizationRule.mockImplementation(async (r: any) => { rules.push(r); });
+      const controller = buildCategorizeController(client);
+      const { sent, reply } = collect();
+      await buildTelegramCommandHandler(client, controller)({ command: 'newrule', args: 'trader joes = restaur' }, reply);
+      await controller.onCallback(
+        { data: dataFor(sent[0][1], 'Create rule'), chatId: 4242, messageId: 7 },
+        fakeUi(),
+      );
+      expect(rules.map((r) => r.priority)).toEqual([50]);
+    });
+
+    it('says the same thing when the category read throws rather than answering []', async () => {
+      // A locked or corrupt database is another way of not being able to look the
+      // categories up. Unwrapped, it would surface as the listener's generic
+      // "Something went wrong running that command", which names neither the
+      // cause nor anything the reader can do about it.
+      vi.mocked(getNativeSpendingCategories).mockImplementation(() => { throw new Error('database is locked'); });
+      const { sent, client } = await runNewRule('trader joes = groceries');
+      expect(sent[0][0]).toBe(
+        'The companion has no database access right now, so it can\'t look up your categories.',
+      );
+      expect(client.createCategorizationRule).not.toHaveBeenCalled();
+    });
+
+    it('says the database is unreachable instead of "no category starts with"', async () => {
+      // `getNativeSpendingCategories` answers [] for a path that is not there, so
+      // every query would otherwise resolve to a confident "no such category".
+      vi.mocked(existsSync).mockReturnValue(false);
+      const { sent } = await runNewRule('trader joes = groceries');
+      expect(sent[0][0]).toBe(
+        'The companion has no database access right now, so it can\'t look up your categories.',
+      );
+      expect(vi.mocked(getNativeSpendingCategories)).not.toHaveBeenCalled();
+    });
+  });
+
+  it('routes menu callbacks, and the notice\'s Categorize these opens a fresh message', async () => {
+    const { client } = clientFor();
+    const deps = buildTelegramListenerDeps(client);
+    expect(deps.onMenuCallback).toBeTypeOf('function');
+    const ui = fakeUi();
+    await deps.onMenuCallback!({ data: CATEGORIZE_ENTRY_CALLBACK, chatId: 4242, messageId: 7 }, ui);
+    // A new message, never an edit of the import notice the button sits on.
+    expect(lastOf(ui.send)[0]).toBe('2 transactions need a category:');
+    expect(ui.edit).not.toHaveBeenCalled();
+  });
+
+  it('reaches the menu from /categorize typed into the configured chat', async () => {
+    // Through the listener's own dispatch: parseCommand → onCommand → controller.
+    const { client } = clientFor();
+    const deps = buildTelegramListenerDeps(client);
+    const parsed = parseCommand('/categorize');
+    const { sent, reply } = collect();
+    await deps.onCommand(parsed!, reply);
+    expect(sent[0][0]).toBe('2 transactions need a category:');
   });
 });
