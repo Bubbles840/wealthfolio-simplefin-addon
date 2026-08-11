@@ -49,7 +49,7 @@ export interface TaxonomyAssignment {
   categoryId: string;
 }
 
-/** What Undo must put back after a `reassign`/`reassignCross`: the row's
+/** What Undo must put back after a `reassign`: the row's
  *  complete previous assignment set (every taxonomy — see `refiled`'s doc
  *  comment for why a single pair was a real defect) AND the subtype it
  *  carried before the move, `null` when it had none. The subtype half exists
@@ -84,16 +84,6 @@ export type MenuScreen =
   | { kind: 'freeRulePreview'; pattern: string; categoryId: string }
   | { kind: 'ruleCreated'; activityId: string | null; categoryId: string }
   | { kind: 'closed' }
-  /** Confirmation for a CROSS-BUCKET move specifically (an income-side or
-   *  unclassified credit moving into a spending category) — distinct from
-   *  `refiled` because nothing has been written yet: "Do it" is what
-   *  performs the write. Required because the move is not a relabel — it
-   *  changes how Wealthfolio counts the transaction EVERYWHERE it appears,
-   *  not only in this addon's own display, so the reader must see the
-   *  consequence (which category, how much) before it happens rather than
-   *  after. A previous release moved category data without stating the
-   *  consequence first and destroyed a user's category. */
-  | { kind: 'confirmCross'; activityId: string; categoryId: string }
   /** Rendered instead of a category picker when a move cannot work at all.
    *  `reason` mirrors `assignabilityOf`'s own machine tokens
    *  (`'neutral' | 'wrong-bucket'`, ./cash-flow-bucket.ts) plus `'scope'` for
@@ -221,20 +211,16 @@ export type MenuAction =
    *  already has a category, rather than one with none. A separate kind
    *  (rather than reusing `assign`) is what lets the controller tell "first
    *  filing" and "moving an existing filing" apart without inspecting the
-   *  session's mode itself — the action alone says which happened. */
+   *  session's mode itself — the action alone says which happened. This is
+   *  the only category move the menu performs: an earlier design fronted a
+   *  cross-bucket move with its own confirmation screen and its own action
+   *  (`reassignCross`), but the write behind that screen was cut before this
+   *  action ever shipped, so the screen and its action were deleted with it
+   *  — every category tap in recategorize mode, cross-bucket or not, now
+   *  resolves straight to this one action, and the gate in
+   *  companion/src/categorize.ts decides ahead of the write whether it may
+   *  proceed. */
   | { kind: 'reassign'; activityId: string; categoryId: string }
-  /** `reassign`'s cross-bucket counterpart: fired ONLY from `confirmCross`'s
-   *  "Do it" button, after the reader has seen and accepted what the move
-   *  does before it happens. The ordinary category tap (txn/subcats screens,
-   *  via `assignAction`) still emits a plain `reassign` even when the row IS
-   *  a cross-bucket move — deciding that and routing to `confirmCross`
-   *  first is the controller's job (it alone has the account/activity-type
-   *  data `assignabilityOf` needs), not something this module infers from a
-   *  tap. A stale/duplicate token on the original category button can
-   *  therefore never skip the confirmation: it can only ever resolve to
-   *  `reassign`, which the controller must refuse to write for a cross-bucket
-   *  row. */
-  | { kind: 'reassignCross'; activityId: string; categoryId: string }
   /** Undo for `reassign`: puts the transaction back in the state it was in
    *  before the tap.
    *
@@ -733,48 +719,6 @@ function renderRefiled(
 }
 
 /**
- * Confirms a cross-bucket move BEFORE it happens — see `confirmCross`'s doc
- * comment on `MenuScreen` for why a silent write is not acceptable here. All
- * three lines are locked copy: name the target category, state the concrete
- * consequence (which category, how much, for the week and the month), and
- * say plainly what stops. No hedging, no promise beyond what actually
- * happens.
- *
- * Falls back to the list exactly like `refiled` does, and for the same
- * reason: the transaction/category have to resolve since the sentence names
- * both, and a vanished row is the controller's fresh sweep no longer having
- * it.
- */
-function renderConfirmCross(
-  session: MenuSession,
-  screen: Extract<MenuScreen, { kind: 'confirmCross' }>,
-): RenderResult {
-  const txn = findTxn(session, screen.activityId);
-  const category = findCategory(session, screen.categoryId);
-  if (!txn || !category) {
-    const note = session.mode === 'recategorize' ? RECATEGORIZE_GONE_NOTE : GONE_NOTE;
-    return renderList(session, 0, note);
-  }
-
-  const toName = escapeMarkdown(category.name);
-  const money = moneyWhole(txn.amountCents / 100);
-  const text = [
-    `Mark as a reimbursement and file under ${toName}?`,
-    `Your ${toName} spend drops by ${money} for that week and month.`,
-    'It stops counting as income.',
-  ].join('\n');
-
-  const rows: Btn[][] = [
-    [{
-      text: 'Do it',
-      action: { kind: 'reassignCross', activityId: screen.activityId, categoryId: screen.categoryId },
-    }],
-    [{ text: '« Back', action: { kind: 'goto', screen: { kind: 'txn', activityId: screen.activityId } } }],
-  ];
-  return finish(session.generation, text, rows);
-}
-
-/**
  * The one thing a reader CAN do about the two refusals a subtype governs, said
  * in the passive: the bot does not set subtypes and must not imply it will (a
  * transaction rule is the only thing that does, since v1.14.0). Deliberately
@@ -810,6 +754,22 @@ const REFUSED_TEXT: Record<Extract<MenuScreen, { kind: 'refused' }>['reason'], s
   neutral: 'The transaction is not counted as spending or income at all, so no category can be attached to it as it stands.',
   // The same constraint, on a row where a refund subtype WOULD lift it.
   'neutral-subtype': `The transaction is not counted as spending or income at all, so no category can be attached to it as it stands.\n${REIMBURSEMENT_HINT}`,
+  // Hardcodes "money in" rather than branching on `assignabilityOf`'s
+  // `bucket`: the only caller that reaches this reason (the /recategorize
+  // gate in companion/src/categorize.ts) always asks `assignabilityOf` about
+  // SPENDING_TAXONOMY_ID, and `bucketFor`'s outer match — CASH, CREDIT_CARD,
+  // and a wildcard falling to `neutral` — has no arm that ever returns
+  // `'saving'` (docs/upstream-spending-buckets.md §2: `classify_activity`,
+  // activity_classification.rs:97-130, never constructs
+  // `SpendingClassification::Saving` for any account type + activity type +
+  // subtype). A `'saving'` bucket would also land `'wrong-bucket'` here (it
+  // is not `SPENDING_TAXONOMY_ID` either) and this sentence would then be
+  // lying about it — but since `bucketFor` can only return `income`,
+  // `spending`, or `neutral`, and `spending`/`neutral` are handled before
+  // this reason is ever chosen, `bucket` is provably always `'income'`
+  // whenever this reason fires. Pinned by "bucketFor never returns 'saving'"
+  // in cash-flow-bucket.test.ts — if that ever starts failing, this needs a
+  // bucket-aware sentence instead (see task-8-brief.md Part 2).
   'wrong-bucket': `It is recorded as money in and can only take an income category while that is true.\n${REIMBURSEMENT_HINT}`,
   // No hint: a subtype cannot opt an account into spending tracking, so
   // offering the reimbursement route here would send its reader somewhere that
@@ -865,8 +825,6 @@ export function renderScreen(session: MenuSession): RenderResult {
       return renderRuleCreated(session, screen.activityId, screen.categoryId);
     case 'refiled':
       return renderRefiled(session, screen);
-    case 'confirmCross':
-      return renderConfirmCross(session, screen);
     case 'refused':
       return renderRefused(session, screen);
     case 'closed':

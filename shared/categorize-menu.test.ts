@@ -797,69 +797,6 @@ describe('renderScreen — refiled', () => {
   });
 });
 
-// ---- renderScreen: confirmCross ---------------------------------------------
-
-describe('renderScreen — confirmCross', () => {
-  const confirmScreen: MenuScreen = { kind: 'confirmCross', activityId: 'act-1', categoryId: 'cat-groceries' };
-
-  it('renders the exact locked three-line copy, naming the target category and the amount', () => {
-    const s = session({
-      mode: 'recategorize',
-      txns: [txn({ description: 'VENMO PAYBACK', amountCents: 2500 })],
-      screen: confirmScreen,
-    });
-    const { text } = renderScreen(s);
-    expect(text).toBe(
-      'Mark as a reimbursement and file under Groceries?\n'
-      + 'Your Groceries spend drops by $25 for that week and month.\n'
-      + 'It stops counting as income.',
-    );
-  });
-
-  it('offers "Do it" (yields reassignCross) and « Back (returns to the txn screen)', () => {
-    const s = session({ mode: 'recategorize', screen: confirmScreen });
-    const { keyboard, buttons } = renderScreen(s);
-    const labels = keyboard.inline_keyboard.flat().map((b) => b.text);
-    expect(labels).toEqual(['Do it', '« Back']);
-
-    const doIt = buttons[labels.indexOf('Do it')];
-    expect(doIt).toEqual({ kind: 'reassignCross', activityId: 'act-1', categoryId: 'cat-groceries' });
-
-    const back = buttons[labels.indexOf('« Back')];
-    expect(back).toEqual({ kind: 'goto', screen: { kind: 'txn', activityId: 'act-1' } });
-  });
-
-  it('escapes Markdown specials in the category name, everywhere it is named', () => {
-    const s = session({
-      mode: 'recategorize',
-      categories: [{ id: 'cat-groceries', name: 'Foo_Bar', parentId: null, parentName: null }],
-      screen: confirmScreen,
-    });
-    const { text } = renderScreen(s);
-    const lines = text.split('\n');
-    expect(lines[0]).toBe('Mark as a reimbursement and file under Foo\\_Bar?');
-    expect(lines[1]).toContain('Your Foo\\_Bar spend drops by');
-  });
-
-  it('falls back to the list with the recategorize-worded note when the transaction is gone', () => {
-    const s = session({ mode: 'recategorize', txns: [], screen: confirmScreen });
-    const { text } = renderScreen(s);
-    expect(text.split('\n')[0]).toBe('That transaction is no longer available to recategorize.');
-  });
-
-  it('falls back to the list with the recategorize-worded note when the target category is gone', () => {
-    const s = session({ mode: 'recategorize', categories: [], screen: confirmScreen });
-    const { text } = renderScreen(s);
-    expect(text.split('\n')[0]).toBe('That transaction is no longer available to recategorize.');
-  });
-
-  it('falls back with the ORIGINAL GONE_NOTE wording in categorize mode', () => {
-    const s = session({ mode: 'categorize', txns: [], screen: confirmScreen });
-    const { text } = renderScreen(s);
-    expect(text.split('\n')[0]).toBe('That transaction is no longer uncategorized.');
-  });
-});
-
 // ---- renderScreen: refused ---------------------------------------------------
 
 describe('renderScreen — refused', () => {
@@ -960,27 +897,24 @@ describe('renderScreen — refused', () => {
   });
 });
 
-// ---- the cross-bucket confirmation never leaks onto an ordinary tap --------
+// ---- every category tap in recategorize mode yields a plain reassign -------
 
-describe('renderScreen — confirmCross cannot leak onto the ordinary category-tap path', () => {
+describe('renderScreen — recategorize mode: a category tap always yields reassign', () => {
   // This module has none of the data (account type, activity type, subtype)
-  // that assignabilityOf needs to decide whether a tap crosses buckets — only
-  // the controller can compute that and choose to route to confirmCross
-  // first. So every ordinary category tap must keep emitting a plain
-  // reassign regardless of mode or screen; layering the confirmation on top
-  // is entirely the controller's decision, never something this module
-  // infers for itself. If this ever started emitting reassignCross or a
-  // confirmCross goto on its own, the extra step would have leaked onto
-  // every recategorize tap, confirmed or not.
-  it('a leaf category tap on the txn screen still yields reassign, never reassignCross', () => {
+  // that assignabilityOf needs to decide whether a move is even legal — only
+  // the controller has that, via the gate in companion/src/categorize.ts,
+  // which runs AFTER this action reaches it. So every category tap emits a
+  // plain reassign regardless of mode or screen; refusing (or not) is
+  // entirely the controller's job, never something this module decides for
+  // itself.
+  it('a leaf category tap on the txn screen yields reassign', () => {
     const s = session({ mode: 'recategorize', screen: { kind: 'txn', activityId: 'act-1' } });
     const { keyboard, buttons } = renderScreen(s);
     const idx = keyboard.inline_keyboard.flat().findIndex((b) => b.text === 'Groceries');
     expect(buttons[idx]).toEqual({ kind: 'reassign', activityId: 'act-1', categoryId: 'cat-groceries' });
-    expect(buttons.some((b) => b.kind === 'reassignCross')).toBe(false);
   });
 
-  it('a child category tap on the subcats screen still yields reassign, never reassignCross', () => {
+  it('a child category tap on the subcats screen yields reassign', () => {
     const s = session({
       mode: 'recategorize',
       screen: { kind: 'subcats', activityId: 'act-1', parentId: 'cat-dining' },
@@ -988,7 +922,6 @@ describe('renderScreen — confirmCross cannot leak onto the ordinary category-t
     const { keyboard, buttons } = renderScreen(s);
     const idx = keyboard.inline_keyboard.flat().findIndex((b) => b.text === 'Fast Food');
     expect(buttons[idx]).toEqual({ kind: 'reassign', activityId: 'act-1', categoryId: 'cat-dining-fastfood' });
-    expect(buttons.some((b) => b.kind === 'reassignCross')).toBe(false);
   });
 });
 
@@ -1193,16 +1126,6 @@ describe('callback_data byte cap', () => {
             subtype: null,
           },
         },
-      }).keyboard,
-    );
-
-    // confirmCross: a new screen KIND, not just a new mode on an existing
-    // one — "Do it"/« Back are index-only buttons, so an enormous category
-    // name reaching the TEXT still can't reach callback_data.
-    assertCallbackBytesFit(
-      renderScreen({
-        ...base,
-        screen: { kind: 'confirmCross', activityId: longTxns[0].activityId, categoryId: longParents[0].id },
       }).keyboard,
     );
 
