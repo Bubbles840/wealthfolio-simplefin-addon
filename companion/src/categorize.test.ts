@@ -321,14 +321,30 @@ describe('the import notice\'s Categorize these button', () => {
     expect(h.ui.edit).not.toHaveBeenCalled();
   });
 
-  it('clears the spinner even when opening the menu fails outright', async () => {
-    // `open` deliberately has no catch-all of its own (the command path's
-    // listener guard is better than anything it could invent), but here a throw
-    // would leave the tapped button spinning forever.
+  it('reports a failed read on the fresh message, and still clears the spinner', async () => {
+    // The anticipated failure: a read that throws is caught by the load itself,
+    // so the tap renders the reason as a new message rather than an error.
     const h = setup();
     h.deps.readLedger.mockImplementation(() => { throw new Error('secret store down'); });
     await expect(h.tap(CATEGORIZE_ENTRY_CALLBACK)).resolves.toBeUndefined();
+    expect(h.ui.send.mock.calls.at(-1)).toEqual([
+      'Couldn\'t check what needs a category — secret store down',
+    ]);
+    expect(h.ui.edit).not.toHaveBeenCalled();
     expect(h.ui.answer).toHaveBeenLastCalledWith();
+  });
+
+  it('clears the spinner even when the send itself rejects', async () => {
+    // The UNANTICIPATED failure, and the only thing that reaches this path's
+    // catch-all: everything the load can fail at is already rendered as text
+    // above, so the remaining hazard is the send — which the listener promises
+    // never rejects, exactly the kind of promise a catch-all is for. Without it
+    // the tapped button spins until Telegram gives up on the query.
+    const h = setup();
+    h.ui.send.mockRejectedValue(new Error('telegram unreachable'));
+    await expect(h.tap(CATEGORIZE_ENTRY_CALLBACK)).resolves.toBeUndefined();
+    expect(h.ui.answer).toHaveBeenLastCalledWith();
+    expect(h.logs.join('\n')).toContain('telegram unreachable');
   });
 });
 
