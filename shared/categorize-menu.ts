@@ -755,21 +755,19 @@ const REFUSED_TEXT: Record<Extract<MenuScreen, { kind: 'refused' }>['reason'], s
   // The same constraint, on a row where a refund subtype WOULD lift it.
   'neutral-subtype': `The transaction is not counted as spending or income at all, so no category can be attached to it as it stands.\n${REIMBURSEMENT_HINT}`,
   // Hardcodes "money in" rather than branching on `assignabilityOf`'s
-  // `bucket`: the only caller that reaches this reason (the /recategorize
-  // gate in companion/src/categorize.ts) always asks `assignabilityOf` about
-  // SPENDING_TAXONOMY_ID, and `bucketFor`'s outer match — CASH, CREDIT_CARD,
-  // and a wildcard falling to `neutral` — has no arm that ever returns
-  // `'saving'` (docs/upstream-spending-buckets.md §2: `classify_activity`,
-  // activity_classification.rs:97-130, never constructs
-  // `SpendingClassification::Saving` for any account type + activity type +
-  // subtype). A `'saving'` bucket would also land `'wrong-bucket'` here (it
-  // is not `SPENDING_TAXONOMY_ID` either) and this sentence would then be
-  // lying about it — but since `bucketFor` can only return `income`,
-  // `spending`, or `neutral`, and `spending`/`neutral` are handled before
-  // this reason is ever chosen, `bucket` is provably always `'income'`
-  // whenever this reason fires. Pinned by "bucketFor never returns 'saving'"
-  // in cash-flow-bucket.test.ts — if that ever starts failing, this needs a
-  // bucket-aware sentence instead (see task-8-brief.md Part 2).
+  // `bucket`. Safe only because of a narrower invariant than "bucketFor never
+  // returns 'saving'" (that broader claim is not something a test can pin —
+  // upstream's real Saving classification comes from a transfer-linkage path
+  // `BucketInput` has no field for, per docs/upstream-spending-buckets.md
+  // §2): the ONLY caller that reaches this reason (the /recategorize gate in
+  // companion/src/categorize.ts) always asks `assignabilityOf` about
+  // SPENDING_TAXONOMY_ID, and at that call site `wrong-bucket` is provably
+  // only ever reached with `bucket: 'income'` — never `'spending'` (would be
+  // `ok: true`) or `'neutral'` (its own earlier-returned reason). Pinned by
+  // "every wrong-bucket refusal in the full classification matrix has bucket
+  // 'income'" in cash-flow-bucket.test.ts, which asserts this over the whole
+  // MATRIX rather than one hand-picked input — if that ever starts failing,
+  // this needs a bucket-aware sentence instead (see task-8-brief.md Part 2).
   'wrong-bucket': `It is recorded as money in and can only take an income category while that is true.\n${REIMBURSEMENT_HINT}`,
   // No hint: a subtype cannot opt an account into spending tracking, so
   // offering the reimbursement route here would send its reader somewhere that

@@ -113,29 +113,41 @@ describe('bucketFor', () => {
   });
 });
 
-describe('bucketFor never returns "saving" — pins an assumption REFUSED_TEXT relies on', () => {
+describe('assignabilityOf — wrong-bucket only ever means Income', () => {
   // `REFUSED_TEXT['wrong-bucket']` (shared/categorize-menu.ts) hardcodes "It
-  // is recorded as money in" instead of branching on the bucket, because the
-  // only caller that reaches that reason always asks about
-  // SPENDING_TAXONOMY_ID, and — per docs/upstream-spending-buckets.md §2 —
-  // `classify_activity` (activity_classification.rs:97-130, what `bucketFor`
-  // ports) has exactly three outer arms: CASH, CREDIT_CARD, and a wildcard
-  // that falls to `Ignored`/neutral. None of the three ever constructs
-  // `SpendingClassification::Saving`, so `taxonomyForBucket('saving')` — which
-  // does exist, and maps to SAVINGS_TAXONOMY_ID — is dead code from
-  // `bucketFor`'s side: nothing this port can classify ever reaches it, for
-  // ANY account type, activity type, or subtype.
+  // is recorded as money in" instead of branching on `bucket`. That is only
+  // true if `wrong-bucket` is never reached by anything other than an
+  // Income-bucketed row — NOT the broader (and unguardable) claim that
+  // `bucketFor` "never returns 'saving'": upstream's real Saving
+  // classification comes from `classify_activity_for_aggregation`'s
+  // transfer-linkage path (docs/upstream-spending-buckets.md §2), which
+  // `BucketInput` has no field to even represent, so a test keyed on an
+  // account-type string (e.g. `'SAVINGS'`) would stay green through a change
+  // that actually made Saving reachable and give false confidence.
   //
-  // 'SAVINGS' is the most literal guess for what an eventual Saving arm would
-  // key its account type off of; `bucketFor` has none, so this exercises the
-  // same `_ => neutral` fallback as any other account type this port does not
-  // recognize (SECURITIES, tested above). The day upstream's rule — and this
-  // port of it — grows an arm that actually returns 'saving', this test
-  // starts failing, which is the signal that REFUSED_TEXT['wrong-bucket']
-  // needs to branch on `bucket` instead of assuming 'income'.
-  it('an account type named for savings still falls through to neutral, not saving', () => {
-    expect(bucketFor({ accountType: 'SAVINGS', activityType: 'DEPOSIT' })).toBe('neutral');
-    expect(bucketFor({ accountType: 'SAVINGS', activityType: 'CREDIT', subtype: 'REIMBURSEMENT' })).toBe('neutral');
+  // What actually matters, and what is directly assertable: every input in
+  // MATRIX above — which is the exhaustive set of arms `classify_activity`
+  // (and therefore `bucketFor`) can take — that `assignabilityOf` refuses
+  // with `reason: 'wrong-bucket'` when asked about SPENDING_TAXONOMY_ID (the
+  // only taxonomy the `/recategorize` gate ever asks about) carries
+  // `bucket: 'income'`. If a future change to `bucketFor` — however it
+  // happens, transfer-linkage or otherwise — ever produces a `wrong-bucket`
+  // refusal on a non-income bucket, this test fails and says so, which is
+  // the signal that REFUSED_TEXT['wrong-bucket'] needs a bucket-aware
+  // sentence instead of assuming income.
+  it('every wrong-bucket refusal in the full classification matrix has bucket "income"', () => {
+    const wrongBucketResults = MATRIX.map(({ input }) => assignabilityOf(input, SPENDING_TAXONOMY_ID)).filter(
+      (result): result is { ok: false; reason: 'wrong-bucket'; bucket: CashFlowBucket; expected: string | null } =>
+        !result.ok && result.reason === 'wrong-bucket',
+    );
+    // Positive anchor: if MATRIX ever stopped containing an income row, the
+    // loop above would pass vacuously and this test would stop proving
+    // anything. At least one wrong-bucket case must exist for the assertion
+    // below to mean something.
+    expect(wrongBucketResults.length).toBeGreaterThan(0);
+    for (const result of wrongBucketResults) {
+      expect(result.bucket).toBe('income');
+    }
   });
 });
 
