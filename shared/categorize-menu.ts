@@ -657,7 +657,7 @@ function renderRuleCreated(session: MenuSession, activityId: string | null, cate
  * place (docs/upstream-spending-buckets.md §1, §2).
  */
 const RESTORE_BLOCKED_NOTE =
-  'This transaction can no longer hold the category it had before the move, so there is no Undo.';
+  'This transaction can no longer hold everything it had before the move, so there is no Undo.';
 
 /**
  * Confirms a `reassign`: `<description>: <old> → <new>.`, plus a warning line
