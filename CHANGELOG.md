@@ -31,6 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   imported: the sync only ever adds a subtype, never removes one, so it can't
   be confused with a subtype you set by hand in Wealthfolio. Those have to be
   changed in Wealthfolio directly.
+- Undo is not offered after a move when the transaction can no longer hold
+  what it had before the move — putting the old category back would be a
+  write Wealthfolio refuses. This replaces what 1.13.0's notes described for
+  that same move.
 
 Needs the companion rebuild AND the addon zip, since both halves change.
 

@@ -724,7 +724,7 @@ describe('renderScreen — refiled', () => {
     expect(text).toBe(
       'VENMO PAYBACK: Refunds → Groceries.\n'
       + 'This payment now offsets Groceries instead of counting toward its previous category.\n'
-      + 'This transaction can no longer hold the category it had before the move, so there is no Undo.',
+      + 'This transaction can no longer hold everything it had before the move, so there is no Undo.',
     );
     expect(text).not.toContain('failed');
     // Never Wealthfolio's own API prose, on this screen either.
