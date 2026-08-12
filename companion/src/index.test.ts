@@ -508,7 +508,7 @@ describe('runCompanionSync import-notice visibility', () => {
     }
   });
 
-  it('logs an explanatory line when Telegram is not configured at all', async () => {
+  it('logs an explanatory line and sends no notice when Telegram is not configured at all', async () => {
     // No telegram_config secret set at all.
     vi.mocked(runSyncCore).mockResolvedValueOnce({
       imported: 5, skipped: 0, errors: [], prunedDuplicates: [],
@@ -519,11 +519,48 @@ describe('runCompanionSync import-notice visibility', () => {
     const c = await client();
     vi.mocked(WealthfolioClient).mockImplementation(function () { return c; } as any);
 
+    const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+    vi.stubGlobal('fetch', fetchMock);
     const logs = vi.spyOn(console, 'log').mockImplementation(() => {});
     try {
       await runCompanionSync();
+      // No message was sent for the import — there is no config to send with.
+      const sendCall = fetchMock.mock.calls.find((call: any[]) => String(call[0]).includes('sendMessage'));
+      expect(sendCall).toBeUndefined();
       const allLogs = logs.mock.calls.flat().join('\n');
       expect(allLogs).toMatch(/5.*not announced/i);
+      expect(allLogs).toContain('Telegram not configured');
+    } finally {
+      logs.mockRestore();
+    }
+  });
+
+  it('says "disabled", not "not configured", when the user deliberately turned Telegram off', async () => {
+    // A config that fully exists but is switched off — genuinely different
+    // from no config at all, and an operator reading the log must be able to
+    // tell the two apart rather than go hunting for a missing secret they
+    // never set because they didn't need to.
+    secrets.set('telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: false }));
+    vi.mocked(runSyncCore).mockResolvedValueOnce({
+      imported: 4, skipped: 0, errors: [], prunedDuplicates: [],
+      importedTransactions: [importedTx], largeTransactionAlerts: [], balanceDriftAlerts: [], stuckTransferAlerts: [],
+    });
+
+    const { WealthfolioClient } = await import('./wealthfolio.js');
+    const c = await client();
+    vi.mocked(WealthfolioClient).mockImplementation(function () { return c; } as any);
+
+    const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+    vi.stubGlobal('fetch', fetchMock);
+    const logs = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await runCompanionSync();
+      const sendCall = fetchMock.mock.calls.find((call: any[]) => String(call[0]).includes('sendMessage'));
+      expect(sendCall).toBeUndefined();
+      const allLogs = logs.mock.calls.flat().join('\n');
+      expect(allLogs).toMatch(/4.*not announced/i);
+      expect(allLogs).toContain('Telegram disabled');
+      expect(allLogs).not.toContain('Telegram not configured');
     } finally {
       logs.mockRestore();
     }
