@@ -422,6 +422,173 @@ describe('runCompanionSync sync health', () => {
   });
 });
 
+describe('runCompanionSync import-notice visibility', () => {
+  // Covers the "I got two new transactions but never got a Telegram message"
+  // report: rows can land in Wealthfolio while the notice about them goes
+  // silent for three different reasons, and each one must leave a `log`-level
+  // line naming how many transactions went unannounced.
+  let secrets: Map<string, string>;
+  const importedTx = {
+    txId: 'tx-a', sfAccountId: 'sfin-1', description: 'TRADER JOE S #628',
+    amountCents: 6774, currency: 'USD', accountName: 'Spend (4937)',
+    activityType: 'WITHDRAWAL', pending: false, inTransit: false,
+  };
+
+  beforeEach(() => {
+    process.env.WEALTHFOLIO_API_URL = 'http://wf';
+    process.env.WEALTHFOLIO_PASSWORD = 'pw';
+    secrets = new Map();
+    secrets.set('simplefin_access_url', 'https://user:pass@bridge.simplefin.org/simplefin');
+    vi.mocked(runSyncCore).mockClear();
+    vi.mocked(getNativeUncategorizedSpending).mockReturnValue([]);
+  });
+
+  async function client() {
+    const { WealthfolioClient } = await import('./wealthfolio.js');
+    const c: any = new (WealthfolioClient as any)();
+    c.getAddonSecret = vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null);
+    c.setAddonSecret = vi.fn(async (_a: string, key: string, val: string) => { secrets.set(key, val); });
+    return c;
+  }
+
+  it('logs the count and does not fail the sync when the notice itself throws', async () => {
+    secrets.set('telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true }));
+    vi.mocked(runSyncCore).mockResolvedValueOnce({
+      imported: 2, skipped: 0, errors: [], prunedDuplicates: [],
+      importedTransactions: [importedTx], largeTransactionAlerts: [], balanceDriftAlerts: [], stuckTransferAlerts: [],
+    });
+    // The example from the report that prompted this: a locked database on
+    // the uncategorized sweep inside sendImportNotice. The status-tile publish
+    // earlier in the sync reads the same function but swallows its own
+    // errors, so this must stay thrown on every call, not just the first, to
+    // reach sendImportNotice's unguarded read.
+    vi.mocked(getNativeUncategorizedSpending).mockImplementation(() => {
+      throw new Error('database is locked');
+    });
+
+    const { WealthfolioClient } = await import('./wealthfolio.js');
+    const c = await client();
+    vi.mocked(WealthfolioClient).mockImplementation(function () { return c; } as any);
+
+    const logs = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const result = await runCompanionSync();
+      expect(result.imported).toBe(2);
+      const allLogs = logs.mock.calls.flat().join('\n');
+      expect(allLogs).toMatch(/2.*not announced/i);
+      expect(allLogs).toContain('database is locked');
+    } finally {
+      logs.mockRestore();
+    }
+  });
+
+  it('logs an explanatory line and sends no notice when notifyOnImport is off', async () => {
+    secrets.set('telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true, notifyOnImport: false }));
+    vi.mocked(runSyncCore).mockResolvedValueOnce({
+      imported: 3, skipped: 0, errors: [], prunedDuplicates: [],
+      importedTransactions: [importedTx], largeTransactionAlerts: [], balanceDriftAlerts: [], stuckTransferAlerts: [],
+    });
+
+    const { WealthfolioClient } = await import('./wealthfolio.js');
+    const c = await client();
+    vi.mocked(WealthfolioClient).mockImplementation(function () { return c; } as any);
+
+    const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+    vi.stubGlobal('fetch', fetchMock);
+    const logs = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await runCompanionSync();
+      // No message was sent for the import — notifyOnImport is off.
+      const sendCall = fetchMock.mock.calls.find((call: any[]) => String(call[0]).includes('sendMessage'));
+      expect(sendCall).toBeUndefined();
+      const allLogs = logs.mock.calls.flat().join('\n');
+      expect(allLogs).toMatch(/3.*not announced/i);
+    } finally {
+      logs.mockRestore();
+    }
+  });
+
+  it('logs an explanatory line and sends no notice when Telegram is not configured at all', async () => {
+    // No telegram_config secret set at all.
+    vi.mocked(runSyncCore).mockResolvedValueOnce({
+      imported: 5, skipped: 0, errors: [], prunedDuplicates: [],
+      importedTransactions: [importedTx], largeTransactionAlerts: [], balanceDriftAlerts: [], stuckTransferAlerts: [],
+    });
+
+    const { WealthfolioClient } = await import('./wealthfolio.js');
+    const c = await client();
+    vi.mocked(WealthfolioClient).mockImplementation(function () { return c; } as any);
+
+    const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+    vi.stubGlobal('fetch', fetchMock);
+    const logs = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await runCompanionSync();
+      // No message was sent for the import — there is no config to send with.
+      const sendCall = fetchMock.mock.calls.find((call: any[]) => String(call[0]).includes('sendMessage'));
+      expect(sendCall).toBeUndefined();
+      const allLogs = logs.mock.calls.flat().join('\n');
+      expect(allLogs).toMatch(/5.*not announced/i);
+      expect(allLogs).toContain('Telegram not configured');
+    } finally {
+      logs.mockRestore();
+    }
+  });
+
+  it('says "disabled", not "not configured", when the user deliberately turned Telegram off', async () => {
+    // A config that fully exists but is switched off — genuinely different
+    // from no config at all, and an operator reading the log must be able to
+    // tell the two apart rather than go hunting for a missing secret they
+    // never set because they didn't need to.
+    secrets.set('telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: false }));
+    vi.mocked(runSyncCore).mockResolvedValueOnce({
+      imported: 4, skipped: 0, errors: [], prunedDuplicates: [],
+      importedTransactions: [importedTx], largeTransactionAlerts: [], balanceDriftAlerts: [], stuckTransferAlerts: [],
+    });
+
+    const { WealthfolioClient } = await import('./wealthfolio.js');
+    const c = await client();
+    vi.mocked(WealthfolioClient).mockImplementation(function () { return c; } as any);
+
+    const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+    vi.stubGlobal('fetch', fetchMock);
+    const logs = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await runCompanionSync();
+      const sendCall = fetchMock.mock.calls.find((call: any[]) => String(call[0]).includes('sendMessage'));
+      expect(sendCall).toBeUndefined();
+      const allLogs = logs.mock.calls.flat().join('\n');
+      expect(allLogs).toMatch(/4.*not announced/i);
+      expect(allLogs).toContain('Telegram disabled');
+      expect(allLogs).not.toContain('Telegram not configured');
+    } finally {
+      logs.mockRestore();
+    }
+  });
+
+  it('logs nothing new when nothing was imported', async () => {
+    // No telegram_config either, so both the "skipped" and "not configured"
+    // paths are live candidates for firing — neither may, since imported is 0.
+    vi.mocked(runSyncCore).mockResolvedValueOnce({
+      imported: 0, skipped: 0, errors: [], prunedDuplicates: [],
+      importedTransactions: [], largeTransactionAlerts: [], balanceDriftAlerts: [], stuckTransferAlerts: [],
+    });
+
+    const { WealthfolioClient } = await import('./wealthfolio.js');
+    const c = await client();
+    vi.mocked(WealthfolioClient).mockImplementation(function () { return c; } as any);
+
+    const logs = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await runCompanionSync();
+      const allLogs = logs.mock.calls.flat().join('\n');
+      expect(allLogs).not.toMatch(/not announced/i);
+    } finally {
+      logs.mockRestore();
+    }
+  });
+});
+
 describe('stuck-transfer alert delivery confirmation', () => {
   let secrets: Map<string, string>;
 
@@ -2392,6 +2559,51 @@ describe('sendImportNotice', () => {
     expect(written).toHaveProperty('act-addon');
     // This run's own delta still applied: the aged-out entry is gone.
     expect(written).not.toHaveProperty('act-ancient');
+  });
+
+  it('logs Telegram\'s own description when the send is rejected, and still resolves', async () => {
+    // `sendTelegramMessage` never throws for an API-level rejection — a bad
+    // chat id, a blocked bot, and rate limiting all come back as a resolved
+    // `{ ok: false }` — so this is the one failure mode the caller's own
+    // exception catch can never see.
+    vi.mocked(getNativeUncategorizedSpending).mockReturnValue([]);
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({
+      ok: true, json: async () => ({ ok: false, description: 'Forbidden: bot was blocked by the user' }),
+    })));
+    const client: any = {
+      getAddonSecret: vi.fn(async () => null),
+      setAddonSecret: vi.fn(async () => {}),
+    };
+    const logs = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await expect(sendImportNotice(client, { botToken: 'T', chatId: '9' }, {
+        imported: 2, importedTransactions: [importedTx],
+      } as any)).resolves.toBeUndefined();
+      const allLogs = logs.mock.calls.flat().join('\n');
+      expect(allLogs).toMatch(/2.*not announced/i);
+      expect(allLogs).toContain('Forbidden: bot was blocked by the user');
+    } finally {
+      logs.mockRestore();
+    }
+  });
+
+  it('logs nothing when the send succeeds', async () => {
+    vi.mocked(getNativeUncategorizedSpending).mockReturnValue([]);
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: true, json: async () => ({ ok: true }) })));
+    const client: any = {
+      getAddonSecret: vi.fn(async () => null),
+      setAddonSecret: vi.fn(async () => {}),
+    };
+    const logs = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await sendImportNotice(client, { botToken: 'T', chatId: '9' }, {
+        imported: 1, importedTransactions: [importedTx],
+      } as any);
+      const allLogs = logs.mock.calls.flat().join('\n');
+      expect(allLogs).not.toMatch(/not announced|not delivered/i);
+    } finally {
+      logs.mockRestore();
+    }
   });
 
   /** Shaped like `getNativeCategorizedSpending`'s rows: the note still carries the
