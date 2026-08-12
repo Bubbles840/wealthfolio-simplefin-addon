@@ -72,6 +72,22 @@ export type MenuScreen =
   | { kind: 'freeRulePreview'; pattern: string; categoryId: string }
   | { kind: 'ruleCreated'; activityId: string | null; categoryId: string }
   | { kind: 'closed' }
+  /** Rendered instead of a category picker when a move cannot work at all.
+   *  `reason` mirrors `assignabilityOf`'s own machine tokens
+   *  (`'neutral' | 'wrong-bucket'`, ./cash-flow-bucket.ts) plus `'scope'` for
+   *  the separate opted-in-account check — never upstream's own error
+   *  sentence (see `REFUSED_TEXT`'s doc comment for why forwarding it would
+   *  mislead here).
+   *
+   *  `'neutral'` is SPLIT in two, because that one predicate answer covers two
+   *  situations a reader can do opposite things about: a CASH credit that has
+   *  simply not been marked a refund yet (`'neutral-subtype'` — a rule fixes
+   *  it), and everything else neutral, where the ACCOUNT TYPE decides and no
+   *  subtype will ever change the answer (`'neutral'` — a SECURITIES account,
+   *  an account type this build does not know, a CREDIT_CARD non-expense type).
+   *  The caller picks between them with `refundSubtypeWouldMakeSpending`; the
+   *  same reasoning keeps the fix off `'scope'`. */
+  | { kind: 'refused'; activityId: string; reason: 'neutral' | 'neutral-subtype' | 'wrong-bucket' | 'scope' }
   /** The recategorize confirmation. `fromName` (not an id) is what the row
    *  showed BEFORE the tap, because it may name an income-side category that
    *  never appears in `session.categories` (the spending tree) — the whole
@@ -85,9 +101,9 @@ export type MenuScreen =
    *  button replays. It lives on the SCREEN rather than being derived from the
    *  transaction because by the time this screen renders, a fresh sweep already
    *  reports the row's NEW state; only the controller that performed the move
-   *  knows what preceded it. Empty means there is nothing to put back, and the
-   *  Undo button is not offered at all: a button that reported success while
-   *  restoring nothing would be worse than no button. */
+   *  knows what preceded it. `restore` empty means there is nothing to put
+   *  back, and the Undo button is not offered at all: a button that reported
+   *  success while restoring nothing would be worse than no button. */
   | {
       kind: 'refiled';
       activityId: string;
@@ -96,6 +112,36 @@ export type MenuScreen =
       crossTaxonomy: boolean;
       undone: boolean;
       restore: readonly TaxonomyAssignment[];
+      /**
+       * True when at least one leg of `restore` is NOT something Wealthfolio
+       * would accept on this row as it now stands — so replaying it would
+       * delete the category the move set and then be refused, leaving the
+       * transaction with no category at all. Then the Undo button is withheld
+       * and `RESTORE_BLOCKED_NOTE` says so.
+       *
+       * This is the headline case of the release, not a corner: a payback that
+       * auto-filed under an income category and was later re-typed as a
+       * reimbursement is in the SPENDING bucket, which is exactly what makes
+       * the move legal — and exactly what makes putting the income assignment
+       * back illegal (docs/upstream-spending-buckets.md §1: the bucket check is
+       * skipped on unassign and enforced on assign, so the delete lands and the
+       * write after it does not).
+       *
+       * REQUIRED rather than optional-defaulting-to-false: absent would mean
+       * "offer Undo", so a construction site that forgot it would reintroduce
+       * the hazard silently. It is DERIVED, not remembered — the controller
+       * recomputes it against the row's bucket on every render (see `show` in
+       * companion/src/categorize.ts), because a bucket that moved after the
+       * move must change this answer. The predicate itself is
+       * `assignabilityOf` (./cash-flow-bucket.ts); this module stays pure and
+       * is told the answer rather than deriving it, since it holds no account
+       * type, activity type or subtype for the row.
+       *
+       * All legs or none: a partial restore would silently drop a category
+       * while reporting the undo as done, which was the worst defect of the
+       * original /recategorize build.
+       */
+      restoreBlocked: boolean;
     };
 
 export interface MenuSession {
@@ -167,7 +213,15 @@ export type MenuAction =
    *  already has a category, rather than one with none. A separate kind
    *  (rather than reusing `assign`) is what lets the controller tell "first
    *  filing" and "moving an existing filing" apart without inspecting the
-   *  session's mode itself — the action alone says which happened. */
+   *  session's mode itself — the action alone says which happened. This is
+   *  the only category move the menu performs: an earlier design fronted a
+   *  cross-bucket move with its own confirmation screen and its own action
+   *  (`reassignCross`), but the write behind that screen was cut before this
+   *  action ever shipped, so the screen and its action were deleted with it
+   *  — every category tap in recategorize mode, cross-bucket or not, now
+   *  resolves straight to this one action, and the gate in
+   *  companion/src/categorize.ts decides ahead of the write whether it may
+   *  proceed. */
   | { kind: 'reassign'; activityId: string; categoryId: string }
   /** Undo for `reassign`: puts the transaction back in the state it was in
    *  before the tap.
@@ -586,6 +640,26 @@ function renderRuleCreated(session: MenuSession, activityId: string | null, cate
 }
 
 /**
+ * Why there is no Undo button on a confirmation that would otherwise have one
+ * (`refiled.restoreBlocked`). Said in the same register as the refusals: the
+ * constraint first, the consequence after it, blaming nobody and promising
+ * nothing.
+ *
+ * What it must NOT do is read as though the move failed — the move the reader
+ * asked for succeeded, and this sentence is only about the way back. So it
+ * states a property of the transaction ("can no longer hold") rather than an
+ * error, and it does not forward Wealthfolio's own API prose (see
+ * `REFUSED_TEXT`'s doc comment for why that text misleads here).
+ *
+ * "No longer" is literally accurate: the category it had before fitted the
+ * cash-flow bucket the row was in at the time, and the row is in a different
+ * one now — which is the same change that made this move legal in the first
+ * place (docs/upstream-spending-buckets.md §1, §2).
+ */
+const RESTORE_BLOCKED_NOTE =
+  'This transaction can no longer hold everything it had before the move, so there is no Undo.';
+
+/**
  * Confirms a `reassign`: `<description>: <old> → <new>.`, plus a warning line
  * when the move crosses taxonomies (spending clearing some OTHER taxonomy —
  * income, savings, or whatever else a Wealthfolio instance defines) — that
@@ -604,6 +678,12 @@ function renderRuleCreated(session: MenuSession, activityId: string | null, cate
  * category a reader recognises, so an undo derived from it would put back the
  * assignment that happened to be displayed and silently drop whatever else the
  * move cleared, while this screen reported the undo as done.
+ *
+ * It is omitted for a SECOND reason too — `restoreBlocked`, a restore
+ * Wealthfolio would refuse — and then the text says so, because a button that
+ * was there last time and is silently gone this time is worse than a stated
+ * limitation. The two omissions share one shape (no button row at all) rather
+ * than the blocked case getting a disabled-looking button of its own.
  *
  * The transaction and the target category do still have to resolve, since the
  * sentence names both. Missing means the controller's fresh sweep no longer has
@@ -638,11 +718,18 @@ function renderRefiled(
   if (screen.crossTaxonomy) {
     lines.push(`This payment now offsets ${toName} instead of counting toward its previous category.`);
   }
+  // Only when there was something to put back: with an empty restore set the
+  // Undo button is already absent for a reason of its own (nothing was written),
+  // and this sentence would answer a question nobody asked.
+  const undoBlocked = screen.restore.length > 0 && screen.restoreBlocked;
+  if (undoBlocked) lines.push(RESTORE_BLOCKED_NOTE);
 
   const rows: Btn[][] = [
     // No restore data, no Undo button: the alternative is a button that reports a
-    // restore it could not perform, which is worse than not offering one.
-    ...(screen.restore.length > 0
+    // restore it could not perform, which is worse than not offering one. A
+    // BLOCKED restore is withheld for the same reason, one step earlier — there
+    // is data to put back and Wealthfolio would refuse it.
+    ...(screen.restore.length > 0 && !undoBlocked
       ? [[{
         text: 'Undo',
         action: {
@@ -658,6 +745,76 @@ function renderRefiled(
     [DONE_BTN],
   ];
   return finish(session.generation, lines.join('\n'), rows);
+}
+
+/**
+ * The one thing a reader CAN do about the two refusals a subtype governs, said
+ * in the passive: the bot does not set subtypes and must not imply it will (a
+ * transaction rule is the only thing that does, since v1.14.0). Deliberately
+ * short of a promise — "can be turned into", not "will offset once you" — and
+ * it names where the setting lives rather than describing the mechanism, which
+ * is the addon's own screen to explain.
+ *
+ * Appended to exactly the two refusals a subtype can actually lift, and to no
+ * others: not to `'neutral'` (the account type decides those, and no subtype
+ * moves them) and not to `'scope'` (a subtype cannot opt an account into
+ * spending tracking). A fix offered where it cannot work costs its reader a trip
+ * to a settings screen and leaves them where they started.
+ */
+const REIMBURSEMENT_HINT =
+  'A payback can be turned into a spending offset by marking it a reimbursement in Advanced → Transaction Rules.';
+
+/**
+ * The three refusals `refused` can show — written fresh rather than
+ * forwarding Wealthfolio's own error text. Upstream reuses ONE Rust string
+ * ("Neutral transfers cannot be categorized. Change or unlink the transfer if
+ * it should count as spending.") for both an actual internal transfer AND a
+ * merely-Ignored/neutral activity (see docs/upstream-spending-buckets.md §1),
+ * which would misdescribe the latter; its other messages either name internal
+ * enum labels ("Income activities can only use income categories...") or are
+ * written for a developer, not a reader trying to file a transaction. Each
+ * states the constraint plainly, blames nobody, and promises nothing beyond
+ * what is true right now — then, for the two a subtype governs, names the one
+ * route out.
+ */
+const REFUSED_TEXT: Record<Extract<MenuScreen, { kind: 'refused' }>['reason'], string> = {
+  // The account type decides this one, so it states the constraint and stops.
+  // No route out is offered because there is none a subtype could open.
+  neutral: 'The transaction is not counted as spending or income at all, so no category can be attached to it as it stands.',
+  // The same constraint, on a row where a refund subtype WOULD lift it.
+  'neutral-subtype': `The transaction is not counted as spending or income at all, so no category can be attached to it as it stands.\n${REIMBURSEMENT_HINT}`,
+  // Hardcodes "money in" rather than branching on `assignabilityOf`'s
+  // `bucket`. Safe only because of a narrower invariant than "bucketFor never
+  // returns 'saving'" (that broader claim is not something a test can pin —
+  // upstream's real Saving classification comes from a transfer-linkage path
+  // `BucketInput` has no field for, per docs/upstream-spending-buckets.md
+  // §2): the ONLY caller that reaches this reason (the /recategorize gate in
+  // companion/src/categorize.ts) always asks `assignabilityOf` about
+  // SPENDING_TAXONOMY_ID, and at that call site `wrong-bucket` is provably
+  // only ever reached with `bucket: 'income'` — never `'spending'` (would be
+  // `ok: true`) or `'neutral'` (its own earlier-returned reason). Pinned by
+  // "every wrong-bucket refusal in the full classification matrix has bucket
+  // 'income'" in cash-flow-bucket.test.ts, which asserts this over the whole
+  // MATRIX rather than one hand-picked input — if that ever starts failing,
+  // this sentence has to stop hardcoding "money in" and name the bucket
+  // `assignabilityOf` reported instead (one sentence per bucket, or the label
+  // interpolated), because by then some other bucket can reach this reason.
+  'wrong-bucket': `It is recorded as money in and can only take an income category while that is true.\n${REIMBURSEMENT_HINT}`,
+  // No hint: a subtype cannot opt an account into spending tracking, so
+  // offering the reimbursement route here would send its reader somewhere that
+  // changes nothing for them.
+  scope: 'Its account is not set up for spending tracking.',
+};
+
+function renderRefused(
+  session: MenuSession,
+  screen: Extract<MenuScreen, { kind: 'refused' }>,
+): RenderResult {
+  const rows: Btn[][] = [
+    [{ text: '« Back', action: { kind: 'goto', screen: { kind: 'txn', activityId: screen.activityId } } }],
+    [DONE_BTN],
+  ];
+  return finish(session.generation, REFUSED_TEXT[screen.reason], rows);
 }
 
 function renderClosed(generation: number): RenderResult {
@@ -697,6 +854,8 @@ export function renderScreen(session: MenuSession): RenderResult {
       return renderRuleCreated(session, screen.activityId, screen.categoryId);
     case 'refiled':
       return renderRefiled(session, screen);
+    case 'refused':
+      return renderRefused(session, screen);
     case 'closed':
       return renderClosed(session.generation);
   }

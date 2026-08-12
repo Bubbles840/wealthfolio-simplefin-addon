@@ -855,6 +855,11 @@ async function fetchExistingRows(
       pending,
       assetId: a.assetId ? String(a.assetId) : undefined,
       comment: a.comment ?? undefined,
+      // Both halves of the subtype comparison have to be real or `changed()`
+      // decides on one: with the feed carrying a rule's subtype and this side
+      // always blank, every subtyped row differs on every sync and is rewritten
+      // forever. `?? undefined` because the adapters report "none" as `null`.
+      subtype: a.subtype ?? undefined,
       sourceGroupId: a.sourceGroupId ?? null,
     });
   }
@@ -1078,6 +1083,12 @@ export async function runSyncCore(
     /** Spending-neutral placeholder standing in for a transfer leg whose other
      *  side hasn't posted yet (drives the comment prefix). */
     inTransit?: boolean;
+    /** The subtype the matched rule assigned, resolved ONCE here and read from
+     *  here by everything downstream. Omitted — never `''` — for a row no rule
+     *  subtyped: the write is patch-shaped, so an explicit empty string would
+     *  clear a subtype Wealthfolio set for its own reasons. Independent of
+     *  `feeCents`/`inTransit` above, which describe the amount split. */
+    subtype?: string;
   }
   const preparedByAccount = new Map<string, PreparedTx[]>();
   const candidates: TransferCandidate[] = [];
@@ -1121,10 +1132,13 @@ export async function runSyncCore(
     const prepared: PreparedTx[] = [];
     for (const tx of transactions) {
       const amount = parseFloat(tx.amount);
-      const { type, fromRule } = mapTransactionWithSource(
+      const { type, fromRule, subtype } = mapTransactionWithSource(
         tx.description, amount, rules, wfTypes.get(wfAccountId),
       );
-      prepared.push({ sfAccountId: sfAccount.id, tx, type });
+      prepared.push({
+        sfAccountId: sfAccount.id, tx, type,
+        ...(subtype ? { subtype } : {}),
+      });
       const key = accountTxKey(sfAccount.id, tx.id);
       // Amazon categories go on AFTER typing: `mapTransactionWithSource` above
       // matches the user's merchant rules against the bank's own text, and
@@ -1202,6 +1216,16 @@ export async function runSyncCore(
       const postedAt = txEpoch(p.tx) ?? nowSec;
       if (nowSec - postedAt > IN_TRANSIT_TIMEOUT_SECONDS) {
         p.type = (signed >= 0 ? 'DEPOSIT' : 'WITHDRAWAL') as ActivityType;
+        // The same drop as the young branch below, for the same reason and one
+        // step further on: giving up on the pair turns this into an ordinary
+        // deposit or withdrawal, and neither is a refund of anything. Keeping the
+        // rule's subtype here would book a transfer leg against a spending
+        // category — and because this leg reaches the young branch FIRST (a
+        // rule-typed transfer can never pair, see the comment below), the row is
+        // already stored WITHOUT a subtype by the time it expires, so what this
+        // prevents is an update that ADDS one. Reconciliation only ever adds a
+        // subtype, never removes one, so nothing later could take it back.
+        delete p.subtype;
         continue;
       }
       const accountType = wfTypes.get(mapping[p.sfAccountId] ?? '') ?? '';
@@ -1209,6 +1233,13 @@ export async function runSyncCore(
       p.type = activityType;
       p.feeCents = Math.round(fee * 100);
       p.inTransit = true;
+      // Drop any rule-assigned subtype: the placeholder is spending-neutral ONLY
+      // as a BARE CREDIT (see neutralAdjustmentFields), and a refund subtype
+      // would book this balance-holding stand-in against a spending category.
+      // Reachable, not theoretical — a rule that types a leg TRANSFER_IN/OUT is
+      // excluded from pair detection outright (`ruleTyped` in transfers.ts), so
+      // it can never pair and ALWAYS lands here while it is young.
+      delete p.subtype;
     }
   }
 
@@ -1335,7 +1366,7 @@ export async function runSyncCore(
     // in place rather than re-importing). A failed read of existing rows is
     // treated as "none" — the planner then creates everything and the host's
     // own dedup remains the backstop.
-    const feed: FeedTx[] = preparedAll.map(({ tx, type, feeCents, inTransit }) => ({
+    const feed: FeedTx[] = preparedAll.map(({ tx, type, feeCents, inTransit, subtype }) => ({
       txId: tx.id,
       wfAccountId,
       absCents: Math.round(Math.abs(parseFloat(tx.amount)) * 100),
@@ -1344,6 +1375,10 @@ export async function runSyncCore(
       pending: !!tx.pending,
       ...(feeCents ? { feeCents } : {}),
       ...(inTransit ? { inTransit: true } : {}),
+      // Carried so `changed()` can compare it against the stored row — a rule
+      // added after a row was imported has to reach that row as an update, and a
+      // row that already agrees must not be rewritten every sync.
+      ...(subtype ? { subtype } : {}),
     }));
     // Typed to match what fetchExistingRows returns: these rows feed
     // `linkRowByTxId`, and the link step after the loop reads `sourceGroupId` off
@@ -1756,6 +1791,11 @@ export async function runSyncCore(
       // The in-transit marker goes at the FRONT: txIdFromComment parses the
       // `… · <txId>` SUFFIX, and every reconciliation match depends on it.
       comment: `${t.inTransit ? IN_TRANSIT_COMMENT_PREFIX : ''}${descByKey.get(accountTxKey(sfAccount.id, t.txId)) ?? ''} · ${t.txId}${t.pending ? PENDING_SUFFIX : ''}`,
+      // The rule's classifier, and ONLY when a rule set one. The key is absent
+      // rather than `''` on every other row: this field is patch-shaped, so an
+      // empty string is a positive instruction to CLEAR — it would wipe a
+      // subtype Wealthfolio assigned itself, on every sync, on every row.
+      ...(t.subtype ? { subtype: t.subtype } : {}),
       // Transfer-link sourceGroupId is applied later, atomically (see flush).
     });
     const toActivityUpdate = (wfId: string, t: FeedTx): ActivityWrite => ({
@@ -1765,6 +1805,11 @@ export async function runSyncCore(
       // placeholder promoting to a real transfer — or expiring to a plain
       // WITHDRAWAL — would otherwise keep its fee-side split and book the
       // wrong amount.
+      //
+      // `subtype` gets the OPPOSITE treatment, and deliberately: it is inherited
+      // from toActivityCreate above, which omits the key when no rule set one.
+      // Stating it explicitly here the way `fee` is would send `''` for every
+      // unruled row and clear subtypes this sync never owned.
       fee: (t.feeCents ?? 0) / 100,
       id: wfId,
     });

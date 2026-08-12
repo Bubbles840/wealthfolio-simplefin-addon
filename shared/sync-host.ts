@@ -11,6 +11,9 @@ export interface HostActivity {
   comment: string | null;
   assetId?: string;
   sourceGroupId?: string | null;
+  /** A rule-assigned classifier (e.g. 'REIMBURSEMENT'), or `null` when the
+   *  host reports the row has none. See docs/upstream-spending-buckets.md. */
+  subtype?: string | null;
 }
 
 export interface TransferLinkFailureEntry {
@@ -48,6 +51,12 @@ export interface ActivityWrite {
   comment: string;
   metadata?: string;
   sourceGroupId?: string;
+  /** Set to apply a rule's classifier (e.g. 'REIMBURSEMENT') on create or
+   *  update. Absent means "no opinion" — an update must NOT send an explicit
+   *  empty/undefined value here to mean "clear", since that would be
+   *  indistinguishable from "this write never touched subtype" to an
+   *  adapter; clearing is a separate, deliberate operation elsewhere. */
+  subtype?: string;
 }
 
 export interface SaveManyRequest {

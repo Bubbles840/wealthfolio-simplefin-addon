@@ -407,20 +407,25 @@ export interface NativeCategorizedTx {
   /** RAW stored note — callers clean via `descriptionFromComment`. */
   notes: string;
   amountCents: number;
-  /** ISO date (yyyy-mm-dd). */
+  /** ISO date (yyyy-mm-dd), truncated from the stored value for DISPLAY —
+   *  every row-label screen depends on this exact truncated form. */
   date: string;
   accountName: string;
-  /** UPPERCASED (`WITHDRAWAL`, `DEPOSIT`, ...). Not read by any caller today —
-   *  `/recategorize` tells a credit from a spend by category name, not sign
-   *  (see `renderList`'s comment in shared/categorize-menu.ts) — but it costs
-   *  nothing to carry alongside the row this reader already fetched, and it is
-   *  the one column a future "show the amount's real sign" feature for this
-   *  list would otherwise have to add a whole extra query to get. Left in
-   *  rather than removed so as not to touch the exact-shape assertion in
-   *  sqlite-native.test.ts for a field with no behavioural cost. */
+  /** UPPERCASED (`WITHDRAWAL`, `DEPOSIT`, ...). Read, with `subtype` and
+   *  `accountType`, by `/recategorize`'s refusal gate — the three together are
+   *  what `assignabilityOf` needs to say whether Wealthfolio will accept a
+   *  spending category on this row, decided BEFORE the move deletes anything
+   *  (see the `reassign` case in ./categorize.ts). It is NOT what the list
+   *  screen tells a credit from a spend by; that is still the category name,
+   *  never the sign (see `renderList`'s comment in
+   *  shared/categorize-menu.ts). */
   activityType: string;
   /** Every taxonomy's assignment on this activity, 1 or more entries. */
   assignments: NativeAssignment[];
+  /** Raw stored subtype, '' when absent. Feeds the bucket predicate. */
+  subtype: string;
+  /** The account's Wealthfolio type (CASH, CREDIT_CARD, …), '' when unknown. */
+  accountType: string;
 }
 
 /**
@@ -441,6 +446,13 @@ export interface NativeCategorizedTx {
  * column elsewhere in the row and `node:sqlite` (which keys results by column
  * name) would silently drop one — see `getNativeSpendingCategories` for the
  * bug this already shipped once.
+ *
+ * `activity_type`, `subtype` and `account_type` are the THREE columns the bucket
+ * predicate reads (`BucketInput`, shared/cash-flow-bucket.ts) — all already on
+ * hand from the same joined row, at no extra query cost. Nothing else about the
+ * activity is selected: `account_id` and `currency` were selected here for the
+ * per-row subtype write this release cut, and a column no caller reads is one a
+ * later change can quietly start trusting.
  */
 export function getNativeCategorizedSpending(
   dbPath: string,
@@ -459,7 +471,9 @@ export function getNativeCategorizedSpending(
            UPPER(COALESCE(a.activity_type,'')) AS activity_type,
            ata.taxonomy_id                  AS taxonomy_id,
            ata.category_id                  AS category_id,
-           COALESCE(tc.name, '')            AS category_name
+           COALESCE(tc.name, '')            AS category_name,
+           COALESCE(a.subtype, '')          AS subtype,
+           COALESCE(ac.account_type, '')    AS account_type
     FROM activities a
     JOIN activity_taxonomy_assignments ata ON a.id = ata.activity_id
     LEFT JOIN accounts ac ON a.account_id = ac.id
@@ -477,18 +491,19 @@ export function getNativeCategorizedSpending(
     dbPath,
     'categorized',
     query,
-    (parts) => (parts.length === 9
+    (parts) => (parts.length === 11
       ? {
           c0: parts[0], c1: parts[1], c2: parseFloat(parts[2]) || 0, c3: parts[3],
           c4: parts[4], c5: parts[5], c6: parts[6], c7: parts[7], c8: parts[8],
+          c9: parts[9], c10: parts[10],
         }
       : null),
   );
 
   // node:sqlite returns column-named objects; the CLI fallback returns the
-  // c0..c8 shape built above. Read positionally either way. Rows for the same
-  // activity are consecutive (ORDER BY ... a.id, ata.taxonomy_id), so folding
-  // by activityId is a single linear pass, not a second sort.
+  // c0..c10 shape built above. Read positionally either way. Rows for the
+  // same activity are consecutive (ORDER BY ... a.id, ata.taxonomy_id), so
+  // folding by activityId is a single linear pass, not a second sort.
   const byId = new Map<string, NativeCategorizedTx>();
   const result: NativeCategorizedTx[] = [];
   for (const r of rows) {
@@ -510,6 +525,8 @@ export function getNativeCategorizedSpending(
         accountName: String(v[4] ?? ''),
         activityType: String(v[5] ?? ''),
         assignments: [],
+        subtype: String(v[9] ?? ''),
+        accountType: String(v[10] ?? ''),
       };
       byId.set(activityId, tx);
       result.push(tx);

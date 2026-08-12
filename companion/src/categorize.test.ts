@@ -5,6 +5,7 @@ import {
   SPENDING_TAXONOMY_ID,
   type CategorizeDeps,
 } from './categorize.js';
+import { bucketFor, taxonomyForBucket } from '../../shared/cash-flow-bucket.js';
 import { CATEGORIZE_ENTRY_CALLBACK, type InlineKeyboard } from '../../shared/telegram.js';
 import type { DismissalLedger } from '../../shared/uncategorized.js';
 
@@ -48,6 +49,17 @@ const INCOME_TAXONOMY_ID = 'income_categories';
 /** A THIRD taxonomy, so "clear every non-spending assignment" can be shown to
  *  mean every one of them rather than "the first". */
 const SAVINGS_TAXONOMY_ID = 'savings_categories';
+/** Wealthfolio's REAL income taxonomy id (docs/upstream-spending-buckets.md §3),
+ *  needed wherever an income assignment has to be RESTORED rather than merely
+ *  cleared: the bucket predicate compares literal taxonomy ids, so only this one
+ *  can ever be legal on an income-bucketed row, and the fictional id above is
+ *  refused there exactly as the server would refuse it.
+ *
+ *  Both ids stay: clearing is id-agnostic (the controller clears every taxonomy
+ *  that is not the spending one, whatever it turns out to be), and the fiction is
+ *  what pins that — an implementation matching on a known income id would leave
+ *  it in place and those tests would fail. */
+const WF_INCOME_TAXONOMY_ID = 'income_sources';
 
 /** Non-spending category names live outside `CATEGORIES` (the spending tree the
  *  picker renders) — that separation is the whole point of `currentCategory`
@@ -68,6 +80,16 @@ interface CatRow {
   date: string;
   accountName: string;
   activityType: string;
+  /** Raw stored subtype, `''` when absent — exactly what the native reader
+   *  hands over. With `accountType` and `activityType` it is what decides the
+   *  row's cash-flow bucket, and therefore whether a spending category may be
+   *  assigned to it at all. */
+  subtype: string;
+  /** The account's Wealthfolio type. Every fixture states it, because a row
+   *  whose account type is unknown is `neutral` to the predicate — nothing
+   *  assignable — and a fixture that left it out would be testing that case
+   *  by accident. */
+  accountType: string;
   assignments: Assignment[];
 }
 
@@ -77,7 +99,13 @@ const incomeAt = (categoryId: string, categoryName: string): Assignment =>
   ({ taxonomyId: INCOME_TAXONOMY_ID, categoryId, categoryName });
 const savingsAt = (categoryId: string, categoryName: string): Assignment =>
   ({ taxonomyId: SAVINGS_TAXONOMY_ID, categoryId, categoryName });
+const wfIncomeAt = (categoryId: string, categoryName: string): Assignment =>
+  ({ taxonomyId: WF_INCOME_TAXONOMY_ID, categoryId, categoryName });
 
+/** The DEFAULT is the row the whole bug is about: a CASH `DEPOSIT`, which is
+ *  Wealthfolio's `income` bucket, so a spending category on it is refused. Any
+ *  fixture that needs a legal spending move states so explicitly — see
+ *  `REIMBURSED` and `CARD_REFUND`. */
 const catRow = (id: string, assignments: Assignment[], over: Partial<CatRow> = {}): CatRow => ({
   activityId: id,
   notes: `VENMO PAYMENT ${id} · TRN-${id}`,
@@ -85,9 +113,19 @@ const catRow = (id: string, assignments: Assignment[], over: Partial<CatRow> = {
   date: '2026-08-09',
   accountName: 'Citi Double Cash',
   activityType: 'DEPOSIT',
+  subtype: '',
+  accountType: 'CASH',
   assignments,
   ...over,
 });
+
+/** The override that puts a CASH row in the SPENDING bucket, and the ONLY way a
+ *  Venmo payback legally gets there: imported as a `CREDIT` marked
+ *  `REIMBURSEMENT`, which is what a transaction rule now does for it. Every
+ *  cross-taxonomy move below uses it, because a move off a plain CASH `DEPOSIT`
+ *  is a write Wealthfolio refuses — the fixture that made those tests pass was
+ *  describing a state the server never allows. */
+const REIMBURSED: Partial<CatRow> = { activityType: 'CREDIT', subtype: 'REIMBURSEMENT' };
 
 type Recorded = [string, InlineKeyboard | undefined];
 
@@ -129,12 +167,22 @@ function setup(
   const nameFor = (categoryId: string): string =>
     state.categories.find((c) => c.id === categoryId)?.name ?? OFF_TREE_CATEGORY_NAMES[categoryId] ?? categoryId;
 
+  /** The activity-level facts of a row that has dropped out of the categorized
+   *  sweep. In Wealthfolio these live on the ACTIVITY, not on its assignments, so
+   *  deleting the last assignment cannot change the row's type, subtype or
+   *  account — and therefore cannot change its cash-flow bucket. That matters
+   *  precisely on the undo path, which deletes before it writes: the row the next
+   *  write lands on has to be the same transaction, at the same bucket, not a
+   *  freshly invented card spend. */
+  const detached = new Map<string, CatRow>();
+
   /** A row that has lost its LAST assignment is uncategorized, so it leaves the
    *  categorized set and joins the one `/categorize` sweeps. Modelling this is
    *  what makes the delete-then-assign ordering observable end to end. */
   const dropIfBare = (activityId: string): void => {
     const cat = state.categorized.find((r) => r.activityId === activityId);
     if (!cat || cat.assignments.length > 0) return;
+    detached.set(activityId, cat);
     state.categorized = state.categorized.filter((r) => r.activityId !== activityId);
     if (!state.rows.some((r) => r.activityId === activityId)) {
       state.rows = [{
@@ -185,6 +233,34 @@ function setup(
       // exactly the silent failure this dep's third parameter exists to prevent.
       order.push(`assign:${taxonomyId}`);
       const hit = state.rows.find((r) => r.activityId === activityId);
+      // THE SERVER'S OWN RULE, before anything is written: a row may only carry
+      // the ONE taxonomy its cash-flow bucket accepts
+      // (`ensure_activity_assignment_allowed`, docs/upstream-spending-buckets.md
+      // §1), and the bucket is derived from the row AS IT IS NOW — its account
+      // type, activity type and subtype. Enforced here because a fake that
+      // accepted any taxonomy on any row is what let this suite certify a
+      // delete-then-400 sequence as working: the forward move's fixtures were
+      // corrected by hand once, and the undo's were not. `unassignTaxonomy`
+      // below stays permissive, matching upstream (§1: `enforce_bucket=false`
+      // on unassign) — that asymmetry is the whole mechanism, since it is what
+      // lets a restore clear the new category and then fail to put the old one
+      // back.
+      const bucketOf = state.categorized.find((r) => r.activityId === activityId) ?? detached.get(activityId);
+      const expected = taxonomyForBucket(bucketFor(bucketOf
+        ? { accountType: bucketOf.accountType, activityType: bucketOf.activityType, subtype: bucketOf.subtype }
+        // A row that has never been categorized comes from the UNcategorized
+        // sweep, which this fake models as a card spend — the same shape it
+        // gives the row it is about to create below.
+        : { accountType: 'CREDIT_CARD', activityType: 'WITHDRAWAL', subtype: '' }));
+      if (expected !== taxonomyId) {
+        // Upstream's own two 400 sentences, verbatim (§1), so a leak of this
+        // prose into user-visible copy is recognisable in a diff — the copy
+        // tests assert against these exact strings.
+        throw new Error(expected === null
+          ? '400 Bad Request: Neutral transfers cannot be categorized. Change or unlink the transfer if it should count as spending.'
+          : '400 Bad Request: Income activities can only use income categories. '
+            + 'Categories label the cash-flow bucket; they do not change it.');
+      }
       if (hit) {
         state.filed.push(hit);
         state.rows = state.rows.filter((r) => r.activityId !== activityId);
@@ -192,13 +268,19 @@ function setup(
       let cat = state.categorized.find((r) => r.activityId === activityId);
       if (!cat) {
         const src = hit ?? state.filed.find((r) => r.activityId === activityId);
+        const known = detached.get(activityId);
         cat = {
           activityId,
-          notes: src?.notes ?? `ROW ${activityId} · TRN-${activityId}`,
-          amountCents: src?.amountCents ?? 0,
-          date: src?.date ?? '2026-08-08',
-          accountName: src?.accountName ?? 'Citi Double Cash',
-          activityType: 'WITHDRAWAL',
+          notes: known?.notes ?? src?.notes ?? `ROW ${activityId} · TRN-${activityId}`,
+          amountCents: known?.amountCents ?? src?.amountCents ?? 0,
+          date: known?.date ?? src?.date ?? '2026-08-08',
+          accountName: known?.accountName ?? src?.accountName ?? 'Citi Double Cash',
+          // A row that came back from `detached` keeps the activity it always was;
+          // one that arrived from the UNcategorized sweep is a card spend —
+          // CREDIT_CARD + WITHDRAWAL, which is the spending bucket.
+          activityType: known?.activityType ?? 'WITHDRAWAL',
+          subtype: known?.subtype ?? '',
+          accountType: known?.accountType ?? 'CREDIT_CARD',
           assignments: [],
         };
         state.categorized = [...state.categorized, cat];
@@ -1045,15 +1127,38 @@ describe('nothing escapes to the listener', () => {
 
 // ---- /recategorize ---------------------------------------------------------
 
-/** The realistic case the whole feature exists for: a Venmo payback that
- *  auto-filed under an INCOME category, which the user wants to offset a
- *  spending category instead. */
+/** The realistic case the whole feature exists for, BEFORE any rule touches it:
+ *  a Venmo payback that arrived as a CASH `DEPOSIT` and auto-filed under an
+ *  INCOME category. Its bucket is `income`, so Wealthfolio refuses a spending
+ *  category on it — this is the fixture the refusal gate is about. */
 const VENMO_INCOME = catRow('a', [incomeAt('inc-reimb', 'Reimbursements')]);
-/** The same-taxonomy case: already a spending category, just the wrong one. */
+/** The SAME payback after a transaction rule has brought it in as a `CREDIT`
+ *  marked `REIMBURSEMENT`: its bucket is now `spending`, so filing it under a
+ *  spending category is an ordinary legal write, and the dangling income
+ *  assignment is what the move clears. */
+const VENMO_REIMBURSED = catRow('a', [incomeAt('inc-reimb', 'Reimbursements')], REIMBURSED);
+/** A bare CASH `CREDIT` with no refund subtype: `Ignored` upstream, which is the
+ *  `neutral` bucket — NO taxonomy may be attached to it at all, which is a
+ *  different refusal from the income one. */
+const BARE_CREDIT = catRow('a', [incomeAt('inc-reimb', 'Reimbursements')], { activityType: 'CREDIT' });
+/** A credit-card refund. Every `CREDIT` on a CREDIT_CARD account is an expense
+ *  refund upstream — spending bucket, subtype irrelevant — so this one needs no
+ *  rule and no gate. */
+const CARD_REFUND = catRow('c', [incomeAt('inc-reimb', 'Reimbursements')], {
+  notes: 'AMZN REFUND c · TRN-c',
+  amountCents: 1800,
+  date: '2026-08-06',
+  activityType: 'CREDIT',
+  accountType: 'CREDIT_CARD',
+});
+/** The same-taxonomy case: already a spending category, just the wrong one. A
+ *  card purchase, so its bucket is `spending` and the move is legal. */
 const GROCERIES = catRow('b', [spendingAt('cat-rest', 'Restaurants')], {
   notes: 'TRADER JOES b · TRN-b',
   amountCents: -4500,
   date: '2026-08-07',
+  activityType: 'WITHDRAWAL',
+  accountType: 'CREDIT_CARD',
 });
 
 describe('openRecategorize', () => {
@@ -1240,7 +1345,9 @@ describe('openRecategorizeForTxIds — the import notice\'s button', () => {
   });
 
   it('keeps the scope across later renders, and its taps write', async () => {
-    const h = setup({ categorized: [VENMO_INCOME, GROCERIES] });
+    // The reimbursed fixture, because this test's subject is the SCOPE surviving
+    // a write — and a write only happens on a row whose bucket allows one.
+    const h = setup({ categorized: [VENMO_REIMBURSED, GROCERIES] });
     await h.controller.openRecategorizeForTxIds(['TRN-a'], h.send);
     await h.tap(dataFor(keyboardOf(lastCall(h.send)), 'VENMO PAYMENT a'));
     await h.tap(dataFor(keyboardOf(lastCall(h.ui.edit)), 'Entertainment'));
@@ -1253,13 +1360,178 @@ describe('openRecategorizeForTxIds — the import notice\'s button', () => {
   });
 });
 
+/** The three refusal screens, verbatim. Written out here rather than imported so
+ *  a change to any of these sentences has to be made twice, deliberately — this
+ *  is the copy a user sees instead of losing a category.
+ *
+ *  Two of the three end with the reimbursement line and one does not, which is
+ *  the whole point: it is offered only where a refund subtype could actually
+ *  lift the refusal. */
+const REFUSED_INCOME_TEXT =
+  'It is recorded as money in and can only take an income category while that is true.\n'
+  + 'A payback can be turned into a spending offset by marking it a reimbursement in Advanced → Transaction Rules.';
+const REFUSED_NEUTRAL_SUBTYPE_TEXT =
+  'The transaction is not counted as spending or income at all, so no category can be attached to it as it stands.\n'
+  + 'A payback can be turned into a spending offset by marking it a reimbursement in Advanced → Transaction Rules.';
+/** No second line: on these rows the ACCOUNT TYPE decides, and no subtype moves
+ *  them — see the SECURITIES/unknown-account test below. */
+const REFUSED_NEUTRAL_TEXT =
+  'The transaction is not counted as spending or income at all, so no category can be attached to it as it stands.';
+
+describe('reassign — the gate that refuses a move Wealthfolio would reject', () => {
+  it('writes NOTHING for an income-bucketed row, the failure that destroyed a real category', async () => {
+    // THE regression. A Venmo payback filed under income, tapped toward a
+    // spending category. Wealthfolio refuses that assignment outright, and the
+    // version without this gate found out from the 400 — AFTER it had already
+    // deleted the income assignment, leaving a real user's transaction with no
+    // category at all. Predicting the refusal is the only way the delete does
+    // not happen: there is no endpoint that answers "would this be accepted".
+    const h = setup({ categorized: [VENMO_INCOME] });
+    const picker = await openRecatAtTxn(h);
+    await h.tap(dataFor(picker, 'Entertainment'));
+    expect(h.deps.unassignTaxonomy).not.toHaveBeenCalled();
+    expect(h.deps.assign).not.toHaveBeenCalled();
+    expect(h.deps.republish).not.toHaveBeenCalled();
+    // And the row really is untouched — still filed exactly where it was.
+    expect(h.state.categorized[0].assignments).toEqual([
+      { taxonomyId: INCOME_TAXONOMY_ID, categoryId: 'inc-reimb', categoryName: 'Reimbursements' },
+    ]);
+    const refusal = lastCall(h.ui.edit);
+    expect(refusal[0]).toBe(REFUSED_INCOME_TEXT);
+    expect(labels(keyboardOf(refusal))).toEqual(['« Back', 'Done']);
+  });
+
+  it('leaves the reader somewhere they can act — « Back returns to the row', async () => {
+    const h = setup({ categorized: [VENMO_INCOME] });
+    const picker = await openRecatAtTxn(h);
+    await h.tap(dataFor(picker, 'Entertainment'));
+    await h.tap(dataFor(keyboardOf(lastCall(h.ui.edit)), '« Back'));
+    expect(lastCall(h.ui.edit)[0]).toBe(
+      'VENMO PAYMENT a\n$24 · Aug 9 · Citi Double Cash\nCurrently: Reimbursements',
+    );
+  });
+
+  it('says NEUTRAL for a bare credit, not that it can only take an income category', async () => {
+    // A CASH CREDIT with no refund subtype is `Ignored` upstream: NO taxonomy is
+    // assignable to it, so telling its reader it "can only take an income
+    // category" would be false — they would go and file it as income and be
+    // refused again.
+    const h = setup({ categorized: [BARE_CREDIT] });
+    const picker = await openRecatAtTxn(h);
+    await h.tap(dataFor(picker, 'Entertainment'));
+    expect(h.deps.unassignTaxonomy).not.toHaveBeenCalled();
+    expect(h.deps.assign).not.toHaveBeenCalled();
+    expect(h.deps.republish).not.toHaveBeenCalled();
+    const refusal = lastCall(h.ui.edit);
+    // A CASH credit IS the row a refund subtype lifts, so this one keeps the
+    // reimbursement line — the account-type cases below do not.
+    expect(refusal[0]).toBe(REFUSED_NEUTRAL_SUBTYPE_TEXT);
+    expect(refusal[0]).not.toContain('can only take an income category');
+    expect(labels(keyboardOf(refusal))).toEqual(['« Back', 'Done']);
+  });
+
+  it('offers NO reimbursement route when the account type is what refuses the row', async () => {
+    // `neutral` is much wider than "a credit not yet marked a refund": it is also
+    // every activity on an account type outside CASH/CREDIT_CARD, and every row
+    // whose account type could not be resolved at all (the native reader hands
+    // over `''`). No subtype moves any of those, so naming the reimbursement rule
+    // would cost its reader a trip to a settings screen and change nothing —
+    // exactly the reasoning that keeps the hint off the `scope` refusal.
+    for (const accountType of ['SECURITIES', 'SOMETHING_NEW', '']) {
+      const h = setup({ categorized: [catRow('a', [incomeAt('inc-reimb', 'Reimbursements')], { accountType })] });
+      const picker = await openRecatAtTxn(h);
+      await h.tap(dataFor(picker, 'Entertainment'));
+      expect(h.deps.unassignTaxonomy).not.toHaveBeenCalled();
+      expect(h.deps.assign).not.toHaveBeenCalled();
+      expect(h.deps.republish).not.toHaveBeenCalled();
+      const refusal = lastCall(h.ui.edit);
+      expect(refusal[0]).toBe(REFUSED_NEUTRAL_TEXT);
+      expect(refusal[0]).not.toContain('reimbursement');
+      expect(refusal[0]).not.toContain('Transaction Rules');
+      expect(labels(keyboardOf(refusal))).toEqual(['« Back', 'Done']);
+    }
+  });
+
+  it('never pastes Wealthfolio\'s own API sentence into either refusal', async () => {
+    // The 400 the user actually saw reported this verbatim. It names internal
+    // enum labels and reads as a developer's error, and the neutral one
+    // ("Neutral transfers cannot be categorized") describes an internal transfer
+    // the row is not.
+    const expected = [REFUSED_INCOME_TEXT, REFUSED_NEUTRAL_SUBTYPE_TEXT];
+    for (const [i, fixture] of [VENMO_INCOME, BARE_CREDIT].entries()) {
+      const h = setup({ categorized: [fixture] });
+      const picker = await openRecatAtTxn(h);
+      await h.tap(dataFor(picker, 'Entertainment'));
+      const text = lastCall(h.ui.edit)[0];
+      // The positive anchor first: absences alone would also hold on the
+      // CONFIRMATION screen, so this test has to know it is looking at a
+      // refusal at all.
+      expect(text).toBe(expected[i]);
+      expect(text).not.toContain('Income activities can only use income categories');
+      expect(text).not.toContain('Categories label the cash-flow bucket');
+      expect(text).not.toContain('do not change it');
+      expect(text).not.toContain('Neutral transfers cannot be categorized');
+      expect(text).not.toContain('assignActivityCategory failed');
+      expect(text).not.toContain('400');
+    }
+  });
+
+  it('lets a CREDIT_CARD refund through untouched — its bucket is already spending', async () => {
+    const h = setup({ categorized: [CARD_REFUND] });
+    const refiled = await openRecatAtRefiled(h, 'AMZN REFUND c');
+    expect(h.deps.unassignTaxonomy).toHaveBeenCalledWith('c', INCOME_TAXONOMY_ID);
+    expect(h.deps.assign).toHaveBeenCalledWith('c', 'cat-fun');
+    expect(h.deps.republish).toHaveBeenCalledTimes(1);
+    expect(lastCall(h.ui.edit)[0]).toBe(
+      'AMZN REFUND c: Reimbursements → Entertainment.\n'
+      + 'This payment now offsets Entertainment instead of counting toward its previous category.\n'
+      // A card CREDIT is in the spending bucket unconditionally, so the income
+      // assignment this move cleared can never go back on it — see the undo
+      // describe below. The move is fine; only the way back is not.
+      + 'This transaction can no longer hold everything it had before the move, so there is no Undo.',
+    );
+    expect(labels(refiled)).toEqual(['Next transaction', 'Done']);
+  });
+
+  it('lets the SAME payback through once a rule has marked it a reimbursement', async () => {
+    // The two fixtures differ only in activity type and subtype, which is the
+    // whole point: the gate is about the row's bucket, and a rule is what moves
+    // it. Same tap, same row, opposite outcome.
+    const h = setup({ categorized: [VENMO_REIMBURSED] });
+    await openRecatAtRefiled(h);
+    expect(h.deps.unassignTaxonomy).toHaveBeenCalledWith('a', INCOME_TAXONOMY_ID);
+    expect(h.deps.assign).toHaveBeenCalledWith('a', 'cat-fun');
+    expect(lastCall(h.ui.edit)[0]).toContain('VENMO PAYMENT a: Reimbursements → Entertainment.');
+  });
+
+  it('adds no read of its own — the gate runs off the freshness sweep', async () => {
+    // Zero new REST calls, and zero new database reads: the row the freshness
+    // check just verified already carries the account type, activity type and
+    // subtype the predicate needs.
+    const h = setup({ categorized: [VENMO_INCOME] });
+    const picker = await openRecatAtTxn(h);
+    const mark = h.order.length;
+    await h.tap(dataFor(picker, 'Entertainment'));
+    expect(h.order.slice(mark)).toEqual(['readCategorized', 'readCategories']);
+  });
+});
+
+/**
+ * Every test below moves a row ACROSS taxonomies, which Wealthfolio only accepts
+ * when the row's own cash-flow bucket is already spending — so every fixture
+ * here is a reimbursement-marked credit or a card row, never a plain CASH
+ * `DEPOSIT`. That is not a convenience: these tests used to run on a `DEPOSIT`
+ * carrying an income assignment, a state in which the real server rejects the
+ * assign with a 400, and they passed only because the fake API accepted it. The
+ * refusal that a `DEPOSIT` now gets is pinned in the gate's own describe above.
+ */
 describe('reassign — the cross-taxonomy move', () => {
   it('DELETES the income assignment and only then assigns the spending one', async () => {
     // THE ordering of this feature. The other order leaves a window in which the
     // row counts as income AND as a spending offset — a silent double count no
     // freshness check can see. This one leaves at worst an uncategorized row,
     // which /categorize offers back in a single tap.
-    const h = setup({ categorized: [VENMO_INCOME] });
+    const h = setup({ categorized: [VENMO_REIMBURSED] });
     const refiled = await openRecatAtRefiled(h);
     expect(h.order).toEqual([
       'readCategorized', 'readCategories',          // the list
@@ -1274,14 +1546,21 @@ describe('reassign — the cross-taxonomy move', () => {
     expect(h.deps.republish).toHaveBeenCalledTimes(1);
     expect(lastCall(h.ui.edit)[0]).toBe(
       'VENMO PAYMENT a: Reimbursements → Entertainment.\n'
-      + 'This payment now offsets Entertainment instead of counting toward its previous category.',
+      + 'This payment now offsets Entertainment instead of counting toward its previous category.\n'
+      // No Undo on a cross-taxonomy move: the bucket that makes the move legal is
+      // the one that refuses the assignment going back (see the undo describe).
+      + 'This transaction can no longer hold everything it had before the move, so there is no Undo.',
     );
-    expect(labels(refiled)).toEqual(['Undo', 'Next transaction', 'Done']);
+    expect(labels(refiled)).toEqual(['Next transaction', 'Done']);
   });
 
   it('clears EVERY non-spending taxonomy, not just the first', async () => {
     const h = setup({
-      categorized: [catRow('a', [incomeAt('inc-reimb', 'Reimbursements'), savingsAt('sav-goal', 'House Fund')])],
+      categorized: [catRow(
+        'a',
+        [incomeAt('inc-reimb', 'Reimbursements'), savingsAt('sav-goal', 'House Fund')],
+        REIMBURSED,
+      )],
     });
     await openRecatAtRefiled(h);
     expect(h.deps.unassignTaxonomy.mock.calls).toEqual([
@@ -1301,7 +1580,7 @@ describe('reassign — the cross-taxonomy move', () => {
   });
 
   it('re-filing to the identical category writes nothing at all, and offers no Undo', async () => {
-    const h = setup({ categorized: [catRow('a', [spendingAt('cat-fun', 'Entertainment')])] });
+    const h = setup({ categorized: [catRow('a', [spendingAt('cat-fun', 'Entertainment')], REIMBURSED)] });
     const refiled = await openRecatAtRefiled(h);
     expect(h.deps.assign).not.toHaveBeenCalled();
     expect(h.deps.unassignTaxonomy).not.toHaveBeenCalled();
@@ -1319,7 +1598,11 @@ describe('reassign — the cross-taxonomy move', () => {
     // Reimbursements at once. "Same category" is not a no-op here — the income
     // assignment is exactly what has to go.
     const h = setup({
-      categorized: [catRow('a', [incomeAt('inc-reimb', 'Reimbursements'), spendingAt('cat-fun', 'Entertainment')])],
+      categorized: [catRow(
+        'a',
+        [incomeAt('inc-reimb', 'Reimbursements'), spendingAt('cat-fun', 'Entertainment')],
+        REIMBURSED,
+      )],
     });
     await openRecatAtRefiled(h);
     expect(h.deps.unassignTaxonomy).toHaveBeenCalledWith('a', INCOME_TAXONOMY_ID);
@@ -1359,7 +1642,7 @@ describe('reassign — the cross-taxonomy move', () => {
   });
 
   it('reports a refused DELETE without touching the category', async () => {
-    const h = setup({ categorized: [VENMO_INCOME] });
+    const h = setup({ categorized: [VENMO_REIMBURSED] });
     const picker = await openRecatAtTxn(h);
     h.deps.unassignTaxonomy.mockRejectedValue(new Error('403 Forbidden: token *expired*'));
     await h.tap(dataFor(picker, 'Entertainment'));
@@ -1376,8 +1659,10 @@ describe('reassign — the cross-taxonomy move', () => {
 
   it('says the new category was NOT set when the delete worked and the assign did not', async () => {
     // The one state the pinned ordering can leave behind, stated plainly rather
-    // than discovered from a wrong budget figure later.
-    const h = setup({ categorized: [VENMO_INCOME] });
+    // than discovered from a wrong budget figure later. A 500, not the bucket
+    // 400 the gate now predicts: a server can still fail for its own reasons,
+    // and the copy for that has to stay honest.
+    const h = setup({ categorized: [VENMO_REIMBURSED] });
     const picker = await openRecatAtTxn(h);
     h.deps.assign.mockRejectedValue(new Error('500 Internal Server Error'));
     await h.tap(dataFor(picker, 'Entertainment'));
@@ -1394,7 +1679,7 @@ describe('reassign — the cross-taxonomy move', () => {
   it('leaves the row where /categorize can fix it in one tap after that failure', async () => {
     // The reason delete-then-assign is the safe order: the worst case is a row
     // with no category, which the other menu already exists to file.
-    const h = setup({ rows: [], categorized: [VENMO_INCOME] });
+    const h = setup({ rows: [], categorized: [VENMO_REIMBURSED] });
     const picker = await openRecatAtTxn(h);
     h.deps.assign.mockRejectedValue(new Error('500 Internal Server Error'));
     await h.tap(dataFor(picker, 'Entertainment'));
@@ -1408,7 +1693,11 @@ describe('reassign — the cross-taxonomy move', () => {
 
   it('reports the truth when one of several deletes fails after another succeeded', async () => {
     const h = setup({
-      categorized: [catRow('a', [incomeAt('inc-reimb', 'Reimbursements'), savingsAt('sav-goal', 'House Fund')])],
+      categorized: [catRow(
+        'a',
+        [incomeAt('inc-reimb', 'Reimbursements'), savingsAt('sav-goal', 'House Fund')],
+        REIMBURSED,
+      )],
     });
     const picker = await openRecatAtTxn(h);
     h.deps.unassignTaxonomy.mockImplementation(async (_id: string, taxonomyId: string) => {
@@ -1434,7 +1723,7 @@ describe('reassign — the cross-taxonomy move', () => {
   });
 
   it('drills through subcategories in recategorize mode too', async () => {
-    const h = setup({ categorized: [VENMO_INCOME] });
+    const h = setup({ categorized: [VENMO_REIMBURSED] });
     const picker = await openRecatAtTxn(h);
     await h.tap(dataFor(picker, 'Food & Dining'));
     await h.tap(dataFor(keyboardOf(lastCall(h.ui.edit)), 'Restaurants'));
@@ -1444,35 +1733,194 @@ describe('reassign — the cross-taxonomy move', () => {
   });
 });
 
+/**
+ * A restore writes in the OPPOSITE bucket direction from the move, so the two
+ * halves are not legal or illegal together — which is the whole subject of this
+ * describe. The move needs the row's bucket to be `spending`; putting an income
+ * assignment back needs it to be `income`. A row cannot be both, so for a
+ * CROSS-taxonomy move the way back is refused as long as the row stays what it
+ * was when the move succeeded, and Undo is not offered at all
+ * (docs/upstream-spending-buckets.md §1: the bucket check is skipped on unassign
+ * and enforced on assign, so a replay would clear the new category and then 400).
+ *
+ * That leaves two shapes where an undo runs: a spending→spending move, whose
+ * restore is as legal as the move was, and a cross-taxonomy move on a row that
+ * has since gone back to being income-bucketed — see
+ * `openRecatAtRefiledThenIncomeAgain`.
+ */
 describe('undoing a reassignment', () => {
-  it('puts an income category back where a plain unassign could not', async () => {
+  /**
+   * The move on this release's headline row, then that row going back to a plain
+   * CASH `DEPOSIT` underneath the menu — someone editing the activity in
+   * Wealthfolio, or dropping the rule that typed it — which is the only state in
+   * which restoring its income assignment is legal at all.
+   *
+   * Every render re-decides, so the re-render a stale tap forces is what brings
+   * the Undo button back; the button is deliberately absent on the confirmation
+   * itself, which this helper asserts on the way through.
+   */
+  async function openRecatAtRefiledThenIncomeAgain(h: ReturnType<typeof setup>) {
+    const refiled = await openRecatAtRefiled(h);
+    expect(labels(refiled)).not.toContain('Undo');
+    const row = h.state.categorized.find((r) => r.activityId === 'a')!;
+    row.activityType = 'DEPOSIT';
+    row.subtype = '';
+    await h.tap('cz:nope');
+    return keyboardOf(lastCall(h.ui.edit));
+  }
+
+  it('withholds Undo, and says why, when the row can no longer hold what the move cleared', async () => {
+    // CRITICAL. The four steps end to end: the rule backfills the payback to
+    // CREDIT + REIMBURSEMENT, the move off its now-dangling income assignment is
+    // legal and happens, and the way back is NOT — restoring `income_sources` on
+    // a spending-bucketed row is a 400, which would arrive after the delete had
+    // already removed the category the user just chose. The button that would do
+    // that is not offered, and the screen states the limitation rather than
+    // quietly losing a button the reader saw last time.
+    const h = setup({ categorized: [catRow('a', [wfIncomeAt('inc-reimb', 'Reimbursements')], REIMBURSED)] });
+    const refiled = await openRecatAtRefiled(h);
+    // The move itself still ran — this is not the gate over-refusing.
+    expect(h.deps.unassignTaxonomy).toHaveBeenCalledWith('a', WF_INCOME_TAXONOMY_ID);
+    expect(h.deps.assign).toHaveBeenCalledWith('a', 'cat-fun');
+    expect(labels(refiled)).toEqual(['Next transaction', 'Done']);
+    expect(lastCall(h.ui.edit)[0]).toBe(
+      'VENMO PAYMENT a: Reimbursements → Entertainment.\n'
+      + 'This payment now offsets Entertainment instead of counting toward its previous category.\n'
+      + 'This transaction can no longer hold everything it had before the move, so there is no Undo.',
+    );
+    // And the row is exactly where the move put it: one spending assignment,
+    // nothing cleared afterwards by a restore that could not finish.
+    expect(h.state.categorized[0].assignments).toEqual([
+      { taxonomyId: SPENDING_TAXONOMY_ID, categoryId: 'cat-fun', categoryName: 'Entertainment' },
+    ]);
+  });
+
+  it('withholds Undo when only SOME of the restore is legal, rather than putting back the legal part', async () => {
+    // All legs or no button. This row was double counted — spending Entertainment
+    // AND income Reimbursements — so the move cleared the income side and left the
+    // spending one. Replaying just the spending assignment (the legal leg, and the
+    // one the confirmation displays) would drop Reimbursements for good while
+    // reporting the undo as done: the worst defect of the original build.
+    const h = setup({
+      categorized: [catRow(
+        'a',
+        [wfIncomeAt('inc-reimb', 'Reimbursements'), spendingAt('cat-fun', 'Entertainment')],
+        REIMBURSED,
+      )],
+    });
+    const refiled = await openRecatAtRefiled(h);
+    expect(labels(refiled)).not.toContain('Undo');
+    expect(lastCall(h.ui.edit)[0]).toContain(
+      'This transaction can no longer hold everything it had before the move, so there is no Undo.',
+    );
+  });
+
+  it('withholds Undo for a savings assignment, which no bucket this predicate can report ever accepts', async () => {
+    // The savings taxonomy is only assignable to a `saving`-bucketed row, and that
+    // bucket comes from a transfer-linkage path no column here can express
+    // (docs/upstream-spending-buckets.md §2) — so a cleared savings assignment can
+    // never be put back, whatever else happens to the row.
+    const h = setup({
+      categorized: [catRow(
+        'a',
+        [wfIncomeAt('inc-reimb', 'Reimbursements'), savingsAt('sav-goal', 'House Fund')],
+        REIMBURSED,
+      )],
+    });
+    const refiled = await openRecatAtRefiled(h);
+    expect(h.deps.unassignTaxonomy.mock.calls).toEqual([
+      ['a', WF_INCOME_TAXONOMY_ID],
+      ['a', SAVINGS_TAXONOMY_ID],
+    ]);
+    expect(labels(refiled)).not.toContain('Undo');
+  });
+
+  it('writes NOTHING when a tap to undo arrives for a restore the row can no longer take', async () => {
+    // The gate BEHIND the button, which exists because a tap can arrive without a
+    // matching render: here the restore was legal when the confirmation was drawn
+    // (spending → spending) and the row's subtype was then removed in Wealthfolio,
+    // which drops it to the neutral bucket where no category is assignable at all.
+    // This fixture's restore is a single SPENDING leg, so `keepsSpending` is true
+    // and the replay never reaches `unassignTaxonomy` at all — what this pins is
+    // that the gate blocks the single `assign` PUT that leg would need. The
+    // ordering claim — that the gate also runs before the `unassignTaxonomy`
+    // DELETE, on a restore that needs one — is pinned by the test below instead.
+    const h = setup({ categorized: [catRow('b', [spendingAt('cat-rest', 'Restaurants')], REIMBURSED)] });
+    const refiled = await openRecatAtRefiled(h, 'VENMO PAYMENT b');
+    expect(labels(refiled)).toContain('Undo');
+    const undo = dataFor(refiled, 'Undo');
+    const row = h.state.categorized.find((r) => r.activityId === 'b')!;
+    row.subtype = '';
+    const mark = h.order.length;
+    await h.tap(undo);
+    expect(h.order.slice(mark)).toEqual(['readCategorized', 'readCategories']);
+    expect(lastCall(h.ui.edit)[0]).toContain('That transaction changed elsewhere — leaving it as is.');
+    // The category the move set is untouched: the row is filed, not bare.
+    expect(h.state.categorized[0].assignments).toEqual([
+      { taxonomyId: SPENDING_TAXONOMY_ID, categoryId: 'cat-fun', categoryName: 'Entertainment' },
+    ]);
+    expect(h.logs.join('\n')).toContain('refusing to undo b');
+  });
+
+  it('writes NOTHING — the delete included — when the row is re-typed to spending between the render and the tap', async () => {
+    // The gate must run before `unassignTaxonomy`, not merely before `assign`:
+    // this fixture's restore is a lone INCOME leg, so `keepsSpending` is false and
+    // the replay's FIRST write would be the delete of the spending category the
+    // move set. Undo is legitimately offered here — the row is income-bucketed
+    // (a plain CASH DEPOSIT) when the confirmation is drawn — and then a sync run
+    // between the render and the tap re-applies the reimbursement rule (the exact
+    // CREDIT + REIMBURSEMENT backfill this release adds), landing the row back in
+    // the spending bucket where the income restore is illegal again. If the gate
+    // were moved to after the `unassignTaxonomy` call — the one placement its own
+    // comment forbids — the delete would land before the refusal is ever reached.
+    const h = setup({ categorized: [catRow('a', [wfIncomeAt('inc-reimb', 'Reimbursements')], REIMBURSED)] });
+    const withUndo = await openRecatAtRefiledThenIncomeAgain(h);
+    const undo = dataFor(withUndo, 'Undo');
+    const row = h.state.categorized.find((r) => r.activityId === 'a')!;
+    row.activityType = 'CREDIT';
+    row.subtype = 'REIMBURSEMENT';
+    const mark = h.order.length;
+    await h.tap(undo);
+    // Not one write, of either kind — the delete included.
+    expect(h.order.slice(mark)).toEqual(['readCategorized', 'readCategories']);
+    expect(lastCall(h.ui.edit)[0]).toContain('That transaction changed elsewhere — leaving it as is.');
+    // The category the original move set is untouched: the row is filed, not bare.
+    expect(h.state.categorized[0].assignments).toEqual([
+      { taxonomyId: SPENDING_TAXONOMY_ID, categoryId: 'cat-fun', categoryName: 'Entertainment' },
+    ]);
+    expect(h.logs.join('\n')).toContain('refusing to undo a');
+  });
+
+  it('puts an income category back where a plain unassign could not, once the row is income-bucketed again', async () => {
     // `unassign` restores "no spending category", which is NOT where this row
     // came from. Restoring an income assignment is a delete plus an assign under
     // the other taxonomy — and in that order, for the same reason as the move.
-    const h = setup({ categorized: [VENMO_INCOME] });
-    const refiled = await openRecatAtRefiled(h);
+    const h = setup({ categorized: [catRow('a', [wfIncomeAt('inc-reimb', 'Reimbursements')], REIMBURSED)] });
+    const refiled = await openRecatAtRefiledThenIncomeAgain(h);
     const mark = h.order.length;
     await h.tap(dataFor(refiled, 'Undo'));
     expect(h.order.slice(mark)).toEqual([
       'readCategorized', 'readCategories',
       `unassignTaxonomy:${SPENDING_TAXONOMY_ID}`,
-      `assign:${INCOME_TAXONOMY_ID}`,
+      `assign:${WF_INCOME_TAXONOMY_ID}`,
       'readCategorized', 'readCategories',
     ]);
-    expect(h.deps.assign).toHaveBeenLastCalledWith('a', 'inc-reimb', INCOME_TAXONOMY_ID);
+    expect(h.deps.assign).toHaveBeenLastCalledWith('a', 'inc-reimb', WF_INCOME_TAXONOMY_ID);
     expect(lastCall(h.ui.edit)[0]).toBe('Refiling undone — VENMO PAYMENT a is back under Reimbursements.');
     expect(labels(keyboardOf(lastCall(h.ui.edit)))).toEqual(['Back to list', 'Done']);
     expect(h.state.categorized[0].assignments).toEqual([
-      { taxonomyId: INCOME_TAXONOMY_ID, categoryId: 'inc-reimb', categoryName: 'Reimbursements' },
+      { taxonomyId: WF_INCOME_TAXONOMY_ID, categoryId: 'inc-reimb', categoryName: 'Reimbursements' },
     ]);
   });
 
   it('restores a spending category with one PUT and no delete', async () => {
     // The row had a spending assignment before the move, so the move replaced it
     // rather than adding one: replacing it back is a single PUT with no window in
-    // which the row is uncategorized, and nothing to clear.
+    // which the row is uncategorized, and nothing to clear. Legal in both
+    // directions, because both ends are the same taxonomy as the row's bucket.
     const h = setup({ categorized: [GROCERIES] });
     const refiled = await openRecatAtRefiled(h, 'TRADER JOES b');
+    expect(labels(refiled)).toContain('Undo');
     await h.tap(dataFor(refiled, 'Undo'));
     expect(h.deps.unassignTaxonomy).not.toHaveBeenCalled();
     // The replay always names the taxonomy it recorded, spending included — one
@@ -1485,22 +1933,22 @@ describe('undoing a reassignment', () => {
   });
 
   it('declines when the row is no longer where this menu put it', async () => {
-    const h = setup({ categorized: [VENMO_INCOME] });
-    const refiled = await openRecatAtRefiled(h);
+    const h = setup({ categorized: [GROCERIES] });
+    const refiled = await openRecatAtRefiled(h, 'TRADER JOES b');
     // Something else moved it on again after the confirmation was drawn.
-    h.state.categorized = [catRow('a', [spendingAt('cat-rest', 'Restaurants')])];
+    h.state.categorized = [{ ...GROCERIES, assignments: [spendingAt('cat-rest', 'Restaurants')] }];
     const assignsBefore = h.deps.assign.mock.calls.length;
     await h.tap(dataFor(refiled, 'Undo'));
     expect(h.deps.assign.mock.calls.length).toBe(assignsBefore);
-    expect(h.deps.unassignTaxonomy).toHaveBeenCalledTimes(1); // just the original move
+    expect(h.deps.unassignTaxonomy).not.toHaveBeenCalled();
     expect(lastCall(h.ui.edit)[0]).toBe(
       'That transaction changed elsewhere — leaving it as is.\n\nRecategorize — tap a transaction',
     );
   });
 
   it('declines when the row lost its category entirely', async () => {
-    const h = setup({ categorized: [VENMO_INCOME] });
-    const refiled = await openRecatAtRefiled(h);
+    const h = setup({ categorized: [GROCERIES] });
+    const refiled = await openRecatAtRefiled(h, 'TRADER JOES b');
     h.state.categorized = [];
     const assignsBefore = h.deps.assign.mock.calls.length;
     await h.tap(dataFor(refiled, 'Undo'));
@@ -1514,8 +1962,13 @@ describe('undoing a reassignment', () => {
     // OLD category that failed to be set and the NEW one that is already gone.
     // Only the actionable half survives that swap, which is how inverted copy
     // ships unnoticed.
-    const h = setup({ categorized: [VENMO_INCOME] });
-    const refiled = await openRecatAtRefiled(h);
+    //
+    // The one shape that reaches this suffix at all: a restore whose spending
+    // assignment has to be DELETED first, which only an income-bucketed row can
+    // legally follow with a PUT. A 500, not the bucket 400 the gate predicts —
+    // the server can still fail for its own reasons.
+    const h = setup({ categorized: [catRow('a', [wfIncomeAt('inc-reimb', 'Reimbursements')], REIMBURSED)] });
+    const refiled = await openRecatAtRefiledThenIncomeAgain(h);
     h.deps.assign.mockRejectedValue(new Error('500 Internal Server Error'));
     await h.tap(dataFor(refiled, 'Undo'));
     expect(lastCall(h.ui.edit)[0]).toBe(
@@ -1528,11 +1981,12 @@ describe('undoing a reassignment', () => {
   });
 
   it('says nothing was restored when the first write of the undo is refused', async () => {
-    const h = setup({ categorized: [VENMO_INCOME] });
-    const refiled = await openRecatAtRefiled(h);
+    const h = setup({ categorized: [catRow('a', [wfIncomeAt('inc-reimb', 'Reimbursements')], REIMBURSED)] });
+    const refiled = await openRecatAtRefiledThenIncomeAgain(h);
     h.deps.unassignTaxonomy.mockRejectedValue(new Error('403 Forbidden'));
-    await h.tap(dataFor(refiled, 'Undo'));
+    // Captured BEFORE the tap: taken afterwards it could only ever equal itself.
     const assignsBefore = h.deps.assign.mock.calls.length;
+    await h.tap(dataFor(refiled, 'Undo'));
     expect(lastCall(h.ui.edit)[0]).toBe(
       'Couldn\'t undo that — Wealthfolio said: 403 Forbidden'
       + '\n\nNothing was restored — this transaction is still under the category the move set.',
@@ -1541,58 +1995,8 @@ describe('undoing a reassignment', () => {
     expect(h.deps.assign.mock.calls.length).toBe(assignsBefore);
   });
 
-  it('restores EVERY assignment the move cleared, not just the displayed one', async () => {
-    // The defect the restore LIST exists for. This row was double counted to
-    // begin with — spending Entertainment AND income Reimbursements — so the move
-    // cleared the income side without setting anything. An undo built from the
-    // displayed category alone would have PUT Entertainment (which the row already
-    // had), left Reimbursements deleted, and still said "undone".
-    const h = setup({
-      categorized: [catRow('a', [incomeAt('inc-reimb', 'Reimbursements'), spendingAt('cat-fun', 'Entertainment')])],
-    });
-    const refiled = await openRecatAtRefiled(h);
-    const mark = h.order.length;
-    await h.tap(dataFor(refiled, 'Undo'));
-    // The spending assignment survived the move, so there is nothing to delete:
-    // it is replayed first (a single PUT, no window), then the income side.
-    expect(h.order.slice(mark)).toEqual([
-      'readCategorized', 'readCategories',
-      `assign:${SPENDING_TAXONOMY_ID}`,
-      `assign:${INCOME_TAXONOMY_ID}`,
-      'readCategorized', 'readCategories',
-    ]);
-    expect(h.state.categorized[0].assignments).toEqual([
-      { taxonomyId: SPENDING_TAXONOMY_ID, categoryId: 'cat-fun', categoryName: 'Entertainment' },
-      { taxonomyId: INCOME_TAXONOMY_ID, categoryId: 'inc-reimb', categoryName: 'Reimbursements' },
-    ]);
-  });
-
-  it('restores both non-spending taxonomies, and clears the one the move set', async () => {
-    // Two assignments on the other side of the ledger and none on the spending
-    // one: the faithful reverse is to delete what the move added and put both back.
-    const h = setup({
-      categorized: [catRow('a', [incomeAt('inc-reimb', 'Reimbursements'), savingsAt('sav-goal', 'House Fund')])],
-    });
-    const refiled = await openRecatAtRefiled(h);
-    const mark = h.order.length;
-    await h.tap(dataFor(refiled, 'Undo'));
-    expect(h.order.slice(mark)).toEqual([
-      'readCategorized', 'readCategories',
-      `unassignTaxonomy:${SPENDING_TAXONOMY_ID}`,
-      `assign:${INCOME_TAXONOMY_ID}`,
-      `assign:${SAVINGS_TAXONOMY_ID}`,
-      'readCategorized', 'readCategories',
-    ]);
-    expect(h.state.categorized[0].assignments).toEqual([
-      { taxonomyId: INCOME_TAXONOMY_ID, categoryId: 'inc-reimb', categoryName: 'Reimbursements' },
-      { taxonomyId: SAVINGS_TAXONOMY_ID, categoryId: 'sav-goal', categoryName: 'House Fund' },
-    ]);
-    // Byte-for-byte the state the menu started from.
-    expect(h.state.categorized[0].assignments).toHaveLength(2);
-  });
-
   it('offers no Undo at all when the move wrote nothing', async () => {
-    const h = setup({ categorized: [catRow('a', [spendingAt('cat-fun', 'Entertainment')])] });
+    const h = setup({ categorized: [catRow('a', [spendingAt('cat-fun', 'Entertainment')], REIMBURSED)] });
     const refiled = await openRecatAtRefiled(h);
     expect(labels(refiled)).not.toContain('Undo');
     expect(h.state.categorized[0].assignments).toEqual([
@@ -1604,12 +2008,12 @@ describe('undoing a reassignment', () => {
     // The confirmation is rendered from a sweep in which the row already carries
     // its NEW category; the Undo button has to name the one it had BEFORE, or it
     // restores the state it was meant to reverse.
-    const h = setup({ categorized: [VENMO_INCOME] });
-    const refiled = await openRecatAtRefiled(h);
+    const h = setup({ categorized: [GROCERIES] });
+    await openRecatAtRefiled(h, 'TRADER JOES b');
     // A stale token forces a re-render of the same screen — the old category has
     // to survive that too.
     await h.tap('cz:nope');
     await h.tap(dataFor(keyboardOf(lastCall(h.ui.edit)), 'Undo'));
-    expect(h.deps.assign).toHaveBeenLastCalledWith('a', 'inc-reimb', INCOME_TAXONOMY_ID);
+    expect(h.deps.assign).toHaveBeenLastCalledWith('b', 'cat-rest', SPENDING_TAXONOMY_ID);
   });
 });

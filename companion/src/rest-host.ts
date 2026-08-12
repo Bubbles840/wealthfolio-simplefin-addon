@@ -35,6 +35,7 @@ function fromSearchItem(a: any, wfAccountId = ''): HostActivity {
     comment: a.comment ?? a.notes ?? a.description ?? null,
     assetId: a.assetId ? String(a.assetId) : undefined,
     sourceGroupId: a.sourceGroupId ?? null,
+    subtype: a.subtype ?? null,
   };
 }
 

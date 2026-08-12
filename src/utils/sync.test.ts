@@ -1579,3 +1579,47 @@ describe('AddonSyncHost.linkPair', () => {
     expect(res.problems?.join(' ')).toContain('boom');
   });
 });
+
+describe('AddonSyncHost subtype round-trip', () => {
+  // Round-trip fidelity: a rule-set subtype must survive a read/write cycle
+  // through this adapter unchanged, and a row that never had one must not
+  // acquire an explicit `subtype: undefined` key on the write side — that
+  // would be indistinguishable from "has a subtype" to a shallow `in` check,
+  // and distinguishable-but-wrong to a deep-equal one.
+  it('listActivities carries subtype through from the search result, defaulting absent subtype to null', async () => {
+    const ctx = makeCtx();
+    ctx.api.activities.search = vi.fn(async () => ({
+      data: [
+        { id: 'act-1', accountId: 'wf-account-a', activityType: 'CREDIT', date: '2026-07-05', amount: 10, subtype: 'REIMBURSEMENT' },
+        { id: 'act-2', accountId: 'wf-account-a', activityType: 'DEPOSIT', date: '2026-07-05', amount: 5 },
+      ],
+    }));
+    const rows = await new AddonSyncHost(ctx).listActivities('wf-account-a');
+
+    expect(rows[0].subtype).toBe('REIMBURSEMENT');
+    expect(rows[1].subtype).toBeNull();
+  });
+
+  it('saveMany sends subtype on a create that carries one, and sends NO subtype key at all when it does not', async () => {
+    const ctx = makeCtx();
+    await new AddonSyncHost(ctx).saveMany({
+      creates: [
+        { accountId: 'wf-account-a', activityType: 'CREDIT', activityDate: '2026-07-05', currency: 'USD', comment: 'x', subtype: 'REIMBURSEMENT' },
+        { accountId: 'wf-account-a', activityType: 'DEPOSIT', activityDate: '2026-07-05', currency: 'USD', comment: 'y' },
+      ],
+    });
+
+    const creates = vi.mocked(ctx.api.activities.saveMany).mock.calls[0][0].creates as any[];
+    expect(creates[0].subtype).toBe('REIMBURSEMENT');
+    expect('subtype' in creates[1]).toBe(false);
+  });
+
+  it('echoes subtype back on the created/updated rows saveMany returns', async () => {
+    const ctx = makeCtx();
+    const result = await new AddonSyncHost(ctx).saveMany({
+      creates: [{ accountId: 'wf-account-a', activityType: 'CREDIT', activityDate: '2026-07-05', currency: 'USD', comment: 'x', subtype: 'REIMBURSEMENT' }],
+    });
+
+    expect(result.created[0].subtype).toBe('REIMBURSEMENT');
+  });
+});

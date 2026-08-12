@@ -77,4 +77,62 @@ describe('planReconciliation', () => {
     expect(plan.deleteIds).toEqual(['w1']);
     expect(plan.creates.map((c) => c.txId)).toEqual(['t2']);
   });
+
+  describe('subtype', () => {
+    // The feed omits `subtype` entirely when a rule has no subtype (undefined),
+    // while a stored row's adapter normalizes absent subtype to `null` — and some
+    // rows predate the field entirely and may read back `''`. All three must be
+    // treated as the same "no subtype" so an unrelated sync does not report a
+    // difference (and therefore a rewrite) on every row that never had one.
+    it('is unchanged when the row has no subtype (undefined) and the feed has none', () => {
+      const plan = planReconciliation([feed({})], [row({ subtype: undefined })]);
+      expect(plan.updates).toEqual([]);
+    });
+
+    it('is unchanged when the row subtype is null and the feed has none', () => {
+      const plan = planReconciliation([feed({})], [row({ subtype: null })]);
+      expect(plan.updates).toEqual([]);
+    });
+
+    it('is unchanged when the row subtype is the empty string and the feed has none', () => {
+      const plan = planReconciliation([feed({})], [row({ subtype: '' })]);
+      expect(plan.updates).toEqual([]);
+    });
+
+    it('backfills in place when a rule newly assigns a subtype to an already-imported row', () => {
+      const plan = planReconciliation([feed({ subtype: 'REIMBURSEMENT' })], [row({})]);
+      expect(plan.updates).toEqual([{ wfId: 'w1', to: expect.objectContaining({ subtype: 'REIMBURSEMENT' }) }]);
+    });
+
+    it('is unchanged when the stored and feed subtype already match', () => {
+      const plan = planReconciliation([feed({ subtype: 'REIMBURSEMENT' })], [row({ subtype: 'REIMBURSEMENT' })]);
+      expect(plan.updates).toEqual([]);
+    });
+
+    it('is unchanged on a case-only subtype difference (upstream canonicalizes case-insensitively)', () => {
+      const plan = planReconciliation([feed({ subtype: 'REIMBURSEMENT' })], [row({ subtype: 'reimbursement' })]);
+      expect(plan.updates).toEqual([]);
+    });
+
+    it('does NOT update when a rule change removes the subtype (sync only ever adds one)', () => {
+      // Ruled on by the user: clearing a subtype would mean sending `''`, which
+      // is indistinguishable from a deliberate wipe of a subtype the user set
+      // by hand in Wealthfolio — the sync cannot tell those apart. Comparing
+      // symmetrically here would ALSO mean the update that gets issued can never
+      // actually clear the stored value, so the row looks changed again next
+      // sync: an identical no-op update, forever. The accepted consequence: a
+      // removed rule does not reach rows already imported; those are cleared
+      // manually.
+      const plan = planReconciliation([feed({})], [row({ subtype: 'REIMBURSEMENT' })]);
+      expect(plan.updates).toEqual([]);
+    });
+
+    it('updates in place when the feed subtype differs from the stored one (both present, not equal)', () => {
+      // Proves the guard above is not simply "ignore subtype whenever the row
+      // already has one" — a genuine change between two non-empty subtypes must
+      // still reach the row.
+      const plan = planReconciliation([feed({ subtype: 'REFUND' })], [row({ subtype: 'REIMBURSEMENT' })]);
+      expect(plan.updates).toEqual([{ wfId: 'w1', to: expect.objectContaining({ subtype: 'REFUND' }) }]);
+    });
+  });
 });
