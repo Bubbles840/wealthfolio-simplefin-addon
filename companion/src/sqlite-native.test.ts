@@ -756,8 +756,6 @@ describe('sqlite-native', () => {
           activityType: 'WITHDRAWAL',
           // Neither the activity nor its account set these — must default to
           // '', not null/undefined, so the bucket predicate never sees a gap.
-          accountId: 'wf-a',
-          currency: '',
           subtype: '',
           accountType: '',
           assignments: [
@@ -831,7 +829,7 @@ describe('sqlite-native', () => {
       }
     });
 
-    it('carries subtype, accountId, currency and the account type — the inputs the reimbursement bucket predicate needs', () => {
+    it('carries the activity type, subtype and account type — the three inputs the bucket predicate needs, and nothing else about the activity', () => {
       const { path, cleanup } = makeTestDb();
       try {
         const db = new DatabaseSync(path);
@@ -848,11 +846,15 @@ describe('sqlite-native', () => {
         const reimb = rows.find((r) => r.activityId === 'act-reimb');
         expect(reimb).toBeDefined();
         expect(reimb).toMatchObject({
-          accountId: 'wf-cash',
-          currency: 'USD',
+          activityType: 'CREDIT',
           subtype: 'REIMBURSEMENT',
           accountType: 'CASH',
         });
+        // The row is a whole `NativeCategorizedTx` and nothing more: the account id
+        // and currency were selected for the per-row subtype write this release
+        // cut, and no caller has read either since.
+        expect(reimb).not.toHaveProperty('accountId');
+        expect(reimb).not.toHaveProperty('currency');
       } finally {
         cleanup();
       }

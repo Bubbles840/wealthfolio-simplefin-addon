@@ -102,9 +102,22 @@ describe('RestSyncHost', () => {
     const host = new RestSyncHost(client);
     await host.saveMany({
       creates: [{ accountId: 'wf-a', activityType: 'CREDIT', activityDate: '2026-07-05', currency: 'USD', comment: 'x', subtype: 'REIMBURSEMENT' }],
+      // The UPDATE half matters more than the create half, and had no coverage
+      // here: backfilling an already-imported row is how a rule's subtype reaches
+      // a transaction that already exists.
+      updates: [
+        { id: 'act-1', accountId: 'wf-a', activityType: 'CREDIT', activityDate: '2026-07-05', currency: 'USD', comment: 'y', subtype: 'REIMBURSEMENT' },
+        { id: 'act-2', accountId: 'wf-a', activityType: 'DEPOSIT', activityDate: '2026-07-05', currency: 'USD', comment: 'z' },
+      ],
     });
 
-    expect(client.saveMany.mock.calls[0][0].creates[0].subtype).toBe('REIMBURSEMENT');
+    const sent = client.saveMany.mock.calls[0][0];
+    expect(sent.creates[0].subtype).toBe('REIMBURSEMENT');
+    expect(sent.updates[0].subtype).toBe('REIMBURSEMENT');
+    // Absent stays ABSENT, on the update path too: an explicit `subtype: null` or
+    // `undefined` in the body is a patch instruction upstream, so a row nothing
+    // subtyped must reach the API with no such key at all.
+    expect(Object.prototype.hasOwnProperty.call(sent.updates[1], 'subtype')).toBe(false);
   });
 
   it('listOldestActivities starts its sweep at page 0 (the first page), not page 1', async () => {
