@@ -573,6 +573,10 @@ describe('renderScreen — refiled', () => {
     kind: 'refiled', activityId: 'act-1', fromName: 'Dining', toCategoryId: 'cat-groceries',
     crossTaxonomy: false, undone: false,
     restore: [{ taxonomyId: 'spending', categoryId: 'cat-dining' }],
+    // The controller decides this per render from the row's cash-flow bucket;
+    // `false` is the ordinary case — a spending-to-spending move, whose restore
+    // is as legal as the move was.
+    restoreBlocked: false,
   };
 
   function refiledTxn(overrides: Partial<CategorizeTxn> = {}): CategorizeTxn {
@@ -692,6 +696,87 @@ describe('renderScreen — refiled', () => {
     expect(renderScreen(s).text).toBe('BOOK STORES: Dining → Groceries.');
   });
 
+  it('withholds Undo and says why when the restore is one Wealthfolio would refuse', () => {
+    // CRITICAL, the release's own headline flow: a payback re-typed as a
+    // reimbursement sits in the SPENDING bucket, which is what made the move
+    // legal — and what makes putting its income assignment back illegal. Undoing
+    // would delete the new category and then be refused, leaving the transaction
+    // with none at all (docs/upstream-spending-buckets.md §1).
+    const s = session({
+      txns: [refiledTxn({
+        description: 'VENMO PAYBACK',
+        currentCategory: { taxonomyId: 'income', categoryId: 'cat-income-refunds', name: 'Refunds' },
+      })],
+      screen: {
+        ...refiledScreen,
+        fromName: 'Refunds',
+        crossTaxonomy: true,
+        restore: [{ taxonomyId: 'income_sources', categoryId: 'cat-income-refunds' }],
+        restoreBlocked: true,
+      },
+    });
+    const { text, keyboard, buttons } = renderScreen(s);
+    const labels = keyboard.inline_keyboard.flat().map((b) => b.text);
+    expect(labels).toEqual(['Next transaction', 'Done']);
+    expect(buttons.some((b) => b.kind === 'undoReassign')).toBe(false);
+    // The move still reads as the success it was — the extra sentence is about
+    // the way back, and says nothing about anything having failed.
+    expect(text).toBe(
+      'VENMO PAYBACK: Refunds → Groceries.\n'
+      + 'This payment now offsets Groceries instead of counting toward its previous category.\n'
+      + 'This transaction can no longer hold everything it had before the move, so there is no Undo.',
+    );
+    expect(text).not.toContain('failed');
+    // Never Wealthfolio's own API prose, on this screen either.
+    expect(text).not.toContain('can only use');
+    expect(text).not.toContain('400');
+  });
+
+  it('restores NOTHING rather than the legal subset when only one leg of the restore is refused', () => {
+    // All legs or no button. Restoring just the spending half here would drop the
+    // income assignment for good while the screen reported the undo as done —
+    // the worst defect of the original build, and the reason a blocked restore
+    // withholds the button instead of filtering the list.
+    const s = session({
+      txns: [refiledTxn()],
+      screen: {
+        ...refiledScreen,
+        crossTaxonomy: true,
+        restore: [
+          { taxonomyId: 'spending', categoryId: 'cat-dining' },
+          { taxonomyId: 'income_sources', categoryId: 'cat-income-refunds' },
+        ],
+        restoreBlocked: true,
+      },
+    });
+    const { buttons } = renderScreen(s);
+    expect(buttons.some((b) => b.kind === 'undoReassign')).toBe(false);
+  });
+
+  it('says nothing about Undo when the move wrote nothing, blocked or not — there was never a button to explain', () => {
+    // An empty restore already has its own reason for no Undo (nothing was
+    // written). Explaining a constraint on top of that would answer a question
+    // this reader never asked.
+    const s = session({
+      txns: [refiledTxn()],
+      screen: { ...refiledScreen, restore: [], restoreBlocked: true },
+    });
+    const { text, keyboard } = renderScreen(s);
+    expect(text).toBe('BOOK STORES: Dining → Groceries.');
+    expect(keyboard.inline_keyboard.flat().map((b) => b.text)).toEqual(['Next transaction', 'Done']);
+  });
+
+  it('says nothing about Undo on the undone confirmation', () => {
+    // The undo already happened, so a sentence about not being able to undo
+    // would contradict the screen it is on.
+    const s = session({
+      txns: [refiledTxn()],
+      screen: { ...refiledScreen, undone: true, restoreBlocked: true },
+    });
+    const { text } = renderScreen(s);
+    expect(text).toBe('Refiling undone — BOOK STORES is back under Dining.');
+  });
+
   it('undone: true mirrors the existing undo wording pattern and offers only Back to list / Done', () => {
     const s = session({
       txns: [refiledTxn()],
@@ -755,6 +840,134 @@ describe('renderScreen — refiled', () => {
     const s = session({ mode: 'categorize', txns: [], screen: refiledScreen });
     const { text } = renderScreen(s);
     expect(text.split('\n')[0]).toBe('That transaction is no longer uncategorized.');
+  });
+});
+
+// ---- renderScreen: refused ---------------------------------------------------
+
+describe('renderScreen — refused', () => {
+  /** The one route out of both subtype-governed refusals, and the only thing a
+   *  reader can act on — so both screens carry it verbatim. */
+  const HINT = 'A payback can be turned into a spending offset by marking it a reimbursement in Advanced → Transaction Rules.';
+
+  it('neutral: states the constraint and offers NO way out, because a subtype has none to offer', () => {
+    // This reason is reached when the ACCOUNT TYPE decides — a SECURITIES
+    // account, an account type this build does not know, a CREDIT_CARD
+    // non-expense type. Naming the reimbursement rule there would send its
+    // reader to a setting that cannot move their transaction, which is the same
+    // reason `scope` gets no hint either.
+    const s = session({ screen: { kind: 'refused', activityId: 'act-1', reason: 'neutral' } });
+    const { text } = renderScreen(s);
+    expect(text).toBe(
+      'The transaction is not counted as spending or income at all, so no category can be attached to it as it stands.',
+    );
+    expect(text).not.toContain('reimbursement');
+    expect(text).not.toContain('Transaction Rules');
+  });
+
+  it('neutral-subtype: the SAME constraint, plus the way out, for a row a refund subtype would lift', () => {
+    // A CASH credit that has simply not been marked a refund yet. Identical
+    // first sentence — the constraint really is the same — and the second line
+    // is the whole difference between the two reasons.
+    const s = session({ screen: { kind: 'refused', activityId: 'act-1', reason: 'neutral-subtype' } });
+    const { text } = renderScreen(s);
+    expect(text).toBe(
+      'The transaction is not counted as spending or income at all, so no category can be attached to it as it stands.'
+      + `\n${HINT}`,
+    );
+    const bare = renderScreen(session({ screen: { kind: 'refused', activityId: 'act-1', reason: 'neutral' } }));
+    expect(text.split('\n')[0]).toBe(bare.text);
+  });
+
+  it('wrong-bucket: states it is recorded as money in and can only take an income category, then the way out', () => {
+    const s = session({ screen: { kind: 'refused', activityId: 'act-1', reason: 'wrong-bucket' } });
+    const { text } = renderScreen(s);
+    expect(text).toBe(
+      'It is recorded as money in and can only take an income category while that is true.'
+      + `\n${HINT}`,
+    );
+  });
+
+  it('scope: states the account is not set up for spending tracking, and offers NO subtype route', () => {
+    // A subtype cannot opt an account into spending tracking, so the
+    // reimbursement hint would send this reader somewhere that changes nothing.
+    const s = session({ screen: { kind: 'refused', activityId: 'act-1', reason: 'scope' } });
+    const { text } = renderScreen(s);
+    expect(text).toBe('Its account is not set up for spending tracking.');
+    expect(text).not.toContain('reimbursement');
+  });
+
+  it('promises nothing the bot does: the way out is a rule the reader sets, stated in the passive', () => {
+    // The menu writes no subtypes at all (rules own that), so any wording that
+    // implied "tap here and we will fix it" would be a promise it cannot keep —
+    // and this refusal exists precisely because a promise like that once cost a
+    // user their category.
+    for (const reason of ['neutral-subtype', 'wrong-bucket'] as const) {
+      const s = session({ screen: { kind: 'refused', activityId: 'act-1', reason } });
+      const { text } = renderScreen(s);
+      expect(text).toContain('Advanced → Transaction Rules');
+      expect(text).not.toMatch(/\bI(?:'| w)ll\b|we(?:'| w)ill|tap|press/i);
+      // And it never tells the reader they did something wrong.
+      expect(text).not.toMatch(/you (?:should|need to|must)|instead of what you/i);
+    }
+  });
+
+  it('offers only « Back (to the txn screen) and Done, for every reason', () => {
+    for (const reason of ['neutral', 'neutral-subtype', 'wrong-bucket', 'scope'] as const) {
+      const s = session({ screen: { kind: 'refused', activityId: 'act-1', reason } });
+      const { keyboard, buttons } = renderScreen(s);
+      const labels = keyboard.inline_keyboard.flat().map((b) => b.text);
+      expect(labels).toEqual(['« Back', 'Done']);
+      expect(buttons[labels.indexOf('« Back')]).toEqual({
+        kind: 'goto', screen: { kind: 'txn', activityId: 'act-1' },
+      });
+      expect(buttons[labels.indexOf('Done')]).toEqual({ kind: 'close' });
+    }
+  });
+
+  it('never pastes Wealthfolio’s raw API sentence, for any reason', () => {
+    // The real upstream strings (docs/upstream-spending-buckets.md §1, §7):
+    // "Neutral transfers cannot be categorized. Change or unlink the transfer
+    // if it should count as spending.", "{bucket} activities can only use
+    // {taxonomy} categories. Categories label the cash-flow bucket; they do
+    // not change it.", "Activity account is not opted into spending
+    // tracking", "Activity account does not support spending tracking".
+    for (const reason of ['neutral', 'neutral-subtype', 'wrong-bucket', 'scope'] as const) {
+      const s = session({ screen: { kind: 'refused', activityId: 'act-1', reason } });
+      const { text } = renderScreen(s);
+      expect(text).not.toContain('Neutral transfers cannot be categorized');
+      expect(text).not.toContain('do not change it');
+      expect(text).not.toContain('opted into spending tracking');
+      expect(text).not.toContain('does not support spending tracking');
+    }
+  });
+});
+
+// ---- every category tap in recategorize mode yields a plain reassign -------
+
+describe('renderScreen — recategorize mode: a category tap always yields reassign', () => {
+  // This module has none of the data (account type, activity type, subtype)
+  // that assignabilityOf needs to decide whether a move is even legal — only
+  // the controller has that, via the gate in companion/src/categorize.ts,
+  // which runs AFTER this action reaches it. So every category tap emits a
+  // plain reassign regardless of mode or screen; refusing (or not) is
+  // entirely the controller's job, never something this module decides for
+  // itself.
+  it('a leaf category tap on the txn screen yields reassign', () => {
+    const s = session({ mode: 'recategorize', screen: { kind: 'txn', activityId: 'act-1' } });
+    const { keyboard, buttons } = renderScreen(s);
+    const idx = keyboard.inline_keyboard.flat().findIndex((b) => b.text === 'Groceries');
+    expect(buttons[idx]).toEqual({ kind: 'reassign', activityId: 'act-1', categoryId: 'cat-groceries' });
+  });
+
+  it('a child category tap on the subcats screen yields reassign', () => {
+    const s = session({
+      mode: 'recategorize',
+      screen: { kind: 'subcats', activityId: 'act-1', parentId: 'cat-dining' },
+    });
+    const { keyboard, buttons } = renderScreen(s);
+    const idx = keyboard.inline_keyboard.flat().findIndex((b) => b.text === 'Fast Food');
+    expect(buttons[idx]).toEqual({ kind: 'reassign', activityId: 'act-1', categoryId: 'cat-dining-fastfood' });
   });
 });
 
@@ -955,9 +1168,34 @@ describe('callback_data byte cap', () => {
             { taxonomyId: 'income_categories', categoryId: `income-category-id-${'i'.repeat(40)}` },
             { taxonomyId: 'savings_categories', categoryId: `savings-category-id-${'s'.repeat(40)}` },
           ],
+          restoreBlocked: false,
         },
       }).keyboard,
     );
+
+    // refused: fixed « Back/Done buttons regardless of reason. Looped over
+    // EVERY reason `refused` can carry, via a Record (not a plain array) keyed
+    // by the reason union — the same exhaustiveness trick `REFUSED_TEXT` uses
+    // in categorize-menu.ts — so a future reason added to the union is a
+    // compile error here until this list grows too, rather than a silently
+    // uncovered case. This passes trivially today and is expected to: the
+    // reason string never reaches callback_data, only the screen's TEXT does
+    // (checked elsewhere), so a green result here is not evidence about the
+    // text — only that the fixed buttons stay fixed regardless of reason.
+    const everyRefusedReason: Record<Extract<MenuScreen, { kind: 'refused' }>['reason'], true> = {
+      neutral: true,
+      'neutral-subtype': true,
+      'wrong-bucket': true,
+      scope: true,
+    };
+    for (const reason of Object.keys(everyRefusedReason) as Array<keyof typeof everyRefusedReason>) {
+      assertCallbackBytesFit(
+        renderScreen({
+          ...base,
+          screen: { kind: 'refused', activityId: longTxns[0].activityId, reason },
+        }).keyboard,
+      );
+    }
   });
 });
 

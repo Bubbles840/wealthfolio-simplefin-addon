@@ -7,6 +7,10 @@ export interface MappingRule {
   pattern: string;
   matchType: 'contains' | 'regex';
   activityType: ActivityType;
+  /** Optional Wealthfolio activity subtype applied when this rule matches.
+   *  Only meaningful for CREDIT (see docs/upstream-spending-buckets.md): a
+   *  DEPOSIT is income regardless of subtype. */
+  subtype?: string;
 }
 
 export interface SimplefinOrg {

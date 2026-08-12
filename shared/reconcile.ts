@@ -26,6 +26,10 @@ export interface FeedTx {
    *  expired row are the SAME DEPOSIT/WITHDRAWAL, so the marker is the only
    *  thing that differs when such a placeholder times out. */
   inTransit?: boolean;
+  /** The subtype a rule assigned to this transaction (e.g. `REIMBURSEMENT`).
+   *  Omitted — not `null` — when no rule set one; see `normSubtype` for why
+   *  that distinction matters to `changed()`. */
+  subtype?: string;
 }
 
 export interface ExistingRow {
@@ -44,6 +48,10 @@ export interface ExistingRow {
    *  description even when the transaction is outside this run's fetch window
    *  (where the SimpleFin description is no longer available to rebuild it). */
   comment?: string;
+  /** Resolved subtype on the stored row. The host adapter normalizes an
+   *  absent subtype to `null` (never leaves it `undefined`), but older rows
+   *  written before this field existed may read back `''`; see `normSubtype`. */
+  subtype?: string | null;
 }
 
 export interface ReconcilePlan {
@@ -75,6 +83,14 @@ function isInTransitRow(row: ExistingRow): boolean {
   return (row.comment ?? '').startsWith(IN_TRANSIT_COMMENT_PREFIX);
 }
 
+/** `undefined` (feed carries no subtype), `null` (host reported none) and `''`
+ *  are all "no subtype". Comparing raw values would report a difference on every
+ *  row that never had one, and `changed()` is the write trigger — that would
+ *  rewrite every activity on every sync, forever. */
+function normSubtype(v: string | null | undefined): string {
+  return (v ?? '').trim().toUpperCase();
+}
+
 function changed(row: ExistingRow, tx: FeedTx): boolean {
   return (
     row.absCents !== bookedCents(tx) ||
@@ -85,7 +101,20 @@ function changed(row: ExistingRow, tx: FeedTx): boolean {
     // non-CASH placeholder expires into the identical DEPOSIT/WITHDRAWAL, so
     // without this the row would keep its in-transit marker forever on a leg
     // that will never pair.
-    isInTransitRow(row) !== !!tx.inTransit
+    isInTransitRow(row) !== !!tx.inTransit ||
+    // Subtype only ever gets ADDED here, never removed. The write path omits
+    // the `subtype` key entirely whenever the feed has none (see
+    // toActivityCreate in sync-core.ts) — it deliberately never sends `''`,
+    // because an explicit empty string is indistinguishable from a genuine
+    // instruction to clear a subtype the user (or Wealthfolio) set by hand.
+    // If this compared symmetrically, a row whose rule stopped assigning a
+    // subtype would look "changed" forever: the update that gets issued can
+    // never actually clear the stored value, so the row differs again next
+    // sync, and the one issued before it, and so on — an identical no-op
+    // update, every sync, forever. The accepted trade (the user's call):
+    // removing a rule's subtype does not reach rows already imported; those
+    // get cleared by hand in Wealthfolio.
+    (!!tx.subtype && normSubtype(row.subtype) !== normSubtype(tx.subtype))
   );
 }
 

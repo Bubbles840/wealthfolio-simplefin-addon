@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.14.0] - 2026-08-11
+
+### Added
+
+- **Transaction rules can mark a payback as a reimbursement.** A rule now sets
+  an activity's subtype as well as its type, so "Venmo Transfers" can import as
+  a CREDIT marked REIMBURSEMENT. Wealthfolio then treats it as money that
+  reduces whatever category you file it under, instead of income — which is what
+  a friend paying you back for dinner actually is. Set it in Advanced →
+  Transaction Rules.
+- **The rule applies to transactions already imported**, not just future ones:
+  the next sync updates matching rows in place, so you fix a recurring payback
+  once instead of per transaction.
+
+### Changed
+
+- `/recategorize` now refuses a move Wealthfolio would reject, and says why —
+  pointing to Advanced → Transaction Rules, where marking the payback a
+  reimbursement is what makes the move possible — instead of clearing the old
+  category first and failing afterwards.
+- Removing a subtype from a rule does not take effect on transactions already
+  imported: the sync only ever adds a subtype, never removes one, so it can't
+  be confused with a subtype you set by hand in Wealthfolio. Those have to be
+  changed in Wealthfolio directly.
+- Undo is not offered after a move when the transaction can no longer hold
+  what it had before the move — putting the old category back would be a
+  write Wealthfolio refuses. This replaces what 1.13.0's notes described for
+  that same move.
+
+Needs the companion rebuild AND the addon zip, since both halves change.
+
 ## [1.13.0] - 2026-08-11
 
 ### Added
