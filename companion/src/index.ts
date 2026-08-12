@@ -1000,7 +1000,7 @@ export async function sendImportNotice(
   // that this notice had no rows of its own to talk about.
   const noticeTxIds = result.importedTransactions.map((t) => t.txId).filter((id) => !!id);
   rememberImportScope(noticeTxIds.length > 0 ? noticeTxIds : null);
-  await sendTelegramMessage(
+  const sendResult = await sendTelegramMessage(
     tg.botToken,
     tg.chatId,
     text,
@@ -1009,6 +1009,18 @@ export async function sendImportNotice(
     // renders `{inline_keyboard: []}` as an empty markup rather than none.
     keyboard.inline_keyboard.length > 0 ? keyboard : undefined,
   );
+  if (!sendResult.ok) {
+    // `log`: a rejected send is the one failure mode that would otherwise leave
+    // NO trace anywhere. `sendTelegramMessage` never throws — a bad chat id, a
+    // blocked bot, and rate limiting all come back as a resolved `{ ok: false }`
+    // — so the caller's own catch (for exceptions) never sees this, and Telegram's
+    // `description` is the only thing that tells those three apart. Unlike the
+    // stuck-transfer and balance-drift alerts above, there is no retry ledger for
+    // the import notice, so this is a report of what happened, not a scheduled
+    // retry: next sync's notice covers whatever is still uncategorized, but this
+    // specific message is gone for good.
+    log(`Import notice not delivered: ${result.imported} imported transaction(s) were not announced (${sendResult.description}).`);
+  }
 }
 
 

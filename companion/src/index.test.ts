@@ -2524,6 +2524,51 @@ describe('sendImportNotice', () => {
     expect(written).not.toHaveProperty('act-ancient');
   });
 
+  it('logs Telegram\'s own description when the send is rejected, and still resolves', async () => {
+    // `sendTelegramMessage` never throws for an API-level rejection — a bad
+    // chat id, a blocked bot, and rate limiting all come back as a resolved
+    // `{ ok: false }` — so this is the one failure mode the caller's own
+    // exception catch can never see.
+    vi.mocked(getNativeUncategorizedSpending).mockReturnValue([]);
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({
+      ok: true, json: async () => ({ ok: false, description: 'Forbidden: bot was blocked by the user' }),
+    })));
+    const client: any = {
+      getAddonSecret: vi.fn(async () => null),
+      setAddonSecret: vi.fn(async () => {}),
+    };
+    const logs = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await expect(sendImportNotice(client, { botToken: 'T', chatId: '9' }, {
+        imported: 2, importedTransactions: [importedTx],
+      } as any)).resolves.toBeUndefined();
+      const allLogs = logs.mock.calls.flat().join('\n');
+      expect(allLogs).toMatch(/2.*not announced/i);
+      expect(allLogs).toContain('Forbidden: bot was blocked by the user');
+    } finally {
+      logs.mockRestore();
+    }
+  });
+
+  it('logs nothing when the send succeeds', async () => {
+    vi.mocked(getNativeUncategorizedSpending).mockReturnValue([]);
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: true, json: async () => ({ ok: true }) })));
+    const client: any = {
+      getAddonSecret: vi.fn(async () => null),
+      setAddonSecret: vi.fn(async () => {}),
+    };
+    const logs = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await sendImportNotice(client, { botToken: 'T', chatId: '9' }, {
+        imported: 1, importedTransactions: [importedTx],
+      } as any);
+      const allLogs = logs.mock.calls.flat().join('\n');
+      expect(allLogs).not.toMatch(/not announced|not delivered/i);
+    } finally {
+      logs.mockRestore();
+    }
+  });
+
   /** Shaped like `getNativeCategorizedSpending`'s rows: the note still carries the
    *  ` · <txId>` bookkeeping the read-back matches on. */
   const catRow = (activityId: string, desc: string, txId: string, categoryName: string) => ({
