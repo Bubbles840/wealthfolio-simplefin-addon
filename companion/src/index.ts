@@ -676,9 +676,25 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
       const tg = parseSecretJson<any>(tgRaw, 'telegram_config');
       if (tg && tg.botToken && tg.chatId && tg.enabled !== false) {
         log(`Telegram notifications active (chat: ${tg.chatId}).`);
-        if (result.imported > 0 && tg.notifyOnImport !== false) {
-          await sendImportNotice(wfClient, tg, result);
+        if (result.imported > 0) {
+          if (tg.notifyOnImport !== false) {
+            try {
+              await sendImportNotice(wfClient, tg, result);
+            } catch (err) {
+              // `log`, not `debug`: the sync has already succeeded and these rows
+              // are already sitting in Wealthfolio, so a thrown notice means the
+              // user sees new transactions with no message and no explanation —
+              // exactly the report that prompted this line. It must never
+              // rethrow: a notice failure is not a sync failure, and the import
+              // it would be undoing already happened.
+              log(`Import notice failed: ${result.imported} imported transaction(s) were not announced (${formatError(err)}).`);
+            }
+          } else {
+            log(`Import notice skipped: notifyOnImport is off, so ${result.imported} imported transaction(s) were not announced.`);
+          }
         }
+      } else if (result.imported > 0) {
+        log(`Telegram not configured: ${result.imported} imported transaction(s) were not announced.`);
       }
     } catch (err) {
       debug(`Telegram check note: ${formatError(err)}`);
