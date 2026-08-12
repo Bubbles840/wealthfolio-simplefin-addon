@@ -694,7 +694,16 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
           }
         }
       } else if (result.imported > 0) {
-        log(`Telegram not configured: ${result.imported} imported transaction(s) were not announced.`);
+        // Two distinct cases, not one: `enabled: false` is a deliberate choice —
+        // the config exists and is fine — while anything else here (no secret,
+        // or a secret missing botToken/chatId) is genuinely unset. Telling an
+        // operator to go check "not configured" when they switched it off
+        // themselves sends them looking in the wrong place.
+        if (tg && tg.enabled === false) {
+          log(`Telegram disabled: ${result.imported} imported transaction(s) were not announced.`);
+        } else {
+          log(`Telegram not configured: ${result.imported} imported transaction(s) were not announced.`);
+        }
       }
     } catch (err) {
       debug(`Telegram check note: ${formatError(err)}`);
@@ -1010,6 +1019,15 @@ export async function sendImportNotice(
     keyboard.inline_keyboard.length > 0 ? keyboard : undefined,
   );
   if (!sendResult.ok) {
+    // `rememberImportScope`, above, already ran before this send — so on a
+    // rejected send the "last notice" scope now points at rows the user never
+    // saw a message for. If an OLDER, actually-delivered notice is still on
+    // screen, its Recategorize button opens THIS run's rows, not its own. This
+    // is an accepted tradeoff, not an oversight: that write already tolerates
+    // the same gap for an ambiguous response (Telegram can deliver the message
+    // and still fail the confirmation we read), and a flat-out rejection is the
+    // same shape of gap, just a different cause. Not fixed here.
+    //
     // `log`: a rejected send is the one failure mode that would otherwise leave
     // NO trace anywhere. `sendTelegramMessage` never throws — a bad chat id, a
     // blocked bot, and rate limiting all come back as a resolved `{ ok: false }`
