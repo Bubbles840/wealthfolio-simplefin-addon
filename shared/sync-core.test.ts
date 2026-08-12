@@ -2852,4 +2852,35 @@ describe('runSyncCore carries a rule-assigned subtype', () => {
     expect(create.activityType).toBe('CREDIT');
     expect(Object.prototype.hasOwnProperty.call(create, 'subtype')).toBe(false);
   });
+
+  it('drops the rule\'s subtype on an EXPIRED in-transit leg too, not just a young one', async () => {
+    // The other end of the same branch. A rule-typed transfer leg can never pair,
+    // so it reaches the young branch above first and is stored as a bare
+    // placeholder; once it is older than the timeout the sync gives up waiting and
+    // re-types it as an ordinary DEPOSIT. That is not a refund of anything, and
+    // carrying REIMBURSEMENT into it would ADD a subtype to a row created without
+    // one — an update the add-only reconciliation could never take back, booking a
+    // former transfer leg against a spending category for good.
+    const staleEpoch = Math.floor(Date.now() / 1000) - (IN_TRANSIT_TIMEOUT_SECONDS + 3600);
+    const { host, store, saved } = createFakeHost({
+      accountSet: { errors: [], accounts: [{
+        id: 'sfin-1', name: 'Checking', currency: 'USD', balance: '0', 'balance-date': 1,
+        transactions: [{
+          id: 'tx-move', posted: staleEpoch, amount: '42.00', description: 'VENMO CASHOUT',
+        }],
+      }] },
+      mapping: { 'sfin-1': 'wf-a' },
+      accountTypes: { 'wf-a': 'CASH' },
+      mappingRules: [{
+        pattern: 'VENMO', matchType: 'contains', activityType: 'TRANSFER_IN',
+        subtype: 'REIMBURSEMENT',
+      }],
+    });
+    await runSyncCore(host, store, {});
+    const create = saved[0].creates![0];
+    // Given up on, so no placeholder marker and no placeholder shape.
+    expect(create.comment).not.toContain(IN_TRANSIT_COMMENT_PREFIX);
+    expect(create.activityType).toBe('DEPOSIT');
+    expect(Object.prototype.hasOwnProperty.call(create, 'subtype')).toBe(false);
+  });
 });
