@@ -66,6 +66,7 @@ import {
   type MenuScreen,
   type MenuSession,
   type SpendingCategory,
+  type TaxonomyAssignment,
 } from '../../shared/categorize-menu.js';
 import {
   assignabilityOf,
@@ -472,6 +473,43 @@ interface Fresh {
 const NO_ASSIGNMENTS: ReadonlyMap<string, CategorizeAssignment[]> = new Map();
 const NO_BUCKETS: ReadonlyMap<string, BucketInput> = new Map();
 
+/** A row the sweep reported no bucket data for. The predicate reads this as
+ *  `neutral` — nothing assignable — which is the fail-closed answer every caller
+ *  wants: refuse rather than write blind against a row nothing can be reasoned
+ *  about. Unreachable in practice, since `buckets` is populated from the same
+ *  rows `txns` is. */
+const MISSING_BUCKET: BucketInput = { accountType: '', activityType: '', subtype: null };
+
+/**
+ * Would Wealthfolio refuse ANY leg of this restore on the row as it now stands?
+ *
+ * The Undo half of the gate the `reassign` case documents at length. A restore
+ * writes in the OPPOSITE bucket direction from the move — it puts back the
+ * assignment the move cleared — so the very bucket that made the move legal can
+ * make the way back illegal: `docs/upstream-spending-buckets.md` §1 has the
+ * bucket check SKIPPED on unassign and ENFORCED on assign, so replaying a
+ * refused restore deletes the category the move set and then 400s, leaving the
+ * transaction with none at all. That is the same wound the forward gate exists
+ * to prevent, in reverse, and it lands on precisely the rows this release tells
+ * the user to recategorize.
+ *
+ * ALL legs or none. A subset restore would put back the assignments that happen
+ * to be legal and silently drop the rest while the screen said the undo was
+ * done — the worst defect of the original /recategorize build, which the restore
+ * LIST exists to prevent.
+ *
+ * An EMPTY restore set is not blocked (`every` is vacuously true): there is
+ * nothing that could be refused, and the Undo button is already withheld for its
+ * own reason — nothing was written, so there is nothing to reverse.
+ */
+function restoreBlockedFor(
+  toRestore: readonly TaxonomyAssignment[],
+  bucketInput: BucketInput | undefined,
+): boolean {
+  const input = bucketInput ?? MISSING_BUCKET;
+  return !toRestore.every((leg) => assignabilityOf(input, leg.taxonomyId).ok);
+}
+
 /** The spending assignment among a row's assignments, which is the one both Undo
  *  verifications and the same-category check are about. */
 function spendingAssignmentOf(
@@ -790,13 +828,32 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
     };
   }
 
+  /**
+   * `refiled.restoreBlocked`, decided against THIS render's sweep — the row's
+   * bucket as it is now, not as it was when the move happened.
+   *
+   * Re-derived rather than remembered because the answer can change under a
+   * screen that stays on the phone: a row whose subtype is edited in Wealthfolio
+   * after the move moves bucket, which can make a restore that was legal illegal
+   * (the button must go) or a restore that was illegal legal (it may come back).
+   * Every render of the screen goes through here — the confirmation itself, and
+   * the re-render a stale tap produces — so no path can render the stored answer.
+   *
+   * Every other screen kind passes through untouched, including the `undone`
+   * confirmation, which offers no Undo button either way.
+   */
+  function withRestoreGate(screen: MenuScreen, fresh: Fresh): MenuScreen {
+    if (screen.kind !== 'refiled') return screen;
+    return { ...screen, restoreBlocked: restoreBlockedFor(screen.restore, fresh.buckets.get(screen.activityId)) };
+  }
+
   function show(
     chat: ChatSession,
     screen: MenuScreen,
     pin: CategorizeTxn | null,
     fresh: Fresh,
   ): { text: string; keyboard: InlineKeyboard | undefined } {
-    chat.session = buildSession(screen, pin, fresh, chat.mode.kind);
+    chat.session = buildSession(withRestoreGate(screen, fresh), pin, fresh, chat.mode.kind);
     chat.pinned = pin;
     return present(chat);
   }
@@ -1252,8 +1309,7 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
         // treated as the empty input the predicate reads as `neutral` — refuse,
         // never write blind. Unreachable in practice: `buckets` is populated
         // from the same rows `txns` is, and the row was just found in `txns`.
-        const bucketInput: BucketInput = fresh.buckets.get(action.activityId)
-          ?? { accountType: '', activityType: '', subtype: null };
+        const bucketInput: BucketInput = fresh.buckets.get(action.activityId) ?? MISSING_BUCKET;
         const assignable = assignabilityOf(bucketInput, SPENDING_TAXONOMY_ID);
         if (!assignable.ok) {
           // `neutral` splits here, and only here: the predicate's one answer
@@ -1282,6 +1338,9 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
         // button offered here could only rewrite the category the row already
         // carries and call it a restore.
         const writes = toClear.length > 0 || needsAssign;
+        const toRestore: TaxonomyAssignment[] = writes
+          ? assignments.map((a) => ({ taxonomyId: a.taxonomyId, categoryId: a.categoryId }))
+          : [];
         const refiled: MenuScreen = {
           kind: 'refiled',
           activityId: action.activityId,
@@ -1297,14 +1356,16 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
           // above used, and captured BEFORE the writes, because afterwards no
           // reader can report it any more.
           //
-          // `subtype: null` here, not a captured previous value: this ordinary
-          // `reassign` path never writes a subtype (only the reimbursement flow
-          // does — a later task), so there is nothing of that kind for its own
-          // Undo to put back yet. Wiring a real captured value through is that
-          // task's job, not a mechanical shape fix's.
-          restore: writes
-            ? { assignments: assignments.map((a) => ({ taxonomyId: a.taxonomyId, categoryId: a.categoryId })), subtype: null }
-            : { assignments: [], subtype: null },
+          // Assignments and nothing else: this menu never writes a subtype. Only
+          // a transaction rule does (spec decision 7 cut the per-row write), so
+          // there is no second half of the move for Undo to reverse — a subtype
+          // this menu did not set is not this menu's to take back.
+          restore: toRestore,
+          // Whether that set could be put back, against the bucket the gate above
+          // just read. `show` re-derives it on every render (see
+          // `withRestoreGate`); stating it here is what makes the screen valid at
+          // construction rather than only once rendered.
+          restoreBlocked: restoreBlockedFor(toRestore, bucketInput),
         };
 
         if (!writes) {
@@ -1380,6 +1441,29 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
         // undone. Anything else — moved on again, or un-filed entirely — is left
         // alone rather than overwritten with a category that is now historical.
         if (!filedAs || filedAs.categoryId !== screen.toCategoryId) {
+          await showDeclined(chat, loaded.fresh, ui);
+          return;
+        }
+        // THE SAME GATE AS THE MOVE'S, IN THE OTHER DIRECTION, and independent of
+        // the button being withheld. The screen decides what to OFFER; this
+        // decides what to WRITE, and a tap can arrive without a matching render —
+        // from a caller added later, or from this very screen if the row's bucket
+        // moves between the render and the tap. Without it the replay below
+        // deletes the category the move set and is then refused, which is exactly
+        // the bare-transaction failure the forward gate was added for (see
+        // `restoreBlockedFor`).
+        //
+        // Fail closed on missing bucket data, like the forward gate: refuse rather
+        // than write blind. Before EVERY write, including the `unassignTaxonomy`
+        // below — that delete is the half that always succeeds, so a check placed
+        // after it would be no check at all.
+        if (restoreBlockedFor(action.toRestore, loaded.fresh.buckets.get(action.activityId))) {
+          safeLog(
+            `Categorize menu: refusing to undo ${action.activityId} — its cash-flow bucket no longer accepts `
+            + `${action.toRestore.map((a) => a.taxonomyId).join(', ')}, so nothing was written`,
+          );
+          // The row is not in the state this button was drawn for — the same
+          // answer, and the same copy, as the two freshness declines above.
           await showDeclined(chat, loaded.fresh, ui);
           return;
         }

@@ -572,7 +572,11 @@ describe('renderScreen — refiled', () => {
   const refiledScreen: MenuScreen = {
     kind: 'refiled', activityId: 'act-1', fromName: 'Dining', toCategoryId: 'cat-groceries',
     crossTaxonomy: false, undone: false,
-    restore: { assignments: [{ taxonomyId: 'spending', categoryId: 'cat-dining' }], subtype: null },
+    restore: [{ taxonomyId: 'spending', categoryId: 'cat-dining' }],
+    // The controller decides this per render from the row's cash-flow bucket;
+    // `false` is the ordinary case — a spending-to-spending move, whose restore
+    // is as legal as the move was.
+    restoreBlocked: false,
   };
 
   function refiledTxn(overrides: Partial<CategorizeTxn> = {}): CategorizeTxn {
@@ -629,42 +633,6 @@ describe('renderScreen — refiled', () => {
     expect(text).not.toContain('offsets');
   });
 
-  it('adds the reimbursement-specific line ADDITIONALLY when subtypeSet is true and the move also crossed taxonomies', () => {
-    const s = session({
-      txns: [refiledTxn({
-        description: 'VENMO PAYBACK',
-        currentCategory: { taxonomyId: 'income', categoryId: 'cat-income-refunds', name: 'Refunds' },
-      })],
-      screen: { ...refiledScreen, fromName: 'Refunds', crossTaxonomy: true, subtypeSet: true },
-    });
-    const { text } = renderScreen(s);
-    expect(text).toBe(
-      'VENMO PAYBACK: Refunds → Groceries.\n'
-      + 'This payment now offsets Groceries instead of counting toward its previous category.\n'
-      + 'It now offsets Groceries instead of counting as income.',
-    );
-  });
-
-  it('adds ONLY the reimbursement-specific line, with no generic crossTaxonomy line, when nothing was cleared (a previously-neutral credit gaining a subtype has no prior assignment to clear)', () => {
-    const s = session({
-      txns: [refiledTxn({ description: 'VENMO PAYBACK' })],
-      screen: {
-        ...refiledScreen, crossTaxonomy: false, subtypeSet: true, restore: { assignments: [], subtype: null },
-      },
-    });
-    const { text } = renderScreen(s);
-    expect(text).toBe(
-      'VENMO PAYBACK: Dining → Groceries.\n'
-      + 'It now offsets Groceries instead of counting as income.',
-    );
-  });
-
-  it('omits the reimbursement-specific line when subtypeSet is absent — regression: every refiled screen built before the reimbursement flow existed keeps rendering exactly as before', () => {
-    const s = session({ txns: [refiledTxn()], screen: refiledScreen });
-    const { text } = renderScreen(s);
-    expect(text).not.toContain('counting as income');
-  });
-
   it('offers Undo, Next transaction, Done — same goto-list label as the filed screen — with Undo yielding undoReassign back to the old category', () => {
     const s = session({ txns: [refiledTxn()], screen: refiledScreen });
     const { keyboard, buttons } = renderScreen(s);
@@ -695,14 +663,11 @@ describe('renderScreen — refiled', () => {
       screen: {
         ...refiledScreen,
         crossTaxonomy: true,
-        restore: {
-          assignments: [
-            { taxonomyId: 'spending', categoryId: 'cat-dining' },
-            { taxonomyId: 'income', categoryId: 'cat-income-refunds' },
-            { taxonomyId: 'savings', categoryId: 'cat-house' },
-          ],
-          subtype: null,
-        },
+        restore: [
+          { taxonomyId: 'spending', categoryId: 'cat-dining' },
+          { taxonomyId: 'income', categoryId: 'cat-income-refunds' },
+          { taxonomyId: 'savings', categoryId: 'cat-house' },
+        ],
       },
     });
     const { keyboard, buttons } = renderScreen(s);
@@ -722,13 +687,94 @@ describe('renderScreen — refiled', () => {
     // A move that wrote nothing (re-filing to the category the row already had)
     // has nothing to reverse. An Undo here could only either do nothing and
     // claim success, or write a category the row already carries.
-    const s = session({ txns: [refiledTxn()], screen: { ...refiledScreen, restore: { assignments: [], subtype: null } } });
+    const s = session({ txns: [refiledTxn()], screen: { ...refiledScreen, restore: [] } });
     const { keyboard, buttons } = renderScreen(s);
     const labels = keyboard.inline_keyboard.flat().map((b) => b.text);
     expect(labels).toEqual(['Next transaction', 'Done']);
     expect(buttons.some((b) => b.kind === 'undoReassign')).toBe(false);
     // The confirmation itself still renders — the move is still what happened.
     expect(renderScreen(s).text).toBe('BOOK STORES: Dining → Groceries.');
+  });
+
+  it('withholds Undo and says why when the restore is one Wealthfolio would refuse', () => {
+    // CRITICAL, the release's own headline flow: a payback re-typed as a
+    // reimbursement sits in the SPENDING bucket, which is what made the move
+    // legal — and what makes putting its income assignment back illegal. Undoing
+    // would delete the new category and then be refused, leaving the transaction
+    // with none at all (docs/upstream-spending-buckets.md §1).
+    const s = session({
+      txns: [refiledTxn({
+        description: 'VENMO PAYBACK',
+        currentCategory: { taxonomyId: 'income', categoryId: 'cat-income-refunds', name: 'Refunds' },
+      })],
+      screen: {
+        ...refiledScreen,
+        fromName: 'Refunds',
+        crossTaxonomy: true,
+        restore: [{ taxonomyId: 'income_sources', categoryId: 'cat-income-refunds' }],
+        restoreBlocked: true,
+      },
+    });
+    const { text, keyboard, buttons } = renderScreen(s);
+    const labels = keyboard.inline_keyboard.flat().map((b) => b.text);
+    expect(labels).toEqual(['Next transaction', 'Done']);
+    expect(buttons.some((b) => b.kind === 'undoReassign')).toBe(false);
+    // The move still reads as the success it was — the extra sentence is about
+    // the way back, and says nothing about anything having failed.
+    expect(text).toBe(
+      'VENMO PAYBACK: Refunds → Groceries.\n'
+      + 'This payment now offsets Groceries instead of counting toward its previous category.\n'
+      + 'This transaction can no longer hold the category it had before the move, so there is no Undo.',
+    );
+    expect(text).not.toContain('failed');
+    // Never Wealthfolio's own API prose, on this screen either.
+    expect(text).not.toContain('can only use');
+    expect(text).not.toContain('400');
+  });
+
+  it('restores NOTHING rather than the legal subset when only one leg of the restore is refused', () => {
+    // All legs or no button. Restoring just the spending half here would drop the
+    // income assignment for good while the screen reported the undo as done —
+    // the worst defect of the original build, and the reason a blocked restore
+    // withholds the button instead of filtering the list.
+    const s = session({
+      txns: [refiledTxn()],
+      screen: {
+        ...refiledScreen,
+        crossTaxonomy: true,
+        restore: [
+          { taxonomyId: 'spending', categoryId: 'cat-dining' },
+          { taxonomyId: 'income_sources', categoryId: 'cat-income-refunds' },
+        ],
+        restoreBlocked: true,
+      },
+    });
+    const { buttons } = renderScreen(s);
+    expect(buttons.some((b) => b.kind === 'undoReassign')).toBe(false);
+  });
+
+  it('says nothing about Undo when the move wrote nothing, blocked or not — there was never a button to explain', () => {
+    // An empty restore already has its own reason for no Undo (nothing was
+    // written). Explaining a constraint on top of that would answer a question
+    // this reader never asked.
+    const s = session({
+      txns: [refiledTxn()],
+      screen: { ...refiledScreen, restore: [], restoreBlocked: true },
+    });
+    const { text, keyboard } = renderScreen(s);
+    expect(text).toBe('BOOK STORES: Dining → Groceries.');
+    expect(keyboard.inline_keyboard.flat().map((b) => b.text)).toEqual(['Next transaction', 'Done']);
+  });
+
+  it('says nothing about Undo on the undone confirmation', () => {
+    // The undo already happened, so a sentence about not being able to undo
+    // would contradict the screen it is on.
+    const s = session({
+      txns: [refiledTxn()],
+      screen: { ...refiledScreen, undone: true, restoreBlocked: true },
+    });
+    const { text } = renderScreen(s);
+    expect(text).toBe('Refiling undone — BOOK STORES is back under Dining.');
   });
 
   it('undone: true mirrors the existing undo wording pattern and offers only Back to list / Done', () => {
@@ -1117,14 +1163,12 @@ describe('callback_data byte cap', () => {
           undone: false,
           // Several assignments, every id long: the restore list rides on the
           // SCREEN, never in a token, so none of this can reach callback_data.
-          restore: {
-            assignments: [
-              { taxonomyId: 'spending_categories', categoryId: longParents[0].id },
-              { taxonomyId: 'income_categories', categoryId: `income-category-id-${'i'.repeat(40)}` },
-              { taxonomyId: 'savings_categories', categoryId: `savings-category-id-${'s'.repeat(40)}` },
-            ],
-            subtype: null,
-          },
+          restore: [
+            { taxonomyId: 'spending_categories', categoryId: longParents[0].id },
+            { taxonomyId: 'income_categories', categoryId: `income-category-id-${'i'.repeat(40)}` },
+            { taxonomyId: 'savings_categories', categoryId: `savings-category-id-${'s'.repeat(40)}` },
+          ],
+          restoreBlocked: false,
         },
       }).keyboard,
     );

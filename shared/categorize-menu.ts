@@ -49,18 +49,6 @@ export interface TaxonomyAssignment {
   categoryId: string;
 }
 
-/** What Undo must put back after a `reassign`: the row's
- *  complete previous assignment set (every taxonomy — see `refiled`'s doc
- *  comment for why a single pair was a real defect) AND the subtype it
- *  carried before the move, `null` when it had none. The subtype half exists
- *  because a reimbursement move writes a SECOND thing beyond the category —
- *  `setSubtype` — and undoing only the category while leaving the row
- *  subtyped REIMBURSEMENT would not be what "Undo" told the reader it did. */
-export interface RestoreState {
-  assignments: readonly TaxonomyAssignment[];
-  subtype: string | null;
-}
-
 /** One node of Wealthfolio's spending category tree. `parentId === null`
  *  marks a top-level category — the menu's parent filter, so a reader that
  *  hands back `''` for a NULL parent (the sqlite3-CLI fallback does) empties
@@ -108,20 +96,14 @@ export type MenuScreen =
    *  same as `filed.categoryId`, since the new category is always a spending
    *  category and always in that list.
    *
-   *  `restore` is a `RestoreState` holding the COMPLETE set of assignments the
-   *  row held before the move — every taxonomy, the spending one included —
-   *  plus the subtype it carried before, and it is what the Undo button
-   *  replays. It lives on the SCREEN rather than being derived from the
+   *  `restore` is the COMPLETE set of assignments the row held before the move
+   *  — every taxonomy, the spending one included — and it is what the Undo
+   *  button replays. It lives on the SCREEN rather than being derived from the
    *  transaction because by the time this screen renders, a fresh sweep already
    *  reports the row's NEW state; only the controller that performed the move
-   *  knows what preceded it. `restore.assignments` empty means there is
-   *  nothing to put back, and the Undo button is not offered at all: a button
-   *  that reported success while restoring nothing would be worse than no
-   *  button. (`restore` used to be a bare `readonly TaxonomyAssignment[]` —
-   *  the shape grew a `subtype` field alongside it for the same reason it
-   *  carries every taxonomy's assignment: a reimbursement move writes a
-   *  subtype too, and Undo has to put THAT back as well or it is not actually
-   *  undone.) */
+   *  knows what preceded it. `restore` empty means there is nothing to put
+   *  back, and the Undo button is not offered at all: a button that reported
+   *  success while restoring nothing would be worse than no button. */
   | {
       kind: 'refiled';
       activityId: string;
@@ -129,17 +111,37 @@ export type MenuScreen =
       toCategoryId: string;
       crossTaxonomy: boolean;
       undone: boolean;
-      restore: RestoreState;
-      /** True when THIS reassign also set the row's subtype (the
-       *  reimbursement path: a credit only becomes legal to file as spending
-       *  once its subtype is REIMBURSEMENT — see ./cash-flow-bucket.ts).
-       *  Optional, defaulting to false/absent, so every `refiled` screen
-       *  built before the reimbursement flow existed keeps rendering exactly
-       *  as it always did. Conditions the extra "instead of counting as
-       *  income" line independently of `crossTaxonomy`: a previously NEUTRAL
-       *  (no-subtype) credit sets a subtype without clearing any prior
-       *  assignment, so `crossTaxonomy` alone cannot detect it. */
-      subtypeSet?: boolean;
+      restore: readonly TaxonomyAssignment[];
+      /**
+       * True when at least one leg of `restore` is NOT something Wealthfolio
+       * would accept on this row as it now stands — so replaying it would
+       * delete the category the move set and then be refused, leaving the
+       * transaction with no category at all. Then the Undo button is withheld
+       * and `RESTORE_BLOCKED_NOTE` says so.
+       *
+       * This is the headline case of the release, not a corner: a payback that
+       * auto-filed under an income category and was later re-typed as a
+       * reimbursement is in the SPENDING bucket, which is exactly what makes
+       * the move legal — and exactly what makes putting the income assignment
+       * back illegal (docs/upstream-spending-buckets.md §1: the bucket check is
+       * skipped on unassign and enforced on assign, so the delete lands and the
+       * write after it does not).
+       *
+       * REQUIRED rather than optional-defaulting-to-false: absent would mean
+       * "offer Undo", so a construction site that forgot it would reintroduce
+       * the hazard silently. It is DERIVED, not remembered — the controller
+       * recomputes it against the row's bucket on every render (see `show` in
+       * companion/src/categorize.ts), because a bucket that moved after the
+       * move must change this answer. The predicate itself is
+       * `assignabilityOf` (./cash-flow-bucket.ts); this module stays pure and
+       * is told the answer rather than deriving it, since it holds no account
+       * type, activity type or subtype for the row.
+       *
+       * All legs or none: a partial restore would silently drop a category
+       * while reporting the undo as done, which was the worst defect of the
+       * original /recategorize build.
+       */
+      restoreBlocked: boolean;
     };
 
 export interface MenuSession {
@@ -638,6 +640,26 @@ function renderRuleCreated(session: MenuSession, activityId: string | null, cate
 }
 
 /**
+ * Why there is no Undo button on a confirmation that would otherwise have one
+ * (`refiled.restoreBlocked`). Said in the same register as the refusals: the
+ * constraint first, the consequence after it, blaming nobody and promising
+ * nothing.
+ *
+ * What it must NOT do is read as though the move failed — the move the reader
+ * asked for succeeded, and this sentence is only about the way back. So it
+ * states a property of the transaction ("can no longer hold") rather than an
+ * error, and it does not forward Wealthfolio's own API prose (see
+ * `REFUSED_TEXT`'s doc comment for why that text misleads here).
+ *
+ * "No longer" is literally accurate: the category it had before fitted the
+ * cash-flow bucket the row was in at the time, and the row is in a different
+ * one now — which is the same change that made this move legal in the first
+ * place (docs/upstream-spending-buckets.md §1, §2).
+ */
+const RESTORE_BLOCKED_NOTE =
+  'This transaction can no longer hold the category it had before the move, so there is no Undo.';
+
+/**
  * Confirms a `reassign`: `<description>: <old> → <new>.`, plus a warning line
  * when the move crosses taxonomies (spending clearing some OTHER taxonomy —
  * income, savings, or whatever else a Wealthfolio instance defines) — that
@@ -656,6 +678,12 @@ function renderRuleCreated(session: MenuSession, activityId: string | null, cate
  * category a reader recognises, so an undo derived from it would put back the
  * assignment that happened to be displayed and silently drop whatever else the
  * move cleared, while this screen reported the undo as done.
+ *
+ * It is omitted for a SECOND reason too — `restoreBlocked`, a restore
+ * Wealthfolio would refuse — and then the text says so, because a button that
+ * was there last time and is silently gone this time is worse than a stated
+ * limitation. The two omissions share one shape (no button row at all) rather
+ * than the blocked case getting a disabled-looking button of its own.
  *
  * The transaction and the target category do still have to resolve, since the
  * sentence names both. Missing means the controller's fresh sweep no longer has
@@ -690,23 +718,24 @@ function renderRefiled(
   if (screen.crossTaxonomy) {
     lines.push(`This payment now offsets ${toName} instead of counting toward its previous category.`);
   }
-  // Independent of `crossTaxonomy`: a previously NEUTRAL (no-subtype) credit
-  // sets a subtype without clearing any prior assignment, so this cannot be
-  // folded into the branch above — see `subtypeSet`'s doc comment.
-  if (screen.subtypeSet) {
-    lines.push(`It now offsets ${toName} instead of counting as income.`);
-  }
+  // Only when there was something to put back: with an empty restore set the
+  // Undo button is already absent for a reason of its own (nothing was written),
+  // and this sentence would answer a question nobody asked.
+  const undoBlocked = screen.restore.length > 0 && screen.restoreBlocked;
+  if (undoBlocked) lines.push(RESTORE_BLOCKED_NOTE);
 
   const rows: Btn[][] = [
     // No restore data, no Undo button: the alternative is a button that reports a
-    // restore it could not perform, which is worse than not offering one.
-    ...(screen.restore.assignments.length > 0
+    // restore it could not perform, which is worse than not offering one. A
+    // BLOCKED restore is withheld for the same reason, one step earlier — there
+    // is data to put back and Wealthfolio would refuse it.
+    ...(screen.restore.length > 0 && !undoBlocked
       ? [[{
         text: 'Undo',
         action: {
           kind: 'undoReassign' as const,
           activityId: screen.activityId,
-          toRestore: screen.restore.assignments,
+          toRestore: screen.restore,
         },
       }]]
       : []),
@@ -767,7 +796,9 @@ const REFUSED_TEXT: Record<Extract<MenuScreen, { kind: 'refused' }>['reason'], s
   // "every wrong-bucket refusal in the full classification matrix has bucket
   // 'income'" in cash-flow-bucket.test.ts, which asserts this over the whole
   // MATRIX rather than one hand-picked input — if that ever starts failing,
-  // this needs a bucket-aware sentence instead (see task-8-brief.md Part 2).
+  // this sentence has to stop hardcoding "money in" and name the bucket
+  // `assignabilityOf` reported instead (one sentence per bucket, or the label
+  // interpolated), because by then some other bucket can reach this reason.
   'wrong-bucket': `It is recorded as money in and can only take an income category while that is true.\n${REIMBURSEMENT_HINT}`,
   // No hint: a subtype cannot opt an account into spending tracking, so
   // offering the reimbursement route here would send its reader somewhere that
