@@ -1216,6 +1216,16 @@ export async function runSyncCore(
       const postedAt = txEpoch(p.tx) ?? nowSec;
       if (nowSec - postedAt > IN_TRANSIT_TIMEOUT_SECONDS) {
         p.type = (signed >= 0 ? 'DEPOSIT' : 'WITHDRAWAL') as ActivityType;
+        // The same drop as the young branch below, for the same reason and one
+        // step further on: giving up on the pair turns this into an ordinary
+        // deposit or withdrawal, and neither is a refund of anything. Keeping the
+        // rule's subtype here would book a transfer leg against a spending
+        // category — and because this leg reaches the young branch FIRST (a
+        // rule-typed transfer can never pair, see the comment below), the row is
+        // already stored WITHOUT a subtype by the time it expires, so what this
+        // prevents is an update that ADDS one. Reconciliation only ever adds a
+        // subtype, never removes one, so nothing later could take it back.
+        delete p.subtype;
         continue;
       }
       const accountType = wfTypes.get(mapping[p.sfAccountId] ?? '') ?? '';
