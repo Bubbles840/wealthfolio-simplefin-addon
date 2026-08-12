@@ -676,8 +676,33 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
       const tg = parseSecretJson<any>(tgRaw, 'telegram_config');
       if (tg && tg.botToken && tg.chatId && tg.enabled !== false) {
         log(`Telegram notifications active (chat: ${tg.chatId}).`);
-        if (result.imported > 0 && tg.notifyOnImport !== false) {
-          await sendImportNotice(wfClient, tg, result);
+        if (result.imported > 0) {
+          if (tg.notifyOnImport !== false) {
+            try {
+              await sendImportNotice(wfClient, tg, result);
+            } catch (err) {
+              // `log`, not `debug`: the sync has already succeeded and these rows
+              // are already sitting in Wealthfolio, so a thrown notice means the
+              // user sees new transactions with no message and no explanation —
+              // exactly the report that prompted this line. It must never
+              // rethrow: a notice failure is not a sync failure, and the import
+              // it would be undoing already happened.
+              log(`Import notice failed: ${result.imported} imported transaction(s) were not announced (${formatError(err)}).`);
+            }
+          } else {
+            log(`Import notice skipped: notifyOnImport is off, so ${result.imported} imported transaction(s) were not announced.`);
+          }
+        }
+      } else if (result.imported > 0) {
+        // Two distinct cases, not one: `enabled: false` is a deliberate choice —
+        // the config exists and is fine — while anything else here (no secret,
+        // or a secret missing botToken/chatId) is genuinely unset. Telling an
+        // operator to go check "not configured" when they switched it off
+        // themselves sends them looking in the wrong place.
+        if (tg && tg.enabled === false) {
+          log(`Telegram disabled: ${result.imported} imported transaction(s) were not announced.`);
+        } else {
+          log(`Telegram not configured: ${result.imported} imported transaction(s) were not announced.`);
         }
       }
     } catch (err) {
@@ -984,7 +1009,7 @@ export async function sendImportNotice(
   // that this notice had no rows of its own to talk about.
   const noticeTxIds = result.importedTransactions.map((t) => t.txId).filter((id) => !!id);
   rememberImportScope(noticeTxIds.length > 0 ? noticeTxIds : null);
-  await sendTelegramMessage(
+  const sendResult = await sendTelegramMessage(
     tg.botToken,
     tg.chatId,
     text,
@@ -993,6 +1018,27 @@ export async function sendImportNotice(
     // renders `{inline_keyboard: []}` as an empty markup rather than none.
     keyboard.inline_keyboard.length > 0 ? keyboard : undefined,
   );
+  if (!sendResult.ok) {
+    // `rememberImportScope`, above, already ran before this send — so on a
+    // rejected send the "last notice" scope now points at rows the user never
+    // saw a message for. If an OLDER, actually-delivered notice is still on
+    // screen, its Recategorize button opens THIS run's rows, not its own. This
+    // is an accepted tradeoff, not an oversight: that write already tolerates
+    // the same gap for an ambiguous response (Telegram can deliver the message
+    // and still fail the confirmation we read), and a flat-out rejection is the
+    // same shape of gap, just a different cause. Not fixed here.
+    //
+    // `log`: a rejected send is the one failure mode that would otherwise leave
+    // NO trace anywhere. `sendTelegramMessage` never throws — a bad chat id, a
+    // blocked bot, and rate limiting all come back as a resolved `{ ok: false }`
+    // — so the caller's own catch (for exceptions) never sees this, and Telegram's
+    // `description` is the only thing that tells those three apart. Unlike the
+    // stuck-transfer and balance-drift alerts above, there is no retry ledger for
+    // the import notice, so this is a report of what happened, not a scheduled
+    // retry: next sync's notice covers whatever is still uncategorized, but this
+    // specific message is gone for good.
+    log(`Import notice not delivered: ${result.imported} imported transaction(s) were not announced (${sendResult.description}).`);
+  }
 }
 
 
