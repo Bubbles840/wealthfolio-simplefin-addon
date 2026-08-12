@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.14.1] - 2026-08-11
+
+### Fixed
+
+- **A sync that imported transactions could fail to send the Telegram import
+  notice and say nothing anywhere.** New transactions would appear in
+  Wealthfolio with no message and no way to find out why one never arrived.
+  The failure is now logged with the count of transactions it covered, and,
+  when Telegram itself rejected the message, Telegram's own reason. This
+  makes the failure visible — it does not prevent it; the original cause of
+  any given failure is still whatever it always was (a database lock, a bad
+  chat id, a blocked bot, rate limiting), just no longer silent.
+
+Needs the companion rebuild; the addon zip changes only its version string.
+
 ## [1.14.0] - 2026-08-11
 
 ### Added
