@@ -24,9 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `/recategorize` now refuses a move Wealthfolio would reject, and says why —
-  pointing to Advanced → Transaction Rules where a refund subtype would
-  actually lift the refusal — instead of clearing the old category first and
-  failing afterwards.
+  pointing to Advanced → Transaction Rules, where marking the payback a
+  reimbursement is what makes the move possible — instead of clearing the old
+  category first and failing afterwards.
 - Removing a subtype from a rule does not take effect on transactions already
   imported: the sync only ever adds a subtype, never removes one, so it can't
   be confused with a subtype you set by hand in Wealthfolio. Those have to be
