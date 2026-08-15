@@ -21,20 +21,20 @@
   "supportUrl": "https://github.com/Bubbles840/wealthfolio-simplefin-addon/issues",
   "source": {
     "repository": "https://github.com/Bubbles840/wealthfolio-simplefin-addon",
-    "tag": "v1.9.0",
-    "commit": "0945c37df77bf63c49ea8129c62faa14e6d79cdc"
+    "tag": "v1.15.0",
+    "commit": "3f6477fbdd0d1bc8b7f844bb450f4fa14c5d898e"
   },
   "release": {
-    "version": "1.9.0",
+    "version": "1.15.0",
     "minWealthfolioVersion": "3.6.2",
     "sdkVersion": "3.6.2",
     "critical": false,
     "breaking": false,
-    "notes": "Adds automatic categorization of Amazon charges from their order emails, read by the companion at sync time — no extra container. Fixes a bug where a refused row could discard a whole account's import batch, and a phantom balance drift equal to a refused row's amount. Accounts that could not be checked now say so instead of showing as in sync.",
-    "changelogUrl": "https://github.com/Bubbles840/wealthfolio-simplefin-addon/releases/tag/v1.9.0"
+    "notes": "Accounts linked at SimpleFin after setup can now be mapped from Advanced → Accounts, without re-running setup and losing every other setting. Until now such an account was skipped in silence: the sync reported success, imported nothing from it, and the only evidence was an account that never appeared in Wealthfolio. It also announces itself now — the Overview shows a banner naming any unmapped account, and the companion sends one Telegram notice the first time it sees it. Scheduled Telegram reports retry a momentary network failure instead of losing the whole day's report, and the companion image now builds for arm64 as well as amd64.",
+    "changelogUrl": "https://github.com/Bubbles840/wealthfolio-simplefin-addon/releases/tag/v1.15.0"
   },
   "distribution": {
-    "r2Path": "simplefin-sync/1.9.0/simplefin-sync.zip"
+    "r2Path": "simplefin-sync/1.15.0/simplefin-sync.zip"
   },
   "media": {
     "coverLight": "assets/cover-light.webp",
