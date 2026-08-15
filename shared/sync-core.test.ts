@@ -2678,6 +2678,99 @@ describe('runSyncCore persists the last run import count', () => {
   });
 });
 
+describe('runSyncCore reports SimpleFin accounts nothing is mapped to', () => {
+  beforeEach(() => {
+    VALUATION_POLL.delayMs = 1;
+    VALUATION_POLL.attempts = 3;
+  });
+
+  /** One mapped account and one the user has never mapped — the shape of
+   *  linking a new bank at SimpleFin (Robinhood Gold, 2026-08-13) without
+   *  touching the addon. */
+  const seedWithUnmapped = (extra: Partial<any> = {}): FakeHostSeed => ({
+    accountSet: { errors: [], accounts: [
+      {
+        id: 'sfin-1', name: 'Checking', currency: 'USD', balance: '100.00',
+        'balance-date': 1700000000, transactions: [],
+      },
+      {
+        id: 'sfin-new', name: 'Robinhood Gold Card', currency: 'USD', balance: '-25.00',
+        'balance-date': 1700000000,
+        transactions: [
+          { id: 'tx-new', posted: 1700000000, amount: '-25.00', description: 'COFFEE' },
+        ],
+        ...extra,
+      },
+    ] },
+    mapping: { 'sfin-1': 'wf-a' },
+    existing: new Map([['wf-a', [{
+      id: 'sb', accountId: 'wf-a', activityType: 'DEPOSIT', date: '2020-01-01',
+      amount: 100, comment: 'Starting balance · sfin-1', sourceGroupId: null,
+    }]]]),
+  });
+
+  it('names the unmapped account instead of skipping it silently', async () => {
+    // The silent `continue` this covers made a newly-linked bank sync
+    // "successfully" while none of its transactions ever appeared, with
+    // nothing anywhere explaining why.
+    const { host, store } = createFakeHost(seedWithUnmapped());
+    const result = await runSyncCore(host, store, {});
+
+    expect(result.unmappedAccounts).toEqual([
+      { sfinAccountId: 'sfin-new', accountName: 'Robinhood Gold Card' },
+    ]);
+    // Reported, NOT imported: mapping is still the only thing that authorises
+    // writing another account's transactions into Wealthfolio.
+    expect(result.imported).toBe(0);
+    expect(result.errors).toEqual([]);
+  });
+
+  it('carries the institution name when SimpleFin supplies one', async () => {
+    const { host, store } = createFakeHost(
+      seedWithUnmapped({ org: { name: 'Robinhood', domain: 'robinhood.com' } }),
+    );
+    const result = await runSyncCore(host, store, {});
+    expect(result.unmappedAccounts![0].orgName).toBe('Robinhood');
+  });
+
+  it('omits orgName when the org carries no name', async () => {
+    // The protocol allows an org with only a domain/url. Emitting
+    // `orgName: undefined` would render as an empty parenthetical downstream.
+    const { host, store } = createFakeHost(
+      seedWithUnmapped({ org: { domain: 'robinhood.com' } }),
+    );
+    const result = await runSyncCore(host, store, {});
+    expect(result.unmappedAccounts![0]).not.toHaveProperty('orgName');
+  });
+
+  it('reports null — not an empty list — for a run that never read the feed', async () => {
+    // `[]` would claim "the feed was read and everything is mapped". The
+    // companion's once-only notice ledger keys off that distinction: fed `[]`
+    // it clears the ledger, so an interval-skipped startup sync (this
+    // container is restarted by hand often) would re-announce the same
+    // account on the next real run, forever.
+    const { host, store } = createFakeHost(seedWithUnmapped());
+    await runSyncCore(host, store, {});
+
+    const skipped = await runSyncCore(host, store, {});
+    expect(skipped.errors).toEqual([INTERVAL_SKIP_MESSAGE]);
+    expect(skipped.unmappedAccounts).toBeNull();
+  });
+
+  it('is empty when every account in the feed is mapped', async () => {
+    const { host, store } = createFakeHost({
+      accountSet: { errors: [], accounts: [{
+        id: 'sfin-1', name: 'Checking', currency: 'USD', balance: '100.00',
+        'balance-date': 1700000000, transactions: [],
+      }] },
+      mapping: { 'sfin-1': 'wf-a' },
+      existing: new Map([['wf-a', []]]),
+    });
+    const result = await runSyncCore(host, store, {});
+    expect(result.unmappedAccounts).toEqual([]);
+  });
+});
+
 describe('runSyncCore carries a rule-assigned subtype', () => {
   beforeEach(() => {
     VALUATION_POLL.delayMs = 1;

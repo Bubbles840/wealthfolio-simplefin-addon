@@ -34,6 +34,21 @@ export interface SimplefinAccount {
   balance: string;       // Numeric string
   'balance-date': number; // Unix timestamp
   transactions?: SimplefinTransaction[];
+  /**
+   * The institution the account belongs to. The SimpleFin protocol always
+   * sends it, but every field inside is optional — an org may carry only a
+   * `domain` or `url` and no `name` — so read it defensively.
+   *
+   * Optional here because nothing in this codebase depended on it until
+   * unmapped-account reporting, and every stored fixture and test double
+   * predates it.
+   */
+  org?: {
+    name?: string;
+    domain?: string;
+    url?: string;
+    'sfin-url'?: string;
+  };
 }
 
 export interface SimplefinAccountSet {
@@ -44,6 +59,24 @@ export interface SimplefinAccountSet {
 
 export interface AccountMapping {
   [simpleFinAccountId: string]: string; // → Wealthfolio account ID
+}
+
+/**
+ * A SimpleFin account the feed returned that no mapping points at — so nothing
+ * from it is imported.
+ *
+ * Lives here rather than inline in `SyncResult` because the SyncStore
+ * persists it too, and `shared/sync-host.ts` importing `shared/sync-core.ts`
+ * (which imports it back) would be a cycle.
+ */
+export interface UnmappedAccount {
+  /** SimpleFin account id — the key a mapping entry would be written under. */
+  sfinAccountId: string;
+  /** SimpleFin's name for it, e.g. "Robinhood Gold Card". */
+  accountName: string;
+  /** The institution name, when SimpleFin supplies one: two accounts can share
+   *  a name across banks, and this is what tells them apart. */
+  orgName?: string;
 }
 
 export interface TelegramConfig {

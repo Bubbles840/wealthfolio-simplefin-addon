@@ -8,8 +8,11 @@ import { SetupChecklist } from '../components/SetupChecklist';
 import { UncategorizedList, useDismissals } from '../components/UncategorizedList';
 import { visibleUncategorized, type DismissalLedger } from '../../shared/uncategorized';
 import type { TabId } from '../components/Tabs';
+// Card ids only — the banner's CTA has to name the card it opens, and the
+// Advanced tab owns that id set. One-way: AdvancedTab imports nothing here.
+import { CARD as ADVANCED_CARD } from './AdvancedTab';
 import type { SecretsStore, AccountBalanceInfo } from '../utils/secrets';
-import type { AccountMapping } from '../../shared/types';
+import type { AccountMapping, UnmappedAccount } from '../../shared/types';
 
 /** Ids for this tab's collapsible sections. Following the `NOTIF_CARD`
  *  precedent (`src/tabs/NotificationsTab.tsx`): the page owns the open-state
@@ -58,6 +61,10 @@ interface Props {
   doHeal: () => void;
   imported: number | null;
   prunedDuplicates: SyncResult['prunedDuplicates'];
+  /** SimpleFin accounts the last sync had no mapping for. Read by the PAGE from
+   *  the secret every sync writes, rather than from a sync's return value: the
+   *  run that discovers a newly-linked bank is normally the companion's. */
+  unmappedAccounts: UnmappedAccount[];
   /** The companion's uncategorized count AND the rows behind it. Read by the
    *  PAGE, on the same refresh path as the balances: the companion republishes
    *  it every sync, so a count this tab loaded once on mount sat stale for the
@@ -83,7 +90,9 @@ interface Props {
   amazonConfigured: boolean;
   checklistDismissed: boolean;
   onDismissChecklist: () => void;
-  onNavigate: (tab: TabId) => void;
+  /** `openCardId` also expands that card on the destination tab — a CTA naming
+   *  a specific card has to actually open it. */
+  onNavigate: (tab: TabId, openCardId?: string) => void;
 }
 
 /**
@@ -99,7 +108,7 @@ interface Props {
  */
 export function OverviewTab({
   ctx, store, mapping, sfinNames, wfNames, balances, syncing, healing, doHeal,
-  imported, prunedDuplicates, uncategorized, dismissals, onDismissalsChange,
+  imported, prunedDuplicates, unmappedAccounts, uncategorized, dismissals, onDismissalsChange,
   isOpen, toggleCard, onBalancesChanged, onClearError, onError,
   companionVersion, telegramConfigured, amazonConfigured, checklistDismissed,
   onDismissChecklist, onNavigate,
@@ -171,6 +180,45 @@ export function OverviewTab({
 
   return (
     <>
+      {/* An account SimpleFin is offering that nothing is mapped to. First
+          banner on the page because it is the only one that means data is
+          MISSING rather than wrong: until it is mapped, every sync silently
+          imports nothing from that account. Linking a bank at SimpleFin used
+          to produce exactly this with no indication anywhere (Robinhood Gold,
+          2026-08-13) — the account simply never appeared in Wealthfolio.
+
+          Not dismissable, deliberately: it clears itself the moment the next
+          sync sees a mapping, and a dismissed banner would leave the account
+          silently unsynced all over again. */}
+      {unmappedAccounts.length > 0 && (
+        <div className="sfin-banner-warn">
+          <div className="sfin-banner-body">
+            <div>
+              {unmappedAccounts.length === 1 ? 'A new SimpleFin account is' : `${unmappedAccounts.length} SimpleFin accounts are`}{' '}
+              not mapped to Wealthfolio, so nothing from{' '}
+              {unmappedAccounts.length === 1 ? 'it' : 'them'} is being imported:
+            </div>
+            <ul className="sfin-banner-list">
+              {unmappedAccounts.map((a) => (
+                <li key={a.sfinAccountId}>
+                  <b>{a.accountName}</b>
+                  {a.orgName ? ` · ${a.orgName}` : ''}
+                </li>
+              ))}
+            </ul>
+            <div className="sfin-banner-note">
+              Map {unmappedAccounts.length === 1 ? 'it' : 'them'} under Advanced → Accounts.
+              Existing settings are untouched — there is no need to run setup again.
+            </div>
+          </div>
+          {/* Names the card explicitly so the CTA lands on it open, rather
+              than on a tab where it is one of five collapsed headers. */}
+          <Button variant="outline" onClick={() => onNavigate('advanced', ADVANCED_CARD.accounts)}>
+            Open Accounts
+          </Button>
+        </div>
+      )}
+
       {/* What the reconcile sweep deleted. A needs-to-be-seen notice rather than
           a collapsible detail: rows were removed from the user's ledger without
           being asked about, so each one is itemised with the figure, date,
