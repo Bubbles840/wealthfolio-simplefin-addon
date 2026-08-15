@@ -84,6 +84,10 @@ export function AdvancedTab({
    *  `mappingLoaded`, which stays false — the mapper must not render over a
    *  mapping we failed to read. */
   const [mappingLoadFailed, setMappingLoadFailed] = useState(false);
+  /** SimpleFin accounts the user chose not to sync (from the Overview banner).
+   *  Surfaced here because that is the only place the decision can be undone —
+   *  a preference with no visible off-switch is a trap. */
+  const [ignoredAccounts, setIgnoredAccounts] = useState<string[]>([]);
   const [accountsLoading, setAccountsLoading] = useState(false);
   const [accountsError, setAccountsError] = useState('');
   const [mappingSaved, setMappingSaved] = useState(false);
@@ -95,12 +99,18 @@ export function AdvancedTab({
       store.getAutoAdjust(),
       store.getMappingRules(),
       store.getAccountMapping(),
-    ]).then(([hours, heal, adjust, r, m]) => {
+      // Optional-called: a store without it (an older build, a test double)
+      // would otherwise throw SYNCHRONOUSLY here and take the whole tab's
+      // state load down with it — every card would then render defaults as
+      // though they were the stored settings.
+      store.getIgnoredAccounts?.() ?? [],
+    ]).then(([hours, heal, adjust, r, m, ignored]) => {
       setScheduleHours(hours);
       setAutoHeal(heal);
       setAutoAdjust(adjust);
       setRules(r);
       setMapping(m ?? {});
+      setIgnoredAccounts(ignored ?? []);
       setMappingLoaded(true);
     }).catch(() => {
       // `mappingLoaded` deliberately stays FALSE: it gates the mapper, and
@@ -161,8 +171,33 @@ export function AdvancedTab({
       await store.setAccountMapping(m);
       setMapping(m);
       setMappingSaved(true);
+      // Mapping an account IS the decision to sync it, so it can no longer be
+      // on the do-not-sync list. Leaving it there would be harmless today
+      // (the list only suppresses a reminder about UNMAPPED accounts) but
+      // wrong the moment the mapping is cleared again: the account would go
+      // quiet with no reminder, which is the failure this whole feature
+      // exists to prevent.
+      const nowMapped = Object.keys(m).filter((id) => !!m[id]);
+      if (ignoredAccounts.some((id) => nowMapped.includes(id))) {
+        const next = ignoredAccounts.filter((id) => !nowMapped.includes(id));
+        setIgnoredAccounts(next);
+        await store.setIgnoredAccounts(next).catch(() => {});
+      }
     } catch (e: any) {
       setAccountsError(e?.message ?? 'Failed to save account mapping');
+    }
+  }, [store, ignoredAccounts]);
+
+  /** Undo the do-not-sync decision for every account it covers. Coarse on
+   *  purpose: the list is short, and per-row undo would need the mapper to
+   *  grow a second control for a preference most users never set. */
+  const clearIgnored = useCallback(async () => {
+    setIgnoredAccounts([]);
+    try {
+      await store.setIgnoredAccounts([]);
+    } catch (e: any) {
+      setAccountsError(e?.message ?? 'Could not update that preference');
+      await store.getIgnoredAccounts().then(setIgnoredAccounts).catch(() => {});
     }
   }, [store]);
 
@@ -221,6 +256,31 @@ export function AdvancedTab({
           mapped here. Clearing a row stops syncing that account — transactions
           already imported into Wealthfolio stay.
         </div>
+
+        {/* The only place the Overview banner's "Don't sync these" can be
+            undone. A stored preference the user cannot see or reverse would be
+            worse than the nagging it replaced. Names come from the live feed
+            when it has been fetched, falling back to the raw id so an entry is
+            never invisible. */}
+        {ignoredAccounts.length > 0 && (
+          <div className="sfin-callout" style={{ marginBottom: 12 }}>
+            <div>
+              <b>{ignoredAccounts.length} account{ignoredAccounts.length === 1 ? '' : 's'} set not to sync.</b>{' '}
+              They are left out of the &quot;not mapped&quot; reminder and its Telegram
+              notice. Mapping one below starts syncing it again.
+            </div>
+            <ul className="sfin-banner-list">
+              {ignoredAccounts.map((id) => (
+                <li key={id}>{sfAccounts?.find((a) => a.id === id)?.name ?? id}</li>
+              ))}
+            </ul>
+            <div style={{ marginTop: 8 }}>
+              <Button variant="outline" onClick={() => void clearIgnored()}>
+                Remind me about {ignoredAccounts.length === 1 ? 'it' : 'them'} again
+              </Button>
+            </div>
+          </div>
+        )}
 
         {accountsError && <ErrorBox>{accountsError}</ErrorBox>}
 

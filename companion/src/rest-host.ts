@@ -270,6 +270,13 @@ export class RestSyncStore implements SyncStore {
     await this.setJson('unmapped_accounts', list);
   }
 
+  /** Read-only here: the companion never sets this, it only honours what the
+   *  addon's UI recorded (see `SyncStore.getIgnoredAccounts`). */
+  async getIgnoredAccounts(): Promise<string[]> {
+    const list = await this.getJson<unknown>('ignored_accounts');
+    return Array.isArray(list) ? (list as string[]) : [];
+  }
+
   async getAmazonLedger(): Promise<AmazonLedger> {
     return (await this.getJson<AmazonLedger>(AMAZON_LEDGER_SECRET_KEY)) ?? {};
   }

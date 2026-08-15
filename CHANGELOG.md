@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.15.1] - 2026-08-15
+
+### Fixed
+
+- **You can now say an account should not be synced.** v1.15.0's "not mapped
+  to Wealthfolio" banner had no dismissal, on the assumption that an unmapped
+  account always means something is wrong. It does not: an account you have
+  no intention of tracking is a perfectly good steady state, and the banner
+  nagged about it permanently with nothing to do about it. **Don't sync
+  these** on the banner records that decision — it also stops the companion's
+  Telegram notice for those accounts — and **Advanced → Accounts** lists what
+  you have excluded and can put it back. Mapping an account removes it from
+  that list automatically.
+
 ## [1.15.0] - 2026-08-15
 
 ### Added

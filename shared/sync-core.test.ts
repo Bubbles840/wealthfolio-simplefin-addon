@@ -2743,6 +2743,27 @@ describe('runSyncCore reports SimpleFin accounts nothing is mapped to', () => {
     expect(result.unmappedAccounts![0]).not.toHaveProperty('orgName');
   });
 
+  it('leaves out accounts the user has chosen not to sync', async () => {
+    // Being unmapped is not always a mistake. Filtering here rather than in
+    // each consumer silences the Overview banner AND the companion's Telegram
+    // notice from one place — they cannot disagree about what is ignored.
+    const { host, store } = createFakeHost(seedWithUnmapped());
+    (store as any).getIgnoredAccounts = async () => ['sfin-new'];
+
+    const result = await runSyncCore(host, store, {});
+    expect(result.unmappedAccounts).toEqual([]);
+    // Ignored means "stop reminding me", never "import it": still unmapped, so
+    // still not imported.
+    expect(result.imported).toBe(0);
+  });
+
+  it('still reports an unmapped account that is not on the ignore list', async () => {
+    const { host, store } = createFakeHost(seedWithUnmapped());
+    (store as any).getIgnoredAccounts = async () => ['sfin-something-else'];
+    const result = await runSyncCore(host, store, {});
+    expect(result.unmappedAccounts!.map((a) => a.sfinAccountId)).toEqual(['sfin-new']);
+  });
+
   it('reports null — not an empty list — for a run that never read the feed', async () => {
     // `[]` would claim "the feed was read and everything is mapped". The
     // companion's once-only notice ledger keys off that distinction: fed `[]`
