@@ -17,7 +17,7 @@ import type {
   TransferLinkFailureEntry,
   DriftAlertEntry,
 } from '../../shared/sync-host.js';
-import type { AccountMapping, MappingRule, SimplefinAccountSet, TelegramConfig } from '../../shared/types.js';
+import type { AccountMapping, MappingRule, SimplefinAccountSet, TelegramConfig, UnmappedAccount } from '../../shared/types.js';
 
 function toIsoDate(value: unknown): string {
   if (value === null || value === undefined) return '';
@@ -261,6 +261,13 @@ export class RestSyncStore implements SyncStore {
 
   async setAccountBalances(map: Record<string, unknown>): Promise<void> {
     await this.setJson('account_balances', map);
+  }
+
+  /** Same secret the addon reads (`unmapped_accounts`) — the companion is
+   *  normally the side that DISCOVERS a newly-linked account, and the addon UI
+   *  is the only side that can offer to map it. */
+  async setUnmappedAccounts(list: UnmappedAccount[]): Promise<void> {
+    await this.setJson('unmapped_accounts', list);
   }
 
   async getAmazonLedger(): Promise<AmazonLedger> {

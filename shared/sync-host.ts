@@ -1,4 +1,4 @@
-import type { AccountMapping, MappingRule, SimplefinAccountSet } from './types.js';
+import type { AccountMapping, MappingRule, SimplefinAccountSet, UnmappedAccount } from './types.js';
 import type { AmazonLedger } from './amazon-ledger.js';
 
 /** A Wealthfolio activity row, normalized across the SDK and REST shapes. */
@@ -211,4 +211,15 @@ export interface SyncStore {
    */
   getAmazonLedger(): Promise<AmazonLedger>;
   setAmazonLedger(map: AmazonLedger): Promise<void>;
+  /**
+   * The SimpleFin accounts the last run found no mapping for (see
+   * `SyncResult.unmappedAccounts`), persisted so the addon's UI can offer to
+   * map them even though the sync that discovered them ran in the COMPANION —
+   * which is the normal case, and the reason a return value alone is not
+   * enough. Every run overwrites it, so mapping an account clears it.
+   *
+   * Optional: an older host (or a test double) that does not implement it
+   * simply loses the banner, never the sync — `runSyncCore` guards the call.
+   */
+  setUnmappedAccounts?(list: UnmappedAccount[]): Promise<void>;
 }

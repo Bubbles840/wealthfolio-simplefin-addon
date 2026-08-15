@@ -534,6 +534,121 @@ async function sendAmazonNewLabelNotice(
   }
 }
 
+/** Secret holding the SimpleFin account ids the new-account notice has already
+ *  announced. Its own key, not part of `unmapped_accounts`: that one is
+ *  overwritten wholesale by every sync (it describes the CURRENT run), while
+ *  this has to survive them to keep the notice once-only. */
+const ANNOUNCED_UNMAPPED_SECRET_KEY = 'announced_unmapped_accounts';
+
+/**
+ * Announces SimpleFin accounts that nothing is mapped to — once each, ever.
+ *
+ * Without this, linking a bank at SimpleFin produces silence: the sync
+ * "succeeds", imports nothing from the new account, and the only hint is an
+ * account that never appears in Wealthfolio (Robinhood Gold, 2026-08-13, found
+ * by accident days later).
+ *
+ * Once-only per account id, following the drift-alert pattern: announce, then
+ * record the id — and ONLY on a confirmed delivery, since `sendTelegramMessage`
+ * reports an API-level failure by resolving `{ ok: false }` rather than
+ * throwing. Recording an unconfirmed send would silence the account forever on
+ * the strength of a message that never arrived.
+ *
+ * Ids are pruned to those still unmapped, so mapping an account and later
+ * unmapping it announces again — a deliberate re-notification, not a leak.
+ *
+ * Never throws: this runs after a sync that has already succeeded, and a
+ * notice failure must not turn a good sync into a failed one.
+ */
+export async function sendUnmappedAccountsNotice(
+  wfClient: WealthfolioClient,
+  unmapped: SyncResult['unmappedAccounts'],
+): Promise<void> {
+  try {
+    // `null` = this run never read the feed (interval skip, missing config).
+    // It proves nothing about what is mapped, so it must not touch the ledger:
+    // clearing here would re-announce every account after each restart that
+    // lands inside the sync interval.
+    if (unmapped === null) return;
+
+    const raw = await wfClient
+      .getAddonSecret('simplefin-sync', ANNOUNCED_UNMAPPED_SECRET_KEY)
+      .catch(() => null);
+    const parsedLedger = parseSecretJson<unknown>(raw, ANNOUNCED_UNMAPPED_SECRET_KEY);
+    // Array-guarded like the addon's own reader: a secret that parses to a
+    // non-iterable would otherwise throw into the outer catch and leave this
+    // notice permanently dead behind a single log line.
+    const announced = new Set(
+      Array.isArray(parsedLedger) ? (parsedLedger as string[]) : [],
+    );
+
+    /** The ledger reduced to accounts that are STILL unmapped. Computed — and
+     *  written — regardless of whether anything is announced below, so a
+     *  mapped account really does drop out of it. Doing this only on the send
+     *  path meant an id stayed recorded forever whenever some OTHER account
+     *  kept the list non-empty, silently suppressing its re-announcement. */
+    const stillUnmapped = unmapped.map((a) => a.sfinAccountId);
+    const pruned = stillUnmapped.filter((id) => announced.has(id));
+    const persistLedger = async (ids: string[]) => {
+      const next = JSON.stringify(ids);
+      if (next === JSON.stringify([...announced])) return; // no write when unchanged
+      await wfClient
+        .setAddonSecret('simplefin-sync', ANNOUNCED_UNMAPPED_SECRET_KEY, next)
+        .catch(() => {});
+    };
+
+    const fresh = unmapped.filter((a) => !announced.has(a.sfinAccountId));
+    if (fresh.length === 0) {
+      await persistLedger(pruned);
+      return;
+    }
+
+    const tgRaw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_config').catch(() => null);
+    const tg = parseSecretJson<any>(tgRaw, 'telegram_config');
+    if (!tg?.botToken || !tg?.chatId || tg.enabled === false) {
+      // Telegram deliberately off or unconfigured. The addon's own banner still
+      // reports it, so this is not a failure — but the ids stay UNannounced, so
+      // configuring Telegram later still gets the notice. The prune still runs:
+      // dropping a now-mapped account from the ledger is bookkeeping, not an
+      // announcement, and it must not depend on Telegram being on.
+      await persistLedger(pruned);
+      log(`${fresh.length} unmapped SimpleFin account(s) found; Telegram not configured, so no notice was sent.`);
+      return;
+    }
+
+    const lines = fresh.map((a) =>
+      `• ${escapeMarkdown(a.accountName)}${a.orgName ? ` (${escapeMarkdown(a.orgName)})` : ''}`,
+    );
+    const message = [
+      `*New SimpleFin account${fresh.length === 1 ? '' : 's'} — not syncing yet*`,
+      '',
+      ...lines,
+      '',
+      escapeMarkdown(
+        fresh.length === 1
+          ? 'Nothing from it is being imported until it is mapped to a Wealthfolio account. Map it under Advanced → Accounts in the SimpleFin Sync addon.'
+          : 'Nothing from them is being imported until they are mapped to Wealthfolio accounts. Map them under Advanced → Accounts in the SimpleFin Sync addon.',
+      ),
+    ].join('\n');
+
+    const result = await sendTelegramMessage(tg.botToken, tg.chatId, message);
+    if (!result.ok) {
+      // Ledger untouched on an unconfirmed send, so the next sync retries. (The
+      // prune is skipped too: it is not worth a second write on a path that has
+      // already failed, and the next run performs it either way.)
+      log(`Unmapped-account notice failed to send, will retry next sync: ${result.description}`);
+      return;
+    }
+    // Everything currently unmapped is now announced — which is also the prune,
+    // since anything no longer unmapped is absent from this list. Bounded by the
+    // number of accounts at the bridge, not by how many have ever appeared.
+    await persistLedger(stillUnmapped);
+    log(`Announced ${fresh.length} unmapped SimpleFin account(s).`);
+  } catch (err) {
+    log(`Unmapped-account notice error: ${formatError(err)}`);
+  }
+}
+
 /**
  * One companion sync run.
  *
@@ -585,7 +700,9 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
       const empty: SyncResult = {
         imported: 0, skipped: 0, errors: [], stuckTransferAlerts: [],
         importedTransactions: [], largeTransactionAlerts: [], balanceDriftAlerts: [],
-        prunedDuplicates: [],
+        // `null`, not `[]`: nothing was read, so this says nothing about what
+        // is mapped — and `[]` here would clear the notice ledger.
+        prunedDuplicates: [], unmappedAccounts: null,
       };
       // Not-yet-configured is treated as healthy, not a failure: it's the
       // expected state before the user sets up SimpleFin, and would
@@ -670,6 +787,11 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
     await rollBackUndeliveredDriftAlerts(store, undeliveredDrift);
 
     await deliverDuplicatePruneNotice(wfClient, result.prunedDuplicates);
+
+    // Announced once per account id, and OUTSIDE the telegram_config block
+    // below: this function does its own config check, because it must not
+    // record an account as announced when Telegram is switched off.
+    await sendUnmappedAccountsNotice(wfClient, result.unmappedAccounts);
 
     try {
       const tgRaw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_config');
@@ -1258,7 +1380,52 @@ export async function composeDailyDigestMessage(
   return message;
 }
 
-export async function sendDailyTelegramReport(wfClient: WealthfolioClient): Promise<void> {
+/** Delays between retry attempts for a scheduled (daily/weekly/monthly) report
+ *  send. These reports fire once per period with no next attempt until the
+ *  next scheduled tick, unlike the sync-health alert (retried every sync) or
+ *  the import notice (the sync that produced it already succeeded) — so a
+ *  bare transient failure otherwise loses the whole period's report. Observed
+ *  2026-08-13: `Failed to send daily Telegram report: fetch failed` alongside
+ *  a run of ECONNRESET/Bad Gateway/Gateway Timeout from the Telegram listener
+ *  in the same minute — a short-lived connectivity blip, gone by the next
+ *  sync 4 hours later, but the report itself was never retried and never
+ *  arrived. Bounded to two retries: an API-level rejection (bad token,
+ *  malformed Markdown) fails identically every attempt, so retrying it costs
+ *  a short delay, not a hang. */
+const REPORT_RETRY_DELAYS_MS = [3000, 8000];
+
+const defaultReportSleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Shared tail for the three scheduled report senders: send, retry on
+ *  failure per `REPORT_RETRY_DELAYS_MS`, then log success or the final
+ *  failure. `sleep` is injectable so tests can skip the real delay. */
+async function sendReportWithRetry(
+  botToken: string,
+  chatId: string,
+  text: string,
+  reportName: string,
+  successMessage: string,
+  sleep: (ms: number) => Promise<void>,
+): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    const result = await sendTelegramMessage(botToken, chatId, text);
+    if (result.ok) {
+      log(successMessage);
+      return;
+    }
+    if (attempt >= REPORT_RETRY_DELAYS_MS.length) {
+      log(`Failed to send ${reportName} Telegram report after ${attempt + 1} attempt(s): ${result.description}`);
+      return;
+    }
+    await sleep(REPORT_RETRY_DELAYS_MS[attempt]);
+  }
+}
+
+export async function sendDailyTelegramReport(
+  wfClient: WealthfolioClient,
+  sleep: (ms: number) => Promise<void> = defaultReportSleep,
+): Promise<void> {
   const message = await composeDailyDigestMessage(wfClient);
   if (message === null) return;
 
@@ -1266,12 +1433,10 @@ export async function sendDailyTelegramReport(wfClient: WealthfolioClient): Prom
   const tg = parseSecretJson<any>(tgRaw, 'telegram_config');
   if (!tg || !tg.botToken || !tg.chatId) return;
 
-  const result = await sendTelegramMessage(tg.botToken, tg.chatId, message);
-  if (result.ok) {
-    log('Daily Telegram spending check sent successfully.');
-  } else {
-    log(`Failed to send daily Telegram report: ${result.description}`);
-  }
+  await sendReportWithRetry(
+    tg.botToken, tg.chatId, message,
+    'daily', 'Daily Telegram spending check sent successfully.', sleep,
+  );
 }
 
 /** How many of the week's biggest spends the Saturday report lists when the
@@ -1294,7 +1459,10 @@ const DEFAULT_WEEKLY_TOP_SPEND_COUNT = 5;
  * Monday, so the section covers exactly Monday–Sunday however the month falls
  * and whatever day the report is triggered on.
  */
-export async function sendWeeklyTelegramReport(wfClient: WealthfolioClient): Promise<void> {
+export async function sendWeeklyTelegramReport(
+  wfClient: WealthfolioClient,
+  sleep: (ms: number) => Promise<void> = defaultReportSleep,
+): Promise<void> {
   const tgRaw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_config');
   const tg = parseSecretJson<any>(tgRaw, 'telegram_config');
   if (!tg) return;
@@ -1341,12 +1509,10 @@ export async function sendWeeklyTelegramReport(wfClient: WealthfolioClient): Pro
     topSpends.map((t) => ({ amount: t.amount, description: t.description, category: t.categoryName })),
     await readGlyphStyle(wfClient),
   );
-  const result = await sendTelegramMessage(tg.botToken, tg.chatId, message);
-  if (result.ok) {
-    log('Weekly Telegram total-remaining summary sent successfully.');
-  } else {
-    log(`Failed to send weekly Telegram report: ${result.description}`);
-  }
+  await sendReportWithRetry(
+    tg.botToken, tg.chatId, message,
+    'weekly', 'Weekly Telegram total-remaining summary sent successfully.', sleep,
+  );
 }
 
 /**
@@ -1375,7 +1541,10 @@ export async function sendWeeklyTelegramReport(wfClient: WealthfolioClient): Pro
  * `telegram_config` written before this report existed opts in rather than
  * silently never firing.
  */
-export async function sendMonthlyTelegramReport(wfClient: WealthfolioClient): Promise<void> {
+export async function sendMonthlyTelegramReport(
+  wfClient: WealthfolioClient,
+  sleep: (ms: number) => Promise<void> = defaultReportSleep,
+): Promise<void> {
   const tgRaw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_config');
   // Guarded parse: a corrupt secret costs the report that needs it, never a throw
   // escaping into the cron callback.
@@ -1402,16 +1571,15 @@ export async function sendMonthlyTelegramReport(wfClient: WealthfolioClient): Pr
     budget: budgetMap[name] ?? 0,
   }));
   const message = formatMonthlyWrapUp(categories, monthName, await readGlyphStyle(wfClient));
-  // The result is inspected, not discarded: `sendTelegramMessage` reports an
-  // API-level failure (bad token, rate limit, a 400 from malformed Markdown) by
-  // RESOLVING `{ ok: false }`, and this report is produced once a month — a
-  // silently swallowed failure is a month-long gap nobody is told about.
-  const result = await sendTelegramMessage(tg.botToken, tg.chatId, message);
-  if (result.ok) {
-    log('Monthly Telegram wrap-up sent successfully.');
-  } else {
-    log(`Failed to send monthly Telegram report: ${result.description}`);
-  }
+  // The send is retried, not discarded on first failure: `sendTelegramMessage`
+  // reports an API-level failure (bad token, rate limit, a 400 from malformed
+  // Markdown) by RESOLVING `{ ok: false }`, and this report is produced once a
+  // month — a silently swallowed failure is a month-long gap nobody is told
+  // about.
+  await sendReportWithRetry(
+    tg.botToken, tg.chatId, message,
+    'monthly', 'Monthly Telegram wrap-up sent successfully.', sleep,
+  );
 }
 
 /**
