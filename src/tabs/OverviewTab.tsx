@@ -65,6 +65,9 @@ interface Props {
    *  the secret every sync writes, rather than from a sync's return value: the
    *  run that discovers a newly-linked bank is normally the companion's. */
   unmappedAccounts: UnmappedAccount[];
+  /** Record that the user does not want these accounts synced, silencing both
+   *  this banner and the companion's Telegram notice for them. */
+  onIgnoreAccounts: (ids: string[]) => void;
   /** The companion's uncategorized count AND the rows behind it. Read by the
    *  PAGE, on the same refresh path as the balances: the companion republishes
    *  it every sync, so a count this tab loaded once on mount sat stale for the
@@ -108,7 +111,7 @@ interface Props {
  */
 export function OverviewTab({
   ctx, store, mapping, sfinNames, wfNames, balances, syncing, healing, doHeal,
-  imported, prunedDuplicates, unmappedAccounts, uncategorized, dismissals, onDismissalsChange,
+  imported, prunedDuplicates, unmappedAccounts, onIgnoreAccounts, uncategorized, dismissals, onDismissalsChange,
   isOpen, toggleCard, onBalancesChanged, onClearError, onError,
   companionVersion, telegramConfigured, amazonConfigured, checklistDismissed,
   onDismissChecklist, onNavigate,
@@ -187,9 +190,10 @@ export function OverviewTab({
           to produce exactly this with no indication anywhere (Robinhood Gold,
           2026-08-13) — the account simply never appeared in Wealthfolio.
 
-          Not dismissable, deliberately: it clears itself the moment the next
-          sync sees a mapping, and a dismissed banner would leave the account
-          silently unsynced all over again. */}
+          Dismissal is a RECORDED decision ("Don't sync these"), never a
+          cosmetic hide: an account silently dropped from this list would be
+          exactly the silence the banner exists to end. It reappears if that
+          decision is undone in the Accounts card. */}
       {unmappedAccounts.length > 0 && (
         <div className="sfin-banner-warn">
           <div className="sfin-banner-body">
@@ -209,13 +213,30 @@ export function OverviewTab({
             <div className="sfin-banner-note">
               Map {unmappedAccounts.length === 1 ? 'it' : 'them'} under Advanced → Accounts.
               Existing settings are untouched — there is no need to run setup again.
+              Not everything needs syncing: <b>Don&apos;t sync {unmappedAccounts.length === 1 ? 'it' : 'these'}</b>{' '}
+              stops the reminder and can be undone from the Accounts card.
+            </div>
+            <div className="sfin-banner-actions">
+              {/* Names the card explicitly so the CTA lands on it open, rather
+                  than on a tab where it is one of five collapsed headers. */}
+              <Button variant="outline" onClick={() => onNavigate('advanced', ADVANCED_CARD.accounts)}>
+                Open Accounts
+              </Button>
+              {/* An unmapped account is not always a mistake — it can be one
+                  the user has no intention of tracking. This banner shipped
+                  with no dismissal at all, so that deliberate choice read as a
+                  permanent warning with nothing to do about it. Records the
+                  decision rather than hiding the banner: the same list also
+                  silences the companion's Telegram notice, and it survives a
+                  reload. */}
+              <Button
+                variant="ghost"
+                onClick={() => onIgnoreAccounts(unmappedAccounts.map((a) => a.sfinAccountId))}
+              >
+                Don&apos;t sync {unmappedAccounts.length === 1 ? 'it' : 'these'}
+              </Button>
             </div>
           </div>
-          {/* Names the card explicitly so the CTA lands on it open, rather
-              than on a tab where it is one of five collapsed headers. */}
-          <Button variant="outline" onClick={() => onNavigate('advanced', ADVANCED_CARD.accounts)}>
-            Open Accounts
-          </Button>
         </div>
       )}
 

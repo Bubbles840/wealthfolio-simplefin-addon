@@ -34,6 +34,8 @@ const makeProps = () => ({
   } as any,
   store: {
     getLastSyncAt: vi.fn(async () => new Date('2024-01-01T10:00:00Z')),
+    getIgnoredAccounts: vi.fn(async () => [] as string[]),
+    setIgnoredAccounts: vi.fn(async () => {}),
     getAccountMapping: vi.fn(async () => ({ 'sfin-1': 'wf-a', 'sfin-2': 'wf-b' })),
     getMappingRules: vi.fn(async () => []),
     getSyncScheduleHours: vi.fn(async () => 6),
@@ -219,6 +221,44 @@ describe('OverviewTab', () => {
 
       const header = await screen.findByRole('button', { name: /^Accounts/i });
       expect(header.getAttribute('aria-expanded')).toBe('true');
+    });
+
+    it('records a do-not-sync decision and drops the banner', async () => {
+      // An unmapped account is not always a mistake. The banner shipped with
+      // no dismissal at all, so an account the user deliberately does not want
+      // synced showed as a permanent red warning with nothing to do about it.
+      const props = makeProps();
+      props.store.getUnmappedAccounts = vi.fn(async () => [
+        { sfinAccountId: 'sfin-a', accountName: 'Growth (4953)' },
+        { sfinAccountId: 'sfin-b', accountName: 'Reserve (4945)' },
+      ]);
+      render(<SyncPage {...props} />);
+      fireEvent.click(await screen.findByRole('button', { name: /don't sync these/i }));
+
+      // Persisted, not merely hidden: the same list silences the companion's
+      // Telegram notice and survives a reload.
+      await waitFor(() =>
+        expect(props.store.setIgnoredAccounts).toHaveBeenCalledWith(['sfin-a', 'sfin-b']),
+      );
+      await waitFor(() =>
+        expect(screen.queryByText(/not mapped to Wealthfolio/i)).not.toBeInTheDocument(),
+      );
+    });
+
+    it('keeps decisions from earlier rounds when ignoring a newly-found account', async () => {
+      // Merged, never replaced — a second round of ignoring must not
+      // resurrect the reminder for the first round's accounts.
+      const props = makeProps();
+      props.store.getIgnoredAccounts = vi.fn(async () => ['sfin-old']);
+      props.store.getUnmappedAccounts = vi.fn(async () => [
+        { sfinAccountId: 'sfin-new', accountName: 'Robinhood individual' },
+      ]);
+      render(<SyncPage {...props} />);
+      fireEvent.click(await screen.findByRole('button', { name: /don't sync it/i }));
+
+      await waitFor(() =>
+        expect(props.store.setIgnoredAccounts).toHaveBeenCalledWith(['sfin-old', 'sfin-new']),
+      );
     });
 
     it('says nothing when every account is mapped', async () => {

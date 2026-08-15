@@ -222,4 +222,18 @@ export interface SyncStore {
    * simply loses the banner, never the sync — `runSyncCore` guards the call.
    */
   setUnmappedAccounts?(list: UnmappedAccount[]): Promise<void>;
+  /**
+   * SimpleFin account ids the user has deliberately chosen NOT to sync.
+   *
+   * Being unmapped is not always a mistake — an account can be one someone
+   * has no intention of tracking (a spouse's, a dormant one, a brokerage they
+   * only want later). Without this, the "not mapped" banner and its one-time
+   * Telegram notice treat every such account as a problem and there is no way
+   * to say otherwise, so a deliberate choice reads as a permanent red banner.
+   *
+   * Ids listed here are filtered out of `SyncResult.unmappedAccounts`, which
+   * silences both surfaces at once. They stay visible (and mappable) in the
+   * addon's Accounts card — this suppresses the nagging, not the account.
+   */
+  getIgnoredAccounts?(): Promise<string[]>;
 }

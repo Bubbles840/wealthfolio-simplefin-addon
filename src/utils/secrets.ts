@@ -72,6 +72,7 @@ const KEYS = {
   lastSyncImported: 'last_sync_imported',
   accountBalances: 'account_balances',
   unmappedAccounts: 'unmapped_accounts',
+  ignoredAccounts: 'ignored_accounts',
   autoHeal: 'auto_heal',
   autoAdjust: 'auto_adjust',
   telegramConfig: 'telegram_config',
@@ -419,6 +420,28 @@ export class SecretsStore {
   }
   async setUnmappedAccounts(list: UnmappedAccount[]): Promise<void> {
     await this.ctx.api.secrets.set(KEYS.unmappedAccounts, JSON.stringify(list));
+  }
+
+  /**
+   * SimpleFin account ids the user has chosen not to sync. Filtered out of
+   * `unmappedAccounts` by the sync core, which silences both the Overview
+   * banner and the companion's Telegram notice for them.
+   *
+   * Malformed degrades to "none ignored": that over-reports (the banner comes
+   * back) rather than hiding an account the user never meant to exclude.
+   */
+  async getIgnoredAccounts(): Promise<string[]> {
+    const raw = await this.ctx.api.secrets.get(KEYS.ignoredAccounts);
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? (parsed as string[]) : [];
+    } catch {
+      return [];
+    }
+  }
+  async setIgnoredAccounts(ids: string[]): Promise<void> {
+    await this.ctx.api.secrets.set(KEYS.ignoredAccounts, JSON.stringify(ids));
   }
 
   /** Which collapsible config cards the user left open, keyed by card id.

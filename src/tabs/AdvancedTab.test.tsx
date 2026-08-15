@@ -46,6 +46,8 @@ const makeProps = () => ({
   } as any,
   store: {
     getLastSyncAt: vi.fn(async () => new Date('2024-01-01T10:00:00Z')),
+    getIgnoredAccounts: vi.fn(async () => [] as string[]),
+    setIgnoredAccounts: vi.fn(async () => {}),
     getAccountMapping: vi.fn(async () => ({ 'sfin-1': 'wf-a', 'sfin-2': 'wf-b' })),
     setAccountMapping: vi.fn(async () => {}),
     getUnmappedAccounts: vi.fn(async () => [] as any[]),
@@ -414,6 +416,51 @@ describe('AdvancedTab', () => {
       expect(props.store.setAccountMapping).toHaveBeenCalledWith({
         'sfin-1': 'wf-a', 'sfin-2': 'wf-b', 'sfin-new': 'wf-a',
       });
+    });
+
+    it('shows do-not-sync accounts by name and can undo the decision', async () => {
+      // A stored preference with no visible off-switch is a trap: the Overview
+      // banner writes this list, and the Accounts card is the only place it
+      // can be reviewed or reversed.
+      const props = makeProps();
+      props.store.getIgnoredAccounts = vi.fn(async () => ['sfin-new']);
+      render(<SyncPage {...props} />);
+      await switchTab(/advanced/i);
+      await openSection(/^Accounts/i);
+
+      // Named from the live feed, not shown as a raw SimpleFin id.
+      expect(await screen.findByText(/1 account set not to sync/i)).toBeInTheDocument();
+      await waitFor(() =>
+        expect(screen.getAllByText('Robinhood Gold Card').length).toBeGreaterThan(0),
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: /remind me about it again/i }));
+      await waitFor(() => expect(props.store.setIgnoredAccounts).toHaveBeenCalledWith([]));
+      await waitFor(() =>
+        expect(screen.queryByText(/set not to sync/i)).not.toBeInTheDocument(),
+      );
+    });
+
+    it('mapping an ignored account takes it off the do-not-sync list', async () => {
+      // Mapping IS the decision to sync it. Leaving the id behind would go
+      // wrong the moment the mapping is cleared again: the account would fall
+      // silent with no reminder, which is the failure the banner exists for.
+      const props = makeProps();
+      props.store.getIgnoredAccounts = vi.fn(async () => ['sfin-new']);
+      render(<SyncPage {...props} />);
+      await switchTab(/advanced/i);
+      await openSection(/^Accounts/i);
+      const newRowLabel = (await screen.findAllByText('Robinhood Gold Card'))
+        .map((el) => el.closest('.sfin-row'))
+        .find(Boolean) as HTMLElement;
+      await waitFor(() =>
+        expect(screen.getAllByRole('option', { name: 'Checking' }).length).toBeGreaterThan(0),
+      );
+
+      fireEvent.change(within(newRowLabel).getByRole('combobox'), { target: { value: 'wf-a' } });
+      fireEvent.click(screen.getByRole('button', { name: /save mapping/i }));
+
+      await waitFor(() => expect(props.store.setIgnoredAccounts).toHaveBeenCalledWith([]));
     });
 
     it('reports a bridge failure instead of showing an empty mapper', async () => {

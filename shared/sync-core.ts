@@ -1149,11 +1149,19 @@ export async function runSyncCore(
    * See `SyncResult.unmappedAccounts` for why the silent `continue` this sits
    * in front of was not good enough on its own.
    */
-  const unmappedAccounts: SyncResult['unmappedAccounts'] = [];
+  const unmappedAccounts: UnmappedAccount[] = [];
+  /** Accounts the user has said they do not want synced. Reported as neither
+   *  unmapped nor a problem — see `SyncStore.getIgnoredAccounts`. Read once
+   *  per run; a failure degrades to "nothing ignored", which is the safe
+   *  direction (it over-reports rather than hiding an account silently). */
+  const ignoredAccountIds = new Set(
+    (await store.getIgnoredAccounts?.().catch(() => [])) ?? [],
+  );
 
   for (const sfAccount of accountSet.accounts) {
     const wfAccountId = mapping[sfAccount.id];
     if (!wfAccountId) {
+      if (ignoredAccountIds.has(sfAccount.id)) continue;
       unmappedAccounts.push({
         sfinAccountId: sfAccount.id,
         accountName: sfAccount.name,

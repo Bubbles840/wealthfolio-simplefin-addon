@@ -389,6 +389,29 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
     if (pruned.length > 0) navigate('overview');
   }, [navigate]);
 
+  /**
+   * Record that the user does not want these accounts synced, and drop the
+   * banner immediately rather than waiting for a sync to re-derive it.
+   *
+   * Merged into whatever is already stored, never replacing it: two rounds of
+   * ignoring (a new account appears, gets ignored too) must not un-ignore the
+   * first. The local state update is what makes the button feel like it did
+   * something — the persisted list only re-reads on the next sync.
+   */
+  const ignoreAccounts = useCallback(async (ids: string[]) => {
+    if (ids.length === 0) return;
+    setUnmappedAccounts((prev) => prev.filter((a) => !ids.includes(a.sfinAccountId)));
+    try {
+      const existing = (await store.getIgnoredAccounts?.()) ?? [];
+      await store.setIgnoredAccounts?.([...new Set([...existing, ...ids])]);
+    } catch (e: any) {
+      // Put the banner back: a failed write means the next sync will report
+      // these again anyway, and hiding them here would be a lie.
+      showThrownError(e, 'Could not save that preference');
+      store.getUnmappedAccounts?.().then(setUnmappedAccounts).catch(() => {});
+    }
+  }, [store, showThrownError]);
+
   const doSync = useCallback(async (force = false) => {
     setSyncing(true);
     clearError();
@@ -521,6 +544,7 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
           imported={imported}
           prunedDuplicates={prunedDuplicates}
           unmappedAccounts={unmappedAccounts}
+          onIgnoreAccounts={ignoreAccounts}
           uncategorized={uncategorized}
           dismissals={dismissals}
           onDismissalsChange={onDismissalsChange}
