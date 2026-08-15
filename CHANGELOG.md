@@ -30,9 +30,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   failure.** The daily, weekly and monthly reports retry twice before giving
   up; previously a single `fetch failed` discarded the entire period's
   report, with the next attempt a full day (or week, or month) away.
-- **The companion image now builds for arm64 as well as amd64**, so it runs
-  on a Raspberry Pi or an Apple-silicon host. Pushes to `main` build-check
-  the image, and a prerelease tag no longer moves `:latest`.
+- **Pushes to `main` now build-check the companion image**, so a broken
+  Dockerfile surfaces before release day rather than on it, and a prerelease
+  tag no longer moves `:latest`.
 - **README:** the example compose file mounted the `.db` *file*, which hides
   the `-wal` file beside it and can serve data days stale. It mounts the
   containing folder now, sets the required `TZ`, and documents upgrading by
