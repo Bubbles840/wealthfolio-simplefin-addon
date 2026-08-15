@@ -21,20 +21,20 @@
   "supportUrl": "https://github.com/Bubbles840/wealthfolio-simplefin-addon/issues",
   "source": {
     "repository": "https://github.com/Bubbles840/wealthfolio-simplefin-addon",
-    "tag": "v1.15.0",
-    "commit": "00e712aa66f2d9ec4fc0e9a3f50d5a1d8e5e13ee"
+    "tag": "v1.15.1",
+    "commit": "c0bb9158146cd324671d6659a3ea55251afd74d9"
   },
   "release": {
-    "version": "1.15.0",
+    "version": "1.15.1",
     "minWealthfolioVersion": "3.6.2",
     "sdkVersion": "3.6.2",
     "critical": false,
     "breaking": false,
-    "notes": "Accounts linked at SimpleFin after setup can now be mapped from Advanced → Accounts, without re-running setup and losing every other setting. Until now such an account was skipped in silence: the sync reported success, imported nothing from it, and the only evidence was an account that never appeared in Wealthfolio. It also announces itself now — the Overview shows a banner naming any unmapped account, and the companion sends one Telegram notice the first time it sees it. Scheduled Telegram reports retry a momentary network failure instead of losing the whole day's report, and a push to main now build-checks the companion image so a broken build surfaces before release day.",
-    "changelogUrl": "https://github.com/Bubbles840/wealthfolio-simplefin-addon/releases/tag/v1.15.0"
+    "notes": "Accounts linked at SimpleFin after setup can now be mapped from Advanced → Accounts, without re-running setup and losing every other setting. Until now such an account was skipped in silence: the sync reported success, imported nothing from it, and the only evidence was an account that never appeared in Wealthfolio. Unmapped accounts now announce themselves in the Overview and once over Telegram — and an account you deliberately do not want synced can be excluded, which stops both. Scheduled Telegram reports also retry a momentary network failure instead of losing the whole day's report.",
+    "changelogUrl": "https://github.com/Bubbles840/wealthfolio-simplefin-addon/releases/tag/v1.15.1"
   },
   "distribution": {
-    "r2Path": "simplefin-sync/1.15.0/simplefin-sync.zip"
+    "r2Path": "simplefin-sync/1.15.1/simplefin-sync.zip"
   },
   "media": {
     "coverLight": "assets/cover-light.webp",
