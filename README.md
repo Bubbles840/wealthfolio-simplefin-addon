@@ -149,8 +149,8 @@ services:
       - /path/to/wealthfolio:/mnt/wealthfolio:ro
 ```
 
-Images are published for `linux/amd64` and `linux/arm64` (so a Raspberry Pi or
-an Apple-silicon host works), tagged `:latest` and `:vX.Y.Z`. To upgrade:
+Images are published for `linux/amd64`, tagged `:latest` and `:vX.Y.Z`. To
+upgrade:
 
 ```bash
 docker compose pull simplefin-sync

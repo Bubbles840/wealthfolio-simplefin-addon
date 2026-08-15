@@ -19,11 +19,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # QEMU + Buildx are what make the arm64 half of the build possible on an
-      # x86 runner. Without them this image was amd64-only, so anyone running
-      # Wealthfolio on a Raspberry Pi or an Apple-silicon host could not pull
-      # it at all.
-      - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
       # Only a tag push publishes. A main/PR build proves the image still
@@ -60,7 +55,14 @@ jobs:
         with:
           context: .
           file: companion/Dockerfile
-          platforms: linux/amd64,linux/arm64
+          # amd64 only. arm64 was attempted here via QEMU on 2026-08-15 and
+          # cannot work that way: `npm install` for the companion dies under
+          # emulation with `qemu: uncaught target signal 4 (Illegal
+          # instruction) - core dumped`, hanging the release build. Adding
+          # arm64 means building it on a NATIVE arm64 runner (a matrix over
+          # `ubuntu-24.04-arm`, pushing by digest, then merging the two into
+          # one manifest) — not another emulation flag.
+          platforms: linux/amd64
           push: ${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
