@@ -45,6 +45,23 @@ move money.
 3. Map each SimpleFin account to a Wealthfolio account.
 4. Press **Sync now**.
 
+### Adding or removing accounts later
+
+Accounts you link at your SimpleFin bridge *after* setup are not synced until
+they are mapped, because a mapping is what tells the sync which Wealthfolio
+account to write into. Map them under **Advanced → Accounts**: it re-reads the
+live account list from SimpleFin and lets you map each one to an existing
+Wealthfolio account or create a new one. Nothing else you have configured is
+touched — there is no need to run setup again.
+
+Clearing an account's selection stops syncing it. Transactions already imported
+into Wealthfolio stay; delete the Wealthfolio account itself if you want them
+gone.
+
+The addon does not let a newly-linked account go unnoticed: the Overview shows
+a banner naming any SimpleFin account nothing is mapped to, and the companion
+sends one Telegram notice per account the first time it sees it.
+
 ## How it works
 
 ### Syncing
@@ -123,10 +140,26 @@ services:
     environment:
       - WEALTHFOLIO_API_URL=http://wealthfolio:7500
       - WEALTHFOLIO_PASSWORD=your_wealthfolio_password
-      - WEALTHFOLIO_DB_PATH=/mnt/wealthfolio.db
+      - WEALTHFOLIO_DB_PATH=/mnt/wealthfolio/wealthfolio.db
+      - TZ=America/New_York          # Required, or schedules fire on UTC
     volumes:
-      - /path/to/wealthfolio.db:/mnt/wealthfolio.db:ro
+      # Mount the FOLDER containing wealthfolio.db, not the .db file itself.
+      # A file-only mount hides the -wal/-shm files beside it, so the companion
+      # reads whatever was last checkpointed — observed two days stale.
+      - /path/to/wealthfolio:/mnt/wealthfolio:ro
 ```
+
+Images are published for `linux/amd64` and `linux/arm64` (so a Raspberry Pi or
+an Apple-silicon host works), tagged `:latest` and `:vX.Y.Z`. To upgrade:
+
+```bash
+docker compose pull simplefin-sync
+docker compose up -d simplefin-sync
+```
+
+Pin `:vX.Y.Z` instead of `:latest` if you would rather upgrade deliberately.
+The companion logs its version on startup (`Starting companion v…`), and the
+addon's Overview footer flags a companion/addon version mismatch.
 
 ### Amazon auto-categorization
 
@@ -218,7 +251,7 @@ to split, reconciliation is never involved.
 
 ```bash
 npm install
-npm test          # 196 tests
+npm test          # 934 tests (plus 439 in companion/)
 npm run type-check
 npm run bundle    # builds and zips to dist/
 ```

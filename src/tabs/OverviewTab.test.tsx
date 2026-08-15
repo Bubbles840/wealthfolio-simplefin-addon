@@ -190,6 +190,45 @@ describe('OverviewTab', () => {
   });
 
   describe('banners', () => {
+    it('names a SimpleFin account nothing is mapped to, and points at where to fix it', async () => {
+      // Read from the persisted secret, NOT a sync return value: the run that
+      // discovers a newly-linked bank is normally the companion's, and this
+      // page never sees its result. Silence here is what let a Robinhood Gold
+      // Card sit unsynced and unnoticed (2026-08-13).
+      const props = makeProps();
+      props.store.getUnmappedAccounts = vi.fn(async () => [
+        { sfinAccountId: 'sfin-rh', accountName: 'Robinhood Gold Card', orgName: 'Robinhood' },
+      ]);
+      render(<SyncPage {...props} />);
+
+      expect(await screen.findByText(/Robinhood Gold Card/)).toBeInTheDocument();
+      expect(screen.getByText(/not mapped to Wealthfolio/i)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /open accounts/i })).toBeInTheDocument();
+    });
+
+    it('the banner CTA lands on the Accounts card already open', async () => {
+      // Navigating to the tab alone left the user staring at five collapsed
+      // cards with the named one shut — and since that card fetches its
+      // account list on open, nothing loaded either.
+      const props = makeProps();
+      props.store.getUnmappedAccounts = vi.fn(async () => [
+        { sfinAccountId: 'sfin-rh', accountName: 'Robinhood Gold Card' },
+      ]);
+      render(<SyncPage {...props} />);
+      fireEvent.click(await screen.findByRole('button', { name: /open accounts/i }));
+
+      const header = await screen.findByRole('button', { name: /^Accounts/i });
+      expect(header.getAttribute('aria-expanded')).toBe('true');
+    });
+
+    it('says nothing when every account is mapped', async () => {
+      const props = makeProps();
+      props.store.getUnmappedAccounts = vi.fn(async () => []);
+      render(<SyncPage {...props} />);
+      await waitFor(() => expect(screen.getByRole('button', { name: /sync now/i })).toBeInTheDocument());
+      expect(screen.queryByText(/not mapped to Wealthfolio/i)).not.toBeInTheDocument();
+    });
+
     it('reports the duplicate rows a reconcile deleted, with what each one was', async () => {
       // Automatic deletion of financial records must not be silent, and Telegram
       // is optional — so the page itself has to say what vanished.

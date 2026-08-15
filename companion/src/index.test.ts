@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { maskUrl, validateStartupEnv, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, runCompanionSyncExclusive, buildTelegramCommandHandler, applyTelegramDismissal, buildTelegramListenerDeps, buildCategorizeController, buildCategorizeDeps, rememberImportScope } from './index.js';
+import { maskUrl, validateStartupEnv, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, runCompanionSyncExclusive, buildTelegramCommandHandler, applyTelegramDismissal, buildTelegramListenerDeps, buildCategorizeController, buildCategorizeDeps, rememberImportScope, sendUnmappedAccountsNotice } from './index.js';
 import { formatHelpReply, parseCommand } from '../../shared/telegram-commands.js';
 import { SIMPLEFIN_SYNC_VERSION } from '../../shared/version.js';
 import { runSyncCore } from '../../shared/sync-core.js';
@@ -25,14 +25,14 @@ function createDeferred<T>(): { promise: Promise<T>; resolve: (v: T) => void; re
 const FAKE_SYNC_RESULT: SyncResult = {
   imported: 0, skipped: 0, errors: [], stuckTransferAlerts: [],
   importedTransactions: [], largeTransactionAlerts: [], balanceDriftAlerts: [],
-  prunedDuplicates: [],
+  prunedDuplicates: [], unmappedAccounts: [],
 };
 
 vi.mock('../../shared/sync-core.js', async (importOriginal) => ({
   // The real module's parsers (descriptionFromComment etc.) stay real; only the
   // sync engine itself is faked.
   ...(await importOriginal<object>()),
-  runSyncCore: vi.fn(async () => ({ imported: 2, skipped: 1, errors: [], prunedDuplicates: [], importedTransactions: [], largeTransactionAlerts: [], balanceDriftAlerts: [], stuckTransferAlerts: [] })),
+  runSyncCore: vi.fn(async () => ({ imported: 2, skipped: 1, errors: [], prunedDuplicates: [], unmappedAccounts: [], importedTransactions: [], largeTransactionAlerts: [], balanceDriftAlerts: [], stuckTransferAlerts: [] })),
 }));
 
 vi.mock('./wealthfolio.js', () => {
@@ -204,7 +204,7 @@ describe('runCompanionSync sync health', () => {
 
   it('sends one Telegram alert per stuck-transfer entry in the result', async () => {
     vi.mocked(runSyncCore).mockResolvedValueOnce({
-      imported: 0, skipped: 0, errors: [], prunedDuplicates: [],
+      imported: 0, skipped: 0, errors: [], prunedDuplicates: [], unmappedAccounts: [],
       largeTransactionAlerts: [], balanceDriftAlerts: [], stuckTransferAlerts: [{ outTxId: 'tx-out', description: 'Payment ↔ Payment', amountCents: 130000, currency: 'USD' }],
     });
     secrets.set('telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true }));
@@ -234,7 +234,7 @@ describe('runCompanionSync sync health', () => {
     // descriptors like "AMAZON *MKTPLACE"), so this is realistically likelier
     // to break a send than a hand-written error message.
     vi.mocked(runSyncCore).mockResolvedValueOnce({
-      imported: 0, skipped: 0, errors: [], prunedDuplicates: [],
+      imported: 0, skipped: 0, errors: [], prunedDuplicates: [], unmappedAccounts: [],
       largeTransactionAlerts: [], balanceDriftAlerts: [], stuckTransferAlerts: [{ outTxId: 'tx-out', description: 'AMAZON *MKTPLACE ↔ Payment_Refund', amountCents: 500, currency: 'USD' }],
     });
     secrets.set('telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true }));
@@ -378,7 +378,7 @@ describe('runCompanionSync sync health', () => {
     }));
     // imported: 0 so the unrelated "new transactions imported" notification
     // doesn't also fire and confuse the "no alert was sent" assertion below.
-    vi.mocked(runSyncCore).mockResolvedValueOnce({ imported: 0, skipped: 0, errors: [], prunedDuplicates: [], largeTransactionAlerts: [], balanceDriftAlerts: [], stuckTransferAlerts: [] });
+    vi.mocked(runSyncCore).mockResolvedValueOnce({ imported: 0, skipped: 0, errors: [], prunedDuplicates: [], unmappedAccounts: [], largeTransactionAlerts: [], balanceDriftAlerts: [], stuckTransferAlerts: [] });
 
     const { WealthfolioClient } = await import('./wealthfolio.js');
     const client = new (WealthfolioClient as any)();
@@ -454,7 +454,7 @@ describe('runCompanionSync import-notice visibility', () => {
   it('logs the count and does not fail the sync when the notice itself throws', async () => {
     secrets.set('telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true }));
     vi.mocked(runSyncCore).mockResolvedValueOnce({
-      imported: 2, skipped: 0, errors: [], prunedDuplicates: [],
+      imported: 2, skipped: 0, errors: [], prunedDuplicates: [], unmappedAccounts: [],
       importedTransactions: [importedTx], largeTransactionAlerts: [], balanceDriftAlerts: [], stuckTransferAlerts: [],
     });
     // The example from the report that prompted this: a locked database on
@@ -485,7 +485,7 @@ describe('runCompanionSync import-notice visibility', () => {
   it('logs an explanatory line and sends no notice when notifyOnImport is off', async () => {
     secrets.set('telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true, notifyOnImport: false }));
     vi.mocked(runSyncCore).mockResolvedValueOnce({
-      imported: 3, skipped: 0, errors: [], prunedDuplicates: [],
+      imported: 3, skipped: 0, errors: [], prunedDuplicates: [], unmappedAccounts: [],
       importedTransactions: [importedTx], largeTransactionAlerts: [], balanceDriftAlerts: [], stuckTransferAlerts: [],
     });
 
@@ -511,7 +511,7 @@ describe('runCompanionSync import-notice visibility', () => {
   it('logs an explanatory line and sends no notice when Telegram is not configured at all', async () => {
     // No telegram_config secret set at all.
     vi.mocked(runSyncCore).mockResolvedValueOnce({
-      imported: 5, skipped: 0, errors: [], prunedDuplicates: [],
+      imported: 5, skipped: 0, errors: [], prunedDuplicates: [], unmappedAccounts: [],
       importedTransactions: [importedTx], largeTransactionAlerts: [], balanceDriftAlerts: [], stuckTransferAlerts: [],
     });
 
@@ -542,7 +542,7 @@ describe('runCompanionSync import-notice visibility', () => {
     // never set because they didn't need to.
     secrets.set('telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: false }));
     vi.mocked(runSyncCore).mockResolvedValueOnce({
-      imported: 4, skipped: 0, errors: [], prunedDuplicates: [],
+      imported: 4, skipped: 0, errors: [], prunedDuplicates: [], unmappedAccounts: [],
       importedTransactions: [importedTx], largeTransactionAlerts: [], balanceDriftAlerts: [], stuckTransferAlerts: [],
     });
 
@@ -570,7 +570,7 @@ describe('runCompanionSync import-notice visibility', () => {
     // No telegram_config either, so both the "skipped" and "not configured"
     // paths are live candidates for firing — neither may, since imported is 0.
     vi.mocked(runSyncCore).mockResolvedValueOnce({
-      imported: 0, skipped: 0, errors: [], prunedDuplicates: [],
+      imported: 0, skipped: 0, errors: [], prunedDuplicates: [], unmappedAccounts: [],
       importedTransactions: [], largeTransactionAlerts: [], balanceDriftAlerts: [], stuckTransferAlerts: [],
     });
 
@@ -609,7 +609,7 @@ describe('stuck-transfer alert delivery confirmation', () => {
       'tx-out': { count: 3, firstFailedAt: '2026-07-01T00:00:00Z', alerted: true },
     }));
     vi.mocked(runSyncCore).mockResolvedValueOnce({
-      imported: 0, skipped: 0, errors: [], prunedDuplicates: [],
+      imported: 0, skipped: 0, errors: [], prunedDuplicates: [], unmappedAccounts: [],
       largeTransactionAlerts: [], balanceDriftAlerts: [], stuckTransferAlerts: [{ outTxId: 'tx-out', description: 'Payment ↔ Payment', amountCents: 50000, currency: 'USD' }],
     });
 
@@ -638,7 +638,7 @@ describe('stuck-transfer alert delivery confirmation', () => {
       'tx-out': { count: 3, firstFailedAt: '2026-07-01T00:00:00Z', alerted: true },
     }));
     vi.mocked(runSyncCore).mockResolvedValueOnce({
-      imported: 0, skipped: 0, errors: [], prunedDuplicates: [],
+      imported: 0, skipped: 0, errors: [], prunedDuplicates: [], unmappedAccounts: [],
       largeTransactionAlerts: [], balanceDriftAlerts: [], stuckTransferAlerts: [{ outTxId: 'tx-out', description: 'Payment ↔ Payment', amountCents: 50000, currency: 'USD' }],
     });
 
@@ -665,7 +665,7 @@ describe('stuck-transfer alert delivery confirmation', () => {
       'tx-out-2': { count: 3, firstFailedAt: '2026-07-02T00:00:00Z', alerted: true },
     }));
     vi.mocked(runSyncCore).mockResolvedValueOnce({
-      imported: 0, skipped: 0, errors: [], prunedDuplicates: [],
+      imported: 0, skipped: 0, errors: [], prunedDuplicates: [], unmappedAccounts: [],
       largeTransactionAlerts: [], balanceDriftAlerts: [], stuckTransferAlerts: [
         { outTxId: 'tx-out', description: 'Payment ↔ Payment', amountCents: 50000, currency: 'USD' },
         { outTxId: 'tx-out-2', description: 'Other ↔ Other', amountCents: 20000, currency: 'USD' },
@@ -700,7 +700,7 @@ describe('stuck-transfer alert delivery confirmation', () => {
       'tx-out': { count: 3, firstFailedAt: '2026-07-01T00:00:00Z', alerted: true },
     }));
     vi.mocked(runSyncCore).mockResolvedValueOnce({
-      imported: 0, skipped: 0, errors: [], prunedDuplicates: [],
+      imported: 0, skipped: 0, errors: [], prunedDuplicates: [], unmappedAccounts: [],
       largeTransactionAlerts: [], balanceDriftAlerts: [], stuckTransferAlerts: [
         { outTxId: 'tx-out', description: 'Payment ↔ Payment', amountCents: 50000, currency: 'USD' },
         { outTxId: 'tx-out-2', description: 'Other ↔ Other', amountCents: 20000, currency: 'USD' },
@@ -760,7 +760,7 @@ describe('large-transaction alert delivery', () => {
 
   it('sends the rendered alert, with a `*`-laden bank descriptor escaped, on the real request body', async () => {
     vi.mocked(runSyncCore).mockResolvedValueOnce({
-      imported: 0, skipped: 0, errors: [], prunedDuplicates: [], stuckTransferAlerts: [], balanceDriftAlerts: [],
+      imported: 0, skipped: 0, errors: [], prunedDuplicates: [], unmappedAccounts: [], stuckTransferAlerts: [], balanceDriftAlerts: [],
       largeTransactionAlerts: [{
         txId: 'tx-1', description: 'SQ *BLUE BOTTLE_COFFEE', amountCents: 124000,
         currency: 'USD', accountName: 'Spend',
@@ -791,7 +791,7 @@ describe('large-transaction alert delivery', () => {
       currency: 'USD', accountName: 'Spend',
     };
     vi.mocked(runSyncCore).mockResolvedValueOnce({
-      imported: 0, skipped: 0, errors: [], prunedDuplicates: [], stuckTransferAlerts: [], balanceDriftAlerts: [],
+      imported: 0, skipped: 0, errors: [], prunedDuplicates: [], unmappedAccounts: [], stuckTransferAlerts: [], balanceDriftAlerts: [],
       largeTransactionAlerts: [alert],
     });
     await client();
@@ -804,7 +804,7 @@ describe('large-transaction alert delivery', () => {
 
     // Next sync reports nothing new, but the queued alert must still go out.
     vi.mocked(runSyncCore).mockResolvedValueOnce({
-      imported: 0, skipped: 0, errors: [], prunedDuplicates: [], stuckTransferAlerts: [], largeTransactionAlerts: [], balanceDriftAlerts: [],
+      imported: 0, skipped: 0, errors: [], prunedDuplicates: [], unmappedAccounts: [], stuckTransferAlerts: [], largeTransactionAlerts: [], balanceDriftAlerts: [],
     });
     fetchMock.mockClear();
     fetchMock.mockImplementation(async () => ({ json: async () => ({ ok: true }) }));
@@ -819,7 +819,7 @@ describe('large-transaction alert delivery', () => {
 
   it('does not queue a delivered alert', async () => {
     vi.mocked(runSyncCore).mockResolvedValueOnce({
-      imported: 0, skipped: 0, errors: [], prunedDuplicates: [], stuckTransferAlerts: [], balanceDriftAlerts: [],
+      imported: 0, skipped: 0, errors: [], prunedDuplicates: [], unmappedAccounts: [], stuckTransferAlerts: [], balanceDriftAlerts: [],
       largeTransactionAlerts: [{
         txId: 'tx-1', description: 'DELTA AIR LINES', amountCents: 124000,
         currency: 'USD', accountName: 'Spend',
@@ -839,7 +839,7 @@ describe('large-transaction alert delivery', () => {
       txId: 'old', description: 'Older alert', amountCents: 500000, currency: 'USD', accountName: 'Spend',
     }]));
     vi.mocked(runSyncCore).mockResolvedValueOnce({
-      imported: 0, skipped: 0, errors: [], prunedDuplicates: [], stuckTransferAlerts: [], balanceDriftAlerts: [],
+      imported: 0, skipped: 0, errors: [], prunedDuplicates: [], unmappedAccounts: [], stuckTransferAlerts: [], balanceDriftAlerts: [],
       largeTransactionAlerts: [{
         txId: 'tx-1', description: 'DELTA AIR LINES', amountCents: 124000,
         currency: 'USD', accountName: 'Spend',
@@ -862,7 +862,7 @@ describe('large-transaction alert delivery', () => {
     };
     secrets.set('pending_large_tx_alerts', JSON.stringify([alert]));
     vi.mocked(runSyncCore).mockResolvedValueOnce({
-      imported: 0, skipped: 0, errors: [], prunedDuplicates: [], stuckTransferAlerts: [], balanceDriftAlerts: [],
+      imported: 0, skipped: 0, errors: [], prunedDuplicates: [], unmappedAccounts: [], stuckTransferAlerts: [], balanceDriftAlerts: [],
       largeTransactionAlerts: [alert],
     });
     await client();
@@ -912,7 +912,7 @@ describe('balance-drift alert delivery', () => {
 
   it('sends the rendered drift alert on the real request body', async () => {
     vi.mocked(runSyncCore).mockResolvedValueOnce({
-      imported: 0, skipped: 0, errors: [], prunedDuplicates: [], stuckTransferAlerts: [], largeTransactionAlerts: [],
+      imported: 0, skipped: 0, errors: [], prunedDuplicates: [], unmappedAccounts: [], stuckTransferAlerts: [], largeTransactionAlerts: [],
       balanceDriftAlerts: [driftAlert],
     });
     await client();
@@ -935,7 +935,7 @@ describe('balance-drift alert delivery', () => {
 
   it('sends a YOUNG drift as the soft feed-lag notice, not the alarm', async () => {
     vi.mocked(runSyncCore).mockResolvedValueOnce({
-      imported: 0, skipped: 0, errors: [], prunedDuplicates: [], importedTransactions: [], stuckTransferAlerts: [], largeTransactionAlerts: [],
+      imported: 0, skipped: 0, errors: [], prunedDuplicates: [], unmappedAccounts: [], importedTransactions: [], stuckTransferAlerts: [], largeTransactionAlerts: [],
       balanceDriftAlerts: [{ ...driftAlert, phase: 'young' as const }],
     });
     await client();
@@ -951,7 +951,7 @@ describe('balance-drift alert delivery', () => {
 
   it('escapes a `_`-bearing account name so the send cannot 400', async () => {
     vi.mocked(runSyncCore).mockResolvedValueOnce({
-      imported: 0, skipped: 0, errors: [], prunedDuplicates: [], stuckTransferAlerts: [], largeTransactionAlerts: [],
+      imported: 0, skipped: 0, errors: [], prunedDuplicates: [], unmappedAccounts: [], stuckTransferAlerts: [], largeTransactionAlerts: [],
       balanceDriftAlerts: [{ ...driftAlert, accountName: 'Joint_Spend *Main*' }],
     });
     await client();
@@ -966,7 +966,7 @@ describe('balance-drift alert delivery', () => {
 
   it('rolls the episode back to un-alerted when the send fails, so the next sync retries', async () => {
     vi.mocked(runSyncCore).mockResolvedValueOnce({
-      imported: 0, skipped: 0, errors: [], prunedDuplicates: [], stuckTransferAlerts: [], largeTransactionAlerts: [],
+      imported: 0, skipped: 0, errors: [], prunedDuplicates: [], unmappedAccounts: [], stuckTransferAlerts: [], largeTransactionAlerts: [],
       balanceDriftAlerts: [driftAlert],
     });
     await client();
@@ -992,7 +992,7 @@ describe('balance-drift alert delivery', () => {
       'sfin-2': { driftAmount: 500, firstDetectedAt: '2026-07-02T00:00:00Z', alerted: true },
     }));
     vi.mocked(runSyncCore).mockResolvedValueOnce({
-      imported: 0, skipped: 0, errors: [], prunedDuplicates: [], stuckTransferAlerts: [], largeTransactionAlerts: [],
+      imported: 0, skipped: 0, errors: [], prunedDuplicates: [], unmappedAccounts: [], stuckTransferAlerts: [], largeTransactionAlerts: [],
       balanceDriftAlerts: [
         driftAlert,
         { sfinAccountId: 'sfin-2', accountName: 'Savings', driftAmount: 500, currency: 'USD', bankBalance: 610.65, phase: 'young' as const },
@@ -1013,7 +1013,7 @@ describe('balance-drift alert delivery', () => {
   it('leaves the ledger alone when Telegram is not configured — a non-attempt, not a failure', async () => {
     secrets.set('telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: false }));
     vi.mocked(runSyncCore).mockResolvedValueOnce({
-      imported: 0, skipped: 0, errors: [], prunedDuplicates: [], stuckTransferAlerts: [], largeTransactionAlerts: [],
+      imported: 0, skipped: 0, errors: [], prunedDuplicates: [], unmappedAccounts: [], stuckTransferAlerts: [], largeTransactionAlerts: [],
       balanceDriftAlerts: [driftAlert],
     });
     await client();
@@ -1052,8 +1052,8 @@ describe('duplicate-prune notice delivery', () => {
   ];
 
   const emptyResult = () => ({
-    imported: 0, skipped: 0, errors: [], prunedDuplicates: [], stuckTransferAlerts: [],
-    largeTransactionAlerts: [], balanceDriftAlerts: [], prunedDuplicates: [],
+    imported: 0, skipped: 0, errors: [], stuckTransferAlerts: [],
+    largeTransactionAlerts: [], balanceDriftAlerts: [], prunedDuplicates: [], unmappedAccounts: [],
   });
 
   beforeEach(() => {
@@ -1417,6 +1417,60 @@ describe('sendDailyTelegramReport', () => {
     // Blank line between the digest's last line and the health footer, and the
     // footer is the final line — never run on to the money summary.
     expect(text).toMatch(/ to go\n\n✅ synced 2h ago$/);
+  });
+
+  it('retries a transient send failure and reports success once it lands', async () => {
+    // Reproduces 2026-08-13: a bare `fetch failed` (a network-level exception,
+    // not a Telegram API rejection) lost the entire day's report with no
+    // retry. An instant `sleep` stand-in skips the real backoff delay.
+    const secrets = new Map<string, string>([
+      ['telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true })],
+    ]);
+    const client = {
+      getAddonSecret: vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null),
+      setAddonSecret: vi.fn(async () => {}),
+    } as any;
+    const fetchMock = vi.fn()
+      .mockRejectedValueOnce(new Error('fetch failed'))
+      .mockResolvedValue({ json: async () => ({ ok: true }) });
+    vi.stubGlobal('fetch', fetchMock);
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    try {
+      await expect(sendDailyTelegramReport(client, async () => {})).resolves.toBeUndefined();
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      const logged = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(logged).toContain('Daily Telegram spending check sent successfully.');
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it('gives up after exhausting retries and logs the final failure', async () => {
+    const secrets = new Map<string, string>([
+      ['telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true })],
+    ]);
+    const client = {
+      getAddonSecret: vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null),
+      setAddonSecret: vi.fn(async () => {}),
+    } as any;
+    const fetchMock = vi.fn().mockRejectedValue(new Error('fetch failed'));
+    vi.stubGlobal('fetch', fetchMock);
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const sleepCalls: number[] = [];
+
+    try {
+      await expect(
+        sendDailyTelegramReport(client, async (ms: number) => { sleepCalls.push(ms); }),
+      ).resolves.toBeUndefined();
+      // Initial attempt plus one retry per configured delay.
+      expect(fetchMock).toHaveBeenCalledTimes(sleepCalls.length + 1);
+      expect(sleepCalls.length).toBeGreaterThan(0);
+      const logged = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(logged).toContain(`Failed to send daily Telegram report after ${sleepCalls.length + 1} attempt(s): fetch failed`);
+    } finally {
+      logSpy.mockRestore();
+    }
   });
 });
 
@@ -2197,15 +2251,33 @@ describe('sendWeeklyTelegramReport', () => {
       expect(text).not.toContain('Biggest');
     });
 
-    it('logs a rejected send instead of assuming it arrived', async () => {
+    it('logs a rejected send instead of assuming it arrived, after retrying', async () => {
       // `sendTelegramMessage` reports an API-level failure — a 400 from
       // unbalanced Markdown being the one this section could plausibly cause —
-      // by RESOLVING `{ ok: false }`, not throwing.
+      // by RESOLVING `{ ok: false }`, not throwing. An instant `sleep` stand-in
+      // skips the real retry delay so the test doesn't wait out the backoff.
       const logs = vi.spyOn(console, 'log').mockImplementation(() => {});
-      vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ ok: false, description: "can't parse entities" }) })));
+      const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: false, description: "can't parse entities" }) }));
+      vi.stubGlobal('fetch', fetchMock);
       try {
-        await expect(sendWeeklyTelegramReport(weeklyClient())).resolves.toBeUndefined();
+        await expect(sendWeeklyTelegramReport(weeklyClient(), async () => {})).resolves.toBeUndefined();
         expect(logs.mock.calls.flat().join('\n')).toContain('Failed to send weekly Telegram report');
+        expect(fetchMock).toHaveBeenCalledTimes(3);
+      } finally {
+        logs.mockRestore();
+      }
+    });
+
+    it('retries after a transient failure and reports success once it lands', async () => {
+      const logs = vi.spyOn(console, 'log').mockImplementation(() => {});
+      const fetchMock = vi.fn()
+        .mockResolvedValueOnce({ json: async () => ({ ok: false, description: 'fetch failed' }) })
+        .mockResolvedValue({ json: async () => ({ ok: true }) });
+      vi.stubGlobal('fetch', fetchMock);
+      try {
+        await expect(sendWeeklyTelegramReport(weeklyClient(), async () => {})).resolves.toBeUndefined();
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        expect(logs.mock.calls.flat().join('\n')).toContain('Weekly Telegram total-remaining summary sent successfully.');
       } finally {
         logs.mockRestore();
       }
@@ -2431,11 +2503,11 @@ describe('sendMonthlyTelegramReport', () => {
     expect(client.setAddonSecret).not.toHaveBeenCalled();
   });
 
-  it('logs a rejected send instead of discarding the result', async () => {
+  it('logs a rejected send instead of discarding the result, after retrying', async () => {
     // `sendTelegramMessage` reports an API-level failure by RESOLVING
     // `{ ok: false }` — a 400 from malformed Markdown, a bad token, a rate limit.
     // Discarding it would lose the wrap-up silently, and it is only produced once
-    // a month.
+    // a month. An instant `sleep` stand-in skips the real retry delay.
     const secrets = new Map<string, string>([
       ['telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true })],
     ]);
@@ -2443,19 +2515,185 @@ describe('sendMonthlyTelegramReport', () => {
       getAddonSecret: vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null),
       setAddonSecret: vi.fn(async () => {}),
     } as any;
-    vi.stubGlobal('fetch', vi.fn(async () => ({
+    const fetchMock = vi.fn(async () => ({
       json: async () => ({ ok: false, description: "can't parse entities" }),
-    })));
+    }));
+    vi.stubGlobal('fetch', fetchMock);
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
     try {
-      await expect(sendMonthlyTelegramReport(client)).resolves.toBeUndefined();
+      await expect(sendMonthlyTelegramReport(client, async () => {})).resolves.toBeUndefined();
       const logged = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
       expect(logged).toContain('Failed to send monthly Telegram report');
       expect(logged).toContain("can't parse entities");
+      expect(fetchMock).toHaveBeenCalledTimes(3);
     } finally {
       logSpy.mockRestore();
     }
+  });
+});
+
+describe('sendUnmappedAccountsNotice', () => {
+  const ROBINHOOD = { sfinAccountId: 'sfin-rh', accountName: 'Robinhood Gold Card', orgName: 'Robinhood' };
+  const ANNOUNCED_KEY = 'announced_unmapped_accounts';
+
+  /** A client over a mutable secret map, so a test can assert what the ledger
+   *  looks like AFTER the call the way the real secret would persist it. */
+  const clientOver = (secrets: Map<string, string>) => ({
+    getAddonSecret: vi.fn(async (_a: string, k: string) => secrets.get(k) ?? null),
+    setAddonSecret: vi.fn(async (_a: string, k: string, v: string) => { secrets.set(k, v); }),
+  }) as any;
+
+  const configured = () => new Map<string, string>([
+    ['telegram_config', JSON.stringify({ botToken: 'T', chatId: '9', enabled: true })],
+  ]);
+
+  it('announces a newly-seen unmapped account and records it', async () => {
+    const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+    vi.stubGlobal('fetch', fetchMock);
+    const secrets = configured();
+
+    await sendUnmappedAccountsNotice(clientOver(secrets), [ROBINHOOD]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const text = JSON.parse((fetchMock.mock.calls[0][1] as any).body).text;
+    expect(text).toContain('Robinhood Gold Card');
+    expect(text).toContain('Robinhood');
+    expect(text).toContain('Advanced');
+    expect(JSON.parse(secrets.get(ANNOUNCED_KEY)!)).toEqual(['sfin-rh']);
+  });
+
+  it('stays silent on every later sync for an account it already announced', async () => {
+    // The whole point of the ledger: this runs every 6 hours, and an account
+    // can sit unmapped indefinitely.
+    const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+    vi.stubGlobal('fetch', fetchMock);
+    const secrets = configured();
+    secrets.set(ANNOUNCED_KEY, JSON.stringify(['sfin-rh']));
+
+    await sendUnmappedAccountsNotice(clientOver(secrets), [ROBINHOOD]);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('does NOT record the account when Telegram rejects the send', async () => {
+    // `sendTelegramMessage` reports an API-level failure by RESOLVING
+    // `{ ok: false }`. Recording on an unconfirmed send would silence this
+    // account forever on the strength of a message that never arrived.
+    const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: false, description: 'Bad Request' }) }));
+    vi.stubGlobal('fetch', fetchMock);
+    const secrets = configured();
+
+    await sendUnmappedAccountsNotice(clientOver(secrets), [ROBINHOOD]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(secrets.get(ANNOUNCED_KEY)).toBeUndefined();
+  });
+
+  it('leaves the account unannounced when Telegram is not configured', async () => {
+    // The addon's own banner still reports it, so this is not a failure — but
+    // the id must stay unrecorded so configuring Telegram later still notifies.
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const secrets = new Map<string, string>();
+
+    await sendUnmappedAccountsNotice(clientOver(secrets), [ROBINHOOD]);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(secrets.get(ANNOUNCED_KEY)).toBeUndefined();
+  });
+
+  it('leaves the ledger ALONE for a run that never read the feed', async () => {
+    // `null` is an interval skip or a missing-config pre-flight return — it
+    // proves nothing about what is mapped. Treating it as "nothing unmapped"
+    // cleared the ledger on every restart landing inside the sync interval,
+    // which re-announced the same account indefinitely.
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const secrets = configured();
+    secrets.set(ANNOUNCED_KEY, JSON.stringify(['sfin-rh']));
+
+    await sendUnmappedAccountsNotice(clientOver(secrets), null);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(JSON.parse(secrets.get(ANNOUNCED_KEY)!)).toEqual(['sfin-rh']);
+  });
+
+  it('drops a now-mapped account from the ledger even when another stays unmapped', async () => {
+    // The prune used to run only on the send path, so with one account still
+    // unmapped (no fresh ids → early return) a mapped account's id stayed
+    // recorded forever, silently suppressing its re-announcement if it ever
+    // came back unmapped.
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const secrets = configured();
+    secrets.set(ANNOUNCED_KEY, JSON.stringify(['sfin-rh', 'sfin-mapped-since']));
+
+    await sendUnmappedAccountsNotice(clientOver(secrets), [ROBINHOOD]);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(JSON.parse(secrets.get(ANNOUNCED_KEY)!)).toEqual(['sfin-rh']);
+  });
+
+  it('prunes the ledger even when Telegram is switched off', async () => {
+    // Bookkeeping, not an announcement — it must not depend on Telegram.
+    const secrets = new Map<string, string>([
+      ['telegram_config', JSON.stringify({ botToken: 'T', chatId: '9', enabled: false })],
+      [ANNOUNCED_KEY, JSON.stringify(['sfin-rh', 'sfin-gone'])],
+    ]);
+    await sendUnmappedAccountsNotice(clientOver(secrets), [ROBINHOOD]);
+    expect(JSON.parse(secrets.get(ANNOUNCED_KEY)!)).toEqual(['sfin-rh']);
+  });
+
+  it('survives a ledger secret that is not an array', async () => {
+    const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+    vi.stubGlobal('fetch', fetchMock);
+    const secrets = configured();
+    secrets.set(ANNOUNCED_KEY, '{"not":"an array"}');
+
+    await sendUnmappedAccountsNotice(clientOver(secrets), [ROBINHOOD]);
+
+    // Treated as "nothing announced yet" rather than throwing into the outer
+    // catch, which would leave the notice permanently dead.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(secrets.get(ANNOUNCED_KEY)!)).toEqual(['sfin-rh']);
+  });
+
+  it('clears the ledger once nothing is unmapped, so a re-link announces again', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const secrets = configured();
+    secrets.set(ANNOUNCED_KEY, JSON.stringify(['sfin-rh']));
+
+    await sendUnmappedAccountsNotice(clientOver(secrets), []);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(JSON.parse(secrets.get(ANNOUNCED_KEY)!)).toEqual([]);
+  });
+
+  it('announces only the accounts that are new since the last notice', async () => {
+    const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+    vi.stubGlobal('fetch', fetchMock);
+    const secrets = configured();
+    secrets.set(ANNOUNCED_KEY, JSON.stringify(['sfin-rh']));
+    const second = { sfinAccountId: 'sfin-2', accountName: 'Ally Savings' };
+
+    await sendUnmappedAccountsNotice(clientOver(secrets), [ROBINHOOD, second]);
+
+    const text = JSON.parse((fetchMock.mock.calls[0][1] as any).body).text;
+    expect(text).toContain('Ally Savings');
+    expect(text).not.toContain('Robinhood Gold Card');
+    // Both are retained: the ledger tracks what is CURRENTLY unmapped, so it
+    // cannot grow without bound as accounts come and go at the bridge.
+    expect(JSON.parse(secrets.get(ANNOUNCED_KEY)!).sort()).toEqual(['sfin-2', 'sfin-rh']);
+  });
+
+  it('never throws — a notice failure must not fail a sync that already succeeded', async () => {
+    const client = {
+      getAddonSecret: vi.fn(async () => { throw new Error('secrets unreachable'); }),
+      setAddonSecret: vi.fn(async () => {}),
+    } as any;
+    await expect(sendUnmappedAccountsNotice(client, [ROBINHOOD])).resolves.toBeUndefined();
   });
 });
 
