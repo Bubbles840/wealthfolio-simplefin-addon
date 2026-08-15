@@ -11,7 +11,7 @@ import {
   matchAmazonCharge, consumeAmazonMatch, amazonDescription,
 } from './amazon-ledger.js';
 import type { AmazonLedger } from './amazon-ledger.js';
-import type { ActivityType, SimplefinTransaction } from './types.js';
+import type { ActivityType, SimplefinTransaction, UnmappedAccount } from './types.js';
 import type { ActivityWrite, ImportRow, LinkLeg, LinkResult, SaveManyRequest, SaveManyResult, SyncHost, SyncStore } from './sync-host.js';
 
 /**
@@ -399,6 +399,33 @@ export interface SyncResult {
     /** The deleted Wealthfolio activity id, so the deletion is traceable. */
     wfId: string;
   }>;
+  /**
+   * SimpleFin accounts the feed returned that no mapping points at, so this run
+   * imported NOTHING from them.
+   *
+   * Skipping an unmapped account is correct — the user may deliberately not
+   * track it — but doing so SILENTLY is not: a newly-linked bank (Robinhood
+   * Gold, 2026-08-13) syncs "successfully" while none of its transactions ever
+   * appear, and nothing anywhere says why. Reported so the addon can offer to
+   * map it and the companion can announce it once.
+   *
+   * Every run recomputes this from the live feed; it is not a ledger. The
+   * once-only guarantee for the Telegram notice belongs to the companion's own
+   * announced-ids ledger, exactly as the drift and stuck-transfer alerts work.
+   */
+  /**
+   * `null` when this run never LOOKED — an interval skip, or a pre-flight
+   * return for missing configuration. Distinct from `[]`, which means the feed
+   * was read and every account in it is mapped.
+   *
+   * The distinction is load-bearing, and it is the same one `measured` draws
+   * for drift. The companion's notice keeps a once-only ledger keyed on these
+   * ids and CLEARS it when nothing is unmapped (so a re-linked account is
+   * announced again). Handing it `[]` for a run that read nothing would clear
+   * that ledger on every interval-skipped startup sync — and this container is
+   * restarted by hand often — re-announcing the same account indefinitely.
+   */
+  unmappedAccounts: UnmappedAccount[] | null;
 }
 
 export interface SyncOptions {
@@ -971,17 +998,17 @@ export async function runSyncCore(
   // Enforce minimum interval unless the caller forces (Sync anyway) or heals
   const lastSync = await store.getLastSyncAt();
   if (!opts.force && !heal && lastSync && Date.now() - lastSync.getTime() < MIN_SYNC_INTERVAL_MS) {
-    return { imported: 0, skipped: 0, errors: [INTERVAL_SKIP_MESSAGE], stuckTransferAlerts: [], importedTransactions: [], largeTransactionAlerts: [], balanceDriftAlerts: [], prunedDuplicates: [] };
+    return { imported: 0, skipped: 0, errors: [INTERVAL_SKIP_MESSAGE], stuckTransferAlerts: [], importedTransactions: [], largeTransactionAlerts: [], balanceDriftAlerts: [], prunedDuplicates: [], unmappedAccounts: null };
   }
 
   const accessUrl = await store.getAccessUrl();
   if (!accessUrl) {
-    return { imported: 0, skipped: 0, errors: ['Not configured: no access URL'], stuckTransferAlerts: [], importedTransactions: [], largeTransactionAlerts: [], balanceDriftAlerts: [], prunedDuplicates: [] };
+    return { imported: 0, skipped: 0, errors: ['Not configured: no access URL'], stuckTransferAlerts: [], importedTransactions: [], largeTransactionAlerts: [], balanceDriftAlerts: [], prunedDuplicates: [], unmappedAccounts: null };
   }
 
   const mapping = await store.getAccountMapping();
   if (!mapping) {
-    return { imported: 0, skipped: 0, errors: ['Not configured: no account mapping'], stuckTransferAlerts: [], importedTransactions: [], largeTransactionAlerts: [], balanceDriftAlerts: [], prunedDuplicates: [] };
+    return { imported: 0, skipped: 0, errors: ['Not configured: no account mapping'], stuckTransferAlerts: [], importedTransactions: [], largeTransactionAlerts: [], balanceDriftAlerts: [], prunedDuplicates: [], unmappedAccounts: null };
   }
 
   const rules = await store.getMappingRules();
@@ -1113,9 +1140,29 @@ export async function runSyncCore(
   let amazonLedgerChanged = false;
   const amazonEnabled = Object.keys(amazonLedger).length > 0;
 
+  /**
+   * Accounts the feed offered that nothing is mapped to — reported, not
+   * imported. Collected HERE rather than in the second pass below because this
+   * loop runs unconditionally over the whole feed; the later one is reached
+   * only after planning, so an early error would lose the list.
+   *
+   * See `SyncResult.unmappedAccounts` for why the silent `continue` this sits
+   * in front of was not good enough on its own.
+   */
+  const unmappedAccounts: SyncResult['unmappedAccounts'] = [];
+
   for (const sfAccount of accountSet.accounts) {
     const wfAccountId = mapping[sfAccount.id];
-    if (!wfAccountId) continue;
+    if (!wfAccountId) {
+      unmappedAccounts.push({
+        sfinAccountId: sfAccount.id,
+        accountName: sfAccount.name,
+        // SimpleFin nests the institution under `org`; guarded because the
+        // schema allows an org carrying only a domain/url and no name.
+        ...(sfAccount.org?.name ? { orgName: sfAccount.org.name } : {}),
+      });
+      continue;
+    }
     // Keep pending rows now (they import and reconcile), dropping only rows we
     // can't date at all — no `posted` and no `transacted_at` — since those
     // would produce a 1970 date the server rejects.
@@ -2338,6 +2385,12 @@ export async function runSyncCore(
   }
 
   await store.setAccountBalances(accountBalances);
+  // Persisted as well as returned: the sync that discovers a new account is
+  // normally the COMPANION's, and the addon's UI has no way to see a return
+  // value from that. Overwritten every run, so mapping the account clears the
+  // banner on the next sync. Optional on the interface and guarded here — an
+  // older host loses the banner, never the sync.
+  await store.setUnmappedAccounts?.(unmappedAccounts).catch(() => {});
 
   await store.setLastSyncAt(new Date());
   // Alongside the timestamp, and only here: an interval skip returns long before
@@ -2348,6 +2401,6 @@ export async function runSyncCore(
 
   return {
     imported, skipped, errors, stuckTransferAlerts, importedTransactions,
-    largeTransactionAlerts, balanceDriftAlerts, prunedDuplicates,
+    largeTransactionAlerts, balanceDriftAlerts, prunedDuplicates, unmappedAccounts,
   };
 }

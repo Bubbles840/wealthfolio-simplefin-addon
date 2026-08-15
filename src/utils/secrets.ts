@@ -4,7 +4,7 @@ import { AMAZON_CONFIG_SECRET_KEY, AMAZON_LABELS_SECRET_KEY } from '../../shared
 import { UNCATEGORIZED_STATUS_SECRET_KEY, AMAZON_MAIL_STATUS_SECRET_KEY } from '../../shared/status-keys';
 import type { AmazonLabelCatalog, AmazonMailConfig } from '../../shared/amazon-config';
 import type { AmazonLedger } from '../../shared/amazon-ledger';
-import type { AccountMapping, MappingRule } from '../../shared/types';
+import type { AccountMapping, MappingRule, UnmappedAccount } from '../../shared/types';
 import type { DismissalLedger, UncategorizedRow } from '../../shared/uncategorized';
 import type { DriftAlertEntry, TransferLinkFailureEntry } from '../../shared/sync-host';
 import type { SyncResult } from '../../shared/sync-core';
@@ -71,6 +71,7 @@ const KEYS = {
   driftAlerts: 'drift_alerts',
   lastSyncImported: 'last_sync_imported',
   accountBalances: 'account_balances',
+  unmappedAccounts: 'unmapped_accounts',
   autoHeal: 'auto_heal',
   autoAdjust: 'auto_adjust',
   telegramConfig: 'telegram_config',
@@ -396,6 +397,28 @@ export class SecretsStore {
   }
   async setAccountBalances(map: Record<string, AccountBalanceInfo>): Promise<void> {
     await this.ctx.api.secrets.set(KEYS.accountBalances, JSON.stringify(map));
+  }
+
+  /**
+   * SimpleFin accounts the last sync found no mapping for. Written by every
+   * sync (including the companion's, through its own host), read by the
+   * Overview to offer mapping them.
+   *
+   * A malformed value degrades to "none" rather than surfacing an error: the
+   * cost is a missed prompt, and the next sync rewrites it.
+   */
+  async getUnmappedAccounts(): Promise<UnmappedAccount[]> {
+    const raw = await this.ctx.api.secrets.get(KEYS.unmappedAccounts);
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? (parsed as UnmappedAccount[]) : [];
+    } catch {
+      return [];
+    }
+  }
+  async setUnmappedAccounts(list: UnmappedAccount[]): Promise<void> {
+    await this.ctx.api.secrets.set(KEYS.unmappedAccounts, JSON.stringify(list));
   }
 
   /** Which collapsible config cards the user left open, keyed by card id.

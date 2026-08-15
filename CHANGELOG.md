@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.15.0] - 2026-08-15
+
+### Added
+
+- **Add or remove accounts without re-running setup.** An account linked at
+  SimpleFin *after* setup was skipped in silence: the sync reported success,
+  imported nothing from it, and the only evidence was an account that never
+  appeared in Wealthfolio. Mapping it meant Reset, which clears every other
+  setting. **Advanced → Accounts** now re-reads the live SimpleFin account
+  list and maps against it, leaving the rest of your configuration alone.
+  Clearing a row stops syncing that account; transactions already imported
+  stay.
+- **A newly-linked account announces itself.** The Overview shows a banner
+  naming any SimpleFin account nothing is mapped to — with a button that
+  opens the Accounts card — and the companion sends one Telegram notice the
+  first time it sees each one. Neither can be missed the way silence was.
+
+### Fixed
+
+- **A scheduled Telegram report is no longer lost to a momentary network
+  failure.** The daily, weekly and monthly reports retry twice before giving
+  up; previously a single `fetch failed` discarded the entire period's
+  report, with the next attempt a full day (or week, or month) away.
+- **The companion image now builds for arm64 as well as amd64**, so it runs
+  on a Raspberry Pi or an Apple-silicon host. Pushes to `main` build-check
+  the image, and a prerelease tag no longer moves `:latest`.
+- **README:** the example compose file mounted the `.db` *file*, which hides
+  the `-wal` file beside it and can serve data days stale. It mounts the
+  containing folder now, sets the required `TZ`, and documents upgrading by
+  pulling the published image rather than building it.
+
 ## [1.14.1] - 2026-08-11
 
 ### Fixed

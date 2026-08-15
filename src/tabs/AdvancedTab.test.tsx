@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
 import { SyncPage } from '../pages/SyncPage';
 
@@ -22,6 +22,21 @@ vi.mock('../utils/sync', async (importOriginal) => {
   };
 });
 
+/** The Accounts card re-reads the live account list from the bridge. Mocked at
+ *  the module boundary so the tests exercise the card's own logic (fetch →
+ *  mapper → save) without a network call. */
+vi.mock('../utils/simplefin', () => ({
+  fetchAccounts: vi.fn(async () => ({
+    errors: [],
+    accounts: [
+      { id: 'sfin-1', name: 'Growth', currency: 'USD', balance: '10.00', 'balance-date': 1700000000 },
+      { id: 'sfin-2', name: 'Spend', currency: 'USD', balance: '20.00', 'balance-date': 1700000000 },
+      // The newly-linked account: present at SimpleFin, absent from the mapping.
+      { id: 'sfin-new', name: 'Robinhood Gold Card', currency: 'USD', balance: '-25.00', 'balance-date': 1700000000 },
+    ],
+  })),
+}));
+
 const makeProps = () => ({
   ctx: {
     api: {
@@ -32,6 +47,8 @@ const makeProps = () => ({
   store: {
     getLastSyncAt: vi.fn(async () => new Date('2024-01-01T10:00:00Z')),
     getAccountMapping: vi.fn(async () => ({ 'sfin-1': 'wf-a', 'sfin-2': 'wf-b' })),
+    setAccountMapping: vi.fn(async () => {}),
+    getUnmappedAccounts: vi.fn(async () => [] as any[]),
     getMappingRules: vi.fn(async () => []),
     setMappingRules: vi.fn(async () => {}),
     getSyncScheduleHours: vi.fn(async () => 6),
@@ -345,6 +362,72 @@ describe('AdvancedTab', () => {
     await waitFor(() => expect(props.onReset).toHaveBeenCalled());
     expect(props.scheduler.stop).toHaveBeenCalled();
     expect(props.store.clearAll).toHaveBeenCalled();
+  });
+
+  // ── Accounts card ────────────────────────────────────────────────────────
+  // Mapping an account linked AFTER setup used to require Reset, which clears
+  // every other setting. These cover the path that replaced it.
+  describe('Accounts card', () => {
+    it('does not touch the bridge until the card is opened', async () => {
+      const { fetchAccounts } = await import('../utils/simplefin');
+      const props = makeProps();
+      render(<SyncPage {...props} />);
+      await switchTab(/advanced/i);
+      await waitFor(() => expect(screen.getByRole('button', { name: /^Accounts/i })).toBeInTheDocument());
+      expect(fetchAccounts).not.toHaveBeenCalled();
+    });
+
+    it('lists an account that exists at SimpleFin but is not mapped', async () => {
+      const props = makeProps();
+      render(<SyncPage {...props} />);
+      await switchTab(/advanced/i);
+      await openSection(/^Accounts/i);
+      // The mapped two AND the newly-linked one, which is the point: the card
+      // shows the live bridge list, not just what the mapping already knows.
+      expect(await screen.findByText('Robinhood Gold Card')).toBeInTheDocument();
+      expect(screen.getByText('Growth')).toBeInTheDocument();
+    });
+
+    it('saves a new mapping alongside the existing ones, without disturbing them', async () => {
+      const props = makeProps();
+      render(<SyncPage {...props} />);
+      await switchTab(/advanced/i);
+      await openSection(/^Accounts/i);
+      const newRowLabel = await screen.findByText('Robinhood Gold Card');
+
+      // Wait for the Wealthfolio account list to arrive before touching the
+      // select: until its <option> exists, assigning that value is a no-op and
+      // the row silently stays unmapped.
+      await waitFor(() =>
+        expect(screen.getAllByRole('option', { name: 'Checking' }).length).toBeGreaterThan(0),
+      );
+
+      // Target the select in the NEW account's own row rather than by index,
+      // so the assertion cannot silently move to another account's row.
+      const row = newRowLabel.closest('.sfin-row') as HTMLElement;
+      fireEvent.change(within(row).getByRole('combobox'), { target: { value: 'wf-a' } });
+      fireEvent.click(screen.getByRole('button', { name: /save mapping/i }));
+
+      await waitFor(() => expect(props.store.setAccountMapping).toHaveBeenCalled());
+      // The pre-existing entries survive: a save that dropped them would
+      // silently stop syncing the accounts the user never touched.
+      expect(props.store.setAccountMapping).toHaveBeenCalledWith({
+        'sfin-1': 'wf-a', 'sfin-2': 'wf-b', 'sfin-new': 'wf-a',
+      });
+    });
+
+    it('reports a bridge failure instead of showing an empty mapper', async () => {
+      // An empty mapper would read as "you have no accounts", and saving from
+      // it could overwrite a good mapping.
+      const { fetchAccounts } = await import('../utils/simplefin');
+      vi.mocked(fetchAccounts).mockRejectedValueOnce(new Error('SimpleFin /accounts failed: 524'));
+      const props = makeProps();
+      render(<SyncPage {...props} />);
+      await switchTab(/advanced/i);
+      await openSection(/^Accounts/i);
+      expect(await screen.findByText(/524/)).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /save mapping/i })).not.toBeInTheDocument();
+    });
   });
 
 });

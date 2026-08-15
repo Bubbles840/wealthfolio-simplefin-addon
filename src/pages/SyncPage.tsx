@@ -13,7 +13,7 @@ import { AdvancedTab } from '../tabs/AdvancedTab';
 import { useAmazonDraft } from '../components/AmazonCard';
 import type { SecretsStore, AccountBalanceInfo, CategoryCatalogEntry } from '../utils/secrets';
 import type { Scheduler } from '../utils/scheduler';
-import type { AccountMapping } from '../../shared/types';
+import type { AccountMapping, UnmappedAccount } from '../../shared/types';
 import { pruneDismissals, mergeDismissals, type DismissalLedger } from '../../shared/uncategorized';
 
 /** Outside the component: a fresh literal each render would be a new `TabBar`
@@ -88,6 +88,7 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
   const [sfinNames, setSfinNames] = useState<Record<string, string>>({});
   const [wfNames, setWfNames] = useState<Record<string, string>>({});
   const [balances, setBalances] = useState<Record<string, AccountBalanceInfo>>({});
+  const [unmappedAccounts, setUnmappedAccounts] = useState<UnmappedAccount[]>([]);
   const [healing, setHealing] = useState(false);
   const [checklistDismissed, setChecklistDismissed] = useState(false);
   // Which companion build last synced this instance. Null until one has run — the
@@ -158,6 +159,15 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
 
   const loadBalances = useCallback(() => {
     store.getAccountBalances().then(setBalances).catch(() => {});
+    // Read alongside the balances, and from the same secret every sync writes:
+    // the run that finds a newly-linked account is usually the COMPANION's, so
+    // this page has no return value to learn it from.
+    //
+    // Optional-called: a missing method throws SYNCHRONOUSLY, which `.catch`
+    // does not see — it would take the balance refresh down with it. `?.`
+    // short-circuits the whole chain instead, costing the banner and nothing
+    // else.
+    store.getUnmappedAccounts?.().then(setUnmappedAccounts).catch(() => {});
   }, [store]);
 
   /** The three values Overview DERIVES from storage rather than being told about
@@ -214,6 +224,14 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
     store.getLastSyncAt().then((d) => { if (d) setLastSyncAt(d); }).catch(() => {});
     store.getAccountBalances().then(setBalances).catch(() => {});
     store.getCompanionVersion().then(setCompanionVersion).catch(() => {});
+    // Belongs in THIS reader, not just the post-sync one: discovering a
+    // newly-linked account is precisely something the companion does behind
+    // this page's back, and a page that only learned it from its own sync
+    // would stay silent for a user whose syncing is entirely the companion's.
+    //
+    // Optional-called: a missing method throws SYNCHRONOUSLY, which `.catch`
+    // never sees — it would take the whole refresh down with it.
+    store.getUnmappedAccounts?.().then(setUnmappedAccounts).catch(() => {});
     refreshDerivedSignals();
   }, [store, refreshDerivedSignals]);
 
@@ -247,10 +265,23 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
   /** Switch tabs and remember it. Read-modify-write, because `ui_state` also
    *  carries `checklistDismissed` and a blind overwrite would bring a dismissed
    *  checklist back every time a tab is clicked. */
-  const navigate = useCallback((tab: TabId) => {
+  const navigate = useCallback((tab: TabId, openCardId?: string) => {
     // Before the state change, so a load that resolves later leaves it alone.
     hasUserActed.current.tab = true;
     setActiveTab(tab);
+    // A banner that says "map it under Advanced → Accounts" has to LAND the
+    // user on that card. Without this the CTA dropped them on a tab of five
+    // collapsed cards with the relevant one shut — and since the card fetches
+    // its account list on open, nothing loaded either.
+    if (openCardId) {
+      hasUserActed.current.cards = true;
+      setOpenCards((prev) => {
+        if (prev[openCardId]) return prev;
+        const next = { ...prev, [openCardId]: true };
+        store.setOpenCards(next).catch(() => {});
+        return next;
+      });
+    }
     store.getUiState()
       .then((prev) => store.setUiState({ ...prev, activeTab: tab }))
       // Cosmetic — a failed write costs one remembered tab, not an error box.
@@ -489,6 +520,7 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
           doHeal={doHeal}
           imported={imported}
           prunedDuplicates={prunedDuplicates}
+          unmappedAccounts={unmappedAccounts}
           uncategorized={uncategorized}
           dismissals={dismissals}
           onDismissalsChange={onDismissalsChange}
