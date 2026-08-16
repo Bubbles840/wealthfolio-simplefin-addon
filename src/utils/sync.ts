@@ -8,7 +8,9 @@ import {
   formatFeedLagNotice,
   formatLargeTransactionAlert,
   formatDuplicatePruneAlert,
+  formatImportNotice,
 } from '../../shared/telegram';
+import { visibleUncategorized } from '../../shared/uncategorized';
 import type { PendingLargeTxAlert, SecretsStore } from './secrets';
 import type { AddonContext } from '@wealthfolio/addon-sdk';
 
@@ -65,6 +67,10 @@ export function runSync(
 interface TelegramTarget {
   botToken: string;
   chatId: string;
+  /** Mirrors the companion's own check. Absent means ON, matching the
+   *  Notifications tab's default — a config written before the import notice
+   *  existed on this side must not read as "opted out". */
+  notifyOnImport: boolean;
 }
 
 /**
@@ -81,7 +87,11 @@ async function telegramTarget(store: SecretsStore): Promise<TelegramTarget | nul
   // there is no token to send with either way, and no retry fixes it.
   const tg = await store.getTelegramConfig().catch(() => null);
   if (!tg || !tg.botToken || !tg.chatId || tg.enabled === false) return null;
-  return { botToken: String(tg.botToken), chatId: String(tg.chatId) };
+  return {
+    botToken: String(tg.botToken),
+    chatId: String(tg.chatId),
+    notifyOnImport: (tg as { notifyOnImport?: boolean }).notifyOnImport !== false,
+  };
 }
 
 /**
@@ -138,6 +148,7 @@ export async function deliverAddonAlerts(
       && largeTransactionAlerts.length === 0
       && balanceDriftAlerts.length === 0
       && prunedDuplicates.length === 0
+      && result.imported === 0
     ) return;
 
     const target = await telegramTarget(store);
@@ -198,6 +209,55 @@ export async function deliverAddonAlerts(
       const res = await send(formatDuplicatePruneAlert(prunedDuplicates));
       if (!res.ok) {
         console.warn(`[simplefin-sync] duplicate-prune notice not delivered: ${res.description}`);
+      }
+    }
+
+    // ── Import notice ───────────────────────────────────────────────────────
+    // This used to exist ONLY in the companion, on the assumption that the
+    // companion does the importing. It does not always: the addon imports
+    // whenever Sync Now is pressed, and whenever its in-page scheduler fires
+    // on a tab left open. Everything imported that way was announced nowhere
+    // — found 2026-08-16, when four transactions on a newly-mapped account
+    // were imported at 01:01 by the in-page schedule and produced silence
+    // (the companion's own logs showed `Done: 0 imported` for every run).
+    //
+    // Same formatter as the companion's, so the two are indistinguishable in
+    // the chat, with two deliberate differences:
+    //
+    //  • No inline keyboard. The dismiss buttons would work (the companion's
+    //    listener services them), but `Categorize these` is scoped by
+    //    `rememberImportScope`, which lives in the COMPANION's process memory
+    //    — a button this side drew would open whatever that process last
+    //    remembered, i.e. the wrong rows. Text-only is honest.
+    //  • No `filed under` read-back. That comes from the companion's direct
+    //    database read, which the addon has no equivalent for.
+    if (result.imported > 0 && target.notifyOnImport) {
+      // The same 30-day sweep the companion shows, from the status the
+      // companion publishes — minus rows already dismissed, which is exactly
+      // what the Overview's own list does. A missing status (no companion)
+      // simply means no category block.
+      let uncategorized: Array<{ description: string; amountCents: number; date: string; accountName: string }> = [];
+      try {
+        const status = await store.getUncategorizedStatus();
+        const dismissals = await store.getDismissals();
+        uncategorized = visibleUncategorized(status?.rows ?? [], dismissals)
+          .map((r) => ({
+            description: r.description,
+            amountCents: r.amountCents,
+            date: r.date,
+            accountName: r.accountName,
+          }));
+      } catch {
+        // Decoration, not the point of the message: send the imports anyway.
+      }
+      const res = await send(formatImportNotice(result.importedTransactions, uncategorized));
+      if (!res.ok) {
+        // Logged, never retried: the rows are already in Wealthfolio and the
+        // page shows them. Silence here was the whole bug — a visible reason
+        // is the fix, even when the send itself cannot be salvaged.
+        console.warn(
+          `[simplefin-sync] import notice not delivered (${result.imported} transaction(s) were not announced): ${res.description}`,
+        );
       }
     }
   } catch (err) {
