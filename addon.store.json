@@ -21,20 +21,20 @@
   "supportUrl": "https://github.com/Bubbles840/wealthfolio-simplefin-addon/issues",
   "source": {
     "repository": "https://github.com/Bubbles840/wealthfolio-simplefin-addon",
-    "tag": "v1.15.1",
-    "commit": "c0bb9158146cd324671d6659a3ea55251afd74d9"
+    "tag": "v1.15.2",
+    "commit": "5f4b3ebe5260f958a71e37baacd142588067dc07"
   },
   "release": {
-    "version": "1.15.1",
+    "version": "1.15.2",
     "minWealthfolioVersion": "3.6.2",
     "sdkVersion": "3.6.2",
     "critical": false,
     "breaking": false,
-    "notes": "Accounts linked at SimpleFin after setup can now be mapped from Advanced → Accounts, without re-running setup and losing every other setting. Until now such an account was skipped in silence: the sync reported success, imported nothing from it, and the only evidence was an account that never appeared in Wealthfolio. Unmapped accounts now announce themselves in the Overview and once over Telegram — and an account you deliberately do not want synced can be excluded, which stops both. Scheduled Telegram reports also retry a momentary network failure instead of losing the whole day's report.",
-    "changelogUrl": "https://github.com/Bubbles840/wealthfolio-simplefin-addon/releases/tag/v1.15.1"
+    "notes": "Accounts linked at SimpleFin after setup can now be mapped from Advanced → Accounts, without re-running setup and losing every other setting — and an account you deliberately do not want synced can be excluded instead of nagged about. Transactions imported by the addon itself (Sync now, or the in-page schedule on a tab left open) are now announced on Telegram with their needs-a-category prompt; previously only the companion's imports were, so anything the addon imported was announced nowhere. Scheduled Telegram reports also retry a momentary network failure instead of losing the whole day's report.",
+    "changelogUrl": "https://github.com/Bubbles840/wealthfolio-simplefin-addon/releases/tag/v1.15.2"
   },
   "distribution": {
-    "r2Path": "simplefin-sync/1.15.1/simplefin-sync.zip"
+    "r2Path": "simplefin-sync/1.15.2/simplefin-sync.zip"
   },
   "media": {
     "coverLight": "assets/cover-light.webp",
