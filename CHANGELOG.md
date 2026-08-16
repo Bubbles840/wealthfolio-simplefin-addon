@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.15.2] - 2026-08-16
+
+### Fixed
+
+- **Transactions imported by the addon are now announced on Telegram.** The
+  import notice existed only in the companion, on the assumption that the
+  companion does the importing. It does not always: the addon imports
+  whenever you press **Sync now**, and whenever its in-page schedule fires on
+  a Wealthfolio tab left open. Anything imported that way — including the
+  first sync of a newly-mapped account, which is usually a backlog — was
+  announced nowhere, and the "needs a category" prompt that rides along with
+  the notice never arrived either.
+
+  The addon now sends the same notice, using the same formatter, so the two
+  are indistinguishable in the chat. Two deliberate differences: it carries no
+  inline buttons (the *Categorize these* button is scoped by state that lives
+  in the companion's process, so a button drawn from this side would open the
+  wrong rows), and no "filed under" read-back (that comes from the companion's
+  direct database read). Honours `notifyOnImport`, and a config saved before
+  this existed counts as opted in.
+
 ## [1.15.1] - 2026-08-15
 
 ### Fixed

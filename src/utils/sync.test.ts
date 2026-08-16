@@ -10,6 +10,7 @@ import {
 } from './sync';
 import {
   formatStuckTransferAlert,
+  formatImportNotice,
   formatBalanceDriftAlert,
   formatFeedLagNotice,
   formatLargeTransactionAlert,
@@ -1256,6 +1257,94 @@ describe('deliverAddonAlerts', () => {
 
   const sentTexts = (request: any) =>
     request.mock.calls.map((c: any[]) => JSON.parse(c[0].body).text);
+
+  // ── Import notice ─────────────────────────────────────────────────────────
+  // This lived only in the companion, on the assumption that the companion does
+  // the importing. It does not always: 2026-08-16, four transactions on a
+  // newly-mapped account were imported at 01:01 by the addon's in-page schedule
+  // (a tab left open) and announced nowhere — the companion's own logs read
+  // `Done: 0 imported` for every run that day.
+  const importedTx = (over: Partial<any> = {}) => ({
+    txId: 'TRN-1', sfAccountId: 'sfin-1', description: 'KALSHI', amountCents: 1000,
+    currency: 'USD', accountName: 'Robinhood Credit Card', activityType: 'WITHDRAWAL',
+    pending: false, inTransit: false, ...over,
+  });
+
+  it('announces what the addon itself imported', async () => {
+    const request = okNet();
+    const store = tgStore();
+
+    await deliverAddonAlerts(alertCtx(request), store as any, emptyResult({
+      imported: 1,
+      importedTransactions: [importedTx()],
+    }));
+
+    expect(request).toHaveBeenCalledOnce();
+    // The companion's formatter, so the two syncers cannot drift in what they say.
+    expect(sentTexts(request)[0]).toBe(formatImportNotice([importedTx()], []));
+  });
+
+  it('includes the uncategorized sweep, minus rows already dismissed', async () => {
+    const request = okNet();
+    const rows = [
+      { activityId: 'act-1', date: '2026-08-14', amountCents: 1000, description: 'KALSHI', accountName: 'Robinhood Credit Card' },
+      { activityId: 'act-dismissed', date: '2026-08-13', amountCents: 500, description: 'OLD', accountName: 'Spend' },
+    ];
+    const store = tgStore({
+      getUncategorizedStatus: vi.fn(async () => ({ count: 2, asOf: '2026-08-16T00:00:00Z', rows })),
+      getDismissals: vi.fn(async () => ({ 'act-dismissed': '2026-08-15T00:00:00Z' })),
+    });
+
+    await deliverAddonAlerts(alertCtx(request), store as any, emptyResult({
+      imported: 1, importedTransactions: [importedTx()],
+    }));
+
+    const text = sentTexts(request)[0];
+    expect(text).toContain('KALSHI');
+    // A row the user has already dismissed must not come back in a new notice.
+    expect(text).not.toContain('OLD');
+  });
+
+  it('says nothing about imports when notifyOnImport is off', async () => {
+    const request = okNet();
+    const store = tgStore({
+      getTelegramConfig: vi.fn(async () => ({
+        botToken: 'tok', chatId: '42', enabled: true, notifyOnImport: false,
+      })),
+    });
+
+    await deliverAddonAlerts(alertCtx(request), store as any, emptyResult({
+      imported: 1, importedTransactions: [importedTx()],
+    }));
+
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it('treats a config with no notifyOnImport as opted IN', async () => {
+    // Every config written before this side had an import notice omits the
+    // field; reading that as "off" would keep exactly the users who hit the
+    // bug silent after the fix.
+    const request = okNet();
+    const store = tgStore();
+    await deliverAddonAlerts(alertCtx(request), store as any, emptyResult({
+      imported: 1, importedTransactions: [importedTx()],
+    }));
+    expect(request).toHaveBeenCalledOnce();
+  });
+
+  it('still sends the imports when the uncategorized read fails', async () => {
+    // The category block is decoration; the imports are the message.
+    const request = okNet();
+    const store = tgStore({
+      getUncategorizedStatus: vi.fn(async () => { throw new Error('secret unreadable'); }),
+    });
+
+    await deliverAddonAlerts(alertCtx(request), store as any, emptyResult({
+      imported: 1, importedTransactions: [importedTx()],
+    }));
+
+    expect(sentTexts(request)[0]).toBe(formatImportNotice([importedTx()], []));
+  });
 
   it('sends a stuck-transfer alert through the SDK network, not bare fetch', async () => {
     const request = okNet();
