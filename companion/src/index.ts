@@ -18,6 +18,7 @@ import { pruneDismissals, mergeDismissals } from './dismissals.js';
 import { startTelegramListener } from './telegram-listener.js';
 import type { TelegramListenerDeps } from './telegram-listener.js';
 import { createImapSource, ingestAmazonMail, amazonMailConfigured } from './amazon-mail.js';
+import { AMAZON_CONFIG_SECRET_KEY, AMAZON_LABELS_SECRET_KEY } from './amazon-mail.js';
 import type { AmazonIngestResult, AmazonMailConfig, MailSource } from './amazon-mail.js';
 import { DEFAULT_GLYPH_STYLE } from '../../shared/telegram.js';
 import type { GlyphStyle, InlineKeyboard } from '../../shared/telegram.js';
@@ -27,6 +28,7 @@ import { SIMPLEFIN_SYNC_VERSION, COMPANION_VERSION_SECRET_KEY } from '../../shar
 import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeCategorizedSpending, getNativeSpendingCategories, getNativeCategoryCatalog, getNativeSubcategorySpending } from './sqlite-native.js';
 import { publishUncategorizedStatusForDbPath } from './uncategorized-status.js';
 import { createCategorizeController, SPENDING_TAXONOMY_ID } from './categorize.js';
+import { createAmazonLabelMenu, type AmazonLabelMenu } from './amazon-labels.js';
 import type { CategorizeController, CategorizeDeps } from './categorize.js';
 import { AMAZON_MAIL_STATUS_SECRET_KEY, UNCATEGORIZED_STATUS_SECRET_KEY } from '../../shared/status-keys.js';
 import {
@@ -506,9 +508,25 @@ async function pollAmazonMail(
  * the default and wants a pattern — so it is called out explicitly rather than
  * listed alongside the ones that filed themselves correctly.
  */
+/**
+ * The one label-menu instance, shared between the LISTENER (which owns taps)
+ * and the SYNC (which sends the notice the buttons are attached to). It has to
+ * be one object: a tap carries a token that only the instance that minted it
+ * can resolve back to a label.
+ *
+ * Set when the listener is built, which happens once at startup before any
+ * cron sync. Null only in tests and in any future path that syncs without a
+ * listener — where the notice simply goes out without buttons.
+ */
+let sharedAmazonLabelMenu: AmazonLabelMenu | null = null;
+
 async function sendAmazonNewLabelNotice(
   wfClient: WealthfolioClient,
   labels: AmazonIngestResult['newLabels'],
+  /** Supplies the "Change: <label>" buttons. Optional so the many callers in
+   *  tests — and any path with no menu wired up — still send the notice; it
+   *  simply arrives without buttons, exactly as it did before. */
+  menu?: AmazonLabelMenu,
 ): Promise<void> {
   try {
     const tgRaw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_config').catch(() => null);
@@ -528,7 +546,12 @@ async function sendAmazonNewLabelNotice(
         ? ['', escapeMarkdown('Anything marked "no rule yet" landed in the default category. Add a rule for it on the Sync page.')]
         : []),
     ].join('\n');
-    await sendTelegramMessage(tg.botToken, tg.chatId, message);
+    await sendTelegramMessage(
+      tg.botToken, tg.chatId, message, undefined,
+      // One button per label, so a wrong guess is fixable from the chat rather
+      // than only in the app — which is the trip this notice exists to save.
+      menu?.keyboardFor(labels.map((l) => l.label)),
+    );
   } catch (err) {
     log(`Amazon label notice error: ${formatError(err)}`);
   }
@@ -776,7 +799,7 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
     await deliverLargeTransactionAlerts(wfClient, result.largeTransactionAlerts);
 
     if (amazonNewLabels.length > 0) {
-      await sendAmazonNewLabelNotice(wfClient, amazonNewLabels);
+      await sendAmazonNewLabelNotice(wfClient, amazonNewLabels, sharedAmazonLabelMenu ?? undefined);
     }
 
     const undeliveredDrift: Array<{ sfinAccountId: string; phase: 'young' | 'aged' }> = [];
@@ -2215,6 +2238,36 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
    *  every button would answer "that menu expired". */
   const categorize = buildCategorizeController(wfClient);
 
+  /** The Amazon label picker. Shares the `cz:` callback prefix, so
+   *  `onMenuCallback` below asks it first and only then falls through to the
+   *  transaction menu. One instance, because its sessions map a tapped button
+   *  back to the label the notice was about. */
+  const amazonLabels: AmazonLabelMenu = sharedAmazonLabelMenu = createAmazonLabelMenu({
+    readConfig: () => wfClient.getAddonSecret('simplefin-sync', AMAZON_CONFIG_SECRET_KEY)
+      .then((raw) => parseSecretJson<any>(raw, AMAZON_CONFIG_SECRET_KEY))
+      .catch(() => null),
+    writeConfig: (next) => wfClient.setAddonSecret(
+      'simplefin-sync', AMAZON_CONFIG_SECRET_KEY, JSON.stringify(next),
+    ),
+    readLabels: () => wfClient.getAddonSecret('simplefin-sync', AMAZON_LABELS_SECRET_KEY)
+      .then((raw) => parseSecretJson<any>(raw, AMAZON_LABELS_SECRET_KEY) ?? {})
+      .catch(() => ({})),
+    writeLabels: (map) => wfClient.setAddonSecret(
+      'simplefin-sync', AMAZON_LABELS_SECRET_KEY, JSON.stringify(map),
+    ),
+    mainCategories: async () => {
+      const dbPath = process.env.WEALTHFOLIO_DB_PATH || '';
+      if (!dbPath) return [];
+      const now = new Date();
+      const ym = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+      return getNativeCategoryCatalog(dbPath, ym)
+        .filter((c) => c.parent === null)
+        .map((c) => c.name)
+        .sort((a, b) => a.localeCompare(b));
+    },
+    log,
+  });
+
   const ensureSession = async (): Promise<void> => {
     if (Date.now() - sessionEstablishedAt < LISTENER_SESSION_MAX_AGE_MS) return;
     const key = process.env.WEALTHFOLIO_API_KEY;
@@ -2296,6 +2349,13 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
     // because editing would draw the menu over the notice and destroy the only
     // record in the chat of what just imported.
     onMenuCallback: async (cb, ui) => {
+      // Before the transaction menu: both ride the `cz:` prefix, and the
+      // transaction menu treats anything it does not recognise as an expired
+      // session — which would silently swallow every Amazon tap.
+      if (amazonLabels.handles(cb.data)) {
+        await amazonLabels.onCallback(cb, ui);
+        return;
+      }
       if (cb.data !== RECATEGORIZE_ENTRY_CALLBACK) {
         await categorize.onCallback(cb, ui);
         return;
