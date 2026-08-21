@@ -70,6 +70,9 @@ vi.mock('./sqlite-native.js', () => ({
   getNativeWealthfolioBudgets: vi.fn(() => ({ Groceries: 800, Dining: 500 })),
   // The week's biggest individual spends, display-ready (the reader strips the
   // stored note's tx id, pending marker and in-transit prefix).
+  // Default: nothing unfiled, so the many digest tests that predate this
+  // reader keep asserting the totals they always did.
+  getNativeUncategorizedSpendingTotal: vi.fn(() => ({ count: 0, total: 0 })),
   getNativeWealthfolioTopSpending: vi.fn(() => ([
     { amount: 412.37, description: 'WHOLE FOODS MKT', categoryName: 'Dining' },
     { amount: 95.5, description: 'SQ *BLUE BOTTLE', categoryName: 'Dining' },

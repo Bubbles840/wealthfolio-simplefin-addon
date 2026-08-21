@@ -25,7 +25,7 @@ import type { GlyphStyle, InlineKeyboard } from '../../shared/telegram.js';
 import type { DismissalLedger } from './dismissals.js';
 import type { SyncHealth } from '../../shared/telegram.js';
 import { SIMPLEFIN_SYNC_VERSION, COMPANION_VERSION_SECRET_KEY } from '../../shared/version.js';
-import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeCategorizedSpending, getNativeSpendingCategories, getNativeCategoryCatalog, getNativeSubcategorySpending } from './sqlite-native.js';
+import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeCategorizedSpending, getNativeSpendingCategories, getNativeCategoryCatalog, getNativeSubcategorySpending, getNativeUncategorizedSpendingTotal } from './sqlite-native.js';
 import { publishUncategorizedStatusForDbPath } from './uncategorized-status.js';
 import { createCategorizeController, SPENDING_TAXONOMY_ID } from './categorize.js';
 import { createAmazonLabelMenu, type AmazonLabelMenu } from './amazon-labels.js';
@@ -1399,9 +1399,14 @@ export async function composeDailyDigestMessage(
     budget: budgetMap[name] ?? 0,
     children: childrenByParent.get(name),
   }));
+  // Spending with no category at all — invisible to the per-category reader
+  // above, and counted by Wealthfolio against the same month.
+  const uncategorizedSpend = getNativeUncategorizedSpendingTotal(
+    dbPath, `${yearMonth}-01`, toDateString(new Date(now.getFullYear(), now.getMonth() + 1, 1)),
+  );
   let message = formatDailySpendingDigest(
     categories, period, await readGlyphStyle(wfClient), subcategoryDisplay,
-    await readCountOffBudget(wfClient),
+    await readCountOffBudget(wfClient), uncategorizedSpend,
   );
 
   const healthRaw = await wfClient.getAddonSecret('simplefin-sync', 'sync_health').catch(() => null);

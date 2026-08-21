@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.17.1] - 2026-08-21
+
+### Fixed
+
+- **Spending with no category now counts toward the monthly total.** Every
+  other figure in the reports is per-category, and the query behind them
+  joins the category table — so a charge you have not filed yet was invisible
+  to all of them, while Wealthfolio counts it against the same month. That
+  was the last of the gap between the report and the app.
+
+  It appears as its own line, with the count, rather than being folded
+  silently into a total:
+
+  ```
+  ❓ Uncategorized  $21 · 2 charges with no category
+  ```
+
+  **Internal transfers are excluded**, which is the whole difficulty: a
+  transfer between your own accounts cannot be categorized in Wealthfolio, so
+  it looks exactly like an unfiled charge. Counting those would have reported
+  $3,210 of "spending" for a month whose real unfiled total was $20.76 — the
+  difference being a savings transfer and two card payments.
+
+  Governed by the same **Spending with no budget** setting as off-budget
+  spending, since it is the same question; either way it stays visible.
+
 ## [1.17.0] - 2026-08-21
 
 ### Added

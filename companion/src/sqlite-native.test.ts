@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
-import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeCategoryCatalog, getNativeSubcategorySpending, getNativeSpendingCategories, getNativeCategorizedSpending } from './sqlite-native.js';
+import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending,
+  getNativeUncategorizedSpendingTotal, getNativeUncategorizedSpending, getNativeCategoryCatalog, getNativeSubcategorySpending, getNativeSpendingCategories, getNativeCategorizedSpending } from './sqlite-native.js';
 import { DatabaseSync } from 'node:sqlite';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
@@ -19,7 +20,7 @@ function makeTestDb(): { path: string; cleanup: () => void } {
     -- "notes" is the real column name for what the REST API calls "comment";
     -- SELECT comment FROM activities fails with "no such column: comment", so
     -- the fixture carries the SQLite name deliberately.
-    CREATE TABLE activities (id TEXT PRIMARY KEY, amount TEXT, activity_date TEXT, activity_type TEXT, notes TEXT, account_id TEXT DEFAULT 'acct-cash', subtype TEXT, currency TEXT);
+    CREATE TABLE activities (id TEXT PRIMARY KEY, amount TEXT, activity_date TEXT, activity_type TEXT, notes TEXT, account_id TEXT DEFAULT 'acct-cash', subtype TEXT, currency TEXT, source_group_id TEXT);
     CREATE TABLE activity_taxonomy_assignments (activity_id TEXT, category_id TEXT, taxonomy_id TEXT);
     CREATE TABLE budget_targets (category_id TEXT, amount TEXT, period_key TEXT, updated_at TEXT);
     CREATE TABLE accounts (id TEXT PRIMARY KEY, name TEXT, account_type TEXT);
@@ -230,6 +231,57 @@ describe('sqlite-native', () => {
         db.close();
         const top = getNativeWealthfolioTopSpending(path, '2026-08-01', '2026-09-01', 5);
         expect(top.map((t) => t.amount)).toEqual([40]);
+      } finally { cleanup(); }
+    });
+  });
+
+  describe('uncategorized spending total', () => {
+    // The figure Wealthfolio shows as its "Uncategorized" bucket, and the one
+    // every other reader here is blind to (they inner-join the assignments).
+    it('counts unfiled charges but NOT internal transfers', () => {
+      // The trap this exists for: a transfer between the user's own accounts is
+      // uncategorizable in Wealthfolio, so it lands in exactly the "no
+      // assignment" set. The first version of this query reported $3,210.62 for
+      // a month whose real figure was $20.76 — a $3,000 savings transfer and two
+      // card payments. A paired leg is the one thing with a source_group_id.
+      const { path, cleanup } = makeTestDb();
+      try {
+        const db = new DatabaseSync(path);
+        db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, source_group_id)
+                 VALUES ('t1', '-3000', '2026-08-10', 'TRANSFER_OUT', 'wf-transfer-abc')`);
+        db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, source_group_id)
+                 VALUES ('t2', '-94.93', '2026-08-05', 'TRANSFER_OUT', 'wf-transfer-def')`);
+        db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type)
+                 VALUES ('u1', '-10.59', '2026-08-20', 'WITHDRAWAL')`);
+        db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type)
+                 VALUES ('u2', '-10.17', '2026-08-20', 'WITHDRAWAL')`);
+        db.close();
+        const res = getNativeUncategorizedSpendingTotal(path, '2026-08-01', '2026-09-01');
+        // The live figure, matching the app's own Uncategorized bucket.
+        expect(res.total).toBeCloseTo(20.76, 2);
+        expect(res.count).toBe(2);
+      } finally { cleanup(); }
+    });
+
+    it('ignores a charge that HAS a category', () => {
+      const { path, cleanup } = makeTestDb();
+      try {
+        const db = new DatabaseSync(path);
+        db.exec(`INSERT INTO taxonomy_categories (id, name, parent_id) VALUES ('cat-1', 'Groceries', NULL)`);
+        db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type) VALUES ('a1', '-50', '2026-08-02', 'WITHDRAWAL')`);
+        db.exec(`INSERT INTO activity_taxonomy_assignments (activity_id, category_id) VALUES ('a1', 'cat-1')`);
+        db.close();
+        expect(getNativeUncategorizedSpendingTotal(path, '2026-08-01', '2026-09-01')).toEqual({ count: 0, total: 0 });
+      } finally { cleanup(); }
+    });
+
+    it('ignores income, which is not spending however unfiled', () => {
+      const { path, cleanup } = makeTestDb();
+      try {
+        const db = new DatabaseSync(path);
+        db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type) VALUES ('d1', '2970', '2026-08-06', 'DEPOSIT')`);
+        db.close();
+        expect(getNativeUncategorizedSpendingTotal(path, '2026-08-01', '2026-09-01').total).toBe(0);
       } finally { cleanup(); }
     });
   });

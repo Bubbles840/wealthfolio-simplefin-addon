@@ -750,6 +750,16 @@ export function formatDailySpendingDigest(
    * the choice) rather than things they have not got round to budgeting.
    */
   countOffBudget = true,
+  /**
+   * Spending with NO category, which Wealthfolio shows as its own
+   * "Uncategorized" bucket and counts against the month. Every other figure
+   * here is per-category, so this could never appear in `categories` — it has
+   * no category to appear under, and was simply missing from the report.
+   *
+   * Governed by `countOffBudget` for the same reason and with the same
+   * wording: it is spending that no budget covers.
+   */
+  uncategorized?: { count: number; total: number },
 ): string {
   const { daysFromWeekStartToMonthEnd, daysLeftInMonthInclusive } = period;
   const days = Math.max(1, daysLeftInMonthInclusive);
@@ -852,13 +862,20 @@ export function formatDailySpendingDigest(
   // The figure the headline actually reports. Off-budget spend is subtracted
   // here rather than inside the loop so `budgetedRemaining` keeps meaning
   // exactly what its name says, and the two are visibly different quantities.
-  const countedOffBudget = countOffBudget ? offBudgetTotal : 0;
+  const uncategorizedTotal = uncategorized && uncategorized.total > 0 ? uncategorized.total : 0;
+  const countedOffBudget = countOffBudget ? offBudgetTotal + uncategorizedTotal : 0;
   const headlineRemaining = budgetedRemaining - countedOffBudget;
   // Named so the reader can reconcile the headline against the "Off budget:"
   // block below it — a total that silently absorbed $68 would just look wrong.
   // Only when it changed the figure: `after $0 off budget` is noise.
+  // Names whichever of the two it actually covers. "after $89 off budget" for a
+  // figure that is mostly unfiled charges would send the reader looking at the
+  // wrong block for the missing money.
+  const noteSubject = offBudgetTotal > 0 && uncategorizedTotal > 0
+    ? 'off budget & uncategorized'
+    : uncategorizedTotal > 0 ? 'uncategorized' : 'off budget';
   const offBudgetNote = countedOffBudget > 0 && moneyWhole(countedOffBudget) !== '$0'
-    ? ` · after ${moneyWhole(countedOffBudget)} off budget`
+    ? ` · after ${moneyWhole(countedOffBudget)} ${noteSubject}`
     : '';
   const overBudget = headlineRemaining < 0 && moneyWhole(Math.abs(headlineRemaining)) !== '$0';
   const summary = !anyBudget
@@ -872,6 +889,16 @@ export function formatDailySpendingDigest(
   // stray blank gap in that case.
   const blocks = [lines.join('\n')];
   if (offBudgetLines.length > 0) blocks.push(`Off budget:\n${offBudgetLines.join('\n')}`);
+  // Its own block, not folded into "Off budget": those have a category the user
+  // chose and simply no budget, while these are unfiled — a different thing to
+  // do about it, and the count is the actionable half.
+  if (uncategorizedTotal > 0) {
+    const n = uncategorized!.count;
+    blocks.push(
+      `${headerGlyph('❓', style)}Uncategorized  ${moneyWhole(uncategorizedTotal)}`
+      + ` · ${n} ${n === 1 ? 'charge' : 'charges'} with no category`,
+    );
+  }
   // No trailing newline: callers append the sync-health footer as its own
   // block, and a trailing blank line would leave that footer looking like part
   // of this summary line.
