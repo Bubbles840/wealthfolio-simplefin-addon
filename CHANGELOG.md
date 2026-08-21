@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.17.0] - 2026-08-21
+
+### Added
+
+- **Change an Amazon label's category straight from Telegram.** The notice
+  announcing a new Amazon label now carries a **Change: <label>** button per
+  label. Tap it, pick a category, done — the override is saved and every
+  future order with that label files there. Previously the notice told you
+  where an order had landed and left the only fix in the app, which is the
+  trip the notice exists to save.
+
+  Main categories only, matching the rest of the feature: every built-in
+  Amazon rule targets a top-level category, so the picker offers exactly the
+  ones your Wealthfolio has (falling back to the built-in list when the
+  companion has no database mount). Charges already imported keep the
+  category they were given; the override applies from the next one on.
+
 ## [1.16.1] - 2026-08-21
 
 ### Fixed
