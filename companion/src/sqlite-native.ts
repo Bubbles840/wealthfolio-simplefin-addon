@@ -117,6 +117,7 @@ function validDateBounds(startInclusive: string, endExclusive: string): boolean 
  */
 const SPENDING_FROM = `
     FROM activities a
+    JOIN accounts acc ON a.account_id = acc.id
     JOIN activity_taxonomy_assignments ata ON a.id = ata.activity_id
     JOIN taxonomy_categories tc ON ata.category_id = tc.id
     LEFT JOIN taxonomy_categories parent ON tc.parent_id = parent.id`;
@@ -125,11 +126,52 @@ const SPENDING_FROM = `
  *  category itself. Both readers select and filter on this same expression. */
 const SPENDING_CATEGORY = `COALESCE(parent.name, tc.name)`;
 
+/**
+ * Wealthfolio's own spending classification, transcribed from upstream —
+ * `docs/upstream-spending-buckets.md` §2 quotes the Rust with line numbers.
+ * `+1` is an Expense, `-1` an ExpenseRefund (money BACK, which reduces what a
+ * category has cost), `0` Ignored.
+ *
+ * This existed here as `activity_type IN ('WITHDRAWAL','FEE','TAX')` — a
+ * simplification that silently disagreed with the app on three counts, all in
+ * the same direction (over-reporting spend):
+ *
+ *  • A `REIMBURSEMENT`/`REFUND`/`REBATE` credit on a cash account reduces the
+ *    category upstream and was ignored here. Found live 2026-08-21: Food &
+ *    Dining read $157.16 in the Telegram report against $16.35 in the app,
+ *    the difference being $140.81 of Venmo paybacks — the very rows v1.14.0
+ *    taught Wealthfolio to treat this way, while this query was never told.
+ *  • ANY credit on a credit-card account is a refund upstream, subtype
+ *    irrelevant. A $14.42 statement credit was being ignored here.
+ *  • `TRANSFER_OUT` (cash) and `INTEREST` (credit card) are expenses upstream
+ *    and were not counted at all.
+ */
+const SPENDING_SIGN = `
+      CASE UPPER(acc.account_type)
+        WHEN 'CREDIT_CARD' THEN CASE
+          WHEN UPPER(a.activity_type) IN ('WITHDRAWAL', 'FEE', 'INTEREST') THEN 1
+          WHEN UPPER(a.activity_type) = 'CREDIT' THEN -1
+          ELSE 0 END
+        WHEN 'CASH' THEN CASE
+          WHEN UPPER(a.activity_type) IN ('WITHDRAWAL', 'TRANSFER_OUT', 'FEE', 'TAX') THEN 1
+          WHEN UPPER(a.activity_type) = 'CREDIT'
+               AND UPPER(COALESCE(a.subtype, '')) IN ('REFUND', 'REBATE', 'REIMBURSEMENT') THEN -1
+          ELSE 0 END
+        ELSE 0
+      END`;
+
+/** Signed dollars for one assignment row: positive spend, negative refund. */
+const SPENDING_SIGNED_AMOUNT = `(${SPENDING_SIGN}) * ABS(CAST(a.amount AS REAL))`;
+
 function spendingWhere(startInclusive: string, endExclusive: string): string {
   return `
     WHERE a.activity_date >= '${startInclusive}'
       AND a.activity_date < '${endExclusive}'
-      AND UPPER(a.activity_type) IN ('WITHDRAWAL', 'FEE', 'TAX')
+      AND (${SPENDING_SIGN}) <> 0
+      -- The SPENDING taxonomy only. A reimbursement carries TWO assignments —
+      -- an income one and a spending one — so joining every taxonomy counted
+      -- the same row twice, under two different category names.
+      AND tc.taxonomy_id = 'spending_categories'
       AND LOWER(${SPENDING_CATEGORY}) NOT IN ('transfers', 'transfer', 'internal transfers', 'savings & transfers')`;
 }
 
@@ -158,7 +200,7 @@ export function getNativeWealthfolioSpendingBetween(
   const query = `
     SELECT
       ${SPENDING_CATEGORY} as parent_category,
-      ROUND(SUM(ABS(CAST(a.amount AS REAL))), 2) as total_spent
+      ROUND(SUM(${SPENDING_SIGNED_AMOUNT}), 2) as total_spent
     ${SPENDING_FROM}
     ${spendingWhere(startInclusive, endExclusive)}
     GROUP BY ${SPENDING_CATEGORY};
@@ -241,6 +283,10 @@ export function getNativeWealthfolioTopSpending(
       ${SPENDING_CATEGORY} as parent_category
     ${SPENDING_FROM}
     ${spendingWhere(startInclusive, endExclusive)}
+      -- EXPENSES only, unlike the aggregate readers. "Biggest spends this week"
+      -- is a list of purchases; a large refund is money coming back and would
+      -- head the list as though it were the week's worst damage.
+      AND (${SPENDING_SIGN}) > 0
     ORDER BY ABS(CAST(a.amount AS REAL)) DESC
     LIMIT ${n};
   `;
@@ -738,7 +784,7 @@ export function getNativeSubcategorySpending(
   const query = `
     SELECT ${SPENDING_CATEGORY} as parent_name,
            CASE WHEN parent.name IS NULL THEN '' ELSE tc.name END as child_name,
-           ROUND(SUM(ABS(CAST(a.amount AS REAL))), 2) as total_spent
+                ROUND(SUM(${SPENDING_SIGNED_AMOUNT}), 2) as total_spent
     ${SPENDING_FROM}
     ${spendingWhere(startInclusive, endExclusive)}
     GROUP BY parent_name, child_name

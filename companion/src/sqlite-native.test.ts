@@ -10,16 +10,28 @@ function makeTestDb(): { path: string; cleanup: () => void } {
   const path = join(dir, 'wealthfolio.db');
   const db = new DatabaseSync(path);
   db.exec(`
-    CREATE TABLE taxonomy_categories (id TEXT PRIMARY KEY, name TEXT, parent_id TEXT, taxonomy_id TEXT, icon TEXT, color TEXT, sort_order INTEGER);
+    -- taxonomy_id DEFAULTS to the spending taxonomy, and activities default to a
+    -- cash account below, so the many existing fixtures that predate those two
+    -- columns still describe a realistic row: in the real database every
+    -- category belongs to a taxonomy and every activity to an account, and the
+    -- spending reader now depends on both (see SPENDING_SIGN).
+    CREATE TABLE taxonomy_categories (id TEXT PRIMARY KEY, name TEXT, parent_id TEXT, taxonomy_id TEXT DEFAULT 'spending_categories', icon TEXT, color TEXT, sort_order INTEGER);
     -- "notes" is the real column name for what the REST API calls "comment";
     -- SELECT comment FROM activities fails with "no such column: comment", so
     -- the fixture carries the SQLite name deliberately.
-    CREATE TABLE activities (id TEXT PRIMARY KEY, amount TEXT, activity_date TEXT, activity_type TEXT, notes TEXT, account_id TEXT, subtype TEXT, currency TEXT);
+    CREATE TABLE activities (id TEXT PRIMARY KEY, amount TEXT, activity_date TEXT, activity_type TEXT, notes TEXT, account_id TEXT DEFAULT 'acct-cash', subtype TEXT, currency TEXT);
     CREATE TABLE activity_taxonomy_assignments (activity_id TEXT, category_id TEXT, taxonomy_id TEXT);
     CREATE TABLE budget_targets (category_id TEXT, amount TEXT, period_key TEXT, updated_at TEXT);
     CREATE TABLE accounts (id TEXT PRIMARY KEY, name TEXT, account_type TEXT);
     CREATE TABLE budget_groups (id TEXT PRIMARY KEY, name TEXT, key TEXT, color TEXT, icon TEXT, sort_order INTEGER);
     CREATE TABLE budget_group_assignments (id TEXT PRIMARY KEY, group_id TEXT, taxonomy_id TEXT, category_id TEXT);
+  `);
+  // One account of each kind the classifier distinguishes. `acct-cash` is the
+  // activities default, so a fixture that says nothing about accounts gets the
+  // cash rules — which is what every pre-existing test here assumes.
+  db.exec(`
+    INSERT INTO accounts (id, name, account_type) VALUES ('acct-cash', 'Spend', 'CASH');
+    INSERT INTO accounts (id, name, account_type) VALUES ('acct-card', 'Card', 'CREDIT_CARD');
   `);
   db.close();
   return { path, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
@@ -94,6 +106,131 @@ describe('sqlite-native', () => {
       } finally {
         cleanup();
       }
+    });
+  });
+
+  /**
+   * Wealthfolio's classification, which this reader used to approximate as
+   * `activity_type IN ('WITHDRAWAL','FEE','TAX')`. Every case below was wrong
+   * under that rule, and every one of them over-reported spending — so the
+   * Telegram reports told the user they had less left than the app did.
+   *
+   * The live instance: Food & Dining read $157.16 here against $16.35 in the
+   * app, the gap being $140.81 of Venmo reimbursements.
+   */
+  describe('spending classification matches the app', () => {
+    const seed = (db: any) => {
+      db.exec(`INSERT INTO taxonomy_categories (id, name, parent_id) VALUES ('cat-food', 'Food & Dining', NULL)`);
+      db.exec(`INSERT INTO taxonomy_categories (id, name, parent_id) VALUES ('cat-health', 'Health & Wellness', NULL)`);
+      // The income-taxonomy twin every reimbursement also carries.
+      db.exec(`INSERT INTO taxonomy_categories (id, name, parent_id, taxonomy_id) VALUES ('cat-income', 'Other Income', NULL, 'income_sources')`);
+    };
+    const add = (db: any, id: string, amount: string, type: string, opts: { acct?: string; subtype?: string; cat?: string } = {}) => {
+      db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, account_id, subtype)
+               VALUES ('${id}', '${amount}', '2026-08-05', '${type}', '${opts.acct ?? 'acct-cash'}', ${opts.subtype ? `'${opts.subtype}'` : 'NULL'})`);
+      db.exec(`INSERT INTO activity_taxonomy_assignments (activity_id, category_id) VALUES ('${id}', '${opts.cat ?? 'cat-food'}')`);
+    };
+
+    it('nets a cash REIMBURSEMENT credit off the category it was filed under', () => {
+      const { path, cleanup } = makeTestDb();
+      try {
+        const db = new DatabaseSync(path);
+        seed(db);
+        add(db, 'spend', '-157.16', 'WITHDRAWAL');
+        add(db, 'back', '140.81', 'CREDIT', { subtype: 'REIMBURSEMENT' });
+        db.close();
+        // The exact figure the app shows for this month.
+        expect(getNativeWealthfolioSpendingBetween(path, '2026-08-01', '2026-09-01')['Food & Dining'])
+          .toBeCloseTo(16.35, 2);
+      } finally { cleanup(); }
+    });
+
+    it('counts a reimbursement ONCE, despite its two taxonomy assignments', () => {
+      // Every reimbursement is filed under both an income category and a
+      // spending one. Joining all taxonomies counted the row twice, under two
+      // names — and would now subtract it twice.
+      const { path, cleanup } = makeTestDb();
+      try {
+        const db = new DatabaseSync(path);
+        seed(db);
+        add(db, 'spend', '-157.16', 'WITHDRAWAL');
+        add(db, 'back', '140.81', 'CREDIT', { subtype: 'REIMBURSEMENT' });
+        db.exec(`INSERT INTO activity_taxonomy_assignments (activity_id, category_id) VALUES ('back', 'cat-income')`);
+        db.close();
+        const res = getNativeWealthfolioSpendingBetween(path, '2026-08-01', '2026-09-01');
+        expect(res['Food & Dining']).toBeCloseTo(16.35, 2);
+        // The income side is not a spending category and must not appear at all.
+        expect(res['Other Income']).toBeUndefined();
+      } finally { cleanup(); }
+    });
+
+    it('treats ANY credit-card credit as a refund, subtype or not', () => {
+      // Upstream ignores subtype entirely on a credit-card account, which is
+      // how a $14.42 statement credit went uncounted.
+      const { path, cleanup } = makeTestDb();
+      try {
+        const db = new DatabaseSync(path);
+        seed(db);
+        add(db, 'spend', '-100', 'WITHDRAWAL', { acct: 'acct-card', cat: 'cat-health' });
+        add(db, 'credit', '14.42', 'CREDIT', { acct: 'acct-card', cat: 'cat-health' });
+        db.close();
+        expect(getNativeWealthfolioSpendingBetween(path, '2026-08-01', '2026-09-01')['Health & Wellness'])
+          .toBeCloseTo(85.58, 2);
+      } finally { cleanup(); }
+    });
+
+    it('ignores a bare cash credit, which is neither spend nor refund', () => {
+      const { path, cleanup } = makeTestDb();
+      try {
+        const db = new DatabaseSync(path);
+        seed(db);
+        add(db, 'spend', '-100', 'WITHDRAWAL');
+        add(db, 'credit', '25', 'CREDIT');
+        db.close();
+        expect(getNativeWealthfolioSpendingBetween(path, '2026-08-01', '2026-09-01')['Food & Dining'])
+          .toBeCloseTo(100, 2);
+      } finally { cleanup(); }
+    });
+
+    it('counts credit-card INTEREST and cash TRANSFER_OUT as spending', () => {
+      const { path, cleanup } = makeTestDb();
+      try {
+        const db = new DatabaseSync(path);
+        seed(db);
+        add(db, 'int', '-9.99', 'INTEREST', { acct: 'acct-card', cat: 'cat-health' });
+        add(db, 'out', '-20', 'TRANSFER_OUT');
+        db.close();
+        const res = getNativeWealthfolioSpendingBetween(path, '2026-08-01', '2026-09-01');
+        expect(res['Health & Wellness']).toBeCloseTo(9.99, 2);
+        expect(res['Food & Dining']).toBeCloseTo(20, 2);
+      } finally { cleanup(); }
+    });
+
+    it('does not count cash INTEREST, which is income', () => {
+      const { path, cleanup } = makeTestDb();
+      try {
+        const db = new DatabaseSync(path);
+        seed(db);
+        add(db, 'int', '4.13', 'INTEREST');
+        db.close();
+        expect(getNativeWealthfolioSpendingBetween(path, '2026-08-01', '2026-09-01')['Food & Dining'])
+          .toBeUndefined();
+      } finally { cleanup(); }
+    });
+
+    it('keeps a refund out of the biggest-spends list', () => {
+      // That list answers "where did the money go"; a large refund topping it
+      // would name the week's biggest INFLOW as its worst damage.
+      const { path, cleanup } = makeTestDb();
+      try {
+        const db = new DatabaseSync(path);
+        seed(db);
+        add(db, 'spend', '-40', 'WITHDRAWAL');
+        add(db, 'back', '140.81', 'CREDIT', { subtype: 'REIMBURSEMENT' });
+        db.close();
+        const top = getNativeWealthfolioTopSpending(path, '2026-08-01', '2026-09-01', 5);
+        expect(top.map((t) => t.amount)).toEqual([40]);
+      } finally { cleanup(); }
     });
   });
 
