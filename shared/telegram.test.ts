@@ -702,6 +702,54 @@ describe('formatDailySpendingDigest', () => {
     expect(text).toContain('Off budget:');
   });
 
+  it('counts uncategorized spending and lists it separately', () => {
+    // Wealthfolio shows an "Uncategorized" bucket and counts it against the
+    // month; every reader here is per-category, so this spending could never
+    // appear in a category line and was simply missing from the total.
+    const text = formatDailySpendingDigest(
+      [{ name: 'Groceries', monthSpent: 550, weekSpent: 50, budget: 1000 }],
+      period, GLYPHS, 'rollup', true, { count: 2, total: 20.76 },
+    );
+    expect(text).toContain('Uncategorized');
+    expect(text).toContain('2 charges with no category');
+    // 450 - 20.76 = 429.24 -> $429
+    expect(text).toContain('💰 $429 left this month · after $21 uncategorized');
+  });
+
+  it('names both when off-budget and uncategorized are present', () => {
+    const text = formatDailySpendingDigest(
+      [
+        { name: 'Groceries', monthSpent: 550, weekSpent: 50, budget: 1000 },
+        { name: 'Education', monthSpent: 68, weekSpent: 0, budget: 0 },
+      ],
+      period, GLYPHS, 'rollup', true, { count: 1, total: 20.76 },
+    );
+    // Pointing at only one of the two blocks would send the reader hunting the
+    // missing money in the wrong place.
+    expect(text).toContain('off budget & uncategorized');
+    expect(text).toContain('Off budget:');
+    expect(text).toContain('Uncategorized');
+  });
+
+  it('leaves the total alone when off-budget counting is off', () => {
+    const text = formatDailySpendingDigest(
+      [{ name: 'Groceries', monthSpent: 550, weekSpent: 50, budget: 1000 }],
+      period, GLYPHS, 'rollup', false, { count: 2, total: 20.76 },
+    );
+    expect(text).toContain('💰 $450 left this month');
+    // Still SHOWN — the setting governs whether it counts, not whether it shows.
+    expect(text).toContain('Uncategorized');
+  });
+
+  it('says nothing about uncategorized when there is none', () => {
+    const text = formatDailySpendingDigest(
+      [{ name: 'Groceries', monthSpent: 550, weekSpent: 50, budget: 1000 }],
+      period, GLYPHS, 'rollup', true, { count: 0, total: 0 },
+    );
+    expect(text).not.toContain('Uncategorized');
+    expect(text).toContain('💰 $450 left this month');
+  });
+
   it('says nothing about off-budget when there is none', () => {
     const text = dailyGlyphs(
       [{ name: 'Groceries', monthSpent: 550, weekSpent: 50, budget: 1000 }],

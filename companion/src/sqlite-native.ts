@@ -875,3 +875,58 @@ export function getNativeAmazonRows(dbPath: string, limit = 80): NativeAmazonRow
         }
   ));
 }
+
+/**
+ * Spending in the window that has NO category at all — what Wealthfolio's own
+ * breakdown shows as "Uncategorized".
+ *
+ * Invisible to every other reader here, because they INNER JOIN the assignment
+ * table: a charge with no category has no assignment row. Wealthfolio counts it
+ * against the month regardless, so the reports were quietly short by it (found
+ * 2026-08-21: the app's monthly total ran ahead of the report's by exactly the
+ * uncategorized charges).
+ *
+ * INTERNAL TRANSFERS ARE EXCLUDED, and that exclusion is the whole difficulty.
+ * `TRANSFER_OUT` is an expense upstream, and a transfer between the user's own
+ * accounts is uncategorizable (Wealthfolio calls it Neutral) — so it lands in
+ * exactly the "no assignment" set this function selects. The first version of
+ * this query reported $3,210.62 of "uncategorized spending" for a month whose
+ * real figure was $20.76, the difference being a $3,000 transfer to a savings
+ * account and two credit-card payments. A grouped activity is a paired
+ * transfer leg (`sourceGroupId` is only ever written for pairs — see
+ * `TRANSFER_GROUP_PREFIX`), so grouping is the marker to filter on.
+ */
+export function getNativeUncategorizedSpendingTotal(
+  dbPath: string,
+  startInclusive: string,
+  endExclusive: string,
+): { count: number; total: number } {
+  const empty = { count: 0, total: 0 };
+  if (!dbPath || !existsSync(dbPath)) return empty;
+  if (!validDateBounds(startInclusive, endExclusive)) return empty;
+
+  const query = `
+    SELECT COUNT(*) as n,
+           ROUND(SUM(ABS(CAST(a.amount AS REAL))), 2) as total
+    FROM activities a
+    JOIN accounts acc ON a.account_id = acc.id
+    LEFT JOIN activity_taxonomy_assignments ata ON a.id = ata.activity_id
+    WHERE a.activity_date >= '${startInclusive}'
+      AND a.activity_date < '${endExclusive}'
+      AND ata.activity_id IS NULL
+      AND COALESCE(a.source_group_id, '') = ''
+      AND (${SPENDING_SIGN}) > 0;
+  `;
+
+  const rows = queryNativeDb<{ n: number | string; total: number | string | null }>(
+    dbPath,
+    'uncategorized total',
+    query,
+    (parts) => (parts.length >= 2 ? { n: parts[0], total: parts[1] } : null),
+  );
+  const row = rows[0];
+  if (!row) return empty;
+  const count = typeof row.n === 'number' ? row.n : parseInt(String(row.n), 10) || 0;
+  const total = typeof row.total === 'number' ? row.total : parseFloat(String(row.total ?? 0)) || 0;
+  return { count, total };
+}
