@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.16.1] - 2026-08-21
+
+### Fixed
+
+- **Report spending now matches what Wealthfolio itself shows.** The
+  companion's spending query implemented a simplified version of the app's
+  classification — `WITHDRAWAL`, `FEE`, `TAX` and nothing else — which
+  disagreed with the app in three ways, all of them over-reporting what you
+  had spent:
+
+  - A **reimbursement, refund or rebate** credit on a cash account reduces the
+    category it is filed under in Wealthfolio. The reports ignored it. Found
+    live: Food & Dining read **$157.16** in Telegram against **$16.35** in the
+    app — a $140.81 gap made entirely of Venmo paybacks, the exact rows v1.14.0
+    taught Wealthfolio to treat this way while this query was never told.
+  - **Any credit on a credit-card account** is a refund in Wealthfolio,
+    whatever its subtype. A $14.42 statement credit went uncounted.
+  - `TRANSFER_OUT` on a cash account and `INTEREST` on a credit card are
+    spending in Wealthfolio, and were not counted at all.
+
+  All four report types read through that one query, so the daily digest, the
+  weekly check-in, the monthly wrap-up and the biggest-spends list were every
+  one of them affected. Refunds are netted off the category totals but kept
+  OUT of "biggest spends", which answers where money went, not where it came
+  back from.
+
+- **A reimbursement is no longer counted twice.** These rows carry two
+  category assignments — an income one and a spending one — and the query
+  joined every taxonomy, so the same amount appeared under two different
+  category names. It now reads the spending taxonomy alone.
+
 ## [1.16.0] - 2026-08-21
 
 ### Changed
