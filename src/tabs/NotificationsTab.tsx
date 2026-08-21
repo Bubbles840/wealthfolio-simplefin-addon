@@ -58,6 +58,7 @@ export interface TelegramCfgDraft {
   glyphMode: 'clean' | 'glyphs';
   glyphOverrides: Record<string, string>;
   subcategoryDisplay: 'rollup' | 'breakdown';
+  countOffBudget: boolean;
 }
 
 /**
@@ -180,6 +181,8 @@ const EMPTY_DRAFT: TelegramCfgDraft = {
   glyphMode: 'clean',
   glyphOverrides: {},
   subcategoryDisplay: 'rollup',
+  // Default ON, matching the stored opt-OUT and the weekly report.
+  countOffBudget: true,
 };
 
 /** Fills a draft from the stored secret. A stored number is authoritative;
@@ -189,12 +192,14 @@ function draftFromStored(
   tg: any,
   glyph: { mode: 'clean' | 'glyphs'; overrides: Record<string, string> },
   subcategoryDisplay: 'rollup' | 'breakdown',
+  countOffBudget: boolean,
 ): TelegramCfgDraft {
   const base: TelegramCfgDraft = {
     ...EMPTY_DRAFT,
     glyphMode: glyph.mode,
     glyphOverrides: glyph.overrides,
     subcategoryDisplay,
+    countOffBudget,
   };
   if (!tg) return base;
 
@@ -278,8 +283,12 @@ export function useTelegramDraft(store: SecretsStore): TelegramDraftState {
       store.getTelegramConfig(),
       store.getReportGlyphStyle(),
       store.getSubcategoryDisplay(),
-    ]).then(([tg, glyph, subcat]) => {
-      const loaded = draftFromStored(tg, glyph, subcat);
+      // Optional-called: a store without it throws SYNCHRONOUSLY here, which
+      // `.catch` never sees — it would take the whole Notifications tab's load
+      // down over one setting. `true` is the default either way.
+      store.getCountOffBudget?.() ?? true,
+    ]).then(([tg, glyph, subcat, offBudget]) => {
+      const loaded = draftFromStored(tg, glyph, subcat, offBudget);
       setCfg(loaded);
       setSavedCfg(loaded);
     }).catch(() => {});
@@ -308,6 +317,9 @@ export function useTelegramDraft(store: SecretsStore): TelegramDraftState {
     }
     if ('subcategoryDisplay' in patch) {
       store.setSubcategoryDisplay(next.subcategoryDisplay).catch(() => {});
+    }
+    if ('countOffBudget' in patch) {
+      store.setCountOffBudget?.(next.countOffBudget)?.catch(() => {});
     }
   }, [cfg, store]);
 

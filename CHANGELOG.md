@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.16.0] - 2026-08-21
+
+### Changed
+
+- **Spending in categories you have not budgeted now counts against the daily
+  report's "left this month".** It did not before, which meant a $68 charge in
+  an unbudgeted category left the headline still promising $135 to spend —
+  money that was already gone. The old behaviour was defensible if you read
+  that line as *budget headroom*; it is wrong if you read it as *money still
+  available*, which is what the words say.
+
+  The figure now says so explicitly, e.g. `💰 $67 left this month · after $68
+  off budget`, and the "Off budget" list is unchanged, so the subtraction can
+  always be reconciled against it. This also makes the daily agree with the
+  **weekly** check-in, which has always counted this spending — the two used
+  to disagree about the same month.
+
+  If your unbudgeted categories are deliberate exclusions (investments being
+  the case this was kept for), set **Notifications → Report content →
+  Spending with no budget** to *Listed only, does not count* to restore the
+  previous sum.
+
+### Added
+
+- `PRIVACY.md`, describing exactly what each service receives — required for
+  the Wealthfolio community addon directory listing.
+
 ## [1.15.2] - 2026-08-16
 
 ### Fixed

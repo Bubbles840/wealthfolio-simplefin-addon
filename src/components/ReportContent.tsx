@@ -82,6 +82,9 @@ export function ReportContent({
     categoriesSummary,
     cfg.glyphMode === 'glyphs' ? 'emoji icons' : 'no icons',
     cfg.subcategoryDisplay === 'breakdown' ? 'subcategories broken down' : null,
+    // Only the non-default is worth a word in a collapsed header — "off-budget
+    // counts" is now simply how the report works.
+    cfg.countOffBudget ? null : 'off-budget ignored',
   ].filter((s): s is string => typeof s === 'string').join(' · ');
 
   /**
@@ -273,11 +276,33 @@ export function ReportContent({
         </select>
       </div>
 
-      {/* These two are their own stored settings, written on change — so they
+      <div className="sfin-field-row">
+        <label htmlFor="sfin-off-budget">Spending with no budget</label>
+        <select
+          id="sfin-off-budget"
+          value={cfg.countOffBudget ? 'count' : 'ignore'}
+          onChange={(e) => onChangeNow({ countOffBudget: e.target.value === 'count' })}
+        >
+          <option value="count">Counts against the monthly total</option>
+          <option value="ignore">Listed only, does not count</option>
+        </select>
+      </div>
+      {/* Why this is a choice rather than a fixed rule: an unbudgeted category
+          is usually something not budgeted YET, in which case the money is
+          plainly gone and the daily "left this month" must say so. But some
+          people use unbudgeted categories deliberately — investments being the
+          example — and for them subtracting it would make the figure read as
+          though their month were ruined. Only the daily digest is affected;
+          the weekly check-in has always counted this spend. */}
+      <div className="sfin-subtle" style={{ marginTop: -4 }}>
+        Either way it stays visible under &quot;Off budget&quot; in the daily report.
+      </div>
+
+      {/* These are their own stored settings, written on change — so they
           never reach the save bar, and a card that otherwise waits for Save has
           to say which of its controls does not. */}
       <div className="sfin-subtle sfin-applies-now">
-        Both of these apply immediately — no need to save.
+        These three apply immediately — no need to save.
       </div>
     </CollapsibleCard>
   );

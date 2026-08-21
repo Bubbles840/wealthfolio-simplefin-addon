@@ -1194,6 +1194,16 @@ async function readSubcategoryDisplay(wfClient: WealthfolioClient): Promise<'rol
   return raw === 'breakdown' ? 'breakdown' : 'rollup';
 }
 
+/** Mirrors the addon's `getCountOffBudget`: the opt-OUT is what is stored, so
+ *  an absent or unreadable secret means ON — the corrected behaviour, and the
+ *  one the weekly report has always used. */
+async function readCountOffBudget(wfClient: WealthfolioClient): Promise<boolean> {
+  const raw = await wfClient
+    .getAddonSecret('simplefin-sync', 'count_off_budget')
+    .catch(() => null);
+  return raw !== 'off';
+}
+
 function toDateString(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
@@ -1366,7 +1376,10 @@ export async function composeDailyDigestMessage(
     budget: budgetMap[name] ?? 0,
     children: childrenByParent.get(name),
   }));
-  let message = formatDailySpendingDigest(categories, period, await readGlyphStyle(wfClient), subcategoryDisplay);
+  let message = formatDailySpendingDigest(
+    categories, period, await readGlyphStyle(wfClient), subcategoryDisplay,
+    await readCountOffBudget(wfClient),
+  );
 
   const healthRaw = await wfClient.getAddonSecret('simplefin-sync', 'sync_health').catch(() => null);
   // Guarded parse: this secret only supplies a decorative one-line footer, so

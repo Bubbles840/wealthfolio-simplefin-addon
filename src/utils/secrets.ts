@@ -81,6 +81,7 @@ const KEYS = {
   reportCategoryCatalog: 'report_category_catalog',
   reportGlyphStyle: 'report_glyph_style',
   subcategoryDisplay: 'subcategory_display',
+  countOffBudget: 'count_off_budget',
   openCards: 'ui_open_cards',
   uiState: 'ui_state',
   pendingLargeTxAlerts: LARGE_TX_OUTBOX_SECRET_KEY,
@@ -577,6 +578,24 @@ export class SecretsStore {
   }
   async setSubcategoryDisplay(mode: 'rollup' | 'breakdown'): Promise<void> {
     await this.ctx.api.secrets.set(KEYS.subcategoryDisplay, mode);
+  }
+
+  /**
+   * Whether spending in unbudgeted categories is subtracted from the daily
+   * digest's "left this month" headline.
+   *
+   * Stored as the string `'off'` for disabled and anything else (including
+   * absent) for enabled — so the DEFAULT is on, matching the weekly report,
+   * which has always counted it. Storing the opt-out rather than the opt-in
+   * keeps every existing install on the corrected behaviour without a
+   * migration.
+   */
+  async getCountOffBudget(): Promise<boolean> {
+    const raw = await this.ctx.api.secrets.get(KEYS.countOffBudget);
+    return raw !== 'off';
+  }
+  async setCountOffBudget(on: boolean): Promise<void> {
+    await this.ctx.api.secrets.set(KEYS.countOffBudget, on ? 'on' : 'off');
   }
 
   async clearAll(): Promise<void> {
