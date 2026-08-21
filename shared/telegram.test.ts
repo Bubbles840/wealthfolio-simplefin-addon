@@ -672,16 +672,43 @@ describe('formatDailySpendingDigest', () => {
     expect(text).toContain('📅 23 days left in the month');
   });
 
-  it('sums the month summary over budgeted categories only', () => {
+  it('takes unbudgeted spending off the month summary, and says that it did', () => {
+    const cats = [
+      { name: 'Groceries', monthSpent: 550, weekSpent: 50, budget: 1000 },
+      { name: 'Shopping', monthSpent: 40, weekSpent: 40, budget: 0 },
+    ];
+    const text = dailyGlyphs(cats, period);
+    // 410, not 450. This line used to report the budgeted sum alone, on the
+    // reasoning that unbudgeted spend comes out of nobody's budget — true of
+    // budget headroom, false of "left this month", which is read as money
+    // still available. The $40 is gone either way.
+    expect(text).toContain('💰 $410 left this month · after $40 off budget');
+    // And it is still itemised, so the subtraction can be reconciled.
+    expect(text).toContain('Off budget:');
+    expect(text).toContain('$40 spent');
+  });
+
+  it('restores the budgeted-only sum when off-budget spending is not counted', () => {
+    const cats = [
+      { name: 'Groceries', monthSpent: 550, weekSpent: 50, budget: 1000 },
+      { name: 'Shopping', monthSpent: 40, weekSpent: 40, budget: 0 },
+    ];
+    const text = formatDailySpendingDigest(cats, period, GLYPHS, 'rollup', false);
+    expect(text).toContain('💰 $450 left this month');
+    // No parenthetical when nothing was subtracted — it would be noise.
+    expect(text).not.toContain('off budget ·');
+    expect(text).not.toContain('after $');
+    // Still listed: the setting governs whether it COUNTS, never whether it shows.
+    expect(text).toContain('Off budget:');
+  });
+
+  it('says nothing about off-budget when there is none', () => {
     const text = dailyGlyphs(
-      [
-        { name: 'Groceries', monthSpent: 550, weekSpent: 50, budget: 1000 },
-        { name: 'Shopping', monthSpent: 40, weekSpent: 40, budget: 0 },
-      ],
+      [{ name: 'Groceries', monthSpent: 550, weekSpent: 50, budget: 1000 }],
       period,
     );
-    // 450, not 410 — the unbudgeted $40 is not spent out of anyone's budget.
     expect(text).toContain('💰 $450 left this month');
+    expect(text).not.toContain('off budget');
   });
 
   it('keeps cents on the spendable weekly figure and drops them on month context', () => {
@@ -754,7 +781,12 @@ describe('formatDailySpendingDigest', () => {
               { name: 'Groceries', budget: b1, monthSpent: s1, weekSpent: Math.min(s1, 25) },
               { name: 'Dining', budget: b2, monthSpent: s2, weekSpent: Math.min(s2, 25) },
             ];
-            const total = (b1 > 0 ? b1 - s1 : 0) + (b2 > 0 ? b2 - s2 : 0);
+            // Mirrors the headline the digest now reports: budgeted remainder
+            // MINUS spend in categories with no budget. Off-budget only counts
+            // when money actually moved, matching the line that lists it.
+            const budgeted = (b1 > 0 ? b1 - s1 : 0) + (b2 > 0 ? b2 - s2 : 0);
+            const offBudget = (b1 <= 0 && s1 > 0 ? s1 : 0) + (b2 <= 0 && s2 > 0 ? s2 : 0);
+            const total = budgeted - offBudget;
             const text = dailyGlyphs(cats, period);
             const where = JSON.stringify(cats);
             // A minus sign must never reach the screen either: every figure in

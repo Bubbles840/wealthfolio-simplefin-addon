@@ -67,6 +67,8 @@ const makeProps = () => ({
     getAmazonMailStatus: vi.fn(async () => null as any),
     getReportGlyphStyle: vi.fn(async () => ({ mode: 'clean' as const, overrides: {} })),
     setReportGlyphStyle: vi.fn(async () => {}),
+    getCountOffBudget: vi.fn(async () => true),
+    setCountOffBudget: vi.fn(async () => {}),
     getSubcategoryDisplay: vi.fn(async () => 'rollup' as const),
     setSubcategoryDisplay: vi.fn(async () => {}),
     getCompanionVersion: vi.fn(async () => null),

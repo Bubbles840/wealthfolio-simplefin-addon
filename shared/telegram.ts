@@ -729,6 +729,27 @@ export function formatDailySpendingDigest(
   period: DailyDigestWindow,
   style: GlyphStyle = DEFAULT_GLYPH_STYLE,
   subcategories: SubcategoryDisplay = 'rollup',
+  /**
+   * Whether spending in categories with no budget comes out of the headline
+   * "left this month" figure.
+   *
+   * Defaults to TRUE, which is a deliberate change from how this read for its
+   * first year. The old behaviour summed budgeted categories only, on the
+   * reasoning that unbudgeted spend "does not come out of anyone's budget" —
+   * coherent if the line means budget headroom, wrong if it means money you can
+   * still spend, which is how the phrase actually reads. A $68 charge in a
+   * category the user simply had not budgeted yet left `$135 left this month`
+   * standing, and the $68 was gone.
+   *
+   * True is also what makes the two reports agree: the WEEKLY check-in has
+   * always computed `totalBudget - totalSpent` with `totalSpent` covering every
+   * category, budgeted or not, so the daily digest was the outlier.
+   *
+   * False restores the old sum, for anyone whose off-budget categories are
+   * deliberate exclusions (investments being the case that motivated keeping
+   * the choice) rather than things they have not got round to budgeting.
+   */
+  countOffBudget = true,
 ): string {
   const { daysFromWeekStartToMonthEnd, daysLeftInMonthInclusive } = period;
   const days = Math.max(1, daysLeftInMonthInclusive);
@@ -747,6 +768,9 @@ export function formatDailySpendingDigest(
   // when money actually moved: a category with a leftover zero-amount budget row
   // and no spend used to print `no budget · $0 spent` — true, and pure noise.
   const offBudgetLines: string[] = [];
+  /** Month-to-date spend in categories with no budget. Accumulated alongside
+   *  the lines above so the two can never describe different sets. */
+  let offBudgetTotal = 0;
   let budgetedRemaining = 0;
   let anyBudget = false;
 
@@ -771,6 +795,7 @@ export function formatDailySpendingDigest(
     if (c.budget <= 0) {
       if (c.monthSpent > 0) {
         offBudgetLines.push(`${glyph}${name}  ${moneyWhole(c.monthSpent)} spent`);
+        offBudgetTotal += c.monthSpent;
       }
       continue;
     }
@@ -802,9 +827,15 @@ export function formatDailySpendingDigest(
     }
   }
 
-  // Summed over budgeted categories only: an unbudgeted category's spend does
-  // not come out of anyone's budget, so folding it in would understate what is
-  // actually left.
+  // `budgetedRemaining` is summed over budgeted categories only. Whether
+  // UNBUDGETED spend is then taken off it is `countOffBudget`'s job, below.
+  //
+  // This used to read "folding it in would understate what is actually left",
+  // and that reasoning was wrong in the direction that costs the reader money:
+  // it treats the line as budget headroom, while the words "left this month"
+  // are read as money still available. Both cannot be right, and the wrong one
+  // was reporting $135 left to someone who had just spent $68 out of a category
+  // they had not budgeted yet.
   //
   // The over-budget branch is the whole point of this line existing in two
   // forms. Without it the summary printed `💰 $1,494 left this month` for a
@@ -818,12 +849,23 @@ export function formatDailySpendingDigest(
   // even a real 30-cent overspend renders as `$0` in a whole-dollar summary.
   // `🚨 $0 over budget` is a false alarm where `$0 left` already promises
   // nothing.
-  const overBudget = budgetedRemaining < 0 && moneyWhole(Math.abs(budgetedRemaining)) !== '$0';
+  // The figure the headline actually reports. Off-budget spend is subtracted
+  // here rather than inside the loop so `budgetedRemaining` keeps meaning
+  // exactly what its name says, and the two are visibly different quantities.
+  const countedOffBudget = countOffBudget ? offBudgetTotal : 0;
+  const headlineRemaining = budgetedRemaining - countedOffBudget;
+  // Named so the reader can reconcile the headline against the "Off budget:"
+  // block below it — a total that silently absorbed $68 would just look wrong.
+  // Only when it changed the figure: `after $0 off budget` is noise.
+  const offBudgetNote = countedOffBudget > 0 && moneyWhole(countedOffBudget) !== '$0'
+    ? ` · after ${moneyWhole(countedOffBudget)} off budget`
+    : '';
+  const overBudget = headlineRemaining < 0 && moneyWhole(Math.abs(headlineRemaining)) !== '$0';
   const summary = !anyBudget
     ? `${headerGlyph('📅', style)}${days} ${dayWord} left in the month`
     : overBudget
-      ? `🚨 ${moneyWhole(Math.abs(budgetedRemaining))} over budget this month · ${days} ${dayWord} to go`
-      : `${headerGlyph('💰', style)}${moneyWhole(budgetedRemaining)} left this month · ${days} ${dayWord} to go`;
+      ? `🚨 ${moneyWhole(Math.abs(headlineRemaining))} over budget this month${offBudgetNote} · ${days} ${dayWord} to go`
+      : `${headerGlyph('💰', style)}${moneyWhole(headlineRemaining)} left this month${offBudgetNote} · ${days} ${dayWord} to go`;
 
   // An empty budgeted block can happen while off-budget lines exist (every
   // budget deleted, spending continues); joining blocks that exist avoids a
