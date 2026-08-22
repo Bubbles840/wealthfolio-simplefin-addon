@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.20.1] - 2026-08-21
+
+### Changed
+
+- **The daily headline is one figure again.** It had grown a parenthetical —
+  `· after $100 off budget & uncategorized` — which was accurate and still
+  cluttered the one line most people actually read, putting three numbers
+  where the question has one answer. The "Off budget" and "Uncategorized"
+  blocks above it already itemise every dollar involved, so nothing is hidden
+  and the arithmetic stays checkable.
+
+  The figure itself is unchanged: it is still net of both.
+
 ## [1.20.0] - 2026-08-21
 
 Three fixes for the cases that fail **quietly** — the only kind that costs you

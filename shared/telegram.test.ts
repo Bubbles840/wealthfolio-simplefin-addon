@@ -682,7 +682,9 @@ describe('formatDailySpendingDigest', () => {
     // reasoning that unbudgeted spend comes out of nobody's budget — true of
     // budget headroom, false of "left this month", which is read as money
     // still available. The $40 is gone either way.
-    expect(text).toContain('💰 $410 left this month · after $40 off budget');
+    // Net of the $40, but the line does not say so — the block below does.
+    expect(text).toContain('💰 $410 left this month');
+    expect(text).not.toContain('after $');
     // And it is still itemised, so the subtraction can be reconciled.
     expect(text).toContain('Off budget:');
     expect(text).toContain('$40 spent');
@@ -712,8 +714,9 @@ describe('formatDailySpendingDigest', () => {
     );
     expect(text).toContain('Uncategorized');
     expect(text).toContain('2 charges with no category');
-    // 450 - 20.76 = 429.24 -> $429
-    expect(text).toContain('💰 $429 left this month · after $21 uncategorized');
+    // 450 - 20.76 = 429.24 -> $429, with no parenthetical explaining it.
+    expect(text).toContain('💰 $429 left this month');
+    expect(text).not.toContain('after $');
   });
 
   it('names both when off-budget and uncategorized are present', () => {
@@ -724,9 +727,8 @@ describe('formatDailySpendingDigest', () => {
       ],
       period, GLYPHS, 'rollup', true, { count: 1, total: 20.76 },
     );
-    // Pointing at only one of the two blocks would send the reader hunting the
-    // missing money in the wrong place.
-    expect(text).toContain('off budget & uncategorized');
+    // Both are itemised below; the headline stays a single figure.
+    expect(text).not.toContain('after $');
     expect(text).toContain('Off budget:');
     expect(text).toContain('Uncategorized');
   });
