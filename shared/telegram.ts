@@ -906,21 +906,20 @@ export function formatDailySpendingDigest(
   // Named so the reader can reconcile the headline against the "Off budget:"
   // block below it — a total that silently absorbed $68 would just look wrong.
   // Only when it changed the figure: `after $0 off budget` is noise.
-  // Names whichever of the two it actually covers. "after $89 off budget" for a
-  // figure that is mostly unfiled charges would send the reader looking at the
-  // wrong block for the missing money.
-  const noteSubject = offBudgetTotal > 0 && uncategorizedTotal > 0
-    ? 'off budget & uncategorized'
-    : uncategorizedTotal > 0 ? 'uncategorized' : 'off budget';
-  const offBudgetNote = countedOffBudget > 0 && moneyWhole(countedOffBudget) !== '$0'
-    ? ` · after ${moneyWhole(countedOffBudget)} ${noteSubject}`
-    : '';
+  // NO parenthetical naming the subtraction. It used to read "· after $100 off
+  // budget & uncategorized", which was accurate and still cluttered the one
+  // line people actually read — three figures competing where one answers the
+  // question. The blocks above already itemise both, so the arithmetic remains
+  // checkable; the headline just states the answer.
+  //
+  // The subtraction itself is unchanged. `headlineRemaining` is still net of
+  // both, so this line is not the budgeted sum and should not be read as one.
   const overBudget = headlineRemaining < 0 && moneyWhole(Math.abs(headlineRemaining)) !== '$0';
   const summary = !anyBudget
     ? `${headerGlyph('📅', style)}${days} ${dayWord} left in the month`
     : overBudget
-      ? `🚨 ${moneyWhole(Math.abs(headlineRemaining))} over budget this month${offBudgetNote} · ${days} ${dayWord} to go`
-      : `${headerGlyph('💰', style)}${moneyWhole(headlineRemaining)} left this month${offBudgetNote} · ${days} ${dayWord} to go`;
+      ? `🚨 ${moneyWhole(Math.abs(headlineRemaining))} over budget this month · ${days} ${dayWord} to go`
+      : `${headerGlyph('💰', style)}${moneyWhole(headlineRemaining)} left this month · ${days} ${dayWord} to go`;
 
   // An empty budgeted block can happen while off-budget lines exist (every
   // budget deleted, spending continues); joining blocks that exist avoids a
