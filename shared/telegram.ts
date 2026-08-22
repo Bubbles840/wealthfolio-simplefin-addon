@@ -589,6 +589,44 @@ export const RECATEGORIZE_ENTRY_CALLBACK = 'cz:recat';
  * keyboard — an import a rule filed completely leaves nothing to dismiss and is
  * exactly the case where moving one of those filings is what the reader wants.
  */
+/**
+ * Transactions the bank reported that Wealthfolio refused to store, because its
+ * own date+amount check read them as duplicates.
+ *
+ * Worth a message rather than a log line because of what one of these cost: a
+ * real $1,300 withdrawal on 2026-06-26 was refused as a copy of its
+ * same-amount sibling from the 25th, and the account was wrong by that amount
+ * for six weeks. Nothing anywhere said so.
+ *
+ * Worded as a question, not an alarm. Most refusals ARE duplicates — the same
+ * transaction re-sent under a new id — and the reader is the only one who can
+ * tell which kind this is.
+ */
+export function formatRefusedCreatesAlert(
+  rows: Array<{ description: string; amountCents: number; currency: string; accountName: string; date: string }>,
+  style: GlyphStyle = DEFAULT_GLYPH_STYLE,
+): string {
+  const head = `${headerGlyph('🔍', style)}*${rows.length} transaction${rows.length === 1 ? '' : 's'} not imported*`;
+  const lines = rows.slice(0, 10).map((r) =>
+    `• ${money(r.amountCents / 100)}  ${escapeMarkdown(r.description || 'no description')}`
+    + ` — ${escapeMarkdown(r.accountName)} · ${r.date}`,
+  );
+  const more = rows.length > 10 ? [`_…and ${rows.length - 10} more._`] : [];
+  return [
+    head,
+    '',
+    ...lines,
+    ...more,
+    '',
+    escapeMarkdown(
+      'Your bank reported these, and Wealthfolio refused them as duplicates of '
+      + 'transactions it already holds. That is usually right. Check them if you '
+      + 'have two genuine charges of the same amount around the same date — that '
+      + 'case looks identical, and the second one would be missing.',
+    ),
+  ].join('\n');
+}
+
 export function buildDismissKeyboard(
   rows: Array<{ activityId: string; description: string; amountCents: number }>,
   withRecategorize = false,

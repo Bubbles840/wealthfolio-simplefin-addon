@@ -13,7 +13,7 @@ import { runSyncCore, descriptionFromComment, txIdFromComment } from '../../shar
 import type { SyncResult } from '../../shared/sync-core.js';
 import { RestSyncHost, RestSyncStore } from './rest-host.js';
 import { WealthfolioClient } from './wealthfolio.js';
-import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatMonthlyWrapUp, formatSyncHealthFooter, formatLargeTransactionAlert, formatBalanceDriftAlert, formatFeedLagNotice, formatStuckTransferAlert, formatDuplicatePruneAlert, formatImportNotice, buildDismissKeyboard, IMPORT_NOTICE_UNCATEGORIZED_CAP, escapeMarkdown, LARGE_TX_OUTBOX_SECRET_KEY, RECATEGORIZE_ENTRY_CALLBACK } from '../../shared/telegram.js';
+import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatMonthlyWrapUp, formatSyncHealthFooter, formatLargeTransactionAlert, formatBalanceDriftAlert, formatFeedLagNotice, formatStuckTransferAlert, formatDuplicatePruneAlert, formatImportNotice, formatRefusedCreatesAlert, buildDismissKeyboard, IMPORT_NOTICE_UNCATEGORIZED_CAP, escapeMarkdown, LARGE_TX_OUTBOX_SECRET_KEY, RECATEGORIZE_ENTRY_CALLBACK } from '../../shared/telegram.js';
 import { pruneDismissals, mergeDismissals } from './dismissals.js';
 import { startTelegramListener } from './telegram-listener.js';
 import type { TelegramListenerDeps } from './telegram-listener.js';
@@ -25,7 +25,7 @@ import type { GlyphStyle, InlineKeyboard } from '../../shared/telegram.js';
 import type { DismissalLedger } from './dismissals.js';
 import type { SyncHealth } from '../../shared/telegram.js';
 import { SIMPLEFIN_SYNC_VERSION, COMPANION_VERSION_SECRET_KEY } from '../../shared/version.js';
-import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeCategorizedSpending, getNativeSpendingCategories, getNativeCategoryCatalog, getNativeSubcategorySpending, getNativeUncategorizedSpendingTotal } from './sqlite-native.js';
+import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeCategorizedSpending, getNativeSpendingCategories, getNativeCategoryCatalog, getNativeSubcategorySpending, getNativeUncategorizedSpendingTotal, countRulePatternMatches } from './sqlite-native.js';
 import { publishUncategorizedStatusForDbPath } from './uncategorized-status.js';
 import { createCategorizeController, SPENDING_TAXONOMY_ID } from './categorize.js';
 import { createAmazonLabelMenu, type AmazonLabelMenu } from './amazon-labels.js';
@@ -536,6 +536,12 @@ async function fileAmazonLabelledCharges(wfClient: WealthfolioClient): Promise<v
     log,
   });
   if (res.filed > 0) log(`Filed ${res.filed} Amazon charge(s) into their mapped category.`);
+  if (res.needRule.length > 0) {
+    // Visible, not filed: these are exactly the labels the Amazon card counts
+    // as needing a rule, and burying them under the default would remove the
+    // only sign that they do.
+    log(`Amazon filing: left unfiled pending a rule — ${res.needRule.join(', ')}`);
+  }
   if (res.unknownCategories.length > 0) {
     log(`Amazon filing: no such category in Wealthfolio — ${res.unknownCategories.join(', ')}`);
   }
@@ -763,7 +769,7 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
         importedTransactions: [], largeTransactionAlerts: [], balanceDriftAlerts: [],
         // `null`, not `[]`: nothing was read, so this says nothing about what
         // is mapped — and `[]` here would clear the notice ledger.
-        prunedDuplicates: [], unmappedAccounts: null,
+        prunedDuplicates: [], unmappedAccounts: null, refusedCreates: [],
       };
       // Not-yet-configured is treated as healthy, not a failure: it's the
       // expected state before the user sets up SimpleFin, and would
@@ -853,6 +859,22 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
     await rollBackUndeliveredDriftAlerts(store, undeliveredDrift);
 
     await deliverDuplicatePruneNotice(wfClient, result.prunedDuplicates);
+
+    // Transactions the bank reported that Wealthfolio refused as duplicates.
+    // Announced rather than logged at debug, because one of these was a real
+    // $1,300 withdrawal that went unnoticed for six weeks.
+    if (result.refusedCreates.length > 0) {
+      log(`${result.refusedCreates.length} transaction(s) refused as duplicates by Wealthfolio.`);
+      try {
+        const tgRaw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_config').catch(() => null);
+        const tg = parseSecretJson<any>(tgRaw, 'telegram_config');
+        if (tg?.botToken && tg?.chatId && tg.enabled !== false) {
+          await sendTelegramMessage(tg.botToken, tg.chatId, formatRefusedCreatesAlert(result.refusedCreates));
+        }
+      } catch (err) {
+        log(`Refused-create notice error: ${formatError(err)}`);
+      }
+    }
 
     // Announced once per account id, and OUTSIDE the telegram_config block
     // below: this function does its own config check, because it must not
@@ -2312,6 +2334,15 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
     // Its own store over the listener's long-lived client: `RestSyncStore` is a
     // thin wrapper over addon secrets, and the one inside `runCompanionSync` is
     // scoped to a single run.
+    countMatches: async (pattern: string) => {
+      const dbPath = process.env.WEALTHFOLIO_DB_PATH || '';
+      if (!dbPath) return { total: 0, spending: 0 };
+      // A year back: a rule is permanent, so the question is what it catches in
+      // general, not what one month happens to contain.
+      const end = new Date();
+      const start = new Date(end.getFullYear() - 1, end.getMonth(), end.getDate());
+      return countRulePatternMatches(dbPath, pattern, toDateString(start), toDateString(new Date(end.getFullYear(), end.getMonth(), end.getDate() + 1)));
+    },
     readRules: () => new RestSyncStore(wfClient).getMappingRules(),
     writeRules: (rules) => new RestSyncStore(wfClient).setMappingRules(rules),
     log,

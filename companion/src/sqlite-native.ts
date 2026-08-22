@@ -930,3 +930,50 @@ export function getNativeUncategorizedSpendingTotal(
   const total = typeof row.total === 'number' ? row.total : parseFloat(String(row.total ?? 0)) || 0;
   return { count, total };
 }
+
+/**
+ * How many activities in the window a would-be mapping rule's pattern matches,
+ * split by whether they are currently counted as spending.
+ *
+ * Exists so "mark one as a transfer" can say what it is about to do. The rule
+ * that button writes is a `contains` match on the payee wording, and a generic
+ * descriptor — `ACH WITHDRAWAL`, say — would retype EVERY such row as a
+ * transfer, removing all of it from spending, silently and retroactively. A
+ * count turns that from an accident into a choice.
+ */
+export function countRulePatternMatches(
+  dbPath: string,
+  pattern: string,
+  startInclusive: string,
+  endExclusive: string,
+): { total: number; spending: number } {
+  const empty = { total: 0, spending: 0 };
+  if (!dbPath || !existsSync(dbPath)) return empty;
+  if (!validDateBounds(startInclusive, endExclusive)) return empty;
+  // Interpolated like every other bound in this file (the CLI fallback cannot
+  // bind), so the pattern is escaped for SQL and stripped of LIKE wildcards —
+  // a `%` in a descriptor would otherwise widen the match far past what the
+  // rule itself would do, and understate nothing but overstate wildly.
+  const safe = pattern.replace(/'/g, "''").replace(/[%_]/g, ' ');
+  if (!safe.trim()) return empty;
+
+  const query = `
+    SELECT COUNT(*) as total,
+           SUM(CASE WHEN (${SPENDING_SIGN}) > 0 THEN 1 ELSE 0 END) as spending
+    FROM activities a
+    JOIN accounts acc ON a.account_id = acc.id
+    WHERE a.activity_date >= '${startInclusive}'
+      AND a.activity_date < '${endExclusive}'
+      AND LOWER(COALESCE(a.notes, '')) LIKE '%' || LOWER('${safe}') || '%';
+  `;
+  const rows = queryNativeDb<{ total: number | string; spending: number | string | null }>(
+    dbPath,
+    'rule pattern matches',
+    query,
+    (parts) => (parts.length >= 2 ? { total: parts[0], spending: parts[1] } : null),
+  );
+  const row = rows[0];
+  if (!row) return empty;
+  const num = (v: unknown) => (typeof v === 'number' ? v : parseInt(String(v ?? 0), 10) || 0);
+  return { total: num(row.total), spending: num(row.spending) };
+}

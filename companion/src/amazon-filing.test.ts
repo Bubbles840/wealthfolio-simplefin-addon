@@ -82,6 +82,34 @@ describe('fileAmazonCharges', () => {
     expect(assigned).toEqual([]);
   });
 
+  it('leaves a label NO rule matched unfiled, and reports it', async () => {
+    // The default is a guess. Filing on a guess buries it where nothing shows
+    // it, destroying the "needs a rule" signal the Amazon card counts on — and
+    // an uncategorised charge is at least visible.
+    const { deps, assigned } = make({
+      uncategorized: vi.fn(async () => [
+        { activityId: 'a1', notes: 'Amazon · Amazon: Something Unusual · TRN-1' },
+      ]),
+    });
+    const res = await fileAmazonCharges(deps as any);
+    expect(assigned).toEqual([]);
+    expect(res.filed).toBe(0);
+    expect(res.needRule).toEqual(['Something Unusual']);
+  });
+
+  it('files an unmatched label once the user overrides it', async () => {
+    // The override IS the rule — `resolveAmazonCategory` reports `matched` for
+    // it — so the "Change: <label>" button in Telegram makes it file.
+    const { deps, assigned } = make({
+      uncategorized: vi.fn(async () => [
+        { activityId: 'a1', notes: 'Amazon · Amazon: Something Unusual · TRN-1' },
+      ]),
+      readConfig: vi.fn(async () => ({ labelOverrides: { 'Something Unusual': 'Housing' } } as any)),
+    });
+    await fileAmazonCharges(deps as any);
+    expect(assigned).toEqual([['a1', 'cat-housing']]);
+  });
+
   it('reports a category this Wealthfolio does not have, instead of retrying it silently', async () => {
     const { deps, assigned } = make({
       uncategorized: vi.fn(async () => [{ activityId: 'a1', notes: 'Amazon · Amazon: Pet Supplies · TRN-1' }]),
@@ -118,7 +146,7 @@ describe('fileAmazonCharges', () => {
     // It runs after a sync that already succeeded; a filing problem is not a
     // sync failure.
     const { deps } = make({ uncategorized: vi.fn(async () => { throw new Error('no database'); }) });
-    await expect(fileAmazonCharges(deps as any)).resolves.toEqual({ filed: 0, unknownCategories: [] });
+    await expect(fileAmazonCharges(deps as any)).resolves.toEqual({ filed: 0, unknownCategories: [], needRule: [] });
   });
 
   it('does nothing, and reads nothing, when no row carries a label', async () => {

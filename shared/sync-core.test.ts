@@ -2367,6 +2367,35 @@ describe('runSyncCore save failures', () => {
     saveManyHook: hook,
   });
 
+  it('reports a create the host refused, so a real transaction cannot vanish', async () => {
+    // 2026-06-26: a genuine $1,300 withdrawal was refused as a duplicate of its
+    // same-amount sibling from the 25th. The account was wrong by that amount
+    // for six weeks, because the refusal was logged at debug and never
+    // surfaced. The plan only ever proposes a create for a tx id NO stored row
+    // carries, so every refusal here is Wealthfolio's own hash talking.
+    const { host, store } = createFakeHost(twoTxSeed((req) => {
+      // Bulk fails, then the row-by-row retry refuses only the "duplicate".
+      if ((req.creates ?? []).length > 1) throw new Error('bulk refused');
+      const c = (req.creates ?? [])[0];
+      if (c && String(c.comment).includes('tx-dup')) {
+        throw new Error('A matching activity already exists');
+      }
+    }));
+
+    const result = await runSyncCore(host, store, {});
+
+    expect(result.refusedCreates).toHaveLength(1);
+    expect(result.refusedCreates[0]).toMatchObject({ txId: 'tx-dup', amountCents: 1250 });
+    // The good row still imported: one refusal never costs the batch.
+    expect(result.imported).toBe(1);
+  });
+
+  it('reports nothing when every create landed', async () => {
+    const { host, store } = createFakeHost(twoTxSeed(undefined));
+    const result = await runSyncCore(host, store, {});
+    expect(result.refusedCreates).toEqual([]);
+  });
+
   it('falls back row-by-row when the bulk save THROWS, not just when it reports errors', async () => {
     // The addon's SDK adapter lets `ctx.api.activities.saveMany` throw; the
     // companion's REST adapter returns `{errors}`. The fallback only handled the

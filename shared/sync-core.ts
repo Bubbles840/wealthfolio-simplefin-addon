@@ -426,6 +426,31 @@ export interface SyncResult {
    * restarted by hand often — re-announcing the same account indefinitely.
    */
   unmappedAccounts: UnmappedAccount[] | null;
+  /**
+   * Creates the host REFUSED — planned because no stored row carried that
+   * transaction id, then rejected anyway by Wealthfolio's own date+amount
+   * duplicate check.
+   *
+   * Every one of these is a transaction the bank reported and Wealthfolio does
+   * not have. Usually harmless (a re-sent copy of something already stored
+   * under a different id), but not always: on 2026-06-26 a REAL $1,300
+   * withdrawal was refused as a duplicate of its same-amount sibling from the
+   * day before, and the account sat $1,300 wrong for six weeks because nothing
+   * said so. It was logged at debug level and never surfaced.
+   *
+   * Reported so a human can look. Deliberately not auto-retried or force-created:
+   * the refusals really are duplicates most of the time, and inventing a second
+   * copy of a real transaction is the worse error.
+   */
+  refusedCreates: Array<{
+    txId: string;
+    description: string;
+    amountCents: number;
+    currency: string;
+    accountName: string;
+    /** YYYY-MM-DD. */
+    date: string;
+  }>;
 }
 
 export interface SyncOptions {
@@ -998,17 +1023,17 @@ export async function runSyncCore(
   // Enforce minimum interval unless the caller forces (Sync anyway) or heals
   const lastSync = await store.getLastSyncAt();
   if (!opts.force && !heal && lastSync && Date.now() - lastSync.getTime() < MIN_SYNC_INTERVAL_MS) {
-    return { imported: 0, skipped: 0, errors: [INTERVAL_SKIP_MESSAGE], stuckTransferAlerts: [], importedTransactions: [], largeTransactionAlerts: [], balanceDriftAlerts: [], prunedDuplicates: [], unmappedAccounts: null };
+    return { imported: 0, skipped: 0, errors: [INTERVAL_SKIP_MESSAGE], stuckTransferAlerts: [], importedTransactions: [], largeTransactionAlerts: [], balanceDriftAlerts: [], prunedDuplicates: [], unmappedAccounts: null, refusedCreates: [] };
   }
 
   const accessUrl = await store.getAccessUrl();
   if (!accessUrl) {
-    return { imported: 0, skipped: 0, errors: ['Not configured: no access URL'], stuckTransferAlerts: [], importedTransactions: [], largeTransactionAlerts: [], balanceDriftAlerts: [], prunedDuplicates: [], unmappedAccounts: null };
+    return { imported: 0, skipped: 0, errors: ['Not configured: no access URL'], stuckTransferAlerts: [], importedTransactions: [], largeTransactionAlerts: [], balanceDriftAlerts: [], prunedDuplicates: [], unmappedAccounts: null, refusedCreates: [] };
   }
 
   const mapping = await store.getAccountMapping();
   if (!mapping) {
-    return { imported: 0, skipped: 0, errors: ['Not configured: no account mapping'], stuckTransferAlerts: [], importedTransactions: [], largeTransactionAlerts: [], balanceDriftAlerts: [], prunedDuplicates: [], unmappedAccounts: null };
+    return { imported: 0, skipped: 0, errors: ['Not configured: no account mapping'], stuckTransferAlerts: [], importedTransactions: [], largeTransactionAlerts: [], balanceDriftAlerts: [], prunedDuplicates: [], unmappedAccounts: null, refusedCreates: [] };
   }
 
   const rules = await store.getMappingRules();
@@ -1150,6 +1175,8 @@ export async function runSyncCore(
    * in front of was not good enough on its own.
    */
   const unmappedAccounts: UnmappedAccount[] = [];
+  /** See `SyncResult.refusedCreates`. */
+  const refusedCreates: SyncResult['refusedCreates'] = [];
   /** Accounts the user has said they do not want synced. Reported as neither
    *  unmapped nor a problem — see `SyncStore.getIgnoredAccounts`. Read once
    *  per run; a failure degrades to "nothing ignored", which is the safe
@@ -1907,6 +1934,22 @@ export async function runSyncCore(
       // it, and the next run measures accurately against a fresh valuation — where
       // re-deriving the figure would mean re-running the whole episode decision on a
       // number this run has not earned the right to state.
+      // Every planned create that did not land. The plan only ever proposes a
+      // create for a tx id NO stored row carries, so a refusal here is always
+      // Wealthfolio's own duplicate hash talking — which is exactly the check
+      // that ate a real transaction in June.
+      for (const t of plan.creates) {
+        if (landedTxIds.has(t.txId)) continue;
+        refusedCreates.push({
+          txId: t.txId,
+          description: descByKey.get(accountTxKey(sfAccount.id, t.txId)) ?? '',
+          amountCents: t.absCents,
+          currency: sfAccount.currency,
+          accountName: wfNames.get(t.wfAccountId) || sfAccount.name,
+          date: t.date,
+        });
+      }
+
       if (driftAssumedCreates && driftAssumedCreates.some((id) => !landedTxIds.has(id))) {
         const snapshot = accountBalances[sfAccount.id];
         if (snapshot) {
@@ -2410,5 +2453,6 @@ export async function runSyncCore(
   return {
     imported, skipped, errors, stuckTransferAlerts, importedTransactions,
     largeTransactionAlerts, balanceDriftAlerts, prunedDuplicates, unmappedAccounts,
+    refusedCreates,
   };
 }
