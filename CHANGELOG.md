@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.18.0] - 2026-08-21
+
+### Fixed
+
+- **Amazon charges are now actually filed into their category.** The feature
+  stopped one step short of its name: a matched charge got its label written
+  into the description (`… · Amazon: Skincare`) and the label→category mapping
+  was recorded and announced — but nothing ever put a category on the
+  transaction. It assumed a Wealthfolio categorisation rule would match that
+  description, and nothing creates those rules either, so every Amazon charge
+  landed uncategorised while the addon reported the category it *would* have
+  used.
+
+  Each sync now files uncategorised Amazon-labelled charges from the last 60
+  days, so ones stranded by the old behaviour are picked up too, not just new
+  ones. A **mixed-category order is deliberately left alone** — one charge
+  covering $190 of electronics and $10 of groceries has no honest single
+  category, and belongs in the needs-a-category list for you to split.
+
+- **The weekly check-in moves to Sunday 8pm** (was Saturday 9am). Both reports
+  define a week as Monday–Sunday, so a Saturday send summarised a week with
+  two days still to run: the check-in would arrive, and the next two daily
+  digests would go on showing leftover for that same week. Sunday evening is
+  the last useful moment inside the week — the figures are effectively final,
+  and it lands while there is still time to act before Monday.
+
+  Set `WEEKLY_REPORT_SCHEDULE` if you want a different time; an explicit value
+  in your compose file is unaffected by this change.
+
 ## [1.17.1] - 2026-08-21
 
 ### Fixed

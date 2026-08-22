@@ -29,6 +29,7 @@ import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getN
 import { publishUncategorizedStatusForDbPath } from './uncategorized-status.js';
 import { createCategorizeController, SPENDING_TAXONOMY_ID } from './categorize.js';
 import { createAmazonLabelMenu, type AmazonLabelMenu } from './amazon-labels.js';
+import { fileAmazonCharges } from './amazon-filing.js';
 import type { CategorizeController, CategorizeDeps } from './categorize.js';
 import { AMAZON_MAIL_STATUS_SECRET_KEY, UNCATEGORIZED_STATUS_SECRET_KEY } from '../../shared/status-keys.js';
 import {
@@ -509,6 +510,37 @@ async function pollAmazonMail(
  * listed alongside the ones that filed themselves correctly.
  */
 /**
+ * Files Amazon-labelled charges that have no category, using the same
+ * label→category mapping the notice reports. See `amazon-filing.ts` for why
+ * this is a correction rather than a new feature.
+ *
+ * A 60-day window rather than the current month: a charge stranded by the old
+ * behaviour is precisely what wants fixing, and an order email can arrive days
+ * after the charge it belongs to.
+ */
+async function fileAmazonLabelledCharges(wfClient: WealthfolioClient): Promise<void> {
+  const dbPath = process.env.WEALTHFOLIO_DB_PATH || '';
+  if (!dbPath) return;
+  const end = new Date();
+  const start = new Date(end.getFullYear(), end.getMonth(), end.getDate() - 60);
+  const res = await fileAmazonCharges({
+    uncategorized: async () => getNativeUncategorizedSpending(dbPath, toDateString(start), toDateString(new Date(end.getFullYear(), end.getMonth(), end.getDate() + 1))),
+    categories: async () => getNativeSpendingCategories(dbPath),
+    readConfig: async () => parseSecretJson<any>(
+      await wfClient.getAddonSecret('simplefin-sync', AMAZON_CONFIG_SECRET_KEY).catch(() => null),
+      AMAZON_CONFIG_SECRET_KEY,
+    ),
+    assign: (activityId, categoryId) =>
+      wfClient.assignActivityCategory(activityId, SPENDING_TAXONOMY_ID, categoryId),
+    log,
+  });
+  if (res.filed > 0) log(`Filed ${res.filed} Amazon charge(s) into their mapped category.`);
+  if (res.unknownCategories.length > 0) {
+    log(`Amazon filing: no such category in Wealthfolio — ${res.unknownCategories.join(', ')}`);
+  }
+}
+
+/**
  * The one label-menu instance, shared between the LISTENER (which owns taps)
  * and the SYNC (which sends the notice the buttons are attached to). It has to
  * be one object: a tap carries a token that only the instance that minted it
@@ -779,6 +811,11 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
     // simply never appeared, with no error to explain why. The default is safe
     // precisely because of the guard: a wrong path publishes nothing, exactly as
     // an empty one did, rather than a confident zero.
+    // BEFORE publishing the uncategorized status, so the count the addon shows
+    // and the notice's sweep both reflect what was just filed rather than
+    // listing rows that now have a category.
+    await fileAmazonLabelledCharges(wfClient);
+
     await publishUncategorizedStatusForDbPath(
       process.env.WEALTHFOLIO_DB_PATH || '/mnt/wealthfolio.db',
       (key, value) => wfClient.setAddonSecret('simplefin-sync', key, value),
@@ -1480,22 +1517,22 @@ export async function sendDailyTelegramReport(
   );
 }
 
-/** How many of the week's biggest spends the Saturday report lists when the
+/** How many of the week's biggest spends the weekly report lists when the
  *  config says nothing. Five fits a phone screen under the headline without
  *  turning the report into a statement. */
 const DEFAULT_WEEKLY_TOP_SPEND_COUNT = 5;
 
 /**
- * Sends the Saturday check-in: the month's remaining figure, plus the week's
+ * Sends the weekly check-in: the month's remaining figure, plus the week's
  * biggest individual spends underneath it so that one number has a "why".
  *
  * The window for those spends is the TRUE calendar week — `mondayOnOrBefore`,
  * NOT the digest's `weekStartDate`. The digest clamps its week to the 1st of the
  * month because a monthly budget cannot be spent before the month began; that
  * reasoning does not apply to "what did I spend this week", and the clamp would
- * do real damage here. This report is scheduled for Saturday, so on any month
- * whose 1st falls Tue–Sat the clamp would silently shrink the window — on
- * Saturday 1 August 2026 to a single day — while the heading still said
+ * do real damage here. This report is scheduled near the END of the week, so on any month
+ * whose 1st falls midweek the clamp would silently shrink the window — on
+ * Saturday 1 August 2026 it would have been a single day — while the heading still said
  * "this week". The bound stays half-open and runs a full seven days from that
  * Monday, so the section covers exactly Monday–Sunday however the month falls
  * and whatever day the report is triggered on.
@@ -1559,7 +1596,7 @@ export async function sendWeeklyTelegramReport(
 /**
  * Sends the monthly wrap-up: how the month that just ended actually finished,
  * per category and in total. Third of the three scheduled reports, and the only
- * retrospective one — the daily digest and the Saturday check-in both describe
+ * retrospective one — the daily digest and the weekly check-in both describe
  * the month in progress.
  *
  * The one thing this does differently from its two siblings is WHICH month it
@@ -2399,7 +2436,15 @@ function formatError(err: unknown): string {
 if (!process.env.VITEST) {
   const schedule = process.env.SYNC_SCHEDULE ?? '0 */6 * * *';
   const dailySchedule = process.env.DAILY_REPORT_SCHEDULE ?? '0 8 * * *';
-  const weeklySchedule = process.env.WEEKLY_REPORT_SCHEDULE ?? '0 9 * * 6'; // Saturday 9am
+  // SUNDAY EVENING, not Saturday morning. Both reports define a week as
+  // Monday–Sunday (`mondayOnOrBefore`), so a Saturday send summarised a week
+  // with two days still to run: the check-in would land, and the next two
+  // daily digests would go on showing leftover for the same week — reported
+  // live as "the weekly arrived, then the daily said $5 left in the week".
+  // 20:00 Sunday is the last useful moment inside that week: the figures are
+  // effectively final, and it lands while there is still time to act on them
+  // before Monday.
+  const weeklySchedule = process.env.WEEKLY_REPORT_SCHEDULE ?? '0 20 * * 0'; // Sunday 8pm
   const monthlySchedule = process.env.MONTHLY_REPORT_SCHEDULE ?? '0 9 1 * *'; // 1st of the month, 9am
 
   try {

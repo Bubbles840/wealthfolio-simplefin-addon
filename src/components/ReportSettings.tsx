@@ -124,7 +124,7 @@ export function ReportSettings({ cfg, onChange, isOpen, toggleCard }: Props) {
             </div>
           </div>
           <div className="sfin-num-hint sfin-subtle">
-            How many individual charges the Saturday report lists. Untick to
+            How many individual charges the weekly report lists. Untick to
             leave the section out — as does a count of 0; blank means the
             default of {DEFAULT_WEEKLY_TOP_SPEND_COUNT}.
           </div>

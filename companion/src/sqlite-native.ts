@@ -241,7 +241,7 @@ export function getNativeWealthfolioSpending(dbPath: string, yearMonth: string):
 /**
  * The `limit` biggest INDIVIDUAL spending transactions in `[startInclusive,
  * endExclusive)` — largest first — rather than the per-category rollup the
- * readers above produce. Feeds the Saturday report's "biggest this week"
+ * readers above produce. Feeds the weekly report's "biggest this week"
  * section, which exists to say WHY the month's remaining figure moved.
  *
  * Shares the type filter, the transfers exclusion, the parent-category rollup,
