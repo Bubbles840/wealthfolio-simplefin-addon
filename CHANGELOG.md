@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.19.0] - 2026-08-21
+
+### Added
+
+- **Teach the sync what a transfer is, from Telegram.** The import notice now
+  carries **↔ Mark one as a transfer**. Tap it, pick the transaction, and a
+  matching rule is written — the next sync retypes that transaction *and*
+  every future one like it, so it stops counting as spending.
+
+  This exists because a keyword list can never be complete. v1.18.1 widened
+  the built-in patterns for card payments, but the case that prompted it was
+  `Payment to Ccb Credit Card Payments`, where "Ccb" is Coastal Community Bank
+  — a string no list would have contained. One tap handles whatever the
+  patterns miss, permanently, for any wording your bank happens to use.
+
+  The rule is the payee wording with trailing reference numbers dropped, so it
+  matches the next payment rather than one day's reference. Direction is taken
+  from how the transaction imported, never guessed. Rules are appended, so
+  anything you wrote by hand keeps its precedence, and everything remains
+  editable under **Advanced → Transaction Rules**.
+
 ## [1.18.1] - 2026-08-21
 
 ### Fixed

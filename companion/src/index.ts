@@ -30,6 +30,7 @@ import { publishUncategorizedStatusForDbPath } from './uncategorized-status.js';
 import { createCategorizeController, SPENDING_TAXONOMY_ID } from './categorize.js';
 import { createAmazonLabelMenu, type AmazonLabelMenu } from './amazon-labels.js';
 import { fileAmazonCharges } from './amazon-filing.js';
+import { createTransferLearning, type TransferLearning } from './transfer-learning.js';
 import type { CategorizeController, CategorizeDeps } from './categorize.js';
 import { AMAZON_MAIL_STATUS_SECRET_KEY, UNCATEGORIZED_STATUS_SECRET_KEY } from '../../shared/status-keys.js';
 import {
@@ -552,6 +553,11 @@ async function fileAmazonLabelledCharges(wfClient: WealthfolioClient): Promise<v
  */
 let sharedAmazonLabelMenu: AmazonLabelMenu | null = null;
 
+/** Same split, same reason: the LISTENER owns taps, the SYNC sends the notice
+ *  the button rides on, and only the instance that minted a token can resolve
+ *  it. See `transfer-learning.ts`. */
+let sharedTransferLearning: TransferLearning | null = null;
+
 async function sendAmazonNewLabelNotice(
   wfClient: WealthfolioClient,
   labels: AmazonIngestResult['newLabels'],
@@ -861,7 +867,7 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
         if (result.imported > 0) {
           if (tg.notifyOnImport !== false) {
             try {
-              await sendImportNotice(wfClient, tg, result);
+              await sendImportNotice(wfClient, tg, result, sharedTransferLearning ?? undefined);
             } catch (err) {
               // `log`, not `debug`: the sync has already succeeded and these rows
               // are already sitting in Wealthfolio, so a thrown notice means the
@@ -1075,6 +1081,11 @@ export async function sendImportNotice(
   wfClient: WealthfolioClient,
   tg: { botToken: string; chatId: string },
   result: Pick<SyncResult, 'imported' | 'importedTransactions'>,
+  /** Supplies the "mark one as a transfer" button. Passed in rather than read
+   *  from module state so this function's output depends only on its
+   *  arguments — reading the shared instance made the notice's keyboard depend
+   *  on whether a listener had been built earlier in the process. */
+  transfers?: TransferLearning,
 ): Promise<void> {
   // Read the ledger BEFORE the sweep, because it is what filters the notice.
   // Button presses are already in it: the always-on listener
@@ -1182,6 +1193,19 @@ export async function sendImportNotice(
     })),
     anyFiled,
   );
+  // One entry button, not one per transaction: the notice already carries a
+  // dismiss row per uncategorized charge, and the choice belongs inside the
+  // menu rather than crowding the message. Offered only when this run imported
+  // something that is not already a transfer.
+  const transferRow = transfers?.entryButton(
+    result.importedTransactions.map((t) => ({
+      description: t.description,
+      amountCents: t.amountCents,
+      activityType: t.activityType,
+      accountName: t.accountName,
+    })),
+  );
+  if (transferRow) keyboard.inline_keyboard.push(transferRow);
   // Remembered BEFORE the send, so the scope is in place no matter how the send
   // goes: Telegram can deliver the message and still fail the response we read.
   // Every row this notice announced, not just the filed ones — the menu is drawn
@@ -2284,6 +2308,15 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
    *  `onMenuCallback` below asks it first and only then falls through to the
    *  transaction menu. One instance, because its sessions map a tapped button
    *  back to the label the notice was about. */
+  const transferLearning: TransferLearning = sharedTransferLearning = createTransferLearning({
+    // Its own store over the listener's long-lived client: `RestSyncStore` is a
+    // thin wrapper over addon secrets, and the one inside `runCompanionSync` is
+    // scoped to a single run.
+    readRules: () => new RestSyncStore(wfClient).getMappingRules(),
+    writeRules: (rules) => new RestSyncStore(wfClient).setMappingRules(rules),
+    log,
+  });
+
   const amazonLabels: AmazonLabelMenu = sharedAmazonLabelMenu = createAmazonLabelMenu({
     readConfig: () => wfClient.getAddonSecret('simplefin-sync', AMAZON_CONFIG_SECRET_KEY)
       .then((raw) => parseSecretJson<any>(raw, AMAZON_CONFIG_SECRET_KEY))
@@ -2396,6 +2429,10 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
       // session — which would silently swallow every Amazon tap.
       if (amazonLabels.handles(cb.data)) {
         await amazonLabels.onCallback(cb, ui);
+        return;
+      }
+      if (transferLearning.handles(cb.data)) {
+        await transferLearning.onCallback(cb, ui);
         return;
       }
       if (cb.data !== RECATEGORIZE_ENTRY_CALLBACK) {

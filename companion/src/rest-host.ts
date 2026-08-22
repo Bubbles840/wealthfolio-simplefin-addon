@@ -188,6 +188,13 @@ export class RestSyncStore implements SyncStore {
     return this.getJson<AccountMapping>('account_mapping');
   }
 
+  /** Read-modify-write only: the addon's Transaction Rules card owns this
+   *  list, and a whole-object write from a stale snapshot would drop rules the
+   *  user wrote by hand. */
+  async setMappingRules(rules: MappingRule[]): Promise<void> {
+    await this.setJson('mapping_rules', rules);
+  }
+
   async getMappingRules(): Promise<MappingRule[]> {
     return (await this.getJson<MappingRule[]>('mapping_rules')) ?? [];
   }
