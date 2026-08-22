@@ -953,7 +953,7 @@ export function formatSyncHealthFooter(health: SyncHealth | null | undefined, no
 }
 
 /**
- * Formats the weekly (Saturday) "one number" summary: total remaining across
+ * Formats the weekly "one number" summary: total remaining across
  * every included category's budget for the month.
  *
  * The zero-budget branch is load-bearing rather than defensive. This report is
