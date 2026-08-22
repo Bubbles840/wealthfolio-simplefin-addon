@@ -101,6 +101,58 @@ describe('mapTransactionWithSource', () => {
   });
 });
 
+describe('card payments leaving a cash account', () => {
+  // Found live: payments to a Discover card and to "Ccb" (Coastal Community
+  // Bank, the Robinhood card's issuer) imported as WITHDRAWAL and were counted
+  // as $228 of spending. A card payment is a transfer between the user's own
+  // accounts; typing it as one is also what lets the pair form and the leg show
+  // as in-transit.
+  const cases: Array<[string, number]> = [
+    ['Payment to Ccb Credit Card Payments', -140.98],
+    ['Payment to Discover Bank Credit Card Payments', -87.26],
+    ['Payment to Citibank Credit Card Payments', -94.93],
+    ['CREDIT CARD PAYMENT', -50],
+    ['Card Payment - Thank You', -25],
+  ];
+  for (const [description, amount] of cases) {
+    it(`types "${description}" as a transfer out`, () => {
+      expect(mapTransaction(description, amount, [])).toBe('TRANSFER_OUT');
+    });
+  }
+
+  /**
+   * The ambiguity the card-side keywords were always kept away from cash for.
+   * A bare "payment" describes rent, utilities and insurance, and typing those
+   * as transfers would erase real spending from every report — a far worse
+   * failure than missing a card payment, which a mapping rule can fix.
+   */
+  const stillSpending: Array<[string, number]> = [
+    ['RENT PAYMENT', -1550],
+    ['Utility payment - KY Power', -140],
+    ['INSURANCE PAYMENT AUTOPAY', -88],
+    ['AUTOPAY ELECTRIC COMPANY', -75],
+    ['Payment to Landlord', -1200],
+    ['DOORDASH*PAYMENT', -32],
+  ];
+  for (const [description, amount] of stillSpending) {
+    it(`leaves "${description}" as spending`, () => {
+      expect(mapTransaction(description, amount, [])).toBe('WITHDRAWAL');
+    });
+  }
+
+  it('does not touch money coming IN that mentions a card payment', () => {
+    // A positive amount on a cash account is not the paying side of anything.
+    expect(mapTransaction('Credit card payment reversal', 94.93, [])).toBe('DEPOSIT');
+  });
+
+  it('still lets a user rule win', () => {
+    // The escape hatch for every phrasing this list will never contain.
+    expect(mapTransaction('Payment to Ccb Credit Card Payments', -140.98, [
+      { pattern: 'Ccb', matchType: 'contains', activityType: 'WITHDRAWAL' },
+    ])).toBe('WITHDRAWAL');
+  });
+});
+
 describe('mapTransactionWithSource subtype', () => {
   it('rule match includes subtype when the rule specifies one (contains)', () => {
     const rules: MappingRule[] = [

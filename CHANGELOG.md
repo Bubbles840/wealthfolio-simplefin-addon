@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.18.1] - 2026-08-21
+
+### Fixed
+
+- **Paying a credit card from a bank account is recognised as a transfer, not
+  spending.** Only the receiving side was: a payment landing ON a card was
+  typed as a transfer, while the money leaving the bank account was typed as
+  an ordinary purchase. Found live — payments to a Discover card and to "Ccb"
+  (Coastal Community Bank, the Robinhood card's issuer) added $228 to a
+  month's spending, while payments to the same user's Citibank card behaved
+  correctly, because a hand-written rule already typed those.
+
+  Typing also gates transfer pairing, so this is what lets the two legs link
+  and show as *in transit* rather than sitting as an unexplained withdrawal.
+
+  Kept deliberately narrow: only phrasings that cannot describe an ordinary
+  bill (`credit card payment`, `card payment`). A bare "payment" still means
+  spending, because rent, utilities and insurance all describe themselves that
+  way — and `autopay` is excluded for the same reason. Whatever this misses,
+  a mapping rule in **Advanced → Transaction Rules** still overrides it.
+
 ## [1.18.0] - 2026-08-21
 
 ### Fixed
