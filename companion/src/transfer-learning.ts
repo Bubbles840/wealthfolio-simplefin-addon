@@ -25,6 +25,9 @@ import type { MappingRule, ActivityType } from '../../shared/types.js';
 
 const OPEN_PREFIX = `${MENU_CALLBACK_PREFIX}tl:`;
 const CHOOSE_PREFIX = `${MENU_CALLBACK_PREFIX}tlc:`;
+/** The confirm step. A rule is retroactive and silent, so the count of what it
+ *  would catch is shown BEFORE it is written, never after. */
+const CONFIRM_PREFIX = `${MENU_CALLBACK_PREFIX}tlk:`;
 
 /** Transactions offered per notice. The picker is a list of buttons in a chat
  *  message, not a table. */
@@ -46,6 +49,10 @@ export interface TransferCandidate {
 
 export interface TransferLearningDeps {
   readRules(): Promise<MappingRule[]>;
+  /** How many stored activities the pattern would catch, and how many of those
+   *  currently count as spending. Optional: without it the confirm screen
+   *  simply omits the count rather than blocking the rule. */
+  countMatches?(pattern: string): Promise<{ total: number; spending: number }>;
   /** MUST merge: the addon's Transaction Rules card owns this list. */
   writeRules(rules: MappingRule[]): Promise<void>;
   log(msg: string): void;
@@ -109,7 +116,7 @@ export function createTransferLearning(deps: TransferLearningDeps): TransferLear
     },
 
     handles(data) {
-      return data.startsWith(OPEN_PREFIX) || data.startsWith(CHOOSE_PREFIX);
+      return data.startsWith(OPEN_PREFIX) || data.startsWith(CHOOSE_PREFIX) || data.startsWith(CONFIRM_PREFIX);
     },
 
     async onCallback(cb, ui) {
@@ -132,10 +139,49 @@ export function createTransferLearning(deps: TransferLearningDeps): TransferLear
           return;
         }
 
-        const rest = cb.data.slice(CHOOSE_PREFIX.length);
+        // ── Chosen: preview what the rule would catch, then ask ──────────
+        if (cb.data.startsWith(CHOOSE_PREFIX)) {
+          const rest = cb.data.slice(CHOOSE_PREFIX.length);
+          const sep = rest.lastIndexOf(':');
+          const token = sep === -1 ? rest : rest.slice(0, sep);
+          const chosen = sessions.get(token)?.[sep === -1 ? NaN : Number(rest.slice(sep + 1))];
+          if (!chosen) return void await ui.answer('That menu expired — use Transaction Rules in the addon.');
+
+          const pattern = rulePatternFor(chosen.description);
+          // The count is the whole point of this screen. A rule is a `contains`
+          // match applied to everything, so a generic descriptor like "ACH
+          // WITHDRAWAL" would retype every such row as a transfer and remove
+          // all of it from spending — silently, and retroactively. Saying how
+          // many it catches turns that from an accident into a choice.
+          const counts = await deps.countMatches?.(pattern).catch(() => undefined);
+          const scope = counts
+            ? counts.total <= 1
+              ? '\n\nThis matches only this transaction.'
+              : `\n\n⚠️ This also matches *${counts.total - 1}* other transaction${counts.total - 1 === 1 ? '' : 's'}`
+                + (counts.spending > 1 ? `, ${counts.spending} of which currently count as spending` : '')
+                + '. All of them would become transfers.'
+            : '';
+
+          await ui.edit(
+            `Make a rule for *${pattern}*?${scope}\n\n`
+            + '_Anything matching it stops counting as spending, now and in future._',
+            {
+              inline_keyboard: [
+                [{ text: '✓ Make the rule', callback_data: `${CONFIRM_PREFIX}${token}:${sep === -1 ? 0 : Number(rest.slice(sep + 1))}` }],
+                [{ text: 'Cancel', callback_data: `${OPEN_PREFIX}${token}` }],
+              ],
+            },
+          );
+          await ui.answer();
+          return;
+        }
+
+        // ── Confirmed: write it ───────────────────────────────────────────
+        const rest = cb.data.slice(CONFIRM_PREFIX.length);
         const sep = rest.lastIndexOf(':');
-        const list = sessions.get(sep === -1 ? rest : rest.slice(0, sep));
-        const chosen = list?.[sep === -1 ? NaN : Number(rest.slice(sep + 1))];
+        const chosen = sessions.get(sep === -1 ? rest : rest.slice(0, sep))?.[
+          sep === -1 ? NaN : Number(rest.slice(sep + 1))
+        ];
         if (!chosen) return void await ui.answer('That menu expired — use Transaction Rules in the addon.');
 
         const pattern = rulePatternFor(chosen.description);
@@ -148,6 +194,15 @@ export function createTransferLearning(deps: TransferLearningDeps): TransferLear
         const already = rules.some(
           (r) => r.pattern.toLowerCase() === pattern.toLowerCase() && r.activityType === activityType,
         );
+        // `matchRule` returns the FIRST match in list order, so an existing rule
+        // that already catches this description would shadow the new one and the
+        // button would appear to do nothing. Said out loud rather than left as a
+        // mystery.
+        const shadowedBy = rules.find(
+          (r) => r.matchType === 'contains'
+            && chosen.description.toLowerCase().includes(r.pattern.toLowerCase())
+            && r.pattern.toLowerCase() !== pattern.toLowerCase(),
+        );
         if (!already) {
           // Appended, never replacing: the user's own rules live in this list,
           // and earlier rules keep their precedence.
@@ -157,11 +212,16 @@ export function createTransferLearning(deps: TransferLearningDeps): TransferLear
         await ui.edit(
           `↔ *${pattern}* → ${activityType === 'TRANSFER_IN' ? 'transfer in' : 'transfer out'}\n\n`
           + (already ? 'That rule already existed.\n\n' : '')
+          + (shadowedBy
+            ? `⚠️ An earlier rule (*${shadowedBy.pattern}* → ${shadowedBy.activityType}) also matches this `
+              + 'description and wins, because the first matching rule decides. '
+              + 'Reorder or edit them under Advanced → Transaction Rules.\n\n'
+            : '')
           + 'The next sync retypes this transaction and every future one matching it, '
           + 'so it stops counting as spending. Edit or remove it under '
           + 'Advanced → Transaction Rules.',
         );
-        await ui.answer('Rule saved');
+        await ui.answer(already ? 'Rule already existed' : 'Rule saved');
       } catch (err) {
         deps.log(`Transfer-learning menu error: ${String(err)}`);
         await ui.answer('Could not save that — try Transaction Rules in the addon.').catch(() => {});

@@ -21,8 +21,20 @@ const tx = (over: Partial<any> = {}) => ({
   ...over,
 });
 
-/** Walks the two taps: open the picker, choose the first entry. */
+/** Walks all three taps: open the picker, choose an entry, confirm the rule.
+ *  The confirm step exists because the rule is retroactive and silent. */
 async function teach(menu: any, candidates: any[], index = 0) {
+  const row = menu.entryButton(candidates)!;
+  const token = row[0].callback_data.slice('cz:tl:'.length);
+  await menu.onCallback({ data: `cz:tl:${token}` }, ui());
+  await menu.onCallback({ data: `cz:tlc:${token}:${index}` }, ui());
+  const u = ui();
+  await menu.onCallback({ data: `cz:tlk:${token}:${index}` }, u);
+  return u;
+}
+
+/** Stops at the preview, which is where the warnings live. */
+async function preview(menu: any, candidates: any[], index = 0) {
   const row = menu.entryButton(candidates)!;
   const token = row[0].callback_data.slice('cz:tl:'.length);
   await menu.onCallback({ data: `cz:tl:${token}` }, ui());
@@ -105,12 +117,68 @@ describe('transfer learning', () => {
     // The rule is what makes it permanent; reconciliation retypes the existing
     // row because its resolved type now differs from what is stored.
     const { menu } = make();
-    const row = menu.entryButton([tx()])!;
-    const token = row[0].callback_data.slice('cz:tl:'.length);
-    await menu.onCallback({ data: `cz:tl:${token}` }, ui());
-    const u = ui();
-    await menu.onCallback({ data: `cz:tlc:${token}:0` }, u);
+    const u = await teach(menu, [tx()]);
     expect(u.edit.mock.calls[0][0]).toContain('next sync');
+  });
+
+  it('writes nothing until the rule is confirmed', async () => {
+    // The preview is the whole safeguard: a rule is retroactive and silent.
+    const { menu, deps } = make();
+    await preview(menu, [tx()]);
+    expect(deps.writeRules).not.toHaveBeenCalled();
+  });
+
+  it('warns how much else a broad pattern would swallow', async () => {
+    // "ACH WITHDRAWAL" would retype every ACH withdrawal as a transfer and
+    // remove all of it from spending, silently, and backwards.
+    const { menu } = make();
+    const m = createTransferLearning({
+      readRules: async () => [],
+      writeRules: vi.fn(),
+      countMatches: async () => ({ total: 24, spending: 22 }),
+      log: vi.fn(),
+    } as any);
+    void menu;
+    const u = await preview(m, [tx({ description: 'ACH WITHDRAWAL 4471' })]);
+    const text = u.edit.mock.calls[0][0];
+    expect(text).toContain('*23* other transactions');
+    expect(text).toContain('22 of which currently count as spending');
+  });
+
+  it('says plainly when the pattern catches only this transaction', async () => {
+    const m = createTransferLearning({
+      readRules: async () => [],
+      writeRules: vi.fn(),
+      countMatches: async () => ({ total: 1, spending: 1 }),
+      log: vi.fn(),
+    } as any);
+    const u = await preview(m, [tx()]);
+    expect(u.edit.mock.calls[0][0]).toContain('only this transaction');
+  });
+
+  it('still offers the rule when the count cannot be read', async () => {
+    // No database mount is a supported way to run the companion.
+    const m = createTransferLearning({
+      readRules: async () => [],
+      writeRules: vi.fn(),
+      countMatches: async () => { throw new Error('no db'); },
+      log: vi.fn(),
+    } as any);
+    const u = await preview(m, [tx()]);
+    expect(u.edit.mock.calls[0][1].inline_keyboard[0][0].text).toContain('Make the rule');
+  });
+
+  it('warns when an earlier rule already shadows the new one', async () => {
+    // `matchRule` returns the FIRST match, and new rules are appended — so an
+    // existing broad rule wins and the button would otherwise look broken.
+    const { menu, state } = make([
+      { pattern: 'Payment', matchType: 'contains', activityType: 'WITHDRAWAL' },
+    ]);
+    const u = await teach(menu, [tx()]);
+    expect(u.edit.mock.calls[0][0]).toContain('earlier rule');
+    // Still written: the user may reorder them, and refusing to save would
+    // leave nothing to reorder.
+    expect(state.rules).toHaveLength(2);
   });
 
   it('claims only its own callbacks', async () => {
@@ -119,6 +187,7 @@ describe('transfer learning', () => {
     expect(menu.handles('cz:tlc:1:0')).toBe(true);
     // The transaction menu's and the Amazon menu's, which must pass through.
     expect(menu.handles('cz:3:2')).toBe(false);
+    expect(menu.handles('cz:tlk:1:0')).toBe(true);
     expect(menu.handles('cz:al:1')).toBe(false);
   });
 

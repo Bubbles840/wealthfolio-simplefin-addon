@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.20.0] - 2026-08-21
+
+Three fixes for the cases that fail **quietly** — the only kind that costs you
+anything when you are not watching.
+
+### Added
+
+- **A transaction the bank reported but Wealthfolio refused is now announced.**
+  Wealthfolio rejects a create when its own date+amount check reads it as a
+  duplicate. Usually right — and once, badly wrong: a real $1,300 withdrawal
+  was refused as a copy of its same-amount sibling from the day before, and the
+  account was wrong by that amount for six weeks, because the refusal was
+  logged at debug level and surfaced nowhere. It is now a message, worded as a
+  question rather than an alarm, since most refusals genuinely are duplicates
+  and only you can tell which kind it is. Sent from whichever side ran the
+  sync. Nothing is auto-retried: inventing a second copy of a real transaction
+  is the worse error.
+
+### Changed
+
+- **"Mark one as a transfer" now shows what the rule would catch before
+  writing it.** The rule is a text match applied to everything, so a generic
+  descriptor like `ACH WITHDRAWAL` would retype every such transaction as a
+  transfer and remove all of it from spending — silently, and retroactively.
+  The confirm step names the pattern and counts what else it matches, so that
+  is a choice rather than an accident. It also warns when an earlier rule
+  already shadows the new one, since the first matching rule wins and the
+  button would otherwise appear to do nothing.
+
+- **An Amazon label no rule matched is left unfiled, not filed under the
+  default.** v1.18.0 filed everything, which buried a mis-guessed category
+  where nothing showed it. An unmatched label is now reported and left in the
+  needs-a-category list — which is exactly what the "N need a rule" count in
+  the Amazon card is for. Setting a category (in the card, or with the
+  **Change: <label>** button) makes it file from then on.
+
 ## [1.19.0] - 2026-08-21
 
 ### Added

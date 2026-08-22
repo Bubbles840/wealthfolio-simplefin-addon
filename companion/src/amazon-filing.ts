@@ -12,8 +12,16 @@
  * every Amazon charge land uncategorised while the addon reported the category
  * it "would" have used.
  *
- * `resolveAmazonCategory`'s own contract says otherwise — "Nothing is ever left
- * uncategorized" — so this closes the gap rather than adding a feature.
+ * `resolveAmazonCategory`'s own contract says the filing was always intended —
+ * "Nothing is ever left uncategorized" — so this closes a gap rather than
+ * adding a feature.
+ *
+ * With ONE deliberate departure from that sentence: a label no rule matched is
+ * left unfiled. The rest of that contract explains why — such a label "is
+ * reported once so it is one rule away from correct rather than silently
+ * wrong" — and filing it under the default would destroy exactly that signal,
+ * burying a mis-guessed category where nothing shows it. An uncategorised
+ * charge is visible in the needs-a-category list; a wrongly filed one is not.
  *
  * Runs as a SWEEP over uncategorised rows rather than only over what a sync
  * just imported: charges stranded by the old behaviour are exactly the ones a
@@ -52,6 +60,8 @@ export interface AmazonFilingResult {
   filed: number;
   /** Labels whose resolved category does not exist in this Wealthfolio. */
   unknownCategories: string[];
+  /** Labels no rule matched, left unfiled on purpose — see below. */
+  needRule: string[];
 }
 
 /**
@@ -60,7 +70,7 @@ export interface AmazonFilingResult {
  * be reported as a sync failure.
  */
 export async function fileAmazonCharges(deps: AmazonFilingDeps): Promise<AmazonFilingResult> {
-  const result: AmazonFilingResult = { filed: 0, unknownCategories: [] };
+  const result: AmazonFilingResult = { filed: 0, unknownCategories: [], needRule: [] };
   try {
     const rows = await deps.uncategorized();
     const labelled = rows
@@ -76,7 +86,18 @@ export async function fileAmazonCharges(deps: AmazonFilingDeps): Promise<AmazonF
     const byName = new Map(categories.map((c) => [c.name.trim().toLowerCase(), c.id]));
 
     for (const { row, label } of labelled) {
-      const { category } = resolveAmazonCategory(label, cfg);
+      const { category, matched } = resolveAmazonCategory(label, cfg);
+      // A label NO rule matched only landed in the default category, and the
+      // whole point of `matched` is that such a label stays visible — the
+      // Amazon card counts them as "need a rule" and the notice reports each
+      // one once. Filing it anyway would bury a label the user wanted
+      // elsewhere under Shopping, silently, which is the opposite of what that
+      // signal exists for. Reported instead, and left for the user or for the
+      // "Change: <label>" button to decide.
+      if (!matched) {
+        if (!result.needRule.includes(label)) result.needRule.push(label);
+        continue;
+      }
       const categoryId = byName.get(category.trim().toLowerCase());
       if (!categoryId) {
         // A category the mapping names but this Wealthfolio does not have —

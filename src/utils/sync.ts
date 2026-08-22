@@ -9,6 +9,7 @@ import {
   formatLargeTransactionAlert,
   formatDuplicatePruneAlert,
   formatImportNotice,
+  formatRefusedCreatesAlert,
 } from '../../shared/telegram';
 import { visibleUncategorized } from '../../shared/uncategorized';
 import type { PendingLargeTxAlert, SecretsStore } from './secrets';
@@ -149,6 +150,7 @@ export async function deliverAddonAlerts(
       && balanceDriftAlerts.length === 0
       && prunedDuplicates.length === 0
       && result.imported === 0
+      && result.refusedCreates.length === 0
     ) return;
 
     const target = await telegramTarget(store);
@@ -209,6 +211,17 @@ export async function deliverAddonAlerts(
       const res = await send(formatDuplicatePruneAlert(prunedDuplicates));
       if (!res.ok) {
         console.warn(`[simplefin-sync] duplicate-prune notice not delivered: ${res.description}`);
+      }
+    }
+
+    // ── Refused creates ─────────────────────────────────────────────────────
+    // Transactions the bank reported that Wealthfolio would not store. Sent
+    // from whichever side ran the sync, because either can be the one that
+    // hits the refusal.
+    if (result.refusedCreates.length > 0) {
+      const res = await send(formatRefusedCreatesAlert(result.refusedCreates));
+      if (!res.ok) {
+        console.warn(`[simplefin-sync] refused-create notice not delivered: ${res.description}`);
       }
     }
 
