@@ -752,6 +752,45 @@ describe('formatDailySpendingDigest', () => {
     expect(text).toContain('💰 $450 left this month');
   });
 
+  it('caps a category\'s weekly figure by what the month can actually afford', () => {
+    // Two budgeting models were being printed in one message: the category
+    // lines are envelopes, the headline is a pool. With one category far over,
+    // every other envelope went on offering its full weekly allowance —
+    // money that does not exist.
+    const cats = [
+      { name: 'Shopping', budget: 100, monthSpent: 429, weekSpent: 40 },
+      { name: 'Groceries', budget: 300, monthSpent: 200, weekSpent: 21.15 },
+    ];
+    const text = dailyGlyphs(cats, period);
+    // Overall is 400 - 629 = -229, so there is nothing to spend anywhere.
+    expect(text).toContain('🛒 Groceries  *$0*');
+    expect(text).toContain('the month is spent');
+  });
+
+  it('scales weekly figures proportionally when the pool is short but positive', () => {
+    // Room for roughly half of what the envelopes promise.
+    const cats = [
+      { name: 'Shopping', budget: 100, monthSpent: 150, weekSpent: 10 },
+      { name: 'Groceries', budget: 300, monthSpent: 100, weekSpent: 0 },
+    ];
+    const text = dailyGlyphs(cats, period);
+    expect(text).toContain('reduced to fit what is left overall');
+    // 350 - 250 = ... the pool is smaller than Groceries' own 200 envelope, so
+    // its weekly figure must come out under the unscaled one.
+    const shown = /🛒 Groceries  \*\$([\d,.]+)\*/.exec(text);
+    expect(shown).not.toBeNull();
+    expect(parseFloat(shown![1].replace(/,/g, ''))).toBeLessThan(58.33);
+  });
+
+  it('leaves the weekly figures alone when the month can afford them', () => {
+    const text = dailyGlyphs(
+      [{ name: 'Groceries', monthSpent: 100, weekSpent: 20, budget: 1000 }],
+      period,
+    );
+    expect(text).toContain('_left to spend this week_');
+    expect(text).not.toContain('reduced to fit');
+  });
+
   it('says nothing about off-budget when there is none', () => {
     const text = dailyGlyphs(
       [{ name: 'Groceries', monthSpent: 550, weekSpent: 50, budget: 1000 }],

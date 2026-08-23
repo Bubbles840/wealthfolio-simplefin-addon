@@ -1303,6 +1303,11 @@ describe('sendDailyTelegramReport', () => {
     //   Groceries: spentBeforeWeek 150 -> budgetAtWeekStart 650
     //              envelope = 650 * 7 / 19 = 239.47, left = 189.47
     //   Dining:    over budget for the month by 50
+    //
+    // That $189.47 is then CAPPED by the month's pool: Dining being $50 over
+    // means the two envelopes together promise more than the month can afford,
+    // so Groceries' weekly figure is scaled down and the subtitle says so.
+    // Pool = (800-200) + (500-550) = 550 against 600 of envelope, so ~92%.
     vi.useFakeTimers();
     vi.setSystemTime(new Date(2026, 6, 14, 9, 0, 0));
     try {
@@ -1320,9 +1325,15 @@ describe('sendDailyTelegramReport', () => {
       const [, sentBody] = fetchMock.mock.calls[0];
       const text = JSON.parse((sentBody as any).body).text;
       expect(text).toContain('*Daily Spending Check*');
-      expect(text).toContain('_left to spend this week_');
+      expect(text).toContain('left to spend this week');
       expect(text).not.toContain('Weekly Spending Update');
-      expect(text).toContain('Groceries  *$189.47*');
+      // Reduced from 189.47 by the pool cap, not equal to it.
+      const shown = /Groceries  \*\$([\d,.]+)\*/.exec(text);
+      expect(shown).not.toBeNull();
+      const left = parseFloat(shown![1].replace(/,/g, ''));
+      expect(left).toBeGreaterThan(0);
+      expect(left).toBeLessThan(189.47);
+      expect(text).toContain('reduced to fit what is left overall');
       expect(text).toContain('Dining  🚨 *$50 over* for the month');
       // One month-context line at the end, 18 days left counting today.
       expect(text).toContain('$550 left this month · 18 days to go');
