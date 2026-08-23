@@ -19,6 +19,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # v1.22.0 shipped reporting itself as 1.22.0 in the tag and 1.21.0 in
+      # every version string a user can see, because the suite was run before
+      # the version bump and never again after it. `shared/version.test.ts`
+      # would have caught it locally; nothing forced it to run. This does —
+      # and it runs before the login step, so a mismatched tag publishes
+      # nothing at all.
+      - name: Version must match the tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          SRC=$(node -p "require('./package.json').version")
+          MAN=$(node -p "require('./manifest.json').version")
+          CONST=$(grep -o "SIMPLEFIN_SYNC_VERSION = '[^']*'" shared/version.ts | cut -d"'" -f2)
+          echo "tag=$TAG package=$SRC manifest=$MAN constant=$CONST"
+          for got in "$SRC" "$MAN" "$CONST"; do
+            if [ "$got" != "$TAG" ]; then
+              echo "::error::tag v$TAG disagrees with a shipped version string ($got)"
+              exit 1
+            fi
+          done
+
       - uses: docker/setup-buildx-action@v3
 
       # Only a tag push publishes. A main/PR build proves the image still
