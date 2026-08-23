@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.22.1] - 2026-08-22
+
+### Fixed
+
+- **1.22.0 reported itself as `1.21.0`.** Both halves display the single
+  constant in `shared/version.ts`, and the release bumped `package.json` and
+  `manifest.json` without it — so the Sync page footer and the companion's
+  startup log named the previous build. Only the version strings were wrong;
+  the 1.22.0 code was the 1.22.0 code.
+- The version-guard test that exists for exactly this had been run *before*
+  the bump and never again after it. A tag push now re-checks the tag against
+  all three version strings in CI, before the registry login, so a mismatched
+  tag publishes nothing.
+- Report content said "These three apply immediately" after the weekly-capping
+  dropdown made it four.
+
 ## [1.22.0] - 2026-08-22
 
 ### Added
