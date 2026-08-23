@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.21.0] - 2026-08-21
+
+### Changed
+
+- **A category's weekly figure can no longer promise money the month does not
+  have.** The daily digest was printing two budgeting models at once and they
+  contradicted each other: the category lines are *envelopes* (Groceries has
+  its own $80 whatever else happens) while the headline is a *pool* ($297 over
+  across everything). With one category far over, every other envelope went on
+  offering its full weekly allowance — money that did not exist.
+
+  Weekly figures are now scaled by what the pool can actually cover, and the
+  subtitle says which state you are in:
+
+  - room for everything → `left to spend this week`, unchanged
+  - pool short → `left to spend this week · reduced to fit what is left
+    overall`, with each figure scaled proportionally
+  - month spent → `the month is spent — nothing left to spend this week`, and
+    the figures read $0
+
+  The **month** figure on each line is untouched: that states the envelope,
+  which is a real fact about your budget. It is the spend-this-week number
+  that must not over-promise. Spending with no budget and unfiled charges
+  count against the pool too — money gone is gone, whatever it was labelled.
+
+  One consequence worth knowing: these weekly figures now deliberately differ
+  from Wealthfolio's per-category view, which is pure envelope budgeting.
+
 ## [1.20.1] - 2026-08-21
 
 ### Changed

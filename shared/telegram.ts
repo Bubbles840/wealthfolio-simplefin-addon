@@ -821,6 +821,11 @@ export function formatDailySpendingDigest(
   let offBudgetTotal = 0;
   let budgetedRemaining = 0;
   let anyBudget = false;
+  /** First-pass results, rendered once the pool is known. */
+  const rendered: Array<{
+    c: DailyDigestCategory; glyph: string; name: string;
+    leftThisWeek: number; remainingMonth: number;
+  }> = [];
 
   for (const c of categories) {
     const glyph = categoryGlyph(c.name, style);
@@ -850,6 +855,50 @@ export function formatDailySpendingDigest(
 
     anyBudget = true;
     budgetedRemaining += remainingMonth;
+    // Rendered in a SECOND pass: what a category can really be spent on depends
+    // on the whole month's pool, which is not known until every category has
+    // been totalled. See `poolFactor` below.
+    rendered.push({ c, glyph, name, leftThisWeek, remainingMonth });
+    continue;
+  }
+
+  /**
+   * How much of each category's remaining budget the month can actually afford.
+   *
+   * Two budgeting models were being printed in one message and they
+   * contradicted each other: the category lines are ENVELOPES (Groceries has
+   * its own $80 whatever else happens) while the headline is a POOL ($297 over
+   * across everything). Both were true, and together they promised money that
+   * did not exist — $329 over on Shopping left every other category still
+   * offering its full weekly allowance.
+   *
+   * So the weekly figures are scaled by what the pool can cover: `1` when
+   * there is room for every envelope, `0` once the month is spent, and the
+   * ratio in between. Spending in categories with no budget counts against the
+   * pool too, which is why this uses `headlineRemaining` rather than
+   * `budgetedRemaining` — money gone is gone, whatever it was labelled.
+   *
+   * The MONTH figures on each line are left alone. Those state the envelope,
+   * which is a real fact about the budget; it is the "spend this" number that
+   * must not over-promise.
+   */
+  const uncategorizedTotal = uncategorized && uncategorized.total > 0 ? uncategorized.total : 0;
+  const countedOffBudget = countOffBudget ? offBudgetTotal + uncategorizedTotal : 0;
+  // Needed HERE, not just for the headline: the per-category weekly
+  // allowances below are scaled by what this pool can actually cover.
+  const headlineRemaining = budgetedRemaining - countedOffBudget;
+
+  const poolCap = (() => {
+    const wanted = rendered.reduce((sum, r) => sum + Math.max(0, r.remainingMonth), 0);
+    if (wanted <= 0) return 1;
+    const affordable = Math.max(0, headlineRemaining);
+    return Math.min(1, affordable / wanted);
+  })();
+
+  for (const { c, glyph, name, leftThisWeek: rawWeek, remainingMonth } of rendered) {
+    // Only ever reduces. A category already over its own envelope is over
+    // regardless of what the pool says.
+    const leftThisWeek = rawWeek > 0 ? rawWeek * poolCap : rawWeek;
 
     if (remainingMonth < 0) {
       // `Math.abs` explicitly: the word "over" states the direction, and
@@ -900,9 +949,6 @@ export function formatDailySpendingDigest(
   // The figure the headline actually reports. Off-budget spend is subtracted
   // here rather than inside the loop so `budgetedRemaining` keeps meaning
   // exactly what its name says, and the two are visibly different quantities.
-  const uncategorizedTotal = uncategorized && uncategorized.total > 0 ? uncategorized.total : 0;
-  const countedOffBudget = countOffBudget ? offBudgetTotal + uncategorizedTotal : 0;
-  const headlineRemaining = budgetedRemaining - countedOffBudget;
   // Named so the reader can reconcile the headline against the "Off budget:"
   // block below it — a total that silently absorbed $68 would just look wrong.
   // Only when it changed the figure: `after $0 off budget` is noise.
@@ -939,7 +985,15 @@ export function formatDailySpendingDigest(
   // No trailing newline: callers append the sync-health footer as its own
   // block, and a trailing blank line would leave that footer looking like part
   // of this summary line.
-  return `${headerGlyph('☀️', style)}*Daily Spending Check*\n_left to spend this week_\n\n${blocks.filter(Boolean).join('\n\n')}\n\n${summary}`;
+  // Extends the existing subtitle rather than adding a line or marking every
+  // category — the figures being capped is one fact about the whole message,
+  // and repeating it per row is the clutter this report keeps having to shed.
+  const subtitle = poolCap < 1
+    ? poolCap === 0
+      ? '_the month is spent — nothing left to spend this week_'
+      : '_left to spend this week · reduced to fit what is left overall_'
+    : '_left to spend this week_';
+  return `${headerGlyph('☀️', style)}*Daily Spending Check*\n${subtitle}\n\n${blocks.filter(Boolean).join('\n\n')}\n\n${summary}`;
 }
 
 /**
