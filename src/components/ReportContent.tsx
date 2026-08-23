@@ -325,7 +325,7 @@ export function ReportContent({
           never reach the save bar, and a card that otherwise waits for Save has
           to say which of its controls does not. */}
       <div className="sfin-subtle sfin-applies-now">
-        These three apply immediately — no need to save.
+        These four apply immediately — no need to save.
       </div>
     </CollapsibleCard>
   );
