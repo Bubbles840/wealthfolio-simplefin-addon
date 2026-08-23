@@ -782,6 +782,43 @@ describe('formatDailySpendingDigest', () => {
     expect(parseFloat(shown![1].replace(/,/g, ''))).toBeLessThan(58.33);
   });
 
+  it('leaves the figures uncapped, and says so, when capping is switched off', () => {
+    // The opposite answer to the same question, and equally defensible: this is
+    // Wealthfolio's own envelope view, which stays readable when the pool is
+    // tight. What it must never do is let the full envelope read as money in
+    // hand — hence the subtitle naming the pool.
+    const cats = [
+      { name: 'Shopping', budget: 100, monthSpent: 150, weekSpent: 10 },
+      { name: 'Groceries', budget: 300, monthSpent: 100, weekSpent: 0 },
+    ];
+    const capped = formatDailySpendingDigest(cats, period, GLYPHS, 'rollup', true, undefined, true);
+    const full = formatDailySpendingDigest(cats, period, GLYPHS, 'rollup', false, undefined, false);
+
+    expect(full).toContain('only $150 left overall');
+    expect(full).not.toContain('reduced to fit');
+    // Uncapped means the whole envelope: 200 remaining over the period.
+    const shownFull = /🛒 Groceries  \*\$([\d,.]+)\*/.exec(full);
+    const shownCapped = /🛒 Groceries  \*\$([\d,.]+)\*/.exec(capped);
+    const num = (m: RegExpExecArray | null) => parseFloat(m![1].replace(/,/g, ''));
+    expect(shownFull).not.toBeNull();
+    expect(num(shownFull)).toBeGreaterThan(num(shownCapped));
+    // The headline is the pool either way — the setting only moves the
+    // per-category figures, which is exactly what its description promises.
+    expect(full).toContain('💰 $150 left this month');
+    expect(capped).toContain('💰 $150 left this month');
+  });
+
+  it('does not caveat uncapped figures when the month can afford them', () => {
+    // Off + affordable is the ordinary case, and must read like the ordinary
+    // case: no warning about a pool that is not actually short.
+    const text = formatDailySpendingDigest(
+      [{ name: 'Groceries', monthSpent: 100, weekSpent: 20, budget: 1000 }],
+      period, GLYPHS, 'rollup', true, undefined, false,
+    );
+    expect(text).toContain('_left to spend this week_');
+    expect(text).not.toContain('left overall');
+  });
+
   it('leaves the weekly figures alone when the month can afford them', () => {
     const text = dailyGlyphs(
       [{ name: 'Groceries', monthSpent: 100, weekSpent: 20, budget: 1000 }],

@@ -1295,6 +1295,37 @@ describe('sendDailyTelegramReport', () => {
     }
   });
 
+  it('carries the weekly-capping opt-out from the addon into the digest', async () => {
+    // The setting lives in the addon's UI but is applied by the companion, so
+    // the only thing that proves it works is the key crossing that boundary.
+    // Read per report, like the glyph style, so a change takes effect without
+    // restarting the container.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 6, 14, 9, 0, 0));
+    try {
+      const secrets = new Map<string, string>();
+      secrets.set('telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true }));
+      secrets.set('cap_weekly_to_pool', 'off');
+      const client = {
+        getAddonSecret: vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null),
+        setAddonSecret: vi.fn(async () => {}),
+      } as any;
+      const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+      vi.stubGlobal('fetch', fetchMock);
+
+      await sendDailyTelegramReport(client);
+      const text = JSON.parse((fetchMock.mock.calls[0][1] as any).body).text;
+      // Dining is 550/500, so the pool is short of the envelopes and the
+      // uncapped figures need their caveat.
+      // Named exactly: 'left overall' alone also appears in the CAPPED
+      // subtitle, so a loose match here would pass either way.
+      expect(text).toContain('only $550 left overall');
+      expect(text).not.toContain('reduced to fit what is left overall');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('titles the digest as daily and headlines what is left this week', async () => {
     // Mocked month spend/budgets: Groceries 200/800, Dining 550/500; mocked
     // week spend: Groceries 50, Dining 100. Tuesday 2026-07-14, so the week

@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.22.0] - 2026-08-22
+
+### Added
+
+- **Weekly per-category amounts are now a choice**, under Notifications →
+  Report content → "Weekly amounts per category". The two options answer
+  different questions and neither is wrong:
+
+  - **Limited by what the month can afford** (the default, and what 1.21.0
+    did): the per-category figures are scaled so they cannot add up to money
+    the month no longer has. Honest about what is spendable, but when the pool
+    is tight every category collapses toward the same small number and stops
+    telling you which one has room.
+  - **The full budget for each category**: Wealthfolio's own envelope view.
+    Each category keeps its own budget regardless of the others, so the
+    categories stay distinguishable — at the cost of figures that overstate
+    when the pool is short. Because they overstate, the subtitle names the
+    pool outright (`left in each budget · only $150 left overall`) rather than
+    letting the envelopes read as money in hand.
+
+  Whichever is chosen, the report states which one it is showing, and the
+  monthly headline is identical either way — the setting only moves the
+  per-category figures.
+
 ## [1.21.0] - 2026-08-21
 
 ### Changed

@@ -82,6 +82,7 @@ const KEYS = {
   reportGlyphStyle: 'report_glyph_style',
   subcategoryDisplay: 'subcategory_display',
   countOffBudget: 'count_off_budget',
+  capWeeklyToPool: 'cap_weekly_to_pool',
   openCards: 'ui_open_cards',
   uiState: 'ui_state',
   pendingLargeTxAlerts: LARGE_TX_OUTBOX_SECRET_KEY,
@@ -596,6 +597,16 @@ export class SecretsStore {
   }
   async setCountOffBudget(on: boolean): Promise<void> {
     await this.ctx.api.secrets.set(KEYS.countOffBudget, on ? 'on' : 'off');
+  }
+
+  /** Whether weekly category figures are capped by the month's remaining pool.
+   *  Stores the opt-OUT, so the default is on. */
+  async getCapWeeklyToPool(): Promise<boolean> {
+    const raw = await this.ctx.api.secrets.get(KEYS.capWeeklyToPool);
+    return raw !== 'off';
+  }
+  async setCapWeeklyToPool(on: boolean): Promise<void> {
+    await this.ctx.api.secrets.set(KEYS.capWeeklyToPool, on ? 'on' : 'off');
   }
 
   async clearAll(): Promise<void> {

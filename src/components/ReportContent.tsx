@@ -85,6 +85,7 @@ export function ReportContent({
     // Only the non-default is worth a word in a collapsed header — "off-budget
     // counts" is now simply how the report works.
     cfg.countOffBudget ? null : 'off-budget ignored',
+    cfg.capWeeklyToPool ? null : 'full budget amounts',
   ].filter((s): s is string => typeof s === 'string').join(' · ');
 
   /**
@@ -287,6 +288,28 @@ export function ReportContent({
           <option value="ignore">Listed only, does not count</option>
         </select>
       </div>
+      <div className="sfin-field-row">
+        <label htmlFor="sfin-cap-weekly">Weekly amounts per category</label>
+        <select
+          id="sfin-cap-weekly"
+          value={cfg.capWeeklyToPool ? 'cap' : 'full'}
+          onChange={(e) => onChangeNow({ capWeeklyToPool: e.target.value === 'cap' })}
+        >
+          <option value="cap">Limited by what the month can afford</option>
+          <option value="full">The full budget for each category</option>
+        </select>
+      </div>
+      {/* The two answer different questions and neither is wrong. "Limited"
+          answers "what can I actually spend": the per-category figures are
+          scaled so they cannot add up to money the month no longer has. "Full"
+          is Wealthfolio's own envelope view — each category keeps its own
+          budget regardless of the others, which stays readable when the pool is
+          tight but does overstate. Whichever is chosen, the report says which
+          one it is showing, so the numbers are never silently one or the other. */}
+      <div className="sfin-subtle" style={{ marginTop: -4 }}>
+        Only affects the per-category amounts; the monthly total is the same either way.
+      </div>
+
       {/* Why this is a choice rather than a fixed rule: an unbudgeted category
           is usually something not budgeted YET, in which case the money is
           plainly gone and the daily "left this month" must say so. But some

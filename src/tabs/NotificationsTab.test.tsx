@@ -69,6 +69,8 @@ const makeProps = () => ({
     getReportGlyphStyle: vi.fn(async () => ({ mode: 'clean' as const, overrides: {} })),
     setReportGlyphStyle: vi.fn(async () => {}),
     getCountOffBudget: vi.fn(async () => true),
+    getCapWeeklyToPool: vi.fn(async () => true),
+    setCapWeeklyToPool: vi.fn(async () => {}),
     setCountOffBudget: vi.fn(async () => {}),
     getSubcategoryDisplay: vi.fn(async () => 'rollup' as const),
     setSubcategoryDisplay: vi.fn(async () => {}),
