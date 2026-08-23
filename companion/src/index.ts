@@ -1303,6 +1303,15 @@ async function readSubcategoryDisplay(wfClient: WealthfolioClient): Promise<'rol
 /** Mirrors the addon's `getCountOffBudget`: the opt-OUT is what is stored, so
  *  an absent or unreadable secret means ON — the corrected behaviour, and the
  *  one the weekly report has always used. */
+/** Mirrors the addon's `getCapWeeklyToPool`: opt-OUT is stored, so absent or
+ *  unreadable means ON. */
+async function readCapWeeklyToPool(wfClient: WealthfolioClient): Promise<boolean> {
+  const raw = await wfClient
+    .getAddonSecret('simplefin-sync', 'cap_weekly_to_pool')
+    .catch(() => null);
+  return raw !== 'off';
+}
+
 async function readCountOffBudget(wfClient: WealthfolioClient): Promise<boolean> {
   const raw = await wfClient
     .getAddonSecret('simplefin-sync', 'count_off_budget')
@@ -1490,6 +1499,7 @@ export async function composeDailyDigestMessage(
   let message = formatDailySpendingDigest(
     categories, period, await readGlyphStyle(wfClient), subcategoryDisplay,
     await readCountOffBudget(wfClient), uncategorizedSpend,
+    await readCapWeeklyToPool(wfClient),
   );
 
   const healthRaw = await wfClient.getAddonSecret('simplefin-sync', 'sync_health').catch(() => null);

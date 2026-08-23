@@ -798,6 +798,18 @@ export function formatDailySpendingDigest(
    * wording: it is spending that no budget covers.
    */
   uncategorized?: { count: number; total: number },
+  /**
+   * Whether a category's weekly figure is capped by what the month can still
+   * afford overall.
+   *
+   * ON (the default) answers "what can I actually spend": the envelopes are
+   * scaled to fit the pool, so they cannot sum to money that is gone. OFF
+   * answers "what is in this envelope", which is Wealthfolio's own view and
+   * keeps the categories distinguishable when the pool is tight — at the cost
+   * of figures that overstate. Both are honest; they answer different
+   * questions, and the subtitle says which one is being answered.
+   */
+  capWeeklyToPool = true,
 ): string {
   const { daysFromWeekStartToMonthEnd, daysLeftInMonthInclusive } = period;
   const days = Math.max(1, daysLeftInMonthInclusive);
@@ -891,6 +903,7 @@ export function formatDailySpendingDigest(
   const poolCap = (() => {
     const wanted = rendered.reduce((sum, r) => sum + Math.max(0, r.remainingMonth), 0);
     if (wanted <= 0) return 1;
+    if (!capWeeklyToPool) return 1;
     const affordable = Math.max(0, headlineRemaining);
     return Math.min(1, affordable / wanted);
   })();
@@ -988,11 +1001,18 @@ export function formatDailySpendingDigest(
   // Extends the existing subtitle rather than adding a line or marking every
   // category — the figures being capped is one fact about the whole message,
   // and repeating it per row is the clutter this report keeps having to shed.
+  // With capping OFF the figures are envelopes, which overstate once the pool
+  // is short — so the subtitle says so rather than letting them read as money
+  // in hand. Same honesty, different question answered.
+  const envelopesOverstate = !capWeeklyToPool
+    && headlineRemaining < rendered.reduce((sum, r) => sum + Math.max(0, r.remainingMonth), 0);
   const subtitle = poolCap < 1
     ? poolCap === 0
       ? '_the month is spent — nothing left to spend this week_'
       : '_left to spend this week · reduced to fit what is left overall_'
-    : '_left to spend this week_';
+    : envelopesOverstate
+      ? `_left in each budget · only ${moneyWhole(Math.max(0, headlineRemaining))} left overall_`
+      : '_left to spend this week_';
   return `${headerGlyph('☀️', style)}*Daily Spending Check*\n${subtitle}\n\n${blocks.filter(Boolean).join('\n\n')}\n\n${summary}`;
 }
 

@@ -26,6 +26,23 @@ const makeCtxWithData = () => {
 const makeCtx = () => makeCtxWithData().ctx;
 
 describe('SecretsStore', () => {
+  it('defaults weekly capping ON and stores only the opt-out, under the key the companion reads', async () => {
+    // Two independent writers share these secrets, so the key string is the
+    // contract: the companion reads the literal 'cap_weekly_to_pool'. And the
+    // opt-OUT storage is what makes the default reach every existing install
+    // without a migration — an absent value must mean on, not off.
+    const { ctx, data } = makeCtxWithData();
+    const s = new SecretsStore(ctx);
+    expect(await s.getCapWeeklyToPool()).toBe(true);
+
+    await s.setCapWeeklyToPool(false);
+    expect(data['cap_weekly_to_pool']).toBe('off');
+    expect(await s.getCapWeeklyToPool()).toBe(false);
+
+    await s.setCapWeeklyToPool(true);
+    expect(await s.getCapWeeklyToPool()).toBe(true);
+  });
+
   it('roundtrips access URL', async () => {
     const ctx = makeCtx();
     const s = new SecretsStore(ctx);

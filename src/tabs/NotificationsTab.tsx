@@ -59,6 +59,7 @@ export interface TelegramCfgDraft {
   glyphOverrides: Record<string, string>;
   subcategoryDisplay: 'rollup' | 'breakdown';
   countOffBudget: boolean;
+  capWeeklyToPool: boolean;
 }
 
 /**
@@ -183,6 +184,8 @@ const EMPTY_DRAFT: TelegramCfgDraft = {
   subcategoryDisplay: 'rollup',
   // Default ON, matching the stored opt-OUT and the weekly report.
   countOffBudget: true,
+  // Also default ON, also stored as an opt-OUT.
+  capWeeklyToPool: true,
 };
 
 /** Fills a draft from the stored secret. A stored number is authoritative;
@@ -193,6 +196,7 @@ function draftFromStored(
   glyph: { mode: 'clean' | 'glyphs'; overrides: Record<string, string> },
   subcategoryDisplay: 'rollup' | 'breakdown',
   countOffBudget: boolean,
+  capWeeklyToPool: boolean,
 ): TelegramCfgDraft {
   const base: TelegramCfgDraft = {
     ...EMPTY_DRAFT,
@@ -200,6 +204,7 @@ function draftFromStored(
     glyphOverrides: glyph.overrides,
     subcategoryDisplay,
     countOffBudget,
+    capWeeklyToPool,
   };
   if (!tg) return base;
 
@@ -287,8 +292,9 @@ export function useTelegramDraft(store: SecretsStore): TelegramDraftState {
       // `.catch` never sees — it would take the whole Notifications tab's load
       // down over one setting. `true` is the default either way.
       store.getCountOffBudget?.() ?? true,
-    ]).then(([tg, glyph, subcat, offBudget]) => {
-      const loaded = draftFromStored(tg, glyph, subcat, offBudget);
+      store.getCapWeeklyToPool?.() ?? true,
+    ]).then(([tg, glyph, subcat, offBudget, capWeekly]) => {
+      const loaded = draftFromStored(tg, glyph, subcat, offBudget, capWeekly);
       setCfg(loaded);
       setSavedCfg(loaded);
     }).catch(() => {});
@@ -320,6 +326,9 @@ export function useTelegramDraft(store: SecretsStore): TelegramDraftState {
     }
     if ('countOffBudget' in patch) {
       store.setCountOffBudget?.(next.countOffBudget)?.catch(() => {});
+    }
+    if ('capWeeklyToPool' in patch) {
+      store.setCapWeeklyToPool?.(next.capWeeklyToPool)?.catch(() => {});
     }
   }, [cfg, store]);
 
