@@ -1493,8 +1493,15 @@ export async function composeDailyDigestMessage(
   }));
   // Spending with no category at all — invisible to the per-category reader
   // above, and counted by Wealthfolio against the same month.
+  // Dismissed rows are excluded: dismissing means "not spending I need to
+  // file", and counting them anyway let a dismissed charge quietly shrink
+  // every category through the pool.
+  const dismissedIds = Object.keys(
+    await dismissalLedgerAccess(wfClient).readLedger().catch(() => ({})),
+  );
   const uncategorizedSpend = getNativeUncategorizedSpendingTotal(
     dbPath, `${yearMonth}-01`, toDateString(new Date(now.getFullYear(), now.getMonth() + 1, 1)),
+    dismissedIds,
   );
   let message = formatDailySpendingDigest(
     categories, period, await readGlyphStyle(wfClient), subcategoryDisplay,
@@ -1526,7 +1533,7 @@ export async function composeDailyDigestMessage(
  *  arrived. Bounded to two retries: an API-level rejection (bad token,
  *  malformed Markdown) fails identically every attempt, so retrying it costs
  *  a short delay, not a hang. */
-const REPORT_RETRY_DELAYS_MS = [3000, 8000];
+const REPORT_RETRY_DELAYS_MS = [3000, 8000, 30_000, 120_000];
 
 const defaultReportSleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
@@ -1546,6 +1553,13 @@ async function sendReportWithRetry(
     const result = await sendTelegramMessage(botToken, chatId, text);
     if (result.ok) {
       log(successMessage);
+      return;
+    }
+    // A permanent rejection — bad token, wrong chat id, malformed Markdown —
+    // fails identically on every attempt. Stopping now surfaces it in the log
+    // immediately instead of after the whole retry budget has elapsed.
+    if (!result.transient) {
+      log(`Failed to send ${reportName} Telegram report: ${result.description}`);
       return;
     }
     if (attempt >= REPORT_RETRY_DELAYS_MS.length) {

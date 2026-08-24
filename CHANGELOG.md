@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.23.0] - 2026-08-24
+
+### Fixed
+
+- **A dismissed charge no longer shrinks every category.** Dismissing an
+  uncategorized charge means "not spending I need to file", but its amount kept
+  counting toward the month's pool — so one dismissed charge quietly reduced
+  every category's figure with nothing on screen explaining why. The count and
+  the total are filtered together, in SQL, so they cannot disagree about which
+  rows they describe.
+- **A refund larger than a month's spend no longer inflates a category past its
+  own budget.** `budget - monthSpent` exceeds the budget once `monthSpent` goes
+  negative, showing $350 left on a $300 category — and because these figures
+  feed the pool, one inflated category overstated all of them. A refund
+  restores room that was always inside the budget; it does not raise the
+  ceiling.
+- **A permanent Telegram rejection is reported immediately** instead of
+  consuming the whole retry budget first. Bad token, wrong chat id and
+  malformed Markdown fail identically on every attempt, so `TelegramSendResult`
+  now distinguishes them from "come back in a moment".
+
+### Changed
+
+- **Scheduled reports retry for about two and a half minutes** (was 11
+  seconds). The old budget only ever covered an instantaneous blip, while a
+  Telegram outage is usually minutes. Still firmly bounded: a daily report that
+  lands an hour late describes a day already spent into, so failing loudly
+  beats arriving stale.
+
 ## [1.22.2] - 2026-08-22
 
 ### Fixed
