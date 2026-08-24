@@ -819,6 +819,35 @@ describe('formatDailySpendingDigest', () => {
     expect(text).not.toContain('left overall');
   });
 
+  it('never lets a line promise more than the pool holds, on any branch', () => {
+    // The invariant 1.21.0 was supposed to establish, stated directly rather
+    // than per-branch — which is how the `left mo` clause slipped through: the
+    // cap scaled `leftThisWeek` and that clause prints the month figure. With
+    // the month $93 OVER, a line reading "$36 left mo" contradicts the very
+    // headline beneath it.
+    const cats = [
+      // Month room left, but the week's pace is blown -> the ⚠️ branch.
+      { name: 'Food & Dining', budget: 200, monthSpent: 164, weekSpent: 120 },
+      { name: 'Shopping', budget: 100, monthSpent: 429, weekSpent: 0 },
+      { name: 'Groceries', budget: 300, monthSpent: 100, weekSpent: 0 },
+    ];
+    const text = dailyGlyphs(cats, period);
+    expect(text).toContain('🚨 $93 over budget this month');
+    expect(text).toContain('$0 left mo');
+    expect(text).not.toContain('$36 left mo');
+  });
+
+  it('leaves the month figure on the warning line alone when the pool is healthy', () => {
+    // The other half: capping must not touch a figure the month can honour, or
+    // an ordinary "ahead of pace" week starts under-reporting real budget.
+    const cats = [
+      { name: 'Food & Dining', budget: 200, monthSpent: 164, weekSpent: 120 },
+      { name: 'Groceries', budget: 300, monthSpent: 0, weekSpent: 0 },
+    ];
+    const text = dailyGlyphs(cats, period);
+    expect(text).toContain('$36 left mo');
+  });
+
   it('leaves the weekly figures alone when the month can afford them', () => {
     const text = dailyGlyphs(
       [{ name: 'Groceries', monthSpent: 100, weekSpent: 20, budget: 1000 }],
