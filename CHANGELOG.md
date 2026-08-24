@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.22.2] - 2026-08-22
+
+### Fixed
+
+- **A category could still advertise money the month did not have.** When a
+  category had blown the week's pace but kept month budget, its line read
+  `⚠️ $62 over · $36 left mo` — and that `left mo` figure ignored the pool cap
+  1.21.0 introduced, so it could exceed what every category combined had left.
+  One report showed `$36 left mo` directly above `🚨 $93 over budget this
+  month`.
+
+  1.21.0 scaled the weekly figure and deliberately left month figures raw, on
+  the rule that they state a fact about the budget. That holds for
+  `🚨 $329 over`, which promises nothing, and fails for `$36 left mo`, which
+  promises spendable money exactly as a weekly figure does. The cap now applies
+  wherever a figure is money still available, and nowhere it is not — a healthy
+  pool leaves the figure untouched, and switching capping off keeps it raw.
+
 ## [1.22.1] - 2026-08-22
 
 ### Fixed

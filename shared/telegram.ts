@@ -912,13 +912,21 @@ export function formatDailySpendingDigest(
     // Only ever reduces. A category already over its own envelope is over
     // regardless of what the pool says.
     const leftThisWeek = rawWeek > 0 ? rawWeek * poolCap : rawWeek;
+    // The same cap on the month figure, but ONLY where it is printed as money
+    // still available (the `left mo` clause below). 1.21.0 scaled the weekly
+    // figure and left this one raw, on the rule that month figures are
+    // statements of fact — true of `$329 over`, which promises nothing, and
+    // false of `$36 left mo`, which promises exactly as much as a weekly
+    // figure does. A line read "$36 left mo" under a headline of "$93 over
+    // budget this month".
+    const leftMonth = remainingMonth > 0 ? remainingMonth * poolCap : remainingMonth;
 
     if (remainingMonth < 0) {
       // `Math.abs` explicitly: the word "over" states the direction, and
       // `-$50 over` would read as a double negative.
       lines.push(`${glyph}${name}  🚨 *${moneyWhole(Math.abs(remainingMonth))} over* for the month`);
     } else if (leftThisWeek < 0) {
-      lines.push(`${glyph}${name}  ⚠️ *${money(leftThisWeek)} over* · ${moneyWhole(remainingMonth)} left mo`);
+      lines.push(`${glyph}${name}  ⚠️ *${money(leftThisWeek)} over* · ${moneyWhole(leftMonth)} left mo`);
     } else if (leftThisWeek === 0 && remainingMonth === 0) {
       lines.push(`${glyph}${name}  *${money(0)}* · budget used up`);
     } else {
