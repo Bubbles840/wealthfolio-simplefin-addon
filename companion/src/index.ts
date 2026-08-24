@@ -15,6 +15,7 @@ import { RestSyncHost, RestSyncStore } from './rest-host.js';
 import { WealthfolioClient } from './wealthfolio.js';
 import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatMonthlyWrapUp, formatSyncHealthFooter, formatLargeTransactionAlert, formatBalanceDriftAlert, formatFeedLagNotice, formatStuckTransferAlert, formatDuplicatePruneAlert, formatImportNotice, formatRefusedCreatesAlert, buildDismissKeyboard, IMPORT_NOTICE_UNCATEGORIZED_CAP, escapeMarkdown, LARGE_TX_OUTBOX_SECRET_KEY, RECATEGORIZE_ENTRY_CALLBACK } from '../../shared/telegram.js';
 import { pruneDismissals, mergeDismissals } from './dismissals.js';
+import { evaluateSelfCheck, formatSelfCheckBlock } from '../../shared/self-check.js';
 import { startTelegramListener } from './telegram-listener.js';
 import type { TelegramListenerDeps } from './telegram-listener.js';
 import { createImapSource, ingestAmazonMail, amazonMailConfigured } from './amazon-mail.js';
@@ -1509,10 +1510,54 @@ export async function composeDailyDigestMessage(
     await readCapWeeklyToPool(wfClient),
   );
 
-  const healthRaw = await wfClient.getAddonSecret('simplefin-sync', 'sync_health').catch(() => null);
+  // Read so that an unreadable secret stays DISTINGUISHABLE from a missing
+  // one: the self-check reports those differently, because "could not check"
+  // must never render as a clean bill of health.
+  let healthUnreadable = false;
+  let healthRaw: string | null = null;
+  try {
+    healthRaw = await wfClient.getAddonSecret('simplefin-sync', 'sync_health');
+  } catch {
+    healthUnreadable = true;
+  }
   // Guarded parse: this secret only supplies a decorative one-line footer, so
   // an unreadable one must cost the footer, never the digest it hangs off.
   const health = parseSecretJson<SyncHealth>(healthRaw, 'sync_health');
+
+  // The scheduled half of `/status`. Every signal below was already published
+  // and already readable — but only by pulling, and a pull only happens when
+  // the reader already suspects something. These checks run on their own and
+  // speak into the report already being read, rather than opening a second
+  // notification channel that would eventually be muted.
+  const unmapped = parseSecretJson<Array<{ accountName?: string; sfinAccountId?: string }>>(
+    await wfClient.getAddonSecret('simplefin-sync', 'unmapped_accounts').catch(() => null),
+    'unmapped_accounts',
+  ) ?? [];
+  const balances = parseSecretJson<Record<string, StoredAccountBalance>>(
+    await wfClient.getAddonSecret('simplefin-sync', 'account_balances').catch(() => null),
+    'account_balances',
+  ) ?? {};
+  const accountNames = parseSecretJson<Record<string, string>>(
+    await wfClient.getAddonSecret('simplefin-sync', 'account_names').catch(() => null),
+    'account_names',
+  ) ?? {};
+  const selfCheck = formatSelfCheckBlock(evaluateSelfCheck({
+    lastSuccessAt: health?.lastSuccessAt ?? null,
+    firstFailedAt: health?.firstFailedAt ?? null,
+    lastError: health?.lastError ?? null,
+    healthUnreadable,
+    unmappedAccountNames: unmapped
+      .map((a) => a?.accountName || a?.sfinAccountId || '')
+      .filter((n) => n !== ''),
+    accounts: Object.entries(balances).map(([id, info]) => ({
+      name: accountNames[id] ?? id,
+      balanceDate: typeof info?.date === 'number' ? info.date : null,
+    })),
+  }, now));
+  if (selfCheck) {
+    message += `\n\n${selfCheck}`;
+  }
+
   const footer = formatSyncHealthFooter(health);
   if (footer) {
     message += `\n\n${footer}`;
