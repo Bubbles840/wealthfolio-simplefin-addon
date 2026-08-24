@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.24.0] - 2026-08-24
+
+### Added
+
+- **Self-check: the daily report now says when something is wrong with the
+  pipeline itself.** Every signal involved was already published and already
+  readable — but only by running `/status`, and nobody runs `/status` unless
+  they already suspect something. The checks now run on their own and report
+  into the message already being read:
+
+  - the sync has been failing, and for how long, with the error;
+  - no successful sync in over 12 hours (comfortably past the 4-hour default,
+    so an ordinary skipped run never cries wolf);
+  - a SimpleFin account is unmapped, so nothing from it is syncing — named,
+    because the name is the whole fix;
+  - an account has sent no new data in over 14 days, which SimpleFin does not
+    report as an error;
+  - the health signal could not be READ, reported distinctly from "healthy",
+    because a 401 rendering as a clean bill of health is how a dead connection
+    reads as fine.
+
+  Nothing is added on a healthy day. A reassurance printed every single day
+  stops being read long before the day it is wrong — the existing
+  `✅ synced Nh ago` footer already carries proof of life.
+
 ## [1.23.0] - 2026-08-24
 
 ### Fixed

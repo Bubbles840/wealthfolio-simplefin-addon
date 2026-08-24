@@ -1295,6 +1295,60 @@ describe('sendDailyTelegramReport', () => {
     }
   });
 
+  it('surfaces an unmapped account in the daily report', async () => {
+    // The failure that started all of this: an account mapped to nothing syncs
+    // nothing and says nothing. It was already detected and already stored —
+    // but only `/status` ever looked, and nobody runs `/status` unless they
+    // already suspect something.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 6, 14, 9, 0, 0));
+    try {
+      const secrets = new Map<string, string>();
+      secrets.set('telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true }));
+      secrets.set('unmapped_accounts', JSON.stringify([
+        { sfinAccountId: 'sf-9', accountName: 'Robinhood Gold' },
+      ]));
+      const client = {
+        getAddonSecret: vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null),
+        setAddonSecret: vi.fn(async () => {}),
+      } as any;
+      const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+      vi.stubGlobal('fetch', fetchMock);
+
+      await sendDailyTelegramReport(client);
+      const text = JSON.parse((fetchMock.mock.calls[0][1] as any).body).text;
+      expect(text).toContain('Needs attention');
+      expect(text).toContain('Robinhood Gold');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('adds no self-check block to a healthy daily report', () => new Promise<void>((done) => {
+    // Silence on success is the contract. A reassurance printed every single
+    // day stops being read long before the day it is wrong.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 6, 14, 9, 0, 0));
+    const secrets = new Map<string, string>();
+    secrets.set('telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true }));
+    secrets.set('sync_health', JSON.stringify({
+      lastSuccessAt: new Date(2026, 6, 14, 8, 0, 0).toISOString(),
+    }));
+    const client = {
+      getAddonSecret: vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null),
+      setAddonSecret: vi.fn(async () => {}),
+    } as any;
+    const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+    vi.stubGlobal('fetch', fetchMock);
+    sendDailyTelegramReport(client).then(() => {
+      const text = JSON.parse((fetchMock.mock.calls[0][1] as any).body).text;
+      expect(text).not.toContain('Needs attention');
+      expect(text).toContain('✅ synced');
+      vi.useRealTimers();
+      done();
+    });
+  }));
+
   it('carries the weekly-capping opt-out from the addon into the digest', async () => {
     // The setting lives in the addon's UI but is applied by the companion, so
     // the only thing that proves it works is the key crossing that boundary.
