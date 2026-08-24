@@ -2296,18 +2296,19 @@ describe('sendWeeklyTelegramReport', () => {
       expect(text).not.toContain('Biggest');
     });
 
-    it('logs a rejected send instead of assuming it arrived, after retrying', async () => {
+    it('logs a rejected send at once, without spending the retry budget', async () => {
       // `sendTelegramMessage` reports an API-level failure — a 400 from
       // unbalanced Markdown being the one this section could plausibly cause —
-      // by RESOLVING `{ ok: false }`, not throwing. An instant `sleep` stand-in
-      // skips the real retry delay so the test doesn't wait out the backoff.
+      // by RESOLVING `{ ok: false }`, not throwing. Malformed Markdown fails
+      // identically on every attempt, so it is reported immediately: retrying
+      // it only delays the error reaching whoever has to fix it.
       const logs = vi.spyOn(console, 'log').mockImplementation(() => {});
       const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: false, description: "can't parse entities" }) }));
       vi.stubGlobal('fetch', fetchMock);
       try {
         await expect(sendWeeklyTelegramReport(weeklyClient(), async () => {})).resolves.toBeUndefined();
         expect(logs.mock.calls.flat().join('\n')).toContain('Failed to send weekly Telegram report');
-        expect(fetchMock).toHaveBeenCalledTimes(3);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
       } finally {
         logs.mockRestore();
       }
@@ -2315,8 +2316,11 @@ describe('sendWeeklyTelegramReport', () => {
 
     it('retries after a transient failure and reports success once it lands', async () => {
       const logs = vi.spyOn(console, 'log').mockImplementation(() => {});
+      // A real connectivity failure REJECTS — modelling it as a resolved
+      // `ok: false` made the fixture indistinguishable from Telegram rejecting
+      // the message, which is the opposite case and must not be retried.
       const fetchMock = vi.fn()
-        .mockResolvedValueOnce({ json: async () => ({ ok: false, description: 'fetch failed' }) })
+        .mockRejectedValueOnce(new Error('fetch failed'))
         .mockResolvedValue({ json: async () => ({ ok: true }) });
       vi.stubGlobal('fetch', fetchMock);
       try {
@@ -2571,7 +2575,8 @@ describe('sendMonthlyTelegramReport', () => {
       const logged = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
       expect(logged).toContain('Failed to send monthly Telegram report');
       expect(logged).toContain("can't parse entities");
-      expect(fetchMock).toHaveBeenCalledTimes(3);
+      // Permanent: reported on the first attempt rather than after the budget.
+      expect(fetchMock).toHaveBeenCalledTimes(1);
     } finally {
       logSpy.mockRestore();
     }

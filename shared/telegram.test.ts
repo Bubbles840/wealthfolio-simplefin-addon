@@ -819,6 +819,48 @@ describe('formatDailySpendingDigest', () => {
     expect(text).not.toContain('left overall');
   });
 
+  it('marks an unavailable Telegram as transient, and a bad token as not', async () => {
+    // The companion already retries scheduled reports; what it lacked was any
+    // way to tell "come back in a moment" from "this will fail forever".
+    // Retrying a bad token just delays the error the user needs to see.
+    const at = async (status: number, description: string) => sendTelegramMessage(
+      'tok', '1', 'hi',
+      { request: async () => ({ status, body: JSON.stringify({ ok: false, description }) }) },
+    );
+    expect((await at(503, 'busy')).transient).toBe(true);
+    expect((await at(429, 'Too Many Requests')).transient).toBe(true);
+    expect((await at(401, 'Unauthorized')).transient).toBeUndefined();
+    expect((await at(400, 'chat not found')).transient).toBeUndefined();
+  });
+
+  it('treats a thrown network error as transient', async () => {
+    const res = await sendTelegramMessage('tok', '1', 'hi');
+    // No fetch stub in this test: the real call fails and must read as retryable.
+    expect(res.ok).toBe(false);
+    expect(res.transient).toBe(true);
+  });
+
+  it('does not let a net refund inflate a category past its own budget', () => {
+    // A refund larger than the month's spend makes monthSpent negative, and
+    // `budget - monthSpent` then exceeds the budget: a $300 category showing
+    // $350 left. The refund restores room already inside the budget; it does
+    // not raise the ceiling the user set.
+    const r = weeklyEnvelope({
+      budget: 300, monthSpent: -50, weekSpent: 0, daysFromWeekStartToMonthEnd: 7,
+    });
+    expect(r.remainingMonth).toBe(300);
+    expect(r.leftThisWeek).toBeLessThanOrEqual(300);
+  });
+
+  it('still reports the full budget as remaining when nothing has been spent', () => {
+    // The clamp must bite only on negatives — an untouched category still has
+    // its whole budget available.
+    const r = weeklyEnvelope({
+      budget: 300, monthSpent: 0, weekSpent: 0, daysFromWeekStartToMonthEnd: 7,
+    });
+    expect(r.remainingMonth).toBe(300);
+  });
+
   it('never lets a line promise more than the pool holds, on any branch', () => {
     // The invariant 1.21.0 was supposed to establish, stated directly rather
     // than per-branch — which is how the `left mo` clause slipped through: the

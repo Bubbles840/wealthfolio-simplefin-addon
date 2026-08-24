@@ -263,6 +263,41 @@ describe('sqlite-native', () => {
       } finally { cleanup(); }
     });
 
+    it('excludes charges the user dismissed, count and total together', () => {
+      // Dismissing says "not spending I need to file". The total still fed the
+      // daily digest's pool, so one dismissed charge went on shrinking every
+      // category's figure with nothing on screen explaining why.
+      const { path, cleanup } = makeTestDb();
+      try {
+        const db = new DatabaseSync(path);
+        db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type)
+                 VALUES ('keep', '-25.00', '2026-08-20', 'WITHDRAWAL')`);
+        db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type)
+                 VALUES ('gone', '-106.00', '2026-08-20', 'WITHDRAWAL')`);
+        db.close();
+        expect(getNativeUncategorizedSpendingTotal(path, '2026-08-01', '2026-09-01'))
+          .toEqual({ count: 2, total: 131 });
+        const res = getNativeUncategorizedSpendingTotal(path, '2026-08-01', '2026-09-01', ['gone']);
+        expect(res).toEqual({ count: 1, total: 25 });
+      } finally { cleanup(); }
+    });
+
+    it('ignores malformed dismissal ids rather than building broken SQL', () => {
+      // The ids arrive from an addon secret, so a junk value must not be able
+      // to change the query's meaning — or crash the whole daily report.
+      const { path, cleanup } = makeTestDb();
+      try {
+        const db = new DatabaseSync(path);
+        db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type)
+                 VALUES ('keep', '-25.00', '2026-08-20', 'WITHDRAWAL')`);
+        db.close();
+        const res = getNativeUncategorizedSpendingTotal(
+          path, '2026-08-01', '2026-09-01', ["' OR 1=1 --", 'keep'],
+        );
+        expect(res).toEqual({ count: 0, total: 0 });
+      } finally { cleanup(); }
+    });
+
     it('ignores a charge that HAS a category', () => {
       const { path, cleanup } = makeTestDb();
       try {

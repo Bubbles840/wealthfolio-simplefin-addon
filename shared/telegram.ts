@@ -8,6 +8,10 @@
 export interface TelegramSendResult {
   ok: boolean;
   description?: string;
+  /** Whether a later attempt could plausibly succeed — network error, 429, or
+   *  5xx. Absent means the failure is permanent (bad token, wrong chat) and
+   *  retrying would only delay the error reaching the user. */
+  transient?: boolean;
 }
 
 /**
@@ -35,6 +39,7 @@ export async function sendTelegramMessage(
   });
 
   let json: any;
+  let status = 0;
 
   if (network && typeof network.request === 'function') {
     try {
@@ -44,6 +49,7 @@ export async function sendTelegramMessage(
         headers: { 'Content-Type': 'application/json' },
         body,
       });
+      status = res.status;
       json = typeof res.body === 'string' ? JSON.parse(res.body) : res.body;
     } catch {
       // Fallback to direct fetch if network.request fails
@@ -57,14 +63,29 @@ export async function sendTelegramMessage(
         headers: { 'Content-Type': 'application/json' },
         body,
       });
+      status = res.status;
       json = await res.json();
     } catch (err) {
-      return { ok: false, description: (err as Error).message };
+      return { ok: false, description: (err as Error).message, transient: true };
     }
   }
 
   if (!json || json.ok === false) {
-    return { ok: false, description: json?.description ?? 'Telegram API request failed' };
+    // 5xx and 429 are Telegram being unavailable or rate-limiting, which a
+    // later attempt can succeed at. A 400/401/403 — bad token, wrong chat id,
+    // bot blocked — will fail identically forever, and retrying it only delays
+    // the error the user needs to see.
+    // `!json` means nothing parseable came back at all — a proxy error page, a
+    // truncated response — which is infrastructure, not Telegram rejecting the
+    // message. An API-level rejection arrives as HTTP 200 with `ok: false` and
+    // a description ("can't parse entities", "chat not found"); those are
+    // permanent and must surface immediately rather than after a retry budget.
+    const transient = !json || status === 429 || status >= 500;
+    return {
+      ok: false,
+      description: json?.description ?? 'Telegram API request failed',
+      ...(transient ? { transient: true } : {}),
+    };
   }
   return { ok: true };
 }
@@ -714,12 +735,17 @@ export function weeklyEnvelope(input: WeeklyEnvelopeInput): WeeklyEnvelopeResult
   const { budget, monthSpent, weekSpent } = input;
   const horizon = Math.max(1, input.daysFromWeekStartToMonthEnd);
   const spentBeforeWeek = monthSpent - weekSpent;
-  const budgetAtWeekStart = budget - spentBeforeWeek;
+  // Clamped at `budget`, because a refund bigger than the month's spend makes
+  // `monthSpent` negative and `budget - monthSpent` then exceeds the budget —
+  // a $300 category reporting $350 left. A refund gives back room that was
+  // always inside the budget; it does not raise the ceiling the user set, and
+  // these figures feed the pool, so an inflated one overstates every category.
+  const budgetAtWeekStart = Math.min(budget, budget - spentBeforeWeek);
   const weekEnvelope = Math.min(budgetAtWeekStart, (budgetAtWeekStart * 7) / horizon);
   return {
     weekEnvelope,
     leftThisWeek: weekEnvelope - weekSpent,
-    remainingMonth: budget - monthSpent,
+    remainingMonth: Math.min(budget, budget - monthSpent),
   };
 }
 

@@ -900,10 +900,28 @@ export function getNativeUncategorizedSpendingTotal(
   dbPath: string,
   startInclusive: string,
   endExclusive: string,
+  /**
+   * Activity IDs the user has dismissed from the "needs a category" list.
+   *
+   * Dismissing says "this is not spending I need to file" — but the total fed
+   * the daily digest's pool regardless, so a dismissed charge went on
+   * suppressing every category's figure with no line anywhere admitting why.
+   * Excluded here rather than at the call site so the count and the total can
+   * never disagree about which rows they describe.
+   */
+  dismissedActivityIds: readonly string[] = [],
 ): { count: number; total: number } {
   const empty = { count: 0, total: 0 };
   if (!dbPath || !existsSync(dbPath)) return empty;
   if (!validDateBounds(startInclusive, endExclusive)) return empty;
+
+  // Ids come from an addon secret, so they are quoted defensively rather than
+  // interpolated bare — and anything not matching an activity-id shape is
+  // dropped instead of escaped, since a malformed id can only be junk.
+  const safeIds = dismissedActivityIds.filter((id) => /^[A-Za-z0-9_-]{1,64}$/.test(id));
+  const dismissedClause = safeIds.length
+    ? `AND a.id NOT IN (${safeIds.map((id) => `'${id}'`).join(',')})`
+    : '';
 
   const query = `
     SELECT COUNT(*) as n,
@@ -915,6 +933,7 @@ export function getNativeUncategorizedSpendingTotal(
       AND a.activity_date < '${endExclusive}'
       AND ata.activity_id IS NULL
       AND COALESCE(a.source_group_id, '') = ''
+      ${dismissedClause}
       AND (${SPENDING_SIGN}) > 0;
   `;
 
