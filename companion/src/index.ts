@@ -15,6 +15,28 @@ import { RestSyncHost, RestSyncStore } from './rest-host.js';
 import { WealthfolioClient } from './wealthfolio.js';
 import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatMonthlyWrapUp, formatSyncHealthFooter, formatLargeTransactionAlert, formatBalanceDriftAlert, formatFeedLagNotice, formatStuckTransferAlert, formatDuplicatePruneAlert, formatImportNotice, formatRefusedCreatesAlert, buildDismissKeyboard, IMPORT_NOTICE_UNCATEGORIZED_CAP, escapeMarkdown, LARGE_TX_OUTBOX_SECRET_KEY, RECATEGORIZE_ENTRY_CALLBACK } from '../../shared/telegram.js';
 import { pruneDismissals, mergeDismissals } from './dismissals.js';
+
+/**
+ * The ONE default for where Wealthfolio's SQLite file lives.
+ *
+ * The env-var-or-literal fallback was written out at THIRTEEN call sites, and
+ * the literals had drifted into three spellings: '/mnt/wealthfolio.db' mostly,
+ * '/mnt/wealthfolio/wealthfolio.db' once, and '' three times (whose callers
+ * then silently skipped their feature). Nothing was broken in any documented
+ * setup, because every documented setup sets WEALTHFOLIO_DB_PATH explicitly —
+ * which is exactly how the drift could hide indefinitely. If the variable ever
+ * went missing, the code paths would disagree about which (nonexistent) file
+ * to read and every report would describe a perfectly healthy-looking EMPTY
+ * month: zero spending, zero uncategorized, no drift.
+ *
+ * The value matches docker-compose.example.yml, the setup installs are built
+ * from. The sqlite readers keep their own existsSync guards; what this adds is
+ * agreement, plus the loud startup line when the file is absent.
+ */
+const DEFAULT_WEALTHFOLIO_DB_PATH = '/mnt/wealthfolio.db';
+export function wealthfolioDbPath(): string {
+  return process.env.WEALTHFOLIO_DB_PATH || DEFAULT_WEALTHFOLIO_DB_PATH;
+}
 import { evaluateSelfCheck, formatSelfCheckBlock } from '../../shared/self-check.js';
 import { startTelegramListener } from './telegram-listener.js';
 import type { TelegramListenerDeps } from './telegram-listener.js';
@@ -521,8 +543,7 @@ async function pollAmazonMail(
  * after the charge it belongs to.
  */
 async function fileAmazonLabelledCharges(wfClient: WealthfolioClient): Promise<void> {
-  const dbPath = process.env.WEALTHFOLIO_DB_PATH || '';
-  if (!dbPath) return;
+  const dbPath = wealthfolioDbPath();
   const end = new Date();
   const start = new Date(end.getFullYear(), end.getMonth(), end.getDate() - 60);
   const res = await fileAmazonCharges({
@@ -830,7 +851,7 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
     await fileAmazonLabelledCharges(wfClient);
 
     await publishUncategorizedStatusForDbPath(
-      process.env.WEALTHFOLIO_DB_PATH || '/mnt/wealthfolio.db',
+      wealthfolioDbPath(),
       (key, value) => wfClient.setAddonSecret('simplefin-sync', key, value),
       (dbPath, start, end) => getNativeUncategorizedSpending(dbPath, start, end),
       async () => parseSecretJson<DismissalLedger>(
@@ -1146,7 +1167,7 @@ export async function sendImportNotice(
 
   // End bound is TOMORROW: activity_date carries a time component, so a
   // same-day row would fall outside a today-exclusive window.
-  const dbPath = process.env.WEALTHFOLIO_DB_PATH || '/mnt/wealthfolio.db';
+  const dbPath = wealthfolioDbPath();
   const now = Date.now();
   const uncategorized = getNativeUncategorizedSpending(
     dbPath,
@@ -1226,6 +1247,7 @@ export async function sendImportNotice(
       amountCents: t.amountCents,
       activityType: t.activityType,
       accountName: t.accountName,
+      inTransit: t.inTransit,
     })),
   );
   if (transferRow) keyboard.inline_keyboard.push(transferRow);
@@ -1340,7 +1362,7 @@ async function publishCategoryCatalog(
   yearMonth: string,
 ): Promise<void> {
   try {
-    const dbPath = process.env.WEALTHFOLIO_DB_PATH || '/mnt/wealthfolio/wealthfolio.db';
+    const dbPath = wealthfolioDbPath();
     const catalog = getNativeCategoryCatalog(dbPath, yearMonth);
     if (catalog.length === 0) return;
     await wfClient.setAddonSecret(
@@ -1447,7 +1469,7 @@ export async function composeDailyDigestMessage(
   if (!tg.botToken || !tg.chatId || tg.enabled === false) return null;
   if ((opts.honorDailyReportSwitch ?? true) && tg.dailyReportEnabled === false) return null;
 
-  const dbPath = process.env.WEALTHFOLIO_DB_PATH || '/mnt/wealthfolio.db';
+  const dbPath = wealthfolioDbPath();
   if (!dbPath || !existsSync(dbPath)) {
     log('WEALTHFOLIO_DB_PATH not found or missing, skipping daily digest.');
     return null;
@@ -1662,7 +1684,7 @@ export async function sendWeeklyTelegramReport(
   if (!tg.botToken || !tg.chatId || tg.enabled === false) return;
   if (tg.weeklyReportEnabled === false) return;
 
-  const dbPath = process.env.WEALTHFOLIO_DB_PATH || '/mnt/wealthfolio.db';
+  const dbPath = wealthfolioDbPath();
   if (!dbPath || !existsSync(dbPath)) {
     log('WEALTHFOLIO_DB_PATH not found or missing, skipping weekly summary.');
     return;
@@ -1746,7 +1768,7 @@ export async function sendMonthlyTelegramReport(
   if (!tg.botToken || !tg.chatId || tg.enabled === false) return;
   if (tg.monthlyReportEnabled === false) return;
 
-  const dbPath = process.env.WEALTHFOLIO_DB_PATH || '/mnt/wealthfolio.db';
+  const dbPath = wealthfolioDbPath();
   if (!dbPath || !existsSync(dbPath)) {
     log('WEALTHFOLIO_DB_PATH not found or missing, skipping monthly wrap-up.');
     return;
@@ -2054,7 +2076,7 @@ const NEWRULE_NO_DATABASE_REPLY =
  * falsely — that nothing needs a category, or that no such category exists.
  */
 function categorizeDbPath(): string | null {
-  const dbPath = process.env.WEALTHFOLIO_DB_PATH || '/mnt/wealthfolio.db';
+  const dbPath = wealthfolioDbPath();
   return existsSync(dbPath) ? dbPath : null;
 }
 
@@ -2129,7 +2151,7 @@ export function buildCategorizeDeps(wfClient: WealthfolioClient): CategorizeDeps
     republish: async () => {
       try {
         await publishUncategorizedStatusForDbPath(
-          process.env.WEALTHFOLIO_DB_PATH || '/mnt/wealthfolio.db',
+          wealthfolioDbPath(),
           (key, value) => wfClient.setAddonSecret('simplefin-sync', key, value),
           (dbPath, start, end) => getNativeUncategorizedSpending(dbPath, start, end),
           readLedger,
@@ -2176,7 +2198,7 @@ export function buildTelegramCommandHandler(
   /** `/left` and `/afford` read the same snapshot the daily digest is built
    *  from, so the three can never disagree about what "this week" means. */
   const budgetSnapshot = async () => {
-    const dbPath = process.env.WEALTHFOLIO_DB_PATH || '/mnt/wealthfolio.db';
+    const dbPath = wealthfolioDbPath();
     return {
       ...readBudgetSnapshot(dbPath, new Date()),
       style: await readGlyphStyle(wfClient),
@@ -2404,8 +2426,7 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
     // thin wrapper over addon secrets, and the one inside `runCompanionSync` is
     // scoped to a single run.
     countMatches: async (pattern: string) => {
-      const dbPath = process.env.WEALTHFOLIO_DB_PATH || '';
-      if (!dbPath) return { total: 0, spending: 0 };
+      const dbPath = wealthfolioDbPath();
       // A year back: a rule is permanent, so the question is what it catches in
       // general, not what one month happens to contain.
       const end = new Date();
@@ -2431,8 +2452,7 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
       'simplefin-sync', AMAZON_LABELS_SECRET_KEY, JSON.stringify(map),
     ),
     mainCategories: async () => {
-      const dbPath = process.env.WEALTHFOLIO_DB_PATH || '';
-      if (!dbPath) return [];
+      const dbPath = wealthfolioDbPath();
       const now = new Date();
       const ym = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
       return getNativeCategoryCatalog(dbPath, ym)
@@ -2597,6 +2617,14 @@ if (!process.env.VITEST) {
   // Version FIRST in the banner: "which build is running?" is the first
   // question any live diagnosis asks, and until 1.7.0 the only answer was
   // grepping compiled JavaScript inside the container.
+  if (!existsSync(wealthfolioDbPath())) {
+    // Loud, not fatal: a bind-mount can appear moments after the container
+    // starts, and refusing to boot would turn that race into a crash loop. But
+    // every report built against a missing file describes a perfectly
+    // healthy-looking empty month, so the one thing this must never be is
+    // quiet.
+    log(`ERROR: Wealthfolio database not found at ${wealthfolioDbPath()} — reports will be empty until it appears. Check the volume mount and WEALTHFOLIO_DB_PATH.`);
+  }
   log(`Starting companion v${SIMPLEFIN_SYNC_VERSION} — sync schedule: ${schedule}, daily report schedule: ${dailySchedule}, weekly report schedule: ${weeklySchedule}, monthly report schedule: ${monthlySchedule}`);
 
   cron.schedule(schedule, () => {
