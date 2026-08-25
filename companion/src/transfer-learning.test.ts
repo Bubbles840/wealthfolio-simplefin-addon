@@ -78,6 +78,27 @@ describe('transfer learning', () => {
     expect(menu.entryButton([])).toBeUndefined();
   });
 
+  it('offers nothing for an in-transit placeholder, which IS a transfer already', () => {
+    // The live case, 2026-08-25: a savings->bank transfer's first leg arrived
+    // ahead of its counterpart, was booked as the spending-neutral placeholder
+    // (a transfer wearing a CREDIT type), and the notice offered to "mark it
+    // as a transfer". Filtering by activityType alone cannot catch it —
+    // that is the disguise. Teaching a rule from it would be worse than
+    // pointless: its descriptor names the user's own bank, so the rule would
+    // convert every future deposit from that bank into a transfer leg.
+    const { menu } = make();
+    expect(menu.entryButton([tx({ activityType: 'CREDIT', inTransit: true })])).toBeUndefined();
+  });
+
+  it('still offers the button when a real candidate rides alongside a placeholder', () => {
+    const { menu } = make();
+    const row = menu.entryButton([
+      tx({ activityType: 'CREDIT', inTransit: true, description: 'PNC BANK, NATIONAL' }),
+      tx(),
+    ]);
+    expect(row).toHaveLength(1);
+  });
+
   it('writes a rule that types future payments as transfers out', async () => {
     // The live case: "Ccb" is Coastal Community Bank, the Robinhood card's
     // issuer — a string no keyword list would ever have contained.

@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.24.1] - 2026-08-25
+
+### Fixed
+
+- **The import notice no longer offers to "mark as a transfer" a transfer the
+  sync already recognized.** An unpaired transfer leg waiting for its
+  counterpart is booked as a spending-neutral placeholder wearing a CREDIT
+  type, and the transfer-learning menu filtered candidates by activity type
+  alone — so the placeholder walked straight through and the button appeared
+  on it. Worse than redundant: teaching a rule from it would have matched the
+  descriptor of the user's own bank, converting every future deposit from
+  that bank into a transfer leg. The placeholder flag now travels with the
+  imported row and such rows are excluded outright.
+- **The Wealthfolio database path had thirteen hand-written fallbacks in three
+  spellings**, including three that silently skipped their feature. All now
+  agree on one constant, and the companion complains loudly at startup when
+  the file is missing — a report built against a missing database describes a
+  perfectly healthy-looking empty month, which is the one failure that must
+  not be quiet.
+
 ## [1.24.0] - 2026-08-24
 
 ### Added

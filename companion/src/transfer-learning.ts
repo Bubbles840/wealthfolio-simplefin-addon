@@ -45,6 +45,13 @@ export interface TransferCandidate {
    *  `TRANSFER_IN` — the direction is not guessed, it is preserved. */
   activityType: string;
   accountName: string;
+  /** An unpaired transfer leg imported as its spending-neutral placeholder.
+   *  Already a transfer — offering to "mark it as one" is at best redundant,
+   *  and at worst teaches a rule from a descriptor that names the user's own
+   *  bank, converting every future deposit from that bank into a transfer
+   *  leg. The type alone cannot catch this: the placeholder's disguise is
+   *  precisely that it wears a spending type (see neutralAdjustmentFields). */
+  inTransit?: boolean;
 }
 
 export interface TransferLearningDeps {
@@ -98,6 +105,7 @@ export function createTransferLearning(deps: TransferLearningDeps): TransferLear
   const eligible = (candidates: TransferCandidate[]) =>
     candidates
       .filter((c) => !ALREADY_TRANSFER.has(String(c.activityType).toUpperCase()))
+      .filter((c) => !c.inTransit)
       .filter((c) => rulePatternFor(c.description).length > 0)
       .slice(0, MAX_CANDIDATES);
 
