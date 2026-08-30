@@ -56,6 +56,15 @@ describe('SecretsStore', () => {
     expect(await s.getOverBudgetSpent()).toBe('total');
   });
 
+  it('defaults the month projection ON and stores only the opt-out, under the companion\'s key', async () => {
+    const { ctx, data } = makeCtxWithData();
+    const s = new SecretsStore(ctx);
+    expect(await s.getMonthProjection()).toBe(true);
+    await s.setMonthProjection(false);
+    expect(data['month_projection']).toBe('off');
+    expect(await s.getMonthProjection()).toBe(false);
+  });
+
   it('roundtrips access URL', async () => {
     const ctx = makeCtx();
     const s = new SecretsStore(ctx);

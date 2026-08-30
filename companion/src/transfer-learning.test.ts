@@ -235,4 +235,60 @@ describe('transfer learning', () => {
     await expect(failing.onCallback({ data: `cz:tlc:${token}:0` }, u)).resolves.toBeUndefined();
     expect(u.answer).toHaveBeenCalled();
   });
+  it('offers an undo button on confirmation of a new rule', async () => {
+    // The rule takes effect at the next sync, retroactively and silently, so
+    // the confirmation itself carries the way back.
+    const { menu } = make();
+    const u = await teach(menu, [tx()]);
+    const button = u.edit.mock.calls[0][1].inline_keyboard[0][0];
+    expect(button.text).toContain('Undo');
+    expect(button.callback_data.startsWith('cz:tlu:')).toBe(true);
+    expect(Buffer.byteLength(button.callback_data)).toBeLessThanOrEqual(64);
+  });
+
+  it('removes exactly the taught rule and leaves existing rules untouched on undo', async () => {
+    // Hand-written rules live in the same list and must survive an undo of
+    // the one this menu wrote.
+    const mine = { pattern: 'Venmo', matchType: 'contains', activityType: 'CREDIT' };
+    const { menu, state } = make([mine]);
+    const u = await teach(menu, [tx()]);
+    const data = u.edit.mock.calls[0][1].inline_keyboard[0][0].callback_data;
+    const u2 = ui();
+    await menu.onCallback({ data }, u2);
+    expect(state.rules).toEqual([mine]);
+    expect(u2.answer).toHaveBeenCalledWith('Rule removed');
+    expect(u2.edit.mock.calls[0][0]).toContain('Rule removed');
+  });
+
+  it('answers that the rule is already gone when undo is tapped twice', async () => {
+    // A doubled tap is a safe no-op that says so, with no second write.
+    const { menu, deps } = make();
+    const u = await teach(menu, [tx()]);
+    const data = u.edit.mock.calls[0][1].inline_keyboard[0][0].callback_data;
+    await menu.onCallback({ data }, ui());
+    const u3 = ui();
+    await menu.onCallback({ data }, u3);
+    expect(u3.answer).toHaveBeenCalledWith('That rule is already gone');
+    expect(deps.writeRules).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not offer an undo button when the rule already existed', async () => {
+    // Undo there would delete a rule the user wrote earlier, not one this
+    // tap created.
+    const { menu } = make([
+      { pattern: 'Payment to Ccb Credit Card Payments', matchType: 'contains', activityType: 'TRANSFER_OUT' },
+    ]);
+    const u = await teach(menu, [tx()]);
+    expect(u.edit.mock.calls[0][1]).toBeUndefined();
+  });
+
+  it('handles an expired session on undo without writing rules', async () => {
+    // After a daemon restart the in-memory session is gone; the honest answer
+    // is "expired", and nothing must be written on a guess.
+    const { menu, deps } = make();
+    const u = ui();
+    await menu.onCallback({ data: 'cz:tlu:999:0' }, u);
+    expect(u.answer).toHaveBeenCalledWith(expect.stringContaining('expired'));
+    expect(deps.writeRules).not.toHaveBeenCalled();
+  });
 });

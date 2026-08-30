@@ -40,6 +40,7 @@ export function wealthfolioDbPath(): string {
   return process.env.WEALTHFOLIO_DB_PATH || DEFAULT_WEALTHFOLIO_DB_PATH;
 }
 import { evaluateSelfCheck, formatSelfCheckBlock } from '../../shared/self-check.js';
+import { monthEndForecast, previousThreeFullMonths, daysInMonthOf } from '../../shared/projection.js';
 import { startTelegramListener } from './telegram-listener.js';
 import type { TelegramListenerDeps } from './telegram-listener.js';
 import { createImapSource, ingestAmazonMail, amazonMailConfigured } from './amazon-mail.js';
@@ -1339,6 +1340,34 @@ async function readCapWeeklyToPool(wfClient: WealthfolioClient): Promise<boolean
 
 /** Mirrors the addon's `getOverBudgetSpent`: anything unrecognised is the
  *  default, so a newer addon can never break an older companion. */
+/** Mirrors the addon's `getMonthProjection`: opt-OUT stored, absent means on. */
+async function readMonthProjection(wfClient: WealthfolioClient): Promise<boolean> {
+  const raw = await wfClient
+    .getAddonSecret('simplefin-sync', 'month_projection')
+    .catch(() => null);
+  return raw !== 'off';
+}
+
+/**
+ * Wealthfolio's month-end forecast from the same spending reader every other
+ * report uses, so the number is built from totals already reconciled with the
+ * app. Null when the line is switched off.
+ */
+function readProjection(
+  dbPath: string, now: Date, categories: ReadonlyArray<{ monthSpent: number }>, enabled: boolean,
+): { forecast: number } | null {
+  if (!enabled) return null;
+  const window = previousThreeFullMonths(now);
+  const history = getNativeWealthfolioSpendingBetween(dbPath, window.startInclusive, window.endExclusive);
+  const historicalOutflow = Object.values(history).reduce((sum, v) => sum + Math.max(0, v), 0);
+  const spentSoFar = categories.reduce((sum, c) => sum + Math.max(0, c.monthSpent), 0);
+  const forecast = monthEndForecast({
+    historicalOutflow, historyDays: window.days, spentSoFar,
+    dayOfMonth: now.getDate(), daysInMonth: daysInMonthOf(now),
+  });
+  return forecast > 0 ? { forecast } : null;
+}
+
 async function readOverBudgetSpent(wfClient: WealthfolioClient): Promise<'total' | 'all' | 'none'> {
   const raw = await wfClient
     .getAddonSecret('simplefin-sync', 'over_budget_spent')
@@ -1542,6 +1571,7 @@ export async function composeDailyDigestMessage(
     await readCountOffBudget(wfClient), uncategorizedSpend,
     await readCapWeeklyToPool(wfClient),
     await readOverBudgetSpent(wfClient),
+    readProjection(dbPath, now, categories, await readMonthProjection(wfClient)),
   );
 
   // Read so that an unreadable secret stays DISTINGUISHABLE from a missing

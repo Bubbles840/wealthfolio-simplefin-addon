@@ -73,6 +73,8 @@ const makeProps = () => ({
     setCapWeeklyToPool: vi.fn(async () => {}),
     getOverBudgetSpent: vi.fn(async () => 'total'),
     setOverBudgetSpent: vi.fn(async () => {}),
+    getMonthProjection: vi.fn(async () => true),
+    setMonthProjection: vi.fn(async () => {}),
     setCountOffBudget: vi.fn(async () => {}),
     getSubcategoryDisplay: vi.fn(async () => 'rollup' as const),
     setSubcategoryDisplay: vi.fn(async () => {}),

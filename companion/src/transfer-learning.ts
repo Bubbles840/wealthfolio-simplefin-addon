@@ -28,6 +28,10 @@ const CHOOSE_PREFIX = `${MENU_CALLBACK_PREFIX}tlc:`;
 /** The confirm step. A rule is retroactive and silent, so the count of what it
  *  would catch is shown BEFORE it is written, never after. */
 const CONFIRM_PREFIX = `${MENU_CALLBACK_PREFIX}tlk:`;
+/** The way back from a confirmed rule. Offered on the confirmation itself,
+ *  because a rule is retroactive and silent: the next sync retypes every match,
+ *  and the addon's Transaction Rules screen is several taps away on a phone. */
+const UNDO_PREFIX = `${MENU_CALLBACK_PREFIX}tlu:`;
 
 /** Transactions offered per notice. The picker is a list of buttons in a chat
  *  message, not a table. */
@@ -124,7 +128,8 @@ export function createTransferLearning(deps: TransferLearningDeps): TransferLear
     },
 
     handles(data) {
-      return data.startsWith(OPEN_PREFIX) || data.startsWith(CHOOSE_PREFIX) || data.startsWith(CONFIRM_PREFIX);
+      return data.startsWith(OPEN_PREFIX) || data.startsWith(CHOOSE_PREFIX)
+        || data.startsWith(CONFIRM_PREFIX) || data.startsWith(UNDO_PREFIX);
     },
 
     async onCallback(cb, ui) {
@@ -184,6 +189,38 @@ export function createTransferLearning(deps: TransferLearningDeps): TransferLear
           return;
         }
 
+        // ── Undo: remove exactly the rule the confirmation wrote ─────────
+        if (cb.data.startsWith(UNDO_PREFIX)) {
+          const rest = cb.data.slice(UNDO_PREFIX.length);
+          const sep = rest.lastIndexOf(':');
+          const chosen = sessions.get(sep === -1 ? rest : rest.slice(0, sep))?.[
+            sep === -1 ? NaN : Number(rest.slice(sep + 1))
+          ];
+          if (!chosen) return void await ui.answer('That menu expired — remove it under Transaction Rules in the addon.');
+          const pattern = rulePatternFor(chosen.description);
+          const activityType: ActivityType =
+            String(chosen.activityType).toUpperCase() === 'DEPOSIT' ? 'TRANSFER_IN' : 'TRANSFER_OUT';
+          // Exactly the rule the confirm step appended — pattern AND direction —
+          // and nothing else: the user's own hand-written rules live in the
+          // same list and must survive an undo of this one.
+          const rules = await deps.readRules();
+          const kept = rules.filter(
+            (r) => !(r.pattern.toLowerCase() === pattern.toLowerCase() && r.activityType === activityType),
+          );
+          if (kept.length === rules.length) {
+            await ui.answer('That rule is already gone');
+            return;
+          }
+          await deps.writeRules(kept);
+          await ui.edit(
+            `↩ Rule removed: *${pattern}*\n\n`
+            + 'Anything it already retyped goes back to normal on the next sync. '
+            + 'If you change your mind, tap the transaction in a new notice or use /newrule.',
+          );
+          await ui.answer('Rule removed');
+          return;
+        }
+
         // ── Confirmed: write it ───────────────────────────────────────────
         const rest = cb.data.slice(CONFIRM_PREFIX.length);
         const sep = rest.lastIndexOf(':');
@@ -228,6 +265,11 @@ export function createTransferLearning(deps: TransferLearningDeps): TransferLear
           + 'The next sync retypes this transaction and every future one matching it, '
           + 'so it stops counting as spending. Edit or remove it under '
           + 'Advanced → Transaction Rules.',
+          // No Undo when the rule already existed: that would delete a rule the
+          // user wrote earlier, not the one this tap did nothing to create.
+          already ? undefined : {
+            inline_keyboard: [[{ text: '↩ Undo this rule', callback_data: `${UNDO_PREFIX}${rest}` }]],
+          },
         );
         await ui.answer(already ? 'Rule already existed' : 'Rule saved');
       } catch (err) {

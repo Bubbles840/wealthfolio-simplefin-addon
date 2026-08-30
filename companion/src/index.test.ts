@@ -1349,6 +1349,33 @@ describe('sendDailyTelegramReport', () => {
     });
   }));
 
+  it('adds Wealthfolio\'s forecast to the headline, and drops it when switched off', async () => {
+    // The mocked reader returns the same spend for any window, so the three
+    // prior months produce history and the forecast branch is the historical
+    // one — the app's own formula, not this month's pace.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 6, 14, 9, 0, 0));
+    try {
+      const send = async (projection: string | null) => {
+        const secrets = new Map<string, string>();
+        secrets.set('telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true }));
+        if (projection) secrets.set('month_projection', projection);
+        const client = {
+          getAddonSecret: vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null),
+          setAddonSecret: vi.fn(async () => {}),
+        } as any;
+        const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+        vi.stubGlobal('fetch', fetchMock);
+        await sendDailyTelegramReport(client);
+        return JSON.parse((fetchMock.mock.calls[0][1] as any).body).text as string;
+      };
+      expect(await send(null)).toMatch(/on pace for \$[\d,]+/);
+      expect(await send('off')).not.toContain('on pace');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('carries the over-budget spent setting from the addon into the digest', async () => {
     // Mocked Dining is 550 of 500, so the month is over and the setting has
     // something to act on.
@@ -1538,8 +1565,9 @@ describe('sendDailyTelegramReport', () => {
     const [, sentBody] = fetchMock.mock.calls[0];
     const text = JSON.parse((sentBody as any).body).text;
     // Blank line between the digest's last line and the health footer, and the
-    // footer is the final line — never run on to the money summary.
-    expect(text).toMatch(/ to go\n\n✅ synced 2h ago$/);
+    // footer is the final line — never run on to the money summary. The
+    // projection clause, when present, is part of that headline line.
+    expect(text).toMatch(/ to go( · on pace for \$[\d,]+[^\n]*)?\n\n✅ synced 2h ago$/);
   });
 
   it('retries a transient send failure and reports success once it lands', async () => {

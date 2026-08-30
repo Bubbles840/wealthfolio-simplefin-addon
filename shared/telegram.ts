@@ -850,6 +850,13 @@ export function formatDailySpendingDigest(
    * every line as it was.
    */
   overBudgetSpent: OverBudgetSpent = 'total',
+  /**
+   * Wealthfolio's own month-end forecast (see shared/projection.ts), or null
+   * to leave the line out. Rendered as one clause on the headline, with the
+   * distance to the total budget when one exists — the same two numbers the
+   * app's budget page shows, so the report and the app agree on "on pace".
+   */
+  projection: { forecast: number } | null = null,
 ): string {
   const { daysFromWeekStartToMonthEnd, daysLeftInMonthInclusive } = period;
   const days = Math.max(1, daysLeftInMonthInclusive);
@@ -876,6 +883,7 @@ export function formatDailySpendingDigest(
   // a negative: a refund is not spending, and this feeds a figure labelled
   // "spent".
   let budgetedSpent = 0;
+  let budgetedBudget = 0;
   let anyBudget = false;
   /** First-pass results, rendered once the pool is known. */
   const rendered: Array<{
@@ -912,6 +920,7 @@ export function formatDailySpendingDigest(
     anyBudget = true;
     budgetedRemaining += remainingMonth;
     budgetedSpent += Math.max(0, c.monthSpent);
+    budgetedBudget += c.budget;
     // Rendered in a SECOND pass: what a category can really be spent on depends
     // on the whole month's pool, which is not known until every category has
     // been totalled. See `poolFactor` below.
@@ -1033,11 +1042,24 @@ export function formatDailySpendingDigest(
   // describe different sets of transactions.
   const totalSpent = budgetedSpent + countedOffBudget;
   const spentTail = overBudgetSpent === 'none' ? '' : ` · ${moneyWhole(totalSpent)} spent`;
+  // Whole dollars, signed against the budget as the app does it: "+$520" is
+  // the forecast running past the target, "−$300" is headroom.
+  const paceTail = (() => {
+    if (!projection || !(projection.forecast > 0)) return '';
+    const vs = budgetedBudget > 0 ? projection.forecast - budgetedBudget : null;
+    const delta = vs === null || moneyWhole(Math.abs(vs)) === '$0'
+      ? ''
+      : ` (${vs > 0 ? '+' : '−'}${moneyWhole(Math.abs(vs))} vs budget)`;
+    return ` · on pace for ${moneyWhole(projection.forecast)}${delta}`;
+  })();
+  // The forecast rides on every form of the headline, the no-budget one
+  // included: the app shows it whether or not a target exists, and a reader
+  // with no budgets yet is exactly the one with no other sense of pace.
   const summary = !anyBudget
-    ? `${headerGlyph('📅', style)}${days} ${dayWord} left in the month`
+    ? `${headerGlyph('📅', style)}${days} ${dayWord} left in the month${paceTail}`
     : overBudget
-      ? `🚨 ${moneyWhole(Math.abs(headlineRemaining))} over budget this month${spentTail} · ${days} ${dayWord} to go`
-      : `${headerGlyph('💰', style)}${moneyWhole(headlineRemaining)} left this month · ${days} ${dayWord} to go`;
+      ? `🚨 ${moneyWhole(Math.abs(headlineRemaining))} over budget this month${spentTail} · ${days} ${dayWord} to go${paceTail}`
+      : `${headerGlyph('💰', style)}${moneyWhole(headlineRemaining)} left this month · ${days} ${dayWord} to go${paceTail}`;
 
   // An empty budgeted block can happen while off-budget lines exist (every
   // budget deleted, spending continues); joining blocks that exist avoids a
