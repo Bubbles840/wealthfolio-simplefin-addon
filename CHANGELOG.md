@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.29.0] - 2026-08-30
+
+### Added
+
+- **The Budget tab** — the addon's new first and default view: your money as
+  reports, rendered from one `report_cube` secret the companion publishes on
+  every sync (24 months of spending by category and account, income, budgets,
+  merchants, fees, valuations, and the pool's daily burn — all from the same
+  classifier transcription the Telegram reports use, so nothing here can
+  disagree with the digest).
+- **Ten standard reports**: pool burn-down (ideal glide vs actual), cash flow
+  by month, category trends, net worth, savings rate, merchant leaderboard
+  with trend arrows, budget vs actual, a seasonality heatmap, fees & interest,
+  and cash-runway trend. Every chart uses Wealthfolio's own host-provided
+  chart kit, so the tab looks native and costs almost nothing in bundle size.
+- **A custom report builder**, Actual-style: build named series from signed
+  terms — add and subtract categories, income, total spending, uncategorized —
+  pick line/bars/stacked/area/donut/table and a date range, filter by account,
+  and watch a live preview update on every tap. Saved reports join the grid
+  beside the standard ones, with edit, duplicate, and delete.
+- **A dashboard you arrange**: tap any card to open it full-screen (with the
+  one shared range control — 6/12/24 months, all, or the pool window);
+  Customize mode pins up to two hero charts, reorders with up/down buttons,
+  and hides reports into a recoverable row. Buttons, not drag — it works the
+  same on a phone, where the whole tab is built single-column-first.
+- **Absence explains itself**: without a companion publish the tab shows one
+  banner (not ten empty charts); a stale cube gets an "as of" strip; months
+  without valuation data render as gaps; an all-zero fees history says
+  "nothing — as it should be"; a custom report naming a since-renamed category
+  wears a warning chip instead of breaking.
+
+### Notes for self-hosters
+
+- The companion now also publishes the `report_cube` addon secret each sync.
+  Net worth and runway history read Wealthfolio's valuation table when one
+  exists; otherwise those charts accrue from the companion's own monthly
+  snapshots going forward.
+
 ## [1.28.0] - 2026-08-30
 
 ### Added
