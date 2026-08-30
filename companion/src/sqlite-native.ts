@@ -1140,3 +1140,211 @@ export function getNativeUncategorizedByMonthAccount(
     };
   }).filter((r) => r.month);
 }
+
+/**
+ * Raw material for the merchant leaderboard: one row per spending transaction
+ * — categorized AND uncategorized, since an unfiled charge is still money at a
+ * merchant — with the stored note VERBATIM. Normalization (stripping the
+ * ` · tx-id` suffix and markers) happens in the cube builder with
+ * `descriptionFromComment`, where it is tested; SQL string-mangling of that
+ * format is how silent mismatches happen.
+ */
+export function getNativeMerchantRows(
+  dbPath: string,
+  startInclusive: string,
+  endExclusive: string,
+): Array<{ month: string; notes: string; amount: number }> {
+  if (!dbPath || !existsSync(dbPath)) return [];
+  if (!validDateBounds(startInclusive, endExclusive)) return [];
+  const query = `
+    SELECT strftime('%Y-%m', a.activity_date) as month,
+           COALESCE(a.notes, '') as notes,
+           ROUND(${SPENDING_SIGNED_AMOUNT}, 2) as amount
+    ${SPENDING_FROM}
+    ${spendingWhere(startInclusive, endExclusive)}
+    UNION ALL
+    SELECT strftime('%Y-%m', a.activity_date) as month,
+           COALESCE(a.notes, '') as notes,
+           ROUND(ABS(CAST(a.amount AS REAL)), 2) as amount
+    FROM activities a
+    JOIN accounts acc ON a.account_id = acc.id
+    LEFT JOIN activity_taxonomy_assignments ata ON a.id = ata.activity_id
+    WHERE a.activity_date >= '${startInclusive}'
+      AND a.activity_date < '${endExclusive}'
+      AND ata.activity_id IS NULL
+      AND COALESCE(a.source_group_id, '') = ''
+      AND (${SPENDING_SIGN}) > 0;
+  `;
+  const rows = queryNativeDb<Record<string, unknown>>(
+    dbPath,
+    'merchant rows',
+    query,
+    (parts) => (parts.length === 3
+      ? { c0: parts[0], c1: parts[1], c2: parseFloat(parts[2]) || 0 }
+      : null),
+  );
+  return rows.map((r) => {
+    const v = Object.values(r) as [string, string, number | string];
+    return {
+      month: String(v[0]),
+      notes: String(v[1]),
+      amount: typeof v[2] === 'number' ? v[2] : parseFloat(String(v[2])) || 0,
+    };
+  }).filter((r) => r.month !== '');
+}
+
+/**
+ * Money that bought nothing, per month: fees on any account plus interest
+ * CHARGED — interest on a card. Interest on a cash account is the bank paying
+ * the user and belongs to income, which is why the account type gates it.
+ */
+export function getNativeFeesInterestByMonth(
+  dbPath: string,
+  startInclusive: string,
+  endExclusive: string,
+): Array<{ month: string; amount: number }> {
+  if (!dbPath || !existsSync(dbPath)) return [];
+  if (!validDateBounds(startInclusive, endExclusive)) return [];
+  const query = `
+    SELECT strftime('%Y-%m', a.activity_date) as month,
+           ROUND(SUM(ABS(CAST(a.amount AS REAL))), 2) as amount
+    FROM activities a
+    JOIN accounts acc ON a.account_id = acc.id
+    WHERE a.activity_date >= '${startInclusive}'
+      AND a.activity_date < '${endExclusive}'
+      AND (
+        UPPER(a.activity_type) = 'FEE'
+        OR (UPPER(a.activity_type) = 'INTEREST' AND UPPER(acc.account_type) = 'CREDIT_CARD')
+      )
+    GROUP BY month;
+  `;
+  const rows = queryNativeDb<Record<string, unknown>>(
+    dbPath,
+    'fees and interest',
+    query,
+    (parts) => (parts.length === 2 ? { c0: parts[0], c1: parseFloat(parts[1]) || 0 } : null),
+  );
+  return rows.map((r) => {
+    const v = Object.values(r) as [string, number | string];
+    return {
+      month: String(v[0]),
+      amount: typeof v[1] === 'number' ? v[1] : parseFloat(String(v[1])) || 0,
+    };
+  }).filter((r) => r.month !== '');
+}
+
+/**
+ * Total spending per DAY — the pool burn-down's resolution. Categorized plus
+ * uncategorized with the same id-exclusion the uncategorized readers honor,
+ * so a dismissed charge burns nothing here either.
+ */
+export function getNativeSpendDailyTotals(
+  dbPath: string,
+  startInclusive: string,
+  endExclusive: string,
+  excludedActivityIds: readonly string[] = [],
+): Array<{ date: string; amount: number }> {
+  if (!dbPath || !existsSync(dbPath)) return [];
+  if (!validDateBounds(startInclusive, endExclusive)) return [];
+  const safeIds = excludedActivityIds.filter((id) => /^[A-Za-z0-9_-]{1,64}$/.test(id));
+  const excludedClause = safeIds.length
+    ? `AND a.id NOT IN (${safeIds.map((id) => `'${id}'`).join(',')})`
+    : '';
+  const query = `
+    SELECT date, ROUND(SUM(amount), 2) as amount FROM (
+      SELECT substr(a.activity_date, 1, 10) as date, ${SPENDING_SIGNED_AMOUNT} as amount
+      ${SPENDING_FROM}
+      ${spendingWhere(startInclusive, endExclusive)}
+      ${excludedClause}
+      UNION ALL
+      SELECT substr(a.activity_date, 1, 10) as date, ABS(CAST(a.amount AS REAL)) as amount
+      FROM activities a
+      JOIN accounts acc ON a.account_id = acc.id
+      LEFT JOIN activity_taxonomy_assignments ata ON a.id = ata.activity_id
+      WHERE a.activity_date >= '${startInclusive}'
+        AND a.activity_date < '${endExclusive}'
+        AND ata.activity_id IS NULL
+        AND COALESCE(a.source_group_id, '') = ''
+        ${excludedClause}
+        AND (${SPENDING_SIGN}) > 0
+    ) GROUP BY date;
+  `;
+  const rows = queryNativeDb<Record<string, unknown>>(
+    dbPath,
+    'daily spend',
+    query,
+    (parts) => (parts.length === 2 ? { c0: parts[0], c1: parseFloat(parts[1]) || 0 } : null),
+  );
+  return rows.map((r) => {
+    const v = Object.values(r) as [string, number | string];
+    return {
+      date: String(v[0]),
+      amount: typeof v[1] === 'number' ? v[1] : parseFloat(String(v[1])) || 0,
+    };
+  }).filter((r) => /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(r.date));
+}
+
+/**
+ * Month-end valuation per account, from whichever valuation-history table
+ * this Wealthfolio version keeps — discovered at read time, because the
+ * table is upstream's private schema and no endpoint exposes its history.
+ * Every miss (no table, unknown columns, any error) returns [], which the
+ * cube renders as "accruing" rather than a guess. The candidate names and
+ * columns come from upstream source; the live instance's actual shape gets
+ * verified against the real database when this ships (see the plan).
+ */
+export function getNativeValuationByMonth(
+  dbPath: string,
+  months: string[],
+): Array<{ month: string; accountId: string; amount: number }> {
+  if (!dbPath || !existsSync(dbPath)) return [];
+  const safeMonths = months.filter((m) => /^[0-9]{4}-[0-9]{2}$/.test(m));
+  if (safeMonths.length === 0) return [];
+  try {
+    const tables = queryNativeDb<Record<string, unknown>>(
+      dbPath,
+      'valuation table discovery',
+      `SELECT name FROM sqlite_master WHERE type='table' AND name IN ('daily_account_valuation', 'account_valuations', 'valuations') LIMIT 1;`,
+      (parts) => (parts.length >= 1 ? { c0: parts[0] } : null),
+    );
+    const table = tables[0] ? String(Object.values(tables[0])[0]) : null;
+    if (!table) return [];
+    const cols = queryNativeDb<Record<string, unknown>>(
+      dbPath,
+      'valuation columns',
+      `PRAGMA table_info(${table});`,
+      (parts) => (parts.length >= 2 ? { c0: parts[0], c1: parts[1] } : null),
+    ).map((r) => String(Object.values(r)[1] ?? ''));
+    const dateCol = ['valuation_date', 'date', 'as_of_date'].find((c) => cols.includes(c));
+    const valueCol = ['total_value', 'market_value', 'total_portfolio_value'].find((c) => cols.includes(c));
+    if (!dateCol || !valueCol) return [];
+    const monthList = safeMonths.map((m) => `'${m}'`).join(',');
+    const rows = queryNativeDb<Record<string, unknown>>(
+      dbPath,
+      'valuation history',
+      `SELECT strftime('%Y-%m', ${dateCol}) as month, account_id, CAST(${valueCol} AS REAL) as amount, ${dateCol} as d
+       FROM ${table}
+       WHERE strftime('%Y-%m', ${dateCol}) IN (${monthList});`,
+      (parts) => (parts.length === 4
+        ? { c0: parts[0], c1: parts[1], c2: parseFloat(parts[2]) || 0, c3: parts[3] }
+        : null),
+    );
+    // Month-END per (month, account): the latest dated row wins.
+    const best = new Map<string, { month: string; accountId: string; amount: number; d: string }>();
+    for (const r of rows) {
+      const v = Object.values(r) as [string, string, number | string, string];
+      const entry = {
+        month: String(v[0]),
+        accountId: String(v[1]),
+        amount: typeof v[2] === 'number' ? v[2] : parseFloat(String(v[2])) || 0,
+        d: String(v[3]),
+      };
+      const key = `${entry.month} ${entry.accountId}`;
+      const prev = best.get(key);
+      if (!prev || entry.d > prev.d) best.set(key, entry);
+    }
+    return Array.from(best.values()).map(({ month, accountId, amount }) => ({ month, accountId, amount }));
+  } catch {
+    return [];
+  }
+}

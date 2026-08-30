@@ -1206,3 +1206,91 @@ describe('report cube readers, month × account', () => {
     }
   });
 });
+
+import {
+  getNativeMerchantRows, getNativeFeesInterestByMonth,
+  getNativeSpendDailyTotals, getNativeValuationByMonth,
+} from './sqlite-native.js';
+
+describe('report cube readers, merchants / fees / daily / valuations', () => {
+  const seed = (path: string) => {
+    const db = new DatabaseSync(path);
+    db.exec(`INSERT INTO taxonomy_categories (id, name, parent_id) VALUES ('cat-din', 'Dining', NULL)`);
+    // Categorized spend with a real note shape.
+    db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, account_id, notes) VALUES ('m1', '-25.50', '2026-07-09', 'WITHDRAWAL', 'acct-cash', 'CHIPOTLE 1234 · TRN-1')`);
+    db.exec(`INSERT INTO activity_taxonomy_assignments (activity_id, category_id) VALUES ('m1', 'cat-din')`);
+    // Uncategorized spend — merchants and daily totals must still see it.
+    db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, account_id, notes) VALUES ('m2', '-12', '2026-07-09', 'WITHDRAWAL', 'acct-card', 'MYSTERY · TRN-9')`);
+    // Fees and interest: a cash fee and card interest count; cash interest is income.
+    db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, account_id) VALUES ('f1', '-5', '2026-08-04', 'FEE', 'acct-cash')`);
+    db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, account_id) VALUES ('f2', '-2.50', '2026-08-06', 'INTEREST', 'acct-card')`);
+    db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, account_id) VALUES ('f3', '1.25', '2026-08-02', 'INTEREST', 'acct-cash')`);
+    db.close();
+  };
+
+  it('getNativeMerchantRows hands back raw notes with month and amount, uncategorized included', () => {
+    const { path, cleanup } = makeTestDb();
+    try {
+      seed(path);
+      const rows = getNativeMerchantRows(path, '2026-07-01', '2026-09-01');
+      expect(rows).toContainEqual({ month: '2026-07', notes: 'CHIPOTLE 1234 · TRN-1', amount: 25.5 });
+      expect(rows).toContainEqual({ month: '2026-07', notes: 'MYSTERY · TRN-9', amount: 12 });
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('getNativeFeesInterestByMonth sums FEE everywhere plus INTEREST on cards only', () => {
+    const { path, cleanup } = makeTestDb();
+    try {
+      seed(path);
+      expect(getNativeFeesInterestByMonth(path, '2026-07-01', '2026-09-01'))
+        .toContainEqual({ month: '2026-08', amount: 7.5 });
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('getNativeSpendDailyTotals buckets spending by day, exclusions honored', () => {
+    const { path, cleanup } = makeTestDb();
+    try {
+      seed(path);
+      const rows = getNativeSpendDailyTotals(path, '2026-07-01', '2026-09-01', []);
+      expect(rows).toContainEqual({ date: '2026-07-09', amount: 37.5 }); // 25.50 + 12 uncategorized
+      const excluded = getNativeSpendDailyTotals(path, '2026-07-01', '2026-09-01', ['m2']);
+      expect(excluded).toContainEqual({ date: '2026-07-09', amount: 25.5 });
+    } finally {
+      cleanup();
+    }
+  });
+
+  describe('getNativeValuationByMonth', () => {
+    it('returns [] when no valuation table exists', () => {
+      const { path, cleanup } = makeTestDb();
+      try {
+        expect(getNativeValuationByMonth(path, ['2026-07'])).toEqual([]);
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('reads month-end totals per account when the table exists', () => {
+      const { path, cleanup } = makeTestDb();
+      try {
+        const db = new DatabaseSync(path);
+        db.exec(`CREATE TABLE daily_account_valuation (account_id TEXT, valuation_date TEXT, total_value TEXT)`);
+        db.exec(`INSERT INTO daily_account_valuation VALUES ('acct-cash', '2026-07-15', '3000')`);
+        db.exec(`INSERT INTO daily_account_valuation VALUES ('acct-cash', '2026-07-31', '4200')`); // month-end wins
+        db.exec(`INSERT INTO daily_account_valuation VALUES ('acct-card', '2026-07-31', '-500')`);
+        db.exec(`INSERT INTO daily_account_valuation VALUES ('acct-cash', '2026-08-10', '4300')`);
+        db.close();
+        const rows = getNativeValuationByMonth(path, ['2026-07', '2026-08']);
+        expect(rows).toContainEqual({ month: '2026-07', accountId: 'acct-cash', amount: 4200 });
+        expect(rows).toContainEqual({ month: '2026-07', accountId: 'acct-card', amount: -500 });
+        expect(rows).toContainEqual({ month: '2026-08', accountId: 'acct-cash', amount: 4300 });
+      } finally {
+        cleanup();
+      }
+    });
+  });
+});
