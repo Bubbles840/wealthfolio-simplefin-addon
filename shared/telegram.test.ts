@@ -903,6 +903,27 @@ describe('formatDailySpendingDigest', () => {
     expect(text).not.toContain('spent');
   });
 
+  it('states the forecast against the budget, signed the way the app signs it', () => {
+    const cats = [{ name: 'Groceries', budget: 300, monthSpent: 100, weekSpent: 20 }];
+    const over = formatDailySpendingDigest(cats, period, GLYPHS, 'rollup', true, undefined, true, 'total', { forecast: 520 });
+    expect(over).toContain('on pace for $520 (+$220 vs budget)');
+    const under = formatDailySpendingDigest(cats, period, GLYPHS, 'rollup', true, undefined, true, 'total', { forecast: 250 });
+    expect(under).toContain('on pace for $250 (−$50 vs budget)');
+  });
+
+  it('drops the "vs budget" delta when there is nothing to compare to', () => {
+    // Off-budget-only months still have a forecast; they just have no target.
+    const cats = [{ name: 'Education', budget: 0, monthSpent: 68, weekSpent: 0 }];
+    const text = formatDailySpendingDigest(cats, period, GLYPHS, 'rollup', true, undefined, true, 'total', { forecast: 200 });
+    expect(text).toContain('on pace for $200');
+    expect(text).not.toContain('vs budget');
+  });
+
+  it('says nothing about pace when no projection is supplied', () => {
+    const text = dailyGlyphs([{ name: 'Groceries', budget: 300, monthSpent: 100, weekSpent: 20 }], period);
+    expect(text).not.toContain('on pace');
+  });
+
   it('never lets a line promise more than the pool holds, on any branch', () => {
     // The invariant 1.21.0 was supposed to establish, stated directly rather
     // than per-branch — which is how the `left mo` clause slipped through: the

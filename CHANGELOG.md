@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.26.0] - 2026-08-25
+
+### Added
+
+- **Month-end projection on the daily headline**, matched to Wealthfolio's own
+  forecast: `· on pace for $3,120 (+$520 vs budget)`. It is the app's formula
+  transcribed — the previous three full months' outflow ÷ their days × days
+  in this month, with the app's fallback (spent ÷ day-of-month × days) when
+  there is no history — so the report and the budget page say the same
+  number. Note what it does not do: when history exists, this month's
+  spending plays no part; "on pace" means "at your recent average". Toggle
+  under Notifications → Report content → "Month-end projection" (default
+  shown). Expect it to sit within a few dollars of the app rather than match
+  to the cent — the two classify spending by transcription, not by one shared
+  function.
+- **Undo for a transfer rule taught from Telegram.** The confirmation after
+  "✓ Make the rule" now carries "↩ Undo this rule", which removes exactly the
+  rule just written — pattern and direction — and nothing else, so hand-written
+  rules survive. Anything the rule already retyped goes back to normal on the
+  next sync. Not offered when the rule already existed, since that undo would
+  delete a rule the user wrote earlier.
+
 ## [1.25.0] - 2026-08-25
 
 ### Added

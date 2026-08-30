@@ -87,6 +87,7 @@ export function ReportContent({
     cfg.countOffBudget ? null : 'off-budget ignored',
     cfg.capWeeklyToPool ? null : 'full budget amounts',
     cfg.overBudgetSpent === 'total' ? null : cfg.overBudgetSpent === 'all' ? 'spent per category' : 'no spent figures',
+    cfg.monthProjection ? null : 'no projection',
   ].filter((s): s is string => typeof s === 'string').join(' · ');
 
   /**
@@ -312,6 +313,24 @@ export function ReportContent({
           <option value="none">Neither</option>
         </select>
       </div>
+      <div className="sfin-field-row">
+        <label htmlFor="sfin-projection">Month-end projection</label>
+        <select
+          id="sfin-projection"
+          value={cfg.monthProjection ? 'shown' : 'hidden'}
+          onChange={(e) => onChangeNow({ monthProjection: e.target.value === 'shown' })}
+        >
+          <option value="shown">Shown — matches Wealthfolio&apos;s forecast</option>
+          <option value="hidden">Hidden</option>
+        </select>
+      </div>
+      {/* Wealthfolio's own number, not a second opinion: the previous three
+          months' daily average times the days in this month. The whole value
+          of the line is agreeing with the app's budget page. */}
+      <div className="sfin-subtle" style={{ marginTop: -4 }}>
+        &quot;On pace for $X&quot; on the daily headline — your last three months&apos; average, like the app&apos;s budget page.
+      </div>
+
       {/* Why this exists: the budget is a floor, and above it most people hold
           a second, harder number in their head. "$329 over" says nothing about
           how close that is; "$2,897 spent" does. Per-category is opt-in
@@ -346,7 +365,7 @@ export function ReportContent({
           never reach the save bar, and a card that otherwise waits for Save has
           to say which of its controls does not. */}
       <div className="sfin-subtle sfin-applies-now">
-        These five apply immediately — no need to save.
+        These six apply immediately — no need to save.
       </div>
     </CollapsibleCard>
   );

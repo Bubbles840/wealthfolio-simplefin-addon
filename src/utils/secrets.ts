@@ -84,6 +84,7 @@ const KEYS = {
   countOffBudget: 'count_off_budget',
   capWeeklyToPool: 'cap_weekly_to_pool',
   overBudgetSpent: 'over_budget_spent',
+  monthProjection: 'month_projection',
   openCards: 'ui_open_cards',
   uiState: 'ui_state',
   pendingLargeTxAlerts: LARGE_TX_OUTBOX_SECRET_KEY,
@@ -619,6 +620,16 @@ export class SecretsStore {
   }
   async setOverBudgetSpent(mode: 'total' | 'all' | 'none'): Promise<void> {
     await this.ctx.api.secrets.set(KEYS.overBudgetSpent, mode);
+  }
+
+  /** Whether the daily report carries Wealthfolio's month-end forecast.
+   *  Stores the opt-OUT, so the default is on. */
+  async getMonthProjection(): Promise<boolean> {
+    const raw = await this.ctx.api.secrets.get(KEYS.monthProjection);
+    return raw !== 'off';
+  }
+  async setMonthProjection(on: boolean): Promise<void> {
+    await this.ctx.api.secrets.set(KEYS.monthProjection, on ? 'on' : 'off');
   }
 
   async clearAll(): Promise<void> {
