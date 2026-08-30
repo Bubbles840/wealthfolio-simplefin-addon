@@ -150,3 +150,47 @@ export function categorySeries(
   const idx = accountIdx(cube, accounts);
   return cube.months.map((_, mi) => idx.reduce((s, ai) => s + cube.spend[mi][ci][ai], 0));
 }
+
+/**
+ * A cube narrowed to a month window — the Budget tab's shared range control.
+ * `'all'` (and any N covering the whole cube) is the identity; `'pool'` keeps
+ * the months the pool window touches and deliberately degrades to the whole
+ * cube when no pool is set, the same rule the custom evaluator's pool range
+ * follows. Slices every month-indexed series together so a sliced cube is
+ * still a valid cube (dimension checks and all).
+ */
+export function sliceCubeMonths(cube: ReportCube, range: number | 'all' | 'pool'): ReportCube {
+  let from: number;
+  if (range === 'all') {
+    from = 0;
+  } else if (range === 'pool') {
+    if (!cube.pool) return cube;
+    const start = cube.pool.config.startDate.slice(0, 7);
+    const end = cube.pool.config.endDate.slice(0, 7);
+    const first = cube.months.findIndex((m) => m >= start && m <= end);
+    if (first === -1) return cube;
+    const keep = cube.months.filter((m) => m >= start && m <= end).length;
+    from = first;
+    const to = first + keep;
+    return sliceRows(cube, from, to);
+  } else {
+    from = Math.max(0, cube.months.length - range);
+  }
+  if (from === 0) return cube;
+  return sliceRows(cube, from, cube.months.length);
+}
+
+function sliceRows(cube: ReportCube, from: number, to: number): ReportCube {
+  return {
+    ...cube,
+    months: cube.months.slice(from, to),
+    spend: cube.spend.slice(from, to),
+    uncategorized: cube.uncategorized.slice(from, to),
+    income: cube.income.slice(from, to),
+    budgets: cube.budgets.slice(from, to),
+    merchants: cube.merchants.slice(from, to),
+    feesInterest: cube.feesInterest.slice(from, to),
+    netWorth: cube.netWorth.slice(from, to),
+    liquid: cube.liquid.slice(from, to),
+  };
+}
