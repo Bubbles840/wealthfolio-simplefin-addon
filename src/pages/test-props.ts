@@ -62,7 +62,7 @@ export const makeProps = () => ({
     setOpenCards: vi.fn(async () => {}),
     // Page-level UI state (active tab, checklist dismissal) and the companion's
     // uncategorized count. Overview reads all three; see OverviewTab.test.tsx.
-    getUiState: vi.fn(async () => ({}) as any),
+    getUiState: vi.fn(async () => ({ activeTab: 'overview' }) as any),
     setUiState: vi.fn(async () => {}),
     getUncategorizedStatus: vi.fn(async () => null as any),
     getDismissals: vi.fn(async () => ({}) as any),

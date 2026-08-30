@@ -30,7 +30,7 @@ export interface GlyphStylePref {
 }
 
 export interface UiState {
-  activeTab?: 'overview' | 'notifications' | 'advanced';
+  activeTab?: 'budget' | 'overview' | 'notifications' | 'advanced';
   checklistDismissed?: boolean;
 }
 

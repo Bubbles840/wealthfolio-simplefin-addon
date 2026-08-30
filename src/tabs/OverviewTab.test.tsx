@@ -76,7 +76,7 @@ const makeProps = () => ({
     setOpenCards: vi.fn(async () => {}),
     // Page-level UI state, and the companion-published count behind the third
     // stat tile. `null` from the latter is the standalone-addon case.
-    getUiState: vi.fn(async () => ({}) as any),
+    getUiState: vi.fn(async () => ({ activeTab: 'overview' }) as any),
     setUiState: vi.fn(async () => {}),
     getUncategorizedStatus: vi.fn(async () => null as any),
     getDismissals: vi.fn(async () => ({}) as any),
@@ -453,7 +453,7 @@ describe('OverviewTab', () => {
 
     it('is gone from the start when it was dismissed on an earlier visit', async () => {
       const props = makeProps();
-      props.store.getUiState = vi.fn(async () => ({ checklistDismissed: true })) as any;
+      props.store.getUiState = vi.fn(async () => ({ activeTab: 'overview', checklistDismissed: true })) as any;
       render(<SyncPage {...props} />);
       await screen.findByText(/Imported last run/i);
       expect(screen.queryByText(/Finish setting up/i)).toBeNull();
@@ -550,7 +550,7 @@ describe('uncategorized list', () => {
     let saved: any = {};
     // Otherwise the checklist's own "Dismiss setup checklist" button — which
     // also matches /dismiss/i and sits earlier in the DOM — is what gets found.
-    props.store.getUiState = vi.fn(async () => ({ checklistDismissed: true })) as any;
+    props.store.getUiState = vi.fn(async () => ({ activeTab: 'overview', checklistDismissed: true })) as any;
     props.store.getUncategorizedStatus = vi.fn(async () => statusWith([r('a'), r('b')])) as any;
     props.store.getDismissals = vi.fn(async () => saved) as any;
     props.store.setDismissals = vi.fn(async (l: any) => { saved = l; }) as any;
@@ -569,7 +569,7 @@ describe('uncategorized list', () => {
   it('undo puts the row back and restores the count', async () => {
     const props = makeProps();
     let saved: any = {};
-    props.store.getUiState = vi.fn(async () => ({ checklistDismissed: true })) as any;
+    props.store.getUiState = vi.fn(async () => ({ activeTab: 'overview', checklistDismissed: true })) as any;
     props.store.getUncategorizedStatus = vi.fn(async () => statusWith([r('a')])) as any;
     props.store.getDismissals = vi.fn(async () => saved) as any;
     props.store.setDismissals = vi.fn(async (l: any) => { saved = l; }) as any;
@@ -589,7 +589,7 @@ describe('uncategorized list', () => {
     // Inactive tabs unmount. State kept in the tab would resurrect the row.
     const props = makeProps();
     let saved: any = {};
-    props.store.getUiState = vi.fn(async () => ({ checklistDismissed: true })) as any;
+    props.store.getUiState = vi.fn(async () => ({ activeTab: 'overview', checklistDismissed: true })) as any;
     props.store.getUncategorizedStatus = vi.fn(async () => statusWith([r('a'), r('b')])) as any;
     props.store.getDismissals = vi.fn(async () => saved) as any;
     props.store.setDismissals = vi.fn(async (l: any) => { saved = l; }) as any;
@@ -646,6 +646,10 @@ describe('uncategorized list', () => {
       () => new Promise<any[]>((resolve) => { releaseAccounts = resolve; }),
     ) as any;
     render(<SyncPage {...props} />);
+    // The stored ui_state is part of the mount load this test deliberately
+    // holds open, so the page sits on the Budget default until release —
+    // reach Overview the way a user would, by clicking its tab.
+    fireEvent.click(await screen.findByRole('tab', { name: /overview/i }));
 
     fireEvent.click(await screen.findByRole('button', { name: /^2 need/i }));
     fireEvent.click((await screen.findAllByRole('button', { name: /^Dismiss Row a/i }))[0]);
@@ -667,7 +671,7 @@ describe('uncategorized list', () => {
     const props = makeProps();
     let saved: any = {};
     let otherHostWrote = false;
-    props.store.getUiState = vi.fn(async () => ({ checklistDismissed: true })) as any;
+    props.store.getUiState = vi.fn(async () => ({ activeTab: 'overview', checklistDismissed: true })) as any;
     props.store.getUncategorizedStatus = vi.fn(async () => statusWith([r('a'), r('b')])) as any;
     props.store.getDismissals = vi.fn(async () => (
       otherHostWrote ? { ...saved, other: '2026-08-09T00:00:00.000Z' } : saved
@@ -689,7 +693,7 @@ describe('uncategorized list', () => {
   it('undo removes the id from the write even though the re-read still has it persisted', async () => {
     const props = makeProps();
     let saved: any = {};
-    props.store.getUiState = vi.fn(async () => ({ checklistDismissed: true })) as any;
+    props.store.getUiState = vi.fn(async () => ({ activeTab: 'overview', checklistDismissed: true })) as any;
     props.store.getUncategorizedStatus = vi.fn(async () => statusWith([r('a')])) as any;
     props.store.getDismissals = vi.fn(async () => saved) as any;
     props.store.setDismissals = vi.fn(async (l: any) => { saved = l; }) as any;
