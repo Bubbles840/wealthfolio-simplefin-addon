@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { runSyncCore, applyBaselineFix, neutralAdjustmentFields, VALUATION_POLL, IN_TRANSIT_TIMEOUT_SECONDS, descriptionFromComment, txIdFromComment, planDuplicatePrune, IN_TRANSIT_COMMENT_PREFIX, DUPLICATE_REFUSAL_LOG_TAG, INTERVAL_SKIP_MESSAGE } from './sync-core.js';
+import { runSyncCore, applyBaselineFix, neutralAdjustmentFields, inTransitPlaceholderFields, expiredTransferLegType, VALUATION_POLL, IN_TRANSIT_TIMEOUT_SECONDS, descriptionFromComment, txIdFromComment, planDuplicatePrune, IN_TRANSIT_COMMENT_PREFIX, DUPLICATE_REFUSAL_LOG_TAG, INTERVAL_SKIP_MESSAGE } from './sync-core.js';
 import { createFakeHost, type FakeHostSeed } from './fake-host.js';
 import { accountTxKey } from './transfers.js';
 import { linkPairByRecreate } from './link-pair.js';
@@ -282,12 +282,15 @@ describe('runSyncCore', () => {
     expect(create.comment).toContain('↔️ In-transit transfer · ');
   });
 
-  it('uses CREDIT for a solo CREDIT_CARD payment leg, because the API rejects DEPOSIT there', async () => {
-    // mapper types a positive, payment-shaped card amount as TRANSFER_IN, so an
-    // unpaid-off card payment reaches the placeholder path. This test asserted a
-    // plain DEPOSIT on the theory that CREDIT was "only established for CASH" —
-    // and that shape was rejected live on 2026-08-07 with "DEPOSIT activities are
-    // not supported for credit card accounts", stranding the row every sync.
+  it('books a solo CREDIT_CARD payment leg as TRANSFER_IN — neutral on a card, unlike CREDIT', async () => {
+    // Two live incidents shaped this cell. 2026-08-07: DEPOSIT was rejected
+    // outright ("not supported for credit card accounts"), and the fix moved
+    // to CREDIT because it was ACCEPTED. 2026-08-27: that CREDIT counted as a
+    // refund of the whole payment — on a card every CREDIT is an expense
+    // refund, subtype irrelevant — and a $429.71 payment showed the day's
+    // spending as −$400.51 until the cash leg arrived. TRANSFER_IN is Ignored
+    // by the classifier, accepted by the API (every linked card payment is
+    // one), and the type the row becomes on pairing anyway.
     const { host, store, saved } = createFakeHost({
       accountSet: { errors: [], accounts: [{
         id: 'sfin-1', name: 'Card', currency: 'USD', balance: '0', 'balance-date': 1,
@@ -301,12 +304,56 @@ describe('runSyncCore', () => {
     });
     await runSyncCore(host, store, {});
     const create = saved[0].creates![0];
-    expect(create.activityType).toBe('CREDIT');
+    expect(create.activityType).toBe('TRANSFER_IN');
     expect(create.amount).toBe(1300);
-    expect(create.fee).toBeUndefined(); // inflow: nothing on the fee side
-    expect(create.symbol).toEqual({ symbol: '$CASH-USD' });
+    expect(create.fee).toBeUndefined();
+    // Transfer legs carry NO symbol, or the bulk endpoint invents a "$CASH"
+    // security and the leg can never be linked (see isTransferType).
+    expect(create.symbol).toBeUndefined();
     expect(create.comment).toContain('↔️ In-transit transfer · ');
-    expect(create.comment).toContain('· tx-pay');
+  });
+
+  it('migrates a card placeholder stored as a refund to TRANSFER_IN on the next sync', async () => {
+    // The live row from 2026-08-27, exactly as the previous build wrote it. A
+    // fix that only changed NEW placeholders would leave that refund standing
+    // until the cash leg happened to arrive.
+    const { host, store, saved } = createFakeHost({
+      accountSet: { errors: [], accounts: [{
+        id: 'sfin-1', name: 'Card', currency: 'USD', balance: '0', 'balance-date': 1,
+        transactions: [{
+          id: 'tx-pay', posted: recentEpoch(), amount: '429.71',
+          description: 'Payment',
+        }],
+      }] },
+      mapping: { 'sfin-1': 'wf-a' },
+      accountTypes: { 'wf-a': 'CREDIT_CARD' },
+      existing: new Map([['wf-a', [{
+        id: 'ph-refund', accountId: 'wf-a', activityType: 'CREDIT',
+        date: new Date(recentEpoch() * 1000).toISOString().split('T')[0],
+        amount: 429.71, comment: '↔️ In-transit transfer · Payment · tx-pay',
+        sourceGroupId: null,
+      }]]]),
+    });
+    await runSyncCore(host, store, { force: true });
+    const update = saved.flatMap((r) => r.updates ?? []).find((u) => u.id === 'ph-refund')!;
+    expect(update).toBeTruthy();
+    expect(update.activityType).toBe('TRANSFER_IN');
+    expect(update.amount).toBe(429.71);
+    expect(update.comment).toContain('↔️ In-transit transfer · ');
+  });
+
+  it('shapes placeholders per account type and direction', () => {
+    // The table the 2026-08-27 refund would have failed: the ONE cell that
+    // differs from the plug shape is a card inflow.
+    expect(inTransitPlaceholderFields('CREDIT_CARD', 429.71)).toEqual({ activityType: 'TRANSFER_IN', amount: 429.71, fee: 0 });
+    expect(inTransitPlaceholderFields('CREDIT_CARD', -429.71)).toEqual({ activityType: 'CREDIT', amount: 0, fee: 429.71 });
+    expect(inTransitPlaceholderFields('CASH', 1300)).toEqual({ activityType: 'CREDIT', amount: 1300, fee: 0 });
+    expect(inTransitPlaceholderFields('CASH', -1300)).toEqual({ activityType: 'CREDIT', amount: 0, fee: 1300 });
+    // Expiry: a card refuses DEPOSIT, and a positive that never paired is a refund.
+    expect(expiredTransferLegType('CREDIT_CARD', 100)).toBe('CREDIT');
+    expect(expiredTransferLegType('CREDIT_CARD', -100)).toBe('WITHDRAWAL');
+    expect(expiredTransferLegType('CASH', 100)).toBe('DEPOSIT');
+    expect(expiredTransferLegType('CASH', -100)).toBe('WITHDRAWAL');
   });
 
   it('promotes a placeholder to a real linked transfer once the matching leg appears on a later sync', async () => {
@@ -433,12 +480,12 @@ describe('runSyncCore', () => {
     expect(neutralAdjustmentFields('SECURITIES', -200).activityType).toBe('WITHDRAWAL');
   });
 
-  it('drops the in-transit prefix when a NON-CASH placeholder times out (the only field that differs)', async () => {
-    // On a card, neutralAdjustmentFields and the expiry branch produce the SAME
-    // DEPOSIT with no fee split — so type, amount, date and pending are all
-    // identical and only the comment marks the row as still in transit. Without
-    // comparing placeholder-ness, no update is planned and the row wears
-    // "In-transit" forever on a payment that will never pair.
+  it('retypes an expired card placeholder to CREDIT, never the DEPOSIT the API refuses', async () => {
+    // The give-up branch used to demote every inflow to DEPOSIT regardless of
+    // account type — the exact type a card rejects (live, 2026-08-07) — and
+    // this test pinned that refused write as the expected one. A positive on
+    // a card that was never a payment is a refund, so CREDIT is both accepted
+    // and honest. The prefix still comes off: the row is no longer in transit.
     const staleEpoch = Math.floor(Date.now() / 1000) - (IN_TRANSIT_TIMEOUT_SECONDS + 3600);
     const staleDate = new Date(staleEpoch * 1000).toISOString().split('T')[0];
     const { host, store, saved, activities } = createFakeHost({
@@ -463,7 +510,7 @@ describe('runSyncCore', () => {
     expect(update).toBeTruthy();
     expect(update.comment).toBe('PAYMENT THANK YOU · tx-pay');
     expect(update.comment).not.toContain('In-transit');
-    expect(update.activityType).toBe('DEPOSIT');
+    expect(update.activityType).toBe('CREDIT');
     expect(update.amount).toBe(1300);
     expect(activities.get('wf-a')).toHaveLength(1); // rewritten, not duplicated
   });

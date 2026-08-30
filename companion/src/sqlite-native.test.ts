@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { inTransitPlaceholderFields } from '../../shared/sync-core.js';
 import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending,
   getNativeUncategorizedSpendingTotal, getNativeUncategorizedSpending, getNativeCategoryCatalog, getNativeSubcategorySpending, getNativeSpendingCategories, getNativeCategorizedSpending } from './sqlite-native.js';
 import { DatabaseSync } from 'node:sqlite';
@@ -1084,5 +1085,53 @@ describe('sqlite-native', () => {
       }
     });
 
+  });
+});
+
+describe('in-transit placeholder shapes against the spending classifier', () => {
+  // The invariant the 2026-08-27 refund broke, checked against the classifier
+  // transcription itself rather than against anyone's belief about it: every
+  // placeholder shape, on every account type, in both directions, must
+  // classify as ZERO spending. A control row proves the join is live, so a
+  // zero cannot be the vacuous kind.
+  const cases = [
+    { accountType: 'CASH', acct: 'acct-cash', signed: 1300 },
+    { accountType: 'CASH', acct: 'acct-cash', signed: -1300 },
+    { accountType: 'CREDIT_CARD', acct: 'acct-card', signed: 429.71 },
+    { accountType: 'CREDIT_CARD', acct: 'acct-card', signed: -429.71 },
+  ];
+
+  it.each(cases)('$accountType $signed classifies as no spending at all', ({ acct, accountType, signed }) => {
+    const { path, cleanup } = makeTestDb();
+    try {
+      const db = new DatabaseSync(path);
+      db.exec(`INSERT INTO taxonomy_categories (id, name, parent_id) VALUES ('cat-g', 'Groceries', NULL)`);
+      // Control: an ordinary charge in the same category on the same account,
+      // so the expected total is exactly its amount and never a vacuous zero.
+      db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, account_id)
+               VALUES ('control', '-50', '2026-08-20', 'WITHDRAWAL', '${acct}')`);
+      db.exec(`INSERT INTO activity_taxonomy_assignments (activity_id, category_id) VALUES ('control', 'cat-g')`);
+      const shape = inTransitPlaceholderFields(accountType, signed);
+      db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, account_id)
+               VALUES ('ph', '${shape.amount}', '2026-08-21', '${shape.activityType}', '${acct}')`);
+      db.exec(`INSERT INTO activity_taxonomy_assignments (activity_id, category_id) VALUES ('ph', 'cat-g')`);
+      db.close();
+      expect(getNativeWealthfolioSpendingBetween(path, '2026-08-01', '2026-09-01')).toEqual({ Groceries: 50 });
+    } finally { cleanup(); }
+  });
+
+  it('would have caught the refund: a bare CREDIT on a card is NOT neutral', () => {
+    // The shape the previous build wrote for a card inflow, kept as the
+    // negative case so the table above cannot pass by testing nothing.
+    const { path, cleanup } = makeTestDb();
+    try {
+      const db = new DatabaseSync(path);
+      db.exec(`INSERT INTO taxonomy_categories (id, name, parent_id) VALUES ('cat-g', 'Groceries', NULL)`);
+      db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, account_id)
+               VALUES ('bad', '429.71', '2026-08-27', 'CREDIT', 'acct-card')`);
+      db.exec(`INSERT INTO activity_taxonomy_assignments (activity_id, category_id) VALUES ('bad', 'cat-g')`);
+      db.close();
+      expect(getNativeWealthfolioSpendingBetween(path, '2026-08-01', '2026-09-01')).toEqual({ Groceries: -429.71 });
+    } finally { cleanup(); }
   });
 });

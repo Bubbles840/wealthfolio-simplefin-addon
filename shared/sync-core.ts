@@ -931,6 +931,54 @@ async function fetchExistingRows(
  * investment-style accounts), so they keep the simpler DEPOSIT/WITHDRAWAL
  * shape unchanged.
  */
+/**
+ * The shape of an IN-TRANSIT PLACEHOLDER — a transfer leg waiting for its
+ * counterpart — as opposed to a balance plug.
+ *
+ * Distinct from `neutralAdjustmentFields` because of one cell: money ARRIVING
+ * AT A CREDIT CARD. The plug shape there is a bare CREDIT, and on a card
+ * Wealthfolio classifies EVERY CREDIT as an expense refund — subtype
+ * irrelevant (docs/upstream-spending-buckets.md §2). So the "neutral"
+ * placeholder for a card payment counted as a refund of the whole payment
+ * until the cash leg arrived: live on 2026-08-27, a $429.71 payment showed
+ * the day's spending as −$400.51.
+ *
+ * A card inflow is booked as TRANSFER_IN instead: Ignored by the classifier
+ * on a card, accepted by the API (every linked card payment already sits
+ * there as one), the real amount visible, and exactly the type the row
+ * becomes once it pairs. Transfer legs carry no symbol (see isTransferType).
+ *
+ * The plug path keeps `neutralAdjustmentFields` unchanged, on purpose: a plug
+ * goes through the import endpoint with an explicit cash symbol, and a
+ * TRANSFER type there has a known cash-asset quirk (upstream issue #5) that
+ * cannot be verified from here. A positive heal plug on a card therefore
+ * still reads as a refund — recorded as a known issue, not fixed blind.
+ */
+export function inTransitPlaceholderFields(
+  accountType: string,
+  signedAmount: number,
+): { activityType: ActivityType; amount: number; fee: number } {
+  if (accountType === 'CREDIT_CARD' && signedAmount > 0) {
+    const mag = Math.abs(Math.round(signedAmount * 100) / 100);
+    return { activityType: 'TRANSFER_IN' as ActivityType, amount: mag, fee: 0 };
+  }
+  return neutralAdjustmentFields(accountType, signedAmount);
+}
+
+/**
+ * What a solo transfer leg becomes once the in-transit window has passed and
+ * no counterpart ever came: ordinary money in or out, in the type the account
+ * accepts. A card refuses DEPOSIT outright (live, 2026-08-07), and a positive
+ * on a card that was never a payment IS a refund, so CREDIT is both the
+ * accepted and the honest type there.
+ */
+export function expiredTransferLegType(accountType: string, signedAmount: number): ActivityType {
+  if (accountType === 'CREDIT_CARD') {
+    return (signedAmount >= 0 ? 'CREDIT' : 'WITHDRAWAL') as ActivityType;
+  }
+  return (signedAmount >= 0 ? 'DEPOSIT' : 'WITHDRAWAL') as ActivityType;
+}
+
 export function neutralAdjustmentFields(
   accountType: string,
   signedAmount: number,
@@ -1296,8 +1344,9 @@ export async function runSyncCore(
       if (!isTransferType(p.type) || pairedKeys.has(key)) continue;
       const signed = signedByKey.get(key) ?? 0;
       const postedAt = txEpoch(p.tx) ?? nowSec;
+      const accountType = wfTypes.get(mapping[p.sfAccountId] ?? '') ?? '';
       if (nowSec - postedAt > IN_TRANSIT_TIMEOUT_SECONDS) {
-        p.type = (signed >= 0 ? 'DEPOSIT' : 'WITHDRAWAL') as ActivityType;
+        p.type = expiredTransferLegType(accountType, signed);
         // The same drop as the young branch below, for the same reason and one
         // step further on: giving up on the pair turns this into an ordinary
         // deposit or withdrawal, and neither is a refund of anything. Keeping the
@@ -1310,14 +1359,15 @@ export async function runSyncCore(
         delete p.subtype;
         continue;
       }
-      const accountType = wfTypes.get(mapping[p.sfAccountId] ?? '') ?? '';
-      const { activityType, fee } = neutralAdjustmentFields(accountType, signed);
+      const { activityType, fee } = inTransitPlaceholderFields(accountType, signed);
       p.type = activityType;
       p.feeCents = Math.round(fee * 100);
       p.inTransit = true;
-      // Drop any rule-assigned subtype: the placeholder is spending-neutral ONLY
-      // as a BARE CREDIT (see neutralAdjustmentFields), and a refund subtype
-      // would book this balance-holding stand-in against a spending category.
+      // Drop any rule-assigned subtype: a CASH placeholder is spending-neutral
+      // ONLY as a BARE CREDIT (see neutralAdjustmentFields), and a refund
+      // subtype would book this balance-holding stand-in against a spending
+      // category. (A card inflow is a TRANSFER_IN, where a subtype is simply
+      // meaningless — dropped for the same reason.)
       // Reachable, not theoretical — a rule that types a leg TRANSFER_IN/OUT is
       // excluded from pair detection outright (`ruleTyped` in transfers.ts), so
       // it can never pair and ALWAYS lands here while it is young.
