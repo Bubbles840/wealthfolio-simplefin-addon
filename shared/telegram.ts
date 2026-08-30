@@ -5,6 +5,8 @@
  * budget reports and daily spending allowances.
  */
 
+import type { PoolStatus } from './pool.js';
+
 export interface TelegramSendResult {
   ok: boolean;
   description?: string;
@@ -857,6 +859,13 @@ export function formatDailySpendingDigest(
    * app's budget page shows, so the report and the app agree on "on pace".
    */
   projection: { forecast: number } | null = null,
+  /**
+   * The semester pool's status (shared/pool.ts), or null when none is set.
+   * Rendered as ONE line after the summary — the pool is a separate lens by
+   * design (lump-sum funding), so it must not change any monthly figure above
+   * it. Upcoming and gone pools render nothing, exactly like null.
+   */
+  pool: PoolStatus | null = null,
 ): string {
   const { daysFromWeekStartToMonthEnd, daysLeftInMonthInclusive } = period;
   const days = Math.max(1, daysLeftInMonthInclusive);
@@ -1094,7 +1103,8 @@ export function formatDailySpendingDigest(
     : envelopesOverstate
       ? `_left in each budget · only ${moneyWhole(Math.max(0, headlineRemaining))} left overall_`
       : '_left to spend this week_';
-  return `${headerGlyph('☀️', style)}*Daily Spending Check*\n${subtitle}\n\n${blocks.filter(Boolean).join('\n\n')}\n\n${summary}`;
+  const poolLine = pool ? formatPoolLine(pool, style) : null;
+  return `${headerGlyph('☀️', style)}*Daily Spending Check*\n${subtitle}\n\n${blocks.filter(Boolean).join('\n\n')}\n\n${summary}${poolLine ? `\n${poolLine}` : ''}`;
 }
 
 /**
@@ -1166,8 +1176,16 @@ export function formatMonthlyRemainingSummary(
   totalBudget: number,
   topSpends: WeeklyTopSpend[] = [],
   style: GlyphStyle = DEFAULT_GLYPH_STYLE,
+  /** Semester pool status, rendered as its own block; null (or an
+   *  upcoming/gone pool) renders nothing. See the daily digest's `pool`. */
+  pool: PoolStatus | null = null,
+  /** Months of cash runway (shared/pool.ts `computeRunwayMonths`); null —
+   *  unknowable, not infinite — renders nothing. */
+  runwayMonths: number | null = null,
 ): string {
   const remaining = totalBudget - totalSpent;
+  const runwayLine = formatRunwayLine(runwayMonths, style);
+  const poolTail = `${pool ? formatPoolSection(pool, style) : ''}${runwayLine ? `\n\n${runwayLine}` : ''}`;
   const pct = totalBudget > 0 ? Math.round((totalSpent / totalBudget) * 100) : 0;
   const header = `${headerGlyph('📊', style)}*Weekly Budget Check-In*\n\n`;
   const hint = `_Add budgets in Wealthfolio, or check which categories are selected for the weekly report._`;
@@ -1182,13 +1200,82 @@ export function formatMonthlyRemainingSummary(
     const headline = totalSpent > 0
       ? `${headerGlyph('🏷️', style)}*${moneyWhole(totalSpent)} spent* · no budget set`
       : `${headerGlyph('🏷️', style)}Nothing spent, no budgets set this month.`;
-    return `${header}${headline}\n${hint}${biggest}`;
+    return `${header}${headline}\n${hint}${biggest}${poolTail}`;
   }
   const headline = remaining < 0
     // `Math.abs` explicitly: "over budget" states the direction.
     ? `🚨 *${moneyWhole(Math.abs(remaining))} over budget* this month`
     : `${headerGlyph('💰', style)}*${moneyWhole(remaining)} left* this month`;
-  return `${header}${headline}\n_spent ${moneyWhole(totalSpent)} of ${moneyWhole(totalBudget)} · ${pct}%_${biggest}`;
+  return `${header}${headline}\n_spent ${moneyWhole(totalSpent)} of ${moneyWhole(totalBudget)} · ${pct}%_${biggest}${poolTail}`;
+}
+
+/**
+ * The semester pool as one report line (shared/pool.ts has the why). Null for
+ * an upcoming or gone pool — this line must vanish, not explain its absence.
+ *
+ * The 🚨 lead is unconditional in both alarm states, matching the digest's own
+ * over-budget headline: the clean glyph style drops decoration, never alarms.
+ * Money renders whole-dollar like every other report figure; the sustainable
+ * pace is the one number the reader spends against, so it leads the tail.
+ */
+export function formatPoolLine(s: PoolStatus, style: GlyphStyle = DEFAULT_GLYPH_STYLE): string | null {
+  if (s.phase === 'upcoming' || s.phase === 'gone') return null;
+  const end = shortDate(s.endDate);
+  if (s.phase === 'ended') {
+    return s.remainingCents >= 0
+      ? `${headerGlyph('🎓', style)}Pool ended ${end} · ${moneyWhole(s.remainingCents / 100)} unspent`
+      : `🚨 Pool ended ${end} · ${moneyWhole(Math.abs(s.remainingCents) / 100)} over`;
+  }
+  if (s.remainingCents <= 0) {
+    const dayWord = s.daysLeft === 1 ? 'day' : 'days';
+    return `🚨 Pool overspent by ${moneyWhole(Math.abs(s.remainingCents) / 100)} · ${s.daysLeft} ${dayWord} to ${end}`;
+  }
+  const head = `${headerGlyph('🎓', style)}${moneyWhole(s.remainingCents / 100)} of pool left`
+    + ` · ${moneyWhole(s.sustainableWeeklyCents / 100)}/wk sustainable`;
+  const tail = s.spentCents <= 0
+    ? `until ${end}`
+    : s.runsOutBeforeEnd && s.projectedRunOutDate
+      ? `at this pace out by ${shortDate(s.projectedRunOutDate)}`
+      : `lasts past ${end}`;
+  return `${head} · ${tail}`;
+}
+
+/**
+ * The weekly check-in's pool block: totals and both paces, which the one-line
+ * daily rendering deliberately omits. Leading `\n\n` like formatBiggestThisWeek,
+ * so an empty result appends nothing. Only the active shape carries figures —
+ * ended and overspent pools reuse the line wording, which already says
+ * everything a wrap-up can.
+ */
+export function formatPoolSection(s: PoolStatus, style: GlyphStyle = DEFAULT_GLYPH_STYLE): string {
+  if (s.phase === 'upcoming' || s.phase === 'gone') return '';
+  const header = `\n\n${headerGlyph('🎓', style)}*Semester pool*\n`;
+  if (s.phase === 'ended' || s.remainingCents <= 0) {
+    // formatPoolLine never returns null in these phases; strip its own glyph
+    // lead so the block heading isn't followed by a second 🎓.
+    const line = formatPoolLine(s, { mode: 'clean', overrides: {} })!;
+    return `${header}${line}`;
+  }
+  const amountCents = s.spentCents + s.remainingCents;
+  const pct = amountCents > 0 ? Math.round((s.spentCents / amountCents) * 100) : 0;
+  const end = shortDate(s.endDate);
+  const verdict = s.spentCents <= 0
+    ? `until ${end}`
+    : s.runsOutBeforeEnd && s.projectedRunOutDate
+      ? `at this pace out by ${shortDate(s.projectedRunOutDate)}`
+      : `lasts past ${end}`;
+  return `${header}${moneyWhole(s.remainingCents / 100)} left of ${moneyWhole(amountCents / 100)} · ${pct}% used\n`
+    + `${moneyWhole(s.sustainableWeeklyCents / 100)}/wk sustainable · spending ${moneyWhole(s.actualWeeklyCents / 100)}/wk · ${verdict}`;
+}
+
+/**
+ * Months the liquid position covers at the recent spending pace. Null in,
+ * null out: "unknowable" (no spending history) must not render at all, and
+ * rendering it as ∞ would be a promise nobody made.
+ */
+export function formatRunwayLine(months: number | null, style: GlyphStyle = DEFAULT_GLYPH_STYLE): string | null {
+  if (months === null) return null;
+  return `${headerGlyph('🛟', style)}${months} ${months === 1 ? 'month' : 'months'} of cash runway`;
 }
 
 /** One individual spending transaction for the weekly report's "biggest this

@@ -1,7 +1,9 @@
 import type { AddonContext } from '@wealthfolio/addon-sdk';
 import { AMAZON_LEDGER_SECRET_KEY } from '../../shared/amazon-ledger';
 import { AMAZON_CONFIG_SECRET_KEY, AMAZON_LABELS_SECRET_KEY } from '../../shared/amazon-config';
-import { UNCATEGORIZED_STATUS_SECRET_KEY, AMAZON_MAIL_STATUS_SECRET_KEY } from '../../shared/status-keys';
+import { UNCATEGORIZED_STATUS_SECRET_KEY, AMAZON_MAIL_STATUS_SECRET_KEY, POOL_STATUS_SECRET_KEY } from '../../shared/status-keys';
+import { SEMESTER_POOL_SECRET_KEY, parsePoolConfig } from '../../shared/pool';
+import type { SemesterPoolConfig, PoolStatus } from '../../shared/pool';
 import type { AmazonLabelCatalog, AmazonMailConfig } from '../../shared/amazon-config';
 import type { AmazonLedger } from '../../shared/amazon-ledger';
 import type { AccountMapping, MappingRule, UnmappedAccount } from '../../shared/types';
@@ -85,6 +87,11 @@ const KEYS = {
   capWeeklyToPool: 'cap_weekly_to_pool',
   overBudgetSpent: 'over_budget_spent',
   monthProjection: 'month_projection',
+  poolLine: 'pool_line',
+  semesterPool: SEMESTER_POOL_SECRET_KEY,
+  // Companion-published, addon-read-only, in KEYS for the same clearAll reason
+  // as uncategorizedStatus above.
+  poolStatus: POOL_STATUS_SECRET_KEY,
   openCards: 'ui_open_cards',
   uiState: 'ui_state',
   pendingLargeTxAlerts: LARGE_TX_OUTBOX_SECRET_KEY,
@@ -630,6 +637,43 @@ export class SecretsStore {
   }
   async setMonthProjection(on: boolean): Promise<void> {
     await this.ctx.api.secrets.set(KEYS.monthProjection, on ? 'on' : 'off');
+  }
+
+  /** Whether the daily report carries the semester-pool line. Opt-OUT like the
+   *  projection above, so the default is on whenever a pool exists. */
+  async getPoolLine(): Promise<boolean> {
+    const raw = await this.ctx.api.secrets.get(KEYS.poolLine);
+    return raw !== 'off';
+  }
+  async setPoolLine(on: boolean): Promise<void> {
+    await this.ctx.api.secrets.set(KEYS.poolLine, on ? 'on' : 'off');
+  }
+
+  /** The user's semester-pool config, or null when none (or an invalid one) is
+   *  stored. `parsePoolConfig` owns the validation on BOTH writers' behalf. */
+  async getSemesterPool(): Promise<SemesterPoolConfig | null> {
+    return parsePoolConfig(await this.ctx.api.secrets.get(KEYS.semesterPool));
+  }
+  /** Null clears — written as an empty string, the same off state the /pool
+   *  command writes, because the secrets API has no delete for one key. */
+  async setSemesterPool(cfg: SemesterPoolConfig | null): Promise<void> {
+    await this.ctx.api.secrets.set(KEYS.semesterPool, cfg ? JSON.stringify(cfg) : '');
+  }
+
+  /** The companion-computed pool status behind the Overview tile. Read-only
+   *  here: the companion republishes it every sync, and the addon rendering
+   *  the same object the reports render is what keeps the two agreeing. */
+  async getPoolStatus(): Promise<PoolStatus | null> {
+    try {
+      const raw = await this.ctx.api.secrets.get(KEYS.poolStatus);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' && typeof parsed.phase === 'string'
+        ? (parsed as PoolStatus)
+        : null;
+    } catch {
+      return null;
+    }
   }
 
   async clearAll(): Promise<void> {

@@ -706,3 +706,53 @@ describe('uncategorized list', () => {
     expect(saved).not.toHaveProperty('a');
   });
 });
+
+describe('semester pool', () => {
+  const activeStatus = {
+    phase: 'active', startDate: '2026-08-25', endDate: '2026-12-12',
+    spentCents: 450_000, remainingCents: 1_150_000, daysElapsed: 38, daysLeft: 72,
+    sustainableWeeklyCents: 111_806, actualWeeklyCents: 82_895,
+    projectedRunOutDate: '2027-01-06', runsOutBeforeEnd: false,
+  };
+
+  it('shows the pool tile when the companion has published a status', async () => {
+    const props = makeProps();
+    (props.store as any).getPoolStatus = vi.fn(async () => activeStatus);
+    render(<SyncPage {...props} />);
+    // The tile's own figures, not the label: the setup card below the strip
+    // also says "Semester pool", published status or not.
+    await waitFor(() => expect(screen.getByText('$11,500')).toBeInTheDocument());
+    expect(screen.getByText('$1,118/wk sustainable')).toBeInTheDocument();
+  });
+
+  it('shows no pool tile without a published status', async () => {
+    render(<SyncPage {...makeProps()} />);
+    await waitFor(() => expect(screen.getByText(/Growth/)).toBeInTheDocument());
+    expect(screen.queryByText(/wk sustainable/)).not.toBeInTheDocument();
+  });
+
+  it('sets a pool from the card, starting today', async () => {
+    const props = makeProps();
+    (props.store as any).setSemesterPool = vi.fn(async () => {});
+    render(<SyncPage {...props} />);
+    await waitFor(() => expect(screen.getByText(/Growth/)).toBeInTheDocument());
+    fireEvent.change(screen.getByLabelText(/pool amount/i), { target: { value: '16000' } });
+    fireEvent.change(screen.getByLabelText(/must last until/i), { target: { value: '2099-12-12' } });
+    fireEvent.click(screen.getByRole('button', { name: /set pool/i }));
+    await waitFor(() => expect((props.store as any).setSemesterPool).toHaveBeenCalledWith({
+      amountCents: 1_600_000,
+      startDate: new Date().toISOString().slice(0, 10),
+      endDate: '2099-12-12',
+    }));
+  });
+
+  it('clears the pool from the card', async () => {
+    const props = makeProps();
+    (props.store as any).getSemesterPool = vi.fn(async () => ({ amountCents: 100, startDate: '2020-01-01', endDate: '2099-12-31' }));
+    (props.store as any).setSemesterPool = vi.fn(async () => {});
+    render(<SyncPage {...props} />);
+    const clear = await screen.findByRole('button', { name: /clear pool/i });
+    fireEvent.click(clear);
+    await waitFor(() => expect((props.store as any).setSemesterPool).toHaveBeenCalledWith(null));
+  });
+});

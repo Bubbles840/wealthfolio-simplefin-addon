@@ -45,6 +45,7 @@ export const TELEGRAM_COMMAND_MENU = [
   { command: 'report', description: "Today's spending digest, fresh from the database" },
   { command: 'left', description: "What's left per category — /left groceries narrows it" },
   { command: 'afford', description: 'Can I afford it? — /afford 20 shopping' },
+  { command: 'pool', description: 'Semester money pool — /pool 16000 Dec 12' },
   { command: 'status', description: 'Last sync, balances, what needs attention' },
   { command: 'sync', description: 'Pull new bank transactions now' },
   { command: 'categorize', description: 'File uncategorized transactions, right from here' },
@@ -573,4 +574,78 @@ export function formatSyncReply(r: { imported: number; skipped: number; driftAle
   }
 
   return lines.join('\n');
+}
+
+/** What `/pool` replies when its arguments don't parse. The example is the
+ *  fastest possible documentation, per the menu's own convention. */
+export const POOL_USAGE_REPLY =
+  'Set the pool: /pool 16000 Dec 12 — that amount has to last until that date.\n'
+  + 'See it: /pool · Turn it off: /pool off';
+
+export type PoolCommand =
+  | { kind: 'show' }
+  | { kind: 'clear' }
+  | { kind: 'set'; amountCents: number; endDate: string };
+
+const POOL_MONTH_PREFIXES = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+
+/** YYYY-MM-DD for a UTC year/month/day — or null when the day overflows the
+ *  month (Feb 31 must be a refusal, not a silent March 3). */
+function poolDateString(year: number, monthIndex: number, day: number): string | null {
+  const d = new Date(Date.UTC(year, monthIndex, day));
+  if (d.getUTCFullYear() !== year || d.getUTCMonth() !== monthIndex || d.getUTCDate() !== day) return null;
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * `/pool` arguments. Three forms:
+ *   ``            → show the current pool
+ *   `off`         → clear it
+ *   `<amount> <date>` → set it, e.g. `/pool 16000 Dec 12`, `/pool $16,000.50
+ *                   until 2026-12-12`. A month-name date means its NEXT
+ *                   occurrence — a semester end is always ahead of you — and a
+ *                   past ISO date is refused rather than silently accepted as
+ *                   an already-ended pool.
+ *
+ * The START date is deliberately not accepted here: it is set companion-side
+ * to the day the command runs, which is when the disbursement is in hand.
+ */
+export function parsePoolArgs(args: string, now: Date): PoolCommand | null {
+  const t = args.trim();
+  if (t === '') return { kind: 'show' };
+  if (/^off$/i.test(t)) return { kind: 'clear' };
+
+  const tokens = t.split(/\s+/).filter((w) => !/^(until|till?|to)$/i.test(w));
+  if (tokens.length < 2) return null;
+
+  const amountRaw = tokens[0].replace(/[$,]/g, '');
+  if (!/^\d+(\.\d{1,2})?$/.test(amountRaw)) return null;
+  const amountCents = Math.round(parseFloat(amountRaw) * 100);
+  if (amountCents <= 0) return null;
+
+  const today = now.toISOString().slice(0, 10);
+  const dateTokens = tokens.slice(1);
+
+  if (dateTokens.length === 1 && /^\d{4}-\d{2}-\d{2}$/.test(dateTokens[0])) {
+    const iso = dateTokens[0];
+    const [y, m, d] = iso.split('-').map((n) => parseInt(n, 10));
+    if (poolDateString(y, m - 1, d) !== iso) return null;
+    if (iso < today) return null;
+    return { kind: 'set', amountCents, endDate: iso };
+  }
+
+  if (dateTokens.length === 2 && /^\d{1,2}$/.test(dateTokens[1])) {
+    const monthIndex = POOL_MONTH_PREFIXES.indexOf(dateTokens[0].slice(0, 3).toLowerCase());
+    const day = parseInt(dateTokens[1], 10);
+    if (monthIndex === -1) return null;
+    const thisYear = poolDateString(now.getUTCFullYear(), monthIndex, day);
+    if (thisYear === null) return null;
+    return {
+      kind: 'set',
+      amountCents,
+      endDate: thisYear >= today ? thisYear : poolDateString(now.getUTCFullYear() + 1, monthIndex, day)!,
+    };
+  }
+
+  return null;
 }

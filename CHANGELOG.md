@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.28.0] - 2026-08-30
+
+### Added
+
+- **Semester pool burn-down** — a money lens built for lump-sum funding, where
+  "income minus spending this month" means nothing: a loan disbursement lands
+  once and has to last until a date. Tell the addon the amount and the date —
+  the new **Semester pool** card on Overview, or `/pool 16000 Dec 12` in
+  Telegram (`/pool` shows it, `/pool off` clears it; both write the same
+  config) — and from then on:
+  - the **daily digest** carries one line: remaining pool, the sustainable
+    weekly pace, and the verdict — `lasts past Dec 12`, or `at this pace out by
+    Nov 28`;
+  - the **weekly check-in** gets a pool section with totals, both paces
+    (sustainable vs actual), and percent used;
+  - the **Overview strip** gets a pool tile with the remaining amount and
+    sustainable pace, republished by the companion every sync
+    (`pool_status`).
+  "Spent" is the same figure every other report prints — the classifier
+  transcription plus uncategorized spending, dismissed rows excluded — so the
+  pool can never disagree with the digest. After the end date the pool reports
+  its outcome (`$412 unspent` / `$180 over`) for a week, then goes quiet until
+  the next one is set. A hidden pool line is one toggle in Notifications →
+  Report content.
+- **Cash runway on the weekly check-in** — `🛟 4.8 months of cash runway`:
+  liquid cash net of card debt, divided by the trailing-90-day average monthly
+  spend. Rendered only when every input is readable; an unknowable runway says
+  nothing rather than guessing.
+
 ## [1.27.0] - 2026-08-30
 
 ### Fixed

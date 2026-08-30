@@ -4006,3 +4006,135 @@ describe('the /recategorize wiring', () => {
     });
   });
 });
+
+describe('semester pool riding the reports', () => {
+  const POOL_CFG = JSON.stringify({ amountCents: 1_600_000, startDate: '2020-01-01', endDate: '2099-12-31' });
+
+  const clientWith = (entries: Array<[string, string]> = []) => {
+    const secrets = new Map<string, string>(entries);
+    const client = {
+      getAddonSecret: vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null),
+      setAddonSecret: vi.fn(async (_a: string, key: string, val: string) => { secrets.set(key, val); }),
+    } as any;
+    return { client, secrets };
+  };
+  const sentText = (fetchMock: ReturnType<typeof vi.fn>) =>
+    fetchMock.mock.calls.map(([, body]) => JSON.parse((body as any).body).text).join('\n===\n');
+
+  it('weekly check-in carries the pool section when a pool is set', async () => {
+    const { client } = clientWith([
+      ['telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true })],
+      ['semester_pool', POOL_CFG],
+    ]);
+    const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await sendWeeklyTelegramReport(client);
+
+    const text = sentText(fetchMock);
+    // Mocked spend: 50 + 100 categorized, nothing uncategorized → $150 burned.
+    expect(text).toContain('*Semester pool*');
+    expect(text).toContain('left of $16,000');
+  });
+
+  it('weekly check-in is pool-free when none is set', async () => {
+    const { client } = clientWith([
+      ['telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true })],
+    ]);
+    const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+    vi.stubGlobal('fetch', fetchMock);
+    await sendWeeklyTelegramReport(client);
+    expect(sentText(fetchMock)).not.toContain('Semester pool');
+  });
+
+  it('daily digest carries the pool line', async () => {
+    const { client } = clientWith([
+      ['telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true })],
+      ['semester_pool', POOL_CFG],
+    ]);
+    const text = await composeDailyDigestMessage(client);
+    expect(text).toContain('of pool left');
+  });
+
+  it('the pool_line toggle removes the digest line without touching the rest', async () => {
+    const base = clientWith([
+      ['telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true })],
+      ['semester_pool', POOL_CFG],
+    ]);
+    const off = clientWith([
+      ['telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true })],
+      ['semester_pool', POOL_CFG],
+      ['pool_line', 'off'],
+    ]);
+    const withLine = await composeDailyDigestMessage(base.client);
+    const without = await composeDailyDigestMessage(off.client);
+    expect(withLine).toContain('of pool left');
+    expect(without).not.toContain('of pool left');
+    expect(withLine!.startsWith(without!)).toBe(true);
+  });
+});
+
+describe('/pool command', () => {
+  const clientWith = (entries: Array<[string, string]> = []) => {
+    const secrets = new Map<string, string>(entries);
+    const client = {
+      getAddonSecret: vi.fn(async (_a: string, k: string) => secrets.get(k) ?? null),
+      setAddonSecret: vi.fn(async (_a: string, k: string, v: string) => { secrets.set(k, v); }),
+    } as any;
+    return { client, secrets };
+  };
+  const run = async (client: any, args: string) => {
+    const sent: string[] = [];
+    await buildTelegramCommandHandler(client)({ command: 'pool', args }, async (t: string) => { sent.push(t); });
+    return sent;
+  };
+
+  it('sets a pool starting today and confirms with the sustainable pace', async () => {
+    const { client, secrets } = clientWith();
+    const sent = await run(client, '500 2099-01-15');
+    const stored = JSON.parse(secrets.get('semester_pool')!);
+    expect(stored.amountCents).toBe(50_000);
+    expect(stored.endDate).toBe('2099-01-15');
+    expect(stored.startDate).toBe(new Date().toISOString().slice(0, 10));
+    expect(sent.join('\n')).toContain('/wk');
+  });
+
+  it('shows the pool when asked with no arguments', async () => {
+    const { client } = clientWith([['semester_pool', JSON.stringify({ amountCents: 1_600_000, startDate: '2020-01-01', endDate: '2099-12-31' })]]);
+    const sent = await run(client, '');
+    expect(sent.join('\n')).toContain('Semester pool');
+  });
+
+  it('offers the usage line when no pool exists to show', async () => {
+    const { client } = clientWith();
+    const sent = await run(client, '');
+    expect(sent.join('\n')).toContain('/pool 16000');
+  });
+
+  it('clears the pool on /pool off', async () => {
+    const { client, secrets } = clientWith([['semester_pool', JSON.stringify({ amountCents: 1, startDate: '2020-01-01', endDate: '2099-12-31' })]]);
+    const sent = await run(client, 'off');
+    expect(secrets.get('semester_pool')).toBe('');
+    expect(sent.join('\n').toLowerCase()).toContain('cleared');
+  });
+
+  it('replies with usage on arguments it cannot parse', async () => {
+    const { client } = clientWith();
+    const sent = await run(client, 'lots of money');
+    expect(sent.join('\n')).toContain('/pool 16000');
+  });
+});
+
+describe('pool_status publish', () => {
+  it('publishes an empty pool_status after a sync when no pool is configured', async () => {
+    process.env.WEALTHFOLIO_API_URL = 'http://wf';
+    process.env.WEALTHFOLIO_PASSWORD = 'pw';
+    const { WealthfolioClient } = await import('./wealthfolio.js');
+    vi.mocked(WealthfolioClient as any).mockClear();
+
+    await runCompanionSync();
+
+    const instance = (vi.mocked(WealthfolioClient as any).mock.instances.at(-1)) as any;
+    expect(instance.setAddonSecret).toHaveBeenCalledWith('simplefin-sync', 'pool_status', '');
+  });
+});

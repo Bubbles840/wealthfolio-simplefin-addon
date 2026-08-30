@@ -62,6 +62,7 @@ export interface TelegramCfgDraft {
   capWeeklyToPool: boolean;
   overBudgetSpent: 'total' | 'all' | 'none';
   monthProjection: boolean;
+  poolLine: boolean;
 }
 
 /**
@@ -190,6 +191,8 @@ const EMPTY_DRAFT: TelegramCfgDraft = {
   capWeeklyToPool: true,
   overBudgetSpent: 'total',
   monthProjection: true,
+  // Also opt-OUT; only visible in reports while a pool is set anyway.
+  poolLine: true,
 };
 
 /** Fills a draft from the stored secret. A stored number is authoritative;
@@ -203,6 +206,7 @@ function draftFromStored(
   capWeeklyToPool: boolean,
   overBudgetSpent: 'total' | 'all' | 'none',
   monthProjection: boolean,
+  poolLine: boolean,
 ): TelegramCfgDraft {
   const base: TelegramCfgDraft = {
     ...EMPTY_DRAFT,
@@ -213,6 +217,7 @@ function draftFromStored(
     capWeeklyToPool,
     overBudgetSpent,
     monthProjection,
+    poolLine,
   };
   if (!tg) return base;
 
@@ -303,8 +308,9 @@ export function useTelegramDraft(store: SecretsStore): TelegramDraftState {
       store.getCapWeeklyToPool?.() ?? true,
       store.getOverBudgetSpent?.() ?? 'total',
       store.getMonthProjection?.() ?? true,
-    ]).then(([tg, glyph, subcat, offBudget, capWeekly, overSpent, projection]) => {
-      const loaded = draftFromStored(tg, glyph, subcat, offBudget, capWeekly, overSpent, projection);
+      store.getPoolLine?.() ?? true,
+    ]).then(([tg, glyph, subcat, offBudget, capWeekly, overSpent, projection, poolLine]) => {
+      const loaded = draftFromStored(tg, glyph, subcat, offBudget, capWeekly, overSpent, projection, poolLine);
       setCfg(loaded);
       setSavedCfg(loaded);
     }).catch(() => {});
@@ -345,6 +351,9 @@ export function useTelegramDraft(store: SecretsStore): TelegramDraftState {
     }
     if ('monthProjection' in patch) {
       store.setMonthProjection?.(next.monthProjection)?.catch(() => {});
+    }
+    if ('poolLine' in patch) {
+      store.setPoolLine?.(next.poolLine)?.catch(() => {});
     }
   }, [cfg, store]);
 

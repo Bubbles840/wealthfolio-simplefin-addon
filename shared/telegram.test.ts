@@ -1885,3 +1885,130 @@ describe('formatMonthlyWrapUp', () => {
     expect(text).toBe(text.trimEnd());
   });
 });
+
+describe('semester pool formatters', () => {
+  // The Oct 1 under-pace fixture from pool.test.ts, as a literal: these tests
+  // pin RENDERING, so they must not depend on the math they are not testing.
+  const mk = (over: Partial<import('./pool.js').PoolStatus> = {}): import('./pool.js').PoolStatus => ({
+    phase: 'active',
+    startDate: '2026-08-25',
+    endDate: '2026-12-12',
+    spentCents: 450_000,
+    remainingCents: 1_150_000,
+    daysElapsed: 38,
+    daysLeft: 72,
+    sustainableWeeklyCents: 111_806,
+    actualWeeklyCents: 82_895,
+    projectedRunOutDate: '2027-01-06',
+    runsOutBeforeEnd: false,
+    ...over,
+  });
+
+  describe('formatPoolLine', () => {
+    it('renders remaining, sustainable pace, and a lasts-past tail when under pace', () => {
+      expect(formatPoolLine(mk(), GLYPHS)).toBe(
+        '🎓 $11,500 of pool left · $1,118/wk sustainable · lasts past Dec 12',
+      );
+    });
+    it('warns with the projected run-out date when over pace', () => {
+      const s = mk({
+        remainingCents: 700_000, sustainableWeeklyCents: 68_056,
+        projectedRunOutDate: '2026-10-30', runsOutBeforeEnd: true,
+      });
+      expect(formatPoolLine(s, GLYPHS)).toBe(
+        '🎓 $7,000 of pool left · $681/wk sustainable · at this pace out by Oct 30',
+      );
+    });
+    it('shows the end date before any spending gives it a pace', () => {
+      const s = mk({
+        spentCents: 0, remainingCents: 1_600_000, sustainableWeeklyCents: 101_852,
+        projectedRunOutDate: null,
+      });
+      expect(formatPoolLine(s, GLYPHS)).toBe(
+        '🎓 $16,000 of pool left · $1,019/wk sustainable · until Dec 12',
+      );
+    });
+    it('states an overspent pool as an alarm, not an allowance', () => {
+      const s = mk({ remainingCents: -100_000, sustainableWeeklyCents: 0, runsOutBeforeEnd: true, projectedRunOutDate: null });
+      expect(formatPoolLine(s, GLYPHS)).toBe('🚨 Pool overspent by $1,000 · 72 days to Dec 12');
+    });
+    it('wraps up an ended pool in either direction', () => {
+      expect(formatPoolLine(mk({ phase: 'ended', remainingCents: 41_200 }), GLYPHS))
+        .toBe('🎓 Pool ended Dec 12 · $412 unspent');
+      expect(formatPoolLine(mk({ phase: 'ended', remainingCents: -18_000 }), GLYPHS))
+        .toBe('🚨 Pool ended Dec 12 · $180 over');
+    });
+    it('renders nothing before the pool starts or after the grace window', () => {
+      expect(formatPoolLine(mk({ phase: 'upcoming' }), GLYPHS)).toBeNull();
+      expect(formatPoolLine(mk({ phase: 'gone' }), GLYPHS)).toBeNull();
+    });
+  });
+
+  describe('formatPoolSection', () => {
+    it('renders the weekly block with totals, both paces, and the verdict', () => {
+      expect(formatPoolSection(mk(), GLYPHS)).toBe(
+        '\n\n🎓 *Semester pool*\n'
+        + '$11,500 left of $16,000 · 28% used\n'
+        + '$1,118/wk sustainable · spending $829/wk · lasts past Dec 12',
+      );
+    });
+    it('is empty for upcoming and gone pools', () => {
+      expect(formatPoolSection(mk({ phase: 'upcoming' }), GLYPHS)).toBe('');
+      expect(formatPoolSection(mk({ phase: 'gone' }), GLYPHS)).toBe('');
+    });
+  });
+
+  describe('formatRunwayLine', () => {
+    it('renders months of runway', () => {
+      expect(formatRunwayLine(4.8, GLYPHS)).toBe('🛟 4.8 months of cash runway');
+    });
+    it('renders nothing when runway is unknowable', () => {
+      expect(formatRunwayLine(null, GLYPHS)).toBeNull();
+    });
+  });
+});
+
+// Static imports are hoisted, so this sits beside the tests it serves — the
+// same pattern as the mid-file import above.
+import { formatPoolLine, formatPoolSection, formatRunwayLine } from './telegram.js';
+import type { PoolStatus } from './pool.js';
+
+describe('pool figures riding the existing reports', () => {
+  const poolFixture: PoolStatus = {
+    phase: 'active', startDate: '2026-08-25', endDate: '2026-12-12',
+    spentCents: 450_000, remainingCents: 1_150_000, daysElapsed: 38, daysLeft: 72,
+    sustainableWeeklyCents: 111_806, actualWeeklyCents: 82_895,
+    projectedRunOutDate: '2027-01-06', runsOutBeforeEnd: false,
+  };
+  const cats = [{ name: 'Food', monthSpent: 100, weekSpent: 10, budget: 400 }];
+  const period = { daysFromWeekStartToMonthEnd: 26, daysLeftInMonthInclusive: 20 };
+
+  it('appends the pool line to the daily digest when a pool is active', () => {
+    const text = formatDailySpendingDigest(
+      cats, period, GLYPHS, undefined, undefined, undefined, undefined, undefined, undefined,
+      poolFixture,
+    );
+    expect(text.endsWith('🎓 $11,500 of pool left · $1,118/wk sustainable · lasts past Dec 12')).toBe(true);
+  });
+
+  it('leaves the digest untouched with no pool, an upcoming pool, or a gone pool', () => {
+    const bare = formatDailySpendingDigest(cats, period, GLYPHS);
+    for (const pool of [null, { ...poolFixture, phase: 'upcoming' as const }, { ...poolFixture, phase: 'gone' as const }]) {
+      expect(formatDailySpendingDigest(
+        cats, period, GLYPHS, undefined, undefined, undefined, undefined, undefined, undefined, pool,
+      )).toBe(bare);
+    }
+  });
+
+  it('appends the pool section and runway line to the weekly check-in', () => {
+    const text = formatMonthlyRemainingSummary(100, 400, [], GLYPHS, poolFixture, 4.8);
+    expect(text).toContain('🎓 *Semester pool*');
+    expect(text).toContain('$11,500 left of $16,000 · 28% used');
+    expect(text.endsWith('🛟 4.8 months of cash runway')).toBe(true);
+  });
+
+  it('leaves the weekly check-in untouched with no pool and no runway', () => {
+    expect(formatMonthlyRemainingSummary(100, 400, [], GLYPHS, null, null))
+      .toBe(formatMonthlyRemainingSummary(100, 400, [], GLYPHS));
+  });
+});
