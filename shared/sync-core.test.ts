@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { runSyncCore, applyBaselineFix, neutralAdjustmentFields, inTransitPlaceholderFields, expiredTransferLegType, VALUATION_POLL, IN_TRANSIT_TIMEOUT_SECONDS, descriptionFromComment, txIdFromComment, planDuplicatePrune, IN_TRANSIT_COMMENT_PREFIX, DUPLICATE_REFUSAL_LOG_TAG, INTERVAL_SKIP_MESSAGE } from './sync-core.js';
+import { runSyncCore, applyBaselineFix, neutralAdjustmentFields, expiredTransferLegType, VALUATION_POLL, IN_TRANSIT_TIMEOUT_SECONDS, descriptionFromComment, txIdFromComment, planDuplicatePrune, IN_TRANSIT_COMMENT_PREFIX, DUPLICATE_REFUSAL_LOG_TAG, INTERVAL_SKIP_MESSAGE } from './sync-core.js';
 import { createFakeHost, type FakeHostSeed } from './fake-host.js';
 import { accountTxKey } from './transfers.js';
 import { linkPairByRecreate } from './link-pair.js';
@@ -202,6 +202,34 @@ describe('runSyncCore', () => {
     expect(plug.fee).toBe(50);
   });
 
+  it('plugs positive CREDIT_CARD drift with TRANSFER_IN, keeping the cash symbol the import endpoint requires', async () => {
+    // A positive card plug means Wealthfolio thought more was owed than the
+    // bank did. As a CREDIT it read as a refund — permanently, since a plug
+    // never pairs. Probed live 2026-08-30: TRANSFER_IN with `$CASH-USD` stores
+    // with asset_id null (real cash, no phantom asset), and the endpoint
+    // rejects a row with no symbol field at all, so the symbol stays.
+    const { host, store, imported } = createFakeHost({
+      accountSet: { errors: [], accounts: [{
+        id: 'sfin-1', name: 'Card', currency: 'USD',
+        balance: '-100.00', 'balance-date': 1,
+        transactions: [],
+      }] },
+      mapping: { 'sfin-1': 'wf-a' },
+      accountTypes: { 'wf-a': 'CREDIT_CARD' },
+      valuations: new Map([['wf-a', -300]]),
+      autoHeal: true,
+      autoAdjust: true,
+      driftAlerts: { 'sfin-1': { driftAmount: 200, firstDetectedAt: new Date(Date.now() - 11 * 86400_000).toISOString(), alerted: true } },
+    });
+    await runSyncCore(host, store, { heal: true });
+    const plug = imported.flat().find((r) => r.comment.startsWith('Balance adjustment'))!;
+    expect(plug).toBeTruthy();
+    expect(plug.activityType).toBe('TRANSFER_IN');
+    expect(plug.amount).toBe(200);
+    expect(plug.fee).toBe(0);
+    expect(plug.symbol).toBe('$CASH-USD');
+  });
+
   it('uses DEPOSIT/WITHDRAWAL for non-CASH account drift plugs', async () => {
     const { host, store, imported } = createFakeHost({
       accountSet: { errors: [], accounts: [{
@@ -345,10 +373,10 @@ describe('runSyncCore', () => {
   it('shapes placeholders per account type and direction', () => {
     // The table the 2026-08-27 refund would have failed: the ONE cell that
     // differs from the plug shape is a card inflow.
-    expect(inTransitPlaceholderFields('CREDIT_CARD', 429.71)).toEqual({ activityType: 'TRANSFER_IN', amount: 429.71, fee: 0 });
-    expect(inTransitPlaceholderFields('CREDIT_CARD', -429.71)).toEqual({ activityType: 'CREDIT', amount: 0, fee: 429.71 });
-    expect(inTransitPlaceholderFields('CASH', 1300)).toEqual({ activityType: 'CREDIT', amount: 1300, fee: 0 });
-    expect(inTransitPlaceholderFields('CASH', -1300)).toEqual({ activityType: 'CREDIT', amount: 0, fee: 1300 });
+    expect(neutralAdjustmentFields('CREDIT_CARD', 429.71)).toEqual({ activityType: 'TRANSFER_IN', amount: 429.71, fee: 0 });
+    expect(neutralAdjustmentFields('CREDIT_CARD', -429.71)).toEqual({ activityType: 'CREDIT', amount: 0, fee: 429.71 });
+    expect(neutralAdjustmentFields('CASH', 1300)).toEqual({ activityType: 'CREDIT', amount: 1300, fee: 0 });
+    expect(neutralAdjustmentFields('CASH', -1300)).toEqual({ activityType: 'CREDIT', amount: 0, fee: 1300 });
     // Expiry: a card refuses DEPOSIT, and a positive that never paired is a refund.
     expect(expiredTransferLegType('CREDIT_CARD', 100)).toBe('CREDIT');
     expect(expiredTransferLegType('CREDIT_CARD', -100)).toBe('WITHDRAWAL');
@@ -462,8 +490,12 @@ describe('runSyncCore', () => {
     // `Thankyou Points Redeemed` CREDIT row that Wealthfolio wrote itself.
     const inflow = neutralAdjustmentFields('CREDIT_CARD', 1300);
     expect(inflow.activityType).not.toBe('DEPOSIT');
-    expect(inflow.activityType).toBe('CREDIT');
+    // Not CREDIT either: on a card every CREDIT is an expense refund
+    // (2026-08-27). TRANSFER_IN is Ignored, accepted, and verified live on the
+    // import endpoint (2026-08-30) to land as real cash.
+    expect(inflow.activityType).toBe('TRANSFER_IN');
     expect(inflow.amount).toBe(1300);
+    expect(inflow.fee).toBe(0);
 
     const outflow = neutralAdjustmentFields('CREDIT_CARD', -1300);
     expect(outflow.activityType).toBe('CREDIT');

@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.26.2] - 2026-08-30
+
+### Fixed
+
+- **A positive drift-heal plug on a credit card no longer reads as a refund** —
+  the known issue left open in 1.26.1, now closed on evidence rather than
+  guesswork. A $0.05 `TRANSFER_IN` with `$CASH-USD` was written to a real card
+  through the import endpoint, read back with `asset_id` null (the real-cash
+  branch, no phantom asset), and deleted. The same probe showed the endpoint
+  rejects a row without a `symbol` field, so the plug keeps its cash symbol.
+  Card inflows — placeholder and plug alike — are now one shape, `TRANSFER_IN`,
+  from one function; the placeholder/plug split introduced in 1.26.1 is gone.
+
 ## [1.26.1] - 2026-08-27
 
 ### Fixed
