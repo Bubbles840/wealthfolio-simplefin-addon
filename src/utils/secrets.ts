@@ -83,6 +83,7 @@ const KEYS = {
   subcategoryDisplay: 'subcategory_display',
   countOffBudget: 'count_off_budget',
   capWeeklyToPool: 'cap_weekly_to_pool',
+  overBudgetSpent: 'over_budget_spent',
   openCards: 'ui_open_cards',
   uiState: 'ui_state',
   pendingLargeTxAlerts: LARGE_TX_OUTBOX_SECRET_KEY,
@@ -607,6 +608,17 @@ export class SecretsStore {
   }
   async setCapWeeklyToPool(on: boolean): Promise<void> {
     await this.ctx.api.secrets.set(KEYS.capWeeklyToPool, on ? 'on' : 'off');
+  }
+
+  /** Which "spent" figures the daily report adds once over budget. Anything
+   *  unrecognised reads as the default, so a future value never breaks an
+   *  older build. */
+  async getOverBudgetSpent(): Promise<'total' | 'all' | 'none'> {
+    const raw = await this.ctx.api.secrets.get(KEYS.overBudgetSpent);
+    return raw === 'all' || raw === 'none' ? raw : 'total';
+  }
+  async setOverBudgetSpent(mode: 'total' | 'all' | 'none'): Promise<void> {
+    await this.ctx.api.secrets.set(KEYS.overBudgetSpent, mode);
   }
 
   async clearAll(): Promise<void> {

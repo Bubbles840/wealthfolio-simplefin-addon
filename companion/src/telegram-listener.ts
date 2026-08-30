@@ -46,6 +46,10 @@ export interface TelegramListenerDeps {
    * exactly the 1.10.1 bug (`mergeDismissals` exists for this).
    */
   applyDismissal: (activityId: string) => Promise<void>;
+  /** An undo-button tap: removes one id from the ledger, through the same
+   *  merge as `applyDismissal`. OPTIONAL so older harnesses keep working; absent
+   *  means `u:` taps are answered with a "not available" toast. */
+  undoDismissal?: (activityId: string) => Promise<void>;
   /**
    * Runs one command. The `reply` callback NEVER rejects — a transport failure is
    * logged inside the listener instead — so a handler is free to send a reply
@@ -102,6 +106,15 @@ const HANDLER_FAILURE_REPLY = 'Something went wrong running that command — che
  *  are pinned by tests; changing either one alone silently breaks the button. */
 const DISMISS_PAYLOAD_PREFIX = 'd:';
 const DISMISS_ANSWER_TEXT = 'Dismissed — dropped from future notices';
+/** The way back. A dismissal used to be one tap with no undo, on a button
+ *  sitting right under a thumb; the only recovery was waiting ~60 days for the
+ *  ledger to forget it. Tapping Dismiss now turns that button into Undo, and
+ *  Undo turns it back — the notice itself is the surface, so nothing new has
+ *  to be found. */
+export const UNDISMISS_PAYLOAD_PREFIX = 'u:';
+const UNDISMISS_ANSWER_TEXT = 'Restored — it will show as needing a category again';
+const DISMISS_BUTTON_TEXT_PREFIX = 'Dismiss: ';
+export const UNDISMISS_BUTTON_TEXT_PREFIX = '↩ Undo: ';
 
 /** Shown when a `cz:` tap arrives with nothing wired up to interpret it —
  *  either the build predates the menu controller, or the daemon restarted and
@@ -405,6 +418,26 @@ export function startTelegramListener(deps: TelegramListenerDeps): { stop: () =>
       return;
     }
 
+    if (cq.data.startsWith(UNDISMISS_PAYLOAD_PREFIX)) {
+      const activityId = cq.data.slice(UNDISMISS_PAYLOAD_PREFIX.length);
+      if (!deps.undoDismissal) {
+        await answer(config, cq, 'Undo is not available in this build');
+        return;
+      }
+      try {
+        await deps.undoDismissal(activityId);
+      } catch (err) {
+        // Same rule as a failed dismissal: no confirmation for a write that did
+        // not land. The button stays as Undo, so the user can simply tap again.
+        safeLog(`Telegram listener: undo of dismissal ${activityId} failed: ${formatError(err)}`);
+        return;
+      }
+      await answer(config, cq, UNDISMISS_ANSWER_TEXT);
+      await swapButton(config, cq, UNDISMISS_PAYLOAD_PREFIX, DISMISS_PAYLOAD_PREFIX,
+        UNDISMISS_BUTTON_TEXT_PREFIX, DISMISS_BUTTON_TEXT_PREFIX);
+      return;
+    }
+
     if (!cq.data.startsWith(DISMISS_PAYLOAD_PREFIX)) return;
     const activityId = cq.data.slice(DISMISS_PAYLOAD_PREFIX.length);
 
@@ -419,13 +452,58 @@ export function startTelegramListener(deps: TelegramListenerDeps): { stop: () =>
       return;
     }
 
+    await answer(config, cq, DISMISS_ANSWER_TEXT);
+    await swapButton(config, cq, DISMISS_PAYLOAD_PREFIX, UNDISMISS_PAYLOAD_PREFIX,
+      DISMISS_BUTTON_TEXT_PREFIX, UNDISMISS_BUTTON_TEXT_PREFIX);
+  }
+
+  /** Clears the spinner with a toast. Never throws: answered or not, the
+   *  ledger write it follows is already recorded. */
+  async function answer(config: ListenerConfig, cq: any, text: string): Promise<void> {
     try {
       await deps.fetchImpl(`${api(config.botToken, 'answerCallbackQuery')}?${new URLSearchParams({
         callback_query_id: String(cq?.id),
-        text: DISMISS_ANSWER_TEXT,
+        text,
       })}`);
     } catch {
-      /* answered or not, the dismissal itself is recorded */
+      /* see above */
+    }
+  }
+
+  /**
+   * Rewrites the tapped button in place — Dismiss becomes Undo, or back — and
+   * leaves every other button exactly as it was. Best effort: a callback with
+   * no message attached (an old notice Telegram no longer describes, or one
+   * relayed from elsewhere) simply keeps its keyboard; the ledger write that
+   * matters has already happened by the time this runs.
+   */
+  async function swapButton(
+    config: ListenerConfig, cq: any,
+    fromData: string, toData: string, fromText: string, toText: string,
+  ): Promise<void> {
+    const msg = cq?.message;
+    const rows: Array<Array<{ text: string; callback_data?: string }>> | undefined =
+      msg?.reply_markup?.inline_keyboard;
+    if (typeof msg?.message_id !== 'number' || !Array.isArray(rows)) return;
+    let changed = false;
+    const next = rows.map((row) => row.map((btn) => {
+      if (btn.callback_data !== cq.data) return btn;
+      changed = true;
+      const label = btn.text.startsWith(fromText) ? btn.text.slice(fromText.length) : btn.text;
+      return { text: `${toText}${label}`, callback_data: `${toData}${cq.data.slice(fromData.length)}` };
+    }));
+    if (!changed) return;
+    try {
+      await deps.fetchImpl(api(config.botToken, 'editMessageReplyMarkup'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: msg.chat?.id, message_id: msg.message_id,
+          reply_markup: { inline_keyboard: next },
+        }),
+      });
+    } catch (err) {
+      safeLog(`Telegram listener: could not update the button after ${cq.data}: ${formatError(err)}`);
     }
   }
 

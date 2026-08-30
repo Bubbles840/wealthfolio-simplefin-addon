@@ -215,7 +215,7 @@ function formatDollars(amount: number, decimals: number): string {
  * sign, and a bare `-$23.16` next to the word "over" reads as a double
  * negative.
  */
-function money(amount: number): string {
+export function money(amount: number): string {
   const abs = Math.abs(amount);
   return formatDollars(abs, abs >= 1000 || Number.isInteger(abs) ? 0 : 2);
 }
@@ -682,6 +682,8 @@ export interface DailyDigestCategory {
 
 /** `rollup` sums children into the parent (long-standing behaviour); `breakdown`
  *  lists them beneath the parent's envelope line. */
+export type OverBudgetSpent = 'total' | 'all' | 'none';
+
 export type SubcategoryDisplay = 'rollup' | 'breakdown';
 
 export interface WeeklyEnvelopeInput {
@@ -836,6 +838,18 @@ export function formatDailySpendingDigest(
    * questions, and the subtitle says which one is being answered.
    */
   capWeeklyToPool = true,
+  /**
+   * Which "spent" figures to add once something is over budget.
+   *
+   * The budget is a floor the user wants to stay under; above it there is a
+   * higher number they absolutely cannot cross, and once over, "$329 over"
+   * says nothing about how close that is. `total` (default) appends the
+   * month's total spend to the over-budget headline — one number. `all` also
+   * appends each over-budget category's own spend, which is opt-in because
+   * several over categories turn into several extra numbers. `none` keeps
+   * every line as it was.
+   */
+  overBudgetSpent: OverBudgetSpent = 'total',
 ): string {
   const { daysFromWeekStartToMonthEnd, daysLeftInMonthInclusive } = period;
   const days = Math.max(1, daysLeftInMonthInclusive);
@@ -858,6 +872,10 @@ export function formatDailySpendingDigest(
    *  the lines above so the two can never describe different sets. */
   let offBudgetTotal = 0;
   let budgetedRemaining = 0;
+  // Money OUT of budgeted categories. A net-refund category contributes 0, not
+  // a negative: a refund is not spending, and this feeds a figure labelled
+  // "spent".
+  let budgetedSpent = 0;
   let anyBudget = false;
   /** First-pass results, rendered once the pool is known. */
   const rendered: Array<{
@@ -893,6 +911,7 @@ export function formatDailySpendingDigest(
 
     anyBudget = true;
     budgetedRemaining += remainingMonth;
+    budgetedSpent += Math.max(0, c.monthSpent);
     // Rendered in a SECOND pass: what a category can really be spent on depends
     // on the whole month's pool, which is not known until every category has
     // been totalled. See `poolFactor` below.
@@ -950,7 +969,9 @@ export function formatDailySpendingDigest(
     if (remainingMonth < 0) {
       // `Math.abs` explicitly: the word "over" states the direction, and
       // `-$50 over` would read as a double negative.
-      lines.push(`${glyph}${name}  🚨 *${moneyWhole(Math.abs(remainingMonth))} over* for the month`);
+      lines.push(overBudgetSpent === 'all'
+        ? `${glyph}${name}  🚨 *${moneyWhole(Math.abs(remainingMonth))} over* · ${moneyWhole(Math.max(0, c.monthSpent))} spent`
+        : `${glyph}${name}  🚨 *${moneyWhole(Math.abs(remainingMonth))} over* for the month`);
     } else if (leftThisWeek < 0) {
       lines.push(`${glyph}${name}  ⚠️ *${money(leftThisWeek)} over* · ${moneyWhole(leftMonth)} left mo`);
     } else if (leftThisWeek === 0 && remainingMonth === 0) {
@@ -1008,10 +1029,14 @@ export function formatDailySpendingDigest(
   // The subtraction itself is unchanged. `headlineRemaining` is still net of
   // both, so this line is not the budgeted sum and should not be read as one.
   const overBudget = headlineRemaining < 0 && moneyWhole(Math.abs(headlineRemaining)) !== '$0';
+  // The same money the headline subtracts, so "spent" and "over" can never
+  // describe different sets of transactions.
+  const totalSpent = budgetedSpent + countedOffBudget;
+  const spentTail = overBudgetSpent === 'none' ? '' : ` · ${moneyWhole(totalSpent)} spent`;
   const summary = !anyBudget
     ? `${headerGlyph('📅', style)}${days} ${dayWord} left in the month`
     : overBudget
-      ? `🚨 ${moneyWhole(Math.abs(headlineRemaining))} over budget this month · ${days} ${dayWord} to go`
+      ? `🚨 ${moneyWhole(Math.abs(headlineRemaining))} over budget this month${spentTail} · ${days} ${dayWord} to go`
       : `${headerGlyph('💰', style)}${moneyWhole(headlineRemaining)} left this month · ${days} ${dayWord} to go`;
 
   // An empty budgeted block can happen while off-budget lines exist (every

@@ -86,6 +86,7 @@ export function ReportContent({
     // counts" is now simply how the report works.
     cfg.countOffBudget ? null : 'off-budget ignored',
     cfg.capWeeklyToPool ? null : 'full budget amounts',
+    cfg.overBudgetSpent === 'total' ? null : cfg.overBudgetSpent === 'all' ? 'spent per category' : 'no spent figures',
   ].filter((s): s is string => typeof s === 'string').join(' · ');
 
   /**
@@ -299,6 +300,26 @@ export function ReportContent({
           <option value="full">The full budget for each category</option>
         </select>
       </div>
+      <div className="sfin-field-row">
+        <label htmlFor="sfin-over-spent">Spent figures when over budget</label>
+        <select
+          id="sfin-over-spent"
+          value={cfg.overBudgetSpent}
+          onChange={(e) => onChangeNow({ overBudgetSpent: e.target.value as 'total' | 'all' | 'none' })}
+        >
+          <option value="total">Monthly total only</option>
+          <option value="all">Total and each category</option>
+          <option value="none">Neither</option>
+        </select>
+      </div>
+      {/* Why this exists: the budget is a floor, and above it most people hold
+          a second, harder number in their head. "$329 over" says nothing about
+          how close that is; "$2,897 spent" does. Per-category is opt-in
+          because several over categories become several extra numbers. */}
+      <div className="sfin-subtle" style={{ marginTop: -4 }}>
+        Only shown once something is over budget.
+      </div>
+
       {/* The two answer different questions and neither is wrong. "Limited"
           answers "what can I actually spend": the per-category figures are
           scaled so they cannot add up to money the month no longer has. "Full"
@@ -325,7 +346,7 @@ export function ReportContent({
           never reach the save bar, and a card that otherwise waits for Save has
           to say which of its controls does not. */}
       <div className="sfin-subtle sfin-applies-now">
-        These four apply immediately — no need to save.
+        These five apply immediately — no need to save.
       </div>
     </CollapsibleCard>
   );

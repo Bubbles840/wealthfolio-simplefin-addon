@@ -547,6 +547,84 @@ describe('startTelegramListener — categorize menu callbacks', () => {
   });
 });
 
+describe('startTelegramListener — undo for dismissals', () => {
+  /** A callback whose message still carries its keyboard, as Telegram sends
+   *  for a tap on a live notice. */
+  const tapWithKeyboard = (updateId: number, data: string, keyboard: unknown, id = 'cb-k') => ({
+    update_id: updateId,
+    callback_query: {
+      id, data,
+      message: { chat: { id: Number(CHAT_ID) }, message_id: 909, reply_markup: { inline_keyboard: keyboard } },
+    },
+  });
+  const noticeKeyboard = [
+    [{ text: 'Dismiss: Frame It Easy $88.89', callback_data: 'd:act-42' }],
+    [{ text: 'Dismiss: The Post $105.74', callback_data: 'd:act-43' }],
+    [{ text: 'Categorize these', callback_data: 'cz:entry' }],
+  ];
+
+  it('turns the tapped Dismiss button into Undo and leaves the rest alone', async () => {
+    // A dismissal was one tap with no way back, on a button right under a
+    // thumb. The notice itself becomes the way back, so there is nothing new
+    // to find.
+    const h = harness();
+    h.fetchImpl.mockImplementation(pollingRoute([[tapWithKeyboard(400, 'd:act-42', noticeKeyboard)]]));
+    const listener = start(h.deps);
+    await waitFor('keyboard edited', () => h.calls('/editMessageReplyMarkup').length >= 1);
+    await listener.stop();
+
+    expect(h.applyDismissal).toHaveBeenCalledWith('act-42');
+    const body = bodyOf(h.calls('/editMessageReplyMarkup')[0]);
+    expect(body.message_id).toBe(909);
+    expect(body.reply_markup.inline_keyboard).toEqual([
+      [{ text: '↩ Undo: Frame It Easy $88.89', callback_data: 'u:act-42' }],
+      [{ text: 'Dismiss: The Post $105.74', callback_data: 'd:act-43' }],
+      [{ text: 'Categorize these', callback_data: 'cz:entry' }],
+    ]);
+  });
+
+  it('restores on an Undo tap and turns the button back into Dismiss', async () => {
+    const undoDismissal = vi.fn(async () => {});
+    const h = harness({ undoDismissal });
+    const undone = [[{ text: '↩ Undo: Frame It Easy $88.89', callback_data: 'u:act-42' }]];
+    h.fetchImpl.mockImplementation(pollingRoute([[tapWithKeyboard(401, 'u:act-42', undone)]]));
+    const listener = start(h.deps);
+    await waitFor('keyboard edited', () => h.calls('/editMessageReplyMarkup').length >= 1);
+    await listener.stop();
+
+    expect(undoDismissal).toHaveBeenCalledWith('act-42');
+    expect(h.applyDismissal).not.toHaveBeenCalled();
+    expect(String(h.calls('/answerCallbackQuery')[0][0])).toContain('Restored');
+    expect(bodyOf(h.calls('/editMessageReplyMarkup')[0]).reply_markup.inline_keyboard).toEqual([
+      [{ text: 'Dismiss: Frame It Easy $88.89', callback_data: 'd:act-42' }],
+    ]);
+  });
+
+  it('answers honestly, without writing, when no undo is wired up', async () => {
+    // An older daemon, or a harness without the dep: the tap must not crash
+    // the loop and must not claim anything was restored.
+    const h = harness();
+    h.fetchImpl.mockImplementation(pollingRoute([[callbackUpdate(402, 'u:act-42', { id: 'cb-n' })]]));
+    const listener = start(h.deps);
+    await waitFor('answered', () => h.calls('/answerCallbackQuery').length >= 1);
+    await listener.stop();
+    expect(String(h.calls('/answerCallbackQuery')[0][0])).toContain('not+available');
+    expect(h.applyDismissal).not.toHaveBeenCalled();
+    expect(h.writeOffset).toHaveBeenCalledWith(403);
+  });
+
+  it('keeps a failed undo silent and leaves the button as Undo', async () => {
+    const h = harness({ undoDismissal: vi.fn(async () => { throw new Error('secret write refused'); }) });
+    const undone = [[{ text: '↩ Undo: X $1.00', callback_data: 'u:act-9' }]];
+    h.fetchImpl.mockImplementation(pollingRoute([[tapWithKeyboard(403, 'u:act-9', undone)]]));
+    const listener = start(h.deps);
+    await waitFor('logged', () => h.logs.some((l) => l.includes('undo of dismissal act-9 failed')));
+    await listener.stop();
+    expect(h.calls('/answerCallbackQuery')).toHaveLength(0);
+    expect(h.calls('/editMessageReplyMarkup')).toHaveLength(0);
+  });
+});
+
 describe('startTelegramListener — replies that carry a keyboard', () => {
   it('threads a handler\'s keyboard into sendMessage as reply_markup', async () => {
     const keyboard = { inline_keyboard: [[{ text: 'Coffee', callback_data: 'cz:0' }]] };
