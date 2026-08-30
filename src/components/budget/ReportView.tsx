@@ -1,13 +1,31 @@
 import React from 'react';
+import {
+  Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Line, LineChart, Pie, PieChart, XAxis, YAxis,
+} from 'recharts';
+import { ChartContainer, ChartTooltip, ChartTooltipContent } from '@wealthfolio/ui/chart';
 import { SectionLabel } from '../ui';
 import type { ReportCube } from '../../../shared/report-cube';
-import type { CustomReport } from '../../../shared/report-eval';
+import { evaluateCustomReport, type CustomReport, type EvaluatedReport } from '../../../shared/report-eval';
+import {
+  budgetVsActualData, cashFlowData, categoryTrendData, feesInterestData, merchantTable,
+  netWorthData, poolBurndownData, runwayTrendData, savingsRateData, seasonalityGrid,
+} from './report-data';
 
 /**
  * One report, rendered by id — the single dispatch point the hero row, the
- * grid, and (later) the full-screen view all share. Task 11 of the Budget tab
- * plan replaces the placeholder body with the real charts; the `data-report-id`
- * contract and the title resolution are already final.
+ * grid, and the full-screen view share, so a report can never look different
+ * depending on where it appears.
+ *
+ * Charts are the HOST-PROVIDED recharts through the host's ChartContainer
+ * (native Wealthfolio look, ~zero bundle cost); everything non-chart — the
+ * merchant table, the seasonality heatmap, the empty states — is plain DOM.
+ * All data comes from report-data.ts / the custom evaluator, both pinned by
+ * their own tests; this file only decides SHAPE.
+ *
+ * Empty states per the spec: absence explains itself. An all-null net worth
+ * says it is accruing, an all-zero fees history says "nothing — as it should
+ * be", and a custom report naming a category the cube no longer has wears a
+ * warning chip instead of crashing.
  */
 export const REPORT_TITLES: Record<string, string> = {
   'pool-burndown': 'Pool burn-down',
@@ -29,17 +47,363 @@ export function reportTitle(id: string, customReports: CustomReport[]): string {
   return REPORT_TITLES[id] ?? id;
 }
 
-export function ReportView({ id, cube, customReports, hero = false }: {
+const fmt0 = (dollars: number) =>
+  new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(dollars);
+
+/** A stable small palette cycled for multi-series charts; recharts wants
+ *  explicit strokes and the host theme handles contrast. */
+const SERIES_COLORS = ['#2563eb', '#16a34a', '#d97706', '#dc2626', '#7c3aed', '#0891b2', '#be185d', '#65a30d'];
+const color = (i: number) => SERIES_COLORS[i % SERIES_COLORS.length];
+
+function Frame({ children }: { children: React.ReactElement }) {
+  return (
+    <ChartContainer config={{}} className="sfin-chart" style={{ width: '100%', minHeight: 160 }}>
+      {children}
+    </ChartContainer>
+  );
+}
+
+function CashFlow({ cube }: { cube: ReportCube }) {
+  return (
+    <Frame>
+      <BarChart data={cashFlowData(cube)}>
+        <CartesianGrid vertical={false} />
+        <XAxis dataKey="month" />
+        <YAxis width={44} />
+        <ChartTooltip content={<ChartTooltipContent />} />
+        <Bar dataKey="income" fill={color(1)} />
+        <Bar dataKey="spending" fill={color(3)} />
+        <Line dataKey="net" stroke={color(0)} dot={false} />
+      </BarChart>
+    </Frame>
+  );
+}
+
+function CategoryTrends({ cube, categories }: { cube: ReportCube; categories?: string[] }) {
+  const picked = categories ?? cube.categories;
+  return (
+    <Frame>
+      <BarChart data={categoryTrendData(cube, picked)}>
+        <CartesianGrid vertical={false} />
+        <XAxis dataKey="month" />
+        <YAxis width={44} />
+        <ChartTooltip content={<ChartTooltipContent />} />
+        {picked.map((c, i) => (
+          <Bar key={c} dataKey={c} stackId="spend" fill={color(i)} />
+        ))}
+      </BarChart>
+    </Frame>
+  );
+}
+
+function NetWorth({ cube }: { cube: ReportCube }) {
+  if (cube.netWorth.every((v) => v === null)) {
+    return (
+      <div className="sfin-subtle">
+        No valuation history yet — this chart accrues as the companion snapshots
+        your accounts each month.
+      </div>
+    );
+  }
+  return (
+    <Frame>
+      <LineChart data={netWorthData(cube)}>
+        <CartesianGrid vertical={false} />
+        <XAxis dataKey="month" />
+        <YAxis width={56} />
+        <ChartTooltip content={<ChartTooltipContent />} />
+        <Line dataKey="netWorth" stroke={color(0)} connectNulls={false} dot={false} />
+      </LineChart>
+    </Frame>
+  );
+}
+
+function SavingsRate({ cube }: { cube: ReportCube }) {
+  return (
+    <Frame>
+      <LineChart data={savingsRateData(cube)}>
+        <CartesianGrid vertical={false} />
+        <XAxis dataKey="month" />
+        <YAxis width={44} />
+        <ChartTooltip content={<ChartTooltipContent />} />
+        <Line dataKey="rate" stroke={color(4)} connectNulls={false} dot />
+      </LineChart>
+    </Frame>
+  );
+}
+
+function Merchants({ cube }: { cube: ReportCube }) {
+  const rows = merchantTable(cube, Math.min(3, cube.months.length));
+  if (rows.length === 0) return <div className="sfin-subtle">No merchant activity in the window.</div>;
+  return (
+    <div style={{ overflowX: 'auto' }}>
+      <table className="sfin-merchant-table">
+        <thead>
+          <tr><th style={{ textAlign: 'left' }}>Merchant</th><th>Total</th><th>Charges</th><th>Trend</th></tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.name}>
+              <td>{r.name}</td>
+              <td style={{ textAlign: 'right' }}>{fmt0(r.total)}</td>
+              <td style={{ textAlign: 'right' }}>{r.count}</td>
+              <td style={{ textAlign: 'right' }}>
+                {r.trend === null ? '—' : r.trend > 0.05 ? `↑ ${Math.round(r.trend * 100)}%` : r.trend < -0.05 ? `↓ ${Math.round(-r.trend * 100)}%` : '→'}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function BudgetVsActual({ cube }: { cube: ReportCube }) {
+  const month = cube.months.at(-1);
+  const rows = month ? budgetVsActualData(cube, month) : [];
+  if (rows.length === 0) return <div className="sfin-subtle">No budgets or spending this month.</div>;
+  const max = Math.max(...rows.map((r) => Math.max(r.budget, r.actual)), 1);
+  return (
+    <div>
+      {rows.map((r) => (
+        <div key={r.category} style={{ marginBottom: 8 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <span>{r.category}</span>
+            <span className="sfin-subtle">{fmt0(r.actual)} of {fmt0(r.budget)}</span>
+          </div>
+          <div style={{ position: 'relative', height: 8, borderRadius: 4, background: 'color-mix(in srgb, currentColor 12%, transparent)' }}>
+            <div style={{ position: 'absolute', inset: 0, width: `${Math.min(100, (r.budget / max) * 100)}%`, borderRadius: 4, background: 'color-mix(in srgb, currentColor 22%, transparent)' }} />
+            <div style={{ position: 'absolute', insetBlock: 0, left: 0, width: `${Math.min(100, (r.actual / max) * 100)}%`, borderRadius: 4, background: r.actual > r.budget ? color(3) : color(1) }} />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Seasonality({ cube }: { cube: ReportCube }) {
+  const grid = seasonalityGrid(cube);
+  const max = Math.max(...grid.cells.flat(), 1);
+  return (
+    <div style={{ overflowX: 'auto' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: `minmax(90px, auto) repeat(${grid.months.length}, minmax(28px, 1fr))`, gap: 2, alignItems: 'center' }}>
+        <span />
+        {grid.months.map((m) => <span key={m} className="sfin-subtle" style={{ fontSize: 10, textAlign: 'center' }}>{m.slice(2)}</span>)}
+        {grid.categories.map((c, ci) => (
+          <React.Fragment key={c}>
+            <span className="sfin-subtle" style={{ fontSize: 11 }}>{c}</span>
+            {grid.months.map((m, mi) => (
+              <div
+                key={m}
+                data-heat
+                title={`${c} · ${m}: ${fmt0(grid.cells[ci][mi] / 100)}`}
+                style={{
+                  height: 22, borderRadius: 3,
+                  background: `color-mix(in srgb, ${color(3)} ${Math.round((Math.max(0, grid.cells[ci][mi]) / max) * 85)}%, transparent)`,
+                }}
+              />
+            ))}
+          </React.Fragment>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function FeesInterest({ cube }: { cube: ReportCube }) {
+  if (cube.feesInterest.every((v) => v === 0)) {
+    return <div className="sfin-subtle">Fees and interest: nothing — as it should be.</div>;
+  }
+  return (
+    <Frame>
+      <BarChart data={feesInterestData(cube)}>
+        <CartesianGrid vertical={false} />
+        <XAxis dataKey="month" />
+        <YAxis width={44} />
+        <ChartTooltip content={<ChartTooltipContent />} />
+        <Bar dataKey="fees" fill={color(3)} />
+      </BarChart>
+    </Frame>
+  );
+}
+
+function RunwayTrend({ cube }: { cube: ReportCube }) {
+  const data = runwayTrendData(cube);
+  if (data.every((r) => r.months === null)) {
+    return (
+      <div className="sfin-subtle">
+        No balance history yet — runway accrues as the companion snapshots your
+        liquid position each month.
+      </div>
+    );
+  }
+  return (
+    <Frame>
+      <LineChart data={data}>
+        <CartesianGrid vertical={false} />
+        <XAxis dataKey="month" />
+        <YAxis width={40} />
+        <ChartTooltip content={<ChartTooltipContent />} />
+        <Line dataKey="months" stroke={color(5)} connectNulls={false} dot={false} />
+      </LineChart>
+    </Frame>
+  );
+}
+
+function PoolBurndown({ cube }: { cube: ReportCube }) {
+  const data = poolBurndownData(cube);
+  if (data.length === 0) return null;
+  return (
+    <Frame>
+      <LineChart data={data}>
+        <CartesianGrid vertical={false} />
+        <XAxis dataKey="date" />
+        <YAxis width={52} />
+        <ChartTooltip content={<ChartTooltipContent />} />
+        <Line dataKey="ideal" stroke={color(0)} strokeDasharray="4 3" dot={false} />
+        <Line dataKey="actual" stroke={color(1)} connectNulls={false} dot={false} />
+      </LineChart>
+    </Frame>
+  );
+}
+
+function CustomChartBody({ evaluated, def }: { evaluated: EvaluatedReport; def: CustomReport }) {
+  if (def.chart === 'table') {
+    return (
+      <div style={{ overflowX: 'auto' }}>
+        <table className="sfin-custom-table">
+          <thead>
+            <tr>
+              <th style={{ textAlign: 'left' }}>Month</th>
+              {evaluated.series.map((s) => <th key={s.label} style={{ textAlign: 'right' }}>{s.label}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {evaluated.months.map((m, mi) => (
+              <tr key={m}>
+                <td>{m}</td>
+                {evaluated.series.map((s) => (
+                  <td key={s.label} style={{ textAlign: 'right' }}>{fmt0(s.values[mi] / 100)}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+  if (def.chart === 'donut') {
+    const slices = evaluated.series.map((s, i) => ({
+      name: s.label,
+      value: Math.max(0, s.values.reduce((a, b) => a + b, 0)) / 100,
+      fill: color(i),
+    }));
+    return (
+      <Frame>
+        <PieChart>
+          <ChartTooltip content={<ChartTooltipContent />} />
+          <Pie data={slices} dataKey="value" nameKey="name" innerRadius="55%">
+            {slices.map((s) => <Cell key={s.name} fill={s.fill} />)}
+          </Pie>
+        </PieChart>
+      </Frame>
+    );
+  }
+  const rows = evaluated.months.map((m, mi) => {
+    const row: Record<string, string | number> = { month: m };
+    for (const s of evaluated.series) row[s.label] = s.values[mi] / 100;
+    return row;
+  });
+  const series = evaluated.series.map((s) => s.label);
+  if (def.chart === 'area') {
+    return (
+      <Frame>
+        <AreaChart data={rows}>
+          <CartesianGrid vertical={false} />
+          <XAxis dataKey="month" />
+          <YAxis width={44} />
+          <ChartTooltip content={<ChartTooltipContent />} />
+          {series.map((s, i) => <Area key={s} dataKey={s} stroke={color(i)} fill={color(i)} fillOpacity={0.25} />)}
+        </AreaChart>
+      </Frame>
+    );
+  }
+  if (def.chart === 'bars' || def.chart === 'stacked') {
+    return (
+      <Frame>
+        <BarChart data={rows}>
+          <CartesianGrid vertical={false} />
+          <XAxis dataKey="month" />
+          <YAxis width={44} />
+          <ChartTooltip content={<ChartTooltipContent />} />
+          {series.map((s, i) => (
+            <Bar key={s} dataKey={s} fill={color(i)} {...(def.chart === 'stacked' ? { stackId: 'all' } : {})} />
+          ))}
+        </BarChart>
+      </Frame>
+    );
+  }
+  return (
+    <Frame>
+      <LineChart data={rows}>
+        <CartesianGrid vertical={false} />
+        <XAxis dataKey="month" />
+        <YAxis width={44} />
+        <ChartTooltip content={<ChartTooltipContent />} />
+        {series.map((s, i) => <Line key={s} dataKey={s} stroke={color(i)} connectNulls={false} dot={false} />)}
+      </LineChart>
+    </Frame>
+  );
+}
+
+function CustomView({ cube, def }: { cube: ReportCube; def: CustomReport }) {
+  const evaluated = evaluateCustomReport(cube, def);
+  const unknown = Array.from(new Set(evaluated.series.flatMap((s) => s.unknownCategories)));
+  return (
+    <>
+      {unknown.map((name) => (
+        <span key={name} className="sfin-chip-warn sfin-subtle" style={{ display: 'inline-block', marginBottom: 6 }}>
+          unknown category: {name}
+        </span>
+      ))}
+      <CustomChartBody evaluated={evaluated} def={def} />
+    </>
+  );
+}
+
+export function ReportView({ id, cube, customReports, hero = false, categories }: {
   id: string;
   cube: ReportCube;
   customReports: CustomReport[];
   hero?: boolean;
+  /** Category-trends only: narrow to these categories (full-screen chips). */
+  categories?: string[];
 }) {
+  let body: React.ReactNode;
+  if (id.startsWith('custom:')) {
+    const def = customReports.find((r) => `custom:${r.id}` === id);
+    body = def ? <CustomView cube={cube} def={def} /> : <div className="sfin-subtle">This report was deleted.</div>;
+  } else {
+    switch (id) {
+      case 'pool-burndown': body = <PoolBurndown cube={cube} />; break;
+      case 'cash-flow': body = <CashFlow cube={cube} />; break;
+      case 'category-trends': body = <CategoryTrends cube={cube} categories={categories} />; break;
+      case 'net-worth': body = <NetWorth cube={cube} />; break;
+      case 'savings-rate': body = <SavingsRate cube={cube} />; break;
+      case 'merchants': body = <Merchants cube={cube} />; break;
+      case 'budget-vs-actual': body = <BudgetVsActual cube={cube} />; break;
+      case 'seasonality': body = <Seasonality cube={cube} />; break;
+      case 'fees-interest': body = <FeesInterest cube={cube} />; break;
+      case 'runway-trend': body = <RunwayTrend cube={cube} />; break;
+      default: body = null;
+    }
+  }
   return (
     <div className="sfin-card" data-report-id={id} data-hero={hero || undefined}>
       <div className="sfin-card-head">
         <SectionLabel>{reportTitle(id, customReports)}</SectionLabel>
       </div>
+      {body}
     </div>
   );
 }
