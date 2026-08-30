@@ -547,6 +547,117 @@ describe('runSyncCore', () => {
     expect(activities.get('wf-a')).toHaveLength(1); // rewritten, not duplicated
   });
 
+  // --- Feed-aware expiry hold ---
+  //
+  // A solo transfer leg past the timeout is only demoted to spending when every
+  // OTHER mapped account's feed is provably caught up past the pairing window —
+  // otherwise the counterpart never had its chance to appear, and giving up
+  // books a real transfer as spending. Live case (2026-08-30): Discover
+  // mid-transition published nothing for weeks, so a genuine $87.26 card
+  // payment expired into an uncategorized WITHDRAWAL.
+
+  /** Past IN_TRANSIT_TIMEOUT_SECONDS, so only the feed-aware hold can keep the
+   *  leg a placeholder. Relative to now, like the other expiry epochs. */
+  const pastTimeoutEpoch = () => Math.floor(Date.now() / 1000) - (IN_TRANSIT_TIMEOUT_SECONDS + 3600);
+
+  /** Checking holding the expired unpaired card-payment leg from the live
+   *  incident, plus one mapped Discover-shaped card account (or none). */
+  const staleCounterpartSeed = (cardAccounts: object[]): FakeHostSeed => ({
+    accountSet: { errors: [], accounts: [{
+      id: 'sfin-1', name: 'Checking', currency: 'USD', balance: '0',
+      'balance-date': Math.floor(Date.now() / 1000),
+      transactions: [{
+        id: 'tx-disc', posted: pastTimeoutEpoch(), amount: '-87.26',
+        description: 'Payment to Discover Bank Credit Card Payments',
+      }],
+    }, ...(cardAccounts as any[])] },
+    mapping: { 'sfin-1': 'wf-a', 'sfin-2': 'wf-b' },
+    accountTypes: { 'wf-a': 'CASH', 'wf-b': 'CREDIT_CARD' },
+  });
+
+  it('holds an expired solo leg as a placeholder while another mapped feed is behind the pairing window', async () => {
+    const { host, store, saved } = createFakeHost(staleCounterpartSeed([{
+      // The broken Discover connection: balance-date frozen long ago, no
+      // transactions at all — the counterpart leg never had a chance to post.
+      id: 'sfin-2', name: 'Discover Card', currency: 'USD', balance: '-500',
+      'balance-date': 1, transactions: [],
+    }]));
+    const result = await runSyncCore(host, store, { force: true });
+    expect(result.imported).toBe(1);
+    const create = saved[0].creates![0];
+    expect(create.activityType).toBe('CREDIT');
+    expect(create.amount).toBe(0);
+    expect(create.fee).toBe(87.26);
+    expect(create.comment).toContain('↔️ In-transit transfer · ');
+  });
+
+  it('still expires a solo leg when every other mapped feed is caught up past the pairing window', async () => {
+    const { host, store, saved } = createFakeHost(staleCounterpartSeed([{
+      // A healthy card feed: balance refreshed now, past posted + match window.
+      id: 'sfin-2', name: 'Discover Card', currency: 'USD', balance: '-500',
+      'balance-date': Math.floor(Date.now() / 1000), transactions: [],
+    }]));
+    await runSyncCore(host, store, { force: true });
+    const create = saved[0].creates![0];
+    expect(create.activityType).toBe('WITHDRAWAL');
+    expect(create.amount).toBe(87.26);
+    expect(create.comment).not.toContain('In-transit');
+  });
+
+  it('counts a feed as alive through its newest transaction when its balance-date lags', async () => {
+    const { host, store, saved } = createFakeHost(staleCounterpartSeed([{
+      // Some banks publish transactions while the balance timestamp trails.
+      id: 'sfin-2', name: 'Discover Card', currency: 'USD', balance: '-500',
+      'balance-date': 1,
+      transactions: [{
+        id: 'tx-charge', posted: Math.floor(Date.now() / 1000) - 60,
+        amount: '-12.00', description: 'RESTAURANT',
+      }],
+    }]));
+    await runSyncCore(host, store, { force: true });
+    const create = saved[0].creates![0];
+    expect(create.activityType).toBe('WITHDRAWAL');
+    expect(create.comment).not.toContain('In-transit');
+  });
+
+  it('holds when a mapped account is missing from the feed entirely', async () => {
+    // A connection so broken SimpleFin returns nothing for the account — no
+    // balance-date to read at all. Absent must count as "not caught up".
+    const { host, store, saved } = createFakeHost(staleCounterpartSeed([]));
+    const result = await runSyncCore(host, store, { force: true });
+    expect(result.imported).toBe(1);
+    const create = saved[0].creates![0];
+    expect(create.activityType).toBe('CREDIT');
+    expect(create.fee).toBe(87.26);
+    expect(create.comment).toContain('↔️ In-transit transfer · ');
+  });
+
+  it('flips an already-demoted WITHDRAWAL back to a held placeholder — the live 2026-08-30 row', async () => {
+    // The row as the pre-fix build left it: expired to WITHDRAWAL, prefix
+    // stripped, counting as spending. The fix must repair it with no manual
+    // step, while the tx is still inside the fetch window.
+    const staleDate = new Date(pastTimeoutEpoch() * 1000).toISOString().split('T')[0];
+    const seed = staleCounterpartSeed([{
+      id: 'sfin-2', name: 'Discover Card', currency: 'USD', balance: '-500',
+      'balance-date': 1, transactions: [],
+    }]);
+    seed.existing = new Map([['wf-a', [{
+      id: 'demoted-1', accountId: 'wf-a', activityType: 'WITHDRAWAL', date: staleDate,
+      amount: 87.26, comment: 'Payment to Discover Bank Credit Card Payments · tx-disc',
+      sourceGroupId: null,
+    }]]]);
+    const { host, store, saved, activities } = createFakeHost(seed);
+    await runSyncCore(host, store, { force: true });
+
+    const update = saved.flatMap((s) => s.updates ?? []).find((u) => u.id === 'demoted-1')!;
+    expect(update).toBeTruthy();
+    expect(update.activityType).toBe('CREDIT');
+    expect(update.amount).toBe(0);
+    expect(update.fee).toBe(87.26);
+    expect(update.comment).toContain('↔️ In-transit transfer · ');
+    expect(activities.get('wf-a')).toHaveLength(1); // repaired in place, not duplicated
+  });
+
   it('leaves an unchanged in-transit placeholder alone on the next sync (no update churn)', async () => {
     const { host, store, saved } = createFakeHost(soloOutLegSeed());
     await runSyncCore(host, store, {});

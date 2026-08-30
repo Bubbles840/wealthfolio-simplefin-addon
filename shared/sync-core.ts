@@ -1,5 +1,5 @@
 import { mapTransactionWithSource } from './mapper.js';
-import { accountTxKey, detectTransferPairs } from './transfers.js';
+import { accountTxKey, detectTransferPairs, TRANSFER_MATCH_WINDOW_SECONDS } from './transfers.js';
 import type { TransferCandidate } from './transfers.js';
 import { planReconciliation, IN_TRANSIT_COMMENT_PREFIX } from './reconcile.js';
 import type { FeedTx, ExistingRow } from './reconcile.js';
@@ -933,6 +933,46 @@ export function expiredTransferLegType(accountType: string, signedAmount: number
 }
 
 /**
+ * Feed-aware guard on the give-up above: giving up is only justified when the
+ * counterpart HAD its chance to appear. Returns a mapped SimpleFin account id
+ * whose feed has shown no life past the leg's pairing window — the account
+ * where the missing counterpart may still be hiding — or null when every other
+ * mapped feed is caught up, so a demotion to ordinary spending is honest.
+ *
+ * "Life" is the later of the account's `balance-date` (SimpleFin freezes it
+ * when a connection breaks — the live case: Discover mid-transition published
+ * nothing for weeks, and a real $87.26 card payment expired into spending,
+ * 2026-08-30) and its newest datable transaction (for a bank whose balance
+ * timestamp trails its transaction list). A mapped account absent from the
+ * feed entirely has shown no life at all. The leg's OWN account never holds —
+ * its feed evidently published the leg itself.
+ *
+ * A held leg keeps its spending-neutral placeholder shape. While the leg stays
+ * inside the fetch window this re-evaluates every run, so a feed that heals in
+ * time releases the hold and the leg pairs or expires normally. If the feed
+ * stays dead until the leg ages out of the window, the placeholder simply
+ * remains — permanently neutral, which for a transfer whose counterpart data
+ * is lost is the correct resting state (a heal re-scan can still pair it if
+ * the bank backfills). The deliberate trade: a stale feed can delay or freeze
+ * a genuinely-external leg as a neutral $0 placeholder, which costs a lingering
+ * row; the demotion it prevents costs phantom spending in every report and a
+ * manual repair.
+ */
+function expiryHoldAccount(
+  legSfinAccountId: string,
+  legPostedEpoch: number,
+  mappedSfinIds: string[],
+  feedAliveEpoch: Map<string, number>,
+): string | null {
+  const caughtUpBy = legPostedEpoch + TRANSFER_MATCH_WINDOW_SECONDS;
+  for (const id of mappedSfinIds) {
+    if (id === legSfinAccountId) continue;
+    if ((feedAliveEpoch.get(id) ?? 0) < caughtUpBy) return id;
+  }
+  return null;
+}
+
+/**
  * The spending-neutral shape for money that must move a balance without
  * being spending — an in-transit transfer placeholder, or a drift-heal plug.
  *
@@ -1316,6 +1356,20 @@ export async function runSyncCore(
     pairedKeys.add(accountTxKey(pair.out.accountId, pair.out.txId));
     pairedKeys.add(accountTxKey(pair.in.accountId, pair.in.txId));
   }
+  // For the feed-aware expiry hold: the epoch each mapped account's feed has
+  // proven itself alive through — see expiryHoldAccount. Built once per run,
+  // from data this run already fetched; no new I/O.
+  const feedAliveEpoch = new Map<string, number>();
+  for (const sfAccount of accountSet.accounts) {
+    if (!mapping[sfAccount.id]) continue;
+    let alive = sfAccount['balance-date'] ?? 0;
+    for (const tx of sfAccount.transactions ?? []) {
+      const e = txEpoch(tx);
+      if (e !== null && e > alive) alive = e;
+    }
+    feedAliveEpoch.set(sfAccount.id, alive);
+  }
+  const mappedSfinIds = Object.keys(mapping);
   const nowSec = Math.floor(Date.now() / 1000);
   for (const prepared of preparedByAccount.values()) {
     for (const p of prepared) {
@@ -1324,7 +1378,16 @@ export async function runSyncCore(
       const signed = signedByKey.get(key) ?? 0;
       const postedAt = txEpoch(p.tx) ?? nowSec;
       const accountType = wfTypes.get(mapping[p.sfAccountId] ?? '') ?? '';
-      if (nowSec - postedAt > IN_TRANSIT_TIMEOUT_SECONDS) {
+      const heldFor = nowSec - postedAt > IN_TRANSIT_TIMEOUT_SECONDS
+        ? expiryHoldAccount(p.sfAccountId, postedAt, mappedSfinIds, feedAliveEpoch)
+        : null;
+      if (heldFor !== null) {
+        // Past the timeout, but a counterpart feed never had its chance — keep
+        // the placeholder (the young branch below) instead of booking spending.
+        console.info(
+          `[simplefin-sync] in-transit hold: leg ${p.tx.id} (account ${p.sfAccountId}) is past the timeout, but account ${heldFor} has published nothing past its pairing window — keeping the placeholder`,
+        );
+      } else if (nowSec - postedAt > IN_TRANSIT_TIMEOUT_SECONDS) {
         p.type = expiredTransferLegType(accountType, signed);
         // The same drop as the young branch below, for the same reason and one
         // step further on: giving up on the pair turns this into an ordinary

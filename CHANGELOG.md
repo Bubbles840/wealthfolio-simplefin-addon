@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.27.0] - 2026-08-30
+
+### Fixed
+
+- **A transfer leg no longer expires into spending while a counterpart feed is
+  down.** The 10-day in-transit timeout assumed the other bank's feed was alive
+  and merely slow — so when Discover's connection went silent for weeks
+  (an issuer-side transition), a real $87.26 card payment ran out the clock and
+  demoted to an uncategorized `WITHDRAWAL`, polluting the spending report it was
+  correctly held out of for ten days. The give-up now checks its own premise:
+  a leg past the timeout is demoted only when every *other* mapped account's
+  feed has proven itself alive past the leg's pairing window — the later of
+  SimpleFin's `balance-date` (frozen exactly when a connection breaks) and the
+  account's newest transaction, with an account absent from the feed counting
+  as no life at all. While any counterpart feed is behind, the leg keeps its
+  spending-neutral placeholder and the sync log records which account is being
+  waited on. No new I/O: both signals are already in every run.
+- **A leg the old build already demoted heals itself** — while the transaction
+  is still inside the fetch window, the next sync re-resolves it to a held
+  placeholder and rewrites the row in place, taking it back out of spending and
+  the needs-a-category nudge with no manual step.
+- The deliberate trade, documented on `expiryHoldAccount`: if a feed stays dead
+  until the leg ages out of the fetch window, the placeholder remains
+  permanently neutral rather than ever becoming spending — for a card payment
+  whose counterpart data is lost, that is the correct resting state, and a heal
+  re-scan can still pair it if the bank backfills.
+
 ## [1.26.2] - 2026-08-30
 
 ### Fixed
