@@ -266,3 +266,68 @@ describe('customize mode', () => {
     expect(saved.hidden).toEqual([]);
   });
 });
+
+describe('report builder wiring', () => {
+  const freshProps = () => {
+    const props = makeProps();
+    (props.store as any).getReportCube = vi.fn(async () => ({ ...CUBE, asOf: new Date().toISOString() }));
+    return props;
+  };
+  const FOOD = {
+    id: 'cr-1', name: 'Food', chart: 'line', range: { kind: 'all' }, accounts: null,
+    series: [{ label: 'Food', terms: [{ sign: 1, source: 'category', category: 'Dining' }] }],
+  };
+
+  it('opens from the New report card; a save joins the grid and persists', async () => {
+    const props = freshProps();
+    render(<SyncPage {...props} />);
+    await waitFor(() => expect(reportIds().length).toBeGreaterThan(0));
+
+    fireEvent.click(screen.getByRole('button', { name: /new report/i }));
+    fireEvent.change(screen.getByLabelText(/report name/i), { target: { value: 'Food' } });
+    fireEvent.change(screen.getByLabelText(/series 1 label/i), { target: { value: 'Food' } });
+    fireEvent.change(screen.getByLabelText(/add to series 1/i), { target: { value: 'category:Dining' } });
+    fireEvent.click(screen.getByRole('button', { name: /save report/i }));
+
+    await waitFor(() => expect(reportIds().some((id) => id?.startsWith('custom:cr-'))).toBe(true));
+    const saved = (props.store as any).setCustomReports.mock.calls.at(-1)![0];
+    expect(saved).toHaveLength(1);
+    expect(saved[0].name).toBe('Food');
+    expect(screen.queryByLabelText(/report name/i)).toBeNull(); // builder closed
+  });
+
+  it('edits an existing custom report in place', async () => {
+    const props = freshProps();
+    (props.store as any).getCustomReports = vi.fn(async () => [FOOD]);
+    render(<SyncPage {...props} />);
+    await waitFor(() => expect(reportIds()).toContain('custom:cr-1'));
+
+    fireEvent.click(screen.getByRole('button', { name: /^customize$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /edit food/i }));
+    fireEvent.change(screen.getByLabelText(/report name/i), { target: { value: 'Meals' } });
+    fireEvent.click(screen.getByRole('button', { name: /save report/i }));
+
+    const saved = (props.store as any).setCustomReports.mock.calls.at(-1)![0];
+    expect(saved).toHaveLength(1);
+    expect(saved[0].id).toBe('cr-1');
+    expect(saved[0].name).toBe('Meals');
+  });
+
+  it('duplicates and deletes from customize mode', async () => {
+    const props = freshProps();
+    (props.store as any).getCustomReports = vi.fn(async () => [FOOD]);
+    render(<SyncPage {...props} />);
+    await waitFor(() => expect(reportIds()).toContain('custom:cr-1'));
+    fireEvent.click(screen.getByRole('button', { name: /^customize$/i }));
+
+    fireEvent.click(screen.getByRole('button', { name: /duplicate food/i }));
+    let saved = (props.store as any).setCustomReports.mock.calls.at(-1)![0];
+    expect(saved).toHaveLength(2);
+    expect(saved[1].id).not.toBe('cr-1');
+    expect(saved[1].name).toMatch(/food/i);
+
+    fireEvent.click(screen.getAllByRole('button', { name: /delete food/i })[0]);
+    saved = (props.store as any).setCustomReports.mock.calls.at(-1)![0];
+    expect(saved.some((r: any) => r.id === 'cr-1')).toBe(false);
+  });
+});
