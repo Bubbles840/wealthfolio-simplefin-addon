@@ -51,7 +51,7 @@ import type { GlyphStyle, InlineKeyboard } from '../../shared/telegram.js';
 import type { DismissalLedger } from './dismissals.js';
 import type { SyncHealth } from '../../shared/telegram.js';
 import { SIMPLEFIN_SYNC_VERSION, COMPANION_VERSION_SECRET_KEY } from '../../shared/version.js';
-import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeCategorizedSpending, getNativeSpendingCategories, getNativeCategoryCatalog, getNativeSubcategorySpending, getNativeUncategorizedSpendingTotal, countRulePatternMatches } from './sqlite-native.js';
+import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeCategorizedSpending, getNativeSpendingCategories, getNativeCategoryCatalog, getNativeSubcategorySpending, getNativeUncategorizedSpendingTotal, countRulePatternMatches, getNativeSpendMatrix, getNativeIncomeByMonthAccount, getNativeUncategorizedByMonthAccount, getNativeMerchantRows, getNativeFeesInterestByMonth, getNativeSpendDailyTotals, getNativeValuationByMonth } from './sqlite-native.js';
 import { publishUncategorizedStatusForDbPath } from './uncategorized-status.js';
 import { createCategorizeController, SPENDING_TAXONOMY_ID } from './categorize.js';
 import { createAmazonLabelMenu, type AmazonLabelMenu } from './amazon-labels.js';
@@ -74,8 +74,10 @@ import {
 import { parseNewRuleArgs } from '../../shared/categorize-menu.js';
 import type { CategoryBudgetSnapshot, BudgetPeriod, ParsedCommand, StatusReplyInput } from '../../shared/telegram-commands.js';
 import { parsePoolArgs, POOL_USAGE_REPLY } from '../../shared/telegram-commands.js';
-import { SEMESTER_POOL_SECRET_KEY } from '../../shared/pool.js';
+import { SEMESTER_POOL_SECRET_KEY, parsePoolConfig } from '../../shared/pool.js';
 import { readPoolStatus, readRunwayMonths, type PoolReportDeps } from './pool-report.js';
+import { REPORT_CUBE_SECRET_KEY } from '../../shared/report-cube.js';
+import { buildReportCube, type CubeBuildDeps } from './report-cube-build.js';
 
 const logLevel: 'info' | 'debug' =
   process.env.LOG_LEVEL === 'debug' ? 'debug' : 'info';
@@ -884,6 +886,21 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
       log(`Pool status publish failed (tile may be stale): ${formatError(e)}`);
     }
 
+    // The Budget tab's data: the whole report cube, republished every sync
+    // beside the pool status and guarded identically — a failed build costs a
+    // stale tab, never the sync. Skipped without a readable database, because
+    // a cube of zeros would claim months of nothing rather than admit it
+    // could not look.
+    try {
+      const cubeDbPath = wealthfolioDbPath();
+      if (cubeDbPath && existsSync(cubeDbPath)) {
+        const cube = await buildReportCube(cubeBuildDeps(wfClient, cubeDbPath), new Date());
+        await wfClient.setAddonSecret('simplefin-sync', REPORT_CUBE_SECRET_KEY, JSON.stringify(cube));
+      }
+    } catch (e) {
+      log(`Report cube publish failed (Budget tab may be stale): ${formatError(e)}`);
+    }
+
     const undeliveredOutTxIds: string[] = [];
     for (const alert of result.stuckTransferAlerts) {
       const delivered = await sendStuckTransferAlert(wfClient, alert);
@@ -1406,6 +1423,41 @@ function poolReportDeps(wfClient: WealthfolioClient, dbPath: string): PoolReport
         await wfClient.getAddonSecret('simplefin-sync', 'account_balances').catch(() => null),
         'account_balances',
       ) ?? {},
+  };
+}
+
+/**
+ * The cube builder's data sources, bound once — the report-cube twin of
+ * `poolReportDeps` above, sharing its dismissal and pool reads so the cube
+ * and the pool line can never count different money.
+ */
+function cubeBuildDeps(wfClient: WealthfolioClient, dbPath: string): CubeBuildDeps {
+  return {
+    accountMeta: async () => {
+      const mapping = (await new RestSyncStore(wfClient).getAccountMapping()) ?? {};
+      const accounts = await wfClient.getAccounts();
+      const typeById = new Map(accounts.map((a) => [a.id, a.accountType ?? '']));
+      const names = parseSecretJson<Record<string, string>>(
+        await wfClient.getAddonSecret('simplefin-sync', 'account_names').catch(() => null),
+        'account_names',
+      ) ?? {};
+      return Object.entries(mapping).map(([sfinId, wfId]) => ({
+        sfinId, wfId, name: names[sfinId] ?? sfinId, type: typeById.get(wfId) ?? '',
+      }));
+    },
+    dismissedIds: async () =>
+      Object.keys(await dismissalLedgerAccess(wfClient).readLedger().catch(() => ({}))),
+    poolConfig: async () => parsePoolConfig(
+      await wfClient.getAddonSecret('simplefin-sync', SEMESTER_POOL_SECRET_KEY).catch(() => null),
+    ),
+    spendMatrix: (s, e) => getNativeSpendMatrix(dbPath, s, e),
+    incomeByMonthAccount: (s, e) => getNativeIncomeByMonthAccount(dbPath, s, e),
+    uncategorizedByMonthAccount: (s, e, excluded) => getNativeUncategorizedByMonthAccount(dbPath, s, e, excluded),
+    budgetsForMonth: (m) => getNativeWealthfolioBudgets(dbPath, m),
+    merchantRows: (s, e) => getNativeMerchantRows(dbPath, s, e),
+    feesInterestByMonth: (s, e) => getNativeFeesInterestByMonth(dbPath, s, e),
+    spendDaily: (s, e, excluded) => getNativeSpendDailyTotals(dbPath, s, e, excluded),
+    valuationByMonth: (months) => getNativeValuationByMonth(dbPath, months),
   };
 }
 

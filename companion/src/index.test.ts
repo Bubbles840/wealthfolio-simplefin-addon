@@ -44,6 +44,10 @@ vi.mock('./wealthfolio.js', () => {
         return null;
       });
       this.setAddonSecret = vi.fn(async () => {});
+      // The report-cube publish reads account types through this; the real
+      // client always has it, so a missing stub is a mock gap that would make
+      // the guarded publish silently skip in every test here.
+      this.getAccounts = vi.fn(async () => []);
     }),
   };
 });
@@ -78,6 +82,16 @@ vi.mock('./sqlite-native.js', () => ({
     { amount: 95.5, description: 'SQ *BLUE BOTTLE', categoryName: 'Dining' },
     { amount: 63, description: 'COSTCO GAS · PUMP 4', categoryName: 'Groceries' },
   ])),
+  // Report-cube readers. Present because index.ts imports them (a factory
+  // missing an imported export fails every test in this file); empty results
+  // are the "quiet database" every unrelated test wants.
+  getNativeSpendMatrix: vi.fn(() => []),
+  getNativeIncomeByMonthAccount: vi.fn(() => []),
+  getNativeUncategorizedByMonthAccount: vi.fn(() => []),
+  getNativeMerchantRows: vi.fn(() => []),
+  getNativeFeesInterestByMonth: vi.fn(() => []),
+  getNativeSpendDailyTotals: vi.fn(() => []),
+  getNativeValuationByMonth: vi.fn(() => []),
 }));
 
 vi.mock('./amazon-mail.js', async (importOriginal) => ({
@@ -4129,6 +4143,9 @@ describe('pool_status publish', () => {
   it('publishes an empty pool_status after a sync when no pool is configured', async () => {
     process.env.WEALTHFOLIO_API_URL = 'http://wf';
     process.env.WEALTHFOLIO_PASSWORD = 'pw';
+    // Same fs-mock pinning as the report_cube test below: the skip is silent
+    // by design, so position in this file must not decide the outcome.
+    vi.mocked(existsSync).mockReturnValue(true);
     const { WealthfolioClient } = await import('./wealthfolio.js');
     vi.mocked(WealthfolioClient as any).mockClear();
 
@@ -4136,5 +4153,37 @@ describe('pool_status publish', () => {
 
     const instance = (vi.mocked(WealthfolioClient as any).mock.instances.at(-1)) as any;
     expect(instance.setAddonSecret).toHaveBeenCalledWith('simplefin-sync', 'pool_status', '');
+  });
+});
+
+describe('report_cube publish', () => {
+  it('publishes a versioned cube after a sync', async () => {
+    process.env.WEALTHFOLIO_API_URL = 'http://wf';
+    process.env.WEALTHFOLIO_PASSWORD = 'pw';
+    // Earlier tests leave the module-level fs mock returning false, and the
+    // publish's missing-database skip is deliberately SILENT — pin it true or
+    // this test's outcome depends on file position.
+    vi.mocked(existsSync).mockReturnValue(true);
+    const { WealthfolioClient } = await import('./wealthfolio.js');
+    vi.mocked(WealthfolioClient as any).mockClear();
+    // Pin the FULL client shape: an earlier test overrides the constructor's
+    // mockImplementation with one lacking getAccounts (mockClear never undoes
+    // implementations), and the cube's accountMeta read genuinely needs it —
+    // in the full suite this test would otherwise exercise that test's client.
+    vi.mocked(WealthfolioClient as any).mockImplementation(function (this: any) {
+      this.login = vi.fn(async () => {});
+      this.getAddonSecret = vi.fn(async (_a: string, key: string) => (
+        key === 'simplefin_access_url' ? 'https://user:pass@bridge.simplefin.org/simplefin' : null
+      ));
+      this.setAddonSecret = vi.fn(async () => {});
+      this.getAccounts = vi.fn(async () => []);
+    });
+
+    await runCompanionSync();
+
+    const instance = (vi.mocked(WealthfolioClient as any).mock.instances.at(-1)) as any;
+    const call = instance.setAddonSecret.mock.calls.find((c: any[]) => c[1] === 'report_cube');
+    expect(call).toBeTruthy();
+    expect(JSON.parse(call[2]).version).toBe(1);
   });
 });
