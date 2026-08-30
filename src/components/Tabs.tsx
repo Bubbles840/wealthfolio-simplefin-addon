@@ -1,6 +1,6 @@
 import React, { useRef } from 'react';
 
-export type TabId = 'overview' | 'notifications' | 'advanced';
+export type TabId = 'budget' | 'overview' | 'notifications' | 'advanced';
 
 /**
  * A real tablist, not styled buttons: role/aria-selected/roving tabindex and

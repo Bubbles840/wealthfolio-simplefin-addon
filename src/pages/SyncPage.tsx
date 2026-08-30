@@ -7,6 +7,7 @@ import { fetchAccounts } from '../utils/simplefin';
 import { SyncStatus } from '../components/SyncStatus';
 import { Button, ErrorBox } from '../components/ui';
 import { TabBar, type TabId } from '../components/Tabs';
+import { BudgetTab } from '../tabs/BudgetTab';
 import { OverviewTab } from '../tabs/OverviewTab';
 import { NotificationsTab, useTelegramDraft } from '../tabs/NotificationsTab';
 import { AdvancedTab } from '../tabs/AdvancedTab';
@@ -19,6 +20,10 @@ import { pruneDismissals, mergeDismissals, type DismissalLedger } from '../../sh
 /** Outside the component: a fresh literal each render would be a new `TabBar`
  *  prop identity for nothing. */
 const TABS: Array<{ id: TabId; label: string }> = [
+  // Budget leads: the reports are the daily-use surface, the rest is plumbing
+  // you visit when something needs attention (decided with the user,
+  // 2026-08-30 — see the Budget tab spec).
+  { id: 'budget', label: 'Budget' },
   { id: 'overview', label: 'Overview' },
   { id: 'notifications', label: 'Notifications' },
   { id: 'advanced', label: 'Advanced' },
@@ -71,7 +76,7 @@ interface Props {
  * unsaved drafts (`useTelegramDraft`, `useAmazonDraft`).
  */
 export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
-  const [activeTab, setActiveTab] = useState<TabId>('overview');
+  const [activeTab, setActiveTab] = useState<TabId>('budget');
   const [lastSyncAt, setLastSyncAt] = useState<Date | null>(null);
   const [imported, setImported] = useState<number | null>(null);
   const [syncing, setSyncing] = useState(false);
@@ -114,6 +119,16 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
   // lifecycle as `uncategorized`: loaded here, refreshed on the same path.
   const [poolStatus, setPoolStatus] = useState<
     Awaited<ReturnType<SecretsStore['getPoolStatus']>>
+  >(null);
+  // The Budget tab's three inputs, loaded on the same refresh path.
+  const [reportCube, setReportCube] = useState<
+    Awaited<ReturnType<SecretsStore['getReportCube']>>
+  >(null);
+  const [customReports, setCustomReportsState] = useState<
+    Awaited<ReturnType<SecretsStore['getCustomReports']>>
+  >([]);
+  const [budgetLayout, setBudgetLayoutState] = useState<
+    Awaited<ReturnType<SecretsStore['getBudgetLayout']>>
   >(null);
   // Which uncategorized rows the user has dismissed. Lives HERE, not in
   // OverviewTab: `TabPanel` truly unmounts an inactive tab, and a dismissal held
@@ -200,11 +215,17 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
       // Optional-called like the draft loads above: an older store without the
       // method must not take the whole refresh down.
       store.getPoolStatus?.() ?? null,
+      store.getReportCube?.() ?? null,
+      store.getCustomReports?.() ?? [],
+      store.getBudgetLayout?.() ?? null,
     ])
-      .then(([status, ledger, pool]) => {
+      .then(([status, ledger, pool, cube, reports, layoutStored]) => {
         setUncategorized(status);
         setDismissals(ledger);
         setPoolStatus(pool ?? null);
+        setReportCube(cube ?? null);
+        setCustomReportsState(reports ?? []);
+        setBudgetLayoutState(layoutStored ?? null);
       })
       .catch(() => {});
   }, [store]);
@@ -224,6 +245,17 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
       ))
       .catch(() => {});
   }, [store, dismissals]);
+
+  // Budget-tab writers: optimistic state plus a guarded persist, like every
+  // other setting on this page.
+  const onBudgetLayoutChange = useCallback((next: NonNullable<Awaited<ReturnType<SecretsStore['getBudgetLayout']>>>) => {
+    setBudgetLayoutState(next);
+    store.setBudgetLayout?.(next)?.catch(() => {});
+  }, [store]);
+  const onCustomReportsChange = useCallback((next: Awaited<ReturnType<SecretsStore['getCustomReports']>>) => {
+    setCustomReportsState(next);
+    store.setCustomReports?.(next)?.catch(() => {});
+  }, [store]);
 
   /** Re-read everything the COMPANION can change behind this page's back. The
    *  page used to render once, so a tab left open froze at what it read on mount.
@@ -266,7 +298,7 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
   // that changes them (Notifications saving a token, Advanced saving Amazon
   // credentials) has just unmounted, so nothing reported the change.
   useEffect(() => {
-    if (activeTab === 'overview') refreshDerivedSignals();
+    if (activeTab === 'overview' || activeTab === 'budget') refreshDerivedSignals();
   }, [activeTab, refreshDerivedSignals]);
 
   const clearError = useCallback(() => {
@@ -542,6 +574,17 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
 
       {/* Everything a daily visit is for — what needs attention, what is still
           unfinished, the headline numbers, the accounts. */}
+      <TabPanel tab="budget" active={activeTab}>
+        <BudgetTab
+          cube={reportCube}
+          customReports={customReports}
+          layout={budgetLayout}
+          onLayoutChange={onBudgetLayoutChange}
+          onCustomReportsChange={onCustomReportsChange}
+          store={store}
+        />
+      </TabPanel>
+
       <TabPanel tab="overview" active={activeTab}>
         <OverviewTab
           ctx={ctx}

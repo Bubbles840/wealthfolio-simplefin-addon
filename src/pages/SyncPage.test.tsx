@@ -211,19 +211,19 @@ describe('SyncPage', () => {
     ).toBe('true'));
   });
 
-  it('falls back to Overview when the stored tab is not one we can render', async () => {
+  it('falls back to the Budget default when the stored tab is not one we can render', async () => {
     // `ui_state` is an unvalidated stored blob that now decides what renders. A
-    // hand-edited secret — or a fourth tab written by a newer build the user then
+    // hand-edited secret — or a fifth tab written by a newer build the user then
     // downgrades away from — would otherwise select no tab and mount no panel:
-    // a blank page with no way back.
+    // a blank page with no way back. The default landing view is Budget.
     const props = makeProps();
     props.store.getUiState = vi.fn(async () => ({ activeTab: 'reports' }) as any);
     render(<SyncPage {...props} />);
 
-    expect(await screen.findByText('Accounts synced')).toBeTruthy();
-    expect(document.querySelector('#sfin-panel-overview')).toBeTruthy();
+    expect(await screen.findByRole('tab', { name: /budget/i })).toBeTruthy();
+    expect(document.querySelector('#sfin-panel-budget')).toBeTruthy();
     await waitFor(() => expect(
-      screen.getByRole('tab', { name: /overview/i }).getAttribute('aria-selected'),
+      screen.getByRole('tab', { name: /budget/i }).getAttribute('aria-selected'),
     ).toBe('true'));
     // Exactly one panel and exactly one selected tab — never zero of either.
     expect(document.querySelectorAll('[role="tabpanel"]')).toHaveLength(1);
@@ -449,6 +449,9 @@ describe('SyncPage', () => {
     props.store.getLastSyncImported = vi.fn(async () => 7) as any;
 
     render(<SyncPage {...props} />);
+    // The held mount load includes the stored tab, so the page sits on the
+    // Budget default until release — click over to Overview like a user.
+    fireEvent.click(await screen.findByRole('tab', { name: /overview/i }));
     fireEvent.click(await screen.findByRole('button', { name: /Dismiss setup checklist/i }));
     expect(screen.queryByText(/Finish setting up/i)).toBeNull();
 
