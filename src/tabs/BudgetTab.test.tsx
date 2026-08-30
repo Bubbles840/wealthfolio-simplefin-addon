@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
 import { SyncPage } from '../pages/SyncPage';
 import { CUBE } from '../../shared/report-cube.test';
@@ -18,7 +18,11 @@ vi.mock('recharts', () => {
   // Explicit exports, not a Proxy: vitest wraps factories in a static module
   // object, so dynamic gets cannot satisfy ReportView's named imports.
   const stub = (name: string) => (p: any) =>
-    React.createElement('div', { 'data-recharts': name }, p?.children ?? null);
+    React.createElement(
+      'div',
+      { 'data-recharts': name, 'data-points': p?.data ? JSON.stringify(p.data) : undefined },
+      p?.children ?? null,
+    );
   return {
     Area: stub('Area'), AreaChart: stub('AreaChart'), Bar: stub('Bar'), BarChart: stub('BarChart'),
     CartesianGrid: stub('CartesianGrid'), Cell: stub('Cell'), Line: stub('Line'),
@@ -143,5 +147,60 @@ describe('BudgetTab', () => {
     render(<SyncPage {...props} />);
     await waitFor(() => expect(reportIds().length).toBeGreaterThan(0));
     expect(screen.getByText(/as of/i)).toBeInTheDocument();
+  });
+});
+
+describe('drill-in and range', () => {
+  const freshCube = () => ({ ...CUBE, asOf: new Date().toISOString() });
+
+  /** N copies of the CUBE's July column, so range slicing is observable. */
+  const manyMonths = (n: number) => ({
+    ...freshCube(),
+    months: Array.from({ length: n }, (_, i) => `2026-${String(i + 1).padStart(2, '0')}`),
+    spend: Array.from({ length: n }, () => CUBE.spend[0]),
+    uncategorized: Array.from({ length: n }, () => CUBE.uncategorized[0]),
+    income: Array.from({ length: n }, () => CUBE.income[0]),
+    budgets: Array.from({ length: n }, () => CUBE.budgets[0]),
+    merchants: Array.from({ length: n }, () => [] as any[]),
+    feesInterest: Array.from({ length: n }, () => 0),
+    netWorth: Array.from({ length: n }, () => null),
+    liquid: Array.from({ length: n }, () => null),
+  });
+
+  it('opens a report full-screen from its card and comes back', async () => {
+    const props = makeProps();
+    (props.store as any).getReportCube = vi.fn(async () => freshCube());
+    render(<SyncPage {...props} />);
+    await waitFor(() => expect(reportIds().length).toBeGreaterThan(0));
+
+    fireEvent.click(screen.getByRole('button', { name: /open net worth/i }));
+    expect(document.querySelector('[data-full-report="net-worth"]')).toBeTruthy();
+    // The grid steps aside while a report is full-screen.
+    expect(screen.queryByRole('button', { name: /open cash flow/i })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: /back to all reports/i }));
+    await waitFor(() => expect(document.querySelector('[data-full-report]')).toBeNull());
+    expect(screen.getByRole('button', { name: /open cash flow/i })).toBeInTheDocument();
+  });
+
+  it('narrows the full-screen chart with the shared range control', async () => {
+    const props = makeProps();
+    (props.store as any).getReportCube = vi.fn(async () => manyMonths(8));
+    render(<SyncPage {...props} />);
+    await waitFor(() => expect(reportIds().length).toBeGreaterThan(0));
+
+    fireEvent.click(screen.getByRole('button', { name: /open cash flow/i }));
+    const chartData = () => JSON.parse(
+      document.querySelector('[data-full-report] [data-recharts="BarChart"]')!
+        .getAttribute('data-points') ?? '[]',
+    );
+    // Default range is 12 months — the whole 8-month cube.
+    await waitFor(() => expect(chartData()).toHaveLength(8));
+
+    fireEvent.click(screen.getByRole('button', { name: /^6 months$/i }));
+    await waitFor(() => expect(chartData()).toHaveLength(6));
+
+    fireEvent.click(screen.getByRole('button', { name: /^all$/i }));
+    await waitFor(() => expect(chartData()).toHaveLength(8));
   });
 });

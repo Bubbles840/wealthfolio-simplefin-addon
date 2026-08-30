@@ -60,3 +60,38 @@ describe('parseReportCube', () => {
     expect(parseReportCube(JSON.stringify({ ...CUBE, spend: [CUBE.spend[0]] }))).toBeNull();
   });
 });
+
+// Hoisted beside the tests it serves, matching the suite's mid-file pattern.
+import { sliceCubeMonths } from './report-cube.js';
+
+describe('sliceCubeMonths', () => {
+  it('keeps the last N months across every month-indexed series', () => {
+    const s = sliceCubeMonths(CUBE, 1);
+    expect(s.months).toEqual(['2026-08']);
+    expect(s.spend).toEqual([CUBE.spend[1]]);
+    expect(s.uncategorized).toEqual([CUBE.uncategorized[1]]);
+    expect(s.income).toEqual([CUBE.income[1]]);
+    expect(s.budgets).toEqual([CUBE.budgets[1]]);
+    expect(s.merchants).toEqual([[]]);
+    expect(s.feesInterest).toEqual([250]);
+    expect(s.netWorth).toEqual([null]);
+    expect(s.liquid).toEqual([410_000]);
+  });
+
+  it("'all' is the identity, and an oversized N is too", () => {
+    expect(sliceCubeMonths(CUBE, 'all')).toEqual(CUBE);
+    expect(sliceCubeMonths(CUBE, 24)).toEqual(CUBE);
+  });
+
+  it("'pool' keeps the pool's months, and the whole cube without a pool", () => {
+    expect(sliceCubeMonths(CUBE, 'pool')).toEqual(CUBE);
+    const pooled = {
+      ...CUBE,
+      pool: {
+        config: { amountCents: 1, startDate: '2026-08-01', endDate: '2026-08-31' },
+        daily: [],
+      },
+    };
+    expect(sliceCubeMonths(pooled, 'pool').months).toEqual(['2026-08']);
+  });
+});
