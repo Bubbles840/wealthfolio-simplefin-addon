@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.25.0] - 2026-08-25
+
+### Added
+
+- **Undo for dismissals, from Telegram.** Tapping *Dismiss* on an import
+  notice now turns that button into *↩ Undo*, and Undo turns it back — the
+  notice itself is the way back, so there is nothing new to find. A dismissal
+  used to be one tap with no recovery short of waiting ~60 days for the ledger
+  to forget it.
+- **`/dismissed`** lists what you dismissed recently, newest first, each with
+  its own Undo — for a notice that has scrolled out of reach, or one from
+  before this build.
+- **Spent figures once over budget**, under Notifications → Report content →
+  "Spent figures when over budget". The budget is a floor; above it most people
+  hold a second, harder number in their head, and `$329 over` says nothing
+  about how close that is. The over-budget headline now reads
+  `🚨 $297 over budget this month · $2,897 spent` (default: monthly total
+  only). *Total and each category* also appends each over-budget category's
+  own spend — opt-in, because several over categories become several extra
+  numbers. *Neither* keeps every line as it was. Nothing changes while under
+  budget.
+
 ## [1.24.1] - 2026-08-25
 
 ### Fixed

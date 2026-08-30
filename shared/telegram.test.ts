@@ -861,6 +861,48 @@ describe('formatDailySpendingDigest', () => {
     expect(r.remainingMonth).toBe(300);
   });
 
+  it('adds the month\'s total spend to the over-budget headline by default', () => {
+    // The budget is a floor; above it there is a harder number the user holds
+    // in their head, and "$329 over" says nothing about how close that is.
+    // Total = budgeted spend + whatever the headline already counts off
+    // budget, so "spent" and "over" never describe different transactions.
+    const cats = [
+      { name: 'Shopping', budget: 100, monthSpent: 429, weekSpent: 40 },
+      { name: 'Groceries', budget: 300, monthSpent: 200, weekSpent: 20 },
+      { name: 'Education', budget: 0, monthSpent: 68, weekSpent: 0 },
+    ];
+    const text = dailyGlyphs(cats, period);
+    // 400 budget - 629 spent - 68 off budget = 297 over; 629 + 68 = 697 spent.
+    expect(text).toContain('🚨 $297 over budget this month · $697 spent');
+    // Per-category stays as it was unless opted in.
+    expect(text).toContain('🚨 *$329 over* for the month');
+  });
+
+  it('adds each over-budget category\'s own spend only when asked', () => {
+    const cats = [
+      { name: 'Shopping', budget: 100, monthSpent: 429, weekSpent: 40 },
+      { name: 'Groceries', budget: 300, monthSpent: 200, weekSpent: 20 },
+    ];
+    const text = formatDailySpendingDigest(cats, period, GLYPHS, 'rollup', true, undefined, true, 'all');
+    expect(text).toContain('🚨 *$329 over* · $429 spent');
+    // An UNDER-budget category gains nothing — this is about being over.
+    expect(/Groceries.*spent/.test(text)).toBe(false);
+  });
+
+  it('adds no spent figures at all when switched off', () => {
+    const cats = [{ name: 'Shopping', budget: 100, monthSpent: 429, weekSpent: 40 }];
+    const text = formatDailySpendingDigest(cats, period, GLYPHS, 'rollup', true, undefined, true, 'none');
+    expect(text).not.toContain('spent');
+  });
+
+  it('shows no spent figure while under budget', () => {
+    // "Spent" is the over-budget question. Under budget the headline already
+    // carries the number that matters, and this must not become one more.
+    const text = dailyGlyphs([{ name: 'Groceries', budget: 300, monthSpent: 100, weekSpent: 20 }], period);
+    expect(text).toContain('left this month');
+    expect(text).not.toContain('spent');
+  });
+
   it('never lets a line promise more than the pool holds, on any branch', () => {
     // The invariant 1.21.0 was supposed to establish, stated directly rather
     // than per-branch — which is how the `left mo` clause slipped through: the
@@ -953,7 +995,9 @@ describe('formatDailySpendingDigest', () => {
     const text = dailyGlyphs(overBudgetMonth, endOfMonth);
     expect(text).not.toContain('left this month');
     expect(text).not.toContain('💰');
-    expect(text).toContain('🚨 $1,494 over budget this month · 3 days to go');
+    // The spent figure now sits between the two; the assertion is about the
+    // sign wording and the tail surviving, not about the exact middle.
+    expect(text).toMatch(/🚨 \$1,494 over budget this month · \$[\d,]+ spent · 3 days to go/);
   });
 
   it('keeps the days-to-go tail on the over-budget summary — it is useful either way', () => {
@@ -961,7 +1005,7 @@ describe('formatDailySpendingDigest', () => {
       [{ name: 'Dining', budget: 300, monthSpent: 500, weekSpent: 100 }],
       { daysFromWeekStartToMonthEnd: 1, daysLeftInMonthInclusive: 1 },
     );
-    expect(text).toContain('🚨 $200 over budget this month · 1 day to go');
+    expect(text).toContain('🚨 $200 over budget this month · $500 spent · 1 day to go');
   });
 
   it('never says "left this month" for a total that is really negative', () => {

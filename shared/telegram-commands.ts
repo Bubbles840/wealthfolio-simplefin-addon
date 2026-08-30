@@ -55,6 +55,7 @@ export const TELEGRAM_COMMAND_MENU = [
   // does not know about it scrolls 90 days of history by hand.
   { command: 'recategorize', description: 'Move a filed transaction — /recategorize venmo narrows it' },
   { command: 'newrule', description: 'Always file a match — /newrule trader joes = groceries' },
+  { command: 'dismissed', description: 'What you dismissed lately, with Undo' },
   { command: 'help', description: 'This list' },
 ] as const;
 

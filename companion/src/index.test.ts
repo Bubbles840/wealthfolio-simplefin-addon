@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { maskUrl, validateStartupEnv, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, runCompanionSyncExclusive, buildTelegramCommandHandler, applyTelegramDismissal, buildTelegramListenerDeps, buildCategorizeController, buildCategorizeDeps, rememberImportScope, sendUnmappedAccountsNotice } from './index.js';
+import { maskUrl, validateStartupEnv, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, runCompanionSyncExclusive, buildTelegramCommandHandler, applyTelegramDismissal, undoTelegramDismissal, formatDismissedReply, buildTelegramListenerDeps, buildCategorizeController, buildCategorizeDeps, rememberImportScope, sendUnmappedAccountsNotice } from './index.js';
 import { formatHelpReply, parseCommand } from '../../shared/telegram-commands.js';
 import { SIMPLEFIN_SYNC_VERSION } from '../../shared/version.js';
 import { runSyncCore } from '../../shared/sync-core.js';
@@ -1349,6 +1349,30 @@ describe('sendDailyTelegramReport', () => {
     });
   }));
 
+  it('carries the over-budget spent setting from the addon into the digest', async () => {
+    // Mocked Dining is 550 of 500, so the month is over and the setting has
+    // something to act on.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 6, 14, 9, 0, 0));
+    try {
+      const secrets = new Map<string, string>();
+      secrets.set('telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true }));
+      secrets.set('over_budget_spent', 'all');
+      const client = {
+        getAddonSecret: vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null),
+        setAddonSecret: vi.fn(async () => {}),
+      } as any;
+      const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+      vi.stubGlobal('fetch', fetchMock);
+
+      await sendDailyTelegramReport(client);
+      const text = JSON.parse((fetchMock.mock.calls[0][1] as any).body).text;
+      expect(text).toContain('over* · $550 spent');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('carries the weekly-capping opt-out from the addon into the digest', async () => {
     // The setting lives in the addon's UI but is applied by the companion, so
     // the only thing that proves it works is the key crossing that boundary.
@@ -2155,6 +2179,112 @@ describe('buildTelegramListenerDeps', () => {
   it('uses a sleep that cannot reject', async () => {
     const deps = buildTelegramListenerDeps(clientWith(async () => null));
     await expect(deps.sleep(1)).resolves.toBeUndefined();
+  });
+});
+
+describe('undoTelegramDismissal', () => {
+  it('removes only the tapped id, merging against a fresh re-read', async () => {
+    // The mirror of the 1.10.1 test above: an undo is an id-REMOVAL delta, and
+    // it must not take a dismissal the other writer made in between down with
+    // it. A whole-object write of the stale snapshot minus one id would.
+    const secrets = new Map<string, string>([
+      ['uncategorized_dismissals', JSON.stringify({
+        'act-1': '2026-08-09T00:00:00.000Z', 'act-2': '2026-08-10T00:00:00.000Z',
+      })],
+    ]);
+    let ledgerReads = 0;
+    const client: any = {
+      getAddonSecret: vi.fn(async (_a: string, k: string) => {
+        if (k !== 'uncategorized_dismissals') return secrets.get(k) ?? null;
+        ledgerReads += 1;
+        const current = secrets.get(k)!;
+        if (ledgerReads === 1) {
+          secrets.set(k, JSON.stringify({ ...JSON.parse(current), 'act-addon': new Date().toISOString() }));
+          return current;
+        }
+        return secrets.get(k)!;
+      }),
+      setAddonSecret: vi.fn(async (_a: string, k: string, v: string) => { secrets.set(k, v); }),
+    };
+
+    await undoTelegramDismissal(client, 'act-1');
+
+    const written = JSON.parse(secrets.get('uncategorized_dismissals')!);
+    expect(Object.keys(written).sort()).toEqual(['act-2', 'act-addon']);
+  });
+
+  it('writes nothing when the id was never dismissed', async () => {
+    // A doubled tap, or Undo on a row the addon already restored. Idempotent,
+    // and silent: there is nothing to confirm.
+    const secrets = new Map<string, string>([
+      ['uncategorized_dismissals', JSON.stringify({ 'act-1': '2026-08-09T00:00:00.000Z' })],
+    ]);
+    const client: any = {
+      getAddonSecret: vi.fn(async (_a: string, k: string) => secrets.get(k) ?? null),
+      setAddonSecret: vi.fn(async () => {}),
+    };
+    await undoTelegramDismissal(client, 'act-nope');
+    expect(client.setAddonSecret).not.toHaveBeenCalled();
+  });
+});
+
+describe('/dismissed', () => {
+  const rows = [
+    { activityId: 'a1', notes: 'Frame It Easy · TRN-1', amountCents: 8889, date: '2026-08-24', accountName: 'Robinhood' },
+    { activityId: 'a2', notes: 'The Post · TRN-2', amountCents: 10574, date: '2026-08-22', accountName: 'Robinhood' },
+  ];
+
+  it('lists only rows the ledger holds, newest dismissal first, each with an Undo button', async () => {
+    // The button-swap undo lives on the notice that was tapped; a notice that
+    // has scrolled away has no way back. This is that way back.
+    vi.mocked(getNativeUncategorizedSpending).mockReturnValueOnce(rows as any);
+    const secrets = new Map<string, string>([
+      ['uncategorized_dismissals', JSON.stringify({
+        a1: '2026-08-24T10:00:00.000Z', a2: '2026-08-25T10:00:00.000Z',
+      })],
+    ]);
+    const client: any = {
+      getAddonSecret: vi.fn(async (_a: string, k: string) => secrets.get(k) ?? null),
+      setAddonSecret: vi.fn(async () => {}),
+    };
+    const sent: Array<{ text: string; keyboard?: any }> = [];
+    await buildTelegramCommandHandler(client)(
+      { command: 'dismissed', args: '' },
+      async (text: string, keyboard?: any) => { sent.push({ text, keyboard }); },
+    );
+    expect(sent).toHaveLength(1);
+    expect(sent[0].text).toContain('*2 dismissed*');
+    const buttons = sent[0].keyboard.inline_keyboard.flat();
+    // a2 was dismissed later, so it comes first — the most likely slip.
+    expect(buttons.map((b: any) => b.callback_data)).toEqual(['u:a2', 'u:a1']);
+    expect(buttons[0].text).toContain('↩ Undo: The Post');
+    for (const b of buttons) expect(Buffer.byteLength(b.callback_data)).toBeLessThanOrEqual(64);
+  });
+
+  it('says so plainly when nothing is dismissed', async () => {
+    vi.mocked(getNativeUncategorizedSpending).mockReturnValueOnce(rows as any);
+    const client: any = {
+      getAddonSecret: vi.fn(async () => null),
+      setAddonSecret: vi.fn(async () => {}),
+    };
+    const sent: Array<{ text: string; keyboard?: any }> = [];
+    await buildTelegramCommandHandler(client)(
+      { command: 'dismissed', args: '' },
+      async (text: string, keyboard?: any) => { sent.push({ text, keyboard }); },
+    );
+    expect(sent[0].text).toContain('Nothing dismissed');
+    expect(sent[0].keyboard).toBeUndefined();
+  });
+
+  it('formats an empty list without a keyboard and a full one with the row cap', () => {
+    expect(formatDismissedReply([]).keyboard).toBeUndefined();
+    const many = Array.from({ length: 12 }, (_, i) => ({
+      activityId: `id-${i}`, description: `Row ${i}`, amountCents: 100, date: '2026-08-20', accountName: 'X',
+    }));
+    const out = formatDismissedReply(many);
+    expect(out.text).toContain('*12 dismissed*');
+    expect(out.text).toContain('more');
+    expect(out.keyboard!.inline_keyboard.length).toBeLessThan(12);
   });
 });
 

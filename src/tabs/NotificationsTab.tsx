@@ -60,6 +60,7 @@ export interface TelegramCfgDraft {
   subcategoryDisplay: 'rollup' | 'breakdown';
   countOffBudget: boolean;
   capWeeklyToPool: boolean;
+  overBudgetSpent: 'total' | 'all' | 'none';
 }
 
 /**
@@ -186,6 +187,7 @@ const EMPTY_DRAFT: TelegramCfgDraft = {
   countOffBudget: true,
   // Also default ON, also stored as an opt-OUT.
   capWeeklyToPool: true,
+  overBudgetSpent: 'total',
 };
 
 /** Fills a draft from the stored secret. A stored number is authoritative;
@@ -197,6 +199,7 @@ function draftFromStored(
   subcategoryDisplay: 'rollup' | 'breakdown',
   countOffBudget: boolean,
   capWeeklyToPool: boolean,
+  overBudgetSpent: 'total' | 'all' | 'none',
 ): TelegramCfgDraft {
   const base: TelegramCfgDraft = {
     ...EMPTY_DRAFT,
@@ -205,6 +208,7 @@ function draftFromStored(
     subcategoryDisplay,
     countOffBudget,
     capWeeklyToPool,
+    overBudgetSpent,
   };
   if (!tg) return base;
 
@@ -293,8 +297,9 @@ export function useTelegramDraft(store: SecretsStore): TelegramDraftState {
       // down over one setting. `true` is the default either way.
       store.getCountOffBudget?.() ?? true,
       store.getCapWeeklyToPool?.() ?? true,
-    ]).then(([tg, glyph, subcat, offBudget, capWeekly]) => {
-      const loaded = draftFromStored(tg, glyph, subcat, offBudget, capWeekly);
+      store.getOverBudgetSpent?.() ?? 'total',
+    ]).then(([tg, glyph, subcat, offBudget, capWeekly, overSpent]) => {
+      const loaded = draftFromStored(tg, glyph, subcat, offBudget, capWeekly, overSpent);
       setCfg(loaded);
       setSavedCfg(loaded);
     }).catch(() => {});
@@ -329,6 +334,9 @@ export function useTelegramDraft(store: SecretsStore): TelegramDraftState {
     }
     if ('capWeeklyToPool' in patch) {
       store.setCapWeeklyToPool?.(next.capWeeklyToPool)?.catch(() => {});
+    }
+    if ('overBudgetSpent' in patch) {
+      store.setOverBudgetSpent?.(next.overBudgetSpent)?.catch(() => {});
     }
   }, [cfg, store]);
 

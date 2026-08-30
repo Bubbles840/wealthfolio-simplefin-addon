@@ -15,6 +15,8 @@ import { RestSyncHost, RestSyncStore } from './rest-host.js';
 import { WealthfolioClient } from './wealthfolio.js';
 import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatMonthlyWrapUp, formatSyncHealthFooter, formatLargeTransactionAlert, formatBalanceDriftAlert, formatFeedLagNotice, formatStuckTransferAlert, formatDuplicatePruneAlert, formatImportNotice, formatRefusedCreatesAlert, buildDismissKeyboard, IMPORT_NOTICE_UNCATEGORIZED_CAP, escapeMarkdown, LARGE_TX_OUTBOX_SECRET_KEY, RECATEGORIZE_ENTRY_CALLBACK } from '../../shared/telegram.js';
 import { pruneDismissals, mergeDismissals } from './dismissals.js';
+import { UNDISMISS_PAYLOAD_PREFIX, UNDISMISS_BUTTON_TEXT_PREFIX } from './telegram-listener.js';
+import { DISMISSAL_MAX_AGE_DAYS } from '../../shared/uncategorized.js';
 
 /**
  * The ONE default for where Wealthfolio's SQLite file lives.
@@ -43,7 +45,7 @@ import type { TelegramListenerDeps } from './telegram-listener.js';
 import { createImapSource, ingestAmazonMail, amazonMailConfigured } from './amazon-mail.js';
 import { AMAZON_CONFIG_SECRET_KEY, AMAZON_LABELS_SECRET_KEY } from './amazon-mail.js';
 import type { AmazonIngestResult, AmazonMailConfig, MailSource } from './amazon-mail.js';
-import { DEFAULT_GLYPH_STYLE } from '../../shared/telegram.js';
+import { DEFAULT_GLYPH_STYLE, money } from '../../shared/telegram.js';
 import type { GlyphStyle, InlineKeyboard } from '../../shared/telegram.js';
 import type { DismissalLedger } from './dismissals.js';
 import type { SyncHealth } from '../../shared/telegram.js';
@@ -1335,6 +1337,15 @@ async function readCapWeeklyToPool(wfClient: WealthfolioClient): Promise<boolean
   return raw !== 'off';
 }
 
+/** Mirrors the addon's `getOverBudgetSpent`: anything unrecognised is the
+ *  default, so a newer addon can never break an older companion. */
+async function readOverBudgetSpent(wfClient: WealthfolioClient): Promise<'total' | 'all' | 'none'> {
+  const raw = await wfClient
+    .getAddonSecret('simplefin-sync', 'over_budget_spent')
+    .catch(() => null);
+  return raw === 'all' || raw === 'none' ? raw : 'total';
+}
+
 async function readCountOffBudget(wfClient: WealthfolioClient): Promise<boolean> {
   const raw = await wfClient
     .getAddonSecret('simplefin-sync', 'count_off_budget')
@@ -1530,6 +1541,7 @@ export async function composeDailyDigestMessage(
     categories, period, await readGlyphStyle(wfClient), subcategoryDisplay,
     await readCountOffBudget(wfClient), uncategorizedSpend,
     await readCapWeeklyToPool(wfClient),
+    await readOverBudgetSpent(wfClient),
   );
 
   // Read so that an unreadable secret stays DISTINGUISHABLE from a missing
@@ -1831,6 +1843,57 @@ export async function applyTelegramDismissal(
   const base = await readLedger();
   if (activityId in base) return;
   await writeLedgerMerged(base, { ...base, [activityId]: new Date().toISOString() });
+}
+
+/** The inverse of `applyTelegramDismissal`, through the same merge: an
+ *  id-removal delta, which `mergeDismissals` was already built to carry for
+ *  the `/categorize` menu's Undo. Idempotent — undoing something not dismissed
+ *  is a no-op, not an error, because a doubled tap must not write anything. */
+export async function undoTelegramDismissal(
+  wfClient: WealthfolioClient,
+  activityId: string,
+): Promise<void> {
+  const { readLedger, writeLedgerMerged } = dismissalLedgerAccess(wfClient);
+  const base = await readLedger();
+  if (!(activityId in base)) return;
+  const next = { ...base };
+  delete next[activityId];
+  await writeLedgerMerged(base, next);
+}
+
+/**
+ * `/dismissed`: what the ledger holds, as rows with an Undo button each.
+ *
+ * The other half of the button-swap undo: that one lives on the notice you
+ * tapped, and a notice scrolled out of reach — or one from before this build —
+ * has no way back. This lists the same rows from the ledger, over the ledger's
+ * own retention window, so nothing dismissed is ever unreachable.
+ *
+ * Rows are drawn from the uncategorized listing (which is what dismissal
+ * hides), so a dismissed row that has since been FILED no longer appears here:
+ * it is no longer hidden by the dismissal, and restoring it would be a no-op
+ * the user could not see.
+ */
+export function formatDismissedReply(
+  rows: Array<{ activityId: string; description: string; amountCents: number; date: string; accountName: string }>,
+): { text: string; keyboard?: InlineKeyboard } {
+  if (rows.length === 0) {
+    return { text: `Nothing dismissed in the last ${DISMISSAL_MAX_AGE_DAYS} days.` };
+  }
+  const shown = rows.slice(0, IMPORT_NOTICE_UNCATEGORIZED_CAP);
+  const lines = shown.map((r) =>
+    `• ${money(r.amountCents / 100)}  ${escapeMarkdown(r.description)} · ${escapeMarkdown(r.date.slice(5, 10))} — ${escapeMarkdown(r.accountName)}`);
+  if (rows.length > shown.length) lines.push(`  +${rows.length - shown.length} more`);
+  const head = `*${rows.length} dismissed* — tap one to bring it back`;
+  return {
+    text: `${head}\n${lines.join('\n')}`,
+    keyboard: {
+      inline_keyboard: shown.map((r) => [{
+        text: `${UNDISMISS_BUTTON_TEXT_PREFIX}${r.description.slice(0, 24)} ${money(r.amountCents / 100)}`,
+        callback_data: `${UNDISMISS_PAYLOAD_PREFIX}${r.activityId}`,
+      }]),
+    },
+  };
 }
 
 /**
@@ -2248,6 +2311,28 @@ export function buildTelegramCommandHandler(
         await reply(formatStatusReply(await readStatusReplyInput(wfClient), new Date()));
         return;
 
+      case 'dismissed': {
+        const { readLedger } = dismissalLedgerAccess(wfClient);
+        const ledger = await readLedger().catch(() => ({} as DismissalLedger));
+        const now = Date.now();
+        const rows = getNativeUncategorizedSpending(
+          wealthfolioDbPath(),
+          toDateString(new Date(now - DISMISSAL_MAX_AGE_DAYS * 86400_000)),
+          toDateString(new Date(now + 86400_000)),
+        )
+          .filter((r) => r.activityId in ledger)
+          // Most recently dismissed first: that is the one most likely to have
+          // been a slip.
+          .sort((a, b) => Date.parse(ledger[b.activityId]) - Date.parse(ledger[a.activityId]))
+          .map((r) => ({
+            activityId: r.activityId, description: descriptionFromComment(r.notes) || r.notes,
+            amountCents: r.amountCents, date: r.date, accountName: r.accountName,
+          }));
+        const out = formatDismissedReply(rows);
+        await reply(out.text, out.keyboard);
+        return;
+      }
+
       case 'categorize':
         // `reply` carries the keyboard now (Task 3's optional second argument),
         // so the menu arrives as a tappable message rather than a list of things
@@ -2527,6 +2612,7 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
       await wfClient.setAddonSecret('simplefin-sync', 'telegram_update_offset', String(n));
     },
     applyDismissal: (activityId) => applyTelegramDismissal(wfClient, activityId),
+    undoDismissal: (activityId) => undoTelegramDismissal(wfClient, activityId),
     onCommand: buildTelegramCommandHandler(wfClient, categorize),
     // Every `cz:` tap, including the import notice's `Categorize these` (which
     // the controller special-cases into a FRESH message — the notice is not the

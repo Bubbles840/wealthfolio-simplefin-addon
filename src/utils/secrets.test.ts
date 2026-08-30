@@ -43,6 +43,19 @@ describe('SecretsStore', () => {
     expect(await s.getCapWeeklyToPool()).toBe(true);
   });
 
+  it('defaults the over-budget spent figures to the monthly total, under the key the companion reads', async () => {
+    const { ctx, data } = makeCtxWithData();
+    const s = new SecretsStore(ctx);
+    expect(await s.getOverBudgetSpent()).toBe('total');
+    await s.setOverBudgetSpent('all');
+    expect(data['over_budget_spent']).toBe('all');
+    expect(await s.getOverBudgetSpent()).toBe('all');
+    // A value this build does not know reads as the default, never as a crash
+    // or a surprise mode — a newer addon must not break an older one.
+    data['over_budget_spent'] = 'something-from-the-future';
+    expect(await s.getOverBudgetSpent()).toBe('total');
+  });
+
   it('roundtrips access URL', async () => {
     const ctx = makeCtx();
     const s = new SecretsStore(ctx);
