@@ -204,3 +204,65 @@ describe('drill-in and range', () => {
     await waitFor(() => expect(chartData()).toHaveLength(8));
   });
 });
+
+describe('customize mode', () => {
+  const freshProps = () => {
+    const props = makeProps();
+    (props.store as any).getReportCube = vi.fn(async () => ({ ...CUBE, asOf: new Date().toISOString() }));
+    return props;
+  };
+  const enterCustomize = async () => {
+    await waitFor(() => expect(reportIds().length).toBeGreaterThan(0));
+    fireEvent.click(screen.getByRole('button', { name: /^customize$/i }));
+  };
+
+  it('toggles per-card controls, and cards stop opening while editing', async () => {
+    render(<SyncPage {...freshProps()} />);
+    await enterCustomize();
+    expect(screen.getByRole('button', { name: /pin cash flow/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /move net worth down/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /hide merchants/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /open cash flow/i })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /done customizing/i }));
+    expect(screen.queryByRole('button', { name: /pin cash flow/i })).toBeNull();
+    expect(screen.getByRole('button', { name: /open cash flow/i })).toBeInTheDocument();
+  });
+
+  it('pinning a third hero bumps the oldest to the grid front and persists', async () => {
+    const props = freshProps();
+    render(<SyncPage {...props} />);
+    await enterCustomize();
+    fireEvent.click(screen.getByRole('button', { name: /pin net worth/i }));
+    await waitFor(() => {
+      const ids = reportIds();
+      expect(ids.slice(0, 2)).toEqual(['category-trends', 'net-worth']);
+      expect(ids[2]).toBe('cash-flow'); // the bumped hero lands up front, visible
+    });
+    const saved = (props.store as any).setBudgetLayout.mock.calls.at(-1)![0];
+    expect(saved.heroes).toEqual(['category-trends', 'net-worth']);
+    expect(saved.order[0]).toBe('cash-flow');
+  });
+
+  it('move down swaps a card with its neighbor', async () => {
+    const props = freshProps();
+    render(<SyncPage {...props} />);
+    await enterCustomize();
+    // Grid starts net-worth, savings-rate (after the two heroes).
+    fireEvent.click(screen.getByRole('button', { name: /move net worth down/i }));
+    await waitFor(() => expect(reportIds()[2]).toBe('savings-rate'));
+    expect((props.store as any).setBudgetLayout).toHaveBeenCalled();
+  });
+
+  it('hide collects the card in a recoverable hidden row', async () => {
+    const props = freshProps();
+    render(<SyncPage {...props} />);
+    await enterCustomize();
+    fireEvent.click(screen.getByRole('button', { name: /hide merchants/i }));
+    await waitFor(() => expect(reportIds()).not.toContain('merchants'));
+    expect(screen.getByText(/^hidden$/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /unhide merchants/i }));
+    await waitFor(() => expect(reportIds()).toContain('merchants'));
+    const saved = (props.store as any).setBudgetLayout.mock.calls.at(-1)![0];
+    expect(saved.hidden).toEqual([]);
+  });
+});
