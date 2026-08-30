@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { inTransitPlaceholderFields } from '../../shared/sync-core.js';
+import { neutralAdjustmentFields } from '../../shared/sync-core.js';
 import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending,
   getNativeUncategorizedSpendingTotal, getNativeUncategorizedSpending, getNativeCategoryCatalog, getNativeSubcategorySpending, getNativeSpendingCategories, getNativeCategorizedSpending } from './sqlite-native.js';
 import { DatabaseSync } from 'node:sqlite';
@@ -1111,7 +1111,7 @@ describe('in-transit placeholder shapes against the spending classifier', () => 
       db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, account_id)
                VALUES ('control', '-50', '2026-08-20', 'WITHDRAWAL', '${acct}')`);
       db.exec(`INSERT INTO activity_taxonomy_assignments (activity_id, category_id) VALUES ('control', 'cat-g')`);
-      const shape = inTransitPlaceholderFields(accountType, signed);
+      const shape = neutralAdjustmentFields(accountType, signed);
       db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, account_id)
                VALUES ('ph', '${shape.amount}', '2026-08-21', '${shape.activityType}', '${acct}')`);
       db.exec(`INSERT INTO activity_taxonomy_assignments (activity_id, category_id) VALUES ('ph', 'cat-g')`);

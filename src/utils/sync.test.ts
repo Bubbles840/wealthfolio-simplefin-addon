@@ -1189,12 +1189,16 @@ describe('neutralAdjustmentFields', () => {
     expect(result.amount - result.fee).toBeCloseTo(-2635.26);
   });
 
-  it('CREDIT_CARD: uses the CASH-shaped CREDIT, because the API rejects DEPOSIT on a card', () => {
-    // This test previously pinned DEPOSIT/WITHDRAWAL, encoding an assumption
-    // Wealthfolio does not share: it rejects the type outright with "DEPOSIT
-    // activities are not supported for credit card accounts" (live, 2026-08-07).
+  it('CREDIT_CARD: TRANSFER_IN for an inflow, the CASH-shaped CREDIT split for an outflow', () => {
+    // This test has pinned two wrong shapes in its life. DEPOSIT, which the
+    // API rejects on a card ("not supported for credit card accounts", live
+    // 2026-08-07); then CREDIT, which the API accepts but Wealthfolio
+    // classifies as an expense refund on a card, subtype irrelevant — a
+    // $429.71 payment placeholder showed the day as −$400.51 (live,
+    // 2026-08-27). TRANSFER_IN is Ignored, accepted, and verified live on the
+    // import endpoint (2026-08-30) to land as real cash.
     expect(neutralAdjustmentFields('CREDIT_CARD', 40)).toEqual({
-      activityType: 'CREDIT', amount: 40, fee: 0,
+      activityType: 'TRANSFER_IN', amount: 40, fee: 0,
     });
     expect(neutralAdjustmentFields('CREDIT_CARD', -40)).toEqual({
       activityType: 'CREDIT', amount: 0, fee: 40,

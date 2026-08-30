@@ -919,53 +919,6 @@ async function fetchExistingRows(
 }
 
 /**
- * Wealthfolio classifies spending/income by activity type + account type, with
- * no per-activity budget-exclusion field reachable from the addon SDK. On a
- * CASH account, DEPOSIT counts as Income and WITHDRAWAL as Expense — so a
- * plain balance-adjustment plug would pollute the Spending page. A CREDIT
- * with no subtype classifies as Ignored there (neither spending nor income)
- * while still moving cash by `amount − fee − tax`, so it doubles as a
- * spending-neutral plug in both directions: `amount` to add cash, `fee` to
- * remove it. CREDIT_CARD/SECURITIES/CRYPTOCURRENCY don't have this problem
- * (DEPOSIT is already Ignored on a card, and every type is Ignored on
- * investment-style accounts), so they keep the simpler DEPOSIT/WITHDRAWAL
- * shape unchanged.
- */
-/**
- * The shape of an IN-TRANSIT PLACEHOLDER — a transfer leg waiting for its
- * counterpart — as opposed to a balance plug.
- *
- * Distinct from `neutralAdjustmentFields` because of one cell: money ARRIVING
- * AT A CREDIT CARD. The plug shape there is a bare CREDIT, and on a card
- * Wealthfolio classifies EVERY CREDIT as an expense refund — subtype
- * irrelevant (docs/upstream-spending-buckets.md §2). So the "neutral"
- * placeholder for a card payment counted as a refund of the whole payment
- * until the cash leg arrived: live on 2026-08-27, a $429.71 payment showed
- * the day's spending as −$400.51.
- *
- * A card inflow is booked as TRANSFER_IN instead: Ignored by the classifier
- * on a card, accepted by the API (every linked card payment already sits
- * there as one), the real amount visible, and exactly the type the row
- * becomes once it pairs. Transfer legs carry no symbol (see isTransferType).
- *
- * The plug path keeps `neutralAdjustmentFields` unchanged, on purpose: a plug
- * goes through the import endpoint with an explicit cash symbol, and a
- * TRANSFER type there has a known cash-asset quirk (upstream issue #5) that
- * cannot be verified from here. A positive heal plug on a card therefore
- * still reads as a refund — recorded as a known issue, not fixed blind.
- */
-export function inTransitPlaceholderFields(
-  accountType: string,
-  signedAmount: number,
-): { activityType: ActivityType; amount: number; fee: number } {
-  if (accountType === 'CREDIT_CARD' && signedAmount > 0) {
-    const mag = Math.abs(Math.round(signedAmount * 100) / 100);
-    return { activityType: 'TRANSFER_IN' as ActivityType, amount: mag, fee: 0 };
-  }
-  return neutralAdjustmentFields(accountType, signedAmount);
-}
-
-/**
  * What a solo transfer leg becomes once the in-transit window has passed and
  * no counterpart ever came: ordinary money in or out, in the type the account
  * accepts. A card refuses DEPOSIT outright (live, 2026-08-07), and a positive
@@ -979,23 +932,49 @@ export function expiredTransferLegType(accountType: string, signedAmount: number
   return (signedAmount >= 0 ? 'DEPOSIT' : 'WITHDRAWAL') as ActivityType;
 }
 
+/**
+ * The spending-neutral shape for money that must move a balance without
+ * being spending — an in-transit transfer placeholder, or a drift-heal plug.
+ *
+ * Wealthfolio classifies spending/income by activity type + account type, with
+ * no per-activity budget-exclusion field reachable from the addon SDK. On a
+ * CASH account, DEPOSIT counts as Income and WITHDRAWAL as Expense — so a
+ * plain plug would pollute the Spending page. A CREDIT with no subtype
+ * classifies as Ignored there (neither spending nor income) while still
+ * moving cash by `amount − fee − tax`, so it doubles as a spending-neutral
+ * plug in both directions: `amount` to add cash, `fee` to remove it.
+ *
+ * CREDIT_CARD is the cell with history. DEPOSIT is rejected outright by the
+ * API ("not supported for credit card accounts", live 2026-08-07). The fix
+ * then moved to CREDIT because it was ACCEPTED — but on a card Wealthfolio
+ * classifies EVERY CREDIT as an expense refund, subtype irrelevant
+ * (docs/upstream-spending-buckets.md §2), so an inflow placeholder counted
+ * as a refund of the whole payment: a $429.71 card payment showed the day's
+ * spending as −$400.51 (live, 2026-08-27). A card INFLOW is therefore
+ * TRANSFER_IN: Ignored by the classifier, accepted by the API, the real
+ * amount visible. A card outflow keeps the CREDIT/fee split, which is a $0
+ * refund and harmless.
+ *
+ * Verified live on the IMPORT endpoint too (2026-08-30, $0.05 probe on a
+ * real card, then deleted): TRANSFER_IN with `$CASH-USD` lands with
+ * `asset_id` null — the real-cash branch — and creates no phantom asset.
+ * The same endpoint REJECTS a row without a `symbol` field, so the plug must
+ * keep its cash symbol; upstream issue #5 (a literal "$CASH" security) is a
+ * /activities/bulk problem, and bulk transfer legs already carry no symbol.
+ *
+ * SECURITIES/CRYPTOCURRENCY keep the simpler DEPOSIT/WITHDRAWAL shape: every
+ * type is Ignored on an investment-style account.
+ */
 export function neutralAdjustmentFields(
   accountType: string,
   signedAmount: number,
 ): { activityType: ActivityType; amount: number; fee: number } {
   const mag = Math.abs(Math.round(signedAmount * 100) / 100);
-  // CREDIT_CARD shares CASH's shape, and NOT because of the spending classifier
-  // — because Wealthfolio's API rejects the type outright: "Invalid data: DEPOSIT
-  // activities are not supported for credit card accounts", hit live on
-  // 2026-08-07 by the in-transit placeholder for an AUTOPAY arriving at a Citi
-  // card. The old note here reasoned that DEPOSIT was safe on a card since the
-  // classifier already ignores it, which was true and beside the point: the row
-  // never reaches the classifier.
-  //
-  // CREDIT is demonstrably accepted on a card — Wealthfolio writes
-  // `Thankyou Points Redeemed` CREDIT rows to that same account — and the
-  // amount/fee split is how cash moves for any type (`amount − fee − tax`),
-  // which is what keeps the placeholder spending-neutral in both directions.
+  // See the doc comment for the card cell's history; the outflow split below
+  // is shared with CASH because a card CREDIT with amount 0 is a $0 refund.
+  if (accountType === 'CREDIT_CARD' && signedAmount > 0) {
+    return { activityType: 'TRANSFER_IN' as ActivityType, amount: mag, fee: 0 };
+  }
   if (accountType === 'CASH' || accountType === 'CREDIT_CARD') {
     return signedAmount > 0
       ? { activityType: 'CREDIT' as ActivityType, amount: mag, fee: 0 }
@@ -1359,7 +1338,7 @@ export async function runSyncCore(
         delete p.subtype;
         continue;
       }
-      const { activityType, fee } = inTransitPlaceholderFields(accountType, signed);
+      const { activityType, fee } = neutralAdjustmentFields(accountType, signed);
       p.type = activityType;
       p.feeCents = Math.round(fee * 100);
       p.inTransit = true;
