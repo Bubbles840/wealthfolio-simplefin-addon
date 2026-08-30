@@ -6,7 +6,8 @@ import { runwayTrendData, savingsRateData } from '../components/budget/report-da
 import {
   moveCard, pinHero, resolveBudgetLayout, STANDARD_REPORT_IDS, toggleHidden, type BudgetLayout,
 } from '../../shared/budget-layout';
-import type { CustomReport } from '../../shared/report-eval';
+import { newCustomReportId, type CustomReport } from '../../shared/report-eval';
+import { ReportBuilder } from '../components/budget/ReportBuilder';
 import type { SecretsStore } from '../utils/secrets';
 
 /**
@@ -46,10 +47,12 @@ const RANGES: Array<{ label: string; value: Range }> = [
   { label: 'All', value: 'all' },
 ];
 
-export function BudgetTab({ cube, customReports, layout, onLayoutChange }: BudgetTabProps) {
+export function BudgetTab({ cube, customReports, layout, onLayoutChange, onCustomReportsChange }: BudgetTabProps) {
   const [fullId, setFullId] = useState<string | null>(null);
   const [range, setRange] = useState<Range>(12);
   const [customizing, setCustomizing] = useState(false);
+  /** Non-null while the builder is open; `existing` null means a new report. */
+  const [builder, setBuilder] = useState<{ existing: CustomReport | null } | null>(null);
 
   if (!cube) {
     return (
@@ -79,6 +82,23 @@ export function BudgetTab({ cube, customReports, layout, onLayoutChange }: Budge
   const storedLayout: BudgetLayout = layout ?? {
     heroes: resolved.heroes, order: resolved.grid, hidden: resolved.hidden,
   };
+
+  if (builder) {
+    return (
+      <ReportBuilder
+        cube={cube}
+        existing={builder.existing}
+        onSave={(def) => {
+          const next = customReports.some((r) => r.id === def.id)
+            ? customReports.map((r) => (r.id === def.id ? def : r))
+            : [...customReports, def];
+          onCustomReportsChange(next);
+          setBuilder(null);
+        }}
+        onCancel={() => setBuilder(null)}
+      />
+    );
+  }
 
   const staleStrip = stale && (
     <div className="sfin-banner-warn">
@@ -122,8 +142,35 @@ export function BudgetTab({ cube, customReports, layout, onLayoutChange }: Budge
 
   const controls = (id: string, inGrid: boolean) => {
     const title = reportTitle(id, customReports);
+    const custom = id.startsWith('custom:')
+      ? customReports.find((r) => `custom:${r.id}` === id) ?? null
+      : null;
     return (
       <div className="sfin-banner-actions" style={{ marginTop: 4, flexWrap: 'wrap' }}>
+        {custom && (
+          <>
+            <Button variant="ghost" aria-label={`Edit ${title}`} onClick={() => setBuilder({ existing: custom })}>
+              Edit
+            </Button>
+            <Button
+              variant="ghost"
+              aria-label={`Duplicate ${title}`}
+              onClick={() => onCustomReportsChange([
+                ...customReports,
+                { ...custom, id: newCustomReportId(), name: `${custom.name} copy` },
+              ])}
+            >
+              Duplicate
+            </Button>
+            <Button
+              variant="ghost"
+              aria-label={`Delete ${title}`}
+              onClick={() => onCustomReportsChange(customReports.filter((r) => r.id !== custom.id))}
+            >
+              Delete
+            </Button>
+          </>
+        )}
         <Button variant="ghost" aria-label={`Pin ${title}`} onClick={() => onLayoutChange(pinHero(storedLayout, availableIds, id))}>
           📌 Pin
         </Button>
@@ -203,6 +250,17 @@ export function BudgetTab({ cube, customReports, layout, onLayoutChange }: Budge
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 12, marginTop: 12 }}>
         {resolved.grid.map((id) => card(id, false))}
+        {!customizing && (
+          <button
+            type="button"
+            className="sfin-card"
+            aria-label="New report"
+            style={{ cursor: 'pointer', minHeight: 80 }}
+            onClick={() => setBuilder({ existing: null })}
+          >
+            + New report
+          </button>
+        )}
       </div>
 
       {customizing && resolved.hidden.length > 0 && (
