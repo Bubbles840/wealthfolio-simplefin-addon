@@ -88,6 +88,7 @@ export function ReportContent({
     cfg.capWeeklyToPool ? null : 'full budget amounts',
     cfg.overBudgetSpent === 'total' ? null : cfg.overBudgetSpent === 'all' ? 'spent per category' : 'no spent figures',
     cfg.monthProjection ? null : 'no projection',
+    cfg.poolLine ? null : 'no pool line',
   ].filter((s): s is string => typeof s === 'string').join(' · ');
 
   /**
@@ -311,6 +312,17 @@ export function ReportContent({
           <option value="total">Monthly total only</option>
           <option value="all">Total and each category</option>
           <option value="none">Neither</option>
+        </select>
+      </div>
+      <div className="sfin-field-row">
+        <label htmlFor="sfin-pool-line">Semester pool line</label>
+        <select
+          id="sfin-pool-line"
+          value={cfg.poolLine ? 'shown' : 'hidden'}
+          onChange={(e) => onChangeNow({ poolLine: e.target.value === 'shown' })}
+        >
+          <option value="shown">Shown while a pool is set</option>
+          <option value="hidden">Hidden</option>
         </select>
       </div>
       <div className="sfin-field-row">

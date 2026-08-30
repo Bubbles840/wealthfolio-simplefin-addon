@@ -992,3 +992,22 @@ describe('NotificationsTab', () => {
   });
 
 });
+
+describe('semester pool line toggle', () => {
+  it('names a hidden pool line in the Report content summary', async () => {
+    const props = makeProps();
+    (props.store as any).getPoolLine = vi.fn(async () => false);
+    render(<SyncPage {...props} />);
+    await switchTab(/notifications/i);
+    await waitFor(() => expect(screen.getByText(/no pool line/i)).toBeInTheDocument());
+  });
+
+  it('writes the opt-out when the pool line is hidden', async () => {
+    const props = makeProps();
+    (props.store as any).setPoolLine = vi.fn(async () => {});
+    render(<SyncPage {...props} />);
+    await openSection(/^Report content/i);
+    fireEvent.change(screen.getByLabelText(/semester pool line/i), { target: { value: 'hidden' } });
+    await waitFor(() => expect((props.store as any).setPoolLine).toHaveBeenCalledWith(false));
+  });
+});

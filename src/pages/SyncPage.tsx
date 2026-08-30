@@ -110,6 +110,11 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
   const [uncategorized, setUncategorized] = useState<
     Awaited<ReturnType<SecretsStore['getUncategorizedStatus']>>
   >(null);
+  // The companion-published pool status behind the Overview tile — same
+  // lifecycle as `uncategorized`: loaded here, refreshed on the same path.
+  const [poolStatus, setPoolStatus] = useState<
+    Awaited<ReturnType<SecretsStore['getPoolStatus']>>
+  >(null);
   // Which uncategorized rows the user has dismissed. Lives HERE, not in
   // OverviewTab: `TabPanel` truly unmounts an inactive tab, and a dismissal held
   // in the tab would resurrect the moment someone came back from Advanced — the
@@ -189,10 +194,17 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
     // in-addon dismissal would cost that for the whole session. The race it
     // leaves is a dismissal landing in the microtask between `setDismissals` and
     // its persist, which self-heals on the next refresh.
-    Promise.all([store.getUncategorizedStatus(), store.getDismissals()])
-      .then(([status, ledger]) => {
+    Promise.all([
+      store.getUncategorizedStatus(),
+      store.getDismissals(),
+      // Optional-called like the draft loads above: an older store without the
+      // method must not take the whole refresh down.
+      store.getPoolStatus?.() ?? null,
+    ])
+      .then(([status, ledger, pool]) => {
         setUncategorized(status);
         setDismissals(ledger);
+        setPoolStatus(pool ?? null);
       })
       .catch(() => {});
   }, [store]);
@@ -546,6 +558,7 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
           unmappedAccounts={unmappedAccounts}
           onIgnoreAccounts={ignoreAccounts}
           uncategorized={uncategorized}
+          poolStatus={poolStatus}
           dismissals={dismissals}
           onDismissalsChange={onDismissalsChange}
           isOpen={isOpen}

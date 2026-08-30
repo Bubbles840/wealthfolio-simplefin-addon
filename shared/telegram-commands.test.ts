@@ -46,9 +46,9 @@ describe('formatHelpReply', () => {
       expect(help).toContain(`/${command}`);
     }
   });
-  it('menu covers exactly the ten shipped commands', () => {
+  it('menu covers exactly the eleven shipped commands', () => {
     expect(TELEGRAM_COMMAND_MENU.map((c) => c.command).sort())
-      .toEqual(['afford', 'categorize', 'dismissed', 'help', 'left', 'newrule', 'recategorize', 'report', 'status', 'sync']);
+      .toEqual(['afford', 'categorize', 'dismissed', 'help', 'left', 'newrule', 'pool', 'recategorize', 'report', 'status', 'sync']);
   });
   it('lists /recategorize directly after /categorize, and says a query narrows it', () => {
     // Adjacent because they are one pair — file an unfiled row, move a filed
@@ -545,3 +545,43 @@ describe('formatSyncReply', () => {
     expect(reply).not.toContain('second error should not appear');
   });
 });
+
+describe('parsePoolArgs', () => {
+  const now = new Date('2026-08-30T12:00:00Z');
+  it('is a show request with no arguments', () => {
+    expect(parsePoolArgs('', now)).toEqual({ kind: 'show' });
+  });
+  it('clears on "off"', () => {
+    expect(parsePoolArgs('off', now)).toEqual({ kind: 'clear' });
+    expect(parsePoolArgs('OFF', now)).toEqual({ kind: 'clear' });
+  });
+  it('parses an amount and an ISO end date', () => {
+    expect(parsePoolArgs('16000 2026-12-12', now)).toEqual({
+      kind: 'set', amountCents: 1_600_000, endDate: '2026-12-12',
+    });
+  });
+  it('accepts dollar signs, commas, cents, and an "until" filler', () => {
+    expect(parsePoolArgs('$16,000.50 until 2026-12-12', now)).toEqual({
+      kind: 'set', amountCents: 1_600_050, endDate: '2026-12-12',
+    });
+  });
+  it('parses a month-name date as its next occurrence', () => {
+    // Dec 12 is later this year on Aug 30…
+    expect(parsePoolArgs('16000 Dec 12', now)).toEqual({
+      kind: 'set', amountCents: 1_600_000, endDate: '2026-12-12',
+    });
+    // …but May 15 has already passed, so it means next year.
+    expect(parsePoolArgs('16000 May 15', now)).toEqual({
+      kind: 'set', amountCents: 1_600_000, endDate: '2027-05-15',
+    });
+  });
+  it('rejects garbage, missing dates, zero amounts, and past ISO dates', () => {
+    expect(parsePoolArgs('lots of money', now)).toBeNull();
+    expect(parsePoolArgs('16000', now)).toBeNull();
+    expect(parsePoolArgs('0 Dec 12', now)).toBeNull();
+    expect(parsePoolArgs('16000 2025-01-01', now)).toBeNull();
+  });
+});
+
+// Hoisted beside the tests it serves, like the telegram.test.ts pattern.
+import { parsePoolArgs } from './telegram-commands';

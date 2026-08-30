@@ -17,3 +17,12 @@ export const UNCATEGORIZED_STATUS_SECRET_KEY = 'uncategorized_status';
  * parser did not recognise on that run, and when it ran.
  */
 export const AMAZON_MAIL_STATUS_SECRET_KEY = 'amazon_mail_status';
+
+/**
+ * The semester pool's computed `PoolStatus` (shared/pool.ts), republished by
+ * the companion on every sync — the Overview tile renders it verbatim, which
+ * is what keeps the tile and the Telegram reports one implementation. Written
+ * as an empty string when no pool is configured, so a cleared pool takes its
+ * tile down rather than leaving the last state standing.
+ */
+export const POOL_STATUS_SECRET_KEY = 'pool_status';

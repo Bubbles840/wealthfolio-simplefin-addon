@@ -6,6 +6,7 @@ import { BASELINE_FIX_MIN_DRIFT_AGE_MS } from '../../shared/sync-core';
 import { Button, SectionLabel, CheckIcon, AlertIcon } from '../components/ui';
 import { SetupChecklist } from '../components/SetupChecklist';
 import { UncategorizedList, useDismissals } from '../components/UncategorizedList';
+import { PoolCard } from '../components/PoolCard';
 import { visibleUncategorized, type DismissalLedger } from '../../shared/uncategorized';
 import type { TabId } from '../components/Tabs';
 // Card ids only — the banner's CTA has to name the card it opens, and the
@@ -96,6 +97,9 @@ interface Props {
   /** `openCardId` also expands that card on the destination tab — a CTA naming
    *  a specific card has to actually open it. */
   onNavigate: (tab: TabId, openCardId?: string) => void;
+  /** Companion-published semester-pool status. Null — no pool, no companion,
+   *  or an unreadable publish — simply means no tile, like `uncategorized`. */
+  poolStatus: Awaited<ReturnType<SecretsStore['getPoolStatus']>>;
 }
 
 /**
@@ -114,7 +118,7 @@ export function OverviewTab({
   imported, prunedDuplicates, unmappedAccounts, onIgnoreAccounts, uncategorized, dismissals, onDismissalsChange,
   isOpen, toggleCard, onBalancesChanged, onClearError, onError,
   companionVersion, telegramConfigured, amazonConfigured, checklistDismissed,
-  onDismissChecklist, onNavigate,
+  onDismissChecklist, onNavigate, poolStatus,
 }: Props) {
   const [fixingBaseline, setFixingBaseline] = useState<string | null>(null);
   const [adjusting, setAdjusting] = useState<string | null>(null);
@@ -457,6 +461,25 @@ export function OverviewTab({
             </div>
           )
         )}
+        {/* The pool's remaining money, whole dollars like the report figures.
+            Upcoming and gone phases render nothing — the same vanish-don't-
+            explain rule the formatters follow. */}
+        {poolStatus && (poolStatus.phase === 'active' || poolStatus.phase === 'ended') && (
+          <div
+            className="sfin-tile sfin-tile--green"
+            title={`${poolStatus.startDate} until ${poolStatus.endDate}`}
+          >
+            <SectionLabel>Semester pool</SectionLabel>
+            <div className="sfin-tile-val">
+              {new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(poolStatus.remainingCents / 100)}
+            </div>
+            <div className="sfin-tile-sub">
+              {poolStatus.phase === 'ended'
+                ? (poolStatus.remainingCents >= 0 ? 'left when the pool ended' : 'over when the pool ended')
+                : `${new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(poolStatus.sustainableWeeklyCents / 100)}/wk sustainable`}
+            </div>
+          </div>
+        )}
       </div>
 
       {uncategorized && isOpen(OVERVIEW_CARD.uncategorized) && (
@@ -470,6 +493,8 @@ export function OverviewTab({
           onOpenActivities={() => { ctx.api.navigation.navigate('/activities').catch(() => {}); }}
         />
       )}
+
+      <PoolCard store={store} />
 
       <div className="sfin-accts">
         <div className="sfin-card-head">

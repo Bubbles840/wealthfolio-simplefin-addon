@@ -13,7 +13,7 @@ import { runSyncCore, descriptionFromComment, txIdFromComment } from '../../shar
 import type { SyncResult } from '../../shared/sync-core.js';
 import { RestSyncHost, RestSyncStore } from './rest-host.js';
 import { WealthfolioClient } from './wealthfolio.js';
-import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatMonthlyWrapUp, formatSyncHealthFooter, formatLargeTransactionAlert, formatBalanceDriftAlert, formatFeedLagNotice, formatStuckTransferAlert, formatDuplicatePruneAlert, formatImportNotice, formatRefusedCreatesAlert, buildDismissKeyboard, IMPORT_NOTICE_UNCATEGORIZED_CAP, escapeMarkdown, LARGE_TX_OUTBOX_SECRET_KEY, RECATEGORIZE_ENTRY_CALLBACK } from '../../shared/telegram.js';
+import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatMonthlyWrapUp, formatSyncHealthFooter, formatLargeTransactionAlert, formatBalanceDriftAlert, formatFeedLagNotice, formatStuckTransferAlert, formatDuplicatePruneAlert, formatImportNotice, formatRefusedCreatesAlert, formatPoolLine, formatPoolSection, buildDismissKeyboard, IMPORT_NOTICE_UNCATEGORIZED_CAP, escapeMarkdown, LARGE_TX_OUTBOX_SECRET_KEY, RECATEGORIZE_ENTRY_CALLBACK } from '../../shared/telegram.js';
 import { pruneDismissals, mergeDismissals } from './dismissals.js';
 import { UNDISMISS_PAYLOAD_PREFIX, UNDISMISS_BUTTON_TEXT_PREFIX } from './telegram-listener.js';
 import { DISMISSAL_MAX_AGE_DAYS } from '../../shared/uncategorized.js';
@@ -58,7 +58,7 @@ import { createAmazonLabelMenu, type AmazonLabelMenu } from './amazon-labels.js'
 import { fileAmazonCharges } from './amazon-filing.js';
 import { createTransferLearning, type TransferLearning } from './transfer-learning.js';
 import type { CategorizeController, CategorizeDeps } from './categorize.js';
-import { AMAZON_MAIL_STATUS_SECRET_KEY, UNCATEGORIZED_STATUS_SECRET_KEY } from '../../shared/status-keys.js';
+import { AMAZON_MAIL_STATUS_SECRET_KEY, UNCATEGORIZED_STATUS_SECRET_KEY, POOL_STATUS_SECRET_KEY } from '../../shared/status-keys.js';
 import {
   formatHelpReply,
   formatLeftReply,
@@ -73,6 +73,9 @@ import {
 } from '../../shared/telegram-commands.js';
 import { parseNewRuleArgs } from '../../shared/categorize-menu.js';
 import type { CategoryBudgetSnapshot, BudgetPeriod, ParsedCommand, StatusReplyInput } from '../../shared/telegram-commands.js';
+import { parsePoolArgs, POOL_USAGE_REPLY } from '../../shared/telegram-commands.js';
+import { SEMESTER_POOL_SECRET_KEY } from '../../shared/pool.js';
+import { readPoolStatus, readRunwayMonths, type PoolReportDeps } from './pool-report.js';
 
 const logLevel: 'info' | 'debug' =
   process.env.LOG_LEVEL === 'debug' ? 'debug' : 'info';
@@ -863,6 +866,24 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
       ) ?? {},
     );
 
+    // The Overview tile's copy of the semester pool. Republished every sync,
+    // like the uncategorized status above and guarded the same way — a broken
+    // publish costs a stale tile, never the sync. An empty string (no pool, or
+    // a cleared one) takes the tile down; skipped entirely when the database
+    // is unreadable, because a status computed from zero visible spending
+    // would claim a full pool rather than admit it could not look.
+    try {
+      const poolDbPath = wealthfolioDbPath();
+      if (poolDbPath && existsSync(poolDbPath)) {
+        const poolStatus = await readPoolStatus(poolReportDeps(wfClient, poolDbPath), new Date());
+        await wfClient.setAddonSecret(
+          'simplefin-sync', POOL_STATUS_SECRET_KEY, poolStatus ? JSON.stringify(poolStatus) : '',
+        );
+      }
+    } catch (e) {
+      log(`Pool status publish failed (tile may be stale): ${formatError(e)}`);
+    }
+
     const undeliveredOutTxIds: string[] = [];
     for (const alert of result.stuckTransferAlerts) {
       const delivered = await sendStuckTransferAlert(wfClient, alert);
@@ -1348,6 +1369,46 @@ async function readMonthProjection(wfClient: WealthfolioClient): Promise<boolean
   return raw !== 'off';
 }
 
+/** Mirrors `readMonthProjection` for the digest's semester-pool line: opt-OUT,
+ *  so absent (every config written before the pool existed) means shown. */
+async function readPoolLineEnabled(wfClient: WealthfolioClient): Promise<boolean> {
+  const raw = await wfClient
+    .getAddonSecret('simplefin-sync', 'pool_line')
+    .catch(() => null);
+  return raw !== 'off';
+}
+
+/**
+ * The pool module's data sources, bound to this companion's primitives — the
+ * ONE binding all three consumers (daily digest, weekly check-in, the
+ * `pool_status` publish) share, so they cannot diverge on what "spent" means.
+ * Every read is the same one an existing report already does; see
+ * pool-report.ts for the semantics.
+ */
+function poolReportDeps(wfClient: WealthfolioClient, dbPath: string): PoolReportDeps {
+  return {
+    getSecret: (key) => wfClient.getAddonSecret('simplefin-sync', key),
+    spendingBetween: (start, end) => getNativeWealthfolioSpendingBetween(dbPath, start, end),
+    uncategorizedTotal: (start, end, dismissedIds) =>
+      getNativeUncategorizedSpendingTotal(dbPath, start, end, dismissedIds),
+    dismissedIds: async () =>
+      Object.keys(await dismissalLedgerAccess(wfClient).readLedger().catch(() => ({}))),
+    accountTypes: async () => {
+      const mapping = (await new RestSyncStore(wfClient).getAccountMapping()) ?? {};
+      const accounts = await wfClient.getAccounts();
+      const typeById = new Map(accounts.map((a) => [a.id, a.accountType ?? '']));
+      return Object.fromEntries(
+        Object.entries(mapping).map(([sfinId, wfId]) => [sfinId, typeById.get(wfId) ?? '']),
+      );
+    },
+    accountBalances: async () =>
+      parseSecretJson<Record<string, StoredAccountBalance>>(
+        await wfClient.getAddonSecret('simplefin-sync', 'account_balances').catch(() => null),
+        'account_balances',
+      ) ?? {},
+  };
+}
+
 /**
  * Wealthfolio's month-end forecast from the same spending reader every other
  * report uses, so the number is built from totals already reconciled with the
@@ -1566,12 +1627,18 @@ export async function composeDailyDigestMessage(
     dbPath, `${yearMonth}-01`, toDateString(new Date(now.getFullYear(), now.getMonth() + 1, 1)),
     dismissedIds,
   );
+  // Guarded to null, not allowed to throw: the pool line is an addition to the
+  // digest, and a broken pool read must cost the line, never the report.
+  const poolStatus = (await readPoolLineEnabled(wfClient))
+    ? await readPoolStatus(poolReportDeps(wfClient, dbPath), now).catch(() => null)
+    : null;
   let message = formatDailySpendingDigest(
     categories, period, await readGlyphStyle(wfClient), subcategoryDisplay,
     await readCountOffBudget(wfClient), uncategorizedSpend,
     await readCapWeeklyToPool(wfClient),
     await readOverBudgetSpent(wfClient),
     readProjection(dbPath, now, categories, await readMonthProjection(wfClient)),
+    poolStatus,
   );
 
   // Read so that an unreadable secret stays DISTINGUISHABLE from a missing
@@ -1760,11 +1827,19 @@ export async function sendWeeklyTelegramReport(
     ? getNativeWealthfolioTopSpending(dbPath, toDateString(weekStart), toDateString(weekEnd), topCount)
     : [];
 
+  // Pool and runway ride the weekly like the pool line rides the daily —
+  // guarded additions that can only cost themselves. Runway resolves null on
+  // any unreadable input (readRunwayMonths owns that guarantee).
+  const poolDeps = poolReportDeps(wfClient, dbPath);
+  const poolStatus = await readPoolStatus(poolDeps, now).catch(() => null);
+  const runwayMonths = await readRunwayMonths(poolDeps, now);
   const message = formatMonthlyRemainingSummary(
     totalSpent,
     totalBudget,
     topSpends.map((t) => ({ amount: t.amount, description: t.description, category: t.categoryName })),
     await readGlyphStyle(wfClient),
+    poolStatus,
+    runwayMonths,
   );
   await sendReportWithRetry(
     tg.botToken, tg.chatId, message,
@@ -2334,6 +2409,42 @@ export function buildTelegramCommandHandler(
         }
         const { categories, period, style } = await budgetSnapshot();
         await reply(formatAffordReply(categories, period, style, parsed.amount, parsed.query));
+        return;
+      }
+
+      case 'pool': {
+        const parsed = parsePoolArgs(cmd.args, new Date());
+        if (parsed === null) {
+          await reply(POOL_USAGE_REPLY);
+          return;
+        }
+        const deps = poolReportDeps(wfClient, wealthfolioDbPath() ?? '');
+        const style = await readGlyphStyle(wfClient);
+        if (parsed.kind === 'clear') {
+          // Empty string, not a delete: the secrets API has no delete, and
+          // parsePoolConfig reads '' as "no pool" — the same off state the
+          // pool_status publish uses.
+          await wfClient.setAddonSecret('simplefin-sync', SEMESTER_POOL_SECRET_KEY, '');
+          await reply('Pool cleared — reports go back to budgets only.');
+          return;
+        }
+        if (parsed.kind === 'set') {
+          const cfg = {
+            amountCents: parsed.amountCents,
+            // Today, deliberately: the command is typed when the disbursement
+            // is in hand, and spending before today belongs to the OLD pool.
+            startDate: new Date().toISOString().slice(0, 10),
+            endDate: parsed.endDate,
+          };
+          await wfClient.setAddonSecret('simplefin-sync', SEMESTER_POOL_SECRET_KEY, JSON.stringify(cfg));
+          const status = await readPoolStatus(deps, new Date()).catch(() => null);
+          const line = status ? formatPoolLine(status, style) : null;
+          await reply(line ? `Pool set.\n${line}` : 'Pool set.');
+          return;
+        }
+        const status = await readPoolStatus(deps, new Date()).catch(() => null);
+        const section = status ? formatPoolSection(status, style).trim() : '';
+        await reply(section !== '' ? section : `No pool set.\n${POOL_USAGE_REPLY}`);
         return;
       }
 
