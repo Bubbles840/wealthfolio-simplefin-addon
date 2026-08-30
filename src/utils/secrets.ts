@@ -4,6 +4,12 @@ import { AMAZON_CONFIG_SECRET_KEY, AMAZON_LABELS_SECRET_KEY } from '../../shared
 import { UNCATEGORIZED_STATUS_SECRET_KEY, AMAZON_MAIL_STATUS_SECRET_KEY, POOL_STATUS_SECRET_KEY } from '../../shared/status-keys';
 import { SEMESTER_POOL_SECRET_KEY, parsePoolConfig } from '../../shared/pool';
 import type { SemesterPoolConfig, PoolStatus } from '../../shared/pool';
+import { REPORT_CUBE_SECRET_KEY, parseReportCube } from '../../shared/report-cube';
+import type { ReportCube } from '../../shared/report-cube';
+import { parseCustomReports } from '../../shared/report-eval';
+import type { CustomReport } from '../../shared/report-eval';
+import { parseBudgetLayout } from '../../shared/budget-layout';
+import type { BudgetLayout } from '../../shared/budget-layout';
 import type { AmazonLabelCatalog, AmazonMailConfig } from '../../shared/amazon-config';
 import type { AmazonLedger } from '../../shared/amazon-ledger';
 import type { AccountMapping, MappingRule, UnmappedAccount } from '../../shared/types';
@@ -92,6 +98,10 @@ const KEYS = {
   // Companion-published, addon-read-only, in KEYS for the same clearAll reason
   // as uncategorizedStatus above.
   poolStatus: POOL_STATUS_SECRET_KEY,
+  // Companion-published like poolStatus; in KEYS for the same clearAll reason.
+  reportCube: REPORT_CUBE_SECRET_KEY,
+  customReports: 'custom_reports',
+  budgetLayout: 'budget_layout',
   openCards: 'ui_open_cards',
   uiState: 'ui_state',
   pendingLargeTxAlerts: LARGE_TX_OUTBOX_SECRET_KEY,
@@ -674,6 +684,44 @@ export class SecretsStore {
     } catch {
       return null;
     }
+  }
+
+  /** The companion-published report cube behind the Budget tab. Read-only
+   *  here; `parseReportCube` owns validation (unknown versions and ragged
+   *  shapes read as "companion not ready", never as data). */
+  async getReportCube(): Promise<ReportCube | null> {
+    try {
+      return parseReportCube(await this.ctx.api.secrets.get(KEYS.reportCube));
+    } catch {
+      return null;
+    }
+  }
+
+  /** The user's saved custom reports. Malformed entries are dropped
+   *  individually by the parser, so one bad row cannot cost the collection. */
+  async getCustomReports(): Promise<CustomReport[]> {
+    try {
+      return parseCustomReports(await this.ctx.api.secrets.get(KEYS.customReports));
+    } catch {
+      return [];
+    }
+  }
+  async setCustomReports(reports: CustomReport[]): Promise<void> {
+    await this.ctx.api.secrets.set(KEYS.customReports, JSON.stringify(reports));
+  }
+
+  /** The Budget tab arrangement (heroes/order/hidden). Stored as a preference
+   *  and resolved against the reports that exist at render time — see
+   *  shared/budget-layout.ts. */
+  async getBudgetLayout(): Promise<BudgetLayout | null> {
+    try {
+      return parseBudgetLayout(await this.ctx.api.secrets.get(KEYS.budgetLayout));
+    } catch {
+      return null;
+    }
+  }
+  async setBudgetLayout(layout: BudgetLayout): Promise<void> {
+    await this.ctx.api.secrets.set(KEYS.budgetLayout, JSON.stringify(layout));
   }
 
   async clearAll(): Promise<void> {
