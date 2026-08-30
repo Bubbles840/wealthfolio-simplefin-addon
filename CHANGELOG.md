@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.26.1] - 2026-08-27
+
+### Fixed
+
+- **A card payment waiting for its cash leg no longer counts as a refund.**
+  The in-transit placeholder for money arriving at a credit card was booked as
+  a bare `CREDIT` — chosen on 2026-08-07 because the API accepts it where it
+  rejects `DEPOSIT`, without re-checking how it classifies. On a card,
+  Wealthfolio treats *every* `CREDIT` as an expense refund, so a $429.71
+  payment showed the day's spending as −$400.51 until the other bank's feed
+  caught up. Card inflows are now booked as `TRANSFER_IN`: ignored by the
+  classifier, accepted by the API, the real amount visible, and the type the
+  row becomes on pairing anyway. Cash placeholders are unchanged — they were
+  correct.
+- **An existing placeholder written the old way is migrated on the next sync**,
+  not left as a refund until its pair happens to arrive.
+- **A card placeholder that times out no longer demotes to `DEPOSIT`**, the one
+  type a card refuses. It becomes `CREDIT` — a positive that never paired is a
+  refund — and an outflow becomes `WITHDRAWAL`.
+- **A new test checks every placeholder shape against the spending classifier
+  itself** — each account type, both directions — with a control row so a zero
+  can never be the vacuous kind, and the old card shape kept as the negative
+  case. This is the test that would have failed on 2026-08-07.
+
+### Known issue
+
+- A **positive drift-heal balance plug on a credit card** reads as a refund for
+  the same reason, and plugs never pair, so it is permanent. Left as is on
+  purpose: the plug goes through the import endpoint with an explicit cash
+  symbol, where a `TRANSFER` type has a known cash-asset quirk (upstream
+  issue #5) that cannot be verified without a live write. Rare — a positive
+  card plug means Wealthfolio thought the balance owed was higher than the
+  bank's — and the addon's own reports do not count it (an uncategorized row
+  is outside the spending join), but Wealthfolio's spending page does.
+
 ## [1.26.0] - 2026-08-25
 
 ### Added
