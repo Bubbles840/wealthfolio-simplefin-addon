@@ -996,3 +996,147 @@ export function countRulePatternMatches(
   const num = (v: unknown) => (typeof v === 'number' ? v : parseInt(String(v ?? 0), 10) || 0);
   return { total: num(row.total), spending: num(row.spending) };
 }
+
+/**
+ * Signed spend per (month, parent category, account) — the report cube's
+ * central series. Built on the SAME `SPENDING_FROM`/`SPENDING_SIGN`
+ * transcription as every other spending reader, so the Budget tab can never
+ * disagree with the digest about what a month cost; the only addition is the
+ * month bucket and the account dimension (which is what makes the tab's
+ * account filters possible).
+ */
+export function getNativeSpendMatrix(
+  dbPath: string,
+  startInclusive: string,
+  endExclusive: string,
+): Array<{ month: string; category: string; accountId: string; amount: number }> {
+  if (!dbPath || !existsSync(dbPath)) return [];
+  if (!validDateBounds(startInclusive, endExclusive)) return [];
+  const query = `
+    SELECT strftime('%Y-%m', a.activity_date) as month,
+           ${SPENDING_CATEGORY} as category,
+           COALESCE(a.account_id, '') as account_id,
+           ROUND(SUM(${SPENDING_SIGNED_AMOUNT}), 2) as amount
+    ${SPENDING_FROM}
+    ${spendingWhere(startInclusive, endExclusive)}
+    GROUP BY month, category, account_id;
+  `;
+  const rows = queryNativeDb<Record<string, unknown>>(
+    dbPath,
+    'spend matrix',
+    query,
+    (parts) => (parts.length === 4
+      ? { c0: parts[0], c1: parts[1], c2: parts[2], c3: parseFloat(parts[3]) || 0 }
+      : null),
+  );
+  return rows.map((r) => {
+    const v = Object.values(r) as [string, string, string, number | string];
+    return {
+      month: String(v[0]),
+      category: String(v[1]),
+      accountId: String(v[2]),
+      amount: typeof v[3] === 'number' ? v[3] : parseFloat(String(v[3])) || 0,
+    };
+  }).filter((r) => r.month && r.category);
+}
+
+/**
+ * Income per (month, account): deposits and interest on CASH accounts —
+ * Wealthfolio's income classification minus everything that merely LOOKS like
+ * income. `TRANSFER_IN` is deliberately absent (internal moves and card
+ * payments must never read as income; the accepted cost is missing a
+ * keyword-typed external transfer-in, per the spec), card credits are refunds
+ * not income, and the two balance-marker note shapes are excluded because a
+ * starting-balance row is a plain DEPOSIT that would otherwise book the
+ * account's whole opening balance as one month's income.
+ */
+export function getNativeIncomeByMonthAccount(
+  dbPath: string,
+  startInclusive: string,
+  endExclusive: string,
+): Array<{ month: string; accountId: string; amount: number }> {
+  if (!dbPath || !existsSync(dbPath)) return [];
+  if (!validDateBounds(startInclusive, endExclusive)) return [];
+  const query = `
+    SELECT strftime('%Y-%m', a.activity_date) as month,
+           COALESCE(a.account_id, '') as account_id,
+           ROUND(SUM(ABS(CAST(a.amount AS REAL))), 2) as amount
+    FROM activities a
+    JOIN accounts acc ON a.account_id = acc.id
+    WHERE a.activity_date >= '${startInclusive}'
+      AND a.activity_date < '${endExclusive}'
+      AND UPPER(acc.account_type) = 'CASH'
+      AND UPPER(a.activity_type) IN ('DEPOSIT', 'INTEREST')
+      AND COALESCE(a.notes, '') NOT LIKE 'Starting balance · %'
+      AND COALESCE(a.notes, '') NOT LIKE 'Balance adjustment · %'
+    GROUP BY month, account_id;
+  `;
+  const rows = queryNativeDb<Record<string, unknown>>(
+    dbPath,
+    'income by month',
+    query,
+    (parts) => (parts.length === 3
+      ? { c0: parts[0], c1: parts[1], c2: parseFloat(parts[2]) || 0 }
+      : null),
+  );
+  return rows.map((r) => {
+    const v = Object.values(r) as [string, string, number | string];
+    return {
+      month: String(v[0]),
+      accountId: String(v[1]),
+      amount: typeof v[2] === 'number' ? v[2] : parseFloat(String(v[2])) || 0,
+    };
+  }).filter((r) => r.month);
+}
+
+/**
+ * Uncategorized spending per (month, account) — the WHERE clause is
+ * `getNativeUncategorizedSpendingTotal`'s verbatim (spending-signed only, no
+ * grouped rows, dismissed ids excluded with the same defensive quoting), so
+ * the cube's uncategorized cells and the digest's uncategorized total are one
+ * definition with two groupings.
+ */
+export function getNativeUncategorizedByMonthAccount(
+  dbPath: string,
+  startInclusive: string,
+  endExclusive: string,
+  excludedActivityIds: readonly string[] = [],
+): Array<{ month: string; accountId: string; amount: number }> {
+  if (!dbPath || !existsSync(dbPath)) return [];
+  if (!validDateBounds(startInclusive, endExclusive)) return [];
+  const safeIds = excludedActivityIds.filter((id) => /^[A-Za-z0-9_-]{1,64}$/.test(id));
+  const excludedClause = safeIds.length
+    ? `AND a.id NOT IN (${safeIds.map((id) => `'${id}'`).join(',')})`
+    : '';
+  const query = `
+    SELECT strftime('%Y-%m', a.activity_date) as month,
+           COALESCE(a.account_id, '') as account_id,
+           ROUND(SUM(ABS(CAST(a.amount AS REAL))), 2) as amount
+    FROM activities a
+    JOIN accounts acc ON a.account_id = acc.id
+    LEFT JOIN activity_taxonomy_assignments ata ON a.id = ata.activity_id
+    WHERE a.activity_date >= '${startInclusive}'
+      AND a.activity_date < '${endExclusive}'
+      AND ata.activity_id IS NULL
+      AND COALESCE(a.source_group_id, '') = ''
+      ${excludedClause}
+      AND (${SPENDING_SIGN}) > 0
+    GROUP BY month, account_id;
+  `;
+  const rows = queryNativeDb<Record<string, unknown>>(
+    dbPath,
+    'uncategorized by month',
+    query,
+    (parts) => (parts.length === 3
+      ? { c0: parts[0], c1: parts[1], c2: parseFloat(parts[2]) || 0 }
+      : null),
+  );
+  return rows.map((r) => {
+    const v = Object.values(r) as [string, string, number | string];
+    return {
+      month: String(v[0]),
+      accountId: String(v[1]),
+      amount: typeof v[2] === 'number' ? v[2] : parseFloat(String(v[2])) || 0,
+    };
+  }).filter((r) => r.month);
+}

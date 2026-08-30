@@ -1135,3 +1135,74 @@ describe('in-transit placeholder shapes against the spending classifier', () => 
     } finally { cleanup(); }
   });
 });
+
+// Hoisted beside the tests they serve, matching the mid-file import pattern
+// used elsewhere in this suite.
+import {
+  getNativeSpendMatrix, getNativeIncomeByMonthAccount, getNativeUncategorizedByMonthAccount,
+} from './sqlite-native.js';
+
+describe('report cube readers, month × account', () => {
+  /** Two months across the two fixture accounts, with one row for every
+   *  classification trap: a refund (negative spend), a transfer-in (never
+   *  income), a card credit (refund, never income), and a dismissed
+   *  uncategorized charge. */
+  const seedTwoMonths = (path: string) => {
+    const db = new DatabaseSync(path);
+    db.exec(`INSERT INTO taxonomy_categories (id, name, parent_id) VALUES ('cat-din', 'Dining', NULL)`);
+    db.exec(`INSERT INTO taxonomy_categories (id, name, parent_id) VALUES ('cat-gro', 'Groceries', NULL)`);
+    db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, account_id) VALUES ('sp1', '-25.50', '2026-07-09', 'WITHDRAWAL', 'acct-cash')`);
+    db.exec(`INSERT INTO activity_taxonomy_assignments (activity_id, category_id) VALUES ('sp1', 'cat-din')`);
+    db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, account_id) VALUES ('sp2', '-40', '2026-08-03', 'WITHDRAWAL', 'acct-card')`);
+    db.exec(`INSERT INTO activity_taxonomy_assignments (activity_id, category_id) VALUES ('sp2', 'cat-gro')`);
+    db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, account_id) VALUES ('sp3', '10', '2026-08-10', 'CREDIT', 'acct-card')`);
+    db.exec(`INSERT INTO activity_taxonomy_assignments (activity_id, category_id) VALUES ('sp3', 'cat-din')`);
+    db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, account_id) VALUES ('in1', '500', '2026-07-01', 'DEPOSIT', 'acct-cash')`);
+    db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, account_id) VALUES ('in2', '1.25', '2026-08-02', 'INTEREST', 'acct-cash')`);
+    db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, account_id) VALUES ('tin', '300', '2026-07-05', 'TRANSFER_IN', 'acct-cash')`);
+    db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, account_id, notes) VALUES ('un1', '-12', '2026-08-20', 'WITHDRAWAL', 'acct-card', 'MYSTERY · TRN-9')`);
+    db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, account_id, notes) VALUES ('uncat-dismissed', '-99', '2026-07-21', 'WITHDRAWAL', 'acct-cash', 'IGNORED · TRN-8')`);
+    db.close();
+  };
+
+  it('getNativeSpendMatrix groups signed spend by month, parent category, and account', () => {
+    const { path, cleanup } = makeTestDb();
+    try {
+      seedTwoMonths(path);
+      const rows = getNativeSpendMatrix(path, '2026-07-01', '2026-09-01');
+      expect(rows).toContainEqual({ month: '2026-07', category: 'Dining', accountId: 'acct-cash', amount: 25.5 });
+      expect(rows).toContainEqual({ month: '2026-08', category: 'Groceries', accountId: 'acct-card', amount: 40 });
+      // The card credit is a refund: NEGATIVE spend, same cell addressing.
+      expect(rows).toContainEqual({ month: '2026-08', category: 'Dining', accountId: 'acct-card', amount: -10 });
+      // The transfer-in appears nowhere in spending.
+      expect(rows.some((r) => r.amount === 300)).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('getNativeIncomeByMonthAccount counts cash deposits and interest, never transfers or card credits', () => {
+    const { path, cleanup } = makeTestDb();
+    try {
+      seedTwoMonths(path);
+      const rows = getNativeIncomeByMonthAccount(path, '2026-07-01', '2026-09-01');
+      expect(rows).toContainEqual({ month: '2026-07', accountId: 'acct-cash', amount: 500 });
+      expect(rows).toContainEqual({ month: '2026-08', accountId: 'acct-cash', amount: 1.25 });
+      expect(rows.find((r) => r.accountId === 'acct-card')).toBeUndefined();
+      expect(rows.some((r) => r.amount === 300)).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('getNativeUncategorizedByMonthAccount excludes the given activity ids', () => {
+    const { path, cleanup } = makeTestDb();
+    try {
+      seedTwoMonths(path);
+      const rows = getNativeUncategorizedByMonthAccount(path, '2026-07-01', '2026-09-01', ['uncat-dismissed']);
+      expect(rows).toEqual([{ month: '2026-08', accountId: 'acct-card', amount: 12 }]);
+    } finally {
+      cleanup();
+    }
+  });
+});
