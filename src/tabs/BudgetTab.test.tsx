@@ -14,12 +14,18 @@ import { CUBE } from '../../shared/report-cube.test';
  * elements — these tests assert which reports render and with what data
  * handed along, never chart pixels.
  */
-vi.mock('recharts', () => new Proxy({}, {
-  get: (_t, name) => {
-    if (name === 'default') return undefined;
-    return (p: any) => React.createElement('div', { 'data-recharts': String(name) }, p?.children ?? null);
-  },
-}));
+vi.mock('recharts', () => {
+  // Explicit exports, not a Proxy: vitest wraps factories in a static module
+  // object, so dynamic gets cannot satisfy ReportView's named imports.
+  const stub = (name: string) => (p: any) =>
+    React.createElement('div', { 'data-recharts': name }, p?.children ?? null);
+  return {
+    Area: stub('Area'), AreaChart: stub('AreaChart'), Bar: stub('Bar'), BarChart: stub('BarChart'),
+    CartesianGrid: stub('CartesianGrid'), Cell: stub('Cell'), Line: stub('Line'),
+    LineChart: stub('LineChart'), Pie: stub('Pie'), PieChart: stub('PieChart'),
+    XAxis: stub('XAxis'), YAxis: stub('YAxis'),
+  };
+});
 vi.mock('@wealthfolio/ui/chart', () => ({
   ChartContainer: (p: any) => React.createElement('div', null, p.children),
   ChartTooltip: () => null,
