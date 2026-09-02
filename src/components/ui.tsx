@@ -535,21 +535,23 @@ body {
     var(--background);
   background-attachment: fixed, fixed, scroll;
 }
-.sfin-budget-toolbar { display: flex; justify-content: flex-end; align-items: center; gap: 8px; margin-bottom: 10px; }
-.sfin-budget-heroes { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; }
+.sfin-budget-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
+.sfin-budget-toolbar .sfin-range-chips { margin: 0; }
 .sfin-budget-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; margin-top: 14px; }
 .sfin-cell { min-width: 0; }
 .sfin-cell[role="button"] { cursor: pointer; outline: none; border-radius: 12px; }
-.sfin-cell--wide { grid-column: span 2; }
-/* The size cycle: fixed row rhythm so every shape lines up flush. */
+/* Spans ride CSS custom properties set per cell (--sfin-c/--sfin-r), so the
+   phone rules below can flatten EVERYTHING to one column — an inline
+   grid-column would outrank them and break small screens. */
 .sfin-budget-grid { grid-auto-rows: 158px; grid-auto-flow: dense; }
-.sfin-cell--c { grid-row: span 1; }
-.sfin-cell--m { grid-row: span 2; }
-.sfin-cell--w { grid-column: span 2; grid-row: span 2; }
-.sfin-cell--t { grid-row: span 3; }
-.sfin-cell--b { grid-column: span 2; grid-row: span 3; }
+.sfin-budget-grid > .sfin-cell {
+  grid-column: span var(--sfin-c, 1);
+  grid-row: span var(--sfin-r, 2);
+}
 @media (max-width: 720px) {
-  .sfin-cell--wide, .sfin-cell--w, .sfin-cell--b { grid-column: span 1; }
+  .sfin-budget-grid { grid-template-columns: 1fr; grid-auto-rows: 150px; }
+  .sfin-budget-grid > .sfin-cell { grid-column: span 1; }
+  .sfin-page { padding: 14px; }
 }
 .sfin-budget-grid .sfin-cell { position: relative; overflow: hidden; }
 .sfin-budget-grid .sfin-report-body .sfin-chart { min-height: 0; }
@@ -648,6 +650,14 @@ body {
 .sfin-pace--green .sfin-pace-dot { background: #4ade80; box-shadow: 0 0 10px rgba(74, 222, 128, .5); }
 .sfin-pace--amber .sfin-pace-dot { background: #fbbf24; box-shadow: 0 0 10px rgba(251, 191, 36, .5); }
 .sfin-pace--red .sfin-pace-dot { background: #f87171; box-shadow: 0 0 10px rgba(248, 113, 113, .5); }
+/* The headline-numbers card: the old fixed strip, now a card like the rest. */
+.sfin-headline { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 10px; align-items: stretch; height: 100%; }
+.sfin-headline .sfin-tile { box-shadow: none; display: flex; flex-direction: column; justify-content: center; }
+@container (max-width: 460px) { .sfin-headline { grid-auto-flow: row; } }
+/* Drag-to-move feedback. */
+.sfin-cell--editing { cursor: grab; touch-action: none; }
+.sfin-cell--dragging { z-index: 4; }
+.sfin-cell--dragging .sfin-report-card { opacity: .55; border-style: dashed; }
 .sfin-uncat-undo { display: flex; align-items: center; gap: 8px; padding: 4px 0 8px; }
 /* Same rules as .sfin-uncat-undo — a distinct class because the cap notice and
    "Categorize in Wealthfolio" button are an unrelated footer, not the undo

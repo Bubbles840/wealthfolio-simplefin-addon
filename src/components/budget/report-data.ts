@@ -52,10 +52,13 @@ export function netWorthData(cube: ReportCube): MonthRow[] {
 export function savingsRateData(cube: ReportCube): MonthRow[] {
   const income = monthlyIncomeTotals(cube);
   const spending = monthlySpendTotals(cube);
+  // PERCENT, one decimal — the chart's axis and the headline chip must speak
+  // the same unit (the chart once plotted raw fractions next to a chip saying
+  // "20%", live 2026-09-02).
   return cube.months.map((month, mi) => ({
     month,
     rate: income[mi] > 0
-      ? Math.round(((income[mi] - spending[mi]) / income[mi]) * 1000) / 1000
+      ? Math.round(((income[mi] - spending[mi]) / income[mi]) * 1000) / 10
       : null,
   }));
 }

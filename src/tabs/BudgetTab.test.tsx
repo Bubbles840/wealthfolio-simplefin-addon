@@ -247,9 +247,11 @@ describe('customize mode', () => {
     const props = freshProps();
     render(<SyncPage {...props} />);
     await enterCustomize();
-    // Grid starts net-worth, savings-rate (after the two heroes).
     fireEvent.click(screen.getByRole('button', { name: /move net worth down/i }));
-    await waitFor(() => expect(reportIds()[2]).toBe('savings-rate'));
+    await waitFor(() => {
+      const ids = reportIds();
+      expect(ids.indexOf('savings-rate')).toBeLessThan(ids.indexOf('net-worth'));
+    });
     expect((props.store as any).setBudgetLayout).toHaveBeenCalled();
   });
 
@@ -385,16 +387,58 @@ describe('second wave on the grid', () => {
     fireEvent.click(screen.getByRole('button', { name: /^customize$/i }));
 
     const handle = screen.getByLabelText(/drag to resize merchants/i);
-    fireEvent.pointerDown(handle, { clientX: 100, clientY: 100 });
-    fireEvent.pointerMove(window, { clientX: 430, clientY: 285 });
-    fireEvent.pointerUp(window, { clientX: 430, clientY: 285 });
+    // Pointer CAPTURE keeps move/up flowing to the handle itself.
+    fireEvent.pointerDown(handle, { pointerId: 1, clientX: 100, clientY: 100 });
+    fireEvent.pointerMove(handle, { pointerId: 1, clientX: 430, clientY: 285 });
+    fireEvent.pointerUp(handle, { pointerId: 1, clientX: 430, clientY: 285 });
 
     await waitFor(() => {
       const saved = (props.store as any).setBudgetLayout.mock.calls.at(-1)?.[0];
       expect(saved?.span?.merchants).toEqual([2, 3]);
     });
     const cell = document.querySelector('[data-report-id="merchants"]')!.closest('.sfin-cell') as HTMLElement;
-    expect(cell.style.gridColumn).toBe('span 2');
-    expect(cell.style.gridRow).toBe('span 3');
+    expect(cell.style.getPropertyValue('--sfin-c')).toBe('2');
+    expect(cell.style.getPropertyValue('--sfin-r')).toBe('3');
+  });
+
+  it('dragging a card body moves it before the card it is dropped on', async () => {
+    const props = makeProps();
+    (props.store as any).getReportCube = vi.fn(async () => ({ ...CUBE, asOf: new Date().toISOString() }));
+    render(<SyncPage {...props} />);
+    await waitFor(() => expect(reportIds().length).toBeGreaterThan(0));
+    fireEvent.click(screen.getByRole('button', { name: /^customize$/i }));
+
+    const cellOf = (id: string) =>
+      document.querySelector(`[data-report-id="${id}"]`)!.closest('.sfin-cell') as HTMLElement;
+    const before = reportIds();
+    const dragged = before[4]!;
+    const target = before[0]!;
+    // jsdom has no elementFromPoint at all, so it is installed rather than
+    // spied — the component optional-calls it for the same reason.
+    (document as any).elementFromPoint = vi.fn(
+      () => document.querySelector(`[data-report-id="${target}"]`),
+    );
+    try {
+      const cell = cellOf(dragged);
+      fireEvent.pointerDown(cell, { pointerId: 2, clientX: 10, clientY: 10 });
+      fireEvent.pointerMove(cell, { pointerId: 2, clientX: 15, clientY: 15 });
+      fireEvent.pointerUp(cell, { pointerId: 2 });
+    } finally {
+      delete (document as any).elementFromPoint;
+    }
+    await waitFor(() => {
+      const saved = (props.store as any).setBudgetLayout.mock.calls.at(-1)?.[0];
+      expect(saved?.order?.indexOf(dragged)).toBe(saved?.order?.indexOf(target) - 1 >= 0 ? saved.order.indexOf(target) - 1 : 0);
+    });
+    expect(reportIds().indexOf(dragged)).toBeLessThan(reportIds().indexOf(target));
+  });
+
+  it('the dashboard carries the shared range chips', async () => {
+    const props = makeProps();
+    (props.store as any).getReportCube = vi.fn(async () => ({ ...CUBE, asOf: new Date().toISOString() }));
+    render(<SyncPage {...props} />);
+    await waitFor(() => expect(reportIds().length).toBeGreaterThan(0));
+    expect(screen.getByRole('button', { name: /^12 months$/i })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: /^3 months$/i })).toBeInTheDocument();
   });
 });
