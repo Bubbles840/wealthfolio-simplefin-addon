@@ -3217,3 +3217,33 @@ describe('runSyncCore carries a rule-assigned subtype', () => {
     expect(Object.prototype.hasOwnProperty.call(create, 'subtype')).toBe(false);
   });
 });
+
+describe('imported transactions carry direction', () => {
+  it('says which way each imported row moved, placeholders included', async () => {
+    const staleDiscover = {
+      id: 'sfin-2', name: 'Discover Card', currency: 'USD', balance: '-500',
+      'balance-date': 1, transactions: [],
+    };
+    const { host, store } = createFakeHost({
+      accountSet: { errors: [], accounts: [{
+        id: 'sfin-1', name: 'Checking', currency: 'USD', balance: '0',
+        'balance-date': Math.floor(Date.now() / 1000),
+        transactions: [
+          { id: 'tx-dep', posted: Math.floor(Date.now() / 1000) - 3600, amount: '16000.00', description: 'PNC BANK DEPOSIT' },
+          { id: 'tx-wd', posted: Math.floor(Date.now() / 1000) - 3600, amount: '-12.50', description: 'Coffee' },
+          // A keyword-typed transfer leg young enough to import as an
+          // in-transit placeholder: CREDIT with the amount in fee — the one
+          // row whose TYPE lies about its direction.
+          { id: 'tx-pay', posted: Math.floor(Date.now() / 1000) - 3600, amount: '-87.26', description: 'Payment to Discover Bank Credit Card Payments' },
+        ],
+      }, staleDiscover] },
+      mapping: { 'sfin-1': 'wf-a', 'sfin-2': 'wf-b' },
+      accountTypes: { 'wf-a': 'CASH', 'wf-b': 'CREDIT_CARD' },
+    });
+    const result = await runSyncCore(host, store, { force: true });
+    const byTx = new Map(result.importedTransactions.map((t) => [t.txId, t]));
+    expect(byTx.get('tx-dep')?.direction).toBe('in');
+    expect(byTx.get('tx-wd')?.direction).toBe('out');
+    expect(byTx.get('tx-pay')?.direction).toBe('out'); // money LEFT, whatever the placeholder type says
+  });
+});
