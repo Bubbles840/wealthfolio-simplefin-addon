@@ -373,6 +373,13 @@ export interface NativeUncategorizedTx {
   /** ISO date (yyyy-mm-dd). */
   date: string;
   accountName: string;
+  /** Which way the money moved, derived from TYPE + account (the sync stores
+   *  positive magnitudes; the activity type carries direction in Wealthfolio):
+   *  out = withdrawals/fees/taxes and card interest, in = everything else,
+   *  card credits (refunds — money back) included. Drives the +/− and color
+   *  everywhere rows are listed, and decides whether /categorize offers income
+   *  or spending categories. */
+  direction: 'in' | 'out';
 }
 
 /**
@@ -399,7 +406,10 @@ export function getNativeUncategorizedSpending(
   const query = `
     SELECT a.id, COALESCE(a.account_id, ''), COALESCE(a.notes, ''),
            ROUND(ABS(CAST(a.amount AS REAL)) * 100),
-           substr(a.activity_date, 1, 10), COALESCE(ac.name, '')
+           substr(a.activity_date, 1, 10), COALESCE(ac.name, ''),
+           CASE WHEN UPPER(a.activity_type) IN ('WITHDRAWAL', 'FEE', 'TAX')
+                  OR (UPPER(a.activity_type) = 'INTEREST' AND UPPER(COALESCE(ac.account_type, '')) = 'CREDIT_CARD')
+                THEN 'out' ELSE 'in' END
     FROM activities a
     LEFT JOIN activity_taxonomy_assignments ata ON a.id = ata.activity_id
     LEFT JOIN accounts ac ON a.account_id = ac.id
@@ -419,19 +429,19 @@ export function getNativeUncategorizedSpending(
     ORDER BY a.activity_date DESC, a.id;
   `;
 
-  type Raw = [string, string, string, number, string, string];
+  type Raw = [string, string, string, number, string, string, string];
   const rows = queryNativeDb<Record<string, unknown>>(
     dbPath,
     'uncategorized',
     query,
-    (parts) => (parts.length === 6
-      ? { c0: parts[0], c1: parts[1], c2: parts[2], c3: parseFloat(parts[3]) || 0, c4: parts[4], c5: parts[5] }
+    (parts) => (parts.length === 7
+      ? { c0: parts[0], c1: parts[1], c2: parts[2], c3: parseFloat(parts[3]) || 0, c4: parts[4], c5: parts[5], c6: parts[6] }
       : null),
   );
 
   return rows.map((r) => {
     // node:sqlite returns column-named objects; the CLI fallback returns the
-    // c0..c5 shape built above. Read positionally either way.
+    // c0..c6 shape built above. Read positionally either way.
     const vals = Object.values(r) as Raw;
     return {
       activityId: String(vals[0]),
@@ -440,6 +450,7 @@ export function getNativeUncategorizedSpending(
       amountCents: Math.round(Number(vals[3]) || 0),
       date: String(vals[4]).slice(0, 10),
       accountName: String(vals[5]),
+      direction: (String(vals[6]) === 'out' ? 'out' : 'in') as 'in' | 'out',
     };
   });
 }
@@ -1353,4 +1364,43 @@ export function getNativeValuationByMonth(
   } catch {
     return [];
   }
+}
+
+/**
+ * getNativeSpendingCategories' income-taxonomy twin, for the /categorize
+ * menu's income grid. A school grant check is not spending, and upstream
+ * REFUSES a spending category on an income-bucket row — so a deposit's menu
+ * must offer the set Wealthfolio will actually accept (live, 2026-09-02: a
+ * $999 grant check was uncategorizable from Telegram). Same aliasing and
+ * null-normalisation rules as the spending reader, for the same reasons.
+ */
+export function getNativeIncomeCategories(dbPath: string): NativeSpendingCategory[] {
+  if (!dbPath || !existsSync(dbPath)) return [];
+
+  const query = `
+    SELECT tc.id AS id, tc.name AS name, tc.parent_id AS parent_id, parent.name AS parent_name
+    FROM taxonomy_categories tc
+    LEFT JOIN taxonomy_categories parent ON tc.parent_id = parent.id
+    WHERE tc.taxonomy_id = 'income_sources'
+    ORDER BY COALESCE(parent.name, tc.name), tc.parent_id IS NOT NULL, tc.sort_order, tc.name;
+  `;
+
+  const rows = queryNativeDb<Record<string, unknown>>(
+    dbPath,
+    'income categories',
+    query,
+    (parts) => (parts.length === 4
+      ? { id: parts[0], name: parts[1], parent_id: parts[2], parent_name: parts[3] }
+      : null),
+  );
+
+  return rows.map((r) => {
+    const v = Object.values(r) as Array<string | null>;
+    return {
+      id: String(v[0]),
+      name: String(v[1]),
+      parentId: String(v[2] ?? '') || null,
+      parentName: String(v[3] ?? '') || null,
+    };
+  });
 }
