@@ -28,7 +28,7 @@
  * user wants fixed, and a charge whose order email arrives days after the
  * charge is only labelled on a later sync anyway.
  */
-import { resolveAmazonCategory, type AmazonMailConfig } from '../../shared/amazon-config.js';
+import { DEFAULT_AMAZON_CATEGORY, resolveAmazonCategory, type AmazonMailConfig } from '../../shared/amazon-config.js';
 
 /** Pulls the label out of an enriched note. `amazonDescription` writes
  *  ` · Amazon: <label>` (single) or ` · Amazon: mixed — a + b` (several), and
@@ -38,11 +38,9 @@ export function amazonLabelFromNote(note: string): string | null {
   if (!m) return null;
   const label = m[1].trim();
   if (!label) return null;
-  // A MIXED order is deliberately not filed. One charge covering $190 of
-  // electronics and $10 of groceries has no honest single category, and
-  // `amazonDescription` formats it precisely so that nothing can match it —
-  // it belongs in the needs-a-category sweep for a human to split.
-  if (/^mixed\b/i.test(label)) return null;
+  // A MIXED label comes back VERBATIM — `fileAmazonCharges` routes it to the
+  // default category (the user's 2026-09-02 decision; it used to be swallowed
+  // here so mixed orders stranded in the needs-a-category sweep forever).
   return label;
 }
 
@@ -86,6 +84,26 @@ export async function fileAmazonCharges(deps: AmazonFilingDeps): Promise<AmazonF
     const byName = new Map(categories.map((c) => [c.name.trim().toLowerCase(), c.id]));
 
     for (const { row, label } of labelled) {
+      // A MIXED order goes straight to the configured default: one charge
+      // covering several categories has no honest single label, no rule can
+      // ever match it (so `needRule` nagging would be permanent), and leaving
+      // it stranded meant hand-filing every mixed order forever. The default
+      // category is the user's own knob for exactly this kind of judgment call.
+      if (/^mixed\b/i.test(label)) {
+        const fallback = cfg.defaultCategory || DEFAULT_AMAZON_CATEGORY;
+        const fallbackId = byName.get(fallback.trim().toLowerCase());
+        if (!fallbackId) {
+          if (!result.unknownCategories.includes(fallback)) result.unknownCategories.push(fallback);
+          continue;
+        }
+        try {
+          await deps.assign(row.activityId, fallbackId);
+          result.filed += 1;
+        } catch (err) {
+          deps.log(`Amazon filing: could not file mixed order ${row.activityId} under ${fallback}: ${String(err)}`);
+        }
+        continue;
+      }
       const { category, matched } = resolveAmazonCategory(label, cfg);
       // A label NO rule matched only landed in the default category, and the
       // whole point of `matched` is that such a label stays visible — the

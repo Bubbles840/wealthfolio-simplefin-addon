@@ -30,11 +30,11 @@ describe('amazonLabelFromNote', () => {
     expect(amazonLabelFromNote('TRADER JOE S #628 · TRN-abc')).toBeNull();
   });
 
-  it('refuses a MIXED order', () => {
-    // One charge covering several categories has no honest single answer —
-    // `amazonDescription` formats it so nothing can match, deliberately, and it
-    // belongs in the needs-a-category sweep for a human to split.
-    expect(amazonLabelFromNote('Amazon · Amazon: mixed — Tools + Groceries · TRN-x')).toBeNull();
+  it('hands a MIXED order back verbatim for the filer to route', () => {
+    // The label is no longer swallowed here: fileAmazonCharges routes mixed
+    // orders to the DEFAULT category (the user's choice), so the extractor's
+    // job is only to say what the note carries.
+    expect(amazonLabelFromNote('Amazon · Amazon: mixed — Tools + Groceries · TRN-x')).toBe('mixed — Tools + Groceries');
   });
 });
 
@@ -63,15 +63,31 @@ describe('fileAmazonCharges', () => {
     expect(assigned).toEqual([['a1', 'cat-shopping']]);
   });
 
-  it('leaves a mixed-category order alone', async () => {
+  it('files a mixed order under the default Amazon category', async () => {
+    // The user's decision (2026-09-02): a charge covering several categories
+    // has no single honest label, but leaving it stranded meant hand-filing
+    // every mixed order forever — so it goes to the configured default, the
+    // same knob every unmatched label's rule advice points at.
     const { deps, assigned } = make({
       uncategorized: vi.fn(async () => [
         { activityId: 'a1', notes: 'Amazon · Amazon: mixed — Tools + Groceries · TRN-1' },
       ]),
     });
     const res = await fileAmazonCharges(deps as any);
-    expect(res.filed).toBe(0);
-    expect(assigned).toEqual([]);
+    expect(res.filed).toBe(1);
+    expect(assigned).toEqual([['a1', 'cat-shopping']]);
+    expect(res.needRule).toEqual([]); // mixed can never have a rule — no nagging
+  });
+
+  it('honours a configured default category for mixed orders', async () => {
+    const { deps, assigned } = make({
+      uncategorized: vi.fn(async () => [
+        { activityId: 'a1', notes: 'Amazon · Amazon: mixed — Tools + Groceries · TRN-1' },
+      ]),
+      readConfig: vi.fn(async () => ({ defaultCategory: 'Housing' } as any)),
+    });
+    await fileAmazonCharges(deps as any);
+    expect(assigned).toEqual([['a1', 'cat-housing']]);
   });
 
   it('ignores rows that are not Amazon at all', async () => {
