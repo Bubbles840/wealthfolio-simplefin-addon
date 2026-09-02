@@ -1048,7 +1048,7 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
           session: buildSession(
             { kind: 'closed' },
             null,
-            { txns: [], categories: [], ledger: {}, assignments: NO_ASSIGNMENTS, buckets: NO_BUCKETS },
+            { txns: [], categories: [], incomeCategories: [], ledger: {}, assignments: NO_ASSIGNMENTS, buckets: NO_BUCKETS },
             chat.mode.kind,
           ),
           pinned: null,
