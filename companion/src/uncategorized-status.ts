@@ -39,6 +39,8 @@ interface UncategorizedSourceRow {
   amountCents: number;
   date: string;
   accountName: string;
+  /** See `UncategorizedRow.direction` — passed through untouched. */
+  direction?: 'in' | 'out';
 }
 
 /**
@@ -69,6 +71,7 @@ export async function publishUncategorizedStatus(
       // to the raw note rather than publishing an empty field.
       description: descriptionFromComment(r.notes) || r.notes,
       accountName: r.accountName,
+      ...(r.direction ? { direction: r.direction } : {}),
     }));
     const status = {
       // The true total AFTER dismissal filtering — NOT `rows.length`, which is

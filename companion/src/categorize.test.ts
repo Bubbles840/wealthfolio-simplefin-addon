@@ -249,9 +249,12 @@ function setup(
       const expected = taxonomyForBucket(bucketFor(bucketOf
         ? { accountType: bucketOf.accountType, activityType: bucketOf.activityType, subtype: bucketOf.subtype }
         // A row that has never been categorized comes from the UNcategorized
-        // sweep, which this fake models as a card spend — the same shape it
-        // gives the row it is about to create below.
-        : { accountType: 'CREDIT_CARD', activityType: 'WITHDRAWAL', subtype: '' }));
+        // sweep, which this fake models as a card spend — unless the fixture
+        // says the row is income-eligible, in which case it is the cash
+        // deposit the real reader derived that flag from.
+        : (hit as any)?.incomeEligible
+          ? { accountType: 'CASH', activityType: 'DEPOSIT', subtype: '' }
+          : { accountType: 'CREDIT_CARD', activityType: 'WITHDRAWAL', subtype: '' }));
       if (expected !== taxonomyId) {
         // Upstream's own two 400 sentences, verbatim (§1), so a leak of this
         // prose into user-visible copy is recognisable in a diff — the copy
@@ -2015,5 +2018,33 @@ describe('undoing a reassignment', () => {
     await h.tap('cz:nope');
     await h.tap(dataFor(keyboardOf(lastCall(h.ui.edit)), 'Undo'));
     expect(h.deps.assign).toHaveBeenLastCalledWith('b', 'cat-rest', SPENDING_TAXONOMY_ID);
+  });
+});
+
+describe('income filings', () => {
+  it('offers the income grid to a money-in row and files with the income taxonomy', async () => {
+    const h = setup({ rows: [row('g', { notes: 'GRANT CHECK · TRN-g', direction: 'in', incomeEligible: true } as any)] });
+    (h.deps as any).readIncomeCategories = vi.fn(() => [
+      { id: 'inc-oth', name: 'Other Income', parentId: null, parentName: null },
+    ]);
+    const picker = await openAtTxn(h, 'GRANT CHECK');
+    // The header line signs the amount as a magnitude, and the grid is the
+    // INCOME set.
+    expect(lastCall(h.ui.edit)[0]).toContain('+$12');
+    expect(labels(picker)).toContain('Other Income');
+    expect(labels(picker)).not.toContain('Food & Dining');
+    await h.tap(dataFor(picker, 'Other Income'));
+    expect(h.deps.assign).toHaveBeenCalledWith('g', 'inc-oth', 'income_sources');
+    expect(lastCall(h.ui.edit)[0]).toBe('Filed GRANT CHECK → Other Income.');
+  });
+
+  it('money-out rows keep the spending grid untouched', async () => {
+    const h = setup({ rows: [row('a', { direction: 'out' } as any)] });
+    (h.deps as any).readIncomeCategories = vi.fn(() => [
+      { id: 'inc-oth', name: 'Other Income', parentId: null, parentName: null },
+    ]);
+    const picker = await openAtTxn(h, 'BOOK STORES a');
+    expect(labels(picker)).toContain('Food & Dining');
+    expect(labels(picker)).not.toContain('Other Income');
   });
 });

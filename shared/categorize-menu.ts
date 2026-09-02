@@ -30,6 +30,10 @@ export interface CategorizeTxn {
    *  as they always did; when present it puts the +/− on every listed amount
    *  and decides whether a first filing offers income or spending categories. */
   direction?: 'in' | 'out';
+  /** Whether the income taxonomy is the LEGAL filing for this row — the
+   *  bucket question, distinct from `direction`: a card credit is money in
+   *  but a spending-bucket refund, and its income grid would be all 400s. */
+  incomeEligible?: boolean;
   /** Present in recategorize mode: the ONE category this transaction is
    *  currently filed under that a reader would recognise — the spending
    *  assignment when it has one (their budgets are about it), else whatever it
@@ -341,6 +345,15 @@ function directionSign(t: Pick<CategorizeTxn, 'direction'>): string {
   return t.direction === 'out' ? '−' : t.direction === 'in' ? '+' : '';
 }
 
+/** The signed figure for a row. With a direction the amount renders as a
+ *  MAGNITUDE behind the direction's own sign — a stored negative would
+ *  otherwise render `+-$12`; without one, the raw figure passes through
+ *  exactly as it always did. */
+function signedWhole(t: Pick<CategorizeTxn, 'direction' | 'amountCents'>): string {
+  const cents = t.direction ? Math.abs(t.amountCents) : t.amountCents;
+  return `${directionSign(t)}${moneyWhole(cents / 100)}`;
+}
+
 /** Sentence shown when a screen refers to a transaction or category id that
  *  has since vanished from the session's fresh data — most commonly a row
  *  someone else finished categorizing (from another chat, or a rule import)
@@ -470,7 +483,7 @@ function renderList(session: MenuSession, page: number, note?: string): RenderRe
       // readers ABS() the amount before it ever reaches this module, so the
       // sign comes from `direction`, not the figure — and stays absent for a
       // row whose direction an older controller never supplied.
-      text: `${shortDate(t.date)} · ${t.description} · ${directionSign(t)}${moneyWhole(t.amountCents / 100)}${currentSuffix}`,
+      text: `${shortDate(t.date)} · ${t.description} · ${signedWhole(t)}${currentSuffix}`,
       action: { kind: 'goto', screen: { kind: 'txn', activityId: t.activityId } },
     }];
   });
@@ -505,7 +518,7 @@ function renderTxn(session: MenuSession, activityId: string, showSpending = fals
   // is the escape hatch for a deposit that is really a refund; recategorize
   // keeps its spending-centric flow untouched.
   const income = session.incomeCategories ?? [];
-  const incomeGridAvailable = !isRecategorize && txn.direction === 'in' && income.length > 0;
+  const incomeGridAvailable = !isRecategorize && txn.incomeEligible === true && income.length > 0;
   const useIncomeGrid = incomeGridAvailable && !showSpending;
 
   const catButtons: Btn[] = useIncomeGrid
@@ -548,7 +561,7 @@ function renderTxn(session: MenuSession, activityId: string, showSpending = fals
   // Wealthfolio account names both routinely carry `_`/`*`.
   const lines = [
     escapeMarkdown(txn.description),
-    `${directionSign(txn)}${moneyWhole(txn.amountCents / 100)} · ${shortDate(txn.date)} · ${escapeMarkdown(txn.accountName)}`,
+    `${signedWhole(txn)} · ${shortDate(txn.date)} · ${escapeMarkdown(txn.accountName)}`,
   ];
   if (isRecategorize && txn.currentCategory) {
     lines.push(`Currently: ${escapeMarkdown(txn.currentCategory.name)}`);

@@ -760,3 +760,23 @@ describe('semester pool', () => {
     await waitFor(() => expect((props.store as any).setSemesterPool).toHaveBeenCalledWith(null));
   });
 });
+
+describe('uncategorized list signs', () => {
+  it('signs and colors rows by direction', async () => {
+    const props = makeProps();
+    (props.store as any).getUncategorizedStatus = vi.fn(async () => ({
+      count: 2,
+      asOf: new Date().toISOString(),
+      rows: [
+        { activityId: 'u1', date: '2026-09-01', amountCents: 1200, description: 'MYSTERY', accountName: 'Spend', direction: 'out' },
+        { activityId: 'u2', date: '2026-09-01', amountCents: 99_900, description: 'GRANT CHECK', accountName: 'Spend', direction: 'in' },
+      ],
+    }));
+    render(<SyncPage {...props} />);
+    fireEvent.click(await screen.findByRole('button', { name: /^2 need/i }));
+    expect(await screen.findByText(/−\$12/)).toBeInTheDocument();
+    expect(screen.getByText(/\+\$999/)).toBeInTheDocument();
+    expect(document.querySelector('.sfin-amt--in')).toBeTruthy();
+    expect(document.querySelector('.sfin-amt--out')).toBeTruthy();
+  });
+});

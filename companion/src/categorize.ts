@@ -118,6 +118,11 @@ export interface CategorizeSourceRow {
   amountCents: number;
   date: string;
   accountName: string;
+  /** See `NativeUncategorizedTx.direction` — optional so older callers keep
+   *  working; without it the menu renders as it always did. */
+  direction?: 'in' | 'out';
+  /** See `NativeUncategorizedTx.incomeEligible`. */
+  incomeEligible?: boolean;
 }
 
 /** One taxonomy's assignment on a row — `NativeAssignment` from
@@ -191,6 +196,10 @@ export interface CategorizeDeps {
   readCategorized: (dbPath: string, startInclusive: string, endExclusive: string) => CategorizedSourceRow[];
   /** `getNativeSpendingCategories`. */
   readCategories: (dbPath: string) => SpendingCategory[];
+  /** `getNativeIncomeCategories` — the income taxonomy for money-in rows'
+   *  first filings. OPTIONAL: absent (older callers, most tests) means those
+   *  rows keep the spending grid they always had. */
+  readIncomeCategories?: (dbPath: string) => SpendingCategory[];
   readLedger: () => Promise<DismissalLedger>;
   /**
    * Persists a dismissal delta. `base` is the ledger THIS controller read a
@@ -451,6 +460,9 @@ interface ChatSession {
 interface Fresh {
   txns: CategorizeTxn[];
   categories: SpendingCategory[];
+  /** The income taxonomy for money-in first filings; [] in recategorize mode
+   *  and whenever the optional reader is absent or failed. */
+  incomeCategories: SpendingCategory[];
   /** EMPTY in recategorize mode, where the ledger is not read at all: it records
    *  which rows the user stopped being nagged about, and every row this menu
    *  lists already has a category, so it has no say in what appears here. The
@@ -603,6 +615,8 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
       amountCents: r.amountCents,
       description: descriptionFromComment(r.notes) || r.notes,
       accountName: r.accountName,
+      ...(r.direction ? { direction: r.direction } : {}),
+      ...(r.incomeEligible !== undefined ? { incomeEligible: r.incomeEligible } : {}),
     };
   }
 
@@ -699,11 +713,17 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
           });
           txns.push(txn);
         }
-        return { ok: true, fresh: { txns, categories, ledger: {}, assignments, buckets } };
+        return { ok: true, fresh: { txns, categories, incomeCategories: [], ledger: {}, assignments, buckets } };
       }
       const rows = deps.readRows(path, start, end);
       const ledger = await deps.readLedger();
       const categories = deps.readCategories(path);
+      // Guarded to []: the income grid is an addition, and a broken income
+      // read must cost the grid, never the menu.
+      let incomeCategories: SpendingCategory[] = [];
+      try {
+        incomeCategories = deps.readIncomeCategories?.(path) ?? [];
+      } catch { /* the spending grid still works */ }
       return {
         ok: true,
         // ONE definition of "needs a category", shared with the status tile and
@@ -711,6 +731,7 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
         fresh: {
           txns: visibleUncategorized(rows, ledger).map(toTxn),
           categories,
+          incomeCategories,
           ledger,
           assignments: NO_ASSIGNMENTS,
           buckets: NO_BUCKETS,
@@ -821,6 +842,7 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
     return {
       txns,
       categories: fresh.categories,
+      incomeCategories: fresh.incomeCategories,
       screen,
       buttons: [],
       generation: nextGeneration(),
@@ -1052,7 +1074,15 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
           return;
         }
         try {
-          await deps.assign(action.activityId, action.categoryId);
+          // The taxonomy rides through when the menu offered a non-spending
+          // grid. The two-argument call is kept verbatim for spending filings —
+          // it is the shape every existing caller and test pins, and
+          // deps.assign's own default supplies the spending taxonomy there.
+          if (action.taxonomyId) {
+            await deps.assign(action.activityId, action.categoryId, action.taxonomyId);
+          } else {
+            await deps.assign(action.activityId, action.categoryId);
+          }
         } catch (err) {
           const message = formatError(err);
           safeLog(`Categorize menu: filing ${action.activityId} failed: ${message}`);
@@ -1062,7 +1092,10 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
         await republishQuietly();
         await transition(
           chat,
-          { kind: 'filed', activityId: action.activityId, categoryId: action.categoryId, undone: false },
+          {
+            kind: 'filed', activityId: action.activityId, categoryId: action.categoryId, undone: false,
+            ...(action.taxonomyId ? { taxonomyId: action.taxonomyId } : {}),
+          },
           row,
           ui,
         );
@@ -1088,7 +1121,12 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
           await showError(chat, failureText(verified.failure, chat.session.screen, chat.mode), ui);
           return;
         }
-        const filedAs = spendingAssignmentOf(verified.byId.get(action.activityId));
+        // Verified against the taxonomy the filing actually wrote to: an income
+        // Undo checking the SPENDING assignment would find nothing and decline
+        // a perfectly undoable filing.
+        const undoTaxonomy = action.taxonomyId ?? SPENDING_TAXONOMY_ID;
+        const filedAs = (verified.byId.get(action.activityId) ?? [])
+          .find((a) => a.taxonomyId === undoTaxonomy) ?? null;
         if (!filedAs || filedAs.categoryId !== action.categoryId) {
           // Also covers "already unfiled by someone else" (no assignment at all):
           // there is nothing this menu set left to undo, and clearing nothing
@@ -1103,7 +1141,13 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
         }
         const row = rowFor(chat, action.activityId);
         try {
-          await deps.unassign(action.activityId);
+          // The legacy spending path keeps its dedicated dep; a taxonomy-
+          // carrying Undo clears exactly the taxonomy it filed to.
+          if (action.taxonomyId) {
+            await deps.unassignTaxonomy(action.activityId, action.taxonomyId);
+          } else {
+            await deps.unassign(action.activityId);
+          }
         } catch (err) {
           const message = formatError(err);
           safeLog(`Categorize menu: undoing the filing of ${action.activityId} failed: ${message}`);
