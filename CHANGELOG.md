@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.32.0] - 2026-09-02
+
+### Fixed
+
+- **The sage gradient actually shows now.** 1.31.0 painted it on a layer
+  stacked beneath the sandbox body's opaque background — invisible by
+  construction. It lives on the body itself, slightly stronger.
+
+### Added
+
+- **Drag-to-resize.** In Customize, every grid card grows a corner handle:
+  drag right to widen, down to grow, snapping to the grid rhythm (up to 3×4),
+  stored per card. The size-cycle button stays for phones and keyboards.
+- **Auto-density.** Content conforms to the box it is given: short cards
+  shrink their type (CSS container queries), fade out at the bottom edge
+  instead of clipping mid-row, and list reports (merchants, budget vs actual)
+  budget their row count to the card's height with a "+ N more" note.
+- **Six new reports**: *Where it went* (last month's donut), *Month vs last*
+  (change per category, jumps first), *Spending calendar* (per-day heat over
+  the pool window), *Pool pace* (both paces with a green/amber/red verdict),
+  *Money in vs out* (cumulative income against spending), and *Uncategorized
+  trend*. Pool-window reports appear only while a pool is set.
+- **Builder upgrades**: any series can render as **% of income or spending**;
+  a report can apply a **3-month rolling average** (kills lump-sum noise);
+  and a months-range report can **overlay the previous window** ("(prev)"
+  series) for comparison.
+
 ## [1.31.0] - 2026-09-02
 
 ### Changed

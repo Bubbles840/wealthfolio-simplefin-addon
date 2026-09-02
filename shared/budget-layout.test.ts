@@ -132,3 +132,37 @@ describe('wide cards', () => {
 });
 
 import { toggleWide } from './budget-layout.js';
+
+describe('free spans (drag resize)', () => {
+  const base: BudgetLayout = { heroes: ['cash-flow'], order: [], hidden: [] };
+
+  it('setSpan stores exact column/row spans, clamped to the grid', () => {
+    const l = setSpan(base, 'merchants', 2, 3);
+    expect(l.span).toEqual({ merchants: [2, 3] });
+    const clamped = setSpan(base, 'merchants', 9, 0);
+    expect(clamped.span).toEqual({ merchants: [3, 1] });
+  });
+
+  it('spanOf prefers exact spans, then size letters, then wide, then defaults', () => {
+    const stored: BudgetLayout = {
+      ...base,
+      wide: ['net-worth'],
+      size: { seasonality: 't' },
+      span: { merchants: [3, 1] },
+    };
+    const r = resolveBudgetLayout(stored, AVAIL, true);
+    expect(r.spanOf('merchants')).toEqual({ c: 3, r: 1 });
+    expect(r.spanOf('seasonality')).toEqual({ c: 1, r: 3 });
+    expect(r.spanOf('net-worth')).toEqual({ c: 2, r: 2 });
+    expect(r.spanOf('fees-interest')).toEqual({ c: 1, r: 1 });
+    expect(r.spanOf('savings-rate')).toEqual({ c: 1, r: 2 });
+  });
+
+  it('parseBudgetLayout keeps a valid span map and rejects junk', () => {
+    const ok = { heroes: [], order: [], hidden: [], span: { merchants: [2, 2] } };
+    expect(parseBudgetLayout(JSON.stringify(ok))).toEqual(ok);
+    expect(parseBudgetLayout(JSON.stringify({ heroes: [], order: [], hidden: [], span: { merchants: ['x', 2] } }))).toBeNull();
+  });
+});
+
+import { setSpan } from './budget-layout.js';

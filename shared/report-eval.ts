@@ -32,7 +32,13 @@ export interface CustomReportTerm {
   /** Required exactly when `source` is 'category'. */
   category?: string;
 }
-export interface CustomReportSeries { label: string; terms: CustomReportTerm[] }
+export interface CustomReportSeries {
+  label: string;
+  terms: CustomReportTerm[];
+  /** Render this series as a percent (tenths) of the month's total income or
+   *  spending instead of dollars — "Dining as % of what I spend". */
+  asPercentOf?: 'income' | 'spending';
+}
 export interface CustomReport {
   id: string;
   name: string;
@@ -41,6 +47,11 @@ export interface CustomReport {
   /** SimpleFin account ids to include, or null for all. */
   accounts: string[] | null;
   series: CustomReportSeries[];
+  /** 3-month rolling mean over every series — kills lump-sum noise. */
+  smooth?: boolean;
+  /** For a months-range report: overlay the SAME series computed one window
+   *  earlier, labelled "(prev)". */
+  compare?: boolean;
 }
 
 export interface EvaluatedSeries { label: string; values: number[]; unknownCategories: string[] }
@@ -65,7 +76,10 @@ function windowIndices(cube: ReportCube, range: CustomRange): number[] {
 
 export function evaluateCustomReport(cube: ReportCube, def: CustomReport): EvaluatedReport {
   const idx = windowIndices(cube, def.range);
-  const series = def.series.map((s) => {
+
+  /** One series' value for EVERY cube month; windowing and comparison pick
+   *  indices out of this afterwards, so both read the same arithmetic. */
+  const fullSeries = (s: CustomReportSeries): { totals: number[]; unknown: string[] } => {
     const totals = new Array(cube.months.length).fill(0);
     const unknown: string[] = [];
     for (const term of s.terms) {
@@ -86,12 +100,48 @@ export function evaluateCustomReport(cube: ReportCube, def: CustomReport): Evalu
       }
       for (let i = 0; i < totals.length; i += 1) totals[i] += term.sign * full[i];
     }
+    if (s.asPercentOf) {
+      const base = s.asPercentOf === 'income'
+        ? monthlyIncomeTotals(cube, def.accounts)
+        : monthlySpendTotals(cube, def.accounts);
+      for (let i = 0; i < totals.length; i += 1) {
+        totals[i] = base[i] > 0 ? Math.round((totals[i] / base[i]) * 1000) / 10 : 0;
+      }
+    }
+    if (def.smooth) {
+      const smoothed = totals.map((_, i) => {
+        const window = totals.slice(Math.max(0, i - 2), i + 1);
+        return Math.round((window.reduce((a, b) => a + b, 0) / window.length) * 10) / 10;
+      });
+      return { totals: smoothed, unknown };
+    }
+    return { totals, unknown };
+  };
+
+  const series = def.series.map((s) => {
+    const { totals, unknown } = fullSeries(s);
     return {
       label: s.label,
       values: idx.map((i) => totals[i]),
       unknownCategories: unknown,
     };
   });
+
+  // The comparison overlay: the same series, one window earlier. Only a
+  // months-range has a well-defined "previous window"; indices that fall off
+  // the front of the cube read as 0 rather than inventing history.
+  if (def.compare && def.range.kind === 'months') {
+    const n = def.range.n;
+    for (const s of def.series) {
+      const { totals } = fullSeries(s);
+      series.push({
+        label: `${s.label} (prev)`,
+        values: idx.map((i) => (i - n >= 0 ? totals[i - n] : 0)),
+        unknownCategories: [],
+      });
+    }
+  }
+
   return { months: idx.map((i) => cube.months[i]), series };
 }
 
@@ -119,7 +169,10 @@ function validReport(v: any): v is CustomReport {
   for (const s of v.series) {
     if (!s || typeof s !== 'object' || typeof s.label !== 'string') return false;
     if (!Array.isArray(s.terms) || !s.terms.every(validTerm)) return false;
+    if (s.asPercentOf !== undefined && s.asPercentOf !== 'income' && s.asPercentOf !== 'spending') return false;
   }
+  if (v.smooth !== undefined && typeof v.smooth !== 'boolean') return false;
+  if (v.compare !== undefined && typeof v.compare !== 'boolean') return false;
   return true;
 }
 

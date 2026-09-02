@@ -80,3 +80,38 @@ it('newCustomReportId is cr-prefixed and unique-ish', () => {
   expect(a).toMatch(/^cr-[0-9a-f]{12}$/);
   expect(a).not.toBe(b);
 });
+
+describe('builder upgrades', () => {
+  it('a series can render as percent of income or spending', () => {
+    const r = evaluateCustomReport(CUBE, def({
+      series: [{
+        label: 'Dining share',
+        asPercentOf: 'spending',
+        terms: [{ sign: 1, source: 'category', category: 'Dining' }],
+      }],
+    }));
+    // Jul: 3000/6100, Aug: 2000/4700 — tenths of a percent.
+    expect(r.series[0].values).toEqual([49.2, 42.6]);
+  });
+
+  it('a report can smooth every series with a 3-month rolling mean', () => {
+    const r = evaluateCustomReport(CUBE, def({ smooth: true }));
+    // Food: [6000, 4500] → [6000, 5250].
+    expect(r.series[0].values).toEqual([6000, 5250]);
+  });
+
+  it('a months-range report can overlay the previous window for comparison', () => {
+    const r = evaluateCustomReport(CUBE, def({ range: { kind: 'months', n: 1 }, compare: true }));
+    expect(r.months).toEqual(['2026-08']);
+    expect(r.series.map((s) => s.label)).toEqual(['Food', 'Food (prev)']);
+    expect(r.series[0].values).toEqual([4500]);
+    expect(r.series[1].values).toEqual([6000]); // July, one window back
+  });
+
+  it('parse keeps the new fields and rejects junk in them', () => {
+    const good = def({ smooth: true, compare: true, series: [{ label: 'S', asPercentOf: 'income', terms: [{ sign: 1, source: 'spending' }] }] });
+    expect(parseCustomReports(JSON.stringify([good]))).toEqual([good]);
+    const bad = def({ series: [{ label: 'S', asPercentOf: 'weird', terms: [{ sign: 1, source: 'spending' }] } as any] });
+    expect(parseCustomReports(JSON.stringify([bad]))).toEqual([]);
+  });
+});

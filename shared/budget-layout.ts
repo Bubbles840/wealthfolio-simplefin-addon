@@ -19,7 +19,11 @@
 export const STANDARD_REPORT_IDS = [
   'pool-burndown', 'cash-flow', 'category-trends', 'net-worth', 'savings-rate',
   'merchants', 'budget-vs-actual', 'seasonality', 'fees-interest', 'runway-trend',
+  'category-donut', 'mom-delta', 'cumulative-flow', 'spend-calendar', 'pool-pace', 'uncat-trend',
 ] as const;
+
+/** Reports that only exist while a pool is set — they render the pool window. */
+export const POOL_ONLY_REPORT_IDS = new Set(['pool-burndown', 'spend-calendar', 'pool-pace']);
 
 export interface BudgetLayout {
   heroes: string[];
@@ -33,13 +37,27 @@ export interface BudgetLayout {
    *  t = tall (1×3), b = big (2×3). The "exact box size you want", within a
    *  system that keeps the grid flush. */
   size?: Record<string, CardSize>;
+  /** Exact per-card spans from the drag handle: [columns, rows] on the grid's
+   *  fixed rhythm. Wins over `size` and `wide`, which remain as coarser
+   *  fallbacks (the cycle button still writes `size`). */
+  span?: Record<string, [number, number]>;
 }
+
+export interface CardSpan { c: number; r: number }
+
+export const MAX_SPAN_COLS = 3;
+export const MAX_SPAN_ROWS = 4;
+
+/** What each cycle letter means in grid units. */
+const LETTER_SPANS: Record<CardSize, [number, number]> = {
+  c: [1, 1], m: [1, 2], w: [2, 2], t: [1, 3], b: [2, 3],
+};
 
 export type CardSize = 'c' | 'm' | 'w' | 't' | 'b';
 
 /** Reports whose usual content is one line or a short list start compact —
  *  an all-quiet fees card at full height is what read as wasted space. */
-const DEFAULT_COMPACT = new Set(['fees-interest']);
+const DEFAULT_COMPACT = new Set(['fees-interest', 'pool-pace', 'uncat-trend']);
 
 /** m → w → t → b → c → m: each tap of Resize is one step through the shapes. */
 const SIZE_CYCLE: Record<CardSize, CardSize> = { m: 'w', w: 't', t: 'b', b: 'c', c: 'm' };
@@ -55,6 +73,9 @@ export interface ResolvedLayout {
   /** The effective size for any card id: the stored size, else 'w' for a
    *  legacy wide entry, else the per-report default. */
   sizeOf: (id: string) => CardSize;
+  /** The effective spans: an exact drag-set span first, then the size letter's
+   *  shape, then the same fallbacks sizeOf uses. */
+  spanOf: (id: string) => CardSpan;
 }
 
 const MAX_HEROES = 2;
@@ -77,10 +98,18 @@ export function parseBudgetLayout(raw: string | null | undefined): BudgetLayout 
       if (val !== 'c' && val !== 'm' && val !== 'w' && val !== 't' && val !== 'b') return null;
     }
   }
+  if (v.span !== undefined) {
+    if (typeof v.span !== 'object' || v.span === null) return null;
+    for (const val of Object.values(v.span)) {
+      if (!Array.isArray(val) || val.length !== 2
+        || !val.every((n) => Number.isInteger(n) && n >= 1)) return null;
+    }
+  }
   return {
     heroes: v.heroes, order: v.order, hidden: v.hidden,
     ...(v.wide ? { wide: v.wide } : {}),
     ...(v.size ? { size: v.size } : {}),
+    ...(v.span ? { span: v.span } : {}),
   };
 }
 
@@ -117,7 +146,18 @@ function resolveFrom(stored: BudgetLayout | null, avail: string[], poolPresent: 
   const sizeOf = (id: string): CardSize =>
     stored?.size?.[id]
     ?? (wide.includes(id) ? 'w' : DEFAULT_COMPACT.has(id) ? 'c' : 'm');
-  return { heroes, grid, hidden, wide, sizeOf };
+  const spanOf = (id: string): CardSpan => {
+    const exact = stored?.span?.[id];
+    if (exact) {
+      return {
+        c: Math.min(MAX_SPAN_COLS, Math.max(1, exact[0])),
+        r: Math.min(MAX_SPAN_ROWS, Math.max(1, exact[1])),
+      };
+    }
+    const [c, r] = LETTER_SPANS[sizeOf(id)];
+    return { c, r };
+  };
+  return { heroes, grid, hidden, wide, sizeOf, spanOf };
 }
 
 export function resolveBudgetLayout(
@@ -192,4 +232,11 @@ export function cycleSize(stored: BudgetLayout, id: string): BudgetLayout {
     ...stored,
     size: { ...(stored.size ?? {}), [id]: SIZE_CYCLE[current] },
   };
+}
+
+/** Store an exact span from the drag handle, clamped to the grid. */
+export function setSpan(stored: BudgetLayout, id: string, cols: number, rows: number): BudgetLayout {
+  const c = Math.min(MAX_SPAN_COLS, Math.max(1, Math.round(cols)));
+  const r = Math.min(MAX_SPAN_ROWS, Math.max(1, Math.round(rows)));
+  return { ...stored, span: { ...(stored.span ?? {}), [id]: [c, r] } };
 }

@@ -4,8 +4,8 @@ import { ReportView, reportTitle } from '../components/budget/ReportView';
 import { monthlySpendTotals, sliceCubeMonths, type ReportCube } from '../../shared/report-cube';
 import { runwayTrendData, savingsRateData } from '../components/budget/report-data';
 import {
-  cycleSize, moveCard, pinHero, resolveBudgetLayout, SIZE_LABELS, STANDARD_REPORT_IDS,
-  toggleHidden, type BudgetLayout,
+  cycleSize, moveCard, pinHero, POOL_ONLY_REPORT_IDS, resolveBudgetLayout, setSpan, SIZE_LABELS,
+  STANDARD_REPORT_IDS, toggleHidden, type BudgetLayout,
 } from '../../shared/budget-layout';
 import { newCustomReportId, type CustomReport } from '../../shared/report-eval';
 import { ReportBuilder } from '../components/budget/ReportBuilder';
@@ -52,6 +52,8 @@ export function BudgetTab({ cube, customReports, layout, onLayoutChange, onCusto
   const [fullId, setFullId] = useState<string | null>(null);
   const [range, setRange] = useState<Range>(12);
   const [customizing, setCustomizing] = useState(false);
+  /** Live spans while a corner drag is in flight, by report id. */
+  const [dragSpans, setDragSpans] = useState<Record<string, { c: number; r: number }>>({});
   /** Non-null while the builder is open; `existing` null means a new report. */
   const [builder, setBuilder] = useState<{ existing: CustomReport | null } | null>(null);
 
@@ -70,7 +72,7 @@ export function BudgetTab({ cube, customReports, layout, onLayoutChange, onCusto
   }
 
   const availableIds = [
-    ...STANDARD_REPORT_IDS.filter((id) => id !== 'pool-burndown' || cube.pool !== null),
+    ...STANDARD_REPORT_IDS.filter((id) => !POOL_ONLY_REPORT_IDS.has(id) || cube.pool !== null),
     ...customReports.map((r) => `custom:${r.id}`),
   ];
   const resolved = resolveBudgetLayout(layout, availableIds, cube.pool !== null);
@@ -206,15 +208,71 @@ export function BudgetTab({ cube, customReports, layout, onLayoutChange, onCusto
   const cellClass = (id: string, hero: boolean) =>
     `sfin-cell${hero ? '' : ` sfin-cell--${resolved.sizeOf(id)}`}`;
 
+  const spanFor = (id: string) => dragSpans[id] ?? resolved.spanOf(id);
+  const cellStyle = (id: string, hero: boolean): React.CSSProperties => {
+    if (hero) return {};
+    const { c, r } = spanFor(id);
+    return { gridColumn: `span ${c}`, gridRow: `span ${r}` };
+  };
+
+  /** Grid units for the corner drag, from the cell being dragged; jsdom (and
+   *  a not-yet-laid-out cell) measure 0, so real defaults keep the math sane. */
+  const GAP = 14;
+  const ROW_UNIT = 158 + GAP;
+  const startDrag = (id: string) => (down: React.PointerEvent) => {
+    down.preventDefault();
+    down.stopPropagation();
+    const cell = (down.currentTarget as HTMLElement).closest('.sfin-cell') as HTMLElement | null;
+    const { c: c0, r: r0 } = spanFor(id);
+    const colUnit = cell && cell.offsetWidth > 0 ? cell.offsetWidth / c0 + GAP : 330;
+    const startX = down.clientX;
+    const startY = down.clientY;
+    const spanAt = (e: PointerEvent | MouseEvent) => ({
+      c: c0 + Math.round((e.clientX - startX) / colUnit),
+      r: r0 + Math.round((e.clientY - startY) / ROW_UNIT),
+    });
+    const move = (e: PointerEvent) => {
+      const { c, r } = spanAt(e);
+      setDragSpans((prev) => ({
+        ...prev,
+        [id]: { c: Math.min(3, Math.max(1, c)), r: Math.min(4, Math.max(1, r)) },
+      }));
+    };
+    const up = (e: PointerEvent) => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      const { c, r } = spanAt(e);
+      setDragSpans((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      if (c !== c0 || r !== r0) onLayoutChange(setSpan(storedLayout, id, c, r));
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  };
+
   const card = (id: string, hero: boolean) => customizing ? (
-    <div key={id} className={`${cellClass(id, hero)} sfin-cell--editing`}>
-      <ReportView id={id} cube={viewCube} customReports={customReports} hero={hero} />
+    <div key={id} className={`${cellClass(id, hero)} sfin-cell--editing`} style={cellStyle(id, hero)}>
+      <ReportView id={id} cube={viewCube} customReports={customReports} hero={hero} density={spanFor(id).r} />
       {controls(id, !hero)}
+      {!hero && (
+        <div
+          className="sfin-resize-handle"
+          role="button"
+          tabIndex={0}
+          aria-label={`Drag to resize ${reportTitle(id, customReports)}`}
+          title="Drag: right to widen, down to grow"
+          onPointerDown={startDrag(id)}
+        />
+      )}
     </div>
   ) : (
     <div
       key={id}
       className={cellClass(id, hero)}
+      style={cellStyle(id, hero)}
       role="button"
       tabIndex={0}
       aria-label={`Open ${reportTitle(id, customReports)}`}
@@ -223,7 +281,7 @@ export function BudgetTab({ cube, customReports, layout, onLayoutChange, onCusto
         if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setFullId(id); }
       }}
     >
-      <ReportView id={id} cube={viewCube} customReports={customReports} hero={hero} />
+      <ReportView id={id} cube={viewCube} customReports={customReports} hero={hero} density={spanFor(id).r} />
     </div>
   );
 
