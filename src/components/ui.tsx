@@ -516,6 +516,8 @@ const css = `
 .sfin-uncat-when { flex: none; font-size: 11px; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
 .sfin-uncat-what { flex: 1; min-width: 0; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sfin-uncat-amt { flex: none; font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.sfin-amt--in { color: #16a34a; }
+.sfin-amt--out { color: #dc2626; }
 .sfin-uncat-undo { display: flex; align-items: center; gap: 8px; padding: 4px 0 8px; }
 /* Same rules as .sfin-uncat-undo — a distinct class because the cap notice and
    "Categorize in Wealthfolio" button are an unrelated footer, not the undo

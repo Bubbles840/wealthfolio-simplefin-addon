@@ -19,11 +19,14 @@ export interface UncategorizedRow {
   activityId: string;
   /** ISO date (yyyy-mm-dd). */
   date: string;
-  /** Magnitude in cents — sign is not meaningful here. */
+  /** Magnitude in cents — sign is not meaningful here; `direction` is. */
   amountCents: number;
   /** Display text, already stripped of bookkeeping decorations. */
   description: string;
   accountName: string;
+  /** Which way the money moved. Optional — a status published by an older
+   *  companion simply renders unsigned, as it always did. */
+  direction?: 'in' | 'out';
 }
 
 /**

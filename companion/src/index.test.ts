@@ -92,6 +92,7 @@ vi.mock('./sqlite-native.js', () => ({
   getNativeFeesInterestByMonth: vi.fn(() => []),
   getNativeSpendDailyTotals: vi.fn(() => []),
   getNativeValuationByMonth: vi.fn(() => []),
+  getNativeIncomeCategories: vi.fn(() => []),
 }));
 
 vi.mock('./amazon-mail.js', async (importOriginal) => ({

@@ -123,7 +123,9 @@ export function UncategorizedList({
             {r.description}
             <span className="sfin-subtle"> · {r.accountName}</span>
           </span>
-          <span className="sfin-uncat-amt">{money(r.amountCents)}</span>
+          <span className={`sfin-uncat-amt${r.direction ? ` sfin-amt--${r.direction}` : ''}`}>
+            {r.direction === 'out' ? '−' : r.direction === 'in' ? '+' : ''}{money(r.amountCents)}
+          </span>
           <Button
             variant="ghost"
             onClick={() => onDismiss(r.activityId)}

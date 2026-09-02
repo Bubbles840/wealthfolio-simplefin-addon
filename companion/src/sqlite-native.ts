@@ -377,9 +377,13 @@ export interface NativeUncategorizedTx {
    *  positive magnitudes; the activity type carries direction in Wealthfolio):
    *  out = withdrawals/fees/taxes and card interest, in = everything else,
    *  card credits (refunds — money back) included. Drives the +/− and color
-   *  everywhere rows are listed, and decides whether /categorize offers income
-   *  or spending categories. */
+   *  everywhere rows are listed. */
   direction: 'in' | 'out';
+  /** Whether the INCOME taxonomy is the legal filing for this row — upstream's
+   *  bucket rule (cash deposits/interest/income/dividends), NOT the same
+   *  question as `direction`: a card credit is money in but a spending-bucket
+   *  refund, and offering it income categories would offer only 400s. */
+  incomeEligible: boolean;
 }
 
 /**
@@ -409,7 +413,10 @@ export function getNativeUncategorizedSpending(
            substr(a.activity_date, 1, 10), COALESCE(ac.name, ''),
            CASE WHEN UPPER(a.activity_type) IN ('WITHDRAWAL', 'FEE', 'TAX')
                   OR (UPPER(a.activity_type) = 'INTEREST' AND UPPER(COALESCE(ac.account_type, '')) = 'CREDIT_CARD')
-                THEN 'out' ELSE 'in' END
+                THEN 'out' ELSE 'in' END,
+           CASE WHEN UPPER(COALESCE(ac.account_type, '')) = 'CASH'
+                  AND UPPER(a.activity_type) IN ('DEPOSIT', 'INTEREST', 'INCOME', 'DIVIDEND')
+                THEN 1 ELSE 0 END
     FROM activities a
     LEFT JOIN activity_taxonomy_assignments ata ON a.id = ata.activity_id
     LEFT JOIN accounts ac ON a.account_id = ac.id
@@ -429,19 +436,19 @@ export function getNativeUncategorizedSpending(
     ORDER BY a.activity_date DESC, a.id;
   `;
 
-  type Raw = [string, string, string, number, string, string, string];
+  type Raw = [string, string, string, number, string, string, string, number | string];
   const rows = queryNativeDb<Record<string, unknown>>(
     dbPath,
     'uncategorized',
     query,
-    (parts) => (parts.length === 7
-      ? { c0: parts[0], c1: parts[1], c2: parts[2], c3: parseFloat(parts[3]) || 0, c4: parts[4], c5: parts[5], c6: parts[6] }
+    (parts) => (parts.length === 8
+      ? { c0: parts[0], c1: parts[1], c2: parts[2], c3: parseFloat(parts[3]) || 0, c4: parts[4], c5: parts[5], c6: parts[6], c7: parts[7] }
       : null),
   );
 
   return rows.map((r) => {
     // node:sqlite returns column-named objects; the CLI fallback returns the
-    // c0..c6 shape built above. Read positionally either way.
+    // c0..c7 shape built above. Read positionally either way.
     const vals = Object.values(r) as Raw;
     return {
       activityId: String(vals[0]),
@@ -451,6 +458,7 @@ export function getNativeUncategorizedSpending(
       date: String(vals[4]).slice(0, 10),
       accountName: String(vals[5]),
       direction: (String(vals[6]) === 'out' ? 'out' : 'in') as 'in' | 'out',
+      incomeEligible: String(vals[7]) === '1',
     };
   });
 }

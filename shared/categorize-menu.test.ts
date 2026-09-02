@@ -1274,7 +1274,7 @@ describe('direction-aware menu', () => {
 
   it('offers income categories to a money-in row, with taxonomy-carrying assigns', () => {
     const s = session({
-      txns: [txn({ direction: 'in' })],
+      txns: [txn({ direction: 'in', incomeEligible: true })],
       incomeCategories: incomeCats,
       screen: { kind: 'txn', activityId: 'act-1' },
     });
@@ -1291,7 +1291,7 @@ describe('direction-aware menu', () => {
 
   it('lets a money-in row switch to the spending grid, with a way back', () => {
     const s = session({
-      txns: [txn({ direction: 'in' })],
+      txns: [txn({ direction: 'in', incomeEligible: true })],
       incomeCategories: incomeCats,
       screen: { kind: 'txn', activityId: 'act-1', showSpending: true },
     });
@@ -1302,6 +1302,19 @@ describe('direction-aware menu', () => {
     expect(labels).toContain('« Income categories');
     const i = labels.indexOf('Groceries');
     expect(buttons[i]).toEqual({ kind: 'assign', activityId: 'act-1', categoryId: 'cat-groceries' });
+  });
+
+  it('keeps the spending grid for money-in rows that are refunds, not income', () => {
+    // A card credit: direction in, bucket spending — the income grid would
+    // offer only taps upstream rejects.
+    const s = session({
+      txns: [txn({ direction: 'in', incomeEligible: false })],
+      incomeCategories: incomeCats,
+      screen: { kind: 'txn', activityId: 'act-1' },
+    });
+    const labels = renderScreen(s).keyboard.inline_keyboard.flat().map((b) => b.text);
+    expect(labels).toContain('Groceries');
+    expect(labels).not.toContain('Salary & Wages');
   });
 
   it('keeps the spending grid for money-out rows even when income categories exist', () => {
@@ -1318,7 +1331,7 @@ describe('direction-aware menu', () => {
 
   it("an income filing's Undo carries the taxonomy back", () => {
     const s = session({
-      txns: [txn({ direction: 'in' })],
+      txns: [txn({ direction: 'in', incomeEligible: true })],
       incomeCategories: incomeCats,
       screen: { kind: 'filed', activityId: 'act-1', categoryId: 'inc-sal', taxonomyId: 'income_sources', undone: false },
     });

@@ -584,6 +584,7 @@ describe('sqlite-native', () => {
           date: '2026-07-09',
           accountName: 'Spend (4937)',
           direction: 'out',
+          incomeEligible: false,
         });
       } finally {
         cleanup();
@@ -1329,11 +1330,20 @@ describe('direction and income categories', () => {
                VALUES ('out-1', '-12', '2026-07-21', 'WITHDRAWAL', 'acct-cash', 'MYSTERY · TRN-9')`);
       db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, account_id, notes)
                VALUES ('in-1', '999', '2026-07-22', 'DEPOSIT', 'acct-cash', 'SCHOOL GRANT CHECK · TRN-8')`);
+      db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, account_id, notes)
+               VALUES ('in-cc', '14.42', '2026-07-23', 'CREDIT', 'acct-card', 'STATEMENT CREDIT · TRN-7')`);
       db.close();
       const rows = getNativeUncategorizedSpending(path, '2026-07-01', '2026-08-01');
       const byId = new Map(rows.map((r) => [r.activityId, r]));
       expect(byId.get('out-1')?.direction).toBe('out');
       expect(byId.get('in-1')?.direction).toBe('in');
+      // Eligibility is the BUCKET question, not the sign question: the cash
+      // deposit may file as income, the card credit (money in, but a
+      // spending-bucket refund) may not.
+      expect(byId.get('out-1')?.incomeEligible).toBe(false);
+      expect(byId.get('in-1')?.incomeEligible).toBe(true);
+      expect(byId.get('in-cc')?.direction).toBe('in');
+      expect(byId.get('in-cc')?.incomeEligible).toBe(false);
     } finally {
       cleanup();
     }

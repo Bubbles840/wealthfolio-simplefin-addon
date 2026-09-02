@@ -53,7 +53,7 @@ describe('publishing the row list', () => {
     const writes: Record<string, string> = {};
     await publishUncategorizedStatus(
       async (k, v) => { writes[k] = v; },
-      () => [native('a')],
+      () => [native('a', { direction: 'in' })],
       async () => ({}),
       new Date('2026-08-09T12:00:00.000Z'),
     );
@@ -67,6 +67,8 @@ describe('publishing the row list', () => {
       // renders this verbatim and must not show an internal id.
       description: 'THANKYOU POINTS REDEEMED',
       accountName: 'Citi Double Cash',
+      // Direction rides through untouched — the addon's list signs with it.
+      direction: 'in',
     }]);
   });
 

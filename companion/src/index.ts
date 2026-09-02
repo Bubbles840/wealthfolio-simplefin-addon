@@ -51,7 +51,7 @@ import type { GlyphStyle, InlineKeyboard } from '../../shared/telegram.js';
 import type { DismissalLedger } from './dismissals.js';
 import type { SyncHealth } from '../../shared/telegram.js';
 import { SIMPLEFIN_SYNC_VERSION, COMPANION_VERSION_SECRET_KEY } from '../../shared/version.js';
-import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeCategorizedSpending, getNativeSpendingCategories, getNativeCategoryCatalog, getNativeSubcategorySpending, getNativeUncategorizedSpendingTotal, countRulePatternMatches, getNativeSpendMatrix, getNativeIncomeByMonthAccount, getNativeUncategorizedByMonthAccount, getNativeMerchantRows, getNativeFeesInterestByMonth, getNativeSpendDailyTotals, getNativeValuationByMonth } from './sqlite-native.js';
+import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeCategorizedSpending, getNativeSpendingCategories, getNativeCategoryCatalog, getNativeSubcategorySpending, getNativeUncategorizedSpendingTotal, countRulePatternMatches, getNativeSpendMatrix, getNativeIncomeByMonthAccount, getNativeUncategorizedByMonthAccount, getNativeMerchantRows, getNativeFeesInterestByMonth, getNativeSpendDailyTotals, getNativeValuationByMonth, getNativeIncomeCategories } from './sqlite-native.js';
 import { publishUncategorizedStatusForDbPath } from './uncategorized-status.js';
 import { createCategorizeController, SPENDING_TAXONOMY_ID } from './categorize.js';
 import { createAmazonLabelMenu, type AmazonLabelMenu } from './amazon-labels.js';
@@ -1259,8 +1259,10 @@ export async function sendImportNotice(
       amountCents: r.amountCents,
       date: r.date,
       accountName: r.accountName,
+      direction: r.direction,
     })),
     filedByTxId,
+    await readGlyphStyle(wfClient),
   );
   // Buttons for exactly the rows the notice SHOWS — a button for a "+N more"
   // row would dismiss something the user never saw.
@@ -2325,6 +2327,9 @@ export function buildCategorizeDeps(wfClient: WealthfolioClient): CategorizeDeps
     // before they un-file anything.
     readCategorized: getNativeCategorizedSpending,
     readCategories: getNativeSpendingCategories,
+    // The income taxonomy, for money-in rows' first filings (a grant check is
+    // not spending, and upstream refuses a spending category on it).
+    readIncomeCategories: getNativeIncomeCategories,
     readLedger,
     // The shared core, with its fresh second read — NOT a local copy, and never
     // `base` as `persisted`. See `dismissalLedgerAccess`.
