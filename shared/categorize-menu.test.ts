@@ -1252,3 +1252,80 @@ describe('constants', () => {
     expect(MENU_CALLBACK_PREFIX).toBe('cz:');
   });
 });
+
+describe('direction-aware menu', () => {
+  const incomeCats: SpendingCategory[] = [
+    { id: 'inc-sal', name: 'Salary & Wages', parentId: null, parentName: null },
+    { id: 'inc-oth', name: 'Other Income', parentId: null, parentName: null },
+  ];
+
+  it('signs the list rows when direction is known', () => {
+    const s = session({
+      txns: [
+        txn({ direction: 'out', amountCents: 1200 }),
+        txn({ activityId: 'act-2', description: 'GRANT CHECK', direction: 'in', amountCents: 99_900 }),
+      ],
+    });
+    const { keyboard } = renderScreen(s);
+    const labels = keyboard.inline_keyboard.flat().map((b) => b.text);
+    expect(labels.some((l) => l.includes('−$12'))).toBe(true);
+    expect(labels.some((l) => l.includes('+$999'))).toBe(true);
+  });
+
+  it('offers income categories to a money-in row, with taxonomy-carrying assigns', () => {
+    const s = session({
+      txns: [txn({ direction: 'in' })],
+      incomeCategories: incomeCats,
+      screen: { kind: 'txn', activityId: 'act-1' },
+    });
+    const { keyboard, buttons } = renderScreen(s);
+    const labels = keyboard.inline_keyboard.flat().map((b) => b.text);
+    expect(labels).toContain('Salary & Wages');
+    expect(labels).not.toContain('Groceries');
+    const i = labels.indexOf('Salary & Wages');
+    expect(buttons[i]).toEqual({
+      kind: 'assign', activityId: 'act-1', categoryId: 'inc-sal', taxonomyId: 'income_sources',
+    });
+    expect(labels).toContain('Spending categories »');
+  });
+
+  it('lets a money-in row switch to the spending grid, with a way back', () => {
+    const s = session({
+      txns: [txn({ direction: 'in' })],
+      incomeCategories: incomeCats,
+      screen: { kind: 'txn', activityId: 'act-1', showSpending: true },
+    });
+    const { keyboard, buttons } = renderScreen(s);
+    const labels = keyboard.inline_keyboard.flat().map((b) => b.text);
+    expect(labels).toContain('Groceries');
+    expect(labels).not.toContain('Salary & Wages');
+    expect(labels).toContain('« Income categories');
+    const i = labels.indexOf('Groceries');
+    expect(buttons[i]).toEqual({ kind: 'assign', activityId: 'act-1', categoryId: 'cat-groceries' });
+  });
+
+  it('keeps the spending grid for money-out rows even when income categories exist', () => {
+    const s = session({
+      txns: [txn({ direction: 'out' })],
+      incomeCategories: incomeCats,
+      screen: { kind: 'txn', activityId: 'act-1' },
+    });
+    const labels = renderScreen(s).keyboard.inline_keyboard.flat().map((b) => b.text);
+    expect(labels).toContain('Groceries');
+    expect(labels).not.toContain('Salary & Wages');
+    expect(labels).not.toContain('Spending categories »');
+  });
+
+  it("an income filing's Undo carries the taxonomy back", () => {
+    const s = session({
+      txns: [txn({ direction: 'in' })],
+      incomeCategories: incomeCats,
+      screen: { kind: 'filed', activityId: 'act-1', categoryId: 'inc-sal', taxonomyId: 'income_sources', undone: false },
+    });
+    const { text, buttons } = renderScreen(s);
+    expect(text).toContain('Salary & Wages'); // name resolved from the income list
+    expect(buttons).toContainEqual({
+      kind: 'unassign', activityId: 'act-1', categoryId: 'inc-sal', taxonomyId: 'income_sources',
+    });
+  });
+});

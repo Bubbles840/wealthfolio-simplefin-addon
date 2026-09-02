@@ -2012,3 +2012,39 @@ describe('pool figures riding the existing reports', () => {
       .toBe(formatMonthlyRemainingSummary(100, 400, [], GLYPHS));
   });
 });
+
+describe('direction signs on listed rows', () => {
+  const signTx = (over: Partial<ImportNoticeTx> = {}): ImportNoticeTx => ({
+    description: 'TRADER JOE S #628', amountCents: 6774, currency: 'USD',
+    accountName: 'Spend', pending: false, inTransit: false, ...over,
+  });
+
+  it('the import notice signs and colors rows whose direction is known', () => {
+    const text = formatImportNotice(
+      [signTx({ direction: 'out', amountCents: 8726 }), signTx({ description: 'PNC DEPOSIT', direction: 'in', amountCents: 1_600_000 })],
+      [], undefined, GLYPHS,
+    );
+    expect(text).toContain('🔴 −$87.26');
+    expect(text).toContain('🟢 +$16,000');
+  });
+
+  it('clean style keeps the sign and drops the color', () => {
+    const text = formatImportNotice([signTx({ direction: 'out' })], []);
+    expect(text).toContain('−$67.74');
+    expect(text).not.toContain('🔴');
+  });
+
+  it('rows with unknown direction render exactly as before', () => {
+    const text = formatImportNotice([signTx()], []);
+    expect(text).toContain('• $67.74');
+  });
+
+  it('the needs-a-category block signs its rows too', () => {
+    const u = {
+      description: 'GRANT CHECK', amountCents: 99_900, date: '2026-08-30',
+      accountName: 'Spend', direction: 'in' as const,
+    };
+    const text = formatImportNotice([], [u], undefined, GLYPHS);
+    expect(text).toContain('🟢 +$999');
+  });
+});

@@ -459,6 +459,9 @@ export interface ImportNoticeTx {
   accountName: string;
   pending: boolean;
   inTransit: boolean;
+  /** Which way the money moved. Optional — a row without one renders exactly
+   *  as before, so an older companion's data cannot invent a sign. */
+  direction?: 'in' | 'out';
   /**
    * The sync's own identity for this row — the id its stored note ends in — used
    * to look the row up in `formatImportNotice`'s `categoriesByTxId`. NEVER the
@@ -480,6 +483,8 @@ export interface UncategorizedTx {
   /** ISO date (yyyy-mm-dd). */
   date: string;
   accountName: string;
+  /** See `ImportNoticeTx.direction`. */
+  direction?: 'in' | 'out';
 }
 
 const MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -517,8 +522,20 @@ export function formatImportNotice(
   txs: ImportNoticeTx[],
   uncategorized: UncategorizedTx[],
   categoriesByTxId?: Map<string, string>,
+  style: GlyphStyle = DEFAULT_GLYPH_STYLE,
 ): string {
   const head = `🔔 *${txs.length} new transaction${txs.length === 1 ? '' : 's'}*`;
+
+  // "Is this money in or out?" was genuinely unanswerable from a bare figure
+  // (live, 2026-09-02: a $16,000 loan deposit read the same as a withdrawal).
+  // The sign is unconditional once the direction is known; the color dot obeys
+  // the glyph style like every other decoration. Unknown direction — an older
+  // companion's rows — renders exactly as before rather than guessing.
+  const signed = (cents: number, direction?: 'in' | 'out') => {
+    if (!direction) return money(cents / 100);
+    const dot = style.mode === 'glyphs' ? (direction === 'out' ? '🔴 ' : '🟢 ') : '';
+    return `${dot}${direction === 'out' ? '−' : '+'}${money(cents / 100)}`;
+  };
 
   // Escaped text stays OUTSIDE every Markdown entity (legacy Markdown ignores
   // backslash escapes inside one); the bold sits on counts, which have none.
@@ -532,7 +549,7 @@ export function formatImportNotice(
     // under ` with nothing after it states nothing.
     const filed = t.txId ? categoriesByTxId?.get(t.txId) : undefined;
     const filedTail = filed ? ` → filed under ${escapeMarkdown(filed)}` : '';
-    return `• ${money(t.amountCents / 100)}  ${escapeMarkdown(t.description)} — ${escapeMarkdown(t.accountName)}${tail}${filedTail}`;
+    return `• ${signed(t.amountCents, t.direction)}  ${escapeMarkdown(t.description)} — ${escapeMarkdown(t.accountName)}${tail}${filedTail}`;
   };
   const shown = txs.slice(0, IMPORT_NOTICE_TX_CAP).map(txLine);
   if (txs.length > IMPORT_NOTICE_TX_CAP) shown.push(`  +${txs.length - IMPORT_NOTICE_TX_CAP} more`);
@@ -542,7 +559,7 @@ export function formatImportNotice(
   if (uncategorized.length > 0) {
     const rows = uncategorized
       .slice(0, IMPORT_NOTICE_UNCATEGORIZED_CAP)
-      .map((u) => `• ${money(u.amountCents / 100)}  ${escapeMarkdown(u.description)} · ${shortDate(u.date)} — ${escapeMarkdown(u.accountName)}`);
+      .map((u) => `• ${signed(u.amountCents, u.direction)}  ${escapeMarkdown(u.description)} · ${shortDate(u.date)} — ${escapeMarkdown(u.accountName)}`);
     if (uncategorized.length > IMPORT_NOTICE_UNCATEGORIZED_CAP) {
       rows.push(`  +${uncategorized.length - IMPORT_NOTICE_UNCATEGORIZED_CAP} more`);
     }
