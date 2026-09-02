@@ -583,6 +583,7 @@ describe('sqlite-native', () => {
           amountCents: 4516,
           date: '2026-07-09',
           accountName: 'Spend (4937)',
+          direction: 'out',
         });
       } finally {
         cleanup();
@@ -1311,6 +1312,45 @@ describe('uncategorized rows exclude linked transfers', () => {
       db.close();
       const rows = getNativeUncategorizedSpending(path, '2026-07-01', '2026-08-01');
       expect(rows.map((r) => r.activityId)).toEqual(['really-unfiled']);
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+import { getNativeIncomeCategories } from './sqlite-native.js';
+
+describe('direction and income categories', () => {
+  it('every uncategorized row says which way the money moved', () => {
+    const { path, cleanup } = makeTestDb();
+    try {
+      const db = new DatabaseSync(path);
+      db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, account_id, notes)
+               VALUES ('out-1', '-12', '2026-07-21', 'WITHDRAWAL', 'acct-cash', 'MYSTERY · TRN-9')`);
+      db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, account_id, notes)
+               VALUES ('in-1', '999', '2026-07-22', 'DEPOSIT', 'acct-cash', 'SCHOOL GRANT CHECK · TRN-8')`);
+      db.close();
+      const rows = getNativeUncategorizedSpending(path, '2026-07-01', '2026-08-01');
+      const byId = new Map(rows.map((r) => [r.activityId, r]));
+      expect(byId.get('out-1')?.direction).toBe('out');
+      expect(byId.get('in-1')?.direction).toBe('in');
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('getNativeIncomeCategories reads the income taxonomy only, with parent names', () => {
+    const { path, cleanup } = makeTestDb();
+    try {
+      const db = new DatabaseSync(path);
+      db.exec(`INSERT INTO taxonomy_categories (id, name, parent_id, taxonomy_id) VALUES ('inc-1', 'Salary & Wages', NULL, 'income_sources')`);
+      db.exec(`INSERT INTO taxonomy_categories (id, name, parent_id, taxonomy_id) VALUES ('inc-2', 'Grants', 'inc-1', 'income_sources')`);
+      db.exec(`INSERT INTO taxonomy_categories (id, name, parent_id) VALUES ('sp-1', 'Groceries', NULL)`);
+      db.close();
+      const cats = getNativeIncomeCategories(path);
+      expect(cats.map((c) => c.name).sort()).toEqual(['Grants', 'Salary & Wages']);
+      expect(cats.find((c) => c.name === 'Grants')?.parentName).toBe('Salary & Wages');
+      expect(cats.some((c) => c.name === 'Groceries')).toBe(false);
     } finally {
       cleanup();
     }
