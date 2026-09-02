@@ -12,6 +12,7 @@
 
 import type { InlineKeyboard } from './telegram.js';
 import { moneyWhole, escapeMarkdown } from './telegram.js';
+import { INCOME_TAXONOMY_ID } from './cash-flow-bucket.js';
 
 /** One uncategorized spending transaction, as the menu needs it. `date` is
  *  the raw YYYY-MM-DD string — this module never constructs a `Date`, since
@@ -25,6 +26,10 @@ export interface CategorizeTxn {
   amountCents: number;
   description: string;
   accountName: string;
+  /** Which way the money moved. Optional so an older controller's rows render
+   *  as they always did; when present it puts the +/− on every listed amount
+   *  and decides whether a first filing offers income or spending categories. */
+  direction?: 'in' | 'out';
   /** Present in recategorize mode: the ONE category this transaction is
    *  currently filed under that a reader would recognise — the spending
    *  assignment when it has one (their budgets are about it), else whatever it
@@ -64,9 +69,13 @@ export interface SpendingCategory {
 
 export type MenuScreen =
   | { kind: 'list'; page: number }
-  | { kind: 'txn'; activityId: string }
+  /** `showSpending` overrides a money-in row's income grid with the spending
+   *  one — the escape hatch for a deposit that is really a refund. */
+  | { kind: 'txn'; activityId: string; showSpending?: boolean }
   | { kind: 'subcats'; activityId: string; parentId: string }
-  | { kind: 'filed'; activityId: string; categoryId: string; undone: boolean }
+  /** `taxonomyId` rides along when the filing went to a non-spending taxonomy
+   *  (an income category), so Undo can clear the assignment it actually made. */
+  | { kind: 'filed'; activityId: string; categoryId: string; undone: boolean; taxonomyId?: string }
   | { kind: 'dismissed'; activityId: string; undone: boolean }
   | { kind: 'rulePreview'; activityId: string; categoryId: string }
   | { kind: 'freeRulePreview'; pattern: string; categoryId: string }
@@ -154,6 +163,10 @@ export interface MenuSession {
    *  covers the case where it genuinely isn't. */
   txns: CategorizeTxn[];
   categories: SpendingCategory[];
+  /** Wealthfolio's income taxonomy, flat. Optional — absent (an older
+   *  controller, most tests) means money-in rows keep the spending grid they
+   *  always had rather than an empty income one. */
+  incomeCategories?: SpendingCategory[];
   screen: MenuScreen;
   /** Buttons rendered LAST for this session, by token index. applyTap resolves
    *  tokens against this, so a tap on an outdated message can never act on the
@@ -202,8 +215,11 @@ export interface MenuSession {
 
 export type MenuAction =
   | { kind: 'goto'; screen: MenuScreen }
-  | { kind: 'assign'; activityId: string; categoryId: string }
-  | { kind: 'unassign'; activityId: string; categoryId: string }
+  /** `taxonomyId` present = a non-spending filing (income). Absent means the
+   *  spending taxonomy, the long-standing default — the controller's
+   *  `deps.assign` third argument already defaults exactly that way. */
+  | { kind: 'assign'; activityId: string; categoryId: string; taxonomyId?: string }
+  | { kind: 'unassign'; activityId: string; categoryId: string; taxonomyId?: string }
   | { kind: 'dismiss'; activityId: string }
   | { kind: 'undismiss'; activityId: string }
   | { kind: 'createRule'; activityId: string; categoryId: string }
@@ -316,7 +332,13 @@ function findTxn(session: MenuSession, activityId: string): CategorizeTxn | unde
 }
 
 function findCategory(session: MenuSession, categoryId: string): SpendingCategory | undefined {
-  return session.categories.find((c) => c.id === categoryId);
+  return session.categories.find((c) => c.id === categoryId)
+    ?? session.incomeCategories?.find((c) => c.id === categoryId);
+}
+
+/** '−'/'+' from a row's direction; '' when an older controller never said. */
+function directionSign(t: Pick<CategorizeTxn, 'direction'>): string {
+  return t.direction === 'out' ? '−' : t.direction === 'in' ? '+' : '';
 }
 
 /** Sentence shown when a screen refers to a transaction or category id that
@@ -446,10 +468,9 @@ function renderList(session: MenuSession, page: number, note?: string): RenderRe
     return [{
       // moneyWhole takes DOLLARS, so cents are divided down first. Both native
       // readers ABS() the amount before it ever reaches this module, so the
-      // sign never distinguishes a credit from a spend here — every row renders
-      // positive (`$10`); it is `currentSuffix`'s category name, not the sign,
-      // that tells the two apart in recategorize mode.
-      text: `${shortDate(t.date)} · ${t.description} · ${moneyWhole(t.amountCents / 100)}${currentSuffix}`,
+      // sign comes from `direction`, not the figure — and stays absent for a
+      // row whose direction an older controller never supplied.
+      text: `${shortDate(t.date)} · ${t.description} · ${directionSign(t)}${moneyWhole(t.amountCents / 100)}${currentSuffix}`,
       action: { kind: 'goto', screen: { kind: 'txn', activityId: t.activityId } },
     }];
   });
@@ -472,23 +493,46 @@ function renderList(session: MenuSession, page: number, note?: string): RenderRe
   return finish(session.generation, text, rows);
 }
 
-function renderTxn(session: MenuSession, activityId: string): RenderResult {
+function renderTxn(session: MenuSession, activityId: string, showSpending = false): RenderResult {
   const txn = findTxn(session, activityId);
   if (!txn) return renderList(session, 0, GONE_NOTE);
 
   const isRecategorize = session.mode === 'recategorize';
 
-  const parents = session.categories.filter((c) => c.parentId === null);
-  const catButtons: Btn[] = parents.map((c) => {
-    const hasChildren = session.categories.some((k) => k.parentId === c.id);
-    const action: MenuAction = hasChildren
-      ? { kind: 'goto', screen: { kind: 'subcats', activityId, parentId: c.id } }
-      : assignAction(session.mode, activityId, c.id);
-    return { text: c.name, action };
-  });
+  // A money-in row gets the INCOME grid: upstream refuses a spending category
+  // on an income-bucket activity, so offering spending categories to a grant
+  // check is offering only taps that 400 (live, 2026-09-02). `showSpending`
+  // is the escape hatch for a deposit that is really a refund; recategorize
+  // keeps its spending-centric flow untouched.
+  const income = session.incomeCategories ?? [];
+  const incomeGridAvailable = !isRecategorize && txn.direction === 'in' && income.length > 0;
+  const useIncomeGrid = incomeGridAvailable && !showSpending;
+
+  const catButtons: Btn[] = useIncomeGrid
+    ? income.map((c) => ({
+        // FLAT, children disambiguated by their parent's name: the income
+        // taxonomy is shallow and a two-level picker would double every
+        // filing's tap count for nothing.
+        text: c.parentName ? `${c.name} (${c.parentName})` : c.name,
+        action: { kind: 'assign' as const, activityId, categoryId: c.id, taxonomyId: INCOME_TAXONOMY_ID },
+      }))
+    : session.categories.filter((c) => c.parentId === null).map((c) => {
+      const hasChildren = session.categories.some((k) => k.parentId === c.id);
+      const action: MenuAction = hasChildren
+        ? { kind: 'goto', screen: { kind: 'subcats', activityId, parentId: c.id } }
+        : assignAction(session.mode, activityId, c.id);
+      return { text: c.name, action };
+    });
+
+  const switchRows: Btn[][] = useIncomeGrid
+    ? [[{ text: 'Spending categories »', action: { kind: 'goto', screen: { kind: 'txn', activityId, showSpending: true } } }]]
+    : incomeGridAvailable
+      ? [[{ text: '« Income categories', action: { kind: 'goto', screen: { kind: 'txn', activityId } } }]]
+      : [];
 
   const rows: Btn[][] = [
     ...pairUp(catButtons),
+    ...switchRows,
     // "Keep uncategorized" only makes sense before a first filing — a
     // recategorize is choosing among categories, not opting out of having
     // one, and the transaction already has one. The current category's OWN
@@ -504,7 +548,7 @@ function renderTxn(session: MenuSession, activityId: string): RenderResult {
   // Wealthfolio account names both routinely carry `_`/`*`.
   const lines = [
     escapeMarkdown(txn.description),
-    `${moneyWhole(txn.amountCents / 100)} · ${shortDate(txn.date)} · ${escapeMarkdown(txn.accountName)}`,
+    `${directionSign(txn)}${moneyWhole(txn.amountCents / 100)} · ${shortDate(txn.date)} · ${escapeMarkdown(txn.accountName)}`,
   ];
   if (isRecategorize && txn.currentCategory) {
     lines.push(`Currently: ${escapeMarkdown(txn.currentCategory.name)}`);
@@ -550,7 +594,17 @@ function renderFiled(
 
   const text = `Filed ${escapeMarkdown(txn.description)} → ${escapeMarkdown(category.name)}.`;
   const rows: Btn[][] = [
-    [{ text: 'Undo', action: { kind: 'unassign', activityId: screen.activityId, categoryId: screen.categoryId } }],
+    [{
+      text: 'Undo',
+      action: {
+        kind: 'unassign',
+        activityId: screen.activityId,
+        categoryId: screen.categoryId,
+        // The taxonomy the filing actually wrote to — an income Undo clearing
+        // the SPENDING assignment would clear nothing and report success.
+        ...(screen.taxonomyId ? { taxonomyId: screen.taxonomyId } : {}),
+      },
+    }],
     [{
       text: 'Make this a rule',
       action: {
@@ -839,7 +893,7 @@ export function renderScreen(session: MenuSession): RenderResult {
     case 'list':
       return renderList(session, screen.page);
     case 'txn':
-      return renderTxn(session, screen.activityId);
+      return renderTxn(session, screen.activityId, screen.showSpending ?? false);
     case 'subcats':
       return renderSubcats(session, screen.activityId, screen.parentId);
     case 'filed':
