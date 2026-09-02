@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.33.0] - 2026-09-02
+
+### Changed
+
+- **One grid, no special cases.** The hero row and the fixed stat strip are
+  gone: the big charts are ordinary cards that default to 2×2 at the front,
+  the headline numbers (spent / runway / savings rate) are a full-width card
+  of their own — and every card now moves, hides, and resizes the same way.
+- **Both drags actually work now**, rebuilt on pointer capture (the previous
+  window-listener approach silently died inside the sandboxed iframe): drag a
+  card's **corner** to resize it, drag **anywhere else on the card** (in
+  Customize) to move it and drop it where you want. A drop-state bug that
+  could throw away a resize on release is fixed too.
+- **The date-range chips live on the dashboard** and drive every report at
+  once (3/6/12 months, All, Pool) — no per-report fiddling.
+- **Savings rate speaks percent everywhere**: the chart plotted raw fractions
+  next to a chip saying "20%"; chart, chip, and tooltip now share one unit.
+- **Small screens conform**: card spans collapse to a single column on
+  phones via CSS custom properties (inline spans would have overridden the
+  media query), the headline card stacks its tiles when narrow, and the
+  auto-density rules from 1.32.0 keep applying per card.
+
 ## [1.32.0] - 2026-09-02
 
 ### Fixed

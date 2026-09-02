@@ -79,7 +79,7 @@ describe('ReportView', () => {
   it('savings-rate: rate rows with income-less months as gaps', () => {
     view('savings-rate');
     expect(points('LineChart')).toEqual([
-      { month: '2026-07', rate: 0.878 },
+      { month: '2026-07', rate: 87.8 },
       { month: '2026-08', rate: null },
     ]);
   });
@@ -239,5 +239,15 @@ describe('second-wave reports and density', () => {
     render(<ReportView id="merchants" cube={many} customReports={[]} density={1} />);
     expect(screen.getAllByText(/^MERCHANT/)).toHaveLength(3);
     expect(screen.getByText(/\+ ?7 more/i)).toBeInTheDocument();
+  });
+});
+
+describe('headline stats card', () => {
+  it('renders the three chips in one unit system', () => {
+    view('headline-stats');
+    expect(screen.getByText('Spent this month')).toBeInTheDocument();
+    expect(screen.getByText('$47')).toBeInTheDocument();   // Aug spend
+    expect(screen.getByText('88%')).toBeInTheDocument();   // last non-null rate, PERCENT once
+    expect(screen.getByText('75.9mo')).toBeInTheDocument();
   });
 });

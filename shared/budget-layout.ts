@@ -17,7 +17,7 @@
  */
 
 export const STANDARD_REPORT_IDS = [
-  'pool-burndown', 'cash-flow', 'category-trends', 'net-worth', 'savings-rate',
+  'pool-burndown', 'cash-flow', 'headline-stats', 'category-trends', 'net-worth', 'savings-rate',
   'merchants', 'budget-vs-actual', 'seasonality', 'fees-interest', 'runway-trend',
   'category-donut', 'mom-delta', 'cumulative-flow', 'spend-calendar', 'pool-pace', 'uncat-trend',
 ] as const;
@@ -122,14 +122,29 @@ function defaultHeroes(poolPresent: boolean): string[] {
 
 function resolveFrom(stored: BudgetLayout | null, avail: string[], poolPresent: boolean): ResolvedLayout {
   const availSet = new Set(avail);
+  // ONE grid since v1.33.0: the former hero row flattened into the front of
+  // the ordering, with a big default span — every card is movable and
+  // resizable the same way, which is the whole point. `heroes` (stored and
+  // returned) is now just "the front set": it drives default position and the
+  // 2×2 default shape, nothing else.
   const storedHeroes = (stored?.heroes ?? []).filter((id) => availSet.has(id));
-  const heroes = (storedHeroes.length > 0 ? storedHeroes : defaultHeroes(poolPresent).filter((id) => availSet.has(id)))
+  const front = (storedHeroes.length > 0 ? storedHeroes : defaultHeroes(poolPresent).filter((id) => availSet.has(id)))
     .slice(0, MAX_HEROES);
-  const heroSet = new Set(heroes);
-  const hidden = (stored?.hidden ?? []).filter((id) => availSet.has(id) && !heroSet.has(id));
+  const hidden = (stored?.hidden ?? []).filter((id) => availSet.has(id));
   const hiddenSet = new Set(hidden);
-  const placed = new Set([...heroes, ...hidden]);
+  const placed = new Set<string>(hidden);
   const grid: string[] = [];
+  const orderSet = new Set(stored?.order ?? []);
+  // Front cards lead — UNLESS an explicit rearrangement has placed them: the
+  // move/drag snapshots write the whole combined order, front included, and
+  // that snapshot is then the truth. A legacy order that never mentions a
+  // front id (pin's bump list) still gets the front pair up top.
+  for (const id of front) {
+    if (availSet.has(id) && !orderSet.has(id) && !placed.has(id)) {
+      grid.push(id);
+      placed.add(id);
+    }
+  }
   for (const id of stored?.order ?? []) {
     if (availSet.has(id) && !placed.has(id)) {
       grid.push(id);
@@ -143,6 +158,7 @@ function resolveFrom(stored: BudgetLayout | null, avail: string[], poolPresent: 
     }
   }
   const wide = (stored?.wide ?? []).filter((id) => availSet.has(id));
+  const frontSet = new Set(front);
   const sizeOf = (id: string): CardSize =>
     stored?.size?.[id]
     ?? (wide.includes(id) ? 'w' : DEFAULT_COMPACT.has(id) ? 'c' : 'm');
@@ -154,11 +170,24 @@ function resolveFrom(stored: BudgetLayout | null, avail: string[], poolPresent: 
         r: Math.min(MAX_SPAN_ROWS, Math.max(1, exact[1])),
       };
     }
+    const preset = DEFAULT_SPANS[id];
+    if (preset && !stored?.size?.[id] && !wide.includes(id)) {
+      // Front cards default big; fixed presets (the headline strip) likewise —
+      // an explicit size or span always wins.
+      const [c, r] = preset;
+      return { c, r };
+    }
+    if (frontSet.has(id) && !stored?.size?.[id] && !wide.includes(id)) return { c: 2, r: 2 };
     const [c, r] = LETTER_SPANS[sizeOf(id)];
     return { c, r };
   };
-  return { heroes, grid, hidden, wide, sizeOf, spanOf };
+  return { heroes: front, grid, hidden: hidden.filter((id) => hiddenSet.has(id)), wide, sizeOf, spanOf };
 }
+
+/** Fixed default shapes for cards whose content dictates one. */
+const DEFAULT_SPANS: Record<string, [number, number]> = {
+  'headline-stats': [3, 1],
+};
 
 export function resolveBudgetLayout(
   stored: BudgetLayout | null,
@@ -239,4 +268,20 @@ export function setSpan(stored: BudgetLayout, id: string, cols: number, rows: nu
   const c = Math.min(MAX_SPAN_COLS, Math.max(1, Math.round(cols)));
   const r = Math.min(MAX_SPAN_ROWS, Math.max(1, Math.round(rows)));
   return { ...stored, span: { ...(stored.span ?? {}), [id]: [c, r] } };
+}
+
+/** Drag-to-move's drop: put `id` immediately before `targetId` in the one
+ *  grid, snapshotting the whole resolved order (the same snapshot semantics
+ *  moveCard uses, so repeated drags stay stable). */
+export function moveBefore(
+  stored: BudgetLayout,
+  availableIds: string[],
+  id: string,
+  targetId: string,
+): BudgetLayout {
+  const grid = resolveFrom(stored, availableIds, true).grid.filter((g) => g !== id);
+  const at = grid.indexOf(targetId);
+  if (at === -1 || id === targetId) return stored;
+  grid.splice(at, 0, id);
+  return { ...stored, order: grid };
 }

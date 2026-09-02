@@ -30,7 +30,7 @@ describe('report-data prep', () => {
 
   it('savingsRateData: rate 0..1, null when the month had no income', () => {
     expect(savingsRateData(CUBE)).toEqual([
-      { month: '2026-07', rate: 0.878 },
+      { month: '2026-07', rate: 87.8 },
       { month: '2026-08', rate: null },
     ]);
   });

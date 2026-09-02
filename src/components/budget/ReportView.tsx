@@ -4,7 +4,7 @@ import {
 } from 'recharts';
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from '@wealthfolio/ui/chart';
 import { SectionLabel } from '../ui';
-import type { ReportCube } from '../../../shared/report-cube';
+import { monthlySpendTotals, type ReportCube } from '../../../shared/report-cube';
 import { evaluateCustomReport, type CustomReport, type EvaluatedReport } from '../../../shared/report-eval';
 import {
   budgetVsActualData, cashFlowData, categoryDonutData, categoryTrendData, cumulativeFlowData,
@@ -39,6 +39,7 @@ export const REPORT_TITLES: Record<string, string> = {
   'seasonality': 'Seasonality',
   'fees-interest': 'Fees & interest',
   'runway-trend': 'Cash runway',
+  'headline-stats': 'Headline numbers',
   'category-donut': 'Where it went',
   'mom-delta': 'Month vs last',
   'spend-calendar': 'Spending calendar',
@@ -201,6 +202,32 @@ function BudgetVsActual({ cube, full, density }: { cube: ReportCube; full: boole
       ))}
       {!full && rows.length > shown.length && (
         <div className="sfin-subtle">+ {rows.length - shown.length} more — open the card for all</div>
+      )}
+    </div>
+  );
+}
+
+function HeadlineStats({ cube }: { cube: ReportCube }) {
+  const spend = monthlySpendTotals(cube).at(-1) ?? 0;
+  const runway = runwayTrendData(cube).map((r) => r.months).filter((v): v is number => typeof v === 'number').at(-1) ?? null;
+  const rate = savingsRateData(cube).map((r) => r.rate).filter((v): v is number => typeof v === 'number').at(-1) ?? null;
+  return (
+    <div className="sfin-headline">
+      <div className="sfin-tile sfin-tile--blue">
+        <SectionLabel>Spent this month</SectionLabel>
+        <div className="sfin-tile-val">{fmt0(spend / 100)}</div>
+      </div>
+      {runway !== null && (
+        <div className="sfin-tile sfin-tile--green">
+          <SectionLabel>Cash runway</SectionLabel>
+          <div className="sfin-tile-val">{runway}mo</div>
+        </div>
+      )}
+      {rate !== null && (
+        <div className="sfin-tile sfin-tile--purple">
+          <SectionLabel>Savings rate</SectionLabel>
+          <div className="sfin-tile-val">{Math.round(rate)}%</div>
+        </div>
       )}
     </div>
   );
@@ -533,6 +560,7 @@ export function ReportView({ id, cube, customReports, hero = false, categories, 
       case 'seasonality': body = <Seasonality cube={cube} />; break;
       case 'fees-interest': body = <FeesInterest cube={cube} />; break;
       case 'runway-trend': body = <RunwayTrend cube={cube} />; break;
+      case 'headline-stats': body = <HeadlineStats cube={cube} />; break;
       case 'category-donut': body = <CategoryDonut cube={cube} />; break;
       case 'mom-delta': body = <MomDelta cube={cube} />; break;
       case 'spend-calendar': body = <SpendCalendar cube={cube} />; break;

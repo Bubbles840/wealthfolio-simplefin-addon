@@ -7,18 +7,20 @@ import {
 const AVAIL = [...STANDARD_REPORT_IDS, 'custom:cr-1'];
 
 describe('resolveBudgetLayout', () => {
-  it('defaults heroes to pool + cash flow when a pool exists', () => {
+  it('one unified grid: the front pair leads at 2x2 when a pool exists', () => {
     const r = resolveBudgetLayout(null, AVAIL, true);
-    expect(r.heroes).toEqual(['pool-burndown', 'cash-flow']);
-    expect(r.grid).toEqual(AVAIL.filter((id) => !r.heroes.includes(id)));
+    expect(r.grid.slice(0, 2)).toEqual(['pool-burndown', 'cash-flow']);
+    expect(r.spanOf('pool-burndown')).toEqual({ c: 2, r: 2 });
+    expect(r.spanOf('cash-flow')).toEqual({ c: 2, r: 2 });
+    expect(new Set(r.grid)).toEqual(new Set(AVAIL));
     expect(r.hidden).toEqual([]);
   });
 
-  it('pool hero yields to category trends when no pool is set', () => {
+  it('the pool front card yields to category trends when no pool is set', () => {
     const r = resolveBudgetLayout(null, AVAIL, false);
-    expect(r.heroes).toEqual(['cash-flow', 'category-trends']);
-    // The pool report is ABSENT without a pool — not in the grid either.
+    expect(r.grid.slice(0, 2)).toEqual(['cash-flow', 'category-trends']);
     expect(r.grid).not.toContain('pool-burndown');
+    expect(r.spanOf('category-trends')).toEqual({ c: 2, r: 2 });
   });
 
   it('ignores unknown ids and appends new reports at the end', () => {
@@ -28,32 +30,43 @@ describe('resolveBudgetLayout', () => {
       hidden: ['fees-interest'],
     };
     const r = resolveBudgetLayout(stored, AVAIL, true);
-    expect(r.heroes).toEqual(['net-worth']);
-    expect(r.grid[0]).toBe('merchants');
+    // Pinned front cards lead the ONE grid, big by default.
+    expect(r.grid[0]).toBe('net-worth');
+    expect(r.spanOf('net-worth')).toEqual({ c: 2, r: 2 });
+    expect(r.grid[1]).toBe('merchants');
     expect(r.grid).not.toContain('gone-report');
     expect(r.grid).toContain('custom:cr-1'); // appended, never lost
     expect(r.hidden).toEqual(['fees-interest']);
     expect(r.grid).not.toContain('fees-interest');
-    expect(r.grid).not.toContain('net-worth'); // heroes are not grid cards
   });
 });
 
 describe('mutations', () => {
   const base: BudgetLayout = { heroes: ['pool-burndown', 'cash-flow'], order: [], hidden: [] };
 
-  it('pinning a third hero bumps the oldest back into the grid front', () => {
+  it('pinning a third front card bumps the oldest right behind the pair', () => {
     const next = pinHero(base, AVAIL, 'net-worth');
     expect(next.heroes).toEqual(['cash-flow', 'net-worth']);
     const r = resolveBudgetLayout(next, AVAIL, true);
-    expect(r.grid[0]).toBe('pool-burndown'); // the bumped hero lands up front, not lost
+    expect(r.grid.slice(0, 3)).toEqual(['cash-flow', 'net-worth', 'pool-burndown']);
   });
 
-  it('moveCard swaps within resolved grid order and clamps at the edges', () => {
+  it('moveCard swaps within the one grid and clamps at the edges', () => {
     const r = resolveBudgetLayout(base, AVAIL, true);
     const next = moveCard(base, AVAIL, r.grid[1], -1);
     expect(resolveBudgetLayout(next, AVAIL, true).grid[0]).toBe(r.grid[1]);
     const clamped = moveCard(next, AVAIL, resolveBudgetLayout(next, AVAIL, true).grid[0], -1);
     expect(resolveBudgetLayout(clamped, AVAIL, true).grid[0]).toBe(r.grid[1]); // unchanged
+  });
+
+  it('moveBefore drops a card exactly where it was dragged', () => {
+    const r = resolveBudgetLayout(base, AVAIL, true);
+    const dragged = r.grid[5];
+    const target = r.grid[1];
+    const next = moveBefore(base, AVAIL, dragged, target);
+    const after = resolveBudgetLayout(next, AVAIL, true).grid;
+    expect(after.indexOf(dragged)).toBe(1);
+    expect(after).toHaveLength(r.grid.length);
   });
 
   it('toggleHidden hides, un-hides, and unpins a hidden hero', () => {
@@ -166,3 +179,5 @@ describe('free spans (drag resize)', () => {
 });
 
 import { setSpan } from './budget-layout.js';
+
+import { moveBefore } from './budget-layout.js';
