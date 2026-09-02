@@ -339,6 +339,10 @@ export interface SyncResult {
     pending: boolean;
     /** An unpaired transfer leg imported as a spending-neutral placeholder. */
     inTransit: boolean;
+    /** Which way the money moved, from the FEED's signed amount — the one
+     *  source that stays honest for a placeholder, whose stored type (a CASH
+     *  outflow books as CREDIT with the sum in fee) lies about direction. */
+    direction: 'in' | 'out';
   }>;
   /** Newly-created spending rows over the user's configured dollar threshold,
    *  for the caller to announce. Always empty when no threshold is set. */
@@ -2112,6 +2116,7 @@ export async function runSyncCore(
             activityType: t.type,
             pending: !!t.pending,
             inTransit: !!t.inTransit,
+            direction: (signedByKey.get(accountTxKey(sfAccount.id, txId)) ?? 0) < 0 ? 'out' : 'in',
           });
           // Announce a large spend exactly once, off the CREATE echo.
           //
