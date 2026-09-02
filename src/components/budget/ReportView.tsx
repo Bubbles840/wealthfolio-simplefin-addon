@@ -7,8 +7,9 @@ import { SectionLabel } from '../ui';
 import type { ReportCube } from '../../../shared/report-cube';
 import { evaluateCustomReport, type CustomReport, type EvaluatedReport } from '../../../shared/report-eval';
 import {
-  budgetVsActualData, cashFlowData, categoryTrendData, feesInterestData, merchantTable,
-  netWorthData, poolBurndownData, runwayTrendData, savingsRateData, seasonalityGrid,
+  budgetVsActualData, cashFlowData, categoryDonutData, categoryTrendData, cumulativeFlowData,
+  feesInterestData, merchantTable, momDeltaData, netWorthData, poolBurndownData, poolPaceData,
+  runwayTrendData, savingsRateData, seasonalityGrid, spendCalendarData, uncatTrendData,
 } from './report-data';
 
 /**
@@ -38,6 +39,12 @@ export const REPORT_TITLES: Record<string, string> = {
   'seasonality': 'Seasonality',
   'fees-interest': 'Fees & interest',
   'runway-trend': 'Cash runway',
+  'category-donut': 'Where it went',
+  'mom-delta': 'Month vs last',
+  'spend-calendar': 'Spending calendar',
+  'pool-pace': 'Pool pace',
+  'cumulative-flow': 'Money in vs out',
+  'uncat-trend': 'Uncategorized trend',
 };
 
 export function reportTitle(id: string, customReports: CustomReport[]): string {
@@ -135,13 +142,14 @@ function SavingsRate({ cube }: { cube: ReportCube }) {
   );
 }
 
-function Merchants({ cube, full }: { cube: ReportCube; full: boolean }) {
+function Merchants({ cube, full, density }: { cube: ReportCube; full: boolean; density: number }) {
   const rows = merchantTable(cube, Math.min(3, cube.months.length));
   if (rows.length === 0) return <div className="sfin-subtle">No merchant activity in the window.</div>;
-  // The grid card is a PREVIEW: the full list once made this card the tallest
-  // thing on the page and stretched its whole row (live, 2026-09-02). Open
-  // the card for everything.
-  const shown = full ? rows : rows.slice(0, 6);
+  // The grid card is a PREVIEW budgeted by the card's own height: the full
+  // list once made this card the tallest thing on the page (live,
+  // 2026-09-02), and a compact card must trim itself rather than clip.
+  const cap = density <= 1 ? 3 : density >= 3 ? 12 : 6;
+  const shown = full ? rows : rows.slice(0, cap);
   return (
     <div style={{ overflowX: 'auto' }}>
       <table className="sfin-merchant-table">
@@ -170,14 +178,16 @@ function Merchants({ cube, full }: { cube: ReportCube; full: boolean }) {
   );
 }
 
-function BudgetVsActual({ cube }: { cube: ReportCube }) {
+function BudgetVsActual({ cube, full, density }: { cube: ReportCube; full: boolean; density: number }) {
   const month = cube.months.at(-1);
   const rows = month ? budgetVsActualData(cube, month) : [];
   if (rows.length === 0) return <div className="sfin-subtle">No budgets or spending this month.</div>;
   const max = Math.max(...rows.map((r) => Math.max(r.budget, r.actual)), 1);
+  const cap = density <= 1 ? 3 : density >= 3 ? 12 : 6;
+  const shown = full ? rows : rows.slice(0, cap);
   return (
     <div>
-      {rows.map((r) => (
+      {shown.map((r) => (
         <div key={r.category} style={{ marginBottom: 8 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between' }}>
             <span>{r.category}</span>
@@ -189,7 +199,116 @@ function BudgetVsActual({ cube }: { cube: ReportCube }) {
           </div>
         </div>
       ))}
+      {!full && rows.length > shown.length && (
+        <div className="sfin-subtle">+ {rows.length - shown.length} more — open the card for all</div>
+      )}
     </div>
+  );
+}
+
+function CategoryDonut({ cube }: { cube: ReportCube }) {
+  const slices = categoryDonutData(cube).map((s, i) => ({ ...s, fill: color(i) }));
+  if (slices.length === 0) return <div className="sfin-subtle">Nothing spent in the latest month.</div>;
+  return (
+    <Frame>
+      <PieChart>
+        <ChartTooltip content={<ChartTooltipContent />} />
+        <Pie data={slices} dataKey="value" nameKey="name" innerRadius="55%">
+          {slices.map((s) => <Cell key={s.name} fill={s.fill} />)}
+        </Pie>
+      </PieChart>
+    </Frame>
+  );
+}
+
+function MomDelta({ cube }: { cube: ReportCube }) {
+  const data = momDeltaData(cube);
+  if (data.length === 0) return <div className="sfin-subtle">Not enough months to compare yet.</div>;
+  return (
+    <Frame>
+      <BarChart data={data} layout="vertical">
+        <CartesianGrid horizontal={false} />
+        <XAxis type="number" />
+        <YAxis type="category" dataKey="category" width={96} />
+        <ChartTooltip content={<ChartTooltipContent />} />
+        <Bar dataKey="delta">
+          {data.map((d) => <Cell key={d.category} fill={d.delta > 0 ? color(3) : color(0)} />)}
+        </Bar>
+      </BarChart>
+    </Frame>
+  );
+}
+
+function SpendCalendar({ cube }: { cube: ReportCube }) {
+  const days = spendCalendarData(cube);
+  if (days.length === 0) return <div className="sfin-subtle">The calendar follows the pool window.</div>;
+  const max = Math.max(...days.map((d) => d.cents), 1);
+  return (
+    <div className="sfin-cal">
+      {days.map((d) => {
+        const pct = d.cents > 0 ? Math.max(14, Math.round((d.cents / max) * 85)) : 5;
+        return (
+          <div key={d.date} className="sfin-cal-day" title={`${d.date}: ${fmt0(d.cents / 100)}`}>
+            <div
+              data-cal
+              className="sfin-cal-cell"
+              title={`${d.date}: ${fmt0(d.cents / 100)}`}
+              style={{ background: `color-mix(in srgb, ${color(0)} ${pct}%, transparent)` }}
+            />
+            <span className="sfin-cal-label">{d.date.slice(8)}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function PoolPace({ cube }: { cube: ReportCube }) {
+  const p = poolPaceData(cube);
+  if (!p) return <div className="sfin-subtle">The gauge follows the pool.</div>;
+  return (
+    <div className={`sfin-pace sfin-pace--${p.status}`}>
+      <div className="sfin-pace-row">
+        <span className="sfin-subtle">You spend</span>
+        <span className="sfin-pace-val">{fmt0(p.actualWeekly)}</span>
+        <span className="sfin-subtle">/wk</span>
+      </div>
+      <div className="sfin-pace-row">
+        <span className="sfin-subtle">Sustainable</span>
+        <span className="sfin-pace-val">{fmt0(p.sustainableWeekly)}</span>
+        <span className="sfin-subtle">/wk</span>
+      </div>
+      <div className="sfin-pace-dot" aria-hidden />
+    </div>
+  );
+}
+
+function CumulativeFlow({ cube }: { cube: ReportCube }) {
+  return (
+    <Frame>
+      <AreaChart data={cumulativeFlowData(cube)}>
+        <CartesianGrid vertical={false} />
+        <XAxis dataKey="month" />
+        <YAxis width={52} />
+        <ChartTooltip content={<ChartTooltipContent />} />
+        <Area dataKey="income" stroke={color(0)} fill={color(0)} fillOpacity={0.22} />
+        <Area dataKey="spending" stroke={color(3)} fill={color(3)} fillOpacity={0.22} />
+      </AreaChart>
+    </Frame>
+  );
+}
+
+function UncatTrend({ cube }: { cube: ReportCube }) {
+  return (
+    <Frame>
+      <LineChart data={uncatTrendData(cube)}>
+        <CartesianGrid vertical={false} />
+        <XAxis dataKey="month" />
+        <YAxis width={44} />
+        <ChartTooltip content={<ChartTooltipContent />} />
+        <Line dataKey="uncategorized" stroke={color(2)} dot={false} />
+      </LineChart>
+    </Frame>
   );
 }
 
@@ -387,13 +506,16 @@ function CustomView({ cube, def }: { cube: ReportCube; def: CustomReport }) {
   );
 }
 
-export function ReportView({ id, cube, customReports, hero = false, categories }: {
+export function ReportView({ id, cube, customReports, hero = false, categories, density = 2 }: {
   id: string;
   cube: ReportCube;
   customReports: CustomReport[];
   hero?: boolean;
   /** Category-trends only: narrow to these categories (full-screen chips). */
   categories?: string[];
+  /** The card's row span (1–4): list-reports budget their rows to it so a
+   *  compact card trims itself instead of clipping. */
+  density?: number;
 }) {
   let body: React.ReactNode;
   if (id.startsWith('custom:')) {
@@ -406,11 +528,17 @@ export function ReportView({ id, cube, customReports, hero = false, categories }
       case 'category-trends': body = <CategoryTrends cube={cube} categories={categories} />; break;
       case 'net-worth': body = <NetWorth cube={cube} />; break;
       case 'savings-rate': body = <SavingsRate cube={cube} />; break;
-      case 'merchants': body = <Merchants cube={cube} full={hero} />; break;
-      case 'budget-vs-actual': body = <BudgetVsActual cube={cube} />; break;
+      case 'merchants': body = <Merchants cube={cube} full={hero} density={density} />; break;
+      case 'budget-vs-actual': body = <BudgetVsActual cube={cube} full={hero} density={density} />; break;
       case 'seasonality': body = <Seasonality cube={cube} />; break;
       case 'fees-interest': body = <FeesInterest cube={cube} />; break;
       case 'runway-trend': body = <RunwayTrend cube={cube} />; break;
+      case 'category-donut': body = <CategoryDonut cube={cube} />; break;
+      case 'mom-delta': body = <MomDelta cube={cube} />; break;
+      case 'spend-calendar': body = <SpendCalendar cube={cube} />; break;
+      case 'pool-pace': body = <PoolPace cube={cube} />; break;
+      case 'cumulative-flow': body = <CumulativeFlow cube={cube} />; break;
+      case 'uncat-trend': body = <UncatTrend cube={cube} />; break;
       default: body = null;
     }
   }

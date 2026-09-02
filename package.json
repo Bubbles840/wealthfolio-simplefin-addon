@@ -1,6 +1,6 @@
 {
   "name": "simplefin-sync",
-  "version": "1.31.0",
+  "version": "1.32.0",
   "description": "A Wealthfolio addon for wealthfolio-simplefin-addon",
   "type": "module",
   "main": "dist/addon.js",

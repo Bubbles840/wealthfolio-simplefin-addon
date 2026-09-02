@@ -522,15 +522,18 @@ const css = `
 /* ── Budget tab ─────────────────────────────────────────────────────────── */
 .sfin-page--wide { max-width: 1280px; }
 /* Wealthfolio's own ambience: a faint sage wash bleeding in from the top-left
-   and bottom-right, behind every tab of the addon. Fixed so it spans the
-   viewport rather than the width-capped column, and z-indexed under
-   everything. */
-.sfin-page::before {
-  content: '';
-  position: fixed; inset: 0; z-index: -1; pointer-events: none;
+   and bottom-right, behind every tab of the addon. ON THE BODY, not a
+   z-index:-1 layer — the sandbox body paints an opaque --background, and
+   anything stacked beneath it is invisible by construction (v1.31.0 shipped
+   exactly that and the gradient never showed). Fixed attachment so it spans
+   the viewport, layered over the theme background so light mode keeps its
+   own ground. */
+body {
   background:
-    radial-gradient(900px 480px at 10% -8%, rgba(94, 148, 131, .16), transparent 62%),
-    radial-gradient(1100px 640px at 108% 112%, rgba(94, 148, 131, .10), transparent 60%);
+    radial-gradient(1000px 520px at 8% -6%, rgba(94, 148, 131, .22), transparent 60%),
+    radial-gradient(1200px 680px at 106% 110%, rgba(94, 148, 131, .14), transparent 58%),
+    var(--background);
+  background-attachment: fixed, fixed, scroll;
 }
 .sfin-budget-toolbar { display: flex; justify-content: flex-end; align-items: center; gap: 8px; margin-bottom: 10px; }
 .sfin-budget-heroes { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; }
@@ -598,6 +601,53 @@ const css = `
   border-top: 1px solid color-mix(in srgb, currentColor 10%, transparent);
 }
 .sfin-heat-cell { height: 26px; border-radius: 4px; }
+/* ── Auto-density: content conforms to the box it is given ──────────────────
+   Each grid cell is a size container; short cells shrink their type and fade
+   out at the bottom edge, so nothing ever looks torn off mid-row. The
+   list-reports also budget their ROW COUNT from the card's span (see
+   ReportView's density prop) — this is the typographic half. */
+.sfin-budget-grid .sfin-cell { container-type: size; }
+.sfin-budget-grid .sfin-report-body {
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(#000 88%, transparent);
+  mask-image: linear-gradient(#000 88%, transparent);
+}
+@container (max-height: 200px) {
+  .sfin-report-card { font-size: 12px; padding: 10px 12px; }
+  .sfin-report-card .sfin-section-label { font-size: 9.5px; margin-bottom: 4px; }
+  .sfin-report-card .sfin-merchant-table,
+  .sfin-report-card .sfin-custom-table { font-size: 11px; }
+  .sfin-report-card .sfin-heat-cell { height: 16px; }
+}
+@container (max-height: 360px) {
+  .sfin-report-card { font-size: 12.5px; }
+}
+/* The corner drag handle, customize mode only. */
+.sfin-resize-handle {
+  position: absolute; right: 3px; bottom: 3px; z-index: 3;
+  width: 22px; height: 22px; border-radius: 6px;
+  cursor: nwse-resize; touch-action: none;
+  background:
+    linear-gradient(135deg, transparent 46%, color-mix(in srgb, currentColor 45%, transparent) 48%, transparent 52%,
+      transparent 62%, color-mix(in srgb, currentColor 45%, transparent) 64%, transparent 68%);
+}
+.sfin-resize-handle:hover, .sfin-resize-handle:focus-visible {
+  background-color: color-mix(in srgb, currentColor 12%, transparent);
+  outline: none;
+}
+/* Spending calendar. */
+.sfin-cal { display: flex; flex-wrap: wrap; gap: 4px; }
+.sfin-cal-day { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.sfin-cal-cell { width: 26px; height: 26px; border-radius: 5px; }
+.sfin-cal-label { font-size: 9px; color: var(--muted-foreground); }
+/* Pool pace gauge. */
+.sfin-pace { position: relative; display: flex; flex-direction: column; gap: 6px; padding-right: 26px; }
+.sfin-pace-row { display: flex; align-items: baseline; gap: 6px; }
+.sfin-pace-val { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.sfin-pace-dot { position: absolute; top: 2px; right: 2px; width: 12px; height: 12px; border-radius: 50%; }
+.sfin-pace--green .sfin-pace-dot { background: #4ade80; box-shadow: 0 0 10px rgba(74, 222, 128, .5); }
+.sfin-pace--amber .sfin-pace-dot { background: #fbbf24; box-shadow: 0 0 10px rgba(251, 191, 36, .5); }
+.sfin-pace--red .sfin-pace-dot { background: #f87171; box-shadow: 0 0 10px rgba(248, 113, 113, .5); }
 .sfin-uncat-undo { display: flex; align-items: center; gap: 8px; padding: 4px 0 8px; }
 /* Same rules as .sfin-uncat-undo — a distinct class because the cap notice and
    "Categorize in Wealthfolio" button are an unrelated footer, not the undo

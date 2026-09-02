@@ -91,3 +91,73 @@ describe('report-data prep', () => {
     expect(poolBurndownData(CUBE)).toEqual([]); // no pool, no rows
   });
 });
+
+describe('the second wave of reports', () => {
+  it('categoryDonutData: last month by category, largest first', () => {
+    expect(categoryDonutData(CUBE)).toEqual([
+      { name: 'Groceries', value: 25 },
+      { name: 'Dining', value: 20 },
+    ]);
+  });
+
+  it('momDeltaData: this month vs last per category, increases first', () => {
+    expect(momDeltaData(CUBE)).toEqual([
+      { category: 'Groceries', delta: -5 },
+      { category: 'Dining', delta: -10 },
+    ]);
+  });
+
+  it('spendCalendarData: per-day spend from the pool cumulative series', () => {
+    const pooled = {
+      ...CUBE,
+      pool: {
+        config: { amountCents: 160_000, startDate: '2026-08-25', endDate: '2026-08-29' },
+        daily: [
+          { date: '2026-08-26', spentCents: 1000 },
+          { date: '2026-08-27', spentCents: 1500 },
+        ],
+      },
+    };
+    expect(spendCalendarData(pooled)).toEqual([
+      { date: '2026-08-26', cents: 1000 },
+      { date: '2026-08-27', cents: 500 },
+    ]);
+    expect(spendCalendarData(CUBE)).toEqual([]);
+  });
+
+  it('poolPaceData: both paces and a verdict color', () => {
+    const pooled = {
+      ...CUBE,
+      asOf: '2026-08-27T12:00:00Z',
+      pool: {
+        config: { amountCents: 160_000, startDate: '2026-08-25', endDate: '2026-08-29' },
+        daily: [{ date: '2026-08-27', spentCents: 1500 }],
+      },
+    };
+    expect(poolPaceData(pooled)).toEqual({
+      sustainableWeekly: 1585,
+      actualWeekly: 35,
+      status: 'green',
+    });
+    expect(poolPaceData(CUBE)).toBeNull();
+  });
+
+  it('cumulativeFlowData: running income against running spending', () => {
+    expect(cumulativeFlowData(CUBE)).toEqual([
+      { month: '2026-07', income: 500, spending: 61 },
+      { month: '2026-08', income: 500, spending: 108 },
+    ]);
+  });
+
+  it('uncatTrendData: uncategorized spending per month', () => {
+    expect(uncatTrendData(CUBE)).toEqual([
+      { month: '2026-07', uncategorized: 1 },
+      { month: '2026-08', uncategorized: 2 },
+    ]);
+  });
+});
+
+import {
+  categoryDonutData, momDeltaData, spendCalendarData, poolPaceData,
+  cumulativeFlowData, uncatTrendData,
+} from './report-data';

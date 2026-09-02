@@ -12,9 +12,9 @@
  * "actual" past the last day the companion has seen.
  */
 import {
-  categorySeries, monthlyIncomeTotals, monthlySpendTotals, type ReportCube,
+  categorySeries, monthlyIncomeTotals, monthlySpendTotals, monthlyUncategorizedTotals, type ReportCube,
 } from '../../../shared/report-cube';
-import { computeRunwayMonths } from '../../../shared/pool';
+import { computePoolStatus, computeRunwayMonths } from '../../../shared/pool';
 
 export interface MonthRow { month: string; [k: string]: number | string | null }
 
@@ -190,4 +190,87 @@ export function poolBurndownData(
     out.push({ date, ideal, actual });
   }
   return out;
+}
+
+/** The last month's spend per category, largest slice first — top eight, the
+ *  rest folded into 'Other' so the donut stays readable. */
+export function categoryDonutData(cube: ReportCube): Array<{ name: string; value: number }> {
+  const mi = cube.months.length - 1;
+  if (mi < 0) return [];
+  const rows = cube.categories
+    .map((name, ci) => ({ name, cents: cube.spend[mi][ci].reduce((s, v) => s + v, 0) }))
+    .filter((r) => r.cents > 0)
+    .sort((a, b) => b.cents - a.cents);
+  const top = rows.slice(0, 8);
+  const rest = rows.slice(8).reduce((s, r) => s + r.cents, 0);
+  const out = top.map((r) => ({ name: r.name, value: dollars(r.cents) }));
+  if (rest > 0) out.push({ name: 'Other', value: dollars(rest) });
+  return out;
+}
+
+/** This month vs last, per category — the "what changed" chart. Increases
+ *  first: the jumps are what the reader came to find. */
+export function momDeltaData(cube: ReportCube): Array<{ category: string; delta: number }> {
+  const mi = cube.months.length - 1;
+  if (mi < 1) return [];
+  return cube.categories
+    .map((category, ci) => ({
+      category,
+      delta: dollars(
+        cube.spend[mi][ci].reduce((s, v) => s + v, 0)
+        - cube.spend[mi - 1][ci].reduce((s, v) => s + v, 0),
+      ),
+    }))
+    .filter((r) => r.delta !== 0)
+    .sort((a, b) => b.delta - a.delta);
+}
+
+/** Per-day spend inside the pool window, un-cumulated from the pool's daily
+ *  series. Empty without a pool — the calendar is a pool-window lens. */
+export function spendCalendarData(cube: ReportCube): Array<{ date: string; cents: number }> {
+  if (!cube.pool) return [];
+  let prev = 0;
+  return cube.pool.daily.map((d) => {
+    const cents = d.spentCents - prev;
+    prev = d.spentCents;
+    return { date: d.date, cents };
+  });
+}
+
+/** The pool's two paces and a verdict, for the gauge card. Null without a
+ *  pool. Green under the sustainable pace, amber within 15% over, red past
+ *  that — the gauge answers one question at a glance. */
+export function poolPaceData(
+  cube: ReportCube,
+): { sustainableWeekly: number; actualWeekly: number; status: 'green' | 'amber' | 'red' } | null {
+  if (!cube.pool) return null;
+  const spent = cube.pool.daily.at(-1)?.spentCents ?? 0;
+  const status = computePoolStatus(cube.pool.config, spent, new Date(cube.asOf));
+  const verdict = status.actualWeeklyCents <= status.sustainableWeeklyCents ? 'green'
+    : status.actualWeeklyCents <= status.sustainableWeeklyCents * 1.15 ? 'amber' : 'red';
+  return {
+    sustainableWeekly: dollars(status.sustainableWeeklyCents),
+    actualWeekly: dollars(status.actualWeeklyCents),
+    status: verdict,
+  };
+}
+
+/** Running totals: income against spending across the window — the loan
+ *  draining against the burn, viscerally. */
+export function cumulativeFlowData(cube: ReportCube): MonthRow[] {
+  const income = monthlyIncomeTotals(cube);
+  const spending = monthlySpendTotals(cube);
+  let inc = 0;
+  let sp = 0;
+  return cube.months.map((month, mi) => {
+    inc += income[mi];
+    sp += spending[mi];
+    return { month, income: dollars(inc), spending: dollars(sp) };
+  });
+}
+
+/** Uncategorized spending per month — is the filing habit winning? */
+export function uncatTrendData(cube: ReportCube): MonthRow[] {
+  const totals = monthlyUncategorizedTotals(cube);
+  return cube.months.map((month, mi) => ({ month, uncategorized: dollars(totals[mi]) }));
 }

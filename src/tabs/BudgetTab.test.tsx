@@ -351,14 +351,50 @@ describe('layout polish', () => {
     const cellOf = () => document.querySelector('[data-report-id="merchants"]')!.closest('.sfin-cell')!;
     expect(cellOf().className).toContain('sfin-cell--m');
 
-    fireEvent.click(screen.getByRole('button', { name: /resize merchants/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^resize merchants/i }));
     await waitFor(() => expect(cellOf().className).toContain('sfin-cell--w'));
     let saved = (props.store as any).setBudgetLayout.mock.calls.at(-1)![0];
     expect(saved.size).toEqual({ merchants: 'w' });
 
-    fireEvent.click(screen.getByRole('button', { name: /resize merchants/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^resize merchants/i }));
     await waitFor(() => expect(cellOf().className).toContain('sfin-cell--t'));
     saved = (props.store as any).setBudgetLayout.mock.calls.at(-1)![0];
     expect(saved.size).toEqual({ merchants: 't' });
+  });
+});
+
+describe('second wave on the grid', () => {
+  it('the new reports join the grid; pool-gated ones stay out without a pool', async () => {
+    const props = makeProps();
+    (props.store as any).getReportCube = vi.fn(async () => ({ ...CUBE, asOf: new Date().toISOString() }));
+    render(<SyncPage {...props} />);
+    await waitFor(() => expect(reportIds().length).toBeGreaterThan(0));
+    const ids = reportIds();
+    for (const id of ['category-donut', 'mom-delta', 'cumulative-flow', 'uncat-trend']) {
+      expect(ids).toContain(id);
+    }
+    expect(ids).not.toContain('spend-calendar');
+    expect(ids).not.toContain('pool-pace');
+  });
+
+  it('dragging the corner handle resizes to exact spans and persists', async () => {
+    const props = makeProps();
+    (props.store as any).getReportCube = vi.fn(async () => ({ ...CUBE, asOf: new Date().toISOString() }));
+    render(<SyncPage {...props} />);
+    await waitFor(() => expect(reportIds().length).toBeGreaterThan(0));
+    fireEvent.click(screen.getByRole('button', { name: /^customize$/i }));
+
+    const handle = screen.getByLabelText(/drag to resize merchants/i);
+    fireEvent.pointerDown(handle, { clientX: 100, clientY: 100 });
+    fireEvent.pointerMove(window, { clientX: 430, clientY: 285 });
+    fireEvent.pointerUp(window, { clientX: 430, clientY: 285 });
+
+    await waitFor(() => {
+      const saved = (props.store as any).setBudgetLayout.mock.calls.at(-1)?.[0];
+      expect(saved?.span?.merchants).toEqual([2, 3]);
+    });
+    const cell = document.querySelector('[data-report-id="merchants"]')!.closest('.sfin-cell') as HTMLElement;
+    expect(cell.style.gridColumn).toBe('span 2');
+    expect(cell.style.gridRow).toBe('span 3');
   });
 });

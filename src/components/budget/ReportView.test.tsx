@@ -170,3 +170,74 @@ describe('ReportView', () => {
     expect(screen.getByText(/unknown category: Ghost/i)).toBeInTheDocument();
   });
 });
+
+describe('second-wave reports and density', () => {
+  const pooled = (): ReportCube => ({
+    ...fresh(),
+    asOf: '2026-08-27T12:00:00Z',
+    pool: {
+      config: { amountCents: 160_000, startDate: '2026-08-25', endDate: '2026-08-29' },
+      daily: [
+        { date: '2026-08-26', spentCents: 1000 },
+        { date: '2026-08-27', spentCents: 1500 },
+      ],
+    },
+  });
+
+  it('category-donut: a pie of the last month, largest first', () => {
+    view('category-donut');
+    const data = JSON.parse(document.querySelector('[data-recharts="Pie"]')?.getAttribute('data-points') ?? 'null');
+    expect(data[0]).toMatchObject({ name: 'Groceries', value: 25 });
+  });
+
+  it('mom-delta: bars of the change per category', () => {
+    view('mom-delta');
+    expect(points('BarChart')).toEqual([
+      { category: 'Groceries', delta: -5 },
+      { category: 'Dining', delta: -10 },
+    ]);
+  });
+
+  it('spend-calendar: one cell per pool day with the spend in its title', () => {
+    view('spend-calendar', pooled());
+    const cells = document.querySelectorAll('[data-cal]');
+    expect(cells.length).toBe(2);
+    expect(Array.from(cells).some((c) => (c.getAttribute('title') ?? '').includes('$10'))).toBe(true);
+  });
+
+  it('pool-pace: both paces and the verdict color', () => {
+    view('pool-pace', pooled());
+    expect(screen.getByText('$35')).toBeInTheDocument();
+    expect(screen.getByText('$1,585')).toBeInTheDocument();
+    expect(document.querySelector('.sfin-pace--green')).toBeTruthy();
+  });
+
+  it('cumulative-flow: running income against running spending', () => {
+    view('cumulative-flow');
+    expect(points('AreaChart')).toEqual([
+      { month: '2026-07', income: 500, spending: 61 },
+      { month: '2026-08', income: 500, spending: 108 },
+    ]);
+  });
+
+  it('uncat-trend: uncategorized spending per month', () => {
+    view('uncat-trend');
+    expect(points('LineChart')).toEqual([
+      { month: '2026-07', uncategorized: 1 },
+      { month: '2026-08', uncategorized: 2 },
+    ]);
+  });
+
+  it('a one-row card budgets its list rows and says what it cut', () => {
+    render(<ReportView id="budget-vs-actual" cube={fresh()} customReports={[]} density={1} />);
+    // The fixture has two categories; a compact card caps at three, so both
+    // fit — assert the cap machinery with merchants instead.
+    const many = {
+      ...fresh(),
+      merchants: [[], Array.from({ length: 10 }, (_, i) => ({ name: `MERCHANT ${i}`, cents: (10 - i) * 1000, count: 1 }))],
+    };
+    render(<ReportView id="merchants" cube={many} customReports={[]} density={1} />);
+    expect(screen.getAllByText(/^MERCHANT/)).toHaveLength(3);
+    expect(screen.getByText(/\+ ?7 more/i)).toBeInTheDocument();
+  });
+});
