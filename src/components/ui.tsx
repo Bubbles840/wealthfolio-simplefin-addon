@@ -521,13 +521,46 @@ const css = `
 
 /* ── Budget tab ─────────────────────────────────────────────────────────── */
 .sfin-page--wide { max-width: 1280px; }
+/* Wealthfolio's own ambience: a faint sage wash bleeding in from the top-left
+   and bottom-right, behind every tab of the addon. Fixed so it spans the
+   viewport rather than the width-capped column, and z-indexed under
+   everything. */
+.sfin-page::before {
+  content: '';
+  position: fixed; inset: 0; z-index: -1; pointer-events: none;
+  background:
+    radial-gradient(900px 480px at 10% -8%, rgba(94, 148, 131, .16), transparent 62%),
+    radial-gradient(1100px 640px at 108% 112%, rgba(94, 148, 131, .10), transparent 60%);
+}
 .sfin-budget-toolbar { display: flex; justify-content: flex-end; align-items: center; gap: 8px; margin-bottom: 10px; }
 .sfin-budget-heroes { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; }
 .sfin-budget-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; margin-top: 14px; }
 .sfin-cell { min-width: 0; }
 .sfin-cell[role="button"] { cursor: pointer; outline: none; border-radius: 12px; }
 .sfin-cell--wide { grid-column: span 2; }
-@media (max-width: 720px) { .sfin-cell--wide { grid-column: span 1; } }
+/* The size cycle: fixed row rhythm so every shape lines up flush. */
+.sfin-budget-grid { grid-auto-rows: 158px; grid-auto-flow: dense; }
+.sfin-cell--c { grid-row: span 1; }
+.sfin-cell--m { grid-row: span 2; }
+.sfin-cell--w { grid-column: span 2; grid-row: span 2; }
+.sfin-cell--t { grid-row: span 3; }
+.sfin-cell--b { grid-column: span 2; grid-row: span 3; }
+@media (max-width: 720px) {
+  .sfin-cell--wide, .sfin-cell--w, .sfin-cell--b { grid-column: span 1; }
+}
+.sfin-budget-grid .sfin-cell { position: relative; overflow: hidden; }
+.sfin-budget-grid .sfin-report-body .sfin-chart { min-height: 0; }
+.sfin-budget-grid .sfin-report-card { overflow: hidden; }
+.sfin-cell--editing .sfin-report-card { border-style: dashed; }
+.sfin-card-tools {
+  position: absolute; top: 6px; right: 6px; z-index: 2;
+  display: flex; gap: 2px; flex-wrap: wrap; justify-content: flex-end;
+  padding: 2px; border-radius: 9px;
+  background: color-mix(in srgb, currentColor 8%, transparent);
+  backdrop-filter: blur(6px);
+  font-size: 11px;
+}
+.sfin-card-tools button { padding: 2px 7px; font-size: 11px; }
 .sfin-report-card {
   height: 100%; display: flex; flex-direction: column; gap: 8px; box-sizing: border-box;
   transition: border-color .15s ease, transform .15s ease, box-shadow .15s ease;

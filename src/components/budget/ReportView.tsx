@@ -52,7 +52,10 @@ const fmt0 = (dollars: number) =>
 
 /** A stable small palette cycled for multi-series charts; recharts wants
  *  explicit strokes and the host theme handles contrast. */
-const SERIES_COLORS = ['#2563eb', '#16a34a', '#d97706', '#dc2626', '#7c3aed', '#0891b2', '#be185d', '#65a30d'];
+// Wealthfolio's register, not a default-blue chart kit: muted sage first
+// (the app's own accent family), then earth tones that sit quietly on the
+// dark ground. Matched by eye to the app's dashboard (2026-09-02).
+const SERIES_COLORS = ['#5e9483', '#3e6f63', '#c9a86b', '#c17a63', '#7189a8', '#8aa864', '#9a7aa0', '#6b7f8f'];
 const color = (i: number) => SERIES_COLORS[i % SERIES_COLORS.length];
 
 function Frame({ children }: { children: React.ReactElement }) {
@@ -71,9 +74,9 @@ function CashFlow({ cube }: { cube: ReportCube }) {
         <XAxis dataKey="month" />
         <YAxis width={44} />
         <ChartTooltip content={<ChartTooltipContent />} />
-        <Bar dataKey="income" fill={color(1)} />
+        <Bar dataKey="income" fill={color(0)} />
         <Bar dataKey="spending" fill={color(3)} />
-        <Line dataKey="net" stroke={color(0)} dot={false} />
+        <Line dataKey="net" stroke={color(7)} dot={false} />
       </BarChart>
     </Frame>
   );
@@ -132,9 +135,13 @@ function SavingsRate({ cube }: { cube: ReportCube }) {
   );
 }
 
-function Merchants({ cube }: { cube: ReportCube }) {
+function Merchants({ cube, full }: { cube: ReportCube; full: boolean }) {
   const rows = merchantTable(cube, Math.min(3, cube.months.length));
   if (rows.length === 0) return <div className="sfin-subtle">No merchant activity in the window.</div>;
+  // The grid card is a PREVIEW: the full list once made this card the tallest
+  // thing on the page and stretched its whole row (live, 2026-09-02). Open
+  // the card for everything.
+  const shown = full ? rows : rows.slice(0, 6);
   return (
     <div style={{ overflowX: 'auto' }}>
       <table className="sfin-merchant-table">
@@ -142,7 +149,7 @@ function Merchants({ cube }: { cube: ReportCube }) {
           <tr><th style={{ textAlign: 'left' }}>Merchant</th><th>Total</th><th>Charges</th><th>Trend</th></tr>
         </thead>
         <tbody>
-          {rows.map((r) => (
+          {shown.map((r) => (
             <tr key={r.name}>
               <td>{r.name}</td>
               <td style={{ textAlign: 'right' }}>{fmt0(r.total)}</td>
@@ -154,6 +161,11 @@ function Merchants({ cube }: { cube: ReportCube }) {
           ))}
         </tbody>
       </table>
+      {!full && rows.length > shown.length && (
+        <div className="sfin-subtle" style={{ marginTop: 6 }}>
+          + {rows.length - shown.length} more — open the card for the full list
+        </div>
+      )}
     </div>
   );
 }
@@ -394,7 +406,7 @@ export function ReportView({ id, cube, customReports, hero = false, categories }
       case 'category-trends': body = <CategoryTrends cube={cube} categories={categories} />; break;
       case 'net-worth': body = <NetWorth cube={cube} />; break;
       case 'savings-rate': body = <SavingsRate cube={cube} />; break;
-      case 'merchants': body = <Merchants cube={cube} />; break;
+      case 'merchants': body = <Merchants cube={cube} full={hero} />; break;
       case 'budget-vs-actual': body = <BudgetVsActual cube={cube} />; break;
       case 'seasonality': body = <Seasonality cube={cube} />; break;
       case 'fees-interest': body = <FeesInterest cube={cube} />; break;

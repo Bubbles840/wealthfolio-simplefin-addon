@@ -25,11 +25,37 @@ export interface BudgetLayout {
   heroes: string[];
   order: string[];
   hidden: string[];
-  /** Grid cards rendered double-width. Optional: layouts stored before the
-   *  control existed simply have none. */
+  /** Grid cards rendered double-width. LEGACY (pre-size secrets): read as
+   *  size 'w' when the card has no entry in `size`; never written any more. */
   wide?: string[];
+  /** Per-card shape on the grid's fixed row rhythm:
+   *  c = compact (1×1), m = medium (1×2, the default), w = wide (2×2),
+   *  t = tall (1×3), b = big (2×3). The "exact box size you want", within a
+   *  system that keeps the grid flush. */
+  size?: Record<string, CardSize>;
 }
-export interface ResolvedLayout { heroes: string[]; grid: string[]; hidden: string[]; wide: string[] }
+
+export type CardSize = 'c' | 'm' | 'w' | 't' | 'b';
+
+/** Reports whose usual content is one line or a short list start compact —
+ *  an all-quiet fees card at full height is what read as wasted space. */
+const DEFAULT_COMPACT = new Set(['fees-interest']);
+
+/** m → w → t → b → c → m: each tap of Resize is one step through the shapes. */
+const SIZE_CYCLE: Record<CardSize, CardSize> = { m: 'w', w: 't', t: 'b', b: 'c', c: 'm' };
+
+export const SIZE_LABELS: Record<CardSize, string> = {
+  c: 'compact', m: 'medium', w: 'wide', t: 'tall', b: 'big',
+};
+export interface ResolvedLayout {
+  heroes: string[];
+  grid: string[];
+  hidden: string[];
+  wide: string[];
+  /** The effective size for any card id: the stored size, else 'w' for a
+   *  legacy wide entry, else the per-report default. */
+  sizeOf: (id: string) => CardSize;
+}
 
 const MAX_HEROES = 2;
 
@@ -45,7 +71,17 @@ export function parseBudgetLayout(raw: string | null | undefined): BudgetLayout 
   const strings = (x: unknown) => Array.isArray(x) && x.every((s) => typeof s === 'string');
   if (!strings(v.heroes) || !strings(v.order) || !strings(v.hidden)) return null;
   if (v.wide !== undefined && !strings(v.wide)) return null;
-  return { heroes: v.heroes, order: v.order, hidden: v.hidden, ...(v.wide ? { wide: v.wide } : {}) };
+  if (v.size !== undefined) {
+    if (typeof v.size !== 'object' || v.size === null) return null;
+    for (const val of Object.values(v.size)) {
+      if (val !== 'c' && val !== 'm' && val !== 'w' && val !== 't' && val !== 'b') return null;
+    }
+  }
+  return {
+    heroes: v.heroes, order: v.order, hidden: v.hidden,
+    ...(v.wide ? { wide: v.wide } : {}),
+    ...(v.size ? { size: v.size } : {}),
+  };
 }
 
 /** The default hero pair. The pool chart leads when a pool exists — it is the
@@ -77,7 +113,11 @@ function resolveFrom(stored: BudgetLayout | null, avail: string[], poolPresent: 
       placed.add(id);
     }
   }
-  return { heroes, grid, hidden, wide: (stored?.wide ?? []).filter((id) => availSet.has(id)) };
+  const wide = (stored?.wide ?? []).filter((id) => availSet.has(id));
+  const sizeOf = (id: string): CardSize =>
+    stored?.size?.[id]
+    ?? (wide.includes(id) ? 'w' : DEFAULT_COMPACT.has(id) ? 'c' : 'm');
+  return { heroes, grid, hidden, wide, sizeOf };
 }
 
 export function resolveBudgetLayout(
@@ -141,5 +181,15 @@ export function toggleWide(stored: BudgetLayout, id: string): BudgetLayout {
   return {
     ...stored,
     wide: wide.includes(id) ? wide.filter((w) => w !== id) : [...wide, id],
+  };
+}
+
+/** One Resize tap: step this card to the next shape in the cycle. */
+export function cycleSize(stored: BudgetLayout, id: string): BudgetLayout {
+  const current: CardSize = stored.size?.[id]
+    ?? (stored.wide?.includes(id) ? 'w' : DEFAULT_COMPACT.has(id) ? 'c' : 'm');
+  return {
+    ...stored,
+    size: { ...(stored.size ?? {}), [id]: SIZE_CYCLE[current] },
   };
 }

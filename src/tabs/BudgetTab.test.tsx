@@ -341,19 +341,24 @@ describe('layout polish', () => {
     expect(document.querySelector('.sfin-page--wide')).toBeNull();
   });
 
-  it('customize can widen a card to double width, persisted', async () => {
+  it('customize resizes a card through the shape cycle, persisted', async () => {
     const props = makeProps();
     (props.store as any).getReportCube = vi.fn(async () => ({ ...CUBE, asOf: new Date().toISOString() }));
     render(<SyncPage {...props} />);
     await waitFor(() => expect(reportIds().length).toBeGreaterThan(0));
     fireEvent.click(screen.getByRole('button', { name: /^customize$/i }));
-    fireEvent.click(screen.getByRole('button', { name: /widen merchants/i }));
-    await waitFor(() => {
-      const cell = document.querySelector('[data-report-id="merchants"]')!.closest('.sfin-cell');
-      expect(cell?.classList.contains('sfin-cell--wide')).toBe(true);
-    });
-    expect(screen.getByRole('button', { name: /narrow merchants/i })).toBeInTheDocument();
-    const saved = (props.store as any).setBudgetLayout.mock.calls.at(-1)![0];
-    expect(saved.wide).toEqual(['merchants']);
+
+    const cellOf = () => document.querySelector('[data-report-id="merchants"]')!.closest('.sfin-cell')!;
+    expect(cellOf().className).toContain('sfin-cell--m');
+
+    fireEvent.click(screen.getByRole('button', { name: /resize merchants/i }));
+    await waitFor(() => expect(cellOf().className).toContain('sfin-cell--w'));
+    let saved = (props.store as any).setBudgetLayout.mock.calls.at(-1)![0];
+    expect(saved.size).toEqual({ merchants: 'w' });
+
+    fireEvent.click(screen.getByRole('button', { name: /resize merchants/i }));
+    await waitFor(() => expect(cellOf().className).toContain('sfin-cell--t'));
+    saved = (props.store as any).setBudgetLayout.mock.calls.at(-1)![0];
+    expect(saved.size).toEqual({ merchants: 't' });
   });
 });

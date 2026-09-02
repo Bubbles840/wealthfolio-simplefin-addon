@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.31.0] - 2026-09-02
+
+### Changed
+
+- **The Budget tab wears Wealthfolio's own look**: a faint sage radial
+  gradient behind every tab of the addon, and the chart palette re-tuned from
+  primary-color defaults to the app's muted greens and earth tones.
+- **Exact card sizes.** Widen/Narrow grew into a real size cycle — every grid
+  card steps through **compact → medium → wide → tall → big** (column *and*
+  row spans on a fixed grid rhythm, so the boxes are the size you pick and
+  the grid stays flush). Stored per card; old widened layouts carry over.
+- **Customize controls live on the card now** — a compact tool cluster in each
+  card's corner instead of a row floating beneath it.
+- **The merchants card previews its top six** with a "+ N more" note; the full
+  list lives in the opened view. It no longer stretches its whole grid row.
+- Quiet reports (fees & interest) default to compact.
+
 ## [1.30.0] - 2026-09-02
 
 ### Fixed

@@ -74,6 +74,35 @@ it('parseBudgetLayout rejects junk and non-string arrays', () => {
   expect(parseBudgetLayout(JSON.stringify(ok))).toEqual(ok);
 });
 
+describe('card sizes', () => {
+  const base: BudgetLayout = { heroes: ['cash-flow'], order: [], hidden: [] };
+
+  it('cycleSize walks medium through the shapes and back', () => {
+    let l = base;
+    for (const expected of ['w', 't', 'b', 'c', 'm']) {
+      l = cycleSize(l, 'merchants');
+      expect(l.size?.merchants ?? 'm').toBe(expected);
+    }
+  });
+
+  it('resolve reports each card size, honoring the legacy wide list and defaults', () => {
+    const stored: BudgetLayout = { ...base, wide: ['net-worth'], size: { merchants: 't' } };
+    const r = resolveBudgetLayout(stored, AVAIL, true);
+    expect(r.sizeOf('merchants')).toBe('t');
+    expect(r.sizeOf('net-worth')).toBe('w');   // pre-size secrets keep their widening
+    expect(r.sizeOf('fees-interest')).toBe('c'); // quiet reports default compact
+    expect(r.sizeOf('seasonality')).toBe('m');
+  });
+
+  it('parseBudgetLayout keeps a valid size map and rejects junk values', () => {
+    const ok = { heroes: [], order: [], hidden: [], size: { merchants: 'b' } };
+    expect(parseBudgetLayout(JSON.stringify(ok))).toEqual(ok);
+    expect(parseBudgetLayout(JSON.stringify({ heroes: [], order: [], hidden: [], size: { merchants: 'huge' } }))).toBeNull();
+  });
+});
+
+import { cycleSize } from './budget-layout.js';
+
 describe('wide cards', () => {
   const base: BudgetLayout = { heroes: ['cash-flow'], order: [], hidden: [] };
 
