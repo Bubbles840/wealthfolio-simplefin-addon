@@ -406,6 +406,12 @@ export function getNativeUncategorizedSpending(
     WHERE ata.activity_id IS NULL
       AND a.activity_date >= '${startInclusive}'
       AND a.activity_date < '${endExclusive}'
+      -- Grouped rows are internal transfers, whatever type the leg wears — a
+      -- linked pair can hold a WITHDRAWAL leg, and offering one for
+      -- categorization (live, 2026-09-02: a paired Citi payment in /categorize)
+      -- is exactly what this exclusion prevents. The TOTAL query always had it;
+      -- the row list must agree with the count.
+      AND COALESCE(a.source_group_id, '') = ''
       AND UPPER(a.activity_type) IN ('WITHDRAWAL', 'FEE', 'TAX', 'DEPOSIT', 'CREDIT', 'INTEREST', 'DIVIDEND', 'INCOME')
       AND COALESCE(a.notes, '') NOT LIKE 'Starting balance · %'
       AND COALESCE(a.notes, '') NOT LIKE 'Balance adjustment · %'

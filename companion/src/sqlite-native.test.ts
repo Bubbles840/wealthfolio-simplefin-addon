@@ -1294,3 +1294,25 @@ describe('report cube readers, merchants / fees / daily / valuations', () => {
     });
   });
 });
+
+describe('uncategorized rows exclude linked transfers', () => {
+  it('never lists a row that belongs to a transfer group, whatever its type', () => {
+    // The live 2026-09-02 ghost: a LINKED pair can hold a WITHDRAWAL-typed leg
+    // (links are not type-pure), and the ROW query lacked the group exclusion
+    // the TOTAL query has — so /categorize offered a paired Citi payment for
+    // categorization while the tile counted nothing.
+    const { path, cleanup } = makeTestDb();
+    try {
+      const db = new DatabaseSync(path);
+      db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, account_id, notes, source_group_id)
+               VALUES ('linked-leg', '-1043', '2026-07-20', 'WITHDRAWAL', 'acct-cash', 'CITI CARD ONLINE PAYMENT ACH WEB · TRN-c1', 'wf-transfer-abc')`);
+      db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, account_id, notes)
+               VALUES ('really-unfiled', '-12', '2026-07-21', 'WITHDRAWAL', 'acct-cash', 'MYSTERY · TRN-9')`);
+      db.close();
+      const rows = getNativeUncategorizedSpending(path, '2026-07-01', '2026-08-01');
+      expect(rows.map((r) => r.activityId)).toEqual(['really-unfiled']);
+    } finally {
+      cleanup();
+    }
+  });
+});
