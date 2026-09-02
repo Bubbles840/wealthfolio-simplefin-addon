@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.30.0] - 2026-09-02
+
+### Fixed
+
+- **A linked transfer can no longer appear in `/categorize`.** A linked pair
+  may hold a WITHDRAWAL-typed leg, and the row list behind the tile, the
+  import notice, and the menu lacked the transfer-group exclusion the count
+  always had — so a paired Citi card payment was offered for categorization
+  while the tile said nothing needed one. List and count now share one rule.
+
+### Added
+
+- **Income categorization from Telegram.** A money-in row whose bucket is
+  income (deposits, cash interest — your grant check) now gets Wealthfolio's
+  *income* categories in `/categorize`, which are the only ones upstream will
+  accept there; the old spending grid offered such rows nothing but 400s. The
+  filing carries its taxonomy through Undo, and a "Spending categories »"
+  escape hatch covers deposits that are really refunds. Card credits keep the
+  spending grid: money in, but a spending-bucket refund.
+- **Signs and colors on every listed amount.** The import notice, its
+  needs-a-category block, the `/categorize` screens, and the addon's
+  uncategorized list now show `+$16,000` / `−$87.26` — with 🟢/🔴 dots in
+  emoji style and green/red styling in the addon — so money in and money out
+  are never ambiguous again.
+- **Mixed Amazon orders file under your default Amazon category** (the one in
+  the Amazon card — set it to Shopping and that's where they go). No rule can
+  ever match a mixed label, so leaving them stranded meant hand-filing each
+  one forever; the label text still says what the order contained.
+- **Budget tab polish**: full-width on desktop, hero charts at proper height,
+  hoverable cards, pill range chips, a dashed New-report card, merchant and
+  preview tables that fit, a seasonality heatmap whose quiet cells stay
+  visible, and per-card **Widen/Narrow** in Customize (a persisted
+  double-width span that folds to one column on phones).
+
 ## [1.29.0] - 2026-08-30
 
 ### Added
