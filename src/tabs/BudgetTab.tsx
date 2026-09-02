@@ -4,7 +4,7 @@ import { ReportView, reportTitle } from '../components/budget/ReportView';
 import { monthlySpendTotals, sliceCubeMonths, type ReportCube } from '../../shared/report-cube';
 import { runwayTrendData, savingsRateData } from '../components/budget/report-data';
 import {
-  moveCard, pinHero, resolveBudgetLayout, STANDARD_REPORT_IDS, toggleHidden, type BudgetLayout,
+  moveCard, pinHero, resolveBudgetLayout, STANDARD_REPORT_IDS, toggleHidden, toggleWide, type BudgetLayout,
 } from '../../shared/budget-layout';
 import { newCustomReportId, type CustomReport } from '../../shared/report-eval';
 import { ReportBuilder } from '../components/budget/ReportBuilder';
@@ -80,7 +80,7 @@ export function BudgetTab({ cube, customReports, layout, onLayoutChange, onCusto
    *  exists, else the resolved snapshot the user is LOOKING at — so the first
    *  ever customization edits exactly what is on screen. */
   const storedLayout: BudgetLayout = layout ?? {
-    heroes: resolved.heroes, order: resolved.grid, hidden: resolved.hidden,
+    heroes: resolved.heroes, order: resolved.grid, hidden: resolved.hidden, wide: resolved.wide,
   };
 
   if (builder) {
@@ -119,7 +119,7 @@ export function BudgetTab({ cube, customReports, layout, onLayoutChange, onCusto
           </Button>
           <SectionLabel>{reportTitle(fullId, customReports)}</SectionLabel>
         </div>
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', margin: '8px 0' }}>
+        <div className="sfin-range-chips">
           {[...RANGES, ...(cube.pool ? [{ label: 'Pool', value: 'pool' as Range }] : [])].map((r) => (
             <Button
               key={r.label}
@@ -182,6 +182,13 @@ export function BudgetTab({ cube, customReports, layout, onLayoutChange, onCusto
             <Button variant="ghost" aria-label={`Move ${title} down`} onClick={() => onLayoutChange(moveCard(storedLayout, availableIds, id, 1))}>
               ↓
             </Button>
+            <Button
+              variant="ghost"
+              aria-label={`${resolved.wide.includes(id) ? 'Narrow' : 'Widen'} ${title}`}
+              onClick={() => onLayoutChange(toggleWide(storedLayout, id))}
+            >
+              {resolved.wide.includes(id) ? '⇤ Narrow' : '⇥ Widen'}
+            </Button>
           </>
         )}
         <Button variant="ghost" aria-label={`Hide ${title}`} onClick={() => onLayoutChange(toggleHidden(storedLayout, availableIds, id))}>
@@ -194,18 +201,21 @@ export function BudgetTab({ cube, customReports, layout, onLayoutChange, onCusto
   /** A whole card is its own open-button — the tap target a phone needs, with
    *  the accessible name a screen reader needs. In customize mode the card is
    *  inert and its controls row does the talking instead. */
+  const cellClass = (id: string, hero: boolean) =>
+    `sfin-cell${!hero && resolved.wide.includes(id) ? ' sfin-cell--wide' : ''}`;
+
   const card = (id: string, hero: boolean) => customizing ? (
-    <div key={id}>
+    <div key={id} className={cellClass(id, hero)}>
       <ReportView id={id} cube={viewCube} customReports={customReports} hero={hero} />
       {controls(id, !hero)}
     </div>
   ) : (
     <div
       key={id}
+      className={cellClass(id, hero)}
       role="button"
       tabIndex={0}
       aria-label={`Open ${reportTitle(id, customReports)}`}
-      style={{ cursor: 'pointer' }}
       onClick={() => setFullId(id)}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setFullId(id); }
@@ -219,13 +229,13 @@ export function BudgetTab({ cube, customReports, layout, onLayoutChange, onCusto
     <>
       {staleStrip}
 
-      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
+      <div className="sfin-budget-toolbar">
         <Button variant="ghost" onClick={() => setCustomizing((c) => !c)}>
           {customizing ? 'Done customizing' : 'Customize'}
         </Button>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 12 }}>
+      <div className="sfin-budget-heroes">
         {resolved.heroes.map((id) => card(id, true))}
       </div>
 
@@ -248,14 +258,13 @@ export function BudgetTab({ cube, customReports, layout, onLayoutChange, onCusto
         )}
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 12, marginTop: 12 }}>
+      <div className="sfin-budget-grid">
         {resolved.grid.map((id) => card(id, false))}
         {!customizing && (
           <button
             type="button"
-            className="sfin-card"
+            className="sfin-new-report-card"
             aria-label="New report"
-            style={{ cursor: 'pointer', minHeight: 80 }}
             onClick={() => setBuilder({ existing: null })}
           >
             + New report

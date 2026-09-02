@@ -57,7 +57,7 @@ const color = (i: number) => SERIES_COLORS[i % SERIES_COLORS.length];
 
 function Frame({ children }: { children: React.ReactElement }) {
   return (
-    <ChartContainer config={{}} className="sfin-chart" style={{ width: '100%', minHeight: 160 }}>
+    <ChartContainer config={{}} className="sfin-chart" style={{ width: '100%' }}>
       {children}
     </ChartContainer>
   );
@@ -192,17 +192,21 @@ function Seasonality({ cube }: { cube: ReportCube }) {
         {grid.categories.map((c, ci) => (
           <React.Fragment key={c}>
             <span className="sfin-subtle" style={{ fontSize: 11 }}>{c}</span>
-            {grid.months.map((m, mi) => (
-              <div
-                key={m}
-                data-heat
-                title={`${c} · ${m}: ${fmt0(grid.cells[ci][mi] / 100)}`}
-                style={{
-                  height: 22, borderRadius: 3,
-                  background: `color-mix(in srgb, ${color(3)} ${Math.round((Math.max(0, grid.cells[ci][mi]) / max) * 85)}%, transparent)`,
-                }}
-              />
-            ))}
+            {grid.months.map((m, mi) => {
+              const v = Math.max(0, grid.cells[ci][mi]);
+              // A floor tint keeps quiet cells VISIBLE as cells — an all-faint
+              // grid read as an empty card on the live instance (2026-09-02).
+              const pct = v > 0 ? Math.max(14, Math.round((v / max) * 85)) : 5;
+              return (
+                <div
+                  key={m}
+                  data-heat
+                  className="sfin-heat-cell"
+                  title={`${c} · ${m}: ${fmt0(grid.cells[ci][mi] / 100)}`}
+                  style={{ background: `color-mix(in srgb, ${color(3)} ${pct}%, transparent)` }}
+                />
+              );
+            })}
           </React.Fragment>
         ))}
       </div>
@@ -399,11 +403,13 @@ export function ReportView({ id, cube, customReports, hero = false, categories }
     }
   }
   return (
-    <div className="sfin-card" data-report-id={id} data-hero={hero || undefined}>
+    <div className="sfin-card sfin-report-card" data-report-id={id} data-hero={hero || undefined}>
       <div className="sfin-card-head">
         <SectionLabel>{reportTitle(id, customReports)}</SectionLabel>
       </div>
-      {body}
+      <div className={`sfin-report-body${hero ? ' sfin-report-body--hero' : ''}`}>
+        {body}
+      </div>
     </div>
   );
 }
