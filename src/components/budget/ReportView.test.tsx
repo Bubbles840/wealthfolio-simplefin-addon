@@ -91,6 +91,22 @@ describe('ReportView', () => {
     expect(screen.getByRole('table')).toBeInTheDocument();
   });
 
+  it('merchants: the grid card previews the top six; the open view lists all', () => {
+    const many = {
+      ...fresh(),
+      merchants: [
+        [],
+        Array.from({ length: 10 }, (_, i) => ({ name: `MERCHANT ${i}`, cents: (10 - i) * 1000, count: 1 })),
+      ],
+    };
+    const { unmount } = render(<ReportView id="merchants" cube={many} customReports={[]} />);
+    expect(screen.getAllByText(/^MERCHANT/)).toHaveLength(6);
+    expect(screen.getByText(/\+ ?4 more/i)).toBeInTheDocument();
+    unmount();
+    render(<ReportView id="merchants" cube={many} customReports={[]} hero />);
+    expect(screen.getAllByText(/^MERCHANT/)).toHaveLength(10);
+  });
+
   it('budget-vs-actual: category rows, worst overshoot first', () => {
     view('budget-vs-actual');
     const rows = screen.getAllByText(/Groceries|Dining/).map((n) => n.textContent);

@@ -4,7 +4,8 @@ import { ReportView, reportTitle } from '../components/budget/ReportView';
 import { monthlySpendTotals, sliceCubeMonths, type ReportCube } from '../../shared/report-cube';
 import { runwayTrendData, savingsRateData } from '../components/budget/report-data';
 import {
-  moveCard, pinHero, resolveBudgetLayout, STANDARD_REPORT_IDS, toggleHidden, toggleWide, type BudgetLayout,
+  cycleSize, moveCard, pinHero, resolveBudgetLayout, SIZE_LABELS, STANDARD_REPORT_IDS,
+  toggleHidden, type BudgetLayout,
 } from '../../shared/budget-layout';
 import { newCustomReportId, type CustomReport } from '../../shared/report-eval';
 import { ReportBuilder } from '../components/budget/ReportBuilder';
@@ -146,7 +147,7 @@ export function BudgetTab({ cube, customReports, layout, onLayoutChange, onCusto
       ? customReports.find((r) => `custom:${r.id}` === id) ?? null
       : null;
     return (
-      <div className="sfin-banner-actions" style={{ marginTop: 4, flexWrap: 'wrap' }}>
+      <div className="sfin-card-tools">
         {custom && (
           <>
             <Button variant="ghost" aria-label={`Edit ${title}`} onClick={() => setBuilder({ existing: custom })}>
@@ -184,10 +185,11 @@ export function BudgetTab({ cube, customReports, layout, onLayoutChange, onCusto
             </Button>
             <Button
               variant="ghost"
-              aria-label={`${resolved.wide.includes(id) ? 'Narrow' : 'Widen'} ${title}`}
-              onClick={() => onLayoutChange(toggleWide(storedLayout, id))}
+              aria-label={`Resize ${title} (now ${SIZE_LABELS[resolved.sizeOf(id)]})`}
+              title={`Cycle size — now ${SIZE_LABELS[resolved.sizeOf(id)]}`}
+              onClick={() => onLayoutChange(cycleSize(storedLayout, id))}
             >
-              {resolved.wide.includes(id) ? '⇤ Narrow' : '⇥ Widen'}
+              ⤢ {SIZE_LABELS[resolved.sizeOf(id)]}
             </Button>
           </>
         )}
@@ -202,10 +204,10 @@ export function BudgetTab({ cube, customReports, layout, onLayoutChange, onCusto
    *  the accessible name a screen reader needs. In customize mode the card is
    *  inert and its controls row does the talking instead. */
   const cellClass = (id: string, hero: boolean) =>
-    `sfin-cell${!hero && resolved.wide.includes(id) ? ' sfin-cell--wide' : ''}`;
+    `sfin-cell${hero ? '' : ` sfin-cell--${resolved.sizeOf(id)}`}`;
 
   const card = (id: string, hero: boolean) => customizing ? (
-    <div key={id} className={cellClass(id, hero)}>
+    <div key={id} className={`${cellClass(id, hero)} sfin-cell--editing`}>
       <ReportView id={id} cube={viewCube} customReports={customReports} hero={hero} />
       {controls(id, !hero)}
     </div>
