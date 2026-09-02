@@ -518,6 +518,53 @@ const css = `
 .sfin-uncat-amt { flex: none; font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .sfin-amt--in { color: #16a34a; }
 .sfin-amt--out { color: #dc2626; }
+
+/* ── Budget tab ─────────────────────────────────────────────────────────── */
+.sfin-page--wide { max-width: 1280px; }
+.sfin-budget-toolbar { display: flex; justify-content: flex-end; align-items: center; gap: 8px; margin-bottom: 10px; }
+.sfin-budget-heroes { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; }
+.sfin-budget-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; margin-top: 14px; }
+.sfin-cell { min-width: 0; }
+.sfin-cell[role="button"] { cursor: pointer; outline: none; border-radius: 12px; }
+.sfin-cell--wide { grid-column: span 2; }
+@media (max-width: 720px) { .sfin-cell--wide { grid-column: span 1; } }
+.sfin-report-card {
+  height: 100%; display: flex; flex-direction: column; gap: 8px; box-sizing: border-box;
+  transition: border-color .15s ease, transform .15s ease, box-shadow .15s ease;
+}
+.sfin-cell[role="button"]:hover .sfin-report-card,
+.sfin-cell[role="button"]:focus-visible .sfin-report-card {
+  border-color: color-mix(in srgb, currentColor 30%, transparent);
+  transform: translateY(-1px);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, .16);
+}
+.sfin-report-body { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.sfin-report-body .sfin-chart { flex: 1; min-height: 170px; }
+.sfin-report-body--hero .sfin-chart { min-height: 260px; }
+.sfin-range-chips { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0; }
+.sfin-new-report-card {
+  border: 1.5px dashed color-mix(in srgb, currentColor 25%, transparent);
+  background: transparent; border-radius: 12px; min-height: 110px;
+  display: flex; align-items: center; justify-content: center;
+  font: inherit; font-size: 14px; color: inherit; opacity: .7; cursor: pointer;
+  transition: opacity .15s ease, border-color .15s ease;
+}
+.sfin-new-report-card:hover { opacity: 1; border-color: color-mix(in srgb, currentColor 45%, transparent); }
+.sfin-merchant-table, .sfin-custom-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.sfin-merchant-table th, .sfin-custom-table th {
+  text-align: right; font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em;
+  opacity: .6; padding: 4px 8px; font-weight: 600;
+}
+.sfin-merchant-table th:first-child, .sfin-merchant-table td:first-child,
+.sfin-custom-table th:first-child, .sfin-custom-table td:first-child {
+  text-align: left; padding-left: 0; max-width: 240px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sfin-merchant-table td, .sfin-custom-table td {
+  padding: 5px 8px; text-align: right; font-variant-numeric: tabular-nums;
+  border-top: 1px solid color-mix(in srgb, currentColor 10%, transparent);
+}
+.sfin-heat-cell { height: 26px; border-radius: 4px; }
 .sfin-uncat-undo { display: flex; align-items: center; gap: 8px; padding: 4px 0 8px; }
 /* Same rules as .sfin-uncat-undo — a distinct class because the cap notice and
    "Categorize in Wealthfolio" button are an unrelated footer, not the undo

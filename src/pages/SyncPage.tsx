@@ -534,7 +534,7 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
   const isOpen = (id: string) => openCards[id] === true;
 
   return (
-    <div className="sfin-page">
+    <div className={`sfin-page${activeTab === 'budget' ? ' sfin-page--wide' : ''}`}>
       <div className="sfin-head">
         <div>
           <h2 className="sfin-title">SimpleFin Sync</h2>

@@ -21,8 +21,15 @@ export const STANDARD_REPORT_IDS = [
   'merchants', 'budget-vs-actual', 'seasonality', 'fees-interest', 'runway-trend',
 ] as const;
 
-export interface BudgetLayout { heroes: string[]; order: string[]; hidden: string[] }
-export interface ResolvedLayout { heroes: string[]; grid: string[]; hidden: string[] }
+export interface BudgetLayout {
+  heroes: string[];
+  order: string[];
+  hidden: string[];
+  /** Grid cards rendered double-width. Optional: layouts stored before the
+   *  control existed simply have none. */
+  wide?: string[];
+}
+export interface ResolvedLayout { heroes: string[]; grid: string[]; hidden: string[]; wide: string[] }
 
 const MAX_HEROES = 2;
 
@@ -37,7 +44,8 @@ export function parseBudgetLayout(raw: string | null | undefined): BudgetLayout 
   if (!v || typeof v !== 'object') return null;
   const strings = (x: unknown) => Array.isArray(x) && x.every((s) => typeof s === 'string');
   if (!strings(v.heroes) || !strings(v.order) || !strings(v.hidden)) return null;
-  return { heroes: v.heroes, order: v.order, hidden: v.hidden };
+  if (v.wide !== undefined && !strings(v.wide)) return null;
+  return { heroes: v.heroes, order: v.order, hidden: v.hidden, ...(v.wide ? { wide: v.wide } : {}) };
 }
 
 /** The default hero pair. The pool chart leads when a pool exists — it is the
@@ -69,7 +77,7 @@ function resolveFrom(stored: BudgetLayout | null, avail: string[], poolPresent: 
       placed.add(id);
     }
   }
-  return { heroes, grid, hidden };
+  return { heroes, grid, hidden, wide: (stored?.wide ?? []).filter((id) => availSet.has(id)) };
 }
 
 export function resolveBudgetLayout(
@@ -91,7 +99,7 @@ export function pinHero(stored: BudgetLayout, availableIds: string[], id: string
     const bumped = heroes.shift()!;
     order = [bumped, ...order.filter((o) => o !== bumped)];
   }
-  return { heroes, order, hidden };
+  return { ...stored, heroes, order, hidden };
 }
 
 /** Move a grid card one slot up (-1) or down (+1) in the grid the user SEES,
@@ -119,8 +127,19 @@ export function toggleHidden(stored: BudgetLayout, availableIds: string[], id: s
     return { ...stored, hidden: stored.hidden.filter((h) => h !== id) };
   }
   return {
+    ...stored,
     heroes: stored.heroes.filter((h) => h !== id),
     order: stored.order.filter((o) => o !== id),
     hidden: [...stored.hidden, id],
+  };
+}
+
+/** Widen a grid card to double width, or narrow it back — purely visual, so
+ *  unlike hide/pin it touches nothing else about the arrangement. */
+export function toggleWide(stored: BudgetLayout, id: string): BudgetLayout {
+  const wide = stored.wide ?? [];
+  return {
+    ...stored,
+    wide: wide.includes(id) ? wide.filter((w) => w !== id) : [...wide, id],
   };
 }

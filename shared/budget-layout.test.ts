@@ -73,3 +73,33 @@ it('parseBudgetLayout rejects junk and non-string arrays', () => {
   const ok = { heroes: [], order: ['cash-flow'], hidden: [] };
   expect(parseBudgetLayout(JSON.stringify(ok))).toEqual(ok);
 });
+
+describe('wide cards', () => {
+  const base: BudgetLayout = { heroes: ['cash-flow'], order: [], hidden: [] };
+
+  it('resolve carries the wide list, filtered to what exists', () => {
+    const stored: BudgetLayout = { ...base, wide: ['merchants', 'gone-report'] };
+    const r = resolveBudgetLayout(stored, AVAIL, true);
+    expect(r.wide).toEqual(['merchants']);
+  });
+
+  it('a stored layout without a wide list resolves to none (older secret)', () => {
+    expect(resolveBudgetLayout(base, AVAIL, true).wide).toEqual([]);
+    const parsed = parseBudgetLayout(JSON.stringify({ heroes: [], order: [], hidden: [] }));
+    expect(parsed).toEqual({ heroes: [], order: [], hidden: [] });
+  });
+
+  it('toggleWide widens and narrows', () => {
+    const widened = toggleWide(base, 'merchants');
+    expect(widened.wide).toEqual(['merchants']);
+    expect(toggleWide(widened, 'merchants').wide).toEqual([]);
+  });
+
+  it('parseBudgetLayout keeps a valid wide list and rejects a junk one', () => {
+    const ok = { heroes: [], order: [], hidden: [], wide: ['merchants'] };
+    expect(parseBudgetLayout(JSON.stringify(ok))).toEqual(ok);
+    expect(parseBudgetLayout(JSON.stringify({ heroes: [], order: [], hidden: [], wide: [7] }))).toBeNull();
+  });
+});
+
+import { toggleWide } from './budget-layout.js';
