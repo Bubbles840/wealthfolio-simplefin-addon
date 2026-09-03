@@ -57,3 +57,19 @@ describe('legends and captions (v1.45)', () => {
     }
   });
 });
+
+describe('custom report rendering (v1.46)', () => {
+  it('renders a line/bar custom report as an SVG of its evaluated series', async () => {
+    const { renderCustomReportSvg } = await import('./report-render.js');
+    const def = {
+      id: 'cr-1', name: 'Food', chart: 'line' as const, range: { kind: 'all' as const }, accounts: null,
+      series: [{ label: 'Food', terms: [
+        { sign: 1 as const, source: 'category' as const, category: 'Dining' },
+        { sign: 1 as const, source: 'category' as const, category: 'Groceries' },
+      ] }],
+    };
+    const svg = renderCustomReportSvg(CUBE, def, { width: 640, height: 320 });
+    expect(svg).toContain('<svg');
+    expect(svg).toContain('Food');
+  });
+});

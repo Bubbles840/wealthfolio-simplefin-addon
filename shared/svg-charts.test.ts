@@ -72,3 +72,16 @@ describe('attribute hygiene', () => {
     expect(polyline).toContain('stroke-dasharray');
   });
 });
+
+describe('donut centering (v1.46)', () => {
+  it('centers ring plus legend as one group instead of pinning left', () => {
+    // Live: ring hugged the left edge, legend floated mid, dead air right.
+    const svg = svgDonut({
+      width: 640, height: 300,
+      slices: [{ name: 'Dining', value: 60, color: '#5e9483' }],
+    });
+    expect(svg).toContain('<g transform="translate(');
+    const dx = Number(svg.match(/translate\((\d+(?:\.\d+)?)/)![1]);
+    expect(dx).toBeGreaterThan(40);
+  });
+});

@@ -79,6 +79,8 @@ import { readPoolStatus, readRunwayMonths, type PoolReportDeps } from './pool-re
 import { REPORT_CUBE_SECRET_KEY, parseReportCube } from '../../shared/report-cube.js';
 import { HIDDEN_SUBSCRIPTIONS_SECRET_KEY, CONFIRMED_SUBSCRIPTIONS_SECRET_KEY, parseHiddenSubscriptions } from '../../shared/subscriptions.js';
 import { renderReportSvg, reportImageTitle, reportImageCaption, RENDERABLE_REPORT_IDS } from '../../shared/report-render.js';
+import { parseBudgetLayout } from '../../shared/budget-layout.js';
+import { parseCustomReports } from '../../shared/report-eval.js';
 import { sliceCubeMonths } from '../../shared/report-cube.js';
 import { handleReportsRequest } from './reports-server.js';
 import { buildReportCube, type CubeBuildDeps } from './report-cube-build.js';
@@ -3096,6 +3098,21 @@ if (!process.env.VITEST) {
       },
       readCube: async () => parseReportCube(
         await wfClient.getAddonSecret('simplefin-sync', REPORT_CUBE_SECRET_KEY).catch(() => null),
+      ),
+      readLayout: async () => parseBudgetLayout(
+        await wfClient.getAddonSecret('simplefin-sync', 'budget_layout').catch(() => null),
+      ),
+      writeLayout: async (next: import('../../shared/budget-layout.js').BudgetLayout) => {
+        await wfClient.setAddonSecret('simplefin-sync', 'budget_layout', JSON.stringify(next));
+      },
+      readCustomReports: async () => parseCustomReports(
+        await wfClient.getAddonSecret('simplefin-sync', 'custom_reports').catch(() => null),
+      ),
+      readHiddenSubscriptions: async () => parseHiddenSubscriptions(
+        await wfClient.getAddonSecret('simplefin-sync', HIDDEN_SUBSCRIPTIONS_SECRET_KEY).catch(() => null),
+      ),
+      readConfirmedSubscriptions: async () => parseHiddenSubscriptions(
+        await wfClient.getAddonSecret('simplefin-sync', CONFIRMED_SUBSCRIPTIONS_SECRET_KEY).catch(() => null),
       ),
     };
     createServer((req, res) => {
