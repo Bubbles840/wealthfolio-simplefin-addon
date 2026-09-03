@@ -387,3 +387,46 @@ describe('subscriptions card: confirm/ignore (v1.37)', () => {
     expect(screen.queryByText(/is this a subscription\?/i)).toBeNull();
   });
 });
+
+describe('subscriptions card: watch + per-item restore (v1.38)', () => {
+  const SUB = { name: 'SPOTIFY', monthlyCents: 1099, count: 5, lastDate: '2026-08-20', lastCents: 1099, creep: false, kind: 'subscription' as const };
+  const cubeWithMerchants = () => ({
+    ...fresh(),
+    subscriptions: [SUB],
+    merchants: [[], [
+      { name: 'ANTHROPIC* CLAUDE SUB', cents: 2000, count: 1 },
+      { name: 'CHIPOTLE', cents: 4500, count: 3 },
+    ]],
+  });
+
+  it('a confirmed name with no detection yet shows as watching, priced by its charges', () => {
+    render(<ReportView id="subscriptions" customReports={[]} cube={cubeWithMerchants()}
+      confirmedSubscriptions={['ANTHROPIC* CLAUDE SUB']} hiddenSubscriptions={[]} />);
+    expect(screen.getByText('ANTHROPIC* CLAUDE SUB')).toBeTruthy();
+    expect(screen.getByText(/\$20\.00\/mo · watching/)).toBeTruthy();
+    // It counts: a watched subscription is money leaving monthly.
+    expect(screen.getByText(/\$30\.99\/mo across 2/)).toBeTruthy();
+  });
+
+  it('the open view offers this month’s merchants to watch', () => {
+    const onConfirm = vi.fn();
+    render(<ReportView id="subscriptions" customReports={[]} cube={cubeWithMerchants()} hero
+      confirmedSubscriptions={[]} hiddenSubscriptions={[]} onConfirmSubscription={onConfirm} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Watch ANTHROPIC* CLAUDE SUB' }));
+    expect(onConfirm).toHaveBeenCalledWith('ANTHROPIC* CLAUDE SUB');
+  });
+
+  it('the grid card does not carry the watch list — it is drill-in furniture', () => {
+    render(<ReportView id="subscriptions" customReports={[]} cube={cubeWithMerchants()}
+      confirmedSubscriptions={[]} hiddenSubscriptions={[]} onConfirmSubscription={vi.fn()} />);
+    expect(screen.queryByRole('button', { name: /watch anthropic/i })).toBeNull();
+  });
+
+  it('the open view restores dismissed names one at a time', () => {
+    const onUnhide = vi.fn();
+    render(<ReportView id="subscriptions" customReports={[]} cube={cubeWithMerchants()} hero
+      confirmedSubscriptions={[]} hiddenSubscriptions={['QR LIBRARY']} onUnhideSubscription={onUnhide} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Restore QR LIBRARY' }));
+    expect(onUnhide).toHaveBeenCalledWith('QR LIBRARY');
+  });
+});

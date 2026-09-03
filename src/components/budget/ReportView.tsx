@@ -278,12 +278,14 @@ function DataCheck({ cube }: { cube: ReportCube }) {
   );
 }
 
-function Subscriptions({ cube, hidden = [], confirmed = [], onHide, onConfirm, onRestore }: {
+function Subscriptions({ cube, full = false, hidden = [], confirmed = [], onHide, onConfirm, onUnhide, onRestore }: {
   cube: ReportCube;
+  full?: boolean;
   hidden?: string[];
   confirmed?: string[];
   onHide?: (name: string) => void;
   onConfirm?: (name: string) => void;
+  onUnhide?: (name: string) => void;
   onRestore?: () => void;
 }) {
   const res = subscriptionSummary(cube);
@@ -309,7 +311,20 @@ function Subscriptions({ cube, hidden = [], confirmed = [], onHide, onConfirm, o
   const confirmedSet = new Set(confirmed);
   const sure = visible.filter((sub) => (sub.kind ?? 'subscription') === 'subscription' || confirmedSet.has(sub.name));
   const maybes = visible.filter((sub) => !sure.includes(sub));
-  const totalCents = sure.reduce((sum, sub) => sum + sub.monthlyCents, 0);
+  // "Watch this one": a confirmed name the detector has no verdict on yet —
+  // one charge so far, or an accidental cancel of something brand new. Priced
+  // from its latest-month charges until the detector takes over.
+  const detectedNames = new Set(res.subs.map((sub) => sub.name));
+  const latestMerchants = cube.merchants.at(-1) ?? [];
+  const watched = confirmed
+    .filter((name) => !detectedNames.has(name) && !hiddenSet.has(name))
+    .map((name) => {
+      const m = latestMerchants.find((entry) => entry.name === name);
+      return { name, perChargeCents: m && m.count > 0 ? Math.round(m.cents / m.count) : null };
+    });
+  const totalCents = sure.reduce((sum, sub) => sum + sub.monthlyCents, 0)
+    + watched.reduce((sum, w) => sum + (w.perChargeCents ?? 0), 0);
+  const rosterCount = sure.length + watched.length;
   const row = (sub: (typeof visible)[number]) => (
     <div key={sub.name} className="sfin-subs-row">
       <span className="sfin-subs-name">{sub.name}</span>
@@ -338,7 +353,26 @@ function Subscriptions({ cube, hidden = [], confirmed = [], onHide, onConfirm, o
   return (
     <div className="sfin-subs">
       {sure.map(row)}
-      <div className="sfin-subs-total">{fmt2(totalCents / 100)}/mo across {sure.length}</div>
+      {watched.map((w) => (
+        <div key={w.name} className="sfin-subs-row">
+          <span className="sfin-subs-name">{w.name}</span>
+          <span className="sfin-subs-price">
+            {w.perChargeCents !== null ? <>{fmt2(w.perChargeCents / 100)}/mo · watching</> : <>watching</>}
+          </span>
+          {onHide && (
+            <button
+              type="button"
+              className="sfin-subs-dismiss"
+              aria-label={`Dismiss ${w.name}`}
+              title="Stop watching"
+              onClick={() => onHide(w.name)}
+            >
+              ✕
+            </button>
+          )}
+        </div>
+      ))}
+      <div className="sfin-subs-total">{fmt2(totalCents / 100)}/mo across {rosterCount}</div>
       {maybes.length > 0 && (
         <>
           <div className="sfin-subs-maybe-head">Is this a subscription?</div>
@@ -374,10 +408,62 @@ function Subscriptions({ cube, hidden = [], confirmed = [], onHide, onConfirm, o
           ))}
         </>
       )}
-      {hiddenCount > 0 && onRestore && (
+      {!full && hiddenCount > 0 && onRestore && (
         <button type="button" className="sfin-subs-restore" onClick={onRestore}>
           {hiddenCount} dismissed — restore
         </button>
+      )}
+      {full && (
+        <>
+          {hidden.length > 0 && (
+            <>
+              <div className="sfin-subs-maybe-head">Dismissed</div>
+              {hidden.map((name) => (
+                <div key={name} className="sfin-subs-row sfin-subs-row--muted">
+                  <span className="sfin-subs-name">{name}</span>
+                  {onUnhide && (
+                    <button
+                      type="button"
+                      className="sfin-subs-answer"
+                      aria-label={`Restore ${name}`}
+                      onClick={() => onUnhide(name)}
+                    >
+                      ↩ Restore
+                    </button>
+                  )}
+                </div>
+              ))}
+            </>
+          )}
+          {onConfirm && (() => {
+            const known = new Set([...res.subs.map((sub) => sub.name), ...confirmed, ...hidden]);
+            const watchable = latestMerchants.filter((m) => !known.has(m.name)).slice(0, 12);
+            if (watchable.length === 0) return null;
+            return (
+              <>
+                <div className="sfin-subs-maybe-head">Watch a merchant</div>
+                <div className="sfin-subtle">
+                  One charge so far, or something you know recurs — watching counts it here from now on.
+                </div>
+                {watchable.map((m) => (
+                  <div key={m.name} className="sfin-subs-row sfin-subs-row--muted">
+                    <span className="sfin-subs-name">{m.name}</span>
+                    <span className="sfin-subs-price">{fmt2(m.cents / Math.max(1, m.count) / 100)}</span>
+                    <button
+                      type="button"
+                      className="sfin-subs-answer"
+                      aria-label={`Watch ${m.name}`}
+                      title="Treat as a subscription"
+                      onClick={() => onConfirm(m.name)}
+                    >
+                      + Watch
+                    </button>
+                  </div>
+                ))}
+              </>
+            );
+          })()}
+        </>
       )}
     </div>
   );
@@ -685,7 +771,8 @@ function CustomView({ cube, def }: { cube: ReportCube; def: CustomReport }) {
 
 export function ReportView({
   id, cube, customReports, hero = false, categories, density = 2,
-  hiddenSubscriptions, confirmedSubscriptions, onHideSubscription, onConfirmSubscription, onRestoreSubscriptions,
+  hiddenSubscriptions, confirmedSubscriptions, onHideSubscription, onConfirmSubscription,
+  onUnhideSubscription, onRestoreSubscriptions,
 }: {
   id: string;
   cube: ReportCube;
@@ -701,6 +788,7 @@ export function ReportView({
   confirmedSubscriptions?: string[];
   onHideSubscription?: (name: string) => void;
   onConfirmSubscription?: (name: string) => void;
+  onUnhideSubscription?: (name: string) => void;
   onRestoreSubscriptions?: () => void;
 }) {
   let body: React.ReactNode;
@@ -731,10 +819,12 @@ export function ReportView({
         body = (
           <Subscriptions
             cube={cube}
+            full={hero}
             hidden={hiddenSubscriptions}
             confirmed={confirmedSubscriptions}
             onHide={onHideSubscription}
             onConfirm={onConfirmSubscription}
+            onUnhide={onUnhideSubscription}
             onRestore={onRestoreSubscriptions}
           />
         );
