@@ -543,16 +543,19 @@ body {
 /* Spans ride CSS custom properties set per cell (--sfin-c/--sfin-r), so the
    phone rules below can flatten EVERYTHING to one column — an inline
    grid-column would outrank them and break small screens. */
-.sfin-budget-grid { grid-auto-rows: 29px; grid-auto-flow: dense; }
+/* v1.41: explicit 2-D placement — no dense backfill, so a drop cannot
+   repack unrelated cards. Coordinates come from shared/grid-engine.ts. */
+.sfin-budget-grid { grid-auto-rows: 29px; }
 .sfin-budget-grid > .sfin-cell {
-  grid-column: span var(--sfin-c, 1);
-  grid-row: span var(--sfin-r, 2);
+  grid-column: calc(var(--sfin-x, 0) + 1) / span var(--sfin-c, 1);
+  grid-row: calc(var(--sfin-y, 0) + 1) / span var(--sfin-r, 2);
 }
 @media (max-width: 720px) {
   .sfin-budget-grid { grid-template-columns: 1fr; }
-  /* Full width, height kept from --sfin-r: a "super thin" desktop card is a
-     normal full-width card on a phone. */
-  .sfin-budget-grid > .sfin-cell { grid-column: span 1; }
+  /* Full width, auto-stacked in reading order (DOM order is sorted by the
+     board's y,x), height kept from --sfin-r: a "super thin" desktop card is
+     a normal full-width card on a phone. */
+  .sfin-budget-grid > .sfin-cell { grid-column: 1; grid-row: auto / span var(--sfin-r, 2); }
   .sfin-page { padding: 14px; }
 }
 .sfin-budget-grid .sfin-cell { position: relative; overflow: hidden; }
@@ -716,8 +719,8 @@ body {
   transition: opacity .12s ease;
 }
 /* The new-report button spans a readable width on the fine grid. */
-.sfin-new-report-card { grid-column: span 4; grid-row: span 4; }
-@media (max-width: 720px) { .sfin-new-report-card { grid-column: span 1; } }
+.sfin-new-report-card { grid-column: 1 / span 4; grid-row: auto / span 4; }
+@media (max-width: 720px) { .sfin-new-report-card { grid-column: 1; } }
 .sfin-uncat-undo { display: flex; align-items: center; gap: 8px; padding: 4px 0 8px; }
 /* Same rules as .sfin-uncat-undo — a distinct class because the cap notice and
    "Categorize in Wealthfolio" button are an unrelated footer, not the undo

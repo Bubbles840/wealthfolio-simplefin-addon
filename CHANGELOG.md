@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.41.0] - 2026-09-02
+
+### Changed
+
+- **The board is a real 2-D grid now** — the model react-grid-layout and
+  Gridstack converge on, per the drag-and-drop best-practice research: every
+  card keeps an explicit x/y position, a drop lands in the exact cell under
+  your cursor, anything you land on pushes straight *down* (never sideways,
+  never repacked), and gravity closes gaps upward. The old model — a 1-D
+  order that CSS dense-packing rearranged — is why moving one tile could
+  shuffle everything; that cannot happen any more. Your current arrangement
+  migrates automatically, and the ↑/↓ buttons now swap a card with its
+  vertical neighbor (the honest meaning of the buttons under gravity).
+  Phones still collapse to one column in reading order.
+
 ## [1.40.0] - 2026-09-02
 
 ### Changed

@@ -16,6 +16,8 @@
  * happens to sit next in a stale stored order.
  */
 
+import { compact, moveTo, packInto, swapVertical, type PlacedCard } from './grid-engine.js';
+
 export const STANDARD_REPORT_IDS = [
   'pool-burndown', 'cash-flow', 'headline-stats', 'category-trends', 'net-worth', 'savings-rate',
   'merchants', 'budget-vs-actual', 'seasonality', 'fees-interest', 'runway-trend',
@@ -44,6 +46,11 @@ export interface BudgetLayout {
   /** Exact per-card spans from the drag handle, in FINE units (12×16). Wins
    *  over everything; `size`/`wide`/`span` remain as coarser fallbacks. */
   span2?: Record<string, [number, number]>;
+  /** v1.41: the 2-D board — [x, y, w, h] per card in fine units (see
+   *  shared/grid-engine.ts). When present for a card it defines placement
+   *  outright; cards without one are packed after the placed ones, in the
+   *  legacy resolved order, which is also how migration happens. */
+  pos?: Record<string, [number, number, number, number]>;
 }
 
 export interface CardSpan { c: number; r: number }
@@ -109,6 +116,13 @@ export function parseBudgetLayout(raw: string | null | undefined): BudgetLayout 
       if (val !== 'c' && val !== 'm' && val !== 'w' && val !== 't' && val !== 'b') return null;
     }
   }
+  if (v.pos !== undefined) {
+    if (typeof v.pos !== 'object' || v.pos === null) return null;
+    for (const val of Object.values(v.pos)) {
+      if (!Array.isArray(val) || val.length !== 4
+        || !val.every((n) => Number.isInteger(n) && n >= 0)) return null;
+    }
+  }
   for (const key of ['span', 'span2'] as const) {
     if (v[key] !== undefined) {
       if (typeof v[key] !== 'object' || v[key] === null) return null;
@@ -124,6 +138,7 @@ export function parseBudgetLayout(raw: string | null | undefined): BudgetLayout 
     ...(v.size ? { size: v.size } : {}),
     ...(v.span ? { span: v.span } : {}),
     ...(v.span2 ? { span2: v.span2 } : {}),
+    ...(v.pos ? { pos: v.pos } : {}),
   };
 }
 
@@ -299,4 +314,102 @@ export function moveBefore(
   if (at === -1 || id === targetId) return stored;
   grid.splice(at, 0, id);
   return { ...stored, order: grid };
+}
+
+/**
+ * The 2-D board: every visible card with an explicit place. Stored positions
+ * are taken as-is (clamped); everything else — a fresh migration, a new
+ * report, a just-unhidden card — packs into the first gap in the LEGACY
+ * resolved order, so an existing arrangement carries over recognizably.
+ * Always compacted: no floating holes, and a stable answer for the same
+ * inputs.
+ */
+export function resolveBoard(
+  stored: BudgetLayout | null,
+  availableIds: string[],
+  poolPresent: boolean,
+): PlacedCard[] {
+  const legacy = resolveBudgetLayout(stored, availableIds, poolPresent);
+  const visible = legacy.grid;
+  const visibleSet = new Set(visible);
+  const placed: PlacedCard[] = [];
+  const unplaced: Array<{ id: string; w: number; h: number }> = [];
+  for (const id of visible) {
+    const posEntry = stored?.pos?.[id];
+    if (posEntry) {
+      const [x, y, w0, h0] = posEntry;
+      const w = Math.max(1, Math.min(12, w0));
+      placed.push({
+        id,
+        x: Math.max(0, Math.min(12 - w, x)),
+        y: Math.max(0, y),
+        w,
+        h: Math.max(1, Math.min(MAX_SPAN_ROWS, h0)),
+      });
+    } else {
+      const { c, r } = legacy.spanOf(id);
+      unplaced.push({ id, w: c, h: r });
+    }
+  }
+  // Stored ids that no longer exist simply contribute nothing.
+  void visibleSet;
+  return compact(packInto(placed, unplaced));
+}
+
+/** The board serialized back into the stored shape — whole-snapshot writes,
+ *  like every other layout mutation, so repeated edits stay stable. */
+function writeBoard(stored: BudgetLayout, board: PlacedCard[]): BudgetLayout {
+  const pos: Record<string, [number, number, number, number]> = {};
+  for (const c of board) pos[c.id] = [c.x, c.y, c.w, c.h];
+  return { ...stored, pos };
+}
+
+/** Drop `id` at exactly (x, y): the engine pushes overlaps down and closes
+ *  the gaps. The whole resulting board is stored. */
+export function moveCardTo(
+  stored: BudgetLayout,
+  availableIds: string[],
+  poolPresent: boolean,
+  id: string,
+  x: number,
+  y: number,
+): BudgetLayout {
+  const board = resolveBoard(stored, availableIds, poolPresent);
+  if (!board.some((c) => c.id === id)) return stored;
+  return writeBoard(stored, moveTo(board, id, x, y));
+}
+
+/** Resize in place: same spot, new size, collisions re-resolved. */
+export function resizeCardTo(
+  stored: BudgetLayout,
+  availableIds: string[],
+  poolPresent: boolean,
+  id: string,
+  w: number,
+  h: number,
+): BudgetLayout {
+  const board = resolveBoard(stored, availableIds, poolPresent);
+  const card = board.find((c) => c.id === id);
+  if (!card) return stored;
+  const resized = board.map((c) => (c.id === id
+    ? { ...c, w: Math.max(1, Math.min(12, Math.round(w))), h: Math.max(1, Math.min(MAX_SPAN_ROWS, Math.round(h))) }
+    : c));
+  return writeBoard(stored, moveTo(resized, id, card.x, card.y));
+}
+
+/** The buttons' movement: swap with the vertical neighbor (gravity makes a
+ *  bare one-row nudge fall straight back, so swapping is what ↑/↓ MEAN). */
+export function swapCard(
+  stored: BudgetLayout,
+  availableIds: string[],
+  poolPresent: boolean,
+  id: string,
+  dir: -1 | 1,
+): BudgetLayout {
+  const board = resolveBoard(stored, availableIds, poolPresent);
+  if (!board.some((c) => c.id === id)) return stored;
+  const swapped = swapVertical(board, id, dir);
+  const pos: Record<string, [number, number, number, number]> = {};
+  for (const c of swapped) pos[c.id] = [c.x, c.y, c.w, c.h];
+  return { ...stored, pos };
 }

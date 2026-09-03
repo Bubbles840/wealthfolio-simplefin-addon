@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   STANDARD_REPORT_IDS, parseBudgetLayout, resolveBudgetLayout,
+  resolveBoard, moveCardTo, resizeCardTo,
   pinHero, moveCard, toggleHidden, type BudgetLayout,
 } from './budget-layout.js';
 
@@ -209,5 +210,48 @@ describe('v1.34 report roster', () => {
   it('offers the data check and subscriptions as standard reports', () => {
     expect(STANDARD_REPORT_IDS).toContain('data-check');
     expect(STANDARD_REPORT_IDS).toContain('subscriptions');
+  });
+});
+
+describe('2-D board (v1.41)', () => {
+  const base: BudgetLayout = { heroes: [], order: [], hidden: [] };
+
+  it('migrates an order-based layout by packing cards in their visible order', () => {
+    const board = resolveBoard(null, ['cash-flow', 'category-trends', 'headline-stats'], false);
+    // Front cards are 8-wide; headline is 12-wide — first-gap packing puts
+    // cash-flow top-left, category-trends beside it in the 4-unit gap? No:
+    // category-trends is also a front card (8 wide), so it wraps below.
+    expect(board.find((c) => c.id === 'cash-flow')).toMatchObject({ x: 0, y: 0, w: 8, h: 8 });
+    expect(board.find((c) => c.id === 'category-trends')).toMatchObject({ x: 0, y: 8 });
+  });
+
+  it('stored positions win over packing and survive a round trip', () => {
+    const l = moveCardTo(base, ['cash-flow', 'net-worth'], false, 'net-worth', 0, 0);
+    expect(l.pos?.['net-worth']).toBeDefined();
+    const board = resolveBoard(l, ['cash-flow', 'net-worth'], false);
+    expect(board.find((c) => c.id === 'net-worth')).toMatchObject({ x: 0, y: 0 });
+  });
+
+  it('resizing re-resolves collisions without moving the card itself', () => {
+    let l = moveCardTo(base, ['cash-flow', 'net-worth'], false, 'net-worth', 0, 0);
+    l = resizeCardTo(l, ['cash-flow', 'net-worth'], false, 'net-worth', 12, 4);
+    const board = resolveBoard(l, ['cash-flow', 'net-worth'], false);
+    expect(board.find((c) => c.id === 'net-worth')).toMatchObject({ x: 0, y: 0, w: 12, h: 4 });
+    // cash-flow pushed cleanly below the widened card.
+    expect(board.find((c) => c.id === 'cash-flow')!.y).toBeGreaterThanOrEqual(4);
+  });
+
+  it('hidden cards own no board space; unknown stored ids are ignored', () => {
+    const l: BudgetLayout = { heroes: [], order: [], hidden: ['net-worth'], pos: { 'ghost-report': [0, 0, 4, 4] } };
+    const board = resolveBoard(l, ['cash-flow', 'net-worth'], false);
+    expect(board.some((c) => c.id === 'net-worth')).toBe(false);
+    expect(board.some((c) => c.id === 'ghost-report')).toBe(false);
+  });
+
+  it('parseBudgetLayout keeps a valid pos map and rejects junk', () => {
+    const ok = { heroes: [], order: [], hidden: [], pos: { merchants: [0, 4, 4, 8] } };
+    expect(parseBudgetLayout(JSON.stringify(ok))).toEqual(ok);
+    expect(parseBudgetLayout(JSON.stringify({ heroes: [], order: [], hidden: [], pos: { merchants: [0, 4, 4] } }))).toBeNull();
+    expect(parseBudgetLayout(JSON.stringify({ heroes: [], order: [], hidden: [], pos: { merchants: [-1, 0, 4, 8] } }))).toBeNull();
   });
 });

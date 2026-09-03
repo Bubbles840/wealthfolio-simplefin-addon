@@ -133,9 +133,11 @@ describe('BudgetTab', () => {
     render(<SyncPage {...props} />);
     await waitFor(() => expect(reportIds().length).toBeGreaterThan(0));
     const ids = reportIds();
-    // No pool in the CUBE fixture: cash flow + category trends lead.
-    expect(ids.slice(0, 2)).toEqual(['cash-flow', 'category-trends']);
+    // No pool in the CUBE fixture: cash flow leads the board; first-gap
+    // packing may seat a small card beside it before the second big one.
+    expect(ids[0]).toBe('cash-flow');
     expect(ids).not.toContain('pool-burndown');
+    expect(ids).toContain('category-trends');
     expect(ids).toContain('net-worth');
     expect(ids).toContain('merchants');
   });
@@ -228,31 +230,28 @@ describe('customize mode', () => {
     expect(screen.getByRole('button', { name: /open cash flow/i })).toBeInTheDocument();
   });
 
-  it('pinning a third hero bumps the oldest to the grid front and persists', async () => {
+  it('pinning puts the card at the top-left of the board and persists', async () => {
     const props = freshProps();
     render(<SyncPage {...props} />);
     await enterCustomize();
     fireEvent.click(screen.getByRole('button', { name: /pin net worth/i }));
-    await waitFor(() => {
-      const ids = reportIds();
-      expect(ids.slice(0, 2)).toEqual(['category-trends', 'net-worth']);
-      expect(ids[2]).toBe('cash-flow'); // the bumped hero lands up front, visible
-    });
+    await waitFor(() => expect(reportIds()[0]).toBe('net-worth'));
     const saved = (props.store as any).setBudgetLayout.mock.calls.at(-1)![0];
-    expect(saved.heroes).toEqual(['category-trends', 'net-worth']);
-    expect(saved.order[0]).toBe('cash-flow');
+    expect(saved.pos['net-worth'].slice(0, 2)).toEqual([0, 0]);
   });
 
-  it('move down swaps a card with its neighbor', async () => {
+  it('move down swaps a card with the neighbor below it', async () => {
     const props = freshProps();
     render(<SyncPage {...props} />);
     await enterCustomize();
+    const before = reportIds();
+    const idx = before.indexOf('net-worth');
     fireEvent.click(screen.getByRole('button', { name: /move net worth down/i }));
     await waitFor(() => {
-      const ids = reportIds();
-      expect(ids.indexOf('savings-rate')).toBeLessThan(ids.indexOf('net-worth'));
+      expect(reportIds().indexOf('net-worth')).toBeGreaterThan(idx);
     });
-    expect((props.store as any).setBudgetLayout).toHaveBeenCalled();
+    const saved = (props.store as any).setBudgetLayout.mock.calls.at(-1)![0];
+    expect(saved.pos['net-worth'][1]).toBeGreaterThan(0);
   });
 
   it('hide collects the card in a recoverable hidden row', async () => {
@@ -397,14 +396,14 @@ describe('second wave on the grid', () => {
 
     await waitFor(() => {
       const saved = (props.store as any).setBudgetLayout.mock.calls.at(-1)?.[0];
-      expect(saved?.span2?.merchants).toEqual([2, 12]);
+      expect(saved?.pos?.merchants?.slice(2)).toEqual([2, 12]);
     });
     const cell = document.querySelector('[data-report-id="merchants"]')!.closest('.sfin-cell') as HTMLElement;
     expect(cell.style.getPropertyValue('--sfin-c')).toBe('2');
     expect(cell.style.getPropertyValue('--sfin-r')).toBe('12');
   });
 
-  it('dragging a card body moves it before the card it is dropped on', async () => {
+  it('dragging a card drops it at the exact cell under the cursor', async () => {
     const props = makeProps();
     (props.store as any).getReportCube = vi.fn(async () => ({ ...CUBE, asOf: new Date().toISOString() }));
     render(<SyncPage {...props} />);
@@ -415,25 +414,24 @@ describe('second wave on the grid', () => {
       document.querySelector(`[data-report-id="${id}"]`)!.closest('.sfin-cell') as HTMLElement;
     const before = reportIds();
     const dragged = before[4]!;
-    const target = before[0]!;
-    // jsdom has no elementFromPoint at all, so it is installed rather than
-    // spied — the component optional-calls it for the same reason.
-    (document as any).elementFromPoint = vi.fn(
-      () => document.querySelector(`[data-report-id="${target}"]`),
-    );
-    try {
-      const cell = cellOf(dragged);
-      fireEvent.pointerDown(cell, { pointerId: 2, clientX: 10, clientY: 10 });
-      fireEvent.pointerMove(cell, { pointerId: 2, clientX: 15, clientY: 15 });
-      fireEvent.pointerUp(cell, { pointerId: 2 });
-    } finally {
-      delete (document as any).elementFromPoint;
-    }
+    // jsdom measures nothing, so the board geometry is stubbed on the grid:
+    // 12 columns of (110 + 14gap) → unit 124px wide, 43px rows.
+    const grid = document.querySelector('.sfin-budget-grid') as HTMLElement;
+    grid.getBoundingClientRect = () => ({
+      left: 0, top: 0, width: 1474, height: 4000, right: 1474, bottom: 4000, x: 0, y: 0, toJSON: () => ({}),
+    } as DOMRect);
+    const cell = cellOf(dragged);
+    // Grab mid-board, drag to the very top-left cell.
+    fireEvent.pointerDown(cell, { pointerId: 2, clientX: 600, clientY: 600 });
+    fireEvent.pointerMove(cell, { pointerId: 2, clientX: 10, clientY: 10 });
+    fireEvent.pointerUp(cell, { pointerId: 2, clientX: 10, clientY: 10 });
+
     await waitFor(() => {
       const saved = (props.store as any).setBudgetLayout.mock.calls.at(-1)?.[0];
-      expect(saved?.order?.indexOf(dragged)).toBe(saved?.order?.indexOf(target) - 1 >= 0 ? saved.order.indexOf(target) - 1 : 0);
+      expect(saved?.pos?.[dragged]?.slice(0, 2)).toEqual([0, 0]);
     });
-    expect(reportIds().indexOf(dragged)).toBeLessThan(reportIds().indexOf(target));
+    // The board renders it first — it landed exactly where it was dropped.
+    expect(reportIds()[0]).toBe(dragged);
   });
 
   it('the dashboard carries the shared range chips', async () => {
