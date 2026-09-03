@@ -86,16 +86,35 @@ function xLabels(frame: Frame, labels: string[], xAt: (i: number) => number): st
   return out;
 }
 
+/** Colored chip + name per series, along the top: photos have no hover. */
+function legendRow(frame: Frame, series: ChartSeries[]): string {
+  if (series.length < 2) return '';
+  let x = frame.pad.l;
+  let out = '';
+  for (const s of series) {
+    out += `<rect x="${x}" y="6" width="9" height="9" rx="2" fill="${s.color}"/>`
+      + `<text x="${x + 13}" y="14" font-size="11" fill="#cdd5d1" ${FONT}>${esc(s.name)}</text>`;
+    x += 22 + s.name.length * 6.2;
+  }
+  return out;
+}
+
+const fmtLast = (v: number) => {
+  const abs = Math.abs(v);
+  const body = abs >= 1000 ? Math.round(abs).toLocaleString('en-US') : String(Math.round(abs * 10) / 10);
+  return `${v < 0 ? '-' : ''}${body}`;
+};
+
 export function svgLineChart(opts: {
   width: number; height: number; labels: string[]; series: ChartSeries[];
 }): string {
-  const frame: Frame = { width: opts.width, height: opts.height, pad: { l: 46, r: 12, t: 12, b: 26 } };
+  const frame: Frame = { width: opts.width, height: opts.height, pad: { l: 46, r: 58, t: 24, b: 26 } };
   const { min, max } = bounds(opts.series);
   const y = yScale(frame, min, max);
   const innerW = frame.width - frame.pad.l - frame.pad.r;
   const xAt = (i: number) => frame.pad.l + (opts.labels.length <= 1 ? innerW / 2 : (innerW * i) / (opts.labels.length - 1));
 
-  let body = gridAndTicks(frame, min, max);
+  let body = gridAndTicks(frame, min, max) + legendRow(frame, opts.series);
   for (const s of opts.series) {
     // Split on nulls: runs of ≥2 points become polylines, lone points circles.
     const runs: Array<Array<[number, number]>> = [[]];
@@ -119,6 +138,16 @@ export function svgLineChart(opts: {
       }
     }
   }
+  // The newest value, printed at each line's end — a photo has no tooltip.
+  for (const s of opts.series) {
+    if (s.dashed) continue;
+    for (let i = s.values.length - 1; i >= 0; i -= 1) {
+      const v = s.values[i];
+      if (v === null) continue;
+      body += `<text x="${xAt(i) + 5}" y="${y(v) + 4}" font-size="11" font-weight="600" fill="${s.color}" ${FONT}>${fmtLast(v)}</text>`;
+      break;
+    }
+  }
   body += xLabels(frame, opts.labels, xAt);
   return open(frame) + body + '</svg>';
 }
@@ -126,14 +155,14 @@ export function svgLineChart(opts: {
 export function svgBarChart(opts: {
   width: number; height: number; labels: string[]; series: ChartSeries[];
 }): string {
-  const frame: Frame = { width: opts.width, height: opts.height, pad: { l: 46, r: 12, t: 12, b: 26 } };
+  const frame: Frame = { width: opts.width, height: opts.height, pad: { l: 46, r: 12, t: 24, b: 26 } };
   const { min, max } = bounds(opts.series);
   const y = yScale(frame, min, max);
   const innerW = frame.width - frame.pad.l - frame.pad.r;
   const groupW = innerW / Math.max(1, opts.labels.length);
   const barW = Math.max(2, (groupW * 0.7) / Math.max(1, opts.series.length));
 
-  let body = gridAndTicks(frame, min, max);
+  let body = gridAndTicks(frame, min, max) + legendRow(frame, opts.series);
   const zero = y(Math.max(0, min));
   opts.labels.forEach((_, i) => {
     opts.series.forEach((s, si) => {

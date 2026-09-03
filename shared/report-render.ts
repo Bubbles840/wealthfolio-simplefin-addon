@@ -11,6 +11,7 @@ import {
   poolBurndownData, savingsRateData, categoryTrendData,
 } from './report-data.js';
 import type { ReportCube } from './report-cube.js';
+import { headlineStatValues } from './report-data.js';
 import { svgBarChart, svgDonut, svgLineChart } from './svg-charts.js';
 
 /** The sage register, as the Budget tab draws it. */
@@ -116,5 +117,34 @@ export function renderReportSvg(
     }
     default:
       return null;
+  }
+}
+
+/**
+ * The photo's caption: the key latest numbers in words, because an image has
+ * no hover. One line, Telegram-plain.
+ */
+export function reportImageCaption(cube: ReportCube, id: string): string {
+  const stats = new Map(headlineStatValues(cube).map((s) => [s.id, s.value]));
+  const title = reportImageTitle(id);
+  switch (id) {
+    case 'cash-flow':
+      return `${title} — this month: ${stats.get('income-month')} in · ${stats.get('spent-month')} out (net ${stats.get('net-flow')})`;
+    case 'net-worth':
+      return `${title} — now ${stats.get('net-worth')} (liquid ${stats.get('liquid')})`;
+    case 'savings-rate':
+      return `${title} — latest ${stats.get('savings-rate')}`;
+    case 'pool-burndown':
+      return `${title} — ${stats.get('pool-left')} left`;
+    case 'budget-vs-actual':
+      return `${title} — spent ${stats.get('spent-month')} this month, projected ${stats.get('projected-month')}`;
+    case 'category-donut': {
+      const top = categoryDonutData(cube)[0];
+      return top ? `${title} — biggest: ${top.name}` : title;
+    }
+    case 'category-trends':
+      return `${title} — top categories, monthly`;
+    default:
+      return title;
   }
 }

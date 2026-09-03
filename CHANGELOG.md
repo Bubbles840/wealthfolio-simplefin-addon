@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.45.0] - 2026-09-03
+
+### Changed
+
+- **Chart photos read on their own now**: multi-series charts carry a legend
+  chip row, line charts print the newest value at the line's end, and every
+  photo's caption states the key latest numbers in words ("Cash flow — this
+  month: $8,910 in · $2,833 out") — a picture has no hover, so the numbers
+  ride along.
+
 ## [1.44.2] - 2026-09-03
 
 ### Fixed

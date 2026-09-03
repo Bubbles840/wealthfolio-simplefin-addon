@@ -78,7 +78,7 @@ import { SEMESTER_POOL_SECRET_KEY, parsePoolConfig } from '../../shared/pool.js'
 import { readPoolStatus, readRunwayMonths, type PoolReportDeps } from './pool-report.js';
 import { REPORT_CUBE_SECRET_KEY, parseReportCube } from '../../shared/report-cube.js';
 import { HIDDEN_SUBSCRIPTIONS_SECRET_KEY, CONFIRMED_SUBSCRIPTIONS_SECRET_KEY, parseHiddenSubscriptions } from '../../shared/subscriptions.js';
-import { renderReportSvg, reportImageTitle, RENDERABLE_REPORT_IDS } from '../../shared/report-render.js';
+import { renderReportSvg, reportImageTitle, reportImageCaption, RENDERABLE_REPORT_IDS } from '../../shared/report-render.js';
 import { sliceCubeMonths } from '../../shared/report-cube.js';
 import { handleReportsRequest } from './reports-server.js';
 import { buildReportCube, type CubeBuildDeps } from './report-cube-build.js';
@@ -2942,7 +2942,8 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
       try {
         const { Resvg } = await import('@resvg/resvg-js');
         const png: Uint8Array = new Resvg(svg).render().asPng();
-        return { png, title: reportImageTitle(reportId) };
+        // The caption carries the latest numbers — a photo has no hover.
+        return { png, title: reportImageCaption(view, reportId) };
       } catch (err) {
         log(`Report image rasterizer unavailable: ${formatError(err)}`);
         return null;
