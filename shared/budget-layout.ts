@@ -20,6 +20,7 @@ export const STANDARD_REPORT_IDS = [
   'pool-burndown', 'cash-flow', 'headline-stats', 'category-trends', 'net-worth', 'savings-rate',
   'merchants', 'budget-vs-actual', 'seasonality', 'fees-interest', 'runway-trend',
   'category-donut', 'mom-delta', 'cumulative-flow', 'spend-calendar', 'pool-pace', 'uncat-trend',
+  'subscriptions', 'data-check',
 ] as const;
 
 /** Reports that only exist while a pool is set — they render the pool window. */

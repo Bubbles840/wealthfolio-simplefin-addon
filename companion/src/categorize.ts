@@ -75,6 +75,7 @@ import {
   type BucketInput,
 } from '../../shared/cash-flow-bucket.js';
 import { escapeMarkdown, CATEGORIZE_ENTRY_CALLBACK, type InlineKeyboard } from '../../shared/telegram.js';
+import { categoryRulePattern } from '../../shared/rule-pattern.js';
 import { visibleUncategorized, type DismissalLedger } from '../../shared/uncategorized.js';
 import { descriptionFromComment, txIdFromComment } from '../../shared/sync-core.js';
 import { uncategorizedWindow } from './uncategorized-status.js';
@@ -1228,8 +1229,8 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
       }
 
       case 'createRule': {
-        // The pattern IS the description, so without the row there is nothing to
-        // create — and no reason to guess one.
+        // The pattern comes from the description, so without the row there is
+        // nothing to create — and no reason to guess one.
         const row = rowFor(chat, action.activityId);
         if (!row) {
           const loaded = await load(chat.mode);
@@ -1242,7 +1243,9 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
         }
         await runCreateRule(
           chat,
-          row.description,
+          // Trimmed exactly as the preview trims it (shared/rule-pattern.ts):
+          // the write must never be broader or narrower than what was shown.
+          categoryRulePattern(row.description),
           action.categoryId,
           { kind: 'ruleCreated', activityId: action.activityId, categoryId: action.categoryId },
           row,

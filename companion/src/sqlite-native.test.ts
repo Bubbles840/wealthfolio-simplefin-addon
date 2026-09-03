@@ -1235,8 +1235,9 @@ describe('report cube readers, merchants / fees / daily / valuations', () => {
     try {
       seed(path);
       const rows = getNativeMerchantRows(path, '2026-07-01', '2026-09-01');
-      expect(rows).toContainEqual({ month: '2026-07', notes: 'CHIPOTLE 1234 · TRN-1', amount: 25.5 });
-      expect(rows).toContainEqual({ month: '2026-07', notes: 'MYSTERY · TRN-9', amount: 12 });
+      // `date` feeds the subscription detector, which needs day-level cadence.
+      expect(rows).toContainEqual({ month: '2026-07', date: '2026-07-09', notes: 'CHIPOTLE 1234 · TRN-1', amount: 25.5 });
+      expect(rows).toContainEqual({ month: '2026-07', date: '2026-07-09', notes: 'MYSTERY · TRN-9', amount: 12 });
     } finally {
       cleanup();
     }

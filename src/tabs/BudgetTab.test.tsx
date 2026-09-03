@@ -442,3 +442,79 @@ describe('second wave on the grid', () => {
     expect(screen.getByRole('button', { name: /^3 months$/i })).toBeInTheDocument();
   });
 });
+
+describe('layout reset, hide undo, pool editing', () => {
+  const freshCube = () => ({ ...CUBE, asOf: new Date().toISOString() });
+  const poolCube = () => ({
+    ...freshCube(),
+    pool: {
+      config: { amountCents: 160_000, startDate: '2026-07-01', endDate: '2026-12-15' },
+      daily: [{ date: '2026-07-02', spentCents: 1000 }],
+    },
+  });
+
+  it('reset asks for a second tap, then clears the stored layout', async () => {
+    const props = makeProps();
+    (props.store as any).getReportCube = vi.fn(async () => freshCube());
+    (props.store as any).getBudgetLayout = vi.fn(async () => ({ heroes: ['net-worth'], order: ['net-worth'], hidden: [] }));
+    (props.store as any).clearBudgetLayout = vi.fn(async () => {});
+    render(<SyncPage {...props} />);
+    await waitFor(() => expect(reportIds().length).toBeGreaterThan(0));
+    expect(reportIds()[0]).toBe('net-worth');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Customize' }));
+    fireEvent.click(screen.getByRole('button', { name: /reset layout/i }));
+    // Nothing cleared yet: one mistap must not destroy an arranged board.
+    expect((props.store as any).clearBudgetLayout).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: /really reset/i }));
+    expect((props.store as any).clearBudgetLayout).toHaveBeenCalled();
+    // Back to the default order immediately, not on next load.
+    await waitFor(() => expect(reportIds()[0]).toBe('cash-flow'));
+  });
+
+  it('offers no reset when nothing was ever customized', async () => {
+    const props = makeProps();
+    (props.store as any).getReportCube = vi.fn(async () => freshCube());
+    render(<SyncPage {...props} />);
+    await waitFor(() => expect(reportIds().length).toBeGreaterThan(0));
+    fireEvent.click(screen.getByRole('button', { name: 'Customize' }));
+    expect(screen.queryByRole('button', { name: /reset layout/i })).toBeNull();
+  });
+
+  it('hiding a card offers an Undo that restores it', async () => {
+    const props = makeProps();
+    (props.store as any).getReportCube = vi.fn(async () => freshCube());
+    render(<SyncPage {...props} />);
+    await waitFor(() => expect(reportIds().length).toBeGreaterThan(0));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Customize' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Hide Net worth' }));
+    expect(reportIds()).not.toContain('net-worth');
+    expect(screen.getByText(/hidden net worth/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /undo/i }));
+    expect(reportIds()).toContain('net-worth');
+    // The toast leaves with the undo.
+    expect(screen.queryByText(/hidden net worth/i)).toBeNull();
+  });
+
+  it('edits the pool from the full-screen burn-down without Telegram', async () => {
+    const props = makeProps();
+    (props.store as any).getReportCube = vi.fn(async () => poolCube());
+    render(<SyncPage {...props} />);
+    await waitFor(() => expect(reportIds().length).toBeGreaterThan(0));
+
+    fireEvent.click(screen.getByRole('button', { name: /open pool burn-down/i }));
+    fireEvent.click(screen.getByRole('button', { name: /edit pool/i }));
+
+    const amount = screen.getByLabelText('Pool amount') as HTMLInputElement;
+    expect(amount.value).toBe('1600');
+    fireEvent.change(amount, { target: { value: '2000' } });
+    fireEvent.click(screen.getByRole('button', { name: /save pool/i }));
+
+    expect((props.store as any).setSemesterPool).toHaveBeenCalledWith({
+      amountCents: 200_000, startDate: '2026-07-01', endDate: '2026-12-15',
+    });
+    expect(screen.getByText(/next sync/i)).toBeInTheDocument();
+  });
+});

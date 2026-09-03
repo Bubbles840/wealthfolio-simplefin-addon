@@ -41,6 +41,55 @@ const deps = (over: Partial<CubeBuildDeps> = {}): CubeBuildDeps => ({
 const NOW = new Date('2026-08-30T12:00:00Z');
 
 describe('buildReportCube', () => {
+  it('detects subscriptions from dated merchant rows', async () => {
+    const cube = await buildReportCube(deps({
+      merchantRows: vi.fn(() => [
+        { month: '2026-07', date: '2026-07-01', notes: 'NETFLIX.COM \u00b7 T1', amount: 15.49 },
+        { month: '2026-07', date: '2026-07-29', notes: 'NETFLIX.COM \u00b7 T2', amount: 15.49 },
+        { month: '2026-08', date: '2026-08-26', notes: 'NETFLIX.COM \u00b7 T3', amount: 15.49 },
+        { month: '2026-08', date: '2026-08-26', notes: 'ONE-OFF STORE \u00b7 T4', amount: 80 },
+      ]),
+    }), NOW, 2);
+    expect(cube.subscriptions).toEqual([{
+      name: 'NETFLIX.COM', monthlyCents: 1549, count: 3,
+      lastDate: '2026-08-26', lastCents: 1549, creep: false,
+    }]);
+  });
+
+  it('publishes null subscriptions when merchant rows carry no dates', async () => {
+    // An older reader binding: "could not look" must stay distinguishable
+    // from "looked and found none".
+    const cube = await buildReportCube(deps(), NOW, 2);
+    expect(cube.subscriptions ?? null).toBeNull();
+  });
+
+  it('pins the current month against the independent digest readers', async () => {
+    // Two pipelines that must agree: the matrix fill above vs the single-shot
+    // digest readers. The fixture's $99 unmapped Dining row is the one honest
+    // divergence — the cube drops it, the digest counts it.
+    const cube = await buildReportCube(deps({
+      checkTotals: vi.fn((start: string, endEx: string, excluded: string[]) => {
+        expect(start).toBe('2026-08-01');
+        expect(endEx).toBe('2026-09-01');
+        expect(excluded).toEqual(['dis-1']);
+        return { spendByCategory: { Groceries: 40, Dining: 99 }, uncategorized: 12 };
+      }),
+    }), NOW, 2);
+    expect(cube.check).toEqual({
+      month: '2026-08',
+      cubeSpendCents: 4000,
+      cubeUncatCents: 1200,
+      ledgerSpendCents: 13900,
+      ledgerUncatCents: 1200,
+    });
+  });
+
+  it('publishes no check when the reader is not bound', async () => {
+    // Optional-call every new dep: an older binding must keep building cubes.
+    const cube = await buildReportCube(deps(), NOW, 2);
+    expect(cube.check ?? null).toBeNull();
+  });
+
   it('builds the requested month window and asks every reader for exactly that span', async () => {
     const d = deps();
     const cube = await buildReportCube(d, NOW, 2);

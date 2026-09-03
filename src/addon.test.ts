@@ -21,6 +21,7 @@ vi.mock('./utils/sync', () => ({
 }));
 
 import enable, { SimplefinSyncView } from './addon';
+import { SIMPLEFIN_SYNC_VERSION } from '../shared/version';
 import { runSync } from './utils/sync';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -131,6 +132,22 @@ describe('addon enable()', () => {
     enable(ctx);
     await new Promise((r) => setTimeout(r, 20));
     expect(runSync).not.toHaveBeenCalled();
+  });
+
+  it('publishes the addon version on startup so the companion can flag a half-finished update', async () => {
+    // The companion's self-check compares this against its own build; without
+    // the write, skew is visible only on a Sync-page footer nobody re-reads.
+    const ctx = makeCtx();
+    enable(ctx);
+    await waitFor(() => expect(ctx.api.secrets.set).toHaveBeenCalledWith('addon_version', SIMPLEFIN_SYNC_VERSION));
+  });
+
+  it('does not rewrite the version secret when it is already current', async () => {
+    const ctx = makeCtx();
+    ctx.api.secrets.get = vi.fn(async (k: string) => (k === 'addon_version' ? SIMPLEFIN_SYNC_VERSION : null));
+    enable(ctx);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(ctx.api.secrets.set).not.toHaveBeenCalledWith('addon_version', SIMPLEFIN_SYNC_VERSION);
   });
 
   it('registers an onDisable callback', () => {

@@ -43,7 +43,8 @@ export interface SelfCheckFinding {
     | 'sync-stale'
     | 'unmapped-accounts'
     | 'feed-stale'
-    | 'signals-unreadable';
+    | 'signals-unreadable'
+    | 'version-skew';
   severity: SelfCheckSeverity;
   /** One line, already user-facing. No Markdown: the caller escapes and
    *  decorates, because the same finding is rendered in two places. */
@@ -65,6 +66,11 @@ export interface SelfCheckInput {
   /** Per-account feed freshness. `balanceDate` is a Unix SECONDS timestamp, as
    *  SimpleFin reports it; null = SimpleFin gave no date for this account. */
   accounts?: ReadonlyArray<{ name: string; balanceDate: number | null }>;
+  /** The two halves' versions, as each publishes them. The addon's is absent
+   *  on zips older than 1.34.0 (they never wrote it), and absence must stay
+   *  quiet — flagging it would alarm every companion-first updater forever. */
+  addonVersion?: string | null;
+  companionVersion?: string | null;
 }
 
 const HOUR_MS = 3_600_000;
@@ -138,6 +144,18 @@ export function evaluateSelfCheck(input: SelfCheckInput, now: Date): SelfCheckFi
       message: stale.length === 1
         ? `${stale[0]} has sent no new data in over ${FEED_STALE_DAYS} days`
         : `${stale.length} accounts have sent no new data in over ${FEED_STALE_DAYS} days: ${stale.join(', ')}`,
+    });
+  }
+
+  // Only when BOTH are known and disagree: the image and the zip deploy
+  // separately, and a half-finished update is silent everywhere except the
+  // Sync page footer nobody re-visits after updating.
+  if (input.addonVersion && input.companionVersion && input.addonVersion !== input.companionVersion) {
+    findings.push({
+      kind: 'version-skew',
+      severity: 'warning',
+      message: `addon v${input.addonVersion} and companion v${input.companionVersion} are different builds`
+        + ' — finish the update (pull the image AND upload the matching zip)',
     });
   }
 

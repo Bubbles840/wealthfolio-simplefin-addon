@@ -137,3 +137,33 @@ describe('formatSelfCheckBlock', () => {
     expect(text).toContain('⚠️ Y has sent no new data');
   });
 });
+
+describe('version skew', () => {
+  const healthy = { lastSuccessAt: hoursAgo(2) };
+
+  it('flags an addon and companion running different versions', () => {
+    // The two halves deploy separately (pull the image, upload the zip), and
+    // forgetting one leaves them skewed silently — the exact failure this
+    // finding exists to make loud.
+    const findings = evaluateSelfCheck(
+      { ...healthy, addonVersion: '1.33.0', companionVersion: '1.34.0' }, NOW,
+    );
+    expect(findings).toHaveLength(1);
+    expect(findings[0].kind).toBe('version-skew');
+    expect(findings[0].severity).toBe('warning');
+    expect(findings[0].message).toContain('1.33.0');
+    expect(findings[0].message).toContain('1.34.0');
+  });
+
+  it('stays quiet when both halves match', () => {
+    expect(evaluateSelfCheck(
+      { ...healthy, addonVersion: '1.34.0', companionVersion: '1.34.0' }, NOW,
+    )).toEqual([]);
+  });
+
+  it('stays quiet when the addon version is unknown', () => {
+    // Older zips never published their version; treating absence as skew would
+    // alarm every user whose companion updated first, forever.
+    expect(evaluateSelfCheck({ ...healthy, companionVersion: '1.34.0' }, NOW)).toEqual([]);
+  });
+});

@@ -27,6 +27,7 @@ import {
   type CubeMerchant, type ReportCube,
 } from '../../shared/report-cube.js';
 import type { SemesterPoolConfig } from '../../shared/pool.js';
+import { detectSubscriptions, type SubscriptionCharge } from '../../shared/subscriptions.js';
 import type {
   getNativeSpendMatrix, getNativeIncomeByMonthAccount, getNativeUncategorizedByMonthAccount,
   getNativeMerchantRows, getNativeFeesInterestByMonth, getNativeSpendDailyTotals,
@@ -45,6 +46,11 @@ export interface CubeBuildDeps {
   feesInterestByMonth(start: string, endEx: string): ReturnType<typeof getNativeFeesInterestByMonth>;
   spendDaily(start: string, endEx: string, excluded: string[]): ReturnType<typeof getNativeSpendDailyTotals>;
   valuationByMonth(months: string[]): ReturnType<typeof getNativeValuationByMonth>;
+  /** The digest's own current-month sums (spending by category + uncategorized
+   *  total), dollars — an independent pipeline the cube is checked against.
+   *  Optional so an older binding keeps building cubes, just without a check. */
+  checkTotals?(start: string, endEx: string, excluded: string[]):
+    { spendByCategory: Record<string, number>; uncategorized: number } | null;
 }
 
 const MERCHANTS_PER_MONTH = 20;
@@ -184,11 +190,40 @@ export async function buildReportCube(
     };
   }
 
+  // Subscriptions ride the merchant rows already fetched; a row without a
+  // date comes from an older reader, and no dates at all means "could not
+  // look" (null), which must stay distinguishable from "none found" ([]).
+  const datedCharges: SubscriptionCharge[] = [];
+  for (const r of merchantRows as Array<{ date?: string; notes: string; amount: number }>) {
+    if (!r.date) continue;
+    const name = descriptionFromComment(r.notes);
+    if (!name) continue;
+    datedCharges.push({ date: r.date, merchant: name, cents: cents(r.amount) });
+  }
+  const subscriptions = datedCharges.length > 0 ? detectSubscriptions(datedCharges, now) : null;
+
+  // The check compares ONLY the newest month: it answers "do the Budget tab's
+  // headline numbers agree with the digest right now", not "audit all history".
+  let check: ReportCube['check'] = null;
+  const currentMonth = months[months.length - 1];
+  const digest = deps.checkTotals?.(`${currentMonth}-01`, endEx, dismissed) ?? null;
+  if (digest) {
+    const mi = months.length - 1;
+    check = {
+      month: currentMonth,
+      cubeSpendCents: spend[mi].reduce((s, cat) => s + cat.reduce((a, b) => a + b, 0), 0),
+      cubeUncatCents: uncategorized[mi].reduce((a, b) => a + b, 0),
+      ledgerSpendCents: Object.values(digest.spendByCategory).reduce((s, d) => s + cents(d), 0),
+      ledgerUncatCents: cents(digest.uncategorized),
+    };
+  }
+
   let cube: ReportCube = {
     version: 1, asOf: now.toISOString(),
     months, categories,
     accounts: meta.map(({ sfinId, name, type }) => ({ sfinId, name, type })),
     spend, uncategorized, income, budgets, merchants, feesInterest, netWorth, liquid, pool,
+    check, subscriptions,
   };
 
   while (JSON.stringify(cube).length > REPORT_CUBE_MAX_BYTES && cube.months.length > MIN_MONTHS_AFTER_TRIM) {

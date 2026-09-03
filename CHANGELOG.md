@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.34.0] - 2026-09-02
+
+### Added
+
+- **Rule learning.** Filing a transaction in Telegram now counts, live, how
+  many other uncategorized rows the same merchant pattern would catch, and the
+  "Make this a rule" button says so ("⚡ files 2 more like it"). Rules are
+  built from the **trimmed head** of the description — trailing reference
+  numbers, phone numbers, and "#42"s are dropped (capped at six tokens), so a
+  rule finally survives the merchant's next charge instead of memorizing one.
+  The preview quotes exactly what the rule will use and how many rows it files
+  right now. (Patterns stay verbatim substrings — never punctuation-stripped —
+  because Wealthfolio's contains-match runs on raw text.)
+- **One-step updates.** Every release now attaches the addon zip to the GitHub
+  release (built and version-checked in CI); the daily report gains an
+  "⬆ v1.35.0 is available" line when a newer release exists (checked at most
+  once per 6h, fail-silent); and the addon publishes its version so the
+  self-check can warn loudly when the zip and the image are **different
+  builds** — the half-finished-update trap.
+- **Data check report.** The companion recomputes the current month's spending
+  through the digest's own single-shot readers — a pipeline sharing no
+  aggregation code with the report cube — and a new standard card renders
+  "✓ matches the ledger" or each divergent measure with both sides and the
+  delta (a ledger-side surplus usually means an unmapped account).
+- **Subscriptions report.** The companion detects monthly recurring charges
+  (≥3 charges, monthly cadence, stable price, still active) and the new card
+  lists them with prices, flags **price creep** (▲ was $10.99), and totals
+  the monthly cost. The weekly check-in carries the one-line total; a fresh
+  creep earns a daily-report line for three mornings, then goes quiet.
+- **Budget-tab quality of life.** A two-tap **Reset layout** in Customize
+  restores the defaults; hiding a card raises an **Undo** toast; and the
+  semester pool's amount and end date are editable right on the burn-down's
+  full screen — no Telegram required.
+
 ## [1.33.0] - 2026-09-02
 
 ### Changed
