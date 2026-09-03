@@ -251,3 +251,57 @@ describe('headline stats card', () => {
     expect(screen.getByText('75.9mo')).toBeInTheDocument();
   });
 });
+
+describe('data check card', () => {
+  it('says it cannot verify when the companion published no check', () => {
+    view('data-check');
+    expect(screen.getByText(/companion hasn't published a check/i)).toBeTruthy();
+  });
+
+  it('renders the green verdict when the pipelines agree', () => {
+    view('data-check', { ...fresh(), check: {
+      month: '2026-08', cubeSpendCents: 4700, cubeUncatCents: 200,
+      ledgerSpendCents: 4700, ledgerUncatCents: 200,
+    } });
+    expect(screen.getByText(/matches the ledger/i)).toBeTruthy();
+  });
+
+  it('renders each divergent measure with both sides and the delta', () => {
+    view('data-check', { ...fresh(), check: {
+      month: '2026-08', cubeSpendCents: 4700, cubeUncatCents: 200,
+      ledgerSpendCents: 14600, ledgerUncatCents: 200,
+    } });
+    expect(screen.getByText('Categorized spending')).toBeTruthy();
+    expect(screen.getByText(/\$47\.00 here/)).toBeTruthy();
+    expect(screen.getByText(/\$146\.00 in the ledger/)).toBeTruthy();
+    expect(screen.getByText(/\+\$99\.00/)).toBeTruthy();
+    expect(screen.getByText(/accounts this addon doesn't sync/i)).toBeTruthy();
+  });
+});
+
+describe('subscriptions card', () => {
+  const SUB = { name: 'SPOTIFY', monthlyCents: 1099, count: 5, lastDate: '2026-08-20', lastCents: 1099, creep: false };
+
+  it('waits politely while the companion has not looked yet', () => {
+    view('subscriptions');
+    expect(screen.getByText(/after the next sync/i)).toBeTruthy();
+  });
+
+  it('lists each subscription with its monthly price and totals them', () => {
+    view('subscriptions', { ...fresh(), subscriptions: [SUB, { ...SUB, name: 'ADOBE', monthlyCents: 5499, lastCents: 5499 }] });
+    expect(screen.getByText('SPOTIFY')).toBeTruthy();
+    expect(screen.getByText('ADOBE')).toBeTruthy();
+    expect(screen.getByText(/\$65\.98\/mo across 2/)).toBeTruthy();
+  });
+
+  it('marks price creep with the old and new price', () => {
+    view('subscriptions', { ...fresh(), subscriptions: [{ ...SUB, lastCents: 1199, creep: true }] });
+    expect(screen.getByText(/\$11\.99/)).toBeTruthy();
+    expect(screen.getByText(/was \$10\.99/)).toBeTruthy();
+  });
+
+  it('an empty roster reads as a clean bill, not an error', () => {
+    view('subscriptions', { ...fresh(), subscriptions: [] });
+    expect(screen.getByText(/no monthly subscriptions detected/i)).toBeTruthy();
+  });
+});

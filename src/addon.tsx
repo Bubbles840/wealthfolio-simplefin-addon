@@ -87,6 +87,9 @@ const enable: AddonEnableFunction = (ctx) => {
   // rather than being lost as a single long timer would lose it.
   const startupStore = addonStore;
   const startupScheduler = addonScheduler;
+  // Regardless of setup state: skew detection matters MOST mid-update, and an
+  // unconfigured install still has a version.
+  void addonStore.publishAddonVersion().catch(() => {});
   void (async () => {
     try {
       const [accessUrl, mapping] = await Promise.all([

@@ -277,3 +277,57 @@ export function uncatTrendData(cube: ReportCube): MonthRow[] {
   const totals = monthlyUncategorizedTotals(cube);
   return cube.months.map((month, mi) => ({ month, uncategorized: dollars(totals[mi]) }));
 }
+
+/** One dollar of slack: both pipelines round per group before summing, so a
+ *  few cents of float drift is arithmetic, not a data problem. */
+const CHECK_TOLERANCE_CENTS = 100;
+
+export interface DataCheckRow {
+  label: string;
+  cubeCents: number;
+  ledgerCents: number;
+  deltaCents: number;
+}
+
+/**
+ * The data-check card's verdict: the cube's current-month totals against the
+ * digest readers' (see CubeCheck). Null when the companion never published a
+ * check — "could not verify" renders as its own state, never as a pass.
+ */
+export function dataCheckResult(
+  cube: ReportCube,
+): { month: string; status: 'match' | 'diverges'; rows: DataCheckRow[] } | null {
+  const check = cube.check ?? null;
+  if (!check) return null;
+  const rows: DataCheckRow[] = [
+    {
+      label: 'Categorized spending',
+      cubeCents: check.cubeSpendCents,
+      ledgerCents: check.ledgerSpendCents,
+      deltaCents: check.ledgerSpendCents - check.cubeSpendCents,
+    },
+    {
+      label: 'Uncategorized spending',
+      cubeCents: check.cubeUncatCents,
+      ledgerCents: check.ledgerUncatCents,
+      deltaCents: check.ledgerUncatCents - check.cubeUncatCents,
+    },
+  ];
+  const status = rows.every((r) => Math.abs(r.deltaCents) <= CHECK_TOLERANCE_CENTS)
+    ? 'match' as const
+    : 'diverges' as const;
+  return { month: check.month, status, rows };
+}
+
+/**
+ * Subscriptions roster + monthly total. Null means the companion could not
+ * look (no dated merchant rows yet); an EMPTY roster is a real answer and
+ * renders as "none detected", not as an error.
+ */
+export function subscriptionSummary(
+  cube: ReportCube,
+): { totalCents: number; subs: NonNullable<ReportCube['subscriptions']> } | null {
+  const subs = cube.subscriptions ?? null;
+  if (!subs) return null;
+  return { totalCents: subs.reduce((s, x) => s + x.monthlyCents, 0), subs };
+}

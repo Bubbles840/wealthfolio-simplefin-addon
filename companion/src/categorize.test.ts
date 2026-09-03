@@ -899,25 +899,27 @@ describe('rules', () => {
     const h = setup({ rows: [ODD] });
     const filed = await openAtFiled(h, 'TRADER JOE*S');
     await h.tap(dataFor(filed, 'Make this a rule'));
+    // The TRIMMED pattern: '(#123)' is reference noise a future charge won't
+    // carry, and the preview must quote what the write will actually use.
     expect(lastCall(h.ui.edit)[0]).toBe(
       'Create this rule?\n'
-      + 'Descriptions containing "TRADER JOE\\*S (#123)" → Entertainment\n'
+      + 'Descriptions containing "TRADER JOE\\*S" → Entertainment\n'
       + 'It will also file any other uncategorized transactions that match, now and on every future import. '
       + 'Already-categorized transactions are never touched.',
     );
     expect(labels(keyboardOf(lastCall(h.ui.edit)))).toEqual(['Create rule', '« Back']);
   });
 
-  it('creates a contains-rule with the description verbatim', async () => {
+  it('creates a contains-rule from the trimmed head of the description', async () => {
     const h = setup({ rows: [ODD] });
     const filed = await openAtFiled(h, 'TRADER JOE*S');
     await h.tap(dataFor(filed, 'Make this a rule'));
     await h.tap(dataFor(keyboardOf(lastCall(h.ui.edit)), 'Create rule'));
-    // Verbatim: `*` and `(` are literal text to a contains-match, and escaping
-    // them here would create a rule that matches nothing.
+    // Trimmed, never escaped: `*` stays literal text to the contains-match,
+    // while the trailing '(#123)' would pin the rule to this one charge.
     expect(h.deps.createRule).toHaveBeenCalledWith({
-      name: 'Telegram: TRADER JOE*S (#123)',
-      pattern: 'TRADER JOE*S (#123)',
+      name: 'Telegram: TRADER JOE*S',
+      pattern: 'TRADER JOE*S',
       categoryId: 'cat-fun',
     });
     const created = lastCall(h.ui.edit);
@@ -927,17 +929,17 @@ describe('rules', () => {
     expect(h.deps.republish).toHaveBeenCalledTimes(2);
   });
 
-  it('truncates the rule name to 60 characters', async () => {
+  it('caps a long descriptor at its six-token head', async () => {
+    // The old behaviour kept the FULL 70-char descriptor as the pattern — so
+    // specific the next Costco run never matched it. The head is the merchant.
     const long = 'COSTCO WHOLESALE #1123 SEATTLE WA CARD PURCHASE 08/08 RECURRING BILLING';
     const h = setup({ rows: [row('a', { notes: `${long} · TRN-a` })] });
     const filed = await openAtFiled(h, 'COSTCO');
     await h.tap(dataFor(filed, 'Make this a rule'));
     await h.tap(dataFor(keyboardOf(lastCall(h.ui.edit)), 'Create rule'));
     const rule = h.deps.createRule.mock.calls[0][0];
-    expect(rule.name).toBe('Telegram: COSTCO WHOLESALE #1123 SEATTLE WA CARD PURCHASE 08');
-    expect(rule.name).toHaveLength(60);
-    // The PATTERN is never truncated — a clipped pattern matches the wrong rows.
-    expect(rule.pattern).toBe(long);
+    expect(rule.pattern).toBe('COSTCO WHOLESALE #1123 SEATTLE WA CARD');
+    expect(rule.name).toBe('Telegram: COSTCO WHOLESALE #1123 SEATTLE WA CARD');
   });
 
   it('reports a refused rule without claiming it was created', async () => {

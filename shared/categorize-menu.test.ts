@@ -1342,3 +1342,56 @@ describe('direction-aware menu', () => {
     });
   });
 });
+
+// ---- rule learning: the count-aware nudge -----------------------------------
+
+describe('rule learning nudge', () => {
+  const NETFLIX = [
+    txn({ activityId: 'act-1', description: 'NETFLIX.COM 866-579-7172' }),
+    txn({ activityId: 'act-2', description: 'NETFLIX.COM 866-000-1111' }),
+    txn({ activityId: 'act-3', description: 'NETFLIX.COM' }),
+  ];
+
+  it('the filed screen says how many more a rule would file right now', () => {
+    // The nudge IS the feature: "Make this a rule" was always there, but
+    // nothing ever said it would clear two other rows in the same tap.
+    const s = session({
+      txns: NETFLIX,
+      screen: { kind: 'filed', activityId: 'act-1', categoryId: 'cat-groceries', undone: false },
+    });
+    const { keyboard } = renderScreen(s);
+    expect(keyboard.inline_keyboard.flat().map((b) => b.text))
+      .toContain('⚡ Make this a rule — files 2 more like it');
+  });
+
+  it('stays plain when nothing else matches', () => {
+    const s = session({
+      screen: { kind: 'filed', activityId: 'act-1', categoryId: 'cat-groceries', undone: false },
+    });
+    const { keyboard } = renderScreen(s);
+    expect(keyboard.inline_keyboard.flat().map((b) => b.text)).toContain('Make this a rule');
+  });
+
+  it('the rule preview quotes the TRIMMED pattern and the live catch count', () => {
+    const s = session({
+      txns: NETFLIX,
+      screen: { kind: 'rulePreview', activityId: 'act-1', categoryId: 'cat-groceries' },
+    });
+    const { text } = renderScreen(s);
+    expect(text).toContain('Descriptions containing "NETFLIX.COM"');
+    expect(text).not.toContain('866-579');
+    expect(text).toContain('Right now that also files 2 other uncategorized transactions.');
+  });
+
+  it('the preview count is singular for one match and absent for none', () => {
+    const one = session({
+      txns: NETFLIX.slice(0, 2),
+      screen: { kind: 'rulePreview', activityId: 'act-1', categoryId: 'cat-groceries' },
+    });
+    expect(renderScreen(one).text).toContain('Right now that also files 1 other uncategorized transaction.');
+    const none = session({
+      screen: { kind: 'rulePreview', activityId: 'act-1', categoryId: 'cat-groceries' },
+    });
+    expect(renderScreen(none).text).not.toContain('Right now that also files');
+  });
+});

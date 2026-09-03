@@ -95,3 +95,37 @@ jobs:
           # scoping, a cache-service hiccup) must not fail an otherwise-green
           # build — the cache is an optimisation, not an output.
           cache-to: type=gha,mode=max,ignore-error=true
+
+  # The addon zip, attached to a GitHub release on every version tag. Before
+  # this existed the zip only ever came from a laptop build, so "grab the zip
+  # from the release page" — the update path the daily report now suggests —
+  # was a promise nothing kept.
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      # The same gate the publish job runs: a zip whose UI reports a different
+      # version than its filename is the v1.22.0 mistake with packaging on top.
+      - name: Version must match the tag
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          for got in "$(node -p "require('./package.json').version")" \
+                     "$(node -p "require('./manifest.json').version")" \
+                     "$(grep -o "SIMPLEFIN_SYNC_VERSION = '[^']*'" shared/version.ts | cut -d"'" -f2)"; do
+            [ "$got" = "$TAG" ] || { echo "::error::tag v$TAG disagrees with a shipped version string ($got)"; exit 1; }
+          done
+      - run: npm run build && npm run package
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/simplefin-sync-*.zip
+          # The changelog is the release notes; auto-generated commit lists
+          # would duplicate it worse.
+          generate_release_notes: false
+          body: 'See CHANGELOG.md for what changed. Update: pull the new image, then upload the attached zip in Wealthfolio.'

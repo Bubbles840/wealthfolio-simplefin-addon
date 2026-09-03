@@ -1178,17 +1178,21 @@ export function getNativeMerchantRows(
   dbPath: string,
   startInclusive: string,
   endExclusive: string,
-): Array<{ month: string; notes: string; amount: number }> {
+): Array<{ month: string; date: string; notes: string; amount: number }> {
   if (!dbPath || !existsSync(dbPath)) return [];
   if (!validDateBounds(startInclusive, endExclusive)) return [];
+  // `date` sits BEFORE notes: notes are free text and only the pipe-split
+  // parser's fixed leading columns are safe from a stray delimiter in them.
   const query = `
     SELECT strftime('%Y-%m', a.activity_date) as month,
+           date(a.activity_date) as date,
            COALESCE(a.notes, '') as notes,
            ROUND(${SPENDING_SIGNED_AMOUNT}, 2) as amount
     ${SPENDING_FROM}
     ${spendingWhere(startInclusive, endExclusive)}
     UNION ALL
     SELECT strftime('%Y-%m', a.activity_date) as month,
+           date(a.activity_date) as date,
            COALESCE(a.notes, '') as notes,
            ROUND(ABS(CAST(a.amount AS REAL)), 2) as amount
     FROM activities a
@@ -1204,16 +1208,17 @@ export function getNativeMerchantRows(
     dbPath,
     'merchant rows',
     query,
-    (parts) => (parts.length === 3
-      ? { c0: parts[0], c1: parts[1], c2: parseFloat(parts[2]) || 0 }
+    (parts) => (parts.length === 4
+      ? { c0: parts[0], c1: parts[1], c2: parts[2], c3: parseFloat(parts[3]) || 0 }
       : null),
   );
   return rows.map((r) => {
-    const v = Object.values(r) as [string, string, number | string];
+    const v = Object.values(r) as [string, string, string, number | string];
     return {
       month: String(v[0]),
-      notes: String(v[1]),
-      amount: typeof v[2] === 'number' ? v[2] : parseFloat(String(v[2])) || 0,
+      date: String(v[1]),
+      notes: String(v[2]),
+      amount: typeof v[3] === 'number' ? v[3] : parseFloat(String(v[3])) || 0,
     };
   }).filter((r) => r.month !== '');
 }

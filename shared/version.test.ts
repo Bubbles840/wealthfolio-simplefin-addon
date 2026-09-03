@@ -31,3 +31,24 @@ describe('SIMPLEFIN_SYNC_VERSION', () => {
     expect(SIMPLEFIN_SYNC_VERSION).toMatch(/^\d+\.\d+\.\d+$/);
   });
 });
+
+describe('isNewerVersion', () => {
+  it('orders semver numerically, not lexically', async () => {
+    const { isNewerVersion } = await import('./version.js');
+    expect(isNewerVersion('1.34.0', '1.33.0')).toBe(true);
+    expect(isNewerVersion('1.33.0', '1.34.0')).toBe(false);
+    expect(isNewerVersion('1.34.0', '1.34.0')).toBe(false);
+    // The lexical trap: '1.9.0' > '1.10.0' as strings.
+    expect(isNewerVersion('1.10.0', '1.9.0')).toBe(true);
+    expect(isNewerVersion('2.0.0', '1.99.0')).toBe(true);
+  });
+
+  it('rejects anything that is not a plain x.y.z', async () => {
+    // The comparison feeds an "update available" line from an external API
+    // response — a malformed tag must never manufacture an upgrade prompt.
+    const { isNewerVersion } = await import('./version.js');
+    expect(isNewerVersion('', '1.33.0')).toBe(false);
+    expect(isNewerVersion('v1.34.0-rc1', '1.33.0')).toBe(false);
+    expect(isNewerVersion('banana', '1.33.0')).toBe(false);
+  });
+});

@@ -77,6 +77,25 @@ export interface ReportCube {
   /** [month] month-end cents across CASH + CREDIT_CARD only. */
   liquid: Array<number | null>;
   pool: CubePool | null;
+  /** Monthly recurring charges found at build time (shared/subscriptions.ts).
+   *  null = the reader gave no dates (older companion), NOT "none found". */
+  subscriptions?: import('./subscriptions.js').DetectedSubscription[] | null;
+  /** Current-month totals recomputed through the DIGEST's single-shot readers,
+   *  an independent pipeline from the matrices above. The Budget tab's data
+   *  check renders the comparison; absent on cubes from older companions. */
+  check?: CubeCheck | null;
+}
+
+export interface CubeCheck {
+  /** The month both sides describe — always the cube's newest. */
+  month: string;
+  /** Mapped-accounts totals summed from the cube's own matrices. */
+  cubeSpendCents: number;
+  cubeUncatCents: number;
+  /** The same measures from the digest readers, which count EVERY account —
+   *  so "cube < ledger" usually means money on an account nothing maps. */
+  ledgerSpendCents: number;
+  ledgerUncatCents: number;
 }
 
 export function parseReportCube(raw: string | null | undefined): ReportCube | null {

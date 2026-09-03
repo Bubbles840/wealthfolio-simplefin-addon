@@ -181,3 +181,10 @@ describe('free spans (drag resize)', () => {
 import { setSpan } from './budget-layout.js';
 
 import { moveBefore } from './budget-layout.js';
+
+describe('v1.34 report roster', () => {
+  it('offers the data check and subscriptions as standard reports', () => {
+    expect(STANDARD_REPORT_IDS).toContain('data-check');
+    expect(STANDARD_REPORT_IDS).toContain('subscriptions');
+  });
+});

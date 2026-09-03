@@ -17,6 +17,7 @@ import type { DismissalLedger, UncategorizedRow } from '../../shared/uncategoriz
 import type { DriftAlertEntry, TransferLinkFailureEntry } from '../../shared/sync-host';
 import type { SyncResult } from '../../shared/sync-core';
 import { LARGE_TX_OUTBOX_SECRET_KEY } from '../../shared/telegram';
+import { ADDON_VERSION_SECRET_KEY, SIMPLEFIN_SYNC_VERSION } from '../../shared/version';
 
 /** Per-account balance snapshot captured on each sync, for the Sync page. */
 /** One spending category as the companion published it. Mirrors
@@ -135,6 +136,16 @@ export type PendingLargeTxAlert = SyncResult['largeTransactionAlerts'][number];
 
 export class SecretsStore {
   constructor(private ctx: AddonContext) {}
+
+  /** Writes this build's version where the companion's self-check can read it,
+   *  so a half-finished update (image pulled, zip not — or the reverse) shows
+   *  up in the daily report. Read-first: the value changes once per release,
+   *  and every other app start would otherwise be a pointless secret write. */
+  async publishAddonVersion(): Promise<void> {
+    const current = await this.ctx.api.secrets.get(ADDON_VERSION_SECRET_KEY);
+    if (current === SIMPLEFIN_SYNC_VERSION) return;
+    await this.ctx.api.secrets.set(ADDON_VERSION_SECRET_KEY, SIMPLEFIN_SYNC_VERSION);
+  }
 
   async getAccessUrl(): Promise<string | null> {
     return this.ctx.api.secrets.get(KEYS.accessUrl);
@@ -719,6 +730,12 @@ export class SecretsStore {
     } catch {
       return null;
     }
+  }
+  /** Deletes the stored layout so the defaults come back — the Budget tab's
+   *  Reset button. Distinct from writing an "empty" layout, which would pin
+   *  nothing and hide nothing but still count as customized. */
+  async clearBudgetLayout(): Promise<void> {
+    await this.ctx.api.secrets.delete(KEYS.budgetLayout);
   }
   async setBudgetLayout(layout: BudgetLayout): Promise<void> {
     await this.ctx.api.secrets.set(KEYS.budgetLayout, JSON.stringify(layout));

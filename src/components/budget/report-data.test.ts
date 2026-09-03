@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   cashFlowData, categoryTrendData, netWorthData, savingsRateData, merchantTable,
   budgetVsActualData, seasonalityGrid, feesInterestData, runwayTrendData, poolBurndownData,
+  dataCheckResult, subscriptionSummary,
 } from './report-data';
 import { CUBE } from '../../../shared/report-cube.test';
 import type { ReportCube } from '../../../shared/report-cube';
@@ -161,3 +162,49 @@ import {
   categoryDonutData, momDeltaData, spendCalendarData, poolPaceData,
   cumulativeFlowData, uncatTrendData,
 } from './report-data';
+
+describe('dataCheckResult', () => {
+  it('is null when the companion published no check (older build)', () => {
+    expect(dataCheckResult(CUBE)).toBeNull();
+  });
+
+  it('reports a match when both pipelines agree within a dollar', () => {
+    const res = dataCheckResult({ ...CUBE, check: {
+      month: '2026-08', cubeSpendCents: 4700, cubeUncatCents: 200,
+      ledgerSpendCents: 4750, ledgerUncatCents: 200,
+    } });
+    expect(res).toMatchObject({ month: '2026-08', status: 'match' });
+    expect(res!.rows).toEqual([
+      { label: 'Categorized spending', cubeCents: 4700, ledgerCents: 4750, deltaCents: 50 },
+      { label: 'Uncategorized spending', cubeCents: 200, ledgerCents: 200, deltaCents: 0 },
+    ]);
+  });
+
+  it('reports divergence with the delta when the ledger holds more', () => {
+    // The classic cause: spending on an account the addon does not sync.
+    const res = dataCheckResult({ ...CUBE, check: {
+      month: '2026-08', cubeSpendCents: 4700, cubeUncatCents: 200,
+      ledgerSpendCents: 14600, ledgerUncatCents: 200,
+    } });
+    expect(res!.status).toBe('diverges');
+    expect(res!.rows[0].deltaCents).toBe(9900);
+  });
+});
+
+describe('subscriptionSummary', () => {
+  const SUB = { name: 'SPOTIFY', monthlyCents: 1099, count: 5, lastDate: '2026-08-20', lastCents: 1099, creep: false };
+
+  it('is null when the companion could not look (no dated rows yet)', () => {
+    expect(subscriptionSummary(CUBE)).toBeNull();
+    expect(subscriptionSummary({ ...CUBE, subscriptions: null })).toBeNull();
+  });
+
+  it('totals the monthly cost across detected subscriptions', () => {
+    const res = subscriptionSummary({ ...CUBE, subscriptions: [SUB, { ...SUB, name: 'ADOBE', monthlyCents: 5499 }] });
+    expect(res).toEqual({ totalCents: 6598, subs: [SUB, { ...SUB, name: 'ADOBE', monthlyCents: 5499 }] });
+  });
+
+  it('an empty roster is real news, not null', () => {
+    expect(subscriptionSummary({ ...CUBE, subscriptions: [] })).toEqual({ totalCents: 0, subs: [] });
+  });
+});

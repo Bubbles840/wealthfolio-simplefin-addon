@@ -16,9 +16,36 @@
  * so a release that bumps those and forgets this one fails the suite instead of
  * shipping a lie.
  */
-export const SIMPLEFIN_SYNC_VERSION = '1.33.0';
+export const SIMPLEFIN_SYNC_VERSION = '1.34.0';
 
 /** Addon secret the companion writes its version to, so the Sync page can show
  *  which daemon build is actually running against this instance — the two are
  *  deployed separately and can legitimately differ. */
 export const COMPANION_VERSION_SECRET_KEY = 'companion_version';
+
+/** The mirror of the above: the addon writes ITS version here, so the
+ *  companion's self-check can notice a half-finished update (image pulled,
+ *  zip not — or the reverse) and say so in the daily report. */
+export const ADDON_VERSION_SECRET_KEY = 'addon_version';
+
+/**
+ * True when `candidate` is a strictly newer x.y.z than `current`.
+ *
+ * Hand-rolled rather than a semver dependency because the candidate comes from
+ * an external API response (GitHub's latest-release tag): anything that is not
+ * a plain three-part number — a prerelease, an empty string, garbage — returns
+ * false, so a malformed tag can never manufacture an "update available" line.
+ */
+export function isNewerVersion(candidate: string, current: string): boolean {
+  const parse = (v: string): number[] | null => {
+    const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(v);
+    return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+  };
+  const a = parse(candidate);
+  const b = parse(current);
+  if (!a || !b) return false;
+  for (let i = 0; i < 3; i++) {
+    if (a[i] !== b[i]) return a[i] > b[i];
+  }
+  return false;
+}

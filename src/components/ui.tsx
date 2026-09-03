@@ -654,6 +654,27 @@ body {
 .sfin-headline { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 10px; align-items: stretch; height: 100%; }
 .sfin-headline .sfin-tile { box-shadow: none; display: flex; flex-direction: column; justify-content: center; }
 @container (max-width: 460px) { .sfin-headline { grid-auto-flow: row; } }
+/* Toolbar right side: reset + customize. */
+.sfin-toolbar-actions { display: flex; gap: 6px; align-items: center; }
+/* The hide-undo toast: present, quiet, gone in a few seconds. */
+.sfin-toast { display: flex; align-items: center; gap: 8px; margin: 6px 0 10px; padding: 6px 12px; border-radius: 10px; background: color-mix(in srgb, var(--card) 88%, #5e9483); border: 1px solid var(--border); font-size: 13px; }
+/* Pool editing on the burn-down's full screen. */
+.sfin-pool-edit { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+.sfin-pool-edit .sfin-input { max-width: 130px; }
+/* Data-check card. */
+.sfin-check { display: flex; flex-direction: column; gap: 8px; font-size: 13px; }
+.sfin-check-verdict { font-weight: 600; }
+.sfin-check--ok .sfin-check-verdict { color: #5e9483; }
+.sfin-check--diverges .sfin-check-verdict { color: #c9a86b; }
+.sfin-check-row { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.sfin-check-nums { color: var(--muted-foreground); }
+/* Subscriptions card. */
+.sfin-subs { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.sfin-subs-row { display: flex; justify-content: space-between; gap: 10px; }
+.sfin-subs-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sfin-subs-price { white-space: nowrap; }
+.sfin-subs-creep { color: #c17a63; font-weight: 600; }
+.sfin-subs-total { margin-top: 4px; padding-top: 6px; border-top: 1px solid var(--border); font-weight: 600; }
 /* Drag-to-move feedback. */
 .sfin-cell--editing { cursor: grab; touch-action: none; }
 .sfin-cell--dragging { z-index: 4; }

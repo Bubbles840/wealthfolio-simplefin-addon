@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { maskUrl, validateStartupEnv, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, runCompanionSyncExclusive, buildTelegramCommandHandler, applyTelegramDismissal, undoTelegramDismissal, formatDismissedReply, buildTelegramListenerDeps, buildCategorizeController, buildCategorizeDeps, rememberImportScope, sendUnmappedAccountsNotice } from './index.js';
+import { maskUrl, validateStartupEnv, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, runCompanionSyncExclusive, buildTelegramCommandHandler, applyTelegramDismissal, undoTelegramDismissal, formatDismissedReply, buildTelegramListenerDeps, buildCategorizeController, buildCategorizeDeps, rememberImportScope, sendUnmappedAccountsNotice, updateCheckDeps } from './index.js';
 import { formatHelpReply, parseCommand } from '../../shared/telegram-commands.js';
 import { SIMPLEFIN_SYNC_VERSION } from '../../shared/version.js';
 import { runSyncCore } from '../../shared/sync-core.js';
@@ -4186,5 +4186,110 @@ describe('report_cube publish', () => {
     const call = instance.setAddonSecret.mock.calls.find((c: any[]) => c[1] === 'report_cube');
     expect(call).toBeTruthy();
     expect(JSON.parse(call[2]).version).toBe(1);
+  });
+});
+
+describe('daily digest: version skew + update line', () => {
+  const clientWith = (entries: Array<[string, string]> = []) => {
+    const secrets = new Map<string, string>([
+      ['telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true })],
+      ...entries,
+    ]);
+    return {
+      getAddonSecret: vi.fn(async (_a: string, k: string) => secrets.get(k) ?? null),
+      setAddonSecret: vi.fn(async (_a: string, k: string, v: string) => { secrets.set(k, v); }),
+    } as any;
+  };
+
+  it('warns when the addon zip and the companion image are different builds', async () => {
+    // The two halves deploy separately; a half-finished update is otherwise
+    // visible only on a Sync-page footer nobody re-reads after updating.
+    const text = await composeDailyDigestMessage(clientWith([['addon_version', '0.0.1']]));
+    expect(text).toContain('different builds');
+    expect(text).toContain('v0.0.1');
+  });
+
+  it('says nothing about versions when the addon has not published one', async () => {
+    // Old zips never wrote the secret; alarming on absence would flag every
+    // companion-first updater forever.
+    const text = await composeDailyDigestMessage(clientWith());
+    expect(text).not.toContain('different builds');
+  });
+
+  it('appends the update line when a newer release exists', async () => {
+    const fetcher = vi.fn(async () => '999.0.0');
+    const prev = { armed: updateCheckDeps.armed, fetch: updateCheckDeps.fetchLatestVersion };
+    try {
+      updateCheckDeps.armed = true;
+      updateCheckDeps.fetchLatestVersion = fetcher;
+      const text = await composeDailyDigestMessage(clientWith());
+      expect(text).toContain('v999.0.0 is available');
+      expect(text).toContain('release page');
+    } finally {
+      updateCheckDeps.armed = prev.armed;
+      updateCheckDeps.fetchLatestVersion = prev.fetch;
+    }
+  });
+
+  it('does not phone GitHub unless the daemon armed the check at startup', async () => {
+    // The unit suite (and the addon-driven /report path in a broken install)
+    // must never depend on an external API being reachable.
+    const fetcher = vi.fn(async () => '999.0.0');
+    const prev = updateCheckDeps.fetchLatestVersion;
+    try {
+      updateCheckDeps.fetchLatestVersion = fetcher;
+      const text = await composeDailyDigestMessage(clientWith());
+      expect(fetcher).not.toHaveBeenCalled();
+      expect(text).not.toContain('is available');
+    } finally {
+      updateCheckDeps.fetchLatestVersion = prev;
+    }
+  });
+});
+
+describe('subscriptions in the reports', () => {
+  const cubeWith = (subscriptions: unknown) => JSON.stringify({
+    version: 1, asOf: new Date().toISOString(), months: ['2026-09'],
+    categories: [], accounts: [], spend: [[]], uncategorized: [[]], income: [[]],
+    budgets: [[]], merchants: [[]], feesInterest: [0], netWorth: [null], liquid: [null],
+    pool: null, subscriptions,
+  });
+  const clientWith = (entries: Array<[string, string]> = []) => {
+    const secrets = new Map<string, string>([
+      ['telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true })],
+      ...entries,
+    ]);
+    return {
+      getAddonSecret: vi.fn(async (_a: string, k: string) => secrets.get(k) ?? null),
+      setAddonSecret: vi.fn(async (_a: string, k: string, v: string) => { secrets.set(k, v); }),
+    } as any;
+  };
+  const daysAgoDate = (d: number) => new Date(Date.now() - d * 86_400_000).toISOString().slice(0, 10);
+
+  it('weekly check-in totals the detected subscriptions', async () => {
+    const client = clientWith([['report_cube', cubeWith([
+      { name: 'ADOBE', monthlyCents: 5499, count: 4, lastDate: daysAgoDate(3), lastCents: 5499, creep: false },
+      { name: 'SPOTIFY', monthlyCents: 1099, count: 5, lastDate: daysAgoDate(10), lastCents: 1099, creep: false },
+    ])]]);
+    const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+    vi.stubGlobal('fetch', fetchMock);
+    await sendWeeklyTelegramReport(client);
+    const text = JSON.parse((fetchMock.mock.calls[0][1] as any).body).text;
+    expect(text).toContain('Subscriptions');
+    expect(text).toContain('$65.98/mo across 2');
+  });
+
+  it('daily digest flags a fresh price creep, once it is stale it stops', async () => {
+    const fresh = clientWith([['report_cube', cubeWith([
+      { name: 'SPOTIFY', monthlyCents: 1099, count: 5, lastDate: daysAgoDate(1), lastCents: 1199, creep: true },
+    ])]]);
+    const stale = clientWith([['report_cube', cubeWith([
+      { name: 'SPOTIFY', monthlyCents: 1099, count: 5, lastDate: daysAgoDate(9), lastCents: 1199, creep: true },
+    ])]]);
+    const freshText = await composeDailyDigestMessage(fresh);
+    const staleText = await composeDailyDigestMessage(stale);
+    expect(freshText).toContain('SPOTIFY charged $11.99');
+    expect(freshText).toContain('up from its usual $10.99');
+    expect(staleText).not.toContain('up from its usual');
   });
 });

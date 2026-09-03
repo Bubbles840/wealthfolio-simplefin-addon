@@ -10,6 +10,7 @@ import {
   budgetVsActualData, cashFlowData, categoryDonutData, categoryTrendData, cumulativeFlowData,
   feesInterestData, merchantTable, momDeltaData, netWorthData, poolBurndownData, poolPaceData,
   runwayTrendData, savingsRateData, seasonalityGrid, spendCalendarData, uncatTrendData,
+  dataCheckResult, subscriptionSummary,
 } from './report-data';
 
 /**
@@ -46,6 +47,8 @@ export const REPORT_TITLES: Record<string, string> = {
   'pool-pace': 'Pool pace',
   'cumulative-flow': 'Money in vs out',
   'uncat-trend': 'Uncategorized trend',
+  'data-check': 'Data check',
+  'subscriptions': 'Subscriptions',
 };
 
 export function reportTitle(id: string, customReports: CustomReport[]): string {
@@ -57,6 +60,9 @@ export function reportTitle(id: string, customReports: CustomReport[]): string {
 
 const fmt0 = (dollars: number) =>
   new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(dollars);
+/** Exact cents, for the cards where "off by 37¢" IS the content. */
+const fmt2 = (dollars: number) =>
+  new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2 }).format(dollars);
 
 /** A stable small palette cycled for multi-series charts; recharts wants
  *  explicit strokes and the host theme handles contrast. */
@@ -229,6 +235,76 @@ function HeadlineStats({ cube }: { cube: ReportCube }) {
           <div className="sfin-tile-val">{Math.round(rate)}%</div>
         </div>
       )}
+    </div>
+  );
+}
+
+function DataCheck({ cube }: { cube: ReportCube }) {
+  const res = dataCheckResult(cube);
+  if (!res) {
+    return (
+      <div className="sfin-subtle">
+        The companion hasn't published a check yet — it arrives with the first sync after updating.
+      </div>
+    );
+  }
+  if (res.status === 'match') {
+    return (
+      <div className="sfin-check sfin-check--ok">
+        <div className="sfin-check-verdict">✓ The Budget tab matches the ledger</div>
+        <div className="sfin-subtle">
+          {res.month}: spending recounted through an independent path came out the same.
+          Income here counts deposits and interest only — internal transfers are never income.
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="sfin-check sfin-check--diverges">
+      <div className="sfin-check-verdict">Measures disagree for {res.month}</div>
+      {res.rows.filter((r) => r.deltaCents !== 0).map((r) => (
+        <div key={r.label} className="sfin-check-row">
+          <span>{r.label}</span>
+          <span className="sfin-check-nums">
+            {fmt2(r.cubeCents / 100)} here · {fmt2(r.ledgerCents / 100)} in the ledger
+            {' '}({r.deltaCents > 0 ? '+' : '−'}{fmt2(Math.abs(r.deltaCents) / 100)})
+          </span>
+        </div>
+      ))}
+      <div className="sfin-subtle">
+        A ledger-side surplus usually means spending on accounts this addon doesn't sync.
+      </div>
+    </div>
+  );
+}
+
+function Subscriptions({ cube }: { cube: ReportCube }) {
+  const res = subscriptionSummary(cube);
+  if (!res) {
+    return (
+      <div className="sfin-subtle">
+        The companion looks for recurring charges after the next sync.
+      </div>
+    );
+  }
+  if (res.subs.length === 0) {
+    return <div className="sfin-subtle">No monthly subscriptions detected — three charges on a monthly cadence would show here.</div>;
+  }
+  return (
+    <div className="sfin-subs">
+      {res.subs.map((sub) => (
+        <div key={sub.name} className="sfin-subs-row">
+          <span className="sfin-subs-name">{sub.name}</span>
+          <span className="sfin-subs-price">
+            {sub.creep ? (
+              <span className="sfin-subs-creep">{fmt2(sub.lastCents / 100)} ▲ was {fmt2(sub.monthlyCents / 100)}</span>
+            ) : (
+              <>{fmt2(sub.monthlyCents / 100)}/mo</>
+            )}
+          </span>
+        </div>
+      ))}
+      <div className="sfin-subs-total">{fmt2(res.totalCents / 100)}/mo across {res.subs.length}</div>
     </div>
   );
 }
@@ -567,6 +643,8 @@ export function ReportView({ id, cube, customReports, hero = false, categories, 
       case 'pool-pace': body = <PoolPace cube={cube} />; break;
       case 'cumulative-flow': body = <CumulativeFlow cube={cube} />; break;
       case 'uncat-trend': body = <UncatTrend cube={cube} />; break;
+      case 'data-check': body = <DataCheck cube={cube} />; break;
+      case 'subscriptions': body = <Subscriptions cube={cube} />; break;
       default: body = null;
     }
   }

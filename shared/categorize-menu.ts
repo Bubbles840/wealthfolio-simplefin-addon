@@ -10,6 +10,7 @@
  * in, string (and keyboard) out.
  */
 
+import { categoryRulePattern } from './rule-pattern.js';
 import type { InlineKeyboard } from './telegram.js';
 import { moneyWhole, escapeMarkdown } from './telegram.js';
 import { INCOME_TAXONOMY_ID } from './cash-flow-bucket.js';
@@ -592,6 +593,18 @@ function renderSubcats(session: MenuSession, activityId: string, parentId: strin
   return finish(session.generation, text, rows);
 }
 
+/** Uncategorized rows (other than the one in hand) a contains-rule on the
+ *  trimmed pattern would file immediately — the number that turns "Make this
+ *  a rule" from a chore into a payoff. Counted over the session's own list:
+ *  the same rows the user is looking at, no extra read. */
+function ruleCatchCount(session: MenuSession, activityId: string, description: string): number {
+  const pattern = categoryRulePattern(description).toLowerCase();
+  if (!pattern) return 0;
+  return session.txns.filter(
+    (t) => t.activityId !== activityId && t.description.toLowerCase().includes(pattern),
+  ).length;
+}
+
 function renderFiled(
   session: MenuSession,
   screen: Extract<MenuScreen, { kind: 'filed' }>,
@@ -619,7 +632,14 @@ function renderFiled(
       },
     }],
     [{
-      text: 'Make this a rule',
+      // Count-aware: the button was always here, but nothing ever said it
+      // would clear other rows in the same tap.
+      text: (() => {
+        const catches = ruleCatchCount(session, screen.activityId, txn.description);
+        return catches > 0
+          ? `⚡ Make this a rule — files ${catches} more like it`
+          : 'Make this a rule';
+      })(),
       action: {
         kind: 'goto',
         screen: { kind: 'rulePreview', activityId: screen.activityId, categoryId: screen.categoryId },
@@ -670,7 +690,15 @@ function renderRulePreview(session: MenuSession, activityId: string, categoryId:
   const category = findCategory(session, categoryId);
   if (!txn || !category) return renderList(session, 0, GONE_NOTE);
 
-  const text = ruleCopy(escapeMarkdown(txn.description), escapeMarkdown(categoryDisplayName(category)));
+  // The TRIMMED pattern — what the rule is actually built from (the companion
+  // trims identically before the write), so the preview never promises a
+  // reference-number-specific rule while creating a broader one.
+  const pattern = categoryRulePattern(txn.description);
+  const catches = ruleCatchCount(session, activityId, txn.description);
+  const catchLine = catches > 0
+    ? `\nRight now that also files ${catches} other uncategorized transaction${catches === 1 ? '' : 's'}.`
+    : '';
+  const text = ruleCopy(escapeMarkdown(pattern), escapeMarkdown(categoryDisplayName(category))) + catchLine;
   const rows: Btn[][] = [
     [{ text: 'Create rule', action: { kind: 'createRule', activityId, categoryId } }],
     [{ text: '« Back', action: { kind: 'goto', screen: { kind: 'txn', activityId } } }],

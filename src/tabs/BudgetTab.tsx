@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Button, SectionLabel } from '../components/ui';
 import { ReportView, reportTitle } from '../components/budget/ReportView';
 import { sliceCubeMonths, type ReportCube } from '../../shared/report-cube';
@@ -32,6 +32,9 @@ export interface BudgetTabProps {
   customReports: CustomReport[];
   layout: BudgetLayout | null;
   onLayoutChange: (next: BudgetLayout) => void;
+  /** Clears the stored layout entirely — absent on older pages, and the Reset
+   *  button simply doesn't render without it. */
+  onLayoutReset?: () => void;
   onCustomReportsChange: (next: CustomReport[]) => void;
   store: SecretsStore;
 }
@@ -53,7 +56,7 @@ const GAP = 14;
 const ROW_UNIT = 158 + GAP;
 const FALLBACK_COL_UNIT = 330;
 
-export function BudgetTab({ cube, customReports, layout, onLayoutChange, onCustomReportsChange }: BudgetTabProps) {
+export function BudgetTab({ cube, customReports, layout, onLayoutChange, onLayoutReset, onCustomReportsChange, store }: BudgetTabProps) {
   const [fullId, setFullId] = useState<string | null>(null);
   const [range, setRange] = useState<Range>(12);
   const [customizing, setCustomizing] = useState(false);
@@ -65,6 +68,21 @@ export function BudgetTab({ cube, customReports, layout, onLayoutChange, onCusto
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const resizeState = useRef<{ id: string; startX: number; startY: number; c0: number; r0: number; colUnit: number } | null>(null);
   const moveState = useRef<{ id: string } | null>(null);
+  /** Two-tap reset: one mistap must not destroy an arranged board. */
+  const [confirmReset, setConfirmReset] = useState(false);
+  /** The just-hidden card, so Hide always leaves a way back on screen. */
+  const [hiddenToast, setHiddenToast] = useState<string | null>(null);
+  /** Pool editing, on the burn-down's own full screen: amount + end date as
+   *  typed; parsed on save. Null = not editing. */
+  const [poolEdit, setPoolEdit] = useState<{ amount: string; end: string } | null>(null);
+  const [poolSaved, setPoolSaved] = useState(false);
+
+  // The undo toast outlives one glance, not the session.
+  useEffect(() => {
+    if (hiddenToast === null) return undefined;
+    const t = setTimeout(() => setHiddenToast(null), 8000);
+    return () => clearTimeout(t);
+  }, [hiddenToast]);
 
   if (!cube) {
     return (
@@ -150,6 +168,68 @@ export function BudgetTab({ cube, customReports, layout, onLayoutChange, onCusto
         </div>
         {rangeChips}
         <ReportView id={fullId} cube={viewCube} customReports={customReports} hero density={4} />
+        {fullId === 'pool-burndown' && cube.pool && (
+          <div className="sfin-pool-edit">
+            {poolEdit === null ? (
+              <>
+                <Button variant="ghost" onClick={() => {
+                  setPoolSaved(false);
+                  setPoolEdit({
+                    amount: String(cube.pool!.config.amountCents / 100),
+                    end: cube.pool!.config.endDate,
+                  });
+                }}>
+                  Edit pool
+                </Button>
+                {poolSaved && (
+                  <span className="sfin-subtle">Saved — the burn-down redraws on the next sync.</span>
+                )}
+              </>
+            ) : (
+              <>
+                <label className="sfin-subtle">
+                  Pool amount{' '}
+                  <input
+                    aria-label="Pool amount"
+                    className="sfin-input"
+                    inputMode="decimal"
+                    value={poolEdit.amount}
+                    onChange={(e) => setPoolEdit({ ...poolEdit, amount: e.target.value })}
+                  />
+                </label>
+                <label className="sfin-subtle">
+                  Must last until{' '}
+                  <input
+                    aria-label="Pool end date"
+                    className="sfin-input"
+                    type="date"
+                    value={poolEdit.end}
+                    onChange={(e) => setPoolEdit({ ...poolEdit, end: e.target.value })}
+                  />
+                </label>
+                <Button
+                  aria-label="Save pool"
+                  onClick={() => {
+                    const dollars = Number(poolEdit.amount);
+                    if (!Number.isFinite(dollars) || dollars <= 0 || !/^\d{4}-\d{2}-\d{2}$/.test(poolEdit.end)) return;
+                    // The START date is kept: editing the total or the horizon
+                    // is a top-up, not a new semester.
+                    store.setSemesterPool?.({
+                      amountCents: Math.round(dollars * 100),
+                      startDate: cube.pool!.config.startDate,
+                      endDate: poolEdit.end,
+                    })?.catch(() => {});
+                    setPoolEdit(null);
+                    setPoolSaved(true);
+                  }}
+                >
+                  Save pool
+                </Button>
+                <Button variant="ghost" onClick={() => setPoolEdit(null)}>Cancel</Button>
+              </>
+            )}
+          </div>
+        )}
       </div>
     );
   }
@@ -283,7 +363,14 @@ export function BudgetTab({ cube, customReports, layout, onLayoutChange, onCusto
         >
           ⤢ {SIZE_LABELS[resolved.sizeOf(id)]}
         </Button>
-        <Button variant="ghost" aria-label={`Hide ${title}`} onClick={() => onLayoutChange(toggleHidden(storedLayout, availableIds, id))}>
+        <Button
+          variant="ghost"
+          aria-label={`Hide ${title}`}
+          onClick={() => {
+            onLayoutChange(toggleHidden(storedLayout, availableIds, id));
+            setHiddenToast(id);
+          }}
+        >
           Hide
         </Button>
       </div>
@@ -335,10 +422,40 @@ export function BudgetTab({ cube, customReports, layout, onLayoutChange, onCusto
 
       <div className="sfin-budget-toolbar">
         {rangeChips}
-        <Button variant="ghost" onClick={() => setCustomizing((c) => !c)}>
-          {customizing ? 'Done customizing' : 'Customize'}
-        </Button>
+        <div className="sfin-toolbar-actions">
+          {customizing && layout !== null && onLayoutReset && (
+            <Button
+              variant="ghost"
+              onClick={() => {
+                if (!confirmReset) { setConfirmReset(true); return; }
+                setConfirmReset(false);
+                onLayoutReset();
+              }}
+            >
+              {confirmReset ? 'Really reset?' : 'Reset layout'}
+            </Button>
+          )}
+          <Button variant="ghost" onClick={() => { setCustomizing((c) => !c); setConfirmReset(false); }}>
+            {customizing ? 'Done customizing' : 'Customize'}
+          </Button>
+        </div>
       </div>
+
+      {hiddenToast !== null && (
+        <div className="sfin-toast" role="status">
+          <span>Hidden {reportTitle(hiddenToast, customReports)}</span>
+          <Button
+            variant="ghost"
+            aria-label="Undo hide"
+            onClick={() => {
+              onLayoutChange(toggleHidden(storedLayout, availableIds, hiddenToast));
+              setHiddenToast(null);
+            }}
+          >
+            Undo
+          </Button>
+        </div>
+      )}
 
       <div className="sfin-budget-grid">
         {gridIds.map((id) => card(id))}

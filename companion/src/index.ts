@@ -50,7 +50,7 @@ import { DEFAULT_GLYPH_STYLE, money } from '../../shared/telegram.js';
 import type { GlyphStyle, InlineKeyboard } from '../../shared/telegram.js';
 import type { DismissalLedger } from './dismissals.js';
 import type { SyncHealth } from '../../shared/telegram.js';
-import { SIMPLEFIN_SYNC_VERSION, COMPANION_VERSION_SECRET_KEY } from '../../shared/version.js';
+import { SIMPLEFIN_SYNC_VERSION, COMPANION_VERSION_SECRET_KEY, ADDON_VERSION_SECRET_KEY, isNewerVersion } from '../../shared/version.js';
 import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeCategorizedSpending, getNativeSpendingCategories, getNativeCategoryCatalog, getNativeSubcategorySpending, getNativeUncategorizedSpendingTotal, countRulePatternMatches, getNativeSpendMatrix, getNativeIncomeByMonthAccount, getNativeUncategorizedByMonthAccount, getNativeMerchantRows, getNativeFeesInterestByMonth, getNativeSpendDailyTotals, getNativeValuationByMonth, getNativeIncomeCategories } from './sqlite-native.js';
 import { publishUncategorizedStatusForDbPath } from './uncategorized-status.js';
 import { createCategorizeController, SPENDING_TAXONOMY_ID } from './categorize.js';
@@ -76,7 +76,7 @@ import type { CategoryBudgetSnapshot, BudgetPeriod, ParsedCommand, StatusReplyIn
 import { parsePoolArgs, POOL_USAGE_REPLY } from '../../shared/telegram-commands.js';
 import { SEMESTER_POOL_SECRET_KEY, parsePoolConfig } from '../../shared/pool.js';
 import { readPoolStatus, readRunwayMonths, type PoolReportDeps } from './pool-report.js';
-import { REPORT_CUBE_SECRET_KEY } from '../../shared/report-cube.js';
+import { REPORT_CUBE_SECRET_KEY, parseReportCube } from '../../shared/report-cube.js';
 import { buildReportCube, type CubeBuildDeps } from './report-cube-build.js';
 
 const logLevel: 'info' | 'debug' =
@@ -1460,6 +1460,12 @@ function cubeBuildDeps(wfClient: WealthfolioClient, dbPath: string): CubeBuildDe
     feesInterestByMonth: (s, e) => getNativeFeesInterestByMonth(dbPath, s, e),
     spendDaily: (s, e, excluded) => getNativeSpendDailyTotals(dbPath, s, e, excluded),
     valuationByMonth: (months) => getNativeValuationByMonth(dbPath, months),
+    // The digest's own readers, verbatim — the check's whole worth is that
+    // this path shares no aggregation code with the matrices above.
+    checkTotals: (s, e, excluded) => ({
+      spendByCategory: getNativeWealthfolioSpendingBetween(dbPath, s, e),
+      uncategorized: getNativeUncategorizedSpendingTotal(dbPath, s, e, excluded).total,
+    }),
   };
 }
 
@@ -1695,6 +1701,18 @@ export async function composeDailyDigestMessage(
     poolStatus,
   );
 
+  // A price creep is one line for a couple of mornings, then silence: the
+  // detector re-flags `creep` as long as the newest charge tops the typical
+  // price, but the NEWS is only news while the charge is fresh — repeating it
+  // daily until next month's charge would train the reader to skip it.
+  for (const sub of await readCubeSubscriptions(wfClient)) {
+    const daysSince = (now.getTime() - Date.parse(`${sub.lastDate}T00:00:00Z`)) / 86_400_000;
+    if (sub.creep && daysSince <= CREEP_FRESH_DAYS) {
+      message += `\n\n📈 ${sub.name} charged $${(sub.lastCents / 100).toFixed(2)}`
+        + ` — up from its usual $${(sub.monthlyCents / 100).toFixed(2)}.`;
+    }
+  }
+
   // Read so that an unreadable secret stays DISTINGUISHABLE from a missing
   // one: the self-check reports those differently, because "could not check"
   // must never render as a clean bill of health.
@@ -1731,6 +1749,10 @@ export async function composeDailyDigestMessage(
     firstFailedAt: health?.firstFailedAt ?? null,
     lastError: health?.lastError ?? null,
     healthUnreadable,
+    // Raw string secret, not JSON — written by the addon on load, absent on
+    // zips older than 1.34.0 (the self-check stays quiet on absence).
+    addonVersion: await wfClient.getAddonSecret('simplefin-sync', ADDON_VERSION_SECRET_KEY).catch(() => null),
+    companionVersion: SIMPLEFIN_SYNC_VERSION,
     unmappedAccountNames: unmapped
       .map((a) => a?.accountName || a?.sfinAccountId || '')
       .filter((n) => n !== ''),
@@ -1748,8 +1770,61 @@ export async function composeDailyDigestMessage(
     message += `\n\n${footer}`;
   }
 
+  // Armed only by daemon startup: the unit suite (and a compose driven from a
+  // broken install's /report) must never depend on GitHub being reachable.
+  // Guarded to silence, not allowed to throw — an API hiccup must never look
+  // like news, and must never cost the report it hangs off.
+  if (updateCheckDeps.armed) {
+    const latest = await updateCheckDeps.fetchLatestVersion().catch(() => null);
+    if (latest && isNewerVersion(latest, SIMPLEFIN_SYNC_VERSION)) {
+      message += `\n\n⬆ v${latest} is available — pull the image and grab the zip from the release page.`;
+    }
+  }
+
   return message;
 }
+
+/**
+ * The "update available" seam. `armed` stays false until `main()` flips it, so
+ * nothing outside the running daemon ever phones GitHub; the default fetcher
+ * caches for 6 hours because `/report` can be asked for repeatedly and the
+ * answer changes at most once a day.
+ */
+/** Days a crept charge still counts as news in the daily digest. */
+const CREEP_FRESH_DAYS = 3;
+
+/** The cube's detected subscriptions, or [] — a guarded addition that can
+ *  only cost itself, never the report it rides. */
+async function readCubeSubscriptions(
+  wfClient: WealthfolioClient,
+): Promise<NonNullable<ReturnType<typeof parseReportCube>>['subscriptions'] & object> {
+  const cube = parseReportCube(
+    await wfClient.getAddonSecret('simplefin-sync', REPORT_CUBE_SECRET_KEY).catch(() => null),
+  );
+  return cube?.subscriptions ?? [];
+}
+
+export const updateCheckDeps: {
+  armed: boolean;
+  fetchLatestVersion: () => Promise<string | null>;
+} = {
+  armed: false,
+  fetchLatestVersion: (() => {
+    let cache: { at: number; version: string | null } | null = null;
+    return async () => {
+      if (cache && Date.now() - cache.at < 6 * 3_600_000) return cache.version;
+      const res = await fetch(
+        'https://api.github.com/repos/Bubbles840/wealthfolio-simplefin-addon/releases/latest',
+        { headers: { accept: 'application/vnd.github+json' }, signal: AbortSignal.timeout(5000) },
+      );
+      if (!res.ok) return null;
+      const tag = String(((await res.json()) as { tag_name?: unknown })?.tag_name ?? '');
+      const version = tag.startsWith('v') ? tag.slice(1) : tag;
+      cache = { at: Date.now(), version: version || null };
+      return cache.version;
+    };
+  })(),
+};
 
 /** Delays between retry attempts for a scheduled (daily/weekly/monthly) report
  *  send. These reports fire once per period with no next attempt until the
@@ -1887,7 +1962,7 @@ export async function sendWeeklyTelegramReport(
   const poolDeps = poolReportDeps(wfClient, dbPath);
   const poolStatus = await readPoolStatus(poolDeps, now).catch(() => null);
   const runwayMonths = await readRunwayMonths(poolDeps, now);
-  const message = formatMonthlyRemainingSummary(
+  let message = formatMonthlyRemainingSummary(
     totalSpent,
     totalBudget,
     topSpends.map((t) => ({ amount: t.amount, description: t.description, category: t.categoryName })),
@@ -1895,6 +1970,13 @@ export async function sendWeeklyTelegramReport(
     poolStatus,
     runwayMonths,
   );
+  // One line, monthly total only: the weekly answers "what does recurring
+  // life cost", the Budget tab's Subscriptions card holds the roster.
+  const subs = await readCubeSubscriptions(wfClient);
+  if (subs.length > 0) {
+    const totalCents = subs.reduce((sum, sub) => sum + sub.monthlyCents, 0);
+    message += `\n\n*Subscriptions* — $${(totalCents / 100).toFixed(2)}/mo across ${subs.length}`;
+  }
   await sendReportWithRetry(
     tg.botToken, tg.chatId, message,
     'weekly', 'Weekly Telegram total-remaining summary sent successfully.', sleep,
@@ -2910,6 +2992,8 @@ if (!process.env.VITEST) {
     log(`ERROR: Wealthfolio database not found at ${wealthfolioDbPath()} — reports will be empty until it appears. Check the volume mount and WEALTHFOLIO_DB_PATH.`);
   }
   log(`Starting companion v${SIMPLEFIN_SYNC_VERSION} — sync schedule: ${schedule}, daily report schedule: ${dailySchedule}, weekly report schedule: ${weeklySchedule}, monthly report schedule: ${monthlySchedule}`);
+  // Only the running daemon checks for updates; see updateCheckDeps.
+  updateCheckDeps.armed = true;
 
   cron.schedule(schedule, () => {
     // Exclusive: `/sync` (Task 6) can fire in between two schedule ticks, and

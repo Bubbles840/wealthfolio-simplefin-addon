@@ -252,6 +252,12 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
     setBudgetLayoutState(next);
     store.setBudgetLayout?.(next)?.catch(() => {});
   }, [store]);
+  const onBudgetLayoutReset = useCallback(() => {
+    setBudgetLayoutState(null);
+    // Optional-called like every store method added after 1.0: an older
+    // SecretsStore simply has no stored layout worth deleting.
+    store.clearBudgetLayout?.()?.catch(() => {});
+  }, [store]);
   const onCustomReportsChange = useCallback((next: Awaited<ReturnType<SecretsStore['getCustomReports']>>) => {
     setCustomReportsState(next);
     store.setCustomReports?.(next)?.catch(() => {});
@@ -580,6 +586,7 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
           customReports={customReports}
           layout={budgetLayout}
           onLayoutChange={onBudgetLayoutChange}
+          onLayoutReset={onBudgetLayoutReset}
           onCustomReportsChange={onCustomReportsChange}
           store={store}
         />
