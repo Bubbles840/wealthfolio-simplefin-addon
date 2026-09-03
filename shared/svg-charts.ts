@@ -89,8 +89,8 @@ function xLabels(frame: Frame, labels: string[], xAt: (i: number) => number): st
 }
 
 /** Colored chip + name per series, along the top: photos have no hover. */
-function legendRow(frame: Frame, series: ChartSeries[]): string {
-  if (series.length < 2) return '';
+function legendRow(frame: Frame, series: ChartSeries[], always = false): string {
+  if (series.length < 2 && !always) return '';
   let x = frame.pad.l;
   let out = '';
   for (const s of series) {
@@ -109,6 +109,9 @@ const fmtLast = (v: number) => {
 
 export function svgLineChart(opts: {
   width: number; height: number; labels: string[]; series: ChartSeries[];
+  /** 'always' shows the legend even for one series — custom reports carry
+   *  their label here, standard cards carry it in the card title. */
+  legend?: 'auto' | 'always';
 }): string {
   const frame: Frame = { width: opts.width, height: opts.height, pad: { l: 46, r: 58, t: 24, b: 26 } };
   const { min, max } = bounds(opts.series);
@@ -116,7 +119,7 @@ export function svgLineChart(opts: {
   const innerW = frame.width - frame.pad.l - frame.pad.r;
   const xAt = (i: number) => frame.pad.l + (opts.labels.length <= 1 ? innerW / 2 : (innerW * i) / (opts.labels.length - 1));
 
-  let body = gridAndTicks(frame, min, max) + legendRow(frame, opts.series);
+  let body = gridAndTicks(frame, min, max) + legendRow(frame, opts.series, opts.legend === 'always');
   for (const s of opts.series) {
     // Split on nulls: runs of ≥2 points become polylines, lone points circles.
     const runs: Array<Array<[number, number]>> = [[]];
@@ -156,6 +159,7 @@ export function svgLineChart(opts: {
 
 export function svgBarChart(opts: {
   width: number; height: number; labels: string[]; series: ChartSeries[];
+  legend?: 'auto' | 'always';
 }): string {
   const frame: Frame = { width: opts.width, height: opts.height, pad: { l: 46, r: 12, t: 24, b: 26 } };
   const { min, max } = bounds(opts.series);
@@ -164,7 +168,7 @@ export function svgBarChart(opts: {
   const groupW = innerW / Math.max(1, opts.labels.length);
   const barW = Math.max(2, (groupW * 0.7) / Math.max(1, opts.series.length));
 
-  let body = gridAndTicks(frame, min, max) + legendRow(frame, opts.series);
+  let body = gridAndTicks(frame, min, max) + legendRow(frame, opts.series, opts.legend === 'always');
   const zero = y(Math.max(0, min));
   opts.labels.forEach((_, i) => {
     opts.series.forEach((s, si) => {
@@ -193,6 +197,12 @@ export function svgDonut(opts: {
   const rOut = frame.height / 2 - 14;
   const rIn = rOut * 0.62;
 
+  // Ring + legend measured as ONE group and centered — the ring alone hugged
+  // the left edge on wide canvases (live, 2026-09-03).
+  const legendW = Math.min(200, 24 + Math.max(0, ...opts.slices.slice(0, 8).map((sl) => sl.name.length)) * 7);
+  const groupW = frame.height + 8 + legendW;
+  const dx = Math.max(0, (frame.width - groupW) / 2);
+
   let angle = -Math.PI / 2;
   let body = '';
   for (const slice of opts.slices) {
@@ -213,5 +223,5 @@ export function svgDonut(opts: {
     body += `<rect x="${lx}" y="${ly - 9}" width="10" height="10" rx="2" fill="${slice.color}"/>`
       + `<text x="${lx + 16}" y="${ly}" font-size="12" fill="#cdd5d1" ${FONT}>${esc(slice.name)}</text>`;
   });
-  return open(frame) + body + '</svg>';
+  return open(frame) + `<g transform="translate(${Math.round(dx * 10) / 10} 0)">` + body + '</g></svg>';
 }

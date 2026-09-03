@@ -21,9 +21,17 @@ const deps = (over: Partial<ReportsServerDeps> = {}): ReportsServerDeps => ({
   botToken: vi.fn(async () => TOKEN),
   allowedUserIds: vi.fn(async () => [777]),
   readCube: vi.fn(async () => ({ ...CUBE })),
+  readLayout: vi.fn(async () => null),
+  writeLayout: vi.fn(async () => {}),
+  readCustomReports: vi.fn(async () => []),
+  readHiddenSubscriptions: vi.fn(async () => []),
+  readConfirmedSubscriptions: vi.fn(async () => []),
   now: () => NOW,
   ...over,
 });
+
+const pageBody = (extra: Record<string, string> = {}) =>
+  new URLSearchParams({ initData: signedInitData(777), range: '6', ...extra }).toString();
 
 describe('handleReportsRequest', () => {
   it('serves the bootstrap page that hands Telegram initData to /page', async () => {
@@ -67,5 +75,63 @@ describe('handleReportsRequest', () => {
   it('404s anything else', async () => {
     const res = await handleReportsRequest(deps(), { method: 'GET', path: '/etc/passwd', body: '' });
     expect(res.status).toBe(404);
+  });
+});
+
+describe('the board on the phone (v1.46)', () => {
+  it('renders the user\'s board order and skips hidden cards', async () => {
+    const d = deps({
+      readLayout: vi.fn(async () => ({ heroes: [], order: [], hidden: ['cash-flow'] })),
+    });
+    const res = await handleReportsRequest(d, { method: 'POST', path: '/page', body: pageBody() });
+    expect(res.body).not.toContain('>Cash flow<');
+    expect(res.body).toContain('Net worth');
+  });
+
+  it('renders custom reports as charts of their evaluated series', async () => {
+    const d = deps({
+      readCustomReports: vi.fn(async () => [{
+        id: 'cr-1', name: 'Food money', chart: 'line', range: { kind: 'all' }, accounts: null,
+        series: [{ label: 'Food', terms: [{ sign: 1, source: 'category', category: 'Dining' }] }],
+      }] as never),
+    });
+    const res = await handleReportsRequest(d, { method: 'POST', path: '/page', body: pageBody() });
+    expect(res.body).toContain('Food money');
+  });
+
+  it('renders merchants and subscriptions as readable rows', async () => {
+    const d = deps({
+      readCube: vi.fn(async () => ({ ...CUBE, subscriptions: [
+        { name: 'SPOTIFY', monthlyCents: 1099, count: 5, lastDate: '2026-08-20', lastCents: 1099, creep: false, kind: 'subscription' },
+      ] } as never)),
+    });
+    const res = await handleReportsRequest(d, { method: 'POST', path: '/page', body: pageBody() });
+    expect(res.body).toContain('CHIPOTLE');
+    expect(res.body).toContain('SPOTIFY');
+    expect(res.body).toContain('$10.99');
+  });
+
+  it('honors the headline picks for the tile strip', async () => {
+    const d = deps({
+      readLayout: vi.fn(async () => ({ heroes: [], order: [], hidden: [], headline: ['net-worth'] })),
+    });
+    const res = await handleReportsRequest(d, { method: 'POST', path: '/page', body: pageBody() });
+    expect(res.body).toContain('Net worth');
+    expect(res.body).not.toContain('Savings rate</span>');
+  });
+
+  it('card controls write the shared layout: hide, then it is gone', async () => {
+    const writeLayout = vi.fn(async () => {});
+    const d = deps({ writeLayout });
+    const res = await handleReportsRequest(d, { method: 'POST', path: '/page', body: pageBody({ action: 'hide:net-worth' }) });
+    expect(writeLayout).toHaveBeenCalled();
+    const written = writeLayout.mock.calls[0][0] as { hidden: string[] };
+    expect(written.hidden).toContain('net-worth');
+  });
+
+  it('every card carries move and hide controls', async () => {
+    const res = await handleReportsRequest(deps(), { method: 'POST', path: '/page', body: pageBody() });
+    expect(res.body).toContain('data-action="up:net-worth"');
+    expect(res.body).toContain('data-action="hide:net-worth"');
   });
 });

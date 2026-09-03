@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.46.0] - 2026-09-03
+
+### Changed
+
+- **The phone dashboard is YOUR board now.** It renders the same arrangement
+  as the Budget tab — your order, your hidden set, your headline picks, your
+  per-card range pins — including merchants, subscriptions, the data check,
+  and your **custom reports** (evaluated server-side; donut/bars/line/table
+  all render). Cards the phone can't translate well (seasonality, calendars)
+  stay desktop-only.
+- **Organize from the phone**: every card carries ▲ ▼ ✕ controls and hidden
+  cards get an unhide row — edits write the same layout secret the Budget
+  tab uses, so phone and desktop always agree. (Building new tiles stays in
+  the desktop builder; anything you build there appears here.)
+
+### Fixed
+
+- The "Where it went" donut hugged the left edge with its legend adrift —
+  ring and legend now center as one group.
+
 ## [1.45.1] - 2026-09-03
 
 ### Fixed

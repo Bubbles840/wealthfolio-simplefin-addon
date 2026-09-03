@@ -13,6 +13,7 @@ import {
 import type { ReportCube } from './report-cube.js';
 import { headlineStatValues } from './report-data.js';
 import { svgBarChart, svgDonut, svgLineChart } from './svg-charts.js';
+import { evaluateCustomReport, type CustomReport } from './report-eval.js';
 
 /** The sage register, as the Budget tab draws it. */
 const C = ['#5e9483', '#3e6f63', '#c9a86b', '#c17a63', '#7189a8', '#8aa864', '#9a7aa0', '#6b7f8f'];
@@ -147,4 +148,39 @@ export function reportImageCaption(cube: ReportCube, id: string): string {
     default:
       return title;
   }
+}
+
+/**
+ * A user-built custom report as an SVG — the mini app's version of the
+ * builder's output. Table-charted reports return null; the caller renders
+ * those as HTML rows instead.
+ */
+export function renderCustomReportSvg(
+  cube: ReportCube,
+  def: CustomReport,
+  size: { width: number; height: number },
+): string | null {
+  if (def.chart === 'table') return null;
+  const out = evaluateCustomReport(cube, def);
+  const labels = out.months.map((m) => String(m).slice(2));
+  const series = out.series.map((sr, i) => ({
+    name: sr.label,
+    color: C[i % C.length],
+    values: sr.values.map((v) => (typeof v === 'number' ? v / 100 : null)),
+  }));
+  if (def.chart === 'donut') {
+    // A donut of each series' latest value — the closest still-true reading.
+    return svgDonut({
+      ...size,
+      slices: series.map((sr) => ({
+        name: sr.name,
+        value: Math.max(0, sr.values.filter((v): v is number => v !== null).at(-1) ?? 0),
+        color: sr.color,
+      })),
+    });
+  }
+  if (def.chart === 'bars' || def.chart === 'stacked') {
+    return svgBarChart({ ...size, labels, series, legend: 'always' });
+  }
+  return svgLineChart({ ...size, labels, series, legend: 'always' });
 }
