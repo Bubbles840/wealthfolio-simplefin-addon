@@ -50,6 +50,7 @@ const STALE_MS = 2 * 24 * 60 * 60 * 1000;
 
 type Range = number | 'all' | 'pool';
 const RANGES: Array<{ label: string; value: Range }> = [
+  { label: 'Month', value: 1 },
   { label: '3 months', value: 3 },
   { label: '6 months', value: 6 },
   { label: '12 months', value: 12 },

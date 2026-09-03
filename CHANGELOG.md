@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.40.0] - 2026-09-02
+
+### Changed
+
+- **Budget-vs-actual bars finally fill.** Every bar was scaled by the biggest
+  row's budget, so a $174 overspend of a $100 budget rendered as a sliver
+  next to Housing's $1,550. Bars now scale to their own row: overspending
+  fills the whole bar in the warning color with a tick where the budget sat.
+- **The card follows the range control.** Budget-vs-actual shows the monthly
+  average across the selected window (labeled), and a **Month** chip joins
+  3/6/12/All at the top for the single-month view.
+- "Month vs last" is titled **"This month vs last"**.
+
 ## [1.39.0] - 2026-09-02
 
 ### Changed
