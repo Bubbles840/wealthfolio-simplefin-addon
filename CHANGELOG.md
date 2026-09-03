@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.44.1] - 2026-09-03
+
+### Changed
+
+- The mobile-reports command is **/charts** (the ☰ menu entry too) — one
+  letter away from `/report`, the daily digest, was one confusion too many.
+  `/reports` keeps working as a silent alias.
+
 ## [1.44.0] - 2026-09-03
 
 ### Added

@@ -4342,7 +4342,8 @@ describe('/reports command (v1.44)', () => {
       } as any;
       const sent: Array<{ text: string; keyboard?: any }> = [];
       await buildTelegramCommandHandler(client)(
-        { command: 'reports', args: '' },
+        // '/charts' is the advertised name; '/reports' stays a silent alias.
+        { command: 'charts', args: '' },
         async (text: string, keyboard?: any) => { sent.push({ text, keyboard }); },
       );
       return sent;

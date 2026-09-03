@@ -1022,7 +1022,7 @@ describe('startTelegramListener — report images and mini app users (v1.44)', (
       .mockResolvedValueOnce(apiOkResponse())
       .mockResolvedValueOnce(updatesResponse([{
         update_id: 32,
-        message: { chat: { id: Number(CHAT_ID) }, from: { id: 777 }, text: '/reports' },
+        message: { chat: { id: Number(CHAT_ID) }, from: { id: 777 }, text: '/charts' },
       }]))
       .mockResolvedValue(updatesResponse([]));
 

@@ -2530,6 +2530,9 @@ export function buildTelegramCommandHandler(
 
   return async (cmd, reply) => {
     switch (cmd.command) {
+      // '/charts' is the advertised name; '/reports' survives as a silent
+      // alias because it shipped first and muscle memory is cheap to honor.
+      case 'charts':
       case 'reports': {
         // ONE command for the whole mobile surface: a tap-through chart menu,
         // led by the mini-app dashboard when its t.me link is configured

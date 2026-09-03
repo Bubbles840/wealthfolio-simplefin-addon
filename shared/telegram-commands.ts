@@ -43,7 +43,7 @@ export function parseCommand(text: string | null | undefined, botName?: string):
 /** Registered via setMyCommands so Telegram's ☰ menu lists them. Order is display order. */
 export const TELEGRAM_COMMAND_MENU = [
   { command: 'report', description: "Today's spending digest, fresh from the database" },
-  { command: 'reports', description: 'Charts on your phone — tap-through menu + the dashboard' },
+  { command: 'charts', description: 'Charts on your phone — tap-through menu + the dashboard' },
   { command: 'left', description: "What's left per category — /left groceries narrows it" },
   { command: 'afford', description: 'Can I afford it? — /afford 20 shopping' },
   { command: 'pool', description: 'Semester money pool — /pool 16000 Dec 12' },
