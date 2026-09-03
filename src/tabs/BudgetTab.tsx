@@ -175,6 +175,9 @@ export function BudgetTab({
     onConfirmSubscription: onConfirmedSubscriptionsChange
       ? (name: string) => onConfirmedSubscriptionsChange([...confirmedSubscriptions.filter((n) => n !== name), name])
       : undefined,
+    onUnhideSubscription: onHiddenSubscriptionsChange
+      ? (name: string) => onHiddenSubscriptionsChange(hiddenSubscriptions.filter((n) => n !== name))
+      : undefined,
     onRestoreSubscriptions: onHiddenSubscriptionsChange
       ? () => onHiddenSubscriptionsChange([])
       : undefined,
@@ -506,7 +509,12 @@ export function BudgetTab({
       role="button"
       tabIndex={0}
       aria-label={`Open ${reportTitle(id, customReports)}`}
-      onClick={() => setFullId(id)}
+      // A card can carry its own buttons now (the subscription answers);
+      // those taps must not ALSO drill in.
+      onClick={(e) => {
+        if ((e.target as HTMLElement).closest('button')) return;
+        setFullId(id);
+      }}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setFullId(id); }
       }}

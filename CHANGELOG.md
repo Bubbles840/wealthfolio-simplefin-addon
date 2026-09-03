@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.38.0] - 2026-09-02
+
+### Added
+
+- **Undo a dismissal one at a time.** The open Subscriptions view lists what
+  you've dismissed, each with its own ↩ Restore — an accidental ✕ is one tap
+  back. (The card keeps the restore-all link.)
+- **Watch a merchant.** The open view offers this month's merchants with a
+  + Watch button: one charge so far, or something you know recurs — watching
+  treats it as a confirmed subscription immediately ("$20.00/mo · watching"),
+  counted in the total, with the detector taking over as charges accumulate.
+
+### Fixed
+
+- Tapping a button INSIDE a card (a subscription's ✓/✕) no longer also opens
+  that card full-screen.
+
 ## [1.37.0] - 2026-09-02
 
 ### Changed

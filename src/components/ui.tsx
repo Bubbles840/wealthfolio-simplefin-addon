@@ -679,6 +679,8 @@ body {
 .sfin-subs-total { margin-top: 4px; padding-top: 6px; border-top: 1px solid var(--border); font-weight: 600; }
 .sfin-subs-maybe-head { margin-top: 6px; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted-foreground); }
 .sfin-subs-maybe-head ~ .sfin-subs-row { opacity: .75; }
+.sfin-subs-row--muted { opacity: .75; }
+.sfin-subs-answer { border: none; background: transparent; color: #5e9483; cursor: pointer; font-size: 12px; white-space: nowrap; }
 /* Drag feedback: the picked-up card lifts and fades while every other card
    GLIDES to make room (the FLIP effect in BudgetTab animates their rects). */
 .sfin-cell--editing { cursor: grab; touch-action: none; }
