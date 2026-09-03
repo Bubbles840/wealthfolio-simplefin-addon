@@ -121,7 +121,7 @@ export async function handleReportsRequest(
     if (!allowed.includes(auth.userId)) {
       // Deliberately instructive: the allowlist is built by using /reports
       // once in the chat, so the fix is one message away.
-      return { status: 403, contentType: 'text/plain', body: 'Not authorized — send /reports to the bot once, then reopen.' };
+      return { status: 403, contentType: 'text/plain', body: 'Not authorized — send /charts to the bot once, then reopen.' };
     }
     const cube = await deps.readCube();
     const range = params.get('range') ?? '6';

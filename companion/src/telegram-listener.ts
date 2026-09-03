@@ -292,7 +292,7 @@ export function startTelegramListener(deps: TelegramListenerDeps): { stop: () =>
     // The mini app's allowlist is "has used /reports in the configured chat":
     // recorded BEFORE the handler runs, so the button it replies with works
     // on the very first try.
-    if (parsed.command === 'reports' && typeof message?.from?.id === 'number') {
+    if ((parsed.command === 'charts' || parsed.command === 'reports') && typeof message?.from?.id === 'number') {
       await deps.recordMiniappUser?.(message.from.id).catch(
         (err: unknown) => safeLog(`Telegram listener: recording mini-app user failed: ${formatError(err)}`),
       );
