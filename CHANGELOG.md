@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.41.1] - 2026-09-02
+
+### Fixed
+
+- The drag ghost's chart no longer balloons past the tile: every rule that
+  cages a chart inside its cell (overflow, container sizing, chart
+  min-height, the fade mask) was scoped to grid cells only, and the floating
+  ghost lives outside the grid. The same cage now applies to the ghost, so
+  the card you drag looks exactly like the card you grabbed.
+
 ## [1.41.0] - 2026-09-02
 
 ### Changed
