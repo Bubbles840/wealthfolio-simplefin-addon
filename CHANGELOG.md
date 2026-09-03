@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.36.0] - 2026-09-02
+
+### Changed
+
+- **The dragged card rides your cursor.** Picking up a card lifts the card
+  itself into a floating ghost that follows the pointer; its grid cell stays
+  behind as a dashed landing slot that reorders live — the slot IS the
+  "here's where it will drop" indicator, and the other cards keep gliding out
+  of the way.
+- **Recurring detection now has tiers.** *Subscriptions* (stable monthly
+  price) as before; *bills* — a monthly merchant whose amount varies, like
+  gas & electric, shown as "~$120/mo · varies" with no price-creep nagging;
+  *known brands* (Netflix, Spotify, Claude/Anthropic, Adobe, …) count with
+  just two charges, so a subscription started six weeks ago no longer hides
+  for a month; and a **"Possibly recurring"** section surfaces two-charge
+  maybes so you can see what's on the bubble — dismissible like everything
+  else, and never counted in the money total or the weekly line.
+
 ## [1.35.0] - 2026-09-02
 
 ### Changed

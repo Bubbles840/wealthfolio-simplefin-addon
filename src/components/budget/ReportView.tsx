@@ -295,38 +295,51 @@ function Subscriptions({ cube, hidden = [], onHide, onRestore }: {
   // Dismissals filter HERE, not in the cube: the companion keeps publishing
   // the full detection, so a restore takes effect without waiting for a sync.
   const hiddenSet = new Set(hidden);
-  const subs = res.subs.filter((sub) => !hiddenSet.has(sub.name));
-  const hiddenCount = res.subs.length - subs.length;
-  if (subs.length === 0 && hiddenCount === 0) {
-    return <div className="sfin-subtle">No monthly subscriptions detected — three charges on a monthly cadence would show here.</div>;
+  const visible = res.subs.filter((sub) => !hiddenSet.has(sub.name));
+  const hiddenCount = res.subs.length - visible.length;
+  if (visible.length === 0 && hiddenCount === 0) {
+    return <div className="sfin-subtle">No monthly subscriptions detected — recurring monthly charges would show here.</div>;
   }
-  const totalCents = subs.reduce((sum, sub) => sum + sub.monthlyCents, 0);
+  // A missing kind is an older companion's row — a subscription, per the old
+  // detector's only meaning.
+  const sure = visible.filter((sub) => (sub.kind ?? 'subscription') !== 'possible');
+  const maybes = visible.filter((sub) => sub.kind === 'possible');
+  const totalCents = sure.reduce((sum, sub) => sum + sub.monthlyCents, 0);
+  const row = (sub: (typeof visible)[number]) => (
+    <div key={sub.name} className="sfin-subs-row">
+      <span className="sfin-subs-name">{sub.name}</span>
+      <span className="sfin-subs-price">
+        {sub.creep ? (
+          <span className="sfin-subs-creep">{fmt2(sub.lastCents / 100)} ▲ was {fmt2(sub.monthlyCents / 100)}</span>
+        ) : sub.kind === 'bill' ? (
+          <>~{fmt2(sub.monthlyCents / 100)}/mo · varies</>
+        ) : (
+          <>{fmt2(sub.monthlyCents / 100)}/mo</>
+        )}
+      </span>
+      {onHide && (
+        <button
+          type="button"
+          className="sfin-subs-dismiss"
+          aria-label={`Dismiss ${sub.name}`}
+          title="Not a subscription / cancelled"
+          onClick={() => onHide(sub.name)}
+        >
+          ✕
+        </button>
+      )}
+    </div>
+  );
   return (
     <div className="sfin-subs">
-      {subs.map((sub) => (
-        <div key={sub.name} className="sfin-subs-row">
-          <span className="sfin-subs-name">{sub.name}</span>
-          <span className="sfin-subs-price">
-            {sub.creep ? (
-              <span className="sfin-subs-creep">{fmt2(sub.lastCents / 100)} ▲ was {fmt2(sub.monthlyCents / 100)}</span>
-            ) : (
-              <>{fmt2(sub.monthlyCents / 100)}/mo</>
-            )}
-          </span>
-          {onHide && (
-            <button
-              type="button"
-              className="sfin-subs-dismiss"
-              aria-label={`Dismiss ${sub.name}`}
-              title="Not a subscription / cancelled"
-              onClick={() => onHide(sub.name)}
-            >
-              ✕
-            </button>
-          )}
-        </div>
-      ))}
-      <div className="sfin-subs-total">{fmt2(totalCents / 100)}/mo across {subs.length}</div>
+      {sure.map(row)}
+      <div className="sfin-subs-total">{fmt2(totalCents / 100)}/mo across {sure.length}</div>
+      {maybes.length > 0 && (
+        <>
+          <div className="sfin-subs-maybe-head">Possibly recurring</div>
+          {maybes.map(row)}
+        </>
+      )}
       {hiddenCount > 0 && onRestore && (
         <button type="button" className="sfin-subs-restore" onClick={onRestore}>
           {hiddenCount} dismissed — restore

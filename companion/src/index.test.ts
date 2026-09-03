@@ -4266,10 +4266,12 @@ describe('subscriptions in the reports', () => {
   };
   const daysAgoDate = (d: number) => new Date(Date.now() - d * 86_400_000).toISOString().slice(0, 10);
 
-  it('weekly check-in totals the detected subscriptions', async () => {
+  it('weekly check-in totals the detected subscriptions, maybes excluded', async () => {
     const client = clientWith([['report_cube', cubeWith([
       { name: 'ADOBE', monthlyCents: 5499, count: 4, lastDate: daysAgoDate(3), lastCents: 5499, creep: false },
       { name: 'SPOTIFY', monthlyCents: 1099, count: 5, lastDate: daysAgoDate(10), lastCents: 1099, creep: false },
+      // On-the-bubble detections are for the card, never for the money total.
+      { name: 'MYSTERY BOX', monthlyCents: 9900, count: 2, lastDate: daysAgoDate(4), lastCents: 9900, creep: false, kind: 'possible' },
     ])]]);
     const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
     vi.stubGlobal('fetch', fetchMock);
