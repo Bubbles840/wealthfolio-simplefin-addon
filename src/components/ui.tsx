@@ -558,9 +558,9 @@ body {
   .sfin-budget-grid > .sfin-cell { grid-column: 1; grid-row: auto / span var(--sfin-r, 2); }
   .sfin-page { padding: 14px; }
 }
-.sfin-budget-grid .sfin-cell { position: relative; overflow: hidden; }
-.sfin-budget-grid .sfin-report-body .sfin-chart { min-height: 0; }
-.sfin-budget-grid .sfin-report-card { overflow: hidden; }
+.sfin-budget-grid .sfin-cell, .sfin-drag-ghost { position: relative; overflow: hidden; }
+.sfin-budget-grid .sfin-report-body .sfin-chart, .sfin-drag-ghost .sfin-report-body .sfin-chart { min-height: 0; }
+.sfin-budget-grid .sfin-report-card, .sfin-drag-ghost .sfin-report-card { overflow: hidden; }
 .sfin-cell--editing .sfin-report-card { border-style: dashed; }
 .sfin-card-tools {
   position: absolute; top: 6px; right: 6px; z-index: 2;
@@ -613,8 +613,8 @@ body {
    out at the bottom edge, so nothing ever looks torn off mid-row. The
    list-reports also budget their ROW COUNT from the card's span (see
    ReportView's density prop) — this is the typographic half. */
-.sfin-budget-grid .sfin-cell { container-type: size; }
-.sfin-budget-grid .sfin-report-body {
+.sfin-budget-grid .sfin-cell, .sfin-drag-ghost { container-type: size; }
+.sfin-budget-grid .sfin-report-body, .sfin-drag-ghost .sfin-report-body {
   overflow: hidden;
   -webkit-mask-image: linear-gradient(#000 88%, transparent);
   mask-image: linear-gradient(#000 88%, transparent);
@@ -710,6 +710,7 @@ body {
 .sfin-drag-ghost {
   position: fixed; z-index: 60; pointer-events: none;
   opacity: .92; will-change: transform;
+  border-radius: 14px;
   filter: drop-shadow(0 18px 36px rgba(0, 0, 0, .35));
 }
 .sfin-drag-ghost .sfin-report-card { height: 100%; }
