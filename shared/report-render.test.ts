@@ -35,3 +35,25 @@ describe('renderReportSvg', () => {
     expect(renderReportSvg(CUBE, 'headline-stats', { width: 600, height: 340 })).toBeNull();
   });
 });
+
+describe('legends and captions (v1.45)', () => {
+  it('multi-series charts carry a legend naming each series', () => {
+    const svg = renderReportSvg(CUBE, 'cash-flow', { width: 600, height: 340 })!;
+    expect(svg).toContain('income');
+    expect(svg).toContain('spending');
+  });
+
+  it('line charts annotate the newest value so no hover is needed', () => {
+    const svg = renderReportSvg(CUBE, 'net-worth', { width: 600, height: 340 })!;
+    expect(svg).toContain('9,000'); // July's latest known net worth, printed at the line end
+  });
+
+  it('every report has a caption carrying the key latest numbers', async () => {
+    const { reportImageCaption } = await import('./report-render.js');
+    expect(reportImageCaption(CUBE, 'cash-flow')).toContain('$47');
+    expect(reportImageCaption(CUBE, 'net-worth')).toContain('$9,000');
+    for (const id of RENDERABLE_REPORT_IDS) {
+      expect(reportImageCaption(CUBE, id).length).toBeGreaterThan(0);
+    }
+  });
+});
