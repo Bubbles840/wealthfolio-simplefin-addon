@@ -387,18 +387,21 @@ describe('second wave on the grid', () => {
     fireEvent.click(screen.getByRole('button', { name: /^customize$/i }));
 
     const handle = screen.getByLabelText(/drag to resize merchants/i);
-    // Pointer CAPTURE keeps move/up flowing to the handle itself.
-    fireEvent.pointerDown(handle, { pointerId: 1, clientX: 100, clientY: 100 });
-    fireEvent.pointerMove(handle, { pointerId: 1, clientX: 430, clientY: 285 });
-    fireEvent.pointerUp(handle, { pointerId: 1, clientX: 430, clientY: 285 });
+    // Pointer CAPTURE keeps move/up flowing to the handle itself. Fine units
+    // since v1.35: fallback column unit 110px, row unit 43px — this drag is
+    // "super thin and tall": 2 units left, 4 units down from the m default
+    // of [4, 8].
+    fireEvent.pointerDown(handle, { pointerId: 1, clientX: 400, clientY: 100 });
+    fireEvent.pointerMove(handle, { pointerId: 1, clientX: 180, clientY: 272 });
+    fireEvent.pointerUp(handle, { pointerId: 1, clientX: 180, clientY: 272 });
 
     await waitFor(() => {
       const saved = (props.store as any).setBudgetLayout.mock.calls.at(-1)?.[0];
-      expect(saved?.span?.merchants).toEqual([2, 3]);
+      expect(saved?.span2?.merchants).toEqual([2, 12]);
     });
     const cell = document.querySelector('[data-report-id="merchants"]')!.closest('.sfin-cell') as HTMLElement;
     expect(cell.style.getPropertyValue('--sfin-c')).toBe('2');
-    expect(cell.style.getPropertyValue('--sfin-r')).toBe('3');
+    expect(cell.style.getPropertyValue('--sfin-r')).toBe('12');
   });
 
   it('dragging a card body moves it before the card it is dropped on', async () => {
@@ -516,5 +519,28 @@ describe('layout reset, hide undo, pool editing', () => {
       amountCents: 200_000, startDate: '2026-07-01', endDate: '2026-12-15',
     });
     expect(screen.getByText(/next sync/i)).toBeInTheDocument();
+  });
+});
+
+describe('subscription dismissals end to end', () => {
+  it('dismissing on the card persists the name and drops the row', async () => {
+    const props = makeProps();
+    (props.store as any).getReportCube = vi.fn(async () => ({
+      ...CUBE,
+      asOf: new Date().toISOString(),
+      subscriptions: [
+        { name: 'SPOTIFY', monthlyCents: 1099, count: 5, lastDate: '2026-08-20', lastCents: 1099, creep: false },
+        { name: 'QR LIBRARY', monthlyCents: 999, count: 4, lastDate: '2026-08-22', lastCents: 999, creep: false },
+      ],
+    }));
+    (props.store as any).getHiddenSubscriptions = vi.fn(async () => []);
+    (props.store as any).setHiddenSubscriptions = vi.fn(async () => {});
+    render(<SyncPage {...props} />);
+    await waitFor(() => expect(reportIds().length).toBeGreaterThan(0));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss QR LIBRARY' }));
+    expect((props.store as any).setHiddenSubscriptions).toHaveBeenCalledWith(['QR LIBRARY']);
+    await waitFor(() => expect(screen.queryByText('QR LIBRARY')).toBeNull());
+    expect(screen.getByText('SPOTIFY')).toBeInTheDocument();
   });
 });

@@ -4279,6 +4279,26 @@ describe('subscriptions in the reports', () => {
     expect(text).toContain('$65.98/mo across 2');
   });
 
+  it('a dismissed subscription is absent from the weekly total and the creep line', async () => {
+    // "I've canceled already" — dismissing on the card writes the secret, and
+    // every Telegram mention must honor it without waiting for a sync.
+    const daysAgo = (d: number) => new Date(Date.now() - d * 86_400_000).toISOString().slice(0, 10);
+    const client = clientWith([
+      ['report_cube', cubeWith([
+        { name: 'ADOBE', monthlyCents: 5499, count: 4, lastDate: daysAgo(3), lastCents: 5499, creep: false },
+        { name: 'QR LIBRARY', monthlyCents: 999, count: 4, lastDate: daysAgo(2), lastCents: 1099, creep: true },
+      ])],
+      ['hidden_subscriptions', JSON.stringify(['QR LIBRARY'])],
+    ]);
+    const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+    vi.stubGlobal('fetch', fetchMock);
+    await sendWeeklyTelegramReport(client);
+    const weekly = JSON.parse((fetchMock.mock.calls[0][1] as any).body).text;
+    expect(weekly).toContain('$54.99/mo across 1');
+    const daily = await composeDailyDigestMessage(client);
+    expect(daily).not.toContain('QR LIBRARY');
+  });
+
   it('daily digest flags a fresh price creep, once it is stale it stops', async () => {
     const fresh = clientWith([['report_cube', cubeWith([
       { name: 'SPOTIFY', monthlyCents: 1099, count: 5, lastDate: daysAgoDate(1), lastCents: 1199, creep: true },

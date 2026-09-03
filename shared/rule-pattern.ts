@@ -18,9 +18,14 @@
  */
 
 /** A trailing token that is reference noise, not merchant identity: no letters
- *  at all (numbers, phone numbers, "#42"), or a reference-label word. */
+ *  at all (numbers, phone numbers, "#42"), a reference-label word, or a short
+ *  uppercase letters-and-digits code ("8ZK1", "41XP" — per-charge references
+ *  a bank mints fresh every month). A digit is required in the code form so a
+ *  real word ("WA", "SUB") is never mistaken for one. */
 const isJunkToken = (token: string): boolean =>
-  !/[a-zA-Z]/.test(token) || /^(REF|REFERENCE|CONF|CONFIRMATION|ID|NO)[:#]?$/i.test(token);
+  !/[a-zA-Z]/.test(token)
+  || /^(REF|REFERENCE|CONF|CONFIRMATION|ID|NO)[:#]?$/i.test(token)
+  || /^(?=.*\d)[A-Z0-9]{3,8}$/.test(token);
 
 /** Tokens kept at most — past this a descriptor is so specific the next
  *  charge would fail to contain it. Matches the transfer flow's cap. */

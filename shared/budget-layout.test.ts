@@ -10,8 +10,8 @@ describe('resolveBudgetLayout', () => {
   it('one unified grid: the front pair leads at 2x2 when a pool exists', () => {
     const r = resolveBudgetLayout(null, AVAIL, true);
     expect(r.grid.slice(0, 2)).toEqual(['pool-burndown', 'cash-flow']);
-    expect(r.spanOf('pool-burndown')).toEqual({ c: 2, r: 2 });
-    expect(r.spanOf('cash-flow')).toEqual({ c: 2, r: 2 });
+    expect(r.spanOf('pool-burndown')).toEqual({ c: 8, r: 8 });
+    expect(r.spanOf('cash-flow')).toEqual({ c: 8, r: 8 });
     expect(new Set(r.grid)).toEqual(new Set(AVAIL));
     expect(r.hidden).toEqual([]);
   });
@@ -20,7 +20,7 @@ describe('resolveBudgetLayout', () => {
     const r = resolveBudgetLayout(null, AVAIL, false);
     expect(r.grid.slice(0, 2)).toEqual(['cash-flow', 'category-trends']);
     expect(r.grid).not.toContain('pool-burndown');
-    expect(r.spanOf('category-trends')).toEqual({ c: 2, r: 2 });
+    expect(r.spanOf('category-trends')).toEqual({ c: 8, r: 8 });
   });
 
   it('ignores unknown ids and appends new reports at the end', () => {
@@ -32,7 +32,7 @@ describe('resolveBudgetLayout', () => {
     const r = resolveBudgetLayout(stored, AVAIL, true);
     // Pinned front cards lead the ONE grid, big by default.
     expect(r.grid[0]).toBe('net-worth');
-    expect(r.spanOf('net-worth')).toEqual({ c: 2, r: 2 });
+    expect(r.spanOf('net-worth')).toEqual({ c: 8, r: 8 });
     expect(r.grid[1]).toBe('merchants');
     expect(r.grid).not.toContain('gone-report');
     expect(r.grid).toContain('custom:cr-1'); // appended, never lost
@@ -149,14 +149,26 @@ import { toggleWide } from './budget-layout.js';
 describe('free spans (drag resize)', () => {
   const base: BudgetLayout = { heroes: ['cash-flow'], order: [], hidden: [] };
 
-  it('setSpan stores exact column/row spans, clamped to the grid', () => {
-    const l = setSpan(base, 'merchants', 2, 3);
-    expect(l.span).toEqual({ merchants: [2, 3] });
-    const clamped = setSpan(base, 'merchants', 9, 0);
-    expect(clamped.span).toEqual({ merchants: [3, 1] });
+  it('setSpan stores exact FINE spans (12 cols × 16 rows), clamped to the grid', () => {
+    // v1.35: near-custom sizes. New writes land in `span2`, in fine units.
+    const l = setSpan(base, 'merchants', 2, 6);
+    expect(l.span2).toEqual({ merchants: [2, 6] });
+    expect(resolveBudgetLayout(l, AVAIL, true).spanOf('merchants')).toEqual({ c: 2, r: 6 });
+    const clamped = setSpan(base, 'merchants', 99, 0);
+    expect(clamped.span2).toEqual({ merchants: [12, 1] });
   });
 
-  it('spanOf prefers exact spans, then size letters, then wide, then defaults', () => {
+  it('legacy coarse spans (3×4 writers) migrate ×4 on read', () => {
+    const r = resolveBudgetLayout({ ...base, span: { merchants: [3, 1] } }, AVAIL, true);
+    expect(r.spanOf('merchants')).toEqual({ c: 12, r: 4 });
+  });
+
+  it('a fine span wins over a legacy one for the same card', () => {
+    const stored: BudgetLayout = { ...base, span: { merchants: [3, 1] }, span2: { merchants: [2, 6] } };
+    expect(resolveBudgetLayout(stored, AVAIL, true).spanOf('merchants')).toEqual({ c: 2, r: 6 });
+  });
+
+  it('spanOf prefers exact spans, then size letters, then wide, then defaults — in fine units', () => {
     const stored: BudgetLayout = {
       ...base,
       wide: ['net-worth'],
@@ -164,11 +176,22 @@ describe('free spans (drag resize)', () => {
       span: { merchants: [3, 1] },
     };
     const r = resolveBudgetLayout(stored, AVAIL, true);
-    expect(r.spanOf('merchants')).toEqual({ c: 3, r: 1 });
-    expect(r.spanOf('seasonality')).toEqual({ c: 1, r: 3 });
-    expect(r.spanOf('net-worth')).toEqual({ c: 2, r: 2 });
-    expect(r.spanOf('fees-interest')).toEqual({ c: 1, r: 1 });
-    expect(r.spanOf('savings-rate')).toEqual({ c: 1, r: 2 });
+    expect(r.spanOf('merchants')).toEqual({ c: 12, r: 4 });
+    expect(r.spanOf('seasonality')).toEqual({ c: 4, r: 12 });
+    expect(r.spanOf('net-worth')).toEqual({ c: 8, r: 8 });
+    expect(r.spanOf('fees-interest')).toEqual({ c: 4, r: 4 });
+    expect(r.spanOf('savings-rate')).toEqual({ c: 4, r: 8 });
+  });
+
+  it('the headline card defaults to a full-width short strip', () => {
+    const r = resolveBudgetLayout(null, AVAIL, true);
+    expect(r.spanOf('headline-stats')).toEqual({ c: 12, r: 4 });
+  });
+
+  it('parseBudgetLayout keeps a valid span2 map and rejects junk', () => {
+    const ok = { heroes: [], order: [], hidden: [], span2: { merchants: [2, 6] } };
+    expect(parseBudgetLayout(JSON.stringify(ok))).toEqual(ok);
+    expect(parseBudgetLayout(JSON.stringify({ heroes: [], order: [], hidden: [], span2: { merchants: [0, 2] } }))).toBeNull();
   });
 
   it('parseBudgetLayout keeps a valid span map and rejects junk', () => {

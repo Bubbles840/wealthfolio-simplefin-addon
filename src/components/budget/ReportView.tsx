@@ -278,7 +278,12 @@ function DataCheck({ cube }: { cube: ReportCube }) {
   );
 }
 
-function Subscriptions({ cube }: { cube: ReportCube }) {
+function Subscriptions({ cube, hidden = [], onHide, onRestore }: {
+  cube: ReportCube;
+  hidden?: string[];
+  onHide?: (name: string) => void;
+  onRestore?: () => void;
+}) {
   const res = subscriptionSummary(cube);
   if (!res) {
     return (
@@ -287,12 +292,18 @@ function Subscriptions({ cube }: { cube: ReportCube }) {
       </div>
     );
   }
-  if (res.subs.length === 0) {
+  // Dismissals filter HERE, not in the cube: the companion keeps publishing
+  // the full detection, so a restore takes effect without waiting for a sync.
+  const hiddenSet = new Set(hidden);
+  const subs = res.subs.filter((sub) => !hiddenSet.has(sub.name));
+  const hiddenCount = res.subs.length - subs.length;
+  if (subs.length === 0 && hiddenCount === 0) {
     return <div className="sfin-subtle">No monthly subscriptions detected — three charges on a monthly cadence would show here.</div>;
   }
+  const totalCents = subs.reduce((sum, sub) => sum + sub.monthlyCents, 0);
   return (
     <div className="sfin-subs">
-      {res.subs.map((sub) => (
+      {subs.map((sub) => (
         <div key={sub.name} className="sfin-subs-row">
           <span className="sfin-subs-name">{sub.name}</span>
           <span className="sfin-subs-price">
@@ -302,9 +313,25 @@ function Subscriptions({ cube }: { cube: ReportCube }) {
               <>{fmt2(sub.monthlyCents / 100)}/mo</>
             )}
           </span>
+          {onHide && (
+            <button
+              type="button"
+              className="sfin-subs-dismiss"
+              aria-label={`Dismiss ${sub.name}`}
+              title="Not a subscription / cancelled"
+              onClick={() => onHide(sub.name)}
+            >
+              ✕
+            </button>
+          )}
         </div>
       ))}
-      <div className="sfin-subs-total">{fmt2(res.totalCents / 100)}/mo across {res.subs.length}</div>
+      <div className="sfin-subs-total">{fmt2(totalCents / 100)}/mo across {subs.length}</div>
+      {hiddenCount > 0 && onRestore && (
+        <button type="button" className="sfin-subs-restore" onClick={onRestore}>
+          {hiddenCount} dismissed — restore
+        </button>
+      )}
     </div>
   );
 }
@@ -609,7 +636,10 @@ function CustomView({ cube, def }: { cube: ReportCube; def: CustomReport }) {
   );
 }
 
-export function ReportView({ id, cube, customReports, hero = false, categories, density = 2 }: {
+export function ReportView({
+  id, cube, customReports, hero = false, categories, density = 2,
+  hiddenSubscriptions, onHideSubscription, onRestoreSubscriptions,
+}: {
   id: string;
   cube: ReportCube;
   customReports: CustomReport[];
@@ -619,6 +649,10 @@ export function ReportView({ id, cube, customReports, hero = false, categories, 
   /** The card's row span (1–4): list-reports budget their rows to it so a
    *  compact card trims itself instead of clipping. */
   density?: number;
+  /** Subscriptions-card dismissals; the card is read-only without handlers. */
+  hiddenSubscriptions?: string[];
+  onHideSubscription?: (name: string) => void;
+  onRestoreSubscriptions?: () => void;
 }) {
   let body: React.ReactNode;
   if (id.startsWith('custom:')) {
@@ -644,7 +678,16 @@ export function ReportView({ id, cube, customReports, hero = false, categories, 
       case 'cumulative-flow': body = <CumulativeFlow cube={cube} />; break;
       case 'uncat-trend': body = <UncatTrend cube={cube} />; break;
       case 'data-check': body = <DataCheck cube={cube} />; break;
-      case 'subscriptions': body = <Subscriptions cube={cube} />; break;
+      case 'subscriptions':
+        body = (
+          <Subscriptions
+            cube={cube}
+            hidden={hiddenSubscriptions}
+            onHide={onHideSubscription}
+            onRestore={onRestoreSubscriptions}
+          />
+        );
+        break;
       default: body = null;
     }
   }

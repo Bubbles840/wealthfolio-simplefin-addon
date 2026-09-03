@@ -18,6 +18,7 @@ import type { DriftAlertEntry, TransferLinkFailureEntry } from '../../shared/syn
 import type { SyncResult } from '../../shared/sync-core';
 import { LARGE_TX_OUTBOX_SECRET_KEY } from '../../shared/telegram';
 import { ADDON_VERSION_SECRET_KEY, SIMPLEFIN_SYNC_VERSION } from '../../shared/version';
+import { HIDDEN_SUBSCRIPTIONS_SECRET_KEY, parseHiddenSubscriptions } from '../../shared/subscriptions';
 
 /** Per-account balance snapshot captured on each sync, for the Sync page. */
 /** One spending category as the companion published it. Mirrors
@@ -127,6 +128,7 @@ const KEYS = {
   amazonLabels: AMAZON_LABELS_SECRET_KEY,
   amazonLedger: AMAZON_LEDGER_SECRET_KEY,
   dismissals: 'uncategorized_dismissals',
+  hiddenSubscriptions: HIDDEN_SUBSCRIPTIONS_SECRET_KEY,
 } as const;
 
 /** One entry in the shared large-transaction outbox. Derived from `SyncResult`
@@ -731,6 +733,15 @@ export class SecretsStore {
       return null;
     }
   }
+  /** Subscription-card dismissals ("cancelled that already"): merchant names
+   *  filtered out of the roster, the weekly total, and the creep line. */
+  async getHiddenSubscriptions(): Promise<string[]> {
+    return parseHiddenSubscriptions(await this.ctx.api.secrets.get(HIDDEN_SUBSCRIPTIONS_SECRET_KEY));
+  }
+  async setHiddenSubscriptions(names: string[]): Promise<void> {
+    await this.ctx.api.secrets.set(HIDDEN_SUBSCRIPTIONS_SECRET_KEY, JSON.stringify(names));
+  }
+
   /** Deletes the stored layout so the defaults come back — the Budget tab's
    *  Reset button. Distinct from writing an "empty" layout, which would pin
    *  nothing and hide nothing but still count as customized. */

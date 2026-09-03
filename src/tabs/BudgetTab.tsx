@@ -37,6 +37,9 @@ export interface BudgetTabProps {
   onLayoutReset?: () => void;
   onCustomReportsChange: (next: CustomReport[]) => void;
   store: SecretsStore;
+  /** Subscription-card dismissals, owned by the page like layout is. */
+  hiddenSubscriptions?: string[];
+  onHiddenSubscriptionsChange?: (next: string[]) => void;
 }
 
 /** Two days: one missed nightly publish is routine, two is worth a strip. */
@@ -50,13 +53,20 @@ const RANGES: Array<{ label: string; value: Range }> = [
   { label: 'All', value: 'all' },
 ];
 
-/** Grid rhythm shared with the stylesheet; used only as drag math fallbacks
- *  when a cell measures 0 (jsdom, or a not-yet-laid-out card). */
+/** Grid rhythm shared with the stylesheet; the fallbacks cover a cell that
+ *  measures 0 (jsdom, or a not-yet-laid-out card). FINE units since v1.35:
+ *  12 columns × 29px rows, so a resize drag snaps every ~40px — near-custom
+ *  sizes that still reflow as a grid on other screens. */
 const GAP = 14;
-const ROW_UNIT = 158 + GAP;
-const FALLBACK_COL_UNIT = 330;
+const ROW_UNIT = 29 + GAP;
+const FALLBACK_COL_UNIT = 110;
+const MAX_C = 12;
+const MAX_R = 16;
 
-export function BudgetTab({ cube, customReports, layout, onLayoutChange, onLayoutReset, onCustomReportsChange, store }: BudgetTabProps) {
+export function BudgetTab({
+  cube, customReports, layout, onLayoutChange, onLayoutReset, onCustomReportsChange, store,
+  hiddenSubscriptions = [], onHiddenSubscriptionsChange,
+}: BudgetTabProps) {
   const [fullId, setFullId] = useState<string | null>(null);
   const [range, setRange] = useState<Range>(12);
   const [customizing, setCustomizing] = useState(false);
@@ -66,6 +76,7 @@ export function BudgetTab({ cube, customReports, layout, onLayoutChange, onLayou
   /** Live ordering while a move drag is in flight. */
   const [dragOrder, setDragOrder] = useState<string[] | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [resizingId, setResizingId] = useState<string | null>(null);
   const resizeState = useRef<{ id: string; startX: number; startY: number; c0: number; r0: number; colUnit: number } | null>(null);
   const moveState = useRef<{ id: string } | null>(null);
   /** Two-tap reset: one mistap must not destroy an arranged board. */
@@ -76,6 +87,31 @@ export function BudgetTab({ cube, customReports, layout, onLayoutChange, onLayou
    *  typed; parsed on save. Null = not editing. */
   const [poolEdit, setPoolEdit] = useState<{ amount: string; end: string } | null>(null);
   const [poolSaved, setPoolSaved] = useState(false);
+
+  /** FLIP refs: previous on-screen rect per card, so any render that moves a
+   *  card (live reorder under a drag, a resize reflowing neighbors) plays a
+   *  short glide from where it was — the difference between "cards you can
+   *  watch make room" and "cards that teleport". Web Animations API,
+   *  optional-called: jsdom (no rects, no animate) degrades to nothing. */
+  const cellEls = useRef(new Map<string, HTMLElement>());
+  const prevRects = useRef(new Map<string, { left: number; top: number }>());
+  useEffect(() => {
+    for (const [id, el] of cellEls.current) {
+      const next = el.getBoundingClientRect();
+      const prev = prevRects.current.get(id);
+      if (prev && (prev.left !== next.left || prev.top !== next.top)) {
+        el.animate?.(
+          [{ transform: `translate(${prev.left - next.left}px, ${prev.top - next.top}px)` }, { transform: 'translate(0, 0)' }],
+          { duration: 180, easing: 'cubic-bezier(.2, .7, .3, 1)' },
+        );
+      }
+      prevRects.current.set(id, { left: next.left, top: next.top });
+    }
+  });
+  const cellRef = (id: string) => (el: HTMLElement | null) => {
+    if (el) cellEls.current.set(id, el);
+    else { cellEls.current.delete(id); prevRects.current.delete(id); }
+  };
 
   // The undo toast outlives one glance, not the session.
   useEffect(() => {
@@ -113,6 +149,16 @@ export function BudgetTab({ cube, customReports, layout, onLayoutChange, onLayou
   // own from the resolved grid.
   const storedLayout: BudgetLayout = layout ?? {
     heroes: resolved.heroes, order: [], hidden: resolved.hidden,
+  };
+
+  const subsProps = {
+    hiddenSubscriptions,
+    onHideSubscription: onHiddenSubscriptionsChange
+      ? (name: string) => onHiddenSubscriptionsChange([...hiddenSubscriptions.filter((n) => n !== name), name])
+      : undefined,
+    onRestoreSubscriptions: onHiddenSubscriptionsChange
+      ? () => onHiddenSubscriptionsChange([])
+      : undefined,
   };
 
   if (builder) {
@@ -167,7 +213,7 @@ export function BudgetTab({ cube, customReports, layout, onLayoutChange, onLayou
           <SectionLabel>{reportTitle(fullId, customReports)}</SectionLabel>
         </div>
         {rangeChips}
-        <ReportView id={fullId} cube={viewCube} customReports={customReports} hero density={4} />
+        <ReportView id={fullId} cube={viewCube} customReports={customReports} hero density={4} {...subsProps} />
         {fullId === 'pool-burndown' && cube.pool && (
           <div className="sfin-pool-edit">
             {poolEdit === null ? (
@@ -248,6 +294,7 @@ export function BudgetTab({ cube, customReports, layout, onLayoutChange, onLayou
     down.stopPropagation();
     try { (down.currentTarget as Element).setPointerCapture?.(down.pointerId); } catch { /* jsdom */ }
     const cell = (down.currentTarget as HTMLElement).closest('.sfin-cell') as HTMLElement | null;
+    setResizingId(id);
     const { c: c0, r: r0 } = spanFor(id);
     resizeState.current = {
       id, startX: down.clientX, startY: down.clientY, c0, r0,
@@ -256,8 +303,8 @@ export function BudgetTab({ cube, customReports, layout, onLayoutChange, onLayou
   };
   type ResizeState = NonNullable<typeof resizeState.current>;
   const spanFrom = (st: ResizeState, e: React.PointerEvent) => ({
-    c: Math.min(3, Math.max(1, st.c0 + Math.round((e.clientX - st.startX) / st.colUnit))),
-    r: Math.min(4, Math.max(1, st.r0 + Math.round((e.clientY - st.startY) / ROW_UNIT))),
+    c: Math.min(MAX_C, Math.max(1, st.c0 + Math.round((e.clientX - st.startX) / st.colUnit))),
+    r: Math.min(MAX_R, Math.max(1, st.r0 + Math.round((e.clientY - st.startY) / ROW_UNIT))),
   });
   const onResizeMove = (e: React.PointerEvent) => {
     const st = resizeState.current;
@@ -272,6 +319,7 @@ export function BudgetTab({ cube, customReports, layout, onLayoutChange, onLayou
     // silently dropped the resize.
     const { c, r } = spanFrom(st, e);
     resizeState.current = null;
+    setResizingId(null);
     setDragSpans((prev) => {
       const next = { ...prev };
       delete next[st.id];
@@ -380,13 +428,14 @@ export function BudgetTab({ cube, customReports, layout, onLayoutChange, onLayou
   const card = (id: string) => customizing ? (
     <div
       key={id}
-      className={`sfin-cell sfin-cell--${resolved.sizeOf(id)} sfin-cell--editing${draggingId === id ? ' sfin-cell--dragging' : ''}`}
+      ref={cellRef(id)}
+      className={`sfin-cell sfin-cell--${resolved.sizeOf(id)} sfin-cell--editing${draggingId === id ? ' sfin-cell--dragging' : ''}${resizingId === id ? ' sfin-cell--resizing' : ''}`}
       style={cellStyle(id)}
       onPointerDown={startMove(id)}
       onPointerMove={onMoveOver}
       onPointerUp={onMoveUp}
     >
-      <ReportView id={id} cube={viewCube} customReports={customReports} density={spanFor(id).r} />
+      <ReportView id={id} cube={viewCube} customReports={customReports} density={Math.max(1, Math.round(spanFor(id).r / 4))} {...subsProps} />
       {controls(id)}
       <div
         className="sfin-resize-handle"
@@ -402,6 +451,7 @@ export function BudgetTab({ cube, customReports, layout, onLayoutChange, onLayou
   ) : (
     <div
       key={id}
+      ref={cellRef(id)}
       className={`sfin-cell sfin-cell--${resolved.sizeOf(id)}`}
       style={cellStyle(id)}
       role="button"
@@ -412,7 +462,7 @@ export function BudgetTab({ cube, customReports, layout, onLayoutChange, onLayou
         if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setFullId(id); }
       }}
     >
-      <ReportView id={id} cube={viewCube} customReports={customReports} density={spanFor(id).r} />
+      <ReportView id={id} cube={viewCube} customReports={customReports} density={Math.max(1, Math.round(spanFor(id).r / 4))} {...subsProps} />
     </div>
   );
 

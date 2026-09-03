@@ -11,6 +11,8 @@
  * time and publishes only the summaries; raw charges never leave the box.
  */
 
+import { categoryRulePattern } from './rule-pattern.js';
+
 export interface SubscriptionCharge {
   /** YYYY-MM-DD. */
   date: string;
@@ -56,9 +58,14 @@ export function detectSubscriptions(
   const byMerchant = new Map<string, SubscriptionCharge[]>();
   for (const c of charges) {
     if (!c.merchant || !(c.cents > 0)) continue;
-    const list = byMerchant.get(c.merchant) ?? [];
+    // Grouped by the TRIMMED merchant (same normalizer the rule flow uses):
+    // banks append varying reference tokens per charge, and exact-name
+    // grouping split one real subscription into groups of one — the live
+    // miss this fixes.
+    const key = categoryRulePattern(c.merchant) || c.merchant;
+    const list = byMerchant.get(key) ?? [];
     list.push(c);
-    byMerchant.set(c.merchant, list);
+    byMerchant.set(key, list);
   }
 
   const found: DetectedSubscription[] = [];
@@ -70,15 +77,20 @@ export function detectSubscriptions(
     const daysSinceLast = (now.getTime() - Date.parse(`${last.date}T00:00:00Z`)) / DAY_MS;
     if (!(daysSinceLast <= ACTIVE_WITHIN_DAYS)) continue;
 
-    const cadenced = list.every((c, i) => {
+    // Cadence and price are judged on the TRAILING three charges: that is the
+    // subscription as it exists today. History further back must not veto —
+    // a payment hiccup in March, or a plan upgrade, is not evidence the
+    // current monthly charge isn't one.
+    const recent = list.slice(-3);
+    const cadenced = recent.every((c, i) => {
       if (i === 0) return true;
-      const gap = (Date.parse(`${c.date}T00:00:00Z`) - Date.parse(`${list[i - 1].date}T00:00:00Z`)) / DAY_MS;
+      const gap = (Date.parse(`${c.date}T00:00:00Z`) - Date.parse(`${recent[i - 1].date}T00:00:00Z`)) / DAY_MS;
       return gap >= MIN_GAP_DAYS && gap <= MAX_GAP_DAYS;
     });
     if (!cadenced) continue;
 
-    const typical = median(list.map((c) => c.cents));
-    if (!list.every((c) => Math.abs(c.cents - typical) <= typical * AMOUNT_TOLERANCE)) continue;
+    const typical = median(recent.map((c) => c.cents));
+    if (!recent.every((c) => Math.abs(c.cents - typical) <= typical * AMOUNT_TOLERANCE)) continue;
 
     found.push({
       name,
@@ -91,4 +103,20 @@ export function detectSubscriptions(
   }
 
   return found.sort((a, b) => b.monthlyCents - a.monthlyCents);
+}
+
+/** Addon secret: merchant names the user has dismissed from the subscription
+ *  roster ("cancelled that already"). The cube keeps publishing the full
+ *  detection — filtering happens at every consumer, so a restore takes effect
+ *  without waiting for the next sync. */
+export const HIDDEN_SUBSCRIPTIONS_SECRET_KEY = 'hidden_subscriptions';
+
+export function parseHiddenSubscriptions(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  try {
+    const v = JSON.parse(raw);
+    return Array.isArray(v) && v.every((s) => typeof s === 'string') ? v : [];
+  } catch {
+    return [];
+  }
 }
