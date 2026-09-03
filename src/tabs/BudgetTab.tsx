@@ -7,6 +7,7 @@ import {
   SIZE_LABELS, STANDARD_REPORT_IDS, toggleHidden, type BudgetLayout,
 } from '../../shared/budget-layout';
 import { newCustomReportId, type CustomReport } from '../../shared/report-eval';
+import { dropTarget } from './drop-target';
 import { ReportBuilder } from '../components/budget/ReportBuilder';
 import type { SecretsStore } from '../utils/secrets';
 
@@ -37,9 +38,11 @@ export interface BudgetTabProps {
   onLayoutReset?: () => void;
   onCustomReportsChange: (next: CustomReport[]) => void;
   store: SecretsStore;
-  /** Subscription-card dismissals, owned by the page like layout is. */
+  /** Subscription-card answers, owned by the page like layout is. */
   hiddenSubscriptions?: string[];
   onHiddenSubscriptionsChange?: (next: string[]) => void;
+  confirmedSubscriptions?: string[];
+  onConfirmedSubscriptionsChange?: (next: string[]) => void;
 }
 
 /** Two days: one missed nightly publish is routine, two is worth a strip. */
@@ -66,6 +69,7 @@ const MAX_R = 16;
 export function BudgetTab({
   cube, customReports, layout, onLayoutChange, onLayoutReset, onCustomReportsChange, store,
   hiddenSubscriptions = [], onHiddenSubscriptionsChange,
+  confirmedSubscriptions = [], onConfirmedSubscriptionsChange,
 }: BudgetTabProps) {
   const [fullId, setFullId] = useState<string | null>(null);
   const [range, setRange] = useState<Range>(12);
@@ -79,7 +83,11 @@ export function BudgetTab({
    *  translated with every move. The grid cell itself becomes the dashed
    *  SLOT — reordering live, it IS the "this is where it lands" indicator. */
   const [ghost, setGhost] = useState<{ id: string; dx: number; dy: number; w: number; h: number } | null>(null);
-  const [ghostXY, setGhostXY] = useState<{ x: number; y: number } | null>(null);
+  /** Ghost position rides a REF and a direct style write, never state: a
+   *  re-render of ~20 charts per pointer event is exactly the lag that was
+   *  reported live. React re-renders only when the ORDER changes. */
+  const ghostPointer = useRef<{ x: number; y: number } | null>(null);
+  const ghostRef = useRef<HTMLDivElement | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [resizingId, setResizingId] = useState<string | null>(null);
   const resizeState = useRef<{ id: string; startX: number; startY: number; c0: number; r0: number; colUnit: number } | null>(null);
@@ -99,7 +107,7 @@ export function BudgetTab({
    *  watch make room" and "cards that teleport". Web Animations API,
    *  optional-called: jsdom (no rects, no animate) degrades to nothing. */
   const cellEls = useRef(new Map<string, HTMLElement>());
-  const prevRects = useRef(new Map<string, { left: number; top: number }>());
+  const prevRects = useRef(new Map<string, { left: number; top: number; width: number; height: number }>());
   useEffect(() => {
     for (const [id, el] of cellEls.current) {
       const next = el.getBoundingClientRect();
@@ -110,7 +118,9 @@ export function BudgetTab({
           { duration: 180, easing: 'cubic-bezier(.2, .7, .3, 1)' },
         );
       }
-      prevRects.current.set(id, { left: next.left, top: next.top });
+      // Width/height ride along for the drag hit-testing, which reads THIS
+      // cache instead of measuring on every pointer move.
+      prevRects.current.set(id, { left: next.left, top: next.top, width: next.width, height: next.height });
     }
   });
   const cellRef = (id: string) => (el: HTMLElement | null) => {
@@ -158,8 +168,12 @@ export function BudgetTab({
 
   const subsProps = {
     hiddenSubscriptions,
+    confirmedSubscriptions,
     onHideSubscription: onHiddenSubscriptionsChange
       ? (name: string) => onHiddenSubscriptionsChange([...hiddenSubscriptions.filter((n) => n !== name), name])
+      : undefined,
+    onConfirmSubscription: onConfirmedSubscriptionsChange
+      ? (name: string) => onConfirmedSubscriptionsChange([...confirmedSubscriptions.filter((n) => n !== name), name])
       : undefined,
     onRestoreSubscriptions: onHiddenSubscriptionsChange
       ? () => onHiddenSubscriptionsChange([])
@@ -351,21 +365,37 @@ export function BudgetTab({
       w: rect.width || 320,
       h: rect.height || 180,
     });
-    setGhostXY({ x: down.clientX, y: down.clientY });
+    ghostPointer.current = { x: down.clientX, y: down.clientY };
   };
   const onMoveOver = (e: React.PointerEvent) => {
     const st = moveState.current;
     if (!st) return;
-    setGhostXY({ x: e.clientX, y: e.clientY });
-    const over = document.elementFromPoint?.(e.clientX, e.clientY)
-      ?.closest('[data-report-id]')?.getAttribute('data-report-id');
+    ghostPointer.current = { x: e.clientX, y: e.clientY };
+    if (ghostRef.current && ghost) {
+      ghostRef.current.style.transform =
+        `translate(${e.clientX - ghost.dx}px, ${e.clientY - ghost.dy}px) scale(1.02) rotate(.4deg)`;
+    }
+    // Geometry over the FLIP cache — the whole cell is a target, no reads per
+    // move. jsdom's zero rects fall back to elementFromPoint (before-only).
+    const cached = Array.from(prevRects.current, ([id, r]) => ({ id, ...r }));
+    const hit = dropTarget(cached, e.clientX, e.clientY, st.id);
+    let over: string | null = hit?.id ?? null;
+    let after = hit?.after ?? false;
+    if (!over) {
+      over = document.elementFromPoint?.(e.clientX, e.clientY)
+        ?.closest('[data-report-id]')?.getAttribute('data-report-id') ?? null;
+      after = false;
+    }
     if (!over || over === st.id) return;
     setDragOrder((prev) => {
-      const base = (prev ?? gridIds).filter((g) => g !== st.id);
-      const at = base.indexOf(over);
+      const current = prev ?? gridIds;
+      const base = current.filter((g) => g !== st.id);
+      let at = base.indexOf(over!);
       if (at === -1) return prev;
+      if (after) at += 1;
       base.splice(at, 0, st.id);
-      return base;
+      // Identical order = no state churn = no re-render mid-drag.
+      return base.join('\u0000') === current.join('\u0000') ? prev : base;
     });
   };
   const onMoveUp = () => {
@@ -374,7 +404,7 @@ export function BudgetTab({
     moveState.current = null;
     setDraggingId(null);
     setGhost(null);
-    setGhostXY(null);
+    ghostPointer.current = null;
     const finalOrder = dragOrder;
     setDragOrder(null);
     if (finalOrder && finalOrder.join(' ') !== resolved.grid.join(' ')) {
@@ -526,14 +556,16 @@ export function BudgetTab({
         </div>
       )}
 
-      {ghost && ghostXY && (
+      {ghost && (
         <div
+          ref={ghostRef}
           className="sfin-drag-ghost"
           style={{
-            left: ghostXY.x - ghost.dx,
-            top: ghostXY.y - ghost.dy,
+            left: 0,
+            top: 0,
             width: ghost.w,
             height: ghost.h,
+            transform: `translate(${(ghostPointer.current?.x ?? 0) - ghost.dx}px, ${(ghostPointer.current?.y ?? 0) - ghost.dy}px) scale(1.02) rotate(.4deg)`,
           }}
         >
           <ReportView

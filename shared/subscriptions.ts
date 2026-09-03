@@ -122,24 +122,25 @@ export function detectSubscriptions(
     const typical = median(recent.map((c) => c.cents));
     const stable = recent.every((c) => Math.abs(c.cents - typical) <= typical * AMOUNT_TOLERANCE);
 
+    // Nothing with a monthly cadence vanishes any more — v1.37's rule, after
+    // a plan upgrade made a real subscription's two charges "unstable" and
+    // silently disappear. Stability only decides WHICH tier.
     let kind: RecurringKind;
     if (list.length >= 3) {
       kind = stable ? 'subscription' : 'bill';
-    } else if (stable) {
-      // Two monthly charges: proof for a name that is obviously a
-      // subscription, a maybe for anything else.
-      kind = isKnownBrand(name) ? 'subscription' : 'possible';
     } else {
-      continue;
+      kind = isKnownBrand(name) ? 'subscription' : 'possible';
     }
 
     found.push({
       name,
-      monthlyCents: typical,
+      // Across an upgrade the median is a price nobody pays — the newest
+      // charge is the plan as it exists now.
+      monthlyCents: stable ? typical : (list.length >= 3 ? typical : last.cents),
       count: list.length,
       lastDate: last.date,
       lastCents: last.cents,
-      creep: kind === 'subscription' && last.cents > typical,
+      creep: kind === 'subscription' && stable && last.cents > typical,
       kind,
     });
   }
@@ -154,6 +155,12 @@ export function detectSubscriptions(
  *  detection — filtering happens at every consumer, so a restore takes effect
  *  without waiting for the next sync. */
 export const HIDDEN_SUBSCRIPTIONS_SECRET_KEY = 'hidden_subscriptions';
+
+/** Addon secret: candidates the user answered "yes, that's a subscription"
+ *  about — rent, a utility, anything the detector could only guess at. A
+ *  confirmed name counts in every money total from then on, whatever tier
+ *  the detector assigns it. */
+export const CONFIRMED_SUBSCRIPTIONS_SECRET_KEY = 'confirmed_subscriptions';
 
 export function parseHiddenSubscriptions(raw: string | null | undefined): string[] {
   if (!raw) return [];

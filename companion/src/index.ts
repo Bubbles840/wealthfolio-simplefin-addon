@@ -77,7 +77,7 @@ import { parsePoolArgs, POOL_USAGE_REPLY } from '../../shared/telegram-commands.
 import { SEMESTER_POOL_SECRET_KEY, parsePoolConfig } from '../../shared/pool.js';
 import { readPoolStatus, readRunwayMonths, type PoolReportDeps } from './pool-report.js';
 import { REPORT_CUBE_SECRET_KEY, parseReportCube } from '../../shared/report-cube.js';
-import { HIDDEN_SUBSCRIPTIONS_SECRET_KEY, parseHiddenSubscriptions } from '../../shared/subscriptions.js';
+import { HIDDEN_SUBSCRIPTIONS_SECRET_KEY, CONFIRMED_SUBSCRIPTIONS_SECRET_KEY, parseHiddenSubscriptions } from '../../shared/subscriptions.js';
 import { buildReportCube, type CubeBuildDeps } from './report-cube-build.js';
 
 const logLevel: 'info' | 'debug' =
@@ -1802,12 +1802,19 @@ async function readCubeSubscriptions(
   const cube = parseReportCube(
     await wfClient.getAddonSecret('simplefin-sync', REPORT_CUBE_SECRET_KEY).catch(() => null),
   );
-  // Dismissals ("cancelled that already") filter every consumer of the
-  // roster; the cube itself keeps the full detection so a restore is instant.
+  // The MONEY set: auto-detected subscriptions plus names the user confirmed
+  // on the card, minus dismissals. Bills and maybes are the card's question
+  // to ask — they never reach a Telegram total unanswered. The cube keeps the
+  // full detection so both answers take effect without a sync.
   const hidden = new Set(parseHiddenSubscriptions(
     await wfClient.getAddonSecret('simplefin-sync', HIDDEN_SUBSCRIPTIONS_SECRET_KEY).catch(() => null),
   ));
-  return (cube?.subscriptions ?? []).filter((sub) => !hidden.has(sub.name));
+  const confirmed = new Set(parseHiddenSubscriptions(
+    await wfClient.getAddonSecret('simplefin-sync', CONFIRMED_SUBSCRIPTIONS_SECRET_KEY).catch(() => null),
+  ));
+  return (cube?.subscriptions ?? []).filter((sub) =>
+    !hidden.has(sub.name)
+    && ((sub.kind ?? 'subscription') === 'subscription' || confirmed.has(sub.name)));
 }
 
 export const updateCheckDeps: {
@@ -1978,8 +1985,7 @@ export async function sendWeeklyTelegramReport(
   );
   // One line, monthly total only: the weekly answers "what does recurring
   // life cost", the Budget tab's Subscriptions card holds the roster.
-  // 'possible' detections are the card's business, never the money total's.
-  const subs = (await readCubeSubscriptions(wfClient)).filter((sub) => (sub.kind ?? 'subscription') !== 'possible');
+  const subs = await readCubeSubscriptions(wfClient);
   if (subs.length > 0) {
     const totalCents = subs.reduce((sum, sub) => sum + sub.monthlyCents, 0);
     message += `\n\n*Subscriptions* — $${(totalCents / 100).toFixed(2)}/mo across ${subs.length}`;

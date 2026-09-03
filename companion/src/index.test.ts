@@ -4272,6 +4272,8 @@ describe('subscriptions in the reports', () => {
       { name: 'SPOTIFY', monthlyCents: 1099, count: 5, lastDate: daysAgoDate(10), lastCents: 1099, creep: false },
       // On-the-bubble detections are for the card, never for the money total.
       { name: 'MYSTERY BOX', monthlyCents: 9900, count: 2, lastDate: daysAgoDate(4), lastCents: 9900, creep: false, kind: 'possible' },
+      // A bill counts only once the user has confirmed it on the card.
+      { name: 'DUKE ENERGY', monthlyCents: 12000, count: 4, lastDate: daysAgoDate(5), lastCents: 12000, creep: false, kind: 'bill' },
     ])]]);
     const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
     vi.stubGlobal('fetch', fetchMock);
@@ -4299,6 +4301,19 @@ describe('subscriptions in the reports', () => {
     expect(weekly).toContain('$54.99/mo across 1');
     const daily = await composeDailyDigestMessage(client);
     expect(daily).not.toContain('QR LIBRARY');
+  });
+
+  it('a confirmed bill joins the weekly money total', async () => {
+    const client = clientWith([
+      ['report_cube', cubeWith([
+        { name: 'RENT LLC', monthlyCents: 90000, count: 6, lastDate: daysAgoDate(3), lastCents: 90000, creep: false, kind: 'bill' },
+      ])],
+      ['confirmed_subscriptions', JSON.stringify(['RENT LLC'])],
+    ]);
+    const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+    vi.stubGlobal('fetch', fetchMock);
+    await sendWeeklyTelegramReport(client);
+    expect(JSON.parse((fetchMock.mock.calls[0][1] as any).body).text).toContain('$900.00/mo across 1');
   });
 
   it('daily digest flags a fresh price creep, once it is stale it stops', async () => {

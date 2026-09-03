@@ -278,10 +278,12 @@ function DataCheck({ cube }: { cube: ReportCube }) {
   );
 }
 
-function Subscriptions({ cube, hidden = [], onHide, onRestore }: {
+function Subscriptions({ cube, hidden = [], confirmed = [], onHide, onConfirm, onRestore }: {
   cube: ReportCube;
   hidden?: string[];
+  confirmed?: string[];
   onHide?: (name: string) => void;
+  onConfirm?: (name: string) => void;
   onRestore?: () => void;
 }) {
   const res = subscriptionSummary(cube);
@@ -300,10 +302,13 @@ function Subscriptions({ cube, hidden = [], onHide, onRestore }: {
   if (visible.length === 0 && hiddenCount === 0) {
     return <div className="sfin-subtle">No monthly subscriptions detected — recurring monthly charges would show here.</div>;
   }
-  // A missing kind is an older companion's row — a subscription, per the old
-  // detector's only meaning.
-  const sure = visible.filter((sub) => (sub.kind ?? 'subscription') !== 'possible');
-  const maybes = visible.filter((sub) => sub.kind === 'possible');
+  // The roster is what the user (or the stable-price rule) has SAID is a
+  // subscription; every other monthly cadence — rent, a utility, a maybe —
+  // is a question below, not a line item. A missing kind is an older
+  // companion's row: a subscription, per the old detector's only meaning.
+  const confirmedSet = new Set(confirmed);
+  const sure = visible.filter((sub) => (sub.kind ?? 'subscription') === 'subscription' || confirmedSet.has(sub.name));
+  const maybes = visible.filter((sub) => !sure.includes(sub));
   const totalCents = sure.reduce((sum, sub) => sum + sub.monthlyCents, 0);
   const row = (sub: (typeof visible)[number]) => (
     <div key={sub.name} className="sfin-subs-row">
@@ -336,8 +341,37 @@ function Subscriptions({ cube, hidden = [], onHide, onRestore }: {
       <div className="sfin-subs-total">{fmt2(totalCents / 100)}/mo across {sure.length}</div>
       {maybes.length > 0 && (
         <>
-          <div className="sfin-subs-maybe-head">Possibly recurring</div>
-          {maybes.map(row)}
+          <div className="sfin-subs-maybe-head">Is this a subscription?</div>
+          {maybes.map((sub) => (
+            <div key={sub.name} className="sfin-subs-row">
+              <span className="sfin-subs-name">{sub.name}</span>
+              <span className="sfin-subs-price">
+                {sub.kind === 'bill' ? <>~{fmt2(sub.monthlyCents / 100)}/mo · varies</> : <>{fmt2(sub.monthlyCents / 100)}/mo</>}
+              </span>
+              {onConfirm && (
+                <button
+                  type="button"
+                  className="sfin-subs-answer"
+                  aria-label={`Yes, ${sub.name} is a subscription`}
+                  title="Count it as a subscription"
+                  onClick={() => onConfirm(sub.name)}
+                >
+                  ✓
+                </button>
+              )}
+              {onHide && (
+                <button
+                  type="button"
+                  className="sfin-subs-answer"
+                  aria-label={`No, ignore ${sub.name}`}
+                  title="Never show this here"
+                  onClick={() => onHide(sub.name)}
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+          ))}
         </>
       )}
       {hiddenCount > 0 && onRestore && (
@@ -651,7 +685,7 @@ function CustomView({ cube, def }: { cube: ReportCube; def: CustomReport }) {
 
 export function ReportView({
   id, cube, customReports, hero = false, categories, density = 2,
-  hiddenSubscriptions, onHideSubscription, onRestoreSubscriptions,
+  hiddenSubscriptions, confirmedSubscriptions, onHideSubscription, onConfirmSubscription, onRestoreSubscriptions,
 }: {
   id: string;
   cube: ReportCube;
@@ -662,9 +696,11 @@ export function ReportView({
   /** The card's row span (1–4): list-reports budget their rows to it so a
    *  compact card trims itself instead of clipping. */
   density?: number;
-  /** Subscriptions-card dismissals; the card is read-only without handlers. */
+  /** Subscriptions-card answers; the card is read-only without handlers. */
   hiddenSubscriptions?: string[];
+  confirmedSubscriptions?: string[];
   onHideSubscription?: (name: string) => void;
+  onConfirmSubscription?: (name: string) => void;
   onRestoreSubscriptions?: () => void;
 }) {
   let body: React.ReactNode;
@@ -696,7 +732,9 @@ export function ReportView({
           <Subscriptions
             cube={cube}
             hidden={hiddenSubscriptions}
+            confirmed={confirmedSubscriptions}
             onHide={onHideSubscription}
+            onConfirm={onConfirmSubscription}
             onRestore={onRestoreSubscriptions}
           />
         );
