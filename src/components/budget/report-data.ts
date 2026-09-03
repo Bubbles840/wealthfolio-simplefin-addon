@@ -331,3 +331,28 @@ export function subscriptionSummary(
   if (!subs) return null;
   return { totalCents: subs.reduce((s, x) => s + x.monthlyCents, 0), subs };
 }
+
+/**
+ * Budget vs actual for the WHOLE cube window, as monthly averages — the card
+ * follows the shared range control honestly instead of silently showing the
+ * newest month. A one-month window degenerates to exactly that month.
+ */
+export function budgetVsActualAvgData(
+  cube: ReportCube,
+): Array<{ category: string; budget: number; actual: number }> {
+  const n = cube.months.length;
+  if (n === 0) return [];
+  return cube.categories
+    .map((category, ci) => {
+      let budget = 0;
+      let actual = 0;
+      for (let mi = 0; mi < n; mi += 1) {
+        budget += cube.budgets[mi][ci];
+        actual += cube.spend[mi][ci].reduce((s, v) => s + v, 0);
+      }
+      return { category, budget: budget / n, actual: actual / n };
+    })
+    .filter((r) => r.budget !== 0 || r.actual !== 0)
+    .sort((a, b) => (b.actual - b.budget) - (a.actual - a.budget))
+    .map((r) => ({ category: r.category, budget: dollars(r.budget), actual: dollars(r.actual) }));
+}

@@ -464,3 +464,22 @@ describe('subscriptions card: recent months (v1.39)', () => {
     expect(screen.getByText(/\$20\.00\/mo · watching/)).toBeTruthy();
   });
 });
+
+describe('budget vs actual: per-row fill and averaging (v1.40)', () => {
+  it('an overspent category fills its whole bar; every bar scales to its own row', () => {
+    // Live: Shopping at $174 of $100 showed a sliver because every bar was
+    // scaled by the BIGGEST row's budget (Housing), not its own.
+    const overspent = { ...fresh(), budgets: [[4000, 2000], [4000, 2000]] as number[][] };
+    view('budget-vs-actual', overspent);
+    const over = document.querySelector('[data-bva="Groceries"] [data-bva-fill]') as HTMLElement;
+    expect(over.style.width).toBe('100%'); // $27.50 avg of a $20 budget
+    expect(document.querySelector('[data-bva="Groceries"] [data-bva-budget-tick]')).toBeTruthy();
+    const under = document.querySelector('[data-bva="Dining"] [data-bva-fill]') as HTMLElement;
+    expect(under.style.width).toBe('62.5%'); // 25 of 40, scaled to ITS row
+  });
+
+  it('says it is a monthly average when the window is longer than a month', () => {
+    view('budget-vs-actual');
+    expect(screen.getByText(/monthly average across 2 months/i)).toBeTruthy();
+  });
+});

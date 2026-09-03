@@ -10,7 +10,7 @@ import {
   budgetVsActualData, cashFlowData, categoryDonutData, categoryTrendData, cumulativeFlowData,
   feesInterestData, merchantTable, momDeltaData, netWorthData, poolBurndownData, poolPaceData,
   runwayTrendData, savingsRateData, seasonalityGrid, spendCalendarData, uncatTrendData,
-  dataCheckResult, subscriptionSummary,
+  dataCheckResult, subscriptionSummary, budgetVsActualAvgData,
 } from './report-data';
 
 /**
@@ -42,7 +42,7 @@ export const REPORT_TITLES: Record<string, string> = {
   'runway-trend': 'Cash runway',
   'headline-stats': 'Headline numbers',
   'category-donut': 'Where it went',
-  'mom-delta': 'Month vs last',
+  'mom-delta': 'This month vs last',
   'spend-calendar': 'Spending calendar',
   'pool-pace': 'Pool pace',
   'cumulative-flow': 'Money in vs out',
@@ -186,26 +186,46 @@ function Merchants({ cube, full, density }: { cube: ReportCube; full: boolean; d
 }
 
 function BudgetVsActual({ cube, full, density }: { cube: ReportCube; full: boolean; density: number }) {
-  const month = cube.months.at(-1);
-  const rows = month ? budgetVsActualData(cube, month) : [];
+  const rows = budgetVsActualAvgData(cube);
   if (rows.length === 0) return <div className="sfin-subtle">No budgets or spending this month.</div>;
-  const max = Math.max(...rows.map((r) => Math.max(r.budget, r.actual)), 1);
   const cap = density <= 1 ? 3 : density >= 3 ? 12 : 6;
   const shown = full ? rows : rows.slice(0, cap);
   return (
     <div>
-      {shown.map((r) => (
-        <div key={r.category} style={{ marginBottom: 8 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-            <span>{r.category}</span>
-            <span className="sfin-subtle">{fmt0(r.actual)} of {fmt0(r.budget)}</span>
-          </div>
-          <div style={{ position: 'relative', height: 8, borderRadius: 4, background: 'color-mix(in srgb, currentColor 12%, transparent)' }}>
-            <div style={{ position: 'absolute', inset: 0, width: `${Math.min(100, (r.budget / max) * 100)}%`, borderRadius: 4, background: 'color-mix(in srgb, currentColor 22%, transparent)' }} />
-            <div style={{ position: 'absolute', insetBlock: 0, left: 0, width: `${Math.min(100, (r.actual / max) * 100)}%`, borderRadius: 4, background: r.actual > r.budget ? color(3) : color(1) }} />
-          </div>
+      {cube.months.length > 1 && (
+        <div className="sfin-subtle" style={{ marginBottom: 6 }}>
+          monthly average across {cube.months.length} months
         </div>
-      ))}
+      )}
+      {shown.map((r) => {
+        // Each bar scales to ITS OWN row: against the global max, a $174
+        // overspend of a $100 budget rendered as a sliver next to Housing's
+        // $1,550 (live, 2026-09-02). Over budget = full bar, warning color,
+        // with a tick where the budget sat.
+        const denom = Math.max(r.budget, r.actual, 0.01);
+        const over = r.actual > r.budget;
+        return (
+          <div key={r.category} data-bva={r.category} style={{ marginBottom: 8 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <span>{r.category}</span>
+              <span className="sfin-subtle">{fmt0(r.actual)} of {fmt0(r.budget)}</span>
+            </div>
+            <div style={{ position: 'relative', height: 8, borderRadius: 4, background: 'color-mix(in srgb, currentColor 12%, transparent)', overflow: 'hidden' }}>
+              <div
+                data-bva-fill
+                style={{ position: 'absolute', insetBlock: 0, left: 0, width: `${Math.min(100, (r.actual / denom) * 100)}%`, borderRadius: 4, background: over ? color(3) : color(1) }}
+              />
+              {over && r.budget > 0 && (
+                <div
+                  data-bva-budget-tick
+                  title={`budget: ${fmt0(r.budget)}`}
+                  style={{ position: 'absolute', insetBlock: 0, left: `${(r.budget / denom) * 100}%`, width: 2, background: 'var(--background)' }}
+                />
+              )}
+            </div>
+          </div>
+        );
+      })}
       {!full && rows.length > shown.length && (
         <div className="sfin-subtle">+ {rows.length - shown.length} more — open the card for all</div>
       )}

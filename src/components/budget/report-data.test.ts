@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   cashFlowData, categoryTrendData, netWorthData, savingsRateData, merchantTable,
   budgetVsActualData, seasonalityGrid, feesInterestData, runwayTrendData, poolBurndownData,
-  dataCheckResult, subscriptionSummary,
+  dataCheckResult, subscriptionSummary, budgetVsActualAvgData,
 } from './report-data';
 import { CUBE } from '../../../shared/report-cube.test';
 import type { ReportCube } from '../../../shared/report-cube';
@@ -206,5 +206,22 @@ describe('subscriptionSummary', () => {
 
   it('an empty roster is real news, not null', () => {
     expect(subscriptionSummary({ ...CUBE, subscriptions: [] })).toEqual({ totalCents: 0, subs: [] });
+  });
+});
+
+describe('budgetVsActualAvgData (v1.40)', () => {
+  it('averages budget and spend per month over the cube window', () => {
+    // The card said "monthly" while the range chips said 3/6/12 — averaging
+    // makes it honest for any window; a one-month window equals the old view.
+    // Budgets are 40/35 both months; spend averages to 25 and 27.5.
+    expect(budgetVsActualAvgData(CUBE)).toEqual([
+      { category: 'Groceries', budget: 35, actual: 27.5 },
+      { category: 'Dining', budget: 40, actual: 25 },
+    ]);
+  });
+
+  it('a one-month cube matches the single-month view', () => {
+    const one = { ...CUBE, months: ['2026-08'], spend: [CUBE.spend[1]], uncategorized: [CUBE.uncategorized[1]], income: [CUBE.income[1]], budgets: [CUBE.budgets[1]], merchants: [CUBE.merchants[1]], feesInterest: [CUBE.feesInterest[1]], netWorth: [CUBE.netWorth[1]], liquid: [CUBE.liquid[1]] };
+    expect(budgetVsActualAvgData(one)).toEqual(budgetVsActualData(one, '2026-08'));
   });
 });
