@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.43.0] - 2026-09-02
+
+### Added
+
+- **Per-tile time windows.** Any card can pin its own range (Month / 3 / 6 /
+  12 / All) via the ⏱ button in Customize — pinned cards ignore the shared
+  chips and wear a small badge; everything else keeps following the chips.
+- **Pick your headline numbers.** The headline card's catalog grows to 14
+  stats — income, net flow, average daily spend, month-end projection, net
+  worth, liquid cash, uncategorized, fees, subscriptions cost, spend vs last
+  month, pool left, and the classic trio — and the open card lets you choose
+  any one to five of them.
+- **Color palettes.** Ten palettes (Sage, Ocean, Sunset, Forest, Berry,
+  Slate, Autumn, Pastel, Mono green, Bold): pick one globally from the
+  Customize toolbar swatches, and/or override any single card with its 🎨
+  button. Charts recolor everywhere via CSS custom properties.
+- **Cancelling feels like a win.** Dismissing a subscription pops a small
+  celebration with the money freed ("🎉 … $4.99/mo back in your pocket"),
+  and the card's rows got a general polish (separators, hover, tabular
+  numbers).
+
+### Fixed
+
+- Budget-vs-actual now shows EVERY category, compressing row height and type
+  to fit the card instead of cutting off the bottom of the list.
+
 ## [1.42.0] - 2026-09-02
 
 ### Changed

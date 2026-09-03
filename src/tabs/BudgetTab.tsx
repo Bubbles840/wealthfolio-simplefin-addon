@@ -11,6 +11,7 @@ import { moveTo as engineMoveTo } from '../../shared/grid-engine';
 import { newCustomReportId, type CustomReport } from '../../shared/report-eval';
 import { ReportBuilder } from '../components/budget/ReportBuilder';
 import type { SecretsStore } from '../utils/secrets';
+import { PALETTES, paletteVars } from '../components/budget/palettes';
 
 /**
  * The Budget tab: the addon's first and default view, ONE grid since v1.33.0.
@@ -190,6 +191,8 @@ export function BudgetTab({
     onRestoreSubscriptions: onHiddenSubscriptionsChange
       ? () => onHiddenSubscriptionsChange([])
       : undefined,
+    headlinePicks: layout?.headline,
+    onHeadlinePicksChange: (ids: string[]) => onLayoutChange({ ...storedLayout, headline: ids }),
   };
 
   if (builder) {
@@ -235,7 +238,7 @@ export function BudgetTab({
 
   if (fullId !== null) {
     return (
-      <div data-full-report={fullId}>
+      <div data-full-report={fullId} style={layout?.palette ? paletteVars(layout.palette) : undefined}>
         {staleStrip}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
           <Button variant="ghost" aria-label="Back to all reports" onClick={() => setFullId(null)}>
@@ -323,6 +326,16 @@ export function BudgetTab({
   }
 
   const cardOf = (id: string) => shownBoard.find((c) => c.id === id);
+  /** A pinned card ignores the shared chips ('pool' pins only mean something
+   *  while a pool exists). */
+  const viewCubeFor = (id: string) => {
+    const pinned = layout?.ranges?.[id];
+    if (pinned === undefined || (pinned === 'pool' && !cube.pool)) return viewCube;
+    return sliceCubeMonths(cube, pinned);
+  };
+  const RANGE_PIN_CYCLE: Array<number | 'all' | null> = [null, 1, 3, 6, 12, 'all'];
+  const pinLabel = (pin: number | 'all' | 'pool' | undefined | null) =>
+    pin == null ? 'follows' : pin === 'all' ? 'All' : pin === 'pool' ? 'Pool' : `${pin}mo`;
   const spanFor = (id: string) => {
     const live = dragSpans[id];
     if (live) return live;
@@ -335,11 +348,13 @@ export function BudgetTab({
   const cellStyle = (id: string): React.CSSProperties => {
     const card = cardOf(id);
     const { c, r } = spanFor(id);
+    const perCardPalette = layout?.palettes?.[id];
     return {
       ['--sfin-x' as never]: String(card?.x ?? 0),
       ['--sfin-y' as never]: String(card?.y ?? 0),
       ['--sfin-c' as never]: String(c),
       ['--sfin-r' as never]: String(r),
+      ...(perCardPalette ? paletteVars(perCardPalette) : {}),
     };
   };
 
@@ -516,6 +531,38 @@ export function BudgetTab({
         </Button>
         <Button
           variant="ghost"
+          aria-label={`Range for ${title}`}
+          title={`Range: ${pinLabel(layout?.ranges?.[id] ?? null)} — click to change`}
+          onClick={() => {
+            const current = layout?.ranges?.[id] ?? null;
+            const idx = RANGE_PIN_CYCLE.findIndex((v) => v === current);
+            const next = RANGE_PIN_CYCLE[(idx + 1) % RANGE_PIN_CYCLE.length];
+            const ranges = { ...(storedLayout.ranges ?? {}) };
+            if (next === null) delete ranges[id];
+            else ranges[id] = next;
+            onLayoutChange({ ...storedLayout, ranges });
+          }}
+        >
+          ⏱ {pinLabel(layout?.ranges?.[id] ?? null)}
+        </Button>
+        <Button
+          variant="ghost"
+          aria-label={`Palette for ${title}`}
+          title="Cycle this card's palette"
+          onClick={() => {
+            const ids: Array<string | null> = [null, ...PALETTES.map((pal) => pal.id)];
+            const current = layout?.palettes?.[id] ?? null;
+            const next = ids[(ids.findIndex((v) => v === current) + 1) % ids.length];
+            const palettes = { ...(storedLayout.palettes ?? {}) };
+            if (next === null) delete palettes[id];
+            else palettes[id] = next;
+            onLayoutChange({ ...storedLayout, palettes });
+          }}
+        >
+          🎨
+        </Button>
+        <Button
+          variant="ghost"
           aria-label={`Hide ${title}`}
           onClick={() => {
             onLayoutChange(toggleHidden(storedLayout, availableIds, id));
@@ -538,7 +585,7 @@ export function BudgetTab({
       onPointerMove={onMoveOver}
       onPointerUp={onMoveUp}
     >
-      <ReportView id={id} cube={viewCube} customReports={customReports} density={Math.max(1, Math.round(spanFor(id).r / 4))} {...subsProps} />
+      <ReportView id={id} cube={viewCubeFor(id)} customReports={customReports} density={Math.max(1, Math.round(spanFor(id).r / 4))} {...subsProps} />
       {controls(id)}
       <div
         className="sfin-resize-handle"
@@ -570,7 +617,10 @@ export function BudgetTab({
         if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setFullId(id); }
       }}
     >
-      <ReportView id={id} cube={viewCube} customReports={customReports} density={Math.max(1, Math.round(spanFor(id).r / 4))} {...subsProps} />
+      <ReportView id={id} cube={viewCubeFor(id)} customReports={customReports} density={Math.max(1, Math.round(spanFor(id).r / 4))} {...subsProps} />
+      {layout?.ranges?.[id] !== undefined && (
+        <span className="sfin-range-pin">{pinLabel(layout.ranges[id])}</span>
+      )}
     </div>
   );
 
@@ -581,6 +631,21 @@ export function BudgetTab({
       <div className="sfin-budget-toolbar">
         {rangeChips}
         <div className="sfin-toolbar-actions">
+          {customizing && (
+            <div className="sfin-swatches" role="group" aria-label="Color palette">
+              {PALETTES.map((pal) => (
+                <button
+                  key={pal.id}
+                  type="button"
+                  className={`sfin-swatch${(layout?.palette ?? 'sage') === pal.id ? ' sfin-swatch--on' : ''}`}
+                  aria-label={`Palette ${pal.name}`}
+                  title={pal.name}
+                  style={{ background: `linear-gradient(135deg, ${pal.colors[0]} 50%, ${pal.colors[2]} 50%)` }}
+                  onClick={() => onLayoutChange({ ...storedLayout, palette: pal.id })}
+                />
+              ))}
+            </div>
+          )}
           {customizing && layout !== null && onLayoutReset && (
             <Button
               variant="ghost"
@@ -637,7 +702,7 @@ export function BudgetTab({
         </div>
       )}
 
-      <div className="sfin-budget-grid" ref={gridRef}>
+      <div className="sfin-budget-grid" ref={gridRef} style={layout?.palette ? paletteVars(layout.palette) : undefined}>
         {cells.map(({ id }) => card(id))}
         {!customizing && (
           <button

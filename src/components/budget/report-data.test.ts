@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   cashFlowData, categoryTrendData, netWorthData, savingsRateData, merchantTable,
   budgetVsActualData, seasonalityGrid, feesInterestData, runwayTrendData, poolBurndownData,
-  dataCheckResult, subscriptionSummary, budgetVsActualAvgData,
+  dataCheckResult, subscriptionSummary, budgetVsActualAvgData, headlineStatValues,
 } from './report-data';
 import { CUBE } from '../../../shared/report-cube.test';
 import type { ReportCube } from '../../../shared/report-cube';
@@ -223,5 +223,31 @@ describe('budgetVsActualAvgData (v1.40)', () => {
   it('a one-month cube matches the single-month view', () => {
     const one = { ...CUBE, months: ['2026-08'], spend: [CUBE.spend[1]], uncategorized: [CUBE.uncategorized[1]], income: [CUBE.income[1]], budgets: [CUBE.budgets[1]], merchants: [CUBE.merchants[1]], feesInterest: [CUBE.feesInterest[1]], netWorth: [CUBE.netWorth[1]], liquid: [CUBE.liquid[1]] };
     expect(budgetVsActualAvgData(one)).toEqual(budgetVsActualData(one, '2026-08'));
+  });
+});
+
+describe('headlineStatValues (v1.43)', () => {
+  it('offers the full catalog with formatted values from the cube', () => {
+    const stats = headlineStatValues(CUBE);
+    const byId = Object.fromEntries(stats.map((s) => [s.id, s]));
+    expect(stats.length).toBeGreaterThanOrEqual(13);
+    expect(byId['spent-month']).toMatchObject({ label: 'Spent this month', value: '$47' });
+    expect(byId['income-month']).toMatchObject({ label: 'Income this month', value: '$0' });
+    expect(byId['net-flow']).toMatchObject({ value: '-$47' });
+    // Latest KNOWN net worth: August is null, July was $9,000.
+    expect(byId['net-worth']).toMatchObject({ value: '$9,000' });
+    expect(byId['liquid']).toMatchObject({ value: '$4,100' });
+    expect(byId['uncat-month']).toMatchObject({ value: '$2' });
+    expect(byId['delta-spend']).toMatchObject({ value: '-23%' });
+    // August had no income, so the rate is unknowable this month.
+    expect(byId['savings-rate'].value).toBe('88%'); // latest known month
+  });
+
+  it('every stat renders SOMETHING — unknowable is a dash, never a crash', () => {
+    const empty = { ...CUBE, months: ['2026-08'], spend: [CUBE.spend[1]], uncategorized: [[0, 0]], income: [[0, 0]], budgets: [CUBE.budgets[1]], merchants: [[]], feesInterest: [0], netWorth: [null], liquid: [null], pool: null };
+    for (const s of headlineStatValues(empty)) {
+      expect(typeof s.value).toBe('string');
+      expect(s.value.length).toBeGreaterThan(0);
+    }
   });
 });

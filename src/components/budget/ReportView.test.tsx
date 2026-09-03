@@ -483,3 +483,65 @@ describe('budget vs actual: per-row fill and averaging (v1.40)', () => {
     expect(screen.getByText(/monthly average across 2 months/i)).toBeTruthy();
   });
 });
+
+describe('headline picks (v1.43)', () => {
+  it('renders the chosen stats in order, up to five', () => {
+    render(<ReportView id="headline-stats" customReports={[]} cube={fresh()}
+      headlinePicks={['net-worth', 'liquid', 'spent-month', 'income-month', 'net-flow']} />);
+    expect(screen.getByText('Net worth')).toBeTruthy();
+    expect(screen.getByText('Liquid cash')).toBeTruthy();
+    expect(screen.getByText('Net this month')).toBeTruthy();
+    expect(screen.queryByText('Savings rate')).toBeNull();
+  });
+
+  it('a single pick renders one big number', () => {
+    render(<ReportView id="headline-stats" customReports={[]} cube={fresh()} headlinePicks={['net-worth']} />);
+    expect(screen.getByText('$9,000')).toBeTruthy();
+    expect(document.querySelectorAll('.sfin-tile')).toHaveLength(1);
+  });
+
+  it('the open view offers the catalog as toggles, capped at five', () => {
+    const onChange = vi.fn();
+    render(<ReportView id="headline-stats" customReports={[]} cube={fresh()} hero
+      headlinePicks={['spent-month', 'cash-runway', 'savings-rate', 'net-worth', 'liquid']}
+      onHeadlinePicksChange={onChange} />);
+    // Adding a sixth is refused; removing one works.
+    fireEvent.click(screen.getByRole('button', { name: 'Show Uncategorized' }));
+    expect(onChange).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Hide Savings rate' }));
+    expect(onChange).toHaveBeenCalledWith(['spent-month', 'cash-runway', 'net-worth', 'liquid']);
+  });
+});
+
+describe('budget vs actual compresses to fit (v1.43)', () => {
+  it('renders EVERY category and picks a scale tier from count vs card height', () => {
+    const many = {
+      ...fresh(),
+      categories: Array.from({ length: 11 }, (_, i) => `Cat ${String.fromCharCode(65 + i)}`),
+      spend: fresh().months.map(() => Array.from({ length: 11 }, () => [1000, 0])),
+      budgets: fresh().months.map(() => Array.from({ length: 11 }, () => 2000)),
+    };
+    render(<ReportView id="budget-vs-actual" customReports={[]} cube={many} density={2} />);
+    // No "+ N more" hiding — the card compresses instead.
+    expect(screen.queryByText(/more — open the card/i)).toBeNull();
+    expect(document.querySelectorAll('[data-bva]')).toHaveLength(11);
+    expect((document.querySelector('[data-bva-list]') as HTMLElement).getAttribute('data-bva-scale')).toBe('tiny');
+  });
+
+  it('a short list at full size stays at the normal scale', () => {
+    render(<ReportView id="budget-vs-actual" customReports={[]} cube={fresh()} density={4} />);
+    expect((document.querySelector('[data-bva-list]') as HTMLElement).getAttribute('data-bva-scale')).toBe('normal');
+  });
+});
+
+describe('subscription dismissal feels like a win (v1.43)', () => {
+  it('cancelling celebrates the money freed', () => {
+    const onHide = vi.fn();
+    render(<ReportView id="subscriptions" customReports={[]} cube={{ ...fresh(), subscriptions: [
+      { name: 'QR LIBRARY', monthlyCents: 499, count: 4, lastDate: '2026-08-22', lastCents: 499, creep: false, kind: 'subscription' as const },
+    ] }} hiddenSubscriptions={[]} onHideSubscription={onHide} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss QR LIBRARY' }));
+    expect(onHide).toHaveBeenCalledWith('QR LIBRARY');
+    expect(screen.getByText(/\$4\.99\/mo back in your pocket/i)).toBeTruthy();
+  });
+});

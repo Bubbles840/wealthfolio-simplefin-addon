@@ -255,3 +255,27 @@ describe('2-D board (v1.41)', () => {
     expect(parseBudgetLayout(JSON.stringify({ heroes: [], order: [], hidden: [], pos: { merchants: [-1, 0, 4, 8] } }))).toBeNull();
   });
 });
+
+describe('per-card ranges and headline picks (v1.43)', () => {
+  it('parseBudgetLayout keeps valid card ranges and rejects junk', () => {
+    const ok = { heroes: [], order: [], hidden: [], ranges: { 'net-worth': 3, 'cash-flow': 'all' } };
+    expect(parseBudgetLayout(JSON.stringify(ok))).toEqual(ok);
+    expect(parseBudgetLayout(JSON.stringify({ heroes: [], order: [], hidden: [], ranges: { x: 'weekly' } }))).toBeNull();
+    expect(parseBudgetLayout(JSON.stringify({ heroes: [], order: [], hidden: [], ranges: { x: 0 } }))).toBeNull();
+  });
+
+  it('parseBudgetLayout keeps a valid headline pick list and rejects junk', () => {
+    const ok = { heroes: [], order: [], hidden: [], headline: ['spent-month', 'net-worth'] };
+    expect(parseBudgetLayout(JSON.stringify(ok))).toEqual(ok);
+    expect(parseBudgetLayout(JSON.stringify({ heroes: [], order: [], hidden: [], headline: [7] }))).toBeNull();
+  });
+});
+
+describe('palettes (v1.43)', () => {
+  it('parseBudgetLayout keeps a global palette and per-card palettes', () => {
+    const ok = { heroes: [], order: [], hidden: [], palette: 'ocean', palettes: { 'net-worth': 'sunset' } };
+    expect(parseBudgetLayout(JSON.stringify(ok))).toEqual(ok);
+    expect(parseBudgetLayout(JSON.stringify({ heroes: [], order: [], hidden: [], palette: 7 }))).toBeNull();
+    expect(parseBudgetLayout(JSON.stringify({ heroes: [], order: [], hidden: [], palettes: { x: 3 } }))).toBeNull();
+  });
+});
