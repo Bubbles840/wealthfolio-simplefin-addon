@@ -17,7 +17,9 @@ RUN cd companion && npm run build
 
 # ── Stage 2: Production image ─────────────────────────────────────────────────
 FROM node:22-alpine
-RUN apk add --no-cache sqlite
+# ttf-dejavu: resvg renders SVG text as NOTHING without a font on disk —
+# live 2026-09-03, every chart photo shipped with no axis labels or legend.
+RUN apk add --no-cache sqlite ttf-dejavu
 WORKDIR /app
 
 # Copy compiled output from builder

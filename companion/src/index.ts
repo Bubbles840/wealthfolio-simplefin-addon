@@ -2941,7 +2941,11 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
       if (!svg) return null;
       try {
         const { Resvg } = await import('@resvg/resvg-js');
-        const png: Uint8Array = new Resvg(svg).render().asPng();
+        // loadSystemFonts + an explicit default: the image ships ttf-dejavu
+        // precisely so text renders — resvg drops text silently otherwise.
+        const png: Uint8Array = new Resvg(svg, {
+          font: { loadSystemFonts: true, defaultFontFamily: 'DejaVu Sans' },
+        }).render().asPng();
         // The caption carries the latest numbers — a photo has no hover.
         return { png, title: reportImageCaption(view, reportId) };
       } catch (err) {

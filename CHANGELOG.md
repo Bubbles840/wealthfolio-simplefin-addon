@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.45.1] - 2026-09-03
+
+### Fixed
+
+- Chart photos rendered with NO text at all — no axis numbers, no month
+  labels, no legend names — because the Alpine image ships no fonts and
+  resvg silently drops text it cannot face. The image now bundles DejaVu
+  and resvg is told to use it.
+
 ## [1.45.0] - 2026-09-03
 
 ### Changed

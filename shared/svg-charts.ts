@@ -12,7 +12,9 @@
  * Budget tab's register.
  */
 
-const FONT = 'font-family="system-ui, sans-serif"';
+// DejaVu leads because that is the font the companion image actually ships
+// for resvg; browsers fall through to their own sans.
+const FONT = 'font-family="DejaVu Sans, system-ui, sans-serif"';
 const AXIS = '#8a9490';
 const GRID = 'rgba(138, 148, 144, 0.18)';
 const BG = '#1c1f1e';
