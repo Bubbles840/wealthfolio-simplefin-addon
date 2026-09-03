@@ -4330,3 +4330,40 @@ describe('subscriptions in the reports', () => {
     expect(staleText).not.toContain('up from its usual');
   });
 });
+
+describe('/reports command (v1.44)', () => {
+  const run = async (env: Record<string, string | undefined>) => {
+    const saved: Record<string, string | undefined> = {};
+    for (const [k, v] of Object.entries(env)) { saved[k] = process.env[k]; if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+    try {
+      const client = {
+        getAddonSecret: vi.fn(async () => null),
+        setAddonSecret: vi.fn(async () => {}),
+      } as any;
+      const sent: Array<{ text: string; keyboard?: any }> = [];
+      await buildTelegramCommandHandler(client)(
+        { command: 'reports', args: '' },
+        async (text: string, keyboard?: any) => { sent.push({ text, keyboard }); },
+      );
+      return sent;
+    } finally {
+      for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+    }
+  };
+
+  it('offers every renderable chart as one tappable menu — no command sprawl', async () => {
+    const sent = await run({ MINIAPP_LINK: undefined });
+    expect(sent).toHaveLength(1);
+    const buttons = sent[0].keyboard.inline_keyboard.flat();
+    expect(buttons.some((b: any) => b.callback_data === 'mrep:cash-flow')).toBe(true);
+    expect(buttons.some((b: any) => b.callback_data === 'mrep:pool-burndown')).toBe(true);
+    // No dashboard link configured: no dead URL button.
+    expect(buttons.some((b: any) => b.url)).toBe(false);
+  });
+
+  it('leads with the dashboard button when the mini app link is configured', async () => {
+    const sent = await run({ MINIAPP_LINK: 'https://t.me/MyBot/reports' });
+    const buttons = sent[0].keyboard.inline_keyboard.flat();
+    expect(buttons[0]).toMatchObject({ text: expect.stringMatching(/dashboard/i), url: 'https://t.me/MyBot/reports' });
+  });
+});

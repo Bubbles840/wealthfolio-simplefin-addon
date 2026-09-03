@@ -78,6 +78,9 @@ import { SEMESTER_POOL_SECRET_KEY, parsePoolConfig } from '../../shared/pool.js'
 import { readPoolStatus, readRunwayMonths, type PoolReportDeps } from './pool-report.js';
 import { REPORT_CUBE_SECRET_KEY, parseReportCube } from '../../shared/report-cube.js';
 import { HIDDEN_SUBSCRIPTIONS_SECRET_KEY, CONFIRMED_SUBSCRIPTIONS_SECRET_KEY, parseHiddenSubscriptions } from '../../shared/subscriptions.js';
+import { renderReportSvg, reportImageTitle, RENDERABLE_REPORT_IDS } from '../../shared/report-render.js';
+import { sliceCubeMonths } from '../../shared/report-cube.js';
+import { handleReportsRequest } from './reports-server.js';
 import { buildReportCube, type CubeBuildDeps } from './report-cube-build.js';
 
 const logLevel: 'info' | 'debug' =
@@ -2527,6 +2530,23 @@ export function buildTelegramCommandHandler(
 
   return async (cmd, reply) => {
     switch (cmd.command) {
+      case 'reports': {
+        // ONE command for the whole mobile surface: a tap-through chart menu,
+        // led by the mini-app dashboard when its t.me link is configured
+        // (env MINIAPP_LINK, minted once via BotFather /newapp).
+        const link = process.env.MINIAPP_LINK;
+        const rows: InlineKeyboard['inline_keyboard'] = [];
+        if (link) rows.push([{ text: '📊 Open full dashboard', url: link } as never]);
+        for (let i = 0; i < RENDERABLE_REPORT_IDS.length; i += 2) {
+          rows.push(RENDERABLE_REPORT_IDS.slice(i, i + 2).map((id) => ({
+            text: reportImageTitle(id),
+            callback_data: `mrep:${id}`,
+          })));
+        }
+        await reply('Your reports — tap one for a chart' + (link ? ', or open the full dashboard.' : '.'), { inline_keyboard: rows });
+        return;
+      }
+
       case 'report': {
         // `honorDailyReportSwitch: false` — the 8am schedule's off switch is not
         // an answer to "give me a report now". See composeDailyDigestMessage.
@@ -2905,6 +2925,37 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
       await wfClient.setAddonSecret('simplefin-sync', 'telegram_update_offset', String(n));
     },
     applyDismissal: (activityId) => applyTelegramDismissal(wfClient, activityId),
+    // The /reports image path: cube from the published secret (no DB read),
+    // SVG from the shared renderer, PNG via resvg — dynamically imported so
+    // environments without the binary degrade to a notice, not a crash.
+    renderReportImage: async (reportId: string) => {
+      const cube = parseReportCube(
+        await wfClient.getAddonSecret('simplefin-sync', REPORT_CUBE_SECRET_KEY).catch(() => null),
+      );
+      if (!cube) return null;
+      const view = sliceCubeMonths(cube, reportId === 'pool-burndown' ? 'pool' : 12);
+      const svg = renderReportSvg(view, reportId, { width: 900, height: 520 });
+      if (!svg) return null;
+      try {
+        const { Resvg } = await import('@resvg/resvg-js');
+        const png: Uint8Array = new Resvg(svg).render().asPng();
+        return { png, title: reportImageTitle(reportId) };
+      } catch (err) {
+        log(`Report image rasterizer unavailable: ${formatError(err)}`);
+        return null;
+      }
+    },
+    recordMiniappUser: async (userId: number) => {
+      const raw = await wfClient.getAddonSecret('simplefin-sync', 'miniapp_users').catch(() => null);
+      let ids: number[] = [];
+      try {
+        const v = JSON.parse(raw ?? '[]');
+        if (Array.isArray(v)) ids = v.filter((n) => typeof n === 'number');
+      } catch { /* rebuilt fresh */ }
+      if (!ids.includes(userId)) {
+        await wfClient.setAddonSecret('simplefin-sync', 'miniapp_users', JSON.stringify([...ids, userId]));
+      }
+    },
     undoDismissal: (activityId) => undoTelegramDismissal(wfClient, activityId),
     onCommand: buildTelegramCommandHandler(wfClient, categorize),
     // Every `cz:` tap, including the import notice's `Categorize these` (which
@@ -3007,6 +3058,60 @@ if (!process.env.VITEST) {
   log(`Starting companion v${SIMPLEFIN_SYNC_VERSION} — sync schedule: ${schedule}, daily report schedule: ${dailySchedule}, weekly report schedule: ${weeklySchedule}, monthly report schedule: ${monthlySchedule}`);
   // Only the running daemon checks for updates; see updateCheckDeps.
   updateCheckDeps.armed = true;
+
+  // The Telegram mini app's dashboard, served only when a port is configured
+  // — zero new surface otherwise. Auth is Telegram's own initData signature
+  // plus the /reports allowlist; see reports-server.ts.
+  const miniappPort = Number(process.env.MINIAPP_PORT);
+  if (Number.isFinite(miniappPort) && miniappPort > 0) {
+    const { createServer } = await import('node:http');
+    const serverDeps = {
+      botToken: async () => {
+        const tg = parseSecretJson<{ botToken?: string }>(
+          await wfClient.getAddonSecret('simplefin-sync', 'telegram_config').catch(() => null),
+          'telegram_config',
+        );
+        return tg?.botToken ?? null;
+      },
+      allowedUserIds: async () => {
+        const raw = await wfClient.getAddonSecret('simplefin-sync', 'miniapp_users').catch(() => null);
+        let ids: number[] = [];
+        try {
+          const v = JSON.parse(raw ?? '[]');
+          if (Array.isArray(v)) ids = v.filter((n) => typeof n === 'number');
+        } catch { /* env additions below */ }
+        for (const part of (process.env.MINIAPP_USER_IDS ?? '').split(',')) {
+          const n = Number(part.trim());
+          if (Number.isFinite(n) && n !== 0 && !ids.includes(n)) ids.push(n);
+        }
+        return ids;
+      },
+      readCube: async () => parseReportCube(
+        await wfClient.getAddonSecret('simplefin-sync', REPORT_CUBE_SECRET_KEY).catch(() => null),
+      ),
+    };
+    createServer((req, res) => {
+      let body = '';
+      req.on('data', (chunk) => {
+        body += chunk;
+        if (body.length > 65_536) req.destroy();
+      });
+      req.on('end', () => {
+        void handleReportsRequest(serverDeps, {
+          method: req.method ?? 'GET',
+          path: (req.url ?? '/').split('?')[0],
+          body,
+        }).then((out) => {
+          res.writeHead(out.status, { 'Content-Type': out.contentType });
+          res.end(out.body);
+        }).catch((err) => {
+          log(`Mini app request failed: ${formatError(err)}`);
+          res.writeHead(500);
+          res.end('error');
+        });
+      });
+    }).listen(miniappPort, () => log(`Mini app dashboard listening on :${miniappPort}`));
+  }
 
   cron.schedule(schedule, () => {
     // Exclusive: `/sync` (Task 6) can fire in between two schedule ticks, and

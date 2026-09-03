@@ -978,3 +978,57 @@ describe('startTelegramListener — stop', () => {
     expect(h.calls('/getUpdates').length).toBeGreaterThanOrEqual(1);
   });
 });
+
+describe('startTelegramListener — report images and mini app users (v1.44)', () => {
+  it('a report-image tap renders through the dep and sends a photo', async () => {
+    const renderReportImage = vi.fn(async (_id: string) => ({
+      png: new Uint8Array([137, 80, 78, 71]),
+      title: 'Cash flow',
+    }));
+    const h = harness({ renderReportImage } as any);
+    h.fetchImpl
+      .mockResolvedValueOnce(apiOkResponse())
+      .mockResolvedValueOnce(updatesResponse([callbackUpdate(30, 'mrep:cash-flow')]))
+      .mockResolvedValue(updatesResponse([]));
+
+    const listener = start(h.deps);
+    await waitFor('photo sent', () => h.calls('/sendPhoto').length >= 1);
+    await listener.stop();
+
+    expect(renderReportImage).toHaveBeenCalledWith('cash-flow');
+    const send = h.calls('/sendPhoto')[0];
+    const form = (send[1] as { body: FormData }).body;
+    expect(String(form.get('chat_id'))).toBe(String(Number(CHAT_ID)));
+    expect(String(form.get('caption'))).toBe('Cash flow');
+  });
+
+  it('a tap without the renderer answers instead of hanging the spinner', async () => {
+    const h = harness();
+    h.fetchImpl
+      .mockResolvedValueOnce(apiOkResponse())
+      .mockResolvedValueOnce(updatesResponse([callbackUpdate(31, 'mrep:cash-flow')]))
+      .mockResolvedValue(updatesResponse([]));
+
+    const listener = start(h.deps);
+    await waitFor('answered', () => h.calls('/answerCallbackQuery').length >= 1);
+    await listener.stop();
+    expect(h.calls('/sendPhoto')).toHaveLength(0);
+  });
+
+  it('/reports records the sender for the mini app allowlist', async () => {
+    const recordMiniappUser = vi.fn(async (_id: number) => {});
+    const h = harness({ recordMiniappUser } as any);
+    h.fetchImpl
+      .mockResolvedValueOnce(apiOkResponse())
+      .mockResolvedValueOnce(updatesResponse([{
+        update_id: 32,
+        message: { chat: { id: Number(CHAT_ID) }, from: { id: 777 }, text: '/reports' },
+      }]))
+      .mockResolvedValue(updatesResponse([]));
+
+    const listener = start(h.deps);
+    await waitFor('command ran', () => h.onCommand.mock.calls.length >= 1);
+    await listener.stop();
+    expect(recordMiniappUser).toHaveBeenCalledWith(777);
+  });
+});
