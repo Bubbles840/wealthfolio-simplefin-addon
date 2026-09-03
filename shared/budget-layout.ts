@@ -38,20 +38,30 @@ export interface BudgetLayout {
    *  t = tall (1×3), b = big (2×3). The "exact box size you want", within a
    *  system that keeps the grid flush. */
   size?: Record<string, CardSize>;
-  /** Exact per-card spans from the drag handle: [columns, rows] on the grid's
-   *  fixed rhythm. Wins over `size` and `wide`, which remain as coarser
-   *  fallbacks (the cycle button still writes `size`). */
+  /** LEGACY exact spans on the old 3×4 grid — read (×4) but never written
+   *  since v1.35.0. */
   span?: Record<string, [number, number]>;
+  /** Exact per-card spans from the drag handle, in FINE units (12×16). Wins
+   *  over everything; `size`/`wide`/`span` remain as coarser fallbacks. */
+  span2?: Record<string, [number, number]>;
 }
 
 export interface CardSpan { c: number; r: number }
 
-export const MAX_SPAN_COLS = 3;
-export const MAX_SPAN_ROWS = 4;
+/**
+ * v1.35: FINE grid units — 12 columns and short rows, so a drag can make a
+ * card "super thin" or "super wide" without a free-pixel system that would
+ * break reflow on other screen sizes. One legacy coarse unit (the old 3×4
+ * grid) = 4 fine units in each dimension, which is what `SPAN_SCALE`
+ * migrates by. New writes go to `span2`; `span` stays readable forever.
+ */
+export const MAX_SPAN_COLS = 12;
+export const MAX_SPAN_ROWS = 16;
+const SPAN_SCALE = 4;
 
-/** What each cycle letter means in grid units. */
+/** What each cycle letter means, in fine grid units. */
 const LETTER_SPANS: Record<CardSize, [number, number]> = {
-  c: [1, 1], m: [1, 2], w: [2, 2], t: [1, 3], b: [2, 3],
+  c: [4, 4], m: [4, 8], w: [8, 8], t: [4, 12], b: [8, 12],
 };
 
 export type CardSize = 'c' | 'm' | 'w' | 't' | 'b';
@@ -99,11 +109,13 @@ export function parseBudgetLayout(raw: string | null | undefined): BudgetLayout 
       if (val !== 'c' && val !== 'm' && val !== 'w' && val !== 't' && val !== 'b') return null;
     }
   }
-  if (v.span !== undefined) {
-    if (typeof v.span !== 'object' || v.span === null) return null;
-    for (const val of Object.values(v.span)) {
-      if (!Array.isArray(val) || val.length !== 2
-        || !val.every((n) => Number.isInteger(n) && n >= 1)) return null;
+  for (const key of ['span', 'span2'] as const) {
+    if (v[key] !== undefined) {
+      if (typeof v[key] !== 'object' || v[key] === null) return null;
+      for (const val of Object.values(v[key])) {
+        if (!Array.isArray(val) || val.length !== 2
+          || !val.every((n) => Number.isInteger(n) && n >= 1)) return null;
+      }
     }
   }
   return {
@@ -111,6 +123,7 @@ export function parseBudgetLayout(raw: string | null | undefined): BudgetLayout 
     ...(v.wide ? { wide: v.wide } : {}),
     ...(v.size ? { size: v.size } : {}),
     ...(v.span ? { span: v.span } : {}),
+    ...(v.span2 ? { span2: v.span2 } : {}),
   };
 }
 
@@ -163,14 +176,15 @@ function resolveFrom(stored: BudgetLayout | null, avail: string[], poolPresent: 
   const sizeOf = (id: string): CardSize =>
     stored?.size?.[id]
     ?? (wide.includes(id) ? 'w' : DEFAULT_COMPACT.has(id) ? 'c' : 'm');
+  const clamp = (c: number, r: number): CardSpan => ({
+    c: Math.min(MAX_SPAN_COLS, Math.max(1, c)),
+    r: Math.min(MAX_SPAN_ROWS, Math.max(1, r)),
+  });
   const spanOf = (id: string): CardSpan => {
-    const exact = stored?.span?.[id];
-    if (exact) {
-      return {
-        c: Math.min(MAX_SPAN_COLS, Math.max(1, exact[0])),
-        r: Math.min(MAX_SPAN_ROWS, Math.max(1, exact[1])),
-      };
-    }
+    const fine = stored?.span2?.[id];
+    if (fine) return clamp(fine[0], fine[1]);
+    const legacy = stored?.span?.[id];
+    if (legacy) return clamp(legacy[0] * SPAN_SCALE, legacy[1] * SPAN_SCALE);
     const preset = DEFAULT_SPANS[id];
     if (preset && !stored?.size?.[id] && !wide.includes(id)) {
       // Front cards default big; fixed presets (the headline strip) likewise —
@@ -178,7 +192,7 @@ function resolveFrom(stored: BudgetLayout | null, avail: string[], poolPresent: 
       const [c, r] = preset;
       return { c, r };
     }
-    if (frontSet.has(id) && !stored?.size?.[id] && !wide.includes(id)) return { c: 2, r: 2 };
+    if (frontSet.has(id) && !stored?.size?.[id] && !wide.includes(id)) return { c: 8, r: 8 };
     const [c, r] = LETTER_SPANS[sizeOf(id)];
     return { c, r };
   };
@@ -187,7 +201,7 @@ function resolveFrom(stored: BudgetLayout | null, avail: string[], poolPresent: 
 
 /** Fixed default shapes for cards whose content dictates one. */
 const DEFAULT_SPANS: Record<string, [number, number]> = {
-  'headline-stats': [3, 1],
+  'headline-stats': [12, 4],
 };
 
 export function resolveBudgetLayout(
@@ -264,11 +278,11 @@ export function cycleSize(stored: BudgetLayout, id: string): BudgetLayout {
   };
 }
 
-/** Store an exact span from the drag handle, clamped to the grid. */
+/** Store an exact FINE span from the drag handle, clamped to the grid. */
 export function setSpan(stored: BudgetLayout, id: string, cols: number, rows: number): BudgetLayout {
   const c = Math.min(MAX_SPAN_COLS, Math.max(1, Math.round(cols)));
   const r = Math.min(MAX_SPAN_ROWS, Math.max(1, Math.round(rows)));
-  return { ...stored, span: { ...(stored.span ?? {}), [id]: [c, r] } };
+  return { ...stored, span2: { ...(stored.span2 ?? {}), [id]: [c, r] } };
 }
 
 /** Drag-to-move's drop: put `id` immediately before `targetId` in the one

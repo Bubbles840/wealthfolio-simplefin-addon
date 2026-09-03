@@ -77,6 +77,7 @@ import { parsePoolArgs, POOL_USAGE_REPLY } from '../../shared/telegram-commands.
 import { SEMESTER_POOL_SECRET_KEY, parsePoolConfig } from '../../shared/pool.js';
 import { readPoolStatus, readRunwayMonths, type PoolReportDeps } from './pool-report.js';
 import { REPORT_CUBE_SECRET_KEY, parseReportCube } from '../../shared/report-cube.js';
+import { HIDDEN_SUBSCRIPTIONS_SECRET_KEY, parseHiddenSubscriptions } from '../../shared/subscriptions.js';
 import { buildReportCube, type CubeBuildDeps } from './report-cube-build.js';
 
 const logLevel: 'info' | 'debug' =
@@ -1801,7 +1802,12 @@ async function readCubeSubscriptions(
   const cube = parseReportCube(
     await wfClient.getAddonSecret('simplefin-sync', REPORT_CUBE_SECRET_KEY).catch(() => null),
   );
-  return cube?.subscriptions ?? [];
+  // Dismissals ("cancelled that already") filter every consumer of the
+  // roster; the cube itself keeps the full detection so a restore is instant.
+  const hidden = new Set(parseHiddenSubscriptions(
+    await wfClient.getAddonSecret('simplefin-sync', HIDDEN_SUBSCRIPTIONS_SECRET_KEY).catch(() => null),
+  ));
+  return (cube?.subscriptions ?? []).filter((sub) => !hidden.has(sub.name));
 }
 
 export const updateCheckDeps: {

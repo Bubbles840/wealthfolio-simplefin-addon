@@ -32,3 +32,18 @@ describe('categoryRulePattern', () => {
     expect(categoryRulePattern('')).toBe('');
   });
 });
+
+describe('mixed alphanumeric reference codes', () => {
+  it('drops short uppercase code tokens that carry digits', () => {
+    // "CLAUDE.AI *SUB 8ZK1" / "... 41XP": the per-charge reference is letters
+    // AND digits, so the no-letters rule kept it and every charge looked like
+    // a different merchant.
+    expect(categoryRulePattern('CLAUDE.AI *SUB 8ZK1')).toBe('CLAUDE.AI *SUB');
+    expect(categoryRulePattern('CLAUDE.AI *SUB 41XP')).toBe('CLAUDE.AI *SUB');
+  });
+
+  it('keeps ordinary words and digit-free tokens', () => {
+    expect(categoryRulePattern('Payment to Ccb Credit Card Payments')).toBe('Payment to Ccb Credit Card Payments');
+    expect(categoryRulePattern('SHELL OIL 5744')).toBe('SHELL OIL');
+  });
+});

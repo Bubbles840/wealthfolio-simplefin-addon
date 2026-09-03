@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.35.0] - 2026-09-02
+
+### Changed
+
+- **You can see cards move now.** Dragging a card makes it lift, fade, and
+  cast a shadow while every other card *glides* into its new place instead of
+  teleporting; resizing gets a dashed live outline and the same gliding
+  neighbors. (FLIP animations over the real grid — no fake drag layer.)
+- **Near-custom sizes.** The grid is 12 fine columns with short rows instead
+  of 3 coarse columns: the corner drag now snaps every ~40px, so "super thin",
+  "super wide", or anything between is just a drag — no numbers to type.
+  Existing saved sizes migrate automatically. Because it stays a grid (not
+  free pixels), layouts still reflow cleanly on wider/narrower screens, and
+  phones still collapse to one column with each card keeping its height.
+- **Subscriptions detect better and can be dismissed.** Charges whose bank
+  descriptors differ only by per-charge reference codes ("CLAUDE.AI *SUB
+  8ZK1" vs "…41XP") now group as one subscription; cadence and price are
+  judged on the latest three charges, so a plan upgrade or an old billing
+  hiccup no longer disqualifies a real subscription. Each row has a ✕ for
+  "cancelled that already" — dismissals leave the card, the weekly total, and
+  the creep line immediately, with a one-tap restore.
+
 ## [1.34.0] - 2026-09-02
 
 ### Added

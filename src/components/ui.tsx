@@ -537,19 +537,21 @@ body {
 }
 .sfin-budget-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
 .sfin-budget-toolbar .sfin-range-chips { margin: 0; }
-.sfin-budget-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; margin-top: 14px; }
+.sfin-budget-grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 14px; margin-top: 14px; }
 .sfin-cell { min-width: 0; }
 .sfin-cell[role="button"] { cursor: pointer; outline: none; border-radius: 12px; }
 /* Spans ride CSS custom properties set per cell (--sfin-c/--sfin-r), so the
    phone rules below can flatten EVERYTHING to one column — an inline
    grid-column would outrank them and break small screens. */
-.sfin-budget-grid { grid-auto-rows: 158px; grid-auto-flow: dense; }
+.sfin-budget-grid { grid-auto-rows: 29px; grid-auto-flow: dense; }
 .sfin-budget-grid > .sfin-cell {
   grid-column: span var(--sfin-c, 1);
   grid-row: span var(--sfin-r, 2);
 }
 @media (max-width: 720px) {
-  .sfin-budget-grid { grid-template-columns: 1fr; grid-auto-rows: 150px; }
+  .sfin-budget-grid { grid-template-columns: 1fr; }
+  /* Full width, height kept from --sfin-r: a "super thin" desktop card is a
+     normal full-width card on a phone. */
   .sfin-budget-grid > .sfin-cell { grid-column: span 1; }
   .sfin-page { padding: 14px; }
 }
@@ -675,10 +677,23 @@ body {
 .sfin-subs-price { white-space: nowrap; }
 .sfin-subs-creep { color: #c17a63; font-weight: 600; }
 .sfin-subs-total { margin-top: 4px; padding-top: 6px; border-top: 1px solid var(--border); font-weight: 600; }
-/* Drag-to-move feedback. */
+/* Drag feedback: the picked-up card lifts and fades while every other card
+   GLIDES to make room (the FLIP effect in BudgetTab animates their rects). */
 .sfin-cell--editing { cursor: grab; touch-action: none; }
 .sfin-cell--dragging { z-index: 4; }
-.sfin-cell--dragging .sfin-report-card { opacity: .55; border-style: dashed; }
+.sfin-cell--dragging .sfin-report-card {
+  opacity: .5; border-style: dashed; transform: scale(1.02);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, .28);
+  transition: transform .12s ease, box-shadow .12s ease, opacity .12s ease;
+}
+.sfin-cell--resizing .sfin-report-card {
+  outline: 1.5px dashed color-mix(in srgb, #5e9483 70%, transparent);
+  outline-offset: -1.5px; opacity: .82;
+  transition: opacity .12s ease;
+}
+/* The new-report button spans a readable width on the fine grid. */
+.sfin-new-report-card { grid-column: span 4; grid-row: span 4; }
+@media (max-width: 720px) { .sfin-new-report-card { grid-column: span 1; } }
 .sfin-uncat-undo { display: flex; align-items: center; gap: 8px; padding: 4px 0 8px; }
 /* Same rules as .sfin-uncat-undo — a distinct class because the cap notice and
    "Categorize in Wealthfolio" button are an unrelated footer, not the undo

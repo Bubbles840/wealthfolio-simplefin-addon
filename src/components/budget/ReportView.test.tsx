@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
 import { ReportView } from './ReportView';
 import { CUBE } from '../../../shared/report-cube.test';
@@ -303,5 +303,43 @@ describe('subscriptions card', () => {
   it('an empty roster reads as a clean bill, not an error', () => {
     view('subscriptions', { ...fresh(), subscriptions: [] });
     expect(screen.getByText(/no monthly subscriptions detected/i)).toBeTruthy();
+  });
+});
+
+describe('subscriptions card: dismissals', () => {
+  const SUB = { name: 'SPOTIFY', monthlyCents: 1099, count: 5, lastDate: '2026-08-20', lastCents: 1099, creep: false };
+  const QR = { ...SUB, name: 'QR LIBRARY', monthlyCents: 999 };
+
+  it('each row offers a dismiss, for the subscription that was cancelled', () => {
+    const onHide = vi.fn();
+    render(<ReportView
+      id="subscriptions"
+      cube={{ ...fresh(), subscriptions: [SUB, QR] }}
+      customReports={[]}
+      hiddenSubscriptions={[]}
+      onHideSubscription={onHide}
+    />);
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss QR LIBRARY' }));
+    expect(onHide).toHaveBeenCalledWith('QR LIBRARY');
+  });
+
+  it('hidden names leave the roster and the total, with a way back', () => {
+    const onRestore = vi.fn();
+    render(<ReportView
+      id="subscriptions"
+      cube={{ ...fresh(), subscriptions: [SUB, QR] }}
+      customReports={[]}
+      hiddenSubscriptions={['QR LIBRARY']}
+      onRestoreSubscriptions={onRestore}
+    />);
+    expect(screen.queryByText('QR LIBRARY')).toBeNull();
+    expect(screen.getByText(/\$10\.99\/mo across 1/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /1 dismissed — restore/i }));
+    expect(onRestore).toHaveBeenCalled();
+  });
+
+  it('without handlers the card renders read-only, as in older hosts', () => {
+    render(<ReportView id="subscriptions" cube={{ ...fresh(), subscriptions: [SUB] }} customReports={[]} />);
+    expect(screen.queryByRole('button', { name: /dismiss/i })).toBeNull();
   });
 });
