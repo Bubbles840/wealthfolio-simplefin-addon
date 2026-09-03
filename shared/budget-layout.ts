@@ -46,6 +46,16 @@ export interface BudgetLayout {
   /** Exact per-card spans from the drag handle, in FINE units (12×16). Wins
    *  over everything; `size`/`wide`/`span` remain as coarser fallbacks. */
   span2?: Record<string, [number, number]>;
+  /** v1.43: per-card range pins — a card listed here ignores the shared
+   *  range chips and always renders this window (months, or 'all'/'pool'). */
+  ranges?: Record<string, number | 'all' | 'pool'>;
+  /** v1.43: which headline stats the headline card shows, in order (1–5 of
+   *  the catalog in report-data). Absent = the classic trio. */
+  headline?: string[];
+  /** v1.43: chart palette — global, and per-card overrides. Ids from the
+   *  addon's palette catalog; unknown ids fall back to the default. */
+  palette?: string;
+  palettes?: Record<string, string>;
   /** v1.41: the 2-D board — [x, y, w, h] per card in fine units (see
    *  shared/grid-engine.ts). When present for a card it defines placement
    *  outright; cards without one are packed after the placed ones, in the
@@ -116,6 +126,19 @@ export function parseBudgetLayout(raw: string | null | undefined): BudgetLayout 
       if (val !== 'c' && val !== 'm' && val !== 'w' && val !== 't' && val !== 'b') return null;
     }
   }
+  if (v.ranges !== undefined) {
+    if (typeof v.ranges !== 'object' || v.ranges === null) return null;
+    for (const val of Object.values(v.ranges)) {
+      const okNumber = typeof val === 'number' && Number.isInteger(val) && val >= 1;
+      if (!okNumber && val !== 'all' && val !== 'pool') return null;
+    }
+  }
+  if (v.headline !== undefined && !strings(v.headline)) return null;
+  if (v.palette !== undefined && typeof v.palette !== 'string') return null;
+  if (v.palettes !== undefined) {
+    if (typeof v.palettes !== 'object' || v.palettes === null) return null;
+    if (!Object.values(v.palettes).every((val) => typeof val === 'string')) return null;
+  }
   if (v.pos !== undefined) {
     if (typeof v.pos !== 'object' || v.pos === null) return null;
     for (const val of Object.values(v.pos)) {
@@ -139,6 +162,10 @@ export function parseBudgetLayout(raw: string | null | undefined): BudgetLayout 
     ...(v.span ? { span: v.span } : {}),
     ...(v.span2 ? { span2: v.span2 } : {}),
     ...(v.pos ? { pos: v.pos } : {}),
+    ...(v.ranges ? { ranges: v.ranges } : {}),
+    ...(v.headline ? { headline: v.headline } : {}),
+    ...(v.palette ? { palette: v.palette } : {}),
+    ...(v.palettes ? { palettes: v.palettes } : {}),
   };
 }
 

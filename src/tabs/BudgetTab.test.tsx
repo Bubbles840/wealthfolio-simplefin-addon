@@ -597,3 +597,81 @@ describe('subscription confirmation end to end', () => {
     expect(screen.getByText(/\$900\.00\/mo across 1/)).toBeInTheDocument();
   });
 });
+
+describe('per-card ranges, headline picks, palettes (v1.43)', () => {
+  const manyMonthsCube = (n: number) => ({
+    ...CUBE,
+    asOf: new Date().toISOString(),
+    months: Array.from({ length: n }, (_, i) => `2025-${String(i + 1).padStart(2, '0')}`),
+    spend: Array.from({ length: n }, () => CUBE.spend[0]),
+    uncategorized: Array.from({ length: n }, () => CUBE.uncategorized[0]),
+    income: Array.from({ length: n }, () => CUBE.income[0]),
+    budgets: Array.from({ length: n }, () => CUBE.budgets[0]),
+    merchants: Array.from({ length: n }, () => [] as any[]),
+    feesInterest: Array.from({ length: n }, () => 0),
+    netWorth: Array.from({ length: n }, () => null),
+    liquid: Array.from({ length: n }, () => null),
+  });
+
+  it('a pinned card keeps its own window while the chips drive the rest', async () => {
+    const props = makeProps();
+    (props.store as any).getReportCube = vi.fn(async () => manyMonthsCube(14));
+    (props.store as any).getBudgetLayout = vi.fn(async () => ({
+      heroes: [], order: [], hidden: [], ranges: { 'cash-flow': 3 },
+    }));
+    render(<SyncPage {...props} />);
+    await waitFor(() => expect(reportIds().length).toBeGreaterThan(0));
+    const chart = document.querySelector('[data-report-id="cash-flow"] [data-points]')!;
+    expect(JSON.parse(chart.getAttribute('data-points')!)).toHaveLength(3);
+    const unpinned = document.querySelector('[data-report-id="cumulative-flow"] [data-points]')!;
+    expect(JSON.parse(unpinned.getAttribute('data-points')!)).toHaveLength(12);
+  });
+
+  it('the range button cycles and persists a pin', async () => {
+    const props = makeProps();
+    (props.store as any).getReportCube = vi.fn(async () => manyMonthsCube(14));
+    render(<SyncPage {...props} />);
+    await waitFor(() => expect(reportIds().length).toBeGreaterThan(0));
+    fireEvent.click(screen.getByRole('button', { name: /^customize$/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Range for Merchants' }));
+    const saved = (props.store as any).setBudgetLayout.mock.calls.at(-1)![0];
+    expect(saved.ranges?.merchants).toBe(1);
+  });
+
+  it('headline picks persist from the full-screen editor', async () => {
+    const props = makeProps();
+    (props.store as any).getReportCube = vi.fn(async () => ({ ...CUBE, asOf: new Date().toISOString() }));
+    render(<SyncPage {...props} />);
+    await waitFor(() => expect(reportIds().length).toBeGreaterThan(0));
+    fireEvent.click(screen.getByRole('button', { name: /open headline numbers/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Show Net worth' }));
+    const saved = (props.store as any).setBudgetLayout.mock.calls.at(-1)![0];
+    expect(saved.headline).toEqual(['spent-month', 'cash-runway', 'savings-rate', 'net-worth']);
+  });
+
+  it('a global palette paints the grid; a per-card palette overrides its cell', async () => {
+    const props = makeProps();
+    (props.store as any).getReportCube = vi.fn(async () => ({ ...CUBE, asOf: new Date().toISOString() }));
+    (props.store as any).getBudgetLayout = vi.fn(async () => ({
+      heroes: [], order: [], hidden: [], palette: 'ocean', palettes: { merchants: 'sunset' },
+    }));
+    render(<SyncPage {...props} />);
+    await waitFor(() => expect(reportIds().length).toBeGreaterThan(0));
+    const grid = document.querySelector('.sfin-budget-grid') as HTMLElement;
+    expect(grid.style.getPropertyValue('--sfin-s0')).not.toBe('');
+    const cell = document.querySelector('[data-report-id="merchants"]')!.closest('.sfin-cell') as HTMLElement;
+    expect(cell.style.getPropertyValue('--sfin-s0')).not.toBe('');
+    expect(cell.style.getPropertyValue('--sfin-s0')).not.toBe(grid.style.getPropertyValue('--sfin-s0'));
+  });
+
+  it('the customize toolbar offers the palette swatches', async () => {
+    const props = makeProps();
+    (props.store as any).getReportCube = vi.fn(async () => ({ ...CUBE, asOf: new Date().toISOString() }));
+    render(<SyncPage {...props} />);
+    await waitFor(() => expect(reportIds().length).toBeGreaterThan(0));
+    fireEvent.click(screen.getByRole('button', { name: /^customize$/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Palette Ocean' }));
+    const saved = (props.store as any).setBudgetLayout.mock.calls.at(-1)![0];
+    expect(saved.palette).toBe('ocean');
+  });
+});

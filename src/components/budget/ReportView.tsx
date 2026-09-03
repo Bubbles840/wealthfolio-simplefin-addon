@@ -11,6 +11,7 @@ import {
   feesInterestData, merchantTable, momDeltaData, netWorthData, poolBurndownData, poolPaceData,
   runwayTrendData, savingsRateData, seasonalityGrid, spendCalendarData, uncatTrendData,
   dataCheckResult, subscriptionSummary, budgetVsActualAvgData,
+  headlineStatValues, DEFAULT_HEADLINE_IDS, MAX_HEADLINE_STATS,
 } from './report-data';
 
 /**
@@ -66,11 +67,11 @@ const fmt2 = (dollars: number) =>
 
 /** A stable small palette cycled for multi-series charts; recharts wants
  *  explicit strokes and the host theme handles contrast. */
-// Wealthfolio's register, not a default-blue chart kit: muted sage first
-// (the app's own accent family), then earth tones that sit quietly on the
-// dark ground. Matched by eye to the app's dashboard (2026-09-02).
-const SERIES_COLORS = ['#5e9483', '#3e6f63', '#c9a86b', '#c17a63', '#7189a8', '#8aa864', '#9a7aa0', '#6b7f8f'];
-const color = (i: number) => SERIES_COLORS[i % SERIES_COLORS.length];
+// Colors resolve through CSS custom properties so a palette can be applied
+// globally (grid element) or per cell, with charts none the wiser. Defaults
+// (the sage register matched to Wealthfolio's dashboard) live in ThemeStyles;
+// the catalog is src/components/budget/palettes.ts.
+const color = (i: number) => `var(--sfin-s${i % 8})`;
 
 function Frame({ children }: { children: React.ReactElement }) {
   return (
@@ -188,10 +189,17 @@ function Merchants({ cube, full, density }: { cube: ReportCube; full: boolean; d
 function BudgetVsActual({ cube, full, density }: { cube: ReportCube; full: boolean; density: number }) {
   const rows = budgetVsActualAvgData(cube);
   if (rows.length === 0) return <div className="sfin-subtle">No budgets or spending this month.</div>;
-  const cap = density <= 1 ? 3 : density >= 3 ? 12 : 6;
-  const shown = full ? rows : rows.slice(0, cap);
+  // Compress instead of hiding: every category renders, and the row scale
+  // shrinks until the list fits the card ("it's cutting off Housing" — the
+  // answer is smaller rows, not fewer). density ≈ coarse height units of
+  // ~120px; row heights per tier ≈ 34 / 26 / 19px.
+  const shown = rows;
+  const capacityPx = Math.max(1, density) * 120;
+  const scale = full || rows.length * 34 <= capacityPx ? 'normal'
+    : rows.length * 26 <= capacityPx ? 'compact'
+      : 'tiny';
   return (
-    <div>
+    <div data-bva-list data-bva-scale={scale}>
       {cube.months.length > 1 && (
         <div className="sfin-subtle" style={{ marginBottom: 6 }}>
           monthly average across {cube.months.length} months
@@ -226,36 +234,65 @@ function BudgetVsActual({ cube, full, density }: { cube: ReportCube; full: boole
           </div>
         );
       })}
-      {!full && rows.length > shown.length && (
-        <div className="sfin-subtle">+ {rows.length - shown.length} more — open the card for all</div>
-      )}
     </div>
   );
 }
 
-function HeadlineStats({ cube }: { cube: ReportCube }) {
-  const spend = monthlySpendTotals(cube).at(-1) ?? 0;
-  const runway = runwayTrendData(cube).map((r) => r.months).filter((v): v is number => typeof v === 'number').at(-1) ?? null;
-  const rate = savingsRateData(cube).map((r) => r.rate).filter((v): v is number => typeof v === 'number').at(-1) ?? null;
+function HeadlineStats({ cube, full = false, picks, onPicksChange }: {
+  cube: ReportCube;
+  full?: boolean;
+  picks?: string[];
+  onPicksChange?: (ids: string[]) => void;
+}) {
+  const catalog = headlineStatValues(cube);
+  const byId = new Map(catalog.map((stat) => [stat.id, stat]));
+  const chosen = (picks && picks.length > 0 ? picks : DEFAULT_HEADLINE_IDS)
+    .map((id) => byId.get(id))
+    .filter((stat): stat is NonNullable<typeof stat> => stat !== undefined)
+    .slice(0, MAX_HEADLINE_STATS);
+  const accents = ['blue', 'green', 'purple', 'blue', 'green'];
   return (
-    <div className="sfin-headline">
-      <div className="sfin-tile sfin-tile--blue">
-        <SectionLabel>Spent this month</SectionLabel>
-        <div className="sfin-tile-val">{fmt0(spend / 100)}</div>
+    <>
+      <div className="sfin-headline">
+        {chosen.map((stat, i) => (
+          <div key={stat.id} className={`sfin-tile sfin-tile--${accents[i % accents.length]}`}>
+            <SectionLabel>{stat.label}</SectionLabel>
+            <div className="sfin-tile-val">{stat.value}</div>
+          </div>
+        ))}
       </div>
-      {runway !== null && (
-        <div className="sfin-tile sfin-tile--green">
-          <SectionLabel>Cash runway</SectionLabel>
-          <div className="sfin-tile-val">{runway}mo</div>
+      {full && onPicksChange && (
+        <div className="sfin-headline-picker">
+          <div className="sfin-subtle">Choose up to five numbers:</div>
+          {catalog.map((stat) => {
+            const active = chosen.some((c) => c.id === stat.id);
+            return (
+              <button
+                key={stat.id}
+                type="button"
+                className={`sfin-pick${active ? ' sfin-pick--on' : ''}`}
+                aria-pressed={active}
+                aria-label={`${active ? 'Hide' : 'Show'} ${stat.label}`}
+                onClick={() => {
+                  const current = chosen.map((c) => c.id);
+                  if (active) {
+                    // Never below one — an empty headline card is a bug, not
+                    // a preference.
+                    if (current.length <= 1) return;
+                    onPicksChange(current.filter((id) => id !== stat.id));
+                  } else {
+                    if (current.length >= MAX_HEADLINE_STATS) return;
+                    onPicksChange([...current, stat.id]);
+                  }
+                }}
+              >
+                {stat.label} · {stat.value}
+              </button>
+            );
+          })}
         </div>
       )}
-      {rate !== null && (
-        <div className="sfin-tile sfin-tile--purple">
-          <SectionLabel>Savings rate</SectionLabel>
-          <div className="sfin-tile-val">{Math.round(rate)}%</div>
-        </div>
-      )}
-    </div>
+    </>
   );
 }
 
@@ -359,6 +396,11 @@ function Subscriptions({ cube, full = false, hidden = [], confirmed = [], onHide
   const totalCents = sure.reduce((sum, sub) => sum + sub.monthlyCents, 0)
     + watched.reduce((sum, w) => sum + (w.perChargeCents ?? 0), 0);
   const rosterCount = sure.length + watched.length;
+  const [celebrate, setCelebrate] = React.useState<{ name: string; cents: number } | null>(null);
+  const dismiss = (name: string, cents: number) => {
+    setCelebrate({ name, cents });
+    onHide?.(name);
+  };
   const row = (sub: (typeof visible)[number]) => (
     <div key={sub.name} className="sfin-subs-row">
       <span className="sfin-subs-name">{sub.name}</span>
@@ -377,7 +419,7 @@ function Subscriptions({ cube, full = false, hidden = [], confirmed = [], onHide
           className="sfin-subs-dismiss"
           aria-label={`Dismiss ${sub.name}`}
           title="Not a subscription / cancelled"
-          onClick={() => onHide(sub.name)}
+          onClick={() => dismiss(sub.name, sub.monthlyCents)}
         >
           ✕
         </button>
@@ -399,13 +441,18 @@ function Subscriptions({ cube, full = false, hidden = [], confirmed = [], onHide
               className="sfin-subs-dismiss"
               aria-label={`Dismiss ${w.name}`}
               title="Stop watching"
-              onClick={() => onHide(w.name)}
+              onClick={() => dismiss(w.name, w.perChargeCents ?? 0)}
             >
               ✕
             </button>
           )}
         </div>
       ))}
+      {celebrate && (
+        <div className="sfin-subs-celebrate" role="status">
+          🎉 {celebrate.name} cancelled — that&apos;s {fmt2(celebrate.cents / 100)}/mo back in your pocket.
+        </div>
+      )}
       <div className="sfin-subs-total">{fmt2(totalCents / 100)}/mo across {rosterCount}</div>
       {maybes.length > 0 && (
         <>
@@ -817,7 +864,7 @@ function CustomView({ cube, def }: { cube: ReportCube; def: CustomReport }) {
 export function ReportView({
   id, cube, customReports, hero = false, categories, density = 2,
   hiddenSubscriptions, confirmedSubscriptions, onHideSubscription, onConfirmSubscription,
-  onUnhideSubscription, onRestoreSubscriptions,
+  onUnhideSubscription, onRestoreSubscriptions, headlinePicks, onHeadlinePicksChange,
 }: {
   id: string;
   cube: ReportCube;
@@ -835,6 +882,9 @@ export function ReportView({
   onConfirmSubscription?: (name: string) => void;
   onUnhideSubscription?: (name: string) => void;
   onRestoreSubscriptions?: () => void;
+  /** Headline card: which stats to show (1–5 catalog ids) and the editor. */
+  headlinePicks?: string[];
+  onHeadlinePicksChange?: (ids: string[]) => void;
 }) {
   let body: React.ReactNode;
   if (id.startsWith('custom:')) {
@@ -852,7 +902,9 @@ export function ReportView({
       case 'seasonality': body = <Seasonality cube={cube} />; break;
       case 'fees-interest': body = <FeesInterest cube={cube} />; break;
       case 'runway-trend': body = <RunwayTrend cube={cube} />; break;
-      case 'headline-stats': body = <HeadlineStats cube={cube} />; break;
+      case 'headline-stats':
+        body = <HeadlineStats cube={cube} full={hero} picks={headlinePicks} onPicksChange={onHeadlinePicksChange} />;
+        break;
       case 'category-donut': body = <CategoryDonut cube={cube} />; break;
       case 'mom-delta': body = <MomDelta cube={cube} />; break;
       case 'spend-calendar': body = <SpendCalendar cube={cube} />; break;

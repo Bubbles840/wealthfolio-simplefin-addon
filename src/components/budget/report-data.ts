@@ -356,3 +356,67 @@ export function budgetVsActualAvgData(
     .sort((a, b) => (b.actual - b.budget) - (a.actual - a.budget))
     .map((r) => ({ category: r.category, budget: dollars(r.budget), actual: dollars(r.actual) }));
 }
+
+const usd0 = (dollars: number) =>
+  new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(dollars);
+
+export interface HeadlineStat { id: string; label: string; value: string }
+
+/** The classic trio — what the headline card shows until the user picks. */
+export const DEFAULT_HEADLINE_IDS = ['spent-month', 'cash-runway', 'savings-rate'];
+export const MAX_HEADLINE_STATS = 5;
+
+/**
+ * The headline-number catalog: every stat the headline card can show, each
+ * one string-formatted and never absent — an unknowable value is '—', so a
+ * picked stat can never blank the card or crash it. Ordering here is the
+ * picker's ordering.
+ */
+export function headlineStatValues(cube: ReportCube): HeadlineStat[] {
+  const n = cube.months.length;
+  const last = n - 1;
+  const spend = monthlySpendTotals(cube);
+  const income = monthlyIncomeTotals(cube);
+  const uncat = monthlyUncategorizedTotals(cube);
+  const lastKnown = (series: Array<number | null>): number | null => {
+    for (let i = series.length - 1; i >= 0; i -= 1) if (series[i] !== null) return series[i];
+    return null;
+  };
+  const money = (cents: number | null) => (cents === null ? '—' : usd0(Math.round(cents) / 100));
+
+  // Days elapsed in the newest month: the asOf day when asOf is IN that
+  // month, else the whole month — feeding the daily-average and projection.
+  const asOf = new Date(cube.asOf);
+  const [ly, lm] = (cube.months[last] ?? '1970-01').split('-').map(Number);
+  const daysInMonth = new Date(ly, lm, 0).getDate();
+  const sameMonth = asOf.getUTCFullYear() === ly && asOf.getUTCMonth() + 1 === lm;
+  const elapsed = Math.max(1, sameMonth ? asOf.getUTCDate() : daysInMonth);
+
+  const runway = runwayTrendData(cube).map((r) => r.months).filter((v): v is number => typeof v === 'number').at(-1) ?? null;
+  const rate = savingsRateData(cube).map((r) => r.rate).filter((v): v is number => typeof v === 'number').at(-1) ?? null;
+  const prevSpend = n >= 2 ? spend[last - 1] : null;
+  const delta = prevSpend && prevSpend > 0 ? Math.round(((spend[last] - prevSpend) / prevSpend) * 100) : null;
+  const subs = (cube.subscriptions ?? []).filter((s) => (s.kind ?? 'subscription') === 'subscription');
+  const subsCents = cube.subscriptions === undefined || cube.subscriptions === null
+    ? null
+    : subs.reduce((sum, s) => sum + s.monthlyCents, 0);
+  const pool = cube.pool;
+  const poolLeft = pool ? pool.config.amountCents - (pool.daily.at(-1)?.spentCents ?? 0) : null;
+
+  return [
+    { id: 'spent-month', label: 'Spent this month', value: money(spend[last] ?? null) },
+    { id: 'income-month', label: 'Income this month', value: money(income[last] ?? null) },
+    { id: 'net-flow', label: 'Net this month', value: n > 0 ? money(income[last] - spend[last]) : '—' },
+    { id: 'savings-rate', label: 'Savings rate', value: rate === null ? '—' : `${Math.round(rate)}%` },
+    { id: 'cash-runway', label: 'Cash runway', value: runway === null ? '—' : `${runway}mo` },
+    { id: 'avg-daily', label: 'Avg daily spend', value: n > 0 ? money(spend[last] / elapsed) : '—' },
+    { id: 'projected-month', label: 'Projected this month', value: n > 0 ? money((spend[last] / elapsed) * daysInMonth) : '—' },
+    { id: 'net-worth', label: 'Net worth', value: money(lastKnown(cube.netWorth)) },
+    { id: 'liquid', label: 'Liquid cash', value: money(lastKnown(cube.liquid)) },
+    { id: 'uncat-month', label: 'Uncategorized', value: money(uncat[last] ?? null) },
+    { id: 'fees-month', label: 'Fees & interest', value: money(cube.feesInterest[last] ?? null) },
+    { id: 'subs-cost', label: 'Subscriptions', value: subsCents === null ? '—' : `${usd0(subsCents / 100)}/mo` },
+    { id: 'delta-spend', label: 'Spend vs last month', value: delta === null ? '—' : `${delta > 0 ? '+' : ''}${delta}%` },
+    { id: 'pool-left', label: 'Pool left', value: money(poolLeft) },
+  ];
+}

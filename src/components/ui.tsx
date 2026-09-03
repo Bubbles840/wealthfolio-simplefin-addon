@@ -696,7 +696,28 @@ body {
    top-right corner is empty by construction — the line starts high-left. */
 .sfin-report-card { position: relative; }
 .sfin-pool-legend { position: absolute; top: 10px; right: 14px; display: flex; gap: 14px; font-size: 11px; color: var(--muted-foreground); }
-.sfin-pool-legend-actual { color: #5e9483; font-weight: 600; }
+.sfin-pool-legend-actual { color: var(--sfin-s0, #5e9483); font-weight: 600; }
+/* Palette custom properties: sage defaults; pickers override per grid/cell. */
+.sfin-page { --sfin-s0: #5e9483; --sfin-s1: #3e6f63; --sfin-s2: #c9a86b; --sfin-s3: #c17a63; --sfin-s4: #7189a8; --sfin-s5: #8aa864; --sfin-s6: #9a7aa0; --sfin-s7: #6b7f8f; }
+.sfin-swatches { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.sfin-swatch { width: 22px; height: 22px; border-radius: 50%; border: 2px solid transparent; cursor: pointer; padding: 0; }
+.sfin-swatch--on { border-color: var(--foreground); }
+/* Headline picker + BvA scale tiers + subscription polish. */
+.sfin-headline-picker { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; align-items: center; }
+.sfin-pick { border: 1px solid var(--border); background: transparent; color: var(--muted-foreground); border-radius: 999px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
+.sfin-pick--on { background: color-mix(in srgb, var(--sfin-s0) 18%, transparent); color: var(--foreground); border-color: color-mix(in srgb, var(--sfin-s0) 55%, transparent); }
+[data-bva-scale='compact'] [data-bva] { margin-bottom: 4px !important; font-size: 12px; }
+[data-bva-scale='compact'] [data-bva] > div:last-child { height: 6px !important; }
+[data-bva-scale='tiny'] [data-bva] { margin-bottom: 2px !important; font-size: 10.5px; }
+[data-bva-scale='tiny'] [data-bva] > div:last-child { height: 4px !important; }
+.sfin-subs-row { padding: 3px 0; border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent); }
+.sfin-subs-row:hover { background: color-mix(in srgb, var(--sfin-s0) 6%, transparent); }
+.sfin-subs-price { font-variant-numeric: tabular-nums; }
+.sfin-subs-dismiss { border: none; background: transparent; color: var(--muted-foreground); cursor: pointer; border-radius: 6px; }
+.sfin-subs-dismiss:hover { color: #c17a63; background: color-mix(in srgb, #c17a63 12%, transparent); }
+.sfin-subs-celebrate { margin-top: 6px; padding: 8px 12px; border-radius: 10px; font-size: 13px; background: color-mix(in srgb, var(--sfin-s0) 16%, transparent); border: 1px solid color-mix(in srgb, var(--sfin-s0) 45%, transparent); animation: sfin-pop .35s cubic-bezier(.2, 1.4, .4, 1); }
+@keyframes sfin-pop { from { transform: scale(.92); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+.sfin-range-pin { position: absolute; bottom: 6px; right: 10px; font-size: 10px; color: var(--muted-foreground); background: color-mix(in srgb, var(--card) 80%, transparent); border-radius: 6px; padding: 1px 6px; }
 /* Drag feedback: the picked-up card lifts and fades while every other card
    GLIDES to make room (the FLIP effect in BudgetTab animates their rects). */
 .sfin-cell--editing { cursor: grab; touch-action: none; }
