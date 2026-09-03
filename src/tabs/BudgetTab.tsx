@@ -103,7 +103,7 @@ export function BudgetTab({
   const [hiddenToast, setHiddenToast] = useState<string | null>(null);
   /** Pool editing, on the burn-down's own full screen: amount + end date as
    *  typed; parsed on save. Null = not editing. */
-  const [poolEdit, setPoolEdit] = useState<{ amount: string; end: string } | null>(null);
+  const [poolEdit, setPoolEdit] = useState<{ amount: string; start: string; end: string } | null>(null);
   const [poolSaved, setPoolSaved] = useState(false);
 
   /** FLIP refs: previous on-screen rect per card, so any render that moves a
@@ -253,6 +253,7 @@ export function BudgetTab({
                   setPoolSaved(false);
                   setPoolEdit({
                     amount: String(cube.pool!.config.amountCents / 100),
+                    start: cube.pool!.config.startDate,
                     end: cube.pool!.config.endDate,
                   });
                 }}>
@@ -275,6 +276,16 @@ export function BudgetTab({
                   />
                 </label>
                 <label className="sfin-subtle">
+                  Started{' '}
+                  <input
+                    aria-label="Pool start date"
+                    className="sfin-input"
+                    type="date"
+                    value={poolEdit.start}
+                    onChange={(e) => setPoolEdit({ ...poolEdit, start: e.target.value })}
+                  />
+                </label>
+                <label className="sfin-subtle">
                   Must last until{' '}
                   <input
                     aria-label="Pool end date"
@@ -288,12 +299,12 @@ export function BudgetTab({
                   aria-label="Save pool"
                   onClick={() => {
                     const dollars = Number(poolEdit.amount);
-                    if (!Number.isFinite(dollars) || dollars <= 0 || !/^\d{4}-\d{2}-\d{2}$/.test(poolEdit.end)) return;
-                    // The START date is kept: editing the total or the horizon
-                    // is a top-up, not a new semester.
+                    const isDate = (d: string) => /^\d{4}-\d{2}-\d{2}$/.test(d);
+                    if (!Number.isFinite(dollars) || dollars <= 0 || !isDate(poolEdit.end)
+                      || !isDate(poolEdit.start) || poolEdit.start >= poolEdit.end) return;
                     store.setSemesterPool?.({
                       amountCents: Math.round(dollars * 100),
-                      startDate: cube.pool!.config.startDate,
+                      startDate: poolEdit.start,
                       endDate: poolEdit.end,
                     })?.catch(() => {});
                     setPoolEdit(null);

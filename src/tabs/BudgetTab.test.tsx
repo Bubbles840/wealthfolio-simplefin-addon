@@ -511,10 +511,15 @@ describe('layout reset, hide undo, pool editing', () => {
     const amount = screen.getByLabelText('Pool amount') as HTMLInputElement;
     expect(amount.value).toBe('1600');
     fireEvent.change(amount, { target: { value: '2000' } });
+    // The start date is editable too — a pool that actually began with the
+    // semester should not be stuck at whenever /pool was first typed.
+    const start = screen.getByLabelText('Pool start date') as HTMLInputElement;
+    expect(start.value).toBe('2026-07-01');
+    fireEvent.change(start, { target: { value: '2026-08-15' } });
     fireEvent.click(screen.getByRole('button', { name: /save pool/i }));
 
     expect((props.store as any).setSemesterPool).toHaveBeenCalledWith({
-      amountCents: 200_000, startDate: '2026-07-01', endDate: '2026-12-15',
+      amountCents: 200_000, startDate: '2026-08-15', endDate: '2026-12-15',
     });
     expect(screen.getByText(/next sync/i)).toBeInTheDocument();
   });

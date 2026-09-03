@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.42.0] - 2026-09-02
+
+### Changed
+
+- **The pool's start date is editable** alongside the amount and end date on
+  the burn-down's full screen — a pool that began with the semester is no
+  longer stuck at whenever /pool was first typed.
+
+### Fixed
+
+- The pool legend was clipped by the card body's overflow-and-fade cage; it
+  now sits inside the card's top-right corner, which the burn-down leaves
+  empty by construction.
+
 ## [1.41.1] - 2026-09-02
 
 ### Fixed

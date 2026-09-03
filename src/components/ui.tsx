@@ -691,7 +691,11 @@ body {
 .sfin-subs-row > button { justify-self: end; }
 .sfin-subs-row > button + button { margin-left: 6px; }
 .sfin-subs-row:has(> button + button) { grid-template-columns: minmax(0, 1fr) auto auto auto; }
-.sfin-pool-legend { display: flex; gap: 14px; font-size: 11px; color: var(--muted-foreground); margin-top: 2px; }
+/* Overlaid top-right INSIDE the card: below the chart it sat in the body's
+   overflow/fade cage and got clipped (live, 2026-09-02). The burn-down's
+   top-right corner is empty by construction — the line starts high-left. */
+.sfin-report-card { position: relative; }
+.sfin-pool-legend { position: absolute; top: 10px; right: 14px; display: flex; gap: 14px; font-size: 11px; color: var(--muted-foreground); }
 .sfin-pool-legend-actual { color: #5e9483; font-weight: 600; }
 /* Drag feedback: the picked-up card lifts and fades while every other card
    GLIDES to make room (the FLIP effect in BudgetTab animates their rects). */
