@@ -357,11 +357,12 @@ describe('subscriptions card: confirm/ignore (v1.37)', () => {
     const onHide = vi.fn();
     render(<ReportView id="subscriptions" customReports={[]} cube={{ ...fresh(), subscriptions: [
       sub(),
-      sub({ name: 'DUKE ENERGY', monthlyCents: 9900, kind: 'bill' }),
-      sub({ name: 'MYSTERY BOX CLUB', monthlyCents: 1500, kind: 'possible' }),
+      sub({ name: 'DUKE ENERGY', monthlyCents: 9900, lastCents: 9900, prevCents: 5420, kind: 'bill' }),
+      sub({ name: 'MYSTERY BOX CLUB', monthlyCents: 1500, lastCents: 1500, prevCents: 1500, kind: 'possible' }),
     ] }} hiddenSubscriptions={[]} confirmedSubscriptions={[]} onConfirmSubscription={onConfirm} onHideSubscription={onHide} />);
     expect(screen.getByText(/is this a subscription\?/i)).toBeTruthy();
-    expect(screen.getByText(/~\$99\.00\/mo · varies/)).toBeTruthy();
+    // No mute "varies": the change itself is the information.
+    expect(screen.getByText(/\$54\.20 → \$99\.00\/mo/)).toBeTruthy();
     // Only the sure subscription counts.
     expect(screen.getByText(/\$10\.99\/mo across 1/)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Yes, DUKE ENERGY is a subscription' }));
@@ -428,5 +429,38 @@ describe('subscriptions card: watch + per-item restore (v1.38)', () => {
       confirmedSubscriptions={[]} hiddenSubscriptions={['QR LIBRARY']} onUnhideSubscription={onUnhide} />);
     fireEvent.click(screen.getByRole('button', { name: 'Restore QR LIBRARY' }));
     expect(onUnhide).toHaveBeenCalledWith('QR LIBRARY');
+  });
+});
+
+describe('subscriptions card: recent months (v1.39)', () => {
+  it('an unchanged question row shows one price, not an arrow, not varies', () => {
+    render(<ReportView id="subscriptions" customReports={[]} cube={{ ...fresh(), subscriptions: [
+      { name: 'RENT LLC', monthlyCents: 90000, count: 4, lastDate: '2026-08-25', lastCents: 90000, prevCents: 90000, creep: false, kind: 'bill' as const },
+    ] }} hiddenSubscriptions={[]} confirmedSubscriptions={[]} onConfirmSubscription={vi.fn()} />);
+    expect(screen.getByText('$900.00/mo')).toBeTruthy();
+    expect(screen.queryByText(/varies/)).toBeNull();
+    expect(screen.queryByText(/→/)).toBeNull();
+  });
+
+  it('watch list and watched pricing look back past the current month', () => {
+    // Live miss: a mid-August charge was unwatchable on September 2nd because
+    // only the newest month's merchants were offered.
+    const cube = {
+      ...fresh(),
+      subscriptions: [],
+      merchants: [
+        [{ name: 'ANTHROPIC* CLAUDE SUB', cents: 2000, count: 1 }],
+        [{ name: 'CHIPOTLE', cents: 4500, count: 3 }],
+      ],
+    };
+    const onConfirm = vi.fn();
+    const { unmount } = render(<ReportView id="subscriptions" customReports={[]} cube={cube} hero
+      confirmedSubscriptions={[]} hiddenSubscriptions={[]} onConfirmSubscription={onConfirm} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Watch ANTHROPIC* CLAUDE SUB' }));
+    expect(onConfirm).toHaveBeenCalledWith('ANTHROPIC* CLAUDE SUB');
+    unmount();
+    render(<ReportView id="subscriptions" customReports={[]} cube={cube}
+      confirmedSubscriptions={['ANTHROPIC* CLAUDE SUB']} hiddenSubscriptions={[]} />);
+    expect(screen.getByText(/\$20\.00\/mo · watching/)).toBeTruthy();
   });
 });

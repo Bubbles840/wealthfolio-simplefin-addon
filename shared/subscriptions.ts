@@ -40,6 +40,9 @@ export interface DetectedSubscription {
   count: number;
   lastDate: string;
   lastCents: number;
+  /** The charge before the newest one, when there is one — what lets the
+   *  card say "$54.20 → $61.73" instead of a mute "varies". */
+  prevCents?: number;
   /** True when the newest charge exceeds the typical price — the quiet $10.99
    *  → $11.99 that nothing else in a budget ever surfaces. Subscriptions
    *  only; a bill's variance is its nature. */
@@ -140,6 +143,7 @@ export function detectSubscriptions(
       count: list.length,
       lastDate: last.date,
       lastCents: last.cents,
+      ...(list.length >= 2 ? { prevCents: list[list.length - 2].cents } : {}),
       creep: kind === 'subscription' && stable && last.cents > typical,
       kind,
     });
