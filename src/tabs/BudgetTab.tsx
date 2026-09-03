@@ -75,6 +75,11 @@ export function BudgetTab({
   const [dragSpans, setDragSpans] = useState<Record<string, { c: number; r: number }>>({});
   /** Live ordering while a move drag is in flight. */
   const [dragOrder, setDragOrder] = useState<string[] | null>(null);
+  /** The floating copy of the picked-up card: measured at pointer-down, then
+   *  translated with every move. The grid cell itself becomes the dashed
+   *  SLOT — reordering live, it IS the "this is where it lands" indicator. */
+  const [ghost, setGhost] = useState<{ id: string; dx: number; dy: number; w: number; h: number } | null>(null);
+  const [ghostXY, setGhostXY] = useState<{ x: number; y: number } | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [resizingId, setResizingId] = useState<string | null>(null);
   const resizeState = useRef<{ id: string; startX: number; startY: number; c0: number; r0: number; colUnit: number } | null>(null);
@@ -336,10 +341,22 @@ export function BudgetTab({
     moveState.current = { id };
     setDraggingId(id);
     setDragOrder(gridIds);
+    // Measure BEFORE the slot styling lands; jsdom measures 0, so the ghost
+    // falls back to a readable card.
+    const rect = (down.currentTarget as HTMLElement).getBoundingClientRect();
+    setGhost({
+      id,
+      dx: rect.width > 0 ? down.clientX - rect.left : 40,
+      dy: rect.height > 0 ? down.clientY - rect.top : 24,
+      w: rect.width || 320,
+      h: rect.height || 180,
+    });
+    setGhostXY({ x: down.clientX, y: down.clientY });
   };
   const onMoveOver = (e: React.PointerEvent) => {
     const st = moveState.current;
     if (!st) return;
+    setGhostXY({ x: e.clientX, y: e.clientY });
     const over = document.elementFromPoint?.(e.clientX, e.clientY)
       ?.closest('[data-report-id]')?.getAttribute('data-report-id');
     if (!over || over === st.id) return;
@@ -356,6 +373,8 @@ export function BudgetTab({
     if (!st) return;
     moveState.current = null;
     setDraggingId(null);
+    setGhost(null);
+    setGhostXY(null);
     const finalOrder = dragOrder;
     setDragOrder(null);
     if (finalOrder && finalOrder.join(' ') !== resolved.grid.join(' ')) {
@@ -504,6 +523,26 @@ export function BudgetTab({
           >
             Undo
           </Button>
+        </div>
+      )}
+
+      {ghost && ghostXY && (
+        <div
+          className="sfin-drag-ghost"
+          style={{
+            left: ghostXY.x - ghost.dx,
+            top: ghostXY.y - ghost.dy,
+            width: ghost.w,
+            height: ghost.h,
+          }}
+        >
+          <ReportView
+            id={ghost.id}
+            cube={viewCube}
+            customReports={customReports}
+            density={Math.max(1, Math.round(spanFor(ghost.id).r / 4))}
+            {...subsProps}
+          />
         </div>
       )}
 

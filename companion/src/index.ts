@@ -1978,7 +1978,8 @@ export async function sendWeeklyTelegramReport(
   );
   // One line, monthly total only: the weekly answers "what does recurring
   // life cost", the Budget tab's Subscriptions card holds the roster.
-  const subs = await readCubeSubscriptions(wfClient);
+  // 'possible' detections are the card's business, never the money total's.
+  const subs = (await readCubeSubscriptions(wfClient)).filter((sub) => (sub.kind ?? 'subscription') !== 'possible');
   if (subs.length > 0) {
     const totalCents = subs.reduce((sum, sub) => sum + sub.monthlyCents, 0);
     message += `\n\n*Subscriptions* — $${(totalCents / 100).toFixed(2)}/mo across ${subs.length}`;

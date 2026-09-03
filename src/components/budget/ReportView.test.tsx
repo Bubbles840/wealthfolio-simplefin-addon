@@ -343,3 +343,35 @@ describe('subscriptions card: dismissals', () => {
     expect(screen.queryByRole('button', { name: /dismiss/i })).toBeNull();
   });
 });
+
+describe('subscriptions card: tiers (v1.36)', () => {
+  const sub = (over: any = {}) => ({
+    name: 'SPOTIFY', monthlyCents: 1099, count: 5, lastDate: '2026-08-20',
+    lastCents: 1099, creep: false, kind: 'subscription', ...over,
+  });
+
+  it('a bill row is labeled approximate and varying', () => {
+    render(<ReportView id="subscriptions" customReports={[]} cube={{ ...fresh(), subscriptions: [
+      sub({ name: 'DUKE ENERGY', monthlyCents: 9900, kind: 'bill' }),
+    ] }} />);
+    expect(screen.getByText(/~\$99\.00\/mo · varies/)).toBeTruthy();
+  });
+
+  it('possibles sit under their own heading and stay out of the total', () => {
+    render(<ReportView id="subscriptions" customReports={[]} cube={{ ...fresh(), subscriptions: [
+      sub(),
+      sub({ name: 'MYSTERY BOX CLUB', monthlyCents: 1500, kind: 'possible' }),
+    ] }} />);
+    expect(screen.getByText(/possibly recurring/i)).toBeTruthy();
+    expect(screen.getByText('MYSTERY BOX CLUB')).toBeTruthy();
+    expect(screen.getByText(/\$10\.99\/mo across 1/)).toBeTruthy();
+  });
+
+  it('rows without a kind (older companion) count as subscriptions', () => {
+    render(<ReportView id="subscriptions" customReports={[]} cube={{ ...fresh(), subscriptions: [
+      sub({ kind: undefined }),
+    ] }} />);
+    expect(screen.getByText(/\$10\.99\/mo across 1/)).toBeTruthy();
+    expect(screen.queryByText(/possibly recurring/i)).toBeNull();
+  });
+});

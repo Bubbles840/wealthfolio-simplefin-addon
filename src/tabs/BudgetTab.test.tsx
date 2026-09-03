@@ -544,3 +544,28 @@ describe('subscription dismissals end to end', () => {
     expect(screen.getByText('SPOTIFY')).toBeInTheDocument();
   });
 });
+
+describe('drag ghost (v1.36)', () => {
+  it('a picked-up card rides the cursor as a ghost and leaves a slot behind', async () => {
+    const props = makeProps();
+    (props.store as any).getReportCube = vi.fn(async () => ({ ...CUBE, asOf: new Date().toISOString() }));
+    render(<SyncPage {...props} />);
+    await waitFor(() => expect(reportIds().length).toBeGreaterThan(0));
+    fireEvent.click(screen.getByRole('button', { name: /^customize$/i }));
+
+    const id = reportIds()[3]!;
+    const cell = document.querySelector(`[data-report-id="${id}"]`)!.closest('.sfin-cell') as HTMLElement;
+    fireEvent.pointerDown(cell, { pointerId: 1, clientX: 300, clientY: 300 });
+    fireEvent.pointerMove(cell, { pointerId: 1, clientX: 340, clientY: 420 });
+
+    // The ghost is the card itself, floating; the grid cell becomes the
+    // dashed slot that shows where the drop will land.
+    const ghost = document.querySelector('.sfin-drag-ghost') as HTMLElement;
+    expect(ghost).toBeTruthy();
+    expect(ghost.querySelector(`[data-report-id="${id}"]`)).toBeTruthy();
+    expect(cell.className).toContain('sfin-cell--dragging');
+
+    fireEvent.pointerUp(cell, { pointerId: 1, clientX: 340, clientY: 420 });
+    expect(document.querySelector('.sfin-drag-ghost')).toBeNull();
+  });
+});

@@ -677,15 +677,28 @@ body {
 .sfin-subs-price { white-space: nowrap; }
 .sfin-subs-creep { color: #c17a63; font-weight: 600; }
 .sfin-subs-total { margin-top: 4px; padding-top: 6px; border-top: 1px solid var(--border); font-weight: 600; }
+.sfin-subs-maybe-head { margin-top: 6px; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted-foreground); }
+.sfin-subs-maybe-head ~ .sfin-subs-row { opacity: .75; }
 /* Drag feedback: the picked-up card lifts and fades while every other card
    GLIDES to make room (the FLIP effect in BudgetTab animates their rects). */
 .sfin-cell--editing { cursor: grab; touch-action: none; }
-.sfin-cell--dragging { z-index: 4; }
+/* The picked-up card's grid cell is the SLOT: a dashed landing zone that
+   reorders live under the cursor, while the card itself floats as the ghost. */
+.sfin-cell--dragging { z-index: 1; }
 .sfin-cell--dragging .sfin-report-card {
-  opacity: .5; border-style: dashed; transform: scale(1.02);
-  box-shadow: 0 14px 34px rgba(0, 0, 0, .28);
-  transition: transform .12s ease, box-shadow .12s ease, opacity .12s ease;
+  opacity: 0;
 }
+.sfin-cell--dragging::after {
+  content: ''; position: absolute; inset: 0; border-radius: 14px;
+  border: 2px dashed color-mix(in srgb, #5e9483 65%, transparent);
+  background: color-mix(in srgb, #5e9483 8%, transparent);
+}
+.sfin-drag-ghost {
+  position: fixed; z-index: 60; pointer-events: none;
+  opacity: .92; transform: scale(1.02) rotate(.4deg);
+  filter: drop-shadow(0 18px 36px rgba(0, 0, 0, .35));
+}
+.sfin-drag-ghost .sfin-report-card { height: 100%; }
 .sfin-cell--resizing .sfin-report-card {
   outline: 1.5px dashed color-mix(in srgb, #5e9483 70%, transparent);
   outline-offset: -1.5px; opacity: .82;

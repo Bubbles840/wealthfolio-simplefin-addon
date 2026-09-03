@@ -21,6 +21,18 @@ export interface SubscriptionCharge {
   cents: number;
 }
 
+/**
+ * v1.36 tiers, so "catch every subscription" stops fighting "no false alarms":
+ *  - 'subscription': monthly cadence, stable price — the classic case, plus
+ *    known brands proven with only two charges (a sub started six weeks ago
+ *    was otherwise invisible for a month).
+ *  - 'bill': monthly cadence, VARYING amount — gas & electric. Recurring
+ *    money, but "varies" is normal there so creep never fires.
+ *  - 'possible': two monthly same-price charges from an unknown merchant —
+ *    on the bubble, shown separately so the user decides.
+ */
+export type RecurringKind = 'subscription' | 'bill' | 'possible';
+
 export interface DetectedSubscription {
   name: string;
   /** The recurring price: the MEDIAN charge, robust against one crept month. */
@@ -29,9 +41,27 @@ export interface DetectedSubscription {
   lastDate: string;
   lastCents: number;
   /** True when the newest charge exceeds the typical price — the quiet $10.99
-   *  → $11.99 that nothing else in a budget ever surfaces. */
+   *  → $11.99 that nothing else in a budget ever surfaces. Subscriptions
+   *  only; a bill's variance is its nature. */
   creep: boolean;
+  /** Absent on cubes from pre-1.36 companions — readers treat that as
+   *  'subscription'. */
+  kind?: RecurringKind;
 }
+
+/** Names that ARE subscriptions when they recur at all — two monthly charges
+ *  is proof enough here. Substring match on the trimmed merchant. */
+const KNOWN_SUBSCRIPTION_BRANDS = [
+  'NETFLIX', 'SPOTIFY', 'HULU', 'DISNEY', 'HBO', 'MAX.COM', 'PARAMOUNT', 'PEACOCK',
+  'YOUTUBE', 'APPLE.COM/BILL', 'ICLOUD', 'AMAZON PRIME', 'PRIME VIDEO', 'AUDIBLE',
+  'ADOBE', 'CLAUDE', 'ANTHROPIC', 'OPENAI', 'CHATGPT', 'GITHUB', 'GOOGLE ONE',
+  'DROPBOX', 'PATREON', 'TWITCH', 'CRUNCHYROLL', 'PLANET FIT', 'ONLYFANS', 'DUOLINGO',
+];
+
+const isKnownBrand = (name: string): boolean => {
+  const upper = name.toUpperCase();
+  return KNOWN_SUBSCRIPTION_BRANDS.some((brand) => upper.includes(brand));
+};
 
 /** Consecutive-charge gaps that still read as "monthly": a few days early for
  *  a short month or a weekend billing shift, a few late for a retry. */
@@ -70,17 +100,17 @@ export function detectSubscriptions(
 
   const found: DetectedSubscription[] = [];
   for (const [name, list] of byMerchant) {
-    if (list.length < 3) continue;
+    if (list.length < 2) continue;
     list.sort((a, b) => (a.date < b.date ? -1 : 1));
 
     const last = list[list.length - 1];
     const daysSinceLast = (now.getTime() - Date.parse(`${last.date}T00:00:00Z`)) / DAY_MS;
     if (!(daysSinceLast <= ACTIVE_WITHIN_DAYS)) continue;
 
-    // Cadence and price are judged on the TRAILING three charges: that is the
-    // subscription as it exists today. History further back must not veto —
-    // a payment hiccup in March, or a plan upgrade, is not evidence the
-    // current monthly charge isn't one.
+    // Cadence and price are judged on the TRAILING three charges (two, for a
+    // young group): that is the recurrence as it exists today. History
+    // further back must not veto — a payment hiccup in March, or a plan
+    // upgrade, is not evidence the current monthly charge isn't one.
     const recent = list.slice(-3);
     const cadenced = recent.every((c, i) => {
       if (i === 0) return true;
@@ -90,7 +120,18 @@ export function detectSubscriptions(
     if (!cadenced) continue;
 
     const typical = median(recent.map((c) => c.cents));
-    if (!recent.every((c) => Math.abs(c.cents - typical) <= typical * AMOUNT_TOLERANCE)) continue;
+    const stable = recent.every((c) => Math.abs(c.cents - typical) <= typical * AMOUNT_TOLERANCE);
+
+    let kind: RecurringKind;
+    if (list.length >= 3) {
+      kind = stable ? 'subscription' : 'bill';
+    } else if (stable) {
+      // Two monthly charges: proof for a name that is obviously a
+      // subscription, a maybe for anything else.
+      kind = isKnownBrand(name) ? 'subscription' : 'possible';
+    } else {
+      continue;
+    }
 
     found.push({
       name,
@@ -98,11 +139,14 @@ export function detectSubscriptions(
       count: list.length,
       lastDate: last.date,
       lastCents: last.cents,
-      creep: last.cents > typical,
+      creep: kind === 'subscription' && last.cents > typical,
+      kind,
     });
   }
 
-  return found.sort((a, b) => b.monthlyCents - a.monthlyCents);
+  // Real recurrences above the maybes; biggest money first within each band.
+  const rank = (s: DetectedSubscription) => (s.kind === 'possible' ? 1 : 0);
+  return found.sort((a, b) => rank(a) - rank(b) || b.monthlyCents - a.monthlyCents);
 }
 
 /** Addon secret: merchant names the user has dismissed from the subscription

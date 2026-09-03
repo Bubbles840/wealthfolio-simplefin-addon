@@ -22,13 +22,8 @@ describe('detectSubscriptions', () => {
     });
   });
 
-  it('needs at least three charges', () => {
-    // Two same-priced charges a month apart happen by coincidence constantly
-    // (two grocery runs, two tanks of gas); three on a cadence do not.
-    expect(detectSubscriptions([
-      charge('2026-07-15', 'HULU', 999),
-      charge('2026-08-15', 'HULU', 999),
-    ], NOW)).toEqual([]);
+  it('a single charge is never recurring', () => {
+    expect(detectSubscriptions([charge('2026-08-15', 'SOME SHOP', 999)], NOW)).toEqual([]);
   });
 
   it('rejects merchants visited often but not on a monthly cadence', () => {
@@ -39,12 +34,17 @@ describe('detectSubscriptions', () => {
     ], NOW)).toEqual([]);
   });
 
-  it('rejects a cadence whose amounts swing too much to be a price', () => {
-    expect(detectSubscriptions([
+  it('a monthly cadence with swinging amounts is a bill, clearly labeled', () => {
+    // v1.36: gas-station-on-a-coincidental-cadence is the accepted cost of
+    // catching real utility bills — the card labels it "varies" and dismissal
+    // is one tap.
+    const found = detectSubscriptions([
       charge('2026-06-01', 'SHELL OIL', 3000),
       charge('2026-07-01', 'SHELL OIL', 5200),
       charge('2026-08-01', 'SHELL OIL', 2100),
-    ], NOW)).toEqual([]);
+    ], NOW);
+    expect(found).toHaveLength(1);
+    expect(found[0].kind).toBe('bill');
   });
 
   it('drops a subscription that has stopped charging', () => {
@@ -133,5 +133,79 @@ describe('hidden subscriptions', () => {
     expect(parseHiddenSubscriptions('not json')).toEqual([]);
     expect(parseHiddenSubscriptions('{"a":1}')).toEqual([]);
     expect(parseHiddenSubscriptions('[1,2]')).toEqual([]);
+  });
+});
+
+describe('recurring tiers (v1.36)', () => {
+  it('a monthly merchant with a VARYING amount is a bill, not rejected', () => {
+    // Gas & electric: perfectly recurring, never the same price. The old
+    // stability rule threw it away entirely.
+    const found = detectSubscriptions([
+      charge('2026-06-03', 'DUKE ENERGY', 8100),
+      charge('2026-07-03', 'DUKE ENERGY', 12400),
+      charge('2026-08-03', 'DUKE ENERGY', 9900),
+    ], NOW);
+    expect(found).toHaveLength(1);
+    expect(found[0].kind).toBe('bill');
+    // The typical price is the median; creep never fires on a bill.
+    expect(found[0].monthlyCents).toBe(9900);
+    expect(found[0].creep).toBe(false);
+  });
+
+  it('a stable monthly price is still kind subscription', () => {
+    const found = detectSubscriptions([
+      charge('2026-06-15', 'NETFLIX.COM', 1549),
+      charge('2026-07-15', 'NETFLIX.COM', 1549),
+      charge('2026-08-15', 'NETFLIX.COM', 1549),
+    ], NOW);
+    expect(found[0].kind).toBe('subscription');
+  });
+
+  it('a known subscription brand needs only two charges', () => {
+    // A subscription started six weeks ago has billed twice; the 3-charge bar
+    // hid it for a month. For names that are obviously subscriptions, two
+    // monthly charges is proof enough.
+    const found = detectSubscriptions([
+      charge('2026-07-20', 'CLAUDE.AI SUBSCRIPTION ANTHROPIC', 2000),
+      charge('2026-08-20', 'CLAUDE.AI SUBSCRIPTION ANTHROPIC', 2000),
+    ], NOW);
+    expect(found).toHaveLength(1);
+    expect(found[0].kind).toBe('subscription');
+    expect(found[0].monthlyCents).toBe(2000);
+  });
+
+  it('an unknown merchant with two monthly same-price charges is only possible', () => {
+    const found = detectSubscriptions([
+      charge('2026-07-11', 'MYSTERY BOX CLUB', 1500),
+      charge('2026-08-11', 'MYSTERY BOX CLUB', 1500),
+    ], NOW);
+    expect(found).toHaveLength(1);
+    expect(found[0].kind).toBe('possible');
+  });
+
+  it('two charges a week apart are nothing at all', () => {
+    expect(detectSubscriptions([
+      charge('2026-08-11', 'CHIPOTLE', 1200),
+      charge('2026-08-18', 'CHIPOTLE', 1200),
+    ], NOW)).toEqual([]);
+  });
+
+  it('erratic amounts on an erratic cadence stay rejected', () => {
+    expect(detectSubscriptions([
+      charge('2026-08-01', 'CHIPOTLE', 1200),
+      charge('2026-08-04', 'CHIPOTLE', 1150),
+      charge('2026-08-19', 'CHIPOTLE', 1275),
+    ], NOW)).toEqual([]);
+  });
+
+  it('orders by tier first (subscriptions and bills above possibles), cost within', () => {
+    const found = detectSubscriptions([
+      charge('2026-07-11', 'MYSTERY BOX CLUB', 99900),
+      charge('2026-08-11', 'MYSTERY BOX CLUB', 99900),
+      charge('2026-06-15', 'NETFLIX.COM', 1549),
+      charge('2026-07-15', 'NETFLIX.COM', 1549),
+      charge('2026-08-15', 'NETFLIX.COM', 1549),
+    ], NOW);
+    expect(found.map((s) => s.name)).toEqual(['NETFLIX.COM', 'MYSTERY BOX CLUB']);
   });
 });
