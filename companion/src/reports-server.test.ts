@@ -135,3 +135,23 @@ describe('the board on the phone (v1.46)', () => {
     expect(res.body).toContain('data-action="hide:net-worth"');
   });
 });
+
+describe('phone arrows are reading-order (v1.46.1)', () => {
+  it('▲ moves exactly one slot even across side-by-side cards', async () => {
+    const writeLayout = vi.fn(async () => {});
+    const d = deps({
+      writeLayout,
+      readLayout: vi.fn(async () => ({
+        heroes: [], order: [], hidden: [],
+        pos: { 'cash-flow': [0, 0, 8, 8], 'net-worth': [8, 0, 4, 8], 'category-trends': [0, 8, 4, 8] },
+      } as never)),
+    });
+    await handleReportsRequest(d, { method: 'POST', path: '/page', body: pageBody({ action: 'up:category-trends' }) });
+    const written = writeLayout.mock.calls[0][0] as { pos: Record<string, number[]> };
+    const order = Object.entries(written.pos)
+      .filter(([id]) => ['cash-flow', 'net-worth', 'category-trends'].includes(id))
+      .sort(([, a], [, b]) => a[1] - b[1] || a[0] - b[0])
+      .map(([id]) => id);
+    expect(order.indexOf('category-trends')).toBe(1);
+  });
+});

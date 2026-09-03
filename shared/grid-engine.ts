@@ -156,3 +156,24 @@ export function swapVertical(
   });
   return compact(swapped);
 }
+
+/**
+ * Move a card exactly one slot in READING order (top row first, left to
+ * right) — what ▲/▼ mean on a single-column phone view, where the 2-D
+ * column-sharing swap produced two-slot jumps and dead buttons (live,
+ * 2026-09-03). The new order is realized by repacking every card first-gap
+ * in sequence, which keeps sizes and yields a clean board both surfaces
+ * agree on.
+ */
+export function moveInReadingOrder(
+  cards: readonly PlacedCard[],
+  id: string,
+  dir: -1 | 1,
+): PlacedCard[] {
+  const ordered = [...cards].sort(byPosition);
+  const idx = ordered.findIndex((c) => c.id === id);
+  const target = idx + dir;
+  if (idx === -1 || target < 0 || target >= ordered.length) return compact(ordered);
+  [ordered[idx], ordered[target]] = [ordered[target], ordered[idx]];
+  return packInto([], ordered.map(({ id: cid, w, h }) => ({ id: cid, w, h })));
+}
