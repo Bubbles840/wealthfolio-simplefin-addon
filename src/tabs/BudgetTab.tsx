@@ -3,11 +3,12 @@ import { Button, SectionLabel } from '../components/ui';
 import { ReportView, reportTitle } from '../components/budget/ReportView';
 import { sliceCubeMonths, type ReportCube } from '../../shared/report-cube';
 import {
-  cycleSize, moveCard, pinHero, POOL_ONLY_REPORT_IDS, resolveBudgetLayout, setSpan,
-  SIZE_LABELS, STANDARD_REPORT_IDS, toggleHidden, type BudgetLayout,
+  cycleSize, POOL_ONLY_REPORT_IDS, resolveBudgetLayout, resolveBoard, moveCardTo, resizeCardTo,
+  swapCard, SIZE_LABELS, STANDARD_REPORT_IDS, toggleHidden, type BudgetLayout,
 } from '../../shared/budget-layout';
+import type { PlacedCard } from '../../shared/grid-engine';
+import { moveTo as engineMoveTo } from '../../shared/grid-engine';
 import { newCustomReportId, type CustomReport } from '../../shared/report-eval';
-import { dropTarget } from './drop-target';
 import { ReportBuilder } from '../components/budget/ReportBuilder';
 import type { SecretsStore } from '../utils/secrets';
 
@@ -78,8 +79,9 @@ export function BudgetTab({
   const [builder, setBuilder] = useState<{ existing: CustomReport | null } | null>(null);
   /** Live spans while a corner drag is in flight, by report id. */
   const [dragSpans, setDragSpans] = useState<Record<string, { c: number; r: number }>>({});
-  /** Live ordering while a move drag is in flight. */
-  const [dragOrder, setDragOrder] = useState<string[] | null>(null);
+  /** Live board preview while a move drag is in flight — the engine's real
+   *  answer for the current target cell, so what you see IS what you get. */
+  const [dragBoard, setDragBoard] = useState<PlacedCard[] | null>(null);
   /** The floating copy of the picked-up card: measured at pointer-down, then
    *  translated with every move. The grid cell itself becomes the dashed
    *  SLOT — reordering live, it IS the "this is where it lands" indicator. */
@@ -92,7 +94,9 @@ export function BudgetTab({
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [resizingId, setResizingId] = useState<string | null>(null);
   const resizeState = useRef<{ id: string; startX: number; startY: number; c0: number; r0: number; colUnit: number } | null>(null);
-  const moveState = useRef<{ id: string } | null>(null);
+  const moveState = useRef<{ id: string; board: PlacedCard[]; cellDX: number; cellDY: number } | null>(null);
+  const lastCell = useRef<{ x: number; y: number } | null>(null);
+  const gridRef = useRef<HTMLDivElement | null>(null);
   /** Two-tap reset: one mistap must not destroy an arranged board. */
   const [confirmReset, setConfirmReset] = useState(false);
   /** The just-hidden card, so Hide always leaves a way back on screen. */
@@ -157,7 +161,11 @@ export function BudgetTab({
   const resolved = resolveBudgetLayout(layout, availableIds, cube.pool !== null);
   const stale = Date.now() - Date.parse(cube.asOf) > STALE_MS;
   const viewCube = sliceCubeMonths(cube, range);
-  const gridIds = dragOrder ?? resolved.grid;
+  const board = resolveBoard(layout, availableIds, cube.pool !== null);
+  const shownBoard = dragBoard ?? board;
+  // DOM order follows reading order so the phone's single-column collapse
+  // stacks cards the way the desktop board reads.
+  const cells = [...shownBoard].sort((a, b) => a.y - b.y || a.x - b.x);
 
   // Order deliberately EMPTY when nothing is stored: a full snapshot here
   // would mark every card "explicitly placed" and defeat pin's front-set
@@ -303,13 +311,36 @@ export function BudgetTab({
     );
   }
 
-  const spanFor = (id: string) => dragSpans[id] ?? resolved.spanOf(id);
-  /** Spans ride CSS custom properties, never inline grid-column — the phone
-   *  media query has to be able to collapse everything to one column, and an
-   *  inline style would outrank it. */
+  const cardOf = (id: string) => shownBoard.find((c) => c.id === id);
+  const spanFor = (id: string) => {
+    const live = dragSpans[id];
+    if (live) return live;
+    const c = cardOf(id);
+    return c ? { c: c.w, r: c.h } : resolved.spanOf(id);
+  };
+  /** Placement rides CSS custom properties, never inline grid lines — the
+   *  phone media query has to be able to collapse everything to one column,
+   *  and an inline style would outrank it. */
   const cellStyle = (id: string): React.CSSProperties => {
+    const card = cardOf(id);
     const { c, r } = spanFor(id);
-    return { ['--sfin-c' as never]: String(c), ['--sfin-r' as never]: String(r) };
+    return {
+      ['--sfin-x' as never]: String(card?.x ?? 0),
+      ['--sfin-y' as never]: String(card?.y ?? 0),
+      ['--sfin-c' as never]: String(c),
+      ['--sfin-r' as never]: String(r),
+    };
+  };
+
+  /** Pointer position → board cell, from the grid's real geometry. */
+  const cellAt = (clientX: number, clientY: number): { x: number; y: number } | null => {
+    const rect = gridRef.current?.getBoundingClientRect();
+    if (!rect || rect.width <= 0) return null;
+    const unit = (rect.width + GAP) / 12;
+    return {
+      x: Math.max(0, Math.min(11, Math.floor((clientX - rect.left) / unit))),
+      y: Math.max(0, Math.floor((clientY - rect.top) / ROW_UNIT)),
+    };
   };
 
   const startResize = (id: string) => (down: React.PointerEvent) => {
@@ -348,7 +379,9 @@ export function BudgetTab({
       delete next[st.id];
       return next;
     });
-    if (c !== st.c0 || r !== st.r0) onLayoutChange(setSpan(storedLayout, st.id, c, r));
+    if (c !== st.c0 || r !== st.r0) {
+      onLayoutChange(resizeCardTo(storedLayout, availableIds, cube.pool !== null, st.id, c, r));
+    }
   };
 
   const startMove = (id: string) => (down: React.PointerEvent) => {
@@ -356,9 +389,19 @@ export function BudgetTab({
     if ((down.target as HTMLElement).closest('button, .sfin-resize-handle')) return;
     down.preventDefault();
     try { (down.currentTarget as Element).setPointerCapture?.(down.pointerId); } catch { /* jsdom */ }
-    moveState.current = { id };
+    const rect0 = gridRef.current?.getBoundingClientRect();
+    const cellRect = (down.currentTarget as HTMLElement).getBoundingClientRect();
+    const unit = rect0 && rect0.width > 0 ? (rect0.width + GAP) / 12 : FALLBACK_COL_UNIT;
+    moveState.current = {
+      id,
+      board,
+      // Grab offset in CELLS, so the card's own top-left lands under where
+      // you grabbed it — not snapped to the pointer.
+      cellDX: cellRect.width > 0 ? Math.floor((down.clientX - cellRect.left) / unit) : 0,
+      cellDY: cellRect.height > 0 ? Math.floor((down.clientY - cellRect.top) / ROW_UNIT) : 0,
+    };
+    lastCell.current = null;
     setDraggingId(id);
-    setDragOrder(gridIds);
     // Measure BEFORE the slot styling lands; jsdom measures 0, so the ghost
     // falls back to a readable card.
     const rect = (down.currentTarget as HTMLElement).getBoundingClientRect();
@@ -379,28 +422,15 @@ export function BudgetTab({
       ghostRef.current.style.transform =
         `translate(${e.clientX - ghost.dx}px, ${e.clientY - ghost.dy}px) scale(1.02) rotate(.4deg)`;
     }
-    // Geometry over the FLIP cache — the whole cell is a target, no reads per
-    // move. jsdom's zero rects fall back to elementFromPoint (before-only).
-    const cached = Array.from(prevRects.current, ([id, r]) => ({ id, ...r }));
-    const hit = dropTarget(cached, e.clientX, e.clientY, st.id);
-    let over: string | null = hit?.id ?? null;
-    let after = hit?.after ?? false;
-    if (!over) {
-      over = document.elementFromPoint?.(e.clientX, e.clientY)
-        ?.closest('[data-report-id]')?.getAttribute('data-report-id') ?? null;
-      after = false;
-    }
-    if (!over || over === st.id) return;
-    setDragOrder((prev) => {
-      const current = prev ?? gridIds;
-      const base = current.filter((g) => g !== st.id);
-      let at = base.indexOf(over!);
-      if (at === -1) return prev;
-      if (after) at += 1;
-      base.splice(at, 0, st.id);
-      // Identical order = no state churn = no re-render mid-drag.
-      return base.join('\u0000') === current.join('\u0000') ? prev : base;
-    });
+    // The target is a literal board cell from the grid's geometry — the
+    // engine's preview then shows EXACTLY the drop result. State only moves
+    // when the target cell changes, so re-renders stay rare mid-drag.
+    const at = cellAt(e.clientX, e.clientY);
+    if (!at) return;
+    const target = { x: at.x - st.cellDX, y: Math.max(0, at.y - st.cellDY) };
+    if (lastCell.current && lastCell.current.x === target.x && lastCell.current.y === target.y) return;
+    lastCell.current = target;
+    setDragBoard(engineMoveTo(st.board, st.id, target.x, target.y));
   };
   const onMoveUp = () => {
     const st = moveState.current;
@@ -409,10 +439,11 @@ export function BudgetTab({
     setDraggingId(null);
     setGhost(null);
     ghostPointer.current = null;
-    const finalOrder = dragOrder;
-    setDragOrder(null);
-    if (finalOrder && finalOrder.join(' ') !== resolved.grid.join(' ')) {
-      onLayoutChange({ ...storedLayout, order: finalOrder });
+    const dropped = lastCell.current;
+    lastCell.current = null;
+    setDragBoard(null);
+    if (dropped) {
+      onLayoutChange(moveCardTo(storedLayout, availableIds, cube.pool !== null, st.id, dropped.x, dropped.y));
     }
   };
 
@@ -447,13 +478,21 @@ export function BudgetTab({
             </Button>
           </>
         )}
-        <Button variant="ghost" aria-label={`Pin ${title}`} onClick={() => onLayoutChange(pinHero(storedLayout, availableIds, id))}>
+        <Button variant="ghost" aria-label={`Pin ${title}`} onClick={() => onLayoutChange(moveCardTo(storedLayout, availableIds, cube.pool !== null, id, 0, 0))}>
           📌 Pin
         </Button>
-        <Button variant="ghost" aria-label={`Move ${title} up`} onClick={() => onLayoutChange(moveCard(storedLayout, availableIds, id, -1))}>
+        <Button
+          variant="ghost"
+          aria-label={`Move ${title} up`}
+          onClick={() => onLayoutChange(swapCard(storedLayout, availableIds, cube.pool !== null, id, -1))}
+        >
           ↑
         </Button>
-        <Button variant="ghost" aria-label={`Move ${title} down`} onClick={() => onLayoutChange(moveCard(storedLayout, availableIds, id, 1))}>
+        <Button
+          variant="ghost"
+          aria-label={`Move ${title} down`}
+          onClick={() => onLayoutChange(swapCard(storedLayout, availableIds, cube.pool !== null, id, 1))}
+        >
           ↓
         </Button>
         <Button
@@ -587,8 +626,8 @@ export function BudgetTab({
         </div>
       )}
 
-      <div className="sfin-budget-grid">
-        {gridIds.map((id) => card(id))}
+      <div className="sfin-budget-grid" ref={gridRef}>
+        {cells.map(({ id }) => card(id))}
         {!customizing && (
           <button
             type="button"
