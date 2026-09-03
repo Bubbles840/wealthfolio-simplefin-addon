@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.44.0] - 2026-09-03
+
+### Added
+
+- **Reports on your phone, inside Telegram.** Two surfaces, one `/reports`
+  command:
+  - **The mini app dashboard**: the companion serves a mobile dashboard —
+    headline numbers plus the glanceable charts (burn-down, cash flow, net
+    worth, savings rate, donut, budget-vs-actual, trends) with range chips —
+    that opens inside Telegram's own webview. Auth is Telegram's signed
+    `initData` (HMAC over the bot token) plus an allowlist built simply by
+    having used `/reports` in the configured chat: no passwords, no setup
+    screens. Enable with `MINIAPP_PORT` (serve it over HTTPS, e.g. tailscale
+    serve), mint the `t.me/<bot>/<app>` link once via BotFather `/newapp`,
+    and set it as `MINIAPP_LINK`.
+  - **Chart images as a fallback** for when the phone can't reach the
+    server: `/reports` shows a tap-through menu, and each tap renders that
+    chart server-side (hand-rolled SVG → PNG via resvg, no native deps) and
+    sends it as a photo over Telegram's own pipe.
+- Charts for both surfaces come from one shared SVG renderer
+  (`shared/svg-charts.ts` + `shared/report-render.ts`), and `report-data`
+  moved to `shared/` so all three surfaces — Budget tab, mini app, images —
+  prepare numbers identically.
+
 ## [1.43.0] - 2026-09-02
 
 ### Added

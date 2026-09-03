@@ -66,6 +66,12 @@ export interface TelegramListenerDeps {
    * failures are logged in the listener — because a rejecting UI callback in a
    * fire-and-forget position is an unhandled rejection, which kills the daemon.
    */
+  /** A report-image tap (`mrep:<id>`): renders the chart as a PNG. OPTIONAL —
+   *  absent (or a null render) answers the tap with a notice instead. */
+  renderReportImage?: (reportId: string) => Promise<{ png: Uint8Array; title: string } | null>;
+  /** Called with the sender's user id when /reports runs, building the mini
+   *  app allowlist out of ordinary chat membership — no setup screen. */
+  recordMiniappUser?: (userId: number) => Promise<void>;
   onMenuCallback?: (
     cb: { data: string; chatId: number; messageId: number },
     ui: {
@@ -105,6 +111,9 @@ const HANDLER_FAILURE_REPLY = 'Something went wrong running that command — che
  *  `callback_data` at 64 bytes and two uuids plus a prefix run ~85. Both halves
  *  are pinned by tests; changing either one alone silently breaks the button. */
 const DISMISS_PAYLOAD_PREFIX = 'd:';
+/** `/reports` keyboard buttons: `mrep:<report id>` → a rendered chart PNG.
+ *  The other half lives in index.ts's /reports command. */
+export const REPORT_IMAGE_PREFIX = 'mrep:';
 const DISMISS_ANSWER_TEXT = 'Dismissed — dropped from future notices';
 /** The way back. A dismissal used to be one tap with no undo, on a button
  *  sitting right under a thumb; the only recovery was waiting ~60 days for the
@@ -280,6 +289,14 @@ export function startTelegramListener(deps: TelegramListenerDeps): { stop: () =>
       }
     };
 
+    // The mini app's allowlist is "has used /reports in the configured chat":
+    // recorded BEFORE the handler runs, so the button it replies with works
+    // on the very first try.
+    if (parsed.command === 'reports' && typeof message?.from?.id === 'number') {
+      await deps.recordMiniappUser?.(message.from.id).catch(
+        (err: unknown) => safeLog(`Telegram listener: recording mini-app user failed: ${formatError(err)}`),
+      );
+    }
     try {
       await deps.onCommand(parsed, safeReply);
     } catch (err) {
@@ -415,6 +432,32 @@ export function startTelegramListener(deps: TelegramListenerDeps): { stop: () =>
         return;
       }
       await handleMenuCallback(config, cq, chatId);
+      return;
+    }
+
+    if (cq.data.startsWith(REPORT_IMAGE_PREFIX)) {
+      const reportId = cq.data.slice(REPORT_IMAGE_PREFIX.length);
+      if (!deps.renderReportImage) {
+        await answer(config, cq, 'Chart images are not available in this build');
+        return;
+      }
+      await answer(config, cq, 'Rendering…');
+      try {
+        const image = await deps.renderReportImage(reportId);
+        if (!image) {
+          safeLog(`Telegram listener: no image for report ${reportId}`);
+          return;
+        }
+        // Multipart, not JSON: a PNG travels as a file part. Node's global
+        // FormData/Blob make this dependency-free.
+        const form = new FormData();
+        form.set('chat_id', String(config.chatId));
+        form.set('caption', image.title);
+        form.set('photo', new Blob([Buffer.from(image.png)], { type: 'image/png' }), `${reportId}.png`);
+        await deps.fetchImpl(api(config.botToken, 'sendPhoto'), { method: 'POST', body: form });
+      } catch (err) {
+        safeLog(`Telegram listener: report image ${reportId} failed: ${formatError(err)}`);
+      }
       return;
     }
 

@@ -46,9 +46,9 @@ describe('formatHelpReply', () => {
       expect(help).toContain(`/${command}`);
     }
   });
-  it('menu covers exactly the eleven shipped commands', () => {
+  it('menu covers exactly the twelve shipped commands', () => {
     expect(TELEGRAM_COMMAND_MENU.map((c) => c.command).sort())
-      .toEqual(['afford', 'categorize', 'dismissed', 'help', 'left', 'newrule', 'pool', 'recategorize', 'report', 'status', 'sync']);
+      .toEqual(['afford', 'categorize', 'dismissed', 'help', 'left', 'newrule', 'pool', 'recategorize', 'report', 'reports', 'status', 'sync']);
   });
   it('lists /recategorize directly after /categorize, and says a query narrows it', () => {
     // Adjacent because they are one pair — file an unfiled row, move a filed
