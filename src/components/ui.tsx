@@ -672,7 +672,7 @@ body {
 .sfin-check-nums { color: var(--muted-foreground); }
 /* Subscriptions card. */
 .sfin-subs { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
-.sfin-subs-row { display: flex; justify-content: space-between; gap: 10px; }
+.sfin-subs-row { gap: 10px; }
 .sfin-subs-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sfin-subs-price { white-space: nowrap; }
 .sfin-subs-creep { color: #c17a63; font-weight: 600; }
@@ -681,6 +681,15 @@ body {
 .sfin-subs-maybe-head ~ .sfin-subs-row { opacity: .75; }
 .sfin-subs-row--muted { opacity: .75; }
 .sfin-subs-answer { border: none; background: transparent; color: #5e9483; cursor: pointer; font-size: 12px; white-space: nowrap; }
+/* Rows as strict columns: name | price | actions — flex space-between let the
+   price drift toward the middle whenever a row had a different button count. */
+.sfin-subs-row { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(3.5em, auto); align-items: center; }
+.sfin-subs-row .sfin-subs-price { text-align: right; }
+.sfin-subs-row > button { justify-self: end; }
+.sfin-subs-row > button + button { margin-left: 6px; }
+.sfin-subs-row:has(> button + button) { grid-template-columns: minmax(0, 1fr) auto auto auto; }
+.sfin-pool-legend { display: flex; gap: 14px; font-size: 11px; color: var(--muted-foreground); margin-top: 2px; }
+.sfin-pool-legend-actual { color: #5e9483; font-weight: 600; }
 /* Drag feedback: the picked-up card lifts and fades while every other card
    GLIDES to make room (the FLIP effect in BudgetTab animates their rects). */
 .sfin-cell--editing { cursor: grab; touch-action: none; }

@@ -234,3 +234,16 @@ describe('candidates over keywords (v1.37)', () => {
     expect(found[0].kind).toBe('possible');
   });
 });
+
+describe('previous charge (v1.39)', () => {
+  it('carries the second-newest charge so the card can show the change', () => {
+    const found = detectSubscriptions([
+      charge('2026-07-01', 'LOUISVILLE GAS & ELECTRIC', 5420),
+      charge('2026-08-01', 'LOUISVILLE GAS & ELECTRIC', 6173),
+      charge('2026-06-01', 'LOUISVILLE GAS & ELECTRIC', 4890),
+    ], NOW);
+    expect(found).toHaveLength(1);
+    expect(found[0].lastCents).toBe(6173);
+    expect(found[0].prevCents).toBe(5420);
+  });
+});

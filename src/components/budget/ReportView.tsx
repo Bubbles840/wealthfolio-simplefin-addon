@@ -301,7 +301,32 @@ function Subscriptions({ cube, full = false, hidden = [], confirmed = [], onHide
   const hiddenSet = new Set(hidden);
   const visible = res.subs.filter((sub) => !hiddenSet.has(sub.name));
   const hiddenCount = res.subs.length - visible.length;
-  if (visible.length === 0 && hiddenCount === 0) {
+  // "Watch this one": a confirmed name the detector has no verdict on yet —
+  // one charge so far, or an accidental cancel of something brand new. Priced
+  // from its latest-month charges until the detector takes over.
+  const detectedNames = new Set(res.subs.map((sub) => sub.name));
+  // The last few months of merchants, newest first: on the 2nd of a month the
+  // "current month" is two days deep, and a mid-August charge must still be
+  // watchable and priceable (the live Anthropic miss).
+  const recentMerchants: Array<{ name: string; cents: number; count: number }> = [];
+  const seenMerchant = new Set<string>();
+  for (const monthList of cube.merchants.slice(-3).reverse()) {
+    for (const m of monthList) {
+      if (seenMerchant.has(m.name)) continue;
+      seenMerchant.add(m.name);
+      recentMerchants.push(m);
+    }
+  }
+  const watched = confirmed
+    .filter((name) => !detectedNames.has(name) && !hiddenSet.has(name))
+    .map((name) => {
+      const m = recentMerchants.find((entry) => entry.name === name);
+      return { name, perChargeCents: m && m.count > 0 ? Math.round(m.cents / m.count) : null };
+    });
+
+  if (visible.length === 0 && hiddenCount === 0 && watched.length === 0 && !full) {
+    // The OPEN view keeps going: an empty roster is exactly when "watch a
+    // merchant" is the thing the user came for.
     return <div className="sfin-subtle">No monthly subscriptions detected — recurring monthly charges would show here.</div>;
   }
   // The roster is what the user (or the stable-price rule) has SAID is a
@@ -311,17 +336,6 @@ function Subscriptions({ cube, full = false, hidden = [], confirmed = [], onHide
   const confirmedSet = new Set(confirmed);
   const sure = visible.filter((sub) => (sub.kind ?? 'subscription') === 'subscription' || confirmedSet.has(sub.name));
   const maybes = visible.filter((sub) => !sure.includes(sub));
-  // "Watch this one": a confirmed name the detector has no verdict on yet —
-  // one charge so far, or an accidental cancel of something brand new. Priced
-  // from its latest-month charges until the detector takes over.
-  const detectedNames = new Set(res.subs.map((sub) => sub.name));
-  const latestMerchants = cube.merchants.at(-1) ?? [];
-  const watched = confirmed
-    .filter((name) => !detectedNames.has(name) && !hiddenSet.has(name))
-    .map((name) => {
-      const m = latestMerchants.find((entry) => entry.name === name);
-      return { name, perChargeCents: m && m.count > 0 ? Math.round(m.cents / m.count) : null };
-    });
   const totalCents = sure.reduce((sum, sub) => sum + sub.monthlyCents, 0)
     + watched.reduce((sum, w) => sum + (w.perChargeCents ?? 0), 0);
   const rosterCount = sure.length + watched.length;
@@ -331,8 +345,8 @@ function Subscriptions({ cube, full = false, hidden = [], confirmed = [], onHide
       <span className="sfin-subs-price">
         {sub.creep ? (
           <span className="sfin-subs-creep">{fmt2(sub.lastCents / 100)} ▲ was {fmt2(sub.monthlyCents / 100)}</span>
-        ) : sub.kind === 'bill' ? (
-          <>~{fmt2(sub.monthlyCents / 100)}/mo · varies</>
+        ) : sub.kind === 'bill' && sub.prevCents !== undefined && sub.prevCents !== sub.lastCents ? (
+          <>{fmt2(sub.prevCents / 100)} → {fmt2(sub.lastCents / 100)}/mo</>
         ) : (
           <>{fmt2(sub.monthlyCents / 100)}/mo</>
         )}
@@ -380,7 +394,9 @@ function Subscriptions({ cube, full = false, hidden = [], confirmed = [], onHide
             <div key={sub.name} className="sfin-subs-row">
               <span className="sfin-subs-name">{sub.name}</span>
               <span className="sfin-subs-price">
-                {sub.kind === 'bill' ? <>~{fmt2(sub.monthlyCents / 100)}/mo · varies</> : <>{fmt2(sub.monthlyCents / 100)}/mo</>}
+                {sub.prevCents !== undefined && sub.prevCents !== sub.lastCents
+                  ? <>{fmt2(sub.prevCents / 100)} → {fmt2(sub.lastCents / 100)}/mo</>
+                  : <>{fmt2(sub.lastCents / 100)}/mo</>}
               </span>
               {onConfirm && (
                 <button
@@ -437,7 +453,7 @@ function Subscriptions({ cube, full = false, hidden = [], confirmed = [], onHide
           )}
           {onConfirm && (() => {
             const known = new Set([...res.subs.map((sub) => sub.name), ...confirmed, ...hidden]);
-            const watchable = latestMerchants.filter((m) => !known.has(m.name)).slice(0, 12);
+            const watchable = recentMerchants.filter((m) => !known.has(m.name)).slice(0, 12);
             if (watchable.length === 0) return null;
             return (
               <>
@@ -652,16 +668,25 @@ function PoolBurndown({ cube }: { cube: ReportCube }) {
   const data = poolBurndownData(cube);
   if (data.length === 0) return null;
   return (
-    <Frame>
-      <LineChart data={data}>
-        <CartesianGrid vertical={false} />
-        <XAxis dataKey="date" />
-        <YAxis width={52} />
-        <ChartTooltip content={<ChartTooltipContent />} />
-        <Line dataKey="ideal" stroke={color(0)} strokeDasharray="4 3" dot={false} />
-        <Line dataKey="actual" stroke={color(1)} connectNulls={false} dot={false} />
-      </LineChart>
-    </Frame>
+    <>
+      <Frame>
+        <LineChart data={data}>
+          <CartesianGrid vertical={false} />
+          <XAxis dataKey="date" />
+          <YAxis width={52} />
+          <ChartTooltip content={<ChartTooltipContent />} />
+          <Line dataKey="ideal" stroke={color(2)} strokeOpacity={0.55} strokeDasharray="5 5" strokeWidth={1.25} dot={false} />
+          <Line dataKey="actual" stroke={color(0)} strokeWidth={2.75} connectNulls={false} dot={false} />
+        </LineChart>
+      </Frame>
+      {/* Legibility over legend furniture: the two lines were both thin sage
+          and overlapped near the ideal — now actual is unmistakably the bold
+          solid one, and this one-liner says which is which. */}
+      <div className="sfin-pool-legend">
+        <span className="sfin-pool-legend-actual">— actual</span>
+        <span className="sfin-pool-legend-ideal">- - ideal pace</span>
+      </div>
+    </>
   );
 }
 

@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.39.0] - 2026-09-02
+
+### Changed
+
+- **Watch list looks back.** "Watch a merchant" (and watched-item pricing)
+  now draws on the last three months of merchants, not just the current one —
+  on the 2nd of a month the current month is two days deep, which is exactly
+  why a mid-August Claude charge was nowhere to be found. The open view also
+  keeps its Watch/Dismissed sections even when the roster is empty.
+- **"varies" says what varied.** A bill or question row whose last two
+  charges differ shows the movement — "$54.20 → $61.73/mo" — and just the one
+  number when nothing changed.
+- **Subscription rows line up.** Name, price, and buttons are strict columns
+  now; the price no longer drifts with the number of buttons in the row.
+- **The pool chart reads at a glance.** Actual is a bold solid line, ideal a
+  thin dashed one, with a small legend — they were both thin sage and
+  indistinguishable where they overlapped.
+
 ## [1.38.0] - 2026-09-02
 
 ### Added
