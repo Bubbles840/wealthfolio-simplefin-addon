@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.46.1] - 2026-09-03
+
+### Fixed
+
+- The phone dashboard's ▲/▼ moved cards by column geometry — beside a wide
+  card that meant two-slot jumps or a dead button. On the phone's single
+  column they now mean exactly "one slot up or down the list."
+
 ## [1.46.0] - 2026-09-03
 
 ### Changed

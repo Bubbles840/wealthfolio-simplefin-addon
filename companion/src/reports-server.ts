@@ -23,7 +23,7 @@ import {
 } from '../../shared/report-data.js';
 import { renderReportSvg, renderCustomReportSvg, reportImageTitle, RENDERABLE_REPORT_IDS } from '../../shared/report-render.js';
 import {
-  resolveBoard, swapCard, toggleHidden, STANDARD_REPORT_IDS, POOL_ONLY_REPORT_IDS, type BudgetLayout,
+  resolveBoard, moveCardReading, toggleHidden, STANDARD_REPORT_IDS, POOL_ONLY_REPORT_IDS, type BudgetLayout,
 } from '../../shared/budget-layout.js';
 import { evaluateCustomReport, type CustomReport } from '../../shared/report-eval.js';
 
@@ -252,8 +252,11 @@ export async function handleReportsRequest(
       ];
       const stored: BudgetLayout = layout ?? { heroes: [], order: [], hidden: [] };
       let next: BudgetLayout | null = null;
-      if (verb === 'up') next = swapCard(stored, availableIds, cube.pool !== null, id, -1);
-      else if (verb === 'down') next = swapCard(stored, availableIds, cube.pool !== null, id, 1);
+      // Reading-order moves: the phone is a single column, so ▲/▼ must mean
+      // "one slot in the list" — the 2-D column-sharing swap jumped two
+      // slots or dead-ended beside a wide card (live, 2026-09-03).
+      if (verb === 'up') next = moveCardReading(stored, availableIds, cube.pool !== null, id, -1);
+      else if (verb === 'down') next = moveCardReading(stored, availableIds, cube.pool !== null, id, 1);
       else if ((verb === 'hide' && !stored.hidden.includes(id)) || (verb === 'unhide' && stored.hidden.includes(id))) {
         next = toggleHidden(stored, availableIds, id);
       }

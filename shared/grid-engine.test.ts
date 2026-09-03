@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compact, moveTo, packInto, collides, swapVertical, type PlacedCard } from './grid-engine.js';
+import { compact, moveTo, packInto, collides, swapVertical, moveInReadingOrder, type PlacedCard } from './grid-engine.js';
 
 const card = (id: string, x: number, y: number, w = 4, h = 4): PlacedCard => ({ id, x, y, w, h });
 
@@ -67,5 +67,31 @@ describe('swapVertical', () => {
   it('is a no-op at the board edge', () => {
     const cards = [card('a', 0, 0), card('b', 0, 4)];
     expect(swapVertical(cards, 'a', -1)).toEqual(compact(cards));
+  });
+});
+
+describe('moveInReadingOrder (v1.46.1)', () => {
+  // Two cards side by side, one below: reading order A, B, C.
+  const board = [card('a', 0, 0, 8, 8), card('b', 8, 0, 4, 8), card('c', 0, 8, 4, 8)];
+
+  it('moves exactly one slot in reading order, whatever the columns', () => {
+    // The live phone bug: column-sharing swaps made ▲ jump two slots (c past
+    // both a and b) or dead-end (b had no column neighbor above).
+    const up = moveInReadingOrder(board, 'c', -1);
+    const order = [...up].sort((x, y) => x.y - y.y || x.x - y.x).map((k) => k.id);
+    expect(order).toEqual(['a', 'c', 'b']);
+  });
+
+  it('side-by-side cards still move one slot up', () => {
+    const up = moveInReadingOrder(board, 'b', -1);
+    const order = [...up].sort((x, y) => x.y - y.y || x.x - y.x).map((k) => k.id);
+    expect(order).toEqual(['b', 'a', 'c']);
+  });
+
+  it('is a no-op at either end', () => {
+    const same = (out: PlacedCard[]) =>
+      [...out].sort((x, y) => x.y - y.y || x.x - y.x).map((k) => k.id);
+    expect(same(moveInReadingOrder(board, 'a', -1))).toEqual(['a', 'b', 'c']);
+    expect(same(moveInReadingOrder(board, 'c', 1))).toEqual(['a', 'b', 'c']);
   });
 });

@@ -16,7 +16,7 @@
  * happens to sit next in a stale stored order.
  */
 
-import { compact, moveTo, packInto, swapVertical, type PlacedCard } from './grid-engine.js';
+import { compact, moveTo, packInto, swapVertical, moveInReadingOrder, type PlacedCard } from './grid-engine.js';
 
 export const STANDARD_REPORT_IDS = [
   'pool-burndown', 'cash-flow', 'headline-stats', 'category-trends', 'net-worth', 'savings-rate',
@@ -438,5 +438,21 @@ export function swapCard(
   const swapped = swapVertical(board, id, dir);
   const pos: Record<string, [number, number, number, number]> = {};
   for (const c of swapped) pos[c.id] = [c.x, c.y, c.w, c.h];
+  return { ...stored, pos };
+}
+
+/** Reading-order ▲/▼ — the phone's single-column semantics. */
+export function moveCardReading(
+  stored: BudgetLayout,
+  availableIds: string[],
+  poolPresent: boolean,
+  id: string,
+  dir: -1 | 1,
+): BudgetLayout {
+  const board = resolveBoard(stored, availableIds, poolPresent);
+  if (!board.some((c) => c.id === id)) return stored;
+  const moved = moveInReadingOrder(board, id, dir);
+  const pos: Record<string, [number, number, number, number]> = {};
+  for (const c of moved) pos[c.id] = [c.x, c.y, c.w, c.h];
   return { ...stored, pos };
 }
