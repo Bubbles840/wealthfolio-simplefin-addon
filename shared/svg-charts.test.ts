@@ -58,3 +58,17 @@ describe('svgDonut', () => {
     expect(svg).toContain('Groceries');
   });
 });
+
+describe('attribute hygiene', () => {
+  it('a dashed polyline defines stroke-width exactly once', () => {
+    // resvg rejects duplicate attributes outright ("already defined", live
+    // 2026-09-03 on the pool burn-down) — browsers were quietly forgiving it.
+    const svg = svgLineChart({
+      width: 600, height: 300, labels: ['a', 'b'],
+      series: [{ name: 'ideal', color: '#c9a86b', dashed: true, values: [10, 5] }],
+    });
+    const polyline = svg.match(/<polyline[^>]*>/)![0];
+    expect((polyline.match(/stroke-width/g) ?? []).length).toBe(1);
+    expect(polyline).toContain('stroke-dasharray');
+  });
+});

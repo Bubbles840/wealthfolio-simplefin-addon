@@ -112,8 +112,10 @@ export function svgLineChart(opts: {
         body += `<circle cx="${run[0][0]}" cy="${run[0][1]}" r="3" fill="${s.color}"/>`;
       } else {
         const points = run.map(([px, py]) => `${Math.round(px * 10) / 10},${Math.round(py * 10) / 10}`).join(' ');
-        body += `<polyline points="${points}" fill="none" stroke="${s.color}" stroke-width="2.5"`
-          + (s.dashed ? ' stroke-dasharray="6 5" stroke-width="1.5"' : '') + '/>';
+        // ONE stroke-width per element: resvg rejects duplicate attributes
+        // outright, where browsers quietly take the last one.
+        body += `<polyline points="${points}" fill="none" stroke="${s.color}" stroke-width="${s.dashed ? 1.5 : 2.5}"`
+          + (s.dashed ? ' stroke-dasharray="6 5"' : '') + '/>';
       }
     }
   }
@@ -140,7 +142,9 @@ export function svgBarChart(opts: {
       const x = frame.pad.l + groupW * i + groupW * 0.15 + barW * si;
       const top = Math.min(y(v), zero);
       const h = Math.max(1, Math.abs(y(v) - zero));
-      body += `<rect data-bar x="${Math.round(x * 10) / 10}" y="${Math.round(top * 10) / 10}" width="${Math.round(barW * 10) / 10}" height="${Math.round(h * 10) / 10}" fill="${s.color}" rx="2"/>`;
+      // data-bar carries a value: bare attributes are HTML leniency, and
+      // resvg parses strict XML.
+      body += `<rect data-bar="1" x="${Math.round(x * 10) / 10}" y="${Math.round(top * 10) / 10}" width="${Math.round(barW * 10) / 10}" height="${Math.round(h * 10) / 10}" fill="${s.color}" rx="2"/>`;
     });
   });
   body += xLabels(frame, opts.labels, (i) => frame.pad.l + groupW * i + groupW / 2);

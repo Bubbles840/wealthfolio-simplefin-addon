@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.44.2] - 2026-09-03
+
+### Fixed
+
+- Chart-image taps silently produced nothing: the SVG renderer emitted two
+  bits of HTML leniency (a duplicated stroke-width on dashed lines, a bare
+  data attribute) that browsers forgive and resvg's strict XML parser
+  rejects. Both fixed, and the suite now RASTERIZES every renderable report
+  through the real resvg so this class of failure cannot ship again.
+
 ## [1.44.1] - 2026-09-03
 
 ### Changed
