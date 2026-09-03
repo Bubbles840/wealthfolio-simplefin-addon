@@ -344,27 +344,39 @@ describe('subscriptions card: dismissals', () => {
   });
 });
 
-describe('subscriptions card: tiers (v1.36)', () => {
+describe('subscriptions card: confirm/ignore (v1.37)', () => {
   const sub = (over: any = {}) => ({
     name: 'SPOTIFY', monthlyCents: 1099, count: 5, lastDate: '2026-08-20',
     lastCents: 1099, creep: false, kind: 'subscription', ...over,
   });
 
-  it('a bill row is labeled approximate and varying', () => {
-    render(<ReportView id="subscriptions" customReports={[]} cube={{ ...fresh(), subscriptions: [
-      sub({ name: 'DUKE ENERGY', monthlyCents: 9900, kind: 'bill' }),
-    ] }} />);
-    expect(screen.getByText(/~\$99\.00\/mo · varies/)).toBeTruthy();
-  });
-
-  it('possibles sit under their own heading and stay out of the total', () => {
+  it('bills and possibles become a question, not a line item', () => {
+    // The user's general approach: anything on a monthly cadence gets ASKED
+    // about — rent and utilities included — and only answers count as money.
+    const onConfirm = vi.fn();
+    const onHide = vi.fn();
     render(<ReportView id="subscriptions" customReports={[]} cube={{ ...fresh(), subscriptions: [
       sub(),
+      sub({ name: 'DUKE ENERGY', monthlyCents: 9900, kind: 'bill' }),
       sub({ name: 'MYSTERY BOX CLUB', monthlyCents: 1500, kind: 'possible' }),
-    ] }} />);
-    expect(screen.getByText(/possibly recurring/i)).toBeTruthy();
-    expect(screen.getByText('MYSTERY BOX CLUB')).toBeTruthy();
+    ] }} hiddenSubscriptions={[]} confirmedSubscriptions={[]} onConfirmSubscription={onConfirm} onHideSubscription={onHide} />);
+    expect(screen.getByText(/is this a subscription\?/i)).toBeTruthy();
+    expect(screen.getByText(/~\$99\.00\/mo · varies/)).toBeTruthy();
+    // Only the sure subscription counts.
     expect(screen.getByText(/\$10\.99\/mo across 1/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Yes, DUKE ENERGY is a subscription' }));
+    expect(onConfirm).toHaveBeenCalledWith('DUKE ENERGY');
+    fireEvent.click(screen.getByRole('button', { name: 'No, ignore MYSTERY BOX CLUB' }));
+    expect(onHide).toHaveBeenCalledWith('MYSTERY BOX CLUB');
+  });
+
+  it('a confirmed candidate joins the roster and the total for good', () => {
+    render(<ReportView id="subscriptions" customReports={[]} cube={{ ...fresh(), subscriptions: [
+      sub(),
+      sub({ name: 'DUKE ENERGY', monthlyCents: 9900, kind: 'bill' }),
+    ] }} hiddenSubscriptions={[]} confirmedSubscriptions={['DUKE ENERGY']} />);
+    expect(screen.queryByText(/is this a subscription\?/i)).toBeNull();
+    expect(screen.getByText(/\$109\.99\/mo across 2/)).toBeTruthy();
   });
 
   it('rows without a kind (older companion) count as subscriptions', () => {
@@ -372,6 +384,6 @@ describe('subscriptions card: tiers (v1.36)', () => {
       sub({ kind: undefined }),
     ] }} />);
     expect(screen.getByText(/\$10\.99\/mo across 1/)).toBeTruthy();
-    expect(screen.queryByText(/possibly recurring/i)).toBeNull();
+    expect(screen.queryByText(/is this a subscription\?/i)).toBeNull();
   });
 });

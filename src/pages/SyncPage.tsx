@@ -219,8 +219,9 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
       store.getCustomReports?.() ?? [],
       store.getBudgetLayout?.() ?? null,
       store.getHiddenSubscriptions?.() ?? [],
+      store.getConfirmedSubscriptions?.() ?? [],
     ])
-      .then(([status, ledger, pool, cube, reports, layoutStored, hiddenSubs]) => {
+      .then(([status, ledger, pool, cube, reports, layoutStored, hiddenSubs, confirmedSubs]) => {
         setUncategorized(status);
         setDismissals(ledger);
         setPoolStatus(pool ?? null);
@@ -228,6 +229,7 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
         setCustomReportsState(reports ?? []);
         setBudgetLayoutState(layoutStored ?? null);
         setHiddenSubscriptionsState(hiddenSubs ?? []);
+        setConfirmedSubscriptionsState(confirmedSubs ?? []);
       })
       .catch(() => {});
   }, [store]);
@@ -258,6 +260,11 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
   const onHiddenSubscriptionsChange = useCallback((next: string[]) => {
     setHiddenSubscriptionsState(next);
     store.setHiddenSubscriptions?.(next)?.catch(() => {});
+  }, [store]);
+  const [confirmedSubscriptions, setConfirmedSubscriptionsState] = useState<string[]>([]);
+  const onConfirmedSubscriptionsChange = useCallback((next: string[]) => {
+    setConfirmedSubscriptionsState(next);
+    store.setConfirmedSubscriptions?.(next)?.catch(() => {});
   }, [store]);
   const onBudgetLayoutReset = useCallback(() => {
     setBudgetLayoutState(null);
@@ -598,6 +605,8 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
           store={store}
           hiddenSubscriptions={hiddenSubscriptions}
           onHiddenSubscriptionsChange={onHiddenSubscriptionsChange}
+          confirmedSubscriptions={confirmedSubscriptions}
+          onConfirmedSubscriptionsChange={onConfirmedSubscriptionsChange}
         />
       </TabPanel>
 

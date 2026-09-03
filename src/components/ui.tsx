@@ -695,7 +695,7 @@ body {
 }
 .sfin-drag-ghost {
   position: fixed; z-index: 60; pointer-events: none;
-  opacity: .92; transform: scale(1.02) rotate(.4deg);
+  opacity: .92; will-change: transform;
   filter: drop-shadow(0 18px 36px rgba(0, 0, 0, .35));
 }
 .sfin-drag-ghost .sfin-report-card { height: 100%; }

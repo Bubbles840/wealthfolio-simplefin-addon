@@ -209,3 +209,28 @@ describe('recurring tiers (v1.36)', () => {
     expect(found.map((s) => s.name)).toEqual(['NETFLIX.COM', 'MYSTERY BOX CLUB']);
   });
 });
+
+describe('candidates over keywords (v1.37)', () => {
+  it('two monthly charges with DIFFERENT amounts still make a candidate', () => {
+    // The live Claude miss: two charges bracketing a plan upgrade. Nothing
+    // with a monthly cadence should vanish — it should be asked about.
+    const found = detectSubscriptions([
+      charge('2026-07-14', 'ANTHROPIC* CLAUDE SUB SAN FRANCISCO CA', 2000),
+      charge('2026-08-14', 'ANTHROPIC* CLAUDE SUB SAN FRANCISCO CA', 20000),
+    ], NOW);
+    expect(found).toHaveLength(1);
+    // Known brand, so it lands as a subscription outright; the price is the
+    // newest charge (the plan as it exists now).
+    expect(found[0].kind).toBe('subscription');
+    expect(found[0].monthlyCents).toBe(20000);
+  });
+
+  it('an unknown merchant with two differing monthly charges is possible, not gone', () => {
+    const found = detectSubscriptions([
+      charge('2026-07-01', 'LOUISVILLE GAS & ELECTRIC', 5400),
+      charge('2026-08-01', 'LOUISVILLE GAS & ELECTRIC', 6900),
+    ], NOW);
+    expect(found).toHaveLength(1);
+    expect(found[0].kind).toBe('possible');
+  });
+});

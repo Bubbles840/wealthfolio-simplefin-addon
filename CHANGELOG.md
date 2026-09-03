@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.37.0] - 2026-09-02
+
+### Changed
+
+- **The ghost is glued to the cursor now.** Its position updates by a direct
+  style write instead of re-rendering twenty charts per pointer event — the
+  reported lag was React doing exactly that.
+- **Dropping right on top of a card works.** Targeting is real rectangle
+  hit-testing over whole cells (headers, tools, and padding included — the
+  old approach only matched the inner chart body, leaving dead zones), with a
+  halves rule: the front half of a card means "before it", the back half
+  "after it".
+- **"Is this a subscription?"** Anything charging on a monthly cadence — same
+  price or not, so rent, utilities, and a just-upgraded plan all qualify —
+  now appears as a question on the card with ✓ / ✕. Yes counts it in the
+  roster, the total, and the weekly line permanently; No hides it forever
+  (restorable). Only the unambiguous stable-price case is auto-counted, so a
+  gas bill never sneaks into "subscriptions" on its own — and nothing with a
+  monthly cadence can silently vanish the way a plan upgrade used to make
+  two-charge history "unstable" and invisible.
+
 ## [1.36.0] - 2026-09-02
 
 ### Changed

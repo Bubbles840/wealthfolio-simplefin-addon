@@ -569,3 +569,28 @@ describe('drag ghost (v1.36)', () => {
     expect(document.querySelector('.sfin-drag-ghost')).toBeNull();
   });
 });
+
+describe('subscription confirmation end to end', () => {
+  it('answering Yes persists the name and moves it into the roster', async () => {
+    const props = makeProps();
+    (props.store as any).getReportCube = vi.fn(async () => ({
+      ...CUBE,
+      asOf: new Date().toISOString(),
+      subscriptions: [
+        { name: 'RENT LLC', monthlyCents: 90000, count: 6, lastDate: '2026-08-25', lastCents: 90000, creep: false, kind: 'bill' },
+      ],
+    }));
+    (props.store as any).getHiddenSubscriptions = vi.fn(async () => []);
+    (props.store as any).setHiddenSubscriptions = vi.fn(async () => {});
+    (props.store as any).getConfirmedSubscriptions = vi.fn(async () => []);
+    (props.store as any).setConfirmedSubscriptions = vi.fn(async () => {});
+    render(<SyncPage {...props} />);
+    await waitFor(() => expect(reportIds().length).toBeGreaterThan(0));
+
+    expect(screen.getByText(/is this a subscription\?/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Yes, RENT LLC is a subscription' }));
+    expect((props.store as any).setConfirmedSubscriptions).toHaveBeenCalledWith(['RENT LLC']);
+    await waitFor(() => expect(screen.queryByText(/is this a subscription\?/i)).toBeNull());
+    expect(screen.getByText(/\$900\.00\/mo across 1/)).toBeInTheDocument();
+  });
+});

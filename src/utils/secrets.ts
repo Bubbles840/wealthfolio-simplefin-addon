@@ -18,7 +18,7 @@ import type { DriftAlertEntry, TransferLinkFailureEntry } from '../../shared/syn
 import type { SyncResult } from '../../shared/sync-core';
 import { LARGE_TX_OUTBOX_SECRET_KEY } from '../../shared/telegram';
 import { ADDON_VERSION_SECRET_KEY, SIMPLEFIN_SYNC_VERSION } from '../../shared/version';
-import { HIDDEN_SUBSCRIPTIONS_SECRET_KEY, parseHiddenSubscriptions } from '../../shared/subscriptions';
+import { HIDDEN_SUBSCRIPTIONS_SECRET_KEY, CONFIRMED_SUBSCRIPTIONS_SECRET_KEY, parseHiddenSubscriptions } from '../../shared/subscriptions';
 
 /** Per-account balance snapshot captured on each sync, for the Sync page. */
 /** One spending category as the companion published it. Mirrors
@@ -129,6 +129,7 @@ const KEYS = {
   amazonLedger: AMAZON_LEDGER_SECRET_KEY,
   dismissals: 'uncategorized_dismissals',
   hiddenSubscriptions: HIDDEN_SUBSCRIPTIONS_SECRET_KEY,
+  confirmedSubscriptions: CONFIRMED_SUBSCRIPTIONS_SECRET_KEY,
 } as const;
 
 /** One entry in the shared large-transaction outbox. Derived from `SyncResult`
@@ -740,6 +741,15 @@ export class SecretsStore {
   }
   async setHiddenSubscriptions(names: string[]): Promise<void> {
     await this.ctx.api.secrets.set(HIDDEN_SUBSCRIPTIONS_SECRET_KEY, JSON.stringify(names));
+  }
+
+  /** "Yes, that IS a subscription" answers from the card — names counted in
+   *  every money total from then on, whatever tier the detector guessed. */
+  async getConfirmedSubscriptions(): Promise<string[]> {
+    return parseHiddenSubscriptions(await this.ctx.api.secrets.get(CONFIRMED_SUBSCRIPTIONS_SECRET_KEY));
+  }
+  async setConfirmedSubscriptions(names: string[]): Promise<void> {
+    await this.ctx.api.secrets.set(CONFIRMED_SUBSCRIPTIONS_SECRET_KEY, JSON.stringify(names));
   }
 
   /** Deletes the stored layout so the defaults come back — the Budget tab's
