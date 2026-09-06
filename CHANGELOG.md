@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.47.0] - 2026-09-06
+
+### Added
+
+- **Slim the reports.** Notifications → Reports gains a "Slim it down"
+  group: daily category rows can be *all*, *only over-budget*, or *none —
+  summary only*; the "$X left this month" line and the off-budget block each
+  have their own switch; and the weekly's pool section, cash-runway line,
+  and subscriptions line are individually optional. `/report` follows the
+  same settings. Defaults keep today's full report.
+
+### Changed
+
+- Over-for-the-month rows keep their week figure ("… over for the month ·
+  $42 over this wk") instead of dropping it — the subtitle promises a
+  weekly number, and that branch was the one place it vanished.
+- The version-skew warning now says to reload the Wealthfolio tab if the
+  update is already done: the addon publishes its version when it LOADS, so a
+  tab pinned open for days keeps reporting the old build.
+
 ## [1.46.1] - 2026-09-03
 
 ### Fixed

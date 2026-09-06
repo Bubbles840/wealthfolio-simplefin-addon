@@ -1705,6 +1705,13 @@ export async function composeDailyDigestMessage(
     await readOverBudgetSpent(wfClient),
     readProjection(dbPath, now, categories, await readMonthProjection(wfClient)),
     poolStatus,
+    // The slimming dial (v1.47): stored on the same config the Notifications
+    // tab writes; absent fields mean the full report, unchanged.
+    {
+      categoryMode: tg.digestCategoryMode === 'over' || tg.digestCategoryMode === 'none' ? tg.digestCategoryMode : 'all',
+      summary: tg.digestSummary !== false,
+      offBudget: tg.digestOffBudget !== false,
+    },
   );
 
   // A price creep is one line for a couple of mornings, then silence: the
@@ -1978,8 +1985,13 @@ export async function sendWeeklyTelegramReport(
   // guarded additions that can only cost themselves. Runway resolves null on
   // any unreadable input (readRunwayMonths owns that guarantee).
   const poolDeps = poolReportDeps(wfClient, dbPath);
-  const poolStatus = await readPoolStatus(poolDeps, now).catch(() => null);
-  const runwayMonths = await readRunwayMonths(poolDeps, now);
+  // Weekly slimming (v1.47): each add-on section can be switched off; the
+  // formatter treats null exactly like "not available", which it already
+  // renders as silence.
+  const poolStatus = tg.weeklyPoolSection === false
+    ? null
+    : await readPoolStatus(poolDeps, now).catch(() => null);
+  const runwayMonths = tg.weeklyRunway === false ? null : await readRunwayMonths(poolDeps, now);
   let message = formatMonthlyRemainingSummary(
     totalSpent,
     totalBudget,
@@ -1990,7 +2002,7 @@ export async function sendWeeklyTelegramReport(
   );
   // One line, monthly total only: the weekly answers "what does recurring
   // life cost", the Budget tab's Subscriptions card holds the roster.
-  const subs = await readCubeSubscriptions(wfClient);
+  const subs = tg.weeklySubscriptions === false ? [] : await readCubeSubscriptions(wfClient);
   if (subs.length > 0) {
     const totalCents = subs.reduce((sum, sub) => sum + sub.monthlyCents, 0);
     message += `\n\n*Subscriptions* — $${(totalCents / 100).toFixed(2)}/mo across ${subs.length}`;

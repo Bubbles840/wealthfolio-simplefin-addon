@@ -154,8 +154,12 @@ export function evaluateSelfCheck(input: SelfCheckInput, now: Date): SelfCheckFi
     findings.push({
       kind: 'version-skew',
       severity: 'warning',
+      // The reload hint is load-bearing: the addon publishes its version when
+      // it LOADS, so a Wealthfolio tab pinned open for days keeps reporting
+      // the build it loaded — a correct warning that read as a false one
+      // (2026-09-06).
       message: `addon v${input.addonVersion} and companion v${input.companionVersion} are different builds`
-        + ' — finish the update (pull the image AND upload the matching zip)',
+        + ' — finish the update (pull the image AND upload the matching zip), or reload the Wealthfolio tab if you already have',
     });
   }
 
