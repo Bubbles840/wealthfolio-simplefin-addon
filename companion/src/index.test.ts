@@ -4368,3 +4368,46 @@ describe('/reports command (v1.44)', () => {
     expect(buttons[0]).toMatchObject({ text: expect.stringMatching(/dashboard/i), url: 'https://t.me/MyBot/reports' });
   });
 });
+
+describe('report slimming toggles (v1.47)', () => {
+  const clientWith = (tg: Record<string, unknown>, extra: Array<[string, string]> = []) => {
+    const secrets = new Map<string, string>([
+      ['telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true, ...tg })],
+      ...extra,
+    ]);
+    return {
+      getAddonSecret: vi.fn(async (_a: string, k: string) => secrets.get(k) ?? null),
+      setAddonSecret: vi.fn(async (_a: string, k: string, v: string) => { secrets.set(k, v); }),
+    } as any;
+  };
+
+  it('digestCategoryMode none strips the category rows from the daily digest', async () => {
+    const full = await composeDailyDigestMessage(clientWith({}));
+    const slim = await composeDailyDigestMessage(clientWith({ digestCategoryMode: 'none' }));
+    expect(slim!.length).toBeLessThan(full!.length);
+    expect(slim).toContain('Daily Spending Check');
+    expect(slim).not.toContain('left to spend this week');
+  });
+
+  it('weekly toggles silence the pool, runway, and subscription add-ons', async () => {
+    const daysAgoDate = (d: number) => new Date(Date.now() - d * 86_400_000).toISOString().slice(0, 10);
+    const cube = JSON.stringify({
+      version: 1, asOf: new Date().toISOString(), months: ['2026-09'],
+      categories: [], accounts: [], spend: [[]], uncategorized: [[]], income: [[]],
+      budgets: [[]], merchants: [[]], feesInterest: [0], netWorth: [null], liquid: [null],
+      pool: null,
+      subscriptions: [{ name: 'ADOBE', monthlyCents: 5499, count: 4, lastDate: daysAgoDate(3), lastCents: 5499, creep: false }],
+    });
+    const client = clientWith(
+      { weeklySubscriptions: false, weeklyPoolSection: false, weeklyRunway: false },
+      [['report_cube', cube], ['semester_pool', JSON.stringify({ amountCents: 1_600_000, startDate: '2026-07-01', endDate: '2027-01-01' })]],
+    );
+    const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+    vi.stubGlobal('fetch', fetchMock);
+    await sendWeeklyTelegramReport(client);
+    const text = JSON.parse((fetchMock.mock.calls[0][1] as any).body).text;
+    expect(text).not.toContain('Subscriptions');
+    expect(text).not.toContain('Semester pool');
+    expect(text).not.toContain('runway');
+  });
+});

@@ -55,6 +55,13 @@ export interface TelegramCfgDraft {
   driftAmount: string;
   topSpendsOn: boolean;
   topSpendCount: string;
+  /** v1.47 slimming: which daily sections render, and the weekly add-ons. */
+  digestCategoryMode: 'all' | 'over' | 'none';
+  digestSummary: boolean;
+  digestOffBudget: boolean;
+  weeklyPoolSection: boolean;
+  weeklyRunway: boolean;
+  weeklySubscriptions: boolean;
   glyphMode: 'clean' | 'glyphs';
   glyphOverrides: Record<string, string>;
   subcategoryDisplay: 'rollup' | 'breakdown';
@@ -144,6 +151,12 @@ export function buildConfig(cfg: TelegramCfgDraft) {
     dailyReportCategories: cfg.dailyReportCategories,
     weeklyReportCategories: cfg.weeklyReportCategories,
     monthlyReportCategories: cfg.monthlyReportCategories,
+    digestCategoryMode: cfg.digestCategoryMode,
+    digestSummary: cfg.digestSummary,
+    digestOffBudget: cfg.digestOffBudget,
+    weeklyPoolSection: cfg.weeklyPoolSection,
+    weeklyRunway: cfg.weeklyRunway,
+    weeklySubscriptions: cfg.weeklySubscriptions,
     weeklyTopSpendCount: countToSave(
       cfg.topSpendsOn, cfg.topSpendCount, DEFAULT_WEEKLY_TOP_SPEND_COUNT,
     ),
@@ -174,6 +187,12 @@ const EMPTY_DRAFT: TelegramCfgDraft = {
   dailyReportCategories: 'all',
   weeklyReportCategories: 'all',
   monthlyReportCategories: 'all',
+  digestCategoryMode: 'all',
+  digestSummary: true,
+  digestOffBudget: true,
+  weeklyPoolSection: true,
+  weeklyRunway: true,
+  weeklySubscriptions: true,
   largeTxAlerts: false,
   largeTxAmount: String(SUGGESTED_LARGE_TX_THRESHOLD),
   driftAlertsOn: true,
@@ -244,6 +263,12 @@ function draftFromStored(
     dailyReportCategories: tg.dailyReportCategories ?? 'all',
     weeklyReportCategories: tg.weeklyReportCategories ?? 'all',
     monthlyReportCategories: tg.monthlyReportCategories ?? 'all',
+    digestCategoryMode: tg.digestCategoryMode === 'over' || tg.digestCategoryMode === 'none' ? tg.digestCategoryMode : 'all',
+    digestSummary: tg.digestSummary !== false,
+    digestOffBudget: tg.digestOffBudget !== false,
+    weeklyPoolSection: tg.weeklyPoolSection !== false,
+    weeklyRunway: tg.weeklyRunway !== false,
+    weeklySubscriptions: tg.weeklySubscriptions !== false,
     largeTxAlerts: largeTx !== null && largeTx > 0,
     largeTxAmount: largeTx !== null && largeTx > 0 ? String(largeTx) : base.largeTxAmount,
     driftAlertsOn: drift === null || drift > 0,

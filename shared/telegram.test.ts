@@ -2048,3 +2048,51 @@ describe('direction signs on listed rows', () => {
     expect(text).toContain('🟢 +$999');
   });
 });
+
+describe('digest sections (v1.47)', () => {
+  const cats = [
+    { name: 'Groceries', monthSpent: 50, weekSpent: 10, budget: 300 },
+    { name: 'Dining', monthSpent: 250, weekSpent: 60, budget: 200 },
+    { name: 'Hobbies', monthSpent: 40, weekSpent: 0, budget: 0 },
+  ];
+  const period = { daysFromWeekStartToMonthEnd: 28, daysLeftInMonthInclusive: 25 };
+
+  it("'over' keeps only categories past their month budget", () => {
+    const text = formatDailySpendingDigest(cats, period, undefined, undefined, undefined, undefined, undefined, undefined, undefined, null, { categoryMode: 'over' });
+    expect(text).toContain('Dining');
+    expect(text).not.toContain('Groceries');
+  });
+
+  it("'none' drops the category block and its weekly promise, keeping the summary", () => {
+    const text = formatDailySpendingDigest(cats, period, undefined, undefined, undefined, undefined, undefined, undefined, undefined, null, { categoryMode: 'none' });
+    expect(text).not.toContain('Groceries');
+    expect(text).not.toContain('Dining');
+    expect(text).not.toContain('left to spend this week');
+    expect(text).toContain('left this month');
+  });
+
+  it('summary off drops the headline money line', () => {
+    const text = formatDailySpendingDigest(cats, period, undefined, undefined, undefined, undefined, undefined, undefined, undefined, null, { summary: false });
+    expect(text).toContain('Groceries');
+    expect(text).not.toContain('left this month');
+  });
+
+  it('off-budget section can be silenced on its own', () => {
+    const text = formatDailySpendingDigest(cats, period, undefined, undefined, undefined, undefined, undefined, undefined, undefined, null, { offBudget: false });
+    expect(text).not.toContain('Hobbies');
+    expect(text).toContain('Groceries');
+  });
+});
+
+describe('week figure survives a month overspend (v1.47)', () => {
+  it('an over-for-the-month row still shows this week', () => {
+    // Live ask: the subtitle promises "left to spend this week", but the
+    // month-over branch dropped the week entirely.
+    const text = formatDailySpendingDigest(
+      [{ name: 'Dining', monthSpent: 250, weekSpent: 80, budget: 200 }],
+      { daysFromWeekStartToMonthEnd: 28, daysLeftInMonthInclusive: 25 },
+    );
+    expect(text).toContain('over');
+    expect(text).toMatch(/this wk/);
+  });
+});

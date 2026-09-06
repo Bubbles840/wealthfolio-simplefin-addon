@@ -188,6 +188,26 @@ describe('NotificationsTab', () => {
   /** A config that exists but predates all five fields. */
   const bareConfig = () => ({ botToken: 't', chatId: 'c', enabled: true });
 
+  it('saves the slimming choices for daily and weekly reports', async () => {
+    const props = makeProps();
+    props.store.getTelegramConfig = vi.fn(async () => bareConfig());
+    props.store.setTelegramConfig = vi.fn(async () => {});
+    render(<SyncPage {...props} />);
+    await openReports();
+    fireEvent.change(screen.getByLabelText(/Daily category rows/i), { target: { value: 'over' } });
+    fireEvent.click(screen.getByLabelText(/Off-budget section in the daily/i));
+    fireEvent.click(screen.getByLabelText(/Pool section in the weekly/i));
+    await save();
+    const cfg = savedConfig(props);
+    expect(cfg.digestCategoryMode).toBe('over');
+    expect(cfg.digestOffBudget).toBe(false);
+    expect(cfg.weeklyPoolSection).toBe(false);
+    // Untouched sections keep their defaults, explicitly.
+    expect(cfg.digestSummary).toBe(true);
+    expect(cfg.weeklyRunway).toBe(true);
+    expect(cfg.weeklySubscriptions).toBe(true);
+  });
+
   // ── The save bar ───────────────────────────────────────────────────────
   it('shows the save bar only when settings differ from stored config', async () => {
     render(<SyncPage {...makeProps()} />);

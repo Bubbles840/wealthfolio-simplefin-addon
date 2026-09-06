@@ -89,6 +89,69 @@ export function ReportSettings({ cfg, onChange, isOpen, toggleCard }: Props) {
         </div>
 
         <div className="sfin-divider" />
+        <SectionLabel>Slim it down</SectionLabel>
+        <div className="sfin-checks">
+          <label className="sfin-check">
+            <span className="sfin-check-name">Daily category rows</span>
+            <select
+              className="sfin-select"
+              aria-label="Daily category rows"
+              value={cfg.digestCategoryMode}
+              onChange={(e) => onChange({ digestCategoryMode: e.target.value as 'all' | 'over' | 'none' })}
+            >
+              <option value="all">All selected categories</option>
+              <option value="over">Only over-budget</option>
+              <option value="none">None — summary only</option>
+            </select>
+          </label>
+          <label className="sfin-check">
+            <input
+              type="checkbox"
+              checked={cfg.digestSummary}
+              aria-label="Summary line in the daily report"
+              onChange={(e) => onChange({ digestSummary: e.target.checked })}
+            />
+            <span>“$X left this month” summary line</span>
+          </label>
+          <label className="sfin-check">
+            <input
+              type="checkbox"
+              checked={cfg.digestOffBudget}
+              aria-label="Off-budget section in the daily report"
+              onChange={(e) => onChange({ digestOffBudget: e.target.checked })}
+            />
+            <span>Off-budget section in the daily report</span>
+          </label>
+          <label className="sfin-check">
+            <input
+              type="checkbox"
+              checked={cfg.weeklyPoolSection}
+              aria-label="Pool section in the weekly report"
+              onChange={(e) => onChange({ weeklyPoolSection: e.target.checked })}
+            />
+            <span>Pool section in the weekly report</span>
+          </label>
+          <label className="sfin-check">
+            <input
+              type="checkbox"
+              checked={cfg.weeklyRunway}
+              aria-label="Cash runway line in the weekly report"
+              onChange={(e) => onChange({ weeklyRunway: e.target.checked })}
+            />
+            <span>Cash runway line in the weekly report</span>
+          </label>
+          <label className="sfin-check">
+            <input
+              type="checkbox"
+              checked={cfg.weeklySubscriptions}
+              aria-label="Subscriptions line in the weekly report"
+              onChange={(e) => onChange({ weeklySubscriptions: e.target.checked })}
+            />
+            <span>Subscriptions line in the weekly report</span>
+          </label>
+        </div>
+
+        <div className="sfin-divider" />
         <SectionLabel>Alerts &amp; amounts</SectionLabel>
 
         <div className="sfin-nums">

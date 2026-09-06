@@ -807,6 +807,16 @@ export interface DailyDigestWindow {
  *    is not overspending
  *  - otherwise → the plain figure
  */
+export interface DigestSections {
+  /** 'all' (default) lists every selected category; 'over' only those past
+   *  their month budget; 'none' drops the block entirely. */
+  categoryMode?: 'all' | 'over' | 'none';
+  /** The "$X left this month · on pace for …" headline line. */
+  summary?: boolean;
+  /** The unbudgeted-categories block. */
+  offBudget?: boolean;
+}
+
 export function formatDailySpendingDigest(
   categories: DailyDigestCategory[],
   // Not named `window`: this module also runs inside the addon's browser
@@ -883,7 +893,16 @@ export function formatDailySpendingDigest(
    * it. Upcoming and gone pools render nothing, exactly like null.
    */
   pool: PoolStatus | null = null,
+  /**
+   * v1.47: which digest sections render — the "too bloated" dial. Defaults
+   * preserve the full report; every field is opt-out so an old config
+   * changes nothing.
+   */
+  sections: DigestSections = {},
 ): string {
+  const categoryMode = sections.categoryMode ?? 'all';
+  const showSummary = sections.summary ?? true;
+  const showOffBudget = sections.offBudget ?? true;
   const { daysFromWeekStartToMonthEnd, daysLeftInMonthInclusive } = period;
   const days = Math.max(1, daysLeftInMonthInclusive);
   const dayWord = days === 1 ? 'day' : 'days';
@@ -988,7 +1007,13 @@ export function formatDailySpendingDigest(
     return Math.min(1, affordable / wanted);
   })();
 
-  for (const { c, glyph, name, leftThisWeek: rawWeek, remainingMonth } of rendered) {
+  // 'over' keeps only categories past their MONTH budget — the rows that
+  // demand action; 'none' clears the block entirely. The accumulators above
+  // ran over everything, so the summary stays honest whatever is shown.
+  const shownRendered = categoryMode === 'none' ? []
+    : categoryMode === 'over' ? rendered.filter((r) => r.remainingMonth < 0)
+      : rendered;
+  for (const { c, glyph, name, leftThisWeek: rawWeek, remainingMonth } of shownRendered) {
     // Only ever reduces. A category already over its own envelope is over
     // regardless of what the pool says.
     const leftThisWeek = rawWeek > 0 ? rawWeek * poolCap : rawWeek;
@@ -1004,9 +1029,16 @@ export function formatDailySpendingDigest(
     if (remainingMonth < 0) {
       // `Math.abs` explicitly: the word "over" states the direction, and
       // `-$50 over` would read as a double negative.
+      //
+      // The week clause stays even here: the subtitle promises a weekly
+      // figure, and this branch used to be the one place it vanished (live
+      // ask, 2026-09-06 — "I just want to be able to see it").
+      const weekTail = leftThisWeek < 0
+        ? ` · ${money(Math.abs(leftThisWeek))} over this wk`
+        : ` · ${money(leftThisWeek)} this wk`;
       lines.push(overBudgetSpent === 'all'
-        ? `${glyph}${name}  🚨 *${moneyWhole(Math.abs(remainingMonth))} over* · ${moneyWhole(Math.max(0, c.monthSpent))} spent`
-        : `${glyph}${name}  🚨 *${moneyWhole(Math.abs(remainingMonth))} over* for the month`);
+        ? `${glyph}${name}  🚨 *${moneyWhole(Math.abs(remainingMonth))} over* · ${moneyWhole(Math.max(0, c.monthSpent))} spent${weekTail}`
+        : `${glyph}${name}  🚨 *${moneyWhole(Math.abs(remainingMonth))} over* for the month${weekTail}`);
     } else if (leftThisWeek < 0) {
       lines.push(`${glyph}${name}  ⚠️ *${money(leftThisWeek)} over* · ${moneyWhole(leftMonth)} left mo`);
     } else if (leftThisWeek === 0 && remainingMonth === 0) {
@@ -1091,7 +1123,7 @@ export function formatDailySpendingDigest(
   // budget deleted, spending continues); joining blocks that exist avoids a
   // stray blank gap in that case.
   const blocks = [lines.join('\n')];
-  if (offBudgetLines.length > 0) blocks.push(`Off budget:\n${offBudgetLines.join('\n')}`);
+  if (showOffBudget && offBudgetLines.length > 0) blocks.push(`Off budget:\n${offBudgetLines.join('\n')}`);
   // Its own block, not folded into "Off budget": those have a category the user
   // chose and simply no budget, while these are unfiled — a different thing to
   // do about it, and the count is the actionable half.
@@ -1113,7 +1145,10 @@ export function formatDailySpendingDigest(
   // in hand. Same honesty, different question answered.
   const envelopesOverstate = !capWeeklyToPool
     && headlineRemaining < rendered.reduce((sum, r) => sum + Math.max(0, r.remainingMonth), 0);
-  const subtitle = poolCap < 1
+  const subtitle = categoryMode === 'none'
+    // No category rows = no weekly promise to annotate.
+    ? ''
+    : poolCap < 1
     ? poolCap === 0
       ? '_the month is spent — nothing left to spend this week_'
       : '_left to spend this week · reduced to fit what is left overall_'
@@ -1121,7 +1156,10 @@ export function formatDailySpendingDigest(
       ? `_left in each budget · only ${moneyWhole(Math.max(0, headlineRemaining))} left overall_`
       : '_left to spend this week_';
   const poolLine = pool ? formatPoolLine(pool, style) : null;
-  return `${headerGlyph('☀️', style)}*Daily Spending Check*\n${subtitle}\n\n${blocks.filter(Boolean).join('\n\n')}\n\n${summary}${poolLine ? `\n${poolLine}` : ''}`;
+  const shownBlocks = blocks.filter(Boolean).join('\n\n');
+  const tail = [showSummary ? summary : null, poolLine].filter(Boolean).join('\n');
+  return `${headerGlyph('☀️', style)}*Daily Spending Check*${subtitle ? `\n${subtitle}` : ''}`
+    + `${shownBlocks ? `\n\n${shownBlocks}` : ''}${tail ? `\n\n${tail}` : ''}`;
 }
 
 /**
