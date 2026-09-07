@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.49.0] - 2026-09-07
+
+### Changed
+
+- **Wealthfolio 3.8.0 compatibility.** 3.8 makes an activity's `amount` the
+  final cash moved and demotes the fee to information ("it is not deducted
+  again"). Every outflow placeholder and drift plug this sync wrote — a
+  `CREDIT` with the amount in `fee` — booked zero cash there, and 3.8's
+  one-shot migration keeps such rows at $0 and flags them "Needs review", so
+  every affected account would read high by the sum of them. Outflow
+  placeholders and plugs are now a `TRANSFER_OUT` carrying the real amount,
+  which books the same cash on 3.7 and 3.8 — and, as a bonus, in-transit
+  card payments finally show their amount instead of $0.
+- **Legacy rows are restated automatically.** On its next run (every mode,
+  both halves) the sync rewrites its own pre-1.49 fee-side rows to the new
+  shape and clears the review flag it caused. Only rows carrying the sync's
+  own note marker qualify; a hand-entered CREDIT with a fee is never touched.
+- **Reports exclude the sync's bookkeeping by marker, not by type.** An
+  unlinked `TRANSFER_OUT` on a cash account is spending to Wealthfolio's own
+  classifier (only a linked transfer is neutral, and 3.8 left no cash-moving
+  outflow type that isn't), so a Wealthfolio rule can file a placeholder
+  before its counterpart posts. The addon's readers now drop in-transit and
+  balance-adjustment rows from every category, top-spending and
+  uncategorised figure regardless of category. Wealthfolio's own spending
+  page will show a placeholder as an uncategorised outflow until the pair
+  links — the honest trade for a correct balance.
+
 ## [1.48.0] - 2026-09-07
 
 ### Added

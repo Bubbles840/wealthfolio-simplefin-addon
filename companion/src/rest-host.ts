@@ -32,6 +32,7 @@ function fromSearchItem(a: any, wfAccountId = ''): HostActivity {
     activityType: String(a.activityType ?? ''),
     date: toIsoDate(a.date),
     amount: a.amount ?? null,
+    fee: a.fee ?? null,
     comment: a.comment ?? a.notes ?? a.description ?? null,
     assetId: a.assetId ? String(a.assetId) : undefined,
     sourceGroupId: a.sourceGroupId ?? null,

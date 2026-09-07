@@ -304,12 +304,13 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
  * transaction" means the same thing as "large line on the Spending page". Every
  * omission is load-bearing rather than incidental:
  *  - `DEPOSIT` / `CREDIT` — money arriving. A big payday is not alarming, and
- *    `CREDIT` is the type `neutralAdjustmentFields` picks precisely BECAUSE
- *    Wealthfolio classifies it as Ignored (neither spending nor income), so it
- *    is also what every balance plug and CASH in-transit placeholder looks like.
- *    Alerting on it would ping the user about the sync's own bookkeeping.
+ *    `CREDIT` is the type `neutralAdjustmentFields` picks for a CASH inflow
+ *    precisely BECAUSE Wealthfolio classifies it as Ignored (neither spending
+ *    nor income). Alerting on it would ping the user about the sync's own
+ *    bookkeeping.
  *  - `TRANSFER_IN` / `TRANSFER_OUT` — moving your own money between accounts,
- *    which the spending query excludes and Wealthfolio nets out once linked.
+ *    which the spending query excludes and Wealthfolio nets out once linked;
+ *    since v1.49 every outflow placeholder and plug is a TRANSFER_OUT too.
  *  - `ADJUSTMENT` / `UNKNOWN` and the investment types — not cash spending.
  *
  * `FEE`/`TAX` are only reachable through a user mapping rule (`mapper.ts` never
@@ -341,7 +342,7 @@ export interface SyncResult {
     inTransit: boolean;
     /** Which way the money moved, from the FEED's signed amount — the one
      *  source that stays honest for a placeholder, whose stored type (a CASH
-     *  outflow books as CREDIT with the sum in fee) lies about direction. */
+     *  inflow books as a bare CREDIT) says nothing about the pairing. */
     direction: 'in' | 'out';
   }>;
   /** Newly-created spending rows over the user's configured dollar threshold,
@@ -396,8 +397,9 @@ export interface SyncResult {
     /** YYYY-MM-DD. */
     date: string;
     /** The transaction's full magnitude, taken from the FEED rather than the
-     *  deleted row: an in-transit placeholder books its amount as `fee`, so the
-     *  stored `amount` is 0 and reporting it would claim "$0.00 removed". */
+     *  deleted row: a placeholder written before v1.49 booked its amount as
+     *  `fee`, so its stored `amount` is 0 and reporting it would claim
+     *  "$0.00 removed". */
     amountCents: number;
     currency: string;
     /** The deleted Wealthfolio activity id, so the deletion is traceable. */
@@ -906,6 +908,7 @@ async function fetchExistingRows(
       wfAccountId,
       txId,
       absCents: Math.round(Math.abs(parseFloat(String(a.amount ?? '0'))) * 100),
+      feeCents: Math.round(Math.abs(parseFloat(String(a.fee ?? '0')) || 0) * 100),
       type: String(a.activityType),
       date: new Date(a.date).toISOString().slice(0, 10),
       pending,
@@ -920,6 +923,50 @@ async function fetchExistingRows(
     });
   }
   return rows;
+}
+
+export const LEGACY_PLACEHOLDER_REWRITE_LOG_TAG = 'legacy-placeholder-rewrite';
+
+/**
+ * The stored rows this sync wrote in its pre-v1.49 outflow shape — a `CREDIT`
+ * with `amount` 0 and the money in `fee` — restated as `TRANSFER_OUT` with the
+ * real amount (see neutralAdjustmentFields for why the old shape died with
+ * Wealthfolio 3.8). Returns the updates to issue; nothing is written here.
+ *
+ * Only rows the sync itself authored qualify, recognised by their note marker
+ * (a balance plug or an in-transit placeholder): a user's own `CREDIT` with a
+ * fee — a wire that cost $25, say — is exactly the row this must never touch.
+ * A fee-side row still in the feed would also be caught by reconciliation, so
+ * the caller applies these updates to its in-memory snapshot first and the
+ * planner then sees the row as already agreeing; a row already restated has
+ * no fee and never matches again, which is what makes the pass idempotent.
+ *
+ * `needsReview: false` because 3.8's migration flags every such row (it keeps
+ * the zero amount rather than inventing a negative CREDIT). The sync wrote the
+ * row and knows the figure, so it clears the flag it caused.
+ */
+export function planLegacyPlaceholderRewrite(
+  rows: ReadonlyArray<ExistingRow>,
+  currency: string,
+): ActivityWrite[] {
+  const updates: ActivityWrite[] = [];
+  for (const row of rows) {
+    if (row.type !== 'CREDIT' || row.absCents !== 0 || !(row.feeCents && row.feeCents > 0)) continue;
+    const note = row.comment ?? '';
+    if (!note.startsWith(BALANCE_ADJUSTMENT_COMMENT_PREFIX) && !note.startsWith(IN_TRANSIT_COMMENT_PREFIX)) continue;
+    updates.push({
+      id: row.wfId,
+      accountId: row.wfAccountId,
+      activityType: 'TRANSFER_OUT',
+      activityDate: row.date,
+      amount: row.feeCents / 100,
+      fee: 0,
+      currency,
+      comment: note,
+      needsReview: false,
+    });
+  }
+  return updates;
 }
 
 /**
@@ -977,16 +1024,37 @@ function expiryHoldAccount(
 }
 
 /**
- * The spending-neutral shape for money that must move a balance without
- * being spending — an in-transit transfer placeholder, or a drift-heal plug.
+ * The shape for money that must move a balance without being spending — an
+ * in-transit transfer placeholder, or a drift-heal plug.
  *
  * Wealthfolio classifies spending/income by activity type + account type, with
  * no per-activity budget-exclusion field reachable from the addon SDK. On a
  * CASH account, DEPOSIT counts as Income and WITHDRAWAL as Expense — so a
- * plain plug would pollute the Spending page. A CREDIT with no subtype
- * classifies as Ignored there (neither spending nor income) while still
- * moving cash by `amount − fee − tax`, so it doubles as a spending-neutral
- * plug in both directions: `amount` to add cash, `fee` to remove it.
+ * plain plug would pollute the Spending page.
+ *
+ * INFLOW on CASH is a bare CREDIT: Ignored by the classifier (neither spending
+ * nor income), and its `amount` is what moves cash. A card inflow is
+ * TRANSFER_IN (see the card history below).
+ *
+ * OUTFLOW, on either account type, is a TRANSFER_OUT carrying the real amount
+ * (v1.49). Until then an outflow was `CREDIT` with `amount` 0 and the money in
+ * `fee`, which moved cash by `amount − fee − tax` and stayed Ignored. Wealthfolio
+ * 3.8.0 ended that: `amount` is now the final cash paid or received and the
+ * fee is informational ("it is not deducted again"), so that shape books
+ * ZERO cash — and 3.8's one-shot migration keeps such rows at 0 and flags them
+ * "Needs review" rather than restating them (a CREDIT cannot go negative).
+ * TRANSFER_OUT books −amount on 3.7 (amount − fee, fee 0) and on 3.8
+ * (type-directed final cash), so one shape serves both. The trade, stated
+ * plainly: an UNLINKED TRANSFER_OUT on a CASH account is an Expense to
+ * Wealthfolio's spending classifier (only a linked transfer is Neutral there —
+ * `crates/spending/src/activity_classification.rs`, and 3.8 left no
+ * cash-moving outflow type that isn't spending), so Wealthfolio's own spending
+ * page shows a placeholder as an uncategorised outflow until its counterpart
+ * posts and the pair links. The addon's readers exclude the sync's bookkeeping
+ * rows by their note marker instead (see `spendingWhere` in the companion), so
+ * the Budget tab and digests never count them. On a card TRANSFER_OUT is
+ * Ignored outright. Legacy fee-side rows are restated by
+ * `planLegacyPlaceholderRewrite` on the next sync.
  *
  * CREDIT_CARD is the cell with history. DEPOSIT is rejected outright by the
  * API ("not supported for credit card accounts", live 2026-08-07). The fix
@@ -996,8 +1064,7 @@ function expiryHoldAccount(
  * as a refund of the whole payment: a $429.71 card payment showed the day's
  * spending as −$400.51 (live, 2026-08-27). A card INFLOW is therefore
  * TRANSFER_IN: Ignored by the classifier, accepted by the API, the real
- * amount visible. A card outflow keeps the CREDIT/fee split, which is a $0
- * refund and harmless.
+ * amount visible.
  *
  * Verified live on the IMPORT endpoint too (2026-08-30, $0.05 probe on a
  * real card, then deleted): TRANSFER_IN with `$CASH-USD` lands with
@@ -1005,6 +1072,8 @@ function expiryHoldAccount(
  * The same endpoint REJECTS a row without a `symbol` field, so the plug must
  * keep its cash symbol; upstream issue #5 (a literal "$CASH" security) is a
  * /activities/bulk problem, and bulk transfer legs already carry no symbol.
+ * `classify_import_activity` (3.8.0) sends every type with a cash symbol down
+ * the same CashMovement branch, TRANSFER_OUT included.
  *
  * SECURITIES/CRYPTOCURRENCY keep the simpler DEPOSIT/WITHDRAWAL shape: every
  * type is Ignored on an investment-style account.
@@ -1014,15 +1083,13 @@ export function neutralAdjustmentFields(
   signedAmount: number,
 ): { activityType: ActivityType; amount: number; fee: number } {
   const mag = Math.abs(Math.round(signedAmount * 100) / 100);
-  // See the doc comment for the card cell's history; the outflow split below
-  // is shared with CASH because a card CREDIT with amount 0 is a $0 refund.
-  if (accountType === 'CREDIT_CARD' && signedAmount > 0) {
-    return { activityType: 'TRANSFER_IN' as ActivityType, amount: mag, fee: 0 };
-  }
   if (accountType === 'CASH' || accountType === 'CREDIT_CARD') {
-    return signedAmount > 0
-      ? { activityType: 'CREDIT' as ActivityType, amount: mag, fee: 0 }
-      : { activityType: 'CREDIT' as ActivityType, amount: 0, fee: mag };
+    if (signedAmount <= 0) {
+      return { activityType: 'TRANSFER_OUT' as ActivityType, amount: mag, fee: 0 };
+    }
+    return accountType === 'CREDIT_CARD'
+      ? { activityType: 'TRANSFER_IN' as ActivityType, amount: mag, fee: 0 }
+      : { activityType: 'CREDIT' as ActivityType, amount: mag, fee: 0 };
   }
   return {
     activityType: (signedAmount > 0 ? 'DEPOSIT' : 'WITHDRAWAL') as ActivityType,
@@ -1032,8 +1099,9 @@ export function neutralAdjustmentFields(
 }
 
 /** Import one dated balance-adjustment activity. `amount` is signed
- *  (SimpleFin − Wealthfolio). On CASH accounts this is a spending-neutral
- *  CREDIT (see neutralAdjustmentFields); elsewhere a DEPOSIT/WITHDRAWAL.
+ *  (SimpleFin − Wealthfolio). On CASH/CREDIT_CARD accounts this takes the
+ *  placeholder shape (see neutralAdjustmentFields); elsewhere a
+ *  DEPOSIT/WITHDRAWAL.
  *  No-op for a negligible amount. Shared by the manual button and the
  *  aggressive auto-heal path. */
 export async function importAdjustmentActivity(
@@ -1200,9 +1268,6 @@ export async function runSyncCore(
     sfAccountId: string;
     tx: SimplefinTransaction;
     type: ActivityType;
-    /** Cents to book as `fee` rather than `amount` — set only for an in-transit
-     *  placeholder, from the same neutralAdjustmentFields split balance plugs use. */
-    feeCents?: number;
     /** Spending-neutral placeholder standing in for a transfer leg whose other
      *  side hasn't posted yet (drives the comment prefix). */
     inTransit?: boolean;
@@ -1210,7 +1275,7 @@ export async function runSyncCore(
      *  here by everything downstream. Omitted — never `''` — for a row no rule
      *  subtyped: the write is patch-shaped, so an explicit empty string would
      *  clear a subtype Wealthfolio set for its own reasons. Independent of
-     *  `feeCents`/`inTransit` above, which describe the amount split. */
+     *  `inTransit` above. */
     subtype?: string;
   }
   const preparedByAccount = new Map<string, PreparedTx[]>();
@@ -1405,14 +1470,12 @@ export async function runSyncCore(
         delete p.subtype;
         continue;
       }
-      const { activityType, fee } = neutralAdjustmentFields(accountType, signed);
-      p.type = activityType;
-      p.feeCents = Math.round(fee * 100);
+      p.type = neutralAdjustmentFields(accountType, signed).activityType;
       p.inTransit = true;
-      // Drop any rule-assigned subtype: a CASH placeholder is spending-neutral
-      // ONLY as a BARE CREDIT (see neutralAdjustmentFields), and a refund
-      // subtype would book this balance-holding stand-in against a spending
-      // category. (A card inflow is a TRANSFER_IN, where a subtype is simply
+      // Drop any rule-assigned subtype: a CASH inflow placeholder is
+      // spending-neutral ONLY as a BARE CREDIT (see neutralAdjustmentFields),
+      // and a refund subtype would book this balance-holding stand-in against
+      // a spending category. (A transfer leg is where a subtype is simply
       // meaningless — dropped for the same reason.)
       // Reachable, not theoretical — a rule that types a leg TRANSFER_IN/OUT is
       // excluded from pair detection outright (`ruleTyped` in transfers.ts), so
@@ -1544,14 +1607,13 @@ export async function runSyncCore(
     // in place rather than re-importing). A failed read of existing rows is
     // treated as "none" — the planner then creates everything and the host's
     // own dedup remains the backstop.
-    const feed: FeedTx[] = preparedAll.map(({ tx, type, feeCents, inTransit, subtype }) => ({
+    const feed: FeedTx[] = preparedAll.map(({ tx, type, inTransit, subtype }) => ({
       txId: tx.id,
       wfAccountId,
       absCents: Math.round(Math.abs(parseFloat(tx.amount)) * 100),
       type,
       date: new Date(txEpoch(tx)! * 1000).toISOString().split('T')[0],
       pending: !!tx.pending,
-      ...(feeCents ? { feeCents } : {}),
       ...(inTransit ? { inTransit: true } : {}),
       // Carried so `changed()` can compare it against the stored row — a rule
       // added after a row was imported has to reach that row as an update, and a
@@ -1645,6 +1707,32 @@ export async function runSyncCore(
             );
           }
         }
+      }
+    }
+
+    // ── Legacy placeholder rewrite (every mode) ──────────────────────────────
+    // Runs on every sync, not just heal: on Wealthfolio 3.8 each of these rows
+    // is silently booking $0, so the account reads high by the sum of them
+    // until this runs — and the user cannot fix a dozen flagged rows by hand
+    // faster than the next scheduled sync can. The snapshot is patched in
+    // memory so `planReconciliation` below sees the restated row.
+    const legacyRewrites = planLegacyPlaceholderRewrite(existing, sfAccount.currency);
+    if (legacyRewrites.length) {
+      try {
+        const res = await host.saveMany({ updates: legacyRewrites });
+        if (res.errors.length) {
+          errors.push(...res.errors.map((e) => `legacy placeholder rewrite (${sfAccount.name}): ${e.message}`));
+        } else {
+          for (const u of legacyRewrites) {
+            const row = existing.find((r) => r.wfId === u.id);
+            if (row) { row.type = 'TRANSFER_OUT'; row.absCents = Math.round((u.amount ?? 0) * 100); row.feeCents = 0; }
+          }
+          console.info(
+            `[simplefin-sync] ${LEGACY_PLACEHOLDER_REWRITE_LOG_TAG}: restated ${legacyRewrites.length} pre-v1.49 placeholder(s) in account ${sfAccount.id} as TRANSFER_OUT with their real amounts`,
+          );
+        }
+      } catch (e: any) {
+        errors.push(`legacy placeholder rewrite (${sfAccount.name}): ${String(e?.message ?? e)}`);
       }
     }
 
@@ -1959,12 +2047,7 @@ export async function runSyncCore(
       // an AssetResolutionInput object (a bare string 422s with "invalid type:
       // string, expected struct AssetResolutionInput").
       ...(isTransferType(t.type) ? {} : { symbol: { symbol: cashSymbol } }),
-      // An in-transit placeholder books part (CASH outflow: all) of its amount as
-      // `fee` — the exact shape importAdjustmentActivity uses for a spending-
-      // neutral plug, where cash moves by `amount − fee − tax`. amount === 0 on
-      // that side is correct and intentional.
-      amount: (t.absCents - (t.feeCents ?? 0)) / 100,
-      ...(t.feeCents ? { fee: t.feeCents / 100 } : {}),
+      amount: t.absCents / 100,
       currency: sfAccount.currency,
       // The in-transit marker goes at the FRONT: txIdFromComment parses the
       // `… · <txId>` SUFFIX, and every reconciliation match depends on it.
@@ -1978,17 +2061,17 @@ export async function runSyncCore(
     });
     const toActivityUpdate = (wfId: string, t: FeedTx): ActivityWrite => ({
       ...toActivityCreate(t),
-      // State the fee explicitly, even when it is 0. The server's numeric fields
-      // are patch-shaped (an omitted key means "leave unchanged"), so a
-      // placeholder promoting to a real transfer — or expiring to a plain
-      // WITHDRAWAL — would otherwise keep its fee-side split and book the
-      // wrong amount.
+      // State the fee explicitly, even though nothing the sync writes carries
+      // one any more. The server's numeric fields are patch-shaped (an omitted
+      // key means "leave unchanged"), and a row written before v1.49 may still
+      // hold its amount in `fee`: an update that promotes or expires such a
+      // placeholder must clear that side or the row books the wrong amount.
       //
       // `subtype` gets the OPPOSITE treatment, and deliberately: it is inherited
       // from toActivityCreate above, which omits the key when no rule set one.
       // Stating it explicitly here the way `fee` is would send `''` for every
       // unruled row and clear subtypes this sync never owned.
-      fee: (t.feeCents ?? 0) / 100,
+      fee: 0,
       id: wfId,
     });
 
@@ -2156,7 +2239,7 @@ export async function runSyncCore(
       // before the plan ran, so it still describes the row as it was. That matters
       // most for an in-transit placeholder promoting to a real transfer — linkPair
       // re-creates both legs verbatim from what it's handed (the addon must), so a
-      // stale snapshot would resurrect the placeholder's type and fee-side amount.
+      // stale snapshot would resurrect the placeholder's type and amount.
       // Driven off the echo, so only rows the host confirms it wrote are refreshed.
       const updatedFeedByTxId = new Map(plan.updates.map((u) => [u.to.txId, u.to]));
       for (const a of result.updated ?? []) {

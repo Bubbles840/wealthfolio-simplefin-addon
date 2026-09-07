@@ -16,10 +16,6 @@ export interface FeedTx {
   type: string;
   date: string;      // YYYY-MM-DD
   pending: boolean;
-  /** Cents of `absCents` to book as `fee` instead of `amount` — used only by
-   *  the in-transit transfer placeholder (see sync-core.ts), which needs the
-   *  same amount/fee split neutralAdjustmentFields uses for balance plugs. */
-  feeCents?: number;
   /** True when this row is a spending-neutral placeholder for a transfer leg
    *  whose other side hasn't posted yet. Written as the comment prefix, and
    *  compared by `changed()` — on a non-CASH account the placeholder and the
@@ -52,6 +48,11 @@ export interface ExistingRow {
    *  absent subtype to `null` (never leaves it `undefined`), but older rows
    *  written before this field existed may read back `''`; see `normSubtype`. */
   subtype?: string | null;
+  /** The stored fee in cents. Read by the legacy placeholder rewrite in
+   *  sync-core only: every outflow placeholder written before v1.49 keeps its
+   *  whole amount here (a `CREDIT` with `amount` 0), and nothing else the
+   *  sync writes carries a fee. */
+  feeCents?: number;
 }
 
 export interface ReconcilePlan {
@@ -64,17 +65,6 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 function daysBetween(a: string, b: string): number {
   return Math.abs(new Date(a).getTime() - new Date(b).getTime()) / DAY_MS;
-}
-
-/**
- * What an existing row's `amount` holds once this feed tx is written: the fee
- * side of a split is booked as `fee`, not `amount`, so it is NOT part of the
- * stored amount an `ExistingRow` reports back. Comparing raw `absCents` against
- * a stored fee-split row would find a difference on every single sync and
- * re-update the row forever (a host reads back no fee at all).
- */
-function bookedCents(tx: FeedTx): number {
-  return tx.absCents - (tx.feeCents ?? 0);
 }
 
 /** Whether the STORED row is already marked as an in-transit placeholder. The
@@ -93,7 +83,7 @@ function normSubtype(v: string | null | undefined): string {
 
 function changed(row: ExistingRow, tx: FeedTx): boolean {
   return (
-    row.absCents !== bookedCents(tx) ||
+    row.absCents !== tx.absCents ||
     row.type !== tx.type ||
     row.date !== tx.date ||
     row.pending !== tx.pending ||
@@ -165,7 +155,7 @@ export function planReconciliation(
       (c) =>
         !claimed.has(c.txId) &&
         c.wfAccountId === row.wfAccountId &&
-        Math.abs(bookedCents(c) - row.absCents) <= epsilon &&
+        Math.abs(c.absCents - row.absCents) <= epsilon &&
         daysBetween(c.date, row.date) <= window,
     );
     if (match) {

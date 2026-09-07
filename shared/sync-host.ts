@@ -8,6 +8,10 @@ export interface HostActivity {
   activityType: string;
   date: string;          // YYYY-MM-DD
   amount: string | number | null;
+  /** The stored fee. Read back for ONE reason: every outflow placeholder the
+   *  sync wrote before v1.49 is a `CREDIT` with `amount` 0 and the money here,
+   *  and the legacy rewrite in sync-core needs the figure to restate it. */
+  fee?: string | number | null;
   comment: string | null;
   assetId?: string;
   sourceGroupId?: string | null;
@@ -51,6 +55,12 @@ export interface ActivityWrite {
   comment: string;
   metadata?: string;
   sourceGroupId?: string;
+  /** Wealthfolio 3.8's review flag. Sent as `false` only by the legacy
+   *  placeholder rewrite, whose rows 3.8's one-shot migration flags for
+   *  review: the sync is the author of those rows and attests the restated
+   *  amount. Absent everywhere else — an explicit value here overrides what
+   *  the host decided about a row. Older hosts ignore the field. */
+  needsReview?: boolean;
   /** Set to apply a rule's classifier (e.g. 'REIMBURSEMENT') on create or
    *  update. Absent means "no opinion" — an update must NOT send an explicit
    *  empty/undefined value here to mean "clear", since that would be
