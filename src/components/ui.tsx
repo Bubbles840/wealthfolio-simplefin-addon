@@ -13,6 +13,9 @@ const STYLE_ID = 'sfin-ui-styles';
 
 const css = `
 .sfin-page {
+  /* Palette custom properties: sage defaults; pickers override per grid/cell. */
+  --sfin-s0: #5e9483; --sfin-s1: #3e6f63; --sfin-s2: #c9a86b; --sfin-s3: #c17a63;
+  --sfin-s4: #7189a8; --sfin-s5: #8aa864; --sfin-s6: #9a7aa0; --sfin-s7: #6b7f8f;
   max-width: 680px;
   margin: 0 auto;
   padding: 24px;
@@ -537,7 +540,7 @@ body {
 }
 .sfin-budget-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
 .sfin-budget-toolbar .sfin-range-chips { margin: 0; }
-.sfin-budget-grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 14px; margin-top: 14px; }
+.sfin-budget-grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); grid-auto-rows: 29px; gap: 14px; margin-top: 14px; }
 .sfin-cell { min-width: 0; }
 .sfin-cell[role="button"] { cursor: pointer; outline: none; border-radius: 12px; }
 /* Spans ride CSS custom properties set per cell (--sfin-c/--sfin-r), so the
@@ -545,7 +548,6 @@ body {
    grid-column would outrank them and break small screens. */
 /* v1.41: explicit 2-D placement — no dense backfill, so a drop cannot
    repack unrelated cards. Coordinates come from shared/grid-engine.ts. */
-.sfin-budget-grid { grid-auto-rows: 29px; }
 .sfin-budget-grid > .sfin-cell {
   grid-column: calc(var(--sfin-x, 0) + 1) / span var(--sfin-c, 1);
   grid-row: calc(var(--sfin-y, 0) + 1) / span var(--sfin-r, 2);
@@ -572,6 +574,7 @@ body {
 }
 .sfin-card-tools button { padding: 2px 7px; font-size: 11px; }
 .sfin-report-card {
+  position: relative;
   height: 100%; display: flex; flex-direction: column; gap: 8px; box-sizing: border-box;
   transition: border-color .15s ease, transform .15s ease, box-shadow .15s ease;
 }
@@ -586,6 +589,7 @@ body {
 .sfin-report-body--hero .sfin-chart { min-height: 260px; }
 .sfin-range-chips { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0; }
 .sfin-new-report-card {
+  grid-column: 1 / span 4; grid-row: auto / span 4;
   border: 1.5px dashed color-mix(in srgb, currentColor 25%, transparent);
   background: transparent; border-radius: 12px; min-height: 110px;
   display: flex; align-items: center; justify-content: center;
@@ -666,18 +670,26 @@ body {
 /* Pool editing on the burn-down's full screen. */
 .sfin-pool-edit { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
 .sfin-pool-edit .sfin-input { max-width: 130px; }
-/* Data-check card. */
-.sfin-check { display: flex; flex-direction: column; gap: 8px; font-size: 13px; }
-.sfin-check-verdict { font-weight: 600; }
-.sfin-check--ok .sfin-check-verdict { color: #5e9483; }
-.sfin-check--diverges .sfin-check-verdict { color: #c9a86b; }
-.sfin-check-row { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
-.sfin-check-nums { color: var(--muted-foreground); }
+/* Data-check card. Its own prefix: this block once reused .sfin-check,
+   the checkbox-row label class, and — defined later in the sheet — turned
+   every checkbox label in the app into a column (v1.34–v1.47). */
+.sfin-datacheck { display: flex; flex-direction: column; gap: 8px; font-size: 13px; }
+.sfin-datacheck-verdict { font-weight: 600; }
+.sfin-datacheck--ok .sfin-datacheck-verdict { color: #5e9483; }
+.sfin-datacheck--diverges .sfin-datacheck-verdict { color: #c9a86b; }
+.sfin-datacheck-row { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.sfin-datacheck-nums { color: var(--muted-foreground); }
+/* Drill-down (category → its transactions). */
+.sfin-linkish { border: none; background: transparent; padding: 0; color: inherit; font: inherit; cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
+.sfin-linkish:hover { color: var(--sfin-s0, #5e9483); }
+.sfin-drill-head { display: flex; justify-content: space-between; align-items: baseline; font-size: 13px; color: var(--muted-foreground); margin-bottom: 6px; }
+.sfin-drill-total { font-weight: 600; color: var(--foreground); font-variant-numeric: tabular-nums; }
+.sfin-drill-date { white-space: nowrap; color: var(--muted-foreground); }
+.sfin-refund { color: #5e9483; }
 /* Subscriptions card. */
 .sfin-subs { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
-.sfin-subs-row { gap: 10px; }
 .sfin-subs-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sfin-subs-price { white-space: nowrap; }
+.sfin-subs-price { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .sfin-subs-creep { color: #c17a63; font-weight: 600; }
 .sfin-subs-total { margin-top: 4px; padding-top: 6px; border-top: 1px solid var(--border); font-weight: 600; }
 .sfin-subs-maybe-head { margin-top: 6px; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted-foreground); }
@@ -686,7 +698,7 @@ body {
 .sfin-subs-answer { border: none; background: transparent; color: #5e9483; cursor: pointer; font-size: 12px; white-space: nowrap; }
 /* Rows as strict columns: name | price | actions — flex space-between let the
    price drift toward the middle whenever a row had a different button count. */
-.sfin-subs-row { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(3.5em, auto); align-items: center; }
+.sfin-subs-row { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(3.5em, auto); align-items: center; gap: 10px; padding: 3px 0; border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent); }
 .sfin-subs-row .sfin-subs-price { text-align: right; }
 .sfin-subs-row > button { justify-self: end; }
 .sfin-subs-row > button + button { margin-left: 6px; }
@@ -694,11 +706,9 @@ body {
 /* Overlaid top-right INSIDE the card: below the chart it sat in the body's
    overflow/fade cage and got clipped (live, 2026-09-02). The burn-down's
    top-right corner is empty by construction — the line starts high-left. */
-.sfin-report-card { position: relative; }
 .sfin-pool-legend { position: absolute; top: 10px; right: 14px; display: flex; gap: 14px; font-size: 11px; color: var(--muted-foreground); }
 .sfin-pool-legend-actual { color: var(--sfin-s0, #5e9483); font-weight: 600; }
 /* Palette custom properties: sage defaults; pickers override per grid/cell. */
-.sfin-page { --sfin-s0: #5e9483; --sfin-s1: #3e6f63; --sfin-s2: #c9a86b; --sfin-s3: #c17a63; --sfin-s4: #7189a8; --sfin-s5: #8aa864; --sfin-s6: #9a7aa0; --sfin-s7: #6b7f8f; }
 .sfin-swatches { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
 .sfin-swatch { width: 22px; height: 22px; border-radius: 50%; border: 2px solid transparent; cursor: pointer; padding: 0; }
 .sfin-swatch--on { border-color: var(--foreground); }
@@ -710,9 +720,7 @@ body {
 [data-bva-scale='compact'] [data-bva] > div:last-child { height: 6px !important; }
 [data-bva-scale='tiny'] [data-bva] { margin-bottom: 2px !important; font-size: 10.5px; }
 [data-bva-scale='tiny'] [data-bva] > div:last-child { height: 4px !important; }
-.sfin-subs-row { padding: 3px 0; border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent); }
 .sfin-subs-row:hover { background: color-mix(in srgb, var(--sfin-s0) 6%, transparent); }
-.sfin-subs-price { font-variant-numeric: tabular-nums; }
 .sfin-subs-dismiss { border: none; background: transparent; color: var(--muted-foreground); cursor: pointer; border-radius: 6px; }
 .sfin-subs-dismiss:hover { color: #c17a63; background: color-mix(in srgb, #c17a63 12%, transparent); }
 .sfin-subs-celebrate { margin-top: 6px; padding: 8px 12px; border-radius: 10px; font-size: 13px; background: color-mix(in srgb, var(--sfin-s0) 16%, transparent); border: 1px solid color-mix(in srgb, var(--sfin-s0) 45%, transparent); animation: sfin-pop .35s cubic-bezier(.2, 1.4, .4, 1); }
@@ -745,7 +753,6 @@ body {
   transition: opacity .12s ease;
 }
 /* The new-report button spans a readable width on the fine grid. */
-.sfin-new-report-card { grid-column: 1 / span 4; grid-row: auto / span 4; }
 @media (max-width: 720px) { .sfin-new-report-card { grid-column: 1; } }
 .sfin-uncat-undo { display: flex; align-items: center; gap: 8px; padding: 4px 0 8px; }
 /* Same rules as .sfin-uncat-undo — a distinct class because the cap notice and

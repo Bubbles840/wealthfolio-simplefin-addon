@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.48.0] - 2026-09-07
+
+### Added
+
+- **Click a category to see the purchases.** Budget-vs-actual rows are now
+  buttons: tap "Shopping" and the card opens full-screen as that category's
+  transactions this month — date, description, account, amount, with refunds
+  in green and a total — plus an "Open in Wealthfolio" escape hatch. The
+  companion publishes the lists with the cube (the host API can't filter by
+  category), built from the exact SQL the bars use, so the list always sums
+  to the bar you clicked.
+
+### Fixed
+
+- **Every checkbox in the app was misaligned** — the data-check card (v1.34)
+  reused the checkbox-row class name `.sfin-check` with a column layout, and
+  being later in the stylesheet it silently won everywhere. Renamed, and a
+  stylesheet guard test now fails the build on any duplicated top-level
+  selector, so this class of drift can't ship again. Five other duplicated
+  blocks were merged in the same pass, and the "Slim it down" mode picker
+  uses the same label-left/control-right layout as its neighbors.
+
 ## [1.47.0] - 2026-09-06
 
 ### Added

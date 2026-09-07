@@ -45,6 +45,8 @@ export interface BudgetTabProps {
   onHiddenSubscriptionsChange?: (next: string[]) => void;
   confirmedSubscriptions?: string[];
   onConfirmedSubscriptionsChange?: (next: string[]) => void;
+  /** Jumps to Wealthfolio's activities page — the drill view's escape hatch. */
+  onOpenActivities?: () => void;
 }
 
 /** Two days: one missed nightly publish is routine, two is worth a strip. */
@@ -72,7 +74,7 @@ const MAX_R = 16;
 export function BudgetTab({
   cube, customReports, layout, onLayoutChange, onLayoutReset, onCustomReportsChange, store,
   hiddenSubscriptions = [], onHiddenSubscriptionsChange,
-  confirmedSubscriptions = [], onConfirmedSubscriptionsChange,
+  confirmedSubscriptions = [], onConfirmedSubscriptionsChange, onOpenActivities,
 }: BudgetTabProps) {
   const [fullId, setFullId] = useState<string | null>(null);
   const [range, setRange] = useState<Range>(12);
@@ -193,6 +195,8 @@ export function BudgetTab({
       : undefined,
     headlinePicks: layout?.headline,
     onHeadlinePicksChange: (ids: string[]) => onLayoutChange({ ...storedLayout, headline: ids }),
+    onDrill: (category: string) => setFullId(`drill:${category}`),
+    onOpenActivities,
   };
 
   if (builder) {
