@@ -1224,6 +1224,49 @@ export function getNativeMerchantRows(
 }
 
 /**
+ * Drill-down rows: every categorized spending transaction in the window under
+ * its ROLLED-UP category — the same SPENDING_FROM / SPENDING_CATEGORY / sign
+ * definition the spend matrix uses, so a category's list always sums to the
+ * bar the user clicked. Newest first; the cube builder caps per category.
+ */
+export function getNativeDrillRows(
+  dbPath: string,
+  startInclusive: string,
+  endExclusive: string,
+): Array<{ category: string; date: string; notes: string; amount: number; account: string }> {
+  if (!dbPath || !existsSync(dbPath)) return [];
+  if (!validDateBounds(startInclusive, endExclusive)) return [];
+  const query = `
+    SELECT ${SPENDING_CATEGORY} as category,
+           date(a.activity_date) as date,
+           COALESCE(acc.name, '') as account,
+           ROUND(${SPENDING_SIGNED_AMOUNT}, 2) as amount,
+           COALESCE(a.notes, '') as notes
+    ${SPENDING_FROM}
+    ${spendingWhere(startInclusive, endExclusive)}
+    ORDER BY a.activity_date DESC, a.id;
+  `;
+  const rows = queryNativeDb<Record<string, unknown>>(
+    dbPath,
+    'drill rows',
+    query,
+    (parts) => (parts.length === 5
+      ? { c0: parts[0], c1: parts[1], c2: parts[2], c3: parseFloat(parts[3]) || 0, c4: parts[4] }
+      : null),
+  );
+  return rows.map((r) => {
+    const v = Object.values(r) as [string, string, string, number | string, string];
+    return {
+      category: String(v[0]),
+      date: String(v[1]),
+      account: String(v[2]),
+      amount: typeof v[3] === 'number' ? v[3] : parseFloat(String(v[3])) || 0,
+      notes: String(v[4]),
+    };
+  }).filter((r) => r.category !== '');
+}
+
+/**
  * Money that bought nothing, per month: fees on any account plus interest
  * CHARGED — interest on a card. Interest on a cash account is the bank paying
  * the user and belongs to income, which is why the account type gates it.

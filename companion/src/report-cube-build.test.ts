@@ -41,6 +41,31 @@ const deps = (over: Partial<CubeBuildDeps> = {}): CubeBuildDeps => ({
 const NOW = new Date('2026-08-30T12:00:00Z');
 
 describe('buildReportCube', () => {
+  it('publishes each category\'s newest-month transactions for drill-down, capped and normalized', async () => {
+    const cube = await buildReportCube(deps({
+      drillRows: vi.fn(() => [
+        { category: 'Dining', date: '2026-08-20', notes: 'CHIPOTLE 1234 \u00b7 TRN-9', amount: 12.5, account: 'Card' },
+        { category: 'Dining', date: '2026-08-02', notes: 'SWEETGREEN \u00b7 TRN-8', amount: 9, account: 'Checking' },
+        { category: 'Groceries', date: '2026-08-11', notes: 'TRADER JOES \u00b7 TRN-7', amount: 40, account: 'Card' },
+      ]),
+    }), NOW, 2);
+    expect(cube.drill).toEqual({
+      Dining: [
+        { d: '2026-08-20', n: 'CHIPOTLE 1234', c: 1250, a: 'Card' },
+        { d: '2026-08-02', n: 'SWEETGREEN', c: 900, a: 'Checking' },
+      ],
+      Groceries: [{ d: '2026-08-11', n: 'TRADER JOES', c: 4000, a: 'Card' }],
+    });
+  });
+
+  it('caps drill rows per category so one busy month cannot blow the size guard', async () => {
+    const many = Array.from({ length: 60 }, (_, i) => ({
+      category: 'Dining', date: `2026-08-${String((i % 28) + 1).padStart(2, '0')}`, notes: `ROW ${i}`, amount: 1, account: 'Card',
+    }));
+    const cube = await buildReportCube(deps({ drillRows: vi.fn(() => many) }), NOW, 2);
+    expect(cube.drill!.Dining.length).toBeLessThanOrEqual(30);
+  });
+
   it('detects subscriptions from dated merchant rows', async () => {
     const cube = await buildReportCube(deps({
       merchantRows: vi.fn(() => [

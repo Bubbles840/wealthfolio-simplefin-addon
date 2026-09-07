@@ -91,19 +91,21 @@ export function ReportSettings({ cfg, onChange, isOpen, toggleCard }: Props) {
         <div className="sfin-divider" />
         <SectionLabel>Slim it down</SectionLabel>
         <div className="sfin-checks">
-          <label className="sfin-check">
+          <div className="sfin-thresh">
             <span className="sfin-check-name">Daily category rows</span>
-            <select
-              className="sfin-select"
-              aria-label="Daily category rows"
-              value={cfg.digestCategoryMode}
-              onChange={(e) => onChange({ digestCategoryMode: e.target.value as 'all' | 'over' | 'none' })}
-            >
-              <option value="all">All selected categories</option>
-              <option value="over">Only over-budget</option>
-              <option value="none">None — summary only</option>
-            </select>
-          </label>
+            <div className="sfin-thresh-amt">
+              <select
+                className="sfin-select"
+                aria-label="Daily category rows"
+                value={cfg.digestCategoryMode}
+                onChange={(e) => onChange({ digestCategoryMode: e.target.value as 'all' | 'over' | 'none' })}
+              >
+                <option value="all">All selected categories</option>
+                <option value="over">Only over-budget</option>
+                <option value="none">None — summary only</option>
+              </select>
+            </div>
+          </div>
           <label className="sfin-check">
             <input
               type="checkbox"

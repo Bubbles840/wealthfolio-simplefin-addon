@@ -80,10 +80,28 @@ export interface ReportCube {
   /** Monthly recurring charges found at build time (shared/subscriptions.ts).
    *  null = the reader gave no dates (older companion), NOT "none found". */
   subscriptions?: import('./subscriptions.js').DetectedSubscription[] | null;
+  /** v1.48 drill-down: the newest month's transactions per (rolled-up)
+   *  category, newest first, capped — enough to answer "what exactly were
+   *  those purchases" without the host API (which cannot filter by
+   *  category). Absent on older companions. */
+  drill?: Record<string, DrillTx[]> | null;
   /** Current-month totals recomputed through the DIGEST's single-shot readers,
    *  an independent pipeline from the matrices above. The Budget tab's data
    *  check renders the comparison; absent on cubes from older companions. */
   check?: CubeCheck | null;
+}
+
+/** One drill-down transaction. Short keys on purpose — hundreds ride the
+ *  cube secret, and the size guard trims history, not this. */
+export interface DrillTx {
+  /** YYYY-MM-DD. */
+  d: string;
+  /** Description, already normalized (descriptionFromComment). */
+  n: string;
+  /** Signed cents: refunds negative, like the spend matrix. */
+  c: number;
+  /** Account name. */
+  a: string;
 }
 
 export interface CubeCheck {

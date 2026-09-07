@@ -545,3 +545,33 @@ describe('subscription dismissal feels like a win (v1.43)', () => {
     expect(screen.getByText(/\$4\.99\/mo back in your pocket/i)).toBeTruthy();
   });
 });
+
+describe('category drill-down (v1.48)', () => {
+  const withDrill = (): ReportCube => ({
+    ...fresh(),
+    drill: { Dining: [{ d: '2026-08-20', n: 'CHIPOTLE 1234', c: 1250, a: 'Card' }] },
+  });
+
+  it('a budget-vs-actual row is a button that reports its category', () => {
+    const onDrill = vi.fn();
+    render(<ReportView id="budget-vs-actual" customReports={[]} cube={withDrill()} onDrill={onDrill} />);
+    fireEvent.click(screen.getByRole('button', { name: /see Dining transactions/i }));
+    expect(onDrill).toHaveBeenCalledWith('Dining');
+  });
+
+  it('the drill view lists the transactions with a total and an escape hatch to Wealthfolio', () => {
+    const onOpenActivities = vi.fn();
+    render(<ReportView id="drill:Dining" customReports={[]} cube={withDrill()} hero onOpenActivities={onOpenActivities} />);
+    expect(screen.getByText('CHIPOTLE 1234')).toBeTruthy();
+    // The amount appears on the row AND as the total of one row.
+    expect(screen.getAllByText('$12.50')).toHaveLength(2);
+    expect(screen.getByText(/1 transaction/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /open in wealthfolio/i }));
+    expect(onOpenActivities).toHaveBeenCalled();
+  });
+
+  it('says so when the companion has not published drill rows yet', () => {
+    render(<ReportView id="drill:Dining" customReports={[]} cube={fresh()} hero />);
+    expect(screen.getByText(/after the next sync/i)).toBeTruthy();
+  });
+});

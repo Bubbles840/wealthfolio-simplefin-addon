@@ -607,6 +607,7 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
           onHiddenSubscriptionsChange={onHiddenSubscriptionsChange}
           confirmedSubscriptions={confirmedSubscriptions}
           onConfirmedSubscriptionsChange={onConfirmedSubscriptionsChange}
+          onOpenActivities={() => { ctx.api.navigation.navigate('/activities').catch(() => {}); }}
         />
       </TabPanel>
 

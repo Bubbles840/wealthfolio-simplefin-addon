@@ -28,6 +28,8 @@ import {
 } from '../../shared/report-cube.js';
 import type { SemesterPoolConfig } from '../../shared/pool.js';
 import { detectSubscriptions, type SubscriptionCharge } from '../../shared/subscriptions.js';
+
+type DrillTxLike = NonNullable<ReportCube['drill']>[string][number];
 import type {
   getNativeSpendMatrix, getNativeIncomeByMonthAccount, getNativeUncategorizedByMonthAccount,
   getNativeMerchantRows, getNativeFeesInterestByMonth, getNativeSpendDailyTotals,
@@ -51,9 +53,16 @@ export interface CubeBuildDeps {
    *  Optional so an older binding keeps building cubes, just without a check. */
   checkTotals?(start: string, endEx: string, excluded: string[]):
     { spendByCategory: Record<string, number>; uncategorized: number } | null;
+  /** Newest-month transactions per rolled-up category (getNativeDrillRows).
+   *  Optional so an older binding keeps building cubes without drill-down. */
+  drillRows?(start: string, endEx: string):
+    Array<{ category: string; date: string; notes: string; amount: number; account: string }>;
 }
 
 const MERCHANTS_PER_MONTH = 20;
+/** Drill rows kept per category: a busy month stays glanceable and the
+ *  serialized cube stays well inside the size guard. */
+const DRILL_ROWS_PER_CATEGORY = 30;
 const MIN_MONTHS_AFTER_TRIM = 6;
 
 const cents = (dollars: number) => Math.round(dollars * 100);
@@ -202,6 +211,19 @@ export async function buildReportCube(
   }
   const subscriptions = datedCharges.length > 0 ? detectSubscriptions(datedCharges, now) : null;
 
+  // Drill-down: the newest month only, per category, newest first, capped.
+  let drill: ReportCube['drill'] = null;
+  const drillSource = deps.drillRows?.(`${months[months.length - 1]}-01`, endEx);
+  if (drillSource) {
+    const byCat: Record<string, DrillTxLike[]> = {};
+    for (const r of [...drillSource].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))) {
+      const list = byCat[r.category] ?? (byCat[r.category] = []);
+      if (list.length >= DRILL_ROWS_PER_CATEGORY) continue;
+      list.push({ d: r.date, n: descriptionFromComment(r.notes) || r.notes, c: cents(r.amount), a: r.account });
+    }
+    drill = byCat;
+  }
+
   // The check compares ONLY the newest month: it answers "do the Budget tab's
   // headline numbers agree with the digest right now", not "audit all history".
   let check: ReportCube['check'] = null;
@@ -223,7 +245,7 @@ export async function buildReportCube(
     months, categories,
     accounts: meta.map(({ sfinId, name, type }) => ({ sfinId, name, type })),
     spend, uncategorized, income, budgets, merchants, feesInterest, netWorth, liquid, pool,
-    check, subscriptions,
+    check, subscriptions, drill,
   };
 
   while (JSON.stringify(cube).length > REPORT_CUBE_MAX_BYTES && cube.months.length > MIN_MONTHS_AFTER_TRIM) {

@@ -53,6 +53,7 @@ export const REPORT_TITLES: Record<string, string> = {
 };
 
 export function reportTitle(id: string, customReports: CustomReport[]): string {
+  if (id.startsWith('drill:')) return `${id.slice('drill:'.length)} transactions`;
   if (id.startsWith('custom:')) {
     return customReports.find((r) => `custom:${r.id}` === id)?.name ?? 'Custom report';
   }
@@ -186,7 +187,9 @@ function Merchants({ cube, full, density }: { cube: ReportCube; full: boolean; d
   );
 }
 
-function BudgetVsActual({ cube, full, density }: { cube: ReportCube; full: boolean; density: number }) {
+function BudgetVsActual({ cube, full, density, onDrill }: {
+  cube: ReportCube; full: boolean; density: number; onDrill?: (category: string) => void;
+}) {
   const rows = budgetVsActualAvgData(cube);
   if (rows.length === 0) return <div className="sfin-subtle">No budgets or spending this month.</div>;
   // Compress instead of hiding: every category renders, and the row scale
@@ -214,9 +217,20 @@ function BudgetVsActual({ cube, full, density }: { cube: ReportCube; full: boole
         const over = r.actual > r.budget;
         return (
           <div key={r.category} data-bva={r.category} style={{ marginBottom: 8 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span>{r.category}</span>
-              <span className="sfin-subtle">{fmt0(r.actual)} of {fmt0(r.budget)}</span>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 }}>
+              {onDrill ? (
+                // The row IS the drill-down: "what exactly were those purchases"
+                // is one tap from the bar that raised the question.
+                <button
+                  type="button"
+                  className="sfin-linkish"
+                  aria-label={`See ${r.category} transactions`}
+                  onClick={() => onDrill(r.category)}
+                >
+                  {r.category}
+                </button>
+              ) : <span>{r.category}</span>}
+              <span className="sfin-subtle" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt0(r.actual)} of {fmt0(r.budget)}</span>
             </div>
             <div style={{ position: 'relative', height: 8, borderRadius: 4, background: 'color-mix(in srgb, currentColor 12%, transparent)', overflow: 'hidden' }}>
               <div
@@ -307,8 +321,8 @@ function DataCheck({ cube }: { cube: ReportCube }) {
   }
   if (res.status === 'match') {
     return (
-      <div className="sfin-check sfin-check--ok">
-        <div className="sfin-check-verdict">✓ The Budget tab matches the ledger</div>
+      <div className="sfin-datacheck sfin-datacheck--ok">
+        <div className="sfin-datacheck-verdict">✓ The Budget tab matches the ledger</div>
         <div className="sfin-subtle">
           {res.month}: spending recounted through an independent path came out the same.
           Income here counts deposits and interest only — internal transfers are never income.
@@ -317,12 +331,12 @@ function DataCheck({ cube }: { cube: ReportCube }) {
     );
   }
   return (
-    <div className="sfin-check sfin-check--diverges">
-      <div className="sfin-check-verdict">Measures disagree for {res.month}</div>
+    <div className="sfin-datacheck sfin-datacheck--diverges">
+      <div className="sfin-datacheck-verdict">Measures disagree for {res.month}</div>
       {res.rows.filter((r) => r.deltaCents !== 0).map((r) => (
-        <div key={r.label} className="sfin-check-row">
+        <div key={r.label} className="sfin-datacheck-row">
           <span>{r.label}</span>
-          <span className="sfin-check-nums">
+          <span className="sfin-datacheck-nums">
             {fmt2(r.cubeCents / 100)} here · {fmt2(r.ledgerCents / 100)} in the ledger
             {' '}({r.deltaCents > 0 ? '+' : '−'}{fmt2(Math.abs(r.deltaCents) / 100)})
           </span>
@@ -547,6 +561,53 @@ function Subscriptions({ cube, full = false, hidden = [], confirmed = [], onHide
             );
           })()}
         </>
+      )}
+    </div>
+  );
+}
+
+/** The drill-down: one category's newest-month transactions, published by
+ *  the companion (the host API cannot filter by category). */
+function DrillView({ cube, category, onOpenActivities }: {
+  cube: ReportCube; category: string; onOpenActivities?: () => void;
+}) {
+  const rows = cube.drill?.[category];
+  if (!rows) {
+    return (
+      <div className="sfin-subtle">
+        Transaction lists arrive after the next sync once the companion is updated — or open them in Wealthfolio.
+        {onOpenActivities && (
+          <div style={{ marginTop: 8 }}>
+            <button type="button" className="sfin-btn sfin-btn--ghost" onClick={onOpenActivities}>Open in Wealthfolio</button>
+          </div>
+        )}
+      </div>
+    );
+  }
+  const total = rows.reduce((sum, r) => sum + r.c, 0);
+  return (
+    <div className="sfin-drill">
+      <div className="sfin-drill-head">
+        <span>{rows.length} {rows.length === 1 ? 'transaction' : 'transactions'} · {cube.months.at(-1)}</span>
+        <span className="sfin-drill-total">{fmt2(total / 100)}</span>
+      </div>
+      <table className="sfin-merchant-table">
+        <thead><tr><th>Date</th><th>Description</th><th>Account</th><th>Amount</th></tr></thead>
+        <tbody>
+          {rows.map((r, i) => (
+            <tr key={`${r.d}-${i}`}>
+              <td className="sfin-drill-date">{r.d.slice(5)}</td>
+              <td>{r.n}</td>
+              <td className="sfin-subtle">{r.a}</td>
+              <td className={r.c < 0 ? 'sfin-refund' : undefined}>{fmt2(r.c / 100)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {onOpenActivities && (
+        <div style={{ marginTop: 10 }}>
+          <button type="button" className="sfin-btn sfin-btn--ghost" onClick={onOpenActivities}>Open in Wealthfolio</button>
+        </div>
       )}
     </div>
   );
@@ -865,6 +926,7 @@ export function ReportView({
   id, cube, customReports, hero = false, categories, density = 2,
   hiddenSubscriptions, confirmedSubscriptions, onHideSubscription, onConfirmSubscription,
   onUnhideSubscription, onRestoreSubscriptions, headlinePicks, onHeadlinePicksChange,
+  onDrill, onOpenActivities,
 }: {
   id: string;
   cube: ReportCube;
@@ -885,9 +947,15 @@ export function ReportView({
   /** Headline card: which stats to show (1–5 catalog ids) and the editor. */
   headlinePicks?: string[];
   onHeadlinePicksChange?: (ids: string[]) => void;
+  /** Drill-down: a category row asks to open `drill:<category>`. */
+  onDrill?: (category: string) => void;
+  /** The escape hatch out of a drill view into Wealthfolio's activities. */
+  onOpenActivities?: () => void;
 }) {
   let body: React.ReactNode;
-  if (id.startsWith('custom:')) {
+  if (id.startsWith('drill:')) {
+    body = <DrillView cube={cube} category={id.slice('drill:'.length)} onOpenActivities={onOpenActivities} />;
+  } else if (id.startsWith('custom:')) {
     const def = customReports.find((r) => `custom:${r.id}` === id);
     body = def ? <CustomView cube={cube} def={def} /> : <div className="sfin-subtle">This report was deleted.</div>;
   } else {
@@ -898,7 +966,7 @@ export function ReportView({
       case 'net-worth': body = <NetWorth cube={cube} />; break;
       case 'savings-rate': body = <SavingsRate cube={cube} />; break;
       case 'merchants': body = <Merchants cube={cube} full={hero} density={density} />; break;
-      case 'budget-vs-actual': body = <BudgetVsActual cube={cube} full={hero} density={density} />; break;
+      case 'budget-vs-actual': body = <BudgetVsActual cube={cube} full={hero} density={density} onDrill={onDrill} />; break;
       case 'seasonality': body = <Seasonality cube={cube} />; break;
       case 'fees-interest': body = <FeesInterest cube={cube} />; break;
       case 'runway-trend': body = <RunwayTrend cube={cube} />; break;

@@ -675,3 +675,19 @@ describe('per-card ranges, headline picks, palettes (v1.43)', () => {
     expect(saved.palette).toBe('ocean');
   });
 });
+
+describe('drill-down from the board (v1.48)', () => {
+  it('clicking a category row opens its transactions full-screen, with a way back', async () => {
+    const props = makeProps();
+    (props.store as any).getReportCube = vi.fn(async () => ({
+      ...CUBE, asOf: new Date().toISOString(),
+      drill: { Groceries: [{ d: '2026-08-11', n: 'TRADER JOES', c: 4000, a: 'Card' }] },
+    }));
+    render(<SyncPage {...props} />);
+    await waitFor(() => expect(reportIds().length).toBeGreaterThan(0));
+    fireEvent.click(screen.getByRole('button', { name: /see Groceries transactions/i }));
+    expect(await screen.findByText('TRADER JOES')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /back to all reports/i }));
+    await waitFor(() => expect(screen.queryByText('TRADER JOES')).toBeNull());
+  });
+});
