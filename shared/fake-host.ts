@@ -146,6 +146,7 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
       activityType: w.activityType,
       date: w.activityDate,
       amount: w.amount ?? null,
+      fee: w.fee ?? null,
       comment: w.comment ?? null,
       assetId: w.symbol?.symbol,
       sourceGroupId: w.sourceGroupId ?? null,

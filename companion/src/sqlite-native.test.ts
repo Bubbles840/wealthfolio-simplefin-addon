@@ -428,9 +428,11 @@ describe('sqlite-native', () => {
         ['a1', '-95.50', '2026-07-08', 'WITHDRAWAL', 'TARGET 00021479 · TRN-a1b2c3d4', 'c1'],
         // Biggest of the week, and a pending row: ` · pending` trails the id.
         ['a2', '-412.37', '2026-07-07', 'WITHDRAWAL', 'WHOLE FOODS MKT · TRN-b2c3d4e5 · pending', 'c1'],
-        // An in-transit placeholder the user has miscategorised as real spending —
-        // the one row whose note carries the marker PREFIX as well as the suffix.
-        ['a3', '-180.00', '2026-07-09', 'WITHDRAWAL', '↔️ In-transit transfer · Online Transfer to Savings · TRN-c3d4e5f6', 's1'],
+        // An in-transit placeholder the user (or a Wealthfolio rule) has filed
+        // as real spending. Excluded by its marker since v1.49 — it would
+        // otherwise be the week's second-biggest line — see
+        // SYNC_BOOKKEEPING_EXCLUSION.
+        ['a3', '-180.00', '2026-07-09', 'TRANSFER_OUT', '↔️ In-transit transfer · Online Transfer to Savings · TRN-c3d4e5f6', 's1'],
         // A description that itself contains ' · ': all of it must survive.
         ['a4', '-63.00', '2026-07-10', 'FEE', 'COSTCO GAS · PUMP 4 · TRN-d4e5f6a7', 't1'],
         // No note at all (a hand-entered row, or a blank bank description).
@@ -469,7 +471,6 @@ describe('sqlite-native', () => {
         try {
           expect(getNativeWealthfolioTopSpending(path, '2026-07-06', '2026-07-13', 5)).toEqual([
             { amount: 412.37, description: 'WHOLE FOODS MKT', categoryName: 'Food & Dining' },
-            { amount: 180, description: 'Online Transfer to Savings', categoryName: 'Shopping' },
             { amount: 95.5, description: 'TARGET 00021479', categoryName: 'Food & Dining' },
             { amount: 63, description: 'COSTCO GAS · PUMP 4', categoryName: 'Transportation' },
             { amount: 20, description: '', categoryName: 'Shopping' },
@@ -488,7 +489,7 @@ describe('sqlite-native', () => {
       try {
         seedWeek(path);
         const top = getNativeWealthfolioTopSpending(path, '2026-07-06', '2026-07-13', 2);
-        expect(top.map((t) => t.amount)).toEqual([412.37, 180]);
+        expect(top.map((t) => t.amount)).toEqual([412.37, 95.5]);
       } finally {
         cleanup();
       }
@@ -1114,11 +1115,42 @@ describe('in-transit placeholder shapes against the spending classifier', () => 
                VALUES ('control', '-50', '2026-08-20', 'WITHDRAWAL', '${acct}')`);
       db.exec(`INSERT INTO activity_taxonomy_assignments (activity_id, category_id) VALUES ('control', 'cat-g')`);
       const shape = neutralAdjustmentFields(accountType, signed);
-      db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, account_id)
-               VALUES ('ph', '${shape.amount}', '2026-08-21', '${shape.activityType}', '${acct}')`);
+      // Stored the way the sync writes it: the in-transit marker in front of
+      // the note. Since v1.49 a CASH outflow placeholder is a bare TRANSFER_OUT
+      // — an Expense to Wealthfolio's classifier (only a LINKED transfer is
+      // neutral there, and 3.8 left no cash-moving outflow type that isn't) —
+      // so the readers exclude the sync's own bookkeeping rows by that marker
+      // rather than by type. Categorised here on purpose: a Wealthfolio rule
+      // can auto-file the placeholder before its counterpart posts.
+      db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, account_id, notes)
+               VALUES ('ph', '${shape.amount}', '2026-08-21', '${shape.activityType}', '${acct}', '↔️ In-transit transfer · PAYMENT · tx-1')`);
       db.exec(`INSERT INTO activity_taxonomy_assignments (activity_id, category_id) VALUES ('ph', 'cat-g')`);
+      db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, account_id, notes)
+               VALUES ('plug', '${shape.amount}', '2026-08-22', '${shape.activityType}', '${acct}', 'Balance adjustment · sfin-1 · 2026-08-22')`);
+      db.exec(`INSERT INTO activity_taxonomy_assignments (activity_id, category_id) VALUES ('plug', 'cat-g')`);
       db.close();
       expect(getNativeWealthfolioSpendingBetween(path, '2026-08-01', '2026-09-01')).toEqual({ Groceries: 50 });
+      expect(getNativeUncategorizedSpendingTotal(path, '2026-08-01', '2026-09-01')).toEqual({ count: 0, total: 0 });
+    } finally { cleanup(); }
+  });
+
+  it('excludes by the marker, not by type: the same CASH TRANSFER_OUT without it counts as spending', () => {
+    // The negative case for the table above. A bare TRANSFER_OUT on a cash
+    // account IS spending to Wealthfolio (an unlinked transfer classifies as
+    // Expense), so the readers must agree — only the sync's own marker earns
+    // an exclusion.
+    const { path, cleanup } = makeTestDb();
+    try {
+      const db = new DatabaseSync(path);
+      db.exec(`INSERT INTO taxonomy_categories (id, name, parent_id) VALUES ('cat-g', 'Groceries', NULL)`);
+      db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, account_id, notes)
+               VALUES ('bare', '1300', '2026-08-21', 'TRANSFER_OUT', 'acct-cash', 'Online Transfer to Savings · tx-9')`);
+      db.exec(`INSERT INTO activity_taxonomy_assignments (activity_id, category_id) VALUES ('bare', 'cat-g')`);
+      db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, account_id, notes)
+               VALUES ('bare-uncat', '12', '2026-08-21', 'TRANSFER_OUT', 'acct-cash', 'Online Transfer to Savings · tx-10')`);
+      db.close();
+      expect(getNativeWealthfolioSpendingBetween(path, '2026-08-01', '2026-09-01')).toEqual({ Groceries: 1300 });
+      expect(getNativeUncategorizedSpendingTotal(path, '2026-08-01', '2026-09-01')).toEqual({ count: 1, total: 12 });
     } finally { cleanup(); }
   });
 

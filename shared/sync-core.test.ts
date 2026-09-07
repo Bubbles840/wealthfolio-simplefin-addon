@@ -3,7 +3,7 @@ import { runSyncCore, applyBaselineFix, neutralAdjustmentFields, expiredTransfer
 import { createFakeHost, type FakeHostSeed } from './fake-host.js';
 import { accountTxKey } from './transfers.js';
 import { linkPairByRecreate } from './link-pair.js';
-import type { LinkLeg, SyncHost } from './sync-host.js';
+import type { HostActivity, LinkLeg, SyncHost } from './sync-host.js';
 
 describe('runSyncCore', () => {
   beforeEach(() => {
@@ -181,7 +181,7 @@ describe('runSyncCore', () => {
     expect(update.activityType).toBe('DEPOSIT');
   });
 
-  it('plugs negative CASH drift with a fee-based CREDIT', async () => {
+  it('plugs negative CASH drift with a TRANSFER_OUT carrying the amount', async () => {
     const { host, store, imported } = createFakeHost({
       accountSet: { errors: [], accounts: [{
         id: 'sfin-1', name: 'C', currency: 'USD',
@@ -197,9 +197,12 @@ describe('runSyncCore', () => {
     await runSyncCore(host, store, { heal: true });
     const plug = imported.flat().find((r) => r.comment.startsWith('Balance adjustment'))!;
     expect(plug).toBeTruthy();
-    expect(plug.activityType).toBe('CREDIT');
-    expect(plug.amount).toBe(0);
-    expect(plug.fee).toBe(50);
+    expect(plug.activityType).toBe('TRANSFER_OUT');
+    expect(plug.amount).toBe(50);
+    expect(plug.fee).toBe(0);
+    // The import endpoint refuses a row without a symbol; the cash symbol
+    // takes the CashMovement branch for every type (classify_import_activity).
+    expect(plug.symbol).toBe('$CASH-USD');
   });
 
   it('plugs positive CREDIT_CARD drift with TRANSFER_IN, keeping the cash symbol the import endpoint requires', async () => {
@@ -280,12 +283,15 @@ describe('runSyncCore', () => {
     const result = await runSyncCore(host, store, {});
     expect(result.imported).toBe(1);
     const create = saved[0].creates![0];
-    // CREDIT (not TRANSFER_OUT), fee-side of the split since the amount left the account.
-    expect(create.activityType).toBe('CREDIT');
-    expect(create.fee).toBe(1300);
-    expect(create.amount).toBe(0);
-    // CREDIT books real cash only with the reserved cash asset attached.
-    expect(create.symbol).toEqual({ symbol: '$CASH-USD' });
+    // A bare TRANSFER_OUT carrying the REAL amount (v1.49). The old shape — a
+    // CREDIT with the sum in `fee` — stopped moving cash in Wealthfolio 3.8,
+    // where `amount` is the final cash and the fee is informational.
+    expect(create.activityType).toBe('TRANSFER_OUT');
+    expect(create.amount).toBe(1300);
+    expect(create.fee ?? 0).toBe(0);
+    // Transfer legs carry NO asset, so the row lands as real cash and stays
+    // pairable (the July-2026 "$CASH" phantom-security lesson).
+    expect(create.symbol).toBeUndefined();
     expect(create.comment).toContain('↔️ In-transit transfer · ');
     expect(create.comment).toContain('· tx-out');
   });
@@ -374,9 +380,12 @@ describe('runSyncCore', () => {
     // The table the 2026-08-27 refund would have failed: the ONE cell that
     // differs from the plug shape is a card inflow.
     expect(neutralAdjustmentFields('CREDIT_CARD', 429.71)).toEqual({ activityType: 'TRANSFER_IN', amount: 429.71, fee: 0 });
-    expect(neutralAdjustmentFields('CREDIT_CARD', -429.71)).toEqual({ activityType: 'CREDIT', amount: 0, fee: 429.71 });
+    expect(neutralAdjustmentFields('CREDIT_CARD', -429.71)).toEqual({ activityType: 'TRANSFER_OUT', amount: 429.71, fee: 0 });
     expect(neutralAdjustmentFields('CASH', 1300)).toEqual({ activityType: 'CREDIT', amount: 1300, fee: 0 });
-    expect(neutralAdjustmentFields('CASH', -1300)).toEqual({ activityType: 'CREDIT', amount: 0, fee: 1300 });
+    // Every outflow is a TRANSFER_OUT with its real amount: the only cash-moving
+    // shape that survives Wealthfolio 3.8's final-cash contract (fee no longer
+    // moves cash) AND books the same amount on 3.7 (amount − fee, fee = 0).
+    expect(neutralAdjustmentFields('CASH', -1300)).toEqual({ activityType: 'TRANSFER_OUT', amount: 1300, fee: 0 });
     // Expiry: a card refuses DEPOSIT, and a positive that never paired is a refund.
     expect(expiredTransferLegType('CREDIT_CARD', 100)).toBe('CREDIT');
     expect(expiredTransferLegType('CREDIT_CARD', -100)).toBe('WITHDRAWAL');
@@ -388,7 +397,7 @@ describe('runSyncCore', () => {
     const seed = soloOutLegSeed();
     const { host, store, saved, activities, links } = createFakeHost(seed);
     await runSyncCore(host, store, {}); // first run: other leg not posted yet
-    expect(saved[0].creates![0].activityType).toBe('CREDIT');
+    expect(saved[0].creates![0].activityType).toBe('TRANSFER_OUT');
     const placeholderId = activities.get('wf-a')![0].id;
 
     // Second run: the savings side has posted and that account is mapped too.
@@ -498,11 +507,11 @@ describe('runSyncCore', () => {
     expect(inflow.fee).toBe(0);
 
     const outflow = neutralAdjustmentFields('CREDIT_CARD', -1300);
-    expect(outflow.activityType).toBe('CREDIT');
-    // Same amount/fee split CASH uses: cash moves by `amount - fee - tax`, so the
-    // fee side is how an outflow stays spending-neutral.
-    expect(outflow.amount).toBe(0);
-    expect(outflow.fee).toBe(1300);
+    // TRANSFER_OUT is Ignored on a card whatever else is true of it, and it is
+    // the shape whose amount still moves cash under Wealthfolio 3.8 (v1.49).
+    expect(outflow.activityType).toBe('TRANSFER_OUT');
+    expect(outflow.amount).toBe(1300);
+    expect(outflow.fee).toBe(0);
   });
 
   it('leaves investment-style accounts on DEPOSIT/WITHDRAWAL', () => {
@@ -585,9 +594,9 @@ describe('runSyncCore', () => {
     const result = await runSyncCore(host, store, { force: true });
     expect(result.imported).toBe(1);
     const create = saved[0].creates![0];
-    expect(create.activityType).toBe('CREDIT');
-    expect(create.amount).toBe(0);
-    expect(create.fee).toBe(87.26);
+    expect(create.activityType).toBe('TRANSFER_OUT');
+    expect(create.amount).toBe(87.26);
+    expect(create.fee ?? 0).toBe(0);
     expect(create.comment).toContain('↔️ In-transit transfer · ');
   });
 
@@ -627,8 +636,8 @@ describe('runSyncCore', () => {
     const result = await runSyncCore(host, store, { force: true });
     expect(result.imported).toBe(1);
     const create = saved[0].creates![0];
-    expect(create.activityType).toBe('CREDIT');
-    expect(create.fee).toBe(87.26);
+    expect(create.activityType).toBe('TRANSFER_OUT');
+    expect(create.amount).toBe(87.26);
     expect(create.comment).toContain('↔️ In-transit transfer · ');
   });
 
@@ -651,9 +660,9 @@ describe('runSyncCore', () => {
 
     const update = saved.flatMap((s) => s.updates ?? []).find((u) => u.id === 'demoted-1')!;
     expect(update).toBeTruthy();
-    expect(update.activityType).toBe('CREDIT');
-    expect(update.amount).toBe(0);
-    expect(update.fee).toBe(87.26);
+    expect(update.activityType).toBe('TRANSFER_OUT');
+    expect(update.amount).toBe(87.26);
+    expect(update.fee).toBe(0);
     expect(update.comment).toContain('↔️ In-transit transfer · ');
     expect(activities.get('wf-a')).toHaveLength(1); // repaired in place, not duplicated
   });
@@ -662,8 +671,7 @@ describe('runSyncCore', () => {
     const { host, store, saved } = createFakeHost(soloOutLegSeed());
     await runSyncCore(host, store, {});
     saved.length = 0;
-    // The fee-side placeholder stores amount 0, so reconciliation has to compare
-    // the BOOKED amount (absCents − feeCents) or it re-updates the row forever.
+    // A placeholder that agrees with the feed must not be rewritten every sync.
     const second = await runSyncCore(host, store, { force: true });
     expect(saved).toEqual([]);
     expect(second.imported).toBe(0);
@@ -3232,8 +3240,8 @@ describe('imported transactions carry direction', () => {
           { id: 'tx-dep', posted: Math.floor(Date.now() / 1000) - 3600, amount: '16000.00', description: 'PNC BANK DEPOSIT' },
           { id: 'tx-wd', posted: Math.floor(Date.now() / 1000) - 3600, amount: '-12.50', description: 'Coffee' },
           // A keyword-typed transfer leg young enough to import as an
-          // in-transit placeholder: CREDIT with the amount in fee — the one
-          // row whose TYPE lies about its direction.
+          // in-transit placeholder: a bare TRANSFER_OUT (v1.49) — the one row
+          // whose stored type says nothing about whether it paired.
           { id: 'tx-pay', posted: Math.floor(Date.now() / 1000) - 3600, amount: '-87.26', description: 'Payment to Discover Bank Credit Card Payments' },
         ],
       }, staleDiscover] },
@@ -3245,5 +3253,81 @@ describe('imported transactions carry direction', () => {
     expect(byTx.get('tx-dep')?.direction).toBe('in');
     expect(byTx.get('tx-wd')?.direction).toBe('out');
     expect(byTx.get('tx-pay')?.direction).toBe('out'); // money LEFT, whatever the placeholder type says
+  });
+});
+
+describe('legacy fee-side placeholders (pre-v1.49 CREDIT amount 0 / fee X)', () => {
+  beforeEach(() => {
+    VALUATION_POLL.delayMs = 1;
+    VALUATION_POLL.attempts = 1;
+  });
+  // Wealthfolio 3.8 made `amount` the final cash and the fee informational, so
+  // every outflow placeholder the sync wrote before v1.49 — a CREDIT with the
+  // money in `fee` — books ZERO cash there, and its one-shot migration keeps
+  // the amount at 0 and flags the row "Needs review". The sync rewrites its
+  // own rows to the shape that moves cash on both 3.7 and 3.8.
+  const seed = (rows: HostActivity[]): FakeHostSeed => ({
+    accountSet: { errors: [], accounts: [{
+      id: 'sfin-1', name: 'Checking', currency: 'USD', balance: '0',
+      'balance-date': Math.floor(Date.now() / 1000),
+      transactions: [],
+    }] },
+    mapping: { 'sfin-1': 'wf-a' },
+    accountTypes: { 'wf-a': 'CASH' },
+    existing: new Map([['wf-a', rows]]),
+  });
+  const plug: HostActivity = {
+    id: 'plug-1', accountId: 'wf-a', activityType: 'CREDIT', date: '2026-06-12',
+    amount: '0', fee: '80', comment: 'Balance adjustment · sfin-1 · 2026-06-12',
+    sourceGroupId: null, subtype: null,
+  };
+  const agedPlaceholder: HostActivity = {
+    // An in-transit leg that aged out of the fetch window with its feed dead —
+    // reconciliation never sees it again, so only this pass can fix it.
+    id: 'ph-1', accountId: 'wf-a', activityType: 'CREDIT', date: '2026-05-02',
+    amount: '0', fee: '429.71', comment: '↔️ In-transit transfer · PAYMENT TO CARD · tx-old',
+    sourceGroupId: null, subtype: null,
+  };
+
+  it('rewrites a drift plug and an aged placeholder to TRANSFER_OUT with the real amount', async () => {
+    const { host, store, saved, activities } = createFakeHost(seed([plug, agedPlaceholder]));
+    await runSyncCore(host, store, { force: true });
+    const updates = saved.flatMap((r) => r.updates ?? []);
+    const byId = new Map(updates.map((u) => [u.id, u]));
+    expect(byId.get('plug-1')).toMatchObject({
+      activityType: 'TRANSFER_OUT', amount: 80, fee: 0,
+      comment: 'Balance adjustment · sfin-1 · 2026-06-12',
+      // The 3.8 migration flags these rows; the rewrite attests they are fine.
+      needsReview: false,
+    });
+    expect(byId.get('ph-1')).toMatchObject({ activityType: 'TRANSFER_OUT', amount: 429.71, fee: 0, needsReview: false });
+    // Real cash: no asset on a transfer leg.
+    expect(byId.get('plug-1')!.symbol).toBeUndefined();
+    const stored = activities.get('wf-a')!;
+    expect(stored.find((r) => r.id === 'plug-1')).toMatchObject({ activityType: 'TRANSFER_OUT', amount: 80 });
+  });
+
+  it('is idempotent: rows already in the new shape, or with no fee, are left alone', async () => {
+    const already: HostActivity = { ...plug, id: 'done', activityType: 'TRANSFER_OUT', amount: '80', fee: '0' };
+    const inflowPlug: HostActivity = { ...plug, id: 'in', activityType: 'CREDIT', amount: '250', fee: '0' };
+    const userRow: HostActivity = { ...plug, id: 'user', comment: 'Wire fee', amount: '0', fee: '25' };
+    const { host, store, saved } = createFakeHost(seed([already, inflowPlug, userRow]));
+    await runSyncCore(host, store, { force: true });
+    expect(saved.flatMap((r) => r.updates ?? [])).toEqual([]);
+  });
+
+  it('a placeholder still in the feed is rewritten once, not twice', async () => {
+    const posted = Math.floor(Date.now() / 1000) - 3600;
+    // Keyword-typed as a transfer leg (the mapper's wording), so the feed side
+    // is a young placeholder too and the only difference is the legacy shape.
+    const s = seed([{ ...agedPlaceholder, id: 'ph-live', comment: '↔️ In-transit transfer · Online Transfer to Savings · tx-live', date: new Date(posted * 1000).toISOString().slice(0, 10) }]);
+    s.accountSet!.accounts[0].transactions = [{
+      id: 'tx-live', posted, amount: '-429.71', description: 'Online Transfer to Savings',
+    }];
+    const { host, store, saved } = createFakeHost(s);
+    await runSyncCore(host, store, { force: true });
+    const updates = saved.flatMap((r) => r.updates ?? []).filter((u) => u.id === 'ph-live');
+    expect(updates).toHaveLength(1);
+    expect(updates[0]).toMatchObject({ activityType: 'TRANSFER_OUT', amount: 429.71, fee: 0 });
   });
 });

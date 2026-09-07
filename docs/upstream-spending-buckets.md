@@ -389,3 +389,78 @@ spending category (e.g. Groceries) via the REST API, in order:
    which original transaction it's "paying back" — there is no
    original-transaction link in this system, only the refund's own category
    assignment.
+
+## 8. Wealthfolio 3.8.0 — `amount` is the final cash; the fee no longer moves it (2026-09-07)
+
+Read against the `v3.8.0` tag. Cash effects for cash-type rows are resolved in
+`crates/core/src/portfolio/economic_events.rs::resolve_cash_inputs`:
+
+```rust
+let final_amount = inputs.amount.map(|amount| amount.abs());
+let signed_cash_effect = final_amount.map(|amount| {
+    ...
+    Self::type_directed_cash_effect(inputs.activity_type, amount)   // CREDIT → +amount, TRANSFER_OUT → −amount
+});
+```
+
+`fee`/`tax` feed only the *gross* figure (net-contribution reporting). So the
+pre-v1.49 outflow placeholder — `CREDIT`, `amount` 0, the money in `fee` —
+books **zero** cash on 3.8. Before 3.8 the holdings calculator booked
+`amount − fee − tax` (see §2 of the memory notes; the legacy replay lives on in
+`activity_cash_migration.rs::legacy_runtime_cash_effect`).
+
+**The one-shot migration** (`crates/core/src/activities/activity_cash_migration.rs`,
+run at server/desktop startup — `apps/server/src/main_lib.rs:570`) classifies
+every cash-bearing row. For a non-trade, non-charge row the rule is
+`Some(amount) => (Some(amount), has_charges)`: the stored 0 is **kept** and
+`needs_review` is set because the row carries a charge. It cannot restate a
+`CREDIT` as an outflow, so after the rebuild each such row adds its old fee
+back to the account balance. No SQL migration touches amounts; the only new
+tables/columns are `spending_categorization_rules.amount_op/amount_value/
+amount_value2` and `asset_logos`.
+
+**Spending classification of the replacement shape**
+(`crates/spending/src/activity_classification.rs`, unchanged 3.7→3.8):
+
+```rust
+if matches!(activity_type, "TRANSFER_IN" | "TRANSFER_OUT") && activity.source_group_id.is_some() {
+    return SpendingClassification::InternalTransfer;          // any group id → Neutral
+}
+match account_type {
+    CASH => match activity_type {
+        "WITHDRAWAL" | "TRANSFER_OUT" | "FEE" | "TAX" => Expense,   // an UNLINKED TRANSFER_OUT is spending
+        "CREDIT" => Ignored, ...
+    },
+    CREDIT_CARD => match activity_type {
+        "WITHDRAWAL" | "FEE" | "INTEREST" => Expense,
+        "CREDIT" => ExpenseRefund,
+        _ => Ignored,                                            // TRANSFER_OUT is Ignored on a card
+    },
+}
+```
+
+`classify_activity_for_aggregation` additionally maps a grouped CASH
+`TRANSFER_OUT` whose group is not wholly inside the spending accounts to
+`Saving`. A lone-leg group id is not storable (a half-formed group is dropped
+on save), so a placeholder cannot borrow that path. Conclusion: on 3.8 there is
+**no** cash-moving CASH outflow type the classifier ignores. v1.49 therefore
+books outflow placeholders and plugs as a bare `TRANSFER_OUT` with the real
+amount (correct balance everywhere; Wealthfolio's own spending page shows it as
+an uncategorised outflow until the pair links) and the addon's readers exclude
+the sync's bookkeeping rows by their note marker (`SYNC_BOOKKEEPING_EXCLUSION`
+in `companion/src/sqlite-native.ts`).
+
+**Write path on 3.8**: `validate_new_activity_final_amount` only rejects a
+*missing* amount for cash-bearing types; `amount: 0` remains accepted.
+`ActivityUpdate` carries `needs_review: Option<bool>` (also present on 3.7),
+which is how the legacy rewrite clears the flag the migration set.
+`classify_import_activity` sends every type with a cash symbol
+(`$CASH-USD`) down the `CashMovement` branch, `TRANSFER_OUT` included, so the
+import-endpoint plug keeps its symbol.
+
+**API surface**: the ten REST routes the companion calls all exist in 3.8.0;
+the only change under `/spending`, `/activities`, `/valuations`, `/addons` is
+the added `POST /spending/rules/upsert`. The addon SDK 3.8.0 is additive
+(`ctx.api.spending`, translations, `ActivityImport.isExternal`, `status` /
+`needsReview` on create/update).
+

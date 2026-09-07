@@ -35,6 +35,21 @@ describe('RestSyncHost', () => {
     expect(rows[0].accountId).toBe('wf-a');
   });
 
+  it('listActivities carries the stored fee through, so legacy fee-side placeholders can be found', async () => {
+    // Pre-v1.49 outflow placeholders are `CREDIT amount 0 fee X`; the sync
+    // rewrites them and needs the fee to know X. A mapper that drops it
+    // would make every legacy plug look like a $0 row and leave it alone.
+    const client = {
+      searchActivities: vi.fn(async () => [
+        { id: 'plug', accountId: 'wf-a', activityType: 'CREDIT', date: '2026-06-12', amount: '0', fee: '80' },
+        { id: 'plain', accountId: 'wf-a', activityType: 'DEPOSIT', date: '2026-06-13', amount: '10' },
+      ]),
+    } as any;
+    const rows = await new RestSyncHost(client).listActivities('wf-a');
+    expect(rows[0].fee).toBe('80');
+    expect(rows[1].fee ?? null).toBeNull();
+  });
+
   it('links a pair by deleting and re-creating both legs via saveMany, returning the echoed groupId', async () => {
     const client = {
       saveMany: vi.fn(async (req: any) => ({

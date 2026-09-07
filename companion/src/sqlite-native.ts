@@ -8,7 +8,8 @@
 import { existsSync } from 'fs';
 import { execSync } from 'child_process';
 import { DatabaseSync } from 'node:sqlite';
-import { descriptionFromComment } from '../../shared/sync-core.js';
+import { BALANCE_ADJUSTMENT_COMMENT_PREFIX, descriptionFromComment } from '../../shared/sync-core.js';
+import { IN_TRANSIT_COMMENT_PREFIX } from '../../shared/reconcile.js';
 
 export interface NativeCategorySpending {
   categoryName: string;
@@ -163,11 +164,28 @@ const SPENDING_SIGN = `
 /** Signed dollars for one assignment row: positive spend, negative refund. */
 const SPENDING_SIGNED_AMOUNT = `(${SPENDING_SIGN}) * ABS(CAST(a.amount AS REAL))`;
 
+/**
+ * Rows the sync wrote for its own bookkeeping — drift-heal plugs and
+ * in-transit transfer placeholders — recognised by the note marker each one
+ * carries. Excluded from every spending figure BY MARKER rather than by type:
+ * since v1.49 an outflow placeholder is a bare TRANSFER_OUT, which on a CASH
+ * account is an Expense to Wealthfolio's classifier (only a LINKED transfer is
+ * neutral there, and 3.8 left no cash-moving outflow type that isn't). So the
+ * type cannot tell a placeholder from a real transfer, a Wealthfolio rule can
+ * even auto-file one before its counterpart posts — and the marker is the one
+ * thing that is unambiguously the sync's. The single quote is the only
+ * character SQL cares about in these prefixes; neither contains one.
+ */
+const SYNC_BOOKKEEPING_EXCLUSION = `
+      AND COALESCE(a.notes, '') NOT LIKE '${BALANCE_ADJUSTMENT_COMMENT_PREFIX}%'
+      AND COALESCE(a.notes, '') NOT LIKE '${IN_TRANSIT_COMMENT_PREFIX}%'`;
+
 function spendingWhere(startInclusive: string, endExclusive: string): string {
   return `
     WHERE a.activity_date >= '${startInclusive}'
       AND a.activity_date < '${endExclusive}'
       AND (${SPENDING_SIGN}) <> 0
+      ${SYNC_BOOKKEEPING_EXCLUSION}
       -- The SPENDING taxonomy only. A reimbursement carries TWO assignments —
       -- an income one and a spending one — so joining every taxonomy counted
       -- the same row twice, under two different category names.
@@ -959,6 +977,7 @@ export function getNativeUncategorizedSpendingTotal(
       AND ata.activity_id IS NULL
       AND COALESCE(a.source_group_id, '') = ''
       ${dismissedClause}
+      ${SYNC_BOOKKEEPING_EXCLUSION}
       AND (${SPENDING_SIGN}) > 0;
   `;
 
@@ -1145,6 +1164,7 @@ export function getNativeUncategorizedByMonthAccount(
       AND ata.activity_id IS NULL
       AND COALESCE(a.source_group_id, '') = ''
       ${excludedClause}
+      ${SYNC_BOOKKEEPING_EXCLUSION}
       AND (${SPENDING_SIGN}) > 0
     GROUP BY month, account_id;
   `;

@@ -47,6 +47,7 @@ function toSdkWrite(w: ActivityWrite): ActivityCreate & { id?: string } {
     ...(w.metadata !== undefined ? { metadata: w.metadata } : {}),
     ...(w.sourceGroupId !== undefined ? { sourceGroupId: w.sourceGroupId } : {}),
     ...(w.subtype !== undefined ? { subtype: w.subtype } : {}),
+    ...(w.needsReview !== undefined ? { needsReview: w.needsReview } : {}),
   } as ActivityCreate & { id?: string };
 }
 
@@ -59,6 +60,7 @@ function fromSearchRow(a: any, wfAccountId: string): HostActivity {
     activityType: String(a.activityType ?? ''),
     date: toIsoDate(a.date),
     amount: a.amount ?? null,
+    fee: a.fee ?? null,
     comment: a.comment ?? a.notes ?? a.description ?? null,
     assetId: a.assetId ? String(a.assetId) : undefined,
     sourceGroupId: a.sourceGroupId ?? null,
@@ -79,6 +81,7 @@ function fromSdkEcho(a: any): HostActivity {
     activityType: String(a?.activityType ?? ''),
     date: toIsoDate(a?.date ?? a?.activityDate),
     amount: a?.amount ?? null,
+    fee: a?.fee ?? null,
     comment: a?.notes ?? a?.comment ?? null,
     assetId: a?.assetId ? String(a.assetId) : undefined,
     sourceGroupId: a?.sourceGroupId ?? null,

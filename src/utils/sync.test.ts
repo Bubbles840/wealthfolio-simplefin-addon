@@ -457,9 +457,13 @@ describe('runSync', () => {
       sfinAccountId: 'sfin-1', wfAccountId: 'wf-account-a', currency: 'USD', amount: -2635.26,
     });
     const imported = vi.mocked(ctx.api.activities.import).mock.calls.at(-1)![0] as any[];
-    expect(imported[0].activityType).toBe('CREDIT');
-    expect(imported[0].amount).toBe(0);
-    expect(imported[0].fee).toBe(2635.26);
+    // v1.49: a TRANSFER_OUT with the real amount — the only outflow shape whose
+    // cash moves under Wealthfolio 3.8's final-cash contract (see
+    // neutralAdjustmentFields). The import endpoint still needs the cash symbol.
+    expect(imported[0].activityType).toBe('TRANSFER_OUT');
+    expect(imported[0].amount).toBe(2635.26);
+    expect(imported[0].fee).toBe(0);
+    expect(imported[0].symbol).toBe('$CASH-USD');
   });
 
   it('applyBalanceAdjustment uses the card-safe CREDIT shape on a credit card', async () => {
@@ -477,9 +481,9 @@ describe('runSync', () => {
       sfinAccountId: 'sfin-2', wfAccountId: 'wf-account-b', currency: 'USD', amount: -80,
     });
     const imported = vi.mocked(ctx.api.activities.import).mock.calls.at(-1)![0] as any[];
-    expect(imported[0].activityType).toBe('CREDIT');
-    expect(imported[0].amount).toBe(0);
-    expect(imported[0].fee).toBe(80);
+    expect(imported[0].activityType).toBe('TRANSFER_OUT');
+    expect(imported[0].amount).toBe(80);
+    expect(imported[0].fee).toBe(0);
   });
 
   it('drops only transactions with neither posted nor transacted_at', async () => {
@@ -902,6 +906,28 @@ describe('runSync', () => {
     expect(String(flush[0].sourceGroupId).startsWith('wf-transfer-')).toBe(true);
   });
 
+  it('rewrites a legacy fee-side balance plug through the SDK host (fee read back from search)', async () => {
+    // The addon half of the v1.49 legacy rewrite: ActivityDetails from
+    // `activities.search` carries `fee`, the adapter must keep it, and the
+    // pass must reach saveMany as an update to TRANSFER_OUT with the amount.
+    vi.mocked(fetchAccounts).mockResolvedValueOnce({
+      errors: [],
+      accounts: [{ id: 'sfin-1', name: 'Checking', currency: 'USD', balance: '0', 'balance-date': Math.floor(Date.now() / 1000), transactions: [] }],
+    } as any);
+    const ctx = makeCtx();
+    ctx.api.activities.search = vi.fn(async (_p: number, _l: number, filter: any) => ({
+      data: filter.accountIds[0] === 'wf-account-a'
+        ? [{ id: 'plug', accountId: 'wf-account-a', comment: 'Balance adjustment · sfin-1 · 2026-06-12', amount: '0', fee: '80', activityType: 'CREDIT', date: '2026-06-12' }]
+        : [],
+    }));
+    const store = makeStore();
+    await runSync(ctx, store as any, { force: true });
+    const updates = vi.mocked(ctx.api.activities.saveMany).mock.calls.flatMap((c: any) => c[0].updates ?? []);
+    const plug = updates.find((u: any) => u.id === 'plug');
+    expect(plug).toMatchObject({ activityType: 'TRANSFER_OUT', amount: 80, fee: 0, needsReview: false });
+    expect(plug.symbol).toBeUndefined();
+  });
+
   it('purges the ledger entry when Wealthfolio drops a stamped gid (echoed null → retry fresh)', async () => {
     // Reproduces the stuck-pair bug: the save succeeds (no error) but Wealthfolio
     // silently stores NO sourceGroupId for the row (poisoned/invalid group). The
@@ -1185,8 +1211,7 @@ describe('neutralAdjustmentFields', () => {
 
   it('CASH + negative drift: CREDIT with fee, no amount — nets to the drift', () => {
     const result = neutralAdjustmentFields('CASH', -2635.26);
-    expect(result).toEqual({ activityType: 'CREDIT', amount: 0, fee: 2635.26 });
-    expect(result.amount - result.fee).toBeCloseTo(-2635.26);
+    expect(result).toEqual({ activityType: 'TRANSFER_OUT', amount: 2635.26, fee: 0 });
   });
 
   it('CREDIT_CARD: TRANSFER_IN for an inflow, the CASH-shaped CREDIT split for an outflow', () => {
@@ -1201,7 +1226,7 @@ describe('neutralAdjustmentFields', () => {
       activityType: 'TRANSFER_IN', amount: 40, fee: 0,
     });
     expect(neutralAdjustmentFields('CREDIT_CARD', -40)).toEqual({
-      activityType: 'CREDIT', amount: 0, fee: 40,
+      activityType: 'TRANSFER_OUT', amount: 40, fee: 0,
     });
   });
 
