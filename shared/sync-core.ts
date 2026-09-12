@@ -1108,6 +1108,37 @@ export function neutralAdjustmentFields(
   };
 }
 
+/**
+ * The shape of a one-time starting-balance correction.
+ *
+ * DEPOSIT/WITHDRAWAL everywhere except a credit card, where BOTH halves of that
+ * pair are wrong: the API refuses DEPOSIT on a card outright, and WITHDRAWAL
+ * classifies as SPENDING — so an opening balance would book a phantom purchase
+ * the size of the card's whole starting debt. On a card the row takes the same
+ * spending-neutral shape the drift plugs use.
+ *
+ * Deliberately NOT `neutralAdjustmentFields` for every account type. On a cash
+ * account that would turn an opening balance from a DEPOSIT into a bare CREDIT —
+ * which is arguably more correct, since an opening balance is a baseline rather
+ * than income — but it changes months-old semantics for no gain here: this
+ * project's own reports already exclude starting-balance rows by their note
+ * marker, so only Wealthfolio's own income view would move. That is a decision
+ * to take deliberately, not as a side effect of fixing cards.
+ */
+export function startingBalanceFields(
+  accountType: string,
+  starting: number,
+): { activityType: ActivityType; amount: number } {
+  if (accountType === 'CREDIT_CARD') {
+    const shape = neutralAdjustmentFields(accountType, starting);
+    return { activityType: shape.activityType, amount: shape.amount };
+  }
+  return {
+    activityType: (starting > 0 ? 'DEPOSIT' : 'WITHDRAWAL') as ActivityType,
+    amount: Math.abs(Math.round(starting * 100) / 100),
+  };
+}
+
 /** Import one dated balance-adjustment activity. `amount` is signed
  *  (SimpleFin − Wealthfolio). On CASH/CREDIT_CARD accounts this takes the
  *  placeholder shape (see neutralAdjustmentFields); elsewhere a
@@ -1263,13 +1294,36 @@ export async function runSyncCore(
   // per-account entry skips the correction (and leaves the account
   // un-initialized so a later run retries) rather than guessing 0.
   let wfBalances: Map<string, number> | null = null;
+  const mappedWfIds = [...new Set(Object.values(mapping))];
   try {
-    const mappedWfIds = [...new Set(Object.values(mapping))];
     wfBalances = mappedWfIds.length > 0
       ? await host.latestValuations(mappedWfIds)
       : new Map<string, number>();
   } catch {
     errors.push('Could not read account balances — starting-balance checks skipped this run');
+  }
+  // Fill the gaps the valuations API leaves, which in practice is every credit
+  // card: Wealthfolio reports valuations for CASH accounts only, so a card had
+  // no balance to compare against, the one-time starting-balance correction
+  // could never run on one, and a card sat $235.40 short of its true opening
+  // balance for five months with nothing able to notice (live, 2026-09-12).
+  //
+  // Only the missing ones. A valuation, where it exists, stays authoritative:
+  // it is what the account page shows, and it accounts for currency conversion
+  // that a bare sum of activity amounts does not.
+  if (wfBalances !== null && host.ledgerBalances) {
+    const missing = mappedWfIds.filter((id) => !wfBalances!.has(id));
+    if (missing.length > 0) {
+      try {
+        for (const [id, balance] of await host.ledgerBalances(missing)) {
+          wfBalances.set(id, balance);
+        }
+      } catch {
+        // Leave them missing. `canReadBalance` then skips the correction and
+        // the account stays un-initialized, which is the same conservative
+        // behaviour every un-valued account had before this fallback existed.
+      }
+    }
   }
 
   // Phase A: resolve activity types for every transaction across all mapped
@@ -1601,6 +1655,9 @@ export async function runSyncCore(
     targetBalance: number;
     currency: string;
     date: string;
+    /** The Wealthfolio account type, carried because this pass runs after the
+     *  account loop and shapes a spending-neutral row from it. */
+    accountType: string;
   }> = [];
 
   // Per-account SimpleFin balances (+ drift vs Wealthfolio) captured for the
@@ -2334,13 +2391,14 @@ export async function runSyncCore(
       const currentWfBalance = wfBalances!.get(wfAccountId)!;
       const starting = targetBalance - windowDelta - currentWfBalance;
       if (Number.isFinite(starting) && Math.abs(starting) >= 0.01) {
+        const shape = startingBalanceFields(wfTypes.get(wfAccountId) ?? '', starting);
         const correction: ImportRow = {
           accountId: wfAccountId,
           sourceSystem: 'simplefin',
-          activityType: starting > 0 ? 'DEPOSIT' : 'WITHDRAWAL',
+          activityType: shape.activityType,
           date: dayBeforeDate,
           symbol: `$CASH-${sfAccount.currency}`,
-          amount: Math.abs(Math.round(starting * 100) / 100),
+          amount: shape.amount,
           currency: sfAccount.currency,
           comment: `${STARTING_BALANCE_COMMENT_PREFIX}${sfAccount.id}`,
           isValid: true,
@@ -2372,6 +2430,10 @@ export async function runSyncCore(
         targetBalance: parseFloat(sfAccount.balance),
         currency: sfAccount.currency,
         date: dayBeforeDate,
+        // Carried, not re-derived later: the second pass runs after the account
+        // loop, where `sfAccount` is gone, and a correction shaped without the
+        // account type books a phantom purchase on a card (see site one).
+        accountType: wfTypes.get(wfAccountId) ?? '',
       });
     }
     } catch (e: any) {
@@ -2411,13 +2473,14 @@ export async function runSyncCore(
           const alreadyDone = await hasExistingStartingBalance(host, p.wfAccountId, p.sfinAccountId);
           const starting = p.targetBalance - valuation;
           if (!alreadyDone && Number.isFinite(starting) && Math.abs(starting) >= 0.01) {
+            const shape = startingBalanceFields(p.accountType, starting);
             const correction: ImportRow = {
               accountId: p.wfAccountId,
               sourceSystem: 'simplefin',
-              activityType: starting > 0 ? 'DEPOSIT' : 'WITHDRAWAL',
+              activityType: shape.activityType,
               date: p.date,
               symbol: `$CASH-${p.currency}`,
-              amount: Math.abs(Math.round(starting * 100) / 100),
+              amount: shape.amount,
               currency: p.currency,
               comment: `${STARTING_BALANCE_COMMENT_PREFIX}${p.sfinAccountId}`,
               isValid: true,

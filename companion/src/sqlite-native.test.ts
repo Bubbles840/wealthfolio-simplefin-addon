@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { neutralAdjustmentFields } from '../../shared/sync-core.js';
 import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending,
-  getNativeUncategorizedSpendingTotal, getNativeUncategorizedSpending, getNativeCategoryCatalog, getNativeSubcategorySpending, getNativeSpendingCategories, getNativeCategorizedSpending } from './sqlite-native.js';
+  getNativeAccountBalances, getNativeUncategorizedSpendingTotal, getNativeUncategorizedSpending, getNativeCategoryCatalog, getNativeSubcategorySpending, getNativeSpendingCategories, getNativeCategorizedSpending } from './sqlite-native.js';
 import { DatabaseSync } from 'node:sqlite';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
@@ -1088,6 +1088,76 @@ describe('sqlite-native', () => {
       }
     });
 
+  });
+});
+
+describe('getNativeAccountBalances', () => {
+  // The only way to check a credit card. Wealthfolio's /valuations/latest
+  // returns CASH accounts only (live: 6 accounts, 2 rows), so a card's balance
+  // has no figure to compare SimpleFin against — which is why one card silently
+  // carried a $235.40 opening gap for five months.
+  it('sums the signed cash effect of an account\'s activities', () => {
+    const { path, cleanup } = makeTestDb();
+    try {
+      const db = new DatabaseSync(path);
+      db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, account_id, notes)
+               VALUES ('c1', '100', '2026-08-01', 'WITHDRAWAL', 'acct-card', 'Coffee · t1'),
+                      ('c2', '30',  '2026-08-02', 'WITHDRAWAL', 'acct-card', 'Lunch · t2'),
+                      ('c3', '50',  '2026-08-03', 'TRANSFER_IN', 'acct-card', 'Payment · t3'),
+                      ('c4', '5',   '2026-08-04', 'CREDIT',      'acct-card', 'Refund · t4')`);
+      db.close();
+      // −100 −30 +50 +5
+      expect(getNativeAccountBalances(path).get('acct-card')).toBeCloseTo(-75, 2);
+    } finally { cleanup(); }
+  });
+
+  it('reads credit-card INTEREST as a charge, unlike everywhere else', () => {
+    // Upstream's one account-dependent exception: interest is income on a
+    // brokerage and a charge on a card.
+    const { path, cleanup } = makeTestDb();
+    try {
+      const db = new DatabaseSync(path);
+      db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, account_id, notes)
+               VALUES ('i1', '10', '2026-08-01', 'INTEREST', 'acct-card', 'Interest · t1'),
+                      ('i2', '10', '2026-08-01', 'INTEREST', 'acct-cash', 'Interest · t2')`);
+      db.close();
+      const balances = getNativeAccountBalances(path);
+      expect(balances.get('acct-card')).toBeCloseTo(-10, 2);
+      expect(balances.get('acct-cash')).toBeCloseTo(10, 2);
+    } finally { cleanup(); }
+  });
+
+  it('excludes pending rows, because SimpleFin reports the POSTED balance', () => {
+    // Measured live: one card's posted total matched SimpleFin to the cent
+    // while its two pending charges accounted for the whole apparent $87.54
+    // gap. Counting them would report timing as drift, and would put that
+    // difference into a starting-balance correction — real money, written wrong.
+    const { path, cleanup } = makeTestDb();
+    try {
+      const db = new DatabaseSync(path);
+      db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, account_id, notes)
+               VALUES ('p1', '100', '2026-08-01', 'WITHDRAWAL', 'acct-card', 'Settled · t1'),
+                      ('p2', '40',  '2026-08-02', 'WITHDRAWAL', 'acct-card', 'Not yet · t2 · pending')`);
+      db.close();
+      expect(getNativeAccountBalances(path).get('acct-card')).toBeCloseTo(-100, 2);
+    } finally { cleanup(); }
+  });
+
+  it('ignores types that move no cash, and survives an unparseable amount', () => {
+    const { path, cleanup } = makeTestDb();
+    try {
+      const db = new DatabaseSync(path);
+      db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, account_id, notes)
+               VALUES ('s1', '100', '2026-08-01', 'DEPOSIT',    'acct-cash', 'Pay · t1'),
+                      ('s2', '5',   '2026-08-02', 'SPLIT',      'acct-cash', 'Split · t2'),
+                      ('s3', NULL,  '2026-08-03', 'WITHDRAWAL', 'acct-cash', 'Broken · t3')`);
+      db.close();
+      expect(getNativeAccountBalances(path).get('acct-cash')).toBeCloseTo(100, 2);
+    } finally { cleanup(); }
+  });
+
+  it('returns an empty map for a database that is not there', () => {
+    expect(getNativeAccountBalances('/nope/missing.db').size).toBe(0);
   });
 });
 

@@ -793,7 +793,9 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
   }
 
   const store = new RestSyncStore(wfClient);
-  const host = new RestSyncHost(wfClient);
+  // The database path enables the ledger-balance fallback, which is what lets a
+  // credit card get a starting balance at all (Wealthfolio values cash only).
+  const host = new RestSyncHost(wfClient, wealthfolioDbPath());
 
   try {
     log('Reading SimpleFin credentials from Wealthfolio addon secrets...');
