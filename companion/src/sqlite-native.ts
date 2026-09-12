@@ -227,6 +227,17 @@ function spendingWhere(startInclusive: string, endExclusive: string): string {
  * starting-balance correction, which writes real money into the ledger.
  * Measured live: one card's posted total matched SimpleFin to the cent while
  * its two pending charges accounted for the entire apparent $87.54 gap.
+ *
+ * An account holding an IN-FLIGHT TRANSFER is omitted entirely, for the same
+ * reason one step further on. A transfer that has posted at one end and not the
+ * other is in this ledger and not in SimpleFin's balance, so the two are
+ * measuring different moments and their difference is pure timing. Live on
+ * 2026-09-12: a $471.74 card payment left the bank and had not reached the
+ * card, showing as a $208.78 gap that would have been written into the ledger
+ * as a fabricated starting balance. Omission is the right shape for "no
+ * trustworthy figure" here because it is the contract the valuations API
+ * already has — a caller reads a missing entry as "cannot check this account
+ * right now", and the correction simply waits for a settled run.
  */
 export function getNativeAccountBalances(dbPath: string): Map<string, number> {
   const out = new Map<string, number>();
@@ -245,6 +256,11 @@ export function getNativeAccountBalances(dbPath: string): Map<string, number> {
     FROM activities a
     JOIN accounts acc ON a.account_id = acc.id
     WHERE COALESCE(a.notes, '') NOT LIKE '%${PENDING_NOTE_SUFFIX}'
+      AND NOT EXISTS (
+        SELECT 1 FROM activities f
+        WHERE f.account_id = a.account_id
+          AND COALESCE(f.notes, '') LIKE '${IN_TRANSIT_COMMENT_PREFIX}%'
+      )
     GROUP BY a.account_id;
   `;
   const rows = queryNativeDb<{ account_id: string; balance: number | string }>(

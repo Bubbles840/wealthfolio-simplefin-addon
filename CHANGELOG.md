@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.51.1] - 2026-09-12
+
+### Fixed
+
+- **A card with a payment in flight no longer invents a starting balance.**
+  v1.51.0 gave credit cards a readable balance for the first time, which also
+  handed them to the one-time starting-balance correction — and a card is
+  exactly the account most likely to have a transfer that has posted at one end
+  and not the other. Caught on live data within the hour: a $471.74 card
+  payment had left the bank and not yet reached the card, so the ledger counted
+  it and SimpleFin's balance did not, and the resulting $208.78 of pure timing
+  would have been written into the ledger as a fabricated opening balance on a
+  real card. An account holding an in-flight transfer is now omitted from the
+  ledger-balance fallback entirely, which reads downstream as "cannot check
+  this account right now" — the same contract the valuations API already has,
+  and the same conservative behaviour every un-valued account had before the
+  fallback existed. The correction waits for a settled run.
+
 ## [1.51.0] - 2026-09-12
 
 ### Fixed

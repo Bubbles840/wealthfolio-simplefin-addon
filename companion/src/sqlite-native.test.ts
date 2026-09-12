@@ -1156,6 +1156,31 @@ describe('getNativeAccountBalances', () => {
     } finally { cleanup(); }
   });
 
+  it('omits an account holding an in-flight transfer, rather than reporting an untrustworthy figure', () => {
+    // The figure is only comparable to SimpleFin's when nothing is in flight.
+    // Live on 2026-09-12: a $471.74 card payment had posted at the bank and not
+    // yet at the card, so the ledger credited it and SimpleFin's balance did
+    // not — a $208.78 disagreement that is pure timing. Reported as a balance
+    // it would have become a starting-balance correction, i.e. a fabricated
+    // $208.78 row on a real card. Omitting the account instead leaves
+    // `canReadBalance` false, which is exactly how every un-valued account
+    // behaved before this fallback existed: the correction waits.
+    const { path, cleanup } = makeTestDb();
+    try {
+      const db = new DatabaseSync(path);
+      db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, account_id, notes)
+               VALUES ('a1', '100', '2026-08-01', 'WITHDRAWAL', 'acct-card', 'Coffee · t1'),
+                      ('a2', '471.74', '2026-09-11', 'TRANSFER_IN', 'acct-card', '↔️ In-transit transfer · Payment · t2'),
+                      ('b1', '50',  '2026-08-01', 'WITHDRAWAL', 'acct-cash', 'Lunch · t3')`);
+      db.close();
+      const balances = getNativeAccountBalances(path);
+      expect(balances.has('acct-card')).toBe(false);
+      // The settled account is unaffected — one account in flight must not cost
+      // every other account its figure.
+      expect(balances.get('acct-cash')).toBeCloseTo(-50, 2);
+    } finally { cleanup(); }
+  });
+
   it('returns an empty map for a database that is not there', () => {
     expect(getNativeAccountBalances('/nope/missing.db').size).toBe(0);
   });
