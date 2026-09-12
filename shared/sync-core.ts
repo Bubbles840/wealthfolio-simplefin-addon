@@ -756,11 +756,15 @@ async function adjustStartingBalanceForOlderRows(
     wfAccountId: string;
     sfinAccountId: string;
     currency: string;
+    /** The Wealthfolio account type, so the rewritten row keeps the shape the
+     *  original was written with — without it, adjusting a neutral baseline
+     *  would silently turn it back into income. */
+    accountType: string;
     /** Signed amounts of the rows just created, keyed by date (YYYY-MM-DD). */
     created: Array<{ date: string; signed: number }>;
   },
 ): Promise<number> {
-  const { wfAccountId, sfinAccountId, currency, created } = args;
+  const { wfAccountId, sfinAccountId, currency, accountType, created } = args;
   const sb = await fetchStartingBalance(host, wfAccountId, sfinAccountId);
   if (!sb) return 0;
   const olderSum = created
@@ -772,7 +776,9 @@ async function adjustStartingBalanceForOlderRows(
     updates: [{
       id: sb.id,
       accountId: wfAccountId,
-      activityType: nextSigned >= 0 ? 'DEPOSIT' : 'WITHDRAWAL',
+      // Through the same chooser that wrote the row, or an adjustment would
+      // quietly flip a neutral baseline back into income.
+      activityType: startingBalanceFields(accountType, nextSigned).activityType,
       activityDate: sb.date,
       symbol: { symbol: `$CASH-${currency}` },
       amount: Math.abs(nextSigned),
@@ -1129,13 +1135,33 @@ export function startingBalanceFields(
   accountType: string,
   starting: number,
 ): { activityType: ActivityType; amount: number } {
+  const amount = Math.abs(Math.round(starting * 100) / 100);
   if (accountType === 'CREDIT_CARD') {
     const shape = neutralAdjustmentFields(accountType, starting);
     return { activityType: shape.activityType, amount: shape.amount };
   }
+  // A positive cash baseline is a bare CREDIT, which the classifier treats as
+  // `Ignored` — neither spending nor income. A DEPOSIT would be INCOME, and an
+  // opening balance is not earnings: it is the statement that everything before
+  // this date is already accounted for. Left as a DEPOSIT it inflated
+  // Wealthfolio's own income view by the whole opening balance of every account
+  // (live: $11,224.68 across two accounts, dated the day each was first synced).
+  //
+  // The CASH BALANCE IS UNCHANGED by this. Cash movement and classification are
+  // independent: `type_directed_cash_effect` adds the amount for CREDIT exactly
+  // as it does for DEPOSIT, and income types book their cash unconditionally.
+  // Verified live on two rows converted the same way, after which the account
+  // still reconciled with SimpleFin to the cent.
+  if (accountType === 'CASH' && starting > 0) {
+    return { activityType: 'CREDIT' as ActivityType, amount };
+  }
+  // A NEGATIVE cash baseline stays a WITHDRAWAL, because no neutral outflow
+  // exists on a cash account: WITHDRAWAL, TRANSFER_OUT, FEE and TAX all
+  // classify as Expense, and only a LINKED transfer escapes that. Rare enough
+  // (a cash account opening below zero) not to be worth a worse shape.
   return {
     activityType: (starting > 0 ? 'DEPOSIT' : 'WITHDRAWAL') as ActivityType,
-    amount: Math.abs(Math.round(starting * 100) / 100),
+    amount,
   };
 }
 
@@ -2246,6 +2272,7 @@ export async function runSyncCore(
             wfAccountId,
             sfinAccountId: sfAccount.id,
             currency: sfAccount.currency,
+            accountType: wfTypes.get(wfAccountId) ?? '',
             // LANDED creates only. This rewrites the starting balance, so netting
             // out a row that was refused moves real money for a row that does not
             // exist. It used to be shielded by the error a duplicate raised; now

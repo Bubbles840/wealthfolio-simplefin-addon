@@ -848,7 +848,10 @@ describe('runSync', () => {
     // baseline − signed = 4500.38 − (−1300) = 5800.38, which then leaves
     // 5800.38 − 1300 = 4500.38 — the balance the baseline always represented.
     expect(update.amount).toBeCloseTo(5800.38, 2);
-    expect(update.activityType).toBe('DEPOSIT');
+    // A cash opening balance is a bare CREDIT since v1.52: `Ignored` by the
+    // classifier, so it stops counting as income, while the cash it books is
+    // identical (CREDIT and DEPOSIT both add their amount).
+    expect(update.activityType).toBe('CREDIT');
   });
 
   it('leaves the starting balance alone when nothing older than it was imported', async () => {
@@ -1042,7 +1045,11 @@ describe('runSync', () => {
     const imported = vi.mocked(ctx.api.activities.import).mock.calls[0][0];
     // 1000.00 target − (−12.50 window delta) − 0 valuation = 1012.50
     expect(imported[0].comment).toBe('Starting balance · sfin-1');
-    expect(imported[0].activityType).toBe('DEPOSIT');
+    // A cash opening balance is a bare CREDIT since v1.52: `Ignored` by the
+    // classifier, so it stops counting as income, while the cash it books is
+    // identical (CREDIT and DEPOSIT both add their amount).
+    expect(imported[0].activityType).toBe('CREDIT');
+    // The AMOUNT is what proves the balance is untouched by the reclassification.
     expect(imported[0].amount).toBe(1012.5);
     expect(store.addBalanceInitialized).toHaveBeenCalledWith('sfin-1');
   });
@@ -1058,7 +1065,10 @@ describe('runSync', () => {
 
     const imported = vi.mocked(ctx.api.activities.import).mock.calls[0][0];
     // 1000 target − 0 window − (−3000 valuation) = 4000 correction
-    expect(imported[0].activityType).toBe('DEPOSIT');
+    // A cash opening balance is a bare CREDIT since v1.52: `Ignored` by the
+    // classifier, so it stops counting as income, while the cash it books is
+    // identical (CREDIT and DEPOSIT both add their amount).
+    expect(imported[0].activityType).toBe('CREDIT');
     expect(imported[0].amount).toBe(4000);
   });
 
@@ -1101,7 +1111,10 @@ describe('runSync', () => {
     expect(importCalls).toHaveLength(1);
     const correction = importCalls[0][0][0];
     expect(correction.comment).toBe('Starting balance · sfin-1');
-    expect(correction.activityType).toBe('DEPOSIT');
+    // A cash opening balance is a bare CREDIT since v1.52: `Ignored` by the
+    // classifier, so it stops counting as income, while the cash it books is
+    // identical (CREDIT and DEPOSIT both add their amount).
+    expect(correction.activityType).toBe('CREDIT');
     // 1000.00 target − 987.50 fresh valuation (already includes the import)
     expect(correction.amount).toBe(12.5);
     expect(store.addBalanceInitialized).toHaveBeenCalledWith('sfin-1');

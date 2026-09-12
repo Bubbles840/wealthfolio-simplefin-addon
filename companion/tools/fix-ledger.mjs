@@ -367,6 +367,47 @@ else {
   });
 }
 
+console.log('\n── cash opening balances counted as income');
+// A cash opening balance written before v1.52 is a DEPOSIT, which Wealthfolio
+// classifies as INCOME. A baseline is not earnings — it is the statement that
+// everything before its date is already in the bank's figure — so it inflated
+// the income view by the whole opening balance of every account.
+//
+// A bare CREDIT is `Ignored` there: neither spending nor income. THE BALANCE IS
+// UNCHANGED, because cash movement and classification are independent —
+// `type_directed_cash_effect` adds the amount for CREDIT exactly as for DEPOSIT.
+// Only positive baselines are converted: no neutral OUTFLOW exists on a cash
+// account, so a negative one stays a WITHDRAWAL.
+for (const r of db
+  .prepare(
+    `SELECT a.id, a.account_id, acc.name acct, a.activity_type, a.currency,
+            a.activity_date raw_date, substr(a.activity_date,1,10) d,
+            ROUND(ABS(CAST(a.amount AS REAL)),2) amt, COALESCE(a.notes,'') notes
+     FROM activities a JOIN accounts acc ON a.account_id = acc.id
+     WHERE COALESCE(a.notes,'') LIKE 'Starting balance · %'
+       AND UPPER(acc.account_type) = 'CASH'
+       AND UPPER(a.activity_type) = 'DEPOSIT'
+     ORDER BY a.activity_date`,
+  )
+  .all()) {
+  console.log(`   ${r.d}  ${money(r.amt).padStart(11)}  ${String(r.acct).padEnd(30)} DEPOSIT → CREDIT (stops reading as income; balance unchanged)`);
+  actions.push({
+    kind: 'retype',
+    label: `${r.acct} opening balance → neutral`,
+    update: {
+      id: r.id,
+      accountId: r.account_id,
+      activityType: 'CREDIT',
+      activityDate: r.raw_date,
+      amount: r.amt,
+      fee: 0,
+      currency: r.currency || 'USD',
+      comment: r.notes,
+      needsReview: false,
+    },
+  });
+}
+
 console.log('\n── duplicate starting balances');
 // An account is meant to carry exactly one baseline, and the sync's machinery
 // can only see the one whose comment matches `Starting balance · <sfin id>`.
