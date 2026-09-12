@@ -90,16 +90,25 @@ const RECATEGORISE = [
 
 /** Change one activity's type (and subtype), leaving its amount and date alone. */
 const RETYPE = [
-  // Both legs of these two transfers were imported; they never paired because
-  // the two sides were typed by different mechanisms — the savings outflow by a
-  // user mapping rule (TRANSFER_OUT), the arriving side by the default, since
-  // "CAPITAL ONE TRANSFER" matches none of the bank-transfer keywords, leaving
-  // it a DEPOSIT. Pair detection only considers transfer-typed legs, so the two
-  // never met. Retyping the inflow makes the pair linkable below, which is
-  // strictly better than neutralising it: a linked pair is neutral in
-  // Wealthfolio's own view too, not just in ours.
-  { find: 'CAPITAL ONE TRANSFER', amount: 1300, date: '2026-07-28', account: 'Spend', type: 'TRANSFER_IN', subtype: null, why: 'the other leg exists in savings — make the pair linkable' },
-  { find: 'CAPITAL ONE TRANSFER', amount: 600, date: '2026-07-30', account: 'Spend', type: 'TRANSFER_IN', subtype: null, why: 'the other leg exists in savings — make the pair linkable' },
+  // These two arrived as DEPOSIT (income) while their savings counterparts are
+  // TRANSFER_OUT, and the two are ALREADY in one source group — but a group
+  // only neutralises legs the classifier reads as transfers, and a DEPOSIT is
+  // not one, so the arriving half still counts as income.
+  //
+  // The obvious repair, retyping to TRANSFER_IN, is unsafe on exactly these
+  // rows: both carry the phantom `$CASH` security created by the July 2026 bulk
+  // bug, and upstream books transfer cash ONLY on the empty-asset branch — so a
+  // TRANSFER_IN holding an asset moves no money and would leave the Spend
+  // account $1,900 short. (Wealthfolio 3.8 can finally clear an asset by
+  // passing an empty object, but proving that on a reconciled account is not
+  // worth it here.)
+  //
+  // A bare CREDIT needs none of that. It is `Ignored` on a cash account — so
+  // both views agree it is neither income nor spending, which is what the
+  // grouped TRANSFER_OUT on the other side already reads as — and income types
+  // book their cash regardless of a stray asset, so the balance cannot move.
+  { find: 'CAPITAL ONE TRANSFER', amount: 1300, date: '2026-07-28', account: 'Spend', type: 'CREDIT', subtype: null, why: 'own money; neutral on both sides without touching the phantom asset' },
+  { find: 'CAPITAL ONE TRANSFER', amount: 600, date: '2026-07-30', account: 'Spend', type: 'CREDIT', subtype: null, why: 'own money; neutral on both sides without touching the phantom asset' },
   { find: 'Transfer from Zelle', amount: 200, date: '2026-06-26', type: 'CREDIT', subtype: 'REIMBURSEMENT', why: 'a payback from a person, not income' },
   { find: 'Transfer from Zelle', amount: 117, date: '2026-06-16', type: 'CREDIT', subtype: 'REIMBURSEMENT', why: 'a payback from a person, not income' },
 ];
@@ -110,16 +119,6 @@ const LINK = [
     inflow: { find: 'Transfer from Capital One', amount: 1300, date: '2026-06-29' },
     outflow: { find: 'ACH Withdrawal PNC', amount: 1300, date: '2026-06-26' },
     why: 'a genuine savings→spending transfer; linking makes it neutral instead of income',
-  },
-  {
-    inflow: { find: 'CAPITAL ONE TRANSFER', amount: 1300, date: '2026-07-28', account: 'Spend' },
-    outflow: { find: 'CAPITAL ONE TRANSFER', amount: 1300, date: '2026-07-28', account: '360 Performance' },
-    why: 'both legs were imported and never grouped',
-  },
-  {
-    inflow: { find: 'CAPITAL ONE TRANSFER', amount: 600, date: '2026-07-30', account: 'Spend' },
-    outflow: { find: 'CAPITAL ONE TRANSFER', amount: 600, date: '2026-07-30', account: '360 Performance' },
-    why: 'both legs were imported and never grouped',
   },
 ];
 
