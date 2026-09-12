@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.52.0] - 2026-09-12
+
+### Fixed
+
+- **An opening balance no longer counts as income.** A cash account's one-time
+  starting balance was written as a DEPOSIT, which Wealthfolio classifies as
+  income — so every account's whole opening balance read as earnings on the day
+  it was first synced ($11,224.68 across two accounts, live). A baseline is not
+  earnings; it is the statement that everything before its date is already in
+  the bank's figure. It is now a bare CREDIT, which the classifier treats as
+  `Ignored`: neither spending nor income.
+
+  **The balance does not move.** Cash movement and classification are
+  independent in Wealthfolio: `type_directed_cash_effect` adds the amount for a
+  CREDIT exactly as it does for a DEPOSIT, and income types book their cash
+  regardless. A test pins the amount as identical across every account type and
+  direction, and the same conversion was verified live on two rows, after which
+  the account still reconciled with SimpleFin to the cent.
+
+  A NEGATIVE cash baseline stays a WITHDRAWAL, because no neutral outflow
+  exists on a cash account — WITHDRAWAL, TRANSFER_OUT, FEE and TAX all classify
+  as Expense, and only a linked transfer escapes that. The later
+  baseline-adjustment path now runs through the same chooser, so correcting a
+  baseline cannot quietly restore the old income-shaped one.
+
 ## [1.51.1] - 2026-09-12
 
 ### Fixed

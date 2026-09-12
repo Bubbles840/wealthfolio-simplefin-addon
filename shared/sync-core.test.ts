@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { runSyncCore, applyBaselineFix, neutralAdjustmentFields, expiredTransferLegType, VALUATION_POLL, IN_TRANSIT_TIMEOUT_SECONDS, descriptionFromComment, txIdFromComment, planDuplicatePrune, IN_TRANSIT_COMMENT_PREFIX, DUPLICATE_REFUSAL_LOG_TAG, INTERVAL_SKIP_MESSAGE } from './sync-core.js';
+import { runSyncCore, applyBaselineFix, neutralAdjustmentFields, startingBalanceFields, expiredTransferLegType, VALUATION_POLL, IN_TRANSIT_TIMEOUT_SECONDS, descriptionFromComment, txIdFromComment, planDuplicatePrune, IN_TRANSIT_COMMENT_PREFIX, DUPLICATE_REFUSAL_LOG_TAG, INTERVAL_SKIP_MESSAGE } from './sync-core.js';
 import { createFakeHost, type FakeHostSeed } from './fake-host.js';
 import { accountTxKey } from './transfers.js';
 import { linkPairByRecreate } from './link-pair.js';
@@ -178,7 +178,11 @@ describe('runSyncCore', () => {
     const update = saved.flatMap((s) => s.updates ?? []).find((u) => u.id === 'act-start')!;
     expect(update).toBeTruthy();
     expect(update.amount).toBeCloseTo(5800.38, 2);
-    expect(update.activityType).toBe('DEPOSIT');
+    // A cash opening balance is a bare CREDIT since v1.52 — `Ignored` by the
+    // classifier, so it no longer reads as income — and an adjustment must keep
+    // that shape rather than quietly restoring the old one. The amount is what
+    // shows the reclassification moved no money.
+    expect(update.activityType).toBe('CREDIT');
   });
 
   it('plugs negative CASH drift with a TRANSFER_OUT carrying the amount', async () => {
@@ -2271,7 +2275,7 @@ describe('runSyncCore with ONE SimpleFin tx id in two accounts', () => {
     // cash side is deliberately untouched.
     const baselines = imported.flat().filter((r) => r.comment.startsWith('Starting balance · '));
     expect(baselines.map((r) => [r.accountId, r.activityType, r.amount])).toEqual([
-      ['wf-spend', 'DEPOSIT', 700],
+      ['wf-spend', 'CREDIT', 700],
       ['wf-citi', 'TRANSFER_OUT', 700],
     ]);
   });
@@ -3414,6 +3418,49 @@ describe('an expired unpaired leg is flagged rather than silently classified', (
     // is that neither defaulted to DEPOSIT/WITHDRAWAL.
     expect(byTx.get('tx-in')!.comment).toContain(IN_TRANSIT_COMMENT_PREFIX);
     expect(byTx.get('tx-out')!.comment).toContain(IN_TRANSIT_COMMENT_PREFIX);
+  });
+});
+
+describe('startingBalanceFields', () => {
+  // The question this answers, asked directly: does making an opening balance
+  // neutral change the account's balance? No. Cash movement and classification
+  // are independent in Wealthfolio — `type_directed_cash_effect` adds the
+  // amount for CREDIT exactly as for DEPOSIT — so only the label moves.
+  it('keeps the amount identical whatever shape it chooses', () => {
+    for (const accountType of ['CASH', 'CREDIT_CARD', 'SECURITIES', '']) {
+      for (const starting of [1012.5, -1012.5, 0.01]) {
+        expect(startingBalanceFields(accountType, starting).amount).toBeCloseTo(Math.abs(starting), 2);
+      }
+    }
+  });
+
+  it('makes a positive cash baseline neutral instead of income', () => {
+    // A bare CREDIT on a cash account is `Ignored` — neither spending nor
+    // income. An opening balance is not earnings, and left as a DEPOSIT it
+    // inflated Wealthfolio's own income view by every account's whole opening
+    // balance ($11,224.68 across two accounts, live).
+    expect(startingBalanceFields('CASH', 1169.56)).toEqual({ activityType: 'CREDIT', amount: 1169.56 });
+  });
+
+  it('leaves a NEGATIVE cash baseline as a WITHDRAWAL, because no neutral outflow exists', () => {
+    // WITHDRAWAL, TRANSFER_OUT, FEE and TAX all classify as Expense on a cash
+    // account; only a LINKED transfer escapes that, and a baseline has nothing
+    // to link to. Rare enough not to be worth a worse shape.
+    expect(startingBalanceFields('CASH', -50).activityType).toBe('WITHDRAWAL');
+  });
+
+  it('keeps a card spending-neutral in both directions', () => {
+    // The card pair is wrong both ways: DEPOSIT is refused by the API and
+    // WITHDRAWAL classifies as spending.
+    expect(startingBalanceFields('CREDIT_CARD', 235.4).activityType).toBe('TRANSFER_IN');
+    expect(startingBalanceFields('CREDIT_CARD', -235.4).activityType).toBe('TRANSFER_OUT');
+  });
+
+  it('leaves investment-style accounts on the simple pair', () => {
+    // Every type is Ignored on an investment account, so nothing is gained by
+    // complicating it.
+    expect(startingBalanceFields('SECURITIES', 200).activityType).toBe('DEPOSIT');
+    expect(startingBalanceFields('SECURITIES', -200).activityType).toBe('WITHDRAWAL');
   });
 });
 
