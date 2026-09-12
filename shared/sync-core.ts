@@ -2,6 +2,7 @@ import { mapTransactionWithSource } from './mapper.js';
 import { accountTxKey, detectTransferPairs, TRANSFER_MATCH_WINDOW_SECONDS } from './transfers.js';
 import type { TransferCandidate } from './transfers.js';
 import { planReconciliation, IN_TRANSIT_COMMENT_PREFIX } from './reconcile.js';
+import { toHoldingsSnapshot } from './holdings.js';
 import type { FeedTx, ExistingRow } from './reconcile.js';
 /** Re-exported from reconcile.ts (which defines it, so `changed()` can recognise
  *  the marker without importing sync-core and creating a cycle). This module owns
@@ -12,7 +13,7 @@ import {
 } from './amazon-ledger.js';
 import type { AmazonLedger } from './amazon-ledger.js';
 import type { ActivityType, SimplefinTransaction, UnmappedAccount } from './types.js';
-import type { ActivityWrite, ImportRow, LinkLeg, LinkResult, SaveManyRequest, SaveManyResult, SyncHost, SyncStore } from './sync-host.js';
+import type { ActivityWrite, HoldingsSyncOutcome, ImportRow, LinkLeg, LinkResult, SaveManyRequest, SaveManyResult, SyncHost, SyncStore } from './sync-host.js';
 
 /**
  * A datable timestamp for a SimpleFin transaction: `posted` when present, else
@@ -319,10 +320,19 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
  */
 const SPENDING_TYPES = new Set<string>(['WITHDRAWAL', 'FEE', 'TAX']);
 
+/** The "no positions were written" outcome. A function, not a shared constant:
+ *  every result owns its own object, so a caller mutating one can never reach
+ *  back into this module. */
+const noHoldings = (): HoldingsSyncOutcome => ({ imported: 0, skipped: 0, unresolvedSymbols: [] });
+
 export interface SyncResult {
   imported: number;
   skipped: number;
   errors: string[];
+  /** Investment-account positions written this run. All zeroes on a host with no
+   *  snapshot capability, and on a set of accounts that publishes no holdings —
+   *  which is every bank and card account. */
+  holdingsSnapshots: HoldingsSyncOutcome;
   stuckTransferAlerts: Array<{ outTxId: string; description: string; amountCents: number; currency: string }>;
   /** Every feed transaction this run CONFIRMED as created, for the companion's
    *  import notice. Driven off the create echo, so a rejected create is not
@@ -1162,17 +1172,17 @@ export async function runSyncCore(
   // Enforce minimum interval unless the caller forces (Sync anyway) or heals
   const lastSync = await store.getLastSyncAt();
   if (!opts.force && !heal && lastSync && Date.now() - lastSync.getTime() < MIN_SYNC_INTERVAL_MS) {
-    return { imported: 0, skipped: 0, errors: [INTERVAL_SKIP_MESSAGE], stuckTransferAlerts: [], importedTransactions: [], largeTransactionAlerts: [], balanceDriftAlerts: [], prunedDuplicates: [], unmappedAccounts: null, refusedCreates: [] };
+    return { imported: 0, skipped: 0, errors: [INTERVAL_SKIP_MESSAGE], stuckTransferAlerts: [], importedTransactions: [], largeTransactionAlerts: [], balanceDriftAlerts: [], prunedDuplicates: [], unmappedAccounts: null, refusedCreates: [], holdingsSnapshots: noHoldings() };
   }
 
   const accessUrl = await store.getAccessUrl();
   if (!accessUrl) {
-    return { imported: 0, skipped: 0, errors: ['Not configured: no access URL'], stuckTransferAlerts: [], importedTransactions: [], largeTransactionAlerts: [], balanceDriftAlerts: [], prunedDuplicates: [], unmappedAccounts: null, refusedCreates: [] };
+    return { imported: 0, skipped: 0, errors: ['Not configured: no access URL'], stuckTransferAlerts: [], importedTransactions: [], largeTransactionAlerts: [], balanceDriftAlerts: [], prunedDuplicates: [], unmappedAccounts: null, refusedCreates: [], holdingsSnapshots: noHoldings() };
   }
 
   const mapping = await store.getAccountMapping();
   if (!mapping) {
-    return { imported: 0, skipped: 0, errors: ['Not configured: no account mapping'], stuckTransferAlerts: [], importedTransactions: [], largeTransactionAlerts: [], balanceDriftAlerts: [], prunedDuplicates: [], unmappedAccounts: null, refusedCreates: [] };
+    return { imported: 0, skipped: 0, errors: ['Not configured: no account mapping'], stuckTransferAlerts: [], importedTransactions: [], largeTransactionAlerts: [], balanceDriftAlerts: [], prunedDuplicates: [], unmappedAccounts: null, refusedCreates: [], holdingsSnapshots: noHoldings() };
   }
 
   const rules = await store.getMappingRules();
@@ -1271,6 +1281,9 @@ export async function runSyncCore(
     /** Spending-neutral placeholder standing in for a transfer leg whose other
      *  side hasn't posted yet (drives the comment prefix). */
     inTransit?: boolean;
+    /** Set when this row's classification is a guess the user should confirm —
+     *  see `FeedTx.needsReview`. */
+    needsReview?: boolean;
     /** The subtype the matched rule assigned, resolved ONCE here and read from
      *  here by everything downstream. Omitted — never `''` — for a row no rule
      *  subtyped: the write is patch-shaped, so an explicit empty string would
@@ -1458,6 +1471,19 @@ export async function runSyncCore(
         );
       } else if (nowSec - postedAt > IN_TRANSIT_TIMEOUT_SECONDS) {
         p.type = expiredTransferLegType(accountType, signed);
+        // Booking it as ordinary spending or income is the honest reading of a
+        // transfer whose other half never arrived — but it IS a guess, and the
+        // inflow direction is the expensive one to get wrong: income inflates
+        // the sustainable-spend figure, which tells the user to spend money they
+        // do not have. So the row carries the guess to Wealthfolio's own Needs
+        // review screen rather than the sync deciding in silence.
+        //
+        // Resting neutral instead was considered and rejected: since 3.8 no
+        // cash-moving OUTFLOW type is neutral to the classifier unless the
+        // transfer is linked, so a neutral outflow would count as spending
+        // upstream while our own reports excluded it — two views disagreeing
+        // permanently, which is worse than one honest guess that is flagged.
+        p.needsReview = true;
         // The same drop as the young branch below, for the same reason and one
         // step further on: giving up on the pair turns this into an ordinary
         // deposit or withdrawal, and neither is a refund of anything. Keeping the
@@ -1607,7 +1633,7 @@ export async function runSyncCore(
     // in place rather than re-importing). A failed read of existing rows is
     // treated as "none" — the planner then creates everything and the host's
     // own dedup remains the backstop.
-    const feed: FeedTx[] = preparedAll.map(({ tx, type, inTransit, subtype }) => ({
+    const feed: FeedTx[] = preparedAll.map(({ tx, type, inTransit, subtype, needsReview }) => ({
       txId: tx.id,
       wfAccountId,
       absCents: Math.round(Math.abs(parseFloat(tx.amount)) * 100),
@@ -1615,6 +1641,7 @@ export async function runSyncCore(
       date: new Date(txEpoch(tx)! * 1000).toISOString().split('T')[0],
       pending: !!tx.pending,
       ...(inTransit ? { inTransit: true } : {}),
+      ...(needsReview ? { needsReview: true } : {}),
       // Carried so `changed()` can compare it against the stored row — a rule
       // added after a row was imported has to reach that row as an update, and a
       // row that already agrees must not be rewritten every sync.
@@ -2057,6 +2084,10 @@ export async function runSyncCore(
       // empty string is a positive instruction to CLEAR — it would wipe a
       // subtype Wealthfolio assigned itself, on every sync, on every row.
       ...(t.subtype ? { subtype: t.subtype } : {}),
+      // Only ever sent as `true`, and only by the expiry guess above. Never
+      // `false`: that would be this sync asserting a row is fine, overriding a
+      // flag the host or the user set for reasons of their own.
+      ...(t.needsReview ? { needsReview: true } : {}),
       // Transfer-link sourceGroupId is applied later, atomically (see flush).
     });
     const toActivityUpdate = (wfId: string, t: FeedTx): ActivityWrite => ({
@@ -2467,6 +2498,41 @@ export async function runSyncCore(
     pairsToLink.push({ legs: [toLinkLeg(outRow), toLinkLeg(inRow)], keys: [outKey, inKey] });
   }
 
+  // ── Holdings snapshots (investment accounts only) ────────────────────────
+  //
+  // A separate pass rather than a step inside the account loop above: holdings
+  // share nothing with transaction reconciliation — not the plan, not the balance
+  // arithmetic, not the transfer pairing — and that loop has several `continue`
+  // paths a snapshot step would silently ride along with.
+  //
+  // Failure is per account and never fatal. A rejected snapshot is a reporting
+  // problem, the account's transactions are already saved by this point, and
+  // taking the run down over positions would cost the thing that matters to save
+  // the thing that does not.
+  const holdingsSnapshots = noHoldings();
+  if (host.syncHoldings) {
+    for (const sfAccount of accountSet.accounts) {
+      const wfAccountId = mapping[sfAccount.id];
+      if (!wfAccountId) continue;
+      const snapshot = toHoldingsSnapshot(sfAccount);
+      if (!snapshot) continue;
+      try {
+        const outcome = await host.syncHoldings(wfAccountId, snapshot);
+        holdingsSnapshots.imported += outcome.imported;
+        holdingsSnapshots.skipped += outcome.skipped;
+        for (const symbol of outcome.unresolvedSymbols) {
+          // Deduped across accounts: the same unresolvable ticker in two
+          // brokerages is one problem to report, not two.
+          if (!holdingsSnapshots.unresolvedSymbols.includes(symbol)) {
+            holdingsSnapshots.unresolvedSymbols.push(symbol);
+          }
+        }
+      } catch (e: any) {
+        errors.push(`Holdings snapshot failed (${sfAccount.name}): ${e?.message ?? e}`);
+      }
+    }
+  }
+
   const linkFailures = await store.getTransferLinkFailures();
   let linkFailuresChanged = false;
   const stuckTransferAlerts: SyncResult['stuckTransferAlerts'] = [];
@@ -2634,5 +2700,6 @@ export async function runSyncCore(
     imported, skipped, errors, stuckTransferAlerts, importedTransactions,
     largeTransactionAlerts, balanceDriftAlerts, prunedDuplicates, unmappedAccounts,
     refusedCreates,
+    holdingsSnapshots,
   };
 }

@@ -80,7 +80,10 @@ describe('fetchAccounts', () => {
     expect(calledReq.url).not.toContain('user:pass@');
     expect(calledReq.url).toMatch(/^https:/);
     expect(calledReq.auth).toEqual({ type: 'basic', secretKey: 'simplefin_auth_b64' });
-    expect(result).toEqual(expected);
+    // The payload is normalised rather than cast now (shared/simplefin-payload),
+    // so a set always carries the structured `errorList` alongside the strings
+    // every existing consumer reads.
+    expect(result).toEqual({ ...expected, errorList: [] });
   });
 
   it('calls /accounts without auth when no authSecretKey provided', async () => {

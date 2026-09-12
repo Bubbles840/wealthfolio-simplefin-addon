@@ -1,5 +1,6 @@
 import type { NetworkAPI } from '@wealthfolio/addon-sdk';
 import type { SimplefinAccountSet } from '../../shared/types';
+import { normalizeAccountSet } from '../../shared/simplefin-payload';
 
 /**
  * What the user is told when the request to SimpleFin never completed.
@@ -140,5 +141,8 @@ export async function fetchAccounts(
       res.status,
     );
   }
-  return JSON.parse(res.body) as SimplefinAccountSet;
+  // Normalised, not cast: `errors` used to be trusted to exist (a bare `for…of`
+  // downstream), and the structured `errlist` — which names the failing
+  // connection — was ignored entirely. See shared/simplefin-payload.ts.
+  return normalizeAccountSet(JSON.parse(res.body));
 }

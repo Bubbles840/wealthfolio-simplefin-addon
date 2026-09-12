@@ -454,6 +454,15 @@ describe('runSyncCore', () => {
     expect(create.amount).toBe(1300);
     expect(create.fee).toBeUndefined();
     expect(create.comment).not.toContain('In-transit');
+    // Giving up on the pair means booking this as real spending, which is the
+    // honest reading of money that left and never came back — but it is a GUESS,
+    // so the row is flagged. Wealthfolio 3.8's Needs review screen is then the
+    // one place that says "this might have been a transfer", instead of the
+    // sync quietly deciding. Chosen over resting neutral so both views agree:
+    // there is no cash-moving outflow type the classifier treats as neutral
+    // unless the transfer is linked, so a neutral outflow would count as
+    // spending upstream while our reports excluded it.
+    expect(create.needsReview).toBe(true);
   });
 
   it('converts an already-imported placeholder in place when it times out, clearing the fee side', async () => {
@@ -3329,5 +3338,159 @@ describe('legacy fee-side placeholders (pre-v1.49 CREDIT amount 0 / fee X)', () 
     const updates = saved.flatMap((r) => r.updates ?? []).filter((u) => u.id === 'ph-live');
     expect(updates).toHaveLength(1);
     expect(updates[0]).toMatchObject({ activityType: 'TRANSFER_OUT', amount: 429.71, fee: 0 });
+  });
+});
+
+describe('an expired unpaired leg is flagged rather than silently classified', () => {
+  const staleEpoch = () => Math.floor(Date.now() / 1000) - (IN_TRANSIT_TIMEOUT_SECONDS + 3600);
+
+  it('flags an expired INFLOW too, which books as income', async () => {
+    // The direction that cost real money: $1,900 of savings→spending transfers
+    // expired into DEPOSIT and inflated income, which inflates the sustainable
+    // weekly figure and tells the user to spend more than they have. Income is
+    // still the honest default for money that arrived from nowhere provable,
+    // but it must arrive flagged.
+    const { host, store, saved } = createFakeHost({
+      accountSet: { errors: [], accounts: [{
+        id: 'sfin-1', name: 'Checking', currency: 'USD', balance: '0', 'balance-date': 1,
+        transactions: [{
+          id: 'tx-in', posted: staleEpoch(), amount: '1300.00',
+          description: 'Online Transfer from Savings',
+        }],
+      }] },
+      mapping: { 'sfin-1': 'wf-a' },
+      accountTypes: { 'wf-a': 'CASH' },
+    });
+    await runSyncCore(host, store, { force: true });
+    const create = saved[0].creates![0];
+    expect(create.activityType).toBe('DEPOSIT');
+    expect(create.needsReview).toBe(true);
+  });
+
+  it('does not flag an ordinary purchase', async () => {
+    // Only a leg the mapper believed was a transfer can reach the expiry
+    // decision, so nothing else should ever be flagged.
+    const { host, store, saved } = createFakeHost({
+      accountSet: { errors: [], accounts: [{
+        id: 'sfin-1', name: 'Checking', currency: 'USD', balance: '0', 'balance-date': 1,
+        transactions: [{ id: 'tx-1', posted: staleEpoch(), amount: '-12.50', description: 'Coffee' }],
+      }] },
+      mapping: { 'sfin-1': 'wf-a' },
+      accountTypes: { 'wf-a': 'CASH' },
+    });
+    await runSyncCore(host, store, { force: true });
+    const create = saved[0].creates![0];
+    expect(create.activityType).toBe('WITHDRAWAL');
+    expect(create.needsReview).toBeUndefined();
+  });
+
+  it('types a Capital One ACH transfer as a transfer in both directions', async () => {
+    // The descriptor that defaulted to DEPOSIT, typed by the direction-aware
+    // keyword branch rather than a mapping rule — a rule returns its type
+    // whichever way the money moved.
+    const { host, store, saved } = createFakeHost({
+      accountSet: { errors: [], accounts: [{
+        id: 'sfin-1', name: 'Checking', currency: 'USD', balance: '0', 'balance-date': 1,
+        transactions: [
+          { id: 'tx-in', posted: Math.floor(Date.now() / 1000) - 3600, amount: '1300.00', description: 'CAPITAL ONE TRANSFER ACH WEB PAYMENT RT0CF95' },
+          { id: 'tx-out', posted: Math.floor(Date.now() / 1000) - 3600, amount: '-600.00', description: 'CAPITAL ONE TRANSFER ACH WEB PAYMENT RT0D911' },
+        ],
+      }] },
+      mapping: { 'sfin-1': 'wf-a' },
+      accountTypes: { 'wf-a': 'CASH' },
+      // Present so the starting-balance pass has a figure and never polls for
+      // one; without it the run waits out VALUATION_POLL.
+      valuations: new Map([['wf-a', 700]]),
+    });
+    await runSyncCore(host, store, { force: true });
+    const byTx = new Map(saved.flatMap((r) => r.creates ?? []).map((c) => [txIdFromComment(c.comment), c]));
+    // Young and unpaired, so both are spending-neutral placeholders — the point
+    // is that neither defaulted to DEPOSIT/WITHDRAWAL.
+    expect(byTx.get('tx-in')!.comment).toContain(IN_TRANSIT_COMMENT_PREFIX);
+    expect(byTx.get('tx-out')!.comment).toContain(IN_TRANSIT_COMMENT_PREFIX);
+  });
+});
+
+describe('holdings snapshots for investment accounts', () => {
+  // SimpleFin publishes a `holdings` array for brokerage accounts. Until v1.50
+  // the sync dropped it, so an investment account got its cash balance and its
+  // transactions and no positions at all.
+  const brokerageSeed = (): FakeHostSeed => ({
+    accountSet: { errors: [], accounts: [{
+      id: 'sfin-b', name: 'Robinhood', currency: 'USD', balance: '512.34',
+      'balance-date': 1789171200,
+      transactions: [],
+      holdings: [
+        { symbol: 'VTI', shares: '2.5', purchase_price: '210.11' },
+        { symbol: '', shares: '9' },
+      ],
+    }] },
+    mapping: { 'sfin-b': 'wf-b' },
+    accountTypes: { 'wf-b': 'SECURITIES' },
+  });
+
+  it('hands the mapped account one snapshot, with the unusable holding dropped', async () => {
+    const { host, store, holdings } = createFakeHost(brokerageSeed());
+    const result = await runSyncCore(host, store, { force: true });
+    expect(holdings).toEqual([
+      {
+        wfAccountId: 'wf-b',
+        snapshot: {
+          date: '2026-09-12',
+          positions: [{ symbol: 'VTI', quantity: '2.5', avgCost: '210.11', currency: 'USD' }],
+          cashBalances: { USD: '512.34' },
+        },
+      },
+    ]);
+    expect(result.holdingsSnapshots).toEqual({ imported: 1, skipped: 0, unresolvedSymbols: [] });
+  });
+
+  it('reports the symbols Wealthfolio could not resolve, without failing the sync', async () => {
+    // An unresolved ticker is still imported — dropping it would silently shrink
+    // the account — but a bare BTC gets priced against whatever listing matches,
+    // so the run has to say so.
+    const seed = brokerageSeed();
+    seed.holdingsOutcome = { imported: 1, skipped: 0, unresolvedSymbols: ['BTC'] };
+    const { host, store } = createFakeHost(seed);
+    const result = await runSyncCore(host, store, { force: true });
+    expect(result.holdingsSnapshots.unresolvedSymbols).toEqual(['BTC']);
+    expect(result.errors).toEqual([]);
+  });
+
+  it('skips the account when the host cannot import snapshots at all', async () => {
+    // The companion's REST host has no snapshot endpoint to call, so the
+    // capability is optional and its absence is not an error.
+    const seed = brokerageSeed();
+    seed.noHoldingsSupport = true;
+    const { host, store } = createFakeHost(seed);
+    const result = await runSyncCore(host, store, { force: true });
+    expect(result.holdingsSnapshots).toEqual({ imported: 0, skipped: 0, unresolvedSymbols: [] });
+    expect(result.errors).toEqual([]);
+  });
+
+  it('a failing snapshot import is reported, and never stops the transaction sync', async () => {
+    const seed = brokerageSeed();
+    seed.accountSet!.accounts[0].transactions = [
+      { id: 'tx-1', posted: Math.floor(Date.now() / 1000) - 3600, amount: '-12.50', description: 'Coffee' },
+    ];
+    seed.holdingsThrows = 'snapshot rejected: unknown asset';
+    const { host, store } = createFakeHost(seed);
+    const result = await runSyncCore(host, store, { force: true });
+    expect(result.imported).toBe(1);
+    expect(result.errors.some((e) => /snapshot rejected/.test(e))).toBe(true);
+  });
+
+  it('leaves a cash account alone', async () => {
+    // No `holdings` key at all, which is every bank and card account.
+    const { host, store, holdings } = createFakeHost({
+      accountSet: { errors: [], accounts: [{
+        id: 'sfin-1', name: 'Checking', currency: 'USD', balance: '100', 'balance-date': 1,
+        transactions: [],
+      }] },
+      mapping: { 'sfin-1': 'wf-a' },
+      accountTypes: { 'wf-a': 'CASH' },
+    });
+    await runSyncCore(host, store, { force: true });
+    expect(holdings).toEqual([]);
   });
 });

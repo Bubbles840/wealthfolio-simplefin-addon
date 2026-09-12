@@ -9,8 +9,10 @@ import type {
   SaveManyRequest,
   SaveManyResult,
   SyncHost,
+  HoldingsSyncOutcome,
 } from '../../shared/sync-host';
 import type { ActivityType, SimplefinAccountSet } from '../../shared/types';
+import type { HoldingsSnapshot } from '../../shared/holdings';
 import type { AddonContext, ActivityCreate, ActivityUpdate } from '@wealthfolio/addon-sdk';
 
 /**
@@ -159,6 +161,36 @@ export class AddonSyncHost implements SyncHost {
     // `sourceSystem` rides on ImportRow itself, so the payload carries it
     // without this adapter (or the companion's) having to remember to stamp it.
     await this.ctx.api.activities.import(rows as any);
+  }
+
+  /**
+   * Writes one account's positions for a date. The companion has no counterpart
+   * — the self-hosted REST server exposes no snapshot write route — so this
+   * capability exists on the addon half alone (see `SyncHost.syncHoldings`).
+   *
+   * `checkImport` does double duty: it validates the batch before anything is
+   * written, and its `existingDates` is the idempotency signal, which is better
+   * than anything this side could persist because it describes what the host
+   * actually holds. Dates are normalised on both sides before comparing — the
+   * host types them as plain strings without pinning a format, and it returns
+   * full ISO instants elsewhere, so a raw equality check would silently never
+   * match and re-import the same snapshot on every sync.
+   */
+  async syncHoldings(wfAccountId: string, snapshot: HoldingsSnapshot): Promise<HoldingsSyncOutcome> {
+    const check = await this.ctx.api.snapshots.checkImport(wfAccountId, [snapshot]);
+    if (check.validationErrors.length > 0) {
+      throw new Error(check.validationErrors.join('; '));
+    }
+    const unresolvedSymbols = check.symbols.filter((s) => !s.found).map((s) => s.symbol);
+    const dayOf = (value: string) => String(value).slice(0, 10);
+    if (check.existingDates.some((d) => dayOf(d) === snapshot.date)) {
+      return { imported: 0, skipped: 1, unresolvedSymbols };
+    }
+    const result = await this.ctx.api.snapshots.importSnapshots(wfAccountId, [snapshot]);
+    if (result.errors.length > 0) {
+      throw new Error(result.errors.join('; '));
+    }
+    return { imported: result.snapshotsImported, skipped: 0, unresolvedSymbols };
   }
 
   async linkPair(legs: [LinkLeg, LinkLeg]): Promise<LinkResult> {
