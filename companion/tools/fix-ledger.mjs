@@ -344,12 +344,83 @@ else {
       symbol: `$CASH-${card[0].currency || 'USD'}`,
       amount: OPENING.amount,
       currency: card[0].currency || 'USD',
-      comment: 'Starting balance · citi-opening-2026-04-20',
+      // The marker MUST carry the real SimpleFin account id. The sync's
+      // "at most one starting balance per account, ever" guard compares the
+      // whole comment against `Starting balance · <sfinAccountId>`, so a
+      // hand-picked suffix is invisible to it — which is exactly how this card
+      // ended up with two baselines (live, 2026-09-12).
+      comment: `Starting balance · ${byWfId[card[0].id] ?? card[0].id}`,
       isValid: true,
       isDraft: false,
     },
   });
 }
+
+console.log('\n── duplicate starting balances');
+// An account is meant to carry exactly one baseline, and the sync's machinery
+// can only see the one whose comment matches `Starting balance · <sfin id>`.
+// A second row is invisible to it: `adjustStartingBalanceForOlderRows` would
+// later correct the row it CAN see while the other sits unmanaged, so the
+// account's balance drifts the moment a wide re-scan reaches further back.
+// Consolidating keeps the account's balance identical to the cent — the
+// surviving row takes the SUM — while putting the whole baseline back under
+// the sync's control.
+const baselineRows = db
+  .prepare(
+    `SELECT a.id, a.account_id, acc.name acct, a.activity_type, a.currency,
+            a.activity_date raw_date, substr(a.activity_date,1,10) d,
+            ROUND(ABS(CAST(a.amount AS REAL)),2) amt, COALESCE(a.notes,'') notes,
+            COALESCE(a.asset_id,'') asset_id
+     FROM activities a JOIN accounts acc ON a.account_id = acc.id
+     WHERE COALESCE(a.notes,'') LIKE 'Starting balance · %'
+     ORDER BY acc.name, a.activity_date`,
+  )
+  .all();
+const byAccount = new Map();
+for (const r of baselineRows) {
+  if (!byAccount.has(r.account_id)) byAccount.set(r.account_id, []);
+  byAccount.get(r.account_id).push(r);
+}
+let anyDuplicates = false;
+for (const [accountId, rows] of byAccount) {
+  if (rows.length < 2) continue;
+  anyDuplicates = true;
+  const sfinId = byWfId[accountId];
+  const wanted = sfinId ? `Starting balance · ${sfinId}` : null;
+  // Keep the row the sync recognises; failing that, the oldest.
+  const keep = (wanted && rows.find((r) => r.notes === wanted)) || rows[0];
+  const drop = rows.filter((r) => r.id !== keep.id);
+  // Signed, because a baseline can point either way: on a card TRANSFER_IN
+  // reduces the debt and TRANSFER_OUT increases it.
+  const signed = (r) => (['TRANSFER_OUT', 'WITHDRAWAL', 'FEE', 'TAX'].includes(String(r.activity_type)) ? -1 : 1) * Number(r.amt);
+  const total = rows.reduce((sum, r) => sum + signed(r), 0);
+  const keepType = total < 0
+    ? (keep.activity_type === 'DEPOSIT' ? 'WITHDRAWAL' : 'TRANSFER_OUT')
+    : (keep.activity_type === 'WITHDRAWAL' ? 'DEPOSIT' : keep.activity_type);
+  console.log(`   ${rows[0].acct}: ${rows.length} baselines → one of ${money(Math.abs(total))} ${keepType}`);
+  for (const r of rows) console.log(`      ${r.id === keep.id ? 'keep  ' : 'delete'} ${r.d} ${String(r.activity_type).padEnd(12)} ${money(r.amt).padStart(10)}  ${r.notes.slice(0, 46)}`);
+  if (!wanted) {
+    skipped.push(`${rows[0].acct}: no SimpleFin id mapped, cannot tell which baseline the sync owns`);
+    continue;
+  }
+  actions.push({
+    kind: 'retype',
+    label: `consolidate ${rows[0].acct} baselines into ${money(Math.abs(total))}`,
+    update: {
+      id: keep.id,
+      accountId: keep.account_id,
+      activityType: keepType,
+      activityDate: keep.raw_date,
+      amount: Math.abs(Math.round(total * 100) / 100),
+      fee: 0,
+      currency: keep.currency || 'USD',
+      comment: wanted,
+      needsReview: false,
+    },
+  });
+  actions.push({ kind: 'delete', ids: drop.map((r) => r.id), label: `remove ${drop.length} duplicate baseline(s) on ${rows[0].acct}` });
+}
+if (!anyDuplicates) console.log('   – every account has at most one');
 
 db.close();
 
@@ -373,6 +444,10 @@ for (const action of actions) {
     else if (action.kind === 'rule') await client.createCategorizationRule(action.rule);
     else if (action.kind === 'mappingRule') await client.setAddonSecret(ADDON_ID, 'mapping_rules', JSON.stringify(action.rules));
     else if (action.kind === 'opening') await client.importActivities([action.row]);
+    else if (action.kind === 'delete') {
+      const res = await client.saveMany({ deleteIds: action.ids });
+      if (res.errors?.length) throw new Error(res.errors.map((e) => e.message ?? JSON.stringify(e)).join('; '));
+    }
     console.log(`   ✓ ${action.label}`);
     ok++;
   } catch (err) {
