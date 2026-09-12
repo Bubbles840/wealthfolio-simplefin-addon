@@ -231,15 +231,38 @@ for (const pair of LINK) {
     skipped.push(`link ${money(pair.inflow.amount)}: matched ${ins.length} inflows and ${outs.length} outflows`);
     continue;
   }
+  // Idempotency: a linked pair shares a source_group_id. Without this check a
+  // second apply re-links rows that are already a group, which on this host
+  // means delete-and-recreate — new activity ids for no reason.
+  const groups = db
+    .prepare(`SELECT COALESCE(source_group_id,'') g FROM activities WHERE id IN (?, ?)`)
+    .all(ins[0].id, outs[0].id)
+    .map((r) => r.g);
+  if (groups.every((g) => g !== '') && groups[0] === groups[1]) {
+    console.log(`   – ${money(pair.inflow.amount)} ${ins[0].d} is already linked`);
+    continue;
+  }
   console.log(`   ${ins[0].d} ${ins[0].acct} ← → ${outs[0].d} ${outs[0].acct}  ${money(pair.inflow.amount)}   (${pair.why})`);
   actions.push({ kind: 'link', a: ins[0].id, b: outs[0].id, label: `link ${money(pair.inflow.amount)}` });
 }
 
 console.log('\n── categorisation rules for next time');
+// Wealthfolio's own rules live in this table; reading it is how a second apply
+// avoids stacking a duplicate rule for the same pattern (the create endpoint
+// does not dedupe, and nothing downstream would notice two identical rules
+// beyond the clutter).
+const existingRules = db
+  .prepare(`SELECT LOWER(COALESCE(pattern,'')) p FROM spending_categorization_rules`)
+  .all()
+  .map((r) => r.p);
 for (const rule of RULES) {
   const target = catId(rule.category);
   if (!target) {
     skipped.push(`rule "${rule.name}": no category named "${rule.category}"`);
+    continue;
+  }
+  if (existingRules.includes(rule.pattern.toLowerCase())) {
+    console.log(`   – a rule for "${rule.pattern}" already exists`);
     continue;
   }
   console.log(`   "${rule.pattern}" → ${rule.category}`);
