@@ -1,4 +1,5 @@
 import { fetchAccountsNode } from './simplefin.js';
+import { getNativeAccountBalances } from './sqlite-native.js';
 import { AMAZON_LEDGER_SECRET_KEY } from '../../shared/amazon-ledger.js';
 import { AMAZON_CONFIG_SECRET_KEY, AMAZON_LABELS_SECRET_KEY } from './amazon-mail.js';
 import type { AmazonLabelCatalog, AmazonMailConfig } from './amazon-mail.js';
@@ -48,9 +49,31 @@ const OLDEST_SWEEP_PAGE_SIZE = 500;
 const OLDEST_SWEEP_MAX_PAGES = 20;
 
 export class RestSyncHost implements SyncHost {
-  constructor(private client: WealthfolioClient) {}
+  /** `dbPath` is optional so every existing construction and test keeps
+   *  working; without it the ledger-balance fallback simply stays unavailable,
+   *  which is the behaviour that existed before it. */
+  constructor(private client: WealthfolioClient, private dbPath?: string) {}
 
   readonly capabilities = { readsSourceGroupId: true };
+
+  /**
+   * Balances summed from each account's own activities, for the accounts
+   * Wealthfolio's valuations API omits — in practice every credit card.
+   *
+   * Only the companion can answer this: it needs the whole ledger, and the
+   * addon has no database. See `getNativeAccountBalances` for why the figure
+   * excludes pending rows.
+   */
+  async ledgerBalances(accountIds: string[]): Promise<Map<string, number>> {
+    const out = new Map<string, number>();
+    if (!this.dbPath) return out;
+    const all = getNativeAccountBalances(this.dbPath);
+    for (const id of accountIds) {
+      const balance = all.get(id);
+      if (balance !== undefined) out.set(id, balance);
+    }
+    return out;
+  }
 
   async fetchSimplefin(
     accessUrl: string,

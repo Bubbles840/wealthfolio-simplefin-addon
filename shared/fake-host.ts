@@ -65,6 +65,10 @@ export interface FakeHostSeed {
   noHoldingsSupport?: boolean;
   /** Make `syncHoldings` throw with this message. */
   holdingsThrows?: string;
+  /** Ledger-derived balances, the companion-only fallback for accounts the
+   *  valuations API omits. Absent means the host lacks the capability, which is
+   *  the addon's shape. */
+  ledgerBalances?: Map<string, number>;
 }
 
 export interface FakeHost {
@@ -229,6 +233,18 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
     async listOldestActivities(wfAccountId: string, limit: number) {
       return byDate(rowsFor(wfAccountId), true).slice(0, limit);
     },
+
+    ...(seed.ledgerBalances
+      ? {
+          async ledgerBalances(accountIds: string[]) {
+            const out = new Map<string, number>();
+            for (const id of accountIds) {
+              if (seed.ledgerBalances!.has(id)) out.set(id, seed.ledgerBalances!.get(id)!);
+            }
+            return out;
+          },
+        }
+      : {}),
 
     ...(seed.noHoldingsSupport
       ? {}

@@ -2262,11 +2262,17 @@ describe('runSyncCore with ONE SimpleFin tx id in two accounts', () => {
 
     // target − windowDelta − currentValuation, per account:
     //   Spend: 0 − (−700) − 0 = +700 → DEPOSIT
-    //   Citi:  0 − (+700) − 0 = −700 → WITHDRAWAL
+    //   Citi:  0 − (+700) − 0 = −700 → TRANSFER_OUT
+    //
+    // The card side used to be a WITHDRAWAL, which this test froze in place —
+    // and on a card that classifies as SPENDING, so an opening balance booked a
+    // phantom purchase the size of the card's starting debt. A card's
+    // correction is now spending-neutral (see `startingBalanceFields`); the
+    // cash side is deliberately untouched.
     const baselines = imported.flat().filter((r) => r.comment.startsWith('Starting balance · '));
     expect(baselines.map((r) => [r.accountId, r.activityType, r.amount])).toEqual([
       ['wf-spend', 'DEPOSIT', 700],
-      ['wf-citi', 'WITHDRAWAL', 700],
+      ['wf-citi', 'TRANSFER_OUT', 700],
     ]);
   });
 
@@ -3408,6 +3414,72 @@ describe('an expired unpaired leg is flagged rather than silently classified', (
     // is that neither defaulted to DEPOSIT/WITHDRAWAL.
     expect(byTx.get('tx-in')!.comment).toContain(IN_TRANSIT_COMMENT_PREFIX);
     expect(byTx.get('tx-out')!.comment).toContain(IN_TRANSIT_COMMENT_PREFIX);
+  });
+});
+
+describe('a credit card can finally get its opening balance', () => {
+  // The bug that started the 2026-09-12 audit: Wealthfolio reports valuations
+  // for CASH accounts only, the starting-balance correction needs that figure,
+  // so a card's ledger silently began at zero on its first synced transaction.
+  // One card was $235.40 short of its true opening balance for five months.
+  const cardSeed = () => ({
+    accountSet: { errors: [], accounts: [{
+      id: 'sfin-c', name: 'Card', currency: 'USD', balance: '-500.00', 'balance-date': 1,
+      transactions: [{
+        id: 'tx-1', posted: Math.floor(Date.now() / 1000) - 3600, amount: '-100.00', description: 'Coffee',
+      }],
+    }] },
+    mapping: { 'sfin-c': 'wf-card' } as Record<string, string>,
+    accountTypes: { 'wf-card': 'CREDIT_CARD' } as Record<string, string>,
+  });
+
+  it('uses the ledger balance when the valuations API reports nothing', async () => {
+    const seed: FakeHostSeed = {
+      ...cardSeed(),
+      // Empty, exactly as Wealthfolio answers for a card...
+      valuations: new Map(),
+      // ...so the ledger answers instead. Already at −300 before this run.
+      ledgerBalances: new Map([['wf-card', -300]]),
+    };
+    const { host, store, imported } = createFakeHost(seed);
+    await runSyncCore(host, store, { force: true });
+    // SimpleFin says −500, the run itself books −100, the ledger held −300:
+    // the opening gap is −100.
+    const correction = imported.flat().find((r) => r.comment.startsWith('Starting balance · '));
+    expect(correction).toBeTruthy();
+    expect(correction!.amount).toBe(100);
+    // Card-safe and spending-neutral: TRANSFER_OUT, never a WITHDRAWAL (which
+    // the classifier reads as spending) and never a DEPOSIT (which the API
+    // refuses outright on a card).
+    expect(correction!.activityType).toBe('TRANSFER_OUT');
+  });
+
+  it('writes nothing when the host has no ledger fallback', async () => {
+    // An account with no balance from EITHER source falls through to the
+    // same-run second pass, which polls for a valuation that will never appear.
+    // Shrunk so the test measures the outcome rather than the wait.
+    VALUATION_POLL.delayMs = 1;
+    VALUATION_POLL.attempts = 2;
+    // The addon's shape — no database to sum. Skipping is the old, conservative
+    // behaviour, and is still far better than guessing zero: treating a missing
+    // balance as 0 once created full-balance duplicate corrections.
+    const { host, store, imported } = createFakeHost({ ...cardSeed(), valuations: new Map() });
+    await runSyncCore(host, store, { force: true });
+    expect(imported.flat().find((r) => r.comment.startsWith('Starting balance · '))).toBeUndefined();
+  });
+
+  it('prefers the valuation where one exists', async () => {
+    // A cash account has a real valuation; the ledger sum must not override it.
+    const seed: FakeHostSeed = {
+      ...cardSeed(),
+      valuations: new Map([['wf-card', -400]]),
+      ledgerBalances: new Map([['wf-card', -9999]]),
+    };
+    const { host, store, imported } = createFakeHost(seed);
+    await runSyncCore(host, store, { force: true });
+    const correction = imported.flat().find((r) => r.comment.startsWith('Starting balance · '));
+    // −500 target, −100 booked this run, −400 already there: nothing is missing.
+    expect(correction).toBeUndefined();
   });
 });
 

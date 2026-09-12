@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.51.0] - 2026-09-12
+
+### Fixed
+
+- **A credit card can finally get its opening balance, and its balance can be
+  checked at all.** Wealthfolio reports valuations for CASH accounts only —
+  measured live: six accounts, two rows — and `/accounts` carries no balance
+  either (the field exists on the SDK's TypeScript type but arrives `undefined`
+  from the self-hosted server). The one-time starting-balance correction needs
+  that figure, so it had never once run on a card: a card's ledger silently
+  began at zero on whatever its first synced transaction happened to be. Found
+  live, and it was real money — one card's ledger stood $235.40 more owed than
+  the bank said, for five months, with nothing able to notice. The companion now
+  falls back to summing the account's own activities, using Wealthfolio 3.8's
+  own sign rules including the credit-card interest exception. Pending rows are
+  excluded, deliberately: SimpleFin reports a card's POSTED balance, so counting
+  unsettled rows would report timing as drift and feed that difference into a
+  correction that writes real money. Companion-only, and the mirror of holdings
+  sync — this one needs the whole ledger, and only the companion has the
+  database. A valuation, where one exists, stays authoritative.
+
+- **A card's opening balance no longer books a phantom purchase.** The
+  correction chose between DEPOSIT and WITHDRAWAL on the sign alone, and on a
+  credit card both are wrong: the API refuses DEPOSIT outright, and WITHDRAWAL
+  classifies as SPENDING — so the first correction on a card would have charged
+  the user for the size of their own starting debt. Cards now take the same
+  spending-neutral shape the drift plugs use. Cash accounts are deliberately
+  untouched: turning their opening balance into a bare CREDIT would be arguably
+  more correct, since a baseline is not income, but this project's reports
+  already exclude starting-balance rows by their note marker, so only
+  Wealthfolio's own income view would move — a decision worth taking on its own
+  merits rather than as a side effect.
+
 ## [1.50.0] - 2026-09-12
 
 ### Added

@@ -8,7 +8,7 @@
 import { existsSync } from 'fs';
 import { execSync } from 'child_process';
 import { DatabaseSync } from 'node:sqlite';
-import { BALANCE_ADJUSTMENT_COMMENT_PREFIX, descriptionFromComment } from '../../shared/sync-core.js';
+import { BALANCE_ADJUSTMENT_COMMENT_PREFIX, descriptionFromComment, PENDING_SUFFIX as PENDING_NOTE_SUFFIX } from '../../shared/sync-core.js';
 import { IN_TRANSIT_COMMENT_PREFIX } from '../../shared/reconcile.js';
 
 export interface NativeCategorySpending {
@@ -203,6 +203,63 @@ function spendingWhere(startInclusive: string, endExclusive: string): string {
  * the transfers exclusion and the parent-category rollup exist in exactly one
  * place.
  */
+/**
+ * Every account's balance, computed from its own activities.
+ *
+ * Exists because Wealthfolio cannot be asked. `/valuations/latest` returns rows
+ * for CASH accounts only — measured live: six accounts, two rows — and
+ * `/accounts` carries no balance at all (the field exists on the SDK's
+ * TypeScript `Account` type but arrives `undefined` from the self-hosted
+ * server). So a credit card has no figure for the sync to compare SimpleFin
+ * against, which is why the starting-balance correction has never run on one,
+ * and why a card carried a $235.40 opening gap for five months with no alert.
+ *
+ * The sign table is transcribed from Wealthfolio 3.8's
+ * `type_directed_cash_effect`, including its one account-dependent exception:
+ * INTEREST is income on a brokerage and a charge on a credit card
+ * (`resolve_cash_with_account_context`). Since 3.8 `amount` is the final cash
+ * and `fee` is informational, so `fee` is deliberately absent from the
+ * arithmetic — adding it back would double-count every charge.
+ *
+ * PENDING ROWS ARE EXCLUDED, and that is the load-bearing part. SimpleFin
+ * reports a card's POSTED balance, so counting rows that have not settled
+ * reports timing as drift — and worse, feeds that difference into a
+ * starting-balance correction, which writes real money into the ledger.
+ * Measured live: one card's posted total matched SimpleFin to the cent while
+ * its two pending charges accounted for the entire apparent $87.54 gap.
+ */
+export function getNativeAccountBalances(dbPath: string): Map<string, number> {
+  const out = new Map<string, number>();
+  if (!dbPath || !existsSync(dbPath)) return out;
+
+  const query = `
+    SELECT a.account_id,
+           ROUND(SUM(
+             CASE
+               WHEN UPPER(acc.account_type) = 'CREDIT_CARD' AND UPPER(a.activity_type) = 'INTEREST' THEN -1
+               WHEN UPPER(a.activity_type) IN ('DEPOSIT','CREDIT','TRANSFER_IN','DIVIDEND','INTEREST','SELL') THEN 1
+               WHEN UPPER(a.activity_type) IN ('WITHDRAWAL','TRANSFER_OUT','FEE','TAX','BUY') THEN -1
+               ELSE 0
+             END * ABS(CAST(COALESCE(a.amount, '0') AS REAL))
+           ), 2) AS balance
+    FROM activities a
+    JOIN accounts acc ON a.account_id = acc.id
+    WHERE COALESCE(a.notes, '') NOT LIKE '%${PENDING_NOTE_SUFFIX}'
+    GROUP BY a.account_id;
+  `;
+  const rows = queryNativeDb<{ account_id: string; balance: number | string }>(
+    dbPath,
+    'account balances',
+    query,
+    (parts) => (parts.length >= 2 ? { account_id: parts[0], balance: parseFloat(parts[1]) || 0 } : null),
+  );
+  for (const row of rows) {
+    const value = typeof row.balance === 'number' ? row.balance : parseFloat(String(row.balance ?? '0'));
+    if (Number.isFinite(value)) out.set(String(row.account_id), value);
+  }
+  return out;
+}
+
 export function getNativeWealthfolioSpendingBetween(
   dbPath: string,
   startInclusive: string,

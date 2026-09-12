@@ -173,6 +173,19 @@ export interface SyncHost {
    * this side could persist.
    */
   syncHoldings?(wfAccountId: string, snapshot: HoldingsSnapshot): Promise<HoldingsSyncOutcome>;
+  /**
+   * Balances computed from each account's own activities, for accounts the
+   * valuations API does not report.
+   *
+   * OPTIONAL, and the mirror image of `syncHoldings`: this one the COMPANION can
+   * do and the addon cannot, because it needs to read the whole ledger and only
+   * the companion has the database. The addon leaves it undefined.
+   *
+   * Only ever consulted for accounts `latestValuations` omitted — which in
+   * practice means every credit card, since Wealthfolio reports valuations for
+   * cash accounts only. A valuation, where one exists, stays authoritative.
+   */
+  ledgerBalances?(accountIds: string[]): Promise<Map<string, number>>;
   readonly capabilities: {
     /** True when listActivities returns a trustworthy sourceGroupId. */
     readsSourceGroupId: boolean;
