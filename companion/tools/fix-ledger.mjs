@@ -140,6 +140,17 @@ function findOne(find, amount, date) {
     .all(`%${find}%`, amount, date);
   return rows;
 }
+/** An ambiguous match is a finding, not just a refusal: print the candidates so
+ *  the fix can be narrowed (or the extra row explained). */
+function describeCandidates(rows) {
+  return rows
+    .map(
+      (r) =>
+        `\n        ${r.d}  ${String(r.acct).slice(0, 24).padEnd(25)} ${String(r.activity_type).padEnd(13)} ${money(r.amt)}  id=${r.id}  ${String(r.notes).slice(0, 44)}`,
+    )
+    .join('');
+}
+
 const catOf = (activityId) =>
   db
     .prepare(
@@ -160,7 +171,7 @@ for (const fix of RECATEGORISE) {
   const rows = findOne(fix.find, fix.amount, fix.date);
   const target = catId(fix.to);
   if (rows.length !== 1) {
-    skipped.push(`${fix.find} ${money(fix.amount)} ${fix.date}: matched ${rows.length} rows`);
+    skipped.push(`${fix.find} ${money(fix.amount)} ${fix.date}: matched ${rows.length} rows${describeCandidates(rows)}`);
     continue;
   }
   if (!target) {
@@ -181,7 +192,7 @@ console.log('\n── retype');
 for (const fix of RETYPE) {
   const rows = findOne(fix.find, fix.amount, fix.date);
   if (rows.length !== 1) {
-    skipped.push(`${fix.find} ${money(fix.amount)} ${fix.date}: matched ${rows.length} rows`);
+    skipped.push(`${fix.find} ${money(fix.amount)} ${fix.date}: matched ${rows.length} rows${describeCandidates(rows)}`);
     continue;
   }
   const row = rows[0];
