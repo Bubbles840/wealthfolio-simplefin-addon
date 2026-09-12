@@ -27,6 +27,24 @@ export interface SimplefinTransaction {
   transacted_at?: number; // Unix timestamp; used to date pending rows lacking `posted`
 }
 
+/**
+ * One position inside an investment account, straight from SimpleFin. Every
+ * field is optional in the protocol and every numeric one arrives as a STRING:
+ * share counts run to eight decimals for crypto, and routing them through a JS
+ * number loses the tail.
+ */
+export interface SimplefinHolding {
+  symbol?: string;
+  /** Share count. `null` is a real answer from the Bridge, not just absence. */
+  shares?: string | null;
+  currency?: string | null;
+  cost_basis?: string | null;
+  /** Per-share cost. Becomes a position's `avgCost` when present. */
+  purchase_price?: string | null;
+  market_value?: string | null;
+  description?: string | null;
+}
+
 export interface SimplefinAccount {
   id: string;
   name: string;
@@ -49,11 +67,39 @@ export interface SimplefinAccount {
     url?: string;
     'sfin-url'?: string;
   };
+  /**
+   * Positions, for an investment account. Absent on every bank and card
+   * account, and absent from every fixture written before v1.50 — which is why
+   * it is optional rather than an empty array by contract.
+   */
+  holdings?: SimplefinHolding[];
+}
+
+/**
+ * One entry of the Bridge's structured `errlist`, which names the failing
+ * connection where the older string `errors` array only described it.
+ *
+ * `key` is the dedupe handle: a broken institution reports once per affected
+ * account, so one dead connection arrives as several identical failures.
+ */
+export interface SimplefinBridgeError {
+  code: string;
+  msg: string;
+  connId: string | null;
+  accountId: string | null;
+  key: string;
 }
 
 export interface SimplefinAccountSet {
-  // SimpleFin returns errors as an array of human-readable strings.
+  /** Human-readable, one per DISTINCT failure, with the failing account named
+   *  where the payload allowed it to be resolved. Built from `errorList` — see
+   *  `normalizeAccountSet` — and deliberately still `string[]`, because every
+   *  consumer of this field predates the structured form. */
   errors: string[];
+  /** The same failures with their structure intact, for anything that needs to
+   *  act per connection rather than print a line. Optional so the many test
+   *  fixtures and stored payloads that predate it stay valid. */
+  errorList?: SimplefinBridgeError[];
   accounts: SimplefinAccount[];
 }
 

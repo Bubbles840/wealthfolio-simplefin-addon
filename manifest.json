@@ -1,7 +1,7 @@
 {
   "id": "simplefin-sync",
   "name": "SimpleFin Sync",
-  "version": "1.49.0",
+  "version": "1.50.0",
   "description": "Sync bank transactions from SimpleFin into Wealthfolio automatically.",
   "author": "Bubbles840",
   "main": "dist/addon.js",
@@ -9,11 +9,23 @@
   "minWealthfolioVersion": "3.6.2",
   "enabled": true,
   "network": {
-    "allowedHosts": ["bridge.simplefin.org", "beta-bridge.simplefin.org", "api.telegram.org"],
-    "approvedHosts": ["bridge.simplefin.org", "beta-bridge.simplefin.org", "api.telegram.org"]
+    "allowedHosts": [
+      "bridge.simplefin.org",
+      "beta-bridge.simplefin.org",
+      "api.telegram.org"
+    ],
+    "approvedHosts": [
+      "bridge.simplefin.org",
+      "beta-bridge.simplefin.org",
+      "api.telegram.org"
+    ]
   },
   "contributes": {
-    "routes": [{ "id": "simplefin-sync" }],
+    "routes": [
+      {
+        "id": "simplefin-sync"
+      }
+    ],
     "links": {
       "sidebar": [
         {
@@ -29,38 +41,80 @@
   "permissions": [
     {
       "category": "accounts",
-      "functions": ["getAll", "create"],
+      "functions": [
+        "getAll",
+        "create"
+      ],
       "purpose": "Show existing accounts, and optionally create new Wealthfolio accounts, for mapping to SimpleFin accounts"
     },
     {
       "category": "activities",
-      "functions": ["checkImport", "import", "search", "getAll", "create", "update", "saveMany"],
+      "functions": [
+        "checkImport",
+        "import",
+        "search",
+        "getAll",
+        "create",
+        "update",
+        "saveMany"
+      ],
       "purpose": "Import bank transactions, reconcile pending transactions (create/update/delete), and link transfer pairs"
     },
     {
       "category": "navigation",
-      "functions": ["navigate"],
+      "functions": [
+        "navigate"
+      ],
       "purpose": "Open a mapped account's page in Wealthfolio when its row is clicked"
     },
     {
       "category": "portfolio",
-      "functions": ["getLatestValuations"],
+      "functions": [
+        "getLatestValuations"
+      ],
       "purpose": "Read current account balances to size one-time starting-balance corrections"
     },
     {
       "category": "secrets",
-      "functions": ["set", "get", "use", "delete"],
+      "functions": [
+        "set",
+        "get",
+        "use",
+        "delete"
+      ],
       "purpose": "Store SimpleFin credentials and sync configuration securely"
     },
     {
       "category": "network",
-      "functions": ["request"],
+      "functions": [
+        "request"
+      ],
       "purpose": "Fetch transaction data from SimpleFin Bridge"
     },
     {
       "category": "ui",
-      "functions": ["sidebar.addItem", "router.add", "onDisable"],
+      "functions": [
+        "sidebar.addItem",
+        "router.add",
+        "onDisable"
+      ],
       "purpose": "Register sidebar navigation item and route for SimpleFin Sync"
+    },
+    {
+      "category": "snapshots",
+      "functions": [
+        {
+          "name": "checkImport",
+          "isDeclared": true,
+          "isDetected": false
+        },
+        {
+          "name": "importSnapshots",
+          "isDeclared": true,
+          "isDetected": false
+        }
+      ],
+      "purpose": "Import holdings snapshots for investment accounts, so a brokerage syncs its positions and not only its cash."
     }
   ]
 }

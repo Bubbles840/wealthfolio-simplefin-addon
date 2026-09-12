@@ -802,6 +802,7 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
       log('No SimpleFin access URL found in Wealthfolio addon secrets. Please configure the SimpleFin Sync addon in Wealthfolio first.');
       const empty: SyncResult = {
         imported: 0, skipped: 0, errors: [], stuckTransferAlerts: [],
+        holdingsSnapshots: { imported: 0, skipped: 0, unresolvedSymbols: [] },
         importedTransactions: [], largeTransactionAlerts: [], balanceDriftAlerts: [],
         // `null`, not `[]`: nothing was read, so this says nothing about what
         // is mapped — and `[]` here would clear the notice ledger.

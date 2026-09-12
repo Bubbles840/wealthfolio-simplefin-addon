@@ -47,7 +47,18 @@ function matchRule(description: string, rules: MappingRule[]): MappingRule | nul
   return null;
 }
 
-export const BANK_TRANSFER_KEYWORDS = /pnc bank|online transfer|wire transfer|bank transfer|member transfer/i;
+// `capital one transfer` earned its place the hard way (2026-09-12): two real
+// savings→spending transfers arrived described `CAPITAL ONE TRANSFER ACH WEB
+// PAYMENT`, matched nothing here, and so defaulted to DEPOSIT — income — while
+// the savings side was typed TRANSFER_OUT by a user's mapping rule. Pair
+// detection only considers transfer-typed legs, so the two halves never met and
+// $1,900 counted as income for two months.
+//
+// This branch is the right home for it precisely because it is direction-aware.
+// A mapping rule is not: `matchRule` returns its type whichever way the money
+// moved, so a rule typing this CREDIT or TRANSFER_IN would mis-book an OUTGOING
+// transfer of the same name.
+export const BANK_TRANSFER_KEYWORDS = /pnc bank|online transfer|wire transfer|bank transfer|member transfer|capital one transfer/i;
 
 export function mapTransactionWithSource(
   description: string,

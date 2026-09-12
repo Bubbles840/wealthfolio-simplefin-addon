@@ -1,5 +1,6 @@
 import type { AccountMapping, MappingRule, SimplefinAccountSet } from './types.js';
 import type { AmazonLedger } from './amazon-ledger.js';
+import type { HoldingsSnapshot } from './holdings.js';
 import type {
   ActivityWrite,
   HostActivity,
@@ -12,6 +13,7 @@ import type {
   SyncStore,
   TransferLinkFailureEntry,
   DriftAlertEntry,
+  HoldingsSyncOutcome,
 } from './sync-host.js';
 
 export interface FakeHostSeed {
@@ -56,10 +58,19 @@ export interface FakeHostSeed {
    * shape silently lost a whole account's batch on the SDK path.
    */
   saveManyHook?: (req: SaveManyRequest, callIndex: number) => void;
+  /** What `syncHoldings` reports back. Defaults to "one snapshot imported". */
+  holdingsOutcome?: HoldingsSyncOutcome;
+  /** Drop `syncHoldings` from the host entirely — the companion's shape, where
+   *  the REST server has no snapshot write route. */
+  noHoldingsSupport?: boolean;
+  /** Make `syncHoldings` throw with this message. */
+  holdingsThrows?: string;
 }
 
 export interface FakeHost {
   host: SyncHost;
+  /** Every holdings snapshot handed to the host, in call order. */
+  holdings: Array<{ wfAccountId: string; snapshot: HoldingsSnapshot }>;
   store: SyncStore;
   /** Live activities per Wealthfolio account id. Mutated by saveMany/linkPair. */
   activities: Map<string, HostActivity[]>;
@@ -122,6 +133,7 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
   const driftAlertThreshold = seed.driftAlertThreshold ?? null;
 
   const activities = cloneActivities(seed.existing);
+  const holdings: Array<{ wfAccountId: string; snapshot: HoldingsSnapshot }> = [];
   const saved: SaveManyRequest[] = [];
   const links: Array<[LinkLeg, LinkLeg]> = [];
   const imported: ImportRow[][] = [];
@@ -217,6 +229,16 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
     async listOldestActivities(wfAccountId: string, limit: number) {
       return byDate(rowsFor(wfAccountId), true).slice(0, limit);
     },
+
+    ...(seed.noHoldingsSupport
+      ? {}
+      : {
+          async syncHoldings(wfAccountId: string, snapshot: HoldingsSnapshot) {
+            holdings.push({ wfAccountId, snapshot });
+            if (seed.holdingsThrows) throw new Error(seed.holdingsThrows);
+            return seed.holdingsOutcome ?? { imported: 1, skipped: 0, unresolvedSymbols: [] };
+          },
+        }),
 
     async saveMany(req: SaveManyRequest): Promise<SaveManyResult> {
       saved.push(req);
@@ -371,5 +393,5 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
     },
   };
 
-  return { host, store, activities, saved, links, imported, amazon: () => amazonLedger };
+  return { host, store, activities, saved, links, imported, holdings, amazon: () => amazonLedger };
 }

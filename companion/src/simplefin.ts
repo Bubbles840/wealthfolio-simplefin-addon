@@ -1,4 +1,5 @@
 import type { SimplefinAccountSet } from '../../shared/types';
+import { normalizeAccountSet } from '../../shared/simplefin-payload.js';
 
 function requireHttps(url: string): void {
   if (!url.startsWith('https://')) {
@@ -55,5 +56,7 @@ export async function fetchAccountsNode(
     headers: { Authorization: `Basic ${credentials}` },
   });
   if (!res.ok) throw new Error(`SimpleFin /accounts failed: ${res.status}`);
-  return res.json() as Promise<SimplefinAccountSet>;
+  // Same normalisation as the addon half (shared/simplefin-payload.ts), so both
+  // syncers see identical errors and neither trusts a field to be present.
+  return normalizeAccountSet(await res.json());
 }

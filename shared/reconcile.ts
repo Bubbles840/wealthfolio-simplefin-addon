@@ -26,6 +26,21 @@ export interface FeedTx {
    *  Omitted — not `null` — when no rule set one; see `normSubtype` for why
    *  that distinction matters to `changed()`. */
   subtype?: string;
+  /**
+   * Mark the written row as needing the user's eye — Wealthfolio 3.8's
+   * `needs_review`, which it surfaces on its own Activities screen.
+   *
+   * Set only where the sync had to GUESS a classification it cannot prove: an
+   * unpaired transfer leg that ran out of time and was booked as ordinary
+   * spending or income.
+   *
+   * Deliberately NOT compared by `changed()`. It is set on the transition, where
+   * the type and the in-transit marker already differ so an update fires anyway;
+   * and leaving it out of the comparison means a flag the user CLEARS in
+   * Wealthfolio is never re-applied by a later sync — which would otherwise be
+   * an unclearable flag, since the row keeps expiring on every run.
+   */
+  needsReview?: boolean;
 }
 
 export interface ExistingRow {

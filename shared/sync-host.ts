@@ -1,5 +1,6 @@
 import type { AccountMapping, MappingRule, SimplefinAccountSet, UnmappedAccount } from './types.js';
 import type { AmazonLedger } from './amazon-ledger.js';
+import type { HoldingsSnapshot } from './holdings.js';
 
 /** A Wealthfolio activity row, normalized across the SDK and REST shapes. */
 export interface HostActivity {
@@ -123,6 +124,18 @@ export interface ImportRow {
   isDraft: false;
 }
 
+/** What a holdings-snapshot import did, per account. */
+export interface HoldingsSyncOutcome {
+  imported: number;
+  /** The snapshot was already on file for that date, so nothing was written. */
+  skipped: number;
+  /** Tickers the host could not resolve to a security. Imported anyway —
+   *  dropping them would silently shrink the account — but reported, because an
+   *  unresolved symbol gets priced against whatever listing its bare ticker
+   *  happens to match. */
+  unresolvedSymbols: string[];
+}
+
 export interface SyncHost {
   fetchSimplefin(accessUrl: string, since: Date, authKey?: string | null): Promise<SimplefinAccountSet>;
   listAccounts(): Promise<Array<{ id: string; accountType: string; name?: string }>>;
@@ -146,6 +159,20 @@ export interface SyncHost {
   importActivities(rows: ImportRow[]): Promise<void>;
   /** Record that two activities are one internal transfer. */
   linkPair(legs: [LinkLeg, LinkLeg]): Promise<LinkResult>;
+  /**
+   * Writes one investment account's positions for a date, idempotently.
+   *
+   * OPTIONAL, and the asymmetry is upstream's: the addon SDK exposes a
+   * `snapshots` API, while the self-hosted REST server exposes no snapshot write
+   * route at all (checked against Wealthfolio 3.8's router — `/snapshots/...`
+   * is read-only there). So the companion cannot do this and says so by not
+   * implementing it, rather than by failing at the call.
+   *
+   * Idempotency belongs to the implementation, not the caller: the SDK reports
+   * which dates an account already has, which is a better signal than anything
+   * this side could persist.
+   */
+  syncHoldings?(wfAccountId: string, snapshot: HoldingsSnapshot): Promise<HoldingsSyncOutcome>;
   readonly capabilities: {
     /** True when listActivities returns a trustworthy sourceGroupId. */
     readsSourceGroupId: boolean;

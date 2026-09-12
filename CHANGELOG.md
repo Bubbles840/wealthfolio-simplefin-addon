@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.50.0] - 2026-09-12
+
+### Added
+
+- **Investment accounts finally sync their positions.** SimpleFin publishes a
+  `holdings` array for brokerage accounts and the sync had been dropping it, so
+  a brokerage arrived as a bank account that happened to be at a broker: cash
+  balance, transactions, no positions. They now import as Wealthfolio holdings
+  snapshots. A snapshot states the WHOLE position list for a date, so anything
+  less than a complete one writes nothing rather than a partial: no holdings,
+  an empty array, or a list where every entry lacks a symbol or a share count
+  all produce no snapshot, because a positions-free snapshot is
+  indistinguishable from "I sold everything". Unresolvable tickers are still
+  imported and reported, since a bare BTC gets priced against whatever listing
+  it matches. Addon-only, and by upstream's shape: the self-hosted REST server
+  exposes no snapshot write route, so the companion declines the capability
+  instead of failing at the call.
+
+- **A dead bank connection now names itself.** The Bridge's structured
+  `errlist` carries a code, a connection id and an account id per failure, and
+  the sync was reading only the older prose `errors` array. When Discover's
+  feed died it published nothing for weeks and the only signal was an
+  untethered sentence that never said which connection had stopped. Failures
+  are now resolved against the accounts in the same payload, so they read
+  "Discover it Card: Connection to institution failed", and repeats of one
+  failure across several accounts collapse into one line. Both syncers share
+  one normaliser, which also means neither trusts `errors` to exist — an
+  absent field used to be a TypeError mid-sync rather than "nothing went
+  wrong".
+
+### Fixed
+
+- **A transfer whose other half never arrives no longer changes your income in
+  silence.** An unpaired leg that runs out of its pairing window is booked as
+  ordinary spending or income, which is the honest reading — but it is a guess,
+  and it now arrives flagged for review, so Wealthfolio's own Needs review
+  screen is the thing that says "this might have been a transfer". The inflow
+  direction is the expensive one: two real savings transfers expired into
+  deposits and counted as $1,900 of income for two months, which inflates the
+  sustainable-spend figure and tells you to spend money you do not have.
+  Resting neutral instead was considered and rejected — since Wealthfolio 3.8
+  no cash-moving outflow type is neutral to the classifier unless the transfer
+  is linked, so a neutral outflow would count as spending upstream while our
+  reports excluded it, leaving two views permanently disagreeing. The flag is
+  never re-applied once cleared.
+
+- **`CAPITAL ONE TRANSFER ACH WEB PAYMENT` is recognised as a transfer.** It
+  matched none of the bank-transfer keywords and so defaulted to a deposit,
+  while the same transfer's other leg was typed as a transfer by a user's
+  mapping rule — and pair detection only considers transfer-typed legs, so the
+  two halves never met. Added to the keyword branch rather than as a mapping
+  rule deliberately: that branch picks its type from the direction the money
+  moved, where a rule returns one type regardless and would mis-book an
+  outgoing transfer of the same name.
+
 ## [1.49.0] - 2026-09-07
 
 ### Changed

@@ -1280,7 +1280,7 @@ describe('deliverAddonAlerts', () => {
   const emptyResult = (over: Partial<any> = {}) => ({
     imported: 0, skipped: 0, errors: [],
     stuckTransferAlerts: [], importedTransactions: [], largeTransactionAlerts: [],
-    balanceDriftAlerts: [], prunedDuplicates: [], unmappedAccounts: [], refusedCreates: [],
+    balanceDriftAlerts: [], prunedDuplicates: [], unmappedAccounts: [], refusedCreates: [], holdingsSnapshots: { imported: 0, skipped: 0, unresolvedSymbols: [] },
     ...over,
   });
 
