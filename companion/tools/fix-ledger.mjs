@@ -90,8 +90,16 @@ const RECATEGORISE = [
 
 /** Change one activity's type (and subtype), leaving its amount and date alone. */
 const RETYPE = [
-  { find: 'CAPITAL ONE TRANSFER', amount: 1300, date: '2026-07-28', type: 'CREDIT', subtype: null, why: 'own money from Capital One — neutral, not income' },
-  { find: 'CAPITAL ONE TRANSFER', amount: 600, date: '2026-07-30', type: 'CREDIT', subtype: null, why: 'own money from Capital One — neutral, not income' },
+  // Both legs of these two transfers were imported; they never paired because
+  // the two sides were typed by different mechanisms — the savings outflow by a
+  // user mapping rule (TRANSFER_OUT), the arriving side by the default, since
+  // "CAPITAL ONE TRANSFER" matches none of the bank-transfer keywords, leaving
+  // it a DEPOSIT. Pair detection only considers transfer-typed legs, so the two
+  // never met. Retyping the inflow makes the pair linkable below, which is
+  // strictly better than neutralising it: a linked pair is neutral in
+  // Wealthfolio's own view too, not just in ours.
+  { find: 'CAPITAL ONE TRANSFER', amount: 1300, date: '2026-07-28', account: 'Spend', type: 'TRANSFER_IN', subtype: null, why: 'the other leg exists in savings — make the pair linkable' },
+  { find: 'CAPITAL ONE TRANSFER', amount: 600, date: '2026-07-30', account: 'Spend', type: 'TRANSFER_IN', subtype: null, why: 'the other leg exists in savings — make the pair linkable' },
   { find: 'Transfer from Zelle', amount: 200, date: '2026-06-26', type: 'CREDIT', subtype: 'REIMBURSEMENT', why: 'a payback from a person, not income' },
   { find: 'Transfer from Zelle', amount: 117, date: '2026-06-16', type: 'CREDIT', subtype: 'REIMBURSEMENT', why: 'a payback from a person, not income' },
 ];
@@ -102,6 +110,16 @@ const LINK = [
     inflow: { find: 'Transfer from Capital One', amount: 1300, date: '2026-06-29' },
     outflow: { find: 'ACH Withdrawal PNC', amount: 1300, date: '2026-06-26' },
     why: 'a genuine savings→spending transfer; linking makes it neutral instead of income',
+  },
+  {
+    inflow: { find: 'CAPITAL ONE TRANSFER', amount: 1300, date: '2026-07-28', account: 'Spend' },
+    outflow: { find: 'CAPITAL ONE TRANSFER', amount: 1300, date: '2026-07-28', account: '360 Performance' },
+    why: 'both legs were imported and never grouped',
+  },
+  {
+    inflow: { find: 'CAPITAL ONE TRANSFER', amount: 600, date: '2026-07-30', account: 'Spend' },
+    outflow: { find: 'CAPITAL ONE TRANSFER', amount: 600, date: '2026-07-30', account: '360 Performance' },
+    why: 'both legs were imported and never grouped',
   },
 ];
 
@@ -125,19 +143,21 @@ const OPENING = {
 };
 
 // ── resolve ────────────────────────────────────────────────────────────────
-function findOne(find, amount, date) {
+function findOne(find, amount, date, account = '') {
   const rows = db
     .prepare(
       `SELECT a.id, a.account_id, a.activity_type, a.subtype, a.currency,
+              COALESCE(a.asset_id,'') asset_id,
               substr(a.activity_date,1,10) d, a.activity_date raw_date,
               ROUND(ABS(CAST(a.amount AS REAL)),2) amt, COALESCE(a.notes,'') notes,
               acc.name acct
        FROM activities a JOIN accounts acc ON a.account_id = acc.id
        WHERE COALESCE(a.notes,'') LIKE ?
          AND ROUND(ABS(CAST(a.amount AS REAL)),2) = ?
-         AND substr(a.activity_date,1,10) = ?`,
+         AND substr(a.activity_date,1,10) = ?
+         AND (? = '' OR acc.name LIKE ?)`,
     )
-    .all(`%${find}%`, amount, date);
+    .all(`%${find}%`, amount, date, account, account ? `%${account}%` : '');
   return rows;
 }
 /** An ambiguous match is a finding, not just a refusal: print the candidates so
@@ -190,7 +210,7 @@ for (const fix of RECATEGORISE) {
 
 console.log('\n── retype');
 for (const fix of RETYPE) {
-  const rows = findOne(fix.find, fix.amount, fix.date);
+  const rows = findOne(fix.find, fix.amount, fix.date, fix.account ?? '');
   if (rows.length !== 1) {
     skipped.push(`${fix.find} ${money(fix.amount)} ${fix.date}: matched ${rows.length} rows${describeCandidates(rows)}`);
     continue;
@@ -198,6 +218,14 @@ for (const fix of RETYPE) {
   const row = rows[0];
   if (row.activity_type === fix.type && (row.subtype ?? null) === fix.subtype) {
     console.log(`   – ${fix.find} ${money(fix.amount)} already ${fix.type}${fix.subtype ? `/${fix.subtype}` : ''}`);
+    continue;
+  }
+  // A transfer leg that carries an asset books NO cash: upstream's
+  // handle_transfer_out/in move cash only on the `asset_id.is_empty()` branch.
+  // Retyping an asset-backed row into a transfer would silently stop it moving
+  // the balance, so refuse rather than break a reconciled account.
+  if ((fix.type === 'TRANSFER_IN' || fix.type === 'TRANSFER_OUT') && row.asset_id !== '') {
+    skipped.push(`${fix.find} ${money(fix.amount)}: carries asset ${row.asset_id}; a transfer leg with an asset books no cash`);
     continue;
   }
   console.log(
@@ -225,8 +253,8 @@ for (const fix of RETYPE) {
 
 console.log('\n── link transfer pairs');
 for (const pair of LINK) {
-  const ins = findOne(pair.inflow.find, pair.inflow.amount, pair.inflow.date);
-  const outs = findOne(pair.outflow.find, pair.outflow.amount, pair.outflow.date);
+  const ins = findOne(pair.inflow.find, pair.inflow.amount, pair.inflow.date, pair.inflow.account ?? '');
+  const outs = findOne(pair.outflow.find, pair.outflow.amount, pair.outflow.date, pair.outflow.account ?? '');
   if (ins.length !== 1 || outs.length !== 1) {
     skipped.push(`link ${money(pair.inflow.amount)}: matched ${ins.length} inflows and ${outs.length} outflows`);
     continue;
