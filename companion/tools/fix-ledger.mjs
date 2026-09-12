@@ -64,6 +64,17 @@ const client = new WealthfolioClient(process.env.WEALTHFOLIO_API_URL);
 if (process.env.WEALTHFOLIO_API_KEY) client.token = process.env.WEALTHFOLIO_API_KEY;
 else await client.login(process.env.WEALTHFOLIO_PASSWORD);
 
+// Wealthfolio account id → SimpleFin account id. Needed because the sync's
+// starting-balance marker is keyed on the SIMPLEFIN id, not the Wealthfolio one.
+const byWfId = {};
+try {
+  const raw = await client.getAddonSecret(ADDON_ID, 'account_mapping');
+  for (const [sfinId, wfId] of Object.entries(raw ? JSON.parse(raw) : {})) byWfId[wfId] = sfinId;
+} catch {
+  // Left empty: every consumer below treats a missing id as "cannot tell which
+  // baseline the sync owns" and skips rather than guessing.
+}
+
 // ── category ids, resolved by name ─────────────────────────────────────────
 const cats = db
   .prepare(
@@ -410,7 +421,12 @@ for (const [accountId, rows] of byAccount) {
       id: keep.id,
       accountId: keep.account_id,
       activityType: keepType,
-      activityDate: keep.raw_date,
+      // The EARLIEST of the merged dates, not the surviving row's own. A
+      // baseline means "everything before this date is already in the bank's
+      // figure", so one sitting mid-history makes every transaction before it
+      // look like a late arrival to `adjustStartingBalanceForOlderRows`, which
+      // exists to correct the baseline when exactly that happens.
+      activityDate: rows.reduce((earliest, r) => (r.raw_date < earliest ? r.raw_date : earliest), keep.raw_date),
       amount: Math.abs(Math.round(total * 100) / 100),
       fee: 0,
       currency: keep.currency || 'USD',
