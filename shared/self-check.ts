@@ -71,6 +71,16 @@ export interface SelfCheckInput {
    *  quiet — flagging it would alarm every companion-first updater forever. */
   addonVersion?: string | null;
   companionVersion?: string | null;
+  /**
+   * The version in the INSTALLED addon's manifest, read off disk by the
+   * companion. Distinct from `addonVersion`, and the distinction is the point:
+   * that one is written when the bundle LOADS in a browser, so it means "the
+   * newest build that has ever run", which a tab pinned open for a week keeps
+   * stale however many zips are uploaded underneath it. Absent when the addons
+   * directory is not mounted, in which case the two remedies cannot be told
+   * apart and the warning says both.
+   */
+  installedAddonVersion?: string | null;
 }
 
 const HOUR_MS = 3_600_000;
@@ -150,15 +160,36 @@ export function evaluateSelfCheck(input: SelfCheckInput, now: Date): SelfCheckFi
   // Only when BOTH are known and disagree: the image and the zip deploy
   // separately, and a half-finished update is silent everywhere except the
   // Sync page footer nobody re-visits after updating.
-  if (input.addonVersion && input.companionVersion && input.addonVersion !== input.companionVersion) {
+  const { addonVersion: running, installedAddonVersion: installed, companionVersion: companion } = input;
+  if (companion && installed && installed !== companion) {
+    // The manifest on disk is old: nothing the browser does can fix that, so
+    // the reload hint would only send the user the wrong way.
     findings.push({
       kind: 'version-skew',
       severity: 'warning',
-      // The reload hint is load-bearing: the addon publishes its version when
-      // it LOADS, so a Wealthfolio tab pinned open for days keeps reporting
-      // the build it loaded — a correct warning that read as a false one
-      // (2026-09-06).
-      message: `addon v${input.addonVersion} and companion v${input.companionVersion} are different builds`
+      message: `the installed addon is v${installed} but the companion is v${companion}`
+        + ` — upload simplefin-sync-${companion}.zip in Wealthfolio's addon settings`,
+    });
+  } else if (companion && installed && running && running !== companion) {
+    // The right zip IS installed, and a browser is still running an older
+    // bundle. Worth saying rather than ignoring: the addon is a second writer,
+    // and a stale tab syncs with the old build's logic when Sync is clicked.
+    findings.push({
+      kind: 'version-skew',
+      severity: 'warning',
+      message: `addon v${companion} is installed, but a Wealthfolio tab is still running v${running}`
+        + ' — hard-refresh it (Cmd/Ctrl+Shift+R)',
+    });
+  } else if (!installed && running && companion && running !== companion) {
+    // No manifest to consult (the addons directory is not mounted), so the two
+    // causes cannot be told apart and the message has to offer both. The
+    // reload hint is load-bearing: a tab pinned open for days keeps reporting
+    // the build it loaded — a correct warning that read as a false one
+    // (2026-09-06).
+    findings.push({
+      kind: 'version-skew',
+      severity: 'warning',
+      message: `addon v${running} and companion v${companion} are different builds`
         + ' — finish the update (pull the image AND upload the matching zip), or reload the Wealthfolio tab if you already have',
     });
   }

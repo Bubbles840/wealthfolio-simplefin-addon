@@ -40,6 +40,7 @@ export function wealthfolioDbPath(): string {
   return process.env.WEALTHFOLIO_DB_PATH || DEFAULT_WEALTHFOLIO_DB_PATH;
 }
 import { evaluateSelfCheck, formatSelfCheckBlock } from '../../shared/self-check.js';
+import { readInstalledAddonVersion } from './installed-addon.js';
 import { monthEndForecast, previousThreeFullMonths, daysInMonthOf } from '../../shared/projection.js';
 import { startTelegramListener } from './telegram-listener.js';
 import type { TelegramListenerDeps } from './telegram-listener.js';
@@ -1769,6 +1770,9 @@ export async function composeDailyDigestMessage(
     // Raw string secret, not JSON — written by the addon on load, absent on
     // zips older than 1.34.0 (the self-check stays quiet on absence).
     addonVersion: await wfClient.getAddonSecret('simplefin-sync', ADDON_VERSION_SECRET_KEY).catch(() => null),
+    // Off disk, because the secret above only says what last RAN in a browser.
+    // With both, the warning can name the one remedy that applies.
+    installedAddonVersion: readInstalledAddonVersion(wealthfolioDbPath()),
     companionVersion: SIMPLEFIN_SYNC_VERSION,
     unmappedAccountNames: unmapped
       .map((a) => a?.accountName || a?.sfinAccountId || '')

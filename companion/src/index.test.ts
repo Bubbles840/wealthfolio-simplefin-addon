@@ -2234,7 +2234,7 @@ describe('undoTelegramDismissal', () => {
     // it. A whole-object write of the stale snapshot minus one id would.
     const secrets = new Map<string, string>([
       ['uncategorized_dismissals', JSON.stringify({
-        'act-1': '2026-08-09T00:00:00.000Z', 'act-2': '2026-08-10T00:00:00.000Z',
+        'act-1': new Date(Date.now() - 10 * 86_400_000).toISOString(), 'act-2': '2026-08-10T00:00:00.000Z',
       })],
     ]);
     let ledgerReads = 0;
@@ -2262,7 +2262,7 @@ describe('undoTelegramDismissal', () => {
     // A doubled tap, or Undo on a row the addon already restored. Idempotent,
     // and silent: there is nothing to confirm.
     const secrets = new Map<string, string>([
-      ['uncategorized_dismissals', JSON.stringify({ 'act-1': '2026-08-09T00:00:00.000Z' })],
+      ['uncategorized_dismissals', JSON.stringify({ 'act-1': new Date(Date.now() - 10 * 86_400_000).toISOString() })],
     ]);
     const client: any = {
       getAddonSecret: vi.fn(async (_a: string, k: string) => secrets.get(k) ?? null),
@@ -2347,7 +2347,7 @@ describe('applyTelegramDismissal', () => {
     // "existing entries survive" — the merge has to be against a FRESH read to
     // mean anything, which is what this asserts.
     const secrets = new Map<string, string>([
-      ['uncategorized_dismissals', JSON.stringify({ 'act-earlier': '2026-08-09T00:00:00.000Z' })],
+      ['uncategorized_dismissals', JSON.stringify({ 'act-earlier': new Date(Date.now() - 10 * 86_400_000).toISOString() })],
     ]);
     let ledgerReads = 0;
     const client: any = {
@@ -2369,12 +2369,12 @@ describe('applyTelegramDismissal', () => {
 
     const written = JSON.parse(secrets.get('uncategorized_dismissals')!);
     expect(Object.keys(written).sort()).toEqual(['act-addon', 'act-earlier', 'act-tapped']);
-    expect(written['act-earlier']).toBe('2026-08-09T00:00:00.000Z');
+    expect(written['act-earlier']).toBe(new Date(Date.now() - 10 * 86_400_000).toISOString());
   });
 
   it('writes nothing at all when the id is already dismissed', async () => {
     const secrets = new Map<string, string>([
-      ['uncategorized_dismissals', JSON.stringify({ 'act-1': '2026-08-09T00:00:00.000Z' })],
+      ['uncategorized_dismissals', JSON.stringify({ 'act-1': new Date(Date.now() - 10 * 86_400_000).toISOString() })],
     ]);
     const client = clientOver(secrets);
 
@@ -2999,7 +2999,11 @@ describe('sendImportNotice', () => {
     // long before this notice ran — this path no longer polls for it.
     const secrets = new Map<string, string>([
       ['uncategorized_dismissals', JSON.stringify({
-        'act-old': '2026-07-20T00:00:00Z',
+        // Relative to now, never a literal date. Dismissals are pruned past
+        // 60 days, so the hardcoded '2026-07-20' this used to be turned the
+        // test into a time bomb that went off on 2026-09-18 — the entry aged
+        // out, the row came back, and the suite failed with no code change.
+        'act-old': new Date(Date.now() - 10 * 86_400_000).toISOString(),
         'act-9': new Date().toISOString(),
       })],
     ]);
@@ -3491,7 +3495,7 @@ describe('the /categorize wiring', () => {
   });
 
   it('leaves an already-dismissed row out of what /categorize lists', async () => {
-    const { client } = clientFor([[LEDGER_KEY, JSON.stringify({ 'act-2': '2026-08-09T00:00:00.000Z' })]]);
+    const { client } = clientFor([[LEDGER_KEY, JSON.stringify({ 'act-2': new Date(Date.now() - 10 * 86_400_000).toISOString() })]]);
     const { sent, reply } = collect();
     await buildTelegramCommandHandler(client)({ command: 'categorize', args: '' }, reply);
     expect(sent[0][0]).toBe('1 transaction needs a category:');
@@ -3597,7 +3601,7 @@ describe('the /categorize wiring', () => {
       // whole-object write and erases whatever the other host recorded in
       // between. Two reads are the only thing that makes the merge mean anything.
       const { client, secrets } = clientFor([
-        [LEDGER_KEY, JSON.stringify({ 'act-earlier': '2026-08-09T00:00:00.000Z' })],
+        [LEDGER_KEY, JSON.stringify({ 'act-earlier': new Date(Date.now() - 10 * 86_400_000).toISOString() })],
       ]);
       const deps = buildCategorizeDeps(client);
 
@@ -3610,7 +3614,7 @@ describe('the /categorize wiring', () => {
 
       const written = JSON.parse(secrets.get(LEDGER_KEY)!);
       expect(Object.keys(written).sort()).toEqual(['act-earlier', 'act-menu', 'act-thirdparty']);
-      expect(written['act-earlier']).toBe('2026-08-09T00:00:00.000Z');
+      expect(written['act-earlier']).toBe(new Date(Date.now() - 10 * 86_400_000).toISOString());
     });
 
     it('replays a REMOVAL as a delta, leaving a third party\'s entry alone', async () => {

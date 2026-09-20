@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.52.1] - 2026-09-20
+
+### Fixed
+
+- **The "different builds" warning now says which half is stale, and what to
+  do about it.** The addon reports its version when its bundle LOADS in a
+  browser, so that figure means "the newest build that has ever run" — and a
+  Wealthfolio tab pinned open for a week keeps it stale however many zips are
+  uploaded underneath it. The warning could not tell "you never uploaded the
+  zip" from "you did, and your tab is old", so it offered both remedies at once
+  and twice read as a false alarm. The companion now reads the INSTALLED
+  addon's manifest off disk — it already mounts that data directory to reach
+  the database — and names the one remedy that applies: upload
+  `simplefin-sync-<version>.zip`, or hard-refresh the tab. With no addons
+  directory mounted it falls back to the old wording, and a current zip that no
+  browser has opened yet is not a warning at all.
+
+### Internal
+
+- Defused four date-dependent test fixtures. Dismissals are pruned past 60
+  days, and the fixtures hardcoded July and August dates, so one test began
+  failing on 2026-09-18 with no code change and three more would have followed
+  on 2026-10-08. They are now relative to the clock.
+
 ## [1.52.0] - 2026-09-12
 
 ### Fixed
