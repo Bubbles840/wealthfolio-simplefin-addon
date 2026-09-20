@@ -44,7 +44,9 @@ export interface SelfCheckFinding {
     | 'unmapped-accounts'
     | 'feed-stale'
     | 'signals-unreadable'
-    | 'version-skew';
+    | 'version-skew'
+    /** A finding from `shared/ledger-checks.ts`: the row-level audit. */
+    | 'ledger';
   severity: SelfCheckSeverity;
   /** One line, already user-facing. No Markdown: the caller escapes and
    *  decorates, because the same finding is rendered in two places. */

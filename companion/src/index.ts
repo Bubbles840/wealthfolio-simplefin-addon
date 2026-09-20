@@ -41,6 +41,12 @@ export function wealthfolioDbPath(): string {
 }
 import { evaluateSelfCheck, formatSelfCheckBlock } from '../../shared/self-check.js';
 import { readInstalledAddonVersion } from './installed-addon.js';
+import { getLedgerFacts } from './ledger-facts.js';
+import { evaluateLedgerChecks, nextLedgerCheckSeen, type LedgerCheckSeen } from '../../shared/ledger-checks.js';
+
+/** When each ledger-check condition was first seen — what lets a card mismatch
+ *  wait out feed lag before speaking, and a budget nudge be said only once. */
+const LEDGER_CHECK_SEEN_SECRET_KEY = 'ledger_check_seen';
 import { monthEndForecast, previousThreeFullMonths, daysInMonthOf } from '../../shared/projection.js';
 import { startTelegramListener } from './telegram-listener.js';
 import type { TelegramListenerDeps } from './telegram-listener.js';
@@ -1762,7 +1768,7 @@ export async function composeDailyDigestMessage(
     await wfClient.getAddonSecret('simplefin-sync', 'account_names').catch(() => null),
     'account_names',
   ) ?? {};
-  const selfCheck = formatSelfCheckBlock(evaluateSelfCheck({
+  const selfCheckFindings = evaluateSelfCheck({
     lastSuccessAt: health?.lastSuccessAt ?? null,
     firstFailedAt: health?.firstFailedAt ?? null,
     lastError: health?.lastError ?? null,
@@ -1781,7 +1787,42 @@ export async function composeDailyDigestMessage(
       name: accountNames[id] ?? id,
       balanceDate: typeof info?.date === 'number' ? info.date : null,
     })),
-  }, now));
+  }, now);
+  // The row-level audit, judged every morning so nobody has to run one by
+  // hand. Balances agreeing with the bank was never enough: every shape a row
+  // can take moves the same cash, so a reconciled ledger can still count the
+  // user's own money as income. Wrapped whole — a checker that cannot check
+  // must never cost the user the report it exists to improve.
+  let ledgerFindings: ReturnType<typeof evaluateLedgerChecks>['findings'] = [];
+  try {
+    const mapping = parseSecretJson<Record<string, string>>(
+      await wfClient.getAddonSecret('simplefin-sync', 'account_mapping').catch(() => null),
+      'account_mapping',
+    ) ?? {};
+    const bankByWfId = new Map<string, number | null>();
+    for (const [sfinId, wfId] of Object.entries(mapping)) {
+      const balance = balances[sfinId]?.balance;
+      bankByWfId.set(wfId, typeof balance === 'number' ? balance : null);
+    }
+    const facts = getLedgerFacts(wealthfolioDbPath(), now, bankByWfId);
+    if (facts) {
+      const seen = parseSecretJson<LedgerCheckSeen>(
+        await wfClient.getAddonSecret('simplefin-sync', LEDGER_CHECK_SEEN_SECRET_KEY).catch(() => null),
+        LEDGER_CHECK_SEEN_SECRET_KEY,
+      ) ?? {};
+      const judged = evaluateLedgerChecks(facts, seen, now);
+      ledgerFindings = judged.findings;
+      const next = nextLedgerCheckSeen(seen, judged.keys, now);
+      // Written only when it changed: most mornings nothing did, and a secret
+      // write a day for no reason is a write that can fail for no reason.
+      if (JSON.stringify(next) !== JSON.stringify(seen)) {
+        await wfClient.setAddonSecret('simplefin-sync', LEDGER_CHECK_SEEN_SECRET_KEY, JSON.stringify(next)).catch(() => {});
+      }
+    }
+  } catch (err) {
+    log(`Ledger checks skipped: ${formatError(err)}`);
+  }
+  const selfCheck = formatSelfCheckBlock([...selfCheckFindings, ...ledgerFindings]);
   if (selfCheck) {
     message += `\n\n${selfCheck}`;
   }
