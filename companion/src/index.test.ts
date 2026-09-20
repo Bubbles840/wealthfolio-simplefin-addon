@@ -10,6 +10,20 @@ import { CATEGORIZE_ENTRY_CALLBACK } from '../../shared/telegram.js';
 import { existsSync } from 'fs';
 import type { SyncResult } from '../../shared/sync-core.js';
 
+
+/**
+ * A dismissal timestamp comfortably inside the 60-day pruning window.
+ *
+ * ONE value for the whole file, computed once. It has to be relative to the
+ * clock — the literal dates this replaced turned four tests into time bombs
+ * (one went off on 2026-09-18) — but it also has to be a single constant,
+ * because several tests compare the fixture's timestamp against the value that
+ * comes back: evaluating `Date.now()` separately on each side passes on a fast
+ * machine and fails by one millisecond on a slow one, which is exactly how the
+ * first version of this fix failed in CI while passing locally.
+ */
+const RECENT_DISMISSAL = new Date(Date.now() - 10 * 86_400_000).toISOString();
+
 /** A promise plus its resolve/reject, for tests that need to control exactly
  *  when an in-flight async operation settles. */
 function createDeferred<T>(): { promise: Promise<T>; resolve: (v: T) => void; reject: (e: unknown) => void } {
@@ -2234,7 +2248,7 @@ describe('undoTelegramDismissal', () => {
     // it. A whole-object write of the stale snapshot minus one id would.
     const secrets = new Map<string, string>([
       ['uncategorized_dismissals', JSON.stringify({
-        'act-1': new Date(Date.now() - 10 * 86_400_000).toISOString(), 'act-2': '2026-08-10T00:00:00.000Z',
+        'act-1': RECENT_DISMISSAL, 'act-2': '2026-08-10T00:00:00.000Z',
       })],
     ]);
     let ledgerReads = 0;
@@ -2262,7 +2276,7 @@ describe('undoTelegramDismissal', () => {
     // A doubled tap, or Undo on a row the addon already restored. Idempotent,
     // and silent: there is nothing to confirm.
     const secrets = new Map<string, string>([
-      ['uncategorized_dismissals', JSON.stringify({ 'act-1': new Date(Date.now() - 10 * 86_400_000).toISOString() })],
+      ['uncategorized_dismissals', JSON.stringify({ 'act-1': RECENT_DISMISSAL })],
     ]);
     const client: any = {
       getAddonSecret: vi.fn(async (_a: string, k: string) => secrets.get(k) ?? null),
@@ -2347,7 +2361,7 @@ describe('applyTelegramDismissal', () => {
     // "existing entries survive" — the merge has to be against a FRESH read to
     // mean anything, which is what this asserts.
     const secrets = new Map<string, string>([
-      ['uncategorized_dismissals', JSON.stringify({ 'act-earlier': new Date(Date.now() - 10 * 86_400_000).toISOString() })],
+      ['uncategorized_dismissals', JSON.stringify({ 'act-earlier': RECENT_DISMISSAL })],
     ]);
     let ledgerReads = 0;
     const client: any = {
@@ -2369,12 +2383,12 @@ describe('applyTelegramDismissal', () => {
 
     const written = JSON.parse(secrets.get('uncategorized_dismissals')!);
     expect(Object.keys(written).sort()).toEqual(['act-addon', 'act-earlier', 'act-tapped']);
-    expect(written['act-earlier']).toBe(new Date(Date.now() - 10 * 86_400_000).toISOString());
+    expect(written['act-earlier']).toBe(RECENT_DISMISSAL);
   });
 
   it('writes nothing at all when the id is already dismissed', async () => {
     const secrets = new Map<string, string>([
-      ['uncategorized_dismissals', JSON.stringify({ 'act-1': new Date(Date.now() - 10 * 86_400_000).toISOString() })],
+      ['uncategorized_dismissals', JSON.stringify({ 'act-1': RECENT_DISMISSAL })],
     ]);
     const client = clientOver(secrets);
 
@@ -3003,7 +3017,7 @@ describe('sendImportNotice', () => {
         // 60 days, so the hardcoded '2026-07-20' this used to be turned the
         // test into a time bomb that went off on 2026-09-18 — the entry aged
         // out, the row came back, and the suite failed with no code change.
-        'act-old': new Date(Date.now() - 10 * 86_400_000).toISOString(),
+        'act-old': RECENT_DISMISSAL,
         'act-9': new Date().toISOString(),
       })],
     ]);
@@ -3495,7 +3509,7 @@ describe('the /categorize wiring', () => {
   });
 
   it('leaves an already-dismissed row out of what /categorize lists', async () => {
-    const { client } = clientFor([[LEDGER_KEY, JSON.stringify({ 'act-2': new Date(Date.now() - 10 * 86_400_000).toISOString() })]]);
+    const { client } = clientFor([[LEDGER_KEY, JSON.stringify({ 'act-2': RECENT_DISMISSAL })]]);
     const { sent, reply } = collect();
     await buildTelegramCommandHandler(client)({ command: 'categorize', args: '' }, reply);
     expect(sent[0][0]).toBe('1 transaction needs a category:');
@@ -3601,7 +3615,7 @@ describe('the /categorize wiring', () => {
       // whole-object write and erases whatever the other host recorded in
       // between. Two reads are the only thing that makes the merge mean anything.
       const { client, secrets } = clientFor([
-        [LEDGER_KEY, JSON.stringify({ 'act-earlier': new Date(Date.now() - 10 * 86_400_000).toISOString() })],
+        [LEDGER_KEY, JSON.stringify({ 'act-earlier': RECENT_DISMISSAL })],
       ]);
       const deps = buildCategorizeDeps(client);
 
@@ -3614,7 +3628,7 @@ describe('the /categorize wiring', () => {
 
       const written = JSON.parse(secrets.get(LEDGER_KEY)!);
       expect(Object.keys(written).sort()).toEqual(['act-earlier', 'act-menu', 'act-thirdparty']);
-      expect(written['act-earlier']).toBe(new Date(Date.now() - 10 * 86_400_000).toISOString());
+      expect(written['act-earlier']).toBe(RECENT_DISMISSAL);
     });
 
     it('replays a REMOVAL as a delta, leaving a third party\'s entry alone', async () => {
