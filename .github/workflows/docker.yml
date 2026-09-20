@@ -9,9 +9,51 @@ on:
   pull_request:
     branches: ['main']
   workflow_dispatch:
+  # Weekly, with no code change, so a test that depends on today's date fails on
+  # a quiet Monday instead of on release day. Not hypothetical: a fixture
+  # hardcoded '2026-07-20' against a 60-day pruning window and began failing on
+  # 2026-09-18 — and three more were armed for 2026-10-08.
+  schedule:
+    - cron: '0 12 * * 1'
 
 jobs:
+  # Until 2026-09-20 this workflow ran NO tests: it checked the version strings,
+  # built the image and published. Two thousand tests existed and nothing forced
+  # them to run, so every release rested on someone remembering to run both
+  # suites by hand — and v1.52.0 shipped with the companion suite failing,
+  # because that time nobody did. `publish` and `release` both wait on this.
+  #
+  # BOTH suites, separately. The root `vitest` does not collect the companion's
+  # tests and the root `tsc` does not cover its sources; "the tests pass" has
+  # meant "half of them" more than once.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          # node:sqlite is what the companion's readers and their tests run on.
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            companion/package-lock.json
+      - name: Addon and shared — typecheck and tests
+        run: |
+          npm ci
+          npx tsc --noEmit
+          npx vitest run
+      - name: Companion — typecheck and tests
+        working-directory: companion
+        run: |
+          npm ci
+          npx tsc --noEmit
+          npx vitest run
+
   publish:
+    needs: test
+    # A scheduled run exists to exercise the tests, not to rebuild the image.
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -101,6 +143,7 @@ jobs:
   # from the release page" — the update path the daily report now suggests —
   # was a promise nothing kept.
   release:
+    needs: test
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
