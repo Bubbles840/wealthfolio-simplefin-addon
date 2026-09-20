@@ -161,6 +161,61 @@ describe('version skew', () => {
     )).toEqual([]);
   });
 
+  // The skew warning used to offer both remedies at once — "upload the zip, OR
+  // reload the tab if you already have" — because the addon's self-reported
+  // version cannot tell them apart: it is written when the bundle LOADS, so it
+  // means "the newest build that ever ran in a browser". Twice that read as a
+  // false alarm (2026-09-06, 2026-09-20). The installed zip is on disk in the
+  // directory the companion already mounts, and its manifest settles which
+  // remedy applies.
+  it('says the zip was never uploaded when the INSTALLED addon is the old one', () => {
+    const [finding] = evaluateSelfCheck({
+      ...healthy, addonVersion: '1.49.0', installedAddonVersion: '1.49.0', companionVersion: '1.52.0',
+    }, NOW);
+    expect(finding.kind).toBe('version-skew');
+    expect(finding.message).toContain('simplefin-sync-1.52.0.zip');
+    expect(finding.message).toContain('1.49.0');
+    // Not the tab's fault, so the reload hint would only mislead.
+    expect(finding.message).not.toMatch(/reload|refresh/i);
+  });
+
+  it('says to refresh the tab when the right zip IS installed but an old bundle is still running', () => {
+    const [finding] = evaluateSelfCheck({
+      ...healthy, addonVersion: '1.49.0', installedAddonVersion: '1.52.0', companionVersion: '1.52.0',
+    }, NOW);
+    expect(finding.kind).toBe('version-skew');
+    expect(finding.message).toMatch(/refresh/i);
+    expect(finding.message).toContain('1.49.0');
+    // Nothing to upload, so naming a zip would send the user to redo a step
+    // they already did.
+    expect(finding.message).not.toContain('.zip');
+  });
+
+  it('flags an out-of-date installed zip even when no bundle has reported in', () => {
+    // A zip older than 1.34.0 never writes its version, and neither does one
+    // nobody has opened since install. The manifest is evidence on its own.
+    const [finding] = evaluateSelfCheck({
+      ...healthy, installedAddonVersion: '1.49.0', companionVersion: '1.52.0',
+    }, NOW);
+    expect(finding.kind).toBe('version-skew');
+    expect(finding.message).toContain('simplefin-sync-1.52.0.zip');
+  });
+
+  it('stays quiet when installed, running and companion all agree', () => {
+    expect(evaluateSelfCheck({
+      ...healthy, addonVersion: '1.52.0', installedAddonVersion: '1.52.0', companionVersion: '1.52.0',
+    }, NOW)).toEqual([]);
+  });
+
+  it('stays quiet when the right zip is installed and nothing has loaded it yet', () => {
+    // Installed and current, no browser report at all: there is no evidence of
+    // anything stale, and a warning here would fire for every user who updates
+    // from the server and has not opened the app since.
+    expect(evaluateSelfCheck({
+      ...healthy, installedAddonVersion: '1.52.0', companionVersion: '1.52.0',
+    }, NOW)).toEqual([]);
+  });
+
   it('stays quiet when the addon version is unknown', () => {
     // Older zips never published their version; treating absence as skew would
     // alarm every user whose companion updated first, forever.
