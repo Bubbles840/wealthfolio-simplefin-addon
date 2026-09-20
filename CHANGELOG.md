@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.53.0] - 2026-09-20
+
+### Added
+
+- **The daily report audits the ledger itself, and only speaks when something
+  is wrong.** Balances agreeing with the bank was never enough: every shape a
+  row can take moves the same cash, so a ledger that reconciles to the cent can
+  still count your own money as income. A day of auditing by hand found exactly
+  that — $1,900 of transfers booked as income, a card five months short of its
+  opening balance, reimbursements filed where they reduced nothing — and all of
+  it is detectable mechanically. Those checks now run every morning under
+  *Needs attention*:
+
+  - a refund or card credit with no spending category, which reduces nothing;
+  - an unlinked cash transfer, which Wealthfolio counts as income or spending;
+  - a row inside a transfer group that is typed as a deposit or withdrawal;
+  - a credit card whose posted ledger has disagreed with the bank for over two
+    days — cards could never be balance-checked before, and the two-day wait
+    exists because a bank's balance leads its own transactions;
+  - rows Wealthfolio has flagged Needs review.
+
+- **Budget scenarios, not just ledger errors.** Some things break a budget
+  without being a bug. Said ONCE each, because the question is only useful the
+  first time: a single purchase bigger than its category's whole budget
+  (reimbursable, a one-off, or time to raise the budget?); a category over
+  budget three months running, where the budget is probably what is wrong; a
+  deposit filed under an income category named like a reimbursement, which
+  offsets no spending; and a transfer held open for weeks by a silent feed.
+
+  The block is capped at five lines, and a healthy ledger adds nothing at all.
+
 ## [1.52.1] - 2026-09-20
 
 ### Fixed
