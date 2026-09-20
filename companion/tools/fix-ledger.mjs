@@ -122,6 +122,27 @@ const RETYPE = [
   { find: 'CAPITAL ONE TRANSFER', amount: 600, date: '2026-07-30', account: 'Spend', type: 'CREDIT', subtype: null, why: 'own money; neutral on both sides without touching the phantom asset' },
   { find: 'Transfer from Zelle', amount: 200, date: '2026-06-26', type: 'CREDIT', subtype: 'REIMBURSEMENT', why: 'a payback from a person, not income' },
   { find: 'Transfer from Zelle', amount: 117, date: '2026-06-16', type: 'CREDIT', subtype: 'REIMBURSEMENT', why: 'a payback from a person, not income' },
+  // Cash handed back for a $150 interest-group food order the month before.
+  // As a DEPOSIT filed under the INCOME category "Reimbursements" it counted as
+  // income and offset nothing — $137 of a $431 overage. It is categorised in
+  // THEN_CATEGORISE below, which must run after this retype.
+  { find: 'Atm Deposit XX0863', amount: 137, date: '2026-09-11', type: 'CREDIT', subtype: 'REIMBURSEMENT', why: 'paid back for a group food order, not income' },
+];
+
+/**
+ * Category moves that are only LEGAL after a retype, so they are planned after
+ * the retypes and therefore applied after them.
+ *
+ * Wealthfolio validates an assignment against the row's classification: a
+ * DEPOSIT is Income and accepts only income categories, so filing the $137
+ * under Restaurants while it is still a DEPOSIT is refused outright. The
+ * Thankyou credits need no retype — a card CREDIT is already an expense refund
+ * — but they carried only an income category, which reduces nothing.
+ */
+const THEN_CATEGORISE = [
+  { find: 'Atm Deposit XX0863', amount: 137, date: '2026-09-11', to: 'Restaurants', why: 'offsets the food order it paid back' },
+  { find: 'Thankyou Points Redeemed', amount: 22.91, date: '2026-09-11', to: 'Shopping', why: 'card rewards reduce Shopping' },
+  { find: 'Thankyou Points Redeemed', amount: 70, date: '2026-07-25', to: 'Shopping', why: 'card rewards reduce Shopping' },
 ];
 
 /** Link a real transfer pair whose two legs were never grouped. */
@@ -139,6 +160,7 @@ const RULES = [
   { name: 'Robinhood Gold → Subscriptions', pattern: 'Gold Annual Subscription', category: 'Subscriptions' },
   { name: 'Staples → Shopping', pattern: 'Staples', category: 'Shopping' },
   { name: 'Amazon → Online Shopping', pattern: 'Amazon', category: 'Online Shopping' },
+  { name: 'Card rewards → Shopping', pattern: 'Thankyou Points Redeemed', category: 'Shopping' },
 ];
 
 /** One missing opening balance, as a labelled starting-balance row. */
@@ -197,7 +219,8 @@ const actions = [];
 const skipped = [];
 
 console.log('── recategorise');
-for (const fix of RECATEGORISE) {
+function planCategoryMoves(list) {
+for (const fix of list) {
   const rows = findOne(fix.find, fix.amount, fix.date);
   const target = catId(fix.to);
   if (rows.length !== 1) {
@@ -217,6 +240,8 @@ for (const fix of RECATEGORISE) {
   console.log(`   ${row.d}  ${money(row.amt).padStart(10)}  ${fix.find.padEnd(26)} ${from} → ${fix.to}   (${fix.why})`);
   actions.push({ kind: 'recategorise', id: row.id, categoryId: target, label: `${fix.find} → ${fix.to}` });
 }
+}
+planCategoryMoves(RECATEGORISE);
 
 console.log('\n── retype');
 for (const fix of RETYPE) {
@@ -260,6 +285,9 @@ for (const fix of RETYPE) {
     },
   });
 }
+
+console.log('\n── categorise, now that the types allow it');
+planCategoryMoves(THEN_CATEGORISE);
 
 console.log('\n── link transfer pairs');
 for (const pair of LINK) {
