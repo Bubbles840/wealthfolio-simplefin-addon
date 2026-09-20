@@ -408,6 +408,99 @@ for (const r of db
   });
 }
 
+console.log('\n── baselines that absorbed a late-arriving transaction');
+// A starting balance is computed as (bank balance − what this run imports −
+// what the ledger holds). A bank can include a transaction in its BALANCE a day
+// or two before it publishes the transaction itself — and if the baseline is
+// computed inside that gap, it swallows the amount. When the transaction then
+// arrives it is counted a second time, and nothing corrects it:
+// `adjustStartingBalanceForOlderRows` only nets rows DATED before the baseline.
+//
+// The signature is exact, which is what makes this safe to automate: a row
+// CREATED after the baseline was written, but DATED on or before that moment,
+// whose cash effect equals the account's whole disagreement with the bank to
+// the cent. Found live: a $22.91 card credit posted two days before a $22.91
+// baseline was computed, imported after it.
+let sfBalances = {};
+try {
+  sfBalances = JSON.parse((await client.getAddonSecret(ADDON_ID, 'account_balances')) ?? '{}');
+} catch {
+  /* without the bank's figure nothing below can be proven, so nothing fires */
+}
+const CASH_EFFECT_SQL = `
+  CASE
+    WHEN UPPER(acc.account_type) = 'CREDIT_CARD' AND UPPER(a.activity_type) = 'INTEREST' THEN -1
+    WHEN UPPER(a.activity_type) IN ('DEPOSIT','CREDIT','TRANSFER_IN','DIVIDEND','INTEREST','SELL') THEN 1
+    WHEN UPPER(a.activity_type) IN ('WITHDRAWAL','TRANSFER_OUT','FEE','TAX','BUY') THEN -1
+    ELSE 0 END * ABS(CAST(COALESCE(a.amount,'0') AS REAL))`;
+let anyAbsorbed = false;
+for (const base of db
+  .prepare(
+    `SELECT a.id, a.account_id, acc.name acct, acc.account_type at, a.activity_type, a.currency,
+            a.activity_date raw_date, a.created_at, COALESCE(a.notes,'') notes,
+            ROUND(${CASH_EFFECT_SQL}, 2) signed
+     FROM activities a JOIN accounts acc ON a.account_id = acc.id
+     WHERE COALESCE(a.notes,'') LIKE 'Starting balance · %'`,
+  )
+  .all()) {
+  const sfin = sfBalances[byWfId[base.account_id]]?.balance;
+  if (sfin === null || sfin === undefined || !base.created_at) continue;
+  const inFlight = db
+    .prepare(`SELECT COUNT(*) n FROM activities WHERE account_id = ? AND COALESCE(notes,'') LIKE '↔️ In-transit transfer · %'`)
+    .get(base.account_id).n;
+  if (inFlight > 0) continue; // the two sides are measuring different moments
+  const ledger = db
+    .prepare(
+      `SELECT ROUND(SUM(${CASH_EFFECT_SQL}), 2) v FROM activities a JOIN accounts acc ON a.account_id = acc.id
+       WHERE a.account_id = ? AND COALESCE(a.notes,'') NOT LIKE '% · pending'`,
+    )
+    .get(base.account_id).v;
+  const diff = Math.round((Number(ledger) - Number(sfin)) * 100) / 100;
+  if (Math.abs(diff) < 0.01) continue;
+  const candidates = db
+    .prepare(
+      `SELECT a.id, substr(a.activity_date,1,10) d, a.activity_type, COALESCE(a.notes,'') notes,
+              ROUND(${CASH_EFFECT_SQL}, 2) signed
+       FROM activities a JOIN accounts acc ON a.account_id = acc.id
+       WHERE a.account_id = ?
+         AND a.id <> ?
+         AND COALESCE(a.notes,'') NOT LIKE '% · pending'
+         AND a.created_at > ?
+         AND substr(a.activity_date,1,10) <= substr(?,1,10)
+         AND ABS(ROUND(${CASH_EFFECT_SQL}, 2) - ?) < 0.01`,
+    )
+    .all(base.account_id, base.id, base.created_at, base.created_at, diff);
+  if (candidates.length !== 1) {
+    skipped.push(`${base.acct}: off by ${money(diff)} but ${candidates.length} late-arriving rows explain it — not guessing`);
+    continue;
+  }
+  anyAbsorbed = true;
+  const late = candidates[0];
+  const nextSigned = Math.round((Number(base.signed) - Number(late.signed)) * 100) / 100;
+  const nextType = base.at === 'CREDIT_CARD'
+    ? (nextSigned >= 0 ? 'TRANSFER_IN' : 'TRANSFER_OUT')
+    : (nextSigned >= 0 ? (base.activity_type === 'DEPOSIT' ? 'DEPOSIT' : 'CREDIT') : 'WITHDRAWAL');
+  console.log(`   ${base.acct}: ledger is ${money(diff)} ${diff > 0 ? 'above' : 'below'} the bank`);
+  console.log(`      counted twice: ${late.d} ${late.activity_type} ${money(late.signed)}  ${late.notes.split(' · ')[0].slice(0, 40)}`);
+  console.log(`      baseline ${money(base.signed)} → ${money(nextSigned)} ${nextType}`);
+  actions.push({
+    kind: 'retype',
+    label: `${base.acct} baseline ${money(base.signed)} → ${money(nextSigned)}`,
+    update: {
+      id: base.id,
+      accountId: base.account_id,
+      activityType: nextType,
+      activityDate: base.raw_date,
+      amount: Math.abs(nextSigned),
+      fee: 0,
+      currency: base.currency || 'USD',
+      comment: base.notes,
+      needsReview: false,
+    },
+  });
+}
+if (!anyAbsorbed) console.log('   – none found');
+
 console.log('\n── duplicate starting balances');
 // An account is meant to carry exactly one baseline, and the sync's machinery
 // can only see the one whose comment matches `Starting balance · <sfin id>`.
