@@ -1106,7 +1106,11 @@ export const LEGACY_PLACEHOLDER_REWRITE_LOG_TAG = 'legacy-placeholder-rewrite';
 export function planLegacyPlaceholderRewrite(
   rows: ReadonlyArray<ExistingRow>,
   currency: string,
+  accountType = 'CASH',
 ): ActivityWrite[] {
+  // Through the shared chooser: a card refuses TRANSFER_OUT (see
+  // neutralAdjustmentFields), so a card row restates as a WITHDRAWAL.
+  const outflowType = neutralAdjustmentFields(accountType, -1).activityType;
   const updates: ActivityWrite[] = [];
   for (const row of rows) {
     if (row.type !== 'CREDIT' || row.absCents !== 0 || !(row.feeCents && row.feeCents > 0)) continue;
@@ -1115,7 +1119,7 @@ export function planLegacyPlaceholderRewrite(
     updates.push({
       id: row.wfId,
       accountId: row.wfAccountId,
-      activityType: 'TRANSFER_OUT',
+      activityType: outflowType,
       activityDate: row.date,
       amount: row.feeCents / 100,
       fee: 0,
@@ -1233,6 +1237,18 @@ function expiryHoldAccount(
  * `classify_import_activity` (3.8.0) sends every type with a cash symbol down
  * the same CashMovement branch, TRANSFER_OUT included.
  *
+ * A card OUTFLOW is a WITHDRAWAL, and it is not neutral — there is no neutral
+ * option. Wealthfolio 3.8 accepts only WITHDRAWAL, TRANSFER_IN, CREDIT, FEE and
+ * INTEREST on a card, on every write path (activities_service.rs,
+ * `account_activity_validation_message`), and all three outflows classify as
+ * spending. The TRANSFER_OUT this used to pick was refused outright (live,
+ * 2026-09-23: "TRANSFER_OUT activities are not supported for credit card
+ * accounts"), so a card that OPENED OWING MONEY never got its opening balance
+ * at all — the write failed on every sync. A card's opening debt therefore
+ * shows on Wealthfolio's own Spending page on its opening date unless it is
+ * filed under a category excluded from spending; this project's readers skip
+ * it by note marker either way.
+ *
  * SECURITIES/CRYPTOCURRENCY keep the simpler DEPOSIT/WITHDRAWAL shape: every
  * type is Ignored on an investment-style account.
  */
@@ -1243,7 +1259,13 @@ export function neutralAdjustmentFields(
   const mag = Math.abs(Math.round(signedAmount * 100) / 100);
   if (accountType === 'CASH' || accountType === 'CREDIT_CARD') {
     if (signedAmount <= 0) {
-      return { activityType: 'TRANSFER_OUT' as ActivityType, amount: mag, fee: 0 };
+      // A card refuses TRANSFER_OUT outright (see the card note above), and
+      // every outflow type it accepts is spending; WITHDRAWAL is the honest one.
+      return {
+        activityType: (accountType === 'CREDIT_CARD' ? 'WITHDRAWAL' : 'TRANSFER_OUT') as ActivityType,
+        amount: mag,
+        fee: 0,
+      };
     }
     return accountType === 'CREDIT_CARD'
       ? { activityType: 'TRANSFER_IN' as ActivityType, amount: mag, fee: 0 }
@@ -1968,7 +1990,7 @@ export async function runSyncCore(
     // until this runs — and the user cannot fix a dozen flagged rows by hand
     // faster than the next scheduled sync can. The snapshot is patched in
     // memory so `planReconciliation` below sees the restated row.
-    const legacyRewrites = planLegacyPlaceholderRewrite(existing, sfAccount.currency);
+    const legacyRewrites = planLegacyPlaceholderRewrite(existing, sfAccount.currency, wfTypes.get(wfAccountId) ?? 'CASH');
     if (legacyRewrites.length) {
       try {
         const res = await host.saveMany({ updates: legacyRewrites });
@@ -1977,7 +1999,7 @@ export async function runSyncCore(
         } else {
           for (const u of legacyRewrites) {
             const row = existing.find((r) => r.wfId === u.id);
-            if (row) { row.type = 'TRANSFER_OUT'; row.absCents = Math.round((u.amount ?? 0) * 100); row.feeCents = 0; }
+            if (row) { row.type = u.activityType; row.absCents = Math.round((u.amount ?? 0) * 100); row.feeCents = 0; }
           }
           console.info(
             `[simplefin-sync] ${LEGACY_PLACEHOLDER_REWRITE_LOG_TAG}: restated ${legacyRewrites.length} pre-v1.49 placeholder(s) in account ${sfAccount.id} as TRANSFER_OUT with their real amounts`,

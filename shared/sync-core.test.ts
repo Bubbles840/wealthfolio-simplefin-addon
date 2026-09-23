@@ -384,7 +384,7 @@ describe('runSyncCore', () => {
     // The table the 2026-08-27 refund would have failed: the ONE cell that
     // differs from the plug shape is a card inflow.
     expect(neutralAdjustmentFields('CREDIT_CARD', 429.71)).toEqual({ activityType: 'TRANSFER_IN', amount: 429.71, fee: 0 });
-    expect(neutralAdjustmentFields('CREDIT_CARD', -429.71)).toEqual({ activityType: 'TRANSFER_OUT', amount: 429.71, fee: 0 });
+    expect(neutralAdjustmentFields('CREDIT_CARD', -429.71)).toEqual({ activityType: 'WITHDRAWAL', amount: 429.71, fee: 0 });
     expect(neutralAdjustmentFields('CASH', 1300)).toEqual({ activityType: 'CREDIT', amount: 1300, fee: 0 });
     // Every outflow is a TRANSFER_OUT with its real amount: the only cash-moving
     // shape that survives Wealthfolio 3.8's final-cash contract (fee no longer
@@ -520,9 +520,10 @@ describe('runSyncCore', () => {
     expect(inflow.fee).toBe(0);
 
     const outflow = neutralAdjustmentFields('CREDIT_CARD', -1300);
-    // TRANSFER_OUT is Ignored on a card whatever else is true of it, and it is
-    // the shape whose amount still moves cash under Wealthfolio 3.8 (v1.49).
-    expect(outflow.activityType).toBe('TRANSFER_OUT');
+    // Not TRANSFER_OUT: Wealthfolio 3.8 refuses it on a card (live,
+    // 2026-09-23). Every outflow a card accepts is spending, so this is the
+    // honest one — see neutralAdjustmentFields.
+    expect(outflow.activityType).toBe('WITHDRAWAL');
     expect(outflow.amount).toBe(1300);
     expect(outflow.fee).toBe(0);
   });
@@ -866,17 +867,17 @@ describe('runSyncCore', () => {
     });
   });
 
-  it("keeps a card baseline in the card's neutral shape, with no cash symbol on the transfer leg", async () => {
+  it("keeps a card baseline in a shape the card accepts, with no cash symbol", async () => {
     const seed = baselineOnlySeed();
     seed.accountTypes = { 'wf-a': 'CREDIT_CARD' };
     const { host, saved } = createFakeHost(seed);
     await applyBaselineFix(host, {
       wfAccountId: 'wf-a', sfAccountId: 'sfin-1', suggestedAmount: -235.4, currency: 'USD',
     });
-    // DEPOSIT is refused on a card and WITHDRAWAL is a purchase; the opening
-    // debt is a TRANSFER_OUT (neutralAdjustmentFields).
+    // DEPOSIT and TRANSFER_OUT are both refused on a card; the opening debt is
+    // a WITHDRAWAL (neutralAdjustmentFields).
     const u = saved.flatMap((r) => r.updates ?? [])[0];
-    expect(u).toMatchObject({ activityType: 'TRANSFER_OUT', amount: 235.4 });
+    expect(u).toMatchObject({ activityType: 'WITHDRAWAL', amount: 235.4 });
     expect(u.symbol).toBeUndefined();
   });
 
@@ -2283,17 +2284,16 @@ describe('runSyncCore with ONE SimpleFin tx id in two accounts', () => {
 
     // target − windowDelta − currentValuation, per account:
     //   Spend: 0 − (−700) − 0 = +700 → DEPOSIT
-    //   Citi:  0 − (+700) − 0 = −700 → TRANSFER_OUT
+    //   Citi:  0 − (+700) − 0 = −700 → WITHDRAWAL
     //
-    // The card side used to be a WITHDRAWAL, which this test froze in place —
-    // and on a card that classifies as SPENDING, so an opening balance booked a
-    // phantom purchase the size of the card's starting debt. A card's
-    // correction is now spending-neutral (see `startingBalanceFields`); the
-    // cash side is deliberately untouched.
+    // The card side went WITHDRAWAL → TRANSFER_OUT (v1.51, to stay out of
+    // spending) → WITHDRAWAL again (v1.55): Wealthfolio 3.8 refuses TRANSFER_OUT
+    // on a card, so the "neutral" shape never landed at all. Every outflow a
+    // card accepts is spending; see neutralAdjustmentFields.
     const baselines = imported.flat().filter((r) => r.comment.startsWith('Starting balance · '));
     expect(baselines.map((r) => [r.accountId, r.activityType, r.amount])).toEqual([
       ['wf-spend', 'CREDIT', 700],
-      ['wf-citi', 'TRANSFER_OUT', 700],
+      ['wf-citi', 'WITHDRAWAL', 700],
     ]);
   });
 
@@ -3343,6 +3343,17 @@ describe('legacy fee-side placeholders (pre-v1.49 CREDIT amount 0 / fee X)', () 
     expect(stored.find((r) => r.id === 'plug-1')).toMatchObject({ activityType: 'TRANSFER_OUT', amount: 80 });
   });
 
+  it('restates a card placeholder as a WITHDRAWAL, the outflow a card accepts', async () => {
+    // TRANSFER_OUT is refused on a card (Wealthfolio 3.8); the bulk call would
+    // fail and the row would keep booking $0 forever.
+    const s = seed([plug]);
+    s.accountTypes = { 'wf-a': 'CREDIT_CARD' };
+    const { host, store, activities } = createFakeHost(s);
+    const result = await runSyncCore(host, store, { force: true });
+    expect(result.errors.filter((e) => e.includes('legacy'))).toEqual([]);
+    expect(activities.get('wf-a')!.find((r) => r.id === 'plug-1')).toMatchObject({ activityType: 'WITHDRAWAL', amount: 80 });
+  });
+
   it('is idempotent: rows already in the new shape, or with no fee, are left alone', async () => {
     const already: HostActivity = { ...plug, id: 'done', activityType: 'TRANSFER_OUT', amount: '80', fee: '0' };
     const inflowPlug: HostActivity = { ...plug, id: 'in', activityType: 'CREDIT', amount: '250', fee: '0' };
@@ -3466,11 +3477,12 @@ describe('startingBalanceFields', () => {
     expect(startingBalanceFields('CASH', -50).activityType).toBe('WITHDRAWAL');
   });
 
-  it('keeps a card spending-neutral in both directions', () => {
-    // The card pair is wrong both ways: DEPOSIT is refused by the API and
-    // WITHDRAWAL classifies as spending.
+  it('gives a card only types Wealthfolio accepts on a card', () => {
+    // DEPOSIT and TRANSFER_OUT are both refused on a card. A credit opening is
+    // a neutral TRANSFER_IN; an opening DEBT has no neutral option, so it is a
+    // WITHDRAWAL (see neutralAdjustmentFields).
     expect(startingBalanceFields('CREDIT_CARD', 235.4).activityType).toBe('TRANSFER_IN');
-    expect(startingBalanceFields('CREDIT_CARD', -235.4).activityType).toBe('TRANSFER_OUT');
+    expect(startingBalanceFields('CREDIT_CARD', -235.4).activityType).toBe('WITHDRAWAL');
   });
 
   it('leaves investment-style accounts on the simple pair', () => {
@@ -3512,10 +3524,9 @@ describe('a credit card can finally get its opening balance', () => {
     const correction = imported.flat().find((r) => r.comment.startsWith('Starting balance · '));
     expect(correction).toBeTruthy();
     expect(correction!.amount).toBe(100);
-    // Card-safe and spending-neutral: TRANSFER_OUT, never a WITHDRAWAL (which
-    // the classifier reads as spending) and never a DEPOSIT (which the API
-    // refuses outright on a card).
-    expect(correction!.activityType).toBe('TRANSFER_OUT');
+    // WITHDRAWAL: the only outflow a card accepts that is not a fee or
+    // interest. TRANSFER_OUT and DEPOSIT are refused outright on a card.
+    expect(correction!.activityType).toBe('WITHDRAWAL');
   });
 
   it('writes nothing when the host has no ledger fallback', async () => {
@@ -3702,7 +3713,8 @@ describe('the starting balance stays the OLDEST row (v1.54)', () => {
   });
 
   it("reads a card baseline's TRANSFER_OUT as money owed when netting older charges", async () => {
-    // A card opening balance of $500 owed is a TRANSFER_OUT (neutralAdjustmentFields).
+    // A card opening balance of $500 owed, stored as TRANSFER_OUT (v1.51's shape,
+    // accepted only before Wealthfolio 3.8).
     // Read back as +$500, netting a recovered $50 charge produced +$550 — the
     // opening DEBT flipped into a $550 credit.
     const { host, store, saved } = createFakeHost({
@@ -3719,10 +3731,9 @@ describe('the starting balance stays the OLDEST row (v1.54)', () => {
     });
     await runSyncCore(host, store, {});
     const update = saved.flatMap((s) => s.updates ?? []).filter((u) => u.id === 'act-start').at(-1)!;
-    expect(update).toMatchObject({ activityType: 'TRANSFER_OUT', amount: 450, activityDate: '2026-04-22' });
-    // A transfer leg carrying the cash symbol becomes the phantom "$CASH"
-    // security and stops moving cash — the rewrite must send none.
-    expect(update.symbol).toBeUndefined();
+    // Rewritten as a WITHDRAWAL: a stored TRANSFER_OUT (possible only from
+    // before Wealthfolio 3.8) cannot be written back on a card.
+    expect(update).toMatchObject({ activityType: 'WITHDRAWAL', amount: 450, activityDate: '2026-04-22' });
   });
 });
 
@@ -3750,14 +3761,14 @@ describe("the sync's own unlinked transfer rows are marked external (v1.54)", ()
   it('stamps an opening balance, a plug and an aged placeholder', async () => {
     const { host, store, saved, activities } = createFakeHost(seed([
       row({ id: 'sb' }),
-      row({ id: 'plug', activityType: 'TRANSFER_OUT', date: '2026-06-12', amount: '80', comment: 'Balance adjustment · sfin-1 · 2026-06-12' }),
-      row({ id: 'ph', activityType: 'TRANSFER_OUT', date: '2026-05-02', amount: '700', comment: '↔️ In-transit transfer · ZELLE TO J · tx-z' }),
+      row({ id: 'plug', date: '2026-06-12', amount: '80', comment: 'Balance adjustment · sfin-1 · 2026-06-12' }),
+      row({ id: 'ph', date: '2026-05-02', amount: '700', comment: '↔️ In-transit transfer · AUTOPAY · tx-z' }),
     ]));
     await runSyncCore(host, store, { force: true });
     const byId = new Map(saved.flatMap((s) => s.updates ?? []).map((u) => [u.id, u]));
     expect(byId.get('sb')).toMatchObject({ metadata: EXTERNAL, activityType: 'TRANSFER_IN', amount: 235.4, activityDate: '2026-04-18', comment: 'Starting balance · sfin-1' });
-    expect(byId.get('plug')).toMatchObject({ metadata: EXTERNAL, activityType: 'TRANSFER_OUT', amount: 80 });
-    expect(byId.get('ph')).toMatchObject({ metadata: EXTERNAL, activityType: 'TRANSFER_OUT', amount: 700 });
+    expect(byId.get('plug')).toMatchObject({ metadata: EXTERNAL, activityType: 'TRANSFER_IN', amount: 80 });
+    expect(byId.get('ph')).toMatchObject({ metadata: EXTERNAL, activityType: 'TRANSFER_IN', amount: 700 });
     for (const id of ['sb', 'plug', 'ph']) expect(byId.get(id)!.symbol).toBeUndefined();
     // And it holds: a second run has nothing left to stamp.
     saved.length = 0;
