@@ -38,6 +38,10 @@ function fromSearchItem(a: any, wfAccountId = ''): HostActivity {
     assetId: a.assetId ? String(a.assetId) : undefined,
     sourceGroupId: a.sourceGroupId ?? null,
     subtype: a.subtype ?? null,
+    // Passed through as-is, and ABSENT (not null) when the response has no
+    // such field: an older server that cannot report metadata must read as
+    // "unknown", or the sync would re-stamp its rows on every run.
+    ...('metadata' in a ? { metadata: a.metadata ?? null } : {}),
   };
 }
 

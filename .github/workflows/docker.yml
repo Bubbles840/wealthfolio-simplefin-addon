@@ -164,7 +164,8 @@ jobs:
                      "$(grep -o "SIMPLEFIN_SYNC_VERSION = '[^']*'" shared/version.ts | cut -d"'" -f2)"; do
             [ "$got" = "$TAG" ] || { echo "::error::tag v$TAG disagrees with a shipped version string ($got)"; exit 1; }
           done
-      - run: npm run build && npm run package
+      # `package` builds, then refuses a bundle compiled as another version.
+      - run: npm run package
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/simplefin-sync-*.zip

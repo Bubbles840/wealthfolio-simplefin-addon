@@ -173,7 +173,18 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
       // exact same "backfill" update forever, which is invisible unless a test
       // reads a row back through this function rather than a hand-seeded one.
       subtype: w.subtype ?? null,
+      metadata: w.metadata ?? null,
     };
+  }
+
+  /** Wealthfolio's update semantics for metadata (activities_service.rs,
+   *  `merge_metadata_patch`): an update that omits it keeps what is stored,
+   *  and one that sends it merges its top-level keys over the stored object. */
+  function mergedMetadata(prev: HostActivity | undefined, patch: string | undefined): HostActivity['metadata'] {
+    const before = prev?.metadata;
+    if (patch === undefined) return before ?? null;
+    const base = typeof before === 'string' ? JSON.parse(before) : before ?? {};
+    return JSON.stringify({ ...base, ...JSON.parse(patch) });
   }
 
   /** Echo a row the way the real Wealthfolio API does: `comment` mirrored under `notes`. */
@@ -275,7 +286,7 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
         const accountId = accountOfId.get(w.id) ?? w.accountId;
         const rows = rowsFor(accountId);
         const idx = rows.findIndex((r) => r.id === w.id);
-        const row = toHostActivity(w.id, w);
+        const row = { ...toHostActivity(w.id, w), metadata: mergedMetadata(idx >= 0 ? rows[idx] : undefined, w.metadata) };
         if (idx >= 0) {
           rows[idx] = row;
         } else {

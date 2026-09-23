@@ -19,6 +19,11 @@ export interface HostActivity {
   /** A rule-assigned classifier (e.g. 'REIMBURSEMENT'), or `null` when the
    *  host reports the row has none. See docs/upstream-spending-buckets.md. */
   subtype?: string | null;
+  /** The row's stored metadata — a JSON string, or the parsed object some
+   *  reads return. `null` when the host reports the row has none; ABSENT when
+   *  the host cannot report it at all, which callers must treat as "unknown",
+   *  never as "none" (see `flowExternalOf` in sync-core). */
+  metadata?: string | Record<string, unknown> | null;
 }
 
 export interface TransferLinkFailureEntry {
