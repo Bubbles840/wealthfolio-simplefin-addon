@@ -29,8 +29,20 @@
  *      and fail pairing). Amount, date, note and id are unchanged.
  *   4. Links the two through Wealthfolio's own link endpoint, which updates
  *      both rows in place — ids and categories survive.
- * Then, if every row that pointed at the phantom `$CASH` asset was cleared, it
- * deletes that asset, which is what ends the "Sync issues for $CASH" warning.
+ * A MISSING LEG. An in-transit placeholder whose partner never arrived in the
+ * bank feed leaves the receiving account short by exactly its amount (live:
+ * $3,000 Spend → Savings on 2026-08-10; Savings $3,000 below the bank ever
+ * since). When exactly one other cash account is off from its bank balance by
+ * that amount, in the matching direction, the tool writes the missing leg there
+ * and links the two — the drift closes and the placeholder stops counting as
+ * spending.
+ *
+ * THE `$CASH` ASSET. Hundreds of ordinary rows point at it (an import path
+ * resolved the cash symbol to it), so it is never deleted while anything does.
+ * It is switched to MANUAL pricing instead: Wealthfolio then stops asking Yahoo
+ * for a quote no provider has, and clears the "Sync issues for $CASH" error
+ * (assets_service.rs, update_quote_mode_silent). Prices play no part in a cash
+ * row's balance, so nothing moves.
  *
  * Every write is reversible in the UI (unlink, retype). Re-running is safe: a
  * linked pair is no longer incomplete, so a second run plans nothing for it.
@@ -79,7 +91,7 @@ const carriesSecurity = (assetId) => !!assetId && !assetId.toUpperCase().startsW
 
 const acts = db
   .prepare(
-    `SELECT a.id, a.account_id, acc.name acct, substr(a.activity_date,1,10) d, UPPER(a.currency) ccy,
+    `SELECT a.id, a.account_id, acc.name acct, UPPER(acc.account_type) at, substr(a.activity_date,1,10) d, UPPER(a.currency) ccy,
             UPPER(COALESCE(a.activity_type_override, a.activity_type)) t, UPPER(COALESCE(a.status,'POSTED')) status,
             ABS(CAST(COALESCE(a.amount,'0') AS REAL)) amt, COALESCE(a.source_group_id,'') g,
             COALESCE(a.asset_id,'') asset, COALESCE(a.notes,'') notes, COALESCE(a.metadata,'') meta
@@ -214,6 +226,20 @@ if (unmatched.length) {
   console.log('   (money to or from an account Wealthfolio does not track, or a transfer whose other side never synced)');
   for (const leg of unmatched) {
     console.log(`   ${line(leg)}`);
+    // Near misses, so a human can decide: the same amount further apart in
+    // time, or (for money leaving a cash account) card inflows around the date.
+    const wanted = leg.t === 'TRANSFER_OUT' ? INFLOW : OUTFLOW;
+    const near = acts
+      .filter((c) => c.id !== leg.id && c.account_id !== leg.account_id && wanted.has(c.t))
+      .filter((c) => {
+        const gap = Math.abs(dayMs(c.d) - dayMs(leg.d)) / 86_400_000;
+        return (Math.abs(c.amt - leg.amt) < 0.005 && gap <= 45) ||
+          (leg.t === 'TRANSFER_OUT' && c.at === 'CREDIT_CARD' && c.amt >= 25 && gap <= 7);
+      })
+      .sort((a, b) => Math.abs(dayMs(a.d) - dayMs(leg.d)) - Math.abs(dayMs(b.d) - dayMs(leg.d)))
+      .slice(0, 5);
+    for (const c of near) console.log(`       near: ${line(c)}${c.g ? '  (grouped)' : ''}`);
+    if (!near.length) console.log('       near: nothing within 45 days at this amount, or on a card within a week');
     if (MARK_EXTERNAL) {
       writes.push({
         kind: 'update',
@@ -227,18 +253,88 @@ if (unmatched.length) {
   if (!MARK_EXTERNAL) console.log('   → add -e MARK_EXTERNAL=1 to mark these external (silences the warning; spending is unchanged)');
 }
 
-// The phantom $CASH asset: deletable once nothing points at it.
-const phantomRefs = acts.filter((a) => isPhantom(a.asset));
+// ── missing legs ─────────────────────────────────────────────────────────────
+// Each cash account's gap to its bank balance, computed the way Wealthfolio
+// books cash (3.8: amount is final cash, sign by type; pending rows excluded).
+const SECRET = async (key) => {
+  try {
+    const raw = await client.getAddonSecret('simplefin-sync', key);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+};
+const balances = (await SECRET('account_balances')) ?? {};
+const mapping = (await SECRET('account_mapping')) ?? {};
+const PLUS = new Set(['DEPOSIT', 'CREDIT', 'TRANSFER_IN', 'DIVIDEND', 'INTEREST', 'SELL']);
+const MINUS = new Set(['WITHDRAWAL', 'TRANSFER_OUT', 'FEE', 'TAX', 'BUY']);
+const gapByAccount = new Map();
+for (const [sfinId, wfId] of Object.entries(mapping)) {
+  const bank = Number(balances[sfinId]?.balance);
+  const rows = acts.filter((a) => a.account_id === wfId && a.at === 'CASH');
+  if (!Number.isFinite(bank) || !rows.length) continue;
+  const ledger = rows
+    .filter((a) => !a.notes.endsWith(' · pending'))
+    .reduce((sum, a) => sum + (PLUS.has(a.t) ? a.amt : MINUS.has(a.t) ? -a.amt : 0), 0);
+  gapByAccount.set(wfId, Math.round((bank - ledger) * 100) / 100);
+}
+const placeholders = acts.filter(
+  (a) => isTransfer(a.t) && a.status === 'POSTED' && a.notes.startsWith(IN_TRANSIT) && !inValidPair(a),
+);
+const missing = [];
+for (const ph of placeholders) {
+  // Money that left `ph`'s account must have ARRIVED somewhere: that account
+  // reads LOW against its bank (gap = bank − ledger > 0), and vice versa.
+  const want = ph.t === 'TRANSFER_OUT' ? ph.amt : -ph.amt;
+  const hits = [...gapByAccount.entries()].filter(([id, gap]) => id !== ph.account_id && Math.abs(gap - want) < 0.01);
+  if (hits.length === 1) missing.push({ ph, accountId: hits[0][0] });
+}
+console.log(`\n── ${missing.length} missing leg(s) to write`);
+for (const { ph, accountId } of missing) {
+  const acct = acts.find((a) => a.account_id === accountId)?.acct ?? accountId;
+  const type = ph.t === 'TRANSFER_OUT' ? 'TRANSFER_IN' : 'TRANSFER_OUT';
+  console.log(`   ${line(ph)}`);
+  console.log(`       + ${ph.d}  ${type.padEnd(12)} ${money(ph.amt).padStart(10)}  ${acct} — the leg the bank feed never delivered (${acct} is ${money(ph.amt)} ${type === 'TRANSFER_IN' ? 'below' : 'above'} its bank balance)`);
+  writes.push({
+    kind: 'create-and-link',
+    label: `write the missing ${money(ph.amt)} leg in ${acct} and link it`,
+    placeholder: ph,
+    create: {
+      accountId,
+      activityType: type,
+      activityDate: ph.d,
+      amount: ph.amt,
+      currency: ph.ccy,
+      // No ` · <txId>` suffix on purpose: the sync keys its rows by that id,
+      // so a row without one is never reconciled, rewritten or deleted by it.
+      comment: `${type === 'TRANSFER_IN' ? 'Transfer from' : 'Transfer to'} ${ph.acct} (missing from the bank feed; added by fix-transfers)`,
+      metadata: INTERNAL,
+    },
+  });
+}
+if (!missing.length) {
+  for (const [id, gap] of gapByAccount) if (Math.abs(gap) >= 0.01) console.log(`   (${acts.find((a) => a.account_id === id)?.acct}: off the bank by ${gap < 0 ? '-' : ''}${money(gap)}, no single placeholder explains it)`);
+}
+
+// ── the $CASH asset ──────────────────────────────────────────────────────────
 const phantomIds = [...new Set([...assetCodes.keys()].filter((id) => isPhantom(id)))];
-const cleared = new Set(writes.filter((w) => w.clearsAsset && isPhantom(w.clearsAsset)).map((w) => w.row.id));
-const stillReferenced = phantomRefs.filter((a) => !cleared.has(a.id));
-console.log(`\n── phantom $CASH asset: ${phantomIds.length ? phantomIds.join(', ') : 'none'}`);
-for (const a of phantomRefs) console.log(`   ${cleared.has(a.id) ? 'cleared by this plan' : 'STILL REFERENCED  '}  ${line(a)}`);
-if (phantomIds.length && stillReferenced.length === 0) {
-  for (const id of phantomIds) writes.push({ kind: 'delete-asset', label: `delete asset ${id}`, id });
-  console.log('   → will be deleted (nothing points at it after this plan)');
-} else if (phantomIds.length) {
-  console.log('   → kept: rows above still point at it');
+for (const id of phantomIds) {
+  const refs = acts.filter((a) => a.asset === id);
+  const cleared = writes.filter((w) => w.clearsAsset === id).length;
+  const mode = db.prepare(`SELECT COALESCE(quote_mode,'') m FROM assets WHERE id = ?`).get(id)?.m ?? '';
+  const byAcct = {};
+  for (const a of refs) byAcct[a.acct] = (byAcct[a.acct] ?? 0) + 1;
+  console.log(`\n── the "$CASH" asset ${id}: pricing ${mode || 'unknown'}, ${refs.length} row(s) point at it (${cleared} cleared by this plan)`);
+  for (const [acct, n] of Object.entries(byAcct)) console.log(`   ${String(n).padStart(4)}  ${acct}`);
+  if (refs.length - cleared === 0) {
+    writes.push({ kind: 'delete-asset', label: `delete asset ${id}`, id });
+    console.log('   → will be deleted (nothing points at it after this plan)');
+  } else if (mode.toUpperCase() !== 'MANUAL') {
+    writes.push({ kind: 'manual-pricing', label: `stop price sync for asset ${id}`, id });
+    console.log('   → will be set to MANUAL pricing (ends the "Sync issues for $CASH" warning; no balance moves)');
+  } else {
+    console.log('   → already MANUAL; nothing to do');
+  }
 }
 
 db.close();
@@ -274,6 +370,27 @@ for (const w of writes) {
         continue;
       }
       await client.linkTransferActivities(w.a.id, w.b.id);
+    } else if (w.kind === 'create-and-link') {
+      const ph = w.placeholder;
+      if (carriesSecurity(ph.asset)) {
+        const res = await client.saveMany({ updates: [{
+          id: ph.id, accountId: ph.account_id, activityType: ph.t, activityDate: ph.d,
+          amount: ph.amt, currency: ph.ccy, comment: ph.notes, asset: {},
+        }] });
+        if ((res.errors ?? []).length) throw new Error(res.errors.map((e) => e.message).join('; '));
+      }
+      const res = await client.saveMany({ creates: [w.create] });
+      if ((res.errors ?? []).length) throw new Error(res.errors.map((e) => e.message).join('; '));
+      const newId = res.created?.[0]?.id;
+      if (!newId) throw new Error('the create returned no id; nothing linked — re-run to see the state');
+      await client.linkTransferActivities(ph.id, newId);
+    } else if (w.kind === 'manual-pricing') {
+      const res = await fetch(`${client.baseUrl}/api/v1/assets/pricing-mode/${encodeURIComponent(w.id)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', ...client.authHeaders() },
+        body: JSON.stringify({ quoteMode: 'MANUAL' }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status} ${await res.text().catch(() => '')}`);
     } else if (w.kind === 'delete-asset') {
       const res = await fetch(`${client.baseUrl}/api/v1/assets/${encodeURIComponent(w.id)}`, {
         method: 'DELETE',

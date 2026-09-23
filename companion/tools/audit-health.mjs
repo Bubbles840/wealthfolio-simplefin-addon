@@ -200,15 +200,15 @@ const phantom = [...assets.entries()]
   .map(([id]) => id);
 console.log(`   $CASH assets: ${phantom.length ? phantom.join(', ') : 'none'}`);
 for (const id of phantom) {
-  for (const r of db
+  const rows = db
     .prepare(
-      `SELECT a.id, substr(a.activity_date,1,10) d, acc.name acct, UPPER(a.activity_type) t,
-              ABS(CAST(a.amount AS REAL)) amt, COALESCE(a.source_group_id,'') g, COALESCE(a.notes,'') notes
-       FROM activities a JOIN accounts acc ON a.account_id = acc.id WHERE a.asset_id = ? ORDER BY a.activity_date`,
+      `SELECT acc.name acct, UPPER(COALESCE(a.activity_type_override, a.activity_type)) t, COUNT(*) n
+       FROM activities a JOIN accounts acc ON a.account_id = acc.id WHERE a.asset_id = ? GROUP BY 1, 2 ORDER BY 1, 2`,
     )
-    .all(id)) {
-    console.log(`   ${r.d}  ${r.t.padEnd(12)} ${money(r.amt).padStart(10)}  ${String(r.acct).slice(0, 24).padEnd(25)} grp=${r.g ? 'yes' : 'no '} ${desc(r.notes)}  id=${r.id}`);
-  }
+    .all(id);
+  const mode = db.prepare(`SELECT COALESCE(quote_mode,'') m FROM assets WHERE id = ?`).get(id)?.m ?? '';
+  console.log(`   ${id}: pricing ${mode || 'unknown'}`);
+  for (const r of rows) console.log(`   ${String(r.n).padStart(4)}  ${r.t.padEnd(12)} ${r.acct}${isTransfer(r.t) ? '   ← transfer legs on it book NO cash' : ''}`);
 }
 
 // ── 4. spending by month, Wealthfolio's way ────────────────────────────────
