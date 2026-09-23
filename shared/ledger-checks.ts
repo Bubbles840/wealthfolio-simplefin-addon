@@ -193,6 +193,14 @@ export function evaluateLedgerChecks(
     return age !== null && age >= CARD_MISMATCH_GRACE_MS;
   });
 
+  // The cap hides the tail. A hidden once-only finding must NOT be stamped as
+  // seen, or it expires without ever having been shown — live on the first
+  // morning: eleven findings, four shown, "…and 7 more", and the seven were
+  // never said. Left unstamped, it is "new" tomorrow and takes its turn as the
+  // visible ones age out. Always-on findings are stamped regardless: they
+  // repeat until fixed, so the stamp costs them nothing; and a card mismatch
+  // keeps aging, so a busy morning cannot reset its two-day clock.
+  const shown = new Set(due.slice(0, due.length > MAX_LINES ? MAX_LINES - 1 : MAX_LINES).map((c) => c.key));
   const findings = due.map((c) => c.finding);
   if (findings.length > MAX_LINES) {
     const hidden = findings.length - (MAX_LINES - 1);
@@ -202,7 +210,10 @@ export function evaluateLedgerChecks(
       message: `…and ${hidden} more ledger issue${hidden === 1 ? '' : 's'}`,
     });
   }
-  return { findings, keys: candidates.map((c) => c.key) };
+  const keys = candidates
+    .filter((c) => c.when !== 'once' || shown.has(c.key) || (seen[c.key] !== undefined && !due.includes(c)))
+    .map((c) => c.key);
+  return { findings, keys };
 }
 
 /**

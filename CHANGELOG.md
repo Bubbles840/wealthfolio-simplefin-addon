@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.53.1] - 2026-09-23
+
+### Fixed
+
+- **Findings the five-line cap hid were being marked as said.** On the first
+  morning after v1.53.0 the ledger checks had eleven things to say, showed four
+  and "…and 7 more" — and stamped all eleven as seen, so the seven once-only
+  findings nobody read expired without ever being shown. A finding the cap
+  hides is now left unstamped, so it takes its turn as the visible ones age
+  out. Always-on findings are stamped regardless (they repeat until fixed), and
+  a card mismatch keeps aging so a busy morning cannot reset its two-day clock.
+
 ## [1.53.0] - 2026-09-20
 
 ### Added
