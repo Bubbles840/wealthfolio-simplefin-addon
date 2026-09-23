@@ -166,6 +166,30 @@ describe('evaluateLedgerChecks', () => {
     });
   });
 
+  it('does not count a once-only finding as said when the cap hid it', () => {
+    // Live on the first morning: eleven findings, four shown, "…and 7 more".
+    // Every one was stamped as seen — including the seven nobody saw — so the
+    // once-only ones among them expired unshown and the user never learned
+    // what they were. A finding the cap hid must stay unstamped, so it takes
+    // its turn as the visible ones age out.
+    const f = clean();
+    f.idleRefunds = Array.from({ length: 4 }, (_, i) => ({ id: `r${i}`, description: `Refund ${i}`, amount: 5 }));
+    f.categories = Array.from({ length: 3 }, (_, i) => ({
+      name: `Cat ${i}`, budget: 100, spent: 500, largest: { id: `p${i}`, description: `Buster ${i}`, amount: 400 },
+    }));
+    const day1 = evaluateLedgerChecks(f, {}, NOW);
+    expect(day1.findings).toHaveLength(5);
+    // The four always-on refunds fill the block; the three busters were hidden.
+    expect(day1.findings[4].message).toMatch(/3 more/);
+    expect(day1.keys).toEqual(['idle-refund:r0', 'idle-refund:r1', 'idle-refund:r2', 'idle-refund:r3']);
+    // Two refunds get filed. The busters now surface, and are said as new.
+    f.idleRefunds = f.idleRefunds.slice(0, 2);
+    const seen = nextLedgerCheckSeen({}, day1.keys, NOW);
+    const day2 = evaluateLedgerChecks(f, seen, new Date(NOW.getTime() + 86_400_000));
+    expect(day2.findings.map((x) => x.message).join('\n')).toContain('Buster 0');
+    expect(day2.keys).toContain('budget-buster:p0');
+  });
+
   it('caps the block so a bad week cannot bury the spending report', () => {
     // The digest was called bloated once already. Integrity problems come
     // first, and everything past the cap collapses into a single line.
@@ -174,7 +198,8 @@ describe('evaluateLedgerChecks', () => {
     const { findings, keys } = evaluateLedgerChecks(f, {}, NOW);
     expect(findings).toHaveLength(5);
     expect(findings[4].message).toMatch(/5 more/);
-    // Every condition is still tracked, shown or not.
+    // Always-on conditions stay tracked whether shown or not: they repeat
+    // regardless, so stamping them costs nothing.
     expect(keys).toHaveLength(9);
   });
 });
