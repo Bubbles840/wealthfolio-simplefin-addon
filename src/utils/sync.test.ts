@@ -466,7 +466,7 @@ describe('runSync', () => {
     expect(imported[0].symbol).toBe('$CASH-USD');
   });
 
-  it('applyBalanceAdjustment uses the card-safe CREDIT shape on a credit card', async () => {
+  it('applyBalanceAdjustment writes a card outflow plug as a type the card accepts', async () => {
     // Was "keeps DEPOSIT/WITHDRAWAL on a non-CASH account" and asserted
     // WITHDRAWAL. Cards now share CASH's CREDIT shape because Wealthfolio rejects
     // DEPOSIT on them, and the plug follows `neutralAdjustmentFields` — which is
@@ -481,7 +481,8 @@ describe('runSync', () => {
       sfinAccountId: 'sfin-2', wfAccountId: 'wf-account-b', currency: 'USD', amount: -80,
     });
     const imported = vi.mocked(ctx.api.activities.import).mock.calls.at(-1)![0] as any[];
-    expect(imported[0].activityType).toBe('TRANSFER_OUT');
+    // Not TRANSFER_OUT: refused on a card by Wealthfolio 3.8 (live, 2026-09-23).
+    expect(imported[0].activityType).toBe('WITHDRAWAL');
     expect(imported[0].amount).toBe(80);
     expect(imported[0].fee).toBe(0);
   });
@@ -1227,7 +1228,7 @@ describe('neutralAdjustmentFields', () => {
     expect(result).toEqual({ activityType: 'TRANSFER_OUT', amount: 2635.26, fee: 0 });
   });
 
-  it('CREDIT_CARD: TRANSFER_IN for an inflow, the CASH-shaped CREDIT split for an outflow', () => {
+  it('CREDIT_CARD: TRANSFER_IN for an inflow, WITHDRAWAL for an outflow', () => {
     // This test has pinned two wrong shapes in its life. DEPOSIT, which the
     // API rejects on a card ("not supported for credit card accounts", live
     // 2026-08-07); then CREDIT, which the API accepts but Wealthfolio
@@ -1238,8 +1239,10 @@ describe('neutralAdjustmentFields', () => {
     expect(neutralAdjustmentFields('CREDIT_CARD', 40)).toEqual({
       activityType: 'TRANSFER_IN', amount: 40, fee: 0,
     });
+    // And the outflow's shape has been wrong once too: TRANSFER_OUT, refused on
+    // a card by Wealthfolio 3.8 (live, 2026-09-23).
     expect(neutralAdjustmentFields('CREDIT_CARD', -40)).toEqual({
-      activityType: 'TRANSFER_OUT', amount: 40, fee: 0,
+      activityType: 'WITHDRAWAL', amount: 40, fee: 0,
     });
   });
 

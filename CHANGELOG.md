@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.55.0] - 2026-09-23
+
+### Fixed
+
+- **A credit card that starts out owing money gets its opening balance.**
+  Wealthfolio 3.8 accepts only withdrawals, fees, interest, transfers in and
+  credits on a credit card. The addon wrote a card's opening debt, a negative
+  balance plug, and a restated old placeholder as a transfer out, which
+  Wealthfolio refuses. The write failed on every sync and the card's history
+  began at zero. These rows are now withdrawals.
+
+### Known limitation
+
+- Every money-out type Wealthfolio accepts on a card counts as spending. A
+  card's opening debt therefore appears on Wealthfolio's own Spending page on
+  its opening date, unless you file it under a category excluded from spending
+  (Settings → Spending). The addon's Budget tab and reports already leave it
+  out.
+
 ## [1.54.0] - 2026-09-23
 
 ### Fixed

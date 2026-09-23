@@ -155,6 +155,18 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
     return rows;
   }
 
+  /** Wealthfolio 3.8 accepts only these types on a credit card, on every write
+   *  path (activities_service.rs, `account_activity_validation_message`). Live
+   *  refusal 2026-09-23: "TRANSFER_OUT activities are not supported for credit
+   *  card accounts". Enforced here so a test cannot pass on a write the real
+   *  server would refuse. */
+  function cardRefusal(accountId: string, activityType: string): string | null {
+    if (accountTypes[accountId] !== 'CREDIT_CARD') return null;
+    return ['WITHDRAWAL', 'TRANSFER_IN', 'CREDIT', 'FEE', 'INTEREST'].includes(activityType)
+      ? null
+      : `Invalid data: ${activityType} activities are not supported for credit card accounts`;
+  }
+
   function toHostActivity(id: string, w: ActivityWrite): HostActivity {
     return {
       id,
@@ -270,6 +282,13 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
     async saveMany(req: SaveManyRequest): Promise<SaveManyResult> {
       saved.push(req);
       seed.saveManyHook?.(req, saved.length - 1);
+      // The bulk endpoint is all-or-nothing: one refused row and nothing lands.
+      const refusals = [...(req.creates ?? []), ...(req.updates ?? [])]
+        .map((w) => cardRefusal(accountOfId.get(w.id ?? '') ?? w.accountId, w.activityType))
+        .filter((m): m is string => m !== null);
+      if (refusals.length) {
+        return { created: [], updated: [], errors: refusals.map((message) => ({ action: 'save', message })) };
+      }
       const created: HostActivity[] = [];
       const updated: HostActivity[] = [];
 
@@ -310,6 +329,10 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
 
     async importActivities(rows: ImportRow[]) {
       imported.push(rows);
+      for (const row of rows) {
+        const refusal = cardRefusal(row.accountId, row.activityType);
+        if (refusal) throw new Error(refusal);
+      }
       for (const row of rows) {
         const id = freshId();
         const hostRow: HostActivity = {
