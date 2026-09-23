@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.54.0] - 2026-09-23
+
+### Fixed
+
+- **Wealthfolio's Health page no longer lists the addon's own rows as
+  "incomplete transfers".** Opening balances, balance plugs and in-transit
+  placeholders are stored as transfer legs because that is how they stay out of
+  spending. None of them has a partner, and Wealthfolio 3.8 reports every
+  unpartnered transfer leg as an error unless it is marked as money crossing
+  the portfolio boundary. Each sync now marks the addon's own such rows that
+  way, and new placeholders are written with the mark. Your own transfers and
+  linked pairs are never touched. Spending totals do not change.
+- **An account's early history no longer dips below zero.** When a re-scan
+  brought in transactions older than the starting balance, the addon corrected
+  the starting balance's amount but left its date alone, after the history it
+  stands for. Wealthfolio then replayed that history against an empty account
+  and reported "cash account had a negative balance". The starting balance now
+  moves to the day before the earliest transaction. Every sync checks this, so
+  a ledger corrected by an older version is repaired too. Only the date moves.
+- **A card's opening balance kept its sign when adjusted.** A card's opening
+  debt is stored as a transfer out, but it was read back as a positive amount.
+  Recovering an older charge would have turned the debt into a credit of the
+  same size. The same repair also no longer attaches a cash symbol to a
+  transfer-leg starting balance, which would have stopped it moving the balance.
+- **"Fix the starting balance" keeps the row's shape.** Accepting the offer
+  rewrote a cash opening balance as a deposit, which counted it as income again,
+  and on a card wrote a type the API refuses. It now writes the same shape the
+  sync uses for opening balances.
+- **The addon zip always carries the code for its version.** Packaging zipped
+  whatever `dist/addon.js` was already on disk. A locally built v1.53.0 zip
+  therefore shipped the v1.49.0 bundle, and the Sync page footer said so.
+  `npm run package` now builds first and refuses to pack a bundle compiled as a
+  different version. The zips attached to GitHub releases were built fresh by
+  CI and were not affected.
+
+### Added
+
+- `companion/tools/audit-health.mjs` shows the rows behind Wealthfolio's Health
+  and Spending pages, using Wealthfolio's own rules. It lists incomplete
+  transfers, late starting balances, rows on the phantom `$CASH` asset, spending
+  by month split into purchases, unlinked transfers and sync rows, and each
+  cash account against the bank. It also names the version compiled into the
+  installed addon. Read-only.
+- `companion/tools/fix-transfers.mjs` links the transfer legs Wealthfolio
+  reports as incomplete to their counterpart in another account, matched on the
+  same amount within five days. It retypes a counterpart stored as a deposit,
+  credit or withdrawal, and deletes the phantom `$CASH` asset once nothing
+  points at it. It acts only on matches that are unique both ways. Dry run by
+  default.
+
 ## [1.53.1] - 2026-09-23
 
 ### Fixed

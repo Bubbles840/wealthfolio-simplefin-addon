@@ -557,30 +557,58 @@ async function hasExistingStartingBalance(
   return rows.some((a) => (a.comment ?? '') === marker);
 }
 
+/** Activity types that take money OUT of an account. A starting balance is
+ *  stored as a magnitude with the sign in its type, and since v1.51 a card's
+ *  opening debt is a `TRANSFER_OUT` — reading only `WITHDRAWAL` as negative
+ *  turned that debt into a credit the moment anything adjusted it. */
+const OUTFLOW_TYPES = new Set(['WITHDRAWAL', 'TRANSFER_OUT', 'FEE', 'TAX']);
+
+const isoDay = (date: string) => new Date(date).toISOString().slice(0, 10);
+const dayBefore = (day: string) => new Date(Date.parse(`${day}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
+
 /**
- * The account's starting-balance entry, if one exists, as a signed amount.
+ * The account's starting-balance entry, if one exists, as a signed amount —
+ * plus the date of the account's earliest OTHER row, which is what the
+ * baseline has to stay in front of.
  *
  * The entry is a one-time baseline meaning "everything before this date is
  * already reflected in the bank's balance". It's calculated from the first
  * sync's window, so any transaction later imported with an EARLIER date (a wide
  * re-scan reaching further back) would be counted twice — once in the baseline
- * and again as its own activity. `adjustStartingBalanceForOlderRows` corrects
- * the baseline when that happens; this reads the row it has to correct.
+ * and again as its own activity. `keepStartingBalanceOldest` corrects the
+ * baseline when that happens; this reads the row it has to correct.
+ *
+ * The ascending scan finds it on a healthy ledger, where it is the oldest row.
+ * `recent` is the fallback for the ledger this function exists to repair: a
+ * backfill of more than a scan's worth of older rows pushes the baseline out of
+ * that window, and a lookup that then reports "no baseline" would leave it
+ * stranded after the history it stands in for.
  */
 async function fetchStartingBalance(
   host: SyncHost,
   wfAccountId: string,
   sfinAccountId: string,
-): Promise<{ id: string; date: string; signed: number } | null> {
+  recent: ReadonlyArray<{ wfId: string; comment?: string; date: string; type: string; absCents: number }> = [],
+): Promise<{ id: string; date: string; signed: number; activityType: string; earliestOther: string | null } | null> {
   const rows = await host.listOldestActivities(wfAccountId, STARTING_BALANCE_SCAN);
   const marker = `${STARTING_BALANCE_COMMENT_PREFIX}${sfinAccountId}`;
+  const others = rows.filter((a) => (a.comment ?? '') !== marker).map((a) => isoDay(a.date));
+  const earliestOther = others.length ? others.reduce((a, b) => (a < b ? a : b)) : null;
   const row = rows.find((a) => (a.comment ?? '') === marker);
-  if (!row) return null;
-  const abs = Math.abs(parseFloat(String(row.amount ?? '0')));
+  let found: { id: string; date: string; type: string; abs: number } | null = row
+    ? { id: row.id, date: isoDay(row.date), type: String(row.activityType), abs: Math.abs(parseFloat(String(row.amount ?? '0'))) }
+    : null;
+  if (!found) {
+    const r = recent.find((a) => (a.comment ?? '') === marker);
+    if (r) found = { id: r.wfId, date: r.date, type: r.type, abs: r.absCents / 100 };
+  }
+  if (!found) return null;
   return {
-    id: row.id,
-    date: new Date(row.date).toISOString().slice(0, 10),
-    signed: String(row.activityType) === 'WITHDRAWAL' ? -abs : abs,
+    id: found.id,
+    date: found.date,
+    signed: OUTFLOW_TYPES.has(found.type) ? -found.abs : found.abs,
+    activityType: found.type,
+    earliestOther,
   };
 }
 
@@ -721,16 +749,26 @@ export async function applyBaselineFix(
   // snapshot can be minutes old, and this writes to a financial row by id.
   const baseline = await fetchStartingBalance(host, wfAccountId, sfAccountId).catch(() => null);
   if (!baseline) return { applied: false, error: 'no starting-balance row on this account' };
+  const accountType = String(
+    (await host.listAccounts().catch(() => [])).find((a) => a.id === wfAccountId)?.accountType ?? '',
+  );
+  // `amount` is a magnitude — the sign lives in the type, so a correction that
+  // crosses zero has to change the type or it lands with the old one. Chosen by
+  // the same function that wrote the row: a hard-coded DEPOSIT/WITHDRAWAL here
+  // turned a neutral cash baseline back into income, and on a card wrote a type
+  // the API refuses (DEPOSIT) or a purchase (WITHDRAWAL).
+  const shape = startingBalanceFields(accountType, suggestedAmount);
   const res = await host.saveMany({
     updates: [
       {
         id: baseline.id,
         accountId: wfAccountId,
-        // `amount` is a magnitude — the sign lives in the type, so a correction
-        // that crosses zero has to change the type or it lands with the old one.
-        activityType: suggestedAmount < 0 ? 'WITHDRAWAL' : 'DEPOSIT',
+        activityType: shape.activityType,
         activityDate: baseline.date,
-        amount: Math.abs(Math.round(suggestedAmount * 100) / 100),
+        // No symbol, as before: the stored asset is left as it is, and a card
+        // baseline's transfer leg must never gain one (it would become the
+        // phantom "$CASH" security and stop booking cash).
+        amount: shape.amount,
         currency,
         comment: `${STARTING_BALANCE_COMMENT_PREFIX}${sfAccountId}`,
       },
@@ -743,14 +781,24 @@ export async function applyBaselineFix(
 }
 
 /**
- * Keep the starting-balance baseline honest when a run imports transactions
- * dated BEFORE it. Those rows are already baked into the baseline, so leaving it
- * alone double-counts them (the classic symptom: an account drifts by exactly
- * the sum of the newly-recovered history). Subtracting their signed total from
- * the baseline nets them out, so the balance stays correct no matter how far
- * back a later re-scan reaches.
+ * Keep the starting-balance baseline in front of the history it stands for.
+ *
+ * Two duties, one update:
+ *  - AMOUNT. When a run imports transactions dated BEFORE the baseline, those
+ *    rows are already baked into it, so leaving it alone double-counts them (the
+ *    classic symptom: an account drifts by exactly the sum of the newly-recovered
+ *    history). Subtracting their signed total nets them out, so the balance stays
+ *    correct no matter how far back a later re-scan reaches.
+ *  - DATE. Netting fixes today's balance but not the path to it: a baseline left
+ *    on its old date sits AFTER the recovered rows, so Wealthfolio replays them
+ *    against an empty account and its early history goes negative (live: Savings
+ *    −$1,300 from 2026-04-23 behind a 2026-06-19 baseline). The baseline moves to
+ *    the day before the earliest other row. Checked on every run, not only when
+ *    rows arrive, so a ledger netted by an older version heals too.
+ *
+ * Moving the date moves no money. The amount changes only by the netted sum.
  */
-async function adjustStartingBalanceForOlderRows(
+async function keepStartingBalanceOldest(
   host: SyncHost,
   args: {
     wfAccountId: string;
@@ -762,31 +810,44 @@ async function adjustStartingBalanceForOlderRows(
     accountType: string;
     /** Signed amounts of the rows just created, keyed by date (YYYY-MM-DD). */
     created: Array<{ date: string; signed: number }>;
+    /** The account's already-read rows: the lookup's fallback. */
+    recent?: ReadonlyArray<{ wfId: string; comment?: string; date: string; type: string; absCents: number }>;
   },
 ): Promise<number> {
   const { wfAccountId, sfinAccountId, currency, accountType, created } = args;
-  const sb = await fetchStartingBalance(host, wfAccountId, sfinAccountId);
+  const sb = await fetchStartingBalance(host, wfAccountId, sfinAccountId, args.recent);
   if (!sb) return 0;
-  const olderSum = created
-    .filter((c) => c.date < sb.date)
-    .reduce((sum, c) => sum + c.signed, 0);
-  if (!Number.isFinite(olderSum) || Math.abs(olderSum) < 0.01) return 0;
-  const nextSigned = Math.round((sb.signed - olderSum) * 100) / 100;
+  const older = created.filter((c) => c.date <= sb.date);
+  const olderSum = older.reduce((sum, c) => sum + c.signed, 0);
+  const netting = Number.isFinite(olderSum) && Math.abs(olderSum) >= 0.01;
+  const earliest = [sb.earliestOther, ...older.map((c) => c.date)]
+    .filter((d): d is string => !!d)
+    .reduce<string | null>((a, b) => (a === null || b < a ? b : a), null);
+  const nextDate = earliest !== null && earliest <= sb.date ? dayBefore(earliest) : sb.date;
+  if (!netting && nextDate === sb.date) return 0;
+  const nextSigned = netting ? Math.round((sb.signed - olderSum) * 100) / 100 : sb.signed;
+  const activityType = netting
+    // Through the same chooser that wrote the row, or an adjustment would
+    // quietly flip a neutral baseline back into income.
+    ? startingBalanceFields(accountType, nextSigned).activityType
+    : sb.activityType;
   await host.saveMany({
     updates: [{
       id: sb.id,
       accountId: wfAccountId,
-      // Through the same chooser that wrote the row, or an adjustment would
-      // quietly flip a neutral baseline back into income.
-      activityType: startingBalanceFields(accountType, nextSigned).activityType,
-      activityDate: sb.date,
-      symbol: { symbol: `$CASH-${currency}` },
+      activityType,
+      activityDate: nextDate,
+      // Only a non-transfer row that is being re-shaped states its cash symbol.
+      // A TRANSFER leg carrying one becomes the phantom "$CASH" security and
+      // stops moving cash, and a date-only move has no reason to touch the
+      // asset at all (an omitted asset is left as stored).
+      ...(netting && !isTransferType(activityType) ? { symbol: { symbol: `$CASH-${currency}` } } : {}),
       amount: Math.abs(nextSigned),
       currency,
       comment: `${STARTING_BALANCE_COMMENT_PREFIX}${sfinAccountId}`,
     }],
   });
-  return olderSum;
+  return netting ? olderSum : 0;
 }
 
 /**
@@ -822,6 +883,43 @@ export const newTransferGroupId = () => `${TRANSFER_GROUP_PREFIX}${crypto.random
  *  blob), so an object 422s. Mirrors what Wealthfolio itself stores —
  *  `json!({ "flow": { "is_external": … } }).to_string()`. */
 export const INTERNAL_TRANSFER_METADATA = JSON.stringify({ flow: { is_external: false } });
+
+/**
+ * The marker for the transfer-TYPED rows the sync writes as bookkeeping — an
+ * opening balance, a drift plug, an in-transit placeholder. They are transfer
+ * legs only because that is the spending-neutral shape (see
+ * neutralAdjustmentFields); none has a partner to pair with.
+ *
+ * Wealthfolio 3.8's Health page reports every posted TRANSFER_IN/OUT that is
+ * not half of a valid pair as an "incomplete transfer" error, unless its
+ * metadata carries `flow.is_external: true` (health/service.rs,
+ * `invalid_transfer_groups_from_activities`). The flag changes nothing on the
+ * Spending page — the classifier never reads it — and for performance it
+ * files the row as money crossing the portfolio boundary instead of
+ * "unknown", which is what an opening balance or a plug is.
+ */
+export const EXTERNAL_BOOKKEEPING_METADATA = JSON.stringify({ flow: { is_external: true } });
+
+/**
+ * A stored row's `flow.is_external`: `true`/`false` when set, `null` when the
+ * row has metadata but no such flag (or none at all), and `undefined` when the
+ * host did not report metadata or it cannot be parsed — "unknown", which no
+ * caller may treat as "unset" and write over.
+ */
+export function flowExternalOf(metadata: unknown): boolean | null | undefined {
+  if (metadata === undefined) return undefined;
+  if (metadata === null || metadata === '') return null;
+  let parsed: unknown = metadata;
+  if (typeof metadata === 'string') {
+    try {
+      parsed = JSON.parse(metadata);
+    } catch {
+      return undefined;
+    }
+  }
+  const flag = (parsed as { flow?: { is_external?: unknown } } | null)?.flow?.is_external;
+  return typeof flag === 'boolean' ? flag : null;
+}
 
 const TRANSFER_TYPES = new Set<string>(['TRANSFER_IN', 'TRANSFER_OUT']);
 
@@ -909,12 +1007,14 @@ type LinkableRow = ExistingRow & {
  * `readsSourceGroupId` capability is false it is meaningless (always null) and
  * the ledger stands in for it.
  */
+type StoredRow = ExistingRow & { sourceGroupId?: string | null; flowExternal?: boolean | null };
+
 async function fetchExistingRows(
   host: SyncHost,
   wfAccountId: string,
-): Promise<Array<ExistingRow & { sourceGroupId?: string | null }>> {
+): Promise<StoredRow[]> {
   const data = await host.listActivities(wfAccountId);
-  const rows: Array<ExistingRow & { sourceGroupId?: string | null }> = [];
+  const rows: StoredRow[] = [];
   for (const a of data) {
     const pending = (a.comment ?? '').endsWith(PENDING_SUFFIX);
     const txId = txIdFromComment(a.comment);
@@ -936,9 +1036,51 @@ async function fetchExistingRows(
       // forever. `?? undefined` because the adapters report "none" as `null`.
       subtype: a.subtype ?? undefined,
       sourceGroupId: a.sourceGroupId ?? null,
+      flowExternal: flowExternalOf(a.metadata),
     });
   }
   return rows;
+}
+
+export const EXTERNAL_MARKER_STAMP_LOG_TAG = 'external-marker-stamp';
+
+/**
+ * The sync's own unlinked transfer-typed rows that still lack the external
+ * marker (see EXTERNAL_BOOKKEEPING_METADATA), as metadata-only updates. Nothing
+ * is written here.
+ *
+ * Deliberately narrow, because a wrong stamp is worse than a missing one:
+ *  - Only rows the sync authored, by note marker. A user's own transfer is
+ *    theirs to link or mark.
+ *  - Only rows with NO group and a flag that is known to be unset. A linked
+ *    leg carries `is_external: false`; flagging one leg of a pair external
+ *    makes Wealthfolio report the pair as conflicting. A host that cannot
+ *    report metadata (`undefined`) gets nothing, or it would re-stamp forever.
+ * The server merges metadata keys on update and keeps it when an update omits
+ * it, so a stamp survives later reconciliation updates and runs once.
+ */
+export function planExternalMarkerStamp(rows: ReadonlyArray<StoredRow>, currency: string): ActivityWrite[] {
+  const updates: ActivityWrite[] = [];
+  for (const row of rows) {
+    if (!isTransferType(row.type) || row.sourceGroupId || row.flowExternal !== null) continue;
+    const note = row.comment ?? '';
+    if (
+      !note.startsWith(STARTING_BALANCE_COMMENT_PREFIX) &&
+      !note.startsWith(BALANCE_ADJUSTMENT_COMMENT_PREFIX) &&
+      !note.startsWith(IN_TRANSIT_COMMENT_PREFIX)
+    ) continue;
+    updates.push({
+      id: row.wfId,
+      accountId: row.wfAccountId,
+      activityType: row.type,
+      activityDate: row.date,
+      amount: row.absCents / 100,
+      currency,
+      comment: note,
+      metadata: EXTERNAL_BOOKKEEPING_METADATA,
+    });
+  }
+  return updates;
 }
 
 export const LEGACY_PLACEHOLDER_REWRITE_LOG_TAG = 'legacy-placeholder-rewrite';
@@ -1733,7 +1875,7 @@ export async function runSyncCore(
     // Typed to match what fetchExistingRows returns: these rows feed
     // `linkRowByTxId`, and the link step after the loop reads `sourceGroupId` off
     // them, so it must survive into this variable.
-    let existing: Array<ExistingRow & { sourceGroupId?: string | null }> = [];
+    let existing: StoredRow[] = [];
     try {
       existing = await fetchExistingRows(host, wfAccountId);
     } catch {
@@ -1843,6 +1985,29 @@ export async function runSyncCore(
         }
       } catch (e: any) {
         errors.push(`legacy placeholder rewrite (${sfAccount.name}): ${String(e?.message ?? e)}`);
+      }
+    }
+
+    // ── External marker on the sync's own transfer-typed rows (every mode) ──
+    // After the legacy rewrite, which is what turns an old fee-side CREDIT into
+    // the TRANSFER_OUT this then marks.
+    const stamps = planExternalMarkerStamp(existing, sfAccount.currency);
+    if (stamps.length) {
+      try {
+        const res = await host.saveMany({ updates: stamps });
+        if (res.errors.length) {
+          errors.push(...res.errors.map((e) => `external marker (${sfAccount.name}): ${e.message}`));
+        } else {
+          for (const u of stamps) {
+            const row = existing.find((r) => r.wfId === u.id);
+            if (row) row.flowExternal = true;
+          }
+          console.info(
+            `[simplefin-sync] ${EXTERNAL_MARKER_STAMP_LOG_TAG}: marked ${stamps.length} opening-balance/plug/in-transit row(s) in account ${sfAccount.id} as external, so Wealthfolio stops reporting them as incomplete transfers`,
+          );
+        }
+      } catch (e: any) {
+        errors.push(`external marker (${sfAccount.name}): ${String(e?.message ?? e)}`);
       }
     }
 
@@ -2171,10 +2336,24 @@ export async function runSyncCore(
       // `false`: that would be this sync asserting a row is fine, overriding a
       // flag the host or the user set for reasons of their own.
       ...(t.needsReview ? { needsReview: true } : {}),
+      // A transfer-typed placeholder is born external (see
+      // EXTERNAL_BOOKKEEPING_METADATA), so it never shows on Wealthfolio's
+      // Health page as an incomplete transfer while it waits for its partner.
+      // Linking re-creates both legs with the internal marker instead, and an
+      // update that omits metadata leaves the stored value alone.
+      ...(t.inTransit && isTransferType(t.type) ? { metadata: EXTERNAL_BOOKKEEPING_METADATA } : {}),
       // Transfer-link sourceGroupId is applied later, atomically (see flush).
     });
-    const toActivityUpdate = (wfId: string, t: FeedTx): ActivityWrite => ({
-      ...toActivityCreate(t),
+    const toActivityUpdate = (wfId: string, t: FeedTx): ActivityWrite => {
+      const write = toActivityCreate(t);
+      // Never mark a row that is already one half of a link: Wealthfolio then
+      // reports the whole pair as conflicting (see planExternalMarkerStamp).
+      const stored = existing.find((r) => r.wfId === wfId);
+      if (stored && (stored.sourceGroupId || stored.flowExternal === false)) delete write.metadata;
+      return withUpdateFields(wfId, write);
+    };
+    const withUpdateFields = (wfId: string, write: ActivityWrite): ActivityWrite => ({
+      ...write,
       // State the fee explicitly, even though nothing the sync writes carries
       // one any more. The server's numeric fields are patch-shaped (an omitted
       // key means "leave unchanged"), and a row written before v1.49 may still
@@ -2194,6 +2373,8 @@ export async function runSyncCore(
     // never lets Wealthfolio see a complete 2-leg group (each call looks like a
     // lone leg and the group is dropped). All linking is done atomically after
     // the loop over `linkRowByTxId` (see the flush below).
+    /** Rows this run landed, for the starting-balance netting below. */
+    let baselineCreated: Array<{ date: string; signed: number }> = [];
     if (plan.creates.length || plan.updates.length || plan.deleteIds.length) {
       // Row-by-row fallback on a refusal: the bulk endpoint is all-or-nothing,
       // so one un-importable row would otherwise discard this account's whole
@@ -2265,28 +2446,19 @@ export async function runSyncCore(
         );
       }
       // Recovering history older than the starting-balance baseline double-counts
-      // it (the baseline already includes those rows), so net them back out.
+      // it (the baseline already includes those rows), so net them back out —
+      // after the write block, together with the baseline's date check.
       if ((result.errors ?? []).length === 0) {
-        try {
-          await adjustStartingBalanceForOlderRows(host, {
-            wfAccountId,
-            sfinAccountId: sfAccount.id,
-            currency: sfAccount.currency,
-            accountType: wfTypes.get(wfAccountId) ?? '',
-            // LANDED creates only. This rewrites the starting balance, so netting
-            // out a row that was refused moves real money for a row that does not
-            // exist. It used to be shielded by the error a duplicate raised; now
-            // that a duplicate is (correctly) not an error, the filter is the guard.
-            created: plan.creates
-              .filter((t) => !t.pending && landedTxIds.has(t.txId))
-              .map((t) => ({
-                date: t.date,
-                signed: signedByKey.get(accountTxKey(sfAccount.id, t.txId)) ?? 0,
-              })),
-          });
-        } catch (e: any) {
-          errors.push(`Account ${wfAccountId} starting-balance adjust failed: ${e?.message ?? e}`);
-        }
+        // LANDED creates only. This rewrites the starting balance, so netting
+        // out a row that was refused moves real money for a row that does not
+        // exist. It used to be shielded by the error a duplicate raised; now
+        // that a duplicate is (correctly) not an error, the filter is the guard.
+        baselineCreated = plan.creates
+          .filter((t) => !t.pending && landedTxIds.has(t.txId))
+          .map((t) => ({
+            date: t.date,
+            signed: signedByKey.get(accountTxKey(sfAccount.id, t.txId)) ?? 0,
+          }));
       }
       // Register rows just created so a brand-new transfer pair can be linked in
       // the same run's atomic flush (match the echoed Activity's `… · <txId>`
@@ -2377,6 +2549,21 @@ export async function runSyncCore(
           sfAccountId: sfAccount.id,
         });
       }
+    }
+
+    // Every run, not only one that imported: a baseline stranded after older
+    // history by an earlier version has no new row to trigger its repair.
+    try {
+      await keepStartingBalanceOldest(host, {
+        wfAccountId,
+        sfinAccountId: sfAccount.id,
+        currency: sfAccount.currency,
+        accountType: wfTypes.get(wfAccountId) ?? '',
+        created: baselineCreated,
+        recent: existing,
+      });
+    } catch (e: any) {
+      errors.push(`Account ${wfAccountId} starting-balance adjust failed: ${e?.message ?? e}`);
     }
 
     // Oldest datable timestamp for the account — used to place the one-time

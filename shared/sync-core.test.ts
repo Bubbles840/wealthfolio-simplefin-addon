@@ -842,7 +842,10 @@ describe('runSyncCore', () => {
     expect(updates[0]).toMatchObject({
       id: 'sb-wf-a',
       accountId: 'wf-a',
-      activityType: 'DEPOSIT',
+      // A positive CASH baseline is a bare CREDIT since v1.52 — accepting the
+      // offer used to write DEPOSIT and quietly turn the opening balance back
+      // into income.
+      activityType: 'CREDIT',
       activityDate: '2023-11-01',
       amount: 10055.12,
       comment: 'Starting balance · sfin-1',
@@ -861,6 +864,20 @@ describe('runSyncCore', () => {
     expect(saved.flatMap((r) => r.updates ?? [])[0]).toMatchObject({
       activityType: 'WITHDRAWAL', amount: 42.5,
     });
+  });
+
+  it("keeps a card baseline in the card's neutral shape, with no cash symbol on the transfer leg", async () => {
+    const seed = baselineOnlySeed();
+    seed.accountTypes = { 'wf-a': 'CREDIT_CARD' };
+    const { host, saved } = createFakeHost(seed);
+    await applyBaselineFix(host, {
+      wfAccountId: 'wf-a', sfAccountId: 'sfin-1', suggestedAmount: -235.4, currency: 'USD',
+    });
+    // DEPOSIT is refused on a card and WITHDRAWAL is a purchase; the opening
+    // debt is a TRANSFER_OUT (neutralAdjustmentFields).
+    const u = saved.flatMap((r) => r.updates ?? [])[0];
+    expect(u).toMatchObject({ activityType: 'TRANSFER_OUT', amount: 235.4 });
+    expect(u.symbol).toBeUndefined();
   });
 
   it('writes nothing and reports failure when the account has no baseline row', async () => {
@@ -3611,5 +3628,195 @@ describe('holdings snapshots for investment accounts', () => {
     });
     await runSyncCore(host, store, { force: true });
     expect(holdings).toEqual([]);
+  });
+});
+
+describe('the starting balance stays the OLDEST row (v1.54)', () => {
+  // The baseline stands for everything before the account's first synced row.
+  // Dated after older history, Wealthfolio replays that history first and the
+  // account's early balance goes negative — its Health page then reports "cash
+  // account had a negative balance" (live: Savings −$1,300 from 2026-04-23 with
+  // the baseline on 2026-06-19; Spend −$440.50 from 2026-05-03, baseline 06-14).
+  const baselineRow = (over: Partial<HostActivity> = {}): HostActivity => ({
+    id: 'act-start', accountId: 'wf-a', activityType: 'CREDIT',
+    date: '2026-06-18', amount: 4500.38, comment: 'Starting balance · sfin-1',
+    sourceGroupId: null, subtype: null, ...over,
+  });
+
+  it('moves the baseline to the day before older history it just netted out', async () => {
+    const { host, store, saved } = createFakeHost({
+      accountSet: { errors: [], accounts: [{
+        id: 'sfin-1', name: 'C', currency: 'USD', balance: '3200.38', 'balance-date': 1,
+        transactions: [{
+          id: 'tx-old', posted: Math.floor(Date.parse('2026-04-23T12:00:00Z') / 1000),
+          amount: '-1300.00', description: 'ACH Withdrawal',
+        }],
+      }] },
+      mapping: { 'sfin-1': 'wf-a' },
+      existing: new Map([['wf-a', [baselineRow()]]]),
+    });
+    await runSyncCore(host, store, {});
+    const updates = saved.flatMap((s) => s.updates ?? []).filter((u) => u.id === 'act-start');
+    expect(updates.at(-1)).toMatchObject({ activityDate: '2026-04-22', activityType: 'CREDIT' });
+    expect(updates.at(-1)!.amount).toBeCloseTo(5800.38, 2);
+  });
+
+  it('re-dates a baseline already sitting after older rows, without touching its amount', async () => {
+    // Nick's ledger today: the netting happened on an earlier version, so no
+    // new row arrives to trigger it — the sync has to notice on its own.
+    const { host, store, saved } = createFakeHost({
+      accountSet: { errors: [], accounts: [{
+        id: 'sfin-1', name: 'C', currency: 'USD', balance: '0', 'balance-date': 1, transactions: [],
+      }] },
+      mapping: { 'sfin-1': 'wf-a' },
+      accountTypes: { 'wf-a': 'CASH' },
+      existing: new Map([['wf-a', [
+        baselineRow(),
+        { id: 'old', accountId: 'wf-a', activityType: 'WITHDRAWAL', date: '2026-04-23', amount: 1300,
+          comment: 'ACH Withdrawal · tx-old', sourceGroupId: null, subtype: null },
+      ]]]),
+    });
+    await runSyncCore(host, store, { force: true });
+    const updates = saved.flatMap((s) => s.updates ?? []).filter((u) => u.id === 'act-start');
+    expect(updates).toHaveLength(1);
+    expect(updates[0]).toMatchObject({ activityDate: '2026-04-22', activityType: 'CREDIT', amount: 4500.38 });
+    // Omitted, so the stored asset is left exactly as it is.
+    expect(updates[0].symbol).toBeUndefined();
+  });
+
+  it('leaves a baseline that is already the oldest row alone', async () => {
+    const { host, store, saved } = createFakeHost({
+      accountSet: { errors: [], accounts: [{
+        id: 'sfin-1', name: 'C', currency: 'USD', balance: '0', 'balance-date': 1, transactions: [],
+      }] },
+      mapping: { 'sfin-1': 'wf-a' },
+      accountTypes: { 'wf-a': 'CASH' },
+      existing: new Map([['wf-a', [
+        baselineRow({ date: '2026-04-01' }),
+        { id: 'later', accountId: 'wf-a', activityType: 'WITHDRAWAL', date: '2026-04-23', amount: 1300,
+          comment: 'ACH Withdrawal · tx-old', sourceGroupId: null, subtype: null },
+      ]]]),
+    });
+    await runSyncCore(host, store, { force: true });
+    expect(saved.flatMap((s) => s.updates ?? []).filter((u) => u.id === 'act-start')).toEqual([]);
+  });
+
+  it("reads a card baseline's TRANSFER_OUT as money owed when netting older charges", async () => {
+    // A card opening balance of $500 owed is a TRANSFER_OUT (neutralAdjustmentFields).
+    // Read back as +$500, netting a recovered $50 charge produced +$550 — the
+    // opening DEBT flipped into a $550 credit.
+    const { host, store, saved } = createFakeHost({
+      accountSet: { errors: [], accounts: [{
+        id: 'sfin-1', name: 'Card', currency: 'USD', balance: '-500', 'balance-date': 1,
+        transactions: [{
+          id: 'tx-old', posted: Math.floor(Date.parse('2026-04-23T12:00:00Z') / 1000),
+          amount: '-50.00', description: 'COFFEE SHOP',
+        }],
+      }] },
+      mapping: { 'sfin-1': 'wf-a' },
+      accountTypes: { 'wf-a': 'CREDIT_CARD' },
+      existing: new Map([['wf-a', [baselineRow({ activityType: 'TRANSFER_OUT', amount: 500 })]]]),
+    });
+    await runSyncCore(host, store, {});
+    const update = saved.flatMap((s) => s.updates ?? []).filter((u) => u.id === 'act-start').at(-1)!;
+    expect(update).toMatchObject({ activityType: 'TRANSFER_OUT', amount: 450, activityDate: '2026-04-22' });
+    // A transfer leg carrying the cash symbol becomes the phantom "$CASH"
+    // security and stops moving cash — the rewrite must send none.
+    expect(update.symbol).toBeUndefined();
+  });
+});
+
+describe("the sync's own unlinked transfer rows are marked external (v1.54)", () => {
+  // Wealthfolio 3.8's Health page reports every posted TRANSFER_IN/OUT that is
+  // not one half of a valid pair as an "incomplete transfer" — unless its
+  // metadata says `flow.is_external: true` (health/service.rs,
+  // invalid_transfer_groups_from_activities). Opening balances, drift plugs and
+  // in-transit placeholders are transfer-TYPED only to stay spending-neutral;
+  // none has a partner to pair with, so each one was an error there.
+  const EXTERNAL = JSON.stringify({ flow: { is_external: true } });
+  const seed = (rows: HostActivity[], accountType = 'CREDIT_CARD'): FakeHostSeed => ({
+    accountSet: { errors: [], accounts: [{
+      id: 'sfin-1', name: 'Card', currency: 'USD', balance: '0', 'balance-date': 1, transactions: [],
+    }] },
+    mapping: { 'sfin-1': 'wf-a' },
+    accountTypes: { 'wf-a': accountType },
+    existing: new Map([['wf-a', rows]]),
+  });
+  const row = (over: Partial<HostActivity>): HostActivity => ({
+    id: 'r', accountId: 'wf-a', activityType: 'TRANSFER_IN', date: '2026-04-18', amount: '235.4',
+    comment: 'Starting balance · sfin-1', sourceGroupId: null, subtype: null, metadata: null, ...over,
+  });
+
+  it('stamps an opening balance, a plug and an aged placeholder', async () => {
+    const { host, store, saved, activities } = createFakeHost(seed([
+      row({ id: 'sb' }),
+      row({ id: 'plug', activityType: 'TRANSFER_OUT', date: '2026-06-12', amount: '80', comment: 'Balance adjustment · sfin-1 · 2026-06-12' }),
+      row({ id: 'ph', activityType: 'TRANSFER_OUT', date: '2026-05-02', amount: '700', comment: '↔️ In-transit transfer · ZELLE TO J · tx-z' }),
+    ]));
+    await runSyncCore(host, store, { force: true });
+    const byId = new Map(saved.flatMap((s) => s.updates ?? []).map((u) => [u.id, u]));
+    expect(byId.get('sb')).toMatchObject({ metadata: EXTERNAL, activityType: 'TRANSFER_IN', amount: 235.4, activityDate: '2026-04-18', comment: 'Starting balance · sfin-1' });
+    expect(byId.get('plug')).toMatchObject({ metadata: EXTERNAL, activityType: 'TRANSFER_OUT', amount: 80 });
+    expect(byId.get('ph')).toMatchObject({ metadata: EXTERNAL, activityType: 'TRANSFER_OUT', amount: 700 });
+    for (const id of ['sb', 'plug', 'ph']) expect(byId.get(id)!.symbol).toBeUndefined();
+    // And it holds: a second run has nothing left to stamp.
+    saved.length = 0;
+    await runSyncCore(host, store, { force: true });
+    expect(saved.flatMap((s) => s.updates ?? []).filter((u) => u.metadata === EXTERNAL)).toEqual([]);
+    expect(activities.get('wf-a')!.find((a) => a.id === 'sb')!.metadata).toBe(EXTERNAL);
+  });
+
+  it('never touches a linked leg, a user transfer, a non-transfer row, or a row whose metadata the host cannot report', async () => {
+    const { host, store, saved } = createFakeHost(seed([
+      // Linked: the link stamps is_external:false, and marking one leg of a
+      // pair external makes Wealthfolio report the PAIR as conflicting.
+      row({ id: 'linked', comment: '↔️ In-transit transfer · PAYMENT · tx-p', metadata: JSON.stringify({ flow: { is_external: false } }), sourceGroupId: 'wf-transfer-1' }),
+      row({ id: 'grouped', comment: '↔️ In-transit transfer · PAYMENT · tx-q', sourceGroupId: 'wf-transfer-2' }),
+      row({ id: 'user', comment: 'Transfer from Savings · tx-u' }),
+      row({ id: 'credit', activityType: 'CREDIT', comment: 'Balance adjustment · sfin-1 · 2026-06-12' }),
+      row({ id: 'unknown', metadata: undefined }),
+      row({ id: 'done', metadata: EXTERNAL }),
+      row({ id: 'object', metadata: { flow: { is_external: true } } as unknown as string }),
+    ]));
+    await runSyncCore(host, store, { force: true });
+    expect(saved.flatMap((s) => s.updates ?? []).filter((u) => u.metadata !== undefined)).toEqual([]);
+  });
+
+  it('writes a new in-transit transfer placeholder with the marker already on', async () => {
+    const posted = Math.floor(Date.now() / 1000) - 3600;
+    const s = seed([], 'CASH');
+    s.accountSet!.accounts[0].transactions = [{
+      id: 'tx-live', posted, amount: '-429.71', description: 'Online Transfer to Savings',
+    }];
+    const { host, store, saved } = createFakeHost(s);
+    await runSyncCore(host, store, { force: true });
+    const create = saved.flatMap((r) => r.creates ?? []).find((c) => c.comment.includes('tx-live'))!;
+    expect(create).toMatchObject({ activityType: 'TRANSFER_OUT', metadata: EXTERNAL });
+  });
+});
+
+describe('an update never marks a linked leg external (v1.54)', () => {
+  it('drops the marker when the stored row is grouped', async () => {
+    const posted = Math.floor(Date.now() / 1000) - 3600;
+    const day = new Date(posted * 1000).toISOString().slice(0, 10);
+    const { host, store, saved } = createFakeHost({
+      accountSet: { errors: [], accounts: [{
+        id: 'sfin-1', name: 'Checking', currency: 'USD', balance: '0', 'balance-date': 1,
+        transactions: [{ id: 'tx-live', posted, amount: '-429.71', description: 'Online Transfer to Savings' }],
+      }] },
+      mapping: { 'sfin-1': 'wf-a' },
+      accountTypes: { 'wf-a': 'CASH' },
+      // Linked earlier; this run sees the leg alone, so it plans it back into a
+      // placeholder — an update that must not carry the external marker.
+      existing: new Map([['wf-a', [{
+        id: 'leg', accountId: 'wf-a', activityType: 'TRANSFER_OUT', date: day, amount: '429.71',
+        comment: 'Online Transfer to Savings · tx-live', sourceGroupId: 'wf-transfer-9', subtype: null,
+        metadata: JSON.stringify({ flow: { is_external: false } }),
+      }]]]),
+    });
+    await runSyncCore(host, store, { force: true });
+    const u = saved.flatMap((r) => r.updates ?? []).find((x) => x.id === 'leg');
+    expect(u).toBeTruthy();
+    expect(u!.metadata).toBeUndefined();
   });
 });
