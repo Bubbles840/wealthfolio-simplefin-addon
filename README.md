@@ -30,6 +30,10 @@ move money.
   balance and flags any drift, with a one-click correction.
 - **Auto-sync on a schedule** while Wealthfolio is open, including a catch-up
   when you open the app.
+- **Reports tab** (with the Docker companion) — the daily, weekly and monthly
+  reports as they stand right now, plus every edition that was sent. On a
+  Wealthfolio server with Web Push, each report is also pushed to your devices
+  and the notification opens its report.
 
 ## Requirements
 
@@ -98,7 +102,15 @@ applies the correction in the same run.
 
 If a later wide re-scan recovers transactions older than that entry, the
 baseline is adjusted by their total — otherwise those transactions would be
-counted twice, once in the baseline and again individually.
+counted twice, once in the baseline and again individually — and moved to the
+day before the earliest transaction, so the account's history never dips
+below zero.
+
+A credit card that started out owing money gets its opening debt as a
+withdrawal, the only money-out type Wealthfolio accepts on a card. The Docker
+companion files it under an **Opening balances** spending category and
+excludes that category from spending, so Wealthfolio's Spending page does not
+read it as a purchase.
 
 ### Deep scan
 

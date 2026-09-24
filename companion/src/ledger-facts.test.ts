@@ -129,6 +129,57 @@ describe('getLedgerFacts', () => {
     expect(f.chronicallyOver).toEqual([{ name: 'Food & Dining', months: 3, averageOver: 140 }]);
   });
 
+  it('finds a transfer whose other half is missing: the one account off from its bank by exactly that amount', () => {
+    // Spend's placeholder left $3,000; Savings reads exactly $3,000 below its
+    // bank. Spend itself agrees with its bank, so it is not the suspect.
+    const f = facts(`
+      INSERT INTO activities VALUES ('s0','cash','CREDIT',NULL,'2026-04-01','5000','Starting balance · sf1',NULL,0);
+      INSERT INTO activities VALUES ('ph','cash','TRANSFER_OUT',NULL,'2026-08-10','3000','↔️ In-transit transfer · Transfer to Capital One · t9',NULL,0);
+      INSERT INTO activities VALUES ('v0','sav','CREDIT',NULL,'2026-04-01','12919.24','Starting balance · sf2',NULL,0);
+    `, [['cash', 2000], ['sav', 15919.24]]);
+    expect(f.missingLegs).toEqual([{
+      id: 'ph', description: 'Transfer to Capital One', amount: 3000, date: '2026-08-10',
+      fromAccount: 'Spend', toAccount: 'Savings',
+    }]);
+  });
+
+  it('names no missing leg when two accounts could explain it, or none', () => {
+    const ambiguous = facts(`
+      INSERT INTO activities VALUES ('ph','cash','TRANSFER_OUT',NULL,'2026-08-10','50','↔️ In-transit transfer · Move · t9',NULL,0);
+    `, [['cash', -50], ['sav', 50], ['card', 50]]);
+    expect(ambiguous.missingLegs).toEqual([]);
+    const none = facts(`
+      INSERT INTO activities VALUES ('ph','cash','TRANSFER_OUT',NULL,'2026-08-10','50','↔️ In-transit transfer · Move · t9',NULL,0);
+    `, [['cash', -50], ['sav', 0]]);
+    expect(none.missingLegs).toEqual([]);
+  });
+
+  it('leaves a young leg alone: the other bank is usually just ahead of its feed', () => {
+    const f = facts(`
+      INSERT INTO activities VALUES ('ph','cash','TRANSFER_OUT',NULL,'2026-09-18','391.33','↔️ In-transit transfer · Payment · t9',NULL,0);
+    `, [['cash', -391.33], ['card', 391.33]]);
+    expect(f.missingLegs).toEqual([]);
+  });
+
+  it('names a broad Amazon rule only while order emails are set up to label Amazon charges', () => {
+    const rows = `
+      CREATE TABLE spending_categorization_rules (name TEXT, pattern TEXT, match_type TEXT);
+      INSERT INTO spending_categorization_rules VALUES ('Amazon → Online Shopping','Amazon','CONTAINS'),('Kindle','Kindle Svcs','CONTAINS');
+    `;
+    const on = getLedgerFacts(ledger(rows), NOW, new Map(), { amazonMailEnabled: true })!;
+    expect(on.broadAmazonRules).toEqual(['Amazon → Online Shopping']);
+    const off = getLedgerFacts(ledger(rows), NOW, new Map())!;
+    expect(off.broadAmazonRules).toEqual([]);
+  });
+
+  it('finds a card whose opening balance says it started in credit', () => {
+    const f = facts(`
+      INSERT INTO activities VALUES ('o1','card','TRANSFER_IN',NULL,'2026-04-20','235.4','Starting balance · sfc',NULL,0);
+      INSERT INTO activities VALUES ('o2','card2','WITHDRAWAL',NULL,'2026-04-20','464.6','Starting balance · sfd',NULL,0);
+    `);
+    expect(f.cardsOpenedInCredit).toEqual([{ name: 'Citi', amount: 235.4, date: '2026-04-20' }]);
+  });
+
   it('counts rows Wealthfolio flagged, and survives a schema without the column', () => {
     expect(facts(`INSERT INTO activities VALUES ('x','cash','WITHDRAWAL',NULL,'2026-09-01','5','X · t',NULL,1);`).needsReview).toBe(1);
   });

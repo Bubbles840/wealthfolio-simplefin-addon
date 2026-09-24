@@ -21,7 +21,7 @@ import {
 } from '../../shared/amazon-ledger.js';
 import { classifyAmazonEmail } from '../../shared/amazon.js';
 import {
-  resolveAmazonCategory, amazonMailConfigured, AMAZON_SENDERS, isAmazonMessage,
+  normalizeAppPassword, resolveAmazonCategory, amazonMailConfigured, AMAZON_SENDERS, isAmazonMessage,
   AMAZON_CONFIG_SECRET_KEY, AMAZON_LABELS_SECRET_KEY, DEFAULT_AMAZON_CATEGORY,
 } from '../../shared/amazon-config.js';
 import type { AmazonMailConfig, AmazonLabelCatalog } from '../../shared/amazon-config.js';
@@ -263,7 +263,8 @@ export async function createImapSource(cfg: AmazonMailConfig): Promise<MailSourc
     host: cfg.host!,
     port: cfg.port ?? 993,
     secure: true,
-    auth: { user: cfg.user!, pass: cfg.password! },
+    // Normalised here as well as on save, so a config saved before the fix works.
+    auth: { user: cfg.user!, pass: normalizeAppPassword(cfg.password!) },
     // The companion's own log is the diagnostic channel; imapflow's per-command
     // pino stream would bury it.
     logger: false,

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { maskUrl, validateStartupEnv, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, runCompanionSyncExclusive, buildTelegramCommandHandler, applyTelegramDismissal, undoTelegramDismissal, formatDismissedReply, buildTelegramListenerDeps, buildCategorizeController, buildCategorizeDeps, rememberImportScope, sendUnmappedAccountsNotice, updateCheckDeps } from './index.js';
+import { maskUrl, publishLiveReports, validateStartupEnv, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, runCompanionSyncExclusive, buildTelegramCommandHandler, applyTelegramDismissal, undoTelegramDismissal, formatDismissedReply, buildTelegramListenerDeps, buildCategorizeController, buildCategorizeDeps, rememberImportScope, sendUnmappedAccountsNotice, updateCheckDeps } from './index.js';
 import { formatHelpReply, parseCommand } from '../../shared/telegram-commands.js';
 import { SIMPLEFIN_SYNC_VERSION } from '../../shared/version.js';
 import { runSyncCore } from '../../shared/sync-core.js';
@@ -1183,16 +1183,79 @@ describe('sendDailyTelegramReport', () => {
     expect(text).not.toContain('Dining');
   });
 
-  it('does nothing when dailyReportEnabled is false', async () => {
+  it('sends nothing — no Telegram, no push — when dailyReportEnabled is false, but still archives it', async () => {
+    // The switch means "don't send me this". The Reports tab's history is
+    // passive, so the edition is still kept there.
     const secrets = new Map<string, string>([
       ['telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true, dailyReportEnabled: false })],
     ]);
     const client = {
       getAddonSecret: vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null),
-      setAddonSecret: vi.fn(async () => {}),
+      setAddonSecret: vi.fn(async (_a: string, key: string, val: string) => { secrets.set(key, val); }),
+      sendNotification: vi.fn(async () => ({ delivered: 1, removed: 0, failed: 0 })),
     } as any;
+    const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+    vi.stubGlobal('fetch', fetchMock);
     await sendDailyTelegramReport(client);
-    expect(client.setAddonSecret).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(client.sendNotification).not.toHaveBeenCalled();
+    expect(JSON.parse(secrets.get('reports_daily')!).archive).toHaveLength(1);
+  });
+
+  it('archives the edition for the Reports tab and pushes it, with no Telegram configured at all', async () => {
+    // The Reports tab replaces Telegram's history: a user who never set up a
+    // chat still gets every daily report kept, and pushed to their devices.
+    const secrets = new Map<string, string>();
+    const client = {
+      getAddonSecret: vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null),
+      setAddonSecret: vi.fn(async (_a: string, key: string, val: string) => { secrets.set(key, val); }),
+      sendNotification: vi.fn(async () => ({ delivered: 2, removed: 0, failed: 0 })),
+    } as any;
+    const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await sendDailyTelegramReport(client);
+
+    const store = JSON.parse(secrets.get('reports_daily')!);
+    expect(store.archive).toHaveLength(1);
+    expect(store.archive[0]).toMatchObject({ kind: 'daily' });
+    expect(store.archive[0].text.length).toBeGreaterThan(0);
+    expect(client.sendNotification).toHaveBeenCalledWith(expect.objectContaining({
+      url: '/addons/simplefin-sync?tab=reports&report=daily',
+      tag: 'simplefin-daily',
+    }));
+    // And no chat: Telegram itself is never called.
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('never records ledger findings from a live preview', async () => {
+    // Recomposed every sync; recording first-seen times there would age a
+    // "say once" finding out before the 8am report ever carried it.
+    const secrets = new Map<string, string>();
+    const client = {
+      getAddonSecret: vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null),
+      setAddonSecret: vi.fn(async (_a: string, key: string, val: string) => { secrets.set(key, val); }),
+    } as any;
+    await publishLiveReports(client, new Date(2026, 8, 23, 9, 0));
+    expect(client.setAddonSecret.mock.calls.map((c: string[]) => c[1])).not.toContain('ledger_check_seen');
+  });
+
+  it('publishes a live edition of each report, and leaves an unchanged one alone', async () => {
+    const secrets = new Map<string, string>();
+    const client = {
+      getAddonSecret: vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null),
+      setAddonSecret: vi.fn(async (_a: string, key: string, val: string) => { secrets.set(key, val); }),
+    } as any;
+    const now = new Date(2026, 8, 23, 9, 0);
+    await publishLiveReports(client, now);
+    for (const kind of ['daily', 'weekly', 'monthly']) {
+      const store = JSON.parse(secrets.get(`reports_${kind}`)!);
+      expect(store.live.kind).toBe(kind);
+      expect(store.archive).toEqual([]);
+    }
+    const writes = client.setAddonSecret.mock.calls.filter((c: string[]) => c[1].startsWith('reports_')).length;
+    await publishLiveReports(client, now);
+    expect(client.setAddonSecret.mock.calls.filter((c: string[]) => c[1].startsWith('reports_')).length).toBe(writes);
   });
 
   it('appends a sync-health success footer when a sync_health record exists', async () => {
@@ -1284,18 +1347,20 @@ describe('sendDailyTelegramReport', () => {
     expect(text).not.toContain('failing since');
   });
 
-  it('sends nothing and does not throw when telegram_config itself is corrupt', async () => {
+  it('sends nothing to Telegram and does not throw when telegram_config itself is corrupt', async () => {
     const secrets = new Map<string, string>([['telegram_config', 'not json at all']]);
     const client = {
       getAddonSecret: vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null),
       setAddonSecret: vi.fn(async () => {}),
+      sendNotification: vi.fn(async () => null),
     } as any;
     const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
     vi.stubGlobal('fetch', fetchMock);
 
     await expect(sendDailyTelegramReport(client)).resolves.toBeUndefined();
+    // No chat to send to: Telegram is never called. (The Reports tab may still
+    // archive the edition — that is not a send.)
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(client.setAddonSecret).not.toHaveBeenCalled();
   });
 
   it('turns glyphs back on when the style secret asks for them', async () => {
@@ -2428,21 +2493,22 @@ describe('sendWeeklyTelegramReport', () => {
     expect(text).toContain('_spent $750 of $1,300 · 58%_');
   });
 
-  it('does nothing when weeklyReportEnabled is false', async () => {
+  it('sends nothing — no Telegram, no push — when weeklyReportEnabled is false', async () => {
     const secrets = new Map<string, string>([
       ['telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true, weeklyReportEnabled: false })],
     ]);
     const client = {
       getAddonSecret: vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null),
       setAddonSecret: vi.fn(async () => {}),
+      sendNotification: vi.fn(async () => ({ delivered: 1, removed: 0, failed: 0 })),
     } as any;
     const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
     vi.stubGlobal('fetch', fetchMock);
 
     await sendWeeklyTelegramReport(client);
 
-    expect(client.setAddonSecret).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
+    expect(client.sendNotification).not.toHaveBeenCalled();
   });
 
   describe('biggest spends this week', () => {
@@ -2746,21 +2812,22 @@ describe('sendMonthlyTelegramReport', () => {
     expect(text.replace(/\\[_*`[]/g, '').match(/_/g)).toBeNull();
   });
 
-  it('does nothing when monthlyReportEnabled is false', async () => {
+  it('sends nothing — no Telegram, no push — when monthlyReportEnabled is false', async () => {
     const secrets = new Map<string, string>([
       ['telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true, monthlyReportEnabled: false })],
     ]);
     const client = {
       getAddonSecret: vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null),
       setAddonSecret: vi.fn(async () => {}),
+      sendNotification: vi.fn(async () => ({ delivered: 1, removed: 0, failed: 0 })),
     } as any;
     const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
     vi.stubGlobal('fetch', fetchMock);
 
     await sendMonthlyTelegramReport(client);
 
-    expect(client.setAddonSecret).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
+    expect(client.sendNotification).not.toHaveBeenCalled();
   });
 
   it('opts an existing config without the field IN', async () => {
@@ -2781,18 +2848,20 @@ describe('sendMonthlyTelegramReport', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('sends nothing and does not throw when telegram_config is corrupt', async () => {
+  it('sends nothing to Telegram and does not throw when telegram_config is corrupt', async () => {
     const secrets = new Map<string, string>([['telegram_config', 'not json at all']]);
     const client = {
       getAddonSecret: vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null),
       setAddonSecret: vi.fn(async () => {}),
+      sendNotification: vi.fn(async () => null),
     } as any;
     const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
     vi.stubGlobal('fetch', fetchMock);
 
     await expect(sendMonthlyTelegramReport(client)).resolves.toBeUndefined();
+    // No chat to send to: Telegram is never called. (The Reports tab may still
+    // archive the edition — that is not a send.)
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(client.setAddonSecret).not.toHaveBeenCalled();
   });
 
   it('logs a rejected send instead of discarding the result, after retrying', async () => {

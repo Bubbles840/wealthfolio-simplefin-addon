@@ -153,9 +153,11 @@ export function evaluateSelfCheck(input: SelfCheckInput, now: Date): SelfCheckFi
     findings.push({
       kind: 'feed-stale',
       severity: 'warning',
+      // The remedy, not just the symptom: a dead feed also holds any transfer
+      // that names it open indefinitely (see expiryHoldAccount in sync-core).
       message: stale.length === 1
-        ? `${stale[0]} has sent no new data in over ${FEED_STALE_DAYS} days`
-        : `${stale.length} accounts have sent no new data in over ${FEED_STALE_DAYS} days: ${stale.join(', ')}`,
+        ? `${stale[0]} has sent no new data in over ${FEED_STALE_DAYS} days — reconnect it in SimpleFin, or unmap it here if the account is closed`
+        : `${stale.length} accounts have sent no new data in over ${FEED_STALE_DAYS} days: ${stale.join(', ')} — reconnect them in SimpleFin, or unmap any that are closed`,
     });
   }
 

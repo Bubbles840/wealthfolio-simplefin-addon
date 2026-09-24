@@ -255,6 +255,20 @@ const css = `
   background: var(--primary); color: var(--primary-foreground);
   font-weight: 600;
 }
+/* Reports sub-tabs: a quieter, smaller copy of the tab pills. */
+.sfin-subtabs { display: flex; gap: 4px; margin: 0 0 12px; }
+.sfin-subtab {
+  border: 1px solid color-mix(in srgb, var(--muted-foreground) 25%, transparent);
+  background: transparent; color: var(--muted-foreground);
+  font-size: 12px; font-weight: 550; padding: 4px 12px; border-radius: 999px; cursor: pointer;
+}
+.sfin-subtab--active { background: color-mix(in srgb, var(--primary) 14%, transparent); color: var(--foreground); }
+.sfin-report-live { margin-bottom: 16px; }
+.sfin-report-head { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
+.sfin-report-past { margin-top: 8px; }
+.sfin-report-past > summary { cursor: pointer; font-weight: 550; }
+.sfin-report-text { font-size: 13px; line-height: 1.5; }
+.sfin-report-gap { height: 8px; }
 .sfin-banner-warn {
   display: flex; gap: 10px; align-items: flex-start;
   background: color-mix(in srgb, var(--destructive) 10%, transparent);

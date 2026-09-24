@@ -69,7 +69,8 @@ describe('AmazonCard', () => {
       enabled: true,
       host: 'imap.gmail.com',
       user: 'receipts@gmail.com',
-      password: 'abcd efgh ijkl mnop',
+      // Saved without Google's display spaces, which IMAP rejects.
+      password: 'abcdefghijklmnop',
     });
   });
 

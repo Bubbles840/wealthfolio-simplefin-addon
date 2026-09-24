@@ -186,6 +186,57 @@ export class WealthfolioClient {
     if (!res.ok) throw await this.httpError('assignActivityCategory', res);
   }
 
+  /** Creates a top-level spending category and returns its id. The key is the
+   *  name in snake case, which is how Wealthfolio keys its own categories. */
+  async createSpendingCategory(name: string): Promise<string> {
+    const res = await fetch(`${this.baseUrl}/api/v1/taxonomies/categories`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
+      body: JSON.stringify({
+        taxonomyId: 'spending_categories',
+        parentId: null,
+        name,
+        key: name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, ''),
+        color: '#9ca3af',
+        description: 'Balances an account already had when syncing began. Not spending.',
+        sortOrder: 999,
+      }),
+    });
+    if (!res.ok) throw await this.httpError('createSpendingCategory', res);
+    const created = (await res.json()) as { id?: unknown };
+    if (typeof created.id !== 'string' || !created.id) throw new Error('createSpendingCategory returned no id');
+    return created.id;
+  }
+
+  /** Sets `spending.excluded_category_ids`. The route is a patch: omitted
+   *  fields (the account list, the enabled flag) are left as they are. */
+  async setExcludedSpendingCategories(categoryIds: string[]): Promise<void> {
+    const res = await fetch(`${this.baseUrl}/api/v1/spending/settings`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
+      body: JSON.stringify({ excludedCategoryIds: categoryIds }),
+    });
+    if (!res.ok) throw await this.httpError('setExcludedSpendingCategories', res);
+  }
+
+  /**
+   * Pushes a notification to every browser that enabled Wealthfolio's Web Push.
+   * Resolves `null` when the server has no push endpoint (an older Wealthfolio,
+   * or the desktop app): push is an extra, never a requirement.
+   */
+  async sendNotification(notification: {
+    title: string; body: string; url?: string; tag?: string;
+  }): Promise<{ delivered: number; removed: number; failed: number } | null> {
+    const res = await fetch(`${this.baseUrl}/api/v1/notifications/send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
+      body: JSON.stringify(notification),
+    });
+    if (res.status === 404 || res.status === 405) return null;
+    if (!res.ok) throw await this.httpError('sendNotification', res);
+    return (await res.json()) as { delivered: number; removed: number; failed: number };
+  }
+
   /** Removes a taxonomy's category assignment from one activity - the undo
    *  side of `assignActivityCategory`. No request body: the taxonomy to clear
    *  is a path segment, matching the server's DELETE route shape. */

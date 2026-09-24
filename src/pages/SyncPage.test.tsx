@@ -217,7 +217,7 @@ describe('SyncPage', () => {
     // downgrades away from — would otherwise select no tab and mount no panel:
     // a blank page with no way back. The default landing view is Budget.
     const props = makeProps();
-    props.store.getUiState = vi.fn(async () => ({ activeTab: 'reports' }) as any);
+    props.store.getUiState = vi.fn(async () => ({ activeTab: 'yearly-review' }) as any);
     render(<SyncPage {...props} />);
 
     expect(await screen.findByRole('tab', { name: /budget/i })).toBeTruthy();
@@ -228,6 +228,20 @@ describe('SyncPage', () => {
     // Exactly one panel and exactly one selected tab — never zero of either.
     expect(document.querySelectorAll('[role="tabpanel"]')).toHaveLength(1);
     expect(document.querySelectorAll('[role="tab"][aria-selected="true"]')).toHaveLength(1);
+  });
+
+  it('opens the Reports tab on the report a notification linked to, over the remembered tab', async () => {
+    const props = makeProps();
+    props.store.getUiState = vi.fn(async () => ({ activeTab: 'overview' }) as any);
+    (props.store as any).getReports = vi.fn(async () => ({ live: null, archive: [] }));
+    render(<SyncPage {...props} initialSearch="?tab=reports&report=weekly" />);
+    await waitFor(() => expect(
+      screen.getByRole('tab', { name: 'Reports' }).getAttribute('aria-selected'),
+    ).toBe('true'));
+    expect(screen.getByRole('tab', { name: 'Weekly' }).getAttribute('aria-selected')).toBe('true');
+    // The stored tab loaded afterwards and must not have won.
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.getByRole('tab', { name: 'Reports' }).getAttribute('aria-selected')).toBe('true');
   });
 
   it('remembers the tab without forgetting the dismissed checklist', async () => {

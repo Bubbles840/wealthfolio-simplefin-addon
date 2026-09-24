@@ -58,6 +58,15 @@ export interface LedgerFacts {
   }>;
   /** Categories over budget in each of the last N full months. */
   chronicallyOver: Array<{ name: string; months: number; averageOver: number }>;
+  /** Unlinked transfer legs whose other half never reached the ledger: exactly
+   *  one other account is off from its bank balance by the leg's amount, in the
+   *  direction the money went. */
+  missingLegs: Array<{ id: string; description: string; amount: number; date: string; fromAccount: string; toAccount: string }>;
+  /** Cards whose opening balance says they started in credit. */
+  cardsOpenedInCredit: Array<{ name: string; amount: number; date: string }>;
+  /** Categorization rules that file Amazon charges wholesale, while Amazon
+   *  order emails are set up to label them. Empty when the emails are not. */
+  broadAmazonRules?: string[];
 }
 
 /** When each condition was FIRST observed, keyed as `evaluateLedgerChecks`
@@ -116,8 +125,12 @@ export function evaluateLedgerChecks(
       finding: warn(`${g.description} (${money(g.amount)}) is linked as a transfer but typed ${g.type}, so it still counts — retype it as a transfer`),
     });
   }
+  // A leg whose other half is provably MISSING gets the sharper message below;
+  // "link it to its other half" would send the user looking for a row that
+  // does not exist.
+  const missingIds = new Set((facts.missingLegs ?? []).map((m) => m.id));
   for (const t of facts.unlinkedTransfers) {
-    if (t.ageDays < UNLINKED_MIN_AGE_DAYS) continue;
+    if (t.ageDays < UNLINKED_MIN_AGE_DAYS || missingIds.has(t.id)) continue;
     candidates.push({
       key: `unlinked-transfer:${t.id}`,
       when: 'always',
@@ -141,6 +154,13 @@ export function evaluateLedgerChecks(
       key: `card-balance:${c.name}:${Math.round(Math.abs(diff) * 100)}`,
       when: 'after-grace',
       finding: warn(`${c.name} has been ${money(diff)} ${diff > 0 ? 'above' : 'below'} the bank's balance for over two days`),
+    });
+  }
+  for (const m of facts.missingLegs ?? []) {
+    candidates.push({
+      key: `missing-leg:${m.id}`,
+      when: 'always',
+      finding: warn(`${m.description} (${money(m.amount)}) left ${m.fromAccount} on ${m.date} but never arrived: ${m.toAccount} is exactly ${money(m.amount)} off from its bank balance. The feed dropped the other half — run fix-transfers to add it and link the pair`),
     });
   }
   if (facts.needsReview > 0) {
@@ -174,6 +194,20 @@ export function evaluateLedgerChecks(
       key: `chronic:${facts.month}:${c.name}`,
       when: 'once',
       finding: warn(`${c.name} has been over budget ${c.months} months running, by about ${money(c.averageOver)} a month — the budget may be the thing that is wrong`),
+    });
+  }
+  for (const c of facts.cardsOpenedInCredit ?? []) {
+    candidates.push({
+      key: `card-opened-in-credit:${c.name}`,
+      when: 'once',
+      finding: warn(`${c.name}'s opening balance says it started ${money(c.amount)} in credit on ${c.date}. A card in use rarely does — an opening balance computed from the bank's figure silently absorbs any payment the feed never delivered. Check the card's payment history against its Wealthfolio payments`),
+    });
+  }
+  for (const name of facts.broadAmazonRules ?? []) {
+    candidates.push({
+      key: `broad-amazon-rule:${name}`,
+      when: 'once',
+      finding: warn(`Your categorization rule "${name}" files every Amazon charge the moment it imports, so the order emails never get to label them — narrow it or delete it`),
     });
   }
   for (const h of facts.heldTransfers) {

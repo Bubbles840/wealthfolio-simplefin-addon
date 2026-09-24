@@ -1,3 +1,4 @@
+import { parseReportStore, reportsSecretKey, type ReportKind, type ReportStore } from '../../shared/reports-archive';
 import type { AddonContext } from '@wealthfolio/addon-sdk';
 import { AMAZON_LEDGER_SECRET_KEY } from '../../shared/amazon-ledger';
 import { AMAZON_CONFIG_SECRET_KEY, AMAZON_LABELS_SECRET_KEY } from '../../shared/amazon-config';
@@ -32,7 +33,7 @@ export interface GlyphStylePref {
 }
 
 export interface UiState {
-  activeTab?: 'budget' | 'overview' | 'notifications' | 'advanced';
+  activeTab?: 'budget' | 'reports' | 'overview' | 'notifications' | 'advanced';
   checklistDismissed?: boolean;
 }
 
@@ -148,6 +149,11 @@ export class SecretsStore {
     const current = await this.ctx.api.secrets.get(ADDON_VERSION_SECRET_KEY);
     if (current === SIMPLEFIN_SYNC_VERSION) return;
     await this.ctx.api.secrets.set(ADDON_VERSION_SECRET_KEY, SIMPLEFIN_SYNC_VERSION);
+  }
+
+  /** A report's live edition and archive, published by the companion. */
+  async getReports(kind: ReportKind): Promise<ReportStore> {
+    return parseReportStore(await this.ctx.api.secrets.get(reportsSecretKey(kind)));
   }
 
   async getAccessUrl(): Promise<string | null> {

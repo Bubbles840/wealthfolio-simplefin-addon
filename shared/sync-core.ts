@@ -1176,13 +1176,48 @@ function expiryHoldAccount(
   legPostedEpoch: number,
   mappedSfinIds: string[],
   feedAliveEpoch: Map<string, number>,
+  dead: { nowSec: number; legDescription: string; nameWords: Map<string, string[]> },
 ): string | null {
   const caughtUpBy = legPostedEpoch + TRANSFER_MATCH_WINDOW_SECONDS;
+  const description = dead.legDescription.toLowerCase();
   for (const id of mappedSfinIds) {
     if (id === legSfinAccountId) continue;
-    if ((feedAliveEpoch.get(id) ?? 0) < caughtUpBy) return id;
+    const alive = feedAliveEpoch.get(id) ?? 0;
+    if (alive >= caughtUpBy) continue;
+    // Disconnected, not late: a feed silent this long holds only the legs that
+    // name it. Holding EVERY leg on its account froze a $3,000 Spend → Savings
+    // transfer as a placeholder for six weeks behind a dead Discover feed
+    // (live, 2026-09-23); the Discover payment itself stays held.
+    if (dead.nowSec - alive > DEAD_FEED_SECONDS) {
+      // An account absent from the feed has no name to judge by, so it keeps
+      // holding: unknown is not evidence the leg is unrelated.
+      const words = dead.nameWords.get(id) ?? [];
+      if (words.length > 0 && !words.some((w) => description.includes(w))) continue;
+    }
+    return id;
   }
   return null;
+}
+
+/** A feed silent longer than this is treated as disconnected rather than
+ *  behind (see expiryHoldAccount). Past the self-check's two-week stale
+ *  warning, so the user has already been told about it. */
+const DEAD_FEED_SECONDS = 21 * 86_400;
+
+/** Words that pick an account out of a transfer description: its own name's
+ *  and its institution's distinctive words. Generic account words ("card",
+ *  "checking") would match nearly every payment, so they never count. */
+const GENERIC_ACCOUNT_WORDS = new Set([
+  'account', 'bank', 'card', 'cash', 'checking', 'credit', 'debit', 'everyday', 'online',
+  'performance', 'platinum', 'premier', 'rewards', 'savings', 'signature', 'spend', 'visa',
+  'mastercard', 'the', 'and',
+]);
+export function accountNameWords(name: string, orgName?: string): string[] {
+  const words = `${name} ${orgName ?? ''}`
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((w) => w.length >= 4 && !GENERIC_ACCOUNT_WORDS.has(w) && !/^\d+$/.test(w));
+  return [...new Set(words)];
 }
 
 /**
@@ -1686,6 +1721,7 @@ export async function runSyncCore(
   // proven itself alive through — see expiryHoldAccount. Built once per run,
   // from data this run already fetched; no new I/O.
   const feedAliveEpoch = new Map<string, number>();
+  const nameWords = new Map<string, string[]>();
   for (const sfAccount of accountSet.accounts) {
     if (!mapping[sfAccount.id]) continue;
     let alive = sfAccount['balance-date'] ?? 0;
@@ -1694,6 +1730,7 @@ export async function runSyncCore(
       if (e !== null && e > alive) alive = e;
     }
     feedAliveEpoch.set(sfAccount.id, alive);
+    nameWords.set(sfAccount.id, accountNameWords(sfAccount.name, sfAccount.org?.name));
   }
   const mappedSfinIds = Object.keys(mapping);
   const nowSec = Math.floor(Date.now() / 1000);
@@ -1705,7 +1742,9 @@ export async function runSyncCore(
       const postedAt = txEpoch(p.tx) ?? nowSec;
       const accountType = wfTypes.get(mapping[p.sfAccountId] ?? '') ?? '';
       const heldFor = nowSec - postedAt > IN_TRANSIT_TIMEOUT_SECONDS
-        ? expiryHoldAccount(p.sfAccountId, postedAt, mappedSfinIds, feedAliveEpoch)
+        ? expiryHoldAccount(p.sfAccountId, postedAt, mappedSfinIds, feedAliveEpoch, {
+          nowSec, legDescription: p.tx.description ?? '', nameWords,
+        })
         : null;
       if (heldFor !== null) {
         // Past the timeout, but a counterpart feed never had its chance — keep
