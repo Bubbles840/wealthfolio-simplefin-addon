@@ -64,9 +64,6 @@ export interface LedgerFacts {
   missingLegs: Array<{ id: string; description: string; amount: number; date: string; fromAccount: string; toAccount: string }>;
   /** Cards whose opening balance says they started in credit. */
   cardsOpenedInCredit: Array<{ name: string; amount: number; date: string }>;
-  /** Categorization rules that file Amazon charges wholesale, while Amazon
-   *  order emails are set up to label them. Empty when the emails are not. */
-  broadAmazonRules?: string[];
 }
 
 /** When each condition was FIRST observed, keyed as `evaluateLedgerChecks`
@@ -201,13 +198,6 @@ export function evaluateLedgerChecks(
       key: `card-opened-in-credit:${c.name}`,
       when: 'once',
       finding: warn(`${c.name}'s opening balance says it started ${money(c.amount)} in credit on ${c.date}. A card in use rarely does — an opening balance computed from the bank's figure silently absorbs any payment the feed never delivered. Check the card's payment history against its Wealthfolio payments`),
-    });
-  }
-  for (const name of facts.broadAmazonRules ?? []) {
-    candidates.push({
-      key: `broad-amazon-rule:${name}`,
-      when: 'once',
-      finding: warn(`Your categorization rule "${name}" files every Amazon charge the moment it imports, so the order emails never get to label them — narrow it or delete it`),
     });
   }
   for (const h of facts.heldTransfers) {

@@ -47,6 +47,16 @@ export function amazonLabelFromNote(note: string): string | null {
 export interface AmazonFilingDeps {
   /** Uncategorised rows in the window, as the notice's sweep already reads. */
   uncategorized(): Promise<Array<{ activityId: string; notes: string }>>;
+  /**
+   * Labelled Amazon rows whose spending category came from a categorization
+   * RULE (assignment source "rule"). A rule runs on import, before the order
+   * email arrives, so a broad one ("Amazon → Online Shopping") used to decide
+   * every Amazon charge and the email's label never applied. Treated as a
+   * fallback the label replaces. The filer's own assignment is "manual", which
+   * rule re-runs never overwrite; a category the user chose is also "manual"
+   * and never appears here.
+   */
+  ruleCategorized?(): Promise<Array<{ activityId: string; notes: string }>>;
   /** Every spending category, for name → id. */
   categories(): Promise<Array<{ id: string; name: string }>>;
   readConfig(): Promise<AmazonMailConfig | null>;
@@ -70,7 +80,9 @@ export interface AmazonFilingResult {
 export async function fileAmazonCharges(deps: AmazonFilingDeps): Promise<AmazonFilingResult> {
   const result: AmazonFilingResult = { filed: 0, unknownCategories: [], needRule: [] };
   try {
-    const rows = await deps.uncategorized();
+    const seen = new Set<string>();
+    const rows = [...(await deps.uncategorized()), ...((await deps.ruleCategorized?.()) ?? [])]
+      .filter((r) => !seen.has(r.activityId) && seen.add(r.activityId));
     const labelled = rows
       .map((r) => ({ row: r, label: amazonLabelFromNote(r.notes) }))
       .filter((x): x is { row: typeof rows[number]; label: string } => x.label !== null);

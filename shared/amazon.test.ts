@@ -542,3 +542,41 @@ describe('mapAmazonLabel', () => {
       .toBe('Electronics');
   });
 });
+
+describe('the September 2026 layout: item line BEFORE the order number', () => {
+  // Live, 2026-09-14 (subject "Ordered 1 item: Hair Care"): the category line
+  // moved above "Order #". Splitting at "Order #" left each order's item line
+  // in the previous chunk, so the email read as unrecognised.
+  const SEPT = [
+    'Ordered 1 item: Hair Care',
+    'Your Orders', 'Your Account', 'Buy Again',
+    'Thanks for your order!',
+    'Ordered', 'Shipped', 'Out for delivery', 'Delivered',
+    'Arriving Wednesday',
+    '⁦1⁩ Hair Care item',
+    'Nicholas - LOUISVILLE, KY',
+    'Order # ‫113-2704312-9904237',
+    'View or edit order',
+    'Grand Total:',
+    '$10.80',
+  ].join('\n');
+
+  it('reads the order, its label and its total', () => {
+    expect(parseAmazonEmail(SEPT)).toEqual([{
+      orderId: '113-2704312-9904237', kind: 'ordered', totalCents: 1080, itemCount: 1, labels: ['Hair Care'],
+    }]);
+  });
+
+  it('gives each order in a two-order email its own label', () => {
+    const two = [
+      'Thanks for your order!',
+      '1 Hair Care item', 'Order # 113-0000000-0000001', 'Grand Total:', '$10.80',
+      '2 Books items', 'Order # 113-0000000-0000002', 'Grand Total:', '$25.00',
+    ].join('\n');
+    const orders = parseAmazonEmail(two);
+    expect(orders.map((o) => [o.orderId, o.labels[0], o.totalCents])).toEqual([
+      ['113-0000000-0000001', 'Hair Care', 1080],
+      ['113-0000000-0000002', 'Books', 2500],
+    ]);
+  });
+});

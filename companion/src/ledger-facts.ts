@@ -15,7 +15,6 @@ import { existsSync } from 'fs';
 import { DatabaseSync } from 'node:sqlite';
 import type { LedgerFacts } from '../../shared/ledger-checks.js';
 import { IN_TRANSIT_COMMENT_PREFIX } from '../../shared/reconcile.js';
-import { ruleCatchesAmazonCharges } from '../../shared/amazon-config.js';
 import { PENDING_SUFFIX } from '../../shared/sync-core.js';
 
 /** The digest's own spending sign — kept in step with `SPENDING_SIGN` in
@@ -86,7 +85,6 @@ export function getLedgerFacts(
   now: Date,
   /** SimpleFin's last reported balance per WEALTHFOLIO account id. */
   bankBalanceByWfId: ReadonlyMap<string, number | null>,
-  opts: { amazonMailEnabled?: boolean } = {},
 ): LedgerFacts | null {
   const db = open(dbPath);
   if (!db) return null;
@@ -296,21 +294,10 @@ export function getLedgerFacts(
          AND ABS(CAST(a.amount AS REAL)) >= 1`,
     ).map((r) => ({ name: String(r.name), amount: Number(r.amt), date: String(r.d) }));
 
-    // Only worth saying while order emails are set up to label Amazon charges;
-    // otherwise a broad Amazon rule is simply how the user files them.
-    const hasRules = all<{ name: string }>(`SELECT name FROM sqlite_master WHERE type='table' AND name='spending_categorization_rules'`).length > 0;
-    const broadAmazonRules = opts.amazonMailEnabled && hasRules
-      ? all<{ name: string; pattern: string; match_type: string }>(
-        `SELECT name, pattern, match_type FROM spending_categorization_rules`,
-      )
-        .filter((r) => ruleCatchesAmazonCharges({ pattern: String(r.pattern ?? ''), matchType: String(r.match_type ?? '') }))
-        .map((r) => String(r.name || r.pattern))
-      : [];
-
     return {
       month, cardBalances, idleRefunds, incomeReimbursements, unlinkedTransfers,
       groupedNonTransfers, heldTransfers, needsReview, categories, chronicallyOver,
-      missingLegs, cardsOpenedInCredit, broadAmazonRules,
+      missingLegs, cardsOpenedInCredit,
     };
   } catch (err) {
     console.error('[simplefin-sync] ledger checks could not read the database:', err);

@@ -195,14 +195,22 @@ export function parseAmazonEmail(body: string): AmazonOrderRecord[] {
     parts.push(text.slice(starts[i], starts[i + 1] ?? text.length));
   }
 
+  // Two layouts. Until Sep 2026 the item line FOLLOWED "Order #"; since then
+  // (live, 2026-09-14: "Ordered 1 item: Hair Care") it comes BEFORE it. In the
+  // new layout an order's item line sits between the previous order number and
+  // its own, so it is the LAST item line in that stretch; reading the chunk
+  // after "Order #" would find the NEXT order's line, or none.
+  const itemFirst = findItemLine(text.slice(0, starts[0]), 'first') !== null;
+
   const records: AmazonOrderRecord[] = [];
-  for (const part of parts) {
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i];
     const id = ORDER_ID.exec(part)?.[1];
-    // Breakdown FIRST. `6 items: 1 Home Improvement, …` also satisfies nothing in
-    // the suffix pattern, but checking the more specific shape first keeps the two
-    // from ever competing as Amazon's wording drifts again.
-    const breakdown = ITEM_BREAKDOWN.exec(part);
-    const item = breakdown ?? ITEM_SUFFIX.exec(part);
+    const found = itemFirst
+      ? findItemLine(text.slice(i === 0 ? 0 : starts[i - 1], starts[i]), 'last')
+      : findItemLine(part, 'first');
+    const breakdown = found?.breakdown ? found.match : null;
+    const item = found?.match ?? null;
     const totalMatch = TOTAL.exec(part);
     const total = totalMatch?.[1] ?? totalMatch?.[2];
     // All three or nothing: an order with no total cannot be matched to a charge,
@@ -220,6 +228,32 @@ export function parseAmazonEmail(body: string): AmazonOrderRecord[] {
     });
   }
   return records;
+}
+
+/**
+ * The category line in `text`, and which form it is.
+ *
+ * `first`: breakdown form FIRST, then suffix — `6 items: 1 Home Improvement, …`
+ * satisfies nothing in the suffix pattern, but checking the more specific shape
+ * first keeps the two from ever competing as Amazon's wording drifts again.
+ * `last`: the line nearest the end, whichever form — the new layout's order
+ * owns the item line closest above its order number.
+ */
+function findItemLine(text: string, which: 'first' | 'last'): { match: RegExpExecArray; breakdown: boolean } | null {
+  if (which === 'first') {
+    const breakdown = ITEM_BREAKDOWN.exec(text);
+    if (breakdown) return { match: breakdown, breakdown: true };
+    const suffix = ITEM_SUFFIX.exec(text);
+    return suffix ? { match: suffix, breakdown: false } : null;
+  }
+  let last: { match: RegExpExecArray; breakdown: boolean } | null = null;
+  for (const [re, breakdown] of [[ITEM_BREAKDOWN, true], [ITEM_SUFFIX, false]] as const) {
+    const global = new RegExp(re.source, `${re.flags.replace('g', '')}g`);
+    for (let m = global.exec(text); m; m = global.exec(text)) {
+      if (!last || m.index > last.match.index) last = { match: m, breakdown };
+    }
+  }
+  return last;
 }
 
 /** What a message turned out to be. */

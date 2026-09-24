@@ -63,7 +63,7 @@ import type { GlyphStyle, InlineKeyboard } from '../../shared/telegram.js';
 import type { DismissalLedger } from './dismissals.js';
 import type { SyncHealth } from '../../shared/telegram.js';
 import { SIMPLEFIN_SYNC_VERSION, COMPANION_VERSION_SECRET_KEY, ADDON_VERSION_SECRET_KEY, isNewerVersion } from '../../shared/version.js';
-import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeCategorizedSpending, getNativeSpendingCategories, getNativeCategoryCatalog, getNativeSubcategorySpending, getNativeUncategorizedSpendingTotal, countRulePatternMatches, getNativeSpendMatrix, getNativeIncomeByMonthAccount, getNativeUncategorizedByMonthAccount, getNativeMerchantRows, getNativeDrillRows, getNativeFeesInterestByMonth, getNativeSpendDailyTotals, getNativeValuationByMonth, getNativeIncomeCategories } from './sqlite-native.js';
+import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeRuleCategorizedAmazonRows, getNativeCategorizedSpending, getNativeSpendingCategories, getNativeCategoryCatalog, getNativeSubcategorySpending, getNativeUncategorizedSpendingTotal, countRulePatternMatches, getNativeSpendMatrix, getNativeIncomeByMonthAccount, getNativeUncategorizedByMonthAccount, getNativeMerchantRows, getNativeDrillRows, getNativeFeesInterestByMonth, getNativeSpendDailyTotals, getNativeValuationByMonth, getNativeIncomeCategories } from './sqlite-native.js';
 import { publishUncategorizedStatusForDbPath } from './uncategorized-status.js';
 import { createCategorizeController, SPENDING_TAXONOMY_ID } from './categorize.js';
 import { createAmazonLabelMenu, type AmazonLabelMenu } from './amazon-labels.js';
@@ -574,6 +574,7 @@ async function fileAmazonLabelledCharges(wfClient: WealthfolioClient): Promise<v
   const start = new Date(end.getFullYear(), end.getMonth(), end.getDate() - 60);
   const res = await fileAmazonCharges({
     uncategorized: async () => getNativeUncategorizedSpending(dbPath, toDateString(start), toDateString(new Date(end.getFullYear(), end.getMonth(), end.getDate() + 1))),
+    ruleCategorized: async () => getNativeRuleCategorizedAmazonRows(dbPath, toDateString(start), toDateString(new Date(end.getFullYear(), end.getMonth(), end.getDate() + 1))),
     categories: async () => getNativeSpendingCategories(dbPath),
     readConfig: async () => parseSecretJson<any>(
       await wfClient.getAddonSecret('simplefin-sync', AMAZON_CONFIG_SECRET_KEY).catch(() => null),
@@ -1836,13 +1837,7 @@ export async function composeDailyDigestMessage(
       const balance = balances[sfinId]?.balance;
       bankByWfId.set(wfId, typeof balance === 'number' ? balance : null);
     }
-    const amazonCfg = parseSecretJson<AmazonMailConfig>(
-      await wfClient.getAddonSecret('simplefin-sync', AMAZON_CONFIG_SECRET_KEY).catch(() => null),
-      AMAZON_CONFIG_SECRET_KEY,
-    );
-    const facts = getLedgerFacts(wealthfolioDbPath(), now, bankByWfId, {
-      amazonMailEnabled: amazonMailConfigured(amazonCfg),
-    });
+    const facts = getLedgerFacts(wealthfolioDbPath(), now, bankByWfId);
     if (facts) {
       const seen = parseSecretJson<LedgerCheckSeen>(
         await wfClient.getAddonSecret('simplefin-sync', LEDGER_CHECK_SEEN_SECRET_KEY).catch(() => null),

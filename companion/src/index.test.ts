@@ -68,6 +68,7 @@ vi.mock('./wealthfolio.js', () => {
 
 vi.mock('./sqlite-native.js', () => ({
   getNativeUncategorizedSpending: vi.fn(() => []),
+  getNativeRuleCategorizedAmazonRows: vi.fn(() => []),
   // v1.48 drill-down reader — bound by cubeBuildDeps, so it must exist here.
   getNativeDrillRows: vi.fn(() => []),
   // The categorized mirror: read by both menus' Undo before it un-files
