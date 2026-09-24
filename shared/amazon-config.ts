@@ -99,36 +99,3 @@ export function normalizeAppPassword(password: string): string {
   const trimmed = password.trim();
   return /^[a-z]{4}(\s+[a-z]{4}){3}$/i.test(trimmed) ? trimmed.replace(/\s+/g, '') : password;
 }
-
-/** What Amazon charges look like on a statement: the descriptions a rule must
- *  NOT swallow if the order emails are to label them. */
-const AMAZON_DESCRIPTION_SAMPLES = [
-  'amazon mktpl*bv3gy5v12 seattle wa',
-  'amazon.com*d38nq0xa3 seattle wa',
-  'amzn mktp us*2k1ab3cd4',
-  'amazon',
-];
-
-/**
- * Whether a Wealthfolio categorization rule files Amazon charges wholesale. Such
- * a rule runs when a charge is imported, so by the time an order email arrives
- * the charge already has a category and the email's label never applies (live,
- * 2026-08-07: every Amazon charge landed in one category). Narrow rules — a
- * pattern only some Amazon charges carry, like "Kindle Svcs" — are fine.
- */
-export function ruleCatchesAmazonCharges(rule: { pattern: string; matchType: string }): boolean {
-  const pattern = rule.pattern.trim().toLowerCase();
-  if (pattern.length < 4) return false;
-  const type = rule.matchType.trim().toUpperCase();
-  if (type === 'REGEX') {
-    try {
-      const re = new RegExp(rule.pattern, 'i');
-      return AMAZON_DESCRIPTION_SAMPLES.filter((s) => re.test(s)).length >= 2;
-    } catch {
-      return false;
-    }
-  }
-  if (type === 'STARTS_WITH') return AMAZON_DESCRIPTION_SAMPLES.filter((s) => s.startsWith(pattern)).length >= 1;
-  if (type === 'CONTAINS') return AMAZON_DESCRIPTION_SAMPLES.filter((s) => s.includes(pattern)).length >= 1;
-  return false;
-}

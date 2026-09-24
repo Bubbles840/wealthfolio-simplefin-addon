@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.56.1] - 2026-09-24
+
+### Fixed
+
+- **Amazon's September order emails are read again.** Amazon moved the
+  category line ("1 Hair Care item") above the order number, and the parser
+  looked for it below. Every new order email was left unread as "could not be
+  read". Both layouts now parse, including emails with several orders.
+- **An order email's label now beats a categorization rule.** A broad rule
+  such as "Amazon → Online Shopping" files each charge on import, before the
+  email arrives, and used to decide the category for good. A rule's category is
+  now a fallback: the email's label replaces it. A category you chose yourself
+  is never touched. The daily-audit warning added in 1.56.0 about such rules is
+  gone, because the rule is harmless now.
+
+### Added
+
+- `companion/tools/amazon-unread.mjs` prints the Amazon emails the parser
+  could not read, exactly as the parser sees them. It is read-only and marks
+  nothing as read.
+
 ## [1.56.0] - 2026-09-23
 
 ### Added

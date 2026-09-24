@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { neutralAdjustmentFields } from '../../shared/sync-core.js';
-import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending,
+import { getNativeRuleCategorizedAmazonRows, getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending,
   getNativeAccountBalances, getNativeUncategorizedSpendingTotal, getNativeUncategorizedSpending, getNativeCategoryCatalog, getNativeSubcategorySpending, getNativeSpendingCategories, getNativeCategorizedSpending } from './sqlite-native.js';
 import { DatabaseSync } from 'node:sqlite';
 import { mkdtempSync, rmSync } from 'fs';
@@ -540,6 +540,34 @@ describe('sqlite-native', () => {
       try {
         seedWeek(path);
         expect(getNativeWealthfolioTopSpending(path, '2026-06-01', '2026-06-08', 5)).toEqual([]);
+      } finally {
+        cleanup();
+      }
+    });
+  });
+
+  describe('getNativeRuleCategorizedAmazonRows', () => {
+    it("returns labelled Amazon charges a RULE filed, never a user's own choice or an unlabelled charge", () => {
+      const { path, cleanup } = makeTestDb();
+      try {
+        const db = new DatabaseSync(path);
+        db.exec(`
+          ALTER TABLE activity_taxonomy_assignments ADD COLUMN source TEXT;
+          INSERT INTO activities (id, amount, activity_date, activity_type, notes) VALUES
+            ('rule', '10.80', '2026-09-15T00:00:00Z', 'WITHDRAWAL', 'AMAZON MKTPL · Amazon: Hair Care · TRN-1'),
+            ('mine', '20.00', '2026-09-15T00:00:00Z', 'WITHDRAWAL', 'AMAZON MKTPL · Amazon: Books · TRN-2'),
+            ('bare', '30.00', '2026-09-15T00:00:00Z', 'WITHDRAWAL', 'AMAZON MKTPL · TRN-3'),
+            ('old',  '40.00', '2026-06-01T00:00:00Z', 'WITHDRAWAL', 'AMAZON MKTPL · Amazon: Toys · TRN-4');
+          INSERT INTO activity_taxonomy_assignments (activity_id, category_id, taxonomy_id, source) VALUES
+            ('rule', 'c', 'spending_categories', 'rule'),
+            ('mine', 'c', 'spending_categories', 'manual'),
+            ('bare', 'c', 'spending_categories', 'rule'),
+            ('old',  'c', 'spending_categories', 'rule');
+        `);
+        db.close();
+        expect(getNativeRuleCategorizedAmazonRows(path, '2026-08-01', '2026-10-01')).toEqual([
+          { activityId: 'rule', notes: 'AMAZON MKTPL · Amazon: Hair Care · TRN-1' },
+        ]);
       } finally {
         cleanup();
       }

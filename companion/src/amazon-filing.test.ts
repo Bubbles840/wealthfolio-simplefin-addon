@@ -174,3 +174,30 @@ describe('fileAmazonCharges', () => {
     expect(deps.readConfig).not.toHaveBeenCalled();
   });
 });
+
+describe('a rule category is a fallback the order email replaces (v1.56.1)', () => {
+  // A broad rule ("Amazon → Online Shopping") files each charge on import,
+  // before its order email arrives. Wealthfolio records that assignment as
+  // source "rule"; the filer's own assignment is "manual" and rule re-runs
+  // never overwrite manual ones. So the email's label now wins over a rule
+  // (live, 2026-09-24: every Amazon charge stuck in Online Shopping).
+  it('re-files a rule-categorized charge by its label', async () => {
+    const { deps, assigned } = make({
+      ruleCategorized: vi.fn(async () => [{ activityId: 'r1', notes: 'AMAZON MKTPL · Amazon: Hair Care · TRN-1' }]),
+    } as any);
+    const res = await fileAmazonCharges(deps as any);
+    expect(res.filed).toBe(1);
+    expect(assigned).toHaveLength(1);
+    expect(assigned[0][0]).toBe('r1');
+  });
+
+  it('files a charge once even when it shows up in both lists', async () => {
+    const row = { activityId: 'x', notes: 'AMAZON · Amazon: Hair Care · TRN-2' };
+    const { deps, assigned } = make({
+      uncategorized: vi.fn(async () => [row]),
+      ruleCategorized: vi.fn(async () => [row]),
+    } as any);
+    await fileAmazonCharges(deps as any);
+    expect(assigned).toHaveLength(1);
+  });
+});

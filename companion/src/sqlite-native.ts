@@ -554,6 +554,41 @@ export function getNativeUncategorizedSpending(
   });
 }
 
+/**
+ * Amazon charges the order emails have labelled (`· Amazon: <label>` in the
+ * note) whose spending category was set by a categorization RULE — the
+ * fallback `fileAmazonCharges` replaces with the label's category.
+ */
+export function getNativeRuleCategorizedAmazonRows(
+  dbPath: string,
+  startInclusive: string,
+  endExclusive: string,
+): Array<{ activityId: string; notes: string }> {
+  if (!dbPath || !existsSync(dbPath)) return [];
+  if (!validDateBounds(startInclusive, endExclusive)) return [];
+  const query = `
+    SELECT a.id, COALESCE(a.notes, '')
+    FROM activities a
+    JOIN activity_taxonomy_assignments ata ON a.id = ata.activity_id
+    WHERE ata.taxonomy_id = 'spending_categories'
+      AND LOWER(COALESCE(ata.source, '')) = 'rule'
+      AND COALESCE(a.notes, '') LIKE '%· Amazon:%'
+      AND a.activity_date >= '${startInclusive}'
+      AND a.activity_date < '${endExclusive}'
+    ORDER BY a.activity_date DESC, a.id;
+  `;
+  const rows = queryNativeDb<Record<string, unknown>>(
+    dbPath,
+    'rule-categorized-amazon',
+    query,
+    (parts) => (parts.length === 2 ? { c0: parts[0], c1: parts[1] } : null),
+  );
+  return rows.map((r) => {
+    const vals = Object.values(r);
+    return { activityId: String(vals[0]), notes: String(vals[1]) };
+  });
+}
+
 /** One taxonomy's assignment on a transaction — a transaction can carry more
  *  than one (an income assignment AND a spending one), which is why this is
  *  its own type rather than a single categoryId/categoryName pair. */

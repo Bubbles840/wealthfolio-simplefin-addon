@@ -161,17 +161,6 @@ describe('getLedgerFacts', () => {
     expect(f.missingLegs).toEqual([]);
   });
 
-  it('names a broad Amazon rule only while order emails are set up to label Amazon charges', () => {
-    const rows = `
-      CREATE TABLE spending_categorization_rules (name TEXT, pattern TEXT, match_type TEXT);
-      INSERT INTO spending_categorization_rules VALUES ('Amazon → Online Shopping','Amazon','CONTAINS'),('Kindle','Kindle Svcs','CONTAINS');
-    `;
-    const on = getLedgerFacts(ledger(rows), NOW, new Map(), { amazonMailEnabled: true })!;
-    expect(on.broadAmazonRules).toEqual(['Amazon → Online Shopping']);
-    const off = getLedgerFacts(ledger(rows), NOW, new Map())!;
-    expect(off.broadAmazonRules).toEqual([]);
-  });
-
   it('finds a card whose opening balance says it started in credit', () => {
     const f = facts(`
       INSERT INTO activities VALUES ('o1','card','TRANSFER_IN',NULL,'2026-04-20','235.4','Starting balance · sfc',NULL,0);
