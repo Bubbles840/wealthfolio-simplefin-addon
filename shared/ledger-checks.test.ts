@@ -15,6 +15,8 @@ const clean = (): LedgerFacts => ({
   needsReview: 0,
   categories: [],
   chronicallyOver: [],
+  missingLegs: [],
+  cardsOpenedInCredit: [],
 });
 
 describe('evaluateLedgerChecks', () => {
@@ -212,4 +214,60 @@ describe('nextLedgerCheckSeen', () => {
     const next = nextLedgerCheckSeen(seen, ['idle-refund:r1', 'held-transfer:h9'], NOW);
     expect(next).toEqual({ 'idle-refund:r1': daysAgo(4), 'held-transfer:h9': NOW.toISOString() });
   });
+});
+
+describe('a transfer whose other half never arrived', () => {
+  // Live 2026-09-23: Spend sent Savings $3,000 on Aug 10, the Savings side
+  // never reached the feed, and Savings sat exactly $3,000 below its bank for
+  // six weeks while the Spend leg counted as $3,000 of spending.
+  const facts = (): LedgerFacts => ({
+    ...clean(),
+    missingLegs: [{
+      id: 'ph', description: 'Transfer to Capital One', amount: 3000, date: '2026-08-10',
+      fromAccount: 'Spend', toAccount: 'Savings',
+    }],
+  });
+
+  it('names the account short by exactly that amount, every day until fixed', () => {
+    const first = evaluateLedgerChecks(facts(), {}, NOW);
+    expect(first.findings).toHaveLength(1);
+    const msg = first.findings[0].message;
+    expect(msg).toContain('Transfer to Capital One');
+    expect(msg).toContain('$3000.00');
+    expect(msg).toContain('Savings');
+    expect(msg).toContain('fix-transfers');
+    // A ledger error: it repeats.
+    const later = evaluateLedgerChecks(facts(), { 'missing-leg:ph': daysAgo(5) }, NOW);
+    expect(later.findings).toHaveLength(1);
+  });
+});
+
+describe('a card that opened in credit', () => {
+  // Live 2026-09-23: Citi's computed opening balance said the card started
+  // $235.40 in credit. It had absorbed a $700 payment the feed never delivered
+  // (true opening: $464.60 owed), which kept the missing payment invisible.
+  const facts = (): LedgerFacts => ({
+    ...clean(),
+    cardsOpenedInCredit: [{ name: 'Citi', amount: 235.4, date: '2026-04-20' }],
+  });
+
+  it('says so once, because a card can genuinely start in credit', () => {
+    const first = evaluateLedgerChecks(facts(), {}, NOW);
+    expect(first.findings).toHaveLength(1);
+    expect(first.findings[0].message).toContain('Citi');
+    expect(first.findings[0].message).toContain('$235.40');
+    const later = evaluateLedgerChecks(facts(), { 'card-opened-in-credit:Citi': daysAgo(3) }, NOW);
+    expect(later.findings).toEqual([]);
+  });
+});
+
+it('reports a leg with a missing partner once, as missing rather than unlinked', () => {
+  const f: LedgerFacts = {
+    ...clean(),
+    unlinkedTransfers: [{ id: 'z', description: 'Payment to Citi', amount: 700, direction: 'out', ageDays: 20 }],
+    missingLegs: [{ id: 'z', description: 'Payment to Citi', amount: 700, date: '2026-06-26', fromAccount: 'Spend', toAccount: 'Citi' }],
+  };
+  const { findings } = evaluateLedgerChecks(f, {}, NOW);
+  expect(findings).toHaveLength(1);
+  expect(findings[0].message).toContain('never arrived');
 });

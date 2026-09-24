@@ -20,9 +20,11 @@ export interface SimplefinSyncViewProps {
   ctx: AddonContext;
   store: SecretsStore;
   scheduler: Scheduler;
+  /** The route's query string, passed through for deep links. */
+  search?: string;
 }
 
-export function SimplefinSyncView({ ctx, store, scheduler }: SimplefinSyncViewProps) {
+export function SimplefinSyncView({ ctx, store, scheduler, search }: SimplefinSyncViewProps) {
   const [isSetup, setIsSetup] = useState<boolean | null>(null);
 
   useEffect(() => {
@@ -66,7 +68,7 @@ export function SimplefinSyncView({ ctx, store, scheduler }: SimplefinSyncViewPr
       {!isSetup ? (
         <SetupPage ctx={ctx} store={store} onComplete={handleComplete} />
       ) : (
-        <SyncPage ctx={ctx} store={store} scheduler={scheduler} onReset={handleReset} />
+        <SyncPage ctx={ctx} store={store} scheduler={scheduler} onReset={handleReset} initialSearch={search} />
       )}
     </>
   );
@@ -126,10 +128,12 @@ const enable: AddonEnableFunction = (ctx) => {
 
   ctx.router.add({
     path: '/addons/simplefin-sync',
-    render: ({ root: routeRoot }) => {
+    // `location` is passed by hosts that support it (SDK 3.6+); older hosts
+    // omit it and the page simply opens on its remembered tab.
+    render: ({ root: routeRoot, location }: { root: HTMLElement; location?: { search?: string } }) => {
       root ??= createRoot(routeRoot);
       root.render(
-        <SimplefinSyncView ctx={addonCtx!} store={addonStore!} scheduler={addonScheduler!} />,
+        <SimplefinSyncView ctx={addonCtx!} store={addonStore!} scheduler={addonScheduler!} search={location?.search} />,
       );
     },
   });

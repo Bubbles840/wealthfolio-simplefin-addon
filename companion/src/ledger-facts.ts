@@ -15,6 +15,7 @@ import { existsSync } from 'fs';
 import { DatabaseSync } from 'node:sqlite';
 import type { LedgerFacts } from '../../shared/ledger-checks.js';
 import { IN_TRANSIT_COMMENT_PREFIX } from '../../shared/reconcile.js';
+import { ruleCatchesAmazonCharges } from '../../shared/amazon-config.js';
 import { PENDING_SUFFIX } from '../../shared/sync-core.js';
 
 /** The digest's own spending sign — kept in step with `SPENDING_SIGN` in
@@ -52,6 +53,10 @@ const CASH_EFFECT = `
  *  older oddities are history someone has already lived with (this ledger has
  *  three hand-repaired legs from June that must NOT be re-litigated daily). */
 const RECENT_DAYS = 60;
+/** A leg younger than this is usually just in transit: the receiving bank's
+ *  balance often includes it a day or two before its feed does, which looks
+ *  exactly like a missing leg until the feed catches up. */
+const MISSING_LEG_MIN_AGE_DAYS = 7;
 /** How many full months a category must be over before it is "chronic". */
 const CHRONIC_MONTHS = 3;
 
@@ -81,6 +86,7 @@ export function getLedgerFacts(
   now: Date,
   /** SimpleFin's last reported balance per WEALTHFOLIO account id. */
   bankBalanceByWfId: ReadonlyMap<string, number | null>,
+  opts: { amazonMailEnabled?: boolean } = {},
 ): LedgerFacts | null {
   const db = open(dbPath);
   if (!db) return null;
@@ -239,9 +245,72 @@ export function getLedgerFacts(
         averageOver: Math.round((overs.reduce((s, v) => s + v, 0) / overs.length) * 100) / 100,
       }));
 
+    // A transfer's other half missing from the feed leaves the receiving
+    // account off from its bank by exactly the leg's amount (live: $3,000
+    // Spend → Savings, 2026-08-10, six weeks unnoticed). gap = bank − ledger,
+    // so money that LEFT one account shows up as a positive gap elsewhere.
+    const names = new Map(all<{ id: string; name: string }>(`SELECT id, name FROM accounts`).map((r) => [r.id, String(r.name)]));
+    const ledgers = new Map(
+      all<{ id: string; ledger: number }>(
+        `SELECT acc.id, ROUND(SUM(${CASH_EFFECT}), 2) ledger
+         FROM activities a JOIN accounts acc ON a.account_id = acc.id
+         WHERE UPPER(acc.account_type) IN ('CASH','CREDIT_CARD')
+           AND COALESCE(a.notes,'') NOT LIKE '%${PENDING_SUFFIX}'
+         GROUP BY acc.id`,
+      ).map((r) => [r.id, Number(r.ledger)]),
+    );
+    const gaps: Array<[string, number]> = [];
+    for (const [wfId, bank] of bankBalanceByWfId) {
+      if (typeof bank !== 'number' || !names.has(wfId)) continue;
+      const gap = Math.round((bank - (ledgers.get(wfId) ?? 0)) * 100) / 100;
+      if (Math.abs(gap) >= 1) gaps.push([wfId, gap]);
+    }
+    const missingLegs = all<{ id: string; account_id: string; notes: string; amt: number; t: string; d: string }>(
+      `SELECT a.id, a.account_id, a.notes, ABS(CAST(a.amount AS REAL)) amt, UPPER(a.activity_type) t,
+              substr(a.activity_date,1,10) d
+       FROM activities a JOIN accounts acc ON a.account_id = acc.id
+       WHERE UPPER(a.activity_type) IN ('TRANSFER_IN','TRANSFER_OUT')
+         AND COALESCE(a.source_group_id,'') = ''
+         AND COALESCE(a.notes,'') NOT LIKE '%${PENDING_SUFFIX}'
+         AND COALESCE(a.notes,'') NOT LIKE 'Starting balance · %'
+         AND COALESCE(a.notes,'') NOT LIKE 'Balance adjustment · %'
+         AND ${age} >= ${MISSING_LEG_MIN_AGE_DAYS}`,
+    ).flatMap((r) => {
+      const want = r.t === 'TRANSFER_OUT' ? Number(r.amt) : -Number(r.amt);
+      const hits = gaps.filter(([id, gap]) => id !== r.account_id && Math.abs(gap - want) < 0.01);
+      if (hits.length !== 1) return [];
+      const leftFrom = r.t === 'TRANSFER_OUT' ? r.account_id : hits[0][0];
+      const arrivedAt = r.t === 'TRANSFER_OUT' ? hits[0][0] : r.account_id;
+      return [{
+        id: r.id, description: describe(r.notes), amount: Number(r.amt), date: r.d,
+        fromAccount: names.get(leftFrom) ?? leftFrom, toAccount: names.get(arrivedAt) ?? arrivedAt,
+      }];
+    });
+
+    const cardsOpenedInCredit = all<{ name: string; amt: number; d: string }>(
+      `SELECT acc.name, ABS(CAST(a.amount AS REAL)) amt, substr(a.activity_date,1,10) d
+       FROM activities a JOIN accounts acc ON a.account_id = acc.id
+       WHERE UPPER(acc.account_type) = 'CREDIT_CARD'
+         AND COALESCE(a.notes,'') LIKE 'Starting balance · %'
+         AND UPPER(a.activity_type) IN ('TRANSFER_IN','CREDIT')
+         AND ABS(CAST(a.amount AS REAL)) >= 1`,
+    ).map((r) => ({ name: String(r.name), amount: Number(r.amt), date: String(r.d) }));
+
+    // Only worth saying while order emails are set up to label Amazon charges;
+    // otherwise a broad Amazon rule is simply how the user files them.
+    const hasRules = all<{ name: string }>(`SELECT name FROM sqlite_master WHERE type='table' AND name='spending_categorization_rules'`).length > 0;
+    const broadAmazonRules = opts.amazonMailEnabled && hasRules
+      ? all<{ name: string; pattern: string; match_type: string }>(
+        `SELECT name, pattern, match_type FROM spending_categorization_rules`,
+      )
+        .filter((r) => ruleCatchesAmazonCharges({ pattern: String(r.pattern ?? ''), matchType: String(r.match_type ?? '') }))
+        .map((r) => String(r.name || r.pattern))
+      : [];
+
     return {
       month, cardBalances, idleRefunds, incomeReimbursements, unlinkedTransfers,
       groupedNonTransfers, heldTransfers, needsReview, categories, chronicallyOver,
+      missingLegs, cardsOpenedInCredit, broadAmazonRules,
     };
   } catch (err) {
     console.error('[simplefin-sync] ledger checks could not read the database:', err);

@@ -614,6 +614,31 @@ describe('runSyncCore', () => {
     expect(create.comment).toContain('↔️ In-transit transfer · ');
   });
 
+  it('lets a long-dead feed hold only the legs that name it (v1.56)', async () => {
+    // Discover's feed died for good, and because ANY behind feed held EVERY
+    // expiring leg, a $3,000 Spend → Savings transfer sat as an in-transit
+    // placeholder for six weeks (live, 2026-09-23). A feed silent this long is
+    // disconnected, not late: it keeps holding the payment that names it, and
+    // nothing else.
+    const deadDiscover = {
+      id: 'sfin-2', name: 'Discover it Card', currency: 'USD', balance: '-500',
+      org: { name: 'Discover' },
+      'balance-date': Math.floor(Date.now() / 1000) - 60 * 86_400, transactions: [],
+    };
+    const seed = staleCounterpartSeed([deadDiscover]);
+    seed.accountSet!.accounts[0].transactions!.push({
+      id: 'tx-sav', posted: pastTimeoutEpoch(), amount: '-3000.00', description: 'Transfer to Capital One Transfers',
+    });
+    const { host, store, saved } = createFakeHost(seed);
+    await runSyncCore(host, store, { force: true });
+    const creates = saved.flatMap((r) => r.creates ?? []);
+    const payment = creates.find((c) => c.comment.includes('tx-disc'))!;
+    const transfer = creates.find((c) => c.comment.includes('tx-sav'))!;
+    expect(payment.comment).toContain('↔️ In-transit transfer · ');
+    expect(transfer.comment).not.toContain('In-transit');
+    expect(transfer).toMatchObject({ activityType: 'WITHDRAWAL', needsReview: true });
+  });
+
   it('still expires a solo leg when every other mapped feed is caught up past the pairing window', async () => {
     const { host, store, saved } = createFakeHost(staleCounterpartSeed([{
       // A healthy card feed: balance refreshed now, past posted + match window.

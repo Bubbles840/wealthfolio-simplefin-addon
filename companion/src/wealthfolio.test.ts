@@ -209,6 +209,30 @@ describe('WealthfolioClient', () => {
     );
   });
 
+  it('createSpendingCategory POSTs a top-level spending category and returns its id', async () => {
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ id: 'cat-new' }) });
+    const client = new WealthfolioClient('http://wf');
+    expect(await client.createSpendingCategory('Opening balances')).toBe('cat-new');
+    const [url, opts] = mockFetch.mock.calls[0];
+    expect(url).toBe('http://wf/api/v1/taxonomies/categories');
+    expect((opts as any).method).toBe('POST');
+    expect(JSON.parse((opts as any).body)).toMatchObject({
+      taxonomyId: 'spending_categories', parentId: null, name: 'Opening balances', key: 'opening_balances',
+    });
+  });
+
+  it('setExcludedSpendingCategories PUTs only the exclusion list to the spending settings', async () => {
+    // Only this field: the settings route is a patch, and the account list and
+    // enabled flag are the user's.
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({}) });
+    const client = new WealthfolioClient('http://wf');
+    await client.setExcludedSpendingCategories(['a', 'b']);
+    const [url, opts] = mockFetch.mock.calls[0];
+    expect(url).toBe('http://wf/api/v1/spending/settings');
+    expect((opts as any).method).toBe('PUT');
+    expect(JSON.parse((opts as any).body)).toEqual({ excludedCategoryIds: ['a', 'b'] });
+  });
+
   it('unassignActivityCategory DELETEs the taxonomy off the assignments path, with no body', async () => {
     mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({}) });
     const client = new WealthfolioClient('http://wf');

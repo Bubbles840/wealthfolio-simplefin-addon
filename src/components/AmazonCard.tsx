@@ -4,6 +4,7 @@ import type { StatusMessage } from './ui';
 import { CategoryIcon } from './CategoryIcon';
 import {
   DEFAULT_AMAZON_CATEGORY,
+  normalizeAppPassword,
   resolveAmazonCategory,
   type AmazonLabelCatalog,
   type AmazonMailConfig,
@@ -122,7 +123,8 @@ export function useAmazonDraft(store: SecretsStore): AmazonDraftState {
       enabled: true,
       host: draft.host,
       user: draft.user,
-      password: draft.password,
+      // Google's app passwords are shown with spaces that IMAP rejects.
+      password: normalizeAppPassword(draft.password),
       defaultCategory: draft.defaultCategory,
       labelOverrides: draft.overrides,
     } satisfies AmazonMailConfig);

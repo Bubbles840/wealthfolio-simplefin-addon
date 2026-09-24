@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.56.0] - 2026-09-23
+
+### Added
+
+- **Reports tab.** Daily, Weekly and Monthly sub-tabs, each showing the
+  report as it stands right now and every edition that was sent before it.
+  The companion recomposes the live edition after each sync from the local
+  database, and archives each scheduled report whether or not Telegram is set
+  up. The daily history keeps about two months, weekly half a year, monthly two
+  years.
+- **Push notifications for reports.** On a Wealthfolio server that supports
+  Web Push, the companion pushes each scheduled report to every browser that
+  turned notifications on. Tapping it opens that report's sub-tab. A report you
+  switched off in Notifications is still archived, but not sent. Servers
+  without push support are skipped quietly.
+- **Two new daily-audit findings**, from problems found by hand:
+  - A transfer whose other half never arrived. The finding names the account
+    that is off from its bank by exactly that amount.
+  - A card whose opening balance says it started in credit. That usually
+    means the balance absorbed a payment the feed never delivered.
+- **Card opening debts are filed automatically.** The companion files a card's
+  opening debt under an "Opening balances" category excluded from spending,
+  creating both the category and the exclusion only if needed.
+
+### Fixed
+
+- **A dead bank feed no longer holds every transfer open.** A feed silent for
+  three weeks now holds only the transfers that name its account. Everything
+  else pairs or expires normally. The stale-feed warning now says what to do:
+  reconnect the feed in SimpleFin, or unmap a closed account.
+- **Amazon email setup.** A Google app password pasted with its display spaces
+  now works, for new and existing configs. If a categorization rule files every
+  Amazon charge before the order emails can label it, the daily audit says so
+  once.
+
 ## [1.55.0] - 2026-09-23
 
 ### Fixed

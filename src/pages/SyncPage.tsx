@@ -11,6 +11,8 @@ import { BudgetTab } from '../tabs/BudgetTab';
 import { OverviewTab } from '../tabs/OverviewTab';
 import { NotificationsTab, useTelegramDraft } from '../tabs/NotificationsTab';
 import { AdvancedTab } from '../tabs/AdvancedTab';
+import { ReportsTab } from '../tabs/ReportsTab';
+import { parseReportsLink } from '../../shared/reports-archive';
 import { useAmazonDraft } from '../components/AmazonCard';
 import type { SecretsStore, AccountBalanceInfo, CategoryCatalogEntry } from '../utils/secrets';
 import type { Scheduler } from '../utils/scheduler';
@@ -24,6 +26,8 @@ const TABS: Array<{ id: TabId; label: string }> = [
   // you visit when something needs attention (decided with the user,
   // 2026-08-30 — see the Budget tab spec).
   { id: 'budget', label: 'Budget' },
+  // Every report the companion sent, kept — what Telegram's history was for.
+  { id: 'reports', label: 'Reports' },
   { id: 'overview', label: 'Overview' },
   { id: 'notifications', label: 'Notifications' },
   { id: 'advanced', label: 'Advanced' },
@@ -59,6 +63,8 @@ interface Props {
   store: SecretsStore;
   onReset: () => void;
   scheduler: Scheduler;
+  /** The route's query, e.g. `?tab=reports&report=weekly` from a notification. */
+  initialSearch?: string;
 }
 
 /**
@@ -75,8 +81,10 @@ interface Props {
  * in a different class of bad from losing a derived number — both config tabs'
  * unsaved drafts (`useTelegramDraft`, `useAmazonDraft`).
  */
-export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
-  const [activeTab, setActiveTab] = useState<TabId>('budget');
+export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Props) {
+  // A notification tap lands here with the report it was about.
+  const link = parseReportsLink(initialSearch);
+  const [activeTab, setActiveTab] = useState<TabId>(link ? 'reports' : 'budget');
   const [lastSyncAt, setLastSyncAt] = useState<Date | null>(null);
   const [imported, setImported] = useState<number | null>(null);
   const [syncing, setSyncing] = useState(false);
@@ -175,7 +183,16 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
    * every future session, permanently. A ref rather than state because it must
    * not re-render and must be readable from inside the resolved promise.
    */
-  const hasUserActed = useRef({ tab: false, checklist: false, cards: false, dismissals: false });
+  // A deep link counts as the user's choice: the remembered tab must not
+  // overwrite the report they tapped a notification to see.
+  const hasUserActed = useRef({ tab: link !== null, checklist: false, cards: false, dismissals: false });
+  // A later tap while the page is already open arrives as a new query.
+  useEffect(() => {
+    if (link) {
+      hasUserActed.current.tab = true;
+      setActiveTab('reports');
+    }
+  }, [initialSearch]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const loadBalances = useCallback(() => {
     store.getAccountBalances().then(setBalances).catch(() => {});
@@ -609,6 +626,10 @@ export function SyncPage({ ctx, store, onReset, scheduler }: Props) {
           onConfirmedSubscriptionsChange={onConfirmedSubscriptionsChange}
           onOpenActivities={() => { ctx.api.navigation.navigate('/activities').catch(() => {}); }}
         />
+      </TabPanel>
+
+      <TabPanel tab="reports" active={activeTab}>
+        <ReportsTab store={store} initialReport={link?.report} />
       </TabPanel>
 
       <TabPanel tab="overview" active={activeTab}>

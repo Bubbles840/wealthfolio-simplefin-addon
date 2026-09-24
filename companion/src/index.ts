@@ -7,6 +7,11 @@
  * daemon with only instance URL and password.
  */
 
+import {
+  notificationPreview, parseReportStore, reportPeriod, reportsLink, reportsSecretKey, withArchived, withLive,
+  type ReportEdition, type ReportKind, type ReportStore,
+} from '../../shared/reports-archive.js';
+import { fileCardOpeningDebts } from './opening-balance-category.js';
 import cron from 'node-cron';
 import { readFileSync, existsSync } from 'fs';
 import { runSyncCore, descriptionFromComment, txIdFromComment } from '../../shared/sync-core.js';
@@ -874,6 +879,20 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
     // listing rows that now have a category.
     await fileAmazonLabelledCharges(wfClient);
 
+    // A card's opening DEBT has to be a WITHDRAWAL on Wealthfolio 3.8, which its
+    // Spending page reads as a purchase; filed under an excluded category it
+    // counts nowhere. Best-effort, like the Amazon filing above.
+    await fileCardOpeningDebts({
+      dbPath: wealthfolioDbPath(),
+      createCategory: (name) => wfClient.createSpendingCategory(name),
+      setExcluded: (ids) => wfClient.setExcludedSpendingCategories(ids),
+      assign: (activityId, categoryId) => wfClient.assignActivityCategory(activityId, SPENDING_TAXONOMY_ID, categoryId),
+      log,
+    }).catch((e) => log(`Card opening balance filing skipped: ${formatError(e)}`));
+
+    // The Reports tab's live editions, from the ledger this sync just updated.
+    await publishLiveReports(wfClient).catch((e) => log(`Live reports skipped: ${formatError(e)}`));
+
     await publishUncategorizedStatusForDbPath(
       wealthfolioDbPath(),
       (key, value) => wfClient.setAddonSecret('simplefin-sync', key, value),
@@ -1639,13 +1658,26 @@ export function readBudgetSnapshot(dbPath: string, now: Date): {
  */
 export async function composeDailyDigestMessage(
   wfClient: WealthfolioClient,
-  opts: { honorDailyReportSwitch?: boolean } = {},
+  opts: {
+    honorDailyReportSwitch?: boolean;
+    requireTelegram?: boolean;
+    /** False for a preview (the Reports tab's live edition, recomposed every
+     *  sync): the ledger findings are judged but WHEN each was first seen is not
+     *  recorded, or an hourly preview would age a "say once" finding out before
+     *  the scheduled report ever carried it. */
+    recordLedgerChecks?: boolean;
+  } = {},
 ): Promise<string | null> {
   const tgRaw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_config');
-  const tg = parseSecretJson<any>(tgRaw, 'telegram_config');
+  const parsedTg = parseSecretJson<any>(tgRaw, 'telegram_config');
+  // The Reports tab composes the same text with no chat configured at all; the
+  // Telegram settings then only supply display options, if there are any.
+  const tg = opts.requireTelegram === false ? (parsedTg ?? {}) : parsedTg;
   if (!tg) return null;
-  if (!tg.botToken || !tg.chatId || tg.enabled === false) return null;
-  if ((opts.honorDailyReportSwitch ?? true) && tg.dailyReportEnabled === false) return null;
+  if (opts.requireTelegram !== false) {
+    if (!tg.botToken || !tg.chatId || tg.enabled === false) return null;
+    if ((opts.honorDailyReportSwitch ?? true) && tg.dailyReportEnabled === false) return null;
+  }
 
   const dbPath = wealthfolioDbPath();
   if (!dbPath || !existsSync(dbPath)) {
@@ -1804,7 +1836,13 @@ export async function composeDailyDigestMessage(
       const balance = balances[sfinId]?.balance;
       bankByWfId.set(wfId, typeof balance === 'number' ? balance : null);
     }
-    const facts = getLedgerFacts(wealthfolioDbPath(), now, bankByWfId);
+    const amazonCfg = parseSecretJson<AmazonMailConfig>(
+      await wfClient.getAddonSecret('simplefin-sync', AMAZON_CONFIG_SECRET_KEY).catch(() => null),
+      AMAZON_CONFIG_SECRET_KEY,
+    );
+    const facts = getLedgerFacts(wealthfolioDbPath(), now, bankByWfId, {
+      amazonMailEnabled: amazonMailConfigured(amazonCfg),
+    });
     if (facts) {
       const seen = parseSecretJson<LedgerCheckSeen>(
         await wfClient.getAddonSecret('simplefin-sync', LEDGER_CHECK_SEEN_SECRET_KEY).catch(() => null),
@@ -1816,7 +1854,9 @@ export async function composeDailyDigestMessage(
       // Written only when it changed: most mornings nothing did, and a secret
       // write a day for no reason is a write that can fail for no reason.
       if (JSON.stringify(next) !== JSON.stringify(seen)) {
-        await wfClient.setAddonSecret('simplefin-sync', LEDGER_CHECK_SEEN_SECRET_KEY, JSON.stringify(next)).catch(() => {});
+        if (opts.recordLedgerChecks !== false) {
+          await wfClient.setAddonSecret('simplefin-sync', LEDGER_CHECK_SEEN_SECRET_KEY, JSON.stringify(next)).catch(() => {});
+        }
       }
     }
   } catch (err) {
@@ -1920,6 +1960,88 @@ const defaultReportSleep = (ms: number): Promise<void> =>
 /** Shared tail for the three scheduled report senders: send, retry on
  *  failure per `REPORT_RETRY_DELAYS_MS`, then log success or the final
  *  failure. `sleep` is injectable so tests can skip the real delay. */
+const REPORT_TITLES: Record<ReportKind, (d: Date) => string> = {
+  daily: (d) => d.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' }),
+  weekly: (d) => `Week of ${mondayOnOrBefore(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`,
+  monthly: (d) => d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' }),
+};
+
+function reportEdition(kind: ReportKind, text: string, periodDate: Date): ReportEdition {
+  return {
+    kind,
+    period: reportPeriod(kind, periodDate),
+    title: REPORT_TITLES[kind](periodDate),
+    generatedAt: new Date().toISOString(),
+    text,
+  };
+}
+
+async function readReportStore(wfClient: WealthfolioClient, kind: ReportKind): Promise<ReportStore> {
+  return parseReportStore(await wfClient.getAddonSecret('simplefin-sync', reportsSecretKey(kind)).catch(() => null));
+}
+
+/**
+ * A report as SENT: archived for the Reports tab, and pushed to every browser
+ * that enabled Wealthfolio notifications (a server without push support is
+ * silently skipped). Best-effort throughout — a failure here must never cost
+ * the Telegram send that follows it.
+ */
+async function deliverReportEdition(
+  wfClient: WealthfolioClient,
+  kind: ReportKind,
+  text: string,
+  periodDate: Date,
+  /** False when the user switched this report off: it is still archived (a
+   *  passive history), but nothing is sent to their devices. */
+  push: boolean,
+): Promise<void> {
+  const edition = reportEdition(kind, text, periodDate);
+  try {
+    const store = await readReportStore(wfClient, kind);
+    await wfClient.setAddonSecret('simplefin-sync', reportsSecretKey(kind), JSON.stringify(withArchived(store, edition)));
+  } catch (e) {
+    log(`Could not archive the ${kind} report: ${formatError(e)}`);
+  }
+  if (!push) return;
+  try {
+    const sent = await wfClient.sendNotification({
+      title: `${kind[0].toUpperCase()}${kind.slice(1)} report · ${edition.title}`,
+      body: notificationPreview(text),
+      url: reportsLink(kind),
+      tag: `simplefin-${kind}`,
+    });
+    if (sent && sent.delivered > 0) log(`Pushed the ${kind} report to ${sent.delivered} device(s).`);
+  } catch (e) {
+    log(`Could not push the ${kind} report: ${formatError(e)}`);
+  }
+}
+
+/**
+ * Each report as it stands right now, for the top of its Reports sub-tab.
+ * Recomposed after every sync from the local database — no SimpleFin call —
+ * and written only when the text changed.
+ */
+export async function publishLiveReports(wfClient: WealthfolioClient, now = new Date()): Promise<void> {
+  const tg = parseSecretJson<any>(await wfClient.getAddonSecret('simplefin-sync', 'telegram_config').catch(() => null), 'telegram_config') ?? {};
+  const monthName = now.toLocaleDateString('en-US', { month: 'long' });
+  const texts: Array<[ReportKind, () => Promise<string | null>]> = [
+    ['daily', () => composeDailyDigestMessage(wfClient, { requireTelegram: false, recordLedgerChecks: false })],
+    ['weekly', () => composeWeeklyReportMessage(wfClient, now, tg)],
+    ['monthly', () => composeMonthlyWrapUpMessage(wfClient, currentYearMonth(now), `${monthName} so far`, tg)],
+  ];
+  for (const [kind, compose] of texts) {
+    try {
+      const text = await compose();
+      if (text === null) continue;
+      const store = await readReportStore(wfClient, kind);
+      if (store.live?.text === text && store.live.period === reportPeriod(kind, now)) continue;
+      await wfClient.setAddonSecret('simplefin-sync', reportsSecretKey(kind), JSON.stringify(withLive(store, reportEdition(kind, text, now))));
+    } catch (e) {
+      log(`Could not publish the live ${kind} report: ${formatError(e)}`);
+    }
+  }
+}
+
 async function sendReportWithRetry(
   botToken: string,
   chatId: string,
@@ -1953,12 +2075,15 @@ export async function sendDailyTelegramReport(
   wfClient: WealthfolioClient,
   sleep: (ms: number) => Promise<void> = defaultReportSleep,
 ): Promise<void> {
-  const message = await composeDailyDigestMessage(wfClient);
+  // Composed ONCE and delivered three ways: archived for the Reports tab and
+  // pushed whether or not Telegram is set up (the tab is the report's home
+  // now), then sent to Telegram if a chat is configured. One composition, so
+  // all three carry the same text and the ledger checks are recorded once.
+  const message = await composeDailyDigestMessage(wfClient, { requireTelegram: false });
   if (message === null) return;
-
-  const tgRaw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_config');
-  const tg = parseSecretJson<any>(tgRaw, 'telegram_config');
-  if (!tg || !tg.botToken || !tg.chatId) return;
+  const tg = parseSecretJson<any>(await wfClient.getAddonSecret('simplefin-sync', 'telegram_config').catch(() => null), 'telegram_config');
+  await deliverReportEdition(wfClient, 'daily', message, new Date(), tg?.dailyReportEnabled !== false);
+  if (!tg || !tg.botToken || !tg.chatId || tg.enabled === false || tg.dailyReportEnabled === false) return;
 
   await sendReportWithRetry(
     tg.botToken, tg.chatId, message,
@@ -1986,61 +2111,42 @@ const DEFAULT_WEEKLY_TOP_SPEND_COUNT = 5;
  * Monday, so the section covers exactly Monday–Sunday however the month falls
  * and whatever day the report is triggered on.
  */
-export async function sendWeeklyTelegramReport(
+/** The weekly check-in's text, or `null` when the database cannot be read.
+ *  `tg` supplies display options only; no chat has to be configured. */
+export async function composeWeeklyReportMessage(
   wfClient: WealthfolioClient,
-  sleep: (ms: number) => Promise<void> = defaultReportSleep,
-): Promise<void> {
-  const tgRaw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_config');
-  const tg = parseSecretJson<any>(tgRaw, 'telegram_config');
-  if (!tg) return;
-  if (!tg.botToken || !tg.chatId || tg.enabled === false) return;
-  if (tg.weeklyReportEnabled === false) return;
-
+  now: Date,
+  tg: any,
+): Promise<string | null> {
   const dbPath = wealthfolioDbPath();
   if (!dbPath || !existsSync(dbPath)) {
     log('WEALTHFOLIO_DB_PATH not found or missing, skipping weekly summary.');
-    return;
+    return null;
   }
 
-  const now = new Date();
   const yearMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
   const spentMap = getNativeWealthfolioSpending(dbPath, yearMonth);
   const budgetMap = getNativeWealthfolioBudgets(dbPath, yearMonth);
   const allNames = await publishAvailableCategories(wfClient, spentMap, budgetMap, yearMonth);
 
-  const names = filterCategories(allNames, tg.weeklyReportCategories);
+  const names = filterCategories(allNames, tg?.weeklyReportCategories);
   const totalSpent = names.reduce((sum, n) => sum + (spentMap[n] ?? 0), 0);
   const totalBudget = names.reduce((sum, n) => sum + (budgetMap[n] ?? 0), 0);
 
-  // `0` (or negative) turns the section off without touching the rest of the
-  // report; absent means the default, so a config written before this section
-  // existed gets it.
-  const topCount = typeof tg.weeklyTopSpendCount === 'number'
+  const topCount = typeof tg?.weeklyTopSpendCount === 'number'
     ? tg.weeklyTopSpendCount
     : DEFAULT_WEEKLY_TOP_SPEND_COUNT;
   const weekStart = mondayOnOrBefore(now);
   const weekEnd = new Date(weekStart.getFullYear(), weekStart.getMonth(), weekStart.getDate() + 7);
-  // Deliberately NOT filtered by `weeklyReportCategories`: the categories list
-  // narrows which BUDGETS the headline totals, whereas this section answers
-  // "where did the money go this week", and hiding the week's largest charge
-  // because its category is not budgeted would make the section quietly
-  // misleading. Its rows are labelled with their category, so nothing is
-  // ambiguous.
   const topSpends = topCount > 0
     ? getNativeWealthfolioTopSpending(dbPath, toDateString(weekStart), toDateString(weekEnd), topCount)
     : [];
 
-  // Pool and runway ride the weekly like the pool line rides the daily —
-  // guarded additions that can only cost themselves. Runway resolves null on
-  // any unreadable input (readRunwayMonths owns that guarantee).
   const poolDeps = poolReportDeps(wfClient, dbPath);
-  // Weekly slimming (v1.47): each add-on section can be switched off; the
-  // formatter treats null exactly like "not available", which it already
-  // renders as silence.
-  const poolStatus = tg.weeklyPoolSection === false
+  const poolStatus = tg?.weeklyPoolSection === false
     ? null
     : await readPoolStatus(poolDeps, now).catch(() => null);
-  const runwayMonths = tg.weeklyRunway === false ? null : await readRunwayMonths(poolDeps, now);
+  const runwayMonths = tg?.weeklyRunway === false ? null : await readRunwayMonths(poolDeps, now);
   let message = formatMonthlyRemainingSummary(
     totalSpent,
     totalBudget,
@@ -2049,13 +2155,28 @@ export async function sendWeeklyTelegramReport(
     poolStatus,
     runwayMonths,
   );
-  // One line, monthly total only: the weekly answers "what does recurring
-  // life cost", the Budget tab's Subscriptions card holds the roster.
-  const subs = tg.weeklySubscriptions === false ? [] : await readCubeSubscriptions(wfClient);
+  const subs = tg?.weeklySubscriptions === false ? [] : await readCubeSubscriptions(wfClient);
   if (subs.length > 0) {
     const totalCents = subs.reduce((sum, sub) => sum + sub.monthlyCents, 0);
     message += `\n\n*Subscriptions* — $${(totalCents / 100).toFixed(2)}/mo across ${subs.length}`;
   }
+  return message;
+}
+
+export async function sendWeeklyTelegramReport(
+  wfClient: WealthfolioClient,
+  sleep: (ms: number) => Promise<void> = defaultReportSleep,
+): Promise<void> {
+  const tgRaw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_config');
+  const tg = parseSecretJson<any>(tgRaw, 'telegram_config');
+  const now = new Date();
+  const message = await composeWeeklyReportMessage(wfClient, now, tg ?? {});
+  if (message === null) return;
+  await deliverReportEdition(wfClient, 'weekly', message, now, tg?.weeklyReportEnabled !== false);
+
+  if (!tg) return;
+  if (!tg.botToken || !tg.chatId || tg.enabled === false) return;
+  if (tg.weeklyReportEnabled === false) return;
   await sendReportWithRetry(
     tg.botToken, tg.chatId, message,
     'weekly', 'Weekly Telegram total-remaining summary sent successfully.', sleep,
@@ -2088,41 +2209,48 @@ export async function sendWeeklyTelegramReport(
  * `telegram_config` written before this report existed opts in rather than
  * silently never firing.
  */
-export async function sendMonthlyTelegramReport(
+/** The monthly wrap-up's text for `yearMonth`, or `null` when the database
+ *  cannot be read. `tg` supplies display options only. */
+export async function composeMonthlyWrapUpMessage(
   wfClient: WealthfolioClient,
-  sleep: (ms: number) => Promise<void> = defaultReportSleep,
-): Promise<void> {
-  const tgRaw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_config');
-  // Guarded parse: a corrupt secret costs the report that needs it, never a throw
-  // escaping into the cron callback.
-  const tg = parseSecretJson<any>(tgRaw, 'telegram_config');
-  if (!tg) return;
-  if (!tg.botToken || !tg.chatId || tg.enabled === false) return;
-  if (tg.monthlyReportEnabled === false) return;
-
+  yearMonth: string,
+  monthName: string,
+  tg: any,
+): Promise<string | null> {
   const dbPath = wealthfolioDbPath();
   if (!dbPath || !existsSync(dbPath)) {
     log('WEALTHFOLIO_DB_PATH not found or missing, skipping monthly wrap-up.');
-    return;
+    return null;
   }
-
-  const { yearMonth, monthName } = previousYearMonth(new Date());
   const spentMap = getNativeWealthfolioSpending(dbPath, yearMonth);
   const budgetMap = getNativeWealthfolioBudgets(dbPath, yearMonth);
   const allNames = await publishAvailableCategories(wfClient, spentMap, budgetMap, yearMonth);
 
-  const names = filterCategories(allNames, tg.monthlyReportCategories);
+  const names = filterCategories(allNames, tg?.monthlyReportCategories);
   const categories = names.map((name) => ({
     name,
     spent: spentMap[name] ?? 0,
     budget: budgetMap[name] ?? 0,
   }));
-  const message = formatMonthlyWrapUp(categories, monthName, await readGlyphStyle(wfClient));
-  // The send is retried, not discarded on first failure: `sendTelegramMessage`
-  // reports an API-level failure (bad token, rate limit, a 400 from malformed
-  // Markdown) by RESOLVING `{ ok: false }`, and this report is produced once a
-  // month — a silently swallowed failure is a month-long gap nobody is told
-  // about.
+  return formatMonthlyWrapUp(categories, monthName, await readGlyphStyle(wfClient));
+}
+
+export async function sendMonthlyTelegramReport(
+  wfClient: WealthfolioClient,
+  sleep: (ms: number) => Promise<void> = defaultReportSleep,
+): Promise<void> {
+  const tgRaw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_config');
+  const tg = parseSecretJson<any>(tgRaw, 'telegram_config');
+  const now = new Date();
+  const { yearMonth, monthName } = previousYearMonth(now);
+  const message = await composeMonthlyWrapUpMessage(wfClient, yearMonth, monthName, tg ?? {});
+  if (message === null) return;
+  // Filed under the month it describes, not the day it was sent.
+  await deliverReportEdition(wfClient, 'monthly', message, new Date(now.getFullYear(), now.getMonth() - 1, 15), tg?.monthlyReportEnabled !== false);
+
+  if (!tg) return;
+  if (!tg.botToken || !tg.chatId || tg.enabled === false) return;
+  if (tg.monthlyReportEnabled === false) return;
   await sendReportWithRetry(
     tg.botToken, tg.chatId, message,
     'monthly', 'Monthly Telegram wrap-up sent successfully.', sleep,
