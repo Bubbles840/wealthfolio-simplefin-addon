@@ -12,8 +12,8 @@ function money(cents: number): string {
  * showing, and the ~6-second timer that clears it.
  *
  * Lives here, next to the only component that uses it, rather than inline in
- * `OverviewTab` — the timer needs a cleanup path that inline JSX handlers have
- * nowhere to put. `OverviewTab` unmounts on every tab switch (see `TabPanel` in
+ * `HomeTab` — the timer needs a cleanup path that inline JSX handlers have
+ * nowhere to put. `HomeTab` unmounts on every tab switch (see `TabPanel` in
  * `SyncPage.tsx`), and a `window.setTimeout` left running past that fires
  * `setJustDismissed` on a dead component. The effect below cancels it on
  * unmount, and `dismiss` cancels any PREVIOUS pending timer so a second
@@ -68,7 +68,7 @@ export function useDismissals(
  * The panel behind the "Needs a category" tile — the undo banner, the rows,
  * and the footer — and a way to stop caring about one row.
  *
- * The tile itself (in `OverviewTab`) is the disclosure trigger; this component
+ * The tile itself (in `HomeTab`) is the disclosure trigger; this component
  * is mounted only while that tile's toggle is open, and renders nothing else
  * that announces the count — the old inline `Disclosure` header duplicated the
  * tile above it, which is the whole reason this split changed.
@@ -77,7 +77,7 @@ export function useDismissals(
  * undo window. A row that hid itself would leave the tile disagreeing with the
  * list — the same class of split this feature exists to close.
  *
- * Its own file rather than more of OverviewTab, which is already at the 400-line
+ * Its own file rather than more of HomeTab, which is already at the 400-line
  * size target.
  */
 export function UncategorizedList({
@@ -85,7 +85,7 @@ export function UncategorizedList({
 }: {
   rows: UncategorizedRow[];
   total: number;
-  /** Matches the tile button's `aria-controls` in `OverviewTab`. */
+  /** Matches the tile button's `aria-controls` in `HomeTab`. */
   id: string;
   onDismiss: (activityId: string) => void;
   justDismissed: string | null;

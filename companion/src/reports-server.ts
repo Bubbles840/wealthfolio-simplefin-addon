@@ -186,8 +186,8 @@ function dashboardHtml(data: BoardData): string {
     if (id === 'data-check') {
       const res = dataCheckResult(cube);
       const text = !res ? 'No check published yet.'
-        : res.status === 'match' ? '✓ The Budget tab matches the ledger.'
-          : `Measures disagree for ${res.month} — open the Budget tab for detail.`;
+        : res.status === 'match' ? '✓ Your budget matches the ledger.'
+          : `Measures disagree for ${res.month} — open Home in the addon for detail.`;
       return section(id, 'Data check', `<p class="sub">${esc(text)}</p>`);
     }
     if (id.startsWith('custom:')) {

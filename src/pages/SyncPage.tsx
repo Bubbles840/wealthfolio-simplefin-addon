@@ -1,16 +1,16 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import type { AddonContext } from '@wealthfolio/addon-sdk';
 import { runSync, INTERVAL_SKIP_MESSAGE } from '../utils/sync';
-import { SIMPLEFIN_SYNC_VERSION } from '../../shared/version';
+import { SIMPLEFIN_SYNC_VERSION, versionMismatchNotice } from '../../shared/version';
 import type { SyncResult } from '../utils/sync';
 import { fetchAccounts } from '../utils/simplefin';
 import { SyncStatus } from '../components/SyncStatus';
 import { Button, ErrorBox } from '../components/ui';
-import { TabBar, type TabId } from '../components/Tabs';
+import { TabBar, resolveStoredTab, type TabId } from '../components/Tabs';
 import { BudgetTab } from '../tabs/BudgetTab';
-import { OverviewTab } from '../tabs/OverviewTab';
-import { NotificationsTab, useTelegramDraft } from '../tabs/NotificationsTab';
-import { AdvancedTab } from '../tabs/AdvancedTab';
+import { HomeTab } from '../tabs/HomeTab';
+import { useTelegramDraft } from '../tabs/NotificationsTab';
+import { SettingsTab, CARD as SETTINGS_CARD } from '../tabs/SettingsTab';
 import { ReportsTab } from '../tabs/ReportsTab';
 import { parseReportsLink } from '../../shared/reports-archive';
 import { useAmazonDraft } from '../components/AmazonCard';
@@ -22,25 +22,18 @@ import { pruneDismissals, mergeDismissals, type DismissalLedger } from '../../sh
 /** Outside the component: a fresh literal each render would be a new `TabBar`
  *  prop identity for nothing. */
 const TABS: Array<{ id: TabId; label: string }> = [
-  // Budget leads: the reports are the daily-use surface, the rest is plumbing
-  // you visit when something needs attention (decided with the user,
-  // 2026-08-30 — see the Budget tab spec).
-  { id: 'budget', label: 'Budget' },
+  // What needs you, then the budget (1.57: was Overview + Budget). The budget
+  // still leads the daily visit — it is the bulk of this tab — but what is
+  // WRONG now sits above it instead of two tabs away.
+  { id: 'home', label: 'Home' },
   // Every report the companion sent, kept — what Telegram's history was for.
   { id: 'reports', label: 'Reports' },
-  { id: 'overview', label: 'Overview' },
-  { id: 'notifications', label: 'Notifications' },
-  { id: 'advanced', label: 'Advanced' },
+  // Everything configurable, on one page (1.57: was Notifications + Advanced,
+  // plus Overview's account list and pool card).
+  { id: 'settings', label: 'Settings' },
 ];
 
-/** Guards the hydration path. `ui_state` is an unvalidated stored blob (see
- *  `getUiState`) that now decides what renders, so a hand-edited secret — or a
- *  fourth tab written by a newer build the user then downgrades away from — would
- *  select no tab and mount no panel. A blank page with no way back is far worse
- *  than the wrong tab, so anything unrecognised falls back to Overview. */
-function isKnownTab(id: unknown): id is TabId {
-  return TABS.some((t) => t.id === id);
-}
+
 
 /** The panel half of the tabs contract: `TabBar` points each button at
  *  `sfin-panel-<id>`, and an inactive tab renders NOTHING — not a hidden div.
@@ -84,7 +77,7 @@ interface Props {
 export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Props) {
   // A notification tap lands here with the report it was about.
   const link = parseReportsLink(initialSearch);
-  const [activeTab, setActiveTab] = useState<TabId>(link ? 'reports' : 'budget');
+  const [activeTab, setActiveTab] = useState<TabId>(link ? 'reports' : 'home');
   const [lastSyncAt, setLastSyncAt] = useState<Date | null>(null);
   const [imported, setImported] = useState<number | null>(null);
   const [syncing, setSyncing] = useState(false);
@@ -107,28 +100,31 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
   // Which companion build last synced this instance. Null until one has run — the
   // addon works standalone, so no companion is normal, not an error.
   const [companionVersion, setCompanionVersion] = useState<string | null>(null);
+  // The installed zip's version, published by the companion. With it, a stale
+  // tab can say whether reloading is enough or a zip still needs uploading.
+  const [installedAddonVersion, setInstalledAddonVersion] = useState<string | null>(null);
   // Every collapsible section's open state in one map, replacing the one-off
   // `show*` booleans this page used to carry. Shared by both config tabs.
   const [openCards, setOpenCards] = useState<Record<string, boolean>>({});
   // The full catalog (all 52 spending categories). Read once here because two
   // things need it: the Amazon card's per-label pickers and the report matrix.
   const [categoryCatalog, setCategoryCatalog] = useState<CategoryCatalogEntry[]>([]);
-  // The next three only feed Overview, which self-completes its checklist and
+  // The next three only feed Home, which self-completes its checklist and
   // third tile from real signals. All READ FROM STORAGE here rather than reported
   // up by the tab that owns the setting: those tabs are unmounted precisely when
-  // Overview is on screen, so a callback from their effects would freeze at
+  // Home is on screen, so a callback from their effects would freeze at
   // whatever it last said. See `refreshDerivedSignals`.
   const [telegramConfigured, setTelegramConfigured] = useState(false);
   const [amazonConfigured, setAmazonConfigured] = useState(false);
   const [uncategorized, setUncategorized] = useState<
     Awaited<ReturnType<SecretsStore['getUncategorizedStatus']>>
   >(null);
-  // The companion-published pool status behind the Overview tile — same
+  // The companion-published pool status behind the Home tile — same
   // lifecycle as `uncategorized`: loaded here, refreshed on the same path.
   const [poolStatus, setPoolStatus] = useState<
     Awaited<ReturnType<SecretsStore['getPoolStatus']>>
   >(null);
-  // The Budget tab's three inputs, loaded on the same refresh path.
+  // The budget's three inputs, loaded on the same refresh path.
   const [reportCube, setReportCube] = useState<
     Awaited<ReturnType<SecretsStore['getReportCube']>>
   >(null);
@@ -139,11 +135,14 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
     Awaited<ReturnType<SecretsStore['getBudgetLayout']>>
   >(null);
   // Which uncategorized rows the user has dismissed. Lives HERE, not in
-  // OverviewTab: `TabPanel` truly unmounts an inactive tab, and a dismissal held
-  // in the tab would resurrect the moment someone came back from Advanced — the
+  // HomeTab: `TabPanel` truly unmounts an inactive tab, and a dismissal held
+  // in the tab would resurrect the moment someone came back from Settings — the
   // same defect class that used to silently destroy typed Telegram/Amazon
   // credentials (see the drafts above).
   const [dismissals, setDismissals] = useState<DismissalLedger>({});
+  /** A request from Home's pool tile to open a budget card full-screen. A
+   *  sequence number, so tapping the tile twice re-opens it after a close. */
+  const [budgetOpen, setBudgetOpen] = useState<{ id: string; seq: number } | undefined>(undefined);
 
   /**
    * The two config tabs' UNSAVED DRAFTS, held here rather than inside the tabs
@@ -152,7 +151,7 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
    * `TabPanel` unmounts an inactive tab — that is the whole point of it — so a
    * draft owned by a tab dies on any tab switch, and re-reads storage on the way
    * back. What that cost in practice: a bot token or an IMAP app password typed,
-   * the save bar saying "You have unsaved changes", one click on Overview to
+   * the save bar saying "You have unsaved changes", one click on Home to
    * check a balance, and back to an empty field with the bar now claiming
    * nothing was pending. Silent loss of something the user had typed, including
    * a credential they may have had to go and generate.
@@ -174,7 +173,7 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
    * The load below is a `Promise.all` that includes an IPC round-trip
    * (`accounts.getAll`), so it can resolve hundreds of milliseconds after the
    * page is interactive — and it used to assign `activeTab`, `checklistDismissed`
-   * and `openCards` unconditionally. Click Advanced, or the checklist's dismiss
+   * and `openCards` unconditionally. Click Settings, or the checklist's dismiss
    * button, inside that window and you were snapped back, with storage now
    * disagreeing with the screen.
    *
@@ -207,8 +206,8 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
     store.getUnmappedAccounts?.().then(setUnmappedAccounts).catch(() => {});
   }, [store]);
 
-  /** The three values Overview DERIVES from storage rather than being told about
-   *  by a sibling tab. Split out of `refreshLiveState` so returning to Overview
+  /** The three values Home DERIVES from storage rather than being told about
+   *  by a sibling tab. Split out of `refreshLiveState` so returning to Home
    *  re-reads exactly these, not the header's timestamp as well. */
   const refreshDerivedSignals = useCallback(() => {
     store.getTelegramConfig()
@@ -305,6 +304,8 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
     store.getLastSyncAt().then((d) => { if (d) setLastSyncAt(d); }).catch(() => {});
     store.getAccountBalances().then(setBalances).catch(() => {});
     store.getCompanionVersion().then(setCompanionVersion).catch(() => {});
+    // Optional on the store so test doubles predating it keep working.
+    store.getInstalledAddonVersion?.().then(setInstalledAddonVersion).catch(() => {});
     // Belongs in THIS reader, not just the post-sync one: discovering a
     // newly-linked account is precisely something the companion does behind
     // this page's back, and a page that only learned it from its own sync
@@ -331,17 +332,34 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
     };
   }, [refreshLiveState]);
 
-  // Returning to Overview is the moment its derived signals can be wrong: the tab
-  // that changes them (Notifications saving a token, Advanced saving Amazon
+  // Returning to Home is the moment its derived signals can be wrong: the tab
+  // that changes them (Settings saving a Telegram token or Amazon
   // credentials) has just unmounted, so nothing reported the change.
   useEffect(() => {
-    if (activeTab === 'overview' || activeTab === 'budget') refreshDerivedSignals();
+    if (activeTab === 'home') refreshDerivedSignals();
   }, [activeTab, refreshDerivedSignals]);
 
   const clearError = useCallback(() => {
     setError('');
     setErrorDetail(undefined);
   }, []);
+
+  /** Re-read the mapping, the account names and Wealthfolio's accounts after
+   *  Settings writes any of them. The page reads them once at mount, and
+   *  Home's Accounts tile and Settings' account rows are both drawn from these
+   *  — a mapping saved in Settings must reach both, with names that match. */
+  const reloadAccounts = useCallback(() => {
+    Promise.all([
+      store.getAccountMapping(),
+      store.getAccountNames(),
+      ctx.api.accounts.getAll().catch(() => null),
+    ]).then(([m, names, wfAccounts]) => {
+      setMapping(m ?? {});
+      setSfinNames(names ?? {});
+      if (wfAccounts) setWfNames(Object.fromEntries(wfAccounts.map((a) => [a.id, a.name])));
+    }).catch(() => {});
+    loadBalances();
+  }, [store, ctx, loadBalances]);
 
   /** Switch tabs and remember it. Read-modify-write, because `ui_state` also
    *  carries `checklistDismissed` and a blind overwrite would bring a dismissed
@@ -350,7 +368,7 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
     // Before the state change, so a load that resolves later leaves it alone.
     hasUserActed.current.tab = true;
     setActiveTab(tab);
-    // A banner that says "map it under Advanced → Accounts" has to LAND the
+    // A banner that says "map it under Settings → Accounts" has to LAND the
     // user on that card. Without this the CTA dropped them on a tab of five
     // collapsed cards with the relevant one shut — and since the card fetches
     // its account list on open, nothing loaded either.
@@ -362,6 +380,14 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
         store.setOpenCards(next).catch(() => {});
         return next;
       });
+      // And bring it on screen. Settings is one long page since 1.57, so an
+      // opened card can still be well below the fold — which reads as the link
+      // doing nothing. After a tick: the tab's panel (and the card in it) does
+      // not exist until this state change renders.
+      window.setTimeout(() => {
+        document.querySelector(`[data-card-id="${openCardId}"]`)
+          ?.scrollIntoView?.({ block: 'start', behavior: 'smooth' });
+      }, 0);
     }
     store.getUiState()
       .then((prev) => store.setUiState({ ...prev, activeTab: tab }))
@@ -406,7 +432,9 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
       // action; see `hasUserActed`. Everything below them is load-only data no
       // interaction can contradict, so it is assigned unconditionally.
       if (!hasUserActed.current.checklist) setChecklistDismissed(ui.checklistDismissed === true);
-      if (!hasUserActed.current.tab && isKnownTab(ui.activeTab)) setActiveTab(ui.activeTab);
+      // Migrated, not just validated: a 1.56 install stored one of five old tab
+      // ids, and every value — old, unknown, absent — must open a real tab.
+      if (!hasUserActed.current.tab) setActiveTab(resolveStoredTab(ui.activeTab));
       if (!hasUserActed.current.cards) setOpenCards(cards);
       // Guarded for the same reason, one step further: a dismissal made while
       // this was in flight is already persisted, so letting the pre-dismissal
@@ -445,7 +473,7 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
 
   /** Record what a run deleted, and make sure the user can actually SEE it.
    *  `Sync now`/`Deep scan` are in the shell header and fire from any tab, but the
-   *  itemised notice renders inside Overview — unmounted while another tab is
+   *  itemised notice renders inside Home — unmounted while another tab is
    *  active. Deleting rows from someone's ledger and reporting it into an
    *  unmounted component is silent data loss, so a non-empty list forces the tab
    *  that shows it. An empty one changes nothing: a routine run must not yank the
@@ -454,10 +482,10 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
     // Always assigned, never appended: the banner describes THIS run, so a clean
     // run clears a previous one's list rather than leave it looking current.
     setPrunedDuplicates(pruned);
-    // Through `navigate`, so this also PERSISTS `activeTab: 'overview'`: it
+    // Through `navigate`, so this also PERSISTS `activeTab: 'home'`: it
     // overwrites the tab the user deliberately chose, and survives a reload.
     // Deliberate — the notice describes only the last run, so a reload that put
-    // them back on Advanced would hide it again with no way to get it back. One
+    // them back on Settings would hide it again with no way to get it back. One
     // forgotten tab preference is the right price for not losing that record.
     //
     // And a forgotten tab preference is now the WHOLE price. `Sync now` sits in
@@ -467,7 +495,7 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
     // `useTelegramDraft` / `useAmazonDraft`), so the panel unmounting costs
     // nothing but the panel, and going back to the tab shows every field and the
     // unsaved-changes bar exactly as they were left.
-    if (pruned.length > 0) navigate('overview');
+    if (pruned.length > 0) navigate('home');
   }, [navigate]);
 
   /**
@@ -570,8 +598,10 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
   };
   const isOpen = (id: string) => openCards[id] === true;
 
+  const versionNotice = versionMismatchNotice(SIMPLEFIN_SYNC_VERSION, companionVersion, installedAddonVersion);
+
   return (
-    <div className={`sfin-page${activeTab === 'budget' ? ' sfin-page--wide' : ''}`}>
+    <div className={`sfin-page${activeTab === 'home' ? ' sfin-page--wide' : ''}`}>
       <div className="sfin-head">
         <div>
           <h2 className="sfin-title">SimpleFin Sync</h2>
@@ -607,33 +637,21 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
         </div>
       )}
 
+      {/* Re-checked every minute and on focus (refreshLiveState), so a tab
+          left open across an update notices on its own. Above the tabs: it is
+          about the page itself, whichever tab is showing. */}
+      {versionNotice && (
+        <div className="sfin-callout" role="status">
+          {versionNotice.text}
+        </div>
+      )}
+
       <TabBar tabs={TABS} active={activeTab} onChange={navigate} />
 
-      {/* Everything a daily visit is for — what needs attention, what is still
-          unfinished, the headline numbers, the accounts. */}
-      <TabPanel tab="budget" active={activeTab}>
-        <BudgetTab
-          cube={reportCube}
-          customReports={customReports}
-          layout={budgetLayout}
-          onLayoutChange={onBudgetLayoutChange}
-          onLayoutReset={onBudgetLayoutReset}
-          onCustomReportsChange={onCustomReportsChange}
-          store={store}
-          hiddenSubscriptions={hiddenSubscriptions}
-          onHiddenSubscriptionsChange={onHiddenSubscriptionsChange}
-          confirmedSubscriptions={confirmedSubscriptions}
-          onConfirmedSubscriptionsChange={onConfirmedSubscriptionsChange}
-          onOpenActivities={() => { ctx.api.navigation.navigate('/activities').catch(() => {}); }}
-        />
-      </TabPanel>
-
-      <TabPanel tab="reports" active={activeTab}>
-        <ReportsTab store={store} initialReport={link?.report} />
-      </TabPanel>
-
-      <TabPanel tab="overview" active={activeTab}>
-        <OverviewTab
+      {/* What needs you — banners, unfinished setup, the status strip — and
+          the budget under it. One tab since 1.57 (was Overview + Budget). */}
+      <TabPanel tab="home" active={activeTab}>
+        <HomeTab
           ctx={ctx}
           store={store}
           mapping={mapping}
@@ -643,7 +661,6 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
           syncing={syncing}
           healing={healing}
           doHeal={doHeal}
-          imported={imported}
           prunedDuplicates={prunedDuplicates}
           unmappedAccounts={unmappedAccounts}
           onIgnoreAccounts={ignoreAccounts}
@@ -662,24 +679,36 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
           checklistDismissed={checklistDismissed}
           onDismissChecklist={dismissChecklist}
           onNavigate={navigate}
+          // The pool tile opens the burn-down full-screen in the budget below,
+          // which already carries the pool editor.
+          onOpenPool={() => setBudgetOpen((prev) => ({ id: 'pool-burndown', seq: (prev?.seq ?? 0) + 1 }))}
+        />
+        <BudgetTab
+          cube={reportCube}
+          customReports={customReports}
+          layout={budgetLayout}
+          onLayoutChange={onBudgetLayoutChange}
+          onLayoutReset={onBudgetLayoutReset}
+          onCustomReportsChange={onCustomReportsChange}
+          store={store}
+          hiddenSubscriptions={hiddenSubscriptions}
+          onHiddenSubscriptionsChange={onHiddenSubscriptionsChange}
+          confirmedSubscriptions={confirmedSubscriptions}
+          onConfirmedSubscriptionsChange={onConfirmedSubscriptionsChange}
+          onOpenActivities={() => { ctx.api.navigation.navigate('/activities').catch(() => {}); }}
+          onSetUpCompanion={() => navigate('settings', SETTINGS_CARD.docker)}
+          openRequest={budgetOpen}
         />
       </TabPanel>
 
-      {/* Was ONE card called "Telegram Notifications (Optional)" holding six
-          unrelated concerns and a Save button at the very bottom. */}
-      <TabPanel tab="notifications" active={activeTab}>
-        <NotificationsTab
-          ctx={ctx}
-          draft={telegramDraft}
-          categories={categoryCatalog}
-          isOpen={isOpen}
-          toggleCard={toggleCard}
-        />
+      <TabPanel tab="reports" active={activeTab}>
+        <ReportsTab store={store} initialReport={link?.report} />
       </TabPanel>
 
-      {/* Configured once and then only checked, plus the destructive reset. */}
-      <TabPanel tab="advanced" active={activeTab}>
-        <AdvancedTab
+      {/* Everything configurable, grouped on one page: accounts, the pool,
+          Telegram, sync, categorizing, reset. */}
+      <TabPanel tab="settings" active={activeTab}>
+        <SettingsTab
           ctx={ctx}
           store={store}
           scheduler={scheduler}
@@ -688,6 +717,12 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
           categories={categoryCatalog}
           isOpen={isOpen}
           toggleCard={toggleCard}
+          accountMapping={mapping}
+          balances={balances}
+          sfinNames={sfinNames}
+          wfNames={wfNames}
+          onAccountsChanged={reloadAccounts}
+          telegramDraft={telegramDraft}
         />
       </TabPanel>
 
@@ -701,7 +736,7 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
         companion {companionVersion ? `v${companionVersion}` : 'not running'}
         {companionVersion && companionVersion !== SIMPLEFIN_SYNC_VERSION && (
           <span className="sfin-foot-warn">
-            — versions differ; rebuild the companion to match
+            — versions differ (see the note at the top)
           </span>
         )}
       </div>

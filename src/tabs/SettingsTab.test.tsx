@@ -125,17 +125,38 @@ async function switchTab(name: RegExp) {
   return tab;
 }
 
-describe('AdvancedTab', () => {
+/** Settings → Accounts shows the balances on open; the bridge is only asked
+ *  for the account list once "Edit mapping" is tapped. */
+async function openMapper() {
+  await openSection(/^Accounts/i);
+  fireEvent.click(await screen.findByRole('button', { name: 'Edit mapping' }));
+}
+
+describe('SettingsTab', () => {
 
   it('changing the interval saves it and restarts the scheduler', async () => {
     const props = makeProps();
     render(<SyncPage {...props} />);
-    await switchTab(/advanced/i);
+    await switchTab(/settings/i);
     await openSection(/^Auto-sync/i);
     const select = await screen.findByLabelText(/auto-sync interval/i);
-    fireEvent.change(select, { target: { value: '8' } });
-    await waitFor(() => expect(props.store.setSyncScheduleHours).toHaveBeenCalledWith(8));
-    expect(props.scheduler.start).toHaveBeenCalledWith(8, expect.any(Function), expect.any(Function));
+    fireEvent.change(select, { target: { value: '12' } });
+    await waitFor(() => expect(props.store.setSyncScheduleHours).toHaveBeenCalledWith(12));
+    expect(props.scheduler.start).toHaveBeenCalledWith(12, expect.any(Function), expect.any(Function));
+  });
+
+  it('offers the same intervals as setup, and still shows an older stored one', async () => {
+    // Setup said more than four syncs a day gets no new data while this card
+    // offered hourly (1.57 aligns the two).
+    const props = makeProps();
+    props.store.getSyncScheduleHours = vi.fn(async () => 8);
+    render(<SyncPage {...props} />);
+    await switchTab(/settings/i);
+    await openSection(/^Auto-sync/i);
+    const select = await screen.findByLabelText(/auto-sync interval/i);
+    const values = within(select).getAllByRole('option').map((o) => (o as HTMLOptionElement).value);
+    expect(values).toEqual(['0', '4', '6', '12', '24', '8']);
+    await waitFor(() => expect(select).toHaveValue('8'));
   });
 
   // ── Collapsible config cards ───────────────────────────────────────────
@@ -147,7 +168,7 @@ describe('AdvancedTab', () => {
     // Collapsed: the controls inside each config card are absent from the DOM,
     // not merely hidden. Asserted per tab, since a tab the user is not on is
     // unmounted outright — a stronger form of the same guarantee.
-    await switchTab(/advanced/i);
+    await switchTab(/settings/i);
     expect(screen.queryByLabelText(/auto-sync interval/i)).not.toBeInTheDocument();
     expect(screen.queryByText('+ Add rule')).not.toBeInTheDocument();
     expect(screen.queryByText(/docker-compose\.yml/)).not.toBeInTheDocument();
@@ -155,7 +176,7 @@ describe('AdvancedTab', () => {
       expect(screen.getByRole('button', { name }).getAttribute('aria-expanded')).toBe('false');
     }
 
-    await switchTab(/notifications/i);
+    await switchTab(/settings/i);
     expect(screen.queryByLabelText(/Bot Token/i)).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/Monthly Wrap-Up/i)).not.toBeInTheDocument();
     // The Telegram card became three, so three headers here rather than one.
@@ -170,7 +191,7 @@ describe('AdvancedTab', () => {
     // exactly produced a companion that synced fine and a "Needs a category" tile
     // that never appeared, with nothing on screen explaining why.
     render(<SyncPage {...makeProps()} />);
-    await switchTab(/advanced/i);
+    await switchTab(/settings/i);
     await openSection(/^Background sync/i);
     const snippet = (await screen.findByText(/services:/)).textContent!;
 
@@ -189,7 +210,7 @@ describe('AdvancedTab', () => {
 
   it('gives every collapsible card one disclosure shape: a real button, whole-header hit target, aria-expanded', async () => {
     render(<SyncPage {...makeProps()} />);
-    await switchTab(/advanced/i);
+    await switchTab(/settings/i);
     const header = await screen.findByRole('button', { name: /^Auto-sync/i });
     // A native <button> is what makes the header keyboard-operable (focus +
     // Enter/Space) without any hand-rolled key handling, and the title AND the
@@ -225,11 +246,11 @@ describe('AdvancedTab', () => {
     // time now, so its half is asserted after the switch.
     props.store.getTelegramConfig = vi.fn(async () => ({ botToken: 't', chatId: 'c', enabled: true }));
     render(<SyncPage {...props} />);
-    await switchTab(/advanced/i);
+    await switchTab(/settings/i);
     await screen.findByText('Every 4h · auto re-scan on');
     expect(screen.getByText('2 rules')).toBeInTheDocument();
 
-    await switchTab(/notifications/i);
+    await switchTab(/settings/i);
     expect(await screen.findByText('Connected')).toBeInTheDocument();
     expect(screen.getByText('daily, weekly, monthly reports')).toBeInTheDocument();
   });
@@ -239,13 +260,13 @@ describe('AdvancedTab', () => {
     props.store.getSyncScheduleHours = vi.fn(async () => null);
     props.store.getAutoAdjust = vi.fn(async () => true);
     render(<SyncPage {...props} />);
-    await switchTab(/advanced/i);
+    await switchTab(/settings/i);
     // Interval off, but aggressive auto re-scan on — the summary has to say both.
     await screen.findByText('Off · aggressive auto re-scan');
     expect(screen.getByText(/using the \+\/− defaults/)).toBeInTheDocument();
     // No token/chat id in the default mock — same "collapsed still says its
     // state" contract, for the Telegram card.
-    await switchTab(/notifications/i);
+    await switchTab(/settings/i);
     expect(await screen.findByText('Not connected')).toBeInTheDocument();
   });
 
@@ -261,7 +282,7 @@ describe('AdvancedTab', () => {
       { pattern: 'ATM', matchType: 'contains', activityType: 'WITHDRAWAL' },
     ]);
     render(<SyncPage {...props} />);
-    await switchTab(/advanced/i);
+    await switchTab(/settings/i);
     await openSection(/^Transaction rules/i);
 
     // Only the CREDIT row offers a subtype — the WITHDRAWAL row does not, since
@@ -282,7 +303,7 @@ describe('AdvancedTab', () => {
       { pattern: 'PAYROLL', matchType: 'contains', activityType: 'DEPOSIT' },
     ]);
     render(<SyncPage {...props} />);
-    await switchTab(/advanced/i);
+    await switchTab(/settings/i);
     await openSection(/^Transaction rules/i);
 
     fireEvent.change(screen.getByPlaceholderText('pattern'), { target: { value: 'PAYCHECK' } });
@@ -294,7 +315,7 @@ describe('AdvancedTab', () => {
   it('persists which cards are open, and restores them on the next visit', async () => {
     const props = makeProps();
     const first = render(<SyncPage {...props} />);
-    await switchTab(/advanced/i);
+    await switchTab(/settings/i);
     fireEvent.click(await screen.findByRole('button', { name: /^Transaction rules/i }));
     await waitFor(() =>
       expect(props.store.setOpenCards).toHaveBeenCalledWith(expect.objectContaining({ rules: true })),
@@ -306,12 +327,12 @@ describe('AdvancedTab', () => {
     // Next visit: the stored blob decides, so the page does not reset.
     const revisit = makeProps();
     revisit.store.getOpenCards = vi.fn(async () => ({ rules: true, 'auto-sync': true }));
-    revisit.store.getUiState = vi.fn(async () => ({ activeTab: 'advanced' }) as any);
+    revisit.store.getUiState = vi.fn(async () => ({ activeTab: 'settings' }) as any);
     render(<SyncPage {...revisit} />);
     await waitFor(() => expect(screen.getAllByText('+ Add rule').length).toBe(1));
     expect(screen.getAllByLabelText(/auto-sync interval/i).length).toBe(1);
     // Cards absent from the blob stay closed.
-    await switchTab(/notifications/i);
+    await switchTab(/settings/i);
     expect(screen.queryByLabelText(/Bot Token/i)).not.toBeInTheDocument();
   });
 
@@ -325,7 +346,7 @@ describe('AdvancedTab', () => {
       { name: 'Housing', parent: null, icon: null, color: null, hasBudget: true, hasSpend: false },
     ] as any));
     render(<SyncPage {...props} />);
-    await switchTab(/advanced/i);
+    await switchTab(/settings/i);
     const header = await screen.findByRole('button', { name: /^Amazon categorization/i });
     fireEvent.click(header);
     expect(await screen.findByLabelText(/IMAP server/i)).toBeInTheDocument();
@@ -335,7 +356,7 @@ describe('AdvancedTab', () => {
   // ── Reset ───────────────────────────────────────────────────────────────
   it('gives the destructive reset flow a boundary card with the stated consequences', async () => {
     render(<SyncPage {...makeProps()} />);
-    await switchTab(/advanced/i);
+    await switchTab(/settings/i);
     const card = (await screen.findByText('Reset connection')).closest('.sfin-danger-card');
     expect(card).toBeTruthy();
     // Has to name everything `clearAll` actually deletes — not just the
@@ -350,7 +371,7 @@ describe('AdvancedTab', () => {
   it('reset requires an explicit confirmation step', async () => {
     const props = makeProps();
     render(<SyncPage {...props} />);
-    await switchTab(/advanced/i);
+    await switchTab(/settings/i);
     fireEvent.click(await screen.findByRole('button', { name: /^Reset…$/ }));
     expect(props.onReset).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: /yes, reset/i }));
@@ -360,7 +381,7 @@ describe('AdvancedTab', () => {
   it('reset stops the scheduler and clears every stored secret before handing off', async () => {
     const props = makeProps();
     render(<SyncPage {...props} />);
-    await switchTab(/advanced/i);
+    await switchTab(/settings/i);
     fireEvent.click(await screen.findByRole('button', { name: /^Reset…$/ }));
     fireEvent.click(screen.getByRole('button', { name: /yes, reset/i }));
     await waitFor(() => expect(props.onReset).toHaveBeenCalled());
@@ -376,27 +397,48 @@ describe('AdvancedTab', () => {
       const { fetchAccounts } = await import('../utils/simplefin');
       const props = makeProps();
       render(<SyncPage {...props} />);
-      await switchTab(/advanced/i);
+      await switchTab(/settings/i);
       await waitFor(() => expect(screen.getByRole('button', { name: /^Accounts/i })).toBeInTheDocument());
       expect(fetchAccounts).not.toHaveBeenCalled();
+    });
+
+    it('shows the balances when Accounts opens, and asks SimpleFin only for Edit mapping', async () => {
+      // Opening Accounts is now mostly a look at the balances (they moved here
+      // from Overview), so it must not cost a bridge round-trip every time.
+      const { fetchAccounts } = await import('../utils/simplefin');
+      vi.mocked(fetchAccounts).mockClear();
+      render(<SyncPage {...makeProps()} />);
+      await switchTab(/settings/i);
+      await openSection(/^Accounts/i);
+      expect(await screen.findByText('$1,234.56')).toBeInTheDocument();
+      expect(fetchAccounts).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole('button', { name: 'Edit mapping' }));
+      await waitFor(() => expect(fetchAccounts).toHaveBeenCalledOnce());
+    });
+
+    it('summarises Accounts with the count and any difference', async () => {
+      render(<SyncPage {...makeProps()} />);
+      await switchTab(/settings/i);
+      expect(await screen.findByText('2 accounts · 1 off by $15.22')).toBeInTheDocument();
     });
 
     it('lists an account that exists at SimpleFin but is not mapped', async () => {
       const props = makeProps();
       render(<SyncPage {...props} />);
-      await switchTab(/advanced/i);
-      await openSection(/^Accounts/i);
+      await switchTab(/settings/i);
+      await openMapper();
       // The mapped two AND the newly-linked one, which is the point: the card
       // shows the live bridge list, not just what the mapping already knows.
       expect(await screen.findByText('Robinhood Gold Card')).toBeInTheDocument();
-      expect(screen.getByText('Growth')).toBeInTheDocument();
+      // Twice since 1.57: once in the balance list above the mapper, once in it.
+      expect(screen.getAllByText('Growth').length).toBeGreaterThan(0);
     });
 
     it('saves a new mapping alongside the existing ones, without disturbing them', async () => {
       const props = makeProps();
       render(<SyncPage {...props} />);
-      await switchTab(/advanced/i);
-      await openSection(/^Accounts/i);
+      await switchTab(/settings/i);
+      await openMapper();
       const newRowLabel = await screen.findByText('Robinhood Gold Card');
 
       // Wait for the Wealthfolio account list to arrive before touching the
@@ -427,8 +469,8 @@ describe('AdvancedTab', () => {
       const props = makeProps();
       props.store.getIgnoredAccounts = vi.fn(async () => ['sfin-new']);
       render(<SyncPage {...props} />);
-      await switchTab(/advanced/i);
-      await openSection(/^Accounts/i);
+      await switchTab(/settings/i);
+      await openMapper();
 
       // Named from the live feed, not shown as a raw SimpleFin id.
       expect(await screen.findByText(/1 account set not to sync/i)).toBeInTheDocument();
@@ -450,8 +492,8 @@ describe('AdvancedTab', () => {
       const props = makeProps();
       props.store.getIgnoredAccounts = vi.fn(async () => ['sfin-new']);
       render(<SyncPage {...props} />);
-      await switchTab(/advanced/i);
-      await openSection(/^Accounts/i);
+      await switchTab(/settings/i);
+      await openMapper();
       const newRowLabel = (await screen.findAllByText('Robinhood Gold Card'))
         .map((el) => el.closest('.sfin-row'))
         .find(Boolean) as HTMLElement;
@@ -465,6 +507,39 @@ describe('AdvancedTab', () => {
       await waitFor(() => expect(props.store.setIgnoredAccounts).toHaveBeenCalledWith([]));
     });
 
+    it('lists a just-mapped account by its name, in step with the page', async () => {
+      // The list used the tab's fresh mapping but the page's names, read once
+      // at startup — so an account mapped seconds ago appeared as its raw id
+      // with "account no longer exists — reset & re-map", pointing at Reset.
+      const props = makeProps();
+      const stored: Record<string, any> = {
+        mapping: { 'sfin-1': 'wf-a', 'sfin-2': 'wf-b' },
+        names: { 'sfin-1': 'Growth', 'sfin-2': 'Spend' },
+      };
+      props.store.getAccountMapping = vi.fn(async () => stored.mapping);
+      props.store.setAccountMapping = vi.fn(async (m: any) => { stored.mapping = m; });
+      props.store.getAccountNames = vi.fn(async () => stored.names);
+      props.store.setAccountNames = vi.fn(async (n: any) => { stored.names = n; });
+      render(<SyncPage {...props} />);
+      await switchTab(/settings/i);
+      await openMapper();
+      const newRowLabel = (await screen.findAllByText('Robinhood Gold Card'))
+        .map((el) => el.closest('.sfin-row'))
+        .find(Boolean) as HTMLElement;
+      await waitFor(() =>
+        expect(screen.getAllByRole('option', { name: 'Checking' }).length).toBeGreaterThan(0),
+      );
+      fireEvent.change(within(newRowLabel).getByRole('combobox'), { target: { value: 'wf-a' } });
+      fireEvent.click(screen.getByRole('button', { name: /save mapping/i }));
+
+      const list = document.querySelector('.sfin-accts--bare') as HTMLElement;
+      const row = await waitFor(() => within(list).getByText('Robinhood Gold Card').closest('.sfin-acct-card') as HTMLElement);
+      expect(row).toHaveTextContent('→ Checking');
+      expect(row).not.toHaveTextContent('no longer exists');
+      // The card's summary and the Home tile count the same mapping.
+      expect(screen.getByRole('button', { name: /^Accounts/ })).toHaveTextContent('3 accounts');
+    });
+
     it('reports a bridge failure instead of showing an empty mapper', async () => {
       // An empty mapper would read as "you have no accounts", and saving from
       // it could overwrite a good mapping.
@@ -472,11 +547,79 @@ describe('AdvancedTab', () => {
       vi.mocked(fetchAccounts).mockRejectedValueOnce(new Error('SimpleFin /accounts failed: 524'));
       const props = makeProps();
       render(<SyncPage {...props} />);
-      await switchTab(/advanced/i);
-      await openSection(/^Accounts/i);
+      await switchTab(/settings/i);
+      await openMapper();
       expect(await screen.findByText(/524/)).toBeInTheDocument();
       expect(screen.queryByRole('button', { name: /save mapping/i })).not.toBeInTheDocument();
     });
   });
 
+
+  it('groups the cards under plain headings, in the order of the spec', async () => {
+    render(<SyncPage {...makeProps()} />);
+    await switchTab(/settings/i);
+    const headings = await screen.findAllByRole('heading', { level: 3 });
+    expect(headings.map((h) => h.textContent)).toEqual(
+      ['Accounts', 'Budget', 'Notifications', 'Sync', 'Categorizing', 'Reset'],
+    );
+  });
+
+  it('keeps an unsaved Telegram edit across a trip to another tab', async () => {
+    // The draft is page-owned; moving the Telegram cards into Settings must not
+    // change that.
+    const props = makeProps();
+    props.store.getReports = vi.fn(async () => ({ live: null, archive: [] }));
+    render(<SyncPage {...props} />);
+    await switchTab(/settings/i);
+    await openSection(/^Telegram connection/i);
+    fireEvent.change(await screen.findByLabelText(/bot token/i), { target: { value: 'typed-token' } });
+    await switchTab(/reports/i);
+    await switchTab(/settings/i);
+    expect(await screen.findByLabelText(/bot token/i)).toHaveValue('typed-token');
+  });
+
+  it('keeps an unsaved Telegram edit across a glance at Home', async () => {
+    render(<SyncPage {...makeProps()} />);
+    await switchTab(/settings/i);
+    await openSection(/^Telegram connection/i);
+    fireEvent.change(await screen.findByLabelText(/bot token/i), { target: { value: 'typed-token' } });
+    await switchTab(/home/i);
+    await switchTab(/settings/i);
+    expect(await screen.findByLabelText(/bot token/i)).toHaveValue('typed-token');
+  });
+
+  it('summarises a set pool with its amount and a readable end date', async () => {
+    // From the stored pool the card edits, not the companion's last publish —
+    // which lags a Set or Clear until the next sync.
+    const props = makeProps();
+    (props.store as any).getSemesterPool = vi.fn(async () => ({ amountCents: 1_600_000, startDate: '2026-08-25', endDate: '2026-12-12' }));
+    render(<SyncPage {...props} />);
+    await switchTab(/settings/i);
+    const header = await screen.findByRole('button', { name: /^Semester pool/i });
+    await waitFor(() => expect(header).toHaveTextContent('$16,000 until Dec 12'));
+  });
+
+  it('updates the pool summary the moment a pool is set, without waiting for a sync', async () => {
+    const props = makeProps();
+    (props.store as any).getSemesterPool = vi.fn(async () => null);
+    (props.store as any).setSemesterPool = vi.fn(async () => {});
+    render(<SyncPage {...props} />);
+    await switchTab(/settings/i);
+    await openSection(/^Semester pool/i);
+    fireEvent.change(await screen.findByLabelText('Pool amount'), { target: { value: '16000' } });
+    fireEvent.change(screen.getByLabelText('Must last until'), { target: { value: '2099-12-12' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Set pool' }));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /^Semester pool/i })).toHaveTextContent('$16,000 until Dec 12'),
+    );
+  });
+
+  it('offers the semester pool as a Settings card, summarised when closed', async () => {
+    render(<SyncPage {...makeProps()} />);
+    await switchTab(/settings/i);
+    const header = await screen.findByRole('button', { name: /^Semester pool/i });
+    expect(header).toHaveTextContent('Not set');
+    fireEvent.click(header);
+    expect(await screen.findByLabelText('Pool amount')).toBeInTheDocument();
+  });
 });

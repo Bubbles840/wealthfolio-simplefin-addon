@@ -21,6 +21,7 @@
  * separated from both so it can be tested as a table of cases rather than
  * through a Telegram send.
  */
+import { formatDollars } from './telegram.js';
 
 /** How long a sync can go missing before it is worth saying so. Comfortably
  *  past the 4-hour default schedule, so an ordinary skipped run — a container
@@ -32,6 +33,11 @@ export const SYNC_STALE_HOURS = 12;
  *  holiday; two weeks is past any of that and means the connection itself has
  *  stopped delivering, which SimpleFin does not report as an error. */
 export const FEED_STALE_DAYS = 14;
+
+/** How long a balance difference can be the bank's feed catching up. The same
+ *  ten days after which the sync's own drift alert escalated, and after which
+ *  the one-click baseline fix is offered. */
+export const DRIFT_AGED_DAYS = 10;
 
 export type SelfCheckSeverity = 'problem' | 'warning';
 
@@ -45,13 +51,42 @@ export interface SelfCheckFinding {
     | 'feed-stale'
     | 'signals-unreadable'
     | 'version-skew'
+    /** A non-card account whose balance differs from the bank's (cards have
+     *  the ledger audit's own `card-balance` check). */
+    | 'balance-drift'
     /** A finding from `shared/ledger-checks.ts`: the row-level audit. */
     | 'ledger';
   severity: SelfCheckSeverity;
   /** One line, already user-facing. No Markdown: the caller escapes and
    *  decorates, because the same finding is rendered in two places. */
   message: string;
+  /**
+   * Which condition this is, stable across days — kind plus subject. It is
+   * what a snooze remembers and what a tapped button finds the finding by
+   * again, so it must not contain anything that changes while the condition
+   * stays the same (an age in days, say). Absent = cannot be snoozed.
+   */
+  key?: string;
+  /** A short name for a button, under ~40 characters. Falls back to the
+   *  message when absent. */
+  label?: string;
+  /** A repair the Telegram menu can offer for this finding, when one exists. */
+  fix?: FindingFix;
 }
+
+/**
+ * The repairs a tap can make. Each hands off to a flow that already exists and
+ * already previews before it writes — no finding gets a one-tap write of its
+ * own, because the findings are judged from a read-only database snapshot and a
+ * write built on a stale snapshot is how a fix becomes a second problem.
+ */
+export type FindingFix =
+  /** Write a mapping rule through the transfer-learning confirm step. A bare
+   *  retype would not stick: the sync rewrites any row whose stored type
+   *  differs from what the feed resolves to. */
+  | { kind: 'make-transfer'; activityId: string; description: string; amount: number; activityType: string }
+  /** Open the category picker on exactly this transaction. */
+  | { kind: 'pick-category'; activityId: string };
 
 export interface SelfCheckInput {
   /** ISO timestamp of the last SUCCESSFUL sync; null = never synced. */
@@ -66,8 +101,15 @@ export interface SelfCheckInput {
    *  ones the user chose to ignore. */
   unmappedAccountNames?: readonly string[];
   /** Per-account feed freshness. `balanceDate` is a Unix SECONDS timestamp, as
-   *  SimpleFin reports it; null = SimpleFin gave no date for this account. */
-  accounts?: ReadonlyArray<{ name: string; balanceDate: number | null }>;
+   *  SimpleFin reports it; null = SimpleFin gave no date for this account.
+   *  `drift` is bank − Wealthfolio in dollars, set by the sync only past the
+   *  alert threshold; `driftSince` is when that difference was first seen. */
+  accounts?: ReadonlyArray<{
+    name: string;
+    balanceDate: number | null;
+    drift?: number | null;
+    driftSince?: string | null;
+  }>;
   /** The two halves' versions, as each publishes them. The addon's is absent
    *  on zips older than 1.34.0 (they never wrote it), and absence must stay
    *  quiet — flagging it would alarm every companion-first updater forever. */
@@ -141,23 +183,49 @@ export function evaluateSelfCheck(input: SelfCheckInput, now: Date): SelfCheckFi
     });
   }
 
-  const stale: string[] = [];
   for (const account of input.accounts ?? []) {
     // No date is not a stale date. SimpleFin omits it for some accounts, and
     // treating "unknown" as "old" would flag them forever with no way to fix it.
     if (typeof account.balanceDate !== 'number' || !Number.isFinite(account.balanceDate)) continue;
     const days = (now.getTime() - account.balanceDate * 1000) / DAY_MS;
-    if (days >= FEED_STALE_DAYS) stale.push(account.name);
-  }
-  if (stale.length > 0) {
+    if (days < FEED_STALE_DAYS) continue;
+    // One finding PER ACCOUNT, not one naming them all: each is snoozed on its
+    // own, and a snooze of "Discover is dead, I know" must not also silence a
+    // second feed that dies next week.
     findings.push({
       kind: 'feed-stale',
       severity: 'warning',
+      key: `feed-stale:${account.name}`,
+      label: `${account.name}: no new data`,
       // The remedy, not just the symptom: a dead feed also holds any transfer
       // that names it open indefinitely (see expiryHoldAccount in sync-core).
-      message: stale.length === 1
-        ? `${stale[0]} has sent no new data in over ${FEED_STALE_DAYS} days — reconnect it in SimpleFin, or unmap it here if the account is closed`
-        : `${stale.length} accounts have sent no new data in over ${FEED_STALE_DAYS} days: ${stale.join(', ')} — reconnect them in SimpleFin, or unmap any that are closed`,
+      message: `${account.name} has sent no new data in over ${FEED_STALE_DAYS} days — reconnect it in SimpleFin, or unmap it here if the account is closed`,
+    });
+  }
+
+  for (const account of input.accounts ?? []) {
+    const drift = account.drift;
+    if (typeof drift !== 'number' || !Number.isFinite(drift) || drift === 0) continue;
+    // Only an OPEN alert episode dates a drift, and one opens only past the
+    // user's alert threshold (never when alerts are off). `drift` alone is
+    // recorded from $1, for the balance chips — far too small to nag about.
+    const since = account.driftSince ? Date.parse(account.driftSince) : NaN;
+    if (!Number.isFinite(since)) continue;
+    const aged = now.getTime() - since >= DRIFT_AGED_DAYS * DAY_MS;
+    const lead = `${account.name} is ${formatDollars(Math.abs(drift), 2)} ${drift > 0 ? 'below' : 'above'} the bank's balance`;
+    findings.push({
+      kind: 'balance-drift',
+      // A warning either way, so it folds into the 🧹 count and can be
+      // snoozed: the separate aged alert it replaces was said once, and a
+      // problem prints in full every morning. Young, it is usually the bank's
+      // balance running ahead of its own transaction list, so it asks for
+      // nothing until it has outlived that.
+      severity: 'warning',
+      key: `balance-drift:${account.name}`,
+      label: `${account.name}: balance differs`,
+      message: aged
+        ? `${lead} — for over ${DRIFT_AGED_DAYS} days, so it is more than feed lag. Open SimpleFin Sync to line them up`
+        : `${lead} — usually the bank's feed catching up; it clears on its own`,
     });
   }
 
@@ -171,19 +239,18 @@ export function evaluateSelfCheck(input: SelfCheckInput, now: Date): SelfCheckFi
     findings.push({
       kind: 'version-skew',
       severity: 'warning',
+      key: `version-skew:installed:${installed}:${companion}`,
+      label: `Upload the v${companion} addon zip`,
       message: `the installed addon is v${installed} but the companion is v${companion}`
         + ` — upload simplefin-sync-${companion}.zip in Wealthfolio's addon settings`,
     });
-  } else if (companion && installed && running && running !== companion) {
-    // The right zip IS installed, and a browser is still running an older
-    // bundle. Worth saying rather than ignoring: the addon is a second writer,
-    // and a stale tab syncs with the old build's logic when Sync is clicked.
-    findings.push({
-      kind: 'version-skew',
-      severity: 'warning',
-      message: `addon v${companion} is installed, but a Wealthfolio tab is still running v${running}`
-        + ' — hard-refresh it (Cmd/Ctrl+Shift+R)',
-    });
+  } else if (companion && installed && installed === companion) {
+    // The right zip IS installed. A tab still running an older bundle is no
+    // longer reported here: `running` is the most recent build to LOAD, so it
+    // also reads stale for someone who simply has not opened Wealthfolio since
+    // updating — the morning report then nagged about a tab that did not exist
+    // (2026-10). From 1.57.0 the stale tab says so itself, in a banner, which
+    // is the one place a stale tab can actually be seen and refreshed.
   } else if (!installed && running && companion && running !== companion) {
     // No manifest to consult (the addons directory is not mounted), so the two
     // causes cannot be told apart and the message has to offer both. The
@@ -193,6 +260,8 @@ export function evaluateSelfCheck(input: SelfCheckInput, now: Date): SelfCheckFi
     findings.push({
       kind: 'version-skew',
       severity: 'warning',
+      key: `version-skew:running:${running}:${companion}`,
+      label: 'Addon and companion versions differ',
       message: `addon v${running} and companion v${companion} are different builds`
         + ' — finish the update (pull the image AND upload the matching zip), or reload the Wealthfolio tab if you already have',
     });
@@ -213,6 +282,46 @@ export function evaluateSelfCheck(input: SelfCheckInput, now: Date): SelfCheckFi
  */
 export function formatSelfCheckBlock(findings: readonly SelfCheckFinding[]): string {
   if (findings.length === 0) return '';
-  const lines = findings.map((f) => `${f.severity === 'problem' ? '🚨' : '⚠️'} ${f.message}`);
+  const lines = findings.map((f) => `${f.severity === 'problem' ? '🚨' : '⚠️'} ${escapeFindingText(f.message)}`);
   return `*Needs attention*\n${lines.join('\n')}`;
+}
+
+/** Legacy-Markdown specials in a finding's text. The messages carry bank
+ *  descriptors and account names verbatim, and one stray underscore in a
+ *  payee is enough for Telegram to reject the whole report with a 400. Local
+ *  rather than imported from ./telegram.ts so this module stays dependency-free
+ *  (the addon bundle imports it too). */
+export function escapeFindingText(text: string): string {
+  return text.replace(/([_*`[])/g, '\\$1');
+}
+
+/**
+ * Whether a finding prints in full in the morning report, or is folded into
+ * the "things to fix" count behind a button.
+ *
+ * Problems are the reason the block exists — a sync that is failing, an
+ * account syncing nothing — and folding one into a count would bury exactly the
+ * thing the self-check was built to shout. An unreadable health signal rides
+ * with them: it is not a chore, it is "nothing below can be trusted".
+ */
+export function printsInFull(f: SelfCheckFinding): boolean {
+  return f.severity === 'problem' || f.kind === 'signals-unreadable';
+}
+
+/**
+ * The morning report's version of the block: problems in full, everything else
+ * as ONE line counting it, with the list behind a button the caller attaches.
+ *
+ * Chosen 2026-10 after the block grew to seven lines on an ordinary day and
+ * became most of the message. The chores are still announced every morning —
+ * the count never hides that they exist — but reading them is a tap, not a
+ * scroll past them to reach the day's spending.
+ */
+export function formatFindingsSummary(findings: readonly SelfCheckFinding[]): string {
+  const full = findings.filter(printsInFull);
+  const folded = findings.length - full.length;
+  const lines = full.map((f) => `${f.severity === 'problem' ? '🚨' : '⚠️'} ${escapeFindingText(f.message)}`);
+  const count = folded > 0 ? `🧹 *${folded} ${folded === 1 ? 'thing' : 'things'} to fix*` : '';
+  if (lines.length === 0) return count;
+  return `*Needs attention*\n${lines.join('\n')}${count ? `\n${count}` : ''}`;
 }

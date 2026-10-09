@@ -3,6 +3,8 @@ import {
   parseCommand,
   formatHelpReply,
   TELEGRAM_COMMAND_MENU,
+  TELEGRAM_MORE_COMMANDS,
+  parseLeftArgs,
   resolveCategoryQuery,
   formatCategoryQueryMiss,
   NEWRULE_CATEGORY_LIST_HINT,
@@ -46,20 +48,25 @@ describe('formatHelpReply', () => {
       expect(help).toContain(`/${command}`);
     }
   });
-  it('menu covers exactly the twelve shipped commands', () => {
-    expect(TELEGRAM_COMMAND_MENU.map((c) => c.command).sort())
-      .toEqual(['afford', 'categorize', 'charts', 'dismissed', 'help', 'left', 'newrule', 'pool', 'recategorize', 'report', 'status', 'sync']);
+  it('puts seven commands in the ☰ menu, in this order', () => {
+    // 1.57: twelve was a menu nobody read. The rest still work — see below.
+    expect(TELEGRAM_COMMAND_MENU.map((c) => c.command))
+      .toEqual(['report', 'left', 'categorize', 'charts', 'status', 'sync', 'help']);
   });
-  it('lists /recategorize directly after /categorize, and says a query narrows it', () => {
-    // Adjacent because they are one pair — file an unfiled row, move a filed
-    // one — and the ☰ menu is the only place most readers will ever see either
-    // name. The description carries an EXAMPLE for the same reason `/left`'s
-    // and `/newrule`'s do: the optional argument is invisible otherwise, and a
-    // reader who does not know about it will scroll a 90-day list by hand.
-    const names = TELEGRAM_COMMAND_MENU.map((c) => c.command);
-    expect(names.indexOf('recategorize')).toBe(names.indexOf('categorize') + 1);
-    expect(TELEGRAM_COMMAND_MENU.find((c) => c.command === 'recategorize')?.description)
-      .toBe('Move a filed transaction — /recategorize venmo narrows it');
+  it('keeps the other five working, listed under "More commands" in /help', () => {
+    expect(TELEGRAM_MORE_COMMANDS.map((c) => c.command))
+      .toEqual(['afford', 'pool', 'recategorize', 'newrule', 'dismissed']);
+    const help = formatHelpReply();
+    const more = help.indexOf('*More commands*');
+    expect(more).toBeGreaterThan(help.indexOf('/help'));
+    for (const { command } of TELEGRAM_MORE_COMMANDS) {
+      expect(help.indexOf(`/${command} `)).toBeGreaterThan(more);
+    }
+    // The optional query is invisible without an example.
+    expect(help).toContain('/recategorize venmo');
+  });
+  it('says on /left that an amount asks whether it fits', () => {
+    expect(TELEGRAM_COMMAND_MENU.find((c) => c.command === 'left')?.description).toContain('/left groceries 20');
   });
   it('prefixes with Unknown command when asked about junk', () => {
     const help = formatHelpReply('bogus');
@@ -71,6 +78,24 @@ describe('formatHelpReply', () => {
     // this reply is the one sent to someone who has just mistyped — so an
     // unescaped `/a*b` means the bot answers a typo with total silence.
     expect(formatHelpReply('a*b_c')).toContain('Unknown command: /a\\*b\\_c');
+  });
+});
+
+describe('parseLeftArgs', () => {
+  it('reads nothing as the full listing and words as a category', () => {
+    expect(parseLeftArgs('')).toEqual({});
+    expect(parseLeftArgs('groceries')).toEqual({ query: 'groceries' });
+    expect(parseLeftArgs('home improvement')).toEqual({ query: 'home improvement' });
+  });
+  it('reads a trailing amount as "can I afford this much of it"', () => {
+    expect(parseLeftArgs('groceries 20')).toEqual({ query: 'groceries', amount: 20 });
+    expect(parseLeftArgs('home improvement $45.50')).toEqual({ query: 'home improvement', amount: 45.5 });
+  });
+  it('also takes the /afford order, amount first', () => {
+    expect(parseLeftArgs('20 groceries')).toEqual({ query: 'groceries', amount: 20 });
+  });
+  it('treats a zero amount as part of the name rather than a question', () => {
+    expect(parseLeftArgs('groceries 0')).toEqual({ query: 'groceries 0' });
   });
 });
 

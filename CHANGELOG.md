@@ -7,6 +7,197 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.57.0] - 2026-10-09
+
+A minimalism release: three tabs, a calmer look, fewer settings, one Telegram
+voice, and a two-step setup.
+
+### Changed
+
+- **Three tabs instead of five: Home, Reports and Settings.**
+  - **Home** is what needs you: banners, unfinished setup, and a status strip.
+    The strip shows your accounts and whether any balance differs, what needs
+    a category, and the semester pool. The budget sits underneath.
+  - **Settings** is everything else, on one page, grouped: Accounts, Budget,
+    Notifications, Sync, Categorizing, Reset.
+  - The account balances moved into Settings → Accounts, beside the mapping.
+    Opening that card no longer contacts SimpleFin; only "Edit mapping" does.
+  - The pool editor moved to Settings → Budget. The pool tile on Home opens the
+    pool's burn-down.
+  - Your last-opened tab carries over.
+  - "Set up →" and the unmapped-account banner now open the right card and
+    scroll to it, instead of leaving you on a page of collapsed cards.
+  - The "Imported last run" tile is gone; the header already says how many
+    transactions the last sync imported.
+- **A calmer look ("Soft").** The addon now uses one visual system:
+  - **Type:** one type scale instead of 15 font sizes, and two weights.
+  - **Shape:** three corner radii, and one faint lift under surfaces instead of
+    a heavy drop shadow on every card.
+  - **Background:** the green glow behind the page is gone.
+  - **Tabs:** the tabs, the Reports sub-tabs and the Budget range chips are now
+    one segmented control.
+  - **Overview:** the stat tiles are one divided strip with no coloured rails,
+    and the accounts are one list instead of a stack of floating cards.
+  - **Banners:** they share one shape. Amber means "check this" (a balance
+    difference, duplicates removed); red is kept for real errors.
+  - **Colours:** they come from Wealthfolio's theme, so light and dark both
+    follow it. Chart colours are unchanged for now.
+- **Fewer settings.** One **Report detail** switch (Brief or Full) replaces
+  eight controls:
+  - Always on: the "$X left this month" line and the weekly pool section.
+  - Always allowed, and still only there to warn: the semester pool line and
+    the month-end forecast.
+  - Full only: the off-budget block in the daily report, and the cash runway
+    and subscriptions lines in the weekly one.
+  - Biggest spends in the weekly report: 5 in Full, 3 in Brief.
+
+  Existing setups read as **Full**, so nothing changes until you pick Brief. A
+  new setup starts on Brief. If you had switched one of the retired controls
+  off, it comes back.
+- **Auto-sync runs every 4, 6, 12 or 24 hours** (or off). Hourly is gone: the
+  SimpleFin bridge only refreshes every few hours. A stored value outside the
+  list still shows as its own option.
+- **Report content is shorter.** Weekly amounts per category, spent figures
+  when over budget, and subcategories are under **More options**.
+- **Long banners are one sentence**, with the rest under **Why?**: the
+  balance-difference and unmapped-account banners, the Amazon "no emails yet"
+  note, the pool card and the Spending Tracker note.
+- **The budget starts on six reports** in a fresh layout: the headline
+  numbers, cash flow (or the pool burn-down when a pool is set), category
+  trends (or cash flow), budget vs actual, top merchants and subscriptions.
+  A layout you already arranged keeps exactly what it had.
+- **+ Add report** lists the hidden reports, so bringing one back no longer
+  needs Customize. "Build your own…" opens the builder.
+- **Customize has one ⋯ button per card**, opening a menu (Edit, Duplicate,
+  Delete, Move, Size, Range, Colors, Hide) instead of seven buttons.
+- **Setup is two steps:** connect, then map accounts. Saving the mapping
+  finishes setup and turns on auto-sync every 6 hours. Rules start empty and
+  live in Settings.
+- **Without the companion, the budget shows a calm empty state** instead of a
+  warning. Its **Set up background sync** button opens Settings on the Docker
+  instructions.
+- **One Telegram voice.** While the daily report is on, three things stop
+  arriving as messages of their own and are listed in its "🧹 things to fix"
+  line instead:
+  - a SimpleFin account nothing is mapped to;
+  - a balance that differs from the bank, including the "waiting on the bank
+    feed" notice;
+  - a transfer that would not auto-link.
+
+  With the daily report off, they are sent exactly as before. So are the
+  addon's own alerts when no companion has synced in the last two days (an
+  addon-only install, or a stopped container), since then no daily report
+  will carry them. Imports,
+  large transactions, a day of failed syncs, refused imports, removed
+  duplicates and new Amazon labels still arrive straight away.
+- **One vocabulary in Telegram.**
+  - ✅ only means "synced". "On track", under-budget rows in the monthly
+    wrap-up, and "Nothing to fix" no longer carry it.
+  - Back buttons read "‹ Back" and undo buttons "↩ Undo".
+  - Amounts have thousands separators everywhere ($1,300.00, not $1300.00).
+  - Dates read "Oct 9", and times "Oct 9, 3:40 PM", instead of 2026-10-09,
+    10-09 or the container's locale format.
+- **The ☰ menu has seven commands:** /report, /left, /categorize, /charts,
+  /status, /sync and /help. /afford, /pool, /recategorize, /newrule and
+  /dismissed still work and are listed under "More commands" in /help.
+- **The pool tile says how long the pool lasts** ("lasts past Dec 12" or "out
+  by Nov 20"), and the Accounts tile says "all match the bank" only when every
+  balance was actually checked.
+- **The README** opens with what the addon does, a screenshot and three setup
+  steps. The store covers are new, rendered from the 1.57 UI with sample data.
+
+- **The daily report is shorter.** It now opens with only the categories
+  that need a decision today: over budget, over this week, or nearly out. The
+  rest become one line ("7 others on track"). Choose **All selected
+  categories** under Settings → Notifications → Daily category rows to get
+  every row back. The setting is stored under a new key, because earlier versions saved
+  "all" on every save whether you chose it or not.
+- **"Needs attention" no longer takes over the message.** Problems (a failing
+  sync, an unmapped account) still print in full. Everything else is one line,
+  "🧹 5 things to fix", with a **Show what to fix** button. The Reports tab
+  and push notifications still list every finding, since they have no button.
+- **The headline says what's left per day** ("about $74/day").
+- **The month-end forecast only speaks to warn.** It says "on pace to go
+  $X over", only from the 8th of the month. Before that it was a few days of
+  rent extrapolated, and it read as a contradiction next to "$X left".
+- **The semester pool leaves the daily report while it's healthy.** It
+  comes back when the pool is overspent or on pace to run out early. The
+  weekly check-in still carries the full section.
+- **An over-budget line no longer says the same figure twice.** When a
+  category was already over before this week, it reads "· nothing left this
+  wk" instead of repeating the month's overage as a weekly one.
+- **A dead bank feed is one finding per account**, so each can be snoozed
+  separately.
+
+### Added
+
+- **A balance-difference finding per account** in the daily report, for
+  accounts other than cards (cards already have their own check). It appears
+  only past your drift-alert threshold, never with drift alerts off. It says
+  which way and by how much, says it usually clears on its own while it is
+  young, and says it is more than feed lag after 10 days. It can be snoozed
+  like any other finding.
+- **/left groceries 20** answers "can I afford $20 of groceries", the same as
+  /afford 20 groceries.
+- **Fix and snooze from Telegram.** Show what to fix lists every finding.
+  Tapping one opens it, with:
+  - **Make it a transfer**, for a payment linked as a transfer but still
+    counting as spending. It goes through the usual rule preview: count, then
+    confirm, with Undo afterwards.
+  - **Pick a category**, for a refund that reduces nothing. It opens the
+    category picker on that one transaction.
+  - **Snooze 30 days**, for anything you already know about, such as a closed
+    card's dead feed. A snoozed finding comes back if it changes.
+  - **Unsnooze**, to bring snoozed findings back early.
+- **A stale tab now says so itself.** A banner at the top of the addon tells an
+  old tab to reload, or tells you to upload the new zip if the old one is still
+  installed. It re-checks every minute. The morning report no longer carries
+  the "a tab is still running vX" line. That line also fired when no tab was
+  open at all.
+- **Amazon mailbox problems show on the Amazon card.** That covers a failed
+  sign-in (wrong app password or address), and a mailbox the companion has read
+  but never found an Amazon email in. The second usually means the Gmail
+  filter's To field isn't empty. Both used to be visible only in
+  `docker logs`.
+- **Startup warnings** for a `WEALTHFOLIO_PASSWORD_FILE` that does not exist,
+  which used to fail later as a wrong password, and for an unset `TZ`, which
+  runs every schedule on UTC.
+- `companion/tools/audit-headline.mjs` is read-only. It measures each known
+  difference between the report's "$X left" and Wealthfolio's budget card:
+  - rows dated the 1st at midnight UTC,
+  - rows dated after today,
+  - sync bookkeeping rows,
+  - excluded categories,
+  - rows filed twice,
+  - uncategorized refunds.
+
+### Fixed
+
+- **A refused import is announced once.** Before, Wealthfolio refused the same
+  transaction on every sync and the "not imported" alert repeated every six
+  hours until the transaction left the bank feed. The companion and the addon
+  share one record of what was already announced.
+- `/report` stated the last sync time twice. It keeps the "failing since"
+  warning when a sync is failing.
+- In Settings → Notifications → Report content, each hint now sits under the setting it
+  explains. "These six apply immediately" was wrong (there are seven) and now
+  reads "These apply immediately".
+- The semester pool's inputs had no styling and were nearly invisible.
+- Three style classes the components used were never defined.
+- 🧹 now only means "things to fix"; the duplicates-removed notice uses 🗑️.
+- A reused SimpleFin setup token now explains that tokens are single-use,
+  instead of a bare "403". Text that isn't a setup token at all, such as an
+  access URL, is named as such.
+- Telegram bot tokens and chat IDs are trimmed on save. A pasted trailing
+  newline broke every API call, and the only error was "Not Found".
+- `/report` no longer marks a "say once" ledger finding as seen, so it can
+  no longer use one up before the 8am report.
+- `docker-compose.example.yml` now mounts the database folder (not the bare
+  `.db` file, which reads days stale) and sets `TZ`. The README's port now
+  matches Wealthfolio's default (8088).
+- Six tests with fixed dismissal dates started failing once those dates aged
+  past the 60-day pruning window. They now use dates relative to today.
+
 ## [1.56.1] - 2026-09-24
 
 ### Fixed

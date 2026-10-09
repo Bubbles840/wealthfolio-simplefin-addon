@@ -44,6 +44,18 @@ describe('claimToken', () => {
     await expect(claimToken(btoa('http://bridge.simplefin.org/claim/x'), network)).rejects.toThrow('HTTPS');
   });
 
+  it('explains that a setup token is single-use when the claim is refused', async () => {
+    // A bare "403" was all a reused token ever produced.
+    const network = { request: vi.fn(async () => ({ status: 403, body: '' })) } as any;
+    await expect(claimToken(btoa('https://bridge.simplefin.org/claim/x'), network)).rejects.toThrow(/already used/);
+  });
+
+  it('says plainly when the pasted text is not a setup token at all', async () => {
+    const network = { request: vi.fn() } as any;
+    await expect(claimToken('https://user:pass@bridge.simplefin.org/simplefin', network)).rejects.toThrow(/does not look like a SimpleFin setup token/);
+    expect(network.request).not.toHaveBeenCalled();
+  });
+
   it('throws when claim URL is not a simplefin.org domain', async () => {
     const network = makeNetwork();
     await expect(claimToken(btoa('https://evil.com/claim/x'), network)).rejects.toThrow('simplefin.org');

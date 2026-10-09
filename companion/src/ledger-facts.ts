@@ -110,6 +110,7 @@ export function getLedgerFacts(
          AND COALESCE(a.notes,'') NOT LIKE '%${PENDING_SUFFIX}'
        GROUP BY acc.id`,
     ).map((r) => ({
+      wfId: String(r.id),
       name: String(r.name),
       ledger: Number(r.ledger),
       bank: bankBalanceByWfId.get(r.id) ?? null,

@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { SectionLabel } from '../components/ui';
 import {
   REPORT_KINDS,
   type ReportEdition,
@@ -99,7 +100,7 @@ export function ReportsTab({ store, initialReport }: { store: ReportsStore; init
         )}
         {data && data.archive.length > 0 && (
           <section aria-label="Past reports">
-            <h3 className="sfin-section-title">Past reports</h3>
+            <SectionLabel>Past reports</SectionLabel>
             {data.archive.map((e) => (
               <details key={`${e.kind}-${e.period}`} className="sfin-card sfin-report-past">
                 <summary>{e.title}</summary>

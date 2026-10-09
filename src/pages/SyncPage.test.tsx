@@ -71,7 +71,7 @@ describe('SyncPage', () => {
     render(<SyncPage {...makeProps()} />);
     await waitFor(() => expect(screen.getByRole('button', { name: /sync now/i })).toBeInTheDocument());
     expect(headerButton(/deep scan/i)).toBeInTheDocument();
-    expect(screen.getByText('Accounts synced')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Accounts:/ })).toBeInTheDocument();
   });
 
   it('keeps the technical meaning of the renamed reconcile button in its tooltip', async () => {
@@ -79,7 +79,7 @@ describe('SyncPage', () => {
     // logs, the docs and the companion — so it stays reachable on hover rather
     // than being deleted outright.
     render(<SyncPage {...makeProps()} />);
-    await screen.findByText('Accounts synced');
+    await screen.findByRole('button', { name: /^Accounts:/ });
     expect(headerButton(/deep scan/i).getAttribute('title')).toBe(
       'Re-scans the last 90 days and re-links transfer pairs (reconcile & link)',
     );
@@ -91,7 +91,7 @@ describe('SyncPage', () => {
     let release: (v: any) => void = () => {};
     vi.mocked(runSync).mockImplementationOnce(() => new Promise((res) => { release = res; }));
     render(<SyncPage {...makeProps()} />);
-    await screen.findByText('Accounts synced');
+    await screen.findByRole('button', { name: /^Accounts:/ });
     fireEvent.click(headerButton(/deep scan/i));
 
     await waitFor(() => expect(headerButton('Deep scanning…')).toBeTruthy());
@@ -165,17 +165,17 @@ describe('SyncPage', () => {
     // once-ever setup, so the setup half must be absent — not merely hidden —
     // while Overview is on screen.
     render(<SyncPage {...makeProps()} />);
-    await screen.findByText('Accounts synced');
+    await screen.findByRole('button', { name: /^Accounts:/ });
     expect(document.querySelectorAll('[role="tabpanel"]')).toHaveLength(1);
 
-    const panel = document.querySelector('#sfin-panel-overview')!;
-    expect(panel.getAttribute('aria-labelledby')).toBe('sfin-tab-overview');
+    const panel = document.querySelector('#sfin-panel-home')!;
+    expect(panel.getAttribute('aria-labelledby')).toBe('sfin-tab-home');
     // Focusable, so tabbing off the tablist ENTERS the panel. A panel whose
     // content starts with plain text has nothing focusable of its own, and
     // without this the whole panel is skipped.
     expect(panel.getAttribute('tabindex')).toBe('0');
-    expect(screen.getByRole('tab', { name: /overview/i }).getAttribute('aria-controls'))
-      .toBe('sfin-panel-overview');
+    expect(screen.getByRole('tab', { name: /home/i }).getAttribute('aria-controls'))
+      .toBe('sfin-panel-home');
     // The other two tabs' content is unmounted.
     expect(screen.queryByRole('button', { name: /^Telegram connection/i })).toBeNull();
     expect(screen.queryByRole('button', { name: /^Auto-sync/i })).toBeNull();
@@ -183,11 +183,11 @@ describe('SyncPage', () => {
     expect(panel.contains(screen.getByRole('button', { name: /sync now/i }))).toBe(false);
     expect(panel.contains(screen.getByRole('tablist'))).toBe(false);
 
-    await switchTab(/advanced/i);
+    await switchTab(/settings/i);
     expect(await screen.findByRole('button', { name: /^Auto-sync/i })).toBeTruthy();
     expect(document.querySelectorAll('[role="tabpanel"]')).toHaveLength(1);
-    expect(document.querySelector('#sfin-panel-advanced')).toBeTruthy();
-    expect(screen.queryByText('Accounts synced')).toBeNull();
+    expect(document.querySelector('#sfin-panel-settings')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /^Accounts:/ })).toBeNull();
     // The header buttons work from every tab, which is what makes hazard 1 below
     // possible in the first place.
     expect(screen.getByRole('button', { name: /sync now/i })).toBeInTheDocument();
@@ -201,29 +201,29 @@ describe('SyncPage', () => {
     props.store.setUiState = vi.fn(async (s: any) => { saved = s; }) as any;
 
     const { unmount } = render(<SyncPage {...props} />);
-    await switchTab(/advanced/i);
-    await waitFor(() => expect(saved.activeTab).toBe('advanced'));
+    await switchTab(/settings/i);
+    await waitFor(() => expect(saved.activeTab).toBe('settings'));
     unmount();
 
     render(<SyncPage {...props} />);
     await waitFor(() => expect(
-      screen.getByRole('tab', { name: /advanced/i }).getAttribute('aria-selected'),
+      screen.getByRole('tab', { name: /settings/i }).getAttribute('aria-selected'),
     ).toBe('true'));
   });
 
-  it('falls back to the Budget default when the stored tab is not one we can render', async () => {
+  it('falls back to Home when the stored tab is not one we can render', async () => {
     // `ui_state` is an unvalidated stored blob that now decides what renders. A
     // hand-edited secret — or a fifth tab written by a newer build the user then
     // downgrades away from — would otherwise select no tab and mount no panel:
-    // a blank page with no way back. The default landing view is Budget.
+    // a blank page with no way back. The default landing view is Home.
     const props = makeProps();
     props.store.getUiState = vi.fn(async () => ({ activeTab: 'yearly-review' }) as any);
     render(<SyncPage {...props} />);
 
-    expect(await screen.findByRole('tab', { name: /budget/i })).toBeTruthy();
-    expect(document.querySelector('#sfin-panel-budget')).toBeTruthy();
+    expect(await screen.findByRole('tab', { name: /home/i })).toBeTruthy();
+    expect(document.querySelector('#sfin-panel-home')).toBeTruthy();
     await waitFor(() => expect(
-      screen.getByRole('tab', { name: /budget/i }).getAttribute('aria-selected'),
+      screen.getByRole('tab', { name: /home/i }).getAttribute('aria-selected'),
     ).toBe('true'));
     // Exactly one panel and exactly one selected tab — never zero of either.
     expect(document.querySelectorAll('[role="tabpanel"]')).toHaveLength(1);
@@ -250,9 +250,9 @@ describe('SyncPage', () => {
     const props = makeProps();
     props.store.getUiState = vi.fn(async () => ({ checklistDismissed: true })) as any;
     render(<SyncPage {...props} />);
-    await switchTab(/notifications/i);
+    await switchTab(/settings/i);
     await waitFor(() => expect(props.store.setUiState).toHaveBeenCalledWith(
-      { checklistDismissed: true, activeTab: 'notifications' },
+      { checklistDismissed: true, activeTab: 'settings' },
     ));
   });
 
@@ -264,7 +264,7 @@ describe('SyncPage', () => {
       .find((row) => /Telegram/i.test(row.textContent ?? ''))!;
     fireEvent.click(telegramRow.querySelector('.sfin-checklist-link')!);
 
-    expect(screen.getByRole('tab', { name: /notifications/i }).getAttribute('aria-selected'))
+    expect(screen.getByRole('tab', { name: /settings/i }).getAttribute('aria-selected'))
       .toBe('true');
     // Landed somewhere useful, not just on the right tab index.
     expect(await screen.findByRole('button', { name: /^Telegram connection/i })).toBeTruthy();
@@ -285,14 +285,14 @@ describe('SyncPage', () => {
       ],
     } as any);
     render(<SyncPage {...makeProps()} />);
-    await switchTab(/advanced/i);
+    await switchTab(/settings/i);
     await screen.findByRole('button', { name: /^Auto-sync/i });
 
     fireEvent.click(screen.getByRole('button', { name: /sync now/i }));
 
     const banner = await screen.findByText(/Removed 1 duplicate activity/i);
     expect(banner.closest('.sfin-banner-warn')!.textContent).toContain('$1,300.00');
-    expect(screen.getByRole('tab', { name: /overview/i }).getAttribute('aria-selected'))
+    expect(screen.getByRole('tab', { name: /home/i }).getAttribute('aria-selected'))
       .toBe('true');
   });
 
@@ -300,12 +300,12 @@ describe('SyncPage', () => {
     // The forced switch is for something the user MUST see. A routine run from
     // the Advanced tab must not yank them off the card they were reading.
     render(<SyncPage {...makeProps()} />);
-    await switchTab(/advanced/i);
+    await switchTab(/settings/i);
     await screen.findByRole('button', { name: /^Auto-sync/i });
     fireEvent.click(screen.getByRole('button', { name: /sync now/i }));
 
     await waitFor(() => expect(screen.getByText(/5 transactions/i)).toBeInTheDocument());
-    expect(screen.getByRole('tab', { name: /advanced/i }).getAttribute('aria-selected'))
+    expect(screen.getByRole('tab', { name: /settings/i }).getAttribute('aria-selected'))
       .toBe('true');
   });
 
@@ -322,14 +322,14 @@ describe('SyncPage', () => {
     render(<SyncPage {...props} />);
     expect(await screen.findByText(/Telegram reports — get a daily digest/)).toBeTruthy();
 
-    await switchTab(/notifications/i);
+    await switchTab(/settings/i);
     fireEvent.click(await screen.findByRole('button', { name: /^Telegram connection/i }));
     fireEvent.change(await screen.findByLabelText(/Bot Token/i), { target: { value: 'tok' } });
     fireEvent.change(screen.getByLabelText(/Chat ID/i), { target: { value: '42' } });
     fireEvent.click(await screen.findByRole('button', { name: /^Save$/ }));
     await waitFor(() => expect(props.store.setTelegramConfig).toHaveBeenCalled());
 
-    await switchTab(/overview/i);
+    await switchTab(/home/i);
     expect(await screen.findByText(/Telegram reports — connected/)).toBeTruthy();
   });
 
@@ -343,7 +343,7 @@ describe('SyncPage', () => {
   it('keeps a half-typed bot token when the user glances at another tab', async () => {
     const props = makeProps();
     render(<SyncPage {...props} />);
-    await switchTab(/notifications/i);
+    await switchTab(/settings/i);
     fireEvent.click(await screen.findByRole('button', { name: /^Telegram connection/i }));
     fireEvent.change(await screen.findByLabelText(/Bot Token/i), {
       target: { value: '123456:half-typed-token' },
@@ -352,9 +352,9 @@ describe('SyncPage', () => {
     expect(await screen.findByText(/You have unsaved changes/i)).toBeTruthy();
 
     // The exact trip that lost it: over to Overview to check a balance, back.
-    await switchTab(/overview/i);
-    await screen.findByText('Accounts synced');
-    await switchTab(/notifications/i);
+    await switchTab(/home/i);
+    await screen.findByRole('button', { name: /^Accounts:/ });
+    await switchTab(/settings/i);
 
     const token = await screen.findByLabelText(/Bot Token/i);
     expect((token as HTMLInputElement).value).toBe('123456:half-typed-token');
@@ -372,7 +372,7 @@ describe('SyncPage', () => {
     // Worse than the token: an app password has to be generated at Google, so
     // losing it silently costs a trip back through that flow.
     render(<SyncPage {...makeProps()} />);
-    await switchTab(/advanced/i);
+    await switchTab(/settings/i);
     fireEvent.click(await screen.findByRole('button', { name: /^Amazon categorization/i }));
     fireEvent.change(await screen.findByLabelText(/Mailbox address/i), {
       target: { value: 'receipts@gmail.com' },
@@ -382,9 +382,9 @@ describe('SyncPage', () => {
     });
     expect(await screen.findByText(/You have unsaved changes/i)).toBeTruthy();
 
-    await switchTab(/overview/i);
-    await screen.findByText('Accounts synced');
-    await switchTab(/advanced/i);
+    await switchTab(/home/i);
+    await screen.findByRole('button', { name: /^Accounts:/ });
+    await switchTab(/settings/i);
 
     const pass = await screen.findByLabelText(/App password/i);
     expect((pass as HTMLInputElement).value).toBe('abcd efgh ijkl mnop');
@@ -407,7 +407,7 @@ describe('SyncPage', () => {
       ],
     } as any);
     render(<SyncPage {...makeProps()} />);
-    await switchTab(/notifications/i);
+    await switchTab(/settings/i);
     fireEvent.click(await screen.findByRole('button', { name: /^Telegram connection/i }));
     fireEvent.change(await screen.findByLabelText(/Bot Token/i), {
       target: { value: 'tok-mid-edit' },
@@ -415,10 +415,10 @@ describe('SyncPage', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /sync now/i }));
     await screen.findByText(/Removed 1 duplicate activity/i);
-    expect(screen.getByRole('tab', { name: /overview/i }).getAttribute('aria-selected'))
+    expect(screen.getByRole('tab', { name: /home/i }).getAttribute('aria-selected'))
       .toBe('true');
 
-    await switchTab(/notifications/i);
+    await switchTab(/settings/i);
     expect(((await screen.findByLabelText(/Bot Token/i)) as HTMLInputElement).value)
       .toBe('tok-mid-edit');
     expect(screen.getByText(/You have unsaved changes/i)).toBeTruthy();
@@ -436,18 +436,18 @@ describe('SyncPage', () => {
     props.ctx.api.accounts.getAll = vi.fn(() => new Promise((res) => { release = res; }));
     // Storage says Notifications, the user says Advanced, and the user is the one
     // who is right.
-    props.store.getUiState = vi.fn(async () => ({ activeTab: 'notifications' })) as any;
+    props.store.getUiState = vi.fn(async () => ({ activeTab: 'settings' })) as any;
     props.store.getLastSyncImported = vi.fn(async () => 7) as any;
 
     render(<SyncPage {...props} />);
-    await switchTab(/advanced/i);
+    await switchTab(/settings/i);
     expect(await screen.findByRole('button', { name: /^Auto-sync/i })).toBeTruthy();
 
     release([{ id: 'wf-a', name: 'Checking' }]);
     // Proves the hydration actually ran: `imported` comes from the same load.
     await screen.findByText(/7 transactions/i);
 
-    expect(screen.getByRole('tab', { name: /advanced/i }).getAttribute('aria-selected'))
+    expect(screen.getByRole('tab', { name: /settings/i }).getAttribute('aria-selected'))
       .toBe('true');
     expect(screen.getByRole('button', { name: /^Auto-sync/i })).toBeTruthy();
   });
@@ -465,7 +465,7 @@ describe('SyncPage', () => {
     render(<SyncPage {...props} />);
     // The held mount load includes the stored tab, so the page sits on the
     // Budget default until release — click over to Overview like a user.
-    fireEvent.click(await screen.findByRole('tab', { name: /overview/i }));
+    fireEvent.click(await screen.findByRole('tab', { name: /home/i }));
     fireEvent.click(await screen.findByRole('button', { name: /Dismiss setup checklist/i }));
     expect(screen.queryByText(/Finish setting up/i)).toBeNull();
 
@@ -487,7 +487,7 @@ describe('SyncPage', () => {
     props.store.getLastSyncImported = vi.fn(async () => 7) as any;
 
     render(<SyncPage {...props} />);
-    await switchTab(/advanced/i);
+    await switchTab(/settings/i);
     fireEvent.click(await screen.findByRole('button', { name: /^Auto-sync/i }));
     expect(await screen.findByLabelText(/Auto-sync interval/i)).toBeTruthy();
 

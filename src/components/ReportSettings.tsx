@@ -3,11 +3,11 @@ import { CollapsibleCard, SectionLabel } from './ui';
 import { DEFAULT_DRIFT_ALERT_THRESHOLD_DOLLARS } from '../../shared/sync-core';
 import {
   NOTIF_CARD,
-  DEFAULT_WEEKLY_TOP_SPEND_COUNT,
   SUGGESTED_LARGE_TX_THRESHOLD,
   thresholdToSave,
 } from '../tabs/NotificationsTab';
 import type { TelegramCfgDraft, CfgPatch } from '../tabs/NotificationsTab';
+import type { DigestCategoryMode, ReportDetail } from '../../shared/telegram';
 
 interface Props {
   cfg: TelegramCfgDraft;
@@ -89,7 +89,7 @@ export function ReportSettings({ cfg, onChange, isOpen, toggleCard }: Props) {
         </div>
 
         <div className="sfin-divider" />
-        <SectionLabel>Slim it down</SectionLabel>
+        <SectionLabel>Report detail</SectionLabel>
         <div className="sfin-checks">
           <div className="sfin-thresh">
             <span className="sfin-check-name">Daily category rows</span>
@@ -98,102 +98,40 @@ export function ReportSettings({ cfg, onChange, isOpen, toggleCard }: Props) {
                 className="sfin-select"
                 aria-label="Daily category rows"
                 value={cfg.digestCategoryMode}
-                onChange={(e) => onChange({ digestCategoryMode: e.target.value as 'all' | 'over' | 'none' })}
+                onChange={(e) => onChange({ digestCategoryMode: e.target.value as DigestCategoryMode })}
               >
+                <option value="attention">Only what needs attention (recommended)</option>
                 <option value="all">All selected categories</option>
                 <option value="over">Only over-budget</option>
                 <option value="none">None — summary only</option>
               </select>
             </div>
           </div>
-          <label className="sfin-check">
-            <input
-              type="checkbox"
-              checked={cfg.digestSummary}
-              aria-label="Summary line in the daily report"
-              onChange={(e) => onChange({ digestSummary: e.target.checked })}
-            />
-            <span>“$X left this month” summary line</span>
-          </label>
-          <label className="sfin-check">
-            <input
-              type="checkbox"
-              checked={cfg.digestOffBudget}
-              aria-label="Off-budget section in the daily report"
-              onChange={(e) => onChange({ digestOffBudget: e.target.checked })}
-            />
-            <span>Off-budget section in the daily report</span>
-          </label>
-          <label className="sfin-check">
-            <input
-              type="checkbox"
-              checked={cfg.weeklyPoolSection}
-              aria-label="Pool section in the weekly report"
-              onChange={(e) => onChange({ weeklyPoolSection: e.target.checked })}
-            />
-            <span>Pool section in the weekly report</span>
-          </label>
-          <label className="sfin-check">
-            <input
-              type="checkbox"
-              checked={cfg.weeklyRunway}
-              aria-label="Cash runway line in the weekly report"
-              onChange={(e) => onChange({ weeklyRunway: e.target.checked })}
-            />
-            <span>Cash runway line in the weekly report</span>
-          </label>
-          <label className="sfin-check">
-            <input
-              type="checkbox"
-              checked={cfg.weeklySubscriptions}
-              aria-label="Subscriptions line in the weekly report"
-              onChange={(e) => onChange({ weeklySubscriptions: e.target.checked })}
-            />
-            <span>Subscriptions line in the weekly report</span>
-          </label>
+          {/* One switch in place of eight per-section toggles (1.57). */}
+          <div className="sfin-thresh">
+            <span className="sfin-check-name">Report detail</span>
+            <div className="sfin-thresh-amt">
+              <select
+                className="sfin-select"
+                aria-label="Report detail"
+                value={cfg.reportDetail}
+                onChange={(e) => onChange({ reportDetail: e.target.value as ReportDetail })}
+              >
+                <option value="brief">Brief</option>
+                <option value="full">Full</option>
+              </select>
+            </div>
+          </div>
+          <div className="sfin-num-hint sfin-subtle">
+            Full adds the off-budget list to the daily report, and cash runway,
+            subscriptions and five biggest spends (instead of three) to the weekly.
+          </div>
         </div>
 
         <div className="sfin-divider" />
         <SectionLabel>Alerts &amp; amounts</SectionLabel>
 
         <div className="sfin-nums">
-          <div className="sfin-thresh">
-            {/* Its own checkbox, matching the two rows below. `0` still means
-                "hide the section" to every reader, so this control and typing 0
-                are two spellings of one stored value — but three sibling rows
-                where only one lacked the neighbours' control read as broken,
-                whatever the logic underneath said. */}
-            <label className="sfin-check">
-              <input
-                type="checkbox"
-                checked={cfg.topSpendsOn}
-                onChange={(e) => onChange({ topSpendsOn: e.target.checked })}
-              />
-              <span className="sfin-check-name">Biggest spends in the weekly report</span>
-            </label>
-            <div className="sfin-thresh-amt">
-              <input
-                id="sfin-top-spend"
-                type="number"
-                min={0}
-                step={1}
-                className="sfin-select sfin-num"
-                // Its own accessible name, for the same reason the two threshold
-                // fields have one: the visible row label now belongs to the
-                // checkbox beside it.
-                aria-label="How many biggest spends to list"
-                value={cfg.topSpendCount}
-                disabled={!cfg.topSpendsOn}
-                onChange={(e) => onChange({ topSpendCount: e.target.value })}
-              />
-            </div>
-          </div>
-          <div className="sfin-num-hint sfin-subtle">
-            How many individual charges the weekly report lists. Untick to
-            leave the section out — as does a count of 0; blank means the
-            default of {DEFAULT_WEEKLY_TOP_SPEND_COUNT}.
-          </div>
-
           <div className="sfin-thresh">
             <label className="sfin-check">
               <input

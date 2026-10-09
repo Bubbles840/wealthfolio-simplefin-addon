@@ -3,7 +3,7 @@ import {
   Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Line, LineChart, Pie, PieChart, XAxis, YAxis,
 } from 'recharts';
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from '@wealthfolio/ui/chart';
-import { SectionLabel } from '../ui';
+import { Button, SectionLabel } from '../ui';
 import { monthlySpendTotals, type ReportCube } from '../../../shared/report-cube';
 import { evaluateCustomReport, type CustomReport, type EvaluatedReport } from '../../../shared/report-eval';
 import {
@@ -322,7 +322,7 @@ function DataCheck({ cube }: { cube: ReportCube }) {
   if (res.status === 'match') {
     return (
       <div className="sfin-datacheck sfin-datacheck--ok">
-        <div className="sfin-datacheck-verdict">✓ The Budget tab matches the ledger</div>
+        <div className="sfin-datacheck-verdict">✓ Your budget matches the ledger</div>
         <div className="sfin-subtle">
           {res.month}: spending recounted through an independent path came out the same.
           Income here counts deposits and interest only — internal transfers are never income.
@@ -506,9 +506,9 @@ function Subscriptions({ cube, full = false, hidden = [], confirmed = [], onHide
         </>
       )}
       {!full && hiddenCount > 0 && onRestore && (
-        <button type="button" className="sfin-subs-restore" onClick={onRestore}>
+        <Button variant="ghost" onClick={onRestore}>
           {hiddenCount} dismissed — restore
-        </button>
+        </Button>
       )}
       {full && (
         <>
@@ -913,7 +913,7 @@ function CustomView({ cube, def }: { cube: ReportCube; def: CustomReport }) {
   return (
     <>
       {unknown.map((name) => (
-        <span key={name} className="sfin-chip-warn sfin-subtle" style={{ display: 'inline-block', marginBottom: 6 }}>
+        <span key={name} className="sfin-chip sfin-chip--warn" style={{ marginBottom: 6 }}>
           unknown category: {name}
         </span>
       ))}

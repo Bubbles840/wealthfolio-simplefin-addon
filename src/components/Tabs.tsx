@@ -1,6 +1,23 @@
 import React, { useRef } from 'react';
 
-export type TabId = 'budget' | 'reports' | 'overview' | 'notifications' | 'advanced';
+export type TabId = 'home' | 'reports' | 'settings';
+
+/**
+ * A stored `ui_state.activeTab` from any version, as one of today's tabs.
+ *
+ * 1.56 and earlier had five tabs (budget, reports, overview, notifications,
+ * advanced); 1.57 folded them into three. The stored value is an unvalidated
+ * blob, so anything unrecognised — a hand-edited secret, a tab from a newer
+ * build after a downgrade — lands on Home. A blank page with no way back is far
+ * worse than the wrong tab.
+ */
+export function resolveStoredTab(raw: unknown): TabId {
+  switch (raw) {
+    case 'reports': return 'reports';
+    case 'settings': case 'notifications': case 'advanced': return 'settings';
+    default: return 'home';
+  }
+}
 
 /**
  * A real tablist, not styled buttons: role/aria-selected/roving tabindex and

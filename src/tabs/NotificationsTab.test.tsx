@@ -73,7 +73,6 @@ const makeProps = () => ({
     setCapWeeklyToPool: vi.fn(async () => {}),
     getOverBudgetSpent: vi.fn(async () => 'total'),
     setOverBudgetSpent: vi.fn(async () => {}),
-    getMonthProjection: vi.fn(async () => true),
     setMonthProjection: vi.fn(async () => {}),
     setCountOffBudget: vi.fn(async () => {}),
     getSubcategoryDisplay: vi.fn(async () => 'rollup' as const),
@@ -113,7 +112,7 @@ async function switchTab(name: RegExp) {
  * the tab switch belongs here rather than repeated in forty tests.
  */
 async function openSection(name: RegExp) {
-  await switchTab(/notifications/i);
+  await switchTab(/settings/i);
   const header = await screen.findByRole('button', { name });
   if (header.getAttribute('aria-expanded') !== 'true') fireEvent.click(header);
   return header;
@@ -188,24 +187,48 @@ describe('NotificationsTab', () => {
   /** A config that exists but predates all five fields. */
   const bareConfig = () => ({ botToken: 't', chatId: 'c', enabled: true });
 
-  it('saves the slimming choices for daily and weekly reports', async () => {
+  it('saves the daily rows and the report detail, and none of the retired toggles', async () => {
+    // One "Report detail" switch replaced eight per-section toggles (1.57).
     const props = makeProps();
     props.store.getTelegramConfig = vi.fn(async () => bareConfig());
     props.store.setTelegramConfig = vi.fn(async () => {});
     render(<SyncPage {...props} />);
     await openReports();
     fireEvent.change(screen.getByLabelText(/Daily category rows/i), { target: { value: 'over' } });
-    fireEvent.click(screen.getByLabelText(/Off-budget section in the daily/i));
-    fireEvent.click(screen.getByLabelText(/Pool section in the weekly/i));
+    fireEvent.change(screen.getByLabelText(/Report detail/i), { target: { value: 'brief' } });
     await save();
     const cfg = savedConfig(props);
-    expect(cfg.digestCategoryMode).toBe('over');
-    expect(cfg.digestOffBudget).toBe(false);
-    expect(cfg.weeklyPoolSection).toBe(false);
-    // Untouched sections keep their defaults, explicitly.
-    expect(cfg.digestSummary).toBe(true);
-    expect(cfg.weeklyRunway).toBe(true);
-    expect(cfg.weeklySubscriptions).toBe(true);
+    expect(cfg.digestRows).toBe('over');
+    expect(cfg.reportDetail).toBe('brief');
+    for (const retired of ['digestSummary', 'digestOffBudget', 'weeklyPoolSection', 'weeklyRunway', 'weeklySubscriptions', 'weeklyTopSpendCount']) {
+      expect(retired in cfg).toBe(false);
+    }
+  });
+
+  it('shows Full for an existing config without the key, so an upgrade changes nothing', async () => {
+    const props = makeProps();
+    props.store.getTelegramConfig = vi.fn(async () => bareConfig());
+    render(<SyncPage {...props} />);
+    await openReports();
+    expect(screen.getByLabelText(/Report detail/i)).toHaveValue('full');
+  });
+
+  it('starts a brand-new setup on Brief', async () => {
+    const props = makeProps();
+    props.store.getTelegramConfig = vi.fn(async () => null);
+    render(<SyncPage {...props} />);
+    await openReports();
+    expect(screen.getByLabelText(/Report detail/i)).toHaveValue('brief');
+  });
+
+  it('no longer offers the per-section toggles or the biggest-spends count', async () => {
+    const props = makeProps();
+    props.store.getTelegramConfig = vi.fn(async () => bareConfig());
+    render(<SyncPage {...props} />);
+    await openReports();
+    for (const gone of [/summary line/i, /Off-budget section/i, /Pool section in the weekly/i, /runway line/i, /Subscriptions line/i, /Biggest spends/i]) {
+      expect(screen.queryByLabelText(gone)).toBeNull();
+    }
   });
 
   // ── The save bar ───────────────────────────────────────────────────────
@@ -674,6 +697,8 @@ describe('NotificationsTab', () => {
     expect(screen.getByText(/no need to save/i)).toBeTruthy();
     expect(await screen.findByText(/emoji choices apply immediately/i)).toBeTruthy();
 
+    // Subcategories sits under More options since 1.57.
+    fireEvent.click(screen.getByRole('button', { name: /^More options/i }));
     fireEvent.change(screen.getByLabelText(/subcategories/i), { target: { value: 'breakdown' } });
     await waitFor(() => expect(props.store.setSubcategoryDisplay).toHaveBeenCalledWith('breakdown'));
     expect(screen.queryByText(/unsaved changes/i)).toBeNull();
@@ -814,97 +839,6 @@ describe('NotificationsTab', () => {
     expect(saved.weeklyReportCategories).toBe('all');
   });
 
-  it('gives the biggest-spends row the same checkbox its two siblings have', async () => {
-    // Three sibling rows in ALERTS & AMOUNTS where one lacked the control its
-    // neighbours had. `0` being a meaningful value made that defensible, but a
-    // missing control reads as a defect regardless of the logic behind it.
-    const props = makeProps();
-    props.store.getTelegramConfig = vi.fn(async () => bareConfig());
-    props.store.setTelegramConfig = vi.fn(async () => {});
-    render(<SyncPage {...props} />);
-    await openReports();
-    const toggle = screen.getByLabelText(/Biggest spends in the weekly report/i) as HTMLInputElement;
-    const count = screen.getByLabelText(/how many biggest spends/i) as HTMLInputElement;
-    expect(toggle.type).toBe('checkbox');
-    // Absent → ON at the default of 5, which is what the companion already did.
-    expect(toggle.checked).toBe(true);
-    expect(count.disabled).toBe(false);
-    expect(count.value).toBe('5');
-
-    nudge();
-    await save();
-    await waitFor(() => expect(props.store.setTelegramConfig).toHaveBeenCalled());
-    expect(savedConfig(props).weeklyTopSpendCount).toBe(5);
-  });
-
-  it('unticking biggest spends stores 0 rather than omitting the field', async () => {
-    const props = makeProps();
-    props.store.getTelegramConfig = vi.fn(async () => bareConfig());
-    props.store.setTelegramConfig = vi.fn(async () => {});
-    render(<SyncPage {...props} />);
-    await openReports();
-    const toggle = screen.getByLabelText(/Biggest spends in the weekly report/i) as HTMLInputElement;
-
-    fireEvent.click(toggle);
-    expect((screen.getByLabelText(/how many biggest spends/i) as HTMLInputElement).disabled).toBe(true);
-    await save();
-    await waitFor(() => expect(props.store.setTelegramConfig).toHaveBeenCalled());
-    const saved = savedConfig(props);
-    expect(saved.weeklyTopSpendCount).toBe(0);
-    // Never simply omitted: absent reads as ON at the default of 5, so omitting
-    // it would hand back the section the user just switched off.
-    expect('weeklyTopSpendCount' in saved).toBe(true);
-  });
-
-  it('a stored 0 reloads as unticked, not as the default', async () => {
-    // The other half of the round trip, and the reason the collapse of "unticked"
-    // onto "0" is safe: unticking, saving and reloading must not come back ticked.
-    const props = makeProps();
-    props.store.getTelegramConfig = vi.fn(async () => ({ ...bareConfig(), weeklyTopSpendCount: 0 }));
-    props.store.setTelegramConfig = vi.fn(async () => {});
-    render(<SyncPage {...props} />);
-    await openReports();
-    expect((screen.getByLabelText(/Biggest spends in the weekly report/i) as HTMLInputElement).checked)
-      .toBe(false);
-    // The count keeps its default rather than showing the stored 0, exactly as
-    // the drift row does: 0 is the checkbox's business, not the number field's.
-    const count = screen.getByLabelText(/how many biggest spends/i) as HTMLInputElement;
-    expect(count.value).toBe('5');
-    expect(count.disabled).toBe(true);
-
-    // ...and re-saving that reloaded state stores 0 again — a fixed point, not a
-    // value that drifts back to 5 the moment the page is revisited.
-    nudge();
-    await save();
-    await waitFor(() => expect(props.store.setTelegramConfig).toHaveBeenCalled());
-    expect(savedConfig(props).weeklyTopSpendCount).toBe(0);
-  });
-
-  it('stores the weekly top-spend count, treating 0 as "hide" and blank as the default', async () => {
-    const props = makeProps();
-    props.store.getTelegramConfig = vi.fn(async () => ({ ...bareConfig(), weeklyTopSpendCount: 3 }));
-    props.store.setTelegramConfig = vi.fn(async () => {});
-    render(<SyncPage {...props} />);
-    await openReports();
-    // Queried by the number field's own accessible name: the visible row label
-    // belongs to the checkbox beside it, matching the two sibling rows.
-    const field = screen.getByLabelText(/how many biggest spends/i) as HTMLInputElement;
-    expect(field.value).toBe('3');
-
-    // 0 is a value the user can mean, so it must survive as 0.
-    fireEvent.change(field, { target: { value: '0' } });
-    await save();
-    await waitFor(() => expect(props.store.setTelegramConfig).toHaveBeenCalled());
-    expect(savedConfig(props).weeklyTopSpendCount).toBe(0);
-
-    // Blank is not 0 — it means "I have no opinion", i.e. the default of 5.
-    props.store.setTelegramConfig = vi.fn(async () => {});
-    fireEvent.change(field, { target: { value: '' } });
-    await save();
-    await waitFor(() => expect(props.store.setTelegramConfig).toHaveBeenCalled());
-    expect(savedConfig(props).weeklyTopSpendCount).toBe(5);
-  });
-
   it('large-transaction alerts: absent reads as off, and off stores 0 rather than a number', async () => {
     const props = makeProps();
     props.store.getTelegramConfig = vi.fn(async () => bareConfig());
@@ -1013,21 +947,24 @@ describe('NotificationsTab', () => {
 
 });
 
-describe('semester pool line toggle', () => {
-  it('names a hidden pool line in the Report content summary', async () => {
-    const props = makeProps();
-    (props.store as any).getPoolLine = vi.fn(async () => false);
-    render(<SyncPage {...props} />);
-    await switchTab(/notifications/i);
-    await waitFor(() => expect(screen.getByText(/no pool line/i)).toBeInTheDocument());
+describe('Report content, trimmed (1.57)', () => {
+  it('no longer offers the pool line or the month-end projection as settings', async () => {
+    // Both only appear when they warn now, so a switch to hide them would only
+    // ever hide a warning.
+    render(<SyncPage {...makeProps()} />);
+    await openSection(/^Report content/i);
+    expect(screen.queryByLabelText(/semester pool line/i)).toBeNull();
+    expect(screen.queryByLabelText(/month-end projection/i)).toBeNull();
   });
 
-  it('writes the opt-out when the pool line is hidden', async () => {
-    const props = makeProps();
-    (props.store as any).setPoolLine = vi.fn(async () => {});
-    render(<SyncPage {...props} />);
+  it('keeps the rarely-needed settings behind More options', async () => {
+    render(<SyncPage {...makeProps()} />);
     await openSection(/^Report content/i);
-    fireEvent.change(screen.getByLabelText(/semester pool line/i), { target: { value: 'hidden' } });
-    await waitFor(() => expect((props.store as any).setPoolLine).toHaveBeenCalledWith(false));
+    expect(screen.queryByLabelText(/Weekly amounts per category/i)).toBeNull();
+    expect(screen.getByLabelText(/Spending with no budget/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /^More options/i }));
+    expect(screen.getByLabelText(/Weekly amounts per category/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Spent figures when over budget/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Subcategories/i)).toBeInTheDocument();
   });
 });

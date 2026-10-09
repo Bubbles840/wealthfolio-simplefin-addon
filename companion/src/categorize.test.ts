@@ -696,9 +696,9 @@ describe('openRulePreview — /newrule\'s entry point', () => {
     expect(h.deps.createRule).toHaveBeenCalledTimes(1);
     const failed = lastCall(h.ui.edit);
     expect(failed[0]).toBe('Couldn\'t set that rule up — secret store down');
-    expect(labels(keyboardOf(failed))).toEqual(['« Back', 'Done']);
+    expect(labels(keyboardOf(failed))).toEqual(['‹ Back', 'Done']);
 
-    await h.tap(dataFor(keyboardOf(failed), '« Back'));
+    await h.tap(dataFor(keyboardOf(failed), '‹ Back'));
     expect(labels(keyboardOf(lastCall(h.ui.edit)))).not.toContain('Create rule');
     expect(lastCall(h.ui.edit)[0]).toBe(
       'Rule created — future matches will file automatically under Entertainment.',
@@ -716,7 +716,7 @@ describe('filing a transaction', () => {
     // The row has left the uncategorized set by now — the confirmation still
     // names it, which is only possible because the controller keeps it.
     expect(lastCall(h.ui.edit)[0]).toBe('Filed BOOK STORES a → Entertainment.');
-    expect(labels(filed)).toEqual(['Undo', 'Make this a rule', 'Next transaction', 'Done']);
+    expect(labels(filed)).toEqual(['↩ Undo', 'Make this a rule', 'Next transaction', 'Done']);
   });
 
   it('drills into subcategories first when the category has children', async () => {
@@ -726,7 +726,7 @@ describe('filing a transaction', () => {
     await h.tap(dataFor(picker, 'Food & Dining'));
     const subcats = keyboardOf(lastCall(h.ui.edit));
     expect(lastCall(h.ui.edit)[0]).toBe('Choose a subcategory of Food & Dining:');
-    expect(labels(subcats)).toEqual(['Restaurants', 'Just Food & Dining itself', '« Back']);
+    expect(labels(subcats)).toEqual(['Restaurants', 'Just Food & Dining itself', '‹ Back']);
     await h.tap(dataFor(subcats, 'Restaurants'));
     expect(h.deps.assign).toHaveBeenCalledWith('a', 'cat-rest');
   });
@@ -746,11 +746,11 @@ describe('filing a transaction', () => {
     // Escaped: the text is Markdown-parsed, and an unbalanced `*` from an API
     // body makes Telegram refuse the edit outright — a screen that never appears.
     expect(failure[0]).toBe('Couldn\'t file that — Wealthfolio said: 403 Forbidden: token \\*expired\\*');
-    expect(labels(keyboardOf(failure))).toEqual(['« Back', 'Done']);
+    expect(labels(keyboardOf(failure))).toEqual(['‹ Back', 'Done']);
     expect(h.deps.republish).not.toHaveBeenCalled();
     expect(h.logs.join('\n')).toContain('403 Forbidden');
     // Back returns to the picker the tap came from — nothing is retried on its own.
-    await h.tap(dataFor(keyboardOf(failure), '« Back'));
+    await h.tap(dataFor(keyboardOf(failure), '‹ Back'));
     expect(lastCall(h.ui.edit)[0]).toBe('BOOK STORES a\n-$12 · Aug 8 · Citi Double Cash');
   });
 
@@ -770,12 +770,12 @@ describe('filing a transaction', () => {
   it('undoes a filing through unassign', async () => {
     const h = setup();
     const filed = await openAtFiled(h);
-    await h.tap(dataFor(filed, 'Undo'));
+    await h.tap(dataFor(filed, '↩ Undo'));
     expect(h.deps.unassign).toHaveBeenCalledWith('a');
     expect(h.deps.republish).toHaveBeenCalledTimes(2);
     const undone = lastCall(h.ui.edit);
     expect(undone[0]).toBe('Filing undone — BOOK STORES a is uncategorized again.');
-    expect(labels(keyboardOf(undone))).toEqual(['Back to list', 'Done']);
+    expect(labels(keyboardOf(undone))).toEqual(['‹ Back to list', 'Done']);
   });
 
   it('reads the row\'s CURRENT assignment before un-filing it — the closed v1.12.0 blind spot', async () => {
@@ -787,7 +787,7 @@ describe('filing a transaction', () => {
     const h = setup();
     const filed = await openAtFiled(h);
     const mark = h.order.length;
-    await h.tap(dataFor(filed, 'Undo'));
+    await h.tap(dataFor(filed, '↩ Undo'));
     expect(h.order.slice(mark)).toEqual([
       'readCategorized', 'unassign', 'readRows', 'readLedger', 'readCategories',
     ]);
@@ -801,7 +801,7 @@ describe('filing a transaction', () => {
     const h = setup();
     const filed = await openAtFiled(h);
     h.state.categorized = [catRow('a', [spendingAt('cat-rest', 'Restaurants')], { notes: 'BOOK STORES a · TRN-a' })];
-    await h.tap(dataFor(filed, 'Undo'));
+    await h.tap(dataFor(filed, '↩ Undo'));
     expect(h.deps.unassign).not.toHaveBeenCalled();
     expect(lastCall(h.ui.edit)[0]).toContain('That transaction changed elsewhere — leaving it as is.');
     // Refreshed, not left on a dead screen: what the list shows now is the truth.
@@ -814,7 +814,7 @@ describe('filing a transaction', () => {
     const h = setup();
     const filed = await openAtFiled(h);
     h.state.categorized = [];
-    await h.tap(dataFor(filed, 'Undo'));
+    await h.tap(dataFor(filed, '↩ Undo'));
     expect(h.deps.unassign).not.toHaveBeenCalled();
     expect(lastCall(h.ui.edit)[0]).toContain('That transaction changed elsewhere — leaving it as is.');
   });
@@ -823,7 +823,7 @@ describe('filing a transaction', () => {
     const h = setup();
     const filed = await openAtFiled(h);
     h.deps.unassign.mockRejectedValue(new Error('500 Internal Server Error'));
-    await h.tap(dataFor(filed, 'Undo'));
+    await h.tap(dataFor(filed, '↩ Undo'));
     expect(lastCall(h.ui.edit)[0]).toBe('Couldn\'t undo that — Wealthfolio said: 500 Internal Server Error');
     expect(h.deps.republish).toHaveBeenCalledTimes(1);
     expect(h.logs.join('\n')).toContain('500 Internal Server Error');
@@ -843,7 +843,7 @@ describe('dismissing from the menu', () => {
     expect(h.deps.republish).toHaveBeenCalledTimes(1);
     const dismissed = lastCall(h.ui.edit);
     expect(dismissed[0]).toBe('BOOK STORES a will stay uncategorized.');
-    expect(labels(keyboardOf(dismissed))).toEqual(['Undo', 'Back to list', 'Done']);
+    expect(labels(keyboardOf(dismissed))).toEqual(['↩ Undo', '‹ Back to list', 'Done']);
   });
 
   it('bases the merge on the ledger it just read, not the one the menu opened with', async () => {
@@ -875,7 +875,7 @@ describe('dismissing from the menu', () => {
     await h.tap(dataFor(picker, 'Keep uncategorized'));
     const failure = lastCall(h.ui.edit);
     expect(failure[0]).toBe('Couldn\'t save that — Wealthfolio said: secret write refused');
-    expect(labels(keyboardOf(failure))).toEqual(['« Back', 'Done']);
+    expect(labels(keyboardOf(failure))).toEqual(['‹ Back', 'Done']);
     expect(h.deps.republish).not.toHaveBeenCalled();
   });
 
@@ -884,7 +884,7 @@ describe('dismissing from the menu', () => {
     const picker = await openAtTxn(h);
     await h.tap(dataFor(picker, 'Keep uncategorized'));
     const dismissed = keyboardOf(lastCall(h.ui.edit));
-    await h.tap(dataFor(dismissed, 'Undo'));
+    await h.tap(dataFor(dismissed, '↩ Undo'));
     expect(h.writes).toHaveLength(2);
     expect(Object.keys(h.writes[1].base)).toEqual(['a']);
     expect(h.writes[1].next).toEqual({});
@@ -907,7 +907,7 @@ describe('rules', () => {
       + 'It will also file any other uncategorized transactions that match, now and on every future import. '
       + 'Already-categorized transactions are never touched.',
     );
-    expect(labels(keyboardOf(lastCall(h.ui.edit)))).toEqual(['Create rule', '« Back']);
+    expect(labels(keyboardOf(lastCall(h.ui.edit)))).toEqual(['Create rule', '‹ Back']);
   });
 
   it('creates a contains-rule from the trimmed head of the description', async () => {
@@ -924,7 +924,7 @@ describe('rules', () => {
     });
     const created = lastCall(h.ui.edit);
     expect(created[0]).toBe('Rule created — future matches will file automatically under Entertainment.');
-    expect(labels(keyboardOf(created))).toEqual(['Back to list', 'Done']);
+    expect(labels(keyboardOf(created))).toEqual(['‹ Back to list', 'Done']);
     // The server files every other uncategorized match, so the tile is stale now.
     expect(h.deps.republish).toHaveBeenCalledTimes(2);
   });
@@ -949,7 +949,7 @@ describe('rules', () => {
     await h.tap(dataFor(filed, 'Make this a rule'));
     await h.tap(dataFor(keyboardOf(lastCall(h.ui.edit)), 'Create rule'));
     expect(lastCall(h.ui.edit)[0]).toBe('Couldn\'t create that rule — Wealthfolio said: 422 duplicate rule');
-    expect(labels(keyboardOf(lastCall(h.ui.edit)))).toEqual(['« Back', 'Done']);
+    expect(labels(keyboardOf(lastCall(h.ui.edit)))).toEqual(['‹ Back', 'Done']);
   });
 });
 
@@ -959,7 +959,7 @@ describe('the freshness rule', () => {
     await h.controller.open(h.send);
     const picker = keyboardOf(lastCall(h.send));
     await h.tap(dataFor(picker, 'BOOK STORES a'));
-    await h.tap(dataFor(keyboardOf(lastCall(h.ui.edit)), '« Back'));
+    await h.tap(dataFor(keyboardOf(lastCall(h.ui.edit)), '‹ Back'));
     expect(h.deps.readRows).toHaveBeenCalledTimes(3);
     expect(h.deps.readLedger).toHaveBeenCalledTimes(3);
     expect(h.deps.readCategories).toHaveBeenCalledTimes(3);
@@ -973,7 +973,7 @@ describe('the freshness rule', () => {
     // The addon (or an import rule) filed row b between the two taps.
     h.state.rows = [row('a')];
     await h.tap(dataFor(list, 'BOOK STORES a'));
-    await h.tap(dataFor(keyboardOf(lastCall(h.ui.edit)), '« Back'));
+    await h.tap(dataFor(keyboardOf(lastCall(h.ui.edit)), '‹ Back'));
     const refreshed = lastCall(h.ui.edit);
     expect(refreshed[0]).toBe('1 transaction needs a category:');
     expect(labels(keyboardOf(refreshed))).toEqual(['Aug 8 · BOOK STORES a · -$12', 'Done']);
@@ -1073,7 +1073,7 @@ describe('nothing escapes to the listener', () => {
     h.deps.republish.mockRejectedValue(new Error('addon secret 401'));
     const filed = await openAtFiled(h);
     expect(lastCall(h.ui.edit)[0]).toBe('Filed BOOK STORES a → Entertainment.');
-    expect(labels(filed)).toEqual(['Undo', 'Make this a rule', 'Next transaction', 'Done']);
+    expect(labels(filed)).toEqual(['↩ Undo', 'Make this a rule', 'Next transaction', 'Done']);
     expect(h.logs.join('\n')).toContain('addon secret 401');
   });
 
@@ -1084,7 +1084,7 @@ describe('nothing escapes to the listener', () => {
     h.deps.readCategories.mockImplementation(() => { throw new Error('db vanished'); });
     await h.tap(dataFor(list, 'BOOK STORES a'));
     expect(lastCall(h.ui.edit)[0]).toBe('Couldn\'t check what needs a category — db vanished');
-    expect(labels(keyboardOf(lastCall(h.ui.edit)))).toEqual(['« Back', 'Done']);
+    expect(labels(keyboardOf(lastCall(h.ui.edit)))).toEqual(['‹ Back', 'Done']);
   });
 
   it('reports lost database access mid-flow', async () => {
@@ -1246,7 +1246,7 @@ describe('openRecategorize', () => {
     const h = setup({ categorized: [VENMO_INCOME] });
     const picker = await openRecatAtTxn(h);
     expect(labels(picker)).not.toContain('Keep uncategorized');
-    expect(labels(picker)).toEqual(['Food & Dining', 'Entertainment', '« Back']);
+    expect(labels(picker)).toEqual(['Food & Dining', 'Entertainment', '‹ Back']);
     expect(lastCall(h.ui.edit)[0]).toBe(
       'VENMO PAYMENT a\n$24 · Aug 9 · Citi Double Cash\nCurrently: Reimbursements',
     );
@@ -1298,7 +1298,7 @@ describe('openRecategorize', () => {
   it('re-renders the recategorize list — not the categorize one — on every transition', async () => {
     const h = setup({ categorized: [VENMO_INCOME, GROCERIES] });
     const picker = await openRecatAtTxn(h);
-    await h.tap(dataFor(picker, '« Back'));
+    await h.tap(dataFor(picker, '‹ Back'));
     expect(lastCall(h.ui.edit)[0]).toBe('Recategorize — tap a transaction');
     expect(labels(keyboardOf(lastCall(h.ui.edit)))).toEqual([
       'Aug 9 · VENMO PAYMENT a · $24 · Reimbursements',
@@ -1313,7 +1313,7 @@ describe('openRecategorize', () => {
     const h = setup({ categorized: [VENMO_INCOME, GROCERIES] });
     await h.controller.openRecategorize('venmo', h.send);
     await h.tap(dataFor(keyboardOf(lastCall(h.send)), 'VENMO PAYMENT a'));
-    await h.tap(dataFor(keyboardOf(lastCall(h.ui.edit)), '« Back'));
+    await h.tap(dataFor(keyboardOf(lastCall(h.ui.edit)), '‹ Back'));
     expect(labels(keyboardOf(lastCall(h.ui.edit)))).toEqual([
       'Aug 9 · VENMO PAYMENT a · $24 · Reimbursements',
       'Done',
@@ -1374,10 +1374,10 @@ describe('openRecategorizeForTxIds — the import notice\'s button', () => {
  *  lift the refusal. */
 const REFUSED_INCOME_TEXT =
   'It is recorded as money in and can only take an income category while that is true.\n'
-  + 'A payback can be turned into a spending offset by marking it a reimbursement in Advanced → Transaction Rules.';
+  + 'A payback can be turned into a spending offset by marking it a reimbursement in Settings → Transaction rules.';
 const REFUSED_NEUTRAL_SUBTYPE_TEXT =
   'The transaction is not counted as spending or income at all, so no category can be attached to it as it stands.\n'
-  + 'A payback can be turned into a spending offset by marking it a reimbursement in Advanced → Transaction Rules.';
+  + 'A payback can be turned into a spending offset by marking it a reimbursement in Settings → Transaction rules.';
 /** No second line: on these rows the ACCOUNT TYPE decides, and no subtype moves
  *  them — see the SECURITIES/unknown-account test below. */
 const REFUSED_NEUTRAL_TEXT =
@@ -1403,14 +1403,14 @@ describe('reassign — the gate that refuses a move Wealthfolio would reject', (
     ]);
     const refusal = lastCall(h.ui.edit);
     expect(refusal[0]).toBe(REFUSED_INCOME_TEXT);
-    expect(labels(keyboardOf(refusal))).toEqual(['« Back', 'Done']);
+    expect(labels(keyboardOf(refusal))).toEqual(['‹ Back', 'Done']);
   });
 
   it('leaves the reader somewhere they can act — « Back returns to the row', async () => {
     const h = setup({ categorized: [VENMO_INCOME] });
     const picker = await openRecatAtTxn(h);
     await h.tap(dataFor(picker, 'Entertainment'));
-    await h.tap(dataFor(keyboardOf(lastCall(h.ui.edit)), '« Back'));
+    await h.tap(dataFor(keyboardOf(lastCall(h.ui.edit)), '‹ Back'));
     expect(lastCall(h.ui.edit)[0]).toBe(
       'VENMO PAYMENT a\n$24 · Aug 9 · Citi Double Cash\nCurrently: Reimbursements',
     );
@@ -1432,7 +1432,7 @@ describe('reassign — the gate that refuses a move Wealthfolio would reject', (
     // reimbursement line — the account-type cases below do not.
     expect(refusal[0]).toBe(REFUSED_NEUTRAL_SUBTYPE_TEXT);
     expect(refusal[0]).not.toContain('can only take an income category');
-    expect(labels(keyboardOf(refusal))).toEqual(['« Back', 'Done']);
+    expect(labels(keyboardOf(refusal))).toEqual(['‹ Back', 'Done']);
   });
 
   it('offers NO reimbursement route when the account type is what refuses the row', async () => {
@@ -1453,7 +1453,7 @@ describe('reassign — the gate that refuses a move Wealthfolio would reject', (
       expect(refusal[0]).toBe(REFUSED_NEUTRAL_TEXT);
       expect(refusal[0]).not.toContain('reimbursement');
       expect(refusal[0]).not.toContain('Transaction Rules');
-      expect(labels(keyboardOf(refusal))).toEqual(['« Back', 'Done']);
+      expect(labels(keyboardOf(refusal))).toEqual(['‹ Back', 'Done']);
     }
   });
 
@@ -1658,7 +1658,7 @@ describe('reassign — the cross-taxonomy move', () => {
       'Couldn\'t move that — Wealthfolio said: 403 Forbidden: token \\*expired\\*'
       + '\n\nNothing changed — this transaction still has the category it had.',
     );
-    expect(labels(keyboardOf(failure))).toEqual(['« Back', 'Done']);
+    expect(labels(keyboardOf(failure))).toEqual(['‹ Back', 'Done']);
     expect(h.logs.join('\n')).toContain('403 Forbidden');
   });
 
@@ -1766,7 +1766,7 @@ describe('undoing a reassignment', () => {
    */
   async function openRecatAtRefiledThenIncomeAgain(h: ReturnType<typeof setup>) {
     const refiled = await openRecatAtRefiled(h);
-    expect(labels(refiled)).not.toContain('Undo');
+    expect(labels(refiled)).not.toContain('↩ Undo');
     const row = h.state.categorized.find((r) => r.activityId === 'a')!;
     row.activityType = 'DEPOSIT';
     row.subtype = '';
@@ -1814,7 +1814,7 @@ describe('undoing a reassignment', () => {
       )],
     });
     const refiled = await openRecatAtRefiled(h);
-    expect(labels(refiled)).not.toContain('Undo');
+    expect(labels(refiled)).not.toContain('↩ Undo');
     expect(lastCall(h.ui.edit)[0]).toContain(
       'This transaction can no longer hold everything it had before the move, so there is no Undo.',
     );
@@ -1837,7 +1837,7 @@ describe('undoing a reassignment', () => {
       ['a', WF_INCOME_TAXONOMY_ID],
       ['a', SAVINGS_TAXONOMY_ID],
     ]);
-    expect(labels(refiled)).not.toContain('Undo');
+    expect(labels(refiled)).not.toContain('↩ Undo');
   });
 
   it('writes NOTHING when a tap to undo arrives for a restore the row can no longer take', async () => {
@@ -1852,8 +1852,8 @@ describe('undoing a reassignment', () => {
     // DELETE, on a restore that needs one — is pinned by the test below instead.
     const h = setup({ categorized: [catRow('b', [spendingAt('cat-rest', 'Restaurants')], REIMBURSED)] });
     const refiled = await openRecatAtRefiled(h, 'VENMO PAYMENT b');
-    expect(labels(refiled)).toContain('Undo');
-    const undo = dataFor(refiled, 'Undo');
+    expect(labels(refiled)).toContain('↩ Undo');
+    const undo = dataFor(refiled, '↩ Undo');
     const row = h.state.categorized.find((r) => r.activityId === 'b')!;
     row.subtype = '';
     const mark = h.order.length;
@@ -1880,7 +1880,7 @@ describe('undoing a reassignment', () => {
     // comment forbids — the delete would land before the refusal is ever reached.
     const h = setup({ categorized: [catRow('a', [wfIncomeAt('inc-reimb', 'Reimbursements')], REIMBURSED)] });
     const withUndo = await openRecatAtRefiledThenIncomeAgain(h);
-    const undo = dataFor(withUndo, 'Undo');
+    const undo = dataFor(withUndo, '↩ Undo');
     const row = h.state.categorized.find((r) => r.activityId === 'a')!;
     row.activityType = 'CREDIT';
     row.subtype = 'REIMBURSEMENT';
@@ -1903,7 +1903,7 @@ describe('undoing a reassignment', () => {
     const h = setup({ categorized: [catRow('a', [wfIncomeAt('inc-reimb', 'Reimbursements')], REIMBURSED)] });
     const refiled = await openRecatAtRefiledThenIncomeAgain(h);
     const mark = h.order.length;
-    await h.tap(dataFor(refiled, 'Undo'));
+    await h.tap(dataFor(refiled, '↩ Undo'));
     expect(h.order.slice(mark)).toEqual([
       'readCategorized', 'readCategories',
       `unassignTaxonomy:${SPENDING_TAXONOMY_ID}`,
@@ -1912,7 +1912,7 @@ describe('undoing a reassignment', () => {
     ]);
     expect(h.deps.assign).toHaveBeenLastCalledWith('a', 'inc-reimb', WF_INCOME_TAXONOMY_ID);
     expect(lastCall(h.ui.edit)[0]).toBe('Refiling undone — VENMO PAYMENT a is back under Reimbursements.');
-    expect(labels(keyboardOf(lastCall(h.ui.edit)))).toEqual(['Back to list', 'Done']);
+    expect(labels(keyboardOf(lastCall(h.ui.edit)))).toEqual(['‹ Back to list', 'Done']);
     expect(h.state.categorized[0].assignments).toEqual([
       { taxonomyId: WF_INCOME_TAXONOMY_ID, categoryId: 'inc-reimb', categoryName: 'Reimbursements' },
     ]);
@@ -1925,8 +1925,8 @@ describe('undoing a reassignment', () => {
     // directions, because both ends are the same taxonomy as the row's bucket.
     const h = setup({ categorized: [GROCERIES] });
     const refiled = await openRecatAtRefiled(h, 'TRADER JOES b');
-    expect(labels(refiled)).toContain('Undo');
-    await h.tap(dataFor(refiled, 'Undo'));
+    expect(labels(refiled)).toContain('↩ Undo');
+    await h.tap(dataFor(refiled, '↩ Undo'));
     expect(h.deps.unassignTaxonomy).not.toHaveBeenCalled();
     // The replay always names the taxonomy it recorded, spending included — one
     // loop over the restore list, no special case to get wrong.
@@ -1943,7 +1943,7 @@ describe('undoing a reassignment', () => {
     // Something else moved it on again after the confirmation was drawn.
     h.state.categorized = [{ ...GROCERIES, assignments: [spendingAt('cat-rest', 'Restaurants')] }];
     const assignsBefore = h.deps.assign.mock.calls.length;
-    await h.tap(dataFor(refiled, 'Undo'));
+    await h.tap(dataFor(refiled, '↩ Undo'));
     expect(h.deps.assign.mock.calls.length).toBe(assignsBefore);
     expect(h.deps.unassignTaxonomy).not.toHaveBeenCalled();
     expect(lastCall(h.ui.edit)[0]).toBe(
@@ -1956,7 +1956,7 @@ describe('undoing a reassignment', () => {
     const refiled = await openRecatAtRefiled(h, 'TRADER JOES b');
     h.state.categorized = [];
     const assignsBefore = h.deps.assign.mock.calls.length;
-    await h.tap(dataFor(refiled, 'Undo'));
+    await h.tap(dataFor(refiled, '↩ Undo'));
     expect(h.deps.assign.mock.calls.length).toBe(assignsBefore);
     expect(lastCall(h.ui.edit)[0]).toContain('That transaction changed elsewhere — leaving it as is.');
   });
@@ -1975,7 +1975,7 @@ describe('undoing a reassignment', () => {
     const h = setup({ categorized: [catRow('a', [wfIncomeAt('inc-reimb', 'Reimbursements')], REIMBURSED)] });
     const refiled = await openRecatAtRefiledThenIncomeAgain(h);
     h.deps.assign.mockRejectedValue(new Error('500 Internal Server Error'));
-    await h.tap(dataFor(refiled, 'Undo'));
+    await h.tap(dataFor(refiled, '↩ Undo'));
     expect(lastCall(h.ui.edit)[0]).toBe(
       'Couldn\'t undo that — Wealthfolio said: 500 Internal Server Error'
       + '\n\nThe old category was NOT restored, and the one the move set is already cleared — '
@@ -1991,7 +1991,7 @@ describe('undoing a reassignment', () => {
     h.deps.unassignTaxonomy.mockRejectedValue(new Error('403 Forbidden'));
     // Captured BEFORE the tap: taken afterwards it could only ever equal itself.
     const assignsBefore = h.deps.assign.mock.calls.length;
-    await h.tap(dataFor(refiled, 'Undo'));
+    await h.tap(dataFor(refiled, '↩ Undo'));
     expect(lastCall(h.ui.edit)[0]).toBe(
       'Couldn\'t undo that — Wealthfolio said: 403 Forbidden'
       + '\n\nNothing was restored — this transaction is still under the category the move set.',
@@ -2003,7 +2003,7 @@ describe('undoing a reassignment', () => {
   it('offers no Undo at all when the move wrote nothing', async () => {
     const h = setup({ categorized: [catRow('a', [spendingAt('cat-fun', 'Entertainment')], REIMBURSED)] });
     const refiled = await openRecatAtRefiled(h);
-    expect(labels(refiled)).not.toContain('Undo');
+    expect(labels(refiled)).not.toContain('↩ Undo');
     expect(h.state.categorized[0].assignments).toEqual([
       { taxonomyId: SPENDING_TAXONOMY_ID, categoryId: 'cat-fun', categoryName: 'Entertainment' },
     ]);
@@ -2018,7 +2018,7 @@ describe('undoing a reassignment', () => {
     // A stale token forces a re-render of the same screen — the old category has
     // to survive that too.
     await h.tap('cz:nope');
-    await h.tap(dataFor(keyboardOf(lastCall(h.ui.edit)), 'Undo'));
+    await h.tap(dataFor(keyboardOf(lastCall(h.ui.edit)), '↩ Undo'));
     expect(h.deps.assign).toHaveBeenLastCalledWith('b', 'cat-rest', SPENDING_TAXONOMY_ID);
   });
 });
@@ -2048,5 +2048,30 @@ describe('income filings', () => {
     const picker = await openAtTxn(h, 'BOOK STORES a');
     expect(labels(picker)).toContain('Food & Dining');
     expect(labels(picker)).not.toContain('Other Income');
+  });
+});
+
+describe('openForActivity — the morning report\'s "Pick a category" fix', () => {
+  it('opens straight on the one transaction when it has no category at all', async () => {
+    const h = setup();
+    await h.controller.openForActivity('a', 4242, h.send);
+    const [text] = lastCall(h.send);
+    expect(text).toContain('BOOK STORES a');
+    expect(text).not.toContain('BOOK STORES b');
+  });
+
+  it('finds it in the recategorize sweep when it is filed somewhere that is not spending', async () => {
+    // An idle refund can carry an income category and still reduce nothing.
+    const h = setup({ categorized: [VENMO_INCOME, GROCERIES] });
+    await h.controller.openForActivity('a', 4242, h.send);
+    const [text] = lastCall(h.send);
+    expect(text).toContain('VENMO PAYMENT a');
+    expect(text).not.toContain('TRADER JOES');
+  });
+
+  it('says so, rather than opening a list nobody asked for, when the transaction is in neither', async () => {
+    const h = setup();
+    await h.controller.openForActivity('zzz', 4242, h.send);
+    expect(lastCall(h.send)[0]).toMatch(/not in the category menu any more/);
   });
 });

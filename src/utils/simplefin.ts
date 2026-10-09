@@ -74,12 +74,34 @@ function requireSimpleFinDomain(url: string, label: string): void {
 
 export async function claimToken(setupToken: string, network: NetworkAPI): Promise<string> {
   // SimpleFin tokens use URL-safe base64 (- instead of +, _ instead of /)
-  const normalized = setupToken.replace(/-/g, '+').replace(/_/g, '/');
-  const claimUrl = atob(normalized);
+  const normalized = setupToken.trim().replace(/-/g, '+').replace(/_/g, '/');
+  let claimUrl: string;
+  try {
+    claimUrl = atob(normalized);
+    new URL(claimUrl);
+  } catch {
+    // atob's own message ("The string to be decoded is not correctly
+    // encoded") says nothing about what to do. The usual cause is pasting the
+    // access URL, or only part of the token.
+    throw new Error(
+      'That does not look like a SimpleFin setup token. Copy the whole token from SimpleFin Bridge '
+      + '(a long string of letters and numbers), not the access URL or your login.',
+    );
+  }
   requireHttps(claimUrl, 'SimpleFin claim URL');
   requireSimpleFinDomain(claimUrl, 'SimpleFin claim URL');
 
   const res = await network.request({ url: claimUrl, method: 'POST' });
+  if (res.status === 403) {
+    // The one failure everyone hits once: a setup token can be claimed
+    // exactly ONCE, and a second attempt (a retry, a reinstall, the token
+    // reused from notes) gets a bare 403.
+    throw new Error(
+      'SimpleFin claim failed (403): this setup token was already used — each one can be claimed only once. '
+      + 'Create a new setup token in SimpleFin Bridge and paste that. '
+      + 'Note that creating a new token can disconnect any app still using the old one.',
+    );
+  }
   if (res.status < 200 || res.status >= 300) {
     throw new Error(`SimpleFin claim failed: ${res.status}`);
   }

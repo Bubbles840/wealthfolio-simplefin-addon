@@ -196,7 +196,7 @@ function headerGlyph(glyph: string, style: GlyphStyle): string {
  * literal text next to the figure states the direction ("over", "spent"), in
  * which case pass `Math.abs(...)` explicitly so the choice is visible.
  */
-function formatDollars(amount: number, decimals: number): string {
+export function formatDollars(amount: number, decimals: number): string {
   const [whole, frac] = Math.abs(amount).toFixed(decimals).split('.');
   const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
   const body = frac ? `$${grouped}.${frac}` : `$${grouped}`;
@@ -302,21 +302,19 @@ export function formatLargeTransactionAlert(alert: {
  * leave a live opener and Telegram would reject the WHOLE message with a 400.
  * The only entity here wraps the fixed heading, which contains no specials.
  *
- * The amount is deliberately `toFixed(2)` rather than `formatDollars` — no
- * thousands separator — because that is the string this alert has always sent
- * and the figure is a diagnostic to match against a row in Wealthfolio, not a
- * headline figure.
+ * Cents kept, because the figure is matched against one row in Wealthfolio;
+ * thousands separated since 1.57, like every other amount these messages send.
  */
 export function formatStuckTransferAlert(alert: {
   description: string;
   amountCents: number;
   currency: string;
 }): string {
-  const amount = (alert.amountCents / 100).toFixed(2);
+  const amount = formatDollars(alert.amountCents / 100, 2);
   return (
     "⚠️ *Transfer stuck — couldn't auto-link after 3 tries*\n"
     + `${escapeMarkdown(alert.description)}\n`
-    + `Amount: $${amount} ${escapeMarkdown(alert.currency)}\n`
+    + `Amount: ${amount} ${escapeMarkdown(alert.currency)}\n`
     + 'Try "Deep scan" in the addon, or check for a duplicate/mismatched leg.'
   );
 }
@@ -432,7 +430,7 @@ export function formatDuplicatePruneAlert(rows: PrunedDuplicateRow[]): string {
     const figure = formatDollars(Math.abs(r.amountCents) / 100, 2);
     const fields = [
       escapeMarkdown(r.currency),
-      escapeMarkdown(r.date),
+      shortDate(r.date),
       // A SimpleFin description can legitimately be empty — render the row
       // without the field rather than with a blank one.
       escapeMarkdown(r.description),
@@ -443,7 +441,7 @@ export function formatDuplicatePruneAlert(rows: PrunedDuplicateRow[]): string {
   const overflow = rows.length - shown.length;
   if (overflow > 0) lines.push(`…and ${overflow} more`);
   return (
-    `🧹 *Duplicate activities removed* — ${rows.length} row${rows.length === 1 ? '' : 's'}\n`
+    `🗑️ *Duplicate activities removed* — ${rows.length} row${rows.length === 1 ? '' : 's'}\n`
     + 'Each of these was stored twice, so the extra copy was deleted during reconcile:\n'
     + `${lines.join('\n')}\n`
     + 'Nothing to do — your balances should line up again.'
@@ -491,9 +489,22 @@ const MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'S
 
 /** `2026-07-09` → `Jul 9`. Parsed as UTC so the label can't shift a day on a
  *  host west of UTC. */
-function shortDate(isoDate: string): string {
+/** "2026-12-12" → "Dec 12", the way every report names a date. Exported for
+ *  the addon's own summaries, so a pool date reads the same on the page as in
+ *  the reports. */
+export function shortDate(isoDate: string): string {
   const d = new Date(`${isoDate.slice(0, 10)}T00:00:00Z`);
   return `${MONTHS_SHORT[d.getUTCMonth()]} ${d.getUTCDate()}`;
+}
+
+/** A moment as "Oct 9, 3:40 PM", in the process's own zone (the companion's
+ *  `TZ`). Built by hand rather than with `toLocaleString`, whose shape follows
+ *  the container's locale — "10/9/2026, 3:40:00 PM" on most images. */
+export function shortDateTime(iso: string): string {
+  const d = new Date(iso);
+  const h = d.getHours();
+  const clock = `${h % 12 === 0 ? 12 : h % 12}:${String(d.getMinutes()).padStart(2, '0')} ${h < 12 ? 'AM' : 'PM'}`;
+  return `${MONTHS_SHORT[d.getMonth()]} ${d.getDate()}, ${clock}`;
 }
 
 const IMPORT_NOTICE_TX_CAP = 10;
@@ -649,7 +660,7 @@ export function formatRefusedCreatesAlert(
   const head = `${headerGlyph('🔍', style)}*${rows.length} transaction${rows.length === 1 ? '' : 's'} not imported*`;
   const lines = rows.slice(0, 10).map((r) =>
     `• ${money(r.amountCents / 100)}  ${escapeMarkdown(r.description || 'no description')}`
-    + ` — ${escapeMarkdown(r.accountName)} · ${r.date}`,
+    + ` — ${escapeMarkdown(r.accountName)} · ${shortDate(r.date)}`,
   );
   const more = rows.length > 10 ? [`_…and ${rows.length - 10} more._`] : [];
   return [
@@ -776,7 +787,21 @@ export interface DailyDigestWindow {
   /** Days left in the month COUNTING TODAY — 1 on the last day, since today is
    *  still a day money can be spent. */
   daysLeftInMonthInclusive: number;
+  /** Today's day of the month (1–31). Optional so older callers keep working;
+   *  absent means "late enough in the month to trust a forecast". */
+  dayOfMonth?: number;
 }
+
+/** A month-end forecast built on the first week of a month is mostly one rent
+ *  payment and a couple of big shops extrapolated thirty days — live, on the
+ *  6th: "on pace for $3,659 (+$1,059 vs budget)" beside "$1,932 left", two
+ *  numbers that read as a contradiction. The forecast stays quiet until the
+ *  8th. */
+export const PACE_MIN_DAY_OF_MONTH = 8;
+
+/** Under this share of its week's allowance left, a category is "nearly out"
+ *  and earns its own line in the attention view. */
+const NEARLY_OUT_SHARE = 0.25;
 
 /**
  * Formats the daily spending check: one short line per category carrying the
@@ -808,13 +833,56 @@ export interface DailyDigestWindow {
  *  - otherwise → the plain figure
  */
 export interface DigestSections {
-  /** 'all' (default) lists every selected category; 'over' only those past
-   *  their month budget; 'none' drops the block entirely. */
-  categoryMode?: 'all' | 'over' | 'none';
+  /** 'attention' (the companion's default) lists the categories that are over
+   *  or nearly out and sums the rest up as one "on track" line; 'all' (this
+   *  function's default) lists every selected category; 'over' only those past their month budget; 'none' drops the
+   *  block entirely. */
+  categoryMode?: DigestCategoryMode;
   /** The "$X left this month · on pace for …" headline line. */
   summary?: boolean;
   /** The unbudgeted-categories block. */
   offBudget?: boolean;
+}
+
+export type DigestCategoryMode = 'attention' | 'all' | 'over' | 'none';
+
+/**
+ * 1.57, "one voice": while the daily report is on, its 🧹 line carries the
+ * problems that used to arrive as messages of their own — an unmapped account,
+ * a balance that differs from the bank, a transfer that would not link. With
+ * it off, those messages are sent exactly as before, so nothing goes
+ * unannounced. Absent means on, matching every other reader of the switch.
+ */
+export function dailyReportCarriesProblems(tg: { dailyReportEnabled?: unknown } | null | undefined): boolean {
+  return !!tg && tg.dailyReportEnabled !== false;
+}
+
+/** How much the reports carry beyond their core (1.57). One switch in place of
+ *  eight per-section toggles: Brief leaves out the daily off-budget block, the
+ *  weekly runway and subscriptions lines, and lists three biggest spends
+ *  instead of five. */
+export type ReportDetail = 'brief' | 'full';
+
+/** A config without the key reads as Full — exactly what every report carried
+ *  before the switch existed, so an upgrade changes nothing by itself. */
+export function resolveReportDetail(tg: { reportDetail?: unknown } | null | undefined): ReportDetail {
+  return tg?.reportDetail === 'brief' ? 'brief' : 'full';
+}
+
+/**
+ * Which category rows the daily report shows, from the stored Telegram config.
+ *
+ * Read from `digestRows` (1.57.0+). The older `digestCategoryMode` key is
+ * honoured only for 'over' and 'none': before 1.57.0 the Notifications tab
+ * wrote `'all'` on EVERY save, chosen or not, so a stored 'all' says nothing
+ * about what the reader wanted — and treating it as a choice would have kept
+ * nearly everyone on the long report the attention view replaces.
+ */
+export function resolveDigestRows(tg: { digestRows?: unknown; digestCategoryMode?: unknown } | null | undefined): DigestCategoryMode {
+  const modes: readonly DigestCategoryMode[] = ['attention', 'all', 'over', 'none'];
+  if (modes.includes(tg?.digestRows as DigestCategoryMode)) return tg!.digestRows as DigestCategoryMode;
+  if (tg?.digestCategoryMode === 'over' || tg?.digestCategoryMode === 'none') return tg.digestCategoryMode;
+  return 'attention';
 }
 
 export function formatDailySpendingDigest(
@@ -900,6 +968,9 @@ export function formatDailySpendingDigest(
    */
   sections: DigestSections = {},
 ): string {
+  // 'all' when unspecified, so a direct caller gets every row. The PRODUCT
+  // default is 'attention', and lives where the config is read (the companion),
+  // because that is where "the user never chose" can be told apart.
   const categoryMode = sections.categoryMode ?? 'all';
   const showSummary = sections.summary ?? true;
   const showOffBudget = sections.offBudget ?? true;
@@ -933,7 +1004,7 @@ export function formatDailySpendingDigest(
   /** First-pass results, rendered once the pool is known. */
   const rendered: Array<{
     c: DailyDigestCategory; glyph: string; name: string;
-    leftThisWeek: number; remainingMonth: number;
+    leftThisWeek: number; remainingMonth: number; weekEnvelope: number;
   }> = [];
 
   for (const c of categories) {
@@ -947,7 +1018,7 @@ export function formatDailySpendingDigest(
     // `*Food\_Drink*` would still leave a live italic opener. The bold sits on
     // the figures, which contain no specials.
     const name = escapeMarkdown(c.name);
-    const { leftThisWeek, remainingMonth } = weeklyEnvelope({
+    const { leftThisWeek, remainingMonth, weekEnvelope } = weeklyEnvelope({
       budget: c.budget,
       monthSpent: c.monthSpent,
       weekSpent: c.weekSpent,
@@ -969,7 +1040,7 @@ export function formatDailySpendingDigest(
     // Rendered in a SECOND pass: what a category can really be spent on depends
     // on the whole month's pool, which is not known until every category has
     // been totalled. See `poolFactor` below.
-    rendered.push({ c, glyph, name, leftThisWeek, remainingMonth });
+    rendered.push({ c, glyph, name, leftThisWeek, remainingMonth, weekEnvelope });
     continue;
   }
 
@@ -1010,9 +1081,21 @@ export function formatDailySpendingDigest(
   // 'over' keeps only categories past their MONTH budget — the rows that
   // demand action; 'none' clears the block entirely. The accumulators above
   // ran over everything, so the summary stays honest whatever is shown.
+  //
+  // 'attention' keeps what needs a decision today: anything over (the month or
+  // the week), used up, or nearly out. The rest are one line. With the pool
+  // capped to zero every row reads $0, so "nearly out" would list everything —
+  // there, only the over rows are kept, and the subtitle already says why.
+  const needsAttention = (r: typeof rendered[number]) => {
+    if (r.remainingMonth <= 0 || r.leftThisWeek <= 0) return true;
+    if (poolCap === 0) return false;
+    return r.weekEnvelope > 0 && r.leftThisWeek / r.weekEnvelope < NEARLY_OUT_SHARE;
+  };
   const shownRendered = categoryMode === 'none' ? []
     : categoryMode === 'over' ? rendered.filter((r) => r.remainingMonth < 0)
-      : rendered;
+      : categoryMode === 'attention' ? rendered.filter(needsAttention)
+        : rendered;
+  const onTrack = categoryMode === 'attention' ? rendered.length - shownRendered.length : 0;
   for (const { c, glyph, name, leftThisWeek: rawWeek, remainingMonth } of shownRendered) {
     // Only ever reduces. A category already over its own envelope is over
     // regardless of what the pool says.
@@ -1033,9 +1116,16 @@ export function formatDailySpendingDigest(
       // The week clause stays even here: the subtitle promises a weekly
       // figure, and this branch used to be the one place it vanished (live
       // ask, 2026-09-06 — "I just want to be able to see it").
-      const weekTail = leftThisWeek < 0
-        ? ` · ${money(Math.abs(leftThisWeek))} over this wk`
-        : ` · ${money(leftThisWeek)} this wk`;
+      //
+      // Except when the two figures are the same money: a category already
+      // over before the week began has no weekly allowance, so its week figure
+      // IS the month figure — "$230 over for the month · $230.06 over this wk"
+      // said one fact twice. The week clause then says the useful thing.
+      const weekTail = Math.abs(leftThisWeek - remainingMonth) < 0.01
+        ? ' · nothing left this wk'
+        : leftThisWeek < 0
+          ? ` · ${money(Math.abs(leftThisWeek))} over this wk`
+          : ` · ${money(leftThisWeek)} this wk`;
       lines.push(overBudgetSpent === 'all'
         ? `${glyph}${name}  🚨 *${moneyWhole(Math.abs(remainingMonth))} over* · ${moneyWhole(Math.max(0, c.monthSpent))} spent${weekTail}`
         : `${glyph}${name}  🚨 *${moneyWhole(Math.abs(remainingMonth))} over* for the month${weekTail}`);
@@ -1100,16 +1190,26 @@ export function formatDailySpendingDigest(
   // describe different sets of transactions.
   const totalSpent = budgetedSpent + countedOffBudget;
   const spentTail = overBudgetSpent === 'none' ? '' : ` · ${moneyWhole(totalSpent)} spent`;
-  // Whole dollars, signed against the budget as the app does it: "+$520" is
-  // the forecast running past the target, "−$300" is headroom.
+  // Only when it WARNS, and only once the month has enough days in it to mean
+  // anything. A forecast under budget restates the headline in a second
+  // number; one built on the first week is mostly rent extrapolated. Both read
+  // beside "$X left" as a contradiction. With no budget at all there is no
+  // headline figure to contradict, so the forecast is the only sense of pace
+  // and always shows.
   const paceTail = (() => {
     if (!projection || !(projection.forecast > 0)) return '';
-    const vs = budgetedBudget > 0 ? projection.forecast - budgetedBudget : null;
-    const delta = vs === null || moneyWhole(Math.abs(vs)) === '$0'
-      ? ''
-      : ` (${vs > 0 ? '+' : '−'}${moneyWhole(Math.abs(vs))} vs budget)`;
-    return ` · on pace for ${moneyWhole(projection.forecast)}${delta}`;
+    if (budgetedBudget <= 0) return ` · on pace for ${moneyWhole(projection.forecast)}`;
+    if (period.dayOfMonth !== undefined && period.dayOfMonth < PACE_MIN_DAY_OF_MONTH) return '';
+    const over = projection.forecast - budgetedBudget;
+    if (moneyWhole(over) === '$0' || over < 0) return '';
+    return ` · on pace to go ${moneyWhole(over)} over`;
   })();
+  // What the headline means per day: the figure a reader can actually hold a
+  // single day's spending against. Whole dollars, and only while there is
+  // money left — "$0/day" adds nothing to "$0 left".
+  const perDay = headlineRemaining > 0 && moneyWhole(headlineRemaining / days) !== '$0'
+    ? ` · about ${moneyWhole(headlineRemaining / days)}/day`
+    : '';
   // The forecast rides on every form of the headline, the no-budget one
   // included: the app shows it whether or not a target exists, and a reader
   // with no budgets yet is exactly the one with no other sense of pace.
@@ -1117,12 +1217,23 @@ export function formatDailySpendingDigest(
     ? `${headerGlyph('📅', style)}${days} ${dayWord} left in the month${paceTail}`
     : overBudget
       ? `🚨 ${moneyWhole(Math.abs(headlineRemaining))} over budget this month${spentTail} · ${days} ${dayWord} to go${paceTail}`
-      : `${headerGlyph('💰', style)}${moneyWhole(headlineRemaining)} left this month · ${days} ${dayWord} to go${paceTail}`;
+      : `${headerGlyph('💰', style)}${moneyWhole(headlineRemaining)} left this month · ${days} ${dayWord} to go${perDay}${paceTail}`;
 
   // An empty budgeted block can happen while off-budget lines exist (every
   // budget deleted, spending continues); joining blocks that exist avoids a
   // stray blank gap in that case.
   const blocks = [lines.join('\n')];
+  if (onTrack > 0) {
+    // One line for everything that needs nothing today. "Others" only when
+    // something was listed above it; on a quiet day it is the whole block.
+    const label = shownRendered.length > 0
+      ? `${onTrack} ${onTrack === 1 ? 'other' : 'others'}`
+      : `All ${onTrack}`;
+    blocks[0] = [blocks[0], poolCap === 0
+      ? `${label} within their own budgets`
+      // No ✅: in these messages it means one thing, "synced" (1.57).
+      : `${label} on track`].filter(Boolean).join('\n');
+  }
   if (showOffBudget && offBudgetLines.length > 0) blocks.push(`Off budget:\n${offBudgetLines.join('\n')}`);
   // Its own block, not folded into "Off budget": those have a category the user
   // chose and simply no budget, while these are unfiled — a different thing to
@@ -1155,7 +1266,13 @@ export function formatDailySpendingDigest(
     : envelopesOverstate
       ? `_left in each budget · only ${moneyWhole(Math.max(0, headlineRemaining))} left overall_`
       : '_left to spend this week_';
-  const poolLine = pool ? formatPoolLine(pool, style) : null;
+  // The daily report carries the pool only when it has news: overspent, or on
+  // pace to run out before its end date. A healthy pool said the same thing
+  // every morning ("lasts past Jan 1") and the weekly check-in already carries
+  // its full section.
+  const poolLine = pool && (pool.remainingCents <= 0 || pool.runsOutBeforeEnd)
+    ? formatPoolLine(pool, style)
+    : null;
   const shownBlocks = blocks.filter(Boolean).join('\n\n');
   const tail = [showSummary ? summary : null, poolLine].filter(Boolean).join('\n');
   return `${headerGlyph('☀️', style)}*Daily Spending Check*${subtitle ? `\n${subtitle}` : ''}`
@@ -1199,7 +1316,7 @@ export function formatRelativeTime(fromIso: string, now: Date): string {
 export function formatSyncHealthFooter(health: SyncHealth | null | undefined, now: Date = new Date()): string {
   if (!health) return '';
   if (health.firstFailedAt) {
-    const since = new Date(health.firstFailedAt).toLocaleString();
+    const since = shortDateTime(health.firstFailedAt);
     const lastError = escapeMarkdown(health.lastError ?? 'unknown error');
     return `⚠️ failing since ${since} — ${lastError}`;
   }
@@ -1418,7 +1535,7 @@ export interface MonthlyWrapUpCategory {
  *    something that was never set, and calling it over would invent a target the
  *    user never agreed to
  *  - over budget → 🚨 plus the overage, which is the number worth reading
- *  - otherwise → ✅ and the plain spend-of-budget
+ *  - otherwise → unmarked, the plain spend-of-budget
  *
  * The verdict line has three, for the same reason plus one:
  *  - nothing budgeted anywhere → no verdict is possible, so it states the spend
@@ -1482,7 +1599,8 @@ export function formatMonthlyWrapUp(
       // what carries the direction.
       lines.push(`🚨 ${glyph}${name}  ${moneyWhole(c.spent)} of ${moneyWhole(c.budget)} · *${moneyWhole(over)} over*`);
     } else {
-      lines.push(`✅ ${glyph}${name}  *${moneyWhole(c.spent)}* of ${moneyWhole(c.budget)}`);
+      // Unmarked: only the 🚨 rows need the eye, and ✅ means "synced".
+      lines.push(`${glyph}${name}  *${moneyWhole(c.spent)}* of ${moneyWhole(c.budget)}`);
     }
   }
 

@@ -40,36 +40,61 @@ export function parseCommand(text: string | null | undefined, botName?: string):
   return { command: name.toLowerCase(), args: rest.join(' ').trim() };
 }
 
-/** Registered via setMyCommands so Telegram's ☰ menu lists them. Order is display order. */
+/** Registered via setMyCommands so Telegram's ☰ menu lists them. Order is
+ *  display order. Seven since 1.57: twelve was a menu nobody read, so the
+ *  occasional ones moved to `/help`'s "More commands" — they still work. */
 export const TELEGRAM_COMMAND_MENU = [
-  { command: 'report', description: "Today's spending digest, fresh from the database" },
-  { command: 'charts', description: 'Charts on your phone — tap-through menu + the dashboard' },
-  { command: 'left', description: "What's left per category — /left groceries narrows it" },
+  { command: 'report', description: "Today's report" },
+  // The example carries the amount form: it is invisible otherwise.
+  { command: 'left', description: "What's left — /left groceries 20 asks if $20 fits" },
+  { command: 'categorize', description: 'File, refile and review transactions' },
+  { command: 'charts', description: 'Charts and the dashboard' },
+  { command: 'status', description: 'Last sync, balances, what needs attention' },
+  { command: 'sync', description: 'Pull new transactions now' },
+  { command: 'help', description: 'This list, plus more commands' },
+] as const;
+
+/** Commands that work but stay out of the ☰ menu; `/help` lists them. Each
+ *  description carries an EXAMPLE: the optional argument is invisible
+ *  otherwise, and a reader who does not know about `/recategorize venmo`
+ *  scrolls 90 days of history by hand. */
+export const TELEGRAM_MORE_COMMANDS = [
   { command: 'afford', description: 'Can I afford it? — /afford 20 shopping' },
   { command: 'pool', description: 'Semester money pool — /pool 16000 Dec 12' },
-  { command: 'status', description: 'Last sync, balances, what needs attention' },
-  { command: 'sync', description: 'Pull new bank transactions now' },
-  { command: 'categorize', description: 'File uncategorized transactions, right from here' },
-  // Directly after `/categorize`, because the two are one pair — file an unfiled
-  // row, move a filed one — and this menu is the only place most readers will
-  // ever see either name. The description carries an EXAMPLE like `/left`'s and
-  // `/newrule`'s do: the optional query is invisible otherwise, and a reader who
-  // does not know about it scrolls 90 days of history by hand.
   { command: 'recategorize', description: 'Move a filed transaction — /recategorize venmo narrows it' },
   { command: 'newrule', description: 'Always file a match — /newrule trader joes = groceries' },
   { command: 'dismissed', description: 'What you dismissed lately, with Undo' },
-  { command: 'help', description: 'This list' },
 ] as const;
 
 export function formatHelpReply(unknownCommand?: string): string {
-  const lines = TELEGRAM_COMMAND_MENU.map((c) => `/${c.command} — ${c.description}`);
+  const line = (c: { command: string; description: string }) => `/${c.command} — ${c.description}`;
   // Escaped like every other caller-supplied string in this file: the "unknown
   // command" is whatever the user typed, so `/a*b` would leave an unbalanced
   // entity, Telegram would refuse the whole message (`ok: false`, 400) — and the
   // one person guaranteed to see this reply is the one who just made a typo.
   // Silence is the worst possible answer to that.
   const head = unknownCommand ? `Unknown command: /${escapeMarkdown(unknownCommand)}\n\n` : '';
-  return `${head}${lines.join('\n')}`;
+  return `${head}${TELEGRAM_COMMAND_MENU.map(line).join('\n')}`
+    + `\n\n*More commands*\n${TELEGRAM_MORE_COMMANDS.map(line).join('\n')}`;
+}
+
+/**
+ * `/left`'s arguments: nothing (every category), a category, or a category
+ * with an amount — `/left groceries 20` is `/afford 20 groceries`, asked
+ * where people already look for what is left. The `/afford` order works too.
+ * A zero amount stays part of the name: "can I afford $0" is not a question.
+ */
+export function parseLeftArgs(args: string): { query?: string; amount?: number } {
+  const trimmed = (args ?? '').trim();
+  if (!trimmed) return {};
+  const amountFirst = parseAffordArgs(trimmed);
+  if (amountFirst) return amountFirst;
+  const trailing = trimmed.match(/^(.+?)\s+\$?(\d+(?:\.\d+)?)$/);
+  if (trailing) {
+    const amount = Number(trailing[2]);
+    if (Number.isFinite(amount) && amount > 0) return { query: trailing[1].trim(), amount };
+  }
+  return { query: trimmed };
 }
 
 /** One category's budget-vs-spend state, as `/left` and `/afford` need it —
@@ -93,6 +118,8 @@ export interface CategoryBudgetSnapshot {
 export interface BudgetPeriod {
   daysFromWeekStartToMonthEnd: number;
   daysLeftInMonthInclusive: number;
+  /** See `DailyDigestWindow.dayOfMonth`. */
+  dayOfMonth?: number;
 }
 
 /** The minimum a resolvable category has to carry. `parentName` is optional
@@ -447,7 +474,7 @@ export interface StatusReplyInput {
 
 /**
  * One account's sync-state chip, in the exact precedence the addon's own
- * balance card uses (src/tabs/OverviewTab.tsx): drift beats measured beats
+ * account list uses (src/components/AccountList.tsx): drift beats measured beats
  * neither.
  *
  * `drift: null` is ambiguous on its own — it means BOTH "compared and it

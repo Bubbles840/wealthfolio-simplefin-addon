@@ -21,14 +21,16 @@ describe('SetupChecklist', () => {
     expect(links).toHaveLength(2); // telegram + amazon remain
   });
 
-  it('deep-links each row to the right tab', () => {
+  it('sends each "Set up" to its own Settings card, not just the tab', () => {
+    // Landing on a page of collapsed cards with the right one shut was the old
+    // behaviour; the link now names the card to open.
     const onNavigate = vi.fn();
     render(<SetupChecklist {...base} onNavigate={onNavigate} />);
     const links = screen.getAllByRole('button', { name: /set up/i });
-    fireEvent.click(links[0]); // background sync → advanced
-    fireEvent.click(links[1]); // telegram → notifications
-    fireEvent.click(links[2]); // amazon → advanced
-    expect(onNavigate.mock.calls.map((c) => c[0])).toEqual(['advanced', 'notifications', 'advanced']);
+    links.forEach((l) => fireEvent.click(l));
+    expect(onNavigate.mock.calls).toEqual([
+      ['settings', 'docker'], ['settings', 'telegram'], ['settings', 'amazon'],
+    ]);
   });
 
   it('disappears when dismissed, and when everything is complete', () => {
