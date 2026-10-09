@@ -10,8 +10,10 @@ import {
   formatDuplicatePruneAlert,
   formatImportNotice,
   formatRefusedCreatesAlert,
+  dailyReportCarriesProblems,
 } from '../../shared/telegram';
 import { visibleUncategorized } from '../../shared/uncategorized';
+import { parseAnnouncedRefusals, unannouncedRefusals, withAnnouncedRefusals } from '../../shared/refused-alerts';
 import type { PendingLargeTxAlert, SecretsStore } from './secrets';
 import type { AddonContext } from '@wealthfolio/addon-sdk';
 
@@ -72,6 +74,9 @@ interface TelegramTarget {
    *  Notifications tab's default — a config written before the import notice
    *  existed on this side must not read as "opted out". */
   notifyOnImport: boolean;
+  /** The daily report is on, so its 🧹 list carries stuck transfers and
+   *  balance drift instead of messages of their own. */
+  dailyReportCarries: boolean;
 }
 
 /**
@@ -82,6 +87,17 @@ interface TelegramTarget {
  * A non-attempt is NOT a delivery failure, and the distinction decides whether
  * the ledgers get touched at all — see `deliverAddonAlerts`.
  */
+/** How recent the companion's last successful sync must be to count as
+ *  running — the same two days after which Budget calls its data stale. */
+const COMPANION_ALIVE_MS = 2 * 24 * 60 * 60 * 1000;
+
+async function companionSyncedRecently(store: SecretsStore): Promise<boolean> {
+  // Optional-called: a store built before 1.57 has no such method.
+  const health = await store.getSyncHealth?.().catch(() => null);
+  const at = health?.lastSuccessAt ? Date.parse(health.lastSuccessAt) : NaN;
+  return Number.isFinite(at) && Date.now() - at < COMPANION_ALIVE_MS;
+}
+
 async function telegramTarget(store: SecretsStore): Promise<TelegramTarget | null> {
   // The store's getter does a bare JSON.parse, so a truncated or hand-edited
   // secret throws. Treated as absent, matching the companion's parseSecretJson:
@@ -92,6 +108,7 @@ async function telegramTarget(store: SecretsStore): Promise<TelegramTarget | nul
     botToken: String(tg.botToken),
     chatId: String(tg.chatId),
     notifyOnImport: (tg as { notifyOnImport?: boolean }).notifyOnImport !== false,
+    dailyReportCarries: dailyReportCarriesProblems(tg as { dailyReportEnabled?: unknown }),
   };
 }
 
@@ -166,12 +183,19 @@ export async function deliverAddonAlerts(
     const send = (text: string) =>
       sendTelegramMessage(target.botToken, target.chatId, text, network);
 
+    // Folded into the daily report only when a companion is there to send
+    // one. On an addon-only install, or with the container down, folding
+    // would lose these for good: the core has already marked them alerted.
+    const folded = target.dailyReportCarries && await companionSyncedRecently(store);
+
     // ── Stuck transfers ─────────────────────────────────────────────────────
     // `sendTelegramMessage` reports an API-level rejection (bad token, rate
     // limit, a 400 from unbalanced Markdown) by RESOLVING `{ ok: false }`, so a
     // caller that ignores the result marks delivered what never arrived.
+    // While the daily report is on, its 🧹 list says these instead (1.57) —
+    // counted as told, so nothing is rolled back to be re-sent.
     const undeliveredOutTxIds: string[] = [];
-    for (const alert of stuckTransferAlerts) {
+    for (const alert of folded ? [] : stuckTransferAlerts) {
       const res = await send(formatStuckTransferAlert(alert));
       if (!res.ok) {
         console.warn(`[simplefin-sync] stuck-transfer alert not delivered, will retry next sync: ${res.description}`);
@@ -188,7 +212,7 @@ export async function deliverAddonAlerts(
     // ahead of its own feed — informational, self-resolving, no alarm — while
     // an AGED one has outlived plausible lag and gets the alarm styling.
     const undeliveredDrift: Array<{ sfinAccountId: string; phase: 'young' | 'aged' }> = [];
-    for (const alert of balanceDriftAlerts) {
+    for (const alert of folded ? [] : balanceDriftAlerts) {
       const res = await send(
         alert.phase === 'aged' ? formatBalanceDriftAlert(alert) : formatFeedLagNotice(alert),
       );
@@ -218,10 +242,22 @@ export async function deliverAddonAlerts(
     // Transactions the bank reported that Wealthfolio would not store. Sent
     // from whichever side ran the sync, because either can be the one that
     // hits the refusal.
+    //
+    // Once per refusal, shared with the companion through one secret: a
+    // refused row is never stored, so every later sync is refused again — and
+    // used to announce it again, every time.
     if (result.refusedCreates.length > 0) {
-      const res = await send(formatRefusedCreatesAlert(result.refusedCreates));
-      if (!res.ok) {
-        console.warn(`[simplefin-sync] refused-create notice not delivered: ${res.description}`);
+      const announced = parseAnnouncedRefusals(await store.getAnnouncedRefusals().catch(() => null));
+      const fresh = unannouncedRefusals(result.refusedCreates, announced);
+      if (fresh.length > 0) {
+        const res = await send(formatRefusedCreatesAlert(fresh));
+        if (!res.ok) {
+          console.warn(`[simplefin-sync] refused-create notice not delivered: ${res.description}`);
+        } else {
+          await store.setAnnouncedRefusals(
+            JSON.stringify(withAnnouncedRefusals(announced, fresh, new Date())),
+          ).catch(() => {});
+        }
       }
     }
 

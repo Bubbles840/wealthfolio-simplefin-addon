@@ -50,7 +50,8 @@ describe('getLedgerFacts', () => {
     `, [['card', -84.79], ['card2', -3]]);
     const citi = f.cardBalances.find((c) => c.name === 'Citi')!;
     // −100 + 40; the pending $25 is excluded because the bank's figure is posted-only.
-    expect(citi).toEqual({ name: 'Citi', ledger: -60, bank: -84.79, inFlight: false });
+    // The id is what tells the daily findings which accounts this covers.
+    expect(citi).toEqual({ wfId: 'card', name: 'Citi', ledger: -60, bank: -84.79, inFlight: false });
     expect(f.cardBalances.find((c) => c.name === 'Robinhood')!.inFlight).toBe(true);
     // Cash accounts are not here at all: they already have drift episodes.
     expect(f.cardBalances.map((c) => c.name).sort()).toEqual(['Citi', 'Robinhood']);

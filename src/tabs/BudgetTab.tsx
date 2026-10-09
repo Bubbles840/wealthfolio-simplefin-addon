@@ -31,6 +31,10 @@ import { PALETTES, paletteVars } from '../components/budget/palettes';
  * One range control drives every report at once, on the dashboard itself.
  */
 export interface BudgetTabProps {
+  /** A request from outside (Home's pool tile) to open one card full-screen.
+   *  `seq` changes on every request, so the same card can be asked for again
+   *  after it was closed. */
+  openRequest?: { id: string; seq: number };
   cube: ReportCube | null;
   customReports: CustomReport[];
   layout: BudgetLayout | null;
@@ -47,6 +51,8 @@ export interface BudgetTabProps {
   onConfirmedSubscriptionsChange?: (next: string[]) => void;
   /** Jumps to Wealthfolio's activities page — the drill view's escape hatch. */
   onOpenActivities?: () => void;
+  /** Opens Settings on the background-sync card — the empty state's way out. */
+  onSetUpCompanion?: () => void;
 }
 
 /** Two days: one missed nightly publish is routine, two is worth a strip. */
@@ -74,9 +80,20 @@ const MAX_R = 16;
 export function BudgetTab({
   cube, customReports, layout, onLayoutChange, onLayoutReset, onCustomReportsChange, store,
   hiddenSubscriptions = [], onHiddenSubscriptionsChange,
-  confirmedSubscriptions = [], onConfirmedSubscriptionsChange, onOpenActivities,
+  confirmedSubscriptions = [], onConfirmedSubscriptionsChange, onOpenActivities, openRequest,
+  onSetUpCompanion,
 }: BudgetTabProps) {
   const [fullId, setFullId] = useState<string | null>(null);
+  // Acted on ONCE per request. Initialised to whatever request already exists
+  // at mount, because this tab unmounts whenever another tab is shown: the
+  // page keeps its last request, and acting on it again at every remount
+  // reopened the pool burn-down on every return to Home.
+  const handledSeq = useRef(openRequest?.seq);
+  useEffect(() => {
+    if (!openRequest || openRequest.seq === handledSeq.current) return;
+    handledSeq.current = openRequest.seq;
+    setFullId(openRequest.id);
+  }, [openRequest?.seq]); // eslint-disable-line react-hooks/exhaustive-deps
   const [range, setRange] = useState<Range>(12);
   const [customizing, setCustomizing] = useState(false);
   const [builder, setBuilder] = useState<{ existing: CustomReport | null } | null>(null);
@@ -104,6 +121,10 @@ export function BudgetTab({
   const [confirmReset, setConfirmReset] = useState(false);
   /** The just-hidden card, so Hide always leaves a way back on screen. */
   const [hiddenToast, setHiddenToast] = useState<string | null>(null);
+  /** Which card's ⋯ menu is open in customize mode, if any. */
+  const [openMenu, setOpenMenu] = useState<string | null>(null);
+  /** Whether the "+ Add report" picker is showing. */
+  const [adding, setAdding] = useState(false);
   /** Pool editing, on the burn-down's own full screen: amount + end date as
    *  typed; parsed on save. Null = not editing. */
   const [poolEdit, setPoolEdit] = useState<{ amount: string; start: string; end: string } | null>(null);
@@ -143,16 +164,14 @@ export function BudgetTab({
     return () => clearTimeout(t);
   }, [hiddenToast]);
 
+  // Not a warning: a new install has no companion yet, and nothing is wrong.
   if (!cube) {
     return (
-      <div className="sfin-banner-warn">
-        <div className="sfin-banner-body">
-          <div>
-            <b>Reports need the companion.</b> The Budget tab renders data the
-            companion publishes on each sync — once a sync with v1.29.0+ has
-            run, the reports appear here on their own.
-          </div>
-        </div>
+      <div className="sfin-budget-empty">
+        <p>Budget reports come from the background companion; once it syncs, they appear here.</p>
+        {onSetUpCompanion && (
+          <Button variant="outline" onClick={onSetUpCompanion}>Set up background sync</Button>
+        )}
       </div>
     );
   }
@@ -416,7 +435,7 @@ export function BudgetTab({
 
   const startMove = (id: string) => (down: React.PointerEvent) => {
     // Buttons and the resize handle own their own taps.
-    if ((down.target as HTMLElement).closest('button, .sfin-resize-handle')) return;
+    if ((down.target as HTMLElement).closest('button, .sfin-resize-handle, .sfin-card-menu')) return;
     down.preventDefault();
     try { (down.currentTarget as Element).setPointerCapture?.(down.pointerId); } catch { /* jsdom */ }
     const rect0 = gridRef.current?.getBoundingClientRect();
@@ -477,104 +496,140 @@ export function BudgetTab({
     }
   };
 
+  /**
+   * One ⋯ per card in customize mode, and its actions in a menu (1.57). It was
+   * seven buttons per card — about 130 on a full board — for things done once
+   * in a while. Every action keeps its accessible name, so a screen reader
+   * finds each one where it was, one step in. The menu closes after an action.
+   */
   const controls = (id: string) => {
     const title = reportTitle(id, customReports);
     const custom = id.startsWith('custom:')
       ? customReports.find((r) => `custom:${r.id}` === id) ?? null
       : null;
+    const open = openMenu === id;
+    const act = (fn: () => void) => () => { fn(); setOpenMenu(null); };
     return (
       <div className="sfin-card-tools">
-        {custom && (
-          <>
-            <Button variant="ghost" aria-label={`Edit ${title}`} onClick={() => setBuilder({ existing: custom })}>
-              Edit
+        <Button
+          variant="ghost"
+          aria-label={`Options for ${title}`}
+          aria-haspopup="menu"
+          aria-expanded={open}
+          onClick={() => setOpenMenu(open ? null : id)}
+        >
+          ⋯
+        </Button>
+        {open && (
+          <div
+            className="sfin-card-menu"
+            role="menu"
+            aria-label={`Options for ${title}`}
+            onKeyDown={(e) => { if (e.key === 'Escape') setOpenMenu(null); }}
+          >
+            {custom && (
+              <>
+                <Button variant="ghost" role="menuitem" aria-label={`Edit ${title}`} onClick={act(() => setBuilder({ existing: custom }))}>
+                  Edit
+                </Button>
+                <Button
+                  variant="ghost"
+                  role="menuitem"
+                  aria-label={`Duplicate ${title}`}
+                  onClick={act(() => onCustomReportsChange([
+                    ...customReports,
+                    { ...custom, id: newCustomReportId(), name: `${custom.name} copy` },
+                  ]))}
+                >
+                  Duplicate
+                </Button>
+                <Button
+                  variant="ghost"
+                  role="menuitem"
+                  aria-label={`Delete ${title}`}
+                  onClick={act(() => onCustomReportsChange(customReports.filter((r) => r.id !== custom.id)))}
+                >
+                  Delete
+                </Button>
+              </>
+            )}
+            <Button
+              variant="ghost"
+              role="menuitem"
+              aria-label={`Move ${title} to front`}
+              onClick={act(() => onLayoutChange(moveCardTo(storedLayout, availableIds, cube.pool !== null, id, 0, 0)))}
+            >
+              Move to front
             </Button>
             <Button
               variant="ghost"
-              aria-label={`Duplicate ${title}`}
-              onClick={() => onCustomReportsChange([
-                ...customReports,
-                { ...custom, id: newCustomReportId(), name: `${custom.name} copy` },
-              ])}
+              role="menuitem"
+              aria-label={`Move ${title} up`}
+              onClick={act(() => onLayoutChange(swapCard(storedLayout, availableIds, cube.pool !== null, id, -1)))}
             >
-              Duplicate
+              Move up
             </Button>
             <Button
               variant="ghost"
-              aria-label={`Delete ${title}`}
-              onClick={() => onCustomReportsChange(customReports.filter((r) => r.id !== custom.id))}
+              role="menuitem"
+              aria-label={`Move ${title} down`}
+              onClick={act(() => onLayoutChange(swapCard(storedLayout, availableIds, cube.pool !== null, id, 1)))}
             >
-              Delete
+              Move down
             </Button>
-          </>
+            <Button
+              variant="ghost"
+              role="menuitem"
+              aria-label={`Resize ${title} (now ${SIZE_LABELS[resolved.sizeOf(id)]})`}
+              onClick={act(() => onLayoutChange(cycleSize(storedLayout, id)))}
+            >
+              Size: {SIZE_LABELS[resolved.sizeOf(id)]}
+            </Button>
+            <Button
+              variant="ghost"
+              role="menuitem"
+              aria-label={`Range for ${title}: ${pinLabel(layout?.ranges?.[id] ?? null)}`}
+              onClick={act(() => {
+                const current = layout?.ranges?.[id] ?? null;
+                const idx = RANGE_PIN_CYCLE.findIndex((v) => v === current);
+                const next = RANGE_PIN_CYCLE[(idx + 1) % RANGE_PIN_CYCLE.length];
+                const ranges = { ...(storedLayout.ranges ?? {}) };
+                if (next === null) delete ranges[id];
+                else ranges[id] = next;
+                onLayoutChange({ ...storedLayout, ranges });
+              })}
+            >
+              Range: {pinLabel(layout?.ranges?.[id] ?? null)}
+            </Button>
+            <Button
+              variant="ghost"
+              role="menuitem"
+              aria-label={`Palette for ${title}`}
+              onClick={act(() => {
+                const ids: Array<string | null> = [null, ...PALETTES.map((pal) => pal.id)];
+                const current = layout?.palettes?.[id] ?? null;
+                const next = ids[(ids.findIndex((v) => v === current) + 1) % ids.length];
+                const palettes = { ...(storedLayout.palettes ?? {}) };
+                if (next === null) delete palettes[id];
+                else palettes[id] = next;
+                onLayoutChange({ ...storedLayout, palettes });
+              })}
+            >
+              Next colors
+            </Button>
+            <Button
+              variant="ghost"
+              role="menuitem"
+              aria-label={`Hide ${title}`}
+              onClick={act(() => {
+                onLayoutChange(toggleHidden(storedLayout, availableIds, id));
+                setHiddenToast(id);
+              })}
+            >
+              Hide
+            </Button>
+          </div>
         )}
-        <Button variant="ghost" aria-label={`Pin ${title}`} onClick={() => onLayoutChange(moveCardTo(storedLayout, availableIds, cube.pool !== null, id, 0, 0))}>
-          📌 Pin
-        </Button>
-        <Button
-          variant="ghost"
-          aria-label={`Move ${title} up`}
-          onClick={() => onLayoutChange(swapCard(storedLayout, availableIds, cube.pool !== null, id, -1))}
-        >
-          ↑
-        </Button>
-        <Button
-          variant="ghost"
-          aria-label={`Move ${title} down`}
-          onClick={() => onLayoutChange(swapCard(storedLayout, availableIds, cube.pool !== null, id, 1))}
-        >
-          ↓
-        </Button>
-        <Button
-          variant="ghost"
-          aria-label={`Resize ${title} (now ${SIZE_LABELS[resolved.sizeOf(id)]})`}
-          title={`Cycle size — now ${SIZE_LABELS[resolved.sizeOf(id)]}`}
-          onClick={() => onLayoutChange(cycleSize(storedLayout, id))}
-        >
-          ⤢ {SIZE_LABELS[resolved.sizeOf(id)]}
-        </Button>
-        <Button
-          variant="ghost"
-          aria-label={`Range for ${title}`}
-          title={`Range: ${pinLabel(layout?.ranges?.[id] ?? null)} — click to change`}
-          onClick={() => {
-            const current = layout?.ranges?.[id] ?? null;
-            const idx = RANGE_PIN_CYCLE.findIndex((v) => v === current);
-            const next = RANGE_PIN_CYCLE[(idx + 1) % RANGE_PIN_CYCLE.length];
-            const ranges = { ...(storedLayout.ranges ?? {}) };
-            if (next === null) delete ranges[id];
-            else ranges[id] = next;
-            onLayoutChange({ ...storedLayout, ranges });
-          }}
-        >
-          ⏱ {pinLabel(layout?.ranges?.[id] ?? null)}
-        </Button>
-        <Button
-          variant="ghost"
-          aria-label={`Palette for ${title}`}
-          title="Cycle this card's palette"
-          onClick={() => {
-            const ids: Array<string | null> = [null, ...PALETTES.map((pal) => pal.id)];
-            const current = layout?.palettes?.[id] ?? null;
-            const next = ids[(ids.findIndex((v) => v === current) + 1) % ids.length];
-            const palettes = { ...(storedLayout.palettes ?? {}) };
-            if (next === null) delete palettes[id];
-            else palettes[id] = next;
-            onLayoutChange({ ...storedLayout, palettes });
-          }}
-        >
-          🎨
-        </Button>
-        <Button
-          variant="ghost"
-          aria-label={`Hide ${title}`}
-          onClick={() => {
-            onLayoutChange(toggleHidden(storedLayout, availableIds, id));
-            setHiddenToast(id);
-          }}
-        >
-          Hide
-        </Button>
       </div>
     );
   };
@@ -708,35 +763,44 @@ export function BudgetTab({
 
       <div className="sfin-budget-grid" ref={gridRef} style={layout?.palette ? paletteVars(layout.palette) : undefined}>
         {cells.map(({ id }) => card(id))}
-        {!customizing && (
-          <button
-            type="button"
-            className="sfin-new-report-card"
-            aria-label="New report"
-            onClick={() => setBuilder({ existing: null })}
-          >
-            + New report
-          </button>
-        )}
+        <button
+          type="button"
+          className="sfin-new-report-card"
+          aria-expanded={adding}
+          onClick={() => setAdding((a) => !a)}
+        >
+          + Add report
+        </button>
       </div>
 
-      {customizing && resolved.hidden.length > 0 && (
-        <div style={{ marginTop: 16 }}>
-          <SectionLabel>Hidden</SectionLabel>
-          <div className="sfin-banner-actions" style={{ flexWrap: 'wrap' }}>
-            {resolved.hidden.map((id) => (
-              <Button
-                key={id}
-                variant="ghost"
-                aria-label={`Unhide ${reportTitle(id, customReports)}`}
-                onClick={() => onLayoutChange(toggleHidden(storedLayout, availableIds, id))}
-              >
-                {reportTitle(id, customReports)} — unhide
-              </Button>
-            ))}
-          </div>
+      {/* Hidden reports come back from here, in or out of customize mode — a
+          fresh layout starts with six and keeps the rest one tap away (1.57).
+          It replaced both the "+ New report" card and customize's Hidden row. */}
+      {adding && (
+        <div className="sfin-card sfin-add-report" role="group" aria-label="Add a report">
+          {resolved.hidden.length > 0 && (
+            <div className="sfin-add-report-list">
+              {resolved.hidden.map((id) => (
+                <Button
+                  key={id}
+                  variant="outline"
+                  aria-label={`Add ${reportTitle(id, customReports)}`}
+                  onClick={() => {
+                    onLayoutChange(toggleHidden(storedLayout, availableIds, id));
+                    setAdding(false);
+                  }}
+                >
+                  {reportTitle(id, customReports)}
+                </Button>
+              ))}
+            </div>
+          )}
+          <Button variant="ghost" onClick={() => { setAdding(false); setBuilder({ existing: null }); }}>
+            Build your own…
+          </Button>
         </div>
       )}
+
     </>
   );
 }

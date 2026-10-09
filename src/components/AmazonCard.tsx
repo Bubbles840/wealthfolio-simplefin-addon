@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Button, CollapsibleCard, Disclosure, ErrorBox, statusToneClass } from './ui';
+import { Button, CollapsibleCard, Disclosure, ErrorBox, statusToneClass, Why } from './ui';
 import type { StatusMessage } from './ui';
 import { CategoryIcon } from './CategoryIcon';
 import {
@@ -10,6 +10,7 @@ import {
   type AmazonMailConfig,
 } from '../../shared/amazon-config';
 import type { CategoryCatalogEntry, SecretsStore } from '../utils/secrets';
+import type { AmazonMailStatus } from '../../shared/status-keys';
 
 /**
  * Setup for automatic categorization of Amazon charges.
@@ -64,7 +65,7 @@ export interface AmazonDraftState {
    * nothing to report or an older companion that never publishes this key;
    * the two must be visually identical (see `getAmazonMailStatus`).
    */
-  mailStatus: { unparsed: number; asOf: string } | null;
+  mailStatus: AmazonMailStatus | null;
   /** Has the stored config been read yet? Distinguishes "loading" from "not set
    *  up", which the collapsed summary says out loud. */
   loaded: boolean;
@@ -84,7 +85,7 @@ export function useAmazonDraft(store: SecretsStore): AmazonDraftState {
    *  Telegram tab's `savedCfg` is. */
   const [saved, setSaved] = useState<AmazonDraft>(EMPTY_AMAZON_DRAFT);
   const [labels, setLabels] = useState<AmazonLabelCatalog>({});
-  const [mailStatus, setMailStatus] = useState<{ unparsed: number; asOf: string } | null>(null);
+  const [mailStatus, setMailStatus] = useState<AmazonMailStatus | null>(null);
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
@@ -180,6 +181,13 @@ export function AmazonCard({
   // count with no configured mailbox is a stale value left over from before a
   // reset, not a live problem to surface.
   const unparsed = configured ? (mailStatus?.unparsed ?? 0) : 0;
+  // Same rule: a sign-in error is only live while a mailbox is configured.
+  const signInError = configured ? mailStatus?.error ?? null : null;
+  // The companion has read this mailbox, successfully, and never found a
+  // single message in it — the signature of a Gmail filter that forwards
+  // nothing. Not shown before the first check (no `asOf`), when it would be
+  // a guess.
+  const neverReceived = configured && !!mailStatus?.asOf && !signInError && !mailStatus?.lastMailAt;
 
   const summaryBase = !loaded
     ? 'Loading…'
@@ -190,9 +198,11 @@ export function AmazonCard({
         : `On · ${labelNames.length} Amazon categories mapped`;
   // Appended, not replacing: a collapsed card is the one place this warning
   // could otherwise hide entirely, so the summary line has to carry it too.
-  const summary = unparsed > 0
-    ? `${summaryBase} · ${unparsed} email${unparsed === 1 ? '' : 's'} unread`
-    : summaryBase;
+  const summary = signInError
+    ? `${summaryBase} · cannot sign in to the mailbox`
+    : unparsed > 0
+      ? `${summaryBase} · ${unparsed} email${unparsed === 1 ? '' : 's'} unread`
+      : summaryBase;
 
   const save = async () => {
     await amazon.save();
@@ -210,6 +220,26 @@ export function AmazonCard({
       open={open}
       onToggle={onToggle}
     >
+      {signInError && (
+        <ErrorBox detail={signInError}>
+          The companion could not sign in to {user || 'the mailbox'} on its last check, so
+          Amazon charges are not being categorized. Check the address and the app
+          password (paste it exactly as Google shows it — the spaces are fine).
+        </ErrorBox>
+      )}
+
+      {neverReceived && (
+        <div className="sfin-callout">
+          No Amazon emails have reached this mailbox yet. Check that the Gmail filter&apos;s{' '}
+          <strong>To</strong> field is empty.
+          <Why>
+            A filter with anything in its To field matches no Amazon mail, so nothing is
+            forwarded and nothing fails. Gmail also only forwards mail that arrives after
+            the filter is made, so an order placed before then never shows up here.
+          </Why>
+        </div>
+      )}
+
       {unparsed > 0 && (
         <ErrorBox>
           {unparsed} recent email{unparsed === 1 ? '' : 's'} could not be read — Amazon

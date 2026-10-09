@@ -104,7 +104,7 @@ describe('evaluateLedgerChecks', () => {
     // The one-day-old leg is still inside the window where its pair normally
     // arrives, so only the settled one is worth a line.
     expect(findings).toHaveLength(1);
-    expect(findings[0].message).toContain('$1300.00');
+    expect(findings[0].message).toContain('$1,300.00');
     expect(findings[0].message).toMatch(/income/i);
   });
 
@@ -168,41 +168,47 @@ describe('evaluateLedgerChecks', () => {
     });
   });
 
-  it('does not count a once-only finding as said when the cap hid it', () => {
-    // Live on the first morning: eleven findings, four shown, "…and 7 more".
-    // Every one was stamped as seen — including the seven nobody saw — so the
-    // once-only ones among them expired unshown and the user never learned
-    // what they were. A finding the cap hid must stay unstamped, so it takes
-    // its turn as the visible ones age out.
-    const f = clean();
-    f.idleRefunds = Array.from({ length: 4 }, (_, i) => ({ id: `r${i}`, description: `Refund ${i}`, amount: 5 }));
-    f.categories = Array.from({ length: 3 }, (_, i) => ({
-      name: `Cat ${i}`, budget: 100, spent: 500, largest: { id: `p${i}`, description: `Buster ${i}`, amount: 400 },
-    }));
-    const day1 = evaluateLedgerChecks(f, {}, NOW);
-    expect(day1.findings).toHaveLength(5);
-    // The four always-on refunds fill the block; the three busters were hidden.
-    expect(day1.findings[4].message).toMatch(/3 more/);
-    expect(day1.keys).toEqual(['idle-refund:r0', 'idle-refund:r1', 'idle-refund:r2', 'idle-refund:r3']);
-    // Two refunds get filed. The busters now surface, and are said as new.
-    f.idleRefunds = f.idleRefunds.slice(0, 2);
-    const seen = nextLedgerCheckSeen({}, day1.keys, NOW);
-    const day2 = evaluateLedgerChecks(f, seen, new Date(NOW.getTime() + 86_400_000));
-    expect(day2.findings.map((x) => x.message).join('\n')).toContain('Buster 0');
-    expect(day2.keys).toContain('budget-buster:p0');
-  });
-
-  it('caps the block so a bad week cannot bury the spending report', () => {
-    // The digest was called bloated once already. Integrity problems come
-    // first, and everything past the cap collapses into a single line.
+  it('returns every due finding — the report folds them, so there is no cap to hide one behind', () => {
+    // Until 1.57.0 these printed straight into the morning report, capped at
+    // five lines plus "…and N more", and the hidden tail had to be left
+    // unstamped so a once-only finding was not used up unseen. The report now
+    // prints only a count with the whole list behind a button, so nothing is
+    // hidden, and every finding — once-only ones included — is stamped the day
+    // it is said.
     const f = clean();
     f.idleRefunds = Array.from({ length: 9 }, (_, i) => ({ id: `r${i}`, description: `Refund ${i}`, amount: 5 }));
+    f.categories = [{ name: 'Shopping', budget: 100, spent: 500, largest: { id: 'p0', description: 'Buster', amount: 400 } }];
     const { findings, keys } = evaluateLedgerChecks(f, {}, NOW);
-    expect(findings).toHaveLength(5);
-    expect(findings[4].message).toMatch(/5 more/);
-    // Always-on conditions stay tracked whether shown or not: they repeat
-    // regardless, so stamping them costs nothing.
-    expect(keys).toHaveLength(9);
+    expect(findings).toHaveLength(10);
+    expect(findings.some((x) => /more ledger issue/.test(x.message))).toBe(false);
+    expect(keys).toHaveLength(10);
+    expect(keys).toContain('budget-buster:p0');
+  });
+
+  it('writes amounts the way every other message does, with thousands separators', () => {
+    const f = clean();
+    f.idleRefunds = [{ id: 'r1', description: 'Venmo', amount: 1234.5 }];
+    const [finding] = evaluateLedgerChecks(f, {}, NOW).findings;
+    expect(finding.message).toContain('($1,234.50)');
+  });
+
+  it('gives each finding its key, a short button label, and a fix where one exists', () => {
+    const f = clean();
+    f.groupedNonTransfers = [{ id: 'g1', description: 'Payment to Citibank Credit Card Payments', amount: 94.93, type: 'WITHDRAWAL' }];
+    f.idleRefunds = [{ id: 'r1', description: 'Transfer from Venmo Transfers', amount: 50 }];
+    f.needsReview = 4;
+    const { findings } = evaluateLedgerChecks(f, {}, NOW);
+    const byKey = Object.fromEntries(findings.map((x) => [x.key, x]));
+    expect(byKey['grouped-non-transfer:g1'].fix).toEqual({
+      kind: 'make-transfer', activityId: 'g1',
+      description: 'Payment to Citibank Credit Card Payments', amount: 94.93, activityType: 'WITHDRAWAL',
+    });
+    expect(byKey['idle-refund:r1'].fix).toEqual({ kind: 'pick-category', activityId: 'r1' });
+    expect(byKey['needs-review'].fix).toBeUndefined();
+    for (const x of findings) expect((x.label ?? '').length).toBeLessThanOrEqual(45);
+    // The old wording told the reader to "retype it", which does not stick:
+    // the next sync rewrites the type. The message now names the real fix.
+    expect(byKey['grouped-non-transfer:g1'].message).toContain('make it a transfer');
   });
 });
 
@@ -233,7 +239,8 @@ describe('a transfer whose other half never arrived', () => {
     expect(first.findings).toHaveLength(1);
     const msg = first.findings[0].message;
     expect(msg).toContain('Transfer to Capital One');
-    expect(msg).toContain('$3000.00');
+    expect(msg).toContain('$3,000.00');
+    expect(msg).toContain('left Spend on Aug 10 but');
     expect(msg).toContain('Savings');
     expect(msg).toContain('fix-transfers');
     // A ledger error: it repeats.

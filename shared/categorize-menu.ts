@@ -429,7 +429,7 @@ function finish(generation: number, text: string, rows: Btn[][]): RenderResult {
 }
 
 const DONE_BTN: Btn = { text: 'Done', action: { kind: 'close' } };
-const BACK_TO_LIST_BTN: Btn = { text: 'Back to list', action: { kind: 'goto', screen: { kind: 'list', page: 0 } } };
+const BACK_TO_LIST_BTN: Btn = { text: '‹ Back to list', action: { kind: 'goto', screen: { kind: 'list', page: 0 } } };
 
 function pairUp<T>(items: T[]): T[][] {
   const rows: T[][] = [];
@@ -554,7 +554,7 @@ function renderTxn(session: MenuSession, activityId: string, showSpending = fals
     // to the same category is a harmless no-op for the controller to shrug
     // off, not a state this screen needs to special-case.
     ...(isRecategorize ? [] : [[{ text: 'Keep uncategorized', action: { kind: 'dismiss' as const, activityId } }]]),
-    [{ text: '« Back', action: { kind: 'goto', screen: { kind: 'list', page: 0 } } }],
+    [{ text: '‹ Back', action: { kind: 'goto', screen: { kind: 'list', page: 0 } } }],
   ];
 
   // Text IS Markdown-parsed, unlike button labels, so every interpolated
@@ -586,7 +586,7 @@ function renderSubcats(session: MenuSession, activityId: string, parentId: strin
   const rows: Btn[][] = [
     ...childButtons.map((b) => [b]),
     [{ text: `Just ${parent.name} itself`, action: assignAction(session.mode, activityId, parent.id) }],
-    [{ text: '« Back', action: { kind: 'goto', screen: { kind: 'txn', activityId } } }],
+    [{ text: '‹ Back', action: { kind: 'goto', screen: { kind: 'txn', activityId } } }],
   ];
 
   const text = `Choose a subcategory of ${escapeMarkdown(parent.name)}:`;
@@ -621,7 +621,7 @@ function renderFiled(
   const text = `Filed ${escapeMarkdown(txn.description)} → ${escapeMarkdown(category.name)}.`;
   const rows: Btn[][] = [
     [{
-      text: 'Undo',
+      text: '↩ Undo',
       action: {
         kind: 'unassign',
         activityId: screen.activityId,
@@ -665,7 +665,7 @@ function renderDismissed(
 
   const text = `${escapeMarkdown(txn.description)} will stay uncategorized.`;
   const rows: Btn[][] = [
-    [{ text: 'Undo', action: { kind: 'undismiss', activityId: screen.activityId } }],
+    [{ text: '↩ Undo', action: { kind: 'undismiss', activityId: screen.activityId } }],
     [BACK_TO_LIST_BTN],
     [DONE_BTN],
   ];
@@ -701,7 +701,7 @@ function renderRulePreview(session: MenuSession, activityId: string, categoryId:
   const text = ruleCopy(escapeMarkdown(pattern), escapeMarkdown(categoryDisplayName(category))) + catchLine;
   const rows: Btn[][] = [
     [{ text: 'Create rule', action: { kind: 'createRule', activityId, categoryId } }],
-    [{ text: '« Back', action: { kind: 'goto', screen: { kind: 'txn', activityId } } }],
+    [{ text: '‹ Back', action: { kind: 'goto', screen: { kind: 'txn', activityId } } }],
   ];
   return finish(session.generation, text, rows);
 }
@@ -826,7 +826,7 @@ function renderRefiled(
     // is data to put back and Wealthfolio would refuse it.
     ...(screen.restore.length > 0 && !undoBlocked
       ? [[{
-        text: 'Undo',
+        text: '↩ Undo',
         action: {
           kind: 'undoReassign' as const,
           activityId: screen.activityId,
@@ -857,7 +857,7 @@ function renderRefiled(
  * to a settings screen and leaves them where they started.
  */
 const REIMBURSEMENT_HINT =
-  'A payback can be turned into a spending offset by marking it a reimbursement in Advanced → Transaction Rules.';
+  'A payback can be turned into a spending offset by marking it a reimbursement in Settings → Transaction rules.';
 
 /**
  * The three refusals `refused` can show — written fresh rather than
@@ -906,7 +906,7 @@ function renderRefused(
   screen: Extract<MenuScreen, { kind: 'refused' }>,
 ): RenderResult {
   const rows: Btn[][] = [
-    [{ text: '« Back', action: { kind: 'goto', screen: { kind: 'txn', activityId: screen.activityId } } }],
+    [{ text: '‹ Back', action: { kind: 'goto', screen: { kind: 'txn', activityId: screen.activityId } } }],
     [DONE_BTN],
   ];
   return finish(session.generation, REFUSED_TEXT[screen.reason], rows);

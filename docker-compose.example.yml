@@ -17,11 +17,15 @@ services:
     #   dockerfile: companion/Dockerfile
     restart: unless-stopped
     environment:
-      - WEALTHFOLIO_API_URL=http://wealthfolio:8088
+      - WEALTHFOLIO_API_URL=http://wealthfolio:8088   # Wealthfolio's default port
       - WEALTHFOLIO_PASSWORD=your_wealthfolio_password
-      - WEALTHFOLIO_DB_PATH=/mnt/wealthfolio.db
+      - WEALTHFOLIO_DB_PATH=/mnt/wealthfolio/wealthfolio.db
+      - TZ=America/New_York          # Required, or every schedule fires on UTC
     volumes:
-      - /mnt/data/media/budget/wealthfolio/wealthfolio.db:/mnt/wealthfolio.db:ro
+      # Mount the FOLDER containing wealthfolio.db, not the .db file itself.
+      # A file-only mount hides the -wal/-shm files beside it, so the companion
+      # reads whatever was last checkpointed — observed two days stale.
+      - /path/to/wealthfolio:/mnt/wealthfolio:ro
     networks:
       - wealthfolio_default         # must match your Wealthfolio network name
     user: "1000:1000"

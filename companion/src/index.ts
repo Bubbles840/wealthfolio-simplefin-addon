@@ -18,7 +18,8 @@ import { runSyncCore, descriptionFromComment, txIdFromComment } from '../../shar
 import type { SyncResult } from '../../shared/sync-core.js';
 import { RestSyncHost, RestSyncStore } from './rest-host.js';
 import { WealthfolioClient } from './wealthfolio.js';
-import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatMonthlyWrapUp, formatSyncHealthFooter, formatLargeTransactionAlert, formatBalanceDriftAlert, formatFeedLagNotice, formatStuckTransferAlert, formatDuplicatePruneAlert, formatImportNotice, formatRefusedCreatesAlert, formatPoolLine, formatPoolSection, buildDismissKeyboard, IMPORT_NOTICE_UNCATEGORIZED_CAP, escapeMarkdown, LARGE_TX_OUTBOX_SECRET_KEY, RECATEGORIZE_ENTRY_CALLBACK } from '../../shared/telegram.js';
+import { resolveDigestRows, resolveReportDetail, shortDate, shortDateTime, formatDollars } from '../../shared/telegram.js';
+import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatMonthlyWrapUp, formatSyncHealthFooter, formatLargeTransactionAlert, formatBalanceDriftAlert, formatFeedLagNotice, formatStuckTransferAlert, formatDuplicatePruneAlert, formatImportNotice, formatRefusedCreatesAlert, formatPoolLine, formatPoolSection, buildDismissKeyboard, dailyReportCarriesProblems, IMPORT_NOTICE_UNCATEGORIZED_CAP, escapeMarkdown, LARGE_TX_OUTBOX_SECRET_KEY, RECATEGORIZE_ENTRY_CALLBACK } from '../../shared/telegram.js';
 import { pruneDismissals, mergeDismissals } from './dismissals.js';
 import { UNDISMISS_PAYLOAD_PREFIX, UNDISMISS_BUTTON_TEXT_PREFIX } from './telegram-listener.js';
 import { DISMISSAL_MAX_AGE_DAYS } from '../../shared/uncategorized.js';
@@ -44,14 +45,16 @@ const DEFAULT_WEALTHFOLIO_DB_PATH = '/mnt/wealthfolio.db';
 export function wealthfolioDbPath(): string {
   return process.env.WEALTHFOLIO_DB_PATH || DEFAULT_WEALTHFOLIO_DB_PATH;
 }
-import { evaluateSelfCheck, formatSelfCheckBlock } from '../../shared/self-check.js';
+import { formatSelfCheckBlock, formatFindingsSummary, printsInFull } from '../../shared/self-check.js';
 import { readInstalledAddonVersion } from './installed-addon.js';
 import { getLedgerFacts } from './ledger-facts.js';
-import { evaluateLedgerChecks, nextLedgerCheckSeen, type LedgerCheckSeen } from '../../shared/ledger-checks.js';
+import { REFUSED_ALERTED_SECRET_KEY, parseAnnouncedRefusals, unannouncedRefusals, withAnnouncedRefusals } from '../../shared/refused-alerts.js';
+import { gatherFindings, readSyncHealth, updateSnoozes, type FindingsDeps } from './daily-findings.js';
+import { createFindingsMenu, SHOW_FINDINGS_BUTTON, type FindingsMenu } from './findings-menu.js';
+import { withSnooze } from '../../shared/findings.js';
 
 /** When each ledger-check condition was first seen — what lets a card mismatch
  *  wait out feed lag before speaking, and a budget nudge be said only once. */
-const LEDGER_CHECK_SEEN_SECRET_KEY = 'ledger_check_seen';
 import { monthEndForecast, previousThreeFullMonths, daysInMonthOf } from '../../shared/projection.js';
 import { startTelegramListener } from './telegram-listener.js';
 import type { TelegramListenerDeps } from './telegram-listener.js';
@@ -62,7 +65,7 @@ import { DEFAULT_GLYPH_STYLE, money } from '../../shared/telegram.js';
 import type { GlyphStyle, InlineKeyboard } from '../../shared/telegram.js';
 import type { DismissalLedger } from './dismissals.js';
 import type { SyncHealth } from '../../shared/telegram.js';
-import { SIMPLEFIN_SYNC_VERSION, COMPANION_VERSION_SECRET_KEY, ADDON_VERSION_SECRET_KEY, isNewerVersion } from '../../shared/version.js';
+import { SIMPLEFIN_SYNC_VERSION, COMPANION_VERSION_SECRET_KEY, INSTALLED_ADDON_VERSION_SECRET_KEY, isNewerVersion } from '../../shared/version.js';
 import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeRuleCategorizedAmazonRows, getNativeCategorizedSpending, getNativeSpendingCategories, getNativeCategoryCatalog, getNativeSubcategorySpending, getNativeUncategorizedSpendingTotal, countRulePatternMatches, getNativeSpendMatrix, getNativeIncomeByMonthAccount, getNativeUncategorizedByMonthAccount, getNativeMerchantRows, getNativeDrillRows, getNativeFeesInterestByMonth, getNativeSpendDailyTotals, getNativeValuationByMonth, getNativeIncomeCategories } from './sqlite-native.js';
 import { publishUncategorizedStatusForDbPath } from './uncategorized-status.js';
 import { createCategorizeController, SPENDING_TAXONOMY_ID } from './categorize.js';
@@ -70,7 +73,7 @@ import { createAmazonLabelMenu, type AmazonLabelMenu } from './amazon-labels.js'
 import { fileAmazonCharges } from './amazon-filing.js';
 import { createTransferLearning, type TransferLearning } from './transfer-learning.js';
 import type { CategorizeController, CategorizeDeps } from './categorize.js';
-import { AMAZON_MAIL_STATUS_SECRET_KEY, UNCATEGORIZED_STATUS_SECRET_KEY, POOL_STATUS_SECRET_KEY } from '../../shared/status-keys.js';
+import { AMAZON_MAIL_STATUS_SECRET_KEY, UNCATEGORIZED_STATUS_SECRET_KEY, POOL_STATUS_SECRET_KEY, type AmazonMailStatus } from '../../shared/status-keys.js';
 import {
   formatHelpReply,
   formatLeftReply,
@@ -79,6 +82,7 @@ import {
   formatReportFooter,
   formatSyncReply,
   parseAffordArgs,
+  parseLeftArgs,
   resolveCategoryQuery,
   formatCategoryQueryMiss,
   NEWRULE_CATEGORY_LIST_HINT,
@@ -127,6 +131,29 @@ export function validateStartupEnv(): void {
   if (!hasPassword) {
     throw new Error('Missing required authentication: set WEALTHFOLIO_PASSWORD, WEALTHFOLIO_PASSWORD_FILE, or WEALTHFOLIO_API_KEY');
   }
+}
+
+/**
+ * Setup mistakes that do not stop the daemon but quietly break it, each said
+ * once at startup in words that name the fix. Not fatal: the password file can
+ * legitimately appear a moment after the container starts (`resolvePassword`
+ * re-reads it on every login), and a missing TZ still syncs — at the wrong
+ * hour.
+ */
+export function startupWarnings(env: NodeJS.ProcessEnv = process.env, fileExists: (p: string) => boolean = existsSync): string[] {
+  const warnings: string[] = [];
+  const file = env.WEALTHFOLIO_PASSWORD_FILE;
+  if (file && !env.WEALTHFOLIO_PASSWORD && !env.WEALTHFOLIO_API_KEY && !fileExists(file)) {
+    // Otherwise this surfaces later as a failed LOGIN — "wrong password" —
+    // when the real problem is that there is no password file at that path.
+    warnings.push(`WEALTHFOLIO_PASSWORD_FILE points at ${file}, which does not exist — every login will fail until it does. Check the path and the volume mount.`);
+  }
+  if (!env.TZ) {
+    // node:22-alpine ships no timezone, so every schedule runs on UTC: the
+    // 8am report arrives at 4am Eastern.
+    warnings.push('TZ is not set, so every schedule runs on UTC (an 8am report arrives at 4am in New York). Set TZ, e.g. TZ=America/New_York.');
+  }
+  return warnings;
 }
 
 export function resolvePassword(): string {
@@ -233,7 +260,7 @@ async function checkSyncHealthAlert(wfClient: WealthfolioClient): Promise<void> 
   const result = await sendTelegramMessage(
     tg.botToken,
     tg.chatId,
-    `⚠️ *SimpleFin Sync has been failing since ${new Date(health.firstFailedAt).toLocaleString()}*\nLast error: ${lastError}`,
+    `⚠️ *SimpleFin Sync has been failing since ${shortDateTime(health.firstFailedAt)}*\nLast error: ${lastError}`,
   );
   if (!result.ok) {
     log(`Sync health alert failed to send, will retry next sync: ${result.description}`);
@@ -267,6 +294,8 @@ async function sendStuckTransferAlert(
   const tg = parseSecretJson<any>(tgRaw, 'telegram_config');
   if (!tg) return true;
   if (!tg.botToken || !tg.chatId || tg.enabled === false) return true;
+  // The daily report's unlinked-transfer findings say this instead.
+  if (dailyReportCarriesProblems(tg)) return true;
   // Text built by `shared/telegram.ts` — including the escaping of the
   // bank-supplied description — so the addon, which now delivers these too,
   // cannot say anything different about the same episode.
@@ -323,6 +352,8 @@ async function sendBalanceDriftAlert(
   const tg = parseSecretJson<any>(tgRaw, 'telegram_config');
   if (!tg) return true;
   if (!tg.botToken || !tg.chatId || tg.enabled === false) return true;
+  // The daily report's balance-drift finding says this instead.
+  if (dailyReportCarriesProblems(tg)) return true;
   // Phase picks the voice — see the addon's deliverAddonAlerts, which makes
   // the identical choice: young informs (feed lag resolves itself), aged alarms.
   const text = alert.phase === 'aged' ? formatBalanceDriftAlert(alert) : formatFeedLagNotice(alert);
@@ -511,6 +542,12 @@ async function pollAmazonMail(
   };
   if (!amazonMailConfigured(merged)) return [];
 
+  // The previous status, carried forward: `lastMailAt` must survive runs that
+  // find nothing new, and a failed login must not wipe an `unparsed` warning.
+  const previous = parseSecretJson<AmazonMailStatus>(
+    await wfClient.getAddonSecret('simplefin-sync', AMAZON_MAIL_STATUS_SECRET_KEY).catch(() => null),
+    AMAZON_MAIL_STATUS_SECRET_KEY,
+  );
   let source: MailSource | null = null;
   try {
     source = await createImapSource(merged);
@@ -536,16 +573,33 @@ async function pollAmazonMail(
     // Wrapped in its own catch, same swallow-and-continue posture as every
     // other status publish here (see `publishUncategorizedStatus`): a stats
     // secret must never be able to fail a sync.
+    //
+    // `lastMailAt` is what tells "nothing ordered lately" apart from "the Gmail
+    // filter forwards nothing" — the second is the setup trap where a filter
+    // with anything in its To field silently matches no Amazon mail at all.
+    const now = new Date().toISOString();
+    const status: AmazonMailStatus = {
+      unparsed: result.unparsed,
+      asOf: now,
+      ...(result.scanned > 0 ? { lastMailAt: now } : previous?.lastMailAt ? { lastMailAt: previous.lastMailAt } : {}),
+    };
     await wfClient
-      .setAddonSecret(
-        'simplefin-sync',
-        AMAZON_MAIL_STATUS_SECRET_KEY,
-        JSON.stringify({ unparsed: result.unparsed, asOf: new Date().toISOString() }),
-      )
+      .setAddonSecret('simplefin-sync', AMAZON_MAIL_STATUS_SECRET_KEY, JSON.stringify(status))
       .catch(() => {});
     return result.newLabels;
   } catch (err) {
     log(`Amazon mail error (categorization skipped this run): ${formatError(err)}`);
+    // Published, not just logged: a wrong app password used to be visible only
+    // in `docker logs`, while the addon's card went on saying "On".
+    const failed: AmazonMailStatus = {
+      unparsed: previous?.unparsed ?? 0,
+      asOf: new Date().toISOString(),
+      ...(previous?.lastMailAt ? { lastMailAt: previous.lastMailAt } : {}),
+      error: formatError(err).slice(0, 200),
+    };
+    await wfClient
+      .setAddonSecret('simplefin-sync', AMAZON_MAIL_STATUS_SECRET_KEY, JSON.stringify(failed))
+      .catch(() => {});
     return [];
   } finally {
     await source?.close().catch(() => {});
@@ -731,6 +785,12 @@ export async function sendUnmappedAccountsNotice(
       log(`${fresh.length} unmapped SimpleFin account(s) found; Telegram not configured, so no notice was sent.`);
       return;
     }
+    if (dailyReportCarriesProblems(tg)) {
+      // The daily report names it on its problem line. Left UNannounced, so
+      // turning the report off later still sends the notice.
+      await persistLedger(pruned);
+      return;
+    }
 
     const lines = fresh.map((a) =>
       `• ${escapeMarkdown(a.accountName)}${a.orgName ? ` (${escapeMarkdown(a.orgName)})` : ''}`,
@@ -742,8 +802,8 @@ export async function sendUnmappedAccountsNotice(
       '',
       escapeMarkdown(
         fresh.length === 1
-          ? 'Nothing from it is being imported until it is mapped to a Wealthfolio account. Map it under Advanced → Accounts in the SimpleFin Sync addon.'
-          : 'Nothing from them is being imported until they are mapped to Wealthfolio accounts. Map them under Advanced → Accounts in the SimpleFin Sync addon.',
+          ? 'Nothing from it is being imported until it is mapped to a Wealthfolio account. Map it under Settings → Accounts in the SimpleFin Sync addon.'
+          : 'Nothing from them is being imported until they are mapped to Wealthfolio accounts. Map them under Settings → Accounts in the SimpleFin Sync addon.',
       ),
     ].join('\n');
 
@@ -859,6 +919,14 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
     await wfClient
       .setAddonSecret('simplefin-sync', COMPANION_VERSION_SECRET_KEY, SIMPLEFIN_SYNC_VERSION)
       .catch(() => {});
+    // And which addon zip is INSTALLED, read off disk: a browser tab cannot see
+    // the manifest, and needs it to tell "reload me" from "upload the new zip".
+    const installedAddon = readInstalledAddonVersion(wealthfolioDbPath());
+    if (installedAddon) {
+      await wfClient
+        .setAddonSecret('simplefin-sync', INSTALLED_ADDON_VERSION_SECRET_KEY, installedAddon)
+        .catch(() => {});
+    }
 
     // Every sync, not just report runs: the addon's category selector is
     // unusable without this, and a sync happens far more often than a report.
@@ -934,7 +1002,7 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
         await wfClient.setAddonSecret('simplefin-sync', REPORT_CUBE_SECRET_KEY, JSON.stringify(cube));
       }
     } catch (e) {
-      log(`Report cube publish failed (Budget tab may be stale): ${formatError(e)}`);
+      log(`Report cube publish failed (the addon's budget reports may be stale): ${formatError(e)}`);
     }
 
     const undeliveredOutTxIds: string[] = [];
@@ -968,7 +1036,23 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
         const tgRaw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_config').catch(() => null);
         const tg = parseSecretJson<any>(tgRaw, 'telegram_config');
         if (tg?.botToken && tg?.chatId && tg.enabled !== false) {
-          await sendTelegramMessage(tg.botToken, tg.chatId, formatRefusedCreatesAlert(result.refusedCreates));
+          // Once per refusal: a refused row is never stored, so every later
+          // sync is refused again — and used to say so again, every six hours.
+          const announced = parseAnnouncedRefusals(
+            await wfClient.getAddonSecret('simplefin-sync', REFUSED_ALERTED_SECRET_KEY).catch(() => null),
+          );
+          const fresh = unannouncedRefusals(result.refusedCreates, announced);
+          if (fresh.length > 0) {
+            const sent = await sendTelegramMessage(tg.botToken, tg.chatId, formatRefusedCreatesAlert(fresh));
+            // Recorded only once it actually went out: an undelivered alert
+            // about possibly-missing money must get another chance.
+            if (sent.ok) {
+              await wfClient.setAddonSecret(
+                'simplefin-sync', REFUSED_ALERTED_SECRET_KEY,
+                JSON.stringify(withAnnouncedRefusals(announced, fresh, new Date())),
+              ).catch(() => {});
+            }
+          }
         }
       } catch (err) {
         log(`Refused-create notice error: ${formatError(err)}`);
@@ -1416,22 +1500,6 @@ async function readCapWeeklyToPool(wfClient: WealthfolioClient): Promise<boolean
 
 /** Mirrors the addon's `getOverBudgetSpent`: anything unrecognised is the
  *  default, so a newer addon can never break an older companion. */
-/** Mirrors the addon's `getMonthProjection`: opt-OUT stored, absent means on. */
-async function readMonthProjection(wfClient: WealthfolioClient): Promise<boolean> {
-  const raw = await wfClient
-    .getAddonSecret('simplefin-sync', 'month_projection')
-    .catch(() => null);
-  return raw !== 'off';
-}
-
-/** Mirrors `readMonthProjection` for the digest's semester-pool line: opt-OUT,
- *  so absent (every config written before the pool existed) means shown. */
-async function readPoolLineEnabled(wfClient: WealthfolioClient): Promise<boolean> {
-  const raw = await wfClient
-    .getAddonSecret('simplefin-sync', 'pool_line')
-    .catch(() => null);
-  return raw !== 'off';
-}
 
 /**
  * The pool module's data sources, bound to this companion's primitives — the
@@ -1634,6 +1702,7 @@ export function readBudgetSnapshot(dbPath: string, now: Date): {
     period: {
       daysFromWeekStartToMonthEnd: lastDayOfMonth(now) - weekStart.getDate() + 1,
       daysLeftInMonthInclusive: daysLeftInMonthInclusive(now),
+      dayOfMonth: now.getDate(),
     },
   };
 }
@@ -1657,7 +1726,17 @@ export function readBudgetSnapshot(dbPath: string, now: Date): {
  * the only things it needs are a Telegram config and a readable database, both
  * still checked below.
  */
-export async function composeDailyDigestMessage(
+export interface DailyDigest {
+  /** For Telegram: problems in full, other findings folded into a count. */
+  text: string;
+  /** For the Reports tab and push: the same report with every finding spelled
+   *  out, since neither has a button to unfold them. */
+  archive: string;
+  /** The "Show what to fix" button, when anything was folded. */
+  keyboard?: InlineKeyboard;
+}
+
+export async function composeDailyDigest(
   wfClient: WealthfolioClient,
   opts: {
     honorDailyReportSwitch?: boolean;
@@ -1667,8 +1746,11 @@ export async function composeDailyDigestMessage(
      *  recorded, or an hourly preview would age a "say once" finding out before
      *  the scheduled report ever carried it. */
     recordLedgerChecks?: boolean;
+    /** `/report` carries its own "Data as of last sync" footer, so it asks
+     *  for the health footer only when it has something to add: a failure. */
+    healthFooter?: 'always' | 'failures-only';
   } = {},
-): Promise<string | null> {
+): Promise<DailyDigest | null> {
   const tgRaw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_config');
   const parsedTg = parseSecretJson<any>(tgRaw, 'telegram_config');
   // The Reports tab composes the same text with no chat configured at all; the
@@ -1738,23 +1820,27 @@ export async function composeDailyDigestMessage(
     dismissedIds,
   );
   // Guarded to null, not allowed to throw: the pool line is an addition to the
-  // digest, and a broken pool read must cost the line, never the report.
-  const poolStatus = (await readPoolLineEnabled(wfClient))
-    ? await readPoolStatus(poolReportDeps(wfClient, dbPath), now).catch(() => null)
-    : null;
+  // digest, and a broken pool read must cost the line, never the report. No
+  // on/off switch since 1.57: the line only appears when the pool is in
+  // trouble, which is exactly when hiding it would hide the news.
+  const poolStatus = await readPoolStatus(poolReportDeps(wfClient, dbPath), now).catch(() => null);
   let message = formatDailySpendingDigest(
     categories, period, await readGlyphStyle(wfClient), subcategoryDisplay,
     await readCountOffBudget(wfClient), uncategorizedSpend,
     await readCapWeeklyToPool(wfClient),
     await readOverBudgetSpent(wfClient),
-    readProjection(dbPath, now, categories, await readMonthProjection(wfClient)),
+    // Always computed; the formatter only prints it to warn, from the 8th.
+    readProjection(dbPath, now, categories, true),
     poolStatus,
-    // The slimming dial (v1.47): stored on the same config the Notifications
-    // tab writes; absent fields mean the full report, unchanged.
     {
-      categoryMode: tg.digestCategoryMode === 'over' || tg.digestCategoryMode === 'none' ? tg.digestCategoryMode : 'all',
-      summary: tg.digestSummary !== false,
-      offBudget: tg.digestOffBudget !== false,
+      // Absent means the attention view (1.57.0); see resolveDigestRows for
+      // why a legacy stored 'all' does not count as a choice.
+      categoryMode: resolveDigestRows(tg),
+      // The summary line is the report's answer, not an option (1.57).
+      summary: true,
+      // Unbudgeted spend is counted in the total either way; Brief only
+      // leaves out the block that itemises it.
+      offBudget: resolveReportDetail(tg) === 'full',
     },
   );
 
@@ -1765,106 +1851,41 @@ export async function composeDailyDigestMessage(
   for (const sub of await readCubeSubscriptions(wfClient)) {
     const daysSince = (now.getTime() - Date.parse(`${sub.lastDate}T00:00:00Z`)) / 86_400_000;
     if (sub.creep && daysSince <= CREEP_FRESH_DAYS) {
-      message += `\n\n📈 ${sub.name} charged $${(sub.lastCents / 100).toFixed(2)}`
-        + ` — up from its usual $${(sub.monthlyCents / 100).toFixed(2)}.`;
+      message += `\n\n📈 ${sub.name} charged ${formatDollars(sub.lastCents / 100, 2)}`
+        + ` — up from its usual ${formatDollars(sub.monthlyCents / 100, 2)}.`;
     }
   }
 
   // Read so that an unreadable secret stays DISTINGUISHABLE from a missing
   // one: the self-check reports those differently, because "could not check"
   // must never render as a clean bill of health.
-  let healthUnreadable = false;
-  let healthRaw: string | null = null;
-  try {
-    healthRaw = await wfClient.getAddonSecret('simplefin-sync', 'sync_health');
-  } catch {
-    healthUnreadable = true;
-  }
-  // Guarded parse: this secret only supplies a decorative one-line footer, so
-  // an unreadable one must cost the footer, never the digest it hangs off.
-  const health = parseSecretJson<SyncHealth>(healthRaw, 'sync_health');
+  const { health, healthUnreadable } = await readSyncHealth(findingsDeps(wfClient));
 
-  // The scheduled half of `/status`. Every signal below was already published
-  // and already readable — but only by pulling, and a pull only happens when
-  // the reader already suspects something. These checks run on their own and
-  // speak into the report already being read, rather than opening a second
-  // notification channel that would eventually be muted.
-  const unmapped = parseSecretJson<Array<{ accountName?: string; sfinAccountId?: string }>>(
-    await wfClient.getAddonSecret('simplefin-sync', 'unmapped_accounts').catch(() => null),
-    'unmapped_accounts',
-  ) ?? [];
-  const balances = parseSecretJson<Record<string, StoredAccountBalance>>(
-    await wfClient.getAddonSecret('simplefin-sync', 'account_balances').catch(() => null),
-    'account_balances',
-  ) ?? {};
-  const accountNames = parseSecretJson<Record<string, string>>(
-    await wfClient.getAddonSecret('simplefin-sync', 'account_names').catch(() => null),
-    'account_names',
-  ) ?? {};
-  const selfCheckFindings = evaluateSelfCheck({
-    lastSuccessAt: health?.lastSuccessAt ?? null,
-    firstFailedAt: health?.firstFailedAt ?? null,
-    lastError: health?.lastError ?? null,
+  // The scheduled half of `/status`, plus the row-level ledger audit — judged
+  // in daily-findings.ts so the "Show what to fix" button sees the very same
+  // list. They speak into the report already being read rather than opening a
+  // second notification channel that would eventually be muted.
+  const { visible } = await gatherFindings(findingsDeps(wfClient), now, {
+    recordLedgerChecks: opts.recordLedgerChecks !== false,
+    health,
     healthUnreadable,
-    // Raw string secret, not JSON — written by the addon on load, absent on
-    // zips older than 1.34.0 (the self-check stays quiet on absence).
-    addonVersion: await wfClient.getAddonSecret('simplefin-sync', ADDON_VERSION_SECRET_KEY).catch(() => null),
-    // Off disk, because the secret above only says what last RAN in a browser.
-    // With both, the warning can name the one remedy that applies.
-    installedAddonVersion: readInstalledAddonVersion(wealthfolioDbPath()),
-    companionVersion: SIMPLEFIN_SYNC_VERSION,
-    unmappedAccountNames: unmapped
-      .map((a) => a?.accountName || a?.sfinAccountId || '')
-      .filter((n) => n !== ''),
-    accounts: Object.entries(balances).map(([id, info]) => ({
-      name: accountNames[id] ?? id,
-      balanceDate: typeof info?.date === 'number' ? info.date : null,
-    })),
-  }, now);
-  // The row-level audit, judged every morning so nobody has to run one by
-  // hand. Balances agreeing with the bank was never enough: every shape a row
-  // can take moves the same cash, so a reconciled ledger can still count the
-  // user's own money as income. Wrapped whole — a checker that cannot check
-  // must never cost the user the report it exists to improve.
-  let ledgerFindings: ReturnType<typeof evaluateLedgerChecks>['findings'] = [];
-  try {
-    const mapping = parseSecretJson<Record<string, string>>(
-      await wfClient.getAddonSecret('simplefin-sync', 'account_mapping').catch(() => null),
-      'account_mapping',
-    ) ?? {};
-    const bankByWfId = new Map<string, number | null>();
-    for (const [sfinId, wfId] of Object.entries(mapping)) {
-      const balance = balances[sfinId]?.balance;
-      bankByWfId.set(wfId, typeof balance === 'number' ? balance : null);
-    }
-    const facts = getLedgerFacts(wealthfolioDbPath(), now, bankByWfId);
-    if (facts) {
-      const seen = parseSecretJson<LedgerCheckSeen>(
-        await wfClient.getAddonSecret('simplefin-sync', LEDGER_CHECK_SEEN_SECRET_KEY).catch(() => null),
-        LEDGER_CHECK_SEEN_SECRET_KEY,
-      ) ?? {};
-      const judged = evaluateLedgerChecks(facts, seen, now);
-      ledgerFindings = judged.findings;
-      const next = nextLedgerCheckSeen(seen, judged.keys, now);
-      // Written only when it changed: most mornings nothing did, and a secret
-      // write a day for no reason is a write that can fail for no reason.
-      if (JSON.stringify(next) !== JSON.stringify(seen)) {
-        if (opts.recordLedgerChecks !== false) {
-          await wfClient.setAddonSecret('simplefin-sync', LEDGER_CHECK_SEEN_SECRET_KEY, JSON.stringify(next)).catch(() => {});
-        }
-      }
-    }
-  } catch (err) {
-    log(`Ledger checks skipped: ${formatError(err)}`);
-  }
-  const selfCheck = formatSelfCheckBlock([...selfCheckFindings, ...ledgerFindings]);
-  if (selfCheck) {
-    message += `\n\n${selfCheck}`;
-  }
+  });
+  // Two renderings of one judgement. Telegram gets problems in full and the
+  // rest as a count with a button; the Reports tab and push notifications have
+  // no button, so they carry the whole list.
+  const summary = formatFindingsSummary(visible);
+  const fullBlock = formatSelfCheckBlock(visible);
+  let archive = message;
+  if (summary) message += `\n\n${summary}`;
+  if (fullBlock) archive += `\n\n${fullBlock}`;
+  const folded = visible.filter((f) => !printsInFull(f)).length;
 
-  const footer = formatSyncHealthFooter(health);
+  const footer = opts.healthFooter === 'failures-only' && !health?.firstFailedAt
+    ? ''
+    : formatSyncHealthFooter(health);
   if (footer) {
     message += `\n\n${footer}`;
+    archive += `\n\n${footer}`;
   }
 
   // Armed only by daemon startup: the unit suite (and a compose driven from a
@@ -1874,11 +1895,43 @@ export async function composeDailyDigestMessage(
   if (updateCheckDeps.armed) {
     const latest = await updateCheckDeps.fetchLatestVersion().catch(() => null);
     if (latest && isNewerVersion(latest, SIMPLEFIN_SYNC_VERSION)) {
-      message += `\n\n⬆ v${latest} is available — pull the image and grab the zip from the release page.`;
+      const notice = `\n\n⬆ v${latest} is available — pull the image and grab the zip from the release page.`;
+      message += notice;
+      archive += notice;
     }
   }
 
-  return message;
+  return {
+    text: message,
+    archive,
+    // The button only when something is actually folded behind it.
+    keyboard: folded > 0 ? { inline_keyboard: [[SHOW_FINDINGS_BUTTON]] } : undefined,
+  };
+}
+
+/** The daily report's Telegram text — `composeDailyDigest(...).text`. Kept for
+ *  the callers (and tests) that only ever wanted the string. */
+export async function composeDailyDigestMessage(
+  wfClient: WealthfolioClient,
+  opts: Parameters<typeof composeDailyDigest>[1] = {},
+): Promise<string | null> {
+  return (await composeDailyDigest(wfClient, opts))?.text ?? null;
+}
+
+/**
+ * The findings' dependencies over the companion's own client and database.
+ * Secrets are read RAW here — `readSyncHealth` relies on a read failure
+ * throwing, to tell "unreadable" apart from "absent".
+ */
+function findingsDeps(wfClient: WealthfolioClient): FindingsDeps {
+  return {
+    getSecret: (key) => wfClient.getAddonSecret('simplefin-sync', key),
+    setSecret: (key, value) => wfClient.setAddonSecret('simplefin-sync', key, value),
+    installedAddonVersion: () => readInstalledAddonVersion(wealthfolioDbPath()),
+    companionVersion: SIMPLEFIN_SYNC_VERSION,
+    ledgerFacts: (bankByWfId, now) => getLedgerFacts(wealthfolioDbPath(), now, bankByWfId),
+    log,
+  };
 }
 
 /**
@@ -2020,7 +2073,7 @@ export async function publishLiveReports(wfClient: WealthfolioClient, now = new 
   const tg = parseSecretJson<any>(await wfClient.getAddonSecret('simplefin-sync', 'telegram_config').catch(() => null), 'telegram_config') ?? {};
   const monthName = now.toLocaleDateString('en-US', { month: 'long' });
   const texts: Array<[ReportKind, () => Promise<string | null>]> = [
-    ['daily', () => composeDailyDigestMessage(wfClient, { requireTelegram: false, recordLedgerChecks: false })],
+    ['daily', async () => (await composeDailyDigest(wfClient, { requireTelegram: false, recordLedgerChecks: false }))?.archive ?? null],
     ['weekly', () => composeWeeklyReportMessage(wfClient, now, tg)],
     ['monthly', () => composeMonthlyWrapUpMessage(wfClient, currentYearMonth(now), `${monthName} so far`, tg)],
   ];
@@ -2044,9 +2097,10 @@ async function sendReportWithRetry(
   reportName: string,
   successMessage: string,
   sleep: (ms: number) => Promise<void>,
+  keyboard?: InlineKeyboard,
 ): Promise<void> {
   for (let attempt = 0; ; attempt++) {
-    const result = await sendTelegramMessage(botToken, chatId, text);
+    const result = await sendTelegramMessage(botToken, chatId, text, undefined, keyboard);
     if (result.ok) {
       log(successMessage);
       return;
@@ -2074,15 +2128,17 @@ export async function sendDailyTelegramReport(
   // pushed whether or not Telegram is set up (the tab is the report's home
   // now), then sent to Telegram if a chat is configured. One composition, so
   // all three carry the same text and the ledger checks are recorded once.
-  const message = await composeDailyDigestMessage(wfClient, { requireTelegram: false });
-  if (message === null) return;
+  const digest = await composeDailyDigest(wfClient, { requireTelegram: false });
+  if (digest === null) return;
   const tg = parseSecretJson<any>(await wfClient.getAddonSecret('simplefin-sync', 'telegram_config').catch(() => null), 'telegram_config');
-  await deliverReportEdition(wfClient, 'daily', message, new Date(), tg?.dailyReportEnabled !== false);
+  // The archive carries every finding spelled out: the Reports tab and a push
+  // notification have no "Show what to fix" button to unfold a count with.
+  await deliverReportEdition(wfClient, 'daily', digest.archive, new Date(), tg?.dailyReportEnabled !== false);
   if (!tg || !tg.botToken || !tg.chatId || tg.enabled === false || tg.dailyReportEnabled === false) return;
 
   await sendReportWithRetry(
-    tg.botToken, tg.chatId, message,
-    'daily', 'Daily Telegram spending check sent successfully.', sleep,
+    tg.botToken, tg.chatId, digest.text,
+    'daily', 'Daily Telegram spending check sent successfully.', sleep, digest.keyboard,
   );
 }
 
@@ -2090,6 +2146,8 @@ export async function sendDailyTelegramReport(
  *  config says nothing. Five fits a phone screen under the headline without
  *  turning the report into a statement. */
 const DEFAULT_WEEKLY_TOP_SPEND_COUNT = 5;
+/** The same list in a Brief report. */
+const BRIEF_WEEKLY_TOP_SPEND_COUNT = 3;
 
 /**
  * Sends the weekly check-in: the month's remaining figure, plus the week's
@@ -2128,9 +2186,11 @@ export async function composeWeeklyReportMessage(
   const totalSpent = names.reduce((sum, n) => sum + (spentMap[n] ?? 0), 0);
   const totalBudget = names.reduce((sum, n) => sum + (budgetMap[n] ?? 0), 0);
 
-  const topCount = typeof tg?.weeklyTopSpendCount === 'number'
-    ? tg.weeklyTopSpendCount
-    : DEFAULT_WEEKLY_TOP_SPEND_COUNT;
+  // One "Report detail" switch since 1.57 in place of a count field and three
+  // section toggles: Full lists five biggest spends and carries the runway and
+  // subscriptions lines; Brief lists three and leaves those two out.
+  const full = resolveReportDetail(tg) === 'full';
+  const topCount = full ? DEFAULT_WEEKLY_TOP_SPEND_COUNT : BRIEF_WEEKLY_TOP_SPEND_COUNT;
   const weekStart = mondayOnOrBefore(now);
   const weekEnd = new Date(weekStart.getFullYear(), weekStart.getMonth(), weekStart.getDate() + 7);
   const topSpends = topCount > 0
@@ -2138,10 +2198,9 @@ export async function composeWeeklyReportMessage(
     : [];
 
   const poolDeps = poolReportDeps(wfClient, dbPath);
-  const poolStatus = tg?.weeklyPoolSection === false
-    ? null
-    : await readPoolStatus(poolDeps, now).catch(() => null);
-  const runwayMonths = tg?.weeklyRunway === false ? null : await readRunwayMonths(poolDeps, now);
+  // Always, while a pool is set: whether it lasts is the weekly report's point.
+  const poolStatus = await readPoolStatus(poolDeps, now).catch(() => null);
+  const runwayMonths = full ? await readRunwayMonths(poolDeps, now) : null;
   let message = formatMonthlyRemainingSummary(
     totalSpent,
     totalBudget,
@@ -2150,10 +2209,10 @@ export async function composeWeeklyReportMessage(
     poolStatus,
     runwayMonths,
   );
-  const subs = tg?.weeklySubscriptions === false ? [] : await readCubeSubscriptions(wfClient);
+  const subs = full ? await readCubeSubscriptions(wfClient) : [];
   if (subs.length > 0) {
     const totalCents = subs.reduce((sum, sub) => sum + sub.monthlyCents, 0);
-    message += `\n\n*Subscriptions* — $${(totalCents / 100).toFixed(2)}/mo across ${subs.length}`;
+    message += `\n\n*Subscriptions* — ${formatDollars(totalCents / 100, 2)}/mo across ${subs.length}`;
   }
   return message;
 }
@@ -2325,7 +2384,7 @@ export function formatDismissedReply(
   }
   const shown = rows.slice(0, IMPORT_NOTICE_UNCATEGORIZED_CAP);
   const lines = shown.map((r) =>
-    `• ${money(r.amountCents / 100)}  ${escapeMarkdown(r.description)} · ${escapeMarkdown(r.date.slice(5, 10))} — ${escapeMarkdown(r.accountName)}`);
+    `• ${money(r.amountCents / 100)}  ${escapeMarkdown(r.description)} · ${shortDate(r.date)} — ${escapeMarkdown(r.accountName)}`);
   if (rows.length > shown.length) lines.push(`  +${rows.length - shown.length} more`);
   const head = `*${rows.length} dismissed* — tap one to bring it back`;
   return {
@@ -2542,7 +2601,7 @@ async function readStatusReplyInput(wfClient: WealthfolioClient): Promise<Status
  *  neither is discoverable from a chat window. Deliberately NOT reachable from
  *  the daily-report switch any more — `/report` is on-demand and ignores it. */
 const REPORT_UNAVAILABLE_REPLY =
-  "Telegram reports are not configured — check budgets and the addon's Notifications tab.";
+  "Telegram reports are not configured — check budgets and the addon's Settings → Notifications.";
 
 /** `/report`'s footer when the last-sync timestamp could not be READ. The digest
  *  above it is real; how fresh it is, we cannot say. `formatReportFooter`'s
@@ -2739,7 +2798,16 @@ export function buildTelegramCommandHandler(
       case 'report': {
         // `honorDailyReportSwitch: false` — the 8am schedule's off switch is not
         // an answer to "give me a report now". See composeDailyDigestMessage.
-        const digest = await composeDailyDigestMessage(wfClient, { honorDailyReportSwitch: false });
+        // A preview, so the ledger audit's "first seen" memory is left alone:
+        // asking for a report at 7am must not use up a "say once" finding
+        // before the 8am report carries it.
+        const digest = await composeDailyDigest(wfClient, {
+          honorDailyReportSwitch: false,
+          recordLedgerChecks: false,
+          // The freshness footer below says when the data is from; "✅ synced
+          // 3h ago" above it said the same thing a line earlier.
+          healthFooter: 'failures-only',
+        });
         if (digest === null) {
           await reply(REPORT_UNAVAILABLE_REPLY);
           return;
@@ -2751,14 +2819,18 @@ export function buildTelegramCommandHandler(
         const footer = lastSync.read
           ? formatReportFooter(lastSync.iso, new Date())
           : REPORT_FOOTER_UNREADABLE_SYNC;
-        await reply(`${digest}\n\n${footer}`);
+        await reply(`${digest.text}\n\n${footer}`, digest.keyboard);
         return;
       }
 
       case 'left': {
         const { categories, period, style } = await budgetSnapshot();
-        // Empty args mean the bare listing, not a query for "".
-        await reply(formatLeftReply(categories, period, style, cmd.args || undefined));
+        // `/left groceries 20` is `/afford 20 groceries`, asked where people
+        // already look (1.57). Empty args mean the bare listing.
+        const { query, amount } = parseLeftArgs(cmd.args);
+        await reply(amount !== undefined && query
+          ? formatAffordReply(categories, period, style, amount, query)
+          : formatLeftReply(categories, period, style, query));
         return;
       }
 
@@ -3050,6 +3122,28 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
     log,
   });
 
+  // The morning report's "Show what to fix" button. Stateless — every tap
+  // re-judges the findings — so it needs no session and survives restarts.
+  const findings: FindingsMenu = createFindingsMenu({
+    current: async (now) => {
+      const deps = findingsDeps(wfClient);
+      const { health, healthUnreadable } = await readSyncHealth(deps);
+      // Never records "first seen": a tap is a look, not the scheduled report.
+      return gatherFindings(deps, now, { recordLedgerChecks: false, health, healthUnreadable });
+    },
+    snooze: (key, now) => updateSnoozes(findingsDeps(wfClient), now, (current) => withSnooze(current, key, now)),
+    unsnoozeAll: (now) => updateSnoozes(findingsDeps(wfClient), now, () => ({})),
+    makeTransfer: (fix, ui) => transferLearning.openForCandidate({
+      description: fix.description,
+      amountCents: Math.round(fix.amount * 100),
+      activityType: fix.activityType,
+      accountName: '',
+    }, ui),
+    pickCategory: (activityId, chatId, ui) => categorize.openForActivity(activityId, chatId, ui.send),
+    now: () => new Date(),
+    log,
+  });
+
   const ensureSession = async (): Promise<void> => {
     if (Date.now() - sessionEstablishedAt < LISTENER_SESSION_MAX_AGE_MS) return;
     const key = process.env.WEALTHFOLIO_API_KEY;
@@ -3179,6 +3273,10 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
         await transferLearning.onCallback(cb, ui);
         return;
       }
+      if (findings.handles(cb.data)) {
+        await findings.onCallback(cb, ui);
+        return;
+      }
       if (cb.data !== RECATEGORIZE_ENTRY_CALLBACK) {
         await categorize.onCallback(cb, ui);
         return;
@@ -3234,6 +3332,7 @@ if (!process.env.VITEST) {
     console.error(`[simplefin-sync] Startup error: ${(err as Error).message}`);
     process.exit(1);
   }
+  for (const warning of startupWarnings()) log(`WARNING: ${warning}`);
 
   const apiUrl = process.env.WEALTHFOLIO_API_URL ?? '';
   const wfClient = new WealthfolioClient(apiUrl);

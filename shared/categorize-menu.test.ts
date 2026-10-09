@@ -177,7 +177,7 @@ describe('renderScreen — txn', () => {
   it('has a « Back button that returns to the list', () => {
     const s = session({ screen: { kind: 'txn', activityId: 'act-1' } });
     const { keyboard, buttons } = renderScreen(s);
-    const idx = keyboard.inline_keyboard.flat().findIndex((b) => b.text === '« Back');
+    const idx = keyboard.inline_keyboard.flat().findIndex((b) => b.text === '‹ Back');
     expect(buttons[idx]).toEqual({ kind: 'goto', screen: { kind: 'list', page: 0 } });
   });
 
@@ -214,7 +214,7 @@ describe('renderScreen — subcats', () => {
   it('« Back returns to the txn screen', () => {
     const s = session({ screen: subcatsScreen });
     const { keyboard, buttons } = renderScreen(s);
-    const idx = keyboard.inline_keyboard.flat().findIndex((b) => b.text === '« Back');
+    const idx = keyboard.inline_keyboard.flat().findIndex((b) => b.text === '‹ Back');
     expect(buttons[idx]).toEqual({ kind: 'goto', screen: { kind: 'txn', activityId: 'act-1' } });
   });
 
@@ -243,9 +243,9 @@ describe('renderScreen — filed', () => {
     const s = session({ screen: filedScreen });
     const { keyboard, buttons } = renderScreen(s);
     const labels = keyboard.inline_keyboard.flat().map((b) => b.text);
-    expect(labels).toEqual(['Undo', 'Make this a rule', 'Next transaction', 'Done']);
+    expect(labels).toEqual(['↩ Undo', 'Make this a rule', 'Next transaction', 'Done']);
 
-    const undo = buttons[keyboard.inline_keyboard.flat().findIndex((b) => b.text === 'Undo')];
+    const undo = buttons[keyboard.inline_keyboard.flat().findIndex((b) => b.text === '↩ Undo')];
     expect(undo).toEqual({ kind: 'unassign', activityId: 'act-1', categoryId: 'cat-groceries' });
 
     const rule = buttons[keyboard.inline_keyboard.flat().findIndex((b) => b.text === 'Make this a rule')];
@@ -268,7 +268,7 @@ describe('renderScreen — filed', () => {
     });
     const { text, keyboard } = renderScreen(s);
     expect(text).toBe('Filing undone — BOOK STORES is uncategorized again.');
-    expect(keyboard.inline_keyboard.flat().map((b) => b.text)).toEqual(['Back to list', 'Done']);
+    expect(keyboard.inline_keyboard.flat().map((b) => b.text)).toEqual(['‹ Back to list', 'Done']);
   });
 
   it('escapes Markdown specials in the description and category name', () => {
@@ -296,8 +296,8 @@ describe('renderScreen — dismissed', () => {
   it('offers Undo, Back to list, Done', () => {
     const s = session({ screen: dismissedScreen });
     const { keyboard, buttons } = renderScreen(s);
-    expect(keyboard.inline_keyboard.flat().map((b) => b.text)).toEqual(['Undo', 'Back to list', 'Done']);
-    const undo = buttons[keyboard.inline_keyboard.flat().findIndex((b) => b.text === 'Undo')];
+    expect(keyboard.inline_keyboard.flat().map((b) => b.text)).toEqual(['↩ Undo', '‹ Back to list', 'Done']);
+    const undo = buttons[keyboard.inline_keyboard.flat().findIndex((b) => b.text === '↩ Undo')];
     expect(undo).toEqual({ kind: 'undismiss', activityId: 'act-1' });
   });
 
@@ -308,7 +308,7 @@ describe('renderScreen — dismissed', () => {
     });
     const { text, keyboard } = renderScreen(s);
     expect(text).toBe('Dismissal undone — BOOK STORES is uncategorized again.');
-    expect(keyboard.inline_keyboard.flat().map((b) => b.text)).toEqual(['Back to list', 'Done']);
+    expect(keyboard.inline_keyboard.flat().map((b) => b.text)).toEqual(['‹ Back to list', 'Done']);
   });
 });
 
@@ -330,10 +330,10 @@ describe('renderScreen — rulePreview', () => {
   it('offers Create rule and « Back', () => {
     const s = session({ screen: ruleScreen });
     const { keyboard, buttons } = renderScreen(s);
-    expect(keyboard.inline_keyboard.flat().map((b) => b.text)).toEqual(['Create rule', '« Back']);
+    expect(keyboard.inline_keyboard.flat().map((b) => b.text)).toEqual(['Create rule', '‹ Back']);
     const create = buttons[keyboard.inline_keyboard.flat().findIndex((b) => b.text === 'Create rule')];
     expect(create).toEqual({ kind: 'createRule', activityId: 'act-1', categoryId: 'cat-groceries' });
-    const back = buttons[keyboard.inline_keyboard.flat().findIndex((b) => b.text === '« Back')];
+    const back = buttons[keyboard.inline_keyboard.flat().findIndex((b) => b.text === '‹ Back')];
     expect(back).toEqual({ kind: 'goto', screen: { kind: 'txn', activityId: 'act-1' } });
   });
 
@@ -361,7 +361,7 @@ describe('renderScreen — freeRulePreview', () => {
     const s = session({ screen: freeScreen });
     const { keyboard, buttons } = renderScreen(s);
     expect(keyboard.inline_keyboard.flat().map((b) => b.text)).toEqual(['Create rule', 'Cancel']);
-    expect(keyboard.inline_keyboard.flat().map((b) => b.text)).not.toContain('« Back');
+    expect(keyboard.inline_keyboard.flat().map((b) => b.text)).not.toContain('‹ Back');
     const create = buttons[keyboard.inline_keyboard.flat().findIndex((b) => b.text === 'Create rule')];
     expect(create).toEqual({ kind: 'createFreeRule', pattern: 'trader joes', categoryId: 'cat-groceries' });
   });
@@ -377,7 +377,7 @@ describe('renderScreen — ruleCreated', () => {
   it('with an activityId, offers Back to list and Done', () => {
     const s = session({ screen: { kind: 'ruleCreated', activityId: 'act-1', categoryId: 'cat-groceries' } });
     const { keyboard } = renderScreen(s);
-    expect(keyboard.inline_keyboard.flat().map((b) => b.text)).toEqual(['Back to list', 'Done']);
+    expect(keyboard.inline_keyboard.flat().map((b) => b.text)).toEqual(['‹ Back to list', 'Done']);
   });
 
   it('confirms the category by name in the text', () => {
@@ -637,9 +637,9 @@ describe('renderScreen — refiled', () => {
     const s = session({ txns: [refiledTxn()], screen: refiledScreen });
     const { keyboard, buttons } = renderScreen(s);
     const labels = keyboard.inline_keyboard.flat().map((b) => b.text);
-    expect(labels).toEqual(['Undo', 'Next transaction', 'Done']);
+    expect(labels).toEqual(['↩ Undo', 'Next transaction', 'Done']);
 
-    const undo = buttons[labels.indexOf('Undo')];
+    const undo = buttons[labels.indexOf('↩ Undo')];
     expect(undo).toEqual({
       kind: 'undoReassign',
       activityId: 'act-1',
@@ -672,7 +672,7 @@ describe('renderScreen — refiled', () => {
     });
     const { keyboard, buttons } = renderScreen(s);
     const labels = keyboard.inline_keyboard.flat().map((b) => b.text);
-    expect(buttons[labels.indexOf('Undo')]).toEqual({
+    expect(buttons[labels.indexOf('↩ Undo')]).toEqual({
       kind: 'undoReassign',
       activityId: 'act-1',
       toRestore: [
@@ -784,7 +784,7 @@ describe('renderScreen — refiled', () => {
     });
     const { text, keyboard } = renderScreen(s);
     expect(text).toBe('Refiling undone — BOOK STORES is back under Dining.');
-    expect(keyboard.inline_keyboard.flat().map((b) => b.text)).toEqual(['Back to list', 'Done']);
+    expect(keyboard.inline_keyboard.flat().map((b) => b.text)).toEqual(['‹ Back to list', 'Done']);
   });
 
   it('escapes Markdown specials in the description, old name, and new category name', () => {
@@ -828,8 +828,8 @@ describe('renderScreen — refiled', () => {
     const { text, keyboard, buttons } = renderScreen(s);
     expect(text).toBe('BOOK STORES: Dining → Groceries.');
     const labels = keyboard.inline_keyboard.flat().map((b) => b.text);
-    expect(labels).toEqual(['Undo', 'Next transaction', 'Done']);
-    expect(buttons[labels.indexOf('Undo')]).toEqual({
+    expect(labels).toEqual(['↩ Undo', 'Next transaction', 'Done']);
+    expect(buttons[labels.indexOf('↩ Undo')]).toEqual({
       kind: 'undoReassign',
       activityId: 'act-1',
       toRestore: [{ taxonomyId: 'spending', categoryId: 'cat-dining' }],
@@ -848,7 +848,7 @@ describe('renderScreen — refiled', () => {
 describe('renderScreen — refused', () => {
   /** The one route out of both subtype-governed refusals, and the only thing a
    *  reader can act on — so both screens carry it verbatim. */
-  const HINT = 'A payback can be turned into a spending offset by marking it a reimbursement in Advanced → Transaction Rules.';
+  const HINT = 'A payback can be turned into a spending offset by marking it a reimbursement in Settings → Transaction rules.';
 
   it('neutral: states the constraint and offers NO way out, because a subtype has none to offer', () => {
     // This reason is reached when the ACCOUNT TYPE decides — a SECURITIES
@@ -905,7 +905,7 @@ describe('renderScreen — refused', () => {
     for (const reason of ['neutral-subtype', 'wrong-bucket'] as const) {
       const s = session({ screen: { kind: 'refused', activityId: 'act-1', reason } });
       const { text } = renderScreen(s);
-      expect(text).toContain('Advanced → Transaction Rules');
+      expect(text).toContain('Settings → Transaction rules');
       expect(text).not.toMatch(/\bI(?:'| w)ll\b|we(?:'| w)ill|tap|press/i);
       // And it never tells the reader they did something wrong.
       expect(text).not.toMatch(/you (?:should|need to|must)|instead of what you/i);
@@ -917,8 +917,8 @@ describe('renderScreen — refused', () => {
       const s = session({ screen: { kind: 'refused', activityId: 'act-1', reason } });
       const { keyboard, buttons } = renderScreen(s);
       const labels = keyboard.inline_keyboard.flat().map((b) => b.text);
-      expect(labels).toEqual(['« Back', 'Done']);
-      expect(buttons[labels.indexOf('« Back')]).toEqual({
+      expect(labels).toEqual(['‹ Back', 'Done']);
+      expect(buttons[labels.indexOf('‹ Back')]).toEqual({
         kind: 'goto', screen: { kind: 'txn', activityId: 'act-1' },
       });
       expect(buttons[labels.indexOf('Done')]).toEqual({ kind: 'close' });

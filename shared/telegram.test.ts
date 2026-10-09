@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { shortDateTime, formatRefusedCreatesAlert } from './telegram.js';
 import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatMonthlyWrapUp, formatSyncHealthFooter, escapeMarkdown, weeklyEnvelope, moneyWhole, formatLargeTransactionAlert, formatBalanceDriftAlert, formatStuckTransferAlert, formatDuplicatePruneAlert, formatImportNotice } from './telegram.js';
 
 /**
@@ -903,12 +904,36 @@ describe('formatDailySpendingDigest', () => {
     expect(text).not.toContain('spent');
   });
 
-  it('states the forecast against the budget, signed the way the app signs it', () => {
+  it('speaks about pace only to warn of an overshoot', () => {
+    // Under budget, a forecast restated the headline as a second number; it
+    // now says nothing and leaves the headline (and its per-day figure) to it.
     const cats = [{ name: 'Groceries', budget: 300, monthSpent: 100, weekSpent: 20 }];
     const over = formatDailySpendingDigest(cats, period, GLYPHS, 'rollup', true, undefined, true, 'total', { forecast: 520 });
-    expect(over).toContain('on pace for $520 (+$220 vs budget)');
+    expect(over).toContain('on pace to go $220 over');
     const under = formatDailySpendingDigest(cats, period, GLYPHS, 'rollup', true, undefined, true, 'total', { forecast: 250 });
-    expect(under).toContain('on pace for $250 (−$50 vs budget)');
+    expect(under).not.toContain('on pace');
+  });
+
+  it('holds the forecast back during the first week of the month', () => {
+    // Live, on the 6th: "on pace for $3,659 (+$1,059 vs budget)" beside
+    // "$1,932 left" — a forecast built on five days of rent and big shops.
+    const cats = [{ name: 'Groceries', budget: 300, monthSpent: 100, weekSpent: 20 }];
+    const early = formatDailySpendingDigest(cats, { ...period, dayOfMonth: 6 }, GLYPHS, 'rollup', true, undefined, true, 'total', { forecast: 520 });
+    expect(early).not.toContain('on pace');
+    const later = formatDailySpendingDigest(cats, { ...period, dayOfMonth: 8 }, GLYPHS, 'rollup', true, undefined, true, 'total', { forecast: 520 });
+    expect(later).toContain('on pace to go $220 over');
+  });
+
+  it('says what the headline means per day', () => {
+    // $200 left over 23 days is about $9 a day — the number a single day's
+    // spending can actually be held against.
+    const text = dailyGlyphs([{ name: 'Groceries', budget: 300, monthSpent: 100, weekSpent: 20 }], period);
+    expect(text).toContain('$200 left this month · 23 days to go · about $9/day');
+  });
+
+  it('gives no per-day figure once nothing is left', () => {
+    const text = dailyGlyphs([{ name: 'Groceries', budget: 300, monthSpent: 400, weekSpent: 20 }], period);
+    expect(text).not.toContain('/day');
   });
 
   it('drops the "vs budget" delta when there is nothing to compare to', () => {
@@ -1323,7 +1348,9 @@ describe('formatSyncHealthFooter', () => {
     };
     const text = formatSyncHealthFooter(health, now);
     expect(text).toContain('⚠️ failing since');
-    expect(text).toContain(new Date(health.firstFailedAt).toLocaleString());
+    // "Jul 27, 9:15 AM" in the container's zone — not the locale's 7/27/2026.
+    expect(text).toContain(`failing since ${shortDateTime(health.firstFailedAt)} —`);
+    expect(text).not.toContain('/2026');
     expect(text).toContain('SimpleFin: token revoked');
   });
 
@@ -1563,6 +1590,22 @@ describe('formatLargeTransactionAlert', () => {
   });
 });
 
+describe('dates in messages (1.57: "Oct 9", "Oct 9, 3:40 PM")', () => {
+  it('writes a timestamp as month, day and clock time', () => {
+    // A local wall-clock input, so the expectation holds in any zone.
+    expect(shortDateTime('2026-10-09T15:40:00')).toBe('Oct 9, 3:40 PM');
+    expect(shortDateTime('2026-01-02T09:05:00')).toBe('Jan 2, 9:05 AM');
+  });
+
+  it('dates a refused import the way every other message does', () => {
+    const text = formatRefusedCreatesAlert([
+      { description: 'CAPITAL ONE', amountCents: 130000, currency: 'USD', accountName: 'Spend', date: '2026-10-01' },
+    ]);
+    expect(text).toContain('· Oct 1');
+    expect(text).not.toContain('2026-10-01');
+  });
+});
+
 describe('formatStuckTransferAlert', () => {
   // Lives here rather than in either host because BOTH syncers send it now (the
   // addon delivers the alerts it consumes), and two copies of a message builder
@@ -1575,7 +1618,7 @@ describe('formatStuckTransferAlert', () => {
     })).toBe(
       "⚠️ *Transfer stuck — couldn't auto-link after 3 tries*\n"
       + 'Payment ↔ Payment\n'
-      + 'Amount: $1300.00 USD\n'
+      + 'Amount: $1,300.00 USD\n'
       + 'Try "Deep scan" in the addon, or check for a duplicate/mismatched leg.',
     );
   });
@@ -1674,23 +1717,23 @@ describe('formatDuplicatePruneAlert', () => {
 
   it('lists every removed row with its figure, date, description and account', () => {
     expect(formatDuplicatePruneAlert(liveRows)).toBe(
-      '🧹 *Duplicate activities removed* — 2 rows\n'
+      '🗑️ *Duplicate activities removed* — 2 rows\n'
       + 'Each of these was stored twice, so the extra copy was deleted during reconcile:\n'
-      + '• *$1,300.00* USD · 2026-07-27 · PNC BANK 1234 Transfer · Savings\n'
-      + '• *$2.50* USD · 2026-06-30 · Monthly Interest Paid · Savings\n'
+      + '• *$1,300.00* USD · Jul 27 · PNC BANK 1234 Transfer · Savings\n'
+      + '• *$2.50* USD · Jun 30 · Monthly Interest Paid · Savings\n'
       + 'Nothing to do — your balances should line up again.',
     );
   });
 
   it('says "1 row" for a single removal', () => {
     expect(formatDuplicatePruneAlert([liveRows[1]])).toContain(
-      '🧹 *Duplicate activities removed* — 1 row\n',
+      '🗑️ *Duplicate activities removed* — 1 row\n',
     );
   });
 
   it('renders a row whose bank description is empty without an empty field', () => {
     const text = formatDuplicatePruneAlert([{ ...liveRows[1], description: '' }]);
-    expect(text).toContain('• *$2.50* USD · 2026-06-30 · Savings');
+    expect(text).toContain('• *$2.50* USD · Jun 30 · Savings');
   });
 
   it('escapes a `*`/`_`-bearing description and account name, outside every entity', () => {
@@ -1701,7 +1744,7 @@ describe('formatDuplicatePruneAlert', () => {
       accountName: 'Joint_Savings', description: 'AMAZON *MKTPLACE_US',
       date: '2026-07-27', amountCents: 130000, currency: 'USD',
     }]);
-    expect(text).toContain('• *$1,300.00* USD · 2026-07-27 · AMAZON \\*MKTPLACE\\_US · Joint\\_Savings');
+    expect(text).toContain('• *$1,300.00* USD · Jul 27 · AMAZON \\*MKTPLACE\\_US · Joint\\_Savings');
     // Two deliberate entities only: the fixed heading and the figure.
     const unescaped = text.replace(/\\[_*`[]/g, '');
     expect(unescaped.match(/\*/g) ?? []).toHaveLength(4);
@@ -1738,9 +1781,9 @@ describe('formatMonthlyWrapUp', () => {
     expect(wrapUpGlyphs(mixed, 'July')).toBe(
       '📅 *July wrap-up*\n'
       + '\n'
-      + '✅ 🛒 Groceries  *$280* of $300\n'
+      + '🛒 Groceries  *$280* of $300\n'
       + '🚨 🍽️ Food & Dining  $412 of $300 · *$112 over*\n'
-      + '✅ 🚗 Transportation  *$45* of $50\n'
+      + '🚗 Transportation  *$45* of $50\n'
       + '🏷️ 🎓 Education  *$6* · no budget\n'
       + '\n'
       + '🚨 Finished *$87 over budget* · spent $737 of $650',
@@ -1811,7 +1854,9 @@ describe('formatMonthlyWrapUp', () => {
     const text = wrapUpGlyphs([{ name: 'Groceries', spent: 300.4, budget: 300 }], 'July');
     expect(text).not.toContain('🚨');
     expect(text).not.toContain('$0 over');
-    expect(text).toContain('✅ 🛒 Groceries  *$300* of $300');
+    expect(text).toContain('🛒 Groceries  *$300* of $300');
+    // ✅ means one thing in these messages: synced.
+    expect(text).not.toContain('✅ 🛒');
     expect(text).toContain('💰 Finished *right on budget*');
   });
 
@@ -1983,12 +2028,27 @@ describe('pool figures riding the existing reports', () => {
   const cats = [{ name: 'Food', monthSpent: 100, weekSpent: 10, budget: 400 }];
   const period = { daysFromWeekStartToMonthEnd: 26, daysLeftInMonthInclusive: 20 };
 
-  it('appends the pool line to the daily digest when a pool is active', () => {
+  it('leaves a healthy pool to the weekly check-in', () => {
+    // "lasts past Dec 12" every morning was the same reassurance daily, and the
+    // weekly check-in carries the full section anyway.
     const text = formatDailySpendingDigest(
       cats, period, GLYPHS, undefined, undefined, undefined, undefined, undefined, undefined,
       poolFixture,
     );
-    expect(text.endsWith('🎓 $11,500 of pool left · $1,118/wk sustainable · lasts past Dec 12')).toBe(true);
+    expect(text).not.toContain('of pool left');
+  });
+
+  it('appends the pool line to the daily digest when the pool will not last', () => {
+    const text = formatDailySpendingDigest(
+      cats, period, GLYPHS, undefined, undefined, undefined, undefined, undefined, undefined,
+      { ...poolFixture, runsOutBeforeEnd: true, projectedRunOutDate: '2026-11-20' },
+    );
+    expect(text.endsWith('🎓 $11,500 of pool left · $1,118/wk sustainable · at this pace out by Nov 20')).toBe(true);
+    const overspent = formatDailySpendingDigest(
+      cats, period, GLYPHS, undefined, undefined, undefined, undefined, undefined, undefined,
+      { ...poolFixture, remainingCents: -5_000 },
+    );
+    expect(overspent).toContain('🚨 Pool overspent by $50');
   });
 
   it('leaves the digest untouched with no pool, an upcoming pool, or a gone pool', () => {
@@ -2094,5 +2154,64 @@ describe('week figure survives a month overspend (v1.47)', () => {
     );
     expect(text).toContain('over');
     expect(text).toMatch(/this wk/);
+  });
+});
+
+describe('the attention view (1.57.0)', () => {
+  // Nine category lines, eight of them saying nothing was wrong, made the
+  // daily report something to scroll past. The attention view keeps what needs
+  // a decision today and sums up the rest.
+  const period = { daysFromWeekStartToMonthEnd: 28, daysLeftInMonthInclusive: 26, dayOfMonth: 6 };
+  const attention = (cats: Parameters<typeof formatDailySpendingDigest>[0]) => formatDailySpendingDigest(
+    cats, period, GLYPHS, 'rollup', true, undefined, true, 'total', null, null, { categoryMode: 'attention' },
+  );
+
+  it('lists only what is over or nearly out, and counts the rest as on track', () => {
+    const text = attention([
+      { name: 'Shopping', budget: 100, monthSpent: 330, weekSpent: 116 },
+      { name: 'Groceries', budget: 400, monthSpent: 60, weekSpent: 20 },
+      { name: 'Food & Dining', budget: 200, monthSpent: 20, weekSpent: 10 },
+    ]);
+    expect(text).toContain('Shopping');
+    expect(text).not.toContain('Groceries');
+    expect(text).not.toContain('Food');
+    expect(text).toContain('2 others on track');
+    expect(text).not.toMatch(/✅[^\n]*on track/);
+  });
+
+  it('keeps a category that has under a quarter of its week left', () => {
+    // $400 over 28 days is a $100 week; $90 of it gone leaves $10.
+    const text = attention([
+      { name: 'Groceries', budget: 400, monthSpent: 90, weekSpent: 90 },
+      { name: 'Housing', budget: 1400, monthSpent: 0, weekSpent: 0 },
+    ]);
+    expect(text).toContain('Groceries');
+    expect(text).toContain('1 other on track');
+    expect(text).not.toMatch(/✅[^\n]*on track/);
+  });
+
+  it('says "All N on track" on a day nothing needs a decision', () => {
+    const text = attention([
+      { name: 'Groceries', budget: 400, monthSpent: 10, weekSpent: 10 },
+      { name: 'Housing', budget: 1400, monthSpent: 0, weekSpent: 0 },
+    ]);
+    expect(text).toContain('All 2 on track');
+    expect(text).not.toMatch(/✅[^\n]*on track/);
+  });
+
+  it('does not say the overspend twice when it all happened before this week', () => {
+    // Over before the week began means there was no weekly allowance at all,
+    // so the week figure WAS the month figure: "$230 over for the month ·
+    // $230.06 over this wk". The week clause now says the useful part.
+    const text = attention([{ name: 'Shopping', budget: 100, monthSpent: 330.06, weekSpent: 0 }]);
+    expect(text).toContain('🚨 *$230 over* for the month · nothing left this wk');
+    expect(text).not.toContain('over this wk');
+  });
+
+  it('still shows the week figure when it differs from the month one', () => {
+    // The live ask that put it there (2026-09-06): an over-budget category
+    // must still say what this week looks like.
+    const text = attention([{ name: 'Shopping', budget: 100, monthSpent: 150, weekSpent: 140 }]);
+    expect(text).toMatch(/\$50 over\* for the month · \$[\d.]+ over this wk/);
   });
 });

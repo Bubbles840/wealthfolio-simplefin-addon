@@ -8,6 +8,7 @@ import { ReportContent } from '../components/ReportContent';
 // The real default the sync engine applies when driftAlertThreshold is absent,
 // imported rather than re-typed so the field can never disagree with it.
 import { DEFAULT_DRIFT_ALERT_THRESHOLD_DOLLARS } from '../../shared/sync-core';
+import { resolveDigestRows, resolveReportDetail, type DigestCategoryMode, type ReportDetail } from '../../shared/telegram';
 import type { SecretsStore, CategoryCatalogEntry } from '../utils/secrets';
 
 /** Amount the "Large transaction alerts" field is seeded with. Purely a UI
@@ -15,10 +16,6 @@ import type { SecretsStore, CategoryCatalogEntry } from '../utils/secrets';
  *  this number only ever reaches storage once the user ticks the box. */
 export const SUGGESTED_LARGE_TX_THRESHOLD = 500;
 
-/** Mirrors the companion's `DEFAULT_WEEKLY_TOP_SPEND_COUNT`, which is module-
- *  private in companion/src/index.ts and so cannot be imported across the
- *  package boundary. Keep the two in step. */
-export const DEFAULT_WEEKLY_TOP_SPEND_COUNT = 5;
 
 /**
  * Every setting the old "Telegram Notifications" mega-card held, as ONE object.
@@ -53,23 +50,17 @@ export interface TelegramCfgDraft {
   largeTxAmount: string;
   driftAlertsOn: boolean;
   driftAmount: string;
-  topSpendsOn: boolean;
-  topSpendCount: string;
-  /** v1.47 slimming: which daily sections render, and the weekly add-ons. */
-  digestCategoryMode: 'all' | 'over' | 'none';
-  digestSummary: boolean;
-  digestOffBudget: boolean;
-  weeklyPoolSection: boolean;
-  weeklyRunway: boolean;
-  weeklySubscriptions: boolean;
+  /** Which category rows the daily report lists. */
+  digestCategoryMode: DigestCategoryMode;
+  /** Brief or Full — one switch in place of eight per-section toggles (1.57;
+   *  see resolveReportDetail). */
+  reportDetail: ReportDetail;
   glyphMode: 'clean' | 'glyphs';
   glyphOverrides: Record<string, string>;
   subcategoryDisplay: 'rollup' | 'breakdown';
   countOffBudget: boolean;
   capWeeklyToPool: boolean;
   overBudgetSpent: 'total' | 'all' | 'none';
-  monthProjection: boolean;
-  poolLine: boolean;
 }
 
 /**
@@ -110,26 +101,6 @@ export function thresholdToSave(on: boolean, raw: string, fallback: number): num
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
-/**
- * `weeklyTopSpendCount` sits between the two: absent means ON at the default of
- * 5 (like the drift threshold), but `0` is also a value the user can legitimately
- * type, and it already means "hide the section" to every reader — so unticking
- * and "ticked, with 0 in the box" deliberately collapse onto the same stored `0`.
- *
- * That collapse is safe because the round trip is stable in one step: a stored 0
- * reloads UNTICKED with the number field back at its default (never showing the
- * 0, exactly as the drift row doesn't), and saving again from there stores 0. So
- * unticking, saving and reloading can never come back ticked.
- *
- * A BLANK field still falls back to the default rather than to 0 — blank is "I
- * have no opinion", which is a different statement from "none".
- */
-export function countToSave(on: boolean, raw: string, fallback: number): number {
-  if (!on) return 0;
-  if (raw.trim() === '') return fallback;
-  const n = Number(raw);
-  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : fallback;
-}
 
 /**
  * The stored Telegram secret, built from the draft.
@@ -141,8 +112,11 @@ export function countToSave(on: boolean, raw: string, fallback: number): number 
  */
 export function buildConfig(cfg: TelegramCfgDraft) {
   return {
-    botToken: cfg.botToken,
-    chatId: cfg.chatId,
+    // Trimmed: a token pasted with a trailing newline or space put that
+    // character into every API URL, and the test button answered only "Not
+    // Found" — nothing pointing at the stray whitespace.
+    botToken: cfg.botToken.trim(),
+    chatId: cfg.chatId.trim(),
     enabled: true,
     notifyOnImport: cfg.notifyOnImport,
     dailyReportEnabled: cfg.dailyReportEnabled,
@@ -151,15 +125,12 @@ export function buildConfig(cfg: TelegramCfgDraft) {
     dailyReportCategories: cfg.dailyReportCategories,
     weeklyReportCategories: cfg.weeklyReportCategories,
     monthlyReportCategories: cfg.monthlyReportCategories,
-    digestCategoryMode: cfg.digestCategoryMode,
-    digestSummary: cfg.digestSummary,
-    digestOffBudget: cfg.digestOffBudget,
-    weeklyPoolSection: cfg.weeklyPoolSection,
-    weeklyRunway: cfg.weeklyRunway,
-    weeklySubscriptions: cfg.weeklySubscriptions,
-    weeklyTopSpendCount: countToSave(
-      cfg.topSpendsOn, cfg.topSpendCount, DEFAULT_WEEKLY_TOP_SPEND_COUNT,
-    ),
+    // Its own key since 1.57.0 — see resolveDigestRows.
+    digestRows: cfg.digestCategoryMode,
+    // Replaces digestSummary, digestOffBudget, weeklyPoolSection, weeklyRunway,
+    // weeklySubscriptions and weeklyTopSpendCount, none of which are written
+    // any more (1.57).
+    reportDetail: cfg.reportDetail,
     // Always an explicit number, never omitted: `0` is how both readers spell
     // "off", and omitting driftAlertThreshold would hand the user back the $100
     // default they just switched off.
@@ -187,20 +158,14 @@ const EMPTY_DRAFT: TelegramCfgDraft = {
   dailyReportCategories: 'all',
   weeklyReportCategories: 'all',
   monthlyReportCategories: 'all',
-  digestCategoryMode: 'all',
-  digestSummary: true,
-  digestOffBudget: true,
-  weeklyPoolSection: true,
-  weeklyRunway: true,
-  weeklySubscriptions: true,
+  digestCategoryMode: 'attention',
+  // A brand-new setup starts Brief. A stored config without the key reads as
+  // Full (draftFromStored), which is what it always received.
+  reportDetail: 'brief',
   largeTxAlerts: false,
   largeTxAmount: String(SUGGESTED_LARGE_TX_THRESHOLD),
   driftAlertsOn: true,
   driftAmount: String(DEFAULT_DRIFT_ALERT_THRESHOLD_DOLLARS),
-  // Absent means ON at the default of 5 — what the companion has always done —
-  // so this starts true and only an explicit stored 0 unticks it.
-  topSpendsOn: true,
-  topSpendCount: String(DEFAULT_WEEKLY_TOP_SPEND_COUNT),
   glyphMode: 'clean',
   glyphOverrides: {},
   subcategoryDisplay: 'rollup',
@@ -209,9 +174,6 @@ const EMPTY_DRAFT: TelegramCfgDraft = {
   // Also default ON, also stored as an opt-OUT.
   capWeeklyToPool: true,
   overBudgetSpent: 'total',
-  monthProjection: true,
-  // Also opt-OUT; only visible in reports while a pool is set anyway.
-  poolLine: true,
 };
 
 /** Fills a draft from the stored secret. A stored number is authoritative;
@@ -224,8 +186,6 @@ function draftFromStored(
   countOffBudget: boolean,
   capWeeklyToPool: boolean,
   overBudgetSpent: 'total' | 'all' | 'none',
-  monthProjection: boolean,
-  poolLine: boolean,
 ): TelegramCfgDraft {
   const base: TelegramCfgDraft = {
     ...EMPTY_DRAFT,
@@ -235,8 +195,6 @@ function draftFromStored(
     countOffBudget,
     capWeeklyToPool,
     overBudgetSpent,
-    monthProjection,
-    poolLine,
   };
   if (!tg) return base;
 
@@ -248,9 +206,6 @@ function draftFromStored(
   // user having turned it off, which is why the amount field keeps its default
   // rather than showing the stored 0.
   const drift = num(tg.driftAlertThreshold);
-  // Same shape as the drift threshold: absent → ON at the default, an explicit
-  // 0 (or negative) is the user having switched it off.
-  const top = num(tg.weeklyTopSpendCount);
 
   return {
     ...base,
@@ -263,18 +218,12 @@ function draftFromStored(
     dailyReportCategories: tg.dailyReportCategories ?? 'all',
     weeklyReportCategories: tg.weeklyReportCategories ?? 'all',
     monthlyReportCategories: tg.monthlyReportCategories ?? 'all',
-    digestCategoryMode: tg.digestCategoryMode === 'over' || tg.digestCategoryMode === 'none' ? tg.digestCategoryMode : 'all',
-    digestSummary: tg.digestSummary !== false,
-    digestOffBudget: tg.digestOffBudget !== false,
-    weeklyPoolSection: tg.weeklyPoolSection !== false,
-    weeklyRunway: tg.weeklyRunway !== false,
-    weeklySubscriptions: tg.weeklySubscriptions !== false,
+    digestCategoryMode: resolveDigestRows(tg),
+    reportDetail: resolveReportDetail(tg),
     largeTxAlerts: largeTx !== null && largeTx > 0,
     largeTxAmount: largeTx !== null && largeTx > 0 ? String(largeTx) : base.largeTxAmount,
     driftAlertsOn: drift === null || drift > 0,
     driftAmount: drift !== null && drift > 0 ? String(drift) : base.driftAmount,
-    topSpendsOn: top === null || top > 0,
-    topSpendCount: top !== null && top > 0 ? String(Math.floor(top)) : base.topSpendCount,
   };
 }
 
@@ -332,10 +281,8 @@ export function useTelegramDraft(store: SecretsStore): TelegramDraftState {
       store.getCountOffBudget?.() ?? true,
       store.getCapWeeklyToPool?.() ?? true,
       store.getOverBudgetSpent?.() ?? 'total',
-      store.getMonthProjection?.() ?? true,
-      store.getPoolLine?.() ?? true,
-    ]).then(([tg, glyph, subcat, offBudget, capWeekly, overSpent, projection, poolLine]) => {
-      const loaded = draftFromStored(tg, glyph, subcat, offBudget, capWeekly, overSpent, projection, poolLine);
+    ]).then(([tg, glyph, subcat, offBudget, capWeekly, overSpent]) => {
+      const loaded = draftFromStored(tg, glyph, subcat, offBudget, capWeekly, overSpent);
       setCfg(loaded);
       setSavedCfg(loaded);
     }).catch(() => {});
@@ -373,12 +320,6 @@ export function useTelegramDraft(store: SecretsStore): TelegramDraftState {
     }
     if ('overBudgetSpent' in patch) {
       store.setOverBudgetSpent?.(next.overBudgetSpent)?.catch(() => {});
-    }
-    if ('monthProjection' in patch) {
-      store.setMonthProjection?.(next.monthProjection)?.catch(() => {});
-    }
-    if ('poolLine' in patch) {
-      store.setPoolLine?.(next.poolLine)?.catch(() => {});
     }
   }, [cfg, store]);
 

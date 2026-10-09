@@ -1,9 +1,9 @@
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within, cleanup } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
 import { SyncPage } from '../pages/SyncPage';
 import { ThemeStyles } from '../components/ui';
 import { runSync } from '../utils/sync';
-import { OVERVIEW_CARD } from './OverviewTab';
+import { HOME_CARD as OVERVIEW_CARD } from './HomeTab';
 
 /**
  * Integration-level, on purpose: OverviewTab owns none of its data, so every
@@ -95,10 +95,20 @@ async function switchTab(name: RegExp) {
   fireEvent.click(await screen.findByRole('tab', { name }));
 }
 
-describe('OverviewTab', () => {
+/** The account rows live in Settings → Accounts since 1.57 (Overview's list
+ *  moved there). Opens it the way a user does. */
+async function openSettingsCard(name: RegExp) {
+  fireEvent.click(await screen.findByRole('tab', { name: /settings/i }));
+  const header = await screen.findByRole('button', { name });
+  if (header.getAttribute('aria-expanded') !== 'true') fireEvent.click(header);
+}
+const openAccounts = () => openSettingsCard(/^Accounts/);
+
+describe('HomeTab', () => {
   describe('account list', () => {
     it('shows account names instead of raw IDs in the mapping list', async () => {
       render(<SyncPage {...makeProps()} />);
+      await openAccounts();
       await waitFor(() => expect(screen.getByText(/Growth/)).toBeInTheDocument());
       expect(screen.getByText(/Checking/)).toBeInTheDocument();
       // The account row must show the name, not the raw SimpleFin ID
@@ -109,6 +119,7 @@ describe('OverviewTab', () => {
     it('navigates to the Wealthfolio account when a mapped row is clicked', async () => {
       const props = makeProps();
       render(<SyncPage {...props} />);
+      await openAccounts();
       await waitFor(() => expect(screen.getByText(/Growth/)).toBeInTheDocument());
       fireEvent.click(screen.getByText(/Growth/).closest('.sfin-acct-card')!);
       expect(props.ctx.api.navigation.navigate).toHaveBeenCalledWith('/accounts/wf-a');
@@ -118,6 +129,7 @@ describe('OverviewTab', () => {
       // Stacked, one per row: the two-column treatment put a balance and its
       // chip directly beneath a different account's name.
       render(<SyncPage {...makeProps()} />);
+      await openAccounts();
       await waitFor(() => expect(screen.getByText(/Growth/)).toBeInTheDocument());
       const rows = document.querySelectorAll('.sfin-acct-card');
       expect(rows).toHaveLength(2);
@@ -137,6 +149,7 @@ describe('OverviewTab', () => {
      */
     it('formats the balance as currency, not as a raw number', async () => {
       render(<SyncPage {...makeProps()} />);
+      await openAccounts();
       expect(await screen.findByText('$1,234.56')).toBeInTheDocument();
     });
 
@@ -155,6 +168,7 @@ describe('OverviewTab', () => {
         'sfin-2': { balance: 10, currency: 'USD', date: 1700000000, drift: null, measured: false },
       })) as any;
       render(<SyncPage {...props} />);
+      await openAccounts();
 
       expect(await screen.findByText('in sync')).toBeTruthy();
       expect(screen.getByText('not checked')).toBeTruthy();
@@ -171,6 +185,7 @@ describe('OverviewTab', () => {
         'sfin-1': { balance: 1234.56, currency: 'USD', date: 1700000000, drift: null },
       })) as any;
       render(<SyncPage {...props} />);
+      await openAccounts();
 
       expect(await screen.findByText('not checked')).toBeTruthy();
       expect(screen.queryByText('in sync')).toBeNull();
@@ -184,6 +199,7 @@ describe('OverviewTab', () => {
         'sfin-1': { balance: 100, currency: 'USD', date: 1700000000, drift: 15.22, measured: true },
       })) as any;
       render(<SyncPage {...props} />);
+      await openAccounts();
 
       // getAllBy, because the drift banner above the list says "off by" too — the
       // point here is the CHIP, and that it is not the muted one.
@@ -333,8 +349,9 @@ describe('OverviewTab', () => {
       props.store.getLastSyncImported = vi.fn(async () => 7) as any;
       render(<SyncPage {...props} />);
 
-      const tile = (await screen.findByText(/Imported last run/i)).closest('.sfin-tile');
-      expect(tile?.textContent).toContain('7');
+      // The tile is gone since 1.57; the header under the title says the same
+      // thing from the same stored value.
+      expect(await screen.findByText(/7 transactions imported/)).toBeInTheDocument();
     });
 
     it('shows a stored zero as 0, not as unknown', async () => {
@@ -344,18 +361,16 @@ describe('OverviewTab', () => {
       props.store.getLastSyncImported = vi.fn(async () => 0) as any;
       render(<SyncPage {...props} />);
 
-      const tile = (await screen.findByText(/Imported last run/i)).closest('.sfin-tile');
-      expect(tile?.textContent).toContain('0');
-      expect(tile?.textContent).not.toContain('—');
+      expect(await screen.findByText(/0 transactions imported/)).toBeInTheDocument();
     });
 
-    it('falls back to — when nothing has ever been recorded', async () => {
+    it('says nothing about an import count when none has ever been recorded', async () => {
       const props = makeProps();
       props.store.getLastSyncImported = vi.fn(async () => null) as any;
       render(<SyncPage {...props} />);
 
-      const tile = (await screen.findByText(/Imported last run/i)).closest('.sfin-tile');
-      expect(tile?.textContent).toContain('—');
+      expect(await screen.findByText(/Last synced/)).toBeInTheDocument();
+      expect(screen.queryByText(/transactions? imported/)).toBeNull();
     });
 
     it('says the imported figure counts transactions, not dollars', async () => {
@@ -363,8 +378,7 @@ describe('OverviewTab', () => {
       props.store.getLastSyncImported = vi.fn(async () => 6) as any;
       render(<SyncPage {...props} />);
 
-      const tile = (await screen.findByText(/Imported last run/i)).closest('.sfin-tile')!;
-      expect(tile.querySelector('.sfin-tile-sub')?.textContent).toBe('transactions');
+      expect(await screen.findByText(/6 transactions imported/)).toBeInTheDocument();
     });
 
     it('shows the needs-a-category tile only when the companion has published a count', async () => {
@@ -382,7 +396,7 @@ describe('OverviewTab', () => {
       // The addon cannot compute it: the SDK exposes no category data, so there
       // is nothing honest to put in the tile.
       render(<SyncPage {...makeProps()} />); // default mock returns null
-      await screen.findByText(/Imported last run/i);
+      await screen.findByRole('button', { name: /^Accounts:/ });
       expect(screen.queryByText(/Needs a category/i)).toBeNull();
     });
 
@@ -390,14 +404,14 @@ describe('OverviewTab', () => {
       // Its home is the Auto-Sync card header, which already prints the interval;
       // a tile spent a third of the strip restating a setting.
       render(<SyncPage {...makeProps()} />);
-      const strip = (await screen.findByText(/Imported last run/i)).closest('.sfin-strip')!;
+      const strip = (await screen.findByRole('button', { name: /^Accounts:/ })).closest('.sfin-strip')!;
       expect(strip.textContent).not.toMatch(/Every 6h/);
     });
 
     it('fills the row with two tiles instead of leaving a phantom third column', async () => {
-      render(<SyncPage {...makeProps()} />); // no companion → two tiles
-      const strip = (await screen.findByText(/Imported last run/i)).closest('.sfin-strip')!;
-      expect(strip.querySelectorAll('.sfin-tile')).toHaveLength(2);
+      render(<SyncPage {...makeProps()} />); // no companion, no pool → one tile
+      const strip = (await screen.findByRole('button', { name: /^Accounts:/ })).closest('.sfin-strip')!;
+      expect(strip.querySelectorAll('.sfin-tile')).toHaveLength(1);
 
       // The column count is derived from the children, so two tiles cannot leave
       // an empty third column. Asserted against the stylesheet itself, because a
@@ -442,7 +456,7 @@ describe('OverviewTab', () => {
       render(<SyncPage {...props} />);
       // The stored state opens on Advanced, so the checklist has to be reached
       // the way a user would.
-      await switchTab(/overview/i);
+      await switchTab(/home/i);
       fireEvent.click(await screen.findByRole('button', { name: /Dismiss setup checklist/i }));
 
       await waitFor(() => expect(props.store.setUiState).toHaveBeenCalledWith(
@@ -455,7 +469,7 @@ describe('OverviewTab', () => {
       const props = makeProps();
       props.store.getUiState = vi.fn(async () => ({ activeTab: 'overview', checklistDismissed: true })) as any;
       render(<SyncPage {...props} />);
-      await screen.findByText(/Imported last run/i);
+      await screen.findByRole('button', { name: /^Accounts:/ });
       expect(screen.queryByText(/Finish setting up/i)).toBeNull();
     });
   });
@@ -599,8 +613,8 @@ describe('uncategorized list', () => {
     fireEvent.click((await screen.findAllByRole('button', { name: /dismiss/i }))[0]);
     await waitFor(() => expect(props.store.setDismissals).toHaveBeenCalled());
 
-    fireEvent.click(screen.getByRole('tab', { name: /advanced/i }));
-    fireEvent.click(screen.getByRole('tab', { name: /overview/i }));
+    fireEvent.click(screen.getByRole('tab', { name: /settings/i }));
+    fireEvent.click(screen.getByRole('tab', { name: /home/i }));
 
     const tile = (await screen.findByText('Needs a category')).closest('.sfin-tile');
     expect(tile?.textContent).toContain('1');
@@ -649,7 +663,7 @@ describe('uncategorized list', () => {
     // The stored ui_state is part of the mount load this test deliberately
     // holds open, so the page sits on the Budget default until release —
     // reach Overview the way a user would, by clicking its tab.
-    fireEvent.click(await screen.findByRole('tab', { name: /overview/i }));
+    fireEvent.click(await screen.findByRole('tab', { name: /home/i }));
 
     fireEvent.click(await screen.findByRole('button', { name: /^2 need/i }));
     fireEvent.click((await screen.findAllByRole('button', { name: /^Dismiss Row a/i }))[0]);
@@ -674,7 +688,9 @@ describe('uncategorized list', () => {
     props.store.getUiState = vi.fn(async () => ({ activeTab: 'overview', checklistDismissed: true })) as any;
     props.store.getUncategorizedStatus = vi.fn(async () => statusWith([r('a'), r('b')])) as any;
     props.store.getDismissals = vi.fn(async () => (
-      otherHostWrote ? { ...saved, other: '2026-08-09T00:00:00.000Z' } : saved
+      // Relative, not a fixed date: dismissals older than 60 days are pruned on
+      // write, so a literal date quietly turned this test into a time bomb.
+      otherHostWrote ? { ...saved, other: new Date(Date.now() - 86_400_000).toISOString() } : saved
     )) as any;
     props.store.setDismissals = vi.fn(async (l: any) => { saved = l; }) as any;
     render(<SyncPage {...props} />);
@@ -723,15 +739,22 @@ describe('semester pool', () => {
     const props = makeProps();
     (props.store as any).getPoolStatus = vi.fn(async () => activeStatus);
     render(<SyncPage {...props} />);
-    // The tile's own figures, not the label: the setup card below the strip
-    // also says "Semester pool", published status or not.
+    // What is left and whether it lasts — the verdict the reports give.
     await waitFor(() => expect(screen.getByText('$11,500')).toBeInTheDocument());
-    expect(screen.getByText('$1,118/wk sustainable')).toBeInTheDocument();
+    expect(screen.getByText('lasts past Dec 12')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Semester pool: $11,500 left, lasts past Dec 12' })).toBeInTheDocument();
+  });
+
+  it('says when the pool runs out early, on the tile itself', async () => {
+    const props = makeProps();
+    (props.store as any).getPoolStatus = vi.fn(async () => ({ ...activeStatus, runsOutBeforeEnd: true, projectedRunOutDate: '2026-11-20' }));
+    render(<SyncPage {...props} />);
+    expect(await screen.findByText('out by Nov 20')).toBeInTheDocument();
   });
 
   it('shows no pool tile without a published status', async () => {
     render(<SyncPage {...makeProps()} />);
-    await waitFor(() => expect(screen.getByText(/Growth/)).toBeInTheDocument());
+    await screen.findByRole('button', { name: /^Accounts:/ });
     expect(screen.queryByText(/wk sustainable/)).not.toBeInTheDocument();
   });
 
@@ -739,8 +762,9 @@ describe('semester pool', () => {
     const props = makeProps();
     (props.store as any).setSemesterPool = vi.fn(async () => {});
     render(<SyncPage {...props} />);
-    await waitFor(() => expect(screen.getByText(/Growth/)).toBeInTheDocument());
-    fireEvent.change(screen.getByLabelText(/pool amount/i), { target: { value: '16000' } });
+    // The pool card moved to Settings → Budget in 1.57.
+    await openSettingsCard(/^Semester pool/);
+    fireEvent.change(await screen.findByLabelText(/pool amount/i), { target: { value: '16000' } });
     fireEvent.change(screen.getByLabelText(/must last until/i), { target: { value: '2099-12-12' } });
     fireEvent.click(screen.getByRole('button', { name: /set pool/i }));
     await waitFor(() => expect((props.store as any).setSemesterPool).toHaveBeenCalledWith({
@@ -755,6 +779,7 @@ describe('semester pool', () => {
     (props.store as any).getSemesterPool = vi.fn(async () => ({ amountCents: 100, startDate: '2020-01-01', endDate: '2099-12-31' }));
     (props.store as any).setSemesterPool = vi.fn(async () => {});
     render(<SyncPage {...props} />);
+    await openSettingsCard(/^Semester pool/);
     const clear = await screen.findByRole('button', { name: /clear pool/i });
     fireEvent.click(clear);
     await waitFor(() => expect((props.store as any).setSemesterPool).toHaveBeenCalledWith(null));
@@ -778,5 +803,127 @@ describe('uncategorized list signs', () => {
     expect(screen.getByText(/\+\$999/)).toBeInTheDocument();
     expect(document.querySelector('.sfin-amt--in')).toBeTruthy();
     expect(document.querySelector('.sfin-amt--out')).toBeTruthy();
+  });
+});
+
+describe('HomeTab (1.57: Overview + Budget on one tab)', () => {
+  const withStatus = (props: ReturnType<typeof makeProps>) => {
+    props.store.getUncategorizedStatus = vi.fn(async () => ({ count: 3, asOf: '2026-10-09T12:00:00Z', rows: [] }));
+    return props;
+  };
+
+  it('lands a 1.56 user whose last tab was Overview on Home', async () => {
+    render(<SyncPage {...withStatus(makeProps())} />);
+    expect(await screen.findByRole('tab', { name: 'Home', selected: true })).toBeInTheDocument();
+    expect(await screen.findByText('Needs a category')).toBeInTheDocument();
+  });
+
+  it('shows Accounts as a count with any difference, and opens Settings → Accounts', async () => {
+    // The shared fixture: two mapped accounts, sfin-2 off by $15.22.
+    render(<SyncPage {...makeProps()} />);
+    const tile = await screen.findByRole('button', { name: /^Accounts:/ });
+    expect(tile).toHaveTextContent('2');
+    expect(tile).toHaveTextContent('1 off by $15.22');
+    fireEvent.click(tile);
+    expect(await screen.findByRole('tab', { name: 'Settings', selected: true })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Accounts/, expanded: true })).toBeInTheDocument();
+  });
+
+  it('says the balances match only when every account was actually checked', async () => {
+    // "not checked" is an absence of information (see AccountList); a tile that
+    // called it "all as expected" claimed a check that never happened.
+    const unchecked = makeProps();
+    unchecked.store.getAccountBalances = vi.fn(async () => ({
+      'sfin-1': { balance: 1234.56, currency: 'USD', date: 1700000000, drift: null },
+      'sfin-2': { balance: -420.1, currency: 'USD', date: 1700000000, drift: null, measured: true },
+    }));
+    render(<SyncPage {...unchecked} />);
+    const tile = await screen.findByRole('button', { name: /^Accounts:/ });
+    await waitFor(() => expect(tile).toHaveTextContent('not all checked yet'));
+    expect(tile).not.toHaveTextContent('off by');
+    cleanup();
+
+    const checked = makeProps();
+    checked.store.getAccountBalances = vi.fn(async () => ({
+      'sfin-1': { balance: 1234.56, currency: 'USD', date: 1700000000, drift: null, measured: true },
+      'sfin-2': { balance: -420.1, currency: 'USD', date: 1700000000, drift: null, measured: true },
+    }));
+    render(<SyncPage {...checked} />);
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Accounts:/ })).toHaveTextContent('all match the bank'));
+  });
+
+  it('renders a fresh install with no balances yet without claiming anything about them', async () => {
+    const props = makeProps();
+    props.store.getAccountBalances = vi.fn(async () => ({}));
+    render(<SyncPage {...props} />);
+    const tile = await screen.findByRole('button', { name: /^Accounts:/ });
+    await waitFor(() => expect(tile).toHaveTextContent('not all checked yet'));
+    expect(tile).not.toHaveTextContent('off by');
+    expect(tile).not.toHaveTextContent('match');
+  });
+
+  it('leaves out the pool tile when no pool is set, and keeps the ended wording', async () => {
+    render(<SyncPage {...withStatus(makeProps())} />);
+    await screen.findByText('Needs a category');
+    expect(screen.queryByText('Semester pool')).toBeNull();
+    cleanup();
+
+    const ended = withStatus(makeProps());
+    ended.store.getPoolStatus = vi.fn(async () => ({
+      phase: 'ended', startDate: '2026-08-25', endDate: '2026-12-12',
+      spentCents: 1_500_000, remainingCents: 100_000, daysElapsed: 110, daysLeft: 0,
+      sustainableWeeklyCents: 0, actualWeeklyCents: 0, projectedRunOutDate: null, runsOutBeforeEnd: false,
+    }));
+    render(<SyncPage {...ended} />);
+    expect(await screen.findByText('left when the pool ended')).toBeInTheDocument();
+  });
+
+  it('drops the Imported last run tile — the header already says it', async () => {
+    render(<SyncPage {...withStatus(makeProps())} />);
+    await screen.findByText('Needs a category');
+    expect(screen.queryByText('Imported last run')).toBeNull();
+    expect(screen.queryByText('Accounts synced')).toBeNull();
+  });
+
+  it('renders the budget under the strip, on the same tab', async () => {
+    render(<SyncPage {...withStatus(makeProps())} />);
+    await screen.findByText('Needs a category');
+    expect(document.querySelectorAll('[role="tabpanel"]')).toHaveLength(1);
+    // BudgetTab without a cube says the companion is needed — its own copy,
+    // proving it mounted in the Home panel.
+    expect(screen.getByRole('tabpanel')).toHaveTextContent(/companion/i);
+  });
+});
+
+describe('links into Settings (1.57)', () => {
+  const withUnmapped = () => {
+    const props = makeProps();
+    props.store.getUnmappedAccounts = vi.fn(async () => [{ sfinAccountId: 'sfin-9', accountName: 'Robinhood Gold' }]);
+    return props;
+  };
+
+  it('lands the unmapped-account banner on Settings → Accounts with the mapper one tap away', async () => {
+    // The whole point of the banner is getting that account mapped.
+    render(<SyncPage {...withUnmapped()} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Open Accounts' }));
+    expect(await screen.findByRole('tab', { name: 'Settings', selected: true })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Accounts/, expanded: true })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Edit mapping' })).toBeInTheDocument();
+  });
+
+  it('scrolls the card it opened into view', async () => {
+    // A long Settings page with the card shut, or open but off-screen, reads as
+    // the link doing nothing.
+    const scrollIntoView = vi.fn();
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrollIntoView;
+    try {
+      render(<SyncPage {...withUnmapped()} />);
+      fireEvent.click(await screen.findByRole('button', { name: 'Open Accounts' }));
+      await waitFor(() => expect(scrollIntoView).toHaveBeenCalled());
+      expect(scrollIntoView.mock.contexts[0]).toHaveAttribute('data-card-id', 'accounts');
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
   });
 });

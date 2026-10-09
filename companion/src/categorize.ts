@@ -299,6 +299,15 @@ export interface CategorizeController {
    * that would read as "that import filed nothing".
    */
   openRecategorizeForTxIds(txIds: string[] | null, send: MenuSend): Promise<void>;
+  /**
+   * The morning report's "Pick a category" fix: straight to ONE transaction's
+   * category screen, in whichever sweep holds it — the uncategorized list if
+   * it has no category at all, the recategorize list if it has one that is not
+   * a spending category. Says so plainly when it is in neither (filed since the
+   * report, or older than the menu's window) instead of opening a list the
+   * reader did not ask for.
+   */
+  openForActivity(activityId: string, chatId: number, send: MenuSend): Promise<void>;
   /** One `cz:` tap. */
   onCallback(cb: { data: string; chatId: number; messageId: number }, ui: CategorizeUi): Promise<void>;
 }
@@ -899,7 +908,7 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
   async function showError(chat: ChatSession, text: string, ui: CategorizeUi): Promise<void> {
     chat.session.generation = nextGeneration();
     const { keyboard, buttons } = layoutScreen(chat.session.generation, [
-      [{ text: '« Back', action: { kind: 'goto', screen: chat.session.screen } }],
+      [{ text: '‹ Back', action: { kind: 'goto', screen: chat.session.screen } }],
       [{ text: 'Done', action: { kind: 'close' } }],
     ]);
     chat.session.buttons = buttons;
@@ -1664,6 +1673,22 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
         send,
         { kind: 'recategorize', query: null, txIds: txIds === null ? null : new Set(txIds) },
       );
+    },
+
+    async openForActivity(activityId, chatId, send): Promise<void> {
+      const recategorize: MenuMode = { kind: 'recategorize', query: null, txIds: null };
+      for (const mode of [CATEGORIZE_MODE, recategorize]) {
+        const loaded = await load(mode);
+        if (!loaded.ok) {
+          await send(failureText(loaded.failure, { kind: 'txn', activityId }, mode));
+          return;
+        }
+        if (loaded.fresh.txns.some((t) => t.activityId === activityId)) {
+          await openScreen(chatId, { kind: 'txn', activityId }, send, mode);
+          return;
+        }
+      }
+      await send('That transaction is not in the category menu any more — it may have been filed since. Check it in Wealthfolio.');
     },
 
     /**

@@ -9,51 +9,64 @@ Your data goes from your bank to SimpleFin to your own Wealthfolio instance.
 Nothing is sent anywhere else, and SimpleFin access is read-only: nothing can
 move money.
 
-## Features
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/cover-dark.webp">
+  <img alt="SimpleFin Sync's Home tab: a status strip, then the budget reports" src="assets/cover-light.webp">
+</picture>
 
-- **Automatic transaction import** from every SimpleFin-connected account —
-  checking, savings, and credit cards.
-- **Account mapping** — point each SimpleFin account at a Wealthfolio account,
-  or create the Wealthfolio account from the setup screen.
-- **Correct balances.** A one-time starting-balance entry lands each account on
-  its real bank balance rather than just the sum of imported transactions.
-- **Pending transactions**, imported and then reconciled in place when they
-  post — so a pending charge that settles at a different amount is updated, not
-  duplicated, and one that vanishes is removed.
-- **Internal transfers detected and linked.** A payment from checking to a
-  credit card is recognised as one movement and excluded from spending and
-  income, instead of double-counting as both an expense and income.
-- **Custom mapping rules** — map a description pattern to a specific activity
-  type when a bank's phrasing needs different treatment. Your rules always win
-  over automatic detection.
-- **Balance reconciliation.** The sync page shows each account's SimpleFin
-  balance and flags any drift, with a one-click correction.
-- **Auto-sync on a schedule** while Wealthfolio is open, including a catch-up
-  when you open the app.
-- **Reports tab** (with the Docker companion) — the daily, weekly and monthly
-  reports as they stand right now, plus every edition that was sent. On a
-  Wealthfolio server with Web Push, each report is also pushed to your devices
-  and the notification opens its report.
+## Set up in three steps
+
+1. Install the addon in Wealthfolio (**Settings → Add-ons**).
+2. Open **SimpleFin Sync** in the sidebar and paste your SimpleFin setup token.
+3. Pick the Wealthfolio account each bank account writes into.
+
+That's it: saving the mapping runs the first sync and turns on auto-sync every
+6 hours. Rules, the Telegram bot and Amazon categorization are optional, and
+live in **Settings** when you want them.
+
+You need Wealthfolio **3.6.2** or newer and a SimpleFin account with a one-time
+**setup token**. The token is exchanged once for a long-lived access URL, kept
+in Wealthfolio's encrypted secret storage; the token itself is not kept.
+
+## What you get
+
+The addon has three tabs: **Home**, **Reports** and **Settings**.
+
+- **Home** — a status strip (last sync, accounts, anything that needs you),
+  then your budget: six reports to start (headline numbers, cash flow or the
+  semester-pool burn-down, budget vs actual, top merchants, subscriptions),
+  with more a tap away under **+ Add report**, or build your own.
+- **Syncing that gets the money right.**
+  - Every SimpleFin account (checking, savings and cards) is imported on a
+    schedule, with a catch-up when you open the app.
+  - Pending charges are updated in place when they post, never duplicated.
+  - A transfer between your own accounts, like a card payment, is linked
+    as one movement and kept out of spending and income.
+  - A one-time starting balance lands each account on the bank's real
+    balance; any difference is flagged with a one-click fix.
+- **Reports** (with the companion) — the daily, weekly and monthly reports
+  as they stand right now, plus every edition that was sent. On a Wealthfolio
+  server with Web Push, each report is also pushed to your devices.
+- **Telegram bot** (with the companion) — one short daily report: what you
+  spent, what's left, and a single "🧹 N things to fix" line with buttons.
+  File transactions, check what you can afford and pull charts from the chat.
+- **Amazon categorization** (optional) — reads Amazon's order emails from a
+  throwaway mailbox and files each `AMAZON.COM*…` charge under what you bought.
+- **Rules** — map a description pattern to a category or activity type when a
+  bank's wording needs help. Your rules always win.
 
 ## Requirements
 
 - Wealthfolio **3.6.2** or newer
 - A SimpleFin account and a one-time **setup token**
-
-## Setup
-
-1. Install the addon in Wealthfolio (**Settings → Add-ons**).
-2. Open **SimpleFin Sync** in the sidebar and paste your SimpleFin setup token.
-   It is exchanged once for a long-lived access URL, which is stored in
-   Wealthfolio's encrypted secret storage — the token itself is not kept.
-3. Map each SimpleFin account to a Wealthfolio account.
-4. Press **Sync now**.
+- Optional: Docker, for the background companion (background sync, Reports,
+  the Telegram bot and Amazon categorization)
 
 ### Adding or removing accounts later
 
 Accounts you link at your SimpleFin bridge *after* setup are not synced until
 they are mapped, because a mapping is what tells the sync which Wealthfolio
-account to write into. Map them under **Advanced → Accounts**: it re-reads the
+account to write into. Map them under **Settings → Accounts → Edit mapping**: it reads the
 live account list from SimpleFin and lets you map each one to an existing
 Wealthfolio account or create a new one. Nothing else you have configured is
 touched — there is no need to run setup again.
@@ -62,9 +75,10 @@ Clearing an account's selection stops syncing it. Transactions already imported
 into Wealthfolio stay; delete the Wealthfolio account itself if you want them
 gone.
 
-The addon does not let a newly-linked account go unnoticed: the Overview shows
+The addon does not let a newly-linked account go unnoticed: Home shows
 a banner naming any SimpleFin account nothing is mapped to, and the companion
-sends one Telegram notice per account the first time it sees it.
+names it in the daily Telegram report (or, with the daily report off,
+sends one notice per account the first time it sees it).
 
 ## How it works
 
@@ -150,7 +164,7 @@ services:
     image: ghcr.io/bubbles840/wealthfolio-simplefin-sync:latest
     restart: unless-stopped
     environment:
-      - WEALTHFOLIO_API_URL=http://wealthfolio:7500
+      - WEALTHFOLIO_API_URL=http://wealthfolio:8088   # Wealthfolio's default port
       - WEALTHFOLIO_PASSWORD=your_wealthfolio_password
       - WEALTHFOLIO_DB_PATH=/mnt/wealthfolio/wealthfolio.db
       - TZ=America/New_York          # Required, or schedules fire on UTC
@@ -171,7 +185,8 @@ docker compose up -d simplefin-sync
 
 Pin `:vX.Y.Z` instead of `:latest` if you would rather upgrade deliberately.
 The companion logs its version on startup (`Starting companion v…`), and the
-addon's Overview footer flags a companion/addon version mismatch.
+addon shows a banner when the tab, the installed addon and the companion
+are different versions, naming the fix (reload, upload the zip, or pull the image).
 
 ### Amazon auto-categorization
 
@@ -215,7 +230,24 @@ docker exec simplefin-sync node dist/companion/src/amazon-check.js \
 
 A Gmail app password (`myaccount.google.com/apppasswords`, with 2-Step
 Verification on) is all the mailbox needs — there is no IMAP setting to enable,
-since Google removed that toggle and IMAP is always on.
+since Google removed that toggle and IMAP is always on. Paste it as Google shows
+it; the spaces are removed for you.
+
+Three things trip up almost everyone setting this up:
+
+- **The Gmail filter's _To_ field must be empty.** A filter with your address in
+  _To_ matches nothing Amazon sends, so nothing is forwarded and nothing fails —
+  the card just never sees an email. The card says so once the companion has
+  checked the mailbox and found it empty.
+- **Gmail only forwards mail that arrives after the filter exists.** Forward one
+  old order email by hand to test, as above.
+- **`AMAZON_IMAP_HOST`, `AMAZON_IMAP_USER`, `AMAZON_IMAP_PASSWORD` and
+  `AMAZON_IMAP_PORT` in the companion's environment override the card.** Useful
+  for keeping the password out of Wealthfolio; confusing if you forget they are
+  set and then edit the card.
+
+If the companion cannot sign in to the mailbox, the card shows the error itself
+(before 1.57.0 it was only in `docker logs`).
 
 **Proton Mail does not work for this**, for two reasons. An alias delivers into the
 same mailbox, so credentials for it reach everything in the account — no isolation
@@ -263,7 +295,7 @@ to split, reconciliation is never involved.
 
 ```bash
 npm install
-npm test          # 934 tests (plus 439 in companion/)
+npm test          # 1,549 tests (plus 698 in companion/)
 npm run type-check
 npm run bundle    # builds and zips to dist/
 ```

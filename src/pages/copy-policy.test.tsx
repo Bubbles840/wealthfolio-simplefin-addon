@@ -36,9 +36,9 @@ vi.mock('../utils/sync', async (importOriginal) => {
 const EMOJI = /\p{Extended_Pictographic}/u;
 
 const TABS: Array<[string, RegExp]> = [
-  ['overview', /overview/i],
-  ['notifications', /notifications/i],
-  ['advanced', /advanced/i],
+  ['home', /home/i],
+  // Notifications and Advanced became one Settings tab in 1.57.
+  ['settings', /settings/i],
 ];
 
 /**
@@ -51,21 +51,19 @@ const TABS: Array<[string, RegExp]> = [
  * clearest case: `AmazonCard` shows "Loading…" until its two reads land.
  */
 const LOADED_UNCONFIGURED: Record<string, RegExp> = {
-  overview: /balances as of/i,
-  // Nothing on this tab changes at load when no Telegram config is stored — the
-  // loaded draft equals the empty one — so there is no anchor to await here.
-  // `flushLoads` covers it instead, and the configured case below awaits a real
-  // post-load string.
-  notifications: /^$/,
-  advanced: /Amazon charges stay uncategorized/,
+  // The header's "Last synced …" replaces "Never synced" once the stored
+  // timestamp lands — the earliest post-load string on Home.
+  home: /Last synced/,
+  // Settings (1.57: Notifications + Advanced): the Amazon card reads "Loading…"
+  // until its two reads land, so its unconfigured summary is the anchor.
+  settings: /Amazon charges stay uncategorized/,
 };
 
 const LOADED_CONFIGURED: Record<string, RegExp> = {
-  overview: /balances as of/i,
+  home: /Last synced/,
   // "Connected" is the connection card's summary once a stored token and chat id
   // have landed; before the read resolves it reads "Not connected".
-  notifications: /^Connected$/,
-  advanced: /Amazon charges stay uncategorized/,
+  settings: /^Connected$/,
 };
 
 /** Let a freshly-mounted tab's `useEffect` reads settle. Used where the fixture
@@ -248,7 +246,7 @@ describe('copy policy', () => {
 
   it('renders no "(optional)" and no chrome emoji on any tab', async () => {
     render(<SyncPage {...makeProps()} />);
-    await screen.findByText(/Imported last run/i);
+    await screen.findByText(/Last synced/);
     // This fixture's drift carries no `driftSince`, so it is the OFF-BALANCE
     // banner (the one that held ⚠) which renders here.
     expect(document.querySelector('.sfin-banner-warn')).toBeTruthy();
@@ -258,7 +256,7 @@ describe('copy policy', () => {
 
   it('checks the feed-lag banner and the copy a configured install shows', async () => {
     render(<SyncPage {...configuredWithFreshDrift()} />);
-    await screen.findByText(/Imported last run/i);
+    await screen.findByText(/Last synced/);
 
     // The banner ⏳ lived in, which no other case in this file can reach. Asserted
     // rather than assumed: if a future change to `waitingOnFeed` stopped it
@@ -279,7 +277,7 @@ describe('copy policy', () => {
     // 📱. Open them all and re-apply the policy. Driven off the configured
     // fixture so the summaries being opened are the loaded ones.
     render(<SyncPage {...configuredWithFreshDrift()} />);
-    await screen.findByText(/Imported last run/i);
+    await screen.findByText(/Last synced/);
 
     await walkTabs(LOADED_CONFIGURED, true);
   });

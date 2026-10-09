@@ -1,12 +1,17 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import type { AddonContext } from '@wealthfolio/addon-sdk';
 import { runSync } from '../utils/sync';
-import { Button, CollapsibleCard, ErrorBox } from '../components/ui';
+import { Button, CollapsibleCard, ErrorBox, Why } from '../components/ui';
 import { AmazonCard, type AmazonDraftState } from '../components/AmazonCard';
 import { AccountMapper } from '../components/AccountMapper';
 import { RuleEditor } from '../components/RuleEditor';
+import { AccountList, accountsSummary } from '../components/AccountList';
+import { PoolCard } from '../components/PoolCard';
+import { shortDate } from '../../shared/telegram';
+import type { SemesterPoolConfig } from '../../shared/pool';
+import { NotificationsTab, type TelegramDraftState } from './NotificationsTab';
 import { fetchAccounts } from '../utils/simplefin';
-import type { SecretsStore, CategoryCatalogEntry } from '../utils/secrets';
+import type { SecretsStore, CategoryCatalogEntry, AccountBalanceInfo } from '../utils/secrets';
 import type { Scheduler } from '../utils/scheduler';
 import type { MappingRule, SimplefinAccount, AccountMapping } from '../../shared/types';
 
@@ -14,6 +19,10 @@ import type { MappingRule, SimplefinAccount, AccountMapping } from '../../shared
  *  page owns the open-card map), so these strings must not change — a rename
  *  silently forgets that card's last-open state, which is fine, but a stored
  *  blob keyed on the old string would never match again. */
+/** The intervals offered here and in setup. The bridge refreshes from the bank
+ *  every few hours, so anything shorter than 4 fetches nothing new. */
+export const SYNC_INTERVALS: readonly number[] = [4, 6, 12, 24];
+
 export const CARD = {
   accounts: 'accounts',
   autoSync: 'auto-sync',
@@ -21,6 +30,7 @@ export const CARD = {
   amazon: 'amazon',
   amazonGuide: 'amazon-guide',
   rules: 'rules',
+  pool: 'pool',
 } as const;
 
 interface Props {
@@ -32,25 +42,55 @@ interface Props {
    *  this panel is unmounted the moment another tab is selected. Passed straight
    *  through — nothing else on this tab reads it. */
   amazon: AmazonDraftState;
-  /** Loaded once by the page (the Notifications tab needs it too), so it
+  /** Loaded once by the page (the Notifications cards need it too), so it
    *  arrives as a prop rather than being fetched a second time here. */
   categories: CategoryCatalogEntry[];
   isOpen: (id: string) => boolean;
   toggleCard: (id: string) => void;
+  /** The page's mapping, balance snapshots and names, for the account rows in
+   *  the Accounts card (they moved here from Overview in 1.57). The PAGE's
+   *  mapping, not this tab's own: the rows and Home's Accounts tile must count
+   *  the same thing, and the names only make sense next to the mapping they
+   *  were read with. */
+  accountMapping: AccountMapping;
+  balances: Record<string, AccountBalanceInfo>;
+  sfinNames: Record<string, string>;
+  wfNames: Record<string, string>;
+  /** The Telegram draft, owned by the page so it outlives this panel. */
+  telegramDraft: TelegramDraftState;
+  /** Called after this tab writes the mapping or the account names, so the
+   *  page re-reads both — otherwise a just-mapped account shows as its raw id
+   *  with "account no longer exists". */
+  onAccountsChanged?: () => void;
 }
 
 /**
- * Everything that is set up once and then only checked, plus the destructive
- * reset flow.
+ * Settings: everything configurable, on one page, under plain group headings
+ * (1.57 — this was the Advanced tab, and absorbed Notifications and the parts
+ * of Overview that were configuration).
+ *
+ * Originally: everything that is set up once and then only checked, plus the
+ * destructive reset flow.
  *
  * Owns its own auto-sync / auto-heal / transaction-rule state, loaded here
  * rather than in the page's mega-load: nothing outside this tab reads any of
  * it (the scheduler itself is (re)started elsewhere — see `addon.tsx` — so a
  * tab that has never been opened still keeps syncing on schedule).
  */
-export function AdvancedTab({
+export function SettingsTab({
   ctx, store, scheduler, onReset, amazon, categories, isOpen, toggleCard,
+  accountMapping, balances, sfinNames, wfNames, telegramDraft, onAccountsChanged,
 }: Props) {
+  // The stored pool, for the card's collapsed summary. Read here and updated by
+  // the card itself on Set / Clear: the companion's published status would lag
+  // a change until the next sync, and say "Not set" over a card showing one.
+  const [poolCfg, setPoolCfg] = useState<SemesterPoolConfig | null>(null);
+  useEffect(() => {
+    store.getSemesterPool?.().then((c) => setPoolCfg(c ?? null)).catch(() => {});
+  }, [store]);
+  const poolSummary = poolCfg
+    ? `${new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(poolCfg.amountCents / 100)} until ${shortDate(poolCfg.endDate)}`
+    : 'Not set';
   const [scheduleHours, setScheduleHours] = useState<number | null>(null);
   const [autoHeal, setAutoHeal] = useState(false);
   const [autoAdjust, setAutoAdjust] = useState(false);
@@ -84,7 +124,7 @@ export function AdvancedTab({
    *  `mappingLoaded`, which stays false — the mapper must not render over a
    *  mapping we failed to read. */
   const [mappingLoadFailed, setMappingLoadFailed] = useState(false);
-  /** SimpleFin accounts the user chose not to sync (from the Overview banner).
+  /** SimpleFin accounts the user chose not to sync (from the Home banner).
    *  Surfaced here because that is the only place the decision can be undone —
    *  a preference with no visible off-switch is a trap. */
   const [ignoredAccounts, setIgnoredAccounts] = useState<string[]>([]);
@@ -127,7 +167,7 @@ export function AdvancedTab({
    * without re-running setup (which would clear every other setting).
    *
    * Also refreshes the stored account NAMES, the same way setup does: those
-   * names label the balance rows on the Overview, and an account linked after
+   * names label the balance rows in this Accounts card, and an account linked after
    * setup has never had a name recorded for it.
    */
   const loadAccounts = useCallback(async () => {
@@ -150,7 +190,7 @@ export function AdvancedTab({
       // MERGED into the stored names, never replacing them. SimpleFin can
       // return one institution's accounts alongside an error for another, and a
       // wholesale write would erase the names of everything missing from this
-      // response — leaving the Overview's balance rows labelled with raw
+      // response — leaving the balance rows labelled with raw
       // SimpleFin ids until some later refresh happened to be complete. Setup
       // can overwrite (the user is watching it); a background refresh cannot.
       const existingNames = await store.getAccountNames().catch(() => ({}));
@@ -158,12 +198,13 @@ export function AdvancedTab({
         ...existingNames,
         ...Object.fromEntries(set.accounts.map((a) => [a.id, a.name])),
       }).catch(() => {});
+      onAccountsChanged?.();
     } catch (e: any) {
       setAccountsError(e?.message ?? 'Could not reach SimpleFin');
     } finally {
       setAccountsLoading(false);
     }
-  }, [ctx, store]);
+  }, [ctx, store, onAccountsChanged]);
 
   const saveMapping = useCallback(async (m: AccountMapping) => {
     setAccountsError('');
@@ -171,6 +212,7 @@ export function AdvancedTab({
       await store.setAccountMapping(m);
       setMapping(m);
       setMappingSaved(true);
+      onAccountsChanged?.();
       // Mapping an account IS the decision to sync it, so it can no longer be
       // on the do-not-sync list. Leaving it there would be harmless today
       // (the list only suppresses a reminder about UNMAPPED accounts) but
@@ -186,7 +228,7 @@ export function AdvancedTab({
     } catch (e: any) {
       setAccountsError(e?.message ?? 'Failed to save account mapping');
     }
-  }, [store, ignoredAccounts]);
+  }, [store, ignoredAccounts, onAccountsChanged]);
 
   /** Undo the do-not-sync decision for every account it covers. Coarse on
    *  purpose: the list is short, and per-row undo would need the mapper to
@@ -230,11 +272,10 @@ export function AdvancedTab({
       ? 'None — using the +/− defaults'
       : `${rules.length} rule${rules.length === 1 ? '' : 's'}`;
 
-  const mappedCount = Object.values(mapping).filter(Boolean).length;
-  const accountsSummary = `${mappedCount} account${mappedCount === 1 ? '' : 's'} mapped`;
 
   return (
     <>
+      <h3 className="sfin-settings-group">Accounts</h3>
       {/* First card on the tab: linking a new account at your bank is the one
           thing here that silently changes what syncs, and until this existed
           the only way to map it was Reset — which clears every other setting.
@@ -243,21 +284,32 @@ export function AdvancedTab({
       <CollapsibleCard
         id={CARD.accounts}
         title="Accounts"
-        summary={accountsSummary}
+        summary={accountsSummary(accountMapping, balances)}
         open={isOpen(CARD.accounts)}
-        onToggle={() => {
-          const opening = !isOpen(CARD.accounts);
-          toggleCard(CARD.accounts);
-          if (opening && sfAccounts === null && !accountsLoading) void loadAccounts();
-        }}
+        // Opening shows the balances, from local snapshots. The bridge is asked
+        // for the live account list only when "Edit mapping" is tapped: this
+        // card is now opened mostly to look, and a look must not cost a
+        // SimpleFin round-trip every time.
+        onToggle={() => toggleCard(CARD.accounts)}
       >
+        {/* Not over a mapping this tab failed to read: "No accounts mapped
+            yet." beside "Could not read your saved account mapping" would be
+            two contradicting statements. */}
+        {!mappingLoadFailed && <AccountList
+          mapping={accountMapping}
+          balances={balances}
+          sfinNames={sfinNames}
+          wfNames={wfNames}
+          onOpenAccount={(id) => { ctx.api.navigation.navigate(`/accounts/${id}`).catch(() => {}); }}
+        />}
+        <div className="sfin-divider" />
         <div className="sfin-subtle" style={{ marginBottom: 12 }}>
           Accounts you link at SimpleFin after setup are not synced until they are
           mapped here. Clearing a row stops syncing that account — transactions
           already imported into Wealthfolio stay.
         </div>
 
-        {/* The only place the Overview banner's "Don't sync these" can be
+        {/* The only place the Home banner's "Don't sync these" can be
             undone. A stored preference the user cannot see or reverse would be
             worse than the nagging it replaced. Names come from the live feed
             when it has been fetched, falling back to the raw id so an entry is
@@ -294,7 +346,7 @@ export function AdvancedTab({
           <div className="sfin-subtle">Loading accounts from SimpleFin…</div>
         ) : sfAccounts === null ? (
           <Button variant="outline" onClick={() => void loadAccounts()}>
-            Load accounts
+            Edit mapping
           </Button>
         ) : (
           <>
@@ -317,6 +369,28 @@ export function AdvancedTab({
         )}
       </CollapsibleCard>
 
+      <h3 className="sfin-settings-group">Budget</h3>
+      <CollapsibleCard
+        id={CARD.pool}
+        title="Semester pool"
+        summary={poolSummary}
+        open={isOpen(CARD.pool)}
+        onToggle={() => toggleCard(CARD.pool)}
+      >
+        <PoolCard store={store} bare onChange={setPoolCfg} />
+      </CollapsibleCard>
+
+      <h3 className="sfin-settings-group">Notifications</h3>
+      <NotificationsTab
+        ctx={ctx}
+        draft={telegramDraft}
+        categories={categories}
+        isOpen={isOpen}
+        toggleCard={toggleCard}
+      />
+
+      <h3 className="sfin-settings-group">Sync</h3>
+
       <CollapsibleCard
         id={CARD.autoSync}
         title="Auto-sync"
@@ -335,10 +409,12 @@ export function AdvancedTab({
             onChange={(e) => changeInterval(Number(e.target.value))}
           >
             <option value={0}>Off</option>
-            <option value={1}>Every 1 hour</option>
-            <option value={4}>Every 4 hours</option>
-            <option value={8}>Every 8 hours</option>
-            <option value={24}>Every 24 hours</option>
+            {SYNC_INTERVALS.map((h) => <option key={h} value={h}>Every {h} hours</option>)}
+            {/* An interval stored by an older version (hourly, 8 hours) stays
+                visible as itself rather than blanking the select. */}
+            {scheduleHours !== null && scheduleHours > 0 && !SYNC_INTERVALS.includes(scheduleHours) && (
+              <option value={scheduleHours}>Every {scheduleHours} hour{scheduleHours === 1 ? '' : 's'}</option>
+            )}
           </select>
         </div>
         <div className="sfin-subtle sfin-autosync-hint">
@@ -446,8 +522,9 @@ export function AdvancedTab({
         </div>
       </CollapsibleCard>
 
-      {/* Directly below the Docker card: it is the companion that reads the
-          mailbox, so this is only useful to someone who has just set that up. */}
+      <h3 className="sfin-settings-group">Categorizing</h3>
+      {/* The companion reads the mailbox, so this is only useful to someone
+          who has set up background sync above. */}
       <AmazonCard
         amazon={amazon}
         cardId={CARD.amazon}
@@ -481,9 +558,13 @@ export function AdvancedTab({
       </CollapsibleCard>
 
       <div className="sfin-callout sfin-advanced-callout">
-        Imported bank transactions appear under <strong>Activities</strong>. To see them in the{' '}
-        <strong>Spending</strong> tab with categories and budgets, enable the Spending Tracker for
-        your mapped accounts: <strong>Settings → Spending Tracker</strong>.
+        To see synced transactions in Wealthfolio&apos;s <strong>Spending</strong> page, turn on
+        the Spending Tracker for your mapped accounts.
+        <Why>
+          Imported transactions always appear under Activities. The Spending page, with its
+          categories and budgets, only counts accounts the Spending Tracker is on for:
+          Wealthfolio&apos;s <strong>Settings → Spending Tracker</strong>.
+        </Why>
       </div>
 
       {/* A destructive boundary, not a bare button under unrelated settings:
@@ -494,6 +575,7 @@ export function AdvancedTab({
           The copy below has to match what `clearAll` actually deletes: every
           key in `SecretsStore`'s KEYS map, which is everything this tab (and
           Notifications) configures — not just the account mapping. */}
+      <h3 className="sfin-settings-group">Reset</h3>
       <div className="sfin-danger-card">
         <b>Reset connection</b>
         <div className="sfin-subtle sfin-danger-note">

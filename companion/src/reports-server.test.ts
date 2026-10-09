@@ -130,9 +130,11 @@ describe('the board on the phone (v1.46)', () => {
   });
 
   it('every card carries move and hide controls', async () => {
+    // A fresh layout starts on six reports (1.57), cash flow among them.
     const res = await handleReportsRequest(deps(), { method: 'POST', path: '/page', body: pageBody() });
-    expect(res.body).toContain('data-action="up:net-worth"');
-    expect(res.body).toContain('data-action="hide:net-worth"');
+    expect(res.body).toContain('data-action="up:cash-flow"');
+    expect(res.body).toContain('data-action="hide:cash-flow"');
+    expect(res.body).not.toContain('data-action="hide:net-worth"');
   });
 });
 

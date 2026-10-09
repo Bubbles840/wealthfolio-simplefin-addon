@@ -13,8 +13,28 @@ describe('resolveBudgetLayout', () => {
     expect(r.grid.slice(0, 2)).toEqual(['pool-burndown', 'cash-flow']);
     expect(r.spanOf('pool-burndown')).toEqual({ c: 8, r: 8 });
     expect(r.spanOf('cash-flow')).toEqual({ c: 8, r: 8 });
-    expect(new Set(r.grid)).toEqual(new Set(AVAIL));
+    // A fresh layout starts with six reports (1.57); the rest wait under
+    // "+ Add report". Custom reports are the user's own, so always shown.
+    expect(new Set(r.grid)).toEqual(new Set([
+      'headline-stats', 'pool-burndown', 'cash-flow', 'budget-vs-actual', 'merchants', 'subscriptions', 'custom:cr-1',
+    ]));
+    expect(r.hidden).toContain('data-check');
+    expect(r.hidden).toHaveLength(AVAIL.length - 7);
+  });
+
+  it('starts without a pool on category trends in the pool chart\'s place', () => {
+    const r = resolveBudgetLayout(null, AVAIL, false);
+    expect(new Set(r.grid)).toEqual(new Set([
+      'headline-stats', 'cash-flow', 'category-trends', 'budget-vs-actual', 'merchants', 'subscriptions', 'custom:cr-1',
+    ]));
+  });
+
+  it('leaves a stored layout exactly as it was — the short default is for fresh layouts only', () => {
+    // An existing arrangement with nothing hidden keeps every card: shrinking
+    // it to six on upgrade would look like reports had been deleted.
+    const r = resolveBudgetLayout({ heroes: [], order: [], hidden: [] }, AVAIL, true);
     expect(r.hidden).toEqual([]);
+    expect(new Set(r.grid)).toEqual(new Set(AVAIL));
   });
 
   it('the pool front card yields to category trends when no pool is set', () => {

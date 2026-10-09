@@ -44,6 +44,8 @@ interface Props {
 export function ReportContent({
   cfg, onChange, onChangeNow, categories, isOpen, toggleCard,
 }: Props) {
+  // Local, not persisted: a fold for rarely-changed settings, not a card.
+  const [moreOpen, setMoreOpen] = React.useState(false);
   const categoryRows = categories
     .filter((c) => !c.parent)
     .sort((a, b) => a.name.localeCompare(b.name));
@@ -87,8 +89,6 @@ export function ReportContent({
     cfg.countOffBudget ? null : 'off-budget ignored',
     cfg.capWeeklyToPool ? null : 'full budget amounts',
     cfg.overBudgetSpent === 'total' ? null : cfg.overBudgetSpent === 'all' ? 'spent per category' : 'no spent figures',
-    cfg.monthProjection ? null : 'no projection',
-    cfg.poolLine ? null : 'no pool line',
   ].filter((s): s is string => typeof s === 'string').join(' · ');
 
   /**
@@ -266,19 +266,6 @@ export function ReportContent({
         </select>
       </div>
 
-      <div className="sfin-field-row">
-        <label htmlFor="sfin-subcat-mode">Subcategories</label>
-        <select
-          id="sfin-subcat-mode"
-          value={cfg.subcategoryDisplay}
-          onChange={(e) => onChangeNow({
-            subcategoryDisplay: e.target.value as 'rollup' | 'breakdown',
-          })}
-        >
-          <option value="rollup">Roll up into the parent</option>
-          <option value="breakdown">Break down under the parent</option>
-        </select>
-      </div>
 
       <div className="sfin-field-row">
         <label htmlFor="sfin-off-budget">Spending with no budget</label>
@@ -291,77 +278,6 @@ export function ReportContent({
           <option value="ignore">Listed only, does not count</option>
         </select>
       </div>
-      <div className="sfin-field-row">
-        <label htmlFor="sfin-cap-weekly">Weekly amounts per category</label>
-        <select
-          id="sfin-cap-weekly"
-          value={cfg.capWeeklyToPool ? 'cap' : 'full'}
-          onChange={(e) => onChangeNow({ capWeeklyToPool: e.target.value === 'cap' })}
-        >
-          <option value="cap">Limited by what the month can afford</option>
-          <option value="full">The full budget for each category</option>
-        </select>
-      </div>
-      <div className="sfin-field-row">
-        <label htmlFor="sfin-over-spent">Spent figures when over budget</label>
-        <select
-          id="sfin-over-spent"
-          value={cfg.overBudgetSpent}
-          onChange={(e) => onChangeNow({ overBudgetSpent: e.target.value as 'total' | 'all' | 'none' })}
-        >
-          <option value="total">Monthly total only</option>
-          <option value="all">Total and each category</option>
-          <option value="none">Neither</option>
-        </select>
-      </div>
-      <div className="sfin-field-row">
-        <label htmlFor="sfin-pool-line">Semester pool line</label>
-        <select
-          id="sfin-pool-line"
-          value={cfg.poolLine ? 'shown' : 'hidden'}
-          onChange={(e) => onChangeNow({ poolLine: e.target.value === 'shown' })}
-        >
-          <option value="shown">Shown while a pool is set</option>
-          <option value="hidden">Hidden</option>
-        </select>
-      </div>
-      <div className="sfin-field-row">
-        <label htmlFor="sfin-projection">Month-end projection</label>
-        <select
-          id="sfin-projection"
-          value={cfg.monthProjection ? 'shown' : 'hidden'}
-          onChange={(e) => onChangeNow({ monthProjection: e.target.value === 'shown' })}
-        >
-          <option value="shown">Shown — matches Wealthfolio&apos;s forecast</option>
-          <option value="hidden">Hidden</option>
-        </select>
-      </div>
-      {/* Wealthfolio's own number, not a second opinion: the previous three
-          months' daily average times the days in this month. The whole value
-          of the line is agreeing with the app's budget page. */}
-      <div className="sfin-subtle" style={{ marginTop: -4 }}>
-        &quot;On pace for $X&quot; on the daily headline — your last three months&apos; average, like the app&apos;s budget page.
-      </div>
-
-      {/* Why this exists: the budget is a floor, and above it most people hold
-          a second, harder number in their head. "$329 over" says nothing about
-          how close that is; "$2,897 spent" does. Per-category is opt-in
-          because several over categories become several extra numbers. */}
-      <div className="sfin-subtle" style={{ marginTop: -4 }}>
-        Only shown once something is over budget.
-      </div>
-
-      {/* The two answer different questions and neither is wrong. "Limited"
-          answers "what can I actually spend": the per-category figures are
-          scaled so they cannot add up to money the month no longer has. "Full"
-          is Wealthfolio's own envelope view — each category keeps its own
-          budget regardless of the others, which stays readable when the pool is
-          tight but does overstate. Whichever is chosen, the report says which
-          one it is showing, so the numbers are never silently one or the other. */}
-      <div className="sfin-subtle" style={{ marginTop: -4 }}>
-        Only affects the per-category amounts; the monthly total is the same either way.
-      </div>
-
       {/* Why this is a choice rather than a fixed rule: an unbudgeted category
           is usually something not budgeted YET, in which case the money is
           plainly gone and the daily "left this month" must say so. But some
@@ -373,11 +289,82 @@ export function ReportContent({
         Either way it stays visible under &quot;Off budget&quot; in the daily report.
       </div>
 
+
+
+
+      {/* Settings most people never change, folded away (1.57). The two that
+          shape what the report SAYS stay above: the icon style, and whether
+          unbudgeted spending counts. */}
+      <Disclosure
+        id="report-more-options"
+        title="More options"
+        summary="Subcategories, weekly amounts, spent figures"
+        open={moreOpen}
+        onToggle={() => setMoreOpen((o) => !o)}
+        variant="inline"
+      >
+        <div className="sfin-stack">
+          <div className="sfin-field-row">
+            <label htmlFor="sfin-subcat-mode">Subcategories</label>
+            <select
+              id="sfin-subcat-mode"
+              value={cfg.subcategoryDisplay}
+              onChange={(e) => onChangeNow({
+                subcategoryDisplay: e.target.value as 'rollup' | 'breakdown',
+              })}
+            >
+              <option value="rollup">Roll up into the parent</option>
+              <option value="breakdown">Break down under the parent</option>
+            </select>
+          </div>
+          <div className="sfin-field-row">
+            <label htmlFor="sfin-cap-weekly">Weekly amounts per category</label>
+            <select
+              id="sfin-cap-weekly"
+              value={cfg.capWeeklyToPool ? 'cap' : 'full'}
+              onChange={(e) => onChangeNow({ capWeeklyToPool: e.target.value === 'cap' })}
+            >
+              <option value="cap">Limited by what the month can afford</option>
+              <option value="full">The full budget for each category</option>
+            </select>
+          </div>
+          {/* The two answer different questions and neither is wrong. "Limited"
+              answers "what can I actually spend": the per-category figures are
+              scaled so they cannot add up to money the month no longer has. "Full"
+              is Wealthfolio's own envelope view — each category keeps its own
+              budget regardless of the others, which stays readable when the pool is
+              tight but does overstate. Whichever is chosen, the report says which
+              one it is showing, so the numbers are never silently one or the other. */}
+          <div className="sfin-subtle" style={{ marginTop: -4 }}>
+            Only affects the per-category amounts; the monthly total is the same either way.
+          </div>
+          <div className="sfin-field-row">
+            <label htmlFor="sfin-over-spent">Spent figures when over budget</label>
+            <select
+              id="sfin-over-spent"
+              value={cfg.overBudgetSpent}
+              onChange={(e) => onChangeNow({ overBudgetSpent: e.target.value as 'total' | 'all' | 'none' })}
+            >
+              <option value="total">Monthly total only</option>
+              <option value="all">Total and each category</option>
+              <option value="none">Neither</option>
+            </select>
+          </div>
+          {/* Why this exists: the budget is a floor, and above it most people hold
+              a second, harder number in their head. "$329 over" says nothing about
+              how close that is; "$2,897 spent" does. Per-category is opt-in
+              because several over categories become several extra numbers. */}
+          <div className="sfin-subtle" style={{ marginTop: -4 }}>
+            Only shown once something is over budget.
+          </div>
+        </div>
+      </Disclosure>
+
       {/* These are their own stored settings, written on change — so they
           never reach the save bar, and a card that otherwise waits for Save has
           to say which of its controls does not. */}
       <div className="sfin-subtle sfin-applies-now">
-        These six apply immediately — no need to save.
+        These apply immediately — no need to save.
       </div>
     </CollapsibleCard>
   );

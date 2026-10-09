@@ -7,6 +7,8 @@ interface Row {
   label: string;
   doneLabel: string;
   tab: TabId;
+  /** The Settings card the row's "Set up →" opens (and scrolls to). */
+  card: string;
 }
 
 /**
@@ -23,26 +25,29 @@ export function SetupChecklist({
   amazonConfigured: boolean;
   dismissed: boolean;
   onDismiss: () => void;
-  onNavigate: (tab: TabId) => void;
+  onNavigate: (tab: TabId, cardId?: string) => void;
 }) {
   const rows: Row[] = [
     {
       done: !!companionVersion,
       label: 'Background sync — keep syncing when Wealthfolio is closed',
       doneLabel: `Background sync — companion v${companionVersion} connected`,
-      tab: 'advanced',
+      tab: 'settings',
+      card: 'docker',
     },
     {
       done: telegramConfigured,
       label: 'Telegram reports — get a daily digest',
       doneLabel: 'Telegram reports — connected',
-      tab: 'notifications',
+      tab: 'settings',
+      card: 'telegram',
     },
     {
       done: amazonConfigured,
       label: 'Amazon categorization — label Amazon charges automatically',
       doneLabel: 'Amazon categorization — on',
-      tab: 'advanced',
+      tab: 'settings',
+      card: 'amazon',
     },
   ];
   if (dismissed || rows.every((r) => r.done)) return null;
@@ -56,13 +61,13 @@ export function SetupChecklist({
         </button>
       </div>
       {rows.map((r) => (
-        <div className="sfin-checklist-row" key={r.tab + r.label}>
+        <div className="sfin-checklist-row" key={r.card}>
           <span className={r.done ? 'sfin-checklist-dot sfin-checklist-dot--done' : 'sfin-checklist-dot'} aria-hidden>
             {r.done ? <CheckIcon /> : null}
           </span>
           <span className="sfin-checklist-label">{r.done ? r.doneLabel : r.label}</span>
           {!r.done && (
-            <button type="button" className="sfin-checklist-link" onClick={() => onNavigate(r.tab)}>
+            <button type="button" className="sfin-checklist-link" onClick={() => onNavigate(r.tab, r.card)}>
               Set up →
             </button>
           )}

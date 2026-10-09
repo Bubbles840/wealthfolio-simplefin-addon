@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Button, SectionLabel } from './ui';
+import { Button, SectionLabel, Why } from './ui';
 import type { SecretsStore } from '../utils/secrets';
 import type { SemesterPoolConfig } from '../../shared/pool';
 
@@ -18,7 +18,17 @@ import type { SemesterPoolConfig } from '../../shared/pool';
  * and after a save it says the tile catches up on the next sync rather than
  * pretending to know the current burn.
  */
-export function PoolCard({ store }: { store: SecretsStore }) {
+/**
+ * `bare`: inside Settings' own "Semester pool" collapsible (1.57), which
+ * already supplies the frame and the title — so neither is drawn twice.
+ */
+export function PoolCard({ store, bare = false, onChange }: {
+  store: SecretsStore;
+  bare?: boolean;
+  /** After a Set or Clear lands, so a summary elsewhere (Settings' card
+   *  header) can say so at once instead of after the next sync. */
+  onChange?: (cfg: SemesterPoolConfig | null) => void;
+}) {
   const [cfg, setCfg] = useState<SemesterPoolConfig | null>(null);
   const [amount, setAmount] = useState('');
   const [endDate, setEndDate] = useState('');
@@ -45,6 +55,7 @@ export function PoolCard({ store }: { store: SecretsStore }) {
       const next: SemesterPoolConfig = { amountCents, startDate: today, endDate };
       await store.setSemesterPool?.(next);
       setCfg(next);
+      onChange?.(next);
       setAmount('');
       setEndDate('');
       setJustSaved(true);
@@ -58,6 +69,7 @@ export function PoolCard({ store }: { store: SecretsStore }) {
     try {
       await store.setSemesterPool?.(null);
       setCfg(null);
+      onChange?.(null);
       setJustSaved(false);
     } finally {
       setBusy(false);
@@ -70,15 +82,19 @@ export function PoolCard({ store }: { store: SecretsStore }) {
     }).format(cents / 100);
 
   return (
-    <div className="sfin-card">
-      <div className="sfin-card-head">
-        <SectionLabel>Semester pool</SectionLabel>
-      </div>
+    <div className={bare ? 'sfin-stack' : 'sfin-card'}>
+      {!bare && (
+        <div className="sfin-card-head">
+          <SectionLabel>Semester pool</SectionLabel>
+        </div>
+      )}
       <div className="sfin-subtle">
-        Money that arrives in one lump — a loan disbursement, a stipend — and
-        has to last until a date. Reports show what a week can afford and when
-        the pool runs out at your pace. Also settable from Telegram:{' '}
-        <code>/pool 16000 Dec 12</code>.
+        Money that arrives in one lump and has to last until a date.
+        <Why>
+          A loan disbursement or a stipend, for example. Reports then show what a week
+          can afford and when the pool runs out at your pace. You can also set it from
+          Telegram: <code>/pool 16000 Dec 12</code>.
+        </Why>
       </div>
       {cfg && (
         <div className="sfin-banner-note">
@@ -91,6 +107,7 @@ export function PoolCard({ store }: { store: SecretsStore }) {
         <label htmlFor="sfin-pool-amount">Pool amount</label>
         <input
           id="sfin-pool-amount"
+          className="sfin-input"
           type="text"
           inputMode="decimal"
           placeholder="16000"
@@ -102,6 +119,7 @@ export function PoolCard({ store }: { store: SecretsStore }) {
         <label htmlFor="sfin-pool-end">Must last until</label>
         <input
           id="sfin-pool-end"
+          className="sfin-input"
           type="date"
           value={endDate}
           onChange={(e) => setEndDate(e.target.value)}

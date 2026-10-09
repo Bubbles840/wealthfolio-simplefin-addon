@@ -103,7 +103,10 @@ const makeProps = () => ({
     getReportCube: vi.fn(async () => null as any),
     getCustomReports: vi.fn(async () => [] as any[]),
     setCustomReports: vi.fn(async () => {}),
-    getBudgetLayout: vi.fn(async () => null as any),
+    // An existing arrangement with nothing hidden, so every report renders —
+    // these tests exercise what the controls do to cards. A FRESH layout
+    // (null) starts with six; see the test that says so.
+    getBudgetLayout: vi.fn(async () => ({ heroes: [], order: [], hidden: [] }) as any),
     setBudgetLayout: vi.fn(async () => {}),
   } as any,
   onReset: vi.fn(),
@@ -113,33 +116,50 @@ const makeProps = () => ({
 const reportIds = () =>
   Array.from(document.querySelectorAll('[data-report-id]')).map((n) => n.getAttribute('data-report-id'));
 
+
+/** Customize mode gives each card ONE ⋯ button (1.57); its actions live in the
+ *  menu that button opens, and the menu closes after an action. */
+function openCardMenu(title: string) {
+  fireEvent.click(screen.getByRole('button', { name: `Options for ${title}` }));
+}
+
 describe('BudgetTab', () => {
-  it('is the first tab and the default landing view', async () => {
+  it('lives on the first tab, which is the default landing view', async () => {
+    // 1.57: the budget is the bulk of Home, under the status strip.
     render(<SyncPage {...makeProps()} />);
     const tabs = await screen.findAllByRole('tab');
-    expect(tabs[0]).toHaveAccessibleName(/budget/i);
+    expect(tabs[0]).toHaveAccessibleName(/home/i);
     await waitFor(() => expect(tabs[0]).toHaveAttribute('aria-selected', 'true'));
   });
 
-  it('renders one companion banner and no charts without a cube', async () => {
+  it('shows a calm empty state, not a warning, without a cube', async () => {
     render(<SyncPage {...makeProps()} />);
-    await waitFor(() => expect(screen.getByText(/reports need the companion/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/budget reports come from the background companion/i)).toBeInTheDocument());
+    expect(screen.queryByText(/reports need the companion/i)).toBeNull();
     expect(reportIds()).toEqual([]);
   });
 
-  it('renders heroes then grid from the cube, pool absent without a pool', async () => {
+  it('opens Settings on the background-sync card from the empty state', async () => {
+    render(<SyncPage {...makeProps()} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Set up background sync' }));
+    const tabs = await screen.findAllByRole('tab');
+    await waitFor(() => expect(tabs[2]).toHaveAttribute('aria-selected', 'true'));
+    expect(await screen.findByRole('button', { name: /background sync \(docker\)/i })).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it('starts a fresh layout on six reports, cash flow first without a pool', async () => {
     const props = makeProps();
     (props.store as any).getReportCube = vi.fn(async () => ({ ...CUBE, asOf: new Date().toISOString() }));
+    (props.store as any).getBudgetLayout = vi.fn(async () => null);
     render(<SyncPage {...props} />);
     await waitFor(() => expect(reportIds().length).toBeGreaterThan(0));
     const ids = reportIds();
     // No pool in the CUBE fixture: cash flow leads the board; first-gap
     // packing may seat a small card beside it before the second big one.
     expect(ids[0]).toBe('cash-flow');
-    expect(ids).not.toContain('pool-burndown');
-    expect(ids).toContain('category-trends');
-    expect(ids).toContain('net-worth');
-    expect(ids).toContain('merchants');
+    expect(new Set(ids)).toEqual(new Set([
+      'headline-stats', 'cash-flow', 'category-trends', 'budget-vs-actual', 'merchants', 'subscriptions',
+    ]));
   });
 
   it('warns about a stale cube but still renders the reports', async () => {
@@ -218,15 +238,20 @@ describe('customize mode', () => {
     fireEvent.click(screen.getByRole('button', { name: /^customize$/i }));
   };
 
-  it('toggles per-card controls, and cards stop opening while editing', async () => {
+  it('gives each card one ⋯ menu while editing, and cards stop opening', async () => {
+    // Seven buttons per card (about 130 on screen) became one (1.57).
     render(<SyncPage {...freshProps()} />);
     await enterCustomize();
-    expect(screen.getByRole('button', { name: /pin cash flow/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /move net worth down/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /hide merchants/i })).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: /^Options for / }).length).toBe(reportIds().length);
+    // The actions are in the menu, not on the card.
+    expect(screen.queryByRole('button', { name: /move cash flow to front/i })).toBeNull();
+    openCardMenu('Cash flow');
+    expect(screen.getByRole('menuitem', { name: /move cash flow to front/i })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: /move cash flow down/i })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: /hide cash flow/i })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /open cash flow/i })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: /done customizing/i }));
-    expect(screen.queryByRole('button', { name: /pin cash flow/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Options for / })).toBeNull();
     expect(screen.getByRole('button', { name: /open cash flow/i })).toBeInTheDocument();
   });
 
@@ -234,7 +259,8 @@ describe('customize mode', () => {
     const props = freshProps();
     render(<SyncPage {...props} />);
     await enterCustomize();
-    fireEvent.click(screen.getByRole('button', { name: /pin net worth/i }));
+    openCardMenu('Net worth');
+    fireEvent.click(screen.getByRole('menuitem', { name: /move net worth to front/i }));
     await waitFor(() => expect(reportIds()[0]).toBe('net-worth'));
     const saved = (props.store as any).setBudgetLayout.mock.calls.at(-1)![0];
     expect(saved.pos['net-worth'].slice(0, 2)).toEqual([0, 0]);
@@ -246,7 +272,8 @@ describe('customize mode', () => {
     await enterCustomize();
     const before = reportIds();
     const idx = before.indexOf('net-worth');
-    fireEvent.click(screen.getByRole('button', { name: /move net worth down/i }));
+    openCardMenu('Net worth');
+    fireEvent.click(screen.getByRole('menuitem', { name: /move net worth down/i }));
     await waitFor(() => {
       expect(reportIds().indexOf('net-worth')).toBeGreaterThan(idx);
     });
@@ -254,14 +281,16 @@ describe('customize mode', () => {
     expect(saved.pos['net-worth'][1]).toBeGreaterThan(0);
   });
 
-  it('hide collects the card in a recoverable hidden row', async () => {
+  it('a hidden card comes back from + Add report', async () => {
     const props = freshProps();
     render(<SyncPage {...props} />);
     await enterCustomize();
-    fireEvent.click(screen.getByRole('button', { name: /hide merchants/i }));
+    openCardMenu('Merchants');
+    fireEvent.click(screen.getByRole('menuitem', { name: /hide merchants/i }));
     await waitFor(() => expect(reportIds()).not.toContain('merchants'));
-    expect(screen.getByText(/^hidden$/i)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: /unhide merchants/i }));
+    fireEvent.click(screen.getByRole('button', { name: /done customizing/i }));
+    fireEvent.click(screen.getByRole('button', { name: '+ Add report' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add Merchants' }));
     await waitFor(() => expect(reportIds()).toContain('merchants'));
     const saved = (props.store as any).setBudgetLayout.mock.calls.at(-1)![0];
     expect(saved.hidden).toEqual([]);
@@ -279,12 +308,13 @@ describe('report builder wiring', () => {
     series: [{ label: 'Food', terms: [{ sign: 1, source: 'category', category: 'Dining' }] }],
   };
 
-  it('opens from the New report card; a save joins the grid and persists', async () => {
+  it('opens from + Add report; a save joins the grid and persists', async () => {
     const props = freshProps();
     render(<SyncPage {...props} />);
     await waitFor(() => expect(reportIds().length).toBeGreaterThan(0));
 
-    fireEvent.click(screen.getByRole('button', { name: /new report/i }));
+    fireEvent.click(screen.getByRole('button', { name: '+ Add report' }));
+    fireEvent.click(screen.getByRole('button', { name: /build your own/i }));
     fireEvent.change(screen.getByLabelText(/report name/i), { target: { value: 'Food' } });
     fireEvent.change(screen.getByLabelText(/series 1 label/i), { target: { value: 'Food' } });
     fireEvent.change(screen.getByLabelText(/add to series 1/i), { target: { value: 'category:Dining' } });
@@ -297,6 +327,22 @@ describe('report builder wiring', () => {
     expect(screen.queryByLabelText(/report name/i)).toBeNull(); // builder closed
   });
 
+  it('lists the reports a fresh layout leaves out, and adds one back', async () => {
+    // Hidden reports used to come back only from inside Customize.
+    const props = freshProps();
+    (props.store as any).getBudgetLayout = vi.fn(async () => null);
+    render(<SyncPage {...props} />);
+    await waitFor(() => expect(reportIds().length).toBeGreaterThan(0));
+    expect(reportIds()).not.toContain('net-worth');
+    fireEvent.click(screen.getByRole('button', { name: '+ Add report' }));
+    expect(screen.getByRole('button', { name: 'Add Data check' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Add Net worth' }));
+    await waitFor(() => expect(reportIds()).toContain('net-worth'));
+    const saved = (props.store as any).setBudgetLayout.mock.calls.at(-1)![0];
+    expect(saved.hidden).not.toContain('net-worth');
+    expect(saved.hidden).toContain('data-check');
+  });
+
   it('edits an existing custom report in place', async () => {
     const props = freshProps();
     (props.store as any).getCustomReports = vi.fn(async () => [FOOD]);
@@ -304,7 +350,8 @@ describe('report builder wiring', () => {
     await waitFor(() => expect(reportIds()).toContain('custom:cr-1'));
 
     fireEvent.click(screen.getByRole('button', { name: /^customize$/i }));
-    fireEvent.click(screen.getByRole('button', { name: /edit food/i }));
+    openCardMenu('Food');
+    fireEvent.click(screen.getByRole('menuitem', { name: /edit food/i }));
     fireEvent.change(screen.getByLabelText(/report name/i), { target: { value: 'Meals' } });
     fireEvent.click(screen.getByRole('button', { name: /save report/i }));
 
@@ -321,24 +368,26 @@ describe('report builder wiring', () => {
     await waitFor(() => expect(reportIds()).toContain('custom:cr-1'));
     fireEvent.click(screen.getByRole('button', { name: /^customize$/i }));
 
-    fireEvent.click(screen.getByRole('button', { name: /duplicate food/i }));
+    openCardMenu('Food');
+    fireEvent.click(screen.getByRole('menuitem', { name: /duplicate food/i }));
     let saved = (props.store as any).setCustomReports.mock.calls.at(-1)![0];
     expect(saved).toHaveLength(2);
     expect(saved[1].id).not.toBe('cr-1');
     expect(saved[1].name).toMatch(/food/i);
 
-    fireEvent.click(screen.getAllByRole('button', { name: /delete food/i })[0]);
+    openCardMenu('Food');
+    fireEvent.click(screen.getByRole('menuitem', { name: /delete food/i }));
     saved = (props.store as any).setCustomReports.mock.calls.at(-1)![0];
     expect(saved.some((r: any) => r.id === 'cr-1')).toBe(false);
   });
 });
 
 describe('layout polish', () => {
-  it('the page runs full-width on the Budget tab and narrow elsewhere', async () => {
+  it('the page runs full-width on Home, where the budget is, and narrow elsewhere', async () => {
     render(<SyncPage {...makeProps()} />);
     await screen.findAllByRole('tab');
     await waitFor(() => expect(document.querySelector('.sfin-page--wide')).toBeTruthy());
-    fireEvent.click(screen.getByRole('tab', { name: /overview/i }));
+    fireEvent.click(screen.getByRole('tab', { name: /settings/i }));
     expect(document.querySelector('.sfin-page--wide')).toBeNull();
   });
 
@@ -352,12 +401,14 @@ describe('layout polish', () => {
     const cellOf = () => document.querySelector('[data-report-id="merchants"]')!.closest('.sfin-cell')!;
     expect(cellOf().className).toContain('sfin-cell--m');
 
-    fireEvent.click(screen.getByRole('button', { name: /^resize merchants/i }));
+    openCardMenu('Merchants');
+    fireEvent.click(screen.getByRole('menuitem', { name: /^resize merchants/i }));
     await waitFor(() => expect(cellOf().className).toContain('sfin-cell--w'));
     let saved = (props.store as any).setBudgetLayout.mock.calls.at(-1)![0];
     expect(saved.size).toEqual({ merchants: 'w' });
 
-    fireEvent.click(screen.getByRole('button', { name: /^resize merchants/i }));
+    openCardMenu('Merchants');
+    fireEvent.click(screen.getByRole('menuitem', { name: /^resize merchants/i }));
     await waitFor(() => expect(cellOf().className).toContain('sfin-cell--t'));
     saved = (props.store as any).setBudgetLayout.mock.calls.at(-1)![0];
     expect(saved.size).toEqual({ merchants: 't' });
@@ -476,6 +527,7 @@ describe('layout reset, hide undo, pool editing', () => {
   it('offers no reset when nothing was ever customized', async () => {
     const props = makeProps();
     (props.store as any).getReportCube = vi.fn(async () => freshCube());
+    (props.store as any).getBudgetLayout = vi.fn(async () => null);
     render(<SyncPage {...props} />);
     await waitFor(() => expect(reportIds().length).toBeGreaterThan(0));
     fireEvent.click(screen.getByRole('button', { name: 'Customize' }));
@@ -489,7 +541,8 @@ describe('layout reset, hide undo, pool editing', () => {
     await waitFor(() => expect(reportIds().length).toBeGreaterThan(0));
 
     fireEvent.click(screen.getByRole('button', { name: 'Customize' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Hide Net worth' }));
+    openCardMenu('Net worth');
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Hide Net worth' }));
     expect(reportIds()).not.toContain('net-worth');
     expect(screen.getByText(/hidden net worth/i)).toBeInTheDocument();
 
@@ -633,7 +686,8 @@ describe('per-card ranges, headline picks, palettes (v1.43)', () => {
     render(<SyncPage {...props} />);
     await waitFor(() => expect(reportIds().length).toBeGreaterThan(0));
     fireEvent.click(screen.getByRole('button', { name: /^customize$/i }));
-    fireEvent.click(screen.getByRole('button', { name: 'Range for Merchants' }));
+    openCardMenu('Merchants');
+    fireEvent.click(screen.getByRole('menuitem', { name: /^Range for Merchants/ }));
     const saved = (props.store as any).setBudgetLayout.mock.calls.at(-1)![0];
     expect(saved.ranges?.merchants).toBe(1);
   });
@@ -689,5 +743,33 @@ describe('drill-down from the board (v1.48)', () => {
     expect(await screen.findByText('TRADER JOES')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /back to all reports/i }));
     await waitFor(() => expect(screen.queryByText('TRADER JOES')).toBeNull());
+  });
+});
+
+describe('opening a card from Home (1.57)', () => {
+  const activePool = {
+    phase: 'active', startDate: '2026-08-25', endDate: '2026-12-12',
+    spentCents: 450_000, remainingCents: 1_150_000, daysElapsed: 38, daysLeft: 72,
+    sustainableWeeklyCents: 111_806, actualWeeklyCents: 82_895,
+    projectedRunOutDate: '2027-01-06', runsOutBeforeEnd: false,
+  };
+
+  it('opens the pool burn-down from the pool tile, once — not again on every return to Home', async () => {
+    // Inactive tabs unmount; a request that outlived the tap re-fired on every
+    // remount and hijacked Home with the burn-down for the rest of the session.
+    const props = makeProps();
+    (props.store as any).getReportCube = vi.fn(async () => ({ ...CUBE, asOf: new Date().toISOString() }));
+    (props.store as any).getPoolStatus = vi.fn(async () => activePool);
+    render(<SyncPage {...props} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /semester pool/i }));
+    await waitFor(() => expect(document.querySelector('[data-full-report="pool-burndown"]')).toBeTruthy());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Back to all reports' }));
+    fireEvent.click(screen.getByRole('tab', { name: /settings/i }));
+    fireEvent.click(await screen.findByRole('tab', { name: /home/i }));
+
+    await screen.findByRole('button', { name: /semester pool/i });
+    expect(document.querySelector('[data-full-report]')).toBeNull();
   });
 });

@@ -1,13 +1,18 @@
 import React, { useState } from 'react';
 import type { AddonContext } from '@wealthfolio/addon-sdk';
-import type { AccountMapping, MappingRule, SimplefinAccount } from '../../shared/types';
+import type { AccountMapping, SimplefinAccount } from '../../shared/types';
 import { claimToken, fetchAccounts } from '../utils/simplefin';
 import { AccountMapper } from '../components/AccountMapper';
-import { RuleEditor } from '../components/RuleEditor';
-import { Button, Card, ErrorBox, Input, Select } from '../components/ui';
+import { Button, Card, ErrorBox, Input } from '../components/ui';
 import type { SecretsStore } from '../utils/secrets';
 
-type Step = 1 | 2 | 3 | 4;
+/** Two steps since 1.57: connect, then map. Rules start empty and the schedule
+ *  starts at every 6 hours; both are in Settings for anyone who wants them. */
+type Step = 1 | 2;
+
+/** The schedule a finished setup starts with. Was OFF unless ticked on a
+ *  fourth step, which left new installs syncing only when Sync now was pressed. */
+const DEFAULT_SYNC_HOURS = 6;
 
 interface Props {
   ctx: AddonContext;
@@ -22,9 +27,6 @@ export function SetupPage({ ctx, store, onComplete }: Props) {
   const [loading, setLoading] = useState(false);
   const [sfAccounts, setSfAccounts] = useState<SimplefinAccount[]>([]);
   const [mapping, setMapping] = useState<AccountMapping>({});
-  const [rules, setRules] = useState<MappingRule[]>([]);
-  const [scheduleHours, setScheduleHours] = useState<number>(4);
-  const [autoSync, setAutoSync] = useState(false);
 
   // Step 1: Claim token
   const handleConnect = async () => {
@@ -66,34 +68,15 @@ export function SetupPage({ ctx, store, onComplete }: Props) {
     }
   };
 
-  // Step 2: Save mapping
+  // Step 2: save the mapping, and finish.
   const handleSaveMapping = async (m: AccountMapping) => {
     try {
       await store.setAccountMapping(m);
       setMapping(m);
-      setStep(3);
-    } catch (e: any) {
-      setError(e.message ?? 'Failed to save account mapping');
-    }
-  };
-
-  // Step 3: Save rules
-  const handleSaveRules = async () => {
-    try {
-      await store.setMappingRules(rules);
-      setStep(4);
-    } catch (e: any) {
-      setError(e.message ?? 'Failed to save rules');
-    }
-  };
-
-  // Step 4: Save schedule
-  const handleFinish = async () => {
-    try {
-      await store.setSyncScheduleHours(autoSync ? scheduleHours : 0);
+      await store.setSyncScheduleHours(DEFAULT_SYNC_HOURS);
       onComplete();
     } catch (e: any) {
-      setError(e.message ?? 'Failed to save schedule');
+      setError(e.message ?? 'Failed to save account mapping');
     }
   };
 
@@ -106,7 +89,7 @@ export function SetupPage({ ctx, store, onComplete }: Props) {
       {step === 1 && (
         <Card>
           <div className="sfin-setup-step">
-            <div className="sfin-step">Step 1 of 4</div>
+            <div className="sfin-step">Step 1 of 2</div>
             <h3>Connect SimpleFin</h3>
             <p className="sfin-subtle">
               Paste your SimpleFin setup token below. Get it from your bank's SimpleFin Bridge page.
@@ -126,8 +109,12 @@ export function SetupPage({ ctx, store, onComplete }: Props) {
       {step === 2 && (
         <Card>
           <div className="sfin-setup-step">
-            <div className="sfin-step">Step 2 of 4</div>
+            <div className="sfin-step">Step 2 of 2</div>
             <h3>Map accounts</h3>
+            <p className="sfin-subtle">
+              Pick the Wealthfolio account each bank account writes into. Saving finishes
+              setup and syncs every 6 hours; change that in Settings → Sync.
+            </p>
             <AccountMapper
               ctx={ctx}
               simplefinAccounts={sfAccounts}
@@ -138,55 +125,6 @@ export function SetupPage({ ctx, store, onComplete }: Props) {
         </Card>
       )}
 
-      {step === 3 && (
-        <Card>
-          <div className="sfin-setup-step">
-            <div className="sfin-step">Step 3 of 4</div>
-            <h3>Transaction rules</h3>
-            <RuleEditor rules={rules} onChange={setRules} />
-            <Button onClick={handleSaveRules} className="sfin-setup-save-btn">
-              Save rules &amp; continue
-            </Button>
-          </div>
-        </Card>
-      )}
-
-      {step === 4 && (
-        <Card>
-          <div className="sfin-setup-step">
-            <div className="sfin-step">Step 4 of 4</div>
-            <h3>Schedule</h3>
-            <label className="sfin-setup-autosync">
-              <input
-                type="checkbox"
-                checked={autoSync}
-                onChange={(e) => setAutoSync(e.target.checked)}
-              />
-              Enable auto-sync
-            </label>
-            {autoSync && (
-              <div className="sfin-setup-schedule">
-                <label>Sync every:</label>
-                <Select
-                  value={scheduleHours}
-                  onChange={(e) => setScheduleHours(Number(e.target.value))}
-                >
-                  <option value={4}>4 hours</option>
-                  <option value={6}>6 hours</option>
-                  <option value={12}>12 hours</option>
-                  <option value={24}>24 hours</option>
-                </Select>
-                <p className="sfin-subtle">
-                  SimpleFin Bridge refreshes from your bank every few hours — syncing more than 4×/day returns no new data.
-                </p>
-              </div>
-            )}
-            <div className="sfin-setup-finish">
-              <Button onClick={handleFinish}>Finish setup</Button>
-            </div>
-          </div>
-        </Card>
-      )}
     </div>
   );
 }

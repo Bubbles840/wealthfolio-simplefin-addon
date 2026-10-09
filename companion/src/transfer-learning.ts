@@ -19,7 +19,7 @@
  * `mapTransactionWithSource`), so a rule written here cannot be overruled by a
  * later change to those patterns.
  */
-import type { InlineKeyboard } from '../../shared/telegram.js';
+import { formatDollars, type InlineKeyboard } from '../../shared/telegram.js';
 import { MENU_CALLBACK_PREFIX } from '../../shared/categorize-menu.js';
 import type { MappingRule, ActivityType } from '../../shared/types.js';
 
@@ -80,6 +80,14 @@ export interface TransferLearning {
   entryButton(candidates: TransferCandidate[]): InlineKeyboard['inline_keyboard'][number] | undefined;
   handles(data: string): boolean;
   onCallback(cb: { data: string }, ui: TransferLearningUi): Promise<void>;
+  /**
+   * Straight to the confirm step for ONE known transaction — the morning
+   * report's "Make it a transfer" fix. Same preview, same shadowing warning,
+   * same Undo as a pick from an import notice: one rule write, two ways in.
+   * Answers "not eligible" rather than throwing when the candidate is already a
+   * transfer or has no usable descriptor.
+   */
+  openForCandidate(candidate: TransferCandidate, ui: TransferLearningUi): Promise<void>;
 }
 
 /**
@@ -106,6 +114,50 @@ export function createTransferLearning(deps: TransferLearningDeps): TransferLear
   const sessions = new Map<string, TransferCandidate[]>();
   let counter = 0;
 
+  const remember = (list: TransferCandidate[]): string => {
+    const token = String(++counter);
+    sessions.set(token, list);
+    while (sessions.size > MAX_SESSIONS) {
+      const oldest = sessions.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      sessions.delete(oldest);
+    }
+    return token;
+  };
+
+  /** The confirm screen for one remembered candidate. */
+  async function showChoice(token: string, index: number, ui: TransferLearningUi): Promise<void> {
+    const chosen = sessions.get(token)?.[index];
+    if (!chosen) return void await ui.answer('That menu expired — use Transaction Rules in the addon.');
+
+    const pattern = rulePatternFor(chosen.description);
+    // The count is the whole point of this screen. A rule is a `contains`
+    // match applied to everything, so a generic descriptor like "ACH
+    // WITHDRAWAL" would retype every such row as a transfer and remove
+    // all of it from spending — silently, and retroactively. Saying how
+    // many it catches turns that from an accident into a choice.
+    const counts = await deps.countMatches?.(pattern).catch(() => undefined);
+    const scope = counts
+      ? counts.total <= 1
+        ? '\n\nThis matches only this transaction.'
+        : `\n\n⚠️ This also matches *${counts.total - 1}* other transaction${counts.total - 1 === 1 ? '' : 's'}`
+          + (counts.spending > 1 ? `, ${counts.spending} of which currently count as spending` : '')
+          + '. All of them would become transfers.'
+      : '';
+
+    await ui.edit(
+      `Make a rule for *${pattern}*?${scope}\n\n`
+      + '_Anything matching it stops counting as spending, now and in future._',
+      {
+        inline_keyboard: [
+          [{ text: '✓ Make the rule', callback_data: `${CONFIRM_PREFIX}${token}:${index}` }],
+          [{ text: 'Cancel', callback_data: `${OPEN_PREFIX}${token}` }],
+        ],
+      },
+    );
+    await ui.answer();
+  }
+
   const eligible = (candidates: TransferCandidate[]) =>
     candidates
       .filter((c) => !ALREADY_TRANSFER.has(String(c.activityType).toUpperCase()))
@@ -117,14 +169,22 @@ export function createTransferLearning(deps: TransferLearningDeps): TransferLear
     entryButton(candidates) {
       const list = eligible(candidates);
       if (list.length === 0) return undefined;
-      const token = String(++counter);
-      sessions.set(token, list);
-      while (sessions.size > MAX_SESSIONS) {
-        const oldest = sessions.keys().next().value as string | undefined;
-        if (oldest === undefined) break;
-        sessions.delete(oldest);
-      }
+      const token = remember(list);
       return [{ text: '↔ Mark one as a transfer', callback_data: `${OPEN_PREFIX}${token}` }];
+    },
+
+    async openForCandidate(candidate, ui) {
+      try {
+        const list = eligible([candidate]);
+        if (list.length === 0) {
+          await ui.answer('That one cannot become a transfer rule — fix it in Wealthfolio.');
+          return;
+        }
+        await showChoice(remember(list), 0, ui);
+      } catch (err) {
+        deps.log(`Transfer-learning menu error: ${String(err)}`);
+        await ui.answer('Could not open that — try Transaction Rules in the addon.').catch(() => {});
+      }
     },
 
     handles(data) {
@@ -143,7 +203,7 @@ export function createTransferLearning(deps: TransferLearningDeps): TransferLear
             + '_Money moved, not money spent — a card payment, or a move to savings._',
             {
               inline_keyboard: list.map((c, i) => [{
-                text: `${c.description.slice(0, 30)} · $${(c.amountCents / 100).toFixed(2)}`,
+                text: `${c.description.slice(0, 30)} · ${formatDollars(c.amountCents / 100, 2)}`,
                 callback_data: `${CHOOSE_PREFIX}${token}:${i}`,
               }]),
             },
@@ -156,36 +216,7 @@ export function createTransferLearning(deps: TransferLearningDeps): TransferLear
         if (cb.data.startsWith(CHOOSE_PREFIX)) {
           const rest = cb.data.slice(CHOOSE_PREFIX.length);
           const sep = rest.lastIndexOf(':');
-          const token = sep === -1 ? rest : rest.slice(0, sep);
-          const chosen = sessions.get(token)?.[sep === -1 ? NaN : Number(rest.slice(sep + 1))];
-          if (!chosen) return void await ui.answer('That menu expired — use Transaction Rules in the addon.');
-
-          const pattern = rulePatternFor(chosen.description);
-          // The count is the whole point of this screen. A rule is a `contains`
-          // match applied to everything, so a generic descriptor like "ACH
-          // WITHDRAWAL" would retype every such row as a transfer and remove
-          // all of it from spending — silently, and retroactively. Saying how
-          // many it catches turns that from an accident into a choice.
-          const counts = await deps.countMatches?.(pattern).catch(() => undefined);
-          const scope = counts
-            ? counts.total <= 1
-              ? '\n\nThis matches only this transaction.'
-              : `\n\n⚠️ This also matches *${counts.total - 1}* other transaction${counts.total - 1 === 1 ? '' : 's'}`
-                + (counts.spending > 1 ? `, ${counts.spending} of which currently count as spending` : '')
-                + '. All of them would become transfers.'
-            : '';
-
-          await ui.edit(
-            `Make a rule for *${pattern}*?${scope}\n\n`
-            + '_Anything matching it stops counting as spending, now and in future._',
-            {
-              inline_keyboard: [
-                [{ text: '✓ Make the rule', callback_data: `${CONFIRM_PREFIX}${token}:${sep === -1 ? 0 : Number(rest.slice(sep + 1))}` }],
-                [{ text: 'Cancel', callback_data: `${OPEN_PREFIX}${token}` }],
-              ],
-            },
-          );
-          await ui.answer();
+          await showChoice(sep === -1 ? rest : rest.slice(0, sep), sep === -1 ? NaN : Number(rest.slice(sep + 1)), ui);
           return;
         }
 
@@ -260,11 +291,11 @@ export function createTransferLearning(deps: TransferLearningDeps): TransferLear
           + (shadowedBy
             ? `⚠️ An earlier rule (*${shadowedBy.pattern}* → ${shadowedBy.activityType}) also matches this `
               + 'description and wins, because the first matching rule decides. '
-              + 'Reorder or edit them under Advanced → Transaction Rules.\n\n'
+              + 'Reorder or edit them under Settings → Transaction rules.\n\n'
             : '')
           + 'The next sync retypes this transaction and every future one matching it, '
           + 'so it stops counting as spending. Edit or remove it under '
-          + 'Advanced → Transaction Rules.',
+          + 'Settings → Transaction rules.',
           // No Undo when the rule already existed: that would delete a rule the
           // user wrote earlier, not the one this tap did nothing to create.
           already ? undefined : {

@@ -93,6 +93,18 @@ describe('evaluateSelfCheck', () => {
     expect(findings[0].message).toContain('A, B');
   });
 
+  it('flags each quiet feed on its own, so each can be snoozed on its own', () => {
+    const findings = evaluateSelfCheck({
+      lastSuccessAt: hoursAgo(1),
+      accounts: [
+        { name: 'Discover', balanceDate: daysAgoUnix(FEED_STALE_DAYS + 30) },
+        { name: 'Spend', balanceDate: daysAgoUnix(FEED_STALE_DAYS + 1) },
+      ],
+    }, NOW);
+    expect(findings.map((f) => f.key)).toEqual(['feed-stale:Discover', 'feed-stale:Spend']);
+    expect(findings[0].label).toBe('Discover: no new data');
+  });
+
   it('flags a feed that has gone quiet', () => {
     const findings = evaluateSelfCheck({
       lastSuccessAt: hoursAgo(1),
@@ -179,16 +191,15 @@ describe('version skew', () => {
     expect(finding.message).not.toMatch(/reload|refresh/i);
   });
 
-  it('says to refresh the tab when the right zip IS installed but an old bundle is still running', () => {
-    const [finding] = evaluateSelfCheck({
+  it('leaves a stale TAB to the in-app banner when the right zip is installed', () => {
+    // The browser-reported version is the most recent build to LOAD, so it
+    // also reads stale for someone who has simply not opened Wealthfolio since
+    // updating — and the morning report nagged about a tab that did not exist
+    // (2026-10). From 1.57.0 a stale tab shows its own banner, which is where
+    // it can actually be refreshed.
+    expect(evaluateSelfCheck({
       ...healthy, addonVersion: '1.49.0', installedAddonVersion: '1.52.0', companionVersion: '1.52.0',
-    }, NOW);
-    expect(finding.kind).toBe('version-skew');
-    expect(finding.message).toMatch(/refresh/i);
-    expect(finding.message).toContain('1.49.0');
-    // Nothing to upload, so naming a zip would send the user to redo a step
-    // they already did.
-    expect(finding.message).not.toContain('.zip');
+    }, NOW)).toEqual([]);
   });
 
   it('flags an out-of-date installed zip even when no bundle has reported in', () => {
@@ -220,5 +231,58 @@ describe('version skew', () => {
     // Older zips never published their version; treating absence as skew would
     // alarm every user whose companion updated first, forever.
     expect(evaluateSelfCheck({ ...healthy, companionVersion: '1.34.0' }, NOW)).toEqual([]);
+  });
+});
+
+describe('balance drift (1.57: the daily report carries what the drift alerts said)', () => {
+  const daysAgoIso = (d: number) => new Date(NOW.getTime() - d * 86_400_000).toISOString();
+
+  it('names each account that differs from the bank, on its own snoozable key', () => {
+    const findings = evaluateSelfCheck({
+      lastSuccessAt: hoursAgo(1),
+      accounts: [
+        { name: 'Checking', balanceDate: daysAgoUnix(1), drift: 1234.5, driftSince: daysAgoIso(1) },
+        { name: 'Savings', balanceDate: daysAgoUnix(1), drift: null },
+      ],
+    }, NOW);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      kind: 'balance-drift', severity: 'warning', key: 'balance-drift:Checking', label: 'Checking: balance differs',
+    });
+    // bank − Wealthfolio is positive, so Wealthfolio is the lower one.
+    expect(findings[0].message).toMatch(/^Checking is \$1,234\.50 below the bank's balance/);
+    // Young: most often the bank's feed catching up, so it asks for nothing yet.
+    expect(findings[0].message).toContain('clears on its own');
+  });
+
+  it('says "above" when Wealthfolio is the higher of the two', () => {
+    const [f] = evaluateSelfCheck({
+      lastSuccessAt: hoursAgo(1),
+      accounts: [{ name: 'Checking', balanceDate: daysAgoUnix(1), drift: -36.1, driftSince: daysAgoIso(2) }],
+    }, NOW);
+    expect(f.message).toMatch(/^Checking is \$36\.10 above the bank's balance/);
+  });
+
+  it('says nothing below the alert threshold, where no alert episode is open', () => {
+    // `drift` is recorded from $1 for the balance chips; only an open episode
+    // (past the user's alert threshold, never when alerts are off) dates it.
+    expect(evaluateSelfCheck({
+      lastSuccessAt: hoursAgo(1),
+      accounts: [{ name: 'Savings', balanceDate: daysAgoUnix(1), drift: 5.25, driftSince: null }],
+    }, NOW)).toEqual([]);
+  });
+
+  it('says so once it has outlived feed lag, and stays snoozable', () => {
+    const [f] = evaluateSelfCheck({
+      lastSuccessAt: hoursAgo(1),
+      accounts: [{ name: 'Checking', balanceDate: daysAgoUnix(1), drift: 50, driftSince: daysAgoIso(11) }],
+    }, NOW);
+    // A warning, not a problem: problems print in full every morning with no
+    // snooze, and the old aged alert was said once.
+    expect(f.severity).toBe('warning');
+    expect(f.message).toContain('over 10 days');
+    expect(f.message).not.toContain('clears on its own');
+    // Same condition, same key: a snooze taken while it was young still holds.
+    expect(f.key).toBe('balance-drift:Checking');
   });
 });

@@ -176,6 +176,20 @@ function defaultHeroes(poolPresent: boolean): string[] {
   return poolPresent ? ['pool-burndown', 'cash-flow'] : ['cash-flow', 'category-trends'];
 }
 
+/**
+ * What a FRESH layout shows (1.57): six reports, the rest hidden until added
+ * from "+ Add report". Nineteen cards on first open read as a wall; these six
+ * answer the questions people open the tab with — where the month stands,
+ * whether the pool lasts or where the cash goes, budget against actual, who
+ * the money went to, and what renews every month. Applies only when nothing is
+ * stored: an existing arrangement keeps every card it had.
+ */
+function starterReports(poolPresent: boolean): Set<string> {
+  return new Set(poolPresent
+    ? ['headline-stats', 'pool-burndown', 'cash-flow', 'budget-vs-actual', 'merchants', 'subscriptions']
+    : ['headline-stats', 'cash-flow', 'category-trends', 'budget-vs-actual', 'merchants', 'subscriptions']);
+}
+
 function resolveFrom(stored: BudgetLayout | null, avail: string[], poolPresent: boolean): ResolvedLayout {
   const availSet = new Set(avail);
   // ONE grid since v1.33.0: the former hero row flattened into the front of
@@ -186,7 +200,11 @@ function resolveFrom(stored: BudgetLayout | null, avail: string[], poolPresent: 
   const storedHeroes = (stored?.heroes ?? []).filter((id) => availSet.has(id));
   const front = (storedHeroes.length > 0 ? storedHeroes : defaultHeroes(poolPresent).filter((id) => availSet.has(id)))
     .slice(0, MAX_HEROES);
-  const hidden = (stored?.hidden ?? []).filter((id) => availSet.has(id));
+  const starter = starterReports(poolPresent);
+  const hidden = stored
+    ? stored.hidden.filter((id) => availSet.has(id))
+    // Custom reports are the user's own work: never hidden by a default.
+    : avail.filter((id) => !starter.has(id) && !id.startsWith('custom:'));
   const hiddenSet = new Set(hidden);
   const placed = new Set<string>(hidden);
   const grid: string[] = [];

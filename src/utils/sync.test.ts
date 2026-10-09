@@ -1285,9 +1285,11 @@ describe('deliverAddonAlerts', () => {
 
   const alertCtx = (request: any) => ({ api: { network: { request } } }) as any;
 
+  // Daily report OFF by default here: with it on, the report's 🧹 list
+  // carries the stuck-transfer and drift alerts (pinned in its own test).
   const tgStore = (overrides: Record<string, unknown> = {}) =>
     makeStore({
-      getTelegramConfig: vi.fn(async () => ({ botToken: 'tok', chatId: '42', enabled: true })),
+      getTelegramConfig: vi.fn(async () => ({ botToken: 'tok', chatId: '42', enabled: true, dailyReportEnabled: false })),
       getPendingLargeTxAlerts: vi.fn(async (): Promise<any[]> => []),
       setPendingLargeTxAlerts: vi.fn(async (_a: any[]) => {}),
       ...overrides,
@@ -1313,6 +1315,75 @@ describe('deliverAddonAlerts', () => {
     txId: 'TRN-1', sfAccountId: 'sfin-1', description: 'KALSHI', amountCents: 1000,
     currency: 'USD', accountName: 'Robinhood Credit Card', activityType: 'WITHDRAWAL',
     pending: false, inTransit: false, ...over,
+  });
+
+  const stuckAndDrift = () => emptyResult({
+    stuckTransferAlerts: [{ outTxId: 'tx-out', description: 'Payment', amountCents: 50000, currency: 'USD' }],
+    balanceDriftAlerts: [{ sfinAccountId: 'sfin-1', accountName: 'Spend', driftAmount: 12, currency: 'USD', bankBalance: 100, phase: 'aged' }],
+  });
+
+  it('sends stuck transfers and drift itself when no companion has synced lately', async () => {
+    // Only the companion sends a daily report. On an addon-only install — or
+    // with the container down — folding these into it would lose them: the
+    // core has already marked them alerted.
+    for (const health of [null, { lastSuccessAt: new Date(Date.now() - 3 * 86_400_000).toISOString() }]) {
+      const store = tgStore({
+        getTelegramConfig: vi.fn(async () => ({ botToken: 'tok', chatId: '42', enabled: true })),
+        getSyncHealth: vi.fn(async () => health),
+      });
+      const request = okNet();
+      await deliverAddonAlerts(alertCtx(request), store as any, stuckAndDrift());
+      expect(sentTexts(request)).toHaveLength(2);
+    }
+  });
+
+  it('leaves stuck transfers and drift to the daily report while it is on', async () => {
+    const setFailures = vi.fn(async () => {});
+    const setDrift = vi.fn(async () => {});
+    const store = tgStore({
+      getTelegramConfig: vi.fn(async () => ({ botToken: 'tok', chatId: '42', enabled: true })),
+      // A companion that synced an hour ago is the one sending the report.
+      getSyncHealth: vi.fn(async () => ({ lastSuccessAt: new Date(Date.now() - 3_600_000).toISOString() })),
+      setTransferLinkFailures: setFailures,
+      setDriftAlerts: setDrift,
+    });
+    const request = okNet();
+    await deliverAddonAlerts(alertCtx(request), store as any, emptyResult({
+      stuckTransferAlerts: [{ outTxId: 'tx-out', description: 'Payment', amountCents: 50000, currency: 'USD' }],
+      balanceDriftAlerts: [{ sfinAccountId: 'sfin-1', accountName: 'Spend', driftAmount: 12, currency: 'USD', bankBalance: 100, phase: 'aged' }],
+    }));
+    expect(request).not.toHaveBeenCalled();
+    // Counted as told: nothing is rolled back to be re-sent next sync.
+    expect(setFailures).not.toHaveBeenCalled();
+    expect(setDrift).not.toHaveBeenCalled();
+  });
+
+  it('announces a refused import once, then stays quiet while it keeps being refused', async () => {
+    // A refused row is never stored, so every later sync is refused again —
+    // and used to send the same "not imported" message every time.
+    let record: string | null = null;
+    const store = tgStore({
+      getAnnouncedRefusals: vi.fn(async () => record),
+      setAnnouncedRefusals: vi.fn(async (json: string) => { record = json; }),
+    });
+    const refused = [{ txId: 'TRN-9', description: 'CAPITAL ONE', amountCents: 130000, currency: 'USD', accountName: 'Spend', date: '2026-10-01' }];
+
+    const first = okNet();
+    await deliverAddonAlerts(alertCtx(first), store as any, emptyResult({ refusedCreates: refused }));
+    expect(sentTexts(first)[0]).toContain('not imported');
+
+    const second = okNet();
+    await deliverAddonAlerts(alertCtx(second), store as any, emptyResult({ refusedCreates: refused }));
+    expect(second).not.toHaveBeenCalled();
+  });
+
+  it('keeps a refused import unannounced when the message did not go out', async () => {
+    const setAnnouncedRefusals = vi.fn(async () => {});
+    const store = tgStore({ getAnnouncedRefusals: vi.fn(async () => null), setAnnouncedRefusals });
+    await deliverAddonAlerts(alertCtx(rejectingNet()), store as any, emptyResult({
+      refusedCreates: [{ txId: 'TRN-9', description: 'X', amountCents: 100, currency: 'USD', accountName: 'Spend', date: '2026-10-01' }],
+    }));
+    expect(setAnnouncedRefusals).not.toHaveBeenCalled();
   });
 
   it('announces what the addon itself imported', async () => {

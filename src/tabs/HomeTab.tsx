@@ -3,22 +3,24 @@ import type { AddonContext } from '@wealthfolio/addon-sdk';
 import { applyBalanceAdjustment, applyBaselineCorrection } from '../utils/sync';
 import type { SyncResult } from '../utils/sync';
 import { BASELINE_FIX_MIN_DRIFT_AGE_MS } from '../../shared/sync-core';
-import { Button, SectionLabel, CheckIcon, AlertIcon } from '../components/ui';
+import { Button, SectionLabel, Why } from '../components/ui';
 import { SetupChecklist } from '../components/SetupChecklist';
 import { UncategorizedList, useDismissals } from '../components/UncategorizedList';
-import { PoolCard } from '../components/PoolCard';
+import { money, accountsSummary } from '../components/AccountList';
+import { shortDate } from '../../shared/telegram';
 import { visibleUncategorized, type DismissalLedger } from '../../shared/uncategorized';
 import type { TabId } from '../components/Tabs';
 // Card ids only — the banner's CTA has to name the card it opens, and the
 // Advanced tab owns that id set. One-way: AdvancedTab imports nothing here.
-import { CARD as ADVANCED_CARD } from './AdvancedTab';
+import { CARD as SETTINGS_CARD } from './SettingsTab';
 import type { SecretsStore, AccountBalanceInfo } from '../utils/secrets';
 import type { AccountMapping, UnmappedAccount } from '../../shared/types';
 
 /** Ids for this tab's collapsible sections. Following the `NOTIF_CARD`
  *  precedent (`src/tabs/NotificationsTab.tsx`): the page owns the open-state
- *  map, this tab owns the keys into it. */
-export const OVERVIEW_CARD = { uncategorized: 'uncategorized-list' } as const;
+ *  map, this tab owns the keys into it. The value is unchanged from when this
+ *  was the Overview tab, so a list someone left open stays open. */
+export const HOME_CARD = { uncategorized: 'uncategorized-list' } as const;
 
 /** The offer a sync attaches to an account when it proved the drift belongs to
  *  the starting-balance baseline rather than to any transaction. */
@@ -27,26 +29,6 @@ type BaselineFixOffer = {
   currentAmount: number;
   suggestedAmount: number;
 };
-
-function money(amount: number, currency = 'USD'): string {
-  try {
-    return new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(amount);
-  } catch {
-    return `${amount.toFixed(2)} ${currency}`;
-  }
-}
-
-/** Two-character badge from an account name: "Spend (1234)" → "SP". */
-function initials(name: string): string {
-  const clean = name.replace(/[^a-zA-Z0-9]/g, '');
-  return (clean.slice(0, 2) || '••').toUpperCase();
-}
-
-function formatAsOf(unixSeconds: number): string {
-  return new Date(unixSeconds * 1000).toLocaleString(undefined, {
-    month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
-  });
-}
 
 interface Props {
   ctx: AddonContext;
@@ -60,7 +42,6 @@ interface Props {
   syncing: boolean;
   healing: boolean;
   doHeal: () => void;
-  imported: number | null;
   prunedDuplicates: SyncResult['prunedDuplicates'];
   /** SimpleFin accounts the last sync had no mapping for. Read by the PAGE from
    *  the secret every sync writes, rather than from a sync's return value: the
@@ -100,25 +81,27 @@ interface Props {
   /** Companion-published semester-pool status. Null — no pool, no companion,
    *  or an unreadable publish — simply means no tile, like `uncategorized`. */
   poolStatus: Awaited<ReturnType<SecretsStore['getPoolStatus']>>;
+  /** The pool tile's tap: opens the pool's burn-down in the budget below. */
+  onOpenPool: () => void;
 }
 
 /**
- * The daily-glance half of the page: what needs attention (banners), what is
- * still worth setting up (checklist), the three headline numbers, and every
- * mapped account with its balance.
+ * Home, above the budget: what needs attention (banners), what is still worth
+ * setting up (checklist), and the status strip — accounts, what needs a
+ * category, the pool. The account rows themselves live in Settings → Accounts
+ * since 1.57; the Accounts tile is the way there.
  *
- * Deliberately NOT a tile for balance discrepancies: a drift is per-account and
- * event-driven, so a permanent tile would spend most of its life reading "0" —
- * the banner above and the per-account chip below say it where it can be acted
- * on. "Needs a category" can only come from the companion: the addon SDK
+ * A balance difference is a banner (where it can be acted on) and a clause on
+ * the Accounts tile, not a tile of its own: it is per-account and event-driven,
+ * so a dedicated tile would spend most of its life reading "0". "Needs a category" can only come from the companion: the addon SDK
  * exposes no category data, so a null status means the tile is simply absent.
  */
-export function OverviewTab({
+export function HomeTab({
   ctx, store, mapping, sfinNames, wfNames, balances, syncing, healing, doHeal,
-  imported, prunedDuplicates, unmappedAccounts, onIgnoreAccounts, uncategorized, dismissals, onDismissalsChange,
+  prunedDuplicates, unmappedAccounts, onIgnoreAccounts, uncategorized, dismissals, onDismissalsChange,
   isOpen, toggleCard, onBalancesChanged, onClearError, onError,
   companionVersion, telegramConfigured, amazonConfigured, checklistDismissed,
-  onDismissChecklist, onNavigate, poolStatus,
+  onDismissChecklist, onNavigate, poolStatus, onOpenPool,
 }: Props) {
   const [fixingBaseline, setFixingBaseline] = useState<string | null>(null);
   const [adjusting, setAdjusting] = useState<string | null>(null);
@@ -180,10 +163,6 @@ export function OverviewTab({
   const mappedEntries = Object.entries(mapping);
   const mappedCount = mappedEntries.length;
   const driftAccounts = mappedEntries.filter(([sfinId]) => balances[sfinId]?.drift != null);
-  const asOf = mappedEntries
-    .map(([sfinId]) => balances[sfinId]?.date)
-    .filter((d): d is number => typeof d === 'number')
-    .sort((a, b) => b - a)[0];
 
   return (
     <>
@@ -215,15 +194,18 @@ export function OverviewTab({
               ))}
             </ul>
             <div className="sfin-banner-note">
-              Map {unmappedAccounts.length === 1 ? 'it' : 'them'} under Advanced → Accounts.
-              Existing settings are untouched — there is no need to run setup again.
-              Not everything needs syncing: <b>Don&apos;t sync {unmappedAccounts.length === 1 ? 'it' : 'these'}</b>{' '}
-              stops the reminder and can be undone from the Accounts card.
+              Map {unmappedAccounts.length === 1 ? 'it' : 'them'} in Settings → Accounts, or
+              choose <b>Don&apos;t sync</b>.
             </div>
+            <Why>
+              Mapping changes no other setting, and there is no need to run setup again.
+              Not every account needs syncing: Don&apos;t sync stops this reminder, and you
+              can undo it from the Accounts card.
+            </Why>
             <div className="sfin-banner-actions">
               {/* Names the card explicitly so the CTA lands on it open, rather
                   than on a tab where it is one of five collapsed headers. */}
-              <Button variant="outline" onClick={() => onNavigate('advanced', ADVANCED_CARD.accounts)}>
+              <Button variant="outline" onClick={() => onNavigate('settings', SETTINGS_CARD.accounts)}>
                 Open Accounts
               </Button>
               {/* An unmapped account is not always a mistake — it can be one
@@ -304,11 +286,13 @@ export function OverviewTab({
                       <b>{money(info.balance ?? 0, info.currency)}</b>.
                     </div>
                     <div className="sfin-banner-note">
-                      The bank&apos;s balance usually includes recent activity its transaction
-                      list hasn&apos;t published yet — a transfer still in flight is the common
-                      one. This typically clears in a few days on its own. A deep scan
-                      re-checks the last 90 days if you would rather not wait.
+                      This typically clears on its own in a few days.
                     </div>
+                    <Why>
+                      The bank&apos;s balance usually includes recent activity its transaction
+                      list hasn&apos;t published yet; a transfer still in flight is the common
+                      one. A deep scan re-checks the last 90 days if you would rather not wait.
+                    </Why>
                   </>
                 ) : (
                   <>
@@ -318,11 +302,14 @@ export function OverviewTab({
                       reports (<b>{money(info.balance ?? 0, info.currency)}</b>).
                     </div>
                     <div className="sfin-banner-note">
-                      Feed lag cannot cause this direction — lag makes the bank look ahead,
-                      not behind. Something is likely recorded twice, or a withdrawal
-                      hasn&apos;t imported. A deep scan of the last 90 days is the first thing
-                      to try; don&apos;t add a plug, which would only widen the gap.
+                      Try a deep scan first. Don&apos;t add a plug here.
                     </div>
+                    <Why>
+                      Feed lag cannot cause this direction: lag makes the bank look ahead, not
+                      behind. Something is likely recorded twice, or a withdrawal hasn&apos;t
+                      imported. A deep scan checks the last 90 days; a plug would only widen
+                      the gap.
+                    </Why>
                   </>
                 )}
                 {/* Same operation, same name as the header button — one flag
@@ -411,17 +398,29 @@ export function OverviewTab({
       {/* Two tiles or three — the strip's columns come from what is rendered
           (see `.sfin-strip`), so a missing companion leaves no empty column. */}
       <div className="sfin-strip">
-        <div className="sfin-tile sfin-tile--green">
-          <SectionLabel>Accounts synced</SectionLabel>
+        {/* The accounts, as a count and whether any balance disagrees with the
+            bank. The rows themselves live in Settings → Accounts (1.57); this
+            tile is the way there. "Imported last run" is gone: the header under
+            the title already says how many the last run imported. */}
+        <button
+          type="button"
+          className="sfin-tile sfin-tile--toggle"
+          aria-label={`Accounts: ${accountsSummary(mapping, balances)}`}
+          onClick={() => onNavigate('settings', SETTINGS_CARD.accounts)}
+        >
+          <SectionLabel>Accounts</SectionLabel>
           <div className="sfin-tile-val">{mappedCount}</div>
-        </div>
-        <div className="sfin-tile sfin-tile--blue">
-          <SectionLabel>Imported last run</SectionLabel>
-          <div className="sfin-tile-val">{imported ?? '—'}</div>
-          {/* The figure is a COUNT of transactions, which the number alone was
-              read as a dollar amount often enough to be worth spelling out. */}
-          <div className="sfin-tile-sub">transactions</div>
-        </div>
+          <div className="sfin-tile-sub">
+            {driftAccounts.length > 0
+              ? accountsSummary(mapping, balances).split(' · ')[1]
+              // "Matches" only when every account was actually compared: an
+              // unchecked balance is an absence of information (see the
+              // three-state chip in AccountList), not a clean bill.
+              : mappedCount > 0 && mappedEntries.every(([id]) => (balances[id] as { measured?: boolean } | undefined)?.measured === true)
+                ? 'all match the bank'
+                : 'not all checked yet'}
+          </div>
+        </button>
         {/* Doubles as the disclosure trigger once there is a list to show — one
             surface for the number instead of the tile plus a separate bar
             repeating it underneath. Gated on ROWS, not on the count: a v1.10.0
@@ -434,21 +433,21 @@ export function OverviewTab({
               type="button"
               className="sfin-tile sfin-tile--purple sfin-tile--toggle"
               title={`As of ${uncategorized.asOf}`}
-              aria-expanded={isOpen(OVERVIEW_CARD.uncategorized)}
+              aria-expanded={isOpen(HOME_CARD.uncategorized)}
               // Same rule as the page's Disclosure: only points at the panel
               // while the panel actually exists.
-              {...(isOpen(OVERVIEW_CARD.uncategorized)
-                ? { 'aria-controls': OVERVIEW_CARD.uncategorized }
+              {...(isOpen(HOME_CARD.uncategorized)
+                ? { 'aria-controls': HOME_CARD.uncategorized }
                 : {})}
               // The tile's own contents ("Needs a category" / "7" / "from your
               // companion") read as a fragmented accessible name; this is the
               // same wording the separate disclosure header used to carry.
               aria-label={`${uncatCount} need${uncatCount === 1 ? 's' : ''} a category`}
-              onClick={() => toggleCard(OVERVIEW_CARD.uncategorized)}
+              onClick={() => toggleCard(HOME_CARD.uncategorized)}
             >
               <div className="sfin-tile-head">
                 <SectionLabel>Needs a category</SectionLabel>
-                <span className="sfin-chevron" data-open={isOpen(OVERVIEW_CARD.uncategorized)} aria-hidden>▼</span>
+                <span className="sfin-chevron" data-open={isOpen(HOME_CARD.uncategorized)} aria-hidden>▼</span>
               </div>
               <div className="sfin-tile-val">{uncatCount}</div>
               <div className="sfin-tile-sub">from your companion</div>
@@ -464,29 +463,41 @@ export function OverviewTab({
         {/* The pool's remaining money, whole dollars like the report figures.
             Upcoming and gone phases render nothing — the same vanish-don't-
             explain rule the formatters follow. */}
-        {poolStatus && (poolStatus.phase === 'active' || poolStatus.phase === 'ended') && (
-          <div
-            className="sfin-tile sfin-tile--green"
-            title={`${poolStatus.startDate} until ${poolStatus.endDate}`}
-          >
-            <SectionLabel>Semester pool</SectionLabel>
-            <div className="sfin-tile-val">
-              {new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(poolStatus.remainingCents / 100)}
-            </div>
-            <div className="sfin-tile-sub">
-              {poolStatus.phase === 'ended'
-                ? (poolStatus.remainingCents >= 0 ? 'left when the pool ended' : 'over when the pool ended')
-                : `${new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(poolStatus.sustainableWeeklyCents / 100)}/wk sustainable`}
-            </div>
-          </div>
-        )}
+        {poolStatus && (poolStatus.phase === 'active' || poolStatus.phase === 'ended') && (() => {
+          const left = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 })
+            .format(Math.abs(poolStatus.remainingCents) / 100);
+          // The verdict the reports give, in the same words: whether the money
+          // lasts, not a weekly rate the reader has to judge for themselves.
+          const verdict = poolStatus.phase === 'ended'
+            ? (poolStatus.remainingCents >= 0 ? 'left when the pool ended' : 'over when the pool ended')
+            : poolStatus.spentCents <= 0
+              ? `until ${shortDate(poolStatus.endDate)}`
+              : poolStatus.runsOutBeforeEnd && poolStatus.projectedRunOutDate
+                ? `out by ${shortDate(poolStatus.projectedRunOutDate)}`
+                : `lasts past ${shortDate(poolStatus.endDate)}`;
+          return (
+            <button
+              type="button"
+              className="sfin-tile sfin-tile--toggle"
+              title={`${poolStatus.startDate} until ${poolStatus.endDate}`}
+              // One phrase for assistive tech, instead of the tile's three
+              // fragments read run-together.
+              aria-label={`Semester pool: ${left} ${poolStatus.remainingCents < 0 ? 'over' : 'left'}, ${verdict}`}
+              onClick={onOpenPool}
+            >
+              <SectionLabel>Semester pool</SectionLabel>
+              <div className="sfin-tile-val">{left}</div>
+              <div className="sfin-tile-sub">{verdict}</div>
+            </button>
+          );
+        })()}
       </div>
 
-      {uncategorized && isOpen(OVERVIEW_CARD.uncategorized) && (
+      {uncategorized && isOpen(HOME_CARD.uncategorized) && (
         <UncategorizedList
           rows={visibleRows}
           total={uncatCount}
-          id={OVERVIEW_CARD.uncategorized}
+          id={HOME_CARD.uncategorized}
           onDismiss={dismiss}
           justDismissed={justDismissed}
           onUndo={undo}
@@ -494,85 +505,6 @@ export function OverviewTab({
         />
       )}
 
-      <PoolCard store={store} />
-
-      <div className="sfin-accts">
-        <div className="sfin-card-head">
-          {/* Just "Accounts": the count is already the first stat tile, and
-              printing it twice within 100px of itself read as clutter. */}
-          <SectionLabel>Accounts</SectionLabel>
-          {asOf && <span className="sfin-subtle sfin-accts-asof">balances as of {formatAsOf(asOf)}</span>}
-        </div>
-        {mappedEntries.map(([sfinId, wfId]) => {
-          const info = balances[sfinId];
-          const name = sfinNames[sfinId] ?? sfinId;
-          const exists = !!wfNames[wfId];
-          const open = () => { if (exists) ctx.api.navigation.navigate(`/accounts/${wfId}`).catch(() => {}); };
-          return (
-            // One full-width card per account, stacked. A grid of two columns
-            // made the balance and its chip compete with the neighbouring
-            // account's name; a row that spans the width does not.
-            <div
-              className={`sfin-card sfin-acct-card${exists ? ' sfin-acct-card--link' : ''}`}
-              key={sfinId}
-              {...(exists
-                ? {
-                    role: 'button',
-                    tabIndex: 0,
-                    title: 'Open this account in Wealthfolio',
-                    onClick: open,
-                    onKeyDown: (e: React.KeyboardEvent) => {
-                      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
-                    },
-                  }
-                : {})}
-            >
-              <div className="sfin-acct-left">
-                <div className="sfin-avatar">{initials(name)}</div>
-                <div className="sfin-acct-ident">
-                  <div className="sfin-acct-name">{name}</div>
-                  <div className="sfin-acct-map">
-                    {exists ? (
-                      `→ ${wfNames[wfId]}`
-                    ) : (
-                      <span className="sfin-acct-gone">account no longer exists — reset &amp; re-map</span>
-                    )}
-                  </div>
-                </div>
-              </div>
-              <div className="sfin-acct-right">
-                <div className="sfin-bal">{info && info.balance != null ? money(info.balance, info.currency) : '—'}</div>
-                {/* THREE states, not two. `drift == null` used to render a green
-                    "in sync" chip, but it is also what "could not check" looks
-                    like — an account is incomparable for several ordinary reasons
-                    (a pending row, a run that updated or deleted anything, a
-                    pruned duplicate, a planned create that never landed). Calling
-                    those "in sync" claims a verification that did not happen, and
-                    two phantom drift episodes on one account were read as verified
-                    balances because of it. `measured` distinguishes them; absent
-                    means unmeasured, since a snapshot from an older build has
-                    proved nothing about the current state either. */}
-                {info && info.balance != null && (info.drift != null ? (
-                  <span className="sfin-chip sfin-chip--off"><AlertIcon /> off by {money(Math.abs(info.drift), info.currency)}</span>
-                ) : (info as { measured?: boolean }).measured ? (
-                  <span className="sfin-chip"><CheckIcon /> in sync</span>
-                ) : (
-                  <span
-                    className="sfin-chip sfin-chip--muted"
-                    title={
-                      'This sync could not compare the two balances — usually a pending '
-                      + 'transaction, or a row it reconciled or could not write. Nothing is '
-                      + 'wrong; it just was not checked. The next sync normally can.'
-                    }
-                  >
-                    not checked
-                  </span>
-                ))}
-              </div>
-            </div>
-          );
-        })}
-      </div>
     </>
   );
 }

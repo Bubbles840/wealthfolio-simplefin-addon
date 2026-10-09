@@ -292,3 +292,30 @@ describe('transfer learning', () => {
     expect(deps.writeRules).not.toHaveBeenCalled();
   });
 });
+
+describe('openForCandidate — the morning report\'s "Make it a transfer" fix', () => {
+  it('goes straight to the preview, and the confirm button there writes the same rule', async () => {
+    // One rule write, two ways in: the same preview, count and Undo as a pick
+    // from an import notice.
+    const { menu, state } = make();
+    const u = ui();
+    await menu.openForCandidate(tx(), u);
+    const [text, keyboard] = u.edit.mock.calls[0] as any[];
+    expect(text).toContain('Make a rule for *Payment to Ccb Credit Card Payments*?');
+    const confirm = keyboard.inline_keyboard[0][0].callback_data;
+    expect(confirm).toMatch(/^cz:tlk:/);
+    await menu.onCallback({ data: confirm }, ui());
+    expect(state.rules).toEqual([
+      { pattern: 'Payment to Ccb Credit Card Payments', matchType: 'contains', activityType: 'TRANSFER_OUT' },
+    ]);
+  });
+
+  it('declines a row that is already a transfer instead of offering a rule', async () => {
+    const { menu, deps } = make();
+    const u = ui();
+    await menu.openForCandidate(tx({ activityType: 'TRANSFER_OUT' }), u);
+    expect(u.edit).not.toHaveBeenCalled();
+    expect(u.answer).toHaveBeenCalledWith(expect.stringMatching(/cannot become a transfer rule/));
+    expect(deps.writeRules).not.toHaveBeenCalled();
+  });
+});

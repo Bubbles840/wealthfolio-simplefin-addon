@@ -52,3 +52,42 @@ describe('isNewerVersion', () => {
     expect(isNewerVersion('banana', '1.33.0')).toBe(false);
   });
 });
+
+describe('versionMismatchNotice', () => {
+  it('stays quiet when the tab matches the companion, or no companion has run', async () => {
+    const { versionMismatchNotice } = await import('./version.js');
+    expect(versionMismatchNotice('1.57.0', '1.57.0', '1.57.0')).toBeNull();
+    expect(versionMismatchNotice('1.57.0', null, null)).toBeNull();
+  });
+
+  it('tells a stale tab to reload when the new zip is already installed', async () => {
+    // The case the morning report could never tell apart from "no tab open".
+    const { versionMismatchNotice } = await import('./version.js');
+    const notice = versionMismatchNotice('1.57.0', '1.58.0', '1.58.0');
+    expect(notice?.tone).toBe('reload');
+    expect(notice?.text).toMatch(/Reload/);
+    expect(notice?.text).not.toContain('.zip');
+  });
+
+  it('names the zip when the installed addon is the old one', async () => {
+    const { versionMismatchNotice } = await import('./version.js');
+    const notice = versionMismatchNotice('1.57.0', '1.58.0', '1.57.0');
+    expect(notice?.tone).toBe('upload');
+    expect(notice?.text).toContain('simplefin-sync-1.58.0.zip');
+  });
+
+  it('offers both remedies when the installed version is unknown', async () => {
+    const { versionMismatchNotice } = await import('./version.js');
+    const notice = versionMismatchNotice('1.57.0', '1.58.0', null);
+    expect(notice?.text).toMatch(/Reload/);
+    expect(notice?.text).toContain('simplefin-sync-1.58.0.zip');
+  });
+
+  it('points at the companion image when this tab is the newer half', async () => {
+    // The old footer said "rebuild the companion" whichever half was behind.
+    const { versionMismatchNotice } = await import('./version.js');
+    const notice = versionMismatchNotice('1.58.0', '1.57.0', '1.58.0');
+    expect(notice?.tone).toBe('companion');
+    expect(notice?.text).toMatch(/pull the new companion image/);
+  });
+});
