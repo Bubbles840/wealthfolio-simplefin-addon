@@ -97,6 +97,13 @@ describe('parseLeftArgs', () => {
   it('treats a zero amount as part of the name rather than a question', () => {
     expect(parseLeftArgs('groceries 0')).toEqual({ query: 'groceries 0' });
   });
+  it('reads a number that is part of a category name as the name', () => {
+    // "Travel 2026" and "529 Plan" are categories, not $2,026 and $529.
+    const cats = [{ name: 'Travel 2026' }, { name: '529 Plan' }, { name: 'Groceries' }];
+    expect(parseLeftArgs('travel 2026', cats)).toEqual({ query: 'travel 2026' });
+    expect(parseLeftArgs('529 plan', cats)).toEqual({ query: '529 plan' });
+    expect(parseLeftArgs('groceries 20', cats)).toEqual({ query: 'groceries', amount: 20 });
+  });
 });
 
 describe('resolveCategoryQuery', () => {

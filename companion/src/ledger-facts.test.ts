@@ -57,6 +57,22 @@ describe('getLedgerFacts', () => {
     expect(f.cardBalances.map((c) => c.name).sort()).toEqual(['Citi', 'Robinhood']);
   });
 
+  it('looks up the transfers the sync could not link, keeping only those still unlinked', () => {
+    const path = ledger(`
+      INSERT INTO activities VALUES ('s1','card','WITHDRAWAL',NULL,'2026-06-02','1300','Payment to Citi · TRN-9',NULL,0);
+      INSERT INTO activities VALUES ('s2','cash','TRANSFER_OUT',NULL,'2026-09-10','50','Venmo · TRN-8','grp',0);
+      INSERT INTO activities VALUES ('s3','cash','TRANSFER_OUT',NULL,'2026-09-12','20','Zelle · TRN-7 · pending',NULL,0);
+      INSERT INTO activities VALUES ('s4','cash','TRANSFER_OUT',NULL,'2026-09-12','99','Other · TRN-90',NULL,0);
+    `);
+    const f = getLedgerFacts(path, NOW, new Map(), ['TRN-9', 'TRN-8', 'TRN-7'])!;
+    // TRN-8 was linked since (by hand, say); TRN-90 is a different id that
+    // merely starts the same.
+    expect(f.stuckTransfers).toEqual([
+      { id: 's1', description: 'Payment to Citi', amount: 1300, date: '2026-06-02', account: 'Citi' },
+      { id: 's3', description: 'Zelle', amount: 20, date: '2026-09-12', account: 'Spend' },
+    ]);
+  });
+
   it('finds the refund that reduces nothing, and leaves a filed one alone', () => {
     const f = facts(`
       INSERT INTO activities VALUES ('r1','card','CREDIT',NULL,'2026-09-11','22.91','Thankyou Points Redeemed · t1',NULL,0);

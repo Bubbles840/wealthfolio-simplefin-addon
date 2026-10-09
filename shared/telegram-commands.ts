@@ -83,10 +83,17 @@ export function formatHelpReply(unknownCommand?: string): string {
  * with an amount — `/left groceries 20` is `/afford 20 groceries`, asked
  * where people already look for what is left. The `/afford` order works too.
  * A zero amount stays part of the name: "can I afford $0" is not a question.
+ *
+ * Given the categories, a phrase that already names one is read as that name:
+ * `/left travel 2026` is the "Travel 2026" category, not $2,026 of travel.
  */
-export function parseLeftArgs(args: string): { query?: string; amount?: number } {
+export function parseLeftArgs(
+  args: string,
+  categories?: readonly ResolvableCategory[],
+): { query?: string; amount?: number } {
   const trimmed = (args ?? '').trim();
   if (!trimmed) return {};
+  if (categories && resolveCategoryQuery([...categories], trimmed).kind !== 'none') return { query: trimmed };
   const amountFirst = parseAffordArgs(trimmed);
   if (amountFirst) return amountFirst;
   const trailing = trimmed.match(/^(.+?)\s+\$?(\d+(?:\.\d+)?)$/);

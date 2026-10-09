@@ -8,9 +8,12 @@ import {
 const AVAIL = [...STANDARD_REPORT_IDS, 'custom:cr-1'];
 
 describe('resolveBudgetLayout', () => {
-  it('one unified grid: the front pair leads at 2x2 when a pool exists', () => {
+  it('one unified grid: the headline strip, then the front pair at 2x2 when a pool exists', () => {
     const r = resolveBudgetLayout(null, AVAIL, true);
-    expect(r.grid.slice(0, 2)).toEqual(['pool-burndown', 'cash-flow']);
+    // The headline numbers lead a layout nobody has arranged (1.57.1): they
+    // are what the page is opened for, and packing used to drop the
+    // full-width strip below the charts.
+    expect(r.grid.slice(0, 3)).toEqual(['headline-stats', 'pool-burndown', 'cash-flow']);
     expect(r.spanOf('pool-burndown')).toEqual({ c: 8, r: 8 });
     expect(r.spanOf('cash-flow')).toEqual({ c: 8, r: 8 });
     // A fresh layout starts with six reports (1.57); the rest wait under
@@ -39,7 +42,7 @@ describe('resolveBudgetLayout', () => {
 
   it('the pool front card yields to category trends when no pool is set', () => {
     const r = resolveBudgetLayout(null, AVAIL, false);
-    expect(r.grid.slice(0, 2)).toEqual(['cash-flow', 'category-trends']);
+    expect(r.grid.slice(0, 3)).toEqual(['headline-stats', 'cash-flow', 'category-trends']);
     expect(r.grid).not.toContain('pool-burndown');
     expect(r.spanOf('category-trends')).toEqual({ c: 8, r: 8 });
   });
@@ -236,8 +239,31 @@ describe('v1.34 report roster', () => {
 describe('2-D board (v1.41)', () => {
   const base: BudgetLayout = { heroes: [], order: [], hidden: [] };
 
-  it('migrates an order-based layout by packing cards in their visible order', () => {
+  it('puts the headline strip across the top of a fresh board', () => {
     const board = resolveBoard(null, ['cash-flow', 'category-trends', 'headline-stats'], false);
+    expect(board.find((c) => c.id === 'headline-stats')).toMatchObject({ x: 0, y: 0, w: 12 });
+    expect(board.find((c) => c.id === 'cash-flow')).toMatchObject({ x: 0, y: 4 });
+  });
+
+  it('keeps it there through a hide, which saves no positions', () => {
+    const hidden = { heroes: [], order: [], hidden: ['merchants'] };
+    const board = resolveBoard(hidden, ['cash-flow', 'headline-stats', 'merchants'], false);
+    expect(board.find((c) => c.id === 'headline-stats')).toMatchObject({ x: 0, y: 0 });
+  });
+
+  it('leaves a board with saved positions exactly where the user put it', () => {
+    const arranged: BudgetLayout = {
+      heroes: [], order: [], hidden: [],
+      pos: { 'cash-flow': [0, 0, 8, 8], 'headline-stats': [0, 8, 12, 4] },
+    };
+    const board = resolveBoard(arranged, ['cash-flow', 'headline-stats'], false);
+    expect(board.find((c) => c.id === 'cash-flow')).toMatchObject({ x: 0, y: 0 });
+    expect(board.find((c) => c.id === 'headline-stats')).toMatchObject({ x: 0, y: 8 });
+  });
+
+  it('migrates an order-based layout by packing cards in their visible order', () => {
+    const ordered: BudgetLayout = { heroes: [], order: ['cash-flow', 'category-trends', 'headline-stats'], hidden: [] };
+    const board = resolveBoard(ordered, ['cash-flow', 'category-trends', 'headline-stats'], false);
     // Front cards are 8-wide; headline is 12-wide — first-gap packing puts
     // cash-flow top-left, category-trends beside it in the 4-unit gap? No:
     // category-trends is also a front card (8 wide), so it wraps below.

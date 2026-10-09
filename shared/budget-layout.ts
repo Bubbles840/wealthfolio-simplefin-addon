@@ -209,6 +209,18 @@ function resolveFrom(stored: BudgetLayout | null, avail: string[], poolPresent: 
   const placed = new Set<string>(hidden);
   const grid: string[] = [];
   const orderSet = new Set(stored?.order ?? []);
+  // The headline strip leads a board nobody has arranged (1.57.1) — fresh, or
+  // only ever hidden/added to, which saves no positions. First-gap packing
+  // otherwise dropped the full-width strip below the 8-wide front pair. Once
+  // anything is dragged or pinned, `pos` holds the whole board and this rule
+  // no longer applies; a legacy `order` placing it, or legacy pinned front
+  // cards (which promise to lead), win too.
+  const HEADLINE = 'headline-stats';
+  if (!stored?.pos && storedHeroes.length === 0 && availSet.has(HEADLINE)
+    && !orderSet.has(HEADLINE) && !hiddenSet.has(HEADLINE)) {
+    grid.push(HEADLINE);
+    placed.add(HEADLINE);
+  }
   // Front cards lead — UNLESS an explicit rearrangement has placed them: the
   // move/drag snapshots write the whole combined order, front included, and
   // that snapshot is then the truth. A legacy order that never mentions a
