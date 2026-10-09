@@ -15,7 +15,7 @@ import { existsSync } from 'fs';
 import { DatabaseSync } from 'node:sqlite';
 import type { LedgerFacts } from '../../shared/ledger-checks.js';
 import { IN_TRANSIT_COMMENT_PREFIX } from '../../shared/reconcile.js';
-import { PENDING_SUFFIX } from '../../shared/sync-core.js';
+import { PENDING_SUFFIX, txIdFromComment } from '../../shared/sync-core.js';
 
 /** The digest's own spending sign — kept in step with `SPENDING_SIGN` in
  *  sqlite-native.ts, which transcribes Wealthfolio's classifier. */
@@ -85,6 +85,8 @@ export function getLedgerFacts(
   now: Date,
   /** SimpleFin's last reported balance per WEALTHFOLIO account id. */
   bankBalanceByWfId: ReadonlyMap<string, number | null>,
+  /** SimpleFin tx ids of transfer legs the sync failed to link three times. */
+  stuckTxIds: readonly string[] = [],
 ): LedgerFacts | null {
   const db = open(dbPath);
   if (!db) return null;
@@ -295,10 +297,29 @@ export function getLedgerFacts(
          AND ABS(CAST(a.amount AS REAL)) >= 1`,
     ).map((r) => ({ name: String(r.name), amount: Number(r.amt), date: String(r.d) }));
 
+    // Matched loosely in SQL, then exactly by the id the note ends with: a
+    // LIKE alone would let TRN-9 match TRN-90. Linked since (by a later sync,
+    // or by hand) means nothing to say, which is why the database decides and
+    // not the failure ledger, which nothing ever prunes.
+    const stuckTransfers = stuckTxIds.flatMap((txId) =>
+      all<{ id: string; notes: string; amt: number; d: string; name: string }>(
+        `SELECT a.id, a.notes, ABS(CAST(a.amount AS REAL)) amt, substr(a.activity_date,1,10) d, acc.name
+         FROM activities a JOIN accounts acc ON a.account_id = acc.id
+         WHERE instr(COALESCE(a.notes,''), ?) > 0
+           AND COALESCE(a.source_group_id,'') = ''
+           AND ${NOT_BOOKKEEPING}`,
+        txId,
+      )
+        .filter((r) => txIdFromComment(String(r.notes)) === txId)
+        .map((r) => ({
+          id: String(r.id), description: describe(r.notes), amount: Number(r.amt),
+          date: String(r.d), account: String(r.name),
+        })));
+
     return {
       month, cardBalances, idleRefunds, incomeReimbursements, unlinkedTransfers,
       groupedNonTransfers, heldTransfers, needsReview, categories, chronicallyOver,
-      missingLegs, cardsOpenedInCredit,
+      missingLegs, cardsOpenedInCredit, stuckTransfers,
     };
   } catch (err) {
     console.error('[simplefin-sync] ledger checks could not read the database:', err);

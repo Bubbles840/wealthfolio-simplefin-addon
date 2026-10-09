@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.57.1] - 2026-10-09
+
+### Fixed
+
+- **Every stuck transfer reaches the daily report.** 1.57.0 folded the
+  "Transfer stuck" alert into the daily report, but the report only noticed
+  unlinked transfers on checking and savings accounts from the last 60 days.
+  It now reads the sync's record of pairs that failed to link three times and
+  names each leg that is still unlinked, on any account and at any age. A
+  pair you have since linked drops out on its own.
+- **A card with a transfer in flight is checked again.** The ledger's card
+  check skips such a card, and 1.57.0 also kept it out of the new
+  balance-difference finding, so a real mismatch said nothing until the
+  transfer cleared. The finding now covers it.
+- **No alert is lost on a morning the daily report cannot run.** If the
+  companion cannot find the Wealthfolio database, it sends the unmapped-account,
+  balance-difference and stuck-transfer messages itself, as before 1.57.
+- **Two accounts with the same name get separate findings.** Snoozing one
+  no longer silences the other, and each is labelled with the end of its id,
+  e.g. "CHECKING (…1111)". Accounts with unique names keep their snoozes.
+- **/left reads a number in a category's name as the name.** `/left travel
+  2026` looks up "Travel 2026" when that category exists, instead of asking
+  whether $2,026 of travel fits.
+- **The card menu's Pin and Range items have their old names back** for
+  screen readers ("Pin Cash flow", "Range for Cash flow").
+- **A fresh budget opens with the headline numbers across the top**, instead
+  of below the first two charts. Boards you have dragged or pinned keep their
+  positions.
+
 ## [1.57.0] - 2026-10-09
 
 A minimalism release: three tabs, a calmer look, fewer settings, one Telegram

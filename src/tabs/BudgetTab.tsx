@@ -556,10 +556,12 @@ export function BudgetTab({
             <Button
               variant="ghost"
               role="menuitem"
-              aria-label={`Move ${title} to front`}
+              // The pre-1.57 names, kept: "Pin X" is what a screen reader user
+              // already knows this as.
+              aria-label={`Pin ${title}`}
               onClick={act(() => onLayoutChange(moveCardTo(storedLayout, availableIds, cube.pool !== null, id, 0, 0)))}
             >
-              Move to front
+              📌 Pin to front
             </Button>
             <Button
               variant="ghost"
@@ -588,7 +590,8 @@ export function BudgetTab({
             <Button
               variant="ghost"
               role="menuitem"
-              aria-label={`Range for ${title}: ${pinLabel(layout?.ranges?.[id] ?? null)}`}
+              aria-label={`Range for ${title}`}
+              title={`Range: ${pinLabel(layout?.ranges?.[id] ?? null)} — click to change`}
               onClick={act(() => {
                 const current = layout?.ranges?.[id] ?? null;
                 const idx = RANGE_PIN_CYCLE.findIndex((v) => v === current);

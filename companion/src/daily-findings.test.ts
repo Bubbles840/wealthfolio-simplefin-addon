@@ -65,7 +65,7 @@ describe('gatherFindings', () => {
     // Cards have `card-balance`, judged from the ledger itself; a second
     // finding about the same card would say the same thing twice.
     const facts = cleanFacts();
-    facts.cardBalances = [{ wfId: 'wf-card', name: 'Citi', ledger: -130, bank: -94, inFlight: true }];
+    facts.cardBalances = [{ wfId: 'wf-card', name: 'Citi', ledger: -94, bank: -94, inFlight: false }];
     const since = new Date(NOW.getTime() - 86_400_000).toISOString();
     const { deps } = makeDeps({
       account_balances: JSON.stringify({
@@ -78,6 +78,32 @@ describe('gatherFindings', () => {
 
     const found = await gatherFindings(deps, NOW, { recordLedgerChecks: false, ...healthy });
     expect(found.visible.map((f) => f.key)).toEqual(['balance-drift:Checking']);
+  });
+
+  it('still names a card the ledger audit skips because a transfer is in flight', async () => {
+    // `card-balance` cannot judge a card mid-transfer, so the sync's own
+    // measure — the old drift alert's — is the only voice left for it.
+    const facts = cleanFacts();
+    facts.cardBalances = [{ wfId: 'wf-card', name: 'Citi', ledger: -130, bank: -94, inFlight: true }];
+    const since = new Date(NOW.getTime() - 86_400_000).toISOString();
+    const { deps } = makeDeps({
+      account_balances: JSON.stringify({ sf2: { balance: -94, date: unixDaysAgo(1), drift: 36, driftSince: since } }),
+      account_names: JSON.stringify({ sf2: 'Citi' }),
+      account_mapping: JSON.stringify({ sf2: 'wf-card' }),
+    }, facts);
+    const found = await gatherFindings(deps, NOW, { recordLedgerChecks: false, ...healthy });
+    expect(found.visible.map((f) => f.key)).toEqual(['balance-drift:Citi']);
+  });
+
+  it('asks the ledger about every transfer the sync gave up linking, and only those', async () => {
+    const { deps } = makeDeps({
+      transfer_link_failures: JSON.stringify({
+        'TRN-9': { count: 3, firstFailedAt: '2026-06-02T00:00:00Z', alerted: true },
+        'TRN-8': { count: 1, firstFailedAt: '2026-10-08T00:00:00Z', alerted: false },
+      }),
+    });
+    await gatherFindings(deps, NOW, { recordLedgerChecks: false, ...healthy });
+    expect(deps.ledgerFacts).toHaveBeenCalledWith(expect.any(Map), NOW, ['TRN-9']);
   });
 
   it('names every drifting account when the ledger cannot say which are cards', async () => {

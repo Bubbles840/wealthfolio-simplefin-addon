@@ -147,16 +147,16 @@ describe('BudgetTab', () => {
     expect(await screen.findByRole('button', { name: /background sync \(docker\)/i })).toHaveAttribute('aria-expanded', 'true');
   });
 
-  it('starts a fresh layout on six reports, cash flow first without a pool', async () => {
+  it('starts a fresh layout on six reports, the headline strip then cash flow without a pool', async () => {
     const props = makeProps();
     (props.store as any).getReportCube = vi.fn(async () => ({ ...CUBE, asOf: new Date().toISOString() }));
     (props.store as any).getBudgetLayout = vi.fn(async () => null);
     render(<SyncPage {...props} />);
     await waitFor(() => expect(reportIds().length).toBeGreaterThan(0));
     const ids = reportIds();
-    // No pool in the CUBE fixture: cash flow leads the board; first-gap
-    // packing may seat a small card beside it before the second big one.
-    expect(ids[0]).toBe('cash-flow');
+    // The headline strip spans the top (1.57.1); with no pool in the CUBE
+    // fixture, cash flow leads the charts under it.
+    expect(ids.slice(0, 2)).toEqual(['headline-stats', 'cash-flow']);
     expect(new Set(ids)).toEqual(new Set([
       'headline-stats', 'cash-flow', 'category-trends', 'budget-vs-actual', 'merchants', 'subscriptions',
     ]));
@@ -244,9 +244,9 @@ describe('customize mode', () => {
     await enterCustomize();
     expect(screen.getAllByRole('button', { name: /^Options for / }).length).toBe(reportIds().length);
     // The actions are in the menu, not on the card.
-    expect(screen.queryByRole('button', { name: /move cash flow to front/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^pin cash flow$/i })).toBeNull();
     openCardMenu('Cash flow');
-    expect(screen.getByRole('menuitem', { name: /move cash flow to front/i })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: /^pin cash flow$/i })).toBeInTheDocument();
     expect(screen.getByRole('menuitem', { name: /move cash flow down/i })).toBeInTheDocument();
     expect(screen.getByRole('menuitem', { name: /hide cash flow/i })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /open cash flow/i })).toBeNull();
@@ -260,7 +260,7 @@ describe('customize mode', () => {
     render(<SyncPage {...props} />);
     await enterCustomize();
     openCardMenu('Net worth');
-    fireEvent.click(screen.getByRole('menuitem', { name: /move net worth to front/i }));
+    fireEvent.click(screen.getByRole('menuitem', { name: /^pin net worth$/i }));
     await waitFor(() => expect(reportIds()[0]).toBe('net-worth'));
     const saved = (props.store as any).setBudgetLayout.mock.calls.at(-1)![0];
     expect(saved.pos['net-worth'].slice(0, 2)).toEqual([0, 0]);
@@ -521,7 +521,7 @@ describe('layout reset, hide undo, pool editing', () => {
     fireEvent.click(screen.getByRole('button', { name: /really reset/i }));
     expect((props.store as any).clearBudgetLayout).toHaveBeenCalled();
     // Back to the default order immediately, not on next load.
-    await waitFor(() => expect(reportIds()[0]).toBe('cash-flow'));
+    await waitFor(() => expect(reportIds().slice(0, 2)).toEqual(['headline-stats', 'cash-flow']));
   });
 
   it('offers no reset when nothing was ever customized', async () => {
@@ -687,7 +687,7 @@ describe('per-card ranges, headline picks, palettes (v1.43)', () => {
     await waitFor(() => expect(reportIds().length).toBeGreaterThan(0));
     fireEvent.click(screen.getByRole('button', { name: /^customize$/i }));
     openCardMenu('Merchants');
-    fireEvent.click(screen.getByRole('menuitem', { name: /^Range for Merchants/ }));
+    fireEvent.click(screen.getByRole('menuitem', { name: /^Range for Merchants$/ }));
     const saved = (props.store as any).setBudgetLayout.mock.calls.at(-1)![0];
     expect(saved.ranges?.merchants).toBe(1);
   });

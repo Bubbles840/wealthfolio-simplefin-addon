@@ -1008,6 +1008,25 @@ describe('balance-drift alert delivery', () => {
     expect(JSON.parse(secrets.get('drift_alerts')!)['sfin-1']).toMatchObject({ alerted: true, alertedAged: true });
   });
 
+  it('sends it after all when the database is missing, since no daily report can carry it', async () => {
+    secrets.set('telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true }));
+    vi.mocked(runSyncCore).mockResolvedValueOnce({
+      imported: 0, skipped: 0, errors: [], prunedDuplicates: [], unmappedAccounts: [], refusedCreates: [], stuckTransferAlerts: [], largeTransactionAlerts: [],
+      balanceDriftAlerts: [driftAlert],
+    });
+    await client();
+    const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+    vi.stubGlobal('fetch', fetchMock);
+    vi.mocked(existsSync).mockReturnValue(false);
+    try {
+      await runCompanionSync();
+    } finally {
+      vi.mocked(existsSync).mockReturnValue(true);
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(JSON.parse((fetchMock.mock.calls[0][1] as any).body).text).toContain('Balance drift');
+  });
+
   it('sends the rendered drift alert on the real request body', async () => {
     vi.mocked(runSyncCore).mockResolvedValueOnce({
       imported: 0, skipped: 0, errors: [], prunedDuplicates: [], unmappedAccounts: [], refusedCreates: [], stuckTransferAlerts: [], largeTransactionAlerts: [],
@@ -3028,6 +3047,21 @@ describe('sendUnmappedAccountsNotice', () => {
 
     expect(fetchMock).not.toHaveBeenCalled();
     expect(JSON.parse(secrets.get(ANNOUNCED_KEY) ?? '[]')).toEqual([]);
+  });
+
+  it('announces it itself when the database is missing and no daily report can run', async () => {
+    const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+    vi.stubGlobal('fetch', fetchMock);
+    const secrets = new Map<string, string>([
+      ['telegram_config', JSON.stringify({ botToken: 'T', chatId: '9', enabled: true })],
+    ]);
+    vi.mocked(existsSync).mockReturnValue(false);
+    try {
+      await sendUnmappedAccountsNotice(clientOver(secrets), [ROBINHOOD]);
+    } finally {
+      vi.mocked(existsSync).mockReturnValue(true);
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('announces a newly-seen unmapped account and records it', async () => {

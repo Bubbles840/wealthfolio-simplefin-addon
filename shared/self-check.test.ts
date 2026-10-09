@@ -286,3 +286,25 @@ describe('balance drift (1.57: the daily report carries what the drift alerts sa
     expect(f.key).toBe('balance-drift:Checking');
   });
 });
+
+describe('accounts that share a name (1.57.1)', () => {
+  it('gives each its own key and says which is which', () => {
+    // Two "CHECKING"s used to share one key: snoozing one silenced both, and
+    // the menu opened the first one's detail for either button.
+    const findings = evaluateSelfCheck({
+      lastSuccessAt: hoursAgo(1),
+      accounts: [
+        { id: 'ACT-aaaa1111', name: 'CHECKING', balanceDate: daysAgoUnix(FEED_STALE_DAYS + 1) },
+        { id: 'ACT-bbbb2222', name: 'CHECKING', balanceDate: daysAgoUnix(FEED_STALE_DAYS + 1) },
+        { id: 'ACT-cccc3333', name: 'Savings', balanceDate: daysAgoUnix(FEED_STALE_DAYS + 1) },
+      ],
+    }, NOW);
+    expect(findings.map((f) => f.key)).toEqual([
+      'feed-stale:CHECKING#ACT-aaaa1111', 'feed-stale:CHECKING#ACT-bbbb2222',
+      // A unique name keeps its key, so a snooze taken before still holds.
+      'feed-stale:Savings',
+    ]);
+    expect(findings[0].message).toMatch(/^CHECKING \(…1111\) has sent no new data/);
+    expect(findings[1].label).toBe('CHECKING (…2222): no new data');
+  });
+});

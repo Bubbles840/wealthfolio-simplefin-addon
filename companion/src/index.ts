@@ -283,6 +283,18 @@ async function checkSyncHealthAlert(wfClient: WealthfolioClient): Promise<void> 
  *  without being sent, but only for a user who has deliberately not
  *  configured or has disabled notifications; that tradeoff only applies to
  *  users who opted out, not to a delivery failure they'd want to know about. */
+/**
+ * Whether this morning's daily report will list the problems the separate
+ * alerts used to announce (1.57 "one voice"). The switch alone is not enough:
+ * the composer gives up without the database, and on that day a folded alert
+ * would reach no one — the core has already marked it alerted.
+ */
+function dailyReportWillCarry(tg: { dailyReportEnabled?: unknown } | null | undefined): boolean {
+  if (!dailyReportCarriesProblems(tg)) return false;
+  const dbPath = wealthfolioDbPath();
+  return !!dbPath && existsSync(dbPath);
+}
+
 async function sendStuckTransferAlert(
   wfClient: WealthfolioClient,
   alert: { description: string; amountCents: number; currency: string },
@@ -295,7 +307,7 @@ async function sendStuckTransferAlert(
   if (!tg) return true;
   if (!tg.botToken || !tg.chatId || tg.enabled === false) return true;
   // The daily report's unlinked-transfer findings say this instead.
-  if (dailyReportCarriesProblems(tg)) return true;
+  if (dailyReportWillCarry(tg)) return true;
   // Text built by `shared/telegram.ts` — including the escaping of the
   // bank-supplied description — so the addon, which now delivers these too,
   // cannot say anything different about the same episode.
@@ -353,7 +365,7 @@ async function sendBalanceDriftAlert(
   if (!tg) return true;
   if (!tg.botToken || !tg.chatId || tg.enabled === false) return true;
   // The daily report's balance-drift finding says this instead.
-  if (dailyReportCarriesProblems(tg)) return true;
+  if (dailyReportWillCarry(tg)) return true;
   // Phase picks the voice — see the addon's deliverAddonAlerts, which makes
   // the identical choice: young informs (feed lag resolves itself), aged alarms.
   const text = alert.phase === 'aged' ? formatBalanceDriftAlert(alert) : formatFeedLagNotice(alert);
@@ -785,7 +797,7 @@ export async function sendUnmappedAccountsNotice(
       log(`${fresh.length} unmapped SimpleFin account(s) found; Telegram not configured, so no notice was sent.`);
       return;
     }
-    if (dailyReportCarriesProblems(tg)) {
+    if (dailyReportWillCarry(tg)) {
       // The daily report names it on its problem line. Left UNannounced, so
       // turning the report off later still sends the notice.
       await persistLedger(pruned);
@@ -1929,7 +1941,7 @@ function findingsDeps(wfClient: WealthfolioClient): FindingsDeps {
     setSecret: (key, value) => wfClient.setAddonSecret('simplefin-sync', key, value),
     installedAddonVersion: () => readInstalledAddonVersion(wealthfolioDbPath()),
     companionVersion: SIMPLEFIN_SYNC_VERSION,
-    ledgerFacts: (bankByWfId, now) => getLedgerFacts(wealthfolioDbPath(), now, bankByWfId),
+    ledgerFacts: (bankByWfId, now, stuckTxIds) => getLedgerFacts(wealthfolioDbPath(), now, bankByWfId, stuckTxIds),
     log,
   };
 }
@@ -2827,7 +2839,7 @@ export function buildTelegramCommandHandler(
         const { categories, period, style } = await budgetSnapshot();
         // `/left groceries 20` is `/afford 20 groceries`, asked where people
         // already look (1.57). Empty args mean the bare listing.
-        const { query, amount } = parseLeftArgs(cmd.args);
+        const { query, amount } = parseLeftArgs(cmd.args, categories);
         await reply(amount !== undefined && query
           ? formatAffordReply(categories, period, style, amount, query)
           : formatLeftReply(categories, period, style, query));

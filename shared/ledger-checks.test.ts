@@ -94,6 +94,28 @@ describe('evaluateLedgerChecks', () => {
     expect(day3.keys).toEqual(['income-reimbursement:d1']);
   });
 
+  it('names a transfer the sync could not link after three tries, wherever it lives', () => {
+    // 1.57.1: with the daily report on, this replaces the separate "Transfer
+    // stuck" alert — including legs the unlinked-transfer check never sees
+    // (a card's leg, or one a deep scan found months back).
+    const f = clean();
+    f.stuckTransfers = [{ id: 's1', description: 'Payment to Citi', amount: 1300, date: '2026-06-02', account: 'Citi' }];
+    const { findings } = evaluateLedgerChecks(f, {}, NOW);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({ key: 'stuck-transfer:s1', severity: 'warning' });
+    expect(findings[0].message).toBe(
+      "Payment to Citi ($1,300.00, Citi, Jun 2) could not be linked to its other half after 3 tries — run Deep scan, or link the pair in Wealthfolio",
+    );
+  });
+
+  it('says a stuck transfer once when the unlinked-transfer check already names it', () => {
+    const f = clean();
+    f.unlinkedTransfers = [{ id: 's1', description: 'Payment to Citi', amount: 1300, direction: 'out', ageDays: 9 }];
+    f.stuckTransfers = [{ id: 's1', description: 'Payment to Citi', amount: 1300, date: '2026-09-11', account: 'Spend' }];
+    const { findings } = evaluateLedgerChecks(f, {}, NOW);
+    expect(findings.map((x) => x.key)).toEqual(['unlinked-transfer:s1']);
+  });
+
   it('flags an unlinked cash transfer, which upstream counts as income or spending', () => {
     const f = clean();
     f.unlinkedTransfers = [

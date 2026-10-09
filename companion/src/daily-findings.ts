@@ -29,8 +29,9 @@ export interface FindingsDeps {
   installedAddonVersion(): string | null;
   companionVersion: string;
   /** The row-level audit's facts, given each mapped Wealthfolio account's bank
-   *  balance; null when the database cannot be read. */
-  ledgerFacts(bankByWfId: Map<string, number | null>, now: Date): LedgerFacts | null;
+   *  balance and the transfer legs the sync gave up linking; null when the
+   *  database cannot be read. */
+  ledgerFacts(bankByWfId: Map<string, number | null>, now: Date, stuckTxIds: string[]): LedgerFacts | null;
   log(msg: string): void;
 }
 
@@ -111,9 +112,16 @@ export async function gatherFindings(
       const balance = balances[sfinId]?.balance;
       bankByWfId.set(wfId, typeof balance === 'number' ? balance : null);
     }
-    const facts = deps.ledgerFacts(bankByWfId, now);
+    // Legs the sync failed to link three times — what its separate "Transfer
+    // stuck" alert announced before the daily report carried it (1.57.1).
+    const failures = await read<Record<string, { alerted?: boolean }>>('transfer_link_failures') ?? {};
+    const stuckTxIds = Object.entries(failures).filter(([, e]) => e?.alerted === true).map(([txId]) => txId);
+    const facts = deps.ledgerFacts(bankByWfId, now, stuckTxIds);
     if (facts) {
-      for (const c of facts.cardBalances) if (c.wfId) cardWfIds.add(c.wfId);
+      // Only the cards `card-balance` can actually judge: one with a
+      // transfer in flight (or no bank figure) is skipped there, so the
+      // sync's own drift measure stays its voice.
+      for (const c of facts.cardBalances) if (c.wfId && !c.inFlight && c.bank !== null) cardWfIds.add(c.wfId);
       const seen = await read<LedgerCheckSeen>(LEDGER_CHECK_SEEN_SECRET_KEY) ?? {};
       const judged = evaluateLedgerChecks(facts, seen, now);
       ledgerFindings = judged.findings;
@@ -143,10 +151,11 @@ export async function gatherFindings(
       .map((a) => a?.accountName || a?.sfinAccountId || '')
       .filter((n) => n !== ''),
     accounts: Object.entries(balances).map(([id, info]) => ({
+      id,
       name: accountNames[id] ?? id,
       balanceDate: typeof info?.date === 'number' ? info.date : null,
       // Since 1.57 the daily report carries what the separate drift alert
-      // said. Not for cards: `card-balance` above already judges those.
+      // said. Not for the cards `card-balance` above already judges.
       drift: cardWfIds.has(mapping[id]) ? null : info?.drift ?? null,
       driftSince: info?.driftSince ?? null,
     })),

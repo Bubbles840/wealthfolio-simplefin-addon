@@ -70,6 +70,10 @@ export interface LedgerFacts {
   missingLegs: Array<{ id: string; description: string; amount: number; date: string; fromAccount: string; toAccount: string }>;
   /** Cards whose opening balance says they started in credit. */
   cardsOpenedInCredit: Array<{ name: string; amount: number; date: string }>;
+  /** Legs of a detected transfer pair the sync failed to link three times
+   *  (its `transfer_link_failures` ledger), still unlinked in the database —
+   *  on any account, at any age. Optional for older fixtures. */
+  stuckTransfers?: Array<{ id: string; description: string; amount: number; date: string; account: string }>;
 }
 
 /** When each condition was FIRST observed, keyed as `evaluateLedgerChecks`
@@ -138,14 +142,29 @@ export function evaluateLedgerChecks(
   // "link it to its other half" would send the user looking for a row that
   // does not exist.
   const missingIds = new Set((facts.missingLegs ?? []).map((m) => m.id));
+  const namedIds = new Set(missingIds);
   for (const t of facts.unlinkedTransfers) {
     if (t.ageDays < UNLINKED_MIN_AGE_DAYS || missingIds.has(t.id)) continue;
+    namedIds.add(t.id);
     candidates.push({
       key: `unlinked-transfer:${t.id}`,
       when: 'always',
       finding: warn(
         `${t.description} (${money(t.amount)}) is an unlinked transfer, so Wealthfolio counts it as ${t.direction === 'in' ? 'income' : 'spending'} — link it to its other half`,
         `${short(t.description)} ${money(t.amount)} unlinked`,
+      ),
+    });
+  }
+  // What the separate "Transfer stuck" alert said, once the daily report
+  // carries it (1.57.1) — only where nothing above already names the leg.
+  for (const t of facts.stuckTransfers ?? []) {
+    if (namedIds.has(t.id)) continue;
+    candidates.push({
+      key: `stuck-transfer:${t.id}`,
+      when: 'always',
+      finding: warn(
+        `${t.description} (${money(t.amount)}, ${t.account}, ${shortDate(t.date)}) could not be linked to its other half after 3 tries — run Deep scan, or link the pair in Wealthfolio`,
+        `${short(t.description)} ${money(t.amount)} won't link`,
       ),
     });
   }

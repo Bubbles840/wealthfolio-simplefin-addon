@@ -105,6 +105,8 @@ export interface SelfCheckInput {
    *  `drift` is bank − Wealthfolio in dollars, set by the sync only past the
    *  alert threshold; `driftSince` is when that difference was first seen. */
   accounts?: ReadonlyArray<{
+    /** The SimpleFin account id — what tells two same-named accounts apart. */
+    id?: string;
     name: string;
     balanceDate: number | null;
     drift?: number | null;
@@ -183,6 +185,16 @@ export function evaluateSelfCheck(input: SelfCheckInput, now: Date): SelfCheckFi
     });
   }
 
+  // Two accounts can share a display name (two "CHECKING"s at two banks). A
+  // finding's key is what a snooze and a button find it by, so those get the
+  // id in the key and a short id in the text; a unique name keeps the plain
+  // key, so a snooze taken before 1.57.1 still holds.
+  const nameCounts = new Map<string, number>();
+  for (const a of input.accounts ?? []) nameCounts.set(a.name, (nameCounts.get(a.name) ?? 0) + 1);
+  const shared = (a: { id?: string; name: string }) => (nameCounts.get(a.name) ?? 0) > 1 && !!a.id;
+  const keyName = (a: { id?: string; name: string }) => (shared(a) ? `${a.name}#${a.id}` : a.name);
+  const shownName = (a: { id?: string; name: string }) => (shared(a) ? `${a.name} (…${a.id!.slice(-4)})` : a.name);
+
   for (const account of input.accounts ?? []) {
     // No date is not a stale date. SimpleFin omits it for some accounts, and
     // treating "unknown" as "old" would flag them forever with no way to fix it.
@@ -195,11 +207,11 @@ export function evaluateSelfCheck(input: SelfCheckInput, now: Date): SelfCheckFi
     findings.push({
       kind: 'feed-stale',
       severity: 'warning',
-      key: `feed-stale:${account.name}`,
-      label: `${account.name}: no new data`,
+      key: `feed-stale:${keyName(account)}`,
+      label: `${shownName(account)}: no new data`,
       // The remedy, not just the symptom: a dead feed also holds any transfer
       // that names it open indefinitely (see expiryHoldAccount in sync-core).
-      message: `${account.name} has sent no new data in over ${FEED_STALE_DAYS} days — reconnect it in SimpleFin, or unmap it here if the account is closed`,
+      message: `${shownName(account)} has sent no new data in over ${FEED_STALE_DAYS} days — reconnect it in SimpleFin, or unmap it here if the account is closed`,
     });
   }
 
@@ -212,7 +224,7 @@ export function evaluateSelfCheck(input: SelfCheckInput, now: Date): SelfCheckFi
     const since = account.driftSince ? Date.parse(account.driftSince) : NaN;
     if (!Number.isFinite(since)) continue;
     const aged = now.getTime() - since >= DRIFT_AGED_DAYS * DAY_MS;
-    const lead = `${account.name} is ${formatDollars(Math.abs(drift), 2)} ${drift > 0 ? 'below' : 'above'} the bank's balance`;
+    const lead = `${shownName(account)} is ${formatDollars(Math.abs(drift), 2)} ${drift > 0 ? 'below' : 'above'} the bank's balance`;
     findings.push({
       kind: 'balance-drift',
       // A warning either way, so it folds into the 🧹 count and can be
@@ -221,8 +233,8 @@ export function evaluateSelfCheck(input: SelfCheckInput, now: Date): SelfCheckFi
       // balance running ahead of its own transaction list, so it asks for
       // nothing until it has outlived that.
       severity: 'warning',
-      key: `balance-drift:${account.name}`,
-      label: `${account.name}: balance differs`,
+      key: `balance-drift:${keyName(account)}`,
+      label: `${shownName(account)}: balance differs`,
       message: aged
         ? `${lead} — for over ${DRIFT_AGED_DAYS} days, so it is more than feed lag. Open SimpleFin Sync to line them up`
         : `${lead} — usually the bank's feed catching up; it clears on its own`,

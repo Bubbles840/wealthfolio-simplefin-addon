@@ -295,7 +295,7 @@ to split, reconciliation is never involved.
 
 ```bash
 npm install
-npm test          # 1,549 tests (plus 698 in companion/)
+npm test          # 1,556 tests (plus 703 in companion/)
 npm run type-check
 npm run bundle    # builds and zips to dist/
 ```
