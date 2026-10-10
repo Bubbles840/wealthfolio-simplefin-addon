@@ -385,6 +385,22 @@ Grand Total:	$120.52
     expect(rows[0].totalCents).toBe(423);
   });
 
+  it('rounds the unrounded float the plain-text copy prints', () => {
+    // Live from 2026-09-15: `Total` / `10.799999999999999 USD` for a $10.80
+    // shipment. Exactly-two-decimals refused it, and the order was lost.
+    const rows = parseAmazonEmail(
+      'Your package was shipped!\nOrder # 113-2704312-9904237\n1 Hair Care item\nTotal\n10.799999999999999 USD',
+    );
+    expect(rows[0].totalCents).toBe(1080);
+  });
+
+  it('does not read an item subtotal as the total', () => {
+    const rows = parseAmazonEmail(
+      'Thanks for your order!\nOrder # 111-2223334-4445556\n1 Electronics item\nItem Subtotal: $9.00\nGrand Total: $9.54',
+    );
+    expect(rows[0].totalCents).toBe(954);
+  });
+
   it('still refuses a bare number with neither $ nor USD as a total', () => {
     // A number alone is not a price — it could be anything else on the line. Only
     // a currency-marked figure is trusted.
