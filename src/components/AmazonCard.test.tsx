@@ -244,9 +244,44 @@ describe('AmazonCard unparsed-mail warning', () => {
     const warning = await screen.findByText(/2 recent emails could not be read/i);
     expect(warning.textContent).toMatch(/Amazon may have changed their email format/i);
     expect(warning.textContent).toMatch(/stay unread in the mailbox/i);
-    expect(warning.textContent).toMatch(/stay uncategorized until this addon gets an update/i);
+    expect(warning.textContent).toMatch(/won.t get an Amazon category until this addon gets an update/i);
     expect(warning.textContent).not.toMatch(EMOJI);
     expect(warning.closest('.sfin-error')).toBeTruthy();
+  });
+
+  it('offers the unreadable emails for copying', async () => {
+    const props = configuredProps();
+    props.store.getAmazonMailStatus = vi.fn(async () => ({ unparsed: 1, asOf: '2026-10-10T12:00:00.000Z' })) as any;
+    (props.store as any).getAmazonMailSamples = vi.fn(async () => ({
+      asOf: '2026-10-10T12:00:00.000Z',
+      samples: [{
+        at: '2026-10-05T17:11:52.000Z', from: 'shipment-tracking@amazon.com',
+        subject: 'Shipped 4 items: Electronics, Irons & Steamers, and more',
+        plain: 'Order #\n113-3583199-4585009', html: '4 items: 1 Electronics',
+      }],
+    }));
+    render(<Harness {...props} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /Show what couldn.t be read/i }));
+    const box = screen.getByLabelText(/Emails that could not be read/i) as HTMLTextAreaElement;
+    const [fixture] = JSON.parse(box.value);
+    expect(fixture.subject).toBe('Shipped 4 items: Electronics, Irons & Steamers, and more');
+    expect(fixture.plain).toEqual(['Order #', '113-3583199-4585009']);
+
+    // jsdom has no clipboard — the same situation as a sandboxed iframe that
+    // refuses it — so the card must say how to copy by hand.
+    fireEvent.click(screen.getByRole('button', { name: 'Copy' }));
+    expect(await screen.findByText(/select the text above and copy it/i)).toBeTruthy();
+  });
+
+  it('shows no samples section on a companion that publishes none', async () => {
+    // Version skew: an older companion writes no samples secret, and its store
+    // mock has no getter at all. The card must look exactly as before.
+    const props = configuredProps();
+    props.store.getAmazonMailStatus = vi.fn(async () => ({ unparsed: 1, asOf: '2026-10-10T12:00:00.000Z' })) as any;
+    render(<Harness {...props} />);
+    await screen.findByText(/1 recent email could not be read/i);
+    expect(screen.queryByRole('button', { name: /Show what couldn.t be read/i })).toBeNull();
   });
 
   it('uses the singular for exactly one unparsed message', async () => {
