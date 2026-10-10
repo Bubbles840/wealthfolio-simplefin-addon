@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Button, CollapsibleCard, Disclosure, ErrorBox, statusToneClass, Why } from './ui';
 import type { StatusMessage } from './ui';
 import { CategoryIcon } from './CategoryIcon';
@@ -10,7 +10,8 @@ import {
   type AmazonMailConfig,
 } from '../../shared/amazon-config';
 import type { CategoryCatalogEntry, SecretsStore } from '../utils/secrets';
-import type { AmazonMailStatus } from '../../shared/status-keys';
+import type { AmazonMailSample, AmazonMailSamples, AmazonMailStatus } from '../../shared/status-keys';
+import { amazonSamplesAsFixtureText } from '../../shared/amazon-sample';
 
 /**
  * Setup for automatic categorization of Amazon charges.
@@ -66,6 +67,9 @@ export interface AmazonDraftState {
    * the two must be visually identical (see `getAmazonMailStatus`).
    */
   mailStatus: AmazonMailStatus | null;
+  /** The unreadable emails, when the companion published any. Optional so a
+   *  hand-built state (tests, an older page) needs no change. */
+  samples?: AmazonMailSamples | null;
   /** Has the stored config been read yet? Distinguishes "loading" from "not set
    *  up", which the collapsed summary says out loud. */
   loaded: boolean;
@@ -86,14 +90,22 @@ export function useAmazonDraft(store: SecretsStore): AmazonDraftState {
   const [saved, setSaved] = useState<AmazonDraft>(EMPTY_AMAZON_DRAFT);
   const [labels, setLabels] = useState<AmazonLabelCatalog>({});
   const [mailStatus, setMailStatus] = useState<AmazonMailStatus | null>(null);
+  const [samples, setSamples] = useState<AmazonMailSamples | null>(null);
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
     // Loaded alongside config + labels, on the same one-shot mount effect —
     // not its own poll, for the same reason the draft itself is one-shot: a
     // re-hydrate on a timer would fight a half-typed password.
-    Promise.all([store.getAmazonConfig(), store.getAmazonLabels(), store.getAmazonMailStatus()])
-      .then(([cfg, seen, status]) => {
+    Promise.all([
+      store.getAmazonConfig(),
+      store.getAmazonLabels(),
+      store.getAmazonMailStatus(),
+      // Optional-called: a store (or test double) from before the samples
+      // existed has no such method, and must read as "nothing to show".
+      store.getAmazonMailSamples?.() ?? null,
+    ])
+      .then(([cfg, seen, status, unreadable]) => {
         if (cfg) {
           const stored: AmazonDraft = {
             host: cfg.host || 'imap.gmail.com',
@@ -107,6 +119,7 @@ export function useAmazonDraft(store: SecretsStore): AmazonDraftState {
         }
         setLabels(seen);
         setMailStatus(status);
+        setSamples(unreadable ?? null);
       })
       .catch(() => {})
       .finally(() => setLoaded(true));
@@ -137,6 +150,7 @@ export function useAmazonDraft(store: SecretsStore): AmazonDraftState {
     patch,
     labels,
     mailStatus,
+    samples,
     loaded,
     dirty: JSON.stringify(draft) !== JSON.stringify(saved),
     configured: !!(draft.host && draft.user && draft.password),
@@ -161,7 +175,7 @@ interface Props {
 export function AmazonCard({
   amazon, cardId, guideId, open, guideOpen, onToggle, onToggleGuide, categories,
 }: Props) {
-  const { draft, patch, labels, mailStatus, loaded, dirty, configured } = amazon;
+  const { draft, patch, labels, mailStatus, samples, loaded, dirty, configured } = amazon;
   const { host, user, password, defaultCategory, overrides } = draft;
   /** `{ text, tone }` like every other status line in the addon: the ✅ this
    *  message used to open with was its only success signal, so dropping the
@@ -244,8 +258,12 @@ export function AmazonCard({
         <ErrorBox>
           {unparsed} recent email{unparsed === 1 ? '' : 's'} could not be read — Amazon
           may have changed their email format. They stay unread in the mailbox, and
-          charges from them stay uncategorized until this addon gets an update.
+          their charges won&apos;t get an Amazon category until this addon gets an update.
         </ErrorBox>
+      )}
+
+      {unparsed > 0 && samples && samples.samples.length > 0 && (
+        <UnreadableSamples samples={samples.samples} />
       )}
 
       <div className="sfin-subtle" style={{ marginBottom: 12 }}>
@@ -454,5 +472,57 @@ export function AmazonCard({
         </div>
       </div>
     </CollapsibleCard>
+  );
+}
+
+/**
+ * The emails the parser could not read, ready to paste into a bug report — and
+ * from there straight into `shared/__fixtures__/amazon-emails/` as a test.
+ *
+ * A textarea as well as a Copy button: the addon runs in a sandboxed iframe,
+ * where the clipboard API may be refused, and a selectable box always works.
+ */
+function UnreadableSamples({ samples }: { samples: AmazonMailSample[] }) {
+  const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState<'idle' | 'ok' | 'failed'>('idle');
+  const text = useMemo(() => amazonSamplesAsFixtureText(samples), [samples]);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied('ok');
+    } catch {
+      setCopied('failed');
+    }
+  };
+  return (
+    <div className="sfin-disc-inset" style={{ marginBottom: 12 }}>
+      <Disclosure
+        id="amazon-unreadable"
+        variant="inline"
+        title="Show what couldn't be read"
+        open={open}
+        onToggle={() => setOpen((o) => !o)}
+      >
+        <p className="sfin-subtle">
+          Personal details are removed. Paste this into a bug report so the addon can
+          learn the new format.
+        </p>
+        <textarea
+          readOnly
+          aria-label="Emails that could not be read"
+          value={text}
+          rows={10}
+          style={{ width: '100%', fontFamily: 'monospace', fontSize: 12 }}
+          onFocus={(e) => e.currentTarget.select()}
+        />
+        <div style={{ marginTop: 8 }}>
+          <Button variant="outline" onClick={copy}>Copy</Button>
+          {copied === 'ok' && <span className="sfin-subtle"> Copied.</span>}
+          {copied === 'failed' && (
+            <span className="sfin-subtle"> Couldn&apos;t copy here — select the text above and copy it.</span>
+          )}
+        </div>
+      </Disclosure>
+    </div>
   );
 }

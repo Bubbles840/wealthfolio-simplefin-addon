@@ -3,7 +3,7 @@ import { SKIPPED_TRANSACTIONS_SECRET_KEY, parseSkippedTransactions, type Skipped
 import type { AddonContext } from '@wealthfolio/addon-sdk';
 import { AMAZON_LEDGER_SECRET_KEY } from '../../shared/amazon-ledger';
 import { AMAZON_CONFIG_SECRET_KEY, AMAZON_LABELS_SECRET_KEY } from '../../shared/amazon-config';
-import { UNCATEGORIZED_STATUS_SECRET_KEY, AMAZON_MAIL_STATUS_SECRET_KEY, POOL_STATUS_SECRET_KEY, type AmazonMailStatus } from '../../shared/status-keys';
+import { UNCATEGORIZED_STATUS_SECRET_KEY, AMAZON_MAIL_STATUS_SECRET_KEY, AMAZON_MAIL_SAMPLES_SECRET_KEY, POOL_STATUS_SECRET_KEY, type AmazonMailStatus, type AmazonMailSamples } from '../../shared/status-keys';
 import { SEMESTER_POOL_SECRET_KEY, parsePoolConfig } from '../../shared/pool';
 import type { SemesterPoolConfig, PoolStatus } from '../../shared/pool';
 import { REPORT_CUBE_SECRET_KEY, parseReportCube } from '../../shared/report-cube';
@@ -125,6 +125,9 @@ const KEYS = {
   // key that is easy to leave out of KEYS. Left out here, a reset account would
   // keep showing a stale "emails unread" warning from before the reset.
   amazonMailStatus: AMAZON_MAIL_STATUS_SECRET_KEY,
+  // And the unreadable-email samples beside it: companion-written, the same
+  // easy-to-forget shape, and they hold (redacted) receipt text.
+  amazonMailSamples: AMAZON_MAIL_SAMPLES_SECRET_KEY,
   // Same bug, same fix, for the Amazon mailbox credentials: these three read
   // and write their key constants directly (see `getAmazonConfig` etc.) rather
   // than through KEYS, so they were also missing from `clearAll`. That meant
@@ -606,6 +609,26 @@ export class SecretsStore {
           ...(typeof parsed.error === 'string' && parsed.error ? { error: parsed.error } : {}),
         }
         : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Companion-published copies of the Amazon emails the parser could not read
+   * (see `AMAZON_MAIL_SAMPLES_SECRET_KEY`). `null` when absent or corrupt, and
+   * malformed entries are dropped — like the status, an older companion that
+   * never writes this must look identical to "nothing to show".
+   */
+  async getAmazonMailSamples(): Promise<AmazonMailSamples | null> {
+    const raw = await this.ctx.api.secrets.get(AMAZON_MAIL_SAMPLES_SECRET_KEY);
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed?.samples)) return null;
+      const samples = parsed.samples.filter((s: any) => s
+        && typeof s.subject === 'string' && typeof s.plain === 'string' && typeof s.html === 'string');
+      return { asOf: String(parsed.asOf ?? ''), samples };
     } catch {
       return null;
     }

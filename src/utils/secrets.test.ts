@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { SecretsStore } from './secrets';
 import type { MappingRule, AccountMapping } from '../../shared/types';
 import type { UiState } from './secrets';
-import { UNCATEGORIZED_STATUS_SECRET_KEY, AMAZON_MAIL_STATUS_SECRET_KEY } from '../../shared/status-keys';
+import { UNCATEGORIZED_STATUS_SECRET_KEY, AMAZON_MAIL_STATUS_SECRET_KEY, AMAZON_MAIL_SAMPLES_SECRET_KEY } from '../../shared/status-keys';
 import { AMAZON_LABELS_SECRET_KEY } from '../../shared/amazon-config';
 
 /** Builds a ctx plus its backing secrets map. `makeCtx` (below) wraps this and
@@ -166,6 +166,22 @@ describe('SecretsStore', () => {
     expect(await s.getAmazonMailStatus()).toEqual({ unparsed: 2, asOf: '2026-08-08' });
     await s.clearAll();
     expect(await s.getAmazonMailStatus()).toBeNull();
+  });
+
+  it('reads the unreadable-email samples, dropping malformed ones, and clearAll removes them', async () => {
+    const ctx = makeCtx();
+    const s = new SecretsStore(ctx);
+    const sample = { at: '2026-10-05', subject: 'Shipped 4 items', plain: 'p', html: 'h' };
+    await ctx.api.secrets.set(AMAZON_MAIL_SAMPLES_SECRET_KEY, JSON.stringify({ asOf: '2026-10-05', samples: [sample, { junk: true }] }));
+    expect(await s.getAmazonMailSamples()).toEqual({ asOf: '2026-10-05', samples: [sample] });
+    await s.clearAll();
+    expect(await s.getAmazonMailSamples()).toBeNull();
+  });
+
+  it('reads a corrupt samples secret as none', async () => {
+    const ctx = makeCtx();
+    await ctx.api.secrets.set(AMAZON_MAIL_SAMPLES_SECRET_KEY, '{not json');
+    expect(await new SecretsStore(ctx).getAmazonMailSamples()).toBeNull();
   });
 });
 
