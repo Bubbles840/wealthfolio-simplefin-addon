@@ -17,9 +17,11 @@
  */
 
 import {
-  mergeAmazonOrders, pruneAmazonLedger, type AmazonLedger,
+  mergeAmazonOrders, pruneAmazonLedger, retireCancelledOrders, type AmazonLedger,
 } from '../../shared/amazon-ledger.js';
-import { classifyAmazonEmail } from '../../shared/amazon.js';
+import { classifyAmazonEmail, type AmazonMailParts } from '../../shared/amazon.js';
+import { toAmazonMailSample, AMAZON_SAMPLE_LIMIT } from '../../shared/amazon-sample.js';
+import type { AmazonMailSample } from '../../shared/status-keys.js';
 import {
   normalizeAppPassword, resolveAmazonCategory, amazonMailConfigured, AMAZON_SENDERS, isAmazonMessage,
   AMAZON_CONFIG_SECRET_KEY, AMAZON_LABELS_SECRET_KEY, DEFAULT_AMAZON_CATEGORY,
@@ -47,7 +49,8 @@ export interface MailMessage {
   mailbox: string;
   /** The message's own date — the anchor the ±5 day match window measures from. */
   date: string;
-  text: string;
+  /** Subject, plain text and HTML-as-text, kept apart — see `AmazonMailParts`. */
+  parts: AmazonMailParts;
   /**
    * Sender, lowercased.
    *
@@ -79,11 +82,16 @@ export interface AmazonIngestResult {
   /** Amazon notices that by their nature carry no total (delivery confirmations).
    *  Expected, not failures, and flagged read so they stop accumulating. */
   ignored: number;
+  /** Cancellation notices: nothing was charged. Flagged read, and their
+   *  orders' confirmation records retired (see `retireCancelledOrders`). */
+  cancelled: number;
   pruned: number;
   /** Labels seen for the first time ever, with where they were filed. */
   newLabels: Array<{ label: string; category: string; matched: boolean }>;
   /** Senders whose messages yielded no orders, with a count each. */
   unparsedSenders: Record<string, number>;
+  /** Redacted copies of the unreadable messages, newest `AMAZON_SAMPLE_LIMIT`. */
+  samples: AmazonMailSample[];
 }
 
 /**
@@ -138,32 +146,24 @@ export function htmlToText(html: string | undefined | null): string {
 }
 
 /**
- * The document `classifyAmazonEmail` actually reads: subject, then the
- * text/plain part, then the HTML part reduced to text — each included only when
- * present.
+ * The three copies `classifyAmazonEmail` reads, each only when present.
  *
- * ALL THREE, not "plain text, falling back to HTML only when plain is absent".
- * As of ~Aug 2026 Amazon moved the category label out of text/plain entirely —
- * it now lives only in the subject (`Ordered: ⁦1⁩ Essentials item`) and the HTML
- * (`<span class="rio-text ...">⁦1⁩ Essentials item</span>`) — so a single message
- * can need parts from more than one source at once, and "prefer plain, fall back
- * to HTML" would keep reading a plain part that no longer has what is needed.
- *
- * Reading every source risks nothing extra: the same order parsed twice — once
- * from the subject, once from the HTML — reduces to the same
- * `orderId|kind|totalCents` ledger key (see `shared/amazon-ledger.ts`), and
- * `mergeAmazonOrders` already dedupes on that key. `matchAmazonCharge`'s
- * ambiguity handling is measured per ORDER, not per source that mentioned it, so
- * re-deriving one order from three places changes nothing about matching.
+ * KEPT APART. As of ~Aug 2026 the category label lives only in the subject and
+ * the HTML, and since Sep 2026 the plain-text copy has its own `Order #` with
+ * no label — so joining the copies into one document put the label and the
+ * readable total into different orders' chunks. The parser now reads each copy
+ * on its own and combines them by order number (see `AmazonMailParts`).
  */
-export function buildAmazonMailText(
+export function buildAmazonMailParts(
   subject: string | undefined | null,
   textPlain: string | undefined | null,
   html: string | undefined | null,
-): string {
-  return [subject, textPlain, html ? htmlToText(html) : undefined]
-    .filter((part): part is string => !!part)
-    .join('\n');
+): AmazonMailParts {
+  return {
+    ...(subject ? { subject } : {}),
+    ...(textPlain ? { plain: textPlain } : {}),
+    ...(html ? { html: htmlToText(html) } : {}),
+  };
 }
 
 export interface IngestStore {
@@ -192,26 +192,36 @@ export async function ingestAmazonMail(
   const labels = { ...(await store.getAmazonLabels()) };
 
   const result: AmazonIngestResult = {
-    scanned: messages.length, added: 0, unparsed: 0, ignored: 0, pruned: 0,
-    newLabels: [], unparsedSenders: {},
+    scanned: messages.length, added: 0, unparsed: 0, ignored: 0, cancelled: 0, pruned: 0,
+    newLabels: [], unparsedSenders: {}, samples: [],
   };
   const consumed: MailMessage[] = [];
+  let retired = false;
 
   for (const msg of messages) {
-    const { orders, status } = classifyAmazonEmail(msg.text);
+    const { orders, status, cancelledOrderIds } = classifyAmazonEmail(msg.parts);
     if (status !== 'orders') {
       // A delivery notice restates no price, so it can never match a charge. Read
       // and dropped rather than counted as a failure: every order produces one, and
       // leaving them unread would fill the mailbox and bury a real format change
-      // under permanent noise.
+      // under permanent noise. A cancellation is the same, plus its order's
+      // confirmation total must stop being a candidate.
       if (status === 'ignored') {
-        result.ignored += 1;
+        if (cancelledOrderIds) {
+          result.cancelled += 1;
+          const out = retireCancelledOrders(ledger, cancelledOrderIds);
+          ledger = out.ledger;
+          if (out.removed > 0) retired = true;
+        } else {
+          result.ignored += 1;
+        }
         consumed.push(msg);
         continue;
       }
       result.unparsed += 1;
       const who = msg.from ?? 'unknown sender';
       result.unparsedSenders[who] = (result.unparsedSenders[who] ?? 0) + 1;
+      result.samples.push(toAmazonMailSample(msg));
       continue;
     }
     // Date only: the window is measured in days, and keeping a time-of-day would
@@ -235,10 +245,13 @@ export async function ingestAmazonMail(
     }
   }
 
+  // Messages arrive oldest first; the newest are the ones worth showing.
+  result.samples = result.samples.slice(-AMAZON_SAMPLE_LIMIT);
+
   const pruned = pruneAmazonLedger(ledger, nowMs);
   result.pruned = pruned.removed;
 
-  if (result.added > 0 || pruned.removed > 0) await store.setAmazonLedger(pruned.ledger);
+  if (result.added > 0 || pruned.removed > 0 || retired) await store.setAmazonLedger(pruned.ledger);
   if (result.newLabels.length > 0) await store.setAmazonLabels(labels);
   if (consumed.length > 0) await source.markSeen(consumed);
 
@@ -315,22 +328,20 @@ export async function createImapSource(cfg: AmazonMailConfig): Promise<MailSourc
         const from = (msg.envelope?.from ?? [])
           .map((a) => String(a.address ?? '').toLowerCase());
         const parsed = await simpleParser(msg.source!);
-        // Subject + text/plain + HTML-as-text. Since ~Aug 2026 the category label
-        // lives only in the subject and the HTML (see `buildAmazonMailText`), so
-        // text/plain alone is no longer enough to classify the message.
-        const text = buildAmazonMailText(
+        // Subject, plain text and HTML-as-text, kept apart (see `buildAmazonMailParts`).
+        const parts = buildAmazonMailParts(
           parsed.subject, parsed.text, parsed.html ? String(parsed.html) : undefined,
         );
         // Sender check here rather than in the IMAP search: the forwarding mailbox
         // should contain nothing else, but "should" is not a reason to parse
         // whatever else lands in it. Needs the decoded body too, so a hand-forwarded
         // order — whose From: is the person who forwarded it — still counts.
-        if (!isAmazonMessage(from[0], text)) continue;
+        if (!isAmazonMessage(from[0], [parts.plain, parts.html].filter(Boolean).join('\n'))) continue;
         out.push({
           uid: msg.uid,
           mailbox,
           date: (parsed.date ?? new Date()).toISOString(),
-          text,
+          parts,
           from: from[0],
         });
       }

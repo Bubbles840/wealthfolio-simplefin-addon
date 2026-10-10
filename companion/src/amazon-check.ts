@@ -117,13 +117,15 @@ async function main(): Promise<void> {
       // Same classifier the sync uses, deliberately. This tool's only job is to say
       // what the sync will do, so a second opinion here would be a bug even when it
       // happened to agree.
-      const { orders, status } = classifyAmazonEmail(msg.text);
+      const { orders, status, cancelledOrderIds } = classifyAmazonEmail(msg.parts);
       const date = msg.date.slice(0, 10);
       if (status === 'ignored') {
         // Expected, not a failure: a delivery notice restates no price, so it can
         // never match a charge. Every order produces one.
         ignored += 1;
-        console.log(`— ${date} — delivery notice, skipped (no total to match)`);
+        console.log(cancelledOrderIds
+          ? `— ${date} — cancellation, skipped (nothing was charged)`
+          : `— ${date} — delivery notice, skipped (no total to match)`);
         console.log('');
         continue;
       }
@@ -134,7 +136,8 @@ async function main(): Promise<void> {
         // parsing means Amazon changed the format. Same symptom, opposite fixes.
         console.log(`✗ ${date} — not recognised (from ${msg.from ?? 'unknown'}, in ${msg.mailbox})`);
         console.log('    First lines of the body:');
-        for (const line of msg.text.split('\n').map((l) => l.trim()).filter(Boolean).slice(0, 8)) {
+        const body = [msg.parts.subject, msg.parts.plain, msg.parts.html].filter(Boolean).join('\n');
+        for (const line of body.split('\n').map((l) => l.trim()).filter(Boolean).slice(0, 8)) {
           console.log(`      ${line}`);
         }
         console.log('');

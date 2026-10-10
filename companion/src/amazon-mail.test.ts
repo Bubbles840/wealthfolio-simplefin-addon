@@ -5,7 +5,7 @@ import {
   amazonMailConfigured,
   isAmazonMessage,
   htmlToText,
-  buildAmazonMailText,
+  buildAmazonMailParts,
   type MailMessage,
   type MailSource,
   type IngestStore,
@@ -43,7 +43,7 @@ const NOW = Date.parse('2026-08-07T12:00:00Z');
 describe('ingestAmazonMail', () => {
   it('turns messages into ledger records anchored on the email date', () => {
     const { source } = fakeSource([
-      { uid: 11, date: '2026-08-04T18:22:00Z', text: email('113-0728509-1925031', 'Lawn & Garden', '21.18') },
+      { uid: 11, date: '2026-08-04T18:22:00Z', parts: { plain: email('113-0728509-1925031', 'Lawn & Garden', '21.18') } },
     ]);
     const { store, state } = fakeStore();
     return ingestAmazonMail(source, store, {}, NOW).then((r) => {
@@ -61,9 +61,9 @@ describe('ingestAmazonMail', () => {
     // identical from a count — messages that yield no orders — and the fixes are
     // opposite. The sender is the only thing that tells them apart.
     const { source } = fakeSource([
-      { uid: 11, date: '2026-08-04T00:00:00Z', text: 'Deals of the day!', from: 'store-news@amazon.com' },
-      { uid: 12, date: '2026-08-05T00:00:00Z', text: 'More deals!', from: 'store-news@amazon.com' },
-      { uid: 13, date: '2026-08-05T00:00:00Z', text: 'Nothing useful', from: 'auto-confirm@amazon.com' },
+      { uid: 11, date: '2026-08-04T00:00:00Z', parts: { plain: 'Deals of the day!' }, from: 'store-news@amazon.com' },
+      { uid: 12, date: '2026-08-05T00:00:00Z', parts: { plain: 'More deals!' }, from: 'store-news@amazon.com' },
+      { uid: 13, date: '2026-08-05T00:00:00Z', parts: { plain: 'Nothing useful' }, from: 'auto-confirm@amazon.com' },
     ]);
     const { store } = fakeStore();
     const r = await ingestAmazonMail(source, store, {}, NOW);
@@ -79,8 +79,8 @@ describe('ingestAmazonMail', () => {
     // weeks ago; marking the failure read would turn the next change into
     // "categorization quietly stopped working" with nothing to look at.
     const { source, seen } = fakeSource([
-      { uid: 11, date: '2026-08-04T00:00:00Z', text: email('113-0728509-1925031', 'Electronics', '10.55') },
-      { uid: 12, date: '2026-08-05T00:00:00Z', text: 'Your Amazon account was accessed from a new device' },
+      { uid: 11, date: '2026-08-04T00:00:00Z', parts: { plain: email('113-0728509-1925031', 'Electronics', '10.55') } },
+      { uid: 12, date: '2026-08-05T00:00:00Z', parts: { plain: 'Your Amazon account was accessed from a new device' } },
     ]);
     const { store } = fakeStore();
     const r = await ingestAmazonMail(source, store, {}, NOW);
@@ -95,8 +95,8 @@ describe('ingestAmazonMail', () => {
     // alone marks the wrong one read: the parsed order re-ingests forever while an
     // unrelated message is hidden from the next poll.
     const { source, seen } = fakeSource([
-      { uid: 5, mailbox: 'INBOX', date: '2026-08-04T00:00:00Z', text: email('113-0728509-1925031', 'Electronics', '10.55') },
-      { uid: 5, mailbox: '[Gmail]/Spam', date: '2026-08-05T00:00:00Z', text: email('222-2222222-2222222', 'Grocery', '8.20') },
+      { uid: 5, mailbox: 'INBOX', date: '2026-08-04T00:00:00Z', parts: { plain: email('113-0728509-1925031', 'Electronics', '10.55') } },
+      { uid: 5, mailbox: '[Gmail]/Spam', date: '2026-08-05T00:00:00Z', parts: { plain: email('222-2222222-2222222', 'Grocery', '8.20') } },
     ]);
     const { store } = fakeStore();
     const r = await ingestAmazonMail(source, store, {}, NOW);
@@ -110,7 +110,7 @@ describe('ingestAmazonMail', () => {
     // charge. Counting them as failures would leave the mailbox filling with
     // permanently-unread mail and bury the one signal that says the parser broke.
     const { source, seen } = fakeSource([
-      { uid: 21, date: '2026-08-06T00:00:00Z', text: 'Delivered: ⁦1⁩ Electronics item', from: 'order-update@amazon.com' },
+      { uid: 21, date: '2026-08-06T00:00:00Z', parts: { plain: 'Delivered: ⁦1⁩ Electronics item' }, from: 'order-update@amazon.com' },
     ]);
     const { store } = fakeStore();
     const r = await ingestAmazonMail(source, store, {}, NOW);
@@ -121,15 +121,49 @@ describe('ingestAmazonMail', () => {
     expect(seen().map((m) => m.uid)).toEqual([21]);
   });
 
+  it('skips a cancellation, retires its confirmation, and marks it read', async () => {
+    const ledger: AmazonLedger = {
+      '113-2018846-2323410|ordered|839': {
+        orderId: '113-2018846-2323410', kind: 'ordered', totalCents: 839, itemCount: 1,
+        labels: ['Electronics'], emailDate: '2026-08-04',
+      },
+    };
+    const { source, seen } = fakeSource([{
+      uid: 31, date: '2026-08-06T00:00:00Z', from: 'order-update@amazon.com',
+      parts: {
+        subject: 'Item cancelled successfully: "Example item..."',
+        plain: 'Your order was cancelled. You have not been charged for this order.\nOrder #\n113-2018846-2323410',
+      },
+    }]);
+    const { store, state } = fakeStore(ledger);
+    const r = await ingestAmazonMail(source, store, {}, NOW);
+    expect(r).toMatchObject({ cancelled: 1, ignored: 0, unparsed: 0 });
+    expect(state.ledger).toEqual({});
+    expect(seen().map((m) => m.uid)).toEqual([31]);
+  });
+
+  it('keeps a redacted copy of each email it could not read, newest five', async () => {
+    const msgs = Array.from({ length: 6 }, (_, i) => ({
+      uid: 40 + i,
+      date: `2026-08-0${i + 1}T00:00:00Z`,
+      from: 'shipment-tracking@amazon.com',
+      parts: { subject: `Shipped ${i + 1} item: Mystery`, plain: 'Nicholas - LOUISVILLE, KY\nnick@example.com' },
+    }));
+    const r = await ingestAmazonMail(fakeSource(msgs).source, fakeStore().store, {}, NOW);
+    expect(r.unparsed).toBe(6);
+    expect(r.samples.map((s) => s.subject)).toEqual([2, 3, 4, 5, 6].map((n) => `Shipped ${n} item: Mystery`));
+    expect(r.samples[0].plain).toBe('Jordan - SPRINGFIELD, IL\n<email>');
+  });
+
   it('reports a label the first time it is seen, and not again', async () => {
-    const msgs = [{ uid: 11, date: '2026-08-04T00:00:00Z', text: email('113-0728509-1925031', 'Lawn & Garden', '21.18') }];
+    const msgs = [{ uid: 11, date: '2026-08-04T00:00:00Z', parts: { plain: email('113-0728509-1925031', 'Lawn & Garden', '21.18') } }];
     const { store, state } = fakeStore();
     const first = await ingestAmazonMail(fakeSource(msgs).source, store, {}, NOW);
     expect(first.newLabels).toEqual([{ label: 'Lawn & Garden', category: 'Housing', matched: true }]);
     expect(state.labels['Lawn & Garden']).toEqual({ category: 'Housing', matched: true });
 
     const second = await ingestAmazonMail(
-      fakeSource([{ uid: 12, date: '2026-08-05T00:00:00Z', text: email('222-2222222-2222222', 'Lawn & Garden', '9.99') }]).source,
+      fakeSource([{ uid: 12, date: '2026-08-05T00:00:00Z', parts: { plain: email('222-2222222-2222222', 'Lawn & Garden', '9.99') } }]).source,
       store, {}, NOW,
     );
     expect(second.newLabels).toEqual([]);
@@ -139,7 +173,7 @@ describe('ingestAmazonMail', () => {
     // Both, not either: filed so nothing lands uncategorized, flagged so the
     // digest can say so and the user can add one pattern.
     const { source } = fakeSource([
-      { uid: 11, date: '2026-08-04T00:00:00Z', text: email('113-0728509-1925031', 'Industrial & Scientific', '21.18') },
+      { uid: 11, date: '2026-08-04T00:00:00Z', parts: { plain: email('113-0728509-1925031', 'Industrial & Scientific', '21.18') } },
     ]);
     const { store } = fakeStore();
     const r = await ingestAmazonMail(source, store, {}, NOW);
@@ -149,7 +183,7 @@ describe('ingestAmazonMail', () => {
   });
 
   it('re-ingesting the same message adds nothing', async () => {
-    const msgs = [{ uid: 11, date: '2026-08-04T00:00:00Z', text: email('113-0728509-1925031', 'Electronics', '10.55') }];
+    const msgs = [{ uid: 11, date: '2026-08-04T00:00:00Z', parts: { plain: email('113-0728509-1925031', 'Electronics', '10.55') } }];
     const { store } = fakeStore();
     await ingestAmazonMail(fakeSource(msgs).source, store, {}, NOW);
     const again = await ingestAmazonMail(fakeSource(msgs).source, store, {}, NOW);
@@ -238,21 +272,22 @@ describe('htmlToText', () => {
   });
 });
 
-describe('buildAmazonMailText', () => {
-  it('combines subject, plain text and html-derived text, each only when present', () => {
-    const text = buildAmazonMailText(
+describe('buildAmazonMailParts', () => {
+  it('keeps subject, plain text and html-derived text apart', () => {
+    expect(buildAmazonMailParts(
       'Ordered: ⁦1⁩ Essentials item',
       'Thanks for your order!',
       '<span class="rio-text rio-text-339">⁦1⁩ Essentials item</span>',
-    );
-    expect(text).toContain('Ordered: ⁦1⁩ Essentials item');
-    expect(text).toContain('Thanks for your order!');
-    expect(text).toContain('⁦1⁩ Essentials item');
+    )).toEqual({
+      subject: 'Ordered: ⁦1⁩ Essentials item',
+      plain: 'Thanks for your order!',
+      html: '\n⁦1⁩ Essentials item\n',
+    });
   });
 
-  it('omits a part entirely when the message did not carry it', () => {
-    expect(buildAmazonMailText(undefined, 'plain only', undefined)).toBe('plain only');
-    expect(buildAmazonMailText('subject only', undefined, undefined)).toBe('subject only');
+  it('omits a copy the message did not carry', () => {
+    expect(buildAmazonMailParts(undefined, 'plain only', undefined)).toEqual({ plain: 'plain only' });
+    expect(buildAmazonMailParts('subject only', undefined, undefined)).toEqual({ subject: 'subject only' });
   });
 });
 
