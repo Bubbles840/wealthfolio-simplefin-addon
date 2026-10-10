@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.58.0] - 2026-10-09
+
+### Fixed
+
+- **A linked transfer keeps both of its halves.** When the sync updated one
+  half of a linked transfer, Wealthfolio copied that half's date and note onto
+  the other — and the note is where the sync keeps each bank's transaction id.
+  The other half then read as the wrong bank's transaction, its own bank record
+  looked new, and every full sync reported it as "not imported" (or, if the
+  amount had changed, imported it a second time). Seen live on two card
+  payments and a savings transfer. Two changes:
+  - The sync no longer rewrites a half that is already linked just because its
+    partner fell outside this sync's date range. That rewrite — back into an
+    "in transit" placeholder, or after ten days into a plain deposit or
+    withdrawal — was what set the copying off. A bank's real change of amount
+    still goes through.
+  - A half that is carrying its partner's identity is recognised, and the pair
+    is re-linked with each half under its own bank's description, date and id.
+    The bank's own record is no longer offered as a new transaction.
+- **A transaction your own rule types as a transfer links up with its other
+  half.** Rule-typed transactions were kept out of automatic pairing (so a
+  pairing could never override your choice), which also meant one a rule
+  called a transfer could never be linked: it waited "in transit", then after
+  ten days counted as spending. Pairing only adds the link now when your rule
+  already says "transfer" in the same direction; rules naming any other type
+  still keep the transaction out. Seen live on a $500 savings → checking move.
+- **A refused import names the row Wealthfolio matched it to,** in the
+  companion log, so a refusal can be traced instead of guessed at.
+
+### Added
+
+- **Skip list for transactions a bank reports twice.** Deleting the extra copy
+  by hand did not stick: the next sync imported it again. The sync now never
+  imports a transaction on the list (per account; nothing already stored is
+  deleted for you). `companion/tools/skip-transaction.mjs` adds one and deletes
+  its row, after a dry run that shows the account's balance against the bank's.
+
 ## [1.57.1] - 2026-10-09
 
 ### Fixed

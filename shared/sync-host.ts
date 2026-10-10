@@ -1,6 +1,7 @@
 import type { AccountMapping, MappingRule, SimplefinAccountSet, UnmappedAccount } from './types.js';
 import type { AmazonLedger } from './amazon-ledger.js';
 import type { HoldingsSnapshot } from './holdings.js';
+import type { SkippedTransaction } from './skipped-transactions.js';
 
 /** A Wealthfolio activity row, normalized across the SDK and REST shapes. */
 export interface HostActivity {
@@ -291,4 +292,12 @@ export interface SyncStore {
    * addon's Accounts card — this suppresses the nagging, not the account.
    */
   getIgnoredAccounts?(): Promise<string[]>;
+  /**
+   * Bank transactions the user has said are not real — a feed's second copy of
+   * one transaction (see shared/skipped-transactions.ts). Never imported.
+   *
+   * Optional like the getters above; a host without it imports everything, which
+   * is what it did before the list existed.
+   */
+  getSkippedTransactions?(): Promise<SkippedTransaction[]>;
 }

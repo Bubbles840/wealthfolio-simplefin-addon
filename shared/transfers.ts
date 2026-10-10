@@ -26,7 +26,9 @@ export interface TransferCandidate {
   posted: number;
   /** Signed amount */
   amount: number;
-  /** True when a user mapping rule set the type — excluded from pairing */
+  /** True when a user mapping rule set a type pairing must not override —
+   *  excluded from pairing. A rule that already types the leg as a transfer in
+   *  its own direction is NOT flagged: pairing only links it (see sync-core). */
   ruleTyped: boolean;
   /** Wealthfolio account type (e.g. 'CREDIT_CARD'); optional. A credit card's
    *  negative side (a charge) is never auto-typed TRANSFER_OUT — on cards,

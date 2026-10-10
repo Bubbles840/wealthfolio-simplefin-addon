@@ -3838,12 +3838,14 @@ describe('an update never marks a linked leg external (v1.54)', () => {
     const { host, store, saved } = createFakeHost({
       accountSet: { errors: [], accounts: [{
         id: 'sfin-1', name: 'Checking', currency: 'USD', balance: '0', 'balance-date': 1,
-        transactions: [{ id: 'tx-live', posted, amount: '-429.71', description: 'Online Transfer to Savings' }],
+        transactions: [{ id: 'tx-live', posted, amount: '-430.00', description: 'Online Transfer to Savings' }],
       }] },
       mapping: { 'sfin-1': 'wf-a' },
       accountTypes: { 'wf-a': 'CASH' },
-      // Linked earlier; this run sees the leg alone, so it plans it back into a
-      // placeholder — an update that must not carry the external marker.
+      // Linked earlier; the bank has since revised the amount, which is the one
+      // change a linked leg is still updated for (its type and date are kept as
+      // stored — see keepLinkedLegAsStored). That update must not carry the
+      // external marker.
       existing: new Map([['wf-a', [{
         id: 'leg', accountId: 'wf-a', activityType: 'TRANSFER_OUT', date: day, amount: '429.71',
         comment: 'Online Transfer to Savings · tx-live', sourceGroupId: 'wf-transfer-9', subtype: null,
@@ -3853,6 +3855,9 @@ describe('an update never marks a linked leg external (v1.54)', () => {
     await runSyncCore(host, store, { force: true });
     const u = saved.flatMap((r) => r.updates ?? []).find((x) => x.id === 'leg');
     expect(u).toBeTruthy();
+    expect(u!.amount).toBe(430);
+    expect(u!.activityType).toBe('TRANSFER_OUT');
+    expect(u!.comment).not.toContain('In-transit');
     expect(u!.metadata).toBeUndefined();
   });
 });

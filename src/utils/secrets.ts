@@ -1,4 +1,5 @@
 import { parseReportStore, reportsSecretKey, type ReportKind, type ReportStore } from '../../shared/reports-archive';
+import { SKIPPED_TRANSACTIONS_SECRET_KEY, parseSkippedTransactions, type SkippedTransaction } from '../../shared/skipped-transactions';
 import type { AddonContext } from '@wealthfolio/addon-sdk';
 import { AMAZON_LEDGER_SECRET_KEY } from '../../shared/amazon-ledger';
 import { AMAZON_CONFIG_SECRET_KEY, AMAZON_LABELS_SECRET_KEY } from '../../shared/amazon-config';
@@ -87,6 +88,7 @@ const KEYS = {
   accountBalances: 'account_balances',
   unmappedAccounts: 'unmapped_accounts',
   ignoredAccounts: 'ignored_accounts',
+  skippedTransactions: SKIPPED_TRANSACTIONS_SECRET_KEY,
   autoHeal: 'auto_heal',
   autoAdjust: 'auto_adjust',
   telegramConfig: 'telegram_config',
@@ -504,6 +506,11 @@ export class SecretsStore {
   }
   async setIgnoredAccounts(ids: string[]): Promise<void> {
     await this.ctx.api.secrets.set(KEYS.ignoredAccounts, JSON.stringify(ids));
+  }
+
+  /** Bank transactions never to import (see shared/skipped-transactions.ts). */
+  async getSkippedTransactions(): Promise<SkippedTransaction[]> {
+    return parseSkippedTransactions(await this.ctx.api.secrets.get(KEYS.skippedTransactions));
   }
 
   /** Which collapsible config cards the user left open, keyed by card id.
