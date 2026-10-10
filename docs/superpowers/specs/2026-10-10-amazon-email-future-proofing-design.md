@@ -126,7 +126,9 @@ Each copy is read on its own, for:
     matches the published `unparsed` count, and clears once a fix reads them.
   - A failed scan (connection error) leaves the previous set alone, the same
     rule as the status record.
-- **Size:** each copy is trimmed to 80 non-blank lines and 8,000 characters.
+- **Size:** each copy is trimmed to 80 non-blank lines and 4,000 characters,
+  so five samples stay near 60 KB in the secret store. The real HTML copies
+  are about 2.5 KB of text.
 - **Redaction:** `redactAmazonSample` in `shared/`, host-agnostic and unit-tested.
   - Removed: email addresses, the delivery line (`<Name> - <CITY>, <ST>`), and
     the query string of every URL.
@@ -228,8 +230,10 @@ a label remapped on the card wins.
 
 ### No "make this a rule" for Amazon purchases
 
-- **Where:** `shared/categorize-menu.ts`'s filed screen, and its controller in
-  `companion/src/categorize.ts`.
+- **Where:** `shared/categorize-menu.ts`'s filed screen.
+- **No guard in the controller** (`companion/src/categorize.ts`). Menu sessions
+  and their button tables live in memory, and an upgrade restarts the
+  companion, so no button rendered before the change can be tapped after it.
 - **Change:** the rule offer is hidden when `isAmazonDescription(description)`
   is true.
 - **Why:** a rule on `AMAZON MKTPL` would file every later Amazon charge the
