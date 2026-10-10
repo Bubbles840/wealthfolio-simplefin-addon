@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.59.0] - 2026-10-10
+
+### Fixed
+
+- **Amazon's new shipment emails are read again.** Since mid-September Amazon
+  sends a plain-text copy with its own order number but no category, and
+  prints its total as `10.799999999999999 USD`. The parser joined that copy
+  with the HTML one and lost the order, so every shipment read as "could not
+  be read". It now reads the subject, plain text and HTML separately and
+  combines them by order number. An email with one order number (every
+  shipment notice) needs no layout logic at all, and an order whose copies
+  disagree on the total is skipped, never guessed.
+- **A charge imported before its email was readable gets its category.** The
+  sync only ever added the Amazon label when it first imported a charge, so a
+  charge that arrived during an outage stayed unlabelled for good. Each sync
+  now adds the label to such a charge's note — only to a note the sync wrote
+  and nobody edited, never to a linked transfer — and the charge is filed.
+- **Cancellation emails are skipped**, not reported as unreadable. They also
+  retire the cancelled order's confirmation, so a different charge for the
+  same amount cannot pick up its category.
+
+### Added
+
+- **"Show what couldn't be read"** on the Amazon card. The emails the parser
+  could not read, with your name, address and link codes removed, ready to
+  copy into a bug report. Each one becomes a test, so a fixed format stays
+  fixed.
+
+### Changed
+
+- **`/categorize` no longer offers "Make this a rule" for an Amazon purchase.**
+  A rule on `AMAZON MKTPL` would file every later Amazon charge the same way.
+  Prime, AWS and Kindle Unlimited charges still get the offer.
+- **Remove any catch-all Amazon rule** (for example `Amazon → Online
+  Shopping`). It files every Amazon charge before its order email is read, so
+  a charge whose email never parses silently keeps the rule's category instead
+  of reaching `/categorize`. Deleting a rule leaves the charges it already
+  filed as they are.
+
 ## [1.58.0] - 2026-10-09
 
 ### Fixed
