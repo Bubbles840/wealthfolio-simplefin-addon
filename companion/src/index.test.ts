@@ -5,7 +5,7 @@ import { SIMPLEFIN_SYNC_VERSION } from '../../shared/version.js';
 import { runSyncCore } from '../../shared/sync-core.js';
 import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeCategorizedSpending, getNativeSpendingCategories } from './sqlite-native.js';
 import { ingestAmazonMail } from './amazon-mail.js';
-import { AMAZON_MAIL_STATUS_SECRET_KEY, UNCATEGORIZED_STATUS_SECRET_KEY } from '../../shared/status-keys.js';
+import { AMAZON_MAIL_STATUS_SECRET_KEY, AMAZON_MAIL_SAMPLES_SECRET_KEY, UNCATEGORIZED_STATUS_SECRET_KEY } from '../../shared/status-keys.js';
 import { CATEGORIZE_ENTRY_CALLBACK } from '../../shared/telegram.js';
 import { existsSync } from 'fs';
 import type { SyncResult } from '../../shared/sync-core.js';
@@ -118,7 +118,7 @@ vi.mock('./amazon-mail.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   createImapSource: vi.fn(async () => ({ close: vi.fn(async () => {}) })),
   ingestAmazonMail: vi.fn(async () => ({
-    scanned: 0, added: 0, unparsed: 0, ignored: 0, pruned: 0, newLabels: [], unparsedSenders: {},
+    scanned: 0, added: 0, unparsed: 0, ignored: 0, pruned: 0, newLabels: [], unparsedSenders: {}, cancelled: 0, samples: [],
   })),
 }));
 
@@ -3571,7 +3571,7 @@ describe('Amazon mail status publishing', () => {
     const secrets = configuredSecrets();
     await clientFor(secrets);
     vi.mocked(ingestAmazonMail).mockResolvedValueOnce({
-      scanned: 5, added: 1, unparsed: 2, ignored: 1, pruned: 0, newLabels: [], unparsedSenders: {},
+      scanned: 5, added: 1, unparsed: 2, ignored: 1, pruned: 0, newLabels: [], unparsedSenders: {}, cancelled: 0, samples: [],
     });
 
     await runCompanionSync();
@@ -3585,13 +3585,47 @@ describe('Amazon mail status publishing', () => {
     const secrets = configuredSecrets();
     await clientFor(secrets);
     vi.mocked(ingestAmazonMail).mockResolvedValueOnce({
-      scanned: 3, added: 3, unparsed: 0, ignored: 0, pruned: 0, newLabels: [], unparsedSenders: {},
+      scanned: 3, added: 3, unparsed: 0, ignored: 0, pruned: 0, newLabels: [], unparsedSenders: {}, cancelled: 0, samples: [],
     });
 
     await runCompanionSync();
 
     const published = JSON.parse(secrets.get(AMAZON_MAIL_STATUS_SECRET_KEY)!);
     expect(published.unparsed).toBe(0);
+  });
+
+  it('publishes the unreadable emails as samples, replacing the previous set', async () => {
+    const secrets = configuredSecrets();
+    secrets.set(AMAZON_MAIL_SAMPLES_SECRET_KEY, JSON.stringify({
+      asOf: '2026-10-01T00:00:00.000Z', samples: [{ at: 'old', subject: 'stale', plain: '', html: '' }],
+    }));
+    await clientFor(secrets);
+    const sample = {
+      at: '2026-10-05T17:11:52.000Z', from: 'shipment-tracking@amazon.com',
+      subject: 'Shipped 4 items: Electronics', plain: 'Order #', html: '4 items: 1 Electronics',
+    };
+    vi.mocked(ingestAmazonMail).mockResolvedValueOnce({
+      scanned: 1, added: 0, unparsed: 1, ignored: 0, cancelled: 0, pruned: 0,
+      newLabels: [], unparsedSenders: {}, samples: [sample],
+    });
+
+    await runCompanionSync();
+
+    expect(JSON.parse(secrets.get(AMAZON_MAIL_SAMPLES_SECRET_KEY)!).samples).toEqual([sample]);
+  });
+
+  it('keeps the last samples when the mailbox check fails', async () => {
+    const secrets = configuredSecrets();
+    const standing = JSON.stringify({
+      asOf: '2026-10-01T00:00:00.000Z', samples: [{ at: 'x', subject: 'kept', plain: '', html: '' }],
+    });
+    secrets.set(AMAZON_MAIL_SAMPLES_SECRET_KEY, standing);
+    await clientFor(secrets);
+    vi.mocked(ingestAmazonMail).mockRejectedValueOnce(new Error('ECONNREFUSED'));
+
+    await runCompanionSync();
+
+    expect(secrets.get(AMAZON_MAIL_SAMPLES_SECRET_KEY)).toBe(standing);
   });
 
   it('publishes a failed check as an error, keeping any standing warning', async () => {
@@ -3618,7 +3652,7 @@ describe('Amazon mail status publishing', () => {
     const secrets = configuredSecrets();
     await clientFor(secrets);
     vi.mocked(ingestAmazonMail).mockResolvedValueOnce({
-      scanned: 2, added: 1, unparsed: 0, ignored: 0, pruned: 0, newLabels: [], unparsedSenders: {},
+      scanned: 2, added: 1, unparsed: 0, ignored: 0, pruned: 0, newLabels: [], unparsedSenders: {}, cancelled: 0, samples: [],
     });
     await runCompanionSync();
     const first = JSON.parse(secrets.get(AMAZON_MAIL_STATUS_SECRET_KEY)!);
@@ -3626,7 +3660,7 @@ describe('Amazon mail status publishing', () => {
     expect(first.error).toBeUndefined();
 
     vi.mocked(ingestAmazonMail).mockResolvedValueOnce({
-      scanned: 0, added: 0, unparsed: 0, ignored: 0, pruned: 0, newLabels: [], unparsedSenders: {},
+      scanned: 0, added: 0, unparsed: 0, ignored: 0, pruned: 0, newLabels: [], unparsedSenders: {}, cancelled: 0, samples: [],
     });
     await runCompanionSync();
     expect(JSON.parse(secrets.get(AMAZON_MAIL_STATUS_SECRET_KEY)!).lastMailAt).toBe(first.lastMailAt);
@@ -3645,7 +3679,7 @@ describe('Amazon mail status publishing', () => {
     };
     vi.mocked(WealthfolioClient).mockImplementation(function () { return client; } as any);
     vi.mocked(ingestAmazonMail).mockResolvedValueOnce({
-      scanned: 1, added: 0, unparsed: 1, ignored: 0, pruned: 0, newLabels: [], unparsedSenders: {},
+      scanned: 1, added: 0, unparsed: 1, ignored: 0, pruned: 0, newLabels: [], unparsedSenders: {}, cancelled: 0, samples: [],
     });
 
     const result = await runCompanionSync();
