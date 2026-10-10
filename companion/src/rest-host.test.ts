@@ -250,6 +250,17 @@ describe('RestSyncStore', () => {
     expect(await store.getLastSyncAt()).toEqual(new Date('2026-07-01T12:00:00Z'));
   });
 
+  it('reads the skip list the addon shares, dropping malformed entries', async () => {
+    const secrets = new Map<string, string>([
+      ['skipped_transactions', JSON.stringify([{ account: 'sfin-1', txId: 'TRN-1' }, 'junk'])],
+    ]);
+    const client = {
+      getAddonSecret: vi.fn(async (_addonId: string, key: string) => secrets.get(key) ?? null),
+      setAddonSecret: vi.fn(),
+    } as any;
+    expect(await new RestSyncStore(client).getSkippedTransactions()).toEqual([{ account: 'sfin-1', txId: 'TRN-1' }]);
+  });
+
   it('reads and writes transfer link failures as JSON', async () => {
     const secrets = new Map<string, string>();
     const client = {

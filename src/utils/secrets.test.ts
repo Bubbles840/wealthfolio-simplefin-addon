@@ -169,6 +169,17 @@ describe('SecretsStore', () => {
   });
 });
 
+describe('SecretsStore skipped transactions', () => {
+  it('reads the skip list from the key the companion reads too, and clearAll removes it', async () => {
+    const { ctx, data } = makeCtxWithData();
+    data['skipped_transactions'] = JSON.stringify([{ account: 'sfin-1', txId: 'TRN-1', note: 'sent twice' }, { bad: 1 }]);
+    const s = new SecretsStore(ctx);
+    expect(await s.getSkippedTransactions()).toEqual([{ account: 'sfin-1', txId: 'TRN-1', note: 'sent twice' }]);
+    await s.clearAll();
+    expect(data['skipped_transactions']).toBeUndefined();
+  });
+});
+
 describe('SecretsStore transfer link failures', () => {
   it('returns an empty record when nothing is stored', async () => {
     const ctx = makeCtx();

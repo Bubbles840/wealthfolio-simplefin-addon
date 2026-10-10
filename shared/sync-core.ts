@@ -195,6 +195,85 @@ export function planDuplicatePrune<
   return remove;
 }
 
+/** Grep token for "this leg was carrying its partner's identity". */
+export const OVERWRITTEN_LEG_LOG_TAG = 'overwritten-leg';
+
+/**
+ * Stored transfer legs whose note — and so whose transaction id — belongs to
+ * ANOTHER account's transaction, each matched to the feed transaction in THIS
+ * account it really is.
+ *
+ * How a leg ends up like that: Wealthfolio 3.8 copies an updated leg's date and
+ * note onto its linked partner (activities_service.rs, `build_counterpart_update`),
+ * and the note is where the sync keeps the bank's transaction id. From then on
+ * the partner reads as the other account's transaction, its own bank transaction
+ * looks new, and the create is refused — the stored fingerprint still describes
+ * the original — or, when the amount moved too, lands as a second copy. Live on
+ * 2026-10-09: two card payments and a savings transfer carried PNC's id.
+ *
+ * Deliberately narrow, because matching here stops a transaction being imported:
+ *  - the stored id must be one the bank reports for a DIFFERENT account on this
+ *    run (`isOtherAccountsTx`) and not for this one — an id that merely aged out
+ *    of every feed is an old row, not an overwritten one;
+ *  - transfer-typed, posted, not one of the sync's own bookkeeping rows;
+ *  - the feed transaction has no stored row, is posted, moves money the same way
+ *    for the same amount, and is dated within the transfer-pairing window.
+ * A match is taken only when it is the one possible (see below).
+ */
+export function planOverwrittenLegAdoptions<R extends ExistingRow>(
+  feed: FeedTx[],
+  existing: R[],
+  isInflow: (txId: string) => boolean,
+  isOtherAccountsTx: (txId: string) => boolean,
+): Array<{ row: R; tx: FeedTx }> {
+  const feedIds = new Set(feed.map((t) => t.txId));
+  const storedIds = new Set(existing.map((r) => r.txId));
+  const rows = existing.filter((r) =>
+    !feedIds.has(r.txId) && isOtherAccountsTx(r.txId) && isTransferType(r.type)
+    && !r.pending && !isInternalMarkerComment(r.comment));
+  const unstored = feed.filter((t) => !storedIds.has(t.txId) && !t.pending);
+  const windowDays = TRANSFER_MATCH_WINDOW_SECONDS / 86_400;
+  const dayGap = (a: string, b: string) => Math.abs(Date.parse(`${a}T00:00:00Z`) - Date.parse(`${b}T00:00:00Z`)) / 86_400_000;
+  const candidatesOf = (row: R) => unstored.filter((t) =>
+    t.absCents === row.absCents && isInflow(t.txId) === (row.type === 'TRANSFER_IN')
+    && dayGap(t.date, row.date) <= windowDays);
+
+  // Only an UNAMBIGUOUS match is adopted: one candidate, wanted by no other row.
+  // Two same-amount transactions in the window could be this leg or a genuinely
+  // new transfer, and guessing wrong would hide the new one. Left alone, both
+  // still reach the planner — the new one imports, and the worst case for the
+  // real one is the refusal this function exists to prevent, said once.
+  const candidates = new Map(rows.map((r) => [r, candidatesOf(r)]));
+  const wantedBy = new Map<string, number>();
+  for (const list of candidates.values()) {
+    for (const t of list) wantedBy.set(t.txId, (wantedBy.get(t.txId) ?? 0) + 1);
+  }
+  const out: Array<{ row: R; tx: FeedTx }> = [];
+  for (const [row, list] of candidates) {
+    if (list.length === 1 && wantedBy.get(list[0].txId) === 1) out.push({ row, tx: list[0] });
+  }
+  return out;
+}
+
+/**
+ * The feed transaction as the planner should see it when its stored row is one
+ * leg of a LINKED transfer: keep the stored type and date, and none of this run's
+ * in-transit or expiry decisions.
+ *
+ * Those decisions are made from whether the partner is in THIS run's feed, and a
+ * routine sync only looks back two weeks — so a linked leg whose partner posted a
+ * day or two earlier routinely finds itself "unpaired" and gets rewritten as an
+ * in-transit placeholder, or past ten days as a plain deposit or withdrawal. Each
+ * rewrite is an update, and Wealthfolio copies an updated leg's note and date onto
+ * its partner: the start of every overwritten leg `planOverwrittenLegAdoptions`
+ * has to recover. A real change of amount still goes through.
+ */
+export function keepLinkedLegAsStored(tx: FeedTx, row: ExistingRow | undefined, linked: boolean): FeedTx {
+  if (!row || !linked || !isTransferType(row.type) || row.pending || tx.pending) return tx;
+  const { inTransit: _inTransit, needsReview: _needsReview, subtype: _subtype, ...rest } = tx;
+  return { ...rest, type: row.type, date: row.date };
+}
+
 export function dedupeAccountTransactions(
   sfAccountId: string,
   transactions: SimplefinTransaction[],
@@ -716,7 +795,9 @@ async function saveWithRowFallback(
       // it is neither an import (not counted in `created`) nor a failure. Logged so
       // the fact that reconcile missed an existing row is still findable.
       if (isDuplicateRefusal(msg)) {
-        console.log(`[simplefin-sync] ${DUPLICATE_REFUSAL_LOG_TAG} (create): ${c.comment}`);
+        // The host's own words name the stored row it matched ("(id: …)"), which
+        // is the one fact needed to find out why reconcile did not recognise it.
+        console.log(`[simplefin-sync] ${DUPLICATE_REFUSAL_LOG_TAG} (create): ${c.comment} — ${msg}`);
       } else {
         errors.push({ action: 'create', message: `${msg} [${c.comment}]` });
       }
@@ -1612,6 +1693,12 @@ export async function runSyncCore(
   const ignoredAccountIds = new Set(
     (await store.getIgnoredAccounts?.().catch(() => [])) ?? [],
   );
+  /** Bank transactions the user has said are not real (shared/skipped-transactions.ts),
+   *  per account. A failed read imports everything, as before the list existed. */
+  const skippedTxKeys = new Set(
+    ((await store.getSkippedTransactions?.().catch(() => [])) ?? [])
+      .map((s) => accountTxKey(s.account, s.txId)),
+  );
 
   for (const sfAccount of accountSet.accounts) {
     const wfAccountId = mapping[sfAccount.id];
@@ -1635,9 +1722,15 @@ export async function runSyncCore(
     // in one saveMany batch, which is the only way past Wealthfolio's duplicate
     // guard (see dedupeAccountTransactions). Per account — the same id is a
     // legitimate sight in two accounts, as the two legs of one transfer.
+    //
+    // A skipped transaction goes here too, so nothing downstream plans from it.
+    // `accountSet` itself is left whole: an overwritten leg is recognised by the
+    // bank still reporting its partner's id, skipped or not.
     const transactions = dedupeAccountTransactions(
       sfAccount.id,
-      (sfAccount.transactions ?? []).filter((tx) => txEpoch(tx) !== null),
+      (sfAccount.transactions ?? []).filter(
+        (tx) => txEpoch(tx) !== null && !skippedTxKeys.has(accountTxKey(sfAccount.id, tx.id)),
+      ),
     );
     const prepared: PreparedTx[] = [];
     for (const tx of transactions) {
@@ -1680,8 +1773,16 @@ export async function runSyncCore(
       // Pending transactions are provisional — exclude them from transfer
       // pairing so a not-yet-settled row can't lock in a TRANSFER typing.
       if (tx.pending) continue;
+      // A rule's type is never overridden by pair detection, which is why ruled
+      // rows sit out of it — except a rule that already says "transfer, this way".
+      // Pairing assigns that very type, so all it adds is the link; leaving such a
+      // leg out meant it could NEVER link, and after ten days it expired into
+      // spending regardless of the rule (live: the $500 to 360 Checking, and the
+      // $600 from savings whose expiry rewrite overwrote its linked partner).
+      const ruleSaysThisTransfer = type === (amount < 0 ? 'TRANSFER_OUT' : 'TRANSFER_IN');
       candidates.push({
-        txId: tx.id, accountId: sfAccount.id, posted: txEpoch(tx)!, amount, ruleTyped: fromRule,
+        txId: tx.id, accountId: sfAccount.id, posted: txEpoch(tx)!, amount,
+        ruleTyped: fromRule && !ruleSaysThisTransfer,
         accountType: wfTypes.get(wfAccountId),
       });
     }
@@ -1771,8 +1872,8 @@ export async function runSyncCore(
         // step further on: giving up on the pair turns this into an ordinary
         // deposit or withdrawal, and neither is a refund of anything. Keeping the
         // rule's subtype here would book a transfer leg against a spending
-        // category — and because this leg reaches the young branch FIRST (a
-        // rule-typed transfer can never pair, see the comment below), the row is
+        // category — and because this leg reaches the young branch FIRST (an
+        // unpaired leg always does, see the comment below), the row is
         // already stored WITHOUT a subtype by the time it expires, so what this
         // prevents is an update that ADDS one. Reconciliation only ever adds a
         // subtype, never removes one, so nothing later could take it back.
@@ -1786,9 +1887,9 @@ export async function runSyncCore(
       // and a refund subtype would book this balance-holding stand-in against
       // a spending category. (A transfer leg is where a subtype is simply
       // meaningless — dropped for the same reason.)
-      // Reachable, not theoretical — a rule that types a leg TRANSFER_IN/OUT is
-      // excluded from pair detection outright (`ruleTyped` in transfers.ts), so
-      // it can never pair and ALWAYS lands here while it is young.
+      // Reachable, not theoretical — a rule can type a leg TRANSFER_IN/OUT and
+      // carry a subtype, and a ruled leg whose counterpart has not posted yet
+      // lands here like any other.
       delete p.subtype;
     }
   }
@@ -1906,6 +2007,20 @@ export async function runSyncCore(
   // sweep exists to remove, while the other account's leg was never touched or
   // linked.
   const linkRowByKey = new Map<string, LinkableRow>();
+
+  // Which SimpleFin accounts report each transaction id on this run — every
+  // account, mapped or not, since an overwritten leg's partner can sit in an
+  // account that is no longer synced. Read by `planOverwrittenLegAdoptions`.
+  const accountsByTxId = new Map<string, Set<string>>();
+  for (const acc of accountSet.accounts) {
+    for (const tx of acc.transactions ?? []) {
+      let set = accountsByTxId.get(tx.id);
+      if (!set) accountsByTxId.set(tx.id, (set = new Set()));
+      set.add(acc.id);
+    }
+  }
+  /** Overwritten legs this run adopted, re-linked under their own identity after the loop. */
+  const overwrittenLegs: Array<{ aliasKey: string; partnerTxId: string; sfAccountId: string }> = [];
 
   for (const sfAccount of accountSet.accounts) {
     const wfAccountId = mapping[sfAccount.id];
@@ -2072,12 +2187,48 @@ export async function runSyncCore(
       }
     }
 
-    for (const row of existing) {
+    // ── Legs carrying their partner's identity ────────────────────────────────
+    // Matched to this account's own transaction and kept OUT of the plan: no
+    // create (Wealthfolio would refuse it, or worse store a second copy) and no
+    // update (an update to a linked leg overwrites its partner in turn). They are
+    // re-linked under their own identity after the loop.
+    const adoptions = planOverwrittenLegAdoptions(
+      feed, existing,
+      (txId) => (signedByKey.get(accountTxKey(sfAccount.id, txId)) ?? 0) > 0,
+      (txId) => [...(accountsByTxId.get(txId) ?? [])].some((id) => id !== sfAccount.id),
+    );
+    const adoptedRowIds = new Set(adoptions.map((a) => a.row.wfId));
+    const adoptedTxIds = new Set(adoptions.map((a) => a.tx.txId));
+    const planExisting = existing.filter((r) => !adoptedRowIds.has(r.wfId));
+    for (const { row, tx } of adoptions) {
+      const aliasKey = accountTxKey(sfAccount.id, tx.txId);
+      // `comment` unset so toLinkLeg rebuilds this account's own description.
+      linkRowByKey.set(aliasKey, {
+        ...row, txId: tx.txId, date: tx.date, absCents: tx.absCents, comment: undefined,
+        currency: sfAccount.currency, sfAccountId: sfAccount.id,
+      });
+      overwrittenLegs.push({ aliasKey, partnerTxId: row.txId, sfAccountId: sfAccount.id });
+      console.info(
+        `[simplefin-sync] ${OVERWRITTEN_LEG_LOG_TAG}: activity ${row.wfId} in account ${sfAccount.id} carried transaction ${row.txId}; it is ${tx.txId}`,
+      );
+    }
+
+    for (const row of planExisting) {
       linkRowByKey.set(accountTxKey(sfAccount.id, row.txId), {
         ...row, currency: sfAccount.currency, sfAccountId: sfAccount.id,
       });
     }
-    const plan = planReconciliation(feed, existing);
+    const isLinkedRow = (row: ExistingRow & { sourceGroupId?: string | null }) => readsGroups
+      ? !!row.sourceGroupId
+      : ledger[accountTxKey(sfAccount.id, row.txId)] !== undefined || ledger[row.txId] !== undefined;
+    const storedByTxId = new Map(planExisting.map((r) => [r.txId, r]));
+    const planFeed = feed
+      .filter((t) => !adoptedTxIds.has(t.txId))
+      .map((t) => {
+        const row = storedByTxId.get(t.txId);
+        return keepLinkedLegAsStored(t, row, !!row && isLinkedRow(row));
+      });
+    const plan = planReconciliation(planFeed, planExisting);
 
     // State the post-save drift correction needs (see "windowDelta assumed" below).
     // Captured BEFORE the measurement so a rollback can put the episode ledger back
@@ -2590,10 +2741,14 @@ export async function runSyncCore(
       // stale snapshot would resurrect the placeholder's type and amount.
       // Driven off the echo, so only rows the host confirms it wrote are refreshed.
       const updatedFeedByTxId = new Map(plan.updates.map((u) => [u.to.txId, u.to]));
+      // Only rows THIS plan updated. The echo also carries the linked partner
+      // Wealthfolio rewrote alongside (in another account, now wearing this leg's
+      // note), and taking it for this leg would hand the link step the wrong row.
+      const plannedUpdateIds = new Set(plan.updates.map((u) => u.wfId));
       for (const a of result.updated ?? []) {
         const txId = txIdFromComment(a.comment);
         const t = txId ? updatedFeedByTxId.get(txId) : undefined;
-        if (!txId || !t || !a.id) continue;
+        if (!txId || !t || !a.id || !plannedUpdateIds.has(a.id)) continue;
         const prior = linkRowByKey.get(accountTxKey(sfAccount.id, txId));
         linkRowByKey.set(accountTxKey(sfAccount.id, txId), {
           // `comment` is deliberately left unset so toLinkLeg rebuilds a clean
@@ -2833,6 +2988,33 @@ export async function runSyncCore(
     // successful `linkPair`, alongside the existing `linkFailures` handling.
     linkedKeys.add(outKey);
     linkedKeys.add(inKey);
+    pairsToLink.push({ legs: [toLinkLeg(outRow), toLinkLeg(inRow)], keys: [outKey, inKey] });
+  }
+
+  // Overwritten legs: re-link each with the partner whose identity it was wearing,
+  // so both are re-created under their OWN note, date and fingerprint. Even when
+  // the two already share a group — that is the state being repaired. Skipped
+  // (the leg just stays adopted) unless the partner is a real opposite leg of the
+  // same amount in another account.
+  const queuedKeys = new Set(pairsToLink.flatMap((p) => p.keys));
+  for (const { aliasKey, partnerTxId, sfAccountId } of overwrittenLegs) {
+    const alias = linkRowByKey.get(aliasKey);
+    const partnerKey = [...(accountsByTxId.get(partnerTxId) ?? [])]
+      .filter((id) => id !== sfAccountId)
+      .map((id) => accountTxKey(id, partnerTxId))
+      .find((key) => linkRowByKey.has(key));
+    const partner = partnerKey ? linkRowByKey.get(partnerKey) : undefined;
+    if (!alias || !partner || !partnerKey || queuedKeys.has(aliasKey) || queuedKeys.has(partnerKey)) continue;
+    const opposite = new Set([alias.type, partner.type]);
+    if (!opposite.has('TRANSFER_IN') || !opposite.has('TRANSFER_OUT')) continue;
+    if (alias.absCents !== partner.absCents || alias.wfAccountId === partner.wfAccountId) continue;
+    const [outRow, outKey, inRow, inKey] = alias.type === 'TRANSFER_OUT'
+      ? [alias, aliasKey, partner, partnerKey] as const
+      : [partner, partnerKey, alias, aliasKey] as const;
+    linkedKeys.add(outKey);
+    linkedKeys.add(inKey);
+    queuedKeys.add(outKey);
+    queuedKeys.add(inKey);
     pairsToLink.push({ legs: [toLinkLeg(outRow), toLinkLeg(inRow)], keys: [outKey, inKey] });
   }
 

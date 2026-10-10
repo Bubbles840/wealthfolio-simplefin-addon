@@ -5,6 +5,7 @@ import { AMAZON_CONFIG_SECRET_KEY, AMAZON_LABELS_SECRET_KEY } from './amazon-mai
 import type { AmazonLabelCatalog, AmazonMailConfig } from './amazon-mail.js';
 import type { AmazonLedger } from '../../shared/amazon-ledger.js';
 import { linkPairByRecreate } from '../../shared/link-pair.js';
+import { SKIPPED_TRANSACTIONS_SECRET_KEY, parseSkippedTransactions, type SkippedTransaction } from '../../shared/skipped-transactions.js';
 import type { WealthfolioClient } from './wealthfolio.js';
 import type {
   HostActivity,
@@ -310,6 +311,12 @@ export class RestSyncStore implements SyncStore {
   async getIgnoredAccounts(): Promise<string[]> {
     const list = await this.getJson<unknown>('ignored_accounts');
     return Array.isArray(list) ? (list as string[]) : [];
+  }
+
+  /** Read-only, like the ignored accounts: the list is written by the addon or a
+   *  companion tool, and honoured here (see shared/skipped-transactions.ts). */
+  async getSkippedTransactions(): Promise<SkippedTransaction[]> {
+    return parseSkippedTransactions(await this.client.getAddonSecret(this.addonId, SKIPPED_TRANSACTIONS_SECRET_KEY));
   }
 
   async getAmazonLedger(): Promise<AmazonLedger> {
