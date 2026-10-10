@@ -204,6 +204,37 @@ const IN_SPENDING_SCOPE = `
           SELECT CASE WHEN json_valid(setting_value) THEN setting_value ELSE '[]' END
           FROM app_settings WHERE setting_key = 'spending.account_ids')))`;
 
+/**
+ * Not one half of a transfer whose other half already waits in another
+ * account: an UNLINKED transfer-typed row there — the sync's in-transit
+ * placeholder included — for the same amount to the cent, moving money the
+ * opposite way, within the pairing window (TRANSFER_MATCH_WINDOW_SECONDS, 5
+ * days). Applied to every uncategorized reader, like IN_SPENDING_SCOPE.
+ *
+ * Live 2026-10-10: a $691.29 card payment. The card's half was typed as an
+ * in-transit TRANSFER_IN, but PNC's half was still pending ("ACH DEBIT
+ * ROBINHOOD CCB") and pending rows are never paired, so it sat in the
+ * needs-a-category list as a $691 purchase, counted in the digest and one tap
+ * from being filed as spending.
+ *
+ * Read-only and self-limiting. Once the halves link both are transfers
+ * anyway; if they never do, the placeholder expires into a plain
+ * deposit/withdrawal after 10 days and the charge is listed again. The cost
+ * accepted: a genuine purchase of exactly the same amount within 5 days of an
+ * unrelated unlinked transfer is held back until that transfer links.
+ */
+const NOT_AWAITING_TRANSFER_HALF = `
+      AND NOT EXISTS (
+        SELECT 1 FROM activities b
+        WHERE b.account_id <> a.account_id
+          AND COALESCE(b.source_group_id, '') = ''
+          AND UPPER(b.activity_type) = CASE UPPER(a.activity_type)
+                WHEN 'WITHDRAWAL' THEN 'TRANSFER_IN'
+                WHEN 'DEPOSIT' THEN 'TRANSFER_OUT'
+                WHEN 'CREDIT' THEN 'TRANSFER_OUT' END
+          AND ROUND(ABS(CAST(b.amount AS REAL)) * 100) = ROUND(ABS(CAST(a.amount AS REAL)) * 100)
+          AND ABS(julianday(substr(b.activity_date, 1, 10)) - julianday(substr(a.activity_date, 1, 10))) <= 5)`;
+
 function spendingWhere(startInclusive: string, endExclusive: string): string {
   return `
     WHERE a.activity_date >= '${startInclusive}'
@@ -549,6 +580,7 @@ export function getNativeUncategorizedSpending(
       AND COALESCE(a.notes, '') NOT LIKE 'Balance adjustment · %'
       AND COALESCE(a.notes, '') NOT LIKE '↔️ In-transit transfer · %'
       ${IN_SPENDING_SCOPE}
+      ${NOT_AWAITING_TRANSFER_HALF}
     ORDER BY a.activity_date DESC, a.id;
   `;
 
@@ -1112,6 +1144,7 @@ export function getNativeUncategorizedSpendingTotal(
       ${dismissedClause}
       ${SYNC_BOOKKEEPING_EXCLUSION}
       ${IN_SPENDING_SCOPE}
+      ${NOT_AWAITING_TRANSFER_HALF}
       AND (${SPENDING_SIGN}) > 0;
   `;
 
@@ -1300,6 +1333,7 @@ export function getNativeUncategorizedByMonthAccount(
       ${excludedClause}
       ${SYNC_BOOKKEEPING_EXCLUSION}
       ${IN_SPENDING_SCOPE}
+      ${NOT_AWAITING_TRANSFER_HALF}
       AND (${SPENDING_SIGN}) > 0
     GROUP BY month, account_id;
   `;
@@ -1358,6 +1392,7 @@ export function getNativeMerchantRows(
       AND ata.activity_id IS NULL
       AND COALESCE(a.source_group_id, '') = ''
       ${IN_SPENDING_SCOPE}
+      ${NOT_AWAITING_TRANSFER_HALF}
       AND (${SPENDING_SIGN}) > 0;
   `;
   const rows = queryNativeDb<Record<string, unknown>>(
@@ -1496,6 +1531,7 @@ export function getNativeSpendDailyTotals(
         AND COALESCE(a.source_group_id, '') = ''
         ${excludedClause}
         ${IN_SPENDING_SCOPE}
+      ${NOT_AWAITING_TRANSFER_HALF}
         AND (${SPENDING_SIGN}) > 0
     ) GROUP BY date;
   `;
