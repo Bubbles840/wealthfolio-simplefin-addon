@@ -115,6 +115,32 @@ export function pruneAmazonLedger(
   return { ledger: next, removed };
 }
 
+/**
+ * Drop the confirmation records of orders Amazon says were cancelled.
+ *
+ * A cancelled order's confirmation total will never be charged, but it would
+ * sit in the ledger for 90 days as a candidate — and an unrelated Amazon charge
+ * of the same amount inside the window would take its label. Only `ordered`
+ * records go, and only unconsumed ones: a shipment record means a charge
+ * happened, and a consumed record has already found its charge.
+ */
+export function retireCancelledOrders(
+  ledger: AmazonLedger,
+  orderIds: readonly string[],
+): { ledger: AmazonLedger; removed: number } {
+  if (orderIds.length === 0) return { ledger, removed: 0 };
+  const next: AmazonLedger = {};
+  let removed = 0;
+  for (const [key, rec] of Object.entries(ledger)) {
+    if (orderIds.includes(rec.orderId) && rec.kind === 'ordered' && !rec.consumedBy) {
+      removed += 1;
+      continue;
+    }
+    next[key] = rec;
+  }
+  return { ledger: next, removed };
+}
+
 export interface AmazonChargeQuery {
   /** The bank's description for the charge. */
   description: string;
