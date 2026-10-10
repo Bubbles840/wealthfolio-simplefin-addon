@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import { neutralAdjustmentFields } from '../../shared/sync-core.js';
 import { getNativeRuleCategorizedAmazonRows, getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending,
-  getNativeAccountBalances, getNativeUncategorizedSpendingTotal, getNativeUncategorizedSpending, getNativeCategoryCatalog, getNativeSubcategorySpending, getNativeSpendingCategories, getNativeCategorizedSpending } from './sqlite-native.js';
+  getNativeAccountBalances, getNativeUncategorizedSpendingTotal, getNativeUncategorizedSpending, getNativeCategoryCatalog, getNativeSubcategorySpending, getNativeSpendingCategories, getNativeCategorizedSpending,
+  getNativeUncategorizedByMonthAccount, getNativeMerchantRows, getNativeSpendDailyTotals } from './sqlite-native.js';
 import { DatabaseSync } from 'node:sqlite';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
@@ -27,6 +28,15 @@ function makeTestDb(): { path: string; cleanup: () => void } {
     CREATE TABLE accounts (id TEXT PRIMARY KEY, name TEXT, account_type TEXT);
     CREATE TABLE budget_groups (id TEXT PRIMARY KEY, name TEXT, key TEXT, color TEXT, icon TEXT, sort_order INTEGER);
     CREATE TABLE budget_group_assignments (id TEXT PRIMARY KEY, group_id TEXT, taxonomy_id TEXT, category_id TEXT);
+    CREATE TABLE app_settings (setting_key TEXT PRIMARY KEY, setting_value TEXT);
+  `);
+  // Spending tracking ON for every account the fixtures in this file use, the
+  // state of a configured install: Wealthfolio only categorises (and only
+  // totals) activities in these accounts, and the uncategorized readers now
+  // honour the same scope. A test about an UNtracked account adds its own.
+  db.exec(`
+    INSERT INTO app_settings VALUES ('spending.enabled', 'true');
+    INSERT INTO app_settings VALUES ('spending.account_ids', '["acct-cash","acct-card","wf-a","wf-cash"]');
   `);
   // One account of each kind the classifier distinguishes. `acct-cash` is the
   // activities default, so a fixture that says nothing about accounts gets the
@@ -1543,4 +1553,70 @@ describe('getNativeDrillRows (v1.48)', () => {
       cleanup();
     }
   });
+});
+
+describe('uncategorized readers: only accounts Wealthfolio tracks for spending', () => {
+  // Wealthfolio refuses a category on any activity outside its spending
+  // accounts ("Activity account is not opted into spending tracking", live
+  // 2026-10-10 on six Robinhood cashback deposits), and its own totals leave
+  // those accounts out. So a needs-a-category row there could never be filed,
+  // and counting it made the digest run ahead of Wealthfolio.
+  const seed = (path: string, settings?: { enabled?: string | null; accountIds?: string | null }) => {
+    const db = new DatabaseSync(path);
+    db.exec(`
+      INSERT INTO accounts (id, name, account_type) VALUES ('acct-untracked', 'Brokerage cash', 'CASH');
+      INSERT INTO activities (id, amount, activity_date, activity_type, notes, account_id) VALUES ('in-scope', '12.00', '2026-07-09T00:00:00Z', 'WITHDRAWAL', 'KROGER · TRN-1', 'acct-cash');
+      INSERT INTO activities (id, amount, activity_date, activity_type, notes, account_id) VALUES ('out-of-scope', '30.00', '2026-07-09T00:00:00Z', 'WITHDRAWAL', 'BROKERAGE FEE · TRN-2', 'acct-untracked');
+    `);
+    if (settings) {
+      db.exec(`DELETE FROM app_settings;`);
+      if (settings.enabled !== null && settings.enabled !== undefined) {
+        db.prepare(`INSERT INTO app_settings VALUES ('spending.enabled', ?)`).run(settings.enabled);
+      }
+      if (settings.accountIds !== null && settings.accountIds !== undefined) {
+        db.prepare(`INSERT INTO app_settings VALUES ('spending.account_ids', ?)`).run(settings.accountIds);
+      }
+    }
+    db.close();
+  };
+  const withDb = (settings: Parameters<typeof seed>[1], fn: (path: string) => void) => {
+    const { path, cleanup } = makeTestDb();
+    try {
+      seed(path, settings);
+      fn(path);
+    } finally {
+      cleanup();
+    }
+  };
+
+  it('leaves an untracked account out of the needs-a-category list', () => withDb(undefined, (path) => {
+    expect(getNativeUncategorizedSpending(path, '2026-07-01', '2026-08-01').map((r) => r.activityId))
+      .toEqual(['in-scope']);
+  }));
+
+  it('leaves it out of the count and total, so they still describe the list', () => withDb(undefined, (path) => {
+    expect(getNativeUncategorizedSpendingTotal(path, '2026-07-01', '2026-08-01')).toEqual({ count: 1, total: 12 });
+  }));
+
+  it('leaves it out of the report cube, the merchant rows and the daily totals', () => withDb(undefined, (path) => {
+    expect(getNativeUncategorizedByMonthAccount(path, '2026-07-01', '2026-08-01'))
+      .toEqual([{ month: '2026-07', accountId: 'acct-cash', amount: 12 }]);
+    expect(getNativeMerchantRows(path, '2026-07-01', '2026-08-01').map((r) => r.amount)).toEqual([12]);
+    expect(getNativeSpendDailyTotals(path, '2026-07-01', '2026-08-01')).toEqual([{ date: '2026-07-09', amount: 12 }]);
+  }));
+
+  it('lists nothing while spending tracking is off, as Wealthfolio files nothing then', () => withDb(
+    { enabled: 'false', accountIds: '["acct-cash","acct-untracked"]' },
+    (path) => expect(getNativeUncategorizedSpending(path, '2026-07-01', '2026-08-01')).toEqual([]),
+  ));
+
+  it('reads absent settings the way Wealthfolio does: tracking off, no accounts', () => withDb(
+    { enabled: null, accountIds: null },
+    (path) => expect(getNativeUncategorizedSpendingTotal(path, '2026-07-01', '2026-08-01')).toEqual({ count: 0, total: 0 }),
+  ));
+
+  it('reads an unparsable account list as empty rather than failing the query', () => withDb(
+    { enabled: 'true', accountIds: 'not json' },
+    (path) => expect(getNativeUncategorizedSpending(path, '2026-07-01', '2026-08-01')).toEqual([]),
+  ));
 });
