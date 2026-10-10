@@ -7,7 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.59.1] - 2026-10-10
+## [1.59.2] - 2026-10-10
+
+1.59.1 was tagged but never published: its CI run stopped on a test-file
+error before anything was built. This is the same fix.
 
 ### Fixed
 

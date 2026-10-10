@@ -1,8 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { neutralAdjustmentFields } from '../../shared/sync-core.js';
 import { getNativeRuleCategorizedAmazonRows, getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending,
-  getNativeAccountBalances, getNativeUncategorizedSpendingTotal, getNativeUncategorizedSpending, getNativeCategoryCatalog, getNativeSubcategorySpending, getNativeSpendingCategories, getNativeCategorizedSpending,
-  getNativeUncategorizedByMonthAccount, getNativeMerchantRows, getNativeSpendDailyTotals } from './sqlite-native.js';
+  getNativeAccountBalances, getNativeUncategorizedSpendingTotal, getNativeUncategorizedSpending, getNativeCategoryCatalog, getNativeSubcategorySpending, getNativeSpendingCategories, getNativeCategorizedSpending } from './sqlite-native.js';
 import { DatabaseSync } from 'node:sqlite';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
