@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { runSyncCore, applyBaselineFix, neutralAdjustmentFields, startingBalanceFields, expiredTransferLegType, VALUATION_POLL, IN_TRANSIT_TIMEOUT_SECONDS, descriptionFromComment, txIdFromComment, planDuplicatePrune, IN_TRANSIT_COMMENT_PREFIX, DUPLICATE_REFUSAL_LOG_TAG, INTERVAL_SKIP_MESSAGE } from './sync-core.js';
+import { runSyncCore, applyBaselineFix, neutralAdjustmentFields, startingBalanceFields, expiredTransferLegType, VALUATION_POLL, IN_TRANSIT_TIMEOUT_SECONDS, descriptionFromComment, txIdFromComment, planDuplicatePrune, planAmazonLateLabels, IN_TRANSIT_COMMENT_PREFIX, DUPLICATE_REFUSAL_LOG_TAG, INTERVAL_SKIP_MESSAGE } from './sync-core.js';
 import { createFakeHost, type FakeHostSeed } from './fake-host.js';
 import { accountTxKey } from './transfers.js';
 import { linkPairByRecreate } from './link-pair.js';
@@ -2489,6 +2489,25 @@ describe('runSyncCore + Amazon order categories', () => {
     expect(saved[0].creates![0].comment).toBe('WHOLEFOODS #10251 · tx-amz');
   });
 
+  it('adds the order category to a charge imported before its email was read', async () => {
+    // The gap behind the 2026-10 outage: reconciliation never compares notes,
+    // so a row that existed before its order email parsed kept the bare bank
+    // text forever, and no category ever reached it.
+    const { host, store, saved } = createFakeHost({
+      ...amazonSeed(ledgerFixture()),
+      existing: new Map([['wf-a', [{
+        id: 'act-amz', accountId: 'wf-a', activityType: 'WITHDRAWAL', date: '2026-08-06',
+        amount: 21.18, comment: 'AMAZON.COM*MB3T81 · tx-amz', sourceGroupId: null,
+      }]]]),
+    });
+    await runSyncCore(host, store, {});
+    const updates = saved.flatMap((s) => s.updates ?? []).filter((u) => u.id === 'act-amz');
+    expect(updates).toEqual([expect.objectContaining({
+      comment: 'AMAZON.COM*MB3T81 · Amazon: Lawn & Garden · tx-amz',
+      activityType: 'WITHDRAWAL', activityDate: '2026-08-06', amount: 21.18,
+    })]);
+  });
+
   it('does nothing at all when the ledger is empty', async () => {
     // The off-switch for every user who never set up mail forwarding: no flag and
     // no config, just an empty ledger.
@@ -3859,5 +3878,50 @@ describe('an update never marks a linked leg external (v1.54)', () => {
     expect(u!.activityType).toBe('TRANSFER_OUT');
     expect(u!.comment).not.toContain('In-transit');
     expect(u!.metadata).toBeUndefined();
+  });
+});
+
+describe('planAmazonLateLabels', () => {
+  const row = (over: Partial<{ txId: string; comment: string; pending: boolean; sourceGroupId: string | null }> = {}) => ({
+    wfId: 'act-amz', wfAccountId: 'wf-a', txId: 'tx-amz', absCents: 2118, type: 'WITHDRAWAL',
+    date: '2026-08-06', pending: false, comment: 'AMAZON.COM*MB3T81 · tx-amz', sourceGroupId: null,
+    ...over,
+  });
+  const labelled = new Map([['tx-amz', {
+    bare: 'AMAZON.COM*MB3T81', enriched: 'AMAZON.COM*MB3T81 · Amazon: Lawn & Garden',
+  }]]);
+
+  it('labels the sync\'s own note and passes everything else through unchanged', () => {
+    expect(planAmazonLateLabels([row()], labelled, 'USD')).toEqual([{
+      id: 'act-amz', accountId: 'wf-a', activityType: 'WITHDRAWAL', activityDate: '2026-08-06',
+      amount: 21.18, currency: 'USD', comment: 'AMAZON.COM*MB3T81 · Amazon: Lawn & Garden · tx-amz',
+    }]);
+  });
+
+  it('leaves a note someone edited alone', () => {
+    expect(planAmazonLateLabels([row({ comment: 'Garden hose · tx-amz' })], labelled, 'USD')).toEqual([]);
+  });
+
+  it('never touches half of a linked transfer', () => {
+    // Wealthfolio copies an updated linked leg's note onto its partner.
+    expect(planAmazonLateLabels([row({ sourceGroupId: 'grp-1' })], labelled, 'USD')).toEqual([]);
+  });
+
+  it('leaves a pending charge to the update that posts it', () => {
+    expect(planAmazonLateLabels(
+      [row({ pending: true, comment: 'AMAZON.COM*MB3T81 · tx-amz · pending' })], labelled, 'USD',
+    )).toEqual([]);
+  });
+
+  it('never rewrites a note that already carries the label', () => {
+    // Idempotent across syncs and across the two writers (addon + companion).
+    expect(planAmazonLateLabels(
+      [row({ comment: 'AMAZON.COM*MB3T81 · Amazon: Lawn & Garden · tx-amz' })], labelled, 'USD',
+    )).toEqual([]);
+  });
+
+  it('ignores rows no order matched', () => {
+    expect(planAmazonLateLabels([row({ txId: 'tx-other', comment: 'AMAZON.COM*X · tx-other' })], labelled, 'USD'))
+      .toEqual([]);
   });
 });

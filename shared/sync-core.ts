@@ -1164,6 +1164,49 @@ export function planExternalMarkerStamp(rows: ReadonlyArray<StoredRow>, currency
   return updates;
 }
 
+export const AMAZON_LATE_LABEL_LOG_TAG = 'amazon-late-label';
+
+/**
+ * Existing rows whose Amazon order email was read only after the row was
+ * imported, as note-only updates. Nothing is written here.
+ *
+ * Needed because `changed()` (shared/reconcile.ts) never compares notes: a row
+ * imported while its email was unreadable — Amazon's 2026-10 format change left
+ * four charges that way — kept the bare bank text forever, so the Amazon filer
+ * never saw a label and the charge never got its category.
+ *
+ * Deliberately narrow, because a note is the user's as much as the sync's:
+ *  - Only a note in the sync's own unedited form, `<bank text> · <txId>`. An
+ *    edited note, a pending one, or one already labelled is left alone, which
+ *    is also what makes the pass idempotent across both writers.
+ *  - Never a grouped row: Wealthfolio copies an updated linked leg's note onto
+ *    its partner.
+ *  - Labels are only ever added. Type, date and amount are passed through, the
+ *    same shape as `planExternalMarkerStamp`.
+ */
+export function planAmazonLateLabels(
+  rows: ReadonlyArray<StoredRow>,
+  labelled: ReadonlyMap<string, { bare: string; enriched: string }>,
+  currency: string,
+): ActivityWrite[] {
+  const updates: ActivityWrite[] = [];
+  for (const row of rows) {
+    if (row.sourceGroupId || row.pending) continue;
+    const hit = labelled.get(row.txId);
+    if (!hit || (row.comment ?? '') !== `${hit.bare} · ${row.txId}`) continue;
+    updates.push({
+      id: row.wfId,
+      accountId: row.wfAccountId,
+      activityType: row.type,
+      activityDate: row.date,
+      amount: row.absCents / 100,
+      currency,
+      comment: `${hit.enriched} · ${row.txId}`,
+    });
+  }
+  return updates;
+}
+
 export const LEGACY_PLACEHOLDER_REWRITE_LOG_TAG = 'legacy-placeholder-rewrite';
 
 /**
@@ -1672,6 +1715,10 @@ export async function runSyncCore(
   // called per transaction against an empty map.
   let amazonLedger = await store.getAmazonLedger().catch(() => ({} as AmazonLedger));
   let amazonLedgerChanged = false;
+  /** Charges this run matched to an order, per SimpleFin account then tx id,
+   *  with the bank's own text beside the labelled one — what the late-label
+   *  pass needs to recognise a note written before the email was readable. */
+  const amazonLabelled = new Map<string, Map<string, { bare: string; enriched: string }>>();
   const amazonEnabled = Object.keys(amazonLedger).length > 0;
 
   /**
@@ -1760,6 +1807,11 @@ export async function runSyncCore(
         });
         if (hit) {
           description = amazonDescription(description, hit.labels, hit.partial);
+          if (description !== tx.description) {
+            const forAccount = amazonLabelled.get(sfAccount.id) ?? new Map<string, { bare: string; enriched: string }>();
+            forAccount.set(tx.id, { bare: tx.description, enriched: description });
+            amazonLabelled.set(sfAccount.id, forAccount);
+          }
           // Consumed even when this row already exists in Wealthfolio and so
           // won't be re-written: the charge for that order HAS been found, and
           // leaving the record live would offer it to the next charge of the
@@ -2184,6 +2236,31 @@ export async function runSyncCore(
         }
       } catch (e: any) {
         errors.push(`external marker (${sfAccount.name}): ${String(e?.message ?? e)}`);
+      }
+    }
+
+    // ── Amazon late label (every mode) ───────────────────────────────────────
+    // A charge imported before its order email was readable gets the label
+    // added to its note now (see planAmazonLateLabels); the Amazon filer then
+    // files it on this same companion run. The snapshot is patched so the rest
+    // of the pass sees the note as written.
+    const lateLabels = planAmazonLateLabels(existing, amazonLabelled.get(sfAccount.id) ?? new Map(), sfAccount.currency);
+    if (lateLabels.length) {
+      try {
+        const res = await host.saveMany({ updates: lateLabels });
+        if (res.errors.length) {
+          errors.push(...res.errors.map((e) => `Amazon late label (${sfAccount.name}): ${e.message}`));
+        } else {
+          for (const u of lateLabels) {
+            const row = existing.find((r) => r.wfId === u.id);
+            if (row) row.comment = u.comment;
+          }
+          console.info(
+            `[simplefin-sync] ${AMAZON_LATE_LABEL_LOG_TAG}: added the Amazon category to ${lateLabels.length} charge(s) in account ${sfAccount.id} imported before their order email was read`,
+          );
+        }
+      } catch (e: any) {
+        errors.push(`Amazon late label (${sfAccount.name}): ${String(e?.message ?? e)}`);
       }
     }
 
