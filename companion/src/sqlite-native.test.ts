@@ -1620,3 +1620,67 @@ describe('uncategorized readers: only accounts Wealthfolio tracks for spending',
     (path) => expect(getNativeUncategorizedSpending(path, '2026-07-01', '2026-08-01')).toEqual([]),
   ));
 });
+
+describe('uncategorized readers: a transfer waiting for its other half', () => {
+  // Live 2026-10-10: a $691.29 Robinhood card payment. The card's half arrived
+  // and the sync typed it as an in-transit TRANSFER_IN; PNC's half was still
+  // pending ("ACH DEBIT ROBINHOOD CCB"), and pending rows are never paired, so
+  // it sat in the needs-a-category list as a $691 purchase — nagging, counted
+  // in the digest, one tap from being filed as spending.
+  const seed = (path: string, half: { id?: string; account?: string; type?: string; amount?: string; date?: string; group?: string | null }) => {
+    const db = new DatabaseSync(path);
+    db.prepare(`INSERT INTO activities (id, amount, activity_date, activity_type, notes, account_id) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run('bank-half', '691.29', '2026-10-10T00:00:00+00:00', 'WITHDRAWAL', 'ACH DEBIT ROBINHOOD CCB · TRN-x · pending', 'acct-cash');
+    db.prepare(`INSERT INTO activities (id, amount, activity_date, activity_type, notes, account_id, source_group_id) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .run(half.id ?? 'card-half', half.amount ?? '691.29', half.date ?? '2026-10-09T00:00:00+00:00', half.type ?? 'TRANSFER_IN',
+        '↔️ In-transit transfer · PENDING Payment · TRN-y', half.account ?? 'acct-card', half.group ?? null);
+    db.close();
+  };
+  const listed = (half: Parameters<typeof seed>[1]) => {
+    const { path, cleanup } = makeTestDb();
+    try {
+      seed(path, half);
+      return getNativeUncategorizedSpending(path, '2026-10-01', '2026-11-01').map((r) => r.activityId);
+    } finally {
+      cleanup();
+    }
+  };
+
+  it('leaves out a charge whose other half already waits in another account as a transfer', () => {
+    expect(listed({})).toEqual([]);
+  });
+
+  it('leaves it out of the count, the totals and the report cube too', () => {
+    const { path, cleanup } = makeTestDb();
+    try {
+      seed(path, {});
+      expect(getNativeUncategorizedSpendingTotal(path, '2026-10-01', '2026-11-01')).toEqual({ count: 0, total: 0 });
+      expect(getNativeUncategorizedByMonthAccount(path, '2026-10-01', '2026-11-01')).toEqual([]);
+      expect(getNativeSpendDailyTotals(path, '2026-10-01', '2026-11-01')).toEqual([]);
+      expect(getNativeMerchantRows(path, '2026-10-01', '2026-11-01')).toEqual([]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('still lists it when the amounts differ by a cent', () => {
+    expect(listed({ amount: '691.28' })).toEqual(['bank-half']);
+  });
+
+  it('still lists it when the two are more than 5 days apart', () => {
+    expect(listed({ date: '2026-10-04T00:00:00+00:00' })).toEqual(['bank-half']);
+  });
+
+  it('still lists it when the transfer is in the same account', () => {
+    expect(listed({ account: 'acct-cash' })).toEqual(['bank-half']);
+  });
+
+  it('still lists it when that transfer is already linked to something else', () => {
+    expect(listed({ group: 'grp-1' })).toEqual(['bank-half']);
+  });
+
+  it('still lists it when the transfer moves money the same way', () => {
+    // Money out of PNC pairs with money INTO the card, never with another outflow.
+    expect(listed({ type: 'TRANSFER_OUT' })).toEqual(['bank-half']);
+  });
+});

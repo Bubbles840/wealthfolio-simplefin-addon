@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.59.1] - 2026-10-10
+
+### Fixed
+
+- **The needs-a-category list only shows what Wealthfolio will let you file.**
+  Wealthfolio refuses a category on any transaction in an account it does not
+  track for spending, so those rows sat in the list and in Telegram's count,
+  and every attempt to file one failed. They are now left out of the list, the
+  count, the digest's uncategorized total and the charts, matching
+  Wealthfolio's own totals. With spending tracking off the list is empty,
+  because Wealthfolio files nothing then.
+- **A card payment still pending at the bank no longer asks for a category.**
+  While one half of a transfer is pending the sync cannot pair it, so it looked
+  like a purchase: nagged about, counted in the digest, and one tap from being
+  filed as spending. A transaction is now left out of the list, the count and
+  the totals when its other half already waits in another account as a
+  transfer (same amount to the cent, the opposite direction, within 5 days).
+  Nothing is written, and if the halves never link the charge comes back to
+  the list once the other half's 10-day in-transit period ends.
+
 ## [1.59.0] - 2026-10-10
 
 ### Fixed
