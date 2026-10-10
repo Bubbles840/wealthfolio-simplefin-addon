@@ -76,8 +76,19 @@ const ITEM_SUFFIX = /^\s*(\d+)\s+(.+?)\s+items?\s*$/im;
  * `4.23 USD`. The `\s*` already spans the newline, so only the currency marker
  * needed widening. One of `$` or `USD` is required either way — a bare number
  * must never be read as a total, or `Total items shipped: 4` would misparse.
+ *
+ * Any number of decimals, rounded to cents: since Sep 2026 the plain-text copy
+ * prints an unrounded binary float (`10.799999999999999 USD` for $10.80). And
+ * `Total` must be a whole word, so `Item Subtotal:` is never read as the total.
+ * Group 1 is `Grand ` when present (see `copyTotal`), 2 the `$` amount, 3 the
+ * `USD` amount.
  */
-const TOTAL = /(?:Grand\s+)?Total:?\s*(?:\$\s*([\d,]+\.\d{2})|([\d,]+\.\d{2})\s*USD\b)/i;
+const TOTAL = /\b(Grand\s+)?Total\b:?\s*(?:\$\s*([\d,]+\.\d+)|([\d,]+\.\d+)\s*USD\b)/i;
+
+/** Integer cents from a `TOTAL` match. Rounded, not truncated — see `TOTAL`. */
+function toCents(m: RegExpMatchArray): number {
+  return Math.round(parseFloat((m[2] ?? m[3] ?? '').replace(/,/g, '')) * 100);
+}
 
 function detectKind(text: string): AmazonOrderRecord['kind'] | null {
   if (/your package was shipped|has shipped|Shipped:/i.test(text)) return 'shipped';
@@ -212,16 +223,15 @@ export function parseAmazonEmail(body: string): AmazonOrderRecord[] {
     const breakdown = found?.breakdown ? found.match : null;
     const item = found?.match ?? null;
     const totalMatch = TOTAL.exec(part);
-    const total = totalMatch?.[1] ?? totalMatch?.[2];
     // All three or nothing: an order with no total cannot be matched to a charge,
     // and half a record would sit in the ledger forever pretending to be usable.
-    if (!id || !item || !total) continue;
+    if (!id || !item || !totalMatch) continue;
     const { labels, partial } = splitLabels(item[2], !!breakdown);
     if (labels.length === 0) continue;
     records.push({
       orderId: id,
       kind,
-      totalCents: Math.round(parseFloat(total.replace(/,/g, '')) * 100),
+      totalCents: toCents(totalMatch),
       itemCount: Number(item[1]) || 1,
       labels,
       ...(partial ? { partial: true } : {}),
