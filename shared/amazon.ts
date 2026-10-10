@@ -46,6 +46,7 @@ export interface AmazonOrderRecord {
 const BIDI_CONTROLS = /[‪-‮⁦-⁩‎‏]/g;
 
 const ORDER_ID = /Order\s*#\s*(\d{3}-\d{7}-\d{7})/;
+const ORDER_ID_ALL = new RegExp(ORDER_ID.source, 'g');
 
 /**
  * Amazon writes the category line two different ways, and they are not variations
@@ -114,7 +115,8 @@ function detectKind(text: string): AmazonOrderRecord['kind'] | null {
  * auto-categorized — the exact failure this feature exists to avoid.
  *
  * `other` is dropped and reported: it is Amazon declining to name the remaining
- * categories, not a category called "other".
+ * categories, not a category called "other". `more` is the subject line's
+ * version of the same thing (`Shipped 4 items: A, B, and more`).
  */
 function splitLabels(raw: string, stripCounts = false): { labels: string[]; partial: boolean } {
   const parts = raw
@@ -131,7 +133,7 @@ function splitLabels(raw: string, stripCounts = false): { labels: string[]; part
     // the guess this module refuses to make.
     .map((s) => (stripCounts ? s.replace(/^\d+\s+/, '').trim() : s))
     .filter(Boolean);
-  const labels = parts.filter((p) => !/^others?$/i.test(p));
+  const labels = parts.filter((p) => !/^(?:others?|more)$/i.test(p));
   return { labels, partial: labels.length !== parts.length };
 }
 
@@ -178,6 +180,104 @@ export function isAmazonNoticeWithoutTotal(body: string): boolean {
 }
 
 /**
+ * One message's three copies, each already plain text (the companion reduces
+ * the HTML part with `htmlToText` before it gets here).
+ *
+ * KEPT APART, not joined. Until Oct 2026 the companion glued all three into
+ * one document, and that broke the moment the copies stopped agreeing on
+ * layout: Amazon's plain-text copy grew its own `Order #` with no category
+ * line, so slicing the joined text at every `Order #` left the category in one
+ * chunk and the only readable total in the next. Each copy is now read on its
+ * own and the results are combined by order number.
+ */
+export interface AmazonMailParts {
+  subject?: string | null;
+  plain?: string | null;
+  html?: string | null;
+}
+
+/** A bare string is one copy — how every caller worked before the copies were
+ *  kept apart, and how a hand-pasted body still arrives. */
+function toParts(input: string | AmazonMailParts): AmazonMailParts {
+  return typeof input === 'string' ? { plain: input } : input;
+}
+
+function joinParts(parts: AmazonMailParts): string {
+  return [parts.subject, parts.plain, parts.html].filter((s): s is string => !!s).join('\n');
+}
+
+const stripMarks = (s: string | null | undefined): string => (s ?? '').replace(BIDI_CONTROLS, '');
+
+/** `Shipped 1 item: Hair Care` — the subject's first word names the email type. */
+const SUBJECT_KIND = /^\s*(Ordered|Shipped|Delivered)\b/i;
+/**
+ * The category list in a SUBJECT, in its two observed shapes:
+ *   Shipped 4 items: Electronics, Irons & Steamers, and more   (Sep 2026 on)
+ *   Ordered: 1 Essentials item                                 (Aug 2026)
+ * A backup only: subjects get cut short (`Item cancelled successfully:
+ * "Amazon Basics USB-C to..."`), so a body line wins whenever one exists.
+ */
+const SUBJECT_ITEMS_COLON = /^\s*(?:Ordered|Shipped|Delivered)\s+(\d+)\s+items?\s*:\s*(.+?)\s*$/i;
+const SUBJECT_ITEMS_SUFFIX = /^\s*(?:Ordered|Shipped|Delivered)\s*:\s*(\d+)\s+(.+?)\s+items?\s*$/i;
+
+interface ItemFacts { count: number; labels: string[]; partial: boolean }
+
+function kindOf(subject: string, bodies: string[]): AmazonOrderRecord['kind'] | null {
+  const verb = SUBJECT_KIND.exec(subject)?.[1];
+  if (verb) return verb.toLowerCase() as AmazonOrderRecord['kind'];
+  return detectKind(bodies.join('\n'));
+}
+
+function orderIdsIn(text: string): string[] {
+  const ids: string[] = [];
+  for (const m of text.matchAll(ORDER_ID_ALL)) if (!ids.includes(m[1])) ids.push(m[1]);
+  return ids;
+}
+
+function itemFacts(found: { match: RegExpExecArray; breakdown: boolean } | null): ItemFacts | null {
+  if (!found) return null;
+  const { labels, partial } = splitLabels(found.match[2], found.breakdown);
+  return labels.length > 0 ? { count: Number(found.match[1]) || 1, labels, partial } : null;
+}
+
+function subjectItemFacts(subject: string): ItemFacts | null {
+  const m = SUBJECT_ITEMS_COLON.exec(subject) ?? SUBJECT_ITEMS_SUFFIX.exec(subject);
+  if (!m) return null;
+  const { labels, partial } = splitLabels(m[2]);
+  return labels.length > 0 ? { count: Number(m[1]) || 1, labels, partial } : null;
+}
+
+/**
+ * The one total a copy states for a single-order email: cents, `null` when it
+ * states none, `'conflict'` when it states two different ones.
+ *
+ * `Grand Total` outranks a bare `Total` — a confirmation can carry both, and
+ * the grand figure is the order's. Two different figures at the same rank are
+ * not resolved by guessing which one the bank will show.
+ */
+function copyTotal(text: string): number | null | 'conflict' {
+  const all = [...text.matchAll(new RegExp(TOTAL.source, 'gi'))];
+  const grand = all.filter((m) => !!m[1]);
+  const cents = [...new Set((grand.length > 0 ? grand : all).map(toCents))];
+  if (cents.length === 0) return null;
+  return cents.length === 1 ? cents[0] : 'conflict';
+}
+
+/** Each order's total in one copy, keyed by order id — the cross-check for a
+ *  multi-order email. Totals follow their `Order #` in every layout seen. */
+function totalsByOrder(text: string): Map<string, number> {
+  const out = new Map<string, number>();
+  const starts = [...text.matchAll(/Order\s*#/g)].map((m) => m.index ?? 0);
+  starts.forEach((start, i) => {
+    const chunk = text.slice(start, starts[i + 1] ?? text.length);
+    const id = ORDER_ID.exec(chunk)?.[1];
+    const total = TOTAL.exec(chunk);
+    if (id && total && !out.has(id)) out.set(id, toCents(total));
+  });
+  return out;
+}
+
+/**
  * Every order an email describes.
  *
  * Returns an ARRAY because one message legitimately covers several orders — the
@@ -187,12 +287,63 @@ export function isAmazonNoticeWithoutTotal(body: string): boolean {
  * format five weeks ago and may again; a wrong category on real money is invisible
  * (it looks exactly like a right one) whereas a missing one is merely absent, so
  * absent is the only acceptable failure direction.
+ *
+ * ONE ORDER NUMBER (every shipment notice seen so far): no positional logic at
+ * all. The category comes from the first body copy that has a category line,
+ * else the subject; every copy that states a total must state the same one.
+ * SEVERAL: the positional pairing in `parseCopy`, run inside one copy at a
+ * time (HTML first), with the other copies' totals as a cross-check.
  */
-export function parseAmazonEmail(body: string): AmazonOrderRecord[] {
-  const text = (body ?? '').replace(BIDI_CONTROLS, '');
-  const kind = detectKind(text);
+export function parseAmazonEmail(input: string | AmazonMailParts): AmazonOrderRecord[] {
+  const parts = toParts(input);
+  const subject = stripMarks(parts.subject);
+  // HTML first: it is the copy that still carries the category line.
+  const bodies = [stripMarks(parts.html), stripMarks(parts.plain)].filter((b) => b.trim() !== '');
+  const kind = kindOf(subject, bodies);
   if (!kind) return [];
+  const ids = [...new Set(bodies.flatMap(orderIdsIn))];
+  if (ids.length === 0) return [];
+  return ids.length === 1 ? singleOrder(ids[0], kind, subject, bodies) : severalOrders(kind, bodies);
+}
 
+function singleOrder(
+  orderId: string,
+  kind: AmazonOrderRecord['kind'],
+  subject: string,
+  bodies: string[],
+): AmazonOrderRecord[] {
+  const totals = bodies.map(copyTotal);
+  if (totals.includes('conflict')) return [];
+  const stated = [...new Set(totals.filter((t): t is number => typeof t === 'number'))];
+  // All three or nothing (see `parseCopy`), and every copy that names a total
+  // must name the same one.
+  if (stated.length !== 1) return [];
+  const item = bodies.map((b) => itemFacts(findItemLine(b, 'first'))).find((f): f is ItemFacts => f !== null)
+    ?? subjectItemFacts(subject);
+  if (!item) return [];
+  return [{
+    orderId,
+    kind,
+    totalCents: stated[0],
+    itemCount: item.count,
+    labels: item.labels,
+    ...(item.partial ? { partial: true } : {}),
+  }];
+}
+
+function severalOrders(kind: AmazonOrderRecord['kind'], bodies: string[]): AmazonOrderRecord[] {
+  for (let i = 0; i < bodies.length; i++) {
+    const records = parseCopy(bodies[i], kind);
+    if (records.length === 0) continue;
+    const others = bodies.filter((_, j) => j !== i).map(totalsByOrder);
+    return records.filter((r) => others.every((t) => !t.has(r.orderId) || t.get(r.orderId) === r.totalCents));
+  }
+  return [];
+}
+
+/** The positional reading of ONE copy: what `parseAmazonEmail` did to the
+ *  whole message before the copies were kept apart. */
+function parseCopy(text: string, kind: AmazonOrderRecord['kind']): AmazonOrderRecord[] {
   // One message can hold several orders, each introduced by its own `Order #`.
   // Slicing on that marker keeps each order's label and total with the right id;
   // a single global regex pass would happily pair order A's id with order B's
@@ -293,10 +444,10 @@ export interface AmazonEmailClassification {
  * Anything that needs to know what a message is calls this, so there is exactly one
  * answer.
  */
-export function classifyAmazonEmail(body: string): AmazonEmailClassification {
-  const orders = parseAmazonEmail(body);
+export function classifyAmazonEmail(input: string | AmazonMailParts): AmazonEmailClassification {
+  const orders = parseAmazonEmail(input);
   if (orders.length > 0) return { orders, status: 'orders' };
-  return { orders, status: isAmazonNoticeWithoutTotal(body) ? 'ignored' : 'unrecognised' };
+  return { orders, status: isAmazonNoticeWithoutTotal(joinParts(toParts(input))) ? 'ignored' : 'unrecognised' };
 }
 
 /** One label→category rule. `test` is matched against the lowercased label. */

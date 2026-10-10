@@ -596,3 +596,69 @@ describe('the September 2026 layout: item line BEFORE the order number', () => {
     ]);
   });
 });
+
+describe('reading each copy of an email separately', () => {
+  // Since 2026-09-15 Amazon's plain-text copy carries its own "Order #" but no
+  // category line, and prints its total as an unrounded float. Glued into one
+  // document with the HTML copy, the category and the only readable total fell
+  // into different chunks and every shipment read as unrecognised.
+  const html = [
+    'Your package was shipped!', '1 Hair Care item', 'Order #', '113-2704312-9904237', 'Total', '  $10.80',
+  ].join('\n');
+  const plain = [
+    'Your package was shipped!', 'Order #', '113-2704312-9904237', 'Total', '10.799999999999999 USD',
+  ].join('\n');
+
+  it('takes the category from the copy that has it and checks the totals agree', () => {
+    expect(parseAmazonEmail({ subject: 'Shipped 1 item: Hair Care', plain, html })).toEqual([{
+      orderId: '113-2704312-9904237', kind: 'shipped', totalCents: 1080, itemCount: 1, labels: ['Hair Care'],
+    }]);
+  });
+
+  it('refuses an order whose copies state different totals', () => {
+    const wrong = plain.replace('10.799999999999999', '12.50');
+    expect(classifyAmazonEmail({ subject: 'Shipped 1 item: Hair Care', plain: wrong, html }).status)
+      .toBe('unrecognised');
+  });
+
+  it('falls back to the subject when no body copy names a category', () => {
+    const bare = html.replace('1 Hair Care item\n', '');
+    expect(parseAmazonEmail({ subject: 'Shipped 1 item: Hair Care', plain, html: bare })[0].labels)
+      .toEqual(['Hair Care']);
+  });
+
+  it('marks a subject list ending "and more" as partial', () => {
+    const bare = html.replace('1 Hair Care item\n', '');
+    const [order] = parseAmazonEmail({
+      subject: 'Shipped 4 items: Electronics, Irons & Steamers, and more', plain, html: bare,
+    });
+    expect(order).toMatchObject({ itemCount: 4, labels: ['Electronics', 'Irons & Steamers'], partial: true });
+  });
+
+  it('takes the email type from the subject verb', () => {
+    const neutral = html.replace('Your package was shipped!\n', '');
+    expect(parseAmazonEmail({ subject: 'Shipped 1 item: Hair Care', html: neutral })[0].kind).toBe('shipped');
+  });
+
+  it('prefers the grand total when a copy also states a per-shipment total', () => {
+    const [order] = parseAmazonEmail({
+      html: ['Thanks for your order!', '1 Books item', 'Order #', '113-0000000-0000009', 'Total $5.00', 'Grand Total: $9.54'].join('\n'),
+    });
+    expect(order.totalCents).toBe(954);
+  });
+
+  it('pairs several orders inside one copy and drops one another copy contradicts', () => {
+    const htmlTwo = [
+      'Thanks for your order!',
+      '1 Hair Care item', 'Order # 113-0000000-0000001', 'Grand Total:', '$10.80',
+      '2 Books items', 'Order # 113-0000000-0000002', 'Grand Total:', '$25.00',
+    ].join('\n');
+    const plainTwo = [
+      'Thanks for your order!',
+      'Order # 113-0000000-0000001', 'Grand Total:', '10.80 USD',
+      'Order # 113-0000000-0000002', 'Grand Total:', '26.00 USD',
+    ].join('\n');
+    expect(parseAmazonEmail({ html: htmlTwo, plain: plainTwo }).map((o) => o.orderId))
+      .toEqual(['113-0000000-0000001']);
+  });
+});
