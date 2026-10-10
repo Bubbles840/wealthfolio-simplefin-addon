@@ -7,11 +7,27 @@ describe('redactAmazonText', () => {
       .toBe('Arriving tomorrow\nJordan - SPRINGFIELD, IL\nOrder #');
   });
 
-  it('removes a personal address but keeps Amazon\'s own', () => {
+  it('removes a personal address, name included, but keeps Amazon\'s own', () => {
     // A hand-forwarded order carries the forwarder's address AND Amazon's in its
     // From: lines; the forwarded-mail check needs Amazon's to recognise it.
-    expect(redactAmazonText('From: Nick <nick@example.com>\nFrom: "Amazon.com" <auto-confirm@amazon.com>'))
-      .toBe('From: Nick <<email>>\nFrom: "Amazon.com" <auto-confirm@amazon.com>');
+    expect(redactAmazonText('From: Nick Wright <nick@example.com>\nFrom: "Amazon.com" <auto-confirm@amazon.com>'))
+      .toBe('From: <email>\nFrom: "Amazon.com" <auto-confirm@amazon.com>');
+    expect(redactAmazonText('Questions? Write to nick@example.com')).toBe('Questions? Write to <email>');
+  });
+
+  it('finds the delivery line inside Amazon\'s invisible direction marks', () => {
+    expect(redactAmazonText('Order #\n\u202BNicholas - LOUISVILLE, KY\u202C')).toBe('Order #\nJordan - SPRINGFIELD, IL');
+  });
+
+  it('finds a delivery line with a mixed-case city and a ZIP code', () => {
+    expect(redactAmazonText('Nicholas Wright - Louisville, KY 40202')).toBe('Jordan - SPRINGFIELD, IL');
+  });
+
+  it('removes the name from a greeting and the digits from a card', () => {
+    // A refund notice — the first unseen layout the spec expects — opens with a
+    // greeting and names the card it refunded to.
+    expect(redactAmazonText('Hello Nicholas,\nRefunded to Visa ending in 4321'))
+      .toBe('Hello Jordan,\nRefunded to Visa ending in 0000');
   });
 
   it('drops link query strings, which carry tracking and shipment codes', () => {

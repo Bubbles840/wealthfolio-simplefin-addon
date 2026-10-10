@@ -1179,8 +1179,11 @@ export const AMAZON_LATE_LABEL_LOG_TAG = 'amazon-late-label';
  *  - Only a note in the sync's own unedited form, `<bank text> · <txId>`. An
  *    edited note, a pending one, or one already labelled is left alone, which
  *    is also what makes the pass idempotent across both writers.
- *  - Never a grouped row: Wealthfolio copies an updated linked leg's note onto
- *    its partner.
+ *  - Never a transfer-typed or grouped row: Wealthfolio copies an updated
+ *    linked leg's note onto its partner. The type is the guard that holds on
+ *    both writers — the addon host never reads `sourceGroupId`
+ *    (`readsSourceGroupId: false`), so a linked leg arrives there ungrouped,
+ *    but only transfer-typed rows are ever linked.
  *  - Labels are only ever added. Type, date and amount are passed through, the
  *    same shape as `planExternalMarkerStamp`.
  */
@@ -1191,7 +1194,7 @@ export function planAmazonLateLabels(
 ): ActivityWrite[] {
   const updates: ActivityWrite[] = [];
   for (const row of rows) {
-    if (row.sourceGroupId || row.pending) continue;
+    if (isTransferType(row.type) || row.sourceGroupId || row.pending) continue;
     const hit = labelled.get(row.txId);
     if (!hit || (row.comment ?? '') !== `${hit.bare} · ${row.txId}`) continue;
     updates.push({

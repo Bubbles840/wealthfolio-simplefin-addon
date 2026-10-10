@@ -26,14 +26,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and nobody edited, never to a linked transfer — and the charge is filed.
 - **Cancellation emails are skipped**, not reported as unreadable. They also
   retire the cancelled order's confirmation, so a different charge for the
-  same amount cannot pick up its category.
+  same amount cannot pick up its category. Only an email whose subject says
+  it was cancelled and that states no total counts — one that merely mentions
+  a cancelled item still has to parse, or it is reported.
 
 ### Added
 
 - **"Show what couldn't be read"** on the Amazon card. The emails the parser
-  could not read, with your name, address and link codes removed, ready to
-  copy into a bug report. Each one becomes a test, so a fixed format stays
-  fixed.
+  could not read, with email addresses, your name and delivery line, card
+  digits and link codes removed, ready to copy into a bug report (look it over
+  before posting it anywhere public). Each one becomes a test, so a fixed
+  format stays fixed.
 
 ### Changed
 

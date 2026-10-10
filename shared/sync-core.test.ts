@@ -3882,7 +3882,7 @@ describe('an update never marks a linked leg external (v1.54)', () => {
 });
 
 describe('planAmazonLateLabels', () => {
-  const row = (over: Partial<{ txId: string; comment: string; pending: boolean; sourceGroupId: string | null }> = {}) => ({
+  const row = (over: Partial<{ txId: string; type: string; comment: string; pending: boolean; sourceGroupId: string | null }> = {}) => ({
     wfId: 'act-amz', wfAccountId: 'wf-a', txId: 'tx-amz', absCents: 2118, type: 'WITHDRAWAL',
     date: '2026-08-06', pending: false, comment: 'AMAZON.COM*MB3T81 · tx-amz', sourceGroupId: null,
     ...over,
@@ -3905,6 +3905,13 @@ describe('planAmazonLateLabels', () => {
   it('never touches half of a linked transfer', () => {
     // Wealthfolio copies an updated linked leg's note onto its partner.
     expect(planAmazonLateLabels([row({ sourceGroupId: 'grp-1' })], labelled, 'USD')).toEqual([]);
+  });
+
+  it('never touches a transfer-typed row, even on a host that cannot report links', () => {
+    // The addon host never reads sourceGroupId (readsSourceGroupId: false), so a
+    // linked leg arrives there with sourceGroupId null. Only transfer-typed rows
+    // are ever linked, so the type is the guard that holds on both writers.
+    expect(planAmazonLateLabels([row({ type: 'TRANSFER_OUT' })], labelled, 'USD')).toEqual([]);
   });
 
   it('leaves a pending charge to the update that posts it', () => {
