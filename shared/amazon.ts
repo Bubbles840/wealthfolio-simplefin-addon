@@ -429,7 +429,21 @@ export type AmazonEmailStatus =
 export interface AmazonEmailClassification {
   orders: AmazonOrderRecord[];
   status: AmazonEmailStatus;
+  /**
+   * Present only on a cancellation notice: the order numbers it names. The
+   * mail reader retires their confirmation records, so a cancelled order's
+   * total cannot be matched to an unrelated charge of the same amount.
+   */
+  cancelledOrderIds?: string[];
 }
+
+/**
+ * Amazon's cancellation notice, verbatim from the live 2026-10-06 message:
+ * subject `Item cancelled successfully: "…"`, body `Your items were cancelled`
+ * and `Your order was cancelled. You have not been charged for this order.`
+ * Both spellings, since Amazon writes "canceled" elsewhere.
+ */
+const CANCELLATION = /\bcancell?ed successfully\b|\b(?:was|were|been)\s+cancell?ed\b/i;
 
 /**
  * THE single definition of what a message is.
@@ -447,7 +461,11 @@ export interface AmazonEmailClassification {
 export function classifyAmazonEmail(input: string | AmazonMailParts): AmazonEmailClassification {
   const orders = parseAmazonEmail(input);
   if (orders.length > 0) return { orders, status: 'orders' };
-  return { orders, status: isAmazonNoticeWithoutTotal(joinParts(toParts(input))) ? 'ignored' : 'unrecognised' };
+  const all = stripMarks(joinParts(toParts(input)));
+  // Checked only once nothing parsed: a shipment that mentions a cancelled
+  // item still carries its own order and must keep it.
+  if (CANCELLATION.test(all)) return { orders, status: 'ignored', cancelledOrderIds: orderIdsIn(all) };
+  return { orders, status: isAmazonNoticeWithoutTotal(all) ? 'ignored' : 'unrecognised' };
 }
 
 /** One label→category rule. `test` is matched against the lowercased label. */

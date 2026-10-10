@@ -662,3 +662,28 @@ describe('reading each copy of an email separately', () => {
       .toEqual(['113-0000000-0000001']);
   });
 });
+
+describe('cancellation notices', () => {
+  const CANCELLED = {
+    subject: 'Item cancelled successfully: "Example item..."',
+    plain: [
+      'Your items were cancelled',
+      'Your order was cancelled. You have not been charged for this order.',
+      'Order #', '113-2018846-2323410', 'Quantity: 1', '8.39 USD',
+    ].join('\n'),
+  };
+
+  it('skips a cancellation and names the order it cancels', () => {
+    expect(classifyAmazonEmail(CANCELLED)).toEqual({
+      orders: [], status: 'ignored', cancelledOrderIds: ['113-2018846-2323410'],
+    });
+  });
+
+  it('still reads the order in a shipment that mentions a cancelled item', () => {
+    const r = classifyAmazonEmail(
+      'Your package was shipped!\nOne item was cancelled.\nOrder # 113-0000000-0000003\n1 Books item\nTotal $12.00',
+    );
+    expect(r.status).toBe('orders');
+    expect(r.cancelledOrderIds).toBeUndefined();
+  });
+});
