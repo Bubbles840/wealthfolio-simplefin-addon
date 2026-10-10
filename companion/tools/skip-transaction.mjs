@@ -110,7 +110,18 @@ console.log(`\n${row.acct}:`);
 console.log(`   Wealthfolio ledger now   ${money(ledger)}`);
 console.log(`   after removing this row  ${money(ledger - signed(row))}`);
 console.log(`   bank (last sync)         ${Number.isFinite(bank) ? money(bank) : 'unknown'}`);
-if (row.g) console.log('\n   ⚠ This row is one leg of a linked transfer. Removing it leaves the other leg on its own.');
+if (row.g) {
+  // Wealthfolio deletes BOTH halves of a valid linked transfer when either is
+  // deleted (activities_service.rs, bulk_mutate_activities), so say which.
+  const partners = db.prepare(
+    `SELECT acc.name acct, substr(a.activity_date,1,10) d, UPPER(COALESCE(a.activity_type_override, a.activity_type)) t,
+            ABS(CAST(COALESCE(a.amount,'0') AS REAL)) amt, COALESCE(a.notes,'') notes
+     FROM activities a JOIN accounts acc ON a.account_id = acc.id WHERE a.source_group_id = ? AND a.id <> ?`,
+  ).all(row.g, row.id);
+  console.log('\n   This row is half of a linked transfer. Wealthfolio deletes both halves together, so this also removes:');
+  for (const p of partners) console.log(`     ${p.d}  ${p.t.padEnd(12)} ${money(p.amt).padStart(10)}  ${p.acct}  ${p.notes}`);
+  console.log('   If that bank still reports it, the next /sync imports it again under its own id and links it to the right partner.');
+}
 
 if (!APPLY) {
   console.log('\nDry run — nothing written. Add -e APPLY=1 to skip this transaction and delete the row.\n');
