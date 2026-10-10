@@ -159,7 +159,8 @@ const RULES = [
   { name: 'OpenRouter → Software & Services', pattern: 'OPENROUTER', category: 'Software & Services' },
   { name: 'Robinhood Gold → Subscriptions', pattern: 'Gold Annual Subscription', category: 'Subscriptions' },
   { name: 'Staples → Shopping', pattern: 'Staples', category: 'Shopping' },
-  { name: 'Amazon → Online Shopping', pattern: 'Amazon', category: 'Online Shopping' },
+  // No catch-all Amazon rule: it filed every Amazon charge before its order
+  // email was read, hiding the ones whose email never parsed (v1.59.0).
   { name: 'Card rewards → Shopping', pattern: 'Thankyou Points Redeemed', category: 'Shopping' },
 ];
 

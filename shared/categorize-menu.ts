@@ -11,6 +11,7 @@
  */
 
 import { categoryRulePattern } from './rule-pattern.js';
+import { isAmazonDescription } from './amazon-ledger.js';
 import type { InlineKeyboard } from './telegram.js';
 import { moneyWhole, escapeMarkdown } from './telegram.js';
 import { INCOME_TAXONOMY_ID } from './cash-flow-bucket.js';
@@ -619,6 +620,26 @@ function renderFiled(
   }
 
   const text = `Filed ${escapeMarkdown(txn.description)} → ${escapeMarkdown(category.name)}.`;
+  // No rule from an Amazon purchase: the descriptor names the store, not the
+  // purchase, so `AMAZON MKTPL → Electronics` would file every later Amazon
+  // charge as Electronics — the silent wrong category the order emails exist
+  // to prevent. Prime, AWS and Kindle Unlimited are not purchases
+  // (`isAmazonDescription` excludes them) and keep the offer.
+  const offerRule = !isAmazonDescription(txn.description);
+  const ruleRow: Btn[] = [{
+    // Count-aware: the button was always here, but nothing ever said it
+    // would clear other rows in the same tap.
+    text: (() => {
+      const catches = ruleCatchCount(session, screen.activityId, txn.description);
+      return catches > 0
+        ? `⚡ Make this a rule — files ${catches} more like it`
+        : 'Make this a rule';
+    })(),
+    action: {
+      kind: 'goto',
+      screen: { kind: 'rulePreview', activityId: screen.activityId, categoryId: screen.categoryId },
+    },
+  }];
   const rows: Btn[][] = [
     [{
       text: '↩ Undo',
@@ -631,20 +652,7 @@ function renderFiled(
         ...(screen.taxonomyId ? { taxonomyId: screen.taxonomyId } : {}),
       },
     }],
-    [{
-      // Count-aware: the button was always here, but nothing ever said it
-      // would clear other rows in the same tap.
-      text: (() => {
-        const catches = ruleCatchCount(session, screen.activityId, txn.description);
-        return catches > 0
-          ? `⚡ Make this a rule — files ${catches} more like it`
-          : 'Make this a rule';
-      })(),
-      action: {
-        kind: 'goto',
-        screen: { kind: 'rulePreview', activityId: screen.activityId, categoryId: screen.categoryId },
-      },
-    }],
+    ...(offerRule ? [ruleRow] : []),
     [{ text: 'Next transaction', action: { kind: 'goto', screen: { kind: 'list', page: 0 } } }],
     [DONE_BTN],
   ];

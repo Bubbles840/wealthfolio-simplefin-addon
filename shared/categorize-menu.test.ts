@@ -239,6 +239,20 @@ describe('renderScreen — filed', () => {
     expect(text).toBe('Filed BOOK STORES → Groceries.');
   });
 
+  it('offers no rule for an Amazon purchase, whose descriptor names the store and not the purchase', () => {
+    // `AMAZON MKTPL → Electronics` would file every later Amazon charge as
+    // Electronics: the silent wrong category the order emails exist to prevent.
+    const s = session({ txns: [txn({ description: 'AMAZON MKTPL*ZK4GH1 · Amazon: Hair Care' })], screen: filedScreen });
+    const labels = renderScreen(s).keyboard.inline_keyboard.flat().map((b) => b.text);
+    expect(labels).toEqual(['↩ Undo', 'Next transaction', 'Done']);
+  });
+
+  it('still offers a rule for an Amazon subscription, which always means the same thing', () => {
+    const s = session({ txns: [txn({ description: 'Amazon Prime*RT4HD2' })], screen: filedScreen });
+    const labels = renderScreen(s).keyboard.inline_keyboard.flat().map((b) => b.text);
+    expect(labels).toContain('Make this a rule');
+  });
+
   it('offers Undo, Make this a rule, Next transaction, and Done', () => {
     const s = session({ screen: filedScreen });
     const { keyboard, buttons } = renderScreen(s);
