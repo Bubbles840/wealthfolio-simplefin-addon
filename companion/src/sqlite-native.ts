@@ -180,6 +180,30 @@ const SYNC_BOOKKEEPING_EXCLUSION = `
       AND COALESCE(a.notes, '') NOT LIKE '${BALANCE_ADJUSTMENT_COMMENT_PREFIX}%'
       AND COALESCE(a.notes, '') NOT LIKE '${IN_TRANSIT_COMMENT_PREFIX}%'`;
 
+/**
+ * Only activities in accounts Wealthfolio tracks for spending — the scope it
+ * enforces on every category write (`ensure_activity_in_spending_scope`,
+ * crates/spending cash_activities/service.rs: "Activity account is not opted
+ * into spending tracking") and the only accounts its own totals read. Applied
+ * to every UNCATEGORIZED reader, because the categorized ones are scoped
+ * already: Wealthfolio never let those rows be filed outside it.
+ *
+ * Without it the needs-a-category list offered rows nobody could file — live
+ * 2026-10-10, six Robinhood cashback deposits failed on every attempt — and
+ * the digest counted spending Wealthfolio leaves out.
+ *
+ * Settings are read exactly as upstream reads them (settings/service.rs): no
+ * `spending.enabled` row means OFF, and a missing or unparsable account list
+ * means NO accounts. Wealthfolio files nothing in either state, so listing
+ * nothing is the matching answer, not a lost signal.
+ */
+const IN_SPENDING_SCOPE = `
+      AND (SELECT setting_value FROM app_settings WHERE setting_key = 'spending.enabled') = 'true'
+      AND a.account_id IN (
+        SELECT value FROM json_each((
+          SELECT CASE WHEN json_valid(setting_value) THEN setting_value ELSE '[]' END
+          FROM app_settings WHERE setting_key = 'spending.account_ids')))`;
+
 function spendingWhere(startInclusive: string, endExclusive: string): string {
   return `
     WHERE a.activity_date >= '${startInclusive}'
@@ -524,6 +548,7 @@ export function getNativeUncategorizedSpending(
       AND COALESCE(a.notes, '') NOT LIKE 'Starting balance · %'
       AND COALESCE(a.notes, '') NOT LIKE 'Balance adjustment · %'
       AND COALESCE(a.notes, '') NOT LIKE '↔️ In-transit transfer · %'
+      ${IN_SPENDING_SCOPE}
     ORDER BY a.activity_date DESC, a.id;
   `;
 
@@ -1086,6 +1111,7 @@ export function getNativeUncategorizedSpendingTotal(
       AND COALESCE(a.source_group_id, '') = ''
       ${dismissedClause}
       ${SYNC_BOOKKEEPING_EXCLUSION}
+      ${IN_SPENDING_SCOPE}
       AND (${SPENDING_SIGN}) > 0;
   `;
 
@@ -1273,6 +1299,7 @@ export function getNativeUncategorizedByMonthAccount(
       AND COALESCE(a.source_group_id, '') = ''
       ${excludedClause}
       ${SYNC_BOOKKEEPING_EXCLUSION}
+      ${IN_SPENDING_SCOPE}
       AND (${SPENDING_SIGN}) > 0
     GROUP BY month, account_id;
   `;
@@ -1330,6 +1357,7 @@ export function getNativeMerchantRows(
       AND a.activity_date < '${endExclusive}'
       AND ata.activity_id IS NULL
       AND COALESCE(a.source_group_id, '') = ''
+      ${IN_SPENDING_SCOPE}
       AND (${SPENDING_SIGN}) > 0;
   `;
   const rows = queryNativeDb<Record<string, unknown>>(
@@ -1467,6 +1495,7 @@ export function getNativeSpendDailyTotals(
         AND ata.activity_id IS NULL
         AND COALESCE(a.source_group_id, '') = ''
         ${excludedClause}
+        ${IN_SPENDING_SCOPE}
         AND (${SPENDING_SIGN}) > 0
     ) GROUP BY date;
   `;
