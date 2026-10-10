@@ -100,13 +100,18 @@ Each copy is read on its own, for:
   - Where the other copy also yields a total for the same order id, the two
     must agree.
 - **Disagreement on a total** → that order is dropped and the message counts
-  as unreadable. Absent is still the only acceptable failure direction.
+  as unreadable. In a multi-order email one contradiction voids the whole
+  message (final review): keeping the other orders would mark it read with no
+  warning or sample. Absent is still the only acceptable failure direction.
 
 ### Message types
 
 - **Delivery notice:** `ignored`, as today. `isAmazonNoticeWithoutTotal` keeps
   its narrow wording rules.
-- **Cancellation:** `ignored` and marked read.
+- **Cancellation:** `ignored` and marked read. Judged on the subject
+  (`cancelled`/`canceled`) and only for a message stating no total (final
+  review): a body that merely mentions cancelling must still parse or be
+  reported.
   - The classification also returns the cancelled order ids.
   - `ingestAmazonMail` removes those orders' **unconsumed `ordered`** ledger
     records. A same-amount charge then cannot match a cancelled order.
@@ -130,8 +135,10 @@ Each copy is read on its own, for:
   so five samples stay near 60 KB in the secret store. The real HTML copies
   are about 2.5 KB of text.
 - **Redaction:** `redactAmazonSample` in `shared/`, host-agnostic and unit-tested.
-  - Removed: email addresses, the delivery line (`<Name> - <CITY>, <ST>`), and
-    the query string of every URL.
+  - Removed: email addresses, the delivery line (`<Name> - <City>, <ST>`, any
+    case, optional ZIP, inside direction marks), names on `From:`/`To:` lines,
+    greetings, card digits (`ending in 1234`), and the query string of every
+    URL (final review). The card asks for a look before posting publicly.
   - Order ids stay. The parser needs them, and fixtures already carry real ones.
 - **Amazon card** (`src/components/AmazonCard.tsx`):
   - Under the existing warning, a collapsed "Show what couldn't be read"
@@ -172,8 +179,10 @@ New behavior:
 
 - **When:** a hit lands on a row that already exists in Wealthfolio.
 - **Conditions,** all required:
-  - The row is not grouped (`source_group_id` empty). Wealthfolio copies a
-    linked leg's note onto its partner.
+  - The row is not transfer-typed and not grouped (`source_group_id` empty).
+    Wealthfolio copies a linked leg's note onto its partner, and the addon host
+    never reads `source_group_id`, so the type is the guard on both writers
+    (final review).
   - Its stored note is exactly the sync's own unedited form,
     `<bank description> · <txId>`.
   - The note has no `· Amazon:` label yet.

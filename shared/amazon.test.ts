@@ -647,19 +647,28 @@ describe('reading each copy of an email separately', () => {
     expect(order.totalCents).toBe(954);
   });
 
-  it('pairs several orders inside one copy and drops one another copy contradicts', () => {
-    const htmlTwo = [
-      'Thanks for your order!',
-      '1 Hair Care item', 'Order # 113-0000000-0000001', 'Grand Total:', '$10.80',
-      '2 Books items', 'Order # 113-0000000-0000002', 'Grand Total:', '$25.00',
-    ].join('\n');
-    const plainTwo = [
-      'Thanks for your order!',
-      'Order # 113-0000000-0000001', 'Grand Total:', '10.80 USD',
-      'Order # 113-0000000-0000002', 'Grand Total:', '26.00 USD',
-    ].join('\n');
-    expect(parseAmazonEmail({ html: htmlTwo, plain: plainTwo }).map((o) => o.orderId))
-      .toEqual(['113-0000000-0000001']);
+  const htmlTwo = [
+    'Thanks for your order!',
+    '1 Hair Care item', 'Order # 113-0000000-0000001', 'Grand Total:', '$10.80',
+    '2 Books items', 'Order # 113-0000000-0000002', 'Grand Total:', '$25.00',
+  ].join('\n');
+  const plainTwo = (second: string) => [
+    'Thanks for your order!',
+    'Order # 113-0000000-0000001', 'Grand Total:', '10.80 USD',
+    'Order # 113-0000000-0000002', 'Grand Total:', `${second} USD`,
+  ].join('\n');
+
+  it('pairs several orders inside one copy when the other copy agrees', () => {
+    expect(parseAmazonEmail({ html: htmlTwo, plain: plainTwo('25.00') }).map((o) => [o.orderId, o.totalCents]))
+      .toEqual([['113-0000000-0000001', 1080], ['113-0000000-0000002', 2500]]);
+  });
+
+  it('counts a multi-order email as unreadable when another copy contradicts one order', () => {
+    // Dropping just the contradicted order would mark the message read with no
+    // warning and no sample — a layout change hidden behind the orders that
+    // still parsed. The whole message stays unread instead, and is sampled.
+    expect(classifyAmazonEmail({ html: htmlTwo, plain: plainTwo('26.00') }))
+      .toEqual({ orders: [], status: 'unrecognised' });
   });
 });
 
@@ -677,6 +686,25 @@ describe('cancellation notices', () => {
     expect(classifyAmazonEmail(CANCELLED)).toEqual({
       orders: [], status: 'ignored', cancelledOrderIds: ['113-2018846-2323410'],
     });
+  });
+
+  it('does not take an unreadable order email for a cancellation because it mentions one', () => {
+    // A confirmation in a layout the parser cannot read yet that happens to
+    // mention cancelling. Skipping it as a cancellation would mark it read with
+    // no warning — the 2026-08 delivery-notice failure again.
+    expect(classifyAmazonEmail({
+      subject: 'Ordered 1 item: Hair Care',
+      plain: 'Thanks for your order!\nOrder # 113-0000000-0000004\nIf an item has been cancelled, you will not be charged.\nOrder total 10,80 €',
+    }).status).toBe('unrecognised');
+  });
+
+  it('does not skip a cancellation notice that states a total', () => {
+    // A total means money moved (a refund, a part-cancelled order): not the
+    // nothing-was-charged notice this skip exists for.
+    expect(classifyAmazonEmail({
+      subject: 'Item cancelled successfully: "Example item..."',
+      plain: 'Your order was cancelled.\nOrder # 113-0000000-0000005\nRefund Total: $8.39',
+    }).status).toBe('unrecognised');
   });
 
   it('still reads the order in a shipment that mentions a cancelled item', () => {

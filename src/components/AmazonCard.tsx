@@ -504,8 +504,9 @@ function UnreadableSamples({ samples }: { samples: AmazonMailSample[] }) {
         onToggle={() => setOpen((o) => !o)}
       >
         <p className="sfin-subtle">
-          Personal details are removed. Paste this into a bug report so the addon can
-          learn the new format.
+          Email addresses, your name and delivery line, card digits and link codes are
+          removed — but check the text before posting it anywhere public. Paste it into
+          a bug report so the addon can learn the new format.
         </p>
         <textarea
           readOnly

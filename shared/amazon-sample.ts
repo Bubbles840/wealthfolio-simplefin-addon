@@ -10,10 +10,10 @@
  * (`shared/__fixtures__/amazon-emails/`) directly.
  *
  * Redaction is aimed at what a receipt actually carries about a person: the
- * delivery line, email addresses, and the query strings on links (tracking and
- * shipment codes). Order numbers stay — the parser needs them, and on their own
- * they open nothing. Host-agnostic: the companion builds samples, the addon
- * formats them.
+ * delivery line, email addresses and the names beside them, a greeting, card
+ * digits, and the query strings on links (tracking and shipment codes). Order
+ * numbers stay — the parser needs them, and on their own they open nothing.
+ * Host-agnostic: the companion builds samples, the addon formats them.
  */
 import type { AmazonMailParts } from './amazon.js';
 import type { AmazonMailSample } from './status-keys.js';
@@ -22,18 +22,39 @@ export const AMAZON_SAMPLE_LIMIT = 5;
 const MAX_LINES = 80;
 const MAX_CHARS = 4000;
 
+/** Amazon's invisible direction marks (see `BIDI_CONTROLS` in ./amazon.ts),
+ *  plus U+034F from its preheaders. Stripped first: a delivery line wrapped in
+ *  them would otherwise slip past every pattern below. */
+const INVISIBLE_MARKS = /[‪-‮⁦-⁩‎‏͏]/g;
+/** A forwarded block's `From:`/`To:` line names the forwarder — display name
+ *  and all — unless it is Amazon's own, which the forwarded-mail check needs. */
+const ADDRESS_LINE = /^(\s*(?:From|To|Cc|Reply-To):[ \t]*)(?![^\n]*@amazon\.)[^\n]*$/gim;
 const EMAIL = /[\w.+-]+@(?:[\w-]+\.)+[\w-]+/g;
 const AMAZON_ADDRESS = /@amazon\.[a-z.]+$/i;
-/** `Alex - LOUISVILLE, KY` — Amazon's "ship to" line. Replaced with the
- *  stand-in every fixture already uses, so a sample pastes in unchanged. */
-const DELIVERY_LINE = /^(\s*)\S[^\n]{0,60}? - [A-Z][A-Z .'-]*, [A-Z]{2}\s*$/gm;
+/** `Alex - LOUISVILLE, KY` — Amazon's "ship to" line, in any case and with
+ *  an optional ZIP. Replaced with the stand-in every fixture already uses, so
+ *  a sample pastes in unchanged. */
+const DELIVERY_LINE = /^(\s*)\S[^\n]{0,60}? - [^\n,]{2,40}, [A-Z]{2}(?:\s+\d{5}(?:-\d{4})?)?\s*$/gm;
+/** `Hello Alex,` — a refund notice is expected to open with one. */
+const GREETING = /^(\s*(?:Hello|Hi|Dear)\s+)[^,\n]{1,40},/gim;
+/** `Visa ending in 4321`. */
+const CARD_DIGITS = /\b(ending in\s+)\d{4}\b/gi;
 /** Stops at `)` and `]` so a markdown link keeps its closing bracket. */
 const URL_QUERY = /(https?:\/\/[^\s?#)\]]+)[?#][^\s)\]]*/g;
 
+/**
+ * What a receipt says about the person, removed. Not a guarantee — a layout
+ * nobody has seen can carry something no pattern here knows — which is why the
+ * card asks for a look before anything is posted publicly.
+ */
 export function redactAmazonText(text: string): string {
   return text
+    .replace(INVISIBLE_MARKS, '')
+    .replace(ADDRESS_LINE, '$1<email>')
     .replace(EMAIL, (addr) => (AMAZON_ADDRESS.test(addr) ? addr : '<email>'))
     .replace(DELIVERY_LINE, '$1Jordan - SPRINGFIELD, IL')
+    .replace(GREETING, '$1Jordan,')
+    .replace(CARD_DIGITS, '$10000')
     .replace(URL_QUERY, '$1');
 }
 

@@ -336,7 +336,11 @@ function severalOrders(kind: AmazonOrderRecord['kind'], bodies: string[]): Amazo
     const records = parseCopy(bodies[i], kind);
     if (records.length === 0) continue;
     const others = bodies.filter((_, j) => j !== i).map(totalsByOrder);
-    return records.filter((r) => others.every((t) => !t.has(r.orderId) || t.get(r.orderId) === r.totalCents));
+    // One contradiction voids the whole message, not just that order: keeping
+    // the rest would mark it read with no warning and no sample, hiding the
+    // very layout change the cross-check just caught.
+    const agreed = records.every((r) => others.every((t) => !t.has(r.orderId) || t.get(r.orderId) === r.totalCents));
+    return agreed ? records : [];
   }
   return [];
 }
@@ -438,12 +442,18 @@ export interface AmazonEmailClassification {
 }
 
 /**
- * Amazon's cancellation notice, verbatim from the live 2026-10-06 message:
- * subject `Item cancelled successfully: "…"`, body `Your items were cancelled`
- * and `Your order was cancelled. You have not been charged for this order.`
- * Both spellings, since Amazon writes "canceled" elsewhere.
+ * Amazon's cancellation notice, from the live 2026-10-06 message: subject
+ * `Item cancelled successfully: "…"`, body `Your order was cancelled. You have
+ * not been charged for this order.` Both spellings, since Amazon writes
+ * "canceled" elsewhere.
+ *
+ * Judged on the SUBJECT, and only for a message stating no total. A body that
+ * merely mentions cancelling — a confirmation saying "if an item has been
+ * cancelled…", a shipment from a part-cancelled order — must not be skipped
+ * when it fails to parse: that would mark it read with no warning, the
+ * 2026-08 delivery-notice failure again (see `isAmazonNoticeWithoutTotal`).
  */
-const CANCELLATION = /\bcancell?ed successfully\b|\b(?:was|were|been)\s+cancell?ed\b/i;
+const CANCELLATION_SUBJECT = /\bcancell?ed\b/i;
 
 /**
  * THE single definition of what a message is.
@@ -461,10 +471,13 @@ const CANCELLATION = /\bcancell?ed successfully\b|\b(?:was|were|been)\s+cancell?
 export function classifyAmazonEmail(input: string | AmazonMailParts): AmazonEmailClassification {
   const orders = parseAmazonEmail(input);
   if (orders.length > 0) return { orders, status: 'orders' };
-  const all = stripMarks(joinParts(toParts(input)));
+  const parts = toParts(input);
+  const all = stripMarks(joinParts(parts));
   // Checked only once nothing parsed: a shipment that mentions a cancelled
   // item still carries its own order and must keep it.
-  if (CANCELLATION.test(all)) return { orders, status: 'ignored', cancelledOrderIds: orderIdsIn(all) };
+  if (CANCELLATION_SUBJECT.test(stripMarks(parts.subject)) && !TOTAL.test(all)) {
+    return { orders, status: 'ignored', cancelledOrderIds: orderIdsIn(all) };
+  }
   return { orders, status: isAmazonNoticeWithoutTotal(all) ? 'ignored' : 'unrecognised' };
 }
 
