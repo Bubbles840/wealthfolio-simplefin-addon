@@ -73,7 +73,7 @@ import { createAmazonLabelMenu, type AmazonLabelMenu } from './amazon-labels.js'
 import { fileAmazonCharges } from './amazon-filing.js';
 import { createTransferLearning, type TransferLearning } from './transfer-learning.js';
 import type { CategorizeController, CategorizeDeps } from './categorize.js';
-import { AMAZON_MAIL_STATUS_SECRET_KEY, UNCATEGORIZED_STATUS_SECRET_KEY, POOL_STATUS_SECRET_KEY, type AmazonMailStatus } from '../../shared/status-keys.js';
+import { AMAZON_MAIL_STATUS_SECRET_KEY, AMAZON_MAIL_SAMPLES_SECRET_KEY, UNCATEGORIZED_STATUS_SECRET_KEY, POOL_STATUS_SECRET_KEY, type AmazonMailStatus, type AmazonMailSamples } from '../../shared/status-keys.js';
 import {
   formatHelpReply,
   formatLeftReply,
@@ -567,6 +567,7 @@ async function pollAmazonMail(
     log(
       `Amazon mail: ${result.scanned} scanned, ${result.added} orders added` +
       `${result.ignored ? `, ${result.ignored} delivery notices skipped` : ''}` +
+      `${result.cancelled ? `, ${result.cancelled} cancellations skipped` : ''}` +
       `${result.unparsed ? `, ${result.unparsed} unrecognised` : ''}` +
       `${result.pruned ? `, ${result.pruned} pruned` : ''}`,
     );
@@ -597,6 +598,13 @@ async function pollAmazonMail(
     };
     await wfClient
       .setAddonSecret('simplefin-sync', AMAZON_MAIL_STATUS_SECRET_KEY, JSON.stringify(status))
+      .catch(() => {});
+    // The unreadable emails themselves, replaced every completed scan so the set
+    // always matches `unparsed` and clears itself once a fix reads them. A failed
+    // scan never gets here, so a standing set survives it (see the catch below).
+    const samples: AmazonMailSamples = { asOf: now, samples: result.samples };
+    await wfClient
+      .setAddonSecret('simplefin-sync', AMAZON_MAIL_SAMPLES_SECRET_KEY, JSON.stringify(samples))
       .catch(() => {});
     return result.newLabels;
   } catch (err) {
