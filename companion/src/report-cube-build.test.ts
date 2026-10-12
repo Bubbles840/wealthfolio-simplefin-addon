@@ -78,6 +78,9 @@ describe('buildReportCube', () => {
     expect(cube.subscriptions).toEqual([{
       name: 'NETFLIX.COM', monthlyCents: 1549, count: 3,
       lastDate: '2026-08-26', lastCents: 1549, prevCents: 1549, creep: false, kind: 'subscription',
+      recent: [
+        { date: '2026-08-26', cents: 1549 }, { date: '2026-07-29', cents: 1549 }, { date: '2026-07-01', cents: 1549 },
+      ],
     }]);
   });
 
