@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { maskUrl, publishLiveReports, validateStartupEnv, startupWarnings, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, composeDailyDigest, runCompanionSyncExclusive, buildTelegramCommandHandler, applyTelegramDismissal, undoTelegramDismissal, formatDismissedReply, buildTelegramListenerDeps, buildCategorizeController, buildCategorizeDeps, rememberImportScope, sendUnmappedAccountsNotice, updateCheckDeps, buildAskSessions } from './index.js';
+import { maskUrl, publishLiveReports, validateStartupEnv, startupWarnings, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, composeDailyDigest, composeWeeklyReportMessage, runCompanionSyncExclusive, buildTelegramCommandHandler, applyTelegramDismissal, undoTelegramDismissal, formatDismissedReply, buildTelegramListenerDeps, buildCategorizeController, buildCategorizeDeps, rememberImportScope, sendUnmappedAccountsNotice, updateCheckDeps, buildAskSessions } from './index.js';
 import { findingHandle } from '../../shared/findings.js';
 import { formatHelpReply, parseCommand } from '../../shared/telegram-commands.js';
 import { SIMPLEFIN_SYNC_VERSION } from '../../shared/version.js';
@@ -4930,6 +4930,101 @@ describe('subscriptions in the reports', () => {
   };
   const daysAgoDate = (d: number) => new Date(Date.now() - d * 86_400_000).toISOString().slice(0, 10);
 
+  /** DetectedSubscription exactly as a 1.60 companion publishes it. */
+  const det = (name: string, over: Record<string, unknown> = {}) => ({
+    name, monthlyCents: 1199, count: 5, lastDate: '2026-09-15', lastCents: 1199, prevCents: 1199, creep: false,
+    kind: 'subscription', recent: [{ date: '2026-09-15', cents: 1199 }], ...over,
+  });
+  const cubeR2 = (subscriptions: unknown[]) => JSON.stringify({
+    version: 1, asOf: '2026-10-12T06:00:00.000Z', months: ['2026-09', '2026-10'], categories: [], accounts: [],
+    spend: [[], []], uncategorized: [[], []], income: [[], []], budgets: [[], []], merchants: [[], []],
+    feesInterest: [0, 0], netWorth: [null, null], liquid: [null, null], pool: null, subscriptions,
+  });
+  /** Oct 12: SPOTIFY due in 3 days, RENT due in 4, a fresh price rise with a
+   *  Markdown star in the bank's name, NETFLIX's Oct 3 charge missing. */
+  const MORNING = () => cubeR2([
+    det('SPOTIFY', { lastDate: '2026-09-15' }),
+    det('RENT LLC', { kind: 'bill', monthlyCents: 80000, lastCents: 80000, lastDate: '2026-09-16' }),
+    det('PAYPAL *HULU', { monthlyCents: 999, lastCents: 1099, creep: true, lastDate: '2026-10-10' }),
+    det('NETFLIX', { monthlyCents: 1549, lastCents: 1549, lastDate: '2026-09-03' }),
+  ]);
+  const REMIND_SPOTIFY = JSON.stringify({ v: 1, remind: { SPOTIFY: 3 } });
+  const at = async <T>(date: Date, fn: () => Promise<T>): Promise<T> => {
+    vi.useFakeTimers();
+    vi.setSystemTime(date);
+    try { return await fn(); } finally { vi.useRealTimers(); }
+  };
+  const MORNING_8AM = new Date(2026, 9, 12, 8, 0, 0);
+
+  it('the morning block sits after the spending summary: reminders, the week, the price rise, "cancelled?"', async () => {
+    const client = clientWith([['report_cube', MORNING()], ['subscription_prefs', REMIND_SPOTIFY]]);
+    const digest = (await at(MORNING_8AM, () => composeDailyDigest(client, { requireTelegram: false })))!;
+    const block = [
+      '*Coming up*',
+      '🔔 SPOTIFY charges in 3 days · $11.99',
+      'RENT LLC Oct 16 · about $800',
+      '📈 PAYPAL \\*HULU charged $10.99 — up from its usual $9.99.',
+      "✓ NETFLIX didn't charge Oct 3 — cancelled?",
+    ].join('\n');
+    expect(digest.text).toContain(block);
+    expect(digest.text.indexOf('*Coming up*')).toBeGreaterThan(digest.text.indexOf('Daily Spending Check'));
+    // The Reports tab and push carry the block too — as text, without buttons.
+    expect(digest.archive).toContain(block);
+    const rows = digest.keyboard!.inline_keyboard;
+    expect(rows[0]).toEqual([{ text: '💳 Subscriptions', callback_data: 'cz:sb:o' }]);
+    expect(rows[1]).toEqual([{ text: '🙈 Hide NETFLIX', callback_data: `cz:sb:hr:${findingHandle('NETFLIX')}` }]);
+  });
+
+  it('a Brief morning leaves out the week ahead', async () => {
+    const client = clientWith([
+      ['telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true, reportDetail: 'brief' })],
+      ['report_cube', MORNING()], ['subscription_prefs', REMIND_SPOTIFY],
+    ]);
+    const text = (await at(MORNING_8AM, () => composeDailyDigestMessage(client)))!;
+    expect(text).toContain('*Coming up*\n🔔 SPOTIFY charges in 3 days · $11.99\n📈');
+    expect(text).not.toContain('RENT LLC Oct 16');
+  });
+
+  // Review Focus: a bank name with Markdown characters on the morning report.
+  it('a bank name with * or _ is escaped and kept out of bold — Telegram would refuse the whole report', async () => {
+    const client = clientWith([['report_cube', cubeR2([
+      det('SQ *COFFEE_CLUB', { monthlyCents: 900, lastCents: 1000, creep: true, lastDate: '2026-10-11' }),
+    ])]]);
+    const text = (await at(MORNING_8AM, () => composeDailyDigestMessage(client)))!;
+    expect(text).toContain('\n📈 SQ \\*COFFEE\\_CLUB charged $10.00 — up from its usual $9.00.');
+    expect(text).not.toContain('SQ *COFFEE_CLUB');
+  });
+
+  it('nothing to say: no block and no subscription buttons', async () => {
+    const client = clientWith([['report_cube', cubeR2([det('ADOBE', { monthlyCents: 5499, lastCents: 5499, lastDate: '2026-09-25' })])]]);
+    const digest = (await at(MORNING_8AM, () => composeDailyDigest(client, { requireTelegram: false })))!;
+    expect(digest.text).not.toContain('Coming up');
+    expect(JSON.stringify(digest.keyboard ?? null)).not.toContain('cz:sb:');
+  });
+
+  it('weekly: the subscriptions line from the roster, next week under it, and See all', async () => {
+    const client = clientWith([
+      ['report_cube', cubeR2([
+        det('SPOTIFY', { lastDate: '2026-09-15' }),
+        det('RENT LLC', { kind: 'bill', monthlyCents: 80000, lastCents: 80000, lastDate: '2026-09-16' }),
+        det('ADOBE', { monthlyCents: 5499, lastCents: 5499, lastDate: '2026-09-25' }),
+      ])],
+      ['subscription_prefs', JSON.stringify({ v: 1, names: { SPOTIFY: 'Spotify' } })],
+    ]);
+    const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+    vi.stubGlobal('fetch', fetchMock);
+    await at(new Date(2026, 9, 11, 20, 0, 0), () => sendWeeklyTelegramReport(client)); // Sunday 8pm
+    const body = JSON.parse((fetchMock.mock.calls[0] as any)[1].body);
+    expect(body.text).toContain('*Subscriptions* — $66.98/mo across 2\nNext week: 2 charges · $811.99');
+    expect(body.reply_markup).toEqual({ inline_keyboard: [[{ text: 'See all', callback_data: 'cz:sb:o' }]] });
+  });
+
+  it("the Reports tab's weekly copy is the same text, still a plain string", async () => {
+    const client = clientWith([['report_cube', cubeR2([det('SPOTIFY', { lastDate: '2026-09-15' })])]]);
+    const text = await composeWeeklyReportMessage(client, new Date(2026, 9, 11, 20, 0, 0), {});
+    expect(text).toContain('*Subscriptions* — $11.99/mo across 1\nNext week: 1 charge · $11.99');
+  });
+
   it('weekly check-in totals the detected subscriptions, maybes excluded', async () => {
     const client = clientWith([['report_cube', cubeWith([
       { name: 'ADOBE', monthlyCents: 5499, count: 4, lastDate: daysAgoDate(3), lastCents: 5499, creep: false },
@@ -4977,7 +5072,7 @@ describe('subscriptions in the reports', () => {
     const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
     vi.stubGlobal('fetch', fetchMock);
     await sendWeeklyTelegramReport(client);
-    expect(JSON.parse((fetchMock.mock.calls[0][1] as any).body).text).toContain('$1,250.00/mo across 1');
+    expect(JSON.parse((fetchMock.mock.calls[0][1] as any).body).text).toContain('$1,250/mo across 1');
   });
 
   it('daily digest flags a fresh price creep, once it is stale it stops', async () => {
