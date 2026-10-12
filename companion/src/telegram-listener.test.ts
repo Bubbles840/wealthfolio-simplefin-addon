@@ -276,6 +276,36 @@ describe('startTelegramListener — command dispatch', () => {
     expect(bodyOf(h.calls('/sendMessage')[0])).toMatchObject({ chat_id: CHAT_ID, text: 'got it' });
   });
 
+  it("does not hand another bot's /cmd@Other to onText", async () => {
+    const onText = vi.fn(async () => {});
+    const h = harness({ onText: onText as any });
+    h.fetchImpl
+      .mockResolvedValueOnce(apiOkResponse())
+      .mockResolvedValueOnce(updatesResponse([messageUpdate(13, '/report@SomeoneElsesBot')]))
+      .mockResolvedValue(updatesResponse([]));
+    const listener = start(h.deps);
+    await waitFor('batch consumed', () => h.writeOffset.mock.calls.length >= 1);
+    await listener.stop();
+    expect(onText).not.toHaveBeenCalled();
+  });
+
+  it('tells onText whether the chat is private', async () => {
+    const onText = vi.fn(async () => {});
+    const h = harness({ onText: onText as any });
+    const typed = (id: number, type: string) => ({
+      update_id: id, message: { chat: { id: Number(CHAT_ID), type }, text: '25' },
+    });
+    h.fetchImpl
+      .mockResolvedValueOnce(apiOkResponse())
+      .mockResolvedValueOnce(updatesResponse([typed(14, 'private'), typed(15, 'group')]))
+      .mockResolvedValue(updatesResponse([]));
+    const listener = start(h.deps);
+    await waitFor('both handled', () => onText.mock.calls.length >= 2);
+    await listener.stop();
+    expect((onText.mock.calls[0] as any[])[2]).toEqual({ privateChat: true });
+    expect((onText.mock.calls[1] as any[])[2]).toEqual({ privateChat: false });
+  });
+
   it('never hands text from a foreign chat to onText', async () => {
     const onText = vi.fn(async () => {});
     const h = harness({ onText: onText as any });

@@ -3291,7 +3291,7 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
       if (asks.cancelForCommand()) await reply(CANCELLED_EARLIER);
       await runCommand(cmd, reply);
     },
-    onText: (text, reply) => asks.onText(text, reply),
+    onText: (text, reply, ctx) => asks.onText(text, reply, ctx),
     // Every `cz:` tap, including the import notice's `Categorize these` (which
     // the controller special-cases into a FRESH message — the notice is not the
     // menu). Written as a lambda rather than `categorize.onCallback` so the
