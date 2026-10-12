@@ -93,7 +93,7 @@ import { parsePoolArgs, POOL_USAGE_REPLY } from '../../shared/telegram-commands.
 import { SEMESTER_POOL_SECRET_KEY, parsePoolConfig } from '../../shared/pool.js';
 import { readPoolStatus, readRunwayMonths, type PoolReportDeps } from './pool-report.js';
 import { REPORT_CUBE_SECRET_KEY, parseReportCube } from '../../shared/report-cube.js';
-import { loadSubscriptionPrefs, type SecretGet, type SecretSet } from '../../shared/subscription-prefs.js';
+import { emptySubscriptionPrefs, loadSubscriptionPrefs, type SecretGet, type SecretSet } from '../../shared/subscription-prefs.js';
 import { HIDDEN_SUBSCRIPTIONS_SECRET_KEY, CONFIRMED_SUBSCRIPTIONS_SECRET_KEY, parseHiddenSubscriptions } from '../../shared/subscriptions.js';
 import { renderReportSvg, reportImageTitle, reportImageCaption, RENDERABLE_REPORT_IDS } from '../../shared/report-render.js';
 import { createAskSessions, CANCELLED, CANCELLED_EARLIER, NOT_WAITING, type AskSessions } from './ask-session.js';
@@ -3566,12 +3566,10 @@ if (!process.env.VITEST) {
       readCustomReports: async () => parseCustomReports(
         await wfClient.getAddonSecret('simplefin-sync', 'custom_reports').catch(() => null),
       ),
-      readHiddenSubscriptions: async () => parseHiddenSubscriptions(
-        await wfClient.getAddonSecret('simplefin-sync', HIDDEN_SUBSCRIPTIONS_SECRET_KEY).catch(() => null),
-      ),
-      readConfirmedSubscriptions: async () => parseHiddenSubscriptions(
-        await wfClient.getAddonSecret('simplefin-sync', CONFIRMED_SUBSCRIPTIONS_SECRET_KEY).catch(() => null),
-      ),
+      // The document the card and the bot edit. A failed read renders the page
+      // with nothing hidden rather than no page.
+      readSubscriptionPrefs: async () =>
+        (await loadSubscriptionPrefs(subscriptionSecrets(wfClient).get).catch(() => null))?.prefs ?? emptySubscriptionPrefs(),
     };
     createServer((req, res) => {
       let body = '';
