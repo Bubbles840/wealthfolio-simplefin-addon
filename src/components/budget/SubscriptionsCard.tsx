@@ -39,6 +39,8 @@ export interface SubscriptionsCardProps {
   onSetUpCompanion?: () => void;
 }
 
+export const SUBSCRIPTIONS_LOAD_FAILED_NOTICE =
+  "Couldn't load your subscription settings — try again later.";
 export const SUBSCRIPTIONS_UNREADABLE_NOTICE =
   "Couldn't read your subscription settings, so changes are paused. This shows your earlier choices.";
 const NOT_LOOKED_YET = 'The companion looks for recurring charges after the next sync.';
@@ -165,7 +167,11 @@ export function SubscriptionsCard({
 }: SubscriptionsCardProps) {
   // A corrupt document refuses every write, so the card offers none: it is
   // read-only under the notice instead of celebrating a hide that never saved.
-  const edit = subscriptionPrefs?.unreadable ? undefined : onSubscriptionEdit;
+  // A null document means the host read FAILED (a real empty document loads as
+  // an empty list): editing then would re-add what is already stored, so the
+  // card is read-only until a later refresh loads the settings.
+  const loadFailed = !subscriptionPrefs && !!onSubscriptionEdit;
+  const edit = subscriptionPrefs?.unreadable || loadFailed ? undefined : onSubscriptionEdit;
   // Hooks first: every early return below comes after them.
   const [openKey, setOpenKey] = React.useState<string | null>(null);
   const [deleted, setDeleted] = React.useState<{ id: string; name: string } | null>(null);
@@ -198,7 +204,7 @@ export function SubscriptionsCard({
 
   const unreadableNotice = subscriptionPrefs?.unreadable
     ? <div className="sfin-subs-note">{SUBSCRIPTIONS_UNREADABLE_NOTICE}</div>
-    : null;
+    : loadFailed ? <div className="sfin-subs-note">{SUBSCRIPTIONS_LOAD_FAILED_NOTICE}</div> : null;
   // Shown in the empty states too: deleting the last entry empties the card,
   // and Undo must still be there.
   const statusLines = (
@@ -249,27 +255,33 @@ export function SubscriptionsCard({
       </div>
       {edit && (
         <>
-          <div className="sfin-subs-remind">
-            <span>Remind</span>
-            <div className="sfin-range-chips" role="group" aria-label={`Remind before ${e.displayName} charges`}>
-              {REMIND_CHIPS.map((c) => {
-                const on = (e.remind ?? null) === c.days;
-                return (
-                  <Button key={c.label} variant={on ? undefined : 'ghost'} aria-pressed={on}
-                    onClick={() => edit((p) => setRemind(p, e.key, c.days))}>
-                    {c.label}
-                  </Button>
-                );
-              })}
+          {e.nextDate === null ? (
+            <div className="sfin-subtle">Reminders start once a charge date is known.</div>
+          ) : (
+            <>
+            <div className="sfin-subs-remind">
+              <span>Remind</span>
+              <div className="sfin-range-chips" role="group" aria-label={`Remind before ${e.displayName} charges`}>
+                {REMIND_CHIPS.map((c) => {
+                  const on = (e.remind ?? null) === c.days;
+                  return (
+                    <Button key={c.label} variant={on ? undefined : 'ghost'} aria-pressed={on}
+                      onClick={() => edit((p) => setRemind(p, e.key, c.days))}>
+                      {c.label}
+                    </Button>
+                  );
+                })}
+              </div>
             </div>
-          </div>
-          {companionStale && (
-            <div className="sfin-subtle">
-              Reminders are sent by the background companion, and it hasn&apos;t published in over two days.
-              {onSetUpCompanion && (
-                <> <Button variant="ghost" onClick={onSetUpCompanion}>Open background sync settings</Button></>
-              )}
-            </div>
+            {companionStale && (
+              <div className="sfin-subtle">
+                Reminders are sent by the background companion, and it hasn&apos;t published in over two days.
+                {onSetUpCompanion && (
+                  <> <Button variant="ghost" onClick={onSetUpCompanion}>Open background sync settings</Button></>
+                )}
+              </div>
+            )}
+            </>
           )}
           <RenameField key={e.key} entry={e} onRename={(name) => edit((p) => renameKey(p, e.key, name))} />
           <div className="sfin-subs-actions">

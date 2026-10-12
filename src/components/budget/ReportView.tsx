@@ -710,7 +710,7 @@ function CustomView({ cube, def }: { cube: ReportCube; def: CustomReport }) {
 export function ReportView({
   id, cube, customReports, hero = false, categories, density = 2,
   headlinePicks, onHeadlinePicksChange,
-  onDrill, onOpenActivities, subscriptionPrefs, onSubscriptionEdit, companionStale, onSetUpCompanion,
+  onDrill, onOpenActivities, subscriptionPrefs, onSubscriptionEdit, subscriptionsCube, companionStale, onSetUpCompanion,
 }: {
   id: string;
   cube: ReportCube;
@@ -731,6 +731,9 @@ export function ReportView({
   /** The subscription document and its one edit path; the card is read-only without the edit. */
   subscriptionPrefs?: LoadedSubscriptionPrefs | null;
   onSubscriptionEdit?: (edit: SubscriptionEdit) => void;
+  /** The UNSLICED cube for the Subscriptions card, so its totals do not follow
+   *  the range chip and match Telegram's. */
+  subscriptionsCube?: ReportCube;
   /** The cube is over two days old (BudgetTab's STALE_MS). */
   companionStale?: boolean;
   onSetUpCompanion?: () => void;
@@ -766,7 +769,7 @@ export function ReportView({
       case 'subscriptions':
         body = (
           <SubscriptionsCard
-            cube={cube}
+            cube={subscriptionsCube ?? cube}
             full={hero}
             subscriptionPrefs={subscriptionPrefs}
             onSubscriptionEdit={onSubscriptionEdit}

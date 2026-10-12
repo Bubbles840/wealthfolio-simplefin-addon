@@ -487,9 +487,24 @@ changes what a user sees today.
   windows. Pre-existing seam (see the R2 facts); not worth a migration.
 - **Weekly-cadence subscriptions and annual detection** stay out of scope
   (spec, "Out of scope").
-- **The `/subscriptions` menu's taps answer an invalid save with "Couldn't
-  reach Wealthfolio — try again."** The Telegram question flows say "Couldn't
-  save that — nothing was changed." Make the menu say the same.
+- **A linked hand-added entry revives once detection lapses.** Detection drops
+  a merchant 45 days after its last charge; the linked entry then falls back
+  to `rollForward` of its stored date, so it keeps counting and reminding as
+  if nothing happened. Suggested rule: when a linked entry loses its detection
+  row, treat it as overdue from its last known predicted date and stop
+  counting it until a charge matches again. Deferred because once detection
+  lapses there is no last-charge date left to count from.
+- **The `subs-cost` headline stat is a fourth copy of "what counts".**
+  `shared/report-data.ts` (~403-406) ignores hidden, confirmed and hand-added
+  entries, so it can disagree with the card and Telegram. Feed it the roster
+  (`buildRoster`) instead of the raw cube rows.
+- **Billers on the 29th-31st are predicted a day early after a short month.**
+  The from-last-charge rule steps from the clamped Feb 28 to Mar 28. Suggested
+  improvement: use the largest day-of-month seen in `recent` as the anchor.
+- **Corrupt legacy list, and the closed document shape.** A corrupt legacy
+  `hidden_subscriptions` / `confirmed_subscriptions` list imports as empty
+  (the pre-existing parse). The `v:1` document has a closed shape: a new
+  top-level field needs `v: 2`, or an older writer drops it on rewrite.
 
 ## Reference: name mismatches between the database, the REST API, and the SDK
 

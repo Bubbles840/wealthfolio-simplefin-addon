@@ -199,6 +199,7 @@ export function BudgetTab({
   const subsProps = {
     subscriptionPrefs,
     onSubscriptionEdit,
+    subscriptionsCube: cube,
     // The Remind control's "reminders are sent by the companion" hint uses the
     // stale strip's own two-day test.
     companionStale: stale,
