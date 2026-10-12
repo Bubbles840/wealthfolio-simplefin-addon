@@ -19,7 +19,7 @@ import type { SyncResult } from '../../shared/sync-core.js';
 import { RestSyncHost, RestSyncStore } from './rest-host.js';
 import { WealthfolioClient } from './wealthfolio.js';
 import { resolveDigestRows, resolveReportDetail, shortDate, shortDateTime, formatDollars } from '../../shared/telegram.js';
-import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatMonthlyWrapUp, formatSyncHealthFooter, formatLargeTransactionAlert, formatBalanceDriftAlert, formatFeedLagNotice, formatStuckTransferAlert, formatDuplicatePruneAlert, formatImportNotice, formatRefusedCreatesAlert, formatPoolLine, formatPoolSection, buildDismissKeyboard, dailyReportCarriesProblems, IMPORT_NOTICE_UNCATEGORIZED_CAP, escapeMarkdown, formatComingUpBlock, formatNextWeekLine, LARGE_TX_OUTBOX_SECRET_KEY, RECATEGORIZE_ENTRY_CALLBACK } from '../../shared/telegram.js';
+import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatMonthlyWrapUp, formatSyncHealthFooter, formatLargeTransactionAlert, formatBalanceDriftAlert, formatFeedLagNotice, formatStuckTransferAlert, formatDuplicatePruneAlert, formatImportNotice, formatRefusedCreatesAlert, formatPoolLine, formatPoolSection, buildDismissKeyboard, dailyReportCarriesProblems, IMPORT_NOTICE_UNCATEGORIZED_CAP, escapeMarkdown, formatComingUpBlock, formatNextWeekLine, formatSubscriptionNews, parseNewsSent, pruneNewsSent, SUBSCRIPTION_NEWS_SECRET_KEY, LARGE_TX_OUTBOX_SECRET_KEY, RECATEGORIZE_ENTRY_CALLBACK } from '../../shared/telegram.js';
 import { pruneDismissals, mergeDismissals } from './dismissals.js';
 import { UNDISMISS_PAYLOAD_PREFIX, UNDISMISS_BUTTON_TEXT_PREFIX } from './telegram-listener.js';
 import { DISMISSAL_MAX_AGE_DAYS } from '../../shared/uncategorized.js';
@@ -2151,6 +2151,40 @@ async function sendReportWithRetry(
   }
 }
 
+/**
+ * With the daily report switched off, the subscription lines still arrive:
+ * the 🔔, 📈 and ✓ lines the report would have carried, as ONE short
+ * message, each event at most once (ids in `subscription_news_sent`, pruned
+ * after 60 days). Recorded only after Telegram accepted the message, so a
+ * failed morning tries again the next — a reminder still inside its window
+ * still goes.
+ */
+export async function sendSubscriptionNews(
+  wfClient: WealthfolioClient,
+  tg: { botToken: string; chatId: string },
+  now: Date,
+): Promise<void> {
+  const today = toDateString(now);
+  const read = await readRosterFor(wfClient, now).catch(() => null);
+  if (!read) return;
+  const sent = parseNewsSent(
+    await wfClient.getAddonSecret('simplefin-sync', SUBSCRIPTION_NEWS_SECRET_KEY).catch(() => null),
+  );
+  const news = formatSubscriptionNews(read.roster, today, sent, await readGlyphStyle(wfClient));
+  if (!news) return;
+  const hides = news.cancelled.slice(0, 2).map(hideFromReportButton);
+  const keyboard: InlineKeyboard = { inline_keyboard: [[SUBSCRIPTIONS_BUTTON], ...(hides.length > 0 ? [hides] : [])] };
+  const result = await sendTelegramMessage(tg.botToken, tg.chatId, news.text, undefined, keyboard);
+  if (!result.ok) {
+    log(`Subscription news was not sent: ${result.description}`);
+    return;
+  }
+  log('Subscription news sent (the daily report is off).');
+  const next = pruneNewsSent({ ...sent, ...Object.fromEntries(news.events.map((id) => [id, today])) }, today);
+  await wfClient.setAddonSecret('simplefin-sync', SUBSCRIPTION_NEWS_SECRET_KEY, JSON.stringify(next))
+    .catch((err) => log(`Could not record the subscription news as sent: ${formatError(err)}`));
+}
+
 export async function sendDailyTelegramReport(
   wfClient: WealthfolioClient,
   sleep: (ms: number) => Promise<void> = defaultReportSleep,
@@ -2165,7 +2199,13 @@ export async function sendDailyTelegramReport(
   // The archive carries every finding spelled out: the Reports tab and a push
   // notification have no "Show what to fix" button to unfold a count with.
   await deliverReportEdition(wfClient, 'daily', digest.archive, new Date(), tg?.dailyReportEnabled !== false);
-  if (!tg || !tg.botToken || !tg.chatId || tg.enabled === false || tg.dailyReportEnabled === false) return;
+  if (!tg || !tg.botToken || !tg.chatId || tg.enabled === false) return;
+  if (tg.dailyReportEnabled === false) {
+    // The report is off, but a reminder was asked for: the lines go out on
+    // their own — never both (v1.57's one-voice rule).
+    await sendSubscriptionNews(wfClient, tg, new Date());
+    return;
+  }
 
   await sendReportWithRetry(
     tg.botToken, tg.chatId, digest.text,

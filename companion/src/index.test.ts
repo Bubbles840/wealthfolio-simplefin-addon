@@ -5088,6 +5088,87 @@ describe('subscriptions in the reports', () => {
     expect(freshText).toContain('up from its usual $10.99');
     expect(staleText).not.toContain('up from its usual');
   });
+
+  describe('news while the daily report is off (1.60)', () => {
+    const OFF = JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true, dailyReportEnabled: false });
+    const sends = (fetchMock: ReturnType<typeof vi.fn>) => fetchMock.mock.calls
+      .filter((c: any[]) => String(c[0]).includes('/sendMessage'))
+      .map((c: any[]) => JSON.parse(c[1].body));
+    const memo = async (client: any) => {
+      const raw = await client.getAddonSecret('simplefin-sync', 'subscription_news_sent');
+      return raw ? JSON.parse(raw) : null;
+    };
+
+    it('one message with every new line and its buttons', async () => {
+      const client = clientWith([['telegram_config', OFF], ['report_cube', MORNING()], ['subscription_prefs', REMIND_SPOTIFY]]);
+      const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+      vi.stubGlobal('fetch', fetchMock);
+      await at(MORNING_8AM, () => sendDailyTelegramReport(client));
+      const [body, ...more] = sends(fetchMock);
+      expect(more).toEqual([]);
+      expect(body.text).toBe([
+        '*Coming up*',
+        '🔔 SPOTIFY charges in 3 days · $11.99',
+        '📈 PAYPAL \\*HULU charged $10.99 — up from its usual $9.99.',
+        "✓ NETFLIX didn't charge Oct 3 — cancelled?",
+      ].join('\n'));
+      expect(body.reply_markup.inline_keyboard).toEqual([
+        [{ text: '💳 Subscriptions', callback_data: 'cz:sb:o' }],
+        [{ text: '🙈 Hide NETFLIX', callback_data: `cz:sb:hr:${findingHandle('NETFLIX')}` }],
+      ]);
+      expect(await memo(client)).toEqual({
+        'SPOTIFY|remind|2026-10-15': '2026-10-12',
+        'PAYPAL *HULU|creep|2026-10-10': '2026-10-12',
+        'NETFLIX|cancel|2026-10-03': '2026-10-12',
+      });
+    });
+
+    // Review Focus: daily report off, and the companion down on the reminder's first morning.
+    it('a reminder goes out on the first morning inside its window that the companion runs — and only once', async () => {
+      const client = clientWith([
+        ['telegram_config', OFF],
+        ['report_cube', cubeR2([det('SPOTIFY', { lastDate: '2026-09-15' })])],
+        ['subscription_prefs', REMIND_SPOTIFY],
+      ]);
+      const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+      vi.stubGlobal('fetch', fetchMock);
+      await at(new Date(2026, 9, 11, 8, 0, 0), () => sendDailyTelegramReport(client)); // 4 days out: too early
+      expect(sends(fetchMock)).toEqual([]);
+      // Oct 12: the companion was down. Oct 13: two days out, still inside the window.
+      await at(new Date(2026, 9, 13, 8, 0, 0), () => sendDailyTelegramReport(client));
+      expect(sends(fetchMock).map((b) => b.text)).toEqual(['*Coming up*\n🔔 SPOTIFY charges in 2 days · $11.99']);
+      await at(new Date(2026, 9, 14, 8, 0, 0), () => sendDailyTelegramReport(client));
+      expect(sends(fetchMock)).toHaveLength(1);
+      expect(await memo(client)).toEqual({ 'SPOTIFY|remind|2026-10-15': '2026-10-13' });
+    });
+
+    it('a message Telegram refuses is not recorded, so the next morning tries again', async () => {
+      const client = clientWith([
+        ['telegram_config', OFF],
+        ['report_cube', cubeR2([det('SPOTIFY', { lastDate: '2026-09-15' })])],
+        ['subscription_prefs', REMIND_SPOTIFY],
+      ]);
+      const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: false, error_code: 400, description: 'Bad Request' }) }));
+      vi.stubGlobal('fetch', fetchMock);
+      await at(new Date(2026, 9, 13, 8, 0, 0), () => sendDailyTelegramReport(client));
+      expect(await memo(client)).toBeNull();
+      fetchMock.mockImplementation(async () => ({ json: async () => ({ ok: true }) }));
+      await at(new Date(2026, 9, 14, 8, 0, 0), () => sendDailyTelegramReport(client));
+      expect(sends(fetchMock).at(-1).text).toBe('*Coming up*\n🔔 SPOTIFY charges tomorrow · $11.99');
+      expect(await memo(client)).toEqual({ 'SPOTIFY|remind|2026-10-15': '2026-10-14' });
+    });
+
+    it('with the daily report on, the block rides the report and nothing else is sent', async () => {
+      const client = clientWith([['report_cube', MORNING()], ['subscription_prefs', REMIND_SPOTIFY]]);
+      const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+      vi.stubGlobal('fetch', fetchMock);
+      await at(MORNING_8AM, () => sendDailyTelegramReport(client));
+      const bodies = sends(fetchMock);
+      expect(bodies).toHaveLength(1);
+      expect(bodies[0].text).toContain('*Coming up*');
+      expect(await memo(client)).toBeNull();
+    });
+  });
 });
 
 describe('/reports command (v1.44)', () => {
