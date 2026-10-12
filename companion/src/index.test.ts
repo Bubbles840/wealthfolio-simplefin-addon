@@ -2165,6 +2165,23 @@ describe('buildTelegramCommandHandler', () => {
     expect(sent[0]).toBe('Usage: /afford 20 shopping');
   });
 
+  it('starts the questions when /afford is sent bare', async () => {
+    const { client } = clientFor();
+    const sent = await run(client, 'afford', '');
+    expect(sent[0]).toContain('*Can I afford it? · 1 of 2*');
+  });
+
+  it('answers through the questions exactly as the one-liner does', async () => {
+    const { client } = clientFor();
+    const oneLiner = await run(client, 'afford', '20 groceries');
+    const asks = buildAskSessions(client, buildCategorizeController(client));
+    const { sent, reply } = collector();
+    await asks.start('afford', reply);
+    await asks.onText('20', reply);
+    await asks.onText('groceries', reply);
+    expect(sent[sent.length - 1]).toBe(oneLiner[0]);
+  });
+
   it('answers /afford <amount> <category> with the before → after pair', async () => {
     const { client } = clientFor();
     const sent = await run(client, 'afford', '20 groceries');

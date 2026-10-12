@@ -96,7 +96,7 @@ import { REPORT_CUBE_SECRET_KEY, parseReportCube } from '../../shared/report-cub
 import { HIDDEN_SUBSCRIPTIONS_SECRET_KEY, CONFIRMED_SUBSCRIPTIONS_SECRET_KEY, parseHiddenSubscriptions } from '../../shared/subscriptions.js';
 import { renderReportSvg, reportImageTitle, reportImageCaption, RENDERABLE_REPORT_IDS } from '../../shared/report-render.js';
 import { createAskSessions, CANCELLED_EARLIER, type AskSessions } from './ask-session.js';
-import { buildNewRuleFlow, buildPoolClearFlow, buildPoolSetFlow, mostUsedCategories } from './ask-flows.js';
+import { buildAffordFlow, buildNewRuleFlow, buildPoolClearFlow, buildPoolSetFlow, mostUsedCategories } from './ask-flows.js';
 import { askStartData } from '../../shared/ask-flow.js';
 import { parseBudgetLayout } from '../../shared/budget-layout.js';
 import { parseCustomReports } from '../../shared/report-eval.js';
@@ -2788,6 +2788,15 @@ async function applyPoolClear(wfClient: WealthfolioClient): Promise<string> {
   return 'Pool cleared — reports go back to budgets only.';
 }
 
+/** `/left`, `/afford` and the afford question read the same snapshot the
+ *  daily digest is built from, so they can never disagree about "this week". */
+async function readBudgetSnapshotWithStyle(wfClient: WealthfolioClient) {
+  return {
+    ...readBudgetSnapshot(wealthfolioDbPath(), new Date()),
+    style: await readGlyphStyle(wfClient),
+  };
+}
+
 /**
  * The bot's question flows, registered on ONE session holder. Like the
  * categorize controller, one instance must serve `onCommand`, `onText` and
@@ -2843,6 +2852,17 @@ export function buildAskSessions(wfClient: WealthfolioClient, controller: Catego
       onDone: (a, send) => controller.openRulePreview(a.pattern as string, a.category as string, send),
     };
   });
+  asks.register('afford', async () => {
+    const snapshot = await readBudgetSnapshotWithStyle(wfClient);
+    return {
+      flow: buildAffordFlow(snapshot.categories.filter((c) => c.budget > 0)),
+      onDone: async (a, send) => {
+        // Re-read at Save: the questions may have taken minutes.
+        const { categories, period, style } = await readBudgetSnapshotWithStyle(wfClient);
+        await send(formatAffordReply(categories, period, style, (a.amount as number) / 100, a.query as string));
+      },
+    };
+  });
   return asks;
 }
 
@@ -2869,15 +2889,7 @@ export function buildTelegramCommandHandler(
   controller: CategorizeController = buildCategorizeController(wfClient),
   asks: AskSessions = buildAskSessions(wfClient, controller),
 ): (cmd: ParsedCommand, reply: (text: string, keyboard?: InlineKeyboard) => Promise<void>) => Promise<void> {
-  /** `/left` and `/afford` read the same snapshot the daily digest is built
-   *  from, so the three can never disagree about what "this week" means. */
-  const budgetSnapshot = async () => {
-    const dbPath = wealthfolioDbPath();
-    return {
-      ...readBudgetSnapshot(dbPath, new Date()),
-      style: await readGlyphStyle(wfClient),
-    };
-  };
+  const budgetSnapshot = () => readBudgetSnapshotWithStyle(wfClient);
 
   return async (cmd, reply) => {
     switch (cmd.command) {
@@ -2941,6 +2953,10 @@ export function buildTelegramCommandHandler(
       }
 
       case 'afford': {
+        if (cmd.args.trim() === '') {
+          await asks.start('afford', reply);
+          return;
+        }
         const parsed = parseAffordArgs(cmd.args);
         if (!parsed) {
           await reply(AFFORD_USAGE_REPLY);
