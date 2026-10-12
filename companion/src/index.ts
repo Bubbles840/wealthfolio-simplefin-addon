@@ -92,8 +92,12 @@ import type { CategoryBudgetSnapshot, BudgetPeriod, ParsedCommand, StatusReplyIn
 import { parsePoolArgs, POOL_USAGE_REPLY } from '../../shared/telegram-commands.js';
 import { SEMESTER_POOL_SECRET_KEY, parsePoolConfig } from '../../shared/pool.js';
 import { readPoolStatus, readRunwayMonths, type PoolReportDeps } from './pool-report.js';
+import { readSubscriptionRoster, type RosterRead } from './subscription-data.js';
+import {
+  createSubscriptionsMenu, renderSubscriptionList, SUBSCRIPTIONS_UNREACHABLE_REPLY, type SubscriptionsMenu,
+} from './subscriptions-menu.js';
 import { REPORT_CUBE_SECRET_KEY, parseReportCube } from '../../shared/report-cube.js';
-import { emptySubscriptionPrefs, loadSubscriptionPrefs, type SecretGet, type SecretSet } from '../../shared/subscription-prefs.js';
+import { editSubscriptionPrefs, emptySubscriptionPrefs, loadSubscriptionPrefs, type SecretGet, type SecretSet } from '../../shared/subscription-prefs.js';
 import { HIDDEN_SUBSCRIPTIONS_SECRET_KEY, CONFIRMED_SUBSCRIPTIONS_SECRET_KEY, parseHiddenSubscriptions } from '../../shared/subscriptions.js';
 import { renderReportSvg, reportImageTitle, reportImageCaption, RENDERABLE_REPORT_IDS } from '../../shared/report-render.js';
 import { createAskSessions, CANCELLED, CANCELLED_EARLIER, NOT_WAITING, type AskSessions } from './ask-session.js';
@@ -1570,6 +1574,12 @@ function subscriptionSecrets(wfClient: WealthfolioClient): { get: SecretGet; set
   };
 }
 
+/** The roster as every Telegram surface sees it: cube + document, with
+ *  "today" in the companion's TZ. Rejects when Wealthfolio cannot be read. */
+async function readRosterFor(wfClient: WealthfolioClient, now: Date): Promise<RosterRead> {
+  return readSubscriptionRoster(subscriptionSecrets(wfClient).get, toDateString(now));
+}
+
 function cubeBuildDeps(wfClient: WealthfolioClient, dbPath: string): CubeBuildDeps {
   return {
     accountMeta: async () => {
@@ -3028,6 +3038,22 @@ export function buildTelegramCommandHandler(
         return;
       }
 
+      case 'subscriptions': {
+        // Caught here, unlike most commands: "Couldn't reach Wealthfolio" is
+        // the answer the design promises, not the listener's generic apology.
+        let read: RosterRead;
+        try {
+          read = await readRosterFor(wfClient, new Date());
+        } catch (err) {
+          log(`/subscriptions: reading failed: ${formatError(err)}`);
+          await reply(SUBSCRIPTIONS_UNREACHABLE_REPLY);
+          return;
+        }
+        const screen = renderSubscriptionList(read, 0);
+        await reply(screen.text, screen.keyboard);
+        return;
+      }
+
       case 'status':
         await reply(formatStatusReply(await readStatusReplyInput(wfClient), new Date()));
         return;
@@ -3301,6 +3327,18 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
     log,
   });
 
+  // `/subscriptions` and the report buttons into it. Stateless like the
+  // findings menu: every tap re-reads, so it survives restarts.
+  const subscriptions: SubscriptionsMenu = createSubscriptionsMenu({
+    read: (now) => readRosterFor(wfClient, now),
+    edit: (edit, now) => {
+      const { get, set } = subscriptionSecrets(wfClient);
+      return editSubscriptionPrefs(get, set, edit, now);
+    },
+    now: () => new Date(),
+    log,
+  });
+
   const ensureSession = async (): Promise<void> => {
     if (Date.now() - sessionEstablishedAt < LISTENER_SESSION_MAX_AGE_MS) return;
     const key = process.env.WEALTHFOLIO_API_KEY;
@@ -3450,6 +3488,12 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
       }
       if (findings.handles(cb.data)) {
         await findings.onCallback(cb, ui);
+        return;
+      }
+      // `cz:sb:` before the transaction menu, which reads any `cz:` data it
+      // does not know as an expired session.
+      if (subscriptions.handles(cb.data)) {
+        await subscriptions.onCallback(cb, ui);
         return;
       }
       if (cb.data !== RECATEGORIZE_ENTRY_CALLBACK) {

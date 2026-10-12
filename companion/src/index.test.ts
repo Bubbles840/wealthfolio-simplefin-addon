@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { maskUrl, publishLiveReports, validateStartupEnv, startupWarnings, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, composeDailyDigest, runCompanionSyncExclusive, buildTelegramCommandHandler, applyTelegramDismissal, undoTelegramDismissal, formatDismissedReply, buildTelegramListenerDeps, buildCategorizeController, buildCategorizeDeps, rememberImportScope, sendUnmappedAccountsNotice, updateCheckDeps, buildAskSessions } from './index.js';
+import { findingHandle } from '../../shared/findings.js';
 import { formatHelpReply, parseCommand } from '../../shared/telegram-commands.js';
 import { SIMPLEFIN_SYNC_VERSION } from '../../shared/version.js';
 import { runSyncCore } from '../../shared/sync-core.js';
@@ -2427,6 +2428,41 @@ describe('buildTelegramCommandHandler', () => {
     } finally {
       delete process.env.MIN_SYNC_INTERVAL_HOURS;
     }
+  });
+
+  describe('/subscriptions (1.60)', () => {
+    const cube = JSON.stringify({
+      version: 1, asOf: '2026-10-12T06:00:00.000Z', months: ['2026-10'], categories: [], accounts: [],
+      spend: [[]], uncategorized: [[]], income: [[]], budgets: [[]], merchants: [[]], feesInterest: [0],
+      netWorth: [null], liquid: [null], pool: null,
+      subscriptions: [{
+        name: 'SPOTIFY', monthlyCents: 1199, count: 5, lastDate: '2026-09-15', lastCents: 1199, prevCents: 1199,
+        creep: false, kind: 'subscription', recent: [{ date: '2026-09-15', cents: 1199 }],
+      }],
+    });
+
+    it('replies with the list and one button per row', async () => {
+      const { client } = clientFor([['report_cube', cube]]);
+      const sent: Array<[string, any]> = [];
+      await buildTelegramCommandHandler(client)({ command: 'subscriptions', args: '' }, async (t, k) => { sent.push([t, k]); });
+      expect(sent[0][0]).toContain('💳 *Subscriptions* · $11.99/mo');
+      expect(sent[0][1].inline_keyboard.flat().map((b: any) => b.callback_data)).toContain(`cz:sb:d:${findingHandle('SPOTIFY')}`);
+    });
+
+    it("says so when Wealthfolio can't be reached", async () => {
+      const client = { getAddonSecret: vi.fn(async () => { throw new Error('ECONNREFUSED'); }), setAddonSecret: vi.fn() } as any;
+      const { sent, reply } = collector();
+      await buildTelegramCommandHandler(client)({ command: 'subscriptions', args: '' }, reply);
+      expect(sent).toEqual(["Couldn't reach Wealthfolio — try again."]);
+    });
+
+    it('cz:sb: taps reach the subscriptions menu, not the transaction menu', async () => {
+      const { client } = clientFor([['report_cube', cube]]);
+      const deps = buildTelegramListenerDeps(client);
+      const ui = { edit: vi.fn(async () => {}), answer: vi.fn(async () => {}), send: vi.fn(async () => {}) };
+      await deps.onMenuCallback!({ data: 'cz:sb:o', chatId: 1, messageId: 2 }, ui);
+      expect((ui.send.mock.calls[0] as unknown as [string])[0]).toContain('💳 *Subscriptions*');
+    });
   });
 });
 
