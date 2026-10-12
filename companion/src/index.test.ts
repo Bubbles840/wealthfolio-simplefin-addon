@@ -1996,6 +1996,24 @@ describe('buildTelegramCommandHandler', () => {
     process.env.WEALTHFOLIO_PASSWORD = 'pw';
   });
 
+  describe('listener deps: the open question', () => {
+    it('routes plain text to the open question', async () => {
+      const { client } = clientFor();
+      const deps = buildTelegramListenerDeps(client);
+      const { sent, reply } = collector();
+      await deps.onText!('hello', reply);
+      expect(sent).toEqual(["I'm not waiting for an answer right now — /help lists what I can do."]);
+    });
+
+    it('offers cz:ak: taps to the ask sessions before the categorize menu', async () => {
+      const { client } = clientFor();
+      const deps = buildTelegramListenerDeps(client);
+      const ui = { edit: vi.fn(async () => {}), answer: vi.fn(async () => {}), send: vi.fn(async () => {}) };
+      await deps.onMenuCallback!({ data: 'cz:ak:abc:0:x', chatId: 1, messageId: 2 }, ui);
+      expect(ui.answer).toHaveBeenCalledWith('That question expired.');
+    });
+  });
+
   it('answers /help with the registered command menu', async () => {
     const { client } = clientFor();
     const sent = await run(client, 'help');

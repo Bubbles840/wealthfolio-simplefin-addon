@@ -95,6 +95,7 @@ import { readPoolStatus, readRunwayMonths, type PoolReportDeps } from './pool-re
 import { REPORT_CUBE_SECRET_KEY, parseReportCube } from '../../shared/report-cube.js';
 import { HIDDEN_SUBSCRIPTIONS_SECRET_KEY, CONFIRMED_SUBSCRIPTIONS_SECRET_KEY, parseHiddenSubscriptions } from '../../shared/subscriptions.js';
 import { renderReportSvg, reportImageTitle, reportImageCaption, RENDERABLE_REPORT_IDS } from '../../shared/report-render.js';
+import { createAskSessions, CANCELLED_EARLIER, type AskSessions } from './ask-session.js';
 import { parseBudgetLayout } from '../../shared/budget-layout.js';
 import { parseCustomReports } from '../../shared/report-eval.js';
 import { sliceCubeMonths } from '../../shared/report-cube.js';
@@ -2762,6 +2763,19 @@ export function buildCategorizeController(wfClient: WealthfolioClient): Categori
 }
 
 /**
+ * The bot's question flows, registered on ONE session holder. Like the
+ * categorize controller, one instance must serve `onCommand`, `onText` and
+ * `onMenuCallback`, or a question asked through one could never be answered
+ * through another. Flows are registered by later tasks.
+ */
+export function buildAskSessions(wfClient: WealthfolioClient, controller: CategorizeController): AskSessions {
+  const asks = createAskSessions({ log });
+  void wfClient;
+  void controller;
+  return asks;
+}
+
+/**
  * The bot's command handler: the listener's `onCommand` dependency.
  *
  * Every reply is produced by a formatter in shared/telegram-commands.ts, and
@@ -2782,7 +2796,9 @@ export function buildCategorizeController(wfClient: WealthfolioClient): Categori
 export function buildTelegramCommandHandler(
   wfClient: WealthfolioClient,
   controller: CategorizeController = buildCategorizeController(wfClient),
+  asks: AskSessions = buildAskSessions(wfClient, controller),
 ): (cmd: ParsedCommand, reply: (text: string, keyboard?: InlineKeyboard) => Promise<void>) => Promise<void> {
+  void asks;
   /** `/left` and `/afford` read the same snapshot the daily digest is built
    *  from, so the three can never disagree about what "this week" means. */
   const budgetSnapshot = async () => {
@@ -3096,6 +3112,10 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
    *  every button would answer "that menu expired". */
   const categorize = buildCategorizeController(wfClient);
 
+  /** ONE question slot for commands, plain answers and taps alike. */
+  const asks = buildAskSessions(wfClient, categorize);
+  const runCommand = buildTelegramCommandHandler(wfClient, categorize, asks);
+
   /** The Amazon label picker. Shares the `cz:` callback prefix, so
    *  `onMenuCallback` below asks it first and only then falls through to the
    *  transaction menu. One instance, because its sessions map a tapped button
@@ -3265,7 +3285,13 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
       }
     },
     undoDismissal: (activityId) => undoTelegramDismissal(wfClient, activityId),
-    onCommand: buildTelegramCommandHandler(wfClient, categorize),
+    // A command while a question is open drops the question first and says
+    // so in one line — the command itself then runs exactly as it would have.
+    onCommand: async (cmd, reply) => {
+      if (asks.cancelForCommand()) await reply(CANCELLED_EARLIER);
+      await runCommand(cmd, reply);
+    },
+    onText: (text, reply) => asks.onText(text, reply),
     // Every `cz:` tap, including the import notice's `Categorize these` (which
     // the controller special-cases into a FRESH message — the notice is not the
     // menu). Written as a lambda rather than `categorize.onCallback` so the
@@ -3282,6 +3308,12 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
     // because editing would draw the menu over the notice and destroy the only
     // record in the chat of what just imported.
     onMenuCallback: async (cb, ui) => {
+      // First: `cz:ak:` is the question engine's, and the transaction menu
+      // below would read it as an expired menu.
+      if (asks.handles(cb.data)) {
+        await asks.onCallback(cb, ui);
+        return;
+      }
       // Before the transaction menu: both ride the `cz:` prefix, and the
       // transaction menu treats anything it does not recognise as an expired
       // session — which would silently swallow every Amazon tap.
