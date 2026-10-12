@@ -103,6 +103,10 @@ export interface LinkLeg {
 export interface LinkResult {
   linked: boolean;
   groupId?: string;
+  /** The two re-created rows' ids, in leg order, when the host's echo carried
+   *  them. Linking deletes and re-creates both legs, so these are NEW ids —
+   *  the change log records them for R2. Absent from an older host. */
+  activityIds?: [string, string];
   /** Why the link failed, when it did. Present only on `linked: false`.
    *
    *  Linking DELETES both rows before re-creating them, so a refused re-create

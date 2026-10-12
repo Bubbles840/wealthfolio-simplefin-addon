@@ -74,7 +74,7 @@ describe('linkPairByRecreate', () => {
       };
     };
     const res = await linkPairByRecreate(saveMany, [leg('a', 'wf-a', 'TRANSFER_OUT'), leg('b', 'wf-b', 'TRANSFER_IN')]);
-    expect(res).toEqual({ linked: true, groupId: 'gid-the-host-chose' });
+    expect(res).toEqual({ linked: true, groupId: 'gid-the-host-chose', activityIds: ['new-0', 'new-1'] });
   });
 
   it('reports linked: false when the host silently drops the group', async () => {

@@ -425,7 +425,9 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
         const row = rows.find((r) => r.id === leg.wfId);
         if (row) row.sourceGroupId = groupId;
       }
-      return { linked: true, groupId };
+      // This double keeps the rows (it only stamps the group), so the
+      // "re-created" ids are the old ones.
+      return { linked: true, groupId, activityIds: [legs[0].wfId, legs[1].wfId] };
     },
 
     capabilities: {

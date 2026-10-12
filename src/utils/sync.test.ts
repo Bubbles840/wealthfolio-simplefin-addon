@@ -1752,7 +1752,7 @@ describe('AddonSyncHost.linkPair', () => {
       expect(c.amount).toBe(500);
     }
     expect(creates[0].sourceGroupId).toBe(creates[1].sourceGroupId);
-    expect(result).toEqual({ linked: true, groupId: creates[0].sourceGroupId });
+    expect(result).toEqual({ linked: true, groupId: creates[0].sourceGroupId, activityIds: ['created-0', 'created-1'] });
   });
 
   it('reports linked:false when the host silently drops the group', async () => {
