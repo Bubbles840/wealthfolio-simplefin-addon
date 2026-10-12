@@ -215,3 +215,72 @@ describe('subscriptions card: emptying it (fix round 1)', () => {
     expect(screen.queryByRole('button', { name: /^(Delete|Hide) / })).toBeNull();
   });
 });
+
+describe('subscriptions card: adding and editing by hand (1.60)', () => {
+  const openAdd = () => fireEvent.click(screen.getByRole('button', { name: '+ Add subscription' }));
+
+  it('offers + Add subscription on an empty card too', () => {
+    render(<SubscriptionsCard cube={cubeWith([])} subscriptionPrefs={loaded()} onSubscriptionEdit={vi.fn()} />);
+    expect(screen.getByText(/no monthly subscriptions detected/i)).toBeTruthy();
+    expect(screen.getByRole('button', { name: '+ Add subscription' })).toBeTruthy();
+  });
+
+  it('refuses what the bot refuses, with the same words', () => {
+    const onEdit = vi.fn();
+    render(<SubscriptionsCard cube={cubeWith([det('SPOTIFY')])} subscriptionPrefs={loaded()} onSubscriptionEdit={onEdit} />);
+    openAdd();
+    fireEvent.change(screen.getByLabelText('Amount'), { target: { value: '9,99' } });
+    fireEvent.change(screen.getByLabelText('Next charge'), { target: { value: 'someday' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(screen.getAllByRole('alert').map((a) => a.textContent)).toEqual([
+      'Type a name, up to 40 characters.',
+      "Couldn't read that as an amount — try 9.99.",
+      "Couldn't read that date — try Oct 20 or 2026-10-20.",
+    ]);
+    expect(onEdit).not.toHaveBeenCalled();
+  });
+
+  it('saves a hand-added subscription with its reminder, then closes the form', () => {
+    const onEdit = vi.fn();
+    render(<SubscriptionsCard cube={cubeWith([det('SPOTIFY')])} subscriptionPrefs={loaded()} onSubscriptionEdit={onEdit} />);
+    openAdd();
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Hulu' } });
+    fireEvent.change(screen.getByLabelText('Amount'), { target: { value: '9.99' } });
+    fireEvent.change(screen.getByLabelText('Next charge'), { target: { value: 'Oct 20' } });
+    fireEvent.click(within(screen.getByRole('group', { name: 'Remind before it charges' })).getByRole('button', { name: '3d' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    const after = applied(onEdit);
+    expect(after.manual).toEqual([{ id: expect.stringMatching(/^[0-9a-z]{8}$/), name: 'Hulu', cents: 999, cadence: 'monthly', nextDate: '2026-10-20' }]);
+    expect(after.remind).toEqual({ [`m:${after.manual[0].id}`]: 3 });
+    expect(screen.queryByRole('form', { name: 'Add a subscription' })).toBeNull();
+  });
+
+  it.each([
+    ['Yearly', 'Feb 29', '2027-02-28'], // R2-4: 2027 has no Feb 29
+    ['Monthly', 'Oct 3', '2026-11-03'], // a past date rolls forward
+  ])('%s, "%s" is stored as %s', (cadence, typed, want) => {
+    const onEdit = vi.fn();
+    render(<SubscriptionsCard cube={cubeWith([])} subscriptionPrefs={loaded()} onSubscriptionEdit={onEdit} />);
+    openAdd();
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Domain' } });
+    fireEvent.change(screen.getByLabelText('Amount'), { target: { value: '15' } });
+    fireEvent.click(within(screen.getByRole('group', { name: 'How often' })).getByRole('button', { name: cadence }));
+    fireEvent.change(screen.getByLabelText('Next charge'), { target: { value: typed } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(applied(onEdit).manual[0].nextDate).toBe(want);
+  });
+
+  it('a hand-added entry edits its amount, cadence and date', () => {
+    const onEdit = vi.fn();
+    const base = loaded({ manual: [HULU] });
+    render(<SubscriptionsCard cube={cubeWith([])} subscriptionPrefs={base} onSubscriptionEdit={onEdit} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Hulu' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Hulu' }));
+    const form = screen.getByRole('form', { name: 'Edit subscription' });
+    expect((within(form).getByLabelText('Amount') as HTMLInputElement).value).toBe('9.99');
+    fireEvent.change(within(form).getByLabelText('Amount'), { target: { value: '10.99' } });
+    fireEvent.click(within(form).getByRole('button', { name: 'Yearly' }));
+    fireEvent.click(within(form).getByRole('button', { name: 'Save changes' }));
+    expect(applied(onEdit, base.prefs).manual).toEqual([{ ...HULU, cents: 1099, cadence: 'yearly', nextDate: '2026-10-20' }]);
+  });
+});
