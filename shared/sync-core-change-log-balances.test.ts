@@ -43,6 +43,7 @@ describe('runSyncCore — change log for balances, links and repairs', () => {
     expect(log.entries().map((e) => e.kind)).toEqual(['import', 'starting-balance']);
     expect(log.entries()[1]).toMatchObject({
       summary: "Set Checking's starting balance to $112.50 on Oct 10",
+      account: { sfinId: 'sfin-1', wfId: 'wf-a', name: 'Checking' },
       subject: { activityIds: ['fh-2'], amountCents: 11250, date: '2026-10-10' },
       after: { activityId: 'fh-2', amountCents: 11250, date: '2026-10-10', activityType: 'CREDIT', comment: 'Starting balance · sfin-1' },
       undoable: true,
@@ -89,6 +90,7 @@ describe('runSyncCore — change log for balances, links and repairs', () => {
     expect(plug).toMatchObject({
       actor: 'auto', undoable: true,
       summary: 'Added a $100.00 balance correction to Checking',
+      account: { sfinId: 'sfin-1', wfId: 'wf-a', name: 'Checking' },
       subject: { activityIds: ['fh-1'], amountCents: 10000, date: '2026-10-12' },
       after: { activityId: 'fh-1', accountId: 'wf-a', amountCents: 10000, activityType: 'CREDIT', comment: 'Balance adjustment · sfin-1 · 2026-10-12' },
     });
