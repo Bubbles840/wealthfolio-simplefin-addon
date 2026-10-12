@@ -19,7 +19,7 @@ import type { SyncResult } from '../../shared/sync-core.js';
 import { RestSyncHost, RestSyncStore } from './rest-host.js';
 import { WealthfolioClient } from './wealthfolio.js';
 import { resolveDigestRows, resolveReportDetail, shortDate, shortDateTime, formatDollars } from '../../shared/telegram.js';
-import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatMonthlyWrapUp, formatSyncHealthFooter, formatLargeTransactionAlert, formatBalanceDriftAlert, formatFeedLagNotice, formatStuckTransferAlert, formatDuplicatePruneAlert, formatImportNotice, formatRefusedCreatesAlert, formatPoolLine, formatPoolSection, buildDismissKeyboard, dailyReportCarriesProblems, IMPORT_NOTICE_UNCATEGORIZED_CAP, escapeMarkdown, LARGE_TX_OUTBOX_SECRET_KEY, RECATEGORIZE_ENTRY_CALLBACK } from '../../shared/telegram.js';
+import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatMonthlyWrapUp, formatSyncHealthFooter, formatLargeTransactionAlert, formatBalanceDriftAlert, formatFeedLagNotice, formatStuckTransferAlert, formatDuplicatePruneAlert, formatImportNotice, formatRefusedCreatesAlert, formatPoolLine, formatPoolSection, buildDismissKeyboard, dailyReportCarriesProblems, IMPORT_NOTICE_UNCATEGORIZED_CAP, escapeMarkdown, formatComingUpBlock, formatNextWeekLine, LARGE_TX_OUTBOX_SECRET_KEY, RECATEGORIZE_ENTRY_CALLBACK } from '../../shared/telegram.js';
 import { pruneDismissals, mergeDismissals } from './dismissals.js';
 import { UNDISMISS_PAYLOAD_PREFIX, UNDISMISS_BUTTON_TEXT_PREFIX } from './telegram-listener.js';
 import { DISMISSAL_MAX_AGE_DAYS } from '../../shared/uncategorized.js';
@@ -94,13 +94,12 @@ import { SEMESTER_POOL_SECRET_KEY, parsePoolConfig } from '../../shared/pool.js'
 import { readPoolStatus, readRunwayMonths, type PoolReportDeps } from './pool-report.js';
 import { readSubscriptionRoster, type RosterRead } from './subscription-data.js';
 import {
-  createSubscriptionsMenu, findRosterEntry, renderSubscriptionList, SUBSCRIPTIONS_BUTTON, SUBSCRIPTIONS_RENAME_GONE_REPLY,
+  createSubscriptionsMenu, findRosterEntry, renderSubscriptionList, SUBSCRIPTIONS_BUTTON, SEE_ALL_SUBSCRIPTIONS_BUTTON, hideFromReportButton, SUBSCRIPTIONS_RENAME_GONE_REPLY,
   SUBSCRIPTIONS_UNREACHABLE_REPLY, SUBSCRIPTIONS_UNREADABLE_REPLY, undoRenameButton, type SubscriptionsMenu,
 } from './subscriptions-menu.js';
-import { manualKey, rosterMoney, type Cadence } from '../../shared/subscription-roster.js';
+import { addDaysIso, dueWithin, formatRosterTotal, manualKey, rosterMoney, type Cadence } from '../../shared/subscription-roster.js';
 import { REPORT_CUBE_SECRET_KEY, parseReportCube } from '../../shared/report-cube.js';
 import { addManual, editSubscriptionPrefs, emptySubscriptionPrefs, isUnreadablePrefsError, loadSubscriptionPrefs, newManualId, renameKey, setRemind, SubscriptionPrefsInvalidError, type ManualSubscription, type RemindDays, type SecretGet, type SecretSet, type SubscriptionEdit } from '../../shared/subscription-prefs.js';
-import { HIDDEN_SUBSCRIPTIONS_SECRET_KEY, CONFIRMED_SUBSCRIPTIONS_SECRET_KEY, parseHiddenSubscriptions } from '../../shared/subscriptions.js';
 import { renderReportSvg, reportImageTitle, reportImageCaption, RENDERABLE_REPORT_IDS } from '../../shared/report-render.js';
 import { createAskSessions, CANCELLED, CANCELLED_EARLIER, NOT_WAITING, type AskSessions } from './ask-session.js';
 import { buildAffordFlow, buildNewRuleFlow, buildPoolClearFlow, buildPoolSetFlow, buildSubAddFlow, buildSubRenameFlow, mostUsedCategories } from './ask-flows.js';
@@ -1875,8 +1874,9 @@ export async function composeDailyDigest(
   // on/off switch since 1.57: the line only appears when the pool is in
   // trouble, which is exactly when hiding it would hide the news.
   const poolStatus = await readPoolStatus(poolReportDeps(wfClient, dbPath), now).catch(() => null);
+  const glyphStyle = await readGlyphStyle(wfClient);
   let message = formatDailySpendingDigest(
-    categories, period, await readGlyphStyle(wfClient), subcategoryDisplay,
+    categories, period, glyphStyle, subcategoryDisplay,
     await readCountOffBudget(wfClient), uncategorizedSpend,
     await readCapWeeklyToPool(wfClient),
     await readOverBudgetSpent(wfClient),
@@ -1895,17 +1895,15 @@ export async function composeDailyDigest(
     },
   );
 
-  // A price creep is one line for a couple of mornings, then silence: the
-  // detector re-flags `creep` as long as the newest charge tops the typical
-  // price, but the NEWS is only news while the charge is fresh — repeating it
-  // daily until next month's charge would train the reader to skip it.
-  for (const sub of await readCubeSubscriptions(wfClient)) {
-    const daysSince = (now.getTime() - Date.parse(`${sub.lastDate}T00:00:00Z`)) / 86_400_000;
-    if (sub.creep && daysSince <= CREEP_FRESH_DAYS) {
-      message += `\n\n📈 ${sub.name} charged ${formatDollars(sub.lastCents / 100, 2)}`
-        + ` — up from its usual ${formatDollars(sub.monthlyCents / 100, 2)}.`;
-    }
-  }
+  // "Coming up" (1.60): reminders, the week's charges (Full), the price-rise
+  // line that used to stand alone here (same 3-day rule), and "cancelled?".
+  // From the roster, so it says what the card and /subscriptions say.
+  // Guarded to absence: it can cost itself, never the report.
+  const roster = (await readRosterFor(wfClient, now).catch(() => null))?.roster ?? null;
+  const comingUp = roster
+    ? formatComingUpBlock(roster, toDateString(now), resolveReportDetail(tg), glyphStyle)
+    : null;
+  if (comingUp) message += `\n\n${comingUp.text}`;
 
   // Read so that an unreadable secret stays DISTINGUISHABLE from a missing
   // one: the self-check reports those differently, because "could not check"
@@ -1952,11 +1950,19 @@ export async function composeDailyDigest(
     }
   }
 
+  const rows: InlineKeyboard['inline_keyboard'] = [];
+  if (comingUp) {
+    // Opens the list as a NEW message, like the 🧹 button below it.
+    rows.push([SUBSCRIPTIONS_BUTTON]);
+    const hides = comingUp.cancelled.slice(0, 2).map(hideFromReportButton);
+    if (hides.length > 0) rows.push(hides);
+  }
+  // The 🧹 button only when something is actually folded behind it.
+  if (folded > 0) rows.push([SHOW_FINDINGS_BUTTON]);
   return {
     text: message,
     archive,
-    // The button only when something is actually folded behind it.
-    keyboard: folded > 0 ? { inline_keyboard: [[SHOW_FINDINGS_BUTTON]] } : undefined,
+    keyboard: rows.length > 0 ? { inline_keyboard: rows } : undefined,
   };
 }
 
@@ -1991,32 +1997,6 @@ function findingsDeps(wfClient: WealthfolioClient): FindingsDeps {
  * caches for 6 hours because `/report` can be asked for repeatedly and the
  * answer changes at most once a day.
  */
-/** Days a crept charge still counts as news in the daily digest. */
-const CREEP_FRESH_DAYS = 3;
-
-/** The cube's detected subscriptions, or [] — a guarded addition that can
- *  only cost itself, never the report it rides. */
-async function readCubeSubscriptions(
-  wfClient: WealthfolioClient,
-): Promise<NonNullable<ReturnType<typeof parseReportCube>>['subscriptions'] & object> {
-  const cube = parseReportCube(
-    await wfClient.getAddonSecret('simplefin-sync', REPORT_CUBE_SECRET_KEY).catch(() => null),
-  );
-  // The MONEY set: auto-detected subscriptions plus names the user confirmed
-  // on the card, minus dismissals. Bills and maybes are the card's question
-  // to ask — they never reach a Telegram total unanswered. The cube keeps the
-  // full detection so both answers take effect without a sync.
-  const hidden = new Set(parseHiddenSubscriptions(
-    await wfClient.getAddonSecret('simplefin-sync', HIDDEN_SUBSCRIPTIONS_SECRET_KEY).catch(() => null),
-  ));
-  const confirmed = new Set(parseHiddenSubscriptions(
-    await wfClient.getAddonSecret('simplefin-sync', CONFIRMED_SUBSCRIPTIONS_SECRET_KEY).catch(() => null),
-  ));
-  return (cube?.subscriptions ?? []).filter((sub) =>
-    !hidden.has(sub.name)
-    && ((sub.kind ?? 'subscription') === 'subscription' || confirmed.has(sub.name)));
-}
-
 export const updateCheckDeps: {
   armed: boolean;
   fetchLatestVersion: () => Promise<string | null>;
@@ -2217,11 +2197,11 @@ const BRIEF_WEEKLY_TOP_SPEND_COUNT = 3;
  */
 /** The weekly check-in's text, or `null` when the database cannot be read.
  *  `tg` supplies display options only; no chat has to be configured. */
-export async function composeWeeklyReportMessage(
+export async function composeWeeklyReport(
   wfClient: WealthfolioClient,
   now: Date,
   tg: any,
-): Promise<string | null> {
+): Promise<{ text: string; keyboard?: InlineKeyboard } | null> {
   const dbPath = wealthfolioDbPath();
   if (!dbPath || !existsSync(dbPath)) {
     log('WEALTHFOLIO_DB_PATH not found or missing, skipping weekly summary.');
@@ -2252,20 +2232,45 @@ export async function composeWeeklyReportMessage(
   // Always, while a pool is set: whether it lasts is the weekly report's point.
   const poolStatus = await readPoolStatus(poolDeps, now).catch(() => null);
   const runwayMonths = full ? await readRunwayMonths(poolDeps, now) : null;
+  const glyphStyle = await readGlyphStyle(wfClient);
   let message = formatMonthlyRemainingSummary(
     totalSpent,
     totalBudget,
     topSpends.map((t) => ({ amount: t.amount, description: t.description, category: t.categoryName })),
-    await readGlyphStyle(wfClient),
+    glyphStyle,
     poolStatus,
     runwayMonths,
   );
-  const subs = full ? await readCubeSubscriptions(wfClient) : [];
-  if (subs.length > 0) {
-    const totalCents = subs.reduce((sum, sub) => sum + sub.monthlyCents, 0);
-    message += `\n\n*Subscriptions* — ${formatDollars(totalCents / 100, 2)}/mo across ${subs.length}`;
+  let keyboard: InlineKeyboard | undefined;
+  if (full) {
+    // From the roster since 1.60: the card's names and totals, and what the
+    // coming week will charge. Guarded: it can cost these lines, never the report.
+    const read = await readRosterFor(wfClient, now).catch(() => null);
+    if (read) {
+      const { roster } = read;
+      const lines: string[] = [];
+      if (roster.subscriptions.length > 0) {
+        lines.push(`*Subscriptions* — ${formatRosterTotal(roster)} across ${roster.subscriptions.length}`);
+      }
+      const nextWeek = formatNextWeekLine(dueWithin(roster, addDaysIso(toDateString(now), 1), 7), glyphStyle);
+      if (nextWeek) lines.push(nextWeek);
+      if (lines.length > 0) {
+        message += `\n\n${lines.join('\n')}`;
+        keyboard = { inline_keyboard: [[SEE_ALL_SUBSCRIPTIONS_BUTTON]] };
+      }
+    }
   }
-  return message;
+  return { text: message, keyboard };
+}
+
+/** The weekly report's text alone — the Reports tab's live edition (R2-7:
+ *  publishLiveReports keeps calling this, unchanged). */
+export async function composeWeeklyReportMessage(
+  wfClient: WealthfolioClient,
+  now: Date,
+  tg: any,
+): Promise<string | null> {
+  return (await composeWeeklyReport(wfClient, now, tg))?.text ?? null;
 }
 
 export async function sendWeeklyTelegramReport(
@@ -2275,8 +2280,9 @@ export async function sendWeeklyTelegramReport(
   const tgRaw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_config');
   const tg = parseSecretJson<any>(tgRaw, 'telegram_config');
   const now = new Date();
-  const message = await composeWeeklyReportMessage(wfClient, now, tg ?? {});
-  if (message === null) return;
+  const report = await composeWeeklyReport(wfClient, now, tg ?? {});
+  if (report === null) return;
+  const message = report.text;
   await deliverReportEdition(wfClient, 'weekly', message, now, tg?.weeklyReportEnabled !== false);
 
   if (!tg) return;
@@ -2285,6 +2291,7 @@ export async function sendWeeklyTelegramReport(
   await sendReportWithRetry(
     tg.botToken, tg.chatId, message,
     'weekly', 'Weekly Telegram total-remaining summary sent successfully.', sleep,
+    report.keyboard,
   );
 }
 
