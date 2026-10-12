@@ -2,9 +2,11 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   acceptLink, addManual, confirmKey, declineLink, deleteManual, editSubscriptionPrefs, emptySubscriptionPrefs,
   hideKey, isUnreadablePrefsError, loadSubscriptionPrefs, newManualId, parseSubscriptionPrefs, pruneDeleted,
-  renameKey, restoreDeleted, setRemind, SubscriptionPrefsUnreadableError, SUBSCRIPTION_PREFS_SECRET_KEY,
-  unconfirmKey, undoRename, unhideKey, updateManual, type ManualSubscription, type SubscriptionPrefs,
+  renameKey, restoreDeleted, setRemind, SubscriptionPrefsUnreadableError, SubscriptionPrefsInvalidError,
+  SUBSCRIPTION_PREFS_SECRET_KEY, unconfirmKey, undoRename, unhideKey, updateManual, type ManualSubscription,
+  type SubscriptionPrefs,
 } from './subscription-prefs.js';
+import { CONFIRMED_SUBSCRIPTIONS_SECRET_KEY, HIDDEN_SUBSCRIPTIONS_SECRET_KEY } from './subscriptions.js';
 
 const NOW = new Date('2026-10-12T15:00:00Z');
 const HULU: ManualSubscription = { id: 'hulu0001', name: 'Hulu', cents: 999, cadence: 'monthly', nextDate: '2026-10-20' };
@@ -84,9 +86,48 @@ describe('loadSubscriptionPrefs', () => {
 describe('editSubscriptionPrefs', () => {
   it('re-reads right before writing, so a change made elsewhere since is kept', async () => {
     const m = memory({ [SUBSCRIPTION_PREFS_SECRET_KEY]: JSON.stringify(prefs({ hidden: ['NETFLIX'] })) });
+    // A view taken earlier, before another writer changed the stored document.
+    const seen = await loadSubscriptionPrefs(m.get);
+    expect(seen.prefs.hidden).toEqual(['NETFLIX']);
+    m.data.set(SUBSCRIPTION_PREFS_SECRET_KEY, JSON.stringify(prefs({ hidden: ['NETFLIX', 'HULU'] })));
+    m.get.mockClear();
     const written = await editSubscriptionPrefs(m.get, m.set, (p) => hideKey(p, 'SPOTIFY'), NOW);
-    expect(written.hidden).toEqual(['NETFLIX', 'SPOTIFY']);
+    // The write is based on the latest stored copy, not on the stale view.
+    expect(written.hidden).toEqual(['NETFLIX', 'HULU', 'SPOTIFY']);
+    expect(m.get).toHaveBeenCalledTimes(1);
     expect(JSON.parse(m.data.get(SUBSCRIPTION_PREFS_SECRET_KEY)!)).toEqual(written);
+  });
+
+  it('refuses an edit whose result the parser would not read back — nothing is written', async () => {
+    const m = memory();
+    const seeded = addManual(prefs(), HULU);
+    m.data.set(SUBSCRIPTION_PREFS_SECRET_KEY, JSON.stringify(seeded));
+    const before = m.data.get(SUBSCRIPTION_PREFS_SECRET_KEY);
+    for (const cents of [0, Number.NaN]) {
+      m.set.mockClear();
+      await expect(editSubscriptionPrefs(m.get, m.set, (p) => updateManual(p, 'hulu0001', { cents }), NOW))
+        .rejects.toBeInstanceOf(SubscriptionPrefsInvalidError);
+      expect(m.set).not.toHaveBeenCalled();
+      expect(m.data.get(SUBSCRIPTION_PREFS_SECRET_KEY)).toBe(before);
+    }
+  });
+
+  it('refuses an impossible calendar day in a hand-added entry', async () => {
+    for (const nextDate of ['2026-02-31', '2026-13-45']) {
+      const raw = JSON.stringify(prefs({ manual: [{ ...HULU, nextDate }] }));
+      expect(parseSubscriptionPrefs(raw)).toEqual({ kind: 'corrupt' });
+    }
+    expect(parseSubscriptionPrefs(JSON.stringify(prefs({ manual: [{ ...HULU, nextDate: '2028-02-29' }] }))).kind).toBe('ok');
+  });
+
+  it('mirror writes are independent: a failed hidden write still writes the confirmed legacy key', async () => {
+    const m = memory();
+    m.set.mockImplementation(async (k: string, v: string) => {
+      if (k === HIDDEN_SUBSCRIPTIONS_SECRET_KEY) throw new Error('hidden mirror down');
+      m.data.set(k, v);
+    });
+    await editSubscriptionPrefs(m.get, m.set, (p) => confirmKey(p, 'RENT LLC'), NOW);
+    expect(m.data.get(CONFIRMED_SUBSCRIPTIONS_SECRET_KEY)).toBe('["RENT LLC"]');
   });
 
   it('imports the legacy lists on the first write and mirrors the result back into them', async () => {
@@ -235,5 +276,34 @@ describe('edits', () => {
     expect(isUnreadablePrefsError(new SubscriptionPrefsUnreadableError())).toBe(true);
     expect(isUnreadablePrefsError({ name: 'SubscriptionPrefsUnreadableError' })).toBe(true);
     expect(isUnreadablePrefsError(new Error('x'))).toBe(false);
+  });
+});
+
+describe('key lookups and same-name renames', () => {
+  it('a key named constructor is looked up as data, not as an inherited property', () => {
+    const renamed = renameKey(prefs(), 'constructor', 'Gym');
+    expect(renamed.prevNames).toEqual({ constructor: null });
+    expect(undoRename(renamed, 'constructor')).toEqual(prefs());
+    expect(undoRename(prefs(), 'constructor')).toEqual(prefs());
+    expect(acceptLink(prefs({ manual: [HULU], remind: { constructor: 3 as const } }),
+      { manualId: 'hulu0001', merchant: 'constructor', date: '2026-10-08' }).remind).toEqual({ 'm:hulu0001': 3 });
+    expect(acceptLink(prefs({ manual: [HULU] }), { manualId: 'hulu0001', merchant: 'constructor', date: '2026-10-08' })
+      .remind).toEqual({});
+  });
+
+  it('a rename to the name already shown changes nothing, keeping Undo history', () => {
+    const first = renameKey(prefs(), 'SPOTIFY', 'Spotify');
+    const second = renameKey(first, 'SPOTIFY', ' Spotify ');
+    expect(second).toBe(first);
+    expect(second.prevNames).toEqual({ SPOTIFY: null });
+  });
+});
+
+describe('pruneDeleted edges', () => {
+  it('keeps an entry exactly 7 days old and prunes one with an unparseable deletedAt', () => {
+    const exact = { ...HULU, id: 'edge0001', deletedAt: '2026-10-05T15:00:00.000Z' };
+    const broken = { ...HULU, id: 'bad00001', deletedAt: 'not a date' };
+    const pruned = pruneDeleted(prefs({ deleted: [exact, broken] }), NOW);
+    expect(pruned.deleted).toEqual([exact]);
   });
 });

@@ -82,6 +82,14 @@ export class SubscriptionPrefsUnreadableError extends Error {
   }
 }
 
+/** The edit produced a document this module could not read back. Nothing is saved. */
+export class SubscriptionPrefsInvalidError extends Error {
+  constructor() {
+    super('The subscription settings change was invalid — nothing was saved.');
+    this.name = 'SubscriptionPrefsInvalidError';
+  }
+}
+
 /** By name as well as by class: a bundle or a test double can carry its own copy of the class. */
 export function isUnreadablePrefsError(err: unknown): boolean {
   return err instanceof SubscriptionPrefsUnreadableError
@@ -103,7 +111,14 @@ export function newManualId(random: () => number = Math.random): string {
   return id;
 }
 
-const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
+/** A real calendar day: the shape matches AND it survives a round trip, so 2026-02-31 is refused. */
+function isIsoDay(s: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  const t = Date.parse(`${s}T00:00:00Z`);
+  return !Number.isNaN(t) && new Date(t).toISOString().slice(0, 10) === s;
+}
+/** Own-property lookup. `in` and bare indexing see the prototype, so a key named 'constructor' would read Object's. */
+const own = (rec: object, key: string): boolean => Object.prototype.hasOwnProperty.call(rec, key);
 const INVALID = Symbol('invalid');
 const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 const isStringArray = (v: unknown): v is string[] => Array.isArray(v) && v.every((s) => typeof s === 'string');
@@ -116,7 +131,7 @@ function isManual(v: unknown): v is ManualSubscription {
     && typeof v.name === 'string'
     && Number.isInteger(v.cents) && (v.cents as number) > 0
     && (v.cadence === 'monthly' || v.cadence === 'yearly')
-    && typeof v.nextDate === 'string' && ISO_DAY.test(v.nextDate)
+    && typeof v.nextDate === 'string' && isIsoDay(v.nextDate)
     && (v.merchant === undefined || typeof v.merchant === 'string');
 }
 
@@ -189,9 +204,17 @@ export async function editSubscriptionPrefs(
   if (parsed.kind === 'corrupt') throw new SubscriptionPrefsUnreadableError();
   const base = parsed.kind === 'ok' ? parsed.prefs : await legacySubscriptionPrefs(get);
   const next = pruneDeleted(edit(base), now);
-  await set(SUBSCRIPTION_PREFS_SECRET_KEY, JSON.stringify(next));
+  // Never write what the parser would refuse on the next read.
+  const body = JSON.stringify(next);
+  if (parseSubscriptionPrefs(body).kind !== 'ok') throw new SubscriptionPrefsInvalidError();
+  await set(SUBSCRIPTION_PREFS_SECRET_KEY, body);
+  // Each mirror write is independent: one failing must not skip the other.
   try {
     await set(HIDDEN_SUBSCRIPTIONS_SECRET_KEY, JSON.stringify(next.hidden.filter((k) => !isManualKey(k))));
+  } catch {
+    // Best-effort; see above.
+  }
+  try {
     await set(CONFIRMED_SUBSCRIPTIONS_SECRET_KEY, JSON.stringify(next.confirmed));
   } catch {
     // Best-effort; see above.
@@ -222,15 +245,17 @@ export function unconfirmKey(p: SubscriptionPrefs, key: string): SubscriptionPre
 export function renameKey(p: SubscriptionPrefs, key: string, name: string): SubscriptionPrefs {
   const trimmed = name.trim();
   if (trimmed === '') return p;
+  // Same name as shown now: nothing changes, so the Undo history is kept.
+  if (own(p.names, key) && p.names[key] === trimmed) return p;
   return {
     ...p,
     names: { ...p.names, [key]: trimmed },
-    prevNames: { ...p.prevNames, [key]: p.names[key] ?? null },
+    prevNames: { ...p.prevNames, [key]: own(p.names, key) ? p.names[key] : null },
   };
 }
 
 export function undoRename(p: SubscriptionPrefs, key: string): SubscriptionPrefs {
-  if (!(key in p.prevNames)) return p;
+  if (!own(p.prevNames, key)) return p;
   const prev = p.prevNames[key];
   const names = { ...p.names };
   if (prev === null) delete names[key];
@@ -292,8 +317,8 @@ export function acceptLink(
   const key = manualKey(entry.id);
   const hidden = p.hidden.includes(link.merchant) ? withKey(without(p.hidden, link.merchant), key) : p.hidden;
   const remind = { ...p.remind };
-  if (link.merchant in remind) {
-    if (!(key in remind)) remind[key] = remind[link.merchant];
+  if (own(remind, link.merchant)) {
+    if (!own(remind, key)) remind[key] = remind[link.merchant];
     delete remind[link.merchant];
   }
   return {
