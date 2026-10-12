@@ -118,8 +118,10 @@ Extracted so one-liners and questions read input identically:
   button. Expires **15 minutes** after the last answer.
 - **The next plain message in that chat answers it.** No need to use Telegram's
   Reply.
-- **Any `/command` cancels the open question** and runs; the reply is prefixed
-  "Cancelled your earlier question."
+- **Any `/command` cancels the open question** and runs; one line,
+  "Cancelled your earlier question.", is sent just before the command's reply.
+- The listener honours one configured chat, so "one per chat" is a single
+  slot in practice.
 - **Starting a new flow replaces an open one**, with the same note.
 - **Plain text with no open question:**
   - The chat's question expired in this process (remembered for 1 hour after
@@ -146,7 +148,7 @@ regressions). Only the bare command changes.
 | Command | Bare form today | Bare form after R1 |
 |---|---|---|
 | `/pool` | Shows the pool (or "No pool set" + usage). | Same text, plus `[✏️ Set a new pool]` and, when one is set, `[Clear pool]`. Set: **How much?** → **Must last until?** → summary → Save (same write as `/pool 16000 Dec 12`, start date = today). Clear: "Clear the pool? `[Yes, clear]` `[Cancel]`" (today's `/pool off` stays instant). |
-| `/newrule` | Usage message. | **Which words should match?** (e.g. *trader joes*; the hint says how many of the last 90 days' charges match) → **Which category?** (text, resolved by `resolveCategoryQuery` over the whole tree with the same ambiguity reply; quick-pick buttons for the 6 categories used most in the last 90 days) → hands off to `controller.openRulePreview(pattern, categoryId)`, the existing preview-before-write screen. |
+| `/newrule` | Usage message. | **Which words should match?** (e.g. *trader joes*) → **Which category?** (the question says how many charges in the past year match — the same one-year window as the transfer-rule preview's `countMatches`) (text, resolved by `resolveCategoryQuery` over the whole tree with the same ambiguity reply; quick-pick buttons for the 6 categories used most in the last 90 days) → hands off to `controller.openRulePreview(pattern, categoryId)`, the existing preview-before-write screen. |
 | `/afford` | Usage message. | **How much?** → **Which category?** (quick picks: budgeted categories) → the same `formatAffordReply` answer. |
 
 `/help`'s descriptions change to say the bare command asks
