@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { answerText, startAsk, type AskOutcome } from '../../shared/ask-flow.js';
-import { buildPoolClearFlow, buildPoolSetFlow } from './ask-flows.js';
+import { answerButton, answerText, startAsk, type AskOutcome } from '../../shared/ask-flow.js';
+import { buildNewRuleFlow, buildPoolClearFlow, buildPoolSetFlow, mostUsedCategories } from './ask-flows.js';
 
 const NOW = new Date('2026-10-12T15:00:00Z');
 
@@ -51,5 +51,72 @@ describe('pool-clear flow', () => {
     const flow = buildPoolClearFlow();
     const { state } = startAsk(flow, 'k1');
     expect(answerText(flow, state, 'yes clear')).toEqual({ kind: 'done', answers: { confirm: true } });
+  });
+});
+
+const cats = [
+  { id: 'g', name: 'Groceries', parentId: null, parentName: null },
+  { id: 'r', name: 'Restaurants', parentId: 'f', parentName: 'Food_Drink' },
+  { id: 'h1', name: 'Home', parentId: null, parentName: null },
+  { id: 'h2', name: 'Home Improvement', parentId: null, parentName: null },
+];
+
+describe('mostUsedCategories', () => {
+  it('ranks spending-category assignments by count and ignores other taxonomies', () => {
+    const row = (taxonomyId: string, categoryId: string) => ({ assignments: [{ taxonomyId, categoryId }] });
+    const rows = [row('spending_categories', 'r'), row('spending_categories', 'r'), row('spending_categories', 'g'),
+      row('income_categories', 'g'), row('income_categories', 'g'), row('spending_categories', 'gone')];
+    expect(mostUsedCategories(rows, cats, 6).map((c) => c.id)).toEqual(['r', 'g']);
+  });
+});
+
+describe('newrule flow', () => {
+  const flow = buildNewRuleFlow({ categories: cats, mostUsed: [cats[1], cats[0]], countMatches: (p) => (p === 'trader joes' ? 12 : 0) });
+
+  it('asks for words, then names the match count when asking for the category', () => {
+    const { state } = startAsk(flow, 'k1');
+    const out = answerText(flow, state, 'trader joes');
+    if (out.kind !== 'screen') throw new Error(out.kind);
+    expect(out.screen.text).toContain('12 charges in the past year match "trader joes"');
+  });
+
+  it('says plainly when nothing matches yet', () => {
+    const { state } = startAsk(flow, 'k1');
+    const out = answerText(flow, state, 'nothing here');
+    if (out.kind !== 'screen') throw new Error(out.kind);
+    expect(out.screen.text).toContain('No charges in the past year match');
+  });
+
+  it('escapes Markdown in the echoed words and in quick-pick labels', () => {
+    const { state } = startAsk(flow, 'k1');
+    const out = answerText(flow, state, 'kids_*club');
+    if (out.kind !== 'screen') throw new Error(out.kind);
+    expect(out.screen.text).toContain('kids\\_\\*club');
+    const labels = out.screen.keyboard.inline_keyboard.flat().map((b) => b.text);
+    expect(labels).toContain('Restaurants (Food_Drink)');
+  });
+
+  it('finishes with the category id from a typed name', () => {
+    const at1 = { seq: 'k1', step: 1, answers: { pattern: 'trader joes' } };
+    expect(answerText(flow, at1, 'groc')).toEqual({ kind: 'done', answers: { pattern: 'trader joes', category: 'g' } });
+  });
+
+  it('finishes with the category id from a quick pick', () => {
+    const at1 = { seq: 'k1', step: 1, answers: { pattern: 'trader joes' } };
+    const out = answerButton(flow, at1, 'cz:ak:k1:1:q0');
+    expect(out).toMatchObject({ kind: 'done', answers: { pattern: 'trader joes', category: 'r' } });
+  });
+
+  it('re-asks with the ambiguity reply when a name matches several', () => {
+    const at1 = { seq: 'k1', step: 1, answers: { pattern: 'lowes' } };
+    const out = answerText(flow, at1, 'hom');
+    expect(out.kind).toBe('retry');
+    if (out.kind !== 'retry') return;
+    expect(out.screen.text).toContain('Which one? Home, Home Improvement');
+  });
+
+  it('refuses empty or digits-only words', () => {
+    const { state } = startAsk(flow, 'k1');
+    expect(answerText(flow, state, '1234').kind).toBe('retry');
   });
 });
