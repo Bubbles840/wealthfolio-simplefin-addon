@@ -2464,6 +2464,115 @@ describe('buildTelegramCommandHandler', () => {
       expect((ui.send.mock.calls[0] as unknown as [string])[0]).toContain('💳 *Subscriptions*');
     });
   });
+
+  describe('subscription questions (1.60)', () => {
+    const SUB_CUBE = JSON.stringify({
+      version: 1, asOf: '2026-10-12T06:00:00.000Z', months: ['2026-10'], categories: [], accounts: [],
+      spend: [[]], uncategorized: [[]], income: [[]], budgets: [[]], merchants: [[]], feesInterest: [0],
+      netWorth: [null], liquid: [null], pool: null,
+      subscriptions: [{
+        name: 'SPOTIFY', monthlyCents: 1199, count: 5, lastDate: '2026-09-15', lastCents: 1199, prevCents: 1199,
+        creep: false, kind: 'subscription', recent: [{ date: '2026-09-15', cents: 1199 }],
+      }],
+    });
+    const atMorning = async (fn: () => Promise<void>) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(2026, 9, 12, 9, 0, 0));
+      try { await fn(); } finally { vi.useRealTimers(); }
+    };
+
+    it('adds a subscription through the questions, then offers the list', async () => {
+      const { client, secrets } = clientFor([['report_cube', SUB_CUBE]]);
+      await atMorning(async () => {
+        const asks = buildAskSessions(client, buildCategorizeController(client));
+        const sent: Array<[string, any]> = [];
+        const send = async (t: string, k?: any) => { sent.push([t, k]); };
+        await asks.start('sub-add', send);
+        for (const answer of ['Hulu', '9.99', 'Monthly', 'Oct 20', '3d']) await asks.onText(answer, send);
+        const save = sent[sent.length - 1][1].inline_keyboard.flat().find((b: any) => b.text === '✅ Save').callback_data;
+        await asks.onCallback({ data: save }, { edit: vi.fn(async () => {}), answer: vi.fn(async () => {}), send });
+        const doc = JSON.parse(secrets.get('subscription_prefs')!);
+        expect(doc.manual).toEqual([{ id: expect.stringMatching(/^[0-9a-z]{8}$/), name: 'Hulu', cents: 999, cadence: 'monthly', nextDate: '2026-10-20' }]);
+        expect(doc.remind).toEqual({ [`m:${doc.manual[0].id}`]: 3 });
+        expect(sent[sent.length - 1]).toEqual([
+          '✍️ Added Hulu — $9.99 a month, next charge Oct 20.',
+          { inline_keyboard: [[{ text: '💳 Subscriptions', callback_data: 'cz:sb:o' }]] },
+        ]);
+      });
+    });
+
+    it('renames from the detail button; the reply carries an Undo that puts the old name back', async () => {
+      const { client, secrets } = clientFor([['report_cube', SUB_CUBE]]);
+      await atMorning(async () => {
+        const deps = buildTelegramListenerDeps(client);
+        const sent: Array<[string, any]> = [];
+        const reply = async (t: string, k?: any) => { sent.push([t, k]); };
+        const ui = { edit: vi.fn(async () => {}), answer: vi.fn(async () => {}), send: reply };
+        await deps.onMenuCallback!({ data: `cz:ak:go:sub-rename:${findingHandle('SPOTIFY')}`, chatId: 1, messageId: 2 }, ui);
+        expect(sent[0][0]).toBe('*Rename*\nNew name for SPOTIFY?');
+        await deps.onText!('Spotify Premium', reply, { privateChat: true });
+        expect(JSON.parse(secrets.get('subscription_prefs')!)).toMatchObject({ names: { SPOTIFY: 'Spotify Premium' }, prevNames: { SPOTIFY: null } });
+        const [text, kb] = sent[sent.length - 1];
+        expect(text).toBe('✏️ Renamed SPOTIFY to Spotify Premium.');
+        const undo = kb.inline_keyboard.flat().find((b: any) => b.text === '↩ Undo').callback_data;
+        expect(undo).toBe(`cz:sb:un:${findingHandle('SPOTIFY')}`);
+        await deps.onMenuCallback!({ data: undo, chatId: 1, messageId: 3 }, ui);
+        expect(JSON.parse(secrets.get('subscription_prefs')!).names).toEqual({});
+      });
+    });
+
+    it('a rename button whose entry has gone says so instead of asking', async () => {
+      const { client } = clientFor([['report_cube', SUB_CUBE]]);
+      const deps = buildTelegramListenerDeps(client);
+      const sent: string[] = [];
+      const ui = { edit: vi.fn(async () => {}), answer: vi.fn(async () => {}), send: async (t: string) => { sent.push(t); } };
+      await deps.onMenuCallback!({ data: 'cz:ak:go:sub-rename:deadbeef', chatId: 1, messageId: 2 }, ui);
+      expect(sent).toEqual(['That one is gone now — send /subscriptions for the current list.']);
+    });
+
+    it('a corrupt document stops the add before the first question', async () => {
+      const { client } = clientFor([['subscription_prefs', '{"v":1,"hidden":']]);
+      const asks = buildAskSessions(client, buildCategorizeController(client));
+      const { sent, reply } = collector();
+      await asks.start('sub-add', reply);
+      expect(sent).toEqual(["Couldn't read your subscription settings — nothing was changed."]);
+    });
+
+    it('a document that turns corrupt while the questions run is answered, not overwritten', async () => {
+      const { client, secrets } = clientFor([['report_cube', SUB_CUBE]]);
+      await atMorning(async () => {
+        const asks = buildAskSessions(client, buildCategorizeController(client));
+        const sent: Array<[string, any]> = [];
+        const send = async (t: string, k?: any) => { sent.push([t, k]); };
+        await asks.start('sub-add', send);
+        for (const answer of ['Hulu', '9.99', 'Monthly', 'Oct 20', 'No']) await asks.onText(answer, send);
+        secrets.set('subscription_prefs', '{"v":1,"hidden":');
+        const save = sent[sent.length - 1][1].inline_keyboard.flat().find((b: any) => b.text === '✅ Save').callback_data;
+        await asks.onCallback({ data: save }, { edit: vi.fn(async () => {}), answer: vi.fn(async () => {}), send });
+        expect(sent[sent.length - 1][0]).toBe("Couldn't read your subscription settings — nothing was changed.");
+        expect(secrets.get('subscription_prefs')).toBe('{"v":1,"hidden":');
+      });
+    });
+
+    it('an edit the parser would reject says nothing was saved instead of a generic failure', async () => {
+      const { client, secrets } = clientFor([['report_cube', SUB_CUBE]]);
+      await atMorning(async () => {
+        const asks = buildAskSessions(client, buildCategorizeController(client));
+        const sent: Array<[string, any]> = [];
+        const send = async (t: string, k?: any) => { sent.push([t, k]); };
+        await asks.start('sub-add', send);
+        for (const answer of ['Hulu', '9.99', 'Monthly', 'Oct 20', 'No']) await asks.onText(answer, send);
+        const mod = await import('../../shared/subscription-prefs.js');
+        const spy = vi.spyOn(mod, 'editSubscriptionPrefs').mockRejectedValueOnce(new mod.SubscriptionPrefsInvalidError());
+        try {
+          const save = sent[sent.length - 1][1].inline_keyboard.flat().find((b: any) => b.text === '✅ Save').callback_data;
+          await asks.onCallback({ data: save }, { edit: vi.fn(async () => {}), answer: vi.fn(async () => {}), send });
+        } finally { spy.mockRestore(); }
+        expect(sent[sent.length - 1][0]).toBe("Couldn't save that — nothing was changed.");
+        expect(secrets.has('subscription_prefs')).toBe(false);
+      });
+    });
+  });
 });
 
 describe('buildTelegramListenerDeps', () => {

@@ -94,14 +94,16 @@ import { SEMESTER_POOL_SECRET_KEY, parsePoolConfig } from '../../shared/pool.js'
 import { readPoolStatus, readRunwayMonths, type PoolReportDeps } from './pool-report.js';
 import { readSubscriptionRoster, type RosterRead } from './subscription-data.js';
 import {
-  createSubscriptionsMenu, renderSubscriptionList, SUBSCRIPTIONS_UNREACHABLE_REPLY, type SubscriptionsMenu,
+  createSubscriptionsMenu, findRosterEntry, renderSubscriptionList, SUBSCRIPTIONS_BUTTON, SUBSCRIPTIONS_RENAME_GONE_REPLY,
+  SUBSCRIPTIONS_UNREACHABLE_REPLY, SUBSCRIPTIONS_UNREADABLE_REPLY, undoRenameButton, type SubscriptionsMenu,
 } from './subscriptions-menu.js';
+import { manualKey, rosterMoney, type Cadence } from '../../shared/subscription-roster.js';
 import { REPORT_CUBE_SECRET_KEY, parseReportCube } from '../../shared/report-cube.js';
-import { editSubscriptionPrefs, emptySubscriptionPrefs, loadSubscriptionPrefs, type SecretGet, type SecretSet } from '../../shared/subscription-prefs.js';
+import { addManual, editSubscriptionPrefs, emptySubscriptionPrefs, isUnreadablePrefsError, loadSubscriptionPrefs, newManualId, renameKey, setRemind, SubscriptionPrefsInvalidError, type ManualSubscription, type RemindDays, type SecretGet, type SecretSet, type SubscriptionEdit } from '../../shared/subscription-prefs.js';
 import { HIDDEN_SUBSCRIPTIONS_SECRET_KEY, CONFIRMED_SUBSCRIPTIONS_SECRET_KEY, parseHiddenSubscriptions } from '../../shared/subscriptions.js';
 import { renderReportSvg, reportImageTitle, reportImageCaption, RENDERABLE_REPORT_IDS } from '../../shared/report-render.js';
 import { createAskSessions, CANCELLED, CANCELLED_EARLIER, NOT_WAITING, type AskSessions } from './ask-session.js';
-import { buildAffordFlow, buildNewRuleFlow, buildPoolClearFlow, buildPoolSetFlow, mostUsedCategories } from './ask-flows.js';
+import { buildAffordFlow, buildNewRuleFlow, buildPoolClearFlow, buildPoolSetFlow, buildSubAddFlow, buildSubRenameFlow, mostUsedCategories } from './ask-flows.js';
 import { askStartData } from '../../shared/ask-flow.js';
 import { parseBudgetLayout } from '../../shared/budget-layout.js';
 import { parseCustomReports } from '../../shared/report-eval.js';
@@ -2823,6 +2825,33 @@ async function readBudgetSnapshotWithStyle(wfClient: WealthfolioClient) {
   };
 }
 
+/** One subscription write for the question flows, reported as an outcome so
+ *  each flow can answer with the matching sentence. */
+async function writeSubscriptionPrefs(
+  wfClient: WealthfolioClient,
+  edit: SubscriptionEdit,
+): Promise<'ok' | 'unreadable' | 'invalid' | 'unreachable'> {
+  const { get, set } = subscriptionSecrets(wfClient);
+  try {
+    await editSubscriptionPrefs(get, set, edit, new Date());
+    return 'ok';
+  } catch (err) {
+    if (isUnreadablePrefsError(err)) return 'unreadable';
+    if (err instanceof SubscriptionPrefsInvalidError) return 'invalid';
+    log(`Subscription write failed: ${formatError(err)}`);
+    return 'unreachable';
+  }
+}
+
+const SUBSCRIPTION_INVALID_REPLY = "Couldn't save that — nothing was changed.";
+
+/** The sentence for a write that did not go through. */
+function subscriptionWriteFailure(outcome: 'unreadable' | 'invalid' | 'unreachable'): string {
+  return outcome === 'unreadable' ? SUBSCRIPTIONS_UNREADABLE_REPLY
+    : outcome === 'invalid' ? SUBSCRIPTION_INVALID_REPLY
+    : SUBSCRIPTIONS_UNREACHABLE_REPLY;
+}
+
 /**
  * The bot's question flows, registered on ONE session holder. Like the
  * categorize controller, one instance must serve `onCommand`, `onText` and
@@ -2898,6 +2927,72 @@ export function buildAskSessions(wfClient: WealthfolioClient, controller: Catego
         // Re-read at Save: the questions may have taken minutes.
         const { categories, period, style } = await readBudgetSnapshotWithStyle(wfClient);
         await send(formatAffordReply(categories, period, style, (a.amount as number) / 100, a.query as string));
+      },
+    };
+  });
+  asks.register('sub-add', async (_arg, send) => {
+    // Checked before the five questions, not after them: a document that
+    // cannot be written must not cost the answers.
+    const loaded = await loadSubscriptionPrefs(subscriptionSecrets(wfClient).get).catch(() => null);
+    if (!loaded) {
+      await send(SUBSCRIPTIONS_UNREACHABLE_REPLY);
+      return null;
+    }
+    if (loaded.unreadable) {
+      await send(SUBSCRIPTIONS_UNREADABLE_REPLY);
+      return null;
+    }
+    return {
+      flow: buildSubAddFlow(new Date()),
+      onDone: async (a, reply) => {
+        const entry: ManualSubscription = {
+          id: newManualId(), name: a.name as string, cents: a.amount as number,
+          cadence: a.cadence as Cadence, nextDate: a.nextDate as string,
+        };
+        const remind = (a.remind ?? null) as RemindDays | null;
+        const outcome = await writeSubscriptionPrefs(wfClient, (p) => setRemind(addManual(p, entry), manualKey(entry.id), remind));
+        if (outcome !== 'ok') {
+          await reply(subscriptionWriteFailure(outcome));
+          return;
+        }
+        await reply(
+          `✍️ Added ${escapeMarkdown(entry.name)} — ${rosterMoney(entry.cents)} ${entry.cadence === 'yearly' ? 'a year' : 'a month'}, next charge ${shortDate(entry.nextDate)}.`,
+          { inline_keyboard: [[SUBSCRIPTIONS_BUTTON]] },
+        );
+      },
+    };
+  });
+  asks.register('sub-rename', async (arg, send) => {
+    let read: RosterRead;
+    try {
+      read = await readRosterFor(wfClient, new Date());
+    } catch (err) {
+      log(`Ask flow sub-rename: reading failed: ${formatError(err)}`);
+      await send(SUBSCRIPTIONS_UNREACHABLE_REPLY);
+      return null;
+    }
+    if (read.unreadable) {
+      await send(SUBSCRIPTIONS_UNREADABLE_REPLY);
+      return null;
+    }
+    const entry = findRosterEntry(read.roster, arg ?? '');
+    if (!entry) {
+      await send(SUBSCRIPTIONS_RENAME_GONE_REPLY);
+      return null;
+    }
+    return {
+      flow: buildSubRenameFlow(entry.displayName),
+      onDone: async (a, reply) => {
+        const name = a.name as string;
+        const outcome = await writeSubscriptionPrefs(wfClient, (p) => renameKey(p, entry.key, name));
+        if (outcome !== 'ok') {
+          await reply(subscriptionWriteFailure(outcome));
+          return;
+        }
+        await reply(
+          `✏️ Renamed ${escapeMarkdown(entry.displayName)} to ${escapeMarkdown(name)}.`,
+          { inline_keyboard: [[undoRenameButton(entry.handle)], [SUBSCRIPTIONS_BUTTON]] },
+        );
       },
     };
   });

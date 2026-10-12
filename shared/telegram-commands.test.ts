@@ -17,6 +17,8 @@ import {
   parseAmountCents,
   parseDateInput,
   nextOccurrence,
+  parseSubscriptionDate,
+  parseSubscriptionName,
 } from './telegram-commands';
 import type { CategoryBudgetSnapshot, BudgetPeriod, StatusReplyInput } from './telegram-commands';
 import { DEFAULT_GLYPH_STYLE, formatRelativeTime } from './telegram.js';
@@ -694,5 +696,39 @@ describe('More commands wording (1.60)', () => {
       expect(byName[name]).toMatch(/asks/);
       expect(byName[name]).toContain(`/${name} `);
     }
+  });
+});
+
+describe('subscription answers (1.60)', () => {
+  const now = new Date('2026-10-12T15:00:00Z');
+  const today = '2026-10-12';
+
+  it('reads a name: trimmed, inner spaces collapsed, 1–40 characters', () => {
+    expect(parseSubscriptionName('  Hulu   Plus ')).toBe('Hulu Plus');
+    expect(parseSubscriptionName('   ')).toBeNull();
+    expect(parseSubscriptionName('x'.repeat(41))).toBeNull();
+  });
+
+  it.each([
+    ['Oct 20', 'monthly', '2026-10-20'],
+    ['Oct 3', 'monthly', '2026-11-03'],
+    ['Oct 3', 'yearly', '2027-10-03'],
+    ['2025-03-03', 'yearly', '2027-03-03'],
+    ['Jan 31', 'monthly', '2026-10-31'],
+    ['today', 'monthly', '2026-10-12'],
+  ] as const)('%s (%s) means %s — a past date rolls forward', (input, cadence, want) => {
+    expect(parseSubscriptionDate(input, now, cadence, today)).toBe(want);
+  });
+
+  // R2-4: Feb 29 typed in a year without one.
+  it.each([
+    ['Feb 29', 'yearly', '2027-02-28'],
+    ['february 29th', 'monthly', '2026-10-28'],
+  ] as const)('%s (%s) lands on %s', (input, cadence, want) => {
+    expect(parseSubscriptionDate(input, now, cadence, today)).toBe(want);
+  });
+
+  it.each(['', 'soon', 'Feb 30', '2026-02-29'])('refuses %j', (input) => {
+    expect(parseSubscriptionDate(input, now, 'monthly', today)).toBeNull();
   });
 });

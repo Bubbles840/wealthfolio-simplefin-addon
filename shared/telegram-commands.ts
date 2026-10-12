@@ -14,6 +14,7 @@ import type { GlyphStyle } from './telegram.js';
 // second copy of the `Name (Parent)` rule is how the preview and the miss reply
 // would come to disagree about which category they are talking about.
 import { categoryDisplayName } from './categorize-menu.js';
+import { rollForward, type Cadence } from './subscription-roster.js';
 
 export interface ParsedCommand {
   /** Lowercased, without the slash: 'report', 'left', … */
@@ -680,6 +681,35 @@ export function nextOccurrence(iso: string, today: string): string {
   if (iso >= today) return iso;
   const [y, m, d] = iso.split('-').map((n) => parseInt(n, 10));
   return poolDateString(y + 1, m - 1, d) ?? poolDateString(y + 1, m - 1, d - 1)!;
+}
+
+/** Hints shared by the bot's add/rename questions and the app's add form,
+ *  so the two refuse the same input with the same words. */
+export const SUB_NAME_HINT = 'Type a name, up to 40 characters.';
+export const SUB_AMOUNT_HINT = "Couldn't read that as an amount — try 9.99.";
+export const SUB_DATE_HINT = "Couldn't read that date — try Oct 20 or 2026-10-20.";
+
+/** A subscription's name: trimmed, inner runs of spaces collapsed, 1–40 characters. */
+export function parseSubscriptionName(text: string): string | null {
+  const name = (text ?? '').trim().replace(/\s+/g, ' ');
+  return name.length >= 1 && name.length <= 40 ? name : null;
+}
+
+/**
+ * A subscription's next charge date. A past date means its next occurrence
+ * by the cadence (monthly rolls by months, yearly by years), counted from
+ * what was typed so a 31st stays a 31st. "Feb 29" in a year without one is
+ * Feb 28 (R2-4) — parseDateInput refuses it, so it is caught here.
+ */
+export function parseSubscriptionDate(text: string, now: Date, cadence: Cadence, today: string): string | null {
+  let parsed = parseDateInput(text, now);
+  if (parsed === null) {
+    const md = (text ?? '').trim().toLowerCase().match(/^([a-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?$/);
+    if (md && md[1].startsWith('feb') && Number(md[2]) === 29) {
+      parsed = { iso: `${now.getUTCFullYear()}-02-28`, form: 'month-day' };
+    }
+  }
+  return parsed === null ? null : rollForward(parsed.iso, cadence, today);
 }
 
 /**
