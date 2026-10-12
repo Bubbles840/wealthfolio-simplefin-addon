@@ -14,6 +14,11 @@ import {
 import type { AmazonLedger } from './amazon-ledger.js';
 import type { ActivityType, SimplefinTransaction, UnmappedAccount } from './types.js';
 import type { ActivityWrite, HoldingsSyncOutcome, ImportRow, LinkLeg, LinkResult, SaveManyRequest, SaveManyResult, SyncHost, SyncStore } from './sync-host.js';
+import {
+  amazonLabelChange, amazonLabelOf, bankUpdateChange, bookkeepingChange, duplicateRemovedChange, importChange,
+  pendingRemovedChange, stampChange, transferTypeChange,
+  type ChangeAccount, type ChangeDraft, type ChangeEntry, type ChangeLogSink,
+} from './change-entries.js';
 
 /**
  * A datable timestamp for a SimpleFin transaction: `posted` when present, else
@@ -556,6 +561,14 @@ export interface SyncOptions {
    *  what this run imports) so the Sync page can offer a balance adjustment for
    *  anything SimpleFin can't supply. Implies force (bypasses the interval). */
   heal?: boolean;
+  /**
+   * Where this run's change-log entries go (shared/change-log.ts). Absent —
+   * an older host, a test that does not care — means nothing is recorded and
+   * nothing about the run changes. The core collects an entry for every write
+   * that SUCCEEDED and appends them once, at the end, best-effort: a failed
+   * append is caught here and never alters the result.
+   */
+  changeLog?: ChangeLogSink;
 }
 
 /** Distinct marker so the UI can recognise an interval skip and offer to
@@ -749,9 +762,11 @@ async function attemptSave(
 async function saveWithRowFallback(
   host: SyncHost,
   req: SaveManyRequest,
-): Promise<SaveManyResult> {
+): Promise<SaveManyResult & { deleted: string[] }> {
   const bulk = await attemptSave(host, req);
-  if ((bulk.errors ?? []).length === 0) return bulk;
+  // `deleted`: the delete ids whose request came back clean — the only deletes
+  // the change log may claim. The error shape cannot say which id failed.
+  if ((bulk.errors ?? []).length === 0) return { ...bulk, deleted: [...(req.deleteIds ?? [])] };
 
   const created = [...(bulk.created ?? [])];
   const updated = [...(bulk.updated ?? [])];
@@ -763,9 +778,11 @@ async function saveWithRowFallback(
   );
   const landedUpdates = new Set(updated.map((a) => a.id).filter((id): id is string => !!id));
 
+  let deleted: string[] = [];
   if ((req.deleteIds ?? []).length > 0) {
     const del = await attemptSave(host, { deleteIds: req.deleteIds });
     for (const e of del.errors ?? []) errors.push(e);
+    if ((del.errors ?? []).length === 0) deleted = [...req.deleteIds!];
   }
 
   for (const u of req.updates ?? []) {
@@ -804,7 +821,7 @@ async function saveWithRowFallback(
     }
   }
 
-  return { created, updated, errors };
+  return { created, updated, errors, deleted };
 }
 
 /**
@@ -1547,6 +1564,55 @@ export async function runSyncCore(
   store: SyncStore,
   opts: SyncOptions = {},
 ): Promise<SyncResult> {
+  const sink = opts.changeLog;
+  const changes: ChangeEntry[] = [];
+  const logChange: RecordChange | null = sink
+    ? (draft) => { changes.push(stampChange(draft, sink.writer, new Date(), sink.run)); }
+    : null;
+  try {
+    return await runSyncPass(host, store, opts, logChange);
+  } finally {
+    // Once, at the end, whatever happened above — and never at the run's
+    // expense: the sink is not supposed to reject, and if it does the result
+    // the caller gets is exactly the one it would have got without a log.
+    if (sink && changes.length > 0) {
+      try {
+        await sink.append(changes);
+      } catch (e: any) {
+        console.warn(`[simplefin-sync] change log: ${changes.length} change(s) not recorded: ${String(e?.message ?? e)}`);
+      }
+    }
+  }
+}
+
+/** Records one change-log entry for a write that succeeded. */
+type RecordChange = (draft: ChangeDraft) => void;
+
+/**
+ * A stored row as the create request that would make it again — what R2's
+ * undo needs to put back a duplicate the prune removed.
+ */
+function recreatePayload(row: StoredRow, currency: string): ActivityWrite {
+  return {
+    accountId: row.wfAccountId,
+    activityType: row.type,
+    activityDate: row.date,
+    ...(isTransferType(row.type) ? {} : { symbol: { symbol: `$CASH-${currency}` } }),
+    amount: row.absCents / 100,
+    ...(row.feeCents ? { fee: row.feeCents / 100 } : {}),
+    currency,
+    comment: row.comment ?? '',
+    ...(row.subtype ? { subtype: row.subtype } : {}),
+    ...(typeof row.flowExternal === 'boolean' ? { metadata: JSON.stringify({ flow: { is_external: row.flowExternal } }) } : {}),
+  };
+}
+
+async function runSyncPass(
+  host: SyncHost,
+  store: SyncStore,
+  opts: SyncOptions,
+  logChange: RecordChange | null,
+): Promise<SyncResult> {
   const errors: string[] = [];
   const autoAdjust = await store.getAutoAdjust();
   const heal = opts.heal || autoAdjust || (await store.getAutoHeal());
@@ -2083,6 +2149,13 @@ export async function runSyncCore(
 
     try {
     const preparedAll = preparedByAccount.get(sfAccount.id) ?? [];
+    /** This account, as change-log entries name it. */
+    const accountRef: ChangeAccount = { sfinId: sfAccount.id, wfId: wfAccountId, name: wfNames.get(wfAccountId) || sfAccount.name };
+    /** A row's signed amount in cents: the feed's when it has the row, else from the type. */
+    const signedCentsOf = (txId: string, type: string, absCents: number): number => {
+      const signed = signedByKey.get(accountTxKey(sfAccount.id, txId));
+      return signed !== undefined ? Math.round(signed * 100) : OUTFLOW_TYPES.has(type) ? -absCents : absCents;
+    };
 
     // Build the feed for this account and reconcile it against the rows already
     // imported (matched by SimpleFin tx id, so a changed resolved type updates
@@ -2188,6 +2261,15 @@ export async function runSyncCore(
               `[simplefin-sync] ${DUPLICATE_PRUNE_LOG_TAG}: deleted activity ${row.wfId} — a surplus copy of transaction ${row.txId} in account ${sfAccount.id}`,
               entry,
             );
+            logChange?.(duplicateRemovedChange({
+              account: accountRef,
+              txKey: accountTxKey(sfAccount.id, row.txId),
+              activityId: row.wfId,
+              description: entry.description,
+              amountCents: signedCentsOf(row.txId, row.type, entry.amountCents),
+              date: row.date,
+              payload: { ...recreatePayload(row, sfAccount.currency) },
+            }));
           }
         }
       }
@@ -2210,6 +2292,7 @@ export async function runSyncCore(
             const row = existing.find((r) => r.wfId === u.id);
             if (row) { row.type = u.activityType; row.absCents = Math.round((u.amount ?? 0) * 100); row.feeCents = 0; }
           }
+          logChange?.(bookkeepingChange({ step: 'legacy-placeholder', account: accountRef, activityIds: legacyRewrites.map((u) => u.id!) }));
           console.info(
             `[simplefin-sync] ${LEGACY_PLACEHOLDER_REWRITE_LOG_TAG}: restated ${legacyRewrites.length} pre-v1.49 placeholder(s) in account ${sfAccount.id} as TRANSFER_OUT with their real amounts`,
           );
@@ -2233,6 +2316,7 @@ export async function runSyncCore(
             const row = existing.find((r) => r.wfId === u.id);
             if (row) row.flowExternal = true;
           }
+          logChange?.(bookkeepingChange({ step: 'external-marker', account: accountRef, activityIds: stamps.map((u) => u.id!) }));
           console.info(
             `[simplefin-sync] ${EXTERNAL_MARKER_STAMP_LOG_TAG}: marked ${stamps.length} opening-balance/plug/in-transit row(s) in account ${sfAccount.id} as external, so Wealthfolio stops reporting them as incomplete transfers`,
           );
@@ -2256,7 +2340,22 @@ export async function runSyncCore(
         } else {
           for (const u of lateLabels) {
             const row = existing.find((r) => r.wfId === u.id);
-            if (row) row.comment = u.comment;
+            if (!row) continue;
+            const hit = amazonLabelled.get(sfAccount.id)?.get(row.txId);
+            if (hit) {
+              logChange?.(amazonLabelChange({
+                account: accountRef,
+                txKey: accountTxKey(sfAccount.id, row.txId),
+                activityId: row.wfId,
+                description: hit.bare,
+                amountCents: signedCentsOf(row.txId, row.type, row.absCents),
+                date: row.date,
+                beforeNote: row.comment ?? '',
+                afterNote: u.comment,
+                label: amazonLabelOf(hit.bare, hit.enriched),
+              }));
+            }
+            row.comment = u.comment;
           }
           console.info(
             `[simplefin-sync] ${AMAZON_LATE_LABEL_LOG_TAG}: added the Amazon category to ${lateLabels.length} charge(s) in account ${sfAccount.id} imported before their order email was read`,
@@ -2844,6 +2943,66 @@ export async function runSyncCore(
           sourceGroupId: a.sourceGroupId ?? prior?.sourceGroupId ?? null,
           sfAccountId: sfAccount.id,
         });
+      }
+
+      // The change log: an entry per write the host CONFIRMED — a create or an
+      // update off its echo, a delete only when its request came back clean.
+      // A refused create is in none of these and records nothing (it is on
+      // `refusedCreates` already).
+      if (logChange) {
+        for (const a of result.created ?? []) {
+          const txId = txIdFromComment(a.comment);
+          const t = txId ? createdFeedByTxId.get(txId) : undefined;
+          if (!txId || !t || !a.id) continue;
+          const key = accountTxKey(sfAccount.id, txId);
+          const facts = {
+            account: accountRef, txKey: key, activityId: a.id, description: descByKey.get(key) ?? '',
+            amountCents: signedCentsOf(txId, t.type, t.absCents), date: t.date,
+          };
+          logChange(importChange({ ...facts, pending: !!t.pending, activityType: t.type }));
+          // Held as a transfer that has not found its other half: a decision
+          // of its own, undone in R2 with `notTransfer` on this leg.
+          if (t.inTransit) logChange(transferTypeChange({ ...facts, activityType: t.type, previousType: null, held: true }));
+        }
+        const updateTo = new Map(plan.updates.map((u) => [u.wfId, u.to]));
+        for (const a of result.updated ?? []) {
+          const to = a.id ? updateTo.get(a.id) : undefined;
+          const stored = to ? planExisting.find((r) => r.wfId === a.id) : undefined;
+          if (!to || !stored) continue;
+          const key = accountTxKey(sfAccount.id, to.txId);
+          const facts = {
+            account: accountRef, txKey: key, activityId: stored.wfId,
+            description: descByKey.get(key) ?? descriptionFromComment(stored.comment),
+            amountCents: signedCentsOf(to.txId, to.type, to.absCents), date: to.date,
+          };
+          // Two of these are the sync's own transfer decisions, not the bank's:
+          // a row now held in transit, and a placeholder that ran out of time
+          // (an unpaired leg always passes through the placeholder first).
+          const wasInTransit = (stored.comment ?? '').startsWith(IN_TRANSIT_COMMENT_PREFIX);
+          if (to.inTransit && !wasInTransit) {
+            logChange(transferTypeChange({ ...facts, activityType: to.type, previousType: stored.type, held: true }));
+          } else if (wasInTransit && !to.inTransit && !isTransferType(to.type)) {
+            logChange(transferTypeChange({ ...facts, activityType: to.type, previousType: stored.type, held: false }));
+          } else {
+            logChange(bankUpdateChange({
+              ...facts,
+              before: { absCents: stored.absCents, date: stored.date, pending: stored.pending, activityType: stored.type, subtype: stored.subtype ?? null },
+              after: { absCents: to.absCents, date: to.date, pending: to.pending, activityType: to.type, subtype: to.subtype ?? null },
+            }));
+          }
+        }
+        for (const id of result.deleted) {
+          const stored = planExisting.find((r) => r.wfId === id);
+          if (!stored) continue;
+          logChange(pendingRemovedChange({
+            account: accountRef,
+            txKey: accountTxKey(sfAccount.id, stored.txId),
+            activityId: stored.wfId,
+            description: descriptionFromComment(stored.comment),
+            amountCents: signedCentsOf(stored.txId, stored.type, stored.absCents),
+            date: stored.date,
+          }));
+        }
       }
     }
 
