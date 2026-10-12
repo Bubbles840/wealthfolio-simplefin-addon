@@ -80,6 +80,7 @@ vi.mock('./sqlite-native.js', () => ({
   // replaces the WHOLE module, so an export index.ts imports but the factory
   // omits fails at import time and takes every test in this file with it.
   getNativeSpendingCategories: vi.fn(() => []),
+  countRulePatternMatches: vi.fn(() => ({ total: 0, spending: 0 })),
   getNativeSubcategorySpending: vi.fn(() => []),
   getNativeCategoryCatalog: vi.fn(() => ([
     { name: 'Transportation', parent: null, icon: 'Car', color: '#24837B', hasBudget: true, hasSpend: false },
@@ -4030,10 +4031,40 @@ describe('the /categorize wiring', () => {
     };
 
     it('answers one usage line for anything that does not parse', async () => {
-      for (const args of ['', 'just some text', '= groceries', 'trader joes =']) {
+      for (const args of ['just some text', '= groceries', 'trader joes =']) {
         const { sent } = await runNewRule(args);
         expect(sent).toEqual([['Usage: /newrule trader joes = groceries', undefined]]);
       }
+    });
+
+    it('starts the questions when sent bare', async () => {
+      vi.mocked(getNativeSpendingCategories).mockReturnValue([
+        { id: 'c1', name: 'Groceries', parentId: null, parentName: null },
+      ] as any);
+      vi.mocked(existsSync).mockReturnValue(true);
+      const { sent } = await runNewRule('');
+      expect(sent[0][0]).toContain('*New rule · 1 of 2*');
+    });
+
+    it('hands the answers to the rule preview', async () => {
+      vi.mocked(getNativeSpendingCategories).mockReturnValue([
+        { id: 'c1', name: 'Groceries', parentId: null, parentName: null },
+      ] as any);
+      vi.mocked(existsSync).mockReturnValue(true);
+      const { client } = clientFor();
+      const controller = { ...buildCategorizeController(client), openRulePreview: vi.fn(async () => {}) };
+      const asks = buildAskSessions(client, controller as any);
+      const { reply } = collect();
+      await asks.start('newrule', reply);
+      await asks.onText('trader joes', reply);
+      await asks.onText('groceries', reply);
+      expect(controller.openRulePreview).toHaveBeenCalledWith('trader joes', 'c1', reply);
+    });
+
+    it('answers bare /newrule without a database the same way the one-liner does', async () => {
+      vi.mocked(existsSync).mockReturnValue(false);
+      const { sent } = await runNewRule('');
+      expect(sent[0][0]).toBe("The companion has no database access right now, so it can't look up your categories.");
     });
 
     it('asks which one when the category query is ambiguous', async () => {

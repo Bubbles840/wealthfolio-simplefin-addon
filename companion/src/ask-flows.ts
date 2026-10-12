@@ -10,8 +10,10 @@
  * summary prints goes through `escapeMarkdown` here.
  */
 import type { AskFlow } from '../../shared/ask-flow.js';
-import { formatDollars, shortDate } from '../../shared/telegram.js';
-import { nextOccurrence, parseAmountCents, parseDateInput } from '../../shared/telegram-commands.js';
+import { categoryDisplayName } from '../../shared/categorize-menu.js';
+import { escapeMarkdown, formatDollars, shortDate } from '../../shared/telegram.js';
+import { formatCategoryQueryMiss, NEWRULE_CATEGORY_LIST_HINT, nextOccurrence, parseAmountCents, parseDateInput, resolveCategoryQuery } from '../../shared/telegram-commands.js';
+import type { NativeSpendingCategory } from './sqlite-native.js';
 
 const AMOUNT_HINT = "Couldn't read that as an amount — try 16000 or $16,000.";
 const DATE_HINT = "Couldn't read that date — try Dec 12 or 2026-12-12.";
@@ -59,5 +61,67 @@ export function buildPoolClearFlow(): AskFlow {
       prompt: () => 'Clear the pool? Reports go back to budgets only.',
       options: () => [{ label: 'Yes, clear', value: true }],
     }],
+  };
+}
+
+/** The spending categories filed most often in `rows`, most-used first —
+ *  `/newrule`'s quick picks. Other taxonomies and deleted categories drop. */
+export function mostUsedCategories(
+  rows: ReadonlyArray<{ assignments: ReadonlyArray<{ taxonomyId: string; categoryId: string }> }>,
+  categories: NativeSpendingCategory[],
+  limit = 6,
+): NativeSpendingCategory[] {
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    for (const a of row.assignments) {
+      if (a.taxonomyId === 'spending_categories') counts.set(a.categoryId, (counts.get(a.categoryId) ?? 0) + 1);
+    }
+  }
+  const byId = new Map(categories.map((c) => [c.id, c]));
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([id]) => byId.get(id))
+    .filter((c): c is NativeSpendingCategory => c !== undefined)
+    .slice(0, limit);
+}
+
+export function buildNewRuleFlow(input: {
+  categories: NativeSpendingCategory[];
+  mostUsed: NativeSpendingCategory[];
+  countMatches: (pattern: string) => number;
+}): AskFlow {
+  return {
+    id: 'newrule',
+    command: 'newrule',
+    title: 'New rule',
+    steps: [
+      {
+        id: 'pattern',
+        kind: 'text',
+        prompt: () => "Which words from the bank's description should the rule match? (e.g. trader joes)",
+        parse: (text) => (/[a-z]/i.test(text)
+          ? { ok: true, value: text.trim() }
+          : { ok: false, hint: "Type a few words from the bank's description, e.g. trader joes." }),
+      },
+      {
+        id: 'category',
+        kind: 'text',
+        prompt: (a) => {
+          const pattern = a.pattern as string;
+          const n = input.countMatches(pattern);
+          const quoted = `"${escapeMarkdown(pattern)}"`;
+          const head = n === 0
+            ? `No charges in the past year match ${quoted} yet — the rule will still file future ones.`
+            : `${n} ${n === 1 ? 'charge' : 'charges'} in the past year match ${quoted}.`;
+          return `${head}\nWhich category should they go to? Type a name or tap one.`;
+        },
+        parse: (text) => {
+          const result = resolveCategoryQuery(input.categories, text);
+          if (result.kind === 'one') return { ok: true, value: result.category.id };
+          return { ok: false, hint: formatCategoryQueryMiss(result, text, NEWRULE_CATEGORY_LIST_HINT) ?? 'No category by that name.' };
+        },
+        quick: () => input.mostUsed.map((c) => ({ label: categoryDisplayName(c), value: c.id })),
+      },
+    ],
   };
 }

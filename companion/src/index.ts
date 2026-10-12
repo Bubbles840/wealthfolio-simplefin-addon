@@ -96,7 +96,7 @@ import { REPORT_CUBE_SECRET_KEY, parseReportCube } from '../../shared/report-cub
 import { HIDDEN_SUBSCRIPTIONS_SECRET_KEY, CONFIRMED_SUBSCRIPTIONS_SECRET_KEY, parseHiddenSubscriptions } from '../../shared/subscriptions.js';
 import { renderReportSvg, reportImageTitle, reportImageCaption, RENDERABLE_REPORT_IDS } from '../../shared/report-render.js';
 import { createAskSessions, CANCELLED_EARLIER, type AskSessions } from './ask-session.js';
-import { buildPoolClearFlow, buildPoolSetFlow } from './ask-flows.js';
+import { buildNewRuleFlow, buildPoolClearFlow, buildPoolSetFlow, mostUsedCategories } from './ask-flows.js';
 import { askStartData } from '../../shared/ask-flow.js';
 import { parseBudgetLayout } from '../../shared/budget-layout.js';
 import { parseCustomReports } from '../../shared/report-eval.js';
@@ -2804,7 +2804,45 @@ export function buildAskSessions(wfClient: WealthfolioClient, controller: Catego
     flow: buildPoolClearFlow(),
     onDone: async (_a, send) => { await send(await applyPoolClear(wfClient)); },
   }));
-  void controller;
+  asks.register('newrule', async (_arg, send) => {
+    const dbPath = categorizeDbPath();
+    if (dbPath === null) {
+      await send(NEWRULE_NO_DATABASE_REPLY);
+      return null;
+    }
+    let categories;
+    try {
+      categories = getNativeSpendingCategories(dbPath);
+    } catch (err) {
+      log(`Ask flow newrule: reading spending categories failed: ${formatError(err)}`);
+      await send(NEWRULE_NO_DATABASE_REPLY);
+      return null;
+    }
+    const today = new Date();
+    const tomorrow = toDateString(new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1));
+    const quarterAgo = toDateString(new Date(today.getFullYear(), today.getMonth(), today.getDate() - 90));
+    // Quick picks are a convenience: an unreadable history costs the buttons,
+    // never the question.
+    let recent: ReturnType<typeof getNativeCategorizedSpending> = [];
+    try {
+      recent = getNativeCategorizedSpending(dbPath, quarterAgo, tomorrow);
+    } catch (err) {
+      log(`Ask flow newrule: reading recent filings failed: ${formatError(err)}`);
+    }
+    // The SAME one-year window transfer learning's preview counts over: a
+    // rule is permanent, so the question is what it catches in general.
+    const yearAgo = toDateString(new Date(today.getFullYear() - 1, today.getMonth(), today.getDate()));
+    return {
+      flow: buildNewRuleFlow({
+        categories,
+        mostUsed: mostUsedCategories(recent, categories),
+        countMatches: (pattern) => countRulePatternMatches(dbPath, pattern, yearAgo, tomorrow).total,
+      }),
+      // Never writes a rule itself: the existing preview discloses what the
+      // rule would file before anything is saved.
+      onDone: (a, send) => controller.openRulePreview(a.pattern as string, a.category as string, send),
+    };
+  });
   return asks;
 }
 
@@ -2831,7 +2869,6 @@ export function buildTelegramCommandHandler(
   controller: CategorizeController = buildCategorizeController(wfClient),
   asks: AskSessions = buildAskSessions(wfClient, controller),
 ): (cmd: ParsedCommand, reply: (text: string, keyboard?: InlineKeyboard) => Promise<void>) => Promise<void> {
-  void asks;
   /** `/left` and `/afford` read the same snapshot the daily digest is built
    *  from, so the three can never disagree about what "this week" means. */
   const budgetSnapshot = async () => {
@@ -2997,6 +3034,12 @@ export function buildTelegramCommandHandler(
         return;
 
       case 'newrule': {
+        // Bare /newrule asks (1.60). The flow's own start checks the database
+        // and says the same sentence the one-liner does when it is missing.
+        if (cmd.args.trim() === '') {
+          await asks.start('newrule', reply);
+          return;
+        }
         const parsed = parseNewRuleArgs(cmd.args);
         if (!parsed) {
           await reply(NEWRULE_USAGE_REPLY);
