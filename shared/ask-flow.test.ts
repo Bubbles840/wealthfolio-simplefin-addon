@@ -112,6 +112,25 @@ describe('answerText', () => {
   });
 });
 
+describe('typed escape words', () => {
+  it.each(['cancel', 'Stop', ' CANCEL '])('%s cancels on any step', (word) => {
+    expect(answerText(flow, startAsk(flow, 'k1').state, word)).toEqual({ kind: 'cancel' });
+    expect(answerText(flow, { seq: 'k1', step: 1, answers: { amount: 25 } }, word)).toEqual({ kind: 'cancel' });
+  });
+
+  it('back goes one step back, and cancels on the first question', () => {
+    const out = answerText(flow, { seq: 'k1', step: 1, answers: { amount: 25 } }, 'Back');
+    expect(out).toMatchObject({ kind: 'screen', state: { step: 0 } });
+    expect(answerText(flow, startAsk(flow, 'k1').state, 'back')).toEqual({ kind: 'cancel' });
+  });
+
+  it('works at the summary too', () => {
+    const atSummary = { seq: 'k1', step: 2, answers: { amount: 25, kind: 'm' } };
+    expect(answerText(flow, atSummary, 'cancel')).toEqual({ kind: 'cancel' });
+    expect(answerText(flow, atSummary, 'back')).toMatchObject({ kind: 'screen', state: { step: 1 } });
+  });
+});
+
 describe('answerButton', () => {
   const at1 = { seq: 'k1', step: 1, answers: { amount: 25 } };
 

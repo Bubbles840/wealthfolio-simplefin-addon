@@ -239,10 +239,43 @@ describe('createAskSessions', () => {
     expect(t.done).toHaveBeenCalledWith({ amount: 25, kind: 'm' }, t.ui.send);
   });
 
-  it('answers a tap on a question that no longer exists', async () => {
+  it('answers a tap with nothing open as moved on, not expired', async () => {
     const t = setup();
     await t.sessions.onCallback({ data: 'cz:ak:abc:0:x' }, t.ui);
+    expect(t.ui.answer).toHaveBeenCalledWith(ASK_MOVED_ON);
+  });
+
+  it('says expired only when an expiry is remembered', async () => {
+    const t = setup();
+    await t.sessions.start('demo', t.send);
+    t.tick(15 * 60_000 + 1);
+    await t.sessions.onCallback({ data: 'cz:ak:abc:0:x' }, t.ui);
     expect(t.ui.answer).toHaveBeenCalledWith('That question expired.');
+  });
+
+  it('says moved on after a flow finished or was cancelled', async () => {
+    const t = setup();
+    await t.sessions.start('demo', t.send);
+    await t.sessions.onText('cancel', t.send);
+    await t.sessions.onCallback({ data: 'cz:ak:abc:0:x' }, t.ui);
+    expect(t.ui.answer).toHaveBeenCalledWith(ASK_MOVED_ON);
+  });
+
+  it('typed cancel closes the question and says so', async () => {
+    const t = setup();
+    await t.sessions.start('demo', t.send);
+    await t.sessions.onText('Stop', t.send);
+    expect(t.sent[t.sent.length - 1][0]).toBe('Cancelled.');
+    await t.sessions.onText('25', t.send);
+    expect(t.sent[t.sent.length - 1][0]).toBe(NOT_WAITING);
+  });
+
+  it('typed back returns to the previous question', async () => {
+    const t = setup();
+    await t.sessions.start('demo', t.send);
+    await t.sessions.onText('25', t.send);
+    await t.sessions.onText('back', t.send);
+    expect(t.sent[t.sent.length - 1][0]).toContain('How much?');
   });
 
   it('only claims cz:ak: data', () => {

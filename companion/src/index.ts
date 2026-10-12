@@ -95,7 +95,7 @@ import { readPoolStatus, readRunwayMonths, type PoolReportDeps } from './pool-re
 import { REPORT_CUBE_SECRET_KEY, parseReportCube } from '../../shared/report-cube.js';
 import { HIDDEN_SUBSCRIPTIONS_SECRET_KEY, CONFIRMED_SUBSCRIPTIONS_SECRET_KEY, parseHiddenSubscriptions } from '../../shared/subscriptions.js';
 import { renderReportSvg, reportImageTitle, reportImageCaption, RENDERABLE_REPORT_IDS } from '../../shared/report-render.js';
-import { createAskSessions, CANCELLED_EARLIER, type AskSessions } from './ask-session.js';
+import { createAskSessions, CANCELLED, CANCELLED_EARLIER, NOT_WAITING, type AskSessions } from './ask-session.js';
 import { buildAffordFlow, buildNewRuleFlow, buildPoolClearFlow, buildPoolSetFlow, mostUsedCategories } from './ask-flows.js';
 import { askStartData } from '../../shared/ask-flow.js';
 import { parseBudgetLayout } from '../../shared/budget-layout.js';
@@ -3389,6 +3389,12 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
     // A command while a question is open drops the question first and says
     // so in one line — the command itself then runs exactly as it would have.
     onCommand: async (cmd, reply) => {
+      // `/cancel` is a quiet alias for dropping the open question; it never
+      // reaches /help's "Unknown command".
+      if (cmd.command === 'cancel') {
+        await reply(asks.cancelForCommand() ? CANCELLED : NOT_WAITING);
+        return;
+      }
       if (asks.cancelForCommand()) await reply(CANCELLED_EARLIER);
       await runCommand(cmd, reply);
     },
