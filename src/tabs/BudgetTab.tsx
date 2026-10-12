@@ -12,6 +12,7 @@ import { newCustomReportId, type CustomReport } from '../../shared/report-eval';
 import { ReportBuilder } from '../components/budget/ReportBuilder';
 import type { SecretsStore } from '../utils/secrets';
 import { PALETTES, paletteVars } from '../components/budget/palettes';
+import type { LoadedSubscriptionPrefs, SubscriptionEdit } from '../../shared/subscription-prefs';
 
 /**
  * The Budget tab: the addon's first and default view, ONE grid since v1.33.0.
@@ -44,11 +45,10 @@ export interface BudgetTabProps {
   onLayoutReset?: () => void;
   onCustomReportsChange: (next: CustomReport[]) => void;
   store: SecretsStore;
-  /** Subscription-card answers, owned by the page like layout is. */
-  hiddenSubscriptions?: string[];
-  onHiddenSubscriptionsChange?: (next: string[]) => void;
-  confirmedSubscriptions?: string[];
-  onConfirmedSubscriptionsChange?: (next: string[]) => void;
+  /** The subscription document, owned by the page like layout is; null until loaded. */
+  subscriptionPrefs?: LoadedSubscriptionPrefs | null;
+  /** One edit to it. Absent → the card is read-only. */
+  onSubscriptionEdit?: (edit: SubscriptionEdit) => void;
   /** Jumps to Wealthfolio's activities page — the drill view's escape hatch. */
   onOpenActivities?: () => void;
   /** Opens Settings on the background-sync card — the empty state's way out. */
@@ -79,8 +79,7 @@ const MAX_R = 16;
 
 export function BudgetTab({
   cube, customReports, layout, onLayoutChange, onLayoutReset, onCustomReportsChange, store,
-  hiddenSubscriptions = [], onHiddenSubscriptionsChange,
-  confirmedSubscriptions = [], onConfirmedSubscriptionsChange, onOpenActivities, openRequest,
+  subscriptionPrefs = null, onSubscriptionEdit, onOpenActivities, openRequest,
   onSetUpCompanion,
 }: BudgetTabProps) {
   const [fullId, setFullId] = useState<string | null>(null);
@@ -198,20 +197,12 @@ export function BudgetTab({
   };
 
   const subsProps = {
-    hiddenSubscriptions,
-    confirmedSubscriptions,
-    onHideSubscription: onHiddenSubscriptionsChange
-      ? (name: string) => onHiddenSubscriptionsChange([...hiddenSubscriptions.filter((n) => n !== name), name])
-      : undefined,
-    onConfirmSubscription: onConfirmedSubscriptionsChange
-      ? (name: string) => onConfirmedSubscriptionsChange([...confirmedSubscriptions.filter((n) => n !== name), name])
-      : undefined,
-    onUnhideSubscription: onHiddenSubscriptionsChange
-      ? (name: string) => onHiddenSubscriptionsChange(hiddenSubscriptions.filter((n) => n !== name))
-      : undefined,
-    onRestoreSubscriptions: onHiddenSubscriptionsChange
-      ? () => onHiddenSubscriptionsChange([])
-      : undefined,
+    subscriptionPrefs,
+    onSubscriptionEdit,
+    // The Remind control's "reminders are sent by the companion" hint uses the
+    // stale strip's own two-day test.
+    companionStale: stale,
+    onSetUpCompanion,
     headlinePicks: layout?.headline,
     onHeadlinePicksChange: (ids: string[]) => onLayoutChange({ ...storedLayout, headline: ids }),
     onDrill: (category: string) => setFullId(`drill:${category}`),

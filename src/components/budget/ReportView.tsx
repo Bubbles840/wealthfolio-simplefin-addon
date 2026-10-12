@@ -13,6 +13,9 @@ import {
   dataCheckResult, subscriptionSummary, budgetVsActualAvgData,
   headlineStatValues, DEFAULT_HEADLINE_IDS, MAX_HEADLINE_STATS,
 } from './report-data';
+import {
+  confirmKey, hideKey, unhideKey, type LoadedSubscriptionPrefs, type SubscriptionEdit,
+} from '../../../shared/subscription-prefs';
 
 /**
  * One report, rendered by id — the single dispatch point the hero row, the
@@ -926,7 +929,7 @@ export function ReportView({
   id, cube, customReports, hero = false, categories, density = 2,
   hiddenSubscriptions, confirmedSubscriptions, onHideSubscription, onConfirmSubscription,
   onUnhideSubscription, onRestoreSubscriptions, headlinePicks, onHeadlinePicksChange,
-  onDrill, onOpenActivities,
+  onDrill, onOpenActivities, subscriptionPrefs, onSubscriptionEdit, companionStale, onSetUpCompanion,
 }: {
   id: string;
   cube: ReportCube;
@@ -951,6 +954,13 @@ export function ReportView({
   onDrill?: (category: string) => void;
   /** The escape hatch out of a drill view into Wealthfolio's activities. */
   onOpenActivities?: () => void;
+  /** 1.60: the subscription document and its one edit path (Task 11 renders
+   *  the new card from them; until then they feed the old one). */
+  subscriptionPrefs?: LoadedSubscriptionPrefs | null;
+  onSubscriptionEdit?: (edit: SubscriptionEdit) => void;
+  /** The cube is over two days old (BudgetTab's STALE_MS). */
+  companionStale?: boolean;
+  onSetUpCompanion?: () => void;
 }) {
   let body: React.ReactNode;
   if (id.startsWith('drill:')) {
@@ -980,20 +990,25 @@ export function ReportView({
       case 'cumulative-flow': body = <CumulativeFlow cube={cube} />; break;
       case 'uncat-trend': body = <UncatTrend cube={cube} />; break;
       case 'data-check': body = <DataCheck cube={cube} />; break;
-      case 'subscriptions':
+      case 'subscriptions': {
+        // Transitional: the document drives the pre-1.60 card until Task 11
+        // replaces it. The old props remain only for ReportView.test.tsx.
+        const prefs = subscriptionPrefs?.prefs;
+        const edit = onSubscriptionEdit;
         body = (
           <Subscriptions
             cube={cube}
             full={hero}
-            hidden={hiddenSubscriptions}
-            confirmed={confirmedSubscriptions}
-            onHide={onHideSubscription}
-            onConfirm={onConfirmSubscription}
-            onUnhide={onUnhideSubscription}
-            onRestore={onRestoreSubscriptions}
+            hidden={prefs ? prefs.hidden : hiddenSubscriptions}
+            confirmed={prefs ? prefs.confirmed : confirmedSubscriptions}
+            onHide={edit ? (name) => edit((p) => hideKey(p, name)) : onHideSubscription}
+            onConfirm={edit ? (name) => edit((p) => confirmKey(p, name)) : onConfirmSubscription}
+            onUnhide={edit ? (name) => edit((p) => unhideKey(p, name)) : onUnhideSubscription}
+            onRestore={edit ? () => edit((p) => ({ ...p, hidden: [] })) : onRestoreSubscriptions}
           />
         );
         break;
+      }
       default: body = null;
     }
   }
