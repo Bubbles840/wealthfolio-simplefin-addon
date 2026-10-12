@@ -99,9 +99,13 @@ export function buildNewRuleFlow(input: {
         id: 'pattern',
         kind: 'text',
         prompt: () => "Which words from the bank's description should the rule match? (e.g. trader joes)",
-        parse: (text) => (/[a-z]/i.test(text)
-          ? { ok: true, value: text.trim() }
-          : { ok: false, hint: "Type a few words from the bank's description, e.g. trader joes." }),
+        parse: (text) => {
+          // `=` and `→` are the one-liner's separator; here the category is the next question.
+          if (/[=→]/.test(text)) return { ok: false, hint: "Just the words — I'll ask for the category next." };
+          return /[a-z]/i.test(text)
+            ? { ok: true, value: text.trim() }
+            : { ok: false, hint: "Type a few words from the bank's description, e.g. trader joes." };
+        },
       },
       {
         id: 'category',
@@ -111,8 +115,8 @@ export function buildNewRuleFlow(input: {
           const n = input.countMatches(pattern);
           const quoted = `"${escapeMarkdown(pattern)}"`;
           const head = n === 0
-            ? `No charges in the past year match ${quoted} yet — the rule will still file future ones.`
-            : `${n} ${n === 1 ? 'charge' : 'charges'} in the past year match ${quoted}.`;
+            ? `No transactions in the past year match ${quoted} yet — the rule will still file future ones.`
+            : `${n} ${n === 1 ? 'transaction' : 'transactions'} in the past year match ${quoted}.`;
           return `${head}\nWhich category should they go to? Type a name or tap one.`;
         },
         parse: (text) => {

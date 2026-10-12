@@ -117,7 +117,18 @@ function advance(flow: AskFlow, state: AskState, value: unknown, echo?: string):
 const retry = (flow: AskFlow, state: AskState, hint: string): AskOutcome =>
   ({ kind: 'retry', state, screen: renderAsk(flow, state, hint) });
 
+/** One step back; on the first question there is nothing to go back to, so it cancels. */
+function goBack(flow: AskFlow, state: AskState): AskOutcome {
+  if (state.step === 0) return { kind: 'cancel' };
+  const back: AskState = { ...state, step: state.step - 1 };
+  return { kind: 'screen', state: back, screen: renderAsk(flow, back) };
+}
+
 export function answerText(flow: AskFlow, state: AskState, text: string): AskOutcome {
+  // Typed escape words work on every step, like the buttons they stand for.
+  const word = text.trim().toLowerCase();
+  if (word === 'cancel' || word === 'stop') return { kind: 'cancel' };
+  if (word === 'back') return goBack(flow, state);
   if (state.step >= flow.steps.length) return retry(flow, state, SUMMARY_HINT);
   const step = flow.steps[state.step];
   const input = text.trim();
@@ -139,9 +150,7 @@ export function answerButton(flow: AskFlow, state: AskState, raw: string): AskOu
   const atSummary = state.step >= flow.steps.length;
   if (action === 'x') return { kind: 'cancel' };
   if (action === 'b') {
-    if (state.step === 0) return { kind: 'cancel' };
-    const back: AskState = { ...state, step: state.step - 1 };
-    return { kind: 'screen', state: back, screen: renderAsk(flow, back) };
+    return goBack(flow, state);
   }
   if (action === 's') return atSummary ? { kind: 'done', answers: state.answers, echo: ASK_SAVE } : { kind: 'stale' };
   if (atSummary) return { kind: 'stale' };

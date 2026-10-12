@@ -77,17 +77,17 @@ describe('newrule flow', () => {
     const { state } = startAsk(flow, 'k1');
     const out = answerText(flow, state, 'trader joes');
     if (out.kind !== 'screen') throw new Error(out.kind);
-    expect(out.screen.text).toContain('12 charges in the past year match "trader joes"');
+    expect(out.screen.text).toContain('12 transactions in the past year match "trader joes"');
   });
 
   it('says plainly when nothing matches yet', () => {
     const { state } = startAsk(flow, 'k1');
     const out = answerText(flow, state, 'nothing here');
     if (out.kind !== 'screen') throw new Error(out.kind);
-    expect(out.screen.text).toContain('No charges in the past year match');
+    expect(out.screen.text).toContain('No transactions in the past year match');
   });
 
-  it('escapes Markdown in the echoed words and in quick-pick labels', () => {
+  it('escapes Markdown in the echoed words while quick-pick labels stay plain', () => {
     const { state } = startAsk(flow, 'k1');
     const out = answerText(flow, state, 'kids_*club');
     if (out.kind !== 'screen') throw new Error(out.kind);
@@ -113,6 +113,16 @@ describe('newrule flow', () => {
     expect(out.kind).toBe('retry');
     if (out.kind !== 'retry') return;
     expect(out.screen.text).toContain('Which one? Home, Home Improvement');
+  });
+
+  it('refuses text with = or → and points at the next question', () => {
+    const { state } = startAsk(flow, 'k1');
+    for (const text of ['trader joes = groceries', 'trader joes → groceries']) {
+      const out = answerText(flow, state, text);
+      expect(out.kind).toBe('retry');
+      if (out.kind !== 'retry') return;
+      expect(out.screen.text).toContain("Just the words — I'll ask for the category next.");
+    }
   });
 
   it('refuses empty or digits-only words', () => {

@@ -12,7 +12,8 @@
  *
  * This module relies on the listener: `send`/`reply` and every `ui.*` method
  * never reject, and the listener wraps onCommand, onMenuCallback and onText in
- * a catch. So this module adds no try/catch around transport calls, except
+ * a catch. It also relies on the listener handling ONE update at a time:
+ * onCallback holds the open question across awaits. So this module adds no try/catch around transport calls, except
  * where a failed cosmetic edit must not strand an answer (see onCallback).
  */
 import {
@@ -35,6 +36,7 @@ export const CANCELLED_EARLIER = 'Cancelled your earlier question.';
 export const NOT_WAITING = "I'm not waiting for an answer right now — /help lists what I can do.";
 export const ASK_MOVED_ON = 'That question has moved on.';
 const QUESTION_GONE = 'That question expired.';
+export const CANCELLED = 'Cancelled.';
 const UNKNOWN_FLOW = 'That button is no longer available.';
 const DONE_FAILED = 'Something went wrong finishing that — check the companion logs.';
 
@@ -158,6 +160,9 @@ export function createAskSessions(opts: {
       } else if (outcome.kind === 'done') {
         open = null;
         await finish(o.run, outcome.answers, send);
+      } else if (outcome.kind === 'cancel') {
+        open = null;
+        await send(CANCELLED);
       }
     },
 
@@ -174,7 +179,9 @@ export function createAskSessions(opts: {
       }
       const o = current();
       if (!o) {
-        await ui.answer(QUESTION_GONE);
+        // "Expired" only when an expiry is actually remembered; a flow that
+        // finished or was cancelled has simply moved on.
+        await ui.answer(expired && now() - expired.at <= expiredMemory ? QUESTION_GONE : ASK_MOVED_ON);
         return;
       }
       const outcome = answerButton(o.run.flow, o.state, cb.data);

@@ -1998,11 +1998,11 @@ describe('buildTelegramCommandHandler', () => {
   });
 
   describe('listener deps: the open question', () => {
-    it('routes plain text to the open question', async () => {
+    it('says it is not waiting when plain text arrives with nothing open', async () => {
       const { client } = clientFor();
       const deps = buildTelegramListenerDeps(client);
       const { sent, reply } = collector();
-      await deps.onText!('hello', reply);
+      await deps.onText!('hello', reply, { privateChat: true });
       expect(sent).toEqual(["I'm not waiting for an answer right now — /help lists what I can do."]);
     });
 
@@ -2011,7 +2011,20 @@ describe('buildTelegramCommandHandler', () => {
       const deps = buildTelegramListenerDeps(client);
       const ui = { edit: vi.fn(async () => {}), answer: vi.fn(async () => {}), send: vi.fn(async () => {}) };
       await deps.onMenuCallback!({ data: 'cz:ak:abc:0:x', chatId: 1, messageId: 2 }, ui);
-      expect(ui.answer).toHaveBeenCalledWith('That question expired.');
+      expect(ui.answer).toHaveBeenCalledWith('That question has moved on.');
+    });
+
+    it('/cancel quietly cancels an open question, or says nothing is open', async () => {
+      const { client } = clientFor();
+      const deps = buildTelegramListenerDeps(client);
+      const { sent, reply } = collector();
+      const ui = { edit: vi.fn(async () => {}), answer: vi.fn(async () => {}), send: reply };
+      await deps.onMenuCallback!({ data: 'cz:ak:go:pool-set', chatId: 1, messageId: 2 }, ui);
+      await deps.onCommand({ command: 'cancel', args: '' }, reply);
+      expect(sent[sent.length - 1]).toBe('Cancelled.');
+      await deps.onCommand({ command: 'cancel', args: '' }, reply);
+      expect(sent[sent.length - 1]).toBe("I'm not waiting for an answer right now — /help lists what I can do.");
+      expect(sent.join('\n')).not.toContain('Unknown');
     });
 
     it('a command cancels an open question with one line before its own reply', async () => {
