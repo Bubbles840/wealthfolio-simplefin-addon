@@ -5158,6 +5158,55 @@ describe('subscriptions in the reports', () => {
       expect(await memo(client)).toEqual({ 'SPOTIFY|remind|2026-10-15': '2026-10-14' });
     });
 
+    describe('a memo that cannot be trusted (R2-17)', () => {
+      const spotify = () => [
+        ['telegram_config', OFF],
+        ['report_cube', cubeR2([det('SPOTIFY', { lastDate: '2026-09-15' })])],
+        ['subscription_prefs', REMIND_SPOTIFY],
+      ] as Array<[string, string]>;
+
+      it('a thrown memo read skips the morning, writes nothing, and the next morning sends once', async () => {
+        const client = clientWith(spotify());
+        const real = client.getAddonSecret;
+        let broken = true;
+        client.getAddonSecret = vi.fn(async (a: string, k: string) => {
+          if (broken && k === 'subscription_news_sent') throw new Error('network down');
+          return real(a, k);
+        });
+        const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+        vi.stubGlobal('fetch', fetchMock);
+        await at(new Date(2026, 9, 13, 8, 0, 0), () => sendDailyTelegramReport(client));
+        expect(sends(fetchMock)).toEqual([]);
+        expect(client.setAddonSecret.mock.calls.filter((c: any[]) => c[1] === 'subscription_news_sent')).toEqual([]);
+        broken = false;
+        await at(new Date(2026, 9, 14, 8, 0, 0), () => sendDailyTelegramReport(client));
+        expect(sends(fetchMock)).toHaveLength(1);
+        await at(new Date(2026, 9, 15, 8, 0, 0), () => sendDailyTelegramReport(client));
+        expect(sends(fetchMock)).toHaveLength(1);
+      });
+
+      it('a corrupt memo counts as empty: the event goes once and the memo is rewritten as valid JSON', async () => {
+        const client = clientWith([...spotify(), ['subscription_news_sent', '{not json']]);
+        const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+        vi.stubGlobal('fetch', fetchMock);
+        await at(new Date(2026, 9, 13, 8, 0, 0), () => sendDailyTelegramReport(client));
+        expect(sends(fetchMock)).toHaveLength(1);
+        expect(await memo(client)).toEqual({ 'SPOTIFY|remind|2026-10-15': '2026-10-13' });
+      });
+
+      it('a throwing dependency inside the news path never rejects out of the daily report', async () => {
+        const client = clientWith(spotify());
+        const real = client.setAddonSecret;
+        // A synchronous throw (not a rejection) slips past the .catch() on the memo write.
+        client.setAddonSecret = vi.fn((a: string, k: string, v: string) => {
+          if (k === 'subscription_news_sent') throw new Error('boom');
+          return real(a, k, v);
+        });
+        vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ ok: true }) })));
+        await expect(at(new Date(2026, 9, 13, 8, 0, 0), () => sendDailyTelegramReport(client))).resolves.toBeUndefined();
+      });
+    });
+
     it('with the daily report on, the block rides the report and nothing else is sent', async () => {
       const client = clientWith([['report_cube', MORNING()], ['subscription_prefs', REMIND_SPOTIFY]]);
       const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
