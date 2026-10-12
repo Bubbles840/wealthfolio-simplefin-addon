@@ -292,3 +292,64 @@ export function createChangeLogWriter(opts: {
     pendingGaps: () => pending.map((g) => ({ ...g })),
   };
 }
+
+// ── Reading ──────────────────────────────────────────────────────────────
+
+export interface ChangeLogItem extends ChangeEntry {
+  /** R2: set when the newest undo/redo entry reversing this one is an undo. */
+  undone?: { by: string; at: string };
+}
+
+export interface ChangeLogRead {
+  /** Both writers, newest first, the last 90 days. */
+  entries: ChangeLogItem[];
+  gaps: Array<ChangeGap & { writer: ChangeWriter }>;
+  /** Entries dropped to the cap, across every bucket read. */
+  trimmed: number;
+  /** Buckets that could not be read (left untouched). `paused`: its fallback
+   *  is unreadable too, so that writer's changes that month are not saved. */
+  unreadable: Array<{ writer: ChangeWriter; month: string; paused: boolean }>;
+}
+
+/**
+ * Both writers' buckets for this month and the three before it, `.2`
+ * fallbacks included, merged newest first. Rejects only when the host read
+ * itself fails; a corrupt bucket is reported in `unreadable`, never thrown.
+ */
+export async function readChangeLog(get: SecretGet, now: Date): Promise<ChangeLogRead> {
+  const month = changeMonth(now);
+  const months = Array.from({ length: CHANGE_LOG_READ_MONTHS }, (_, i) => shiftMonth(month, -i));
+  const cutoff = now.getTime() - CHANGE_LOG_RETENTION_DAYS * 86_400_000;
+  const reads = await Promise.all(months.flatMap((m) => CHANGE_LOG_WRITERS.map(async (writer) => {
+    const [primary, fallback] = await Promise.all([get(changeLogKey(writer, m)), get(changeLogKey(writer, m, true))]);
+    return { writer, month: m, primary: parseChangeBucket(primary, writer, m), fallback: parseChangeBucket(fallback, writer, m) };
+  })));
+
+  const entries: ChangeLogItem[] = [];
+  const gaps: ChangeLogRead['gaps'] = [];
+  const unreadable: ChangeLogRead['unreadable'] = [];
+  let trimmed = 0;
+  for (const r of reads) {
+    if (r.primary.kind === 'corrupt' || r.fallback.kind === 'corrupt') {
+      unreadable.push({ writer: r.writer, month: r.month, paused: r.primary.kind === 'corrupt' && r.fallback.kind === 'corrupt' });
+    }
+    for (const parsed of [r.primary, r.fallback]) {
+      if (parsed.kind !== 'ok') continue;
+      trimmed += parsed.bucket.trimmed ?? 0;
+      for (const e of parsed.bucket.entries) if (Date.parse(e.at) >= cutoff) entries.push({ ...e });
+      for (const g of parsed.bucket.gaps) if (Date.parse(g.at) >= cutoff) gaps.push({ ...g, writer: r.writer });
+    }
+  }
+  entries.sort((a, b) => (a.at === b.at ? (a.id < b.id ? 1 : a.id > b.id ? -1 : 0) : a.at < b.at ? 1 : -1));
+  gaps.sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
+
+  // R2's undo state: the NEWEST reversing entry decides. Entries are newest
+  // first, so the first one seen per target wins.
+  const latest = new Map<string, ChangeEntry>();
+  for (const e of entries) if (e.reverses && !latest.has(e.reverses.id)) latest.set(e.reverses.id, e);
+  for (const e of entries) {
+    const by = latest.get(e.id);
+    if (by?.reverses?.op === 'undo') e.undone = { by: by.id, at: by.at };
+  }
+  return { entries, gaps, trimmed, unreadable };
+}
