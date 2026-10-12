@@ -9,10 +9,11 @@
  * The engine never escapes; anything user- or bank-supplied that a prompt or
  * summary prints goes through `escapeMarkdown` here.
  */
-import type { AskFlow } from '../../shared/ask-flow.js';
+import type { AskFlow, AskOption } from '../../shared/ask-flow.js';
+import { localIsoDay, rosterMoney, type Cadence } from '../../shared/subscription-roster.js';
 import { categoryDisplayName } from '../../shared/categorize-menu.js';
 import { escapeMarkdown, formatDollars, shortDate } from '../../shared/telegram.js';
-import { type CategoryBudgetSnapshot, formatCategoryQueryMiss, NEWRULE_CATEGORY_LIST_HINT, nextOccurrence, parseAmountCents, parseDateInput, resolveCategoryQuery } from '../../shared/telegram-commands.js';
+import { type CategoryBudgetSnapshot, formatCategoryQueryMiss, NEWRULE_CATEGORY_LIST_HINT, nextOccurrence, parseAmountCents, parseDateInput, parseSubscriptionDate, parseSubscriptionName, resolveCategoryQuery, SUB_AMOUNT_HINT, SUB_DATE_HINT, SUB_NAME_HINT } from '../../shared/telegram-commands.js';
 import type { NativeSpendingCategory } from './sqlite-native.js';
 
 const AMOUNT_HINT = "Couldn't read that as an amount — try 16000 or $16,000.";
@@ -163,5 +164,70 @@ export function buildAffordFlow(categories: CategoryBudgetSnapshot[]): AskFlow {
         quick: () => categories.filter((c) => c.budget > 0).slice(0, 8).map((c) => ({ label: c.name, value: c.name })),
       },
     ],
+  };
+}
+
+/** `[1d] [3d] [7d] [No]` — days of warning before a charge. */
+export const SUB_REMIND_OPTIONS: AskOption[] = [
+  { label: '1d', value: 1 }, { label: '3d', value: 3 }, { label: '7d', value: 7 }, { label: 'No', value: null },
+];
+
+const subName = (input: string) => {
+  const name = parseSubscriptionName(input);
+  return name === null ? { ok: false as const, hint: SUB_NAME_HINT } : { ok: true as const, value: name };
+};
+
+/** ➕ Add on /subscriptions: name → amount → how often → next date → reminder → summary → Save. */
+export function buildSubAddFlow(now: Date): AskFlow {
+  const today = localIsoDay(now);
+  return {
+    id: 'sub-add',
+    command: 'subscriptions',
+    title: 'New subscription',
+    steps: [
+      { id: 'name', kind: 'text', prompt: () => "What's it called? (e.g. Hulu)", parse: subName },
+      {
+        id: 'amount',
+        kind: 'text',
+        prompt: (a) => `How much is each ${escapeMarkdown(a.name as string)} charge? (e.g. 9.99)`,
+        parse: (input) => {
+          const cents = parseAmountCents(input);
+          return cents === null ? { ok: false, hint: SUB_AMOUNT_HINT } : { ok: true, value: cents };
+        },
+      },
+      {
+        id: 'cadence',
+        kind: 'choice',
+        prompt: () => 'How often does it charge?',
+        options: () => [{ label: 'Monthly', value: 'monthly' }, { label: 'Yearly', value: 'yearly' }],
+      },
+      {
+        id: 'nextDate',
+        kind: 'text',
+        prompt: () => 'When is the next charge? (e.g. Oct 20)',
+        parse: (input, a) => {
+          const date = parseSubscriptionDate(input, now, a.cadence as Cadence, today);
+          return date === null ? { ok: false, hint: SUB_DATE_HINT } : { ok: true, value: date };
+        },
+      },
+      { id: 'remind', kind: 'choice', prompt: () => 'Remind you before it charges?', options: () => SUB_REMIND_OPTIONS },
+    ],
+    // The name is user text: escaped, and kept out of the bold the date wears.
+    summary: (a) => {
+      const days = a.remind as number | null;
+      return `${escapeMarkdown(a.name as string)} — ${rosterMoney(a.amount as number)} ${a.cadence === 'yearly' ? 'a year' : 'a month'}, `
+        + `next charge *${shortDate(a.nextDate as string)}*.\n`
+        + (days ? `🔔 Reminder ${days} ${days === 1 ? 'day' : 'days'} before.` : 'No reminder.');
+    },
+  };
+}
+
+/** ✏️ Rename on an entry's detail: one question, finished by the answer. */
+export function buildSubRenameFlow(currentName: string): AskFlow {
+  return {
+    id: 'sub-rename',
+    command: 'subscriptions',
+    title: 'Rename',
+    steps: [{ id: 'name', kind: 'text', prompt: () => `New name for ${escapeMarkdown(currentName)}?`, parse: subName }],
   };
 }

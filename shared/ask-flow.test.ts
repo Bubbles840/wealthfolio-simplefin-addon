@@ -192,3 +192,10 @@ describe('flow-start buttons', () => {
     expect(parseAskStart(`${ASK_CALLBACK_PREFIX}k1:0:x`)).toBeNull();
   });
 });
+
+describe('askStartData size guard (1.60)', () => {
+  it("refuses data over Telegram's 64-byte limit instead of minting a dead button", () => {
+    expect(askStartData('sub-rename', 'a1b2c3d4')).toBe('cz:ak:go:sub-rename:a1b2c3d4');
+    expect(() => askStartData('sub-rename', 'x'.repeat(60))).toThrow(/64 bytes/);
+  });
+});

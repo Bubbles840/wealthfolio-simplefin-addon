@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { answerButton, answerText, startAsk, type AskOutcome } from '../../shared/ask-flow.js';
-import { buildAffordFlow, buildNewRuleFlow, buildPoolClearFlow, buildPoolSetFlow, mostUsedCategories } from './ask-flows.js';
+import { buildAffordFlow, buildNewRuleFlow, buildPoolClearFlow, buildPoolSetFlow, mostUsedCategories, buildSubAddFlow, buildSubRenameFlow } from './ask-flows.js';
 
 const NOW = new Date('2026-10-12T15:00:00Z');
 
@@ -177,5 +177,66 @@ describe('afford flow', () => {
     const out = answerText(f, startAsk(f, 'k1').state, '5');
     if (out.kind !== 'screen') throw new Error(out.kind);
     expect(out.screen.keyboard.inline_keyboard.flat().filter((b) => b.callback_data.includes(':q'))).toHaveLength(8);
+  });
+});
+
+describe('sub-add flow', () => {
+  const NOW_LOCAL = new Date(2026, 9, 12, 9, 0, 0);
+  const driveSub = (answers: string[]) => drive(buildSubAddFlow(NOW_LOCAL), answers);
+
+  it('counts its five questions in the title', () => {
+    expect(startAsk(buildSubAddFlow(NOW_LOCAL), 'k1').screen.text).toBe("*New subscription · 1 of 5*\nWhat's it called? (e.g. Hulu)");
+  });
+
+  it('asks name, amount, how often, next date, reminder — then a summary', () => {
+    const out = driveSub(['Hulu', '9.99', 'Monthly', 'Oct 20', '3d']);
+    if (out.kind !== 'screen') throw new Error(out.kind);
+    expect(out.state.answers).toEqual({ name: 'Hulu', amount: 999, cadence: 'monthly', nextDate: '2026-10-20', remind: 3 });
+    expect(out.screen.text).toBe('*New subscription*\nHulu — $9.99 a month, next charge *Oct 20*.\n🔔 Reminder 3 days before.');
+  });
+
+  it('rolls a past date forward by the cadence', () => {
+    const monthly = driveSub(['Gym', '40', 'Monthly', 'Oct 3', 'No']);
+    const yearly = driveSub(['Domain', '15', 'Yearly', 'Oct 3', 'No']);
+    if (monthly.kind !== 'screen' || yearly.kind !== 'screen') throw new Error('not at the summary');
+    expect(monthly.state.answers.nextDate).toBe('2026-11-03');
+    expect(yearly.state.answers.nextDate).toBe('2027-10-03');
+    expect(yearly.screen.text).toContain('No reminder.');
+  });
+
+  it('lands Feb 29 on Feb 28 in a year without one (R2-4)', () => {
+    const out = driveSub(['Domain', '15', 'Yearly', 'Feb 29', 'No']);
+    if (out.kind !== 'screen') throw new Error(out.kind);
+    expect(out.state.answers.nextDate).toBe('2027-02-28');
+  });
+
+  it('re-asks an empty name, a bad amount and a bad date with the shared hints', () => {
+    expect(driveSub(['   ']).kind).toBe('retry');
+    const badAmount = driveSub(['Hulu', '9,99']);
+    if (badAmount.kind !== 'retry') throw new Error(badAmount.kind);
+    expect(badAmount.screen.text).toContain("Couldn't read that as an amount — try 9.99.");
+    const badDate = driveSub(['Hulu', '9.99', 'Monthly', 'someday']);
+    if (badDate.kind !== 'retry') throw new Error(badDate.kind);
+    expect(badDate.screen.text).toContain("Couldn't read that date — try Oct 20 or 2026-10-20.");
+  });
+
+  it('escapes the name and keeps it out of bold', () => {
+    const out = driveSub(['Max_Ultimate*', '20', 'Monthly', 'Oct 20', 'No']);
+    if (out.kind !== 'screen') throw new Error(out.kind);
+    expect(out.screen.text).toContain('\nMax\\_Ultimate\\* — $20 a month, next charge *Oct 20*.');
+  });
+});
+
+describe('sub-rename flow', () => {
+  it('asks once and re-asks an empty answer', () => {
+    const flow = buildSubRenameFlow('SPOTIFY');
+    const { state, screen } = startAsk(flow, 'k1');
+    expect(screen.text).toBe('*Rename*\nNew name for SPOTIFY?');
+    expect(answerText(flow, state, '   ').kind).toBe('retry');
+    expect(answerText(flow, state, ' Spotify ')).toEqual({ kind: 'done', answers: { name: 'Spotify' } });
+  });
+
+  it('escapes the current name in the question', () => {
+    expect(startAsk(buildSubRenameFlow('SQ *COFFEE_CLUB'), 'k1').screen.text).toBe('*Rename*\nNew name for SQ \\*COFFEE\\_CLUB?');
   });
 });
