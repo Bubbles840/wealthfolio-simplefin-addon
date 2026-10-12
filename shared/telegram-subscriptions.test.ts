@@ -47,6 +47,11 @@ describe('formatComingUpBlock', () => {
     ].join('\n'));
   });
 
+  it('the price-rise line uses the roster money format: whole dollars drop the .00', () => {
+    const r = roster({ detected: [det('GYM', { monthlyCents: 2000, lastCents: 2500, prevCents: 2000, creep: true, lastDate: '2026-10-10' })] });
+    expect(formatComingUpBlock(r, TODAY, 'brief')?.text).toContain('📈 GYM charged $25 — up from its usual $20.');
+  });
+
   it('Brief leaves out the week ahead', () => {
     expect(formatComingUpBlock(morning(), TODAY, 'brief')?.text).toBe([
       '*Coming up*',

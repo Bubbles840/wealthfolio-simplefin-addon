@@ -701,12 +701,16 @@ export function parseSubscriptionName(text: string): string | null {
  * what was typed so a 31st stays a 31st. "Feb 29" in a year without one is
  * Feb 28 (R2-4) — parseDateInput refuses it, so it is caught here.
  */
-export function parseSubscriptionDate(text: string, now: Date, cadence: Cadence, today: string): string | null {
-  let parsed = parseDateInput(text, now);
+export function parseSubscriptionDate(text: string, _now: Date, cadence: Cadence, today: string): string | null {
+  // The reader's LOCAL day drives "today", "tomorrow" and the year of a
+  // month-day: hand parseDateInput a clock whose UTC parts are `today`'s.
+  const [y, m, d] = today.split('-').map((n) => parseInt(n, 10));
+  const local = new Date(Date.UTC(y, m - 1, d));
+  let parsed = parseDateInput(text, local);
   if (parsed === null) {
     const md = (text ?? '').trim().toLowerCase().match(/^([a-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?$/);
     if (md && md[1].startsWith('feb') && Number(md[2]) === 29) {
-      parsed = { iso: `${now.getUTCFullYear()}-02-28`, form: 'month-day' };
+      parsed = { iso: `${y}-02-28`, form: 'month-day' };
     }
   }
   return parsed === null ? null : rollForward(parsed.iso, cadence, today);

@@ -21,7 +21,7 @@ import { askStartData } from '../../shared/ask-flow.js';
 import { MENU_CALLBACK_PREFIX } from '../../shared/categorize-menu.js';
 import { findingHandle } from '../../shared/findings.js';
 import {
-  acceptLink, confirmKey, declineLink, deleteManual, hideKey, isUnreadablePrefsError, restoreDeleted, setRemind,
+  acceptLink, confirmKey, declineLink, deleteManual, hideKey, isUnreadablePrefsError, SubscriptionPrefsInvalidError, restoreDeleted, setRemind,
   unconfirmKey, undoRename, unhideKey, type RemindDays, type SubscriptionEdit, type SubscriptionPrefs,
 } from '../../shared/subscription-prefs.js';
 import {
@@ -51,12 +51,16 @@ export const SUBSCRIPTIONS_GONE_ANSWER = 'That one is already sorted — refresh
 export const SUBSCRIPTIONS_UNREACHABLE_REPLY = "Couldn't reach Wealthfolio — try again.";
 export const SUBSCRIPTIONS_UNREADABLE_REPLY = "Couldn't read your subscription settings — nothing was changed.";
 export const SUBSCRIPTIONS_RENAME_GONE_REPLY = 'That one is gone now — send /subscriptions for the current list.';
+export const SUBSCRIPTIONS_INVALID_REPLY = "Couldn't save that — nothing was changed.";
 const FAILED_ANSWER = 'Could not do that — check the companion logs.';
 
 const BACK_TO_LIST: Button = { text: '‹ Subscriptions', callback_data: `${LIST}0` };
 const BACK: Button = { text: '‹ Back', callback_data: `${LIST}0` };
 /** Button labels are plain text (never parsed as Markdown), only shortened. */
-const label = (name: string, max = 28) => (name.length > max ? `${name.slice(0, max - 1)}…` : name);
+const label = (name: string, max = 28) => {
+  const chars = Array.from(name); // code points: an emoji is never cut in half
+  return chars.length > max ? `${chars.slice(0, max - 1).join('')}…` : name;
+};
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
 export interface SubscriptionsMenuUi {
@@ -131,17 +135,20 @@ export function renderSubscriptionDetail(e: RosterEntry): MenuScreen {
   if (e.creep) lines.push(`⬆ Up from ${rosterMoney(e.creep.fromCents)} to ${rosterMoney(e.creep.toCents)} on ${shortDate(e.creep.chargedOn)}.`);
   if (e.source === 'manual') lines.push('✍️ Added by you.');
   if (e.source === 'watched') lines.push('👀 Watching — you said this one recurs.');
-  lines.push(`🔔 Remind: ${e.remind ? `${e.remind} ${e.remind === 1 ? 'day' : 'days'} before` : 'off'}`);
+  // A reminder counts down to a known charge date; without one it can never fire.
+  const canRemind = e.nextDate !== null;
+  if (canRemind) lines.push(`🔔 Remind: ${e.remind ? `${e.remind} ${e.remind === 1 ? 'day' : 'days'} before` : 'off'}`);
+  else lines.push('Reminders start once a charge date is known.');
   const current = e.remind ?? 0;
-  const remindRow = ([1, 3, 7, 0] as const).map((n) => ({
+  const remindRow: Button[] = canRemind ? ([1, 3, 7, 0] as const).map((n) => ({
     text: `${current === n ? '✓ ' : ''}${n === 0 ? 'Off' : `${n}d`}`,
     callback_data: act(`r${n}`, e.handle),
-  }));
+  })) : [];
   return {
     text: lines.join('\n'),
     keyboard: {
       inline_keyboard: [
-        remindRow,
+        ...(remindRow.length > 0 ? [remindRow] : []),
         [{ text: '✏️ Rename', callback_data: askStartData('sub-rename', e.handle) }],
         [e.source === 'manual'
           ? { text: '🗑 Delete', callback_data: act('x', e.handle) }
@@ -217,6 +224,8 @@ export function createSubscriptionsMenu(deps: SubscriptionsMenuDeps): Subscripti
           } catch (err) {
             if (isUnreadablePrefsError(err)) {
               await ui.answer(SUBSCRIPTIONS_UNREADABLE_REPLY);
+            } else if (err instanceof SubscriptionPrefsInvalidError) {
+              await ui.answer(SUBSCRIPTIONS_INVALID_REPLY);
             } else {
               deps.log(`Subscriptions menu: ${cb.data} write failed: ${message(err)}`);
               await ui.answer(SUBSCRIPTIONS_UNREACHABLE_REPLY);
@@ -224,7 +233,17 @@ export function createSubscriptionsMenu(deps: SubscriptionsMenuDeps): Subscripti
             return false;
           }
         };
-        const freshList = async () => renderSubscriptionList(await deps.read(now), 0);
+        // After a SUCCESSFUL write a failed re-read must not read as a failure:
+        // fall back to the pre-write roster (`read`), stale but honest.
+        const reread = async (): Promise<RosterRead | null> => {
+          try {
+            return await deps.read(now);
+          } catch (err) {
+            deps.log(`Subscriptions menu: re-reading after ${cb.data} failed: ${message(err)}`);
+            return null;
+          }
+        };
+        const freshList = async () => renderSubscriptionList((await reread()) ?? read, 0);
 
         if (cb.data === OPEN_SUBSCRIPTIONS) return void await show(renderSubscriptionList(read, 0), 'send');
         if (cb.data.startsWith(LIST)) return void await show(renderSubscriptionList(read, Number(cb.data.slice(LIST.length)) || 0), 'edit');
@@ -248,7 +267,10 @@ export function createSubscriptionsMenu(deps: SubscriptionsMenuDeps): Subscripti
             if (!active) return void await gone();
             const days = Number(action.slice(1)) as 0 | RemindDays;
             if (!(await write((p) => setRemind(p, active.key, days === 0 ? null : days)))) return;
-            const fresh = findRosterEntry((await deps.read(now)).roster, handle) ?? active;
+            const after = await reread();
+            const fresh = after
+              ? findRosterEntry(after.roster, handle) ?? active
+              : { ...active, remind: days === 0 ? undefined : days };
             return void await show(renderSubscriptionDetail(fresh), 'edit',
               days === 0 ? 'Reminder off' : `Reminder: ${days} ${days === 1 ? 'day' : 'days'} before`);
           }
@@ -282,7 +304,7 @@ export function createSubscriptionsMenu(deps: SubscriptionsMenuDeps): Subscripti
             const entry = roster.hidden.find((e) => e.handle === handle);
             if (!entry) return void await gone();
             if (!(await write((p) => unhideKey(p, entry.key)))) return;
-            if (action === 'u') return void await show(renderHidden((await deps.read(now)).roster), 'edit', `Restored ${entry.displayName}`);
+            if (action === 'u') return void await show(renderHidden(((await reread()) ?? read).roster), 'edit', `Restored ${entry.displayName}`);
             return void await show(await freshList(), 'edit', 'Undone');
           }
           case 'uc': {

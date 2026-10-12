@@ -42,9 +42,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   card. Subscription amounts drop a trailing `.00` everywhere (`$20/mo`).
 - Your subscription choices are stored as one document, written by re-reading
   first, so a change made in Telegram is never overwritten by an open app tab.
-  A save that could not be read back is refused ("Couldn't save that —
-  nothing was changed."), and a document that is already unreadable is never
-  overwritten: the app card turns read-only with a notice.
+  In Telegram, a save that could not be read back is refused ("Couldn't save
+  that — nothing was changed."); in the app, nothing changes. A document that
+  is already unreadable is never overwritten: the app card turns read-only
+  with a notice.
+- **Upgrade order:** update the addon (upload the zip and reload the tab)
+  before using `/subscriptions` from Telegram. Hides made in a not-yet-updated
+  addon after the companion has created the new document are not carried over.
 - The one-line forms still work: `/pool 16000 Dec 12`,
   `/newrule trader joes = groceries`, `/afford 20 shopping`. `/pool`'s date
   now also accepts `today`, `tomorrow` and `Dec 12th`, and an amount with

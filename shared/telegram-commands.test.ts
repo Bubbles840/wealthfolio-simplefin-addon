@@ -728,6 +728,19 @@ describe('subscription answers (1.60)', () => {
     expect(parseSubscriptionDate(input, now, cadence, today)).toBe(want);
   });
 
+  // R2 fix wave M5: the reader's LOCAL day, not the UTC day of `now`.
+  it('"today" at 21:00 local on Oct 12 with the UTC clock already on Oct 13 is Oct 12', () => {
+    const lateLocal = new Date('2026-10-13T01:00:00Z');
+    expect(parseSubscriptionDate('today', lateLocal, 'monthly', '2026-10-12')).toBe('2026-10-12');
+    expect(parseSubscriptionDate('tomorrow', lateLocal, 'monthly', '2026-10-12')).toBe('2026-10-13');
+  });
+
+  it('"Dec 31" typed on the evening of Dec 31 (UTC already in the new year) is this year, monthly', () => {
+    const newYearUtc = new Date('2027-01-01T02:00:00Z');
+    expect(parseSubscriptionDate('Dec 31', newYearUtc, 'monthly', '2026-12-31')).toBe('2026-12-31');
+    expect(parseSubscriptionDate('Feb 29', newYearUtc, 'yearly', '2026-12-31')).toBe('2027-02-28');
+  });
+
   it.each(['', 'soon', 'Feb 30', '2026-02-29'])('refuses %j', (input) => {
     expect(parseSubscriptionDate(input, now, 'monthly', today)).toBeNull();
   });

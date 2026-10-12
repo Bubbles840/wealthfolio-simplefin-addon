@@ -1715,8 +1715,8 @@ function comingUpParts(roster: Roster, today: string) {
     })
     .map((e) => ({
       id: `${e.key}|creep|${e.creep!.chargedOn}`,
-      text: `📈 ${escapeMarkdown(e.displayName)} charged ${formatDollars(e.creep!.toCents / 100, 2)}`
-        + ` — up from its usual ${formatDollars(e.creep!.fromCents / 100, 2)}.`,
+      text: `📈 ${escapeMarkdown(e.displayName)} charged ${rosterMoney(e.creep!.toCents)}`
+        + ` — up from its usual ${rosterMoney(e.creep!.fromCents)}.`,
       entry: e,
     }));
   const cancels: ComingUpLine[] = active
