@@ -63,6 +63,10 @@ export function createAskSessions(opts: {
    *  minted before a restart can never match a flow started after it. */
   seqBase?: number;
   log?: (m: string) => void;
+  /** Plain text appended on its own line to the FIRST question of a flow, or
+   *  null for nothing. In a group, Telegram's privacy mode drops typed answers
+   *  that are not replies to the bot, so index.ts uses this to say so. */
+  firstQuestionNote?: () => Promise<string | null>;
 } = {}): AskSessions {
   const now = opts.now ?? Date.now;
   const ttl = opts.ttlMs ?? 15 * 60_000;
@@ -112,7 +116,13 @@ export function createAskSessions(opts: {
     const { state, screen } = startAsk(run.flow, seq);
     open = { run, state, lastAt: now(), lastText: screen.text };
     expired = null;
-    await send(`${replaced ? `${CANCELLED_EARLIER}\n\n` : ''}${screen.text}`, screen.keyboard);
+    let note: string | null = null;
+    try {
+      note = (await opts.firstQuestionNote?.()) ?? null;
+    } catch (err) {
+      log(`Ask flow ${run.flow.id}: first-question note failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    await send(`${replaced ? `${CANCELLED_EARLIER}\n\n` : ''}${screen.text}${note ? `\n\n${note}` : ''}`, screen.keyboard);
   };
 
   return {

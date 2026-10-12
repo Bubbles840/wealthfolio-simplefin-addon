@@ -2185,6 +2185,24 @@ describe('buildTelegramCommandHandler', () => {
     expect(sent[2]).toBe(oneLiner[0]);
   });
 
+  it('tells a group chat to reply to the first question only', async () => {
+    const { client } = clientFor([['telegram_config', JSON.stringify({ botToken: 't', chatId: '-100123' })]]);
+    const asks = buildAskSessions(client, buildCategorizeController(client));
+    const { sent, reply } = collector();
+    await asks.start('afford', reply);
+    await asks.onText('20', reply);
+    expect(sent[0]).toContain('In a group, reply to this message to answer.');
+    expect(sent[1]).not.toContain('reply to this message');
+  });
+
+  it('adds no group note in a private chat', async () => {
+    const { client } = clientFor([['telegram_config', JSON.stringify({ botToken: 't', chatId: '12345' })]]);
+    const asks = buildAskSessions(client, buildCategorizeController(client));
+    const { sent, reply } = collector();
+    await asks.start('afford', reply);
+    expect(sent[0]).not.toContain('reply to this message');
+  });
+
   it('keeps unbudgeted categories out of the afford quick picks', async () => {
     vi.mocked(getNativeWealthfolioSpending).mockReturnValueOnce({ Groceries: 200, Dining: 550, Hobbies: 90 });
     vi.mocked(getNativeWealthfolioBudgets).mockReturnValueOnce({ Groceries: 800, Dining: 500 });
