@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { maskUrl, publishLiveReports, validateStartupEnv, startupWarnings, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, composeDailyDigest, runCompanionSyncExclusive, buildTelegramCommandHandler, applyTelegramDismissal, undoTelegramDismissal, formatDismissedReply, buildTelegramListenerDeps, buildCategorizeController, buildCategorizeDeps, rememberImportScope, sendUnmappedAccountsNotice, updateCheckDeps } from './index.js';
+import { maskUrl, publishLiveReports, validateStartupEnv, startupWarnings, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, composeDailyDigest, runCompanionSyncExclusive, buildTelegramCommandHandler, applyTelegramDismissal, undoTelegramDismissal, formatDismissedReply, buildTelegramListenerDeps, buildCategorizeController, buildCategorizeDeps, rememberImportScope, sendUnmappedAccountsNotice, updateCheckDeps, buildAskSessions } from './index.js';
 import { formatHelpReply, parseCommand } from '../../shared/telegram-commands.js';
 import { SIMPLEFIN_SYNC_VERSION } from '../../shared/version.js';
 import { runSyncCore } from '../../shared/sync-core.js';
@@ -2011,6 +2011,23 @@ describe('buildTelegramCommandHandler', () => {
       const ui = { edit: vi.fn(async () => {}), answer: vi.fn(async () => {}), send: vi.fn(async () => {}) };
       await deps.onMenuCallback!({ data: 'cz:ak:abc:0:x', chatId: 1, messageId: 2 }, ui);
       expect(ui.answer).toHaveBeenCalledWith('That question expired.');
+    });
+
+    it('a command cancels an open question with one line before its own reply', async () => {
+      const { client } = clientFor();
+      const deps = buildTelegramListenerDeps(client);
+      const { sent, reply } = collector();
+      const ui = { edit: vi.fn(async () => {}), answer: vi.fn(async () => {}), send: reply };
+      await deps.onMenuCallback!({ data: 'cz:ak:go:pool-set', chatId: 1, messageId: 2 }, ui);
+      await deps.onCommand({ command: 'help', args: '' }, reply);
+      expect(sent).toHaveLength(3);
+      expect(sent[0]).toContain('How much is the pool?');
+      expect(sent[1]).toBe('Cancelled your earlier question.');
+      expect(sent[2]).toContain('/report');
+
+      const after = collector();
+      await deps.onText!('500', after.reply, { privateChat: true });
+      expect(after.sent).toEqual(["I'm not waiting for an answer right now — /help lists what I can do."]);
     });
   });
 
@@ -4429,6 +4446,53 @@ describe('/pool command', () => {
     await buildTelegramCommandHandler(client)({ command: 'pool', args }, async (t: string) => { sent.push(t); });
     return sent;
   };
+
+  const runWithKeyboard = async (client: any, args: string) => {
+    const sent: Array<[string, any]> = [];
+    await buildTelegramCommandHandler(client)({ command: 'pool', args }, async (t: string, k?: any) => { sent.push([t, k]); });
+    return sent;
+  };
+  const datas = (k: any) => (k?.inline_keyboard ?? []).flat().map((b: any) => b.callback_data);
+
+  it('offers Set and Clear buttons under an existing pool', async () => {
+    const { client } = clientWith([['semester_pool', JSON.stringify({ amountCents: 1_600_000, startDate: '2020-01-01', endDate: '2099-12-31' })]]);
+    const sent = await runWithKeyboard(client, '');
+    expect(datas(sent[0][1])).toEqual(['cz:ak:go:pool-set', 'cz:ak:go:pool-clear']);
+  });
+
+  it('offers only Set when there is no pool', async () => {
+    const { client } = clientWith();
+    const sent = await runWithKeyboard(client, '');
+    expect(datas(sent[0][1])).toEqual(['cz:ak:go:pool-set']);
+  });
+
+  it('sets the pool through the questions exactly as the one-liner does', async () => {
+    const { client, secrets } = clientWith();
+    const controller = buildCategorizeController(client);
+    const asks = buildAskSessions(client, controller);
+    const sent: Array<[string, any]> = [];
+    const send = async (t: string, k?: any) => { sent.push([t, k]); };
+    await asks.start('pool-set', send);
+    await asks.onText('500', send);
+    await asks.onText('2099-01-15', send);
+    const save = datas(sent[sent.length - 1][1])[0];
+    const ui = { edit: vi.fn(async () => {}), answer: vi.fn(async () => {}), send };
+    await asks.onCallback({ data: save } as any, ui as any);
+    const stored = JSON.parse(secrets.get('semester_pool')!);
+    expect(stored).toMatchObject({ amountCents: 50_000, endDate: '2099-01-15' });
+    expect(sent[sent.length - 1][0]).toContain('Pool set.');
+  });
+
+  it('clears the pool through the confirmation question', async () => {
+    const { client, secrets } = clientWith([['semester_pool', JSON.stringify({ amountCents: 1, startDate: '2020-01-01', endDate: '2099-12-31' })]]);
+    const asks = buildAskSessions(client, buildCategorizeController(client));
+    const sent: string[] = [];
+    const send = async (t: string) => { sent.push(t); };
+    await asks.start('pool-clear', send);
+    await asks.onText('Yes, clear', send);
+    expect(secrets.get('semester_pool')).toBe('');
+    expect(sent[sent.length - 1].toLowerCase()).toContain('cleared');
+  });
 
   it('sets a pool starting today and confirms with the sustainable pace', async () => {
     const { client, secrets } = clientWith();
