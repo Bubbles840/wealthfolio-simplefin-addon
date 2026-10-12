@@ -26,6 +26,16 @@ const applied = (spy: ReturnType<typeof vi.fn>, base: SubscriptionPrefs = emptyS
 const HULU = { id: 'hulu0001', name: 'Hulu', cents: 999, cadence: 'monthly' as const, nextDate: '2026-10-20' };
 const LINK = { manualId: 'hulu0001', merchant: 'HULU', date: '2026-09-19', cents: 999 };
 
+describe('hidden hand-added entries (R2 fix wave)', () => {
+  it('the full view lists a hidden hand-added entry with Restore', () => {
+    const onEdit = vi.fn();
+    render(<SubscriptionsCard full cube={cubeWith([det('SPOTIFY')])}
+      subscriptionPrefs={loaded({ manual: [HULU], hidden: ['m:hulu0001'] })} onSubscriptionEdit={onEdit} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Restore Hulu' }));
+    expect(applied(onEdit, loaded({ manual: [HULU], hidden: ['m:hulu0001'] }).prefs).hidden).toEqual([]);
+  });
+});
+
 describe('subscriptions card rows (1.60)', () => {
   it('rows carry the next date and, in words, the reminder and hand-added marks', () => {
     render(<SubscriptionsCard cube={cubeWith([det('SPOTIFY')])}

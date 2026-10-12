@@ -253,7 +253,7 @@ export function createSubscriptionsMenu(deps: SubscriptionsMenuDeps): Subscripti
               days === 0 ? 'Reminder off' : `Reminder: ${days} ${days === 1 ? 'day' : 'days'} before`);
           }
           case 'h': case 'hr': {
-            if (!active || active.source === 'manual') return void await gone();
+            if (!active) return void await gone();
             if (!(await write((p) => hideKey(p, active.key)))) return;
             return void await show(doneScreen(
               `🙈 Hid ${escapeMarkdown(active.displayName)}. It's out of every total and report — Undo puts it back.`,

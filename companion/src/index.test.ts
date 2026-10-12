@@ -4975,6 +4975,17 @@ describe('subscriptions in the reports', () => {
     expect(rows[1]).toEqual([{ text: '🙈 Hide NETFLIX', callback_data: `cz:sb:hr:${findingHandle('NETFLIX')}` }]);
   });
 
+  it('a linked hand-added entry that went overdue gets the "cancelled?" line and a Hide button', async () => {
+    const manual = { id: 'hulu0001', name: 'Hulu', cents: 999, cadence: 'monthly', nextDate: '2026-10-02', merchant: 'HULU' };
+    const client = clientWith([
+      ['report_cube', cubeR2([det('HULU', { monthlyCents: 999, lastCents: 999, lastDate: '2026-09-02' })])],
+      ['subscription_prefs', JSON.stringify({ v: 1, manual: [manual] })],
+    ]);
+    const digest = (await at(MORNING_8AM, () => composeDailyDigest(client, { requireTelegram: false })))!;
+    expect(digest.text).toContain("✓ Hulu didn't charge Oct 2 — cancelled?");
+    expect(digest.keyboard!.inline_keyboard[1]).toEqual([{ text: '🙈 Hide Hulu', callback_data: `cz:sb:hr:${findingHandle('m:hulu0001')}` }]);
+  });
+
   it('a Brief morning leaves out the week ahead', async () => {
     const client = clientWith([
       ['telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true, reportDetail: 'brief' })],
