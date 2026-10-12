@@ -805,8 +805,6 @@ const css = `
 [data-bva-scale='tiny'] [data-bva] { margin-bottom: 2px !important; font-size: var(--sfin-sz-2xs); }
 [data-bva-scale='tiny'] [data-bva] > div:last-child { height: 4px !important; }
 .sfin-subs-row:hover { background: color-mix(in srgb, var(--sfin-s0) 6%, transparent); }
-.sfin-subs-dismiss { border: none; background: transparent; color: var(--muted-foreground); cursor: pointer; border-radius: var(--sfin-rad-xs); }
-.sfin-subs-dismiss:hover { color: var(--sfin-bad); background: color-mix(in srgb, var(--sfin-bad) 10%, transparent); }
 .sfin-subs-celebrate { margin-top: 6px; padding: 8px 12px; border-radius: var(--sfin-rad-sm); font-size: var(--sfin-sz-base); background: color-mix(in srgb, var(--sfin-ok) 10%, transparent); border: 1px solid color-mix(in srgb, var(--sfin-ok) 35%, transparent); animation: sfin-pop .35s cubic-bezier(.2, 1.4, .4, 1); }
 /* 1.60 roster card: a row's name opens it inline. */
 .sfin-subs-item { display: flex; flex-direction: column; }

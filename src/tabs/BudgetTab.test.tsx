@@ -649,6 +649,57 @@ describe('subscription edits end to end', () => {
     expect(screen.getByText(/\$15\/mo across 1/)).toBeInTheDocument();
   });
 
+  it('two quick edits both land — the page queues them, so the second does not undo the first', async () => {
+    vi.useRealTimers();
+    // Reads at the START and writes after a delay: unqueued, both edits read
+    // the same document and the later write drops the earlier hide.
+    let doc: SubscriptionPrefs = emptySubscriptionPrefs();
+    const props = makeProps();
+    Object.assign(props.store, {
+      getSubscriptionPrefs: vi.fn(async () => ({ prefs: doc, unreadable: false })),
+      editSubscriptionPrefs: vi.fn(async (edit: SubscriptionEdit) => {
+        const next = edit(doc);
+        await new Promise((r) => setTimeout(r, 20));
+        doc = next;
+        return doc;
+      }),
+    });
+    withCube(props, [det('SPOTIFY'), det('QR LIBRARY', { monthlyCents: 999, lastCents: 999 }), det('NETFLIX', { monthlyCents: 1549, lastCents: 1549 })]);
+    render(<SyncPage {...props} />);
+    await waitFor(() => expect(reportIds().length).toBeGreaterThan(0));
+
+    fireEvent.click(screen.getByRole('button', { name: 'QR LIBRARY' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Hide QR LIBRARY' }));
+    fireEvent.click(screen.getByRole('button', { name: 'NETFLIX' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Hide NETFLIX' }));
+    await waitFor(() => expect([...doc.hidden].sort()).toEqual(['NETFLIX', 'QR LIBRARY']));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'QR LIBRARY' })).toBeNull());
+    expect(screen.queryByRole('button', { name: 'NETFLIX' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'SPOTIFY' })).toBeInTheDocument();
+  });
+
+  it('an invalid edit changes nothing — the entry stays, nothing is stored, nothing crashes', async () => {
+    const stored = { ...emptySubscriptionPrefs(), remind: { SPOTIFY: 3 as const } };
+    const props = makeProps();
+    const editSubscriptionPrefs = vi.fn(async () => { throw new SubscriptionPrefsInvalidError(); });
+    Object.assign(props.store, {
+      getSubscriptionPrefs: vi.fn(async () => ({ prefs: stored, unreadable: false })),
+      editSubscriptionPrefs,
+    });
+    withCube(props, [det('SPOTIFY')]);
+    render(<SyncPage {...props} />);
+    await waitFor(() => expect(reportIds().length).toBeGreaterThan(0));
+
+    fireEvent.click(screen.getByRole('button', { name: 'SPOTIFY' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Hide SPOTIFY' }));
+    await waitFor(() => expect(editSubscriptionPrefs).toHaveBeenCalledTimes(1));
+    // Let the rejected promise settle through the page's catch.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.queryByText(/Couldn't read your subscription settings/)).toBeNull();
+    expect(screen.getByRole('button', { name: 'SPOTIFY' })).toBeInTheDocument();
+    expect(stored).toEqual({ ...emptySubscriptionPrefs(), remind: { SPOTIFY: 3 } });
+  });
+
   it('a document found corrupt on write: the card says so and stops offering changes', async () => {
     // Readable when the page loaded, corrupt by the time of the edit (another
     // writer, a partial write): SyncPage's refusal path, not the load path.

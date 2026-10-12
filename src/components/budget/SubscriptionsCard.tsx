@@ -112,11 +112,17 @@ export function SubscriptionsCard({
     today: localIsoDay(new Date()),
   }), [cube, prefs]);
 
+  const unreadableNotice = subscriptionPrefs?.unreadable
+    ? <div className="sfin-subs-note">{SUBSCRIPTIONS_UNREADABLE_NOTICE}</div>
+    : null;
+  // A link question with no buttons is dead, so a read-only card does not ask it.
+  const linkSuggestions = edit ? roster.linkSuggestions : [];
   const listed = roster.subscriptions.length + roster.bills.length + roster.maybes.length;
-  if (!full && listed === 0 && roster.linkSuggestions.length === 0) {
-    if (!roster.detectionAvailable) return <div className="sfin-subtle">{NOT_LOOKED_YET}</div>;
+  if (!full && listed === 0 && linkSuggestions.length === 0) {
+    // The notice survives the empty states: it is why nothing can be changed.
+    if (!roster.detectionAvailable) return <>{unreadableNotice}<div className="sfin-subtle">{NOT_LOOKED_YET}</div></>;
     // The OPEN view keeps going: an empty roster is when "watch a merchant" is the point.
-    if (roster.hidden.length === 0) return <div className="sfin-subtle">{NOTHING_DETECTED}</div>;
+    if (roster.hidden.length === 0) return <>{unreadableNotice}<div className="sfin-subtle">{NOTHING_DETECTED}</div></>;
   }
 
   const hide = (e: RosterEntry) => {
@@ -200,8 +206,8 @@ export function SubscriptionsCard({
 
   return (
     <div className="sfin-subs">
-      {subscriptionPrefs?.unreadable && <div className="sfin-subs-note">{SUBSCRIPTIONS_UNREADABLE_NOTICE}</div>}
-      {roster.linkSuggestions.map((s) => (
+      {unreadableNotice}
+      {linkSuggestions.map((s) => (
         <div key={`${s.manualId}|${s.merchant}`} className="sfin-subs-row sfin-subs-link">
           <span className="sfin-subs-name">Is {s.merchant} your {s.manualName}?</span>
           <span className="sfin-subs-price">{rosterMoney(s.cents)} on {monthDay(s.date)}</span>
