@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, within } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { SubscriptionsCard } from './SubscriptionsCard';
 import { CUBE } from '../../../shared/report-cube.test';
@@ -107,5 +107,60 @@ describe('subscriptions card rows (1.60)', () => {
     render(<SubscriptionsCard cube={cubeWith(null)} subscriptionPrefs={loaded({ manual: [HULU] })} onSubscriptionEdit={vi.fn()} />);
     expect(screen.getByRole('button', { name: 'Hulu' })).toBeTruthy();
     expect(screen.getByText('The companion looks for recurring charges after the next sync.')).toBeTruthy();
+  });
+});
+
+describe('subscriptions card: reminders, rename, delete (1.60)', () => {
+  it('the Remind control is Off · 1d · 3d · 7d, the current one pressed', () => {
+    const onEdit = vi.fn();
+    render(<SubscriptionsCard cube={cubeWith([det('SPOTIFY')])} subscriptionPrefs={loaded({ remind: { SPOTIFY: 7 } })} onSubscriptionEdit={onEdit} />);
+    fireEvent.click(screen.getByRole('button', { name: 'SPOTIFY' }));
+    const group = screen.getByRole('group', { name: 'Remind before SPOTIFY charges' });
+    expect(within(group).getAllByRole('button').map((b) => [b.textContent, b.getAttribute('aria-pressed')])).toEqual([
+      ['Off', 'false'], ['1d', 'false'], ['3d', 'false'], ['7d', 'true'],
+    ]);
+    fireEvent.click(within(group).getByRole('button', { name: '3d' }));
+    expect(applied(onEdit).remind).toEqual({ SPOTIFY: 3 });
+  });
+
+  it('says reminders need the companion when it has gone quiet, with the way to its settings', () => {
+    const onSetUp = vi.fn();
+    const { unmount } = render(<SubscriptionsCard cube={cubeWith([det('SPOTIFY')])} subscriptionPrefs={loaded()}
+      onSubscriptionEdit={vi.fn()} companionStale onSetUpCompanion={onSetUp} />);
+    fireEvent.click(screen.getByRole('button', { name: 'SPOTIFY' }));
+    expect(screen.getByText(/Reminders are sent by the background companion/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Open background sync settings' }));
+    expect(onSetUp).toHaveBeenCalled();
+    unmount();
+    render(<SubscriptionsCard cube={cubeWith([det('SPOTIFY')])} subscriptionPrefs={loaded()} onSubscriptionEdit={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'SPOTIFY' }));
+    expect(screen.queryByText(/Reminders are sent by the background companion/)).toBeNull();
+  });
+
+  it('renames inline; a blank name is refused with the hint the bot gives', () => {
+    const onEdit = vi.fn();
+    render(<SubscriptionsCard cube={cubeWith([det('SPOTIFY')])} subscriptionPrefs={loaded()} onSubscriptionEdit={onEdit} />);
+    fireEvent.click(screen.getByRole('button', { name: 'SPOTIFY' }));
+    const field = screen.getByLabelText('New name for SPOTIFY');
+    fireEvent.change(field, { target: { value: '   ' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save name' }));
+    expect(screen.getByRole('alert').textContent).toBe('Type a name, up to 40 characters.');
+    expect(onEdit).not.toHaveBeenCalled();
+    fireEvent.change(field, { target: { value: ' Spotify Duo ' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save name' }));
+    expect(applied(onEdit).names).toEqual({ SPOTIFY: 'Spotify Duo' });
+  });
+
+  it('a hand-added entry is deleted, not hidden — with Undo', () => {
+    const onEdit = vi.fn();
+    const base = loaded({ manual: [HULU] });
+    render(<SubscriptionsCard cube={cubeWith([])} subscriptionPrefs={base} onSubscriptionEdit={onEdit} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Hulu' }));
+    expect(screen.queryByRole('button', { name: /^Hide/ })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Hulu' }));
+    expect(applied(onEdit, base.prefs).manual).toEqual([]);
+    expect(screen.getByRole('status').textContent).toContain('Deleted Hulu.');
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
+    expect(applied(onEdit, base.prefs).manual).toEqual([HULU]);
   });
 });
