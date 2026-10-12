@@ -2171,6 +2171,45 @@ describe('buildTelegramCommandHandler', () => {
     expect(sent[0]).toContain('*Can I afford it? · 1 of 2*');
   });
 
+  it("the afford questions end on the one-liner's exact answer", async () => {
+    const { client } = clientFor();
+    const oneLiner = await run(client, 'afford', '20 groceries');
+    expect(oneLiner[0]).toContain('This week:');
+    expect(oneLiner[0]).toContain('This month:');
+    const asks = buildAskSessions(client, buildCategorizeController(client));
+    const { sent, reply } = collector();
+    await asks.start('afford', reply);
+    await asks.onText('20', reply);
+    await asks.onText('groceries', reply);
+    expect(sent).toHaveLength(3);
+    expect(sent[2]).toBe(oneLiner[0]);
+  });
+
+  it('keeps unbudgeted categories out of the afford quick picks', async () => {
+    vi.mocked(getNativeWealthfolioSpending).mockReturnValueOnce({ Groceries: 200, Dining: 550, Hobbies: 90 });
+    vi.mocked(getNativeWealthfolioBudgets).mockReturnValueOnce({ Groceries: 800, Dining: 500 });
+    const { client } = clientFor();
+    const asks = buildAskSessions(client, buildCategorizeController(client));
+    const keyboards: any[] = [];
+    const reply = async (_t: string, kb?: any) => { if (kb) keyboards.push(kb); };
+    await asks.start('afford', reply);
+    await asks.onText('20', reply);
+    const picks = keyboards[keyboards.length - 1].inline_keyboard.flat().filter((b: any) => b.callback_data.includes(':q')).map((b: any) => b.text);
+    expect([...picks].sort()).toEqual(['Dining', 'Groceries']);
+  });
+
+  it('answers an unparseable /afford with the one usage line', async () => {
+    const { client } = clientFor();
+    const sent = await run(client, 'afford', 'shopping');
+    expect(sent[0]).toBe('Usage: /afford 20 shopping');
+  });
+
+  it('starts the questions when /afford is sent bare', async () => {
+    const { client } = clientFor();
+    const sent = await run(client, 'afford', '');
+    expect(sent[0]).toContain('*Can I afford it? · 1 of 2*');
+  });
+
   it('answers through the questions exactly as the one-liner does', async () => {
     const { client } = clientFor();
     const oneLiner = await run(client, 'afford', '20 groceries');
