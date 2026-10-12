@@ -115,14 +115,31 @@ export function SubscriptionsCard({
   const unreadableNotice = subscriptionPrefs?.unreadable
     ? <div className="sfin-subs-note">{SUBSCRIPTIONS_UNREADABLE_NOTICE}</div>
     : null;
+  // Shown in the empty states too: deleting the last entry empties the card,
+  // and Undo must still be there.
+  const statusLines = (
+    <>
+    {celebrate && (
+      <div className="sfin-subs-celebrate" role="status">
+        🎉 {celebrate.name} cancelled — that&apos;s {celebrate.price} back in your pocket.
+      </div>
+    )}
+    {deleted && edit && (
+      <div className="sfin-subs-actions" role="status">
+        Deleted {deleted.name}.
+        <Button variant="ghost" onClick={() => { edit((p) => restoreDeleted(p, deleted.id)); setDeleted(null); }}>Undo</Button>
+      </div>
+    )}
+    </>
+  );
   // A link question with no buttons is dead, so a read-only card does not ask it.
   const linkSuggestions = edit ? roster.linkSuggestions : [];
   const listed = roster.subscriptions.length + roster.bills.length + roster.maybes.length;
   if (!full && listed === 0 && linkSuggestions.length === 0) {
     // The notice survives the empty states: it is why nothing can be changed.
-    if (!roster.detectionAvailable) return <>{unreadableNotice}<div className="sfin-subtle">{NOT_LOOKED_YET}</div></>;
+    if (!roster.detectionAvailable) return <>{unreadableNotice}{statusLines}<div className="sfin-subtle">{NOT_LOOKED_YET}</div></>;
     // The OPEN view keeps going: an empty roster is when "watch a merchant" is the point.
-    if (roster.hidden.length === 0) return <>{unreadableNotice}<div className="sfin-subtle">{NOTHING_DETECTED}</div></>;
+    if (roster.hidden.length === 0) return <>{unreadableNotice}{statusLines}<div className="sfin-subtle">{NOTHING_DETECTED}</div></>;
   }
 
   const hide = (e: RosterEntry) => {
@@ -223,17 +240,7 @@ export function SubscriptionsCard({
       ))}
       {!roster.detectionAvailable && <div className="sfin-subtle">{NOT_LOOKED_YET}</div>}
       {roster.subscriptions.map(row)}
-      {celebrate && (
-        <div className="sfin-subs-celebrate" role="status">
-          🎉 {celebrate.name} cancelled — that&apos;s {celebrate.price} back in your pocket.
-        </div>
-      )}
-      {deleted && edit && (
-        <div className="sfin-subs-actions" role="status">
-          Deleted {deleted.name}.
-          <Button variant="ghost" onClick={() => { edit((p) => restoreDeleted(p, deleted.id)); setDeleted(null); }}>Undo</Button>
-        </div>
-      )}
+      {statusLines}
       <div className="sfin-subs-total">{formatRosterTotal(roster)} across {roster.subscriptions.length}</div>
       {roster.bills.length > 0 && (
         <>
