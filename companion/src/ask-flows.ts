@@ -12,7 +12,7 @@
 import type { AskFlow } from '../../shared/ask-flow.js';
 import { categoryDisplayName } from '../../shared/categorize-menu.js';
 import { escapeMarkdown, formatDollars, shortDate } from '../../shared/telegram.js';
-import { formatCategoryQueryMiss, NEWRULE_CATEGORY_LIST_HINT, nextOccurrence, parseAmountCents, parseDateInput, resolveCategoryQuery } from '../../shared/telegram-commands.js';
+import { type CategoryBudgetSnapshot, formatCategoryQueryMiss, NEWRULE_CATEGORY_LIST_HINT, nextOccurrence, parseAmountCents, parseDateInput, resolveCategoryQuery } from '../../shared/telegram-commands.js';
 import type { NativeSpendingCategory } from './sqlite-native.js';
 
 const AMOUNT_HINT = "Couldn't read that as an amount — try 16000 or $16,000.";
@@ -121,6 +121,34 @@ export function buildNewRuleFlow(input: {
           return { ok: false, hint: formatCategoryQueryMiss(result, text, NEWRULE_CATEGORY_LIST_HINT) ?? 'No category by that name.' };
         },
         quick: () => input.mostUsed.map((c) => ({ label: categoryDisplayName(c), value: c.id })),
+      },
+    ],
+  };
+}
+
+export function buildAffordFlow(budgeted: CategoryBudgetSnapshot[]): AskFlow {
+  return {
+    id: 'afford',
+    command: 'afford',
+    title: 'Can I afford it?',
+    steps: [
+      {
+        id: 'amount',
+        kind: 'text',
+        prompt: () => 'How much do you want to spend? (e.g. 20)',
+        parse: (input) => {
+          const cents = parseAmountCents(input);
+          return cents === null ? { ok: false, hint: "Couldn't read that as an amount — try 20 or $20." } : { ok: true, value: cents };
+        },
+      },
+      {
+        id: 'query',
+        kind: 'text',
+        prompt: () => 'On what? Type a category or tap one.',
+        // Passed through as typed: formatAffordReply resolves it and owns
+        // the "no such category" answer, exactly as for `/afford 20 x`.
+        parse: (input) => (input ? { ok: true, value: input } : { ok: false, hint: 'Type a category name.' }),
+        quick: () => budgeted.slice(0, 8).map((c) => ({ label: c.name, value: c.name })),
       },
     ],
   };

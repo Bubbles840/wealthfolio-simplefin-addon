@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { answerButton, answerText, startAsk, type AskOutcome } from '../../shared/ask-flow.js';
-import { buildNewRuleFlow, buildPoolClearFlow, buildPoolSetFlow, mostUsedCategories } from './ask-flows.js';
+import { buildAffordFlow, buildNewRuleFlow, buildPoolClearFlow, buildPoolSetFlow, mostUsedCategories } from './ask-flows.js';
 
 const NOW = new Date('2026-10-12T15:00:00Z');
 
@@ -118,5 +118,33 @@ describe('newrule flow', () => {
   it('refuses empty or digits-only words', () => {
     const { state } = startAsk(flow, 'k1');
     expect(answerText(flow, state, '1234').kind).toBe('retry');
+  });
+});
+
+describe('afford flow', () => {
+  const budgeted = [
+    { name: 'Groceries', budget: 400, monthSpent: 100, weekSpent: 20 },
+    { name: 'Dining', budget: 200, monthSpent: 50, weekSpent: 10 },
+  ];
+  const flow = buildAffordFlow(budgeted);
+
+  it('asks the amount, then offers the budgeted categories as quick picks', () => {
+    const { state } = startAsk(flow, 'k1');
+    const out = answerText(flow, state, '$20');
+    if (out.kind !== 'screen') throw new Error(out.kind);
+    expect(out.screen.keyboard.inline_keyboard.flat().map((b) => b.text)).toEqual(['Groceries', 'Dining', '‹ Back', '✖ Cancel']);
+  });
+
+  it('finishes with the amount in cents and the category text as typed', () => {
+    const at1 = { seq: 'k1', step: 1, answers: { amount: 2000 } };
+    expect(answerText(flow, at1, 'groc')).toEqual({ kind: 'done', answers: { amount: 2000, query: 'groc' } });
+  });
+
+  it('caps quick picks at eight', () => {
+    const many = Array.from({ length: 12 }, (_, i) => ({ name: `Cat ${i}`, budget: 10, monthSpent: 0, weekSpent: 0 }));
+    const f = buildAffordFlow(many);
+    const out = answerText(f, startAsk(f, 'k1').state, '5');
+    if (out.kind !== 'screen') throw new Error(out.kind);
+    expect(out.screen.keyboard.inline_keyboard.flat().filter((b) => b.callback_data.includes(':q'))).toHaveLength(8);
   });
 });
