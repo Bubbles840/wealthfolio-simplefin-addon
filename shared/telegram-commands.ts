@@ -632,6 +632,52 @@ function poolDateString(year: number, monthIndex: number, day: number): string |
   return d.toISOString().slice(0, 10);
 }
 
+/** Cents from what a person types for money: `20`, `9.99`, `$16,000.50`.
+ *  Commas are accepted only as thousands separators (`16,000`, not `9,99`).
+ *  Null for anything else — including zero, negatives and a third decimal —
+ *  so one caller-chosen hint covers every miss. Shared by the one-line
+ *  commands and the question flows so the two can never read money
+ *  differently. */
+export function parseAmountCents(text: string): number | null {
+  const raw = (text ?? '').trim().replace(/^\$/, '');
+  if (!/^(\d{1,3}(,\d{3})+|\d+)(\.\d{1,2})?$/.test(raw)) return null;
+  const cents = Math.round(parseFloat(raw.replace(/,/g, '')) * 100);
+  return cents > 0 ? cents : null;
+}
+
+/** A date as a person types it: `2026-12-12`, `Dec 12`, `december 12th`,
+ *  `today`, `tomorrow`. A month-day is THIS year's — possibly already past;
+ *  what a past date means is the CALLER's policy (`/pool` refuses a past ISO
+ *  date but rolls a month-day forward; a subscription rolls everything). */
+export function parseDateInput(
+  text: string,
+  now: Date,
+): { iso: string; form: 'iso' | 'month-day' | 'relative' } | null {
+  const t = (text ?? '').trim().toLowerCase();
+  if (t === 'today' || t === 'tomorrow') {
+    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + (t === 'tomorrow' ? 1 : 0)));
+    return { iso: d.toISOString().slice(0, 10), form: 'relative' };
+  }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(t)) {
+    const [y, m, d] = t.split('-').map((n) => parseInt(n, 10));
+    return poolDateString(y, m - 1, d) === t ? { iso: t, form: 'iso' } : null;
+  }
+  const md = t.match(/^([a-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?$/);
+  if (!md) return null;
+  const monthIndex = POOL_MONTH_PREFIXES.indexOf(md[1].slice(0, 3));
+  if (monthIndex === -1) return null;
+  const iso = poolDateString(now.getUTCFullYear(), monthIndex, parseInt(md[2], 10));
+  return iso === null ? null : { iso, form: 'month-day' };
+}
+
+/** `iso` when it is today or later; otherwise the same month and day next
+ *  year (Feb 29 lands on Feb 28 when next year has none). */
+export function nextOccurrence(iso: string, today: string): string {
+  if (iso >= today) return iso;
+  const [y, m, d] = iso.split('-').map((n) => parseInt(n, 10));
+  return poolDateString(y + 1, m - 1, d) ?? poolDateString(y + 1, m - 1, d - 1)!;
+}
+
 /**
  * `/pool` arguments. Three forms:
  *   ``            → show the current pool
@@ -640,7 +686,7 @@ function poolDateString(year: number, monthIndex: number, day: number): string |
  *                   until 2026-12-12`. A month-name date means its NEXT
  *                   occurrence — a semester end is always ahead of you — and a
  *                   past ISO date is refused rather than silently accepted as
- *                   an already-ended pool.
+ *                   an already-ended pool. `today` and `tomorrow` work too.
  *
  * The START date is deliberately not accepted here: it is set companion-side
  * to the day the command runs, which is when the disbursement is in hand.
@@ -653,34 +699,15 @@ export function parsePoolArgs(args: string, now: Date): PoolCommand | null {
   const tokens = t.split(/\s+/).filter((w) => !/^(until|till?|to)$/i.test(w));
   if (tokens.length < 2) return null;
 
-  const amountRaw = tokens[0].replace(/[$,]/g, '');
-  if (!/^\d+(\.\d{1,2})?$/.test(amountRaw)) return null;
-  const amountCents = Math.round(parseFloat(amountRaw) * 100);
-  if (amountCents <= 0) return null;
+  const amountCents = parseAmountCents(tokens[0]);
+  if (amountCents === null) return null;
 
   const today = now.toISOString().slice(0, 10);
-  const dateTokens = tokens.slice(1);
-
-  if (dateTokens.length === 1 && /^\d{4}-\d{2}-\d{2}$/.test(dateTokens[0])) {
-    const iso = dateTokens[0];
-    const [y, m, d] = iso.split('-').map((n) => parseInt(n, 10));
-    if (poolDateString(y, m - 1, d) !== iso) return null;
-    if (iso < today) return null;
-    return { kind: 'set', amountCents, endDate: iso };
-  }
-
-  if (dateTokens.length === 2 && /^\d{1,2}$/.test(dateTokens[1])) {
-    const monthIndex = POOL_MONTH_PREFIXES.indexOf(dateTokens[0].slice(0, 3).toLowerCase());
-    const day = parseInt(dateTokens[1], 10);
-    if (monthIndex === -1) return null;
-    const thisYear = poolDateString(now.getUTCFullYear(), monthIndex, day);
-    if (thisYear === null) return null;
-    return {
-      kind: 'set',
-      amountCents,
-      endDate: thisYear >= today ? thisYear : poolDateString(now.getUTCFullYear() + 1, monthIndex, day)!,
-    };
-  }
-
-  return null;
+  const date = parseDateInput(tokens.slice(1).join(' '), now);
+  if (date === null) return null;
+  // A past ISO date is refused rather than silently accepted as an
+  // already-ended pool; a month-name means its NEXT occurrence, because a
+  // semester end is always ahead of you.
+  if (date.form === 'iso' && date.iso < today) return null;
+  return { kind: 'set', amountCents, endDate: date.form === 'month-day' ? nextOccurrence(date.iso, today) : date.iso };
 }

@@ -14,6 +14,9 @@ import {
   formatStatusReply,
   formatReportFooter,
   formatSyncReply,
+  parseAmountCents,
+  parseDateInput,
+  nextOccurrence,
 } from './telegram-commands';
 import type { CategoryBudgetSnapshot, BudgetPeriod, StatusReplyInput } from './telegram-commands';
 import { DEFAULT_GLYPH_STYLE, formatRelativeTime } from './telegram.js';
@@ -617,3 +620,58 @@ describe('parsePoolArgs', () => {
 
 // Hoisted beside the tests it serves, like the telegram.test.ts pattern.
 import { parsePoolArgs } from './telegram-commands';
+
+describe('parseAmountCents', () => {
+  it.each([
+    ['20', 2000], ['9.99', 999], ['$16,000.50', 1_600_050], [' 7 ', 700], ['0.5', 50],
+  ])('reads %s as %i cents', (input, cents) => {
+    expect(parseAmountCents(input)).toBe(cents);
+  });
+
+  it.each(['', 'abc', '0', '-5', '9.999', '9,99', '$', '1e3'])('refuses %s', (input) => {
+    expect(parseAmountCents(input)).toBeNull();
+  });
+});
+
+describe('parseDateInput', () => {
+  const now = new Date('2026-10-12T15:00:00Z');
+
+  it('reads ISO dates as given, past or future', () => {
+    expect(parseDateInput('2026-12-12', now)).toEqual({ iso: '2026-12-12', form: 'iso' });
+    expect(parseDateInput('2026-01-02', now)).toEqual({ iso: '2026-01-02', form: 'iso' });
+  });
+
+  it('refuses impossible ISO dates', () => {
+    expect(parseDateInput('2026-02-31', now)).toBeNull();
+  });
+
+  it('reads month-day as THIS year, leaving past ones for the caller to roll', () => {
+    expect(parseDateInput('Dec 12', now)).toEqual({ iso: '2026-12-12', form: 'month-day' });
+    expect(parseDateInput('december 12th', now)).toEqual({ iso: '2026-12-12', form: 'month-day' });
+    expect(parseDateInput('Jan 3', now)).toEqual({ iso: '2026-01-03', form: 'month-day' });
+  });
+
+  it('reads today and tomorrow', () => {
+    expect(parseDateInput('today', now)).toEqual({ iso: '2026-10-12', form: 'relative' });
+    expect(parseDateInput('Tomorrow', now)).toEqual({ iso: '2026-10-13', form: 'relative' });
+  });
+
+  it.each(['', 'soon', 'Dec', '12', 'Foo 12', 'Feb 30'])('refuses %s', (input) => {
+    expect(parseDateInput(input, now)).toBeNull();
+  });
+});
+
+describe('nextOccurrence', () => {
+  it('keeps a date that is today or later', () => {
+    expect(nextOccurrence('2026-10-12', '2026-10-12')).toBe('2026-10-12');
+    expect(nextOccurrence('2026-12-12', '2026-10-12')).toBe('2026-12-12');
+  });
+
+  it('moves a past date to next year', () => {
+    expect(nextOccurrence('2026-01-03', '2026-10-12')).toBe('2027-01-03');
+  });
+
+  it('lands Feb 29 on Feb 28 in a non-leap year', () => {
+    expect(nextOccurrence('2028-02-29', '2028-03-01')).toBe('2029-02-28');
+  });
+});
