@@ -26,6 +26,10 @@ import {
   SUBSCRIPTION_PREFS_SECRET_KEY, editSubscriptionPrefs as editPrefsDocument, loadSubscriptionPrefs,
   type LoadedSubscriptionPrefs, type SubscriptionEdit, type SubscriptionPrefs,
 } from '../../shared/subscription-prefs';
+import { newRunId, stampChange, type ChangeDraft, type ChangeEntry, type ChangeLogSink } from '../../shared/change-entries';
+import {
+  changeLogResetKeys, createChangeLogWriter, readChangeLog, type ChangeLogIo, type ChangeLogRead,
+} from '../../shared/change-log';
 
 /** Per-account balance snapshot captured on each sync, for the Sync page. */
 /** One spending category as the companion published it. Mirrors
@@ -159,6 +163,47 @@ export type PendingLargeTxAlert = SyncResult['largeTransactionAlerts'][number];
 
 export class SecretsStore {
   constructor(private ctx: AddonContext) {}
+
+  /** The add-on's change-log writer: ONE per store, and the add-on makes one
+   *  store per load, so a sync and a button append through the same queue. */
+  private readonly changeLog = createChangeLogWriter({
+    writer: 'addon',
+    log: (msg) => console.warn(`[simplefin-sync] ${msg}`),
+  });
+
+  private changeLogIo(): ChangeLogIo {
+    return {
+      get: (k) => this.ctx.api.secrets.get(k),
+      set: (k, v) => this.ctx.api.secrets.set(k, v),
+      clear: (k) => this.ctx.api.secrets.delete(k),
+    };
+  }
+
+  /** Appends stamped entries. Never rejects: a failed append becomes a gap
+   *  record on the next one (shared/change-log.ts). */
+  async recordChanges(entries: ChangeEntry[]): Promise<void> {
+    await this.changeLog.append(this.changeLogIo(), entries);
+  }
+
+  /** One entry for something the person did in the app (`actor: 'you'`). */
+  async recordChange(draft: ChangeDraft): Promise<void> {
+    await this.recordChanges([stampChange(draft, 'addon', new Date())]);
+  }
+
+  /** What `runSync` hands the core: this writer, a fresh run id. */
+  changeLogSink(now = new Date()): ChangeLogSink {
+    return { writer: 'addon', run: newRunId('addon', now), append: (entries) => this.recordChanges(entries) };
+  }
+
+  /** Both writers' log, merged. Null when the host read itself fails; a
+   *  corrupt bucket is reported inside the result, not as null. */
+  async getChangeLog(): Promise<ChangeLogRead | null> {
+    try {
+      return await readChangeLog((k) => this.ctx.api.secrets.get(k), new Date());
+    } catch {
+      return null;
+    }
+  }
 
   /** Writes this build's version where the companion's self-check can read it,
    *  so a half-finished update (image pulled, zip not — or the reverse) shows
@@ -834,6 +879,9 @@ export class SecretsStore {
   }
 
   async clearAll(): Promise<void> {
-    await Promise.all(Object.values(KEYS).map((k) => this.ctx.api.secrets.delete(k)));
+    // The change log's buckets are keyed by month, so they cannot sit in KEYS:
+    // both writers' keys (and `.2` fallbacks) for this month and the four
+    // before it are generated, since the secrets API cannot list keys.
+    await Promise.all([...Object.values(KEYS), ...changeLogResetKeys(new Date())].map((k) => this.ctx.api.secrets.delete(k)));
   }
 }

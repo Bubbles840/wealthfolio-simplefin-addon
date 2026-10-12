@@ -14,6 +14,7 @@ import { fetchAccounts } from '../utils/simplefin';
 import type { SecretsStore, CategoryCatalogEntry, AccountBalanceInfo } from '../utils/secrets';
 import type { Scheduler } from '../utils/scheduler';
 import type { MappingRule, SimplefinAccount, AccountMapping } from '../../shared/types';
+import { accountCreatedChange } from '../../shared/change-entries';
 
 /** Ids for this tab's collapsible cards. Doubles as the persisted key set (the
  *  page owns the open-card map), so these strings must not change — a rename
@@ -355,6 +356,7 @@ export function SettingsTab({
               simplefinAccounts={sfAccounts}
               initialMapping={mapping}
               onSave={saveMapping}
+              onAccountCreated={(created) => { void store.recordChange?.(accountCreatedChange(created)); }}
             />
             <div style={{ marginTop: 12, display: 'flex', gap: 8, alignItems: 'center' }}>
               <Button variant="ghost" onClick={() => void loadAccounts()} disabled={accountsLoading}>
