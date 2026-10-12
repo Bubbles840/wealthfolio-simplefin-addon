@@ -635,6 +635,33 @@ describe('subscription edits end to end', () => {
     await waitFor(() => expect(screen.queryByRole('button', { name: 'NETFLIX' })).toBeNull());
   });
 
+  it('the Subscriptions card ignores the range chip — a watched price from an older month still shows', async () => {
+    const props = makeProps();
+    const subs = subscriptionStore({ confirmed: ['OLD CO'] });
+    withSubscriptions(props, subs);
+    const n = 5;
+    const base = { ...CUBE, asOf: new Date().toISOString(), subscriptions: [det('SPOTIFY')] };
+    (props.store as any).getReportCube = vi.fn(async () => ({
+      ...base,
+      months: Array.from({ length: n }, (_, i) => `2026-${String(i + 5).padStart(2, '0')}`),
+      spend: Array.from({ length: n }, () => CUBE.spend[0]),
+      uncategorized: Array.from({ length: n }, () => CUBE.uncategorized[0]),
+      income: Array.from({ length: n }, () => CUBE.income[0]),
+      budgets: Array.from({ length: n }, () => CUBE.budgets[0]),
+      merchants: Array.from({ length: n }, (_, i) => (i === 3 ? [{ name: 'OLD CO', cents: 700, count: 1 }] : [])),
+      feesInterest: Array.from({ length: n }, () => 0),
+      netWorth: Array.from({ length: n }, () => null),
+      liquid: Array.from({ length: n }, () => null),
+    }));
+    render(<SyncPage {...props} />);
+    await waitFor(() => expect(reportIds().length).toBeGreaterThan(0));
+    const row = () => screen.getByRole('button', { name: 'OLD CO' }).closest('.sfin-subs-row')!.textContent;
+    await waitFor(() => expect(row()).toContain('$7'));
+    fireEvent.click(screen.getByRole('button', { name: /^Month$/ }));
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Month$/ })).toHaveAttribute('aria-pressed', 'true'));
+    expect(row()).toContain('$7');
+  });
+
   it('a maybe answered Yes joins the roster', async () => {
     const props = makeProps();
     const subs = subscriptionStore();

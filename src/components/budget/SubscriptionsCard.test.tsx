@@ -26,6 +26,37 @@ const applied = (spy: ReturnType<typeof vi.fn>, base: SubscriptionPrefs = emptyS
 const HULU = { id: 'hulu0001', name: 'Hulu', cents: 999, cadence: 'monthly' as const, nextDate: '2026-10-20' };
 const LINK = { manualId: 'hulu0001', merchant: 'HULU', date: '2026-09-19', cents: 999 };
 
+describe('reminders and load failures (R2 fix wave)', () => {
+  it('offers no reminder choices where a reminder can never fire: watched and overdue entries', () => {
+    render(<SubscriptionsCard
+      cube={cubeWith([det('NETFLIX', { lastDate: '2026-09-03' }), det('SPOTIFY')], { merchants: [[{ name: 'WATCHED CO', cents: 700, count: 1 }]] })}
+      subscriptionPrefs={loaded({ confirmed: ['WATCHED CO'] })} onSubscriptionEdit={vi.fn()} />);
+    for (const name of ['NETFLIX', 'WATCHED CO']) {
+      fireEvent.click(screen.getByRole('button', { name }));
+      expect(screen.getByText('Reminders start once a charge date is known.')).toBeTruthy();
+      expect(screen.queryByRole('group', { name: `Remind before ${name} charges` })).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name }));
+    }
+    fireEvent.click(screen.getByRole('button', { name: 'SPOTIFY' }));
+    expect(screen.getByRole('group', { name: 'Remind before SPOTIFY charges' })).toBeTruthy();
+    expect(screen.queryByText('Reminders start once a charge date is known.')).toBeNull();
+  });
+
+  it('when the host read failed (null prefs) the card is read-only with a notice, not an editable empty list', () => {
+    render(<SubscriptionsCard cube={cubeWith([det('SPOTIFY')])} subscriptionPrefs={null} onSubscriptionEdit={vi.fn()} />);
+    expect(screen.getByText("Couldn't load your subscription settings — try again later.")).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '+ Add subscription' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'SPOTIFY' }));
+    expect(screen.queryByRole('button', { name: 'Hide SPOTIFY' })).toBeNull();
+  });
+
+  it('a real empty document stays editable', () => {
+    render(<SubscriptionsCard cube={cubeWith([det('SPOTIFY')])} subscriptionPrefs={loaded()} onSubscriptionEdit={vi.fn()} />);
+    expect(screen.queryByText(/Couldn't load/)).toBeNull();
+    expect(screen.getByRole('button', { name: '+ Add subscription' })).toBeTruthy();
+  });
+});
+
 describe('hidden hand-added entries (R2 fix wave)', () => {
   it('the full view lists a hidden hand-added entry with Restore', () => {
     const onEdit = vi.fn();

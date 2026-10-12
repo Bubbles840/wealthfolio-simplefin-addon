@@ -801,7 +801,7 @@ export class SecretsStore {
   }
   /** The subscription document (shared/subscription-prefs.ts), or the legacy
    *  lists while none exists. Null when the host read itself fails: the card
-   *  then starts from nothing hidden, and every edit still re-reads first. */
+   *  then shows a read-only notice (a real empty document is not null). */
   async getSubscriptionPrefs(): Promise<LoadedSubscriptionPrefs | null> {
     try {
       return await loadSubscriptionPrefs((k) => this.ctx.api.secrets.get(k));
