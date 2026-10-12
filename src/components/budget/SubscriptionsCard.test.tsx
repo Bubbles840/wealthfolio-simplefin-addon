@@ -164,3 +164,18 @@ describe('subscriptions card: reminders, rename, delete (1.60)', () => {
     expect(applied(onEdit, base.prefs).manual).toEqual([HULU]);
   });
 });
+
+describe('subscriptions card: unreadable document (R2-18)', () => {
+  it('asks no link question it cannot take an answer to', () => {
+    render(<SubscriptionsCard cube={cubeWith([det('SPOTIFY')], { subscriptionLinks: [LINK] })}
+      subscriptionPrefs={loaded({ manual: [HULU] }, true)} onSubscriptionEdit={vi.fn()} />);
+    expect(screen.getByText(/Couldn't read your subscription settings/)).toBeTruthy();
+    expect(screen.queryByText(/your Hulu\?/)).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Yes, HULU/ })).toBeNull();
+  });
+
+  it('still shows the notice when there is nothing to list', () => {
+    render(<SubscriptionsCard cube={cubeWith([])} subscriptionPrefs={loaded({}, true)} onSubscriptionEdit={vi.fn()} />);
+    expect(screen.getByText(/Couldn't read your subscription settings/)).toBeTruthy();
+  });
+});
