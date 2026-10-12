@@ -12,16 +12,17 @@
  * celebration line predates the rule and stays.
  */
 import React from 'react';
-import { Button } from '../ui';
+import { Button, Input } from '../ui';
 import type { ReportCube } from '../../../shared/report-cube';
 import {
-  acceptLink, confirmKey, declineLink, emptySubscriptionPrefs, hideKey, unhideKey,
-  type LoadedSubscriptionPrefs, type SubscriptionEdit,
+  acceptLink, confirmKey, declineLink, deleteManual, emptySubscriptionPrefs, hideKey, renameKey, restoreDeleted, setRemind, unhideKey,
+  type LoadedSubscriptionPrefs, type RemindDays, type SubscriptionEdit,
 } from '../../../shared/subscription-prefs';
 import {
   aboutDollars, buildRoster, formatRosterTotal, localIsoDay, monthDay, rosterMoney, rosterPrice, rosterWhen,
   type RosterEntry,
 } from '../../../shared/subscription-roster';
+import { parseSubscriptionName, SUB_NAME_HINT } from '../../../shared/telegram-commands';
 
 export interface SubscriptionsCardProps {
   cube: ReportCube;
@@ -63,6 +64,35 @@ function recentMerchants(cube: ReportCube): Array<{ name: string; cents: number;
   return out;
 }
 
+const REMIND_CHIPS: Array<{ label: 'Off' | '1d' | '3d' | '7d'; days: RemindDays | null }> = [
+  { label: 'Off', days: null }, { label: '1d', days: 1 }, { label: '3d', days: 3 }, { label: '7d', days: 7 },
+];
+
+/** Inline rename, validated with the bot's own parser and hint. */
+function RenameField({ entry, onRename }: { entry: RosterEntry; onRename: (name: string) => void }) {
+  const [draft, setDraft] = React.useState(entry.displayName);
+  const [error, setError] = React.useState<string | null>(null);
+  return (
+    <form
+      className="sfin-subs-rename"
+      onSubmit={(ev) => {
+        ev.preventDefault();
+        const name = parseSubscriptionName(draft);
+        if (name === null) {
+          setError(SUB_NAME_HINT);
+          return;
+        }
+        setError(null);
+        onRename(name);
+      }}
+    >
+      <Input aria-label={`New name for ${entry.displayName}`} value={draft} onChange={(ev) => setDraft(ev.target.value)} />
+      <Button type="submit" variant="outline">Save name</Button>
+      {error && <div className="sfin-subs-error" role="alert">{error}</div>}
+    </form>
+  );
+}
+
 export function SubscriptionsCard({
   cube, full = false, subscriptionPrefs, onSubscriptionEdit, companionStale = false, onSetUpCompanion,
 }: SubscriptionsCardProps) {
@@ -71,6 +101,7 @@ export function SubscriptionsCard({
   const edit = subscriptionPrefs?.unreadable ? undefined : onSubscriptionEdit;
   // Hooks first: every early return below comes after them.
   const [openKey, setOpenKey] = React.useState<string | null>(null);
+  const [deleted, setDeleted] = React.useState<{ id: string; name: string } | null>(null);
   const [celebrate, setCelebrate] = React.useState<{ name: string; price: string } | null>(null);
   const prefs = subscriptionPrefs?.prefs ?? null;
   const roster = React.useMemo(() => buildRoster({
@@ -94,6 +125,13 @@ export function SubscriptionsCard({
     edit?.((p) => hideKey(p, e.key));
   };
 
+  const remove = (e: RosterEntry) => {
+    const id = e.key.slice(2); // 'm:<id>'
+    setDeleted({ id, name: e.displayName });
+    setOpenKey(null);
+    edit?.((p) => deleteManual(p, id, new Date()));
+  };
+
   const detail = (e: RosterEntry) => (
     <div className="sfin-subs-detail">
       {e.bankName && <div className="sfin-subtle">On your statement as {e.bankName}</div>}
@@ -102,10 +140,37 @@ export function SubscriptionsCard({
           ? `Last charges: ${e.recent.map((r) => `${monthDay(r.date)} ${rosterMoney(r.cents)}`).join(' · ')}`
           : 'No charge matched to it yet.'}
       </div>
-      {edit && e.source !== 'manual' && (
-        <div className="sfin-subs-actions">
-          <Button variant="outline" aria-label={`Hide ${e.displayName}`} onClick={() => hide(e)}>Hide / I cancelled it</Button>
-        </div>
+      {edit && (
+        <>
+          <div className="sfin-subs-remind">
+            <span>Remind</span>
+            <div className="sfin-range-chips" role="group" aria-label={`Remind before ${e.displayName} charges`}>
+              {REMIND_CHIPS.map((c) => {
+                const on = (e.remind ?? null) === c.days;
+                return (
+                  <Button key={c.label} variant={on ? undefined : 'ghost'} aria-pressed={on}
+                    onClick={() => edit((p) => setRemind(p, e.key, c.days))}>
+                    {c.label}
+                  </Button>
+                );
+              })}
+            </div>
+          </div>
+          {companionStale && (
+            <div className="sfin-subtle">
+              Reminders are sent by the background companion, and it hasn&apos;t published in over two days.
+              {onSetUpCompanion && (
+                <> <Button variant="ghost" onClick={onSetUpCompanion}>Open background sync settings</Button></>
+              )}
+            </div>
+          )}
+          <RenameField key={e.key} entry={e} onRename={(name) => edit((p) => renameKey(p, e.key, name))} />
+          <div className="sfin-subs-actions">
+            {e.source === 'manual'
+              ? <Button variant="outline" aria-label={`Delete ${e.displayName}`} onClick={() => remove(e)}>Delete</Button>
+              : <Button variant="outline" aria-label={`Hide ${e.displayName}`} onClick={() => hide(e)}>Hide / I cancelled it</Button>}
+          </div>
+        </>
       )}
     </div>
   );
@@ -155,6 +220,12 @@ export function SubscriptionsCard({
       {celebrate && (
         <div className="sfin-subs-celebrate" role="status">
           🎉 {celebrate.name} cancelled — that&apos;s {celebrate.price} back in your pocket.
+        </div>
+      )}
+      {deleted && edit && (
+        <div className="sfin-subs-actions" role="status">
+          Deleted {deleted.name}.
+          <Button variant="ghost" onClick={() => { edit((p) => restoreDeleted(p, deleted.id)); setDeleted(null); }}>Undo</Button>
         </div>
       )}
       <div className="sfin-subs-total">{formatRosterTotal(roster)} across {roster.subscriptions.length}</div>

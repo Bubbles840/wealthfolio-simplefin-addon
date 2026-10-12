@@ -817,6 +817,10 @@ const css = `
 .sfin-subs-detail { display: flex; flex-direction: column; gap: 8px; margin: 2px 0 8px; padding: 8px 0 8px 12px; border-left: 2px solid var(--border); font-size: var(--sfin-sz-sm); }
 .sfin-subs-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .sfin-subs-note { font-size: var(--sfin-sz-sm); color: var(--sfin-warn); }
+.sfin-subs-remind { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.sfin-subs-remind .sfin-range-chips { margin: 0; }
+.sfin-subs-rename { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.sfin-subs-error { color: var(--sfin-bad); font-size: var(--sfin-sz-sm); }
 .sfin-subs-link { background: color-mix(in srgb, var(--sfin-s0) 8%, transparent); border-radius: var(--sfin-rad-xs); padding: 4px 6px; }
 @keyframes sfin-pop { from { transform: scale(.92); opacity: 0; } to { transform: scale(1); opacity: 1; } }
 .sfin-range-pin { position: absolute; bottom: 6px; right: 10px; font-size: var(--sfin-sz-2xs); color: var(--muted-foreground); background: color-mix(in srgb, var(--card) 80%, transparent); border-radius: var(--sfin-rad-xs); padding: 1px 6px; }
