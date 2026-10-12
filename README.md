@@ -51,7 +51,9 @@ The addon has three tabs: **Home**, **Reports** and **Settings**.
   spent, what's left, and a single "🧹 N things to fix" line with buttons.
   File transactions, check what you can afford and pull charts from the chat.
   Commands that need details — `/pool`, `/newrule`, `/afford` — ask for them
-  one question at a time; the one-line forms still work.
+  one question at a time; the one-line forms still work. Bare `/pool` shows
+  the pool with Set and Clear buttons. In a group chat, answer a question by
+  replying to it.
 - **Amazon categorization** (optional) — reads Amazon's order emails from a
   throwaway mailbox and files each `AMAZON.COM*…` charge under what you bought.
 - **Rules** — map a description pattern to a category or activity type when a
