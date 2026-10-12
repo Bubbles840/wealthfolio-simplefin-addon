@@ -60,6 +60,13 @@ export interface TelegramListenerDeps {
    */
   onCommand: (cmd: ParsedCommand, reply: (text: string, keyboard?: InlineKeyboard) => Promise<void>) => Promise<void>;
   /**
+   * Plain text — anything that is not a command — from the configured chat:
+   * the answer to an open question (companion/src/ask-session.ts). OPTIONAL:
+   * absent keeps the old behaviour of dropping chatter. `reply` carries the
+   * same never-rejects guarantee as `onCommand`'s.
+   */
+  onText?: (text: string, reply: (text: string, keyboard?: InlineKeyboard) => Promise<void>) => Promise<void>;
+  /**
    * Menu-button taps (callback_data starting with 'cz:'). OPTIONAL: absent
    * means such callbacks are answered with a generic expiry notice. `ui`
    * mirrors `reply`'s guarantee: NONE of its methods ever reject — transport
@@ -273,7 +280,23 @@ export function startTelegramListener(deps: TelegramListenerDeps): { stop: () =>
       return;
     }
     const parsed = parseCommand(message?.text, config.botName);
-    if (!parsed) return;
+    if (!parsed) {
+      const text = message?.text;
+      if (!deps.onText || typeof text !== 'string' || text.trim() === '') return;
+      const safeTextReply = async (body: string, keyboard?: InlineKeyboard): Promise<void> => {
+        try {
+          await reply(config, body, keyboard);
+        } catch (err) {
+          safeLog(`Telegram listener: reply to a plain message was not delivered: ${formatError(err)}`);
+        }
+      };
+      try {
+        await deps.onText(text, safeTextReply);
+      } catch (err) {
+        safeLog(`Telegram listener: handling a plain message failed: ${formatError(err)}`);
+      }
+      return;
+    }
 
     // The callback handed to a handler can NEVER reject — see `onCommand`'s doc
     // comment. A handler that fires a reply without awaiting it (`void reply(…)`,
