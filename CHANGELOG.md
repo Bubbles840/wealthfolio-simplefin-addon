@@ -20,8 +20,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `/pool` shows **Set a new pool** and **Clear pool** buttons under the pool.
 - `/newrule` says how many transactions in the past year the words match, and
   offers your most-used recent categories as buttons.
+- **Subscriptions & bills, in the app and the bot.** One list both edit:
+  hide one you cancelled, confirm a maybe, set a reminder 1, 3 or 7 days
+  before a charge, rename it, or add one the bank data can't show (an annual
+  plan) by hand. Every entry shows its next charge date. `/subscriptions` in
+  Telegram does all of it with buttons and ↩ Undo; adding and renaming ask one
+  question at a time.
+- **"Coming up" in the daily report:** reminders, the week's charges (Full
+  detail), a price rise, and "didn't charge — cancelled?" with a Hide button.
+  With the daily report off, the reminders and news still arrive, as one short
+  message, each said once.
+- The weekly report adds `Next week: N charges · $X` and a **See all** button.
+- When a charge looks like one you added by hand, the card and the bot ask
+  "Is HULU your Hulu?" — Yes merges them into one row.
 
 ### Changed
+- Bills (monthly, varying amount) now have their own group with an "about"
+  subtotal, instead of being asked about one by one; they stay out of the
+  subscriptions total.
+- The mini app's Subscriptions section shows the same names and totals as the
+  card. Subscription amounts drop a trailing `.00` everywhere (`$20/mo`).
+- Your subscription choices are stored as one document, written by re-reading
+  first, so a change made in Telegram is never overwritten by an open app tab.
+  A save that could not be read back is refused ("Couldn't save that —
+  nothing was changed."), and a document that is already unreadable is never
+  overwritten: the app card turns read-only with a notice.
 - The one-line forms still work: `/pool 16000 Dec 12`,
   `/newrule trader joes = groceries`, `/afford 20 shopping`. `/pool`'s date
   now also accepts `today`, `tomorrow` and `Dec 12th`, and an amount with
@@ -32,6 +55,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`$1,200` works; a third decimal is refused).
 
 ### Fixed
+- A bank name with `*` or `_` in the daily report's price-rise line no longer
+  stops the whole report from being delivered.
 - The companion's sqlite3 fallback no longer runs through a shell.
 
 ## [1.59.2] - 2026-10-10

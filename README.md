@@ -34,7 +34,7 @@ The addon has three tabs: **Home**, **Reports** and **Settings**.
 
 - **Home** — a status strip (last sync, accounts, anything that needs you),
   then your budget: six reports to start (headline numbers, cash flow or the
-  semester-pool burn-down, budget vs actual, top merchants, subscriptions),
+  semester-pool burn-down, budget vs actual, top merchants, subscriptions & bills (remind, rename, hide, add by hand)),
   with more a tap away under **+ Add report**, or build your own.
 - **Syncing that gets the money right.**
   - Every SimpleFin account (checking, savings and cards) is imported on a
@@ -52,7 +52,10 @@ The addon has three tabs: **Home**, **Reports** and **Settings**.
   File transactions, check what you can afford and pull charts from the chat.
   Commands that need details — `/pool`, `/newrule`, `/afford` — ask for them
   one question at a time; the one-line forms still work. Bare `/pool` shows
-  the pool with Set and Clear buttons. In a group chat, answer a question by
+  the pool with Set and Clear buttons.
+  `/subscriptions` lists your subscriptions and bills — set a reminder before
+  a charge, rename one, hide one you cancelled, or add an annual plan by hand —
+  and the daily report's "Coming up" lines say what charges soon. In a group chat, answer a question by
   replying to it.
 - **Amazon categorization** (optional) — reads Amazon's order emails from a
   throwaway mailbox and files each `AMAZON.COM*…` charge under what you bought.

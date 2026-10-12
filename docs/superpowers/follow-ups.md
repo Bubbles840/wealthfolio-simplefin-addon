@@ -4,7 +4,8 @@ Findings that survived a review cycle without being fixed, with enough context
 to act on them later. Each says why it was deferred, so a future reader can
 tell "decided against" from "not got to yet".
 
-Last updated: 2026-07-30, after fixing the shared-transaction-id collision
+Last updated: 2026-10-12, after the subscriptions & bills plan (new section 7).
+Previous revision: 2026-07-30, after fixing the shared-transaction-id collision
 (former item 1, now under "Fixed"; former items 2-6 are now 1-5). Previous
 revision: 2026-07-29, after fixing the duplicate-transaction import
 (then-new item 1, which pushed former items 1-5 down to 2-6, plus three new
@@ -462,6 +463,33 @@ changes what a user sees today.
   judged in UTC.
 
 ---
+
+## 7. Subscriptions & bills (2026-10-12, plan `2026-10-12-subscriptions.md`)
+
+- **Remove the legacy-list mirror one release after 1.60.** `editSubscriptionPrefs`
+  writes `hidden_subscriptions` and `confirmed_subscriptions` after every edit
+  so an older companion or a stale tab reads correct lists mid-upgrade. Once
+  1.61 has shipped: drop the mirror and `legacySubscriptionPrefs`'s writers'
+  dependence on it, keep the two keys in `KEYS` (Reset must still clear what
+  older versions wrote), and keep the read-side import from them for one more
+  release so a never-edited install still imports its old choices.
+- **No no-companion mode in the app.** Without a cube the Budget board is an
+  empty state, so hand-added entries are only reachable from Telegram there.
+  `buildRoster` already supports `detectionAvailable: false`.
+- **A bill cannot be moved into Subscriptions from the UI** (only an old
+  `confirmed_subscriptions` entry does that). Add a "Count it as a
+  subscription" action to the bill detail if anyone asks.
+- **Hidden names the detector has dropped vanish from the Hidden list** (they
+  are no longer roster entries). Harmless — they come back hidden if the
+  merchant recurs — but they cannot be restored ahead of time.
+- **`today` is the local day, cube dates are UTC `date()` strings.** A charge
+  posted in the evening west of UTC can land a day "late" on the late/overdue
+  windows. Pre-existing seam (see the R2 facts); not worth a migration.
+- **Weekly-cadence subscriptions and annual detection** stay out of scope
+  (spec, "Out of scope").
+- **The `/subscriptions` menu's taps answer an invalid save with "Couldn't
+  reach Wealthfolio — try again."** The Telegram question flows say "Couldn't
+  save that — nothing was changed." Make the menu say the same.
 
 ## Reference: name mismatches between the database, the REST API, and the SDK
 
