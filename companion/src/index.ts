@@ -1561,11 +1561,6 @@ function poolReportDeps(wfClient: WealthfolioClient, dbPath: string): PoolReport
   };
 }
 
-/**
- * The cube builder's data sources, bound once — the report-cube twin of
- * `poolReportDeps` above, sharing its dismissal and pool reads so the cube
- * and the pool line can never count different money.
- */
 /** The two secret calls every subscription reader and writer goes through —
  *  the companion's half of shared/subscription-prefs.ts's `get`/`set`. */
 function subscriptionSecrets(wfClient: WealthfolioClient): { get: SecretGet; set: SecretSet } {
@@ -1581,6 +1576,11 @@ async function readRosterFor(wfClient: WealthfolioClient, now: Date): Promise<Ro
   return readSubscriptionRoster(subscriptionSecrets(wfClient).get, toDateString(now));
 }
 
+/**
+ * The cube builder's data sources, bound once — the report-cube twin of
+ * `poolReportDeps` above, sharing its dismissal and pool reads so the cube
+ * and the pool line can never count different money.
+ */
 function cubeBuildDeps(wfClient: WealthfolioClient, dbPath: string): CubeBuildDeps {
   return {
     accountMeta: async () => {

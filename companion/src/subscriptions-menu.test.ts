@@ -227,7 +227,7 @@ describe('subscriptions menu', () => {
     expect(h.set).not.toHaveBeenCalled();
   });
 
-  it('an edit the parser would reject: refused like any failed write, nothing written, no escape', async () => {
+  it('an edit the parser would reject: "couldn\'t save that", nothing written, no escape', async () => {
     const h = harness(BASE());
     const { SubscriptionPrefsInvalidError } = await import('../../shared/subscription-prefs.js');
     const deps: SubscriptionsMenuDeps = {
@@ -238,7 +238,7 @@ describe('subscriptions menu', () => {
     };
     await createSubscriptionsMenu(deps).onCallback({ data: `cz:sb:h:${H('SPOTIFY')}`, chatId: 1 }, h.ui);
     expect(h.ui.answer).toHaveBeenCalledTimes(1);
-    expect(h.ui.answer).toHaveBeenCalledWith(SUBSCRIPTIONS_UNREACHABLE_REPLY);
+    expect(h.ui.answer).toHaveBeenCalledWith("Couldn't save that — nothing was changed.");
     expect(h.ui.edit).not.toHaveBeenCalled();
     expect(h.set).not.toHaveBeenCalled();
   });
@@ -249,6 +249,64 @@ describe('subscriptions menu', () => {
       cents: 900, cadence: 'monthly', nextDate: '2026-10-15', recent: [], handle: H('SQ *COFFEE_CLUB'),
     });
     expect(screen.text.split('\n')[0]).toBe('SQ \\*COFFEE\\_CLUB');
+  });
+
+  it('a name with an emoji at the cut never leaves half of it, on list rows and the report button', async () => {
+    const name = `${'a'.repeat(26)}😀bbb`;
+    const h = harness({ report_cube: cubeJson([det(name)]) });
+    await h.tap(OPEN_SUBSCRIPTIONS);
+    const rowLabel = texts((h.ui.send.mock.calls[0] as unknown as [string, any])[1])[0];
+    expect(rowLabel).toBe(`${'a'.repeat(26)}😀…`);
+    const { hideFromReportButton } = await import('./subscriptions-menu.js');
+    const entry = (await readSubscriptionRoster(h.get, '2026-10-12')).roster.subscriptions[0];
+    expect(hideFromReportButton(entry).text).toBe(`🙈 Hide ${'a'.repeat(23)}…`);
+    expect(hideFromReportButton({ ...entry, displayName: `${'a'.repeat(22)}😀bbb` }).text).toBe(`🙈 Hide ${'a'.repeat(22)}😀…`);
+  });
+
+  it('no reminder choices where a reminder can never fire: a watched or overdue entry', async () => {
+    const h = harness({
+      report_cube: cubeJson([det('NETFLIX', { lastDate: '2026-09-03' })]),
+      subscription_prefs: doc({ confirmed: ['WATCHED CO'] }),
+    });
+    for (const name of ['NETFLIX', 'WATCHED CO']) {
+      h.ui.edit.mockClear();
+      await h.tap(`cz:sb:d:${H(name)}`);
+      const [text, kb] = h.ui.edit.mock.calls[0] as unknown as [string, any];
+      expect(text).toContain('Reminders start once a charge date is known.');
+      expect(text).not.toContain('Remind:');
+      expect(texts(kb)).not.toContain('1d');
+      expect(texts(kb)).not.toContain('✓ Off');
+    }
+  });
+
+  it('a re-read that fails AFTER a good write still answers with the success, from the old list', async () => {
+    const h = harness(BASE());
+    const deps: SubscriptionsMenuDeps = {
+      read: (() => {
+        let n = 0;
+        return (now: Date) => (++n === 1 ? readSubscriptionRoster(h.get, localIsoDay(now)) : Promise.reject(new Error('ECONNRESET')));
+      })(),
+      edit: (edit, now) => editSubscriptionPrefs(h.get, h.set, edit, now),
+      now: () => NOW,
+      log: vi.fn(),
+    };
+    await createSubscriptionsMenu(deps).onCallback({ data: `cz:sb:r3:${H('SPOTIFY')}`, chatId: 1 }, h.ui);
+    expect(h.stored().remind).toEqual({ SPOTIFY: 3 });
+    expect(h.ui.answer).toHaveBeenCalledTimes(1);
+    expect(h.ui.answer).toHaveBeenCalledWith('Reminder: 3 days before');
+    expect(texts((h.ui.edit.mock.calls[0] as unknown as [string, any])[1])).toContain('✓ 3d');
+    // The list-returning paths too (Undo of a hide).
+    const h2 = harness({ ...BASE(), subscription_prefs: doc({ hidden: ['SPOTIFY'] }) });
+    let n = 0;
+    await createSubscriptionsMenu({
+      read: (now) => (++n === 1 ? readSubscriptionRoster(h2.get, localIsoDay(now)) : Promise.reject(new Error('down'))),
+      edit: (edit, now) => editSubscriptionPrefs(h2.get, h2.set, edit, now),
+      now: () => NOW,
+      log: vi.fn(),
+    }).onCallback({ data: `cz:sb:uh:${H('SPOTIFY')}`, chatId: 1 }, h2.ui);
+    expect(h2.stored().hidden).toEqual([]);
+    expect(h2.ui.answer).toHaveBeenCalledTimes(1);
+    expect(h2.ui.answer).toHaveBeenCalledWith('Undone');
   });
 
   it('ignores data it does not know', async () => {
