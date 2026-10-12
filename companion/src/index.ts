@@ -2804,7 +2804,19 @@ async function readBudgetSnapshotWithStyle(wfClient: WealthfolioClient) {
  * through another.
  */
 export function buildAskSessions(wfClient: WealthfolioClient, controller: CategorizeController): AskSessions {
-  const asks = createAskSessions({ log });
+  const asks = createAskSessions({
+    log,
+    firstQuestionNote: async () => {
+      try {
+        const tg = parseSecretJson<any>(await wfClient.getAddonSecret('simplefin-sync', 'telegram_config'), 'telegram_config');
+        // Group chat ids are negative. Telegram's privacy mode delivers only
+        // replies to the bot there, so a typed answer needs to be a reply.
+        return Number(tg?.chatId) < 0 ? 'In a group, reply to this message to answer.' : null;
+      } catch {
+        return null;
+      }
+    },
+  });
   asks.register('pool-set', async () => ({
     flow: buildPoolSetFlow(new Date()),
     onDone: async (a, send) => { await send(await applyPoolSet(wfClient, a.amount as number, a.until as string)); },

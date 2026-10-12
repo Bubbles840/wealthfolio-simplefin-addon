@@ -32,6 +32,29 @@ function setup(start = 1_000_000) {
 const lastButtons = (sent: Array<[string, unknown]>) =>
   ((sent[sent.length - 1][1] as any).inline_keyboard as Array<Array<{ callback_data: string }>>).flat().map((b) => b.callback_data);
 
+describe('firstQuestionNote', () => {
+  it('is appended to the first question only', async () => {
+    const sessions = createAskSessions({ seqBase: 0, firstQuestionNote: async () => 'Reply to answer.' });
+    sessions.register('demo', async () => ({ flow, onDone: async () => {} } as AskRun));
+    const sent: string[] = [];
+    const send = async (t: string) => { sent.push(t); };
+    await sessions.start('demo', send);
+    await sessions.onText('25', send);
+    expect(sent[0]).toBe('*Demo · 1 of 2*\nHow much?\n\nReply to answer.');
+    expect(sent[1]).not.toContain('Reply to answer.');
+  });
+
+  it('a failing or null note costs nothing', async () => {
+    for (const firstQuestionNote of [async () => null, async (): Promise<string | null> => { throw new Error('x'); }]) {
+      const sessions = createAskSessions({ seqBase: 0, firstQuestionNote });
+      sessions.register('demo', async () => ({ flow, onDone: async () => {} } as AskRun));
+      const sent: string[] = [];
+      await sessions.start('demo', async (t) => { sent.push(t); });
+      expect(sent[0]).toBe('*Demo · 1 of 2*\nHow much?');
+    }
+  });
+});
+
 describe('createAskSessions', () => {
   it('starts a flow by id and sends its first question', async () => {
     const t = setup();
