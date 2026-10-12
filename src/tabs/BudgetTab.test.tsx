@@ -611,7 +611,8 @@ describe('subscription dismissals end to end', () => {
     await waitFor(() => expect(reportIds().length).toBeGreaterThan(0));
 
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss QR LIBRARY' }));
-    expect(subs.editSubscriptionPrefs).toHaveBeenCalledTimes(1);
+    // The edit starts a microtask later (the page queues edits).
+    await waitFor(() => expect(subs.editSubscriptionPrefs).toHaveBeenCalledTimes(1));
     expect(subs.current().hidden).toEqual(['QR LIBRARY']);
     await waitFor(() => expect(screen.queryByText('QR LIBRARY')).toBeNull());
     expect(screen.getByText('SPOTIFY')).toBeInTheDocument();
@@ -629,6 +630,29 @@ describe('subscription dismissals end to end', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss QR LIBRARY' }));
     await waitFor(() => expect(screen.queryByText('NETFLIX')).toBeNull());
     expect(screen.queryByText('QR LIBRARY')).toBeNull();
+  });
+
+  it('two quick edits both land — the second waits for the first instead of racing it', async () => {
+    const props = makeProps();
+    let doc: SubscriptionPrefs = emptySubscriptionPrefs();
+    // Like the real store: read at the start, write after a delay.
+    const edit = vi.fn(async (e: SubscriptionEdit) => {
+      const base = doc;
+      await new Promise((r) => setTimeout(r, 20));
+      doc = e(base);
+      return doc;
+    });
+    Object.assign(props.store, { getSubscriptionPrefs: vi.fn(async () => ({ prefs: doc, unreadable: false })), editSubscriptionPrefs: edit });
+    withCube(props, [SPOTIFY, QR, NETFLIX]);
+    render(<SyncPage {...props} />);
+    await waitFor(() => expect(reportIds().length).toBeGreaterThan(0));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss QR LIBRARY' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss SPOTIFY' }));
+    await waitFor(() => expect(screen.queryByText('SPOTIFY')).toBeNull());
+    expect(doc.hidden).toEqual(['QR LIBRARY', 'SPOTIFY']);
+    expect(screen.queryByText('QR LIBRARY')).toBeNull();
+    expect(screen.getByText('NETFLIX')).toBeInTheDocument();
   });
 
   it('an edit the document refuses (invalid) changes nothing and does not crash', async () => {
@@ -690,7 +714,7 @@ describe('subscription confirmation end to end', () => {
 
     expect(screen.getByText(/is this a subscription\?/i)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Yes, RENT LLC is a subscription' }));
-    expect(subs.current().confirmed).toEqual(['RENT LLC']);
+    await waitFor(() => expect(subs.current().confirmed).toEqual(['RENT LLC']));
     await waitFor(() => expect(screen.queryByText(/is this a subscription\?/i)).toBeNull());
     expect(screen.getByText(/\$900\.00\/mo across 1/)).toBeInTheDocument();
   });
