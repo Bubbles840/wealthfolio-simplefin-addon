@@ -96,6 +96,8 @@ import { REPORT_CUBE_SECRET_KEY, parseReportCube } from '../../shared/report-cub
 import { HIDDEN_SUBSCRIPTIONS_SECRET_KEY, CONFIRMED_SUBSCRIPTIONS_SECRET_KEY, parseHiddenSubscriptions } from '../../shared/subscriptions.js';
 import { renderReportSvg, reportImageTitle, reportImageCaption, RENDERABLE_REPORT_IDS } from '../../shared/report-render.js';
 import { createAskSessions, CANCELLED_EARLIER, type AskSessions } from './ask-session.js';
+import { buildPoolClearFlow, buildPoolSetFlow } from './ask-flows.js';
+import { askStartData } from '../../shared/ask-flow.js';
 import { parseBudgetLayout } from '../../shared/budget-layout.js';
 import { parseCustomReports } from '../../shared/report-eval.js';
 import { sliceCubeMonths } from '../../shared/report-cube.js';
@@ -2762,15 +2764,46 @@ export function buildCategorizeController(wfClient: WealthfolioClient): Categori
   return createCategorizeController(buildCategorizeDeps(wfClient));
 }
 
+/** `/pool <amount> <date>` and the pool question's Save: one write, one reply. */
+async function applyPoolSet(wfClient: WealthfolioClient, amountCents: number, endDate: string): Promise<string> {
+  const deps = poolReportDeps(wfClient, wealthfolioDbPath() ?? '');
+  const style = await readGlyphStyle(wfClient);
+  const cfg = {
+    amountCents,
+    // Today, deliberately: the pool is set when the disbursement is in hand,
+    // and spending before today belongs to the OLD pool.
+    startDate: new Date().toISOString().slice(0, 10),
+    endDate,
+  };
+  await wfClient.setAddonSecret('simplefin-sync', SEMESTER_POOL_SECRET_KEY, JSON.stringify(cfg));
+  const status = await readPoolStatus(deps, new Date()).catch(() => null);
+  const line = status ? formatPoolLine(status, style) : null;
+  return line ? `Pool set.\n${line}` : 'Pool set.';
+}
+
+/** `/pool off` and the clear question: empty string, not a delete — the
+ *  secrets API has no delete, and parsePoolConfig reads '' as "no pool". */
+async function applyPoolClear(wfClient: WealthfolioClient): Promise<string> {
+  await wfClient.setAddonSecret('simplefin-sync', SEMESTER_POOL_SECRET_KEY, '');
+  return 'Pool cleared — reports go back to budgets only.';
+}
+
 /**
  * The bot's question flows, registered on ONE session holder. Like the
  * categorize controller, one instance must serve `onCommand`, `onText` and
  * `onMenuCallback`, or a question asked through one could never be answered
- * through another. Flows are registered by later tasks.
+ * through another.
  */
 export function buildAskSessions(wfClient: WealthfolioClient, controller: CategorizeController): AskSessions {
   const asks = createAskSessions({ log });
-  void wfClient;
+  asks.register('pool-set', async () => ({
+    flow: buildPoolSetFlow(new Date()),
+    onDone: async (a, send) => { await send(await applyPoolSet(wfClient, a.amount as number, a.until as string)); },
+  }));
+  asks.register('pool-clear', async () => ({
+    flow: buildPoolClearFlow(),
+    onDone: async (_a, send) => { await send(await applyPoolClear(wfClient)); },
+  }));
   void controller;
   return asks;
 }
@@ -2887,33 +2920,30 @@ export function buildTelegramCommandHandler(
           await reply(POOL_USAGE_REPLY);
           return;
         }
-        const deps = poolReportDeps(wfClient, wealthfolioDbPath() ?? '');
-        const style = await readGlyphStyle(wfClient);
         if (parsed.kind === 'clear') {
-          // Empty string, not a delete: the secrets API has no delete, and
-          // parsePoolConfig reads '' as "no pool" — the same off state the
-          // pool_status publish uses.
-          await wfClient.setAddonSecret('simplefin-sync', SEMESTER_POOL_SECRET_KEY, '');
-          await reply('Pool cleared — reports go back to budgets only.');
+          await reply(await applyPoolClear(wfClient));
           return;
         }
         if (parsed.kind === 'set') {
-          const cfg = {
-            amountCents: parsed.amountCents,
-            // Today, deliberately: the command is typed when the disbursement
-            // is in hand, and spending before today belongs to the OLD pool.
-            startDate: new Date().toISOString().slice(0, 10),
-            endDate: parsed.endDate,
-          };
-          await wfClient.setAddonSecret('simplefin-sync', SEMESTER_POOL_SECRET_KEY, JSON.stringify(cfg));
-          const status = await readPoolStatus(deps, new Date()).catch(() => null);
-          const line = status ? formatPoolLine(status, style) : null;
-          await reply(line ? `Pool set.\n${line}` : 'Pool set.');
+          await reply(await applyPoolSet(wfClient, parsed.amountCents, parsed.endDate));
           return;
         }
+        const deps = poolReportDeps(wfClient, wealthfolioDbPath() ?? '');
+        const style = await readGlyphStyle(wfClient);
         const status = await readPoolStatus(deps, new Date()).catch(() => null);
         const section = status ? formatPoolSection(status, style).trim() : '';
-        await reply(section !== '' ? section : `No pool set.\n${POOL_USAGE_REPLY}`);
+        // Bare /pool asks (1.60): the buttons start the questions; the
+        // one-line forms above still work for anyone who knows them.
+        if (section !== '') {
+          await reply(section, { inline_keyboard: [[
+            { text: '✏️ Set a new pool', callback_data: askStartData('pool-set') },
+            { text: 'Clear pool', callback_data: askStartData('pool-clear') },
+          ]] });
+        } else {
+          await reply(`No pool set.\n${POOL_USAGE_REPLY}`, { inline_keyboard: [[
+            { text: '✏️ Set a pool', callback_data: askStartData('pool-set') },
+          ]] });
+        }
         return;
       }
 
