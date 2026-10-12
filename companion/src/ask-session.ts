@@ -9,6 +9,11 @@
  * Text answers arrive through the listener's `onText`; buttons through
  * `onMenuCallback`, which must offer `cz:ak:` data HERE before the categorize
  * controller treats it as an expired menu.
+ *
+ * This module relies on the listener: `send`/`reply` and every `ui.*` method
+ * never reject, and the listener wraps onCommand, onMenuCallback and onText in
+ * a catch. So this module adds no try/catch around transport calls, except
+ * where a failed cosmetic edit must not strand an answer (see onCallback).
  */
 import {
   ASK_CALLBACK_PREFIX, answerButton, answerText, parseAskStart, startAsk,
@@ -69,17 +74,17 @@ export function createAskSessions(opts: {
 
   const current = (): Open | null => {
     if (open && now() - open.lastAt > ttl) {
-      expired = { command: open.run.flow.command, at: now() };
+      expired = { command: open.run.flow.command, at: open.lastAt + ttl };
       open = null;
     }
     return open;
   };
 
-  const show = async (o: Open, outcome: Extract<AskOutcome, { kind: 'screen' | 'retry' }>, send: AskSend, prefix = '') => {
+  const show = async (o: Open, outcome: Extract<AskOutcome, { kind: 'screen' | 'retry' }>, send: AskSend) => {
     o.state = outcome.state;
     o.lastAt = now();
     o.lastText = outcome.screen.text;
-    await send(`${prefix}${outcome.screen.text}`, outcome.screen.keyboard);
+    await send(outcome.screen.text, outcome.screen.keyboard);
   };
 
   const finish = async (run: AskRun, answers: Answers, send: AskSend) => {
@@ -98,14 +103,13 @@ export function createAskSessions(opts: {
       await send(UNKNOWN_FLOW);
       return;
     }
-    const replaced = current() !== null;
-    open = null;
+    // Build the flow first: a null or thrown factory leaves any open question answerable.
     const run = await factory(arg, send);
     if (!run) return;
+    const replaced = current() !== null;
     const seq = (counter++).toString(36);
     const { state, screen } = startAsk(run.flow, seq);
-    const o: Open = { run, state, lastAt: now(), lastText: screen.text };
-    open = o;
+    open = { run, state, lastAt: now(), lastText: screen.text };
     expired = null;
     await send(`${replaced ? `${CANCELLED_EARLIER}\n\n` : ''}${screen.text}`, screen.keyboard);
   };
@@ -120,6 +124,7 @@ export function createAskSessions(opts: {
     cancelForCommand() {
       const had = current() !== null;
       open = null;
+      expired = null;
       return had;
     },
 
@@ -167,19 +172,29 @@ export function createAskSessions(opts: {
         return;
       }
       await ui.answer();
+      // State changes before the cosmetic edit, so a failing edit cannot strand a Save or Cancel.
+      const edit = async (text: string) => {
+        try {
+          await ui.edit(text);
+        } catch (err) {
+          log(`Ask flow ${o.run.flow.id}: editing the answered question failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      };
       if (outcome.kind === 'cancel') {
         open = null;
-        await ui.edit(`${o.lastText}\n→ Cancelled.`);
+        await edit(`${o.lastText}\n→ Cancelled.`);
         return;
       }
       // The tapped question keeps its text and loses its buttons, so the chat
       // reads as a record of what was answered.
-      await ui.edit(outcome.kind !== 'retry' && outcome.echo ? `${o.lastText}\n→ ${escapeMarkdown(outcome.echo)}` : o.lastText);
+      const shown = outcome.kind !== 'retry' && outcome.echo ? `${o.lastText}\n→ ${escapeMarkdown(outcome.echo)}` : o.lastText;
       if (outcome.kind === 'done') {
         open = null;
+        await edit(shown);
         await finish(o.run, outcome.answers, ui.send);
         return;
       }
+      await edit(shown);
       await show(o, outcome, ui.send);
     },
   };

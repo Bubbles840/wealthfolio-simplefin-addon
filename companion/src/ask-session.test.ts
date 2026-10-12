@@ -118,12 +118,19 @@ describe('createAskSessions', () => {
     expect(t.sent[t.sent.length - 1][0]).toContain('25 m');
   });
 
-  it('forgets an expired command after an hour', async () => {
+  it('forgets an expired command an hour after it timed out', async () => {
+    const t = setup();
+    await t.sessions.start('demo', t.send);
+    t.tick(15 * 60_000 + 60 * 60_000 + 2);
+    await t.sessions.onText('25', t.send);
+    expect(t.sent[t.sent.length - 1][0]).toBe(NOT_WAITING);
+  });
+
+  it('a command clears the expiry notice', async () => {
     const t = setup();
     await t.sessions.start('demo', t.send);
     t.tick(15 * 60_000 + 1);
-    await t.sessions.cancelForCommand();      // first look marks it expired
-    t.tick(60 * 60_000 + 1);
+    expect(t.sessions.cancelForCommand()).toBe(false);
     await t.sessions.onText('25', t.send);
     expect(t.sent[t.sent.length - 1][0]).toBe(NOT_WAITING);
   });
@@ -165,10 +172,34 @@ describe('createAskSessions', () => {
     expect(factory).toHaveBeenCalledWith('abc', t.ui.send);
   });
 
-  it('answers a go: button for an unknown flow without throwing', async () => {
+  it('answers a go: button for an unknown flow without disturbing an open question', async () => {
     const t = setup();
+    await t.sessions.start('demo', t.send);
     await t.sessions.onCallback({ data: 'cz:ak:go:nope' }, t.ui);
-    expect(t.sent[0][0]).toBe('That button is no longer available.');
+    expect(t.sent[1][0]).toBe('That button is no longer available.');
+    await t.sessions.onText('25', t.send);
+    expect(t.sent[t.sent.length - 1][0]).toContain('Which?');
+  });
+
+  it('a flow that cannot start leaves the open question answerable', async () => {
+    const t = setup();
+    t.sessions.register('blocked', async () => null);
+    await t.sessions.start('demo', t.send);
+    await t.sessions.start('blocked', t.send);
+    expect(t.sent[t.sent.length - 1][0]).not.toContain(CANCELLED_EARLIER);
+    await t.sessions.onText('25', t.send);
+    expect(t.sent[t.sent.length - 1][0]).toContain('Which?');
+  });
+
+  it('a failing edit cannot strand Save: onDone still runs once', async () => {
+    const t = setup();
+    await t.sessions.start('demo', t.send);
+    await t.sessions.onText('25', t.send);
+    await t.sessions.onText('monthly', t.send);
+    const failingEdit = { ...t.ui, edit: vi.fn(async () => { throw new Error('edit gone'); }) };
+    await t.sessions.onCallback({ data: lastButtons(t.sent)[0] }, failingEdit);
+    expect(t.done).toHaveBeenCalledTimes(1);
+    expect(t.done).toHaveBeenCalledWith({ amount: 25, kind: 'm' }, t.ui.send);
   });
 
   it('answers a tap on a question that no longer exists', async () => {
