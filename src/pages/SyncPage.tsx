@@ -279,15 +279,26 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
    *  kept), and the card then shows what was WRITTEN — never a local guess.
    *  A corrupt document refuses the write and the card says so; any other
    *  failure changes nothing, like every other setting on this page. */
+  const subscriptionQueue = useRef<Promise<unknown>>(Promise.resolve());
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
   const onSubscriptionEdit = useCallback((edit: SubscriptionEdit) => {
-    const pending = store.editSubscriptionPrefs?.(edit);
-    if (!pending) return;
-    pending
-      .then((written) => setSubscriptionPrefs({ prefs: written, unreadable: false }))
-      .catch((err) => {
-        if (!isUnreadablePrefsError(err)) return;
+    if (!store.editSubscriptionPrefs) return;
+    // Edits run one after another: each starts only after the previous one
+    // settled, so it re-reads that write instead of racing it and dropping it.
+    const run = async () => {
+      try {
+        const written = await store.editSubscriptionPrefs!(edit);
+        if (mounted.current) setSubscriptionPrefs({ prefs: written, unreadable: false });
+      } catch (err) {
+        if (!isUnreadablePrefsError(err) || !mounted.current) return;
         setSubscriptionPrefs((prev) => ({ prefs: prev?.prefs ?? emptySubscriptionPrefs(), unreadable: true }));
-      });
+      }
+    };
+    subscriptionQueue.current = subscriptionQueue.current.then(run, run);
   }, [store]);
   const onBudgetLayoutReset = useCallback(() => {
     setBudgetLayoutState(null);
