@@ -93,6 +93,7 @@ import { parsePoolArgs, POOL_USAGE_REPLY } from '../../shared/telegram-commands.
 import { SEMESTER_POOL_SECRET_KEY, parsePoolConfig } from '../../shared/pool.js';
 import { readPoolStatus, readRunwayMonths, type PoolReportDeps } from './pool-report.js';
 import { REPORT_CUBE_SECRET_KEY, parseReportCube } from '../../shared/report-cube.js';
+import { loadSubscriptionPrefs, type SecretGet, type SecretSet } from '../../shared/subscription-prefs.js';
 import { HIDDEN_SUBSCRIPTIONS_SECRET_KEY, CONFIRMED_SUBSCRIPTIONS_SECRET_KEY, parseHiddenSubscriptions } from '../../shared/subscriptions.js';
 import { renderReportSvg, reportImageTitle, reportImageCaption, RENDERABLE_REPORT_IDS } from '../../shared/report-render.js';
 import { createAskSessions, CANCELLED, CANCELLED_EARLIER, NOT_WAITING, type AskSessions } from './ask-session.js';
@@ -1560,6 +1561,15 @@ function poolReportDeps(wfClient: WealthfolioClient, dbPath: string): PoolReport
  * `poolReportDeps` above, sharing its dismissal and pool reads so the cube
  * and the pool line can never count different money.
  */
+/** The two secret calls every subscription reader and writer goes through —
+ *  the companion's half of shared/subscription-prefs.ts's `get`/`set`. */
+function subscriptionSecrets(wfClient: WealthfolioClient): { get: SecretGet; set: SecretSet } {
+  return {
+    get: (key) => wfClient.getAddonSecret('simplefin-sync', key),
+    set: (key, value) => wfClient.setAddonSecret('simplefin-sync', key, value),
+  };
+}
+
 function cubeBuildDeps(wfClient: WealthfolioClient, dbPath: string): CubeBuildDeps {
   return {
     accountMeta: async () => {
@@ -1594,6 +1604,12 @@ function cubeBuildDeps(wfClient: WealthfolioClient, dbPath: string): CubeBuildDe
       spendByCategory: getNativeWealthfolioSpendingBetween(dbPath, s, e),
       uncategorized: getNativeUncategorizedSpendingTotal(dbPath, s, e, excluded).total,
     }),
+    // Link suggestions for hand-added subscriptions. An unreadable document
+    // offers none rather than guessing from the legacy lists.
+    subscriptionPrefs: async () => {
+      const loaded = await loadSubscriptionPrefs(subscriptionSecrets(wfClient).get).catch(() => null);
+      return loaded && !loaded.unreadable ? loaded.prefs : null;
+    },
   };
 }
 

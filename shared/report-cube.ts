@@ -80,6 +80,11 @@ export interface ReportCube {
   /** Monthly recurring charges found at build time (shared/subscriptions.ts).
    *  null = the reader gave no dates (older companion), NOT "none found". */
   subscriptions?: import('./subscriptions.js').DetectedSubscription[] | null;
+  /** 1.60: hand-added subscriptions' likely bank names, "Is HULU your Hulu?"
+   *  (shared/subscription-links.ts). Absent on older companions; null when the
+   *  prefs could not be read. NOT validated by parseReportCube —
+   *  buildRoster drops malformed entries. */
+  subscriptionLinks?: import('./subscription-roster.js').CubeLink[] | null;
   /** v1.48 drill-down: the newest month's transactions per (rolled-up)
    *  category, newest first, capped — enough to answer "what exactly were
    *  those purchases" without the host API (which cannot filter by

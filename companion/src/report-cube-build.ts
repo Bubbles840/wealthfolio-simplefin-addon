@@ -28,6 +28,8 @@ import {
 } from '../../shared/report-cube.js';
 import type { SemesterPoolConfig } from '../../shared/pool.js';
 import { detectSubscriptions, type SubscriptionCharge } from '../../shared/subscriptions.js';
+import { findLinkSuggestions } from '../../shared/subscription-links.js';
+import type { SubscriptionPrefs } from '../../shared/subscription-prefs.js';
 
 type DrillTxLike = NonNullable<ReportCube['drill']>[string][number];
 import type {
@@ -57,6 +59,9 @@ export interface CubeBuildDeps {
    *  Optional so an older binding keeps building cubes without drill-down. */
   drillRows?(start: string, endEx: string):
     Array<{ category: string; date: string; notes: string; amount: number; account: string }>;
+  /** The subscription document, for link suggestions. Optional so an older
+   *  binding keeps building cubes, just without suggestions. */
+  subscriptionPrefs?(): Promise<SubscriptionPrefs | null>;
 }
 
 const MERCHANTS_PER_MONTH = 20;
@@ -210,6 +215,13 @@ export async function buildReportCube(
     datedCharges.push({ date: r.date, merchant: name, cents: cents(r.amount) });
   }
   const subscriptions = datedCharges.length > 0 ? detectSubscriptions(datedCharges, now) : null;
+  // Link suggestions ride the same dated charges. A failed read costs the
+  // suggestions, never the cube.
+  let subscriptionLinks: ReportCube['subscriptionLinks'] = null;
+  if (deps.subscriptionPrefs && datedCharges.length > 0) {
+    const prefs = await deps.subscriptionPrefs().catch(() => null);
+    if (prefs) subscriptionLinks = findLinkSuggestions(datedCharges, prefs, now);
+  }
 
   // Drill-down: the newest month only, per category, newest first, capped.
   let drill: ReportCube['drill'] = null;
@@ -245,7 +257,7 @@ export async function buildReportCube(
     months, categories,
     accounts: meta.map(({ sfinId, name, type }) => ({ sfinId, name, type })),
     spend, uncategorized, income, budgets, merchants, feesInterest, netWorth, liquid, pool,
-    check, subscriptions, drill,
+    check, subscriptions, subscriptionLinks, drill,
   };
 
   while (JSON.stringify(cube).length > REPORT_CUBE_MAX_BYTES && cube.months.length > MIN_MONTHS_AFTER_TRIM) {
