@@ -217,12 +217,12 @@ export function resolveCategoryQuery<T extends ResolvableCategory>(
 export function parseAffordArgs(args: string): { amount: number; query: string } | null {
   const trimmed = (args ?? '').trim();
   if (!trimmed) return null;
-  const match = trimmed.match(/^\$?(-?\d+(?:\.\d+)?)\s+(.+)$/);
+  const match = trimmed.match(/^(\S+)\s+(.+)$/);
   if (!match) return null;
-  const amount = Number(match[1]);
+  const cents = parseAmountCents(match[1]);
   const query = match[2].trim();
-  if (!Number.isFinite(amount) || amount <= 0 || !query) return null;
-  return { amount, query };
+  if (cents === null || !query) return null;
+  return { amount: cents / 100, query };
 }
 
 /**

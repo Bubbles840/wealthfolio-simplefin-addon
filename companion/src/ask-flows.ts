@@ -126,7 +126,11 @@ export function buildNewRuleFlow(input: {
   };
 }
 
-export function buildAffordFlow(budgeted: CategoryBudgetSnapshot[]): AskFlow {
+const AFFORD_CATEGORY_HINT = 'Type one of your budget categories, or tap one.';
+
+/** `categories` is the whole snapshot (what `formatAffordReply` resolves over);
+ *  the quick picks are only the budgeted ones. */
+export function buildAffordFlow(categories: CategoryBudgetSnapshot[]): AskFlow {
   return {
     id: 'afford',
     command: 'afford',
@@ -145,10 +149,14 @@ export function buildAffordFlow(budgeted: CategoryBudgetSnapshot[]): AskFlow {
         id: 'query',
         kind: 'text',
         prompt: () => 'On what? Type a category or tap one.',
-        // Passed through as typed: formatAffordReply resolves it and owns
-        // the "no such category" answer, exactly as for `/afford 20 x`.
-        parse: (input) => (input ? { ok: true, value: input } : { ok: false, hint: 'Type a category name.' }),
-        quick: () => budgeted.slice(0, 8).map((c) => ({ label: c.name, value: c.name })),
+        // Resolved here, so a wrong answer re-asks only this question; the
+        // done value is the resolved name, which formatAffordReply re-resolves.
+        parse: (input) => {
+          const result = resolveCategoryQuery(categories, input);
+          if (result.kind === 'one') return { ok: true, value: result.category.name };
+          return { ok: false, hint: formatCategoryQueryMiss(result, input, AFFORD_CATEGORY_HINT) ?? 'No category by that name.' };
+        },
+        quick: () => categories.filter((c) => c.budget > 0).slice(0, 8).map((c) => ({ label: c.name, value: c.name })),
       },
     ],
   };

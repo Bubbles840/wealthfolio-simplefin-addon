@@ -318,6 +318,12 @@ describe('parseAffordArgs', () => {
   it('rejects a negative amount', () => {
     expect(parseAffordArgs('-5 x')).toBeNull();
   });
+  it('reads the amount like the question does: thousands commas work', () => {
+    expect(parseAffordArgs('$1,200 rent')).toEqual({ amount: 1200, query: 'rent' });
+  });
+  it('refuses a third decimal, like the question', () => {
+    expect(parseAffordArgs('9.999 x')).toBeNull();
+  });
 });
 
 describe('formatAffordReply', () => {
@@ -610,6 +616,11 @@ describe('parsePoolArgs', () => {
       kind: 'set', amountCents: 1_600_000, endDate: '2027-05-15',
     });
   });
+  it('reads "tomorrow" as the next day', () => {
+    expect(parsePoolArgs('16000 tomorrow', now)).toEqual({
+      kind: 'set', amountCents: 1_600_000, endDate: '2026-08-31',
+    });
+  });
   it('rejects garbage, missing dates, zero amounts, and past ISO dates', () => {
     expect(parsePoolArgs('lots of money', now)).toBeNull();
     expect(parsePoolArgs('16000', now)).toBeNull();
@@ -628,7 +639,7 @@ describe('parseAmountCents', () => {
     expect(parseAmountCents(input)).toBe(cents);
   });
 
-  it.each(['', 'abc', '0', '-5', '9.999', '9,99', '$', '1e3'])('refuses %s', (input) => {
+  it.each(['', 'abc', '0', '-5', '9.999', '9,99', '$', '1e3', '1,6000', '1,00'])('refuses %s', (input) => {
     expect(parseAmountCents(input)).toBeNull();
   });
 });

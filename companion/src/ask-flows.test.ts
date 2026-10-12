@@ -125,6 +125,8 @@ describe('afford flow', () => {
   const budgeted = [
     { name: 'Groceries', budget: 400, monthSpent: 100, weekSpent: 20 },
     { name: 'Dining', budget: 200, monthSpent: 50, weekSpent: 10 },
+    { name: 'Dining Out', budget: 0, monthSpent: 5, weekSpent: 0 },
+    { name: 'Hobbies', budget: 0, monthSpent: 5, weekSpent: 0 },
   ];
   const flow = buildAffordFlow(budgeted);
 
@@ -135,9 +137,28 @@ describe('afford flow', () => {
     expect(out.screen.keyboard.inline_keyboard.flat().map((b) => b.text)).toEqual(['Groceries', 'Dining', '‹ Back', '✖ Cancel']);
   });
 
-  it('finishes with the amount in cents and the category text as typed', () => {
+  it('finishes with the amount in cents and the RESOLVED category name', () => {
     const at1 = { seq: 'k1', step: 1, answers: { amount: 2000 } };
-    expect(answerText(flow, at1, 'groc')).toEqual({ kind: 'done', answers: { amount: 2000, query: 'groc' } });
+    expect(answerText(flow, at1, 'groc')).toEqual({ kind: 'done', answers: { amount: 2000, query: 'Groceries' } });
+    expect(answerText(flow, at1, 'dining')).toMatchObject({ kind: 'done', answers: { query: 'Dining' } });
+  });
+
+  it('re-asks only the category on a typo, with a hint that fits a question', () => {
+    const at1 = { seq: 'k1', step: 1, answers: { amount: 2000 } };
+    const out = answerText(flow, at1, 'xyzzy');
+    expect(out.kind).toBe('retry');
+    if (out.kind !== 'retry') return;
+    expect(out.screen.text).toContain('No category starts with "xyzzy"');
+    expect(out.screen.text).toContain('Type one of your budget categories, or tap one.');
+    expect(out.screen.text).not.toContain('/left');
+  });
+
+  it('re-asks naming the options on an ambiguous prefix', () => {
+    const at1 = { seq: 'k1', step: 1, answers: { amount: 2000 } };
+    const amb = answerText(buildAffordFlow([...budgeted, { name: 'Dinner', budget: 5, monthSpent: 0, weekSpent: 0 }]), at1, 'din');
+    expect(amb.kind).toBe('retry');
+    if (amb.kind !== 'retry') return;
+    expect(amb.screen.text).toContain('Which one? Dining, Dining Out, Dinner');
   });
 
   it('caps quick picks at eight', () => {
