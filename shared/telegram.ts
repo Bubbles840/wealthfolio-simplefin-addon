@@ -6,6 +6,10 @@
  */
 
 import type { PoolStatus } from './pool.js';
+import {
+  aboutDollars, daysBetween, dueWithin, formatRosterTotal, rosterAmount, rosterMoney, rosterWhen,
+  type Roster, type RosterEntry,
+} from './subscription-roster.js';
 
 export interface TelegramSendResult {
   ok: boolean;
@@ -1627,4 +1631,187 @@ export function formatMonthlyWrapUp(
   }
 
   return `${header}\n\n${lines.join('\n')}\n\n${verdict}`;
+}
+
+// ── Subscriptions (1.60) ──────────────────────────────────────────────────
+//
+// SAFETY: every bank- or user-supplied name below is escaped AND kept out of
+// bold/italic. Legacy Markdown ignores a backslash escape inside an entity
+// (see formatBiggestThisWeek), so `*SQ \*COFFEE*` would cost the whole message.
+
+export const SUBSCRIPTION_PAGE_SIZE = 10;
+
+/** One page of the list's rows: subscriptions, then bills. An out-of-range
+ *  page clamps to the last one, so an old Next › button still lands somewhere. */
+export function subscriptionListPage(roster: Roster, page: number): { entries: RosterEntry[]; page: number; pages: number } {
+  const all = [...roster.subscriptions, ...roster.bills];
+  const pages = Math.max(1, Math.ceil(all.length / SUBSCRIPTION_PAGE_SIZE));
+  const p = Math.min(Math.max(0, Math.floor(page) || 0), pages - 1);
+  return { entries: all.slice(p * SUBSCRIPTION_PAGE_SIZE, (p + 1) * SUBSCRIPTION_PAGE_SIZE), page: p, pages };
+}
+
+/** `Spotify — $11.99 · next Oct 15 🔔`, `Hulu ✍️ — $9.99 · next Oct 20`,
+ *  `Netflix — $17.99 · next Oct 22 · ⬆ was $15.49`. */
+export function formatSubscriptionRow(e: RosterEntry): string {
+  const mark = e.source === 'manual' ? ' ✍️' : '';
+  const bell = e.remind ? ' 🔔' : '';
+  const creep = e.creep ? ` · ⬆ was ${rosterMoney(e.creep.fromCents)}` : '';
+  return `${escapeMarkdown(e.displayName)}${mark} — ${rosterAmount(e)} · ${rosterWhen(e)}${bell}${creep}`;
+}
+
+export const SUBSCRIPTIONS_UNREADABLE_NOTE =
+  "⚠️ Couldn't read your subscription settings — changes are paused, and this list shows your older choices.";
+
+export function formatSubscriptionList(roster: Roster, page: number, opts: { unreadable?: boolean } = {}): string {
+  const { entries, page: p, pages } = subscriptionListPage(roster, page);
+  const lines: string[] = [];
+  if (opts.unreadable) lines.push(SUBSCRIPTIONS_UNREADABLE_NOTE, '');
+  const link = roster.linkSuggestions[0];
+  if (link) {
+    lines.push(
+      `Is ${escapeMarkdown(link.merchant)} your ${escapeMarkdown(link.manualName)}? (${rosterMoney(link.cents)} on ${shortDate(link.date)})`,
+      '',
+    );
+  }
+  lines.push(`💳 *Subscriptions* · ${formatRosterTotal(roster)}`);
+  if (roster.subscriptions.length === 0 && roster.bills.length === 0) {
+    lines.push(roster.detectionAvailable
+      ? 'Nothing recurring found yet — tap ➕ Add to track one by hand.'
+      : "The companion hasn't looked for recurring charges yet — tap ➕ Add to track one by hand.");
+  }
+  lines.push(...entries.filter((e) => e.group === 'subscription').map(formatSubscriptionRow));
+  const bills = entries.filter((e) => e.group === 'bill');
+  if (bills.length > 0) {
+    lines.push(`📄 *Bills* · about ${aboutDollars(roster.billsMonthlyCents)}/mo`, ...bills.map(formatSubscriptionRow));
+  }
+  if (pages > 1) lines.push(`_Page ${p + 1} of ${pages}_`);
+  return lines.join('\n');
+}
+
+/** The 1.x digest's rule, now in whole days: the charge day and three more. */
+const CREEP_FRESH_DAYS = 3;
+/** "Cancelled?" on the first three mornings an entry is overdue — overdue
+ *  starts once the 7-day late grace is over. */
+const CANCEL_ASK_FROM_DAYS = 8;
+const CANCEL_ASK_TO_DAYS = 10;
+
+interface ComingUpLine { id: string; text: string; entry: RosterEntry }
+
+function comingUpParts(roster: Roster, today: string) {
+  const active = [...roster.subscriptions, ...roster.bills];
+  const reminders: ComingUpLine[] = dueWithin(roster, today, 8)
+    .filter((e) => e.remind !== undefined && daysBetween(today, e.nextDate!) <= e.remind)
+    .map((e) => {
+      const days = daysBetween(today, e.nextDate!);
+      const when = days === 0 ? 'today' : days === 1 ? 'tomorrow' : `in ${days} days`;
+      return { id: `${e.key}|remind|${e.nextDate}`, text: `🔔 ${escapeMarkdown(e.displayName)} charges ${when} · ${rosterAmount(e)}`, entry: e };
+    });
+  const reminded = new Set(reminders.map((l) => l.entry.key));
+  const creeps: ComingUpLine[] = active
+    .filter((e) => {
+      if (!e.creep) return false;
+      const days = daysBetween(e.creep.chargedOn, today);
+      return days >= 0 && days <= CREEP_FRESH_DAYS;
+    })
+    .map((e) => ({
+      id: `${e.key}|creep|${e.creep!.chargedOn}`,
+      text: `📈 ${escapeMarkdown(e.displayName)} charged ${formatDollars(e.creep!.toCents / 100, 2)}`
+        + ` — up from its usual ${formatDollars(e.creep!.fromCents / 100, 2)}.`,
+      entry: e,
+    }));
+  const cancels: ComingUpLine[] = active
+    .filter((e) => {
+      if (!e.overdueSince) return false;
+      const days = daysBetween(e.overdueSince, today);
+      return days >= CANCEL_ASK_FROM_DAYS && days <= CANCEL_ASK_TO_DAYS;
+    })
+    .map((e) => ({
+      id: `${e.key}|cancel|${e.overdueSince}`,
+      text: `✓ ${escapeMarkdown(e.displayName)} didn't charge ${shortDate(e.overdueSince!)} — cancelled?`,
+      entry: e,
+    }));
+  const due = dueWithin(roster, today, 7).filter((e) => !reminded.has(e.key));
+  return { reminders, creeps, cancels, due };
+}
+
+export interface ComingUpBlock {
+  text: string;
+  /** Entries behind the "cancelled?" lines, in order — for their Hide buttons. */
+  cancelled: RosterEntry[];
+}
+
+/**
+ * The daily report's "Coming up" block, after the spending summary and before
+ * the 🧹 line. Brief: reminders, the price-rise line and "cancelled?". Full
+ * adds everything charging today and the 6 days after that is not already on
+ * a 🔔 line. Null when there is nothing to say.
+ */
+export function formatComingUpBlock(
+  roster: Roster,
+  today: string,
+  detail: ReportDetail,
+  style: GlyphStyle = DEFAULT_GLYPH_STYLE,
+): ComingUpBlock | null {
+  const { reminders, creeps, cancels, due } = comingUpParts(roster, today);
+  const lines = reminders.map((l) => l.text);
+  if (detail === 'full' && due.length > 0) {
+    lines.push(due.map((e) => `${escapeMarkdown(e.displayName)} ${shortDate(e.nextDate!)} · ${rosterAmount(e)}`).join(' · '));
+  }
+  lines.push(...creeps.map((l) => l.text), ...cancels.map((l) => l.text));
+  if (lines.length === 0) return null;
+  return { text: [`${headerGlyph('📅', style)}*Coming up*`, ...lines].join('\n'), cancelled: cancels.map((l) => l.entry) };
+}
+
+/** Companion setting: which "Coming up" events were sent while the daily
+ *  report is off — event id → the day it was sent. */
+export const SUBSCRIPTION_NEWS_SECRET_KEY = 'subscription_news_sent';
+const NEWS_KEEP_DAYS = 60;
+
+export interface SubscriptionNews {
+  text: string;
+  /** Ids to record as sent once the message is delivered. */
+  events: string[];
+  cancelled: RosterEntry[];
+}
+
+/** With the daily report off: the 🔔, 📈 and ✓ lines not sent before, as one
+ *  short message (no week-ahead list). A reminder goes out on the first
+ *  morning inside its window that the companion runs. Null when nothing is new. */
+export function formatSubscriptionNews(
+  roster: Roster,
+  today: string,
+  sent: Readonly<Record<string, string>>,
+  style: GlyphStyle = DEFAULT_GLYPH_STYLE,
+): SubscriptionNews | null {
+  const { reminders, creeps, cancels } = comingUpParts(roster, today);
+  const fresh = [...reminders, ...creeps, ...cancels].filter((l) => !(l.id in sent));
+  if (fresh.length === 0) return null;
+  return {
+    text: [`${headerGlyph('📅', style)}*Coming up*`, ...fresh.map((l) => l.text)].join('\n'),
+    events: fresh.map((l) => l.id),
+    cancelled: fresh.filter((l) => cancels.includes(l)).map((l) => l.entry),
+  };
+}
+
+/** Lenient on purpose: a lost memo can at worst repeat a line once. */
+export function parseNewsSent(raw: string | null | undefined): Record<string, string> {
+  if (!raw) return {};
+  try {
+    const v = JSON.parse(raw);
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return {};
+    return Object.fromEntries(Object.entries(v).filter(([, day]) => typeof day === 'string')) as Record<string, string>;
+  } catch {
+    return {};
+  }
+}
+
+export function pruneNewsSent(sent: Readonly<Record<string, string>>, today: string): Record<string, string> {
+  return Object.fromEntries(Object.entries(sent).filter(([, day]) => daysBetween(day, today) <= NEWS_KEEP_DAYS));
+}
+
+/** The weekly report's `📅 Next week: 4 charges · $852`, or null for none. */
+export function formatNextWeekLine(due: RosterEntry[], style: GlyphStyle = DEFAULT_GLYPH_STYLE): string | null {
+  if (due.length === 0) return null;
+  const total = due.reduce((s, e) => s + e.cents, 0);
+  return `${headerGlyph('📅', style)}Next week: ${due.length} ${due.length === 1 ? 'charge' : 'charges'} · ${rosterMoney(total)}`;
 }
