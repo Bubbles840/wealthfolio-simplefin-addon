@@ -8,6 +8,8 @@ interface Props {
   simplefinAccounts: SimplefinAccount[];
   initialMapping: AccountMapping;
   onSave: (mapping: AccountMapping) => void;
+  /** After a Wealthfolio account is created here — for the change log. */
+  onAccountCreated?: (created: { sfinId: string; wfId: string; name: string; accountType: string }) => void;
 }
 
 const CREATE_NEW_VALUE = '__create_new__';
@@ -20,7 +22,7 @@ const ACCOUNT_TYPE_OPTIONS = [
 
 type CreatableAccountType = (typeof ACCOUNT_TYPE_OPTIONS)[number]['type'];
 
-export function AccountMapper({ ctx, simplefinAccounts, initialMapping, onSave }: Props) {
+export function AccountMapper({ ctx, simplefinAccounts, initialMapping, onSave, onAccountCreated }: Props) {
   const [wfAccounts, setWfAccounts] = useState<Array<{ id: string; name: string }>>([]);
   const [mapping, setMapping] = useState<AccountMapping>(initialMapping);
   const [loadError, setLoadError] = useState('');
@@ -59,6 +61,7 @@ export function AccountMapper({ ctx, simplefinAccounts, initialMapping, onSave }
       });
       setWfAccounts((prev) => [...prev, { id: created.id, name: created.name }]);
       setMapping((prev) => ({ ...prev, [sfin.id]: created.id }));
+      onAccountCreated?.({ sfinId: sfin.id, wfId: created.id, name: created.name, accountType });
     } catch (e: any) {
       setCreateErrors((prev) => ({
         ...prev,

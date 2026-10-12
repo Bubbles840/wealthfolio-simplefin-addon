@@ -1577,7 +1577,7 @@ export async function importAdjustmentActivity(
  * import endpoint reports no ids. Undefined when the read fails or finds
  * nothing: the change entry still names the row by its note.
  */
-async function rowIdByComment(read: () => Promise<HostActivity[]>, comment: string): Promise<string | undefined> {
+export async function rowIdByComment(read: () => Promise<HostActivity[]>, comment: string): Promise<string | undefined> {
   try {
     return (await read()).find((a) => (a.comment ?? '') === comment)?.id;
   } catch {
