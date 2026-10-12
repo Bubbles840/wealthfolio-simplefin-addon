@@ -438,6 +438,31 @@ Not code findings — things a test suite structurally cannot answer.
 
 ---
 
+## 6. Question flows (2026-10-12, plan `2026-10-12-ask-flows.md`)
+
+Minor findings from the task and whole-branch reviews, left on purpose. None
+changes what a user sees today.
+
+- **One-liner "Which one?" replies, then "not waiting".** `/left`, `/afford`
+  and `/newrule` one-liners that hit an ambiguous category print "Which one?
+  …"; answering that now gets "I'm not waiting for an answer" (before: silence).
+  Fix: say "send /left <one of these>" in those replies. Deferred because
+  `formatCategoryQueryMiss` is shared with the question flows' retry hints.
+- **`queryNativeDb` swallows errors**, so a failed read in `/newrule`'s count
+  shows a confident "No transactions … match yet". Pre-existing helper.
+- **The one-year window is computed twice** (transfer learning's
+  `countMatches` and the `/newrule` question). Same arithmetic; no helper.
+- **Typed `cancel`, `stop`, `back` are reserved** on every question, so a rule
+  pattern or category literally named one of those cannot be typed.
+- **Engine paths without a test:** Back from a summary (a live `/pool` path),
+  `c`/`q` buttons on the wrong step kind.
+- **Duplicated amount-hint wording** in `companion/src/ask-flows.ts`.
+- **Pre-existing, noted while here:** bare `/pool` says "No pool set." when
+  reading the status fails although a pool exists; `/pool`'s "past date" is
+  judged in UTC.
+
+---
+
 ## Reference: name mismatches between the database, the REST API, and the SDK
 
 Every one of these cost a diagnostic cycle against the live instance on
