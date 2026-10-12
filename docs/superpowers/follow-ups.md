@@ -505,6 +505,11 @@ changes what a user sees today.
   `hidden_subscriptions` / `confirmed_subscriptions` list imports as empty
   (the pre-existing parse). The `v:1` document has a closed shape: a new
   top-level field needs `v: 2`, or an older writer drops it on rewrite.
+- **A reminder on an entry with no known date cannot be switched off.** Once
+  `nextDate` is null (watched, or overdue), neither the card nor `/subscriptions`
+  offers the reminder choices, so an existing reminder stays set (the app row
+  still says "reminder 3d"). It cannot fire without a date and resumes when one
+  returns. Suggested fix: keep a single Off button while `remind` is set.
 
 ## Reference: name mismatches between the database, the REST API, and the SDK
 
