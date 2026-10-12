@@ -34,6 +34,7 @@ describe('addDaysIso / daysBetween / addPeriod', () => {
     expect(addDaysIso('2026-10-30', 3)).toBe('2026-11-02');
     expect(addDaysIso('2026-03-01', -1)).toBe('2026-02-28');
     expect(addDaysIso('2026-12-31', 1)).toBe('2027-01-01');
+    expect(addDaysIso('2028-02-28', 1)).toBe('2028-02-29');
   });
 
   it('counts whole days either way, unaffected by daylight saving', () => {
@@ -67,6 +68,10 @@ describe('rollForward', () => {
 
   it('lands a Feb 29 anchor on Feb 28 in a year without one', () => {
     expect(rollForward('2024-02-29', 'yearly', '2026-10-12')).toBe('2027-02-28');
+  });
+
+  it('returns to Feb 29 in the next leap year', () => {
+    expect(rollForward('2024-02-29', 'yearly', '2028-01-01')).toBe('2028-02-29');
   });
 });
 
