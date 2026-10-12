@@ -47,7 +47,8 @@ export interface AskSessions {
   start(flowId: string, send: AskSend, arg?: string): Promise<void>;
   /** A command arrived: drop any open question. True when one was open. */
   cancelForCommand(): boolean;
-  onText(text: string, send: AskSend): Promise<void>;
+  /** `privateChat: false` (a group) keeps NOT_WAITING silent; an expiry notice is still sent. */
+  onText(text: string, send: AskSend, opts?: { privateChat?: boolean }): Promise<void>;
   handles(data: string): boolean;
   onCallback(cb: { data: string }, ui: AskUi): Promise<void>;
 }
@@ -128,7 +129,7 @@ export function createAskSessions(opts: {
       return had;
     },
 
-    async onText(text, send) {
+    async onText(text, send, opts) {
       const o = current();
       if (!o) {
         if (expired && now() - expired.at <= expiredMemory) {
@@ -137,7 +138,7 @@ export function createAskSessions(opts: {
           await send(expiredReply(command));
         } else {
           expired = null;
-          await send(NOT_WAITING);
+          if (opts?.privateChat !== false) await send(NOT_WAITING);
         }
         return;
       }

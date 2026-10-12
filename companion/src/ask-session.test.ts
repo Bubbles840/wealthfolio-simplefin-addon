@@ -108,6 +108,20 @@ describe('createAskSessions', () => {
     expect(t.sent[t.sent.length - 1][0]).toBe(NOT_WAITING);
   });
 
+  it('stays silent in a group when no question is open', async () => {
+    const t = setup();
+    await t.sessions.onText('hi', t.send, { privateChat: false });
+    expect(t.sent).toHaveLength(0);
+  });
+
+  it('still names an expired command in a group', async () => {
+    const t = setup();
+    await t.sessions.start('demo', t.send);
+    t.tick(15 * 60_000 + 1);
+    await t.sessions.onText('25', t.send, { privateChat: false });
+    expect(t.sent[t.sent.length - 1][0]).toBe(expiredReply('pool'));
+  });
+
   it('keeps a question alive while answers keep coming', async () => {
     const t = setup();
     await t.sessions.start('demo', t.send);

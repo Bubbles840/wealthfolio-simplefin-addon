@@ -62,10 +62,16 @@ export interface TelegramListenerDeps {
   /**
    * Plain text — anything that is not a command — from the configured chat:
    * the answer to an open question (companion/src/ask-session.ts). OPTIONAL:
-   * absent keeps the old behaviour of dropping chatter. `reply` carries the
-   * same never-rejects guarantee as `onCommand`'s.
+   * absent keeps the old behaviour of dropping chatter. Text starting with
+   * '/' (another bot's `/cmd@Other`) is never handed over. `ctx.privateChat`
+   * lets the handler stay quiet in a group. `reply` carries the same
+   * never-rejects guarantee as `onCommand`'s.
    */
-  onText?: (text: string, reply: (text: string, keyboard?: InlineKeyboard) => Promise<void>) => Promise<void>;
+  onText?: (
+    text: string,
+    reply: (text: string, keyboard?: InlineKeyboard) => Promise<void>,
+    ctx: { privateChat: boolean },
+  ) => Promise<void>;
   /**
    * Menu-button taps (callback_data starting with 'cz:'). OPTIONAL: absent
    * means such callbacks are answered with a generic expiry notice. `ui`
@@ -282,7 +288,7 @@ export function startTelegramListener(deps: TelegramListenerDeps): { stop: () =>
     const parsed = parseCommand(message?.text, config.botName);
     if (!parsed) {
       const text = message?.text;
-      if (!deps.onText || typeof text !== 'string' || text.trim() === '') return;
+      if (!deps.onText || typeof text !== 'string' || text.trim() === '' || text.trim().startsWith('/')) return;
       const safeTextReply = async (body: string, keyboard?: InlineKeyboard): Promise<void> => {
         try {
           await reply(config, body, keyboard);
@@ -291,7 +297,7 @@ export function startTelegramListener(deps: TelegramListenerDeps): { stop: () =>
         }
       };
       try {
-        await deps.onText(text, safeTextReply);
+        await deps.onText(text, safeTextReply, { privateChat: message?.chat?.type === 'private' });
       } catch (err) {
         safeLog(`Telegram listener: handling a plain message failed: ${formatError(err)}`);
       }
