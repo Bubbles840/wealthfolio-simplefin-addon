@@ -678,26 +678,36 @@ describe('subscription edits end to end', () => {
     expect(screen.getByRole('button', { name: 'SPOTIFY' })).toBeInTheDocument();
   });
 
-  it('an invalid edit changes nothing — the entry stays, nothing is stored, nothing crashes', async () => {
-    const stored = { ...emptySubscriptionPrefs(), remind: { SPOTIFY: 3 as const } };
+  it('an invalid edit changes nothing — the entry stays, no notice, and the next action still works', async () => {
     const props = makeProps();
-    const editSubscriptionPrefs = vi.fn(async () => { throw new SubscriptionPrefsInvalidError(); });
+    let calls = 0;
+    const editSubscriptionPrefs = vi.fn(async (edit: SubscriptionEdit) => {
+      calls += 1;
+      if (calls === 1) throw new SubscriptionPrefsInvalidError();
+      return edit(emptySubscriptionPrefs());
+    });
     Object.assign(props.store, {
-      getSubscriptionPrefs: vi.fn(async () => ({ prefs: stored, unreadable: false })),
+      getSubscriptionPrefs: vi.fn(async () => ({ prefs: emptySubscriptionPrefs(), unreadable: false })),
       editSubscriptionPrefs,
     });
-    withCube(props, [det('SPOTIFY')]);
+    withCube(props, [det('SPOTIFY'), det('NETFLIX', { monthlyCents: 1549, lastCents: 1549 })]);
     render(<SyncPage {...props} />);
     await waitFor(() => expect(reportIds().length).toBeGreaterThan(0));
 
     fireEvent.click(screen.getByRole('button', { name: 'SPOTIFY' }));
     fireEvent.click(screen.getByRole('button', { name: 'Hide SPOTIFY' }));
     await waitFor(() => expect(editSubscriptionPrefs).toHaveBeenCalledTimes(1));
-    // Let the rejected promise settle through the page's catch.
     await new Promise((r) => setTimeout(r, 0));
+    expect(editSubscriptionPrefs).toHaveBeenCalledTimes(1);
     expect(screen.queryByText(/Couldn't read your subscription settings/)).toBeNull();
     expect(screen.getByRole('button', { name: 'SPOTIFY' })).toBeInTheDocument();
-    expect(stored).toEqual({ ...emptySubscriptionPrefs(), remind: { SPOTIFY: 3 } });
+
+    // A second action goes through: the queue and the catch did not wedge.
+    fireEvent.click(screen.getByRole('button', { name: 'NETFLIX' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Hide NETFLIX' }));
+    await waitFor(() => expect(editSubscriptionPrefs).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'NETFLIX' })).toBeNull());
+    expect(screen.getByRole('button', { name: 'SPOTIFY' })).toBeInTheDocument();
   });
 
   it('a document found corrupt on write: the card says so and stops offering changes', async () => {

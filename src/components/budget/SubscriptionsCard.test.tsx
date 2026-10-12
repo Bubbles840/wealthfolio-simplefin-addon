@@ -179,3 +179,39 @@ describe('subscriptions card: unreadable document (R2-18)', () => {
     expect(screen.getByText(/Couldn't read your subscription settings/)).toBeTruthy();
   });
 });
+
+/** Holds the prefs and applies each edit, so the card re-renders from what it changed. */
+function Stateful({ cube, initial }: { cube: ReportCube; initial: SubscriptionPrefs }) {
+  const [prefs, setPrefs] = React.useState(initial);
+  return <SubscriptionsCard cube={cube} subscriptionPrefs={{ prefs, unreadable: false }}
+    onSubscriptionEdit={(edit) => setPrefs((p) => edit(p))} />;
+}
+
+describe('subscriptions card: emptying it (fix round 1)', () => {
+  it('Undo survives deleting the only hand-added entry', () => {
+    render(<Stateful cube={cubeWith([])} initial={{ ...emptySubscriptionPrefs(), manual: [HULU] }} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Hulu' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Hulu' }));
+    expect(screen.queryByRole('button', { name: 'Hulu' })).toBeNull();
+    expect(screen.getByRole('status').textContent).toContain('Deleted Hulu.');
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
+    expect(screen.getByRole('button', { name: 'Hulu' })).toBeTruthy();
+  });
+
+  it('the cancelled line survives hiding the only subscription', () => {
+    render(<Stateful cube={cubeWith([det('SPOTIFY')])} initial={emptySubscriptionPrefs()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'SPOTIFY' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Hide SPOTIFY' }));
+    expect(screen.queryByRole('button', { name: 'SPOTIFY' })).toBeNull();
+    expect(screen.getByRole('status').textContent).toContain('SPOTIFY cancelled');
+  });
+
+  it('a read-only card offers no Remind, Rename, Delete or Hide', () => {
+    render(<SubscriptionsCard cube={cubeWith([det('SPOTIFY')])} subscriptionPrefs={loaded({ manual: [HULU] }, true)} onSubscriptionEdit={vi.fn()} />);
+    for (const name of ['SPOTIFY', 'Hulu']) fireEvent.click(screen.getByRole('button', { name }));
+    expect(screen.queryByRole('group', { name: /^Remind before/ })).toBeNull();
+    expect(screen.queryByLabelText(/^New name for/)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Save name' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^(Delete|Hide) / })).toBeNull();
+  });
+});
