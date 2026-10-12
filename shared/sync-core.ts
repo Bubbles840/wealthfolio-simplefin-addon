@@ -1601,7 +1601,15 @@ export async function runSyncCore(
   const sink = opts.changeLog;
   const changes: ChangeEntry[] = [];
   const logChange: RecordChange | null = sink
-    ? (draft) => { changes.push(stampChange(draft, sink.writer, new Date(), sink.run)); }
+    ? (build) => {
+      // Building an entry is not allowed to cost the work: a bug in a builder
+      // drops that one entry, never the account's sync.
+      try {
+        changes.push(stampChange(build(), sink.writer, new Date(), sink.run));
+      } catch (e: any) {
+        console.warn(`[simplefin-sync] change log: an entry was dropped: ${String(e?.message ?? e)}`);
+      }
+    }
     : null;
   try {
     return await runSyncPass(host, store, opts, logChange);
@@ -1620,7 +1628,7 @@ export async function runSyncCore(
 }
 
 /** Records one change-log entry for a write that succeeded. */
-type RecordChange = (draft: ChangeDraft) => void;
+type RecordChange = (build: () => ChangeDraft) => void;
 
 /**
  * A stored row as the create request that would make it again — what R2's
@@ -2295,7 +2303,7 @@ async function runSyncPass(
               `[simplefin-sync] ${DUPLICATE_PRUNE_LOG_TAG}: deleted activity ${row.wfId} — a surplus copy of transaction ${row.txId} in account ${sfAccount.id}`,
               entry,
             );
-            logChange?.(duplicateRemovedChange({
+            logChange?.(() => duplicateRemovedChange({
               account: accountRef,
               txKey: accountTxKey(sfAccount.id, row.txId),
               activityId: row.wfId,
@@ -2326,7 +2334,7 @@ async function runSyncPass(
             const row = existing.find((r) => r.wfId === u.id);
             if (row) { row.type = u.activityType; row.absCents = Math.round((u.amount ?? 0) * 100); row.feeCents = 0; }
           }
-          logChange?.(bookkeepingChange({ step: 'legacy-placeholder', account: accountRef, activityIds: legacyRewrites.map((u) => u.id!) }));
+          logChange?.(() => bookkeepingChange({ step: 'legacy-placeholder', account: accountRef, activityIds: legacyRewrites.map((u) => u.id!) }));
           console.info(
             `[simplefin-sync] ${LEGACY_PLACEHOLDER_REWRITE_LOG_TAG}: restated ${legacyRewrites.length} pre-v1.49 placeholder(s) in account ${sfAccount.id} as TRANSFER_OUT with their real amounts`,
           );
@@ -2350,7 +2358,7 @@ async function runSyncPass(
             const row = existing.find((r) => r.wfId === u.id);
             if (row) row.flowExternal = true;
           }
-          logChange?.(bookkeepingChange({ step: 'external-marker', account: accountRef, activityIds: stamps.map((u) => u.id!) }));
+          logChange?.(() => bookkeepingChange({ step: 'external-marker', account: accountRef, activityIds: stamps.map((u) => u.id!) }));
           console.info(
             `[simplefin-sync] ${EXTERNAL_MARKER_STAMP_LOG_TAG}: marked ${stamps.length} opening-balance/plug/in-transit row(s) in account ${sfAccount.id} as external, so Wealthfolio stops reporting them as incomplete transfers`,
           );
@@ -2377,7 +2385,7 @@ async function runSyncPass(
             if (!row) continue;
             const hit = amazonLabelled.get(sfAccount.id)?.get(row.txId);
             if (hit) {
-              logChange?.(amazonLabelChange({
+              logChange?.(() => amazonLabelChange({
                 account: accountRef,
                 txKey: accountTxKey(sfAccount.id, row.txId),
                 activityId: row.wfId,
@@ -2629,11 +2637,13 @@ async function runSyncPass(
               });
               imported += 1;
               if (plug && logChange) {
-                logChange(balanceCorrectionChange({
+                const driftCents = Math.round(drift * 100);
+                const plugId = await rowIdByComment(() => host.listActivities(wfAccountId), plug.comment);
+                logChange(() => balanceCorrectionChange({
                   account: accountRef,
                   actor: 'auto',
-                  activityId: await rowIdByComment(() => host.listActivities(wfAccountId), plug.comment),
-                  amountCents: Math.round(drift * 100),
+                  activityId: plugId,
+                  amountCents: driftCents,
                   date: plug.date,
                   activityType: plug.activityType,
                   comment: plug.comment,
@@ -3000,14 +3010,14 @@ async function runSyncPass(
           const t = txId ? createdFeedByTxId.get(txId) : undefined;
           if (!txId || !t || !a.id) continue;
           const key = accountTxKey(sfAccount.id, txId);
-          const facts = {
+          const facts = () => ({
             account: accountRef, txKey: key, activityId: a.id, description: descByKey.get(key) ?? '',
             amountCents: signedCentsOf(txId, t.type, t.absCents), date: t.date,
-          };
-          logChange(importChange({ ...facts, pending: !!t.pending, activityType: t.type }));
+          });
+          logChange(() => importChange({ ...facts(), pending: !!t.pending, activityType: t.type }));
           // Held as a transfer that has not found its other half: a decision
           // of its own, undone in R2 with `notTransfer` on this leg.
-          if (t.inTransit) logChange(transferTypeChange({ ...facts, activityType: t.type, previousType: null, held: true }));
+          if (t.inTransit) logChange(() => transferTypeChange({ ...facts(), activityType: t.type, previousType: null, held: true }));
         }
         const updateTo = new Map(plan.updates.map((u) => [u.wfId, u.to]));
         for (const a of result.updated ?? []) {
@@ -3015,22 +3025,22 @@ async function runSyncPass(
           const stored = to ? planExisting.find((r) => r.wfId === a.id) : undefined;
           if (!to || !stored) continue;
           const key = accountTxKey(sfAccount.id, to.txId);
-          const facts = {
+          const facts = () => ({
             account: accountRef, txKey: key, activityId: stored.wfId,
             description: descByKey.get(key) ?? descriptionFromComment(stored.comment),
             amountCents: signedCentsOf(to.txId, to.type, to.absCents), date: to.date,
-          };
+          });
           // Two of these are the sync's own transfer decisions, not the bank's:
           // a row now held in transit, and a placeholder that ran out of time
           // (an unpaired leg always passes through the placeholder first).
           const wasInTransit = (stored.comment ?? '').startsWith(IN_TRANSIT_COMMENT_PREFIX);
           if (to.inTransit && !wasInTransit) {
-            logChange(transferTypeChange({ ...facts, activityType: to.type, previousType: stored.type, held: true }));
+            logChange(() => transferTypeChange({ ...facts(), activityType: to.type, previousType: stored.type, held: true }));
           } else if (wasInTransit && !to.inTransit && !isTransferType(to.type)) {
-            logChange(transferTypeChange({ ...facts, activityType: to.type, previousType: stored.type, held: false }));
+            logChange(() => transferTypeChange({ ...facts(), activityType: to.type, previousType: stored.type, held: false }));
           } else {
-            logChange(bankUpdateChange({
-              ...facts,
+            logChange(() => bankUpdateChange({
+              ...facts(),
               before: { absCents: stored.absCents, date: stored.date, pending: stored.pending, activityType: stored.type, subtype: stored.subtype ?? null },
               after: { absCents: to.absCents, date: to.date, pending: to.pending, activityType: to.type, subtype: to.subtype ?? null },
             }));
@@ -3039,7 +3049,7 @@ async function runSyncPass(
         for (const id of result.deleted) {
           const stored = planExisting.find((r) => r.wfId === id);
           if (!stored) continue;
-          logChange(pendingRemovedChange({
+          logChange(() => pendingRemovedChange({
             account: accountRef,
             txKey: accountTxKey(sfAccount.id, stored.txId),
             activityId: stored.wfId,
@@ -3062,7 +3072,7 @@ async function runSyncPass(
         created: baselineCreated,
         recent: existing,
       });
-      if (moved) logChange?.(startingBalanceMovedChange({ account: accountRef, actor: 'auto', ...moved }));
+      if (moved) logChange?.(() => startingBalanceMovedChange({ account: accountRef, actor: 'auto', ...moved }));
     } catch (e: any) {
       errors.push(`Account ${wfAccountId} starting-balance adjust failed: ${e?.message ?? e}`);
     }
@@ -3123,9 +3133,10 @@ async function runSyncPass(
           await host.importActivities([correction]);
           imported += 1;
           if (logChange) {
-            logChange(startingBalanceChange({
+            const sbId = await rowIdByComment(() => host.listOldestActivities(wfAccountId, STARTING_BALANCE_SCAN), correction.comment);
+            logChange(() => startingBalanceChange({
               account: accountRef,
-              activityId: await rowIdByComment(() => host.listOldestActivities(wfAccountId, STARTING_BALANCE_SCAN), correction.comment),
+              activityId: sbId,
               amountCents: Math.round(starting * 100),
               date: correction.date,
               activityType: correction.activityType,
@@ -3214,13 +3225,14 @@ async function runSyncPass(
             await host.importActivities([correction]);
             imported += 1;
             if (logChange) {
-              logChange(startingBalanceChange({
+              const sbId = await rowIdByComment(() => host.listOldestActivities(p.wfAccountId, STARTING_BALANCE_SCAN), correction.comment);
+              logChange(() => startingBalanceChange({
                 account: {
                   sfinId: p.sfinAccountId,
                   wfId: p.wfAccountId,
                   name: wfNames.get(p.wfAccountId) || (accountSet.accounts.find((a) => a.id === p.sfinAccountId)?.name ?? ''),
                 },
-                activityId: await rowIdByComment(() => host.listOldestActivities(p.wfAccountId, STARTING_BALANCE_SCAN), correction.comment),
+                activityId: sbId,
                 amountCents: Math.round(starting * 100),
                 date: correction.date,
                 activityType: correction.activityType,
@@ -3399,7 +3411,7 @@ async function runSyncPass(
       continue; // leave the ledger untouched so the pair retries next run
     }
     if (result.linked && result.groupId) {
-      logChange?.(transferLinkChange(
+      logChange?.(() => transferLinkChange(
         linkLegFacts(legs[0], keys[0], result.activityIds?.[0]),
         linkLegFacts(legs[1], keys[1], result.activityIds?.[1]),
       ));
@@ -3521,7 +3533,7 @@ async function runSyncPass(
     }
     if ((del.errors ?? []).length === 0 && (result.errors ?? []).length === 0) {
       const fresh = (result.created ?? []).map((a) => a.id).filter((id): id is string => !!id);
-      logChange?.(bookkeepingChange({
+      logChange?.(() => bookkeepingChange({
         step: 'transfer-relink',
         activityIds: fresh.length === relinkCreates.length ? fresh : staleLegIds,
       }));

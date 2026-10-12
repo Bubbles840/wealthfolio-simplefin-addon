@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import * as entries from './change-entries.js';
 import type { ChangeEntry, ChangeLogSink } from './change-entries.js';
 import { createFakeHost, type FakeHostSeed } from './fake-host.js';
 import { IN_TRANSIT_TIMEOUT_SECONDS, runSyncCore, VALUATION_POLL } from './sync-core.js';
@@ -234,5 +235,85 @@ describe('runSyncCore — change log', () => {
       ['bookkeeping', 'Restated 1 old placeholder row with its real amount', ['plug-1'], false],
       ['bookkeeping', "Marked 1 bookkeeping row as outside transfers for Wealthfolio's Health page", ['plug-1'], false],
     ]);
+  });
+});
+
+describe('runSyncCore — the log never costs the work', () => {
+  beforeEach(() => {
+    VALUATION_POLL.delayMs = 1;
+    VALUATION_POLL.attempts = 1;
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(NOW);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it('records no pending-removed entry when the delete is refused on the fallback path too', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const { host, store } = createFakeHost({
+      ...checking([]),
+      existing: new Map([['wf-a', [{
+        id: 'act-8', accountId: 'wf-a', activityType: 'WITHDRAWAL', date: '2026-10-10', amount: 18.1,
+        comment: 'UBER *TRIP · tx-gone · pending', sourceGroupId: null,
+      }]]]),
+      saveManyHook: (req: SaveManyRequest) => { if ((req.deleteIds ?? []).length > 0) throw new Error('delete refused'); },
+    });
+    const log = capture();
+    const result = await runSyncCore(host, store, { changeLog: log });
+    expect(result.errors.join(' ')).toContain('delete refused');
+    expect(log.batches.flat().filter((e) => e.kind === 'pending-removed')).toEqual([]);
+  });
+
+  it('records no bank-update entry for an update that is refused on the fallback path', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const { host, store } = createFakeHost({
+      ...checking([{ id: 'tx-1', posted: epoch('2026-10-11T12:00:00Z'), amount: '-12.34', description: 'KROGER #123' }]),
+      existing: new Map([['wf-a', [{
+        id: 'act-7', accountId: 'wf-a', activityType: 'WITHDRAWAL', date: '2026-10-10', amount: 12,
+        comment: 'KROGER #123 · tx-1 · pending', sourceGroupId: null,
+      }]]]),
+      saveManyHook: (req: SaveManyRequest) => { if ((req.updates ?? []).length > 0) throw new Error('update refused'); },
+    });
+    const log = capture();
+    const result = await runSyncCore(host, store, { changeLog: log });
+    expect(result.errors.join(' ')).toContain('update refused');
+    expect(log.batches.flat().filter((e) => e.kind === 'bank-update')).toEqual([]);
+  });
+
+  it('still appends the entries collected before a run throws', async () => {
+    const { host, store } = createFakeHost(checking([
+      { id: 'tx-1', posted: epoch('2026-10-11T12:00:00Z'), amount: '-12.34', description: 'KROGER #123' },
+    ]));
+    // Fails after the import, when the run saves its balances.
+    store.setAccountBalances = async () => { throw new Error('store went away'); };
+    const log = capture();
+    let threw = false;
+    try {
+      await runSyncCore(host, store, { changeLog: log });
+    } catch {
+      threw = true;
+    }
+    expect(threw).toBe(true);
+    expect(log.append).toHaveBeenCalledTimes(1);
+    expect(log.batches[0].map((e) => e.kind)).toEqual(['import']);
+  });
+
+  it('a builder that throws changes neither the result nor the account errors', async () => {
+    const seed = () => checking([
+      { id: 'tx-1', posted: epoch('2026-10-11T12:00:00Z'), amount: '-12.34', description: 'KROGER #123' },
+    ]);
+    const plain = createFakeHost(seed());
+    const without = await runSyncCore(plain.host, plain.store, {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(entries, 'importChange').mockImplementation(() => { throw new Error('builder bug'); });
+    const broken = createFakeHost(seed());
+    const log = capture();
+    const result = await runSyncCore(broken.host, broken.store, { changeLog: log });
+    expect(result).toEqual(without);
+    expect(result.errors).toEqual([]);
+    expect(log.append).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('builder bug'));
   });
 });
