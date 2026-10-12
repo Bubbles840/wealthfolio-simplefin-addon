@@ -173,6 +173,24 @@ describe('subscriptions menu', () => {
     expect((h.ui.send.mock.calls[0] as unknown as [string])[0]).toContain('🙈 Hid NETFLIX.');
   });
 
+  it('a report Hide button hides a LINKED hand-added entry too; Undo offered, Hidden lists it with Restore', async () => {
+    const LINKED = { ...HULU, merchant: 'HULU', nextDate: '2026-10-02' };
+    const h = harness({
+      report_cube: cubeJson([det('HULU', { lastDate: '2026-09-02', monthlyCents: 999, lastCents: 999 })]),
+      subscription_prefs: doc({ manual: [LINKED] }),
+    });
+    await h.tap(`cz:sb:hr:${H('m:hulu0001')}`);
+    expect(h.stored().hidden).toEqual(['m:hulu0001']);
+    expect(h.ui.edit).not.toHaveBeenCalled();
+    const [text, kb] = h.ui.send.mock.calls[0] as unknown as [string, any];
+    expect(text).toContain('🙈 Hid Hulu.');
+    expect(datas(kb)).toContain(`cz:sb:uh:${H('m:hulu0001')}`);
+    await h.tap('cz:sb:hd');
+    expect(texts((h.ui.edit.mock.calls[0] as unknown as [string, any])[1])).toEqual(['↩ Hulu', '‹ Back']);
+    await h.tap(`cz:sb:u:${H('m:hulu0001')}`);
+    expect(h.stored().hidden).toEqual([]);
+  });
+
   // Review Focus: a report button tapped after the entry already left.
   it('a report button for an entry hidden since: "already sorted", the list as a NEW message, no write', async () => {
     const h = harness({
