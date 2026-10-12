@@ -820,6 +820,9 @@ const css = `
 .sfin-subs-rename { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .sfin-subs-error { color: var(--sfin-bad); font-size: var(--sfin-sz-sm); }
 .sfin-subs-link { background: color-mix(in srgb, var(--sfin-s0) 8%, transparent); border-radius: var(--sfin-rad-xs); padding: 4px 6px; }
+.sfin-subs-form { display: flex; flex-direction: column; gap: 8px; padding: 8px 0; }
+.sfin-subs-form label { display: flex; flex-direction: column; gap: 3px; font-size: var(--sfin-sz-sm); }
+.sfin-subs-form .sfin-range-chips { margin: 0; }
 @keyframes sfin-pop { from { transform: scale(.92); opacity: 0; } to { transform: scale(1); opacity: 1; } }
 .sfin-range-pin { position: absolute; bottom: 6px; right: 10px; font-size: var(--sfin-sz-2xs); color: var(--muted-foreground); background: color-mix(in srgb, var(--card) 80%, transparent); border-radius: var(--sfin-rad-xs); padding: 1px 6px; }
 /* Drag feedback: the picked-up card lifts and fades while every other card
