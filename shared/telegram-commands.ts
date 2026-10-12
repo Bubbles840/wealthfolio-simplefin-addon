@@ -59,13 +59,15 @@ export const TELEGRAM_COMMAND_MENU = [
  *  otherwise, and a reader who does not know about `/recategorize venmo`
  *  scrolls 90 days of history by hand.
  *  Since 1.60 the bare form of `/afford`, `/pool` and `/newrule` asks for what
- *  it needs; the example still shows the one-line shortcut. */
+ *  it needs; the example still shows the one-line shortcut.
+ *  `/subscriptions` (1.60) takes no arguments; everything happens on its buttons. */
 export const TELEGRAM_MORE_COMMANDS = [
   { command: 'afford', description: 'Can I afford it? — asks, or /afford 20 shopping' },
   { command: 'pool', description: 'Semester money pool — asks, or /pool 16000 Dec 12' },
   { command: 'recategorize', description: 'Move a filed transaction — /recategorize venmo narrows it' },
   { command: 'newrule', description: 'Always file a match — asks, or /newrule trader joes = groceries' },
   { command: 'dismissed', description: 'What you dismissed lately, with Undo' },
+  { command: 'subscriptions', description: 'Subscriptions and bills — remind, rename, hide, or add one' },
 ] as const;
 
 export function formatHelpReply(unknownCommand?: string): string {
