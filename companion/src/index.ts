@@ -2167,9 +2167,17 @@ export async function sendSubscriptionNews(
   const today = toDateString(now);
   const read = await readRosterFor(wfClient, now).catch(() => null);
   if (!read) return;
-  const sent = parseNewsSent(
-    await wfClient.getAddonSecret('simplefin-sync', SUBSCRIPTION_NEWS_SECRET_KEY).catch(() => null),
-  );
+  // A THROWN read is not "nothing sent yet": skip the morning rather than
+  // repeat every in-window event and overwrite the history (R2-17).
+  let rawSent: string | null;
+  try {
+    rawSent = await wfClient.getAddonSecret('simplefin-sync', SUBSCRIPTION_NEWS_SECRET_KEY);
+  } catch (err) {
+    log(`Subscription news: could not read what was already sent — skipping today: ${formatError(err)}`);
+    return;
+  }
+  // A present-but-corrupt memo parses as empty: one repeat of in-window events, then the history is rebuilt.
+  const sent = parseNewsSent(rawSent);
   const news = formatSubscriptionNews(read.roster, today, sent, await readGlyphStyle(wfClient));
   if (!news) return;
   const hides = news.cancelled.slice(0, 2).map(hideFromReportButton);
@@ -2203,7 +2211,11 @@ export async function sendDailyTelegramReport(
   if (tg.dailyReportEnabled === false) {
     // The report is off, but a reminder was asked for: the lines go out on
     // their own — never both (v1.57's one-voice rule).
-    await sendSubscriptionNews(wfClient, tg, new Date());
+    try {
+      await sendSubscriptionNews(wfClient, tg, new Date());
+    } catch (err) {
+      log(`Subscription news failed: ${formatError(err)}`);
+    }
     return;
   }
 
