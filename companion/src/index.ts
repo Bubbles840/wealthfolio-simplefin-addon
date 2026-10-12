@@ -2855,7 +2855,7 @@ export function buildAskSessions(wfClient: WealthfolioClient, controller: Catego
   asks.register('afford', async () => {
     const snapshot = await readBudgetSnapshotWithStyle(wfClient);
     return {
-      flow: buildAffordFlow(snapshot.categories.filter((c) => c.budget > 0)),
+      flow: buildAffordFlow(snapshot.categories),
       onDone: async (a, send) => {
         // Re-read at Save: the questions may have taken minutes.
         const { categories, period, style } = await readBudgetSnapshotWithStyle(wfClient);
