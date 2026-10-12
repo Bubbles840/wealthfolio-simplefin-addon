@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **The bot asks instead of making you remember argument order.** Send
+  `/pool`, `/newrule` or `/afford` on its own and it asks one question at a
+  time, with buttons where there is a choice, `‹ Back`, `✖ Cancel`, and a
+  summary before anything is saved. Your next message answers the question;
+  any command cancels it; an unanswered question expires after 15 minutes.
+  `/pool 16000 Dec 12`, `/newrule trader joes = groceries` and
+  `/afford 20 shopping` work exactly as before.
+- `/pool` shows **Set a new pool** and **Clear pool** buttons under the pool.
+- `/newrule` says how many charges in the past year the words match, and
+  offers your most-used categories as buttons.
+
 ## [1.59.2] - 2026-10-10
 
 1.59.1 was tagged but never published: its CI run stopped on a test-file

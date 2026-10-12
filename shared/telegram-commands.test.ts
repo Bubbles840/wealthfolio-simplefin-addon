@@ -675,3 +675,13 @@ describe('nextOccurrence', () => {
     expect(nextOccurrence('2028-02-29', '2028-03-01')).toBe('2029-02-28');
   });
 });
+
+describe('More commands wording (1.60)', () => {
+  it('says the question-asking commands ask when sent bare, and keeps their one-line example', () => {
+    const byName = Object.fromEntries(TELEGRAM_MORE_COMMANDS.map((c) => [c.command, c.description]));
+    for (const name of ['afford', 'pool', 'newrule']) {
+      expect(byName[name]).toMatch(/asks/);
+      expect(byName[name]).toContain(`/${name} `);
+    }
+  });
+});
