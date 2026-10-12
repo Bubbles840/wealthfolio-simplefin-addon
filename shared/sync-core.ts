@@ -13,11 +13,12 @@ import {
 } from './amazon-ledger.js';
 import type { AmazonLedger } from './amazon-ledger.js';
 import type { ActivityType, SimplefinTransaction, UnmappedAccount } from './types.js';
-import type { ActivityWrite, HoldingsSyncOutcome, ImportRow, LinkLeg, LinkResult, SaveManyRequest, SaveManyResult, SyncHost, SyncStore } from './sync-host.js';
+import type { ActivityWrite, HoldingsSyncOutcome, HostActivity, ImportRow, LinkLeg, LinkResult, SaveManyRequest, SaveManyResult, SyncHost, SyncStore } from './sync-host.js';
 import {
-  amazonLabelChange, amazonLabelOf, bankUpdateChange, bookkeepingChange, duplicateRemovedChange, importChange,
-  pendingRemovedChange, stampChange, transferTypeChange,
-  type ChangeAccount, type ChangeDraft, type ChangeEntry, type ChangeLogSink,
+  amazonLabelChange, amazonLabelOf, balanceCorrectionChange, bankUpdateChange, bookkeepingChange, duplicateRemovedChange,
+  importChange, pendingRemovedChange, stampChange, startingBalanceChange, startingBalanceMovedChange, transferLinkChange,
+  transferTypeChange,
+  type BaselineState, type ChangeAccount, type ChangeDraft, type ChangeEntry, type ChangeLogSink, type LinkLegFacts,
 } from './change-entries.js';
 
 /**
@@ -841,7 +842,7 @@ async function saveWithRowFallback(
 export async function applyBaselineFix(
   host: SyncHost,
   args: { wfAccountId: string; sfAccountId: string; suggestedAmount: number; currency: string },
-): Promise<{ applied: boolean; error?: string }> {
+): Promise<{ applied: boolean; error?: string; change?: BaselineMove }> {
   const { wfAccountId, sfAccountId, suggestedAmount, currency } = args;
   // Re-read instead of trusting the id the snapshot was built with: that
   // snapshot can be minutes old, and this writes to a financial row by id.
@@ -875,8 +876,19 @@ export async function applyBaselineFix(
   if (res.errors.length > 0) {
     return { applied: false, error: res.errors.map((e) => `${e.action}: ${e.message}`).join('; ') };
   }
-  return { applied: true };
+  return {
+    applied: true,
+    // For the change log: what the row was and what it is now.
+    change: {
+      activityId: baseline.id,
+      before: { amountCents: Math.round(baseline.signed * 100), date: baseline.date, activityType: baseline.activityType },
+      after: { amountCents: Math.round(suggestedAmount * 100), date: baseline.date, activityType: shape.activityType },
+    },
+  };
 }
+
+/** A starting balance rewritten in place: the row, before and after. */
+export interface BaselineMove { activityId: string; before: BaselineState; after: BaselineState }
 
 /**
  * Keep the starting-balance baseline in front of the history it stands for.
@@ -911,10 +923,10 @@ async function keepStartingBalanceOldest(
     /** The account's already-read rows: the lookup's fallback. */
     recent?: ReadonlyArray<{ wfId: string; comment?: string; date: string; type: string; absCents: number }>;
   },
-): Promise<number> {
+): Promise<BaselineMove | null> {
   const { wfAccountId, sfinAccountId, currency, accountType, created } = args;
   const sb = await fetchStartingBalance(host, wfAccountId, sfinAccountId, args.recent);
-  if (!sb) return 0;
+  if (!sb) return null;
   const older = created.filter((c) => c.date <= sb.date);
   const olderSum = older.reduce((sum, c) => sum + c.signed, 0);
   const netting = Number.isFinite(olderSum) && Math.abs(olderSum) >= 0.01;
@@ -922,14 +934,14 @@ async function keepStartingBalanceOldest(
     .filter((d): d is string => !!d)
     .reduce<string | null>((a, b) => (a === null || b < a ? b : a), null);
   const nextDate = earliest !== null && earliest <= sb.date ? dayBefore(earliest) : sb.date;
-  if (!netting && nextDate === sb.date) return 0;
+  if (!netting && nextDate === sb.date) return null;
   const nextSigned = netting ? Math.round((sb.signed - olderSum) * 100) / 100 : sb.signed;
   const activityType = netting
     // Through the same chooser that wrote the row, or an adjustment would
     // quietly flip a neutral baseline back into income.
     ? startingBalanceFields(accountType, nextSigned).activityType
     : sb.activityType;
-  await host.saveMany({
+  const res = await host.saveMany({
     updates: [{
       id: sb.id,
       accountId: wfAccountId,
@@ -945,7 +957,13 @@ async function keepStartingBalanceOldest(
       comment: `${STARTING_BALANCE_COMMENT_PREFIX}${sfinAccountId}`,
     }],
   });
-  return netting ? olderSum : 0;
+  // What moved, for the change log — only when the host took the update.
+  if ((res.errors ?? []).length > 0) return null;
+  return {
+    activityId: sb.id,
+    before: { amountCents: Math.round(sb.signed * 100), date: sb.date, activityType: sb.activityType },
+    after: { amountCents: Math.round(nextSigned * 100), date: nextDate, activityType },
+  };
 }
 
 /**
@@ -1517,9 +1535,9 @@ export function startingBalanceFields(
 export async function importAdjustmentActivity(
   host: SyncHost,
   args: { sfinAccountId: string; wfAccountId: string; currency: string; amount: number },
-): Promise<void> {
+): Promise<ImportRow | null> {
   const { sfinAccountId, wfAccountId, currency, amount } = args;
-  if (!Number.isFinite(amount) || Math.abs(amount) < 0.01) return;
+  if (!Number.isFinite(amount) || Math.abs(amount) < 0.01) return null;
   const today = new Date().toISOString().split('T')[0];
   const wfAccounts = await host.listAccounts().catch(() => []);
   const accountType = String(
@@ -1543,11 +1561,27 @@ export async function importAdjustmentActivity(
   };
   try {
     await host.importActivities([adjustment]);
+    // The row written, for the change log. Null below: nothing was written.
+    return adjustment;
   } catch (e: any) {
     const msg = String(e?.message ?? e);
     if (!msg.toLowerCase().includes('duplicate')) {
       throw e;
     }
+    return null;
+  }
+}
+
+/**
+ * The id of the row carrying `comment`, read back after an import — the
+ * import endpoint reports no ids. Undefined when the read fails or finds
+ * nothing: the change entry still names the row by its note.
+ */
+async function rowIdByComment(read: () => Promise<HostActivity[]>, comment: string): Promise<string | undefined> {
+  try {
+    return (await read()).find((a) => (a.comment ?? '') === comment)?.id;
+  } catch {
+    return undefined;
   }
 }
 
@@ -2587,13 +2621,24 @@ async function runSyncPass(
           );
           if (!alreadyToday) {
             try {
-              await importAdjustmentActivity(host, {
+              const plug = await importAdjustmentActivity(host, {
                 sfinAccountId: sfAccount.id,
                 wfAccountId,
                 currency: sfAccount.currency,
                 amount: drift,
               });
               imported += 1;
+              if (plug && logChange) {
+                logChange(balanceCorrectionChange({
+                  account: accountRef,
+                  actor: 'auto',
+                  activityId: await rowIdByComment(() => host.listActivities(wfAccountId), plug.comment),
+                  amountCents: Math.round(drift * 100),
+                  date: plug.date,
+                  activityType: plug.activityType,
+                  comment: plug.comment,
+                }));
+              }
             } catch (e: any) {
               const msg = String(e?.message ?? e);
               if (!msg.toLowerCase().includes('duplicate')) {
@@ -3009,7 +3054,7 @@ async function runSyncPass(
     // Every run, not only one that imported: a baseline stranded after older
     // history by an earlier version has no new row to trigger its repair.
     try {
-      await keepStartingBalanceOldest(host, {
+      const moved = await keepStartingBalanceOldest(host, {
         wfAccountId,
         sfinAccountId: sfAccount.id,
         currency: sfAccount.currency,
@@ -3017,6 +3062,7 @@ async function runSyncPass(
         created: baselineCreated,
         recent: existing,
       });
+      if (moved) logChange?.(startingBalanceMovedChange({ account: accountRef, actor: 'auto', ...moved }));
     } catch (e: any) {
       errors.push(`Account ${wfAccountId} starting-balance adjust failed: ${e?.message ?? e}`);
     }
@@ -3076,6 +3122,16 @@ async function runSyncPass(
         try {
           await host.importActivities([correction]);
           imported += 1;
+          if (logChange) {
+            logChange(startingBalanceChange({
+              account: accountRef,
+              activityId: await rowIdByComment(() => host.listOldestActivities(wfAccountId, STARTING_BALANCE_SCAN), correction.comment),
+              amountCents: Math.round(starting * 100),
+              date: correction.date,
+              activityType: correction.activityType,
+              comment: correction.comment,
+            }));
+          }
         } catch (importErr: any) {
           // If the starting balance already exists or failed gracefully, log/ignore duplicate
           const msg = String(importErr?.message ?? importErr);
@@ -3157,6 +3213,20 @@ async function runSyncPass(
             };
             await host.importActivities([correction]);
             imported += 1;
+            if (logChange) {
+              logChange(startingBalanceChange({
+                account: {
+                  sfinId: p.sfinAccountId,
+                  wfId: p.wfAccountId,
+                  name: wfNames.get(p.wfAccountId) || (accountSet.accounts.find((a) => a.id === p.sfinAccountId)?.name ?? ''),
+                },
+                activityId: await rowIdByComment(() => host.listOldestActivities(p.wfAccountId, STARTING_BALANCE_SCAN), correction.comment),
+                amountCents: Math.round(starting * 100),
+                date: correction.date,
+                activityType: correction.activityType,
+                comment: correction.comment,
+              }));
+            }
           }
           await store.addBalanceInitialized(p.sfinAccountId);
         } catch {
@@ -3302,6 +3372,24 @@ async function runSyncPass(
   // reasons are the diagnosis; the `unlinkedLegs` count below is the scale.
   const LINK_PROBLEM_REPORT_LIMIT = 3;
   let pairsWithReportedProblems = 0;
+  /** One leg of a confirmed link, as the change log names it. */
+  const linkLegFacts = (leg: LinkLeg, key: string, newActivityId?: string): LinkLegFacts => {
+    const sfinId = linkRowByKey.get(key)?.sfAccountId;
+    const signed = signedByKey.get(key);
+    return {
+      account: {
+        ...(sfinId ? { sfinId } : {}),
+        wfId: leg.accountId,
+        name: wfNames.get(leg.accountId) || (accountSet.accounts.find((a) => a.id === sfinId)?.name ?? ''),
+      },
+      txKey: key,
+      description: descByKey.get(key) ?? descriptionFromComment(leg.comment),
+      amountCents: signed !== undefined ? Math.round(signed * 100) : OUTFLOW_TYPES.has(leg.activityType) ? -leg.absCents : leg.absCents,
+      date: leg.date,
+      oldActivityId: leg.wfId,
+      ...(newActivityId ? { newActivityId } : {}),
+    };
+  };
   for (const { legs, keys } of pairsToLink) {
     let result: LinkResult;
     try {
@@ -3309,6 +3397,12 @@ async function runSyncPass(
     } catch (e: any) {
       errors.push(`Transfer-link failed (${legs[0].txId}/${legs[1].txId}): ${e?.message ?? e}`);
       continue; // leave the ledger untouched so the pair retries next run
+    }
+    if (result.linked && result.groupId) {
+      logChange?.(transferLinkChange(
+        linkLegFacts(legs[0], keys[0], result.activityIds?.[0]),
+        linkLegFacts(legs[1], keys[1], result.activityIds?.[1]),
+      ));
     }
     if (!result.linked || !result.groupId) {
       unlinkedLegs += legs.length;
@@ -3424,6 +3518,13 @@ async function runSyncPass(
     const result = await host.saveMany({ creates: relinkCreates });
     for (const err of result.errors ?? []) {
       errors.push(`Transfer-relink save error (${err.action}): ${err.message}`);
+    }
+    if ((del.errors ?? []).length === 0 && (result.errors ?? []).length === 0) {
+      const fresh = (result.created ?? []).map((a) => a.id).filter((id): id is string => !!id);
+      logChange?.(bookkeepingChange({
+        step: 'transfer-relink',
+        activityIds: fresh.length === relinkCreates.length ? fresh : staleLegIds,
+      }));
     }
   }
 

@@ -63,14 +63,18 @@ export async function linkPairByRecreate(
   // ("both legs came back on the same gid") would then compare the second leg's
   // gid with itself and report `linked: true` even where one leg's group had been
   // silently dropped. Precisely the failure this echo exists to catch.
-  const echoed = new Map<string, string | null | undefined>();
+  const echoed = new Map<string, { group: string | null | undefined; id: string }>();
   for (const a of [...res.updated, ...res.created]) {
     const txId = txIdFromComment(a.comment);
-    if (txId) echoed.set(accountTxKey(a.accountId, txId), a.sourceGroupId);
+    if (txId) echoed.set(accountTxKey(a.accountId, txId), { group: a.sourceGroupId, id: a.id });
   }
-  const stored = legs.map((l) => echoed.get(accountTxKey(l.accountId, l.txId)));
+  const stored = legs.map((l) => echoed.get(accountTxKey(l.accountId, l.txId))?.group);
   const linked = !!stored[0] && stored[0] === stored[1];
-  if (linked) return { linked: true, groupId: stored[0]! };
+  if (linked) {
+    // The NEW ids: the re-created rows are what the change log points R2 at.
+    const ids = legs.map((l) => echoed.get(accountTxKey(l.accountId, l.txId))?.id);
+    return { linked: true, groupId: stored[0]!, ...(ids[0] && ids[1] ? { activityIds: [ids[0], ids[1]] as [string, string] } : {}) };
+  }
   // Both saves reported success and the group still isn't there — the silent
   // drop this echo exists to catch. Name it, or the caller has a failure with
   // no host error to explain it.
