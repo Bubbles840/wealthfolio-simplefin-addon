@@ -5002,7 +5002,7 @@ describe('subscriptions in the reports', () => {
       det('SQ *COFFEE_CLUB', { monthlyCents: 900, lastCents: 1000, creep: true, lastDate: '2026-10-11' }),
     ])]]);
     const text = (await at(MORNING_8AM, () => composeDailyDigestMessage(client)))!;
-    expect(text).toContain('\n📈 SQ \\*COFFEE\\_CLUB charged $10.00 — up from its usual $9.00.');
+    expect(text).toContain('\n📈 SQ \\*COFFEE\\_CLUB charged $10 — up from its usual $9.');
     expect(text).not.toContain('SQ *COFFEE_CLUB');
   });
 
