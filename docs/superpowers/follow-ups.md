@@ -545,10 +545,10 @@ changes what a user sees today.
 
 ## 9. Change log — Undo (2026-10-13, plan `2026-10-13-change-log-undo.md`)
 
-- **`SYNC_OVERRIDES_SINCE` is `1.61.0`** (shared/version.ts) — the release
-  after R1's. If Undo ships in the SAME release as R1, lower it to that
-  version at release time; `shared/change-undo.test.ts` fails a release that
-  ships BELOW it, but cannot catch one shipped above it.
+- **`SYNC_OVERRIDES_SINCE` is `1.60.0`** (shared/version.ts) — R1 and Undo
+  shipped together in 1.60.0, so the first companion that obeys overrides is
+  that release. `shared/change-undo.test.ts` fails a release that ships BELOW
+  it, but cannot catch one shipped above it.
 - **A held transfer's Undo waits for the leg to be in a sync's window.** The
   sync applies `notTransfer` to a feed transaction (14-day routine overlap,
   44/89 days on a re-scan). A placeholder held past that by a dead feed stays
