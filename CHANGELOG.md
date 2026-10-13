@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **The bot asks instead of making you remember argument order.** Send
+  `/newrule` or `/afford` on its own, or tap **Set a new pool** under `/pool`,
+  and it asks one question at a time — buttons where there is a choice, and
+  `‹ Back` and `✖ Cancel` on every question. Setting a pool ends on a summary
+  with `✅ Save`; a new rule still shows the usual preview before anything is
+  written. Your next message answers the question; any command cancels it; an
+  unanswered question expires after 15 minutes. Type `cancel` or `back` to
+  do what the buttons do. In a group chat the first question says to answer
+  by replying to it.
+- `/pool` shows **Set a new pool** and **Clear pool** buttons under the pool.
+- `/newrule` says how many transactions in the past year the words match, and
+  offers your most-used recent categories as buttons.
+
+### Changed
+- The one-line forms still work: `/pool 16000 Dec 12`,
+  `/newrule trader joes = groceries`, `/afford 20 shopping`. `/pool`'s date
+  now also accepts `today`, `tomorrow` and `Dec 12th`, and an amount with
+  misplaced commas (`1,6000`) is refused instead of guessed.
+- In a private chat, a plain message when no question is open now gets "I'm
+  not waiting for an answer right now" instead of silence.
+- `/afford` one-liner amounts are read the same way as the question
+  (`$1,200` works; a third decimal is refused).
+
+### Fixed
+- The companion's sqlite3 fallback no longer runs through a shell.
+
 ## [1.59.2] - 2026-10-10
 
 1.59.1 was tagged but never published: its CI run stopped on a test-file

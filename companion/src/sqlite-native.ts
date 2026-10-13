@@ -6,7 +6,7 @@
  */
 
 import { existsSync } from 'fs';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { DatabaseSync } from 'node:sqlite';
 import { BALANCE_ADJUSTMENT_COMMENT_PREFIX, descriptionFromComment, PENDING_SUFFIX as PENDING_NOTE_SUFFIX } from '../../shared/sync-core.js';
 import { IN_TRANSIT_COMMENT_PREFIX } from '../../shared/reconcile.js';
@@ -79,8 +79,9 @@ function queryNativeDb<Row>(
   }
 
   try {
-    const cmd = `sqlite3 "${dbPath}" "${query.replace(/\n/g, ' ')}"`;
-    const output = execSync(cmd, { encoding: 'utf8' });
+    // No shell: the query can carry typed chat text (rule patterns), so it must
+    // reach sqlite3 as a single argv element.
+    const output = execFileSync('sqlite3', [dbPath, query.replace(/\n/g, ' ')], { encoding: 'utf8' });
     const rows: Row[] = [];
     for (const line of output.split('\n')) {
       const trimmed = line.trim();

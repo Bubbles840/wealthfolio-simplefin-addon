@@ -11,7 +11,7 @@
  * and fatal in the UI (the menu's parent filter is `parentId === null`).
  *
  * Driven hermetically: a file that exists but is not a database makes all three
- * `node:sqlite` opens fail for real, and `execSync` is mocked so the assertions
+ * `node:sqlite` opens fail for real, and `execFileSync` is mocked so the assertions
  * are about our mapping rather than about which sqlite3 binary the machine has.
  */
 
@@ -20,10 +20,10 @@ import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
-const execSyncMock = vi.hoisted(() => vi.fn());
-vi.mock('child_process', () => ({ execSync: execSyncMock }));
+const execFileSyncMock = vi.hoisted(() => vi.fn());
+vi.mock('child_process', () => ({ execFileSync: execFileSyncMock }));
 
-const { getNativeSpendingCategories } = await import('./sqlite-native.js');
+const { getNativeSpendingCategories, countRulePatternMatches } = await import('./sqlite-native.js');
 
 /** A path that EXISTS (so the reader gets past its `existsSync` guard) but is not
  *  a SQLite database, so every `node:sqlite` open genuinely fails and the CLI
@@ -39,7 +39,7 @@ describe('sqlite-native — sqlite3 CLI fallback', () => {
   let errors: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
-    execSyncMock.mockReset();
+    execFileSyncMock.mockReset();
     // The three failed node:sqlite opens each log; they are the point, not noise
     // to be surprised by.
     errors = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -56,7 +56,7 @@ describe('sqlite-native — sqlite3 CLI fallback', () => {
         // Exactly what `sqlite3 db.sqlite "SELECT id, name, parent_id, parent.name …"`
         // prints: one line per row, `|` between columns, NOTHING between the
         // separators where a column is NULL.
-        execSyncMock.mockReturnValue(
+        execFileSyncMock.mockReturnValue(
           'p1|Food & Dining||\n'
           + 'c1|Restaurants|p1|Food & Dining\n'
           + 't1|Transportation||\n',
@@ -65,7 +65,7 @@ describe('sqlite-native — sqlite3 CLI fallback', () => {
         const cats = getNativeSpendingCategories(path);
 
         // Proves the CLI branch is what answered: node:sqlite never got this far.
-        expect(execSyncMock).toHaveBeenCalledTimes(1);
+        expect(execFileSyncMock).toHaveBeenCalledTimes(1);
         expect(cats).toEqual([
           { id: 'p1', name: 'Food & Dining', parentId: null, parentName: null },
           { id: 'c1', name: 'Restaurants', parentId: 'p1', parentName: 'Food & Dining' },
@@ -76,6 +76,27 @@ describe('sqlite-native — sqlite3 CLI fallback', () => {
         // the whole category picker.
         expect(cats.filter((c) => c.parentId === null).map((c) => c.name))
           .toEqual(['Food & Dining', 'Transportation']);
+      } finally {
+        cleanup();
+      }
+    });
+  });
+
+  describe('countRulePatternMatches', () => {
+    it('hands the query to sqlite3 as one argv element, with no shell', () => {
+      const { path, cleanup } = notADatabase();
+      try {
+        execFileSyncMock.mockReturnValue('0|0\n');
+        const pattern = 'joes $(touch /tmp/pwned) `id` "quoted"';
+        countRulePatternMatches(path, pattern, '2026-01-01', '2026-02-01');
+
+        expect(execFileSyncMock).toHaveBeenCalledTimes(1);
+        const [file, args, options] = execFileSyncMock.mock.calls[0];
+        expect(file).toBe('sqlite3');
+        expect(args[0]).toBe(path);
+        expect(args).toHaveLength(2);
+        expect(args[1]).toContain('joes $(touch /tmp/pwned) `id` "quoted"');
+        expect(options.shell).toBeUndefined();
       } finally {
         cleanup();
       }
