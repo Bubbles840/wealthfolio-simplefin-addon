@@ -28,6 +28,10 @@ export const CHANGE_LOG_CAP_BYTES = 200_000;
 export const CHANGE_LOG_READ_MONTHS = 4;
 /** A writer clears its own bucket this many months back. Reset clears through it. */
 export const CHANGE_LOG_CLEAR_MONTHS_BACK = 4;
+/** On its first append of a month a writer clears months -4 through -12, so a
+ *  writer that skipped months (nothing to write, or the app closed) still
+ *  leaves nothing older behind. Clearing an empty key is idempotent. */
+export const CHANGE_LOG_CLEAR_MONTHS_THROUGH = 12;
 export const CHANGE_LOG_RETENTION_DAYS = 90;
 /** Gap records kept per bucket, newest last. */
 export const CHANGE_LOG_MAX_GAPS = 50;
@@ -255,10 +259,13 @@ export function createChangeLogWriter(opts: {
 
   async function clearOld(io: ChangeLogIo, month: string): Promise<void> {
     if (clearedMonth === month) return;
-    const old = shiftMonth(month, -CHANGE_LOG_CLEAR_MONTHS_BACK);
+    let old = month;
     try {
-      await io.clear(changeLogKey(opts.writer, old));
-      await io.clear(changeLogKey(opts.writer, old, true));
+      for (let back = CHANGE_LOG_CLEAR_MONTHS_BACK; back <= CHANGE_LOG_CLEAR_MONTHS_THROUGH; back++) {
+        old = shiftMonth(month, -back);
+        await io.clear(changeLogKey(opts.writer, old));
+        await io.clear(changeLogKey(opts.writer, old, true));
+      }
       clearedMonth = month;
     } catch (err) {
       log(`Change log: could not clear ${old}: ${err instanceof Error ? err.message : String(err)}`);
