@@ -46,3 +46,61 @@ export function parseSkippedTransactions(raw: string | null | undefined): Skippe
     && typeof (e as SkippedTransaction).account === 'string'
     && typeof (e as SkippedTransaction).txId === 'string');
 }
+
+// ── Writing (R2: Undo of an import) ──────────────────────────────────────
+
+export type ParsedSkippedTransactions =
+  | { kind: 'ok'; list: SkippedTransaction[] }
+  | { kind: 'absent' }
+  | { kind: 'corrupt' };
+
+const isSkipEntry = (e: unknown): e is SkippedTransaction => {
+  if (!e || typeof e !== 'object' || Array.isArray(e)) return false;
+  const s = e as Record<string, unknown>;
+  return typeof s.account === 'string' && typeof s.txId === 'string'
+    && (s.note === undefined || typeof s.note === 'string')
+    && (s.at === undefined || typeof s.at === 'string');
+};
+
+/** The stored list as a writer must see it: corrupt is NOT absent. Reading
+ *  stays lenient (`parseSkippedTransactions`); a write over a list this cannot
+ *  read in full would drop the entries it skipped. */
+export function parseSkippedTransactionsStrict(raw: string | null | undefined): ParsedSkippedTransactions {
+  if (raw === null || raw === undefined || raw.trim() === '') return { kind: 'absent' };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { kind: 'corrupt' };
+  }
+  return Array.isArray(parsed) && parsed.every(isSkipEntry) ? { kind: 'ok', list: parsed } : { kind: 'corrupt' };
+}
+
+export class SkippedTransactionsUnreadableError extends Error {
+  constructor() {
+    super("The list of transactions not to import can't be read, so nothing was changed.");
+    this.name = 'SkippedTransactionsUnreadableError';
+  }
+}
+
+/** The only write: re-read, edit, write. A stored list that cannot be read is
+ *  never overwritten. */
+export async function editSkippedTransactions(
+  get: (key: string) => Promise<string | null>,
+  set: (key: string, value: string) => Promise<void>,
+  edit: (list: SkippedTransaction[]) => SkippedTransaction[],
+): Promise<SkippedTransaction[]> {
+  const parsed = parseSkippedTransactionsStrict(await get(SKIPPED_TRANSACTIONS_SECRET_KEY));
+  if (parsed.kind === 'corrupt') throw new SkippedTransactionsUnreadableError();
+  const next = edit(parsed.kind === 'ok' ? parsed.list : []);
+  await set(SKIPPED_TRANSACTIONS_SECRET_KEY, JSON.stringify(next));
+  return next;
+}
+
+export function withSkipped(list: SkippedTransaction[], entry: SkippedTransaction): SkippedTransaction[] {
+  return list.some((s) => s.account === entry.account && s.txId === entry.txId) ? list : [...list, entry];
+}
+
+export function withoutSkipped(list: SkippedTransaction[], account: string, txId: string): SkippedTransaction[] {
+  return list.filter((s) => !(s.account === account && s.txId === txId));
+}
