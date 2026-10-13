@@ -363,9 +363,22 @@ describe('SettingsTab', () => {
     // account mapping — since it undersells a destructive action otherwise.
     expect(card!.textContent).toContain(
       'Clears every SimpleFin Sync setting — the connection, account mapping, sync '
-      + 'schedule, transaction rules, and any Telegram or Amazon setup. Transactions '
-      + 'already imported into Wealthfolio stay.',
+      + 'schedule, transaction rules, the change log, and any Telegram or Amazon setup. '
+      + 'Transactions already imported into Wealthfolio stay.',
     );
+  });
+
+  it('offers the change log under Sync, collapsed, reading it only when opened', async () => {
+    const props = makeProps();
+    props.store.getChangeLog = vi.fn(async () => ({ entries: [], gaps: [], trimmed: 0, unreadable: [] }));
+    render(<SyncPage {...props} />);
+    await switchTab(/settings/i);
+    const header = await screen.findByRole('button', { name: /^Change log/ });
+    expect(header.getAttribute('aria-expanded')).toBe('false');
+    expect(props.store.getChangeLog).not.toHaveBeenCalled();
+    fireEvent.click(header);
+    expect(await screen.findByText('Nothing recorded yet. Changes show here after the next sync.')).toBeInTheDocument();
+    expect(props.store.getChangeLog).toHaveBeenCalledTimes(1);
   });
 
   it('reset requires an explicit confirmation step', async () => {

@@ -15,6 +15,7 @@ import type { SecretsStore, CategoryCatalogEntry, AccountBalanceInfo } from '../
 import type { Scheduler } from '../utils/scheduler';
 import type { MappingRule, SimplefinAccount, AccountMapping } from '../../shared/types';
 import { accountCreatedChange } from '../../shared/change-entries';
+import { ChangeLogCard } from '../components/ChangeLogCard';
 
 /** Ids for this tab's collapsible cards. Doubles as the persisted key set (the
  *  page owns the open-card map), so these strings must not change — a rename
@@ -32,6 +33,7 @@ export const CARD = {
   amazonGuide: 'amazon-guide',
   rules: 'rules',
   pool: 'pool',
+  changeLog: 'change-log',
 } as const;
 
 interface Props {
@@ -252,6 +254,13 @@ export function SettingsTab({
       scheduler.start(hours, () => store.getLastSyncAt(), () => runSync(ctx, store));
     }
   }, [ctx, store, scheduler]);
+
+  // Stable, so the card reads once each time it opens. Optional-called: an
+  // older store (or a test double) has no change log, which reads as empty.
+  const loadChangeLog = useCallback(
+    async () => (store.getChangeLog ? store.getChangeLog() : { entries: [], gaps: [], trimmed: 0, unreadable: [] }),
+    [store],
+  );
 
   const handleReset = useCallback(async () => {
     scheduler.stop();
@@ -524,6 +533,18 @@ export function SettingsTab({
         </div>
       </CollapsibleCard>
 
+      {/* Read-only in this release: every change the sync and you made, the
+          same entries /changes shows. Loads when opened. */}
+      <CollapsibleCard
+        id={CARD.changeLog}
+        title="Change log"
+        summary="What the sync and you changed, the last 90 days"
+        open={isOpen(CARD.changeLog)}
+        onToggle={() => toggleCard(CARD.changeLog)}
+      >
+        <ChangeLogCard load={loadChangeLog} />
+      </CollapsibleCard>
+
       <h3 className="sfin-settings-group">Categorizing</h3>
       {/* The companion reads the mailbox, so this is only useful to someone
           who has set up background sync above. */}
@@ -582,8 +603,8 @@ export function SettingsTab({
         <b>Reset connection</b>
         <div className="sfin-subtle sfin-danger-note">
           Clears every SimpleFin Sync setting — the connection, account mapping, sync
-          schedule, transaction rules, and any Telegram or Amazon setup. Transactions
-          already imported into Wealthfolio stay.
+          schedule, transaction rules, the change log, and any Telegram or Amazon setup.
+          Transactions already imported into Wealthfolio stay.
         </div>
         <div className="sfin-danger-actions">
           {!confirmingReset ? (
