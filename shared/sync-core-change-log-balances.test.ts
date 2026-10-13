@@ -42,7 +42,7 @@ describe('runSyncCore — change log for balances, links and repairs', () => {
     await runSyncCore(host, store, { changeLog: log });
     expect(log.entries().map((e) => e.kind)).toEqual(['import', 'starting-balance']);
     expect(log.entries()[1]).toMatchObject({
-      summary: "Set Checking's starting balance to $112.50 on Oct 10",
+      summary: 'Set the starting balance, dated Oct 10',
       account: { sfinId: 'sfin-1', wfId: 'wf-a', name: 'Checking' },
       subject: { activityIds: ['fh-2'], amountCents: 11250, date: '2026-10-10' },
       after: { activityId: 'fh-2', amountCents: 11250, date: '2026-10-10', activityType: 'CREDIT', comment: 'Starting balance · sfin-1' },
@@ -66,7 +66,7 @@ describe('runSyncCore — change log for balances, links and repairs', () => {
     await runSyncCore(host, store, { force: true, changeLog: log });
     expect(log.entries()).toEqual([expect.objectContaining({
       kind: 'starting-balance-moved', actor: 'auto',
-      summary: "Moved Savings's starting balance to Apr 22 (was Jun 19)",
+      summary: 'Moved the starting balance to Apr 22 (was Jun 19)',
       before: { activityId: 'sb-1', amountCents: 120000, date: '2026-06-19', activityType: 'CREDIT' },
       after: { activityId: 'sb-1', amountCents: 120000, date: '2026-04-22', activityType: 'CREDIT' },
     })]);
@@ -89,7 +89,7 @@ describe('runSyncCore — change log for balances, links and repairs', () => {
     const plug = log.entries().find((e) => e.kind === 'balance-correction')!;
     expect(plug).toMatchObject({
       actor: 'auto', undoable: true,
-      summary: 'Added a $100.00 balance correction to Checking',
+      summary: 'Added a balance correction',
       account: { sfinId: 'sfin-1', wfId: 'wf-a', name: 'Checking' },
       subject: { activityIds: ['fh-1'], amountCents: 10000, date: '2026-10-12' },
       after: { activityId: 'fh-1', accountId: 'wf-a', amountCents: 10000, activityType: 'CREDIT', comment: 'Balance adjustment · sfin-1 · 2026-10-12' },
@@ -112,7 +112,7 @@ describe('runSyncCore — change log for balances, links and repairs', () => {
     await runSyncCore(host, store, { changeLog: log });
     const link = log.entries().find((e) => e.kind === 'transfer-link')!;
     expect(link).toMatchObject({
-      summary: 'Linked Payment to Card (Checking) and PAYMENT THANK YOU (Citi Card) as one transfer',
+      summary: 'Linked Payment to Card and PAYMENT THANK YOU as one transfer',
       account: { sfinId: 'sfin-1', wfId: 'wf-a', name: 'Checking' },
       subject: { txKeys: [accountTxKey('sfin-1', 'tx-out'), accountTxKey('sfin-2', 'tx-in')], activityIds: ['fh-1', 'fh-2'], amountCents: -50000 },
       before: { activityIds: ['fh-1', 'fh-2'] },

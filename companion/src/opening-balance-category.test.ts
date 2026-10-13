@@ -100,7 +100,7 @@ describe('fileCardOpeningDebts — change log', () => {
     await fileCardOpeningDebts(d);
     expect(drafts.map((x) => [x.kind, x.summary])).toEqual([
       ['bookkeeping', 'Set up the "Opening balances" category and kept it out of spending'],
-      ['opening-balance-filed', "Filed Citi's opening balance under Opening balances"],
+      ['opening-balance-filed', "Filed the opening balance under Opening balances"],
     ]);
     expect(drafts[1]).toMatchObject({
       account: { sfinId: 'sfc', wfId: 'card', name: 'Citi' },

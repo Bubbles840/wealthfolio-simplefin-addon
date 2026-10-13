@@ -58,7 +58,7 @@ describe('ChangeLogCard', () => {
     expect(rowTexts()).toEqual([
       '14:06Imported 2 transactions',
       '09:12Moved AMAZON MKTPL*2K4 from Online Shopping to Personal CareCiti Card-$10.80',
-      '08:00Linked CITI AUTOPAY (Checking) and PAYMENT THANK YOU (Citi Card) as one transferChecking → Citi Card-$464.60',
+      '08:00Linked CITI AUTOPAY and PAYMENT THANK YOU as one transferChecking → Citi Card-$464.60',
     ]);
     expect(screen.getByText('1 background change not shown — Background lists it.')).toBeInTheDocument();
   });

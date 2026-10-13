@@ -58,7 +58,7 @@ describe('SecretsStore — the change log', () => {
     await new SecretsStore(ctx).recordChange(accountCreatedChange({ sfinId: 'ACT-1', wfId: 'wf-a', name: 'Citi Card', accountType: 'CREDIT_CARD' }));
     const b = bucket(data, 'change_log:addon:2026-10');
     expect(b.entries).toEqual([expect.objectContaining({
-      writer: 'addon', actor: 'you', kind: 'account-created', at: NOW.toISOString(), summary: 'Created the Wealthfolio account Citi Card',
+      writer: 'addon', actor: 'you', kind: 'account-created', at: NOW.toISOString(), summary: 'Created a Wealthfolio account',
     })]);
   });
 
@@ -141,10 +141,19 @@ describe('the add-on records its own writes', () => {
     const { ctx, data } = makeCtx({ account_balances: JSON.stringify({ 'sfin-1': { balance: 10, currency: 'USD', date: 1, drift: 2.15 } }) });
     await applyBalanceAdjustment(ctx, new SecretsStore(ctx), { sfinAccountId: 'sfin-1', wfAccountId: 'wf-a', currency: 'USD', amount: 2.15 });
     expect(bucket(data, 'change_log:addon:2026-10').entries).toEqual([expect.objectContaining({
-      kind: 'balance-correction', actor: 'you', summary: 'Added a $2.15 balance correction to Everyday Checking',
+      kind: 'balance-correction', actor: 'you', summary: 'Added a balance correction',
       account: { sfinId: 'sfin-1', wfId: 'wf-a', name: 'Everyday Checking' },
       subject: { activityIds: ['imp-1'], amountCents: 215, date: '2026-10-12' },
     })]);
+  });
+
+  it('Add adjustment reads back the right row when two adjustments share a day', async () => {
+    const { ctx, data } = makeCtx();
+    const store = new SecretsStore(ctx);
+    await applyBalanceAdjustment(ctx, store, { sfinAccountId: 'sfin-1', wfAccountId: 'wf-a', currency: 'USD', amount: 2.15 });
+    await applyBalanceAdjustment(ctx, store, { sfinAccountId: 'sfin-1', wfAccountId: 'wf-a', currency: 'USD', amount: 5 });
+    const ids = bucket(data, 'change_log:addon:2026-10').entries.map((e) => e.subject.activityIds);
+    expect(ids).toEqual([['imp-1'], ['imp-2']]);
   });
 
   it('accepting the baseline fix records the move by you, before and after', async () => {
@@ -153,7 +162,7 @@ describe('the add-on records its own writes', () => {
     await applyBaselineCorrection(ctx, new SecretsStore(ctx), { sfinAccountId: 'sfin-1', wfAccountId: 'wf-a', currency: 'USD', suggestedAmount: 10055.12 });
     expect(bucket(data, 'change_log:addon:2026-10').entries).toEqual([expect.objectContaining({
       kind: 'starting-balance-moved', actor: 'you',
-      summary: "Changed Everyday Checking's starting balance to $10,055.12 (was $11,355.12)",
+      summary: 'Changed the starting balance (was $11,355.12)',
       before: { activityId: 'sb-1', amountCents: 1135512, date: '2026-06-19', activityType: 'DEPOSIT' },
       after: { activityId: 'sb-1', amountCents: 1005512, date: '2026-06-19', activityType: 'CREDIT' },
     })]);
