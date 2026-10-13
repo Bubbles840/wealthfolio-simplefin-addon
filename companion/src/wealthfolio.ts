@@ -298,7 +298,9 @@ export class WealthfolioClient {
   /** Every taxonomy's category on one activity, as the server stores it now —
    *  what an Undo checks before it changes a filing. Upstream route
    *  `GET /spending/activities/{id}/assignments` (`Vec<ActivityTaxonomyAssignment>`,
-   *  camelCase). An activity with none, or one that is gone, answers `[]`. */
+   *  camelCase). An activity with none answers `[]`; any non-2xx — a 404 for
+   *  one that is gone included — throws, so the Undo says it couldn't reach
+   *  Wealthfolio and changes nothing. */
   async getActivityAssignments(activityId: string): Promise<Array<{ taxonomyId: string; categoryId: string; source?: string }>> {
     const res = await fetch(
       `${this.baseUrl}/api/v1/spending/activities/${encodeURIComponent(activityId)}/assignments`,

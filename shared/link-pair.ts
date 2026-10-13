@@ -159,7 +159,7 @@ export async function unlinkPairByRecreate(
   if (problem !== null) {
     return {
       unlinked: false, stale: true, ...activityIds,
-      problems: [`re-created ${both} as ordinary rows, but the old linked pair is still there next to them (${problem}); the next sync deletes it`],
+      problems: [`re-created ${both} as ordinary rows, but the old linked pair is still there next to them (${problem}); a later sync deletes it once both new rows are confirmed`],
     };
   }
   return { unlinked: true, ...activityIds };
