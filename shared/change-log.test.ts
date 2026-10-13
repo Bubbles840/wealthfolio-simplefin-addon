@@ -154,10 +154,24 @@ describe('createChangeLogWriter', () => {
     const w = createChangeLogWriter({ writer: 'companion', now: () => NOW });
     await w.append(io, [imported(1)]);
     await w.append(io, [imported(2)]);
-    expect(io.clear).toHaveBeenCalledTimes(2);
+    expect(io.clear).toHaveBeenCalledTimes(18);
     expect(io.clear).toHaveBeenCalledWith('change_log:companion:2026-06');
     expect(io.clear).toHaveBeenCalledWith('change_log:companion:2026-06.2');
     expect(io.data.get('change_log:companion:2026-06')).toBe('');
+  });
+
+  it('also clears the months a writer skipped: -4 through -12, and nothing newer', async () => {
+    const io = memory({
+      'change_log:addon:2025-10': '{"old":true}', 'change_log:addon:2025-12.2': '{"old":true}',
+      'change_log:addon:2026-07': '{"old":true}', 'change_log:addon:2026-06': '{"old":true}',
+    });
+    const w = createChangeLogWriter({ writer: 'addon', now: () => NOW });
+    await w.append(io, [imported(1)]);
+    for (const k of ['2025-10', '2026-06']) expect(io.data.get(`change_log:addon:${k}`)).toBe('');
+    expect(io.data.get('change_log:addon:2025-12.2')).toBe('');
+    expect(io.data.get('change_log:addon:2026-07')).toBe('{"old":true}');
+    expect(io.clear).not.toHaveBeenCalledWith('change_log:addon:2025-09');
+    expect(io.clear).not.toHaveBeenCalledWith('change_log:companion:2026-06');
   });
 
   it('never rejects, remembers a failed append, and writes it as a gap next time', async () => {
