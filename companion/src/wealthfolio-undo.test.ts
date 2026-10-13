@@ -40,7 +40,7 @@ describe('WealthfolioClient — what Undo needs', () => {
     expect(mockFetch.mock.calls[0][0]).toBe('http://wf/api/v1/spending/rules');
   });
 
-  it('deletes a rule by id, and says why it could not', async () => {
+  it('deletes a rule by id, treats 404 as already gone, and says why it could not', async () => {
     mockFetch.mockResolvedValueOnce({ ok: true, text: async () => '' });
     const client = new WealthfolioClient('http://wf');
     await client.deleteCategorizationRule('rule/7');
@@ -48,6 +48,8 @@ describe('WealthfolioClient — what Undo needs', () => {
     expect(url).toBe('http://wf/api/v1/spending/rules/rule%2F7');
     expect((opts as any).method).toBe('DELETE');
     mockFetch.mockResolvedValueOnce({ ok: false, status: 404, text: async () => 'Rule not found' });
-    await expect(client.deleteCategorizationRule('gone')).rejects.toThrow('deleteCategorizationRule failed: 404 - Rule not found');
+    await expect(client.deleteCategorizationRule('gone')).resolves.toBeUndefined();
+    mockFetch.mockResolvedValueOnce({ ok: false, status: 500, text: async () => 'boom' });
+    await expect(client.deleteCategorizationRule('bad')).rejects.toThrow('deleteCategorizationRule failed: 500 - boom');
   });
 });

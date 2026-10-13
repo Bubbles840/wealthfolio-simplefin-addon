@@ -15,6 +15,12 @@
  * Bank and user text (a summary, an account name, a search) is escaped AND
  * kept outside every `*…*`/`_…_`: legacy Markdown ignores a backslash inside
  * an entity, and one bank `*` would cost the whole message.
+ *
+ * R2: an entry's screen offers `↩ Undo` or `Redo` (a rule: `↩ Undo rule` and
+ * `↩ Undo rule + un-file N`). The tap runs the shared runner
+ * (shared/change-undo-run.ts) — no confirmation — and the screen says what
+ * happened; after a sync decision it adds `🔄 Sync now`, the same forced run
+ * as `/sync`.
  */
 import { MENU_CALLBACK_PREFIX } from '../../shared/categorize-menu.js';
 import type { ChangeLogItem, ChangeLogRead } from '../../shared/change-log.js';
@@ -25,6 +31,8 @@ import {
 } from '../../shared/change-view.js';
 import { findingHandle } from '../../shared/handle.js';
 import { escapeMarkdown, shortDateTime, type InlineKeyboard } from '../../shared/telegram.js';
+import { undoAvailability, UNDO_TAKES_EFFECT, type UndoOp, type UndoVariant } from '../../shared/change-undo.js';
+import type { UndoOutcome } from '../../shared/change-undo-run.js';
 
 export const CHANGES_CALLBACK_PREFIX = `${MENU_CALLBACK_PREFIX}cl:`;
 export const CHANGES_PAGE_SIZE = 8;
@@ -33,6 +41,8 @@ export const CHANGES_LIST_DAYS = 7;
 export const CHANGES_QUERY_MAX_BYTES = 30;
 export const CHANGES_GONE_ANSWER = 'That one is already sorted — refreshing.';
 export const CHANGES_UNREACHABLE_REPLY = "Couldn't reach Wealthfolio — try again.";
+export const CHANGES_SYNC_STARTED = 'Syncing…';
+export const CHANGES_SYNC_RUNNING = 'Already syncing — hang on.';
 const FAILED_ANSWER = 'Could not do that — check the companion logs.';
 
 type Button = { text: string; callback_data: string };
@@ -43,7 +53,11 @@ export type ChangesView =
   | { kind: 'list'; page: number; background: boolean }
   | { kind: 'search'; page: number; query: string }
   | { kind: 'run'; run: string; page: number; from: { page: number; background: boolean } }
-  | { kind: 'detail'; entry: string; back: Exclude<ChangesView, { kind: 'detail' }> };
+  | { kind: 'detail'; entry: string; back: Exclude<ChangesView, { kind: 'detail' | 'act' }> }
+  /** A button on an entry's screen: `u` undo, `r` redo, `f` undo rule + un-file, `s` sync now. */
+  | { kind: 'act'; action: ChangeAction; entry: string; back: Exclude<ChangesView, { kind: 'detail' | 'act' }> };
+
+export type ChangeAction = 'u' | 'r' | 'f' | 's';
 
 const encodeList = (page: number, background: boolean) => `${background ? 'b' : 'l'}${page}`;
 
@@ -58,6 +72,7 @@ function encodeView(view: ChangesView): string {
     case 'search': return `s${view.page}:${view.query}`;
     case 'run': return `r${view.page}:${view.run}:${encodeList(view.from.page, view.from.background)}`;
     case 'detail': return `d${view.entry}:${encodeView(view.back)}`;
+    case 'act': return `x${view.action}${view.entry}:${encodeView(view.back)}`;
   }
 }
 
@@ -77,7 +92,14 @@ function decodeView(s: string, allowDetail: boolean): ChangesView | null {
   m = /^d([0-9a-f]{8}):(.+)$/s.exec(s);
   if (m && allowDetail) {
     const back = decodeView(m[2], false);
-    return back && back.kind !== 'detail' ? { kind: 'detail', entry: m[1], back } : null;
+    return back && back.kind !== 'detail' && back.kind !== 'act' ? { kind: 'detail', entry: m[1], back } : null;
+  }
+  m = /^x([urfs])([0-9a-f]{8}):(.+)$/s.exec(s);
+  if (m && allowDetail) {
+    const back = decodeView(m[3], false);
+    return back && back.kind !== 'detail' && back.kind !== 'act'
+      ? { kind: 'act', action: m[1] as ChangeAction, entry: m[2], back }
+      : null;
   }
   return null;
 }
@@ -123,7 +145,7 @@ function pageOf<T>(items: T[], page: number): { slice: T[]; page: number; pages:
 }
 
 /** Number buttons, four to a row, each opening its line. */
-function numberRows(rows: ChangeRow[], first: number, back: Exclude<ChangesView, { kind: 'detail' }>): Button[][] {
+function numberRows(rows: ChangeRow[], first: number, back: Exclude<ChangesView, { kind: 'detail' | 'act' }>): Button[][] {
   const buttons = rows.map((row, i): Button => ({
     text: String(first + i + 1),
     callback_data: row.kind === 'run' && back.kind === 'list'
@@ -213,8 +235,22 @@ export function renderChangeRun(entries: ChangeLogItem[], view: Extract<ChangesV
   return { text: lines.join('\n'), keyboard: { inline_keyboard: keyboard } };
 }
 
-/** One entry: what, why, before → after, who and when. */
-export function renderChangeDetail(entry: ChangeLogItem, back: Exclude<ChangesView, { kind: 'detail' }>): MenuScreen {
+/** What an entry's screen offers (R2). Absent: an R1 screen, no buttons. */
+export interface DetailExtras {
+  /** Undo or Redo is possible here. */
+  op?: UndoOp;
+  /** A rule's undo: how many charges it filed (null: unknown — no un-file button). */
+  unfileCount?: number | null;
+  /** What the last tap did, said once. */
+  result?: { ok: boolean; message: string; needsSync?: boolean };
+}
+
+/** One entry: what, why, before → after, who and when — and, in R2, Undo/Redo. */
+export function renderChangeDetail(
+  entry: ChangeLogItem,
+  back: Exclude<ChangesView, { kind: 'detail' | 'act' }>,
+  extras: DetailExtras = {},
+): MenuScreen {
   const lines = [escapeMarkdown(entry.summary)];
   const facts = [changeAmountText(entry), changeAccountText(entry)].filter(Boolean).map(escapeMarkdown);
   if (facts.length) lines.push(facts.join(' · '));
@@ -223,7 +259,25 @@ export function renderChangeDetail(entry: ChangeLogItem, back: Exclude<ChangesVi
   if (beforeAfter) lines.push(`Before → after: ${escapeMarkdown(beforeAfter)}`);
   lines.push(`${changeSourceText(entry)} · ${shortDateTime(entry.at)}`);
   if (entry.undone) lines.push(`↩ Undone ${shortDateTime(entry.undone.at)}`);
-  return { text: lines.join('\n'), keyboard: { inline_keyboard: [[{ text: '‹ Back', callback_data: changesData(back) }]] } };
+  const r = extras.result;
+  if (r) {
+    lines.push('', `${r.ok ? '✅' : '⚠️'} ${escapeMarkdown(r.message)}`);
+    if (r.ok && r.needsSync) lines.push(UNDO_TAKES_EFFECT);
+  }
+  const handle = findingHandle(entry.id);
+  const act = (action: ChangeAction) => changesData({ kind: 'act', action, entry: handle, back });
+  const keyboard: Button[][] = [];
+  if (extras.op === 'redo') keyboard.push([{ text: 'Redo', callback_data: act('r') }]);
+  else if (extras.op === 'undo' && entry.kind === 'category-rule-created') {
+    const n = extras.unfileCount;
+    keyboard.push([
+      { text: '↩ Undo rule', callback_data: act('u') },
+      ...(n ? [{ text: `↩ Undo rule + un-file ${n}`, callback_data: act('f') }] : []),
+    ]);
+  } else if (extras.op === 'undo') keyboard.push([{ text: '↩ Undo', callback_data: act('u') }]);
+  if (r?.ok && r.needsSync) keyboard.push([{ text: '🔄 Sync now', callback_data: act('s') }]);
+  keyboard.push([{ text: '‹ Back', callback_data: changesData(back) }]);
+  return { text: lines.join('\n'), keyboard: { inline_keyboard: keyboard } };
 }
 
 /** `/changes` and `/changes <words>`: the first screen, as a reply. */
@@ -235,6 +289,8 @@ export function renderChangesCommand(read: ChangeLogRead, args: string, now: Dat
 export interface ChangesMenuUi {
   edit(text: string, keyboard?: InlineKeyboard): Promise<void>;
   answer(text?: string): Promise<void>;
+  /** A NEW message — where Sync now's summary goes. */
+  send?(text: string, keyboard?: InlineKeyboard): Promise<void>;
 }
 
 export interface ChangesMenuDeps {
@@ -242,6 +298,12 @@ export interface ChangesMenuDeps {
   read(now: Date): Promise<ChangeLogRead>;
   now(): Date;
   log(msg: string): void;
+  /** R2: undo or redo one entry (shared/change-undo-run.ts). Absent: read-only. */
+  undo?(entry: ChangeLogItem, entries: ChangeLogItem[], op: UndoOp, variant: UndoVariant): Promise<UndoOutcome>;
+  /** N for a rule's "Undo rule + un-file N", read when its screen is shown. */
+  ruleFiledCount?(entry: ChangeLogItem): Promise<number | null>;
+  /** The `/sync` run: started, or joined; the summary never rejects. */
+  syncNow?(): { started: boolean; summary: Promise<string> };
 }
 
 export interface ChangesMenu {
@@ -252,8 +314,19 @@ export interface ChangesMenu {
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
 export function createChangesMenu(deps: ChangesMenuDeps): ChangesMenu {
-  const renderView = (read: ChangeLogRead, view: Exclude<ChangesView, { kind: 'detail' | 'run' }>, now: Date) =>
+  const renderView = (read: ChangeLogRead, view: Exclude<ChangesView, { kind: 'detail' | 'run' | 'act' }>, now: Date) =>
     (view.kind === 'list' ? renderChangesList(read, view.page, view.background, now) : renderChangesSearch(read, view.page, view.query));
+
+  /** The entry's screen, with its Undo/Redo buttons when this menu can undo. */
+  const detailScreen = async (entry: ChangeLogItem, back: Exclude<ChangesView, { kind: 'detail' | 'act' }>, result?: DetailExtras['result']) => {
+    if (!deps.undo) return renderChangeDetail(entry, back, result ? { result } : {});
+    const available = undoAvailability(entry, { host: 'companion', companionVersion: null });
+    const op = available.kind === 'ready' ? available.op : undefined;
+    const unfileCount = op === 'undo' && entry.kind === 'category-rule-created'
+      ? await deps.ruleFiledCount?.(entry).catch(() => null) ?? null
+      : null;
+    return renderChangeDetail(entry, back, { ...(op ? { op } : {}), unfileCount, ...(result ? { result } : {}) });
+  };
 
   return {
     handles(data) {
@@ -292,7 +365,30 @@ export function createChangesMenu(deps: ChangesMenuDeps): ChangesMenu {
             const entry = read.entries.find((e) => findingHandle(e.id) === view.entry);
             if (!entry) return void await gone();
             if (view.back.kind === 'run' && runEntries(view.back.run).length === 0) return void await gone();
-            return void await show(renderChangeDetail(entry, view.back));
+            return void await show(await detailScreen(entry, view.back));
+          }
+          case 'act': {
+            const entry = read.entries.find((e) => findingHandle(e.id) === view.entry);
+            if (!entry) return void await gone();
+            if (view.action === 's') {
+              if (!deps.syncNow) return void await ui.answer();
+              const { started, summary } = deps.syncNow();
+              await ui.answer(started ? CHANGES_SYNC_STARTED : CHANGES_SYNC_RUNNING);
+              // Not awaited: a sync takes tens of seconds, and the summary
+              // promise cannot reject.
+              void summary.then((text) => ui.send?.(text)).catch((err) => deps.log(`Changes menu: sync summary not sent: ${message(err)}`));
+              return;
+            }
+            if (!deps.undo) return void await ui.answer();
+            const op: UndoOp = view.action === 'r' ? 'redo' : 'undo';
+            const outcome = await deps.undo(entry, read.entries, op, view.action === 'f' ? 'unfile' : 'plain');
+            // Re-read so the screen shows the entry as it now stands (Undone,
+            // and Redo offered); the old read stands in if that fails.
+            const fresh = outcome.ok ? await deps.read(deps.now()).catch(() => read) : read;
+            const now2 = fresh.entries.find((e) => e.id === entry.id) ?? entry;
+            return void await show(await detailScreen(now2, view.back, {
+              ok: outcome.ok, message: outcome.message, ...(outcome.ok ? { needsSync: outcome.needsSync } : {}),
+            }));
           }
         }
       } catch (err) {
