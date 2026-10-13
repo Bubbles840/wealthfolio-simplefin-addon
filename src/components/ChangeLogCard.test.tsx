@@ -140,6 +140,6 @@ describe('ChangeLogCard', () => {
     mount(log([e]));
     const row = await screen.findByRole('button', { name: /Moved VENMO/ });
     expect(row.className).toContain('sfin-log-row--undone');
-    expect(row.textContent).toContain('(undone)');
+    expect(row.textContent).toContain('· Undone by you Oct 12');
   });
 });

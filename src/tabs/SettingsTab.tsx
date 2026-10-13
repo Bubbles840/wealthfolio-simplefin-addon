@@ -16,6 +16,10 @@ import type { Scheduler } from '../utils/scheduler';
 import type { MappingRule, SimplefinAccount, AccountMapping } from '../../shared/types';
 import { accountCreatedChange } from '../../shared/change-entries';
 import { ChangeLogCard } from '../components/ChangeLogCard';
+import { emptySyncOverrides, removeOverrideRow, type OverrideRow } from '../../shared/sync-overrides';
+import type { ChangeLogItem } from '../../shared/change-log';
+import type { UndoOp } from '../../shared/change-undo';
+import { undoFromApp } from '../utils/change-undo';
 
 /** Ids for this tab's collapsible cards. Doubles as the persisted key set (the
  *  page owns the open-card map), so these strings must not change — a rename
@@ -261,6 +265,27 @@ export function SettingsTab({
     async () => (store.getChangeLog ? store.getChangeLog() : { entries: [], gaps: [], trimmed: 0, unreadable: [] }),
     [store],
   );
+  // R2: Undo and Redo, the companion's version (the gate and the Telegram
+  // pointer), Sync now (the Sync page's own forced run) and "Your overrides".
+  const [companionVersion, setCompanionVersion] = useState<string | null>(null);
+  useEffect(() => {
+    store.getCompanionVersion?.().then((v) => setCompanionVersion(v ?? null)).catch(() => {});
+  }, [store]);
+  const undoChange = useCallback(
+    (entry: ChangeLogItem, entries: ChangeLogItem[], op: UndoOp) => undoFromApp(ctx, store, entry, entries, op),
+    [ctx, store],
+  );
+  const syncNowForLog = useCallback(async () => {
+    const r = await runSync(ctx, store, { force: true });
+    return r.errors.length ? `Synced, with a problem: ${r.errors[0]}` : `Synced — ${r.imported} imported.`;
+  }, [ctx, store]);
+  const loadOverrides = useCallback(
+    async () => (store.readSyncOverrides ? store.readSyncOverrides() : { overrides: emptySyncOverrides(), unreadable: false }),
+    [store],
+  );
+  const removeOverride = useCallback(async (row: OverrideRow) => {
+    await store.editSyncOverrides((o) => removeOverrideRow(o, row));
+  }, [store]);
 
   const handleReset = useCallback(async () => {
     scheduler.stop();
@@ -533,8 +558,8 @@ export function SettingsTab({
         </div>
       </CollapsibleCard>
 
-      {/* Read-only in this release: every change the sync and you made, the
-          same entries /changes shows. Loads when opened. */}
+      {/* Every change the sync and you made, the same entries /changes shows,
+          with Undo and Redo. Loads when opened. */}
       <CollapsibleCard
         id={CARD.changeLog}
         title="Change log"
@@ -542,7 +567,14 @@ export function SettingsTab({
         open={isOpen(CARD.changeLog)}
         onToggle={() => toggleCard(CARD.changeLog)}
       >
-        <ChangeLogCard load={loadChangeLog} />
+        <ChangeLogCard
+          load={loadChangeLog}
+          undo={undoChange}
+          companionVersion={companionVersion}
+          onSyncNow={syncNowForLog}
+          loadOverrides={loadOverrides}
+          removeOverride={removeOverride}
+        />
       </CollapsibleCard>
 
       <h3 className="sfin-settings-group">Categorizing</h3>
