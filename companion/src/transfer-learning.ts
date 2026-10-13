@@ -20,6 +20,7 @@
  * later change to those patterns.
  */
 import { formatDollars, type InlineKeyboard } from '../../shared/telegram.js';
+import { mappingRuleCreatedChange, type ChangeDraft } from '../../shared/change-entries.js';
 import { MENU_CALLBACK_PREFIX } from '../../shared/categorize-menu.js';
 import type { MappingRule, ActivityType } from '../../shared/types.js';
 
@@ -67,6 +68,8 @@ export interface TransferLearningDeps {
   /** MUST merge: the addon's Transaction Rules card owns this list. */
   writeRules(rules: MappingRule[]): Promise<void>;
   log(msg: string): void;
+  /** The change log: the rule this menu wrote. Must not throw. */
+  record?(draft: ChangeDraft): void;
 }
 
 export interface TransferLearningUi {
@@ -283,6 +286,15 @@ export function createTransferLearning(deps: TransferLearningDeps): TransferLear
           // Appended, never replacing: the user's own rules live in this list,
           // and earlier rules keep their precedence.
           await deps.writeRules([...rules, { pattern, matchType: 'contains', activityType }]);
+          try {
+            deps.record?.(mappingRuleCreatedChange({
+              rule: { pattern, matchType: 'contains', activityType },
+              description: chosen.description,
+              account: { name: chosen.accountName },
+            }));
+          } catch (err) {
+            deps.log(`Transfer-learning: recording the rule failed: ${String(err)}`);
+          }
         }
 
         await ui.edit(

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import * as changeEntries from '../../shared/change-entries.js';
 import {
   createCategorizeController,
   INCOME_TAXONOMY_NOTE,
@@ -2073,5 +2074,114 @@ describe('openForActivity — the morning report\'s "Pick a category" fix', () =
     const h = setup();
     await h.controller.openForActivity('zzz', 4242, h.send);
     expect(lastCall(h.send)[0]).toMatch(/not in the category menu any more/);
+  });
+});
+
+describe('change log', () => {
+  /** The controller reads `deps.record` when it writes, so a test can attach it after setup. */
+  const recording = (h: ReturnType<typeof setup>) => {
+    const recorded: any[] = [];
+    (h.deps as any).record = (d: unknown) => recorded.push(d);
+    return recorded;
+  };
+
+  it('records a filing with no category before it', async () => {
+    const h = setup();
+    const recorded = recording(h);
+    await openAtFiled(h);
+    expect(recorded).toEqual([expect.objectContaining({
+      kind: 'category-filed', actor: 'you', summary: 'Filed BOOK STORES a under Entertainment',
+      account: { name: 'Citi Double Cash' },
+      subject: expect.objectContaining({ activityIds: ['a'], description: 'BOOK STORES a', date: '2026-08-08', categoryName: 'Entertainment' }),
+      before: { categoryId: null, categoryName: null },
+      after: { categoryId: 'cat-fun', categoryName: 'Entertainment', taxonomyId: SPENDING_TAXONOMY_ID },
+    })]);
+  });
+
+  it('records the filing’s Undo as taking the category back off', async () => {
+    const h = setup();
+    const recorded = recording(h);
+    const filed = await openAtFiled(h);
+    await h.tap(dataFor(filed, '↩ Undo'));
+    expect(recorded.map((d) => d.summary)).toEqual([
+      'Filed BOOK STORES a under Entertainment',
+      'Took BOOK STORES a out of Entertainment',
+    ]);
+    expect(recorded[1].before).toEqual({ categoryId: 'cat-fun', categoryName: 'Entertainment', taxonomyId: SPENDING_TAXONOMY_ID });
+    expect(recorded[1].after).toEqual({ categoryId: null, categoryName: null });
+  });
+
+  it('records nothing for a filing Wealthfolio refused', async () => {
+    const h = setup();
+    const recorded = recording(h);
+    const picker = await openAtTxn(h);
+    h.deps.assign.mockRejectedValueOnce(new Error('500'));
+    await h.tap(dataFor(picker, 'Entertainment'));
+    expect(recorded).toEqual([]);
+  });
+
+  it('records a move with the whole prior state, and its Undo', async () => {
+    const h = setup({ categorized: [GROCERIES] });
+    const recorded = recording(h);
+    const refiled = await openRecatAtRefiled(h, 'TRADER JOES b');
+    await h.tap(dataFor(refiled, '↩ Undo'));
+    expect(recorded.map((d) => d.summary)).toEqual([
+      'Moved TRADER JOES b from Restaurants to Entertainment',
+      'Moved TRADER JOES b from Entertainment to Restaurants',
+    ]);
+    expect(recorded[0].before).toEqual({
+      categoryId: 'cat-rest', categoryName: 'Restaurants', taxonomyId: SPENDING_TAXONOMY_ID,
+      assignments: [{ taxonomyId: SPENDING_TAXONOMY_ID, categoryId: 'cat-rest' }],
+    });
+    expect(recorded[0].after).toEqual(expect.objectContaining({ categoryId: 'cat-fun', categoryName: 'Entertainment', taxonomyId: SPENDING_TAXONOMY_ID }));
+    expect(recorded[1].after).toEqual(expect.objectContaining({ categoryId: 'cat-rest', categoryName: 'Restaurants', taxonomyId: SPENDING_TAXONOMY_ID }));
+    // `before.assignments` is the COMPLETE state the Undo found, i.e. what the move set.
+    expect(recorded[1].before).toEqual({
+      categoryId: 'cat-fun', categoryName: 'Entertainment', taxonomyId: SPENDING_TAXONOMY_ID,
+      assignments: [{ taxonomyId: SPENDING_TAXONOMY_ID, categoryId: 'cat-fun' }],
+    });
+  });
+
+  it('records a rule with the id the server gave it', async () => {
+    const h = setup();
+    const recorded = recording(h);
+    h.deps.createRule.mockResolvedValueOnce('rule-7' as never);
+    await h.controller.openRulePreview('TRADER JOE*S', 'cat-fun', h.send);
+    await h.tap(dataFor(keyboardOf(lastCall(h.send)), 'Create rule'));
+    expect(recorded).toEqual([expect.objectContaining({
+      kind: 'category-rule-created', actor: 'you',
+      summary: 'Created a rule: descriptions containing "TRADER JOE*S" go to Entertainment',
+      subject: { ruleId: 'rule-7', rulePattern: 'TRADER JOE*S', categoryName: 'Entertainment' },
+      after: { ruleId: 'rule-7', name: 'Telegram: TRADER JOE*S', pattern: 'TRADER JOE*S', categoryId: 'cat-fun', categoryName: 'Entertainment' },
+    })]);
+  });
+
+  it('records nothing for a refused rule', async () => {
+    const h = setup();
+    const recorded = recording(h);
+    h.deps.createRule.mockRejectedValueOnce(new Error('422 duplicate rule'));
+    await h.controller.openRulePreview('TRADER JOE*S', 'cat-fun', h.send);
+    await h.tap(dataFor(keyboardOf(lastCall(h.send)), 'Create rule'));
+    expect(recorded).toEqual([]);
+  });
+
+  it('finishes the filing when building the entry throws', async () => {
+    const h = setup();
+    (h.deps as any).record = () => undefined;
+    const spy = vi.spyOn(changeEntries, 'categoryFiledChange').mockImplementation(() => { throw new Error('builder down'); });
+    try {
+      const filed = await openAtFiled(h);
+      expect(labels(filed)).toContain('↩ Undo');
+      expect(h.logs.join('\n')).toContain('recording a change failed: builder down');
+      expect(h.logs.join('\n')).not.toMatch(/Something went wrong/);
+    } finally { spy.mockRestore(); }
+  });
+
+  it('finishes the filing when recording throws', async () => {
+    const h = setup();
+    (h.deps as any).record = () => { throw new Error('log down'); };
+    const filed = await openAtFiled(h);
+    expect(labels(filed)).toContain('↩ Undo');
+    expect(h.logs.join('\n')).toContain('recording a change failed: log down');
   });
 });

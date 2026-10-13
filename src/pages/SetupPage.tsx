@@ -5,6 +5,7 @@ import { claimToken, fetchAccounts } from '../utils/simplefin';
 import { AccountMapper } from '../components/AccountMapper';
 import { Button, Card, ErrorBox, Input } from '../components/ui';
 import type { SecretsStore } from '../utils/secrets';
+import { accountCreatedChange } from '../../shared/change-entries';
 
 /** Two steps since 1.57: connect, then map. Rules start empty and the schedule
  *  starts at every 6 hours; both are in Settings for anyone who wants them. */
@@ -120,6 +121,7 @@ export function SetupPage({ ctx, store, onComplete }: Props) {
               simplefinAccounts={sfAccounts}
               initialMapping={mapping}
               onSave={handleSaveMapping}
+              onAccountCreated={(created) => { void store.recordChange?.(accountCreatedChange(created)); }}
             />
           </div>
         </Card>

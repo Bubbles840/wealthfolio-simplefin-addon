@@ -50,6 +50,23 @@ export function isNewerVersion(candidate: string, current: string): boolean {
   return false;
 }
 
+/**
+ * The first release whose companion obeys `sync_overrides` (the change log's
+ * Undo, R2). Undo of a SYNC decision only records an override and lets the
+ * next sync act on it, so an older companion — which ignores the document —
+ * would simply redo the decision. Until the companion publishes this version
+ * or newer, the app disables those undos ("Update the companion first").
+ * `shared/change-undo.test.ts` fails if a release ships below it.
+ */
+export const SYNC_OVERRIDES_SINCE = '1.61.0';
+
+/** True when `companionVersion` obeys overrides. No companion at all (null)
+ *  is true: nothing else is syncing that could ignore them. */
+export function companionUnderstandsOverrides(companionVersion: string | null): boolean {
+  if (companionVersion === null) return true;
+  return companionVersion === SYNC_OVERRIDES_SINCE || isNewerVersion(companionVersion, SYNC_OVERRIDES_SINCE);
+}
+
 /** The companion writes the version in the INSTALLED addon's manifest here
  *  (read off disk), so a browser tab can tell "I am an old bundle — reload me"
  *  apart from "the old zip is still installed — upload the new one". */

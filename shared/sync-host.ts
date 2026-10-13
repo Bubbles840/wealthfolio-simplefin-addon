@@ -2,6 +2,7 @@ import type { AccountMapping, MappingRule, SimplefinAccountSet, UnmappedAccount 
 import type { AmazonLedger } from './amazon-ledger.js';
 import type { HoldingsSnapshot } from './holdings.js';
 import type { SkippedTransaction } from './skipped-transactions.js';
+import type { SyncOverrides } from './sync-overrides.js';
 
 /** A Wealthfolio activity row, normalized across the SDK and REST shapes. */
 export interface HostActivity {
@@ -103,6 +104,10 @@ export interface LinkLeg {
 export interface LinkResult {
   linked: boolean;
   groupId?: string;
+  /** The two re-created rows' ids, in leg order, when the host's echo carried
+   *  them. Linking deletes and re-creates both legs, so these are NEW ids —
+   *  the change log records them for R2. Absent from an older host. */
+  activityIds?: [string, string];
   /** Why the link failed, when it did. Present only on `linked: false`.
    *
    *  Linking DELETES both rows before re-creating them, so a refused re-create
@@ -144,7 +149,9 @@ export interface HoldingsSyncOutcome {
 
 export interface SyncHost {
   fetchSimplefin(accessUrl: string, since: Date, authKey?: string | null): Promise<SimplefinAccountSet>;
-  listAccounts(): Promise<Array<{ id: string; accountType: string; name?: string }>>;
+  /** `currency` is the account's own (Undo writes a row back in it); absent
+   *  when the host does not say. */
+  listAccounts(): Promise<Array<{ id: string; accountType: string; name?: string; currency?: string }>>;
   latestValuations(accountIds: string[]): Promise<Map<string, number>>;
   /** The account's most recent activities, newest first. Bounded by the host's
    *  page size, so it is NOT a way to reach an old row on a busy account. */
@@ -300,4 +307,13 @@ export interface SyncStore {
    * is what it did before the list existed.
    */
   getSkippedTransactions?(): Promise<SkippedTransaction[]>;
+  /**
+   * What the person told the sync not to do again (shared/sync-overrides.ts),
+   * set by an Undo in the change log. A stored document that cannot be read —
+   * or a failed read — comes back EMPTY, so the sync behaves exactly as it did
+   * before overrides existed.
+   *
+   * Optional like the getters above; a host without it obeys no overrides.
+   */
+  getSyncOverrides?(): Promise<SyncOverrides>;
 }

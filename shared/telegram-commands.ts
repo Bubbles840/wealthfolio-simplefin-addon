@@ -61,7 +61,8 @@ export const TELEGRAM_COMMAND_MENU = [
  *  scrolls 90 days of history by hand.
  *  Since 1.60 the bare form of `/afford`, `/pool` and `/newrule` asks for what
  *  it needs; the example still shows the one-line shortcut.
- *  `/subscriptions` (1.60) takes no arguments; everything happens on its buttons. */
+ *  `/subscriptions` (1.60) takes no arguments; everything happens on its buttons.
+ *  `/changes` lists the change log; `/changes <words>` searches it. */
 export const TELEGRAM_MORE_COMMANDS = [
   { command: 'afford', description: 'Can I afford it? — asks, or /afford 20 shopping' },
   { command: 'pool', description: 'Semester money pool — asks, or /pool 16000 Dec 12' },
@@ -69,6 +70,7 @@ export const TELEGRAM_MORE_COMMANDS = [
   { command: 'newrule', description: 'Always file a match — asks, or /newrule trader joes = groceries' },
   { command: 'dismissed', description: 'What you dismissed lately, with Undo' },
   { command: 'subscriptions', description: 'Subscriptions and bills — remind, rename, hide, or add one' },
+  { command: 'changes', description: 'What changed lately — /changes venmo searches' },
 ] as const;
 
 export function formatHelpReply(unknownCommand?: string): string {

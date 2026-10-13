@@ -4,8 +4,9 @@ Findings that survived a review cycle without being fixed, with enough context
 to act on them later. Each says why it was deferred, so a future reader can
 tell "decided against" from "not got to yet".
 
-Last updated: 2026-10-12, after the subscriptions & bills plan (new section 7).
-Previous revision: 2026-07-30, after fixing the shared-transaction-id collision
+Last updated: 2026-10-13, after the change log Undo plan (new section 9).
+Previous revision: 2026-10-12, after the subscriptions & bills plan (new
+section 7). Previous revision: 2026-07-30, after fixing the shared-transaction-id collision
 (former item 1, now under "Fixed"; former items 2-6 are now 1-5). Previous
 revision: 2026-07-29, after fixing the duplicate-transaction import
 (then-new item 1, which pushed former items 1-5 down to 2-6, plus three new
@@ -510,6 +511,146 @@ changes what a user sees today.
   offers the reminder choices, so an existing reminder stays set (the app row
   still says "reminder 3d"). It cannot fire without a date and resumes when one
   returns. Suggested fix: keep a single Off button while `remind` is set.
+
+## 8. Change log — Record (2026-10-12, plan `2026-10-12-change-log-record.md`)
+
+- **Undo is release R2** (spec Part B). Every R1 entry already carries what its
+  undo needs; deleting a category rule will need a new client method for
+  upstream's `DELETE /api/v1/spending/rules/{id}` — nothing in this codebase
+  calls it yet.
+- **The transfer-learning menu's own ↩ Undo is not logged** (it removes the
+  rule it wrote seconds earlier); the creation is. R2's state check finds the
+  rule gone and refuses cleanly.
+- **A Telegram filing has no account-scoped tx key** (the categorize rows carry
+  no SimpleFin account id). R2 restores the category by activity id; only
+  automatic filings need `noAutoFile`, and those carry the key. An Amazon
+  filing whose account isn't mapped also omits the key.
+- **A corrupt bucket stays until it ages out** (four months) or Reset clears it.
+  A "repair" button would have to decide what in it is real; not worth it yet.
+- **The Undo of a move records the complete prior state** (fixed in the R1 fix
+  wave): on every `category-filed` entry `before.assignments` is the complete
+  state before that action ran, so R2 can rely on it.
+- **A partial move records nothing** (the unassign landed, the assign failed):
+  the row is left uncategorized and no entry exists for it.
+- **Rule-id fallback by name:** when the create reply carries no id, the entry's
+  `ruleId` is null; R2 finds the rule by `name` via `GET /api/v1/spending/rules`.
+- **An Amazon filing loses its tx key on a transient `account_mapping` read
+  failure.** R2 can re-derive it from the row's note plus the mapping.
+- **Watch for "older changes were trimmed" notes after deploy.** If a writer
+  trims most months, split buckets by half-month or raise the cap, after
+  checking the host's real secret-size limit (200 KB is a guess at about 235
+  entries per writer per month at real id lengths).
+- **The read-back of a new starting balance or plug costs one activity read**,
+  only when a change log is attached and only on the rare run that writes one.
+
+## 9. Change log — Undo (2026-10-13, plan `2026-10-13-change-log-undo.md`)
+
+- **`SYNC_OVERRIDES_SINCE` is `1.61.0`** (shared/version.ts) — the release
+  after R1's. If Undo ships in the SAME release as R1, lower it to that
+  version at release time; `shared/change-undo.test.ts` fails a release that
+  ships BELOW it, but cannot catch one shipped above it.
+- **A held transfer's Undo waits for the leg to be in a sync's window.** The
+  sync applies `notTransfer` to a feed transaction (14-day routine overlap,
+  44/89 days on a re-scan). A placeholder held past that by a dead feed stays
+  a placeholder until a re-scan reaches it. A linked pair is different: it is
+  unlinked from the stored rows, in or out of the feed.
+- **A linked leg whose other half is not in view stays linked** and the sync
+  says so ("its other half is not in this sync"): deleting one leg of a pair
+  deletes both, and the unseen half could not be re-created. Reached when the
+  partner's account is unmapped or the row is past the 500-row read.
+- **Undoing an automatic starting-balance MOVE** restores the amount and the
+  date, but the next sync moves the DATE back in front of older rows (it moves
+  no money); the restored amount stays. No override exists for the date.
+- **Undoing a removed duplicate is almost always refused** as an exact copy —
+  the prune removes copies, and copies share a fingerprint. Working as the
+  spec says ("nothing changes and the entry says why"); the override is taken
+  back out.
+- **An automatic balance correction's Undo sets `noAutoCorrect`; your own
+  Add adjustment's does not** (you added it; auto-correction may be off).
+- **A redone category rule comes back at priority 50**, as `/categorize`
+  creates it, even if it had been edited in Wealthfolio since.
+- **The Rules card writes `mapping_rules` from its own snapshot** (pre-existing
+  whole-list write). Undoing a transaction rule while that card is open and
+  then saving the card puts the rule back. Same race the card already has with
+  the transfer-learning menu.
+- **On the add-on, "is it linked?" is the `linked_groups` ledger — plus a
+  guess.** The add-on reads no groups back, and its ledger knows only the
+  links IT made; the companion never writes it. So for an Undo of an import or
+  an Amazon label (the kinds that delete or update one row), the app counts a
+  row as linked when the ledger confirms it ("Undo the transfer link first.")
+  OR when it is `TRANSFER_IN`/`TRANSFER_OUT` and is not a held in-transit
+  placeholder, an opening balance or adjustment, or flagged
+  `flow.is_external: true` — that "maybe" case refuses with "This may be half
+  of a linked transfer — undo the link first, or undo it from Telegram:
+  /changes" (`UNDO_MAYBE_LINKED`). Deleting one half deletes both, and an
+  update to one half is copied onto the other. The cost: the import or label
+  of an UNLINKED rule-typed transfer (a `TRANSFER_OUT` your rule made that
+  never paired) can't be undone from the app; Telegram, which reads groups
+  off the rows, can. The sync side is the same story: a ledger that lost a
+  pair lets a `notTransfer` leg be retyped by an ordinary update, which
+  Wealthfolio copies onto its partner (not seen).
+- **A refused placeholder promotion can be linked with its placeholder note**
+  (sync-core): when the update promoting a held placeholder is refused in the
+  same run its partner arrives, `linkRowByKey` keeps the pre-update snapshot
+  and `linkPair` re-creates the leg with the `↔️ In-transit transfer` note. The
+  undo check no longer trusts that note on a row a link wrote
+  (`is_external: false` → still "maybe linked"), but the sync's own
+  note-based placeholder checks (`isPlaceholder` in the unlink pre-pass) can
+  still misread it. Fix in sync-core: don't link a pair whose promotion update
+  was not echoed back. Rare (needs a refused update mid-run); not seen.
+- **Telegram lists no overrides** — only the app card does (spec B3).
+- **An import's Undo has no "changed since" check** (ruled, not a gap): a
+  later bank update to that row is its own entry, and removing the row as it
+  is now and skip-listing its transaction is what the person asked for.
+- **A Telegram Undo runs outside the sync lock** (ruled): it writes its
+  override first, so a sync running at that moment may act on the old
+  decision once; the next sync obeys the override and corrects it.
+- **The app's version gate fails closed.** When `companion_version` can't be
+  read, a sync decision's Undo is refused ("Couldn't check the companion's
+  version — nothing was changed. Try again."); a Redo, and an undo the gate
+  doesn't cover, go ahead. No published version at all still means no
+  companion, and the gate is open.
+- **Amazon filing while any filing is undone.** A row whose tx key can't be
+  built (the account mapping read failed) is skipped whenever any
+  `noAutoFile` override exists, so such a run files no keyless charge; the
+  next run with a readable mapping files them.
+- **Section 8's R2 notes are settled:** the DELETE rule client exists
+  (`deleteCategorizationRule`), a rule without an id is found by name, an
+  Amazon filing without a tx key has it re-derived from the row's note and the
+  account mapping (refused when that fails).
+
+### Transfer unlinks (Task 3)
+
+- **A single `notTransfer` override on a linked pair.** The undo planner always
+  sets `notTransfer` on both legs of a link, but "Your overrides" → Remove can
+  leave one. The sync unlinks the pair from either leg, after which the leg
+  without an override is an ordinary row again and can be re-typed or re-held as
+  a transfer candidate on later syncs (held, then relinked or expired after 10
+  days). Pinned today by `shared/sync-core-not-transfer.test.ts` (one-override
+  case); Remove should probably clear both legs of a pair together.
+- **A linked leg already stored as ordinary money** (a half-typed pair) cannot
+  be unlinked create-first: re-creating it is refused as an exact copy, so the
+  pair stays linked and the sync reports it each run.
+- **The add-on leaves any non-held `notTransfer` transfer leg it cannot confirm
+  in its own ledger for the companion** (it cannot tell a companion link from an
+  unlinked rule-typed leg), reporting a note each sync.
+- **A stale unlink waits rather than guess.** The old linked pair of an unlink
+  whose delete failed is deleted only once BOTH legs have an ordinary row of
+  their own in the same run (`planUnlinkPrepass`); until then the sync reports
+  "Transfer-unlink cleanup waiting (…)" each run, the old pair stays next to the
+  new rows (a visible double count) and drift is not measured for those
+  accounts. A leg left as an in-transit placeholder waits for it to expire; one
+  whose transaction leaves the feed first never gets an ordinary row, so that
+  pair waits until it is fixed by hand.
+- **A failed account read holds every `notTransfer` unlink for that run** — no
+  unlink, cleanup, duplicate prune, relink sweep or drift measurement anywhere —
+  with one note (it fires whenever that read was uncertain, held pair or not).
+  On the companion — and on the add-on when the overridden leg's ledger entry
+  is a legacy bare-txId key, which the override's account-scoped key can't
+  match — a held pair's leg in an account read BEFORE the unreadable one is not
+  taken out of that account's plan that run (it cannot be matched to the pair
+  without the unread rows); nothing deletes it, at worst its ordinary row is
+  re-held as a placeholder and the cleanup waits for it.
 
 ## Reference: name mismatches between the database, the REST API, and the SDK
 
