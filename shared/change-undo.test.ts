@@ -206,6 +206,26 @@ describe('planChangeUndo — categories', () => {
     ]);
   });
 
+  it('redo of a cross-taxonomy move checks the state the undo restored, then re-applies the move', () => {
+    const move = entry(categoryFiledChange({
+      actor: 'you', activityId: 'act-6', description: 'GRANT',
+      before: { categoryId: 'inc-1', categoryName: 'Grants', taxonomyId: 'income_categories' },
+      after: { categoryId: 'cat-gro', categoryName: 'Groceries', taxonomyId: 'spending_categories' },
+      restore: [{ taxonomyId: 'income_categories', categoryId: 'inc-1' }],
+    }));
+    const restored = { assignments: [{ taxonomyId: 'income_categories', categoryId: 'inc-1' }] };
+    const p = ok(planChangeUndo(move, 'redo', restored, { latest: undo(move) }));
+    expect(p.steps).toEqual([
+      { do: 'unassign', activityId: 'act-6', taxonomyId: 'income_categories' },
+      { do: 'assign', activityId: 'act-6', taxonomyId: 'spending_categories', categoryId: 'cat-gro' },
+    ]);
+    expect(p.done).toBe('Redone — filed under Groceries.');
+    expect(reason(planChangeUndo(move, 'redo', { assignments: [{ taxonomyId: 'income_categories', categoryId: 'inc-2' }] }, { latest: undo(move) })))
+      .toBe('It has changed since — nothing was redone.');
+    expect(reason(planChangeUndo(move, 'redo', { assignments: [] }, { latest: undo(move) })))
+      .toBe('It has changed since — nothing was redone.');
+  });
+
   it('an opening-balance filing: the account’s noOpeningFile, then the category off', () => {
     const opening = entry(openingBalanceFiledChange({
       account: CARD, activityId: 'sb-1', amountCents: -46460, date: '2026-06-18',
