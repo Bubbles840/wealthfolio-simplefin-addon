@@ -279,6 +279,9 @@ export interface TransferTypeFacts {
   previousType: string | null;
   /** true: held as a transfer in transit. false: the wait ran out. */
   held: boolean;
+  /** With `held: false`: retyped because the person undid the transfer
+   *  decision (a `notTransfer` override), not because the wait ran out. */
+  undone?: boolean;
 }
 
 /**
@@ -294,8 +297,10 @@ export function transferTypeChange(f: TransferTypeFacts): ChangeDraft {
     subject: { txKeys: [f.txKey], activityIds: [f.activityId], description: f.description, amountCents: f.amountCents, date: f.date },
     summary: f.held
       ? `Held ${what(f.description)} as a transfer in transit`
-      : `Stopped waiting for the other half of ${what(f.description)} — now counted as ${f.amountCents < 0 ? 'spending' : 'money in'}`,
-    why: f.held ? 'Looks like a transfer; waiting for the other half' : 'No other half arrived within 10 days',
+      : f.undone
+        ? `Counted ${what(f.description)} as ${f.amountCents < 0 ? 'spending' : 'money in'} — you said it isn't a transfer`
+        : `Stopped waiting for the other half of ${what(f.description)} — now counted as ${f.amountCents < 0 ? 'spending' : 'money in'}`,
+    why: f.held ? 'Looks like a transfer; waiting for the other half' : f.undone ? 'You undid the transfer' : 'No other half arrived within 10 days',
     before: { activityType: f.previousType, inTransit: !f.held },
     after: { activityType: f.activityType, inTransit: f.held },
     undoable: f.held,
@@ -622,7 +627,7 @@ export function accountCreatedChange(f: AccountCreatedFacts): ChangeDraft {
 
 // ── Bookkeeping ──────────────────────────────────────────────────────────
 
-export type BookkeepingStep = 'legacy-placeholder' | 'external-marker' | 'transfer-relink' | 'opening-category';
+export type BookkeepingStep = 'legacy-placeholder' | 'external-marker' | 'transfer-relink' | 'opening-category' | 'transfer-unlink';
 
 export interface BookkeepingFacts {
   step: BookkeepingStep;
@@ -641,7 +646,9 @@ export function bookkeepingChange(f: BookkeepingFacts): ChangeDraft {
       ? `Marked ${n} bookkeeping ${plural(n, 'row', 'rows')} as outside transfers for Wealthfolio's Health page`
       : f.step === 'transfer-relink'
         ? `Re-created ${n} old transfer ${plural(n, 'row', 'rows')} so ${plural(n, 'it moves', 'they move')} cash`
-        : `Set up the "${f.categoryName ?? 'Opening balances'}" category and kept it out of spending`;
+        : f.step === 'transfer-unlink'
+          ? `Unlinked a transfer you undid: re-created ${plural(n, 'its row', 'its 2 rows')} as spending or money in`
+          : `Set up the "${f.categoryName ?? 'Opening balances'}" category and kept it out of spending`;
   return {
     actor: 'auto',
     kind: 'bookkeeping',

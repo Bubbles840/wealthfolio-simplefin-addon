@@ -1,4 +1,4 @@
-import { INTERNAL_TRANSFER_METADATA, newTransferGroupId, txIdFromComment } from './sync-core.js';
+import { INTERNAL_TRANSFER_METADATA, isTransferType, newTransferGroupId, txIdFromComment } from './sync-core.js';
 import { accountTxKey } from './transfers.js';
 import type { LinkLeg, LinkResult, SaveManyRequest, SaveManyResult } from './sync-host.js';
 
@@ -82,4 +82,59 @@ export async function linkPairByRecreate(
     `the host stored no shared group for both legs (got ${stored[0] ?? 'none'} / ${stored[1] ?? 'none'})`,
   );
   return { linked: false, problems };
+}
+
+/** One leg of a linked pair to unlink, and the type it becomes. */
+export interface UnlinkLeg extends LinkLeg {
+  /** Ordinary money in or out (`expiredTransferLegType`). */
+  newType: string;
+}
+
+export interface UnlinkResult {
+  unlinked: boolean;
+  /** The re-created rows' ids, in leg order, when the echo carried them. */
+  activityIds?: [string, string];
+  problems?: string[];
+}
+
+/**
+ * Undo of a transfer link: delete BOTH legs in one call and re-create each as
+ * ordinary money in or out, with no group and no transfer marker.
+ *
+ * Why delete-and-re-create, as linking does: an update to one leg of a linked
+ * pair is copied onto its partner (Wealthfolio 3.8, `build_counterpart_update`)
+ * and an update cannot take a row out of its group. Deleting both in ONE
+ * request is clean — the bulk endpoint expands a linked leg's delete to the
+ * pair and de-duplicates the ids. The new types differ from the old ones, so
+ * the re-creates never collide with the deleted rows' fingerprints.
+ *
+ * Unlike `linkPairByRecreate`, a failed delete stops here: the rows are still
+ * there, still linked, and re-creating them would leave a second copy.
+ */
+export async function unlinkPairByRecreate(
+  saveMany: (req: SaveManyRequest) => Promise<SaveManyResult>,
+  legs: [UnlinkLeg, UnlinkLeg],
+): Promise<UnlinkResult> {
+  const del = await saveMany({ deleteIds: legs.map((l) => l.wfId) });
+  if (del.errors.length > 0) {
+    return { unlinked: false, problems: del.errors.map((e) => `delete (${e.action}): ${e.message}`) };
+  }
+  const res = await saveMany({
+    creates: legs.map((leg) => ({
+      accountId: leg.accountId,
+      activityType: leg.newType,
+      activityDate: leg.date,
+      // Ordinary money resolves the cash asset by symbol; only a transfer leg
+      // must carry none (see `isTransferType`).
+      ...(isTransferType(leg.newType) ? {} : { symbol: { symbol: `$CASH-${leg.currency}` } }),
+      amount: leg.absCents / 100,
+      currency: leg.currency,
+      comment: leg.comment,
+    })),
+  });
+  if (res.errors.length > 0) {
+    return { unlinked: false, problems: res.errors.map((e) => `save (${e.action}): ${e.message}`) };
+  }
+  const ids = legs.map((l) => res.created.find((a) => a.accountId === l.accountId && txIdFromComment(a.comment) === l.txId)?.id);
+  return { unlinked: true, ...(ids[0] && ids[1] ? { activityIds: [ids[0], ids[1]] as [string, string] } : {}) };
 }
