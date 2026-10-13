@@ -86,6 +86,8 @@ export async function linkPairByRecreate(
 
 /** One leg of a linked pair to unlink, and the type it becomes. */
 export interface UnlinkLeg extends LinkLeg {
+  /** The account's display name, for messages (falls back to its id). */
+  accountName?: string;
   /** Ordinary money in or out (`expiredTransferLegType`). */
   newType: string;
 }
@@ -100,7 +102,7 @@ export interface UnlinkResult {
 }
 
 /** A row named the way a person would look for it: account, date, amount, note. */
-const describeLeg = (l: LinkLeg) => `${l.accountId} ${l.date} ${(l.absCents / 100).toFixed(2)} "${l.comment}"`;
+const describeLeg = (l: UnlinkLeg) => `${l.accountName || l.accountId} ${l.date} ${(l.absCents / 100).toFixed(2)} "${l.comment}"`;
 
 /**
  * Undo of a transfer link: re-create both legs as ordinary money in or out

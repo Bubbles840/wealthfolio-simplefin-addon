@@ -293,3 +293,12 @@ describe('what R2 needs to undo it (P1)', () => {
     expect(JSON.stringify(entry).length).toBeLessThan(700);
   });
 });
+
+describe('transfer-unlink summary', () => {
+  it('pluralises for several pairs', () => {
+    expect(bookkeepingChange({ step: 'transfer-unlink', activityIds: ['a', 'b'] }).summary)
+      .toBe('Unlinked a transfer you undid: re-created its 2 rows as spending or money in');
+    expect(bookkeepingChange({ step: 'transfer-unlink', activityIds: ['a', 'b', 'c', 'd', 'e', 'f'] }).summary)
+      .toBe('Unlinked 3 transfers you undid: re-created their 6 rows as spending or money in');
+  });
+});

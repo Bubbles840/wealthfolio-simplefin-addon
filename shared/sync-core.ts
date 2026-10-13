@@ -2299,7 +2299,10 @@ async function runSyncPass(
       // Copies the person chose to keep (Undo of a removed duplicate) are left
       // out of the sweep entirely — every copy shares the one tx key.
       const surplus = planDuplicatePrune(
-        existing.filter((r) => !hasTxOverride(overrides, accountTxKey(sfAccount.id, r.txId), 'keepDuplicate')),
+        existing.filter((r) => !hasTxOverride(overrides, accountTxKey(sfAccount.id, r.txId), 'keepDuplicate')
+          // A pair being unlinked has, for a moment, an old linked row and its
+          // ordinary replacement under one tx id: not duplicates to prune.
+          && !hasTxOverride(overrides, accountTxKey(sfAccount.id, r.txId), 'notTransfer')),
         new Set(feedByTxId.keys()),
       );
       if (surplus.length > 0) {
@@ -2485,7 +2488,7 @@ async function runSyncPass(
       && !(r.comment ?? '').startsWith(IN_TRANSIT_COMMENT_PREFIX));
     for (const r of foreign) {
       const key = accountTxKey(sfAccount.id, r.txId);
-      errors.push(`Left ${descByKey.get(key) || descriptionFromComment(r.comment) || r.txId} for the companion to unlink — it was linked by the companion.`);
+      errors.push(`Left ${descByKey.get(key) || descriptionFromComment(r.comment) || r.txId} linked: this app can't unlink a pair it didn't link; the companion will on its next sync.`);
     }
     const hiddenIds = new Set([...stale, ...foreign].map((r) => r.wfId));
     const foreignTxIds = new Set(foreign.map((r) => r.txId));
@@ -2578,7 +2581,9 @@ async function runSyncPass(
       // then write that amount into the account as a balance adjustment: the very
       // figure the prune just removed, put straight back. Not measurable this run.
       const createOnly =
-        plan.updates.length === 0 && plan.deleteIds.length === 0 && prunedThisAccount === 0;
+        plan.updates.length === 0 && plan.deleteIds.length === 0 && prunedThisAccount === 0
+        // `wfValuation` still counts the stale linked rows deleted after this loop.
+        && stale.length === 0;
       // Heal re-scans wide and imports, so it must subtract what it creates
       // (lag-free: WF's balance becomes wfValuation + creates). A normal sync
       // only trusts drift when nothing was created (valuation is otherwise
@@ -3418,7 +3423,7 @@ async function runSyncPass(
       const fed = signedByKey.get(accountTxKey(r.sfAccountId, r.txId));
       const signed = fed !== undefined ? Math.round(fed * 100)
         : UNLINK_OUTFLOW_TYPES.has(r.type) ? -r.absCents : r.absCents;
-      return { ...base, newType: expiredTransferLegType(wfTypes.get(r.wfAccountId) ?? '', signed) };
+      return { ...base, accountName: wfNames.get(r.wfAccountId), newType: expiredTransferLegType(wfTypes.get(r.wfAccountId) ?? '', signed) };
     };
     let result: UnlinkResult;
     try {
@@ -3427,7 +3432,7 @@ async function runSyncPass(
       result = { unlinked: false, problems: [String(e?.message ?? e)] };
     }
     if (!result.unlinked) {
-      for (const p of result.problems ?? []) errors.push(`Transfer-unlink failed (${row.txId}/${partner.txId}): ${p}`);
+      for (const p of result.problems ?? []) errors.push(`Transfer-unlink ${result.stale ? 'incomplete' : 'failed'} (${row.txId}/${partner.txId}): ${p}`);
       continue;
     }
     if (!readsGroups) {
@@ -3458,10 +3463,10 @@ async function runSyncPass(
       errors.push(`Transfer-unlink cleanup failed (${staleLinked.map((s) => s.row.txId).join('/')}): the old linked pair is still there next to the new rows: ${problem}`);
     } else {
       if (!readsGroups) {
-        for (const { key, row } of staleLinked) {
-          const gid = ledger[key] ?? ledger[row.txId];
-          if (key in ledger) { delete ledger[key]; ledgerChanged = true; }
-          if (row.txId in ledger && ledger[row.txId] === gid) { delete ledger[row.txId]; ledgerChanged = true; }
+        // Both legs' entries go: they share one group id.
+        const gids = new Set(staleLinked.map(({ key, row }) => ledger[key] ?? ledger[row.txId]).filter((g): g is string => !!g));
+        for (const [k, g] of Object.entries(ledger)) {
+          if (gids.has(g)) { delete ledger[k]; ledgerChanged = true; }
         }
       }
       logChange?.(() => bookkeepingChange({
