@@ -95,6 +95,9 @@ import { readPoolStatus, readRunwayMonths, type PoolReportDeps } from './pool-re
 import { REPORT_CUBE_SECRET_KEY, parseReportCube } from '../../shared/report-cube.js';
 import { HIDDEN_SUBSCRIPTIONS_SECRET_KEY, CONFIRMED_SUBSCRIPTIONS_SECRET_KEY, parseHiddenSubscriptions } from '../../shared/subscriptions.js';
 import { renderReportSvg, reportImageTitle, reportImageCaption, RENDERABLE_REPORT_IDS } from '../../shared/report-render.js';
+import { createAskSessions, CANCELLED, CANCELLED_EARLIER, NOT_WAITING, type AskSessions } from './ask-session.js';
+import { buildAffordFlow, buildNewRuleFlow, buildPoolClearFlow, buildPoolSetFlow, mostUsedCategories } from './ask-flows.js';
+import { askStartData } from '../../shared/ask-flow.js';
 import { parseBudgetLayout } from '../../shared/budget-layout.js';
 import { parseCustomReports } from '../../shared/report-eval.js';
 import { sliceCubeMonths } from '../../shared/report-cube.js';
@@ -2761,6 +2764,120 @@ export function buildCategorizeController(wfClient: WealthfolioClient): Categori
   return createCategorizeController(buildCategorizeDeps(wfClient));
 }
 
+/** `/pool <amount> <date>` and the pool question's Save: one write, one reply. */
+async function applyPoolSet(wfClient: WealthfolioClient, amountCents: number, endDate: string): Promise<string> {
+  const deps = poolReportDeps(wfClient, wealthfolioDbPath() ?? '');
+  const style = await readGlyphStyle(wfClient);
+  const cfg = {
+    amountCents,
+    // Today, deliberately: the pool is set when the disbursement is in hand,
+    // and spending before today belongs to the OLD pool.
+    startDate: new Date().toISOString().slice(0, 10),
+    endDate,
+  };
+  await wfClient.setAddonSecret('simplefin-sync', SEMESTER_POOL_SECRET_KEY, JSON.stringify(cfg));
+  const status = await readPoolStatus(deps, new Date()).catch(() => null);
+  const line = status ? formatPoolLine(status, style) : null;
+  return line ? `Pool set.\n${line}` : 'Pool set.';
+}
+
+/** `/pool off` and the clear question: empty string, not a delete — the
+ *  secrets API has no delete, and parsePoolConfig reads '' as "no pool". */
+async function applyPoolClear(wfClient: WealthfolioClient): Promise<string> {
+  await wfClient.setAddonSecret('simplefin-sync', SEMESTER_POOL_SECRET_KEY, '');
+  return 'Pool cleared — reports go back to budgets only.';
+}
+
+/** `/left`, `/afford` and the afford question read the same snapshot the
+ *  daily digest is built from, so they can never disagree about "this week". */
+async function readBudgetSnapshotWithStyle(wfClient: WealthfolioClient) {
+  return {
+    ...readBudgetSnapshot(wealthfolioDbPath(), new Date()),
+    style: await readGlyphStyle(wfClient),
+  };
+}
+
+/**
+ * The bot's question flows, registered on ONE session holder. Like the
+ * categorize controller, one instance must serve `onCommand`, `onText` and
+ * `onMenuCallback`, or a question asked through one could never be answered
+ * through another.
+ */
+export function buildAskSessions(wfClient: WealthfolioClient, controller: CategorizeController): AskSessions {
+  const asks = createAskSessions({
+    log,
+    firstQuestionNote: async () => {
+      try {
+        const tg = parseSecretJson<any>(await wfClient.getAddonSecret('simplefin-sync', 'telegram_config'), 'telegram_config');
+        // Group chat ids are negative. Telegram's privacy mode delivers only
+        // replies to the bot there, so a typed answer needs to be a reply.
+        return Number(tg?.chatId) < 0 ? 'In a group, reply to this message to answer.' : null;
+      } catch {
+        return null;
+      }
+    },
+  });
+  asks.register('pool-set', async () => ({
+    flow: buildPoolSetFlow(new Date()),
+    onDone: async (a, send) => { await send(await applyPoolSet(wfClient, a.amount as number, a.until as string)); },
+  }));
+  asks.register('pool-clear', async () => ({
+    flow: buildPoolClearFlow(),
+    onDone: async (_a, send) => { await send(await applyPoolClear(wfClient)); },
+  }));
+  asks.register('newrule', async (_arg, send) => {
+    const dbPath = categorizeDbPath();
+    if (dbPath === null) {
+      await send(NEWRULE_NO_DATABASE_REPLY);
+      return null;
+    }
+    let categories;
+    try {
+      categories = getNativeSpendingCategories(dbPath);
+    } catch (err) {
+      log(`Ask flow newrule: reading spending categories failed: ${formatError(err)}`);
+      await send(NEWRULE_NO_DATABASE_REPLY);
+      return null;
+    }
+    const today = new Date();
+    const tomorrow = toDateString(new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1));
+    const quarterAgo = toDateString(new Date(today.getFullYear(), today.getMonth(), today.getDate() - 90));
+    // Quick picks are a convenience: an unreadable history costs the buttons,
+    // never the question.
+    let recent: ReturnType<typeof getNativeCategorizedSpending> = [];
+    try {
+      recent = getNativeCategorizedSpending(dbPath, quarterAgo, tomorrow);
+    } catch (err) {
+      log(`Ask flow newrule: reading recent filings failed: ${formatError(err)}`);
+    }
+    // The SAME one-year window transfer learning's preview counts over: a
+    // rule is permanent, so the question is what it catches in general.
+    const yearAgo = toDateString(new Date(today.getFullYear() - 1, today.getMonth(), today.getDate()));
+    return {
+      flow: buildNewRuleFlow({
+        categories,
+        mostUsed: mostUsedCategories(recent, categories),
+        countMatches: (pattern) => countRulePatternMatches(dbPath, pattern, yearAgo, tomorrow).total,
+      }),
+      // Never writes a rule itself: the existing preview discloses what the
+      // rule would file before anything is saved.
+      onDone: (a, send) => controller.openRulePreview(a.pattern as string, a.category as string, send),
+    };
+  });
+  asks.register('afford', async () => {
+    const snapshot = await readBudgetSnapshotWithStyle(wfClient);
+    return {
+      flow: buildAffordFlow(snapshot.categories),
+      onDone: async (a, send) => {
+        // Re-read at Save: the questions may have taken minutes.
+        const { categories, period, style } = await readBudgetSnapshotWithStyle(wfClient);
+        await send(formatAffordReply(categories, period, style, (a.amount as number) / 100, a.query as string));
+      },
+    };
+  });
+  return asks;
+}
+
 /**
  * The bot's command handler: the listener's `onCommand` dependency.
  *
@@ -2782,16 +2899,9 @@ export function buildCategorizeController(wfClient: WealthfolioClient): Categori
 export function buildTelegramCommandHandler(
   wfClient: WealthfolioClient,
   controller: CategorizeController = buildCategorizeController(wfClient),
+  asks: AskSessions = buildAskSessions(wfClient, controller),
 ): (cmd: ParsedCommand, reply: (text: string, keyboard?: InlineKeyboard) => Promise<void>) => Promise<void> {
-  /** `/left` and `/afford` read the same snapshot the daily digest is built
-   *  from, so the three can never disagree about what "this week" means. */
-  const budgetSnapshot = async () => {
-    const dbPath = wealthfolioDbPath();
-    return {
-      ...readBudgetSnapshot(dbPath, new Date()),
-      style: await readGlyphStyle(wfClient),
-    };
-  };
+  const budgetSnapshot = () => readBudgetSnapshotWithStyle(wfClient);
 
   return async (cmd, reply) => {
     switch (cmd.command) {
@@ -2855,6 +2965,10 @@ export function buildTelegramCommandHandler(
       }
 
       case 'afford': {
+        if (cmd.args.trim() === '') {
+          await asks.start('afford', reply);
+          return;
+        }
         const parsed = parseAffordArgs(cmd.args);
         if (!parsed) {
           await reply(AFFORD_USAGE_REPLY);
@@ -2871,33 +2985,30 @@ export function buildTelegramCommandHandler(
           await reply(POOL_USAGE_REPLY);
           return;
         }
-        const deps = poolReportDeps(wfClient, wealthfolioDbPath() ?? '');
-        const style = await readGlyphStyle(wfClient);
         if (parsed.kind === 'clear') {
-          // Empty string, not a delete: the secrets API has no delete, and
-          // parsePoolConfig reads '' as "no pool" — the same off state the
-          // pool_status publish uses.
-          await wfClient.setAddonSecret('simplefin-sync', SEMESTER_POOL_SECRET_KEY, '');
-          await reply('Pool cleared — reports go back to budgets only.');
+          await reply(await applyPoolClear(wfClient));
           return;
         }
         if (parsed.kind === 'set') {
-          const cfg = {
-            amountCents: parsed.amountCents,
-            // Today, deliberately: the command is typed when the disbursement
-            // is in hand, and spending before today belongs to the OLD pool.
-            startDate: new Date().toISOString().slice(0, 10),
-            endDate: parsed.endDate,
-          };
-          await wfClient.setAddonSecret('simplefin-sync', SEMESTER_POOL_SECRET_KEY, JSON.stringify(cfg));
-          const status = await readPoolStatus(deps, new Date()).catch(() => null);
-          const line = status ? formatPoolLine(status, style) : null;
-          await reply(line ? `Pool set.\n${line}` : 'Pool set.');
+          await reply(await applyPoolSet(wfClient, parsed.amountCents, parsed.endDate));
           return;
         }
+        const deps = poolReportDeps(wfClient, wealthfolioDbPath() ?? '');
+        const style = await readGlyphStyle(wfClient);
         const status = await readPoolStatus(deps, new Date()).catch(() => null);
         const section = status ? formatPoolSection(status, style).trim() : '';
-        await reply(section !== '' ? section : `No pool set.\n${POOL_USAGE_REPLY}`);
+        // Bare /pool asks (1.60): the buttons start the questions; the
+        // one-line forms above still work for anyone who knows them.
+        if (section !== '') {
+          await reply(section, { inline_keyboard: [[
+            { text: '✏️ Set a new pool', callback_data: askStartData('pool-set') },
+            { text: 'Clear pool', callback_data: askStartData('pool-clear') },
+          ]] });
+        } else {
+          await reply(`No pool set.\n${POOL_USAGE_REPLY}`, { inline_keyboard: [[
+            { text: '✏️ Set a pool', callback_data: askStartData('pool-set') },
+          ]] });
+        }
         return;
       }
 
@@ -2951,6 +3062,12 @@ export function buildTelegramCommandHandler(
         return;
 
       case 'newrule': {
+        // Bare /newrule asks (1.60). The flow's own start checks the database
+        // and says the same sentence the one-liner does when it is missing.
+        if (cmd.args.trim() === '') {
+          await asks.start('newrule', reply);
+          return;
+        }
         const parsed = parseNewRuleArgs(cmd.args);
         if (!parsed) {
           await reply(NEWRULE_USAGE_REPLY);
@@ -3095,6 +3212,10 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
    *  tap that arrives through `onMenuCallback` must reach the same instance or
    *  every button would answer "that menu expired". */
   const categorize = buildCategorizeController(wfClient);
+
+  /** ONE question slot for commands, plain answers and taps alike. */
+  const asks = buildAskSessions(wfClient, categorize);
+  const runCommand = buildTelegramCommandHandler(wfClient, categorize, asks);
 
   /** The Amazon label picker. Shares the `cz:` callback prefix, so
    *  `onMenuCallback` below asks it first and only then falls through to the
@@ -3265,7 +3386,19 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
       }
     },
     undoDismissal: (activityId) => undoTelegramDismissal(wfClient, activityId),
-    onCommand: buildTelegramCommandHandler(wfClient, categorize),
+    // A command while a question is open drops the question first and says
+    // so in one line — the command itself then runs exactly as it would have.
+    onCommand: async (cmd, reply) => {
+      // `/cancel` is a quiet alias for dropping the open question; it never
+      // reaches /help's "Unknown command".
+      if (cmd.command === 'cancel') {
+        await reply(asks.cancelForCommand() ? CANCELLED : NOT_WAITING);
+        return;
+      }
+      if (asks.cancelForCommand()) await reply(CANCELLED_EARLIER);
+      await runCommand(cmd, reply);
+    },
+    onText: (text, reply, ctx) => asks.onText(text, reply, ctx),
     // Every `cz:` tap, including the import notice's `Categorize these` (which
     // the controller special-cases into a FRESH message — the notice is not the
     // menu). Written as a lambda rather than `categorize.onCallback` so the
@@ -3282,6 +3415,12 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
     // because editing would draw the menu over the notice and destroy the only
     // record in the chat of what just imported.
     onMenuCallback: async (cb, ui) => {
+      // First: `cz:ak:` is the question engine's, and the transaction menu
+      // below would read it as an expired menu.
+      if (asks.handles(cb.data)) {
+        await asks.onCallback(cb, ui);
+        return;
+      }
       // Before the transaction menu: both ride the `cz:` prefix, and the
       // transaction menu treats anything it does not recognise as an expired
       // session — which would silently swallow every Amazon tap.

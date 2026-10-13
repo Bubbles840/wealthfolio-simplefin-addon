@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { maskUrl, publishLiveReports, validateStartupEnv, startupWarnings, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, composeDailyDigest, runCompanionSyncExclusive, buildTelegramCommandHandler, applyTelegramDismissal, undoTelegramDismissal, formatDismissedReply, buildTelegramListenerDeps, buildCategorizeController, buildCategorizeDeps, rememberImportScope, sendUnmappedAccountsNotice, updateCheckDeps } from './index.js';
+import { maskUrl, publishLiveReports, validateStartupEnv, startupWarnings, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, composeDailyDigest, runCompanionSyncExclusive, buildTelegramCommandHandler, applyTelegramDismissal, undoTelegramDismissal, formatDismissedReply, buildTelegramListenerDeps, buildCategorizeController, buildCategorizeDeps, rememberImportScope, sendUnmappedAccountsNotice, updateCheckDeps, buildAskSessions } from './index.js';
 import { formatHelpReply, parseCommand } from '../../shared/telegram-commands.js';
 import { SIMPLEFIN_SYNC_VERSION } from '../../shared/version.js';
 import { runSyncCore } from '../../shared/sync-core.js';
@@ -80,6 +80,7 @@ vi.mock('./sqlite-native.js', () => ({
   // replaces the WHOLE module, so an export index.ts imports but the factory
   // omits fails at import time and takes every test in this file with it.
   getNativeSpendingCategories: vi.fn(() => []),
+  countRulePatternMatches: vi.fn(() => ({ total: 0, spending: 0 })),
   getNativeSubcategorySpending: vi.fn(() => []),
   getNativeCategoryCatalog: vi.fn(() => ([
     { name: 'Transportation', parent: null, icon: 'Car', color: '#24837B', hasBudget: true, hasSpend: false },
@@ -1996,6 +1997,54 @@ describe('buildTelegramCommandHandler', () => {
     process.env.WEALTHFOLIO_PASSWORD = 'pw';
   });
 
+  describe('listener deps: the open question', () => {
+    it('says it is not waiting when plain text arrives with nothing open', async () => {
+      const { client } = clientFor();
+      const deps = buildTelegramListenerDeps(client);
+      const { sent, reply } = collector();
+      await deps.onText!('hello', reply, { privateChat: true });
+      expect(sent).toEqual(["I'm not waiting for an answer right now — /help lists what I can do."]);
+    });
+
+    it('offers cz:ak: taps to the ask sessions before the categorize menu', async () => {
+      const { client } = clientFor();
+      const deps = buildTelegramListenerDeps(client);
+      const ui = { edit: vi.fn(async () => {}), answer: vi.fn(async () => {}), send: vi.fn(async () => {}) };
+      await deps.onMenuCallback!({ data: 'cz:ak:abc:0:x', chatId: 1, messageId: 2 }, ui);
+      expect(ui.answer).toHaveBeenCalledWith('That question has moved on.');
+    });
+
+    it('/cancel quietly cancels an open question, or says nothing is open', async () => {
+      const { client } = clientFor();
+      const deps = buildTelegramListenerDeps(client);
+      const { sent, reply } = collector();
+      const ui = { edit: vi.fn(async () => {}), answer: vi.fn(async () => {}), send: reply };
+      await deps.onMenuCallback!({ data: 'cz:ak:go:pool-set', chatId: 1, messageId: 2 }, ui);
+      await deps.onCommand({ command: 'cancel', args: '' }, reply);
+      expect(sent[sent.length - 1]).toBe('Cancelled.');
+      await deps.onCommand({ command: 'cancel', args: '' }, reply);
+      expect(sent[sent.length - 1]).toBe("I'm not waiting for an answer right now — /help lists what I can do.");
+      expect(sent.join('\n')).not.toContain('Unknown');
+    });
+
+    it('a command cancels an open question with one line before its own reply', async () => {
+      const { client } = clientFor();
+      const deps = buildTelegramListenerDeps(client);
+      const { sent, reply } = collector();
+      const ui = { edit: vi.fn(async () => {}), answer: vi.fn(async () => {}), send: reply };
+      await deps.onMenuCallback!({ data: 'cz:ak:go:pool-set', chatId: 1, messageId: 2 }, ui);
+      await deps.onCommand({ command: 'help', args: '' }, reply);
+      expect(sent).toHaveLength(3);
+      expect(sent[0]).toContain('How much is the pool?');
+      expect(sent[1]).toBe('Cancelled your earlier question.');
+      expect(sent[2]).toContain('/report');
+
+      const after = collector();
+      await deps.onText!('500', after.reply, { privateChat: true });
+      expect(after.sent).toEqual(["I'm not waiting for an answer right now — /help lists what I can do."]);
+    });
+  });
+
   it('answers /help with the registered command menu', async () => {
     const { client } = clientFor();
     const sent = await run(client, 'help');
@@ -2127,6 +2176,57 @@ describe('buildTelegramCommandHandler', () => {
     const { client } = clientFor();
     const sent = await run(client, 'afford', 'shopping');
     expect(sent[0]).toBe('Usage: /afford 20 shopping');
+  });
+
+  it('starts the questions when /afford is sent bare', async () => {
+    const { client } = clientFor();
+    const sent = await run(client, 'afford', '');
+    expect(sent[0]).toContain('*Can I afford it? · 1 of 2*');
+  });
+
+  it("the afford questions end on the one-liner's exact answer", async () => {
+    const { client } = clientFor();
+    const oneLiner = await run(client, 'afford', '20 groceries');
+    expect(oneLiner[0]).toContain('This week:');
+    expect(oneLiner[0]).toContain('This month:');
+    const asks = buildAskSessions(client, buildCategorizeController(client));
+    const { sent, reply } = collector();
+    await asks.start('afford', reply);
+    await asks.onText('20', reply);
+    await asks.onText('groceries', reply);
+    expect(sent).toHaveLength(3);
+    expect(sent[2]).toBe(oneLiner[0]);
+  });
+
+  it('tells a group chat to reply to the first question only', async () => {
+    const { client } = clientFor([['telegram_config', JSON.stringify({ botToken: 't', chatId: '-100123' })]]);
+    const asks = buildAskSessions(client, buildCategorizeController(client));
+    const { sent, reply } = collector();
+    await asks.start('afford', reply);
+    await asks.onText('20', reply);
+    expect(sent[0]).toContain('In a group, reply to this message to answer.');
+    expect(sent[1]).not.toContain('reply to this message');
+  });
+
+  it('adds no group note in a private chat', async () => {
+    const { client } = clientFor([['telegram_config', JSON.stringify({ botToken: 't', chatId: '12345' })]]);
+    const asks = buildAskSessions(client, buildCategorizeController(client));
+    const { sent, reply } = collector();
+    await asks.start('afford', reply);
+    expect(sent[0]).not.toContain('reply to this message');
+  });
+
+  it('keeps unbudgeted categories out of the afford quick picks', async () => {
+    vi.mocked(getNativeWealthfolioSpending).mockReturnValueOnce({ Groceries: 200, Dining: 550, Hobbies: 90 });
+    vi.mocked(getNativeWealthfolioBudgets).mockReturnValueOnce({ Groceries: 800, Dining: 500 });
+    const { client } = clientFor();
+    const asks = buildAskSessions(client, buildCategorizeController(client));
+    const keyboards: any[] = [];
+    const reply = async (_t: string, kb?: any) => { if (kb) keyboards.push(kb); };
+    await asks.start('afford', reply);
+    await asks.onText('20', reply);
+    const picks = keyboards[keyboards.length - 1].inline_keyboard.flat().filter((b: any) => b.callback_data.includes(':q')).map((b: any) => b.text);
+    expect([...picks].sort()).toEqual(['Dining', 'Groceries']);
   });
 
   it('answers /afford <amount> <category> with the before → after pair', async () => {
@@ -3995,10 +4095,40 @@ describe('the /categorize wiring', () => {
     };
 
     it('answers one usage line for anything that does not parse', async () => {
-      for (const args of ['', 'just some text', '= groceries', 'trader joes =']) {
+      for (const args of ['just some text', '= groceries', 'trader joes =']) {
         const { sent } = await runNewRule(args);
         expect(sent).toEqual([['Usage: /newrule trader joes = groceries', undefined]]);
       }
+    });
+
+    it('starts the questions when sent bare', async () => {
+      vi.mocked(getNativeSpendingCategories).mockReturnValue([
+        { id: 'c1', name: 'Groceries', parentId: null, parentName: null },
+      ] as any);
+      vi.mocked(existsSync).mockReturnValue(true);
+      const { sent } = await runNewRule('');
+      expect(sent[0][0]).toContain('*New rule · 1 of 2*');
+    });
+
+    it('hands the answers to the rule preview', async () => {
+      vi.mocked(getNativeSpendingCategories).mockReturnValue([
+        { id: 'c1', name: 'Groceries', parentId: null, parentName: null },
+      ] as any);
+      vi.mocked(existsSync).mockReturnValue(true);
+      const { client } = clientFor();
+      const controller = { ...buildCategorizeController(client), openRulePreview: vi.fn(async () => {}) };
+      const asks = buildAskSessions(client, controller as any);
+      const { reply } = collect();
+      await asks.start('newrule', reply);
+      await asks.onText('trader joes', reply);
+      await asks.onText('groceries', reply);
+      expect(controller.openRulePreview).toHaveBeenCalledWith('trader joes', 'c1', reply);
+    });
+
+    it('answers bare /newrule without a database the same way the one-liner does', async () => {
+      vi.mocked(existsSync).mockReturnValue(false);
+      const { sent } = await runNewRule('');
+      expect(sent[0][0]).toBe("The companion has no database access right now, so it can't look up your categories.");
     });
 
     it('asks which one when the category query is ambiguous', async () => {
@@ -4411,6 +4541,53 @@ describe('/pool command', () => {
     await buildTelegramCommandHandler(client)({ command: 'pool', args }, async (t: string) => { sent.push(t); });
     return sent;
   };
+
+  const runWithKeyboard = async (client: any, args: string) => {
+    const sent: Array<[string, any]> = [];
+    await buildTelegramCommandHandler(client)({ command: 'pool', args }, async (t: string, k?: any) => { sent.push([t, k]); });
+    return sent;
+  };
+  const datas = (k: any) => (k?.inline_keyboard ?? []).flat().map((b: any) => b.callback_data);
+
+  it('offers Set and Clear buttons under an existing pool', async () => {
+    const { client } = clientWith([['semester_pool', JSON.stringify({ amountCents: 1_600_000, startDate: '2020-01-01', endDate: '2099-12-31' })]]);
+    const sent = await runWithKeyboard(client, '');
+    expect(datas(sent[0][1])).toEqual(['cz:ak:go:pool-set', 'cz:ak:go:pool-clear']);
+  });
+
+  it('offers only Set when there is no pool', async () => {
+    const { client } = clientWith();
+    const sent = await runWithKeyboard(client, '');
+    expect(datas(sent[0][1])).toEqual(['cz:ak:go:pool-set']);
+  });
+
+  it('sets the pool through the questions exactly as the one-liner does', async () => {
+    const { client, secrets } = clientWith();
+    const controller = buildCategorizeController(client);
+    const asks = buildAskSessions(client, controller);
+    const sent: Array<[string, any]> = [];
+    const send = async (t: string, k?: any) => { sent.push([t, k]); };
+    await asks.start('pool-set', send);
+    await asks.onText('500', send);
+    await asks.onText('2099-01-15', send);
+    const save = datas(sent[sent.length - 1][1])[0];
+    const ui = { edit: vi.fn(async () => {}), answer: vi.fn(async () => {}), send };
+    await asks.onCallback({ data: save } as any, ui as any);
+    const stored = JSON.parse(secrets.get('semester_pool')!);
+    expect(stored).toMatchObject({ amountCents: 50_000, endDate: '2099-01-15' });
+    expect(sent[sent.length - 1][0]).toContain('Pool set.');
+  });
+
+  it('clears the pool through the confirmation question', async () => {
+    const { client, secrets } = clientWith([['semester_pool', JSON.stringify({ amountCents: 1, startDate: '2020-01-01', endDate: '2099-12-31' })]]);
+    const asks = buildAskSessions(client, buildCategorizeController(client));
+    const sent: string[] = [];
+    const send = async (t: string) => { sent.push(t); };
+    await asks.start('pool-clear', send);
+    await asks.onText('Yes, clear', send);
+    expect(secrets.get('semester_pool')).toBe('');
+    expect(sent[sent.length - 1].toLowerCase()).toContain('cleared');
+  });
 
   it('sets a pool starting today and confirms with the sustainable pace', async () => {
     const { client, secrets } = clientWith();
