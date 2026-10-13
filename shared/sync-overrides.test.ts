@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   clearAccountOverride, clearTxOverride, editSyncOverrides, emptySyncOverrides, hasAccountOverride, hasTxOverride,
   isUnreadableOverridesError, loadSyncOverrides, overrideRows, parseSyncOverrides, pruneTxOverrides, removeOverrideRow,
-  setAccountOverride, setTxOverride, SYNC_OVERRIDES_SECRET_KEY, SYNC_OVERRIDES_UNREADABLE_MESSAGE, syncOverridesOrEmpty,
+  setAccountOverride, setTxOverride, SYNC_OVERRIDES_SECRET_KEY, SYNC_OVERRIDES_UNREADABLE_MESSAGE, syncOverridesIgnoredLog, syncOverridesOrEmpty,
   SyncOverridesInvalidError, type SyncOverrides,
 } from './sync-overrides.js';
 import { accountTxKey } from './transfers.js';
@@ -68,6 +68,30 @@ describe('loading', () => {
     expect(await syncOverridesOrEmpty(secrets({ [SYNC_OVERRIDES_SECRET_KEY]: 'garbage' }).get)).toEqual(emptySyncOverrides());
     expect(await syncOverridesOrEmpty(secrets().get)).toEqual(emptySyncOverrides());
     expect(await syncOverridesOrEmpty(async () => { throw new Error('down'); })).toEqual(emptySyncOverrides());
+  });
+
+  it('says once why it handed the sync an empty document — corrupt or unread — and never for absent or fine', async () => {
+    const heard: string[] = [];
+    const hear = (why: string) => { heard.push(why); };
+    const s = secrets({ [SYNC_OVERRIDES_SECRET_KEY]: 'garbage' });
+    expect(await syncOverridesOrEmpty(s.get, hear)).toEqual(emptySyncOverrides());
+    expect(await syncOverridesOrEmpty(async () => { throw new Error('down'); }, hear)).toEqual(emptySyncOverrides());
+    await syncOverridesOrEmpty(secrets().get, hear);
+    await syncOverridesOrEmpty(secrets({ [SYNC_OVERRIDES_SECRET_KEY]: JSON.stringify(emptySyncOverrides()) }).get, hear);
+    expect(heard).toEqual(['corrupt', 'unreadable']);
+    // Reading is all it does: the corrupt text stays exactly as it was.
+    expect(s.store.get(SYNC_OVERRIDES_SECRET_KEY)).toBe('garbage');
+    // A listener that throws costs the sync nothing.
+    expect(await syncOverridesOrEmpty(s.get, () => { throw new Error('log down'); })).toEqual(emptySyncOverrides());
+  });
+
+  it('words the log line for each case', () => {
+    expect(syncOverridesIgnoredLog('corrupt')).toBe(
+      "[simplefin-sync] sync-overrides-ignored: your sync overrides can't be read (the stored document is corrupt), so this sync ignores them — a transfer link, import or other decision you undid may come back",
+    );
+    expect(syncOverridesIgnoredLog('unreadable')).toBe(
+      '[simplefin-sync] sync-overrides-ignored: your sync overrides could not be read this time, so this sync ignores them — a transfer link, import or other decision you undid may come back',
+    );
   });
 });
 

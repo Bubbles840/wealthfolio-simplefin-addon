@@ -158,14 +158,44 @@ export async function loadSyncOverrides(get: SecretGet): Promise<LoadedSyncOverr
   return { overrides: emptySyncOverrides(), unreadable: parsed.kind === 'corrupt' };
 }
 
+/** Why a sync was handed an empty document instead of the stored one. */
+export type SyncOverridesIgnored = 'corrupt' | 'unreadable';
+
+export const SYNC_OVERRIDES_IGNORED_LOG_TAG = 'sync-overrides-ignored';
+
+/** The one log line a sync writes when it ignores the stored document, so an
+ *  undone decision coming back has an explanation. */
+export function syncOverridesIgnoredLog(why: SyncOverridesIgnored): string {
+  const what = why === 'corrupt'
+    ? "your sync overrides can't be read (the stored document is corrupt)"
+    : 'your sync overrides could not be read this time';
+  return `[simplefin-sync] ${SYNC_OVERRIDES_IGNORED_LOG_TAG}: ${what}, so this sync ignores them — a transfer link, import or other decision you undid may come back`;
+}
+
 /** What a sync obeys. Absent, corrupt and unreadable all read as empty — the
- *  sync then behaves exactly as it did before overrides existed. */
-export async function syncOverridesOrEmpty(get: SecretGet): Promise<SyncOverrides> {
+ *  sync then behaves exactly as it did before overrides existed. `ignored`
+ *  hears once why, for a corrupt document or a failed read (never absent);
+ *  it only reads, so a corrupt document stays exactly as stored. */
+export async function syncOverridesOrEmpty(
+  get: SecretGet,
+  ignored?: (why: SyncOverridesIgnored) => void,
+): Promise<SyncOverrides> {
+  const say = (why: SyncOverridesIgnored) => {
+    try {
+      ignored?.(why);
+    } catch {
+      // Saying so never costs the sync.
+    }
+  };
+  let loaded: LoadedSyncOverrides;
   try {
-    return (await loadSyncOverrides(get)).overrides;
+    loaded = await loadSyncOverrides(get);
   } catch {
+    say('unreadable');
     return emptySyncOverrides();
   }
+  if (loaded.unreadable) say('corrupt');
+  return loaded.overrides;
 }
 
 /**

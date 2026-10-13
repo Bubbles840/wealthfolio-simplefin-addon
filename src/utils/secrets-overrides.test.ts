@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { SecretsStore } from './secrets';
-import { emptySyncOverrides, setAccountOverride, SYNC_OVERRIDES_SECRET_KEY } from '../../shared/sync-overrides';
+import { emptySyncOverrides, setAccountOverride, SYNC_OVERRIDES_SECRET_KEY, syncOverridesIgnoredLog } from '../../shared/sync-overrides';
 
 const ctxOver = (data: Record<string, string>) => ({
   api: {
@@ -20,6 +20,20 @@ describe('SecretsStore — sync overrides', () => {
 
   it('reads a corrupt document as empty, so the sync behaves as today', async () => {
     expect(await new SecretsStore(ctxOver({ [SYNC_OVERRIDES_SECRET_KEY]: 'not json' })).getSyncOverrides()).toEqual(emptySyncOverrides());
+  });
+
+  it('logs one line when it ignores a corrupt document, and none for a readable one', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await new SecretsStore(ctxOver({ [SYNC_OVERRIDES_SECRET_KEY]: 'not json' })).getSyncOverrides();
+      expect(warn.mock.calls).toEqual([[syncOverridesIgnoredLog('corrupt')]]);
+      warn.mockClear();
+      await new SecretsStore(ctxOver({ [SYNC_OVERRIDES_SECRET_KEY]: JSON.stringify(emptySyncOverrides()) })).getSyncOverrides();
+      await new SecretsStore(ctxOver({})).getSyncOverrides();
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('Reset clears it', async () => {

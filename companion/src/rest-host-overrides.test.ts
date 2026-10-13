@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { RestSyncStore } from './rest-host.js';
-import { emptySyncOverrides, setTxOverride, SYNC_OVERRIDES_SECRET_KEY } from '../../shared/sync-overrides.js';
+import { emptySyncOverrides, setTxOverride, SYNC_OVERRIDES_SECRET_KEY, syncOverridesIgnoredLog } from '../../shared/sync-overrides.js';
 
 const store = (secrets: Map<string, string>) => new RestSyncStore({
   getAddonSecret: vi.fn(async (_id: string, key: string) => secrets.get(key) ?? null),
@@ -19,5 +19,22 @@ describe('RestSyncStore — sync overrides', () => {
     expect(await store(new Map()).getSyncOverrides()).toEqual(emptySyncOverrides());
     const failing = new RestSyncStore({ getAddonSecret: vi.fn(async () => { throw new Error('502'); }), setAddonSecret: vi.fn() } as any);
     expect(await failing.getSyncOverrides()).toEqual(emptySyncOverrides());
+  });
+
+  it('logs one line when it ignores a corrupt or unread document, and none for a readable or absent one', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await store(new Map([[SYNC_OVERRIDES_SECRET_KEY, '{"v":1,"tx":7}']])).getSyncOverrides();
+      expect(warn.mock.calls).toEqual([[syncOverridesIgnoredLog('corrupt')]]);
+      warn.mockClear();
+      await new RestSyncStore({ getAddonSecret: vi.fn(async () => { throw new Error('502'); }), setAddonSecret: vi.fn() } as any).getSyncOverrides();
+      expect(warn.mock.calls).toEqual([[syncOverridesIgnoredLog('unreadable')]]);
+      warn.mockClear();
+      await store(new Map([[SYNC_OVERRIDES_SECRET_KEY, JSON.stringify(emptySyncOverrides())]])).getSyncOverrides();
+      await store(new Map()).getSyncOverrides();
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
