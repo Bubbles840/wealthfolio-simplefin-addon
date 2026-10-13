@@ -149,7 +149,9 @@ export interface HoldingsSyncOutcome {
 
 export interface SyncHost {
   fetchSimplefin(accessUrl: string, since: Date, authKey?: string | null): Promise<SimplefinAccountSet>;
-  listAccounts(): Promise<Array<{ id: string; accountType: string; name?: string }>>;
+  /** `currency` is the account's own (Undo writes a row back in it); absent
+   *  when the host does not say. */
+  listAccounts(): Promise<Array<{ id: string; accountType: string; name?: string; currency?: string }>>;
   latestValuations(accountIds: string[]): Promise<Map<string, number>>;
   /** The account's most recent activities, newest first. Bounded by the host's
    *  page size, so it is NOT a way to reach an old row on a busy account. */
