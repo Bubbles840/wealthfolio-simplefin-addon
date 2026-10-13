@@ -340,7 +340,7 @@ describe('runChangeUndo', () => {
       h.io.host = { ...real, listActivities: async () => [], listOldestActivities: async () => [] };
       expect(await h.undo(plug, 'redo')).toMatchObject({ ok: true });
       h.io.host = real;
-      expect(h.log[0].after.activityId).toBeUndefined();
+      expect(h.log[0].after?.activityId).toBeUndefined();
       const deletes = vi.spyOn(real, 'saveMany');
       expect(await h.undo(plug, 'undo')).toMatchObject({ ok: false });
       expect(deletes).not.toHaveBeenCalled();
