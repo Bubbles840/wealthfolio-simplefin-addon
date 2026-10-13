@@ -573,11 +573,38 @@ changes what a user sees today.
   whole-list write). Undoing a transaction rule while that card is open and
   then saving the card puts the rule back. Same race the card already has with
   the transfer-learning menu.
-- **On the add-on, "is it linked?" is the `linked_groups` ledger.** A ledger
-  that lost a pair lets a `notTransfer` leg be retyped by an ordinary update,
-  which Wealthfolio copies onto its partner. Not seen; the companion reads
-  groups off the rows.
+- **On the add-on, "is it linked?" is the `linked_groups` ledger — plus a
+  guess.** The add-on reads no groups back, and its ledger knows only the
+  links IT made; the companion never writes it. So for an Undo of an import or
+  an Amazon label (the kinds that delete or update one row), the app counts a
+  row as linked when the ledger confirms it ("Undo the transfer link first.")
+  OR when it is `TRANSFER_IN`/`TRANSFER_OUT` and is not a held in-transit
+  placeholder, an opening balance or adjustment, or flagged
+  `flow.is_external: true` — that "maybe" case refuses with "This may be half
+  of a linked transfer — undo the link first, or undo it from Telegram:
+  /changes" (`UNDO_MAYBE_LINKED`). Deleting one half deletes both, and an
+  update to one half is copied onto the other. The cost: the import or label
+  of an UNLINKED rule-typed transfer (a `TRANSFER_OUT` your rule made that
+  never paired) can't be undone from the app; Telegram, which reads groups
+  off the rows, can. The sync side is the same story: a ledger that lost a
+  pair lets a `notTransfer` leg be retyped by an ordinary update, which
+  Wealthfolio copies onto its partner (not seen).
 - **Telegram lists no overrides** — only the app card does (spec B3).
+- **An import's Undo has no "changed since" check** (ruled, not a gap): a
+  later bank update to that row is its own entry, and removing the row as it
+  is now and skip-listing its transaction is what the person asked for.
+- **A Telegram Undo runs outside the sync lock** (ruled): it writes its
+  override first, so a sync running at that moment may act on the old
+  decision once; the next sync obeys the override and corrects it.
+- **The app's version gate fails closed.** When `companion_version` can't be
+  read, a sync decision's Undo is refused ("Couldn't check the companion's
+  version — nothing was changed. Try again."); a Redo, and an undo the gate
+  doesn't cover, go ahead. No published version at all still means no
+  companion, and the gate is open.
+- **Amazon filing while any filing is undone.** A row whose tx key can't be
+  built (the account mapping read failed) is skipped whenever any
+  `noAutoFile` override exists, so such a run files no keyless charge; the
+  next run with a readable mapping files them.
 - **Section 8's R2 notes are settled:** the DELETE rule client exists
   (`deleteCategorizationRule`), a rule without an id is found by name, an
   Amazon filing without a tx key has it re-derived from the row's note and the
@@ -608,10 +635,13 @@ changes what a user sees today.
   pair waits until it is fixed by hand.
 - **A failed account read holds every `notTransfer` unlink for that run** — no
   unlink, cleanup, duplicate prune, relink sweep or drift measurement anywhere —
-  with one note. On the companion, a held pair's leg in an account read BEFORE
-  the unreadable one is not taken out of that account's plan that run (it cannot
-  be matched to the pair without the unread rows); nothing deletes it, at worst
-  its ordinary row is re-held as a placeholder and the cleanup waits for it.
+  with one note (it fires whenever that read was uncertain, held pair or not).
+  On the companion — and on the add-on when the overridden leg's ledger entry
+  is a legacy bare-txId key, which the override's account-scoped key can't
+  match — a held pair's leg in an account read BEFORE the unreadable one is not
+  taken out of that account's plan that run (it cannot be matched to the pair
+  without the unread rows); nothing deletes it, at worst its ordinary row is
+  re-held as a placeholder and the cleanup waits for it.
 
 ## Reference: name mismatches between the database, the REST API, and the SDK
 
