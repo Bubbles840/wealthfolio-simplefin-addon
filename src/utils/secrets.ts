@@ -27,7 +27,10 @@ import {
   type LoadedSubscriptionPrefs, type SubscriptionEdit, type SubscriptionPrefs,
 } from '../../shared/subscription-prefs';
 import { newRunId, stampChange, type ChangeDraft, type ChangeEntry, type ChangeLogSink } from '../../shared/change-entries';
-import { SYNC_OVERRIDES_SECRET_KEY, syncOverridesOrEmpty, type SyncOverrides } from '../../shared/sync-overrides';
+import {
+  editSyncOverrides as editOverridesDocument, loadSyncOverrides, SYNC_OVERRIDES_SECRET_KEY, syncOverridesOrEmpty,
+  type LoadedSyncOverrides, type SyncOverrides, type SyncOverridesEdit,
+} from '../../shared/sync-overrides';
 import {
   changeLogResetKeys, createChangeLogWriter, readChangeLog, type ChangeLogIo, type ChangeLogRead,
 } from '../../shared/change-log';
@@ -578,6 +581,29 @@ export class SecretsStore {
    *  failed read all come back empty — the sync then behaves as it always did. */
   async getSyncOverrides(): Promise<SyncOverrides> {
     return syncOverridesOrEmpty((k) => this.ctx.api.secrets.get(k));
+  }
+
+  /** The document for the Change log card's "Your overrides": `unreadable` when
+   *  a stored one cannot be read (the list then turns read-only). Null when
+   *  the host read itself fails. */
+  async readSyncOverrides(): Promise<LoadedSyncOverrides | null> {
+    try {
+      return await loadSyncOverrides((k) => this.ctx.api.secrets.get(k));
+    } catch {
+      return null;
+    }
+  }
+
+  /** One edit, re-read immediately before the write (the companion writes the
+   *  same document). Rejects with SyncOverridesUnreadableError, writing
+   *  nothing, when the stored document is corrupt. */
+  async editSyncOverrides(edit: SyncOverridesEdit): Promise<SyncOverrides> {
+    return editOverridesDocument(
+      (k) => this.ctx.api.secrets.get(k),
+      (k, v) => this.ctx.api.secrets.set(k, v),
+      edit,
+      new Date(),
+    );
   }
 
   /** Which collapsible config cards the user left open, keyed by card id.
