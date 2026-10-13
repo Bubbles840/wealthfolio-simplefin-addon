@@ -19,7 +19,7 @@ import type { SyncResult } from '../../shared/sync-core.js';
 import { RestSyncHost, RestSyncStore } from './rest-host.js';
 import { WealthfolioClient } from './wealthfolio.js';
 import { resolveDigestRows, resolveReportDetail, shortDate, shortDateTime, formatDollars } from '../../shared/telegram.js';
-import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatMonthlyWrapUp, formatSyncHealthFooter, formatLargeTransactionAlert, formatBalanceDriftAlert, formatFeedLagNotice, formatStuckTransferAlert, formatDuplicatePruneAlert, formatImportNotice, formatRefusedCreatesAlert, formatPoolLine, formatPoolSection, buildDismissKeyboard, dailyReportCarriesProblems, IMPORT_NOTICE_UNCATEGORIZED_CAP, escapeMarkdown, LARGE_TX_OUTBOX_SECRET_KEY, RECATEGORIZE_ENTRY_CALLBACK } from '../../shared/telegram.js';
+import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatMonthlyWrapUp, formatSyncHealthFooter, formatLargeTransactionAlert, formatBalanceDriftAlert, formatFeedLagNotice, formatStuckTransferAlert, formatDuplicatePruneAlert, formatImportNotice, formatRefusedCreatesAlert, formatPoolLine, formatPoolSection, buildDismissKeyboard, dailyReportCarriesProblems, IMPORT_NOTICE_UNCATEGORIZED_CAP, escapeMarkdown, formatComingUpBlock, formatNextWeekLine, formatSubscriptionNews, parseNewsSent, pruneNewsSent, SUBSCRIPTION_NEWS_SECRET_KEY, LARGE_TX_OUTBOX_SECRET_KEY, RECATEGORIZE_ENTRY_CALLBACK } from '../../shared/telegram.js';
 import { pruneDismissals, mergeDismissals } from './dismissals.js';
 import { UNDISMISS_PAYLOAD_PREFIX, UNDISMISS_BUTTON_TEXT_PREFIX } from './telegram-listener.js';
 import { DISMISSAL_MAX_AGE_DAYS } from '../../shared/uncategorized.js';
@@ -92,11 +92,17 @@ import type { CategoryBudgetSnapshot, BudgetPeriod, ParsedCommand, StatusReplyIn
 import { parsePoolArgs, POOL_USAGE_REPLY } from '../../shared/telegram-commands.js';
 import { SEMESTER_POOL_SECRET_KEY, parsePoolConfig } from '../../shared/pool.js';
 import { readPoolStatus, readRunwayMonths, type PoolReportDeps } from './pool-report.js';
+import { readSubscriptionRoster, type RosterRead } from './subscription-data.js';
+import {
+  createSubscriptionsMenu, findRosterEntry, renderSubscriptionList, SUBSCRIPTIONS_BUTTON, SEE_ALL_SUBSCRIPTIONS_BUTTON, hideFromReportButton, SUBSCRIPTIONS_RENAME_GONE_REPLY,
+  SUBSCRIPTIONS_UNREACHABLE_REPLY, SUBSCRIPTIONS_UNREADABLE_REPLY, undoRenameButton, type SubscriptionsMenu,
+} from './subscriptions-menu.js';
+import { addDaysIso, dueWithin, formatRosterTotal, manualKey, rosterMoney, type Cadence } from '../../shared/subscription-roster.js';
 import { REPORT_CUBE_SECRET_KEY, parseReportCube } from '../../shared/report-cube.js';
-import { HIDDEN_SUBSCRIPTIONS_SECRET_KEY, CONFIRMED_SUBSCRIPTIONS_SECRET_KEY, parseHiddenSubscriptions } from '../../shared/subscriptions.js';
+import { addManual, editSubscriptionPrefs, emptySubscriptionPrefs, isUnreadablePrefsError, loadSubscriptionPrefs, newManualId, renameKey, setRemind, SubscriptionPrefsInvalidError, type ManualSubscription, type RemindDays, type SecretGet, type SecretSet, type SubscriptionEdit } from '../../shared/subscription-prefs.js';
 import { renderReportSvg, reportImageTitle, reportImageCaption, RENDERABLE_REPORT_IDS } from '../../shared/report-render.js';
 import { createAskSessions, CANCELLED, CANCELLED_EARLIER, NOT_WAITING, type AskSessions } from './ask-session.js';
-import { buildAffordFlow, buildNewRuleFlow, buildPoolClearFlow, buildPoolSetFlow, mostUsedCategories } from './ask-flows.js';
+import { buildAffordFlow, buildNewRuleFlow, buildPoolClearFlow, buildPoolSetFlow, buildSubAddFlow, buildSubRenameFlow, mostUsedCategories } from './ask-flows.js';
 import { askStartData } from '../../shared/ask-flow.js';
 import { parseBudgetLayout } from '../../shared/budget-layout.js';
 import { parseCustomReports } from '../../shared/report-eval.js';
@@ -1555,6 +1561,21 @@ function poolReportDeps(wfClient: WealthfolioClient, dbPath: string): PoolReport
   };
 }
 
+/** The two secret calls every subscription reader and writer goes through —
+ *  the companion's half of shared/subscription-prefs.ts's `get`/`set`. */
+function subscriptionSecrets(wfClient: WealthfolioClient): { get: SecretGet; set: SecretSet } {
+  return {
+    get: (key) => wfClient.getAddonSecret('simplefin-sync', key),
+    set: (key, value) => wfClient.setAddonSecret('simplefin-sync', key, value),
+  };
+}
+
+/** The roster as every Telegram surface sees it: cube + document, with
+ *  "today" in the companion's TZ. Rejects when Wealthfolio cannot be read. */
+async function readRosterFor(wfClient: WealthfolioClient, now: Date): Promise<RosterRead> {
+  return readSubscriptionRoster(subscriptionSecrets(wfClient).get, toDateString(now));
+}
+
 /**
  * The cube builder's data sources, bound once — the report-cube twin of
  * `poolReportDeps` above, sharing its dismissal and pool reads so the cube
@@ -1594,6 +1615,12 @@ function cubeBuildDeps(wfClient: WealthfolioClient, dbPath: string): CubeBuildDe
       spendByCategory: getNativeWealthfolioSpendingBetween(dbPath, s, e),
       uncategorized: getNativeUncategorizedSpendingTotal(dbPath, s, e, excluded).total,
     }),
+    // Link suggestions for hand-added subscriptions. An unreadable document
+    // offers none rather than guessing from the legacy lists.
+    subscriptionPrefs: async () => {
+      const loaded = await loadSubscriptionPrefs(subscriptionSecrets(wfClient).get).catch(() => null);
+      return loaded && !loaded.unreadable ? loaded.prefs : null;
+    },
   };
 }
 
@@ -1847,8 +1874,9 @@ export async function composeDailyDigest(
   // on/off switch since 1.57: the line only appears when the pool is in
   // trouble, which is exactly when hiding it would hide the news.
   const poolStatus = await readPoolStatus(poolReportDeps(wfClient, dbPath), now).catch(() => null);
+  const glyphStyle = await readGlyphStyle(wfClient);
   let message = formatDailySpendingDigest(
-    categories, period, await readGlyphStyle(wfClient), subcategoryDisplay,
+    categories, period, glyphStyle, subcategoryDisplay,
     await readCountOffBudget(wfClient), uncategorizedSpend,
     await readCapWeeklyToPool(wfClient),
     await readOverBudgetSpent(wfClient),
@@ -1867,17 +1895,15 @@ export async function composeDailyDigest(
     },
   );
 
-  // A price creep is one line for a couple of mornings, then silence: the
-  // detector re-flags `creep` as long as the newest charge tops the typical
-  // price, but the NEWS is only news while the charge is fresh — repeating it
-  // daily until next month's charge would train the reader to skip it.
-  for (const sub of await readCubeSubscriptions(wfClient)) {
-    const daysSince = (now.getTime() - Date.parse(`${sub.lastDate}T00:00:00Z`)) / 86_400_000;
-    if (sub.creep && daysSince <= CREEP_FRESH_DAYS) {
-      message += `\n\n📈 ${sub.name} charged ${formatDollars(sub.lastCents / 100, 2)}`
-        + ` — up from its usual ${formatDollars(sub.monthlyCents / 100, 2)}.`;
-    }
-  }
+  // "Coming up" (1.60): reminders, the week's charges (Full), the price-rise
+  // line that used to stand alone here (same 3-day rule), and "cancelled?".
+  // From the roster, so it says what the card and /subscriptions say.
+  // Guarded to absence: it can cost itself, never the report.
+  const roster = (await readRosterFor(wfClient, now).catch(() => null))?.roster ?? null;
+  const comingUp = roster
+    ? formatComingUpBlock(roster, toDateString(now), resolveReportDetail(tg), glyphStyle)
+    : null;
+  if (comingUp) message += `\n\n${comingUp.text}`;
 
   // Read so that an unreadable secret stays DISTINGUISHABLE from a missing
   // one: the self-check reports those differently, because "could not check"
@@ -1924,11 +1950,19 @@ export async function composeDailyDigest(
     }
   }
 
+  const rows: InlineKeyboard['inline_keyboard'] = [];
+  if (comingUp) {
+    // Opens the list as a NEW message, like the 🧹 button below it.
+    rows.push([SUBSCRIPTIONS_BUTTON]);
+    const hides = comingUp.cancelled.slice(0, 2).map(hideFromReportButton);
+    if (hides.length > 0) rows.push(hides);
+  }
+  // The 🧹 button only when something is actually folded behind it.
+  if (folded > 0) rows.push([SHOW_FINDINGS_BUTTON]);
   return {
     text: message,
     archive,
-    // The button only when something is actually folded behind it.
-    keyboard: folded > 0 ? { inline_keyboard: [[SHOW_FINDINGS_BUTTON]] } : undefined,
+    keyboard: rows.length > 0 ? { inline_keyboard: rows } : undefined,
   };
 }
 
@@ -1963,32 +1997,6 @@ function findingsDeps(wfClient: WealthfolioClient): FindingsDeps {
  * caches for 6 hours because `/report` can be asked for repeatedly and the
  * answer changes at most once a day.
  */
-/** Days a crept charge still counts as news in the daily digest. */
-const CREEP_FRESH_DAYS = 3;
-
-/** The cube's detected subscriptions, or [] — a guarded addition that can
- *  only cost itself, never the report it rides. */
-async function readCubeSubscriptions(
-  wfClient: WealthfolioClient,
-): Promise<NonNullable<ReturnType<typeof parseReportCube>>['subscriptions'] & object> {
-  const cube = parseReportCube(
-    await wfClient.getAddonSecret('simplefin-sync', REPORT_CUBE_SECRET_KEY).catch(() => null),
-  );
-  // The MONEY set: auto-detected subscriptions plus names the user confirmed
-  // on the card, minus dismissals. Bills and maybes are the card's question
-  // to ask — they never reach a Telegram total unanswered. The cube keeps the
-  // full detection so both answers take effect without a sync.
-  const hidden = new Set(parseHiddenSubscriptions(
-    await wfClient.getAddonSecret('simplefin-sync', HIDDEN_SUBSCRIPTIONS_SECRET_KEY).catch(() => null),
-  ));
-  const confirmed = new Set(parseHiddenSubscriptions(
-    await wfClient.getAddonSecret('simplefin-sync', CONFIRMED_SUBSCRIPTIONS_SECRET_KEY).catch(() => null),
-  ));
-  return (cube?.subscriptions ?? []).filter((sub) =>
-    !hidden.has(sub.name)
-    && ((sub.kind ?? 'subscription') === 'subscription' || confirmed.has(sub.name)));
-}
-
 export const updateCheckDeps: {
   armed: boolean;
   fetchLatestVersion: () => Promise<string | null>;
@@ -2143,6 +2151,48 @@ async function sendReportWithRetry(
   }
 }
 
+/**
+ * With the daily report switched off, the subscription lines still arrive:
+ * the 🔔, 📈 and ✓ lines the report would have carried, as ONE short
+ * message, each event at most once (ids in `subscription_news_sent`, pruned
+ * after 60 days). Recorded only after Telegram accepted the message, so a
+ * failed morning tries again the next — a reminder still inside its window
+ * still goes.
+ */
+export async function sendSubscriptionNews(
+  wfClient: WealthfolioClient,
+  tg: { botToken: string; chatId: string },
+  now: Date,
+): Promise<void> {
+  const today = toDateString(now);
+  const read = await readRosterFor(wfClient, now).catch(() => null);
+  if (!read) return;
+  // A THROWN read is not "nothing sent yet": skip the morning rather than
+  // repeat every in-window event and overwrite the history (R2-17).
+  let rawSent: string | null;
+  try {
+    rawSent = await wfClient.getAddonSecret('simplefin-sync', SUBSCRIPTION_NEWS_SECRET_KEY);
+  } catch (err) {
+    log(`Subscription news: could not read what was already sent — skipping today: ${formatError(err)}`);
+    return;
+  }
+  // A present-but-corrupt memo parses as empty: one repeat of in-window events, then the history is rebuilt.
+  const sent = parseNewsSent(rawSent);
+  const news = formatSubscriptionNews(read.roster, today, sent, await readGlyphStyle(wfClient));
+  if (!news) return;
+  const hides = news.cancelled.slice(0, 2).map(hideFromReportButton);
+  const keyboard: InlineKeyboard = { inline_keyboard: [[SUBSCRIPTIONS_BUTTON], ...(hides.length > 0 ? [hides] : [])] };
+  const result = await sendTelegramMessage(tg.botToken, tg.chatId, news.text, undefined, keyboard);
+  if (!result.ok) {
+    log(`Subscription news was not sent: ${result.description}`);
+    return;
+  }
+  log('Subscription news sent (the daily report is off).');
+  const next = pruneNewsSent({ ...sent, ...Object.fromEntries(news.events.map((id) => [id, today])) }, today);
+  await wfClient.setAddonSecret('simplefin-sync', SUBSCRIPTION_NEWS_SECRET_KEY, JSON.stringify(next))
+    .catch((err) => log(`Could not record the subscription news as sent: ${formatError(err)}`));
+}
+
 export async function sendDailyTelegramReport(
   wfClient: WealthfolioClient,
   sleep: (ms: number) => Promise<void> = defaultReportSleep,
@@ -2157,7 +2207,17 @@ export async function sendDailyTelegramReport(
   // The archive carries every finding spelled out: the Reports tab and a push
   // notification have no "Show what to fix" button to unfold a count with.
   await deliverReportEdition(wfClient, 'daily', digest.archive, new Date(), tg?.dailyReportEnabled !== false);
-  if (!tg || !tg.botToken || !tg.chatId || tg.enabled === false || tg.dailyReportEnabled === false) return;
+  if (!tg || !tg.botToken || !tg.chatId || tg.enabled === false) return;
+  if (tg.dailyReportEnabled === false) {
+    // The report is off, but a reminder was asked for: the lines go out on
+    // their own — never both (v1.57's one-voice rule).
+    try {
+      await sendSubscriptionNews(wfClient, tg, new Date());
+    } catch (err) {
+      log(`Subscription news failed: ${formatError(err)}`);
+    }
+    return;
+  }
 
   await sendReportWithRetry(
     tg.botToken, tg.chatId, digest.text,
@@ -2189,11 +2249,11 @@ const BRIEF_WEEKLY_TOP_SPEND_COUNT = 3;
  */
 /** The weekly check-in's text, or `null` when the database cannot be read.
  *  `tg` supplies display options only; no chat has to be configured. */
-export async function composeWeeklyReportMessage(
+export async function composeWeeklyReport(
   wfClient: WealthfolioClient,
   now: Date,
   tg: any,
-): Promise<string | null> {
+): Promise<{ text: string; keyboard?: InlineKeyboard } | null> {
   const dbPath = wealthfolioDbPath();
   if (!dbPath || !existsSync(dbPath)) {
     log('WEALTHFOLIO_DB_PATH not found or missing, skipping weekly summary.');
@@ -2224,20 +2284,45 @@ export async function composeWeeklyReportMessage(
   // Always, while a pool is set: whether it lasts is the weekly report's point.
   const poolStatus = await readPoolStatus(poolDeps, now).catch(() => null);
   const runwayMonths = full ? await readRunwayMonths(poolDeps, now) : null;
+  const glyphStyle = await readGlyphStyle(wfClient);
   let message = formatMonthlyRemainingSummary(
     totalSpent,
     totalBudget,
     topSpends.map((t) => ({ amount: t.amount, description: t.description, category: t.categoryName })),
-    await readGlyphStyle(wfClient),
+    glyphStyle,
     poolStatus,
     runwayMonths,
   );
-  const subs = full ? await readCubeSubscriptions(wfClient) : [];
-  if (subs.length > 0) {
-    const totalCents = subs.reduce((sum, sub) => sum + sub.monthlyCents, 0);
-    message += `\n\n*Subscriptions* — ${formatDollars(totalCents / 100, 2)}/mo across ${subs.length}`;
+  let keyboard: InlineKeyboard | undefined;
+  if (full) {
+    // From the roster since 1.60: the card's names and totals, and what the
+    // coming week will charge. Guarded: it can cost these lines, never the report.
+    const read = await readRosterFor(wfClient, now).catch(() => null);
+    if (read) {
+      const { roster } = read;
+      const lines: string[] = [];
+      if (roster.subscriptions.length > 0) {
+        lines.push(`*Subscriptions* — ${formatRosterTotal(roster)} across ${roster.subscriptions.length}`);
+      }
+      const nextWeek = formatNextWeekLine(dueWithin(roster, addDaysIso(toDateString(now), 1), 7), glyphStyle);
+      if (nextWeek) lines.push(nextWeek);
+      if (lines.length > 0) {
+        message += `\n\n${lines.join('\n')}`;
+        keyboard = { inline_keyboard: [[SEE_ALL_SUBSCRIPTIONS_BUTTON]] };
+      }
+    }
   }
-  return message;
+  return { text: message, keyboard };
+}
+
+/** The weekly report's text alone — the Reports tab's live edition (R2-7:
+ *  publishLiveReports keeps calling this, unchanged). */
+export async function composeWeeklyReportMessage(
+  wfClient: WealthfolioClient,
+  now: Date,
+  tg: any,
+): Promise<string | null> {
+  return (await composeWeeklyReport(wfClient, now, tg))?.text ?? null;
 }
 
 export async function sendWeeklyTelegramReport(
@@ -2247,8 +2332,9 @@ export async function sendWeeklyTelegramReport(
   const tgRaw = await wfClient.getAddonSecret('simplefin-sync', 'telegram_config');
   const tg = parseSecretJson<any>(tgRaw, 'telegram_config');
   const now = new Date();
-  const message = await composeWeeklyReportMessage(wfClient, now, tg ?? {});
-  if (message === null) return;
+  const report = await composeWeeklyReport(wfClient, now, tg ?? {});
+  if (report === null) return;
+  const message = report.text;
   await deliverReportEdition(wfClient, 'weekly', message, now, tg?.weeklyReportEnabled !== false);
 
   if (!tg) return;
@@ -2257,6 +2343,7 @@ export async function sendWeeklyTelegramReport(
   await sendReportWithRetry(
     tg.botToken, tg.chatId, message,
     'weekly', 'Weekly Telegram total-remaining summary sent successfully.', sleep,
+    report.keyboard,
   );
 }
 
@@ -2797,6 +2884,33 @@ async function readBudgetSnapshotWithStyle(wfClient: WealthfolioClient) {
   };
 }
 
+/** One subscription write for the question flows, reported as an outcome so
+ *  each flow can answer with the matching sentence. */
+async function writeSubscriptionPrefs(
+  wfClient: WealthfolioClient,
+  edit: SubscriptionEdit,
+): Promise<'ok' | 'unreadable' | 'invalid' | 'unreachable'> {
+  const { get, set } = subscriptionSecrets(wfClient);
+  try {
+    await editSubscriptionPrefs(get, set, edit, new Date());
+    return 'ok';
+  } catch (err) {
+    if (isUnreadablePrefsError(err)) return 'unreadable';
+    if (err instanceof SubscriptionPrefsInvalidError) return 'invalid';
+    log(`Subscription write failed: ${formatError(err)}`);
+    return 'unreachable';
+  }
+}
+
+const SUBSCRIPTION_INVALID_REPLY = "Couldn't save that — nothing was changed.";
+
+/** The sentence for a write that did not go through. */
+function subscriptionWriteFailure(outcome: 'unreadable' | 'invalid' | 'unreachable'): string {
+  return outcome === 'unreadable' ? SUBSCRIPTIONS_UNREADABLE_REPLY
+    : outcome === 'invalid' ? SUBSCRIPTION_INVALID_REPLY
+    : SUBSCRIPTIONS_UNREACHABLE_REPLY;
+}
+
 /**
  * The bot's question flows, registered on ONE session holder. Like the
  * categorize controller, one instance must serve `onCommand`, `onText` and
@@ -2872,6 +2986,72 @@ export function buildAskSessions(wfClient: WealthfolioClient, controller: Catego
         // Re-read at Save: the questions may have taken minutes.
         const { categories, period, style } = await readBudgetSnapshotWithStyle(wfClient);
         await send(formatAffordReply(categories, period, style, (a.amount as number) / 100, a.query as string));
+      },
+    };
+  });
+  asks.register('sub-add', async (_arg, send) => {
+    // Checked before the five questions, not after them: a document that
+    // cannot be written must not cost the answers.
+    const loaded = await loadSubscriptionPrefs(subscriptionSecrets(wfClient).get).catch(() => null);
+    if (!loaded) {
+      await send(SUBSCRIPTIONS_UNREACHABLE_REPLY);
+      return null;
+    }
+    if (loaded.unreadable) {
+      await send(SUBSCRIPTIONS_UNREADABLE_REPLY);
+      return null;
+    }
+    return {
+      flow: buildSubAddFlow(new Date()),
+      onDone: async (a, reply) => {
+        const entry: ManualSubscription = {
+          id: newManualId(), name: a.name as string, cents: a.amount as number,
+          cadence: a.cadence as Cadence, nextDate: a.nextDate as string,
+        };
+        const remind = (a.remind ?? null) as RemindDays | null;
+        const outcome = await writeSubscriptionPrefs(wfClient, (p) => setRemind(addManual(p, entry), manualKey(entry.id), remind));
+        if (outcome !== 'ok') {
+          await reply(subscriptionWriteFailure(outcome));
+          return;
+        }
+        await reply(
+          `✍️ Added ${escapeMarkdown(entry.name)} — ${rosterMoney(entry.cents)} ${entry.cadence === 'yearly' ? 'a year' : 'a month'}, next charge ${shortDate(entry.nextDate)}.`,
+          { inline_keyboard: [[SUBSCRIPTIONS_BUTTON]] },
+        );
+      },
+    };
+  });
+  asks.register('sub-rename', async (arg, send) => {
+    let read: RosterRead;
+    try {
+      read = await readRosterFor(wfClient, new Date());
+    } catch (err) {
+      log(`Ask flow sub-rename: reading failed: ${formatError(err)}`);
+      await send(SUBSCRIPTIONS_UNREACHABLE_REPLY);
+      return null;
+    }
+    if (read.unreadable) {
+      await send(SUBSCRIPTIONS_UNREADABLE_REPLY);
+      return null;
+    }
+    const entry = findRosterEntry(read.roster, arg ?? '');
+    if (!entry) {
+      await send(SUBSCRIPTIONS_RENAME_GONE_REPLY);
+      return null;
+    }
+    return {
+      flow: buildSubRenameFlow(entry.displayName),
+      onDone: async (a, reply) => {
+        const name = a.name as string;
+        const outcome = await writeSubscriptionPrefs(wfClient, (p) => renameKey(p, entry.key, name));
+        if (outcome !== 'ok') {
+          await reply(subscriptionWriteFailure(outcome));
+          return;
+        }
+        await reply(
+          `✏️ Renamed ${escapeMarkdown(entry.displayName)} to ${escapeMarkdown(name)}.`,
+          { inline_keyboard: [[undoRenameButton(entry.handle)], [SUBSCRIPTIONS_BUTTON]] },
+        );
       },
     };
   });
@@ -3009,6 +3189,22 @@ export function buildTelegramCommandHandler(
             { text: '✏️ Set a pool', callback_data: askStartData('pool-set') },
           ]] });
         }
+        return;
+      }
+
+      case 'subscriptions': {
+        // Caught here, unlike most commands: "Couldn't reach Wealthfolio" is
+        // the answer the design promises, not the listener's generic apology.
+        let read: RosterRead;
+        try {
+          read = await readRosterFor(wfClient, new Date());
+        } catch (err) {
+          log(`/subscriptions: reading failed: ${formatError(err)}`);
+          await reply(SUBSCRIPTIONS_UNREACHABLE_REPLY);
+          return;
+        }
+        const screen = renderSubscriptionList(read, 0);
+        await reply(screen.text, screen.keyboard);
         return;
       }
 
@@ -3285,6 +3481,18 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
     log,
   });
 
+  // `/subscriptions` and the report buttons into it. Stateless like the
+  // findings menu: every tap re-reads, so it survives restarts.
+  const subscriptions: SubscriptionsMenu = createSubscriptionsMenu({
+    read: (now) => readRosterFor(wfClient, now),
+    edit: (edit, now) => {
+      const { get, set } = subscriptionSecrets(wfClient);
+      return editSubscriptionPrefs(get, set, edit, now);
+    },
+    now: () => new Date(),
+    log,
+  });
+
   const ensureSession = async (): Promise<void> => {
     if (Date.now() - sessionEstablishedAt < LISTENER_SESSION_MAX_AGE_MS) return;
     const key = process.env.WEALTHFOLIO_API_KEY;
@@ -3436,6 +3644,12 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
         await findings.onCallback(cb, ui);
         return;
       }
+      // `cz:sb:` before the transaction menu, which reads any `cz:` data it
+      // does not know as an expired session.
+      if (subscriptions.handles(cb.data)) {
+        await subscriptions.onCallback(cb, ui);
+        return;
+      }
       if (cb.data !== RECATEGORIZE_ENTRY_CALLBACK) {
         await categorize.onCallback(cb, ui);
         return;
@@ -3550,12 +3764,10 @@ if (!process.env.VITEST) {
       readCustomReports: async () => parseCustomReports(
         await wfClient.getAddonSecret('simplefin-sync', 'custom_reports').catch(() => null),
       ),
-      readHiddenSubscriptions: async () => parseHiddenSubscriptions(
-        await wfClient.getAddonSecret('simplefin-sync', HIDDEN_SUBSCRIPTIONS_SECRET_KEY).catch(() => null),
-      ),
-      readConfirmedSubscriptions: async () => parseHiddenSubscriptions(
-        await wfClient.getAddonSecret('simplefin-sync', CONFIRMED_SUBSCRIPTIONS_SECRET_KEY).catch(() => null),
-      ),
+      // The document the card and the bot edit. A failed read renders the page
+      // with nothing hidden rather than no page.
+      readSubscriptionPrefs: async () =>
+        (await loadSubscriptionPrefs(subscriptionSecrets(wfClient).get).catch(() => null))?.prefs ?? emptySubscriptionPrefs(),
     };
     createServer((req, res) => {
       let body = '';

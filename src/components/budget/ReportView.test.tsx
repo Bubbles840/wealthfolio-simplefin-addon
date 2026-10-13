@@ -1,10 +1,14 @@
 import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ReportView } from './ReportView';
 import { CUBE } from '../../../shared/report-cube.test';
 import type { ReportCube } from '../../../shared/report-cube';
 import type { CustomReport } from '../../../shared/report-eval';
+import type { DetectedSubscription } from '../../../shared/subscriptions';
+import {
+  emptySubscriptionPrefs, type LoadedSubscriptionPrefs, type SubscriptionEdit, type SubscriptionPrefs,
+} from '../../../shared/subscription-prefs';
 
 /**
  * Component-level: charts are host-provided recharts, mocked here to
@@ -279,8 +283,23 @@ describe('data check card', () => {
   });
 });
 
+// ── Subscriptions: since 1.60 rendered from the shared roster ─────────────
+const SUB_NOW = new Date(2026, 9, 12, 9, 0, 0);
+const useSubNow = () => {
+  beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(SUB_NOW); });
+  afterEach(() => { vi.useRealTimers(); });
+};
+const prefsWith = (over: Partial<SubscriptionPrefs> = {}): LoadedSubscriptionPrefs =>
+  ({ prefs: { ...emptySubscriptionPrefs(), ...over }, unreadable: false });
+const applied = (spy: ReturnType<typeof vi.fn>, base: SubscriptionPrefs = emptySubscriptionPrefs()) =>
+  spy.mock.calls.reduce((p: SubscriptionPrefs, call: unknown[]) => (call[0] as SubscriptionEdit)(p), base);
+const sub = (over: Partial<DetectedSubscription> = {}): DetectedSubscription => ({
+  name: 'SPOTIFY', monthlyCents: 1099, count: 5, lastDate: '2026-09-20', lastCents: 1099, creep: false,
+  kind: 'subscription', ...over,
+});
+
 describe('subscriptions card', () => {
-  const SUB = { name: 'SPOTIFY', monthlyCents: 1099, count: 5, lastDate: '2026-08-20', lastCents: 1099, creep: false };
+  useSubNow();
 
   it('waits politely while the companion has not looked yet', () => {
     view('subscriptions');
@@ -288,16 +307,15 @@ describe('subscriptions card', () => {
   });
 
   it('lists each subscription with its monthly price and totals them', () => {
-    view('subscriptions', { ...fresh(), subscriptions: [SUB, { ...SUB, name: 'ADOBE', monthlyCents: 5499, lastCents: 5499 }] });
+    view('subscriptions', { ...fresh(), subscriptions: [sub(), sub({ name: 'ADOBE', monthlyCents: 5499, lastCents: 5499 })] });
     expect(screen.getByText('SPOTIFY')).toBeTruthy();
     expect(screen.getByText('ADOBE')).toBeTruthy();
     expect(screen.getByText(/\$65\.98\/mo across 2/)).toBeTruthy();
   });
 
   it('marks price creep with the old and new price', () => {
-    view('subscriptions', { ...fresh(), subscriptions: [{ ...SUB, lastCents: 1199, creep: true }] });
-    expect(screen.getByText(/\$11\.99/)).toBeTruthy();
-    expect(screen.getByText(/was \$10\.99/)).toBeTruthy();
+    view('subscriptions', { ...fresh(), subscriptions: [sub({ lastCents: 1199, creep: true })] });
+    expect(screen.getByText('$11.99 ▲ was $10.99')).toBeTruthy();
   });
 
   it('an empty roster reads as a clean bill, not an error', () => {
@@ -306,94 +324,86 @@ describe('subscriptions card', () => {
   });
 });
 
-describe('subscriptions card: dismissals', () => {
-  const SUB = { name: 'SPOTIFY', monthlyCents: 1099, count: 5, lastDate: '2026-08-20', lastCents: 1099, creep: false };
-  const QR = { ...SUB, name: 'QR LIBRARY', monthlyCents: 999 };
+describe('subscriptions card: hiding', () => {
+  useSubNow();
+  const QR = sub({ name: 'QR LIBRARY', monthlyCents: 999, lastCents: 999 });
 
-  it('each row offers a dismiss, for the subscription that was cancelled', () => {
-    const onHide = vi.fn();
-    render(<ReportView
-      id="subscriptions"
-      cube={{ ...fresh(), subscriptions: [SUB, QR] }}
-      customReports={[]}
-      hiddenSubscriptions={[]}
-      onHideSubscription={onHide}
-    />);
-    fireEvent.click(screen.getByRole('button', { name: 'Dismiss QR LIBRARY' }));
-    expect(onHide).toHaveBeenCalledWith('QR LIBRARY');
+  it('a row opens to Hide / I cancelled it, which hides it — and celebrates the money freed', () => {
+    const onEdit = vi.fn();
+    render(<ReportView id="subscriptions" cube={{ ...fresh(), subscriptions: [sub(), QR] }} customReports={[]}
+      subscriptionPrefs={prefsWith()} onSubscriptionEdit={onEdit} />);
+    fireEvent.click(screen.getByRole('button', { name: 'QR LIBRARY' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Hide QR LIBRARY' }));
+    expect(applied(onEdit).hidden).toEqual(['QR LIBRARY']);
+    expect(screen.getByText(/\$9\.99\/mo back in your pocket/i)).toBeTruthy();
   });
 
   it('hidden names leave the roster and the total, with a way back', () => {
-    const onRestore = vi.fn();
-    render(<ReportView
-      id="subscriptions"
-      cube={{ ...fresh(), subscriptions: [SUB, QR] }}
-      customReports={[]}
-      hiddenSubscriptions={['QR LIBRARY']}
-      onRestoreSubscriptions={onRestore}
-    />);
+    const onEdit = vi.fn();
+    const base = prefsWith({ hidden: ['QR LIBRARY'] });
+    render(<ReportView id="subscriptions" cube={{ ...fresh(), subscriptions: [sub(), QR] }} customReports={[]}
+      subscriptionPrefs={base} onSubscriptionEdit={onEdit} />);
     expect(screen.queryByText('QR LIBRARY')).toBeNull();
     expect(screen.getByText(/\$10\.99\/mo across 1/)).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: /1 dismissed — restore/i }));
-    expect(onRestore).toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: /1 hidden — restore/i }));
+    expect(applied(onEdit, base.prefs).hidden).toEqual([]);
   });
 
-  it('without handlers the card renders read-only, as in older hosts', () => {
-    render(<ReportView id="subscriptions" cube={{ ...fresh(), subscriptions: [SUB] }} customReports={[]} />);
-    expect(screen.queryByRole('button', { name: /dismiss/i })).toBeNull();
+  it('without an edit handler the card is read-only, as in older hosts', () => {
+    render(<ReportView id="subscriptions" cube={{ ...fresh(), subscriptions: [sub()] }} customReports={[]} />);
+    fireEvent.click(screen.getByRole('button', { name: 'SPOTIFY' }));
+    expect(screen.queryByRole('button', { name: /hide/i })).toBeNull();
   });
 });
 
-describe('subscriptions card: confirm/ignore (v1.37)', () => {
-  const sub = (over: any = {}) => ({
-    name: 'SPOTIFY', monthlyCents: 1099, count: 5, lastDate: '2026-08-20',
-    lastCents: 1099, creep: false, kind: 'subscription', ...over,
-  });
+describe('subscriptions card: bills and maybes (1.60)', () => {
+  useSubNow();
 
-  it('bills and possibles become a question, not a line item', () => {
-    // The user's general approach: anything on a monthly cadence gets ASKED
-    // about — rent and utilities included — and only answers count as money.
-    const onConfirm = vi.fn();
-    const onHide = vi.fn();
+  it('bills are their own group, out of the total; maybes are still a question', () => {
+    const onEdit = vi.fn();
     render(<ReportView id="subscriptions" customReports={[]} cube={{ ...fresh(), subscriptions: [
       sub(),
       sub({ name: 'DUKE ENERGY', monthlyCents: 9900, lastCents: 9900, prevCents: 5420, kind: 'bill' }),
       sub({ name: 'MYSTERY BOX CLUB', monthlyCents: 1500, lastCents: 1500, prevCents: 1500, kind: 'possible' }),
-    ] }} hiddenSubscriptions={[]} confirmedSubscriptions={[]} onConfirmSubscription={onConfirm} onHideSubscription={onHide} />);
-    expect(screen.getByText(/is this a subscription\?/i)).toBeTruthy();
-    // No mute "varies": the change itself is the information.
-    expect(screen.getByText(/\$54\.20 → \$99\.00\/mo/)).toBeTruthy();
-    // Only the sure subscription counts.
+    ] }} subscriptionPrefs={prefsWith()} onSubscriptionEdit={onEdit} />);
+    expect(screen.getByText('Bills ≈ $99/mo')).toBeTruthy();
+    expect(screen.getByText('about $99/mo')).toBeTruthy();
     expect(screen.getByText(/\$10\.99\/mo across 1/)).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Yes, DUKE ENERGY is a subscription' }));
-    expect(onConfirm).toHaveBeenCalledWith('DUKE ENERGY');
+    expect(screen.getByText(/is this a subscription\?/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Yes, MYSTERY BOX CLUB is a subscription' }));
     fireEvent.click(screen.getByRole('button', { name: 'No, ignore MYSTERY BOX CLUB' }));
-    expect(onHide).toHaveBeenCalledWith('MYSTERY BOX CLUB');
+    expect(applied(onEdit)).toMatchObject({ confirmed: ['MYSTERY BOX CLUB'], hidden: ['MYSTERY BOX CLUB'] });
   });
 
   it('a confirmed candidate joins the roster and the total for good', () => {
     render(<ReportView id="subscriptions" customReports={[]} cube={{ ...fresh(), subscriptions: [
-      sub(),
-      sub({ name: 'DUKE ENERGY', monthlyCents: 9900, kind: 'bill' }),
-    ] }} hiddenSubscriptions={[]} confirmedSubscriptions={['DUKE ENERGY']} />);
-    expect(screen.queryByText(/is this a subscription\?/i)).toBeNull();
+      sub(), sub({ name: 'DUKE ENERGY', monthlyCents: 9900, lastCents: 9900, kind: 'bill' }),
+    ] }} subscriptionPrefs={prefsWith({ confirmed: ['DUKE ENERGY'] })} />);
+    expect(screen.queryByText(/Bills ≈/)).toBeNull();
     expect(screen.getByText(/\$109\.99\/mo across 2/)).toBeTruthy();
   });
 
   it('rows without a kind (older companion) count as subscriptions', () => {
-    render(<ReportView id="subscriptions" customReports={[]} cube={{ ...fresh(), subscriptions: [
-      sub({ kind: undefined }),
-    ] }} />);
+    render(<ReportView id="subscriptions" customReports={[]} cube={{ ...fresh(), subscriptions: [sub({ kind: undefined })] }} />);
     expect(screen.getByText(/\$10\.99\/mo across 1/)).toBeTruthy();
     expect(screen.queryByText(/is this a subscription\?/i)).toBeNull();
   });
+
+  it('an unchanged bill shows one price — no arrow, no "varies"', () => {
+    render(<ReportView id="subscriptions" customReports={[]} cube={{ ...fresh(), subscriptions: [
+      sub({ name: 'RENT LLC', monthlyCents: 90000, count: 4, lastDate: '2026-09-25', lastCents: 90000, prevCents: 90000, kind: 'bill' }),
+    ] }} subscriptionPrefs={prefsWith()} onSubscriptionEdit={vi.fn()} />);
+    expect(screen.getByText('about $900/mo')).toBeTruthy();
+    expect(screen.queryByText(/varies/)).toBeNull();
+    expect(screen.queryByText(/→/)).toBeNull();
+  });
 });
 
-describe('subscriptions card: watch + per-item restore (v1.38)', () => {
-  const SUB = { name: 'SPOTIFY', monthlyCents: 1099, count: 5, lastDate: '2026-08-20', lastCents: 1099, creep: false, kind: 'subscription' as const };
+describe('subscriptions card: watch + per-item restore', () => {
+  useSubNow();
   const cubeWithMerchants = () => ({
     ...fresh(),
-    subscriptions: [SUB],
+    subscriptions: [sub()],
     merchants: [[], [
       { name: 'ANTHROPIC* CLAUDE SUB', cents: 2000, count: 1 },
       { name: 'CHIPOTLE', cents: 4500, count: 3 },
@@ -402,44 +412,35 @@ describe('subscriptions card: watch + per-item restore (v1.38)', () => {
 
   it('a confirmed name with no detection yet shows as watching, priced by its charges', () => {
     render(<ReportView id="subscriptions" customReports={[]} cube={cubeWithMerchants()}
-      confirmedSubscriptions={['ANTHROPIC* CLAUDE SUB']} hiddenSubscriptions={[]} />);
+      subscriptionPrefs={prefsWith({ confirmed: ['ANTHROPIC* CLAUDE SUB'] })} />);
     expect(screen.getByText('ANTHROPIC* CLAUDE SUB')).toBeTruthy();
-    expect(screen.getByText(/\$20\.00\/mo · watching/)).toBeTruthy();
-    // It counts: a watched subscription is money leaving monthly.
+    expect(screen.getByText('$20/mo')).toBeTruthy();
+    expect(screen.getByText('watching')).toBeTruthy();
     expect(screen.getByText(/\$30\.99\/mo across 2/)).toBeTruthy();
   });
 
-  it('the open view offers this month’s merchants to watch', () => {
-    const onConfirm = vi.fn();
+  it('the open view offers recent merchants to watch', () => {
+    const onEdit = vi.fn();
     render(<ReportView id="subscriptions" customReports={[]} cube={cubeWithMerchants()} hero
-      confirmedSubscriptions={[]} hiddenSubscriptions={[]} onConfirmSubscription={onConfirm} />);
+      subscriptionPrefs={prefsWith()} onSubscriptionEdit={onEdit} />);
     fireEvent.click(screen.getByRole('button', { name: 'Watch ANTHROPIC* CLAUDE SUB' }));
-    expect(onConfirm).toHaveBeenCalledWith('ANTHROPIC* CLAUDE SUB');
+    expect(applied(onEdit).confirmed).toEqual(['ANTHROPIC* CLAUDE SUB']);
   });
 
   it('the grid card does not carry the watch list — it is drill-in furniture', () => {
     render(<ReportView id="subscriptions" customReports={[]} cube={cubeWithMerchants()}
-      confirmedSubscriptions={[]} hiddenSubscriptions={[]} onConfirmSubscription={vi.fn()} />);
+      subscriptionPrefs={prefsWith()} onSubscriptionEdit={vi.fn()} />);
     expect(screen.queryByRole('button', { name: /watch anthropic/i })).toBeNull();
   });
 
-  it('the open view restores dismissed names one at a time', () => {
-    const onUnhide = vi.fn();
-    render(<ReportView id="subscriptions" customReports={[]} cube={cubeWithMerchants()} hero
-      confirmedSubscriptions={[]} hiddenSubscriptions={['QR LIBRARY']} onUnhideSubscription={onUnhide} />);
+  it('the open view restores hidden rows one at a time', () => {
+    const onEdit = vi.fn();
+    const base = prefsWith({ hidden: ['QR LIBRARY'] });
+    render(<ReportView id="subscriptions" customReports={[]} hero
+      cube={{ ...cubeWithMerchants(), subscriptions: [sub(), sub({ name: 'QR LIBRARY', monthlyCents: 999, lastCents: 999 })] }}
+      subscriptionPrefs={base} onSubscriptionEdit={onEdit} />);
     fireEvent.click(screen.getByRole('button', { name: 'Restore QR LIBRARY' }));
-    expect(onUnhide).toHaveBeenCalledWith('QR LIBRARY');
-  });
-});
-
-describe('subscriptions card: recent months (v1.39)', () => {
-  it('an unchanged question row shows one price, not an arrow, not varies', () => {
-    render(<ReportView id="subscriptions" customReports={[]} cube={{ ...fresh(), subscriptions: [
-      { name: 'RENT LLC', monthlyCents: 90000, count: 4, lastDate: '2026-08-25', lastCents: 90000, prevCents: 90000, creep: false, kind: 'bill' as const },
-    ] }} hiddenSubscriptions={[]} confirmedSubscriptions={[]} onConfirmSubscription={vi.fn()} />);
-    expect(screen.getByText('$900.00/mo')).toBeTruthy();
-    expect(screen.queryByText(/varies/)).toBeNull();
-    expect(screen.queryByText(/→/)).toBeNull();
+    expect(applied(onEdit, base.prefs).hidden).toEqual([]);
   });
 
   it('watch list and watched pricing look back past the current month', () => {
@@ -453,15 +454,15 @@ describe('subscriptions card: recent months (v1.39)', () => {
         [{ name: 'CHIPOTLE', cents: 4500, count: 3 }],
       ],
     };
-    const onConfirm = vi.fn();
+    const onEdit = vi.fn();
     const { unmount } = render(<ReportView id="subscriptions" customReports={[]} cube={cube} hero
-      confirmedSubscriptions={[]} hiddenSubscriptions={[]} onConfirmSubscription={onConfirm} />);
+      subscriptionPrefs={prefsWith()} onSubscriptionEdit={onEdit} />);
     fireEvent.click(screen.getByRole('button', { name: 'Watch ANTHROPIC* CLAUDE SUB' }));
-    expect(onConfirm).toHaveBeenCalledWith('ANTHROPIC* CLAUDE SUB');
+    expect(applied(onEdit).confirmed).toEqual(['ANTHROPIC* CLAUDE SUB']);
     unmount();
     render(<ReportView id="subscriptions" customReports={[]} cube={cube}
-      confirmedSubscriptions={['ANTHROPIC* CLAUDE SUB']} hiddenSubscriptions={[]} />);
-    expect(screen.getByText(/\$20\.00\/mo · watching/)).toBeTruthy();
+      subscriptionPrefs={prefsWith({ confirmed: ['ANTHROPIC* CLAUDE SUB'] })} />);
+    expect(screen.getByText('$20/mo')).toBeTruthy();
   });
 });
 
@@ -531,18 +532,6 @@ describe('budget vs actual compresses to fit (v1.43)', () => {
   it('a short list at full size stays at the normal scale', () => {
     render(<ReportView id="budget-vs-actual" customReports={[]} cube={fresh()} density={4} />);
     expect((document.querySelector('[data-bva-list]') as HTMLElement).getAttribute('data-bva-scale')).toBe('normal');
-  });
-});
-
-describe('subscription dismissal feels like a win (v1.43)', () => {
-  it('cancelling celebrates the money freed', () => {
-    const onHide = vi.fn();
-    render(<ReportView id="subscriptions" customReports={[]} cube={{ ...fresh(), subscriptions: [
-      { name: 'QR LIBRARY', monthlyCents: 499, count: 4, lastDate: '2026-08-22', lastCents: 499, creep: false, kind: 'subscription' as const },
-    ] }} hiddenSubscriptions={[]} onHideSubscription={onHide} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Dismiss QR LIBRARY' }));
-    expect(onHide).toHaveBeenCalledWith('QR LIBRARY');
-    expect(screen.getByText(/\$4\.99\/mo back in your pocket/i)).toBeTruthy();
   });
 });
 

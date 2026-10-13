@@ -17,6 +17,8 @@ import {
   parseAmountCents,
   parseDateInput,
   nextOccurrence,
+  parseSubscriptionDate,
+  parseSubscriptionName,
 } from './telegram-commands';
 import type { CategoryBudgetSnapshot, BudgetPeriod, StatusReplyInput } from './telegram-commands';
 import { DEFAULT_GLYPH_STYLE, formatRelativeTime } from './telegram.js';
@@ -56,9 +58,9 @@ describe('formatHelpReply', () => {
     expect(TELEGRAM_COMMAND_MENU.map((c) => c.command))
       .toEqual(['report', 'left', 'categorize', 'charts', 'status', 'sync', 'help']);
   });
-  it('keeps the other five working, listed under "More commands" in /help', () => {
+  it('keeps the other six working, listed under "More commands" in /help', () => {
     expect(TELEGRAM_MORE_COMMANDS.map((c) => c.command))
-      .toEqual(['afford', 'pool', 'recategorize', 'newrule', 'dismissed']);
+      .toEqual(['afford', 'pool', 'recategorize', 'newrule', 'dismissed', 'subscriptions']);
     const help = formatHelpReply();
     const more = help.indexOf('*More commands*');
     expect(more).toBeGreaterThan(help.indexOf('/help'));
@@ -694,5 +696,52 @@ describe('More commands wording (1.60)', () => {
       expect(byName[name]).toMatch(/asks/);
       expect(byName[name]).toContain(`/${name} `);
     }
+  });
+});
+
+describe('subscription answers (1.60)', () => {
+  const now = new Date('2026-10-12T15:00:00Z');
+  const today = '2026-10-12';
+
+  it('reads a name: trimmed, inner spaces collapsed, 1–40 characters', () => {
+    expect(parseSubscriptionName('  Hulu   Plus ')).toBe('Hulu Plus');
+    expect(parseSubscriptionName('   ')).toBeNull();
+    expect(parseSubscriptionName('x'.repeat(41))).toBeNull();
+  });
+
+  it.each([
+    ['Oct 20', 'monthly', '2026-10-20'],
+    ['Oct 3', 'monthly', '2026-11-03'],
+    ['Oct 3', 'yearly', '2027-10-03'],
+    ['2025-03-03', 'yearly', '2027-03-03'],
+    ['Jan 31', 'monthly', '2026-10-31'],
+    ['today', 'monthly', '2026-10-12'],
+  ] as const)('%s (%s) means %s — a past date rolls forward', (input, cadence, want) => {
+    expect(parseSubscriptionDate(input, now, cadence, today)).toBe(want);
+  });
+
+  // R2-4: Feb 29 typed in a year without one.
+  it.each([
+    ['Feb 29', 'yearly', '2027-02-28'],
+    ['february 29th', 'monthly', '2026-10-28'],
+  ] as const)('%s (%s) lands on %s', (input, cadence, want) => {
+    expect(parseSubscriptionDate(input, now, cadence, today)).toBe(want);
+  });
+
+  // R2 fix wave M5: the reader's LOCAL day, not the UTC day of `now`.
+  it('"today" at 21:00 local on Oct 12 with the UTC clock already on Oct 13 is Oct 12', () => {
+    const lateLocal = new Date('2026-10-13T01:00:00Z');
+    expect(parseSubscriptionDate('today', lateLocal, 'monthly', '2026-10-12')).toBe('2026-10-12');
+    expect(parseSubscriptionDate('tomorrow', lateLocal, 'monthly', '2026-10-12')).toBe('2026-10-13');
+  });
+
+  it('"Dec 31" typed on the evening of Dec 31 (UTC already in the new year) is this year, monthly', () => {
+    const newYearUtc = new Date('2027-01-01T02:00:00Z');
+    expect(parseSubscriptionDate('Dec 31', newYearUtc, 'monthly', '2026-12-31')).toBe('2026-12-31');
+    expect(parseSubscriptionDate('Feb 29', newYearUtc, 'yearly', '2026-12-31')).toBe('2027-02-28');
+  });
+
+  it.each(['', 'soon', 'Feb 30', '2026-02-29'])('refuses %j', (input) => {
+    expect(parseSubscriptionDate(input, now, 'monthly', today)).toBeNull();
   });
 });

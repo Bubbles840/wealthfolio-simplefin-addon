@@ -18,6 +18,9 @@ import type { SecretsStore, AccountBalanceInfo, CategoryCatalogEntry } from '../
 import type { Scheduler } from '../utils/scheduler';
 import type { AccountMapping, UnmappedAccount } from '../../shared/types';
 import { pruneDismissals, mergeDismissals, type DismissalLedger } from '../../shared/uncategorized';
+import {
+  emptySubscriptionPrefs, isUnreadablePrefsError, type LoadedSubscriptionPrefs, type SubscriptionEdit,
+} from '../../shared/subscription-prefs';
 
 /** Outside the component: a fresh literal each render would be a new `TabBar`
  *  prop identity for nothing. */
@@ -234,18 +237,16 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
       store.getReportCube?.() ?? null,
       store.getCustomReports?.() ?? [],
       store.getBudgetLayout?.() ?? null,
-      store.getHiddenSubscriptions?.() ?? [],
-      store.getConfirmedSubscriptions?.() ?? [],
+      store.getSubscriptionPrefs?.() ?? null,
     ])
-      .then(([status, ledger, pool, cube, reports, layoutStored, hiddenSubs, confirmedSubs]) => {
+      .then(([status, ledger, pool, cube, reports, layoutStored, subPrefs]) => {
         setUncategorized(status);
         setDismissals(ledger);
         setPoolStatus(pool ?? null);
         setReportCube(cube ?? null);
         setCustomReportsState(reports ?? []);
         setBudgetLayoutState(layoutStored ?? null);
-        setHiddenSubscriptionsState(hiddenSubs ?? []);
-        setConfirmedSubscriptionsState(confirmedSubs ?? []);
+        setSubscriptionPrefs(subPrefs ?? null);
       })
       .catch(() => {});
   }, [store]);
@@ -272,15 +273,32 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
     setBudgetLayoutState(next);
     store.setBudgetLayout?.(next)?.catch(() => {});
   }, [store]);
-  const [hiddenSubscriptions, setHiddenSubscriptionsState] = useState<string[]>([]);
-  const onHiddenSubscriptionsChange = useCallback((next: string[]) => {
-    setHiddenSubscriptionsState(next);
-    store.setHiddenSubscriptions?.(next)?.catch(() => {});
-  }, [store]);
-  const [confirmedSubscriptions, setConfirmedSubscriptionsState] = useState<string[]>([]);
-  const onConfirmedSubscriptionsChange = useCallback((next: string[]) => {
-    setConfirmedSubscriptionsState(next);
-    store.setConfirmedSubscriptions?.(next)?.catch(() => {});
+  const [subscriptionPrefs, setSubscriptionPrefs] = useState<LoadedSubscriptionPrefs | null>(null);
+  /** One subscription edit. The store re-reads the stored document right
+   *  before writing (a hide made from Telegram since this page loaded is
+   *  kept), and the card then shows what was WRITTEN — never a local guess.
+   *  A corrupt document refuses the write and the card says so; any other
+   *  failure changes nothing, like every other setting on this page. */
+  const subscriptionQueue = useRef<Promise<unknown>>(Promise.resolve());
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+  const onSubscriptionEdit = useCallback((edit: SubscriptionEdit) => {
+    if (!store.editSubscriptionPrefs) return;
+    // Edits run one after another: each starts only after the previous one
+    // settled, so it re-reads that write instead of racing it and dropping it.
+    const run = async () => {
+      try {
+        const written = await store.editSubscriptionPrefs!(edit);
+        if (mounted.current) setSubscriptionPrefs({ prefs: written, unreadable: false });
+      } catch (err) {
+        if (!isUnreadablePrefsError(err) || !mounted.current) return;
+        setSubscriptionPrefs((prev) => ({ prefs: prev?.prefs ?? emptySubscriptionPrefs(), unreadable: true }));
+      }
+    };
+    subscriptionQueue.current = subscriptionQueue.current.then(run, run);
   }, [store]);
   const onBudgetLayoutReset = useCallback(() => {
     setBudgetLayoutState(null);
@@ -691,10 +709,8 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
           onLayoutReset={onBudgetLayoutReset}
           onCustomReportsChange={onCustomReportsChange}
           store={store}
-          hiddenSubscriptions={hiddenSubscriptions}
-          onHiddenSubscriptionsChange={onHiddenSubscriptionsChange}
-          confirmedSubscriptions={confirmedSubscriptions}
-          onConfirmedSubscriptionsChange={onConfirmedSubscriptionsChange}
+          subscriptionPrefs={subscriptionPrefs}
+          onSubscriptionEdit={onSubscriptionEdit}
           onOpenActivities={() => { ctx.api.navigation.navigate('/activities').catch(() => {}); }}
           onSetUpCompanion={() => navigate('settings', SETTINGS_CARD.docker)}
           openRequest={budgetOpen}

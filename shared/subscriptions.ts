@@ -50,6 +50,10 @@ export interface DetectedSubscription {
   /** Absent on cubes from pre-1.36 companions — readers treat that as
    *  'subscription'. */
   kind?: RecurringKind;
+  /** 1.60: the newest three charges, newest first — the "last charges" on the
+   *  card's detail and in /subscriptions. Absent on older cubes; readers fall
+   *  back to `lastDate`/`lastCents`. */
+  recent?: Array<{ date: string; cents: number }>;
 }
 
 /** Names that ARE subscriptions when they recur at all — two monthly charges
@@ -146,6 +150,8 @@ export function detectSubscriptions(
       ...(list.length >= 2 ? { prevCents: list[list.length - 2].cents } : {}),
       creep: kind === 'subscription' && stable && last.cents > typical,
       kind,
+      // `recent` above is the trailing three, oldest first.
+      recent: [...recent].reverse().map((c) => ({ date: c.date, cents: c.cents })),
     });
   }
 

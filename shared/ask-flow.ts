@@ -163,8 +163,16 @@ export function answerButton(flow: AskFlow, state: AskState, raw: string): AskOu
   return option ? advance(flow, state, option.value, option.label) : { kind: 'stale' };
 }
 
+/** Telegram drops a button whose callback_data is over 64 bytes — fail loudly
+ *  at render time instead of shipping a dead button. */
+const MAX_CALLBACK_BYTES = 64;
+
 export function askStartData(flowId: string, arg?: string): string {
-  return `${START_PREFIX}${flowId}${arg !== undefined ? `:${arg}` : ''}`;
+  const data = `${START_PREFIX}${flowId}${arg !== undefined ? `:${arg}` : ''}`;
+  if (new TextEncoder().encode(data).length > MAX_CALLBACK_BYTES) {
+    throw new Error(`callback_data over Telegram's 64 bytes: ${data}`);
+  }
+  return data;
 }
 
 export function parseAskStart(raw: string): { flowId: string; arg?: string } | null {

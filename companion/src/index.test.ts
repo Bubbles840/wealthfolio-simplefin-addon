@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { maskUrl, publishLiveReports, validateStartupEnv, startupWarnings, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, composeDailyDigest, runCompanionSyncExclusive, buildTelegramCommandHandler, applyTelegramDismissal, undoTelegramDismissal, formatDismissedReply, buildTelegramListenerDeps, buildCategorizeController, buildCategorizeDeps, rememberImportScope, sendUnmappedAccountsNotice, updateCheckDeps, buildAskSessions } from './index.js';
+import { maskUrl, publishLiveReports, validateStartupEnv, startupWarnings, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, composeDailyDigest, composeWeeklyReportMessage, runCompanionSyncExclusive, buildTelegramCommandHandler, applyTelegramDismissal, undoTelegramDismissal, formatDismissedReply, buildTelegramListenerDeps, buildCategorizeController, buildCategorizeDeps, rememberImportScope, sendUnmappedAccountsNotice, updateCheckDeps, buildAskSessions } from './index.js';
+import { findingHandle } from '../../shared/findings.js';
 import { formatHelpReply, parseCommand } from '../../shared/telegram-commands.js';
 import { SIMPLEFIN_SYNC_VERSION } from '../../shared/version.js';
 import { runSyncCore } from '../../shared/sync-core.js';
@@ -2428,6 +2429,150 @@ describe('buildTelegramCommandHandler', () => {
       delete process.env.MIN_SYNC_INTERVAL_HOURS;
     }
   });
+
+  describe('/subscriptions (1.60)', () => {
+    const cube = JSON.stringify({
+      version: 1, asOf: '2026-10-12T06:00:00.000Z', months: ['2026-10'], categories: [], accounts: [],
+      spend: [[]], uncategorized: [[]], income: [[]], budgets: [[]], merchants: [[]], feesInterest: [0],
+      netWorth: [null], liquid: [null], pool: null,
+      subscriptions: [{
+        name: 'SPOTIFY', monthlyCents: 1199, count: 5, lastDate: '2026-09-15', lastCents: 1199, prevCents: 1199,
+        creep: false, kind: 'subscription', recent: [{ date: '2026-09-15', cents: 1199 }],
+      }],
+    });
+
+    it('replies with the list and one button per row', async () => {
+      const { client } = clientFor([['report_cube', cube]]);
+      const sent: Array<[string, any]> = [];
+      await buildTelegramCommandHandler(client)({ command: 'subscriptions', args: '' }, async (t, k) => { sent.push([t, k]); });
+      expect(sent[0][0]).toContain('💳 *Subscriptions* · $11.99/mo');
+      expect(sent[0][1].inline_keyboard.flat().map((b: any) => b.callback_data)).toContain(`cz:sb:d:${findingHandle('SPOTIFY')}`);
+    });
+
+    it("says so when Wealthfolio can't be reached", async () => {
+      const client = { getAddonSecret: vi.fn(async () => { throw new Error('ECONNREFUSED'); }), setAddonSecret: vi.fn() } as any;
+      const { sent, reply } = collector();
+      await buildTelegramCommandHandler(client)({ command: 'subscriptions', args: '' }, reply);
+      expect(sent).toEqual(["Couldn't reach Wealthfolio — try again."]);
+    });
+
+    it('cz:sb: taps reach the subscriptions menu, not the transaction menu', async () => {
+      const { client } = clientFor([['report_cube', cube]]);
+      const deps = buildTelegramListenerDeps(client);
+      const ui = { edit: vi.fn(async () => {}), answer: vi.fn(async () => {}), send: vi.fn(async () => {}) };
+      await deps.onMenuCallback!({ data: 'cz:sb:o', chatId: 1, messageId: 2 }, ui);
+      expect((ui.send.mock.calls[0] as unknown as [string])[0]).toContain('💳 *Subscriptions*');
+    });
+  });
+
+  describe('subscription questions (1.60)', () => {
+    const SUB_CUBE = JSON.stringify({
+      version: 1, asOf: '2026-10-12T06:00:00.000Z', months: ['2026-10'], categories: [], accounts: [],
+      spend: [[]], uncategorized: [[]], income: [[]], budgets: [[]], merchants: [[]], feesInterest: [0],
+      netWorth: [null], liquid: [null], pool: null,
+      subscriptions: [{
+        name: 'SPOTIFY', monthlyCents: 1199, count: 5, lastDate: '2026-09-15', lastCents: 1199, prevCents: 1199,
+        creep: false, kind: 'subscription', recent: [{ date: '2026-09-15', cents: 1199 }],
+      }],
+    });
+    const atMorning = async (fn: () => Promise<void>) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(2026, 9, 12, 9, 0, 0));
+      try { await fn(); } finally { vi.useRealTimers(); }
+    };
+
+    it('adds a subscription through the questions, then offers the list', async () => {
+      const { client, secrets } = clientFor([['report_cube', SUB_CUBE]]);
+      await atMorning(async () => {
+        const asks = buildAskSessions(client, buildCategorizeController(client));
+        const sent: Array<[string, any]> = [];
+        const send = async (t: string, k?: any) => { sent.push([t, k]); };
+        await asks.start('sub-add', send);
+        for (const answer of ['Hulu', '9.99', 'Monthly', 'Oct 20', '3d']) await asks.onText(answer, send);
+        const save = sent[sent.length - 1][1].inline_keyboard.flat().find((b: any) => b.text === '✅ Save').callback_data;
+        await asks.onCallback({ data: save }, { edit: vi.fn(async () => {}), answer: vi.fn(async () => {}), send });
+        const doc = JSON.parse(secrets.get('subscription_prefs')!);
+        expect(doc.manual).toEqual([{ id: expect.stringMatching(/^[0-9a-z]{8}$/), name: 'Hulu', cents: 999, cadence: 'monthly', nextDate: '2026-10-20' }]);
+        expect(doc.remind).toEqual({ [`m:${doc.manual[0].id}`]: 3 });
+        expect(sent[sent.length - 1]).toEqual([
+          '✍️ Added Hulu — $9.99 a month, next charge Oct 20.',
+          { inline_keyboard: [[{ text: '💳 Subscriptions', callback_data: 'cz:sb:o' }]] },
+        ]);
+      });
+    });
+
+    it('renames from the detail button; the reply carries an Undo that puts the old name back', async () => {
+      const { client, secrets } = clientFor([['report_cube', SUB_CUBE]]);
+      await atMorning(async () => {
+        const deps = buildTelegramListenerDeps(client);
+        const sent: Array<[string, any]> = [];
+        const reply = async (t: string, k?: any) => { sent.push([t, k]); };
+        const ui = { edit: vi.fn(async () => {}), answer: vi.fn(async () => {}), send: reply };
+        await deps.onMenuCallback!({ data: `cz:ak:go:sub-rename:${findingHandle('SPOTIFY')}`, chatId: 1, messageId: 2 }, ui);
+        expect(sent[0][0]).toBe('*Rename*\nNew name for SPOTIFY?');
+        await deps.onText!('Spotify Premium', reply, { privateChat: true });
+        expect(JSON.parse(secrets.get('subscription_prefs')!)).toMatchObject({ names: { SPOTIFY: 'Spotify Premium' }, prevNames: { SPOTIFY: null } });
+        const [text, kb] = sent[sent.length - 1];
+        expect(text).toBe('✏️ Renamed SPOTIFY to Spotify Premium.');
+        const undo = kb.inline_keyboard.flat().find((b: any) => b.text === '↩ Undo').callback_data;
+        expect(undo).toBe(`cz:sb:un:${findingHandle('SPOTIFY')}`);
+        await deps.onMenuCallback!({ data: undo, chatId: 1, messageId: 3 }, ui);
+        expect(JSON.parse(secrets.get('subscription_prefs')!).names).toEqual({});
+      });
+    });
+
+    it('a rename button whose entry has gone says so instead of asking', async () => {
+      const { client } = clientFor([['report_cube', SUB_CUBE]]);
+      const deps = buildTelegramListenerDeps(client);
+      const sent: string[] = [];
+      const ui = { edit: vi.fn(async () => {}), answer: vi.fn(async () => {}), send: async (t: string) => { sent.push(t); } };
+      await deps.onMenuCallback!({ data: 'cz:ak:go:sub-rename:deadbeef', chatId: 1, messageId: 2 }, ui);
+      expect(sent).toEqual(['That one is gone now — send /subscriptions for the current list.']);
+    });
+
+    it('a corrupt document stops the add before the first question', async () => {
+      const { client } = clientFor([['subscription_prefs', '{"v":1,"hidden":']]);
+      const asks = buildAskSessions(client, buildCategorizeController(client));
+      const { sent, reply } = collector();
+      await asks.start('sub-add', reply);
+      expect(sent).toEqual(["Couldn't read your subscription settings — nothing was changed."]);
+    });
+
+    it('a document that turns corrupt while the questions run is answered, not overwritten', async () => {
+      const { client, secrets } = clientFor([['report_cube', SUB_CUBE]]);
+      await atMorning(async () => {
+        const asks = buildAskSessions(client, buildCategorizeController(client));
+        const sent: Array<[string, any]> = [];
+        const send = async (t: string, k?: any) => { sent.push([t, k]); };
+        await asks.start('sub-add', send);
+        for (const answer of ['Hulu', '9.99', 'Monthly', 'Oct 20', 'No']) await asks.onText(answer, send);
+        secrets.set('subscription_prefs', '{"v":1,"hidden":');
+        const save = sent[sent.length - 1][1].inline_keyboard.flat().find((b: any) => b.text === '✅ Save').callback_data;
+        await asks.onCallback({ data: save }, { edit: vi.fn(async () => {}), answer: vi.fn(async () => {}), send });
+        expect(sent[sent.length - 1][0]).toBe("Couldn't read your subscription settings — nothing was changed.");
+        expect(secrets.get('subscription_prefs')).toBe('{"v":1,"hidden":');
+      });
+    });
+
+    it('an edit the parser would reject says nothing was saved instead of a generic failure', async () => {
+      const { client, secrets } = clientFor([['report_cube', SUB_CUBE]]);
+      await atMorning(async () => {
+        const asks = buildAskSessions(client, buildCategorizeController(client));
+        const sent: Array<[string, any]> = [];
+        const send = async (t: string, k?: any) => { sent.push([t, k]); };
+        await asks.start('sub-add', send);
+        for (const answer of ['Hulu', '9.99', 'Monthly', 'Oct 20', 'No']) await asks.onText(answer, send);
+        const mod = await import('../../shared/subscription-prefs.js');
+        const spy = vi.spyOn(mod, 'editSubscriptionPrefs').mockRejectedValueOnce(new mod.SubscriptionPrefsInvalidError());
+        try {
+          const save = sent[sent.length - 1][1].inline_keyboard.flat().find((b: any) => b.text === '✅ Save').callback_data;
+          await asks.onCallback({ data: save }, { edit: vi.fn(async () => {}), answer: vi.fn(async () => {}), send });
+        } finally { spy.mockRestore(); }
+        expect(sent[sent.length - 1][0]).toBe("Couldn't save that — nothing was changed.");
+        expect(secrets.has('subscription_prefs')).toBe(false);
+      });
+    });
+  });
 });
 
 describe('buildTelegramListenerDeps', () => {
@@ -4785,6 +4930,112 @@ describe('subscriptions in the reports', () => {
   };
   const daysAgoDate = (d: number) => new Date(Date.now() - d * 86_400_000).toISOString().slice(0, 10);
 
+  /** DetectedSubscription exactly as a 1.60 companion publishes it. */
+  const det = (name: string, over: Record<string, unknown> = {}) => ({
+    name, monthlyCents: 1199, count: 5, lastDate: '2026-09-15', lastCents: 1199, prevCents: 1199, creep: false,
+    kind: 'subscription', recent: [{ date: '2026-09-15', cents: 1199 }], ...over,
+  });
+  const cubeR2 = (subscriptions: unknown[]) => JSON.stringify({
+    version: 1, asOf: '2026-10-12T06:00:00.000Z', months: ['2026-09', '2026-10'], categories: [], accounts: [],
+    spend: [[], []], uncategorized: [[], []], income: [[], []], budgets: [[], []], merchants: [[], []],
+    feesInterest: [0, 0], netWorth: [null, null], liquid: [null, null], pool: null, subscriptions,
+  });
+  /** Oct 12: SPOTIFY due in 3 days, RENT due in 4, a fresh price rise with a
+   *  Markdown star in the bank's name, NETFLIX's Oct 3 charge missing. */
+  const MORNING = () => cubeR2([
+    det('SPOTIFY', { lastDate: '2026-09-15' }),
+    det('RENT LLC', { kind: 'bill', monthlyCents: 80000, lastCents: 80000, lastDate: '2026-09-16' }),
+    det('PAYPAL *HULU', { monthlyCents: 999, lastCents: 1099, creep: true, lastDate: '2026-10-10' }),
+    det('NETFLIX', { monthlyCents: 1549, lastCents: 1549, lastDate: '2026-09-03' }),
+  ]);
+  const REMIND_SPOTIFY = JSON.stringify({ v: 1, remind: { SPOTIFY: 3 } });
+  const at = async <T>(date: Date, fn: () => Promise<T>): Promise<T> => {
+    vi.useFakeTimers();
+    vi.setSystemTime(date);
+    try { return await fn(); } finally { vi.useRealTimers(); }
+  };
+  const MORNING_8AM = new Date(2026, 9, 12, 8, 0, 0);
+
+  it('the morning block sits after the spending summary: reminders, the week, the price rise, "cancelled?"', async () => {
+    const client = clientWith([['report_cube', MORNING()], ['subscription_prefs', REMIND_SPOTIFY]]);
+    const digest = (await at(MORNING_8AM, () => composeDailyDigest(client, { requireTelegram: false })))!;
+    const block = [
+      '*Coming up*',
+      '🔔 SPOTIFY charges in 3 days · $11.99',
+      'RENT LLC Oct 16 · about $800',
+      '📈 PAYPAL \\*HULU charged $10.99 — up from its usual $9.99.',
+      "✓ NETFLIX didn't charge Oct 3 — cancelled?",
+    ].join('\n');
+    expect(digest.text).toContain(block);
+    expect(digest.text.indexOf('*Coming up*')).toBeGreaterThan(digest.text.indexOf('Daily Spending Check'));
+    // The Reports tab and push carry the block too — as text, without buttons.
+    expect(digest.archive).toContain(block);
+    const rows = digest.keyboard!.inline_keyboard;
+    expect(rows[0]).toEqual([{ text: '💳 Subscriptions', callback_data: 'cz:sb:o' }]);
+    expect(rows[1]).toEqual([{ text: '🙈 Hide NETFLIX', callback_data: `cz:sb:hr:${findingHandle('NETFLIX')}` }]);
+  });
+
+  it('a linked hand-added entry that went overdue gets the "cancelled?" line and a Hide button', async () => {
+    const manual = { id: 'hulu0001', name: 'Hulu', cents: 999, cadence: 'monthly', nextDate: '2026-10-02', merchant: 'HULU' };
+    const client = clientWith([
+      ['report_cube', cubeR2([det('HULU', { monthlyCents: 999, lastCents: 999, lastDate: '2026-09-02' })])],
+      ['subscription_prefs', JSON.stringify({ v: 1, manual: [manual] })],
+    ]);
+    const digest = (await at(MORNING_8AM, () => composeDailyDigest(client, { requireTelegram: false })))!;
+    expect(digest.text).toContain("✓ Hulu didn't charge Oct 2 — cancelled?");
+    expect(digest.keyboard!.inline_keyboard[1]).toEqual([{ text: '🙈 Hide Hulu', callback_data: `cz:sb:hr:${findingHandle('m:hulu0001')}` }]);
+  });
+
+  it('a Brief morning leaves out the week ahead', async () => {
+    const client = clientWith([
+      ['telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true, reportDetail: 'brief' })],
+      ['report_cube', MORNING()], ['subscription_prefs', REMIND_SPOTIFY],
+    ]);
+    const text = (await at(MORNING_8AM, () => composeDailyDigestMessage(client)))!;
+    expect(text).toContain('*Coming up*\n🔔 SPOTIFY charges in 3 days · $11.99\n📈');
+    expect(text).not.toContain('RENT LLC Oct 16');
+  });
+
+  // Review Focus: a bank name with Markdown characters on the morning report.
+  it('a bank name with * or _ is escaped and kept out of bold — Telegram would refuse the whole report', async () => {
+    const client = clientWith([['report_cube', cubeR2([
+      det('SQ *COFFEE_CLUB', { monthlyCents: 900, lastCents: 1000, creep: true, lastDate: '2026-10-11' }),
+    ])]]);
+    const text = (await at(MORNING_8AM, () => composeDailyDigestMessage(client)))!;
+    expect(text).toContain('\n📈 SQ \\*COFFEE\\_CLUB charged $10 — up from its usual $9.');
+    expect(text).not.toContain('SQ *COFFEE_CLUB');
+  });
+
+  it('nothing to say: no block and no subscription buttons', async () => {
+    const client = clientWith([['report_cube', cubeR2([det('ADOBE', { monthlyCents: 5499, lastCents: 5499, lastDate: '2026-09-25' })])]]);
+    const digest = (await at(MORNING_8AM, () => composeDailyDigest(client, { requireTelegram: false })))!;
+    expect(digest.text).not.toContain('Coming up');
+    expect(JSON.stringify(digest.keyboard ?? null)).not.toContain('cz:sb:');
+  });
+
+  it('weekly: the subscriptions line from the roster, next week under it, and See all', async () => {
+    const client = clientWith([
+      ['report_cube', cubeR2([
+        det('SPOTIFY', { lastDate: '2026-09-15' }),
+        det('RENT LLC', { kind: 'bill', monthlyCents: 80000, lastCents: 80000, lastDate: '2026-09-16' }),
+        det('ADOBE', { monthlyCents: 5499, lastCents: 5499, lastDate: '2026-09-25' }),
+      ])],
+      ['subscription_prefs', JSON.stringify({ v: 1, names: { SPOTIFY: 'Spotify' } })],
+    ]);
+    const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+    vi.stubGlobal('fetch', fetchMock);
+    await at(new Date(2026, 9, 11, 20, 0, 0), () => sendWeeklyTelegramReport(client)); // Sunday 8pm
+    const body = JSON.parse((fetchMock.mock.calls[0] as any)[1].body);
+    expect(body.text).toContain('*Subscriptions* — $66.98/mo across 2\nNext week: 2 charges · $811.99');
+    expect(body.reply_markup).toEqual({ inline_keyboard: [[{ text: 'See all', callback_data: 'cz:sb:o' }]] });
+  });
+
+  it("the Reports tab's weekly copy is the same text, still a plain string", async () => {
+    const client = clientWith([['report_cube', cubeR2([det('SPOTIFY', { lastDate: '2026-09-15' })])]]);
+    const text = await composeWeeklyReportMessage(client, new Date(2026, 9, 11, 20, 0, 0), {});
+    expect(text).toContain('*Subscriptions* — $11.99/mo across 1\nNext week: 1 charge · $11.99');
+  });
+
   it('weekly check-in totals the detected subscriptions, maybes excluded', async () => {
     const client = clientWith([['report_cube', cubeWith([
       { name: 'ADOBE', monthlyCents: 5499, count: 4, lastDate: daysAgoDate(3), lastCents: 5499, creep: false },
@@ -4832,7 +5083,7 @@ describe('subscriptions in the reports', () => {
     const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
     vi.stubGlobal('fetch', fetchMock);
     await sendWeeklyTelegramReport(client);
-    expect(JSON.parse((fetchMock.mock.calls[0][1] as any).body).text).toContain('$1,250.00/mo across 1');
+    expect(JSON.parse((fetchMock.mock.calls[0][1] as any).body).text).toContain('$1,250/mo across 1');
   });
 
   it('daily digest flags a fresh price creep, once it is stale it stops', async () => {
@@ -4847,6 +5098,136 @@ describe('subscriptions in the reports', () => {
     expect(freshText).toContain('SPOTIFY charged $11.99');
     expect(freshText).toContain('up from its usual $10.99');
     expect(staleText).not.toContain('up from its usual');
+  });
+
+  describe('news while the daily report is off (1.60)', () => {
+    const OFF = JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true, dailyReportEnabled: false });
+    const sends = (fetchMock: ReturnType<typeof vi.fn>) => fetchMock.mock.calls
+      .filter((c: any[]) => String(c[0]).includes('/sendMessage'))
+      .map((c: any[]) => JSON.parse(c[1].body));
+    const memo = async (client: any) => {
+      const raw = await client.getAddonSecret('simplefin-sync', 'subscription_news_sent');
+      return raw ? JSON.parse(raw) : null;
+    };
+
+    it('one message with every new line and its buttons', async () => {
+      const client = clientWith([['telegram_config', OFF], ['report_cube', MORNING()], ['subscription_prefs', REMIND_SPOTIFY]]);
+      const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+      vi.stubGlobal('fetch', fetchMock);
+      await at(MORNING_8AM, () => sendDailyTelegramReport(client));
+      const [body, ...more] = sends(fetchMock);
+      expect(more).toEqual([]);
+      expect(body.text).toBe([
+        '*Coming up*',
+        '🔔 SPOTIFY charges in 3 days · $11.99',
+        '📈 PAYPAL \\*HULU charged $10.99 — up from its usual $9.99.',
+        "✓ NETFLIX didn't charge Oct 3 — cancelled?",
+      ].join('\n'));
+      expect(body.reply_markup.inline_keyboard).toEqual([
+        [{ text: '💳 Subscriptions', callback_data: 'cz:sb:o' }],
+        [{ text: '🙈 Hide NETFLIX', callback_data: `cz:sb:hr:${findingHandle('NETFLIX')}` }],
+      ]);
+      expect(await memo(client)).toEqual({
+        'SPOTIFY|remind|2026-10-15': '2026-10-12',
+        'PAYPAL *HULU|creep|2026-10-10': '2026-10-12',
+        'NETFLIX|cancel|2026-10-03': '2026-10-12',
+      });
+    });
+
+    // Review Focus: daily report off, and the companion down on the reminder's first morning.
+    it('a reminder goes out on the first morning inside its window that the companion runs — and only once', async () => {
+      const client = clientWith([
+        ['telegram_config', OFF],
+        ['report_cube', cubeR2([det('SPOTIFY', { lastDate: '2026-09-15' })])],
+        ['subscription_prefs', REMIND_SPOTIFY],
+      ]);
+      const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+      vi.stubGlobal('fetch', fetchMock);
+      await at(new Date(2026, 9, 11, 8, 0, 0), () => sendDailyTelegramReport(client)); // 4 days out: too early
+      expect(sends(fetchMock)).toEqual([]);
+      // Oct 12: the companion was down. Oct 13: two days out, still inside the window.
+      await at(new Date(2026, 9, 13, 8, 0, 0), () => sendDailyTelegramReport(client));
+      expect(sends(fetchMock).map((b) => b.text)).toEqual(['*Coming up*\n🔔 SPOTIFY charges in 2 days · $11.99']);
+      await at(new Date(2026, 9, 14, 8, 0, 0), () => sendDailyTelegramReport(client));
+      expect(sends(fetchMock)).toHaveLength(1);
+      expect(await memo(client)).toEqual({ 'SPOTIFY|remind|2026-10-15': '2026-10-13' });
+    });
+
+    it('a message Telegram refuses is not recorded, so the next morning tries again', async () => {
+      const client = clientWith([
+        ['telegram_config', OFF],
+        ['report_cube', cubeR2([det('SPOTIFY', { lastDate: '2026-09-15' })])],
+        ['subscription_prefs', REMIND_SPOTIFY],
+      ]);
+      const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: false, error_code: 400, description: 'Bad Request' }) }));
+      vi.stubGlobal('fetch', fetchMock);
+      await at(new Date(2026, 9, 13, 8, 0, 0), () => sendDailyTelegramReport(client));
+      expect(await memo(client)).toBeNull();
+      fetchMock.mockImplementation(async () => ({ json: async () => ({ ok: true }) }));
+      await at(new Date(2026, 9, 14, 8, 0, 0), () => sendDailyTelegramReport(client));
+      expect(sends(fetchMock).at(-1).text).toBe('*Coming up*\n🔔 SPOTIFY charges tomorrow · $11.99');
+      expect(await memo(client)).toEqual({ 'SPOTIFY|remind|2026-10-15': '2026-10-14' });
+    });
+
+    describe('a memo that cannot be trusted (R2-17)', () => {
+      const spotify = () => [
+        ['telegram_config', OFF],
+        ['report_cube', cubeR2([det('SPOTIFY', { lastDate: '2026-09-15' })])],
+        ['subscription_prefs', REMIND_SPOTIFY],
+      ] as Array<[string, string]>;
+
+      it('a thrown memo read skips the morning, writes nothing, and the next morning sends once', async () => {
+        const client = clientWith(spotify());
+        const real = client.getAddonSecret;
+        let broken = true;
+        client.getAddonSecret = vi.fn(async (a: string, k: string) => {
+          if (broken && k === 'subscription_news_sent') throw new Error('network down');
+          return real(a, k);
+        });
+        const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+        vi.stubGlobal('fetch', fetchMock);
+        await at(new Date(2026, 9, 13, 8, 0, 0), () => sendDailyTelegramReport(client));
+        expect(sends(fetchMock)).toEqual([]);
+        expect(client.setAddonSecret.mock.calls.filter((c: any[]) => c[1] === 'subscription_news_sent')).toEqual([]);
+        broken = false;
+        await at(new Date(2026, 9, 14, 8, 0, 0), () => sendDailyTelegramReport(client));
+        expect(sends(fetchMock)).toHaveLength(1);
+        await at(new Date(2026, 9, 15, 8, 0, 0), () => sendDailyTelegramReport(client));
+        expect(sends(fetchMock)).toHaveLength(1);
+      });
+
+      it('a corrupt memo counts as empty: the event goes once and the memo is rewritten as valid JSON', async () => {
+        const client = clientWith([...spotify(), ['subscription_news_sent', '{not json']]);
+        const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+        vi.stubGlobal('fetch', fetchMock);
+        await at(new Date(2026, 9, 13, 8, 0, 0), () => sendDailyTelegramReport(client));
+        expect(sends(fetchMock)).toHaveLength(1);
+        expect(await memo(client)).toEqual({ 'SPOTIFY|remind|2026-10-15': '2026-10-13' });
+      });
+
+      it('a throwing dependency inside the news path never rejects out of the daily report', async () => {
+        const client = clientWith(spotify());
+        const real = client.setAddonSecret;
+        // A synchronous throw (not a rejection) slips past the .catch() on the memo write.
+        client.setAddonSecret = vi.fn((a: string, k: string, v: string) => {
+          if (k === 'subscription_news_sent') throw new Error('boom');
+          return real(a, k, v);
+        });
+        vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ ok: true }) })));
+        await expect(at(new Date(2026, 9, 13, 8, 0, 0), () => sendDailyTelegramReport(client))).resolves.toBeUndefined();
+      });
+    });
+
+    it('with the daily report on, the block rides the report and nothing else is sent', async () => {
+      const client = clientWith([['report_cube', MORNING()], ['subscription_prefs', REMIND_SPOTIFY]]);
+      const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+      vi.stubGlobal('fetch', fetchMock);
+      await at(MORNING_8AM, () => sendDailyTelegramReport(client));
+      const bodies = sends(fetchMock);
+      expect(bodies).toHaveLength(1);
+      expect(bodies[0].text).toContain('*Coming up*');
+      expect(await memo(client)).toBeNull();
+    });
   });
 });
 

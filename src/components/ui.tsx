@@ -805,9 +805,24 @@ const css = `
 [data-bva-scale='tiny'] [data-bva] { margin-bottom: 2px !important; font-size: var(--sfin-sz-2xs); }
 [data-bva-scale='tiny'] [data-bva] > div:last-child { height: 4px !important; }
 .sfin-subs-row:hover { background: color-mix(in srgb, var(--sfin-s0) 6%, transparent); }
-.sfin-subs-dismiss { border: none; background: transparent; color: var(--muted-foreground); cursor: pointer; border-radius: var(--sfin-rad-xs); }
-.sfin-subs-dismiss:hover { color: var(--sfin-bad); background: color-mix(in srgb, var(--sfin-bad) 10%, transparent); }
 .sfin-subs-celebrate { margin-top: 6px; padding: 8px 12px; border-radius: var(--sfin-rad-sm); font-size: var(--sfin-sz-base); background: color-mix(in srgb, var(--sfin-ok) 10%, transparent); border: 1px solid color-mix(in srgb, var(--sfin-ok) 35%, transparent); animation: sfin-pop .35s cubic-bezier(.2, 1.4, .4, 1); }
+/* 1.60 roster card: a row's name opens it inline. */
+.sfin-subs-item { display: flex; flex-direction: column; }
+.sfin-subs-label { display: flex; flex-direction: column; min-width: 0; }
+.sfin-subs-toggle { border: none; background: transparent; color: var(--foreground); padding: 0; font: inherit; text-align: left; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sfin-subs-toggle:hover { text-decoration: underline; text-underline-offset: 3px; }
+.sfin-subs-meta { font-size: var(--sfin-sz-xs); color: var(--muted-foreground); }
+.sfin-subs-detail { display: flex; flex-direction: column; gap: 8px; margin: 2px 0 8px; padding: 8px 0 8px 12px; border-left: 2px solid var(--border); font-size: var(--sfin-sz-sm); }
+.sfin-subs-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.sfin-subs-note { font-size: var(--sfin-sz-sm); color: var(--sfin-warn); }
+.sfin-subs-remind { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.sfin-subs-remind .sfin-range-chips { margin: 0; }
+.sfin-subs-rename { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.sfin-subs-error { color: var(--sfin-bad); font-size: var(--sfin-sz-sm); }
+.sfin-subs-link { background: color-mix(in srgb, var(--sfin-s0) 8%, transparent); border-radius: var(--sfin-rad-xs); padding: 4px 6px; }
+.sfin-subs-form { display: flex; flex-direction: column; gap: 8px; padding: 8px 0; }
+.sfin-subs-form label { display: flex; flex-direction: column; gap: 3px; font-size: var(--sfin-sz-sm); }
+.sfin-subs-form .sfin-range-chips { margin: 0; }
 @keyframes sfin-pop { from { transform: scale(.92); opacity: 0; } to { transform: scale(1); opacity: 1; } }
 .sfin-range-pin { position: absolute; bottom: 6px; right: 10px; font-size: var(--sfin-sz-2xs); color: var(--muted-foreground); background: color-mix(in srgb, var(--card) 80%, transparent); border-radius: var(--sfin-rad-xs); padding: 1px 6px; }
 /* Drag feedback: the picked-up card lifts and fades while every other card

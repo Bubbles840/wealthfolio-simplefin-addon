@@ -247,3 +247,20 @@ describe('previous charge (v1.39)', () => {
     expect(found[0].prevCents).toBe(5420);
   });
 });
+
+describe('recent charges (1.60)', () => {
+  it('publishes the newest three charges, newest first', () => {
+    const [found] = detectSubscriptions([
+      charge('2026-05-15', 'NETFLIX.COM', 1549), charge('2026-06-15', 'NETFLIX.COM', 1549),
+      charge('2026-07-15', 'NETFLIX.COM', 1549), charge('2026-08-15', 'NETFLIX.COM', 1599),
+    ], NOW);
+    expect(found.recent).toEqual([
+      { date: '2026-08-15', cents: 1599 }, { date: '2026-07-15', cents: 1549 }, { date: '2026-06-15', cents: 1549 },
+    ]);
+  });
+
+  it('a two-charge group publishes both', () => {
+    const [found] = detectSubscriptions([charge('2026-07-20', 'SPOTIFY USA', 1199), charge('2026-08-20', 'SPOTIFY USA', 1199)], NOW);
+    expect(found.recent).toEqual([{ date: '2026-08-20', cents: 1199 }, { date: '2026-07-20', cents: 1199 }]);
+  });
+});
