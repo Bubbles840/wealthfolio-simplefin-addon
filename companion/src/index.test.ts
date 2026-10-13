@@ -4177,6 +4177,29 @@ describe('the /categorize wiring', () => {
     });
   });
 
+  it('logs a filing and the rule made from it in the companion’s change log, with the rule’s id', async () => {
+    const { client, secrets } = clientFor();
+    client.createCategorizationRule.mockResolvedValue('rule-7');
+    const controller = buildCategorizeController(client);
+    const { sent, reply } = collect();
+    await buildTelegramCommandHandler(client, controller)({ command: 'categorize', args: '' }, reply);
+    const ui = fakeUi();
+    const cb = (data: string) => controller.onCallback({ data, chatId: 4242, messageId: 7 }, ui);
+    await cb(dataFor(sent[0][1], 'BOOK STORES'));
+    await cb(dataFor(lastOf(ui.edit)[1], 'Entertainment'));
+    await cb(dataFor(lastOf(ui.edit)[1], 'Make this a rule'));
+    await cb(dataFor(lastOf(ui.edit)[1], 'Create rule'));
+    const logged = () => [...secrets.entries()]
+      .filter(([k, v]) => /^change_log:companion:\d{4}-\d{2}$/.test(k) && v)
+      .flatMap(([, v]) => JSON.parse(v).entries);
+    await vi.waitFor(() => expect(logged()).toHaveLength(2));
+    expect(logged().map((e: any) => [e.kind, e.actor, e.writer, e.summary])).toEqual([
+      ['category-filed', 'you', 'companion', 'Filed BOOK STORES under Entertainment'],
+      ['category-rule-created', 'you', 'companion', 'Created a rule: descriptions containing "BOOK STORES" go to Entertainment'],
+    ]);
+    expect(logged()[1].subject.ruleId).toBe('rule-7');
+  });
+
   describe('writeLedgerMerged', () => {
     it('re-reads the ledger immediately before writing, so a third party\'s dismissal survives', async () => {
       // THE 1.10.1 bug, in the shape this dep can reintroduce it: passing the
