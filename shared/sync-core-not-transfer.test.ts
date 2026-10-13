@@ -179,8 +179,8 @@ describe('runSyncCore — notTransfer', () => {
       expect(fh.saved).toEqual([]);
       expect(snapshot(fh.activities)).toEqual(before);
       expect(result.errors).toEqual([
-        "Left CITI AUTOPAY PAYMENT linked: this app can't unlink a pair it didn't link; the companion will on its next sync.",
-        "Left PAYMENT THANK YOU linked: this app can't unlink a pair it didn't link; the companion will on its next sync.",
+        "Left CITI AUTOPAY PAYMENT as it is: this app has no record of linking it; the companion will unlink it on its next sync.",
+        "Left PAYMENT THANK YOU as it is: this app has no record of linking it; the companion will unlink it on its next sync.",
       ]);
     });
 
@@ -323,7 +323,7 @@ describe('runSyncCore — notTransfer', () => {
       expect(await fh.store.getDriftAlerts()).toEqual({});
     });
 
-    it('cleaning up a stale pair on an add-on clears BOTH legs from the ledger', async () => {
+    it('cleaning up a stale pair on an add-on clears BOTH legs from the ledger (override on the IN leg)', async () => {
       const fh = createFakeHost(twoAccounts({ existing: linkedRows(), syncOverrides: notTransfer(IN), upstreamWriteRules: true }));
       await fh.store.setLinkedGroups({ [OUT]: 'wf-transfer-9', [IN]: 'wf-transfer-9', 'tx-unrelated': 'wf-transfer-1' });
       const addon = (h: typeof fh.host) => ({ ...h, capabilities: { readsSourceGroupId: false } });
@@ -348,6 +348,71 @@ describe('runSyncCore — notTransfer', () => {
         expect.stringContaining('Held PAYMENT THANK YOU'),
         'Re-created 1 old transfer row so it moves cash',
       ]);
+    });
+
+    for (const which of ['IN', 'OUT'] as const) {
+      for (const [outId, inId] of [['act-out', 'act-in'], ['zz-out', 'act-in'], ['act-out', 'zz-in'], ['zz-out', 'zz-in']]) {
+        it(`a heal after a failed delete, override on the ${which} leg only (ids ${outId}/${inId}): no row lost, nothing pruned`, async () => {
+          const existing = linkedRows();
+          existing.get('wf-a')![0] = { ...existing.get('wf-a')![0], id: outId };
+          existing.get('wf-b')![0] = { ...existing.get('wf-b')![0], id: inId };
+          const fh = createFakeHost(twoAccounts({ existing, syncOverrides: notTransfer(which === 'IN' ? IN : OUT), upstreamWriteRules: true }));
+          const r1 = await runSyncCore(cascading(fh, true), fh.store, {});
+          expect(r1.errors[0]).toContain('Transfer-unlink incomplete');
+          const log = capture();
+          const r2 = await runSyncCore(cascading(fh), fh.store, { force: true, heal: true, changeLog: log });
+          expect(r2.errors).toEqual([]);
+          expect(r2.prunedDuplicates).toEqual([]);
+          expect(log.entries().filter((e) => e.kind === 'duplicate-removed')).toEqual([]);
+          expect(fh.activities.get('wf-a')!.map((r) => r.activityType)).toEqual(['WITHDRAWAL']);
+          expect(fh.activities.get('wf-b')).toHaveLength(1);
+          expect([...fh.activities.values()].flat().filter((r) => r.sourceGroupId)).toEqual([]);
+        });
+      }
+    }
+
+    it('one override on the IN leg: cleaning up opens no drift alert, and real drift alerts on the following run', async () => {
+      const seed = twoAccounts({ existing: linkedRows(), syncOverrides: notTransfer(IN), upstreamWriteRules: true });
+      seed.valuations = new Map();
+      const fh = createFakeHost(seed);
+      await runSyncCore(cascading(fh, true), fh.store, {});
+      seed.valuations!.set('wf-a', 464.6);
+      await runSyncCore(cascading(fh), fh.store, { force: true });
+      expect(await fh.store.getDriftAlerts()).toEqual({});
+      await runSyncCore(cascading(fh), fh.store, { force: true });
+      expect(Object.keys(await fh.store.getDriftAlerts())).toEqual(['sfin-1']);
+    });
+
+    it('counts pairs, not legs: one pair, two pairs, and a pair with one override alongside a pair with two', async () => {
+      const two = (n: number, both: boolean) => {
+        const accounts = [
+          { id: 'sfin-1', name: 'Checking', currency: 'USD', balance: '0', 'balance-date': epoch('2026-10-13T12:00:00Z'), transactions: [] as any[] },
+          { id: 'sfin-2', name: 'Citi', currency: 'USD', balance: '0', 'balance-date': epoch('2026-10-13T12:00:00Z'), transactions: [] as any[] },
+        ];
+        const existing = new Map<string, HostActivity[]>([['wf-a', []], ['wf-b', []]]);
+        let o = emptySyncOverrides();
+        for (let i = 0; i < n; i++) {
+          const amt = 100 + i;
+          accounts[0].transactions.push({ id: `o${i}`, posted: epoch('2026-10-08T12:00:00Z'), amount: `-${amt}.00`, description: `PAY ${i}` });
+          accounts[1].transactions.push({ id: `i${i}`, posted: epoch('2026-10-09T12:00:00Z'), amount: `${amt}.00`, description: `PAYMENT ${i}` });
+          existing.get('wf-a')!.push({ id: `ao${i}`, accountId: 'wf-a', activityType: 'TRANSFER_OUT', date: '2026-10-08', amount: amt, comment: `PAY ${i} · o${i}`, sourceGroupId: `g${i}`, metadata: '{"flow":{"is_external":false}}' });
+          existing.get('wf-b')!.push({ id: `bi${i}`, accountId: 'wf-b', activityType: 'TRANSFER_IN', date: '2026-10-09', amount: amt, comment: `PAYMENT ${i} · i${i}`, sourceGroupId: `g${i}`, metadata: '{"flow":{"is_external":false}}' });
+          o = setTxOverride(o, accountTxKey('sfin-2', `i${i}`), 'notTransfer', NOW);
+          if (both || i === 0) o = setTxOverride(o, accountTxKey('sfin-1', `o${i}`), 'notTransfer', NOW);
+        }
+        return twoAccounts({ accountSet: { errors: [], accounts }, existing, syncOverrides: o, upstreamWriteRules: true });
+      };
+      const summaries = async (n: number, both: boolean) => {
+        const fh = createFakeHost(two(n, both));
+        await runSyncCore(cascading(fh, true), fh.store, {});
+        const log = capture();
+        await runSyncCore(cascading(fh), fh.store, { force: true, changeLog: log });
+        return log.entries().map((e) => e.summary);
+      };
+      const one = 'Unlinked a transfer you undid: re-created its 2 rows as spending or money in';
+      expect(await summaries(1, true)).toEqual([one]);
+      expect(await summaries(2, true)).toEqual([one, one]);
+      expect(await summaries(2, false)).toEqual([one, one]);
     });
   });
 });

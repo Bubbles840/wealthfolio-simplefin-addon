@@ -2218,7 +2218,57 @@ async function runSyncPass(
   const unlinkKeys = new Set<string>();
   /** Old linked legs an earlier unlink could not delete, with the ordinary row
    *  already standing in for each. Deleted after the loop. */
-  const staleLinked: Array<{ key: string; row: ExistingRow; sfAccountId: string; siblingId?: string }> = [];
+  interface StalePair {
+    gid: string | undefined;
+    oldIds: string[];
+    newIds: string[];
+    legs: Array<{ txKey: string; txId: string; description: string }>;
+  }
+  const stalePairs: StalePair[] = [];
+  /** Old linked legs (the overridden ones and their partners): hidden from every plan. */
+  const staleOldIds = new Set<string>();
+  /** Their ordinary replacements: protected from the duplicate prune. */
+  const staleNewIds = new Set<string>();
+  /** SimpleFin accounts touched by a stale pair: drift is not measured for them. */
+  const staleAccounts = new Set<string>();
+  // Decided per PAIR, across accounts, before any account is processed: an
+  // overridden leg with an ordinary row under its tx id (an earlier unlink
+  // re-created the pair but could not delete the old one), its partner in the
+  // same group, and both legs' ordinary replacements. Only read when an
+  // override could make it matter.
+  if (Object.values(overrides.tx).some((o) => o.notTransfer)) {
+    interface Seen { sf: string; row: StoredRow }
+    const all: Seen[] = [];
+    for (const acc of accountSet.accounts) {
+      const wf = mapping[acc.id];
+      if (!wf) continue;
+      try {
+        for (const row of await fetchExistingRows(host, wf)) all.push({ sf: acc.id, row });
+      } catch {
+        // an unreadable account has nothing to protect this run
+      }
+    }
+    const keyOf = (x: Seen) => accountTxKey(x.sf, x.row.txId);
+    const gidOf = (x: Seen) => (readsGroups ? x.row.sourceGroupId || undefined : (ledger[keyOf(x)] ?? ledger[x.row.txId]));
+    const ordinaryOf = (x: Seen) => all.filter((o) => o.sf === x.sf && o.row.txId === x.row.txId && !isTransferType(o.row.type));
+    const done = new Set<string>();
+    for (const x of all) {
+      const gid = gidOf(x);
+      if (done.has(x.row.wfId) || !gid || !isTransferType(x.row.type)
+        || !hasTxOverride(overrides, keyOf(x), 'notTransfer') || ordinaryOf(x).length === 0) continue;
+      const members = all.filter((o) => isTransferType(o.row.type) && gidOf(o) === gid);
+      const pair: StalePair = { gid, oldIds: [], newIds: [], legs: [] };
+      for (const m of members) {
+        done.add(m.row.wfId);
+        pair.oldIds.push(m.row.wfId);
+        staleOldIds.add(m.row.wfId);
+        staleAccounts.add(m.sf);
+        pair.legs.push({ txKey: keyOf(m), txId: m.row.txId, description: descByKey.get(keyOf(m)) || descriptionFromComment(m.row.comment) || m.row.txId });
+        for (const o of ordinaryOf(m)) { pair.newIds.push(o.row.wfId); staleNewIds.add(o.row.wfId); }
+      }
+      stalePairs.push(pair);
+    }
+  }
 
   for (const sfAccount of accountSet.accounts) {
     const wfAccountId = mapping[sfAccount.id];
@@ -2302,7 +2352,8 @@ async function runSyncPass(
         existing.filter((r) => !hasTxOverride(overrides, accountTxKey(sfAccount.id, r.txId), 'keepDuplicate')
           // A pair being unlinked has, for a moment, an old linked row and its
           // ordinary replacement under one tx id: not duplicates to prune.
-          && !hasTxOverride(overrides, accountTxKey(sfAccount.id, r.txId), 'notTransfer')),
+          && !hasTxOverride(overrides, accountTxKey(sfAccount.id, r.txId), 'notTransfer')
+          && !staleOldIds.has(r.wfId) && !staleNewIds.has(r.wfId)),
         new Set(feedByTxId.keys()),
       );
       if (surplus.length > 0) {
@@ -2470,16 +2521,9 @@ async function runSyncPass(
     const isNotTransferLeg = (r: ExistingRow) => isTransferType(r.type)
       && hasTxOverride(overrides, accountTxKey(sfAccount.id, r.txId), 'notTransfer');
     // An earlier unlink re-created the pair as ordinary rows but could not
-    // delete the old linked one: it is deleted (alone, no second create) after
-    // the loop, and kept out of everything else meanwhile.
-    const ordinaryTxIds = new Set(planExistingAll.filter((r) => !isTransferType(r.type)).map((r) => r.txId));
-    const stale = planExistingAll.filter((r) => isNotTransferLeg(r) && isLinkedRow(r) && ordinaryTxIds.has(r.txId));
-    for (const r of stale) {
-      staleLinked.push({
-        key: accountTxKey(sfAccount.id, r.txId), row: r, sfAccountId: sfAccount.id,
-        siblingId: planExistingAll.find((o) => o.txId === r.txId && !isTransferType(o.type))?.wfId,
-      });
-    }
+    // delete the old linked one (decided per pair above): it is deleted (alone,
+    // no second create) after the loop, and kept out of everything else.
+    const stale = planExistingAll.filter((r) => staleOldIds.has(r.wfId));
     // A host that cannot read groups only knows the links its own ledger
     // recorded. Any other transfer leg the person undid may be linked by the
     // companion, and updating one leg of a linked pair rewrites its partner:
@@ -2488,7 +2532,7 @@ async function runSyncPass(
       && !(r.comment ?? '').startsWith(IN_TRANSIT_COMMENT_PREFIX));
     for (const r of foreign) {
       const key = accountTxKey(sfAccount.id, r.txId);
-      errors.push(`Left ${descByKey.get(key) || descriptionFromComment(r.comment) || r.txId} linked: this app can't unlink a pair it didn't link; the companion will on its next sync.`);
+      errors.push(`Left ${descByKey.get(key) || descriptionFromComment(r.comment) || r.txId} as it is: this app has no record of linking it; the companion will unlink it on its next sync.`);
     }
     const hiddenIds = new Set([...stale, ...foreign].map((r) => r.wfId));
     const foreignTxIds = new Set(foreign.map((r) => r.txId));
@@ -2583,7 +2627,7 @@ async function runSyncPass(
       const createOnly =
         plan.updates.length === 0 && plan.deleteIds.length === 0 && prunedThisAccount === 0
         // `wfValuation` still counts the stale linked rows deleted after this loop.
-        && stale.length === 0;
+        && !staleAccounts.has(sfAccount.id);
       // Heal re-scans wide and imports, so it must subtract what it creates
       // (lag-free: WF's balance becomes wfValuation + creates). A normal sync
       // only trusts drift when nothing was created (valuation is otherwise
@@ -3451,29 +3495,31 @@ async function runSyncPass(
 
   // The old linked pair of an unlink whose delete failed last time: the
   // ordinary rows are already there, so this only deletes — no second create.
-  if (staleLinked.length > 0) {
+  if (stalePairs.length > 0) {
     let problem: string | null = null;
+    const oldIds = stalePairs.flatMap((p) => p.oldIds);
     try {
-      const del = await host.saveMany({ deleteIds: staleLinked.map((s) => s.row.wfId) });
+      const del = await host.saveMany({ deleteIds: oldIds });
       if (del.errors.length > 0) problem = del.errors.map((e) => `${e.action}: ${e.message}`).join('; ');
     } catch (e: any) {
       problem = String(e?.message ?? e);
     }
     if (problem !== null) {
-      errors.push(`Transfer-unlink cleanup failed (${staleLinked.map((s) => s.row.txId).join('/')}): the old linked pair is still there next to the new rows: ${problem}`);
+      errors.push(`Transfer-unlink cleanup incomplete (${stalePairs.flatMap((p) => p.legs.map((l) => l.txId)).join('/')}): the old linked pair is still there next to the new rows: ${problem}`);
     } else {
       if (!readsGroups) {
         // Both legs' entries go: they share one group id.
-        const gids = new Set(staleLinked.map(({ key, row }) => ledger[key] ?? ledger[row.txId]).filter((g): g is string => !!g));
+        const gids = new Set(stalePairs.map((p) => p.gid).filter((g): g is string => !!g));
         for (const [k, g] of Object.entries(ledger)) {
           if (gids.has(g)) { delete ledger[k]; ledgerChanged = true; }
         }
       }
-      logChange?.(() => bookkeepingChange({
-        step: 'transfer-unlink',
-        activityIds: staleLinked.map((s) => s.siblingId ?? s.row.wfId),
-        legs: staleLinked.map((s) => ({ txKey: s.key, description: descByKey.get(s.key) || descriptionFromComment(s.row.comment) || s.row.txId })),
-      }));
+      for (const p of stalePairs) {
+        logChange?.(() => bookkeepingChange({
+          step: 'transfer-unlink', pairs: 1, rows: p.newIds.length || p.oldIds.length,
+          activityIds: [...p.newIds, ...p.oldIds], legs: p.legs.map((l) => ({ txKey: l.txKey, description: l.description })),
+        }));
+      }
     }
   }
 

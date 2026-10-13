@@ -637,6 +637,10 @@ export interface BookkeepingFacts {
   categoryName?: string;
   /** `transfer-unlink` only: the legs that were unlinked. */
   legs?: Array<{ txKey: string; description: string }>;
+  /** `transfer-unlink` only: how many pairs this entry covers (default 1) and
+   *  how many rows were re-created (default: the ids listed). */
+  pairs?: number;
+  rows?: number;
 }
 
 /** Repairs the sync makes to its own rows. Shown behind a button; never undoable. */
@@ -649,9 +653,9 @@ export function bookkeepingChange(f: BookkeepingFacts): ChangeDraft {
       : f.step === 'transfer-relink'
         ? `Re-created ${n} old transfer ${plural(n, 'row', 'rows')} so ${plural(n, 'it moves', 'they move')} cash`
         : f.step === 'transfer-unlink'
-          ? (n > 2 && n % 2 === 0
-            ? `Unlinked ${n / 2} transfers you undid: re-created their ${n} rows as spending or money in`
-            : `Unlinked a transfer you undid: re-created ${plural(n, 'its row', 'its 2 rows')} as spending or money in`)
+          ? ((f.pairs ?? 1) > 1
+            ? `Unlinked ${f.pairs} transfers you undid: re-created their ${f.rows ?? n} rows as spending or money in`
+            : `Unlinked a transfer you undid: re-created ${(f.rows ?? n) === 1 ? 'its row' : `its ${f.rows ?? n} rows`} as spending or money in`)
           : `Set up the "${f.categoryName ?? 'Opening balances'}" category and kept it out of spending`;
   return {
     actor: 'auto',
