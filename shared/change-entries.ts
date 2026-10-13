@@ -670,3 +670,33 @@ export function bookkeepingChange(f: BookkeepingFacts): ChangeDraft {
     undoable: false,
   };
 }
+
+// ── Undo and Redo (R2) ───────────────────────────────────────────────────
+
+/**
+ * The entry an Undo or a Redo writes, in the undoer's own bucket. Same kind,
+ * account and subject as the entry it reverses (so it files under the same
+ * filter), `reverses` pointing back at it, and `before`/`after` the other way
+ * round for an undo. `extra` lands on `after`: the row or rule id the reversal
+ * left behind (`activityId`, `ruleId`), which the next undo or redo of the same
+ * entry acts on — a re-created row has a new id. Never itself undoable: you
+ * undo or redo the original.
+ */
+export function reversalChange(
+  original: ChangeEntry,
+  op: 'undo' | 'redo',
+  extra: Record<string, unknown> = {},
+): ChangeDraft {
+  const [before, after] = op === 'undo' ? [original.after, original.before] : [original.before, original.after];
+  return {
+    actor: 'you',
+    kind: original.kind,
+    ...(original.account ? { account: { ...original.account } } : {}),
+    subject: { ...original.subject },
+    summary: `${op === 'undo' ? 'Undid' : 'Redid'}: ${original.summary}`,
+    ...(before ? { before: { ...before } } : {}),
+    after: { ...(after ?? {}), ...extra },
+    undoable: false,
+    reverses: { id: original.id, op },
+  };
+}
