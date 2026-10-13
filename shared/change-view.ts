@@ -204,7 +204,7 @@ export function changeRowAt(row: ChangeRow): string {
 }
 
 export function changeRowSummary(row: ChangeRow): string {
-  return row.kind === 'entry' ? row.entry.summary : `Imported ${row.entries.length} transactions`;
+  return row.kind === 'entry' ? row.entry.summary : `Imported ${row.entries.length} ${row.entries.length === 1 ? 'transaction' : 'transactions'}`;
 }
 
 const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
