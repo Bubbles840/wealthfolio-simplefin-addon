@@ -86,6 +86,9 @@ export interface AmazonFilingDeps {
   record?(draft: ChangeDraft): void;
   /** The SimpleFin account behind a Wealthfolio one, for the entry's tx key. */
   sfinAccountOf?(wfAccountId: string): string | undefined;
+  /** True when the person undid an automatic filing of this transaction
+   *  (`noAutoFile`, shared/sync-overrides.ts): it is never filed again. */
+  noAutoFile?(txKey: string): boolean;
 }
 
 export interface AmazonFilingResult {
@@ -146,6 +149,10 @@ export async function fileAmazonCharges(deps: AmazonFilingDeps): Promise<AmazonF
     };
 
     for (const { row, label } of labelled) {
+      // Undone by the person: left exactly as they put it back.
+      const sfinId = row.wfAccountId ? deps.sfinAccountOf?.(row.wfAccountId) : undefined;
+      const txId = txIdFromComment(row.notes);
+      if (sfinId && txId && deps.noAutoFile?.(accountTxKey(sfinId, txId))) continue;
       // A MIXED order goes straight to the configured default: one charge
       // covering several categories has no honest single label, no rule can
       // ever match it (so `needRule` nagging would be permanent), and leaving

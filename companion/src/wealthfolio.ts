@@ -295,6 +295,55 @@ export class WealthfolioClient {
     }
   }
 
+  /** Every taxonomy's category on one activity, as the server stores it now —
+   *  what an Undo checks before it changes a filing. Upstream route
+   *  `GET /spending/activities/{id}/assignments` (`Vec<ActivityTaxonomyAssignment>`,
+   *  camelCase). An activity with none, or one that is gone, answers `[]`. */
+  async getActivityAssignments(activityId: string): Promise<Array<{ taxonomyId: string; categoryId: string; source?: string }>> {
+    const res = await fetch(
+      `${this.baseUrl}/api/v1/spending/activities/${encodeURIComponent(activityId)}/assignments`,
+      { headers: this.authHeaders() },
+    );
+    if (!res.ok) throw await this.httpError('getActivityAssignments', res);
+    const rows = (await res.json()) as unknown;
+    if (!Array.isArray(rows)) return [];
+    return rows
+      .filter((r): r is Record<string, unknown> => !!r && typeof r === 'object')
+      .filter((r) => typeof r.taxonomyId === 'string' && typeof r.categoryId === 'string')
+      .map((r) => ({
+        taxonomyId: r.taxonomyId as string,
+        categoryId: r.categoryId as string,
+        ...(typeof r.source === 'string' ? { source: r.source } : {}),
+      }));
+  }
+
+  /** Every categorization rule (`GET /spending/rules`, `Vec<CategorizationRule>`):
+   *  how an Undo finds a rule the log knows only by name. */
+  async listCategorizationRules(): Promise<Array<{ id: string; name: string; pattern: string; categoryId: string | null }>> {
+    const res = await fetch(`${this.baseUrl}/api/v1/spending/rules`, { headers: this.authHeaders() });
+    if (!res.ok) throw await this.httpError('listCategorizationRules', res);
+    const rows = (await res.json()) as unknown;
+    if (!Array.isArray(rows)) return [];
+    return rows
+      .filter((r): r is Record<string, unknown> => !!r && typeof r === 'object' && typeof (r as { id?: unknown }).id === 'string')
+      .map((r) => ({
+        id: r.id as string,
+        name: typeof r.name === 'string' ? r.name : '',
+        pattern: typeof r.pattern === 'string' ? r.pattern : '',
+        categoryId: typeof r.categoryId === 'string' ? r.categoryId : null,
+      }));
+  }
+
+  /** Deletes a categorization rule (`DELETE /spending/rules/{id}`, upstream
+   *  `delete_categorization_rule`). Filings the rule already made stay. */
+  async deleteCategorizationRule(id: string): Promise<void> {
+    const res = await fetch(`${this.baseUrl}/api/v1/spending/rules/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      headers: this.authHeaders(),
+    });
+    if (!res.ok) throw await this.httpError('deleteCategorizationRule', res);
+  }
+
   async saveMany(req: {
     creates?: unknown[];
     updates?: unknown[];
