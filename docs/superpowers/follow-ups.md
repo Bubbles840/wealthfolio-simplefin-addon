@@ -589,6 +589,15 @@ changes what a user sees today.
   off the rows, can. The sync side is the same story: a ledger that lost a
   pair lets a `notTransfer` leg be retyped by an ordinary update, which
   Wealthfolio copies onto its partner (not seen).
+- **A refused placeholder promotion can be linked with its placeholder note**
+  (sync-core): when the update promoting a held placeholder is refused in the
+  same run its partner arrives, `linkRowByKey` keeps the pre-update snapshot
+  and `linkPair` re-creates the leg with the `↔️ In-transit transfer` note. The
+  undo check no longer trusts that note on a row a link wrote
+  (`is_external: false` → still "maybe linked"), but the sync's own
+  note-based placeholder checks (`isPlaceholder` in the unlink pre-pass) can
+  still misread it. Fix in sync-core: don't link a pair whose promotion update
+  was not echoed back. Rare (needs a refused update mid-run); not seen.
 - **Telegram lists no overrides** — only the app card does (spec B3).
 - **An import's Undo has no "changed since" check** (ruled, not a gap): a
   later bank update to that row is its own entry, and removing the row as it

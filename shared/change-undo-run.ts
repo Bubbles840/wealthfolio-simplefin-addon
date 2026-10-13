@@ -128,13 +128,16 @@ const sameRule = (a: MappingRule, b: MappingRule) =>
  * unpaired — a held in-transit placeholder, an opening balance or a balance
  * adjustment — and a row whose `flow.is_external` is `true` (the sync's own
  * unpaired rows; Wealthfolio never links one). A row whose metadata is unknown
- * may be linked.
+ * may be linked. The note alone is not trusted when the row says a link wrote
+ * it (`is_external: false`): a placeholder whose promotion was refused can be
+ * linked with its placeholder note still on it.
  */
 export function maybeLinkedTransfer(a: HostActivity): boolean {
   if (!isTransferType(a.activityType)) return false;
   const note = a.comment ?? '';
-  if (note.startsWith(IN_TRANSIT_COMMENT_PREFIX) || isInternalMarkerComment(note)) return false;
-  return flowExternalOf(a.metadata) !== true;
+  const external = flowExternalOf(a.metadata);
+  if ((note.startsWith(IN_TRANSIT_COMMENT_PREFIX) || isInternalMarkerComment(note)) && external !== false) return false;
+  return external !== true;
 }
 
 /** The row as the planner sees it, with "is it one half of a linked transfer". */
