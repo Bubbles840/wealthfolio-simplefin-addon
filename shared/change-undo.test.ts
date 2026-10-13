@@ -283,14 +283,26 @@ describe('planChangeUndo — sync decisions', () => {
 
   it('a link: notTransfer on both legs, then a sync; a redo clears both', () => {
     const p = ok(planChangeUndo(link, 'undo', {}, { latest: null }));
+    // Each leg's override is named by that leg's own bank text.
     expect(p.steps).toEqual([
       { do: 'set-tx', txKey: KEY, flag: 'notTransfer', label: 'CITI AUTOPAY · Checking' },
-      { do: 'set-tx', txKey: CARD_KEY, flag: 'notTransfer', label: 'CITI AUTOPAY · Citi Card' },
+      { do: 'set-tx', txKey: CARD_KEY, flag: 'notTransfer', label: 'PAYMENT THANK YOU · Citi Card' },
     ]);
     expect(p).toMatchObject({ needsSync: true, done: 'Undone — the next sync counts each half as spending or money in.' });
     expect(ok(planChangeUndo(link, 'redo', {}, { latest: undo(link) })).steps).toEqual([
       { do: 'clear-tx', txKey: KEY, flag: 'notTransfer' },
       { do: 'clear-tx', txKey: CARD_KEY, flag: 'notTransfer' },
+    ]);
+  });
+
+  it('a link logged before legs carried their own text: the in-leg is named from the summary', () => {
+    const legacy: ChangeEntry = {
+      ...link,
+      after: { ...(link.after as Record<string, unknown>), legs: (link.after as { legs: Array<Record<string, unknown>> }).legs.map(({ description: _d, ...l }) => l) },
+    };
+    expect(ok(planChangeUndo(legacy, 'undo', {}, { latest: null })).steps).toEqual([
+      { do: 'set-tx', txKey: KEY, flag: 'notTransfer', label: 'CITI AUTOPAY · Checking' },
+      { do: 'set-tx', txKey: CARD_KEY, flag: 'notTransfer', label: 'PAYMENT THANK YOU · Citi Card' },
     ]);
   });
 

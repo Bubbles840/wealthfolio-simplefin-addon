@@ -169,7 +169,10 @@ describe('what R2 needs to undo it (P1)', () => {
     );
     expect(d.subject).toMatchObject({ txKeys: [KEY, inKey], activityIds: ['new-1', 'new-2'] });
     expect(d.before).toEqual({ activityIds: ['old-1', 'old-2'] });
-    expect(d.after).toMatchObject({ activityIds: ['new-1', 'new-2'], legs: [{ txKey: KEY, accountName: 'Checking' }, { txKey: inKey, accountName: 'Citi Card' }] });
+    expect(d.after).toMatchObject({
+      activityIds: ['new-1', 'new-2'],
+      legs: [{ txKey: KEY, accountName: 'Checking', description: 'A' }, { txKey: inKey, accountName: 'Citi Card', description: 'B' }],
+    });
   });
 
   it('a link without new ids still carries the tx keys', () => {
