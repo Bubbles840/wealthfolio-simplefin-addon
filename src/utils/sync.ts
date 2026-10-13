@@ -446,7 +446,7 @@ export async function applyBalanceAdjustment(
       await store.recordChange(balanceCorrectionChange({
         account: await changeAccountFor(host, store, args.sfinAccountId, args.wfAccountId),
         actor: 'you',
-        activityId: await rowIdByComment(() => host.listActivities(args.wfAccountId), row.comment),
+        activityId: await rowIdByComment(() => host.listActivities(args.wfAccountId), row.comment, { amount: row.amount, fee: row.fee }),
         amountCents: Math.round(args.amount * 100),
         date: row.date,
         activityType: row.activityType,
