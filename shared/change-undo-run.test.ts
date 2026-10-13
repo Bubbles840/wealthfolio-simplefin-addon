@@ -8,13 +8,13 @@ import {
   UNDO_EXACT_COPY, UNDO_FROM_TELEGRAM, UNDO_LINKED_REFUSAL, UNDO_UNREACHABLE, UNDO_UPDATE_COMPANION, type UndoOp, type UndoVariant,
 } from './change-undo.js';
 import {
-  runChangeUndo, UNDO_MAPPING_RULES_UNREADABLE, UNDO_RULE_FILED_UNREADABLE, UNDO_SKIP_NOTE, type UndoIo,
+  runChangeUndo, UNDO_ALREADY_RUNNING, UNDO_MAPPING_RULES_UNREADABLE, UNDO_RULE_FILED_UNREADABLE, UNDO_SAVE_FAILED, UNDO_SKIP_NOTE, type UndoIo,
 } from './change-undo-run.js';
 import { createFakeHost, type FakeHostSeed } from './fake-host.js';
 import { SKIPPED_TRANSACTIONS_SECRET_KEY } from './skipped-transactions.js';
 import type { HostActivity } from './sync-host.js';
 import {
-  hasAccountOverride, hasTxOverride, parseSyncOverrides, SYNC_OVERRIDES_SECRET_KEY, SYNC_OVERRIDES_UNREADABLE_MESSAGE,
+  emptySyncOverrides, setTxOverride, hasAccountOverride, hasTxOverride, parseSyncOverrides, SYNC_OVERRIDES_SECRET_KEY, SYNC_OVERRIDES_UNREADABLE_MESSAGE,
 } from './sync-overrides.js';
 import { accountTxKey } from './transfers.js';
 
@@ -324,5 +324,89 @@ describe('runChangeUndo', () => {
     h.io.host = { ...h.fh.host, listActivities: async () => { throw new Error('ECONNREFUSED'); } };
     expect(await h.undo(imported, 'undo')).toEqual({ ok: false, message: UNDO_UNREACHABLE });
     expect(h.set).not.toHaveBeenCalled();
+  });
+
+  describe('honest failures', () => {
+    const filing = (actor: 'auto' | 'you' = 'auto', before: { categoryId: string; categoryName: string; taxonomyId: string } | null = null) => stampChange(categoryFiledChange({
+      actor, account: CHECKING, txKey: KEY, activityId: 'act-amz', description: 'AMAZON MKTPL*2K4',
+      before, after: { categoryId: 'cat-pc', categoryName: 'Personal Care', taxonomyId: 'spending_categories' },
+    }), 'companion', NOW);
+    const current = async () => [{ taxonomyId: 'spending_categories', categoryId: 'cat-pc' }];
+
+    it('a redo whose new row id is not read back records no stale id, and the next undo refuses cleanly', async () => {
+      const h = harness(seedWith([plugRow]));
+      expect(await h.undo(plug, 'undo')).toMatchObject({ ok: true });
+      const real = h.io.host;
+      h.io.host = { ...real, listActivities: async () => [], listOldestActivities: async () => [] };
+      expect(await h.undo(plug, 'redo')).toMatchObject({ ok: true });
+      h.io.host = real;
+      expect(h.log[0].after.activityId).toBeUndefined();
+      const deletes = vi.spyOn(real, 'saveMany');
+      expect(await h.undo(plug, 'undo')).toMatchObject({ ok: false });
+      expect(deletes).not.toHaveBeenCalled();
+    });
+
+    it('a reversal that fails after the override: the override stays, nothing is logged, and it says what failed', async () => {
+      const h = harness(seedWith([]), {}, { categories: { assignments: current, assign: async () => {}, unassign: async () => { throw new Error('boom'); } } });
+      expect(await h.undo(filing(), 'undo')).toEqual({ ok: false, message: "Couldn't finish the undo: boom" });
+      expect(hasTxOverride(h.overrides(), KEY, 'noAutoFile')).toBe(true);
+      expect(h.io.record).not.toHaveBeenCalled();
+    });
+
+    it('a partial failure says what was already done', async () => {
+      const before = { categoryId: 'cat-old', categoryName: 'Dining', taxonomyId: 'spending_categories' };
+      const h = harness(seedWith([]), {}, { categories: { assignments: current, assign: async () => { throw new Error('nope'); }, unassign: async () => {} } });
+      expect(await h.undo(filing('you', before), 'undo')).toEqual({
+        ok: false, message: "Couldn't finish the undo: nope. Part of it was already done: took the category off.",
+      });
+      expect(h.io.record).not.toHaveBeenCalled();
+    });
+
+    const dup = stampChange(duplicateRemovedChange({
+      account: CHECKING, txKey: KEY, activityId: 'act-2', description: 'TRADER JOE S #628', amountCents: -2120, date: '2026-08-06',
+      payload: { accountId: 'wf-a', activityType: 'WITHDRAWAL', activityDate: '2026-08-06', symbol: { symbol: '$CASH-USD' }, amount: 21.2, currency: 'USD', comment: 'TRADER JOE S #628 · tx-1' },
+    }), 'companion', NOW);
+    const survivor: HostActivity = {
+      id: 'act-1', accountId: 'wf-a', activityType: 'WITHDRAWAL', date: '2026-08-06', amount: 21.2, comment: 'TRADER JOE S #628 · tx-1', sourceGroupId: null,
+    };
+
+    it('an exact-copy refusal keeps a keepDuplicate that was already there', async () => {
+      const pre = JSON.stringify(setTxOverride(emptySyncOverrides(), KEY, 'keepDuplicate', NOW, { label: 'earlier' }));
+      const h = harness(seedWith([survivor], { upstreamWriteRules: true }), { [SYNC_OVERRIDES_SECRET_KEY]: pre });
+      expect(await h.undo(dup, 'undo')).toEqual({ ok: false, message: UNDO_EXACT_COPY });
+      expect(hasTxOverride(h.overrides(), KEY, 'keepDuplicate')).toBe(true);
+    });
+
+    it('an exact-copy refusal whose rollback fails says so instead of claiming nothing changed', async () => {
+      const h = harness(seedWith([survivor], { upstreamWriteRules: true }));
+      let writes = 0;
+      h.set.mockImplementation(async (k: string, v: string) => {
+        if (k === SYNC_OVERRIDES_SECRET_KEY && ++writes > 1) throw new Error('disk');
+        h.data.set(k, v);
+      });
+      const out = await h.undo(dup, 'undo');
+      expect(out.ok).toBe(false);
+      expect(out.ok ? '' : out.message).toContain(UNDO_EXACT_COPY);
+      expect(out.ok ? '' : out.message).toContain('could not be taken back');
+      expect(hasTxOverride(h.overrides(), KEY, 'keepDuplicate')).toBe(true);
+    });
+
+    it('a failed save of the overrides says nothing was changed', async () => {
+      const h = harness(seedWith([]), {}, { categories: { assignments: current, assign: async () => {}, unassign: vi.fn(async () => {}) } });
+      h.set.mockImplementation(async () => { throw new Error('disk'); });
+      expect(await h.undo(filing(), 'undo')).toEqual({ ok: false, message: UNDO_SAVE_FAILED });
+      expect(h.io.record).not.toHaveBeenCalled();
+    });
+
+    it('a double tap: one run goes through, the other is refused, and one entry is logged', async () => {
+      const h = harness(seedWith([importedRow()]));
+      const real = h.io.host;
+      h.io.host = { ...real, listActivities: async (id: string) => { await new Promise((r) => setTimeout(r, 20)); return real.listActivities(id); } };
+      const [a, b] = await Promise.all([h.undo(imported, 'undo'), h.undo(imported, 'undo')]);
+      expect([a.ok, b.ok].sort()).toEqual([false, true]);
+      expect([a, b].find((x) => !x.ok)!.message).toBe(UNDO_ALREADY_RUNNING);
+      expect(h.log).toHaveLength(1);
+      expect(await h.undo(imported, 'redo')).toMatchObject({ ok: true });
+    });
   });
 });
