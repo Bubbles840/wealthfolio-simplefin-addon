@@ -18,8 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bookkeeping is never matched), and **Settings → Change log** in the app shows
   the last 90 days (30 by default) with filters. Read-only for now — Undo comes
   in the next release. Recording can never fail or alter a sync or something
-  you did. A change that could not be saved to the log is reported there as a
-  gap rather than lost silently.
+  you did. When a change could not be saved to the log, a note says so ("3
+  changes may be missing"); the add-on keeps such gaps only in that tab's
+  memory until the next successful save.
 - **The bot asks instead of making you remember argument order.** Send
   `/newrule` or `/afford` on its own, or tap **Set a new pool** under `/pool`,
   and it asks one question at a time — buttons where there is a choice, and
