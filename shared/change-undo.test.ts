@@ -8,7 +8,7 @@ import {
 import type { ChangeLogItem } from './change-log.js';
 import {
   currentRowId, currentRuleId, latestReversal, planChangeUndo, REDO_FROM_TELEGRAM, undoAvailability, undoChangedSince,
-  UNDO_ALREADY_UNDONE, UNDO_EXACT_COPY, UNDO_FROM_TELEGRAM, UNDO_LINKED_REFUSAL, UNDO_NO_KEY, UNDO_NOT_POSSIBLE,
+  UNDO_ALREADY_UNDONE, UNDO_EXACT_COPY, UNDO_FROM_TELEGRAM, UNDO_LINKED_REFUSAL, UNDO_MAYBE_LINKED, UNDO_NO_KEY, UNDO_NOT_POSSIBLE,
   UNDO_NOT_UNDONE, UNDO_UPDATE_COMPANION, type UndoDecision, type UndoPlan, type UndoRow, type UndoState,
 } from './change-undo.js';
 import { accountTxKey } from './transfers.js';
@@ -332,8 +332,9 @@ describe('planChangeUndo — sync decisions', () => {
       { do: 'skip', account: 'ACT-1f2e', txId: 'TRN-a1b2' },
       { do: 'delete', activityId: 'act-1' },
     ]);
-    expect(reason(planChangeUndo(imported, 'undo', { row: row({ linked: true }) }, { latest: null }))).toBe(UNDO_LINKED_REFUSAL);
+    expect(reason(planChangeUndo(imported, 'undo', { row: row({ linked: 'confirmed' }) }, { latest: null }))).toBe(UNDO_LINKED_REFUSAL);
     expect(UNDO_LINKED_REFUSAL).toBe('Undo the transfer link first.');
+    expect(reason(planChangeUndo(imported, 'undo', { row: row({ type: 'TRANSFER_OUT', linked: 'maybe' }) }, { latest: null }))).toBe(UNDO_MAYBE_LINKED);
     expect(ok(planChangeUndo(imported, 'undo', { row: null }, { latest: null })).steps).toEqual([{ do: 'skip', account: 'ACT-1f2e', txId: 'TRN-a1b2' }]);
     expect(ok(planChangeUndo(imported, 'redo', {}, { latest: undo(imported) }))).toMatchObject({
       needsSync: true, steps: [{ do: 'unskip', account: 'ACT-1f2e', txId: 'TRN-a1b2' }],
@@ -352,7 +353,8 @@ describe('planChangeUndo — sync decisions', () => {
       { do: 'update', write: { id: 'act-4', accountId: 'wf-citi', activityType: 'WITHDRAWAL', activityDate: '2026-09-15', amount: 10.8, currency: 'USD', comment: 'AMAZON MKTPL*2K4 · TRN-a1b2' } },
     ]);
     expect(reason(planChangeUndo(label, 'undo', { row: { ...labelled, comment: 'edited by hand' } }, { latest: null }))).toBe('It has changed since — nothing was undone.');
-    expect(reason(planChangeUndo(label, 'undo', { row: { ...labelled, linked: true } }, { latest: null }))).toBe(UNDO_LINKED_REFUSAL);
+    expect(reason(planChangeUndo(label, 'undo', { row: { ...labelled, linked: 'confirmed' } }, { latest: null }))).toBe(UNDO_LINKED_REFUSAL);
+    expect(reason(planChangeUndo(label, 'undo', { row: { ...labelled, linked: 'maybe' } }, { latest: null }))).toBe(UNDO_MAYBE_LINKED);
     expect(reason(planChangeUndo(label, 'undo', { row: null }, { latest: null }))).toBe('That transaction is gone — nothing was undone.');
     expect(ok(planChangeUndo(label, 'redo', {}, { latest: undo(label, { activityId: 'act-4' }) }))).toMatchObject({
       needsSync: true, rowAfter: 'act-4', steps: [{ do: 'clear-tx', txKey: CARD_KEY, flag: 'noAmazonLabel' }],

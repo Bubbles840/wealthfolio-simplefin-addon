@@ -45,6 +45,8 @@ export const UNDO_FROM_TELEGRAM = 'Undo this from Telegram: /changes';
 export const REDO_FROM_TELEGRAM = 'Redo this from Telegram: /changes';
 export const UNDO_TAKES_EFFECT = 'Takes effect on the next sync.';
 export const UNDO_LINKED_REFUSAL = 'Undo the transfer link first.';
+/** The app, for a transfer-typed row it cannot tell is linked (it reads no groups). */
+export const UNDO_MAYBE_LINKED = 'This may be half of a linked transfer — undo the link first, or undo it from Telegram: /changes';
 export const UNDO_UNREACHABLE = "Couldn't reach Wealthfolio — nothing undone.";
 export const UNDO_ALREADY_UNDONE = 'That one is already undone.';
 export const UNDO_NOT_UNDONE = "That one isn't undone — nothing to redo.";
@@ -135,8 +137,14 @@ export interface UndoRow {
   date: string;
   absCents: number;
   comment: string;
-  /** One half of a linked transfer. */
-  linked: boolean;
+  /**
+   * One half of a linked transfer — deleting it deletes both halves, and an
+   * update to it is copied onto the other. `confirmed`: the row's group says so
+   * (the companion), or the sync's ledger does (the add-on). `maybe`: the add-on
+   * reads no groups and its ledger knows only its own links, so a transfer-typed
+   * row nothing marks as unpaired may be half of a pair the companion linked.
+   */
+  linked: 'confirmed' | 'maybe' | false;
 }
 
 /** What is there now, read by the runner — each kind reads only what it needs. */
@@ -196,6 +204,9 @@ export type UndoDecision = { ok: true; plan: UndoPlan } | { ok: false; reason: s
 
 const refuse = (reason: string): UndoDecision => ({ ok: false, reason });
 const plan = (p: UndoPlan): UndoDecision => ({ ok: true, plan: p });
+/** Why a row that may be half of a linked transfer cannot be changed alone, or null. */
+const linkedRefusal = (row: UndoRow | null | undefined): string | null =>
+  (row?.linked === 'confirmed' ? UNDO_LINKED_REFUSAL : row?.linked === 'maybe' ? UNDO_MAYBE_LINKED : null);
 
 /** What an override is called in the overrides list: the bank text and the account. */
 function labelOf(entry: ChangeEntry, accountName?: string): string {
@@ -496,7 +507,8 @@ export function planChangeUndo(
         });
       }
       const row = state.row ?? null;
-      if (row?.linked) return refuse(UNDO_LINKED_REFUSAL);
+      const linked = linkedRefusal(row);
+      if (linked) return refuse(linked);
       return plan({
         op, needsSync: false, rowAfter: null, done: "Undone — it's removed and won't be imported again.",
         steps: [{ do: 'skip', account: sfinId, txId }, ...(row ? [{ do: 'delete', activityId: row.id } as const] : [])],
@@ -514,7 +526,8 @@ export function planChangeUndo(
       const row = state.row;
       const beforeNote = str(before.comment);
       if (!row) return refuse(undoGone(op));
-      if (row.linked) return refuse(UNDO_LINKED_REFUSAL);
+      const linked = linkedRefusal(row);
+      if (linked) return refuse(linked);
       if (!beforeNote || row.comment !== str(after.comment)) return refuse(undoChangedSince(op));
       return plan({
         op, needsSync: false, rowAfter: row.id, done: 'Undone — the label is off, and stays off.',

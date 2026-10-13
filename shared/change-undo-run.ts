@@ -26,7 +26,9 @@ import {
 } from './change-undo.js';
 import { editSkippedTransactions, withoutSkipped, withSkipped } from './skipped-transactions.js';
 import type { SecretGet, SecretSet } from './subscription-prefs.js';
-import { rowIdByComment, txIdFromComment } from './sync-core.js';
+import {
+  flowExternalOf, IN_TRANSIT_COMMENT_PREFIX, isInternalMarkerComment, isTransferType, rowIdByComment, txIdFromComment,
+} from './sync-core.js';
 import type { HostActivity, SyncHost } from './sync-host.js';
 import {
   clearAccountOverride, clearTxOverride, editSyncOverrides, isUnreadableOverridesError, setAccountOverride, setTxOverride,
@@ -120,16 +122,34 @@ async function readMappingRules(get: SecretGet): Promise<MappingRule[]> {
 const sameRule = (a: MappingRule, b: MappingRule) =>
   a.pattern === b.pattern && a.matchType === b.matchType && a.activityType === b.activityType && (a.subtype ?? '') === (b.subtype ?? '');
 
+/**
+ * On a host that cannot read groups: could this row be half of a pair someone
+ * else linked? Any transfer-typed row could, except the ones the sync wrote as
+ * unpaired — a held in-transit placeholder, an opening balance or a balance
+ * adjustment — and a row whose `flow.is_external` is `true` (the sync's own
+ * unpaired rows; Wealthfolio never links one). A row whose metadata is unknown
+ * may be linked.
+ */
+export function maybeLinkedTransfer(a: HostActivity): boolean {
+  if (!isTransferType(a.activityType)) return false;
+  const note = a.comment ?? '';
+  if (note.startsWith(IN_TRANSIT_COMMENT_PREFIX) || isInternalMarkerComment(note)) return false;
+  return flowExternalOf(a.metadata) !== true;
+}
+
 /** The row as the planner sees it, with "is it one half of a linked transfer". */
 async function toUndoRow(io: UndoIo, a: HostActivity, txKey: string | null): Promise<UndoRow> {
-  let linked: boolean;
+  let linked: UndoRow['linked'];
   if (io.host.capabilities.readsSourceGroupId) {
-    linked = !!a.sourceGroupId;
+    linked = a.sourceGroupId ? 'confirmed' : false;
   } else {
-    // The add-on cannot read groups back; the ledger the sync keeps stands in.
+    // The add-on cannot read groups back. The ledger the sync keeps confirms
+    // the links IT made; the companion's links are in no ledger, so any other
+    // transfer-typed row may be half of one (deleting it would delete both).
     const ledger = parseJson<Record<string, string>>(await io.secrets.get(LINKED_GROUPS_SECRET_KEY)) ?? {};
     const txId = txIdFromComment(a.comment);
-    linked = (!!txKey && ledger[txKey] !== undefined) || (!!txId && ledger[txId] !== undefined);
+    const confirmed = (!!txKey && ledger[txKey] !== undefined) || (!!txId && ledger[txId] !== undefined);
+    linked = confirmed ? 'confirmed' : maybeLinkedTransfer(a) ? 'maybe' : false;
   }
   return {
     id: a.id, accountId: a.accountId, type: a.activityType, date: a.date.slice(0, 10),

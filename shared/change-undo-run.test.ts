@@ -5,13 +5,16 @@ import {
 } from './change-entries.js';
 import type { ChangeLogItem } from './change-log.js';
 import {
-  UNDO_EXACT_COPY, UNDO_FROM_TELEGRAM, UNDO_LINKED_REFUSAL, UNDO_UNREACHABLE, UNDO_UPDATE_COMPANION, type UndoOp, type UndoVariant,
+  UNDO_EXACT_COPY, UNDO_FROM_TELEGRAM, UNDO_LINKED_REFUSAL, UNDO_MAYBE_LINKED, UNDO_UNREACHABLE, UNDO_UPDATE_COMPANION, type UndoOp,
+  type UndoVariant,
 } from './change-undo.js';
 import {
-  runChangeUndo, UNDO_ALREADY_RUNNING, UNDO_MAPPING_RULES_UNREADABLE, UNDO_RULE_FILED_UNREADABLE, UNDO_SAVE_FAILED, UNDO_SKIP_NOTE, type UndoIo,
+  maybeLinkedTransfer, runChangeUndo, UNDO_ALREADY_RUNNING, UNDO_MAPPING_RULES_UNREADABLE, UNDO_RULE_FILED_UNREADABLE, UNDO_SAVE_FAILED,
+  UNDO_SKIP_NOTE, type UndoIo,
 } from './change-undo-run.js';
 import { createFakeHost, type FakeHostSeed } from './fake-host.js';
 import { SKIPPED_TRANSACTIONS_SECRET_KEY } from './skipped-transactions.js';
+import { BALANCE_ADJUSTMENT_COMMENT_PREFIX, IN_TRANSIT_COMMENT_PREFIX, STARTING_BALANCE_COMMENT_PREFIX } from './sync-core.js';
 import type { HostActivity } from './sync-host.js';
 import {
   emptySyncOverrides, setTxOverride, hasAccountOverride, hasTxOverride, parseSyncOverrides, SYNC_OVERRIDES_SECRET_KEY, SYNC_OVERRIDES_UNREADABLE_MESSAGE,
@@ -228,6 +231,117 @@ describe('runChangeUndo', () => {
     addon.io.host = { ...addon.fh.host, capabilities: { readsSourceGroupId: false } };
     expect(await addon.undo(imported, 'undo')).toEqual({ ok: false, message: UNDO_LINKED_REFUSAL });
     expect(addon.fh.activities.get('wf-a')).toHaveLength(1);
+  });
+
+  describe('on the add-on, which cannot read groups: one half of a pair the companion linked', () => {
+    const OUT_KEY = accountTxKey('sfin-1', 'tx-out');
+    const LINKED = '{"flow":{"is_external":false}}';
+    const outRow = (over: Partial<HostActivity> = {}): HostActivity => ({
+      id: 'act-out', accountId: 'wf-a', activityType: 'TRANSFER_OUT', date: '2026-10-08', amount: 464.6,
+      comment: 'AMAZON.COM*MB3T81 · tx-out', sourceGroupId: 'wf-transfer-9', metadata: LINKED, ...over,
+    });
+    const inRow = (over: Partial<HostActivity> = {}): HostActivity => ({
+      id: 'act-in', accountId: 'wf-b', activityType: 'TRANSFER_IN', date: '2026-10-09', amount: 464.6,
+      comment: 'PAYMENT THANK YOU · tx-in', sourceGroupId: 'wf-transfer-9', metadata: LINKED, ...over,
+    });
+    /**
+     * The add-on as Wealthfolio serves it: a read carries no group (ActivityDetails
+     * has none), deleting one half of a linked pair deletes both, and an update to
+     * one half is copied onto the other (`upstreamWriteRules`). The companion linked
+     * the pair, so the add-on's own `linked_groups` ledger is EMPTY.
+     */
+    function addon(out: HostActivity, partner: HostActivity | null, secrets: Record<string, string> = {}) {
+      const h = harness({
+        mapping: { 'sfin-1': 'wf-a', 'sfin-2': 'wf-b' },
+        accountTypes: { 'wf-a': 'CASH', 'wf-b': 'CREDIT_CARD' },
+        accountNames: { 'wf-a': 'Checking', 'wf-b': 'Amazon Store Card' },
+        existing: new Map([['wf-a', [out]], ['wf-b', partner ? [partner] : []]]),
+        upstreamWriteRules: true,
+      }, secrets, { where: { host: 'addon', companionVersion: '1.61.0' } });
+      const real = h.fh.host;
+      h.io.host = {
+        ...real,
+        capabilities: { readsSourceGroupId: false },
+        listActivities: async (wf: string) => (await real.listActivities(wf)).map((r) => ({ ...r, sourceGroupId: null })),
+        saveMany: async (req) => {
+          if (!req.deleteIds) return real.saveMany(req);
+          const all = [...h.fh.activities.values()].flat();
+          const ids = new Set<string>(req.deleteIds);
+          for (const id of req.deleteIds) {
+            const r = all.find((x) => x.id === id);
+            if (r?.sourceGroupId) for (const o of all) if (o.sourceGroupId === r.sourceGroupId) ids.add(o.id);
+          }
+          return real.saveMany({ ...req, deleteIds: [...ids] });
+        },
+      };
+      return h;
+    }
+    const importedOut = stampChange(importChange({
+      account: CHECKING, txKey: OUT_KEY, activityId: 'act-out', description: 'AMAZON.COM*MB3T81', amountCents: -46460, date: '2026-10-08',
+      pending: false, activityType: 'TRANSFER_OUT',
+    }), 'addon', NOW);
+    const labelledOut = stampChange(amazonLabelChange({
+      account: CHECKING, txKey: OUT_KEY, activityId: 'act-out', description: 'AMAZON.COM*MB3T81', amountCents: -46460, date: '2026-10-08',
+      beforeNote: 'AMAZON.COM*MB3T81 · tx-out', afterNote: 'AMAZON.COM*MB3T81 · Amazon: Lawn & Garden · tx-out', label: 'Lawn & Garden',
+    }), 'addon', NOW);
+
+    it('an import undo is refused, writing nothing — Wealthfolio would delete both halves', async () => {
+      const h = addon(outRow(), inRow());
+      expect(await h.undo(importedOut, 'undo')).toEqual({ ok: false, message: UNDO_MAYBE_LINKED });
+      expect(h.set).not.toHaveBeenCalled();
+      expect(h.fh.saved).toEqual([]);
+      expect(h.fh.activities.get('wf-a')).toHaveLength(1);
+      expect(h.fh.activities.get('wf-b')).toHaveLength(1);
+      expect(h.io.record).not.toHaveBeenCalled();
+      expect(UNDO_MAYBE_LINKED).toBe('This may be half of a linked transfer — undo the link first, or undo it from Telegram: /changes');
+    });
+
+    it('an Amazon label undo is refused, writing nothing — Wealthfolio would copy the note onto the other half', async () => {
+      const h = addon(outRow({ comment: 'AMAZON.COM*MB3T81 · Amazon: Lawn & Garden · tx-out' }), inRow());
+      expect(await h.undo(labelledOut, 'undo')).toEqual({ ok: false, message: UNDO_MAYBE_LINKED });
+      expect(h.set).not.toHaveBeenCalled();
+      expect(h.fh.saved).toEqual([]);
+      expect(h.fh.activities.get('wf-a')![0].comment).toBe('AMAZON.COM*MB3T81 · Amazon: Lawn & Garden · tx-out');
+      expect(h.fh.activities.get('wf-b')![0].comment).toBe('PAYMENT THANK YOU · tx-in');
+    });
+
+    it('a pair the ledger confirms keeps "Undo the transfer link first."', async () => {
+      const h = addon(outRow(), inRow(), { linked_groups: JSON.stringify({ [OUT_KEY]: 'wf-transfer-9' }) });
+      expect(await h.undo(importedOut, 'undo')).toEqual({ ok: false, message: UNDO_LINKED_REFUSAL });
+      expect(h.set).not.toHaveBeenCalled();
+      expect(h.fh.saved).toEqual([]);
+    });
+
+    it('a transfer-typed row the sync marked external is not refused', async () => {
+      const h = addon(outRow({ sourceGroupId: null, metadata: '{"flow":{"is_external":true}}' }), null);
+      expect(await h.undo(importedOut, 'undo')).toMatchObject({ ok: true });
+      expect(h.fh.activities.get('wf-a')).toEqual([]);
+    });
+
+    it('a held in-transit placeholder is not refused', async () => {
+      const h = addon(outRow({ sourceGroupId: null, metadata: undefined, comment: `${IN_TRANSIT_COMMENT_PREFIX}AMAZON.COM*MB3T81 · tx-out` }), null);
+      expect(await h.undo(importedOut, 'undo')).toMatchObject({ ok: true });
+      expect(h.fh.activities.get('wf-a')).toEqual([]);
+    });
+
+    it('the companion reads the group off the row, so an unlinked transfer-typed row is never "maybe"', async () => {
+      const h = harness(seedWith([outRow({ sourceGroupId: null })]));
+      expect(await h.undo(importedOut, 'undo')).toMatchObject({ ok: true });
+      expect(h.fh.activities.get('wf-a')).toEqual([]);
+    });
+  });
+
+  it('only an unflagged, unmarked transfer-typed row may be half of a pair the add-on cannot see', () => {
+    const base: HostActivity = { id: 'a', accountId: 'wf-a', activityType: 'TRANSFER_OUT', date: '2026-10-08', amount: 1, comment: 'ZELLE TO J SMITH · tx-1' };
+    expect(maybeLinkedTransfer(base)).toBe(true);
+    expect(maybeLinkedTransfer({ ...base, metadata: '{"flow":{"is_external":false}}' })).toBe(true);
+    expect(maybeLinkedTransfer({ ...base, metadata: null })).toBe(true);
+    expect(maybeLinkedTransfer({ ...base, activityType: 'TRANSFER_IN' })).toBe(true);
+    expect(maybeLinkedTransfer({ ...base, activityType: 'WITHDRAWAL' })).toBe(false);
+    expect(maybeLinkedTransfer({ ...base, metadata: '{"flow":{"is_external":true}}' })).toBe(false);
+    expect(maybeLinkedTransfer({ ...base, comment: `${IN_TRANSIT_COMMENT_PREFIX}ZELLE TO J SMITH · tx-1` })).toBe(false);
+    expect(maybeLinkedTransfer({ ...base, comment: `${STARTING_BALANCE_COMMENT_PREFIX}sfin-1` })).toBe(false);
+    expect(maybeLinkedTransfer({ ...base, comment: `${BALANCE_ADJUSTMENT_COMMENT_PREFIX}sfin-1 · 2026-10-12` })).toBe(false);
   });
 
   it('an Amazon label: noAmazonLabel, then the old note back', async () => {
