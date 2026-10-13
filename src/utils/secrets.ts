@@ -28,7 +28,7 @@ import {
 } from '../../shared/subscription-prefs';
 import { newRunId, stampChange, type ChangeDraft, type ChangeEntry, type ChangeLogSink } from '../../shared/change-entries';
 import {
-  editSyncOverrides as editOverridesDocument, loadSyncOverrides, SYNC_OVERRIDES_SECRET_KEY, syncOverridesOrEmpty,
+  editSyncOverrides as editOverridesDocument, loadSyncOverrides, SYNC_OVERRIDES_SECRET_KEY, syncOverridesIgnoredLog, syncOverridesOrEmpty,
   type LoadedSyncOverrides, type SyncOverrides, type SyncOverridesEdit,
 } from '../../shared/sync-overrides';
 import {
@@ -578,9 +578,10 @@ export class SecretsStore {
   }
 
   /** What the sync obeys (shared/sync-overrides.ts): corrupt, absent and a
-   *  failed read all come back empty — the sync then behaves as it always did. */
+   *  failed read all come back empty — the sync then behaves as it always did,
+   *  and a corrupt or unread document gets one log line saying so. */
   async getSyncOverrides(): Promise<SyncOverrides> {
-    return syncOverridesOrEmpty((k) => this.ctx.api.secrets.get(k));
+    return syncOverridesOrEmpty((k) => this.ctx.api.secrets.get(k), (why) => console.warn(syncOverridesIgnoredLog(why)));
   }
 
   /** The document for the Change log card's "Your overrides": `unreadable` when

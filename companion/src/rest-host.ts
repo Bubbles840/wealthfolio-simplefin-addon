@@ -6,7 +6,7 @@ import type { AmazonLabelCatalog, AmazonMailConfig } from './amazon-mail.js';
 import type { AmazonLedger } from '../../shared/amazon-ledger.js';
 import { linkPairByRecreate } from '../../shared/link-pair.js';
 import { SKIPPED_TRANSACTIONS_SECRET_KEY, parseSkippedTransactions, type SkippedTransaction } from '../../shared/skipped-transactions.js';
-import { syncOverridesOrEmpty, type SyncOverrides } from '../../shared/sync-overrides.js';
+import { syncOverridesIgnoredLog, syncOverridesOrEmpty, type SyncOverrides } from '../../shared/sync-overrides.js';
 import type { WealthfolioClient } from './wealthfolio.js';
 import type {
   HostActivity,
@@ -322,9 +322,10 @@ export class RestSyncStore implements SyncStore {
   }
 
   /** The same document the add-on reads (shared/sync-overrides.ts); corrupt,
-   *  absent and a failed read are empty, so the sync behaves as it always did. */
+   *  absent and a failed read are empty, so the sync behaves as it always did,
+   *  and a corrupt or unread document gets one log line saying so. */
   async getSyncOverrides(): Promise<SyncOverrides> {
-    return syncOverridesOrEmpty((k) => this.client.getAddonSecret(this.addonId, k));
+    return syncOverridesOrEmpty((k) => this.client.getAddonSecret(this.addonId, k), (why) => console.warn(syncOverridesIgnoredLog(why)));
   }
 
   async getAmazonLedger(): Promise<AmazonLedger> {
