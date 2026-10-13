@@ -30,7 +30,7 @@ import { rowIdByComment, txIdFromComment } from './sync-core.js';
 import type { HostActivity, SyncHost } from './sync-host.js';
 import {
   clearAccountOverride, clearTxOverride, editSyncOverrides, isUnreadableOverridesError, setAccountOverride, setTxOverride,
-  type SyncOverrides,
+  hasTxOverride, type SyncOverrides,
 } from './sync-overrides.js';
 import { accountTxKey } from './transfers.js';
 import type { MappingRule } from './types.js';
@@ -79,6 +79,25 @@ const cents = (v: unknown) => Math.round(Math.abs(Number(v ?? 0)) * 100);
 const isDuplicateRefusal = (msg: string) => /duplicate|already exists/i.test(msg);
 
 class Refusal extends Error {}
+
+/** A step failed after earlier ones had already taken effect. */
+class PartialFailure extends Error {
+  constructor(cause: unknown, readonly done: string[]) {
+    super(message(cause));
+  }
+}
+
+const STEP_WORDS: Record<string, string> = {
+  skip: 'put it on the skip list', unskip: 'took it off the skip list', delete: 'removed the row', create: 're-created the row',
+  import: 'wrote the row back', update: 'updated the row', assign: 'filed the category', unassign: 'took the category off',
+  'delete-rule': 'deleted the rule', 'create-rule': 'created the rule', 'mapping-remove': 'removed the transaction rule',
+  'mapping-add': 'added the transaction rule',
+};
+
+/** Entries whose undo/redo is running right now in this process (a double tap). */
+const inFlight = new Set<string>();
+export const UNDO_ALREADY_RUNNING = 'That undo is already running.';
+export const UNDO_SAVE_FAILED = "Couldn't save the undo — nothing was changed.";
 
 function parseJson<T>(raw: string | null): T | null {
   if (!raw) return null;
@@ -243,7 +262,22 @@ function rollbackOverride(o: SyncOverrides, s: UndoStep): SyncOverrides {
 /** Performs the reversal steps; resolves the id of a row a step created. */
 async function perform(io: UndoIo, steps: UndoStep[], now: Date): Promise<string | null> {
   let created: string | null = null;
+  const done: string[] = [];
   for (const s of steps) {
+    try {
+      created = await performStep(io, s, now, created);
+    } catch (err) {
+      if (err instanceof Refusal || done.length === 0) throw err;
+      throw new PartialFailure(err, done);
+    }
+    done.push(STEP_WORDS[s.do] ?? s.do);
+  }
+  return created;
+}
+
+async function performStep(io: UndoIo, s: UndoStep, now: Date, prior: string | null): Promise<string | null> {
+  let created = prior;
+  {
     switch (s.do) {
       case 'skip':
         await editSkippedTransactions(io.secrets.get, io.secrets.set, (l) => withSkipped(l, {
@@ -336,6 +370,18 @@ export async function runChangeUndo(
   variant: UndoVariant = 'plain',
   now: Date = new Date(),
 ): Promise<UndoOutcome> {
+  if (inFlight.has(entry.id)) return { ok: false, message: UNDO_ALREADY_RUNNING };
+  inFlight.add(entry.id);
+  try {
+    return await runOnce(entry, entries, op, io, variant, now);
+  } finally {
+    inFlight.delete(entry.id);
+  }
+}
+
+async function runOnce(
+  entry: ChangeLogItem, entries: readonly ChangeEntry[], op: UndoOp, io: UndoIo, variant: UndoVariant, now: Date,
+): Promise<UndoOutcome> {
   const available = undoAvailability(entry, io.where);
   if (available.kind === 'none') return { ok: false, message: UNDO_NOT_POSSIBLE };
   if (available.kind !== 'ready') return { ok: false, message: available.text };
@@ -353,11 +399,16 @@ export async function runChangeUndo(
 
   const overrideSteps = p.steps.filter(isOverrideStep);
   const rest = p.steps.filter((s) => !isOverrideStep(s));
+  // Overrides THIS undo set (a flag already there before is not ours to take back).
+  let ours: UndoStep[] = [];
   if (overrideSteps.length > 0) {
     try {
-      await editSyncOverrides(io.secrets.get, io.secrets.set, (o) => overrideSteps.reduce((d, s) => applyOverride(d, s, now, entry.id), o), now);
+      await editSyncOverrides(io.secrets.get, io.secrets.set, (o) => {
+        ours = overrideSteps.filter((s) => !(s.do === 'set-tx' && hasTxOverride(o, s.txKey, s.flag)));
+        return overrideSteps.reduce((d, s) => applyOverride(d, s, now, entry.id), o);
+      }, now);
     } catch (err) {
-      return { ok: false, message: isUnreadableOverridesError(err) ? message(err) : UNDO_UNREACHABLE };
+      return { ok: false, message: isUnreadableOverridesError(err) ? message(err) : UNDO_SAVE_FAILED };
     }
   }
 
@@ -367,13 +418,18 @@ export async function runChangeUndo(
   } catch (err) {
     if (err instanceof Refusal) {
       // Refused as an exact copy: take the override back out, so nothing changed.
-      if (overrideSteps.length > 0) {
-        await editSyncOverrides(io.secrets.get, io.secrets.set, (o) => overrideSteps.reduce(rollbackOverride, o), now).catch(() => {});
+      if (ours.length > 0) {
+        try {
+          await editSyncOverrides(io.secrets.get, io.secrets.set, (o) => ours.reduce(rollbackOverride, o), now);
+        } catch {
+          return { ok: false, message: `${err.message} The setting it saved could not be taken back out, so it stays.` };
+        }
       }
       return { ok: false, message: err.message };
     }
     const what = op === 'undo' ? 'undo' : 'redo';
-    return { ok: false, message: `Couldn't finish the ${what}: ${message(err)}` };
+    const base = `Couldn't finish the ${what}: ${message(err)}`;
+    return { ok: false, message: err instanceof PartialFailure ? `${base.replace(/\.$/, '')}. Part of it was already done: ${err.done.join(', ')}.` : base };
   }
 
   try {
