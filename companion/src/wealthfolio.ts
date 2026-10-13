@@ -335,12 +335,15 @@ export class WealthfolioClient {
   }
 
   /** Deletes a categorization rule (`DELETE /spending/rules/{id}`, upstream
-   *  `delete_categorization_rule`). Filings the rule already made stay. */
+   *  `delete_categorization_rule`). Filings the rule already made stay. A 404
+   *  means the rule is already gone (deleted in Wealthfolio): that resolves, so
+   *  an undo of it is not stranded. */
   async deleteCategorizationRule(id: string): Promise<void> {
     const res = await fetch(`${this.baseUrl}/api/v1/spending/rules/${encodeURIComponent(id)}`, {
       method: 'DELETE',
       headers: this.authHeaders(),
     });
+    if (res.status === 404) return;
     if (!res.ok) throw await this.httpError('deleteCategorizationRule', res);
   }
 

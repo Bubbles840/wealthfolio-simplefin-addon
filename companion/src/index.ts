@@ -74,6 +74,8 @@ import { fileAmazonCharges } from './amazon-filing.js';
 import { companionChangeSink, readCompanionChangeLog, recordCompanionChanges } from './change-log-host.js';
 import { emptySyncOverrides, hasAccountOverride, hasTxOverride, syncOverridesOrEmpty, type SyncOverrides } from '../../shared/sync-overrides.js';
 import { createChangesMenu, renderChangesCommand, CHANGES_UNREACHABLE_REPLY, type ChangesMenu } from './changes-menu.js';
+import { companionRuleFiledCount, companionUndoIo } from './change-undo-host.js';
+import { runChangeUndo } from '../../shared/change-undo-run.js';
 import type { ChangeLogRead } from '../../shared/change-log.js';
 import type { ChangeDraft } from '../../shared/change-entries.js';
 import { createTransferLearning, type TransferLearning } from './transfer-learning.js';
@@ -2757,6 +2759,32 @@ const AFFORD_USAGE_REPLY = 'Usage: /afford 20 shopping';
 const SYNC_STARTED_REPLY = 'Syncing…';
 const SYNC_ALREADY_RUNNING_REPLY = 'Already syncing — hang on.';
 
+/**
+ * `/sync` and the change log's 🔄 Sync now: one FORCED run through the shared
+ * lock, joined when one is already running.
+ *
+ * Both handlers are attached to the run synchronously, BEFORE any caller
+ * awaits, and in BOTH branches. That ordering is the point: a sync that
+ * rejects while a caller is suspended would otherwise be an unhandled
+ * rejection, which kills the daemon and stops bank syncing — the same hazard
+ * the cron callbacks' `.catch` guards. It also makes `summary` a promise that
+ * can only ever FULFIL, with a string.
+ */
+export function startTelegramSync(): { started: boolean; summary: Promise<string> } {
+  const { started, result } = runCompanionSyncExclusive(() => runCompanionSync({ force: true }));
+  const summary = result.then(
+    (r) => formatSyncReply({
+      imported: r.imported,
+      skipped: r.skipped,
+      driftAlerts: r.balanceDriftAlerts.length,
+      errors: r.errors,
+    }),
+    // RAW error text: `formatSyncReply` escapes it itself.
+    (err) => formatSyncReply({ imported: 0, skipped: 0, driftAlerts: 0, errors: [formatError(err)] }),
+  );
+  return { started, summary };
+}
+
 /** One line for every way `/newrule`'s arguments can fail to parse — see
  *  `parseNewRuleArgs`, which deliberately does not distinguish them. */
 const NEWRULE_USAGE_REPLY = 'Usage: /newrule trader joes = groceries';
@@ -3370,23 +3398,7 @@ export function buildTelegramCommandHandler(
         // not yet elapsed". The addon's Sync Now answers that with a "Sync
         // anyway" button; a chat command has no second click, so an explicit
         // request forces — which is what the design and the changelog promise.
-        const { started, result } = runCompanionSyncExclusive(() => runCompanionSync({ force: true }));
-        // Both handlers are attached to `result` synchronously, BEFORE the first
-        // `await`, and in BOTH branches. That ordering is the point: a sync that
-        // rejects while this function is suspended would otherwise be an
-        // unhandled rejection, which kills the daemon and stops bank syncing —
-        // the same hazard the cron callbacks' `.catch` guards. It also makes
-        // `summary` a promise that can only ever FULFIL, with a string.
-        const summary = result.then(
-          (r) => formatSyncReply({
-            imported: r.imported,
-            skipped: r.skipped,
-            driftAlerts: r.balanceDriftAlerts.length,
-            errors: r.errors,
-          }),
-          // RAW error text: `formatSyncReply` escapes it itself.
-          (err) => formatSyncReply({ imported: 0, skipped: 0, driftAlerts: 0, errors: [formatError(err)] }),
-        );
+        const { started, summary } = startTelegramSync();
 
         await reply(started ? SYNC_STARTED_REPLY : SYNC_ALREADY_RUNNING_REPLY);
 
@@ -3545,8 +3557,12 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
   });
 
   // `/changes`. Stateless: every tap re-reads the log, so it survives restarts.
+  // Undo and Redo run here (R2) through the shared runner; Sync now is /sync.
   const changes: ChangesMenu = createChangesMenu({
     read: (now) => readCompanionChangeLog(wfClient, now),
+    undo: (entry, entries, op, variant) => runChangeUndo(entry, entries, op, companionUndoIo(wfClient, wealthfolioDbPath()), variant),
+    ruleFiledCount: async (entry) => companionRuleFiledCount(wealthfolioDbPath(), entry),
+    syncNow: () => startTelegramSync(),
     now: () => new Date(),
     log,
   });
