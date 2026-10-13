@@ -76,33 +76,33 @@ describe('summaries — one per kind, bank text raw', () => {
     ['transfer-link', transferLinkChange(
       { account: CHECKING, txKey: KEY, description: 'CITI AUTOPAY', amountCents: -46460, date: '2026-10-08', oldActivityId: 'old-1', newActivityId: 'new-1' },
       { account: CARD, txKey: accountTxKey('ACT-9c8d', 'TRN-a1b2'), description: 'PAYMENT THANK YOU', amountCents: 46460, date: '2026-10-08', oldActivityId: 'old-2', newActivityId: 'new-2' },
-    ), 'Linked CITI AUTOPAY (Checking) and PAYMENT THANK YOU (Citi Card) as one transfer'],
+    ), 'Linked CITI AUTOPAY and PAYMENT THANK YOU as one transfer'],
     ['duplicate-removed', duplicateRemovedChange({
       account: CHECKING, txKey: KEY, activityId: 'act-dup', description: 'TRADER JOE S #628', amountCents: -2120,
       date: '2026-08-06', payload: { accountId: 'wf-checking', activityType: 'WITHDRAWAL', activityDate: '2026-08-06', amount: 21.2, currency: 'USD', comment: 'TRADER JOE S #628 · TRN-a1b2' },
     }), 'Removed a duplicate copy of TRADER JOE S #628'],
     ['starting-balance', startingBalanceChange({
       account: CARD, activityId: 'sb-1', amountCents: -46460, date: '2026-06-18', activityType: 'WITHDRAWAL', comment: 'Starting balance · ACT-9c8d',
-    }), "Set Citi Card's starting balance to -$464.60 on Jun 18"],
+    }), 'Set the starting balance, dated Jun 18'],
     ['starting-balance-moved (date)', startingBalanceMovedChange({
       account: CHECKING, actor: 'auto', activityId: 'sb-2',
       before: { amountCents: 120000, date: '2026-06-19', activityType: 'CREDIT' },
       after: { amountCents: 120000, date: '2026-04-22', activityType: 'CREDIT' },
-    }), "Moved Checking's starting balance to Apr 22 (was Jun 19)"],
+    }), 'Moved the starting balance to Apr 22 (was Jun 19)'],
     ['starting-balance-moved (amount)', startingBalanceMovedChange({
       account: CHECKING, actor: 'you', activityId: 'sb-2',
       before: { amountCents: 120000, date: '2026-06-19', activityType: 'CREDIT' },
       after: { amountCents: 125000, date: '2026-06-19', activityType: 'CREDIT' },
-    }), "Changed Checking's starting balance to $1,250.00 (was $1,200.00)"],
+    }), 'Changed the starting balance (was $1,200.00)'],
     ['starting-balance-moved (both)', startingBalanceMovedChange({
       account: CHECKING, actor: 'auto', activityId: 'sb-2',
       before: { amountCents: 120000, date: '2026-06-19', activityType: 'CREDIT' },
       after: { amountCents: 80000, date: '2026-04-22', activityType: 'CREDIT' },
-    }), "Changed Checking's starting balance to $800.00 on Apr 22 (was $1,200.00 on Jun 19)"],
+    }), 'Changed the starting balance and moved it to Apr 22 (was $1,200.00 on Jun 19)'],
     ['balance-correction', balanceCorrectionChange({
       account: CHECKING, actor: 'auto', activityId: 'plug-1', amountCents: -215, date: '2026-10-12', activityType: 'TRANSFER_OUT',
       comment: 'Balance adjustment · ACT-1f2e · 2026-10-12',
-    }), 'Added a -$2.15 balance correction to Checking'],
+    }), 'Added a balance correction'],
     ['amazon-label', amazonLabelChange({
       account: CARD, txKey: KEY, activityId: 'act-4', description: 'AMAZON MKTPL*2K4', amountCents: -1080, date: '2026-09-15',
       beforeNote: 'AMAZON MKTPL*2K4 · TRN-a1b2', afterNote: 'AMAZON MKTPL*2K4 · Amazon: Hair Care · TRN-a1b2', label: 'Hair Care',
@@ -122,7 +122,7 @@ describe('summaries — one per kind, bank text raw', () => {
     ['opening-balance-filed', openingBalanceFiledChange({
       account: CARD, activityId: 'sb-1', amountCents: -46460, date: '2026-06-18',
       category: { categoryId: 'cat-open', categoryName: 'Opening balances' },
-    }), "Filed Citi Card's opening balance under Opening balances"],
+    }), 'Filed the opening balance under Opening balances'],
     ['category-rule-created', categoryRuleCreatedChange({
       ruleId: 'rule-7', name: 'Telegram: TRADER JOE S', pattern: 'TRADER JOE S', categoryId: 'cat-gro', categoryName: 'Groceries',
     }), 'Created a rule: descriptions containing "TRADER JOE S" go to Groceries'],
@@ -130,7 +130,7 @@ describe('summaries — one per kind, bank text raw', () => {
       rule: { pattern: 'Payment to Ccb', matchType: 'contains', activityType: 'TRANSFER_OUT' }, description: 'Payment to Ccb Credit Card',
     }), 'Added a transaction rule: "Payment to Ccb" is a transfer out'],
     ['account-created', accountCreatedChange({ sfinId: 'ACT-9c8d', wfId: 'wf-citi', name: 'Citi Card', accountType: 'CREDIT_CARD' }),
-      'Created the Wealthfolio account Citi Card'],
+      'Created a Wealthfolio account'],
     ['bookkeeping', bookkeepingChange({ step: 'legacy-placeholder', account: CHECKING, activityIds: ['a', 'b'] }),
       'Restated 2 old placeholder rows with their real amounts'],
   ];
@@ -157,7 +157,7 @@ describe('what R2 needs to undo it (P1)', () => {
     const d = importChange({
       account: CHECKING, txKey: KEY, activityId: 'act-1', description: 'X', amountCents: -100, date: '2026-10-11', pending: false, activityType: 'WITHDRAWAL',
     });
-    expect(d).toMatchObject({ undoable: true, actor: 'auto', after: { activityId: 'act-1', txKey: KEY } });
+    expect(d).toMatchObject({ undoable: true, actor: 'auto', after: { activityType: 'WITHDRAWAL', pending: false }, subject: { activityIds: ['act-1'], txKeys: [KEY] } });
     expect(d.subject.txKeys).toEqual([KEY]);
   });
 
@@ -258,6 +258,38 @@ describe('what R2 needs to undo it (P1)', () => {
       before: { absCents: 500, date: '2026-10-01', pending: false, activityType: 'CREDIT', subtype: null },
       after: { absCents: 500, date: '2026-10-01', pending: false, activityType: 'CREDIT', subtype: 'REIMBURSEMENT' },
     });
-    expect(d.summary).toBe('Updated VENMO from the bank: marked REIMBURSEMENT');
+    expect(d.summary).toBe('VENMO marked REIMBURSEMENT');
+    expect(d.why).toBe('A rule changed it');
+  });
+
+  it('a type-only update is the sync retyping it, not the bank', () => {
+    const d = bankUpdateChange({
+      account: CHECKING, txKey: KEY, activityId: 'a', description: 'Online Transfer', amountCents: -500,
+      before: { absCents: 500, date: '2026-10-01', pending: false, activityType: 'WITHDRAWAL' },
+      after: { absCents: 500, date: '2026-10-01', pending: false, activityType: 'TRANSFER_OUT' },
+    });
+    expect(d.summary).toBe('Retyped Online Transfer: WITHDRAWAL → TRANSFER_OUT');
+    expect(d.why).toBe('The sync retyped it');
+  });
+
+  it('an amount, date or pending change is still the bank, and a new tx id keeps the old key', () => {
+    const d = bankUpdateChange({
+      account: CHECKING, txKey: KEY, activityId: 'a', description: 'X', amountCents: -600, previousTxKey: 'old-key',
+      before: { absCents: 500, date: '2026-10-01', pending: true, activityType: 'WITHDRAWAL' },
+      after: { absCents: 600, date: '2026-10-01', pending: false, activityType: 'WITHDRAWAL' },
+    });
+    expect(d.why).toBe('The bank changed it');
+    expect(d.before).toMatchObject({ txKey: 'old-key' });
+  });
+
+  it('an import entry stays small at real id lengths', () => {
+    const uuid = (n: number) => `${n}`.repeat(8).slice(0, 8) + '-aaaa-bbbb-cccc-dddddddddddd';
+    const d = importChange({
+      account: { sfinId: `ACT-${uuid(1)}`, wfId: uuid(2), name: 'Everyday Checking' },
+      txKey: accountTxKey(`ACT-${uuid(1)}`, `TRN-${uuid(3)}`), activityId: uuid(4),
+      description: 'KROGER #123 SPRINGFIELD', amountCents: -1234, date: '2026-10-11', pending: false, activityType: 'WITHDRAWAL',
+    });
+    const entry = stampChange(d, 'companion', new Date('2026-10-12T14:05:00Z'), 'cmgt1abc');
+    expect(JSON.stringify(entry).length).toBeLessThan(700);
   });
 });

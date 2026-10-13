@@ -157,7 +157,12 @@ export interface ImportFacts {
   activityType: string;
 }
 
-/** A bank transaction the sync created. Undo (R2): skip list + remove the row. */
+/**
+ * A bank transaction the sync created. Undo (R2): skip list + remove the row.
+ * Size: the identity is stored ONCE. R2 reads the row id from
+ * `subject.activityIds[0]` and the tx key from `subject.txKeys[0]`; `after`
+ * holds only what the subject does not (type and pending state).
+ */
 export function importChange(f: ImportFacts): ChangeDraft {
   return {
     actor: 'auto',
@@ -165,7 +170,7 @@ export function importChange(f: ImportFacts): ChangeDraft {
     account: f.account,
     subject: { txKeys: [f.txKey], activityIds: [f.activityId], description: f.description, amountCents: f.amountCents, date: f.date },
     summary: `Imported ${what(f.description)}${f.pending ? ' (pending)' : ''}`,
-    after: { activityId: f.activityId, txKey: f.txKey, activityType: f.activityType, pending: f.pending },
+    after: { activityType: f.activityType, pending: f.pending },
     undoable: true,
   };
 }
@@ -189,6 +194,8 @@ export interface BankUpdateFacts {
   amountCents: number;
   before: StoredTxState;
   after: StoredTxState;
+  /** The old tx key, when a pending row posted under a NEW tx id. */
+  previousTxKey?: string;
 }
 
 /** What the bank changed, as short phrases: `$12.00 → $12.34`, `posted`. */
@@ -204,17 +211,32 @@ export function bankUpdateParts(before: StoredTxState, after: StoredTxState): st
   return parts;
 }
 
-/** A reconcile update the bank drove. Not undoable: the bank is the source of truth. */
+/**
+ * A reconcile update. Mostly the bank's doing; when only the type and/or
+ * subtype moved it is the sync's or a rule's decision, and says so. Not
+ * undoable: the bank is the source of truth. R2 reads the row id and tx key
+ * from `subject`; `before.txKey` is present only for a posting under a new id.
+ */
 export function bankUpdateChange(f: BankUpdateFacts): ChangeDraft {
   const parts = bankUpdateParts(f.before, f.after);
+  const bankMoved = !!f.previousTxKey
+    || f.before.absCents !== f.after.absCents
+    || f.before.date !== f.after.date
+    || f.before.pending !== f.after.pending;
+  const retyped = f.before.activityType !== f.after.activityType;
+  const [summary, why] = bankMoved
+    ? [`Updated ${what(f.description)} from the bank${parts.length ? `: ${parts.join(', ')}` : ''}`, 'The bank changed it']
+    : retyped
+      ? [`Retyped ${what(f.description)}: ${parts.join(', ')}`, 'The sync retyped it']
+      : [`${what(f.description)} ${parts.length ? parts.join(', ') : 'updated'}`, 'A rule changed it'];
   return {
     actor: 'auto',
     kind: 'bank-update',
     account: f.account,
     subject: { txKeys: [f.txKey], activityIds: [f.activityId], description: f.description, amountCents: f.amountCents, date: f.after.date },
-    summary: `Updated ${what(f.description)} from the bank${parts.length ? `: ${parts.join(', ')}` : ''}`,
-    why: 'The bank changed it',
-    before: { ...f.before },
+    summary,
+    why,
+    before: { ...f.before, ...(f.previousTxKey ? { txKey: f.previousTxKey } : {}) },
     after: { ...f.after },
     undoable: false,
   };
@@ -313,7 +335,7 @@ export function transferLinkChange(out: LinkLegFacts, inLeg: LinkLegFacts): Chan
       amountCents: out.amountCents,
       date: out.date,
     },
-    summary: `Linked ${what(out.description)} (${out.account.name}) and ${what(inLeg.description)} (${inLeg.account.name}) as one transfer`,
+    summary: `Linked ${what(out.description)} and ${what(inLeg.description)} as one transfer`,
     why: 'Same amount left one account and arrived in another',
     before: { activityIds: [out.oldActivityId, inLeg.oldActivityId] },
     after: { ...(fresh.length === 2 ? { activityIds: fresh } : {}), legs: [leg(out), leg(inLeg)] },
@@ -366,7 +388,7 @@ export function startingBalanceChange(f: BalanceRowFacts): ChangeDraft {
     kind: 'starting-balance',
     account: f.account,
     subject: { ...(f.activityId ? { activityIds: [f.activityId] } : {}), amountCents: f.amountCents, date: f.date },
-    summary: `Set ${f.account.name}'s starting balance to ${changeMoney(f.amountCents)} on ${changeDay(f.date)}`,
+    summary: `Set the starting balance, dated ${changeDay(f.date)}`,
     why: "Everything before the first sync, so the account matches the bank's balance",
     after: {
       ...(f.activityId ? { activityId: f.activityId } : {}),
@@ -389,14 +411,13 @@ export interface StartingBalanceMovedFacts {
 /** The starting balance changed in place — moved in front of older history by
  *  the sync, or corrected by the person accepting the baseline fix. */
 export function startingBalanceMovedChange(f: StartingBalanceMovedFacts): ChangeDraft {
-  const name = f.account.name;
   const sameAmount = f.before.amountCents === f.after.amountCents;
   const sameDate = f.before.date === f.after.date;
   const summary = sameAmount
-    ? `Moved ${name}'s starting balance to ${changeDay(f.after.date)} (was ${changeDay(f.before.date)})`
+    ? `Moved the starting balance to ${changeDay(f.after.date)} (was ${changeDay(f.before.date)})`
     : sameDate
-      ? `Changed ${name}'s starting balance to ${changeMoney(f.after.amountCents)} (was ${changeMoney(f.before.amountCents)})`
-      : `Changed ${name}'s starting balance to ${changeMoney(f.after.amountCents)} on ${changeDay(f.after.date)} (was ${changeMoney(f.before.amountCents)} on ${changeDay(f.before.date)})`;
+      ? `Changed the starting balance (was ${changeMoney(f.before.amountCents)})`
+      : `Changed the starting balance and moved it to ${changeDay(f.after.date)} (was ${changeMoney(f.before.amountCents)} on ${changeDay(f.before.date)})`;
   return {
     actor: f.actor,
     kind: 'starting-balance-moved',
@@ -420,7 +441,7 @@ export function balanceCorrectionChange(f: BalanceCorrectionFacts): ChangeDraft 
     kind: 'balance-correction',
     account: f.account,
     subject: { ...(f.activityId ? { activityIds: [f.activityId] } : {}), amountCents: f.amountCents, date: f.date },
-    summary: `Added a ${changeMoney(f.amountCents)} balance correction to ${f.account.name}`,
+    summary: 'Added a balance correction',
     ...(f.actor === 'auto' ? { why: "Aggressive auto re-scan: the account didn't match the bank" } : {}),
     after: {
       ...(f.activityId ? { activityId: f.activityId } : {}),
@@ -531,7 +552,7 @@ export function openingBalanceFiledChange(f: OpeningBalanceFiledFacts): ChangeDr
     kind: 'opening-balance-filed',
     account: f.account,
     subject: { activityIds: [f.activityId], amountCents: f.amountCents, date: f.date, categoryName: f.category.categoryName },
-    summary: `Filed ${f.account.name}'s opening balance under ${f.category.categoryName}`,
+    summary: `Filed the opening balance under ${f.category.categoryName}`,
     why: "A card's opening debt is not a purchase",
     before: filed(null),
     after: filed(f.category),
@@ -593,7 +614,7 @@ export function accountCreatedChange(f: AccountCreatedFacts): ChangeDraft {
     kind: 'account-created',
     account: { sfinId: f.sfinId, wfId: f.wfId, name: f.name },
     subject: {},
-    summary: `Created the Wealthfolio account ${f.name}`,
+    summary: 'Created a Wealthfolio account',
     after: { wfAccountId: f.wfId, sfinAccountId: f.sfinId, accountType: f.accountType },
     undoable: false,
   };
