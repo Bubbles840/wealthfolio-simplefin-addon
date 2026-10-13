@@ -533,6 +533,24 @@ describe('runSyncCore — notTransfer', () => {
         expect(r.errors).toEqual([expect.stringContaining('Transfer-unlink cleanup waiting (tx-out/tx-in)')]);
       });
 
+      it('a read that fails with a notTransfer override but no pair to hold still says why the run held back', async () => {
+        // The pair was unlinked by an earlier sync; the overrides stay (365 days).
+        const first = createFakeHost(twoAccounts({ existing: linkedRows(), syncOverrides: notTransfer(OUT, IN), upstreamWriteRules: true }));
+        await runSyncCore(first.host, first.store, {});
+        expect(first.activities.get('wf-a')!.map((r) => r.activityType)).toEqual(['WITHDRAWAL']);
+        const fh = createFakeHost(twoAccounts({ existing: first.activities, syncOverrides: notTransfer(OUT, IN), upstreamWriteRules: true }));
+        let failed = false;
+        const blipping = { ...fh.host, listActivities: async (id: string) => {
+          if (id === 'wf-b' && !failed) { failed = true; throw new Error('blip'); }
+          return fh.host.listActivities(id);
+        } };
+        const r = await runSyncCore(blipping, fh.store, {});
+        expect(failed).toBe(true);
+        // Prune, relink and drift were all skipped for every account: the note says why.
+        expect(r.errors).toEqual([HELD_FOR_A_READ]);
+        expect(fh.saved).toEqual([]);
+      });
+
       it('a read that fails before an unlink holds it for the run; the next sync unlinks', async () => {
         const fh = createFakeHost(twoAccounts({ existing: linkedRows(), syncOverrides: notTransfer(OUT, IN), upstreamWriteRules: true }));
         const reads = new Map<string, number>();

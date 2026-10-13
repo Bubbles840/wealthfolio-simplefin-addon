@@ -3677,7 +3677,10 @@ async function runSyncPass(
   for (const w of unlinkPrepass.waiting) {
     errors.push(`Transfer-unlink cleanup waiting (${w.txIds.join('/')}): ${w.reason} — the old linked rows stay for now, nothing was deleted`);
   }
-  if (!unlinkPrepass.certain && heldGids.size > 0) {
+  // Whenever the pre-pass read was uncertain (it runs only while a notTransfer
+  // override exists), held pair or not: the run skipped the prune, the relink
+  // sweep and drift for EVERY account, and this note is the only sign of it.
+  if (!unlinkPrepass.certain) {
     errors.push('Could not read every account, so a transfer you undid was not unlinked or cleaned up this sync — nothing was deleted; the next sync tries again');
   }
 
