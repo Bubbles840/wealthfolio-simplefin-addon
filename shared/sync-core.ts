@@ -1643,6 +1643,136 @@ export async function runSyncCore(
 /** Records one change-log entry for a write that succeeded. */
 type RecordChange = (build: () => ChangeDraft) => void;
 
+/** A row the unlink pre-pass read, with the SimpleFin account it sits in. */
+interface UnlinkSeen { sf: string; key: string; row: StoredRow }
+
+/** A linked pair an earlier unlink re-created as ordinary rows but could not
+ *  delete, confirmed for its cleanup this run. */
+interface StaleUnlinkPair {
+  gid: string;
+  /** The old linked legs, by row: one per leg, in account order. */
+  old: UnlinkSeen[];
+  /** Each leg's ordinary replacement, by row, in the same order. */
+  replacements: UnlinkSeen[];
+}
+
+/** What the unlink pre-pass decided, before any account is touched. */
+interface UnlinkPrepass {
+  /** Every account could be read. When false nothing about a pair being
+   *  unlinked is decided this run: no unlink, no cleanup delete, no duplicate
+   *  prune, no relink sweep, no drift measurement anywhere. */
+  certain: boolean;
+  /** Old linked legs kept out of every step of this run, by row id. */
+  hiddenIds: Set<string>;
+  /** Their groups, so a leg the pre-pass could not see is kept out too. */
+  heldGids: Set<string>;
+  /** Tx keys whose bank transaction stays out of the plan, so every row under
+   *  them is left exactly as it is this run. */
+  frozenKeys: Set<string>;
+  /** Tx keys of every held pair: never paired, linked or relinked this run. */
+  staleKeys: Set<string>;
+  /** Tx keys of every linked pair with a `notTransfer` leg: never pruned. */
+  pairKeys: Set<string>;
+  /** SimpleFin accounts holding a held pair: drift is not measured there. */
+  driftAccounts: Set<string>;
+  /** Pairs whose old linked legs may be deleted this run. */
+  cleanup: StaleUnlinkPair[];
+  /** Pairs left as they are this run, and why. */
+  waiting: Array<{ txIds: string[]; reason: string }>;
+}
+
+const emptyUnlinkPrepass = (): UnlinkPrepass => ({
+  certain: true, hiddenIds: new Set(), heldGids: new Set(), frozenKeys: new Set(), staleKeys: new Set(),
+  pairKeys: new Set(), driftAccounts: new Set(), cleanup: [], waiting: [],
+});
+
+/**
+ * The unlink pre-pass: every linked pair with a `notTransfer` leg, decided per
+ * PAIR across all accounts before any of them is touched.
+ *
+ * An unlink re-creates both legs as ordinary rows first and deletes the old
+ * linked pair after (`unlinkPairByRecreate`); when that delete fails, the old
+ * pair is still there next to the new rows and a later run deletes it. That
+ * cleanup obeys ONE rule: an old linked leg is deleted only when, in this same
+ * run, EVERY leg of its pair has a confirmed ordinary replacement row. Both
+ * halves of that are identified by ROW, never by tx key alone:
+ *  - a pair's legs are the transfer-typed rows in its group (the shared
+ *    `sourceGroupId`, or on a host that cannot read it this app's ledger entry
+ *    for the row's tx key) — exactly two, one out and one in, in two accounts.
+ *    A held in-transit placeholder is never one: it was never linked, and is
+ *    what the sync re-holds a leg as when its partner said "not a transfer".
+ *  - a replacement is an ordinary row (not a transfer type, not a placeholder,
+ *    not pending) under the leg's own tx key.
+ * Anything less certain leaves the pair exactly as it is and says why: an
+ * account that could not be read (then every pair with a `notTransfer` leg
+ * waits), an other half not in this sync, rows that cannot be told apart, a leg
+ * with no ordinary row yet. Never a delete under doubt: a stale pair waiting
+ * one more sync is visible and costs nothing; a wrong delete loses a row.
+ *
+ * A pair with a `notTransfer` leg and no replacement yet is a plain unlink,
+ * done after the account loop; it is only protected from the duplicate prune
+ * here (`pairKeys`).
+ */
+function planUnlinkPrepass(
+  seen: UnlinkSeen[],
+  certain: boolean,
+  gidOf: (x: UnlinkSeen) => string | undefined,
+  notTransfer: (key: string) => boolean,
+  describe: (x: UnlinkSeen) => string,
+  /** Groups an unread account may hold a leg of: the ledger's, where the host keeps one. */
+  unseenGids: string[],
+): UnlinkPrepass {
+  const out = { ...emptyUnlinkPrepass(), certain };
+  const isPlaceholder = (r: StoredRow) => (r.comment ?? '').startsWith(IN_TRANSIT_COMMENT_PREFIX);
+  const legs = seen.filter((x) => isTransferType(x.row.type) && !isPlaceholder(x.row) && !!gidOf(x));
+  const ordinary = new Map<string, UnlinkSeen[]>();
+  for (const x of seen) {
+    if (isTransferType(x.row.type) || isPlaceholder(x.row) || x.row.pending) continue;
+    ordinary.set(x.key, [...(ordinary.get(x.key) ?? []), x]);
+  }
+  const gids = new Set(legs.filter((x) => notTransfer(x.key)).map((x) => gidOf(x)!));
+  if (!certain) for (const g of unseenGids) gids.add(g);
+  for (const gid of gids) {
+    const members = legs.filter((x) => gidOf(x) === gid);
+    for (const m of members) out.pairKeys.add(m.key);
+    /** Kept out of this run; `frozen` also keeps their bank transactions out of the plan. */
+    const hold = (frozen: boolean) => {
+      out.heldGids.add(gid);
+      for (const m of members) {
+        out.hiddenIds.add(m.row.wfId);
+        out.staleKeys.add(m.key);
+        out.driftAccounts.add(m.sf);
+        if (frozen) out.frozenKeys.add(m.key);
+      }
+    };
+    if (!certain) {
+      hold(true);
+      continue;
+    }
+    // No leg re-created yet: a plain unlink, after the account loop.
+    if (!members.some((m) => notTransfer(m.key) && ordinary.has(m.key))) continue;
+    const types = new Set(members.map((m) => m.row.type));
+    const reason = members.length < 2
+      ? 'its other half is not in this sync'
+      : members.length > 2 || members[0].sf === members[1].sf || !types.has('TRANSFER_OUT') || !types.has('TRANSFER_IN')
+        ? 'its linked rows cannot be told apart'
+        : members.filter((m) => !ordinary.has(m.key)).map((m) => `${describe(m)} has no ordinary row of its own yet`)[0];
+    if (reason) {
+      // Hidden, but its transactions still reach the plan: an expiring
+      // placeholder or a missing row becomes the ordinary row a later run
+      // can confirm.
+      hold(false);
+      out.waiting.push({ txIds: members.map((m) => m.row.txId), reason });
+      continue;
+    }
+    // Frozen: the replacements stay exactly as confirmed (not re-held as a
+    // placeholder, say) whether or not the delete lands.
+    hold(true);
+    out.cleanup.push({ gid, old: members, replacements: members.map((m) => ordinary.get(m.key)![0]) });
+  }
+  return out;
+}
+
 /**
  * A stored row as the create request that would make it again — what R2's
  * undo needs to put back a duplicate the prune removed.
@@ -2216,59 +2346,41 @@ async function runSyncPass(
   /** Linked legs carrying `notTransfer`, kept out of their account's plan and
    *  unlinked — with their partner — after the loop. */
   const unlinkKeys = new Set<string>();
-  /** Old linked legs an earlier unlink could not delete, with the ordinary row
-   *  already standing in for each. Deleted after the loop. */
-  interface StalePair {
-    gid: string | undefined;
-    oldIds: string[];
-    newIds: string[];
-    legs: Array<{ txKey: string; txId: string; description: string }>;
-  }
-  const stalePairs: StalePair[] = [];
-  /** Old linked legs (the overridden ones and their partners): hidden from every plan. */
-  const staleOldIds = new Set<string>();
-  /** Their ordinary replacements: protected from the duplicate prune. */
-  const staleNewIds = new Set<string>();
-  /** SimpleFin accounts touched by a stale pair: drift is not measured for them. */
-  const staleAccounts = new Set<string>();
-  // Decided per PAIR, across accounts, before any account is processed: an
-  // overridden leg with an ordinary row under its tx id (an earlier unlink
-  // re-created the pair but could not delete the old one), its partner in the
-  // same group, and both legs' ordinary replacements. Only read when an
-  // override could make it matter.
+  const notTransferKey = (key: string) => hasTxOverride(overrides, key, 'notTransfer');
+  /** A stored row's transfer group: its own where the host reads it, the ledger's otherwise. */
+  const gidOfRow = (sf: string, row: StoredRow): string | undefined => (readsGroups
+    ? row.sourceGroupId || undefined
+    : ledger[accountTxKey(sf, row.txId)] ?? ledger[row.txId]);
+  // Every linked pair with a `notTransfer` leg, decided per PAIR across
+  // accounts before any account is touched (see planUnlinkPrepass). Only read
+  // when an override could make it matter.
+  let unlinkPrepass = emptyUnlinkPrepass();
   if (Object.values(overrides.tx).some((o) => o.notTransfer)) {
-    interface Seen { sf: string; row: StoredRow }
-    const all: Seen[] = [];
+    const seen: UnlinkSeen[] = [];
+    let certain = true;
     for (const acc of accountSet.accounts) {
       const wf = mapping[acc.id];
       if (!wf) continue;
       try {
-        for (const row of await fetchExistingRows(host, wf)) all.push({ sf: acc.id, row });
+        for (const row of await fetchExistingRows(host, wf)) seen.push({ sf: acc.id, key: accountTxKey(acc.id, row.txId), row });
       } catch {
-        // an unreadable account has nothing to protect this run
+        // Not "nothing there": an unread account may hold the other half of
+        // a pair, so nothing about any of them is decided this run.
+        certain = false;
       }
     }
-    const keyOf = (x: Seen) => accountTxKey(x.sf, x.row.txId);
-    const gidOf = (x: Seen) => (readsGroups ? x.row.sourceGroupId || undefined : (ledger[keyOf(x)] ?? ledger[x.row.txId]));
-    const ordinaryOf = (x: Seen) => all.filter((o) => o.sf === x.sf && o.row.txId === x.row.txId && !isTransferType(o.row.type));
-    const done = new Set<string>();
-    for (const x of all) {
-      const gid = gidOf(x);
-      if (done.has(x.row.wfId) || !gid || !isTransferType(x.row.type)
-        || !hasTxOverride(overrides, keyOf(x), 'notTransfer') || ordinaryOf(x).length === 0) continue;
-      const members = all.filter((o) => isTransferType(o.row.type) && gidOf(o) === gid);
-      const pair: StalePair = { gid, oldIds: [], newIds: [], legs: [] };
-      for (const m of members) {
-        done.add(m.row.wfId);
-        pair.oldIds.push(m.row.wfId);
-        staleOldIds.add(m.row.wfId);
-        staleAccounts.add(m.sf);
-        pair.legs.push({ txKey: keyOf(m), txId: m.row.txId, description: descByKey.get(keyOf(m)) || descriptionFromComment(m.row.comment) || m.row.txId });
-        for (const o of ordinaryOf(m)) { pair.newIds.push(o.row.wfId); staleNewIds.add(o.row.wfId); }
-      }
-      stalePairs.push(pair);
-    }
+    unlinkPrepass = planUnlinkPrepass(
+      seen, certain,
+      (x) => gidOfRow(x.sf, x.row),
+      notTransferKey,
+      (x) => descByKey.get(x.key) || descriptionFromComment(x.row.comment) || x.row.txId,
+      readsGroups ? [] : Object.entries(ledger).filter(([k]) => notTransferKey(k)).map(([, g]) => g),
+    );
   }
+  const { hiddenIds: unlinkHiddenIds, heldGids, frozenKeys, staleKeys, pairKeys, driftAccounts } = unlinkPrepass;
+  /** Groups a leg was found in only by the account loop: their cleanup, if
+   *  any, is no longer confirmed (a third row cannot be told apart). */
+  const lateGids = new Set<string>();
 
   for (const sfAccount of accountSet.accounts) {
     const wfAccountId = mapping[sfAccount.id];
@@ -2313,6 +2425,31 @@ async function runSyncPass(
       // read unavailable — proceed as if no rows exist
     }
 
+    // ── Pairs the unlink pre-pass holds (see planUnlinkPrepass) ─────────────
+    // Their old linked legs leave the snapshot here, so nothing below — the
+    // prune, the repairs, the plan, the link step — can update or delete one.
+    // Plus any leg the pre-pass could not see: one in a held group, and, when
+    // an account could not be read, every linked leg the person undid.
+    if (unlinkHiddenIds.size > 0 || heldGids.size > 0 || !unlinkPrepass.certain) {
+      const isLinkedLeg = (r: StoredRow) => isTransferType(r.type)
+        && !(r.comment ?? '').startsWith(IN_TRANSIT_COMMENT_PREFIX) && !!gidOfRow(sfAccount.id, r);
+      const held = existing.filter((r) => unlinkHiddenIds.has(r.wfId) || (isLinkedLeg(r)
+        && (heldGids.has(gidOfRow(sfAccount.id, r)!) || (!unlinkPrepass.certain && notTransferKey(accountTxKey(sfAccount.id, r.txId))))));
+      for (const r of held) {
+        if (unlinkHiddenIds.has(r.wfId)) continue;
+        const key = accountTxKey(sfAccount.id, r.txId);
+        const gid = gidOfRow(sfAccount.id, r)!;
+        if (heldGids.has(gid)) lateGids.add(gid);
+        heldGids.add(gid);
+        staleKeys.add(key);
+        pairKeys.add(key);
+        driftAccounts.add(sfAccount.id);
+        if (!unlinkPrepass.certain) frozenKeys.add(key);
+      }
+      const heldIds = new Set(held.map((r) => r.wfId));
+      existing = existing.filter((r) => !heldIds.has(r.wfId));
+    }
+
     // ── Duplicate prune (heal/reconcile only) ────────────────────────────────
     //
     // Delete rows that are surplus copies of a transaction this account already
@@ -2344,16 +2481,19 @@ async function runSyncPass(
     // wide window, which is what gives the sweep the feed evidence it needs. A
     // routine sync never deletes anything.
     let prunedThisAccount = 0;
-    if (heal) {
+    // Not at all when the unlink pre-pass could not read every account: a
+    // pair being unlinked may have rows here it could not see.
+    if (heal && unlinkPrepass.certain) {
       const feedByTxId = new Map(feed.map((t) => [t.txId, t]));
       // Copies the person chose to keep (Undo of a removed duplicate) are left
       // out of the sweep entirely — every copy shares the one tx key.
       const surplus = planDuplicatePrune(
         existing.filter((r) => !hasTxOverride(overrides, accountTxKey(sfAccount.id, r.txId), 'keepDuplicate')
           // A pair being unlinked has, for a moment, an old linked row and its
-          // ordinary replacement under one tx id: not duplicates to prune.
-          && !hasTxOverride(overrides, accountTxKey(sfAccount.id, r.txId), 'notTransfer')
-          && !staleOldIds.has(r.wfId) && !staleNewIds.has(r.wfId)),
+          // ordinary replacement under one tx id: not duplicates to prune —
+          // neither half of it, override or not.
+          && !notTransferKey(accountTxKey(sfAccount.id, r.txId))
+          && !pairKeys.has(accountTxKey(sfAccount.id, r.txId))),
         new Set(feedByTxId.keys()),
       );
       if (surplus.length > 0) {
@@ -2507,23 +2647,27 @@ async function runSyncPass(
     // create (Wealthfolio would refuse it, or worse store a second copy) and no
     // update (an update to a linked leg overwrites its partner in turn). They are
     // re-linked under their own identity after the loop.
+    /** The bank's transactions this account's plan may act on: none under a
+     *  key the unlink pre-pass froze, whose rows stay exactly as they are. */
+    const liveFeed = feed.filter((t) => !frozenKeys.has(accountTxKey(sfAccount.id, t.txId)));
     const adoptions = planOverwrittenLegAdoptions(
-      feed, existing,
+      liveFeed, existing,
       (txId) => (signedByKey.get(accountTxKey(sfAccount.id, txId)) ?? 0) > 0,
       (txId) => [...(accountsByTxId.get(txId) ?? [])].some((id) => id !== sfAccount.id),
     );
     const adoptedRowIds = new Set(adoptions.map((a) => a.row.wfId));
     const adoptedTxIds = new Set(adoptions.map((a) => a.tx.txId));
     const planExistingAll = existing.filter((r) => !adoptedRowIds.has(r.wfId));
+    // The ledger knows tx keys, not rows: under a key whose linked leg the
+    // unlink pre-pass took out of the snapshot, every row left is NOT linked
+    // (a held placeholder kept as a "linked leg" would lose its marker and
+    // never expire).
     const isLinkedRow = (row: ExistingRow & { sourceGroupId?: string | null }) => readsGroups
       ? !!row.sourceGroupId
-      : ledger[accountTxKey(sfAccount.id, row.txId)] !== undefined || ledger[row.txId] !== undefined;
+      : !staleKeys.has(accountTxKey(sfAccount.id, row.txId))
+        && (ledger[accountTxKey(sfAccount.id, row.txId)] !== undefined || ledger[row.txId] !== undefined);
     const isNotTransferLeg = (r: ExistingRow) => isTransferType(r.type)
       && hasTxOverride(overrides, accountTxKey(sfAccount.id, r.txId), 'notTransfer');
-    // An earlier unlink re-created the pair as ordinary rows but could not
-    // delete the old linked one (decided per pair above): it is deleted (alone,
-    // no second create) after the loop, and kept out of everything else.
-    const stale = planExistingAll.filter((r) => staleOldIds.has(r.wfId));
     // A host that cannot read groups only knows the links its own ledger
     // recorded. Any other transfer leg the person undid may be linked by the
     // companion, and updating one leg of a linked pair rewrites its partner:
@@ -2534,7 +2678,7 @@ async function runSyncPass(
       const key = accountTxKey(sfAccount.id, r.txId);
       errors.push(`Left ${descByKey.get(key) || descriptionFromComment(r.comment) || r.txId} as it is: this app has no record of linking it; the companion will unlink it on its next sync.`);
     }
-    const hiddenIds = new Set([...stale, ...foreign].map((r) => r.wfId));
+    const hiddenIds = new Set(foreign.map((r) => r.wfId));
     const foreignTxIds = new Set(foreign.map((r) => r.txId));
     const planExisting = planExistingAll.filter((r) => !hiddenIds.has(r.wfId));
     for (const { row, tx } of adoptions) {
@@ -2564,7 +2708,7 @@ async function runSyncPass(
     const unlinkingIds = new Set(unlinking.map((r) => r.wfId));
     const unlinkingTxIds = new Set(unlinking.map((r) => r.txId));
     const storedByTxId = new Map(planExisting.map((r) => [r.txId, r]));
-    const planFeed = feed
+    const planFeed = liveFeed
       .filter((t) => !adoptedTxIds.has(t.txId) && !unlinkingTxIds.has(t.txId) && !foreignTxIds.has(t.txId))
       .map((t) => {
         const row = storedByTxId.get(t.txId);
@@ -2626,8 +2770,10 @@ async function runSyncPass(
       // figure the prune just removed, put straight back. Not measurable this run.
       const createOnly =
         plan.updates.length === 0 && plan.deleteIds.length === 0 && prunedThisAccount === 0
-        // `wfValuation` still counts the stale linked rows deleted after this loop.
-        && !staleAccounts.has(sfAccount.id);
+        // `wfValuation` still counts the old linked rows of a held pair (see
+        // planUnlinkPrepass) — and with an unread account, any account may
+        // hold one.
+        && unlinkPrepass.certain && !driftAccounts.has(sfAccount.id);
       // Heal re-scans wide and imports, so it must subtract what it creates
       // (lag-free: WF's balance becomes wfValuation + creates). A normal sync
       // only trusts drift when nothing was created (valuation is otherwise
@@ -3436,7 +3582,10 @@ async function runSyncPass(
   // shared group where the host reads it, the ledger where it cannot. A leg
   // whose other half is not in view is left linked and reported — deleting one
   // leg of a pair deletes both, and the unseen half could not be re-created.
-  const unlinkedKeys = new Set<string>();
+  // A pair the pre-pass holds is in here from the start: no step this run
+  // pairs, links or relinks it (each of those deletes and re-creates a row,
+  // and the re-create would collide with an old linked leg still standing).
+  const unlinkedKeys = new Set<string>(staleKeys);
   const partnerKeyOf = (key: string, row: LinkableRow): string | null => {
     const gid = readsGroups ? row.sourceGroupId : (ledger[key] ?? ledger[row.txId]);
     if (!gid) return null;
@@ -3493,34 +3642,43 @@ async function runSyncPass(
     }));
   }
 
-  // The old linked pair of an unlink whose delete failed last time: the
-  // ordinary rows are already there, so this only deletes — no second create.
-  if (stalePairs.length > 0) {
+  // The old linked pair of an unlink whose delete failed last time, confirmed
+  // by planUnlinkPrepass: each leg has its ordinary row already, so this only
+  // deletes — no second create. One request per pair, so each says how it went.
+  for (const pair of unlinkPrepass.cleanup) {
+    const txIds = pair.old.map((m) => m.row.txId).join('/');
+    if (lateGids.has(pair.gid)) {
+      unlinkPrepass.waiting.push({ txIds: pair.old.map((m) => m.row.txId), reason: 'its linked rows cannot be told apart' });
+      continue;
+    }
     let problem: string | null = null;
-    const oldIds = stalePairs.flatMap((p) => p.oldIds);
     try {
-      const del = await host.saveMany({ deleteIds: oldIds });
+      const del = await host.saveMany({ deleteIds: pair.old.map((m) => m.row.wfId) });
       if (del.errors.length > 0) problem = del.errors.map((e) => `${e.action}: ${e.message}`).join('; ');
     } catch (e: any) {
       problem = String(e?.message ?? e);
     }
     if (problem !== null) {
-      errors.push(`Transfer-unlink cleanup incomplete (${stalePairs.flatMap((p) => p.legs.map((l) => l.txId)).join('/')}): the old linked pair is still there next to the new rows: ${problem}`);
-    } else {
-      if (!readsGroups) {
-        // Both legs' entries go: they share one group id.
-        const gids = new Set(stalePairs.map((p) => p.gid).filter((g): g is string => !!g));
-        for (const [k, g] of Object.entries(ledger)) {
-          if (gids.has(g)) { delete ledger[k]; ledgerChanged = true; }
-        }
-      }
-      for (const p of stalePairs) {
-        logChange?.(() => bookkeepingChange({
-          step: 'transfer-unlink', pairs: 1, rows: p.newIds.length || p.oldIds.length,
-          activityIds: [...p.newIds, ...p.oldIds], legs: p.legs.map((l) => ({ txKey: l.txKey, description: l.description })),
-        }));
+      errors.push(`Transfer-unlink cleanup incomplete (${txIds}): the old linked pair is still there next to the new rows: ${problem}`);
+      continue;
+    }
+    if (!readsGroups) {
+      // Both legs' entries go: they share the pair's group id.
+      for (const [k, g] of Object.entries(ledger)) {
+        if (g === pair.gid) { delete ledger[k]; ledgerChanged = true; }
       }
     }
+    logChange?.(() => bookkeepingChange({
+      step: 'transfer-unlink', pairs: 1, rows: pair.replacements.length,
+      activityIds: [...pair.replacements, ...pair.old].map((m) => m.row.wfId),
+      legs: pair.old.map((m) => ({ txKey: m.key, description: descByKey.get(m.key) || descriptionFromComment(m.row.comment) || m.row.txId })),
+    }));
+  }
+  for (const w of unlinkPrepass.waiting) {
+    errors.push(`Transfer-unlink cleanup waiting (${w.txIds.join('/')}): ${w.reason} — the old linked rows stay for now, nothing was deleted`);
+  }
+  if (!unlinkPrepass.certain && heldGids.size > 0) {
+    errors.push('Could not read every account, so a transfer you undid was not unlinked or cleaned up this sync — nothing was deleted; the next sync tries again');
   }
 
   for (const { out, in: inLeg } of detection.pairs) {
@@ -3749,9 +3907,13 @@ async function runSyncPass(
   // asset). Delete and re-create asset-free instead, which is the only way to
   // make them book cash (handlers/transfers.rs only books cash when asset_id is
   // empty). No group id: there's nothing to pair them with.
+  //
+  // Not at all when the unlink pre-pass could not read every account: the
+  // re-create can collide with an old linked leg it could not see, after the
+  // delete has already gone through.
   const relinkCreates: ActivityWrite[] = [];
   const staleLegIds: string[] = [];
-  for (const [key, row] of linkRowByKey) {
+  for (const [key, row] of unlinkPrepass.certain ? linkRowByKey : []) {
     if (!isTransferType(row.type) || !row.assetId || linkedKeys.has(key) || unlinkedKeys.has(key)) continue;
     staleLegIds.push(row.wfId);
     relinkCreates.push({
