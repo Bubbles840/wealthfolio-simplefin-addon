@@ -56,13 +56,17 @@ The addon has three tabs: **Home**, **Reports** and **Settings**.
   `/subscriptions` lists your subscriptions and bills — set a reminder before
   a charge, rename one, hide one you cancelled, or add an annual plan by hand —
   and the daily report's "Coming up" lines say what charges soon. In a group chat, answer a question by
-  replying to it. `/changes` lists what changed in the last 7 days, and
-  `/changes venmo` searches it.
+  replying to it. `/changes` lists what changed in the last 7 days, each with
+  Undo or Redo, and `/changes venmo` searches it.
 - **Change log** — every change the sync, the companion and you made, the last
   90 days, under **Settings → Change log**: imports, bank updates, transfer
   links, removed duplicates, starting balances, corrections, filings and rules,
-  each with why and, where there is one, what it was before. Read-only in this
-  release.
+  each with why and, where there is one, what it was before. Undo or Redo any
+  of it from the entry — no confirmation. Undoing something the sync decided
+  also tells the sync not to decide it again (the card's **Your overrides**
+  lists those, each with Remove), and takes effect on the next sync — Sync now
+  is right there. Category and rule changes are undone from Telegram's
+  `/changes`.
 - **Amazon categorization** (optional) — reads Amazon's order emails from a
   throwaway mailbox and files each `AMAZON.COM*…` charge under what you bought.
 - **Rules** — map a description pattern to a category or activity type when a
