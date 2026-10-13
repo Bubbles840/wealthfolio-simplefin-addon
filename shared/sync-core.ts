@@ -657,6 +657,8 @@ async function hasExistingStartingBalance(
  *  opening debt is a `TRANSFER_OUT` — reading only `WITHDRAWAL` as negative
  *  turned that debt into a credit the moment anything adjusted it. */
 const OUTFLOW_TYPES = new Set(['WITHDRAWAL', 'TRANSFER_OUT', 'FEE', 'TAX']);
+/** Money out when a re-created leg's sign must come from its stored type. */
+const UNLINK_OUTFLOW_TYPES = new Set(['WITHDRAWAL', 'TRANSFER_OUT', 'FEE', 'INTEREST']);
 
 const isoDay = (date: string) => new Date(date).toISOString().slice(0, 10);
 const dayBefore = (day: string) => new Date(Date.parse(`${day}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
@@ -2214,6 +2216,9 @@ async function runSyncPass(
   /** Linked legs carrying `notTransfer`, kept out of their account's plan and
    *  unlinked — with their partner — after the loop. */
   const unlinkKeys = new Set<string>();
+  /** Old linked legs an earlier unlink could not delete, with the ordinary row
+   *  already standing in for each. Deleted after the loop. */
+  const staleLinked: Array<{ key: string; row: ExistingRow; sfAccountId: string; siblingId?: string }> = [];
 
   for (const sfAccount of accountSet.accounts) {
     const wfAccountId = mapping[sfAccount.id];
@@ -2455,7 +2460,36 @@ async function runSyncPass(
     );
     const adoptedRowIds = new Set(adoptions.map((a) => a.row.wfId));
     const adoptedTxIds = new Set(adoptions.map((a) => a.tx.txId));
-    const planExisting = existing.filter((r) => !adoptedRowIds.has(r.wfId));
+    const planExistingAll = existing.filter((r) => !adoptedRowIds.has(r.wfId));
+    const isLinkedRow = (row: ExistingRow & { sourceGroupId?: string | null }) => readsGroups
+      ? !!row.sourceGroupId
+      : ledger[accountTxKey(sfAccount.id, row.txId)] !== undefined || ledger[row.txId] !== undefined;
+    const isNotTransferLeg = (r: ExistingRow) => isTransferType(r.type)
+      && hasTxOverride(overrides, accountTxKey(sfAccount.id, r.txId), 'notTransfer');
+    // An earlier unlink re-created the pair as ordinary rows but could not
+    // delete the old linked one: it is deleted (alone, no second create) after
+    // the loop, and kept out of everything else meanwhile.
+    const ordinaryTxIds = new Set(planExistingAll.filter((r) => !isTransferType(r.type)).map((r) => r.txId));
+    const stale = planExistingAll.filter((r) => isNotTransferLeg(r) && isLinkedRow(r) && ordinaryTxIds.has(r.txId));
+    for (const r of stale) {
+      staleLinked.push({
+        key: accountTxKey(sfAccount.id, r.txId), row: r, sfAccountId: sfAccount.id,
+        siblingId: planExistingAll.find((o) => o.txId === r.txId && !isTransferType(o.type))?.wfId,
+      });
+    }
+    // A host that cannot read groups only knows the links its own ledger
+    // recorded. Any other transfer leg the person undid may be linked by the
+    // companion, and updating one leg of a linked pair rewrites its partner:
+    // leave it for the companion. (A held placeholder is never linked.)
+    const foreign = readsGroups ? [] : planExistingAll.filter((r) => isNotTransferLeg(r) && !isLinkedRow(r)
+      && !(r.comment ?? '').startsWith(IN_TRANSIT_COMMENT_PREFIX));
+    for (const r of foreign) {
+      const key = accountTxKey(sfAccount.id, r.txId);
+      errors.push(`Left ${descByKey.get(key) || descriptionFromComment(r.comment) || r.txId} for the companion to unlink — it was linked by the companion.`);
+    }
+    const hiddenIds = new Set([...stale, ...foreign].map((r) => r.wfId));
+    const foreignTxIds = new Set(foreign.map((r) => r.txId));
+    const planExisting = planExistingAll.filter((r) => !hiddenIds.has(r.wfId));
     for (const { row, tx } of adoptions) {
       const aliasKey = accountTxKey(sfAccount.id, tx.txId);
       // `comment` unset so toLinkLeg rebuilds this account's own description.
@@ -2474,9 +2508,6 @@ async function runSyncPass(
         ...row, currency: sfAccount.currency, sfAccountId: sfAccount.id,
       });
     }
-    const isLinkedRow = (row: ExistingRow & { sourceGroupId?: string | null }) => readsGroups
-      ? !!row.sourceGroupId
-      : ledger[accountTxKey(sfAccount.id, row.txId)] !== undefined || ledger[row.txId] !== undefined;
     // A LINKED leg the person said is not a transfer is unlinked after the
     // loop, both halves together, and kept out of this plan meanwhile: an
     // update to one leg of a linked pair is copied onto the other.
@@ -2487,7 +2518,7 @@ async function runSyncPass(
     const unlinkingTxIds = new Set(unlinking.map((r) => r.txId));
     const storedByTxId = new Map(planExisting.map((r) => [r.txId, r]));
     const planFeed = feed
-      .filter((t) => !adoptedTxIds.has(t.txId) && !unlinkingTxIds.has(t.txId))
+      .filter((t) => !adoptedTxIds.has(t.txId) && !unlinkingTxIds.has(t.txId) && !foreignTxIds.has(t.txId))
       .map((t) => {
         const row = storedByTxId.get(t.txId);
         return keepLinkedLegAsStored(t, row, !!row && isLinkedRow(row));
@@ -3383,7 +3414,10 @@ async function runSyncPass(
     unlinkedKeys.add(partnerKey);
     const leg = (r: LinkableRow): UnlinkLeg => {
       const base = toLinkLeg(r);
-      const signed = r.type === 'TRANSFER_OUT' ? -r.absCents : r.absCents;
+      // The feed's own sign when the leg is in it; else from the stored type.
+      const fed = signedByKey.get(accountTxKey(r.sfAccountId, r.txId));
+      const signed = fed !== undefined ? Math.round(fed * 100)
+        : UNLINK_OUTFLOW_TYPES.has(r.type) ? -r.absCents : r.absCents;
       return { ...base, newType: expiredTransferLegType(wfTypes.get(r.wfAccountId) ?? '', signed) };
     };
     let result: UnlinkResult;
@@ -3403,7 +3437,39 @@ async function runSyncPass(
         if (r.txId in ledger && ledger[r.txId] === gid) { delete ledger[r.txId]; ledgerChanged = true; }
       }
     }
-    logChange?.(() => bookkeepingChange({ step: 'transfer-unlink', activityIds: result.activityIds ?? [row.wfId, partner.wfId] }));
+    const unlinkedPair: Array<[string, LinkableRow]> = [[key, row], [partnerKey, partner]];
+    logChange?.(() => bookkeepingChange({
+      step: 'transfer-unlink', activityIds: result.activityIds ?? [row.wfId, partner.wfId],
+      legs: unlinkedPair.map(([k, r]) => ({ txKey: k, description: descByKey.get(k) || descriptionFromComment(r.comment) || r.txId })),
+    }));
+  }
+
+  // The old linked pair of an unlink whose delete failed last time: the
+  // ordinary rows are already there, so this only deletes — no second create.
+  if (staleLinked.length > 0) {
+    let problem: string | null = null;
+    try {
+      const del = await host.saveMany({ deleteIds: staleLinked.map((s) => s.row.wfId) });
+      if (del.errors.length > 0) problem = del.errors.map((e) => `${e.action}: ${e.message}`).join('; ');
+    } catch (e: any) {
+      problem = String(e?.message ?? e);
+    }
+    if (problem !== null) {
+      errors.push(`Transfer-unlink cleanup failed (${staleLinked.map((s) => s.row.txId).join('/')}): the old linked pair is still there next to the new rows: ${problem}`);
+    } else {
+      if (!readsGroups) {
+        for (const { key, row } of staleLinked) {
+          const gid = ledger[key] ?? ledger[row.txId];
+          if (key in ledger) { delete ledger[key]; ledgerChanged = true; }
+          if (row.txId in ledger && ledger[row.txId] === gid) { delete ledger[row.txId]; ledgerChanged = true; }
+        }
+      }
+      logChange?.(() => bookkeepingChange({
+        step: 'transfer-unlink',
+        activityIds: staleLinked.map((s) => s.siblingId ?? s.row.wfId),
+        legs: staleLinked.map((s) => ({ txKey: s.key, description: descByKey.get(s.key) || descriptionFromComment(s.row.comment) || s.row.txId })),
+      }));
+    }
   }
 
   for (const { out, in: inLeg } of detection.pairs) {
@@ -3412,6 +3478,7 @@ async function runSyncPass(
     // keeps them two distinct rows in two accounts instead of one row twice.
     const outKey = accountTxKey(out.accountId, out.txId);
     const inKey = accountTxKey(inLeg.accountId, inLeg.txId);
+    if (unlinkedKeys.has(outKey) || unlinkedKeys.has(inKey)) continue;
     const outRow = linkRowByKey.get(outKey);
     const inRow = linkRowByKey.get(inKey);
     if (!outRow || !inRow) continue; // a leg isn't imported yet — links next run

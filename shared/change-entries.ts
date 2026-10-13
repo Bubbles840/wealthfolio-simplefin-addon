@@ -635,6 +635,8 @@ export interface BookkeepingFacts {
   activityIds: string[];
   /** `opening-category` only: the category it created or reused. */
   categoryName?: string;
+  /** `transfer-unlink` only: the legs that were unlinked. */
+  legs?: Array<{ txKey: string; description: string }>;
 }
 
 /** Repairs the sync makes to its own rows. Shown behind a button; never undoable. */
@@ -653,7 +655,10 @@ export function bookkeepingChange(f: BookkeepingFacts): ChangeDraft {
     actor: 'auto',
     kind: 'bookkeeping',
     ...(f.account ? { account: f.account } : {}),
-    subject: n > 0 ? { activityIds: [...f.activityIds] } : {},
+    subject: {
+      ...(n > 0 ? { activityIds: [...f.activityIds] } : {}),
+      ...(f.legs?.length ? { txKeys: f.legs.map((l) => l.txKey), description: f.legs.map((l) => l.description).join(' / ') } : {}),
+    },
     summary,
     after: { step: f.step, count: n, ...(f.categoryName ? { categoryName: f.categoryName } : {}) },
     undoable: false,

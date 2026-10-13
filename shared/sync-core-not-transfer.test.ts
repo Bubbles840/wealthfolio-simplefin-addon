@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { ChangeEntry, ChangeLogSink } from './change-entries.js';
 import { createFakeHost, type FakeHostSeed } from './fake-host.js';
 import { runSyncCore, VALUATION_POLL } from './sync-core.js';
-import type { HostActivity } from './sync-host.js';
+import type { HostActivity, SaveManyRequest, SaveManyResult } from './sync-host.js';
 import { emptySyncOverrides, setTxOverride, type SyncOverrides } from './sync-overrides.js';
 import { accountTxKey } from './transfers.js';
 
@@ -66,11 +66,11 @@ describe('runSyncCore — notTransfer', () => {
     expect(result.errors).toEqual([]);
     expect(first.links).toEqual([]);
     // Never an update to a linked leg (it would be copied onto the partner):
-    // one delete of both, then one create of both.
+    // one create of both (before anything is deleted), then one delete of both.
     expect(first.saved.filter((r) => (r.updates ?? []).length > 0)).toEqual([]);
     expect(first.saved.map((r) => [r.deleteIds ?? [], (r.creates ?? []).map((c) => c.activityType)])).toEqual([
-      [['act-out', 'act-in'], []],
       [[], ['WITHDRAWAL', 'CREDIT']],
+      [['act-out', 'act-in'], []],
     ]);
     expect(rows(first.activities)).toEqual([
       { account: 'wf-a', type: 'WITHDRAWAL', comment: 'CITI AUTOPAY PAYMENT · tx-out', group: null },
@@ -98,6 +98,11 @@ describe('runSyncCore — notTransfer', () => {
     expect(fh.links).toEqual([]);
     expect(rows(fh.activities).map((r) => r.type)).toEqual(['WITHDRAWAL', 'CREDIT']);
     expect(await fh.store.getLinkedGroups()).toEqual({ 'tx-unrelated': 'wf-transfer-1' });
+    // A second sync finds nothing left to do.
+    const writes = fh.saved.length;
+    await runSyncCore(host, fh.store, { force: true });
+    expect(fh.saved.length).toBe(writes);
+    expect(fh.links).toEqual([]);
   });
 
   it('unlinks the pair when only one leg carries the override', async () => {
@@ -156,5 +161,120 @@ describe('runSyncCore — notTransfer', () => {
       summary: "Counted Online Transfer to Savings as spending — you said it isn't a transfer",
       why: 'You undid the transfer',
     })]);
+  });
+
+  describe('data safety', () => {
+    const snapshot = (a: Map<string, HostActivity[]>) => JSON.parse(JSON.stringify([...a.entries()]));
+    /** A host whose saveMany is wrapped: `around` may answer a request itself. */
+    const wrapped = (fh: ReturnType<typeof createFakeHost>, around: (req: SaveManyRequest) => Promise<SaveManyResult> | null) => ({
+      ...fh.host,
+      saveMany: (req: SaveManyRequest) => around(req) ?? fh.host.saveMany(req),
+    });
+
+    it('a host that cannot read groups never touches a pair it cannot confirm: no write, a note', async () => {
+      const fh = createFakeHost(twoAccounts({ existing: linkedRows(), syncOverrides: notTransfer(OUT, IN), upstreamWriteRules: true }));
+      const host = { ...fh.host, capabilities: { readsSourceGroupId: false } };
+      const before = snapshot(fh.activities);
+      const result = await runSyncCore(host, fh.store, {});
+      expect(fh.saved).toEqual([]);
+      expect(snapshot(fh.activities)).toEqual(before);
+      expect(result.errors).toEqual([
+        'Left CITI AUTOPAY PAYMENT for the companion to unlink — it was linked by the companion.',
+        'Left PAYMENT THANK YOU for the companion to unlink — it was linked by the companion.',
+      ]);
+    });
+
+    it('a refused create deletes nothing, names both rows, and the pair is retried next sync', async () => {
+      const fh = createFakeHost(twoAccounts({ existing: linkedRows(), syncOverrides: notTransfer(OUT, IN), upstreamWriteRules: true }));
+      const host = wrapped(fh, (req) => req.creates
+        ? Promise.resolve({ created: [], updated: [], errors: [{ action: 'create', message: 'refused' }] }) : null);
+      const before = snapshot(fh.activities);
+      const result = await runSyncCore(host, fh.store, {});
+      expect(fh.saved.some((r) => (r.deleteIds ?? []).length > 0)).toBe(false);
+      expect(snapshot(fh.activities)).toEqual(before);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0]).toContain('Transfer-unlink failed (tx-out/tx-in)');
+      expect(result.errors[0]).toContain('wf-a 2026-10-08 464.60 "CITI AUTOPAY PAYMENT · tx-out"');
+      expect(result.errors[0]).toContain('wf-b 2026-10-09 464.60 "PAYMENT THANK YOU · tx-in"');
+      const retry = await runSyncCore(fh.host, fh.store, { force: true });
+      expect(retry.errors).toEqual([]);
+      expect(rows(fh.activities).map((r) => r.type)).toEqual(['WITHDRAWAL', 'CREDIT']);
+    });
+
+    it('a create that throws deletes nothing', async () => {
+      const fh = createFakeHost(twoAccounts({ existing: linkedRows(), syncOverrides: notTransfer(OUT, IN), upstreamWriteRules: true }));
+      const host = wrapped(fh, (req) => req.creates ? Promise.reject(new Error('socket closed')) : null);
+      const before = snapshot(fh.activities);
+      const result = await runSyncCore(host, fh.store, {});
+      expect(fh.saved.some((r) => (r.deleteIds ?? []).length > 0)).toBe(false);
+      expect(snapshot(fh.activities)).toEqual(before);
+      expect(result.errors.join('\n')).toContain('socket closed');
+    });
+
+    it('a failed delete is reported; the next sync deletes only the stale pair and creates nothing', async () => {
+      const first = createFakeHost(twoAccounts({ existing: linkedRows(), syncOverrides: notTransfer(OUT, IN), upstreamWriteRules: true }));
+      const host = wrapped(first, (req) => req.deleteIds
+        ? Promise.resolve({ created: [], updated: [], errors: [{ action: 'delete', message: 'locked' }] }) : null);
+      const log = capture();
+      const r1 = await runSyncCore(host, first.store, { changeLog: log });
+      expect(r1.errors).toHaveLength(1);
+      expect(r1.errors[0]).toContain('the old linked pair is still there next to them');
+      expect(log.entries()).toEqual([]);
+      expect(rows(first.activities).map((r) => r.type).sort()).toEqual(['CREDIT', 'TRANSFER_IN', 'TRANSFER_OUT', 'WITHDRAWAL']);
+
+      const second = createFakeHost(twoAccounts({ existing: first.activities, syncOverrides: notTransfer(OUT, IN), upstreamWriteRules: true }));
+      const log2 = capture();
+      const r2 = await runSyncCore(second.host, second.store, { force: true, changeLog: log2 });
+      expect(r2.errors).toEqual([]);
+      expect(second.saved.map((r) => [r.deleteIds ?? [], r.creates ?? [], r.updates ?? []])).toEqual([[['act-out', 'act-in'], [], []]]);
+      expect(rows(second.activities).map((r) => r.type)).toEqual(['WITHDRAWAL', 'CREDIT']);
+      expect(log2.entries()).toEqual([expect.objectContaining({
+        kind: 'bookkeeping',
+        subject: expect.objectContaining({ txKeys: [OUT, IN], description: 'CITI AUTOPAY PAYMENT / PAYMENT THANK YOU' }),
+      })]);
+    });
+
+    it('the unlink entry names both legs and the new rows', async () => {
+      const fh = createFakeHost(twoAccounts({ existing: linkedRows(), syncOverrides: notTransfer(OUT, IN), upstreamWriteRules: true }));
+      const log = capture();
+      await runSyncCore(fh.host, fh.store, { changeLog: log });
+      const ids = [...fh.activities.values()].flat().map((r) => r.id).sort();
+      const [entry] = log.entries();
+      expect(entry.subject).toEqual(expect.objectContaining({ txKeys: [OUT, IN], description: 'CITI AUTOPAY PAYMENT / PAYMENT THANK YOU' }));
+      expect([...(entry.subject.activityIds ?? [])].sort()).toEqual(ids);
+    });
+
+    it('re-creates a leg missing from the feed with the sign its stored type implies: money out, not in', async () => {
+      const seed = twoAccounts({ syncOverrides: notTransfer(IN), upstreamWriteRules: true });
+      seed.accountSet!.accounts[0].transactions = [{ id: 'tx-other', posted: epoch('2026-10-01T12:00:00Z'), amount: '-5.00', description: 'COFFEE' }];
+      const fh = createFakeHost({ ...seed, existing: linkedRows() });
+      const res = await runSyncCore(fh.host, fh.store, {});
+      expect(res.errors).toEqual([]);
+      expect(rows(fh.activities).map((r) => [r.type, r.group])).toEqual([['WITHDRAWAL', null], ['WITHDRAWAL', null], ['CREDIT', null]]);
+    });
+
+    it('a half-typed pair whose cash leg already is ordinary money: the exact-copy create is refused, nothing is deleted', async () => {
+      const seed = twoAccounts({ syncOverrides: notTransfer(IN), upstreamWriteRules: true });
+      const existing = linkedRows();
+      existing.get('wf-a')![0] = { ...existing.get('wf-a')![0], activityType: 'WITHDRAWAL' };
+      const fh = createFakeHost({ ...seed, existing });
+      const before = snapshot(fh.activities);
+      const res = await runSyncCore(fh.host, fh.store, {});
+      expect(res.errors).toHaveLength(1);
+      expect(res.errors[0]).toContain('nothing deleted (still linked)');
+      expect(snapshot(fh.activities)).toEqual(before);
+    });
+
+    it('one override on a linked pair unlinks both; the next sync leaves the other half as spending, unlinked — pinned as it is today', async () => {
+      const first = createFakeHost(twoAccounts({ existing: linkedRows(), syncOverrides: notTransfer(IN), upstreamWriteRules: true }));
+      await runSyncCore(first.host, first.store, {});
+      expect(rows(first.activities).map((r) => r.type)).toEqual(['WITHDRAWAL', 'CREDIT']);
+      const second = createFakeHost(twoAccounts({ existing: first.activities, syncOverrides: notTransfer(IN), upstreamWriteRules: true }));
+      await runSyncCore(second.host, second.store, { force: true });
+      expect(second.links).toEqual([]);
+      expect(second.activities.get('wf-b')!.map((r) => r.activityType)).toEqual(['CREDIT']);
+      expect(second.activities.get('wf-a')!.map((r) => r.activityType)).toEqual(['WITHDRAWAL']);
+      expect(second.saved).toEqual([]);
+    });
   });
 });
