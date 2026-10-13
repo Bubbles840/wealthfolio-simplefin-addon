@@ -2,6 +2,7 @@ import type { AccountMapping, MappingRule, SimplefinAccountSet } from './types.j
 import type { AmazonLedger } from './amazon-ledger.js';
 import type { HoldingsSnapshot } from './holdings.js';
 import type { SkippedTransaction } from './skipped-transactions.js';
+import type { SyncOverrides } from './sync-overrides.js';
 import type {
   ActivityWrite,
   HostActivity,
@@ -86,6 +87,9 @@ export interface FakeHostSeed {
   upstreamWriteRules?: boolean;
   /** The user's skip list (see shared/skipped-transactions.ts). */
   skippedTransactions?: SkippedTransaction[];
+  /** What Undo told the sync not to do (shared/sync-overrides.ts). Absent
+   *  leaves `getSyncOverrides` off the store, the shape of an older host. */
+  syncOverrides?: SyncOverrides;
 }
 
 export interface FakeHost {
@@ -513,6 +517,9 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
     async getSkippedTransactions() {
       return seed.skippedTransactions ?? [];
     },
+    ...(seed.syncOverrides
+      ? { async getSyncOverrides() { return seed.syncOverrides!; } }
+      : {}),
   };
 
   return { host, store, activities, saved, links, imported, holdings, amazon: () => amazonLedger };
