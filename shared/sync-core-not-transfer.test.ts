@@ -179,8 +179,8 @@ describe('runSyncCore — notTransfer', () => {
       expect(fh.saved).toEqual([]);
       expect(snapshot(fh.activities)).toEqual(before);
       expect(result.errors).toEqual([
-        'Left CITI AUTOPAY PAYMENT for the companion to unlink — it was linked by the companion.',
-        'Left PAYMENT THANK YOU for the companion to unlink — it was linked by the companion.',
+        "Left CITI AUTOPAY PAYMENT linked: this app can't unlink a pair it didn't link; the companion will on its next sync.",
+        "Left PAYMENT THANK YOU linked: this app can't unlink a pair it didn't link; the companion will on its next sync.",
       ]);
     });
 
@@ -194,8 +194,8 @@ describe('runSyncCore — notTransfer', () => {
       expect(snapshot(fh.activities)).toEqual(before);
       expect(result.errors).toHaveLength(1);
       expect(result.errors[0]).toContain('Transfer-unlink failed (tx-out/tx-in)');
-      expect(result.errors[0]).toContain('wf-a 2026-10-08 464.60 "CITI AUTOPAY PAYMENT · tx-out"');
-      expect(result.errors[0]).toContain('wf-b 2026-10-09 464.60 "PAYMENT THANK YOU · tx-in"');
+      expect(result.errors[0]).toContain('Checking 2026-10-08 464.60 "CITI AUTOPAY PAYMENT · tx-out"');
+      expect(result.errors[0]).toContain('Citi Card 2026-10-09 464.60 "PAYMENT THANK YOU · tx-in"');
       const retry = await runSyncCore(fh.host, fh.store, { force: true });
       expect(retry.errors).toEqual([]);
       expect(rows(fh.activities).map((r) => r.type)).toEqual(['WITHDRAWAL', 'CREDIT']);
@@ -218,6 +218,7 @@ describe('runSyncCore — notTransfer', () => {
       const log = capture();
       const r1 = await runSyncCore(host, first.store, { changeLog: log });
       expect(r1.errors).toHaveLength(1);
+      expect(r1.errors[0]).toContain('Transfer-unlink incomplete');
       expect(r1.errors[0]).toContain('the old linked pair is still there next to them');
       expect(log.entries()).toEqual([]);
       expect(rows(first.activities).map((r) => r.type).sort()).toEqual(['CREDIT', 'TRANSFER_IN', 'TRANSFER_OUT', 'WITHDRAWAL']);
@@ -275,6 +276,78 @@ describe('runSyncCore — notTransfer', () => {
       expect(second.activities.get('wf-b')!.map((r) => r.activityType)).toEqual(['CREDIT']);
       expect(second.activities.get('wf-a')!.map((r) => r.activityType)).toEqual(['WITHDRAWAL']);
       expect(second.saved).toEqual([]);
+    });
+
+    /** Real Wealthfolio: deleting one half of a linked pair removes the partner too. */
+    const cascading = (fh: ReturnType<typeof createFakeHost>, failDelete = false) => ({
+      ...fh.host,
+      saveMany: async (req: SaveManyRequest): Promise<SaveManyResult> => {
+        if (!req.deleteIds) return fh.host.saveMany(req);
+        if (failDelete) {
+          fh.saved.push(req);
+          return { created: [], updated: [], errors: [{ action: 'delete', message: 'locked' }] };
+        }
+        const all = [...fh.activities.values()].flat();
+        const ids = new Set<string>(req.deleteIds);
+        for (const id of req.deleteIds) {
+          const r = all.find((x) => x.id === id);
+          if (r?.sourceGroupId) for (const o of all) if (o.sourceGroupId === r.sourceGroupId) ids.add(o.id);
+        }
+        return fh.host.saveMany({ ...req, deleteIds: [...ids] });
+      },
+    });
+    const unluckyIds = (): Map<string, HostActivity[]> => {
+      const m = linkedRows();
+      m.get('wf-b')![0] = { ...m.get('wf-b')![0], id: 'zz-in' };
+      return m;
+    };
+
+    it('a heal pass never prunes the stale pair against its replacements, whatever the ids', async () => {
+      const fh = createFakeHost(twoAccounts({ existing: unluckyIds(), syncOverrides: notTransfer(OUT, IN), upstreamWriteRules: true }));
+      const r1 = await runSyncCore(cascading(fh, true), fh.store, {});
+      expect(r1.errors[0]).toContain('Transfer-unlink incomplete');
+      const r2 = await runSyncCore(cascading(fh), fh.store, { force: true, heal: true });
+      expect(r2.errors).toEqual([]);
+      expect(r2.prunedDuplicates).toEqual([]);
+      expect(rows(fh.activities).map((r) => [r.account, r.type])).toEqual([['wf-a', 'WITHDRAWAL'], ['wf-b', 'CREDIT']]);
+    });
+
+    it('cleaning up the stale pair opens no drift alert', async () => {
+      const seed = twoAccounts({ existing: linkedRows(), syncOverrides: notTransfer(OUT, IN), upstreamWriteRules: true });
+      seed.valuations = new Map();
+      const fh = createFakeHost(seed);
+      await runSyncCore(cascading(fh, true), fh.store, {});
+      // The valuation still counts the stale rows (Wealthfolio would too).
+      seed.valuations!.set('wf-a', 464.6);
+      await runSyncCore(cascading(fh), fh.store, { force: true });
+      expect(await fh.store.getDriftAlerts()).toEqual({});
+    });
+
+    it('cleaning up a stale pair on an add-on clears BOTH legs from the ledger', async () => {
+      const fh = createFakeHost(twoAccounts({ existing: linkedRows(), syncOverrides: notTransfer(IN), upstreamWriteRules: true }));
+      await fh.store.setLinkedGroups({ [OUT]: 'wf-transfer-9', [IN]: 'wf-transfer-9', 'tx-unrelated': 'wf-transfer-1' });
+      const addon = (h: typeof fh.host) => ({ ...h, capabilities: { readsSourceGroupId: false } });
+      await runSyncCore(addon(cascading(fh, true)), fh.store, {});
+      expect(await fh.store.getLinkedGroups()).toHaveProperty(OUT);
+      await runSyncCore(addon(cascading(fh)), fh.store, { force: true });
+      expect(await fh.store.getLinkedGroups()).toEqual({ 'tx-unrelated': 'wf-transfer-1' });
+      expect(rows(fh.activities).map((r) => r.type)).toEqual(['WITHDRAWAL', 'CREDIT']);
+    });
+
+    it('one override on the OUT leg: both unlink, then the card leg (no override) is held and re-created by the relink sweep — pinned as it is today', async () => {
+      const first = createFakeHost(twoAccounts({ existing: linkedRows(), syncOverrides: notTransfer(OUT), upstreamWriteRules: true }));
+      await runSyncCore(first.host, first.store, {});
+      expect(rows(first.activities).map((r) => r.type)).toEqual(['WITHDRAWAL', 'CREDIT']);
+      const second = createFakeHost(twoAccounts({ existing: first.activities, syncOverrides: notTransfer(OUT), upstreamWriteRules: true }));
+      const log = capture();
+      await runSyncCore(second.host, second.store, { force: true, changeLog: log });
+      expect(second.links).toEqual([]);
+      expect(second.activities.get('wf-a')!.map((r) => r.activityType)).toEqual(['WITHDRAWAL']);
+      expect(second.activities.get('wf-b')!.map((r) => r.activityType)).toEqual(['TRANSFER_IN']);
+      expect(log.entries().map((e) => e.summary)).toEqual([
+        expect.stringContaining('Held PAYMENT THANK YOU'),
+        'Re-created 1 old transfer row so it moves cash',
+      ]);
     });
   });
 });
