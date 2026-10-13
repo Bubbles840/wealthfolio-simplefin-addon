@@ -833,7 +833,7 @@ const css = `
 .sfin-log-row { display: grid; grid-template-columns: 3.2em minmax(0, 1fr) auto auto; align-items: baseline; gap: 10px; width: 100%; padding: 4px 0; border: none; border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent); background: transparent; color: var(--foreground); font: inherit; text-align: left; cursor: pointer; }
 .sfin-log-row:hover { background: color-mix(in srgb, var(--sfin-s0) 6%, transparent); }
 .sfin-log-row--undone { opacity: .6; }
-.sfin-log-run-line { display: grid; grid-template-columns: 3.2em minmax(0, 1fr) auto auto; align-items: baseline; gap: 10px; }
+.sfin-log-run-line { display: grid; grid-template-columns: 3.2em minmax(0, 1fr) auto auto; align-items: baseline; gap: 10px; width: 100%; padding: 2px 0; border: none; background: transparent; color: var(--foreground); font: inherit; text-align: left; cursor: pointer; }
 .sfin-log-time { font-size: var(--sfin-sz-xs); color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
 .sfin-log-summary { min-width: 0; overflow-wrap: anywhere; }
 .sfin-log-account { font-size: var(--sfin-sz-xs); color: var(--muted-foreground); white-space: nowrap; }

@@ -225,6 +225,68 @@ describe('ChangeLogCard — Undo and Redo', () => {
     await open(/Added a balance correction/);
     expect(within(detail()).queryByRole('button')).toBeNull();
   });
+
+  describe('a run row (one sync’s imports)', () => {
+    const runImport = (n: number, when: Date, over: Partial<ChangeLogItem> = {}): ChangeLogItem => ({
+      ...stampChange(importChange({
+        account: CHECKING, txKey: `sfin-1\u0000tx-${n}`, activityId: `act-${n}`, description: `KROGER #${n}`, amountCents: -1234,
+        date: '2026-10-12', pending: false, activityType: 'WITHDRAWAL',
+      }), 'companion', when, 'runA'),
+      ...over,
+    });
+    /** The detail a run line opens, right under it. */
+    const lineDetail = (line: HTMLElement) => line.closest('.sfin-log-item')!.querySelector(':scope > .sfin-log-detail') as HTMLElement;
+
+    it('opens a line to its own detail, whose Undo undoes that entry and says so inline', async () => {
+      const a = runImport(1, at(9, 13, 9, 0));
+      const b = runImport(2, at(9, 13, 9, 1));
+      const undo = vi.fn(async (): Promise<UndoOutcome> => ({ ok: true, message: "Undone — it's removed and won't be imported again.", needsSync: false }));
+      const load = mount([a, b], { undo });
+      await open(/Imported 2 transactions/);
+      const line = screen.getByRole('button', { name: /Imported KROGER #1/ });
+      expect(line.getAttribute('aria-expanded')).toBe('false');
+      fireEvent.click(line);
+      expect(line.getAttribute('aria-expanded')).toBe('true');
+      // Opening rows reads nothing: the log is read once per opening of the card.
+      expect(load).toHaveBeenCalledTimes(1);
+      const d = lineDetail(line);
+      expect(d.textContent).toContain('Automatic — the background sync');
+      expect(screen.getByRole('button', { name: /Imported KROGER #2/ }).getAttribute('aria-expanded')).toBe('false');
+      fireEvent.click(within(d).getByRole('button', { name: 'Undo' }));
+      expect(await within(d).findByText("Undone — it's removed and won't be imported again.")).toBeInTheDocument();
+      expect(undo).toHaveBeenCalledTimes(1);
+      expect(undo).toHaveBeenCalledWith(expect.objectContaining({ id: a.id }), expect.arrayContaining([a, b]), 'undo');
+      await waitFor(() => expect(load).toHaveBeenCalledTimes(2));
+      // The re-read keeps the run and the line open, with the result under it.
+      expect(within(lineDetail(screen.getByRole('button', { name: /Imported KROGER #1/ }))).getByText("Undone — it's removed and won't be imported again.")).toBeInTheDocument();
+    });
+
+    it('an undone line is muted and offers Redo', async () => {
+      const a = runImport(1, at(9, 13, 9, 0), { undone: { by: 'a9', at: at(9, 13, 12, 0).toISOString() } });
+      const undo = vi.fn(async (): Promise<UndoOutcome> => ({ ok: true, message: 'Redone — the next sync imports it again.', needsSync: true }));
+      mount([a, runImport(2, at(9, 13, 9, 1))], { undo });
+      await open(/Imported 2 transactions/);
+      const line = screen.getByRole('button', { name: /Imported KROGER #1/ });
+      expect(line.className).toContain('sfin-log-row--undone');
+      expect(line.textContent).toContain('· Undone by you Oct 13');
+      fireEvent.click(line);
+      fireEvent.click(within(lineDetail(line)).getByRole('button', { name: 'Redo' }));
+      expect(await within(lineDetail(line)).findByText(/Takes effect on the next sync\./)).toBeInTheDocument();
+      expect(undo).toHaveBeenCalledWith(expect.objectContaining({ id: a.id }), expect.any(Array), 'redo');
+    });
+
+    it('a line whose entry cannot be undone shows no button', async () => {
+      const undo = vi.fn();
+      mount([runImport(1, at(9, 13, 9, 0), { undoable: false }), runImport(2, at(9, 13, 9, 1))], { undo });
+      await open(/Imported 2 transactions/);
+      const line = screen.getByRole('button', { name: /Imported KROGER #1/ });
+      fireEvent.click(line);
+      const d = lineDetail(line);
+      expect(d.textContent).toContain('Automatic — the background sync');
+      expect(within(d).queryByRole('button')).toBeNull();
+      expect(d.querySelector('.sfin-log-undo')).toBeNull();
+    });
+  });
 });
 
 describe('ChangeLogCard — Your overrides', () => {

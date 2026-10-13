@@ -7,8 +7,8 @@
  *
  * Filters: account, kind group, 7 / 30 / 90 days, search. Rows by day: time,
  * summary, account, amount; a row opens to why, before → after, and who. One
- * sync run's imports are one row that opens to its transactions. Bookkeeping
- * shows only under Background.
+ * sync run's imports are one row that opens to its transactions, each of which
+ * opens like a row of its own. Bookkeeping shows only under Background.
  *
  * R2: an opened row offers Undo or Redo — no confirmation; the result is said
  * under it, and after a sync decision "Takes effect on the next sync." beside
@@ -189,16 +189,33 @@ function Row({ row, actions }: { row: ChangeRow; actions: RowActions }) {
       {open && entry && <EntryDetail entry={entry} actions={actions} />}
       {open && row.kind === 'run' && (
         <div className="sfin-log-detail">
-          {row.entries.map((e) => (
-            <div key={e.id} className="sfin-log-run-line">
-              <span className="sfin-log-time">{changeClock(e.at)}</span>
-              <span className="sfin-log-summary">{e.summary}</span>
-              <span className="sfin-log-account">{changeAccountText(e)}</span>
-              <span className="sfin-log-amount">{changeAmountText(e)}</span>
-            </div>
-          ))}
+          {row.entries.map((e) => <RunLine key={e.id} entry={e} actions={actions} />)}
         </div>
       )}
+    </div>
+  );
+}
+
+/** One import inside an opened run: it opens to its own detail, with Undo. */
+function RunLine({ entry, actions }: { entry: ChangeLogItem; actions: RowActions }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="sfin-log-item">
+      <button
+        type="button"
+        className={`sfin-log-run-line${entry.undone ? ' sfin-log-row--undone' : ''}`}
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+      >
+        <span className="sfin-log-time">{changeClock(entry.at)}</span>
+        <span className="sfin-log-summary">
+          {entry.summary}
+          {entry.undone && <span className="sfin-log-undone"> · Undone by you {changeDay(changeLocalDay(entry.undone.at))}</span>}
+        </span>
+        <span className="sfin-log-account">{changeAccountText(entry)}</span>
+        <span className="sfin-log-amount">{changeAmountText(entry)}</span>
+      </button>
+      {open && <EntryDetail entry={entry} actions={actions} />}
     </div>
   );
 }
