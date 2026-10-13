@@ -1691,3 +1691,38 @@ export function getNativeIncomeCategories(dbPath: string): NativeSpendingCategor
     };
   });
 }
+
+/**
+ * The charges a categorization rule filed: spending assignments with source
+ * "rule" in the rule's category, on rows whose note contains the rule's words
+ * (case-insensitive, like the rule's own `contains` match). What "Undo rule +
+ * un-file its N charges" counts and takes out. A category the person chose is
+ * "manual" and is never in this list.
+ *
+ * Null when the database is not there — "unknown", never "none".
+ */
+export function getNativeRuleFiledActivityIds(dbPath: string, categoryId: string, pattern: string): string[] | null {
+  if (!dbPath || !existsSync(dbPath)) return null;
+  // Interpolated like every bound in this file (the CLI fallback cannot bind):
+  // quotes doubled, LIKE wildcards neutralised.
+  const cat = categoryId.replace(/'/g, "''");
+  const safe = pattern.replace(/'/g, "''").replace(/[%_]/g, ' ');
+  if (!cat || !safe.trim()) return [];
+  const query = `
+    SELECT a.id AS activity_id
+    FROM activities a
+    JOIN activity_taxonomy_assignments ata ON ata.activity_id = a.id
+    WHERE ata.taxonomy_id = 'spending_categories'
+      AND LOWER(COALESCE(ata.source, '')) = 'rule'
+      AND ata.category_id = '${cat}'
+      AND LOWER(COALESCE(a.notes, '')) LIKE '%' || LOWER('${safe}') || '%'
+    ORDER BY a.activity_date DESC, a.id;
+  `;
+  const rows = queryNativeDb<{ activity_id: string }>(
+    dbPath,
+    'rule-filed activities',
+    query,
+    (parts) => (parts.length >= 1 && parts[0] ? { activity_id: parts[0] } : null),
+  );
+  return rows.map((r) => String(r.activity_id));
+}

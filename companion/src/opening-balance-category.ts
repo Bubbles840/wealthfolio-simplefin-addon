@@ -39,6 +39,9 @@ export interface OpeningBalanceFilingDeps {
   log: (message: string) => void;
   /** The change log: one draft per write that succeeded. */
   record?: (draft: ChangeDraft) => void;
+  /** True for a SimpleFin account whose opening-balance filing the person
+   *  undid (`noOpeningFile`, shared/sync-overrides.ts): never filed again. */
+  noOpeningFile?: (sfinAccountId: string) => boolean;
 }
 
 interface OpeningDebtRow { id: string; account_id: string; account_name: string; amount: string; day: string; notes: string }
@@ -78,6 +81,9 @@ export async function fileCardOpeningDebts(deps: OpeningBalanceFilingDeps): Prom
              WHERE ata.activity_id = a.id AND tc.taxonomy_id = ?)`,
       )
       .all(TAXONOMY) as unknown as OpeningDebtRow[];
+    // The note names the SimpleFin account: `Starting balance · <sfinId>`.
+    rows = rows.filter((r) => !(r.notes.startsWith(STARTING_BALANCE_COMMENT_PREFIX)
+      && deps.noOpeningFile?.(r.notes.slice(STARTING_BALANCE_COMMENT_PREFIX.length))));
     if (rows.length === 0) return { filed: 0 };
     categoryId = (
       db.prepare(`SELECT id FROM taxonomy_categories WHERE taxonomy_id = ? AND name = ?`).get(TAXONOMY, OPENING_BALANCES_CATEGORY) as

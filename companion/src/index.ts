@@ -72,6 +72,7 @@ import { createCategorizeController, SPENDING_TAXONOMY_ID } from './categorize.j
 import { createAmazonLabelMenu, type AmazonLabelMenu } from './amazon-labels.js';
 import { fileAmazonCharges } from './amazon-filing.js';
 import { companionChangeSink, readCompanionChangeLog, recordCompanionChanges } from './change-log-host.js';
+import { emptySyncOverrides, hasAccountOverride, hasTxOverride, syncOverridesOrEmpty, type SyncOverrides } from '../../shared/sync-overrides.js';
 import { createChangesMenu, renderChangesCommand, CHANGES_UNREACHABLE_REPLY, type ChangesMenu } from './changes-menu.js';
 import type { ChangeLogRead } from '../../shared/change-log.js';
 import type { ChangeDraft } from '../../shared/change-entries.js';
@@ -655,7 +656,7 @@ async function pollAmazonMail(
  * behaviour is precisely what wants fixing, and an order email can arrive days
  * after the charge it belongs to.
  */
-async function fileAmazonLabelledCharges(wfClient: WealthfolioClient, run?: string): Promise<void> {
+async function fileAmazonLabelledCharges(wfClient: WealthfolioClient, run?: string, overrides: SyncOverrides = emptySyncOverrides()): Promise<void> {
   const dbPath = wealthfolioDbPath();
   const end = new Date();
   const start = new Date(end.getFullYear(), end.getMonth(), end.getDate() - 60);
@@ -680,6 +681,7 @@ async function fileAmazonLabelledCharges(wfClient: WealthfolioClient, run?: stri
     log,
     record: (draft) => changes.push(draft),
     sfinAccountOf: (wfAccountId) => sfinOf.get(wfAccountId),
+    noAutoFile: (txKey) => hasTxOverride(overrides, txKey, 'noAutoFile'),
   });
   // Never rejects in practice; a failed recording must not fail the filing.
   await recordCompanionChanges(wfClient, changes, run).catch((e) => log(`Change log skipped: ${formatError(e)}`));
@@ -994,7 +996,10 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
     // BEFORE publishing the uncategorized status, so the count the addon shows
     // and the notice's sweep both reflect what was just filed rather than
     // listing rows that now have a category.
-    await fileAmazonLabelledCharges(wfClient, changeLog.run);
+    // What Undo told the after-sync filers not to do again — read once, after
+    // the sync. Unreadable is empty: the filers then behave as they always did.
+    const overrides = await syncOverridesOrEmpty((k) => wfClient.getAddonSecret('simplefin-sync', k));
+    await fileAmazonLabelledCharges(wfClient, changeLog.run, overrides);
 
     // A card's opening DEBT has to be a WITHDRAWAL on Wealthfolio 3.8, which its
     // Spending page reads as a purchase; filed under an excluded category it
@@ -1007,6 +1012,7 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
       assign: (activityId, categoryId) => wfClient.assignActivityCategory(activityId, SPENDING_TAXONOMY_ID, categoryId),
       log,
       record: (draft) => openingChanges.push(draft),
+      noOpeningFile: (sfinId) => hasAccountOverride(overrides, sfinId, 'noOpeningFile'),
     }).catch((e) => log(`Card opening balance filing skipped: ${formatError(e)}`));
     // After the catch: a filing that stopped half-way still logs what landed.
     await recordCompanionChanges(wfClient, openingChanges, changeLog.run).catch((e) => log(`Change log skipped: ${formatError(e)}`));
