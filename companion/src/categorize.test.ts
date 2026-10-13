@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import * as changeEntries from '../../shared/change-entries.js';
 import {
   createCategorizeController,
   INCOME_TAXONOMY_NOTE,
@@ -2132,6 +2133,8 @@ describe('change log', () => {
       categoryId: 'cat-rest', categoryName: 'Restaurants', taxonomyId: SPENDING_TAXONOMY_ID,
       assignments: [{ taxonomyId: SPENDING_TAXONOMY_ID, categoryId: 'cat-rest' }],
     });
+    expect(recorded[0].after).toEqual(expect.objectContaining({ categoryId: 'cat-fun', categoryName: 'Entertainment', taxonomyId: SPENDING_TAXONOMY_ID }));
+    expect(recorded[1].after).toEqual(expect.objectContaining({ categoryId: 'cat-rest', categoryName: 'Restaurants', taxonomyId: SPENDING_TAXONOMY_ID }));
   });
 
   it('records a rule with the id the server gave it', async () => {
@@ -2155,6 +2158,18 @@ describe('change log', () => {
     await h.controller.openRulePreview('TRADER JOE*S', 'cat-fun', h.send);
     await h.tap(dataFor(keyboardOf(lastCall(h.send)), 'Create rule'));
     expect(recorded).toEqual([]);
+  });
+
+  it('finishes the filing when building the entry throws', async () => {
+    const h = setup();
+    (h.deps as any).record = () => undefined;
+    const spy = vi.spyOn(changeEntries, 'categoryFiledChange').mockImplementation(() => { throw new Error('builder down'); });
+    try {
+      const filed = await openAtFiled(h);
+      expect(labels(filed)).toContain('↩ Undo');
+      expect(h.logs.join('\n')).toContain('recording a change failed: builder down');
+      expect(h.logs.join('\n')).not.toMatch(/Something went wrong/);
+    } finally { spy.mockRestore(); }
   });
 
   it('finishes the filing when recording throws', async () => {
