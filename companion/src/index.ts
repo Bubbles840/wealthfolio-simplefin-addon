@@ -71,7 +71,9 @@ import { publishUncategorizedStatusForDbPath } from './uncategorized-status.js';
 import { createCategorizeController, SPENDING_TAXONOMY_ID } from './categorize.js';
 import { createAmazonLabelMenu, type AmazonLabelMenu } from './amazon-labels.js';
 import { fileAmazonCharges } from './amazon-filing.js';
-import { companionChangeSink, recordCompanionChanges } from './change-log-host.js';
+import { companionChangeSink, readCompanionChangeLog, recordCompanionChanges } from './change-log-host.js';
+import { createChangesMenu, renderChangesCommand, CHANGES_UNREACHABLE_REPLY, type ChangesMenu } from './changes-menu.js';
+import type { ChangeLogRead } from '../../shared/change-log.js';
 import type { ChangeDraft } from '../../shared/change-entries.js';
 import { createTransferLearning, type TransferLearning } from './transfer-learning.js';
 import type { CategorizeController, CategorizeDeps } from './categorize.js';
@@ -3232,6 +3234,23 @@ export function buildTelegramCommandHandler(
         return;
       }
 
+      case 'changes': {
+        // Caught here, like /subscriptions: "Couldn't reach Wealthfolio" is the
+        // answer, not the listener's generic apology.
+        const now = new Date();
+        let read: ChangeLogRead;
+        try {
+          read = await readCompanionChangeLog(wfClient, now);
+        } catch (err) {
+          log(`/changes: reading failed: ${formatError(err)}`);
+          await reply(CHANGES_UNREACHABLE_REPLY);
+          return;
+        }
+        const screen = renderChangesCommand(read, cmd.args, now);
+        await reply(screen.text, screen.keyboard);
+        return;
+      }
+
       case 'status':
         await reply(formatStatusReply(await readStatusReplyInput(wfClient), new Date()));
         return;
@@ -3519,6 +3538,13 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
     log,
   });
 
+  // `/changes`. Stateless: every tap re-reads the log, so it survives restarts.
+  const changes: ChangesMenu = createChangesMenu({
+    read: (now) => readCompanionChangeLog(wfClient, now),
+    now: () => new Date(),
+    log,
+  });
+
   const ensureSession = async (): Promise<void> => {
     if (Date.now() - sessionEstablishedAt < LISTENER_SESSION_MAX_AGE_MS) return;
     const key = process.env.WEALTHFOLIO_API_KEY;
@@ -3674,6 +3700,11 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
       // does not know as an expired session.
       if (subscriptions.handles(cb.data)) {
         await subscriptions.onCallback(cb, ui);
+        return;
+      }
+      // `cz:cl:` likewise, before the transaction menu's fallthrough.
+      if (changes.handles(cb.data)) {
+        await changes.onCallback(cb, ui);
         return;
       }
       if (cb.data !== RECATEGORIZE_ENTRY_CALLBACK) {

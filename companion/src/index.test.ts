@@ -8,6 +8,7 @@ import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getN
 import { ingestAmazonMail } from './amazon-mail.js';
 import { AMAZON_MAIL_STATUS_SECRET_KEY, AMAZON_MAIL_SAMPLES_SECRET_KEY, UNCATEGORIZED_STATUS_SECRET_KEY } from '../../shared/status-keys.js';
 import { CATEGORIZE_ENTRY_CALLBACK } from '../../shared/telegram.js';
+import { categoryFiledChange, stampChange } from '../../shared/change-entries.js';
 import { existsSync } from 'fs';
 import type { SyncResult } from '../../shared/sync-core.js';
 
@@ -2503,6 +2504,56 @@ describe('buildTelegramCommandHandler', () => {
       const ui = { edit: vi.fn(async () => {}), answer: vi.fn(async () => {}), send: vi.fn(async () => {}) };
       await deps.onMenuCallback!({ data: 'cz:sb:o', chatId: 1, messageId: 2 }, ui);
       expect((ui.send.mock.calls[0] as unknown as [string])[0]).toContain('💳 *Subscriptions*');
+    });
+  });
+
+  describe('/changes', () => {
+    const AT = new Date(2026, 9, 12, 8, 0, 0);
+    const venmo = () => stampChange(categoryFiledChange({
+      actor: 'you', account: { name: 'Checking' }, activityId: 'a1', description: 'VENMO *J SMITH', amountCents: -650,
+      before: null, after: { categoryId: 'cat-din', categoryName: 'Dining' },
+    }), 'companion', new Date(2026, 9, 12, 7, 30, 0));
+    const withLog = () => clientFor([[
+      'change_log:companion:2026-10',
+      JSON.stringify({ v: 1, writer: 'companion', month: '2026-10', entries: [venmo()], gaps: [] }),
+    ]]);
+
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(AT);
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('replies with the change log and a button per line', async () => {
+      const { client } = withLog();
+      const sent: Array<[string, any]> = [];
+      await buildTelegramCommandHandler(client)({ command: 'changes', args: '' }, async (t, k) => { sent.push([t, k]); });
+      expect(sent[0][0]).toBe('*Changes — last 7 days*\n\n_Oct 12_\n1. 07:30 · Filed VENMO \\*J SMITH under Dining · -$6.50 · Checking');
+      expect(sent[0][1].inline_keyboard[0][0].callback_data).toMatch(/^cz:cl:d[0-9a-f]{8}:l0$/);
+    });
+
+    it('searches with the words after the command', async () => {
+      const { client } = withLog();
+      const sent: Array<[string, any]> = [];
+      await buildTelegramCommandHandler(client)({ command: 'changes', args: 'zelle' }, async (t, k) => { sent.push([t, k]); });
+      expect(sent[0][0]).toContain('Nothing in the last 90 days matches zelle.');
+    });
+
+    it("says so when Wealthfolio can't be reached", async () => {
+      const client = { getAddonSecret: vi.fn(async () => { throw new Error('ECONNREFUSED'); }), setAddonSecret: vi.fn() } as any;
+      const { sent, reply } = collector();
+      await buildTelegramCommandHandler(client)({ command: 'changes', args: '' }, reply);
+      expect(sent).toEqual(["Couldn't reach Wealthfolio — try again."]);
+    });
+
+    it('cz:cl: taps reach the changes menu, not the transaction menu', async () => {
+      const { client } = withLog();
+      const deps = buildTelegramListenerDeps(client);
+      const ui = { edit: vi.fn(async () => {}), answer: vi.fn(async () => {}), send: vi.fn(async () => {}) };
+      await deps.onMenuCallback!({ data: 'cz:cl:l0', chatId: 1, messageId: 2 }, ui);
+      expect((ui.edit.mock.calls[0] as unknown as [string])[0]).toContain('*Changes — last 7 days*');
     });
   });
 
