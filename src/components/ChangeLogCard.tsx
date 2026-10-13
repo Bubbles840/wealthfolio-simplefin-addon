@@ -20,7 +20,7 @@
  * Bank text is rendered as React text, never as markup. No emoji in app copy
  * (src/pages/copy-policy.test.tsx).
  */
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Input, Select } from './ui';
 import type { ChangeLogItem, ChangeLogRead } from '../../shared/change-log';
 import { undoAvailability, UNDO_TAKES_EFFECT, UNDO_UNREACHABLE, type UndoOp } from '../../shared/change-undo';
@@ -91,37 +91,47 @@ function UndoControls({ entry, actions }: { entry: ChangeLogItem; actions: RowAc
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<UndoOutcome | null>(null);
   const [synced, setSynced] = useState<string | null>(null);
+  // No state updates once the row is gone (an undo can outlive its card).
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
   if (!actions.undo) return null;
   const available = undoAvailability(entry, { host: 'addon', companionVersion: actions.companionVersion });
   if (available.kind === 'none' && !result) return null;
   const run = async (op: UndoOp) => {
     setBusy(true);
     setSynced(null);
+    let outcome: UndoOutcome;
     try {
-      setResult(await actions.undo!(entry, actions.entries, op));
+      outcome = await actions.undo!(entry, actions.entries, op);
     } catch {
-      setResult({ ok: false, message: UNDO_UNREACHABLE });
-    } finally {
-      setBusy(false);
-      actions.changed();
+      outcome = { ok: false, message: UNDO_UNREACHABLE };
     }
+    if (!mounted.current) return;
+    setResult(outcome);
+    setBusy(false);
+    actions.changed();
   };
   const syncNow = async () => {
     if (!actions.onSyncNow) return;
     setBusy(true);
+    let sentence: string;
     try {
-      setSynced(await actions.onSyncNow());
+      sentence = await actions.onSyncNow();
     } catch (e: any) {
-      setSynced(`The sync failed: ${String(e?.message ?? e)}`);
-    } finally {
-      setBusy(false);
-      actions.changed();
+      sentence = `The sync failed: ${String(e?.message ?? e)}`;
     }
+    if (!mounted.current) return;
+    setSynced(sentence);
+    setBusy(false);
+    actions.changed();
   };
   return (
     <div className="sfin-log-undo">
       {available.kind === 'ready' && (
-        <Button variant="ghost" disabled={busy} onClick={() => run(available.op)}>
+        <Button variant="ghost" disabled={busy} aria-busy={busy} onClick={() => run(available.op)}>
           {available.op === 'undo' ? 'Undo' : 'Redo'}
         </Button>
       )}
@@ -132,14 +142,14 @@ function UndoControls({ entry, actions }: { entry: ChangeLogItem; actions: RowAc
         </>
       )}
       {available.kind === 'telegram' && <span className="sfin-subtle">{available.text}</span>}
-      {result && <div className={result.ok ? 'sfin-log-result' : 'sfin-log-result sfin-log-result--refused'}>{result.message}</div>}
+      {result && <div role="status" className={result.ok ? 'sfin-log-result' : 'sfin-log-result sfin-log-result--refused'}>{result.message}</div>}
       {result?.ok && result.needsSync && (
         <div className="sfin-log-result">
           {UNDO_TAKES_EFFECT}{' '}
-          {actions.onSyncNow && <Button variant="ghost" disabled={busy} onClick={syncNow}>Sync now</Button>}
+          {actions.onSyncNow && <Button variant="ghost" disabled={busy} aria-busy={busy} onClick={syncNow}>Sync now</Button>}
         </div>
       )}
-      {synced && <div className="sfin-subtle">{synced}</div>}
+      {synced && <div role="status" className="sfin-subtle">{synced}</div>}
     </div>
   );
 }
@@ -202,6 +212,12 @@ function OverridesList({ load, remove, version }: {
   const [doc, setDoc] = useState<LoadedSyncOverrides | null | 'loading'>('loading');
   const [note, setNote] = useState<string | null>(null);
   const [mine, setMine] = useState(0);
+  const [removing, setRemoving] = useState(false);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
   useEffect(() => {
     let live = true;
     load().then((d) => { if (live) setDoc(d); }).catch(() => { if (live) setDoc(null); });
@@ -210,12 +226,17 @@ function OverridesList({ load, remove, version }: {
   if (doc === 'loading') return null;
   const rows = doc ? overrideRows(doc.overrides) : [];
   const onRemove = async (row: OverrideRow) => {
+    setRemoving(true);
+    let said: string;
     try {
       await remove!(row);
-      setNote(OVERRIDE_REMOVED);
+      said = OVERRIDE_REMOVED;
     } catch (e: any) {
-      setNote(String(e?.message ?? e));
+      said = String(e?.message ?? e);
     }
+    if (!mounted.current) return;
+    setNote(said);
+    setRemoving(false);
     setMine((n) => n + 1);
   };
   return (
@@ -231,7 +252,7 @@ function OverridesList({ load, remove, version }: {
         rows.map((r) => (
           <div key={`${r.scope}:${r.key}:${r.flag}`} className="sfin-log-override">
             <span className="sfin-log-summary">{r.text}</span>
-            {remove && <Button variant="ghost" onClick={() => onRemove(r)}>Remove</Button>}
+            {remove && <Button variant="ghost" disabled={removing} aria-busy={removing} aria-label={`Remove ${r.text}`} onClick={() => onRemove(r)}>Remove</Button>}
           </div>
         ))
       )}
@@ -251,10 +272,26 @@ export function ChangeLogCard({
   // Bumped after an undo, a redo or a sync: the log and the overrides re-read.
   const [version, setVersion] = useState(0);
   const changed = useCallback(() => setVersion((v) => v + 1), []);
+  // Only the first read may replace the card with the failure state; a later
+  // re-read that fails keeps the rows and says so inline.
+  const [rereadFailed, setRereadFailed] = useState(false);
+  const hasRead = useRef(false);
 
   useEffect(() => {
     let live = true;
-    load().then((r) => { if (live) setRead(r); }).catch(() => { if (live) setRead(null); });
+    const settle = (r: ChangeLogRead | null) => {
+      if (!live) return;
+      if (r) {
+        hasRead.current = true;
+        setRead(r);
+        setRereadFailed(false);
+      } else if (hasRead.current) {
+        setRereadFailed(true);
+      } else {
+        setRead(null);
+      }
+    };
+    load().then(settle).catch(() => settle(null));
     return () => { live = false; };
   }, [load, version]);
 
@@ -284,6 +321,7 @@ export function ChangeLogCard({
 
   return (
     <div className="sfin-log">
+      {rereadFailed && <div className="sfin-log-note">{CHANGE_LOG_READ_FAILED}</div>}
       {changeLogNotes(read).map((n, i) => <div key={`${i}:${n}`} className="sfin-log-note">{n}</div>)}
       <div className="sfin-log-filters">
         <Select aria-label="Account" value={account} onChange={(e) => setAccount(e.target.value)}>

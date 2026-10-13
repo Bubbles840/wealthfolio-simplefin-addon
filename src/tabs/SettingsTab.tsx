@@ -284,7 +284,7 @@ export function SettingsTab({
     [store],
   );
   const removeOverride = useCallback(async (row: OverrideRow) => {
-    await store.editSyncOverrides((o) => removeOverrideRow(o, row));
+    await store.editSyncOverrides?.((o) => removeOverrideRow(o, row));
   }, [store]);
 
   const handleReset = useCallback(async () => {
@@ -573,7 +573,7 @@ export function SettingsTab({
           companionVersion={companionVersion}
           onSyncNow={syncNowForLog}
           loadOverrides={loadOverrides}
-          removeOverride={removeOverride}
+          removeOverride={typeof store.editSyncOverrides === 'function' ? removeOverride : undefined}
         />
       </CollapsibleCard>
 

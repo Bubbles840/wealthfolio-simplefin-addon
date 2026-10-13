@@ -6,10 +6,12 @@ import {
 } from '../../shared/change-entries';
 import type { ChangeLogItem, ChangeLogRead } from '../../shared/change-log';
 import type { UndoOutcome } from '../../shared/change-undo-run';
+import { UNDO_UNREACHABLE } from '../../shared/change-undo';
 import {
   emptySyncOverrides, setAccountOverride, setTxOverride, type LoadedSyncOverrides,
 } from '../../shared/sync-overrides';
-import { ChangeLogCard, OVERRIDES_EMPTY, OVERRIDES_UNREADABLE, OVERRIDE_REMOVED, type ChangeLogCardProps } from './ChangeLogCard';
+import {
+  ChangeLogCard, CHANGE_LOG_READ_FAILED, OVERRIDES_EMPTY, OVERRIDES_READ_FAILED, OVERRIDES_UNREADABLE, OVERRIDE_REMOVED, type ChangeLogCardProps } from './ChangeLogCard';
 
 const at = (month: number, day: number, h: number, m: number) => new Date(2026, month, day, h, m);
 const NOW = at(9, 13, 15, 0);
@@ -117,6 +119,107 @@ describe('ChangeLogCard — Undo and Redo', () => {
     expect(within(detail()).queryByText(/Takes effect/)).toBeNull();
   });
 
+  const deferred = () => {
+    let resolve!: (o: UndoOutcome) => void;
+    const promise = new Promise<UndoOutcome>((r) => { resolve = r; });
+    return { promise, resolve };
+  };
+
+  it('one undo per click: a second click while it runs does nothing, and the button says it is busy', async () => {
+    const d = deferred();
+    const undo = vi.fn(() => d.promise);
+    mount([yourCorrection()], { undo });
+    await open(/Added a balance correction/);
+    const button = within(detail()).getByRole('button', { name: 'Undo' }) as HTMLButtonElement;
+    fireEvent.click(button);
+    fireEvent.click(button);
+    expect(undo).toHaveBeenCalledTimes(1);
+    expect(button.disabled).toBe(true);
+    expect(button.getAttribute('aria-busy')).toBe('true');
+    d.resolve({ ok: true, message: 'Undone.', needsSync: false });
+    await within(detail()).findByText('Undone.');
+  });
+
+  it('a failed re-read after an undo keeps the rows, the result, and Sync now, with an inline note', async () => {
+    const e = imported();
+    let reads = 0;
+    const load = vi.fn(async () => {
+      reads += 1;
+      if (reads > 1) throw new Error('boom');
+      return log([e]);
+    });
+    render(<ChangeLogCard
+      load={load}
+      now={() => NOW}
+      companionVersion="1.61.0"
+      undo={vi.fn(async () => ({ ok: true as const, message: 'Undone — removed.', needsSync: true }))}
+      onSyncNow={vi.fn(async () => 'Synced.')}
+    />);
+    await open(/Imported SQ \*BLUE_BOTTLE/);
+    fireEvent.click(within(detail()).getByRole('button', { name: 'Undo' }));
+    expect(await within(detail()).findByText('Undone — removed.')).toBeInTheDocument();
+    await waitFor(() => expect(load).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText(CHANGE_LOG_READ_FAILED)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Imported SQ/ })).toBeInTheDocument();
+    expect(within(detail()).getByText('Undone — removed.')).toBeInTheDocument();
+    expect(within(detail()).getByText(/Takes effect on the next sync\./)).toBeInTheDocument();
+    expect(within(detail()).getByRole('button', { name: 'Sync now' })).toBeInTheDocument();
+  });
+
+  it('a first read that fails still shows the failure state', async () => {
+    render(<ChangeLogCard load={vi.fn(async () => null)} now={() => NOW} />);
+    expect(await screen.findByText(CHANGE_LOG_READ_FAILED)).toBeInTheDocument();
+  });
+
+  it('result and synced lines are polite live regions', async () => {
+    mount([imported()], {
+      undo: vi.fn(async () => ({ ok: true as const, message: 'Undone.', needsSync: true })),
+      onSyncNow: vi.fn(async () => 'Synced — 0 imported.'),
+    });
+    await open(/Imported SQ/);
+    fireEvent.click(within(detail()).getByRole('button', { name: 'Undo' }));
+    await within(detail()).findByText('Undone.');
+    fireEvent.click(await within(detail()).findByRole('button', { name: 'Sync now' }));
+    const synced = await within(detail()).findByText('Synced — 0 imported.');
+    expect(synced.getAttribute('role')).toBe('status');
+    expect(within(detail()).getByText('Undone.').getAttribute('role')).toBe('status');
+  });
+
+  it('undo rejecting shows UNDO_UNREACHABLE', async () => {
+    mount([yourCorrection()], { undo: vi.fn(async () => { throw new Error('x'); }) });
+    await open(/Added a balance correction/);
+    fireEvent.click(within(detail()).getByRole('button', { name: 'Undo' }));
+    expect(await within(detail()).findByText(UNDO_UNREACHABLE)).toBeInTheDocument();
+  });
+
+  it('Sync now rejecting says the sync failed', async () => {
+    mount([imported()], {
+      undo: vi.fn(async () => ({ ok: true as const, message: 'Undone.', needsSync: true })),
+      onSyncNow: vi.fn(async () => { throw new Error('bridge down'); }),
+    });
+    await open(/Imported SQ/);
+    fireEvent.click(within(detail()).getByRole('button', { name: 'Undo' }));
+    fireEvent.click(await within(detail()).findByRole('button', { name: 'Sync now' }));
+    expect(await within(detail()).findByText('The sync failed: bridge down')).toBeInTheDocument();
+  });
+
+  it('unmounting while an undo is pending, then resolving it, updates nothing and logs no error', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const d = deferred();
+    const undo = vi.fn(() => d.promise);
+    const load = vi.fn(async () => log([yourCorrection()]));
+    const { unmount } = render(<ChangeLogCard load={load} now={() => NOW} companionVersion="1.61.0" undo={undo} />);
+    await open(/Added a balance correction/);
+    fireEvent.click(within(detail()).getByRole('button', { name: 'Undo' }));
+    unmount();
+    d.resolve({ ok: true, message: 'Undone.', needsSync: false });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(err).not.toHaveBeenCalled();
+    expect(load).toHaveBeenCalledTimes(1);
+    err.mockRestore();
+  });
+
   it('stays read-only without the undo prop, as in R1', async () => {
     mount([yourCorrection()]);
     await open(/Added a balance correction/);
@@ -141,10 +244,38 @@ describe('ChangeLogCard — Your overrides', () => {
     expect(await screen.findByText('Your overrides')).toBeInTheDocument();
     const rows = () => Array.from(document.querySelectorAll('.sfin-log-override')).map((r) => r.querySelector('.sfin-log-summary')!.textContent);
     expect(rows()).toEqual(['No automatic balance corrections: Checking', 'Not a transfer: CITI AUTOPAY · Checking']);
-    fireEvent.click(within(document.querySelectorAll('.sfin-log-override')[0] as HTMLElement).getByRole('button', { name: 'Remove' }));
+    fireEvent.click(within(document.querySelectorAll('.sfin-log-override')[0] as HTMLElement).getByRole('button', { name: 'Remove No automatic balance corrections: Checking' }));
     expect(await screen.findByText(OVERRIDE_REMOVED)).toBeInTheDocument();
     expect(removeOverride).toHaveBeenCalledWith(expect.objectContaining({ scope: 'account', key: 'sfin-1', flag: 'noAutoCorrect' }));
     await waitFor(() => expect(rows()).toEqual(['Not a transfer: CITI AUTOPAY · Checking']));
+  });
+
+  it('Remove is guarded while it runs: a double click removes once', async () => {
+    let release!: () => void;
+    const removeOverride = vi.fn(() => new Promise<void>((r) => { release = r; }));
+    mount([], { loadOverrides: vi.fn(async () => doc()), removeOverride });
+    const button = await screen.findByRole('button', { name: 'Remove No automatic balance corrections: Checking' }) as HTMLButtonElement;
+    fireEvent.click(button);
+    fireEvent.click(button);
+    expect(removeOverride).toHaveBeenCalledTimes(1);
+    expect(button.disabled).toBe(true);
+    expect(button.getAttribute('aria-busy')).toBe('true');
+    release();
+    expect(await screen.findByText(OVERRIDE_REMOVED)).toBeInTheDocument();
+  });
+
+  it('a removal that throws shows its message', async () => {
+    mount([], { loadOverrides: vi.fn(async () => doc()), removeOverride: vi.fn(async () => { throw new Error('Could not save'); }) });
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove No automatic balance corrections: Checking' }));
+    expect(await screen.findByText('Could not save')).toBeInTheDocument();
+  });
+
+  it('loadOverrides returning null or rejecting says the overrides could not be read', async () => {
+    const { unmount } = render(<ChangeLogCard load={vi.fn(async () => log([]))} now={() => NOW} loadOverrides={vi.fn(async () => null)} />);
+    expect(await screen.findByText(OVERRIDES_READ_FAILED)).toBeInTheDocument();
+    unmount();
+    render(<ChangeLogCard load={vi.fn(async () => log([]))} now={() => NOW} loadOverrides={vi.fn(async () => { throw new Error('x'); })} />);
+    expect(await screen.findByText(OVERRIDES_READ_FAILED)).toBeInTheDocument();
   });
 
   it('says when there are none, and turns read-only over an unreadable document', async () => {
@@ -155,7 +286,7 @@ describe('ChangeLogCard — Your overrides', () => {
   it('an unreadable document: the notice, no Remove', async () => {
     mount([], { loadOverrides: vi.fn(async () => ({ overrides: emptySyncOverrides(), unreadable: true })), removeOverride: vi.fn() });
     expect(await screen.findByText(OVERRIDES_UNREADABLE)).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Remove' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Remove/ })).toBeNull();
   });
 
   it('carries no emoji in its copy', async () => {
@@ -163,7 +294,7 @@ describe('ChangeLogCard — Your overrides', () => {
     await screen.findByText('Your overrides');
     await open(/Imported SQ/);
     await open(/Filed VENMO/);
-    const chrome = Array.from(document.querySelectorAll('button, .sfin-subtle, .sfin-log-overrides-title, .sfin-log-result'))
+    const chrome = Array.from(document.querySelectorAll('button, .sfin-subtle, .sfin-log-overrides-title, .sfin-log-result, .sfin-log-note, [role="status"]'))
       .map((el) => el.textContent ?? '').join('\n');
     expect(chrome).not.toMatch(EMOJI);
   });
