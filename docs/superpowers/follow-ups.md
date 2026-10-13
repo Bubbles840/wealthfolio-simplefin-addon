@@ -4,8 +4,9 @@ Findings that survived a review cycle without being fixed, with enough context
 to act on them later. Each says why it was deferred, so a future reader can
 tell "decided against" from "not got to yet".
 
-Last updated: 2026-10-12, after the subscriptions & bills plan (new section 7).
-Previous revision: 2026-07-30, after fixing the shared-transaction-id collision
+Last updated: 2026-10-13, after the change log Undo plan (new section 9).
+Previous revision: 2026-10-12, after the subscriptions & bills plan (new
+section 7). Previous revision: 2026-07-30, after fixing the shared-transaction-id collision
 (former item 1, now under "Fixed"; former items 2-6 are now 1-5). Previous
 revision: 2026-07-29, after fixing the duplicate-transaction import
 (then-new item 1, which pushed former items 1-5 down to 2-6, plus three new
@@ -542,7 +543,47 @@ changes what a user sees today.
 - **The read-back of a new starting balance or plug costs one activity read**,
   only when a change log is attached and only on the rare run that writes one.
 
-### Change log — Undo (R2, Task 3)
+## 9. Change log — Undo (2026-10-13, plan `2026-10-13-change-log-undo.md`)
+
+- **`SYNC_OVERRIDES_SINCE` is `1.61.0`** (shared/version.ts) — the release
+  after R1's. If Undo ships in the SAME release as R1, lower it to that
+  version at release time; `shared/change-undo.test.ts` fails a release that
+  ships BELOW it, but cannot catch one shipped above it.
+- **A held transfer's Undo waits for the leg to be in a sync's window.** The
+  sync applies `notTransfer` to a feed transaction (14-day routine overlap,
+  44/89 days on a re-scan). A placeholder held past that by a dead feed stays
+  a placeholder until a re-scan reaches it. A linked pair is different: it is
+  unlinked from the stored rows, in or out of the feed.
+- **A linked leg whose other half is not in view stays linked** and the sync
+  says so ("its other half is not in this sync"): deleting one leg of a pair
+  deletes both, and the unseen half could not be re-created. Reached when the
+  partner's account is unmapped or the row is past the 500-row read.
+- **Undoing an automatic starting-balance MOVE** restores the amount and the
+  date, but the next sync moves the DATE back in front of older rows (it moves
+  no money); the restored amount stays. No override exists for the date.
+- **Undoing a removed duplicate is almost always refused** as an exact copy —
+  the prune removes copies, and copies share a fingerprint. Working as the
+  spec says ("nothing changes and the entry says why"); the override is taken
+  back out.
+- **An automatic balance correction's Undo sets `noAutoCorrect`; your own
+  Add adjustment's does not** (you added it; auto-correction may be off).
+- **A redone category rule comes back at priority 50**, as `/categorize`
+  creates it, even if it had been edited in Wealthfolio since.
+- **The Rules card writes `mapping_rules` from its own snapshot** (pre-existing
+  whole-list write). Undoing a transaction rule while that card is open and
+  then saving the card puts the rule back. Same race the card already has with
+  the transfer-learning menu.
+- **On the add-on, "is it linked?" is the `linked_groups` ledger.** A ledger
+  that lost a pair lets a `notTransfer` leg be retyped by an ordinary update,
+  which Wealthfolio copies onto its partner. Not seen; the companion reads
+  groups off the rows.
+- **Telegram lists no overrides** — only the app card does (spec B3).
+- **Section 8's R2 notes are settled:** the DELETE rule client exists
+  (`deleteCategorizationRule`), a rule without an id is found by name, an
+  Amazon filing without a tx key has it re-derived from the row's note and the
+  account mapping (refused when that fails).
+
+### Transfer unlinks (Task 3)
 
 - **A single `notTransfer` override on a linked pair.** The undo planner always
   sets `notTransfer` on both legs of a link, but "Your overrides" → Remove can

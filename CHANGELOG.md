@@ -16,11 +16,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rules you created; accounts you created. `/changes` in Telegram lists the
   last 7 days (`/changes venmo` searches the last 90 days; background
   bookkeeping is never matched), and **Settings → Change log** in the app shows
-  the last 90 days (30 by default) with filters. Read-only for now — Undo comes
-  in the next release. Recording can never fail or alter a sync or something
-  you did. When a change could not be saved to the log, a note says so ("3
-  changes may be missing"); the add-on keeps such gaps only in that tab's
-  memory until the next successful save.
+  the last 90 days (30 by default) with filters. Recording can never fail or
+  alter a sync or something you did. When a change could not be saved to the
+  log, a note says so ("3 changes may be missing"); the add-on keeps such gaps
+  only in that tab's memory until the next successful save.
+- **Undo and Redo in the change log.** Every automatic decision and every
+  filing you made can be undone from its entry — in `/changes` (`↩ Undo`,
+  `Redo`) or on the app card (Undo, Redo) — with no "are you sure?". The
+  result is said right there. Undoing a decision the sync makes (a transfer
+  link or a transfer held in transit, a removed duplicate, an automatic
+  balance correction, an import, an Amazon label) also tells the sync not to
+  make it again: an undone transfer link is unlinked on the next sync and each
+  half counts as spending or money in, an undone import is removed and never
+  imported again. Those take effect on the next sync, and both surfaces offer
+  **Sync now**. Filings, rules and starting balances are reversed at once. A
+  rule you created offers `↩ Undo rule` or `↩ Undo rule + un-file N` (the N
+  charges it filed go back to the needs-a-category list). Nothing is undone
+  over a change made since: "It has changed since — nothing was undone."
+  **Your overrides**, at the bottom of the app card, lists what the sync now
+  leaves alone; Remove lets it decide again. Category and rule entries are
+  undone from Telegram (the add-on cannot reach categories); the app says so.
 - **The bot asks instead of making you remember argument order.** Send
   `/newrule` or `/afford` on its own, or tap **Set a new pool** under `/pool`,
   and it asks one question at a time — buttons where there is a choice, and
@@ -59,6 +74,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that — nothing was changed."); in the app, nothing changes. A document that
   is already unreadable is never overwritten: the app card turns read-only
   with a notice.
+- **Upgrade order (Undo):** update the companion before undoing a sync
+  decision in the app — until a companion that obeys overrides is running,
+  those Undo buttons stay off with "Update the companion first". Undo from
+  Telegram needs nothing more.
 - **Upgrade order:** update the addon (upload the zip and reload the tab)
   before using `/subscriptions` from Telegram. Hides made in a not-yet-updated
   addon after the companion has created the new document are not carried over.
