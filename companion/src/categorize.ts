@@ -617,10 +617,12 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
     }
   }
 
-  /** Records a write that succeeded. The log must never cost the flow. */
-  function record(draft: ChangeDraft): void {
+  /** Records a write that succeeded. The draft is built INSIDE the guard (a thunk),
+   *  so a throwing builder or lookup is logged like a throwing recorder. The log
+   *  must never cost the flow. */
+  function record(build: () => ChangeDraft): void {
     try {
-      deps.record?.(draft);
+      deps.record?.(build());
     } catch (err) {
       safeLog(`Categorize menu: recording a change failed: ${formatError(err)}`);
     }
@@ -1065,7 +1067,7 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
       await showError(chat, `${RULE_FAILED_PREFIX}${escapeMarkdown(message)}`, ui);
       return;
     }
-    record(categoryRuleCreatedChange({
+    record(() => categoryRuleCreatedChange({
       ruleId, name, pattern, categoryId,
       categoryName: categoryNameIn([chat.session], categoryId) || categoryId,
     }));
@@ -1144,7 +1146,7 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
           await showError(chat, `${ASSIGN_FAILED_PREFIX}${escapeMarkdown(message)}`, ui);
           return;
         }
-        record(categoryFiledChange({
+        record(() => categoryFiledChange({
           actor: 'you',
           ...rowFacts(row),
           activityId: action.activityId,
@@ -1220,7 +1222,7 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
           await showError(chat, `${UNDO_FAILED_PREFIX}${escapeMarkdown(message)}`, ui);
           return;
         }
-        record(categoryFiledChange({
+        record(() => categoryFiledChange({
           actor: 'you',
           ...rowFacts(row),
           activityId: action.activityId,
@@ -1534,7 +1536,7 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
             return;
           }
         }
-        record(categoryFiledChange({
+        record(() => categoryFiledChange({
           actor: 'you',
           ...rowFacts(row),
           activityId: action.activityId,
@@ -1636,7 +1638,7 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
           return;
         }
         const back = replay[0];
-        record(categoryFiledChange({
+        record(() => categoryFiledChange({
           actor: 'you',
           ...rowFacts(pin),
           activityId: action.activityId,
