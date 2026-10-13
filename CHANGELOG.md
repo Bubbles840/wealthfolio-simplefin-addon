@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.60.0] - 2026-10-13
+
 ### Added
 - **A change log.** Every change the sync, the companion and you make to your
   books is recorded: each import, bank update and removed pending charge;
