@@ -1646,7 +1646,9 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
           after: back
             ? { categoryId: back.categoryId, categoryName: categoryNameIn([loaded.fresh, chat.session], back.categoryId), taxonomyId: back.taxonomyId }
             : null,
-          restore: action.toRestore,
+          // The complete state this Undo found (before.assignments = prior state on
+          // every category-filed entry), not the set it is about to write back.
+          restore: (loaded.fresh.assignments.get(action.activityId) ?? [filedAs]).map((x) => ({ taxonomyId: x.taxonomyId, categoryId: x.categoryId })),
         }));
         await republishQuietly();
         await transition(chat, { ...screen, undone: true }, pin, ui);
