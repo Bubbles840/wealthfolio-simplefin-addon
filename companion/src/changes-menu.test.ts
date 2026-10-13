@@ -94,6 +94,21 @@ describe('the /changes list', () => {
       'Nothing changed in the last 7 days.',
     ].join('\n'));
   });
+
+  it('shows at most three notes, then points at the app, and stays under 4096 characters', () => {
+    const gaps = Array.from({ length: 50 }, (_, i) => ({
+      at: at(12, 8, i).toISOString(), count: 3, reason: "couldn't save the log", writer: 'companion' as const,
+    }));
+    const s = renderChangesList(log([], { gaps, trimmed: 2 }), 0, false, NOW);
+    const notes = s.text.split('\n').filter((l) => l.startsWith('⚠️'));
+    expect(notes).toHaveLength(4);
+    expect(notes[3]).toBe("⚠️ and 48 more notes — see the app's Change log.");
+    expect(s.text.length).toBeLessThan(4096);
+    const one = renderChangesList(log([], { gaps: gaps.slice(0, 1), trimmed: 2, unreadable: [
+      { writer: 'companion', month: '2026-09', paused: false }, { writer: 'addon', month: '2026-09', paused: false },
+    ] as never }), 0, false, NOW);
+    expect(one.text).toContain('and 1 more note —');
+  });
 });
 
 describe('search', () => {

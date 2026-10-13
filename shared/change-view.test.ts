@@ -119,6 +119,10 @@ describe('rows', () => {
     expect(changeRowSummary(rows[2])).toBe('Imported KROGER #9');
   });
 
+  it('says "1 transaction" for a run of one', () => {
+    expect(changeRowSummary({ kind: 'run', run: 'runA', entries: [imp(1, at(12, 8, 0), 'runA')] } as never)).toBe('Imported 1 transaction');
+  });
+
   it('keeps the window and the local clock', () => {
     const now = at(12, 15, 0);
     const recent = imp(1, at(10, 7, 9));

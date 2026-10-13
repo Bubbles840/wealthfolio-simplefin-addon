@@ -142,7 +142,16 @@ function navRow(page: number, pages: number, at: (page: number) => string): Butt
   return nav;
 }
 
-const noteLines = (read: ChangeLogRead) => changeLogNotes(read).map((n) => `⚠️ ${escapeMarkdown(n)}`);
+const MAX_NOTES = 3;
+/** At most three notes (a long run of gap records must not push the message past
+ *  Telegram's 4096-character limit), then a pointer to the app. */
+function noteLines(read: ChangeLogRead): string[] {
+  const notes = changeLogNotes(read);
+  const lines = notes.slice(0, MAX_NOTES).map((n) => `⚠️ ${escapeMarkdown(n)}`);
+  const more = notes.length - MAX_NOTES;
+  if (more > 0) lines.push(`⚠️ and ${more} more ${more === 1 ? 'note' : 'notes'} — see the app's Change log.`);
+  return lines;
+}
 
 /** The list: the last 7 days, background hidden unless asked for. */
 export function renderChangesList(read: ChangeLogRead, page: number, background: boolean, now: Date): MenuScreen {
@@ -190,7 +199,7 @@ export function renderChangeRun(entries: ChangeLogItem[], view: Extract<ChangesV
   const { slice, page: p, pages } = pageOf(rows, view.page);
   const first = p * CHANGES_PAGE_SIZE;
   const lines = [
-    `*Imported ${entries.length} transactions*`,
+    `*Imported ${entries.length} ${entries.length === 1 ? 'transaction' : 'transactions'}*`,
     `_${shortDateTime(entries[0].at)}_`,
     '',
     ...slice.map((row, i) => rowLine(first + i + 1, row)),
