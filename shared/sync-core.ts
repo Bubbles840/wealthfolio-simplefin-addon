@@ -1577,9 +1577,18 @@ export async function importAdjustmentActivity(
  * import endpoint reports no ids. Undefined when the read fails or finds
  * nothing: the change entry still names the row by its note.
  */
-export async function rowIdByComment(read: () => Promise<HostActivity[]>, comment: string): Promise<string | undefined> {
+export async function rowIdByComment(
+  read: () => Promise<HostActivity[]>,
+  comment: string,
+  /** Also match the money, when several rows can share one note (two Add
+   *  adjustment taps on the same day). The LAST match wins: the newest row. */
+  money?: { amount?: unknown; fee?: unknown },
+): Promise<string | undefined> {
   try {
-    return (await read()).find((a) => (a.comment ?? '') === comment)?.id;
+    const cents = (v: unknown) => Math.round(Number(v ?? 0) * 100);
+    const matches = (await read()).filter((a) => (a.comment ?? '') === comment
+      && (!money || (cents(a.amount) === cents(money.amount) && cents(a.fee) === cents(money.fee))));
+    return matches[matches.length - 1]?.id;
   } catch {
     return undefined;
   }
@@ -3038,9 +3047,23 @@ async function runSyncPass(
             logChange(() => transferTypeChange({ ...facts(), activityType: to.type, previousType: stored.type, held: true }));
           } else if (wasInTransit && !to.inTransit && !isTransferType(to.type)) {
             logChange(() => transferTypeChange({ ...facts(), activityType: to.type, previousType: stored.type, held: false }));
+          } else if (wasInTransit && !to.inTransit) {
+            // A held leg found its other half: the `transfer-link` entry that
+            // follows is the record of this (and carries the undo). The row
+            // update itself is the link's plumbing, not a bank change.
+          } else if (
+            // The bank finishing the charge — same id, same everything but
+            // the pending flag — is not worth an entry (it would be one per
+            // pending row, forever).
+            to.txId === stored.txId && stored.pending && !to.pending
+            && stored.absCents === to.absCents && stored.type === to.type && stored.date === to.date
+            && !(to.subtype && (stored.subtype ?? '').trim().toUpperCase() !== to.subtype.trim().toUpperCase())
+          ) {
+            // record nothing
           } else {
             logChange(() => bankUpdateChange({
               ...facts(),
+              ...(to.txId !== stored.txId ? { previousTxKey: accountTxKey(sfAccount.id, stored.txId) } : {}),
               before: { absCents: stored.absCents, date: stored.date, pending: stored.pending, activityType: stored.type, subtype: stored.subtype ?? null },
               after: { absCents: to.absCents, date: to.date, pending: to.pending, activityType: to.type, subtype: to.subtype ?? null },
             }));

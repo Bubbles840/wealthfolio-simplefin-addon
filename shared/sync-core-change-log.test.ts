@@ -53,7 +53,7 @@ describe('runSyncCore — change log', () => {
       writer: 'companion', run: 'cRUN1', actor: 'auto', at: NOW.toISOString(), undoable: true,
       account: { sfinId: 'sfin-1', wfId: 'wf-a', name: 'Everyday Checking' },
       subject: { txKeys: [accountTxKey('sfin-1', 'tx-1')], activityIds: ['fh-1'], description: 'KROGER #123', amountCents: -1234, date: '2026-10-11' },
-      after: { activityId: 'fh-1', txKey: accountTxKey('sfin-1', 'tx-1'), activityType: 'WITHDRAWAL', pending: false },
+      after: { activityType: 'WITHDRAWAL', pending: false },
     });
     expect(entries[1].subject.amountCents).toBe(150000);
   });
@@ -122,6 +122,65 @@ describe('runSyncCore — change log', () => {
       before: { absCents: 1200, date: '2026-10-10', pending: true, activityType: 'WITHDRAWAL' },
       after: { absCents: 1234, date: '2026-10-11', pending: false, activityType: 'WITHDRAWAL' },
     });
+  });
+
+  const existingPending = (id: string, amount: number, comment: string) => new Map([['wf-a', [{
+    id, accountId: 'wf-a', activityType: 'WITHDRAWAL', date: '2026-10-11', amount, comment, sourceGroupId: null,
+  }]]]);
+
+  it('records nothing when a pending row posts unchanged under the same id', async () => {
+    const { host, store } = createFakeHost({
+      ...checking([{ id: 'tx-1', posted: epoch('2026-10-11T12:00:00Z'), amount: '-12.34', description: 'KROGER #123' }]),
+      existing: existingPending('act-7', 12.34, 'KROGER #123 · tx-1 · pending'),
+    });
+    const log = capture();
+    await runSyncCore(host, store, { changeLog: log });
+    expect(log.batches.flat()).toEqual([]);
+  });
+
+  it('records a pending row that posts with a changed amount, as a bank update', async () => {
+    const { host, store } = createFakeHost({
+      ...checking([{ id: 'tx-1', posted: epoch('2026-10-11T12:00:00Z'), amount: '-15.00', description: 'KROGER #123' }]),
+      existing: existingPending('act-7', 12.34, 'KROGER #123 · tx-1 · pending'),
+    });
+    const log = capture();
+    await runSyncCore(host, store, { changeLog: log });
+    expect(log.batches[0]).toEqual([expect.objectContaining({ kind: 'bank-update', why: 'The bank changed it' })]);
+    expect(log.batches[0][0].before).not.toHaveProperty('txKey');
+  });
+
+  it('records a pending row posting under a new tx id, with the old key in before', async () => {
+    const { host, store } = createFakeHost({
+      ...checking([{ id: 'tx-new', posted: epoch('2026-10-11T12:00:00Z'), amount: '-12.34', description: 'KROGER #123' }]),
+      existing: existingPending('act-7', 12.34, 'KROGER #123 · tx-old · pending'),
+    });
+    const log = capture();
+    await runSyncCore(host, store, { changeLog: log });
+    expect(log.batches[0]).toEqual([expect.objectContaining({
+      kind: 'bank-update',
+      subject: expect.objectContaining({ txKeys: [accountTxKey('sfin-1', 'tx-new')], activityIds: ['act-7'] }),
+      before: expect.objectContaining({ txKey: accountTxKey('sfin-1', 'tx-old') }),
+    })]);
+  });
+
+  it('a held transfer that finds its other half records the link and no bank update', async () => {
+    const accounts = (withIn: boolean) => ({
+      accountSet: { errors: [], accounts: [
+        { id: 'sfin-1', name: 'Checking', currency: 'USD', balance: '0', 'balance-date': epoch('2026-10-12T12:00:00Z'),
+          transactions: [{ id: 'tx-out', posted: epoch('2026-10-12T13:00:00Z'), amount: '-500.00', description: 'Online Transfer to Card' }] },
+        { id: 'sfin-2', name: 'Card', currency: 'USD', balance: '0', 'balance-date': epoch('2026-10-12T12:00:00Z'),
+          transactions: withIn ? [{ id: 'tx-in', posted: epoch('2026-10-12T13:30:00Z'), amount: '500.00', description: 'PAYMENT THANK YOU' }] : [] },
+      ] },
+      mapping: { 'sfin-1': 'wf-a', 'sfin-2': 'wf-b' },
+      accountTypes: { 'wf-a': 'CASH', 'wf-b': 'CREDIT_CARD' },
+      accountNames: { 'wf-a': 'Checking', 'wf-b': 'Citi Card' },
+    });
+    const first = createFakeHost(accounts(false));
+    await runSyncCore(first.host, first.store, { changeLog: capture() });
+    const second = createFakeHost({ ...accounts(true), existing: first.activities });
+    const log = capture();
+    await runSyncCore(second.host, second.store, { changeLog: log });
+    expect(log.batches.flat().map((e) => e.kind).sort()).toEqual(['import', 'transfer-link']);
   });
 
   it('records a pending row the bank dropped', async () => {
