@@ -840,6 +840,13 @@ const css = `
 .sfin-log-amount { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .sfin-log-detail { display: flex; flex-direction: column; gap: 4px; margin: 2px 0 8px; padding: 6px 0 6px 12px; border-left: 2px solid var(--border); font-size: var(--sfin-sz-sm); }
 .sfin-log-hidden { margin-top: 8px; }
+.sfin-log-undone { color: var(--muted-foreground); font-size: var(--sfin-sz-xs); }
+.sfin-log-undo { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.sfin-log-result { flex-basis: 100%; }
+.sfin-log-result--refused { color: var(--sfin-warn); }
+.sfin-log-overrides { margin-top: 14px; padding-top: 8px; border-top: 1px solid var(--border); }
+.sfin-log-overrides-title { font-size: var(--sfin-sz-xs); letter-spacing: .06em; text-transform: uppercase; color: var(--muted-foreground); margin-bottom: 4px; }
+.sfin-log-override { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 2px 0; }
 @media (max-width: 560px) {
   .sfin-log-row { grid-template-columns: 3.2em minmax(0, 1fr); }
   .sfin-log-run-line { grid-template-columns: 3.2em minmax(0, 1fr); }
