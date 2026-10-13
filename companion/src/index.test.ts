@@ -228,6 +228,47 @@ describe('runCompanionSync', () => {
       delete process.env.MIN_SYNC_INTERVAL_HOURS;
     }
   });
+
+  it('hands the sync a change-log sink, and logs the Amazon filing after it under the same run', async () => {
+    const at = new Date(2026, 9, 12, 8, 0, 0);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(at);
+    const { WealthfolioClient } = await import('./wealthfolio.js');
+    const original = vi.mocked(WealthfolioClient).getMockImplementation();
+    try {
+      const secrets = new Map<string, string>([
+        ['simplefin_access_url', 'https://user:pass@bridge.simplefin.org/simplefin'],
+        ['account_mapping', JSON.stringify({ 'ACT-9c8d': 'wf-citi' })],
+      ]);
+      const client = new (WealthfolioClient as any)();
+      client.getAddonSecret = vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null);
+      client.setAddonSecret = vi.fn(async (_a: string, key: string, val: string) => { secrets.set(key, val); });
+      client.assignActivityCategory = vi.fn(async () => {});
+      vi.mocked(WealthfolioClient).mockImplementation(function () { return client; } as any);
+      vi.mocked(getNativeUncategorizedSpending).mockReturnValue([{
+        activityId: 'a1', wfAccountId: 'wf-citi', notes: 'AMAZON MKTPL*2K4 · Amazon: Skincare · TRN-1', amountCents: 1080,
+        date: '2026-09-15', accountName: 'Citi', direction: 'out', incomeEligible: false,
+      }]);
+      vi.mocked(getNativeSpendingCategories).mockReturnValue([{ id: 'cat-personal', name: 'Personal Care', parentId: null, parentName: null }] as any);
+
+      await runCompanionSync();
+
+      const sink = vi.mocked(runSyncCore).mock.calls[0][2]!.changeLog!;
+      expect(sink).toMatchObject({ writer: 'companion', run: `c${at.getTime().toString(36)}` });
+      const bucket = JSON.parse(secrets.get('change_log:companion:2026-10')!);
+      expect(bucket.entries).toEqual([expect.objectContaining({
+        kind: 'category-filed', run: sink.run, summary: 'Filed AMAZON MKTPL*2K4 under Personal Care',
+        subject: expect.objectContaining({ txKeys: ['ACT-9c8d\u0000TRN-1'] }),
+        account: expect.objectContaining({ sfinId: 'ACT-9c8d' }),
+        after: expect.objectContaining({ taxonomyId: 'spending_categories' }),
+      })]);
+    } finally {
+      vi.mocked(getNativeUncategorizedSpending).mockReturnValue([]);
+      vi.mocked(getNativeSpendingCategories).mockReturnValue([]);
+      vi.mocked(WealthfolioClient).mockImplementation(original!);
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe('runCompanionSync sync health', () => {

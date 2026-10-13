@@ -29,6 +29,11 @@
  * charge is only labelled on a later sync anyway.
  */
 import { DEFAULT_AMAZON_CATEGORY, resolveAmazonCategory, type AmazonMailConfig } from '../../shared/amazon-config.js';
+import { categoryFiledChange, type ChangeDraft } from '../../shared/change-entries.js';
+import { descriptionFromComment, txIdFromComment } from '../../shared/sync-core.js';
+import { accountTxKey } from '../../shared/transfers.js';
+
+const SPENDING_TAXONOMY = 'spending_categories';
 
 /** Pulls the label out of an enriched note. `amazonDescription` writes
  *  ` · Amazon: <label>` (single) or ` · Amazon: mixed — a + b` (several), and
@@ -44,9 +49,24 @@ export function amazonLabelFromNote(note: string): string | null {
   return label;
 }
 
+/** A row the filer may file. The optional fields describe it for the change
+ *  log; `categoryId`/`categoryName` are the category a rule had given it. */
+export interface AmazonFilingRow {
+  activityId: string;
+  notes: string;
+  wfAccountId?: string;
+  accountName?: string;
+  /** Magnitude; `direction` carries the sign. */
+  amountCents?: number;
+  date?: string;
+  direction?: 'in' | 'out';
+  categoryId?: string;
+  categoryName?: string;
+}
+
 export interface AmazonFilingDeps {
   /** Uncategorised rows in the window, as the notice's sweep already reads. */
-  uncategorized(): Promise<Array<{ activityId: string; notes: string }>>;
+  uncategorized(): Promise<AmazonFilingRow[]>;
   /**
    * Labelled Amazon rows whose spending category came from a categorization
    * RULE (assignment source "rule"). A rule runs on import, before the order
@@ -56,12 +76,16 @@ export interface AmazonFilingDeps {
    * rule re-runs never overwrite; a category the user chose is also "manual"
    * and never appears here.
    */
-  ruleCategorized?(): Promise<Array<{ activityId: string; notes: string }>>;
+  ruleCategorized?(): Promise<AmazonFilingRow[]>;
   /** Every spending category, for name → id. */
   categories(): Promise<Array<{ id: string; name: string }>>;
   readConfig(): Promise<AmazonMailConfig | null>;
   assign(activityId: string, categoryId: string): Promise<void>;
   log(msg: string): void;
+  /** The change log: one draft per filing Wealthfolio accepted. */
+  record?(draft: ChangeDraft): void;
+  /** The SimpleFin account behind a Wealthfolio one, for the entry's tx key. */
+  sfinAccountOf?(wfAccountId: string): string | undefined;
 }
 
 export interface AmazonFilingResult {
@@ -94,6 +118,32 @@ export async function fileAmazonCharges(deps: AmazonFilingDeps): Promise<AmazonF
     // hand, and "personal care" should find "Personal Care" rather than
     // silently file nothing.
     const byName = new Map(categories.map((c) => [c.name.trim().toLowerCase(), c.id]));
+    const nameOf = new Map(categories.map((c) => [c.id, c.name]));
+    /** The change-log entry for a filing that just landed: what it was filed
+     *  under before (a rule's choice, or nothing) and what it is now. A failed
+     *  recording never touches the filing. */
+    const recordFiling = (row: AmazonFilingRow, label: string, categoryId: string) => {
+      if (!deps.record) return;
+      try {
+        const sfinId = row.wfAccountId ? deps.sfinAccountOf?.(row.wfAccountId) : undefined;
+        const txId = txIdFromComment(row.notes);
+        deps.record(categoryFiledChange({
+          actor: 'auto',
+          ...(row.wfAccountId ? { account: { ...(sfinId ? { sfinId } : {}), wfId: row.wfAccountId, name: row.accountName ?? '' } } : {}),
+          ...(sfinId && txId ? { txKey: accountTxKey(sfinId, txId) } : {}),
+          activityId: row.activityId,
+          // The bank's own words: the label is the entry's `why`.
+          description: descriptionFromComment(row.notes).split(' · Amazon: ')[0],
+          ...(row.amountCents !== undefined ? { amountCents: row.direction === 'in' ? row.amountCents : -row.amountCents } : {}),
+          ...(row.date ? { date: row.date } : {}),
+          before: row.categoryId ? { categoryId: row.categoryId, categoryName: row.categoryName ?? '', taxonomyId: SPENDING_TAXONOMY } : null,
+          after: { categoryId, categoryName: nameOf.get(categoryId) ?? '', taxonomyId: SPENDING_TAXONOMY },
+          why: `Amazon: ${label}`,
+        }));
+      } catch (err) {
+        deps.log(`Amazon filing: could not record the change for ${row.activityId}: ${String(err)}`);
+      }
+    };
 
     for (const { row, label } of labelled) {
       // A MIXED order goes straight to the configured default: one charge
@@ -111,6 +161,7 @@ export async function fileAmazonCharges(deps: AmazonFilingDeps): Promise<AmazonF
         try {
           await deps.assign(row.activityId, fallbackId);
           result.filed += 1;
+          recordFiling(row, label, fallbackId);
         } catch (err) {
           deps.log(`Amazon filing: could not file mixed order ${row.activityId} under ${fallback}: ${String(err)}`);
         }
@@ -138,6 +189,7 @@ export async function fileAmazonCharges(deps: AmazonFilingDeps): Promise<AmazonF
       try {
         await deps.assign(row.activityId, categoryId);
         result.filed += 1;
+        recordFiling(row, label, categoryId);
       } catch (err) {
         // Per row: one refusal must not abandon the rest of the batch.
         deps.log(`Amazon filing: could not file ${row.activityId} under ${category}: ${String(err)}`);
