@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { ChangeEntry, ChangeLogSink } from './change-entries.js';
 import { createFakeHost, type FakeHostSeed } from './fake-host.js';
-import { runSyncCore, VALUATION_POLL } from './sync-core.js';
+import { runSyncCore, txIdFromComment, VALUATION_POLL } from './sync-core.js';
 import type { HostActivity, SaveManyRequest, SaveManyResult } from './sync-host.js';
 import { emptySyncOverrides, setTxOverride, type SyncOverrides } from './sync-overrides.js';
 import { accountTxKey } from './transfers.js';
@@ -19,6 +19,9 @@ function capture(): ChangeLogSink & { entries: () => ChangeEntry[] } {
     entries: () => batches.flat(),
   };
 }
+
+/** The note a run gives when it could not read every account before an unlink. */
+const HELD_FOR_A_READ = 'Could not read every account, so a transfer you undid was not unlinked or cleaned up this sync — nothing was deleted; the next sync tries again';
 
 const notTransfer = (...keys: string[]): SyncOverrides =>
   keys.reduce((o, k) => setTxOverride(o, k, 'notTransfer', NOW), emptySyncOverrides());
@@ -413,6 +416,181 @@ describe('runSyncCore — notTransfer', () => {
       expect(await summaries(1, true)).toEqual([one]);
       expect(await summaries(2, true)).toEqual([one, one]);
       expect(await summaries(2, false)).toEqual([one, one]);
+    });
+
+    // The one rule the cleanup obeys: an old linked leg is deleted only when, in
+    // that same run, EVERY leg of its pair has a confirmed ordinary replacement
+    // row (by row, not by tx key); a held placeholder is never a member; any
+    // uncertainty skips the delete, the duplicate prune and drift.
+    describe('the cleanup deletes only what it has confirmed', () => {
+      const addon = <H extends { capabilities: { readsSourceGroupId: boolean } }>(h: H): H => ({ ...h, capabilities: { readsSourceGroupId: false } });
+      const deletedIds = (fh: ReturnType<typeof createFakeHost>) => fh.saved.flatMap((r) => r.deleteIds ?? []);
+      /** Every row each account holds, as [tx id, type]. */
+      const held = (fh: ReturnType<typeof createFakeHost>) => ['wf-a', 'wf-b'].map((wf) =>
+        (fh.activities.get(wf) ?? []).map((r) => [txIdFromComment(r.comment), r.activityType]));
+      const unlinked = [{ account: 'wf-a', type: 'WITHDRAWAL', group: null }, { account: 'wf-b', type: 'CREDIT', group: null }];
+      const shape = (fh: ReturnType<typeof createFakeHost>) => rows(fh.activities).map(({ account, type, group }) => ({ account, type, group }));
+      /** The add-on's ledger for the pair (fresh each time: the sync edits the object it reads). */
+      const ledger9 = () => ({ [OUT]: 'wf-transfer-9', [IN]: 'wf-transfer-9' });
+
+      it('add-on, override on the OUT leg only: a cleanup that fails twice deletes nothing but the old linked pair', async () => {
+        const fh = createFakeHost(twoAccounts({ existing: linkedRows(), syncOverrides: notTransfer(OUT), upstreamWriteRules: true }));
+        await fh.store.setLinkedGroups(ledger9());
+        await runSyncCore(addon(cascading(fh, true)), fh.store, {});
+        const stale = snapshot(fh.activities);
+
+        const r2 = await runSyncCore(addon(cascading(fh, true)), fh.store, { force: true });
+        expect(r2.errors).toEqual([expect.stringContaining('Transfer-unlink cleanup incomplete (tx-out/tx-in)')]);
+        // Left exactly as it was: the card's ordinary row was not re-held as a
+        // placeholder while the old pair still stands next to it.
+        expect(snapshot(fh.activities)).toEqual(stale);
+
+        const r3 = await runSyncCore(addon(cascading(fh)), fh.store, { force: true });
+        expect(r3.errors).toEqual([]);
+        expect(new Set(deletedIds(fh))).toEqual(new Set(['act-out', 'act-in']));
+        expect(shape(fh)).toEqual(unlinked);
+        expect(await fh.store.getLinkedGroups()).toEqual({});
+      });
+
+      for (const host of ['companion', 'add-on'] as const) {
+        it(`${host}, override on the OUT leg only: the card leg ages out of the feed before the cleanup lands — no row lost`, async () => {
+          const fh = createFakeHost(twoAccounts({ existing: linkedRows(), syncOverrides: notTransfer(OUT), upstreamWriteRules: true }));
+          const wrap = <H extends { capabilities: { readsSourceGroupId: boolean } }>(h: H) => (host === 'add-on' ? addon(h) : h);
+          if (host === 'add-on') await fh.store.setLinkedGroups(ledger9());
+          await runSyncCore(wrap(cascading(fh, true)), fh.store, {});
+          await runSyncCore(wrap(cascading(fh, true)), fh.store, { force: true });
+
+          const seed = twoAccounts({ existing: fh.activities, syncOverrides: notTransfer(OUT), upstreamWriteRules: true });
+          seed.accountSet!.accounts[1].transactions = [];
+          const later = createFakeHost(seed);
+          if (host === 'add-on') await later.store.setLinkedGroups(await fh.store.getLinkedGroups());
+          const r3 = await runSyncCore(wrap(cascading(later)), later.store, { force: true });
+          expect(r3.errors).toEqual([]);
+          expect(new Set(deletedIds(later))).toEqual(new Set(['act-out', 'act-in']));
+          expect(shape(later)).toEqual(unlinked);
+        });
+
+        it(`${host}: a held placeholder next to a stale pair is never deleted, and the cleanup waits for an ordinary row`, async () => {
+          const existing = linkedRows();
+          existing.get('wf-a')!.push({ id: 'new-out', accountId: 'wf-a', activityType: 'WITHDRAWAL', date: '2026-10-08', amount: 464.6, comment: 'CITI AUTOPAY PAYMENT · tx-out', sourceGroupId: null, assetId: '$CASH-USD' });
+          existing.get('wf-b')!.push({ id: 'ph-in', accountId: 'wf-b', activityType: 'TRANSFER_IN', date: '2026-10-09', amount: 464.6, comment: '↔️ In-transit transfer · PAYMENT THANK YOU · tx-in', sourceGroupId: null, assetId: '$CASH-USD' });
+          const seed = twoAccounts({ existing, syncOverrides: notTransfer(OUT), upstreamWriteRules: true });
+          seed.accountSet!.accounts[1].transactions = []; // the card leg has aged out of the feed
+          const fh = createFakeHost(seed);
+          if (host === 'add-on') await fh.store.setLinkedGroups(ledger9());
+          const before = snapshot(fh.activities);
+          const r = await runSyncCore(host === 'add-on' ? addon(cascading(fh)) : cascading(fh), fh.store, { force: true, heal: true });
+          expect(deletedIds(fh)).toEqual([]);
+          expect(r.prunedDuplicates).toEqual([]);
+          expect(snapshot(fh.activities)).toEqual(before);
+          expect(r.errors).toEqual([
+            'Transfer-unlink cleanup waiting (tx-out/tx-in): PAYMENT THANK YOU has no ordinary row of its own yet — the old linked rows stay for now, nothing was deleted',
+          ]);
+        });
+      }
+
+      for (const host of ['companion', 'add-on'] as const) {
+        it(`${host}: a waiting pair moves on once the card's placeholder expires into an ordinary row`, async () => {
+          const existing = linkedRows();
+          existing.get('wf-a')!.push({ id: 'new-out', accountId: 'wf-a', activityType: 'WITHDRAWAL', date: '2026-10-08', amount: 464.6, comment: 'CITI AUTOPAY PAYMENT · tx-out', sourceGroupId: null, assetId: '$CASH-USD' });
+          existing.get('wf-b')!.push({ id: 'ph-in', accountId: 'wf-b', activityType: 'TRANSFER_IN', date: '2026-10-09', amount: 464.6, comment: '↔️ In-transit transfer · PAYMENT THANK YOU · tx-in', sourceGroupId: null, assetId: '$CASH-USD' });
+          const wrap = <H extends { capabilities: { readsSourceGroupId: boolean } }>(h: H) => (host === 'add-on' ? addon(h) : h);
+          const fh = createFakeHost(twoAccounts({ existing, syncOverrides: notTransfer(OUT), upstreamWriteRules: true }));
+          if (host === 'add-on') await fh.store.setLinkedGroups(ledger9());
+          // Still inside its 10 days: the card leg stays held, untouched — it is
+          // not the linked leg, even where the ledger only knows its tx key.
+          const before = snapshot(fh.activities);
+          const r1 = await runSyncCore(wrap(cascading(fh)), fh.store, { force: true });
+          expect(snapshot(fh.activities)).toEqual(before);
+          expect(r1.errors).toEqual([expect.stringContaining('Transfer-unlink cleanup waiting (tx-out/tx-in)')]);
+
+          vi.setSystemTime(new Date('2026-10-25T15:00:00Z'));
+          const seed = twoAccounts({ existing: fh.activities, syncOverrides: notTransfer(OUT), upstreamWriteRules: true });
+          for (const a of seed.accountSet!.accounts) a['balance-date'] = epoch('2026-10-25T12:00:00Z');
+          const later = createFakeHost(seed);
+          if (host === 'add-on') await later.store.setLinkedGroups(await fh.store.getLinkedGroups());
+          await runSyncCore(wrap(cascading(later)), later.store, { force: true });
+          expect(deletedIds(later)).toEqual([]);
+          expect(later.activities.get('wf-b')!.find((r) => r.id === 'ph-in')!.activityType).toBe('CREDIT');
+
+          const r3 = await runSyncCore(wrap(cascading(later)), later.store, { force: true });
+          expect(r3.errors).toEqual([]);
+          expect(new Set(deletedIds(later))).toEqual(new Set(['act-out', 'act-in']));
+          expect(shape(later)).toEqual(unlinked);
+        });
+      }
+
+      it('an old linked leg is never deleted while its other half has no ordinary row', async () => {
+        const existing = linkedRows();
+        existing.get('wf-a')!.push({ id: 'dup-out', accountId: 'wf-a', activityType: 'WITHDRAWAL', date: '2026-10-08', amount: 464.6, comment: 'CITI AUTOPAY PAYMENT · tx-out', sourceGroupId: null });
+        const seed = twoAccounts({ existing, syncOverrides: notTransfer(OUT), upstreamWriteRules: true });
+        seed.accountSet!.accounts[1].transactions = [];
+        const fh = createFakeHost(seed);
+        const before = snapshot(fh.activities);
+        const r = await runSyncCore(cascading(fh), fh.store, { force: true });
+        expect(deletedIds(fh)).toEqual([]);
+        expect(snapshot(fh.activities)).toEqual(before);
+        expect(r.errors).toEqual([expect.stringContaining('Transfer-unlink cleanup waiting (tx-out/tx-in)')]);
+      });
+
+      it('a read that fails before an unlink holds it for the run; the next sync unlinks', async () => {
+        const fh = createFakeHost(twoAccounts({ existing: linkedRows(), syncOverrides: notTransfer(OUT, IN), upstreamWriteRules: true }));
+        const reads = new Map<string, number>();
+        const flaky = { ...fh.host, listActivities: async (id: string) => {
+          reads.set(id, (reads.get(id) ?? 0) + 1);
+          if (reads.get(id) === 1) throw new Error('read down');
+          return fh.host.listActivities(id);
+        } };
+        const before = snapshot(fh.activities);
+        const r1 = await runSyncCore(flaky, fh.store, {});
+        expect(fh.saved).toEqual([]);
+        expect(snapshot(fh.activities)).toEqual(before);
+        expect(r1.errors).toEqual([HELD_FOR_A_READ]);
+        const r2 = await runSyncCore(fh.host, fh.store, { force: true });
+        expect(r2.errors).toEqual([]);
+        expect(shape(fh)).toEqual(unlinked);
+      });
+
+      // The reviewer's read-blip matrix: a stale pair (an unlink whose delete
+      // failed), then a heal whose pre-pass read of one account fails once.
+      for (const host of ['companion', 'add-on'] as const) {
+        for (const which of ['IN', 'OUT'] as const) {
+          for (const blip of ['wf-a', 'wf-b'] as const) {
+            for (const [outId, inId] of [['act-out', 'act-in'], ['zz-out', 'act-in'], ['act-out', 'zz-in'], ['zz-out', 'zz-in']]) {
+              it(`${host}, override on ${which}, ${blip} unreadable once (ids ${outId}/${inId}): nothing deleted or pruned that run; the next sync cleans up`, async () => {
+                const existing = linkedRows();
+                existing.get('wf-a')![0] = { ...existing.get('wf-a')![0], id: outId };
+                existing.get('wf-b')![0] = { ...existing.get('wf-b')![0], id: inId };
+                const fh = createFakeHost(twoAccounts({ existing, syncOverrides: notTransfer(which === 'IN' ? IN : OUT), upstreamWriteRules: true }));
+                const wrap = <H extends { capabilities: { readsSourceGroupId: boolean } }>(h: H) => (host === 'add-on' ? addon(h) : h);
+                if (host === 'add-on') await fh.store.setLinkedGroups(ledger9());
+                const r1 = await runSyncCore(wrap(cascading(fh, true)), fh.store, {});
+                expect(r1.errors[0]).toContain('Transfer-unlink incomplete');
+                const stale = snapshot(fh.activities);
+                fh.saved.length = 0;
+
+                let failed = false;
+                const base = wrap(cascading(fh));
+                const blipping = { ...base, listActivities: async (id: string) => {
+                  if (id === blip && !failed) { failed = true; throw new Error('blip'); }
+                  return base.listActivities(id);
+                } };
+                const r2 = await runSyncCore(blipping, fh.store, { force: true, heal: true });
+                expect(deletedIds(fh)).toEqual([]);
+                expect(r2.prunedDuplicates).toEqual([]);
+                expect(held(fh)).toEqual([[['tx-out', 'TRANSFER_OUT'], ['tx-out', 'WITHDRAWAL']], [['tx-in', 'TRANSFER_IN'], ['tx-in', 'CREDIT']]]);
+                expect(snapshot(fh.activities)).toEqual(stale);
+                expect(r2.errors).toEqual([HELD_FOR_A_READ]);
+
+                const r3 = await runSyncCore(wrap(cascading(fh)), fh.store, { force: true });
+                expect(r3.errors).toEqual([]);
+                expect(shape(fh)).toEqual(unlinked);
+                if (host === 'add-on') expect(await fh.store.getLinkedGroups()).toEqual({});
+              });
+            }
+          }
+        }
+      }
     });
   });
 });

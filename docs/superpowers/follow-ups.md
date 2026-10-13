@@ -557,6 +557,20 @@ changes what a user sees today.
 - **The add-on leaves any non-held `notTransfer` transfer leg it cannot confirm
   in its own ledger for the companion** (it cannot tell a companion link from an
   unlinked rule-typed leg), reporting a note each sync.
+- **A stale unlink waits rather than guess.** The old linked pair of an unlink
+  whose delete failed is deleted only once BOTH legs have an ordinary row of
+  their own in the same run (`planUnlinkPrepass`); until then the sync reports
+  "Transfer-unlink cleanup waiting (…)" each run, the old pair stays next to the
+  new rows (a visible double count) and drift is not measured for those
+  accounts. A leg left as an in-transit placeholder waits for it to expire; one
+  whose transaction leaves the feed first never gets an ordinary row, so that
+  pair waits until it is fixed by hand.
+- **A failed account read holds every `notTransfer` unlink for that run** — no
+  unlink, cleanup, duplicate prune, relink sweep or drift measurement anywhere —
+  with one note. On the companion, a held pair's leg in an account read BEFORE
+  the unreadable one is not taken out of that account's plan that run (it cannot
+  be matched to the pair without the unread rows); nothing deletes it, at worst
+  its ordinary row is re-held as a placeholder and the cleanup waits for it.
 
 ## Reference: name mismatches between the database, the REST API, and the SDK
 
