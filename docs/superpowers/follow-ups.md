@@ -542,6 +542,22 @@ changes what a user sees today.
 - **The read-back of a new starting balance or plug costs one activity read**,
   only when a change log is attached and only on the rare run that writes one.
 
+### Change log — Undo (R2, Task 3)
+
+- **A single `notTransfer` override on a linked pair.** The undo planner always
+  sets `notTransfer` on both legs of a link, but "Your overrides" → Remove can
+  leave one. The sync unlinks the pair from either leg, after which the leg
+  without an override is an ordinary row again and can be re-typed or re-held as
+  a transfer candidate on later syncs (held, then relinked or expired after 10
+  days). Pinned today by `shared/sync-core-not-transfer.test.ts` (one-override
+  case); Remove should probably clear both legs of a pair together.
+- **A linked leg already stored as ordinary money** (a half-typed pair) cannot
+  be unlinked create-first: re-creating it is refused as an exact copy, so the
+  pair stays linked and the sync reports it each run.
+- **The add-on leaves any non-held `notTransfer` transfer leg it cannot confirm
+  in its own ledger for the companion** (it cannot tell a companion link from an
+  unlinked rule-typed leg), reporting a note each sync.
+
 ## Reference: name mismatches between the database, the REST API, and the SDK
 
 Every one of these cost a diagnostic cycle against the live instance on

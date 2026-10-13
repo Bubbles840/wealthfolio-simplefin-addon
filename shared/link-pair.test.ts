@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { linkPairByRecreate } from './link-pair.js';
+import { linkPairByRecreate, unlinkPairByRecreate, type UnlinkLeg } from './link-pair.js';
 import { TRANSFER_GROUP_PREFIX } from './sync-core.js';
 import type { LinkLeg, SaveManyRequest, SaveManyResult } from './sync-host.js';
 
@@ -165,5 +165,68 @@ describe('linkPairByRecreate', () => {
     ]);
     expect(res.linked).toBe(false);
     expect(res.problems?.join(' ')).toMatch(/group/i);
+  });
+});
+
+describe('unlinkPairByRecreate', () => {
+  const ul = (wfId: string, accountId: string, newType: string): UnlinkLeg => ({ ...leg(wfId, accountId, 'TRANSFER_OUT'), newType });
+  const pair = (): [UnlinkLeg, UnlinkLeg] => [ul('a', 'wf-a', 'WITHDRAWAL'), ul('b', 'wf-b', 'CREDIT')];
+
+  it('creates both ordinary rows first, then deletes the old pair in one request', async () => {
+    const { requests, saveMany } = acceptingHost();
+    const res = await unlinkPairByRecreate(saveMany, pair());
+    expect(requests.map((r) => [(r.creates ?? []).map((c) => c.activityType), r.deleteIds ?? []])).toEqual([
+      [['WITHDRAWAL', 'CREDIT'], []],
+      [[], ['a', 'b']],
+    ]);
+    expect(requests[0].creates!.every((c) => c.sourceGroupId === undefined && c.symbol?.symbol === '$CASH-USD')).toBe(true);
+    expect(res.unlinked).toBe(true);
+  });
+
+  it('maps the echoed ids to the legs, in leg order, whatever order the host echoes', async () => {
+    const saveMany = async (req: SaveManyRequest): Promise<SaveManyResult> => ({
+      created: (req.creates ?? []).map((c, i) => ({
+        id: `new-${i}`, accountId: c.accountId, activityType: c.activityType, date: c.activityDate,
+        amount: c.amount ?? null, comment: c.comment, sourceGroupId: null,
+      })).reverse(),
+      updated: [], errors: [],
+    });
+    const res = await unlinkPairByRecreate(saveMany, pair());
+    expect(res.activityIds).toEqual(['new-0', 'new-1']);
+  });
+
+  it('a refused create deletes nothing and names both rows', async () => {
+    const requests: SaveManyRequest[] = [];
+    const saveMany = async (req: SaveManyRequest): Promise<SaveManyResult> => {
+      requests.push(req);
+      return { created: [], updated: [], errors: [{ action: 'create', message: 'Duplicate activity detected' }] };
+    };
+    const res = await unlinkPairByRecreate(saveMany, pair());
+    expect(res.unlinked).toBe(false);
+    expect(requests.every((r) => !r.deleteIds)).toBe(true);
+    expect(res.problems?.[0]).toContain('wf-a 2026-07-20 1982.19 "Transfer · tx-a"');
+    expect(res.problems?.[0]).toContain('wf-b 2026-07-20 1982.19 "Transfer · tx-b"');
+    expect(res.problems?.[0]).toContain('Duplicate activity detected');
+  });
+
+  it('a create that throws deletes nothing', async () => {
+    const requests: SaveManyRequest[] = [];
+    const saveMany = async (req: SaveManyRequest): Promise<SaveManyResult> => {
+      requests.push(req);
+      throw new Error('socket closed');
+    };
+    const res = await unlinkPairByRecreate(saveMany, pair());
+    expect(res.unlinked).toBe(false);
+    expect(requests).toHaveLength(1);
+    expect(res.problems?.[0]).toContain('socket closed');
+  });
+
+  it('a failed delete after the creates is reported as stale, carrying the new ids', async () => {
+    const { saveMany: ok } = acceptingHost();
+    const saveMany = async (req: SaveManyRequest): Promise<SaveManyResult> =>
+      req.deleteIds ? { created: [], updated: [], errors: [{ action: 'delete', message: 'locked' }] } : ok(req);
+    const res = await unlinkPairByRecreate(saveMany, pair());
+    expect(res).toMatchObject({ unlinked: false, stale: true, activityIds: ['new-0', 'new-1'] });
+    expect(res.problems?.[0]).toContain('the old linked pair is still there next to them');
   });
 });

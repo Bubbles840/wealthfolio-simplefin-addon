@@ -92,49 +92,73 @@ export interface UnlinkLeg extends LinkLeg {
 
 export interface UnlinkResult {
   unlinked: boolean;
+  /** The new rows exist but the old linked pair could not be deleted. */
+  stale?: boolean;
   /** The re-created rows' ids, in leg order, when the echo carried them. */
   activityIds?: [string, string];
   problems?: string[];
 }
 
+/** A row named the way a person would look for it: account, date, amount, note. */
+const describeLeg = (l: LinkLeg) => `${l.accountId} ${l.date} ${(l.absCents / 100).toFixed(2)} "${l.comment}"`;
+
 /**
- * Undo of a transfer link: delete BOTH legs in one call and re-create each as
- * ordinary money in or out, with no group and no transfer marker.
+ * Undo of a transfer link: re-create both legs as ordinary money in or out
+ * (no group, no transfer marker), THEN delete the old linked pair.
  *
- * Why delete-and-re-create, as linking does: an update to one leg of a linked
- * pair is copied onto its partner (Wealthfolio 3.8, `build_counterpart_update`)
- * and an update cannot take a row out of its group. Deleting both in ONE
- * request is clean — the bulk endpoint expands a linked leg's delete to the
- * pair and de-duplicates the ids. The new types differ from the old ones, so
- * the re-creates never collide with the deleted rows' fingerprints.
+ * Why not an update: an update to one leg of a linked pair is copied onto its
+ * partner (Wealthfolio 3.8, `build_counterpart_update`) and cannot take a row
+ * out of its group. Why create first: the delete cannot be taken back, so it
+ * happens only once both new rows exist. The new types differ from the old
+ * ones, so their fingerprints never collide with the legs still standing.
+ * Deleting both ids in ONE request is clean — the bulk endpoint expands a
+ * linked leg's delete to the pair and de-duplicates the ids.
  *
- * Unlike `linkPairByRecreate`, a failed delete stops here: the rows are still
- * there, still linked, and re-creating them would leave a second copy.
+ * Failure leaves no loss: a refused or thrown create deletes nothing (the pair
+ * stays linked and is retried); a failed delete leaves the old pair next to the
+ * new rows, which `stale` reports so the next sync deletes only the old pair.
  */
 export async function unlinkPairByRecreate(
   saveMany: (req: SaveManyRequest) => Promise<SaveManyResult>,
   legs: [UnlinkLeg, UnlinkLeg],
 ): Promise<UnlinkResult> {
-  const del = await saveMany({ deleteIds: legs.map((l) => l.wfId) });
-  if (del.errors.length > 0) {
-    return { unlinked: false, problems: del.errors.map((e) => `delete (${e.action}): ${e.message}`) };
-  }
-  const res = await saveMany({
-    creates: legs.map((leg) => ({
-      accountId: leg.accountId,
-      activityType: leg.newType,
-      activityDate: leg.date,
-      // Ordinary money resolves the cash asset by symbol; only a transfer leg
-      // must carry none (see `isTransferType`).
-      ...(isTransferType(leg.newType) ? {} : { symbol: { symbol: `$CASH-${leg.currency}` } }),
-      amount: leg.absCents / 100,
-      currency: leg.currency,
-      comment: leg.comment,
-    })),
-  });
-  if (res.errors.length > 0) {
-    return { unlinked: false, problems: res.errors.map((e) => `save (${e.action}): ${e.message}`) };
+  const both = `${describeLeg(legs[0])} and ${describeLeg(legs[1])}`;
+  let res: SaveManyResult;
+  try {
+    res = await saveMany({
+      creates: legs.map((leg) => ({
+        accountId: leg.accountId,
+        activityType: leg.newType,
+        activityDate: leg.date,
+        // Ordinary money resolves the cash asset by symbol; only a transfer leg
+        // must carry none (see `isTransferType`).
+        ...(isTransferType(leg.newType) ? {} : { symbol: { symbol: `$CASH-${leg.currency}` } }),
+        amount: leg.absCents / 100,
+        currency: leg.currency,
+        comment: leg.comment,
+      })),
+    });
+  } catch (e: any) {
+    return { unlinked: false, problems: [`could not re-create ${both}, nothing deleted: ${String(e?.message ?? e)}`] };
   }
   const ids = legs.map((l) => res.created.find((a) => a.accountId === l.accountId && txIdFromComment(a.comment) === l.txId)?.id);
-  return { unlinked: true, ...(ids[0] && ids[1] ? { activityIds: [ids[0], ids[1]] as [string, string] } : {}) };
+  if (res.errors.length > 0 || res.created.length < legs.length) {
+    const why = res.errors.length > 0 ? res.errors.map((e) => `${e.action}: ${e.message}`).join('; ') : 'the host created fewer rows than asked';
+    return { unlinked: false, problems: [`could not re-create ${both}, nothing deleted (still linked): ${why}`] };
+  }
+  const activityIds = ids[0] && ids[1] ? { activityIds: [ids[0], ids[1]] as [string, string] } : {};
+  let problem: string | null = null;
+  try {
+    const del = await saveMany({ deleteIds: legs.map((l) => l.wfId) });
+    if (del.errors.length > 0) problem = del.errors.map((e) => `delete (${e.action}): ${e.message}`).join('; ');
+  } catch (e: any) {
+    problem = String(e?.message ?? e);
+  }
+  if (problem !== null) {
+    return {
+      unlinked: false, stale: true, ...activityIds,
+      problems: [`re-created ${both} as ordinary rows, but the old linked pair is still there next to them (${problem}); the next sync deletes it`],
+    };
+  }
+  return { unlinked: true, ...activityIds };
 }
