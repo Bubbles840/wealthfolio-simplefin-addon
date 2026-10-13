@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **A change log.** Every change the sync, the companion and you make to your
+  books is recorded: each import, bank update and removed pending charge;
+  transfer links and transfers held in transit; removed duplicates; starting
+  balances and balance corrections; Amazon labels and filings; card
+  opening-balance filings; categories you set, moved or took off in Telegram;
+  rules you created; accounts you created. `/changes` in Telegram lists the
+  last 7 days (`/changes venmo` searches the last 90 days; background
+  bookkeeping is never matched), and **Settings → Change log** in the app shows
+  the last 90 days (30 by default) with filters. Read-only for now — Undo comes
+  in the next release. Recording can never fail or alter a sync or something
+  you did. A change that could not be saved to the log is reported there as a
+  gap rather than lost silently.
 - **The bot asks instead of making you remember argument order.** Send
   `/newrule` or `/afford` on its own, or tap **Set a new pool** under `/pool`,
   and it asks one question at a time — buttons where there is a choice, and

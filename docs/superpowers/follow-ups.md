@@ -511,6 +511,24 @@ changes what a user sees today.
   still says "reminder 3d"). It cannot fire without a date and resumes when one
   returns. Suggested fix: keep a single Off button while `remind` is set.
 
+## 8. Change log — Record (2026-10-12, plan `2026-10-12-change-log-record.md`)
+
+- **Undo is release R2** (spec Part B). Every R1 entry already carries what its
+  undo needs; deleting a category rule will need a new client method for
+  upstream's `DELETE /api/v1/spending/rules/{id}` — nothing in this codebase
+  calls it yet.
+- **The transfer-learning menu's own ↩ Undo is not logged** (it removes the
+  rule it wrote seconds earlier); the creation is. R2's state check finds the
+  rule gone and refuses cleanly.
+- **A Telegram filing has no account-scoped tx key** (the categorize rows carry
+  no SimpleFin account id). R2 restores the category by activity id; only
+  automatic filings need `noAutoFile`, and those carry the key. An Amazon
+  filing whose account isn't mapped also omits the key.
+- **A corrupt bucket stays until it ages out** (four months) or Reset clears it.
+  A "repair" button would have to decide what in it is real; not worth it yet.
+- **The read-back of a new starting balance or plug costs one activity read**,
+  only when a change log is attached and only on the rare run that writes one.
+
 ## Reference: name mismatches between the database, the REST API, and the SDK
 
 Every one of these cost a diagnostic cycle against the live instance on
