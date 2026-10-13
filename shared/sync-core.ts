@@ -14,6 +14,7 @@ import {
 import type { AmazonLedger } from './amazon-ledger.js';
 import type { ActivityType, SimplefinTransaction, UnmappedAccount } from './types.js';
 import type { ActivityWrite, HoldingsSyncOutcome, HostActivity, ImportRow, LinkLeg, LinkResult, SaveManyRequest, SaveManyResult, SyncHost, SyncStore } from './sync-host.js';
+import { unlinkPairByRecreate, type UnlinkLeg, type UnlinkResult } from './link-pair.js';
 import {
   amazonLabelChange, amazonLabelOf, balanceCorrectionChange, bankUpdateChange, bookkeepingChange, duplicateRemovedChange,
   importChange, pendingRemovedChange, stampChange, startingBalanceChange, startingBalanceMovedChange, transferLinkChange,
@@ -1906,14 +1907,20 @@ async function runSyncPass(
     const prepared: PreparedTx[] = [];
     for (const tx of transactions) {
       const amount = parseFloat(tx.amount);
-      const { type, fromRule, subtype } = mapTransactionWithSource(
-        tx.description, amount, rules, wfTypes.get(wfAccountId),
-      );
+      const key = accountTxKey(sfAccount.id, tx.id);
+      // The person undid a transfer decision on this leg (`notTransfer`):
+      // neither a card-payment keyword nor a mapping rule may type it as a
+      // transfer. It becomes ordinary money in or out, the type a leg whose
+      // other half never arrived takes, and the rule's subtype goes with it.
+      const notTransfer = hasTxOverride(overrides, key, 'notTransfer');
+      const mapped = mapTransactionWithSource(tx.description, amount, rules, wfTypes.get(wfAccountId));
+      const { type, fromRule, subtype } = notTransfer && isTransferType(mapped.type)
+        ? { type: expiredTransferLegType(wfTypes.get(wfAccountId) ?? '', amount), fromRule: false, subtype: undefined }
+        : mapped;
       prepared.push({
         sfAccountId: sfAccount.id, tx, type,
         ...(subtype ? { subtype } : {}),
       });
-      const key = accountTxKey(sfAccount.id, tx.id);
       // Amazon categories go on AFTER typing: `mapTransactionWithSource` above
       // matches the user's merchant rules against the bank's own text, and
       // enriching first would change what those rules see.
@@ -1954,6 +1961,8 @@ async function runSyncPass(
       // Pending transactions are provisional — exclude them from transfer
       // pairing so a not-yet-settled row can't lock in a TRANSFER typing.
       if (tx.pending) continue;
+      // Never paired: pairing would type it a transfer and link it again.
+      if (notTransfer) continue;
       // A rule's type is never overridden by pair detection, which is why ruled
       // rows sit out of it — except a rule that already says "transfer, this way".
       // Pairing assigns that very type, so all it adds is the link; leaving such a
@@ -2202,6 +2211,9 @@ async function runSyncPass(
   }
   /** Overwritten legs this run adopted, re-linked under their own identity after the loop. */
   const overwrittenLegs: Array<{ aliasKey: string; partnerTxId: string; sfAccountId: string }> = [];
+  /** Linked legs carrying `notTransfer`, kept out of their account's plan and
+   *  unlinked — with their partner — after the loop. */
+  const unlinkKeys = new Set<string>();
 
   for (const sfAccount of accountSet.accounts) {
     const wfAccountId = mapping[sfAccount.id];
@@ -2465,14 +2477,22 @@ async function runSyncPass(
     const isLinkedRow = (row: ExistingRow & { sourceGroupId?: string | null }) => readsGroups
       ? !!row.sourceGroupId
       : ledger[accountTxKey(sfAccount.id, row.txId)] !== undefined || ledger[row.txId] !== undefined;
+    // A LINKED leg the person said is not a transfer is unlinked after the
+    // loop, both halves together, and kept out of this plan meanwhile: an
+    // update to one leg of a linked pair is copied onto the other.
+    const unlinking = planExisting.filter((r) => isTransferType(r.type) && isLinkedRow(r)
+      && hasTxOverride(overrides, accountTxKey(sfAccount.id, r.txId), 'notTransfer'));
+    for (const r of unlinking) unlinkKeys.add(accountTxKey(sfAccount.id, r.txId));
+    const unlinkingIds = new Set(unlinking.map((r) => r.wfId));
+    const unlinkingTxIds = new Set(unlinking.map((r) => r.txId));
     const storedByTxId = new Map(planExisting.map((r) => [r.txId, r]));
     const planFeed = feed
-      .filter((t) => !adoptedTxIds.has(t.txId))
+      .filter((t) => !adoptedTxIds.has(t.txId) && !unlinkingTxIds.has(t.txId))
       .map((t) => {
         const row = storedByTxId.get(t.txId);
         return keepLinkedLegAsStored(t, row, !!row && isLinkedRow(row));
       });
-    const plan = planReconciliation(planFeed, planExisting);
+    const plan = planReconciliation(planFeed, planExisting.filter((r) => !unlinkingIds.has(r.wfId)));
 
     // State the post-save drift correction needs (see "windowDelta assumed" below).
     // Captured BEFORE the measurement so a rollback can put the episode ledger back
@@ -3064,7 +3084,10 @@ async function runSyncPass(
           if (to.inTransit && !wasInTransit) {
             logChange(() => transferTypeChange({ ...facts(), activityType: to.type, previousType: stored.type, held: true }));
           } else if (wasInTransit && !to.inTransit && !isTransferType(to.type)) {
-            logChange(() => transferTypeChange({ ...facts(), activityType: to.type, previousType: stored.type, held: false }));
+            logChange(() => transferTypeChange({
+              ...facts(), activityType: to.type, previousType: stored.type, held: false,
+              ...(hasTxOverride(overrides, key, 'notTransfer') ? { undone: true } : {}),
+            }));
           } else if (wasInTransit && !to.inTransit) {
             // A held leg found its other half: the `transfer-link` entry that
             // follows is the record of this (and carries the undo). The row
@@ -3324,6 +3347,65 @@ async function runSyncPass(
       comment,
     };
   };
+
+  // ── Unlink: a linked pair with a leg the person said is not a transfer ──
+  //
+  // Both legs are deleted together and re-created as ordinary money in or out
+  // (`unlinkPairByRecreate`), and every later step this run leaves them alone.
+  // The partner is found the way "already linked?" is answered: the rows'
+  // shared group where the host reads it, the ledger where it cannot. A leg
+  // whose other half is not in view is left linked and reported — deleting one
+  // leg of a pair deletes both, and the unseen half could not be re-created.
+  const unlinkedKeys = new Set<string>();
+  const partnerKeyOf = (key: string, row: LinkableRow): string | null => {
+    const gid = readsGroups ? row.sourceGroupId : (ledger[key] ?? ledger[row.txId]);
+    if (!gid) return null;
+    for (const [k, r] of linkRowByKey) {
+      if (k === key || r.sfAccountId === row.sfAccountId) continue;
+      const same = readsGroups
+        ? r.sourceGroupId === gid
+        : ledger[k] === gid || (r.txId !== row.txId && ledger[r.txId] === gid);
+      if (same) return k;
+    }
+    return null;
+  };
+  for (const key of unlinkKeys) {
+    if (unlinkedKeys.has(key)) continue;
+    const row = linkRowByKey.get(key);
+    if (!row) continue;
+    const partnerKey = partnerKeyOf(key, row);
+    const partner = partnerKey ? linkRowByKey.get(partnerKey) : undefined;
+    unlinkedKeys.add(key);
+    if (!partner || !partnerKey) {
+      errors.push(`Could not unlink ${descByKey.get(key) || descriptionFromComment(row.comment) || row.txId}: its other half is not in this sync — it stays linked for now`);
+      continue;
+    }
+    unlinkedKeys.add(partnerKey);
+    const leg = (r: LinkableRow): UnlinkLeg => {
+      const base = toLinkLeg(r);
+      const signed = r.type === 'TRANSFER_OUT' ? -r.absCents : r.absCents;
+      return { ...base, newType: expiredTransferLegType(wfTypes.get(r.wfAccountId) ?? '', signed) };
+    };
+    let result: UnlinkResult;
+    try {
+      result = await unlinkPairByRecreate((req) => host.saveMany(req), [leg(row), leg(partner)]);
+    } catch (e: any) {
+      result = { unlinked: false, problems: [String(e?.message ?? e)] };
+    }
+    if (!result.unlinked) {
+      for (const p of result.problems ?? []) errors.push(`Transfer-unlink failed (${row.txId}/${partner.txId}): ${p}`);
+      continue;
+    }
+    if (!readsGroups) {
+      const gid = ledger[key] ?? ledger[row.txId];
+      for (const [k, r] of [[key, row], [partnerKey, partner]] as const) {
+        if (k in ledger) { delete ledger[k]; ledgerChanged = true; }
+        if (r.txId in ledger && ledger[r.txId] === gid) { delete ledger[r.txId]; ledgerChanged = true; }
+      }
+    }
+    logChange?.(() => bookkeepingChange({ step: 'transfer-unlink', activityIds: result.activityIds ?? [row.wfId, partner.wfId] }));
+  }
+
   for (const { out, in: inLeg } of detection.pairs) {
     // Resolved per (account, tx id). When SimpleFin gave both sides of the
     // transfer ONE id these two keys still differ — by account — which is what
@@ -3367,6 +3449,8 @@ async function runSyncPass(
       .find((key) => linkRowByKey.has(key));
     const partner = partnerKey ? linkRowByKey.get(partnerKey) : undefined;
     if (!alias || !partner || !partnerKey || queuedKeys.has(aliasKey) || queuedKeys.has(partnerKey)) continue;
+    // A leg the person said is not a transfer is never linked again.
+    if ([aliasKey, partnerKey].some((k) => unlinkedKeys.has(k) || hasTxOverride(overrides, k, 'notTransfer'))) continue;
     const opposite = new Set([alias.type, partner.type]);
     if (!opposite.has('TRANSFER_IN') || !opposite.has('TRANSFER_OUT')) continue;
     if (alias.absCents !== partner.absCents || alias.wfAccountId === partner.wfAccountId) continue;
@@ -3550,7 +3634,7 @@ async function runSyncPass(
   const relinkCreates: ActivityWrite[] = [];
   const staleLegIds: string[] = [];
   for (const [key, row] of linkRowByKey) {
-    if (!isTransferType(row.type) || !row.assetId || linkedKeys.has(key)) continue;
+    if (!isTransferType(row.type) || !row.assetId || linkedKeys.has(key) || unlinkedKeys.has(key)) continue;
     staleLegIds.push(row.wfId);
     relinkCreates.push({
       accountId: row.wfAccountId,
