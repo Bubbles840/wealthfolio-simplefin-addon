@@ -324,6 +324,15 @@ describe('runChangeUndo', () => {
       expect(h.fh.activities.get('wf-a')).toEqual([]);
     });
 
+    it('a linked half that kept a placeholder note (its promotion was refused, then it was linked) is refused, writing nothing', async () => {
+      const h = addon(outRow({ comment: `${IN_TRANSIT_COMMENT_PREFIX}AMAZON.COM*MB3T81 · tx-out` }), inRow());
+      expect(await h.undo(importedOut, 'undo')).toEqual({ ok: false, message: UNDO_MAYBE_LINKED });
+      expect(h.set).not.toHaveBeenCalled();
+      expect(h.fh.saved).toEqual([]);
+      expect(h.fh.activities.get('wf-a')).toHaveLength(1);
+      expect(h.fh.activities.get('wf-b')).toHaveLength(1);
+    });
+
     it('the companion reads the group off the row, so an unlinked transfer-typed row is never "maybe"', async () => {
       const h = harness(seedWith([outRow({ sourceGroupId: null })]));
       expect(await h.undo(importedOut, 'undo')).toMatchObject({ ok: true });
@@ -340,6 +349,9 @@ describe('runChangeUndo', () => {
     expect(maybeLinkedTransfer({ ...base, activityType: 'WITHDRAWAL' })).toBe(false);
     expect(maybeLinkedTransfer({ ...base, metadata: '{"flow":{"is_external":true}}' })).toBe(false);
     expect(maybeLinkedTransfer({ ...base, comment: `${IN_TRANSIT_COMMENT_PREFIX}ZELLE TO J SMITH · tx-1` })).toBe(false);
+    // A placeholder note on a row a link wrote (`is_external: false`) is not a placeholder.
+    expect(maybeLinkedTransfer({ ...base, comment: `${IN_TRANSIT_COMMENT_PREFIX}ZELLE TO J SMITH · tx-1`, metadata: '{"flow":{"is_external":false}}' })).toBe(true);
+    expect(maybeLinkedTransfer({ ...base, comment: `${IN_TRANSIT_COMMENT_PREFIX}ZELLE TO J SMITH · tx-1`, metadata: '{"flow":{"is_external":true}}' })).toBe(false);
     expect(maybeLinkedTransfer({ ...base, comment: `${STARTING_BALANCE_COMMENT_PREFIX}sfin-1` })).toBe(false);
     expect(maybeLinkedTransfer({ ...base, comment: `${BALANCE_ADJUSTMENT_COMMENT_PREFIX}sfin-1 · 2026-10-12` })).toBe(false);
   });
