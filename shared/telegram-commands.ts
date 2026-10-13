@@ -14,6 +14,7 @@ import type { GlyphStyle } from './telegram.js';
 // second copy of the `Name (Parent)` rule is how the preview and the miss reply
 // would come to disagree about which category they are talking about.
 import { categoryDisplayName } from './categorize-menu.js';
+import { rollForward, type Cadence } from './subscription-roster.js';
 
 export interface ParsedCommand {
   /** Lowercased, without the slash: 'report', 'left', … */
@@ -59,13 +60,15 @@ export const TELEGRAM_COMMAND_MENU = [
  *  otherwise, and a reader who does not know about `/recategorize venmo`
  *  scrolls 90 days of history by hand.
  *  Since 1.60 the bare form of `/afford`, `/pool` and `/newrule` asks for what
- *  it needs; the example still shows the one-line shortcut. */
+ *  it needs; the example still shows the one-line shortcut.
+ *  `/subscriptions` (1.60) takes no arguments; everything happens on its buttons. */
 export const TELEGRAM_MORE_COMMANDS = [
   { command: 'afford', description: 'Can I afford it? — asks, or /afford 20 shopping' },
   { command: 'pool', description: 'Semester money pool — asks, or /pool 16000 Dec 12' },
   { command: 'recategorize', description: 'Move a filed transaction — /recategorize venmo narrows it' },
   { command: 'newrule', description: 'Always file a match — asks, or /newrule trader joes = groceries' },
   { command: 'dismissed', description: 'What you dismissed lately, with Undo' },
+  { command: 'subscriptions', description: 'Subscriptions and bills — remind, rename, hide, or add one' },
 ] as const;
 
 export function formatHelpReply(unknownCommand?: string): string {
@@ -678,6 +681,39 @@ export function nextOccurrence(iso: string, today: string): string {
   if (iso >= today) return iso;
   const [y, m, d] = iso.split('-').map((n) => parseInt(n, 10));
   return poolDateString(y + 1, m - 1, d) ?? poolDateString(y + 1, m - 1, d - 1)!;
+}
+
+/** Hints shared by the bot's add/rename questions and the app's add form,
+ *  so the two refuse the same input with the same words. */
+export const SUB_NAME_HINT = 'Type a name, up to 40 characters.';
+export const SUB_AMOUNT_HINT = "Couldn't read that as an amount — try 9.99.";
+export const SUB_DATE_HINT = "Couldn't read that date — try Oct 20 or 2026-10-20.";
+
+/** A subscription's name: trimmed, inner runs of spaces collapsed, 1–40 characters. */
+export function parseSubscriptionName(text: string): string | null {
+  const name = (text ?? '').trim().replace(/\s+/g, ' ');
+  return name.length >= 1 && name.length <= 40 ? name : null;
+}
+
+/**
+ * A subscription's next charge date. A past date means its next occurrence
+ * by the cadence (monthly rolls by months, yearly by years), counted from
+ * what was typed so a 31st stays a 31st. "Feb 29" in a year without one is
+ * Feb 28 (R2-4) — parseDateInput refuses it, so it is caught here.
+ */
+export function parseSubscriptionDate(text: string, _now: Date, cadence: Cadence, today: string): string | null {
+  // The reader's LOCAL day drives "today", "tomorrow" and the year of a
+  // month-day: hand parseDateInput a clock whose UTC parts are `today`'s.
+  const [y, m, d] = today.split('-').map((n) => parseInt(n, 10));
+  const local = new Date(Date.UTC(y, m - 1, d));
+  let parsed = parseDateInput(text, local);
+  if (parsed === null) {
+    const md = (text ?? '').trim().toLowerCase().match(/^([a-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?$/);
+    if (md && md[1].startsWith('feb') && Number(md[2]) === 29) {
+      parsed = { iso: `${y}-02-28`, form: 'month-day' };
+    }
+  }
+  return parsed === null ? null : rollForward(parsed.iso, cadence, today);
 }
 
 /**

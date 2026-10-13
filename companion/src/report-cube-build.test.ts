@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { buildReportCube, type CubeBuildDeps } from './report-cube-build.js';
 import { parseReportCube, REPORT_CUBE_MAX_BYTES } from '../../shared/report-cube.js';
+import { emptySubscriptionPrefs } from '../../shared/subscription-prefs.js';
 
 /** All-fake deps, like pool-report.test.ts: this module is DI end to end. */
 const deps = (over: Partial<CubeBuildDeps> = {}): CubeBuildDeps => ({
@@ -78,6 +79,9 @@ describe('buildReportCube', () => {
     expect(cube.subscriptions).toEqual([{
       name: 'NETFLIX.COM', monthlyCents: 1549, count: 3,
       lastDate: '2026-08-26', lastCents: 1549, prevCents: 1549, creep: false, kind: 'subscription',
+      recent: [
+        { date: '2026-08-26', cents: 1549 }, { date: '2026-07-29', cents: 1549 }, { date: '2026-07-01', cents: 1549 },
+      ],
     }]);
   });
 
@@ -187,5 +191,32 @@ describe('buildReportCube', () => {
   it('round-trips through parseReportCube', async () => {
     const cube = await buildReportCube(deps(), NOW, 2);
     expect(parseReportCube(JSON.stringify(cube))).toEqual(cube);
+  });
+});
+
+describe('link suggestions in the cube (1.60)', () => {
+  const hulu = { id: 'hulu0001', name: 'Hulu', cents: 999, cadence: 'monthly' as const, nextDate: '2026-09-20' };
+  const huluRows = () => [
+    { month: '2026-08', date: '2026-08-19', notes: 'HULU 877-824-4858 · TRN-41', amount: 9.99 },
+    { month: '2026-08', date: '2026-08-21', notes: 'CHIPOTLE 1234 · TRN-42', amount: 14.5 },
+  ];
+
+  it("publishes the hand-added entries' link suggestions from the dated charges", async () => {
+    const cube = await buildReportCube(deps({
+      merchantRows: vi.fn(huluRows),
+      subscriptionPrefs: vi.fn(async () => ({ ...emptySubscriptionPrefs(), manual: [hulu] })),
+    }), NOW, 2);
+    expect(cube.subscriptionLinks).toEqual([{ manualId: 'hulu0001', merchant: 'HULU', date: '2026-08-19', cents: 999 }]);
+    expect(parseReportCube(JSON.stringify(cube))?.subscriptionLinks).toEqual(cube.subscriptionLinks);
+  });
+
+  it('publishes null without the binding or when reading the prefs fails — the cube still builds', async () => {
+    expect((await buildReportCube(deps({ merchantRows: vi.fn(huluRows) }), NOW, 2)).subscriptionLinks).toBeNull();
+    const failing = await buildReportCube(deps({
+      merchantRows: vi.fn(huluRows),
+      subscriptionPrefs: vi.fn(async () => { throw new Error('down'); }),
+    }), NOW, 2);
+    expect(failing.subscriptionLinks).toBeNull();
+    expect(failing.months).toHaveLength(2);
   });
 });

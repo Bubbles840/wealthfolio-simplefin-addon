@@ -1,8 +1,9 @@
 import React from 'react';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { SyncPage } from '../pages/SyncPage';
 import { CUBE } from '../../shared/report-cube.test';
+import { emptySubscriptionPrefs, hideKey, SubscriptionPrefsInvalidError, SubscriptionPrefsUnreadableError, type SubscriptionEdit, type SubscriptionPrefs } from '../../shared/subscription-prefs';
 
 /**
  * Integration-level through SyncPage, like every other tab's suite: the page
@@ -115,6 +116,21 @@ const makeProps = () => ({
 
 const reportIds = () =>
   Array.from(document.querySelectorAll('[data-report-id]')).map((n) => n.getAttribute('data-report-id'));
+
+/** The store's subscription half over one in-memory document. The real
+ *  re-read-before-write lives in SecretsStore (pinned in secrets.test.ts);
+ *  `elsewhere` stands in for a write from Telegram after the page loaded. */
+const subscriptionStore = (initial: Partial<SubscriptionPrefs> = {}) => {
+  let doc: SubscriptionPrefs = { ...emptySubscriptionPrefs(), ...initial };
+  return {
+    getSubscriptionPrefs: vi.fn(async () => ({ prefs: doc, unreadable: false })),
+    editSubscriptionPrefs: vi.fn(async (edit: SubscriptionEdit) => { doc = edit(doc); return doc; }),
+    elsewhere: (edit: SubscriptionEdit) => { doc = edit(doc); },
+    current: () => doc,
+  };
+};
+const withSubscriptions = (props: ReturnType<typeof makeProps>, subs: ReturnType<typeof subscriptionStore>) =>
+  Object.assign(props.store, { getSubscriptionPrefs: subs.getSubscriptionPrefs, editSubscriptionPrefs: subs.editSubscriptionPrefs });
 
 
 /** Customize mode gives each card ONE ⋯ button (1.57); its actions live in the
@@ -578,26 +594,167 @@ describe('layout reset, hide undo, pool editing', () => {
   });
 });
 
-describe('subscription dismissals end to end', () => {
-  it('dismissing on the card persists the name and drops the row', async () => {
+describe('subscription edits end to end', () => {
+  beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date(2026, 9, 12, 9, 0, 0)); });
+  afterEach(() => { vi.useRealTimers(); });
+  const det = (name: string, over: Record<string, unknown> = {}) => ({
+    name, monthlyCents: 1099, count: 5, lastDate: '2026-09-20', lastCents: 1099, creep: false, kind: 'subscription', ...over,
+  });
+  const withCube = (props: ReturnType<typeof makeProps>, subscriptions: unknown[]) => {
+    (props.store as any).getReportCube = vi.fn(async () => ({ ...CUBE, asOf: new Date().toISOString(), subscriptions }));
+  };
+
+  it('hiding on the card is ONE edit through the store, and the row goes', async () => {
     const props = makeProps();
-    (props.store as any).getReportCube = vi.fn(async () => ({
-      ...CUBE,
-      asOf: new Date().toISOString(),
-      subscriptions: [
-        { name: 'SPOTIFY', monthlyCents: 1099, count: 5, lastDate: '2026-08-20', lastCents: 1099, creep: false },
-        { name: 'QR LIBRARY', monthlyCents: 999, count: 4, lastDate: '2026-08-22', lastCents: 999, creep: false },
-      ],
-    }));
-    (props.store as any).getHiddenSubscriptions = vi.fn(async () => []);
-    (props.store as any).setHiddenSubscriptions = vi.fn(async () => {});
+    const subs = subscriptionStore();
+    withSubscriptions(props, subs);
+    withCube(props, [det('SPOTIFY'), det('QR LIBRARY', { monthlyCents: 999, lastCents: 999 })]);
     render(<SyncPage {...props} />);
     await waitFor(() => expect(reportIds().length).toBeGreaterThan(0));
 
-    fireEvent.click(screen.getByRole('button', { name: 'Dismiss QR LIBRARY' }));
-    expect((props.store as any).setHiddenSubscriptions).toHaveBeenCalledWith(['QR LIBRARY']);
-    await waitFor(() => expect(screen.queryByText('QR LIBRARY')).toBeNull());
-    expect(screen.getByText('SPOTIFY')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'QR LIBRARY' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Hide QR LIBRARY' }));
+    // The page queues edits, so the store call starts a microtask later.
+    await waitFor(() => expect(subs.current().hidden).toEqual(['QR LIBRARY']));
+    expect(subs.editSubscriptionPrefs).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'QR LIBRARY' })).toBeNull());
+    expect(screen.getByRole('button', { name: 'SPOTIFY' })).toBeInTheDocument();
+  });
+
+  it('the card follows what was WRITTEN — a hide made from Telegram since the page loaded comes along', async () => {
+    const props = makeProps();
+    const subs = subscriptionStore();
+    withSubscriptions(props, subs);
+    withCube(props, [det('SPOTIFY'), det('QR LIBRARY', { monthlyCents: 999, lastCents: 999 }), det('NETFLIX', { monthlyCents: 1549, lastCents: 1549 })]);
+    render(<SyncPage {...props} />);
+    await waitFor(() => expect(reportIds().length).toBeGreaterThan(0));
+
+    subs.elsewhere((p) => hideKey(p, 'NETFLIX'));
+    fireEvent.click(screen.getByRole('button', { name: 'QR LIBRARY' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Hide QR LIBRARY' }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'NETFLIX' })).toBeNull());
+  });
+
+  it('the Subscriptions card ignores the range chip — a watched price from an older month still shows', async () => {
+    const props = makeProps();
+    const subs = subscriptionStore({ confirmed: ['OLD CO'] });
+    withSubscriptions(props, subs);
+    const n = 5;
+    const base = { ...CUBE, asOf: new Date().toISOString(), subscriptions: [det('SPOTIFY')] };
+    (props.store as any).getReportCube = vi.fn(async () => ({
+      ...base,
+      months: Array.from({ length: n }, (_, i) => `2026-${String(i + 5).padStart(2, '0')}`),
+      spend: Array.from({ length: n }, () => CUBE.spend[0]),
+      uncategorized: Array.from({ length: n }, () => CUBE.uncategorized[0]),
+      income: Array.from({ length: n }, () => CUBE.income[0]),
+      budgets: Array.from({ length: n }, () => CUBE.budgets[0]),
+      merchants: Array.from({ length: n }, (_, i) => (i === 3 ? [{ name: 'OLD CO', cents: 700, count: 1 }] : [])),
+      feesInterest: Array.from({ length: n }, () => 0),
+      netWorth: Array.from({ length: n }, () => null),
+      liquid: Array.from({ length: n }, () => null),
+    }));
+    render(<SyncPage {...props} />);
+    await waitFor(() => expect(reportIds().length).toBeGreaterThan(0));
+    const row = () => screen.getByRole('button', { name: 'OLD CO' }).closest('.sfin-subs-row')!.textContent;
+    await waitFor(() => expect(row()).toContain('$7'));
+    fireEvent.click(screen.getByRole('button', { name: /^Month$/ }));
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Month$/ })).toHaveAttribute('aria-pressed', 'true'));
+    expect(row()).toContain('$7');
+  });
+
+  it('a maybe answered Yes joins the roster', async () => {
+    const props = makeProps();
+    const subs = subscriptionStore();
+    withSubscriptions(props, subs);
+    withCube(props, [det('MYSTERY BOX', { monthlyCents: 1500, lastCents: 1500, count: 2, kind: 'possible' })]);
+    render(<SyncPage {...props} />);
+    await waitFor(() => expect(reportIds().length).toBeGreaterThan(0));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Yes, MYSTERY BOX is a subscription' }));
+    await waitFor(() => expect(subs.current().confirmed).toEqual(['MYSTERY BOX']));
+    await waitFor(() => expect(screen.queryByText(/is this a subscription\?/i)).toBeNull());
+    expect(screen.getByText(/\$15\/mo across 1/)).toBeInTheDocument();
+  });
+
+  it('two quick edits both land — the page queues them, so the second does not undo the first', async () => {
+    vi.useRealTimers();
+    // Reads at the START and writes after a delay: unqueued, both edits read
+    // the same document and the later write drops the earlier hide.
+    let doc: SubscriptionPrefs = emptySubscriptionPrefs();
+    const props = makeProps();
+    Object.assign(props.store, {
+      getSubscriptionPrefs: vi.fn(async () => ({ prefs: doc, unreadable: false })),
+      editSubscriptionPrefs: vi.fn(async (edit: SubscriptionEdit) => {
+        const next = edit(doc);
+        await new Promise((r) => setTimeout(r, 20));
+        doc = next;
+        return doc;
+      }),
+    });
+    withCube(props, [det('SPOTIFY'), det('QR LIBRARY', { monthlyCents: 999, lastCents: 999 }), det('NETFLIX', { monthlyCents: 1549, lastCents: 1549 })]);
+    render(<SyncPage {...props} />);
+    await waitFor(() => expect(reportIds().length).toBeGreaterThan(0));
+
+    fireEvent.click(screen.getByRole('button', { name: 'QR LIBRARY' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Hide QR LIBRARY' }));
+    fireEvent.click(screen.getByRole('button', { name: 'NETFLIX' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Hide NETFLIX' }));
+    await waitFor(() => expect([...doc.hidden].sort()).toEqual(['NETFLIX', 'QR LIBRARY']));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'QR LIBRARY' })).toBeNull());
+    expect(screen.queryByRole('button', { name: 'NETFLIX' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'SPOTIFY' })).toBeInTheDocument();
+  });
+
+  it('an invalid edit changes nothing — the entry stays, no notice, and the next action still works', async () => {
+    const props = makeProps();
+    let calls = 0;
+    const editSubscriptionPrefs = vi.fn(async (edit: SubscriptionEdit) => {
+      calls += 1;
+      if (calls === 1) throw new SubscriptionPrefsInvalidError();
+      return edit(emptySubscriptionPrefs());
+    });
+    Object.assign(props.store, {
+      getSubscriptionPrefs: vi.fn(async () => ({ prefs: emptySubscriptionPrefs(), unreadable: false })),
+      editSubscriptionPrefs,
+    });
+    withCube(props, [det('SPOTIFY'), det('NETFLIX', { monthlyCents: 1549, lastCents: 1549 })]);
+    render(<SyncPage {...props} />);
+    await waitFor(() => expect(reportIds().length).toBeGreaterThan(0));
+
+    fireEvent.click(screen.getByRole('button', { name: 'SPOTIFY' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Hide SPOTIFY' }));
+    await waitFor(() => expect(editSubscriptionPrefs).toHaveBeenCalledTimes(1));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(editSubscriptionPrefs).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText(/Couldn't read your subscription settings/)).toBeNull();
+    expect(screen.getByRole('button', { name: 'SPOTIFY' })).toBeInTheDocument();
+
+    // A second action goes through: the queue and the catch did not wedge.
+    fireEvent.click(screen.getByRole('button', { name: 'NETFLIX' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Hide NETFLIX' }));
+    await waitFor(() => expect(editSubscriptionPrefs).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'NETFLIX' })).toBeNull());
+    expect(screen.getByRole('button', { name: 'SPOTIFY' })).toBeInTheDocument();
+  });
+
+  it('a document found corrupt on write: the card says so and stops offering changes', async () => {
+    // Readable when the page loaded, corrupt by the time of the edit (another
+    // writer, a partial write): SyncPage's refusal path, not the load path.
+    const props = makeProps();
+    Object.assign(props.store, {
+      getSubscriptionPrefs: vi.fn(async () => ({ prefs: emptySubscriptionPrefs(), unreadable: false })),
+      editSubscriptionPrefs: vi.fn(async () => { throw new SubscriptionPrefsUnreadableError(); }),
+    });
+    withCube(props, [det('SPOTIFY')]);
+    render(<SyncPage {...props} />);
+    await waitFor(() => expect(reportIds().length).toBeGreaterThan(0));
+
+    fireEvent.click(screen.getByRole('button', { name: 'SPOTIFY' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Hide SPOTIFY' }));
+    expect(await screen.findByText(/Couldn't read your subscription settings/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'SPOTIFY' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'SPOTIFY' }));
+    expect(screen.queryByRole('button', { name: 'Hide SPOTIFY' })).toBeNull();
   });
 });
 
@@ -623,31 +780,6 @@ describe('drag ghost (v1.36)', () => {
 
     fireEvent.pointerUp(cell, { pointerId: 1, clientX: 340, clientY: 420 });
     expect(document.querySelector('.sfin-drag-ghost')).toBeNull();
-  });
-});
-
-describe('subscription confirmation end to end', () => {
-  it('answering Yes persists the name and moves it into the roster', async () => {
-    const props = makeProps();
-    (props.store as any).getReportCube = vi.fn(async () => ({
-      ...CUBE,
-      asOf: new Date().toISOString(),
-      subscriptions: [
-        { name: 'RENT LLC', monthlyCents: 90000, count: 6, lastDate: '2026-08-25', lastCents: 90000, creep: false, kind: 'bill' },
-      ],
-    }));
-    (props.store as any).getHiddenSubscriptions = vi.fn(async () => []);
-    (props.store as any).setHiddenSubscriptions = vi.fn(async () => {});
-    (props.store as any).getConfirmedSubscriptions = vi.fn(async () => []);
-    (props.store as any).setConfirmedSubscriptions = vi.fn(async () => {});
-    render(<SyncPage {...props} />);
-    await waitFor(() => expect(reportIds().length).toBeGreaterThan(0));
-
-    expect(screen.getByText(/is this a subscription\?/i)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Yes, RENT LLC is a subscription' }));
-    expect((props.store as any).setConfirmedSubscriptions).toHaveBeenCalledWith(['RENT LLC']);
-    await waitFor(() => expect(screen.queryByText(/is this a subscription\?/i)).toBeNull());
-    expect(screen.getByText(/\$900\.00\/mo across 1/)).toBeInTheDocument();
   });
 });
 

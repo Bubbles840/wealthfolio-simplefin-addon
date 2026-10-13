@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { createHmac } from 'node:crypto';
 import { handleReportsRequest, type ReportsServerDeps } from './reports-server.js';
 import { CUBE } from '../../shared/report-cube.test';
+import { emptySubscriptionPrefs } from '../../shared/subscription-prefs.js';
 
 const TOKEN = '12345:TEST-TOKEN';
 const NOW = new Date('2026-09-02T22:00:00Z');
@@ -24,8 +25,7 @@ const deps = (over: Partial<ReportsServerDeps> = {}): ReportsServerDeps => ({
   readLayout: vi.fn(async () => null),
   writeLayout: vi.fn(async () => {}),
   readCustomReports: vi.fn(async () => []),
-  readHiddenSubscriptions: vi.fn(async () => []),
-  readConfirmedSubscriptions: vi.fn(async () => []),
+  readSubscriptionPrefs: vi.fn(async () => emptySubscriptionPrefs()),
   now: () => NOW,
   ...over,
 });
@@ -97,6 +97,27 @@ describe('the board on the phone (v1.46)', () => {
     });
     const res = await handleReportsRequest(d, { method: 'POST', path: '/page', body: pageBody() });
     expect(res.body).toContain('Food money');
+  });
+
+  it('renders subscriptions from the roster: renames, hides, bills apart, the card\'s total', async () => {
+    const d = deps({
+      readCube: vi.fn(async () => ({ ...CUBE, subscriptions: [
+        { name: 'SPOTIFY', monthlyCents: 1099, count: 5, lastDate: '2026-08-20', lastCents: 1099, creep: false, kind: 'subscription' },
+        { name: 'LG&E', monthlyCents: 6149, count: 6, lastDate: '2026-08-28', lastCents: 6149, creep: false, kind: 'bill' },
+        { name: 'QR LIBRARY', monthlyCents: 499, count: 4, lastDate: '2026-08-22', lastCents: 499, creep: false, kind: 'subscription' },
+      ] } as never)),
+      readSubscriptionPrefs: vi.fn(async () => ({
+        ...emptySubscriptionPrefs(),
+        names: { SPOTIFY: 'Spotify' },
+        hidden: ['QR LIBRARY'],
+        manual: [{ id: 'dom00001', name: 'Domain', cents: 9900, cadence: 'yearly' as const, nextDate: '2027-03-03' }],
+      })),
+    });
+    const res = await handleReportsRequest(d, { method: 'POST', path: '/page', body: pageBody() });
+    expect(res.body).toContain('<span>Spotify</span><span>$10.99/mo</span>');
+    expect(res.body).not.toContain('QR LIBRARY');
+    expect(res.body).toContain('$10.99/mo + $99/yr across 2');
+    expect(res.body).toContain('<span>LG&amp;E</span><span>about $61/mo</span>');
   });
 
   it('renders merchants and subscriptions as readable rows', async () => {

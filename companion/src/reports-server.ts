@@ -19,13 +19,17 @@
 import { validateInitData } from './miniapp-auth.js';
 import { sliceCubeMonths, type ReportCube } from '../../shared/report-cube.js';
 import {
-  headlineStatValues, DEFAULT_HEADLINE_IDS, merchantTable, subscriptionSummary, dataCheckResult,
+  headlineStatValues, DEFAULT_HEADLINE_IDS, merchantTable, dataCheckResult,
 } from '../../shared/report-data.js';
 import { renderReportSvg, renderCustomReportSvg, reportImageTitle, RENDERABLE_REPORT_IDS } from '../../shared/report-render.js';
 import {
   resolveBoard, moveCardReading, toggleHidden, STANDARD_REPORT_IDS, POOL_ONLY_REPORT_IDS, type BudgetLayout,
 } from '../../shared/budget-layout.js';
 import { evaluateCustomReport, type CustomReport } from '../../shared/report-eval.js';
+import type { SubscriptionPrefs } from '../../shared/subscription-prefs.js';
+import {
+  aboutDollars, buildRoster, formatRosterTotal, localIsoDay, rosterPrice, type RosterEntry,
+} from '../../shared/subscription-roster.js';
 
 export interface ReportsServerDeps {
   botToken(): Promise<string | null>;
@@ -36,8 +40,8 @@ export interface ReportsServerDeps {
   readLayout(): Promise<BudgetLayout | null>;
   writeLayout(next: BudgetLayout): Promise<void>;
   readCustomReports(): Promise<CustomReport[]>;
-  readHiddenSubscriptions(): Promise<string[]>;
-  readConfirmedSubscriptions(): Promise<string[]>;
+  /** The subscription document the card and the bot edit (1.60). */
+  readSubscriptionPrefs(): Promise<SubscriptionPrefs>;
   now?: () => Date;
 }
 
@@ -95,8 +99,9 @@ interface BoardData {
   range: string;
   layout: BudgetLayout | null;
   customs: CustomReport[];
-  hiddenSubs: string[];
-  confirmedSubs: string[];
+  subscriptionPrefs: SubscriptionPrefs;
+  /** The reader's local day, for next dates. */
+  today: string;
 }
 
 const usd2 = (cents: number) =>
@@ -171,17 +176,21 @@ function dashboardHtml(data: BoardData): string {
       return rows ? section(id, 'Merchants', rows) : '';
     }
     if (id === 'subscriptions') {
-      const res = subscriptionSummary(cube);
-      if (!res) return '';
-      const hiddenSet = new Set(data.hiddenSubs);
-      const confirmedSet = new Set(data.confirmedSubs);
-      const visible = res.subs.filter((sub) => !hiddenSet.has(sub.name));
-      const sure = visible.filter((sub) => (sub.kind ?? 'subscription') === 'subscription' || confirmedSet.has(sub.name));
-      const rows = sure
-        .map((sub) => `<div class="row"><span>${esc(sub.name)}</span><span>${usd2(sub.monthlyCents)}/mo</span></div>`)
-        .join('');
-      const total = sure.reduce((sum, sub) => sum + sub.monthlyCents, 0);
-      return section(id, 'Subscriptions', `${rows}<div class="row total"><span>Total</span><span>${usd2(total)}/mo across ${sure.length}</span></div>`);
+      // The roster, as the card and /subscriptions render it: one filter, three surfaces.
+      const roster = buildRoster({
+        detected: cube.subscriptions ?? null,
+        merchants: cube.merchants,
+        links: cube.subscriptionLinks ?? [],
+        prefs: data.subscriptionPrefs,
+        today: data.today,
+      });
+      if (!roster.detectionAvailable && roster.subscriptions.length === 0) return '';
+      const row = (e: RosterEntry) => `<div class="row"><span>${esc(e.displayName)}</span><span>${esc(rosterPrice(e))}</span></div>`;
+      const total = `<div class="row total"><span>Total</span><span>${formatRosterTotal(roster)} across ${roster.subscriptions.length}</span></div>`;
+      const bills = roster.bills.length > 0
+        ? `<div class="row total"><span>Bills</span><span>about ${aboutDollars(roster.billsMonthlyCents)}/mo</span></div>${roster.bills.map(row).join('')}`
+        : '';
+      return section(id, 'Subscriptions', `${roster.subscriptions.map(row).join('')}${total}${bills}`);
     }
     if (id === 'data-check') {
       const res = dataCheckResult(cube);
@@ -271,8 +280,8 @@ export async function handleReportsRequest(
       contentType: 'text/html; charset=utf-8',
       body: dashboardHtml({
         cube, range, layout, customs,
-        hiddenSubs: await deps.readHiddenSubscriptions(),
-        confirmedSubs: await deps.readConfirmedSubscriptions(),
+        subscriptionPrefs: await deps.readSubscriptionPrefs(),
+        today: localIsoDay(deps.now?.() ?? new Date()),
       }),
     };
   }

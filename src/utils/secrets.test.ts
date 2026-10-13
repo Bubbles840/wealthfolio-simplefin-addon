@@ -4,6 +4,7 @@ import type { MappingRule, AccountMapping } from '../../shared/types';
 import type { UiState } from './secrets';
 import { UNCATEGORIZED_STATUS_SECRET_KEY, AMAZON_MAIL_STATUS_SECRET_KEY, AMAZON_MAIL_SAMPLES_SECRET_KEY } from '../../shared/status-keys';
 import { AMAZON_LABELS_SECRET_KEY } from '../../shared/amazon-config';
+import { hideKey, SubscriptionPrefsUnreadableError } from '../../shared/subscription-prefs';
 
 /** Builds a ctx plus its backing secrets map. `makeCtx` (below) wraps this and
  *  discards the map, for the ~40 call sites that only need the ctx; tests that
@@ -434,5 +435,48 @@ describe('uncategorized rows and dismissals', () => {
     await store.setDismissals({ a: '2026-08-09T00:00:00.000Z' });
     await store.clearAll();
     expect(data['uncategorized_dismissals']).toBeUndefined();
+  });
+});
+
+describe('subscription prefs (1.60)', () => {
+  it('reads the legacy lists while no document exists', async () => {
+    const { ctx, data } = makeCtxWithData();
+    data.hidden_subscriptions = JSON.stringify(['QR LIBRARY']);
+    data.confirmed_subscriptions = JSON.stringify(['RENT LLC']);
+    expect(await new SecretsStore(ctx).getSubscriptionPrefs()).toMatchObject({
+      unreadable: false, prefs: { hidden: ['QR LIBRARY'], confirmed: ['RENT LLC'] },
+    });
+  });
+
+  it('edits by re-reading the stored document — a hide made from Telegram since the page loaded is kept', async () => {
+    const { ctx, data } = makeCtxWithData();
+    data.subscription_prefs = JSON.stringify({ v: 1, hidden: ['NETFLIX'] });
+    const written = await new SecretsStore(ctx).editSubscriptionPrefs((p) => hideKey(p, 'SPOTIFY'));
+    expect(written.hidden).toEqual(['NETFLIX', 'SPOTIFY']);
+    expect(JSON.parse(data.subscription_prefs).hidden).toEqual(['NETFLIX', 'SPOTIFY']);
+    expect(JSON.parse(data.hidden_subscriptions)).toEqual(['NETFLIX', 'SPOTIFY']);
+  });
+
+  it('refuses to overwrite a corrupt document', async () => {
+    const { ctx, data } = makeCtxWithData();
+    data.subscription_prefs = '{"v":1,"hidden":';
+    await expect(new SecretsStore(ctx).editSubscriptionPrefs((p) => hideKey(p, 'SPOTIFY')))
+      .rejects.toBeInstanceOf(SubscriptionPrefsUnreadableError);
+    expect(data.subscription_prefs).toBe('{"v":1,"hidden":');
+  });
+
+  it('reads null, not a guess, when the host read fails', async () => {
+    const ctx = makeCtx();
+    ctx.api.secrets.get.mockRejectedValue(new Error('host down'));
+    expect(await new SecretsStore(ctx).getSubscriptionPrefs()).toBeNull();
+  });
+
+  it("clearAll deletes the subscription document and the companion's news memo", async () => {
+    const { ctx, data } = makeCtxWithData();
+    data.subscription_prefs = '{"v":1}';
+    data.subscription_news_sent = '{}';
+    await new SecretsStore(ctx).clearAll();
+    expect(data.subscription_prefs).toBeUndefined();
+    expect(data.subscription_news_sent).toBeUndefined();
   });
 });

@@ -18,10 +18,14 @@ import type { AccountMapping, MappingRule, UnmappedAccount } from '../../shared/
 import type { DismissalLedger, UncategorizedRow } from '../../shared/uncategorized';
 import type { DriftAlertEntry, TransferLinkFailureEntry } from '../../shared/sync-host';
 import type { SyncResult } from '../../shared/sync-core';
-import { LARGE_TX_OUTBOX_SECRET_KEY } from '../../shared/telegram';
+import { LARGE_TX_OUTBOX_SECRET_KEY, SUBSCRIPTION_NEWS_SECRET_KEY } from '../../shared/telegram';
 import { ADDON_VERSION_SECRET_KEY, INSTALLED_ADDON_VERSION_SECRET_KEY, SIMPLEFIN_SYNC_VERSION } from '../../shared/version';
 import { REFUSED_ALERTED_SECRET_KEY } from '../../shared/refused-alerts';
-import { HIDDEN_SUBSCRIPTIONS_SECRET_KEY, CONFIRMED_SUBSCRIPTIONS_SECRET_KEY, parseHiddenSubscriptions } from '../../shared/subscriptions';
+import { HIDDEN_SUBSCRIPTIONS_SECRET_KEY, CONFIRMED_SUBSCRIPTIONS_SECRET_KEY } from '../../shared/subscriptions';
+import {
+  SUBSCRIPTION_PREFS_SECRET_KEY, editSubscriptionPrefs as editPrefsDocument, loadSubscriptionPrefs,
+  type LoadedSubscriptionPrefs, type SubscriptionEdit, type SubscriptionPrefs,
+} from '../../shared/subscription-prefs';
 
 /** Per-account balance snapshot captured on each sync, for the Sync page. */
 /** One spending category as the companion published it. Mirrors
@@ -141,6 +145,11 @@ const KEYS = {
   dismissals: 'uncategorized_dismissals',
   hiddenSubscriptions: HIDDEN_SUBSCRIPTIONS_SECRET_KEY,
   confirmedSubscriptions: CONFIRMED_SUBSCRIPTIONS_SECRET_KEY,
+  // The subscription document (1.60) has no plain setter — it is only ever
+  // edited through editSubscriptionPrefs — and the companion writes the news
+  // memo beside it. Both are the easy-to-forget shape; Reset must clear them.
+  subscriptionPrefs: SUBSCRIPTION_PREFS_SECRET_KEY,
+  subscriptionNewsSent: SUBSCRIPTION_NEWS_SECRET_KEY,
 } as const;
 
 /** One entry in the shared large-transaction outbox. Derived from `SyncResult`
@@ -790,22 +799,28 @@ export class SecretsStore {
       return null;
     }
   }
-  /** Subscription-card dismissals ("cancelled that already"): merchant names
-   *  filtered out of the roster, the weekly total, and the creep line. */
-  async getHiddenSubscriptions(): Promise<string[]> {
-    return parseHiddenSubscriptions(await this.ctx.api.secrets.get(HIDDEN_SUBSCRIPTIONS_SECRET_KEY));
-  }
-  async setHiddenSubscriptions(names: string[]): Promise<void> {
-    await this.ctx.api.secrets.set(HIDDEN_SUBSCRIPTIONS_SECRET_KEY, JSON.stringify(names));
+  /** The subscription document (shared/subscription-prefs.ts), or the legacy
+   *  lists while none exists. Null when the host read itself fails: the card
+   *  then shows a read-only notice (a real empty document is not null). */
+  async getSubscriptionPrefs(): Promise<LoadedSubscriptionPrefs | null> {
+    try {
+      return await loadSubscriptionPrefs((k) => this.ctx.api.secrets.get(k));
+    } catch {
+      return null;
+    }
   }
 
-  /** "Yes, that IS a subscription" answers from the card — names counted in
-   *  every money total from then on, whatever tier the detector guessed. */
-  async getConfirmedSubscriptions(): Promise<string[]> {
-    return parseHiddenSubscriptions(await this.ctx.api.secrets.get(CONFIRMED_SUBSCRIPTIONS_SECRET_KEY));
-  }
-  async setConfirmedSubscriptions(names: string[]): Promise<void> {
-    await this.ctx.api.secrets.set(CONFIRMED_SUBSCRIPTIONS_SECRET_KEY, JSON.stringify(names));
+  /** One edit, re-read immediately before the write so a change made from
+   *  Telegram since this page loaded is kept; the legacy lists are mirrored.
+   *  Rejects with SubscriptionPrefsUnreadableError, writing nothing, when the
+   *  stored document is corrupt. */
+  async editSubscriptionPrefs(edit: SubscriptionEdit): Promise<SubscriptionPrefs> {
+    return editPrefsDocument(
+      (k) => this.ctx.api.secrets.get(k),
+      (k, v) => this.ctx.api.secrets.set(k, v),
+      edit,
+      new Date(),
+    );
   }
 
   /** Deletes the stored layout so the defaults come back — the Budget tab's

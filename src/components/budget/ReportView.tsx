@@ -10,9 +10,11 @@ import {
   budgetVsActualData, cashFlowData, categoryDonutData, categoryTrendData, cumulativeFlowData,
   feesInterestData, merchantTable, momDeltaData, netWorthData, poolBurndownData, poolPaceData,
   runwayTrendData, savingsRateData, seasonalityGrid, spendCalendarData, uncatTrendData,
-  dataCheckResult, subscriptionSummary, budgetVsActualAvgData,
+  dataCheckResult, budgetVsActualAvgData,
   headlineStatValues, DEFAULT_HEADLINE_IDS, MAX_HEADLINE_STATS,
 } from './report-data';
+import type { LoadedSubscriptionPrefs, SubscriptionEdit } from '../../../shared/subscription-prefs';
+import { SubscriptionsCard } from './SubscriptionsCard';
 
 /**
  * One report, rendered by id — the single dispatch point the hero row, the
@@ -345,223 +347,6 @@ function DataCheck({ cube }: { cube: ReportCube }) {
       <div className="sfin-subtle">
         A ledger-side surplus usually means spending on accounts this addon doesn't sync.
       </div>
-    </div>
-  );
-}
-
-function Subscriptions({ cube, full = false, hidden = [], confirmed = [], onHide, onConfirm, onUnhide, onRestore }: {
-  cube: ReportCube;
-  full?: boolean;
-  hidden?: string[];
-  confirmed?: string[];
-  onHide?: (name: string) => void;
-  onConfirm?: (name: string) => void;
-  onUnhide?: (name: string) => void;
-  onRestore?: () => void;
-}) {
-  const res = subscriptionSummary(cube);
-  if (!res) {
-    return (
-      <div className="sfin-subtle">
-        The companion looks for recurring charges after the next sync.
-      </div>
-    );
-  }
-  // Dismissals filter HERE, not in the cube: the companion keeps publishing
-  // the full detection, so a restore takes effect without waiting for a sync.
-  const hiddenSet = new Set(hidden);
-  const visible = res.subs.filter((sub) => !hiddenSet.has(sub.name));
-  const hiddenCount = res.subs.length - visible.length;
-  // "Watch this one": a confirmed name the detector has no verdict on yet —
-  // one charge so far, or an accidental cancel of something brand new. Priced
-  // from its latest-month charges until the detector takes over.
-  const detectedNames = new Set(res.subs.map((sub) => sub.name));
-  // The last few months of merchants, newest first: on the 2nd of a month the
-  // "current month" is two days deep, and a mid-August charge must still be
-  // watchable and priceable (the live Anthropic miss).
-  const recentMerchants: Array<{ name: string; cents: number; count: number }> = [];
-  const seenMerchant = new Set<string>();
-  for (const monthList of cube.merchants.slice(-3).reverse()) {
-    for (const m of monthList) {
-      if (seenMerchant.has(m.name)) continue;
-      seenMerchant.add(m.name);
-      recentMerchants.push(m);
-    }
-  }
-  const watched = confirmed
-    .filter((name) => !detectedNames.has(name) && !hiddenSet.has(name))
-    .map((name) => {
-      const m = recentMerchants.find((entry) => entry.name === name);
-      return { name, perChargeCents: m && m.count > 0 ? Math.round(m.cents / m.count) : null };
-    });
-
-  if (visible.length === 0 && hiddenCount === 0 && watched.length === 0 && !full) {
-    // The OPEN view keeps going: an empty roster is exactly when "watch a
-    // merchant" is the thing the user came for.
-    return <div className="sfin-subtle">No monthly subscriptions detected — recurring monthly charges would show here.</div>;
-  }
-  // The roster is what the user (or the stable-price rule) has SAID is a
-  // subscription; every other monthly cadence — rent, a utility, a maybe —
-  // is a question below, not a line item. A missing kind is an older
-  // companion's row: a subscription, per the old detector's only meaning.
-  const confirmedSet = new Set(confirmed);
-  const sure = visible.filter((sub) => (sub.kind ?? 'subscription') === 'subscription' || confirmedSet.has(sub.name));
-  const maybes = visible.filter((sub) => !sure.includes(sub));
-  const totalCents = sure.reduce((sum, sub) => sum + sub.monthlyCents, 0)
-    + watched.reduce((sum, w) => sum + (w.perChargeCents ?? 0), 0);
-  const rosterCount = sure.length + watched.length;
-  const [celebrate, setCelebrate] = React.useState<{ name: string; cents: number } | null>(null);
-  const dismiss = (name: string, cents: number) => {
-    setCelebrate({ name, cents });
-    onHide?.(name);
-  };
-  const row = (sub: (typeof visible)[number]) => (
-    <div key={sub.name} className="sfin-subs-row">
-      <span className="sfin-subs-name">{sub.name}</span>
-      <span className="sfin-subs-price">
-        {sub.creep ? (
-          <span className="sfin-subs-creep">{fmt2(sub.lastCents / 100)} ▲ was {fmt2(sub.monthlyCents / 100)}</span>
-        ) : sub.kind === 'bill' && sub.prevCents !== undefined && sub.prevCents !== sub.lastCents ? (
-          <>{fmt2(sub.prevCents / 100)} → {fmt2(sub.lastCents / 100)}/mo</>
-        ) : (
-          <>{fmt2(sub.monthlyCents / 100)}/mo</>
-        )}
-      </span>
-      {onHide && (
-        <button
-          type="button"
-          className="sfin-subs-dismiss"
-          aria-label={`Dismiss ${sub.name}`}
-          title="Not a subscription / cancelled"
-          onClick={() => dismiss(sub.name, sub.monthlyCents)}
-        >
-          ✕
-        </button>
-      )}
-    </div>
-  );
-  return (
-    <div className="sfin-subs">
-      {sure.map(row)}
-      {watched.map((w) => (
-        <div key={w.name} className="sfin-subs-row">
-          <span className="sfin-subs-name">{w.name}</span>
-          <span className="sfin-subs-price">
-            {w.perChargeCents !== null ? <>{fmt2(w.perChargeCents / 100)}/mo · watching</> : <>watching</>}
-          </span>
-          {onHide && (
-            <button
-              type="button"
-              className="sfin-subs-dismiss"
-              aria-label={`Dismiss ${w.name}`}
-              title="Stop watching"
-              onClick={() => dismiss(w.name, w.perChargeCents ?? 0)}
-            >
-              ✕
-            </button>
-          )}
-        </div>
-      ))}
-      {celebrate && (
-        <div className="sfin-subs-celebrate" role="status">
-          🎉 {celebrate.name} cancelled — that&apos;s {fmt2(celebrate.cents / 100)}/mo back in your pocket.
-        </div>
-      )}
-      <div className="sfin-subs-total">{fmt2(totalCents / 100)}/mo across {rosterCount}</div>
-      {maybes.length > 0 && (
-        <>
-          <div className="sfin-subs-maybe-head">Is this a subscription?</div>
-          {maybes.map((sub) => (
-            <div key={sub.name} className="sfin-subs-row">
-              <span className="sfin-subs-name">{sub.name}</span>
-              <span className="sfin-subs-price">
-                {sub.prevCents !== undefined && sub.prevCents !== sub.lastCents
-                  ? <>{fmt2(sub.prevCents / 100)} → {fmt2(sub.lastCents / 100)}/mo</>
-                  : <>{fmt2(sub.lastCents / 100)}/mo</>}
-              </span>
-              {onConfirm && (
-                <button
-                  type="button"
-                  className="sfin-subs-answer"
-                  aria-label={`Yes, ${sub.name} is a subscription`}
-                  title="Count it as a subscription"
-                  onClick={() => onConfirm(sub.name)}
-                >
-                  ✓
-                </button>
-              )}
-              {onHide && (
-                <button
-                  type="button"
-                  className="sfin-subs-answer"
-                  aria-label={`No, ignore ${sub.name}`}
-                  title="Never show this here"
-                  onClick={() => onHide(sub.name)}
-                >
-                  ✕
-                </button>
-              )}
-            </div>
-          ))}
-        </>
-      )}
-      {!full && hiddenCount > 0 && onRestore && (
-        <Button variant="ghost" onClick={onRestore}>
-          {hiddenCount} dismissed — restore
-        </Button>
-      )}
-      {full && (
-        <>
-          {hidden.length > 0 && (
-            <>
-              <div className="sfin-subs-maybe-head">Dismissed</div>
-              {hidden.map((name) => (
-                <div key={name} className="sfin-subs-row sfin-subs-row--muted">
-                  <span className="sfin-subs-name">{name}</span>
-                  {onUnhide && (
-                    <button
-                      type="button"
-                      className="sfin-subs-answer"
-                      aria-label={`Restore ${name}`}
-                      onClick={() => onUnhide(name)}
-                    >
-                      ↩ Restore
-                    </button>
-                  )}
-                </div>
-              ))}
-            </>
-          )}
-          {onConfirm && (() => {
-            const known = new Set([...res.subs.map((sub) => sub.name), ...confirmed, ...hidden]);
-            const watchable = recentMerchants.filter((m) => !known.has(m.name)).slice(0, 12);
-            if (watchable.length === 0) return null;
-            return (
-              <>
-                <div className="sfin-subs-maybe-head">Watch a merchant</div>
-                <div className="sfin-subtle">
-                  One charge so far, or something you know recurs — watching counts it here from now on.
-                </div>
-                {watchable.map((m) => (
-                  <div key={m.name} className="sfin-subs-row sfin-subs-row--muted">
-                    <span className="sfin-subs-name">{m.name}</span>
-                    <span className="sfin-subs-price">{fmt2(m.cents / Math.max(1, m.count) / 100)}</span>
-                    <button
-                      type="button"
-                      className="sfin-subs-answer"
-                      aria-label={`Watch ${m.name}`}
-                      title="Treat as a subscription"
-                      onClick={() => onConfirm(m.name)}
-                    >
-                      + Watch
-                    </button>
-                  </div>
-                ))}
-              </>
-            );
-          })()}
-        </>
-      )}
     </div>
   );
 }
@@ -924,9 +709,8 @@ function CustomView({ cube, def }: { cube: ReportCube; def: CustomReport }) {
 
 export function ReportView({
   id, cube, customReports, hero = false, categories, density = 2,
-  hiddenSubscriptions, confirmedSubscriptions, onHideSubscription, onConfirmSubscription,
-  onUnhideSubscription, onRestoreSubscriptions, headlinePicks, onHeadlinePicksChange,
-  onDrill, onOpenActivities,
+  headlinePicks, onHeadlinePicksChange,
+  onDrill, onOpenActivities, subscriptionPrefs, onSubscriptionEdit, subscriptionsCube, companionStale, onSetUpCompanion,
 }: {
   id: string;
   cube: ReportCube;
@@ -937,13 +721,6 @@ export function ReportView({
   /** The card's row span (1–4): list-reports budget their rows to it so a
    *  compact card trims itself instead of clipping. */
   density?: number;
-  /** Subscriptions-card answers; the card is read-only without handlers. */
-  hiddenSubscriptions?: string[];
-  confirmedSubscriptions?: string[];
-  onHideSubscription?: (name: string) => void;
-  onConfirmSubscription?: (name: string) => void;
-  onUnhideSubscription?: (name: string) => void;
-  onRestoreSubscriptions?: () => void;
   /** Headline card: which stats to show (1–5 catalog ids) and the editor. */
   headlinePicks?: string[];
   onHeadlinePicksChange?: (ids: string[]) => void;
@@ -951,6 +728,15 @@ export function ReportView({
   onDrill?: (category: string) => void;
   /** The escape hatch out of a drill view into Wealthfolio's activities. */
   onOpenActivities?: () => void;
+  /** The subscription document and its one edit path; the card is read-only without the edit. */
+  subscriptionPrefs?: LoadedSubscriptionPrefs | null;
+  onSubscriptionEdit?: (edit: SubscriptionEdit) => void;
+  /** The UNSLICED cube for the Subscriptions card, so its totals do not follow
+   *  the range chip and match Telegram's. */
+  subscriptionsCube?: ReportCube;
+  /** The cube is over two days old (BudgetTab's STALE_MS). */
+  companionStale?: boolean;
+  onSetUpCompanion?: () => void;
 }) {
   let body: React.ReactNode;
   if (id.startsWith('drill:')) {
@@ -982,15 +768,13 @@ export function ReportView({
       case 'data-check': body = <DataCheck cube={cube} />; break;
       case 'subscriptions':
         body = (
-          <Subscriptions
-            cube={cube}
+          <SubscriptionsCard
+            cube={subscriptionsCube ?? cube}
             full={hero}
-            hidden={hiddenSubscriptions}
-            confirmed={confirmedSubscriptions}
-            onHide={onHideSubscription}
-            onConfirm={onConfirmSubscription}
-            onUnhide={onUnhideSubscription}
-            onRestore={onRestoreSubscriptions}
+            subscriptionPrefs={subscriptionPrefs}
+            onSubscriptionEdit={onSubscriptionEdit}
+            companionStale={companionStale}
+            onSetUpCompanion={onSetUpCompanion}
           />
         );
         break;

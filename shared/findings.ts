@@ -85,23 +85,8 @@ export function withSnooze(snoozes: FindingSnoozes, key: string, now: Date, days
   };
 }
 
-/**
- * A short, stable handle for a finding key, for `callback_data`.
- *
- * Telegram caps callback data at 64 bytes, and a key can carry a uuid plus an
- * account name. FNV-1a over the key gives 8 hex characters; a tap resolves the
- * handle by re-judging the findings and hashing each key, so nothing has to be
- * remembered between the report going out and the tap arriving — which can be
- * hours, and a container restart, later.
- */
-export function findingHandle(key: string): string {
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < key.length; i++) {
-    hash ^= key.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return (hash >>> 0).toString(16).padStart(8, '0');
-}
+/** Moved to ./handle.ts (a leaf module); re-exported so existing imports keep working. */
+export { findingHandle } from './handle.js';
 
 /** The button text for a finding. */
 export function findingLabel(f: SelfCheckFinding, max = 40): string {
