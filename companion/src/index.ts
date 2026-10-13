@@ -2842,6 +2842,9 @@ export function buildCategorizeDeps(wfClient: WealthfolioClient): CategorizeDeps
       // outranking every rule Nick wrote by hand.
       priority: 50,
     }),
+    // Every filing, move, Undo and rule this menu writes, as `actor: 'you'`.
+    // Fire and forget: the append never rejects, and the menu must not wait on it.
+    record: (draft) => { void recordCompanionChanges(wfClient, [draft]); },
     // Exactly as the sync path publishes it, so the tile the addon renders cannot
     // disagree with itself depending on which host last wrote it. Wrapped so it
     // can never throw: the controller already swallows a failure here, and this
@@ -3453,6 +3456,8 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
     readRules: () => new RestSyncStore(wfClient).getMappingRules(),
     writeRules: (rules) => new RestSyncStore(wfClient).setMappingRules(rules),
     log,
+    // Fire and forget: the append never rejects, and the reply must not wait on it.
+    record: (draft) => { void recordCompanionChanges(wfClient, [draft]); },
   });
 
   const amazonLabels: AmazonLabelMenu = sharedAmazonLabelMenu = createAmazonLabelMenu({

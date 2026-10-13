@@ -259,6 +259,12 @@ export class WealthfolioClient {
    * (`apps/server/src/api/spending.rs`) documents that user-facing rule
    * creation leaves them None, and it's the presence of the keys, not just
    * their value, that marks a rule as preset-derived to the server.
+   *
+   * Resolves the new rule's id: the server answers with the rule it stored
+   * (`create_categorization_rule` returns `Json<CategorizationRule>`, camelCase,
+   * `id: String` — upstream `apps/server/src/api/spending.rs`). The change log
+   * keeps it so R2 can delete the rule (`DELETE /api/v1/spending/rules/{id}`).
+   * Null when a server answers without one.
    */
   async createCategorizationRule(rule: {
     name: string;
@@ -266,7 +272,7 @@ export class WealthfolioClient {
     categoryId: string;
     taxonomyId: string;
     priority: number;
-  }): Promise<void> {
+  }): Promise<string | null> {
     const res = await fetch(`${this.baseUrl}/api/v1/spending/rules`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
@@ -281,6 +287,12 @@ export class WealthfolioClient {
       }),
     });
     if (!res.ok) throw await this.httpError('createCategorizationRule', res);
+    try {
+      const created = (await res.json()) as { id?: unknown } | null;
+      return typeof created?.id === 'string' && created.id ? created.id : null;
+    } catch {
+      return null;
+    }
   }
 
   async saveMany(req: {

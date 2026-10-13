@@ -282,6 +282,27 @@ describe('WealthfolioClient', () => {
     expect(body).not.toHaveProperty('presetVersion');
   });
 
+  it('createCategorizationRule resolves the id of the rule the server stored', async () => {
+    // Upstream answers with the stored rule (Json<CategorizationRule>, camelCase).
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ id: '7c1f2a9e-rule', name: 'Telegram: TRADER JOE S', pattern: 'TRADER JOE S', matchType: 'contains', priority: 50 }),
+    });
+    const client = new WealthfolioClient('http://wf');
+    await expect(client.createCategorizationRule({
+      name: 'Telegram: TRADER JOE S', pattern: 'TRADER JOE S', categoryId: 'cat-1', taxonomyId: 'spending_categories', priority: 50,
+    })).resolves.toBe('7c1f2a9e-rule');
+  });
+
+  it('createCategorizationRule resolves null when the reply carries no id, or no JSON', async () => {
+    const client = new WealthfolioClient('http://wf');
+    const rule = { name: 'n', pattern: 'p', categoryId: 'c', taxonomyId: 'spending_categories', priority: 50 };
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({}) });
+    await expect(client.createCategorizationRule(rule)).resolves.toBeNull();
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => { throw new SyntaxError('Unexpected end of JSON input'); } });
+    await expect(client.createCategorizationRule(rule)).resolves.toBeNull();
+  });
+
   it('createCategorizationRule throws through httpError on a non-ok response', async () => {
     mockFetch.mockResolvedValueOnce({ ok: false, status: 400, text: async () => 'duplicate pattern' });
     const client = new WealthfolioClient('http://wf');

@@ -78,6 +78,7 @@ import { escapeMarkdown, CATEGORIZE_ENTRY_CALLBACK, type InlineKeyboard } from '
 import { categoryRulePattern } from '../../shared/rule-pattern.js';
 import { visibleUncategorized, type DismissalLedger } from '../../shared/uncategorized.js';
 import { descriptionFromComment, txIdFromComment } from '../../shared/sync-core.js';
+import { categoryFiledChange, categoryRuleCreatedChange, type ChangeDraft, type FiledCategory } from '../../shared/change-entries.js';
 import { uncategorizedWindow } from './uncategorized-status.js';
 
 /**
@@ -244,8 +245,13 @@ export interface CategorizeDeps {
    * be carrying, discovered from `readCategorized` at tap time.
    */
   unassignTaxonomy: (activityId: string, taxonomyId: string) => Promise<void>;
-  /** Creates a contains-match rule (priority + taxonomy applied by the caller). */
-  createRule: (rule: { name: string; pattern: string; categoryId: string }) => Promise<void>;
+  /** Creates a contains-match rule (priority + taxonomy applied by the caller).
+   *  Resolves the new rule's id when the server reports one — kept for the
+   *  change log (R2 deletes the rule by it). */
+  createRule: (rule: { name: string; pattern: string; categoryId: string }) => Promise<string | null | void>;
+  /** The change log: one draft per write that succeeded. Optional (most tests
+   *  leave it out); read at call time; a throw is logged and swallowed. */
+  record?: (draft: ChangeDraft) => void;
   /** Republishes the addon's needs-a-category status. May throw; a failure here
    *  costs a stale tile, never the flow the user is in (see `republishQuietly`). */
   republish: () => Promise<void>;
@@ -610,6 +616,42 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
       /* a logger that throws cannot be told about it */
     }
   }
+
+  /** Records a write that succeeded. The log must never cost the flow. */
+  function record(draft: ChangeDraft): void {
+    try {
+      deps.record?.(draft);
+    } catch (err) {
+      safeLog(`Categorize menu: recording a change failed: ${formatError(err)}`);
+    }
+  }
+
+  /** A category's name from whatever was read: a fresh sweep, the session. */
+  function categoryNameIn(
+    sources: ReadonlyArray<{ categories: SpendingCategory[]; incomeCategories?: SpendingCategory[] }>,
+    categoryId: string,
+  ): string {
+    for (const source of sources) {
+      const hit = source.categories.find((c) => c.id === categoryId) ?? source.incomeCategories?.find((c) => c.id === categoryId);
+      if (hit) return hit.name;
+    }
+    return '';
+  }
+
+  /** The facts of a row the change log names: its account, text and day, and
+   *  its signed amount when the row says which way the money moved. */
+  function rowFacts(row: CategorizeTxn | null): { account?: { name: string }; description: string; amountCents?: number; date?: string } {
+    if (!row) return { description: '' };
+    return {
+      account: { name: row.accountName },
+      description: row.description,
+      ...(row.direction ? { amountCents: row.direction === 'out' ? -Math.abs(row.amountCents) : Math.abs(row.amountCents) } : {}),
+      date: row.date,
+    };
+  }
+
+  const filedAsCategory = (a: { taxonomyId: string; categoryId: string; categoryName: string }): FiledCategory =>
+    ({ categoryId: a.categoryId, categoryName: a.categoryName, taxonomyId: a.taxonomyId });
 
   /** A stored note carries ` · <txId>` and possibly ` · pending`; the menu shows
    *  this string, so the bookkeeping is stripped first. A blank strip result (a
@@ -1012,18 +1054,21 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
     pin: CategorizeTxn | null,
     ui: CategorizeUi,
   ): Promise<void> {
+    const name = `${RULE_NAME_PREFIX}${pattern}`.slice(0, RULE_NAME_MAX);
+    let ruleId: string | null = null;
     try {
-      await deps.createRule({
-        name: `${RULE_NAME_PREFIX}${pattern}`.slice(0, RULE_NAME_MAX),
-        pattern,
-        categoryId,
-      });
+      const created = await deps.createRule({ name, pattern, categoryId });
+      ruleId = typeof created === 'string' && created ? created : null;
     } catch (err) {
       const message = formatError(err);
       safeLog(`Categorize menu: creating a rule for "${pattern}" failed: ${message}`);
       await showError(chat, `${RULE_FAILED_PREFIX}${escapeMarkdown(message)}`, ui);
       return;
     }
+    record(categoryRuleCreatedChange({
+      ruleId, name, pattern, categoryId,
+      categoryName: categoryNameIn([chat.session], categoryId) || categoryId,
+    }));
     // The rule EXISTS from here on, so the session leaves the preview screen
     // before anything else can fail. `showError` offers `« Back` to whatever
     // `chat.session.screen` still says, and a preview left standing there hands
@@ -1099,6 +1144,17 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
           await showError(chat, `${ASSIGN_FAILED_PREFIX}${escapeMarkdown(message)}`, ui);
           return;
         }
+        record(categoryFiledChange({
+          actor: 'you',
+          ...rowFacts(row),
+          activityId: action.activityId,
+          before: null,
+          after: {
+            categoryId: action.categoryId,
+            categoryName: categoryNameIn([loaded.fresh], action.categoryId),
+            taxonomyId: action.taxonomyId ?? SPENDING_TAXONOMY_ID,
+          },
+        }));
         await republishQuietly();
         await transition(
           chat,
@@ -1164,6 +1220,13 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
           await showError(chat, `${UNDO_FAILED_PREFIX}${escapeMarkdown(message)}`, ui);
           return;
         }
+        record(categoryFiledChange({
+          actor: 'you',
+          ...rowFacts(row),
+          activityId: action.activityId,
+          before: filedAsCategory(filedAs),
+          after: null,
+        }));
         await republishQuietly();
         await transition(
           chat,
@@ -1471,6 +1534,14 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
             return;
           }
         }
+        record(categoryFiledChange({
+          actor: 'you',
+          ...rowFacts(row),
+          activityId: action.activityId,
+          before: { categoryId: shown.categoryId, categoryName: shown.name, taxonomyId: shown.taxonomyId },
+          after: { categoryId: action.categoryId, categoryName: categoryNameIn([fresh], action.categoryId), taxonomyId: SPENDING_TAXONOMY_ID },
+          restore: toRestore,
+        }));
         // Harmless when nothing UNcategorized changed, and necessary when the
         // clear left the row without a category for a moment.
         await republishQuietly();
@@ -1564,6 +1635,17 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
           await showError(chat, `${UNDO_FAILED_PREFIX}${escapeMarkdown(message)}${suffix}`, ui);
           return;
         }
+        const back = replay[0];
+        record(categoryFiledChange({
+          actor: 'you',
+          ...rowFacts(pin),
+          activityId: action.activityId,
+          before: filedAsCategory(filedAs),
+          after: back
+            ? { categoryId: back.categoryId, categoryName: categoryNameIn([loaded.fresh, chat.session], back.categoryId), taxonomyId: back.taxonomyId }
+            : null,
+          restore: action.toRestore,
+        }));
         await republishQuietly();
         await transition(chat, { ...screen, undone: true }, pin, ui);
         return;
