@@ -2135,6 +2135,11 @@ describe('change log', () => {
     });
     expect(recorded[0].after).toEqual(expect.objectContaining({ categoryId: 'cat-fun', categoryName: 'Entertainment', taxonomyId: SPENDING_TAXONOMY_ID }));
     expect(recorded[1].after).toEqual(expect.objectContaining({ categoryId: 'cat-rest', categoryName: 'Restaurants', taxonomyId: SPENDING_TAXONOMY_ID }));
+    // `before.assignments` is the COMPLETE state the Undo found, i.e. what the move set.
+    expect(recorded[1].before).toEqual({
+      categoryId: 'cat-fun', categoryName: 'Entertainment', taxonomyId: SPENDING_TAXONOMY_ID,
+      assignments: [{ taxonomyId: SPENDING_TAXONOMY_ID, categoryId: 'cat-fun' }],
+    });
   });
 
   it('records a rule with the id the server gave it', async () => {
