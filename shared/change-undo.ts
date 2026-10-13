@@ -242,12 +242,27 @@ export function planChangeUndo(
     case 'category-filed': {
       const taxonomy = str(after.taxonomyId) ?? str(before.taxonomyId) ?? SPENDING_TAXONOMY;
       const current = state.assignments ?? [];
+      const activityId = entry.subject.activityIds?.[0];
+      const prior = Array.isArray(before.assignments)
+        ? (before.assignments as unknown[]).map(rec).map((a) => ({ taxonomyId: str(a.taxonomyId), categoryId: str(a.categoryId) }))
+          .filter((a): a is { taxonomyId: string; categoryId: string } => !!a.taxonomyId && !!a.categoryId)
+        : null;
+      const beforeTaxonomy = str(before.taxonomyId);
+      // A move across taxonomies (or one that recorded its complete prior state):
+      // a redo must check, and clear, the slots the undo restored, not the target's.
+      const isMove = !!prior || (!!beforeTaxonomy && beforeTaxonomy !== taxonomy);
+      const priorSet = prior ?? (isMove && str(before.categoryId) ? [{ taxonomyId: beforeTaxonomy!, categoryId: str(before.categoryId)! }] : []);
       const now = current.find((a) => a.taxonomyId === taxonomy)?.categoryId ?? null;
       const [expected, target] = op === 'undo'
         ? [str(after.categoryId), str(before.categoryId)]
         : [str(before.categoryId), str(after.categoryId)];
-      if (now !== expected) return refuse(undoChangedSince(op));
-      const activityId = entry.subject.activityIds?.[0];
+      if (op === 'redo' && isMove) {
+        const restored = priorSet.every((p) => current.some((a) => a.taxonomyId === p.taxonomyId && a.categoryId === p.categoryId));
+        const targetFree = now === null || priorSet.some((p) => p.taxonomyId === taxonomy && p.categoryId === now);
+        if (!restored || !targetFree) return refuse(undoChangedSince(op));
+      } else if (now !== expected) {
+        return refuse(undoChangedSince(op));
+      }
       if (!activityId) return refuse(UNDO_NOT_POSSIBLE);
       const steps: UndoStep[] = [];
       // An automatic filing would be made again by the next sync's filer.
@@ -257,10 +272,6 @@ export function planChangeUndo(
           ? { do: 'set-tx', txKey: key, flag: 'noAutoFile', label: labelOf(entry) }
           : { do: 'clear-tx', txKey: key, flag: 'noAutoFile' });
       }
-      const prior = Array.isArray(before.assignments)
-        ? (before.assignments as unknown[]).map(rec).map((a) => ({ taxonomyId: str(a.taxonomyId), categoryId: str(a.categoryId) }))
-          .filter((a): a is { taxonomyId: string; categoryId: string } => !!a.taxonomyId && !!a.categoryId)
-        : null;
       if (op === 'undo' && prior) {
         // A move's complete prior state: every taxonomy as it was.
         for (const a of current) {
@@ -272,6 +283,11 @@ export function planChangeUndo(
           if (cur) steps.push({ do: 'unassign', activityId, taxonomyId: p.taxonomyId });
           steps.push({ do: 'assign', activityId, taxonomyId: p.taxonomyId, categoryId: p.categoryId });
         }
+      } else if (op === 'redo' && isMove) {
+        // Take the restored prior state off, then file the move's target.
+        const slots = new Set([...priorSet.map((p) => p.taxonomyId), ...(now !== null ? [taxonomy] : [])]);
+        for (const t of slots) steps.push({ do: 'unassign', activityId, taxonomyId: t });
+        if (target) steps.push({ do: 'assign', activityId, taxonomyId: taxonomy, categoryId: target });
       } else if (target === null) {
         steps.push({ do: 'unassign', activityId, taxonomyId: taxonomy });
       } else {
