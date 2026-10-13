@@ -201,3 +201,59 @@ describe('a rule category is a fallback the order email replaces (v1.56.1)', () 
     expect(assigned).toHaveLength(1);
   });
 });
+
+describe('fileAmazonCharges — change log', () => {
+  it('records each filing that landed, with the category it had before', async () => {
+    const drafts: unknown[] = [];
+    const { deps } = make({
+      uncategorized: vi.fn(async () => [{
+        activityId: 'a1', notes: 'AMAZON MKTPL*2K4 · Amazon: Skincare · TRN-1', wfAccountId: 'wf-citi', accountName: 'Citi',
+        amountCents: 1080, date: '2026-09-15', direction: 'out' as const,
+      }]),
+      ruleCategorized: vi.fn(async () => [{
+        activityId: 'r1', notes: 'AMAZON MKTPL · Amazon: Tools · TRN-2', wfAccountId: 'wf-citi', accountName: 'Citi',
+        amountCents: 2500, date: '2026-09-16', direction: 'out' as const, categoryId: 'cat-online', categoryName: 'Online Shopping',
+      }]),
+      record: (d: unknown) => drafts.push(d),
+      sfinAccountOf: (wf: string) => (wf === 'wf-citi' ? 'ACT-9c8d' : undefined),
+    } as any);
+    await fileAmazonCharges(deps as any);
+    expect(drafts).toEqual([
+      expect.objectContaining({
+        kind: 'category-filed', actor: 'auto', summary: 'Filed AMAZON MKTPL*2K4 under Personal Care',
+        why: 'Amazon: Skincare',
+        account: { sfinId: 'ACT-9c8d', wfId: 'wf-citi', name: 'Citi' },
+        subject: expect.objectContaining({ txKeys: ['ACT-9c8d\u0000TRN-1'], activityIds: ['a1'], amountCents: -1080 }),
+        before: { categoryId: null, categoryName: null },
+        after: { categoryId: 'cat-personal', categoryName: 'Personal Care', taxonomyId: 'spending_categories' },
+      }),
+      expect.objectContaining({
+        summary: 'Moved AMAZON MKTPL from Online Shopping to Housing',
+        subject: expect.objectContaining({ txKeys: ['ACT-9c8d\u0000TRN-2'] }),
+        before: { categoryId: 'cat-online', categoryName: 'Online Shopping', taxonomyId: 'spending_categories' },
+        after: { categoryId: 'cat-housing', categoryName: 'Housing', taxonomyId: 'spending_categories' },
+      }),
+    ]);
+  });
+
+  it('records nothing for a filing Wealthfolio refused', async () => {
+    const drafts: unknown[] = [];
+    const { deps } = make({
+      uncategorized: vi.fn(async () => [{ activityId: 'a1', notes: 'Amazon · Amazon: Skincare · TRN-1' }]),
+      assign: vi.fn(async () => { throw new Error('400'); }),
+      record: (d: unknown) => drafts.push(d),
+    } as any);
+    await fileAmazonCharges(deps as any);
+    expect(drafts).toEqual([]);
+  });
+
+  it('a recorder that throws never costs the filing', async () => {
+    const { deps, assigned } = make({
+      uncategorized: vi.fn(async () => [{ activityId: 'a1', notes: 'Amazon · Amazon: Skincare · TRN-1' }, { activityId: 'a2', notes: 'Amazon · Amazon: Skincare · TRN-2' }]),
+      record: () => { throw new Error('boom'); },
+    } as any);
+    const res = await fileAmazonCharges(deps as any);
+    expect(res.filed).toBe(2);
+    expect(assigned).toHaveLength(2);
+  });
+});
