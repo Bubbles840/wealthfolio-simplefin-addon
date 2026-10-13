@@ -526,6 +526,19 @@ changes what a user sees today.
   filing whose account isn't mapped also omits the key.
 - **A corrupt bucket stays until it ages out** (four months) or Reset clears it.
   A "repair" button would have to decide what in it is real; not worth it yet.
+- **The Undo of a move records the complete prior state** (fixed in the R1 fix
+  wave): on every `category-filed` entry `before.assignments` is the complete
+  state before that action ran, so R2 can rely on it.
+- **A partial move records nothing** (the unassign landed, the assign failed):
+  the row is left uncategorized and no entry exists for it.
+- **Rule-id fallback by name:** when the create reply carries no id, the entry's
+  `ruleId` is null; R2 finds the rule by `name` via `GET /api/v1/spending/rules`.
+- **An Amazon filing loses its tx key on a transient `account_mapping` read
+  failure.** R2 can re-derive it from the row's note plus the mapping.
+- **Watch for "older changes were trimmed" notes after deploy.** If a writer
+  trims most months, split buckets by half-month or raise the cap, after
+  checking the host's real secret-size limit (200 KB is a guess at about 235
+  entries per writer per month at real id lengths).
 - **The read-back of a new starting balance or plug costs one activity read**,
   only when a change log is attached and only on the rare run that writes one.
 
