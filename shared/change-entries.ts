@@ -325,6 +325,7 @@ export function transferLinkChange(out: LinkLegFacts, inLeg: LinkLegFacts): Chan
   const leg = (l: LinkLegFacts) => ({
     txKey: l.txKey,
     accountName: l.account.name,
+    description: l.description,
     ...(l.account.wfId ? { wfAccountId: l.account.wfId } : {}),
     ...(l.account.sfinId ? { sfinAccountId: l.account.sfinId } : {}),
     ...(l.newActivityId ? { activityId: l.newActivityId } : {}),

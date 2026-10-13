@@ -216,10 +216,28 @@ const linkedRefusal = (row: UndoRow | null | undefined): string | null =>
   (row?.linked === 'confirmed' ? UNDO_LINKED_REFUSAL : row?.linked === 'maybe' ? UNDO_MAYBE_LINKED : null);
 
 /** What an override is called in the overrides list: the bank text and the account. */
-function labelOf(entry: ChangeEntry, accountName?: string): string {
-  const what = entry.subject.description?.trim() || 'a transaction';
+function labelOf(entry: ChangeEntry, accountName?: string, description?: string): string {
+  const what = (description ?? entry.subject.description)?.trim() || 'a transaction';
   const where = accountName ?? entry.account?.name;
   return where ? `${what} · ${where}` : what;
+}
+
+/**
+ * A linked leg's own bank text. Each leg records it; a link logged before that
+ * names the out-leg in its subject and both legs in its summary
+ * ("Linked <out> and <in> as one transfer").
+ */
+function legDescription(entry: ChangeEntry, leg: Record<string, unknown> | undefined, i: number): string | undefined {
+  const own = str(leg?.description);
+  if (own) return own;
+  if (i === 0) return undefined;
+  const out = entry.subject.description?.trim() || 'a transaction';
+  const head = `Linked ${out} and `;
+  const tail = ' as one transfer';
+  const s = entry.summary;
+  return s.startsWith(head) && s.endsWith(tail) && s.length > head.length + tail.length
+    ? s.slice(head.length, s.length - tail.length)
+    : undefined;
 }
 
 const sameRule = (a: MappingRule, b: MappingRule) =>
@@ -384,7 +402,10 @@ export function planChangeUndo(
       if (keys.length === 0) return refuse(UNDO_NO_KEY);
       const legs = Array.isArray(after.legs) ? (after.legs as unknown[]).map(rec) : [];
       const steps: UndoStep[] = keys.map((txKey, i) => (op === 'undo'
-        ? { do: 'set-tx', txKey, flag: 'notTransfer', label: labelOf(entry, str(legs[i]?.accountName) ?? undefined) } as const
+        ? {
+          do: 'set-tx', txKey, flag: 'notTransfer',
+          label: labelOf(entry, str(legs[i]?.accountName) ?? undefined, legDescription(entry, legs[i], i)),
+        } as const
         : { do: 'clear-tx', txKey, flag: 'notTransfer' } as const));
       return plan({
         op, steps, needsSync: true,
