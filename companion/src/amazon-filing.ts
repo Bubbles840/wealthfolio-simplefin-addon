@@ -89,6 +89,10 @@ export interface AmazonFilingDeps {
   /** True when the person undid an automatic filing of this transaction
    *  (`noAutoFile`, shared/sync-overrides.ts): it is never filed again. */
   noAutoFile?(txKey: string): boolean;
+  /** True when ANY `noAutoFile` override exists. A row whose tx key cannot be
+   *  built (the account mapping could not be read) may then be one the person
+   *  un-filed, so it is left alone this time. */
+  anyNoAutoFile?: boolean;
 }
 
 export interface AmazonFilingResult {
@@ -149,10 +153,11 @@ export async function fileAmazonCharges(deps: AmazonFilingDeps): Promise<AmazonF
     };
 
     for (const { row, label } of labelled) {
-      // Undone by the person: left exactly as they put it back.
+      // Undone by the person: left exactly as they put it back. Without a tx
+      // key there is no telling, so while any filing is undone it waits.
       const sfinId = row.wfAccountId ? deps.sfinAccountOf?.(row.wfAccountId) : undefined;
       const txId = txIdFromComment(row.notes);
-      if (sfinId && txId && deps.noAutoFile?.(accountTxKey(sfinId, txId))) continue;
+      if (sfinId && txId ? deps.noAutoFile?.(accountTxKey(sfinId, txId)) : deps.anyNoAutoFile) continue;
       // A MIXED order goes straight to the configured default: one charge
       // covering several categories has no honest single label, no rule can
       // ever match it (so `needRule` nagging would be permanent), and leaving

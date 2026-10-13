@@ -684,6 +684,7 @@ async function fileAmazonLabelledCharges(wfClient: WealthfolioClient, run?: stri
     record: (draft) => changes.push(draft),
     sfinAccountOf: (wfAccountId) => sfinOf.get(wfAccountId),
     noAutoFile: (txKey) => hasTxOverride(overrides, txKey, 'noAutoFile'),
+    anyNoAutoFile: Object.keys(overrides.tx).some((key) => hasTxOverride(overrides, key, 'noAutoFile')),
   });
   // Never rejects in practice; a failed recording must not fail the filing.
   await recordCompanionChanges(wfClient, changes, run).catch((e) => log(`Change log skipped: ${formatError(e)}`));
