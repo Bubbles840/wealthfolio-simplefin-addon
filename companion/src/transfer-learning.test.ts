@@ -319,3 +319,41 @@ describe('openForCandidate — the morning report\'s "Make it a transfer" fix', 
     expect(deps.writeRules).not.toHaveBeenCalled();
   });
 });
+
+describe('transfer learning — change log', () => {
+  it('records the rule it wrote, and only that', async () => {
+    const recorded: any[] = [];
+    const state = { rules: [] as any[] };
+    const menu = createTransferLearning({
+      readRules: vi.fn(async () => state.rules),
+      writeRules: vi.fn(async (r: any[]) => { state.rules = r; }),
+      log: vi.fn(),
+      record: (d) => recorded.push(d),
+    });
+    await teach(menu, [tx()]);
+    expect(recorded).toEqual([expect.objectContaining({
+      kind: 'mapping-rule-created', actor: 'you', undoable: true,
+      summary: 'Added a transaction rule: "Payment to Ccb Credit Card Payments" is a transfer out',
+      account: { name: 'Spend (4937)' },
+      after: { rule: { pattern: 'Payment to Ccb Credit Card Payments', matchType: 'contains', activityType: 'TRANSFER_OUT' } },
+    })]);
+    // Taught again: the rule already exists, nothing new was written or recorded.
+    await teach(menu, [tx()]);
+    expect(recorded).toHaveLength(1);
+  });
+
+  it('keeps the rule even when recording it throws', async () => {
+    const state = { rules: [] as any[] };
+    const log = vi.fn();
+    const menu = createTransferLearning({
+      readRules: vi.fn(async () => state.rules),
+      writeRules: vi.fn(async (r: any[]) => { state.rules = r; }),
+      log,
+      record: () => { throw new Error('log down'); },
+    });
+    const u = await teach(menu, [tx()]);
+    expect(state.rules).toHaveLength(1);
+    expect(u.answer).toHaveBeenCalledWith('Rule saved');
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('log down'));
+  });
+});

@@ -8,6 +8,7 @@ import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getN
 import { ingestAmazonMail } from './amazon-mail.js';
 import { AMAZON_MAIL_STATUS_SECRET_KEY, AMAZON_MAIL_SAMPLES_SECRET_KEY, UNCATEGORIZED_STATUS_SECRET_KEY } from '../../shared/status-keys.js';
 import { CATEGORIZE_ENTRY_CALLBACK } from '../../shared/telegram.js';
+import { categoryFiledChange, stampChange } from '../../shared/change-entries.js';
 import { existsSync } from 'fs';
 import type { SyncResult } from '../../shared/sync-core.js';
 
@@ -226,6 +227,47 @@ describe('runCompanionSync', () => {
       expect(vi.mocked(runSyncCore).mock.calls[0][2]).toMatchObject({ force: true });
     } finally {
       delete process.env.MIN_SYNC_INTERVAL_HOURS;
+    }
+  });
+
+  it('hands the sync a change-log sink, and logs the Amazon filing after it under the same run', async () => {
+    const at = new Date(2026, 9, 12, 8, 0, 0);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(at);
+    const { WealthfolioClient } = await import('./wealthfolio.js');
+    const original = vi.mocked(WealthfolioClient).getMockImplementation();
+    try {
+      const secrets = new Map<string, string>([
+        ['simplefin_access_url', 'https://user:pass@bridge.simplefin.org/simplefin'],
+        ['account_mapping', JSON.stringify({ 'ACT-9c8d': 'wf-citi' })],
+      ]);
+      const client = new (WealthfolioClient as any)();
+      client.getAddonSecret = vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null);
+      client.setAddonSecret = vi.fn(async (_a: string, key: string, val: string) => { secrets.set(key, val); });
+      client.assignActivityCategory = vi.fn(async () => {});
+      vi.mocked(WealthfolioClient).mockImplementation(function () { return client; } as any);
+      vi.mocked(getNativeUncategorizedSpending).mockReturnValue([{
+        activityId: 'a1', wfAccountId: 'wf-citi', notes: 'AMAZON MKTPL*2K4 · Amazon: Skincare · TRN-1', amountCents: 1080,
+        date: '2026-09-15', accountName: 'Citi', direction: 'out', incomeEligible: false,
+      }]);
+      vi.mocked(getNativeSpendingCategories).mockReturnValue([{ id: 'cat-personal', name: 'Personal Care', parentId: null, parentName: null }] as any);
+
+      await runCompanionSync();
+
+      const sink = vi.mocked(runSyncCore).mock.calls[0][2]!.changeLog!;
+      expect(sink).toMatchObject({ writer: 'companion', run: `c${at.getTime().toString(36)}` });
+      const bucket = JSON.parse(secrets.get('change_log:companion:2026-10')!);
+      expect(bucket.entries).toEqual([expect.objectContaining({
+        kind: 'category-filed', run: sink.run, summary: 'Filed AMAZON MKTPL*2K4 under Personal Care',
+        subject: expect.objectContaining({ txKeys: ['ACT-9c8d\u0000TRN-1'] }),
+        account: expect.objectContaining({ sfinId: 'ACT-9c8d' }),
+        after: expect.objectContaining({ taxonomyId: 'spending_categories' }),
+      })]);
+    } finally {
+      vi.mocked(getNativeUncategorizedSpending).mockReturnValue([]);
+      vi.mocked(getNativeSpendingCategories).mockReturnValue([]);
+      vi.mocked(WealthfolioClient).mockImplementation(original!);
+      vi.useRealTimers();
     }
   });
 });
@@ -2465,6 +2507,56 @@ describe('buildTelegramCommandHandler', () => {
     });
   });
 
+  describe('/changes', () => {
+    const AT = new Date(2026, 9, 12, 8, 0, 0);
+    const venmo = () => stampChange(categoryFiledChange({
+      actor: 'you', account: { name: 'Checking' }, activityId: 'a1', description: 'VENMO *J SMITH', amountCents: -650,
+      before: null, after: { categoryId: 'cat-din', categoryName: 'Dining' },
+    }), 'companion', new Date(2026, 9, 12, 7, 30, 0));
+    const withLog = () => clientFor([[
+      'change_log:companion:2026-10',
+      JSON.stringify({ v: 1, writer: 'companion', month: '2026-10', entries: [venmo()], gaps: [] }),
+    ]]);
+
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(AT);
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('replies with the change log and a button per line', async () => {
+      const { client } = withLog();
+      const sent: Array<[string, any]> = [];
+      await buildTelegramCommandHandler(client)({ command: 'changes', args: '' }, async (t, k) => { sent.push([t, k]); });
+      expect(sent[0][0]).toBe('*Changes — last 7 days*\n\n_Oct 12_\n1. 07:30 · Filed VENMO \\*J SMITH under Dining · -$6.50 · Checking');
+      expect(sent[0][1].inline_keyboard[0][0].callback_data).toMatch(/^cz:cl:d[0-9a-f]{8}:l0$/);
+    });
+
+    it('searches with the words after the command', async () => {
+      const { client } = withLog();
+      const sent: Array<[string, any]> = [];
+      await buildTelegramCommandHandler(client)({ command: 'changes', args: 'zelle' }, async (t, k) => { sent.push([t, k]); });
+      expect(sent[0][0]).toContain('Nothing in the last 90 days matches zelle.');
+    });
+
+    it("says so when Wealthfolio can't be reached", async () => {
+      const client = { getAddonSecret: vi.fn(async () => { throw new Error('ECONNREFUSED'); }), setAddonSecret: vi.fn() } as any;
+      const { sent, reply } = collector();
+      await buildTelegramCommandHandler(client)({ command: 'changes', args: '' }, reply);
+      expect(sent).toEqual(["Couldn't reach Wealthfolio — try again."]);
+    });
+
+    it('cz:cl: taps reach the changes menu, not the transaction menu', async () => {
+      const { client } = withLog();
+      const deps = buildTelegramListenerDeps(client);
+      const ui = { edit: vi.fn(async () => {}), answer: vi.fn(async () => {}), send: vi.fn(async () => {}) };
+      await deps.onMenuCallback!({ data: 'cz:cl:l0', chatId: 1, messageId: 2 }, ui);
+      expect((ui.edit.mock.calls[0] as unknown as [string])[0]).toContain('*Changes — last 7 days*');
+    });
+  });
+
   describe('subscription questions (1.60)', () => {
     const SUB_CUBE = JSON.stringify({
       version: 1, asOf: '2026-10-12T06:00:00.000Z', months: ['2026-10'], categories: [], accounts: [],
@@ -4134,6 +4226,29 @@ describe('the /categorize wiring', () => {
       taxonomyId: 'spending_categories',
       priority: 50,
     });
+  });
+
+  it('logs a filing and the rule made from it in the companion’s change log, with the rule’s id', async () => {
+    const { client, secrets } = clientFor();
+    client.createCategorizationRule.mockResolvedValue('rule-7');
+    const controller = buildCategorizeController(client);
+    const { sent, reply } = collect();
+    await buildTelegramCommandHandler(client, controller)({ command: 'categorize', args: '' }, reply);
+    const ui = fakeUi();
+    const cb = (data: string) => controller.onCallback({ data, chatId: 4242, messageId: 7 }, ui);
+    await cb(dataFor(sent[0][1], 'BOOK STORES'));
+    await cb(dataFor(lastOf(ui.edit)[1], 'Entertainment'));
+    await cb(dataFor(lastOf(ui.edit)[1], 'Make this a rule'));
+    await cb(dataFor(lastOf(ui.edit)[1], 'Create rule'));
+    const logged = () => [...secrets.entries()]
+      .filter(([k, v]) => /^change_log:companion:\d{4}-\d{2}$/.test(k) && v)
+      .flatMap(([, v]) => JSON.parse(v).entries);
+    await vi.waitFor(() => expect(logged()).toHaveLength(2));
+    expect(logged().map((e: any) => [e.kind, e.actor, e.writer, e.summary])).toEqual([
+      ['category-filed', 'you', 'companion', 'Filed BOOK STORES under Entertainment'],
+      ['category-rule-created', 'you', 'companion', 'Created a rule: descriptions containing "BOOK STORES" go to Entertainment'],
+    ]);
+    expect(logged()[1].subject.ruleId).toBe('rule-7');
   });
 
   describe('writeLedgerMerged', () => {

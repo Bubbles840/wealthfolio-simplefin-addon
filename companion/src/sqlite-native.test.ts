@@ -562,6 +562,7 @@ describe('sqlite-native', () => {
         const db = new DatabaseSync(path);
         db.exec(`
           ALTER TABLE activity_taxonomy_assignments ADD COLUMN source TEXT;
+          INSERT INTO taxonomy_categories (id, name, parent_id) VALUES ('c', 'Online Shopping', NULL);
           INSERT INTO activities (id, amount, activity_date, activity_type, notes) VALUES
             ('rule', '10.80', '2026-09-15T00:00:00Z', 'WITHDRAWAL', 'AMAZON MKTPL · Amazon: Hair Care · TRN-1'),
             ('mine', '20.00', '2026-09-15T00:00:00Z', 'WITHDRAWAL', 'AMAZON MKTPL · Amazon: Books · TRN-2'),
@@ -574,9 +575,12 @@ describe('sqlite-native', () => {
             ('old',  'c', 'spending_categories', 'rule');
         `);
         db.close();
-        expect(getNativeRuleCategorizedAmazonRows(path, '2026-08-01', '2026-10-01')).toEqual([
-          { activityId: 'rule', notes: 'AMAZON MKTPL · Amazon: Hair Care · TRN-1' },
-        ]);
+        // With the rule's category: the change log's "before" when the label's
+        // category replaces it.
+        expect(getNativeRuleCategorizedAmazonRows(path, '2026-08-01', '2026-10-01')).toEqual([{
+          activityId: 'rule', notes: 'AMAZON MKTPL · Amazon: Hair Care · TRN-1', wfAccountId: 'acct-cash', accountName: 'Spend',
+          amountCents: 1080, date: '2026-09-15', direction: 'out', categoryId: 'c', categoryName: 'Online Shopping',
+        }]);
       } finally {
         cleanup();
       }

@@ -612,6 +612,22 @@ export function getNativeUncategorizedSpending(
   });
 }
 
+/** A labelled Amazon charge a RULE filed, with the category the rule chose —
+ *  the "before" the change log records when the label's category replaces it. */
+export interface NativeRuleCategorizedAmazonRow {
+  activityId: string;
+  notes: string;
+  wfAccountId: string;
+  accountName: string;
+  amountCents: number;
+  /** ISO date (yyyy-mm-dd). */
+  date: string;
+  direction: 'in' | 'out';
+  categoryId: string;
+  /** '' when the category row is missing. */
+  categoryName: string;
+}
+
 /**
  * Amazon charges the order emails have labelled (`· Amazon: <label>` in the
  * note) whose spending category was set by a categorization RULE — the
@@ -621,13 +637,21 @@ export function getNativeRuleCategorizedAmazonRows(
   dbPath: string,
   startInclusive: string,
   endExclusive: string,
-): Array<{ activityId: string; notes: string }> {
+): NativeRuleCategorizedAmazonRow[] {
   if (!dbPath || !existsSync(dbPath)) return [];
   if (!validDateBounds(startInclusive, endExclusive)) return [];
   const query = `
-    SELECT a.id, COALESCE(a.notes, '')
+    SELECT a.id AS activity_id, COALESCE(a.notes, '') AS notes, COALESCE(a.account_id, '') AS account_id,
+           COALESCE(ac.name, '') AS account_name, ROUND(ABS(CAST(a.amount AS REAL)) * 100) AS amount_cents,
+           substr(a.activity_date, 1, 10) AS activity_date,
+           CASE WHEN UPPER(a.activity_type) IN ('WITHDRAWAL', 'FEE', 'TAX')
+                  OR (UPPER(a.activity_type) = 'INTEREST' AND UPPER(COALESCE(ac.account_type, '')) = 'CREDIT_CARD')
+                THEN 'out' ELSE 'in' END AS direction,
+           COALESCE(ata.category_id, '') AS category_id, COALESCE(tc.name, '') AS category_name
     FROM activities a
     JOIN activity_taxonomy_assignments ata ON a.id = ata.activity_id
+    LEFT JOIN accounts ac ON a.account_id = ac.id
+    LEFT JOIN taxonomy_categories tc ON tc.id = ata.category_id AND tc.taxonomy_id = ata.taxonomy_id
     WHERE ata.taxonomy_id = 'spending_categories'
       AND LOWER(COALESCE(ata.source, '')) = 'rule'
       AND COALESCE(a.notes, '') LIKE '%· Amazon:%'
@@ -639,11 +663,24 @@ export function getNativeRuleCategorizedAmazonRows(
     dbPath,
     'rule-categorized-amazon',
     query,
-    (parts) => (parts.length === 2 ? { c0: parts[0], c1: parts[1] } : null),
+    (parts) => (parts.length === 9
+      ? { c0: parts[0], c1: parts[1], c2: parts[2], c3: parts[3], c4: parseFloat(parts[4]) || 0, c5: parts[5], c6: parts[6], c7: parts[7], c8: parts[8] }
+      : null),
   );
   return rows.map((r) => {
-    const vals = Object.values(r);
-    return { activityId: String(vals[0]), notes: String(vals[1]) };
+    // Column-named objects from node:sqlite, c0..c8 from the CLI: positional either way.
+    const v = Object.values(r);
+    return {
+      activityId: String(v[0]),
+      notes: String(v[1]),
+      wfAccountId: String(v[2]),
+      accountName: String(v[3]),
+      amountCents: Math.round(Number(v[4]) || 0),
+      date: String(v[5]).slice(0, 10),
+      direction: (String(v[6]) === 'out' ? 'out' : 'in') as 'in' | 'out',
+      categoryId: String(v[7]),
+      categoryName: String(v[8]),
+    };
   });
 }
 
@@ -1653,4 +1690,39 @@ export function getNativeIncomeCategories(dbPath: string): NativeSpendingCategor
       parentName: String(v[3] ?? '') || null,
     };
   });
+}
+
+/**
+ * The charges a categorization rule filed: spending assignments with source
+ * "rule" in the rule's category, on rows whose note contains the rule's words
+ * (case-insensitive, like the rule's own `contains` match). What "Undo rule +
+ * un-file its N charges" counts and takes out. A category the person chose is
+ * "manual" and is never in this list.
+ *
+ * Null when the database is not there — "unknown", never "none".
+ */
+export function getNativeRuleFiledActivityIds(dbPath: string, categoryId: string, pattern: string): string[] | null {
+  if (!dbPath || !existsSync(dbPath)) return null;
+  // Interpolated like every bound in this file (the CLI fallback cannot bind):
+  // quotes doubled, LIKE wildcards neutralised.
+  const cat = categoryId.replace(/'/g, "''");
+  const safe = pattern.replace(/'/g, "''").replace(/[%_]/g, ' ');
+  if (!cat || !safe.trim()) return [];
+  const query = `
+    SELECT a.id AS activity_id
+    FROM activities a
+    JOIN activity_taxonomy_assignments ata ON ata.activity_id = a.id
+    WHERE ata.taxonomy_id = 'spending_categories'
+      AND LOWER(COALESCE(ata.source, '')) = 'rule'
+      AND ata.category_id = '${cat}'
+      AND LOWER(COALESCE(a.notes, '')) LIKE '%' || LOWER('${safe}') || '%'
+    ORDER BY a.activity_date DESC, a.id;
+  `;
+  const rows = queryNativeDb<{ activity_id: string }>(
+    dbPath,
+    'rule-filed activities',
+    query,
+    (parts) => (parts.length >= 1 && parts[0] ? { activity_id: parts[0] } : null),
+  );
+  return rows.map((r) => String(r.activity_id));
 }

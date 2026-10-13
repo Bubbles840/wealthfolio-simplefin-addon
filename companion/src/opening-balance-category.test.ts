@@ -90,3 +90,44 @@ describe('fileCardOpeningDebts', () => {
     expect(d.assign).not.toHaveBeenCalled();
   });
 });
+
+describe('fileCardOpeningDebts — change log', () => {
+  it('records the set-up as bookkeeping and each filing with its account and debt', async () => {
+    const drafts: any[] = [];
+    const d = { ...deps(ledger(`
+      INSERT INTO activities VALUES ('o','card','WITHDRAWAL','2026-04-20T00:00:00Z','464.6','Starting balance · sfc');
+    `)), record: (x: any) => drafts.push(x) };
+    await fileCardOpeningDebts(d);
+    expect(drafts.map((x) => [x.kind, x.summary])).toEqual([
+      ['bookkeeping', 'Set up the "Opening balances" category and kept it out of spending'],
+      ['opening-balance-filed', "Filed the opening balance under Opening balances"],
+    ]);
+    expect(drafts[1]).toMatchObject({
+      account: { sfinId: 'sfc', wfId: 'card', name: 'Citi' },
+      subject: { activityIds: ['o'], amountCents: -46460, date: '2026-04-20', categoryName: 'Opening balances' },
+      before: { categoryId: null, categoryName: null },
+      after: { categoryId: 'new-cat', categoryName: 'Opening balances', taxonomyId: 'spending_categories' },
+    });
+  });
+
+  it('records no set-up when the category and exclusion already exist', async () => {
+    const drafts: any[] = [];
+    const d = { ...deps(ledger(`
+      INSERT INTO taxonomy_categories VALUES ('ob','Opening balances',NULL,'spending_categories');
+      INSERT INTO app_settings VALUES ('spending.excluded_category_ids','["ob"]');
+      INSERT INTO activities VALUES ('o','card','WITHDRAWAL','2026-04-20','464.6','Starting balance · sfc');
+    `)), record: (x: any) => drafts.push(x) };
+    await fileCardOpeningDebts(d);
+    expect(drafts.map((x) => x.kind)).toEqual(['opening-balance-filed']);
+    expect(drafts[0].account.sfinId).toBe('sfc');
+  });
+
+  it('a recorder that throws never costs the filing', async () => {
+    const d = { ...deps(ledger(`
+      INSERT INTO activities VALUES ('o','card','WITHDRAWAL','2026-04-20','464.6','Starting balance · sfc');
+      INSERT INTO activities VALUES ('p','card','WITHDRAWAL','2026-04-21','10','Starting balance · sfd');
+    `)), record: () => { throw new Error('boom'); } };
+    await expect(fileCardOpeningDebts(d)).resolves.toEqual({ filed: 2 });
+    expect(d.assign).toHaveBeenCalledTimes(2);
+  });
+});

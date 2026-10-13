@@ -71,6 +71,13 @@ import { publishUncategorizedStatusForDbPath } from './uncategorized-status.js';
 import { createCategorizeController, SPENDING_TAXONOMY_ID } from './categorize.js';
 import { createAmazonLabelMenu, type AmazonLabelMenu } from './amazon-labels.js';
 import { fileAmazonCharges } from './amazon-filing.js';
+import { companionChangeSink, readCompanionChangeLog, recordCompanionChanges } from './change-log-host.js';
+import { emptySyncOverrides, hasAccountOverride, hasTxOverride, syncOverridesOrEmpty, type SyncOverrides } from '../../shared/sync-overrides.js';
+import { createChangesMenu, renderChangesCommand, CHANGES_UNREACHABLE_REPLY, type ChangesMenu } from './changes-menu.js';
+import { companionRuleFiledCount, companionUndoIo } from './change-undo-host.js';
+import { runChangeUndo } from '../../shared/change-undo-run.js';
+import type { ChangeLogRead } from '../../shared/change-log.js';
+import type { ChangeDraft } from '../../shared/change-entries.js';
 import { createTransferLearning, type TransferLearning } from './transfer-learning.js';
 import type { CategorizeController, CategorizeDeps } from './categorize.js';
 import { AMAZON_MAIL_STATUS_SECRET_KEY, AMAZON_MAIL_SAMPLES_SECRET_KEY, UNCATEGORIZED_STATUS_SECRET_KEY, POOL_STATUS_SECRET_KEY, type AmazonMailStatus, type AmazonMailSamples } from '../../shared/status-keys.js';
@@ -651,10 +658,18 @@ async function pollAmazonMail(
  * behaviour is precisely what wants fixing, and an order email can arrive days
  * after the charge it belongs to.
  */
-async function fileAmazonLabelledCharges(wfClient: WealthfolioClient): Promise<void> {
+async function fileAmazonLabelledCharges(wfClient: WealthfolioClient, run?: string, overrides: SyncOverrides = emptySyncOverrides()): Promise<void> {
   const dbPath = wealthfolioDbPath();
   const end = new Date();
   const start = new Date(end.getFullYear(), end.getMonth(), end.getDate() - 60);
+  // The change log names the SimpleFin account behind each filing (its tx key
+  // is account-scoped); the mapping is sfin → wf, so it is turned around.
+  const mapping = parseSecretJson<Record<string, string>>(
+    await wfClient.getAddonSecret('simplefin-sync', 'account_mapping').catch(() => null),
+    'account_mapping',
+  ) ?? {};
+  const sfinOf = new Map(Object.entries(mapping).map(([sfin, wf]) => [wf, sfin]));
+  const changes: ChangeDraft[] = [];
   const res = await fileAmazonCharges({
     uncategorized: async () => getNativeUncategorizedSpending(dbPath, toDateString(start), toDateString(new Date(end.getFullYear(), end.getMonth(), end.getDate() + 1))),
     ruleCategorized: async () => getNativeRuleCategorizedAmazonRows(dbPath, toDateString(start), toDateString(new Date(end.getFullYear(), end.getMonth(), end.getDate() + 1))),
@@ -666,7 +681,13 @@ async function fileAmazonLabelledCharges(wfClient: WealthfolioClient): Promise<v
     assign: (activityId, categoryId) =>
       wfClient.assignActivityCategory(activityId, SPENDING_TAXONOMY_ID, categoryId),
     log,
+    record: (draft) => changes.push(draft),
+    sfinAccountOf: (wfAccountId) => sfinOf.get(wfAccountId),
+    noAutoFile: (txKey) => hasTxOverride(overrides, txKey, 'noAutoFile'),
+    anyNoAutoFile: Object.keys(overrides.tx).some((key) => hasTxOverride(overrides, key, 'noAutoFile')),
   });
+  // Never rejects in practice; a failed recording must not fail the filing.
+  await recordCompanionChanges(wfClient, changes, run).catch((e) => log(`Change log skipped: ${formatError(e)}`));
   if (res.filed > 0) log(`Filed ${res.filed} Amazon charge(s) into their mapped category.`);
   if (res.needRule.length > 0) {
     // Visible, not filed: these are exactly the labels the Amazon card counts
@@ -936,7 +957,10 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
     const amazonNewLabels = await pollAmazonMail(store, wfClient);
 
     log(`Fetching SimpleFin transactions from ${maskUrl(accessUrl)}...`);
-    const result = await runSyncCore(host, store, { force });
+    // One run id for the sync and the filings after it, so the change log
+    // groups them as one run.
+    const changeLog = companionChangeSink(wfClient);
+    const result = await runSyncCore(host, store, { force, changeLog });
 
     for (const err of result.errors) {
       log(`Sync note: ${err}`);
@@ -975,18 +999,26 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
     // BEFORE publishing the uncategorized status, so the count the addon shows
     // and the notice's sweep both reflect what was just filed rather than
     // listing rows that now have a category.
-    await fileAmazonLabelledCharges(wfClient);
+    // What Undo told the after-sync filers not to do again — read once, after
+    // the sync. Unreadable is empty: the filers then behave as they always did.
+    const overrides = await syncOverridesOrEmpty((k) => wfClient.getAddonSecret('simplefin-sync', k));
+    await fileAmazonLabelledCharges(wfClient, changeLog.run, overrides);
 
     // A card's opening DEBT has to be a WITHDRAWAL on Wealthfolio 3.8, which its
     // Spending page reads as a purchase; filed under an excluded category it
     // counts nowhere. Best-effort, like the Amazon filing above.
+    const openingChanges: ChangeDraft[] = [];
     await fileCardOpeningDebts({
       dbPath: wealthfolioDbPath(),
       createCategory: (name) => wfClient.createSpendingCategory(name),
       setExcluded: (ids) => wfClient.setExcludedSpendingCategories(ids),
       assign: (activityId, categoryId) => wfClient.assignActivityCategory(activityId, SPENDING_TAXONOMY_ID, categoryId),
       log,
+      record: (draft) => openingChanges.push(draft),
+      noOpeningFile: (sfinId) => hasAccountOverride(overrides, sfinId, 'noOpeningFile'),
     }).catch((e) => log(`Card opening balance filing skipped: ${formatError(e)}`));
+    // After the catch: a filing that stopped half-way still logs what landed.
+    await recordCompanionChanges(wfClient, openingChanges, changeLog.run).catch((e) => log(`Change log skipped: ${formatError(e)}`));
 
     // The Reports tab's live editions, from the ledger this sync just updated.
     await publishLiveReports(wfClient).catch((e) => log(`Live reports skipped: ${formatError(e)}`));
@@ -2728,6 +2760,32 @@ const AFFORD_USAGE_REPLY = 'Usage: /afford 20 shopping';
 const SYNC_STARTED_REPLY = 'Syncing…';
 const SYNC_ALREADY_RUNNING_REPLY = 'Already syncing — hang on.';
 
+/**
+ * `/sync` and the change log's 🔄 Sync now: one FORCED run through the shared
+ * lock, joined when one is already running.
+ *
+ * Both handlers are attached to the run synchronously, BEFORE any caller
+ * awaits, and in BOTH branches. That ordering is the point: a sync that
+ * rejects while a caller is suspended would otherwise be an unhandled
+ * rejection, which kills the daemon and stops bank syncing — the same hazard
+ * the cron callbacks' `.catch` guards. It also makes `summary` a promise that
+ * can only ever FULFIL, with a string.
+ */
+export function startTelegramSync(): { started: boolean; summary: Promise<string> } {
+  const { started, result } = runCompanionSyncExclusive(() => runCompanionSync({ force: true }));
+  const summary = result.then(
+    (r) => formatSyncReply({
+      imported: r.imported,
+      skipped: r.skipped,
+      driftAlerts: r.balanceDriftAlerts.length,
+      errors: r.errors,
+    }),
+    // RAW error text: `formatSyncReply` escapes it itself.
+    (err) => formatSyncReply({ imported: 0, skipped: 0, driftAlerts: 0, errors: [formatError(err)] }),
+  );
+  return { started, summary };
+}
+
 /** One line for every way `/newrule`'s arguments can fail to parse — see
  *  `parseNewRuleArgs`, which deliberately does not distinguish them. */
 const NEWRULE_USAGE_REPLY = 'Usage: /newrule trader joes = groceries';
@@ -2821,6 +2879,9 @@ export function buildCategorizeDeps(wfClient: WealthfolioClient): CategorizeDeps
       // outranking every rule Nick wrote by hand.
       priority: 50,
     }),
+    // Every filing, move, Undo and rule this menu writes, as `actor: 'you'`.
+    // Fire and forget: the append never rejects, and the menu must not wait on it.
+    record: (draft) => { void recordCompanionChanges(wfClient, [draft]).catch(() => {}); },
     // Exactly as the sync path publishes it, so the tile the addon renders cannot
     // disagree with itself depending on which host last wrote it. Wrapped so it
     // can never throw: the controller already swallows a failure here, and this
@@ -3208,6 +3269,23 @@ export function buildTelegramCommandHandler(
         return;
       }
 
+      case 'changes': {
+        // Caught here, like /subscriptions: "Couldn't reach Wealthfolio" is the
+        // answer, not the listener's generic apology.
+        const now = new Date();
+        let read: ChangeLogRead;
+        try {
+          read = await readCompanionChangeLog(wfClient, now);
+        } catch (err) {
+          log(`/changes: reading failed: ${formatError(err)}`);
+          await reply(CHANGES_UNREACHABLE_REPLY);
+          return;
+        }
+        const screen = renderChangesCommand(read, cmd.args, now);
+        await reply(screen.text, screen.keyboard);
+        return;
+      }
+
       case 'status':
         await reply(formatStatusReply(await readStatusReplyInput(wfClient), new Date()));
         return;
@@ -3321,23 +3399,7 @@ export function buildTelegramCommandHandler(
         // not yet elapsed". The addon's Sync Now answers that with a "Sync
         // anyway" button; a chat command has no second click, so an explicit
         // request forces — which is what the design and the changelog promise.
-        const { started, result } = runCompanionSyncExclusive(() => runCompanionSync({ force: true }));
-        // Both handlers are attached to `result` synchronously, BEFORE the first
-        // `await`, and in BOTH branches. That ordering is the point: a sync that
-        // rejects while this function is suspended would otherwise be an
-        // unhandled rejection, which kills the daemon and stops bank syncing —
-        // the same hazard the cron callbacks' `.catch` guards. It also makes
-        // `summary` a promise that can only ever FULFIL, with a string.
-        const summary = result.then(
-          (r) => formatSyncReply({
-            imported: r.imported,
-            skipped: r.skipped,
-            driftAlerts: r.balanceDriftAlerts.length,
-            errors: r.errors,
-          }),
-          // RAW error text: `formatSyncReply` escapes it itself.
-          (err) => formatSyncReply({ imported: 0, skipped: 0, driftAlerts: 0, errors: [formatError(err)] }),
-        );
+        const { started, summary } = startTelegramSync();
 
         await reply(started ? SYNC_STARTED_REPLY : SYNC_ALREADY_RUNNING_REPLY);
 
@@ -3432,6 +3494,8 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
     readRules: () => new RestSyncStore(wfClient).getMappingRules(),
     writeRules: (rules) => new RestSyncStore(wfClient).setMappingRules(rules),
     log,
+    // Fire and forget: the append never rejects, and the reply must not wait on it.
+    record: (draft) => { void recordCompanionChanges(wfClient, [draft]).catch(() => {}); },
   });
 
   const amazonLabels: AmazonLabelMenu = sharedAmazonLabelMenu = createAmazonLabelMenu({
@@ -3489,6 +3553,17 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
       const { get, set } = subscriptionSecrets(wfClient);
       return editSubscriptionPrefs(get, set, edit, now);
     },
+    now: () => new Date(),
+    log,
+  });
+
+  // `/changes`. Stateless: every tap re-reads the log, so it survives restarts.
+  // Undo and Redo run here (R2) through the shared runner; Sync now is /sync.
+  const changes: ChangesMenu = createChangesMenu({
+    read: (now) => readCompanionChangeLog(wfClient, now),
+    undo: (entry, entries, op, variant) => runChangeUndo(entry, entries, op, companionUndoIo(wfClient, wealthfolioDbPath()), variant),
+    ruleFiledCount: async (entry) => companionRuleFiledCount(wealthfolioDbPath(), entry),
+    syncNow: () => startTelegramSync(),
     now: () => new Date(),
     log,
   });
@@ -3648,6 +3723,11 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
       // does not know as an expired session.
       if (subscriptions.handles(cb.data)) {
         await subscriptions.onCallback(cb, ui);
+        return;
+      }
+      // `cz:cl:` likewise, before the transaction menu's fallthrough.
+      if (changes.handles(cb.data)) {
+        await changes.onCallback(cb, ui);
         return;
       }
       if (cb.data !== RECATEGORIZE_ENTRY_CALLBACK) {

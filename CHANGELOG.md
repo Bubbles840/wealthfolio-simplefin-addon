@@ -8,6 +8,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **A change log.** Every change the sync, the companion and you make to your
+  books is recorded: each import, bank update and removed pending charge;
+  transfer links and transfers held in transit; removed duplicates; starting
+  balances and balance corrections; Amazon labels and filings; card
+  opening-balance filings; categories you set, moved or took off in Telegram;
+  rules you created; accounts you created. `/changes` in Telegram lists the
+  last 7 days (`/changes venmo` searches the last 90 days; background
+  bookkeeping is never matched), and **Settings → Change log** in the app shows
+  the last 90 days (30 by default) with filters. Recording can never fail or
+  alter a sync or something you did. When a change could not be saved to the
+  log, a note says so ("3 changes may be missing"); the add-on keeps such gaps
+  only in that tab's memory until the next successful save.
+- **Undo and Redo in the change log.** Most automatic decisions and every
+  filing you made can be undone from its entry — in `/changes` (`↩ Undo`,
+  `Redo`) or on the app card (Undo, Redo) — with no "are you sure?". The
+  result is said right there. Undoing a decision the sync makes (a transfer
+  link or a transfer held in transit, a removed duplicate, an automatic
+  balance correction, an import, an Amazon label) also tells the sync not to
+  make it again. Most of it happens at once: a correction is deleted, an
+  import is removed (and never imported again), an Amazon label comes off,
+  a removed duplicate is put back, and filings, category rules and starting
+  balances are reversed. Only these take effect on the next sync, where both
+  surfaces say so and offer **Sync now**: undoing a transfer link (both
+  halves are unlinked and each counts as spending or money in) or a transfer
+  held in transit, undoing or redoing a transaction rule, and redoing an
+  import, an Amazon label, a transfer link or hold (the next sync makes the
+  decision again) or a removed duplicate (the next re-scan removes the copy
+  again). A rule you created offers `↩ Undo rule` or `↩ Undo rule + un-file
+  N` (the N charges it filed go back to the needs-a-category list). An undo
+  never overwrites a filing, label, correction or starting balance changed
+  since: "It has changed since — nothing was undone." Some entries offer
+  nothing: a transfer the sync stopped waiting on, bank
+  updates, removed pending charges, background bookkeeping and accounts
+  created. **Your overrides**, at the bottom of the app card, lists what the
+  sync now leaves alone; Remove lets it decide again. Category and rule
+  entries are undone from Telegram (the add-on cannot reach categories); the
+  app says so, and it also sends you to Telegram for an import or Amazon
+  label on a transfer-typed row it cannot tell is unlinked (the app cannot
+  read Wealthfolio's transfer links, and undoing one half would remove both).
 - **The bot asks instead of making you remember argument order.** Send
   `/newrule` or `/afford` on its own, or tap **Set a new pool** under `/pool`,
   and it asks one question at a time — buttons where there is a choice, and
@@ -46,6 +85,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that — nothing was changed."); in the app, nothing changes. A document that
   is already unreadable is never overwritten: the app card turns read-only
   with a notice.
+- **Upgrade order (Undo):** update the companion before undoing a sync
+  decision in the app — until a companion that obeys overrides is running,
+  those Undo buttons stay off with "Update the companion first". Undo from
+  Telegram needs nothing more.
 - **Upgrade order:** update the addon (upload the zip and reload the tab)
   before using `/subscriptions` from Telegram. Hides made in a not-yet-updated
   addon after the companion has created the new document are not carried over.

@@ -13,7 +13,15 @@ import {
 } from './amazon-ledger.js';
 import type { AmazonLedger } from './amazon-ledger.js';
 import type { ActivityType, SimplefinTransaction, UnmappedAccount } from './types.js';
-import type { ActivityWrite, HoldingsSyncOutcome, ImportRow, LinkLeg, LinkResult, SaveManyRequest, SaveManyResult, SyncHost, SyncStore } from './sync-host.js';
+import type { ActivityWrite, HoldingsSyncOutcome, HostActivity, ImportRow, LinkLeg, LinkResult, SaveManyRequest, SaveManyResult, SyncHost, SyncStore } from './sync-host.js';
+import { unlinkPairByRecreate, type UnlinkLeg, type UnlinkResult } from './link-pair.js';
+import {
+  amazonLabelChange, amazonLabelOf, balanceCorrectionChange, bankUpdateChange, bookkeepingChange, duplicateRemovedChange,
+  importChange, pendingRemovedChange, stampChange, startingBalanceChange, startingBalanceMovedChange, transferLinkChange,
+  transferTypeChange,
+  type BaselineState, type ChangeAccount, type ChangeDraft, type ChangeEntry, type ChangeLogSink, type LinkLegFacts,
+} from './change-entries.js';
+import { emptySyncOverrides, hasAccountOverride, hasTxOverride } from './sync-overrides.js';
 
 /**
  * A datable timestamp for a SimpleFin transaction: `posted` when present, else
@@ -556,6 +564,14 @@ export interface SyncOptions {
    *  what this run imports) so the Sync page can offer a balance adjustment for
    *  anything SimpleFin can't supply. Implies force (bypasses the interval). */
   heal?: boolean;
+  /**
+   * Where this run's change-log entries go (shared/change-log.ts). Absent —
+   * an older host, a test that does not care — means nothing is recorded and
+   * nothing about the run changes. The core collects an entry for every write
+   * that SUCCEEDED and appends them once, at the end, best-effort: a failed
+   * append is caught here and never alters the result.
+   */
+  changeLog?: ChangeLogSink;
 }
 
 /** Distinct marker so the UI can recognise an interval skip and offer to
@@ -641,6 +657,8 @@ async function hasExistingStartingBalance(
  *  opening debt is a `TRANSFER_OUT` — reading only `WITHDRAWAL` as negative
  *  turned that debt into a credit the moment anything adjusted it. */
 const OUTFLOW_TYPES = new Set(['WITHDRAWAL', 'TRANSFER_OUT', 'FEE', 'TAX']);
+/** Money out when a re-created leg's sign must come from its stored type. */
+const UNLINK_OUTFLOW_TYPES = new Set(['WITHDRAWAL', 'TRANSFER_OUT', 'FEE', 'INTEREST']);
 
 const isoDay = (date: string) => new Date(date).toISOString().slice(0, 10);
 const dayBefore = (day: string) => new Date(Date.parse(`${day}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
@@ -749,9 +767,11 @@ async function attemptSave(
 async function saveWithRowFallback(
   host: SyncHost,
   req: SaveManyRequest,
-): Promise<SaveManyResult> {
+): Promise<SaveManyResult & { deleted: string[] }> {
   const bulk = await attemptSave(host, req);
-  if ((bulk.errors ?? []).length === 0) return bulk;
+  // `deleted`: the delete ids whose request came back clean — the only deletes
+  // the change log may claim. The error shape cannot say which id failed.
+  if ((bulk.errors ?? []).length === 0) return { ...bulk, deleted: [...(req.deleteIds ?? [])] };
 
   const created = [...(bulk.created ?? [])];
   const updated = [...(bulk.updated ?? [])];
@@ -763,9 +783,11 @@ async function saveWithRowFallback(
   );
   const landedUpdates = new Set(updated.map((a) => a.id).filter((id): id is string => !!id));
 
+  let deleted: string[] = [];
   if ((req.deleteIds ?? []).length > 0) {
     const del = await attemptSave(host, { deleteIds: req.deleteIds });
     for (const e of del.errors ?? []) errors.push(e);
+    if ((del.errors ?? []).length === 0) deleted = [...req.deleteIds!];
   }
 
   for (const u of req.updates ?? []) {
@@ -804,7 +826,7 @@ async function saveWithRowFallback(
     }
   }
 
-  return { created, updated, errors };
+  return { created, updated, errors, deleted };
 }
 
 /**
@@ -824,7 +846,7 @@ async function saveWithRowFallback(
 export async function applyBaselineFix(
   host: SyncHost,
   args: { wfAccountId: string; sfAccountId: string; suggestedAmount: number; currency: string },
-): Promise<{ applied: boolean; error?: string }> {
+): Promise<{ applied: boolean; error?: string; change?: BaselineMove }> {
   const { wfAccountId, sfAccountId, suggestedAmount, currency } = args;
   // Re-read instead of trusting the id the snapshot was built with: that
   // snapshot can be minutes old, and this writes to a financial row by id.
@@ -858,8 +880,19 @@ export async function applyBaselineFix(
   if (res.errors.length > 0) {
     return { applied: false, error: res.errors.map((e) => `${e.action}: ${e.message}`).join('; ') };
   }
-  return { applied: true };
+  return {
+    applied: true,
+    // For the change log: what the row was and what it is now.
+    change: {
+      activityId: baseline.id,
+      before: { amountCents: Math.round(baseline.signed * 100), date: baseline.date, activityType: baseline.activityType },
+      after: { amountCents: Math.round(suggestedAmount * 100), date: baseline.date, activityType: shape.activityType },
+    },
+  };
 }
+
+/** A starting balance rewritten in place: the row, before and after. */
+export interface BaselineMove { activityId: string; before: BaselineState; after: BaselineState }
 
 /**
  * Keep the starting-balance baseline in front of the history it stands for.
@@ -894,10 +927,10 @@ async function keepStartingBalanceOldest(
     /** The account's already-read rows: the lookup's fallback. */
     recent?: ReadonlyArray<{ wfId: string; comment?: string; date: string; type: string; absCents: number }>;
   },
-): Promise<number> {
+): Promise<BaselineMove | null> {
   const { wfAccountId, sfinAccountId, currency, accountType, created } = args;
   const sb = await fetchStartingBalance(host, wfAccountId, sfinAccountId, args.recent);
-  if (!sb) return 0;
+  if (!sb) return null;
   const older = created.filter((c) => c.date <= sb.date);
   const olderSum = older.reduce((sum, c) => sum + c.signed, 0);
   const netting = Number.isFinite(olderSum) && Math.abs(olderSum) >= 0.01;
@@ -905,14 +938,14 @@ async function keepStartingBalanceOldest(
     .filter((d): d is string => !!d)
     .reduce<string | null>((a, b) => (a === null || b < a ? b : a), null);
   const nextDate = earliest !== null && earliest <= sb.date ? dayBefore(earliest) : sb.date;
-  if (!netting && nextDate === sb.date) return 0;
+  if (!netting && nextDate === sb.date) return null;
   const nextSigned = netting ? Math.round((sb.signed - olderSum) * 100) / 100 : sb.signed;
   const activityType = netting
     // Through the same chooser that wrote the row, or an adjustment would
     // quietly flip a neutral baseline back into income.
     ? startingBalanceFields(accountType, nextSigned).activityType
     : sb.activityType;
-  await host.saveMany({
+  const res = await host.saveMany({
     updates: [{
       id: sb.id,
       accountId: wfAccountId,
@@ -928,7 +961,13 @@ async function keepStartingBalanceOldest(
       comment: `${STARTING_BALANCE_COMMENT_PREFIX}${sfinAccountId}`,
     }],
   });
-  return netting ? olderSum : 0;
+  // What moved, for the change log — only when the host took the update.
+  if ((res.errors ?? []).length > 0) return null;
+  return {
+    activityId: sb.id,
+    before: { amountCents: Math.round(sb.signed * 100), date: sb.date, activityType: sb.activityType },
+    after: { amountCents: Math.round(nextSigned * 100), date: nextDate, activityType },
+  };
 }
 
 /**
@@ -1500,9 +1539,9 @@ export function startingBalanceFields(
 export async function importAdjustmentActivity(
   host: SyncHost,
   args: { sfinAccountId: string; wfAccountId: string; currency: string; amount: number },
-): Promise<void> {
+): Promise<ImportRow | null> {
   const { sfinAccountId, wfAccountId, currency, amount } = args;
-  if (!Number.isFinite(amount) || Math.abs(amount) < 0.01) return;
+  if (!Number.isFinite(amount) || Math.abs(amount) < 0.01) return null;
   const today = new Date().toISOString().split('T')[0];
   const wfAccounts = await host.listAccounts().catch(() => []);
   const accountType = String(
@@ -1526,11 +1565,36 @@ export async function importAdjustmentActivity(
   };
   try {
     await host.importActivities([adjustment]);
+    // The row written, for the change log. Null below: nothing was written.
+    return adjustment;
   } catch (e: any) {
     const msg = String(e?.message ?? e);
     if (!msg.toLowerCase().includes('duplicate')) {
       throw e;
     }
+    return null;
+  }
+}
+
+/**
+ * The id of the row carrying `comment`, read back after an import — the
+ * import endpoint reports no ids. Undefined when the read fails or finds
+ * nothing: the change entry still names the row by its note.
+ */
+export async function rowIdByComment(
+  read: () => Promise<HostActivity[]>,
+  comment: string,
+  /** Also match the money, when several rows can share one note (two Add
+   *  adjustment taps on the same day). The LAST match wins: the newest row. */
+  money?: { amount?: unknown; fee?: unknown },
+): Promise<string | undefined> {
+  try {
+    const cents = (v: unknown) => Math.round(Number(v ?? 0) * 100);
+    const matches = (await read()).filter((a) => (a.comment ?? '') === comment
+      && (!money || (cents(a.amount) === cents(money.amount) && cents(a.fee) === cents(money.fee))));
+    return matches[matches.length - 1]?.id;
+  } catch {
+    return undefined;
   }
 }
 
@@ -1546,6 +1610,193 @@ export async function runSyncCore(
   host: SyncHost,
   store: SyncStore,
   opts: SyncOptions = {},
+): Promise<SyncResult> {
+  const sink = opts.changeLog;
+  const changes: ChangeEntry[] = [];
+  const logChange: RecordChange | null = sink
+    ? (build) => {
+      // Building an entry is not allowed to cost the work: a bug in a builder
+      // drops that one entry, never the account's sync.
+      try {
+        changes.push(stampChange(build(), sink.writer, new Date(), sink.run));
+      } catch (e: any) {
+        console.warn(`[simplefin-sync] change log: an entry was dropped: ${String(e?.message ?? e)}`);
+      }
+    }
+    : null;
+  try {
+    return await runSyncPass(host, store, opts, logChange);
+  } finally {
+    // Once, at the end, whatever happened above — and never at the run's
+    // expense: the sink is not supposed to reject, and if it does the result
+    // the caller gets is exactly the one it would have got without a log.
+    if (sink && changes.length > 0) {
+      try {
+        await sink.append(changes);
+      } catch (e: any) {
+        console.warn(`[simplefin-sync] change log: ${changes.length} change(s) not recorded: ${String(e?.message ?? e)}`);
+      }
+    }
+  }
+}
+
+/** Records one change-log entry for a write that succeeded. */
+type RecordChange = (build: () => ChangeDraft) => void;
+
+/** A row the unlink pre-pass read, with the SimpleFin account it sits in. */
+interface UnlinkSeen { sf: string; key: string; row: StoredRow }
+
+/** A linked pair an earlier unlink re-created as ordinary rows but could not
+ *  delete, confirmed for its cleanup this run. */
+interface StaleUnlinkPair {
+  gid: string;
+  /** The old linked legs, by row: one per leg, in account order. */
+  old: UnlinkSeen[];
+  /** Each leg's ordinary replacement, by row, in the same order. */
+  replacements: UnlinkSeen[];
+}
+
+/** What the unlink pre-pass decided, before any account is touched. */
+interface UnlinkPrepass {
+  /** Every account could be read. When false nothing about a pair being
+   *  unlinked is decided this run: no unlink, no cleanup delete, no duplicate
+   *  prune, no relink sweep, no drift measurement anywhere. */
+  certain: boolean;
+  /** Old linked legs kept out of every step of this run, by row id. */
+  hiddenIds: Set<string>;
+  /** Their groups, so a leg the pre-pass could not see is kept out too. */
+  heldGids: Set<string>;
+  /** Tx keys whose bank transaction stays out of the plan, so every row under
+   *  them is left exactly as it is this run. */
+  frozenKeys: Set<string>;
+  /** Tx keys of every held pair: never paired, linked or relinked this run. */
+  staleKeys: Set<string>;
+  /** Tx keys of every linked pair with a `notTransfer` leg: never pruned. */
+  pairKeys: Set<string>;
+  /** SimpleFin accounts holding a held pair: drift is not measured there. */
+  driftAccounts: Set<string>;
+  /** Pairs whose old linked legs may be deleted this run. */
+  cleanup: StaleUnlinkPair[];
+  /** Pairs left as they are this run, and why. */
+  waiting: Array<{ txIds: string[]; reason: string }>;
+}
+
+const emptyUnlinkPrepass = (): UnlinkPrepass => ({
+  certain: true, hiddenIds: new Set(), heldGids: new Set(), frozenKeys: new Set(), staleKeys: new Set(),
+  pairKeys: new Set(), driftAccounts: new Set(), cleanup: [], waiting: [],
+});
+
+/**
+ * The unlink pre-pass: every linked pair with a `notTransfer` leg, decided per
+ * PAIR across all accounts before any of them is touched.
+ *
+ * An unlink re-creates both legs as ordinary rows first and deletes the old
+ * linked pair after (`unlinkPairByRecreate`); when that delete fails, the old
+ * pair is still there next to the new rows and a later run deletes it. That
+ * cleanup obeys ONE rule: an old linked leg is deleted only when, in this same
+ * run, EVERY leg of its pair has a confirmed ordinary replacement row. Both
+ * halves of that are identified by ROW, never by tx key alone:
+ *  - a pair's legs are the transfer-typed rows in its group (the shared
+ *    `sourceGroupId`, or on a host that cannot read it this app's ledger entry
+ *    for the row's tx key) — exactly two, one out and one in, in two accounts.
+ *    A held in-transit placeholder is never one: it was never linked, and is
+ *    what the sync re-holds a leg as when its partner said "not a transfer".
+ *  - a replacement is an ordinary row (not a transfer type, not a placeholder,
+ *    not pending) under the leg's own tx key.
+ * Anything less certain leaves the pair exactly as it is and says why: an
+ * account that could not be read (then every pair with a `notTransfer` leg
+ * waits), an other half not in this sync, rows that cannot be told apart, a leg
+ * with no ordinary row yet. Never a delete under doubt: a stale pair waiting
+ * one more sync is visible and costs nothing; a wrong delete loses a row.
+ *
+ * A pair with a `notTransfer` leg and no replacement yet is a plain unlink,
+ * done after the account loop; it is only protected from the duplicate prune
+ * here (`pairKeys`).
+ */
+function planUnlinkPrepass(
+  seen: UnlinkSeen[],
+  certain: boolean,
+  gidOf: (x: UnlinkSeen) => string | undefined,
+  notTransfer: (key: string) => boolean,
+  describe: (x: UnlinkSeen) => string,
+  /** Groups an unread account may hold a leg of: the ledger's, where the host keeps one. */
+  unseenGids: string[],
+): UnlinkPrepass {
+  const out = { ...emptyUnlinkPrepass(), certain };
+  const isPlaceholder = (r: StoredRow) => (r.comment ?? '').startsWith(IN_TRANSIT_COMMENT_PREFIX);
+  const legs = seen.filter((x) => isTransferType(x.row.type) && !isPlaceholder(x.row) && !!gidOf(x));
+  const ordinary = new Map<string, UnlinkSeen[]>();
+  for (const x of seen) {
+    if (isTransferType(x.row.type) || isPlaceholder(x.row) || x.row.pending) continue;
+    ordinary.set(x.key, [...(ordinary.get(x.key) ?? []), x]);
+  }
+  const gids = new Set(legs.filter((x) => notTransfer(x.key)).map((x) => gidOf(x)!));
+  if (!certain) for (const g of unseenGids) gids.add(g);
+  for (const gid of gids) {
+    const members = legs.filter((x) => gidOf(x) === gid);
+    for (const m of members) out.pairKeys.add(m.key);
+    /** Kept out of this run; `frozen` also keeps their bank transactions out of the plan. */
+    const hold = (frozen: boolean) => {
+      out.heldGids.add(gid);
+      for (const m of members) {
+        out.hiddenIds.add(m.row.wfId);
+        out.staleKeys.add(m.key);
+        out.driftAccounts.add(m.sf);
+        if (frozen) out.frozenKeys.add(m.key);
+      }
+    };
+    if (!certain) {
+      hold(true);
+      continue;
+    }
+    // No leg re-created yet: a plain unlink, after the account loop.
+    if (!members.some((m) => notTransfer(m.key) && ordinary.has(m.key))) continue;
+    const types = new Set(members.map((m) => m.row.type));
+    const reason = members.length < 2
+      ? 'its other half is not in this sync'
+      : members.length > 2 || members[0].sf === members[1].sf || !types.has('TRANSFER_OUT') || !types.has('TRANSFER_IN')
+        ? 'its linked rows cannot be told apart'
+        : members.filter((m) => !ordinary.has(m.key)).map((m) => `${describe(m)} has no ordinary row of its own yet`)[0];
+    if (reason) {
+      // Hidden, but its transactions still reach the plan: an expiring
+      // placeholder or a missing row becomes the ordinary row a later run
+      // can confirm.
+      hold(false);
+      out.waiting.push({ txIds: members.map((m) => m.row.txId), reason });
+      continue;
+    }
+    // Frozen: the replacements stay exactly as confirmed (not re-held as a
+    // placeholder, say) whether or not the delete lands.
+    hold(true);
+    out.cleanup.push({ gid, old: members, replacements: members.map((m) => ordinary.get(m.key)![0]) });
+  }
+  return out;
+}
+
+/**
+ * A stored row as the create request that would make it again — what R2's
+ * undo needs to put back a duplicate the prune removed.
+ */
+function recreatePayload(row: StoredRow, currency: string): ActivityWrite {
+  return {
+    accountId: row.wfAccountId,
+    activityType: row.type,
+    activityDate: row.date,
+    ...(isTransferType(row.type) ? {} : { symbol: { symbol: `$CASH-${currency}` } }),
+    amount: row.absCents / 100,
+    ...(row.feeCents ? { fee: row.feeCents / 100 } : {}),
+    currency,
+    comment: row.comment ?? '',
+    ...(row.subtype ? { subtype: row.subtype } : {}),
+    ...(typeof row.flowExternal === 'boolean' ? { metadata: JSON.stringify({ flow: { is_external: row.flowExternal } }) } : {}),
+  };
+}
+
+async function runSyncPass(
+  host: SyncHost,
+  store: SyncStore,
+  opts: SyncOptions,
+  logChange: RecordChange | null,
 ): Promise<SyncResult> {
   const errors: string[] = [];
   const autoAdjust = await store.getAutoAdjust();
@@ -1749,6 +2000,9 @@ export async function runSyncCore(
     ((await store.getSkippedTransactions?.().catch(() => [])) ?? [])
       .map((s) => accountTxKey(s.account, s.txId)),
   );
+  /** What Undo told the sync not to do again (shared/sync-overrides.ts). A
+   *  failed or corrupt read is empty: the sync then behaves as it always did. */
+  const overrides = (await store.getSyncOverrides?.().catch(() => null)) ?? emptySyncOverrides();
 
   for (const sfAccount of accountSet.accounts) {
     const wfAccountId = mapping[sfAccount.id];
@@ -1785,14 +2039,20 @@ export async function runSyncCore(
     const prepared: PreparedTx[] = [];
     for (const tx of transactions) {
       const amount = parseFloat(tx.amount);
-      const { type, fromRule, subtype } = mapTransactionWithSource(
-        tx.description, amount, rules, wfTypes.get(wfAccountId),
-      );
+      const key = accountTxKey(sfAccount.id, tx.id);
+      // The person undid a transfer decision on this leg (`notTransfer`):
+      // neither a card-payment keyword nor a mapping rule may type it as a
+      // transfer. It becomes ordinary money in or out, the type a leg whose
+      // other half never arrived takes, and the rule's subtype goes with it.
+      const notTransfer = hasTxOverride(overrides, key, 'notTransfer');
+      const mapped = mapTransactionWithSource(tx.description, amount, rules, wfTypes.get(wfAccountId));
+      const { type, fromRule, subtype } = notTransfer && isTransferType(mapped.type)
+        ? { type: expiredTransferLegType(wfTypes.get(wfAccountId) ?? '', amount), fromRule: false, subtype: undefined }
+        : mapped;
       prepared.push({
         sfAccountId: sfAccount.id, tx, type,
         ...(subtype ? { subtype } : {}),
       });
-      const key = accountTxKey(sfAccount.id, tx.id);
       // Amazon categories go on AFTER typing: `mapTransactionWithSource` above
       // matches the user's merchant rules against the bank's own text, and
       // enriching first would change what those rules see.
@@ -1808,13 +2068,18 @@ export async function runSyncCore(
           postedMs: txEpoch(tx)! * 1000,
           txKey: key,
         });
-        if (hit) {
+        // Still matched and consumed when the person undid this charge's
+        // label: the order HAS been found, and a live record would be offered
+        // to the next charge of the same amount. Only the label stays off.
+        if (hit && !hasTxOverride(overrides, key, 'noAmazonLabel')) {
           description = amazonDescription(description, hit.labels, hit.partial);
           if (description !== tx.description) {
             const forAccount = amazonLabelled.get(sfAccount.id) ?? new Map<string, { bare: string; enriched: string }>();
             forAccount.set(tx.id, { bare: tx.description, enriched: description });
             amazonLabelled.set(sfAccount.id, forAccount);
           }
+        }
+        if (hit) {
           // Consumed even when this row already exists in Wealthfolio and so
           // won't be re-written: the charge for that order HAS been found, and
           // leaving the record live would offer it to the next charge of the
@@ -1828,6 +2093,8 @@ export async function runSyncCore(
       // Pending transactions are provisional — exclude them from transfer
       // pairing so a not-yet-settled row can't lock in a TRANSFER typing.
       if (tx.pending) continue;
+      // Never paired: pairing would type it a transfer and link it again.
+      if (notTransfer) continue;
       // A rule's type is never overridden by pair detection, which is why ruled
       // rows sit out of it — except a rule that already says "transfer, this way".
       // Pairing assigns that very type, so all it adds is the link; leaving such a
@@ -2076,6 +2343,44 @@ export async function runSyncCore(
   }
   /** Overwritten legs this run adopted, re-linked under their own identity after the loop. */
   const overwrittenLegs: Array<{ aliasKey: string; partnerTxId: string; sfAccountId: string }> = [];
+  /** Linked legs carrying `notTransfer`, kept out of their account's plan and
+   *  unlinked — with their partner — after the loop. */
+  const unlinkKeys = new Set<string>();
+  const notTransferKey = (key: string) => hasTxOverride(overrides, key, 'notTransfer');
+  /** A stored row's transfer group: its own where the host reads it, the ledger's otherwise. */
+  const gidOfRow = (sf: string, row: StoredRow): string | undefined => (readsGroups
+    ? row.sourceGroupId || undefined
+    : ledger[accountTxKey(sf, row.txId)] ?? ledger[row.txId]);
+  // Every linked pair with a `notTransfer` leg, decided per PAIR across
+  // accounts before any account is touched (see planUnlinkPrepass). Only read
+  // when an override could make it matter.
+  let unlinkPrepass = emptyUnlinkPrepass();
+  if (Object.values(overrides.tx).some((o) => o.notTransfer)) {
+    const seen: UnlinkSeen[] = [];
+    let certain = true;
+    for (const acc of accountSet.accounts) {
+      const wf = mapping[acc.id];
+      if (!wf) continue;
+      try {
+        for (const row of await fetchExistingRows(host, wf)) seen.push({ sf: acc.id, key: accountTxKey(acc.id, row.txId), row });
+      } catch {
+        // Not "nothing there": an unread account may hold the other half of
+        // a pair, so nothing about any of them is decided this run.
+        certain = false;
+      }
+    }
+    unlinkPrepass = planUnlinkPrepass(
+      seen, certain,
+      (x) => gidOfRow(x.sf, x.row),
+      notTransferKey,
+      (x) => descByKey.get(x.key) || descriptionFromComment(x.row.comment) || x.row.txId,
+      readsGroups ? [] : Object.entries(ledger).filter(([k]) => notTransferKey(k)).map(([, g]) => g),
+    );
+  }
+  const { hiddenIds: unlinkHiddenIds, heldGids, frozenKeys, staleKeys, pairKeys, driftAccounts } = unlinkPrepass;
+  /** Groups a leg was found in only by the account loop: their cleanup, if
+   *  any, is no longer confirmed (a third row cannot be told apart). */
+  const lateGids = new Set<string>();
 
   for (const sfAccount of accountSet.accounts) {
     const wfAccountId = mapping[sfAccount.id];
@@ -2083,6 +2388,13 @@ export async function runSyncCore(
 
     try {
     const preparedAll = preparedByAccount.get(sfAccount.id) ?? [];
+    /** This account, as change-log entries name it. */
+    const accountRef: ChangeAccount = { sfinId: sfAccount.id, wfId: wfAccountId, name: wfNames.get(wfAccountId) || sfAccount.name };
+    /** A row's signed amount in cents: the feed's when it has the row, else from the type. */
+    const signedCentsOf = (txId: string, type: string, absCents: number): number => {
+      const signed = signedByKey.get(accountTxKey(sfAccount.id, txId));
+      return signed !== undefined ? Math.round(signed * 100) : OUTFLOW_TYPES.has(type) ? -absCents : absCents;
+    };
 
     // Build the feed for this account and reconcile it against the rows already
     // imported (matched by SimpleFin tx id, so a changed resolved type updates
@@ -2111,6 +2423,31 @@ export async function runSyncCore(
       existing = await fetchExistingRows(host, wfAccountId);
     } catch {
       // read unavailable — proceed as if no rows exist
+    }
+
+    // ── Pairs the unlink pre-pass holds (see planUnlinkPrepass) ─────────────
+    // Their old linked legs leave the snapshot here, so nothing below — the
+    // prune, the repairs, the plan, the link step — can update or delete one.
+    // Plus any leg the pre-pass could not see: one in a held group, and, when
+    // an account could not be read, every linked leg the person undid.
+    if (unlinkHiddenIds.size > 0 || heldGids.size > 0 || !unlinkPrepass.certain) {
+      const isLinkedLeg = (r: StoredRow) => isTransferType(r.type)
+        && !(r.comment ?? '').startsWith(IN_TRANSIT_COMMENT_PREFIX) && !!gidOfRow(sfAccount.id, r);
+      const held = existing.filter((r) => unlinkHiddenIds.has(r.wfId) || (isLinkedLeg(r)
+        && (heldGids.has(gidOfRow(sfAccount.id, r)!) || (!unlinkPrepass.certain && notTransferKey(accountTxKey(sfAccount.id, r.txId))))));
+      for (const r of held) {
+        if (unlinkHiddenIds.has(r.wfId)) continue;
+        const key = accountTxKey(sfAccount.id, r.txId);
+        const gid = gidOfRow(sfAccount.id, r)!;
+        if (heldGids.has(gid)) lateGids.add(gid);
+        heldGids.add(gid);
+        staleKeys.add(key);
+        pairKeys.add(key);
+        driftAccounts.add(sfAccount.id);
+        if (!unlinkPrepass.certain) frozenKeys.add(key);
+      }
+      const heldIds = new Set(held.map((r) => r.wfId));
+      existing = existing.filter((r) => !heldIds.has(r.wfId));
     }
 
     // ── Duplicate prune (heal/reconcile only) ────────────────────────────────
@@ -2144,9 +2481,21 @@ export async function runSyncCore(
     // wide window, which is what gives the sweep the feed evidence it needs. A
     // routine sync never deletes anything.
     let prunedThisAccount = 0;
-    if (heal) {
+    // Not at all when the unlink pre-pass could not read every account: a
+    // pair being unlinked may have rows here it could not see.
+    if (heal && unlinkPrepass.certain) {
       const feedByTxId = new Map(feed.map((t) => [t.txId, t]));
-      const surplus = planDuplicatePrune(existing, new Set(feedByTxId.keys()));
+      // Copies the person chose to keep (Undo of a removed duplicate) are left
+      // out of the sweep entirely — every copy shares the one tx key.
+      const surplus = planDuplicatePrune(
+        existing.filter((r) => !hasTxOverride(overrides, accountTxKey(sfAccount.id, r.txId), 'keepDuplicate')
+          // A pair being unlinked has, for a moment, an old linked row and its
+          // ordinary replacement under one tx id: not duplicates to prune —
+          // neither half of it, override or not.
+          && !notTransferKey(accountTxKey(sfAccount.id, r.txId))
+          && !pairKeys.has(accountTxKey(sfAccount.id, r.txId))),
+        new Set(feedByTxId.keys()),
+      );
       if (surplus.length > 0) {
         const surplusIds = new Set(surplus.map((r) => r.wfId));
         // Drop them from the snapshot even if the delete below fails: a row we
@@ -2188,6 +2537,15 @@ export async function runSyncCore(
               `[simplefin-sync] ${DUPLICATE_PRUNE_LOG_TAG}: deleted activity ${row.wfId} — a surplus copy of transaction ${row.txId} in account ${sfAccount.id}`,
               entry,
             );
+            logChange?.(() => duplicateRemovedChange({
+              account: accountRef,
+              txKey: accountTxKey(sfAccount.id, row.txId),
+              activityId: row.wfId,
+              description: entry.description,
+              amountCents: signedCentsOf(row.txId, row.type, entry.amountCents),
+              date: row.date,
+              payload: { ...recreatePayload(row, sfAccount.currency) },
+            }));
           }
         }
       }
@@ -2210,6 +2568,7 @@ export async function runSyncCore(
             const row = existing.find((r) => r.wfId === u.id);
             if (row) { row.type = u.activityType; row.absCents = Math.round((u.amount ?? 0) * 100); row.feeCents = 0; }
           }
+          logChange?.(() => bookkeepingChange({ step: 'legacy-placeholder', account: accountRef, activityIds: legacyRewrites.map((u) => u.id!) }));
           console.info(
             `[simplefin-sync] ${LEGACY_PLACEHOLDER_REWRITE_LOG_TAG}: restated ${legacyRewrites.length} pre-v1.49 placeholder(s) in account ${sfAccount.id} as TRANSFER_OUT with their real amounts`,
           );
@@ -2233,6 +2592,7 @@ export async function runSyncCore(
             const row = existing.find((r) => r.wfId === u.id);
             if (row) row.flowExternal = true;
           }
+          logChange?.(() => bookkeepingChange({ step: 'external-marker', account: accountRef, activityIds: stamps.map((u) => u.id!) }));
           console.info(
             `[simplefin-sync] ${EXTERNAL_MARKER_STAMP_LOG_TAG}: marked ${stamps.length} opening-balance/plug/in-transit row(s) in account ${sfAccount.id} as external, so Wealthfolio stops reporting them as incomplete transfers`,
           );
@@ -2256,7 +2616,22 @@ export async function runSyncCore(
         } else {
           for (const u of lateLabels) {
             const row = existing.find((r) => r.wfId === u.id);
-            if (row) row.comment = u.comment;
+            if (!row) continue;
+            const hit = amazonLabelled.get(sfAccount.id)?.get(row.txId);
+            if (hit) {
+              logChange?.(() => amazonLabelChange({
+                account: accountRef,
+                txKey: accountTxKey(sfAccount.id, row.txId),
+                activityId: row.wfId,
+                description: hit.bare,
+                amountCents: signedCentsOf(row.txId, row.type, row.absCents),
+                date: row.date,
+                beforeNote: row.comment ?? '',
+                afterNote: u.comment,
+                label: amazonLabelOf(hit.bare, hit.enriched),
+              }));
+            }
+            row.comment = u.comment;
           }
           console.info(
             `[simplefin-sync] ${AMAZON_LATE_LABEL_LOG_TAG}: added the Amazon category to ${lateLabels.length} charge(s) in account ${sfAccount.id} imported before their order email was read`,
@@ -2272,14 +2647,40 @@ export async function runSyncCore(
     // create (Wealthfolio would refuse it, or worse store a second copy) and no
     // update (an update to a linked leg overwrites its partner in turn). They are
     // re-linked under their own identity after the loop.
+    /** The bank's transactions this account's plan may act on: none under a
+     *  key the unlink pre-pass froze, whose rows stay exactly as they are. */
+    const liveFeed = feed.filter((t) => !frozenKeys.has(accountTxKey(sfAccount.id, t.txId)));
     const adoptions = planOverwrittenLegAdoptions(
-      feed, existing,
+      liveFeed, existing,
       (txId) => (signedByKey.get(accountTxKey(sfAccount.id, txId)) ?? 0) > 0,
       (txId) => [...(accountsByTxId.get(txId) ?? [])].some((id) => id !== sfAccount.id),
     );
     const adoptedRowIds = new Set(adoptions.map((a) => a.row.wfId));
     const adoptedTxIds = new Set(adoptions.map((a) => a.tx.txId));
-    const planExisting = existing.filter((r) => !adoptedRowIds.has(r.wfId));
+    const planExistingAll = existing.filter((r) => !adoptedRowIds.has(r.wfId));
+    // The ledger knows tx keys, not rows: under a key whose linked leg the
+    // unlink pre-pass took out of the snapshot, every row left is NOT linked
+    // (a held placeholder kept as a "linked leg" would lose its marker and
+    // never expire).
+    const isLinkedRow = (row: ExistingRow & { sourceGroupId?: string | null }) => readsGroups
+      ? !!row.sourceGroupId
+      : !staleKeys.has(accountTxKey(sfAccount.id, row.txId))
+        && (ledger[accountTxKey(sfAccount.id, row.txId)] !== undefined || ledger[row.txId] !== undefined);
+    const isNotTransferLeg = (r: ExistingRow) => isTransferType(r.type)
+      && hasTxOverride(overrides, accountTxKey(sfAccount.id, r.txId), 'notTransfer');
+    // A host that cannot read groups only knows the links its own ledger
+    // recorded. Any other transfer leg the person undid may be linked by the
+    // companion, and updating one leg of a linked pair rewrites its partner:
+    // leave it for the companion. (A held placeholder is never linked.)
+    const foreign = readsGroups ? [] : planExistingAll.filter((r) => isNotTransferLeg(r) && !isLinkedRow(r)
+      && !(r.comment ?? '').startsWith(IN_TRANSIT_COMMENT_PREFIX));
+    for (const r of foreign) {
+      const key = accountTxKey(sfAccount.id, r.txId);
+      errors.push(`Left ${descByKey.get(key) || descriptionFromComment(r.comment) || r.txId} as it is: this app has no record of linking it; the companion will unlink it on its next sync.`);
+    }
+    const hiddenIds = new Set(foreign.map((r) => r.wfId));
+    const foreignTxIds = new Set(foreign.map((r) => r.txId));
+    const planExisting = planExistingAll.filter((r) => !hiddenIds.has(r.wfId));
     for (const { row, tx } of adoptions) {
       const aliasKey = accountTxKey(sfAccount.id, tx.txId);
       // `comment` unset so toLinkLeg rebuilds this account's own description.
@@ -2298,17 +2699,22 @@ export async function runSyncCore(
         ...row, currency: sfAccount.currency, sfAccountId: sfAccount.id,
       });
     }
-    const isLinkedRow = (row: ExistingRow & { sourceGroupId?: string | null }) => readsGroups
-      ? !!row.sourceGroupId
-      : ledger[accountTxKey(sfAccount.id, row.txId)] !== undefined || ledger[row.txId] !== undefined;
+    // A LINKED leg the person said is not a transfer is unlinked after the
+    // loop, both halves together, and kept out of this plan meanwhile: an
+    // update to one leg of a linked pair is copied onto the other.
+    const unlinking = planExisting.filter((r) => isTransferType(r.type) && isLinkedRow(r)
+      && hasTxOverride(overrides, accountTxKey(sfAccount.id, r.txId), 'notTransfer'));
+    for (const r of unlinking) unlinkKeys.add(accountTxKey(sfAccount.id, r.txId));
+    const unlinkingIds = new Set(unlinking.map((r) => r.wfId));
+    const unlinkingTxIds = new Set(unlinking.map((r) => r.txId));
     const storedByTxId = new Map(planExisting.map((r) => [r.txId, r]));
-    const planFeed = feed
-      .filter((t) => !adoptedTxIds.has(t.txId))
+    const planFeed = liveFeed
+      .filter((t) => !adoptedTxIds.has(t.txId) && !unlinkingTxIds.has(t.txId) && !foreignTxIds.has(t.txId))
       .map((t) => {
         const row = storedByTxId.get(t.txId);
         return keepLinkedLegAsStored(t, row, !!row && isLinkedRow(row));
       });
-    const plan = planReconciliation(planFeed, planExisting);
+    const plan = planReconciliation(planFeed, planExisting.filter((r) => !unlinkingIds.has(r.wfId)));
 
     // State the post-save drift correction needs (see "windowDelta assumed" below).
     // Captured BEFORE the measurement so a rollback can put the episode ledger back
@@ -2363,7 +2769,11 @@ export async function runSyncCore(
       // then write that amount into the account as a balance adjustment: the very
       // figure the prune just removed, put straight back. Not measurable this run.
       const createOnly =
-        plan.updates.length === 0 && plan.deleteIds.length === 0 && prunedThisAccount === 0;
+        plan.updates.length === 0 && plan.deleteIds.length === 0 && prunedThisAccount === 0
+        // `wfValuation` still counts the old linked rows of a held pair (see
+        // planUnlinkPrepass) — and with an unread account, any account may
+        // hold one.
+        && unlinkPrepass.certain && !driftAccounts.has(sfAccount.id);
       // Heal re-scans wide and imports, so it must subtract what it creates
       // (lag-free: WF's balance becomes wfValuation + creates). A normal sync
       // only trusts drift when nothing was created (valuation is otherwise
@@ -2482,19 +2892,36 @@ export async function runSyncCore(
           ? Date.now() - Date.parse(openEpisode.firstDetectedAt) < BASELINE_FIX_MIN_DRIFT_AGE_MS
           : driftAlertThresholdCents > 0 &&
             Math.abs(Math.round((drift ?? 0) * 100)) > driftAlertThresholdCents;
-        if (heal && autoAdjust && drift != null && !youngEpisode) {
+        // The person undid an automatic correction on this account: no plug, but
+        // `drift` and `measuredDrift` stay as measured, so the account is still
+        // reported (Sync page, alert, the morning 🧹 list).
+        const noAutoCorrect = hasAccountOverride(overrides, sfAccount.id, 'noAutoCorrect');
+        if (heal && autoAdjust && drift != null && !youngEpisode && !noAutoCorrect) {
           const alreadyToday = await hasAdjustmentToday(host, wfAccountId, sfAccount.id).catch(
             () => false,
           );
           if (!alreadyToday) {
             try {
-              await importAdjustmentActivity(host, {
+              const plug = await importAdjustmentActivity(host, {
                 sfinAccountId: sfAccount.id,
                 wfAccountId,
                 currency: sfAccount.currency,
                 amount: drift,
               });
               imported += 1;
+              if (plug && logChange) {
+                const driftCents = Math.round(drift * 100);
+                const plugId = await rowIdByComment(() => host.listActivities(wfAccountId), plug.comment);
+                logChange(() => balanceCorrectionChange({
+                  account: accountRef,
+                  actor: 'auto',
+                  activityId: plugId,
+                  amountCents: driftCents,
+                  date: plug.date,
+                  activityType: plug.activityType,
+                  comment: plug.comment,
+                }));
+              }
             } catch (e: any) {
               const msg = String(e?.message ?? e);
               if (!msg.toLowerCase().includes('duplicate')) {
@@ -2845,12 +3272,89 @@ export async function runSyncCore(
           sfAccountId: sfAccount.id,
         });
       }
+
+      // The change log: an entry per write the host CONFIRMED — a create or an
+      // update off its echo, a delete only when its request came back clean.
+      // A refused create is in none of these and records nothing (it is on
+      // `refusedCreates` already).
+      if (logChange) {
+        for (const a of result.created ?? []) {
+          const txId = txIdFromComment(a.comment);
+          const t = txId ? createdFeedByTxId.get(txId) : undefined;
+          if (!txId || !t || !a.id) continue;
+          const key = accountTxKey(sfAccount.id, txId);
+          const facts = () => ({
+            account: accountRef, txKey: key, activityId: a.id, description: descByKey.get(key) ?? '',
+            amountCents: signedCentsOf(txId, t.type, t.absCents), date: t.date,
+          });
+          logChange(() => importChange({ ...facts(), pending: !!t.pending, activityType: t.type }));
+          // Held as a transfer that has not found its other half: a decision
+          // of its own, undone in R2 with `notTransfer` on this leg.
+          if (t.inTransit) logChange(() => transferTypeChange({ ...facts(), activityType: t.type, previousType: null, held: true }));
+        }
+        const updateTo = new Map(plan.updates.map((u) => [u.wfId, u.to]));
+        for (const a of result.updated ?? []) {
+          const to = a.id ? updateTo.get(a.id) : undefined;
+          const stored = to ? planExisting.find((r) => r.wfId === a.id) : undefined;
+          if (!to || !stored) continue;
+          const key = accountTxKey(sfAccount.id, to.txId);
+          const facts = () => ({
+            account: accountRef, txKey: key, activityId: stored.wfId,
+            description: descByKey.get(key) ?? descriptionFromComment(stored.comment),
+            amountCents: signedCentsOf(to.txId, to.type, to.absCents), date: to.date,
+          });
+          // Two of these are the sync's own transfer decisions, not the bank's:
+          // a row now held in transit, and a placeholder that ran out of time
+          // (an unpaired leg always passes through the placeholder first).
+          const wasInTransit = (stored.comment ?? '').startsWith(IN_TRANSIT_COMMENT_PREFIX);
+          if (to.inTransit && !wasInTransit) {
+            logChange(() => transferTypeChange({ ...facts(), activityType: to.type, previousType: stored.type, held: true }));
+          } else if (wasInTransit && !to.inTransit && !isTransferType(to.type)) {
+            logChange(() => transferTypeChange({
+              ...facts(), activityType: to.type, previousType: stored.type, held: false,
+              ...(hasTxOverride(overrides, key, 'notTransfer') ? { undone: true } : {}),
+            }));
+          } else if (wasInTransit && !to.inTransit) {
+            // A held leg found its other half: the `transfer-link` entry that
+            // follows is the record of this (and carries the undo). The row
+            // update itself is the link's plumbing, not a bank change.
+          } else if (
+            // The bank finishing the charge — same id, same everything but
+            // the pending flag — is not worth an entry (it would be one per
+            // pending row, forever).
+            to.txId === stored.txId && stored.pending && !to.pending
+            && stored.absCents === to.absCents && stored.type === to.type && stored.date === to.date
+            && !(to.subtype && (stored.subtype ?? '').trim().toUpperCase() !== to.subtype.trim().toUpperCase())
+          ) {
+            // record nothing
+          } else {
+            logChange(() => bankUpdateChange({
+              ...facts(),
+              ...(to.txId !== stored.txId ? { previousTxKey: accountTxKey(sfAccount.id, stored.txId) } : {}),
+              before: { absCents: stored.absCents, date: stored.date, pending: stored.pending, activityType: stored.type, subtype: stored.subtype ?? null },
+              after: { absCents: to.absCents, date: to.date, pending: to.pending, activityType: to.type, subtype: to.subtype ?? null },
+            }));
+          }
+        }
+        for (const id of result.deleted) {
+          const stored = planExisting.find((r) => r.wfId === id);
+          if (!stored) continue;
+          logChange(() => pendingRemovedChange({
+            account: accountRef,
+            txKey: accountTxKey(sfAccount.id, stored.txId),
+            activityId: stored.wfId,
+            description: descriptionFromComment(stored.comment),
+            amountCents: signedCentsOf(stored.txId, stored.type, stored.absCents),
+            date: stored.date,
+          }));
+        }
+      }
     }
 
     // Every run, not only one that imported: a baseline stranded after older
     // history by an earlier version has no new row to trigger its repair.
     try {
-      await keepStartingBalanceOldest(host, {
+      const moved = await keepStartingBalanceOldest(host, {
         wfAccountId,
         sfinAccountId: sfAccount.id,
         currency: sfAccount.currency,
@@ -2858,6 +3362,7 @@ export async function runSyncCore(
         created: baselineCreated,
         recent: existing,
       });
+      if (moved) logChange?.(() => startingBalanceMovedChange({ account: accountRef, actor: 'auto', ...moved }));
     } catch (e: any) {
       errors.push(`Account ${wfAccountId} starting-balance adjust failed: ${e?.message ?? e}`);
     }
@@ -2917,6 +3422,17 @@ export async function runSyncCore(
         try {
           await host.importActivities([correction]);
           imported += 1;
+          if (logChange) {
+            const sbId = await rowIdByComment(() => host.listOldestActivities(wfAccountId, STARTING_BALANCE_SCAN), correction.comment);
+            logChange(() => startingBalanceChange({
+              account: accountRef,
+              activityId: sbId,
+              amountCents: Math.round(starting * 100),
+              date: correction.date,
+              activityType: correction.activityType,
+              comment: correction.comment,
+            }));
+          }
         } catch (importErr: any) {
           // If the starting balance already exists or failed gracefully, log/ignore duplicate
           const msg = String(importErr?.message ?? importErr);
@@ -2998,6 +3514,21 @@ export async function runSyncCore(
             };
             await host.importActivities([correction]);
             imported += 1;
+            if (logChange) {
+              const sbId = await rowIdByComment(() => host.listOldestActivities(p.wfAccountId, STARTING_BALANCE_SCAN), correction.comment);
+              logChange(() => startingBalanceChange({
+                account: {
+                  sfinId: p.sfinAccountId,
+                  wfId: p.wfAccountId,
+                  name: wfNames.get(p.wfAccountId) || (accountSet.accounts.find((a) => a.id === p.sfinAccountId)?.name ?? ''),
+                },
+                activityId: sbId,
+                amountCents: Math.round(starting * 100),
+                date: correction.date,
+                activityType: correction.activityType,
+                comment: correction.comment,
+              }));
+            }
           }
           await store.addBalanceInitialized(p.sfinAccountId);
         } catch {
@@ -3042,12 +3573,124 @@ export async function runSyncCore(
       comment,
     };
   };
+
+  // ── Unlink: a linked pair with a leg the person said is not a transfer ──
+  //
+  // Both legs are deleted together and re-created as ordinary money in or out
+  // (`unlinkPairByRecreate`), and every later step this run leaves them alone.
+  // The partner is found the way "already linked?" is answered: the rows'
+  // shared group where the host reads it, the ledger where it cannot. A leg
+  // whose other half is not in view is left linked and reported — deleting one
+  // leg of a pair deletes both, and the unseen half could not be re-created.
+  // A pair the pre-pass holds is in here from the start: no step this run
+  // pairs, links or relinks it (each of those deletes and re-creates a row,
+  // and the re-create would collide with an old linked leg still standing).
+  const unlinkedKeys = new Set<string>(staleKeys);
+  const partnerKeyOf = (key: string, row: LinkableRow): string | null => {
+    const gid = readsGroups ? row.sourceGroupId : (ledger[key] ?? ledger[row.txId]);
+    if (!gid) return null;
+    for (const [k, r] of linkRowByKey) {
+      if (k === key || r.sfAccountId === row.sfAccountId) continue;
+      const same = readsGroups
+        ? r.sourceGroupId === gid
+        : ledger[k] === gid || (r.txId !== row.txId && ledger[r.txId] === gid);
+      if (same) return k;
+    }
+    return null;
+  };
+  for (const key of unlinkKeys) {
+    if (unlinkedKeys.has(key)) continue;
+    const row = linkRowByKey.get(key);
+    if (!row) continue;
+    const partnerKey = partnerKeyOf(key, row);
+    const partner = partnerKey ? linkRowByKey.get(partnerKey) : undefined;
+    unlinkedKeys.add(key);
+    if (!partner || !partnerKey) {
+      errors.push(`Could not unlink ${descByKey.get(key) || descriptionFromComment(row.comment) || row.txId}: its other half is not in this sync — it stays linked for now`);
+      continue;
+    }
+    unlinkedKeys.add(partnerKey);
+    const leg = (r: LinkableRow): UnlinkLeg => {
+      const base = toLinkLeg(r);
+      // The feed's own sign when the leg is in it; else from the stored type.
+      const fed = signedByKey.get(accountTxKey(r.sfAccountId, r.txId));
+      const signed = fed !== undefined ? Math.round(fed * 100)
+        : UNLINK_OUTFLOW_TYPES.has(r.type) ? -r.absCents : r.absCents;
+      return { ...base, accountName: wfNames.get(r.wfAccountId), newType: expiredTransferLegType(wfTypes.get(r.wfAccountId) ?? '', signed) };
+    };
+    let result: UnlinkResult;
+    try {
+      result = await unlinkPairByRecreate((req) => host.saveMany(req), [leg(row), leg(partner)]);
+    } catch (e: any) {
+      result = { unlinked: false, problems: [String(e?.message ?? e)] };
+    }
+    if (!result.unlinked) {
+      for (const p of result.problems ?? []) errors.push(`Transfer-unlink ${result.stale ? 'incomplete' : 'failed'} (${row.txId}/${partner.txId}): ${p}`);
+      continue;
+    }
+    if (!readsGroups) {
+      const gid = ledger[key] ?? ledger[row.txId];
+      for (const [k, r] of [[key, row], [partnerKey, partner]] as const) {
+        if (k in ledger) { delete ledger[k]; ledgerChanged = true; }
+        if (r.txId in ledger && ledger[r.txId] === gid) { delete ledger[r.txId]; ledgerChanged = true; }
+      }
+    }
+    const unlinkedPair: Array<[string, LinkableRow]> = [[key, row], [partnerKey, partner]];
+    logChange?.(() => bookkeepingChange({
+      step: 'transfer-unlink', activityIds: result.activityIds ?? [row.wfId, partner.wfId],
+      legs: unlinkedPair.map(([k, r]) => ({ txKey: k, description: descByKey.get(k) || descriptionFromComment(r.comment) || r.txId })),
+    }));
+  }
+
+  // The old linked pair of an unlink whose delete failed last time, confirmed
+  // by planUnlinkPrepass: each leg has its ordinary row already, so this only
+  // deletes — no second create. One request per pair, so each says how it went.
+  for (const pair of unlinkPrepass.cleanup) {
+    const txIds = pair.old.map((m) => m.row.txId).join('/');
+    if (lateGids.has(pair.gid)) {
+      unlinkPrepass.waiting.push({ txIds: pair.old.map((m) => m.row.txId), reason: 'its linked rows cannot be told apart' });
+      continue;
+    }
+    let problem: string | null = null;
+    try {
+      const del = await host.saveMany({ deleteIds: pair.old.map((m) => m.row.wfId) });
+      if (del.errors.length > 0) problem = del.errors.map((e) => `${e.action}: ${e.message}`).join('; ');
+    } catch (e: any) {
+      problem = String(e?.message ?? e);
+    }
+    if (problem !== null) {
+      errors.push(`Transfer-unlink cleanup incomplete (${txIds}): the old linked pair is still there next to the new rows: ${problem}`);
+      continue;
+    }
+    if (!readsGroups) {
+      // Both legs' entries go: they share the pair's group id.
+      for (const [k, g] of Object.entries(ledger)) {
+        if (g === pair.gid) { delete ledger[k]; ledgerChanged = true; }
+      }
+    }
+    logChange?.(() => bookkeepingChange({
+      step: 'transfer-unlink', pairs: 1, rows: pair.replacements.length,
+      activityIds: [...pair.replacements, ...pair.old].map((m) => m.row.wfId),
+      legs: pair.old.map((m) => ({ txKey: m.key, description: descByKey.get(m.key) || descriptionFromComment(m.row.comment) || m.row.txId })),
+    }));
+  }
+  for (const w of unlinkPrepass.waiting) {
+    errors.push(`Transfer-unlink cleanup waiting (${w.txIds.join('/')}): ${w.reason} — the old linked rows stay for now, nothing was deleted`);
+  }
+  // Whenever the pre-pass read was uncertain (it runs only while a notTransfer
+  // override exists), held pair or not: the run skipped the prune, the relink
+  // sweep and drift for EVERY account, and this note is the only sign of it.
+  if (!unlinkPrepass.certain) {
+    errors.push('Could not read every account, so a transfer you undid was not unlinked or cleaned up this sync — nothing was deleted; the next sync tries again');
+  }
+
   for (const { out, in: inLeg } of detection.pairs) {
     // Resolved per (account, tx id). When SimpleFin gave both sides of the
     // transfer ONE id these two keys still differ — by account — which is what
     // keeps them two distinct rows in two accounts instead of one row twice.
     const outKey = accountTxKey(out.accountId, out.txId);
     const inKey = accountTxKey(inLeg.accountId, inLeg.txId);
+    if (unlinkedKeys.has(outKey) || unlinkedKeys.has(inKey)) continue;
     const outRow = linkRowByKey.get(outKey);
     const inRow = linkRowByKey.get(inKey);
     if (!outRow || !inRow) continue; // a leg isn't imported yet — links next run
@@ -3085,6 +3728,8 @@ export async function runSyncCore(
       .find((key) => linkRowByKey.has(key));
     const partner = partnerKey ? linkRowByKey.get(partnerKey) : undefined;
     if (!alias || !partner || !partnerKey || queuedKeys.has(aliasKey) || queuedKeys.has(partnerKey)) continue;
+    // A leg the person said is not a transfer is never linked again.
+    if ([aliasKey, partnerKey].some((k) => unlinkedKeys.has(k) || hasTxOverride(overrides, k, 'notTransfer'))) continue;
     const opposite = new Set([alias.type, partner.type]);
     if (!opposite.has('TRANSFER_IN') || !opposite.has('TRANSFER_OUT')) continue;
     if (alias.absCents !== partner.absCents || alias.wfAccountId === partner.wfAccountId) continue;
@@ -3143,6 +3788,24 @@ export async function runSyncCore(
   // reasons are the diagnosis; the `unlinkedLegs` count below is the scale.
   const LINK_PROBLEM_REPORT_LIMIT = 3;
   let pairsWithReportedProblems = 0;
+  /** One leg of a confirmed link, as the change log names it. */
+  const linkLegFacts = (leg: LinkLeg, key: string, newActivityId?: string): LinkLegFacts => {
+    const sfinId = linkRowByKey.get(key)?.sfAccountId;
+    const signed = signedByKey.get(key);
+    return {
+      account: {
+        ...(sfinId ? { sfinId } : {}),
+        wfId: leg.accountId,
+        name: wfNames.get(leg.accountId) || (accountSet.accounts.find((a) => a.id === sfinId)?.name ?? ''),
+      },
+      txKey: key,
+      description: descByKey.get(key) ?? descriptionFromComment(leg.comment),
+      amountCents: signed !== undefined ? Math.round(signed * 100) : OUTFLOW_TYPES.has(leg.activityType) ? -leg.absCents : leg.absCents,
+      date: leg.date,
+      oldActivityId: leg.wfId,
+      ...(newActivityId ? { newActivityId } : {}),
+    };
+  };
   for (const { legs, keys } of pairsToLink) {
     let result: LinkResult;
     try {
@@ -3150,6 +3813,12 @@ export async function runSyncCore(
     } catch (e: any) {
       errors.push(`Transfer-link failed (${legs[0].txId}/${legs[1].txId}): ${e?.message ?? e}`);
       continue; // leave the ledger untouched so the pair retries next run
+    }
+    if (result.linked && result.groupId) {
+      logChange?.(() => transferLinkChange(
+        linkLegFacts(legs[0], keys[0], result.activityIds?.[0]),
+        linkLegFacts(legs[1], keys[1], result.activityIds?.[1]),
+      ));
     }
     if (!result.linked || !result.groupId) {
       unlinkedLegs += legs.length;
@@ -3241,10 +3910,14 @@ export async function runSyncCore(
   // asset). Delete and re-create asset-free instead, which is the only way to
   // make them book cash (handlers/transfers.rs only books cash when asset_id is
   // empty). No group id: there's nothing to pair them with.
+  //
+  // Not at all when the unlink pre-pass could not read every account: the
+  // re-create can collide with an old linked leg it could not see, after the
+  // delete has already gone through.
   const relinkCreates: ActivityWrite[] = [];
   const staleLegIds: string[] = [];
-  for (const [key, row] of linkRowByKey) {
-    if (!isTransferType(row.type) || !row.assetId || linkedKeys.has(key)) continue;
+  for (const [key, row] of unlinkPrepass.certain ? linkRowByKey : []) {
+    if (!isTransferType(row.type) || !row.assetId || linkedKeys.has(key) || unlinkedKeys.has(key)) continue;
     staleLegIds.push(row.wfId);
     relinkCreates.push({
       accountId: row.wfAccountId,
@@ -3265,6 +3938,13 @@ export async function runSyncCore(
     const result = await host.saveMany({ creates: relinkCreates });
     for (const err of result.errors ?? []) {
       errors.push(`Transfer-relink save error (${err.action}): ${err.message}`);
+    }
+    if ((del.errors ?? []).length === 0 && (result.errors ?? []).length === 0) {
+      const fresh = (result.created ?? []).map((a) => a.id).filter((id): id is string => !!id);
+      logChange?.(() => bookkeepingChange({
+        step: 'transfer-relink',
+        activityIds: fresh.length === relinkCreates.length ? fresh : staleLegIds,
+      }));
     }
   }
 

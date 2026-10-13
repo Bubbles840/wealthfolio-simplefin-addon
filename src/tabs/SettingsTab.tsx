@@ -14,6 +14,12 @@ import { fetchAccounts } from '../utils/simplefin';
 import type { SecretsStore, CategoryCatalogEntry, AccountBalanceInfo } from '../utils/secrets';
 import type { Scheduler } from '../utils/scheduler';
 import type { MappingRule, SimplefinAccount, AccountMapping } from '../../shared/types';
+import { accountCreatedChange } from '../../shared/change-entries';
+import { ChangeLogCard } from '../components/ChangeLogCard';
+import { emptySyncOverrides, removeOverrideRow, type OverrideRow } from '../../shared/sync-overrides';
+import type { ChangeLogItem } from '../../shared/change-log';
+import type { UndoOp } from '../../shared/change-undo';
+import { undoFromApp } from '../utils/change-undo';
 
 /** Ids for this tab's collapsible cards. Doubles as the persisted key set (the
  *  page owns the open-card map), so these strings must not change — a rename
@@ -31,6 +37,7 @@ export const CARD = {
   amazonGuide: 'amazon-guide',
   rules: 'rules',
   pool: 'pool',
+  changeLog: 'change-log',
 } as const;
 
 interface Props {
@@ -252,6 +259,34 @@ export function SettingsTab({
     }
   }, [ctx, store, scheduler]);
 
+  // Stable, so the card reads once each time it opens. Optional-called: an
+  // older store (or a test double) has no change log, which reads as empty.
+  const loadChangeLog = useCallback(
+    async () => (store.getChangeLog ? store.getChangeLog() : { entries: [], gaps: [], trimmed: 0, unreadable: [] }),
+    [store],
+  );
+  // R2: Undo and Redo, the companion's version (the gate and the Telegram
+  // pointer), Sync now (the Sync page's own forced run) and "Your overrides".
+  const [companionVersion, setCompanionVersion] = useState<string | null>(null);
+  useEffect(() => {
+    store.getCompanionVersion?.().then((v) => setCompanionVersion(v ?? null)).catch(() => {});
+  }, [store]);
+  const undoChange = useCallback(
+    (entry: ChangeLogItem, entries: ChangeLogItem[], op: UndoOp) => undoFromApp(ctx, store, entry, entries, op),
+    [ctx, store],
+  );
+  const syncNowForLog = useCallback(async () => {
+    const r = await runSync(ctx, store, { force: true });
+    return r.errors.length ? `Synced, with a problem: ${r.errors[0]}` : `Synced — ${r.imported} imported.`;
+  }, [ctx, store]);
+  const loadOverrides = useCallback(
+    async () => (store.readSyncOverrides ? store.readSyncOverrides() : { overrides: emptySyncOverrides(), unreadable: false }),
+    [store],
+  );
+  const removeOverride = useCallback(async (row: OverrideRow) => {
+    await store.editSyncOverrides?.((o) => removeOverrideRow(o, row));
+  }, [store]);
+
   const handleReset = useCallback(async () => {
     scheduler.stop();
     await store.clearAll();
@@ -355,6 +390,7 @@ export function SettingsTab({
               simplefinAccounts={sfAccounts}
               initialMapping={mapping}
               onSave={saveMapping}
+              onAccountCreated={(created) => { void store.recordChange?.(accountCreatedChange(created)); }}
             />
             <div style={{ marginTop: 12, display: 'flex', gap: 8, alignItems: 'center' }}>
               <Button variant="ghost" onClick={() => void loadAccounts()} disabled={accountsLoading}>
@@ -522,6 +558,25 @@ export function SettingsTab({
         </div>
       </CollapsibleCard>
 
+      {/* Every change the sync and you made, the same entries /changes shows,
+          with Undo and Redo. Loads when opened. */}
+      <CollapsibleCard
+        id={CARD.changeLog}
+        title="Change log"
+        summary="What the sync and you changed, the last 90 days"
+        open={isOpen(CARD.changeLog)}
+        onToggle={() => toggleCard(CARD.changeLog)}
+      >
+        <ChangeLogCard
+          load={loadChangeLog}
+          undo={undoChange}
+          companionVersion={companionVersion}
+          onSyncNow={syncNowForLog}
+          loadOverrides={loadOverrides}
+          removeOverride={typeof store.editSyncOverrides === 'function' ? removeOverride : undefined}
+        />
+      </CollapsibleCard>
+
       <h3 className="sfin-settings-group">Categorizing</h3>
       {/* The companion reads the mailbox, so this is only useful to someone
           who has set up background sync above. */}
@@ -580,8 +635,8 @@ export function SettingsTab({
         <b>Reset connection</b>
         <div className="sfin-subtle sfin-danger-note">
           Clears every SimpleFin Sync setting — the connection, account mapping, sync
-          schedule, transaction rules, and any Telegram or Amazon setup. Transactions
-          already imported into Wealthfolio stay.
+          schedule, transaction rules, the change log, and any Telegram or Amazon setup.
+          Transactions already imported into Wealthfolio stay.
         </div>
         <div className="sfin-danger-actions">
           {!confirmingReset ? (

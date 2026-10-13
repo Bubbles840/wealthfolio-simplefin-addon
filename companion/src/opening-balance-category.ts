@@ -23,6 +23,8 @@
  */
 import { existsSync } from 'fs';
 import { DatabaseSync } from 'node:sqlite';
+import { bookkeepingChange, openingBalanceFiledChange, type ChangeDraft } from '../../shared/change-entries.js';
+import { STARTING_BALANCE_COMMENT_PREFIX } from '../../shared/sync-core.js';
 
 export const OPENING_BALANCES_CATEGORY = 'Opening balances';
 const TAXONOMY = 'spending_categories';
@@ -35,7 +37,14 @@ export interface OpeningBalanceFilingDeps {
   setExcluded: (categoryIds: string[]) => Promise<void>;
   assign: (activityId: string, categoryId: string) => Promise<void>;
   log: (message: string) => void;
+  /** The change log: one draft per write that succeeded. */
+  record?: (draft: ChangeDraft) => void;
+  /** True for a SimpleFin account whose opening-balance filing the person
+   *  undid (`noOpeningFile`, shared/sync-overrides.ts): never filed again. */
+  noOpeningFile?: (sfinAccountId: string) => boolean;
 }
+
+interface OpeningDebtRow { id: string; account_id: string; account_name: string; amount: string; day: string; notes: string }
 
 function open(dbPath: string): DatabaseSync | null {
   if (!dbPath || !existsSync(dbPath)) return null;
@@ -54,13 +63,15 @@ function open(dbPath: string): DatabaseSync | null {
 export async function fileCardOpeningDebts(deps: OpeningBalanceFilingDeps): Promise<{ filed: number }> {
   const db = open(deps.dbPath);
   if (!db) return { filed: 0 };
-  let rows: Array<{ id: string }>;
+  let rows: OpeningDebtRow[];
   let categoryId: string | undefined;
   let excluded: string[] = [];
   try {
     rows = db
       .prepare(
-        `SELECT a.id FROM activities a JOIN accounts acc ON a.account_id = acc.id
+        `SELECT a.id, COALESCE(a.account_id,'') account_id, COALESCE(acc.name,'') account_name, COALESCE(a.amount,'0') amount,
+                substr(COALESCE(a.activity_date,''),1,10) day, COALESCE(a.notes,'') notes
+         FROM activities a JOIN accounts acc ON a.account_id = acc.id
          WHERE UPPER(acc.account_type) = 'CREDIT_CARD'
            AND UPPER(a.activity_type) = 'WITHDRAWAL'
            AND COALESCE(a.notes,'') LIKE 'Starting balance · %'
@@ -69,7 +80,10 @@ export async function fileCardOpeningDebts(deps: OpeningBalanceFilingDeps): Prom
              JOIN taxonomy_categories tc ON ata.category_id = tc.id
              WHERE ata.activity_id = a.id AND tc.taxonomy_id = ?)`,
       )
-      .all(TAXONOMY) as Array<{ id: string }>;
+      .all(TAXONOMY) as unknown as OpeningDebtRow[];
+    // The note names the SimpleFin account: `Starting balance · <sfinId>`.
+    rows = rows.filter((r) => !(r.notes.startsWith(STARTING_BALANCE_COMMENT_PREFIX)
+      && deps.noOpeningFile?.(r.notes.slice(STARTING_BALANCE_COMMENT_PREFIX.length))));
     if (rows.length === 0) return { filed: 0 };
     categoryId = (
       db.prepare(`SELECT id FROM taxonomy_categories WHERE taxonomy_id = ? AND name = ?`).get(TAXONOMY, OPENING_BALANCES_CATEGORY) as
@@ -91,16 +105,40 @@ export async function fileCardOpeningDebts(deps: OpeningBalanceFilingDeps): Prom
     db.close();
   }
 
+  let setUp = false;
   if (!categoryId) {
     categoryId = await deps.createCategory(OPENING_BALANCES_CATEGORY);
     deps.log(`Created the "${OPENING_BALANCES_CATEGORY}" spending category for card opening balances.`);
+    setUp = true;
   }
   if (!excluded.includes(categoryId)) {
     // Appended to the user's own list, never replacing it.
     await deps.setExcluded([...excluded, categoryId]);
     deps.log(`Excluded "${OPENING_BALANCES_CATEGORY}" from spending, so an opening debt is not read as a purchase.`);
+    setUp = true;
   }
-  for (const row of rows) await deps.assign(row.id, categoryId);
+  // A failed recording never costs the filing.
+  const record = (make: () => ChangeDraft) => {
+    if (!deps.record) return;
+    try { deps.record(make()); } catch (err) { deps.log(`Could not record the change: ${String(err)}`); }
+  };
+  if (setUp) record(() => bookkeepingChange({ step: 'opening-category', activityIds: [], categoryName: OPENING_BALANCES_CATEGORY }));
+  for (const row of rows) {
+    await deps.assign(row.id, categoryId);
+    record(() => openingBalanceFiledChange({
+      account: {
+        // Always the SimpleFin id: R2 keys its don't-auto-file override per account.
+        ...(row.notes.startsWith(STARTING_BALANCE_COMMENT_PREFIX) ? { sfinId: row.notes.slice(STARTING_BALANCE_COMMENT_PREFIX.length) } : {}),
+        wfId: row.account_id,
+        name: row.account_name,
+      },
+      activityId: row.id,
+      // A card's opening DEBT: money owed, so negative.
+      amountCents: -Math.round(Math.abs(Number(row.amount) || 0) * 100),
+      date: row.day,
+      category: { categoryId: categoryId!, categoryName: OPENING_BALANCES_CATEGORY, taxonomyId: TAXONOMY },
+    }));
+  }
   deps.log(`Filed ${rows.length} card opening balance(s) under "${OPENING_BALANCES_CATEGORY}".`);
   return { filed: rows.length };
 }

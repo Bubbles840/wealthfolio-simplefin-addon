@@ -6,6 +6,7 @@ import type { AmazonLabelCatalog, AmazonMailConfig } from './amazon-mail.js';
 import type { AmazonLedger } from '../../shared/amazon-ledger.js';
 import { linkPairByRecreate } from '../../shared/link-pair.js';
 import { SKIPPED_TRANSACTIONS_SECRET_KEY, parseSkippedTransactions, type SkippedTransaction } from '../../shared/skipped-transactions.js';
+import { syncOverridesIgnoredLog, syncOverridesOrEmpty, type SyncOverrides } from '../../shared/sync-overrides.js';
 import type { WealthfolioClient } from './wealthfolio.js';
 import type {
   HostActivity,
@@ -88,12 +89,13 @@ export class RestSyncHost implements SyncHost {
     return fetchAccountsNode(accessUrl, since);
   }
 
-  async listAccounts(): Promise<Array<{ id: string; accountType: string; name?: string }>> {
+  async listAccounts(): Promise<Array<{ id: string; accountType: string; name?: string; currency?: string }>> {
     const accounts = await this.client.getAccounts();
     return accounts.map((a: any) => ({
       id: a.id,
       accountType: String(a.accountType ?? ''),
       name: a.name,
+      ...(a.currency ? { currency: String(a.currency) } : {}),
     }));
   }
 
@@ -317,6 +319,13 @@ export class RestSyncStore implements SyncStore {
    *  companion tool, and honoured here (see shared/skipped-transactions.ts). */
   async getSkippedTransactions(): Promise<SkippedTransaction[]> {
     return parseSkippedTransactions(await this.client.getAddonSecret(this.addonId, SKIPPED_TRANSACTIONS_SECRET_KEY));
+  }
+
+  /** The same document the add-on reads (shared/sync-overrides.ts); corrupt,
+   *  absent and a failed read are empty, so the sync behaves as it always did,
+   *  and a corrupt or unread document gets one log line saying so. */
+  async getSyncOverrides(): Promise<SyncOverrides> {
+    return syncOverridesOrEmpty((k) => this.client.getAddonSecret(this.addonId, k), (why) => console.warn(syncOverridesIgnoredLog(why)));
   }
 
   async getAmazonLedger(): Promise<AmazonLedger> {

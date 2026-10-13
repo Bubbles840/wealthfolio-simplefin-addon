@@ -259,6 +259,12 @@ export class WealthfolioClient {
    * (`apps/server/src/api/spending.rs`) documents that user-facing rule
    * creation leaves them None, and it's the presence of the keys, not just
    * their value, that marks a rule as preset-derived to the server.
+   *
+   * Resolves the new rule's id: the server answers with the rule it stored
+   * (`create_categorization_rule` returns `Json<CategorizationRule>`, camelCase,
+   * `id: String` — upstream `apps/server/src/api/spending.rs`). The change log
+   * keeps it so R2 can delete the rule (`DELETE /api/v1/spending/rules/{id}`).
+   * Null when a server answers without one.
    */
   async createCategorizationRule(rule: {
     name: string;
@@ -266,7 +272,7 @@ export class WealthfolioClient {
     categoryId: string;
     taxonomyId: string;
     priority: number;
-  }): Promise<void> {
+  }): Promise<string | null> {
     const res = await fetch(`${this.baseUrl}/api/v1/spending/rules`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
@@ -281,6 +287,66 @@ export class WealthfolioClient {
       }),
     });
     if (!res.ok) throw await this.httpError('createCategorizationRule', res);
+    try {
+      const created = (await res.json()) as { id?: unknown } | null;
+      return typeof created?.id === 'string' && created.id ? created.id : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Every taxonomy's category on one activity, as the server stores it now —
+   *  what an Undo checks before it changes a filing. Upstream route
+   *  `GET /spending/activities/{id}/assignments` (`Vec<ActivityTaxonomyAssignment>`,
+   *  camelCase). An activity with none answers `[]`; any non-2xx — a 404 for
+   *  one that is gone included — throws, so the Undo says it couldn't reach
+   *  Wealthfolio and changes nothing. */
+  async getActivityAssignments(activityId: string): Promise<Array<{ taxonomyId: string; categoryId: string; source?: string }>> {
+    const res = await fetch(
+      `${this.baseUrl}/api/v1/spending/activities/${encodeURIComponent(activityId)}/assignments`,
+      { headers: this.authHeaders() },
+    );
+    if (!res.ok) throw await this.httpError('getActivityAssignments', res);
+    const rows = (await res.json()) as unknown;
+    if (!Array.isArray(rows)) return [];
+    return rows
+      .filter((r): r is Record<string, unknown> => !!r && typeof r === 'object')
+      .filter((r) => typeof r.taxonomyId === 'string' && typeof r.categoryId === 'string')
+      .map((r) => ({
+        taxonomyId: r.taxonomyId as string,
+        categoryId: r.categoryId as string,
+        ...(typeof r.source === 'string' ? { source: r.source } : {}),
+      }));
+  }
+
+  /** Every categorization rule (`GET /spending/rules`, `Vec<CategorizationRule>`):
+   *  how an Undo finds a rule the log knows only by name. */
+  async listCategorizationRules(): Promise<Array<{ id: string; name: string; pattern: string; categoryId: string | null }>> {
+    const res = await fetch(`${this.baseUrl}/api/v1/spending/rules`, { headers: this.authHeaders() });
+    if (!res.ok) throw await this.httpError('listCategorizationRules', res);
+    const rows = (await res.json()) as unknown;
+    if (!Array.isArray(rows)) return [];
+    return rows
+      .filter((r): r is Record<string, unknown> => !!r && typeof r === 'object' && typeof (r as { id?: unknown }).id === 'string')
+      .map((r) => ({
+        id: r.id as string,
+        name: typeof r.name === 'string' ? r.name : '',
+        pattern: typeof r.pattern === 'string' ? r.pattern : '',
+        categoryId: typeof r.categoryId === 'string' ? r.categoryId : null,
+      }));
+  }
+
+  /** Deletes a categorization rule (`DELETE /spending/rules/{id}`, upstream
+   *  `delete_categorization_rule`). Filings the rule already made stay. A 404
+   *  means the rule is already gone (deleted in Wealthfolio): that resolves, so
+   *  an undo of it is not stranded. */
+  async deleteCategorizationRule(id: string): Promise<void> {
+    const res = await fetch(`${this.baseUrl}/api/v1/spending/rules/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      headers: this.authHeaders(),
+    });
+    if (res.status === 404) return;
+    if (!res.ok) throw await this.httpError('deleteCategorizationRule', res);
   }
 
   async saveMany(req: {

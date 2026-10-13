@@ -823,6 +823,34 @@ const css = `
 .sfin-subs-form { display: flex; flex-direction: column; gap: 8px; padding: 8px 0; }
 .sfin-subs-form label { display: flex; flex-direction: column; gap: 3px; font-size: var(--sfin-sz-sm); }
 .sfin-subs-form .sfin-range-chips { margin: 0; }
+/* The Change log card (Settings → Sync). */
+.sfin-log-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px; }
+.sfin-log-filters .sfin-range-chips { margin: 0; }
+.sfin-log-search { flex: 1; min-width: 12em; }
+.sfin-log-search .sfin-input { width: 100%; }
+.sfin-log-note { font-size: var(--sfin-sz-sm); color: var(--sfin-warn); margin-bottom: 6px; }
+.sfin-log-day { margin-top: 10px; font-size: var(--sfin-sz-xs); letter-spacing: .06em; text-transform: uppercase; color: var(--muted-foreground); }
+.sfin-log-row { display: grid; grid-template-columns: 3.2em minmax(0, 1fr) auto auto; align-items: baseline; gap: 10px; width: 100%; padding: 4px 0; border: none; border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent); background: transparent; color: var(--foreground); font: inherit; text-align: left; cursor: pointer; }
+.sfin-log-row:hover { background: color-mix(in srgb, var(--sfin-s0) 6%, transparent); }
+.sfin-log-row--undone { opacity: .6; }
+.sfin-log-run-line { display: grid; grid-template-columns: 3.2em minmax(0, 1fr) auto auto; align-items: baseline; gap: 10px; width: 100%; padding: 2px 0; border: none; background: transparent; color: var(--foreground); font: inherit; text-align: left; cursor: pointer; }
+.sfin-log-time { font-size: var(--sfin-sz-xs); color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+.sfin-log-summary { min-width: 0; overflow-wrap: anywhere; }
+.sfin-log-account { font-size: var(--sfin-sz-xs); color: var(--muted-foreground); white-space: nowrap; }
+.sfin-log-amount { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.sfin-log-detail { display: flex; flex-direction: column; gap: 4px; margin: 2px 0 8px; padding: 6px 0 6px 12px; border-left: 2px solid var(--border); font-size: var(--sfin-sz-sm); }
+.sfin-log-hidden { margin-top: 8px; }
+.sfin-log-undone { color: var(--muted-foreground); font-size: var(--sfin-sz-xs); }
+.sfin-log-undo { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.sfin-log-result { flex-basis: 100%; }
+.sfin-log-result--refused { color: var(--sfin-warn); }
+.sfin-log-overrides { margin-top: 14px; padding-top: 8px; border-top: 1px solid var(--border); }
+.sfin-log-overrides-title { font-size: var(--sfin-sz-xs); letter-spacing: .06em; text-transform: uppercase; color: var(--muted-foreground); margin-bottom: 4px; }
+.sfin-log-override { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 2px 0; }
+@media (max-width: 560px) {
+  .sfin-log-row { grid-template-columns: 3.2em minmax(0, 1fr); }
+  .sfin-log-run-line { grid-template-columns: 3.2em minmax(0, 1fr); }
+}
 @keyframes sfin-pop { from { transform: scale(.92); opacity: 0; } to { transform: scale(1); opacity: 1; } }
 .sfin-range-pin { position: absolute; bottom: 6px; right: 10px; font-size: var(--sfin-sz-2xs); color: var(--muted-foreground); background: color-mix(in srgb, var(--card) 80%, transparent); border-radius: var(--sfin-rad-xs); padding: 1px 6px; }
 /* Drag feedback: the picked-up card lifts and fades while every other card

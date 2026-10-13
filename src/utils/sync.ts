@@ -1,5 +1,6 @@
 import { AddonSyncHost } from './addon-host';
-import { applyBaselineFix, importAdjustmentActivity, runSyncCore } from '../../shared/sync-core';
+import { applyBaselineFix, importAdjustmentActivity, rowIdByComment, runSyncCore } from '../../shared/sync-core';
+import { balanceCorrectionChange, startingBalanceMovedChange, type ChangeAccount } from '../../shared/change-entries';
 import type { SyncOptions, SyncResult } from '../../shared/sync-core';
 import {
   sendTelegramMessage,
@@ -51,7 +52,10 @@ export function runSync(
 ): Promise<SyncResult> {
   if (syncInFlight) return syncInFlight;
   syncInFlight = (async () => {
-    const result = await runSyncCore(new AddonSyncHost(ctx), store, opts);
+    // The change log rides along when the store can keep one (an older store
+    // or a test double cannot, and then nothing is recorded).
+    const changeLog = opts.changeLog ?? store.changeLogSink?.();
+    const result = await runSyncCore(new AddonSyncHost(ctx), store, { ...opts, ...(changeLog ? { changeLog } : {}) });
     // Deliver INSIDE the single-flight lock and inside the returned promise, so
     // one run announces its own alerts exactly once and a caller that awaits the
     // sync has also awaited the sends. `deliverAddonAlerts` never rejects, so it
@@ -435,7 +439,23 @@ export async function applyBalanceAdjustment(
   args: { sfinAccountId: string; wfAccountId: string; currency: string; amount: number },
 ): Promise<void> {
   if (!Number.isFinite(args.amount) || Math.abs(args.amount) < 0.01) return;
-  await importAdjustmentActivity(new AddonSyncHost(ctx), args);
+  const host = new AddonSyncHost(ctx);
+  const row = await importAdjustmentActivity(host, args);
+  if (row && store.recordChange) {
+    try {
+      await store.recordChange(balanceCorrectionChange({
+        account: await changeAccountFor(host, store, args.sfinAccountId, args.wfAccountId),
+        actor: 'you',
+        activityId: await rowIdByComment(() => host.listActivities(args.wfAccountId), row.comment, { amount: row.amount, fee: row.fee }),
+        amountCents: Math.round(args.amount * 100),
+        date: row.date,
+        activityType: row.activityType,
+        comment: row.comment,
+      }));
+    } catch (e) {
+      console.warn('[simplefin-sync] change log: could not record the adjustment', e);
+    }
+  }
   // Clear the stored drift so the Sync page reflects the fix immediately.
   const balances = await store.getAccountBalances();
   if (balances[args.sfinAccountId]) {
@@ -457,13 +477,25 @@ export async function applyBaselineCorrection(
   store: SecretsStore,
   args: { sfinAccountId: string; wfAccountId: string; currency: string; suggestedAmount: number },
 ): Promise<void> {
-  const res = await applyBaselineFix(new AddonSyncHost(ctx), {
+  const host = new AddonSyncHost(ctx);
+  const res = await applyBaselineFix(host, {
     wfAccountId: args.wfAccountId,
     sfAccountId: args.sfinAccountId,
     suggestedAmount: args.suggestedAmount,
     currency: args.currency,
   });
   if (!res.applied) throw new Error(res.error ?? 'Baseline correction failed');
+  if (res.change && store.recordChange) {
+    try {
+      await store.recordChange(startingBalanceMovedChange({
+        account: await changeAccountFor(host, store, args.sfinAccountId, args.wfAccountId),
+        actor: 'you',
+        ...res.change,
+      }));
+    } catch (e) {
+      console.warn('[simplefin-sync] change log: could not record the baseline fix', e);
+    }
+  }
   // Drop the drift AND the now-spent offer, so the page stops showing both
   // without waiting for the next sync to recompute them.
   const balances = await store.getAccountBalances();
@@ -473,4 +505,17 @@ export async function applyBaselineCorrection(
     balances[args.sfinAccountId] = { ...rest, drift: null };
     await store.setAccountBalances(balances);
   }
+}
+
+/** An account as a change entry names it: Wealthfolio's name, else the bank's,
+ *  else the id. Best-effort — a failed read never costs the action. */
+async function changeAccountFor(
+  host: AddonSyncHost,
+  store: SecretsStore,
+  sfinAccountId: string,
+  wfAccountId: string,
+): Promise<ChangeAccount> {
+  const wfName = (await host.listAccounts().catch(() => [])).find((a) => a.id === wfAccountId)?.name;
+  const sfName = wfName ? undefined : (await store.getAccountNames().catch(() => ({} as Record<string, string>)))[sfinAccountId];
+  return { sfinId: sfinAccountId, wfId: wfAccountId, name: wfName || sfName || wfAccountId };
 }
