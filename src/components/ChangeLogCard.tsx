@@ -135,7 +135,7 @@ export function ChangeLogCard({ load, now = () => new Date() }: ChangeLogCardPro
 
   return (
     <div className="sfin-log">
-      {changeLogNotes(read).map((n) => <div key={n} className="sfin-log-note">{n}</div>)}
+      {changeLogNotes(read).map((n, i) => <div key={`${i}:${n}`} className="sfin-log-note">{n}</div>)}
       <div className="sfin-log-filters">
         <Select aria-label="Account" value={account} onChange={(e) => setAccount(e.target.value)}>
           <option value="">All accounts</option>
