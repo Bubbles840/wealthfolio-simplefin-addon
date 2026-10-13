@@ -20,6 +20,7 @@ import {
   transferTypeChange,
   type BaselineState, type ChangeAccount, type ChangeDraft, type ChangeEntry, type ChangeLogSink, type LinkLegFacts,
 } from './change-entries.js';
+import { emptySyncOverrides, hasAccountOverride, hasTxOverride } from './sync-overrides.js';
 
 /**
  * A datable timestamp for a SimpleFin transaction: `posted` when present, else
@@ -1866,6 +1867,9 @@ async function runSyncPass(
     ((await store.getSkippedTransactions?.().catch(() => [])) ?? [])
       .map((s) => accountTxKey(s.account, s.txId)),
   );
+  /** What Undo told the sync not to do again (shared/sync-overrides.ts). A
+   *  failed or corrupt read is empty: the sync then behaves as it always did. */
+  const overrides = (await store.getSyncOverrides?.().catch(() => null)) ?? emptySyncOverrides();
 
   for (const sfAccount of accountSet.accounts) {
     const wfAccountId = mapping[sfAccount.id];
@@ -1925,13 +1929,18 @@ async function runSyncPass(
           postedMs: txEpoch(tx)! * 1000,
           txKey: key,
         });
-        if (hit) {
+        // Still matched and consumed when the person undid this charge's
+        // label: the order HAS been found, and a live record would be offered
+        // to the next charge of the same amount. Only the label stays off.
+        if (hit && !hasTxOverride(overrides, key, 'noAmazonLabel')) {
           description = amazonDescription(description, hit.labels, hit.partial);
           if (description !== tx.description) {
             const forAccount = amazonLabelled.get(sfAccount.id) ?? new Map<string, { bare: string; enriched: string }>();
             forAccount.set(tx.id, { bare: tx.description, enriched: description });
             amazonLabelled.set(sfAccount.id, forAccount);
           }
+        }
+        if (hit) {
           // Consumed even when this row already exists in Wealthfolio and so
           // won't be re-written: the charge for that order HAS been found, and
           // leaving the record live would offer it to the next charge of the
@@ -2270,7 +2279,12 @@ async function runSyncPass(
     let prunedThisAccount = 0;
     if (heal) {
       const feedByTxId = new Map(feed.map((t) => [t.txId, t]));
-      const surplus = planDuplicatePrune(existing, new Set(feedByTxId.keys()));
+      // Copies the person chose to keep (Undo of a removed duplicate) are left
+      // out of the sweep entirely — every copy shares the one tx key.
+      const surplus = planDuplicatePrune(
+        existing.filter((r) => !hasTxOverride(overrides, accountTxKey(sfAccount.id, r.txId), 'keepDuplicate')),
+        new Set(feedByTxId.keys()),
+      );
       if (surplus.length > 0) {
         const surplusIds = new Set(surplus.map((r) => r.wfId));
         // Drop them from the snapshot even if the delete below fails: a row we
@@ -2632,7 +2646,11 @@ async function runSyncPass(
           ? Date.now() - Date.parse(openEpisode.firstDetectedAt) < BASELINE_FIX_MIN_DRIFT_AGE_MS
           : driftAlertThresholdCents > 0 &&
             Math.abs(Math.round((drift ?? 0) * 100)) > driftAlertThresholdCents;
-        if (heal && autoAdjust && drift != null && !youngEpisode) {
+        // The person undid an automatic correction on this account: no plug, but
+        // `drift` and `measuredDrift` stay as measured, so the account is still
+        // reported (Sync page, alert, the morning 🧹 list).
+        const noAutoCorrect = hasAccountOverride(overrides, sfAccount.id, 'noAutoCorrect');
+        if (heal && autoAdjust && drift != null && !youngEpisode && !noAutoCorrect) {
           const alreadyToday = await hasAdjustmentToday(host, wfAccountId, sfAccount.id).catch(
             () => false,
           );

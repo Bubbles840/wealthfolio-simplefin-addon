@@ -2,6 +2,7 @@ import type { AccountMapping, MappingRule, SimplefinAccountSet, UnmappedAccount 
 import type { AmazonLedger } from './amazon-ledger.js';
 import type { HoldingsSnapshot } from './holdings.js';
 import type { SkippedTransaction } from './skipped-transactions.js';
+import type { SyncOverrides } from './sync-overrides.js';
 
 /** A Wealthfolio activity row, normalized across the SDK and REST shapes. */
 export interface HostActivity {
@@ -304,4 +305,13 @@ export interface SyncStore {
    * is what it did before the list existed.
    */
   getSkippedTransactions?(): Promise<SkippedTransaction[]>;
+  /**
+   * What the person told the sync not to do again (shared/sync-overrides.ts),
+   * set by an Undo in the change log. A stored document that cannot be read —
+   * or a failed read — comes back EMPTY, so the sync behaves exactly as it did
+   * before overrides existed.
+   *
+   * Optional like the getters above; a host without it obeys no overrides.
+   */
+  getSyncOverrides?(): Promise<SyncOverrides>;
 }

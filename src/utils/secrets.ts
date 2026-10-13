@@ -27,6 +27,7 @@ import {
   type LoadedSubscriptionPrefs, type SubscriptionEdit, type SubscriptionPrefs,
 } from '../../shared/subscription-prefs';
 import { newRunId, stampChange, type ChangeDraft, type ChangeEntry, type ChangeLogSink } from '../../shared/change-entries';
+import { SYNC_OVERRIDES_SECRET_KEY, syncOverridesOrEmpty, type SyncOverrides } from '../../shared/sync-overrides';
 import {
   changeLogResetKeys, createChangeLogWriter, readChangeLog, type ChangeLogIo, type ChangeLogRead,
 } from '../../shared/change-log';
@@ -154,6 +155,9 @@ const KEYS = {
   // memo beside it. Both are the easy-to-forget shape; Reset must clear them.
   subscriptionPrefs: SUBSCRIPTION_PREFS_SECRET_KEY,
   subscriptionNewsSent: SUBSCRIPTION_NEWS_SECRET_KEY,
+  // R2's overrides document: edited only through editSyncOverrides, the
+  // easy-to-forget shape; Reset must clear it.
+  syncOverrides: SYNC_OVERRIDES_SECRET_KEY,
 } as const;
 
 /** One entry in the shared large-transaction outbox. Derived from `SyncResult`
@@ -568,6 +572,12 @@ export class SecretsStore {
   /** Bank transactions never to import (see shared/skipped-transactions.ts). */
   async getSkippedTransactions(): Promise<SkippedTransaction[]> {
     return parseSkippedTransactions(await this.ctx.api.secrets.get(KEYS.skippedTransactions));
+  }
+
+  /** What the sync obeys (shared/sync-overrides.ts): corrupt, absent and a
+   *  failed read all come back empty — the sync then behaves as it always did. */
+  async getSyncOverrides(): Promise<SyncOverrides> {
+    return syncOverridesOrEmpty((k) => this.ctx.api.secrets.get(k));
   }
 
   /** Which collapsible config cards the user left open, keyed by card id.
