@@ -41,6 +41,8 @@ export const SPENDING_TAXONOMY = 'spending_categories';
 
 // ── Copy (both surfaces) ─────────────────────────────────────────────────
 export const UNDO_UPDATE_COMPANION = 'Update the companion first';
+/** The app, when the companion's version could not be read: a gated undo waits. */
+export const UNDO_VERSION_UNKNOWN = "Couldn't check the companion's version — nothing was changed. Try again.";
 export const UNDO_FROM_TELEGRAM = 'Undo this from Telegram: /changes';
 export const REDO_FROM_TELEGRAM = 'Redo this from Telegram: /changes';
 export const UNDO_TAKES_EFFECT = 'Takes effect on the next sync.';
@@ -82,8 +84,7 @@ export function undoAvailability(
       ? { kind: 'telegram', op, text: op === 'undo' ? UNDO_FROM_TELEGRAM : REDO_FROM_TELEGRAM }
       : { kind: 'none' };
   }
-  if (where.host === 'addon' && op === 'undo' && needsOverrideSupport(entry)
-    && !companionUnderstandsOverrides(where.companionVersion)) {
+  if (where.host === 'addon' && companionGateCovers(entry, op) && !companionUnderstandsOverrides(where.companionVersion)) {
     return { kind: 'update-companion', op, text: UNDO_UPDATE_COMPANION };
   }
   return { kind: 'ready', op };
@@ -92,6 +93,12 @@ export function undoAvailability(
 /** An automatic sync decision: its undo is an override the sync must obey. */
 export function needsOverrideSupport(entry: Pick<ChangeEntry, 'kind' | 'actor'>): boolean {
   return SYNC_DECISION_KINDS.has(entry.kind) && entry.actor === 'auto';
+}
+
+/** In the app, this waits for a companion that obeys overrides: the Undo of
+ *  an automatic sync decision (a Redo only clears overrides). */
+export function companionGateCovers(entry: Pick<ChangeEntry, 'kind' | 'actor'>, op: UndoOp): boolean {
+  return op === 'undo' && needsOverrideSupport(entry);
 }
 
 /** The newest undo or redo of `id` in a newest-first list, or null. */

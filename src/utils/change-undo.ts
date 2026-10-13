@@ -5,14 +5,15 @@
  * (shared/change-undo-run.ts). The add-on reaches activities and settings
  * only: a category or a rule entry is undone from Telegram (`/changes`), and
  * the card says so. A sync decision's Undo waits for a companion that obeys
- * overrides — the version it publishes decides (`companion_version`).
+ * overrides — the version it publishes decides (`companion_version`); when
+ * that cannot be read, the Undo is refused rather than let through.
  *
  * The reversal entry is recorded in the add-on's own bucket through the
  * store's one writer.
  */
 import type { AddonContext } from '@wealthfolio/addon-sdk';
 import type { ChangeLogItem } from '../../shared/change-log';
-import type { UndoOp } from '../../shared/change-undo';
+import { companionGateCovers, UNDO_VERSION_UNKNOWN, type UndoOp } from '../../shared/change-undo';
 import { runChangeUndo, type UndoIo, type UndoOutcome } from '../../shared/change-undo-run';
 import { AddonSyncHost } from './addon-host';
 import type { SecretsStore } from './secrets';
@@ -29,7 +30,12 @@ export function addonUndoIo(ctx: AddonContext, store: SecretsStore, companionVer
   };
 }
 
-/** One Undo or Redo, decided against the log as the card last read it. */
+/**
+ * One Undo or Redo, decided against the log as the card last read it.
+ *
+ * A failed read of the companion's version is NOT "no companion" (that opens
+ * the gate): the undos the gate covers are refused, and the rest go ahead.
+ */
 export async function undoFromApp(
   ctx: AddonContext,
   store: SecretsStore,
@@ -37,6 +43,12 @@ export async function undoFromApp(
   entries: ChangeLogItem[],
   op: UndoOp,
 ): Promise<UndoOutcome> {
-  const companionVersion = await (store.getCompanionVersion?.() ?? Promise.resolve(null)).catch(() => null);
+  let companionVersion: string | null;
+  try {
+    companionVersion = (await store.getCompanionVersion?.()) ?? null;
+  } catch {
+    if (companionGateCovers(entry, op)) return { ok: false, message: UNDO_VERSION_UNKNOWN };
+    companionVersion = null;
+  }
   return runChangeUndo(entry, entries, op, addonUndoIo(ctx, store, companionVersion));
 }

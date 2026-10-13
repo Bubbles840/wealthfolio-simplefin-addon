@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { categoryFiledChange, importChange, stampChange, transferLinkChange } from '../../shared/change-entries';
+import { balanceCorrectionChange, categoryFiledChange, importChange, stampChange, transferLinkChange } from '../../shared/change-entries';
 import type { ChangeBucket } from '../../shared/change-log';
-import { UNDO_FROM_TELEGRAM, UNDO_UPDATE_COMPANION } from '../../shared/change-undo';
+import { UNDO_FROM_TELEGRAM, UNDO_UPDATE_COMPANION, UNDO_VERSION_UNKNOWN } from '../../shared/change-undo';
 import { emptySyncOverrides, setTxOverride, SYNC_OVERRIDES_SECRET_KEY } from '../../shared/sync-overrides';
 import { accountTxKey } from '../../shared/transfers';
 import { SecretsStore } from './secrets';
@@ -79,6 +79,55 @@ describe('undoFromApp', () => {
     ), 'companion', NOW);
     expect(await undoFromApp(ctx, store, link, [link], 'undo')).toEqual({ ok: false, message: UNDO_UPDATE_COMPANION });
     expect(data[SYNC_OVERRIDES_SECRET_KEY]).toBeUndefined();
+  });
+
+  describe('the companion version gate, when its version cannot be read', () => {
+    const versionReadFails = (rows: any[]) => {
+      const made = makeCtx({}, rows);
+      const get = made.ctx.api.secrets.get;
+      made.ctx.api.secrets.get = vi.fn(async (k: string) => {
+        if (k === 'companion_version') throw new Error('host gone');
+        return get(k);
+      });
+      return made;
+    };
+
+    it('refuses a sync decision’s undo — unknown is not "no companion" — and changes nothing', async () => {
+      const { ctx, rows } = versionReadFails([row()]);
+      const e = imported();
+      expect(await undoFromApp(ctx, new SecretsStore(ctx), e, [e], 'undo')).toEqual({ ok: false, message: UNDO_VERSION_UNKNOWN });
+      expect(UNDO_VERSION_UNKNOWN).toBe("Couldn't check the companion's version — nothing was changed. Try again.");
+      expect(rows).toHaveLength(1);
+      expect(ctx.api.secrets.set).not.toHaveBeenCalled();
+      expect(ctx.api.activities.saveMany).not.toHaveBeenCalled();
+    });
+
+    it('a store whose version read throws outright is refused the same way', async () => {
+      const { ctx, rows } = makeCtx({}, [row()]);
+      const store = new SecretsStore(ctx);
+      store.getCompanionVersion = () => { throw new Error('boom'); };
+      const e = imported();
+      expect(await undoFromApp(ctx, store, e, [e], 'undo')).toEqual({ ok: false, message: UNDO_VERSION_UNKNOWN });
+      expect(rows).toHaveLength(1);
+    });
+
+    it('an undo the gate does not cover still goes through: your own correction', async () => {
+      const plug = { id: 'plug-1', accountId: 'wf-a', activityType: 'CREDIT', date: '2026-10-13', amount: 2.15, comment: 'Balance adjustment · sfin-1 · 2026-10-13' };
+      const { ctx, rows } = versionReadFails([plug]);
+      const e = stampChange(balanceCorrectionChange({
+        account: CHECKING, actor: 'you', activityId: 'plug-1', amountCents: 215, date: '2026-10-13', activityType: 'CREDIT',
+        comment: 'Balance adjustment · sfin-1 · 2026-10-13',
+      }), 'addon', NOW);
+      expect(await undoFromApp(ctx, new SecretsStore(ctx), e, [e], 'undo')).toMatchObject({ ok: true });
+      expect(rows).toEqual([]);
+    });
+
+    it('no companion at all (nothing published) keeps the gate open, as before', async () => {
+      const { ctx, rows } = makeCtx({}, [row()]);
+      const e = imported();
+      expect(await undoFromApp(ctx, new SecretsStore(ctx), e, [e], 'undo')).toMatchObject({ ok: true });
+      expect(rows).toEqual([]);
+    });
   });
 });
 
