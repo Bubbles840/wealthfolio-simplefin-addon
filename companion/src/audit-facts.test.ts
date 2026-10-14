@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import * as snapshotModule from '../../shared/audit-snapshot.js';
 import {
   gatherHeadlineFacts, publishAuditSnapshot, runAudit, type AuditPublishClient, type AuditReaders,
 } from './audit-facts.js';
@@ -8,6 +9,11 @@ import { HEALTH_READ_NOTES } from '../../shared/audit-health.js';
 import type { AuditLedger, AuditLedgerRow } from '../../shared/audit-ledger.js';
 import { AUDIT_SNAPSHOT_SECRET_KEY, parseAuditSnapshot } from '../../shared/audit-snapshot.js';
 import type { ReportCube } from '../../shared/report-cube.js';
+
+vi.mock('../../shared/audit-snapshot.js', async (orig) => {
+  const real = await orig<typeof import('../../shared/audit-snapshot.js')>();
+  return { ...real, buildAuditSnapshot: vi.fn(real.buildAuditSnapshot) };
+});
 
 /** Midday, local: this month is October wherever the suite runs. */
 const NOW = new Date(2026, 9, 13, 12, 0);
@@ -41,9 +47,10 @@ function readers(over: Partial<AuditReaders> = {}): AuditReaders {
   return {
     secret: async (key) => SECRETS[key] ?? null,
     valuations: async () => [{ accountId: 'wf-chk', totalValue: '2431.07' }],
+    accounts: async () => [{ id: 'wf-chk', accountType: 'CASH' }, { id: 'wf-ally', accountType: 'CASH' }],
     ledger: () => LEDGER,
     headlineRows: () => [],
-    settings: () => ({ timezone: 'America/New_York', excludedCategoryIds: [], categoryParents: {} }),
+    settings: () => ({ timezone: 'America/New_York', excludedCategoryIds: [], categoryParents: {}, spendingOn: true }),
     spendingSpent: async () => 1200,
     ...over,
   };
@@ -80,27 +87,59 @@ describe('runAudit', () => {
     expect([out.balances.notes, out.headline.notes, out.health.notes]).toEqual(notes());
   });
 
-  it('leaves an account of unknown type uncompared: without the ledger, or when the ledger does not know it', async () => {
-    const noLedger = await runAudit(readers({ ledger: boom }), NOW);
-    expect(noLedger.balances.accounts[0]).toMatchObject({ wealthfolioCents: null, offCents: null });
-    const unknown: AuditLedger = { accounts: [{ id: 'wf-chk', name: 'Checking', type: '', archived: false }], rows: [] };
-    const blank = await runAudit(readers({ ledger: () => unknown }), NOW);
-    expect(blank.balances.accounts[0]).toMatchObject({ wealthfolioCents: null, offCents: null });
-    const missing = await runAudit(readers({ ledger: () => ({ accounts: [], rows: [] }) }), NOW);
-    expect(missing.balances.accounts[0]).toMatchObject({ wealthfolioCents: null, offCents: null });
+  it('keeps cash compared when only the database is down: the type comes from REST, cards stay uncompared', async () => {
+    const accounts = async () => [{ id: 'wf-chk', accountType: 'CASH' }, { id: 'wf-card', accountType: 'CREDIT_CARD' }];
+    const secret = async (k: string) => (k === 'account_mapping' ? JSON.stringify({ 'sfin-chk': 'wf-chk', 'sfin-card': 'wf-card' }) : SECRETS[k] ?? null);
+    const valuations = async () => [{ accountId: 'wf-chk', totalValue: '2431.07' }, { accountId: 'wf-card', totalValue: '-90' }];
+    const out = await runAudit(readers({ ledger: boom, accounts, secret, valuations }), NOW);
+    expect(out.balances.notes).toEqual([BALANCE_READ_NOTES.ledger]);
+    expect(out.balances.accounts.find((a) => a.wfAccountId === 'wf-chk')).toMatchObject({ wealthfolioCents: 243107, offCents: 5000 });
+    expect(out.balances.accounts.find((a) => a.wfAccountId === 'wf-card')).toMatchObject({ wealthfolioCents: null, offCents: null });
   });
 
-  it('lists a secret that is not an object, and a valuation it cannot read, as failed', async () => {
+  it('compares nothing when the account list cannot be read, and says so', async () => {
+    const out = await runAudit(readers({ accounts: async () => { throw new Error('502'); } }), NOW);
+    expect(out.balances.notes).toEqual([BALANCE_READ_NOTES.accounts]);
+    expect(BALANCE_READ_NOTES.accounts).toBe("Couldn't read your account list just now, so no account is compared.");
+    expect(out.balances.accounts[0]).toMatchObject({ wealthfolioCents: null, offCents: null });
+  });
+
+  it('leaves an account of blank or unlisted type uncompared', async () => {
+    for (const accounts of [[{ id: 'wf-chk', accountType: '' }], [{ id: 'wf-chk' }], [{ id: 'other', accountType: 'CASH' }]]) {
+      const out = await runAudit(readers({ accounts: async () => accounts }), NOW);
+      expect(out.balances.accounts[0]).toMatchObject({ wealthfolioCents: null, offCents: null });
+      expect(out.balances.notes).toEqual([]);
+    }
+  });
+
+  it('lists a secret that is not an object as failed, and drops a junk valuation for its own account only', async () => {
     const odd = await runAudit(readers({ secret: async (k) => (k === 'account_balances' ? '[1]' : SECRETS[k] ?? null) }), NOW);
     expect(odd.balances.notes).toEqual([BALANCE_READ_NOTES.balances]);
-    const junk = await runAudit(readers({ valuations: async () => [{ accountId: 'wf-chk', totalValue: 'n/a' }] }), NOW);
-    expect(junk.balances.notes).toEqual([BALANCE_READ_NOTES.valuations]);
+    const junk = await runAudit(readers({ valuations: async () => [{ accountId: 'wf-chk', totalValue: 'n/a' }, { accountId: 'wf-ally', totalValue: '5' }] }), NOW);
+    expect(junk.balances.notes).toEqual([]);
+    expect(junk.balances.accounts[0]).toMatchObject({ wealthfolioCents: null, offCents: null });
   });
 
   it('lists a Spending page figure that is not a number as failed', async () => {
     const facts = await gatherHeadlineFacts(readers({ spendingSpent: async () => Number.NaN }), NOW);
     expect(facts.failed).toEqual(['wealthfolio']);
     expect(facts.wealthfolioCents).toBeUndefined();
+  });
+
+  it('treats a turned-off Spending page as no figure, and never asks it', async () => {
+    const spendingSpent = vi.fn(async () => 0);
+    const settings = () => ({ timezone: 'America/New_York', excludedCategoryIds: [], categoryParents: {}, spendingOn: false });
+    const out = await runAudit(readers({ spendingSpent, settings }), NOW);
+    expect(spendingSpent).not.toHaveBeenCalled();
+    expect(out.headline.wealthfolioCents).toBeNull();
+    expect(out.headline.notes).toEqual([HEADLINE_READ_NOTES['spending-off']]);
+    expect(HEADLINE_READ_NOTES['spending-off']).toBe("Wealthfolio's Spending page is turned off, so there's nothing to compare.");
+  });
+
+  it('reads the account mapping once per run', async () => {
+    const secret = vi.fn(async (k: string) => SECRETS[k] ?? null);
+    await runAudit(readers({ secret }), NOW);
+    expect(secret.mock.calls.filter(([k]) => k === 'account_mapping')).toHaveLength(1);
   });
 
   it('is unreachable when not even the account mapping can be read', async () => {
@@ -146,6 +185,13 @@ describe('publishAuditSnapshot', () => {
   it('writes nothing when Wealthfolio cannot be reached, so the previous snapshot stays', async () => {
     const set = vi.fn(async () => {});
     expect(await publishAuditSnapshot(client(set), '/db', NOW, readers(failingSecret('account_mapping')))).toBe(false);
+    expect(set).not.toHaveBeenCalled();
+  });
+
+  it('rejects, and writes nothing, when the snapshot is over budget even trimmed', async () => {
+    vi.mocked(snapshotModule.buildAuditSnapshot).mockReturnValueOnce(null);
+    const set = vi.fn(async () => {});
+    await expect(publishAuditSnapshot(client(set), '/db', NOW, readers())).rejects.toThrow(/over budget.*keeping the previous/);
     expect(set).not.toHaveBeenCalled();
   });
 

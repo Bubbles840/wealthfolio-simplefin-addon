@@ -30,22 +30,25 @@ export interface AuditReaders {
   /** One add-on secret; rejects when Wealthfolio cannot be reached. */
   secret(key: string): Promise<string | null>;
   valuations(): Promise<Array<{ accountId: string; totalValue: string | number }>>;
+  /** Every account with its type (REST), so the type does not depend on the database. */
+  accounts(): Promise<Array<{ id: string; accountType?: string }>>;
   /** Throws when the database cannot be read. */
   ledger(): AuditLedger;
   /** Throws when the database cannot be read. */
   headlineRows(startInclusive: string, endExclusive: string): HeadlineDbRow[];
   /** Throws when the database cannot be read. */
-  settings(): { timezone: string | null; excludedCategoryIds: string[]; categoryParents: Record<string, string | null> };
+  settings(): { timezone: string | null; excludedCategoryIds: string[]; categoryParents: Record<string, string | null>; spendingOn: boolean };
   /** Wealthfolio's Spending page `headline.spent`, in dollars. */
   spendingSpent(startIso: string, endIso: string): Promise<number>;
 }
 
-export type AuditClient = Pick<WealthfolioClient, 'getAddonSecret' | 'getLatestValuations' | 'getSpendingInsightSpent'>;
+export type AuditClient = Pick<WealthfolioClient, 'getAddonSecret' | 'getLatestValuations' | 'getAccounts' | 'getSpendingInsightSpent'>;
 
 export function companionAuditReaders(client: AuditClient, dbPath: string): AuditReaders {
   return {
     secret: (key) => client.getAddonSecret(ADDON_ID, key),
     valuations: () => client.getLatestValuations(),
+    accounts: () => client.getAccounts(),
     ledger: () => getNativeAuditLedger(dbPath),
     headlineRows: (start, endEx) => getNativeHeadlineRows(dbPath, start, endEx),
     settings: () => getNativeAuditSettings(dbPath),
@@ -77,6 +80,10 @@ async function readJson<T>(r: AuditReaders, key: string): Promise<{ ok: true; va
   }
 }
 
+type Mapping = { ok: true; value: Record<string, string> | null } | { ok: false };
+/** The account mapping, read once per run and shared by the balance and Health checks. */
+export const readMapping = (r: AuditReaders): Promise<Mapping> => readJson<Record<string, string>>(r, 'account_mapping');
+
 /** The ledger, read once and shared by the balance and Health checks;
  *  undefined when the database could not be read. */
 export function readAuditLedger(r: AuditReaders): AuditLedger | undefined {
@@ -87,10 +94,10 @@ export function readAuditLedger(r: AuditReaders): AuditLedger | undefined {
   }
 }
 
-export async function gatherBalanceFacts(r: AuditReaders, ledger: AuditLedger | undefined): Promise<BalanceFacts> {
+export async function gatherBalanceFacts(r: AuditReaders, ledger: AuditLedger | undefined, sharedMapping?: Mapping): Promise<BalanceFacts> {
   const facts: BalanceFacts = {};
   const failed: BalanceRead[] = [];
-  const mapping = await readJson<Record<string, string>>(r, 'account_mapping');
+  const mapping = sharedMapping ?? await readMapping(r);
   if (mapping.ok) facts.mapping = mapping.value ?? {};
   else failed.push('mapping');
   const balances = await readJson<NonNullable<BalanceFacts['balances']>>(r, 'account_balances');
@@ -99,20 +106,28 @@ export async function gatherBalanceFacts(r: AuditReaders, ledger: AuditLedger | 
   const names = await readJson<Record<string, string>>(r, 'account_names');
   if (names.ok) facts.names = names.value ?? {};
   else failed.push('names');
+  // The type comes from REST, so a database that is down costs only the
+  // ledger part. An account of unknown type (no type given, or the whole list
+  // unread) is left uncompared: its valuation is dropped, so a card's debt is
+  // never compared against a cash-style valuation.
+  const accountTypes: Record<string, string> = {};
   try {
-    // An account whose type the ledger does not give (no ledger, a blank type,
-    // an account it does not list) is left uncompared: the shared check would
-    // otherwise compare a card's debt against a cash-style valuation.
-    const knownType = new Set((ledger?.accounts ?? []).filter((a) => a.type !== '').map((a) => a.id));
+    for (const a of await r.accounts()) {
+      const type = typeof a.accountType === 'string' ? a.accountType.trim().toUpperCase() : '';
+      if (type !== '') accountTypes[a.id] = type;
+    }
+  } catch {
+    failed.push('accounts');
+  }
+  facts.accountTypes = accountTypes;
+  try {
     const valuations: Record<string, number> = {};
-    let unreadable = false;
     for (const v of await r.valuations()) {
       const dollars = typeof v.totalValue === 'number' ? v.totalValue : parseFloat(String(v.totalValue));
-      if (!Number.isFinite(dollars)) unreadable = true;
-      else if (knownType.has(v.accountId)) valuations[v.accountId] = Math.round(dollars * 100);
+      // A valuation that is not a number costs only its own account.
+      if (Number.isFinite(dollars) && accountTypes[v.accountId]) valuations[v.accountId] = Math.round(dollars * 100);
     }
     facts.valuations = valuations;
-    if (unreadable) failed.push('valuations');
   } catch {
     failed.push('valuations');
   }
@@ -136,15 +151,19 @@ export async function gatherHeadlineFacts(r: AuditReaders, now: Date): Promise<H
     failed.push('report');
   }
   let timezone: string | null = null;
+  let spendingOn = true;
   try {
     const settings = r.settings();
     timezone = settings.timezone;
     facts.excludedCategoryIds = settings.excludedCategoryIds;
     facts.categoryParents = settings.categoryParents;
+    spendingOn = settings.spendingOn;
   } catch {
     failed.push('settings');
   }
-  try {
+  // A Spending page that is off answers a meaningless $0: not a figure to compare.
+  if (!spendingOn) failed.push('spending-off');
+  else try {
     const { start, end } = zonedMonthBounds(month, timezone);
     const spent = await r.spendingSpent(start, end);
     if (typeof spent !== 'number' || !Number.isFinite(spent)) throw new Error('no spent figure');
@@ -161,12 +180,12 @@ export async function gatherHeadlineFacts(r: AuditReaders, now: Date): Promise<H
   return facts;
 }
 
-export async function gatherHealthFacts(r: AuditReaders, ledger: AuditLedger | undefined): Promise<HealthFacts> {
+export async function gatherHealthFacts(r: AuditReaders, ledger: AuditLedger | undefined, sharedMapping?: Mapping): Promise<HealthFacts> {
   const facts: HealthFacts = {};
   const failed: HealthRead[] = [];
   if (ledger) facts.ledger = ledger;
   else failed.push('ledger');
-  const mapping = await readJson<Record<string, string>>(r, 'account_mapping');
+  const mapping = sharedMapping ?? await readMapping(r);
   if (mapping.ok) facts.mapping = mapping.value ?? {};
   else failed.push('mapping');
   if (failed.length > 0) facts.failed = failed;
@@ -177,9 +196,10 @@ export async function gatherHealthFacts(r: AuditReaders, ledger: AuditLedger | u
  *  the account mapping could be read: Wealthfolio is unreachable. */
 export async function runAudit(r: AuditReaders, now: Date): Promise<AuditResults & { reached: boolean }> {
   const ledger = readAuditLedger(r);
-  const balanceFacts = await gatherBalanceFacts(r, ledger);
+  const mapping = await readMapping(r);
+  const balanceFacts = await gatherBalanceFacts(r, ledger, mapping);
   const headlineFacts = await gatherHeadlineFacts(r, now);
-  const healthFacts = await gatherHealthFacts(r, ledger);
+  const healthFacts = await gatherHealthFacts(r, ledger, mapping);
   return {
     balances: explainBalances(balanceFacts),
     headline: explainHeadline(headlineFacts),
@@ -204,6 +224,9 @@ export async function publishAuditSnapshot(
 ): Promise<boolean> {
   const { reached, ...results } = await runAudit(readers, now);
   if (!reached) return false;
-  await client.setAddonSecret(ADDON_ID, AUDIT_SNAPSHOT_SECRET_KEY, JSON.stringify(buildAuditSnapshot(results, now)));
+  const snapshot = buildAuditSnapshot(results, now);
+  // Over budget even fully trimmed: never write "null" over the previous one.
+  if (!snapshot) throw new Error('audit snapshot over budget after trimming; keeping the previous one');
+  await client.setAddonSecret(ADDON_ID, AUDIT_SNAPSHOT_SECRET_KEY, JSON.stringify(snapshot));
   return true;
 }
