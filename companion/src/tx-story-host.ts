@@ -15,7 +15,7 @@
  * longer exists is `gone` — a transfer link re-created it, or it was removed.
  */
 import type { ChangeLogItem, ChangeLogRead } from '../../shared/change-log.js';
-import { changesForTransaction } from '../../shared/change-view.js';
+import { changesForTransaction, isChangeLogPartial } from '../../shared/change-view.js';
 import { parseSkippedTransactionsStrict, SKIPPED_TRANSACTIONS_SECRET_KEY } from '../../shared/skipped-transactions.js';
 import { txIdFromComment } from '../../shared/sync-core.js';
 import { hasTxOverride, loadSyncOverrides, TX_OVERRIDE_FLAGS, type TxOverrideFlag } from '../../shared/sync-overrides.js';
@@ -147,8 +147,14 @@ export async function companionTxStory(readers: StoryReaders, activityId: string
   }
 
   let history: ChangeLogItem[] | null = null;
+  // A bucket that can't be read, or a gap, may hold the filing: the history
+  // keeps what was read, but who filed it is not inferred from an absence.
+  let partial = false;
   try {
-    history = changesForTransaction((await readers.changeLog(now)).entries, { txKeys: txKey ? [txKey] : [], activityIds: [activityId] });
+    const read = await readers.changeLog(now);
+    partial = isChangeLogPartial(read);
+    if (partial) failed.push('changeLogPartial');
+    history = changesForTransaction(read.entries, { txKeys: txKey ? [txKey] : [], activityIds: [activityId] });
   } catch {
     failed.push('changeLog');
   }
@@ -199,7 +205,7 @@ export async function companionTxStory(readers: StoryReaders, activityId: string
         source: a.source,
         categoryId: a.categoryId,
         row: { note, activityType: row.activityType, accountId: item.accountId, absCents: row.absCents },
-        history,
+        history: partial ? null : history,
         rules,
       });
       category = { name: a.categoryName || 'a category', filer };

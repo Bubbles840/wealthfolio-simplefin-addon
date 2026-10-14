@@ -290,6 +290,13 @@ const monthName = (month: string) => {
 };
 const writerLabel = (w: string) => (w === 'addon' ? "app's" : "companion's");
 
+/** Part of the window is missing: a bucket can't be read, or a gap says
+ *  changes were not saved (`readChangeLog` keeps only gaps inside the 90
+ *  days). An absence in such a log proves nothing. */
+export function isChangeLogPartial(read: Pick<ChangeLogRead, 'gaps' | 'unreadable'>): boolean {
+  return read.unreadable.length > 0 || read.gaps.length > 0;
+}
+
 /** One sentence per gap, trim and unreadable bucket, for the top of the feed. */
 export function changeLogNotes(read: Pick<ChangeLogRead, 'gaps' | 'trimmed' | 'unreadable'>): string[] {
   const notes: string[] = [];

@@ -4,7 +4,9 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { importChange, stampChange } from '../../shared/change-entries';
 import type { ChangeLogItem } from '../../shared/change-log';
 import type { UndoOutcome } from '../../shared/change-undo-run';
-import { buildTxStory, TX_STORY_GONE_APP, TX_STORY_NO_HISTORY, TX_STORY_UNREACHABLE, type TxStory } from '../../shared/tx-story';
+import {
+  buildTxStory, TX_FACT_NOTES, TX_STORY_GONE_APP, TX_STORY_NO_HISTORY, TX_STORY_UNREACHABLE, type TxStory,
+} from '../../shared/tx-story';
 import { ThemeStyles } from './ui';
 import { TxStoryPanel, TxStoryView, TX_STORY_REREAD_FAILED, type TxStoryActions } from './TxStory';
 import type { AppStoryOutcome } from '../utils/tx-story';
@@ -51,6 +53,17 @@ describe('TxStoryView', () => {
     rerender(<TxStoryView story={story({ history: null, notes: ["Couldn't read the change log just now."] })} entries={[]} actions={actions()} onChanged={() => {}} />);
     expect(screen.queryByText('What happened')).toBeNull();
     expect(screen.getByText("Couldn't read the change log just now.")).toBeInTheDocument();
+  });
+
+  it('a change log read in part never says "No changes", and says why the list may be short', () => {
+    const partial = buildTxStory({
+      row: { activityId: 'act-1', note: 'SQ *BLUE_BOTTLE <b> · tx-1', absCents: 650, date: '2026-10-12', activityType: 'WITHDRAWAL', accountName: 'Checking' },
+      feed: { sfinAccountId: 'sfin-1' }, partner: null, history: [], failed: ['changeLogPartial'], now: NOW,
+    });
+    render(<TxStoryView story={partial} entries={[]} actions={actions()} onChanged={() => {}} />);
+    expect(screen.getByText('What happened')).toBeInTheDocument();
+    expect(screen.queryByText(TX_STORY_NO_HISTORY)).toBeNull();
+    expect(screen.getByText(TX_FACT_NOTES.changeLogPartial)).toBeInTheDocument();
   });
 
   it('a history line opens the change log’s own entry detail, with its Undo — disabled and busy while it runs', async () => {

@@ -25,7 +25,7 @@
  */
 import type { ActivityDetails, ActivitySearchFilters, AddonContext } from '@wealthfolio/addon-sdk';
 import type { ChangeLogItem } from '../../shared/change-log';
-import { changesForTransaction } from '../../shared/change-view';
+import { changesForTransaction, isChangeLogPartial } from '../../shared/change-view';
 import { txIdFromComment, isTransferType } from '../../shared/sync-core';
 import { hasTxOverride, TX_OVERRIDE_FLAGS, type TxOverrideFlag } from '../../shared/sync-overrides';
 import { accountTxKey } from '../../shared/transfers';
@@ -112,6 +112,8 @@ export async function appTxStory(ctx: AddonContext, store: StoryStore, target: A
   if (store.getChangeLog) {
     const read = await store.getChangeLog().catch(() => null);
     if (read) {
+      // An unreadable bucket or a gap: keep what was read, and say the list may be short.
+      if (isChangeLogPartial(read)) failed.push('changeLogPartial');
       entries = read.entries;
       history = changesForTransaction(entries, { txKeys: txKey ? [txKey] : [], activityIds: [row.id] });
     } else failed.push('changeLog');

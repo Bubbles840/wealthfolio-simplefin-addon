@@ -79,6 +79,7 @@ import { companionStoryReaders, companionTxSearch, companionTxStory } from './tx
 import { companionRuleFiledCount, companionUndoIo } from './change-undo-host.js';
 import { runChangeUndo } from '../../shared/change-undo-run.js';
 import type { ChangeLogRead } from '../../shared/change-log.js';
+import { isChangeLogPartial } from '../../shared/change-view.js';
 import type { ChangeDraft } from '../../shared/change-entries.js';
 import { createTransferLearning, type TransferLearning } from './transfer-learning.js';
 import type { CategorizeController, CategorizeDeps } from './categorize.js';
@@ -1659,8 +1660,8 @@ function cubeBuildDeps(wfClient: WealthfolioClient, dbPath: string): CubeBuildDe
     // rule list still lets the log say "you", and the reverse.
     filingContext: async () => ({
       rules: await Promise.resolve().then(() => wfClient.listCategorizationRules()).catch(() => null),
-      // An unreadable bucket may hold the filing: say nothing rather than "by hand".
-      history: await readCompanionChangeLog(wfClient, new Date()).then((r) => (r.unreadable.length ? null : r.entries)).catch(() => null),
+      // An unreadable bucket or a gap may hold the filing: say nothing rather than "by hand".
+      history: await readCompanionChangeLog(wfClient, new Date()).then((r) => (isChangeLogPartial(r) ? null : r.entries)).catch(() => null),
     }),
     checkTotals: (s, e, excluded) => ({
       spendByCategory: getNativeWealthfolioSpendingBetween(dbPath, s, e),

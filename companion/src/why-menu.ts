@@ -179,7 +179,8 @@ export function renderWhyStory(story: TxStory, activityId: string, back: StoryBa
   const numbers: Button[] = [];
   if (story.history) {
     lines.push('', `*${TX_STORY_WHAT_HAPPENED}*`);
-    if (story.history.length === 0) lines.push(TX_STORY_NO_HISTORY);
+    // A log read in part can't say nothing happened: its note says why the list may be short.
+    if (story.history.length === 0 && !story.historyPartial) lines.push(TX_STORY_NO_HISTORY);
     const shown = story.history.slice(-WHY_HISTORY_MAX);
     const hidden = story.history.length - shown.length;
     if (hidden > 0) lines.push(`…and ${hidden} earlier — /changes lists them.`);

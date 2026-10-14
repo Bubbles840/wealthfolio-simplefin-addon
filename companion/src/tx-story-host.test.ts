@@ -4,9 +4,10 @@ import type { ChangeLogRead } from '../../shared/change-log.js';
 import { SYNC_OVERRIDES_SECRET_KEY } from '../../shared/sync-overrides.js';
 import { SKIPPED_TRANSACTIONS_SECRET_KEY } from '../../shared/skipped-transactions.js';
 import { accountTxKey } from '../../shared/transfers.js';
-import { TX_FACT_NOTES, TX_STORY_SPENDING } from '../../shared/tx-story.js';
+import { TX_FACT_NOTES, TX_STORY_NO_HISTORY, TX_STORY_SPENDING } from '../../shared/tx-story.js';
 import { parseTxQuery } from '../../shared/tx-search.js';
 import { companionStoryReaders, companionTxSearch, companionTxStory, type StoryReaders } from './tx-story-host.js';
+import { renderWhyStory } from './why-menu.js';
 import type { ActivitySearchItem } from './wealthfolio.js';
 
 const NOW = new Date('2026-10-13T16:00:00Z');
@@ -106,6 +107,34 @@ describe('companionTxStory', () => {
     if (out.kind !== 'ok') return;
     expect(out.story.title).toBe('KROGER #415 · -$54.20 · Oct 4');
     expect(out.story.notes).toEqual([TX_FACT_NOTES[fact]]);
+  });
+
+  it.each([
+    ['an unreadable bucket', { unreadable: [{ writer: 'companion' as const, month: '2026-10', paused: false }] }],
+    ['a gap in the log', { gaps: [{ at: '2026-10-05T12:00:00Z', count: 1, reason: "couldn't save the log", writer: 'companion' as const }] }],
+  ])('%s that may hold the Telegram filing: no "set by hand", no "No changes…", and a note', async (_what, part) => {
+    // The person's filing sat in the bucket that can't be read: the log as read has nothing about this row.
+    const r = readers({
+      details: vi.fn(() => ({ accountType: 'CASH', assignments: [{ taxonomyId: 'spending_categories', categoryId: 'cat-gro', categoryName: 'Groceries', source: 'manual' }] })),
+      changeLog: vi.fn(async () => ({ ...logOf(), ...part })),
+    });
+    const out = await companionTxStory(r, 'act-1', NOW);
+    expect(out.kind).toBe('ok');
+    if (out.kind !== 'ok') return;
+    expect(out.story.answer).toContain('Filed under Groceries.');
+    expect(out.story.answer.join(' ')).not.toContain('set by hand');
+    expect(out.story.history).toEqual([]);
+    expect(out.story.notes).toEqual([TX_FACT_NOTES.changeLogPartial]);
+    const text = renderWhyStory(out.story, 'act-1', { kind: 'none' }).text;
+    expect(text).not.toContain(TX_STORY_NO_HISTORY);
+    expect(text).toContain(TX_FACT_NOTES.changeLogPartial);
+  });
+
+  it('a change log read in part keeps the entries it could read', async () => {
+    const r = readers({ changeLog: vi.fn(async () => ({ ...logOf(imported), unreadable: [{ writer: 'addon' as const, month: '2026-09', paused: false }] })) });
+    const out = await companionTxStory(r, 'act-1', NOW);
+    expect(out.kind === 'ok' && out.story.history!.map((h) => h.entryId)).toEqual([imported.id]);
+    expect(out.kind === 'ok' && out.story.notes).toEqual([TX_FACT_NOTES.changeLogPartial]);
   });
 
   it('a secret read that fails reports the overrides and the skip list, never "none"', async () => {

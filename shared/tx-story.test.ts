@@ -174,7 +174,7 @@ describe('buildTxStory — missing and failed facts', () => {
     expect(s.notes).toEqual([]);
   });
 
-  const each: TxFactName[] = ['mapping', 'partner', 'category', 'rules', 'changeLog', 'overrides', 'overridesUnreadable', 'skipList'];
+  const each: TxFactName[] = ['mapping', 'partner', 'category', 'rules', 'changeLog', 'changeLogPartial', 'overrides', 'overridesUnreadable', 'skipList'];
   it.each(each)('a failed %s read still tells the story, with a note', (fact) => {
     const s = story({
       category: { name: 'Groceries', filer: { kind: 'hand' } }, overrides: ['noAutoFile'], skipped: true, failed: [fact],
@@ -194,6 +194,19 @@ describe('buildTxStory — missing and failed facts', () => {
     expect(s.notes).toEqual([TX_FACT_NOTES[fact]]);
     if (fact === 'changeLog') expect(s.history).toBeNull();
     else expect(s.history).toEqual([]);
+  });
+
+  it('a change log read in part keeps what it read, says it may be missing changes, and never "No changes"', () => {
+    const imp = item(importChange({
+      account: CHECKING, txKey: 'k1', activityId: 'act-1', description: 'KROGER #415', amountCents: -5420, date: '2026-10-04',
+      pending: false, activityType: 'WITHDRAWAL',
+    }), 4);
+    const kept = story({ history: [imp], failed: ['changeLogPartial'] });
+    expect(kept.history).toEqual([{ entryId: imp.id, line: 'Oct 4 · Imported KROGER #415' }]);
+    expect(kept.historyPartial).toBe(true);
+    expect(kept.notes).toEqual(["Part of the change log can't be read, so this list may be missing changes."]);
+    expect(story({ history: [], failed: ['changeLogPartial'] }).historyPartial).toBe(true);
+    expect(story({ history: [] }).historyPartial).toBeUndefined();
   });
 
   it('all five things you told the sync, in order', () => {
