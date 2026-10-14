@@ -152,6 +152,82 @@ export function matchesChangeSearch(e: ChangeEntry, query: string): boolean {
   return words.every((w) => hay.includes(w));
 }
 
+const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x !== '') : []);
+
+/** The identity one entry carries for its subject(s), aligned by position:
+ *  a transfer link lists both legs, out first, in `subject.txKeys`,
+ *  `subject.activityIds` and `before.activityIds` alike. */
+function entryIdentity(e: ChangeEntry) {
+  const before = isRecord(e.before) ? e.before : {};
+  const after = isRecord(e.after) ? e.after : {};
+  return {
+    keys: strings(e.subject.txKeys),
+    ids: strings(e.subject.activityIds),
+    beforeIds: strings(before.activityIds),
+    afterIds: strings(after.activityIds),
+    oldKey: e.kind === 'bank-update' ? str(before.txKey) : null,
+    leftBehind: str(after.activityId),
+  };
+}
+
+function entryMatches(e: ChangeEntry, keys: Set<string>, ids: Set<string>): boolean {
+  const x = entryIdentity(e);
+  return x.keys.some((k) => keys.has(k))
+    || (x.oldKey !== null && keys.has(x.oldKey))
+    || x.ids.some((id) => ids.has(id))
+    || x.beforeIds.some((id) => ids.has(id));
+}
+
+/** What a matched entry teaches about the same transaction: a bank update's
+ *  old key, the row a reversal left behind, and — for a link — THIS leg's old
+ *  and new ids and key, found by its position. Bookkeeping lists rows that do
+ *  not line up by position, so it teaches nothing. */
+function learnIdentity(e: ChangeEntry, keys: Set<string>, ids: Set<string>): void {
+  if (e.kind === 'bookkeeping') return;
+  const x = entryIdentity(e);
+  if (x.oldKey) keys.add(x.oldKey);
+  if (x.keys.length <= 1 && x.ids.length <= 1) {
+    for (const k of x.keys) keys.add(k);
+    for (const id of [...x.ids, ...x.beforeIds, ...(x.leftBehind ? [x.leftBehind] : [])]) ids.add(id);
+    return;
+  }
+  const legs = Math.max(x.keys.length, x.ids.length, x.beforeIds.length);
+  for (let i = 0; i < legs; i++) {
+    const mine = (x.keys[i] !== undefined && keys.has(x.keys[i]))
+      || (x.ids[i] !== undefined && ids.has(x.ids[i]))
+      || (x.beforeIds[i] !== undefined && ids.has(x.beforeIds[i]));
+    if (!mine) continue;
+    if (x.keys[i]) keys.add(x.keys[i]);
+    for (const id of [x.ids[i], x.beforeIds[i], x.afterIds[i]]) if (id) ids.add(id);
+  }
+}
+
+/**
+ * Every entry about ONE transaction, oldest first — the story's "What
+ * happened". It matches, in this order: the transaction's account-scoped tx
+ * keys; the OLD key a bank update records when a pending row posted under a
+ * new transaction id (so the posted row keeps its pending history); its
+ * activity ids, current and the ones a transfer link replaced
+ * (`subject.activityIds`, `before.activityIds`). Every match can teach more of
+ * the same transaction's identity, so the walk repeats until nothing new is
+ * learned. Background bookkeeping about the transaction is included.
+ */
+export function changesForTransaction<T extends ChangeEntry>(
+  entries: readonly T[],
+  id: { txKeys?: readonly string[]; activityIds?: readonly string[] },
+): T[] {
+  const keys = new Set((id.txKeys ?? []).filter(Boolean));
+  const ids = new Set((id.activityIds ?? []).filter(Boolean));
+  for (let pass = 0; pass < 8; pass++) {
+    const known = keys.size + ids.size;
+    for (const e of entries) if (entryMatches(e, keys, ids)) learnIdentity(e, keys, ids);
+    if (keys.size + ids.size === known) break;
+  }
+  return entries
+    .filter((e) => entryMatches(e, keys, ids))
+    .sort((a, b) => (a.at === b.at ? (a.id < b.id ? -1 : a.id > b.id ? 1 : 0) : a.at < b.at ? -1 : 1));
+}
+
 /** Entries from the last `days` days (by the moment they were written). */
 export function changesWithin<T extends Pick<ChangeEntry, 'at'>>(entries: readonly T[], now: Date, days: number): T[] {
   const cutoff = now.getTime() - days * 86_400_000;
