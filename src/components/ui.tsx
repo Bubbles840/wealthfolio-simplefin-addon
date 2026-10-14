@@ -909,6 +909,10 @@ const css = `
 .sfin-forecast-assume { margin: 2px 0 0; color: var(--muted-foreground); }
 .sfin-forecast-status { font-size: var(--sfin-sz-xs); color: var(--muted-foreground); }
 .sfin-forecast-status--stale, .sfin-forecast-stale, .sfin-forecast-short { color: var(--destructive); }
+/* The Reports tab's unread state (project 5): a count on the tab and on each
+   sub-tab, and "New" on an edition not seen yet. */
+.sfin-inbox-badge { display: inline-block; min-width: 1.5em; margin-left: 6px; padding: 0 5px; border-radius: 999px; background: var(--primary); color: var(--primary-foreground, #fff); font-size: var(--sfin-sz-2xs); font-weight: 600; line-height: 1.5; text-align: center; }
+.sfin-inbox-new { margin-left: 8px; padding: 1px 6px; border-radius: 999px; background: color-mix(in srgb, var(--primary) 15%, transparent); color: var(--primary); font-size: var(--sfin-sz-2xs); font-weight: 600; }
 @keyframes sfin-pop { from { transform: scale(.92); opacity: 0; } to { transform: scale(1); opacity: 1; } }
 .sfin-range-pin { position: absolute; bottom: 6px; right: 10px; font-size: var(--sfin-sz-2xs); color: var(--muted-foreground); background: color-mix(in srgb, var(--card) 80%, transparent); border-radius: var(--sfin-rad-xs); padding: 1px 6px; }
 /* Drag feedback: the picked-up card lifts and fades while every other card
