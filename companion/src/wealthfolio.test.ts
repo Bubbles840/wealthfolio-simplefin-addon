@@ -376,4 +376,29 @@ describe('WealthfolioClient', () => {
       await expect(client.getAccounts()).rejects.toThrow('getAccounts failed: 503');
     });
   });
+
+  it('getAppVersion reads the version from GET /api/v1/app/info', async () => {
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ version: '3.10.0', dbPath: '/x', logsDir: '/l' }) });
+    const client = new WealthfolioClient('http://wf');
+    expect(await client.getAppVersion()).toBe('3.10.0');
+    expect(mockFetch.mock.calls[0][0]).toBe('http://wf/api/v1/app/info');
+  });
+
+  it('getAppVersion returns null on a non-ok response, a throw, or a missing field', async () => {
+    const client = new WealthfolioClient('http://wf');
+    mockFetch.mockResolvedValueOnce({ ok: false, status: 500, text: async () => 'boom' });
+    expect(await client.getAppVersion()).toBeNull();
+    mockFetch.mockRejectedValueOnce(new Error('network'));
+    expect(await client.getAppVersion()).toBeNull();
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({}) });
+    expect(await client.getAppVersion()).toBeNull();
+  });
+
+  it('turns an HTTP 423 into a clear profile-lock error', async () => {
+    mockFetch.mockResolvedValueOnce({ ok: false, status: 423, text: async () => '{"code":"PROFILE_LOCKED"}' });
+    const client = new WealthfolioClient('http://wf');
+    await expect(client.getAccounts()).rejects.toThrow(
+      'Wealthfolio refused the request: a profile is locked or there is more than one profile (HTTP 423 PROFILE_LOCKED). The companion supports one default profile with no lock.',
+    );
+  });
 });
