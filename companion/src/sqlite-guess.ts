@@ -10,10 +10,17 @@
  * Which filings: the spending taxonomy's assignments whose `source` is
  * `manual` (a person — in Wealthfolio, in Telegram, and the Amazon filer, all
  * of which go through the assign route that writes `manual`) or `rule` (your
- * rules), created on or after the day. `migrated` — older Wealthfolio's own
- * conversion of its categories — is left out. The add-on's own bookkeeping
- * rows are left out by their note markers. The same tables and columns on
- * Wealthfolio 3.8, 3.9 and 3.10.
+ * rules), filed on or after the day. `migrated` is Wealthfolio's own conversion
+ * of ASSET classifications and is never on an activity; it is left out all the
+ * same. The add-on's own bookkeeping rows are left out by their note markers.
+ * The same tables and columns on Wealthfolio 3.8, 3.9 and 3.10.
+ *
+ * When a filing was made (ruling P3-J): Wealthfolio keeps ONE assignment per
+ * activity and taxonomy (a unique index), and re-filing a row updates it in
+ * place — INSERT … ON CONFLICT DO UPDATE keeps `created_at` (the FIRST filing)
+ * and moves `updated_at`. So a `manual` filing counts from `updated_at`, the
+ * last time a person filed it; a `rule` filing counts from `created_at`,
+ * because a rules re-run bumps `updated_at` without anyone filing anything.
  *
  * The sqlite3 CLI fallback splits on the unit separator with the note last,
  * newlines made spaces (it prints one row per line).
@@ -36,12 +43,17 @@ export function pastFilingFromCliParts(parts: string[]): Record<string, unknown>
  *  the database cannot be read, or for a malformed day. */
 export function getNativePastFilings(dbPath: string, sinceDay: string): PastFiling[] {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(sinceDay)) throw new Error(`Refusing past filings since a malformed day: ${sinceDay}`);
-  // Only an activity's LATEST spending assignment counts (a row re-filed from A
-  // to B is B, once), judged before the source and the window are applied; the
-  // category is joined from the live table, so an assignment whose category is
-  // gone is left out and a renamed one carries its current name. `created_at`
-  // is compared by its day, so the boundary day is wholly in.
-  const AT = (alias: string) => `replace(substr(COALESCE(${alias}.created_at, ''), 1, 19), 'T', ' ')`;
+  // When the filing was made: `updated_at` for a person's, `created_at` for a
+  // rule's (see the file comment). Compared by its day, so the boundary day is
+  // wholly in.
+  const FILED = (alias: string) =>
+    `(CASE WHEN LOWER(COALESCE(${alias}.source, '')) = 'manual' THEN COALESCE(${alias}.updated_at, ${alias}.created_at) ELSE ${alias}.created_at END)`;
+  const AT = (alias: string) => `replace(substr(COALESCE(${FILED(alias)}, ''), 1, 19), 'T', ' ')`;
+  // One row per activity today: a re-filing from A to B is that row, now B. The
+  // NOT EXISTS is a guard for a future schema that kept several rows: only the
+  // latest would count, judged before the source and the window are applied.
+  // The category is joined from the live table, so an assignment whose
+  // category is gone is left out and a renamed one carries its current name.
   const query = `
     SELECT ata.category_id AS category_id,
            tc.name AS category_name,
@@ -56,7 +68,7 @@ export function getNativePastFilings(dbPath: string, sinceDay: string): PastFili
           AND (${AT('newer')} > ${AT('ata')} OR (${AT('newer')} = ${AT('ata')} AND COALESCE(newer.id, '') > COALESCE(ata.id, '')))
       )
       AND LOWER(COALESCE(ata.source, '')) IN ('manual', 'rule')
-      AND substr(COALESCE(ata.created_at, ''), 1, 10) >= '${sinceDay}'
+      AND substr(COALESCE(${FILED('ata')}, ''), 1, 10) >= '${sinceDay}'
       AND COALESCE(a.notes, '') NOT LIKE 'Starting balance · %'
       AND COALESCE(a.notes, '') NOT LIKE 'Balance adjustment · %'
       AND COALESCE(a.notes, '') NOT LIKE '↔️ In-transit transfer · %';
