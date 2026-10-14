@@ -30,7 +30,7 @@ function ledger(settings = true): string {
     INSERT INTO activities VALUES
       ('act-1', 'wf-chk', 'TRANSFER_OUT', NULL, NULL, NULL, '2026-10-04T00:00:00+00:00', '600', 'usd', NULL, '{"flow":{"is_external":true}}', 'TRANSFER TO ALLY · TRN-1', NULL, NULL),
       ('act-2', 'wf-chk', 'DEPOSIT', 'TRANSFER_IN', 'refund', 'posted', '2026-10-05T04:00:00+00:00', '12.35', 'USD', 'cash-by-code', '{"flow":{"is_external":false}}', 'A | B · TRN-2', 'g1', '1.5'),
-      ('act-3', 'wf-ally', 'WITHDRAWAL', NULL, NULL, 'PENDING', '2026-09-30T00:00:00+00:00', '-9.99', 'USD', '${PHANTOM_CASH_ASSET_ID}', 'not json', NULL, NULL, ''),
+      ('act-3', 'wf-ally', 'WITHDRAWAL', NULL, NULL, 'PENDING', '2026-09-30T00:00:00+00:00', '-9.99', 'USD', '${PHANTOM_CASH_ASSET_ID}', 'not json', NULL, NULL, 'abc'),
       ('act-4', 'wf-chk', 'WITHDRAWAL', '  ', NULL, NULL, '2026-11-01T00:00:00+00:00', '5', 'USD', 'AAPL', '{"flow":{"is_external":"true"}}', 'LATE · TRN-4', NULL, '-3');
     INSERT INTO taxonomy_categories VALUES ('cat-a', 'spending_categories', 'Food', NULL), ('cat-b', 'spending_categories', 'Fun', 'cat-a'), ('inc', 'income_sources', 'Pay', NULL);
     INSERT INTO activity_taxonomy_assignments VALUES
@@ -41,7 +41,7 @@ function ledger(settings = true): string {
   if (settings) {
     db.exec(`
       CREATE TABLE app_settings (setting_key TEXT PRIMARY KEY, setting_value TEXT);
-      INSERT INTO app_settings VALUES ('timezone', 'America/New_York'), ('spending.excluded_category_ids', '["cat-a", 5, "cat-b"]'), ('theme', 'dark');
+      INSERT INTO app_settings VALUES ('timezone', 'America/New_York'), ('spending.excluded_category_ids', '["cat-a", "cat-b"]'), ('spending.enabled', 'true'), ('spending.account_ids', '["wf-chk"]'), ('theme', 'dark');
     `);
   }
   db.close();
@@ -107,8 +107,37 @@ describe('getNativeHeadlineRows', () => {
 describe('getNativeAuditSettings', () => {
   it('reads Wealthfolio’s timezone, the categories it excludes and each spending category’s parent', () => {
     expect(getNativeAuditSettings(ledger())).toEqual({
-      timezone: 'America/New_York', excludedCategoryIds: ['cat-a', 'cat-b'], categoryParents: { 'cat-a': null, 'cat-b': 'cat-a' },
+      timezone: 'America/New_York', excludedCategoryIds: ['cat-a', 'cat-b'], categoryParents: { 'cat-a': null, 'cat-b': 'cat-a' }, spendingOn: true,
     });
+  });
+
+  it('reads one non-string element as no exclusions at all, as upstream does', () => {
+    const path = ledger();
+    const db = new DatabaseSync(path);
+    db.exec(`UPDATE app_settings SET setting_value = '["cat-a", 5]' WHERE setting_key = 'spending.excluded_category_ids';`);
+    db.close();
+    expect(getNativeAuditSettings(path).excludedCategoryIds).toEqual([]);
+  });
+
+  it('reads an absent excluded-categories key (Wealthfolio 3.8) as none', () => {
+    const path = ledger();
+    const db = new DatabaseSync(path);
+    db.exec(`DELETE FROM app_settings WHERE setting_key = 'spending.excluded_category_ids';`);
+    db.close();
+    expect(getNativeAuditSettings(path)).toMatchObject({ excludedCategoryIds: [], spendingOn: true });
+  });
+
+  it.each([
+    ['disabled', `UPDATE app_settings SET setting_value = 'false' WHERE setting_key = 'spending.enabled'`],
+    ['no row', `DELETE FROM app_settings WHERE setting_key = 'spending.enabled'`],
+    ['no accounts opted in', `UPDATE app_settings SET setting_value = '[]' WHERE setting_key = 'spending.account_ids'`],
+    ['an unreadable account list', `UPDATE app_settings SET setting_value = '[1]' WHERE setting_key = 'spending.account_ids'`],
+  ])('reads the Spending page as off when it is %s', (_what, sql) => {
+    const path = ledger();
+    const db = new DatabaseSync(path);
+    db.exec(`${sql};`);
+    db.close();
+    expect(getNativeAuditSettings(path).spendingOn).toBe(false);
   });
 
   it('reads an unset or unparseable setting as none, and a missing table as unreadable', () => {

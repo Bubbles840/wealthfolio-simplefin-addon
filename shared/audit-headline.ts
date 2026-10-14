@@ -47,14 +47,17 @@ import { changeDay, changeMoney } from './change-entries.js';
 import { descriptionFromComment } from './sync-core.js';
 import { isCorrectionNote, isPlaceholderNote, isStartingBalanceNote } from './audit-ledger.js';
 
-export type HeadlineRead = 'report' | 'wealthfolio' | 'ledger' | 'settings';
+/** 'spending-off' is not a failed read: Wealthfolio's Spending page is turned
+ *  off (or has no accounts), so its figure is a meaningless $0 and is left out. */
+export type HeadlineRead = 'report' | 'wealthfolio' | 'spending-off' | 'ledger' | 'settings';
 export const HEADLINE_READ_NOTES: Record<HeadlineRead, string> = {
   report: "Couldn't read the report's figure for this month.",
   wealthfolio: "Couldn't read Wealthfolio's Spending page figure.",
   ledger: "Couldn't read the Wealthfolio database, so the reasons are missing.",
-  settings: "Couldn't read Wealthfolio's settings, so excluded categories aren't checked.",
+  'spending-off': "Wealthfolio's Spending page is turned off, so there's nothing to compare.",
+  settings: "Couldn't read Wealthfolio's settings just now, so excluded categories aren't counted and the month follows the companion's timezone.",
 };
-const READ_ORDER: HeadlineRead[] = ['report', 'wealthfolio', 'ledger', 'settings'];
+const READ_ORDER: HeadlineRead[] = ['report', 'wealthfolio', 'spending-off', 'ledger', 'settings'];
 
 export const HEADLINE_AGREE = 'The report and Wealthfolio agree this month.';
 

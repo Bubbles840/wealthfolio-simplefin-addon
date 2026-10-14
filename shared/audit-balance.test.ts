@@ -63,6 +63,15 @@ describe('explainBalances', () => {
     expect(balanceShort(e)).toBe('off by $50.00');
   });
 
+  it('takes an account’s type from accountTypes when given, and reads a missing one as unknown (the companion drops its valuation)', () => {
+    const typed = explainBalances({ ...pncFacts(), accountTypes: { 'wf-chk': 'CASH' } });
+    expect(typed.accounts[0]).toMatchObject({ accountType: 'CASH', wealthfolioCents: 243107, offCents: 5000 });
+    const unknown = explainBalances({ ...pncFacts(), accountTypes: {} });
+    expect(unknown.accounts[0]).toMatchObject({ accountType: '', wealthfolioCents: 243107 });
+    expect(BALANCE_READ_NOTES.accounts).toBe("Couldn't read your account list just now, so no account is compared.");
+    expect(explainBalances({ ...pncFacts(), failed: ['accounts'] }).notes).toEqual([BALANCE_READ_NOTES.accounts]);
+  });
+
   it('leaves the "not explained" line out when two pending charges are the whole gap', () => {
     const facts = pncFacts();
     facts.valuations = { 'wf-chk': 244287 };

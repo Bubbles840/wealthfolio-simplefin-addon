@@ -41,17 +41,18 @@ import {
   type AuditLedger, type AuditLedgerRow,
 } from './audit-ledger.js';
 
-export type BalanceRead = 'mapping' | 'balances' | 'names' | 'valuations' | 'ledger';
+export type BalanceRead = 'mapping' | 'balances' | 'names' | 'accounts' | 'valuations' | 'ledger';
 
 /** One note per failed read, in this order. */
 export const BALANCE_READ_NOTES: Record<BalanceRead, string> = {
   mapping: "Couldn't read which accounts are mapped.",
   balances: "Couldn't read the bank balances.",
   names: "Couldn't read the account names — showing Wealthfolio's.",
+  accounts: "Couldn't read your account list just now, so no account is compared.",
   valuations: "Couldn't read Wealthfolio's balances, so cash accounts aren't compared.",
   ledger: "Couldn't read the Wealthfolio database, so cards aren't compared and nothing is explained.",
 };
-const READ_ORDER: BalanceRead[] = ['mapping', 'balances', 'names', 'valuations', 'ledger'];
+const READ_ORDER: BalanceRead[] = ['mapping', 'balances', 'names', 'accounts', 'valuations', 'ledger'];
 
 export const BALANCE_NO_BANK = "The bank hasn't sent a balance for this account.";
 export const BALANCE_MATCHES = 'Matches the bank.';
@@ -64,6 +65,11 @@ export interface BalanceFacts {
   balances?: Record<string, { balance?: unknown; date?: unknown } | null | undefined>;
   /** account_names: SimpleFin account id → name. */
   names?: Record<string, string>;
+  /** Account type (upper-case) by Wealthfolio account id, from the accounts
+   *  REST route. When present it is authoritative: an id missing from it, or
+   *  with a blank type, is of UNKNOWN type and is never compared. When absent,
+   *  the ledger's account types are used. */
+  accountTypes?: Record<string, string>;
   /** `/valuations/latest`, in cents, by Wealthfolio account id. */
   valuations?: Record<string, number>;
   ledger?: AuditLedger;
@@ -124,7 +130,7 @@ interface Draft { e: BalanceExplanation; residual: number | null }
 
 function draft(sfinId: string, wfId: string, facts: BalanceFacts, rows: AuditLedgerRow[]): Draft {
   const account = facts.ledger?.accounts.find((a) => a.id === wfId);
-  const accountType = account?.type ?? '';
+  const accountType = facts.accountTypes ? (facts.accountTypes[wfId] ?? '') : (account?.type ?? '');
   const isCard = accountType === 'CREDIT_CARD';
   const name = facts.names?.[sfinId] || account?.name || sfinId;
   const bank = bankFigure(facts, sfinId);

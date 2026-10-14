@@ -85,7 +85,7 @@ export function getNativeAuditLedger(dbPath: string): AuditLedger {
             CASE WHEN COALESCE(a.asset_id, '') <> '' AND (a.asset_id = '${PHANTOM_CASH_ASSET_ID}' OR a.asset_id IN (
                    SELECT id FROM assets WHERE UPPER(COALESCE(display_code, instrument_symbol, name, id)) = '$CASH'))
                  THEN 1 ELSE 0 END AS phantom,
-            CASE WHEN a.quantity IS NULL OR TRIM(CAST(a.quantity AS TEXT)) = '' THEN '' ELSE CAST(CAST(a.quantity AS REAL) AS TEXT) END AS quantity,
+            COALESCE(a.quantity, '') AS quantity,
             COALESCE(a.notes, '') AS notes
      FROM activities a
      ORDER BY a.activity_date, a.id;`,
@@ -151,17 +151,17 @@ export function getNativeHeadlineRows(dbPath: string, startInclusive: string, en
 
 /** What the headline check needs besides the rows: Wealthfolio's timezone
  *  (null when unset), the categories it excludes from spending ([] when unset
- *  — Wealthfolio 3.8 has no such setting — or unparseable, as
- *  audit-headline.mjs reads it), and each spending category's parent, so an
+ *  — Wealthfolio 3.8 has no such setting — or not a list of strings, as
+ *  upstream reads it), whether its Spending page is on, and each spending category's parent, so an
  *  excluded category's descendants count too (3.9+). */
 export function getNativeAuditSettings(dbPath: string): {
-  timezone: string | null; excludedCategoryIds: string[]; categoryParents: Record<string, string | null>;
+  timezone: string | null; excludedCategoryIds: string[]; categoryParents: Record<string, string | null>; spendingOn: boolean;
 } {
   const rows = queryNativeDbStrict<Record<string, unknown>>(
     dbPath,
     'audit settings',
     `SELECT setting_key AS k, COALESCE(setting_value, '') AS v FROM app_settings
-     WHERE setting_key IN ('timezone', 'spending.excluded_category_ids') ORDER BY setting_key;`,
+     WHERE setting_key IN ('timezone', 'spending.excluded_category_ids', 'spending.enabled', 'spending.account_ids') ORDER BY setting_key;`,
     (parts) => (parts.length >= 2 ? { c0: parts[0], c1: tail(parts, 1) } : null),
     SEP,
   );
@@ -169,13 +169,21 @@ export function getNativeAuditSettings(dbPath: string): {
     const v = Object.values(r);
     return [String(v[0]), String(v[1] ?? '')];
   }));
-  let excludedCategoryIds: string[] = [];
-  try {
-    const parsed = JSON.parse(value.get('spending.excluded_category_ids') || '[]');
-    if (Array.isArray(parsed)) excludedCategoryIds = parsed.filter((x): x is string => typeof x === 'string');
-  } catch {
-    /* unparseable: none, as the script reads it */
-  }
+  // As upstream reads a list setting (settings/service.rs): `Vec<String>` or
+  // nothing — one non-string element, or text that is not JSON, is the whole
+  // list absent.
+  const stringList = (key: string): string[] => {
+    try {
+      const parsed: unknown = JSON.parse(value.get(key) || '[]');
+      return Array.isArray(parsed) && parsed.every((x) => typeof x === 'string') ? (parsed as string[]) : [];
+    } catch {
+      return [];
+    }
+  };
+  const excludedCategoryIds = stringList('spending.excluded_category_ids');
+  // The Spending page's own gate: off unless `spending.enabled` is "true" and
+  // at least one account is opted in; a missing row is off.
+  const spendingOn = value.get('spending.enabled') === 'true' && stringList('spending.account_ids').length > 0;
   const parents = queryNativeDbStrict<Record<string, unknown>>(
     dbPath,
     'audit categories',
@@ -189,5 +197,5 @@ export function getNativeAuditSettings(dbPath: string): {
     const v = Object.values(r);
     categoryParents[String(v[0])] = String(v[1] ?? '') || null;
   }
-  return { timezone: value.get('timezone') || null, excludedCategoryIds, categoryParents };
+  return { timezone: value.get('timezone') || null, excludedCategoryIds, categoryParents, spendingOn };
 }
