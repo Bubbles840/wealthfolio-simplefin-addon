@@ -14,7 +14,7 @@ import { categoryRulePattern } from './rule-pattern.js';
 import { isAmazonDescription } from './amazon-ledger.js';
 import type { InlineKeyboard } from './telegram.js';
 import { moneyWhole, escapeMarkdown, WHY_BUTTON_TEXT } from './telegram.js';
-import { INCOME_TAXONOMY_ID } from './cash-flow-bucket.js';
+import { assignRefusalOf, INCOME_TAXONOMY_ID, type AssignRefusal } from './cash-flow-bucket.js';
 import { PAYBACK_PICK, PAYBACK_SWITCH } from './payback-copy.js';
 
 /** One uncategorized spending transaction, as the menu needs it. `date` is
@@ -1074,6 +1074,32 @@ const REFUSED_TEXT: Record<Extract<MenuScreen, { kind: 'refused' }>['reason'], s
   // changes nothing for them.
   scope: 'Its account is not set up for spending tracking.',
 };
+
+/** The plain words for a refusal Wealthfolio gave when an assignment failed
+ *  (W9) — the same sentences as the refusals above, without the hint. */
+const ASSIGN_REFUSAL_LINES: Record<AssignRefusal, string> = {
+  neutral: REFUSED_TEXT.neutral,
+  'wrong-bucket': 'It is recorded as money in and can only take an income category while that is true.',
+  scope: REFUSED_TEXT.scope,
+  off: 'Spending tracking is off in Wealthfolio.',
+};
+
+/** A first filing Wealthfolio refused. */
+export const ASSIGN_FAILED_TEXT = "Couldn't file that — Wealthfolio didn't take it, so it still has no category.";
+/** A recategorize whose new category Wealthfolio refused (the controller adds what stands). */
+export const REFILE_ASSIGN_FAILED_TEXT = "Couldn't move that — Wealthfolio didn't take the new category.";
+/** A recategorize Undo whose old category Wealthfolio refused (the controller adds what stands). */
+export const UNDO_ASSIGN_FAILED_TEXT = "Couldn't undo that — Wealthfolio didn't take the old category back.";
+
+/**
+ * What a refused assignment says (W9): `lead`, then why in the add-on's own
+ * words when Wealthfolio gave a reason it knows. Never Wealthfolio's text —
+ * the caller logs that.
+ */
+export function assignFailureText(lead: string, message: string): string {
+  const reason = assignRefusalOf(message);
+  return reason ? `${lead}\n${ASSIGN_REFUSAL_LINES[reason]}` : lead;
+}
 
 function renderRefused(
   session: MenuSession,
