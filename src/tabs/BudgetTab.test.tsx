@@ -863,10 +863,14 @@ describe('per-card ranges, headline picks, palettes (v1.43)', () => {
 });
 
 describe('drill-down from the board (v1.48)', () => {
+  // The story's title shows the year once it is not the current one.
+  beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date(2026, 9, 12, 9, 0, 0)); });
+  afterEach(() => { vi.useRealTimers(); });
+
   it('clicking a category row opens its transactions full-screen, with a way back', async () => {
     const props = makeProps();
     (props.store as any).getReportCube = vi.fn(async () => ({
-      ...CUBE, asOf: new Date().toISOString(),
+      ...CUBE, asOf: '2026-10-12T13:00:00.000Z',
       drill: { Groceries: [{ d: '2026-08-11', n: 'TRADER JOES', c: 4000, a: 'Card' }] },
     }));
     render(<SyncPage {...props} />);
@@ -889,7 +893,7 @@ describe('drill-down from the board (v1.48)', () => {
       })),
     };
     (props.store as any).getReportCube = vi.fn(async () => ({
-      ...CUBE, asOf: new Date().toISOString(),
+      ...CUBE, asOf: '2026-10-12T13:00:00.000Z',
       drill: { Groceries: [
         { d: '2026-08-11', n: 'TRADER JOES', c: 4000, a: 'Card', i: 'act-9', f: 'r:TRADER JOE' },
         { d: '2026-08-10', n: 'OLD ROW', c: 100, a: 'Card' },

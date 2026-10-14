@@ -1,5 +1,5 @@
 import { render, screen, fireEvent, waitFor, within, cleanup } from '@testing-library/react';
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { SyncPage } from '../pages/SyncPage';
 import { ThemeStyles } from '../components/ui';
 import { runSync } from '../utils/sync';
@@ -929,6 +929,10 @@ describe('links into Settings (1.57)', () => {
 });
 
 describe('Why is this here? (1.61)', () => {
+  // The story's title shows the year once it is not the current one.
+  beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date(2026, 9, 12, 9, 0, 0)); });
+  afterEach(() => { vi.useRealTimers(); });
+
   const kroger = {
     id: 'act-1', accountId: 'wf-a', accountName: 'Checking', activityType: 'WITHDRAWAL',
     date: '2026-10-04T04:00:00.000Z', amount: '54.20', comment: 'KROGER #415 · TRN-1',
@@ -958,6 +962,22 @@ describe('Why is this here? (1.61)', () => {
     expect(await screen.findByText('From your Checking bank feed.')).toBeInTheDocument();
     // No companion published a version: the app says where the category was set.
     expect(screen.getByText('Category set in Wealthfolio.')).toBeInTheDocument();
+  });
+
+  it('an open story is not loaded again when the page re-renders', async () => {
+    const props = withActivities();
+    const { rerender } = render(<SyncPage {...props} />);
+    const box = await screen.findByRole('searchbox', { name: 'Find a transaction' });
+    fireEvent.change(box, { target: { value: 'kroger' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Find' }));
+    fireEvent.click(await screen.findByRole('button', { name: /KROGER #415/ }));
+    expect(await screen.findByText('From your Checking bank feed.')).toBeInTheDocument();
+    const search = props.ctx.api.activities.search as any;
+    const calls = search.mock.calls.length;
+    rerender(<SyncPage {...props} />);
+    rerender(<SyncPage {...props} />);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(search.mock.calls.length).toBe(calls);
   });
 
   it('a needs-a-category row opens its story', async () => {

@@ -385,7 +385,7 @@ function DrillView({ cube, category, onOpenActivities, renderTxStory }: {
         <thead><tr><th>Date</th><th>Description</th><th>Account</th><th>Amount</th></tr></thead>
         <tbody>
           {rows.map((r, i) => {
-            const key = `${r.d}-${i}`;
+            const key = r.i ?? `${r.d}-${i}`;
             const opens = !!(renderTxStory && r.i);
             return (
               <React.Fragment key={key}>
@@ -397,6 +397,7 @@ function DrillView({ cube, category, onOpenActivities, renderTxStory }: {
                         type="button"
                         className="sfin-why-row-btn"
                         aria-expanded={openKey === key}
+                        aria-controls={`sfin-why-story-${key}`}
                         onClick={() => setOpenKey((k) => (k === key ? null : key))}
                       >
                         {r.n}
@@ -409,7 +410,7 @@ function DrillView({ cube, category, onOpenActivities, renderTxStory }: {
                 {opens && openKey === key && (
                   <tr>
                     <td colSpan={4}>
-                      <div className="sfin-why-inline">
+                      <div className="sfin-why-inline" id={`sfin-why-story-${key}`}>
                         {renderTxStory!({ activityId: r.i!, categoryName: category, ...(r.f ? { filer: r.f } : {}) })}
                       </div>
                     </td>

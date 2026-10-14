@@ -98,11 +98,37 @@ describe('UncategorizedList — a row opens its story (1.61)', () => {
     expect(screen.queryByText('story of a')).toBeNull();
   });
 
-  it('keeps Dismiss working beside it', () => {
+  it('Dismiss works beside it and never toggles any story', () => {
     const onDismiss = vi.fn();
-    render(<UncategorizedList {...base} onDismiss={onDismiss} renderStory={() => null} />);
-    fireEvent.click(screen.getByRole('button', { name: /dismiss/i }));
+    const rows = [row(), row({ activityId: 'b', description: 'Other Thing' })];
+    render(<UncategorizedList {...base} rows={rows} total={2} onDismiss={onDismiss} renderStory={(t) => <div>story of {t.activityId}</div>} />);
+    const openB = screen.getByRole('button', { name: /^Other Thing/ });
+    fireEvent.click(openB);
+    expect(screen.getByText('story of b')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /dismiss Thankyou Points/i }));
     expect(onDismiss).toHaveBeenCalledWith('a');
+    // The open story and its button are untouched; the dismissed row's story did not open.
+    expect(screen.getByText('story of b')).toBeTruthy();
+    expect(openB.getAttribute('aria-expanded')).toBe('true');
+    expect(screen.queryByText('story of a')).toBeNull();
+    expect(screen.getByRole('button', { name: /^Thankyou Points/ }).getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('dismissing the row whose story is open closes it, so Undo does not reopen it', () => {
+    const { rerender } = render(<UncategorizedList {...base} renderStory={(t) => <div>story of {t.activityId}</div>} />);
+    fireEvent.click(screen.getByRole('button', { name: /^Thankyou Points Redeemed/ }));
+    expect(screen.getByText('story of a')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /dismiss/i }));
+    expect(screen.queryByText('story of a')).toBeNull();
+    rerender(<UncategorizedList {...base} justDismissed="a" renderStory={(t) => <div>story of {t.activityId}</div>} />);
+    expect(screen.queryByText('story of a')).toBeNull();
+  });
+
+  it('points each row button at its story region', () => {
+    render(<UncategorizedList {...base} renderStory={() => <div>story</div>} />);
+    const open = screen.getByRole('button', { name: /^Thankyou Points Redeemed/ });
+    fireEvent.click(open);
+    expect(document.getElementById(open.getAttribute('aria-controls')!)!.textContent).toBe('story');
   });
 
   it('without a story to tell, a row stays plain text', () => {

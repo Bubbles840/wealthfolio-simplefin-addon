@@ -576,6 +576,11 @@ describe('category drill-down (v1.48)', () => {
     expect(renderTxStory).toHaveBeenCalledWith({ activityId: 'act-1', categoryName: 'Dining', filer: 'r:CHIPOTLE' });
     fireEvent.click(screen.getByRole('button', { name: 'SWEETGREEN' }));
     expect(renderTxStory).toHaveBeenLastCalledWith({ activityId: 'act-2', categoryName: 'Dining' });
+    // One story at a time: opening the second closed the first.
+    expect(screen.queryByText('story of act-1')).toBeNull();
+    expect(screen.getByText('story of act-2')).toBeTruthy();
+    expect(row.getAttribute('aria-expanded')).toBe('false');
+    expect(row.getAttribute('aria-controls')).toBe('sfin-why-story-act-1');
   });
 
   it('rows from an older companion, with no activity id, are not clickable', () => {
