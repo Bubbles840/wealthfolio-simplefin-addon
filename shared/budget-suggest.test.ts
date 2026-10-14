@@ -179,6 +179,45 @@ describe('suggestBudgets', () => {
   });
 });
 
+describe('months the ledger never covered', () => {
+  const sepOnly = [spent('2026-09', 'Groceries', 600)];
+  const run = (historyStartDay?: string | null, spend = sepOnly) => suggestBudgets(facts({ spend, historyStartDay }));
+
+  it('counts only whole covered months, dividing by those', () => {
+    const s = run('2026-09-01');
+    expect(s.monthsUsed).toEqual(['2026-09']);
+    expect(s.notEnoughHistory).toBe(false);
+    expect(s.suggestions).toEqual([{ categoryId: 'cat-gro', name: 'Groceries', averageCents: 60000, cents: 60000 }]);
+  });
+
+  it('does not count a month the history only started part-way through', () => {
+    const s = run('2026-08-15');
+    expect(s.monthsUsed).toEqual(['2026-09']);
+    expect(s.suggestions[0].cents).toBe(60000);
+  });
+
+  it('says there is not enough history when no window month is covered', () => {
+    const s = run('2026-10-02');
+    expect(s.notEnoughHistory).toBe(true);
+    expect(s.monthsUsed).toEqual([]);
+    expect(s.candidates).toEqual([]);
+    expect(s.suggestions).toEqual([]);
+  });
+
+  it('counts all 3 when history starts by July 1, or is absent', () => {
+    for (const h of ['2026-07-01', undefined, null]) {
+      const s = run(h);
+      expect(s.monthsUsed).toEqual(['2026-07', '2026-08', '2026-09']);
+      expect(s.suggestions[0].cents).toBe(20000);
+    }
+  });
+
+  it('scales the under-$10 rule to the counted months', () => {
+    expect(run('2026-09-01', [spent('2026-09', 'Gas', 9.99)]).skipped).toEqual([{ name: 'Gas', reason: 'under-minimum' }]);
+    expect(run('2026-09-01', [spent('2026-09', 'Gas', 10)]).suggestions).toHaveLength(1);
+  });
+});
+
 describe('planBudgetApply: re-read before writing', () => {
   const chosen = suggestBudgets(facts()).suggestions;
 
@@ -193,7 +232,13 @@ describe('planBudgetApply: re-read before writing', () => {
   });
 
   it('writes everything when nothing changed', () => {
-    expect(planBudgetApply(chosen, [], '2026-10')).toEqual({ write: chosen, alreadySet: [] });
+    expect(planBudgetApply(chosen, [], '2026-10')).toEqual({ write: chosen, alreadySet: [], unread: [] });
+  });
+
+  it('writes nothing and reports every choice unread when the re-read failed', () => {
+    for (const none of [null, undefined]) {
+      expect(planBudgetApply(chosen, none, '2026-10')).toEqual({ write: [], alreadySet: [], unread: chosen });
+    }
   });
 
   it('reads a budget as this category’s default or this month’s target only', () => {

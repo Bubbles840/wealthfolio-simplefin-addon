@@ -21,13 +21,18 @@
  *    exclusions); a name the catalog cannot place on exactly one top-level
  *    category (the matrix is keyed by the rolled-up NAME; budgets by id);
  *    excluded categories (`spending.excluded_category_ids`, descendants
- *    included, as Wealthfolio reads it); an average under $10; past the 24
+ *    included via `excludedWithDescendants`); an average under $10; past the 24
  *    biggest (a Telegram keyboard's worth); and last, a category that already
  *    has a budget — a `'default'` target or one for this month. An existing
  *    target is never overwritten: Wealthfolio's POST is an upsert.
  *  - `candidates` is everything but the last rule, biggest first (ties by
  *    name): what a `/budgets` button's bits index. `suggestions` is the
  *    candidates with no budget yet — what is offered.
+ *
+ * Which rows reach `spend` is the matrix read's job (Task 8): it leaves out
+ * excluded subcategories and keeps to the spending accounts. Months the ledger
+ * never covered are left out here (`historyStartDay`): a new install's first
+ * sync fetches only 30 days, and averaging over empty months would understate.
  *
  * Category names are RAW here: Telegram escapes them when it renders.
  */
@@ -74,6 +79,9 @@ export interface BudgetSuggestFacts {
   categoryParents: Record<string, string | null>;
   /** Every budget target now. */
   targets: BudgetTarget[];
+  /** The earliest activity day ('YYYY-MM-DD') on the spending accounts. A window
+   *  month counts only if its first day is on or after it; absent: all count. */
+  historyStartDay?: string | null;
 }
 
 export interface BudgetSuggestion {
@@ -91,6 +99,10 @@ export interface BudgetSuggestions {
   /** This month, in Wealthfolio's timezone. */
   month: string;
   window: string[];
+  /** The window months actually averaged (the ledger covers them whole). */
+  monthsUsed: string[];
+  /** True when no window month is covered: nothing is suggested. */
+  notEnoughHistory: boolean;
   candidates: BudgetSuggestion[];
   suggestions: BudgetSuggestion[];
   /** Spending-alone skips by name, then over-limit and has-budget biggest first. */
@@ -128,6 +140,7 @@ export function budgetWindow(now: Date, timeZone: string | null): { month: strin
   return { month, window, start: `${window[0]}-01`, endExclusive: `${month}-01` };
 }
 
+/** Takes UNROUNDED cents (an exact total ÷ months); never round before calling. */
 export function roundUpToFiveDollars(cents: number): number {
   return Math.ceil(cents / BUDGET_ROUND_CENTS) * BUDGET_ROUND_CENTS;
 }
@@ -143,7 +156,10 @@ const biggestFirst = (a: BudgetSuggestion, b: BudgetSuggestion) => b.cents - a.c
 
 export function suggestBudgets(f: BudgetSuggestFacts): BudgetSuggestions {
   const { month, window } = budgetWindow(f.now, f.timezone);
-  const inWindow = new Set(window);
+  const start = f.historyStartDay ?? null;
+  const monthsUsed = window.filter((m) => start === null || `${m}-01` >= start);
+  const n = monthsUsed.length;
+  const inWindow = new Set(monthsUsed);
   const totals = new Map<string, number>();
   for (const row of f.spend) {
     if (!inWindow.has(row.month)) continue;
@@ -156,6 +172,8 @@ export function suggestBudgets(f: BudgetSuggestFacts): BudgetSuggestions {
   }
   const excluded = excludedWithDescendants(f.excludedCategoryIds, f.categoryParents);
 
+  if (n === 0) return { month, window, monthsUsed, notEnoughHistory: true, candidates: [], suggestions: [], skipped: [] };
+
   const ruleSkips: Array<{ name: string; reason: BudgetSkipReason }> = [];
   const qualified: BudgetSuggestion[] = [];
   for (const [name, total] of totals) {
@@ -164,7 +182,7 @@ export function suggestBudgets(f: BudgetSuggestFacts): BudgetSuggestions {
     if (name === OPENING_BALANCES_CATEGORY) reason = 'opening-balances';
     else if (ids.length !== 1) reason = 'unknown-category';
     else if (excluded.has(ids[0])) reason = 'excluded';
-    else if (total < BUDGET_WINDOW_MONTHS * BUDGET_MIN_AVERAGE_CENTS) reason = 'under-minimum';
+    else if (total < n * BUDGET_MIN_AVERAGE_CENTS) reason = 'under-minimum';
     if (reason) {
       ruleSkips.push({ name, reason });
       continue;
@@ -172,8 +190,8 @@ export function suggestBudgets(f: BudgetSuggestFacts): BudgetSuggestions {
     qualified.push({
       categoryId: ids[0],
       name,
-      averageCents: Math.round(total / BUDGET_WINDOW_MONTHS),
-      cents: Math.ceil(total / (BUDGET_WINDOW_MONTHS * BUDGET_ROUND_CENTS)) * BUDGET_ROUND_CENTS,
+      averageCents: Math.round(total / n),
+      cents: roundUpToFiveDollars(total / n),
     });
   }
   qualified.sort(biggestFirst);
@@ -181,20 +199,24 @@ export function suggestBudgets(f: BudgetSuggestFacts): BudgetSuggestions {
   const overLimit = qualified.slice(BUDGET_MAX_CANDIDATES).map((s) => ({ name: s.name, reason: 'over-limit' as const }));
   const suggestions = candidates.filter((s) => !hasBudget(f.targets, s.categoryId, month));
   const budgeted = candidates.filter((s) => hasBudget(f.targets, s.categoryId, month)).map((s) => ({ name: s.name, reason: 'has-budget' as const }));
-  return { month, window, candidates, suggestions, skipped: [...ruleSkips.sort(byNameAsc), ...overLimit, ...budgeted] };
+  return { month, window, monthsUsed, notEnoughHistory: false, candidates, suggestions, skipped: [...ruleSkips.sort(byNameAsc), ...overLimit, ...budgeted] };
 }
 
 /**
  * Re-read before write: of the suggestions chosen when the list was shown,
  * which to write now, and which gained a budget since — those are left alone
- * and said so ("Already has a budget — left alone.").
+ * and said so ("Already has a budget — left alone."). `targetsNow` null or
+ * undefined means the re-read failed: nothing is written, all are `unread`.
  */
 export function planBudgetApply(
   chosen: readonly BudgetSuggestion[],
-  targetsNow: readonly BudgetTarget[],
+  targetsNow: readonly BudgetTarget[] | null | undefined,
   month: string,
-): { write: BudgetSuggestion[]; alreadySet: BudgetSuggestion[] } {
+): { write: BudgetSuggestion[]; alreadySet: BudgetSuggestion[]; unread: BudgetSuggestion[] } {
+  // The re-read failed: write nothing and report every choice as `unread`.
+  if (!targetsNow) return { write: [], alreadySet: [], unread: [...chosen] };
   return {
+    unread: [],
     write: chosen.filter((s) => !hasBudget(targetsNow, s.categoryId, month)),
     alreadySet: chosen.filter((s) => hasBudget(targetsNow, s.categoryId, month)),
   };
