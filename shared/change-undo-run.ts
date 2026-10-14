@@ -202,7 +202,7 @@ async function gather(io: UndoIo, entry: ChangeEntry, op: UndoOp, latest: Change
   const key = entry.subject.txKeys?.[0] ?? null;
   const state: UndoState = {};
   const wf = entry.account?.wfId ?? str(after.accountId);
-  const needsCurrency = ['balance-correction', 'starting-balance', 'starting-balance-moved', 'amazon-label'].includes(entry.kind);
+  const needsCurrency = ['balance-correction', 'starting-balance', 'starting-balance-moved', 'amazon-label', 'venmo-note'].includes(entry.kind);
   if (needsCurrency && wf) {
     state.currency = (await io.host.listAccounts()).find((a) => a.id === wf)?.currency ?? 'USD';
   }
@@ -244,6 +244,7 @@ async function gather(io: UndoIo, entry: ChangeEntry, op: UndoOp, latest: Change
     case 'starting-balance-moved':
     case 'duplicate-removed':
     case 'amazon-label':
+    case 'venmo-note':
       state.row = await findRow(io, entry, latest, key);
       return state;
     case 'import': {

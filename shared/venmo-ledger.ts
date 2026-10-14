@@ -152,3 +152,14 @@ export function venmoNoteOf(bare: string, enriched: string): string {
   const head = `${bare}${VENMO_NOTE_MARK}`;
   return enriched.startsWith(head) ? enriched.slice(head.length) : enriched;
 }
+
+/** The note `venmoDescription` added, taken back off: from the FIRST ` · Venmo: `
+ *  up to the trailing ` · <txId>` (the LAST ` · `, as `txIdFromComment` reads
+ *  it), so a note holding ` · ` or even ` · Venmo: ` cannot confuse it. Null
+ *  when the comment carries no mark. */
+export function stripVenmoNote(comment: string): string | null {
+  const at = comment.indexOf(VENMO_NOTE_MARK);
+  if (at < 0) return null;
+  const tail = comment.lastIndexOf(' · ');
+  return tail > at ? comment.slice(0, at) + comment.slice(tail) : comment.slice(0, at);
+}

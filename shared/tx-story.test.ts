@@ -8,7 +8,7 @@ import { OPENING_BALANCES_CATEGORY } from './sync-core';
 import {
   buildTxStory, decodeFiler, encodeFiler, inferFilingRule, resolveFiler, ruleMatchesRow, signedCents, splitAmazonLabel,
   TX_FACT_NOTES, TX_STORY_ASK_TELEGRAM, TX_STORY_MONEY_IN, TX_STORY_NOT_FILED, TX_STORY_NOT_FROM_FEED,
-  TX_STORY_SET_IN_WEALTHFOLIO, TX_STORY_SPENDING, withFilingDay, type CategoryRuleLike, type TxFactName,
+  TX_STORY_SET_IN_WEALTHFOLIO, TX_STORY_SPENDING, TX_STORY_VENMO_NOTE, withFilingDay, type CategoryRuleLike, type TxFactName,
   type TxStoryFacts, type TxStoryRow,
 } from './tx-story';
 
@@ -229,6 +229,15 @@ describe('buildTxStory — missing and failed facts', () => {
     expect(s.answer.at(-1)).toBe(
       "You told the sync: not a transfer, keep this duplicate, don't file it automatically, no Amazon label, don't import it.",
     );
+  });
+
+  it('says a Venmo note came from a Venmo email, and words its override', () => {
+    const s = story({ row: row({ note: 'VENMO PAYMENT 1023 · Venmo: Rent October · TRN-1' }), overrides: ['noVenmoNote', 'noAmazonLabel'] });
+    expect(TX_STORY_VENMO_NOTE).toBe('Note from a Venmo email.');
+    expect(s.answer.slice(0, 2)).toEqual(['From your PNC Checking bank feed.', TX_STORY_VENMO_NOTE]);
+    expect(s.answer.at(-1)).toBe('You told the sync: no Amazon label, no Venmo note.');
+    expect(s.title).toBe('VENMO PAYMENT 1023 · Venmo: Rent October · -$54.20 · Oct 4');
+    expect(story().answer).not.toContain(TX_STORY_VENMO_NOTE);
   });
 
   it('a filing by you with no day says only "in Telegram"', () => {

@@ -44,8 +44,6 @@ describe('parseSyncOverrides', () => {
     ['another version', '{"v":2,"tx":{},"accounts":{}}'],
     ['an unknown top-level field', '{"v":1,"tx":{},"accounts":{},"extra":1}'],
     ['a flag that is not true', `{"v":1,"tx":{"k":{"notTransfer":false,"at":"2026-10-12T09:00:00Z"}},"accounts":{}}`],
-    ['an unknown flag', `{"v":1,"tx":{"k":{"noSync":true,"at":"2026-10-12T09:00:00Z"}},"accounts":{}}`],
-    ['an account flag on a transaction', `{"v":1,"tx":{"k":{"noAutoCorrect":true,"at":"2026-10-12T09:00:00Z"}},"accounts":{}}`],
     ['a missing time', `{"v":1,"tx":{"k":{"notTransfer":true}},"accounts":{}}`],
     ['a time that is not a time', `{"v":1,"tx":{},"accounts":{"a":{"noAutoCorrect":true,"at":"yesterday"}}}`],
     ['tx as a list', '{"v":1,"tx":[],"accounts":{}}'],
@@ -192,5 +190,51 @@ describe('overrideRows', () => {
     const [first] = overrideRows(o).filter((r) => r.flag === 'noAmazonLabel');
     const next = removeOverrideRow(o, first);
     expect(overrideRows(next).map((r) => r.flag)).toEqual(['notTransfer']);
+  });
+
+  describe('a flag from a newer version', () => {
+    const FUTURE = '{"v":1,"tx":{"k":{"notTransfer":true,"noFuture":true,"at":"2026-10-12T09:00:00Z"}},"accounts":{"a":{"noAutoCorrect":true,"noFutureAcct":{"x":1},"at":"2026-10-12T09:00:00Z"}}}';
+
+    it('is ignored, not corruption: the known flags read, the unknown one is kept', () => {
+      const r = parseSyncOverrides(FUTURE);
+      expect(r.kind).toBe('ok');
+      if (r.kind !== 'ok') return;
+      expect(hasTxOverride(r.overrides, 'k', 'notTransfer')).toBe(true);
+      expect(overrideRows(r.overrides).map((x) => x.text)).toEqual(['No automatic balance corrections: a', 'Not a transfer: k']);
+      expect(r.overrides.tx.k).toHaveProperty('noFuture', true);
+    });
+
+    it('reads an account flag on a transaction as just another unknown key: ignored, never obeyed', () => {
+      const r = parseSyncOverrides('{"v":1,"tx":{"k":{"noAutoCorrect":true,"at":"2026-10-12T09:00:00Z"}},"accounts":{}}');
+      expect(r.kind).toBe('ok');
+      expect(r.kind === 'ok' && overrideRows(r.overrides)).toEqual([]);
+    });
+
+    it('stays strict on the types of the known keys', () => {
+      expect(parseSyncOverrides('{"v":1,"tx":{"k":{"noFuture":true,"notTransfer":"yes","at":"2026-10-12T09:00:00Z"}},"accounts":{}}')).toEqual({ kind: 'corrupt' });
+      expect(parseSyncOverrides('{"v":1,"tx":{"k":{"noFuture":true,"label":5,"at":"2026-10-12T09:00:00Z"}},"accounts":{}}')).toEqual({ kind: 'corrupt' });
+      expect(parseSyncOverrides('{"v":1,"tx":{"k":{"noFuture":true}},"accounts":{}}')).toEqual({ kind: 'corrupt' });
+    });
+
+    it('survives an edit by this version: set, clear and write never delete it', async () => {
+      const s = secrets({ [SYNC_OVERRIDES_SECRET_KEY]: FUTURE });
+      await editSyncOverrides(s.get, s.set, (o) => setTxOverride(o, 'k', 'noAmazonLabel', NOW), NOW);
+      let stored = JSON.parse(s.store.get(SYNC_OVERRIDES_SECRET_KEY)!);
+      expect(stored.tx.k).toMatchObject({ notTransfer: true, noAmazonLabel: true, noFuture: true });
+      expect(stored.accounts.a.noFutureAcct).toEqual({ x: 1 });
+      // Clearing the last flag this version knows leaves the entry that holds an unknown one.
+      await editSyncOverrides(s.get, s.set, (o) => clearTxOverride(clearTxOverride(o, 'k', 'notTransfer'), 'k', 'noAmazonLabel'), NOW);
+      await editSyncOverrides(s.get, s.set, (o) => clearAccountOverride(o, 'a', 'noAutoCorrect'), NOW);
+      stored = JSON.parse(s.store.get(SYNC_OVERRIDES_SECRET_KEY)!);
+      expect(stored.tx.k.noFuture).toBe(true);
+      expect(stored.accounts.a.noFutureAcct).toEqual({ x: 1 });
+    });
+  });
+
+  it('lists a Venmo note override in words, and a document holding one reads back', () => {
+    const o = setTxOverride(emptySyncOverrides(), OUT, 'noVenmoNote', NOW, { label: 'VENMO PAYMENT 1023 · Checking' });
+    expect(overrideRows(o).map((r) => r.text)).toEqual(['No Venmo note: VENMO PAYMENT 1023 · Checking']);
+    expect(parseSyncOverrides(JSON.stringify(o))).toEqual({ kind: 'ok', overrides: o });
+    expect(hasTxOverride(o, OUT, 'noVenmoNote')).toBe(true);
   });
 });

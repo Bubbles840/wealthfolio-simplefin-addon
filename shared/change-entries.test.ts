@@ -3,7 +3,7 @@ import {
   accountCreatedChange, amazonLabelChange, amazonLabelOf, balanceCorrectionChange, bankUpdateChange, bookkeepingChange,
   categoryFiledChange, categoryRuleCreatedChange, CHANGE_KINDS, changeDay, changeMoney, duplicateRemovedChange,
   importChange, mappingRuleCreatedChange, newEntryId, newRunId, openingBalanceFiledChange, pendingRemovedChange,
-  stampChange, startingBalanceChange, startingBalanceMovedChange, transferLinkChange, transferTypeChange,
+  stampChange, startingBalanceChange, startingBalanceMovedChange, transferLinkChange, transferTypeChange, venmoNoteChange,
   type ChangeDraft,
 } from './change-entries.js';
 import { accountTxKey } from './transfers.js';
@@ -34,7 +34,7 @@ describe('ids and stamps', () => {
   });
 
   it('lists every kind once', () => {
-    expect(new Set(CHANGE_KINDS).size).toBe(16);
+    expect(new Set(CHANGE_KINDS).size).toBe(17);
   });
 });
 
@@ -107,6 +107,10 @@ describe('summaries — one per kind, bank text raw', () => {
       account: CARD, txKey: KEY, activityId: 'act-4', description: 'AMAZON MKTPL*2K4', amountCents: -1080, date: '2026-09-15',
       beforeNote: 'AMAZON MKTPL*2K4 · TRN-a1b2', afterNote: 'AMAZON MKTPL*2K4 · Amazon: Hair Care · TRN-a1b2', label: 'Hair Care',
     }), 'Added the Amazon label "Hair Care" to AMAZON MKTPL*2K4'],
+    ['venmo-note', venmoNoteChange({
+      account: CHECKING, txKey: KEY, activityId: 'act-6', description: 'VENMO PAYMENT 1023', amountCents: -2500, date: '2026-10-04',
+      beforeNote: 'VENMO PAYMENT 1023 · TRN-a1b2', afterNote: 'VENMO PAYMENT 1023 · Venmo: *Rent* _Oct_ · TRN-a1b2', note: '*Rent* _Oct_',
+    }), 'Added the Venmo note "*Rent* _Oct_" to VENMO PAYMENT 1023'],
     ['category-filed (first)', categoryFiledChange({
       actor: 'auto', account: CARD, activityId: 'act-4', description: 'AMAZON MKTPL*2K4',
       before: null, after: { categoryId: 'cat-hair', categoryName: 'Personal Care' }, why: 'Amazon: Hair Care',

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   amazonLabelChange, balanceCorrectionChange, categoryFiledChange, categoryRuleCreatedChange, duplicateRemovedChange,
-  importChange, mappingRuleCreatedChange, stampChange, transferLinkChange, type ChangeDraft, type ChangeEntry,
+  importChange, mappingRuleCreatedChange, stampChange, transferLinkChange, venmoNoteChange, type ChangeDraft, type ChangeEntry,
 } from './change-entries.js';
 import type { ChangeLogItem } from './change-log.js';
 import {
@@ -368,6 +368,20 @@ describe('runChangeUndo', () => {
     expect(await h.undo(label, 'undo')).toMatchObject({ ok: true });
     expect(h.fh.activities.get('wf-a')![0]).toMatchObject({ comment: 'AMAZON.COM*MB3T81 · tx-1', activityType: 'WITHDRAWAL', amount: 21.18 });
     expect(hasTxOverride(h.overrides(), KEY, 'noAmazonLabel')).toBe(true);
+  });
+
+  it('a Venmo note: noVenmoNote, then the old note back', async () => {
+    const note = stampChange(venmoNoteChange({
+      account: CHECKING, txKey: KEY, activityId: 'act-v', description: 'VENMO PAYMENT 1023', amountCents: -2500, date: '2026-10-04',
+      beforeNote: 'VENMO PAYMENT 1023 · tx-1', afterNote: 'VENMO PAYMENT 1023 · Venmo: Rent October · tx-1', note: 'Rent October',
+    }), 'companion', NOW);
+    const h = harness(seedWith([{
+      id: 'act-v', accountId: 'wf-a', activityType: 'WITHDRAWAL', date: '2026-10-04', amount: 25,
+      comment: 'VENMO PAYMENT 1023 · Venmo: Rent October · tx-1', sourceGroupId: null,
+    }]));
+    expect(await h.undo(note, 'undo')).toEqual({ ok: true, message: 'Undone — the note is off, and stays off.', needsSync: false });
+    expect(h.fh.activities.get('wf-a')![0]).toMatchObject({ comment: 'VENMO PAYMENT 1023 · tx-1', activityType: 'WITHDRAWAL', amount: 25 });
+    expect(hasTxOverride(h.overrides(), KEY, 'noVenmoNote')).toBe(true);
   });
 
   it('a transaction rule leaves mapping_rules and comes back; an unreadable list is refused', async () => {
