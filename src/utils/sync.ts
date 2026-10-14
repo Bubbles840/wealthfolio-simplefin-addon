@@ -30,10 +30,13 @@ import { hostTakesCardTransferOut } from '../../shared/version';
  */
 async function bookkeepingHost(
   ctx: AddonContext,
-  store: Partial<Pick<SecretsStore, 'getWealthfolioVersion'>>,
+  store: Partial<Pick<SecretsStore, 'getWealthfolioVersion' | 'getSyncHealth'>>,
   log?: (message: string) => void,
 ): Promise<AddonSyncHost> {
-  const version = await Promise.resolve(store.getWealthfolioVersion?.()).catch(() => null);
+  // The published version is trusted only while the companion that wrote it
+  // is alive (synced within 2 days); a stale one may predate a downgrade.
+  const fresh = await companionSyncedRecently(store);
+  const version = fresh ? await Promise.resolve(store.getWealthfolioVersion?.()).catch(() => null) : null;
   return new AddonSyncHost(ctx, { cardTransferOut: hostTakesCardTransferOut(version), ...(log ? { log } : {}) });
 }
 
@@ -121,7 +124,7 @@ interface TelegramTarget {
  *  running — the same two days after which Budget calls its data stale. */
 const COMPANION_ALIVE_MS = 2 * 24 * 60 * 60 * 1000;
 
-async function companionSyncedRecently(store: SecretsStore): Promise<boolean> {
+async function companionSyncedRecently(store: Partial<Pick<SecretsStore, 'getSyncHealth'>>): Promise<boolean> {
   // Optional-called: a store built before 1.57 has no such method.
   const health = await store.getSyncHealth?.().catch(() => null);
   const at = health?.lastSuccessAt ? Date.parse(health.lastSuccessAt) : NaN;

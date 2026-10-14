@@ -2897,6 +2897,20 @@ async function runSyncPass(
         return keepLinkedLegAsStored(t, row, !!row && isLinkedRow(row));
       });
     const plan = planReconciliation(planFeed, planExisting.filter((r) => !unlinkingIds.has(r.wfId)));
+    // A held card placeholder keeps the shape it is stored in when anything
+    // else about it changes (pending to posted, amount, date): the two writers
+    // would otherwise flip it per change, and a 3.8/3.9-written WITHDRAWAL that
+    // carries the phantom $CASH asset would be retyped TRANSFER_OUT, which 3.10
+    // refuses on every sync until the row expires. Applied to plan.updates
+    // itself, so the link rows below see the same type.
+    if (wfTypes.get(wfAccountId) === 'CREDIT_CARD') {
+      for (const u of plan.updates) {
+        const stored = planExisting.find((r) => r.wfId === u.wfId);
+        if (!stored || !u.to.inTransit || !(stored.comment ?? '').startsWith(IN_TRANSIT_COMMENT_PREFIX)) continue;
+        const type = keepBookkeepingOutflow('CREDIT_CARD', stored.type, u.to.type);
+        if (type !== u.to.type) u.to = { ...u.to, type: type as typeof u.to.type };
+      }
+    }
 
     // State the post-save drift correction needs (see "windowDelta assumed" below).
     // Captured BEFORE the measurement so a rollback can put the episode ledger back

@@ -25,7 +25,10 @@ describe('the companion\'s sync host knows what this Wealthfolio takes', () => {
   it('treats a version it cannot read as older, publishes nothing, and never stops the sync', async () => {
     for (const version of [null, new Error('fetch failed')]) {
       const c = client(version);
-      const { host, wealthfolioVersion } = await syncHostFor(c as any);
+      const log = vi.fn();
+      const { host, wealthfolioVersion } = await syncHostFor(c as any, undefined, log);
+      expect(log).toHaveBeenCalledTimes(1);
+      expect(log).toHaveBeenCalledWith('Wealthfolio version unknown: card bookkeeping stays WITHDRAWAL');
       expect(host.capabilities.cardTransferOut).toBe(false);
       expect(wealthfolioVersion).toBeNull();
       expect(c.setAddonSecret).not.toHaveBeenCalled();

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createFakeHost, type FakeHostSeed } from './fake-host.js';
 import {
-  EXTERNAL_BOOKKEEPING_METADATA, IN_TRANSIT_COMMENT_PREFIX, keepBookkeepingOutflow, neutralAdjustmentFields, runSyncCore,
+  EXTERNAL_BOOKKEEPING_METADATA, IN_TRANSIT_COMMENT_PREFIX, PENDING_SUFFIX, keepBookkeepingOutflow, neutralAdjustmentFields, runSyncCore,
   startingBalanceFields, VALUATION_POLL,
 } from './sync-core.js';
 import type { HostActivity } from './sync-host.js';
@@ -61,11 +61,17 @@ describe('runSyncCore — a card\'s bookkeeping on Wealthfolio 3.10', () => {
   });
 
   it('holds a card\'s unpaired outflow as a TRANSFER_OUT marked external on 3.10, as a WITHDRAWAL before', async () => {
-    const ten = createFakeHost(card());
-    await runSyncCore({ ...ten.host, capabilities: caps(true) }, ten.store, {});
+    const ten = createFakeHost(card({ cardTransferOut: true }));
+    const first = await runSyncCore({ ...ten.host, capabilities: caps(true) }, ten.store, {});
+    expect(first.errors).toEqual([]);
     const write = ten.saved.flatMap((r) => r.creates ?? [])[0];
     expect(write).toMatchObject({ activityType: 'TRANSFER_OUT', amount: 250, metadata: EXTERNAL_BOOKKEEPING_METADATA });
     expect(write.symbol).toBeUndefined();
+    expect(ten.activities.get('wf-c')).toEqual([expect.objectContaining({ activityType: 'TRANSFER_OUT', amount: 250 })]);
+    const writesBefore = ten.saved.length;
+    const second = await runSyncCore({ ...ten.host, capabilities: caps(true) }, ten.store, { force: true } as never);
+    expect(second.errors).toEqual([]);
+    expect(ten.saved.slice(writesBefore).flatMap((r) => [...(r.creates ?? []), ...(r.updates ?? []), ...(r.deleteIds ?? [])])).toEqual([]);
     const nine = createFakeHost(card());
     await runSyncCore({ ...nine.host, capabilities: caps(false) }, nine.store, {});
     expect(nine.saved.flatMap((r) => r.creates ?? [])[0]).toMatchObject({ activityType: 'WITHDRAWAL', amount: 250 });
@@ -75,8 +81,9 @@ describe('runSyncCore — a card\'s bookkeeping on Wealthfolio 3.10', () => {
     ['a 3.10 writer leaves a held WITHDRAWAL as it is', 'WITHDRAWAL', true],
     ['an older writer leaves a held TRANSFER_OUT as it is', 'TRANSFER_OUT', false],
   ])('never flips a held card outflow between its two shapes: %s', async (_what, stored, cardTransferOut) => {
-    const fh = createFakeHost(card({ existing: new Map([['wf-c', [held(stored)]]]) }));
-    await runSyncCore({ ...fh.host, capabilities: caps(cardTransferOut) }, fh.store, {});
+    const fh = createFakeHost(card({ cardTransferOut: true, existing: new Map([['wf-c', [held(stored)]]]) }));
+    const res = await runSyncCore({ ...fh.host, capabilities: caps(cardTransferOut) }, fh.store, {});
+    expect(res.errors).toEqual([]);
     expect(fh.saved.flatMap((r) => r.updates ?? []).filter((u) => u.id === 'act-held')).toEqual([]);
   });
 
@@ -86,8 +93,49 @@ describe('runSyncCore — a card\'s bookkeeping on Wealthfolio 3.10', () => {
       mapping: { 'sfin-c': 'wf-c' },
       accountTypes: { 'wf-c': 'CREDIT_CARD' },
       ledgerBalances: new Map([['wf-c', 0]]),
+      cardTransferOut: true,
     });
-    await runSyncCore({ ...fh.host, capabilities: caps(true) }, fh.store, {});
+    const res = await runSyncCore({ ...fh.host, capabilities: caps(true) }, fh.store, {});
+    expect(res.errors).toEqual([]);
     expect(fh.imported.flat()).toEqual([expect.objectContaining({ activityType: 'TRANSFER_OUT', amount: 464.6, comment: 'Starting balance · sfin-c' })]);
+  });
+
+  // I1: an in-place update keeps a held card placeholder's stored shape.
+  const pendingHeld = (type: string, extra: Partial<HostActivity> = {}): HostActivity => ({
+    ...held(type), comment: `${IN_TRANSIT_COMMENT_PREFIX}BALANCE TRANSFER · tx-bt${PENDING_SUFFIX}`, ...extra,
+  });
+  const updatesOf = (saved: Array<{ updates?: Array<{ id?: string; activityType: string }> }>) =>
+    saved.flatMap((r) => r.updates ?? []).filter((u) => u.id === 'act-held');
+
+  it.each([[undefined], ['$CASH-USD'], ['9231cb80-phantom']])(
+    'a held card WITHDRAWAL going pending to posted under cardTransferOut stays a WITHDRAWAL (stored asset %s)',
+    async (assetId) => {
+      const fh = createFakeHost(card({ cardTransferOut: true, existing: new Map([['wf-c', [pendingHeld('WITHDRAWAL', assetId ? { assetId } : {})]]]) }));
+      const res = await runSyncCore({ ...fh.host, capabilities: caps(true) }, fh.store, {});
+      expect(res.errors).toEqual([]);
+      const ups = updatesOf(fh.saved);
+      expect(ups.length).toBeGreaterThan(0);
+      expect(ups.every((u) => u.activityType === 'WITHDRAWAL')).toBe(true);
+      expect(fh.activities.get('wf-c')?.find((r) => r.id === 'act-held')?.activityType).toBe('WITHDRAWAL');
+    },
+  );
+
+  it.each([
+    ['the add-on (unknown version) writes first', [false, true, false, true, false, true], 0],
+    ['the companion (3.10) writes first', [true, false, true, false, true, false], 1],
+  ])('alternating writers with an amount change each run converge, with no further flip: %s', async (_what, order, maxFlips) => {
+    const seed = card({ cardTransferOut: true });
+    const fh = createFakeHost(seed);
+    const tx = seed.accountSet!.accounts[0].transactions![0] as { amount: string };
+    const types: string[] = [];
+    for (const [i, k] of order.entries()) {
+      tx.amount = `-${250 + i}.00`;
+      const res = await runSyncCore({ ...fh.host, capabilities: caps(k) }, fh.store, { force: true } as never);
+      expect(res.errors).toEqual([]);
+      types.push(...(fh.activities.get('wf-c') ?? []).map((r) => r.activityType));
+    }
+    expect(types).toHaveLength(order.length);
+    expect(types.filter((t, i) => i > 0 && t !== types[i - 1]).length).toBeLessThanOrEqual(maxFlips);
+    expect(new Set(types.slice(2)).size).toBe(1);
   });
 });
