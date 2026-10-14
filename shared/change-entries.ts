@@ -394,6 +394,8 @@ export interface TransactionRemovedFacts {
   date: string;
   /** The deleted row as a create request (`ActivityWrite` shape). */
   payload: Record<string, unknown>;
+  /** The keys this removal itself put on the skip list (not ones skipped earlier); Undo takes back only these. */
+  addedKeys?: string[];
 }
 
 /**
@@ -410,7 +412,7 @@ export function transactionRemovedChange(f: TransactionRemovedFacts): ChangeDraf
     subject: { txKeys: [...f.txKeys], activityIds: [f.activityId], description: f.description, amountCents: f.amountCents, date: f.date },
     summary: `Removed ${what(f.description)} for good`,
     why: "You removed it; the bank feed won't import it again",
-    before: { activityId: f.activityId, activity: f.payload },
+    before: { activityId: f.activityId, activity: f.payload, ...(f.addedKeys ? { addedKeys: f.addedKeys } : {}) },
     undoable: true,
   };
 }

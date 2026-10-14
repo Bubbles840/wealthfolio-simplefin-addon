@@ -545,6 +545,9 @@ export function planChangeUndo(
         skipped.push({ account: k.slice(0, at), txId: k.slice(at + 1) });
       }
       if (skipped.length === 0) return refuse(UNDO_NO_KEY);
+      // Only the keys the removal itself added; an entry without the field falls back to all of them.
+      const added = Array.isArray(before.addedKeys) ? new Set(before.addedKeys.filter((k): k is string => typeof k === 'string')) : null;
+      const ours = added ? skipped.filter((s) => added.has(`${s.account}\u0000${s.txId}`)) : skipped;
       if (op === 'undo') {
         const payload = createPayloadOf(before.activity);
         if (!payload) return refuse(UNDO_NOT_POSSIBLE);
@@ -554,7 +557,7 @@ export function planChangeUndo(
           op, needsSync: false, rowAfter: 'created', done: "Undone — it's back, and the bank feed can import it again.",
           steps: [
             { do: 'create', write: payload },
-            ...skipped.map((s) => ({ do: 'unskip' as const, account: s.account, txId: s.txId })),
+            ...ours.map((s) => ({ do: 'unskip' as const, account: s.account, txId: s.txId })),
           ],
         });
       }
@@ -571,7 +574,7 @@ export function planChangeUndo(
       // The skip first, as the removal did.
       return plan({
         op, needsSync: false, rowAfter: null, done: "Redone — it's removed and won't be imported again.",
-        steps: [...skipped.map((s) => ({ do: 'skip' as const, account: s.account, txId: s.txId })), { do: 'delete', activityId: row.id }],
+        steps: [...ours.map((s) => ({ do: 'skip' as const, account: s.account, txId: s.txId })), { do: 'delete', activityId: row.id }],
       });
     }
 
