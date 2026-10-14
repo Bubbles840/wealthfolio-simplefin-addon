@@ -72,8 +72,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     budgets says where to get some.
   - **A sample-data preview.** Before the companion has synced, the Budget
     board offers **Preview with sample data**: six months of made-up
-    accounts and spending, under a "Sample data, not your money" banner,
+    accounts and spending, under a "Sample data — not your money" banner,
     read-only. Setup's first step has **See what it looks like**.
+  - **A $0 default budget counts as no budget.** Wealthfolio saves a cleared
+    budget as "0" and cannot delete a default, so `/budgets` may suggest for
+    such a category and apply over it, and a Redo of a budget set goes over it.
+    A this-month $0 target or an unreadable amount still counts as a budget.
+    A Redo whose request failed after Wealthfolio saved the budget is now
+    recorded instead of reported as failed. Close preview returns focus to the
+    button that opened it.
 
 ### Fixed
 - **The sqlite3 command-line fallback no longer flattens newlines** in

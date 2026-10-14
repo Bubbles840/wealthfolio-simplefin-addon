@@ -13,7 +13,7 @@
  * ledger, and does not touch Wealthfolio — so the real poll still picks up every
  * message afterwards, and running this twenty times in a row changes nothing.
  *
- *   docker exec simplefin-sync node dist/companion/src/amazon-check.js \
+ *   docker compose exec simplefin-sync node dist/companion/src/amazon-check.js \
  *     --host imap.gmail.com --user you@gmail.com --password 'xxxx xxxx xxxx xxxx'
  *
  * With no flags it reads the same env vars the companion does.

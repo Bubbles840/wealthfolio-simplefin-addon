@@ -14,7 +14,7 @@
  * Read-only: opens the database with `mode=ro` through the same reader the reports
  * use, and writes nothing anywhere.
  *
- *   docker exec simplefin-sync node dist/companion/src/amazon-descriptors.js
+ *   docker compose exec simplefin-sync node dist/companion/src/amazon-descriptors.js
  */
 
 import { getNativeAmazonRows } from './sqlite-native.js';

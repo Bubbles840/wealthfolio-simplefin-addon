@@ -51,7 +51,9 @@ export function DockerSnippet({ timezone = browserTimezone() }: { timezone?: str
       <div className="sfin-subtle sfin-docker-note">
         The database mount is what lets the companion count spending that still
         needs a category, and fill in category names and budgets in its reports.
-        Point it at the folder that contains <code>wealthfolio.db</code>. It syncs
+        Point it at the folder that contains <code>wealthfolio.db</code>. Put
+        Wealthfolio's password in <code>wealthfolio_password.txt</code> beside the
+        compose file, readable by the container (<code>chmod 644</code>). It syncs
         every 6 hours; add <code>SYNC_SCHEDULE</code> (a cron line) to change that.
       </div>
     </div>
