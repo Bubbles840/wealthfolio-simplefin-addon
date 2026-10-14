@@ -871,6 +871,7 @@ const css = `
 .sfin-why-title { font-weight: 600; overflow-wrap: anywhere; }
 .sfin-why-answer { margin: 4px 0; padding-left: 1.1em; display: flex; flex-direction: column; gap: 2px; }
 .sfin-why-history { margin-top: 6px; }
+.sfin-why-remove { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
 .sfin-why-heading { font-size: var(--sfin-sz-xs); letter-spacing: .06em; text-transform: uppercase; color: var(--muted-foreground); margin-bottom: 2px; }
 .sfin-why-line { display: flex; flex-direction: column; }
 .sfin-why-line-btn { width: 100%; padding: 3px 0; border: none; border-bottom: 1px solid color-mix(in srgb, var(--border) 40%, transparent); background: transparent; color: var(--foreground); font: inherit; text-align: left; cursor: pointer; overflow-wrap: anywhere; }
@@ -902,6 +903,7 @@ const css = `
 .sfin-audit-checks { display: flex; flex-direction: column; gap: 8px; }
 .sfin-audit-headline { margin-top: 8px; }
 .sfin-audit-link { padding: 0; border: none; background: transparent; color: var(--primary); font: inherit; font-size: var(--sfin-sz-sm); cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+.sfin-audit-fix { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 4px; }
 @keyframes sfin-pop { from { transform: scale(.92); opacity: 0; } to { transform: scale(1); opacity: 1; } }
 .sfin-range-pin { position: absolute; bottom: 6px; right: 10px; font-size: var(--sfin-sz-2xs); color: var(--muted-foreground); background: color-mix(in srgb, var(--card) 80%, transparent); border-radius: var(--sfin-rad-xs); padding: 1px 6px; }
 /* Drag feedback: the picked-up card lifts and fades while every other card
@@ -999,7 +1001,7 @@ export function Button({
   variant = 'primary',
   className,
   ...props
-}: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: ButtonVariant }) {
+}: React.ComponentPropsWithRef<'button'> & { variant?: ButtonVariant }) {
   const variantClass = variant === 'primary' ? '' : ` sfin-btn--${variant}`;
   return <button type="button" className={`sfin-btn${variantClass}${className ? ` ${className}` : ''}`} {...props} />;
 }

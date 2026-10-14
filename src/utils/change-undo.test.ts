@@ -6,6 +6,7 @@ import { emptySyncOverrides, setTxOverride, SYNC_OVERRIDES_SECRET_KEY } from '..
 import { accountTxKey } from '../../shared/transfers';
 import { SecretsStore } from './secrets';
 import { undoFromApp } from './change-undo';
+import { beginSync, beginWrite, REMOVE_BUSY, REMOVE_SYNC_RUNNING } from './write-lock';
 
 const NOW = new Date('2026-10-13T15:00:00Z');
 const CHECKING = { sfinId: 'sfin-1', wfId: 'wf-a', name: 'Checking' };
@@ -93,6 +94,57 @@ describe('undoFromApp', () => {
     const current = makeCtx({ companion_version: '1.61.0' }, [noted()]);
     expect(await undoFromApp(current.ctx, new SecretsStore(current.ctx), note, [note], 'undo')).toMatchObject({ ok: true });
     expect(JSON.parse(current.data[SYNC_OVERRIDES_SECRET_KEY]).tx[accountTxKey('sfin-1', 'tx-1')]).toHaveProperty('noVenmoNote');
+  });
+
+  describe("the add-on's write lock", () => {
+    it('refuses while a sync holds it, and writes nothing', async () => {
+      const end = await beginSync();
+      try {
+        const { ctx, rows } = makeCtx({ companion_version: '1.61.0' }, [row()]);
+        const e = imported();
+        expect(await undoFromApp(ctx, new SecretsStore(ctx), e, [e], 'undo')).toEqual({ ok: false, message: REMOVE_SYNC_RUNNING });
+        expect(rows).toHaveLength(1);
+        expect(ctx.api.secrets.set).not.toHaveBeenCalled();
+      } finally {
+        end();
+      }
+    });
+
+    it('refuses while another change (a Link, a Remove) holds it', async () => {
+      const release = beginWrite()!;
+      try {
+        const { ctx, rows } = makeCtx({ companion_version: '1.61.0' }, [row()]);
+        const e = imported();
+        expect(await undoFromApp(ctx, new SecretsStore(ctx), e, [e], 'undo')).toEqual({ ok: false, message: REMOVE_BUSY });
+        expect(rows).toHaveLength(1);
+      } finally {
+        release();
+      }
+    });
+
+    it('a sync that starts during an Undo waits for it, and the lock is free afterwards', async () => {
+      const { ctx, rows } = makeCtx({ companion_version: '1.61.0' }, [row()]);
+      let letGo!: () => void;
+      const gate = new Promise<void>((r) => { letGo = r; });
+      const save = ctx.api.activities.saveMany;
+      ctx.api.activities.saveMany = vi.fn(async (req: any) => { await gate; return save(req); });
+      const e = imported();
+      const undo = undoFromApp(ctx, new SecretsStore(ctx), e, [e], 'undo');
+      await vi.waitFor(() => expect(ctx.api.activities.saveMany).toHaveBeenCalled());
+      let synced = false;
+      const sync = beginSync().then((end) => { synced = true; return end; });
+      await new Promise((r) => setTimeout(r, 10));
+      expect(synced).toBe(false);
+      letGo();
+      expect(await undo).toMatchObject({ ok: true });
+      const end = await sync;
+      expect(synced).toBe(true);
+      expect(rows).toEqual([]);
+      end();
+      const after = beginWrite();
+      expect(after).toBeTypeOf('function');
+      after!();
+    });
   });
 
   describe('the companion version gate, when its version cannot be read', () => {
