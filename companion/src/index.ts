@@ -109,6 +109,7 @@ import {
 } from './subscriptions-menu.js';
 import { addDaysIso, dueWithin, formatRosterTotal, manualKey, rosterMoney, type Cadence } from '../../shared/subscription-roster.js';
 import { REPORT_CUBE_SECRET_KEY, parseReportCube } from '../../shared/report-cube.js';
+import { publishAuditSnapshot } from './audit-facts.js';
 import { addManual, editSubscriptionPrefs, emptySubscriptionPrefs, isUnreadablePrefsError, loadSubscriptionPrefs, newManualId, renameKey, setRemind, SubscriptionPrefsInvalidError, type ManualSubscription, type RemindDays, type SecretGet, type SecretSet, type SubscriptionEdit } from '../../shared/subscription-prefs.js';
 import { renderReportSvg, reportImageTitle, reportImageCaption, RENDERABLE_REPORT_IDS } from '../../shared/report-render.js';
 import { createAskSessions, CANCELLED, CANCELLED_EARLIER, NOT_WAITING, type AskSessions } from './ask-session.js';
@@ -1072,6 +1073,17 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
       }
     } catch (e) {
       log(`Report cube publish failed (the addon's budget reports may be stale): ${formatError(e)}`);
+    }
+
+    // 2c: the checks behind the app's Checks card, its account chips and the
+    // Budget tab's "different from Wealthfolio" link — after the cube, whose
+    // figure they compare. Best-effort like the cube: a failed run, an
+    // over-budget rejection or a failed write keeps the previous snapshot and
+    // never touches this sync's result.
+    try {
+      await publishAuditSnapshot(wfClient, wealthfolioDbPath(), new Date());
+    } catch (e) {
+      log(`Audit snapshot publish failed (the app's checks may be stale): ${formatError(e)}`);
     }
 
     const undeliveredOutTxIds: string[] = [];
