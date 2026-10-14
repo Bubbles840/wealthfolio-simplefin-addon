@@ -800,9 +800,11 @@ changes what a user sees today.
   rule). Preferring the payment's note there is a later refinement.
 - **One payment, one row, per sync run (ruling P3-K).** `matchVenmoPayments`
   matches every VENMO row of the run together: a row keeps a payment it
-  already consumed; a payment two rows could be (a pending row counts, as a
-  blocker) is dropped for all of them, with its identical twins; a row gets a
-  note only when exactly one payment is left. The window is a bank row dated
+  already consumed; otherwise it gets a note only when it could be exactly one
+  payment from the start (identical twins are one) and no other row of the
+  run — a pending row counts, as a blocker — could be that payment too
+  (ruling P3-L: a row that could be two payments stays note-free even when
+  another row contests one of them). The window is a bank row dated
   from the day before its email to five days after (calendar days). Costs: a
   bank row dated two or more days before its email gets no note; a payment
   whose email never came (mail before the filter, an unreadable email) still
@@ -827,8 +829,8 @@ changes what a user sees today.
   would have let a 1.60.0 companion through, reachable after a downgrade, since
   only the new companion writes `venmo_ledger`); Telegram's Undo AND Redo of
   one need `installed_addon_version` at that version or newer, and are refused
-  ("Update the add-on first — …") while it is older or unknown (the companion
-  cannot see the addons directory). `shared/change-undo.test.ts` fails a release
+  ("Update the add-on first — or undo it from the app's Change log.") while
+  it is older or unknown (the companion cannot see the addons directory). `shared/change-undo.test.ts` fails a release
   that ships BELOW the constant, but cannot catch one shipped above it.
 - **Release checklist:** If this ships after 1.61.0, raise VENMO_NOTE_SINCE.
 - **Forged From line (accepted risk).** The companion reads Venmo mail by its

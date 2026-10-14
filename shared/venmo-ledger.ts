@@ -7,8 +7,9 @@
  * exact amount, the same direction, a bank row dated from the day before the
  * email to five days after it, and one payment for one row — a payment two
  * rows of the run could be is nobody's, and a row two payments could be gets
- * none (identical duplicate emails count as one). Host-agnostic; the ledger is
- * an add-on secret both syncers read and the companion's mail poll writes.
+ * none, whatever happens to the other payment (identical duplicate emails
+ * count as one). Host-agnostic; the ledger is an add-on secret both syncers
+ * read and the companion's mail poll writes.
  */
 import type { VenmoDirection, VenmoRecord } from './venmo.js';
 
@@ -157,11 +158,14 @@ const toMatch = ([key, rec]: Hit): VenmoMatch => ({ key, note: rec.note, counter
  * depends on the order the feed lists them in:
  *  - a row that already consumed a payment keeps it, whatever arrived since
  *    (idempotent re-runs, P3-E), and competes for nothing else;
- *  - a payment two or more rows could be — a pending row among them — is
- *    dropped for all of them, with its identical twins;
- *  - a row gets a payment only when exactly one is left.
- * A wrong note on real money is invisible; a missing one is merely a row
- * without a note. Pending rows are never in the answer.
+ *  - otherwise a row gets a payment only when it could be EXACTLY ONE payment
+ *    from the start (identical twins are one), and no other row of the run —
+ *    a pending row included — could be that payment too (ruling P3-L).
+ * A row that could be two payments stays without a note even when another row
+ * contests one of them: the other email may be a payment with no bank row, so
+ * it is not known to be this row's. A wrong note on real money is invisible;
+ * a missing one is merely a row without a note. Pending rows are never in the
+ * answer.
  */
 export function matchVenmoPayments(ledger: VenmoLedger, queries: readonly VenmoPaymentQuery[]): Map<string, VenmoMatch> {
   const matches = new Map<string, VenmoMatch>();
@@ -179,12 +183,13 @@ export function matchVenmoPayments(ledger: VenmoLedger, queries: readonly VenmoP
     if (!q.pending) open.push({ txKey: q.txKey, hits });
   }
   for (const { txKey, hits } of open) {
-    const contested = new Set(hits.filter(([key]) => (wantedBy.get(key) ?? 0) > 1).map(([, r]) => paymentSig(r)));
-    const left = hits.filter(([, r]) => !contested.has(paymentSig(r)));
-    if (left.length === 0 || left.some(([, r]) => paymentSig(r) !== paymentSig(left[0][1]))) continue;
+    // Ambiguous from the start: two payments it could be.
+    if (hits.some(([, r]) => paymentSig(r) !== paymentSig(hits[0][1]))) continue;
+    // Contested: another row could be this payment (any of its emails).
+    if (hits.some(([key]) => (wantedBy.get(key) ?? 0) > 1)) continue;
     // One payment, possibly in two emails: the earliest stands for it.
-    left.sort((a, b) => a[1].emailDate.localeCompare(b[1].emailDate));
-    matches.set(txKey, toMatch(left[0]));
+    const sorted = [...hits].sort((a, b) => a[1].emailDate.localeCompare(b[1].emailDate));
+    matches.set(txKey, toMatch(sorted[0]));
   }
   return matches;
 }
