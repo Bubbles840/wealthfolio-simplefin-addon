@@ -57,6 +57,22 @@ export interface AmazonMailSamples {
 }
 
 /**
+ * The Venmo emails the parser could not read (3), redacted like Amazon's —
+ * kept because Venmo's formats are unverified, so the first real email that
+ * breaks a pattern can be read without a shell on the server. Replaced on every
+ * completed scan of the mailbox, so it clears once a fix reads the mail.
+ */
+export const VENMO_MAIL_SAMPLES_SECRET_KEY = 'venmo_mail_samples';
+
+/** What the companion publishes under `VENMO_MAIL_SAMPLES_SECRET_KEY`. */
+export interface VenmoMailSamples {
+  asOf: string;
+  /** Venmo emails left unread on that scan. */
+  unparsed: number;
+  samples: AmazonMailSample[];
+}
+
+/**
  * The semester pool's computed `PoolStatus` (shared/pool.ts), republished by
  * the companion on every sync — the Overview tile renders it verbatim, which
  * is what keeps the tile and the Telegram reports one implementation. Written

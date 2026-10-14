@@ -421,6 +421,63 @@ describe('🔎 Why? on the transaction screen (1.61)', () => {
   });
 });
 
+describe('guessed categories (3)', () => {
+  /** Two past filings of `BOOK STORES a` under Entertainment: a guess. */
+  const withFilings = (h: ReturnType<typeof setup>, readFilings: CategorizeDeps['readFilings']) => {
+    const controller = createCategorizeController({ ...h.deps, readFilings });
+    const tap = (data: string) => controller.onCallback({ data, chatId: CHAT, messageId: 55 }, h.ui);
+    return { controller, tap };
+  };
+  const FILINGS = () => [
+    { description: 'BOOK STORES a', categoryId: 'cat-fun', categoryName: 'Entertainment' },
+    { description: 'BOOK STORES a', categoryId: 'cat-fun', categoryName: 'Entertainment' },
+  ];
+
+  it('reads the year’s filings and shows the guess beside the row', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-14T12:00:00Z'));
+    const h = setup();
+    const readFilings = vi.fn(FILINGS);
+    const { controller } = withFilings(h, readFilings);
+    await controller.open(h.send);
+    expect(readFilings).toHaveBeenCalledWith(DB, '2025-10-14');
+    expect(labels(keyboardOf(lastCall(h.send))).slice(0, 2)).toEqual([
+      'Aug 8 · BOOK STORES a · -$12 · probably Entertainment',
+      'Aug 8 · BOOK STORES b · -$12',
+    ]);
+  });
+
+  it('files the guess with one tap — logged as yours, with Undo and the rule offer as usual', async () => {
+    const h = setup();
+    const recorded: any[] = [];
+    (h.deps as any).record = (d: unknown) => recorded.push(d);
+    const { controller, tap } = withFilings(h, FILINGS);
+    await controller.open(h.send);
+    await tap(dataFor(keyboardOf(lastCall(h.send)), 'BOOK STORES a'));
+    const picker = keyboardOf(lastCall(h.ui.edit));
+    expect(labels(picker)[0]).toBe('✓ Entertainment (like the last 2)');
+    await tap(dataFor(picker, '✓ Entertainment'));
+    expect(h.deps.assign).toHaveBeenCalledWith('a', 'cat-fun');
+    const filed = lastCall(h.ui.edit);
+    expect(filed[0]).toBe('Filed BOOK STORES a → Entertainment.');
+    expect(labels(keyboardOf(filed))).toEqual(expect.arrayContaining(['↩ Undo', 'Make this a rule']));
+    expect(recorded).toEqual([expect.objectContaining({ kind: 'category-filed', actor: 'you', summary: 'Filed BOOK STORES a under Entertainment' })]);
+    await tap(dataFor(keyboardOf(filed), '↩ Undo'));
+    expect(h.deps.unassign).toHaveBeenCalledWith('a');
+    expect(lastCall(h.ui.edit)[0]).toBe('Filing undone — BOOK STORES a is uncategorized again.');
+  });
+
+  it('a failed read of the filings shows no guesses, and the menu still works', async () => {
+    const h = setup();
+    const { controller, tap } = withFilings(h, () => { throw new Error('database is locked'); });
+    await controller.open(h.send);
+    expect(labels(keyboardOf(lastCall(h.send))).join('\n')).not.toContain('probably');
+    await tap(dataFor(keyboardOf(lastCall(h.send)), 'BOOK STORES a'));
+    expect(labels(keyboardOf(lastCall(h.ui.edit)))[0]).not.toMatch(/^✓/);
+    expect(h.logs.join('\n')).toContain('could not read past filings, so no guesses: database is locked');
+  });
+});
+
 describe('the taxonomy the whole feature writes into', () => {
   it('is Wealthfolio\'s spending taxonomy', () => {
     expect(SPENDING_TAXONOMY_ID).toBe('spending_categories');
@@ -941,7 +998,84 @@ describe('rules', () => {
       + 'It will also file any other uncategorized transactions that match, now and on every future import. '
       + 'Already-categorized transactions are never touched.',
     );
-    expect(labels(keyboardOf(lastCall(h.ui.edit)))).toEqual(['Create rule', '‹ Back']);
+    // The row's account can scope the rule (3): every account until "Only" is tapped.
+    expect(labels(keyboardOf(lastCall(h.ui.edit)))).toEqual(['Create rule', '✓ All accounts', 'Only Citi Double Cash', '‹ Back']);
+  });
+
+  it('creates a rule for the row’s account only, says so, and records the scope (3)', async () => {
+    const h = setup({ rows: [ODD] });
+    const recorded: any[] = [];
+    (h.deps as any).record = (d: unknown) => recorded.push(d);
+    h.deps.createRule.mockResolvedValueOnce('rule-8' as never);
+    const filed = await openAtFiled(h, 'TRADER JOE*S');
+    await h.tap(dataFor(filed, 'Make this a rule'));
+    await h.tap(dataFor(keyboardOf(lastCall(h.ui.edit)), 'Only Citi Double Cash'));
+    expect(lastCall(h.ui.edit)[0].split('\n')[1]).toBe('Descriptions containing "TRADER JOE\\*S" in Citi Double Cash → Entertainment');
+    await h.tap(dataFor(keyboardOf(lastCall(h.ui.edit)), 'Create rule'));
+    expect(h.deps.createRule).toHaveBeenCalledWith({ name: 'Telegram: TRADER JOE*S', pattern: 'TRADER JOE*S', categoryId: 'cat-fun', accountId: 'wf-1' });
+    expect(lastCall(h.ui.edit)[0]).toBe('Rule created — future matches in Citi Double Cash will file automatically under Entertainment.');
+    expect(recorded.at(-1)).toMatchObject({
+      kind: 'category-rule-created', account: { wfId: 'wf-1', name: 'Citi Double Cash' },
+      summary: 'Created a rule: descriptions containing "TRADER JOE*S" in Citi Double Cash go to Entertainment',
+      after: expect.objectContaining({ accountId: 'wf-1' }),
+    });
+  });
+
+  it('a scoped rule the server refuses says so and logs nothing (3)', async () => {
+    const h = setup({ rows: [ODD] });
+    const recorded: any[] = [];
+    (h.deps as any).record = (d: unknown) => recorded.push(d);
+    const filed = await openAtFiled(h, 'TRADER JOE*S');
+    recorded.length = 0;
+    h.deps.createRule.mockRejectedValueOnce(new Error('400 accountId is required when isGlobal is false'));
+    await h.tap(dataFor(filed, 'Make this a rule'));
+    await h.tap(dataFor(keyboardOf(lastCall(h.ui.edit)), 'Only Citi Double Cash'));
+    await h.tap(dataFor(keyboardOf(lastCall(h.ui.edit)), 'Create rule'));
+    expect(lastCall(h.ui.edit)[0]).toBe('Couldn\'t create that rule — Wealthfolio said: 400 accountId is required when isGlobal is false');
+    expect(recorded).toEqual([]);
+  });
+
+  it('toggled to Only and back to All accounts, Create sends no accountId — a global rule (3)', async () => {
+    const h = setup({ rows: [ODD] });
+    const filed = await openAtFiled(h, 'TRADER JOE*S');
+    await h.tap(dataFor(filed, 'Make this a rule'));
+    await h.tap(dataFor(keyboardOf(lastCall(h.ui.edit)), 'Only Citi Double Cash'));
+    expect(labels(keyboardOf(lastCall(h.ui.edit)))).toEqual(['Create rule', 'All accounts', '✓ Only Citi Double Cash', '‹ Back']);
+    await h.tap(dataFor(keyboardOf(lastCall(h.ui.edit)), 'All accounts'));
+    expect(labels(keyboardOf(lastCall(h.ui.edit)))).toEqual(['Create rule', '✓ All accounts', 'Only Citi Double Cash', '‹ Back']);
+    expect(lastCall(h.ui.edit)[0].split('\n')[1]).toBe('Descriptions containing "TRADER JOE\\*S" → Entertainment');
+    await h.tap(dataFor(keyboardOf(lastCall(h.ui.edit)), 'Create rule'));
+    expect(h.deps.createRule).toHaveBeenCalledTimes(1);
+    expect(h.deps.createRule.mock.calls[0][0]).toEqual({ name: 'Telegram: TRADER JOE*S', pattern: 'TRADER JOE*S', categoryId: 'cat-fun' });
+    expect('accountId' in h.deps.createRule.mock.calls[0][0]).toBe(false);
+    expect(lastCall(h.ui.edit)[0]).toBe('Rule created — future matches will file automatically under Entertainment.');
+  });
+
+  it('the toggle works on /newrule’s free preview: widened to All accounts, then back to Only (3)', async () => {
+    const h = setup();
+    await h.controller.openRulePreview('venmo', 'cat-fun', h.send, { id: 'wf-chk', name: 'PNC Checking' });
+    // The free preview is SENT; every tap after it edits that message.
+    await h.tap(dataFor(keyboardOf(lastCall(h.send)), 'All accounts'));
+    expect(labels(keyboardOf(lastCall(h.ui.edit)))).toEqual(['Create rule', '✓ All accounts', 'Only PNC Checking', 'Cancel']);
+    expect(lastCall(h.ui.edit)[0].split('\n')[1]).toBe('Descriptions containing "venmo" → Entertainment');
+    await h.tap(dataFor(keyboardOf(lastCall(h.ui.edit)), 'Create rule'));
+    expect(h.deps.createRule.mock.calls[0][0]).toEqual({ name: 'Telegram: venmo', pattern: 'venmo', categoryId: 'cat-fun' });
+
+    const again = setup();
+    await again.controller.openRulePreview('venmo', 'cat-fun', again.send, { id: 'wf-chk', name: 'PNC Checking' });
+    await again.tap(dataFor(keyboardOf(lastCall(again.send)), 'All accounts'));
+    await again.tap(dataFor(keyboardOf(lastCall(again.ui.edit)), 'Only PNC Checking'));
+    expect(labels(keyboardOf(lastCall(again.ui.edit)))).toEqual(['Create rule', 'All accounts', '✓ Only PNC Checking', 'Cancel']);
+    await again.tap(dataFor(keyboardOf(lastCall(again.ui.edit)), 'Create rule'));
+    expect(again.deps.createRule).toHaveBeenCalledWith({ name: 'Telegram: venmo', pattern: 'venmo', categoryId: 'cat-fun', accountId: 'wf-chk' });
+  });
+
+  it('/newrule naming an account opens scoped to it (3)', async () => {
+    const h = setup();
+    await h.controller.openRulePreview('venmo', 'cat-fun', h.send, { id: 'wf-chk', name: 'PNC Checking' });
+    expect(labels(keyboardOf(lastCall(h.send)))).toEqual(['Create rule', 'All accounts', '✓ Only PNC Checking', 'Cancel']);
+    await h.tap(dataFor(keyboardOf(lastCall(h.send)), 'Create rule'));
+    expect(h.deps.createRule).toHaveBeenCalledWith({ name: 'Telegram: venmo', pattern: 'venmo', categoryId: 'cat-fun', accountId: 'wf-chk' });
   });
 
   it('creates a contains-rule from the trimmed head of the description', async () => {
