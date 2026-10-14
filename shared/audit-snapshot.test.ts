@@ -5,7 +5,10 @@ import {
 } from './audit-snapshot';
 import { HEADLINE_REASON_KINDS, type HeadlineRow } from './audit-headline';
 import type { BalanceExplanation } from './audit-balance';
-import type { HealthIssue, HealthLeg } from './audit-health';
+import { healthIssues, type HealthIssue, type HealthLeg } from './audit-health';
+import { explainBalances, type BalanceFacts } from './audit-balance';
+import { explainHeadline } from './audit-headline';
+import type { AuditAccount, AuditLedgerRow } from './audit-ledger';
 
 const bytes = (s: string) => new TextEncoder().encode(s).length;
 const uuid = (i: number) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`;
@@ -139,6 +142,9 @@ describe('parseAuditSnapshot', () => {
       JSON.stringify({ ...good, balances: { [uuid(1)]: { ...account(1), causes: [5] } } }),
       JSON.stringify({ ...good, balances: { [uuid(1)]: { ...account(1), offCents: 'x' } } }),
       JSON.stringify({ ...good, balances: { [uuid(2)]: account(1) } }),
+      JSON.stringify({ ...good, health: { issues: [{ kind: 'late-start', key: 'k', activityId: 1, accountId: 'b', cents: 'x' }], notes: [] } }),
+      JSON.stringify({ ...good, health: { issues: [{ kind: 'phantom-cash', key: 'k', rows: 'x', accounts: 'y' }], notes: [] } }),
+      JSON.stringify({ ...good, health: { issues: [{ kind: 'incomplete-leg', key: 'k', leg: { absCents: 1 } }], notes: [] } }),
     ]) {
       expect(parseAuditSnapshot(raw)).toEqual({ kind: 'corrupt' });
     }
@@ -167,5 +173,76 @@ describe('auditSnapshotStatus', () => {
     expect(auditSnapshotStatus({ kind: 'corrupt' }, '1.61.0', at)).toEqual({ state: 'corrupt', line: AUDIT_CORRUPT });
     expect(AUDIT_CORRUPT).toBe("Couldn't read the checks — run /audit in Telegram.");
     expect(AUDIT_NEEDS_COMPANION).toBe('These checks need the companion.');
+  });
+});
+
+describe('round trip through the real builders', () => {
+  const acct = (id: string, name: string, type = 'CASH'): AuditAccount => ({ id, name, type, archived: false });
+  let seq = 0;
+  const row = (over: Partial<AuditLedgerRow> = {}): AuditLedgerRow => {
+    seq += 1;
+    return {
+      id: `act-${seq}`, accountId: 'wf-a', date: '2026-10-04', currency: 'USD', rawType: 'WITHDRAWAL', type: 'WITHDRAWAL',
+      status: 'POSTED', absCents: 1000, group: '', assetId: '', external: false, phantomCash: false, notes: `ROW · TRN-${seq}`, ...over,
+    };
+  };
+  const ledger = {
+    accounts: [acct('wf-a', 'A'), acct('wf-b', 'B'), acct('wf-c', 'C')],
+    rows: [
+      row({ rawType: 'DEPOSIT', type: 'DEPOSIT', absCents: 50000, date: '2026-09-01', notes: 'Starting balance · ACT-1' }),
+      row({ accountId: 'wf-c', rawType: 'DEPOSIT', type: 'DEPOSIT', absCents: 5000, date: '2026-09-10', notes: 'Starting balance · ACT-3' }),
+      row({ accountId: 'wf-c', date: '2026-09-02', notes: 'EARLY · TRN-90' }),
+      // an incomplete leg with one counterpart, and one with two candidates (null counterpart)
+      row({ id: 'out1', rawType: 'TRANSFER_OUT', type: 'TRANSFER_OUT', absCents: 7000, notes: 'TO B · TRN-91' }),
+      row({ id: 'in1', accountId: 'wf-b', rawType: 'DEPOSIT', type: 'DEPOSIT', absCents: 7000, notes: 'FROM A · TRN-92' }),
+      row({ id: 'out2', rawType: 'TRANSFER_OUT', type: 'TRANSFER_OUT', absCents: 9000, notes: 'TO ? · TRN-93' }),
+      row({ accountId: 'wf-b', rawType: 'DEPOSIT', type: 'DEPOSIT', absCents: 9000, notes: 'X · TRN-94' }),
+      row({ accountId: 'wf-c', rawType: 'DEPOSIT', type: 'DEPOSIT', absCents: 9000, notes: 'Y · TRN-95' }),
+      row({ accountId: 'wf-b', rawType: 'DEPOSIT', type: 'DEPOSIT', absCents: 100, phantomCash: true, notes: 'OLD · TRN-96' }),
+      row({ notes: 'LUNCH · TRN-97 · pending', absCents: 500 }),
+    ],
+  };
+  const mapping = { 's-a': 'wf-a', 's-b': 'wf-b', 's-c': 'wf-c' };
+  const balanceFacts: BalanceFacts = {
+    mapping, ledger, names: { 's-a': 'Bank A' },
+    balances: { 's-a': { balance: 400, date: 1760000000 } }, // b, c: bank sent none
+    valuations: { 'wf-a': 39000, 'wf-b': 1 },
+  };
+  const noLedger: BalanceFacts = { mapping, names: {}, failed: ['ledger', 'balances', 'valuations'] };
+  const rows = [
+    { id: 'h1', date: '2026-10-01T00:00:00+00:00', accountName: 'A', accountType: 'CASH', type: 'WITHDRAWAL', subtype: '', absCents: 100, notes: 'RENT · TRN-1', spendingFilings: 2, categoryIds: ['c'] },
+    { id: 'h2', date: '2026-10-20T00:00:00+00:00', accountName: 'A', accountType: 'CASH', type: 'WITHDRAWAL', subtype: '', absCents: 200, notes: 'GYM · TRN-2', spendingFilings: 1, categoryIds: [] },
+    { id: 'h3', date: '2026-10-05T00:00:00+00:00', accountName: 'A', accountType: 'CASH', type: 'DEPOSIT', subtype: '', absCents: 300, notes: 'REFUND · TRN-3', spendingFilings: 0, categoryIds: [] },
+  ];
+
+  it('parses a snapshot of real results as ok, nulls and all', () => {
+    const full = {
+      balances: explainBalances(balanceFacts),
+      headline: explainHeadline({ month: '2026-10', today: '2026-10-13', reportCents: 5000, wealthfolioCents: 4000, rows }),
+      health: healthIssues({ ledger, mapping }),
+    };
+    const kinds = new Set(full.health.issues!.map((i) => i.kind));
+    expect([...kinds].sort()).toEqual(['incomplete-leg', 'late-start', 'phantom-cash']);
+    const legs = full.health.issues!.flatMap((i) => (i.kind === 'incomplete-leg' ? [i] : []));
+    expect(legs.some((l) => l.counterpart === null)).toBe(true);
+    expect(legs.some((l) => l.counterpart !== null)).toBe(true);
+    expect(full.balances.accounts.map((a) => a.bank.kind)).toContain('none');
+    expect(full.balances.accounts.map((a) => a.bank.kind)).toContain('ok');
+
+    const degraded = {
+      balances: explainBalances(noLedger),
+      headline: explainHeadline({ month: '2026-10', today: '2026-10-13', failed: ['ledger', 'report', 'wealthfolio'] }),
+      health: healthIssues({ mapping, failed: ['ledger'] }),
+    };
+    const accs = degraded.balances.accounts;
+    expect(accs.map((a) => a.bank.kind)).toContain('unread');
+    expect(accs.every((a) => a.causes === null && a.offCents === null && a.unexplainedCents === null && a.includes === null)).toBe(true);
+    expect(degraded.headline.reasons).toBeNull();
+    expect(degraded.health.issues).toBeNull();
+
+    for (const results of [full, degraded]) {
+      const snap = buildAuditSnapshot(results, NOW)!;
+      expect(parseAuditSnapshot(JSON.stringify(snap))).toEqual({ kind: 'ok', snapshot: snap });
+    }
   });
 });
