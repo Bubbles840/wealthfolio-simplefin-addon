@@ -5,7 +5,7 @@ import {
 } from './category-guess';
 
 const filed = (description: string, categoryId = 'cat-gro', categoryName = 'Groceries'): PastFiling => ({ description, categoryId, categoryName });
-const guess = (filings: PastFiling[], description: string) => guessCategory(buildGuessIndex(filings), description);
+const guess = (filings: PastFiling[], description: string | null | undefined) => guessCategory(buildGuessIndex(filings), description);
 
 describe('guessCategory — the thresholds', () => {
   it('is L3’s numbers: 2 filings, 80%, a year', () => {
