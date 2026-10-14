@@ -101,6 +101,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     while the companion cannot tell which add-on is installed). The overrides reader now ignores flags it does
     not know and keeps them, so a later flag will not break this release's
     add-on.
+- **Getting started.**
+  - **Suggested budgets: `/budgets` in Telegram.** For each spending
+    category with no budget, the average of the last 3 full months the
+    synced ledger covers (only Wealthfolio's Spending accounts, refunds
+    netted out, an excluded subcategory's spending left out) rounded up to
+    the nearest $5; categories under $10 a month, excluded categories and
+    "Opening balances" are left out. A ledger with no full month yet gets
+    "once a full calendar month has synced". Tap a category to leave it out,
+    then **Apply all** or **Apply selected**: each becomes a default monthly
+    budget in Wealthfolio. An existing budget (other than a cleared $0
+    default, which Wealthfolio shows as empty) is never overwritten: the
+    budget is read again right before each write, and a
+    category that gained one since is left alone and said so. Applying the
+    same list again shows "✓ ... (already set)", and one that fails to save
+    doesn't stop the rest. Each budget set is in the change log, and Undo
+    (from `/changes`) deletes it. In the app, the budget card with no
+    budgets says where to get some.
+  - **A sample-data preview.** Before the companion has synced, the Budget
+    board offers **Preview with sample data**: six months of made-up
+    accounts and spending, under a "Sample data — not your money" banner,
+    read-only. Setup's first step has **See what it looks like**.
+  - **A $0 default budget counts as no budget.** Wealthfolio saves a cleared
+    budget as "0" and cannot delete a default, so `/budgets` may suggest for
+    such a category and apply over it, and a Redo of a budget set goes over it.
+    A this-month $0 target or an unreadable amount still counts as a budget.
 - **Audits without SSH — fix.** Two repairs that used to need the server's
   `fix-transfers.mjs` and `skip-transaction.mjs`, in Telegram and the app,
   each in the change log with Undo:
@@ -156,7 +181,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   couldn't open the database, the fallback put each query on one line, so a
   `--` comment swallowed the rest of it. Every spending total read through the
   fallback was affected — the digest, weekly and pool figures, the reports and
-  the Budget tab (the spend matrix summed everything into one row) — and the
+  the Budget tab (the spend matrix summed everything into one row), and the
+  `/budgets` suggestions' budget spend and history start — and the
   needs-a-category list lost its filters (linked rows, transfers, starting
   balances and untracked accounts were listed). Queries now go through as
   written. The default `node:sqlite` path was never affected.
@@ -174,6 +200,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   semantics since 1.49); the README says so.
 - The companion reports a Wealthfolio HTTP 423 as a clear "profile is locked or
   there is more than one profile" error.
+- **One Docker Compose snippet.** Settings → Background sync (Docker), the
+  README and `docker-compose.example.yml` now show the same service, written
+  once: Wealthfolio's service name on a shared network (host networking as a
+  comment), the password from a Compose secret file (an API key as the
+  alternative), never a password in the snippet, the database folder
+  mounted read-only, `restart: unless-stopped`, and `TZ`. The card fills in
+  your browser's timezone and has a Copy button. The card's old snippet used
+  host networking and set no `TZ`; a working install needs no change.
+  `docker-compose.example.yml` loses its `user:` line and external network.
 
 ### Wealthfolio 3.10
 Works with 3.10. When upgrading: set `WF_CORS_ALLOW_ORIGINS` to your proxy URL,

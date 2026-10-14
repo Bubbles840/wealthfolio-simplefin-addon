@@ -40,7 +40,10 @@ The addon has three tabs: **Home**, **Reports** and **Settings**.
   merchant that way before),
   then your budget: six reports to start (headline numbers, cash flow or the
   semester-pool burn-down, budget vs actual, top merchants, subscriptions & bills (remind, rename, hide, add by hand)),
-  with more a tap away under **+ Add report**, or build your own.
+  with more a tap away under **+ Add report**, or build your own. Until the
+  companion has synced, **Preview with sample data** shows the board over
+  made-up numbers, read-only (setup's first step has it too: **See what it
+  looks like**).
 - **Syncing that gets the money right.**
   - Every SimpleFin account (checking, savings and cards) is imported on a
     schedule, with a catch-up when you open the app.
@@ -76,7 +79,11 @@ The addon has three tabs: **Home**, **Reports** and **Settings**.
   exactly one likely other half (**Link all** for two or more), and a story
   offers **Remove for good…** for a row the bank reported twice: it goes on
   the skip list and is deleted, so the bank feed never brings it back. Both
-  are in the change log, with Undo.
+  are in the change log, with Undo. `/budgets` suggests a monthly budget for each
+  category that has none (your average over the last 3 full months the ledger
+  covers, rounded up to the nearest $5) and sets the ones you pick in
+  Wealthfolio, never over a budget you already have; Undo any of them from
+  `/changes`.
 - **Checks** (with the companion) — the same three explanations in the app:
   an account's "off by" chip in **Settings → Accounts** opens why in place,
   the Budget tab's "Why is this different from Wealthfolio?" breaks down the
@@ -97,8 +104,8 @@ The addon has three tabs: **Home**, **Reports** and **Settings**.
   again (the card's **Your overrides** lists those, each with Remove). Most
   of it happens at once; undoing or redoing a transfer link or hold or a
   transaction rule, and redoing an import, an Amazon label or a removed
-  duplicate, take effect on the next sync — Sync now is right there. Category
-  and rule changes are undone from Telegram's `/changes`.
+  duplicate, take effect on the next sync — Sync now is right there. Category,
+  rule and budget changes are undone from Telegram's `/changes`.
 - **Amazon categorization** (optional) — reads Amazon's order emails from a
   throwaway mailbox and files each `AMAZON.COM*…` charge under what you bought.
 - **Venmo notes** (optional, the same mailbox) — a bank row for a Venmo
@@ -223,7 +230,12 @@ docker pull ghcr.io/bubbles840/wealthfolio-simplefin-sync:latest
 
 The companion runs on the exact same shared sync core as the in-app addon. Account
 mappings and credentials are configured directly in Wealthfolio via the addon UI,
-so the companion container runs as a lightweight background daemon:
+so the companion container runs as a lightweight background daemon. Add it to the
+`docker-compose.yml` that runs Wealthfolio (alongside it: merge the snippet's
+`services:` and `secrets:` into that file's, don't duplicate them), put Wealthfolio's password in
+`wealthfolio_password.txt` beside that file (readable by the container: `chmod 644`), and run `docker compose up -d`. The
+addon's **Settings → Background sync (Docker)** card shows the same service with
+your timezone filled in, and a Copy button:
 
 ```yaml
 services:
@@ -231,16 +243,29 @@ services:
     image: ghcr.io/bubbles840/wealthfolio-simplefin-sync:latest
     restart: unless-stopped
     environment:
-      - WEALTHFOLIO_API_URL=http://wealthfolio:8088   # Wealthfolio's default port
-      - WEALTHFOLIO_PASSWORD=your_wealthfolio_password
+      - WEALTHFOLIO_API_URL=http://wealthfolio:8088   # Wealthfolio's service name and port
+      - WEALTHFOLIO_PASSWORD_FILE=/run/secrets/wealthfolio_password
+      # Or sign in with an API key instead of the password:
+      # - WEALTHFOLIO_API_KEY=your_api_key
       - WEALTHFOLIO_DB_PATH=/mnt/wealthfolio/wealthfolio.db
-      - TZ=America/New_York          # Required, or schedules fire on UTC
+      - TZ=America/New_York   # change to your timezone, or every schedule runs on UTC
+    secrets:
+      - wealthfolio_password
     volumes:
-      # Mount the FOLDER containing wealthfolio.db, not the .db file itself.
-      # A file-only mount hides the -wal/-shm files beside it, so the companion
-      # reads whatever was last checkpointed — observed two days stale.
+      # The FOLDER holding wealthfolio.db, read-only. A file-only mount hides
+      # the -wal/-shm files beside it, so the companion reads stale data.
       - /path/to/wealthfolio:/mnt/wealthfolio:ro
+    # Wealthfolio on the host network instead? Uncomment the next line and
+    # set WEALTHFOLIO_API_URL=http://127.0.0.1:8088 above.
+    # network_mode: host
+
+secrets:
+  wealthfolio_password:
+    file: ./wealthfolio_password.txt   # Wealthfolio's password, on one line
 ```
+
+It syncs every 6 hours; add `SYNC_SCHEDULE` (a cron line, e.g. `0 */3 * * *`) to
+the environment to change that. `docker-compose.example.yml` is the same service.
 
 Images are published for `linux/amd64`, tagged `:latest` and `:vX.Y.Z`. To
 upgrade:
@@ -291,7 +316,7 @@ mailbox and run the read-only diagnostic — it marks nothing read and records
 nothing, so the real poll still picks the message up:
 
 ```bash
-docker exec simplefin-sync node dist/companion/src/amazon-check.js \
+docker compose exec simplefin-sync node dist/companion/src/amazon-check.js \
   --host imap.gmail.com --user you@gmail.com --password 'xxxx xxxx xxxx xxxx'
 ```
 

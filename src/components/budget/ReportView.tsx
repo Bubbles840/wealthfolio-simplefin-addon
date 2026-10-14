@@ -190,11 +190,17 @@ function Merchants({ cube, full, density }: { cube: ReportCube; full: boolean; d
   );
 }
 
+/** The budget card with no budget in its window (project 4, G3): the add-on
+ *  cannot write budgets (the SDK has none), so it points at the bot that can. */
+export const NO_BUDGETS_YET = 'No budgets yet — /budgets in Telegram suggests some from your last 3 months.';
+
 function BudgetVsActual({ cube, full, density, onDrill }: {
   cube: ReportCube; full: boolean; density: number; onDrill?: (category: string) => void;
 }) {
   const rows = budgetVsActualAvgData(cube);
-  if (rows.length === 0) return <div className="sfin-subtle">No budgets or spending this month.</div>;
+  const noBudgets = cube.budgets.every((month) => month.every((cents) => cents === 0));
+  // No rows at all means no budget either: the pointer is the whole card.
+  if (rows.length === 0) return <div className="sfin-subtle">{NO_BUDGETS_YET}</div>;
   // Compress instead of hiding: every category renders, and the row scale
   // shrinks until the list fits the card ("it's cutting off Housing" — the
   // answer is smaller rows, not fewer). density ≈ coarse height units of
@@ -206,6 +212,7 @@ function BudgetVsActual({ cube, full, density, onDrill }: {
       : 'tiny';
   return (
     <div data-bva-list data-bva-scale={scale}>
+      {noBudgets && <div className="sfin-subtle" style={{ marginBottom: 6 }}>{NO_BUDGETS_YET}</div>}
       {cube.months.length > 1 && (
         <div className="sfin-subtle" style={{ marginBottom: 6 }}>
           monthly average across {cube.months.length} months

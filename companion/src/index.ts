@@ -116,6 +116,8 @@ import { addDaysIso, dueWithin, formatRosterTotal, manualKey, rosterMoney, type 
 import { REPORT_CUBE_SECRET_KEY, parseReportCube } from '../../shared/report-cube.js';
 import { companionAuditReaders, publishAuditSnapshot } from './audit-facts.js';
 import { auditMenuDeps, auditStatusKeyboard, createAuditMenu, type AuditMenu } from './audit-menu.js';
+import { companionBudgetReaders } from './budget-suggest-host.js';
+import { budgetsMenuDeps, createBudgetsMenu, type BudgetsMenu } from './budgets-menu.js';
 import { companionLinkIo, companionRemoveIo } from './audit-fix-host.js';
 import { linkPairs, type LinkRun } from '../../shared/audit-link.js';
 import { removeForGood } from '../../shared/tx-remove.js';
@@ -3134,6 +3136,15 @@ export function buildAuditMenu(wfClient: WealthfolioClient): AuditMenu {
 }
 
 /**
+ * `/budgets` (project 4): default monthly budgets suggested from the last 3
+ * full months, for categories with none, applied over REST. Stateless — every
+ * tap re-reads, and Apply re-reads the budget once more right before writing.
+ */
+export function buildBudgetsMenu(wfClient: WealthfolioClient): BudgetsMenu {
+  return createBudgetsMenu(budgetsMenuDeps(companionBudgetReaders(wfClient, wealthfolioDbPath()), log));
+}
+
+/**
  * The bot's question flows, registered on ONE session holder. Like the
  * categorize controller, one instance must serve `onCommand`, `onText` and
  * `onMenuCallback`, or a question asked through one could never be answered
@@ -3313,6 +3324,7 @@ export function buildTelegramCommandHandler(
   asks: AskSessions = buildAskSessions(wfClient, controller),
   why: WhyMenu = buildWhyMenu(wfClient),
   audit: AuditMenu = buildAuditMenu(wfClient),
+  budgets: BudgetsMenu = buildBudgetsMenu(wfClient),
 ): (cmd: ParsedCommand, reply: (text: string, keyboard?: InlineKeyboard) => Promise<void>) => Promise<void> {
   const budgetSnapshot = () => readBudgetSnapshotWithStyle(wfClient);
 
@@ -3471,6 +3483,11 @@ export function buildTelegramCommandHandler(
       case 'audit':
         // 2c: checked live; "Couldn't reach Wealthfolio" is the answer when it can't be.
         await audit.reply(reply);
+        return;
+
+      case 'budgets':
+        // Project 4: the suggestions, or why there are none to show.
+        await budgets.reply(reply);
         return;
 
       case 'status': {
@@ -3694,9 +3711,11 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
   const why = buildWhyMenu(wfClient);
   /** `/audit` (2c) and `/status`'s 🔎 buttons: stateless too. */
   const audit = buildAuditMenu(wfClient);
+  /** `/budgets` (project 4): stateless too. */
+  const budgets = buildBudgetsMenu(wfClient);
   /** ONE question slot for commands, plain answers and taps alike. */
   const asks = buildAskSessions(wfClient, categorize, why);
-  const runCommand = buildTelegramCommandHandler(wfClient, categorize, asks, why, audit);
+  const runCommand = buildTelegramCommandHandler(wfClient, categorize, asks, why, audit, budgets);
 
   /** The Amazon label picker. Shares the `cz:` callback prefix, so
    *  `onMenuCallback` below asks it first and only then falls through to the
@@ -3968,6 +3987,11 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
       // `cz:au:` (2c) likewise: /audit and /status's 🔎 buttons.
       if (audit.handles(cb.data)) {
         await audit.onCallback(cb, ui);
+        return;
+      }
+      // `cz:bg:` (project 4) likewise: /budgets.
+      if (budgets.handles(cb.data)) {
+        await budgets.onCallback(cb, ui);
         return;
       }
       if (cb.data !== RECATEGORIZE_ENTRY_CALLBACK) {

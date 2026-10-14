@@ -981,6 +981,68 @@ Minor, deferred (not fixed in R2):
   rule's Wealthfolio name does not mention its account; "Undo rule + un-file N"
   counts by pattern and category, not account.
 
+## 14. Getting started (2026-10-14, plan `2026-10-14-getting-started.md`)
+
+Designed overnight under Nick's standing instruction; the spec and plan await
+his review, so the PR stays open.
+
+- **Suggested budgets' spend read differs from Wealthfolio's own budget actuals** (`getNativeBudgetSpend`, companion/src/sqlite-native.ts). It matches them on the spending accounts and the excluded categories (an excluded subcategory's own rows dropped before the roll-up) only. Three known differences: a LINKED `TRANSFER_OUT` filed under a category counts here (upstream treats a linked transfer as neutral); `activity_type_override` is ignored (the raw `activity_type` classifies); `spending_activity_splits` are ignored (an activity counts whole, under its one assignment). Cost: a suggestion can be off by those rows; it is only a suggestion.
+- **Budgets are set from Telegram only.** The add-on SDK has no budget API;
+  applying from the app needs one (or an upstream PR). Only `'default'`
+  targets are suggested, never month-specific ones. A `'default'` target of
+  exactly `$0` counts as NO budget (Wealthfolio's cleared state: its editor
+  saves a cleared amount as "0" and its UI cannot delete a default, so a
+  cleared budget is a `$0` target); suggestions may fill it, apply's re-read
+  and Redo go over it. A NaN amount, a this-month `$0` target and any
+  non-zero default still block.
+- **Re-read before write narrows the race; it cannot close it.** Wealthfolio's
+  `POST /spending/budget/targets` overwrites an existing target (an upsert on
+  period, taxonomy, category) with no create-only form, so a budget added
+  between the re-read and the POST would be overwritten with the suggested
+  amount, and Undo would then delete it; the earlier amount cannot be
+  recovered. A write that lands after the POST is kept (Undo refuses, because
+  the amount differs). One re-read covers each POST, not a batch.
+- **The window is placed in Wealthfolio's timezone; rows are bucketed by their
+  stored date,** as the cube and the digest read them. Wealthfolio's own actuals
+  place a row by its local date, so a row stored at an east-of-UTC local
+  midnight at a month's end (3.10) can count in the neighboring month.
+- **At most 24 suggestions** (one button each, a 24-bit mask); past that, the
+  smallest are left out (the cap applies before the has-budget filter).
+- **The preview covers the Budget board only.** Home's other cards and the
+  Reports tab keep their empty states; drill-down rows open no story.
+- **The compose snippet does not fill in the add-on's id**: the companion
+  reads no variable for it (`simplefin-sync` is fixed in the code). The
+  password file must be readable by the container's `node` user (a 0600 file
+  owned by another uid is not). `docker-compose.example.yml` is exactly the
+  snippet and lost its `user:` line and external network.
+- **Deferred minors.**
+  - Compose: `WEB_URL` accepts a trailing `:` (YAML then reads a map).
+  - Setup preview toggle: no `aria-controls`; the "doesn't disturb step 1" test
+    never types a token; an empty-months cube would say "No budgets yet"; no
+    test that the pointer is absent in the sample preview.
+  - Sample: `headlineStatValues` on day 1-2 extrapolates rent ("Projected
+    $43,400"); `asOf` is read in UTC on the last local evening; card interest
+    is kept as one month's fee.
+  - `/budgets`: a POST that throws after committing leaves an unlogged budget
+    (the after-loop recovery covers it only when the re-read shows the sent
+    amount); a tracker switched off between reads reads as "Couldn't read
+    your budgets"; errors are clipped to 120 characters per category but
+    category names are not, so the result message can still pass 4096
+    characters with very many categories.
+  - The "No budgets yet — /budgets" pointer on the budget card is not gated
+    on the companion's version (an older companion has no `/budgets`).
+  - `/budgets`' history start is the earliest activity across ALL spending
+    accounts, so months a later-linked bank never covered still count, which
+    understates its categories.
+  - An Undo of a budget set whose DELETE throws after Wealthfolio committed
+    leaves the budget gone and the entry live; Redo is then never offered.
+  - The password file: `chmod 644` makes it readable by every user on the
+    host; `chown 1000` (the image's uid) and keeping 600 is tighter.
+  - Dead menu paths: the `cz:bg:m` view is never offered; "Pick at least one
+    first." is unreachable; Apply all ignores the toggles by design.
+  - Undo of a budget set: "nothing undone" wording on an unreachable Redo is
+    pre-existing.
+
 ## Reference: name mismatches between the database, the REST API, and the SDK
 
 Every one of these cost a diagnostic cycle against the live instance on
