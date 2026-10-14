@@ -6,11 +6,16 @@
  * fix-transfers.mjs's matcher, ported over the rows audit-ledger.ts carries.
  *
  *  1. Transfer legs (Wealthfolio 3.8's `invalid_transfer_groups_from_activities`,
- *     crates/core/src/health/service.rs:771-825, the same in 3.10): every
+ *     crates/core/src/health/service.rs:771-825): every
  *     POSTED TRANSFER_IN/TRANSFER_OUT (by its override type) in an ACTIVE,
  *     NOT ARCHIVED account (service.rs:277, 779) that has no group, or whose
  *     group is not exactly one IN and one OUT in two accounts with no
- *     security on either — unless its metadata says `flow.is_external: true`;
+ *     security on either — except what 3.10's build_transfer_pair accepts
+ *     (transfer_pairs.rs): a same-account cash FX conversion (different
+ *     currencies, non-zero amounts) and security legs of the same asset and
+ *     equal quantity. Those are VALID here on every host: a missed flag on 3.8
+ *     is safer than a false "won't accept". Security is reported only when the
+ *     facts show different assets or quantities. Unless its metadata says `flow.is_external: true`;
  *     and every leg of a VALID pair that IS marked external (the
  *     "conflicting external marker", service.rs:813-825). The script checks
  *     neither the account nor the marker on a pair; Health's source does.
@@ -138,15 +143,29 @@ function groupsOf(rows: AuditLedgerRow[]): Map<string, AuditLedgerRow[]> {
 function groupProblem(legs: AuditLedgerRow[]): GroupProblem | null {
   if (legs.length !== 2) return { kind: 'legs', count: legs.length };
   if (legs.filter((l) => l.type === 'TRANSFER_IN').length !== 1) return { kind: 'same-direction' };
-  if (legs[0].accountId === legs[1].accountId) return { kind: 'one-account' };
-  if (legs.some(carriesSecurity)) return { kind: 'security' };
+  if (legs[0].accountId === legs[1].accountId) {
+    // 3.10: a same-account cash FX conversion (different currencies, both amounts non-zero) is a pair.
+    const fx = legs[0].currency !== legs[1].currency && legs[0].absCents > 0 && legs[1].absCents > 0;
+    if (!fx) return { kind: 'one-account' };
+  }
+  if (legs.some(carriesSecurity)) {
+    const [a, b] = legs;
+    const key = (r: AuditLedgerRow) => (carriesSecurity(r) ? r.assetId : '');
+    if (key(a) !== key(b)) return { kind: 'security' };
+    // Same asset: invalid only when both quantities are known and differ.
+    if (a.quantity != null && b.quantity != null && Math.abs(Math.abs(a.quantity) - Math.abs(b.quantity)) > 1e-9) {
+      return { kind: 'security' };
+    }
+  }
   return null;
 }
 
 export function healthIssues(facts: HealthFacts): HealthReport {
   const failed = new Set(facts.failed ?? []);
   const notes = READ_ORDER.filter((r) => failed.has(r)).map((r) => HEALTH_READ_NOTES[r]);
-  if (!facts.ledger) return { issues: null, notes };
+  if (!facts.ledger) {
+    return { issues: null, notes: notes.includes(HEALTH_READ_NOTES.ledger) ? notes : [HEALTH_READ_NOTES.ledger, ...notes] };
+  }
 
   const accounts = new Map(facts.ledger.accounts.map((a) => [a.id, a]));
   const sfinOf = new Map(Object.entries(facts.mapping ?? {}).filter(([, wf]) => !!wf).map(([sfin, wf]) => [wf, sfin]));
@@ -181,9 +200,9 @@ export function healthIssues(facts: HealthFacts): HealthReport {
 
   // ── fix-transfers.mjs's matcher, over accounts that are not archived ──
   const live = rows.filter((r) => !accounts.get(r.accountId)?.archived);
-  const liveGroups = groupsOf(live);
-  const inValidPair = (r: AuditLedgerRow) => isTransferType(r.type) && !!r.group && groupProblem(liveGroups.get(r.group) ?? []) === null;
-  const userLegs = live.filter((r) => isTransferType(r.type) && r.status === 'POSTED' && !inValidPair(r) && !r.external
+  // A pair is valid by ALL rows' groups: a partner in an archived account still counts.
+  const inValidPair = (r: AuditLedgerRow) => isTransferType(r.type) && !!r.group && groupProblem(groups.get(r.group) ?? []) === null;
+  const userLegs = live.filter((r) => eligible(r) && isTransferType(r.type) && r.status === 'POSTED' && !inValidPair(r) && !r.external
     && !isBookkeeping(r) && !isPlaceholderNote(r.notes));
   const userIds = new Set(userLegs.map((l) => l.id));
   const counterparts = (leg: AuditLedgerRow) => live.filter((c) => c.id !== leg.id && c.accountId !== leg.accountId
@@ -282,7 +301,9 @@ export function healthIssueTitle(i: HealthIssue): string {
     case 'phantom-cash':
       return `${i.rows} ${plural(i.rows, 'row points', 'rows point')} at a $CASH asset (${i.accounts.map((a) => `${a.name}: ${a.rows}`).join(', ')})`;
     case 'late-start':
-      return `${i.accountName}'s starting balance is dated ${changeDay(i.date)}, after its earliest transaction (${changeDay(i.earliest)})`;
+      return i.date === i.earliest
+        ? `${i.accountName}'s starting balance is dated ${changeDay(i.date)}, the same day as its earliest transaction`
+        : `${i.accountName}'s starting balance is dated ${changeDay(i.date)}, after its earliest transaction (${changeDay(i.earliest)})`;
   }
 }
 
@@ -291,7 +312,7 @@ function problemText(p: GroupProblem): string {
     case 'legs': return `its group has ${p.count} transfer rows`;
     case 'same-direction': return 'both rows move money the same way';
     case 'one-account': return 'both rows are in one account';
-    case 'security': return 'a row carries an asset';
+    case 'security': return 'the rows carry different assets or quantities';
     case 'marked-external': return 'marked-external';
   }
 }
@@ -300,6 +321,12 @@ function problemText(p: GroupProblem): string {
 export function healthIssueLines(i: HealthIssue): string[] {
   switch (i.kind) {
     case 'incomplete-leg': {
+      if (i.problem?.kind === 'marked-external' && i.owner === 'add-on') {
+        return [
+          'Linked, but marked as money moving in or out of Wealthfolio, which contradicts the pair.',
+          "One of the add-on's own rows — the sync handles its marks itself.",
+        ];
+      }
       if (i.problem?.kind === 'marked-external') {
         return [
           'Linked, but marked as money moving in or out of Wealthfolio, which contradicts the pair.',

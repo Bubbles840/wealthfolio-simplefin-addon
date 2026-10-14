@@ -106,7 +106,7 @@ describe('healthIssues: incomplete transfer legs', () => {
     expect(said('a1')).toBe("Linked, but Wealthfolio won't accept the pair: its group has 3 transfer rows.");
     expect(said('b1')).toBe("Linked, but Wealthfolio won't accept the pair: both rows move money the same way.");
     expect(said('c1')).toBe("Linked, but Wealthfolio won't accept the pair: both rows are in one account.");
-    expect(said('d1')).toBe("Linked, but Wealthfolio won't accept the pair: a row carries an asset.");
+    expect(said('d1')).toBe("Linked, but Wealthfolio won't accept the pair: the rows carry different assets or quantities.");
   });
 
   it('flags the add-on’s own rows without matching them, and never offers an opening balance', () => {
@@ -205,5 +205,91 @@ describe('healthIssues: failed reads', () => {
     const r = healthIssues(facts([row()], { mapping: undefined, failed: ['mapping'] }));
     expect(legs(r.issues)[0].leg.txKey).toBeNull();
     expect(r.notes).toEqual([HEALTH_READ_NOTES.mapping]);
+  });
+});
+
+const inn = (over: Partial<AuditLedgerRow> = {}) => row({ rawType: 'TRANSFER_IN', type: 'TRANSFER_IN', accountId: 'wf-ally', notes: 'FROM PNC · TRN-in', ...over });
+
+describe('healthIssues: pairs Wealthfolio 3.10 accepts, and hidden claimants', () => {
+  it('accepts a same-account cash FX conversion (different currencies)', () => {
+    const r = healthIssues(facts([row({ group: 'fx', currency: 'USD' }), inn({ group: 'fx', accountId: 'wf-chk', currency: 'EUR' })]));
+    expect(r.issues).toEqual([]);
+  });
+  it('still refuses a same-account pair in one currency', () => {
+    const r = legs(healthIssues(facts([row({ id: 'x1', group: 'g' }), inn({ id: 'x2', group: 'g', accountId: 'wf-chk' })])).issues);
+    expect(r[0].problem).toEqual({ kind: 'one-account' });
+  });
+  it('accepts security legs of the same asset and equal quantity, or with a quantity unread', () => {
+    const same = healthIssues(facts([row({ group: 's', assetId: 'AAPL', quantity: 3 }), inn({ group: 's', assetId: 'AAPL', quantity: -3 })]));
+    const unread = healthIssues(facts([row({ group: 'u', assetId: 'AAPL' }), inn({ group: 'u', assetId: 'AAPL' })]));
+    expect(same.issues).toEqual([]);
+    expect(unread.issues).toEqual([]);
+  });
+  it('refuses security legs of different assets or quantities', () => {
+    const diffAsset = legs(healthIssues(facts([row({ id: 'p1', group: 'a', assetId: 'AAPL' }), inn({ id: 'p2', group: 'a', assetId: 'MSFT' })])).issues);
+    const diffQty = legs(healthIssues(facts([row({ id: 'q1', group: 'b', assetId: 'AAPL', quantity: 3 }), inn({ id: 'q2', group: 'b', assetId: 'AAPL', quantity: 4 })])).issues);
+    expect(diffAsset[0].problem).toEqual({ kind: 'security' });
+    expect(diffQty[0].problem).toEqual({ kind: 'security' });
+  });
+  it('counts a leg whose partner is in an archived account as validly paired', () => {
+    const r = healthIssues(facts([row({ group: 'g' }), inn({ group: 'g', accountId: 'wf-old' })]));
+    expect(r.issues).toEqual([]);
+  });
+  it('ignores archived-partner and inactive-account legs as claimants, so a visible leg keeps its counterpart', () => {
+    const out = row({ id: 'out' });
+    const dep = row({ id: 'dep', accountId: 'wf-ally', rawType: 'DEPOSIT', type: 'DEPOSIT', date: '2026-10-05' });
+    const hidden = row({ id: 'hid', accountId: 'wf-off', date: '2026-10-05' });
+    const paired = row({ id: 'pr', accountId: 'wf-cap', group: 'g', date: '2026-10-05' });
+    const partner = inn({ id: 'pp', accountId: 'wf-old', group: 'g' });
+    const [issue] = legs(healthIssues(facts([out, dep, hidden, paired, partner])).issues);
+    expect(issue).toMatchObject({ match: 'one' });
+    expect(issue.counterpart!.activityId).toBe('dep');
+  });
+});
+
+describe('healthIssues: edges', () => {
+  it('matches at exactly 5 days and not at 6', () => {
+    const dep = (date: string) => row({ id: 'dep', accountId: 'wf-ally', rawType: 'DEPOSIT', type: 'DEPOSIT', date });
+    expect(legs(healthIssues(facts([row({ id: 'out' }), dep('2026-10-09')])).issues)[0].match).toBe('one');
+    expect(legs(healthIssues(facts([row({ id: 'out' }), dep('2026-10-10')])).issues)[0].match).toBe('none');
+  });
+  it('does not let a placeholder make a user leg “many”', () => {
+    const dep = row({ id: 'dep', accountId: 'wf-ally', rawType: 'DEPOSIT', type: 'DEPOSIT', date: '2026-10-05' });
+    const ph = row({ id: 'ph', accountId: 'wf-cap', notes: '↔️ In-transit transfer · ZELLE · TRN-3' });
+    const issues = legs(healthIssues(facts([row({ id: 'out' }), dep, ph])).issues);
+    expect(issues.find((i) => i.leg.activityId === 'out')).toMatchObject({ match: 'one' });
+  });
+  it('lists a mutual pair once, from the OUT, when the IN is dated first', () => {
+    const issues = legs(healthIssues(facts([
+      row({ id: 'out', date: '2026-10-06' }), inn({ id: 'in', date: '2026-10-04' }),
+    ])).issues);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({ key: 'leg:out', match: 'one' });
+    expect(issues[0].counterpart!.activityId).toBe('in');
+  });
+  it('gives a tx key only to mapped accounts when the mapping is partial', () => {
+    const [issue] = legs(healthIssues(facts([
+      row({ id: 'out' }), row({ id: 'dep', accountId: 'wf-ally', rawType: 'DEPOSIT', type: 'DEPOSIT', notes: 'IN · TRN-9' }),
+    ], { mapping: { 'sfin-chk': 'wf-chk' } })).issues);
+    expect(issue.leg.txKey).not.toBeNull();
+    expect(issue.counterpart!.txKey).toBeNull();
+  });
+  it('notes the ledger read even when failed does not list it', () => {
+    expect(healthIssues({}).notes).toEqual([HEALTH_READ_NOTES.ledger]);
+  });
+  it('words a late start on the earliest row’s day without “after”, and otherwise keeps “after”', () => {
+    const mk = (d: string) => healthIssues(facts([
+      row({ id: 'sb', accountId: 'wf-ally', rawType: 'DEPOSIT', type: 'DEPOSIT', date: d, notes: 'Starting balance · ACT-1' }),
+      row({ accountId: 'wf-ally', rawType: 'WITHDRAWAL', type: 'WITHDRAWAL', date: '2026-07-28', notes: 'COFFEE · TRN-5' }),
+    ])).issues![0];
+    expect(healthIssueTitle(mk('2026-07-28'))).toBe("Ally Savings's starting balance is dated Jul 28, the same day as its earliest transaction");
+    expect(healthIssueTitle(mk('2026-08-02'))).toContain('after its earliest transaction (Jul 28)');
+  });
+  it('tells an add-on leg of a pair marked external that the sync handles it', () => {
+    const issues = legs(healthIssues(facts([
+      row({ id: 'ph', group: 'g', external: true, notes: '↔️ In-transit transfer · ZELLE · TRN-3' }), inn({ group: 'g' }),
+    ])).issues);
+    expect(issues[0]).toMatchObject({ owner: 'add-on', match: 'skipped' });
+    expect(healthIssueLines(issues[0])[1]).toBe("One of the add-on's own rows — the sync handles its marks itself.");
   });
 });
