@@ -302,6 +302,49 @@ describe('runCompanionSync', () => {
   });
 });
 
+describe('runCompanionSync — the needs-a-category status carries guesses', () => {
+  beforeEach(() => {
+    process.env.WEALTHFOLIO_API_URL = 'http://wf';
+    process.env.WEALTHFOLIO_PASSWORD = 'pw';
+    vi.mocked(runSyncCore).mockClear();
+  });
+
+  it('the sync publish site reads the year’s filings (getNativePastFilings) and publishes each row’s guess', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-14T12:00:00Z'));
+    const { WealthfolioClient } = await import('./wealthfolio.js');
+    const original = vi.mocked(WealthfolioClient).getMockImplementation();
+    try {
+      const secrets = new Map<string, string>([['simplefin_access_url', 'https://user:pass@bridge.simplefin.org/simplefin']]);
+      const client = new (WealthfolioClient as any)();
+      client.getAddonSecret = vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null);
+      client.setAddonSecret = vi.fn(async (_a: string, key: string, val: string) => { secrets.set(key, val); });
+      vi.mocked(WealthfolioClient).mockImplementation(function () { return client; } as any);
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(getNativeUncategorizedSpending).mockReturnValue([{
+        activityId: 'a1', wfAccountId: 'wf-a', notes: 'KROGER #415 · TRN-1', amountCents: 4200,
+        date: '2026-10-12', accountName: 'Checking', direction: 'out', incomeEligible: false,
+      }]);
+      vi.mocked(getNativePastFilings).mockClear();
+      vi.mocked(getNativePastFilings).mockReturnValue([
+        { description: 'KROGER #415', categoryId: 'cat-gro', categoryName: 'Groceries' },
+        { description: 'KROGER #9', categoryId: 'cat-gro', categoryName: 'Groceries' },
+      ]);
+
+      await runCompanionSync();
+
+      expect(vi.mocked(getNativePastFilings)).toHaveBeenCalledWith(expect.any(String), '2025-10-14');
+      const status = JSON.parse(secrets.get(UNCATEGORIZED_STATUS_SECRET_KEY)!);
+      expect(status.rows).toEqual([expect.objectContaining({ activityId: 'a1', guess: { categoryId: 'cat-gro', name: 'Groceries' } })]);
+    } finally {
+      vi.mocked(getNativeUncategorizedSpending).mockReturnValue([]);
+      vi.mocked(getNativePastFilings).mockReturnValue([]);
+      vi.mocked(WealthfolioClient).mockImplementation(original!);
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe('runCompanionSync sync health', () => {
   let secrets: Map<string, string>;
 

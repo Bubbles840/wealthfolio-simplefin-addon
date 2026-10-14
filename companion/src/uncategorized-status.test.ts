@@ -146,6 +146,19 @@ describe('guessed categories', () => {
     expect('guess' in payload.rows[0]).toBe(false);
   });
 
+  it('says why when the filings cannot be read — the one log line a missing guess leaves', async () => {
+    const logs = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await publish([native('a', { notes: 'KROGER #415 · TRN-a' })], () => { throw new Error('database is locked'); });
+      expect(logs.mock.calls.map((c) => c.join(' '))).toEqual(['[simplefin-sync] Guessed categories skipped: database is locked']);
+      logs.mockClear();
+      await publish([native('a', { notes: 'KROGER #415 · TRN-a' })], () => [filing('KROGER #415'), filing('KROGER #415')]);
+      expect(logs).not.toHaveBeenCalled();
+    } finally {
+      logs.mockRestore();
+    }
+  });
+
   it('reads the filings from a year back, through the db-path entry point', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'sfin-uncategorized-guess-'));
     const dbPath = join(dir, 'wealthfolio.db');

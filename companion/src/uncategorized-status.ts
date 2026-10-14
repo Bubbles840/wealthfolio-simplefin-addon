@@ -72,8 +72,11 @@ export async function publishUncategorizedStatus(
     let guesses: GuessIndex | null = null;
     try {
       guesses = readFilings ? buildGuessIndex(readFilings()) : null;
-    } catch {
+    } catch (err) {
+      // No guesses at all, never a guess from part of the history — and said,
+      // since a missing "Probably …" is otherwise silent.
       guesses = null;
+      console.log(`[simplefin-sync] Guessed categories skipped: ${err instanceof Error ? err.message : String(err)}`);
     }
     const rows: UncategorizedRow[] = visible.slice(0, UNCATEGORIZED_ROWS_CAP).map((r) => {
       // The stored note carries ` · <txId>` and possibly ` · pending`; the
