@@ -676,7 +676,8 @@ export interface BookkeepingFacts {
   activityIds: string[];
   /** `opening-category` only: the category it created or reused. */
   categoryName?: string;
-  /** `transfer-unlink` only: the legs that were unlinked. */
+  /** `transfer-unlink`: the legs that were unlinked; `transfer-relink` from a
+   *  Link (2c): the legs that were re-created. */
   legs?: Array<{ txKey: string; description: string }>;
   /** `transfer-unlink` only: how many pairs this entry covers (default 1) and
    *  how many rows were re-created (default: the ids listed). */
