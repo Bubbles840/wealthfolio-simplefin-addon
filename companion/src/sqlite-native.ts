@@ -122,7 +122,9 @@ function tryQueryNativeDb<Row>(
     // No shell: the query can carry typed chat text (rule patterns), so it must
     // reach sqlite3 as a single argv element.
     const args = separator === '|' ? [dbPath, query.replace(/\n/g, ' ')] : ['-separator', separator, dbPath, query.replace(/\n/g, ' ')];
-    const output = execFileSync('sqlite3', args, { encoding: 'utf8' });
+    // stderr piped, not inherited: the caught error carries it, and the
+    // console line below reports it once.
+    const output = execFileSync('sqlite3', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
     const rows: Row[] = [];
     for (const line of output.split('\n')) {
       const trimmed = line.trim();

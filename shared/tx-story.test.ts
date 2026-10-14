@@ -55,12 +55,13 @@ describe('buildTxStory — one fixture per row kind', () => {
       account: CHECKING, txKey: 'k-old', activityId: 'act-1', description: 'KROGER #415', amountCents: -5420, date: '2026-10-03',
       pending: true, activityType: 'WITHDRAWAL',
     }), 3);
+    // The posted row has its own activity id: only the old key ties it to the pending import.
     const upd = item(bankUpdateChange({
-      account: CHECKING, txKey: 'k-new', activityId: 'act-1', description: 'KROGER #415', amountCents: -5420,
+      account: CHECKING, txKey: 'k-new', activityId: 'act-2', description: 'KROGER #415', amountCents: -5420,
       before: { absCents: 5420, date: '2026-10-03', pending: true, activityType: 'WITHDRAWAL' },
       after: { absCents: 5420, date: '2026-10-04', pending: false, activityType: 'WITHDRAWAL' }, previousTxKey: 'k-old',
     }), 5);
-    const s = story({ history: [upd, imp] });
+    const s = story({ row: row({ activityId: 'act-2' }), history: [upd, imp] });
     expect(s.answer[0]).toBe('From your PNC Checking bank feed.');
     expect(s.history!.map((h) => h.line)).toEqual([
       'Oct 3 · Imported KROGER #415 (pending)',

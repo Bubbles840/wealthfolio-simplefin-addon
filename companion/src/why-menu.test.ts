@@ -40,7 +40,7 @@ const storyFor = (over: Partial<TxStory> = {}): TxStory => ({
 });
 
 describe('normalizeWhyQuery', () => {
-  it('keeps a short query as words then the amount', () => {
+  it('keeps a short query as the amount, then the words', () => {
     expect(normalizeWhyQuery('  $54.20   Kroger ')).toBe('$54.20 kroger');
   });
 

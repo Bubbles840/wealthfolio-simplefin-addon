@@ -48,8 +48,9 @@ export interface TxSearchRow {
   accountName: string;
 }
 
-/** The first token that reads as an amount is the amount; everything else,
- *  including a second amount-looking token, is a word. */
+/** The amount is the first token written with `$`, else the first with
+ *  cents, else the LAST amount-like one; every other token, a second
+ *  amount-looking one included, is a word. */
 export function parseTxQuery(text: string): TxQuery {
   const tokens = (text ?? '').trim().split(/\s+/).filter(Boolean);
   const reads = tokens.map(readAmount);
