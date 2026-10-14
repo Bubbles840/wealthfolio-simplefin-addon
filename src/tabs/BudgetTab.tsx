@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Button, SectionLabel } from '../components/ui';
 import { ReportView, reportTitle } from '../components/budget/ReportView';
 import { sliceCubeMonths, type ReportCube } from '../../shared/report-cube';
+import { sampleReportCube } from '../../shared/sample-cube';
 import {
   cycleSize, POOL_ONLY_REPORT_IDS, resolveBudgetLayout, resolveBoard, moveCardTo, resizeCardTo,
   swapCard, SIZE_LABELS, STANDARD_REPORT_IDS, toggleHidden, type BudgetLayout,
@@ -61,7 +62,17 @@ export interface BudgetTabProps {
    *  the headline numbers that lead the board — outside the grid, whose cards
    *  clip their bodies, so it opens in place uncut. Absent: no link. */
   audit?: AuditSource;
+  /** The sample-data preview (project 4, G2): the board over the built-in
+   *  sample cube, read-only — no Customize, no layout, report, pool or
+   *  subscription edits — under a banner. `onExit` leaves it. Set by
+   *  `BudgetPreview` below, never by the page. */
+  preview?: { onExit: () => void };
 }
+
+/** The preview's banner and the line under it. */
+export const SAMPLE_BANNER = 'Sample data — not your money';
+export const SAMPLE_NOTE =
+  'Made-up accounts and spending, to show what these reports look like once the companion syncs. Nothing here is saved.';
 
 /** Two days: one missed nightly publish is routine, two is worth a strip. */
 const STALE_MS = 2 * 24 * 60 * 60 * 1000;
@@ -88,7 +99,7 @@ const MAX_R = 16;
 export function BudgetTab({
   cube, customReports, layout, onLayoutChange, onLayoutReset, onCustomReportsChange, store,
   subscriptionPrefs = null, onSubscriptionEdit, onOpenActivities, openRequest,
-  onSetUpCompanion, renderTxStory, audit,
+  onSetUpCompanion, renderTxStory, audit, preview,
 }: BudgetTabProps) {
   const [fullId, setFullId] = useState<string | null>(null);
   // Acted on ONCE per request. Initialised to whatever request already exists
@@ -136,6 +147,21 @@ export function BudgetTab({
    *  typed; parsed on save. Null = not editing. */
   const [poolEdit, setPoolEdit] = useState<{ amount: string; start: string; end: string } | null>(null);
   const [poolSaved, setPoolSaved] = useState(false);
+  /** The empty state's "Preview with sample data", open (G2). */
+  const [previewing, setPreviewing] = useState(false);
+  /** The button that opened the preview; Close preview hands focus back to it. */
+  const previewOpener = useRef<HTMLButtonElement>(null);
+  const returnFocus = useRef(false);
+  useEffect(() => {
+    if (!previewing && returnFocus.current) {
+      returnFocus.current = false;
+      previewOpener.current?.focus();
+    }
+  }, [previewing]);
+  // A real cube arriving ends it, so the sample never reopens unprompted.
+  useEffect(() => {
+    if (cube) setPreviewing(false);
+  }, [cube]);
 
   /** FLIP refs: previous on-screen rect per card, so any render that moves a
    *  card (live reorder under a drag, a resize reflowing neighbors) plays a
@@ -173,12 +199,17 @@ export function BudgetTab({
 
   // Not a warning: a new install has no companion yet, and nothing is wrong.
   if (!cube) {
+    // Leaving the preview comes back here, to the empty state.
+    if (previewing) return <BudgetPreview store={store} onExit={() => { returnFocus.current = true; setPreviewing(false); }} />;
     return (
       <div className="sfin-budget-empty">
         <p>Budget reports come from the background companion; once it syncs, they appear here.</p>
-        {onSetUpCompanion && (
-          <Button variant="outline" onClick={onSetUpCompanion}>Set up background sync</Button>
-        )}
+        <div className="sfin-budget-empty-actions">
+          {onSetUpCompanion && (
+            <Button variant="outline" onClick={onSetUpCompanion}>Set up background sync</Button>
+          )}
+          <Button variant="ghost" ref={previewOpener} onClick={() => setPreviewing(true)}>Preview with sample data</Button>
+        </div>
       </div>
     );
   }
@@ -188,7 +219,8 @@ export function BudgetTab({
     ...customReports.map((r) => `custom:${r.id}`),
   ];
   const resolved = resolveBudgetLayout(layout, availableIds, cube.pool !== null);
-  const stale = Date.now() - Date.parse(cube.asOf) > STALE_MS;
+  // The sample is never stale: it is dated from when the preview opened.
+  const stale = !preview && Date.now() - Date.parse(cube.asOf) > STALE_MS;
   const viewCube = sliceCubeMonths(cube, range);
   const board = resolveBoard(layout, availableIds, cube.pool !== null);
   const shownBoard = dragBoard ?? board;
@@ -204,19 +236,21 @@ export function BudgetTab({
     heroes: resolved.heroes, order: [], hidden: resolved.hidden,
   };
 
+  // The preview passes no edit, so the headline picker and the subscription
+  // controls render read-only, and nothing opens the real ledger.
   const subsProps = {
     subscriptionPrefs,
-    onSubscriptionEdit,
+    onSubscriptionEdit: preview ? undefined : onSubscriptionEdit,
     subscriptionsCube: cube,
     // The Remind control's "reminders are sent by the companion" hint uses the
     // stale strip's own two-day test.
     companionStale: stale,
     onSetUpCompanion,
     headlinePicks: layout?.headline,
-    onHeadlinePicksChange: (ids: string[]) => onLayoutChange({ ...storedLayout, headline: ids }),
+    onHeadlinePicksChange: preview ? undefined : (ids: string[]) => onLayoutChange({ ...storedLayout, headline: ids }),
     onDrill: (category: string) => setFullId(`drill:${category}`),
-    onOpenActivities,
-    renderTxStory,
+    onOpenActivities: preview ? undefined : onOpenActivities,
+    renderTxStory: preview ? undefined : renderTxStory,
   };
 
   if (builder) {
@@ -245,6 +279,17 @@ export function BudgetTab({
     </div>
   );
 
+  /** The preview's banner (G2), where the stale strip would be. */
+  const previewBanner = preview && (
+    <div className="sfin-preview-banner" role="note">
+      <div className="sfin-banner-body">
+        <b>{SAMPLE_BANNER}</b>
+        <div className="sfin-banner-note">{SAMPLE_NOTE}</div>
+      </div>
+      <Button variant="outline" onClick={preview.onExit}>Close preview</Button>
+    </div>
+  );
+
   const rangeChips = (
     <div className="sfin-range-chips">
       {[...RANGES, ...(cube.pool ? [{ label: 'Pool', value: 'pool' as Range }] : [])].map((r) => (
@@ -264,6 +309,7 @@ export function BudgetTab({
     return (
       <div data-full-report={fullId} style={layout?.palette ? paletteVars(layout.palette) : undefined}>
         {staleStrip}
+        {previewBanner}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
           <Button variant="ghost" aria-label="Back to all reports" onClick={() => setFullId(null)}>
             ← All reports
@@ -272,7 +318,7 @@ export function BudgetTab({
         </div>
         {rangeChips}
         <ReportView id={fullId} cube={viewCube} customReports={customReports} hero density={4} {...subsProps} />
-        {fullId === 'pool-burndown' && cube.pool && (
+        {fullId === 'pool-burndown' && cube.pool && !preview && (
           <div className="sfin-pool-edit">
             {poolEdit === null ? (
               <>
@@ -690,6 +736,7 @@ export function BudgetTab({
   return (
     <>
       {staleStrip}
+      {previewBanner}
 
       <div className="sfin-budget-toolbar">
         {rangeChips}
@@ -721,13 +768,15 @@ export function BudgetTab({
               {confirmReset ? 'Really reset?' : 'Reset layout'}
             </Button>
           )}
-          <Button variant="ghost" onClick={() => { setCustomizing((c) => !c); setConfirmReset(false); }}>
-            {customizing ? 'Done customizing' : 'Customize'}
-          </Button>
+          {!preview && (
+            <Button variant="ghost" onClick={() => { setCustomizing((c) => !c); setConfirmReset(false); }}>
+              {customizing ? 'Done customizing' : 'Customize'}
+            </Button>
+          )}
         </div>
       </div>
 
-      {audit && <HeadlineAuditLink {...audit} />}
+      {audit && !preview && <HeadlineAuditLink {...audit} />}
 
       {hiddenToast !== null && (
         <div className="sfin-toast" role="status">
@@ -769,14 +818,16 @@ export function BudgetTab({
 
       <div className="sfin-budget-grid" ref={gridRef} style={layout?.palette ? paletteVars(layout.palette) : undefined}>
         {cells.map(({ id }) => card(id))}
-        <button
-          type="button"
-          className="sfin-new-report-card"
-          aria-expanded={adding}
-          onClick={() => setAdding((a) => !a)}
-        >
-          + Add report
-        </button>
+        {!preview && (
+          <button
+            type="button"
+            className="sfin-new-report-card"
+            aria-expanded={adding}
+            onClick={() => setAdding((a) => !a)}
+          >
+            + Add report
+          </button>
+        )}
       </div>
 
       {/* Hidden reports come back from here, in or out of customize mode — a
@@ -808,5 +859,30 @@ export function BudgetTab({
       )}
 
     </>
+  );
+}
+
+const NO_REPORTS: CustomReport[] = [];
+const noop = () => {};
+
+/**
+ * The sample-data preview on its own (project 4, G2): the board over
+ * `sampleReportCube`, read-only, under its banner. The empty state opens it,
+ * and so does setup step 1's "See what it looks like". The sample is dated
+ * from the moment it opens (`now` pins it in tests) and kept while it is open.
+ * The store is only passed through: in preview the board writes nothing.
+ */
+export function BudgetPreview({ store, onExit, now }: { store: SecretsStore; onExit: () => void; now?: Date }) {
+  const [cube] = useState(() => sampleReportCube(now ?? new Date()));
+  return (
+    <BudgetTab
+      cube={cube}
+      customReports={NO_REPORTS}
+      layout={null}
+      onLayoutChange={noop}
+      onCustomReportsChange={noop}
+      store={store}
+      preview={{ onExit }}
+    />
   );
 }

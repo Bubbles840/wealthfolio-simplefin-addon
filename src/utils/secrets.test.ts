@@ -127,6 +127,14 @@ describe('SecretsStore', () => {
     expect(await s.getUncategorizedStatus()).toBeNull();
   });
 
+  it('reads a published row with a guess as before — the optional field rides along, nothing else changes', async () => {
+    const ctx = makeCtx();
+    const row = { activityId: 'a', date: '2026-10-04', amountCents: 2500, description: 'KROGER #415', accountName: 'Checking', direction: 'out' };
+    const guessed = { ...row, activityId: 'b', guess: { categoryId: 'cat-gro', name: 'Groceries' } };
+    await ctx.api.secrets.set(UNCATEGORIZED_STATUS_SECRET_KEY, JSON.stringify({ count: 2, asOf: '2026-10-14', rows: [row, guessed] }));
+    expect(await new SecretsStore(ctx).getUncategorizedStatus()).toEqual({ count: 2, asOf: '2026-10-14', rows: [row, guessed] });
+  });
+
   it('clearAll deletes the Amazon mailbox config, ledger and label catalog too', async () => {
     // Same class of bug as uncategorized_status above: getAmazonConfig,
     // getAmazonLabels and getAmazonLedger all read/write their key constants
@@ -183,6 +191,29 @@ describe('SecretsStore', () => {
     const ctx = makeCtx();
     await ctx.api.secrets.set(AMAZON_MAIL_SAMPLES_SECRET_KEY, '{not json');
     expect(await new SecretsStore(ctx).getAmazonMailSamples()).toBeNull();
+  });
+
+  it('reads and writes the Venmo payments under the key the companion writes, absent as empty, unreadable as an error, and clearAll removes them', async () => {
+    const { ctx, data } = makeCtxWithData();
+    const s = new SecretsStore(ctx);
+    expect(await s.getVenmoLedger()).toEqual({});
+    const ledger = { 'id|41234567': { direction: 'out' as const, kind: 'payment' as const, amountCents: 2500, counterparty: 'Jane Doe', note: 'Rent', emailDate: '2026-10-03' } };
+    await s.setVenmoLedger(ledger);
+    expect(JSON.parse(data['venmo_ledger'])).toEqual(ledger);
+    expect(await s.getVenmoLedger()).toEqual(ledger);
+    data['venmo_ledger'] = '[1,2]';
+    await expect(s.getVenmoLedger()).rejects.toThrow();
+    data['venmo_ledger'] = '{not json';
+    await expect(s.getVenmoLedger()).rejects.toThrow();
+    await s.clearAll();
+    expect(data['venmo_ledger']).toBeUndefined();
+  });
+
+  it('clearAll removes the unreadable Venmo emails the companion keeps', async () => {
+    const { ctx, data } = makeCtxWithData();
+    data['venmo_mail_samples'] = JSON.stringify({ asOf: '2026-10-05', unparsed: 1, samples: [] });
+    await new SecretsStore(ctx).clearAll();
+    expect(data['venmo_mail_samples']).toBeUndefined();
   });
 });
 

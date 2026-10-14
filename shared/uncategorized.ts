@@ -27,6 +27,10 @@ export interface UncategorizedRow {
   /** Which way the money moved. Optional — a status published by an older
    *  companion simply renders unsigned, as it always did. */
   direction?: 'in' | 'out';
+  /** The category you filed the same merchant under before (3, L3), shown as a
+   *  hint. Optional: an older add-on ignores it, an older companion never
+   *  sends it, and a row with no clear history has none. */
+  guess?: { categoryId: string; name: string };
 }
 
 /**

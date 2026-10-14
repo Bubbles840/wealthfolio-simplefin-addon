@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { categoryFiledChange, categoryRuleCreatedChange, importChange, stampChange } from '../../shared/change-entries.js';
+import { budgetSetChange, categoryFiledChange, categoryRuleCreatedChange, importChange, stampChange, venmoNoteChange } from '../../shared/change-entries.js';
+import type { BudgetTarget } from '../../shared/budget-suggest.js';
+import { UNDO_UPDATE_ADDON } from '../../shared/change-undo.js';
 import { runChangeUndo } from '../../shared/change-undo-run.js';
 import { createFakeHost } from '../../shared/fake-host.js';
 import { companionRuleFiledCount, companionUndoIo, type UndoClient } from './change-undo-host.js';
@@ -20,6 +22,14 @@ function client(seed: Record<string, string> = {}) {
     listCategorizationRules: vi.fn(async () => [] as Array<{ id: string; name: string; pattern: string; categoryId: string | null }>),
     createCategorizationRule: vi.fn(async () => 'rule-9'),
     deleteCategorizationRule: vi.fn(async () => {}),
+    getBudgetTargets: vi.fn(async () => ({
+      enabled: true,
+      targets: [{ id: 'bt-gro', periodKey: 'default', targetType: 'category', taxonomyId: 'spending_categories', categoryId: 'cat-gro', amountCents: 42500 }],
+    })),
+    setDefaultBudgetTarget: vi.fn(async (categoryId: string, amountCents: number): Promise<BudgetTarget | null> => ({
+      id: 'bt-gro', periodKey: 'default', targetType: 'category', taxonomyId: 'spending_categories', categoryId, amountCents,
+    })),
+    deleteBudgetTarget: vi.fn(async () => {}),
   };
   return c as typeof c & UndoClient;
 }
@@ -73,6 +83,28 @@ describe('companionUndoIo', () => {
     expect(fh.activities.get('wf-a')).toEqual([]);
   });
 
+  it('a Venmo note’s Undo waits for the installed add-on to read noVenmoNote (ruling P3-K), then goes through', async () => {
+    const seed = () => ({
+      mapping: { 'sfin-1': 'wf-a' },
+      existing: new Map([['wf-a', [{ id: 'act-v', accountId: 'wf-a', activityType: 'WITHDRAWAL', date: '2026-10-04', amount: 25, comment: 'VENMO PAYMENT 1023 · Venmo: Rent · tx-1', sourceGroupId: null }]]]),
+    });
+    const note = stampChange(venmoNoteChange({
+      account: { sfinId: 'sfin-1', wfId: 'wf-a', name: 'Checking' }, txKey: 'sfin-1\u0000tx-1', activityId: 'act-v', description: 'VENMO PAYMENT 1023',
+      amountCents: -2500, date: '2026-10-04', beforeNote: 'VENMO PAYMENT 1023 · tx-1', afterNote: 'VENMO PAYMENT 1023 · Venmo: Rent · tx-1', note: 'Rent',
+    }), 'companion', NOW);
+    const old = client({ installed_addon_version: '1.60.0' });
+    const oldHost = createFakeHost(seed());
+    expect(await runChangeUndo(note, [note], 'undo', companionUndoIo(old, '/nope.db', oldHost.host), 'plain', NOW))
+      .toEqual({ ok: false, message: UNDO_UPDATE_ADDON });
+    expect(UNDO_UPDATE_ADDON.startsWith('Update the add-on first — ')).toBe(true);
+    expect(old.setAddonSecret).not.toHaveBeenCalled();
+    expect(oldHost.activities.get('wf-a')![0].comment).toBe('VENMO PAYMENT 1023 · Venmo: Rent · tx-1');
+    const current = client({ installed_addon_version: '1.61.0' });
+    const host = createFakeHost(seed());
+    expect(await runChangeUndo(note, [note], 'undo', companionUndoIo(current, '/nope.db', host.host), 'plain', NOW)).toMatchObject({ ok: true });
+    expect(host.activities.get('wf-a')![0].comment).toBe('VENMO PAYMENT 1023 · tx-1');
+  });
+
   it('undoes a rule the person already deleted in Wealthfolio (DELETE answers 404): succeeds and logs the undo', async () => {
     const c = client();
     c.listCategorizationRules.mockResolvedValue([{ id: 'rule-7', name: 'Telegram: X', pattern: 'X', categoryId: 'cat-gro' }]);
@@ -89,6 +121,33 @@ describe('companionUndoIo', () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+
+  it('undoes a budget set from /budgets by deleting its target, re-reading Wealthfolio first, and redoes it with the same POST', async () => {
+    const c = client();
+    const budget = stampChange(budgetSetChange({ targetId: 'bt-gro', categoryId: 'cat-gro', categoryName: 'Groceries', amountCents: 42500 }), 'companion', NOW);
+    const io = companionUndoIo(c, '/nope.db', createFakeHost().host);
+    expect(await runChangeUndo(budget, [budget], 'undo', io, 'plain', NOW)).toEqual({ ok: true, message: 'Undone — Groceries has no budget.', needsSync: false });
+    expect(c.getBudgetTargets).toHaveBeenCalledTimes(1);
+    expect(c.deleteBudgetTarget).toHaveBeenCalledWith('bt-gro');
+    expect(await io.budgets!.set('cat-gro', 42500)).toBe('bt-gro');
+    expect(c.setDefaultBudgetTarget).toHaveBeenCalledWith('cat-gro', 42500);
+  });
+
+  it('lends the runner null, not a throw, when the POST landed but the reply named no target', async () => {
+    const c = client();
+    c.setDefaultBudgetTarget.mockResolvedValueOnce(null);
+    const io = companionUndoIo(c, '/nope.db', createFakeHost().host);
+    expect(await io.budgets!.set('cat-gro', 42500)).toBeNull();
+  });
+
+  it("won't undo a budget while Wealthfolio's Spending tracker is off: an empty budget is not a deleted one", async () => {
+    const c = client();
+    c.getBudgetTargets.mockResolvedValueOnce({ enabled: false, targets: [] });
+    const budget = stampChange(budgetSetChange({ targetId: 'bt-gro', categoryId: 'cat-gro', categoryName: 'Groceries', amountCents: 42500 }), 'companion', NOW);
+    const io = companionUndoIo(c, '/nope.db', createFakeHost().host);
+    expect(await runChangeUndo(budget, [budget], 'undo', io, 'plain', NOW)).toEqual({ ok: false, message: "Couldn't reach Wealthfolio — nothing undone." });
+    expect(c.deleteBudgetTarget).not.toHaveBeenCalled();
   });
 
   it('counts a rule’s filings only for a rule entry, and says unknown without the database', () => {

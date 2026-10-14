@@ -67,6 +67,38 @@ export function companionUnderstandsOverrides(companionVersion: string | null): 
   return companionVersion === SYNC_OVERRIDES_SINCE || isNewerVersion(companionVersion, SYNC_OVERRIDES_SINCE);
 }
 
+/**
+ * The first release whose BOTH halves read `noVenmoNote`, the override a Venmo
+ * note's Undo writes (ruling P3-K). The overrides reader of 1.60.0 and before is
+ * strict: it reads a `sync_overrides` document holding a flag it does not know
+ * as corrupt, and that half's sync then ignores EVERY override — `keepDuplicate`
+ * (the duplicate prune may delete a copy you kept), `notTransfer` (re-pairs and
+ * re-links), `noAmazonLabel` — until the flag is gone. So the app's Undo of a
+ * Venmo note waits for a companion this new, and the companion's Telegram Undo
+ * and Redo wait for an INSTALLED add-on this new (refused while it cannot tell).
+ *
+ * Raise to the release that ships this.
+ */
+export const VENMO_NOTE_SINCE = '1.61.0';
+
+/** `version` is `min` or newer; anything not a plain x.y.z is not. */
+export function isAtLeastVersion(version: string, min: string): boolean {
+  return version === min || isNewerVersion(version, min);
+}
+
+/** The app's half: a companion that reads `noVenmoNote`. No companion at all
+ *  (null) is true, as for `companionUnderstandsOverrides`. */
+export function companionUnderstandsVenmoNotes(companionVersion: string | null): boolean {
+  if (companionVersion === null) return true;
+  return isAtLeastVersion(companionVersion, VENMO_NOTE_SINCE);
+}
+
+/** The companion's half: an installed add-on that reads `noVenmoNote`. Unknown
+ *  (null — the companion cannot see the addons directory) is false. */
+export function addonUnderstandsVenmoNotes(installedAddonVersion: string | null): boolean {
+  return installedAddonVersion !== null && isAtLeastVersion(installedAddonVersion.trim(), VENMO_NOTE_SINCE);
+}
+
 /** The companion writes the version in the INSTALLED addon's manifest here
  *  (read off disk), so a browser tab can tell "I am an old bundle — reload me"
  *  apart from "the old zip is still installed — upload the new one". */

@@ -14,12 +14,13 @@
  * Every plan puts its override steps FIRST: an override left behind by a
  * reversal that then failed is harmless, and the failure is reported.
  */
-import type { ChangeEntry } from './change-entries.js';
+import { BUDGET_TAXONOMY, DEFAULT_PERIOD_KEY, isClearedDefault, type BudgetTarget } from './budget-suggest.js';
+import { changeMoney, type ChangeEntry } from './change-entries.js';
 import type { ChangeLogItem } from './change-log.js';
 import type { ActivityWrite, ImportRow } from './sync-host.js';
 import type { AccountOverrideFlag, TxOverrideFlag } from './sync-overrides.js';
 import type { MappingRule } from './types.js';
-import { companionUnderstandsOverrides } from './version.js';
+import { companionUnderstandsOverrides, companionUnderstandsVenmoNotes } from './version.js';
 
 export type UndoOp = 'undo' | 'redo';
 /** A rule's Undo comes in two: the rule alone, or the rule and the charges it filed. */
@@ -27,11 +28,12 @@ export type UndoVariant = 'plain' | 'unfile';
 
 /** Kinds whose undo the SYNC carries out (an override): gated on the companion's version. */
 export const SYNC_DECISION_KINDS: ReadonlySet<string> = new Set([
-  'transfer-link', 'transfer-type', 'duplicate-removed', 'balance-correction', 'import', 'amazon-label',
+  'transfer-link', 'transfer-type', 'duplicate-removed', 'balance-correction', 'import', 'amazon-label', 'venmo-note',
 ]);
-/** Kinds only the companion can reverse: the add-on SDK has no category or rule API. */
+/** Kinds only the companion can reverse: the add-on SDK has no category, rule
+ *  or budget API. */
 export const COMPANION_ONLY_KINDS: ReadonlySet<string> = new Set([
-  'category-filed', 'opening-balance-filed', 'category-rule-created',
+  'category-filed', 'opening-balance-filed', 'category-rule-created', 'budget-set',
 ]);
 export const UNDO_KINDS: ReadonlySet<string> = new Set([
   ...SYNC_DECISION_KINDS, ...COMPANION_ONLY_KINDS, 'mapping-rule-created', 'starting-balance', 'starting-balance-moved',
@@ -42,6 +44,11 @@ export const SPENDING_TAXONOMY = 'spending_categories';
 
 // ── Copy (both surfaces) ─────────────────────────────────────────────────
 export const UNDO_UPDATE_COMPANION = 'Update the companion first';
+/** Telegram, for a Venmo note's Undo or Redo while the installed add-on is
+ *  older than `VENMO_NOTE_SINCE`, or unknown (see `addonGateCovers`). It names
+ *  the app too, so a companion that cannot see the add-ons directory still
+ *  points somewhere that works (ruling P3-L). */
+export const UNDO_UPDATE_ADDON = "Update the add-on first — or undo it from the app's Change log.";
 /** The app, when the companion's version could not be read: a gated undo waits. */
 export const UNDO_VERSION_UNKNOWN = "Couldn't check the companion's version — nothing was changed. Try again.";
 export const UNDO_FROM_TELEGRAM = 'Undo this from Telegram: /changes';
@@ -95,10 +102,28 @@ export function undoAvailability(
       ? { kind: 'telegram', op, text: op === 'undo' ? UNDO_FROM_TELEGRAM : REDO_FROM_TELEGRAM }
       : { kind: 'none' };
   }
-  if (where.host === 'addon' && companionGateCovers(entry, op) && !companionUnderstandsOverrides(where.companionVersion)) {
+  if (where.host === 'addon' && companionGateCovers(entry, op) && !companionUnderstands(entry, where.companionVersion)) {
     return { kind: 'update-companion', op, text: UNDO_UPDATE_COMPANION };
   }
   return { kind: 'ready', op };
+}
+
+/** The companion this entry's override needs: one that obeys overrides at all,
+ *  and for a Venmo note one that also reads `noVenmoNote` (ruling P3-K). */
+function companionUnderstands(entry: Pick<ChangeEntry, 'kind'>, companionVersion: string | null): boolean {
+  return companionUnderstandsOverrides(companionVersion)
+    && (entry.kind !== 'venmo-note' || companionUnderstandsVenmoNotes(companionVersion));
+}
+
+/**
+ * In Telegram, this waits for the INSTALLED add-on to read the override it
+ * touches: a Venmo note's Undo writes `noVenmoNote`, its Redo clears it, and an
+ * add-on older than `VENMO_NOTE_SINCE` reads the whole overrides document as
+ * corrupt while the flag is there (see `VENMO_NOTE_SINCE`). The runner reads
+ * the installed version and refuses with `UNDO_UPDATE_ADDON`.
+ */
+export function addonGateCovers(entry: Pick<ChangeEntry, 'kind'>): boolean {
+  return entry.kind === 'venmo-note';
 }
 
 /** A sync decision whose undo is an override the sync must obey: an automatic
@@ -150,6 +175,12 @@ export function currentRuleId(entry: ChangeEntry, latest: ChangeEntry | null): s
   return latest ? str(rec(latest.after).ruleId) : str(rec(entry.after).ruleId);
 }
 
+/** The budget target the next undo acts on: the entry's, or the one the last
+ *  Redo created (null after an Undo). */
+export function currentBudgetTargetId(entry: ChangeEntry, latest: ChangeEntry | null): string | null {
+  return latest ? str(rec(latest.after).targetId) : str(rec(entry.after).targetId);
+}
+
 /** A row as the planner needs it, re-read by the runner. */
 export interface UndoRow {
   id: string;
@@ -183,6 +214,8 @@ export interface UndoState {
   startingBalanceId?: string | null;
   /** The entry's tx key, or one derived from the row's note when it has none. */
   txKey?: string | null;
+  /** `budget-set`: every budget target now (`GET /spending/budget`). */
+  budgetTargets?: BudgetTarget[];
   /** The account's currency, for a row written back. */
   currency?: string;
 }
@@ -203,9 +236,12 @@ export type UndoStep =
   | { do: 'assign'; activityId: string; taxonomyId: string; categoryId: string }
   | { do: 'unassign'; activityId: string; taxonomyId: string }
   | { do: 'delete-rule'; ruleId: string }
-  | { do: 'create-rule'; rule: { name: string; pattern: string; categoryId: string } }
+  | { do: 'create-rule'; rule: { name: string; pattern: string; categoryId: string; accountId?: string } }
   | { do: 'mapping-remove'; rule: MappingRule }
-  | { do: 'mapping-add'; rule: MappingRule };
+  | { do: 'mapping-add'; rule: MappingRule }
+  | { do: 'delete-budget'; targetId: string }
+  /** A category's default monthly budget; the id is read back from Wealthfolio's reply. */
+  | { do: 'set-budget'; categoryId: string; amountCents: number };
 
 export interface UndoPlan {
   op: UndoOp;
@@ -219,6 +255,8 @@ export interface UndoPlan {
   rowAfter?: string | null | 'created';
   /** The rule after this plan, likewise. */
   ruleAfter?: null | 'created';
+  /** The budget target after this plan, likewise. */
+  budgetAfter?: null | 'created';
 }
 
 export type UndoDecision = { ok: true; plan: UndoPlan } | { ok: false; reason: string };
@@ -379,10 +417,15 @@ export function planChangeUndo(
       const name = str(after.name);
       const pattern = str(after.pattern);
       const categoryId = str(after.categoryId);
+      // A rule scoped to one account (3, L5) comes back scoped.
+      const accountId = str(after.accountId);
       if (!name || !pattern || !categoryId) return refuse(UNDO_NOT_POSSIBLE);
       if (op === 'redo') {
         if (state.rule) return refuse('That rule is already there.');
-        return plan({ op, needsSync: false, ruleAfter: 'created', done: 'Redone — the rule is back.', steps: [{ do: 'create-rule', rule: { name, pattern, categoryId } }] });
+        return plan({
+          op, needsSync: false, ruleAfter: 'created', done: 'Redone — the rule is back.',
+          steps: [{ do: 'create-rule', rule: { name, pattern, categoryId, ...(accountId ? { accountId } : {}) } }],
+        });
       }
       if (!state.rule) return refuse('That rule is already gone.');
       const steps: UndoStep[] = [{ do: 'delete-rule', ruleId: state.rule.id }];
@@ -395,6 +438,41 @@ export function planChangeUndo(
         done: opts.variant === 'unfile'
           ? `Undone — the rule is gone and ${n} ${n === 1 ? 'charge is' : 'charges are'} back in the needs-a-category list.`
           : 'Undone — the rule is gone.',
+      });
+    }
+
+    case 'budget-set': {
+      const categoryId = str(after.categoryId);
+      const amountCents = num(after.amountCents);
+      const name = str(after.categoryName) ?? 'That category';
+      if (!categoryId || amountCents === null) return refuse(UNDO_NOT_POSSIBLE);
+      const targets = state.budgetTargets ?? [];
+      if (op === 'redo') {
+        // Never over a budget set since: Wealthfolio's POST would overwrite it. Only a
+        // DEFAULT blocks (a $0 one is Wealthfolio's cleared state, not a budget): a this-month target is untouched by the default POST and sat
+        // beside the default before the Undo, so it deliberately does not block Redo.
+        const again = targets.some((t) => t.targetType === 'category' && t.taxonomyId === BUDGET_TAXONOMY
+          && t.categoryId === categoryId && t.periodKey === DEFAULT_PERIOD_KEY && !isClearedDefault(t));
+        if (again) return refuse(`${name} has a budget again — nothing was redone.`);
+        return plan({
+          op, needsSync: false, budgetAfter: 'created', done: `Redone — ${name} has its ${changeMoney(amountCents)} budget back.`,
+          steps: [{ do: 'set-budget', categoryId, amountCents }],
+        });
+      }
+      const id = currentBudgetTargetId(entry, opts.latest);
+      // No id known (a Redo whose reply named no target, or an entry recorded without
+      // one): a live entry's budget is the category's default target.
+      const live = !opts.latest || opts.latest.reverses?.op === 'redo';
+      const now = id ? targets.find((t) => t.id === id)
+        : live ? targets.find((t) => t.targetType === 'category' && t.taxonomyId === BUDGET_TAXONOMY
+          && t.categoryId === categoryId && t.periodKey === DEFAULT_PERIOD_KEY) : undefined;
+      if (!now) return refuse('That budget is already gone — nothing was undone.');
+      if (now.amountCents !== amountCents || now.periodKey !== DEFAULT_PERIOD_KEY || now.categoryId !== categoryId) {
+        return refuse(undoChangedSince(op));
+      }
+      return plan({
+        op, needsSync: false, budgetAfter: null, done: `Undone — ${name} has no budget.`,
+        steps: [{ do: 'delete-budget', targetId: now.id }],
       });
     }
 
@@ -618,6 +696,31 @@ export function planChangeUndo(
         op, needsSync: false, rowAfter: row.id, done: 'Undone — the label is off, and stays off.',
         steps: [
           { do: 'set-tx', txKey: key, flag: 'noAmazonLabel', label: labelOf(entry) },
+          { do: 'update', write: { id: row.id, accountId: row.accountId, activityType: row.type, activityDate: row.date, amount: row.absCents / 100, currency, comment: beforeNote } },
+        ],
+      });
+    }
+
+    // A Venmo note (3): the override first, then the old note back — as an
+    // Amazon label is undone. The sync then never adds it again.
+    case 'venmo-note': {
+      if (!key) return refuse(UNDO_NO_KEY);
+      if (op === 'redo') {
+        return plan({
+          op, needsSync: true, rowAfter: rowNow, done: 'Redone — the next sync adds the note again.',
+          steps: [{ do: 'clear-tx', txKey: key, flag: 'noVenmoNote' }],
+        });
+      }
+      const row = state.row;
+      const beforeNote = str(before.comment);
+      if (!row) return refuse(undoGone(op));
+      const linked = linkedRefusal(row);
+      if (linked) return refuse(linked);
+      if (!beforeNote || row.comment !== str(after.comment)) return refuse(undoChangedSince(op));
+      return plan({
+        op, needsSync: false, rowAfter: row.id, done: 'Undone — the note is off, and stays off.',
+        steps: [
+          { do: 'set-tx', txKey: key, flag: 'noVenmoNote', label: labelOf(entry) },
           { do: 'update', write: { id: row.id, accountId: row.accountId, activityType: row.type, activityDate: row.date, amount: row.absCents / 100, currency, comment: beforeNote } },
         ],
       });

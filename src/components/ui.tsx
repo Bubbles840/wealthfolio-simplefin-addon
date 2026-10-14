@@ -302,6 +302,17 @@ const css = `
   display: flex; flex-direction: column; align-items: center; gap: 12px;
 }
 .sfin-budget-empty p { margin: 0; max-width: 46ch; font-size: var(--sfin-sz-md); }
+.sfin-budget-empty-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+/* The sample-data preview's banner (project 4): calm, like .sfin-banner-wait —
+   nothing is wrong, and the board under it is made up. */
+.sfin-preview-banner {
+  display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+  background: color-mix(in srgb, var(--primary) 8%, var(--card, var(--background)));
+  border: 1px solid color-mix(in srgb, var(--primary) 30%, transparent);
+  border-radius: var(--sfin-rad);
+  padding: 12px 14px; font-size: var(--sfin-sz-base); line-height: 1.5; margin-bottom: 12px;
+}
+.sfin-setup-preview { margin-top: 16px; }
 .sfin-banner-warn {
   display: flex; gap: 10px; align-items: flex-start;
   background: color-mix(in srgb, var(--sfin-warn) 8%, var(--card, var(--background)));
@@ -553,6 +564,7 @@ const css = `
 .sfin-autosync-checks { margin-top: 14px; }
 .sfin-docker-intro { margin-bottom: 6px; }
 .sfin-docker-pre { margin: 0; }
+.sfin-docker-copy { margin-top: 8px; }
 /* The line under the compose snippet explaining what the database mount buys. */
 .sfin-docker-note { margin-top: 8px; }
 /* Last thing in the tab before the danger card, which supplies its own
@@ -588,6 +600,8 @@ const css = `
 .sfin-uncat-row:first-of-type { border-top: none; }
 .sfin-uncat-when { flex: none; font-size: var(--sfin-sz-xs); color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
 .sfin-uncat-what { flex: 1; min-width: 0; font-size: var(--sfin-sz-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The companion's guessed category (3): its own muted line under the description. */
+.sfin-uncat-guess { display: block; font-size: var(--sfin-sz-xs); color: var(--muted-foreground); overflow: hidden; text-overflow: ellipsis; }
 .sfin-uncat-amt { flex: none; font-size: var(--sfin-sz-sm); font-weight: 600; font-variant-numeric: tabular-nums; }
 .sfin-amt--in { color: var(--sfin-ok); }
 .sfin-amt--out { color: var(--sfin-bad); }
