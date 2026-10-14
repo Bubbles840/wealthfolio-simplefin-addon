@@ -59,8 +59,12 @@
 
 import {
   applyTap,
+  ASSIGN_FAILED_TEXT,
+  assignFailureText,
   layoutScreen,
+  REFILE_ASSIGN_FAILED_TEXT,
   renderScreen,
+  UNDO_ASSIGN_FAILED_TEXT,
   type CategorizeTxn,
   type MenuAction,
   type MenuScreen,
@@ -357,7 +361,6 @@ const RULE_READ_FAILED_PREFIX = 'Couldn\'t set that rule up — ';
  *  and the same reason `RECATEGORIZE_GONE_NOTE` exists in the pure machine. */
 const RECATEGORIZE_NO_DATABASE_TEXT = 'The companion has no database access right now, so it can\'t look up your transactions.';
 const RECATEGORIZE_READ_FAILED_PREFIX = 'Couldn\'t look up your transactions — ';
-const ASSIGN_FAILED_PREFIX = 'Couldn\'t file that — Wealthfolio said: ';
 const UNDO_FAILED_PREFIX = 'Couldn\'t undo that — Wealthfolio said: ';
 const DISMISS_FAILED_PREFIX = 'Couldn\'t save that — Wealthfolio said: ';
 const RULE_FAILED_PREFIX = 'Couldn\'t create that rule — Wealthfolio said: ';
@@ -1181,7 +1184,8 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
         } catch (err) {
           const message = formatError(err);
           safeLog(`Categorize menu: filing ${action.activityId} failed: ${message}`);
-          await showError(chat, `${ASSIGN_FAILED_PREFIX}${escapeMarkdown(message)}`, ui);
+          // Never Wealthfolio's own words (W9): they are logged above.
+          await showError(chat, assignFailureText(ASSIGN_FAILED_TEXT, message), ui);
           return;
         }
         record(() => categoryFiledChange({
@@ -1575,7 +1579,8 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
             // and when a delete did land the row has no category at all now.
             await showError(
               chat,
-              `${REFILE_FAILED_PREFIX}${escapeMarkdown(message)}`
+              // Never Wealthfolio's own words (W9): they are logged above.
+              assignFailureText(REFILE_ASSIGN_FAILED_TEXT, message)
               + (cleared === 0 ? REFILE_UNCHANGED_SUFFIX : REFILE_CLEARED_SUFFIX),
               ui,
             );
@@ -1680,7 +1685,12 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
           const suffix = restored === 0
             ? (cleared ? UNDO_CLEARED_SUFFIX : UNDO_UNCHANGED_SUFFIX)
             : UNDO_PARTIAL_SUFFIX;
-          await showError(chat, `${UNDO_FAILED_PREFIX}${escapeMarkdown(message)}${suffix}`, ui);
+          // The delete either was not needed or landed, so an assign failed:
+          // never Wealthfolio's own words for that (W9).
+          const lead = keepsSpending || cleared
+            ? assignFailureText(UNDO_ASSIGN_FAILED_TEXT, message)
+            : `${UNDO_FAILED_PREFIX}${escapeMarkdown(message)}`;
+          await showError(chat, `${lead}${suffix}`, ui);
           return;
         }
         const back = replay[0];
