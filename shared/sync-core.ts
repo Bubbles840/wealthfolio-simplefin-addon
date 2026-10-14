@@ -12,13 +12,14 @@ import {
   matchAmazonCharge, consumeAmazonMatch, amazonDescription,
 } from './amazon-ledger.js';
 import type { AmazonLedger } from './amazon-ledger.js';
+import { consumeVenmoMatch, isReadableVenmoLedger, matchVenmoPayment, venmoDescription, type VenmoLedger } from './venmo-ledger.js';
 import type { ActivityType, SimplefinTransaction, UnmappedAccount } from './types.js';
 import type { ActivityWrite, HoldingsSyncOutcome, HostActivity, ImportRow, LinkLeg, LinkResult, SaveManyRequest, SaveManyResult, SyncHost, SyncStore } from './sync-host.js';
 import { unlinkPairByRecreate, type UnlinkLeg, type UnlinkResult } from './link-pair.js';
 import {
   amazonLabelChange, amazonLabelOf, balanceCorrectionChange, bankUpdateChange, bookkeepingChange, duplicateRemovedChange,
   importChange, pendingRemovedChange, stampChange, startingBalanceChange, startingBalanceMovedChange, transferLinkChange,
-  transferTypeChange,
+  transferTypeChange, venmoNoteChange,
   type BaselineState, type ChangeAccount, type ChangeDraft, type ChangeEntry, type ChangeLogSink, type LinkLegFacts,
 } from './change-entries.js';
 import { emptySyncOverrides, hasAccountOverride, hasTxOverride } from './sync-overrides.js';
@@ -1256,6 +1257,23 @@ export function planAmazonLateLabels(
   return updates;
 }
 
+export const VENMO_LATE_NOTE_LOG_TAG = 'venmo-late-note';
+
+/**
+ * Existing rows whose Venmo email was read only after the row was imported,
+ * as note-only updates (3). The very same rules as `planAmazonLateLabels` —
+ * only a note in the sync's own unedited form, never a transfer-typed, grouped
+ * or pending row, the note only ever added — so it is that planner, applied
+ * to the rows a Venmo payment matched this run.
+ */
+export function planVenmoLateNotes(
+  rows: ReadonlyArray<StoredRow>,
+  noted: ReadonlyMap<string, { bare: string; enriched: string }>,
+  currency: string,
+): ActivityWrite[] {
+  return planAmazonLateLabels(rows, noted, currency);
+}
+
 export const LEGACY_PLACEHOLDER_REWRITE_LOG_TAG = 'legacy-placeholder-rewrite';
 
 /**
@@ -1982,6 +2000,21 @@ async function runSyncPass(
   const amazonLabelled = new Map<string, Map<string, { bare: string; enriched: string }>>();
   const amazonEnabled = Object.keys(amazonLedger).length > 0;
 
+  // Venmo notes (3), the same shape: an empty ledger — no Venmo mail forwarded,
+  // or an older host with no reader — costs one read and then nothing.
+  // An unreadable ledger (the read throws, or an entry is not a payment) is
+  // never used and never written back: Venmo notes are off for this run.
+  let venmoLedger: VenmoLedger = {};
+  try {
+    const read = await store.getVenmoLedger?.();
+    if (read && isReadableVenmoLedger(read)) venmoLedger = read;
+  } catch { /* unreadable: no Venmo notes this run */ }
+  let venmoLedgerChanged = false;
+  /** Rows this run matched to a Venmo payment, per SimpleFin account then tx
+   *  id: the bank's text, the text with the note, and the note. */
+  const venmoNoted = new Map<string, Map<string, { bare: string; enriched: string; note: string }>>();
+  const venmoEnabled = Object.keys(venmoLedger).length > 0;
+
   /**
    * Accounts the feed offered that nothing is mapped to — reported, not
    * imported. Collected HERE rather than in the second pass below because this
@@ -2093,6 +2126,34 @@ async function runSyncPass(
           // same amount.
           amazonLedger = consumeAmazonMatch(amazonLedger, hit, key);
           amazonLedgerChanged = true;
+        }
+      }
+      // A Venmo note goes on after typing too, matched on the bank's own text,
+      // and consumed whether or not the person undid it (`noVenmoNote`).
+      // POSTED rows only: the sync rewrites a pending row's note when it posts,
+      // and the payment stays live for the posted row (same id or a new one),
+      // which gets its note at import or through the late pass.
+      if (venmoEnabled && !tx.pending) {
+        const hit = matchVenmoPayment(venmoLedger, {
+          description: tx.description,
+          amountCents: Math.round(Math.abs(amount) * 100),
+          // The sign alone, never the account type: a card's purchases are negative too.
+          direction: amount < 0 ? 'out' : 'in',
+          postedMs: txEpoch(tx)! * 1000,
+          txKey: key,
+        });
+        if (hit && !hasTxOverride(overrides, key, 'noVenmoNote')) {
+          const enriched = venmoDescription(description, hit.note);
+          if (enriched !== description) {
+            const forAccount = venmoNoted.get(sfAccount.id) ?? new Map<string, { bare: string; enriched: string; note: string }>();
+            forAccount.set(tx.id, { bare: description, enriched, note: hit.note });
+            venmoNoted.set(sfAccount.id, forAccount);
+            description = enriched;
+          }
+        }
+        if (hit) {
+          venmoLedger = consumeVenmoMatch(venmoLedger, hit, key);
+          venmoLedgerChanged = true;
         }
       }
       descByKey.set(key, description);
@@ -2646,6 +2707,43 @@ async function runSyncPass(
         }
       } catch (e: any) {
         errors.push(`Amazon late label (${sfAccount.name}): ${String(e?.message ?? e)}`);
+      }
+    }
+
+    // ── Venmo late note (every mode) ─────────────────────────────────────────
+    // The same pass for a row imported before its Venmo email was read (3).
+    const lateNotes = planVenmoLateNotes(existing, venmoNoted.get(sfAccount.id) ?? new Map(), sfAccount.currency);
+    if (lateNotes.length) {
+      try {
+        const res = await host.saveMany({ updates: lateNotes });
+        if (res.errors.length) {
+          errors.push(...res.errors.map((e) => `Venmo late note (${sfAccount.name}): ${e.message}`));
+        } else {
+          for (const u of lateNotes) {
+            const row = existing.find((r) => r.wfId === u.id);
+            if (!row) continue;
+            const hit = venmoNoted.get(sfAccount.id)?.get(row.txId);
+            if (hit) {
+              logChange?.(() => venmoNoteChange({
+                account: accountRef,
+                txKey: accountTxKey(sfAccount.id, row.txId),
+                activityId: row.wfId,
+                description: hit.bare,
+                amountCents: signedCentsOf(row.txId, row.type, row.absCents),
+                date: row.date,
+                beforeNote: row.comment ?? '',
+                afterNote: u.comment,
+                note: hit.note,
+              }));
+            }
+            row.comment = u.comment;
+          }
+          console.info(
+            `[simplefin-sync] ${VENMO_LATE_NOTE_LOG_TAG}: added the Venmo note to ${lateNotes.length} row(s) in account ${sfAccount.id} imported before their Venmo email was read`,
+          );
+        }
+      } catch (e: any) {
+        errors.push(`Venmo late note (${sfAccount.name}): ${String(e?.message ?? e)}`);
       }
     }
 
@@ -3296,6 +3394,16 @@ async function runSyncPass(
             amountCents: signedCentsOf(txId, t.type, t.absCents), date: t.date,
           });
           logChange(() => importChange({ ...facts(), pending: !!t.pending, activityType: t.type }));
+          // A Venmo note added at import is its own decision (3), so Undo can
+          // take the note off and leave the row.
+          const noted = venmoNoted.get(sfAccount.id)?.get(txId);
+          const written = a.comment ?? '';
+          if (noted && written.includes(noted.enriched)) {
+            logChange(() => venmoNoteChange({
+              ...facts(), description: noted.bare, note: noted.note,
+              beforeNote: written.replace(noted.enriched, () => noted.bare), afterNote: written,
+            }));
+          }
           // Held as a transfer that has not found its other half: a decision
           // of its own, undone in R2 with `notTransfer` on this leg.
           if (t.inTransit) logChange(() => transferTypeChange({ ...facts(), activityType: t.type, previousType: null, held: true }));
@@ -3311,6 +3419,17 @@ async function runSyncPass(
             description: descByKey.get(key) ?? descriptionFromComment(stored.comment),
             amountCents: signedCentsOf(to.txId, to.type, to.absCents), date: to.date,
           });
+          // A pending row that has posted is rewritten by this update, and the
+          // rewrite carries its Venmo note (pending rows are never noted): the
+          // note is its own decision, undone on its own.
+          const notedHere = venmoNoted.get(sfAccount.id)?.get(to.txId);
+          const writtenHere = a.comment ?? '';
+          if (notedHere && writtenHere.includes(notedHere.enriched) && !(stored.comment ?? '').includes(notedHere.enriched)) {
+            logChange(() => venmoNoteChange({
+              ...facts(), description: notedHere.bare, note: notedHere.note,
+              beforeNote: writtenHere.replace(notedHere.enriched, () => notedHere.bare), afterNote: writtenHere,
+            }));
+          }
           // Two of these are the sync's own transfer decisions, not the bank's:
           // a row now held in transit, and a placeholder that ran out of time
           // (an unpaired leg always passes through the placeholder first).
@@ -3966,6 +4085,11 @@ async function runSyncPass(
   if (amazonLedgerChanged) {
     await store.setAmazonLedger(amazonLedger).catch((e) => {
       errors.push(`Could not save Amazon order ledger: ${String(e?.message ?? e)}`);
+    });
+  }
+  if (venmoLedgerChanged && store.setVenmoLedger) {
+    await store.setVenmoLedger(venmoLedger).catch((e) => {
+      errors.push(`Could not save the Venmo payment ledger: ${String(e?.message ?? e)}`);
     });
   }
 
