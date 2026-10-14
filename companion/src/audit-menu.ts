@@ -24,7 +24,9 @@
  * list, under each leg with one likely other half, that half, a "Link N" per
  * pair and "Link all N" for two or more; on the issue's own screen, "Link".
  * The list is the preview: a tap re-reads Health and links only a pair whose
- * legs still read exactly as the button carried them.
+ * legs still read exactly as the button carried them. A tap that finds none
+ * (a double tap's second run, say) answers "It has changed since — nothing
+ * was linked." as a toast and leaves the message as it is.
  *
  * Bank and user text is escaped AND kept outside every `*…*`; the only
  * entities are fixed headings. Button labels are plain text, not escaped.
@@ -357,30 +359,37 @@ export function createAuditMenu(deps: AuditMenuDeps): AuditMenu {
     },
 
     async onCallback(cb, ui) {
+      // Telegram takes one answer per tap: once one went through, a later
+      // failure (a failed edit, say) is only logged.
+      let answered = false;
+      const answer = async (...text: [string?]) => {
+        await ui.answer(...text);
+        answered = true;
+      };
       try {
         const view = parseAuditData(cb.data);
-        if (!view) return void await ui.answer();
+        if (!view) return void await answer();
         const show = async (screen: MenuScreen, fresh = false) => {
           if (fresh) await sendScreen(ui.send, screen);
           else await ui.edit(screen.text, screen.keyboard);
-          await ui.answer();
+          await answer();
         };
         switch (view.kind) {
           case 'menu': {
             const health = await deps.health();
-            if (!health.reached) return void await ui.answer(AUDIT_UNREACHABLE);
+            if (!health.reached) return void await answer(AUDIT_UNREACHABLE);
             return void await show(renderAuditMenu(health));
           }
           case 'balances': {
             const report = await deps.balances();
-            if (!report.reached) return void await ui.answer(AUDIT_UNREACHABLE);
+            if (!report.reached) return void await answer(AUDIT_UNREACHABLE);
             return void await show(renderAuditBalances(report));
           }
           case 'account': {
             const report = await deps.balances();
-            if (!report.reached) return void await ui.answer(AUDIT_UNREACHABLE);
+            if (!report.reached) return void await answer(AUDIT_UNREACHABLE);
             const e = report.accounts.find((a) => accountHandle(a.wfAccountId) === view.handle);
-            if (!e) return void await ui.answer(AUDIT_ACCOUNT_GONE);
+            if (!e) return void await answer(AUDIT_ACCOUNT_GONE);
             return void await show(renderAuditAccount(e, report.notes, view.fresh), view.fresh);
           }
           case 'headline':
@@ -390,7 +399,7 @@ export function createAuditMenu(deps: AuditMenuDeps): AuditMenu {
             // Rows that could not be read are not rows that are gone.
             if (!h.reasons) return void await show(renderAuditHeadline(h));
             const r = h.reasons.find((x) => reasonHandle(x) === view.handle);
-            if (!r) return void await ui.answer(AUDIT_REASON_GONE);
+            if (!r) return void await answer(AUDIT_REASON_GONE);
             return void await show(renderAuditReason(r));
           }
           case 'health': {
@@ -401,15 +410,15 @@ export function createAuditMenu(deps: AuditMenuDeps): AuditMenu {
             const report = await deps.health();
             if (!report.issues) return void await show(renderAuditHealth(report, { link: !!deps.link }));
             const issue = report.issues.find((i) => issueHandle(i) === view.handle);
-            if (!issue) return void await ui.answer(AUDIT_ISSUE_GONE);
+            if (!issue) return void await answer(AUDIT_ISSUE_GONE);
             return void await show(renderAuditIssue(issue, { link: !!deps.link }));
           }
           case 'link':
           case 'link-all': {
-            if (!deps.link) return void await ui.answer();
+            if (!deps.link) return void await answer();
             // The toast carries the outcome, so it is seen even if the edit fails.
             const finish = async (screen: MenuScreen, outcome: string) => {
-              await ui.answer(clip(outcome, TOAST_MAX)).catch(() => {});
+              await answer(clip(outcome, TOAST_MAX)).catch(() => {});
               await ui.edit(screen.text, screen.keyboard);
             };
             const report = await deps.health();
@@ -419,7 +428,9 @@ export function createAuditMenu(deps: AuditMenuDeps): AuditMenu {
             const pairs = view.kind === 'link'
               ? shown.filter((p) => pairHandle(p) === view.handle)
               : pairsHandle(shown) === view.handle ? shown : [];
-            if (pairs.length === 0) return void await finish(renderAuditHealth(report, { link: true, result: LINK_CHANGED }), LINK_CHANGED);
+            // Nothing to link: the toast alone. The message keeps what it says —
+            // a double tap's second run must not cover the first's "Linked.".
+            if (pairs.length === 0) return void await answer(LINK_CHANGED);
             const run = await deps.link(pairs);
             // The screen re-reads: the list shows what is left.
             let screen: MenuScreen;
@@ -437,7 +448,7 @@ export function createAuditMenu(deps: AuditMenuDeps): AuditMenu {
         }
       } catch (err) {
         deps.log(`Audit menu: ${cb.data} failed: ${message(err)}`);
-        await ui.answer(FAILED_ANSWER).catch(() => {});
+        if (!answered) await ui.answer(FAILED_ANSWER).catch(() => {});
       }
     },
   };

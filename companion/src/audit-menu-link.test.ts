@@ -98,9 +98,12 @@ describe('Link on the Health list', () => {
     await menu.onCallback({ data: 'cz:au:i' }, u);
     const tap = button({ text: '', keyboard: edited(u)[1] }, 'Link 1');
     d.health = vi.fn(async () => report('2026-10-03'));
+    u.edit.mockClear();
     await menu.onCallback({ data: tap }, u);
     expect(d.link).not.toHaveBeenCalled();
-    expect(edited(u)[0]).toContain(`🔎 *Health*\n${escapeMarkdown(LINK_CHANGED)}\n`);
+    // The toast says so; the message is left as it is.
+    expect(u.answer).toHaveBeenLastCalledWith(LINK_CHANGED);
+    expect(u.edit).not.toHaveBeenCalled();
   });
 
   it('Link all links every pair the list showed — and nothing when the list has changed since', async () => {
@@ -116,7 +119,57 @@ describe('Link on the Health list', () => {
     const v = ui();
     await createAuditMenu(later).onCallback({ data: all }, v);
     expect(later.link).not.toHaveBeenCalled();
-    expect(edited(v)[0]).toContain(escapeMarkdown(LINK_CHANGED));
+    expect(v.answer).toHaveBeenLastCalledWith(LINK_CHANGED);
+    expect(v.edit).not.toHaveBeenCalled();
+  });
+
+  it('a double tap on Link leaves the screen saying "Linked.", with one link', async () => {
+    let linkedNow = false;
+    const linkedRows = () => ledgerRows().map((r) => (r.id === 'outA' || r.id === 'inA' ? { ...r, group: 'g-1' } : r));
+    const d = deps({
+      health: vi.fn(async () => (linkedNow
+        ? { ...healthIssues({ ledger: { accounts: ACCOUNTS, rows: linkedRows() }, mapping: MAPPING }), reached: true }
+        : report())),
+    });
+    d.link.mockImplementation(async (pairs: LinkPair[]): Promise<LinkRun> => {
+      linkedNow = true;
+      return { total: pairs.length, linked: pairs.length, changed: 0, failed: 0, done: pairs.map((p) => p.key), lost: [], maybeLost: [], message: 'Linked.' };
+    });
+    const menu = createAuditMenu(d);
+    const u = ui();
+    await menu.onCallback({ data: 'cz:au:i' }, u);
+    const tap = button({ text: '', keyboard: edited(u)[1] }, 'Link 1');
+    await menu.onCallback({ data: tap }, u);
+    await menu.onCallback({ data: tap }, u);
+    expect(d.link).toHaveBeenCalledTimes(1);
+    expect(u.edit).toHaveBeenCalledTimes(2);
+    expect(edited(u)[0].startsWith('🔎 *Health*\nLinked.\n')).toBe(true);
+    expect(u.answer).toHaveBeenLastCalledWith(LINK_CHANGED);
+  });
+
+  it('a double tap on Link all leaves the screen saying "Linked all 2.", with one link', async () => {
+    let linkedNow = false;
+    const linkedRows = () => ledgerRows().map((r) => (['outA', 'inA', 'outB', 'inB'].includes(r.id) ? { ...r, group: `g-${r.id.slice(-1)}` } : r));
+    const d = deps({
+      health: vi.fn(async () => (linkedNow
+        ? { ...healthIssues({ ledger: { accounts: ACCOUNTS, rows: linkedRows() }, mapping: MAPPING }), reached: true }
+        : report())),
+    });
+    const real = d.link.getMockImplementation()!;
+    d.link.mockImplementation(async (pairs: LinkPair[]) => {
+      linkedNow = true;
+      return real(pairs);
+    });
+    const menu = createAuditMenu(d);
+    const u = ui();
+    await menu.onCallback({ data: 'cz:au:i' }, u);
+    const all = button({ text: '', keyboard: edited(u)[1] }, 'Link all 2');
+    await menu.onCallback({ data: all }, u);
+    await menu.onCallback({ data: all }, u);
+    expect(d.link).toHaveBeenCalledTimes(1);
+    expect(u.edit).toHaveBeenCalledTimes(2);
+    expect(edited(u)[0].startsWith('🔎 *Health*\nLinked all 2.\n')).toBe(true);
+    expect(u.answer).toHaveBeenLastCalledWith(LINK_CHANGED);
   });
 
   it('answers a Link tap quietly when the menu cannot link', async () => {
@@ -222,9 +275,13 @@ describe('Link list size, outcome toast and failed re-reads', () => {
     await menu.onCallback({ data: 'cz:au:i' }, u);
     const tap = button({ text: '', keyboard: edited(u)[1] }, 'Link 1');
     u.edit.mockRejectedValueOnce(new Error('400'));
+    u.answer.mockClear();
     await menu.onCallback({ data: tap }, u);
     const toast = u.answer.mock.calls.map((c) => (c as unknown as [string?])[0]).find((t) => t && t.startsWith('Linked 2 of 3'))!;
     expect(toast.length).toBeLessThanOrEqual(200);
+    // The failed edit is logged, not answered a second time.
+    expect(u.answer).toHaveBeenCalledTimes(1);
+    expect(d.log).toHaveBeenCalledWith(expect.stringContaining('failed: 400'));
     const short = deps();
     const v = ui();
     await createAuditMenu(short).onCallback({ data: 'cz:au:i' }, v);
@@ -262,9 +319,11 @@ describe('Link list size, outcome toast and failed re-reads', () => {
     const ambiguous = { ...healthIssues({ ledger: { accounts: ACCOUNTS, rows: [...ledgerRows(), third] }, mapping: MAPPING }), reached: true };
     expect(labels(renderAuditHealth(ambiguous, { link: true }))).not.toContain('Link 1');
     d.health = vi.fn(async () => ambiguous);
+    u.edit.mockClear();
     await menu.onCallback({ data: tap }, u);
     expect(d.link).not.toHaveBeenCalled();
-    expect(edited(u)[0]).toContain(escapeMarkdown(LINK_CHANGED));
+    expect(u.answer).toHaveBeenLastCalledWith(LINK_CHANGED);
+    expect(u.edit).not.toHaveBeenCalled();
   });
 
   it('a pair that is already linked says it changed and writes nothing', async () => {
@@ -275,9 +334,11 @@ describe('Link list size, outcome toast and failed re-reads', () => {
     const tap = button({ text: '', keyboard: edited(u)[1] }, 'Link 1');
     const linked = ledgerRows().map((r) => (r.id === 'outA' || r.id === 'inA' ? { ...r, group: 'g-1' } : r));
     d.health = vi.fn(async () => ({ ...healthIssues({ ledger: { accounts: ACCOUNTS, rows: linked }, mapping: MAPPING }), reached: true }));
+    u.edit.mockClear();
     await menu.onCallback({ data: tap }, u);
     expect(d.link).not.toHaveBeenCalled();
-    expect(edited(u)[0]).toContain(escapeMarkdown(LINK_CHANGED));
+    expect(u.answer).toHaveBeenLastCalledWith(LINK_CHANGED);
+    expect(u.edit).not.toHaveBeenCalled();
   });
 
   it('Link all with 1 of 3 shown pairs changed links nothing', async () => {
@@ -295,8 +356,10 @@ describe('Link list size, outcome toast and failed re-reads', () => {
     await menu.onCallback({ data: 'cz:au:i' }, u);
     const all = button({ text: '', keyboard: edited(u)[1] }, 'Link all 3');
     d.health = vi.fn(async () => three('2026-10-03'));
+    u.edit.mockClear();
     await menu.onCallback({ data: all }, u);
     expect(d.link).not.toHaveBeenCalled();
-    expect(edited(u)[0]).toContain(escapeMarkdown(LINK_CHANGED));
+    expect(u.answer).toHaveBeenLastCalledWith(LINK_CHANGED);
+    expect(u.edit).not.toHaveBeenCalled();
   });
 });
