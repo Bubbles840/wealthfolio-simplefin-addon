@@ -1301,7 +1301,7 @@ describe('direction-aware menu', () => {
 
   it('offers income categories to a money-in row, with taxonomy-carrying assigns', () => {
     const s = session({
-      txns: [txn({ direction: 'in', incomeEligible: true })],
+      txns: [txn({ direction: 'in', incomeEligible: true, activityType: 'DEPOSIT', pending: false })],
       incomeCategories: incomeCats,
       screen: { kind: 'txn', activityId: 'act-1' },
     });
@@ -1318,7 +1318,7 @@ describe('direction-aware menu', () => {
 
   it('lets a money-in row switch to the payback grid, with a way back', () => {
     const s = session({
-      txns: [txn({ direction: 'in', incomeEligible: true })],
+      txns: [txn({ direction: 'in', incomeEligible: true, activityType: 'DEPOSIT', pending: false })],
       incomeCategories: incomeCats,
       screen: { kind: 'txn', activityId: 'act-1', showSpending: true },
     });
@@ -1358,7 +1358,7 @@ describe('direction-aware menu', () => {
 
   it("an income filing's Undo carries the taxonomy back", () => {
     const s = session({
-      txns: [txn({ direction: 'in', incomeEligible: true })],
+      txns: [txn({ direction: 'in', incomeEligible: true, activityType: 'DEPOSIT', pending: false })],
       incomeCategories: incomeCats,
       screen: { kind: 'filed', activityId: 'act-1', categoryId: 'inc-sal', taxonomyId: 'income_sources', undone: false },
     });

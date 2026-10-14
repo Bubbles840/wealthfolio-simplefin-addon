@@ -626,7 +626,10 @@ describe('sqlite-native', () => {
           accountName: 'Spend (4937)',
           direction: 'out',
           incomeEligible: false,
+          activityType: 'WITHDRAWAL',
+          pending: false,
         });
+        expect(rows.map((r) => [r.activityType, r.pending])).toEqual([['DEPOSIT', false], ['CREDIT', false], ['WITHDRAWAL', false]]);
       } finally {
         cleanup();
       }

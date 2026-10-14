@@ -594,6 +594,10 @@ export interface NativeUncategorizedTx {
    *  question as `direction`: a card credit is money in but a spending-bucket
    *  refund, and offering it income categories would offer only 400s. */
   incomeEligible: boolean;
+  /** The stored activity type, upper-cased (1.62): only a posted DEPOSIT can be filed as a payback. */
+  activityType: string;
+  /** Whether the stored note marks the row pending. */
+  pending: boolean;
 }
 
 /**
@@ -626,7 +630,8 @@ export function getNativeUncategorizedSpending(
                 THEN 'out' ELSE 'in' END,
            CASE WHEN UPPER(COALESCE(ac.account_type, '')) = 'CASH'
                   AND UPPER(a.activity_type) IN ('DEPOSIT', 'INTEREST', 'INCOME', 'DIVIDEND')
-                THEN 1 ELSE 0 END
+                THEN 1 ELSE 0 END,
+           UPPER(COALESCE(a.activity_type, ''))
     FROM activities a
     LEFT JOIN activity_taxonomy_assignments ata ON a.id = ata.activity_id
     LEFT JOIN accounts ac ON a.account_id = ac.id
@@ -648,19 +653,19 @@ export function getNativeUncategorizedSpending(
     ORDER BY a.activity_date DESC, a.id;
   `;
 
-  type Raw = [string, string, string, number, string, string, string, number | string];
+  type Raw = [string, string, string, number, string, string, string, number | string, string];
   const rows = queryNativeDb<Record<string, unknown>>(
     dbPath,
     'uncategorized',
     query,
-    (parts) => (parts.length === 8
-      ? { c0: parts[0], c1: parts[1], c2: parts[2], c3: parseFloat(parts[3]) || 0, c4: parts[4], c5: parts[5], c6: parts[6], c7: parts[7] }
+    (parts) => (parts.length === 9
+      ? { c0: parts[0], c1: parts[1], c2: parts[2], c3: parseFloat(parts[3]) || 0, c4: parts[4], c5: parts[5], c6: parts[6], c7: parts[7], c8: parts[8] }
       : null),
   );
 
   return rows.map((r) => {
     // node:sqlite returns column-named objects; the CLI fallback returns the
-    // c0..c7 shape built above. Read positionally either way.
+    // c0..c8 shape built above. Read positionally either way.
     const vals = Object.values(r) as Raw;
     return {
       activityId: String(vals[0]),
@@ -671,6 +676,8 @@ export function getNativeUncategorizedSpending(
       accountName: String(vals[5]),
       direction: (String(vals[6]) === 'out' ? 'out' : 'in') as 'in' | 'out',
       incomeEligible: String(vals[7]) === '1',
+      activityType: String(vals[8] ?? '').toUpperCase(),
+      pending: String(vals[2]).endsWith(PENDING_NOTE_SUFFIX),
     };
   });
 }

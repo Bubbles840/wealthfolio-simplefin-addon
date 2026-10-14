@@ -13,6 +13,7 @@ import { getNativePastFilings } from './sqlite-guess.js';
 import { AMAZON_MAIL_STATUS_SECRET_KEY, AMAZON_MAIL_SAMPLES_SECRET_KEY, UNCATEGORIZED_STATUS_SECRET_KEY, VENMO_MAIL_SAMPLES_SECRET_KEY } from '../../shared/status-keys.js';
 import { CATEGORIZE_ENTRY_CALLBACK, escapeMarkdown } from '../../shared/telegram.js';
 import { categoryFiledChange, stampChange, transactionRemovedChange } from '../../shared/change-entries.js';
+import { PAYBACK_UPDATE_ADDON } from '../../shared/payback-copy.js';
 import { changesData } from './changes-menu.js';
 import { existsSync } from 'fs';
 import type { SyncResult } from '../../shared/sync-core.js';
@@ -5232,6 +5233,70 @@ describe('the /categorize wiring', () => {
         'The companion has no database access right now, so it can\'t look up your categories.',
       );
       expect(vi.mocked(getNativeSpendingCategories)).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('a payback (1.62, W6)', () => {
+    const deposit = {
+      id: 'act-7', accountId: 'wf-a', accountName: 'Checking', activityType: 'DEPOSIT', date: '2026-10-09T00:00:00+00:00', amount: '14',
+      currency: 'USD', comment: 'VENMO CASHOUT · TRN-act-7', subtype: null, sourceGroupId: null, metadata: null,
+    };
+    /** A client whose one deposit can be filed as a payback, opened on its payback grid. */
+    const onPaybackGrid = async (installed: string) => {
+      vi.mocked(getNativeUncategorizedSpending).mockReturnValue([{
+        ...uncatRow('act-7', 'VENMO CASHOUT'), amountCents: 1400, date: '2026-10-09', accountName: 'Checking', direction: 'in', incomeEligible: true, activityType: 'DEPOSIT', pending: false,
+      }] as any);
+      const { client, secrets } = clientFor([
+        ['account_mapping', JSON.stringify({ 'sfin-1': 'wf-a' })], ['installed_addon_version', installed],
+      ]);
+      client.getAccounts = vi.fn(async () => [{ id: 'wf-a', accountType: 'CASH' }]);
+      client.searchActivities = vi.fn(async (b: { activityIdFilter?: string[] }) => [deposit].filter((r) => b.activityIdFilter?.includes(r.id)));
+      client.saveMany = vi.fn(async () => ({ created: [], updated: [], errors: [] }));
+      const controller = buildCategorizeController(client);
+      const { sent, reply } = collect();
+      await buildTelegramCommandHandler(client, controller)({ command: 'categorize', args: '' }, reply);
+      const ui = fakeUi();
+      const cb = (data: string) => controller.onCallback({ data, chatId: 4242, messageId: 7 }, ui);
+      await cb(dataFor(sent[0][1], 'VENMO CASHOUT'));
+      return { client, secrets, ui, cb };
+    };
+
+    it('files a deposit as a payback over REST: the override, the re-type at its stored instant, the category, the change log', async () => {
+      const p = await onPaybackGrid('1.62.0');
+      await p.cb(dataFor(lastOf(p.ui.edit)[1], 'Entertainment'));
+      expect(p.client.saveMany).toHaveBeenCalledWith({ updates: [expect.objectContaining({
+        id: 'act-7', activityType: 'CREDIT', subtype: 'REIMBURSEMENT', activityDate: '2026-10-09T00:00:00+00:00',
+      })] });
+      expect(p.client.assignActivityCategory).toHaveBeenCalledWith('act-7', 'spending_categories', 'cat-fun');
+      expect(lastOf(p.ui.edit)[0]).toBe('Filed as a payback under Entertainment — it takes $14 off your Entertainment spending.\nUndo it from /changes.');
+      expect(JSON.parse(p.secrets.get('sync_overrides')!).tx['sfin-1\u0000TRN-act-7']).toMatchObject({ asReimbursement: true });
+      const logged = [...p.secrets.entries()].filter(([k, v]) => /^change_log:companion:\d{4}-\d{2}$/.test(k) && v)
+        .flatMap(([, v]) => JSON.parse(v).entries);
+      expect(logged.map((e: any) => [e.kind, e.summary])).toEqual([['payback-filed', 'Filed VENMO CASHOUT as a payback under Entertainment']]);
+    });
+
+    it('refuses while the installed add-on is older, naming the app’s Change log, and writes nothing', async () => {
+      const p = await onPaybackGrid('1.61.0');
+      await p.cb(dataFor(lastOf(p.ui.edit)[1], 'Entertainment'));
+      expect(lastOf(p.ui.edit)[0]).toBe(escapeMarkdown(PAYBACK_UPDATE_ADDON));
+      expect(p.client.saveMany).not.toHaveBeenCalled();
+      expect(p.client.assignActivityCategory).not.toHaveBeenCalled();
+      expect(p.secrets.has('sync_overrides')).toBe(false);
+    });
+
+    it('refuses while the companion syncs, and writes nothing', async () => {
+      const p = await onPaybackGrid('1.62.0');
+      const deferred = createDeferred<SyncResult>();
+      const sync = runCompanionSyncExclusive(() => deferred.promise);
+      try {
+        await p.cb(dataFor(lastOf(p.ui.edit)[1], 'Entertainment'));
+        expect(lastOf(p.ui.edit)[0]).toBe(escapeMarkdown(FIX_SYNC_RUNNING));
+        expect(p.client.searchActivities).not.toHaveBeenCalled();
+        expect(p.client.saveMany).not.toHaveBeenCalled();
+      } finally {
+        deferred.resolve(FAKE_SYNC_RESULT);
+        await sync.result;
+      }
     });
   });
 

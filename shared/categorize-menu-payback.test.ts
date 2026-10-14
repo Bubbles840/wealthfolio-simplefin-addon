@@ -11,7 +11,7 @@ const SALARY: SpendingCategory = { id: 'inc-sal', name: 'Salary', parentId: null
 
 const deposit = (over: Partial<CategorizeTxn> = {}): CategorizeTxn => ({
   activityId: 'act-7', date: '2026-10-09', amountCents: 1400, description: 'VENMO CASHOUT', accountName: 'PNC Checking',
-  accountId: 'wf-chk', direction: 'in', incomeEligible: true, ...over,
+  accountId: 'wf-chk', direction: 'in', incomeEligible: true, activityType: 'DEPOSIT', pending: false, ...over,
 });
 const session = (screen: MenuScreen, over: Partial<MenuSession> = {}): MenuSession => ({
   txns: [deposit()], categories: [FOOD, REST, FUN], incomeCategories: [SALARY], screen, buttons: [], generation: 7, mode: 'categorize', ...over,
@@ -24,6 +24,26 @@ const view = (s: MenuSession) => {
 };
 const maxBytes = (s: MenuSession) => Math.max(...renderScreen(s).keyboard.inline_keyboard.flat()
   .map((b) => new TextEncoder().encode(b.callback_data).length));
+
+describe('the payback switch is for a non-pending DEPOSIT only (Task 6 m1)', () => {
+  it.each([
+    ['an INTEREST row', { activityType: 'INTEREST' }],
+    ['an INCOME row', { activityType: 'INCOME' }],
+    ['a DIVIDEND row', { activityType: 'DIVIDEND' }],
+    ['a pending DEPOSIT', { pending: true }],
+  ] as Array<[string, Partial<CategorizeTxn>]>)('%s sees the income grid and no switch', (_n, over) => {
+    const v = view(session({ kind: 'txn', activityId: 'act-7' }, { txns: [deposit(over)] }));
+    expect(v.labels).toContain('Salary');
+    expect(v.labels).not.toContain(PAYBACK_SWITCH);
+    expect(v.labels).not.toContain('« Income categories');
+  });
+
+  it('shows such a row the spending grid as before, with no payback wording, when there are no income categories', () => {
+    const v = view(session({ kind: 'txn', activityId: 'act-7' }, { incomeCategories: [], txns: [deposit({ activityType: 'INTEREST' })] }));
+    expect(v.text).not.toContain(PAYBACK_PICK);
+    expect(v.action('Entertainment')).toEqual({ kind: 'assign', activityId: 'act-7', categoryId: 'cat-fun' });
+  });
+});
 
 describe('the payback grid (W6)', () => {
   it('offers "It’s a payback »" beside a deposit’s income grid', () => {
