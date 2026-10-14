@@ -54,6 +54,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     snapshot the companion publishes after each sync, which says when it was
     taken and when it is out of date or unreadable. Home's Accounts tile
     points at the checks when there is something to look at.
+- **Planning — the next 30 days, a month in review, and unread reports.**
+  - **Next 30 days.** A cash forecast "if nothing comes in": the bank
+    balances of your cash accounts, minus your known subscriptions and bills
+    on their dates (a monthly one twice when it falls twice), minus a typical
+    day of other spending (your last three full months, the bills taken out
+    so nothing counts twice). Home's **Next 30 days** tile shows the low
+    point and its date — or when cash may run short — and opens what it
+    counted: each account (an old balance with its date, an account with no
+    balance named), each bill, and the assumption. `/forecast` in Telegram
+    says the same; the weekly check-in carries it in Full detail; the daily
+    report warns, in Brief too, when cash may run short within 14 days. The
+    companion works it out after each sync, and the app says when it is out
+    of date, could not be made, or needs a newer companion. A balance or
+    spending figure that is not a finite number is never turned into a
+    forecast: it is reported as unreadable, not as an all-clear.
+  - **A month in review.** In Full detail the monthly report for a completed
+    month adds the biggest category changes against the month before, the top
+    merchants, subscriptions that started (any charge in the month), that
+    stopped charging that month, or rose in price, net worth, savings rate
+    (the same figure as the Budget tab) and how many changes were made to
+    your books. Brief is unchanged, and the live "so far" edition of the
+    current month carries no review.
+  - **Unread reports.** The Reports tab and each report's tab count the
+    editions you haven't opened and mark them New; opening a report's tab
+    marks it seen, on every device. The inbox re-reads what is stored before
+    it writes, so a second device never puts an older time back, and it
+    refreshes with the app's live state (on focus and on its interval). A new
+    install starts with everything seen.
 
 ### Fixed
 - **The "Opening balances" spending exclusion is re-applied.** It was only set
