@@ -204,10 +204,29 @@ describe('applyBudgetSuggestions', () => {
     expect(a).toMatchObject({ ok: true, outcome: { set: [], failed: [{ message: 'boom' }] } });
     let n = 0;
     const down = readers({
-      targets: vi.fn(async () => { if (++n > 2) throw new Error('ECONNREFUSED'); return { enabled: true, targets: [] as BudgetTarget[] }; }),
+      targets: vi.fn(async () => { if (++n > 1) throw new Error('ECONNREFUSED'); return { enabled: true, targets: [] as BudgetTarget[] }; }),
       set: vi.fn(async () => { throw new Error('boom'); }),
     });
     expect(await applyBudgetSuggestions(down.r, chosen().slice(0, 1), AT, NOW)).toMatchObject({ ok: true, outcome: { set: [], failed: [{ message: 'boom' }] } });
+  });
+
+  it("never claims a budget this run didn't POST: a category whose re-read failed stays failed, even if another writer set it", async () => {
+    let reads = 0;
+    const { r, recorded } = readers({
+      targets: vi.fn(async () => {
+        reads += 1;
+        // 1: the first read; 2: before Dining out (fails); 3: before Gas; 4: after the loop.
+        if (reads === 2) throw new Error('ECONNREFUSED');
+        const another = [target({ id: 'bt-other', categoryId: 'cat-din', amountCents: 18000 })];
+        return { enabled: true, targets: reads >= 3 ? another : [] };
+      }),
+    });
+    const result = await applyBudgetSuggestions(r, chosen(), AT, NOW);
+    if (!result.ok) throw new Error('refused');
+    expect(r.set).not.toHaveBeenCalledWith('cat-din', expect.anything());
+    expect(result.outcome.failed).toEqual([{ suggestion: expect.objectContaining({ name: 'Dining out' }), message: "couldn't re-read your budgets first" }]);
+    expect(result.outcome.set.map((x) => x.suggestion.name)).toEqual(['Groceries', 'Gas']);
+    expect(recorded.map((d) => d.subject.categoryName)).toEqual(['Groceries', 'Gas']);
   });
 
   it("falls back to the suggested amount when the reply's value is not a number", async () => {

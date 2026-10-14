@@ -131,8 +131,9 @@ const message = (err: unknown) => (err instanceof Error ? err.message : String(e
  * only its own category; logs each target as it lands (`budget-set`, with the
  * id and amount Wealthfolio stored), so a crash part-way still leaves Undo for
  * what was written. A POST that threw may still have committed: after the loop
- * the budget is read once more, and a failed category whose default target now
- * holds the amount sent counts as set.
+ * the budget is read once more, and a category whose POST threw and whose
+ * default target now holds the amount sent counts as set (never one this run
+ * did not POST).
  */
 export async function applyBudgetSuggestions(
   r: BudgetReaders,
@@ -166,16 +167,18 @@ export async function applyBudgetSuggestions(
       // A log must never cost the budget; the writer records gaps itself.
     }
   };
+  // The categories whose POST actually threw: only those may have committed anyway.
+  const threw = new Set<string>();
   let fresh = true;
   for (const suggestion of write) {
     if (!fresh) {
       // Re-read right before this POST; the first read is the one just made.
-      const now = await read();
-      if (now === null) {
-        outcome.failed.push({ suggestion, message: "Couldn't re-read your budgets before setting this one" });
+      const current = await read();
+      if (current === null) {
+        outcome.failed.push({ suggestion, message: "couldn't re-read your budgets first" });
         continue;
       }
-      if (planBudgetApply([suggestion], now, at.month).alreadySet.length > 0) {
+      if (planBudgetApply([suggestion], current, at.month).alreadySet.length > 0) {
         outcome.alreadySet.push(suggestion);
         continue;
       }
@@ -185,15 +188,17 @@ export async function applyBudgetSuggestions(
     try {
       target = await r.set(suggestion.categoryId, suggestion.cents);
     } catch (err) {
+      threw.add(suggestion.categoryId);
       outcome.failed.push({ suggestion, message: message(err) });
       continue;
     }
     await log(suggestion, target);
   }
-  if (outcome.failed.length > 0) {
+  if (threw.size > 0) {
     const after = await read();
     if (after) {
       for (const f of [...outcome.failed]) {
+        if (!threw.has(f.suggestion.categoryId)) continue;
         const landed = after.find((t) => t.targetType === 'category' && t.taxonomyId === BUDGET_TAXONOMY
           && t.categoryId === f.suggestion.categoryId && t.periodKey === DEFAULT_PERIOD_KEY && t.amountCents === f.suggestion.cents);
         if (!landed) continue;
