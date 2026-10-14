@@ -19,6 +19,7 @@
  *  4. Only a reversal that worked is recorded.
  */
 import { reversalChange, type ChangeDraft, type ChangeEntry } from './change-entries.js';
+import type { BudgetTarget } from './budget-suggest.js';
 import type { ChangeLogItem } from './change-log.js';
 import {
   currentRowId, currentRuleId, latestReversal, planChangeUndo, undoAvailability, UNDO_EXACT_COPY, UNDO_NOT_POSSIBLE,
@@ -65,6 +66,14 @@ export interface UndoIo {
      *  containing its words), by activity id. Null when that cannot be read. */
     filedBy(rule: { categoryId: string; pattern: string }): Promise<string[] | null>;
   };
+  /** The companion only: Wealthfolio's budget targets (`/spending/budget`, project 4). */
+  budgets?: {
+    /** Every target now; rejects when they cannot be read. */
+    targets(): Promise<BudgetTarget[]>;
+    /** Sets a category's default monthly budget; resolves the target's id. */
+    set(categoryId: string, amountCents: number): Promise<string>;
+    remove(targetId: string): Promise<void>;
+  };
   /** Appends the reversal entry to this writer's bucket. Never rejects. */
   record(draft: ChangeDraft): Promise<void>;
   where: { host: 'addon' | 'companion'; companionVersion: string | null };
@@ -93,7 +102,7 @@ const STEP_WORDS: Record<string, string> = {
   skip: 'put it on the skip list', unskip: 'took it off the skip list', delete: 'removed the row', create: 're-created the row',
   import: 'wrote the row back', update: 'updated the row', assign: 'filed the category', unassign: 'took the category off',
   'delete-rule': 'deleted the rule', 'create-rule': 'created the rule', 'mapping-remove': 'removed the transaction rule',
-  'mapping-add': 'added the transaction rule',
+  'mapping-add': 'added the transaction rule', 'delete-budget': 'deleted the budget', 'set-budget': 'set the budget',
 };
 
 /** Entries whose undo/redo is running right now in this process (a double tap). */
@@ -234,6 +243,10 @@ async function gather(io: UndoIo, entry: ChangeEntry, op: UndoOp, latest: Change
     case 'mapping-rule-created':
       state.mappingRules = await readMappingRules(io.secrets.get);
       return state;
+    case 'budget-set':
+      if (!io.budgets) throw new Refusal(UNDO_NOT_POSSIBLE);
+      state.budgetTargets = await io.budgets.targets();
+      return state;
     case 'starting-balance':
       state.row = await findRow(io, entry, latest, key);
       if (op === 'redo' && wf) {
@@ -360,6 +373,12 @@ async function performStep(io: UndoIo, s: UndoStep, now: Date, prior: string | n
         if (!list.some((r) => sameRule(r, s.rule))) await io.secrets.set(MAPPING_RULES_SECRET_KEY, JSON.stringify([...list, s.rule]));
         break;
       }
+      case 'delete-budget':
+        await io.budgets!.remove(s.targetId);
+        break;
+      case 'set-budget':
+        created = await io.budgets!.set(s.categoryId, s.amountCents);
+        break;
       default:
         break;
     }
@@ -376,6 +395,7 @@ function reversalExtra(p: UndoPlan, created: string | null, state: UndoState): R
     extra.activityId = id ?? undefined;
   }
   if (p.ruleAfter !== undefined) extra.ruleId = p.ruleAfter === 'created' ? created : null;
+  if (p.budgetAfter !== undefined) extra.targetId = p.budgetAfter === 'created' ? created : null;
   if (state.txKey && p.steps.some((s) => s.do === 'skip')) extra.txKey = state.txKey;
   if (state.ruleFiled && p.steps.some((s) => s.do === 'unassign')) extra.unfiledActivityIds = [...state.ruleFiled];
   return extra;

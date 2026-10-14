@@ -41,6 +41,8 @@ const GROUP_OF: Record<string, ChangeGroup> = {
   'category-rule-created': 'rules',
   'mapping-rule-created': 'rules',
   'account-created': 'rules',
+  // A budget is a category's: found where its filings are.
+  'budget-set': 'categories',
   bookkeeping: 'background',
 };
 
@@ -127,6 +129,10 @@ export function changeBeforeAfter(e: ChangeEntry): string | null {
       const from = isRecord(before) ? str(before.activityType) : null;
       const to = str(after.activityType) ?? '?';
       return `${from ?? 'New'} → ${to}${after.inTransit === true ? ' (in transit)' : ''}`;
+    }
+    case 'budget-set': {
+      const cents = isRecord(after) ? num(after.amountCents) : null;
+      return cents === null ? null : `No budget → ${changeMoney(cents)} a month`;
     }
     default:
       return null;
