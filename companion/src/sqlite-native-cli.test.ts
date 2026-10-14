@@ -23,7 +23,7 @@ import { join } from 'path';
 const execFileSyncMock = vi.hoisted(() => vi.fn());
 vi.mock('child_process', () => ({ execFileSync: execFileSyncMock }));
 
-const { getNativeSpendingCategories, countRulePatternMatches } = await import('./sqlite-native.js');
+const { getNativeSpendingCategories, countRulePatternMatches, getNativeDrillRows, getNativeTxSearchRows } = await import('./sqlite-native.js');
 
 /** A path that EXISTS (so the reader gets past its `existsSync` guard) but is not
  *  a SQLite database, so every `node:sqlite` open genuinely fails and the CLI
@@ -97,6 +97,34 @@ describe('sqlite-native — sqlite3 CLI fallback', () => {
         expect(args).toHaveLength(2);
         expect(args[1]).toContain('joes $(touch /tmp/pwned) `id` "quoted"');
         expect(options.shell).toBeUndefined();
+      } finally {
+        cleanup();
+      }
+    });
+  });
+
+  describe('the unit separator reaches the CLI', () => {
+    it('the drill query still passes -separator \\x1f through tryQueryNativeDb', () => {
+      const { path, cleanup } = notADatabase();
+      try {
+        execFileSyncMock.mockReturnValue('');
+        getNativeDrillRows(path, '2026-10-01', '2026-11-01');
+        const [, args] = execFileSyncMock.mock.calls[0];
+        expect(args.slice(0, 2)).toEqual(['-separator', '\x1f']);
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('the story search reads a | in an account name and a note from the CLI', () => {
+      const { path, cleanup } = notADatabase();
+      try {
+        execFileSyncMock.mockReturnValue('act-9\x1f2026-10-04\x1f5420\x1fWITHDRAWAL\x1fCASH\x1fJoe|Co Checking\x1fSQ *A|B \u00b7 TRN-9\n');
+        const rows = getNativeTxSearchRows(path);
+        expect(execFileSyncMock.mock.calls[0][1].slice(0, 2)).toEqual(['-separator', '\x1f']);
+        expect(rows).toEqual([
+          { activityId: 'act-9', date: '2026-10-04', absCents: 5420, activityType: 'WITHDRAWAL', accountType: 'CASH', accountName: 'Joe|Co Checking', notes: 'SQ *A|B \u00b7 TRN-9' },
+        ]);
       } finally {
         cleanup();
       }

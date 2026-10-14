@@ -1,9 +1,9 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { getNativeTxDetails, getNativeTxPartner, getNativeTxSearchRows, NativeDbUnreadableError } from './sqlite-native.js';
+import { getNativeTxDetails, getNativeTxPartner, getNativeTxSearchRows, NativeDbUnreadableError, storyAssignmentFromCliParts, storyPartnerFromCliParts, storySearchRowFromCliParts } from './sqlite-native.js';
 
 const made: string[] = [];
 afterEach(() => { for (const d of made.splice(0)) rmSync(d, { recursive: true, force: true }); });
@@ -78,5 +78,34 @@ describe('getNativeTxSearchRows', () => {
   it('throws when the database cannot be read', () => {
     expect(() => getNativeTxSearchRows('/nope/wealthfolio.db')).toThrow(/Could not read the Wealthfolio database/);
     expect(() => getNativeTxSearchRows('')).toThrow(NativeDbUnreadableError);
+  });
+});
+
+describe('the CLI fallback parsers split on the unit separator', () => {
+  it('keeps a | in an account name or a note inside its column', () => {
+    expect(storySearchRowFromCliParts('act-9\x1f2026-10-04\x1f5420\x1fWITHDRAWAL\x1fCASH\x1fJoe|Co Checking\x1fSQ *A|B · TRN-9'.split('\x1f'))).toEqual({
+      c0: 'act-9', c1: '2026-10-04', c2: 5420, c3: 'WITHDRAWAL', c4: 'CASH', c5: 'Joe|Co Checking', c6: 'SQ *A|B · TRN-9',
+    });
+    expect(storyPartnerFromCliParts('act-3\x1f2026-10-06\x1fAlly | Savings'.split('\x1f'))).toEqual({ c0: 'act-3', c1: '2026-10-06', c2: 'Ally | Savings' });
+    expect(storyAssignmentFromCliParts('spending_categories\x1fcat-x\x1fFood|Drink\x1frule'.split('\x1f'))).toEqual({ c0: 'spending_categories', c1: 'cat-x', c2: 'Food|Drink', c3: 'rule' });
+    expect(storyPartnerFromCliParts(['a'])).toBeNull();
+  });
+});
+
+describe('queryNativeDbStrict through the readers', () => {
+  it('a database that exists but lacks a table (both paths fail) throws NativeDbUnreadableError', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sfin-story-'));
+    made.push(dir);
+    const path = join(dir, 'wealthfolio.db');
+    const db = new DatabaseSync(path);
+    db.exec('CREATE TABLE unrelated (x TEXT);');
+    db.close();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect(() => getNativeTxSearchRows(path)).toThrow(NativeDbUnreadableError);
+      expect(() => getNativeTxDetails(path, 'a')).toThrow(NativeDbUnreadableError);
+    } finally {
+      vi.restoreAllMocks();
+    }
   });
 });

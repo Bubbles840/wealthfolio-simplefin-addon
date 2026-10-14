@@ -16,13 +16,13 @@
  */
 import type { ChangeLogItem, ChangeLogRead } from '../../shared/change-log.js';
 import { changesForTransaction } from '../../shared/change-view.js';
-import { parseSkippedTransactions, SKIPPED_TRANSACTIONS_SECRET_KEY } from '../../shared/skipped-transactions.js';
+import { parseSkippedTransactionsStrict, SKIPPED_TRANSACTIONS_SECRET_KEY } from '../../shared/skipped-transactions.js';
 import { txIdFromComment } from '../../shared/sync-core.js';
 import { hasTxOverride, loadSyncOverrides, TX_OVERRIDE_FLAGS, type TxOverrideFlag } from '../../shared/sync-overrides.js';
 import { accountTxKey } from '../../shared/transfers.js';
 import { findTransactions, txDescription, TX_SEARCH_RECENT_DAYS, type TxQuery, type TxSearchResult, type TxSearchRow } from '../../shared/tx-search.js';
 import {
-  buildTxStory, isOutflow, resolveFiler, signedCents, type CategoryRuleLike, type TxFactName, type TxStory,
+  buildTxStory, resolveFiler, signedCents, type CategoryRuleLike, type TxFactName, type TxStory,
   type TxStoryFacts, type TxStoryRow,
 } from '../../shared/tx-story.js';
 import { readCompanionChangeLog, type SecretClient } from './change-log-host.js';
@@ -54,10 +54,17 @@ export interface StoryReaders {
   /** All of history (database). Throws when unreadable. */
   searchRows(): NativeTxSearchRow[];
   /** REST, every activity dated `dateFrom` (YYYY-MM-DD) or later. */
-  recentRows(dateFrom: string): Promise<ActivitySearchItem[]>;
+  recentRows(dateFrom: string): Promise<RecentRows>;
 }
 
-export type StoryClient = SecretClient & Pick<WealthfolioClient, 'searchActivities' | 'listCategorizationRules'>;
+/** The REST fallback's rows (archived accounts left out, each with its
+ *  account's type) and whether the page cap cut them short. */
+export interface RecentRows {
+  rows: Array<ActivitySearchItem & { accountType: string }>;
+  truncated: boolean;
+}
+
+export type StoryClient = SecretClient & Pick<WealthfolioClient, 'searchActivities' | 'listCategorizationRules' | 'getAccounts'>;
 
 export function companionStoryReaders(client: StoryClient, dbPath: string): StoryReaders {
   return {
@@ -70,13 +77,21 @@ export function companionStoryReaders(client: StoryClient, dbPath: string): Stor
     secret: (key) => client.getAddonSecret(ADDON_ID, key),
     searchRows: () => getNativeTxSearchRows(dbPath),
     recentRows: async (dateFrom) => {
+      const accounts = new Map((await client.getAccounts()).map((a) => [a.id, a]));
       const all: ActivitySearchItem[] = [];
+      let truncated = false;
       for (let page = 0; page < RECENT_MAX_PAGES; page++) {
         const items = await client.searchActivities({ page, pageSize: RECENT_PAGE_SIZE, dateFrom });
         all.push(...items);
         if (items.length < RECENT_PAGE_SIZE) break;
+        if (page === RECENT_MAX_PAGES - 1) truncated = true;
       }
-      return all;
+      return {
+        rows: all
+          .filter((a) => !accounts.get(a.accountId)?.isArchived)
+          .map((a) => ({ ...a, accountType: accounts.get(a.accountId)?.accountType ?? '' })),
+        truncated,
+      };
     },
   };
 }
@@ -149,8 +164,9 @@ export async function companionTxStory(readers: StoryReaders, activityId: string
 
   let skipped = false;
   try {
-    const list = parseSkippedTransactions(await readers.secret(SKIPPED_TRANSACTIONS_SECRET_KEY));
-    skipped = !!sfinId && !!txId && list.some((s) => s.account === sfinId && s.txId === txId);
+    const parsed = parseSkippedTransactionsStrict(await readers.secret(SKIPPED_TRANSACTIONS_SECRET_KEY));
+    if (parsed.kind === 'corrupt') failed.push('skipList');
+    else if (parsed.kind === 'ok') skipped = !!sfinId && !!txId && parsed.list.some((s) => s.account === sfinId && s.txId === txId);
   } catch {
     failed.push('skipList');
   }
@@ -214,6 +230,7 @@ const isoDaysBefore = (now: Date, days: number) => new Date(now.getTime() - days
 export async function companionTxSearch(readers: StoryReaders, query: TxQuery, now: Date): Promise<SearchOutcome> {
   let rows: TxSearchRow[];
   let recentOnly = false;
+  let cut = false;
   try {
     rows = readers.searchRows().map((r) => ({
       activityId: r.activityId,
@@ -225,13 +242,14 @@ export async function companionTxSearch(readers: StoryReaders, query: TxQuery, n
   } catch {
     try {
       recentOnly = true;
-      rows = (await readers.recentRows(isoDaysBefore(now, TX_SEARCH_RECENT_DAYS))).map((a) => {
-        const abs = absCentsOf(a.amount);
+      const recent = await readers.recentRows(isoDaysBefore(now, TX_SEARCH_RECENT_DAYS));
+      cut = recent.truncated;
+      rows = recent.rows.map((a) => {
         return {
           activityId: a.id,
           date: String(a.date ?? '').slice(0, 10),
           description: txDescription(a.comment),
-          amountCents: isOutflow(String(a.activityType ?? '')) ? -abs : abs,
+          amountCents: signedCents({ absCents: absCentsOf(a.amount), activityType: String(a.activityType ?? '').toUpperCase(), accountType: a.accountType }),
           accountName: a.accountName ?? '',
         };
       });
@@ -239,5 +257,6 @@ export async function companionTxSearch(readers: StoryReaders, query: TxQuery, n
       return { kind: 'unreachable' };
     }
   }
-  return { kind: 'ok', result: findTransactions(rows, query), recentOnly };
+  const result = findTransactions(rows, query);
+  return { kind: 'ok', result: cut ? { ...result, truncated: true } : result, recentOnly };
 }
