@@ -130,6 +130,7 @@ export function UncategorizedList({
                 type="button"
                 className="sfin-uncat-what sfin-why-row-btn"
                 aria-expanded={openId === r.activityId}
+                aria-controls={`sfin-why-story-${r.activityId}`}
                 onClick={() => setOpenId((open) => (open === r.activityId ? null : r.activityId))}
               >
                 {r.description}
@@ -146,7 +147,7 @@ export function UncategorizedList({
             </span>
             <Button
               variant="ghost"
-              onClick={() => onDismiss(r.activityId)}
+              onClick={() => { setOpenId((open) => (open === r.activityId ? null : open)); onDismiss(r.activityId); }}
               title="Stop counting this transaction as needing a category"
               // Nine rows otherwise announce nine identical "Dismiss, button"s to
               // assistive tech. Visible text stays "Dismiss" — only the accessible
@@ -157,7 +158,7 @@ export function UncategorizedList({
             </Button>
           </div>
           {renderStory && openId === r.activityId && (
-            <div className="sfin-why-inline">{renderStory({ activityId: r.activityId })}</div>
+            <div className="sfin-why-inline" id={`sfin-why-story-${r.activityId}`}>{renderStory({ activityId: r.activityId })}</div>
           )}
         </React.Fragment>
       ))}
