@@ -38,9 +38,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     starting balance and corrections the balance includes.
   - **Why the month's spending differs from Wealthfolio's.** The report's
     "Spent this month" against Wealthfolio's Spending page, split into the
-    six known reasons (rows at midnight UTC on the 1st, rows after today, the
-    add-on's own bookkeeping rows, excluded categories, rows filed twice,
-    refunds with no category), each with its rows, and the rest.
+    known reasons — each a set of rows only one side counts: rows at
+    midnight UTC on the 1st (west of UTC), the add-on's own corrections and
+    held transfers, excluded categories, rows filed twice, refunds with no
+    category — each with its rows, and the rest. Only the accounts
+    Wealthfolio's Spending page reads; a linked transfer is never a reason.
   - **What Wealthfolio's Health page flags** of the things the add-on checks:
     incomplete transfer legs (with the likely other half when exactly one row
     fits, both ways), starting balances dated after an account's first

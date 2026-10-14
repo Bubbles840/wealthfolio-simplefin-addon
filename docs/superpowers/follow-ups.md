@@ -751,6 +751,33 @@ changes what a user sees today.
   gate Wealthfolio uses); otherwise the check says the page is turned off. A
   page whose every selected account is archived or non-spending still returns
   $0 and is compared — rare.
+- **A2's scope: a reason is a row exactly one side counts** (final review,
+  ruling C-G). The report's side is the cube's own rules (mapped accounts;
+  the sync's corrections and in-transit placeholders dropped by marker —
+  starting balances are NOT; filings not rolled up to a transfer-named
+  category; an uncategorized charge only when ungrouped and in a Spending
+  account). Wealthfolio's is its Spending page's: the accounts in
+  `spending.account_ids` that exist and are not archived, never a linked
+  transfer (a grouped TRANSFER_IN/OUT is an internal transfer or a saving),
+  excluded categories and their descendants, and the WHOLE calendar month in
+  its timezone — so there is no "after today" reason, and "first midnight" is
+  named only west of UTC. What only one side counts for a rule no reason names
+  stays in "not explained": a spending account the add-on does not map, a
+  linked transfer filed under a spending category, a row Wealthfolio puts in
+  another month other than at 00:00 UTC on the 1st (an east-of-UTC local
+  midnight at the month's end, 3.10), an activity type override, the
+  uncategorized reader's dismissed rows and rows awaiting a transfer's other
+  half, and split lines. A card's opening debt is counted by the report (the
+  cube excludes no starting balance), so on 3.9+, filed under the excluded
+  "Opening balances", it shows as "excluded" — whether the report should
+  drop starting balances like the digest does is its own question.
+- **A mapped ARCHIVED account reads "not compared".** `GET /accounts` omits
+  archived accounts, so its type is unknown and its balance is not compared.
+  Follow-up: read the list with `includeArchived=true` (the route takes it on
+  3.8 and 3.10).
+- **A pending row is never offered as the other half** of a Health leg: the
+  sync never pairs a ` · pending` row (the bank's provisional copy, whose
+  amount can still change before it posts).
 - **R2 (Fix) is next:** Link on a Health leg with a unique other half (the
   snapshot already carries both rows' ids, accounts, tx keys, amounts and
   dates), and "Remove for good…" on a transaction's story.
