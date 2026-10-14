@@ -782,6 +782,10 @@ changes what a user sees today.
   snapshot already carries both rows' ids, accounts, tx keys, amounts and
   dates), and "Remove for good…" on a transaction's story.
 
+## 14. Getting started (2026-10-14, plan `2026-10-14-getting-started.md`)
+
+- **Suggested budgets' spend read differs from Wealthfolio's own budget actuals** (`getNativeBudgetSpend`, companion/src/sqlite-native.ts). It matches them on the spending accounts and the excluded categories (an excluded subcategory's own rows dropped before the roll-up) only. Three known differences: a LINKED `TRANSFER_OUT` filed under a category counts here (upstream treats a linked transfer as neutral); `activity_type_override` is ignored (the raw `activity_type` classifies); `spending_activity_splits` are ignored (an activity counts whole, under its one assignment). Cost: a suggestion can be off by those rows; it is only a suggestion.
+
 ## Reference: name mismatches between the database, the REST API, and the SDK
 
 Every one of these cost a diagnostic cycle against the live instance on

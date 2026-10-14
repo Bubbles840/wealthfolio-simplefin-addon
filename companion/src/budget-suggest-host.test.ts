@@ -6,7 +6,7 @@ import {
 } from './budget-suggest-host.js';
 
 const NOW = new Date('2026-10-14T15:00:00Z');
-const AT = { month: '2026-10', window: ['2026-07', '2026-08', '2026-09'] };
+const AT = { month: '2026-10', monthsUsed: ['2026-07', '2026-08', '2026-09'] };
 const target = (over: Partial<BudgetTarget> = {}): BudgetTarget => ({
   id: 'bt-gro', periodKey: 'default', targetType: 'category', taxonomyId: 'spending_categories', categoryId: 'cat-gro', amountCents: 42500, ...over,
 });
@@ -156,6 +156,70 @@ describe('applyBudgetSuggestions', () => {
     expect(recorded).toEqual([expect.objectContaining({
       kind: 'budget-set', after: expect.objectContaining({ targetId: null, categoryId: 'cat-gro', amountCents: 42000 }),
     })]);
+  });
+
+  it('logs the months actually averaged: one month reads "Sep", not "Sep–Sep"', async () => {
+    const { r, recorded } = readers();
+    await applyBudgetSuggestions(r, chosen().slice(0, 1), { month: '2026-10', monthsUsed: ['2026-09'] }, NOW);
+    expect(recorded[0].why).toBe('Your average for Sep, rounded up to the nearest $5');
+  });
+
+  it('re-reads before EACH POST: a category that gained a default target meanwhile is left alone, with no POST', async () => {
+    const reads: BudgetTarget[][] = [[], [], [target({ id: 'bt-gas', categoryId: 'cat-gas', amountCents: 1 })]];
+    const { r } = readers({ targets: vi.fn(async () => ({ enabled: true, targets: reads.shift() ?? [] })) });
+    const result = await applyBudgetSuggestions(r, chosen(), AT, NOW);
+    if (!result.ok) throw new Error('refused');
+    expect(r.set).not.toHaveBeenCalledWith('cat-gas', expect.anything());
+    expect(r.set).toHaveBeenCalledTimes(2);
+    expect(result.outcome.alreadySet.map((s) => s.name)).toEqual(['Gas']);
+    expect(result.outcome.set.map((x) => x.suggestion.name)).toEqual(['Groceries', 'Dining out']);
+  });
+
+  it('a POST that throws after Wealthfolio committed it is found by one re-read: set and logged, with its id', async () => {
+    const stored: BudgetTarget[] = [];
+    const { r, recorded } = readers({
+      targets: vi.fn(async () => ({ enabled: true, targets: [...stored] })),
+      set: vi.fn(async (categoryId: string, amountCents: number) => {
+        if (categoryId === 'cat-din') {
+          stored.push(target({ id: 'bt-din', categoryId, amountCents }));
+          throw new Error('socket hang up');
+        }
+        return target({ id: `bt-${categoryId}`, categoryId, amountCents });
+      }),
+    });
+    const result = await applyBudgetSuggestions(r, chosen(), AT, NOW);
+    if (!result.ok) throw new Error('refused');
+    expect(result.outcome.failed).toEqual([]);
+    expect(result.outcome.set.map((x) => `${x.suggestion.name} ${x.target?.id}`)).toEqual(['Groceries bt-cat-gro', 'Gas bt-cat-gas', 'Dining out bt-din']);
+    expect(recorded.map((d) => d.subject.categoryName)).toEqual(['Groceries', 'Gas', 'Dining out']);
+    expect(recorded[2].after).toMatchObject({ targetId: 'bt-din', amountCents: 18000 });
+  });
+
+  it('keeps a failed POST failed when the re-read shows a different amount, or cannot be read', async () => {
+    const other = readers({
+      targets: vi.fn(async () => ({ enabled: true, targets: [] as BudgetTarget[] })),
+      set: vi.fn(async () => { throw new Error('boom'); }),
+    });
+    const a = await applyBudgetSuggestions(other.r, chosen().slice(0, 1), AT, NOW);
+    expect(a).toMatchObject({ ok: true, outcome: { set: [], failed: [{ message: 'boom' }] } });
+    let n = 0;
+    const down = readers({
+      targets: vi.fn(async () => { if (++n > 2) throw new Error('ECONNREFUSED'); return { enabled: true, targets: [] as BudgetTarget[] }; }),
+      set: vi.fn(async () => { throw new Error('boom'); }),
+    });
+    expect(await applyBudgetSuggestions(down.r, chosen().slice(0, 1), AT, NOW)).toMatchObject({ ok: true, outcome: { set: [], failed: [{ message: 'boom' }] } });
+  });
+
+  it("falls back to the suggested amount when the reply's value is not a number", async () => {
+    const { r, recorded } = readers({ set: vi.fn(async (categoryId: string) => target({ id: 'bt-x', categoryId, amountCents: NaN })) });
+    await applyBudgetSuggestions(r, chosen().slice(0, 1), AT, NOW);
+    expect(recorded[0].after).toMatchObject({ targetId: 'bt-x', amountCents: 42000 });
+    expect(recorded[0].summary).toBe('Set a $420.00 monthly budget for Groceries');
+  });
+
+  it('refuses when the re-read failed, even with nothing chosen', async () => {
+    const down = readers({ targets: vi.fn(async () => { throw new Error('ECONNREFUSED'); }) });
+    expect(await applyBudgetSuggestions(down.r, [], AT, NOW)).toEqual({ ok: false });
   });
 
   it('a log that cannot be written never costs the budget', async () => {

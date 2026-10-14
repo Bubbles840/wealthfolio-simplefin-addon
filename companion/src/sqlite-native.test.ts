@@ -1767,6 +1767,8 @@ describe('getNativeBudgetSpend / getNativeSpendingHistoryStart', () => {
     add('sub', '-100', '2026-08-04', 'acct-cash', 'cat-fun');
     add('gro', '-30', '2026-08-05', 'acct-card', 'cat-gro');
     add('else', '-999', '2026-08-06', 'acct-untracked', 'cat-gro');
+    db.exec(`INSERT INTO accounts (id, name, account_type) VALUES ('acct-sec', 'Brokerage', 'SECURITIES')`);
+    db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, account_id) VALUES ('old-sec', '5', '2026-02-01', 'DEPOSIT', 'acct-sec')`);
     db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, account_id) VALUES ('early', '5', '2026-01-02T00:00:00+00:00', 'DEPOSIT', 'acct-untracked')`);
     db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, account_id) VALUES ('first', '5', '2026-06-20T04:00:00+00:00', 'DEPOSIT', 'acct-card')`);
     db.close();
@@ -1802,9 +1804,10 @@ describe('getNativeBudgetSpend / getNativeSpendingHistoryStart', () => {
   it('throws on a database it cannot read, and refuses malformed bounds, rather than answering "nothing spent"', () => {
     expect(() => getNativeBudgetSpend('/nope/wealthfolio.db', '2026-07-01', '2026-10-01', scope())).toThrow(NativeDbUnreadableError);
     const { path, cleanup } = makeTestDb();
+    const noise = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
       expect(() => getNativeBudgetSpend(path, "2026-07-01' OR 1=1 --", '2026-10-01', scope())).toThrow(/malformed/);
-    } finally { cleanup(); }
+    } finally { noise.mockRestore(); cleanup(); }
   });
 
   it('reads the earliest activity day on the spending accounts only — null with no activity — and throws when unreadable', () => {
@@ -1814,6 +1817,8 @@ describe('getNativeBudgetSpend / getNativeSpendingHistoryStart', () => {
       seed(path);
       expect(getNativeSpendingHistoryStart(path, ['acct-cash', 'acct-card'])).toBe('2026-06-20');
       expect(getNativeSpendingHistoryStart(path, ['acct-untracked'])).toBe('2026-01-02');
+      // A securities account never supports spending (upstream account_supports_purpose): its older row does not move the start.
+      expect(getNativeSpendingHistoryStart(path, ['acct-cash', 'acct-card', 'acct-sec'])).toBe('2026-06-20');
       expect(getNativeSpendingHistoryStart(path, [])).toBeNull();
     } finally { cleanup(); }
     expect(() => getNativeSpendingHistoryStart('/nope/wealthfolio.db', ['acct-cash'])).toThrow(NativeDbUnreadableError);

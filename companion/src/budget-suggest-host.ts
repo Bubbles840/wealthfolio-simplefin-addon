@@ -20,7 +20,7 @@
  *    added in between would otherwise be overwritten.
  */
 import {
-  budgetWindow, planBudgetApply, suggestBudgets, suggestionWhy,
+  BUDGET_TAXONOMY, budgetWindow, DEFAULT_PERIOD_KEY, planBudgetApply, suggestBudgets, suggestionWhy,
   type BudgetCategory, type BudgetSuggestion, type BudgetSuggestions, type BudgetTarget, type SpendMatrixRow,
 } from '../../shared/budget-suggest.js';
 import { budgetSetChange, type ChangeDraft } from '../../shared/change-entries.js';
@@ -29,13 +29,13 @@ import { getNativeAuditSettings } from './sqlite-audit.js';
 import { getNativeBudgetSpend, getNativeSpendingCategories, getNativeSpendingHistoryStart } from './sqlite-native.js';
 import type { WealthfolioClient } from './wealthfolio.js';
 
-/** Everything suggesting and applying reads or writes, so a test can fake each. */
 export type BudgetSettings = {
   timezone: string | null; excludedCategoryIds: string[]; categoryParents: Record<string, string | null>; spendingOn: boolean;
   /** The accounts Wealthfolio's Spending reads (opted in, existing, not archived). */
   spendingAccountIds: string[];
 };
 
+/** Everything suggesting and applying reads or writes, so a test can fake each. */
 export interface BudgetReaders {
   /** Throws when the database cannot be read. */
   settings(): BudgetSettings;
@@ -126,30 +126,61 @@ const message = (err: unknown) => (err instanceof Error ? err.message : String(e
 
 /**
  * Sets the chosen suggestions as default monthly budgets. Re-reads the budget
- * first and leaves alone any category that gained one since; writes the rest
- * one at a time, so a failed POST costs only its own category; logs each
- * target as it lands (`budget-set`, with the id and amount Wealthfolio
- * stored), so a crash part-way still leaves Undo for what was written.
+ * before every POST (Wealthfolio's POST is an upsert) and leaves alone any
+ * category that gained one since; writes one at a time, so a failed POST costs
+ * only its own category; logs each target as it lands (`budget-set`, with the
+ * id and amount Wealthfolio stored), so a crash part-way still leaves Undo for
+ * what was written. A POST that threw may still have committed: after the loop
+ * the budget is read once more, and a failed category whose default target now
+ * holds the amount sent counts as set.
  */
 export async function applyBudgetSuggestions(
   r: BudgetReaders,
   chosen: readonly BudgetSuggestion[],
-  at: { month: string; window: string[] },
+  at: { month: string; monthsUsed: string[] },
   now: Date,
 ): Promise<BudgetApplyResult> {
-  // A failed re-read, or a Spending tracker that went off, is `null`: the plan
-  // then writes nothing and reports every choice `unread`.
-  let targets: BudgetTarget[] | null;
-  try {
-    const read = await r.targets();
-    targets = read.enabled ? read.targets : null;
-  } catch {
-    targets = null;
-  }
-  const { write, alreadySet, unread } = planBudgetApply(chosen, targets, at.month);
-  if (unread.length > 0) return { ok: false };
-  const outcome: BudgetApplyOutcome = { set: [], alreadySet, failed: [] };
+  // A failed re-read, or a Spending tracker that went off, is `null`.
+  const read = async (): Promise<BudgetTarget[] | null> => {
+    try {
+      const got = await r.targets();
+      return got.enabled ? got.targets : null;
+    } catch {
+      return null;
+    }
+  };
+  const first = await read();
+  // `null` writes nothing and reports every choice `unread` (an empty choice has none, hence the explicit test).
+  const { write, alreadySet, unread } = planBudgetApply(chosen, first, at.month);
+  if (first === null || unread.length > 0) return { ok: false };
+  const outcome: BudgetApplyOutcome = { set: [], alreadySet: [...alreadySet], failed: [] };
+  const log = async (suggestion: BudgetSuggestion, target: BudgetTarget | null) => {
+    outcome.set.push({ suggestion, target });
+    try {
+      await r.record([budgetSetChange({
+        targetId: target?.id ?? null, categoryId: suggestion.categoryId, categoryName: suggestion.name,
+        amountCents: target && Number.isFinite(target.amountCents) ? target.amountCents : suggestion.cents,
+        why: suggestionWhy(at.monthsUsed),
+      })], now);
+    } catch {
+      // A log must never cost the budget; the writer records gaps itself.
+    }
+  };
+  let fresh = true;
   for (const suggestion of write) {
+    if (!fresh) {
+      // Re-read right before this POST; the first read is the one just made.
+      const now = await read();
+      if (now === null) {
+        outcome.failed.push({ suggestion, message: "Couldn't re-read your budgets before setting this one" });
+        continue;
+      }
+      if (planBudgetApply([suggestion], now, at.month).alreadySet.length > 0) {
+        outcome.alreadySet.push(suggestion);
+        continue;
+      }
+    }
+    fresh = false;
     let target: BudgetTarget | null;
     try {
       target = await r.set(suggestion.categoryId, suggestion.cents);
@@ -157,14 +188,18 @@ export async function applyBudgetSuggestions(
       outcome.failed.push({ suggestion, message: message(err) });
       continue;
     }
-    outcome.set.push({ suggestion, target });
-    try {
-      await r.record([budgetSetChange({
-        targetId: target?.id ?? null, categoryId: suggestion.categoryId, categoryName: suggestion.name,
-        amountCents: target?.amountCents ?? suggestion.cents, why: suggestionWhy(at.window),
-      })], now);
-    } catch {
-      // A log must never cost the budget; the writer records gaps itself.
+    await log(suggestion, target);
+  }
+  if (outcome.failed.length > 0) {
+    const after = await read();
+    if (after) {
+      for (const f of [...outcome.failed]) {
+        const landed = after.find((t) => t.targetType === 'category' && t.taxonomyId === BUDGET_TAXONOMY
+          && t.categoryId === f.suggestion.categoryId && t.periodKey === DEFAULT_PERIOD_KEY && t.amountCents === f.suggestion.cents);
+        if (!landed) continue;
+        outcome.failed.splice(outcome.failed.indexOf(f), 1);
+        await log(f.suggestion, landed);
+      }
     }
   }
   return { ok: true, outcome };
