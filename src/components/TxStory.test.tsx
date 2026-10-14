@@ -76,6 +76,20 @@ describe('TxStoryView', () => {
     expect(screen.getByText(TX_FACT_NOTES.changeLogPartial)).toBeInTheDocument();
   });
 
+  it('a history line controls its own detail region, with an id unique on the page', () => {
+    render(<>
+      <TxStoryView story={story()} entries={[imported]} actions={actions()} onChanged={() => {}} />
+      <TxStoryView story={story()} entries={[imported]} actions={actions()} onChanged={() => {}} />
+    </>);
+    const lines = screen.getAllByRole('button', { name: /Imported SQ \*BLUE_BOTTLE/ });
+    for (const line of lines) fireEvent.click(line);
+    const ids = lines.map((b) => b.getAttribute('aria-controls'));
+    expect(new Set(ids).size).toBe(2);
+    for (const id of ids) expect(document.getElementById(id!)?.querySelector('.sfin-log-detail')).not.toBeNull();
+    fireEvent.click(lines[0]);
+    expect(lines[0].hasAttribute('aria-controls')).toBe(false);
+  });
+
   it('a history line opens the change log’s own entry detail, with its Undo — disabled and busy while it runs', async () => {
     let finish!: (o: UndoOutcome) => void;
     const undo = vi.fn(() => new Promise<UndoOutcome>((resolve) => { finish = resolve; }));
@@ -105,12 +119,14 @@ describe('TxStoryPanel', () => {
     expect(load).toHaveBeenCalledWith({ activityId: 'act-1', categoryName: 'Dining', filer: 'h' });
   });
 
-  it('says so when the row cannot be read, or is gone', async () => {
-    const { unmount } = render(<TxStoryPanel target={{ activityId: 'a' }} load={vi.fn(async () => ({ kind: 'unreachable' as const }))} actions={actions()} />);
-    expect(await screen.findByText(TX_STORY_UNREACHABLE)).toBeInTheDocument();
+  it('says so when the row cannot be read, or is gone, in a status region that was there while it loaded', async () => {
+    const { unmount, container } = render(<TxStoryPanel target={{ activityId: 'a' }} load={vi.fn(async () => ({ kind: 'unreachable' as const }))} actions={actions()} />);
+    const status = container.querySelector('[role="status"]');
+    expect(status).not.toBeNull();
+    expect((await screen.findByText(TX_STORY_UNREACHABLE)).closest('[role="status"]')).toBe(status);
     unmount();
     render(<TxStoryPanel target={{ activityId: 'a' }} load={vi.fn(async () => ({ kind: 'gone' as const }))} actions={actions()} />);
-    expect(await screen.findByText(TX_STORY_GONE_APP)).toBeInTheDocument();
+    expect((await screen.findByText(TX_STORY_GONE_APP)).closest('[role="status"]')).not.toBeNull();
   });
 
   it('an unmount while loading, then a late answer, throws nothing', async () => {
@@ -144,7 +160,7 @@ describe('TxStoryPanel', () => {
     render(<TxStoryPanel target={{ activityId: 'act-1' }} load={load} actions={actions({ undo })} />);
     fireEvent.click(await screen.findByRole('button', { name: /Imported SQ \*BLUE_BOTTLE/ }));
     fireEvent.click(within(document.querySelector('.sfin-log-detail') as HTMLElement).getByRole('button', { name: 'Undo' }));
-    expect(await screen.findByText(TX_STORY_REREAD_FAILED)).toBeInTheDocument();
+    expect((await screen.findByText(TX_STORY_REREAD_FAILED)).closest('[role="status"]')).not.toBeNull();
     expect(screen.getByText('From your Checking bank feed.')).toBeInTheDocument();
     await waitFor(() => expect(load).toHaveBeenCalledTimes(2));
   });

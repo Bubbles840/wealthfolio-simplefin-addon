@@ -1,5 +1,5 @@
 import React from 'react';
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { parseTxQuery, TX_SEARCH_TOO_MANY, type TxSearchRow } from '../../shared/tx-search';
 import { TX_STORY_UNREACHABLE } from '../../shared/tx-story';
@@ -62,6 +62,64 @@ describe('WhyCard', () => {
     expect(await screen.findByText(TX_STORY_UNREACHABLE)).toBeInTheDocument();
   });
 
+  describe('the year', () => {
+    afterEach(() => { vi.useRealTimers(); });
+
+    it('a match from another year shows its year; this year’s does not', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date(2027, 0, 15, 12, 0));
+      const lastYear = mount(vi.fn(async () => found(1)));
+      lastYear.ask('kroger');
+      expect(await screen.findByText('Oct 4, 2026')).toBeInTheDocument();
+      lastYear.unmount();
+      vi.setSystemTime(new Date(2026, 9, 13, 12, 0));
+      mount(vi.fn(async () => found(1))).ask('kroger');
+      expect(await screen.findByText('Oct 4')).toBeInTheDocument();
+    });
+  });
+
+  it('each match’s button controls its own story region, with an id unique on the page', async () => {
+    const search = vi.fn(async () => found(2));
+    const renderStory = (t: { activityId: string }) => <div>story of {t.activityId}</div>;
+    render(<><WhyCard search={search} renderStory={renderStory} /><WhyCard search={search} renderStory={renderStory} /></>);
+    for (const box of screen.getAllByRole('searchbox')) fireEvent.change(box, { target: { value: 'kroger' } });
+    for (const find of screen.getAllByRole('button', { name: 'Find' })) fireEvent.click(find);
+    const opens = await screen.findAllByRole('button', { name: /KROGER #1/ });
+    expect(opens).toHaveLength(2);
+    for (const open of opens) fireEvent.click(open);
+    const ids = opens.map((b) => b.getAttribute('aria-controls'));
+    expect(new Set(ids).size).toBe(2);
+    for (const [i, id] of ids.entries()) {
+      const region = document.getElementById(id!);
+      expect(region).not.toBeNull();
+      expect(region!.textContent).toBe('story of act-1');
+      fireEvent.click(opens[i]);
+      expect(opens[i].hasAttribute('aria-controls')).toBe(false);
+    }
+  });
+
+  it('says Searching…, nothing matches, too many and unreachable in a status region', async () => {
+    let resolve!: (o: AppSearchOutcome) => void;
+    const outcomes: Array<() => Promise<AppSearchOutcome>> = [
+      () => new Promise<AppSearchOutcome>((r) => { resolve = r; }),
+      async () => found(40, true),
+      async () => ({ kind: 'unreachable' }),
+    ];
+    const { ask, container } = mount(vi.fn(() => outcomes.shift()!()));
+    const status = () => container.querySelector('[role="status"]') as HTMLElement;
+    expect(status()).not.toBeNull();
+    ask('zzz');
+    expect(status().textContent).toBe('Searching…');
+    await act(async () => resolve(found(0)));
+    expect(status().textContent).toBe(WHY_CARD_NO_MATCH);
+    ask('kroger');
+    await screen.findByText('KROGER #0');
+    for (let i = 0; i < 4; i++) fireEvent.click(screen.getByRole('button', { name: 'More' }));
+    expect(screen.getByText(TX_SEARCH_TOO_MANY).closest('[role="status"]')).not.toBeNull();
+    ask('kroger');
+    expect((await screen.findByText(TX_STORY_UNREACHABLE)).closest('[role="status"]')).toBe(status());
+  });
+
   it('does nothing for an empty search', () => {
     const search = vi.fn(async () => found(1));
     const { ask } = mount(search);
@@ -90,7 +148,7 @@ describe('WhyCard', () => {
     expect(screen.queryByText('FIRST HIT')).toBeNull();
   });
 
-  it('a search resolving after unmount changes nothing and throws nothing', async () => {
+  it('a search resolving after unmount throws nothing', async () => {
     let resolve!: (o: AppSearchOutcome) => void;
     const search = vi.fn(() => new Promise<AppSearchOutcome>((r) => { resolve = r; }));
     const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
