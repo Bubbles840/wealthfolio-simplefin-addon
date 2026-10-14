@@ -121,6 +121,15 @@ vi.mock('./sqlite-native.js', () => ({
   NativeDbUnreadableError: class NativeDbUnreadableError extends Error {},
 }));
 
+// The audits' strict readers (2c): mocked as a module, because sqlite-audit.ts
+// reads its separator from the sqlite-native mock above at import time. An
+// empty ledger is the "quiet database" every unrelated sync test wants.
+vi.mock('./sqlite-audit.js', () => ({
+  getNativeAuditLedger: vi.fn(() => ({ accounts: [], rows: [] })),
+  getNativeHeadlineRows: vi.fn(() => []),
+  getNativeAuditSettings: vi.fn(() => ({ timezone: null, excludedCategoryIds: [], categoryParents: {} })),
+}));
+
 vi.mock('./amazon-mail.js', async (importOriginal) => ({
   // Real `amazonMailConfigured`, `htmlToText`, etc. stay real; only the two
   // functions that would otherwise try a real IMAP connection are faked.
@@ -5030,6 +5039,65 @@ describe('report_cube publish', () => {
     const call = instance.setAddonSecret.mock.calls.find((c: any[]) => c[1] === 'report_cube');
     expect(call).toBeTruthy();
     expect(JSON.parse(call[2]).version).toBe(1);
+  });
+});
+
+describe('audit_snapshot publish', () => {
+  /** The full client shape, pinned for the same reason as report_cube's test. */
+  const pinClient = async (setAddonSecret: (addon: string, key: string, value: string) => Promise<void>) => {
+    process.env.WEALTHFOLIO_API_URL = 'http://wf';
+    process.env.WEALTHFOLIO_PASSWORD = 'pw';
+    const { WealthfolioClient } = await import('./wealthfolio.js');
+    vi.mocked(WealthfolioClient as any).mockClear();
+    vi.mocked(WealthfolioClient as any).mockImplementation(function (this: any) {
+      this.login = vi.fn(async () => {});
+      this.getAddonSecret = vi.fn(async (_a: string, key: string) => (
+        key === 'simplefin_access_url' ? 'https://user:pass@bridge.simplefin.org/simplefin' : null
+      ));
+      this.setAddonSecret = vi.fn(setAddonSecret);
+      this.getAccounts = vi.fn(async () => []);
+    });
+    return () => (vi.mocked(WealthfolioClient as any).mock.instances.at(-1)) as any;
+  };
+
+  it('publishes the checks after a sync', async () => {
+    const instance = await pinClient(async () => {});
+    await runCompanionSync();
+    const call = instance().setAddonSecret.mock.calls.find((c: any[]) => c[1] === 'audit_snapshot');
+    expect(call).toBeTruthy();
+    expect(JSON.parse(call[2]).v).toBe(1);
+  });
+
+  it('logs a publish that fails and returns the sync’s result unchanged', async () => {
+    await pinClient(async (_a, key) => { if (key === 'audit_snapshot') throw new Error('disk full'); });
+    const logs = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const result = await runCompanionSync();
+      expect(result.imported).toBe(2);
+      expect(result.errors).toEqual([]);
+      expect(logs.mock.calls.flat().join('\n')).toContain('Audit snapshot publish failed');
+    } finally {
+      logs.mockRestore();
+    }
+  });
+
+  it('logs once and keeps the sync’s result when the publish rejects over budget', async () => {
+    const audit = await import('./audit-facts.js');
+    const spy = vi.spyOn(audit, 'publishAuditSnapshot').mockRejectedValue(
+      new Error('audit snapshot over budget after trimming; keeping the previous one'));
+    await pinClient(async () => {});
+    const logs = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const result = await runCompanionSync();
+      expect(result.imported).toBe(2);
+      expect(result.errors).toEqual([]);
+      const lines = logs.mock.calls.flat().filter((l) => String(l).includes('Audit snapshot publish failed'));
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain('over budget');
+    } finally {
+      logs.mockRestore();
+      spy.mockRestore();
+    }
   });
 });
 
