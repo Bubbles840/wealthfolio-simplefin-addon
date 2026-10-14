@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { UnlinkLeg } from './link-pair.js';
 import {
-  inPlaceRefusal, ledgerGroupId, linkPairPreferInPlace, storedLegOf, unlinkPairPreferInPlace, type InPlaceIo,
+  HALF_OF_ANOTHER_TRANSFER, inPlaceRefusal, ledgerGroupId, unlinkInPlaceRefusal, linkPairPreferInPlace, storedLegOf, unlinkPairPreferInPlace, type InPlaceIo,
 } from './link-in-place.js';
 import type { ActivityWrite, LinkLeg, SaveManyRequest, SaveManyResult } from './sync-host.js';
 
@@ -26,7 +26,7 @@ const stored = (leg: LinkLeg, over: Partial<Row> = {}): Row => ({
  * Wealthfolio in memory: the exact-id read, its link and unlink (one
  * transaction each; a refusal writes nothing), and the bulk endpoint.
  */
-function wealthfolio(rows: Row[], opts: { refuseLink?: string; loseLinkAnswer?: boolean; refuseUnlink?: string; refuseUpdate?: string } = {}) {
+function wealthfolio(rows: Row[], opts: { refuseLink?: string; loseLinkAnswer?: boolean; refuseUnlink?: string; loseUnlinkAnswer?: boolean; refuseUpdate?: string; throwUpdate?: 'landed' | 'lost'; failReadsFrom?: number } = {}) {
   let n = 0;
   const calls: string[] = [];
   const asSearch = (r: Row) => ({
@@ -34,9 +34,13 @@ function wealthfolio(rows: Row[], opts: { refuseLink?: string; loseLinkAnswer?: 
     assetId: r.assetId ?? '', subtype: r.subtype ?? null, fee: r.fee ?? '0', sourceGroupId: r.sourceGroupId, metadata: r.metadata ? JSON.parse(r.metadata) : null,
   });
   const flow = (r: Row, external: boolean) => JSON.stringify({ ...(r.metadata ? JSON.parse(r.metadata) : {}), flow: { is_external: external } });
+  const logs: string[] = [];
+  let reads = 0;
   const io: InPlaceIo = {
+    log: (m) => { logs.push(m); },
     read: async (ids) => {
       calls.push('read');
+      if (opts.failReadsFrom !== undefined && ++reads >= opts.failReadsFrom) throw new Error('fetch failed');
       return rows.filter((r) => ids.includes(r.id)).map(asSearch);
     },
     link: async (a, b) => {
@@ -61,6 +65,7 @@ function wealthfolio(rows: Row[], opts: { refuseLink?: string; loseLinkAnswer?: 
         r.sourceGroupId = null;
         r.metadata = flow(r, true);
       }
+      if (opts.loseUnlinkAnswer) throw new Error('fetch failed');
       return pair.map(asSearch);
     },
   };
@@ -73,6 +78,7 @@ function wealthfolio(rows: Row[], opts: { refuseLink?: string; loseLinkAnswer?: 
   const saveMany = async (req: SaveManyRequest): Promise<SaveManyResult> => {
     calls.push(`saveMany${req.deleteIds?.length ? ' delete' : ''}${req.creates?.length ? ' create' : ''}${req.updates?.length ? ' update' : ''}`);
     if (req.updates?.length && opts.refuseUpdate) return { created: [], updated: [], errors: [{ action: 'update', message: opts.refuseUpdate }] };
+    if (req.updates?.length && opts.throwUpdate === 'lost') throw new Error('fetch failed');
     for (const id of req.deleteIds ?? []) rows.splice(rows.findIndex((r) => r.id === id), 1);
     const created = (req.creates ?? []).map((w) => {
       const row = write(w, { id: `new-${++n}`, sourceGroupId: null, metadata: null } as Row);
@@ -83,9 +89,10 @@ function wealthfolio(rows: Row[], opts: { refuseLink?: string; loseLinkAnswer?: 
       const row = write(w, rows.find((r) => r.id === w.id)!);
       return { id: row.id, accountId: row.accountId, activityType: row.activityType, date: row.date, amount: row.amount, comment: row.comment, sourceGroupId: row.sourceGroupId };
     });
+    if (req.updates?.length && opts.throwUpdate === 'landed') throw new Error('fetch failed');
     return { created, updated, errors: [] };
   };
-  return { io, saveMany, rows, calls };
+  return { io, saveMany, rows, calls, logs };
 }
 
 describe('linking in place', () => {
@@ -115,11 +122,63 @@ describe('linking in place', () => {
     expect(result.activityIds).toEqual(['new-1', 'new-2']);
   });
 
-  it('re-creates the pair when Wealthfolio refuses to link it in place — nothing was written by the refusal', async () => {
-    const wf = wealthfolio([stored(OUT_LEG), stored(IN_LEG)], { refuseLink: 'One or both activities are already linked to another transfer' });
+  it('re-creates the pair when Wealthfolio refuses to link it in place for another reason — nothing was written by the refusal, and the log says why', async () => {
+    const wf = wealthfolio([stored(OUT_LEG), stored(IN_LEG)], { refuseLink: 'Security transfer legs use different assets' });
     const result = await linkPairPreferInPlace(wf.io, wf.saveMany, [OUT_LEG, IN_LEG]);
     expect(wf.calls).toEqual(['read', 'link out-1 in-1', 'read', 'saveMany delete', 'saveMany create']);
     expect(result).toMatchObject({ linked: true, activityIds: ['new-1', 'new-2'] });
+    expect(wf.logs.join('\n')).toContain('Security transfer legs use different assets');
+    expect(wf.logs.at(-1)).toContain('re-creating instead of linking in place');
+  });
+
+  it('leaves the pair unlinked, deleting and creating nothing, when a row is already half of ANOTHER transfer', async () => {
+    const refusal = 'linkTransferActivities failed: 400 - One or both activities are already linked to another transfer';
+    const rows = [stored(OUT_LEG, { sourceGroupId: 'other-pair' }), stored(IN_LEG)];
+    const wf = wealthfolio(rows, { refuseLink: refusal });
+    const result = await linkPairPreferInPlace(wf.io, wf.saveMany, [OUT_LEG, IN_LEG]);
+    expect(result).toEqual({ linked: false, problems: [HALF_OF_ANOTHER_TRANSFER] });
+    expect(HALF_OF_ANOTHER_TRANSFER).toBe('One of these is already half of another transfer — nothing was changed.');
+    expect(wf.calls).toEqual(['read', 'link out-1 in-1']);
+    expect(wf.rows.map((r) => r.id)).toEqual(['out-1', 'in-1']);
+    expect(wf.logs.join('\n')).toContain(refusal);
+  });
+
+  it('does not take a group the rows were already in as proof the link went through (an older Wealthfolio refuses a pair already linked to each other)', async () => {
+    const wf = wealthfolio([stored(OUT_LEG, { sourceGroupId: 'old' }), stored(IN_LEG, { sourceGroupId: 'old' })], { refuseLink: 'Selected activities already belong to a transfer' });
+    const result = await linkPairPreferInPlace(wf.io, wf.saveMany, [OUT_LEG, IN_LEG]);
+    expect(wf.calls).toEqual(['read', 'link out-1 in-1', 'read', 'saveMany delete', 'saveMany create']);
+    expect(result.inPlace).toBeUndefined();
+    expect(result.activityIds).toEqual(['new-1', 'new-2']);
+  });
+
+  it('does not take an unchanged pre-existing shared group in the re-read after a lost answer either', async () => {
+    const wf = wealthfolio([stored(OUT_LEG, { sourceGroupId: 'old' }), stored(IN_LEG, { sourceGroupId: 'old' })]);
+    const io = { ...wf.io, link: async () => { throw new Error('fetch failed'); } };
+    const result = await linkPairPreferInPlace(io, wf.saveMany, [OUT_LEG, IN_LEG]);
+    expect(result.inPlace).toBeUndefined();
+    expect(wf.calls).toEqual(['read', 'read', 'saveMany delete', 'saveMany create']);
+  });
+
+  it('re-creates when Wealthfolio says it linked but the answer shows no shared group, and a read agrees', async () => {
+    const wf = wealthfolio([stored(OUT_LEG), stored(IN_LEG)]);
+    const io = { ...wf.io, link: async () => [{ id: 'in-1', accountId: 'wf-card', sourceGroupId: null }, { id: 'out-1', accountId: 'wf-chk', sourceGroupId: null }] };
+    const result = await linkPairPreferInPlace(io, wf.saveMany, [OUT_LEG, IN_LEG]);
+    expect(wf.calls).toEqual(['read', 'read', 'saveMany delete', 'saveMany create']);
+    expect(result).toMatchObject({ linked: true, activityIds: ['new-1', 'new-2'] });
+    expect(result.inPlace).toBeUndefined();
+    expect(wf.logs.join('\n')).toContain('without a shared group');
+  });
+
+  it('refuses in place a stored row whose outside-transfer mark is unknown, and logs why it re-created', async () => {
+    const s = (leg: LinkLeg, over: Partial<Row> = {}) => storedLegOf(stored(leg, over));
+    const { metadata: _drop, ...noMetadata } = stored(IN_LEG);
+    expect(inPlaceRefusal([OUT_LEG, IN_LEG], [s(OUT_LEG), storedLegOf(noMetadata)])).toBe('in-1 could not be checked for an outside-transfer mark');
+    expect(inPlaceRefusal([OUT_LEG, IN_LEG], [s(OUT_LEG), s(IN_LEG, { metadata: '{not json' })])).toBe('in-1 could not be checked for an outside-transfer mark');
+    const wf = wealthfolio([stored(OUT_LEG), stored(IN_LEG)]);
+    const io = { ...wf.io, read: async (ids: [string, string]) => (await wf.io.read(ids)).map((r) => { const { metadata: _m, ...rest } = r as Record<string, unknown>; return rest; }) };
+    await linkPairPreferInPlace(io, wf.saveMany, [OUT_LEG, IN_LEG]);
+    expect(wf.calls).toEqual(['read', 'saveMany delete', 'saveMany create']);
+    expect(wf.logs).toEqual(['link out-1/in-1: re-creating instead of linking in place (out-1 could not be checked for an outside-transfer mark)']);
   });
 
   it('reads again when the answer is lost, and keeps a link that went through', async () => {
@@ -188,6 +247,40 @@ describe('unlinking in place (Undo of a link)', () => {
     const wf = wealthfolio(asset);
     await unlinkPairPreferInPlace(wf.io, wf.saveMany, unlinkLegs());
     expect(wf.calls).toEqual(['read', 'saveMany create', 'saveMany delete']);
+  });
+
+  it('keeps an unlink whose answer was lost but which landed, and retypes', async () => {
+    const wf = wealthfolio(linked(), { loseUnlinkAnswer: true });
+    const result = await unlinkPairPreferInPlace(wf.io, wf.saveMany, unlinkLegs());
+    expect(result).toEqual({ unlinked: true, inPlace: true, activityIds: ['out-1', 'in-1'] });
+    expect(wf.calls).toEqual(['read', 'unlink out-1 in-1', 'read', 'saveMany update']);
+  });
+
+  it('names why an unlink cannot be done in place', () => {
+    const legs = unlinkLegs();
+    const s = (leg: LinkLeg, over: Partial<Row> = {}) => storedLegOf(stored(leg, { sourceGroupId: 'g', ...over }));
+    expect(unlinkInPlaceRefusal(legs, [s(OUT_LEG), s(IN_LEG)])).toBeNull();
+    expect(unlinkInPlaceRefusal(legs, [s(OUT_LEG), s(IN_LEG, { sourceGroupId: 'h' })])).toBe('the two rows are in different groups');
+    expect(unlinkInPlaceRefusal(legs, [s(OUT_LEG), s(IN_LEG, { sourceGroupId: null })])).toBe('in-1 is not linked');
+    expect(unlinkInPlaceRefusal(legs, [s(OUT_LEG), null])).toBe('Wealthfolio unlinks one transfer out from one transfer in');
+  });
+
+  it('says what a retype that THROWS left: still transfers when a read shows it, none when it landed, may still be when it cannot tell', async () => {
+    const lost = wealthfolio(linked(), { throwUpdate: 'lost' });
+    const r1 = await unlinkPairPreferInPlace(lost.io, lost.saveMany, unlinkLegs());
+    expect(r1.problems?.[0]).toContain('but they are still typed as transfers (fetch failed)');
+    const landed = wealthfolio(linked(), { throwUpdate: 'landed' });
+    expect(await unlinkPairPreferInPlace(landed.io, landed.saveMany, unlinkLegs())).toEqual({ unlinked: true, inPlace: true, activityIds: ['out-1', 'in-1'] });
+    const blind = wealthfolio(linked(), { throwUpdate: 'lost', failReadsFrom: 2 });
+    const r3 = await unlinkPairPreferInPlace(blind.io, blind.saveMany, unlinkLegs());
+    expect(r3.problems?.[0]).toContain('but they may still be typed as transfers (fetch failed)');
+  });
+
+  it('logs why an unlink fell back to re-creating, with Wealthfolio\'s refusal', async () => {
+    const wf = wealthfolio(linked(), { refuseUnlink: 'Selected activities belong to different linked transfers' });
+    await unlinkPairPreferInPlace(wf.io, wf.saveMany, unlinkLegs());
+    expect(wf.logs.join('\n')).toContain('Selected activities belong to different linked transfers');
+    expect(wf.logs.at(-1)).toContain('re-creating instead of unlinking in place');
   });
 
   it('says so when the pair unlinked but the retype was refused — the rows stay, unlinked, under their ids', async () => {

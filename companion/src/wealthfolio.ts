@@ -234,14 +234,31 @@ export class WealthfolioClient {
     if (!res.ok) throw await this.httpError('deleteBudgetTarget', res);
   }
 
-  /** Marks two activities as one internal transfer (shared source_group_id). */
-  async linkTransferActivities(activityAId: string, activityBId: string): Promise<void> {
+  /** Links two activities as one internal transfer, in place (`POST
+   *  /activities/link`, Wealthfolio 3.8+): one transaction that refuses with
+   *  nothing written. Resolves to the two rows it wrote, transfer-in first. */
+  async linkTransferActivities(activityAId: string, activityBId: string): Promise<unknown[]> {
     const res = await fetch(`${this.baseUrl}/api/v1/activities/link`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
       body: JSON.stringify({ activityAId, activityBId }),
     });
-    if (!res.ok) throw new Error(`linkTransferActivities failed: ${res.status}`);
+    if (!res.ok) throw await this.httpError('linkTransferActivities', res);
+    const rows = (await res.json()) as unknown;
+    return Array.isArray(rows) ? rows : [];
+  }
+
+  /** Unlinks a linked pair in place (`POST /activities/unlink`, 3.8+): both
+   *  rows lose their group and are marked external; nothing else changes. */
+  async unlinkTransferActivities(activityAId: string, activityBId: string): Promise<unknown[]> {
+    const res = await fetch(`${this.baseUrl}/api/v1/activities/unlink`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
+      body: JSON.stringify({ activityAId, activityBId }),
+    });
+    if (!res.ok) throw await this.httpError('unlinkTransferActivities', res);
+    const rows = (await res.json()) as unknown;
+    return Array.isArray(rows) ? rows : [];
   }
 
   async searchActivities(body: {

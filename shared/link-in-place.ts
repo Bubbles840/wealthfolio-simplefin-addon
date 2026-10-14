@@ -63,7 +63,17 @@ export interface InPlaceIo {
   link(aId: string, bId: string): Promise<unknown[]>;
   /** Wealthfolio's unlink: resolves to the two rows it wrote; rejects on a refusal. */
   unlink(aId: string, bId: string): Promise<unknown[]>;
+  /** Optional: where a pair fell back to re-creating, and why — Wealthfolio's own refusal text included. */
+  log?(message: string): void;
 }
+
+/** Wealthfolio's refusal when a row is already half of ANOTHER transfer
+ *  (`link_transfer_activities`, v3.8.0 through v3.10.0). */
+const OTHER_TRANSFER_REFUSAL = /already linked to another transfer/i;
+/** What the caller is told when it is: re-creating would delete the other
+ *  pair's partner too, and that partner is never re-created. */
+export const HALF_OF_ANOTHER_TRANSFER = 'One of these is already half of another transfer — nothing was changed.';
+const whyOf = (e: unknown): string => String((e as { message?: unknown } | null)?.message ?? e);
 
 /** A stored row as in-place linking checks it: a search row (ActivityDetails) or a link answer (Activity). */
 export interface StoredLeg {
@@ -146,16 +156,18 @@ export function inPlaceRefusal(legs: readonly [LinkLeg, LinkLeg], stored: readon
     if (s.assetId) return `${leg.wfId} carries an asset`;
     if (s.subtype) return `${leg.wfId} carries a subtype`;
     if (s.feeCents) return `${leg.wfId} carries a fee`;
+    if (s.external === undefined) return `${leg.wfId} could not be checked for an outside-transfer mark`;
     if (s.external === true) return `${leg.wfId} is marked as an outside transfer`;
   }
   return null;
 }
 
-/** The pair, linked: both rows share a group. Null when they do not. */
-function linkedIn(legs: readonly [LinkLeg, LinkLeg], rows: unknown[]): LinkResult | null {
+/** The pair, linked: both rows share a group (one not in `existing`, the
+ *  groups the rows were in before the call). Null when they do not. */
+function linkedIn(legs: readonly [LinkLeg, LinkLeg], rows: unknown[], existing: ReadonlySet<string> = new Set()): LinkResult | null {
   const a = find(rows, legs[0].wfId);
   const b = find(rows, legs[1].wfId);
-  if (!a || !b || !a.group || a.group !== b.group) return null;
+  if (!a || !b || !a.group || a.group !== b.group || existing.has(a.group)) return null;
   return { linked: true, groupId: a.group, activityIds: [legs[0].wfId, legs[1].wfId], inPlace: true };
 }
 
@@ -172,26 +184,44 @@ export async function linkPairPreferInPlace(
 ): Promise<LinkResult> {
   if (!io) return linkPairByRecreate(saveMany, legs);
   const ids: [string, string] = [legs[0].wfId, legs[1].wfId];
+  const recreate = (why: string) => {
+    io.log?.(`link ${ids[0]}/${ids[1]}: re-creating instead of linking in place (${why})`);
+    return linkPairByRecreate(saveMany, legs);
+  };
   let before: unknown[];
   try {
     before = await io.read(ids);
-  } catch {
-    return linkPairByRecreate(saveMany, legs);
+  } catch (e) {
+    return recreate(`the rows could not be read: ${whyOf(e)}`);
   }
-  if (inPlaceRefusal(legs, [find(before, ids[0]), find(before, ids[1])]) !== null) return linkPairByRecreate(saveMany, legs);
+  const storedBefore: [StoredLeg | null, StoredLeg | null] = [find(before, ids[0]), find(before, ids[1])];
+  const refusal = inPlaceRefusal(legs, storedBefore);
+  if (refusal !== null) return recreate(refusal);
+  // The groups the rows were already in: a shared group found later only
+  // proves the link if it is a new one.
+  const existing = new Set(storedBefore.map((s) => s?.group ?? '').filter(Boolean));
+  const alreadyOneGroup = storedBefore[0]!.group !== '' && storedBefore[0]!.group === storedBefore[1]!.group;
   try {
-    const done = linkedIn(legs, await io.link(ids[0], ids[1]));
+    const done = linkedIn(legs, await io.link(ids[0], ids[1]), alreadyOneGroup ? new Set() : existing);
     if (done) return done;
-  } catch {
-    // Refused (nothing was written), or its answer was lost: look.
+    io.log?.(`link ${ids[0]}/${ids[1]}: Wealthfolio answered without a shared group; looking`);
+  } catch (e) {
+    const why = whyOf(e);
+    if (OTHER_TRANSFER_REFUSAL.test(why) && !alreadyOneGroup) {
+      // Re-creating would delete the OTHER pair's partner too (a delete expands
+      // to the whole group), and that partner is never re-created.
+      io.log?.(`link ${ids[0]}/${ids[1]}: refused, left unlinked, nothing deleted (${why})`);
+      return { linked: false, problems: [HALF_OF_ANOTHER_TRANSFER] };
+    }
+    io.log?.(`link ${ids[0]}/${ids[1]}: Wealthfolio refused or its answer was lost (${why}); looking`);
   }
   try {
-    const done = linkedIn(legs, await io.read(ids));
+    const done = linkedIn(legs, await io.read(ids), existing);
     if (done) return done;
   } catch {
     // Can't tell: re-creating links them either way.
   }
-  return linkPairByRecreate(saveMany, legs);
+  return recreate('Wealthfolio did not link them');
 }
 
 /** Why this pair cannot be unlinked in place, or null when it can. */
@@ -242,19 +272,25 @@ export async function unlinkPairPreferInPlace(
 ): Promise<UnlinkResult> {
   if (!io) return unlinkPairByRecreate(saveMany, legs);
   const ids: [string, string] = [legs[0].wfId, legs[1].wfId];
+  const recreate = (why: string) => {
+    io.log?.(`unlink ${ids[0]}/${ids[1]}: re-creating instead of unlinking in place (${why})`);
+    return unlinkPairByRecreate(saveMany, legs);
+  };
   let before: unknown[];
   try {
     before = await io.read(ids);
-  } catch {
-    return unlinkPairByRecreate(saveMany, legs);
+  } catch (e) {
+    return recreate(`the rows could not be read: ${whyOf(e)}`);
   }
   const stored: [StoredLeg | null, StoredLeg | null] = [find(before, ids[0]), find(before, ids[1])];
-  if (unlinkInPlaceRefusal(legs, stored) !== null) return unlinkPairByRecreate(saveMany, legs);
+  const refusal = unlinkInPlaceRefusal(legs, stored);
+  if (refusal !== null) return recreate(refusal);
   let unlinked = false;
   try {
     await io.unlink(ids[0], ids[1]);
     unlinked = true;
-  } catch {
+  } catch (e) {
+    io.log?.(`unlink ${ids[0]}/${ids[1]}: Wealthfolio refused or its answer was lost (${whyOf(e)}); looking`);
     // Refused, or its answer was lost: unlinked only if both rows now say so.
     try {
       const again = await io.read(ids);
@@ -266,18 +302,29 @@ export async function unlinkPairPreferInPlace(
       unlinked = false;
     }
   }
-  if (!unlinked) return unlinkPairByRecreate(saveMany, legs);
+  if (!unlinked) return recreate('Wealthfolio did not unlink them');
   let problem: string | null = null;
+  let still = 'are still';
   try {
     const res = await saveMany({ updates: legs.map((leg, i) => retypeWrite(leg, stored[i]!)) });
     if (res.errors.length > 0) problem = res.errors.map((e) => `${e.action}: ${e.message}`).join('; ');
-  } catch (e: any) {
-    problem = String(e?.message ?? e);
+  } catch (e) {
+    problem = whyOf(e);
+    still = 'may still be';
+    // A throw is not a refusal: the update may have landed. Look before saying.
+    try {
+      const again = await io.read(ids);
+      const types = legs.map((leg) => find(again, leg.wfId)?.type);
+      if (types.every((t, i) => t === legs[i].newType)) problem = null;
+      else if (types.every((t) => t !== undefined && isTransferType(t))) still = 'are still';
+    } catch {
+      // Can't tell: stays "may still be".
+    }
   }
   if (problem !== null) {
     return {
       unlinked: true, inPlace: true, activityIds: ids,
-      problems: [`unlinked ${describeLeg(legs[0])} and ${describeLeg(legs[1])} in place, but they are still typed as transfers (${problem}); a later sync retypes each while the bank feed still sends it`],
+      problems: [`unlinked ${describeLeg(legs[0])} and ${describeLeg(legs[1])} in place, but they ${still} typed as transfers (${problem}); a later sync retypes each while the bank feed still sends it`],
     };
   }
   return { unlinked: true, inPlace: true, activityIds: ids };

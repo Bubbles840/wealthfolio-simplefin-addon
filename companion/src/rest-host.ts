@@ -5,7 +5,8 @@ import { AMAZON_CONFIG_SECRET_KEY, AMAZON_LABELS_SECRET_KEY } from './amazon-mai
 import type { AmazonLabelCatalog, AmazonMailConfig } from './amazon-mail.js';
 import type { AmazonLedger } from '../../shared/amazon-ledger.js';
 import { VENMO_LEDGER_SECRET_KEY, type VenmoLedger } from '../../shared/venmo-ledger.js';
-import { linkPairByRecreate } from '../../shared/link-pair.js';
+import { linkPairPreferInPlace, unlinkPairPreferInPlace, type InPlaceIo } from '../../shared/link-in-place.js';
+import type { UnlinkLeg, UnlinkResult } from '../../shared/link-pair.js';
 import { SKIPPED_TRANSACTIONS_SECRET_KEY, parseSkippedTransactions, type SkippedTransaction } from '../../shared/skipped-transactions.js';
 import { syncOverridesIgnoredLog, syncOverridesOrEmpty, type SyncOverrides } from '../../shared/sync-overrides.js';
 import type { WealthfolioClient } from './wealthfolio.js';
@@ -184,8 +185,22 @@ export class RestSyncHost implements SyncHost {
     await this.client.importActivities(rows);
   }
 
+  /** Wealthfolio's own link and unlink (`POST /activities/link`, `/unlink`,
+   *  3.8+), and the exact-id read right before each. */
+  private inPlace(): InPlaceIo {
+    return {
+      read: (ids) => this.client.searchActivities({ page: 0, pageSize: 2, activityIdFilter: ids }),
+      link: (a, b) => this.client.linkTransferActivities(a, b),
+      unlink: (a, b) => this.client.unlinkTransferActivities(a, b),
+    };
+  }
+
   async linkPair(legs: [LinkLeg, LinkLeg]): Promise<LinkResult> {
-    return linkPairByRecreate((req) => this.saveMany(req), legs);
+    return linkPairPreferInPlace(this.inPlace(), (req) => this.saveMany(req), legs);
+  }
+
+  async unlinkPair(legs: [UnlinkLeg, UnlinkLeg]): Promise<UnlinkResult> {
+    return unlinkPairPreferInPlace(this.inPlace(), (req) => this.saveMany(req), legs);
   }
 }
 
