@@ -113,6 +113,14 @@ export function TxStoryPanel({ target, load, actions }: {
   const hasStory = useRef(false);
   const { activityId, categoryName, filer } = target;
 
+  // A different transaction starts clean: the old story, and its stale note,
+  // must never sit under the new target's "gone" or "unreachable".
+  useEffect(() => {
+    hasStory.current = false;
+    setShown('loading');
+    setStaleNote(null);
+  }, [activityId]);
+
   useEffect(() => {
     let live = true;
     const settle = (out: AppStoryOutcome) => {

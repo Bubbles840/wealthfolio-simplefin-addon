@@ -1,6 +1,6 @@
 import React from 'react';
 import { describe, it, expect, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { parseTxQuery, TX_SEARCH_TOO_MANY, type TxSearchRow } from '../../shared/tx-search';
 import { TX_STORY_UNREACHABLE } from '../../shared/tx-story';
 import type { AppSearchOutcome } from '../utils/tx-story';
@@ -67,5 +67,38 @@ describe('WhyCard', () => {
     const { ask } = mount(search);
     ask('   ');
     expect(search).not.toHaveBeenCalled();
+  });
+
+  it('searches on submit, as Enter does, without clicking Find', async () => {
+    const search = vi.fn(async () => found(1));
+    mount(search);
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Find a transaction' }), { target: { value: 'kroger' } });
+    fireEvent.submit(screen.getByRole('search'));
+    expect(await screen.findByText('KROGER #0')).toBeInTheDocument();
+    expect(search).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the newest search when an older one resolves last', async () => {
+    const resolvers: Array<(o: AppSearchOutcome) => void> = [];
+    const search = vi.fn(() => new Promise<AppSearchOutcome>((resolve) => { resolvers.push(resolve); }));
+    const { ask } = mount(search);
+    ask('first');
+    ask('second');
+    await act(async () => resolvers[1]({ kind: 'ok', result: { rows: [{ ...rows(1)[0], description: 'SECOND HIT' }], truncated: false } }));
+    await act(async () => resolvers[0]({ kind: 'ok', result: { rows: [{ ...rows(1)[0], description: 'FIRST HIT' }], truncated: false } }));
+    expect(screen.getByText('SECOND HIT')).toBeInTheDocument();
+    expect(screen.queryByText('FIRST HIT')).toBeNull();
+  });
+
+  it('a search resolving after unmount changes nothing and throws nothing', async () => {
+    let resolve!: (o: AppSearchOutcome) => void;
+    const search = vi.fn(() => new Promise<AppSearchOutcome>((r) => { resolve = r; }));
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { ask, unmount } = mount(search);
+    ask('kroger');
+    unmount();
+    await act(async () => resolve(found(1)));
+    expect(errors).not.toHaveBeenCalled();
+    errors.mockRestore();
   });
 });
