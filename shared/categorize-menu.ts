@@ -49,6 +49,11 @@ export interface CategorizeTxn {
    *  assignment that happened to be shown while silently dropping the rest —
    *  see `refiled.restore`, which carries all of them. */
   currentCategory?: { taxonomyId: string; categoryId: string; name: string };
+  /** The category you filed the same merchant under before (3, L3), and how
+   *  many of those filings chose it. Categorize mode only. Shown beside the row
+   *  on the list and as the transaction screen's first button — one tap files
+   *  it, exactly as picking it from the grid would. Never filed on its own. */
+  guess?: { categoryId: string; name: string; count: number };
 }
 
 /** One taxonomy's assignment, as the ids a write needs and nothing else. No
@@ -485,12 +490,14 @@ function renderList(session: MenuSession, page: number, note?: string): RenderRe
     // "categorized as what" without a tap — label only, never Markdown-parsed
     // (see `layout`'s doc comment), so the raw name is fine unescaped here.
     const currentSuffix = mode === 'recategorize' && t.currentCategory ? ` · ${t.currentCategory.name}` : '';
+    // The guess (3), beside the row — a hint only; the tap still opens the row.
+    const guessSuffix = mode !== 'recategorize' && t.guess ? ` · probably ${t.guess.name}` : '';
     return [{
       // moneyWhole takes DOLLARS, so cents are divided down first. Both native
       // readers ABS() the amount before it ever reaches this module, so the
       // sign comes from `direction`, not the figure — and stays absent for a
       // row whose direction an older controller never supplied.
-      text: `${shortDate(t.date)} · ${t.description} · ${signedWhole(t)}${currentSuffix}`,
+      text: `${shortDate(t.date)} · ${t.description} · ${signedWhole(t)}${currentSuffix}${guessSuffix}`,
       action: { kind: 'goto', screen: { kind: 'txn', activityId: t.activityId } },
     }];
   });
@@ -544,6 +551,15 @@ function renderTxn(session: MenuSession, activityId: string, showSpending = fals
       return { text: c.name, action };
     });
 
+  // The guess (3) comes first, as one tap — the same `assign` the grid's own
+  // button makes, so it files, logs and offers Undo and the rule identically.
+  // Only on the spending grid (a guess is a spending category) and only for a
+  // category the tree still has.
+  const guessed = !isRecategorize && !useIncomeGrid && txn.guess ? findCategory(session, txn.guess.categoryId) : undefined;
+  const guessRows: Btn[][] = guessed && txn.guess
+    ? [[{ text: `✓ ${guessed.name} (like the last ${txn.guess.count})`, action: { kind: 'assign', activityId, categoryId: guessed.id } }]]
+    : [];
+
   const switchRows: Btn[][] = useIncomeGrid
     ? [[{ text: 'Spending categories »', action: { kind: 'goto', screen: { kind: 'txn', activityId, showSpending: true } } }]]
     : incomeGridAvailable
@@ -551,6 +567,7 @@ function renderTxn(session: MenuSession, activityId: string, showSpending = fals
       : [];
 
   const rows: Btn[][] = [
+    ...guessRows,
     ...pairUp(catButtons),
     ...switchRows,
     // "Keep uncategorized" only makes sense before a first filing — a

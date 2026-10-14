@@ -421,6 +421,63 @@ describe('🔎 Why? on the transaction screen (1.61)', () => {
   });
 });
 
+describe('guessed categories (3)', () => {
+  /** Two past filings of `BOOK STORES a` under Entertainment: a guess. */
+  const withFilings = (h: ReturnType<typeof setup>, readFilings: CategorizeDeps['readFilings']) => {
+    const controller = createCategorizeController({ ...h.deps, readFilings });
+    const tap = (data: string) => controller.onCallback({ data, chatId: CHAT, messageId: 55 }, h.ui);
+    return { controller, tap };
+  };
+  const FILINGS = () => [
+    { description: 'BOOK STORES a', categoryId: 'cat-fun', categoryName: 'Entertainment' },
+    { description: 'BOOK STORES a', categoryId: 'cat-fun', categoryName: 'Entertainment' },
+  ];
+
+  it('reads the year’s filings and shows the guess beside the row', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-14T12:00:00Z'));
+    const h = setup();
+    const readFilings = vi.fn(FILINGS);
+    const { controller } = withFilings(h, readFilings);
+    await controller.open(h.send);
+    expect(readFilings).toHaveBeenCalledWith(DB, '2025-10-14');
+    expect(labels(keyboardOf(lastCall(h.send))).slice(0, 2)).toEqual([
+      'Aug 8 · BOOK STORES a · -$12 · probably Entertainment',
+      'Aug 8 · BOOK STORES b · -$12',
+    ]);
+  });
+
+  it('files the guess with one tap — logged as yours, with Undo and the rule offer as usual', async () => {
+    const h = setup();
+    const recorded: any[] = [];
+    (h.deps as any).record = (d: unknown) => recorded.push(d);
+    const { controller, tap } = withFilings(h, FILINGS);
+    await controller.open(h.send);
+    await tap(dataFor(keyboardOf(lastCall(h.send)), 'BOOK STORES a'));
+    const picker = keyboardOf(lastCall(h.ui.edit));
+    expect(labels(picker)[0]).toBe('✓ Entertainment (like the last 2)');
+    await tap(dataFor(picker, '✓ Entertainment'));
+    expect(h.deps.assign).toHaveBeenCalledWith('a', 'cat-fun');
+    const filed = lastCall(h.ui.edit);
+    expect(filed[0]).toBe('Filed BOOK STORES a → Entertainment.');
+    expect(labels(keyboardOf(filed))).toEqual(expect.arrayContaining(['↩ Undo', 'Make this a rule']));
+    expect(recorded).toEqual([expect.objectContaining({ kind: 'category-filed', actor: 'you', summary: 'Filed BOOK STORES a under Entertainment' })]);
+    await tap(dataFor(keyboardOf(filed), '↩ Undo'));
+    expect(h.deps.unassign).toHaveBeenCalledWith('a');
+    expect(lastCall(h.ui.edit)[0]).toBe('Filing undone — BOOK STORES a is uncategorized again.');
+  });
+
+  it('a failed read of the filings shows no guesses, and the menu still works', async () => {
+    const h = setup();
+    const { controller, tap } = withFilings(h, () => { throw new Error('database is locked'); });
+    await controller.open(h.send);
+    expect(labels(keyboardOf(lastCall(h.send))).join('\n')).not.toContain('probably');
+    await tap(dataFor(keyboardOf(lastCall(h.send)), 'BOOK STORES a'));
+    expect(labels(keyboardOf(lastCall(h.ui.edit)))[0]).not.toMatch(/^✓/);
+    expect(h.logs.join('\n')).toContain('could not read past filings, so no guesses: database is locked');
+  });
+});
+
 describe('the taxonomy the whole feature writes into', () => {
   it('is Wealthfolio\'s spending taxonomy', () => {
     expect(SPENDING_TAXONOMY_ID).toBe('spending_categories');
