@@ -21,12 +21,12 @@ import type { ActivitySearchFilters, AddonContext } from '@wealthfolio/addon-sdk
 import type { HealthLeg } from '../../shared/audit-health';
 import { linkPairs, LINK_DONE, type LinkIo, type LinkPair, type LinkRun, type ReadRow } from '../../shared/audit-link';
 import { fixRowOf, linkedState, type FixRow } from '../../shared/fix-row';
-import { txIdFromComment } from '../../shared/sync-core';
+import { isTransferType, txIdFromComment } from '../../shared/sync-core';
 import { removeForGood, type RemoveIo, type RemoveOutcome } from '../../shared/tx-remove';
 import { sfinIdsFor } from '../../shared/tx-story';
 import { AddonSyncHost } from './addon-host';
 import type { SecretsStore } from './secrets';
-import { beginWrite, LINK_SYNC_RUNNING, REMOVE_SYNC_RUNNING } from './write-lock';
+import { beginWrite, writeRefusal } from './write-lock';
 
 /** The store methods the fixes use, every one optional. */
 export type FixStore = Partial<Pick<SecretsStore,
@@ -104,7 +104,7 @@ export function addonLinkIo(ctx: AddonContext, store: FixStore, log: (msg: strin
 export async function linkFromApp(ctx: AddonContext, store: FixStore, pairs: LinkPair[]): Promise<LinkRun> {
   const release = beginWrite();
   if (!release) {
-    return { total: pairs.length, linked: 0, changed: 0, failed: 0, done: [], lost: [], maybeLost: [], message: LINK_SYNC_RUNNING };
+    return { total: pairs.length, linked: 0, changed: 0, failed: 0, done: [], lost: [], maybeLost: [], message: writeRefusal('link') };
   }
   try {
     const io = addonLinkIo(ctx, store);
@@ -136,6 +136,9 @@ export function addonRemoveIo(ctx: AddonContext, store: FixStore, log: (msg: str
     read: async (activityId) => readFixRow(ctx, activityId, await accountTypes(ctx)),
     feeds: async (wfAccountId) => sfinIdsFor((await store.getAccountMapping?.()) ?? {}, wfAccountId),
     linked: async (row, txKeys) => {
+      // The app's Remove never needs a transfer leg, and upstream treats a wf-transfer- group or
+      // a "wealthfolio" transfer source as linked even when the row reads is_external:true.
+      if (isTransferType(row.type.toUpperCase())) return 'confirmed';
       const ledger = await ledgerOf(store);
       return linkedState(row, { readsGroups: false, ledgerKnows: ledgerKnows(ledger, txKeys, txIdFromComment(row.notes)) });
     },
@@ -159,7 +162,7 @@ export function addonRemoveIo(ctx: AddonContext, store: FixStore, log: (msg: str
  *  sync that starts meanwhile waits. */
 export async function removeFromApp(ctx: AddonContext, store: FixStore, activityId: string, fingerprint: string): Promise<RemoveOutcome> {
   const release = beginWrite();
-  if (!release) return { ok: false, message: REMOVE_SYNC_RUNNING };
+  if (!release) return { ok: false, message: writeRefusal('remove') };
   try {
     return await removeForGood(activityId, fingerprint, addonRemoveIo(ctx, store), new Date());
   } finally {

@@ -58,15 +58,25 @@ export function useTxStoryActions(ctx: AddonContext, store: SecretsStore, compan
 }
 
 /** "Remove for good…": the first click explains, Remove acts. A refusal reads the story again. */
-function RemoveForGood({ activityId, fingerprint, remove, onRefused }: {
+function RemoveForGood({ activityId, fingerprint, remove, onRefused, result, onResult }: {
   activityId: string;
   fingerprint: string;
   remove: NonNullable<TxStoryActions['remove']>;
   onRefused: () => void;
+  /** The last outcome lives in the story view, so it survives a re-read that stops offering Remove. */
+  result: RemoveOutcome | null;
+  onResult: (r: RemoveOutcome | null) => void;
 }) {
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState<RemoveOutcome | null>(null);
+  const removeBtn = useRef<HTMLButtonElement>(null);
+  const openBtn = useRef<HTMLButtonElement>(null);
+  const focusAfter = useRef<'remove' | 'open' | null>(null);
+  useEffect(() => {
+    if (focusAfter.current === 'remove') removeBtn.current?.focus();
+    else if (focusAfter.current === 'open') openBtn.current?.focus();
+    focusAfter.current = null;
+  }, [confirming]);
   // One action per click, even before the re-render that disables the buttons.
   const running = useRef(false);
   // No state updates once the story is gone.
@@ -87,28 +97,26 @@ function RemoveForGood({ activityId, fingerprint, remove, onRefused }: {
     }
     running.current = false;
     if (!mounted.current) return;
-    setResult(out);
+    onResult(out);
     setBusy(false);
     setConfirming(false);
     if (!out.ok) onRefused();
   };
   return (
-    <div className="sfin-why-remove">
+    <div>
       {confirming && <div>{REMOVE_CONFIRM}</div>}
       {!result?.ok && (
         <div className="sfin-audit-fix">
           {confirming ? (
             <>
-              <Button variant="ghost" disabled={busy} aria-busy={busy} onClick={act}>{REMOVE_BUTTON}</Button>
-              <Button variant="ghost" disabled={busy} onClick={() => setConfirming(false)}>{REMOVE_CANCEL}</Button>
+              <Button ref={removeBtn} variant="ghost" disabled={busy} aria-busy={busy} onClick={act}>{REMOVE_BUTTON}</Button>
+              <Button variant="ghost" disabled={busy} aria-busy={busy} onClick={() => { focusAfter.current = 'open'; setConfirming(false); }}>{REMOVE_CANCEL}</Button>
             </>
           ) : (
-            <Button variant="ghost" onClick={() => { setResult(null); setConfirming(true); }}>{REMOVE_ACTION}</Button>
+            <Button ref={openBtn} variant="ghost" onClick={() => { onResult(null); focusAfter.current = 'remove'; setConfirming(true); }}>{REMOVE_ACTION}</Button>
           )}
         </div>
       )}
-      {/* Mounted from the first render, so what lands in it is announced. */}
-      <div role="status" className="sfin-subtle">{result?.message ?? ''}</div>
     </div>
   );
 }
@@ -150,6 +158,7 @@ export function TxStoryView({ story, entries, actions, onChanged, removal }: {
     undo: actions.undo, companionVersion: actions.companionVersion, entries, onSyncNow: actions.onSyncNow, changed: onChanged,
   };
   const byId = new Map(entries.map((e) => [e.id, e]));
+  const [removed, setRemoved] = useState<RemoveOutcome | null>(null);
   return (
     <div className="sfin-why-story">
       <div className="sfin-why-title">{story.title}</div>
@@ -159,8 +168,18 @@ export function TxStoryView({ story, entries, actions, onChanged, removal }: {
           {story.answer.map((line, i) => <li key={`${i}:${line}`}>{line}</li>)}
         </ul>
       )}
-      {removal && actions.remove && (
-        <RemoveForGood activityId={removal.activityId} fingerprint={removal.fingerprint} remove={actions.remove} onRefused={onChanged} />
+      {actions.remove && (
+        <div className="sfin-why-remove">
+          {/* Mounted from the first render, so what lands in it is announced; it stays
+              when a re-read stops offering Remove, so a refusal is never lost. */}
+          <div role="status" className="sfin-subtle">{removed?.message ?? ''}</div>
+          {removal && (
+            <RemoveForGood
+              activityId={removal.activityId} fingerprint={removal.fingerprint} remove={actions.remove} onRefused={onChanged}
+              result={removed} onResult={setRemoved}
+            />
+          )}
+        </div>
       )}
       {story.history && (
         <div className="sfin-why-history">
