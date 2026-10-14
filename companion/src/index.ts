@@ -18,7 +18,8 @@ import { readFileSync, existsSync } from 'fs';
 import { runSyncCore, descriptionFromComment, txIdFromComment } from '../../shared/sync-core.js';
 import type { SyncResult } from '../../shared/sync-core.js';
 import { RestSyncHost, RestSyncStore } from './rest-host.js';
-import { WealthfolioClient } from './wealthfolio.js';
+import { WealthfolioClient, type ActivitySearchItem } from './wealthfolio.js';
+import type { DateRepairRow } from '../../shared/date-repair.js';
 import { resolveDigestRows, resolveReportDetail, shortDate, shortDateTime, formatDollars } from '../../shared/telegram.js';
 import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatMonthlyWrapUp, formatSyncHealthFooter, formatLargeTransactionAlert, formatBalanceDriftAlert, formatFeedLagNotice, formatStuckTransferAlert, formatDuplicatePruneAlert, formatImportNotice, formatRefusedCreatesAlert, formatPoolLine, formatPoolSection, buildDismissKeyboard, dailyReportCarriesProblems, IMPORT_NOTICE_UNCATEGORIZED_CAP, escapeMarkdown, formatComingUpBlock, formatNextWeekLine, formatSubscriptionNews, parseNewsSent, pruneNewsSent, SUBSCRIPTION_NEWS_SECRET_KEY, LARGE_TX_OUTBOX_SECRET_KEY, RECATEGORIZE_ENTRY_CALLBACK } from '../../shared/telegram.js';
 import { pruneDismissals, mergeDismissals } from './dismissals.js';
@@ -69,7 +70,7 @@ import type { GlyphStyle, InlineKeyboard } from '../../shared/telegram.js';
 import type { DismissalLedger } from './dismissals.js';
 import type { SyncHealth } from '../../shared/telegram.js';
 import { SIMPLEFIN_SYNC_VERSION, COMPANION_VERSION_SECRET_KEY, INSTALLED_ADDON_VERSION_SECRET_KEY, isNewerVersion } from '../../shared/version.js';
-import { getNativeOverriddenActivityIds, getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeRuleCategorizedAmazonRows, getNativeCategorizedSpending, getNativeSpendingCategories, getNativeCategoryCatalog, getNativeSubcategorySpending, getNativeUncategorizedSpendingTotal, countRulePatternMatches, getNativeSpendMatrix, getNativeIncomeByMonthAccount, getNativeUncategorizedByMonthAccount, getNativeMerchantRows, getNativeDrillRows, getNativeFeesInterestByMonth, getNativeSpendDailyTotals, getNativeValuationByMonth, getNativeIncomeCategories } from './sqlite-native.js';
+import { getNativeOverriddenActivityIds, getNativeStoredActivityTypes, getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeRuleCategorizedAmazonRows, getNativeCategorizedSpending, getNativeSpendingCategories, getNativeCategoryCatalog, getNativeSubcategorySpending, getNativeUncategorizedSpendingTotal, countRulePatternMatches, getNativeSpendMatrix, getNativeIncomeByMonthAccount, getNativeUncategorizedByMonthAccount, getNativeMerchantRows, getNativeDrillRows, getNativeFeesInterestByMonth, getNativeSpendDailyTotals, getNativeValuationByMonth, getNativeIncomeCategories } from './sqlite-native.js';
 import { publishUncategorizedStatusForDbPath } from './uncategorized-status.js';
 import { getNativePastFilings } from './sqlite-guess.js';
 import { createCategorizeController, SPENDING_TAXONOMY_ID } from './categorize.js';
@@ -1273,19 +1274,26 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
   }
 }
 
+/** One search hit as the date repair reads it. A missing `sourceGroupId` stays undefined: unknown counts as linked. */
+function repairRow(a: ActivitySearchItem): DateRepairRow {
+  return {
+    id: String(a.id), accountId: String(a.accountId ?? ''), date: String(a.date ?? ''),
+    activityType: String(a.activityType ?? ''), currency: String(a.currency ?? ''),
+    comment: a.comment ?? null, sourceGroupId: a.sourceGroupId,
+  };
+}
+
 /** The date repair's reads and writes over this companion's client and database. */
 function dateRepairDeps(wfClient: WealthfolioClient, store: RestSyncStore, run: string): DateRepairDeps {
   return {
     getSecret: (key) => wfClient.getAddonSecret('simplefin-sync', key),
     setSecret: (key, value) => wfClient.setAddonSecret('simplefin-sync', key, value),
     mappedAccountIds: async () => Object.values((await store.getAccountMapping()) ?? {}),
-    searchPage: async (accountId, page, pageSize) => (await wfClient.searchActivities({ page, pageSize, accountIdFilter: [accountId] }))
-      .map((a) => ({
-        id: String(a.id), accountId: String(a.accountId ?? accountId), date: String(a.date ?? ''),
-        activityType: String(a.activityType ?? ''), currency: String(a.currency ?? ''),
-        comment: a.comment ?? null, sourceGroupId: a.sourceGroupId ?? null,
-      })),
+    installedAddonVersion: () => readInstalledAddonVersion(wealthfolioDbPath()),
+    searchPage: async (accountId, page, pageSize) => (await wfClient.searchActivities({ page, pageSize, accountIdFilter: [accountId] })).map(repairRow),
+    searchByIds: async (ids) => (await wfClient.searchActivities({ page: 0, pageSize: ids.length, activityIdFilter: ids })).map(repairRow),
     overriddenIds: () => getNativeOverriddenActivityIds(wealthfolioDbPath()),
+    storedTypes: () => getNativeStoredActivityTypes(wealthfolioDbPath()),
     saveUpdates: async (updates) => ({ errors: (await wfClient.saveMany({ updates })).errors ?? [] }),
     record: (draft) => recordCompanionChanges(wfClient, [draft], run),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),

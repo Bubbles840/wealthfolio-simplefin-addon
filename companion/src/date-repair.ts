@@ -6,34 +6,44 @@
  * which the add-on's SDK cannot), learns from the read-only database which
  * rows carry a type override, writes the date-only updates in paced batches,
  * records one bookkeeping entry in the change log, and marks the repair done
- * only when every row moved — so a run that stops part-way is picked up by
- * the next sync.
+ * only when nothing is left to move — so a run that stops part-way is picked
+ * up by the next sync. Each batch is re-read by id right before it is written
+ * (the sweep is minutes old: a hand edit, a link or another writer in between
+ * must not be overwritten), and the run waits for the 1.62 add-on.
  *
  * Every dependency is injected: index.ts binds the real ones, the tests fake
  * each in its real shape.
  */
 import { bookkeepingChange, type ChangeDraft } from '../../shared/change-entries.js';
 import {
-  batches, DATE_REPAIR_PAUSE_MS, DATE_REPAIR_SECRET_KEY, parseDateRepairMarker, planDateRepair, type DateRepairRow,
+  batches, DATE_REPAIR_PAUSE_MS, DATE_REPAIR_SECRET_KEY, DATE_REPAIR_SINCE, parseDateRepairMarker, planDateRepair, type DateRepairRow, type DateRepairWrite,
 } from '../../shared/date-repair.js';
-import type { ActivityWrite } from '../../shared/sync-host.js';
+import { isNewerVersion } from '../../shared/version.js';
 
 /** Page size for the account sweep, and the most pages read per account. */
 const PAGE_SIZE = 500;
 const MAX_PAGES = 40;
+/** The most ids the change-log entry lists (the entry carries the full count). */
+export const DATE_REPAIR_ENTRY_IDS = 200;
 
 export interface DateRepairDeps {
   /** One add-on secret; rejects when Wealthfolio cannot be reached. */
   getSecret(key: string): Promise<string | null>;
   setSecret(key: string, value: string): Promise<void>;
+  /** The installed add-on's version, or null when unknown. */
+  installedAddonVersion(): string | null;
   /** The Wealthfolio account ids `account_mapping` maps to. */
   mappedAccountIds(): Promise<string[]>;
   /** One page (0-indexed) of an account's rows, as Wealthfolio's search returns them. */
   searchPage(accountId: string, page: number, pageSize: number): Promise<DateRepairRow[]>;
+  /** These rows by id, as the search returns them now (a vanished id is absent). */
+  searchByIds(ids: string[]): Promise<DateRepairRow[]>;
   /** Ids of rows with a non-blank type override. Throws when the database cannot be read. */
   overriddenIds(): Set<string>;
+  /** Every row's stored type by id. Throws when the database cannot be read. */
+  storedTypes(): Map<string, string>;
   /** One bulk update; resolves the refusals (Wealthfolio's bulk write is all or nothing). */
-  saveUpdates(writes: ActivityWrite[]): Promise<{ errors: Array<{ action: string; message: string }> }>;
+  saveUpdates(writes: DateRepairWrite[]): Promise<{ errors: Array<{ action: string; message: string }> }>;
   record(draft: ChangeDraft): Promise<void>;
   sleep(ms: number): Promise<void>;
   log(message: string): void;
@@ -43,14 +53,31 @@ export interface DateRepairResult {
   /** False when it had already run, or could not run this time. */
   ran: boolean;
   moved: number;
+  /** Rows not moved: refused for good, or failed this time. */
   failed: number;
+  /** Of `failed`, those that may succeed next time (5xx, network). */
+  transient: number;
+  /** Rows that changed or vanished between the sweep and the write. */
+  changed: number;
   skippedGrouped: number;
   skippedOverride: number;
 }
 
-const NOT_RUN: DateRepairResult = { ran: false, moved: 0, failed: 0, skippedGrouped: 0, skippedOverride: 0 };
+const NOT_RUN: DateRepairResult = { ran: false, moved: 0, failed: 0, transient: 0, changed: 0, skippedGrouped: 0, skippedOverride: 0 };
 
-export async function runDateRepair(deps: DateRepairDeps, now: Date): Promise<DateRepairResult> {
+/** A thrown write error that is the row's own fault (4xx) and will not heal. */
+function isPermanent(e: unknown): boolean {
+  const m = /failed: (\d{3})/.exec(e instanceof Error ? e.message : String(e));
+  if (!m) return false;
+  const status = Number(m[1]);
+  return status >= 400 && status < 500 && ![408, 423, 429].includes(status);
+}
+
+export async function runDateRepair(
+  deps: DateRepairDeps, now: Date, limits: { pageSize?: number; maxPages?: number } = {},
+): Promise<DateRepairResult> {
+  const pageSize = limits.pageSize ?? PAGE_SIZE;
+  const maxPages = limits.maxPages ?? MAX_PAGES;
   let marker: string | null;
   try {
     marker = await deps.getSecret(DATE_REPAIR_SECRET_KEY);
@@ -58,56 +85,119 @@ export async function runDateRepair(deps: DateRepairDeps, now: Date): Promise<Da
     return NOT_RUN; // Unreachable: try again after the next sync.
   }
   if (parseDateRepairMarker(marker)) return NOT_RUN;
+  // A 1.61 add-on keeps writing midnight rows after the marker (3.8/3.9).
+  const installed = deps.installedAddonVersion();
+  if (installed && installed !== DATE_REPAIR_SINCE && !isNewerVersion(installed, DATE_REPAIR_SINCE)) {
+    deps.log('Date repair waits for the 1.62 add-on.');
+    return NOT_RUN;
+  }
   const mapped = new Set((await deps.mappedAccountIds()).filter((id) => !!id));
   if (mapped.size === 0) return NOT_RUN;
   let overriddenIds: Set<string>;
+  let storedTypes: Map<string, string>;
   try {
     overriddenIds = deps.overriddenIds();
+    storedTypes = deps.storedTypes();
   } catch (err) {
     deps.log(`Date repair waits: couldn't read the Wealthfolio database (${err instanceof Error ? err.message : String(err)}).`);
     return NOT_RUN;
   }
-  const rows: DateRepairRow[] = [];
-  for (const accountId of mapped) {
-    for (let page = 0; page < MAX_PAGES; page++) {
-      const items = await deps.searchPage(accountId, page, PAGE_SIZE);
-      rows.push(...items);
-      if (items.length < PAGE_SIZE) break;
+  const opts = { mappedAccountIds: mapped, overriddenIds, storedTypes };
+
+  /** Every mapped account's rows, one per id; `capped` when a sweep hit its page limit. */
+  const sweep = async (): Promise<{ rows: DateRepairRow[]; capped: boolean }> => {
+    const byId = new Map<string, DateRepairRow>();
+    let capped = false;
+    for (const accountId of mapped) {
+      for (let page = 0; ; page++) {
+        if (page >= maxPages) { capped = true; break; }
+        const items = await deps.searchPage(accountId, page, pageSize);
+        for (const r of items) byId.set(r.id, r);
+        if (items.length < pageSize) break;
+      }
     }
-  }
-  const plan = planDateRepair(rows, { mappedAccountIds: mapped, overriddenIds });
+    return { rows: [...byId.values()], capped };
+  };
+
+  const first = await sweep();
+  const plan = planDateRepair(first.rows, opts);
   const moved: string[] = [];
-  let failed = 0;
+  const refused = new Set<string>();
+  let transient = 0;
+  let changed = 0;
   const groups = batches(plan.moves);
   for (const [i, group] of groups.entries()) {
     if (i > 0) await deps.sleep(DATE_REPAIR_PAUSE_MS);
-    const bulk = await deps.saveUpdates(group.map((m) => m.write)).catch((e) => ({ errors: [{ action: 'save', message: String(e) }] }));
+    // Re-read right before writing: the note and type go out as swept.
+    let fresh: Map<string, DateRepairRow>;
+    try {
+      fresh = new Map((await deps.searchByIds(group.map((m) => m.row.id))).map((r) => [r.id, r]));
+    } catch (e) {
+      transient += group.length;
+      deps.log(`Date repair: couldn't re-read a batch (${e instanceof Error ? e.message : String(e)}) — the next sync tries again.`);
+      continue;
+    }
+    const same = group.filter((m) => {
+      const now = fresh.get(m.row.id);
+      return !!now && now.accountId === m.row.accountId && now.activityType === m.row.activityType
+        && now.currency === m.row.currency && (now.comment ?? '') === (m.row.comment ?? '');
+    });
+    const send = planDateRepair(same.map((m) => fresh.get(m.row.id)!), opts).moves;
+    changed += group.length - send.length;
+    if (send.length === 0) continue;
+    const bulk = await deps.saveUpdates(send.map((m) => m.write)).catch((e) => ({ errors: [{ action: 'save', message: String(e) }] }));
     if (bulk.errors.length === 0) {
-      moved.push(...group.map((m) => m.row.id));
+      moved.push(...send.map((m) => m.row.id));
       continue;
     }
     // All or nothing: one refused row sends the batch back, so each goes alone.
-    for (const m of group) {
-      const one = await deps.saveUpdates([m.write]).catch((e) => ({ errors: [{ action: 'save', message: String(e) }] }));
-      if (one.errors.length === 0) moved.push(m.row.id);
-      else {
-        failed += 1;
-        deps.log(`Date repair: couldn't move ${m.row.id} (${one.errors.map((e) => e.message).join('; ')}).`);
+    for (const m of send) {
+      let permanent = false;
+      let message = '';
+      try {
+        const one = await deps.saveUpdates([m.write]);
+        if (one.errors.length === 0) { moved.push(m.row.id); continue; }
+        permanent = true; // A refusal in the answer is about this row.
+        message = one.errors.map((e) => e.message).join('; ');
+      } catch (e) {
+        permanent = isPermanent(e);
+        message = e instanceof Error ? e.message : String(e);
       }
+      if (permanent) refused.add(m.row.id); else transient += 1;
+      deps.log(`Date repair: couldn't move ${m.row.id} (${message}).`);
     }
   }
-  const skipped = plan.skippedGrouped + plan.skippedOverride;
+  const failed = refused.size + transient;
+  const skipped = plan.skippedGrouped + plan.skippedOverride + changed;
   if (moved.length > 0) {
-    await deps.record(bookkeepingChange({ step: 'date-repair', activityIds: moved, skipped }))
-      .catch((e) => deps.log(`Change log skipped: ${String(e)}`));
+    await deps.record(bookkeepingChange({
+      step: 'date-repair', activityIds: moved.slice(0, DATE_REPAIR_ENTRY_IDS), total: moved.length, skipped, failed,
+    })).catch((e) => deps.log(`Change log skipped: ${String(e)}`));
   }
-  if (failed === 0) {
-    await deps.setSecret(DATE_REPAIR_SECRET_KEY, JSON.stringify({
-      at: now.toISOString(), moved: moved.length, skippedGrouped: plan.skippedGrouped, skippedOverride: plan.skippedOverride,
-    }));
+
+  // Done only when nothing movable is left: a last sweep, apart from the rows Wealthfolio refuses for good.
+  let complete = transient === 0 && !first.capped;
+  if (first.capped) deps.log(`Date repair: an account has more than ${maxPages * pageSize} rows — not all were read, so it isn't marked done.`);
+  if (complete) {
+    const last = await sweep();
+    const left = planDateRepair(last.rows, opts).moves.filter((m) => !refused.has(m.row.id));
+    if (last.capped || left.length > 0) {
+      complete = false;
+      deps.log(`Date repair: ${left.length} row(s) are still at midnight after the pass — the next sync tries again.`);
+    }
   }
-  deps.log(failed === 0
-    ? `Date repair: moved ${moved.length} row(s) from midnight UTC to noon; left ${skipped} linked or retyped row(s) alone. Done.`
+  if (complete) {
+    try {
+      await deps.setSecret(DATE_REPAIR_SECRET_KEY, JSON.stringify({
+        at: now.toISOString(), moved: moved.length, skippedGrouped: plan.skippedGrouped, skippedOverride: plan.skippedOverride,
+      }));
+    } catch {
+      deps.log(`Date repair moved ${moved.length} rows but couldn't record it — it will check again next sync.`);
+      return { ran: true, moved: moved.length, failed, transient, changed, skippedGrouped: plan.skippedGrouped, skippedOverride: plan.skippedOverride };
+    }
+  }
+  deps.log(complete
+    ? `Date repair: moved ${moved.length} row(s) from midnight UTC to noon; left ${skipped} linked or retyped row(s) alone${refused.size ? `; Wealthfolio refused ${refused.size}` : ''}. Done.`
     : `Date repair: moved ${moved.length} row(s); ${failed} could not be moved — the next sync tries again.`);
-  return { ran: true, moved: moved.length, failed, skippedGrouped: plan.skippedGrouped, skippedOverride: plan.skippedOverride };
+  return { ran: true, moved: moved.length, failed, transient, changed, skippedGrouped: plan.skippedGrouped, skippedOverride: plan.skippedOverride };
 }

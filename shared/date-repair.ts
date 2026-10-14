@@ -34,6 +34,8 @@
 import { bankDayInstant } from './bank-day.js';
 import type { ActivityWrite } from './sync-host.js';
 
+/** The first add-on release that writes bank rows at noon. Before it, a 1.61 add-on keeps writing midnight rows (3.8/3.9), so a repair run first would be undone. */
+export const DATE_REPAIR_SINCE = '1.62.0';
 /** Add-on secret: present once every row has been moved. */
 export const DATE_REPAIR_SECRET_KEY = 'date_repair_done';
 /** Rows per write. */
@@ -41,7 +43,8 @@ export const DATE_REPAIR_BATCH = 25;
 /** The pause between batches, in ms: Wealthfolio recalculates after each write. */
 export const DATE_REPAIR_PAUSE_MS = 500;
 
-const MIDNIGHT = /^(\d{4}-\d{2}-\d{2})(?:T00:00:00(?:\.0+)?(?:Z|\+00:00))?$/;
+// A bare date, or 00:00:00 with Z, +00:00 or no offset at all (upstream reads a naive time as UTC).
+const MIDNIGHT = /^(\d{4}-\d{2}-\d{2})(?:[T ]00:00:00(?:\.0+)?(?:Z|\+00:00)?)?$/;
 
 /** The day of a date stored at exactly 00:00:00 UTC, or null. */
 export function utcMidnightDay(stored: string): string | null {
@@ -60,12 +63,15 @@ export interface DateRepairRow {
   currency: string;
   /** The note; null when the row has none. */
   comment: string | null;
-  /** The link group; null or '' when none. */
-  sourceGroupId: string | null;
+  /** The link group; null or '' when none. Absent (undefined) is unknown, and counts as grouped. */
+  sourceGroupId: string | null | undefined;
 }
 
+/** An update whose note may be null (clears it; upstream's `notes` is optional). */
+export type DateRepairWrite = Omit<ActivityWrite, 'comment'> & { comment: string | null };
+
 export interface DateRepairPlan {
-  moves: Array<{ row: DateRepairRow; write: ActivityWrite }>;
+  moves: Array<{ row: DateRepairRow; write: DateRepairWrite }>;
   /** At midnight UTC, left alone: in a group. */
   skippedGrouped: number;
   /** At midnight UTC, left alone: a type override. */
@@ -73,31 +79,37 @@ export interface DateRepairPlan {
 }
 
 /** The date-only update that moves one row to noon UTC on its day. */
-export function dateRepairWrite(row: DateRepairRow, day: string): ActivityWrite {
+export function dateRepairWrite(row: DateRepairRow, day: string): DateRepairWrite {
   return {
     id: row.id,
     accountId: row.accountId,
     activityType: row.activityType,
     activityDate: bankDayInstant(day),
     currency: row.currency,
-    comment: row.comment ?? '',
+    // Wealthfolio's update takes the note as sent (null clears it, as a missing one does).
+    comment: row.comment ?? null,
   };
 }
 
 export function planDateRepair(
   rows: readonly DateRepairRow[],
-  opts: { mappedAccountIds: ReadonlySet<string>; overriddenIds: ReadonlySet<string> },
+  opts: {
+    mappedAccountIds: ReadonlySet<string>;
+    overriddenIds: ReadonlySet<string>;
+    /** Each row's STORED type, from the database. When given, a row is moved only if its stored type equals the search's (effective) one: a blank override or a stale read is left alone. */
+    storedTypes?: ReadonlyMap<string, string>;
+  },
 ): DateRepairPlan {
   const plan: DateRepairPlan = { moves: [], skippedGrouped: 0, skippedOverride: 0 };
   for (const row of rows) {
     if (!opts.mappedAccountIds.has(row.accountId)) continue;
     const day = utcMidnightDay(row.date);
     if (!day) continue;
-    if (row.sourceGroupId) {
+    if (row.sourceGroupId !== null && row.sourceGroupId !== '') {
       plan.skippedGrouped += 1;
       continue;
     }
-    if (opts.overriddenIds.has(row.id)) {
+    if (opts.overriddenIds.has(row.id) || (opts.storedTypes && opts.storedTypes.get(row.id) !== row.activityType)) {
       plan.skippedOverride += 1;
       continue;
     }
