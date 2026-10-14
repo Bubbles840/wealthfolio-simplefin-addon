@@ -1,10 +1,9 @@
 # Less filing — design (project 3, R1)
 
-> **Not yet approved by Nick.** On the night of 2026-10-13, Nick asked Claude to
-> "keep going until we're done with all the phases". Claude designed this piece
-> overnight without him, choosing the recommended option at each decision; the
-> rulings are listed below. It ships as an **open PR, not merged**, so Nick can
-> review the design before anything reaches main.
+> **Approved by Nick on 2026-10-14** and released in 1.61.0. Claude designed
+> it overnight on 2026-10-13/14 under Nick's standing instruction to keep going
+> until every phase was done, choosing the recommended option at each decision;
+> the rulings below record those choices.
 
 This is project 3 of the roadmap approved on 2026-10-12, "Less filing". The roadmap
 names three ideas:
