@@ -276,9 +276,7 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
     store.getAuditSnapshot?.().then((r) => { if (mounted.current) setAuditSnapshot(r); }).catch(() => {});
     // The same for the forecast: ok / absent / corrupt, never a throw.
     store.getCashForecast?.().then((r) => { if (mounted.current) setCashForecast(r); }).catch(() => {});
-    // New report editions arrive behind the page's back too.
-    refreshInbox();
-  }, [store, refreshInbox]);
+  }, [store]);
 
   const onDismissalsChange = useCallback((next: DismissalLedger) => {
     hasUserActed.current.dismissals = true;
@@ -362,7 +360,9 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
     // never sees — it would take the whole refresh down with it.
     store.getUnmappedAccounts?.().then(setUnmappedAccounts).catch(() => {});
     refreshDerivedSignals();
-  }, [store, refreshDerivedSignals]);
+    // New report editions arrive behind the page's back too.
+    refreshInbox();
+  }, [store, refreshDerivedSignals, refreshInbox]);
 
   useEffect(() => {
     // The mount read too, so each live value has ONE reader rather than being

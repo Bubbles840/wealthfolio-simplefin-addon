@@ -53,10 +53,10 @@ const REPORTS: Record<ReportKind, ReportStore> = {
 const SEEN: ReportsSeen = { daily: '2026-10-12T12:00:00.000Z', weekly: '2026-10-11T23:00:00.000Z', monthly: '2026-10-01T13:00:00.000Z' };
 const NEWEST: ReportsSeen = { daily: '2026-10-14T12:00:00.000Z', weekly: '2026-10-11T23:00:00.000Z', monthly: '2026-10-01T13:00:00.000Z' };
 
-function page(read: () => Promise<ReportsSeenRead>, write: (seen: ReportsSeen) => Promise<void> = async () => {}) {
+function page(read: () => Promise<ReportsSeenRead>, write: (seen: ReportsSeen) => Promise<void> = async () => {}, reports: Record<ReportKind, ReportStore> = REPORTS) {
   const props = makeProps();
   props.store.getUiState = vi.fn(async () => ({ activeTab: 'home' }));
-  props.store.getReports = vi.fn(async (kind: ReportKind) => REPORTS[kind]);
+  props.store.getReports = vi.fn(async (kind: ReportKind) => reports[kind]);
   props.store.getReportsSeen = vi.fn(read);
   props.store.setReportsSeen = vi.fn(write);
   return { props, ...render(<SyncPage {...props} />) };
@@ -119,24 +119,66 @@ describe('the report inbox', () => {
   it('a host read that fails counts nothing and writes nothing', async () => {
     const { props } = page(async () => { throw new Error('host'); });
     await waitFor(() => expect(props.store.getReportsSeen).toHaveBeenCalled());
+    // Let the rejection settle before anything is judged.
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
     fireEvent.click(screen.getByRole('tab', { name: 'Reports' }));
     expect(await screen.findByText('Title 2026-10-13')).toBeTruthy();
     expect(document.querySelector('.sfin-inbox-badge')).toBeNull();
     expect(props.store.setReportsSeen).not.toHaveBeenCalled();
   });
 
-  it('sets nothing once the page is gone', async () => {
+  it('does nothing more once the page is gone', async () => {
     let finish: () => void = () => {};
     const { props, unmount } = page(async () => ({ kind: 'ok', seen: SEEN }), () => new Promise<void>((resolve) => { finish = resolve; }));
-    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
-    try {
-      fireEvent.click(await screen.findByRole('tab', { name: 'Reports, 2 unread' }));
-      await waitFor(() => expect(props.store.setReportsSeen).toHaveBeenCalledTimes(1));
-      unmount();
-      await act(async () => { finish(); await Promise.resolve(); });
-      expect(errors).not.toHaveBeenCalled();
-    } finally {
-      errors.mockRestore();
-    }
+    fireEvent.click(await screen.findByRole('tab', { name: 'Reports, 2 unread' }));
+    await waitFor(() => expect(props.store.setReportsSeen).toHaveBeenCalledTimes(1));
+    const reads = (props.store.getReportsSeen as ReturnType<typeof vi.fn>).mock.calls.length;
+    unmount();
+    await act(async () => { finish(); await Promise.resolve(); await Promise.resolve(); });
+    expect(props.store.setReportsSeen).toHaveBeenCalledTimes(1);
+    expect((props.store.getReportsSeen as ReturnType<typeof vi.fn>).mock.calls.length).toBe(reads);
+  });
+
+  it('opening one kind keeps another device\'s newer time for another kind', async () => {
+    let stored: ReportsSeen = SEEN;
+    const { props } = page(async () => ({ kind: 'ok', seen: stored }));
+    const tab = await screen.findByRole('tab', { name: 'Reports, 2 unread' });
+    // Device B has since read the weekly further on.
+    stored = { ...SEEN, weekly: '2026-10-20T00:00:00.000Z' };
+    fireEvent.click(tab);
+    await waitFor(() => expect(props.store.setReportsSeen).toHaveBeenCalledTimes(1));
+    expect(props.store.setReportsSeen).toHaveBeenCalledWith({ ...NEWEST, weekly: '2026-10-20T00:00:00.000Z' });
+  });
+
+  it('a failed re-read before the write skips the write', async () => {
+    let failing = false;
+    const { props } = page(async () => { if (failing) throw new Error('host'); return { kind: 'ok', seen: SEEN }; });
+    const tab = await screen.findByRole('tab', { name: 'Reports, 2 unread' });
+    failing = true;
+    fireEvent.click(tab);
+    expect(await screen.findByText('Title 2026-10-13')).toBeTruthy();
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(props.store.setReportsSeen).not.toHaveBeenCalled();
+  });
+
+  it('opening a sub-tab marks every edition seen, collapsed ones included', async () => {
+    const { props } = page(async () => ({ kind: 'ok', seen: { ...SEEN, daily: '2026-10-11T12:00:00.000Z' } }));
+    fireEvent.click(await screen.findByRole('tab', { name: 'Reports, 3 unread' }));
+    expect(await screen.findByText('Title 2026-10-12')).toBeTruthy();
+    expect(document.querySelectorAll('details[open]').length).toBe(0);
+    await waitFor(() => expect(props.store.setReportsSeen).toHaveBeenCalledWith(NEWEST));
+    expect(await screen.findByRole('tab', { name: 'Reports' })).toBeTruthy();
+  });
+
+  it('a new edition arriving while the page is open shows a badge after the live refresh', async () => {
+    const reports: Record<ReportKind, ReportStore> = { ...REPORTS, weekly: { live: null, archive: [] } };
+    const { props } = page(async () => ({ kind: 'ok', seen: { daily: NEWEST.daily, monthly: NEWEST.monthly } }), async () => {}, reports);
+    // The first read has landed: all three archives were fetched.
+    await waitFor(() => expect(props.store.getReports).toHaveBeenCalledTimes(3));
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(screen.getByRole('tab', { name: 'Reports' })).toBeTruthy();
+    reports.weekly = REPORTS.weekly;
+    await act(async () => { window.dispatchEvent(new Event('focus')); });
+    expect(await screen.findByRole('tab', { name: 'Reports, 1 unread' })).toBeTruthy();
   });
 });
