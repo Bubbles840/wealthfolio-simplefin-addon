@@ -302,6 +302,16 @@ const css = `
   display: flex; flex-direction: column; align-items: center; gap: 12px;
 }
 .sfin-budget-empty p { margin: 0; max-width: 46ch; font-size: var(--sfin-sz-md); }
+.sfin-budget-empty-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+/* The sample-data preview's banner (project 4): calm, like .sfin-banner-wait —
+   nothing is wrong, and the board under it is made up. */
+.sfin-preview-banner {
+  display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+  background: color-mix(in srgb, var(--primary) 8%, var(--card, var(--background)));
+  border: 1px solid color-mix(in srgb, var(--primary) 30%, transparent);
+  border-radius: var(--sfin-rad);
+  padding: 12px 14px; font-size: var(--sfin-sz-base); line-height: 1.5; margin-bottom: 12px;
+}
 .sfin-banner-warn {
   display: flex; gap: 10px; align-items: flex-start;
   background: color-mix(in srgb, var(--sfin-warn) 8%, var(--card, var(--background)));
