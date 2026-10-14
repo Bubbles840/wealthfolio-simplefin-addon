@@ -10,12 +10,15 @@
  * in, string (and keyboard) out.
  */
 
-import { categoryRulePattern } from './rule-pattern.js';
+import { bankWords, categoryRulePattern, paybackRulePattern } from './rule-pattern.js';
+import { paybackMappingRule, ruleApplies } from './mapper.js';
 import { isAmazonDescription } from './amazon-ledger.js';
 import type { InlineKeyboard } from './telegram.js';
 import { moneyWhole, escapeMarkdown, WHY_BUTTON_TEXT } from './telegram.js';
 import { assignRefusalOf, INCOME_TAXONOMY_ID, type AssignRefusal } from './cash-flow-bucket.js';
-import { PAYBACK_PICK, PAYBACK_SWITCH } from './payback-copy.js';
+import {
+  PAYBACK_PICK, PAYBACK_RULES_CREATE, PAYBACK_SWITCH, paybackRulesButton, paybackRulesPreview,
+} from './payback-copy.js';
 
 /** One uncategorized spending transaction, as the menu needs it. `date` is
  *  the raw YYYY-MM-DD string — this module never constructs a `Date`, since
@@ -133,6 +136,11 @@ export type MenuScreen =
   | { kind: 'paybackResult'; activityId: string; categoryId: string; text: string; offerRules: boolean }
   /** A payback refused, nothing written: why, RAW. Back returns to the payback grid. */
   | { kind: 'paybackRefused'; activityId: string; text: string }
+  /** "Make every <pattern> deposit a payback?" (W10): the two rules, and how
+   *  many deposits waiting for a category they would catch now. */
+  | { kind: 'paybackRulePreview'; activityId: string; categoryId: string }
+  /** What making the two rules did, RAW. */
+  | { kind: 'paybackRulesResult'; activityId: string; text: string }
   /** The recategorize confirmation. `fromName` (not an id) is what the row
    *  showed BEFORE the tap, because it may name an income-side category that
    *  never appears in `session.categories` (the spending tree) — the whole
@@ -296,7 +304,9 @@ export type MenuAction =
   /** 1.61: send this transaction's story as a NEW message; the screen stays. */
   | { kind: 'why'; activityId: string }
   /** 1.62 (W6): file a deposit as a payback under a spending category. */
-  | { kind: 'payback'; activityId: string; categoryId: string };
+  | { kind: 'payback'; activityId: string; categoryId: string }
+  /** 1.62 (W10): make every deposit like it a payback under the category. */
+  | { kind: 'paybackRules'; activityId: string; categoryId: string };
 
 /** A Wealthfolio account a category rule can be scoped to. */
 export interface RuleAccount {
@@ -1127,13 +1137,52 @@ function renderRefused(
 }
 
 /** A payback's outcome: the runner's words, escaped — a bank or category name
- *  can carry `_` or `*` — and the way on. */
+ *  can carry `_` or `*` — and the way on. A payback filed in full offers to
+ *  make every deposit like it one (W10) where "Make this a rule" would be: the
+ *  rules need the row's account and a pattern from its bank words. */
 function renderPaybackResult(session: MenuSession, screen: Extract<MenuScreen, { kind: 'paybackResult' }>): RenderResult {
+  const txn = findTxn(session, screen.activityId);
+  const pattern = txn ? paybackRulePattern(txn.description) : '';
+  const offer: Btn[][] = screen.offerRules && txn?.accountId && pattern
+    ? [[{
+      text: paybackRulesButton(pattern),
+      action: { kind: 'goto', screen: { kind: 'paybackRulePreview', activityId: screen.activityId, categoryId: screen.categoryId } },
+    }]]
+    : [];
   const rows: Btn[][] = [
+    ...offer,
     [{ text: 'Next transaction', action: { kind: 'goto', screen: { kind: 'list', page: 0 } } }],
     [DONE_BTN],
   ];
   return finish(session.generation, escapeMarkdown(screen.text), rows);
+}
+
+/** Other deposits waiting for a category that the transaction rule would make
+ *  paybacks now: money in, in the same account, matched on their bank words by
+ *  the sync's own predicate — so the count is the rule's, not a guess. */
+export function paybackRuleCatches(session: Pick<MenuSession, 'txns'>, txn: CategorizeTxn, pattern: string): number {
+  if (!txn.accountId) return 0;
+  const rule = paybackMappingRule(pattern, txn.accountId);
+  return session.txns.filter((t) => t.activityId !== txn.activityId && t.direction === 'in'
+    && ruleApplies(rule, bankWords(t.description), Math.abs(t.amountCents) / 100, t.accountId)).length;
+}
+
+function renderPaybackRulePreview(session: MenuSession, screen: Extract<MenuScreen, { kind: 'paybackRulePreview' }>): RenderResult {
+  const txn = findTxn(session, screen.activityId);
+  const category = findCategory(session, screen.categoryId);
+  if (!txn || !category || !txn.accountId) return renderList(session, 0, GONE_NOTE);
+  const pattern = paybackRulePattern(txn.description);
+  const text = escapeMarkdown(paybackRulesPreview(pattern, txn.accountName, categoryDisplayName(category), paybackRuleCatches(session, txn, pattern)));
+  const rows: Btn[][] = [
+    [{ text: PAYBACK_RULES_CREATE, action: { kind: 'paybackRules', activityId: screen.activityId, categoryId: screen.categoryId } }],
+    [BACK_TO_LIST_BTN],
+  ];
+  return finish(session.generation, text, rows);
+}
+
+/** What making the rules did, escaped. Nothing here makes them again. */
+function renderPaybackRulesResult(session: MenuSession, screen: Extract<MenuScreen, { kind: 'paybackRulesResult' }>): RenderResult {
+  return finish(session.generation, escapeMarkdown(screen.text), [[BACK_TO_LIST_BTN], [DONE_BTN]]);
 }
 
 /** A payback refused: why, escaped, and Back to the payback grid. */
@@ -1188,6 +1237,10 @@ export function renderScreen(session: MenuSession): RenderResult {
       return renderPaybackResult(session, screen);
     case 'paybackRefused':
       return renderPaybackRefused(session, screen);
+    case 'paybackRulePreview':
+      return renderPaybackRulePreview(session, screen);
+    case 'paybackRulesResult':
+      return renderPaybackRulesResult(session, screen);
     case 'closed':
       return renderClosed(session.generation);
   }

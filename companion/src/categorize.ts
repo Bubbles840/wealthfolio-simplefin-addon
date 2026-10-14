@@ -85,8 +85,9 @@ import { visibleUncategorized, type DismissalLedger } from '../../shared/uncateg
 import { descriptionFromComment, txIdFromComment } from '../../shared/sync-core.js';
 import { categoryFiledChange, categoryRuleCreatedChange, type ChangeDraft, type FiledCategory } from '../../shared/change-entries.js';
 import { buildGuessIndex, guessCategory, guessSinceDay, type GuessIndex, type PastFiling } from '../../shared/category-guess.js';
-import type { PaybackChoice, PaybackOutcome } from '../../shared/payback.js';
+import type { PaybackChoice, PaybackOutcome, PaybackRulesInput, PaybackRulesOutcome } from '../../shared/payback.js';
 import { PAYBACK_UNAVAILABLE, PAYBACK_UNREACHABLE } from '../../shared/payback-copy.js';
+import { paybackRulePattern } from '../../shared/rule-pattern.js';
 import { removalFingerprint } from '../../shared/tx-remove.js';
 import { uncategorizedWindow } from './uncategorized-status.js';
 
@@ -276,6 +277,10 @@ export interface CategorizeDeps {
    *  companion's REST host, refused while its own sync runs. It records its own
    *  change-log entry. Optional: without it a payback tap is refused, in words. */
   payback?: (choice: PaybackChoice) => Promise<PaybackOutcome>;
+  /** 1.62 (W10): "Make every <pattern> deposit a payback" — `makePaybackRules`
+   *  over the companion's host; it records its own change-log entries.
+   *  Optional: without it the offer's tap is refused, in words. */
+  paybackRules?: (input: PaybackRulesInput) => Promise<PaybackRulesOutcome>;
   /** 1.61: the transaction screen's 🔎 Why? — sends that transaction's story
    *  as a NEW message (companion/src/why-menu.ts). Optional: without it the
    *  button is not offered. */
@@ -437,7 +442,7 @@ const PENDING_CHAT_ID = 0;
  *  screen gets the fresh data alone — that is what makes a row filed elsewhere
  *  disappear instead of lingering. */
 const PINNED_SCREEN_KINDS: ReadonlySet<MenuScreen['kind']> = new Set([
-  'filed', 'dismissed', 'rulePreview', 'ruleCreated', 'refiled', 'paybackResult',
+  'filed', 'dismissed', 'rulePreview', 'ruleCreated', 'refiled', 'paybackResult', 'paybackRulePreview', 'paybackRulesResult',
 ]);
 
 function pinnedActivityId(screen: MenuScreen): string | null {
@@ -1276,6 +1281,46 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
         const { text, keyboard } = show(chat, {
           kind: 'paybackResult', activityId: row.activityId, categoryId: category.id, text: outcome.message, offerRules: outcome.kind === 'filed',
         }, row, loaded.fresh);
+        await ui.edit(text, keyboard);
+        return;
+      }
+
+      case 'paybackRules': {
+        // W10, from the preview: the deposit just filed (pinned — it no longer
+        // needs a category) gives the pattern and the account.
+        const row = rowFor(chat, action.activityId);
+        const category = chat.session.categories.find((c) => c.id === action.categoryId) ?? null;
+        if (!row || !row.accountId || !category) {
+          const loaded = await load(chat.mode);
+          if (!loaded.ok) {
+            await showError(chat, failureText(loaded.failure, chat.session.screen, chat.mode), ui);
+            return;
+          }
+          await showGone(chat, action.activityId, loaded.fresh, ui);
+          return;
+        }
+        let outcome: PaybackRulesOutcome;
+        if (!deps.paybackRules) {
+          outcome = { ok: false, message: PAYBACK_UNAVAILABLE };
+        } else {
+          try {
+            outcome = await deps.paybackRules({
+              pattern: paybackRulePattern(row.description), account: { id: row.accountId, name: row.accountName },
+              categoryId: category.id, categoryName: category.name, description: row.description,
+            });
+          } catch (err) {
+            safeLog(`Categorize menu: the payback rules for ${action.activityId} failed: ${formatError(err)}`);
+            outcome = { ok: false, message: PAYBACK_UNREACHABLE };
+          }
+        }
+        if (outcome.ok) await republishQuietly();
+        // Drawn from what the session holds, never a second read: the rules may
+        // exist now, and a failed read must not hide that — nor leave the
+        // preview's Create button standing for a second tap.
+        const { text, keyboard } = show(chat, { kind: 'paybackRulesResult', activityId: row.activityId, text: outcome.message }, row, {
+          txns: chat.session.txns, categories: chat.session.categories, incomeCategories: chat.session.incomeCategories ?? [],
+          ledger: {}, assignments: NO_ASSIGNMENTS, buckets: NO_BUCKETS,
+        });
         await ui.edit(text, keyboard);
         return;
       }

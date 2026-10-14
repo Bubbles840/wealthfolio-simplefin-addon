@@ -1,14 +1,14 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { ChangeBucket, ChangeLogItem } from '../../shared/change-log.js';
 import { runChangeUndo } from '../../shared/change-undo-run.js';
-import { filePayback, type PaybackChoice } from '../../shared/payback.js';
+import { filePayback, makePaybackRules, type PaybackChoice } from '../../shared/payback.js';
 import { removalFingerprint } from '../../shared/tx-remove.js';
 import { PAYBACK_CHANGED, PAYBACK_UPDATE_ADDON } from '../../shared/payback-copy.js';
 import { hasTxOverride, parseSyncOverrides, SYNC_OVERRIDES_SECRET_KEY } from '../../shared/sync-overrides.js';
 import { accountTxKey } from '../../shared/transfers.js';
 import { INSTALLED_ADDON_VERSION_SECRET_KEY } from '../../shared/version.js';
 import { companionUndoIo } from './change-undo-host.js';
-import { companionPaybackIo, readPaybackRow, type PaybackClient } from './payback-host.js';
+import { companionPaybackIo, companionPaybackRulesIo, readPaybackRow, type PaybackClient, type PaybackRulesClient } from './payback-host.js';
 
 const NOW = new Date('2026-10-14T15:00:00Z');
 const KEY = accountTxKey('sfin-chk', 'TRN-77');
@@ -127,5 +127,27 @@ describe('a payback on the companion', () => {
     const out = await runChangeUndo(entry, [entry], 'undo', companionUndoIo(f.client as any, '/nope/wealthfolio.db', undefined, log), 'plain', NOW);
     expect(out.ok).toBe(false);
     expect(log).toHaveBeenCalledWith(expect.stringContaining('secrets down'));
+  });
+});
+
+describe('"Make every … deposit a payback" on the companion (W10)', () => {
+  it('appends the transaction rule and asks Wealthfolio for a rule that files paybacks in that account only', async () => {
+    const f = fakeClient();
+    const client = Object.assign(f.client, {
+      listCategorizationRules: vi.fn(async () => []),
+      createCategorizationRule: vi.fn(async () => 'rule-9'),
+    }) as unknown as PaybackRulesClient & { createCategorizationRule: ReturnType<typeof vi.fn> };
+    const out = await makePaybackRules({
+      pattern: 'VENMO CASHOUT', account: { id: 'wf-chk', name: 'PNC Checking' }, categoryId: 'cat-rest', categoryName: 'Restaurants', description: 'VENMO CASHOUT',
+    }, companionPaybackRulesIo(client, vi.fn()));
+    expect(out.ok).toBe(true);
+    expect(client.createCategorizationRule).toHaveBeenCalledWith({
+      name: 'Telegram payback: VENMO CASHOUT', pattern: 'VENMO CASHOUT', categoryId: 'cat-rest', accountId: 'wf-chk', activityType: 'CREDIT',
+      taxonomyId: 'spending_categories', priority: 50,
+    });
+    expect(JSON.parse(f.data.get('mapping_rules')!)).toEqual([{
+      pattern: 'VENMO CASHOUT', matchType: 'contains', activityType: 'CREDIT', subtype: 'REIMBURSEMENT', onlyMoneyIn: true, accountId: 'wf-chk',
+    }]);
+    expect(f.logged().map((e) => e.kind)).toEqual(['mapping-rule-created', 'category-rule-created']);
   });
 });

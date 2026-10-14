@@ -38,6 +38,7 @@ import type { SecretGet, SecretSet } from './subscription-prefs.js';
 import {
   flowExternalOf, IN_TRANSIT_COMMENT_PREFIX, isInternalMarkerComment, isTransferType, rowIdByComment, txIdFromComment,
 } from './sync-core.js';
+import { sameMappingRule } from './mapper.js';
 import type { HostActivity, SyncHost } from './sync-host.js';
 import {
   clearAccountOverride, clearTxOverride, editSyncOverrides, isUnreadableOverridesError, setAccountOverride, setTxOverride,
@@ -74,7 +75,7 @@ export interface UndoIo {
   /** The companion only: Wealthfolio's categorization rules. */
   rules?: {
     list(): Promise<Array<{ id: string; name: string; pattern: string }>>;
-    create(rule: { name: string; pattern: string; categoryId: string; accountId?: string }): Promise<string | null>;
+    create(rule: { name: string; pattern: string; categoryId: string; accountId?: string; activityType?: string }): Promise<string | null>;
     remove(id: string): Promise<void>;
     /** The charges the rule filed (assignment source "rule", its category, a note
      *  containing its words), by activity id. Null when that cannot be read. */
@@ -149,9 +150,6 @@ async function readMappingRules(get: SecretGet): Promise<MappingRule[]> {
   if (!Array.isArray(parsed)) throw new Refusal(UNDO_MAPPING_RULES_UNREADABLE);
   return parsed as MappingRule[];
 }
-
-const sameRule = (a: MappingRule, b: MappingRule) =>
-  a.pattern === b.pattern && a.matchType === b.matchType && a.activityType === b.activityType && (a.subtype ?? '') === (b.subtype ?? '');
 
 /**
  * On a host that cannot read groups: could this row be half of a pair someone
@@ -419,12 +417,12 @@ async function performStep(io: UndoIo, s: UndoStep, prior: string | null): Promi
       case 'mapping-remove': {
         const rule = s.rule;
         const list = await readMappingRules(io.secrets.get);
-        await io.secrets.set(MAPPING_RULES_SECRET_KEY, JSON.stringify(list.filter((r) => !sameRule(r, rule))));
+        await io.secrets.set(MAPPING_RULES_SECRET_KEY, JSON.stringify(list.filter((r) => !sameMappingRule(r, rule))));
         break;
       }
       case 'mapping-add': {
         const list = await readMappingRules(io.secrets.get);
-        if (!list.some((r) => sameRule(r, s.rule))) await io.secrets.set(MAPPING_RULES_SECRET_KEY, JSON.stringify([...list, s.rule]));
+        if (!list.some((r) => sameMappingRule(r, s.rule))) await io.secrets.set(MAPPING_RULES_SECRET_KEY, JSON.stringify([...list, s.rule]));
         break;
       }
       case 'delete-budget':

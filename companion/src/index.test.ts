@@ -5275,6 +5275,20 @@ describe('the /categorize wiring', () => {
       expect(logged.map((e: any) => [e.kind, e.summary])).toEqual([['payback-filed', 'Filed VENMO CASHOUT as a payback under Entertainment']]);
     });
 
+    it('then makes every deposit like it a payback: the transaction rule and Wealthfolio’s rule for paybacks in that account', async () => {
+      const p = await onPaybackGrid('1.62.0');
+      p.client.listCategorizationRules = vi.fn(async () => []);
+      p.client.createCategorizationRule.mockResolvedValue('rule-9');
+      await p.cb(dataFor(lastOf(p.ui.edit)[1], 'Entertainment'));
+      await p.cb(dataFor(lastOf(p.ui.edit)[1], 'Make every VENMO CASHOUT deposit a payback'));
+      await p.cb(dataFor(lastOf(p.ui.edit)[1], 'Create both rules'));
+      expect(p.client.createCategorizationRule).toHaveBeenCalledWith(expect.objectContaining({
+        pattern: 'VENMO CASHOUT', categoryId: 'cat-fun', accountId: 'wf-a', activityType: 'CREDIT', priority: 50,
+      }));
+      expect(JSON.parse(p.secrets.get('mapping_rules')!)).toEqual([expect.objectContaining({ pattern: 'VENMO CASHOUT', onlyMoneyIn: true, accountId: 'wf-a' })]);
+      expect(lastOf(p.ui.edit)[0]).toBe('Done — every VENMO CASHOUT deposit into Checking is a payback under Entertainment from now on. Undo either rule from /changes.');
+    });
+
     it('refuses while the installed add-on is older, naming the app’s Change log, and writes nothing', async () => {
       const p = await onPaybackGrid('1.61.0');
       await p.cb(dataFor(lastOf(p.ui.edit)[1], 'Entertainment'));

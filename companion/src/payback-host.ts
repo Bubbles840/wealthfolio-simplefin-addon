@@ -11,7 +11,7 @@
  * reads `asReimbursement` (W8).
  */
 import { SPENDING_TAXONOMY_ID } from '../../shared/cash-flow-bucket.js';
-import { addonPaybackGate, paybackRowOf, type PaybackIo } from '../../shared/payback.js';
+import { addonPaybackGate, paybackRowOf, type PaybackIo, type PaybackRulesIo } from '../../shared/payback.js';
 import type { PaybackRow } from '../../shared/payback-row.js';
 import { sfinIdsFor } from '../../shared/tx-story.js';
 import { recordCompanionChanges, type SecretClient } from './change-log-host.js';
@@ -46,6 +46,27 @@ export function companionPaybackIo(client: PaybackClient, log: (msg: string) => 
       if (errors.length > 0) throw new Error(errors.map((e) => String(e.message ?? '')).join('; '));
     },
     assign: (activityId, categoryId) => client.assignActivityCategory(activityId, SPENDING_TAXONOMY_ID, categoryId),
+    record: (draft) => recordCompanionChanges(client, [draft]),
+    log,
+  };
+}
+
+/** What "Make every … deposit a payback" needs of a `WealthfolioClient`. */
+export type PaybackRulesClient = SecretClient & Pick<WealthfolioClient, 'listCategorizationRules' | 'createCategorizationRule'>;
+
+/** W10 on the companion: the add-on's transaction rules (a secret) and
+ *  Wealthfolio's categorization rules, at the same LOSING priority (50) and in
+ *  the spending taxonomy as /categorize's rules. */
+export function companionPaybackRulesIo(client: PaybackRulesClient, log: (msg: string) => void): PaybackRulesIo {
+  const get = (k: string) => client.getAddonSecret(ADDON_ID, k);
+  return {
+    gate: () => addonPaybackGate(get),
+    secrets: { get, set: (k, v) => client.setAddonSecret(ADDON_ID, k, v) },
+    categoryRules: async () => (await client.listCategorizationRules()).map((r) => ({
+      id: r.id, pattern: r.pattern, categoryId: r.categoryId,
+      ...(r.accountId ? { accountId: r.accountId } : {}), ...(r.activityType ? { activityType: r.activityType } : {}),
+    })),
+    createCategoryRule: async (rule) => (await client.createCategorizationRule({ ...rule, taxonomyId: SPENDING_TAXONOMY_ID, priority: 50 })) ?? null,
     record: (draft) => recordCompanionChanges(client, [draft]),
     log,
   };
