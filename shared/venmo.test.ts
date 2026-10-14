@@ -90,6 +90,60 @@ describe('classifyVenmoEmail', () => {
       .toEqual({ status: 'unrecognised' });
   });
 
+  it('accepts a curly apostrophe in a request head', () => {
+    expect(classifyVenmoEmail({
+      subject: 'You completed Alex Kim’s $42.50 charge request',
+      plain: 'You completed Alex Kim’s charge request\n- $42.50\nConcert tickets\n',
+    }).record).toMatchObject({ direction: 'out', kind: 'request', counterparty: 'Alex Kim', note: 'Concert tickets' });
+  });
+
+  it('strips control and format characters from names and notes', () => {
+    const r = classifyVenmoEmail({
+      subject: 'You paid Ja\u200Bne\u202E Doe $25.00',
+      plain: 'You paid Jane Doe\n$25.00\nRe\u0000nt\u200B Oct\u202Eober\n',
+    });
+    expect(r.record).toMatchObject({ counterparty: 'Jane Doe', note: 'Rent October' });
+    expect(clipVenmoNote('a\u200Bb\u0000c\u202Ed  e')).toBe('abcd e');
+  });
+
+  it('never takes boilerplate for the note: greetings, thanks, footers, quoted headers, legal lines', () => {
+    const base = 'You paid Jane Doe\n$25.00\n';
+    for (const line of [
+      'Hi Nicholas,', 'Hello Nicholas', 'Dear Nicholas,', 'Thanks for using Venmo', 'Thank you!',
+      'Venmo is a service of PayPal, Inc.', 'On Oct 3, 2026 Jane wrote:', 'Unsubscribe from these emails',
+      'Privacy Policy', 'Terms of Service', '© 2026 Venmo', 'All rights reserved',
+    ]) {
+      expect(classifyVenmoEmail({ subject: 'You paid Jane Doe $25.00', plain: `${base}${line}\n` }), line).toEqual({ status: 'unrecognised' });
+    }
+    expect(classifyVenmoEmail({ subject: 'You paid Jane Doe $25.00', plain: `${base}See transaction\nThanks for using Venmo\n` }))
+      .toEqual({ status: 'unrecognised' });
+  });
+
+  it('ignores a failed, cancelled or returned transfer to your bank', () => {
+    for (const subject of [
+      'Your $300.00 transfer to your bank failed', 'Your $300.00 transfer to your bank was canceled',
+      'Your $300.00 transfer to your bank was declined', 'Your $300.00 transfer to your bank was returned',
+    ]) expect(classifyVenmoEmail({ subject, plain: 'We could not finish this one.\n' }), subject).toEqual({ status: 'ignored' });
+    expect(classifyVenmoEmail({ subject: 'Update on your transfer', plain: 'Your $300.00 transfer to your bank has failed.\n' }))
+      .toEqual({ status: 'ignored' });
+  });
+
+  it('takes a transfer amount only from the subject or the transfer line, never from elsewhere in the body', () => {
+    expect(classifyVenmoEmail({ subject: 'Your bank transfer is on its way', plain: 'Balance: $300.00\nExpect it soon.\n' }))
+      .toEqual({ status: 'unrecognised' });
+    expect(classifyVenmoEmail({ subject: 'Update', plain: 'Your balance is $999.00\nYou transferred $12.00 to your bank account.\n' }).record)
+      .toMatchObject({ kind: 'bank-transfer', amountCents: 1200 });
+  });
+
+  it('never reads marketing that mentions bank transfers as one', () => {
+    expect(classifyVenmoEmail({
+      subject: 'Get your money faster', plain: 'Instant bank transfer is here, min $0.25\nEarn $5.00 bonus\n',
+    })).toEqual({ status: 'ignored' });
+    expect(classifyVenmoEmail({
+      subject: 'Instant bank transfers', plain: 'Instant bank transfer, min $0.25\nEarn $5.00 bonus\n',
+    }).status).not.toBe('payment');
+  });
+
   it('clips a long note to 60 characters and makes newlines spaces', () => {
     const long = 'Groceries for the whole apartment this week including the big Costco run';
     expect(clipVenmoNote(long)).toBe('Groceries for the whole apartment this week including the b…');
@@ -106,6 +160,14 @@ describe('isVenmoMessage', () => {
     expect(isVenmoMessage('nick@gmail.com', 'I paid Jane on venmo.com yesterday')).toBe(false);
     expect(isVenmoMessage('auto-confirm@amazon.com', 'Thanks for your order')).toBe(false);
     expect(isVenmoMessage(undefined, '')).toBe(false);
+    expect(isVenmoMessage('nick@gmail.com', 'From: venmo@venmo.com\nYou paid Jane Doe')).toBe(true);
+  });
+
+  it('refuses a spoofed From: line', () => {
+    expect(isVenmoMessage('nick@gmail.com', 'From: x@venmo.com.evil.com\nYou paid Jane')).toBe(false);
+    expect(isVenmoMessage('nick@gmail.com', 'From: "x@venmo.com" <a@evil.com>\nYou paid Jane')).toBe(false);
+    expect(isVenmoMessage('nick@gmail.com', 'From: a@evil.com, venmo@venmo.com\nYou paid Jane')).toBe(false);
+    expect(isVenmoMessage('x@venmo.com.evil.com', '')).toBe(false);
   });
 });
 
