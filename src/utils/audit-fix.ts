@@ -2,7 +2,8 @@
  * src/utils/audit-fix.ts
  *
  * The add-on's half of the fixes (2c R2, spec C): what Link
- * (shared/audit-link.ts) reads and writes through the add-on SDK. Rows are
+ * (shared/audit-link.ts) and Remove for good (shared/tx-remove.ts) read and
+ * write through the add-on SDK. Rows are
  * re-read by exact id — Wealthfolio 3.8's `activityIds` search filter, the
  * read the story uses (src/utils/tx-story.ts) — and written through
  * `AddonSyncHost`, whose `linkPair` is the sync's own `linkPairByRecreate`.
@@ -12,6 +13,8 @@
  * `linked_groups` ledger; otherwise `linkedState`'s rule for a row the
  * snapshot read unpaired decides "maybe". A pair linked here goes into that
  * ledger too: it is how the add-on's sync knows to leave both legs as stored.
+ * Remove has no snapshot behind it, so a transfer-typed row nothing marks as
+ * unpaired may be linked (the change log's own rule) and is refused.
  * Every store method is optional-called.
  */
 import type { ActivitySearchFilters, AddonContext } from '@wealthfolio/addon-sdk';
@@ -19,13 +22,15 @@ import type { HealthLeg } from '../../shared/audit-health';
 import { linkPairs, LINK_DONE, type LinkIo, type LinkPair, type LinkRun, type ReadRow } from '../../shared/audit-link';
 import { fixRowOf, linkedState, type FixRow } from '../../shared/fix-row';
 import { txIdFromComment } from '../../shared/sync-core';
+import { removeForGood, type RemoveIo, type RemoveOutcome } from '../../shared/tx-remove';
+import { sfinIdsFor } from '../../shared/tx-story';
 import { AddonSyncHost } from './addon-host';
 import type { SecretsStore } from './secrets';
-import { beginLink, LINK_SYNC_RUNNING } from './write-lock';
+import { beginWrite, LINK_SYNC_RUNNING, REMOVE_SYNC_RUNNING } from './write-lock';
 
 /** The store methods the fixes use, every one optional. */
 export type FixStore = Partial<Pick<SecretsStore,
-  'readSyncOverrides' | 'getLinkedGroups' | 'setLinkedGroups' | 'recordChange'>>;
+  'readSyncOverrides' | 'getLinkedGroups' | 'setLinkedGroups' | 'recordChange' | 'getAccountMapping'>>;
 
 const warn = (msg: string) => console.warn(`[simplefin-sync] ${msg}`);
 
@@ -97,7 +102,7 @@ export function addonLinkIo(ctx: AddonContext, store: FixStore, log: (msg: strin
 /** Link from Settings → Checks. Holds the add-on's write lock (src/utils/write-lock.ts):
  *  refused while a sync is running, and a sync that starts meanwhile waits. */
 export async function linkFromApp(ctx: AddonContext, store: FixStore, pairs: LinkPair[]): Promise<LinkRun> {
-  const release = beginLink();
+  const release = beginWrite();
   if (!release) {
     return { total: pairs.length, linked: 0, changed: 0, failed: 0, done: [], lost: [], maybeLost: [], message: LINK_SYNC_RUNNING };
   }
@@ -120,6 +125,43 @@ export async function linkFromApp(ctx: AddonContext, store: FixStore, pairs: Lin
     if (unnoted.length === 0) return run;
     const note = `Linked, but the add-on couldn't note it (${unnoted[0].trim().replace(/[.\s]+$/, '')}) — check Health after the next sync.`;
     return { ...run, message: run.message === LINK_DONE ? note : `${run.message} ${note}` };
+  } finally {
+    release();
+  }
+}
+
+export function addonRemoveIo(ctx: AddonContext, store: FixStore, log: (msg: string) => void = warn): RemoveIo {
+  const host = new AddonSyncHost(ctx);
+  return {
+    read: async (activityId) => readFixRow(ctx, activityId, await accountTypes(ctx)),
+    feeds: async (wfAccountId) => sfinIdsFor((await store.getAccountMapping?.()) ?? {}, wfAccountId),
+    linked: async (row, txKeys) => {
+      const ledger = await ledgerOf(store);
+      return linkedState(row, { readsGroups: false, ledgerKnows: ledgerKnows(ledger, txKeys, txIdFromComment(row.notes)) });
+    },
+    secrets: {
+      get: (k) => ctx.api.secrets.get(k),
+      set: (k, v) => ctx.api.secrets.set(k, v),
+    },
+    remove: async (activityId) => {
+      const res = await host.saveMany({ deleteIds: [activityId] });
+      if (res.errors.length > 0) throw new Error(res.errors.map((e) => e.message).join('; '));
+    },
+    record: async (draft) => {
+      await store.recordChange?.(draft);
+    },
+    log,
+  };
+}
+
+/** "Remove for good…" from a story in the app. Holds the add-on's write lock
+ *  (src/utils/write-lock.ts), like Link: refused while a sync is running, and a
+ *  sync that starts meanwhile waits. */
+export async function removeFromApp(ctx: AddonContext, store: FixStore, activityId: string, fingerprint: string): Promise<RemoveOutcome> {
+  const release = beginWrite();
+  if (!release) return { ok: false, message: REMOVE_SYNC_RUNNING };
+  try {
+    return await removeForGood(activityId, fingerprint, addonRemoveIo(ctx, store), new Date());
   } finally {
     release();
   }

@@ -869,6 +869,7 @@ const css = `
 .sfin-why-title { font-weight: 600; overflow-wrap: anywhere; }
 .sfin-why-answer { margin: 4px 0; padding-left: 1.1em; display: flex; flex-direction: column; gap: 2px; }
 .sfin-why-history { margin-top: 6px; }
+.sfin-why-remove { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
 .sfin-why-heading { font-size: var(--sfin-sz-xs); letter-spacing: .06em; text-transform: uppercase; color: var(--muted-foreground); margin-bottom: 2px; }
 .sfin-why-line { display: flex; flex-direction: column; }
 .sfin-why-line-btn { width: 100%; padding: 3px 0; border: none; border-bottom: 1px solid color-mix(in srgb, var(--border) 40%, transparent); background: transparent; color: var(--foreground); font: inherit; text-align: left; cursor: pointer; overflow-wrap: anywhere; }
