@@ -4,12 +4,14 @@ import {
   applyTap,
   parseNewRuleArgs,
   resolveAccountQuery,
+  resolveNewRuleCategory,
   formatAccountQueryMiss,
   NEWRULE_ACCOUNTS_UNREADABLE,
   MENU_PAGE_SIZE,
   MENU_CALLBACK_PREFIX,
 } from './categorize-menu';
 import type { CategorizeTxn, SpendingCategory, MenuSession, MenuScreen, MenuAction } from './categorize-menu';
+import { resolveCategoryQuery } from './telegram-commands';
 
 // ---- fixtures -------------------------------------------------------------
 
@@ -1565,10 +1567,54 @@ describe('account-scoped rules (3)', () => {
 describe('/newrule … in <account> (3)', () => {
   const ACCOUNTS = [{ id: 'wf-chk', name: 'PNC Checking' }, { id: 'wf-sav', name: 'PNC Savings' }, { id: 'wf-card', name: 'Citi Card' }];
 
-  it('reads an account after " in " on the category side', () => {
-    expect(parseNewRuleArgs('venmo = rent in pnc checking')).toEqual({ pattern: 'venmo', categoryQuery: 'rent', accountQuery: 'pnc checking' });
-    expect(parseNewRuleArgs('venmo = rent in money in bank')).toEqual({ pattern: 'venmo', categoryQuery: 'rent', accountQuery: 'money in bank' });
+  it('keeps the whole category side, and each way to read it as "<category> in <account>" — the last " in " first', () => {
+    expect(parseNewRuleArgs('venmo = rent in pnc checking')).toEqual({
+      pattern: 'venmo', categoryQuery: 'rent in pnc checking', scopedReadings: [{ categoryQuery: 'rent', accountQuery: 'pnc checking' }],
+    });
+    expect(parseNewRuleArgs('venmo = rent in money in bank')).toEqual({
+      pattern: 'venmo', categoryQuery: 'rent in money in bank',
+      scopedReadings: [{ categoryQuery: 'rent in money', accountQuery: 'bank' }, { categoryQuery: 'rent', accountQuery: 'money in bank' }],
+    });
     expect(parseNewRuleArgs('dine in = restaurants')).toEqual({ pattern: 'dine in', categoryQuery: 'restaurants' });
+  });
+
+  describe('the whole category side first, then " in <account>" (M1)', () => {
+    const CATS = [
+      { id: 'c-dio', name: 'Dine In Out', parentId: null, parentName: null },
+      { id: 'c-gro', name: 'Groceries', parentId: null, parentName: null },
+      { id: 'c-rent', name: 'Rent', parentId: null, parentName: null },
+      { id: 'c-home', name: 'Home', parentId: null, parentName: null },
+      { id: 'c-hi', name: 'Home Improvement', parentId: null, parentName: null },
+    ];
+    const target = (args: string, cats = CATS) => {
+      const r = resolveNewRuleCategory(parseNewRuleArgs(args)!, (q) => resolveCategoryQuery(cats, q));
+      return { kind: r.result.kind, name: r.result.kind === 'one' ? r.result.category.name : undefined, query: r.query, accountQuery: r.accountQuery };
+    };
+
+    it('`x = Dine In Out` with a "Dine In Out" category is that category, for every account', () => {
+      expect(parseNewRuleArgs('x = Dine In Out')).toEqual({
+        pattern: 'x', categoryQuery: 'Dine In Out', scopedReadings: [{ categoryQuery: 'Dine', accountQuery: 'Out' }],
+      });
+      expect(target('x = Dine In Out')).toEqual({ kind: 'one', name: 'Dine In Out', query: 'Dine In Out', accountQuery: undefined });
+    });
+
+    it('`x = dine in pnc` is the category "dine" in the account "pnc"', () => {
+      expect(parseNewRuleArgs('x = dine in pnc')).toEqual({
+        pattern: 'x', categoryQuery: 'dine in pnc', scopedReadings: [{ categoryQuery: 'dine', accountQuery: 'pnc' }],
+      });
+      expect(target('x = dine in pnc')).toEqual({ kind: 'one', name: 'Dine In Out', query: 'dine', accountQuery: 'pnc' });
+    });
+
+    it('a category with " in " in its name can still be scoped, and an account with one still reads', () => {
+      expect(target('x = Dine In Out in pnc checking')).toEqual({ kind: 'one', name: 'Dine In Out', query: 'Dine In Out', accountQuery: 'pnc checking' });
+      expect(target('venmo = rent in money in bank')).toEqual({ kind: 'one', name: 'Rent', query: 'rent', accountQuery: 'money in bank' });
+    });
+
+    it('when no reading names one category, says what the category before the first " in " matched', () => {
+      expect(target('x = hom in pnc')).toEqual({ kind: 'ambiguous', name: undefined, query: 'hom', accountQuery: undefined });
+      expect(target('x = xyzzy in pnc')).toEqual({ kind: 'none', name: undefined, query: 'xyzzy', accountQuery: undefined });
+      expect(target('x = hom')).toEqual({ kind: 'ambiguous', name: undefined, query: 'hom', accountQuery: undefined });
+    });
   });
 
   it('resolves the account: an exact name first, else the one name holding the words', () => {

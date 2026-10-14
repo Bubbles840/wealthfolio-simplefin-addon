@@ -100,7 +100,9 @@ import {
   formatCategoryQueryMiss,
   NEWRULE_CATEGORY_LIST_HINT,
 } from '../../shared/telegram-commands.js';
-import { formatAccountQueryMiss, NEWRULE_ACCOUNTS_UNREADABLE, parseNewRuleArgs, resolveAccountQuery, type RuleAccount } from '../../shared/categorize-menu.js';
+import {
+  formatAccountQueryMiss, NEWRULE_ACCOUNTS_UNREADABLE, parseNewRuleArgs, resolveAccountQuery, resolveNewRuleCategory, type RuleAccount,
+} from '../../shared/categorize-menu.js';
 import type { CategoryBudgetSnapshot, BudgetPeriod, ParsedCommand, StatusReplyInput } from '../../shared/telegram-commands.js';
 import { parsePoolArgs, POOL_USAGE_REPLY } from '../../shared/telegram-commands.js';
 import { SEMESTER_POOL_SECRET_KEY, parsePoolConfig } from '../../shared/pool.js';
@@ -3513,21 +3515,25 @@ export function buildTelegramCommandHandler(
         // presets ship several `Other`s) come back AMBIGUOUS rather than as
         // whichever one the tree lists first, and the reply names each one's
         // parent so the reader can type one back qualified.
-        const result = resolveCategoryQuery(categories, parsed.categoryQuery);
+        //
+        // The whole category side first, then `<category> in <account>` (M1):
+        // a category named "Dine In Out" is never "Dine" in an account "Out".
+        const target = resolveNewRuleCategory(parsed, (q) => resolveCategoryQuery(categories, q));
         // With THIS command's pointer, not `/left`'s: the tree resolved here
         // includes children, which `/left` never lists, so its default "…/left
         // lists them all" would send a reader who mistyped a subcategory to a
         // list that cannot contain it.
-        const miss = formatCategoryQueryMiss(result, parsed.categoryQuery, NEWRULE_CATEGORY_LIST_HINT);
+        const miss = formatCategoryQueryMiss(target.result, target.query, NEWRULE_CATEGORY_LIST_HINT);
         if (miss !== null) {
           await reply(miss);
           return;
         }
-        const category = (result as { kind: 'one'; category: { id: string } }).category;
+        const category = (target.result as { kind: 'one'; category: { id: string } }).category;
         // `… in <account>` (3, L5): the preview opens for that account only.
         // Archived accounts are not offered.
         let account: RuleAccount | undefined;
-        if (parsed.accountQuery) {
+        const accountQuery = target.accountQuery;
+        if (accountQuery) {
           let accounts: RuleAccount[];
           try {
             accounts = (await wfClient.getAccounts())
@@ -3539,9 +3545,9 @@ export function buildTelegramCommandHandler(
             await reply(NEWRULE_ACCOUNTS_UNREADABLE);
             return;
           }
-          const found = resolveAccountQuery(accounts, parsed.accountQuery);
+          const found = resolveAccountQuery(accounts, accountQuery);
           if (found.kind !== 'one') {
-            await reply(formatAccountQueryMiss(found, parsed.accountQuery, accounts));
+            await reply(formatAccountQueryMiss(found, accountQuery, accounts));
             return;
           }
           account = found.account;

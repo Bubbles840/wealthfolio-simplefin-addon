@@ -4729,6 +4729,25 @@ describe('the /categorize wiring', () => {
         const { sent } = await scoped('trader joes = restaur in pnc', async () => { throw new Error('502'); });
         expect(sent[0][0]).toBe("Couldn't read your accounts just now — try again.");
       });
+
+      // M1: a custom category whose name holds " in " is read whole first.
+      const DINE = [...CATS, { id: 'cat-dio', name: 'Dine In Out', parentId: null, parentName: null }];
+
+      it('`x = Dine In Out` with that category opens its preview for every account, reading no accounts', async () => {
+        vi.mocked(getNativeSpendingCategories).mockReturnValue(DINE as any);
+        const getAccounts = vi.fn(async () => [{ id: 'wf-out', name: 'Out' }]);
+        const { sent } = await scoped('x = Dine In Out', getAccounts);
+        expect(sent[0][0].split('\n')[1]).toBe('Descriptions containing "x" → Dine In Out');
+        expect(getAccounts).not.toHaveBeenCalled();
+      });
+
+      it('`x = dine in pnc checking` is the category "dine" for the account "pnc checking"', async () => {
+        vi.mocked(getNativeSpendingCategories).mockReturnValue(DINE as any);
+        const { client, controller, sent } = await scoped('x = dine in pnc checking', async () => ACCOUNTS);
+        expect(sent[0][0].split('\n')[1]).toBe('Descriptions containing "x" in PNC Checking → Dine In Out');
+        await controller.onCallback({ data: dataFor(sent[0][1], 'Create rule'), chatId: 4242, messageId: 7 }, fakeUi());
+        expect(client.createCategorizationRule).toHaveBeenCalledWith(expect.objectContaining({ categoryId: 'cat-dio', accountId: 'wf-chk' }));
+      });
     });
 
     it('pins the rule priority at 50 — higher wins upstream, so a tapped rule yields', async () => {
