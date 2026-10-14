@@ -61,7 +61,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     day of other spending (your last three full months, the bills taken out
     so nothing counts twice). Home's **Next 30 days** tile shows the low
     point and its date — or when cash may run short — and opens what it
-    counted: each account (an old balance with its date, an account with no
+    counted: each account (an old balance with its date, one the bank sent
+    without a date marked "balance date unknown", an account with no
     balance named), each bill, and the assumption. `/forecast` in Telegram
     says the same; the weekly check-in carries it in Full detail; the daily
     report warns, in Brief too, when cash may run short within 14 days. The
@@ -71,10 +72,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     forecast: it is reported as unreadable, not as an all-clear.
   - **A month in review.** In Full detail the monthly report for a completed
     month adds the biggest category changes against the month before, the top
-    merchants, subscriptions that started (any charge in the month), that
-    stopped charging that month, or rose in price, net worth, savings rate
-    (the same figure as the Budget tab) and how many changes were made to
-    your books. Brief is unchanged, and the live "so far" edition of the
+    merchants, subscriptions that started (any charge in the month) or rose
+    in price, net worth, savings rate (the same figure as the Budget tab) and
+    how many changes were made to your books. A "No longer charging" line
+    names subscriptions found missing their charge near the month's end; ones
+    that stopped earlier have already left the subscription list, so the line
+    is rare until the cube keeps them a while longer. Brief is unchanged, and the live "so far" edition of the
     current month carries no review.
   - **Unread reports.** The Reports tab and each report's tab count the
     editions you haven't opened and mark them New; opening a report's tab

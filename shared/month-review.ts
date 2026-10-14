@@ -12,8 +12,13 @@
  *    (the detector keeps the newest three) began in this month or the one
  *    before AND charged this month: a subscription needs two charges to be in
  *    the roster, so one that starts in a month is rarely known by its end;
- *    ones no longer charging ("cancelled?") — overdue since a date in or
- *    before this month; and price rises charged this month.
+ *    ones no longer charging ("cancelled?") — overdue since a date in this
+ *    month — which names only subscriptions found missing their charge near
+ *    the month's end: the detector drops a subscription 45 days after its
+ *    last charge (ACTIVE_WITHIN_DAYS) and an entry is overdue only 7 days
+ *    after its predicted date, so ones that stopped earlier have already left
+ *    the list (R2: the cube keeps recently silent ones); and price rises
+ *    charged this month.
  *  - Net worth: the month-end change. Savings rate: (income − spent) ÷ income.
  *  - How many changes the change log shows (not background) for the month.
  *
