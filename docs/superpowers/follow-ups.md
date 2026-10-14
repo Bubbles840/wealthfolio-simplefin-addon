@@ -672,8 +672,27 @@ changes what a user sees today.
 - **"By hand" is an inference too.** A manual filing with no Telegram or Amazon
   entry in the last 90 days, and no Amazon label in its note, reads "set by
   hand" — not "in Wealthfolio": a Telegram filing older than the log, or from
-  before v1.60, looks the same. With the log unreadable it says only "Filed
-  under X."
+  before v1.60, looks the same. With the log unreadable — or read only in
+  part, a bucket unreadable or a gap recorded — it says only "Filed under
+  X.", and a story read from part of the log keeps what it read, adds "Part
+  of the change log can't be read, so this list may be missing changes." and
+  never says "No changes in the last 90 days." A starting balance with no
+  filing in the log (the companion filed card opening balances over REST
+  before v1.60) is the add-on's when it sits under "Opening balances", and
+  "Filed under X." anywhere else.
+- **Drill-down stories name the rolled-up (parent) category.** A budget
+  drill-down row carries the category it is rolled up under, not the leaf a
+  rule filed it into: "Filed under Food by a rule — 'KROGER' matches it." for
+  a row in Food › Groceries. The rule still filed the row under that parent;
+  naming the leaf would add its name to every drill row, with the worst-case
+  cube already near 80% of its byte cap. Telegram's `/why` reads the leaf from the database.
+- **A button whose row a transfer link re-created still opens it.** A story
+  by an id that no longer exists follows the change log forward once
+  (`currentActivityId`: a link's old leg to its new one, by position; an Undo
+  or Redo that put the row back), and an import notice's list opens each
+  import's current row. An undone link is not followed — its legs come back
+  on the next sync under ids no entry ties back — so such a button still says
+  "That transaction has changed since".
 - **`/why` queries are cut to 17 bytes**, so a story's Back button (the query
   rides in it) fits Telegram's 64: words drop from the end, never the amount,
   and a dropped word only widens the match. A story reached back from a
