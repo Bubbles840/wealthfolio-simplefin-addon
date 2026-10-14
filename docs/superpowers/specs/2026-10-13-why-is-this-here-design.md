@@ -189,7 +189,7 @@ The story is the same in both places. It has a **title**, the **answer**, and **
   - When none matches now (the rule was edited or deleted): "Filed by a rule (none of your current rules matches it)."
 - A category set by a person:
   - "by you, in Telegram, <date>" when the change log has the filing;
-  - otherwise "Set by hand in Wealthfolio."
+  - otherwise "set by hand"
 
 ### C4. Search rules
 

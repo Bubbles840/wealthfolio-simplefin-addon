@@ -1561,6 +1561,26 @@ describe('getNativeDrillRows (v1.48)', () => {
       cleanup();
     }
   });
+
+  it('a pipe in a category or account name cannot shift the ids and source into the wrong fields', () => {
+    const { path, cleanup } = makeTestDb();
+    try {
+      const db = new DatabaseSync(path);
+      db.exec(`INSERT INTO accounts (id, name, account_type) VALUES ('acct-pipe', 'Joe|s Visa', 'CREDIT_CARD')`);
+      db.exec(`INSERT INTO taxonomy_categories (id, name, parent_id, taxonomy_id) VALUES ('cat-pipe', 'Food|Drink', NULL, 'spending_categories')`);
+      db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, account_id, notes) VALUES ('p1', '-9', '2026-09-03', 'WITHDRAWAL', 'acct-pipe', 'CAFE | BAR · TRN-9')`);
+      db.exec(`INSERT INTO activity_taxonomy_assignments (activity_id, category_id, source) VALUES ('p1', 'cat-pipe', 'rule')`);
+      db.close();
+      const rows = getNativeDrillRows(path, '2026-09-01', '2026-10-01');
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        category: 'Food/Drink', account: 'Joe/s Visa', activityId: 'p1', accountId: 'acct-pipe',
+        categoryId: 'cat-pipe', source: 'rule', activityType: 'WITHDRAWAL', amount: 9, notes: 'CAFE | BAR · TRN-9',
+      });
+    } finally {
+      cleanup();
+    }
+  });
 });
 
 describe('uncategorized readers: only accounts Wealthfolio tracks for spending', () => {

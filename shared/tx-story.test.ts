@@ -144,7 +144,7 @@ describe('buildTxStory — the category line', () => {
     expect(line({ kind: 'rule', pattern: null, unknown: true })).toBe('Filed under Groceries by a rule.');
     expect(line({ kind: 'you', at: at(4).toISOString() })).toBe('Filed under Groceries by you, in Telegram, Oct 4.');
     expect(line({ kind: 'amazon', label: 'Lawn & Garden' })).toBe('Filed under Groceries from an Amazon email.');
-    expect(line({ kind: 'hand' })).toBe('Filed under Groceries — set by hand in Wealthfolio.');
+    expect(line({ kind: 'hand' })).toBe('Filed under Groceries — set by hand.');
     expect(line(null)).toBe('Filed under Groceries.');
   });
 
@@ -180,7 +180,7 @@ describe('buildTxStory — missing and failed facts', () => {
     const full = [
       'From your PNC Checking bank feed.',
       TX_STORY_SPENDING,
-      'Filed under Groceries — set by hand in Wealthfolio.',
+      'Filed under Groceries — set by hand.',
       "You told the sync: don't file it automatically, don't import it.",
     ];
     const expected = fact === 'mapping' ? full.slice(1)
