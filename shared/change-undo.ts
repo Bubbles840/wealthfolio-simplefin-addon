@@ -406,7 +406,9 @@ export function planChangeUndo(
       if (!categoryId || amountCents === null) return refuse(UNDO_NOT_POSSIBLE);
       const targets = state.budgetTargets ?? [];
       if (op === 'redo') {
-        // Never over a budget set since: Wealthfolio's POST would overwrite it.
+        // Never over a budget set since: Wealthfolio's POST would overwrite it. Only a
+        // DEFAULT blocks: a this-month target is untouched by the default POST and sat
+        // beside the default before the Undo, so it deliberately does not block Redo.
         const again = targets.some((t) => t.targetType === 'category' && t.taxonomyId === BUDGET_TAXONOMY
           && t.categoryId === categoryId && t.periodKey === DEFAULT_PERIOD_KEY);
         if (again) return refuse(`${name} has a budget again — nothing was redone.`);
@@ -416,7 +418,12 @@ export function planChangeUndo(
         });
       }
       const id = currentBudgetTargetId(entry, opts.latest);
-      const now = id ? targets.find((t) => t.id === id) : undefined;
+      // No id known (a Redo whose reply named no target, or an entry recorded without
+      // one): a live entry's budget is the category's default target.
+      const live = !opts.latest || opts.latest.reverses?.op === 'redo';
+      const now = id ? targets.find((t) => t.id === id)
+        : live ? targets.find((t) => t.targetType === 'category' && t.taxonomyId === BUDGET_TAXONOMY
+          && t.categoryId === categoryId && t.periodKey === DEFAULT_PERIOD_KEY) : undefined;
       if (!now) return refuse('That budget is already gone — nothing was undone.');
       if (now.amountCents !== amountCents || now.periodKey !== DEFAULT_PERIOD_KEY || now.categoryId !== categoryId) {
         return refuse(undoChangedSince(op));
