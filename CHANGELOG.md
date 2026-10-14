@@ -107,11 +107,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - **The companion's sqlite3 fallback kept every filter.** When `node:sqlite`
   couldn't open the database, the fallback put each query on one line, so a
-  `--` comment swallowed the rest of it: the Budget tab's spend matrix lost
-  its taxonomy filter and grouping (everything summed into one row), and the
+  `--` comment swallowed the rest of it. Every spending total read through the
+  fallback was affected — the digest, weekly and pool figures, the reports and
+  the Budget tab (the spend matrix summed everything into one row) — and the
   needs-a-category list lost its filters (linked rows, transfers, starting
   balances and untracked accounts were listed). Queries now go through as
-  written.
+  written. The default `node:sqlite` path was never affected.
 - **The "Opening balances" spending exclusion is re-applied.** It was only set
   while there was an opening debt to file, so a category created on Wealthfolio
   3.8 (which ignores the setting) stayed counted as spending. The companion now

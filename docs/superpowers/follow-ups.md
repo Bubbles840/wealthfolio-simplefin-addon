@@ -829,7 +829,10 @@ What R2 deliberately leaves open:
   Link/Remove are not behind the add-on's lock, and the add-on's sync and the
   app's Link/Remove are not behind the companion's. So a fix on one host
   racing a sync on the other can re-import a removed row once, or leave a
-  duplicate. The
+  duplicate. On the companion, only a removal's `/changes` Undo/Redo waits for
+  its sync; other kinds that write rows or the skip list (an `import` Undo
+  skips then deletes, since 2a) are not guarded there, while the add-on locks
+  every Undo. The
   add-on's `linked_groups` is also still a copy a companion write can
   outdate, and the add-on's sync then treats a pair the companion linked as
   one it did not link.
