@@ -215,9 +215,21 @@ describe('matchVenmoPayments — one payment, one row, per sync run (ruling P3-K
     expect(noted(matchVenmoPayments(twins, [bank('tx-1', '2026-10-04')]))).toEqual({ 'tx-1': 'Transfer to your bank' });
   });
 
-  it('a row left with one record after the contested one is dropped gets it', () => {
+  it('a row that could be two payments gets none, even once the other row contests one of them — nor does that row (P3-L)', () => {
     const two = ledgerOf({ ...COFFEE, emailDate: '2026-10-14' }, { ...COFFEE, counterparty: 'Ann', note: 'Lunch', emailDate: '2026-10-17' });
     // tx-a can be either payment; tx-b only Sam's (Oct 13 is before Ann's window).
-    expect(noted(matchVenmoPayments(two, [row('tx-a', '2026-10-17'), row('tx-b', '2026-10-13')]))).toEqual({ 'tx-a': 'Lunch' });
+    // Ann's email may belong to a payment with no bank row, so tx-a is not known to be Ann's.
+    expect(noted(matchVenmoPayments(two, [row('tx-a', '2026-10-17'), row('tx-b', '2026-10-13')]))).toEqual({});
+    expect(noted(matchVenmoPayments(two, [row('tx-b', '2026-10-13'), row('tx-a', '2026-10-17')]))).toEqual({});
+  });
+
+  it('a row with exactly one candidate that no other row wants still gets it beside an ambiguous row (P3-L)', () => {
+    const three = ledgerOf(
+      { ...COFFEE, emailDate: '2026-10-14' },
+      { ...COFFEE, counterparty: 'Ann', note: 'Lunch', emailDate: '2026-10-17' },
+      { ...COFFEE, counterparty: 'Bob', note: 'Tickets', emailDate: '2026-10-25' },
+    );
+    // tx-a: Sam or Ann (ambiguous); tx-c: only Bob's, and nobody else wants Bob's.
+    expect(noted(matchVenmoPayments(three, [row('tx-a', '2026-10-17'), row('tx-c', '2026-10-25')]))).toEqual({ 'tx-c': 'Tickets' });
   });
 });

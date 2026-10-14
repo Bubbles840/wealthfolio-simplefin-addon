@@ -379,6 +379,21 @@ describe('runSyncCore — one Venmo payment, one bank row per run (ruling P3-K)'
     expect(fh.venmo()[SAM_KEY].consumedBy).toBeUndefined();
   });
 
+  it('a row that could be two payments gets no note even when the other row contests one of them (P3-L)', async () => {
+    const ANN_KEY = 'out|2000|Ann|Lunch|2026-10-17';
+    const both: VenmoLedger = {
+      ...SAM,
+      [ANN_KEY]: { direction: 'out', kind: 'payment', amountCents: 2000, counterparty: 'Ann', note: 'Lunch', emailDate: '2026-10-17' },
+    };
+    vi.setSystemTime(new Date('2026-10-18T15:00:00Z'));
+    // tx-a (Oct 17) could be Sam's or Ann's; tx-b (Oct 13) only Sam's.
+    const fh = createFakeHost(world([tx('tx-a', '2026-10-17'), tx('tx-b', '2026-10-13')], both));
+    await runSyncCore(fh.host, fh.store, {});
+    expect(notes(fh).filter((c) => c!.includes('Venmo:'))).toEqual([]);
+    expect(fh.venmo()[SAM_KEY].consumedBy).toBeUndefined();
+    expect(fh.venmo()[ANN_KEY].consumedBy).toBeUndefined();
+  });
+
   it('a pending VENMO row blocks the payment: the posted row gets no note until the pending one is gone', async () => {
     const s = world([tx('tx-a', '2026-10-15'), tx('tx-p', '2026-10-16', { pending: true })]);
     const fh = createFakeHost(s);
