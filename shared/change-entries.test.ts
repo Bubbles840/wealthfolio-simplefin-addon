@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  accountCreatedChange, amazonLabelChange, amazonLabelOf, balanceCorrectionChange, bankUpdateChange, bookkeepingChange,
+  accountCreatedChange, amazonLabelChange, amazonLabelOf, balanceCorrectionChange, bankUpdateChange, bookkeepingChange, budgetSetChange,
   categoryFiledChange, categoryRuleCreatedChange, CHANGE_KINDS, changeDay, changeMoney, duplicateRemovedChange,
   importChange, mappingRuleCreatedChange, newEntryId, newRunId, openingBalanceFiledChange, pendingRemovedChange,
   stampChange, startingBalanceChange, startingBalanceMovedChange, transferLinkChange, transferTypeChange,
@@ -34,7 +34,7 @@ describe('ids and stamps', () => {
   });
 
   it('lists every kind once', () => {
-    expect(new Set(CHANGE_KINDS).size).toBe(16);
+    expect(new Set(CHANGE_KINDS).size).toBe(17);
   });
 });
 
@@ -131,6 +131,8 @@ describe('summaries — one per kind, bank text raw', () => {
     }), 'Added a transaction rule: "Payment to Ccb" is a transfer out'],
     ['account-created', accountCreatedChange({ sfinId: 'ACT-9c8d', wfId: 'wf-citi', name: 'Citi Card', accountType: 'CREDIT_CARD' }),
       'Created a Wealthfolio account'],
+    ['budget-set', budgetSetChange({ targetId: 'bt-1', categoryId: 'cat-gro', categoryName: 'Groceries', amountCents: 42500 }),
+      'Set a $425.00 monthly budget for Groceries'],
     ['bookkeeping', bookkeepingChange({ step: 'legacy-placeholder', account: CHECKING, activityIds: ['a', 'b'] }),
       'Restated 2 old placeholder rows with their real amounts'],
   ];
