@@ -8,6 +8,7 @@ import { runSyncCore } from '../../shared/sync-core.js';
 import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeCategorizedSpending, getNativeSpendingCategories, getNativeTxSearchRows } from './sqlite-native.js';
 import { ingestAmazonMail } from './amazon-mail.js';
 import { ingestVenmoMail } from './venmo-mail.js';
+import { getNativePastFilings } from './sqlite-guess.js';
 import { AMAZON_MAIL_STATUS_SECRET_KEY, AMAZON_MAIL_SAMPLES_SECRET_KEY, UNCATEGORIZED_STATUS_SECRET_KEY, VENMO_MAIL_SAMPLES_SECRET_KEY } from '../../shared/status-keys.js';
 import { CATEGORIZE_ENTRY_CALLBACK, escapeMarkdown } from '../../shared/telegram.js';
 import { categoryFiledChange, stampChange } from '../../shared/change-entries.js';
@@ -139,6 +140,12 @@ vi.mock('./amazon-mail.js', async (importOriginal) => ({
   ingestAmazonMail: vi.fn(async () => ({
     scanned: 0, added: 0, unparsed: 0, ignored: 0, pruned: 0, newLabels: [], unparsedSenders: {}, cancelled: 0, samples: [],
   })),
+}));
+
+// Guessed categories' strict reader (3): mocked as a module for the same reason
+// as sqlite-audit.js — it reads its separator from the sqlite-native mock.
+vi.mock('./sqlite-guess.js', () => ({
+  getNativePastFilings: vi.fn(() => []),
 }));
 
 // Venmo's ingest (3) reads the same faked mailbox: a quiet result by default,
@@ -4379,6 +4386,17 @@ describe('the /categorize wiring', () => {
     const status = JSON.parse(secrets.get(UNCATEGORIZED_STATUS_SECRET_KEY)!);
     expect(status.count).toBe(2);
     expect(status.rows.map((r: any) => r.description)).toEqual(['BOOK STORES', 'VENMO PAYMENT']);
+  });
+
+  it('republishes each row’s guessed category from the year’s filings', async () => {
+    vi.mocked(getNativePastFilings).mockReturnValueOnce([
+      { description: 'BOOK STORES', categoryId: 'cat-fun', categoryName: 'Entertainment' },
+      { description: 'BOOK STORES', categoryId: 'cat-fun', categoryName: 'Entertainment' },
+    ]);
+    const { client, secrets } = clientFor();
+    await buildCategorizeDeps(client).republish();
+    const status = JSON.parse(secrets.get(UNCATEGORIZED_STATUS_SECRET_KEY)!);
+    expect(status.rows.map((r: any) => r.guess)).toEqual([{ categoryId: 'cat-fun', name: 'Entertainment' }, undefined]);
   });
 
   it('drills into subcategories and files the child id', async () => {

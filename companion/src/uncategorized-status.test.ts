@@ -113,6 +113,57 @@ describe('publishing the row list', () => {
   });
 });
 
+describe('guessed categories', () => {
+  const NOW = new Date('2026-10-14T12:00:00Z');
+  const filing = (description: string, categoryId = 'cat-gro', categoryName = 'Groceries') => ({ description, categoryId, categoryName });
+  const publish = async (rows: ReturnType<typeof native>[], readFilings?: () => ReturnType<typeof filing>[]) => {
+    const writes: Record<string, string> = {};
+    await publishUncategorizedStatus(async (k, v) => { writes[k] = v; }, () => rows, async () => ({}), NOW, readFilings);
+    return JSON.parse(writes['uncategorized_status']);
+  };
+
+  it('puts the guess on a row whose merchant you filed the same way twice', async () => {
+    const payload = await publish(
+      [native('a', { notes: 'KROGER #415 · TRN-a' }), native('b', { notes: 'TARGET 0042 · TRN-b' })],
+      () => [filing('KROGER #415'), filing('KROGER #9')],
+    );
+    expect(payload.rows[0].guess).toEqual({ categoryId: 'cat-gro', name: 'Groceries' });
+    expect('guess' in payload.rows[1]).toBe(false);
+  });
+
+  it('gives an Amazon row no guess, nor a row that takes an income category', async () => {
+    const payload = await publish(
+      [native('a', { notes: 'AMAZON.COM*MB3T81 · TRN-a' }), native('b', { notes: 'KROGER #415 · TRN-b', incomeEligible: true })],
+      () => [filing('AMAZON.COM*MB3T81'), filing('AMAZON.COM*MB3T81'), filing('KROGER #415'), filing('KROGER #415')],
+    );
+    expect(payload.rows.map((r: { guess?: unknown }) => r.guess)).toEqual([undefined, undefined]);
+  });
+
+  it('a failed read of the filings publishes no guesses at all — never a wrong one — and the status as usual', async () => {
+    const payload = await publish([native('a', { notes: 'KROGER #415 · TRN-a' })], () => { throw new Error('database is locked'); });
+    expect(payload.count).toBe(1);
+    expect(payload.rows[0].description).toBe('KROGER #415');
+    expect('guess' in payload.rows[0]).toBe(false);
+  });
+
+  it('reads the filings from a year back, through the db-path entry point', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sfin-uncategorized-guess-'));
+    const dbPath = join(dir, 'wealthfolio.db');
+    writeFileSync(dbPath, '');
+    try {
+      const readFilings = vi.fn(() => [filing('KROGER #415'), filing('KROGER #415')]);
+      const writes: Record<string, string> = {};
+      await publishUncategorizedStatusForDbPath(
+        dbPath, async (k, v) => { writes[k] = v; }, () => [native('a', { notes: 'KROGER #415 · TRN-a' })], async () => ({}), NOW, readFilings,
+      );
+      expect(readFilings).toHaveBeenCalledWith(dbPath, '2025-10-14');
+      expect(JSON.parse(writes['uncategorized_status']).rows[0].guess).toEqual({ categoryId: 'cat-gro', name: 'Groceries' });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('uncategorizedWindow', () => {
   it('spans the last 90 days, end-exclusive tomorrow', () => {
     expect(uncategorizedWindow(new Date('2026-08-08T15:30:00Z'))).toEqual({
