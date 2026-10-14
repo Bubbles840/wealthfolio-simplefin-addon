@@ -233,9 +233,11 @@ export function budgetDollars(cents: number): string {
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const monthName = (month: string) => MONTHS[Number(month.slice(5, 7)) - 1] ?? month;
 
-/** `Jul–Sep`. */
+/** `Jul–Sep`; a single month is just `Sep`. */
 export function windowLabel(window: readonly string[]): string {
-  return `${monthName(window[0])}–${monthName(window[window.length - 1])}`;
+  const first = monthName(window[0]);
+  const last = monthName(window[window.length - 1]);
+  return first === last && window.length === 1 ? first : `${first}–${last}`;
 }
 
 /** The change log's "why" for a budget set from a suggestion. */

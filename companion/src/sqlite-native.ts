@@ -128,7 +128,11 @@ function tryQueryNativeDb<Row>(
   try {
     // No shell: the query can carry typed chat text (rule patterns), so it must
     // reach sqlite3 as a single argv element.
-    const args = separator === '|' ? [dbPath, query.replace(/\n/g, ' ')] : ['-separator', separator, dbPath, query.replace(/\n/g, ' ')];
+    // The query goes through verbatim, newlines and all: execFileSync passes it
+    // as ONE argv element, and sqlite3 reads it line by line, so a `--` comment
+    // ends at its own line. Flattening it onto one line made the comment in
+    // `spendingWhere` swallow the taxonomy filter and the GROUP BY.
+    const args = separator === '|' ? [dbPath, query] : ['-separator', separator, dbPath, query];
     // stderr piped, not inherited: the caught error carries it, and the
     // console line below reports it once.
     const output = execFileSync('sqlite3', args, {
@@ -1349,7 +1353,10 @@ export function getNativeSpendMatrix(
 
 /**
  * Suggested budgets' spend read (project 4): `getNativeSpendMatrix`'s series,
- * restricted the way Wealthfolio's own budget actuals are.
+ * restricted to what Wealthfolio's budget actuals count in two respects. It is
+ * NOT an exact copy of them (see follow-ups §14: a linked TRANSFER_OUT filed
+ * under a category counts, `activity_type_override` and
+ * `spending_activity_splits` are ignored).
  *  - Only the SPENDING accounts (`getNativeAuditSettings.spendingAccountIds`):
  *    Wealthfolio's budgets never see the others.
  *  - A row whose OWN category is excluded (`spending.excluded_category_ids`,
@@ -1401,8 +1408,9 @@ export function getNativeBudgetSpend(
 }
 
 /**
- * The earliest activity day ('YYYY-MM-DD') on the given accounts — how far
- * back the ledger covers, so a new install's first 30 days are not averaged
+ * The earliest activity day ('YYYY-MM-DD') on the given accounts that can be
+ * tracked for spending — CASH and CREDIT_CARD only, as upstream's
+ * `account_supports_purpose` — how far back the ledger covers, so a new install's first 30 days are not averaged
  * over three months. Null: no activity at all. Strict (throws on an unreadable
  * database); the account ids are filtered in code, not interpolated.
  */
@@ -1410,8 +1418,10 @@ export function getNativeSpendingHistoryStart(dbPath: string, accountIds: readon
   const rows = queryNativeDbStrict<Record<string, unknown>>(
     dbPath,
     'history start',
-    `SELECT COALESCE(account_id, '') AS account_id, MIN(substr(activity_date, 1, 10)) AS first_day
-     FROM activities WHERE activity_date IS NOT NULL AND activity_date <> '' GROUP BY account_id;`,
+    `SELECT COALESCE(a.account_id, '') AS account_id, MIN(substr(a.activity_date, 1, 10)) AS first_day
+     FROM activities a JOIN accounts acc ON a.account_id = acc.id
+     WHERE UPPER(acc.account_type) IN ('CASH', 'CREDIT_CARD') AND a.activity_date IS NOT NULL AND a.activity_date <> ''
+     GROUP BY a.account_id;`,
     (parts) => (parts.length >= 2 ? { c0: parts[0], c1: parts[1] } : null),
     DRILL_CLI_SEPARATOR,
   );

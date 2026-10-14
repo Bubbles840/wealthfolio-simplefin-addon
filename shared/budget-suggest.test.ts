@@ -255,6 +255,8 @@ describe('the words', () => {
     expect(budgetDollars(125000)).toBe('$1,250');
     expect(windowLabel(['2026-07', '2026-08', '2026-09'])).toBe('Jul–Sep');
     expect(windowLabel(['2026-11', '2026-12', '2027-01'])).toBe('Nov–Jan');
+    expect(windowLabel(['2026-09'])).toBe('Sep');
+    expect(suggestionWhy(['2026-09'])).toBe('Your average for Sep, rounded up to the nearest $5');
     expect(suggestionWhy(['2026-07', '2026-08', '2026-09'])).toBe('Your average for Jul–Sep, rounded up to the nearest $5');
     expect(suggestionLine(suggestBudgets(facts()).suggestions)).toBe('Groceries $425 · Dining out $180 · Gas $50');
   });
