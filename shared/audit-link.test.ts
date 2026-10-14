@@ -231,7 +231,11 @@ describe('linkPairs', () => {
 
   it('a THROWN re-create (the SDK, a 502 between the requests) writes back whichever rows are gone', async () => {
     const f = goneIo({ link: vi.fn(async () => { throw new Error('502 bad gateway.'); }) });
-    expect((await linkPairs([PAIR], f.io)).message).toBe("Couldn't reach Wealthfolio (502 bad gateway). Both rows are back, with new ids. Their categories may need filing again.");
+    // A thrown request may have linked them after all: check both accounts.
+    expect((await linkPairs([PAIR], f.io)).message).toBe(
+      "Couldn't reach Wealthfolio (502 bad gateway). Both rows are back, with new ids. Their categories may need filing again."
+      + ' Check both accounts in Wealthfolio: if the link went through after all, they show twice.',
+    );
     expect(f.recorded[0]).toMatchObject({ kind: 'bookkeeping', actor: 'you', undoable: false, after: { count: 2, oldActivityIds: ['out-1', 'in-1'] } });
     expect(f.io.restore).toHaveBeenCalledWith([OUT_WRITE, IN_WRITE]);
     // Only one gone: only that one is written back.
@@ -240,8 +244,10 @@ describe('linkPairs', () => {
         .mockImplementation(async (p: LinkPair) => [null, { row: row(p.counterpart), linked: false }]),
       link: vi.fn(async () => { throw new Error('boom'); }),
     });
-    expect((await linkPairs([PAIR], one.io)).message).toMatch(/^Wealthfolio refused the link \(boom\)\. The deleted row is back/);
+    expect((await linkPairs([PAIR], one.io)).message).toMatch(/^Wealthfolio refused the link \(boom\)\. The deleted row is back, with a new id\. Its category may need filing again\. Check both accounts in Wealthfolio/);
     expect(one.io.restore).toHaveBeenCalledWith([OUT_WRITE]);
+    // The entry covers the one row put back: its count, its leg.
+    expect(one.recorded[0]).toMatchObject({ after: { count: 1, oldActivityIds: ['out-1'] }, subject: { txKeys: [OUT_KEY], description: 'TRANSFER TO ALLY' } });
     // Both still there: nothing restored, said honestly.
     const there = fakeIo({ link: vi.fn(async () => { throw new Error('socket hang up'); }) });
     expect((await linkPairs([PAIR], there.io)).message).toBe("Couldn't link them: socket hang up. Check both accounts in Wealthfolio.");
@@ -315,6 +321,40 @@ describe('linkPairs', () => {
     const f = fakeIo({ link: vi.fn(async () => ({ linked: false, problems: ['save (create): no'] })) });
     expect((await linkPairs([PAIR], f.io)).message).toBe("Couldn't link them: no. Nothing was changed.");
     expect(f.io.restore).not.toHaveBeenCalled();
+  });
+
+  it('the write-back entry carries the new ids it was given, and the old ones', async () => {
+    const f = goneIo({
+      link: vi.fn(async () => ({ linked: false, problems: ['save (create): no'] })),
+      restore: vi.fn(async () => ({ created: [{ id: 'back-1' }, { id: 'back-2' }], updated: [], errors: [] }) as never),
+    });
+    await linkPairs([PAIR], f.io);
+    expect(f.recorded[0]).toMatchObject({
+      kind: 'bookkeeping', subject: { activityIds: ['back-1', 'back-2'], txKeys: [OUT_KEY, IN_KEY] }, after: { count: 2, oldActivityIds: ['out-1', 'in-1'] },
+    });
+  });
+
+  it.each(['Failed to fetch', 'Load failed'])('a thrown "%s" (a browser losing the connection) reads as unreachable', async (cause) => {
+    const f = goneIo({ link: vi.fn(async () => { throw new TypeError(cause); }) });
+    expect((await linkPairs([PAIR], f.io)).message).toMatch(new RegExp(`^Couldn't reach Wealthfolio \\(${cause}\\)\\. Both rows are back`));
+  });
+
+  it('a write-back THROWN as a duplicate (Wealthfolio 3.10\'s 400) says a matching row exists, and Link all names the rows', async () => {
+    const dup = () => vi.fn(async () => { throw new Error('400 Bad Request: Duplicate activity detected for account wf-chk'); });
+    const f = goneIo({ link: vi.fn(async () => { throw new Error('boom'); }), restore: dup() });
+    const run = await linkPairs([PAIR], f.io);
+    expect(run.message).toBe('A matching row already exists — the link may have gone through; check both accounts.');
+    expect(run.lost).toEqual([]);
+    expect(run.maybeLost).toEqual([
+      'PNC Checking 2026-10-04 600.00 "TRANSFER TO ALLY · TRN-1"', 'Ally Savings 2026-10-05 600.00 "FROM PNC · TRN-2"',
+    ]);
+    const all = fakeIo();
+    const calls = { n: 0 };
+    all.io.read = vi.fn(async (p: LinkPair) => (p.key === 'leg:out-2' && calls.n++ > 0 ? [null, null] : [{ row: row(p.leg), linked: false }, { row: row(p.counterpart), linked: false }])) as unknown as LinkIo['read'];
+    all.io.link = vi.fn(async (legs: [LinkLeg, LinkLeg]) => { if (legs[0].wfId === 'out-2') throw new Error('boom'); return { linked: true, groupId: 'g', activityIds: ['a', 'b'] as [string, string] }; });
+    all.io.restore = dup();
+    expect((await linkPairs([pairN(1), pairN(2)], all.io)).message)
+      .toMatch(/^Linked 1 of 2 — 1 couldn't be linked\. May have been deleted: PNC Checking 2026-10-04 10\.02 .*; Ally Savings .*\.$/);
   });
 
   it('a write-back refused as a duplicate says a matching row exists, not that rows are lost', async () => {
