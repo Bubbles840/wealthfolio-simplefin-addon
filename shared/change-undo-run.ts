@@ -314,7 +314,7 @@ async function perform(io: UndoIo, steps: UndoStep[], now: Date, skipNote: strin
           l,
         ));
       } else {
-        created = await performStep(io, s, now, created);
+        created = await performStep(io, s, created);
       }
     } catch (err) {
       if (err instanceof Refusal || done.length === 0) throw err;
@@ -325,18 +325,11 @@ async function perform(io: UndoIo, steps: UndoStep[], now: Date, skipNote: strin
   return created;
 }
 
-async function performStep(io: UndoIo, s: UndoStep, now: Date, prior: string | null): Promise<string | null> {
+/** One step that is not a skip-list edit (`perform` batches those itself). */
+async function performStep(io: UndoIo, s: UndoStep, prior: string | null): Promise<string | null> {
   let created = prior;
   {
     switch (s.do) {
-      case 'skip':
-        await editSkippedTransactions(io.secrets.get, io.secrets.set, (l) => withSkipped(l, {
-          account: s.account, txId: s.txId, note: UNDO_SKIP_NOTE, at: now.toISOString(),
-        }));
-        break;
-      case 'unskip':
-        await editSkippedTransactions(io.secrets.get, io.secrets.set, (l) => withoutSkipped(l, s.account, s.txId));
-        break;
       case 'delete': {
         const res = await io.host.saveMany({ deleteIds: [s.activityId] });
         if (res.errors.length) throw new Error(res.errors.map((e) => e.message).join('; '));
@@ -491,6 +484,10 @@ async function runOnce(
         // The skip went through and the delete did not: take back only the keys this Redo added.
         const added = p.steps.filter((s): s is Extract<UndoStep, { do: 'skip' }> => s.do === 'skip')
           .filter((s) => !preSkipped.has(accountTxKey(s.account, s.txId)));
+        // Nothing added (a half-done Undo left it skipped): nothing to write, and it stays skipped.
+        if (added.length === 0) {
+          return { ok: false, message: `${base}. Nothing was removed; it was already on the skip list and stays there.` };
+        }
         try {
           await editSkippedTransactions(io.secrets.get, io.secrets.set, (l) => added.reduce((acc, s) => withoutSkipped(acc, s.account, s.txId), l));
           return { ok: false, message: `${base}. It is off the skip list again, so nothing changed.` };
