@@ -37,7 +37,10 @@ export interface AuditReaders {
   /** Throws when the database cannot be read. */
   headlineRows(startInclusive: string, endExclusive: string): HeadlineDbRow[];
   /** Throws when the database cannot be read. */
-  settings(): { timezone: string | null; excludedCategoryIds: string[]; categoryParents: Record<string, string | null>; spendingOn: boolean };
+  settings(): {
+    timezone: string | null; excludedCategoryIds: string[]; categoryParents: Record<string, string | null>; spendingOn: boolean;
+    spendingAccountIds: string[];
+  };
   /** Wealthfolio's Spending page `headline.spent`, in dollars. */
   spendingSpent(startIso: string, endIso: string): Promise<number>;
 }
@@ -57,8 +60,8 @@ export function companionAuditReaders(client: AuditClient, dbPath: string): Audi
 }
 
 const pad = (n: number) => String(n).padStart(2, '0');
-/** The companion's own day, as audit-headline.mjs's TODAY. */
-const localDay = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+/** The companion's own month, the report cube's newest. */
+const localMonth = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}`;
 const nextMonthStart = (month: string) => {
   const [y, m] = month.split('-').map(Number);
   return m === 12 ? `${y + 1}-01-01` : `${y}-${pad(m + 1)}-01`;
@@ -137,11 +140,13 @@ export async function gatherBalanceFacts(r: AuditReaders, ledger: AuditLedger | 
   return facts;
 }
 
-export async function gatherHeadlineFacts(r: AuditReaders, now: Date): Promise<HeadlineFacts> {
-  const today = localDay(now);
-  const month = today.slice(0, 7);
-  const facts: HeadlineFacts = { month, today };
+export async function gatherHeadlineFacts(r: AuditReaders, now: Date, sharedMapping?: Mapping): Promise<HeadlineFacts> {
+  const month = localMonth(now);
+  const facts: HeadlineFacts = { month };
   const failed: HeadlineRead[] = [];
+  // The report covers the mapped accounts only (the cube drops any other).
+  const mapping = sharedMapping ?? await readMapping(r);
+  if (mapping.ok) facts.reportAccountIds = Object.values(mapping.value ?? {}).filter((id) => !!id);
   try {
     // The report's "Spent this month": the cube's newest month, which must be this one.
     const cube = parseReportCube(await r.secret(REPORT_CUBE_SECRET_KEY));
@@ -157,10 +162,13 @@ export async function gatherHeadlineFacts(r: AuditReaders, now: Date): Promise<H
     timezone = settings.timezone;
     facts.excludedCategoryIds = settings.excludedCategoryIds;
     facts.categoryParents = settings.categoryParents;
+    facts.spendingAccountIds = settings.spendingAccountIds;
     spendingOn = settings.spendingOn;
   } catch {
     failed.push('settings');
   }
+  // Wealthfolio's month is placed by the zone the Spending page is asked in.
+  facts.timezone = timezone;
   // A Spending page that is off answers a meaningless $0: not a figure to compare.
   if (!spendingOn) failed.push('spending-off');
   else try {
@@ -198,7 +206,7 @@ export async function runAudit(r: AuditReaders, now: Date): Promise<AuditResults
   const ledger = readAuditLedger(r);
   const mapping = await readMapping(r);
   const balanceFacts = await gatherBalanceFacts(r, ledger, mapping);
-  const headlineFacts = await gatherHeadlineFacts(r, now);
+  const headlineFacts = await gatherHeadlineFacts(r, now, mapping);
   const healthFacts = await gatherHealthFacts(r, ledger, mapping);
   return {
     balances: explainBalances(balanceFacts),

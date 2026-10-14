@@ -18,34 +18,55 @@
  *    month in Wealthfolio's timezone (`POST /spending/insight`, the request
  *    the page itself makes for "This month").
  *
+ * A REASON IS A ROW EXACTLY ONE SIDE COUNTS, for one named rule. Each side's
+ * rules, for a row read in the report's month (`[YYYY-MM-01, next-01)` on the
+ * stored date, as the cube reads it):
+ *  - the report (companion/src/sqlite-native.ts, the cube's readers): a mapped
+ *    account; the report's spending sign (`reportSpendSign`); not one of the
+ *    sync's corrections or in-transit placeholders (SYNC_BOOKKEEPING_EXCLUSION
+ *    — a starting balance is NOT excluded); then once per spending filing
+ *    whose rolled-up category is not named like a transfer (spendingWhere),
+ *    or, with no filing in any taxonomy, once if it is a charge, not grouped,
+ *    in an account the Spending page reads (the uncategorized reader);
+ *  - Wealthfolio (crates/spending insight/service.rs, activity_classification.rs):
+ *    an account its Spending page reads (`spending.account_ids`, not
+ *    archived); never a linked transfer (a grouped TRANSFER_IN/OUT is an
+ *    internal transfer or a saving); the same sign otherwise; the WHOLE
+ *    calendar month in its timezone, both ends inclusive; once, unless its
+ *    earliest spending filing is an excluded category or a descendant.
+ *
  * Each reason's cents is its share of report − Wealthfolio, from the row's
- * spend in the report's own sign (SPENDING_SIGN, companion/src/
- * sqlite-native.ts; positive spends, negative refunds):
- *   first-midnight        +spend  stored at 00:00 UTC on the 1st: Wealthfolio, west of UTC, counts it last month
- *   future                +spend  dated after today: the report counts the whole month, Wealthfolio stops at today
- *   bookkeeping           −spend  the sync's own rows: Wealthfolio counts them, the report excludes them
- *   excluded              +spend  filed under a category Wealthfolio excludes from spending
- *   double-filed          +spend × (filings − 1)  the report counts every spending filing
+ * spend in the report's sign (positive spends, negative refunds):
+ *   first-midnight        +spend  stored at 00:00 UTC on the 1st, west of UTC: Wealthfolio counts it last month
+ *   bookkeeping           −spend  a sync correction or placeholder: Wealthfolio counts it, the report drops it by its marker
+ *   excluded              +spend  its spending filing is a category Wealthfolio excludes (3.9+)
+ *   double-filed          +spend × (filings − 1)  the report counts every filing, Wealthfolio the row once
  *   uncategorized-refund  −spend  a refund with no category: Wealthfolio nets it, the report ignores it
- * unexplainedCents = (report − Wealthfolio) − Σ reasons.
+ * unexplainedCents = (report − Wealthfolio) − Σ reasons. A row only one side
+ * counts for a rule no reason names stays in it: an account the report does
+ * not cover, a linked transfer or a transfer-named category the report still
+ * files, a row Wealthfolio puts in another month other than at 00:00 UTC on
+ * the 1st, and what this does not model — split lines (the add-on never
+ * writes them), an activity type override, and the uncategorized reader's
+ * dismissed rows and rows awaiting a transfer's other half.
  *
  * Across Wealthfolio versions (3.8 to 3.10):
  *  - first-midnight: a date-only row is stored at UTC midnight on 3.8, and
  *    still is when the sync imports it; from 3.10 one entered in Wealthfolio
  *    west of UTC is stored at its LOCAL midnight (`2026-10-01T04:00:00+00:00`
  *    for New York), which both sides put in the same month. So only a row
- *    stored at exactly 00:00 UTC counts, whatever the rest of the ledger is.
+ *    stored at exactly 00:00 UTC counts, and only where Wealthfolio's month
+ *    starts after it (west of UTC).
  *  - excluded: `spending.excluded_category_ids` arrived in 3.9, where the
  *    Spending page drops a row whose spending allocation — its earliest
  *    spending filing — lands on an excluded category OR ANY DESCENDANT
- *    (crates/spending/src/category_exclusions.rs). With no setting (3.8)
- *    nothing is excluded and the reason is empty. Split lines, which the
- *    add-on never writes, are not modelled: their difference stays in the
- *    remainder.
+ *    (crates/spending/src/category_exclusions.rs). A card's opening debt the
+ *    companion files under "Opening balances" is one. With no setting (3.8)
+ *    nothing is excluded and the reason is empty.
  */
 import { changeDay, changeMoney } from './change-entries.js';
 import { descriptionFromComment } from './sync-core.js';
-import { isCorrectionNote, isPlaceholderNote, isStartingBalanceNote } from './audit-ledger.js';
+import { isCorrectionNote, isPlaceholderNote } from './audit-ledger.js';
 
 /** 'spending-off' is not a failed read: Wealthfolio's Spending page is turned
  *  off (or has no accounts), so its figure is a meaningless $0 and is left out. */
@@ -55,7 +76,7 @@ export const HEADLINE_READ_NOTES: Record<HeadlineRead, string> = {
   wealthfolio: "Couldn't read Wealthfolio's Spending page figure.",
   ledger: "Couldn't read the Wealthfolio database, so the reasons are missing.",
   'spending-off': "Wealthfolio's Spending page is turned off, so there's nothing to compare.",
-  settings: "Couldn't read Wealthfolio's settings just now, so excluded categories aren't counted and the month follows the companion's timezone.",
+  settings: "Couldn't read Wealthfolio's settings just now, so its excluded categories and the Spending page's accounts aren't taken into account, and the month follows the companion's timezone.",
 };
 const READ_ORDER: HeadlineRead[] = ['report', 'wealthfolio', 'spending-off', 'ledger', 'settings'];
 
@@ -66,6 +87,10 @@ export interface HeadlineDbRow {
   id: string;
   /** `activity_date` as stored, e.g. `2026-10-01T00:00:00+00:00`. */
   date: string;
+  /** Wealthfolio account id. */
+  accountId: string;
+  /** `source_group_id`, '' when none: a linked transfer's group. */
+  groupId: string;
   accountName: string;
   /** Upper-case. */
   accountType: string;
@@ -75,7 +100,8 @@ export interface HeadlineDbRow {
   subtype: string;
   absCents: number;
   notes: string;
-  /** How many SPENDING categories it is filed under. */
+  /** How many spending filings the REPORT counts: each one whose category,
+   *  rolled up to its parent, is not named like a transfer (spendingWhere). */
   spendingFilings: number;
   /** Every category it is filed under, any taxonomy. */
   categoryIds: string[];
@@ -87,13 +113,20 @@ export interface HeadlineDbRow {
 export interface HeadlineFacts {
   /** YYYY-MM. */
   month: string;
-  /** YYYY-MM-DD, the companion's day (the script's TODAY). */
-  today: string;
+  /** Wealthfolio's timezone, which places its month; null or absent: the
+   *  companion's own, as the Spending page was asked. */
+  timezone?: string | null;
+  /** The accounts Wealthfolio's Spending page reads: opted in, not archived;
+   *  [] when it is off. Absent (unread): every account. */
+  spendingAccountIds?: string[];
+  /** The accounts the report covers: the mapped ones (the cube drops any
+   *  other). Absent (unread): every account. */
+  reportAccountIds?: string[];
   /** The report's "Spent this month", cents. */
   reportCents?: number;
   /** Wealthfolio's Spending page `headline.spent`, cents. */
   wealthfolioCents?: number;
-  /** The month's activities, every account. */
+  /** The report's month of activities, every account. */
   rows?: HeadlineDbRow[];
   /** `spending.excluded_category_ids`; [] when unset (Wealthfolio 3.8). */
   excludedCategoryIds?: string[];
@@ -104,9 +137,9 @@ export interface HeadlineFacts {
 }
 
 export type HeadlineReasonKind =
-  | 'first-midnight' | 'future' | 'bookkeeping' | 'excluded' | 'double-filed' | 'uncategorized-refund';
+  | 'first-midnight' | 'bookkeeping' | 'excluded' | 'double-filed' | 'uncategorized-refund';
 export const HEADLINE_REASON_KINDS: readonly HeadlineReasonKind[] = [
-  'first-midnight', 'future', 'bookkeeping', 'excluded', 'double-filed', 'uncategorized-refund',
+  'first-midnight', 'bookkeeping', 'excluded', 'double-filed', 'uncategorized-refund',
 ];
 
 /** One row behind a reason. Raw text. */
@@ -154,7 +187,10 @@ export function reportSpendSign(r: Pick<HeadlineDbRow, 'accountType' | 'type' | 
   return 0;
 }
 
-const isBookkeeping = (notes: string) => isStartingBalanceNote(notes) || isCorrectionNote(notes) || isPlaceholderNote(notes);
+/** What the report drops by its marker (SYNC_BOOKKEEPING_EXCLUSION): the
+ *  sync's corrections and in-transit placeholders — not starting balances. */
+const reportDropsByMarker = (notes: string) => isCorrectionNote(notes) || isPlaceholderNote(notes);
+const TRANSFER_TYPES = new Set(['TRANSFER_IN', 'TRANSFER_OUT']);
 
 /** Stored at exactly 00:00 UTC — the only midnight both sides read differently. */
 const atUtcMidnight = (date: string) => /T00:00:00(?:\.0+)?(?:Z|\+00:00)?$/.test(date);
@@ -200,22 +236,49 @@ export function explainHeadline(facts: HeadlineFacts): HeadlineExplanation {
       r.cents += cents;
       r.rows.push(row);
     };
+    const tracked = facts.spendingAccountIds ? new Set(facts.spendingAccountIds) : null;
+    const covered = facts.reportAccountIds ? new Set(facts.reportAccountIds) : null;
+    // Wealthfolio's month: the whole calendar month in its timezone, both ends inclusive.
+    const bounds = zonedMonthBounds(facts.month, facts.timezone ?? null);
+    const wfStart = Date.parse(bounds.start);
+    const wfEnd = Date.parse(bounds.end);
     const firstAtMidnight = `${facts.month}-01T`;
-    const thisMonth = facts.today.slice(0, 7) === facts.month;
     const excluded = facts.excludedCategoryIds ? excludedWithDescendants(facts.excludedCategoryIds, facts.categoryParents ?? {}) : null;
     for (const r of facts.rows) {
       const spend = reportSpendSign(r) * r.absCents;
       if (spend === 0) continue;
+      // Rows one side never counts in any month — an account the report does
+      // not cover, one the Spending page does not read, a linked transfer —
+      // are named by no reason: what they cost stays in the remainder.
+      if (covered && !covered.has(r.accountId)) continue;
+      if (tracked && !tracked.has(r.accountId)) continue;
+      if (r.groupId !== '' && TRANSFER_TYPES.has(r.type)) continue;
+      const filings = reportDropsByMarker(r.notes) ? 0
+        : r.spendingFilings > 0 ? r.spendingFilings
+          : r.categoryIds.length === 0 && r.groupId === '' && spend > 0 ? 1 : 0;
       const row: HeadlineRow = { date: r.date.slice(0, 10), description: descriptionFromComment(r.notes), cents: spend, account: r.accountName };
-      if (isBookkeeping(r.notes)) {
-        add('bookkeeping', -spend, row);
+      // Excluded: Wealthfolio counts it in no month at all.
+      if (excluded && r.spendingCategoryId && excluded.has(r.spendingCategoryId)) {
+        if (filings > 0) {
+          add('excluded', spend, row);
+          if (filings > 1) add('double-filed', spend * (filings - 1), row);
+        }
         continue;
       }
-      if (r.date.startsWith(firstAtMidnight) && atUtcMidnight(r.date)) add('first-midnight', spend, row);
-      if (thisMonth && row.date > facts.today) add('future', spend, row);
-      if (excluded && r.spendingCategoryId && excluded.has(r.spendingCategoryId)) add('excluded', spend, row);
-      if (r.spendingFilings > 1) add('double-filed', spend * (r.spendingFilings - 1), row);
-      if (spend < 0 && r.categoryIds.length === 0) add('uncategorized-refund', -spend, row);
+      const at = Date.parse(r.date);
+      if (!Number.isNaN(at) && (at < wfStart || at > wfEnd)) {
+        // Wealthfolio counts it in another month; only this one is named.
+        if (filings > 0 && r.date.startsWith(firstAtMidnight) && atUtcMidnight(r.date)) {
+          add('first-midnight', spend, row);
+          if (filings > 1) add('double-filed', spend * (filings - 1), row);
+        }
+        continue;
+      }
+      // Wealthfolio counts it, once.
+      if (filings > 1) add('double-filed', spend * (filings - 1), row);
+      if (filings > 0) continue;
+      if (reportDropsByMarker(r.notes)) add('bookkeeping', -spend, row);
+      else if (spend < 0 && r.categoryIds.length === 0) add('uncategorized-refund', -spend, row);
     }
     reasons = HEADLINE_REASON_KINDS.map((k) => byKind.get(k)!).filter((r) => r.rows.length > 0);
   }
@@ -242,7 +305,6 @@ export function headlineSummaryLine(h: HeadlineExplanation): string | null {
 
 export const HEADLINE_REASON_LABELS: Record<HeadlineReasonKind, string> = {
   'first-midnight': 'Dated the 1st at midnight UTC',
-  future: 'Dated after today',
   bookkeeping: "The add-on's own bookkeeping rows",
   excluded: 'In categories Wealthfolio excludes',
   'double-filed': 'Filed under two categories',
@@ -250,7 +312,6 @@ export const HEADLINE_REASON_LABELS: Record<HeadlineReasonKind, string> = {
 };
 const REASON_WHY: Record<HeadlineReasonKind, string> = {
   'first-midnight': "Wealthfolio's month starts later west of UTC, so it counts these last month",
-  future: 'the report counts the whole month; Wealthfolio stops at today',
   bookkeeping: "Wealthfolio counts them; the report doesn't",
   excluded: "Wealthfolio leaves these out; the report doesn't",
   'double-filed': 'the report counts them twice',
