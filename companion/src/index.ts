@@ -110,6 +110,7 @@ import {
 import { addDaysIso, dueWithin, formatRosterTotal, manualKey, rosterMoney, type Cadence } from '../../shared/subscription-roster.js';
 import { REPORT_CUBE_SECRET_KEY, parseReportCube } from '../../shared/report-cube.js';
 import { companionAuditReaders, publishAuditSnapshot } from './audit-facts.js';
+import { publishCashForecast } from './cash-forecast-facts.js';
 import { auditMenuDeps, auditStatusKeyboard, createAuditMenu, type AuditMenu } from './audit-menu.js';
 import { addManual, editSubscriptionPrefs, emptySubscriptionPrefs, isUnreadablePrefsError, loadSubscriptionPrefs, newManualId, renameKey, setRemind, SubscriptionPrefsInvalidError, type ManualSubscription, type RemindDays, type SecretGet, type SecretSet, type SubscriptionEdit } from '../../shared/subscription-prefs.js';
 import { renderReportSvg, reportImageTitle, reportImageCaption, RENDERABLE_REPORT_IDS } from '../../shared/report-render.js';
@@ -1184,6 +1185,17 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
       await publishAuditSnapshot(wfClient, wealthfolioDbPath(), new Date());
     } catch (e) {
       log(`Audit snapshot publish failed (the app's checks may be stale): ${formatError(e)}`);
+    }
+
+    // Project 5: the 30-day cash forecast behind Home's tile, the weekly
+    // line, /forecast and the daily warning — after the cube it reads, and
+    // last like the checks (its REST read has no timeout either). Best-effort:
+    // a failed run or write keeps the previous forecast and never touches
+    // this sync's result.
+    try {
+      await publishCashForecast(wfClient, wealthfolioDbPath(), new Date());
+    } catch (e) {
+      log(`Cash forecast publish failed (the app's forecast may be stale): ${formatError(e)}`);
     }
 
     await updateSyncHealth(wfClient, null);
