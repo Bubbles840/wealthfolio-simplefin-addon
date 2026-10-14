@@ -1,0 +1,294 @@
+/**
+ * shared/link-in-place.ts
+ *
+ * Link and unlink two legs IN PLACE, through Wealthfolio's own link — `POST
+ * /activities/link` and `/activities/unlink` (the companion, Wealthfolio 3.8+)
+ * or the SDK's `activities.linkTransfer` and `unlinkTransfer` (the add-on, a
+ * 3.9+ host). Ids stay stable, and so does everything filed on the rows.
+ * Where in place cannot give the result re-creating gives, the leg shape goes
+ * to the delete-and-re-create linker as before (shared/link-pair.ts). Pure:
+ * each host lends its reads and calls (`InPlaceIo`).
+ *
+ * What upstream's link does (storage-sqlite activities repository.rs
+ * `link_transfer_activities`, v3.8.0 through v3.10.0):
+ *  - one transaction: both rows are read, checked and updated together, and a
+ *    refusal writes nothing;
+ *  - it needs one row whose effective type is TRANSFER_IN and one TRANSFER_OUT
+ *    — it never changes a type — in two accounts (one account only for a cash
+ *    FX conversion);
+ *  - it refuses a row already in another VALID pair ("already linked to
+ *    another transfer"); a row in an orphan or broken group is re-grouped;
+ *    3.10 also accepts the pair already linked to each other (keeps its group);
+ *  - it checks the asset shape only: two cash legs (no asset, or a `$CASH-XXX`
+ *    one) pass; a security asset must match on both legs with a quantity. It
+ *    does NOT clear an asset — so a leg carrying the phantom "$CASH" security
+ *    (a uuid asset that `is_cash_symbol` rejects) is refused or, worse, linked
+ *    and still books no cash;
+ *  - it never checks amount, currency or date;
+ *  - it writes a new uuid `source_group_id` (no `wf-transfer-` prefix),
+ *    merges `flow.is_external: false` into each row's metadata, and sets
+ *    `is_user_modified` (read only by provider upserts, which never touch
+ *    these rows) — nothing else: type, date, amount, note, asset, subtype,
+ *    fee and every category assignment stay as they are;
+ *  - it answers with both rows, transfer-in first.
+ * Unlink is its mirror: both rows must share one group; it clears the group,
+ * sets `flow.is_external: true`, and changes nothing else.
+ *
+ * So in place gives exactly what re-creating gives only when each stored row
+ * already IS the leg re-creating would write: the type, the UTC day, the
+ * amount, the currency, the note, and no asset, subtype or fee. Re-creating
+ * also drops a filing; in place keeps it — the point of linking in place —
+ * except on a row marked external: the sync's held placeholder, whose
+ * bookkeeping filing must not ride onto a real transfer, keeps re-creating.
+ * Rows are read by id right before the call. Wealthfolio decides the group
+ * question itself, atomically: a refusal (of any kind) falls back to
+ * re-creating, which is how every pair linked before 1.62.0. A call whose
+ * answer is lost is read again: a shared group means it went through.
+ *
+ * Unlinking in place keeps the rows and their ids, then retypes both to
+ * ordinary money in ONE bulk update — they are no longer a pair, so an update
+ * to one is not copied onto the other (Wealthfolio 3.8 `build_counterpart_update`
+ * only follows a valid pair). If that update fails the pair stays unlinked,
+ * as transfers marked external, and says so.
+ */
+import { describeLeg, linkPairByRecreate, unlinkPairByRecreate, type UnlinkLeg, type UnlinkResult } from './link-pair.js';
+import { flowExternalOf, isTransferType, TRANSFER_GROUP_PREFIX } from './sync-core.js';
+import type { ActivityWrite, LinkLeg, LinkResult, SaveManyRequest, SaveManyResult } from './sync-host.js';
+
+/** What a host lends: Wealthfolio's link and unlink, and a read by id. */
+export interface InPlaceIo {
+  /** Both rows by id as the host's search returns them (a missing row is absent). Rejects when unreachable. */
+  read(ids: [string, string]): Promise<unknown[]>;
+  /** Wealthfolio's link: resolves to the two rows it wrote; rejects on a refusal. */
+  link(aId: string, bId: string): Promise<unknown[]>;
+  /** Wealthfolio's unlink: resolves to the two rows it wrote; rejects on a refusal. */
+  unlink(aId: string, bId: string): Promise<unknown[]>;
+}
+
+/** A stored row as in-place linking checks it: a search row (ActivityDetails) or a link answer (Activity). */
+export interface StoredLeg {
+  id: string;
+  accountId: string;
+  /** Upper-case. */
+  type: string;
+  /** The stored instant, as the host sent it. */
+  instant: string;
+  /** YYYY-MM-DD: the instant's UTC day. */
+  day: string;
+  absCents: number;
+  feeCents: number;
+  /** Upper-case. */
+  currency: string;
+  notes: string;
+  /** '' when none. */
+  assetId: string;
+  /** '' when none. */
+  subtype: string;
+  /** '' when none. */
+  group: string;
+  /** The host reported the group (sent the key, even empty). */
+  groupKnown: boolean;
+  /** `flow.is_external`: true/false; null when unset; undefined when unknown. */
+  external: boolean | null | undefined;
+}
+
+const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+const text = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
+const cents = (v: unknown) => Math.round(Math.abs(Number(v ?? 0)) * 100) || 0;
+const dayOf = (v: string) => {
+  const d = new Date(v);
+  return Number.isNaN(d.getTime()) ? v.slice(0, 10) : d.toISOString().slice(0, 10);
+};
+
+/** A host row as in-place linking reads it; null without an id or an account. */
+export function storedLegOf(raw: unknown): StoredLeg | null {
+  if (!isRecord(raw)) return null;
+  const id = text(raw.id);
+  const accountId = text(raw.accountId);
+  if (!id || !accountId) return null;
+  const instant = typeof raw.date === 'string' ? raw.date : typeof raw.activityDate === 'string' ? raw.activityDate : '';
+  return {
+    id,
+    accountId,
+    type: text(raw.activityType).toUpperCase(),
+    instant,
+    day: dayOf(instant),
+    absCents: cents(raw.amount),
+    feeCents: cents(raw.fee),
+    currency: text(raw.currency).toUpperCase(),
+    notes: typeof raw.comment === 'string' ? raw.comment : typeof raw.notes === 'string' ? raw.notes : '',
+    assetId: text(raw.assetId),
+    subtype: text(raw.subtype),
+    group: text(raw.sourceGroupId),
+    groupKnown: 'sourceGroupId' in raw,
+    external: 'metadata' in raw ? flowExternalOf(raw.metadata) : undefined,
+  };
+}
+
+const find = (rows: unknown[], id: string): StoredLeg | null =>
+  rows.map(storedLegOf).find((s): s is StoredLeg => s !== null && s.id === id) ?? null;
+
+/** Why this pair cannot be linked in place (for a log), or null when it can. */
+export function inPlaceRefusal(legs: readonly [LinkLeg, LinkLeg], stored: readonly [StoredLeg | null, StoredLeg | null]): string | null {
+  const types = new Set(legs.map((l) => l.activityType));
+  if (!types.has('TRANSFER_OUT') || !types.has('TRANSFER_IN')) return 'Wealthfolio links one transfer out with one transfer in';
+  if (legs[0].accountId === legs[1].accountId) return 'both legs are in one account';
+  for (let i = 0; i < 2; i++) {
+    const leg = legs[i];
+    const s = stored[i];
+    if (!s) return `${leg.wfId} could not be read`;
+    if (s.accountId !== leg.accountId) return `${leg.wfId} is in another account now`;
+    if (s.type !== leg.activityType) return `${leg.wfId} is stored as ${s.type} and links as ${leg.activityType}`;
+    if (s.day !== leg.date) return `${leg.wfId} is dated ${s.day}, not ${leg.date}`;
+    if (s.absCents !== leg.absCents) return `${leg.wfId} has another amount`;
+    if (s.currency !== leg.currency.toUpperCase()) return `${leg.wfId} is in ${s.currency}`;
+    if (s.notes !== leg.comment) return `${leg.wfId} has another note`;
+    if (s.assetId) return `${leg.wfId} carries an asset`;
+    if (s.subtype) return `${leg.wfId} carries a subtype`;
+    if (s.feeCents) return `${leg.wfId} carries a fee`;
+    if (s.external === true) return `${leg.wfId} is marked as an outside transfer`;
+  }
+  return null;
+}
+
+/** The pair, linked: both rows share a group. Null when they do not. */
+function linkedIn(legs: readonly [LinkLeg, LinkLeg], rows: unknown[]): LinkResult | null {
+  const a = find(rows, legs[0].wfId);
+  const b = find(rows, legs[1].wfId);
+  if (!a || !b || !a.group || a.group !== b.group) return null;
+  return { linked: true, groupId: a.group, activityIds: [legs[0].wfId, legs[1].wfId], inPlace: true };
+}
+
+/**
+ * Links the pair in place where the stored rows allow it, and by
+ * re-creating them everywhere else — `io` null (a host without Wealthfolio's
+ * link), a read that fails, a shape in place would not keep, or a link
+ * Wealthfolio refuses.
+ */
+export async function linkPairPreferInPlace(
+  io: InPlaceIo | null,
+  saveMany: (req: SaveManyRequest) => Promise<SaveManyResult>,
+  legs: [LinkLeg, LinkLeg],
+): Promise<LinkResult> {
+  if (!io) return linkPairByRecreate(saveMany, legs);
+  const ids: [string, string] = [legs[0].wfId, legs[1].wfId];
+  let before: unknown[];
+  try {
+    before = await io.read(ids);
+  } catch {
+    return linkPairByRecreate(saveMany, legs);
+  }
+  if (inPlaceRefusal(legs, [find(before, ids[0]), find(before, ids[1])]) !== null) return linkPairByRecreate(saveMany, legs);
+  try {
+    const done = linkedIn(legs, await io.link(ids[0], ids[1]));
+    if (done) return done;
+  } catch {
+    // Refused (nothing was written), or its answer was lost: look.
+  }
+  try {
+    const done = linkedIn(legs, await io.read(ids));
+    if (done) return done;
+  } catch {
+    // Can't tell: re-creating links them either way.
+  }
+  return linkPairByRecreate(saveMany, legs);
+}
+
+/** Why this pair cannot be unlinked in place, or null when it can. */
+export function unlinkInPlaceRefusal(legs: readonly [UnlinkLeg, UnlinkLeg], stored: readonly [StoredLeg | null, StoredLeg | null]): string | null {
+  const types = new Set(stored.map((s) => s?.type));
+  if (!types.has('TRANSFER_OUT') || !types.has('TRANSFER_IN')) return 'Wealthfolio unlinks one transfer out from one transfer in';
+  for (let i = 0; i < 2; i++) {
+    const leg = legs[i];
+    const s = stored[i];
+    if (!s) return `${leg.wfId} could not be read`;
+    if (s.accountId !== leg.accountId) return `${leg.wfId} is in another account now`;
+    if (s.type !== leg.activityType) return `${leg.wfId} is stored as ${s.type}`;
+    if (s.absCents !== leg.absCents) return `${leg.wfId} has another amount`;
+    if (s.assetId) return `${leg.wfId} carries an asset`;
+    if (s.groupKnown && !s.group) return `${leg.wfId} is not linked`;
+  }
+  const [a, b] = stored as [StoredLeg, StoredLeg];
+  if (a.groupKnown && b.groupKnown && a.group !== b.group) return 'the two rows are in different groups';
+  return null;
+}
+
+/** The leg as ordinary money, written over its own row: the stored instant
+ *  kept, the cash symbol for any non-transfer type (see `isTransferType`). */
+function retypeWrite(leg: UnlinkLeg, s: StoredLeg): ActivityWrite {
+  return {
+    id: leg.wfId,
+    accountId: leg.accountId,
+    activityType: leg.newType,
+    activityDate: s.instant || leg.date,
+    ...(isTransferType(leg.newType) ? {} : { symbol: { symbol: `$CASH-${leg.currency}` } }),
+    amount: leg.absCents / 100,
+    fee: 0,
+    currency: leg.currency,
+    comment: leg.comment,
+  };
+}
+
+/**
+ * Undo of a link, in place where it can be: Wealthfolio's unlink, then one
+ * bulk update retyping both rows as ordinary money in or out. Everything else
+ * — `io` null, a failed read, a shape it cannot take, a refused unlink —
+ * goes to `unlinkPairByRecreate` as before.
+ */
+export async function unlinkPairPreferInPlace(
+  io: InPlaceIo | null,
+  saveMany: (req: SaveManyRequest) => Promise<SaveManyResult>,
+  legs: [UnlinkLeg, UnlinkLeg],
+): Promise<UnlinkResult> {
+  if (!io) return unlinkPairByRecreate(saveMany, legs);
+  const ids: [string, string] = [legs[0].wfId, legs[1].wfId];
+  let before: unknown[];
+  try {
+    before = await io.read(ids);
+  } catch {
+    return unlinkPairByRecreate(saveMany, legs);
+  }
+  const stored: [StoredLeg | null, StoredLeg | null] = [find(before, ids[0]), find(before, ids[1])];
+  if (unlinkInPlaceRefusal(legs, stored) !== null) return unlinkPairByRecreate(saveMany, legs);
+  let unlinked = false;
+  try {
+    await io.unlink(ids[0], ids[1]);
+    unlinked = true;
+  } catch {
+    // Refused, or its answer was lost: unlinked only if both rows now say so.
+    try {
+      const again = await io.read(ids);
+      unlinked = ids.every((id) => {
+        const s = find(again, id);
+        return !!s && s.groupKnown && !s.group;
+      });
+    } catch {
+      unlinked = false;
+    }
+  }
+  if (!unlinked) return unlinkPairByRecreate(saveMany, legs);
+  let problem: string | null = null;
+  try {
+    const res = await saveMany({ updates: legs.map((leg, i) => retypeWrite(leg, stored[i]!)) });
+    if (res.errors.length > 0) problem = res.errors.map((e) => `${e.action}: ${e.message}`).join('; ');
+  } catch (e: any) {
+    problem = String(e?.message ?? e);
+  }
+  if (problem !== null) {
+    return {
+      unlinked: true, inPlace: true, activityIds: ids,
+      problems: [`unlinked ${describeLeg(legs[0])} and ${describeLeg(legs[1])} in place, but they are still typed as transfers (${problem}); a later sync retypes each while the bank feed still sends it`],
+    };
+  }
+  return { unlinked: true, inPlace: true, activityIds: ids };
+}
+
+/**
+ * The add-on's `linked_groups` value for a pair. Its sync drops every entry
+ * without the `wf-transfer-` prefix as written before the ledger was
+ * echo-confirmed, and Wealthfolio's own link mints a bare uuid — so a pair
+ * linked in place is remembered under the prefix. The value is only ever
+ * compared between the two legs, never sent to Wealthfolio.
+ */
+export const ledgerGroupId = (groupId: string): string =>
+  groupId.startsWith(TRANSFER_GROUP_PREFIX) ? groupId : `${TRANSFER_GROUP_PREFIX}${groupId}`;
