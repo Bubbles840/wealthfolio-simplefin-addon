@@ -284,6 +284,18 @@ export interface RuleAccount {
   name: string;
 }
 
+/** `/newrule`'s arguments: the pattern, the whole category side, and each way
+ *  to read that side as `<category> in <account>`. */
+export interface NewRuleArgs {
+  pattern: string;
+  /** The whole category side — tried as a category first (M1). */
+  categoryQuery: string;
+  /** `… = groceries in checking` (3, L5): a split at each ` in `, the LAST
+   *  first, so a category with " in " in its name ("Dine In Out") keeps it and
+   *  an account with one ("Money In Bank") is still reached. Absent: no ` in `. */
+  scopedReadings?: Array<{ categoryQuery: string; accountQuery: string }>;
+}
+
 /**
  * Parses `/newrule <pattern> = <category>` (or `→` in place of `=`) — the
  * free-text counterpart to tapping "Make this a rule" off a specific
@@ -294,16 +306,46 @@ export interface RuleAccount {
  * rather than guessed at — the handler's job, not this function's, is
  * turning that into the one-line usage reply.
  */
-export function parseNewRuleArgs(args: string): { pattern: string; categoryQuery: string; accountQuery?: string } | null {
+export function parseNewRuleArgs(args: string): NewRuleArgs | null {
   const sepIndex = args.search(/[=→]/);
   if (sepIndex === -1) return null;
   const pattern = args.slice(0, sepIndex).trim();
   const categoryQuery = args.slice(sepIndex + 1).trim();
   if (!pattern || !categoryQuery) return null;
-  // `… = groceries in checking` (3, L5): the first ` in ` on the category side
-  // names an account. No preset category name has one in it.
-  const scoped = /^(.*?\S)\s+in\s+(\S.*)$/i.exec(categoryQuery);
-  return scoped ? { pattern, categoryQuery: scoped[1], accountQuery: scoped[2] } : { pattern, categoryQuery };
+  const scopedReadings: Array<{ categoryQuery: string; accountQuery: string }> = [];
+  for (const m of categoryQuery.matchAll(/\s+in\s+(?=\S)/gi)) {
+    const at = m.index ?? 0;
+    const before = categoryQuery.slice(0, at).trim();
+    if (before) scopedReadings.unshift({ categoryQuery: before, accountQuery: categoryQuery.slice(at + m[0].length) });
+  }
+  return scopedReadings.length ? { pattern, categoryQuery, scopedReadings } : { pattern, categoryQuery };
+}
+
+/**
+ * Which category `/newrule` means, and for which account (M1). The WHOLE
+ * category side first — so a category named "Dine In Out" is that category,
+ * never "Dine" in an account "Out" — then each `<category> in <account>`
+ * reading; the first that names exactly one category wins. `resolve` is the
+ * category resolver (`resolveCategoryQuery` over the tree), passed in because
+ * it lives beside `/left`'s commands.
+ *
+ * When no reading names one category, the result to report is the whole
+ * side's when it matched several, else the one before the FIRST ` in `.
+ */
+export function resolveNewRuleCategory<R extends { kind: string }>(
+  args: NewRuleArgs,
+  resolve: (query: string) => R,
+): { result: R; query: string; accountQuery?: string } {
+  const whole = resolve(args.categoryQuery);
+  if (whole.kind === 'one') return { result: whole, query: args.categoryQuery };
+  const readings = args.scopedReadings ?? [];
+  for (const r of readings) {
+    const result = resolve(r.categoryQuery);
+    if (result.kind === 'one') return { result, query: r.categoryQuery, accountQuery: r.accountQuery };
+  }
+  const first = readings[readings.length - 1];
+  if (whole.kind === 'ambiguous' || !first) return { result: whole, query: args.categoryQuery };
+  return { result: resolve(first.categoryQuery), query: first.categoryQuery };
 }
 
 /**
