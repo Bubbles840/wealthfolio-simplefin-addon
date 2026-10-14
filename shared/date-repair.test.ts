@@ -15,6 +15,7 @@ describe('utcMidnightDay — exactly 00:00:00 UTC, in each form Wealthfolio retu
   it.each([
     ['2026-10-01', '2026-10-01'], ['2026-10-01T00:00:00Z', '2026-10-01'], ['2026-10-01T00:00:00+00:00', '2026-10-01'],
     ['2026-10-01T00:00:00.000Z', '2026-10-01'], [' 2026-10-01T00:00:00+00:00 ', '2026-10-01'],
+    ['2026-10-01 00:00:00', '2026-10-01'], ['2026-10-01T00:00:00', '2026-10-01'],
   ])('%s → %s', (stored, day) => expect(utcMidnightDay(stored)).toBe(day));
 
   it.each([
@@ -30,13 +31,25 @@ describe('planDateRepair', () => {
     });
     // Nothing else is sent: Wealthfolio's update keeps the asset, amount, subtype, metadata and filings it is not sent.
     expect(Object.keys(dateRepairWrite(row(), '2026-10-01')).sort()).toEqual(['accountId', 'activityDate', 'activityType', 'comment', 'currency', 'id']);
-    expect(dateRepairWrite(row({ comment: null }), '2026-10-01').comment).toBe('');
+    expect(dateRepairWrite(row({ comment: null }), '2026-10-01').comment).toBeNull();
   });
 
   it('skips a row in a group — a linked transfer keeps its date, and its partner’s', () => {
     const plan = planDateRepair([row({ sourceGroupId: 'g-1' }), row({ id: 'a2', sourceGroupId: '' })], opts);
     expect(plan.moves.map((m) => m.row.id)).toEqual(['a2']);
     expect(plan.skippedGrouped).toBe(1);
+  });
+
+  it('skips a row with no sourceGroupId field at all: unknown counts as linked', () => {
+    const plan = planDateRepair([row({ sourceGroupId: undefined })], opts);
+    expect(plan).toMatchObject({ moves: [], skippedGrouped: 1 });
+  });
+
+  it('skips a row whose stored type is not the type the search shows', () => {
+    const storedTypes = new Map([['a1', 'DEPOSIT']]);
+    expect(planDateRepair([row()], { ...opts, storedTypes })).toMatchObject({ moves: [], skippedOverride: 1 });
+    expect(planDateRepair([row()], { ...opts, storedTypes: new Map() })).toMatchObject({ moves: [], skippedOverride: 1 });
+    expect(planDateRepair([row()], { ...opts, storedTypes: new Map([['a1', 'WITHDRAWAL']]) }).moves).toHaveLength(1);
   });
 
   it('skips a row whose type Wealthfolio overrides: the search shows only the effective type', () => {
@@ -79,6 +92,10 @@ describe('the done marker and the change log', () => {
       after: { step: 'date-repair', count: 2, skipped: 3 },
       summary: "Moved 2 rows stored at midnight UTC to noon on the same date, so Wealthfolio counts them on the bank's day — 3 linked or retyped rows left as they were",
     });
+    const capped = bookkeepingChange({ step: 'date-repair', activityIds: ['a1'], total: 230, skipped: 0, failed: 2 });
+    expect(capped.summary).toContain('Moved 230 rows');
+    expect(capped.summary).toContain('2 refused by Wealthfolio');
+    expect(capped).toMatchObject({ after: { count: 230, failed: 2 } });
     expect(bookkeepingChange({ step: 'date-repair', activityIds: ['a1'], skipped: 0 }).summary)
       .toBe("Moved 1 row stored at midnight UTC to noon on the same date, so Wealthfolio counts it on the bank's day");
   });

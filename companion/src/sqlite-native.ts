@@ -1887,6 +1887,21 @@ export function topCategoryName(categoryId: string, settings: Pick<NativeSpendin
   return settings.categoryNames[topCategoryId(categoryId, settings.categoryParents)] ?? '';
 }
 
+/** Every row's STORED `activity_type`, by id. Strict. The date repair moves a
+ *  row only when this equals the type the search shows. */
+export function getNativeStoredActivityTypes(dbPath: string): Map<string, string> {
+  const rows = queryNativeDbStrict<Record<string, unknown>>(
+    dbPath, 'stored types',
+    `SELECT a.id AS id, COALESCE(a.activity_type, '') AS t FROM activities a ORDER BY a.id;`,
+    (parts) => (parts.length >= 2 ? { c0: parts[0], c1: parts[1] } : null),
+    DRILL_CLI_SEPARATOR, SPEND_CLI_MAX_BUFFER,
+  );
+  return new Map(rows.map((r) => {
+    const [id, t] = Object.values(r) as [string, string];
+    return [String(id), String(t)];
+  }));
+}
+
 /** Ids of every row with a non-blank `activity_type_override` — rows whose
  *  stored type Wealthfolio's search does not show (it answers the effective
  *  one). Strict: throws when the database cannot be read. */

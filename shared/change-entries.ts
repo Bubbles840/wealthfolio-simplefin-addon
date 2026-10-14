@@ -772,6 +772,10 @@ export interface BookkeepingFacts {
   /** `date-repair` only: the rows at 00:00 UTC it left alone — half of a
    *  linked transfer, or a type Wealthfolio overrides. */
   skipped?: number;
+  /** `date-repair` only: rows that were refused and left at midnight. */
+  failed?: number;
+  /** `date-repair` only: the full count when `activityIds` is cut to a sample. */
+  total?: number;
   /** `sync-bookkeeping` only: the rows taken back out of the category (no
    *  longer bookkeeping); `activityIds` are the rows filed. */
   unfiledIds?: string[];
@@ -788,7 +792,7 @@ function syncBookkeepingSummary(filed: number, unfiled: number, category: string
 
 /** Repairs the sync makes to its own rows. Shown behind a button; never undoable. */
 export function bookkeepingChange(f: BookkeepingFacts): ChangeDraft {
-  const n = f.activityIds.length;
+  const n = f.total ?? f.activityIds.length;
   const summary = f.step === 'legacy-placeholder'
     ? `Restated ${n} old placeholder ${plural(n, 'row', 'rows')} with ${plural(n, 'its', 'their')} real ${plural(n, 'amount', 'amounts')}`
     : f.step === 'external-marker'
@@ -801,7 +805,8 @@ export function bookkeepingChange(f: BookkeepingFacts): ChangeDraft {
             : `Unlinked a transfer you undid: re-created ${(f.rows ?? n) === 1 ? 'its row' : `its ${f.rows ?? n} rows`} as spending or money in`)
           : f.step === 'date-repair'
             ? `Moved ${n} ${plural(n, 'row', 'rows')} stored at midnight UTC to noon on the same date, so Wealthfolio counts ${plural(n, 'it', 'them')} on the bank's day${
-              f.skipped ? ` — ${f.skipped} linked or retyped ${plural(f.skipped, 'row', 'rows')} left as ${plural(f.skipped, 'it was', 'they were')}` : ''}`
+              f.skipped ? ` — ${f.skipped} linked or retyped ${plural(f.skipped, 'row', 'rows')} left as ${plural(f.skipped, 'it was', 'they were')}` : ''}${
+              f.failed ? `; ${f.failed} refused by Wealthfolio and left at midnight` : ''}`
             : f.step === 'sync-bookkeeping'
               ? syncBookkeepingSummary(n, f.unfiledIds?.length ?? 0, f.categoryName ?? 'Sync bookkeeping')
               : `Set up the "${f.categoryName ?? 'Opening balances'}" category and kept it out of spending`;
@@ -818,6 +823,7 @@ export function bookkeepingChange(f: BookkeepingFacts): ChangeDraft {
     after: {
       step: f.step, count: n, ...(f.categoryName ? { categoryName: f.categoryName } : {}),
       ...(f.skipped !== undefined ? { skipped: f.skipped } : {}),
+      ...(f.failed ? { failed: f.failed } : {}),
       ...(f.unfiledIds ? { unfiled: f.unfiledIds.length } : {}),
     },
     undoable: false,
