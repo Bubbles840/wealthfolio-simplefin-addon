@@ -216,6 +216,9 @@ export interface SyncHost {
   readonly capabilities: {
     /** True when listActivities returns a trustworthy sourceGroupId. */
     readsSourceGroupId: boolean;
+    /** Wealthfolio takes TRANSFER_OUT on a credit card (3.10+): the sync
+     *  writes a card's bookkeeping outflows as one. Absent: it does not. */
+    cardTransferOut?: boolean;
   };
 }
 

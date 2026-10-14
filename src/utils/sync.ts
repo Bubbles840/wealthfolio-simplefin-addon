@@ -19,6 +19,23 @@ import { visibleUncategorized } from '../../shared/uncategorized';
 import { parseAnnouncedRefusals, unannouncedRefusals, withAnnouncedRefusals } from '../../shared/refused-alerts';
 import type { PendingLargeTxAlert, SecretsStore } from './secrets';
 import type { AddonContext } from '@wealthfolio/addon-sdk';
+import { hostTakesCardTransferOut } from '../../shared/version';
+
+/**
+ * The add-on's host for a write that may add a card's bookkeeping row:
+ * TRANSFER_OUT on a card where the companion has published Wealthfolio 3.10+
+ * (the SDK has no version call), WITHDRAWAL otherwise (1.62.0, U4). Either
+ * shape is read as the same row by both syncers, so a stale or missing
+ * version costs nothing but the older shape.
+ */
+async function bookkeepingHost(
+  ctx: AddonContext,
+  store: Partial<Pick<SecretsStore, 'getWealthfolioVersion'>>,
+  log?: (message: string) => void,
+): Promise<AddonSyncHost> {
+  const version = await Promise.resolve(store.getWealthfolioVersion?.()).catch(() => null);
+  return new AddonSyncHost(ctx, { cardTransferOut: hostTakesCardTransferOut(version), ...(log ? { log } : {}) });
+}
 
 // The sync logic itself lives in shared/sync-core.ts so the Docker companion can
 // reuse it behind the same SyncHost interface. These re-exports keep the addon's
@@ -61,7 +78,7 @@ export function runSync(
       // The change log rides along when the store can keep one (an older store
       // or a test double cannot, and then nothing is recorded).
       const changeLog = opts.changeLog ?? store.changeLogSink?.();
-      const result = await runSyncCore(new AddonSyncHost(ctx, warn), store, { ...opts, ...(changeLog ? { changeLog } : {}) });
+      const result = await runSyncCore(await bookkeepingHost(ctx, store, warn), store, { ...opts, ...(changeLog ? { changeLog } : {}) });
       // Deliver INSIDE the single-flight lock and inside the returned promise, so
       // one run announces its own alerts exactly once and a caller that awaits the
       // sync has also awaited the sends. `deliverAddonAlerts` never rejects, so it
@@ -448,7 +465,7 @@ export async function applyBalanceAdjustment(
   args: { sfinAccountId: string; wfAccountId: string; currency: string; amount: number },
 ): Promise<void> {
   if (!Number.isFinite(args.amount) || Math.abs(args.amount) < 0.01) return;
-  const host = new AddonSyncHost(ctx);
+  const host = await bookkeepingHost(ctx, store);
   const row = await importAdjustmentActivity(host, args);
   if (row && store.recordChange) {
     try {
@@ -486,7 +503,7 @@ export async function applyBaselineCorrection(
   store: SecretsStore,
   args: { sfinAccountId: string; wfAccountId: string; currency: string; suggestedAmount: number },
 ): Promise<void> {
-  const host = new AddonSyncHost(ctx);
+  const host = await bookkeepingHost(ctx, store);
   const res = await applyBaselineFix(host, {
     wfAccountId: args.wfAccountId,
     sfAccountId: args.sfinAccountId,

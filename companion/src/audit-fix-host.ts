@@ -34,7 +34,7 @@ async function readFixRow(client: FixClient, activityId: string, types: Map<stri
   return hit ? fixRowOf(hit, types.get(hit.accountId) ?? '') : null;
 }
 
-const restHost = (client: FixClient, log?: (msg: string) => void) => new RestSyncHost(client as unknown as WealthfolioClient, undefined, log);
+const restHost = (client: FixClient, log?: (msg: string) => void) => new RestSyncHost(client as unknown as WealthfolioClient, undefined, log ? { log } : {});
 
 /** The account mapping as stored: none yet is `{}`; anything but a plain
  *  object of strings is unreadable — a refusal of its own, not "unreachable". */

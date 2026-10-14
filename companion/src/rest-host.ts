@@ -9,6 +9,7 @@ import { linkPairPreferInPlace, unlinkPairPreferInPlace, type InPlaceIo } from '
 import type { UnlinkLeg, UnlinkResult } from '../../shared/link-pair.js';
 import { SKIPPED_TRANSACTIONS_SECRET_KEY, parseSkippedTransactions, type SkippedTransaction } from '../../shared/skipped-transactions.js';
 import { syncOverridesIgnoredLog, syncOverridesOrEmpty, type SyncOverrides } from '../../shared/sync-overrides.js';
+import { hostTakesCardTransferOut, WEALTHFOLIO_VERSION_SECRET_KEY } from '../../shared/version.js';
 import type { WealthfolioClient } from './wealthfolio.js';
 import type {
   HostActivity,
@@ -57,12 +58,23 @@ const OLDEST_SWEEP_PAGE_SIZE = 500;
 const OLDEST_SWEEP_MAX_PAGES = 20;
 
 export class RestSyncHost implements SyncHost {
+  /** `cardTransferOut`: Wealthfolio 3.10+ (see `syncHostFor`). */
+  readonly capabilities: { readsSourceGroupId: boolean; cardTransferOut: boolean };
+
+  private log?: (message: string) => void;
+
   /** `dbPath` is optional so every existing construction and test keeps
    *  working; without it the ledger-balance fallback simply stays unavailable,
-   *  which is the behaviour that existed before it. */
-  constructor(private client: WealthfolioClient, private dbPath?: string, private log?: (message: string) => void) {}
-
-  readonly capabilities = { readsSourceGroupId: true };
+   *  which is the behaviour that existed before it. `opts.log` is the
+   *  companion's logger (Task 4); `opts.cardTransferOut` the 3.10 capability. */
+  constructor(
+    private client: WealthfolioClient,
+    private dbPath?: string,
+    opts: { cardTransferOut?: boolean; log?: (message: string) => void } = {},
+  ) {
+    this.log = opts.log;
+    this.capabilities = { readsSourceGroupId: true, cardTransferOut: !!opts.cardTransferOut };
+  }
 
   /**
    * Balances summed from each account's own activities, for the accounts
@@ -203,6 +215,26 @@ export class RestSyncHost implements SyncHost {
   async unlinkPair(legs: [UnlinkLeg, UnlinkLeg]): Promise<UnlinkResult> {
     return unlinkPairPreferInPlace(this.inPlace(), (req) => this.saveMany(req), legs);
   }
+}
+
+/**
+ * The companion's host for a sync, told what this Wealthfolio takes: a card's
+ * bookkeeping outflow is a TRANSFER_OUT from 3.10 (`GET /app/info`; unknown
+ * is older). Neither reading the version nor publishing it for the add-on,
+ * whose SDK cannot ask, ever stops a sync: a failure is an unknown version.
+ */
+export async function syncHostFor(
+  client: Pick<WealthfolioClient, 'getAppVersion' | 'setAddonSecret'>,
+  dbPath?: string,
+  log?: (message: string) => void,
+): Promise<{ host: RestSyncHost; wealthfolioVersion: string | null }> {
+  const wealthfolioVersion = await Promise.resolve().then(() => client.getAppVersion()).catch(() => null);
+  if (wealthfolioVersion) await client.setAddonSecret('simplefin-sync', WEALTHFOLIO_VERSION_SECRET_KEY, wealthfolioVersion).catch(() => {});
+  const host = new RestSyncHost(client as WealthfolioClient, dbPath, {
+    cardTransferOut: hostTakesCardTransferOut(wealthfolioVersion),
+    ...(log ? { log } : {}),
+  });
+  return { host, wealthfolioVersion };
 }
 
 export class RestSyncStore implements SyncStore {

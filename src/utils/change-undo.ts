@@ -26,7 +26,7 @@ import { beginWrite, writeRefusal } from './write-lock';
 
 export function addonUndoIo(ctx: AddonContext, store: SecretsStore, companionVersion: string | null): UndoIo {
   return {
-    host: new AddonSyncHost(ctx, warn),
+    host: new AddonSyncHost(ctx, { log: warn }),
     secrets: {
       get: (k) => ctx.api.secrets.get(k),
       set: (k, v) => ctx.api.secrets.set(k, v),

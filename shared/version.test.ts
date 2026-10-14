@@ -91,3 +91,14 @@ describe('versionMismatchNotice', () => {
     expect(notice?.text).toMatch(/pull the new companion image/);
   });
 });
+
+describe('hostTakesCardTransferOut', () => {
+  it('is true from Wealthfolio 3.10.0, and false for an older or unknown host', async () => {
+    const { hostTakesCardTransferOut } = await import('./version.js');
+    expect(hostTakesCardTransferOut('3.10.0')).toBe(true);
+    expect(hostTakesCardTransferOut(' 3.10.1 ')).toBe(true);
+    expect(hostTakesCardTransferOut('3.9.1')).toBe(false);
+    expect(hostTakesCardTransferOut('3.10.0-beta.1')).toBe(false);
+    expect(hostTakesCardTransferOut(null)).toBe(false);
+  });
+});
