@@ -11,7 +11,7 @@
  * fails keeps the story on screen and says so. Bank text renders as React
  * text. No emoji in app copy (src/pages/copy-policy.test.tsx).
  */
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { AddonContext } from '@wealthfolio/addon-sdk';
 import type { ChangeLogItem } from '../../shared/change-log';
 import type { UndoOp } from '../../shared/change-undo';
@@ -50,6 +50,8 @@ export function useTxStoryActions(ctx: AddonContext, store: SecretsStore, compan
 /** One line of What happened: opens its entry's detail in place. */
 function HistoryLine({ line, entry, actions }: { line: string; entry: ChangeLogItem | undefined; actions: RowActions }) {
   const [open, setOpen] = useState(false);
+  // Unique on the page, even with the same story open in two lists.
+  const detailId = useId();
   if (!entry) return <div className="sfin-why-line">{line}</div>;
   return (
     <div className="sfin-why-line">
@@ -57,11 +59,13 @@ function HistoryLine({ line, entry, actions }: { line: string; entry: ChangeLogI
         type="button"
         className={`sfin-why-line-btn${entry.undone ? ' sfin-log-row--undone' : ''}`}
         aria-expanded={open}
+        // Only while the detail exists: pointing at nothing is worse than no aria-controls.
+        {...(open ? { 'aria-controls': detailId } : {})}
         onClick={() => setOpen((o) => !o)}
       >
         {line}
       </button>
-      {open && <EntryDetail entry={entry} actions={actions} />}
+      {open && <div id={detailId}><EntryDetail entry={entry} actions={actions} /></div>}
     </div>
   );
 }
@@ -144,13 +148,21 @@ export function TxStoryPanel({ target, load, actions }: {
   }, [load, activityId, categoryName, filer, version]);
 
   const changed = useCallback(() => setVersion((v) => v + 1), []);
-  if (shown === 'loading') return <div className="sfin-subtle">{TX_STORY_LOADING}</div>;
-  if (shown.kind === 'unreachable') return <div className="sfin-log-note">{TX_STORY_UNREACHABLE}</div>;
-  if (shown.kind === 'gone') return <div className="sfin-log-note">{TX_STORY_GONE_APP}</div>;
+  const note = shown === 'loading' ? null
+    : shown.kind === 'unreachable' ? TX_STORY_UNREACHABLE
+      : shown.kind === 'gone' ? TX_STORY_GONE_APP
+        : staleNote;
   return (
     <>
-      {staleNote && <div className="sfin-log-note">{staleNote}</div>}
-      <TxStoryView story={shown.story} entries={shown.entries} actions={actions} onChanged={changed} />
+      {/* Mounted from the first render, so what lands in it is announced: a
+          status region inserted already filled is read unreliably. */}
+      <div role="status">
+        {shown === 'loading' && <div className="sfin-subtle">{TX_STORY_LOADING}</div>}
+        {note && <div className="sfin-log-note">{note}</div>}
+      </div>
+      {shown !== 'loading' && shown.kind === 'ok' && (
+        <TxStoryView story={shown.story} entries={shown.entries} actions={actions} onChanged={changed} />
+      )}
     </>
   );
 }

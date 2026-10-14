@@ -6,8 +6,8 @@
  * (src/components/TxStory.tsx). Matches are newest first, 8 at a time, More
  * for the next 8, at most 40. No emoji in app copy.
  */
-import React, { useEffect, useRef, useState } from 'react';
-import { changeDay, changeMoney } from '../../shared/change-entries';
+import React, { useEffect, useId, useRef, useState } from 'react';
+import { changeDayYear, changeMoney } from '../../shared/change-entries';
 import { isEmptyTxQuery, parseTxQuery, TX_SEARCH_PAGE_SIZE, TX_SEARCH_TOO_MANY, type TxQuery } from '../../shared/tx-search';
 import { TX_STORY_UNREACHABLE } from '../../shared/tx-story';
 import { Button, Input, SectionLabel } from './ui';
@@ -18,11 +18,15 @@ export const WHY_CARD_PLACEHOLDER = 'A few words or an amount';
 export const WHY_CARD_SEARCHING = 'Searching…';
 export const WHY_CARD_NO_MATCH = 'Nothing matches. If it was removed, search the Change log in Settings.';
 
-export function WhyCard({ search, renderStory }: {
+export function WhyCard({ search, renderStory, now = () => new Date() }: {
   search: (query: TxQuery) => Promise<AppSearchOutcome>;
   /** A match's story, opened under it. */
   renderStory: (target: AppStoryTarget) => React.ReactNode;
+  /** The clock a match's year is judged against. */
+  now?: () => Date;
 }) {
+  // Each match's story region gets an id unique on the page, for aria-controls.
+  const regionId = useId();
   const [text, setText] = useState('');
   const [state, setState] = useState<'idle' | 'searching' | AppSearchOutcome>('idle');
   const [shownCount, setShownCount] = useState(TX_SEARCH_PAGE_SIZE);
@@ -64,9 +68,13 @@ export function WhyCard({ search, renderStory }: {
         />
         <Button type="submit" variant="outline">Find</Button>
       </form>
-      {state === 'searching' && <div className="sfin-subtle">{WHY_CARD_SEARCHING}</div>}
-      {typeof state === 'object' && state.kind === 'unreachable' && <div className="sfin-log-note">{TX_STORY_UNREACHABLE}</div>}
-      {result && result.rows.length === 0 && <div className="sfin-subtle">{WHY_CARD_NO_MATCH}</div>}
+      {/* Mounted always, so what lands in it is announced: a status region
+          inserted already filled is read unreliably. */}
+      <div role="status">
+        {state === 'searching' && <div className="sfin-subtle">{WHY_CARD_SEARCHING}</div>}
+        {typeof state === 'object' && state.kind === 'unreachable' && <div className="sfin-log-note">{TX_STORY_UNREACHABLE}</div>}
+        {result && result.rows.length === 0 && <div className="sfin-subtle">{WHY_CARD_NO_MATCH}</div>}
+      </div>
       {result && result.rows.length > 0 && (
         <div className="sfin-why-results">
           {result.rows.slice(0, shownCount).map((r) => (
@@ -75,22 +83,28 @@ export function WhyCard({ search, renderStory }: {
                 type="button"
                 className="sfin-why-open"
                 aria-expanded={openId === r.activityId}
+                // Only while the region exists: pointing at nothing is worse than no aria-controls.
+                {...(openId === r.activityId ? { 'aria-controls': `${regionId}-${r.activityId}` } : {})}
                 onClick={() => setOpenId((id) => (id === r.activityId ? null : r.activityId))}
               >
-                <span className="sfin-why-when">{changeDay(r.date)}</span>
+                <span className="sfin-why-when">{changeDayYear(r.date, now())}</span>
                 <span className="sfin-why-what">
                   {r.description || 'A transaction'}
                   <span className="sfin-subtle"> · {r.accountName}</span>
                 </span>
                 <span className="sfin-why-amt">{changeMoney(r.amountCents)}</span>
               </button>
-              {openId === r.activityId && <div className="sfin-why-inline">{renderStory({ activityId: r.activityId })}</div>}
+              {openId === r.activityId && (
+                <div className="sfin-why-inline" id={`${regionId}-${r.activityId}`}>{renderStory({ activityId: r.activityId })}</div>
+              )}
             </div>
           ))}
           {shownCount < result.rows.length && (
             <Button variant="ghost" onClick={() => setShownCount((n) => n + TX_SEARCH_PAGE_SIZE)}>More</Button>
           )}
-          {result.truncated && shownCount >= result.rows.length && <div className="sfin-subtle">{TX_SEARCH_TOO_MANY}</div>}
+          <div role="status">
+            {result.truncated && shownCount >= result.rows.length && <div className="sfin-subtle">{TX_SEARCH_TOO_MANY}</div>}
+          </div>
         </div>
       )}
     </div>
