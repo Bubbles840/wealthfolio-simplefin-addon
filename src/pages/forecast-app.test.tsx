@@ -126,4 +126,17 @@ describe('Home’s "Next 30 days"', () => {
     await screen.findByText(/Last synced/);
     expect(screen.queryByText('Next 30 days')).toBeNull();
   });
+
+  it('an older store with no getCashForecast shows no tile and does not fail', async () => {
+    at(LATER);
+    const props = makeProps();
+    props.store.getUiState = vi.fn(async () => ({ activeTab: 'home' }));
+    props.store.getCompanionVersion = vi.fn(async () => '1.61.0');
+    delete (props.store as any).getCashForecast;
+    expect((props.store as any).getCashForecast).toBeUndefined();
+    render(<SyncPage {...props} />);
+    await screen.findByText(/Last synced/);
+    expect(screen.queryByText('Next 30 days')).toBeNull();
+    expect(document.getElementById('cash-forecast')).toBeNull();
+  });
 });
