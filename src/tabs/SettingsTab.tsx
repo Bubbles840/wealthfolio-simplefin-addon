@@ -6,6 +6,8 @@ import { AmazonCard, type AmazonDraftState } from '../components/AmazonCard';
 import { AccountMapper } from '../components/AccountMapper';
 import { RuleEditor } from '../components/RuleEditor';
 import { AccountList, accountsSummary } from '../components/AccountList';
+import { AccountAudit, ChecksCard, checksSummary } from '../components/AuditViews';
+import type { AuditSnapshotRead } from '../../shared/audit-snapshot';
 import { PoolCard } from '../components/PoolCard';
 import { shortDate } from '../../shared/telegram';
 import type { SemesterPoolConfig } from '../../shared/pool';
@@ -38,6 +40,7 @@ export const CARD = {
   rules: 'rules',
   pool: 'pool',
   changeLog: 'change-log',
+  checks: 'checks',
 } as const;
 
 interface Props {
@@ -69,6 +72,9 @@ interface Props {
    *  page re-reads both — otherwise a just-mapped account shows as its raw id
    *  with "account no longer exists". */
   onAccountsChanged?: () => void;
+  /** 2c: the companion's audit snapshot, for the Checks card and the
+   *  account chips. Absent (an older page): neither is shown. */
+  auditSnapshot?: AuditSnapshotRead | null;
 }
 
 /**
@@ -86,7 +92,7 @@ interface Props {
  */
 export function SettingsTab({
   ctx, store, scheduler, onReset, amazon, categories, isOpen, toggleCard,
-  accountMapping, balances, sfinNames, wfNames, telegramDraft, onAccountsChanged,
+  accountMapping, balances, sfinNames, wfNames, telegramDraft, onAccountsChanged, auditSnapshot,
 }: Props) {
   // The stored pool, for the card's collapsed summary. Read here and updated by
   // the card itself on Set / Clear: the companion's published status would lag
@@ -333,6 +339,9 @@ export function SettingsTab({
           sfinNames={sfinNames}
           wfNames={wfNames}
           onOpenAccount={(id) => { ctx.api.navigation.navigate(`/accounts/${id}`).catch(() => {}); }}
+          renderExplanation={auditSnapshot
+            ? (wfId) => <AccountAudit read={auditSnapshot} wfAccountId={wfId} companionVersion={companionVersion} now={new Date()} />
+            : undefined}
         />}
         <div className="sfin-divider" />
         <div className="sfin-subtle" style={{ marginBottom: 12 }}>
@@ -401,6 +410,21 @@ export function SettingsTab({
           </>
         )}
       </CollapsibleCard>
+
+      {/* 2c: what Wealthfolio's Health page flags, from the companion's
+          snapshot. Beside Accounts: Home's Accounts tile opens it when there
+          is something to look at. */}
+      {auditSnapshot && (
+        <CollapsibleCard
+          id={CARD.checks}
+          title="Checks"
+          summary={checksSummary(auditSnapshot, companionVersion)}
+          open={isOpen(CARD.checks)}
+          onToggle={() => toggleCard(CARD.checks)}
+        >
+          <ChecksCard read={auditSnapshot} companionVersion={companionVersion} now={new Date()} />
+        </CollapsibleCard>
+      )}
 
       <h3 className="sfin-settings-group">Budget</h3>
       <CollapsibleCard

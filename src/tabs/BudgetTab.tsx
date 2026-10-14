@@ -13,6 +13,7 @@ import { ReportBuilder } from '../components/budget/ReportBuilder';
 import type { SecretsStore } from '../utils/secrets';
 import type { AppStoryTarget } from '../utils/tx-story';
 import { PALETTES, paletteVars } from '../components/budget/palettes';
+import { HeadlineAuditLink, type AuditSource } from '../components/AuditViews';
 import type { LoadedSubscriptionPrefs, SubscriptionEdit } from '../../shared/subscription-prefs';
 
 /**
@@ -56,6 +57,10 @@ export interface BudgetTabProps {
   onSetUpCompanion?: () => void;
   /** 1.61: a drill-down row's story, opened in place. */
   renderTxStory?: (target: AppStoryTarget) => React.ReactNode;
+  /** 2c: "Why is this different from Wealthfolio?" under the toolbar, beside
+   *  the headline numbers that lead the board — outside the grid, whose cards
+   *  clip their bodies, so it opens in place uncut. Absent: no link. */
+  audit?: AuditSource;
 }
 
 /** Two days: one missed nightly publish is routine, two is worth a strip. */
@@ -83,7 +88,7 @@ const MAX_R = 16;
 export function BudgetTab({
   cube, customReports, layout, onLayoutChange, onLayoutReset, onCustomReportsChange, store,
   subscriptionPrefs = null, onSubscriptionEdit, onOpenActivities, openRequest,
-  onSetUpCompanion, renderTxStory,
+  onSetUpCompanion, renderTxStory, audit,
 }: BudgetTabProps) {
   const [fullId, setFullId] = useState<string | null>(null);
   // Acted on ONCE per request. Initialised to whatever request already exists
@@ -721,6 +726,8 @@ export function BudgetTab({
           </Button>
         </div>
       </div>
+
+      {audit && <HeadlineAuditLink {...audit} />}
 
       {hiddenToast !== null && (
         <div className="sfin-toast" role="status">
