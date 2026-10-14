@@ -624,6 +624,23 @@ export const CATEGORIZE_ENTRY_CALLBACK = 'cz:open';
 export const RECATEGORIZE_ENTRY_CALLBACK = 'cz:recat';
 
 /**
+ * `/why`'s callback prefix (1.61; companion/src/why-menu.ts answers it). Here,
+ * beside the other `cz:` payloads shared messages carry, because both syncers'
+ * large-transaction alerts carry its 🔎 Why? button and `/changes` leads back
+ * to a story through it. Written out for the reason `CATEGORIZE_ENTRY_CALLBACK`
+ * is; a test asserts the two agree.
+ */
+export const WHY_CALLBACK_PREFIX = 'cz:wy:';
+export const WHY_BUTTON_TEXT = '🔎 Why?';
+
+/** A 🔎 Why? button: that transaction's story, sent as a NEW message so the
+ *  message it sits on stays as it is. `cz:wy:t` plus a 36-character activity
+ *  id is 43 bytes, inside Telegram's 64. */
+export function whyButton(activityId: string): { text: string; callback_data: string } {
+  return { text: WHY_BUTTON_TEXT, callback_data: `${WHY_CALLBACK_PREFIX}t${activityId}` };
+}
+
+/**
  * One dismiss button per needs-a-category row shown in the import notice, plus
  * a final full-width `Categorize these` row when there is anything to list.
  *
