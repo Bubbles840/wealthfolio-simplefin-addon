@@ -4399,6 +4399,17 @@ describe('the /categorize wiring', () => {
     expect(status.rows.map((r: any) => r.guess)).toEqual([{ categoryId: 'cat-fun', name: 'Entertainment' }, undefined]);
   });
 
+  it('/categorize shows each row’s guess, read from the year’s filings', async () => {
+    vi.mocked(getNativePastFilings).mockReturnValueOnce([
+      { description: 'BOOK STORES', categoryId: 'cat-fun', categoryName: 'Entertainment' },
+      { description: 'BOOK STORES', categoryId: 'cat-fun', categoryName: 'Entertainment' },
+    ]);
+    const { client } = clientFor();
+    const { sent, reply } = collect();
+    await buildTelegramCommandHandler(client)({ command: 'categorize', args: '' }, reply);
+    expect(labels(sent[0][1]).slice(0, 2)).toEqual(['Aug 8 · BOOK STORES · $12 · probably Entertainment', 'Aug 8 · VENMO PAYMENT · $12']);
+  });
+
   it('drills into subcategories and files the child id', async () => {
     const { client } = clientFor();
     const controller = buildCategorizeController(client);

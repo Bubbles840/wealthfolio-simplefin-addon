@@ -79,6 +79,7 @@ import { categoryRulePattern } from '../../shared/rule-pattern.js';
 import { visibleUncategorized, type DismissalLedger } from '../../shared/uncategorized.js';
 import { descriptionFromComment, txIdFromComment } from '../../shared/sync-core.js';
 import { categoryFiledChange, categoryRuleCreatedChange, type ChangeDraft, type FiledCategory } from '../../shared/change-entries.js';
+import { buildGuessIndex, guessCategory, guessSinceDay, type GuessIndex, type PastFiling } from '../../shared/category-guess.js';
 import { uncategorizedWindow } from './uncategorized-status.js';
 
 /**
@@ -202,6 +203,10 @@ export interface CategorizeDeps {
    *  first filings. OPTIONAL: absent (older callers, most tests) means those
    *  rows keep the spending grid they always had. */
   readIncomeCategories?: (dbPath: string) => SpendingCategory[];
+  /** `getNativePastFilings` (./sqlite-guess.ts): the year's spending filings,
+   *  each row's guessed category (3). OPTIONAL: absent means no guesses; a read
+   *  that throws means no guesses this render, never a wrong one. */
+  readFilings?: (dbPath: string, sinceDay: string) => PastFiling[];
   readLedger: () => Promise<DismissalLedger>;
   /**
    * Persists a dismissal delta. `base` is the ledger THIS controller read a
@@ -782,12 +787,26 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
       try {
         incomeCategories = deps.readIncomeCategories?.(path) ?? [];
       } catch { /* the spending grid still works */ }
+      // Guessed categories (3): one read of the year's filings. A failed read
+      // costs the guesses, never the menu — and never offers a wrong one.
+      let guesses: GuessIndex | null = null;
+      try {
+        guesses = deps.readFilings ? buildGuessIndex(deps.readFilings(path, guessSinceDay(new Date()))) : null;
+      } catch (err) {
+        safeLog(`Categorize menu: could not read past filings, so no guesses: ${formatError(err)}`);
+      }
+      const withGuess = (t: CategorizeTxn): CategorizeTxn => {
+        // A money-in row that takes an income category gets none: a guess is a
+        // spending category, which Wealthfolio refuses on it.
+        const guess = guesses && !t.incomeEligible ? guessCategory(guesses, t.description) : null;
+        return guess ? { ...t, guess } : t;
+      };
       return {
         ok: true,
         // ONE definition of "needs a category", shared with the status tile and
         // the addon: the native rows minus whatever the ledger dismissed.
         fresh: {
-          txns: visibleUncategorized(rows, ledger).map(toTxn),
+          txns: visibleUncategorized(rows, ledger).map(toTxn).map(withGuess),
           categories,
           incomeCategories,
           ledger,

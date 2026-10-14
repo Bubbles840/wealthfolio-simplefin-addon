@@ -1417,3 +1417,66 @@ describe('rule learning nudge', () => {
     expect(renderScreen(none).text).not.toContain('Right now that also files');
   });
 });
+
+describe('guessed categories (3)', () => {
+  const GUESSED = txn({ guess: { categoryId: 'cat-groceries', name: 'Groceries', count: 3 } });
+
+  it('the list shows the guess beside each row that has one', () => {
+    const s = session({ txns: [GUESSED, txn({ activityId: 'act-2', description: 'NO HISTORY' })] });
+    expect(renderScreen(s).keyboard.inline_keyboard.flat().map((b) => b.text).slice(0, 2)).toEqual([
+      'Aug 8 · BOOK STORES · -$10 · probably Groceries',
+      'Aug 8 · NO HISTORY · -$10',
+    ]);
+  });
+
+  it('the transaction screen offers the guess first; its tap is the same assign the grid makes', () => {
+    const s = session({ txns: [GUESSED], screen: { kind: 'txn', activityId: 'act-1' } });
+    const { keyboard, buttons } = renderScreen(s);
+    expect(keyboard.inline_keyboard[0]).toEqual([{ text: '✓ Groceries (like the last 3)', callback_data: `${MENU_CALLBACK_PREFIX}7:0` }]);
+    expect(buttons[0]).toEqual({ kind: 'assign', activityId: 'act-1', categoryId: 'cat-groceries' });
+    const grid = keyboard.inline_keyboard.flat().findIndex((b) => b.text === 'Groceries');
+    expect(buttons[grid]).toEqual(buttons[0]);
+  });
+
+  it('offers no guess for a category the tree no longer has, on the income grid, or when recategorizing', () => {
+    const gone = txn({ guess: { categoryId: 'cat-deleted', name: 'Old', count: 2 } });
+    const first = (s: MenuSession) => renderScreen(s).keyboard.inline_keyboard[0][0].text;
+    expect(first(session({ txns: [gone], screen: { kind: 'txn', activityId: 'act-1' } }))).toBe('Groceries');
+    const income = txn({ direction: 'in', incomeEligible: true, guess: { categoryId: 'cat-groceries', name: 'Groceries', count: 2 } });
+    const incomeCats: SpendingCategory[] = [{ id: 'inc-sal', name: 'Salary & Wages', parentId: null, parentName: null }];
+    expect(first(session({ txns: [income], incomeCategories: incomeCats, screen: { kind: 'txn', activityId: 'act-1' } }))).toBe('Salary & Wages');
+    const recat = session({ mode: 'recategorize', txns: [GUESSED], screen: { kind: 'txn', activityId: 'act-1' } });
+    expect(first(recat)).toBe('Groceries');
+    expect(renderScreen({ ...recat, screen: { kind: 'list', page: 0 } }).keyboard.inline_keyboard[0][0].text).not.toContain('probably');
+  });
+
+  it('escapes a Venmo note full of Markdown in the text and keeps it raw on the buttons', () => {
+    const noted = txn({ description: 'VENMO PAYMENT 1023 · Venmo: *Rent* _Oct_ [2]', accountName: 'J_D Checking', guess: { categoryId: 'cat-groceries', name: 'Groceries', count: 2 } });
+    const { text } = renderScreen(session({ txns: [noted], screen: { kind: 'txn', activityId: 'act-1' } }));
+    expect(text.split('\n')[0]).toBe('VENMO PAYMENT 1023 · Venmo: \\*Rent\\* \\_Oct\\_ \\[2]');
+    expect(text).toContain('J\\_D Checking');
+    expect(renderScreen(session({ txns: [noted] })).keyboard.inline_keyboard[0][0].text)
+      .toBe('Aug 8 · VENMO PAYMENT 1023 · Venmo: *Rent* _Oct_ [2] · -$10 · probably Groceries');
+  });
+
+  it('keeps every callback within 64 bytes with the guess at the widest generation — the longest is 15', () => {
+    const s = session({ txns: [GUESSED], generation: 4294967295, screen: { kind: 'txn', activityId: 'act-1' } });
+    const { keyboard } = renderScreen(s);
+    assertCallbackBytesFit(keyboard);
+    expect(Math.max(...keyboard.inline_keyboard.flat().map((b) => new TextEncoder().encode(b.callback_data).length))).toBe(15);
+  });
+
+  it('keeps a category name full of Markdown raw on the buttons and escaped, outside every entity, wherever the text names it', () => {
+    const odd: SpendingCategory = { id: 'cat-odd', name: 'Fun_&_*Games*', parentId: null, parentName: null };
+    const guessed = txn({ guess: { categoryId: 'cat-odd', name: 'Fun_&_*Games*', count: 2 } });
+    const base = { txns: [guessed], categories: [odd] };
+    // Buttons are plain text: the list suffix and the guess button stay raw.
+    expect(renderScreen(session(base)).keyboard.inline_keyboard[0][0].text).toBe('Aug 8 · BOOK STORES · -$10 · probably Fun_&_*Games*');
+    const txnScreen = renderScreen(session({ ...base, screen: { kind: 'txn', activityId: 'act-1' } }));
+    expect(txnScreen.keyboard.inline_keyboard[0][0].text).toBe('✓ Fun_&_*Games* (like the last 2)');
+    // The one Markdown message that names the category escapes it, unwrapped.
+    const filed = renderScreen(session({ ...base, screen: { kind: 'filed', activityId: 'act-1', categoryId: 'cat-odd', undone: false } }));
+    expect(filed.text).toContain('Fun\\_&\\_\\*Games\\*');
+    expect(filed.text).not.toContain('Fun_&_*Games*');
+  });
+});

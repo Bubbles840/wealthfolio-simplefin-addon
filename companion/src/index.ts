@@ -2917,6 +2917,8 @@ export function buildCategorizeDeps(wfClient: WealthfolioClient): CategorizeDeps
     // The income taxonomy, for money-in rows' first filings (a grant check is
     // not spending, and upstream refuses a spending category on it).
     readIncomeCategories: getNativeIncomeCategories,
+    // Each row's guessed category (3): how you filed the same merchant before.
+    readFilings: getNativePastFilings,
     // 1.61: the transaction screen's 🔎 Why? — the story as a new message.
     why: (activityId, send) => buildWhyMenu(wfClient).sendStory(activityId, send),
     readLedger,
