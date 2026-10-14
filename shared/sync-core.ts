@@ -86,6 +86,10 @@ export const DUPLICATE_REFUSAL_LOG_TAG = 'duplicate-refused';
  */
 export const STARTING_BALANCE_COMMENT_PREFIX = 'Starting balance · ';
 export const BALANCE_ADJUSTMENT_COMMENT_PREFIX = 'Balance adjustment · ';
+/** The spending category the companion files a card's opening debt under
+ *  (companion/src/opening-balance-category.ts), which Wealthfolio is told to
+ *  leave out of spending. Here so the story can recognise that filing. */
+export const OPENING_BALANCES_CATEGORY = 'Opening balances';
 
 /** True for an activity note this module wrote as bookkeeping — never a bank
  *  transaction, and never a candidate for the duplicate sweep. */

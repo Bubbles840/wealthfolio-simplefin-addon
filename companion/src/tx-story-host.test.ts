@@ -3,6 +3,7 @@ import { categoryFiledChange, importChange, stampChange } from '../../shared/cha
 import type { ChangeLogRead } from '../../shared/change-log.js';
 import { SYNC_OVERRIDES_SECRET_KEY } from '../../shared/sync-overrides.js';
 import { SKIPPED_TRANSACTIONS_SECRET_KEY } from '../../shared/skipped-transactions.js';
+import { OPENING_BALANCES_CATEGORY } from './opening-balance-category.js';
 import { accountTxKey } from '../../shared/transfers.js';
 import { TX_FACT_NOTES, TX_STORY_NO_HISTORY, TX_STORY_SPENDING } from '../../shared/tx-story.js';
 import { parseTxQuery } from '../../shared/tx-search.js';
@@ -86,6 +87,24 @@ describe('companionTxStory', () => {
     const out = await companionTxStory(r, 'act-1', NOW);
     expect(out.kind === 'ok' && out.story.answer[2]).toBe('Filed under Groceries by you, in Telegram, Oct 5.');
     expect(r.rules).not.toHaveBeenCalled();
+  });
+
+  it('a card opening balance the companion filed over REST (never logged) is the add-on’s, not "set by hand"', async () => {
+    const opening = (categoryName: string) => readers({
+      row: vi.fn(async () => restRow({ accountId: 'wf-card', accountName: 'Citi Card', comment: 'Starting balance · ACT-card', amount: '464.60' })),
+      details: vi.fn(() => ({
+        accountType: 'CREDIT_CARD',
+        assignments: [{ taxonomyId: 'spending_categories', categoryId: 'cat-open', categoryName, source: 'manual' }],
+      })),
+      changeLog: vi.fn(async () => logOf()),
+    });
+    const filed = await companionTxStory(opening(OPENING_BALANCES_CATEGORY), 'act-1', NOW);
+    expect(filed.kind === 'ok' && filed.story.answer).toEqual([
+      'The starting balance the add-on set so Citi Card matches the bank from Oct 4.',
+      "Filed under Opening balances by the add-on — an opening balance isn't spending.",
+    ]);
+    const moved = await companionTxStory(opening('Groceries'), 'act-1', NOW);
+    expect(moved.kind === 'ok' && moved.story.answer.at(-1)).toBe('Filed under Groceries.');
   });
 
   it('is "gone" when the row no longer exists, and "unreachable" when it cannot be read', async () => {

@@ -26,8 +26,8 @@ import type { ChangeLogItem } from './change-log.js';
 import { changeLocalDay } from './change-view.js';
 import { IN_TRANSIT_COMMENT_PREFIX } from './reconcile.js';
 import {
-  BALANCE_ADJUSTMENT_COMMENT_PREFIX, IN_TRANSIT_TIMEOUT_SECONDS, PENDING_SUFFIX, STARTING_BALANCE_COMMENT_PREFIX,
-  isTransferType, txIdFromComment,
+  BALANCE_ADJUSTMENT_COMMENT_PREFIX, IN_TRANSIT_TIMEOUT_SECONDS, OPENING_BALANCES_CATEGORY, PENDING_SUFFIX,
+  STARTING_BALANCE_COMMENT_PREFIX, isTransferType, txIdFromComment,
 } from './sync-core.js';
 import type { TxOverrideFlag } from './sync-overrides.js';
 import { txDescription } from './tx-search.js';
@@ -267,6 +267,9 @@ export interface FilerInput {
   /** The assignment's `source` (`rule`, `manual`, …). */
   source: string | null | undefined;
   categoryId: string;
+  /** The category's name, when the host has it: a starting balance with no
+   *  filing in the log is told by it (`OPENING_BALANCES_CATEGORY`). */
+  categoryName?: string;
   row: RuleRow;
   /** Entries about this transaction; null when the log could not be read, or
    *  only in part (`isChangeLogPartial`) — a missing filing must not read as
@@ -280,9 +283,12 @@ export interface FilerInput {
 /**
  * Who filed it. A rule's filing names the rule (`inferFilingRule`). Anything
  * else is the newest log entry that set THIS category — you in Telegram, the
- * Amazon email, the opening-balance filing — then the note's Amazon label;
- * failing all of those, a person set it in Wealthfolio. Null when that cannot
- * be told: the log was unreadable, and nothing else says.
+ * Amazon email, the opening-balance filing — then, for the add-on's own
+ * starting balance, its category (the companion filed card opening balances
+ * before the log existed, over REST, so `source` says `manual`); then the
+ * note's Amazon label; failing all of those, a person set it by hand. Null
+ * when that cannot be told: the log was unreadable, a starting balance sits
+ * in some other category, and nothing else says.
  */
 export function resolveFiler(f: FilerInput): TxFiler | null {
   if ((f.source ?? '').toLowerCase() === 'rule') {
@@ -297,6 +303,9 @@ export function resolveFiler(f: FilerInput): TxFiler | null {
   if (filing?.kind === 'opening-balance-filed') return { kind: 'opening' };
   if (filing?.actor === 'you') return { kind: 'you', at: filing.at };
   if (filing?.why?.startsWith('Amazon: ')) return { kind: 'amazon', label: filing.why.slice('Amazon: '.length) };
+  if (!filing && f.row.note.startsWith(STARTING_BALANCE_COMMENT_PREFIX)) {
+    return f.categoryName === OPENING_BALANCES_CATEGORY ? { kind: 'opening' } : null;
+  }
   const label = splitAmazonLabel(txDescription(f.row.note)).label;
   if (label) return { kind: 'amazon', label };
   if (f.history === null) return null;
