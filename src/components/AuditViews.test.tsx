@@ -1,8 +1,8 @@
-import { render, screen, fireEvent } from '@testing-library/react';
-import { describe, it, expect } from 'vitest';
+import { render, screen, fireEvent, within } from '@testing-library/react';
+import { describe, it, expect, vi } from 'vitest';
 import React from 'react';
 import {
-  AccountAudit, ChecksCard, checksSummary, HeadlineAuditLink, healthIssueCount, AUDIT_ACCOUNT_NOT_COVERED, AUDIT_HEADLINE_LINK,
+  AccountAudit, ChecksCard, checksSummary, HeadlineAuditLink, healthIssueCount, AUDIT_ACCOUNT_NOT_COVERED, AUDIT_HEADLINE_LINK, AUDIT_HEALTH_NOT_CHECKED, HealthView,
 } from './AuditViews';
 import {
   buildAuditSnapshot, parseAuditSnapshot, AUDIT_CORRUPT, AUDIT_NEEDS_COMPANION, AUDIT_NOT_YET, type AuditResults, type AuditSnapshotRead,
@@ -87,7 +87,11 @@ describe('HeadlineAuditLink', () => {
     expect(screen.getByRole('button', { name: AUDIT_HEADLINE_LINK })).toHaveAttribute('aria-expanded', 'true');
     expect(screen.getByText("The report counts $1,300.00 spent this month; Wealthfolio's Spending page counts $1,200.00.")).toBeInTheDocument();
     expect(screen.getByText('$75.00 not explained by these reasons')).toBeInTheDocument();
-    fireEvent.click(screen.getByText(/^\$25\.00 — Dated the 1st at midnight UTC/));
+    const summary = screen.getByText(/^\$25\.00 — Dated the 1st at midnight UTC/);
+    const details = summary.closest('details')!;
+    expect(details).not.toHaveAttribute('open');
+    fireEvent.click(summary);
+    expect(details).toHaveAttribute('open');
     expect(screen.getByText(`Oct 1 · ${BANK} · $25.00 · ${NAME}`)).toBeInTheDocument();
     expect(screen.getByText('and 5 more')).toBeInTheDocument();
   });
@@ -144,5 +148,44 @@ describe('copy', () => {
       unmount();
     }
     expect(AUDIT_NOT_YET).not.toMatch(EMOJI);
+  });
+});
+
+describe('R-F review fixes', () => {
+  it('marks status lines and opened panels as live regions', () => {
+    render(<HeadlineAuditLink read={ok()} companionVersion="1.61.0" now={LATER} />);
+    fireEvent.click(screen.getByRole('button', { name: AUDIT_HEADLINE_LINK }));
+    const region = screen.getByRole('region', { name: 'Spent vs Wealthfolio' });
+    expect(within(region).getByRole('status')).toHaveTextContent('As of the 2:00 PM sync.');
+  });
+
+  const STATES: Array<[string, AuditSnapshotRead, string | null, Date, string]> = [
+    ['corrupt', { kind: 'corrupt' }, '1.61.0', LATER, AUDIT_CORRUPT],
+    ['absent, no companion', { kind: 'absent' }, null, LATER, AUDIT_NEEDS_COMPANION],
+    ['absent, companion', { kind: 'absent' }, '1.61.0', LATER, AUDIT_NOT_YET],
+    ['stale', ok(), '1.61.0', new Date(2026, 9, 16, 9, 0), "These checks are from Oct 13 — the companion hasn't synced since."],
+  ];
+  it.each(STATES)('headline link and Checks card say the exact copy when %s', (_n, read, version, now, copy) => {
+    const a = render(<HeadlineAuditLink read={read} companionVersion={version} now={now} />);
+    fireEvent.click(screen.getByRole('button', { name: AUDIT_HEADLINE_LINK }));
+    expect(screen.getByText(copy)).toBeInTheDocument();
+    a.unmount();
+    render(<ChecksCard read={read} companionVersion={version} now={now} />);
+    expect(screen.getByText(copy)).toBeInTheDocument();
+    if (read.kind !== 'ok') expect(screen.queryByText(HEALTH_NONE)).toBeNull();
+  });
+
+  it('says Health was not checked when there is no verdict and no note', () => {
+    render(<HealthView report={{ issues: null, notes: [] }} />);
+    expect(screen.getByText(AUDIT_HEALTH_NOT_CHECKED)).toBeInTheDocument();
+    expect(AUDIT_HEALTH_NOT_CHECKED).not.toMatch(EMOJI);
+  });
+
+  it('tolerates identical note lines without duplicate keys', () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    render(<HealthView report={{ issues: [], notes: ['same', 'same'] }} />);
+    expect(screen.getAllByText('same')).toHaveLength(2);
+    expect(err).not.toHaveBeenCalled();
+    err.mockRestore();
   });
 });

@@ -61,6 +61,18 @@ describe('AccountList: why an account is off (2c)', () => {
     expect(screen.queryByText('why wf-b')).toBeNull();
   });
 
+  it('labels the opened panel, drops it when a resync clears the drift, and never makes "not checked" a button', () => {
+    const props = { mapping, sfinNames, wfNames, onOpenAccount: () => {}, renderExplanation: (id: string) => <div>why {id}</div> };
+    const { container, rerender } = render(<AccountList {...props} balances={balances} />);
+    fireEvent.click(container.querySelector('button.sfin-audit-chip')!);
+    expect(screen.getByRole('region', { name: 'Why Citi Double Cash is off' })).toBeInTheDocument();
+    rerender(<AccountList {...props} balances={{ ...balances, s2: { ...balances.s2, drift: null, measured: true } }} />);
+    expect(screen.queryByText('why wf-b')).toBeNull();
+    const unchecked = { s1: { ...balances.s1, drift: null, measured: undefined }, s2: { ...balances.s2, drift: null, measured: undefined } };
+    const second = render(<AccountList {...props} balances={unchecked} />);
+    expect(second.container.querySelectorAll('button.sfin-audit-chip')).toHaveLength(0);
+  });
+
   it('keeps the chip a label without an explainer, and "in sync" is never a button', () => {
     const { container, unmount } = render(
       <AccountList mapping={mapping} balances={balances} sfinNames={sfinNames} wfNames={wfNames} onOpenAccount={() => {}} />,

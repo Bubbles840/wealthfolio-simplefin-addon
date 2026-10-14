@@ -17,6 +17,8 @@ import { auditSnapshotStatus, type AuditSnapshotRead } from '../../shared/audit-
  * bank text is never markup. No emoji (src/pages/copy-policy.test.tsx).
  */
 export const AUDIT_HEADLINE_LINK = 'Why is this different from Wealthfolio?';
+/** Health returned no verdict (its database read failed). */
+export const AUDIT_HEALTH_NOT_CHECKED = "Health wasn't checked.";
 export const AUDIT_ACCOUNT_NOT_COVERED = "These checks don't cover this account yet — they arrive with the companion's next sync.";
 
 export interface AuditSource {
@@ -28,12 +30,12 @@ export interface AuditSource {
 /** Where the checks came from: "As of the 2:00 PM sync.", stale, absent or unreadable. */
 export function AuditStatusLine({ read, companionVersion, now }: AuditSource) {
   const { state, line } = auditSnapshotStatus(read, companionVersion, now);
-  return <div className={`sfin-subtle sfin-audit-status sfin-audit-status--${state}`}>{line}</div>;
+  return <div role="status" className={`sfin-subtle sfin-audit-status sfin-audit-status--${state}`}>{line}</div>;
 }
 
 function AuditNotes({ notes }: { notes: readonly string[] }) {
   if (notes.length === 0) return null;
-  return <ul className="sfin-audit-notes">{notes.map((n) => <li key={n}>{n}</li>)}</ul>;
+  return <ul className="sfin-audit-notes">{notes.map((n, i) => <li key={i}>{n}</li>)}</ul>;
 }
 
 export function BalanceExplanationView({ e, notes = [] }: { e: BalanceExplanation; notes?: readonly string[] }) {
@@ -42,7 +44,7 @@ export function BalanceExplanationView({ e, notes = [] }: { e: BalanceExplanatio
   return (
     <div className="sfin-audit-body">
       <div className="sfin-audit-head">{balanceHeaderLine(e)}</div>
-      {causes.length > 0 && <ul className="sfin-audit-lines">{causes.map((l) => <li key={l}>{l}</li>)}</ul>}
+      {causes.length > 0 && <ul className="sfin-audit-lines">{causes.map((l, i) => <li key={i}>{l}</li>)}</ul>}
       {includes && <div className="sfin-subtle">{includes}</div>}
       <AuditNotes notes={notes} />
     </div>
@@ -90,13 +92,14 @@ export function HeadlineView({ h }: { h: HeadlineExplanation }) {
 export function HealthView({ report }: { report: HealthReport }) {
   return (
     <div className="sfin-audit-body">
+      {report.issues === null && report.notes.length === 0 && <div>{AUDIT_HEALTH_NOT_CHECKED}</div>}
       {report.issues && report.issues.length === 0 && !report.more && <div>{HEALTH_NONE}</div>}
       {report.issues && report.issues.length > 0 && (
         <ul className="sfin-audit-issues">
           {report.issues.map((i) => (
             <li key={i.key} className="sfin-audit-issue">
               <div className="sfin-audit-head">{healthIssueTitle(i)}</div>
-              {healthIssueLines(i).map((l) => <div key={l} className="sfin-subtle">{l}</div>)}
+              {healthIssueLines(i).map((l, n) => <div key={n} className="sfin-subtle">{l}</div>)}
             </li>
           ))}
         </ul>
@@ -139,7 +142,7 @@ export function HeadlineAuditLink(source: AuditSource) {
         {AUDIT_HEADLINE_LINK}
       </button>
       {open && (
-        <div className="sfin-audit-inline">
+        <div className="sfin-audit-inline" role="region" aria-label="Spent vs Wealthfolio">
           {source.read.kind === 'ok' && <HeadlineView h={source.read.snapshot.headline} />}
           <AuditStatusLine {...source} />
         </div>
