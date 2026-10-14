@@ -420,7 +420,7 @@ export function buildTxStory(facts: TxStoryFacts): TxStory {
       : TX_STORY_NOT_FROM_FEED);
   }
   // The note the sync added from a Venmo email (3), right under where it came from.
-  if (!special && note.includes(VENMO_NOTE_MARK)) answer.push(TX_STORY_VENMO_NOTE);
+  if (!special && facts.feed && txIdFromComment(note) && note.includes(VENMO_NOTE_MARK)) answer.push(TX_STORY_VENMO_NOTE);
 
   // 2. What it is.
   if (held) {

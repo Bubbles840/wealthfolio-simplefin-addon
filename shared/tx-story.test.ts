@@ -240,6 +240,13 @@ describe('buildTxStory — missing and failed facts', () => {
     expect(story().answer).not.toContain(TX_STORY_VENMO_NOTE);
   });
 
+  it('says it only for a row from the bank feed, not a hand-entered one that holds the mark', () => {
+    const note = 'Lunch · Venmo: split';
+    expect(story({ row: row({ note }), feed: null }).answer).not.toContain(TX_STORY_VENMO_NOTE);
+    expect(story({ row: row({ note: 'Lunch · Venmo: split · TRN-1' }), feed: null }).answer).not.toContain(TX_STORY_VENMO_NOTE);
+    expect(story({ row: row({ note: 'VENMO 1 · Venmo: split' }) }).answer).not.toContain(TX_STORY_VENMO_NOTE);
+  });
+
   it('a filing by you with no day says only "in Telegram"', () => {
     expect(story({ category: { name: 'Groceries', filer: { kind: 'you' } } }).answer[2]).toBe('Filed under Groceries by you, in Telegram.');
   });

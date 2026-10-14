@@ -19,7 +19,6 @@ import type { ChangeLogItem } from './change-log.js';
 import type { ActivityWrite, ImportRow } from './sync-host.js';
 import type { AccountOverrideFlag, TxOverrideFlag } from './sync-overrides.js';
 import type { MappingRule } from './types.js';
-import { stripVenmoNote } from './venmo-ledger.js';
 import { companionUnderstandsOverrides } from './version.js';
 
 export type UndoOp = 'undo' | 'redo';
@@ -587,7 +586,7 @@ export function planChangeUndo(
         op, needsSync: false, rowAfter: row.id, done: 'Undone — the note is off, and stays off.',
         steps: [
           { do: 'set-tx', txKey: key, flag: 'noVenmoNote', label: labelOf(entry) },
-          { do: 'update', write: { id: row.id, accountId: row.accountId, activityType: row.type, activityDate: row.date, amount: row.absCents / 100, currency, comment: stripVenmoNote(row.comment) ?? beforeNote } },
+          { do: 'update', write: { id: row.id, accountId: row.accountId, activityType: row.type, activityDate: row.date, amount: row.absCents / 100, currency, comment: beforeNote } },
         ],
       });
     }

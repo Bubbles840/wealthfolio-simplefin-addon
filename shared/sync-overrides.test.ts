@@ -46,6 +46,7 @@ describe('parseSyncOverrides', () => {
     ['a flag that is not true', `{"v":1,"tx":{"k":{"notTransfer":false,"at":"2026-10-12T09:00:00Z"}},"accounts":{}}`],
     ['a missing time', `{"v":1,"tx":{"k":{"notTransfer":true}},"accounts":{}}`],
     ['a time that is not a time', `{"v":1,"tx":{},"accounts":{"a":{"noAutoCorrect":true,"at":"yesterday"}}}`],
+    ['an entry that is not an object', '{"v":1,"tx":{"k":"yes"},"accounts":{}}'],
     ['tx as a list', '{"v":1,"tx":[],"accounts":{}}'],
   ])('reads %s as corrupt', (_name, raw) => {
     expect(parseSyncOverrides(raw)).toEqual({ kind: 'corrupt' });

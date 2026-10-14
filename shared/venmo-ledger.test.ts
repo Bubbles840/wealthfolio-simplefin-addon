@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   consumeVenmoMatch, isVenmoDescription, matchVenmoPayment, mergeVenmoRecords, pruneVenmoLedger, venmoDescription,
-  stripVenmoNote, venmoLedgerKey, venmoNoteOf, VENMO_LEDGER_SECRET_KEY, VENMO_NOTE_MARK, type VenmoLedger, type VenmoPaymentQuery,
+  venmoLedgerKey, venmoNoteOf, VENMO_LEDGER_SECRET_KEY, VENMO_NOTE_MARK, type VenmoLedger, type VenmoPaymentQuery,
 } from './venmo-ledger';
 import type { VenmoRecord } from './venmo';
 
@@ -155,22 +155,5 @@ describe('review fixes', () => {
 
   it('gives no note for a money-in bank row against an out record (a refund shape)', () => {
     expect(matchVenmoPayment(ledgerOf({ ...RENT, emailDate: '2026-10-03' }), query({ direction: 'in' }))).toBeNull();
-  });
-});
-
-describe('stripVenmoNote', () => {
-  it('takes the mark off up to the trailing id, keeping the bank text and the id', () => {
-    expect(stripVenmoNote('VENMO PAYMENT 1023 · Venmo: Rent October · TRN-a1b2')).toBe('VENMO PAYMENT 1023 · TRN-a1b2');
-  });
-  it('is not confused by a note that holds " · " or even " · Venmo: "', () => {
-    expect(stripVenmoNote('VENMO 1 · Venmo: Rent · October · TRN-1')).toBe('VENMO 1 · TRN-1');
-    expect(stripVenmoNote('VENMO 1 · Venmo: a · Venmo: b · TRN-1')).toBe('VENMO 1 · TRN-1');
-  });
-  it('strips from the FIRST mark when the bank text itself has " · "', () => {
-    expect(stripVenmoNote('VENMO · X · Venmo: Rent · TRN-1')).toBe('VENMO · X · TRN-1');
-  });
-  it('reads a note with no id after it, and returns null when there is no mark', () => {
-    expect(stripVenmoNote('VENMO 1 · Venmo: Rent')).toBe('VENMO 1');
-    expect(stripVenmoNote('VENMO 1 · TRN-1')).toBeNull();
   });
 });
