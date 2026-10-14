@@ -54,6 +54,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     snapshot the companion publishes after each sync, which says when it was
     taken and when it is out of date or unreadable. Home's Accounts tile
     points at the checks when there is something to look at.
+- **Less filing (R1).**
+  - **Venmo notes.** Forward Venmo's emails to the Amazon mailbox (a second
+    Gmail filter, `from:venmo@venmo.com`) and a bank row for a Venmo payment
+    gets the payment's note: `VENMO PAYMENT 1023 · Venmo: Rent October`. A
+    note goes on only when exactly one payment has the same amount and
+    direction with its email within 5 days, and is clipped to 60 characters.
+    Only posted rows get one (a pending row gets its note once it posts), and
+    never a transfer.
+    Each note is in the change log; Undo takes it off and keeps it off. Your
+    rules can match on the note. Venmo's email formats are built from its
+    documented wording and not yet checked against real emails: one that does
+    not read is left unread and kept.
+  - **Guessed categories.** A needs-a-category row whose merchant you filed
+    the same way before (at least 2 filings in a rolling 365 days, 80% of them
+    in one category) gets a guess. A Venmo row is guessed by its note only
+    (no note, no guess); bank text made only of generic banking words ("POS
+    PURCHASE 1234") gets none; neither does a row that takes an income
+    category. `/categorize` offers it as the first button —
+    "✓ Groceries (like the last 3)", one tap files it exactly as the grid
+    would — and shows it beside the row on the list; the app shows "Probably
+    Groceries" under the row. A guess never files anything on its own; Amazon
+    rows get none.
+  - **Rules for one account.** The rule preview after a filing offers "All
+    accounts ⇄ Only <account>", and `/newrule trader joes = groceries in
+    checking` opens it for that account. The change log names the account,
+    and Redo brings the rule back for it.
+  - Update the add-on along with the companion: an add-on older than this
+    release cannot read your overrides once a Venmo note has been undone. The
+    overrides reader now ignores flags it does not know and keeps them, so a
+    later flag will not break this release's add-on.
 
 ### Fixed
 - **The "Opening balances" spending exclusion is re-applied.** It was only set

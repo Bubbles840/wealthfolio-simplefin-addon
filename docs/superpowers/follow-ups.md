@@ -782,6 +782,81 @@ changes what a user sees today.
   snapshot already carries both rows' ids, accounts, tx keys, amounts and
   dates), and "Remove for good…" on a transaction's story.
 
+## 13. Less filing — R1 (2026-10-14, plan `2026-10-14-less-filing.md`)
+
+- **Venmo's email formats are unverified.** `shared/venmo.ts` reads the
+  wording Venmo documents ("You paid <name> $X", "<name> paid you $X", a
+  completed charge request, a transfer to your bank); no real email has been
+  seen. Needed from Nick: one real email of each kind (redacted is fine) to
+  replace the built fixtures in `shared/venmo.test.ts`. Until then a Venmo
+  email that does not read stays unread, is counted in the log
+  (`Venmo mail: … unrecognised`) and kept in the `venmo_mail_samples` secret.
+- **The Venmo samples are not shown anywhere yet.** Amazon's are on its card
+  with Copy; Venmo's sit in `venmo_mail_samples`. Show them on the same card
+  once the formats are known to drift.
+- **A cash-out of exactly one payment gets no note.** "Sam paid you $40" and
+  "Transfer to your bank $40" in the same week are two records of the same
+  amount and direction, so the $40 bank deposit gets neither (the two-record
+  rule). Preferring the payment's note there is a later refinement.
+- **Undo takes a Venmo note off at once**, as an Amazon label's Undo does,
+  rather than leaving it for the next sync; the sync then never adds it again.
+- **Overrides and older add-ons.** `parseSyncOverrides` now ignores and
+  preserves flags it does not know (still strict on known keys' types), so
+  later flags never break this release's add-on. A released v1.60.0 add-on is
+  still strict: it reads a document holding `noVenmoNote` as corrupt, and its
+  sync then ignores every override until it is updated. Only an Undo of a Venmo
+  note writes the flag.
+- **Version gate for `noVenmoNote` (decide at release).** `SYNC_OVERRIDES_SINCE`
+  is still 1.60.0. Give `venmo-note` its own minimum companion/add-on version
+  when this ships, so a half still on v1.60.0 is told to update.
+- **Forged From line (accepted risk).** The companion reads Venmo mail by its
+  From line, which anyone who knows the forwarding address can forge (the same
+  as Amazon's). The worst case is a "Venmo note" on a bank row whose amount and
+  date also match. Keep the forwarding address private (README, Venmo notes).
+- **Guesses.** A Venmo row is guessed by its note only (none without one); bank
+  text made only of generic banking words gets none; the window is a rolling
+  365 days; a money-in row that takes an income category gets none (a guess is
+  a spending category, which Wealthfolio refuses there). Guesses come only from
+  filings with `source` `manual` or `rule`, never `migrated`. Filing a guess
+  from the app waits for R2 (SDK 3.9 `spending`).
+- **Pending final-wave change: the guess window counts the first filing's
+  date.** It reads `created_at`, so a row you re-file keeps its first date
+  (re-filing updates in place). Plan (P3-J): count a manual filing from its
+  `updated_at`, a rule filing from `created_at`, plus the tests that pin it.
+- **Minor, deferred (the final fix wave may not cover them):**
+  - Venmo parser: an imperative marketing line ("Transfer $50.00 to your bank
+    today!") under a neutral subject reads as a transfer; the sample redactor
+    keeps `••••1234`, does not cap the subject, and redacts a hand-forwarded
+    "From: Venmo <…>" line to `<email>`.
+  - Matcher: no test of a timestamped `emailDate` rolling to the next UTC day;
+    `VENMO_X` is untested.
+  - Sync: pin "decided after pairing" (a transfer typed by pairing alone), the
+    placeholder half of the no-note gate, and the three ledger write-merge
+    guards; an add-on and a companion sync at the same moment can leave a note
+    while the ledger records the other writer (narrow).
+  - Mail: the Amazon and Venmo views are not disjoint (a venmo.com email whose
+    body has a `From: …amazon.com` line also reaches Amazon's parser; give each
+    message one owner, sender first); the poll's wiring and its Venmo log lines
+    are untested; the adapter builds the body inline instead of `mailBody`.
+  - Guess reader: fix its comments (re-file is in place; `migrated` is
+    asset-only), log "Guessed categories skipped: <error>" in the inner catch,
+    and pin that the sync publish site passes `getNativePastFilings`.
+  - `/categorize`: assign does not re-check a category deleted between render
+    and tap (the write fails on the foreign key); the guess gate's lookup also
+    matches income categories; the list suffix is not tree-gated; a row
+    switched to the spending grid is not pinned to have no guess; the pinned
+    "longest callback is 15" is fixture-bound.
+  - App: the hint becomes part of the story button's accessible name.
+  - Scoped rules: `/newrule`'s first ` in ` split breaks a custom category like
+    "Dine In Out"; Redo does not re-check the account still exists; the
+    `rules.list()`/filed-by fallbacks ignore scope; missing tests (the toggle on
+    `/newrule`'s free preview, toggling back to All then Create, a runner-level
+    scoped Redo); the toggle label uses the database's account name.
+- **Scoped rules, what stays global:** the bare `/newrule` questions have no
+  account step; the add-on's `mapping_rules` have no scope (L5); a scoped
+  rule's Wealthfolio name does not mention its account; "Undo rule + un-file N"
+  counts by pattern and category, not account.
+
 ## Reference: name mismatches between the database, the REST API, and the SDK
 
 Every one of these cost a diagnostic cycle against the live instance on
