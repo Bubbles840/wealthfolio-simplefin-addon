@@ -2,7 +2,7 @@
 
 > **Approved by Nick on 2026-10-14.** He asked to "make sure things line up with
 > Wealthfolio to the best of their ability" and chose "fix the cause + match +
-> tripwire". He also approved the Venmo payback fix, items 1–5. The rulings
+> tripwire". He also approved the Venmo payback fix, items 1–5, and asked for paybacks from inside the app too ("since we have the newer add-on permission"). The rulings
 > below fill in what that choice leaves open, and each one says what it costs if
 > it is wrong.
 
@@ -49,6 +49,8 @@ feed's.
 | W8 | **Version gate: `PAYBACK_SINCE = 1.62.0`.** A 1.61 reader ignores an unknown override flag and would revert the type. Telegram's payback, its Undo and its Redo therefore need an installed add-on of 1.62.0 or newer; the refusal names the app's Change log. The app's Undo of a payback needs a companion of 1.62.0 or newer. The same pattern as `VENMO_NOTE_SINCE`. | Until both halves are updated, paybacks are refused, with the reason given. |
 | W9 | **No raw Wealthfolio error on a category refusal.** Any bucket refusal from `assignActivityCategory` maps to the add-on's plain sentences, which `/recategorize` already uses. | — |
 | W10 | **"Make every <pattern> deposit a payback" (item 5).** After a payback is filed, the Filed screen offers this instead of "Make this a rule". It creates two rules: an add-on transaction rule that carries the `REIMBURSEMENT` classifier for that description pattern, which the sync applies on import, and a Wealthfolio category rule for the chosen category. Both are change-logged with Undo, and it is scoped to the account like project 3's rules. | One payee's deposits may be mixed (some paybacks, some not); the preview shows how many it would catch. |
+| W11 | **Paybacks in the app, too.** A money-in row in the needs-a-category list (and its story) gets **It's a payback…**: pick a spending category; the add-on re-types the row (`activities` write it already has), records the `asReimbursement` override, and files it. The add-on SDK has no "file this one transaction" call, so the filing goes through an add-on-owned one-off categorization rule matching the row's unique transaction id, run at once with `rerunRules(true)` (uncategorized only) and deleted after — Wealthfolio records it as a rule filing. Change-logged; the app's Undo of a payback says "Undo this from Telegram: /changes" (the SDK cannot un-file — the 2a rule for category kinds). Gated like W8 on the companion's version. | The filing shows as "rule" in Wealthfolio, not "manual". |
+| W12 | **Adopt add-on SDK 3.9.** `@wealthfolio/addon-sdk` 3.9.0 and the manifest permissions its spending calls need; `minWealthfolioVersion` stays 3.8.0 — the payback action appears only when the host offers the spending API (feature-detected), so 3.8 installs keep working without it. | A 3.8 user does not get app paybacks (they need 3.9+). |
 
 ## Testing
 
@@ -97,5 +99,5 @@ feed's.
 
 - **Matching Wealthfolio's Income page.** The tripwire compares spending only.
   An inbound transfer in transit still counts as income there (W3).
-- **Paybacks from the app.** The add-on SDK has no category-assignment
-  permission; that needs SDK 3.9 adoption, which is Nick's call.
+- **Filing any row from the app** (not just paybacks) — the same SDK route
+  would allow it; a later release.
