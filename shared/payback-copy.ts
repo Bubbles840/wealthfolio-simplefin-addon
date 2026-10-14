@@ -49,6 +49,13 @@ export const PAYBACK_OVERRIDE_FAILED = "Couldn't save the payback setting — no
 export const PAYBACK_UPDATE_REFUSED = "Wealthfolio didn't take the change, so it's still a deposit — nothing was changed.";
 export const PAYBACK_UPDATE_STUCK = "Wealthfolio didn't take the change, so it's still a deposit — but the payback setting couldn't be taken back, so the next sync makes it a payback with no category, and /categorize offers it then.";
 export const PAYBACK_UPDATE_UNSURE = "Couldn't tell whether Wealthfolio took the change. The payback setting stays, so the next sync makes it a payback; if it has no category then, /categorize offers it.";
+/** The row was gone when Wealthfolio refused the change, and the payback setting could not be taken back. */
+export const PAYBACK_GONE_STUCK = "That transaction is gone, and the payback setting couldn't be taken back — it does no harm, but it stays in the app's overrides list until you remove it there.";
+/** The menu showed a row that is no longer the row Wealthfolio holds (PB-B, M1). */
+export const PAYBACK_CHANGED = 'It has changed since — nothing was changed.';
+/** After the payback setting stays on a row that may not be a payback (logged, so Undo takes it off). */
+export const PAYBACK_SETTING_HINT = 'To take the payback setting off, use Undo in /changes.';
+export const PAYBACK_NO_UNDO_SETTING = "The change log couldn't be written, so the payback setting can only be taken off in the app's overrides list.";
 
 // ── Undo and Redo ────────────────────────────────────────────────────────
 export const paybackUndone = (categoryName: string | null): string =>

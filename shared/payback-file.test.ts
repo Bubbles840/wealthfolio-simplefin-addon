@@ -1,9 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
 import { stampChange, type ChangeDraft, type ChangeEntry } from './change-entries.js';
+import { removalFingerprint } from './tx-remove.js';
 import { addonPaybackGate, filePayback, paybackRowOf, type PaybackChoice, type PaybackIo } from './payback.js';
 import type { PaybackRow } from './payback-row.js';
 import {
-  PAYBACK_LINKED, PAYBACK_NO_UNDO, PAYBACK_NOT_CASH, PAYBACK_OVERRIDE_FAILED, PAYBACK_PENDING, PAYBACK_RUNNING, PAYBACK_UNREACHABLE,
+  PAYBACK_CHANGED, PAYBACK_GONE, PAYBACK_GONE_STUCK, PAYBACK_LINKED, PAYBACK_NO_UNDO, PAYBACK_NO_UNDO_SETTING, PAYBACK_SETTING_HINT, PAYBACK_NOT_CASH, PAYBACK_OVERRIDE_FAILED, PAYBACK_PENDING, PAYBACK_RUNNING, PAYBACK_UNREACHABLE,
   PAYBACK_UPDATE_ADDON, PAYBACK_UPDATE_REFUSED, PAYBACK_UPDATE_STUCK, PAYBACK_UPDATE_UNSURE,
 } from './payback-copy.js';
 import {
@@ -142,7 +143,7 @@ describe('filePayback', () => {
     let writes = 0;
     const set = w.io.secrets.set;
     w.io.secrets.set = async (k, v) => { writes += 1; if (writes > 1) throw new Error('500'); await set(k, v); };
-    expect(await filePayback(RESTAURANTS, w.io, NOW)).toEqual({ kind: 'partial', message: PAYBACK_UPDATE_STUCK });
+    expect(await filePayback(RESTAURANTS, w.io, NOW)).toEqual({ kind: 'partial', message: `${PAYBACK_UPDATE_STUCK}\n${PAYBACK_SETTING_HINT}` });
     expect(hasTxOverride(w.overrides()!, KEY, 'asReimbursement')).toBe(true);
   });
 
@@ -160,7 +161,7 @@ describe('filePayback', () => {
     let reads = 0;
     const read = w.io.read;
     w.io.read = async (id) => { reads += 1; if (reads > 1) throw new Error('ECONNRESET'); return read(id); };
-    expect(await filePayback(RESTAURANTS, w.io, NOW)).toEqual({ kind: 'partial', message: PAYBACK_UPDATE_UNSURE });
+    expect(await filePayback(RESTAURANTS, w.io, NOW)).toEqual({ kind: 'partial', message: `${PAYBACK_UPDATE_UNSURE}\n${PAYBACK_SETTING_HINT}` });
     expect(hasTxOverride(w.overrides()!, KEY, 'asReimbursement')).toBe(true);
   });
 
@@ -208,5 +209,128 @@ describe('filePayback', () => {
   it('keeps the cents of a large amount', async () => {
     const w = world({ row: { amount: '1234.56' } });
     expect((await filePayback(RESTAURANTS, w.io, NOW)).message).toContain('it takes $1,234.56 off');
+  });
+});
+
+describe('filePayback — ruling PB-B', () => {
+  const shownOf = (over: Record<string, unknown> = {}) => {
+    const r = paybackRowOf({ ...DETAILS, ...over }, 'CASH')!;
+    return removalFingerprint({ activityId: r.id, note: r.notes, absCents: r.absCents, date: r.date, activityType: r.type, accountName: r.accountName });
+  };
+
+  it('M1: files when the row is still the one the menu showed', async () => {
+    const w = world();
+    expect((await filePayback({ ...RESTAURANTS, shown: shownOf() }, w.io, NOW)).kind).toBe('filed');
+  });
+
+  it('M1: refuses a row that changed since the menu showed it, and writes nothing', async () => {
+    const w = world();
+    const out = await filePayback({ ...RESTAURANTS, shown: shownOf({ amount: '20' }) }, w.io, NOW);
+    expect(out).toEqual({ kind: 'refused', message: PAYBACK_CHANGED });
+    expect(PAYBACK_CHANGED).toBe('It has changed since — nothing was changed.');
+    expect(w.calls).toEqual(['read act-7']);
+    expect(w.io.secrets.set).not.toHaveBeenCalled();
+  });
+
+  it('M1: a row that is gone is still said to be gone', async () => {
+    const w = world({ row: null });
+    expect(await filePayback({ ...RESTAURANTS, shown: shownOf() }, w.io, NOW)).toEqual({ kind: 'refused', message: PAYBACK_GONE });
+  });
+
+  it('M2: continues to the re-type when the override write failed but its keys are there', async () => {
+    const w = world();
+    const set = w.io.secrets.set;
+    w.io.secrets.set = vi.fn(async (k, v) => { await set(k, v); throw new Error('socket hang up'); });
+    const out = await filePayback(RESTAURANTS, w.io, NOW);
+    expect(out.kind).toBe('filed');
+    expect(w.io.update).toHaveBeenCalled();
+    expect(hasTxOverride(w.overrides()!, KEY, 'asReimbursement')).toBe(true);
+  });
+
+  it('M2: takes back only what this run added when the continued re-type is refused', async () => {
+    const w = world();
+    const set = w.io.secrets.set;
+    let first = true;
+    w.io.secrets.set = vi.fn(async (k, v) => { await set(k, v); if (first) { first = false; throw new Error('socket hang up'); } });
+    w.io.update = vi.fn(async () => { throw new Error('400'); });
+    expect(await filePayback(RESTAURANTS, w.io, NOW)).toEqual({ kind: 'refused', message: PAYBACK_UPDATE_REFUSED });
+    expect(hasTxOverride(w.overrides()!, KEY, 'asReimbursement')).toBe(false);
+  });
+
+  it('M2: still refuses when the override write failed and the keys are not there', async () => {
+    const w = world();
+    w.io.secrets.set = async () => { throw new Error('500'); };
+    expect(await filePayback(RESTAURANTS, w.io, NOW)).toEqual({ kind: 'refused', message: PAYBACK_OVERRIDE_FAILED });
+    expect(w.io.update).not.toHaveBeenCalled();
+  });
+
+  it('M5: a STUCK payback is logged with no category, so /changes can undo the setting', async () => {
+    const w = world();
+    w.io.update = vi.fn(async () => { throw new Error('400'); });
+    let writes = 0;
+    const set = w.io.secrets.set;
+    w.io.secrets.set = async (k, v) => { writes += 1; if (writes > 1) throw new Error('500'); await set(k, v); };
+    const out = await filePayback(RESTAURANTS, w.io, NOW);
+    expect(out).toEqual({ kind: 'partial', message: `${PAYBACK_UPDATE_STUCK}\n${PAYBACK_SETTING_HINT}` });
+    expect(w.logged[0]).toMatchObject({ kind: 'payback-filed', subject: { txKeys: [KEY] }, after: { categoryId: null, categoryName: null } });
+  });
+
+  it('M5: an UNSURE payback is logged with no category too, and says so when the log fails', async () => {
+    const w = world();
+    w.io.update = vi.fn(async () => { throw new Error('socket hang up'); });
+    let reads = 0;
+    const read = w.io.read;
+    w.io.read = async (id) => { reads += 1; if (reads > 1) throw new Error('ECONNRESET'); return read(id); };
+    await filePayback(RESTAURANTS, w.io, NOW);
+    expect(w.logged[0]).toMatchObject({ kind: 'payback-filed', after: { categoryId: null } });
+
+    const x = world();
+    x.io.update = vi.fn(async () => { throw new Error('socket hang up'); });
+    let n = 0;
+    const read2 = x.io.read;
+    x.io.read = async (id) => { n += 1; if (n > 1) throw new Error('ECONNRESET'); return read2(id); };
+    x.io.record = async () => { throw new Error('quota'); };
+    expect(await filePayback(RESTAURANTS, x.io, NOW)).toEqual({ kind: 'partial', message: `${PAYBACK_UPDATE_UNSURE}\n${PAYBACK_NO_UNDO_SETTING}` });
+  });
+
+  it('M6: a refused update whose re-read finds the row gone says it is gone — not "still a deposit"', async () => {
+    const w = world();
+    let gone = false;
+    const read = w.io.read;
+    w.io.read = async (id) => (gone ? null : read(id));
+    w.io.update = vi.fn(async () => { gone = true; throw new Error('404'); });
+    const out = await filePayback(RESTAURANTS, w.io, NOW);
+    expect(out).toEqual({ kind: 'refused', message: PAYBACK_GONE });
+    expect(out.message).not.toContain('still a deposit');
+    expect(hasTxOverride(w.overrides()!, KEY, 'asReimbursement')).toBe(false);
+  });
+
+  it('M6: and when the setting cannot be taken back either, says that in gone-row words', async () => {
+    const w = world();
+    let gone = false;
+    const read = w.io.read;
+    w.io.read = async (id) => (gone ? null : read(id));
+    w.io.update = vi.fn(async () => { gone = true; throw new Error('404'); });
+    let writes = 0;
+    const set = w.io.secrets.set;
+    w.io.secrets.set = async (k, v) => { writes += 1; if (writes > 1) throw new Error('500'); await set(k, v); };
+    const out = await filePayback(RESTAURANTS, w.io, NOW);
+    expect(out).toEqual({ kind: 'partial', message: PAYBACK_GONE_STUCK });
+    expect(out.message).not.toContain('still a deposit');
+    expect(w.logged).toEqual([]);
+  });
+
+  it('M7: a gate that cannot read secrets logs the error and says it could not reach Wealthfolio', async () => {
+    const w = world({ io: { gate: () => addonPaybackGate(async () => { throw new Error('keychain locked'); }) } });
+    const out = await filePayback(RESTAURANTS, w.io, NOW);
+    expect(out).toEqual({ kind: 'refused', message: PAYBACK_UNREACHABLE });
+    expect(out.message).not.toContain('Update the add-on');
+    expect(w.logs.join('\n')).toContain('keychain locked');
+    expect(w.calls).toEqual([]);
+  });
+
+  it('M7: an installed version that is simply too old still says to update', async () => {
+    const w = world({ secrets: { [INSTALLED_ADDON_VERSION_SECRET_KEY]: '1.61.0' } });
+    expect(await filePayback(RESTAURANTS, w.io, NOW)).toEqual({ kind: 'refused', message: PAYBACK_UPDATE_ADDON });
   });
 });

@@ -17,10 +17,12 @@
 import { BUDGET_TAXONOMY, DEFAULT_PERIOD_KEY, isClearedDefault, type BudgetTarget } from './budget-suggest.js';
 import { changeMoney, type ChangeEntry } from './change-entries.js';
 import type { ChangeLogItem } from './change-log.js';
+import { paybackRedone, paybackUndone } from './payback-copy.js';
+import { isPaybackRow, paybackRetype, type PaybackRow } from './payback-row.js';
 import type { ActivityWrite, ImportRow } from './sync-host.js';
 import type { AccountOverrideFlag, TxOverrideFlag } from './sync-overrides.js';
 import type { MappingRule } from './types.js';
-import { companionUnderstandsOverrides, companionUnderstandsVenmoNotes } from './version.js';
+import { companionUnderstandsOverrides, companionUnderstandsPaybacks, companionUnderstandsVenmoNotes } from './version.js';
 
 export type UndoOp = 'undo' | 'redo';
 /** A rule's Undo comes in two: the rule alone, or the rule and the charges it filed. */
@@ -31,9 +33,9 @@ export const SYNC_DECISION_KINDS: ReadonlySet<string> = new Set([
   'transfer-link', 'transfer-type', 'duplicate-removed', 'balance-correction', 'import', 'amazon-label', 'venmo-note',
 ]);
 /** Kinds only the companion can reverse: the add-on SDK has no category, rule
- *  or budget API. */
+ *  or budget API — and a payback's Undo takes a category off (1.62, W7). */
 export const COMPANION_ONLY_KINDS: ReadonlySet<string> = new Set([
-  'category-filed', 'opening-balance-filed', 'category-rule-created', 'budget-set',
+  'category-filed', 'opening-balance-filed', 'category-rule-created', 'budget-set', 'payback-filed',
 ]);
 export const UNDO_KINDS: ReadonlySet<string> = new Set([
   ...SYNC_DECISION_KINDS, ...COMPANION_ONLY_KINDS, 'mapping-rule-created', 'starting-balance', 'starting-balance-moved',
@@ -98,9 +100,12 @@ export function undoAvailability(
   if (!entry.undoable || entry.reverses || !UNDO_KINDS.has(entry.kind)) return { kind: 'none' };
   const op: UndoOp = entry.undone ? 'redo' : 'undo';
   if (where.host === 'addon' && COMPANION_ONLY_KINDS.has(entry.kind)) {
-    return where.companionVersion
-      ? { kind: 'telegram', op, text: op === 'undo' ? UNDO_FROM_TELEGRAM : REDO_FROM_TELEGRAM }
-      : { kind: 'none' };
+    if (!where.companionVersion) return { kind: 'none' };
+    // A payback's Undo and Redo run in Telegram, on a companion that knows paybacks (W8).
+    if (entry.kind === 'payback-filed' && !companionUnderstandsPaybacks(where.companionVersion)) {
+      return { kind: 'update-companion', op, text: UNDO_UPDATE_COMPANION };
+    }
+    return { kind: 'telegram', op, text: op === 'undo' ? UNDO_FROM_TELEGRAM : REDO_FROM_TELEGRAM };
   }
   if (where.host === 'addon' && companionGateCovers(entry, op) && !companionUnderstands(entry, where.companionVersion)) {
     return { kind: 'update-companion', op, text: UNDO_UPDATE_COMPANION };
@@ -119,11 +124,13 @@ function companionUnderstands(entry: Pick<ChangeEntry, 'kind'>, companionVersion
  * In Telegram, this waits for the INSTALLED add-on to read the override it
  * touches: a Venmo note's Undo writes `noVenmoNote`, its Redo clears it, and an
  * add-on older than `VENMO_NOTE_SINCE` reads the whole overrides document as
- * corrupt while the flag is there (see `VENMO_NOTE_SINCE`). The runner reads
- * the installed version and refuses with `UNDO_UPDATE_ADDON`.
+ * corrupt while the flag is there (see `VENMO_NOTE_SINCE`); a payback's Undo
+ * and Redo touch `asReimbursement`, which an add-on older than `PAYBACK_SINCE`
+ * ignores (W8). The runner reads the installed version and refuses with
+ * `UNDO_UPDATE_ADDON`, or for a payback `PAYBACK_UPDATE_ADDON`.
  */
 export function addonGateCovers(entry: Pick<ChangeEntry, 'kind'>): boolean {
-  return entry.kind === 'venmo-note';
+  return entry.kind === 'venmo-note' || entry.kind === 'payback-filed';
 }
 
 /** A sync decision whose undo is an override the sync must obey: an automatic
@@ -218,6 +225,8 @@ export interface UndoState {
   budgetTargets?: BudgetTarget[];
   /** The account's currency, for a row written back. */
   currency?: string;
+  /** `payback-filed`: the row re-read by exact id, its stored instant included; null: gone. */
+  payback?: PaybackRow | null;
 }
 
 export type UndoStep =
@@ -722,6 +731,44 @@ export function planChangeUndo(
         steps: [
           { do: 'set-tx', txKey: key, flag: 'noVenmoNote', label: labelOf(entry) },
           { do: 'update', write: { id: row.id, accountId: row.accountId, activityType: row.type, activityDate: row.date, amount: row.absCents / 100, currency, comment: beforeNote } },
+        ],
+      });
+    }
+
+    // A payback (1.62, W7): the override first, then the row re-typed, then the
+    // category — Redo the same again. Each refuses a row that is not where the
+    // last write left it.
+    case 'payback-filed': {
+      const keys = entry.subject.txKeys ?? [];
+      if (keys.length === 0) return refuse(UNDO_NO_KEY);
+      const row = state.payback ?? null;
+      if (!row) return refuse(undoGone(op));
+      if (row.grouped) return refuse(UNDO_LINKED_REFUSAL);
+      const categoryId = str(after.categoryId);
+      const categoryName = str(after.categoryName);
+      const filedNow = (state.assignments ?? []).find((a) => a.taxonomyId === SPENDING_TAXONOMY)?.categoryId ?? null;
+      if (op === 'undo') {
+        // A payback setting left on a deposit (a re-type that could not be confirmed, PB-B M5) is logged with no
+        // category: its Undo takes the setting off a row that is still a deposit.
+        const settingOnly = categoryId === null && row.type === 'DEPOSIT';
+        if ((!isPaybackRow(row) && !settingOnly) || filedNow !== categoryId) return refuse(undoChangedSince(op));
+        return plan({
+          op, needsSync: false, rowAfter: row.id, done: paybackUndone(categoryName),
+          steps: [
+            ...keys.map((txKey) => ({ do: 'clear-tx', txKey, flag: 'asReimbursement' } as const)),
+            // The deposit's own subtype back; '' clears REIMBURSEMENT.
+            { do: 'update', write: paybackRetype(row, 'DEPOSIT', str(before.subtype) ?? '') },
+            ...(categoryId ? [{ do: 'unassign', activityId: row.id, taxonomyId: SPENDING_TAXONOMY } as const] : []),
+          ],
+        });
+      }
+      if (row.type !== 'DEPOSIT' || filedNow !== null) return refuse(undoChangedSince(op));
+      return plan({
+        op, needsSync: false, rowAfter: row.id, done: paybackRedone(categoryName),
+        steps: [
+          ...keys.map((txKey) => ({ do: 'set-tx', txKey, flag: 'asReimbursement', label: labelOf(entry) } as const)),
+          { do: 'update', write: paybackRetype(row, 'CREDIT', 'REIMBURSEMENT') },
+          ...(categoryId ? [{ do: 'assign', activityId: row.id, taxonomyId: SPENDING_TAXONOMY, categoryId } as const] : []),
         ],
       });
     }
