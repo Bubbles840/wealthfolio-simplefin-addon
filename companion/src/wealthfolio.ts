@@ -91,12 +91,12 @@ export class WealthfolioClient {
     return res.json() as Promise<unknown[]>;
   }
 
-  async getAccounts(): Promise<Array<{ id: string; accountType?: string }>> {
+  async getAccounts(): Promise<Array<{ id: string; accountType?: string; isArchived?: boolean }>> {
     const res = await fetch(`${this.baseUrl}/api/v1/accounts`, {
       headers: this.authHeaders(),
     });
     if (!res.ok) throw await this.httpError('getAccounts', res);
-    return res.json() as Promise<Array<{ id: string; accountType?: string }>>;
+    return res.json() as Promise<Array<{ id: string; accountType?: string; isArchived?: boolean }>>;
   }
 
   /**

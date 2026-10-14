@@ -70,9 +70,10 @@ function queryNativeDbStrict<Row>(
   label: string,
   query: string,
   fromCliParts: (parts: string[]) => Row | null,
+  separator = '|',
 ): Row[] {
   if (!dbPath || !existsSync(dbPath)) throw new NativeDbUnreadableError(`${label}: no database at ${dbPath || '(unset)'}`);
-  const rows = tryQueryNativeDb(dbPath, label, query, fromCliParts);
+  const rows = tryQueryNativeDb(dbPath, label, query, fromCliParts, separator);
   if (rows === null) throw new NativeDbUnreadableError(label);
   return rows;
 }
@@ -1823,6 +1824,22 @@ export function getNativeRuleFiledActivityIds(dbPath: string, categoryId: string
 
 const sqlText = (s: string) => s.replace(/'/g, "''");
 
+// CLI-fallback row parsers (split on the unit separator, so a `|` in an
+// account name, a category name or a note cannot shift columns).
+export function storyPartnerFromCliParts(parts: string[]): Record<string, unknown> | null {
+  return parts.length >= 3 ? { c0: parts[0], c1: parts[1], c2: parts.slice(2).join(DRILL_CLI_SEPARATOR) } : null;
+}
+export function storyAssignmentFromCliParts(parts: string[]): Record<string, unknown> | null {
+  return parts.length >= 4
+    ? { c0: parts[0], c1: parts[1], c2: parts.slice(2, -1).join(DRILL_CLI_SEPARATOR), c3: parts[parts.length - 1] }
+    : null;
+}
+export function storySearchRowFromCliParts(parts: string[]): Record<string, unknown> | null {
+  return parts.length >= 7
+    ? { c0: parts[0], c1: parts[1], c2: parseFloat(parts[2]) || 0, c3: parts[3], c4: parts[4], c5: parts[5], c6: parts.slice(6).join(DRILL_CLI_SEPARATOR) }
+    : null;
+}
+
 /** One taxonomy's assignment on an activity, with what the story says of it. */
 export interface NativeTxAssignment {
   taxonomyId: string;
@@ -1840,6 +1857,7 @@ export function getNativeTxDetails(dbPath: string, activityId: string): { accoun
     'story account',
     `SELECT COALESCE(acc.account_type, '') AS account_type FROM activities a LEFT JOIN accounts acc ON acc.id = a.account_id WHERE a.id = '${id}';`,
     (parts) => ({ account_type: parts[0] ?? '' }),
+    DRILL_CLI_SEPARATOR,
   );
   const rows = queryNativeDbStrict<Record<string, unknown>>(
     dbPath,
@@ -1850,7 +1868,8 @@ export function getNativeTxDetails(dbPath: string, activityId: string): { accoun
      LEFT JOIN taxonomy_categories tc ON tc.id = ata.category_id
      WHERE ata.activity_id = '${id}'
      ORDER BY ata.taxonomy_id;`,
-    (parts) => (parts.length >= 4 ? { c0: parts[0], c1: parts[1], c2: parts.slice(2, -1).join('|'), c3: parts[parts.length - 1] } : null),
+    storyAssignmentFromCliParts,
+    DRILL_CLI_SEPARATOR,
   );
   return {
     accountType: String(Object.values(account[0] ?? {})[0] ?? ''),
@@ -1870,7 +1889,8 @@ export function getNativeTxPartner(dbPath: string, groupId: string, activityId: 
      FROM activities b LEFT JOIN accounts acc ON acc.id = b.account_id
      WHERE b.source_group_id = '${sqlText(groupId)}' AND b.id <> '${sqlText(activityId)}'
      ORDER BY b.id LIMIT 1;`,
-    (parts) => (parts.length >= 3 ? { c0: parts[0], c1: parts[1], c2: parts.slice(2).join('|') } : null),
+    storyPartnerFromCliParts,
+    DRILL_CLI_SEPARATOR,
   );
   if (rows.length === 0) return null;
   const v = Object.values(rows[0]).map((x) => String(x ?? ''));
@@ -1901,11 +1921,8 @@ export function getNativeTxSearchRows(dbPath: string): NativeTxSearchRow[] {
      FROM activities a LEFT JOIN accounts acc ON acc.id = a.account_id
      WHERE COALESCE(acc.is_archived, 0) = 0
      ORDER BY a.activity_date DESC, a.id;`,
-    // Account name and notes are free text; the name sits before the notes, so
-    // a `|` inside it cannot be told apart — the CLI fallback is a last resort.
-    (parts) => (parts.length >= 7
-      ? { c0: parts[0], c1: parts[1], c2: parseFloat(parts[2]) || 0, c3: parts[3], c4: parts[4], c5: parts[5], c6: parts.slice(6).join('|') }
-      : null),
+    storySearchRowFromCliParts,
+    DRILL_CLI_SEPARATOR,
   );
   return rows.map((r) => {
     const v = Object.values(r);

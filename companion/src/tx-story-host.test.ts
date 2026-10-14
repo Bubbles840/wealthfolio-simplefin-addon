@@ -45,7 +45,7 @@ function readers(over: Partial<StoryReaders> = {}, secrets: Record<string, strin
     changeLog: vi.fn(async () => logOf(imported)),
     secret: vi.fn(async (key: string) => stored[key] ?? null),
     searchRows: vi.fn(() => []),
-    recentRows: vi.fn(async () => []),
+    recentRows: vi.fn(async () => ({ rows: [], truncated: false })),
     ...over,
   };
 }
@@ -119,6 +119,15 @@ describe('companionTxStory', () => {
     expect(out.kind === 'ok' && out.story.notes).toEqual([TX_FACT_NOTES.overrides, TX_FACT_NOTES.skipList]);
   });
 
+  it('a corrupt skip list is reported, never read as "none"; the rest of the answer is unchanged', async () => {
+    const base = await companionTxStory(readers({}, { [SKIPPED_TRANSACTIONS_SECRET_KEY]: null }), 'act-1', NOW);
+    for (const bad of ['{not json', '[{"account":1}]', '{"a":1}']) {
+      const out = await companionTxStory(readers({}, { [SKIPPED_TRANSACTIONS_SECRET_KEY]: bad }), 'act-1', NOW);
+      expect(out.kind === 'ok' && out.story.notes).toEqual([TX_FACT_NOTES.skipList]);
+      expect(out.kind === 'ok' && base.kind === 'ok' && out.story.answer).toEqual(base.story.answer);
+    }
+  });
+
   it('a row on the skip list says so', async () => {
     const out = await companionTxStory(readers({}, {
       [SKIPPED_TRANSACTIONS_SECRET_KEY]: JSON.stringify([{ account: 'ACT-chk', txId: 'TRN-1' }]),
@@ -152,7 +161,7 @@ describe('companionTxSearch', () => {
   it('falls back to the last 12 months over REST when the database cannot be read', async () => {
     const r = readers({
       searchRows: vi.fn(() => { throw new Error('no database'); }),
-      recentRows: vi.fn(async () => [restRow()]),
+      recentRows: vi.fn(async () => ({ rows: [{ ...restRow(), accountType: 'CASH' }], truncated: false })),
     });
     const out = await companionTxSearch(r, parseTxQuery('kroger'), NOW);
     expect(r.recentRows).toHaveBeenCalledWith('2025-10-13');
@@ -160,6 +169,32 @@ describe('companionTxSearch', () => {
       kind: 'ok', recentOnly: true,
       result: { rows: [{ activityId: 'act-1', date: '2026-10-04', description: 'KROGER #415', amountCents: -5420, accountName: 'PNC Checking' }], truncated: false },
     });
+  });
+
+  it('the REST fallback signs by account type, leaves archived accounts out and says when it is cut short', async () => {
+    const searchActivities = vi.fn(async (body: { page: number }) =>
+      Array.from({ length: 500 }, (_, i) => restRow({ id: `p${body.page}-${i}`, accountId: i === 0 ? 'wf-old' : 'wf-card', activityType: 'INTEREST', amount: '10', comment: 'PAYMENT' })));
+    const client = {
+      searchActivities, listCategorizationRules: vi.fn(async () => []),
+      getAccounts: vi.fn(async () => [{ id: 'wf-card', accountType: 'CREDIT_CARD' }, { id: 'wf-old', accountType: 'CASH', isArchived: true }]),
+      getAddonSecret: vi.fn(async () => null), setAddonSecret: vi.fn(async () => {}),
+    };
+    const r = companionStoryReaders(client, '/nope/wealthfolio.db');
+    const recent = await r.recentRows('2025-10-13');
+    expect(recent.truncated).toBe(true);
+    expect(searchActivities).toHaveBeenCalledTimes(20);
+    expect(recent.rows).toHaveLength(20 * 499);
+    expect(recent.rows[0].accountType).toBe('CREDIT_CARD');
+    const out = await companionTxSearch(r, parseTxQuery('payment'), NOW);
+    expect(out.kind === 'ok' && out.recentOnly).toBe(true);
+    expect(out.kind === 'ok' && out.result.truncated).toBe(true);
+    expect(out.kind === 'ok' && out.result.rows[0].amountCents).toBe(-1000);
+  });
+
+  it('a full read of the last year is not marked cut short', async () => {
+    const r = readers({ searchRows: vi.fn(() => { throw new Error('x'); }) });
+    const out = await companionTxSearch(r, parseTxQuery('kroger'), NOW);
+    expect(out.kind === 'ok' && out.result.truncated).toBe(false);
   });
 
   it('is unreachable when neither can be read', async () => {
@@ -179,6 +214,7 @@ describe('companionStoryReaders', () => {
     });
     const client = {
       searchActivities, listCategorizationRules: vi.fn(async () => []),
+      getAccounts: vi.fn(async () => []),
       getAddonSecret: vi.fn(async () => null), setAddonSecret: vi.fn(async () => {}),
     };
     const r = companionStoryReaders(client, '/nope/wealthfolio.db');
@@ -186,7 +222,8 @@ describe('companionStoryReaders', () => {
     expect(searchActivities).toHaveBeenCalledWith({ page: 0, pageSize: 1, activityIdFilter: ['act-1'] });
     expect(await r.row('missing')).toBeNull();
     const recent = await r.recentRows('2025-10-13');
-    expect(recent).toHaveLength(501);
+    expect(recent.rows).toHaveLength(501);
+    expect(recent.truncated).toBe(false);
     expect(searchActivities).toHaveBeenCalledWith({ page: 1, pageSize: 500, dateFrom: '2025-10-13' });
     expect(() => r.searchRows()).toThrow();
   });
