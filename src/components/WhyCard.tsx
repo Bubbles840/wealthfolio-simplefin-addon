@@ -6,7 +6,7 @@
  * (src/components/TxStory.tsx). Matches are newest first, 8 at a time, More
  * for the next 8, at most 40. No emoji in app copy.
  */
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { changeDay, changeMoney } from '../../shared/change-entries';
 import { isEmptyTxQuery, parseTxQuery, TX_SEARCH_PAGE_SIZE, TX_SEARCH_TOO_MANY, type TxQuery } from '../../shared/tx-search';
 import { TX_STORY_UNREACHABLE } from '../../shared/tx-story';
@@ -30,6 +30,8 @@ export function WhyCard({ search, renderStory }: {
   // Only the newest search may land: an older one resolving late must not
   // replace its results.
   const latest = useRef(0);
+  // Unmounting counts as a newer search: a late result must not land.
+  useEffect(() => () => { latest.current += 1; }, []);
 
   const find = async (e: React.FormEvent) => {
     e.preventDefault();

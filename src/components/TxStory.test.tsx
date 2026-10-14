@@ -90,6 +90,28 @@ describe('TxStoryPanel', () => {
     expect(await screen.findByText(TX_STORY_GONE_APP)).toBeInTheDocument();
   });
 
+  it('an unmount while loading, then a late answer, throws nothing', async () => {
+    let resolve!: (o: AppStoryOutcome) => void;
+    const load = vi.fn(() => new Promise<AppStoryOutcome>((r) => { resolve = r; }));
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { unmount } = render(<TxStoryPanel target={{ activityId: 'act-1' }} load={load} actions={actions()} />);
+    unmount();
+    await act(async () => resolve(ok()));
+    expect(errors).not.toHaveBeenCalled();
+    errors.mockRestore();
+  });
+
+  it('a different transaction never shows the old one’s story under its own gone result', async () => {
+    const load = vi.fn()
+      .mockResolvedValueOnce(ok())
+      .mockResolvedValueOnce({ kind: 'gone' });
+    const { rerender } = render(<TxStoryPanel target={{ activityId: 'act-1' }} load={load} actions={actions()} />);
+    expect(await screen.findByText('From your Checking bank feed.')).toBeInTheDocument();
+    rerender(<TxStoryPanel target={{ activityId: 'act-2' }} load={load} actions={actions()} />);
+    expect(await screen.findByText(TX_STORY_GONE_APP)).toBeInTheDocument();
+    expect(screen.queryByText('From your Checking bank feed.')).toBeNull();
+  });
+
   it('reads again after an Undo; a re-read that fails keeps the story and says so', async () => {
     const load = vi.fn()
       .mockResolvedValueOnce(ok())
