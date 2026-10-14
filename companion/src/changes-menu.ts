@@ -30,7 +30,7 @@ import {
   changeRows, changeRowSummary, changeSourceText, changesWithin, isBackground, matchesChangeSearch, type ChangeRow,
 } from '../../shared/change-view.js';
 import { findingHandle } from '../../shared/handle.js';
-import { escapeMarkdown, shortDateTime, type InlineKeyboard } from '../../shared/telegram.js';
+import { escapeMarkdown, shortDateTime, WHY_CALLBACK_PREFIX, type InlineKeyboard } from '../../shared/telegram.js';
 import { undoAvailability, UNDO_TAKES_EFFECT, type UndoOp, type UndoVariant } from '../../shared/change-undo.js';
 import type { UndoOutcome } from '../../shared/change-undo-run.js';
 
@@ -55,7 +55,11 @@ export type ChangesView =
   | { kind: 'run'; run: string; page: number; from: { page: number; background: boolean } }
   | { kind: 'detail'; entry: string; back: Exclude<ChangesView, { kind: 'detail' | 'act' }> }
   /** A button on an entry's screen: `u` undo, `r` redo, `f` undo rule + un-file, `s` sync now. */
-  | { kind: 'act'; action: ChangeAction; entry: string; back: Exclude<ChangesView, { kind: 'detail' | 'act' }> };
+  | { kind: 'act'; action: ChangeAction; entry: string; back: Exclude<ChangesView, { kind: 'detail' | 'act' }> }
+  /** 1.61: an entry opened from a `/why` story. Only ever a `back`: the entry's
+   *  ‹ Back returns to that story, in place (`cz:wy:t<id>:c`, why-menu.ts).
+   *  `cz:cl:d<handle>:w<36-char id>` is 53 bytes. */
+  | { kind: 'why'; activityId: string };
 
 export type ChangeAction = 'u' | 'r' | 'f' | 's';
 
@@ -73,6 +77,7 @@ function encodeView(view: ChangesView): string {
     case 'run': return `r${view.page}:${view.run}:${encodeList(view.from.page, view.from.background)}`;
     case 'detail': return `d${view.entry}:${encodeView(view.back)}`;
     case 'act': return `x${view.action}${view.entry}:${encodeView(view.back)}`;
+    case 'why': return `w${view.activityId}`;
   }
 }
 
@@ -89,6 +94,8 @@ function decodeView(s: string, allowDetail: boolean): ChangesView | null {
   if (m) return { kind: 'search', page: Number(m[1]), query: m[2] };
   m = /^r(\d{1,3}):([0-9a-f]{8}):([lb])(\d{1,3})$/.exec(s);
   if (m) return { kind: 'run', page: Number(m[1]), run: m[2], from: { page: Number(m[4]), background: m[3] === 'b' } };
+  m = /^w([^:\s]{1,64})$/.exec(s);
+  if (m) return allowDetail ? null : { kind: 'why', activityId: m[1] };
   m = /^d([0-9a-f]{8}):(.+)$/s.exec(s);
   if (m && allowDetail) {
     const back = decodeView(m[2], false);
@@ -276,7 +283,10 @@ export function renderChangeDetail(
     ]);
   } else if (extras.op === 'undo') keyboard.push([{ text: '↩ Undo', callback_data: act('u') }]);
   if (r?.ok && r.needsSync) keyboard.push([{ text: '🔄 Sync now', callback_data: act('s') }]);
-  keyboard.push([{ text: '‹ Back', callback_data: changesData(back) }]);
+  keyboard.push([{
+    text: '‹ Back',
+    callback_data: back.kind === 'why' ? `${WHY_CALLBACK_PREFIX}t${back.activityId}:c` : changesData(back),
+  }]);
   return { text: lines.join('\n'), keyboard: { inline_keyboard: keyboard } };
 }
 
@@ -314,7 +324,7 @@ export interface ChangesMenu {
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
 export function createChangesMenu(deps: ChangesMenuDeps): ChangesMenu {
-  const renderView = (read: ChangeLogRead, view: Exclude<ChangesView, { kind: 'detail' | 'run' | 'act' }>, now: Date) =>
+  const renderView = (read: ChangeLogRead, view: Extract<ChangesView, { kind: 'list' | 'search' }>, now: Date) =>
     (view.kind === 'list' ? renderChangesList(read, view.page, view.background, now) : renderChangesSearch(read, view.page, view.query));
 
   /** The entry's screen, with its Undo/Redo buttons when this menu can undo. */

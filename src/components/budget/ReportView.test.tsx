@@ -559,6 +559,36 @@ describe('category drill-down (v1.48)', () => {
     expect(onOpenActivities).toHaveBeenCalled();
   });
 
+  it('a row carrying its activity id opens its story, with its category and who filed it (1.61)', () => {
+    const renderTxStory = vi.fn((t: { activityId: string }) => <div>story of {t.activityId}</div>);
+    const cube: ReportCube = {
+      ...fresh(),
+      drill: { Dining: [
+        { d: '2026-08-20', n: 'CHIPOTLE 1234', c: 1250, a: 'Card', i: 'act-1', f: 'r:CHIPOTLE' },
+        { d: '2026-08-19', n: 'SWEETGREEN', c: 900, a: 'Card', i: 'act-2' },
+      ] },
+    };
+    render(<ReportView id="drill:Dining" customReports={[]} cube={cube} hero renderTxStory={renderTxStory} />);
+    const row = screen.getByRole('button', { name: 'CHIPOTLE 1234' });
+    fireEvent.click(row);
+    expect(row.getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByText('story of act-1')).toBeTruthy();
+    expect(renderTxStory).toHaveBeenCalledWith({ activityId: 'act-1', categoryName: 'Dining', filer: 'r:CHIPOTLE' });
+    fireEvent.click(screen.getByRole('button', { name: 'SWEETGREEN' }));
+    expect(renderTxStory).toHaveBeenLastCalledWith({ activityId: 'act-2', categoryName: 'Dining' });
+    // One story at a time: opening the second closed the first.
+    expect(screen.queryByText('story of act-1')).toBeNull();
+    expect(screen.getByText('story of act-2')).toBeTruthy();
+    expect(row.getAttribute('aria-expanded')).toBe('false');
+    expect(row.getAttribute('aria-controls')).toBe('sfin-why-story-act-1');
+  });
+
+  it('rows from an older companion, with no activity id, are not clickable', () => {
+    render(<ReportView id="drill:Dining" customReports={[]} cube={withDrill()} hero renderTxStory={() => null} />);
+    expect(screen.getByText('CHIPOTLE 1234')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'CHIPOTLE 1234' })).toBeNull();
+  });
+
   it('says so when the companion has not published drill rows yet', () => {
     render(<ReportView id="drill:Dining" customReports={[]} cube={fresh()} hero />);
     expect(screen.getByText(/after the next sync/i)).toBeTruthy();

@@ -1377,15 +1377,18 @@ describe('runSyncCore', () => {
     largeTransactionThreshold: 1000,
   });
 
-  it('reports a large-transaction alert for a newly-created spending row over the threshold', async () => {
-    const { host, store } = createFakeHost(largeSpendSeed());
+  it('reports a large-transaction alert for a newly-created spending row over the threshold, with the row it created', async () => {
+    const { host, store, activities } = createFakeHost(largeSpendSeed());
     const result = await runSyncCore(host, store, {});
+    const created = activities.get('wf-a')!.find((a) => (a.comment ?? '').endsWith('tx-1'))!;
     expect(result.largeTransactionAlerts).toEqual([{
       txId: 'tx-1',
       description: 'AMAZON *MKTPLACE',
       amountCents: 124000,
       currency: 'USD',
       accountName: 'Spend',
+      // 1.61: the alert's 🔎 Why? opens this row's story.
+      activityId: created.id,
     }]);
   });
 

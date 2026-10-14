@@ -15,6 +15,7 @@ import {
 } from './report-data';
 import type { LoadedSubscriptionPrefs, SubscriptionEdit } from '../../../shared/subscription-prefs';
 import { SubscriptionsCard } from './SubscriptionsCard';
+import type { AppStoryTarget } from '../../utils/tx-story';
 
 /**
  * One report, rendered by id — the single dispatch point the hero row, the
@@ -353,9 +354,13 @@ function DataCheck({ cube }: { cube: ReportCube }) {
 
 /** The drill-down: one category's newest-month transactions, published by
  *  the companion (the host API cannot filter by category). */
-function DrillView({ cube, category, onOpenActivities }: {
+function DrillView({ cube, category, onOpenActivities, renderTxStory }: {
   cube: ReportCube; category: string; onOpenActivities?: () => void;
+  /** 1.61: a row's story. Only rows carrying an activity id (`i`) open one —
+   *  an older companion's cube has none, and its rows stay plain. */
+  renderTxStory?: (target: AppStoryTarget) => React.ReactNode;
 }) {
+  const [openKey, setOpenKey] = React.useState<string | null>(null);
   const rows = cube.drill?.[category];
   if (!rows) {
     return (
@@ -379,14 +384,41 @@ function DrillView({ cube, category, onOpenActivities }: {
       <table className="sfin-merchant-table">
         <thead><tr><th>Date</th><th>Description</th><th>Account</th><th>Amount</th></tr></thead>
         <tbody>
-          {rows.map((r, i) => (
-            <tr key={`${r.d}-${i}`}>
-              <td className="sfin-drill-date">{r.d.slice(5)}</td>
-              <td>{r.n}</td>
-              <td className="sfin-subtle">{r.a}</td>
-              <td className={r.c < 0 ? 'sfin-refund' : undefined}>{fmt2(r.c / 100)}</td>
-            </tr>
-          ))}
+          {rows.map((r, i) => {
+            const key = r.i ?? `${r.d}-${i}`;
+            const opens = !!(renderTxStory && r.i);
+            return (
+              <React.Fragment key={key}>
+                <tr>
+                  <td className="sfin-drill-date">{r.d.slice(5)}</td>
+                  <td>
+                    {opens ? (
+                      <button
+                        type="button"
+                        className="sfin-why-row-btn"
+                        aria-expanded={openKey === key}
+                        aria-controls={`sfin-why-story-${key}`}
+                        onClick={() => setOpenKey((k) => (k === key ? null : key))}
+                      >
+                        {r.n}
+                      </button>
+                    ) : r.n}
+                  </td>
+                  <td className="sfin-subtle">{r.a}</td>
+                  <td className={r.c < 0 ? 'sfin-refund' : undefined}>{fmt2(r.c / 100)}</td>
+                </tr>
+                {opens && openKey === key && (
+                  <tr>
+                    <td colSpan={4}>
+                      <div className="sfin-why-inline" id={`sfin-why-story-${key}`}>
+                        {renderTxStory!({ activityId: r.i!, categoryName: category, ...(r.f ? { filer: r.f } : {}) })}
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </React.Fragment>
+            );
+          })}
         </tbody>
       </table>
       {onOpenActivities && (
@@ -711,6 +743,7 @@ export function ReportView({
   id, cube, customReports, hero = false, categories, density = 2,
   headlinePicks, onHeadlinePicksChange,
   onDrill, onOpenActivities, subscriptionPrefs, onSubscriptionEdit, subscriptionsCube, companionStale, onSetUpCompanion,
+  renderTxStory,
 }: {
   id: string;
   cube: ReportCube;
@@ -728,6 +761,8 @@ export function ReportView({
   onDrill?: (category: string) => void;
   /** The escape hatch out of a drill view into Wealthfolio's activities. */
   onOpenActivities?: () => void;
+  /** 1.61: a drill row's story, opened in place. */
+  renderTxStory?: (target: AppStoryTarget) => React.ReactNode;
   /** The subscription document and its one edit path; the card is read-only without the edit. */
   subscriptionPrefs?: LoadedSubscriptionPrefs | null;
   onSubscriptionEdit?: (edit: SubscriptionEdit) => void;
@@ -740,7 +775,7 @@ export function ReportView({
 }) {
   let body: React.ReactNode;
   if (id.startsWith('drill:')) {
-    body = <DrillView cube={cube} category={id.slice('drill:'.length)} onOpenActivities={onOpenActivities} />;
+    body = <DrillView cube={cube} category={id.slice('drill:'.length)} onOpenActivities={onOpenActivities} renderTxStory={renderTxStory} />;
   } else if (id.startsWith('custom:')) {
     const def = customReports.find((r) => `custom:${r.id}` === id);
     body = def ? <CustomView cube={cube} def={def} /> : <div className="sfin-subtle">This report was deleted.</div>;

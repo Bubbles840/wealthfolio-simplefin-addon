@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **"Why is this here?" — one transaction's story.** In Telegram,
+  `/why kroger 54.20` finds any transaction — words, an amount, or both (a
+  number written with `$`, or else one with cents, is the amount; otherwise
+  the last number is); bare `/why` asks — and a tap tells its story: the bank feed it came from (or that
+  it was added by hand), what it is (spending, money in, half of a transfer
+  and with which account, a transfer the sync is holding, a starting balance
+  or a correction), its category and who filed it (the rule that matches it,
+  you in Telegram, an Amazon email, or by hand), anything you
+  told the sync about it, and **What happened**: every change-log entry about
+  it, oldest first, each opening its `/changes` entry, where Undo lives. A
+  🔎 Why? button on the `/categorize` screen, on large-transaction alerts and
+  on import notices (which list that sync's imports) sends the story as a new
+  message. In the app, **Home** starts with a "Why is this here?" search, and
+  needs-a-category rows and budget drill-down rows open their story in
+  place, with the change log's Undo on each history line. Read-only: the
+  story explains; changes still go through Undo or `/categorize`.
+- Budget drill-down rows carry their transaction and who filed it, so they
+  open a story once the companion is updated; rows from an older companion
+  stay as they were.
+
 ## [1.60.0] - 2026-10-13
 
 ### Added

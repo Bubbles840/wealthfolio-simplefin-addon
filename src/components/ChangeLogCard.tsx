@@ -61,8 +61,14 @@ export interface ChangeLogCardProps {
   removeOverride?: (row: OverrideRow) => Promise<void>;
 }
 
-/** What the card can do with a row, from the card's props. */
-interface RowActions {
+/** What Sync now says once the run is over — here and in a transaction's story. */
+export function syncNowSentence(r: { imported: number; errors: string[] }): string {
+  return r.errors.length ? `Synced, with a problem: ${r.errors[0]}` : `Synced — ${r.imported} imported.`;
+}
+
+/** What the card can do with a row, from the card's props. Exported for a
+ *  transaction's story (TxStory.tsx), whose history lines open `EntryDetail`. */
+export interface RowActions {
   undo?: ChangeLogCardProps['undo'];
   companionVersion: string | null;
   entries: ChangeLogItem[];
@@ -154,7 +160,7 @@ function UndoControls({ entry, actions }: { entry: ChangeLogItem; actions: RowAc
   );
 }
 
-function EntryDetail({ entry, actions }: { entry: ChangeLogItem; actions: RowActions }) {
+export function EntryDetail({ entry, actions }: { entry: ChangeLogItem; actions: RowActions }) {
   const beforeAfter = changeBeforeAfter(entry);
   return (
     <div className="sfin-log-detail">

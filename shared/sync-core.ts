@@ -86,6 +86,10 @@ export const DUPLICATE_REFUSAL_LOG_TAG = 'duplicate-refused';
  */
 export const STARTING_BALANCE_COMMENT_PREFIX = 'Starting balance · ';
 export const BALANCE_ADJUSTMENT_COMMENT_PREFIX = 'Balance adjustment · ';
+/** The spending category the companion files a card's opening debt under
+ *  (companion/src/opening-balance-category.ts), which Wealthfolio is told to
+ *  leave out of spending. Here so the story can recognise that filing. */
+export const OPENING_BALANCES_CATEGORY = 'Opening balances';
 
 /** True for an activity note this module wrote as bookkeeping — never a bank
  *  transaction, and never a candidate for the duplicate sweep. */
@@ -452,6 +456,9 @@ export interface SyncResult {
     /** The Wealthfolio account the row landed in, by name (falling back to the
      *  SimpleFin account name on a host that reports no name). */
     accountName: string;
+    /** 1.61: the row this run created — the alert's 🔎 Why? opens its story.
+     *  Absent on an alert an older build queued in the outbox. */
+    activityId?: string;
   }>;
   /** Accounts that opened a new drift episode this run — a TRUSTWORTHY drift
    *  measurement past the alert threshold that the user has not been told about
@@ -3237,6 +3244,7 @@ async function runSyncPass(
               amountCents: t.absCents,
               currency: sfAccount.currency,
               accountName: wfNames.get(t.wfAccountId) || sfAccount.name,
+              activityId: a.id,
             });
           }
         }

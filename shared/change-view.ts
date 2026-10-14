@@ -152,6 +152,136 @@ export function matchesChangeSearch(e: ChangeEntry, query: string): boolean {
   return words.every((w) => hay.includes(w));
 }
 
+const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x !== '') : []);
+
+/** The identity one entry carries for its subject(s), aligned by position:
+ *  a transfer link lists both legs, out first, in `subject.txKeys`,
+ *  `subject.activityIds` and `before.activityIds` alike. */
+function entryIdentity(e: ChangeEntry) {
+  const before = isRecord(e.before) ? e.before : {};
+  const after = isRecord(e.after) ? e.after : {};
+  return {
+    keys: strings(e.subject.txKeys),
+    ids: strings(e.subject.activityIds),
+    beforeIds: strings(before.activityIds),
+    afterIds: strings(after.activityIds),
+    oldKey: e.kind === 'bank-update' ? str(before.txKey) : null,
+    leftBehind: str(after.activityId),
+  };
+}
+
+function entryMatches(e: ChangeEntry, keys: Set<string>, ids: Set<string>): boolean {
+  const x = entryIdentity(e);
+  return x.keys.some((k) => keys.has(k))
+    || (x.oldKey !== null && keys.has(x.oldKey))
+    || x.ids.some((id) => ids.has(id))
+    || x.beforeIds.some((id) => ids.has(id));
+}
+
+/** What a matched entry teaches about the same transaction: a bank update's
+ *  old key, the row a reversal left behind, and — for a link — THIS leg's old
+ *  and new ids and key, found by its position. Bookkeeping lists rows that do
+ *  not line up by position, so it teaches nothing. */
+function learnIdentity(e: ChangeEntry, keys: Set<string>, ids: Set<string>): void {
+  if (e.kind === 'bookkeeping') return;
+  const x = entryIdentity(e);
+  if (x.oldKey) keys.add(x.oldKey);
+  if (x.keys.length <= 1 && x.ids.length <= 1) {
+    for (const k of x.keys) keys.add(k);
+    for (const id of [...x.ids, ...x.beforeIds, ...(x.leftBehind ? [x.leftBehind] : [])]) ids.add(id);
+    return;
+  }
+  const legs = Math.max(x.keys.length, x.ids.length, x.beforeIds.length);
+  for (let i = 0; i < legs; i++) {
+    const mine = (x.keys[i] !== undefined && keys.has(x.keys[i]))
+      || (x.ids[i] !== undefined && ids.has(x.ids[i]))
+      || (x.beforeIds[i] !== undefined && ids.has(x.beforeIds[i]));
+    if (!mine) continue;
+    if (x.keys[i]) keys.add(x.keys[i]);
+    for (const id of [x.ids[i], x.beforeIds[i], x.afterIds[i]]) if (id) ids.add(id);
+  }
+}
+
+/**
+ * Every entry about ONE transaction, oldest first — the story's "What
+ * happened". It matches, in this order: the transaction's account-scoped tx
+ * keys; the OLD key a bank update records when a pending row posted under a
+ * new transaction id (so the posted row keeps its pending history); its
+ * activity ids, current and the ones a transfer link replaced
+ * (`subject.activityIds`, `before.activityIds`). Every match can teach more of
+ * the same transaction's identity, so the walk repeats until nothing new is
+ * learned. Background bookkeeping about the transaction is included.
+ */
+export function changesForTransaction<T extends ChangeEntry>(
+  entries: readonly T[],
+  id: { txKeys?: readonly string[]; activityIds?: readonly string[] },
+): T[] {
+  const keys = new Set((id.txKeys ?? []).filter(Boolean));
+  const ids = new Set((id.activityIds ?? []).filter(Boolean));
+  for (let pass = 0; pass < 8; pass++) {
+    const known = keys.size + ids.size;
+    for (const e of entries) if (entryMatches(e, keys, ids)) learnIdentity(e, keys, ids);
+    if (keys.size + ids.size === known) break;
+  }
+  return entries
+    .filter((e) => entryMatches(e, keys, ids))
+    .sort((a, b) => (a.at === b.at ? (a.id < b.id ? -1 : a.id > b.id ? 1 : 0) : a.at < b.at ? -1 : 1));
+}
+
+/** Hops `currentActivityId` follows at most: a link, a later link of the
+ *  same leg, a re-created row — and never round a loop. */
+const FORWARD_MAX_HOPS = 8;
+
+const newestFirst = <T extends Pick<ChangeEntry, 'at'>>(entries: readonly T[]) =>
+  [...entries].sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
+
+/**
+ * Where a row went: the activity id that stands for `activityId` now — the
+ * forward half of `changesForTransaction`'s walk, for a button or a list that
+ * carries an id the log has since replaced. Two things re-create a row:
+ *  - a transfer link deletes both legs and writes them again, so each leg's
+ *    old id `before.activityIds[i]` becomes `after.activityIds[i]`, by
+ *    position. A link that was undone is not followed (its Undo re-imports the
+ *    legs on the next sync, under ids no entry ties back), and neither is an
+ *    Undo or Redo entry, whose before and after are the other way round;
+ *  - an Undo or Redo that put a row back records it as `after.activityId`. The
+ *    NEWEST reversal of an entry decides, from its row or any row an earlier
+ *    reversal of it left behind; one that removed the row leads nowhere.
+ * Repeats until nothing moves, at most FORWARD_MAX_HOPS times. The id itself
+ * when nothing moved it.
+ */
+export function currentActivityId(entries: readonly ChangeLogItem[], activityId: string): string {
+  const ordered = newestFirst(entries);
+  const links = ordered.filter((e) => e.kind === 'transfer-link' && !e.reverses && !e.undone).map(entryIdentity);
+  // Each reversed entry's reversals, newest first.
+  const reversals = new Map<string, ChangeLogItem[]>();
+  for (const e of ordered) if (e.reverses) reversals.set(e.reverses.id, [...(reversals.get(e.reverses.id) ?? []), e]);
+
+  const next = (id: string): string | null => {
+    for (const x of links) {
+      const i = x.beforeIds.indexOf(id);
+      if (i !== -1 && x.afterIds[i]) return x.afterIds[i];
+    }
+    for (const group of reversals.values()) {
+      // The newest reversal kept the same row, or removed it: nothing moved.
+      const to = entryIdentity(group[0]).leftBehind;
+      if (!to || to === id) continue;
+      if (group.some((r) => strings(r.subject.activityIds).includes(id) || entryIdentity(r).leftBehind === id)) return to;
+    }
+    return null;
+  };
+
+  let id = activityId;
+  const seen = new Set([id]);
+  for (let hop = 0; hop < FORWARD_MAX_HOPS; hop++) {
+    const moved = next(id);
+    if (!moved || seen.has(moved)) break;
+    seen.add(moved);
+    id = moved;
+  }
+  return id;
+}
+
 /** Entries from the last `days` days (by the moment they were written). */
 export function changesWithin<T extends Pick<ChangeEntry, 'at'>>(entries: readonly T[], now: Date, days: number): T[] {
   const cutoff = now.getTime() - days * 86_400_000;
@@ -213,6 +343,13 @@ const monthName = (month: string) => {
   return `${MONTH_NAMES[(m || 1) - 1]} ${y}`;
 };
 const writerLabel = (w: string) => (w === 'addon' ? "app's" : "companion's");
+
+/** Part of the window is missing: a bucket can't be read, or a gap says
+ *  changes were not saved (`readChangeLog` keeps only gaps inside the 90
+ *  days). An absence in such a log proves nothing. */
+export function isChangeLogPartial(read: Pick<ChangeLogRead, 'gaps' | 'unreadable'>): boolean {
+  return read.unreadable.length > 0 || read.gaps.length > 0;
+}
 
 /** One sentence per gap, trim and unreadable bucket, for the top of the feed. */
 export function changeLogNotes(read: Pick<ChangeLogRead, 'gaps' | 'trimmed' | 'unreadable'>): string[] {

@@ -47,7 +47,47 @@ function queryNativeDb<Row>(
   label: string,
   query: string,
   fromCliParts: (parts: string[]) => Row | null,
+  /** The sqlite3 CLI's column separator for this query's fallback. Default
+   *  `|`; a query whose free text can contain one passes an unambiguous one. */
+  separator = '|',
 ): Row[] {
+  return tryQueryNativeDb(dbPath, label, query, fromCliParts, separator) ?? [];
+}
+
+/** Thrown by the story readers (1.61) when the database cannot be read: they
+ *  must tell "could not look" from "nothing there", which `[]` cannot. */
+export class NativeDbUnreadableError extends Error {
+  constructor(what: string) {
+    super(`Could not read the Wealthfolio database (${what})`);
+    this.name = 'NativeDbUnreadableError';
+  }
+}
+
+/** `queryNativeDb`, except a database that is not there or that every path
+ *  failed to read throws `NativeDbUnreadableError`. */
+function queryNativeDbStrict<Row>(
+  dbPath: string,
+  label: string,
+  query: string,
+  fromCliParts: (parts: string[]) => Row | null,
+  separator = '|',
+): Row[] {
+  if (!dbPath || !existsSync(dbPath)) throw new NativeDbUnreadableError(`${label}: no database at ${dbPath || '(unset)'}`);
+  const rows = tryQueryNativeDb(dbPath, label, query, fromCliParts, separator);
+  if (rows === null) throw new NativeDbUnreadableError(label);
+  return rows;
+}
+
+/** The two-path read behind both: null — not [] — when every path failed. */
+function tryQueryNativeDb<Row>(
+  dbPath: string,
+  label: string,
+  query: string,
+  fromCliParts: (parts: string[]) => Row | null,
+  /** The sqlite3 CLI's column separator for this query's fallback. Default
+   *  `|`; a query whose free text can contain one passes an unambiguous one. */
+  separator = '|',
+): Row[] | null {
   // LIVE read first, snapshot only as a fallback. `immutable=1` reads the main
   // DB file alone and ignores the write-ahead log — and Wealthfolio checkpoints
   // rarely (a live instance was observed 2 DAYS behind, 2.4 MB of WAL), so an
@@ -81,18 +121,21 @@ function queryNativeDb<Row>(
   try {
     // No shell: the query can carry typed chat text (rule patterns), so it must
     // reach sqlite3 as a single argv element.
-    const output = execFileSync('sqlite3', [dbPath, query.replace(/\n/g, ' ')], { encoding: 'utf8' });
+    const args = separator === '|' ? [dbPath, query.replace(/\n/g, ' ')] : ['-separator', separator, dbPath, query.replace(/\n/g, ' ')];
+    // stderr piped, not inherited: the caught error carries it, and the
+    // console line below reports it once.
+    const output = execFileSync('sqlite3', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
     const rows: Row[] = [];
     for (const line of output.split('\n')) {
       const trimmed = line.trim();
       if (!trimmed) continue;
-      const row = fromCliParts(trimmed.split('|'));
+      const row = fromCliParts(trimmed.split(separator));
       if (row) rows.push(row);
     }
     return rows;
   } catch (err) {
     console.error(`[simplefin-sync] Failed to read native sqlite ${label}:`, err);
-    return [];
+    return null;
   }
 }
 
@@ -1452,6 +1495,42 @@ export function getNativeMerchantRows(
   }).filter((r) => r.month !== '');
 }
 
+/** One drill-down row. Since 1.61 it carries what the cube needs to open the
+ *  row's story and say who filed it: the activity and account ids, the LEAF
+ *  category id (a rule files into it, not into the rolled-up parent), the
+ *  assignment's source ('' when unrecorded) and the activity type. */
+export interface NativeDrillRow {
+  category: string;
+  date: string;
+  notes: string;
+  amount: number;
+  account: string;
+  activityId: string;
+  accountId: string;
+  categoryId: string;
+  source: string;
+  activityType: string;
+}
+
+/** The sqlite3 CLI separator for the drill query: ASCII unit separator. */
+export const DRILL_CLI_SEPARATOR = '\x1f';
+
+/** Rebuild a drill row from one split CLI line (ten columns, notes last), or
+ *  null for a malformed or shifted line. */
+export function drillRowFromCliParts(parts: string[]): Record<string, unknown> | null {
+  if (parts.length < 10 || !Number.isFinite(parseFloat(parts[3]))) return null;
+  return {
+    c0: parts[0], c1: parts[1], c2: parts[2], c3: parseFloat(parts[3]) || 0, c4: parts[4], c5: parts[5],
+    c6: parts[6], c7: parts[7], c8: parts[8], c9: parts.slice(9).join(DRILL_CLI_SEPARATOR),
+  };
+}
+
+/** One line of the CLI fallback's output, as `queryNativeDb` reads it. */
+export function parseDrillCliLine(line: string): Record<string, unknown> | null {
+  const trimmed = line.trim();
+  return trimmed ? drillRowFromCliParts(trimmed.split(DRILL_CLI_SEPARATOR)) : null;
+}
+
 /**
  * Drill-down rows: every categorized spending transaction in the window under
  * its ROLLED-UP category — the same SPENDING_FROM / SPENDING_CATEGORY / sign
@@ -1462,14 +1541,22 @@ export function getNativeDrillRows(
   dbPath: string,
   startInclusive: string,
   endExclusive: string,
-): Array<{ category: string; date: string; notes: string; amount: number; account: string }> {
+): NativeDrillRow[] {
   if (!dbPath || !existsSync(dbPath)) return [];
   if (!validDateBounds(startInclusive, endExclusive)) return [];
+  // Names come back unchanged on the node:sqlite path (they must match the
+  // cube's other matrices). The CLI fallback uses the unit separator, so a `|`
+  // in any column cannot shift the others; notes stay last anyway.
   const query = `
     SELECT ${SPENDING_CATEGORY} as category,
            date(a.activity_date) as date,
            COALESCE(acc.name, '') as account,
            ROUND(${SPENDING_SIGNED_AMOUNT}, 2) as amount,
+           a.id as activity_id,
+           COALESCE(a.account_id, '') as account_id,
+           COALESCE(ata.category_id, '') as category_id,
+           COALESCE(ata.source, '') as source,
+           UPPER(COALESCE(a.activity_type, '')) as activity_type,
            COALESCE(a.notes, '') as notes
     ${SPENDING_FROM}
     ${spendingWhere(startInclusive, endExclusive)}
@@ -1479,18 +1566,22 @@ export function getNativeDrillRows(
     dbPath,
     'drill rows',
     query,
-    (parts) => (parts.length === 5
-      ? { c0: parts[0], c1: parts[1], c2: parts[2], c3: parseFloat(parts[3]) || 0, c4: parts[4] }
-      : null),
+    drillRowFromCliParts,
+    DRILL_CLI_SEPARATOR,
   );
   return rows.map((r) => {
-    const v = Object.values(r) as [string, string, string, number | string, string];
+    const v = Object.values(r) as Array<string | number>;
     return {
       category: String(v[0]),
       date: String(v[1]),
       account: String(v[2]),
       amount: typeof v[3] === 'number' ? v[3] : parseFloat(String(v[3])) || 0,
-      notes: String(v[4]),
+      activityId: String(v[4] ?? ''),
+      accountId: String(v[5] ?? ''),
+      categoryId: String(v[6] ?? ''),
+      source: String(v[7] ?? ''),
+      activityType: String(v[8] ?? ''),
+      notes: String(v[9] ?? ''),
     };
   }).filter((r) => r.category !== '');
 }
@@ -1725,4 +1816,126 @@ export function getNativeRuleFiledActivityIds(dbPath: string, categoryId: string
     (parts) => (parts.length >= 1 && parts[0] ? { activity_id: parts[0] } : null),
   );
   return rows.map((r) => String(r.activity_id));
+}
+
+// ── "Why is this here?" (1.61) ───────────────────────────────────────────
+// Strict readers: each throws NativeDbUnreadableError rather than answering
+// [] for a database it could not read, because the story must say "couldn't
+// read" there, never "none". Ids are interpolated like every bound in this
+// file (the CLI fallback cannot bind): quotes doubled.
+
+const sqlText = (s: string) => s.replace(/'/g, "''");
+
+// CLI-fallback row parsers (split on the unit separator, so a `|` in an
+// account name, a category name or a note cannot shift columns).
+export function storyPartnerFromCliParts(parts: string[]): Record<string, unknown> | null {
+  return parts.length >= 3 ? { c0: parts[0], c1: parts[1], c2: parts.slice(2).join(DRILL_CLI_SEPARATOR) } : null;
+}
+export function storyAssignmentFromCliParts(parts: string[]): Record<string, unknown> | null {
+  return parts.length >= 4
+    ? { c0: parts[0], c1: parts[1], c2: parts.slice(2, -1).join(DRILL_CLI_SEPARATOR), c3: parts[parts.length - 1] }
+    : null;
+}
+export function storySearchRowFromCliParts(parts: string[]): Record<string, unknown> | null {
+  return parts.length >= 7
+    ? { c0: parts[0], c1: parts[1], c2: parseFloat(parts[2]) || 0, c3: parts[3], c4: parts[4], c5: parts[5], c6: parts.slice(6).join(DRILL_CLI_SEPARATOR) }
+    : null;
+}
+
+/** One taxonomy's assignment on an activity, with what the story says of it. */
+export interface NativeTxAssignment {
+  taxonomyId: string;
+  categoryId: string;
+  categoryName: string;
+  /** 'rule', 'manual', … ('' when unrecorded). */
+  source: string;
+}
+
+/** An activity's account type and every assignment it holds, spending or not. */
+export function getNativeTxDetails(dbPath: string, activityId: string): { accountType: string; assignments: NativeTxAssignment[] } {
+  const id = sqlText(activityId);
+  const account = queryNativeDbStrict<Record<string, unknown>>(
+    dbPath,
+    'story account',
+    `SELECT COALESCE(acc.account_type, '') AS account_type FROM activities a LEFT JOIN accounts acc ON acc.id = a.account_id WHERE a.id = '${id}';`,
+    (parts) => ({ account_type: parts[0] ?? '' }),
+    DRILL_CLI_SEPARATOR,
+  );
+  const rows = queryNativeDbStrict<Record<string, unknown>>(
+    dbPath,
+    'story assignments',
+    `SELECT ata.taxonomy_id AS taxonomy_id, ata.category_id AS category_id, COALESCE(tc.name, '') AS category_name,
+            COALESCE(ata.source, '') AS source
+     FROM activity_taxonomy_assignments ata
+     LEFT JOIN taxonomy_categories tc ON tc.id = ata.category_id
+     WHERE ata.activity_id = '${id}'
+     ORDER BY ata.taxonomy_id;`,
+    storyAssignmentFromCliParts,
+    DRILL_CLI_SEPARATOR,
+  );
+  return {
+    accountType: String(Object.values(account[0] ?? {})[0] ?? ''),
+    assignments: rows.map((r) => {
+      const v = Object.values(r).map((x) => String(x ?? ''));
+      return { taxonomyId: v[0], categoryId: v[1], categoryName: v[2], source: v[3] };
+    }),
+  };
+}
+
+/** The other activity in a transfer's group: its account and day. */
+export function getNativeTxPartner(dbPath: string, groupId: string, activityId: string): { activityId: string; accountName: string; date: string } | null {
+  const rows = queryNativeDbStrict<Record<string, unknown>>(
+    dbPath,
+    'story partner',
+    `SELECT b.id AS activity_id, substr(b.activity_date, 1, 10) AS activity_date, COALESCE(acc.name, '') AS account_name
+     FROM activities b LEFT JOIN accounts acc ON acc.id = b.account_id
+     WHERE b.source_group_id = '${sqlText(groupId)}' AND b.id <> '${sqlText(activityId)}'
+     ORDER BY b.id LIMIT 1;`,
+    storyPartnerFromCliParts,
+    DRILL_CLI_SEPARATOR,
+  );
+  if (rows.length === 0) return null;
+  const v = Object.values(rows[0]).map((x) => String(x ?? ''));
+  return { activityId: v[0], date: v[1], accountName: v[2] };
+}
+
+/** One activity as `/why` searches it. */
+export interface NativeTxSearchRow {
+  activityId: string;
+  date: string;
+  absCents: number;
+  activityType: string;
+  accountName: string;
+  accountType: string;
+  /** The stored note, raw. */
+  notes: string;
+}
+
+/** Every activity in every account Wealthfolio has not archived — all of
+ *  history, newest first. `/why` filters it in memory. */
+export function getNativeTxSearchRows(dbPath: string): NativeTxSearchRow[] {
+  const rows = queryNativeDbStrict<Record<string, unknown>>(
+    dbPath,
+    'story search',
+    `SELECT a.id AS activity_id, substr(a.activity_date, 1, 10) AS activity_date,
+            ROUND(ABS(CAST(a.amount AS REAL)) * 100) AS abs_cents, UPPER(COALESCE(a.activity_type, '')) AS activity_type,
+            COALESCE(acc.account_type, '') AS account_type, COALESCE(acc.name, '') AS account_name, COALESCE(a.notes, '') AS notes
+     FROM activities a LEFT JOIN accounts acc ON acc.id = a.account_id
+     WHERE COALESCE(acc.is_archived, 0) = 0
+     ORDER BY a.activity_date DESC, a.id;`,
+    storySearchRowFromCliParts,
+    DRILL_CLI_SEPARATOR,
+  );
+  return rows.map((r) => {
+    const v = Object.values(r);
+    return {
+      activityId: String(v[0]),
+      date: String(v[1]),
+      absCents: Math.round(Number(v[2]) || 0),
+      activityType: String(v[3]),
+      accountType: String(v[4] ?? ''),
+      accountName: String(v[5] ?? ''),
+      notes: String(v[6] ?? ''),
+    };
+  });
 }

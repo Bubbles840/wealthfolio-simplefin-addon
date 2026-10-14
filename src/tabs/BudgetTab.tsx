@@ -11,6 +11,7 @@ import { moveTo as engineMoveTo } from '../../shared/grid-engine';
 import { newCustomReportId, type CustomReport } from '../../shared/report-eval';
 import { ReportBuilder } from '../components/budget/ReportBuilder';
 import type { SecretsStore } from '../utils/secrets';
+import type { AppStoryTarget } from '../utils/tx-story';
 import { PALETTES, paletteVars } from '../components/budget/palettes';
 import type { LoadedSubscriptionPrefs, SubscriptionEdit } from '../../shared/subscription-prefs';
 
@@ -53,6 +54,8 @@ export interface BudgetTabProps {
   onOpenActivities?: () => void;
   /** Opens Settings on the background-sync card — the empty state's way out. */
   onSetUpCompanion?: () => void;
+  /** 1.61: a drill-down row's story, opened in place. */
+  renderTxStory?: (target: AppStoryTarget) => React.ReactNode;
 }
 
 /** Two days: one missed nightly publish is routine, two is worth a strip. */
@@ -80,7 +83,7 @@ const MAX_R = 16;
 export function BudgetTab({
   cube, customReports, layout, onLayoutChange, onLayoutReset, onCustomReportsChange, store,
   subscriptionPrefs = null, onSubscriptionEdit, onOpenActivities, openRequest,
-  onSetUpCompanion,
+  onSetUpCompanion, renderTxStory,
 }: BudgetTabProps) {
   const [fullId, setFullId] = useState<string | null>(null);
   // Acted on ONCE per request. Initialised to whatever request already exists
@@ -208,6 +211,7 @@ export function BudgetTab({
     onHeadlinePicksChange: (ids: string[]) => onLayoutChange({ ...storedLayout, headline: ids }),
     onDrill: (category: string) => setFullId(`drill:${category}`),
     onOpenActivities,
+    renderTxStory,
   };
 
   if (builder) {
