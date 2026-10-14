@@ -25,7 +25,7 @@ import {
   transferTypeChange, venmoNoteChange,
   type BaselineState, type ChangeAccount, type ChangeDraft, type ChangeEntry, type ChangeLogSink, type LinkLegFacts,
 } from './change-entries.js';
-import { emptySyncOverrides, hasAccountOverride, hasTxOverride } from './sync-overrides.js';
+import { emptySyncOverrides, hasAccountOverride, hasTxOverride, syncOverridesIgnoredLog } from './sync-overrides.js';
 
 /**
  * A datable timestamp for a SimpleFin transaction: `posted` when present, else
@@ -2053,17 +2053,26 @@ async function runSyncPass(
   );
   /** What Undo told the sync not to do again (shared/sync-overrides.ts). A
    *  failed or corrupt read is empty: the sync then behaves as it always did. */
-  const overrides = (await store.getSyncOverrides?.().catch(() => null)) ?? emptySyncOverrides();
+  // Read ONCE: two reads can disagree (the first failing, the second working),
+  // which would leave `overrides` empty while `overridesUnread` is false.
+  const loadedOverrides = store.readSyncOverrides ? await store.readSyncOverrides().catch(() => null) : undefined;
+  const overrides = loadedOverrides === undefined
+    ? (await store.getSyncOverrides?.().catch(() => null)) ?? emptySyncOverrides()
+    : loadedOverrides?.overrides ?? emptySyncOverrides();
   /** The document could not be read (a failed read or a corrupt one): `overrides`
    *  above is then empty, which must not revert a payback — see below. A host
    *  without `readSyncOverrides` cannot say, and keeps today's behaviour. */
-  const overridesUnread = store.readSyncOverrides
-    ? await store.readSyncOverrides().then((l) => !l || l.unreadable, () => true)
-    : false;
+  const overridesUnread = loadedOverrides !== undefined && (!loadedOverrides || loadedOverrides.unreadable);
+  if (overridesUnread) console.warn(syncOverridesIgnoredLog(loadedOverrides ? 'corrupt' : 'unreadable'));
   /** Flagged `asReimbursement` keys whose override yielded this sync (money
    *  out, or a known non-cash account) — logged where a stored payback is seen. */
   const yieldedPaybackKeys = new Set<string>();
   let paybackNoteGiven = false;
+  /** A stored, settled CREDIT marked REIMBURSEMENT: what an unread overrides
+   *  document leaves exactly as stored. (A pending row is not kept: it posts
+   *  under a new id and must be replaced like any other.) */
+  const isKeptPayback = (r: ExistingRow) => r.type === 'CREDIT' && !r.pending
+    && (r.subtype ?? '').toUpperCase() === REIMBURSEMENT_SUBTYPE;
 
   // Keep pending rows now (they import and reconcile), dropping only rows we
   // can't date at all — no `posted` and no `transacted_at` — since those
@@ -2239,7 +2248,27 @@ async function runSyncPass(
     preparedByAccount.set(sfAccount.id, prepared);
   }
 
-  const detection = detectTransferPairs(candidates);
+  // A failed overrides read keeps every stored payback as stored (below), so it
+  // must not be paired either: a same-amount placeholder in another account
+  // would be rewritten to meet it. Read the stored rows first; an account that
+  // cannot be read contributes no keys.
+  const unreadPaybackKeys = new Set<string>();
+  if (overridesUnread) {
+    for (const acc of accountSet.accounts) {
+      const wf = mapping[acc.id];
+      if (!wf || (wfTypes.get(wf) && wfTypes.get(wf) !== 'CASH')) continue;
+      try {
+        for (const row of await fetchExistingRows(host, wf)) {
+          if (isKeptPayback(row)) unreadPaybackKeys.add(accountTxKey(acc.id, row.txId));
+        }
+      } catch {
+        // skipped
+      }
+    }
+  }
+  const detection = detectTransferPairs(unreadPaybackKeys.size === 0
+    ? candidates
+    : candidates.filter((c) => !unreadPaybackKeys.has(accountTxKey(c.accountId, c.txId))));
   for (const prepared of preparedByAccount.values()) {
     for (const p of prepared) {
       const override = detection.typeByAccountTx.get(accountTxKey(p.sfAccountId, p.tx.id));
@@ -2517,6 +2546,32 @@ async function runSyncPass(
       (x) => descByKey.get(x.key) || descriptionFromComment(x.row.comment) || x.row.txId,
       readsGroups ? [] : Object.entries(ledger).filter(([k]) => notTransferKey(k)).map(([, g]) => g),
     );
+  }
+  /** Keys of transfer rows in OTHER accounts sharing a tx id with a "foreign
+   *  payback" (below): left alone with it. Only a host that cannot read groups. */
+  const paybackPartnerKeys = new Set<string>();
+  if (!readsGroups && Object.values(overrides.tx).some((o) => o.asReimbursement)) {
+    const seen: Array<{ sf: string; row: StoredRow }> = [];
+    for (const acc of accountSet.accounts) {
+      const wf = mapping[acc.id];
+      if (!wf) continue;
+      try {
+        for (const row of await fetchExistingRows(host, wf)) seen.push({ sf: acc.id, row });
+      } catch {
+        // an unread account contributes no keys
+      }
+    }
+    for (const { sf, row } of seen) {
+      const key = accountTxKey(sf, row.txId);
+      const known = !unlinkPrepass.staleKeys.has(key) && (ledger[key] !== undefined || ledger[row.txId] !== undefined);
+      if (!isTransferType(row.type) || !hasTxOverride(overrides, key, 'asReimbursement') || known
+        || (row.comment ?? '').startsWith(IN_TRANSIT_COMMENT_PREFIX)) continue;
+      for (const other of seen) {
+        if (other.sf !== sf && other.row.txId === row.txId && isTransferType(other.row.type)) {
+          paybackPartnerKeys.add(accountTxKey(other.sf, other.row.txId));
+        }
+      }
+    }
   }
   const { hiddenIds: unlinkHiddenIds, heldGids, frozenKeys, staleKeys, pairKeys, driftAccounts } = unlinkPrepass;
   /** Groups a leg was found in only by the account loop: their cleanup, if
@@ -2864,13 +2919,16 @@ async function runSyncPass(
       && !(r.comment ?? '').startsWith(IN_TRANSIT_COMMENT_PREFIX));
     for (const r of foreignPayback) {
       const key = accountTxKey(sfAccount.id, r.txId);
-      errors.push(`Left ${descByKey.get(key) || descriptionFromComment(r.comment) || r.txId} as it is: this app has no record of linking it; the companion will unlink it on its next sync.`);
+      errors.push(`Left ${descByKey.get(key) || descriptionFromComment(r.comment) || r.txId} as it is: it is marked a payback but is now a transfer this app did not link \u2014 change it in Wealthfolio, or undo the payback from /changes.`);
     }
+    // The linked partner of such a leg (a transfer row in another account with
+    // the same tx id) is left too: retyping it would rewrite the flagged leg.
+    const partnersOfPaybacks = planExistingAll.filter((r) => paybackPartnerKeys.has(accountTxKey(sfAccount.id, r.txId)));
     // A failed or corrupt overrides read reads as no overrides, which would
     // turn every stored payback (money in, cash, CREDIT/REIMBURSEMENT) back
     // into a deposit: keep each exactly as stored, and say so once.
     const keptPaybacks = overridesUnread
-      ? planExistingAll.filter((r) => r.type === 'CREDIT' && (r.subtype ?? '').toUpperCase() === REIMBURSEMENT_SUBTYPE
+      ? planExistingAll.filter((r) => isKeptPayback(r)
         && (!wfTypes.get(wfAccountId) || wfTypes.get(wfAccountId) === 'CASH'))
       : [];
     if (keptPaybacks.length > 0 && !paybackNoteGiven) {
@@ -2879,12 +2937,13 @@ async function runSyncPass(
     }
     for (const r of planExistingAll) {
       if (r.type === 'CREDIT' && (r.subtype ?? '').toUpperCase() === REIMBURSEMENT_SUBTYPE
-        && yieldedPaybackKeys.has(accountTxKey(sfAccount.id, r.txId))) {
-        console.info(`[simplefin-sync] payback yielded: ${accountTxKey(sfAccount.id, r.txId)} is no longer money in on a cash account, so it is typed as usual`);
+        && yieldedPaybackKeys.has(accountTxKey(sfAccount.id, r.txId))
+        && preparedAll.some((p) => p.tx.id === r.txId && p.type !== r.type)) {
+        console.info(`[simplefin-sync] payback yielded: account ${sfAccount.id}, transaction ${r.txId} is no longer money in on a cash account, so it is typed as usual`);
       }
     }
-    const hiddenIds = new Set([...foreign, ...foreignPayback, ...keptPaybacks].map((r) => r.wfId));
-    const foreignTxIds = new Set([...foreign, ...foreignPayback, ...keptPaybacks].map((r) => r.txId));
+    const hiddenIds = new Set([...foreign, ...foreignPayback, ...keptPaybacks, ...partnersOfPaybacks].map((r) => r.wfId));
+    const foreignTxIds = new Set([...foreign, ...foreignPayback, ...keptPaybacks, ...partnersOfPaybacks].map((r) => r.txId));
     const planExisting = planExistingAll.filter((r) => !hiddenIds.has(r.wfId));
     for (const { row, tx } of adoptions) {
       const aliasKey = accountTxKey(sfAccount.id, tx.txId);
