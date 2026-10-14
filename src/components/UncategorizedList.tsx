@@ -8,6 +8,14 @@ function money(cents: number): string {
     .format(cents / 100);
 }
 
+/** The category the companion guessed (3), as a muted line under the
+ *  description — a hint only: the app cannot file (R2). Nothing for a row
+ *  without one, or a guess this build cannot read. */
+function GuessHint({ row }: { row: UncategorizedRow }) {
+  const name = row.guess && typeof row.guess.name === 'string' ? row.guess.name : '';
+  return name ? <span className="sfin-uncat-guess">Probably {name}</span> : null;
+}
+
 /**
  * The dismiss/undo half of this feature: which row's "Dismissed." banner is
  * showing, and the ~6-second timer that clears it.
@@ -135,11 +143,13 @@ export function UncategorizedList({
               >
                 {r.description}
                 <span className="sfin-subtle"> · {r.accountName}</span>
+                <GuessHint row={r} />
               </button>
             ) : (
               <span className="sfin-uncat-what">
                 {r.description}
                 <span className="sfin-subtle"> · {r.accountName}</span>
+                <GuessHint row={r} />
               </span>
             )}
             <span className={`sfin-uncat-amt${r.direction ? ` sfin-amt--${r.direction}` : ''}`}>
