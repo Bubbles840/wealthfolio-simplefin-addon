@@ -22,7 +22,7 @@ function makeTestDb(): { path: string; cleanup: () => void } {
     -- SELECT comment FROM activities fails with "no such column: comment", so
     -- the fixture carries the SQLite name deliberately.
     CREATE TABLE activities (id TEXT PRIMARY KEY, amount TEXT, activity_date TEXT, activity_type TEXT, notes TEXT, account_id TEXT DEFAULT 'acct-cash', subtype TEXT, currency TEXT, source_group_id TEXT);
-    CREATE TABLE activity_taxonomy_assignments (activity_id TEXT, category_id TEXT, taxonomy_id TEXT);
+    CREATE TABLE activity_taxonomy_assignments (activity_id TEXT, category_id TEXT, taxonomy_id TEXT, source TEXT);
     CREATE TABLE budget_targets (category_id TEXT, amount TEXT, period_key TEXT, updated_at TEXT);
     CREATE TABLE accounts (id TEXT PRIMARY KEY, name TEXT, account_type TEXT);
     CREATE TABLE budget_groups (id TEXT PRIMARY KEY, name TEXT, key TEXT, color TEXT, icon TEXT, sort_order INTEGER);
@@ -561,7 +561,6 @@ describe('sqlite-native', () => {
       try {
         const db = new DatabaseSync(path);
         db.exec(`
-          ALTER TABLE activity_taxonomy_assignments ADD COLUMN source TEXT;
           INSERT INTO taxonomy_categories (id, name, parent_id) VALUES ('c', 'Online Shopping', NULL);
           INSERT INTO activities (id, amount, activity_date, activity_type, notes) VALUES
             ('rule', '10.80', '2026-09-15T00:00:00Z', 'WITHDRAWAL', 'AMAZON MKTPL · Amazon: Hair Care · TRN-1'),
@@ -1546,12 +1545,18 @@ describe('getNativeDrillRows (v1.48)', () => {
       db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, account_id, notes) VALUES ('d1', '-40', '2026-09-02', 'WITHDRAWAL', 'acct-cash', 'ZARA 123 · TRN-1')`);
       db.exec(`INSERT INTO activity_taxonomy_assignments (activity_id, category_id) VALUES ('d1', 'cat-cloth')`);
       db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, account_id, notes) VALUES ('d2', '-25', '2026-09-05', 'WITHDRAWAL', 'acct-card', 'TARGET · TRN-2')`);
-      db.exec(`INSERT INTO activity_taxonomy_assignments (activity_id, category_id) VALUES ('d2', 'cat-shop')`);
+      db.exec(`INSERT INTO activity_taxonomy_assignments (activity_id, category_id, source) VALUES ('d2', 'cat-shop', 'rule')`);
       db.close();
       const rows = getNativeDrillRows(path, '2026-09-01', '2026-10-01');
       expect(rows.map((r) => r.category)).toEqual(['Shopping', 'Shopping']);
       expect(rows[0]).toMatchObject({ date: '2026-09-05', notes: 'TARGET · TRN-2', amount: 25 });
       expect(rows[1]).toMatchObject({ date: '2026-09-02', notes: 'ZARA 123 · TRN-1', amount: 40, account: 'Spend' });
+      // 1.61: what the cube needs to say who filed each row — the leaf
+      // category, not the rolled-up one, and the assignment's source.
+      expect(rows[0]).toMatchObject({
+        activityId: 'd2', accountId: 'acct-card', categoryId: 'cat-shop', source: 'rule', activityType: 'WITHDRAWAL',
+      });
+      expect(rows[1]).toMatchObject({ activityId: 'd1', accountId: 'acct-cash', categoryId: 'cat-cloth', source: '' });
     } finally {
       cleanup();
     }

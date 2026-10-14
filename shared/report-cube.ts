@@ -107,6 +107,14 @@ export interface DrillTx {
   c: number;
   /** Account name. */
   a: string;
+  /** 1.61: the activity id — the row opens its story. Absent from an older
+   *  companion's cube, whose rows then stay plain. */
+  i?: string;
+  /** 1.61: who filed it, as `encodeFiler` (shared/tx-story.ts) writes it:
+   *  `r:<pattern>`, `r` (no current rule matches), `r?` (rules unreadable),
+   *  `y` (you, in Telegram), `a:<label>` (an Amazon email), `o` (the
+   *  opening-balance filing), `h` (by hand in Wealthfolio). */
+  f?: string;
 }
 
 export interface CubeCheck {
