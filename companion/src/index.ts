@@ -1036,9 +1036,6 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
     // After the catch: a filing that stopped half-way still logs what landed.
     await recordCompanionChanges(wfClient, openingChanges, changeLog.run).catch((e) => log(`Change log skipped: ${formatError(e)}`));
 
-    // The Reports tab's live editions, from the ledger this sync just updated.
-    await publishLiveReports(wfClient).catch((e) => log(`Live reports skipped: ${formatError(e)}`));
-
     await publishUncategorizedStatusForDbPath(
       wealthfolioDbPath(),
       (key, value) => wfClient.setAddonSecret('simplefin-sync', key, value),
@@ -1201,6 +1198,17 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
       await publishCashForecast(wfClient, wealthfolioDbPath(), new Date());
     } catch (e) {
       log(`Cash forecast publish failed (the app's forecast may be stale): ${formatError(e)}`);
+    }
+
+    // The Reports tab's live editions, from the ledger this sync just updated.
+    // AFTER the cube and the forecast they read (the daily warning and the
+    // weekly line read the published forecast; the monthly review reads the
+    // cube), so the live editions agree with Home's tile instead of lagging a
+    // sync behind it. Its own guard: a failure here never changes the sync.
+    try {
+      await publishLiveReports(wfClient);
+    } catch (e) {
+      log(`Live reports skipped: ${formatError(e)}`);
     }
 
     await updateSyncHealth(wfClient, null);
@@ -2204,7 +2212,7 @@ export async function publishLiveReports(wfClient: WealthfolioClient, now = new 
   const texts: Array<[ReportKind, () => Promise<string | null>]> = [
     ['daily', async () => (await composeDailyDigest(wfClient, { requireTelegram: false, recordLedgerChecks: false }))?.archive ?? null],
     ['weekly', () => composeWeeklyReportMessage(wfClient, now, tg)],
-    ['monthly', () => composeMonthlyWrapUpMessage(wfClient, currentYearMonth(now), `${monthName} so far`, tg)],
+    ['monthly', () => composeMonthlyWrapUpMessage(wfClient, currentYearMonth(now), `${monthName} so far`, tg, now)],
   ];
   for (const [kind, compose] of texts) {
     try {
@@ -2524,7 +2532,7 @@ export async function sendMonthlyTelegramReport(
   const tg = parseSecretJson<any>(tgRaw, 'telegram_config');
   const now = new Date();
   const { yearMonth, monthName } = previousYearMonth(now);
-  const message = await composeMonthlyWrapUpMessage(wfClient, yearMonth, monthName, tg ?? {});
+  const message = await composeMonthlyWrapUpMessage(wfClient, yearMonth, monthName, tg ?? {}, now);
   if (message === null) return;
   // Filed under the month it describes, not the day it was sent.
   await deliverReportEdition(wfClient, 'monthly', message, new Date(now.getFullYear(), now.getMonth() - 1, 15), tg?.monthlyReportEnabled !== false);
