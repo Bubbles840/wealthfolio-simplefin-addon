@@ -900,6 +900,7 @@ const css = `
 .sfin-audit-checks { display: flex; flex-direction: column; gap: 8px; }
 .sfin-audit-headline { margin-top: 8px; }
 .sfin-audit-link { padding: 0; border: none; background: transparent; color: var(--primary); font: inherit; font-size: var(--sfin-sz-sm); cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+.sfin-audit-fix { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 4px; }
 @keyframes sfin-pop { from { transform: scale(.92); opacity: 0; } to { transform: scale(1); opacity: 1; } }
 .sfin-range-pin { position: absolute; bottom: 6px; right: 10px; font-size: var(--sfin-sz-2xs); color: var(--muted-foreground); background: color-mix(in srgb, var(--card) 80%, transparent); border-radius: var(--sfin-rad-xs); padding: 1px 6px; }
 /* Drag feedback: the picked-up card lifts and fades while every other card
