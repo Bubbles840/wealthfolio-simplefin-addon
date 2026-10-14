@@ -64,6 +64,27 @@ describe('healthIssues: incomplete transfer legs', () => {
     expect(mine).toMatchObject({ match: 'none', counterpart: null });
   });
 
+  it('a broken group still reports itself when an ungrouped leg would pair with it, and the ungrouped leg offers nothing', () => {
+    const lone = row({ id: 'L' });
+    const c = row({ id: 'c', accountId: 'wf-ally', rawType: 'TRANSFER_IN', type: 'TRANSFER_IN', date: '2026-10-05', group: 'g1', notes: 'FROM PNC · TRN-2' });
+    const issues = legs(healthIssues(facts([lone, c])).issues);
+    const byId = Object.fromEntries(issues.map((i) => [i.leg.activityId, i]));
+    expect(byId.c.problem).toMatchObject({ kind: 'legs' });
+    expect(healthIssueLines(byId.c)[0]).toContain('its group has 1 transfer rows');
+    expect(byId.c.counterpart).toBeNull();
+    expect(byId.L).toMatchObject({ match: 'none', counterpart: null });
+    expect(healthIssueLines(byId.L)[1]).toContain('No likely other half');
+  });
+
+  it('a leg alone in a group beside an ungrouped one does not contradict itself', () => {
+    const l = row({ id: 'L', group: 'g2' });
+    const c = row({ id: 'c', accountId: 'wf-ally', rawType: 'TRANSFER_IN', type: 'TRANSFER_IN', date: '2026-10-05', notes: 'FROM PNC · TRN-2' });
+    const byId = Object.fromEntries(legs(healthIssues(facts([l, c])).issues).map((i) => [i.leg.activityId, i]));
+    expect(byId.L.problem).toMatchObject({ kind: 'legs' });
+    expect(byId.L.counterpart).toBeNull();
+    expect(byId.c).toMatchObject({ match: 'none', counterpart: null });
+  });
+
   it('never offers a pending row as the other half — the sync never pairs one', () => {
     const out = row({ id: 'out' });
     const pending = row({ id: 'pend', accountId: 'wf-ally', rawType: 'DEPOSIT', type: 'DEPOSIT', date: '2026-10-05', notes: 'FROM PNC · TRN-9 · pending' });

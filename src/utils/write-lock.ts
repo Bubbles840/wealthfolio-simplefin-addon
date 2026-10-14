@@ -20,12 +20,16 @@ let endLink: (() => void) | null = null;
 /** Link takes the lock; null while a sync (or another Link) holds it. */
 export function beginLink(): (() => void) | null {
   if (syncs > 0 || linking) return null;
-  linking = new Promise<void>((resolve) => { endLink = resolve; });
+  const mine = new Promise<void>((resolve) => { endLink = resolve; });
+  const resolveMine = endLink!;
+  linking = mine;
+  // A release clears the lock only while it is still this holder's.
   return () => {
-    const done = endLink;
-    linking = null;
-    endLink = null;
-    done?.();
+    if (linking === mine) {
+      linking = null;
+      endLink = null;
+    }
+    resolveMine();
   };
 }
 
