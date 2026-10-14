@@ -151,8 +151,8 @@ export function AccountList({ mapping, balances, sfinNames, wfNames, onOpenAccou
             ))}
           </div>
         </div>
-        {explaining === sfinId && renderExplanation && (
-          <div className="sfin-audit-under" id={`sfin-audit-${sfinId}`}>{renderExplanation(wfId)}</div>
+        {explaining === sfinId && renderExplanation && info?.drift != null && (
+          <div className="sfin-audit-under" id={`sfin-audit-${sfinId}`} role="region" aria-label={`Why ${name} is off`}>{renderExplanation(wfId)}</div>
         )}
         </React.Fragment>
       );
