@@ -1,4 +1,5 @@
 import React, { useRef } from 'react';
+import { unreadLabel } from '../../shared/reports-seen';
 
 export type TabId = 'home' | 'reports' | 'settings';
 
@@ -26,7 +27,9 @@ export function resolveStoredTab(raw: unknown): TabId {
  * container wires up by convention rather than by prop-drilling children here.
  */
 export function TabBar({ tabs, active, onChange }: {
-  tabs: Array<{ id: TabId; label: string }>;
+  /** `badge`: a count of unread items (project 5: the Reports tab), shown
+   *  beside the label and named in the tab's accessible name. */
+  tabs: Array<{ id: TabId; label: string; badge?: number }>;
   active: TabId;
   onChange: (id: TabId) => void;
 }) {
@@ -62,6 +65,7 @@ export function TabBar({ tabs, active, onChange }: {
           aria-controls={`sfin-panel-${t.id}`}
           tabIndex={t.id === active ? 0 : -1}
           className={t.id === active ? 'sfin-tab sfin-tab--active' : 'sfin-tab'}
+          aria-label={t.badge ? unreadLabel(t.label, t.badge) : undefined}
           onClick={() => onChange(t.id)}
           onKeyDown={(e) => {
             if (e.key === 'ArrowRight') { e.preventDefault(); move(1); }
@@ -69,6 +73,7 @@ export function TabBar({ tabs, active, onChange }: {
           }}
         >
           {t.label}
+          {t.badge ? <span className="sfin-inbox-badge" aria-hidden>{t.badge}</span> : null}
         </button>
       ))}
     </div>

@@ -17,6 +17,7 @@ import { ReportsTab } from '../tabs/ReportsTab';
 import { parseReportsLink } from '../../shared/reports-archive';
 import type { AuditSnapshotRead } from '../../shared/audit-snapshot';
 import type { CashForecastRead } from '../../shared/cash-forecast';
+import { useReportsInbox } from '../hooks/useReportsInbox';
 import { useAmazonDraft } from '../components/AmazonCard';
 import type { SecretsStore, AccountBalanceInfo, CategoryCatalogEntry } from '../utils/secrets';
 import type { Scheduler } from '../utils/scheduler';
@@ -148,6 +149,10 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
   const [auditSnapshot, setAuditSnapshot] = useState<AuditSnapshotRead | null>(null);
   // Project 5: the companion's cash forecast behind Home's "Next 30 days".
   const [cashForecast, setCashForecast] = useState<CashForecastRead | null>(null);
+  // Project 5: the Reports tab's unread counts and "New" markers, held here
+  // so the tab bar and the sub-tabs agree.
+  const inbox = useReportsInbox(store);
+  const refreshInbox = inbox.refresh;
   const [customReports, setCustomReportsState] = useState<
     Awaited<ReturnType<SecretsStore['getCustomReports']>>
   >([]);
@@ -271,7 +276,9 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
     store.getAuditSnapshot?.().then((r) => { if (mounted.current) setAuditSnapshot(r); }).catch(() => {});
     // The same for the forecast: ok / absent / corrupt, never a throw.
     store.getCashForecast?.().then((r) => { if (mounted.current) setCashForecast(r); }).catch(() => {});
-  }, [store]);
+    // New report editions arrive behind the page's back too.
+    refreshInbox();
+  }, [store, refreshInbox]);
 
   const onDismissalsChange = useCallback((next: DismissalLedger) => {
     hasUserActed.current.dismissals = true;
@@ -639,6 +646,8 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
   const isOpen = (id: string) => openCards[id] === true;
 
   const versionNotice = versionMismatchNotice(SIMPLEFIN_SYNC_VERSION, companionVersion, installedAddonVersion);
+  // "Reports" carries the unread count while there is one.
+  const tabs = inbox.total > 0 ? TABS.map((t) => (t.id === 'reports' ? { ...t, badge: inbox.total } : t)) : TABS;
 
   return (
     <div className={`sfin-page${activeTab === 'home' ? ' sfin-page--wide' : ''}`}>
@@ -686,7 +695,7 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
         </div>
       )}
 
-      <TabBar tabs={TABS} active={activeTab} onChange={navigate} />
+      <TabBar tabs={tabs} active={activeTab} onChange={navigate} />
 
       {/* What needs you — banners, unfinished setup, the status strip — and
           the budget under it. One tab since 1.57 (was Overview + Budget). */}
@@ -745,7 +754,7 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
       </TabPanel>
 
       <TabPanel tab="reports" active={activeTab}>
-        <ReportsTab store={store} initialReport={link?.report} />
+        <ReportsTab store={store} initialReport={link?.report} inbox={inbox} />
       </TabPanel>
 
       {/* Everything configurable, grouped on one page: accounts, the pool,

@@ -6,6 +6,7 @@ import {
   type ReportKind,
   type ReportStore,
 } from '../../shared/reports-archive';
+import { isUnread, unreadLabel, type ReportsSeen } from '../../shared/reports-seen';
 
 /**
  * The Reports tab: every daily, weekly and monthly report, kept.
@@ -27,10 +28,27 @@ export interface ReportsStore {
   getReports(kind: ReportKind): Promise<ReportStore>;
 }
 
-export function ReportsTab({ store, initialReport }: { store: ReportsStore; initialReport?: ReportKind }) {
+/** The page's unread state (project 5): counts per kind, what was seen, and
+ *  the mark-seen call (src/hooks/useReportsInbox.ts). Absent: no counts and
+ *  no markers. */
+export interface ReportsTabInbox {
+  counts: Record<ReportKind, number>;
+  seen: ReportsSeen | null;
+  opened(kind: ReportKind, data: ReportStore): void;
+}
+
+export function ReportsTab({ store, initialReport, inbox }: {
+  store: ReportsStore; initialReport?: ReportKind; inbox?: ReportsTabInbox;
+}) {
   const [kind, setKind] = useState<ReportKind>(initialReport ?? 'daily');
   const [data, setData] = useState<ReportStore | null>(null);
   const tabRefs = useRef<Map<ReportKind, HTMLButtonElement>>(new Map());
+  /** The kind `data` was loaded for: the render between a sub-tab switch and
+   *  its load still holds the previous kind's editions. */
+  const loadedFor = useRef<ReportKind | null>(null);
+  /** What was seen when this sub-tab opened. "New" is judged against it, so
+   *  marking the sub-tab seen does not wipe the markers being read. */
+  const [visit, setVisit] = useState<{ kind: ReportKind; data: ReportStore; seenAt: string | undefined } | null>(null);
 
   // A later notification tap re-renders with a new initialReport.
   useEffect(() => {
@@ -42,10 +60,23 @@ export function ReportsTab({ store, initialReport }: { store: ReportsStore; init
     setData(null);
     store
       .getReports(kind)
-      .then((d) => { if (live) setData(d); })
-      .catch(() => { if (live) setData({ live: null, archive: [] }); });
+      .then((d) => { if (live) { loadedFor.current = kind; setData(d); } })
+      .catch(() => { if (live) { loadedFor.current = kind; setData({ live: null, archive: [] }); } });
     return () => { live = false; };
   }, [store, kind]);
+
+  // Opening a sub-tab marks it seen once its editions and the seen state are
+  // both in: one visit, one call (the inbox writes only when something changes).
+  const seen = inbox?.seen ?? null;
+  const opened = inbox?.opened;
+  useEffect(() => {
+    if (!data || loadedFor.current !== kind || seen === null || !opened) return;
+    if (visit?.kind === kind && visit.data === data) return;
+    setVisit({ kind, data, seenAt: seen[kind] });
+    opened(kind, data);
+  }, [data, kind, seen, opened, visit]);
+  const isNew = (e: ReportEdition) => visit !== null && visit.kind === kind && visit.data === data && isUnread(e, visit.seenAt);
+  const unread = (k: ReportKind) => inbox?.counts[k] ?? 0;
 
   const move = (delta: number) => {
     const i = REPORT_KINDS.indexOf(kind);
@@ -69,6 +100,7 @@ export function ReportsTab({ store, initialReport }: { store: ReportsStore; init
             aria-controls="sfin-report-panel"
             tabIndex={k === kind ? 0 : -1}
             className={`sfin-subtab${k === kind ? ' sfin-subtab--active' : ''}`}
+            aria-label={unread(k) > 0 ? unreadLabel(LABELS[k], unread(k)) : undefined}
             ref={(el) => { if (el) tabRefs.current.set(k, el); else tabRefs.current.delete(k); }}
             onClick={() => setKind(k)}
             onKeyDown={(e) => {
@@ -77,6 +109,7 @@ export function ReportsTab({ store, initialReport }: { store: ReportsStore; init
             }}
           >
             {LABELS[k]}
+            {unread(k) > 0 && <span className="sfin-inbox-badge" aria-hidden>{unread(k)}</span>}
           </button>
         ))}
       </div>
@@ -103,7 +136,10 @@ export function ReportsTab({ store, initialReport }: { store: ReportsStore; init
             <SectionLabel>Past reports</SectionLabel>
             {data.archive.map((e) => (
               <details key={`${e.kind}-${e.period}`} className="sfin-card sfin-report-past">
-                <summary>{e.title}</summary>
+                <summary>
+                  {e.title}
+                  {isNew(e) && <span className="sfin-inbox-new">New</span>}
+                </summary>
                 <ReportText text={e.text} />
               </details>
             ))}
