@@ -12,7 +12,7 @@
 import type { LinkIo, LinkPair, ReadRow } from '../../shared/audit-link.js';
 import { fixRowOf, linkedState, type FixRow } from '../../shared/fix-row.js';
 import { loadSyncOverrides } from '../../shared/sync-overrides.js';
-import type { RemoveIo } from '../../shared/tx-remove.js';
+import { RemoveMappingUnreadableError, type RemoveIo } from '../../shared/tx-remove.js';
 import { sfinIdsFor } from '../../shared/tx-story.js';
 import { recordCompanionChanges, type SecretClient } from './change-log-host.js';
 import { RestSyncHost } from './rest-host.js';
@@ -34,6 +34,22 @@ async function readFixRow(client: FixClient, activityId: string, types: Map<stri
 }
 
 const restHost = (client: FixClient) => new RestSyncHost(client as unknown as WealthfolioClient);
+
+/** The account mapping as stored: none yet is `{}`; anything but a plain
+ *  object of strings is unreadable — a refusal of its own, not "unreachable". */
+function parseMapping(raw: string | null): Record<string, string> {
+  if (raw === null || raw.trim() === '') return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new RemoveMappingUnreadableError();
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || Object.values(parsed).some((v) => typeof v !== 'string')) {
+    throw new RemoveMappingUnreadableError();
+  }
+  return parsed as Record<string, string>;
+}
 
 export function companionLinkIo(client: FixClient, log: (msg: string) => void): LinkIo {
   const host = restHost(client);
@@ -58,10 +74,7 @@ export function companionRemoveIo(client: FixClient, log: (msg: string) => void)
   const host = restHost(client);
   return {
     read: async (activityId) => readFixRow(client, activityId, await accountTypes(client)),
-    feeds: async (wfAccountId) => {
-      const raw = await client.getAddonSecret(ADDON_ID, 'account_mapping');
-      return sfinIdsFor(raw ? (JSON.parse(raw) as Record<string, string>) : {}, wfAccountId);
-    },
+    feeds: async (wfAccountId) => sfinIdsFor(parseMapping(await client.getAddonSecret(ADDON_ID, 'account_mapping')), wfAccountId),
     linked: async (row) => linkedState(row, { readsGroups: true, ledgerKnows: false }),
     secrets: {
       get: (k) => client.getAddonSecret(ADDON_ID, k),

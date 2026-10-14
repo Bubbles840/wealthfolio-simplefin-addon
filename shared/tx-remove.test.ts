@@ -10,7 +10,8 @@ import type { HostActivity } from './sync-host';
 import { accountTxKey } from './transfers';
 import type { TxStoryFacts } from './tx-story';
 import {
-  removalFingerprint, removalOffered, removeForGood, REMOVE_CHANGED, REMOVE_DONE, REMOVE_MANAGED, REMOVE_NOT_FEED, REMOVE_NO_UNDO, REMOVE_NO_UNDO_POSSIBLE, REMOVE_PENDING, REMOVE_RUNNING, removeUnsure,
+  removalFingerprint, removalOffered, removeForGood, REMOVE_CHANGED, REMOVE_DONE, REMOVE_MANAGED, REMOVE_MAPPING_UNREADABLE, REMOVE_NOT_FEED, REMOVE_NO_UNDO,
+  REMOVE_NO_UNDO_POSSIBLE, REMOVE_PENDING, REMOVE_RUNNING, removeUnsure, RemoveMappingUnreadableError,
   REMOVE_SKIP_NOTE, REMOVE_SKIP_UNREADABLE, REMOVE_UNLINK_FIRST, REMOVE_UNREACHABLE, type RemoveIo,
 } from './tx-remove';
 
@@ -71,6 +72,7 @@ describe('removalOffered', () => {
     ['a held transfer', facts({}, `↔️ In-transit transfer · ${NOTE}`)],
     ['a starting balance', facts({}, 'Starting balance · sfin-chk')],
     ['a correction', facts({}, 'Balance adjustment · sfin-chk · 2026-10-09')],
+    ['a $0 row (Undo could not put it back)', facts({ row: { activityId: 'dup-1', note: NOTE, absCents: 0, date: '2026-10-09', activityType: 'DEPOSIT', accountName: 'PNC Checking' } })],
   ])('not on %s', (_why, f) => {
     expect(removalOffered(f)).toBe(false);
   });
@@ -206,11 +208,21 @@ describe('removeForGood', () => {
     const gate = new Promise<void>((r) => { release = r; });
     const f = fakeIo({ remove: vi.fn(async () => { await gate; }) });
     const first = removeForGood('dup-1', FP, f.io, NOW);
-    await new Promise((r) => setTimeout(r, 0));
-    expect(await removeForGood('dup-1', FP, f.io, NOW)).toEqual({ ok: false, message: REMOVE_RUNNING });
-    release();
+    try {
+      await new Promise((r) => setTimeout(r, 0));
+      expect(await removeForGood('dup-1', FP, f.io, NOW)).toEqual({ ok: false, message: REMOVE_RUNNING });
+    } finally {
+      // Released whatever happened above, so the guard never outlives this test.
+      release();
+    }
     expect(await first).toEqual({ ok: true, message: REMOVE_DONE });
     expect(f.io.remove).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses an unreadable account mapping as such, and writes nothing', async () => {
+    const f = fakeIo({ feeds: vi.fn(async () => { throw new RemoveMappingUnreadableError(); }) });
+    expect(await removeForGood('dup-1', FP, f.io, NOW)).toEqual({ ok: false, message: REMOVE_MAPPING_UNREADABLE });
+    expect(f.calls).toEqual([]);
   });
 
   it('records only the keys it added', async () => {
@@ -259,12 +271,19 @@ describe('remove, then Undo, on a host', () => {
     };
     expect((await removeForGood('dup-1', shown(row), io, NOW)).ok).toBe(true);
     expect(fh.activities.get('wf-chk')).toEqual([]);
+    // The entry keeps the row as it was: its currency, its cash symbol, every metadata key.
+    const kept = log[0].before as { activity: Record<string, unknown> };
+    expect(kept.activity).toMatchObject({ currency: 'EUR', symbol: { symbol: '$CASH-EUR' }, fee: 1.5, subtype: 'REIMBURSEMENT' });
+    expect(JSON.parse(String(kept.activity.metadata))).toEqual({ flow: { is_external: true }, tag: 'x' });
     const afterRemove = parseSkippedTransactionsStrict(data.get(SKIPPED_TRANSACTIONS_SECRET_KEY));
     expect(afterRemove.kind === 'ok' && afterRemove.list.map((s) => `${s.account}:${s.txId}`)).toEqual(['sfin-old:TRN-600', 'sfin-chk:TRN-600']);
 
     const undoIo: UndoIo = { host: fh.host, secrets, record, where: { host: 'addon', companionVersion: '1.61.0' } };
     const entry = log[0] as ChangeLogItem;
+    const saved = fh.saved.length;
     expect(await runChangeUndo(entry, log, 'undo', undoIo, 'plain', NOW)).toMatchObject({ ok: true });
+    // Undo's create is that payload, exactly.
+    expect(fh.saved.slice(saved)).toEqual([{ creates: [kept.activity] }]);
     const back = fh.activities.get('wf-chk')!;
     expect(back).toHaveLength(1);
     expect(back[0]).toMatchObject({ accountId: 'wf-chk', activityType: 'WITHDRAWAL', date: '2026-10-09', amount: 600, comment: NOTE });

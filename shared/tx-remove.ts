@@ -15,12 +15,19 @@
  * pending transaction a new id when it posts (shared/reconcile.ts), so a
  * skipped pending id would not keep the posted copy out.
  *
+ * Nothing is written either for a row Undo could not put back (a $0 row),
+ * or while the same row is already being removed.
+ *
  * Order (ruling Y3): the tx id goes on the skip list FIRST, through the
  * corrupt-safe edit, under every feed that maps to the row's account; then the
- * row is deleted. A delete that fails takes back off the list exactly the
- * keys this run added. The change entry keeps the row's full create payload:
- * Undo writes it back and takes the keys off the list, Redo removes it again
- * (shared/change-undo.ts). The log never costs the removal.
+ * row is deleted. A delete that throws is read again by id, since its
+ * response can be lost after it landed: still there, this run's keys come
+ * back off the list ("nothing was changed"); gone, the removal stands; can't
+ * tell, the keys stay and the row is named. The change entry keeps the row's
+ * full create payload and the keys this run added (`addedKeys`): Undo writes
+ * the row back and takes only those keys off the list, Redo skips them and
+ * removes it again (shared/change-undo.ts). The log never costs the removal;
+ * when it can't be written, the payload goes to the host's log.
  */
 import { isCorrectionNote, isPendingNote, isPlaceholderNote, isStartingBalanceNote } from './audit-ledger.js';
 import { createPayloadOf } from './change-undo.js';
@@ -46,6 +53,16 @@ export const REMOVE_NOT_FEED = 'Only a transaction from your bank feed can be re
 export const REMOVE_PENDING = "It's still pending — remove it once it posts.";
 export const REMOVE_SKIP_UNREADABLE = "Couldn't save the skip list — nothing was changed.";
 export const REMOVE_UNREACHABLE = "Couldn't reach Wealthfolio — nothing was removed.";
+export const REMOVE_MAPPING_UNREADABLE = "Your account mapping can't be read, so it can't tell which bank feed to stop — nothing was removed.";
+
+/** A host's `feeds` rejects with this when the mapping is there but unreadable
+ *  (not when Wealthfolio is unreachable). */
+export class RemoveMappingUnreadableError extends Error {
+  constructor() {
+    super(REMOVE_MAPPING_UNREADABLE);
+    this.name = 'RemoveMappingUnreadableError';
+  }
+}
 /** The note a skip-list entry written by a removal carries. */
 export const REMOVE_SKIP_NOTE = REMOVED_FOR_GOOD_NOTE;
 
@@ -81,12 +98,14 @@ const shownOf = (row: FixRow): ShownRow => ({
 const isManaged = (note: string) => isPlaceholderNote(note) || isStartingBalanceNote(note) || isCorrectionNote(note);
 
 /** Whether a story offers "Remove for good…": a posted row from the bank
- *  feed, not one the sync manages, and not half of a transfer as far as the
- *  story knows. The second tap checks everything again. */
+ *  feed, not one the sync manages, not $0 (Undo could not put it back), and
+ *  not half of a transfer as far as the story knows. The second tap checks
+ *  everything again. */
 export function removalOffered(facts: TxStoryFacts): boolean {
   const note = facts.row.note ?? '';
   const failed = new Set(facts.failed ?? []);
   if (!facts.feed || failed.has('mapping') || failed.has('partner')) return false;
+  if (!(facts.row.absCents > 0)) return false;
   if (!txIdFromComment(note) || isPendingNote(note) || isManaged(note)) return false;
   return facts.partner === null;
 }
@@ -96,7 +115,8 @@ export interface RemoveIo {
   /** The row by id, now; null when gone. Rejects when unreachable. */
   read(activityId: string): Promise<FixRow | null>;
   /** The SimpleFin accounts that sync into this Wealthfolio account ([] when
-   *  none). Rejects when the mapping cannot be read. */
+   *  none). Rejects when the mapping cannot be read: with
+   *  `RemoveMappingUnreadableError` when it was read and is not a mapping. */
   feeds(wfAccountId: string): Promise<string[]>;
   /** Whether the row is half of a linked transfer, as sure as the host can be. */
   linked(row: FixRow, txKeys: string[]): Promise<LinkedState>;
@@ -142,7 +162,7 @@ async function removeOnce(activityId: string, fingerprint: string, io: RemoveIo,
     if (row.grouped || await io.linked(row, feeds.map((f) => accountTxKey(f, txId!)))) return refuse(REMOVE_UNLINK_FIRST);
   } catch (err) {
     io.log(`Remove ${activityId}: ${errorText(err)}`);
-    return refuse(REMOVE_UNREACHABLE);
+    return refuse(err instanceof RemoveMappingUnreadableError ? REMOVE_MAPPING_UNREADABLE : REMOVE_UNREACHABLE);
   }
   const id = txId;
   const keys = feeds.map((f) => accountTxKey(f, id));

@@ -4,7 +4,9 @@ import { linkPairs, LINK_CHANGED, LINK_DONE, type LinkPair } from '../../shared/
 import type { ChangeBucket } from '../../shared/change-log.js';
 import { SKIPPED_TRANSACTIONS_SECRET_KEY } from '../../shared/skipped-transactions.js';
 import { accountTxKey } from '../../shared/transfers.js';
-import { removalFingerprint, removeForGood, REMOVE_DONE, REMOVE_UNLINK_FIRST } from '../../shared/tx-remove.js';
+import {
+  removalFingerprint, removeForGood, REMOVE_DONE, REMOVE_MAPPING_UNREADABLE, REMOVE_NOT_FEED, REMOVE_UNLINK_FIRST, REMOVE_UNREACHABLE,
+} from '../../shared/tx-remove.js';
 import { companionLinkIo, companionRemoveIo, type FixClient } from './audit-fix-host.js';
 
 const NOW = new Date('2026-10-14T15:00:00Z');
@@ -111,5 +113,26 @@ describe('Remove for good on the companion', () => {
     const f = fakeClient([{ ...DUP, sourceGroupId: 'wf-transfer-x' }], mapping);
     expect(await removeForGood('dup-1', FP, companionRemoveIo(f.client, vi.fn()), NOW)).toEqual({ ok: false, message: REMOVE_UNLINK_FIRST });
     expect(f.saved).toEqual([]);
+  });
+
+  it.each(['null', '[]', '"wf-chk"', '{not json', JSON.stringify({ 'sfin-chk': 7 })])(
+    'an account mapping that reads as %s refuses as unreadable, not unreachable, and writes nothing',
+    async (raw) => {
+      const f = fakeClient([{ ...DUP }], { account_mapping: raw });
+      expect(await removeForGood('dup-1', FP, companionRemoveIo(f.client, vi.fn()), NOW)).toEqual({ ok: false, message: REMOVE_MAPPING_UNREADABLE });
+      expect(f.saved).toEqual([]);
+      expect(f.data.has(SKIPPED_TRANSACTIONS_SECRET_KEY)).toBe(false);
+    },
+  );
+
+  it('no mapping yet is no feed, and a mapping that cannot be fetched is unreachable', async () => {
+    const none = fakeClient([{ ...DUP }]);
+    expect(await removeForGood('dup-1', FP, companionRemoveIo(none.client, vi.fn()), NOW)).toEqual({ ok: false, message: REMOVE_NOT_FEED });
+    const down = fakeClient([{ ...DUP }], mapping);
+    down.client.getAddonSecret.mockImplementation(async (_a: string, k: string) => {
+      if (k === 'account_mapping') throw new Error('ECONNREFUSED');
+      return down.data.get(k) ?? null;
+    });
+    expect(await removeForGood('dup-1', FP, companionRemoveIo(down.client, vi.fn()), NOW)).toEqual({ ok: false, message: REMOVE_UNREACHABLE });
   });
 });
