@@ -18,12 +18,13 @@ import type { ChangeLogItem } from '../../shared/change-log';
 import { companionGateCovers, UNDO_VERSION_UNKNOWN, type UndoOp } from '../../shared/change-undo';
 import { runChangeUndo, type UndoIo, type UndoOutcome } from '../../shared/change-undo-run';
 import { AddonSyncHost } from './addon-host';
+import { warn } from './audit-fix';
 import type { SecretsStore } from './secrets';
 import { beginWrite, writeRefusal } from './write-lock';
 
 export function addonUndoIo(ctx: AddonContext, store: SecretsStore, companionVersion: string | null): UndoIo {
   return {
-    host: new AddonSyncHost(ctx, (m) => console.warn(`[simplefin-sync] ${m}`)),
+    host: new AddonSyncHost(ctx, warn),
     secrets: {
       get: (k) => ctx.api.secrets.get(k),
       set: (k, v) => ctx.api.secrets.set(k, v),

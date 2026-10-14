@@ -34,7 +34,7 @@ import { beginWrite, writeRefusal } from './write-lock';
 export type FixStore = Partial<Pick<SecretsStore,
   'readSyncOverrides' | 'getLinkedGroups' | 'setLinkedGroups' | 'recordChange' | 'getAccountMapping'>>;
 
-const warn = (msg: string) => console.warn(`[simplefin-sync] ${msg}`);
+export const warn = (msg: string) => console.warn(`[simplefin-sync] ${msg}`);
 
 const accountTypes = async (ctx: AddonContext) =>
   new Map((await ctx.api.accounts.getAll()).map((a) => [a.id, String(a.accountType ?? '')]));

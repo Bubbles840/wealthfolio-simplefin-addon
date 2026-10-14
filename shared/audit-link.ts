@@ -44,7 +44,7 @@ import { isCorrectionNote, isPendingNote, isPlaceholderNote, isStartingBalanceNo
 import { bookkeepingChange, transferLinkChange, type ChangeDraft, type LinkLegFacts } from './change-entries.js';
 import { recreateWrite, type FixRow, type LinkedState } from './fix-row.js';
 import { findingHandle } from './handle.js';
-import { HALF_OF_ANOTHER_TRANSFER } from './link-in-place.js';
+import { HALF_OF_ANOTHER_TRANSFER, LINK_ANSWER_LOST } from './link-in-place.js';
 import { describeLeg } from './link-pair.js';
 import { descriptionFromComment, txIdFromComment } from './sync-core.js';
 import type { ActivityWrite, LinkLeg, LinkResult, SaveManyResult } from './sync-host.js';
@@ -222,6 +222,7 @@ async function linkOne(pair: LinkPair, io: LinkIo, overrides: SyncOverrides): Pr
     // Already half of another transfer: nothing was written, so there is
     // nothing to re-read or write back. The reason is the whole message.
     if (problems.includes(HALF_OF_ANOTHER_TRANSFER)) return { kind: 'failed', message: HALF_OF_ANOTHER_TRANSFER };
+    if (problems.includes(LINK_ANSWER_LOST)) return { kind: 'failed', message: LINK_ANSWER_LOST };
     if (problems.some((p) => p.startsWith('the host stored no shared group'))) {
       // Both saves went through and Wealthfolio kept no group: the rows exist,
       // as transfers, unlinked. Say so, and leave a visible trace.

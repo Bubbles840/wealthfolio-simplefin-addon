@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { UnlinkLeg } from './link-pair.js';
 import {
-  HALF_OF_ANOTHER_TRANSFER, inPlaceRefusal, ledgerGroupId, unlinkInPlaceRefusal, linkPairPreferInPlace, storedLegOf, unlinkPairPreferInPlace, type InPlaceIo,
+  HALF_OF_ANOTHER_TRANSFER, inPlaceRefusal, LINK_ANSWER_LOST, ledgerGroupId, unlinkInPlaceRefusal, linkPairPreferInPlace, storedLegOf, unlinkPairPreferInPlace, type InPlaceIo,
 } from './link-in-place.js';
 import type { ActivityWrite, LinkLeg, SaveManyRequest, SaveManyResult } from './sync-host.js';
 
@@ -198,11 +198,12 @@ describe('linking in place', () => {
     expect(blind.calls).toEqual(['saveMany delete', 'saveMany create']);
   });
 
-  it('a lost answer with a row still in the group it had at the first read, its partner not sharing it, is half of another transfer: no delete, no create, retried next sync', async () => {
+  it('a lost answer with a row still in the group it had at the first read, its partner not sharing it, is not known to be linked: its own message, no delete, no create, retried next sync', async () => {
     const wf = wealthfolio([stored(OUT_LEG, { sourceGroupId: 'other-pair' }), stored(IN_LEG)]);
     const io = { ...wf.io, link: async () => { wf.calls.push('link out-1 in-1'); throw new Error('link failed: 502 Bad Gateway'); } };
     const result = await linkPairPreferInPlace(io, wf.saveMany, [OUT_LEG, IN_LEG]);
-    expect(result).toEqual({ linked: false, problems: [HALF_OF_ANOTHER_TRANSFER] });
+    expect(result).toEqual({ linked: false, problems: [LINK_ANSWER_LOST] });
+    expect(LINK_ANSWER_LOST).toBe("Couldn't tell whether Wealthfolio linked them — it will try again next sync.");
     expect(wf.calls).toEqual(['read', 'link out-1 in-1', 'read']);
     expect(wf.rows.map((r) => r.id)).toEqual(['out-1', 'in-1']);
   });
@@ -223,7 +224,7 @@ describe('linking in place', () => {
   });
 
   it('already linked to each other under a wf-transfer- group is reported linked too', async () => {
-    const wf = wealthfolio([stored(OUT_LEG, { sourceGroupId: 'wf-transfer-9' }), stored(IN_LEG, { sourceGroupId: 'wf-transfer-9' })], { refuseLink: 'Selected activities already linked' });
+    const wf = wealthfolio([stored(OUT_LEG, { sourceGroupId: 'wf-transfer-9' }), stored(IN_LEG, { sourceGroupId: 'wf-transfer-9' })], { refuseLink: 'One or both activities are already linked to another transfer' });
     const result = await linkPairPreferInPlace(wf.io, wf.saveMany, [OUT_LEG, IN_LEG]);
     expect(result).toEqual({ linked: true, groupId: 'wf-transfer-9', activityIds: ['out-1', 'in-1'], inPlace: true });
     expect(wf.calls).toEqual(['read', 'link out-1 in-1']);
@@ -313,6 +314,14 @@ describe('unlinking in place (Undo of a link)', () => {
     const blind = wealthfolio(linked(), { throwUpdate: 'lost', failReadsFrom: 2 });
     const r3 = await unlinkPairPreferInPlace(blind.io, blind.saveMany, unlinkLegs());
     expect(r3.problems?.[0]).toContain('but they may still be typed as transfers (fetch failed)');
+  });
+
+  it('retypes in place, without unlinking again, rows already apart (group known to be none) and still typed as transfers', async () => {
+    const wf = wealthfolio([stored(OUT_LEG), stored(IN_LEG)]);
+    const result = await unlinkPairPreferInPlace(wf.io, wf.saveMany, unlinkLegs());
+    expect(result).toEqual({ unlinked: true, inPlace: true, activityIds: ['out-1', 'in-1'] });
+    expect(wf.calls).toEqual(['read', 'saveMany update']);
+    expect(wf.rows.map((r) => [r.id, r.activityType])).toEqual([['out-1', 'WITHDRAWAL'], ['in-1', 'CREDIT']]);
   });
 
   it('logs why an unlink fell back to re-creating, with Wealthfolio\'s refusal', async () => {
