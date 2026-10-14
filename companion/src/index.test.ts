@@ -8,7 +8,7 @@ import { runSyncCore } from '../../shared/sync-core.js';
 import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeCategorizedSpending, getNativeSpendingCategories, getNativeTxSearchRows } from './sqlite-native.js';
 import { ingestAmazonMail } from './amazon-mail.js';
 import { AMAZON_MAIL_STATUS_SECRET_KEY, AMAZON_MAIL_SAMPLES_SECRET_KEY, UNCATEGORIZED_STATUS_SECRET_KEY } from '../../shared/status-keys.js';
-import { CATEGORIZE_ENTRY_CALLBACK } from '../../shared/telegram.js';
+import { CATEGORIZE_ENTRY_CALLBACK, escapeMarkdown } from '../../shared/telegram.js';
 import { categoryFiledChange, stampChange } from '../../shared/change-entries.js';
 import { existsSync } from 'fs';
 import type { SyncResult } from '../../shared/sync-core.js';
@@ -2645,6 +2645,73 @@ describe('buildTelegramCommandHandler', () => {
       const ui = { edit: vi.fn(async () => {}), answer: vi.fn(async () => {}), send: vi.fn(async () => {}) };
       await deps.onMenuCallback!({ data: 'cz:wy:s0:kroger', chatId: 1, messageId: 2 }, ui);
       expect((ui.edit.mock.calls[0] as unknown as [string])[0]).toBe('🔎 *Why is this here?* kroger\n\nTap one to see its story.');
+    });
+  });
+
+  describe('/audit', () => {
+    const NAME = "Joe's *Visa*_[1]";
+    const offAccount = (): Array<[string, string]> => [
+      ['account_mapping', JSON.stringify({ 'sfin-1': 'wf-1', 'sfin-2': 'wf-2' })],
+      ['account_balances', JSON.stringify({
+        'sfin-1': { balance: 3475.23, currency: 'USD', date: 1_760_000_000, drift: 13, measured: true },
+        'sfin-2': { balance: 100, currency: 'USD', date: 1_760_000_000, drift: null, measured: true },
+      })],
+      ['account_names', JSON.stringify({ 'sfin-1': NAME, 'sfin-2': 'Save' })],
+    ];
+    const ui = () => ({ edit: vi.fn(async () => {}), answer: vi.fn(async () => {}), send: vi.fn(async () => {}) });
+
+    it('replies with the menu, Health counted from the database', async () => {
+      const { client } = clientFor();
+      const sent: Array<[string, any]> = [];
+      await buildTelegramCommandHandler(client)({ command: 'audit', args: '' }, async (t, k) => { sent.push([t, k]); });
+      expect(sent[0][0].startsWith('🔎 *Audit*\n')).toBe(true);
+      expect(sent[0][1].inline_keyboard.flat().map((b: any) => b.callback_data)).toEqual(['cz:au:b', 'cz:au:h', 'cz:au:i']);
+      expect(sent[0][1].inline_keyboard[2][0].text).toBe('Health (0)');
+    });
+
+    it("says so when Wealthfolio can't be reached", async () => {
+      const client = { getAddonSecret: vi.fn(async () => { throw new Error('ECONNREFUSED'); }), setAddonSecret: vi.fn() } as any;
+      const { sent, reply } = collector();
+      await buildTelegramCommandHandler(client)({ command: 'audit', args: '' }, reply);
+      expect(sent).toEqual(["Couldn't reach Wealthfolio — try again."]);
+    });
+
+    it('cz:au: taps reach the audit menu, not the transaction menu', async () => {
+      const { client } = clientFor();
+      const deps = buildTelegramListenerDeps(client);
+      const u = ui();
+      await deps.onMenuCallback!({ data: 'cz:au:i', chatId: 1, messageId: 2 }, u);
+      expect((u.edit.mock.calls[0] as unknown as [string])[0]).toBe('🔎 *Health*\nNothing the add-on checks for: no incomplete transfers, late starting balances or $CASH rows.');
+    });
+
+    it('/status puts a 🔎 under each account that is off: the bank name escaped in the text, raw on the button', async () => {
+      const { client } = clientFor(offAccount());
+      const sent: Array<[string, any]> = [];
+      await buildTelegramCommandHandler(client)({ command: 'status', args: '' }, async (t, k) => { sent.push([t, k]); });
+      expect(sent[0][0]).toContain(`${escapeMarkdown(NAME)}: $3,475 · $13 off`);
+      expect(sent[0][0]).not.toContain(NAME);
+      expect(sent[0][1]).toEqual({ inline_keyboard: [[{ text: `🔎 ${NAME}`, callback_data: `cz:au:s${findingHandle('wf-1')}` }]] });
+    });
+
+    it('/status with nothing off replies as it always did, without a keyboard', async () => {
+      const { client } = clientFor(offAccount().filter(([k]) => k !== 'account_balances').concat([['account_balances', JSON.stringify({
+        'sfin-1': { balance: 1, currency: 'USD', date: 1_760_000_000, drift: null, measured: true },
+      })]]));
+      const calls: unknown[][] = [];
+      await buildTelegramCommandHandler(client)({ command: 'status', args: '' }, async (...args: unknown[]) => { calls.push(args); });
+      expect(calls[0]).toHaveLength(1);
+    });
+
+    it('the 🔎 opens why that account is off as a new message, a failed read saying so', async () => {
+      const { client } = clientFor(offAccount());
+      const deps = buildTelegramListenerDeps(client);
+      const u = ui();
+      await deps.onMenuCallback!({ data: `cz:au:s${findingHandle('wf-1')}`, chatId: 1, messageId: 2 }, u);
+      expect(u.edit).not.toHaveBeenCalled();
+      const [text] = u.send.mock.calls[0] as unknown as [string];
+      expect(text.startsWith(`🔎 *Balance*\n${escapeMarkdown(NAME)}\nBank: $3,475.23`)).toBe(true);
+      // This fake client has no valuations: Wealthfolio's figure is unknown, and the reply says why.
+      expect(text).toContain("⚠️ Couldn't read Wealthfolio's balances, so cash accounts aren't compared.");
     });
   });
 
