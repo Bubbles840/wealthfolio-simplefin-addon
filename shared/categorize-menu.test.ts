@@ -3,10 +3,15 @@ import {
   renderScreen,
   applyTap,
   parseNewRuleArgs,
+  resolveAccountQuery,
+  resolveNewRuleCategory,
+  formatAccountQueryMiss,
+  NEWRULE_ACCOUNTS_UNREADABLE,
   MENU_PAGE_SIZE,
   MENU_CALLBACK_PREFIX,
 } from './categorize-menu';
 import type { CategorizeTxn, SpendingCategory, MenuSession, MenuScreen, MenuAction } from './categorize-menu';
+import { resolveCategoryQuery } from './telegram-commands';
 
 // ---- fixtures -------------------------------------------------------------
 
@@ -1415,5 +1420,213 @@ describe('rule learning nudge', () => {
       screen: { kind: 'rulePreview', activityId: 'act-1', categoryId: 'cat-groceries' },
     });
     expect(renderScreen(none).text).not.toContain('Right now that also files');
+  });
+});
+
+describe('guessed categories (3)', () => {
+  const GUESSED = txn({ guess: { categoryId: 'cat-groceries', name: 'Groceries', count: 3 } });
+
+  it('the list shows the guess beside each row that has one', () => {
+    const s = session({ txns: [GUESSED, txn({ activityId: 'act-2', description: 'NO HISTORY' })] });
+    expect(renderScreen(s).keyboard.inline_keyboard.flat().map((b) => b.text).slice(0, 2)).toEqual([
+      'Aug 8 · BOOK STORES · -$10 · probably Groceries',
+      'Aug 8 · NO HISTORY · -$10',
+    ]);
+  });
+
+  it('the transaction screen offers the guess first; its tap is the same assign the grid makes', () => {
+    const s = session({ txns: [GUESSED], screen: { kind: 'txn', activityId: 'act-1' } });
+    const { keyboard, buttons } = renderScreen(s);
+    expect(keyboard.inline_keyboard[0]).toEqual([{ text: '✓ Groceries (like the last 3)', callback_data: `${MENU_CALLBACK_PREFIX}7:0` }]);
+    expect(buttons[0]).toEqual({ kind: 'assign', activityId: 'act-1', categoryId: 'cat-groceries' });
+    const grid = keyboard.inline_keyboard.flat().findIndex((b) => b.text === 'Groceries');
+    expect(buttons[grid]).toEqual(buttons[0]);
+  });
+
+  it('offers no guess for a category the tree no longer has, on the income grid, or when recategorizing', () => {
+    const gone = txn({ guess: { categoryId: 'cat-deleted', name: 'Old', count: 2 } });
+    const first = (s: MenuSession) => renderScreen(s).keyboard.inline_keyboard[0][0].text;
+    expect(first(session({ txns: [gone], screen: { kind: 'txn', activityId: 'act-1' } }))).toBe('Groceries');
+    const income = txn({ direction: 'in', incomeEligible: true, guess: { categoryId: 'cat-groceries', name: 'Groceries', count: 2 } });
+    const incomeCats: SpendingCategory[] = [{ id: 'inc-sal', name: 'Salary & Wages', parentId: null, parentName: null }];
+    expect(first(session({ txns: [income], incomeCategories: incomeCats, screen: { kind: 'txn', activityId: 'act-1' } }))).toBe('Salary & Wages');
+    const recat = session({ mode: 'recategorize', txns: [GUESSED], screen: { kind: 'txn', activityId: 'act-1' } });
+    expect(first(recat)).toBe('Groceries');
+    expect(renderScreen({ ...recat, screen: { kind: 'list', page: 0 } }).keyboard.inline_keyboard[0][0].text).not.toContain('probably');
+  });
+
+  it('escapes a Venmo note full of Markdown in the text and keeps it raw on the buttons', () => {
+    const noted = txn({ description: 'VENMO PAYMENT 1023 · Venmo: *Rent* _Oct_ [2]', accountName: 'J_D Checking', guess: { categoryId: 'cat-groceries', name: 'Groceries', count: 2 } });
+    const { text } = renderScreen(session({ txns: [noted], screen: { kind: 'txn', activityId: 'act-1' } }));
+    expect(text.split('\n')[0]).toBe('VENMO PAYMENT 1023 · Venmo: \\*Rent\\* \\_Oct\\_ \\[2]');
+    expect(text).toContain('J\\_D Checking');
+    expect(renderScreen(session({ txns: [noted] })).keyboard.inline_keyboard[0][0].text)
+      .toBe('Aug 8 · VENMO PAYMENT 1023 · Venmo: *Rent* _Oct_ [2] · -$10 · probably Groceries');
+  });
+
+  it('keeps every callback within 64 bytes with the guess at the widest generation — the longest is 15', () => {
+    const s = session({ txns: [GUESSED], generation: 4294967295, screen: { kind: 'txn', activityId: 'act-1' } });
+    const { keyboard } = renderScreen(s);
+    assertCallbackBytesFit(keyboard);
+    expect(Math.max(...keyboard.inline_keyboard.flat().map((b) => new TextEncoder().encode(b.callback_data).length))).toBe(15);
+  });
+
+  it('keeps a category name full of Markdown raw on the buttons and escaped, outside every entity, wherever the text names it', () => {
+    const odd: SpendingCategory = { id: 'cat-odd', name: 'Fun_&_*Games*', parentId: null, parentName: null };
+    const guessed = txn({ guess: { categoryId: 'cat-odd', name: 'Fun_&_*Games*', count: 2 } });
+    const base = { txns: [guessed], categories: [odd] };
+    // Buttons are plain text: the list suffix and the guess button stay raw.
+    expect(renderScreen(session(base)).keyboard.inline_keyboard[0][0].text).toBe('Aug 8 · BOOK STORES · -$10 · probably Fun_&_*Games*');
+    const txnScreen = renderScreen(session({ ...base, screen: { kind: 'txn', activityId: 'act-1' } }));
+    expect(txnScreen.keyboard.inline_keyboard[0][0].text).toBe('✓ Fun_&_*Games* (like the last 2)');
+    // The one Markdown message that names the category escapes it, unwrapped.
+    const filed = renderScreen(session({ ...base, screen: { kind: 'filed', activityId: 'act-1', categoryId: 'cat-odd', undone: false } }));
+    expect(filed.text).toContain('Fun\\_&\\_\\*Games\\*');
+    expect(filed.text).not.toContain('Fun_&_*Games*');
+  });
+});
+
+
+describe('account-scoped rules (3)', () => {
+  const CHK = { activityId: 'act-1', accountId: 'wf-chk', accountName: 'PNC Checking', description: 'VENMO PAYMENT 1023' };
+  const rows = [
+    txn(CHK),
+    txn({ ...CHK, activityId: 'act-2' }),
+    txn({ ...CHK, activityId: 'act-3', accountId: 'wf-card', accountName: 'Citi Card' }),
+  ];
+  const preview = (onlyAccount?: boolean): MenuScreen => ({ kind: 'rulePreview', activityId: 'act-1', categoryId: 'cat-groceries', ...(onlyAccount ? { onlyAccount } : {}) });
+  const flat = (s: MenuSession) => {
+    const { keyboard, buttons } = renderScreen(s);
+    return keyboard.inline_keyboard.flat().map((b, i) => [b.text, buttons[i]] as const);
+  };
+
+  it('offers "All accounts ⇄ Only <account>" on a filing’s preview, all accounts ticked by default', () => {
+    const s = session({ txns: rows, screen: preview() });
+    expect(flat(s)).toEqual([
+      ['Create rule', { kind: 'createRule', activityId: 'act-1', categoryId: 'cat-groceries' }],
+      ['✓ All accounts', { kind: 'goto', screen: preview() }],
+      ['Only PNC Checking', { kind: 'goto', screen: preview(true) }],
+      ['‹ Back', { kind: 'goto', screen: { kind: 'txn', activityId: 'act-1' } }],
+    ]);
+    expect(renderScreen(s).text).toContain('Right now that also files 2 other uncategorized transactions.');
+  });
+
+  it('scoped: names the account in the copy, counts only its rows, and creates for it', () => {
+    const s = session({ txns: rows, screen: preview(true) });
+    expect(renderScreen(s).text).toBe(
+      'Create this rule?\n'
+      + 'Descriptions containing "VENMO PAYMENT" in PNC Checking → Groceries\n'
+      + 'It will also file any other uncategorized transactions in PNC Checking that match, now and on every future import. '
+      + 'Already-categorized transactions are never touched.\n'
+      + 'Right now that also files 1 other uncategorized transaction.',
+    );
+    expect(flat(s).map(([t]) => t)).toEqual(['Create rule', 'All accounts', '✓ Only PNC Checking', '‹ Back']);
+    expect(flat(s)[0][1]).toEqual({ kind: 'createRule', activityId: 'act-1', categoryId: 'cat-groceries', account: { id: 'wf-chk', name: 'PNC Checking' } });
+  });
+
+  it('a /newrule preview naming an account opens scoped, and can widen to all accounts', () => {
+    const account = { id: 'wf-chk', name: 'PNC Checking' };
+    const free: MenuScreen = { kind: 'freeRulePreview', pattern: 'venmo', categoryId: 'cat-groceries', account, onlyAccount: true };
+    const s = session({ screen: free });
+    expect(renderScreen(s).text.split('\n')[1]).toBe('Descriptions containing "venmo" in PNC Checking → Groceries');
+    expect(flat(s)).toEqual([
+      ['Create rule', { kind: 'createFreeRule', pattern: 'venmo', categoryId: 'cat-groceries', account }],
+      ['All accounts', { kind: 'goto', screen: { kind: 'freeRulePreview', pattern: 'venmo', categoryId: 'cat-groceries', account } }],
+      ['✓ Only PNC Checking', { kind: 'goto', screen: free }],
+      ['Cancel', { kind: 'close' }],
+    ]);
+    const wide = session({ screen: { kind: 'freeRulePreview', pattern: 'venmo', categoryId: 'cat-groceries', account } });
+    expect(flat(wide)[0][1]).toEqual({ kind: 'createFreeRule', pattern: 'venmo', categoryId: 'cat-groceries' });
+  });
+
+  it('says where a scoped rule will file once it exists', () => {
+    const s = session({ screen: { kind: 'ruleCreated', activityId: null, categoryId: 'cat-groceries', accountName: 'J_D *Checking*' } });
+    expect(renderScreen(s).text).toBe('Rule created — future matches in J\\_D \\*Checking\\* will file automatically under Groceries.');
+  });
+
+  it('escapes an account name full of Markdown in the text and keeps it raw on the button', () => {
+    const odd = txn({ ...CHK, accountName: 'J_D *Checking* [1]' });
+    const s = session({ txns: [odd], screen: preview(true) });
+    expect(renderScreen(s).text.split('\n')[1]).toBe('Descriptions containing "VENMO PAYMENT" in J\\_D \\*Checking\\* \\[1] → Groceries');
+    expect(flat(s)[2][0]).toBe('✓ Only J_D *Checking* [1]');
+  });
+
+  it('offers no scope for a row whose account has no name to show', () => {
+    const s = session({ txns: [txn({ ...CHK, accountName: '' })], screen: preview() });
+    expect(flat(s).map(([t]) => t)).toEqual(['Create rule', '‹ Back']);
+  });
+
+  it('keeps every scoped screen’s callbacks within 64 bytes', () => {
+    const long = txn({ ...CHK, accountName: `A Very Long Household Account Name ${'Z'.repeat(80)}` });
+    for (const screen of [preview(), preview(true)]) {
+      assertCallbackBytesFit(renderScreen(session({ txns: [long], generation: 4294967295, screen })).keyboard);
+    }
+  });
+});
+
+describe('/newrule … in <account> (3)', () => {
+  const ACCOUNTS = [{ id: 'wf-chk', name: 'PNC Checking' }, { id: 'wf-sav', name: 'PNC Savings' }, { id: 'wf-card', name: 'Citi Card' }];
+
+  it('keeps the whole category side, and each way to read it as "<category> in <account>" — the last " in " first', () => {
+    expect(parseNewRuleArgs('venmo = rent in pnc checking')).toEqual({
+      pattern: 'venmo', categoryQuery: 'rent in pnc checking', scopedReadings: [{ categoryQuery: 'rent', accountQuery: 'pnc checking' }],
+    });
+    expect(parseNewRuleArgs('venmo = rent in money in bank')).toEqual({
+      pattern: 'venmo', categoryQuery: 'rent in money in bank',
+      scopedReadings: [{ categoryQuery: 'rent in money', accountQuery: 'bank' }, { categoryQuery: 'rent', accountQuery: 'money in bank' }],
+    });
+    expect(parseNewRuleArgs('dine in = restaurants')).toEqual({ pattern: 'dine in', categoryQuery: 'restaurants' });
+  });
+
+  describe('the whole category side first, then " in <account>" (M1)', () => {
+    const CATS = [
+      { id: 'c-dio', name: 'Dine In Out', parentId: null, parentName: null },
+      { id: 'c-gro', name: 'Groceries', parentId: null, parentName: null },
+      { id: 'c-rent', name: 'Rent', parentId: null, parentName: null },
+      { id: 'c-home', name: 'Home', parentId: null, parentName: null },
+      { id: 'c-hi', name: 'Home Improvement', parentId: null, parentName: null },
+    ];
+    const target = (args: string, cats = CATS) => {
+      const r = resolveNewRuleCategory(parseNewRuleArgs(args)!, (q) => resolveCategoryQuery(cats, q));
+      return { kind: r.result.kind, name: r.result.kind === 'one' ? r.result.category.name : undefined, query: r.query, accountQuery: r.accountQuery };
+    };
+
+    it('`x = Dine In Out` with a "Dine In Out" category is that category, for every account', () => {
+      expect(parseNewRuleArgs('x = Dine In Out')).toEqual({
+        pattern: 'x', categoryQuery: 'Dine In Out', scopedReadings: [{ categoryQuery: 'Dine', accountQuery: 'Out' }],
+      });
+      expect(target('x = Dine In Out')).toEqual({ kind: 'one', name: 'Dine In Out', query: 'Dine In Out', accountQuery: undefined });
+    });
+
+    it('`x = dine in pnc` is the category "dine" in the account "pnc"', () => {
+      expect(parseNewRuleArgs('x = dine in pnc')).toEqual({
+        pattern: 'x', categoryQuery: 'dine in pnc', scopedReadings: [{ categoryQuery: 'dine', accountQuery: 'pnc' }],
+      });
+      expect(target('x = dine in pnc')).toEqual({ kind: 'one', name: 'Dine In Out', query: 'dine', accountQuery: 'pnc' });
+    });
+
+    it('a category with " in " in its name can still be scoped, and an account with one still reads', () => {
+      expect(target('x = Dine In Out in pnc checking')).toEqual({ kind: 'one', name: 'Dine In Out', query: 'Dine In Out', accountQuery: 'pnc checking' });
+      expect(target('venmo = rent in money in bank')).toEqual({ kind: 'one', name: 'Rent', query: 'rent', accountQuery: 'money in bank' });
+    });
+
+    it('when no reading names one category, says what the category before the first " in " matched', () => {
+      expect(target('x = hom in pnc')).toEqual({ kind: 'ambiguous', name: undefined, query: 'hom', accountQuery: undefined });
+      expect(target('x = xyzzy in pnc')).toEqual({ kind: 'none', name: undefined, query: 'xyzzy', accountQuery: undefined });
+      expect(target('x = hom')).toEqual({ kind: 'ambiguous', name: undefined, query: 'hom', accountQuery: undefined });
+    });
+  });
+
+  it('resolves the account: an exact name first, else the one name holding the words', () => {
+    expect(resolveAccountQuery(ACCOUNTS, 'citi')).toEqual({ kind: 'one', account: ACCOUNTS[2] });
+    expect(resolveAccountQuery(ACCOUNTS, 'PNC checking')).toEqual({ kind: 'one', account: ACCOUNTS[0] });
+    expect(resolveAccountQuery(ACCOUNTS, 'pnc')).toEqual({ kind: 'many', accounts: [ACCOUNTS[0], ACCOUNTS[1]] });
+    expect(resolveAccountQuery(ACCOUNTS, 'chase')).toEqual({ kind: 'none' });
+  });
+
+  it('asks which account, or names them all, escaped', () => {
+    expect(formatAccountQueryMiss({ kind: 'many', accounts: [ACCOUNTS[0], ACCOUNTS[1]] }, 'pnc', ACCOUNTS)).toBe('Which account? PNC Checking, PNC Savings');
+    expect(formatAccountQueryMiss({ kind: 'none' }, 'chase_1', [{ id: 'x', name: 'J_D Card' }])).toBe('No account matches "chase\\_1". Your accounts: J\\_D Card.');
+    expect(NEWRULE_ACCOUNTS_UNREADABLE).toBe("Couldn't read your accounts just now — try again.");
   });
 });

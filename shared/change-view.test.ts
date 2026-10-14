@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   amazonLabelChange, bankUpdateChange, bookkeepingChange, categoryFiledChange, CHANGE_KINDS, importChange,
-  stampChange, startingBalanceMovedChange, transferLinkChange, transferTypeChange, type ChangeDraft,
+  stampChange, startingBalanceMovedChange, transferLinkChange, transferTypeChange, venmoNoteChange, type ChangeDraft,
 } from './change-entries.js';
 import type { ChangeLogItem } from './change-log.js';
 import {
@@ -28,6 +28,7 @@ describe('groups', () => {
     expect(changeGroupOf('bookkeeping')).toBe('background');
     expect(changeGroupOf('import')).toBe('imports');
     expect(changeGroupOf('category-rule-created')).toBe('rules');
+    expect(changeGroupOf('venmo-note')).toBe('categories');
   });
 
   it('shows a kind from a newer version instead of hiding it', () => {
@@ -71,6 +72,10 @@ describe('words for one entry', () => {
       account: CARD, txKey: 'k', activityId: 'a', description: 'AMAZON', amountCents: -1, date: '2026-09-15',
       beforeNote: 'AMAZON · TRN-1', afterNote: 'AMAZON · Amazon: Books · TRN-1', label: 'Books',
     }), 'AMAZON · TRN-1 → AMAZON · Amazon: Books · TRN-1'],
+    ['a Venmo note', venmoNoteChange({
+      account: CHECKING, txKey: 'k', activityId: 'a', description: 'VENMO', amountCents: -2500, date: '2026-10-04',
+      beforeNote: 'VENMO · TRN-1', afterNote: 'VENMO · Venmo: Rent · TRN-1', note: 'Rent',
+    }), 'VENMO · TRN-1 → VENMO · Venmo: Rent · TRN-1'],
     ['a held transfer', transferTypeChange({
       account: CHECKING, txKey: 'k', activityId: 'a', description: 'X', amountCents: -1, date: '2026-10-01',
       activityType: 'TRANSFER_OUT', previousType: null, held: true,
