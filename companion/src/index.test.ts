@@ -2713,6 +2713,41 @@ describe('buildTelegramCommandHandler', () => {
       // This fake client has no valuations: Wealthfolio's figure is unknown, and the reply says why.
       expect(text).toContain("⚠️ Couldn't read Wealthfolio's balances, so cash accounts aren't compared.");
     });
+
+    it('Link on the Health list re-reads both rows over REST and links them through the sync’s linker', async () => {
+      const { getNativeAuditLedger } = await import('./sqlite-audit.js');
+      const leg = (over: Record<string, unknown>) => ({
+        accountId: 'wf-1', date: '2026-10-04', currency: 'USD', rawType: 'TRANSFER_OUT', type: 'TRANSFER_OUT', status: 'POSTED', absCents: 60000,
+        group: '', assetId: '', external: false, phantomCash: false, notes: 'TRANSFER TO SAVE · TRN-1', ...over,
+      });
+      const ledger = {
+        accounts: [{ id: 'wf-1', name: 'Checking', type: 'CASH', archived: false }, { id: 'wf-2', name: 'Save', type: 'CASH', archived: false }],
+        rows: [leg({ id: 'out-1' }), leg({ id: 'in-1', accountId: 'wf-2', rawType: 'DEPOSIT', type: 'DEPOSIT', date: '2026-10-05', notes: 'FROM CHECKING · TRN-2' })],
+      };
+      // The list's read and the tap's read see the pair; the read after the link sees it gone.
+      vi.mocked(getNativeAuditLedger).mockReturnValueOnce(ledger as any).mockReturnValueOnce(ledger as any);
+      const { client } = clientFor([['account_mapping', JSON.stringify({ 'sfin-1': 'wf-1', 'sfin-2': 'wf-2' })]]);
+      const stored = [
+        { id: 'out-1', accountId: 'wf-1', activityType: 'TRANSFER_OUT', date: '2026-10-04T00:00:00+00:00', amount: '600', currency: 'USD', comment: 'TRANSFER TO SAVE · TRN-1', sourceGroupId: null, metadata: null },
+        { id: 'in-1', accountId: 'wf-2', activityType: 'DEPOSIT', date: '2026-10-05T00:00:00+00:00', amount: '600', currency: 'USD', comment: 'FROM CHECKING · TRN-2', sourceGroupId: null, metadata: null },
+      ];
+      client.getAccounts = vi.fn(async () => [{ id: 'wf-1', accountType: 'CASH' }, { id: 'wf-2', accountType: 'CASH' }]);
+      client.searchActivities = vi.fn(async (b: { activityIdFilter?: string[] }) => stored.filter((r) => b.activityIdFilter?.includes(r.id)));
+      client.saveMany = vi.fn(async (req: { creates?: Array<Record<string, unknown>> }) => ({
+        created: (req.creates ?? []).map((w, i) => ({ id: `new-${i}`, accountId: w.accountId, comment: w.comment, sourceGroupId: w.sourceGroupId })),
+        updated: [], errors: [],
+      }));
+      const deps = buildTelegramListenerDeps(client);
+      const u = ui();
+      await deps.onMenuCallback!({ data: 'cz:au:i', chatId: 1, messageId: 2 }, u);
+      const [, kb] = u.edit.mock.calls[0] as unknown as [string, { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> }];
+      const link = kb.inline_keyboard.flat().find((b) => b.text === 'Link 1')!.callback_data;
+      await deps.onMenuCallback!({ data: link, chatId: 1, messageId: 2 }, u);
+      expect(client.searchActivities).toHaveBeenCalledWith({ page: 0, pageSize: 1, activityIdFilter: ['out-1'] });
+      expect(client.saveMany.mock.calls[0][0]).toMatchObject({ deleteIds: ['out-1', 'in-1'] });
+      expect((client.saveMany.mock.calls[1][0] as { creates: Array<Record<string, unknown>> }).creates.map((w) => w.activityType)).toEqual(['TRANSFER_OUT', 'TRANSFER_IN']);
+      expect((u.edit.mock.calls[1] as unknown as [string])[0].startsWith('🔎 *Health*\nLinked.\n')).toBe(true);
+    });
   });
 
   describe('subscription questions (1.60)', () => {
