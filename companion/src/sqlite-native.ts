@@ -172,6 +172,12 @@ const SPENDING_FROM = `
  *  category itself. Both readers select and filter on this same expression. */
 const SPENDING_CATEGORY = `COALESCE(parent.name, tc.name)`;
 
+/** A spending filing every spending reader counts: its rolled-up category is
+ *  not named like a transfer. Over `tc` (the category) and `parent` (its
+ *  parent, LEFT JOINed). Exported for the audits' month read
+ *  (sqlite-audit.ts), which counts the report's filings per row. */
+export const REPORT_COUNTS_CATEGORY = `LOWER(${SPENDING_CATEGORY}) NOT IN ('transfers', 'transfer', 'internal transfers', 'savings & transfers')`;
+
 /**
  * Wealthfolio's own spending classification, transcribed from upstream —
  * `docs/upstream-spending-buckets.md` §2 quotes the Rust with line numbers.
@@ -290,7 +296,7 @@ function spendingWhere(startInclusive: string, endExclusive: string): string {
       -- an income one and a spending one — so joining every taxonomy counted
       -- the same row twice, under two different category names.
       AND tc.taxonomy_id = 'spending_categories'
-      AND LOWER(${SPENDING_CATEGORY}) NOT IN ('transfers', 'transfer', 'internal transfers', 'savings & transfers')`;
+      AND ${REPORT_COUNTS_CATEGORY}`;
 }
 
 /**

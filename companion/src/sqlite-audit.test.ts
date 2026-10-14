@@ -32,11 +32,14 @@ function ledger(settings = true): string {
       ('act-2', 'wf-chk', 'DEPOSIT', 'TRANSFER_IN', 'refund', 'posted', '2026-10-05T04:00:00+00:00', '12.35', 'USD', 'cash-by-code', '{"flow":{"is_external":false}}', 'A | B · TRN-2', 'g1', '1.5'),
       ('act-3', 'wf-ally', 'WITHDRAWAL', NULL, NULL, 'PENDING', '2026-09-30T00:00:00+00:00', '-9.99', 'USD', '${PHANTOM_CASH_ASSET_ID}', 'not json', NULL, NULL, 'abc'),
       ('act-4', 'wf-chk', 'WITHDRAWAL', '  ', NULL, NULL, '2026-11-01T00:00:00+00:00', '5', 'USD', 'AAPL', '{"flow":{"is_external":"true"}}', 'LATE · TRN-4', NULL, '-3');
-    INSERT INTO taxonomy_categories VALUES ('cat-a', 'spending_categories', 'Food', NULL), ('cat-b', 'spending_categories', 'Fun', 'cat-a'), ('inc', 'income_sources', 'Pay', NULL);
+    INSERT INTO taxonomy_categories VALUES ('cat-a', 'spending_categories', 'Food', NULL), ('cat-b', 'spending_categories', 'Fun', 'cat-a'), ('inc', 'income_sources', 'Pay', NULL),
+      ('cat-t', 'spending_categories', 'Transfers', NULL), ('cat-tc', 'spending_categories', 'Card payments', 'cat-t');
     INSERT INTO activity_taxonomy_assignments VALUES
       ('x1', 'act-2', 'spending_categories', 'cat-a', 10000, 'rule', '2026-10-06T00:00:00Z'),
       ('x2', 'act-2', 'spending_categories', 'cat-b', 10000, 'manual', '2026-10-05T09:00:00Z'),
-      ('x3', 'act-2', 'income_sources', 'inc', 10000, 'manual', '2026-10-01T00:00:00Z');
+      ('x3', 'act-2', 'income_sources', 'inc', 10000, 'manual', '2026-10-01T00:00:00Z'),
+      ('x4', 'act-2', 'spending_categories', 'cat-t', 10000, 'manual', '2026-10-07T00:00:00Z'),
+      ('x5', 'act-2', 'spending_categories', 'cat-tc', 10000, 'manual', '2026-10-07T00:00:01Z');
   `);
   if (settings) {
     db.exec(`
@@ -87,15 +90,17 @@ describe('getNativeAuditLedger', () => {
 });
 
 describe('getNativeHeadlineRows', () => {
-  it('reads the month’s rows in every account, with their spending filings and every category', () => {
+  it('reads the month’s rows in every account: its account and group, the filings the report counts, and every category', () => {
     const rows = getNativeHeadlineRows(ledger(), '2026-10-01', '2026-11-01');
     expect(rows.map((r) => r.id)).toEqual(['act-1', 'act-2']);
     const two = rows[1];
+    // Four spending filings, but the report counts only the two not rolled up to "Transfers" (spendingWhere).
     expect({ ...two, categoryIds: [...two.categoryIds].sort() }).toEqual({
-      id: 'act-2', date: '2026-10-05T04:00:00+00:00', accountType: 'CASH', type: 'DEPOSIT', subtype: 'REFUND', absCents: 1235,
-      spendingFilings: 2, categoryIds: ['cat-a', 'cat-b', 'inc'], spendingCategoryId: 'cat-b', accountName: 'PNC Checking', notes: 'A | B · TRN-2',
+      id: 'act-2', date: '2026-10-05T04:00:00+00:00', accountId: 'wf-chk', groupId: 'g1', accountType: 'CASH', type: 'DEPOSIT', subtype: 'REFUND',
+      absCents: 1235, spendingFilings: 2, categoryIds: ['cat-a', 'cat-b', 'cat-t', 'cat-tc', 'inc'], spendingCategoryId: 'cat-b',
+      accountName: 'PNC Checking', notes: 'A | B · TRN-2',
     });
-    expect(rows[0]).toMatchObject({ spendingFilings: 0, categoryIds: [], spendingCategoryId: null });
+    expect(rows[0]).toMatchObject({ accountId: 'wf-chk', groupId: '', spendingFilings: 0, categoryIds: [], spendingCategoryId: null });
   });
 
   it('refuses malformed bounds, and throws when the database cannot be read', () => {
@@ -105,10 +110,19 @@ describe('getNativeHeadlineRows', () => {
 });
 
 describe('getNativeAuditSettings', () => {
-  it('reads Wealthfolio’s timezone, the categories it excludes and each spending category’s parent', () => {
+  it('reads Wealthfolio’s timezone, the categories it excludes, each spending category’s parent and the Spending page’s accounts', () => {
     expect(getNativeAuditSettings(ledger())).toEqual({
-      timezone: 'America/New_York', excludedCategoryIds: ['cat-a', 'cat-b'], categoryParents: { 'cat-a': null, 'cat-b': 'cat-a' }, spendingOn: true,
+      timezone: 'America/New_York', excludedCategoryIds: ['cat-a', 'cat-b'],
+      categoryParents: { 'cat-a': null, 'cat-b': 'cat-a', 'cat-t': null, 'cat-tc': 'cat-t' }, spendingOn: true, spendingAccountIds: ['wf-chk'],
     });
+  });
+
+  it('reads the Spending page’s accounts as Wealthfolio does: opted in, existing and not archived', () => {
+    const path = ledger();
+    const db = new DatabaseSync(path);
+    db.exec(`UPDATE app_settings SET setting_value = '["wf-ally", "wf-chk", "wf-gone"]' WHERE setting_key = 'spending.account_ids';`);
+    db.close();
+    expect(getNativeAuditSettings(path)).toMatchObject({ spendingOn: true, spendingAccountIds: ['wf-chk'] });
   });
 
   it('reads one non-string element as no exclusions at all, as upstream does', () => {
@@ -137,7 +151,7 @@ describe('getNativeAuditSettings', () => {
     const db = new DatabaseSync(path);
     db.exec(`${sql};`);
     db.close();
-    expect(getNativeAuditSettings(path).spendingOn).toBe(false);
+    expect(getNativeAuditSettings(path)).toMatchObject({ spendingOn: false, spendingAccountIds: [] });
   });
 
   it('reads an unset or unparseable setting as none, and a missing table as unreadable', () => {
@@ -162,8 +176,9 @@ describe('the CLI fallback parsers split on the unit separator', () => {
     expect(auditRowFromCliParts(['act-1', 'x'])).toBeNull();
     expect(auditRowFromCliParts([...row.slice(0, 7), 'oops', ...row.slice(8)])).toBeNull();
     expect(auditAccountFromCliParts(['wf-chk', 'CASH', '0', '1', 'Joe\x1fCo'])).toEqual({ c0: 'wf-chk', c1: 'CASH', c2: '0', c3: '1', c4: 'Joe\x1fCo' });
-    const month = ['act-2', '2026-10-05', 'CASH', 'DEPOSIT', '', '1235', '2', 'cat-a,cat-b', 'cat-b', 'PNC', 'A | B'];
-    expect(headlineRowFromCliParts(month)).toMatchObject({ c5: '1235', c8: 'cat-b', c10: 'A | B' });
+    const month = ['act-2', '2026-10-05', 'wf-chk', 'g1', 'CASH', 'DEPOSIT', '', '1235', '2', 'cat-a,cat-b', 'cat-b', 'PNC', 'A\x1fB | C'];
+    expect(headlineRowFromCliParts(month)).toMatchObject({ c2: 'wf-chk', c3: 'g1', c7: '1235', c10: 'cat-b', c12: 'A\x1fB | C' });
     expect(headlineRowFromCliParts(month.slice(0, 5))).toBeNull();
+    expect(headlineRowFromCliParts([...month.slice(0, 7), 'oops', ...month.slice(8)])).toBeNull();
   });
 });

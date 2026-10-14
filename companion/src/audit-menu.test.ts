@@ -46,9 +46,9 @@ const balances = (): BalanceReport & { reached: boolean } => ({
   reached: true,
 });
 const headline = (): HeadlineExplanation => explainHeadline({
-  month: '2026-10', today: '2026-10-13', reportCents: 130000, wealthfolioCents: 120000, excludedCategoryIds: [],
+  month: '2026-10', timezone: 'America/New_York', reportCents: 130000, wealthfolioCents: 120000, excludedCategoryIds: [],
   rows: Array.from({ length: 23 }, (_, i) => ({
-    id: `h${i}`, date: '2026-10-01T00:00:00+00:00', accountName: NAME, accountType: 'CASH', type: 'WITHDRAWAL', subtype: '',
+    id: `h${i}`, date: '2026-10-01T00:00:00+00:00', accountId: 'wf-chk', groupId: '', accountName: NAME, accountType: 'CASH', type: 'WITHDRAWAL', subtype: '',
     absCents: 100, notes: `${BANK} · TRN-${i}`, spendingFilings: 1, categoryIds: ['c'],
   })),
 });
@@ -226,7 +226,7 @@ describe('failed reads are not "gone", and hostile text is escaped everywhere', 
 
   it('answers a failed ledger read with its note on a reason or issue tap, never "gone"', async () => {
     const unread = deps({
-      headline: vi.fn(async () => explainHeadline({ month: '2026-10', today: '2026-10-13', reportCents: 1, wealthfolioCents: 2, failed: ['ledger'] })),
+      headline: vi.fn(async () => explainHeadline({ month: '2026-10', reportCents: 1, wealthfolioCents: 2, failed: ['ledger'] })),
       health: vi.fn(async () => ({ ...healthIssues({ mapping: {}, failed: ['ledger'] }), reached: true })),
     });
     const u = ui();
@@ -282,9 +282,9 @@ describe('failed reads are not "gone", and hostile text is escaped everywhere', 
   it('keeps every screen under 4,096 characters with 20 rows of very long descriptions', () => {
     const long = 'X'.repeat(500);
     const h = explainHeadline({
-      month: '2026-10', today: '2026-10-13', reportCents: 130000, wealthfolioCents: 120000, excludedCategoryIds: [],
+      month: '2026-10', timezone: 'America/New_York', reportCents: 130000, wealthfolioCents: 120000, excludedCategoryIds: [],
       rows: Array.from({ length: 30 }, (_, i) => ({
-        id: `h${i}`, date: '2026-10-01T00:00:00+00:00', accountName: 'A', accountType: 'CASH', type: 'WITHDRAWAL', subtype: '',
+        id: `h${i}`, date: '2026-10-01T00:00:00+00:00', accountId: 'wf-chk', groupId: '', accountName: 'A', accountType: 'CASH', type: 'WITHDRAWAL', subtype: '',
         absCents: 100, notes: `${long} · TRN-${i}`, spendingFilings: 1, categoryIds: ['c'],
       })),
     });

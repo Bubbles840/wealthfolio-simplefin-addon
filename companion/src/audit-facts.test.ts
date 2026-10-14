@@ -50,7 +50,7 @@ function readers(over: Partial<AuditReaders> = {}): AuditReaders {
     accounts: async () => [{ id: 'wf-chk', accountType: 'CASH' }, { id: 'wf-ally', accountType: 'CASH' }],
     ledger: () => LEDGER,
     headlineRows: () => [],
-    settings: () => ({ timezone: 'America/New_York', excludedCategoryIds: [], categoryParents: {}, spendingOn: true }),
+    settings: () => ({ timezone: 'America/New_York', excludedCategoryIds: [], categoryParents: {}, spendingOn: true, spendingAccountIds: ['wf-chk'] }),
     spendingSpent: async () => 1200,
     ...over,
   };
@@ -128,7 +128,7 @@ describe('runAudit', () => {
 
   it('treats a turned-off Spending page as no figure, and never asks it', async () => {
     const spendingSpent = vi.fn(async () => 0);
-    const settings = () => ({ timezone: 'America/New_York', excludedCategoryIds: [], categoryParents: {}, spendingOn: false });
+    const settings = () => ({ timezone: 'America/New_York', excludedCategoryIds: [], categoryParents: {}, spendingOn: false, spendingAccountIds: [] });
     const out = await runAudit(readers({ spendingSpent, settings }), NOW);
     expect(spendingSpent).not.toHaveBeenCalled();
     expect(out.headline.wealthfolioCents).toBeNull();
@@ -154,7 +154,22 @@ describe('gatherHeadlineFacts', () => {
     const facts = await gatherHeadlineFacts(readers({ spendingSpent, headlineRows }), NOW);
     expect(spendingSpent).toHaveBeenCalledWith('2026-10-01T04:00:00.000Z', '2026-11-01T03:59:59.999Z');
     expect(headlineRows).toHaveBeenCalledWith('2026-10-01', '2026-11-01');
-    expect(facts).toMatchObject({ month: '2026-10', today: '2026-10-13', reportCents: 130000, wealthfolioCents: 130140, excludedCategoryIds: [] });
+    expect(facts).toMatchObject({ month: '2026-10', reportCents: 130000, wealthfolioCents: 130140, excludedCategoryIds: [] });
+    expect(facts).not.toHaveProperty('today');
+  });
+
+  it('carries each side’s scope: Wealthfolio’s timezone and Spending accounts, the report’s mapped accounts', async () => {
+    const secret = async (k: string) => (k === 'account_mapping' ? JSON.stringify({ 'sfin-chk': 'wf-chk', 'sfin-card': 'wf-card', 'sfin-gone': '' }) : SECRETS[k] ?? null);
+    const facts = await gatherHeadlineFacts(readers({ secret }), NOW);
+    expect(facts).toMatchObject({ timezone: 'America/New_York', spendingAccountIds: ['wf-chk'], reportAccountIds: ['wf-chk', 'wf-card'] });
+  });
+
+  it('leaves both scopes unknown, and the month in the companion’s zone, when their reads fail', async () => {
+    const facts = await gatherHeadlineFacts(readers({ settings: boom, ...failingSecret('account_mapping') }), NOW);
+    expect(facts.timezone).toBeNull();
+    expect(facts.spendingAccountIds).toBeUndefined();
+    expect(facts.reportAccountIds).toBeUndefined();
+    expect(facts.failed).toEqual(['settings']);
   });
 
   it('takes the report’s figure only from a cube built this month', async () => {

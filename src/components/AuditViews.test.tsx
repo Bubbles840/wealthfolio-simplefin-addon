@@ -34,8 +34,11 @@ const LEDGER = {
 
 function results(): AuditResults {
   const headline = explainHeadline({
-    month: '2026-10', today: '2026-10-13', reportCents: 130000, wealthfolioCents: 120000, excludedCategoryIds: [],
-    rows: [{ id: 'h', date: '2026-10-01T00:00:00+00:00', accountName: NAME, accountType: 'CASH', type: 'WITHDRAWAL', subtype: '', absCents: 2500, notes: `${BANK} · TRN-9`, spendingFilings: 1, categoryIds: ['c'] }],
+    month: '2026-10', timezone: 'America/New_York', reportCents: 130000, wealthfolioCents: 120000, excludedCategoryIds: [],
+    rows: [{
+      id: 'h', date: '2026-10-01T00:00:00+00:00', accountId: 'wf-chk', groupId: '', accountName: NAME, accountType: 'CASH', type: 'WITHDRAWAL', subtype: '',
+      absCents: 2500, notes: `${BANK} · TRN-9`, spendingFilings: 1, categoryIds: ['c'],
+    }],
   });
   headline.reasons![0].more = 5;
   return {

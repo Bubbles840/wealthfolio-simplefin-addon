@@ -50,7 +50,7 @@ function worstCase(): AuditResults {
 function small(): AuditResults {
   return {
     balances: { accounts: [account(1)], notes: [] },
-    headline: { month: '2026-10', reportCents: 100, wealthfolioCents: 90, unexplainedCents: 0, notes: [], reasons: [{ kind: 'future', cents: 10, rows: [headlineRow(1)] }] },
+    headline: { month: '2026-10', reportCents: 100, wealthfolioCents: 90, unexplainedCents: 0, notes: [], reasons: [{ kind: 'first-midnight', cents: 10, rows: [headlineRow(1)] }] },
     health: { issues: [], notes: [] },
   };
 }
@@ -89,7 +89,7 @@ describe('buildAuditSnapshot', () => {
 
   it('counts bytes, not characters: 3-byte text under 100,000 characters still trims', () => {
     const r = small();
-    r.headline.reasons = [{ kind: 'future', cents: 1, rows: Array.from({ length: 400 }, (_, i) => ({ ...headlineRow(i), description: '€'.repeat(110) })) }];
+    r.headline.reasons = [{ kind: 'double-filed', cents: 1, rows: Array.from({ length: 400 }, (_, i) => ({ ...headlineRow(i), description: '€'.repeat(110) })) }];
     const chars = JSON.stringify(r).length;
     expect(chars).toBeLessThan(AUDIT_SNAPSHOT_MAX_BYTES);
     expect(bytes(JSON.stringify(r))).toBeGreaterThan(AUDIT_SNAPSHOT_MAX_BYTES);
@@ -127,7 +127,7 @@ describe('parseAuditSnapshot', () => {
       JSON.stringify({ ...good, at: 'yesterday' }),
       JSON.stringify({ ...good, balances: [] }),
       JSON.stringify({ ...good, balances: { x: { name: 'A' } } }),
-      JSON.stringify({ ...good, headline: { ...good.headline, reasons: [{ kind: 'future', cents: 1 }] } }),
+      JSON.stringify({ ...good, headline: { ...good.headline, reasons: [{ kind: 'excluded', cents: 1 }] } }),
       JSON.stringify({ ...good, health: { issues: 'none', notes: [] } }),
       JSON.stringify({ ...good, health: { issues: [{ kind: 'late-start' }], notes: [] } }),
       'null', '[]', '5', '"text"',
@@ -137,7 +137,7 @@ describe('parseAuditSnapshot', () => {
       JSON.stringify({ ...good, health: { issues: [{ kind: 'incomplete-leg', key: 'k' }], notes: [] } }),
       JSON.stringify({ ...good, health: { issues: [{ kind: 'incomplete-leg', key: 'k', leg: { activityId: 'a', accountId: 'b', absCents: 'x' } }], notes: [] } }),
       JSON.stringify({ ...good, health: { issues: [{ kind: 'incomplete-leg', key: 'k', leg: { activityId: 'a', accountId: 'b', absCents: 1 }, counterpart: {} }], notes: [] } }),
-      JSON.stringify({ ...good, headline: { ...good.headline, reasons: [{ kind: 'future', cents: 1, rows: [{ date: 'x' }] }] } }),
+      JSON.stringify({ ...good, headline: { ...good.headline, reasons: [{ kind: 'excluded', cents: 1, rows: [{ date: 'x' }] }] } }),
       JSON.stringify({ ...good, balances: { [uuid(1)]: { ...account(1), causes: [{ kind: 'pending' }] } } }),
       JSON.stringify({ ...good, balances: { [uuid(1)]: { ...account(1), causes: [5] } } }),
       JSON.stringify({ ...good, balances: { [uuid(1)]: { ...account(1), offCents: 'x' } } }),
@@ -210,15 +210,15 @@ describe('round trip through the real builders', () => {
   };
   const noLedger: BalanceFacts = { mapping, names: {}, failed: ['ledger', 'balances', 'valuations'] };
   const rows = [
-    { id: 'h1', date: '2026-10-01T00:00:00+00:00', accountName: 'A', accountType: 'CASH', type: 'WITHDRAWAL', subtype: '', absCents: 100, notes: 'RENT · TRN-1', spendingFilings: 2, categoryIds: ['c'] },
-    { id: 'h2', date: '2026-10-20T00:00:00+00:00', accountName: 'A', accountType: 'CASH', type: 'WITHDRAWAL', subtype: '', absCents: 200, notes: 'GYM · TRN-2', spendingFilings: 1, categoryIds: [] },
-    { id: 'h3', date: '2026-10-05T00:00:00+00:00', accountName: 'A', accountType: 'CASH', type: 'DEPOSIT', subtype: '', absCents: 300, notes: 'REFUND · TRN-3', spendingFilings: 0, categoryIds: [] },
+    { id: 'h1', date: '2026-10-01T00:00:00+00:00', accountId: 'wf-a', groupId: '', accountName: 'A', accountType: 'CASH', type: 'WITHDRAWAL', subtype: '', absCents: 100, notes: 'RENT · TRN-1', spendingFilings: 2, categoryIds: ['c', 'd'] },
+    { id: 'h2', date: '2026-10-03T00:00:00+00:00', accountId: 'wf-a', groupId: '', accountName: 'A', accountType: 'CASH', type: 'CREDIT', subtype: 'REFUND', absCents: 200, notes: 'RETURN · TRN-2', spendingFilings: 0, categoryIds: [] },
+    { id: 'h3', date: '2026-10-05T00:00:00+00:00', accountId: 'wf-a', groupId: '', accountName: 'A', accountType: 'CASH', type: 'DEPOSIT', subtype: '', absCents: 300, notes: 'REFUND · TRN-3', spendingFilings: 0, categoryIds: [] },
   ];
 
   it('parses a snapshot of real results as ok, nulls and all', () => {
     const full = {
       balances: explainBalances(balanceFacts),
-      headline: explainHeadline({ month: '2026-10', today: '2026-10-13', reportCents: 5000, wealthfolioCents: 4000, rows }),
+      headline: explainHeadline({ month: '2026-10', timezone: 'America/New_York', reportCents: 5000, wealthfolioCents: 4000, rows }),
       health: healthIssues({ ledger, mapping }),
     };
     const kinds = new Set(full.health.issues!.map((i) => i.kind));
@@ -231,7 +231,7 @@ describe('round trip through the real builders', () => {
 
     const degraded = {
       balances: explainBalances(noLedger),
-      headline: explainHeadline({ month: '2026-10', today: '2026-10-13', failed: ['ledger', 'report', 'wealthfolio'] }),
+      headline: explainHeadline({ month: '2026-10', failed: ['ledger', 'report', 'wealthfolio'] }),
       health: healthIssues({ mapping, failed: ['ledger'] }),
     };
     const accs = degraded.balances.accounts;

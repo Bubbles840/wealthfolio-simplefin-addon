@@ -63,7 +63,7 @@ function snapshot(): AuditSnapshotRead {
       mapping: { 'sfin-2': 'wf-b' }, balances: { 'sfin-2': { balance: -420.1, date: null } }, names: { 'sfin-2': 'Spend' },
       valuations: { 'wf-b': -43532 }, ledger,
     }),
-    headline: explainHeadline({ month: '2026-10', today: '2026-10-13', reportCents: 130000, wealthfolioCents: 120000, rows: [], excludedCategoryIds: [] }),
+    headline: explainHeadline({ month: '2026-10', reportCents: 130000, wealthfolioCents: 120000, rows: [], excludedCategoryIds: [] }),
     health: healthIssues({ ledger, mapping: { 'sfin-2': 'wf-b' } }),
   }, AT)));
 }
