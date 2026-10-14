@@ -4,6 +4,7 @@ import {
   transferLinkChange, transferTypeChange, type ChangeDraft,
 } from './change-entries';
 import type { ChangeLogItem } from './change-log';
+import { OPENING_BALANCES_CATEGORY } from './sync-core';
 import {
   buildTxStory, decodeFiler, encodeFiler, inferFilingRule, resolveFiler, ruleMatchesRow, signedCents, splitAmazonLabel,
   TX_FACT_NOTES, TX_STORY_ASK_TELEGRAM, TX_STORY_MONEY_IN, TX_STORY_NOT_FILED, TX_STORY_NOT_FROM_FEED,
@@ -301,6 +302,15 @@ describe('resolveFiler', () => {
     }), 3);
     expect(resolveFiler({ source: 'manual', categoryId: 'cat-open', row: rowFor('Starting balance · ACT-chk'), history: [opening], rules: null }))
       .toEqual({ kind: 'opening' });
+  });
+
+  it('a starting balance with no filing in the log: the add-on’s when it is under Opening balances, else no filer', () => {
+    const start = rowFor('Starting balance · ACT-card');
+    const input = { source: 'manual', categoryId: 'cat-open', row: start, rules: null };
+    expect(resolveFiler({ ...input, categoryName: OPENING_BALANCES_CATEGORY, history: [] })).toEqual({ kind: 'opening' });
+    expect(resolveFiler({ ...input, categoryName: OPENING_BALANCES_CATEGORY, history: null })).toEqual({ kind: 'opening' });
+    expect(resolveFiler({ ...input, categoryId: 'cat-gro', categoryName: 'Groceries', history: [] })).toBeNull();
+    expect(resolveFiler({ ...input, history: [] })).toBeNull();
   });
 
   it('a cube "you" takes its day from the log', () => {

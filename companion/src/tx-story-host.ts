@@ -204,6 +204,7 @@ export async function companionTxStory(readers: StoryReaders, activityId: string
       const filer = resolveFiler({
         source: a.source,
         categoryId: a.categoryId,
+        categoryName: a.categoryName,
         row: { note, activityType: row.activityType, accountId: item.accountId, absCents: row.absCents },
         history: partial ? null : history,
         rules,

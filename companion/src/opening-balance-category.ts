@@ -24,9 +24,9 @@
 import { existsSync } from 'fs';
 import { DatabaseSync } from 'node:sqlite';
 import { bookkeepingChange, openingBalanceFiledChange, type ChangeDraft } from '../../shared/change-entries.js';
-import { STARTING_BALANCE_COMMENT_PREFIX } from '../../shared/sync-core.js';
+import { OPENING_BALANCES_CATEGORY, STARTING_BALANCE_COMMENT_PREFIX } from '../../shared/sync-core.js';
 
-export const OPENING_BALANCES_CATEGORY = 'Opening balances';
+export { OPENING_BALANCES_CATEGORY };
 const TAXONOMY = 'spending_categories';
 
 export interface OpeningBalanceFilingDeps {
