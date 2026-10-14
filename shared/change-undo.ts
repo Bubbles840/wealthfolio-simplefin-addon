@@ -14,7 +14,8 @@
  * Every plan puts its override steps FIRST: an override left behind by a
  * reversal that then failed is harmless, and the failure is reported.
  */
-import type { ChangeEntry } from './change-entries.js';
+import { BUDGET_TAXONOMY, DEFAULT_PERIOD_KEY, isClearedDefault, type BudgetTarget } from './budget-suggest.js';
+import { changeMoney, type ChangeEntry } from './change-entries.js';
 import type { ChangeLogItem } from './change-log.js';
 import type { ActivityWrite, ImportRow } from './sync-host.js';
 import type { AccountOverrideFlag, TxOverrideFlag } from './sync-overrides.js';
@@ -29,9 +30,10 @@ export type UndoVariant = 'plain' | 'unfile';
 export const SYNC_DECISION_KINDS: ReadonlySet<string> = new Set([
   'transfer-link', 'transfer-type', 'duplicate-removed', 'balance-correction', 'import', 'amazon-label', 'venmo-note',
 ]);
-/** Kinds only the companion can reverse: the add-on SDK has no category or rule API. */
+/** Kinds only the companion can reverse: the add-on SDK has no category, rule
+ *  or budget API. */
 export const COMPANION_ONLY_KINDS: ReadonlySet<string> = new Set([
-  'category-filed', 'opening-balance-filed', 'category-rule-created',
+  'category-filed', 'opening-balance-filed', 'category-rule-created', 'budget-set',
 ]);
 export const UNDO_KINDS: ReadonlySet<string> = new Set([
   ...SYNC_DECISION_KINDS, ...COMPANION_ONLY_KINDS, 'mapping-rule-created', 'starting-balance', 'starting-balance-moved',
@@ -173,6 +175,12 @@ export function currentRuleId(entry: ChangeEntry, latest: ChangeEntry | null): s
   return latest ? str(rec(latest.after).ruleId) : str(rec(entry.after).ruleId);
 }
 
+/** The budget target the next undo acts on: the entry's, or the one the last
+ *  Redo created (null after an Undo). */
+export function currentBudgetTargetId(entry: ChangeEntry, latest: ChangeEntry | null): string | null {
+  return latest ? str(rec(latest.after).targetId) : str(rec(entry.after).targetId);
+}
+
 /** A row as the planner needs it, re-read by the runner. */
 export interface UndoRow {
   id: string;
@@ -206,6 +214,8 @@ export interface UndoState {
   startingBalanceId?: string | null;
   /** The entry's tx key, or one derived from the row's note when it has none. */
   txKey?: string | null;
+  /** `budget-set`: every budget target now (`GET /spending/budget`). */
+  budgetTargets?: BudgetTarget[];
   /** The account's currency, for a row written back. */
   currency?: string;
 }
@@ -228,7 +238,10 @@ export type UndoStep =
   | { do: 'delete-rule'; ruleId: string }
   | { do: 'create-rule'; rule: { name: string; pattern: string; categoryId: string; accountId?: string } }
   | { do: 'mapping-remove'; rule: MappingRule }
-  | { do: 'mapping-add'; rule: MappingRule };
+  | { do: 'mapping-add'; rule: MappingRule }
+  | { do: 'delete-budget'; targetId: string }
+  /** A category's default monthly budget; the id is read back from Wealthfolio's reply. */
+  | { do: 'set-budget'; categoryId: string; amountCents: number };
 
 export interface UndoPlan {
   op: UndoOp;
@@ -242,6 +255,8 @@ export interface UndoPlan {
   rowAfter?: string | null | 'created';
   /** The rule after this plan, likewise. */
   ruleAfter?: null | 'created';
+  /** The budget target after this plan, likewise. */
+  budgetAfter?: null | 'created';
 }
 
 export type UndoDecision = { ok: true; plan: UndoPlan } | { ok: false; reason: string };
@@ -423,6 +438,41 @@ export function planChangeUndo(
         done: opts.variant === 'unfile'
           ? `Undone — the rule is gone and ${n} ${n === 1 ? 'charge is' : 'charges are'} back in the needs-a-category list.`
           : 'Undone — the rule is gone.',
+      });
+    }
+
+    case 'budget-set': {
+      const categoryId = str(after.categoryId);
+      const amountCents = num(after.amountCents);
+      const name = str(after.categoryName) ?? 'That category';
+      if (!categoryId || amountCents === null) return refuse(UNDO_NOT_POSSIBLE);
+      const targets = state.budgetTargets ?? [];
+      if (op === 'redo') {
+        // Never over a budget set since: Wealthfolio's POST would overwrite it. Only a
+        // DEFAULT blocks (a $0 one is Wealthfolio's cleared state, not a budget): a this-month target is untouched by the default POST and sat
+        // beside the default before the Undo, so it deliberately does not block Redo.
+        const again = targets.some((t) => t.targetType === 'category' && t.taxonomyId === BUDGET_TAXONOMY
+          && t.categoryId === categoryId && t.periodKey === DEFAULT_PERIOD_KEY && !isClearedDefault(t));
+        if (again) return refuse(`${name} has a budget again — nothing was redone.`);
+        return plan({
+          op, needsSync: false, budgetAfter: 'created', done: `Redone — ${name} has its ${changeMoney(amountCents)} budget back.`,
+          steps: [{ do: 'set-budget', categoryId, amountCents }],
+        });
+      }
+      const id = currentBudgetTargetId(entry, opts.latest);
+      // No id known (a Redo whose reply named no target, or an entry recorded without
+      // one): a live entry's budget is the category's default target.
+      const live = !opts.latest || opts.latest.reverses?.op === 'redo';
+      const now = id ? targets.find((t) => t.id === id)
+        : live ? targets.find((t) => t.targetType === 'category' && t.taxonomyId === BUDGET_TAXONOMY
+          && t.categoryId === categoryId && t.periodKey === DEFAULT_PERIOD_KEY) : undefined;
+      if (!now) return refuse('That budget is already gone — nothing was undone.');
+      if (now.amountCents !== amountCents || now.periodKey !== DEFAULT_PERIOD_KEY || now.categoryId !== categoryId) {
+        return refuse(undoChangedSince(op));
+      }
+      return plan({
+        op, needsSync: false, budgetAfter: null, done: `Undone — ${name} has no budget.`,
+        steps: [{ do: 'delete-budget', targetId: now.id }],
       });
     }
 

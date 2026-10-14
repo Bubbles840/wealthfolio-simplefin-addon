@@ -7,6 +7,7 @@
  * so a `--` comment ends at its own line. Flattened onto one line, the comment
  * in `spendingWhere` swallowed the taxonomy filter and the GROUP BY, and the
  * uncategorized reader's swallowed the group, type, note and scope filters.
+ * The budget readers (`/budgets`) take the same path.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
@@ -21,7 +22,7 @@ vi.mock('node:sqlite', () => ({
   },
 }));
 
-import { getNativeSpendMatrix, getNativeUncategorizedSpending } from './sqlite-native.js';
+import { getNativeBudgetSpend, getNativeSpendingHistoryStart, getNativeSpendMatrix, getNativeUncategorizedSpending } from './sqlite-native.js';
 
 let hasSqlite3 = true;
 try { execFileSync('sqlite3', ['-version'], { stdio: 'ignore' }); } catch { hasSqlite3 = false; }
@@ -106,6 +107,36 @@ describe.skipIf(!hasSqlite3)('the sqlite3 CLI fallback, for real', () => {
       },
     ]);
     expect(errors).toHaveBeenCalledWith(expect.stringContaining('node:sqlite uncategorized error'), expect.anything());
+    expect(errors).not.toHaveBeenCalledWith(expect.stringContaining('Failed to read native sqlite'), expect.anything());
+  });
+
+  it('getNativeBudgetSpend and getNativeSpendingHistoryStart keep their filters: the same rows as the node path', () => {
+    const path = database(`
+      INSERT INTO taxonomy_categories (id, name, parent_id, taxonomy_id) VALUES
+        ('cat-food', 'Food', NULL, 'spending_categories'), ('cat-fun', 'Fun', 'cat-food', 'spending_categories'),
+        ('cat-gro', 'Groceries', NULL, 'spending_categories'), ('cat-tr', 'Transfers', NULL, 'spending_categories'),
+        ('inc', 'Pay', NULL, 'income_sources');
+      INSERT INTO activities (id, amount, activity_date, activity_type, notes, account_id) VALUES
+        ('own', '50', '2026-08-03', 'WITHDRAWAL', 'a', 'acct-cash'),
+        ('sub', '100', '2026-08-04', 'WITHDRAWAL', 'b', 'acct-cash'),
+        ('gro', '30', '2026-08-05', 'WITHDRAWAL', 'c', 'acct-card'),
+        ('else', '999', '2026-08-06', 'WITHDRAWAL', 'd', 'acct-off'),
+        ('xfer', '700', '2026-08-07', 'WITHDRAWAL', 'e', 'acct-cash'),
+        ('pay', '2000', '2026-08-08', 'DEPOSIT', 'f', 'acct-cash'),
+        ('first', '5', '2026-06-20T04:00:00+00:00', 'DEPOSIT', 'g', 'acct-card');
+      INSERT INTO activity_taxonomy_assignments VALUES
+        ('own', 'cat-food', 'spending_categories', 'manual'), ('sub', 'cat-fun', 'spending_categories', 'manual'),
+        ('gro', 'cat-gro', 'spending_categories', 'manual'), ('else', 'cat-gro', 'spending_categories', 'manual'),
+        ('xfer', 'cat-tr', 'spending_categories', 'manual'), ('pay', 'inc', 'income_sources', 'manual');
+    `);
+    const scope = { spendingAccountIds: ['acct-cash', 'acct-card'], excludedCategoryIds: ['cat-fun'], categoryParents: { 'cat-fun': 'cat-food' } as Record<string, string | null> };
+    // The excluded subcategory, the non-spending account, the transfer-named
+    // category and the income row are all absent; nothing is merged into one row.
+    expect(getNativeBudgetSpend(path, '2026-07-01', '2026-10-01', scope).sort((a, b) => a.category.localeCompare(b.category))).toEqual([
+      { month: '2026-08', category: 'Food', accountId: 'acct-cash', amount: 50 },
+      { month: '2026-08', category: 'Groceries', accountId: 'acct-card', amount: 30 },
+    ]);
+    expect(getNativeSpendingHistoryStart(path, ['acct-cash', 'acct-card'])).toBe('2026-06-20');
     expect(errors).not.toHaveBeenCalledWith(expect.stringContaining('Failed to read native sqlite'), expect.anything());
   });
 });

@@ -24,7 +24,8 @@ const ADDON_ID = 'simplefin-sync';
 /** What Undo needs of a `WealthfolioClient`. */
 export type UndoClient = SecretClient & Pick<WealthfolioClient,
   'getActivityAssignments' | 'assignActivityCategory' | 'unassignActivityCategory'
-  | 'listCategorizationRules' | 'createCategorizationRule' | 'deleteCategorizationRule'>;
+  | 'listCategorizationRules' | 'createCategorizationRule' | 'deleteCategorizationRule'
+  | 'getBudgetTargets' | 'setDefaultBudgetTarget' | 'deleteBudgetTarget'>;
 
 export function companionUndoIo(
   client: UndoClient,
@@ -50,6 +51,19 @@ export function companionUndoIo(
       create: (rule) => client.createCategorizationRule({ ...rule, taxonomyId: SPENDING_TAXONOMY, priority: 50 }),
       remove: (id) => client.deleteCategorizationRule(id),
       filedBy: async (rule) => getNativeRuleFiledActivityIds(dbPath, rule.categoryId, rule.pattern),
+    },
+    // `budget-set` (project 4). An empty snapshot means Wealthfolio's Spending
+    // tracker is off, not that the budget is gone: that is unreadable, so the
+    // Undo says it couldn't reach Wealthfolio and changes nothing.
+    budgets: {
+      targets: async () => {
+        const read = await client.getBudgetTargets();
+        if (!read.enabled) throw new Error("Wealthfolio's Spending tracker is off");
+        return read.targets;
+      },
+      // null: written, but the reply named no target (the runner then looks the category's default up).
+      set: async (categoryId, amountCents) => (await client.setDefaultBudgetTarget(categoryId, amountCents))?.id ?? null,
+      remove: (id) => client.deleteBudgetTarget(id),
     },
     record: (draft) => recordCompanionChanges(client, [draft]),
     where: { host: 'companion', companionVersion: SIMPLEFIN_SYNC_VERSION },

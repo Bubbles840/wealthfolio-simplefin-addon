@@ -5,7 +5,8 @@ import { whyRunHandle } from './why-menu.js';
 import { formatHelpReply, parseCommand } from '../../shared/telegram-commands.js';
 import { SIMPLEFIN_SYNC_VERSION } from '../../shared/version.js';
 import { runSyncCore } from '../../shared/sync-core.js';
-import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeCategorizedSpending, getNativeSpendingCategories, getNativeTxSearchRows } from './sqlite-native.js';
+import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeCategorizedSpending, getNativeSpendingCategories, getNativeTxSearchRows, getNativeBudgetSpend, getNativeSpendingHistoryStart } from './sqlite-native.js';
+import { getNativeAuditSettings } from './sqlite-audit.js';
 import { ingestAmazonMail } from './amazon-mail.js';
 import { ingestVenmoMail } from './venmo-mail.js';
 import { getNativePastFilings } from './sqlite-guess.js';
@@ -110,6 +111,9 @@ vi.mock('./sqlite-native.js', () => ({
   // missing an imported export fails every test in this file); empty results
   // are the "quiet database" every unrelated test wants.
   getNativeSpendMatrix: vi.fn(() => []),
+  // Suggested budgets' readers (project 4): bound by budgetsMenuDeps in index.ts.
+  getNativeBudgetSpend: vi.fn(() => []),
+  getNativeSpendingHistoryStart: vi.fn(() => null),
   getNativeIncomeByMonthAccount: vi.fn(() => []),
   getNativeUncategorizedByMonthAccount: vi.fn(() => []),
   getNativeMerchantRows: vi.fn(() => []),
@@ -2958,6 +2962,70 @@ describe('buildTelegramCommandHandler', () => {
       await sync.result;
       expect(runner).toHaveBeenCalledTimes(1);
       expect((r.u.edit.mock.calls[0] as unknown as [string])[0]).toBe(`🔎 ${escapeMarkdown("Removed. The bank feed won't import it again — Undo in the change log puts it back.")}`);
+    });
+  });
+
+  describe('/budgets', () => {
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date('2026-10-14T15:00:00Z'));
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    /** One read's worth of the database: Spending on, $1,260 of groceries over Jul-Sep, history from January. */
+    const spendingOnce = () => {
+      vi.mocked(getNativeAuditSettings).mockReturnValueOnce({
+        timezone: 'America/New_York', excludedCategoryIds: [], categoryParents: {}, spendingOn: true, spendingAccountIds: ['wf-1'],
+      });
+      vi.mocked(getNativeBudgetSpend).mockReturnValueOnce([{ month: '2026-09', category: 'Groceries', accountId: 'wf-1', amount: 1260 }]);
+      vi.mocked(getNativeSpendingHistoryStart).mockReturnValueOnce('2026-01-01');
+      vi.mocked(getNativeSpendingCategories).mockReturnValueOnce([{ id: 'cat-gro', name: 'Groceries', parentId: null, parentName: null }]);
+    };
+    const budgetClient = () => {
+      const { client, secrets } = clientFor();
+      client.getBudgetTargets = vi.fn(async () => ({ enabled: true, targets: [] }));
+      client.setDefaultBudgetTarget = vi.fn(async (categoryId: string, amountCents: number) => ({
+        id: `bt-${categoryId}`, periodKey: 'default', targetType: 'category', taxonomyId: 'spending_categories', categoryId, amountCents,
+      }));
+      return { client, secrets };
+    };
+
+    it('replies with the suggestions, every one picked', async () => {
+      spendingOnce();
+      const { client } = budgetClient();
+      const sent: Array<[string, any]> = [];
+      await buildTelegramCommandHandler(client)({ command: 'budgets', args: '' }, async (t, k) => { sent.push([t, k]); });
+      expect(sent[0][0].startsWith('*Suggested budgets*\n')).toBe(true);
+      expect(sent[0][0]).toContain('\nGroceries $420\n');
+      expect(sent[0][1].inline_keyboard.flat().map((b: any) => b.text)).toEqual(['✓ Groceries $420', 'Apply all (1)']);
+    });
+
+    it("says so when Wealthfolio's Spending tracker is off", async () => {
+      const { client } = budgetClient();
+      const { sent, reply } = collector();
+      await buildTelegramCommandHandler(client)({ command: 'budgets', args: '' }, reply);
+      expect(sent).toEqual(["Wealthfolio's Spending tracker is off, so it has no budgets — turn it on in Wealthfolio first."]);
+    });
+
+    it('cz:bg: taps reach the budgets menu, not the transaction menu: Apply sets the budget and logs it for Undo', async () => {
+      spendingOnce();
+      spendingOnce();
+      const { client, secrets } = budgetClient();
+      const sent: Array<[string, any]> = [];
+      await buildTelegramCommandHandler(client)({ command: 'budgets', args: '' }, async (t, k) => { sent.push([t, k]); });
+      const applyAll = sent[0][1].inline_keyboard.flat().find((b: any) => b.text === 'Apply all (1)').callback_data;
+      const deps = buildTelegramListenerDeps(client);
+      const ui = { edit: vi.fn(async () => {}), answer: vi.fn(async () => {}), send: vi.fn(async () => {}) };
+      await deps.onMenuCallback!({ data: applyAll, chatId: 1, messageId: 2 }, ui);
+      expect(client.setDefaultBudgetTarget).toHaveBeenCalledWith('cat-gro', 42000);
+      expect((ui.edit.mock.calls[0] as unknown as [string])[0]).toBe('Setting 1 budget…');
+      expect((ui.edit.mock.calls.at(-1) as unknown as [string])[0]).toBe('*Budgets*\n✓ Groceries: $420 a month\n\nUndo any of these from /changes.');
+      const bucket = JSON.parse(secrets.get('change_log:companion:2026-10')!);
+      expect(bucket.entries).toEqual([expect.objectContaining({
+        kind: 'budget-set', actor: 'you', summary: 'Set a $420.00 monthly budget for Groceries', after: expect.objectContaining({ targetId: 'bt-cat-gro' }),
+      })]);
     });
   });
 
