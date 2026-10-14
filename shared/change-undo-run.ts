@@ -24,7 +24,10 @@ import {
   currentRowId, currentRuleId, latestReversal, planChangeUndo, undoAvailability, UNDO_EXACT_COPY, UNDO_NOT_POSSIBLE,
   UNDO_UNREACHABLE, type UndoOp, type UndoPlan, type UndoRow, type UndoState, type UndoStep, type UndoVariant,
 } from './change-undo.js';
-import { editSkippedTransactions, withoutSkipped, withSkipped } from './skipped-transactions.js';
+import {
+  editSkippedTransactions, parseSkippedTransactionsStrict, REMOVED_FOR_GOOD_NOTE, SKIPPED_TRANSACTIONS_SECRET_KEY, SkippedTransactionsUnreadableError,
+  withoutSkipped, withSkipped,
+} from './skipped-transactions.js';
 import type { SecretGet, SecretSet } from './subscription-prefs.js';
 import {
   flowExternalOf, IN_TRANSIT_COMMENT_PREFIX, isInternalMarkerComment, isTransferType, rowIdByComment, txIdFromComment,
@@ -84,7 +87,7 @@ class Refusal extends Error {}
 
 /** A step failed after earlier ones had already taken effect. */
 class PartialFailure extends Error {
-  constructor(cause: unknown, readonly done: string[]) {
+  constructor(cause: unknown, readonly done: string[], readonly created: string | null = null) {
     super(message(cause));
   }
 }
@@ -163,7 +166,8 @@ async function toUndoRow(io: UndoIo, a: HostActivity, txKey: string | null): Pro
 /** The entry's row as it stands now, or null. */
 async function findRow(io: UndoIo, entry: ChangeEntry, latest: ChangeEntry | null, key: string | null): Promise<UndoRow | null> {
   const after = rec(entry.after);
-  const wf = entry.account?.wfId ?? str(after.accountId);
+  const wf = entry.account?.wfId ?? str(after.accountId)
+    ?? (entry.kind === 'transaction-removed' ? str(rec(rec(entry.before).activity).accountId) : null);
   if (!wf) return null;
   const id = currentRowId(entry, latest);
   const baseline = entry.kind === 'starting-balance' || entry.kind === 'starting-balance-moved';
@@ -246,6 +250,10 @@ async function gather(io: UndoIo, entry: ChangeEntry, op: UndoOp, latest: Change
     case 'amazon-label':
       state.row = await findRow(io, entry, latest, key);
       return state;
+    case 'transaction-removed':
+      // Only a Redo acts on a row: the one the last Undo put back.
+      if (op === 'redo') state.row = await findRow(io, entry, latest, key);
+      return state;
     case 'import': {
       state.row = await findRow(io, entry, latest, key);
       // A pending row that later posted carries a NEW tx id in its note: the skip
@@ -283,33 +291,45 @@ function rollbackOverride(o: SyncOverrides, s: UndoStep): SyncOverrides {
 }
 
 /** Performs the reversal steps; resolves the id of a row a step created. */
-async function perform(io: UndoIo, steps: UndoStep[], now: Date): Promise<string | null> {
+async function perform(io: UndoIo, steps: UndoStep[], now: Date, skipNote: string = UNDO_SKIP_NOTE): Promise<string | null> {
   let created: string | null = null;
   const done: string[] = [];
-  for (const s of steps) {
+  for (let i = 0; i < steps.length; i++) {
+    const s = steps[i];
     try {
-      created = await performStep(io, s, now, created);
+      if (s.do === 'skip' || s.do === 'unskip') {
+        // Every consecutive key in ONE edit of the list.
+        const group: Array<{ account: string; txId: string }> = [];
+        while (i < steps.length) {
+          const n = steps[i];
+          if (n.do !== s.do) break;
+          group.push({ account: n.account, txId: n.txId });
+          i++;
+        }
+        i--;
+        await editSkippedTransactions(io.secrets.get, io.secrets.set, (l) => group.reduce(
+          (acc, g) => (s.do === 'skip'
+            ? withSkipped(acc, { account: g.account, txId: g.txId, note: skipNote, at: now.toISOString() })
+            : withoutSkipped(acc, g.account, g.txId)),
+          l,
+        ));
+      } else {
+        created = await performStep(io, s, created);
+      }
     } catch (err) {
       if (err instanceof Refusal || done.length === 0) throw err;
-      throw new PartialFailure(err, done);
+      throw new PartialFailure(err, done, created);
     }
     done.push(STEP_WORDS[s.do] ?? s.do);
   }
   return created;
 }
 
-async function performStep(io: UndoIo, s: UndoStep, now: Date, prior: string | null): Promise<string | null> {
+/** One step that is not a skip-list edit (`perform` batches those itself). */
+async function performStep(io: UndoIo, s: UndoStep, prior: string | null): Promise<string | null> {
   let created = prior;
   {
     switch (s.do) {
-      case 'skip':
-        await editSkippedTransactions(io.secrets.get, io.secrets.set, (l) => withSkipped(l, {
-          account: s.account, txId: s.txId, note: UNDO_SKIP_NOTE, at: now.toISOString(),
-        }));
-        break;
-      case 'unskip':
-        await editSkippedTransactions(io.secrets.get, io.secrets.set, (l) => withoutSkipped(l, s.account, s.txId));
-        break;
       case 'delete': {
         const res = await io.host.saveMany({ deleteIds: [s.activityId] });
         if (res.errors.length) throw new Error(res.errors.map((e) => e.message).join('; '));
@@ -411,7 +431,14 @@ async function runOnce(
   const latest = latestReversal(entries, entry.id);
 
   let state: UndoState;
+  let preSkipped = new Set<string>();
   try {
+    if (entry.kind === 'transaction-removed') {
+      // Both Undo and Redo write the skip list: refuse before touching anything.
+      const parsed = parseSkippedTransactionsStrict(await io.secrets.get(SKIPPED_TRANSACTIONS_SECRET_KEY));
+      if (parsed.kind === 'corrupt') throw new Refusal(new SkippedTransactionsUnreadableError().message);
+      if (parsed.kind === 'ok') preSkipped = new Set(parsed.list.map((s) => accountTxKey(s.account, s.txId)));
+    }
     state = await gather(io, entry, op, latest, variant);
   } catch (err) {
     return { ok: false, message: err instanceof Refusal ? err.message : UNDO_UNREACHABLE };
@@ -437,8 +464,38 @@ async function runOnce(
 
   let created: string | null;
   try {
-    created = await perform(io, rest, now);
+    created = await perform(io, rest, now, entry.kind === 'transaction-removed' ? REMOVED_FOR_GOOD_NOTE : UNDO_SKIP_NOTE);
   } catch (err) {
+    if (entry.kind === 'transaction-removed' && err instanceof PartialFailure) {
+      const base = `Couldn't finish the ${op}: ${message(err)}`.replace(/\.$/, '');
+      if (op === 'undo' && err.created) {
+        // The row is back: keep the log honest, so Redo then Undo can finish it.
+        try {
+          await io.record(reversalChange(entry, op, reversalExtra(p, err.created, state)));
+        } catch {
+          // Never costs the undo.
+        }
+        return {
+          ok: false,
+          message: `${base}. The transaction is back, but it is still on the skip list — Redo it, then Undo again, to finish.`,
+        };
+      }
+      if (op === 'redo') {
+        // The skip went through and the delete did not: take back only the keys this Redo added.
+        const added = p.steps.filter((s): s is Extract<UndoStep, { do: 'skip' }> => s.do === 'skip')
+          .filter((s) => !preSkipped.has(accountTxKey(s.account, s.txId)));
+        // Nothing added (a half-done Undo left it skipped): nothing to write, and it stays skipped.
+        if (added.length === 0) {
+          return { ok: false, message: `${base}. Nothing was removed; it was already on the skip list and stays there.` };
+        }
+        try {
+          await editSkippedTransactions(io.secrets.get, io.secrets.set, (l) => added.reduce((acc, s) => withoutSkipped(acc, s.account, s.txId), l));
+          return { ok: false, message: `${base}. It is off the skip list again, so nothing changed.` };
+        } catch {
+          return { ok: false, message: `${base}. It stays on the skip list — the bank feed won't import it again until it's taken off.` };
+        }
+      }
+    }
     if (err instanceof Refusal) {
       // Refused as an exact copy: take the override back out, so nothing changed.
       if (ours.length > 0) {

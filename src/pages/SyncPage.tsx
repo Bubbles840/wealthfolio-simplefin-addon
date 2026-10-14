@@ -302,6 +302,11 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
     mounted.current = true;
     return () => { mounted.current = false; };
   }, []);
+  /** 2c R2: after a fix on the Checks card, read the snapshot again. Only the
+   *  companion's next sync renews it, and the card says so. */
+  const reloadAudit = useCallback(() => {
+    store.getAuditSnapshot?.().then((r) => { if (mounted.current) setAuditSnapshot(r); }).catch(() => {});
+  }, [store]);
   const onSubscriptionEdit = useCallback((edit: SubscriptionEdit) => {
     if (!store.editSubscriptionPrefs) return;
     // Edits run one after another: each starts only after the previous one
@@ -761,6 +766,7 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
           onAccountsChanged={reloadAccounts}
           telegramDraft={telegramDraft}
           auditSnapshot={auditSnapshot}
+          onAuditChanged={reloadAudit}
         />
       </TabPanel>
 
