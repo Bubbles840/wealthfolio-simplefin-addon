@@ -9,6 +9,7 @@ import type { SemesterPoolConfig, PoolStatus } from '../../shared/pool';
 import { REPORT_CUBE_SECRET_KEY, parseReportCube } from '../../shared/report-cube';
 import { AUDIT_SNAPSHOT_SECRET_KEY, parseAuditSnapshot, type AuditSnapshotRead } from '../../shared/audit-snapshot';
 import { REPORTS_SEEN_SECRET_KEY, parseReportsSeen, type ReportsSeen, type ReportsSeenRead } from '../../shared/reports-seen';
+import { CASH_FORECAST_SECRET_KEY, parseCashForecast, type CashForecastRead } from '../../shared/cash-forecast';
 import type { ReportCube } from '../../shared/report-cube';
 import { parseCustomReports } from '../../shared/report-eval';
 import type { CustomReport } from '../../shared/report-eval';
@@ -129,6 +130,9 @@ const KEYS = {
   // The Reports tab's unread state (project 5): written by the add-on only,
   // cleared on Reset.
   reportsSeen: REPORTS_SEEN_SECRET_KEY,
+  // The cash forecast (project 5): companion-published, add-on-read-only,
+  // cleared on Reset.
+  cashForecast: CASH_FORECAST_SECRET_KEY,
   customReports: 'custom_reports',
   budgetLayout: 'budget_layout',
   openCards: 'ui_open_cards',
@@ -888,6 +892,16 @@ export class SecretsStore {
   async getAuditSnapshot(): Promise<AuditSnapshotRead> {
     try {
       return parseAuditSnapshot(await this.ctx.api.secrets.get(KEYS.auditSnapshot));
+    } catch {
+      return { kind: 'corrupt' };
+    }
+  }
+
+  /** The companion's cash forecast (project 5): ok, absent or corrupt. A
+   *  host read that fails reads as corrupt, never as "none published". */
+  async getCashForecast(): Promise<CashForecastRead> {
+    try {
+      return parseCashForecast(await this.ctx.api.secrets.get(KEYS.cashForecast));
     } catch {
       return { kind: 'corrupt' };
     }

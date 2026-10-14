@@ -16,6 +16,7 @@ import { SettingsTab, CARD as SETTINGS_CARD } from '../tabs/SettingsTab';
 import { ReportsTab } from '../tabs/ReportsTab';
 import { parseReportsLink } from '../../shared/reports-archive';
 import type { AuditSnapshotRead } from '../../shared/audit-snapshot';
+import type { CashForecastRead } from '../../shared/cash-forecast';
 import { useAmazonDraft } from '../components/AmazonCard';
 import type { SecretsStore, AccountBalanceInfo, CategoryCatalogEntry } from '../utils/secrets';
 import type { Scheduler } from '../utils/scheduler';
@@ -145,6 +146,8 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
   // The companion's audit snapshot (2c): Settings → Checks and the account
   // chips, Home's Accounts tile, the Budget tab's link. Null until read.
   const [auditSnapshot, setAuditSnapshot] = useState<AuditSnapshotRead | null>(null);
+  // Project 5: the companion's cash forecast behind Home's "Next 30 days".
+  const [cashForecast, setCashForecast] = useState<CashForecastRead | null>(null);
   const [customReports, setCustomReportsState] = useState<
     Awaited<ReturnType<SecretsStore['getCustomReports']>>
   >([]);
@@ -266,6 +269,8 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
     // On its own, so it can never cost the reads above: optional-called, and
     // the store answers ok / absent / corrupt rather than throwing.
     store.getAuditSnapshot?.().then((r) => { if (mounted.current) setAuditSnapshot(r); }).catch(() => {});
+    // The same for the forecast: ok / absent / corrupt, never a throw.
+    store.getCashForecast?.().then((r) => { if (mounted.current) setCashForecast(r); }).catch(() => {});
   }, [store]);
 
   const onDismissalsChange = useCallback((next: DismissalLedger) => {
@@ -718,6 +723,7 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
           // which already carries the pool editor.
           onOpenPool={() => setBudgetOpen((prev) => ({ id: 'pool-burndown', seq: (prev?.seq ?? 0) + 1 }))}
           auditSnapshot={auditSnapshot}
+          cashForecast={cashForecast}
           renderTxStory={renderTxStory}
         />
         <BudgetTab
