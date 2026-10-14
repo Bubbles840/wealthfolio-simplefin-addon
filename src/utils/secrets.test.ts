@@ -184,6 +184,22 @@ describe('SecretsStore', () => {
     await ctx.api.secrets.set(AMAZON_MAIL_SAMPLES_SECRET_KEY, '{not json');
     expect(await new SecretsStore(ctx).getAmazonMailSamples()).toBeNull();
   });
+
+  it('reads and writes the Venmo payments under the key the companion writes, malformed as empty, and clearAll removes them', async () => {
+    const { ctx, data } = makeCtxWithData();
+    const s = new SecretsStore(ctx);
+    expect(await s.getVenmoLedger()).toEqual({});
+    const ledger = { 'id|41234567': { direction: 'out' as const, kind: 'payment' as const, amountCents: 2500, counterparty: 'Jane Doe', note: 'Rent', emailDate: '2026-10-03' } };
+    await s.setVenmoLedger(ledger);
+    expect(JSON.parse(data['venmo_ledger'])).toEqual(ledger);
+    expect(await s.getVenmoLedger()).toEqual(ledger);
+    data['venmo_ledger'] = '[1,2]';
+    expect(await s.getVenmoLedger()).toEqual({});
+    data['venmo_ledger'] = '{not json';
+    expect(await s.getVenmoLedger()).toEqual({});
+    await s.clearAll();
+    expect(data['venmo_ledger']).toBeUndefined();
+  });
 });
 
 describe('SecretsStore skipped transactions', () => {

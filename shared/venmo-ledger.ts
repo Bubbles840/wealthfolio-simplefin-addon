@@ -29,6 +29,24 @@ export const VENMO_NOTE_MARK = ' · Venmo: ';
 
 const DAY_MS = 86_400_000;
 
+/**
+ * Whether every entry of a ledger read from a secret has the fields the matcher
+ * touches. A null or non-object entry would throw inside `matchVenmoPayment`, so
+ * a sync checks first: a ledger that fails is treated as unreadable — Venmo
+ * notes are skipped for the run and the ledger is never written back over it.
+ */
+export function isReadableVenmoLedger(ledger: unknown): ledger is VenmoLedger {
+  if (!ledger || typeof ledger !== 'object' || Array.isArray(ledger)) return false;
+  return Object.values(ledger).every((r) => {
+    if (!r || typeof r !== 'object' || Array.isArray(r)) return false;
+    const e = r as Record<string, unknown>;
+    return (e.direction === 'in' || e.direction === 'out')
+      && typeof e.amountCents === 'number' && Number.isFinite(e.amountCents)
+      && typeof e.note === 'string' && typeof e.emailDate === 'string'
+      && (e.consumedBy === undefined || typeof e.consumedBy === 'string');
+  });
+}
+
 /** Whether a bank description is a Venmo row: the word VENMO, any case. */
 export function isVenmoDescription(description: string | null | undefined): boolean {
   return /\bvenmo(?=\d|\b)/i.test(description ?? '');

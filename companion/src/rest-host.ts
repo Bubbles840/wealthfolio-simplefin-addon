@@ -4,6 +4,7 @@ import { AMAZON_LEDGER_SECRET_KEY } from '../../shared/amazon-ledger.js';
 import { AMAZON_CONFIG_SECRET_KEY, AMAZON_LABELS_SECRET_KEY } from './amazon-mail.js';
 import type { AmazonLabelCatalog, AmazonMailConfig } from './amazon-mail.js';
 import type { AmazonLedger } from '../../shared/amazon-ledger.js';
+import { VENMO_LEDGER_SECRET_KEY, type VenmoLedger } from '../../shared/venmo-ledger.js';
 import { linkPairByRecreate } from '../../shared/link-pair.js';
 import { SKIPPED_TRANSACTIONS_SECRET_KEY, parseSkippedTransactions, type SkippedTransaction } from '../../shared/skipped-transactions.js';
 import { syncOverridesIgnoredLog, syncOverridesOrEmpty, type SyncOverrides } from '../../shared/sync-overrides.js';
@@ -334,6 +335,16 @@ export class RestSyncStore implements SyncStore {
 
   async setAmazonLedger(map: AmazonLedger): Promise<void> {
     await this.setJson(AMAZON_LEDGER_SECRET_KEY, map);
+  }
+
+  /** Venmo payments (3): the mail poll merges into it, both syncers consume. */
+  async getVenmoLedger(): Promise<VenmoLedger> {
+    const ledger = await this.getJson<VenmoLedger>(VENMO_LEDGER_SECRET_KEY);
+    return ledger && typeof ledger === 'object' && !Array.isArray(ledger) ? ledger : {};
+  }
+
+  async setVenmoLedger(map: VenmoLedger): Promise<void> {
+    await this.setJson(VENMO_LEDGER_SECRET_KEY, map);
   }
 
   /** Every Amazon label ever received, and the category it resolved to. Read by

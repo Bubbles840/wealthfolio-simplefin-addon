@@ -261,6 +261,22 @@ describe('RestSyncStore', () => {
     expect(await new RestSyncStore(client).getSkippedTransactions()).toEqual([{ account: 'sfin-1', txId: 'TRN-1' }]);
   });
 
+  it('reads and writes the Venmo payments under venmo_ledger, anything but an object as empty', async () => {
+    const secrets = new Map<string, string>();
+    const client = {
+      getAddonSecret: vi.fn(async (_addonId: string, key: string) => secrets.get(key) ?? null),
+      setAddonSecret: vi.fn(async (_addonId: string, key: string, val: string) => { secrets.set(key, val); }),
+    } as any;
+    const store = new RestSyncStore(client);
+    expect(await store.getVenmoLedger()).toEqual({});
+    const ledger = { 'id|1': { direction: 'in' as const, kind: 'payment' as const, amountCents: 700, counterparty: 'Sam', note: 'Coffee', emailDate: '2026-10-03' } };
+    await store.setVenmoLedger(ledger);
+    expect(client.setAddonSecret).toHaveBeenCalledWith('simplefin-sync', 'venmo_ledger', JSON.stringify(ledger));
+    expect(await store.getVenmoLedger()).toEqual(ledger);
+    secrets.set('venmo_ledger', '[]');
+    expect(await store.getVenmoLedger()).toEqual({});
+  });
+
   it('reads and writes transfer link failures as JSON', async () => {
     const secrets = new Map<string, string>();
     const client = {
