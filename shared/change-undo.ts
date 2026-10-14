@@ -19,7 +19,7 @@ import type { ChangeLogItem } from './change-log.js';
 import type { ActivityWrite, ImportRow } from './sync-host.js';
 import type { AccountOverrideFlag, TxOverrideFlag } from './sync-overrides.js';
 import type { MappingRule } from './types.js';
-import { companionUnderstandsOverrides } from './version.js';
+import { companionUnderstandsOverrides, companionUnderstandsVenmoNotes, VENMO_NOTE_SINCE } from './version.js';
 
 export type UndoOp = 'undo' | 'redo';
 /** A rule's Undo comes in two: the rule alone, or the rule and the charges it filed. */
@@ -41,6 +41,10 @@ export const SPENDING_TAXONOMY = 'spending_categories';
 
 // ── Copy (both surfaces) ─────────────────────────────────────────────────
 export const UNDO_UPDATE_COMPANION = 'Update the companion first';
+/** Telegram, for a Venmo note's Undo or Redo while the installed add-on is
+ *  older than `VENMO_NOTE_SINCE`, or unknown (see `addonGateCovers`). */
+export const UNDO_UPDATE_ADDON =
+  `Update the add-on first — an add-on older than v${VENMO_NOTE_SINCE} can't read a Venmo note's Undo, and its syncs would ignore every other Undo too.`;
 /** The app, when the companion's version could not be read: a gated undo waits. */
 export const UNDO_VERSION_UNKNOWN = "Couldn't check the companion's version — nothing was changed. Try again.";
 export const UNDO_FROM_TELEGRAM = 'Undo this from Telegram: /changes';
@@ -84,10 +88,28 @@ export function undoAvailability(
       ? { kind: 'telegram', op, text: op === 'undo' ? UNDO_FROM_TELEGRAM : REDO_FROM_TELEGRAM }
       : { kind: 'none' };
   }
-  if (where.host === 'addon' && companionGateCovers(entry, op) && !companionUnderstandsOverrides(where.companionVersion)) {
+  if (where.host === 'addon' && companionGateCovers(entry, op) && !companionUnderstands(entry, where.companionVersion)) {
     return { kind: 'update-companion', op, text: UNDO_UPDATE_COMPANION };
   }
   return { kind: 'ready', op };
+}
+
+/** The companion this entry's override needs: one that obeys overrides at all,
+ *  and for a Venmo note one that also reads `noVenmoNote` (ruling P3-K). */
+function companionUnderstands(entry: Pick<ChangeEntry, 'kind'>, companionVersion: string | null): boolean {
+  return companionUnderstandsOverrides(companionVersion)
+    && (entry.kind !== 'venmo-note' || companionUnderstandsVenmoNotes(companionVersion));
+}
+
+/**
+ * In Telegram, this waits for the INSTALLED add-on to read the override it
+ * touches: a Venmo note's Undo writes `noVenmoNote`, its Redo clears it, and an
+ * add-on older than `VENMO_NOTE_SINCE` reads the whole overrides document as
+ * corrupt while the flag is there (see `VENMO_NOTE_SINCE`). The runner reads
+ * the installed version and refuses with `UNDO_UPDATE_ADDON`.
+ */
+export function addonGateCovers(entry: Pick<ChangeEntry, 'kind'>): boolean {
+  return entry.kind === 'venmo-note';
 }
 
 /** An automatic sync decision: its undo is an override the sync must obey. */

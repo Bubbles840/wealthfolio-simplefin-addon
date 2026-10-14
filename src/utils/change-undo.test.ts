@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { balanceCorrectionChange, categoryFiledChange, importChange, stampChange, transferLinkChange } from '../../shared/change-entries';
+import { balanceCorrectionChange, categoryFiledChange, importChange, stampChange, transferLinkChange, venmoNoteChange } from '../../shared/change-entries';
 import type { ChangeBucket } from '../../shared/change-log';
 import { UNDO_FROM_TELEGRAM, UNDO_UPDATE_COMPANION, UNDO_VERSION_UNKNOWN } from '../../shared/change-undo';
 import { emptySyncOverrides, setTxOverride, SYNC_OVERRIDES_SECRET_KEY } from '../../shared/sync-overrides';
@@ -79,6 +79,20 @@ describe('undoFromApp', () => {
     ), 'companion', NOW);
     expect(await undoFromApp(ctx, store, link, [link], 'undo')).toEqual({ ok: false, message: UNDO_UPDATE_COMPANION });
     expect(data[SYNC_OVERRIDES_SECRET_KEY]).toBeUndefined();
+  });
+
+  it('a Venmo note’s Undo waits for a companion that reads noVenmoNote (ruling P3-K), then goes through', async () => {
+    const note = stampChange(venmoNoteChange({
+      account: CHECKING, txKey: accountTxKey('sfin-1', 'tx-1'), activityId: 'act-v', description: 'VENMO PAYMENT 1023', amountCents: -2500,
+      date: '2026-10-04', beforeNote: 'VENMO PAYMENT 1023 · tx-1', afterNote: 'VENMO PAYMENT 1023 · Venmo: Rent · tx-1', note: 'Rent',
+    }), 'companion', NOW);
+    const noted = () => ({ id: 'act-v', accountId: 'wf-a', activityType: 'WITHDRAWAL', date: '2026-10-04', amount: 25, comment: 'VENMO PAYMENT 1023 · Venmo: Rent · tx-1' });
+    const old = makeCtx({ companion_version: '1.60.0' }, [noted()]);
+    expect(await undoFromApp(old.ctx, new SecretsStore(old.ctx), note, [note], 'undo')).toEqual({ ok: false, message: UNDO_UPDATE_COMPANION });
+    expect(old.data[SYNC_OVERRIDES_SECRET_KEY]).toBeUndefined();
+    const current = makeCtx({ companion_version: '1.61.0' }, [noted()]);
+    expect(await undoFromApp(current.ctx, new SecretsStore(current.ctx), note, [note], 'undo')).toMatchObject({ ok: true });
+    expect(JSON.parse(current.data[SYNC_OVERRIDES_SECRET_KEY]).tx[accountTxKey('sfin-1', 'tx-1')]).toHaveProperty('noVenmoNote');
   });
 
   describe('the companion version gate, when its version cannot be read', () => {
