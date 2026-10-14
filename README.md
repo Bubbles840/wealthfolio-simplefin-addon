@@ -209,7 +209,11 @@ docker pull ghcr.io/bubbles840/wealthfolio-simplefin-sync:latest
 
 The companion runs on the exact same shared sync core as the in-app addon. Account
 mappings and credentials are configured directly in Wealthfolio via the addon UI,
-so the companion container runs as a lightweight background daemon:
+so the companion container runs as a lightweight background daemon. Add it to the
+`docker-compose.yml` that runs Wealthfolio, put Wealthfolio's password in
+`wealthfolio_password.txt` beside that file, and run `docker compose up -d`. The
+addon's **Settings → Background sync (Docker)** card shows the same service with
+your timezone filled in, and a Copy button:
 
 ```yaml
 services:
@@ -217,16 +221,29 @@ services:
     image: ghcr.io/bubbles840/wealthfolio-simplefin-sync:latest
     restart: unless-stopped
     environment:
-      - WEALTHFOLIO_API_URL=http://wealthfolio:8088   # Wealthfolio's default port
-      - WEALTHFOLIO_PASSWORD=your_wealthfolio_password
+      - WEALTHFOLIO_API_URL=http://wealthfolio:8088   # Wealthfolio's service name and port
+      - WEALTHFOLIO_PASSWORD_FILE=/run/secrets/wealthfolio_password
+      # Or sign in with an API key instead of the password:
+      # - WEALTHFOLIO_API_KEY=your_api_key
       - WEALTHFOLIO_DB_PATH=/mnt/wealthfolio/wealthfolio.db
-      - TZ=America/New_York          # Required, or schedules fire on UTC
+      - TZ=America/New_York   # change to your timezone, or every schedule runs on UTC
+    secrets:
+      - wealthfolio_password
     volumes:
-      # Mount the FOLDER containing wealthfolio.db, not the .db file itself.
-      # A file-only mount hides the -wal/-shm files beside it, so the companion
-      # reads whatever was last checkpointed — observed two days stale.
+      # The FOLDER holding wealthfolio.db, read-only. A file-only mount hides
+      # the -wal/-shm files beside it, so the companion reads stale data.
       - /path/to/wealthfolio:/mnt/wealthfolio:ro
+    # Wealthfolio on the host network instead? Uncomment the next line and
+    # set WEALTHFOLIO_API_URL=http://127.0.0.1:8088 above.
+    # network_mode: host
+
+secrets:
+  wealthfolio_password:
+    file: ./wealthfolio_password.txt   # Wealthfolio's password, on one line
 ```
+
+It syncs every 6 hours; add `SYNC_SCHEDULE` (a cron line, e.g. `0 */3 * * *`) to
+the environment to change that. `docker-compose.example.yml` is the same service.
 
 Images are published for `linux/amd64`, tagged `:latest` and `:vX.Y.Z`. To
 upgrade:
