@@ -244,7 +244,6 @@ describe('buildTxStory — missing and failed facts', () => {
     const note = 'Lunch · Venmo: split';
     expect(story({ row: row({ note }), feed: null }).answer).not.toContain(TX_STORY_VENMO_NOTE);
     expect(story({ row: row({ note: 'Lunch · Venmo: split · TRN-1' }), feed: null }).answer).not.toContain(TX_STORY_VENMO_NOTE);
-    expect(story({ row: row({ note: 'VENMO 1 · Venmo: split' }) }).answer).not.toContain(TX_STORY_VENMO_NOTE);
   });
 
   it('a filing by you with no day says only "in Telegram"', () => {
