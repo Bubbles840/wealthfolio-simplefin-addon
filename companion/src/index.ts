@@ -1076,17 +1076,6 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
       log(`Report cube publish failed (the addon's budget reports may be stale): ${formatError(e)}`);
     }
 
-    // 2c: the checks behind the app's Checks card, its account chips and the
-    // Budget tab's "different from Wealthfolio" link — after the cube, whose
-    // figure they compare. Best-effort like the cube: a failed run, an
-    // over-budget rejection or a failed write keeps the previous snapshot and
-    // never touches this sync's result.
-    try {
-      await publishAuditSnapshot(wfClient, wealthfolioDbPath(), new Date());
-    } catch (e) {
-      log(`Audit snapshot publish failed (the app's checks may be stale): ${formatError(e)}`);
-    }
-
     const undeliveredOutTxIds: string[] = [];
     for (const alert of result.stuckTransferAlerts) {
       const delivered = await sendStuckTransferAlert(wfClient, alert);
@@ -1182,6 +1171,19 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
       }
     } catch (err) {
       debug(`Telegram check note: ${formatError(err)}`);
+    }
+
+    // 2c: the checks behind the app's Checks card, its account chips and the
+    // Budget tab's "different from Wealthfolio" link — after the cube, whose
+    // figure they compare, and LAST, after every alert and notice above: its
+    // Wealthfolio REST reads have no timeout, and a slow one must never hold
+    // an alert back. Best-effort like the cube: a failed run, an over-budget
+    // rejection or a failed write keeps the previous snapshot and never
+    // touches this sync's result.
+    try {
+      await publishAuditSnapshot(wfClient, wealthfolioDbPath(), new Date());
+    } catch (e) {
+      log(`Audit snapshot publish failed (the app's checks may be stale): ${formatError(e)}`);
     }
 
     await updateSyncHealth(wfClient, null);

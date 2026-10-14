@@ -72,9 +72,13 @@ export function queryNativeDbStrict<Row>(
   query: string,
   fromCliParts: (parts: string[]) => Row | null,
   separator = '|',
+  /** The sqlite3 CLI's output buffer, in bytes, for a read whose output can
+   *  pass execFileSync's 1 MB default (the audits read the whole ledger).
+   *  Absent: the default. */
+  maxBuffer?: number,
 ): Row[] {
   if (!dbPath || !existsSync(dbPath)) throw new NativeDbUnreadableError(`${label}: no database at ${dbPath || '(unset)'}`);
-  const rows = tryQueryNativeDb(dbPath, label, query, fromCliParts, separator);
+  const rows = tryQueryNativeDb(dbPath, label, query, fromCliParts, separator, maxBuffer);
   if (rows === null) throw new NativeDbUnreadableError(label);
   return rows;
 }
@@ -88,6 +92,7 @@ function tryQueryNativeDb<Row>(
   /** The sqlite3 CLI's column separator for this query's fallback. Default
    *  `|`; a query whose free text can contain one passes an unambiguous one. */
   separator = '|',
+  maxBuffer?: number,
 ): Row[] | null {
   // LIVE read first, snapshot only as a fallback. `immutable=1` reads the main
   // DB file alone and ignores the write-ahead log — and Wealthfolio checkpoints
@@ -125,7 +130,9 @@ function tryQueryNativeDb<Row>(
     const args = separator === '|' ? [dbPath, query.replace(/\n/g, ' ')] : ['-separator', separator, dbPath, query.replace(/\n/g, ' ')];
     // stderr piped, not inherited: the caught error carries it, and the
     // console line below reports it once.
-    const output = execFileSync('sqlite3', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    const output = execFileSync('sqlite3', args, {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...(maxBuffer ? { maxBuffer } : {}),
+    });
     const rows: Row[] = [];
     for (const line of output.split('\n')) {
       const trimmed = line.trim();
