@@ -553,6 +553,7 @@ const css = `
 .sfin-autosync-checks { margin-top: 14px; }
 .sfin-docker-intro { margin-bottom: 6px; }
 .sfin-docker-pre { margin: 0; }
+.sfin-docker-copy { margin-top: 8px; }
 /* The line under the compose snippet explaining what the database mount buys. */
 .sfin-docker-note { margin-top: 8px; }
 /* Last thing in the tab before the danger card, which supplies its own
