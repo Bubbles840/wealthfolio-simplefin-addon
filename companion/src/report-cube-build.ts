@@ -57,7 +57,8 @@ export interface CubeBuildDeps {
   spendDaily(start: string, endEx: string): ReturnType<typeof getNativeSpendDailyTotals>;
   valuationByMonth(months: string[]): ReturnType<typeof getNativeValuationByMonth>;
   /** The digest's own current-month sums (spending by category + uncategorized
-   *  total), dollars — an independent pipeline the cube is checked against.
+   *  total), dollars — the same spending lines (1.62), summed the digest's way:
+   *  a check of the cube's assembly, not an independent pipeline.
    *  Optional so an older binding keeps building cubes, just without a check. */
   checkTotals?(start: string, endEx: string):
     { spendByCategory: Record<string, number>; uncategorized: number } | null;

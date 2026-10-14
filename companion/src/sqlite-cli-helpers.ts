@@ -25,3 +25,14 @@ export const isTrue = (v: unknown) => String(v) === '1' || String(v).toLowerCase
 export const isDay = (s: string) => /^\d{4}-\d{2}-\d{2}$/.test(s);
 
 export const shiftDay = (day: string, days: number) => new Date(Date.parse(`${day}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
+
+/** The CTE terms `up` and `top` (use after `WITH RECURSIVE` / a comma): each
+ *  category's top-level ancestor name, as upstream's budget page keys a budget
+ *  and its actuals (`top_category_id`, crates/spending/src/budget/service.rs,
+ *  v3.10.0), however deep the taxonomy goes. The walk is bounded (32) so a
+ *  parent loop cannot hang the read; a category in such a loop has no top. */
+export const TOP_CATEGORY_CTE = `up(start_id, parent_id, name, depth) AS (
+    SELECT id, parent_id, name, 0 FROM taxonomy_categories
+    UNION ALL
+    SELECT up.start_id, p.parent_id, p.name, up.depth + 1 FROM up JOIN taxonomy_categories p ON up.parent_id = p.id WHERE up.depth < 32
+  ), top(start_id, name) AS (SELECT start_id, name FROM up WHERE parent_id IS NULL)`;

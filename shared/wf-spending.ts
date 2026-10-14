@@ -170,8 +170,11 @@ const pad = (n: number) => String(n).padStart(2, '0');
 
 /** A stored date as an instant. A timestamp with no offset
  *  (`YYYY-MM-DD HH:MM:SS[.f]` or `YYYY-MM-DDTHH:MM:SS[.f]`, a legacy row) is
- *  UTC, as upstream's `parse_db_datetime` reads it — never the process's zone,
- *  which is what `Date.parse` would use. NaN when it cannot be read. */
+ *  read as UTC, never in the process's zone, which `Date.parse` would use.
+ *  Upstream's `parse_db_datetime` (model.rs:27-41, :438-444 at v3.10.0)
+ *  accepts only the space form and falls back to "now" for the `T` form; we
+ *  deliberately read both as UTC, the honest instant for either. NaN when it
+ *  cannot be read. */
 export function storedInstant(stored: string): number {
   const naive = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(\.\d+)?$/.exec(stored.trim());
   return Date.parse(naive ? `${naive[1]}T${naive[2]}${naive[3] ?? ''}Z` : stored);

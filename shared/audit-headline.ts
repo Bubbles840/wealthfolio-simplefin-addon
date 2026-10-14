@@ -161,8 +161,8 @@ export function explainHeadline(facts: HeadlineFacts): HeadlineExplanation {
     }
     // Wealthfolio converts each row to its base currency; the report sums the
     // stored amounts. The conversion is not modelled, so this reason takes
-    // whatever difference the other reason leaves (nothing, when the two
-    // agree), and names the rows it cannot size.
+    // whatever difference the other reason leaves, up to the rows' own total
+    // (nothing, when the two agree).
     const foreign: HeadlineReason = { kind: 'foreign-currency', cents: 0, rows: [] };
     const base = facts.baseCurrency?.trim().toUpperCase() || null;
     if (base) {
@@ -173,7 +173,12 @@ export function explainHeadline(facts: HeadlineFacts): HeadlineExplanation {
         foreign.rows.push({ date: line.day, description: descriptionFromComment(line.row.notes), cents: line.cents, account: line.row.accountName });
       }
       if (foreign.rows.length > 0 && reportCents !== null && wealthfolioCents !== null) {
-        foreign.cents = reportCents - wealthfolioCents - notCovered.cents;
+        // No more than the rows themselves could account for: the rest stays
+        // unexplained. Nothing left to say, no reason.
+        const cap = foreign.rows.reduce((sum, r) => sum + Math.abs(r.cents), 0);
+        const residual = reportCents - wealthfolioCents - notCovered.cents;
+        foreign.cents = Math.max(-cap, Math.min(cap, residual));
+        if (foreign.cents === 0) foreign.rows = [];
       }
     }
     reasons = [notCovered, foreign].filter((r) => r.rows.length > 0);

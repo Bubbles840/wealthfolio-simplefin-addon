@@ -145,6 +145,18 @@ describe('getLedgerFacts', () => {
     expect(f.categories.find((c) => c.name === 'Food & Dining')!.spent).toBe(85.26);
   });
 
+  it('keys a budget and its spending by the top-level category, however deep the taxonomy (upstream top_category_id)', () => {
+    const f = facts(`
+      INSERT INTO taxonomy_categories VALUES ('imax','IMAX','mov','spending_categories');
+      INSERT INTO budget_targets VALUES ('imax','25','default','2026-01-01');
+      INSERT INTO activities VALUES ('d1','card','WITHDRAWAL',NULL,'2026-09-18','30','Cinema · t1',NULL,0);
+      INSERT INTO activity_taxonomy_assignments VALUES ('d1','imax');
+    `);
+    // The third-level filing and the third-level budget both belong to Entertainment.
+    expect(f.categories.filter((c) => c.name === 'IMAX' || c.name === 'Movies & Events')).toEqual([]);
+    expect(f.categories.find((c) => c.name === 'Entertainment')).toMatchObject({ budget: 125, spent: 30 });
+  });
+
   it('calls a category chronic only when it was over in EVERY one of the last three full months', () => {
     const f = facts(`
       INSERT INTO activities VALUES ('j','card','WITHDRAWAL',NULL,'2026-06-10','340','June · t1',NULL,0);

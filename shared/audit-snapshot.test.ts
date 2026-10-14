@@ -125,6 +125,20 @@ describe('parseAuditSnapshot', () => {
     expect(HEADLINE_REASON_KINDS).toContain('foreign-currency');
   });
 
+  it('keeps a base currency only when it is a three-letter code', () => {
+    const good = buildAuditSnapshot(small(), NOW)!;
+    const read = (baseCurrency: unknown) => {
+      const r = parseAuditSnapshot(JSON.stringify({ ...good, headline: { ...good.headline, baseCurrency } }));
+      return r.kind === 'ok' ? r.snapshot.headline : null;
+    };
+    expect(read('EUR')).toMatchObject({ baseCurrency: 'EUR' });
+    for (const bad of ['usd', 'USDX', '', 5, null, { a: 1 }, '<b>']) {
+      const h = read(bad);
+      expect(h).not.toBeNull();
+      expect(h).not.toHaveProperty('baseCurrency');
+    }
+  });
+
   it('is absent when nothing was published', () => {
     expect(parseAuditSnapshot(null)).toEqual({ kind: 'absent' });
     expect(parseAuditSnapshot(undefined)).toEqual({ kind: 'absent' });

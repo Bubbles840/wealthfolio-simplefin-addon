@@ -1745,8 +1745,8 @@ async function readCashForecast(wfClient: WealthfolioClient): Promise<CashForeca
 
 /**
  * The cube builder's data sources, bound once — the report-cube twin of
- * `poolReportDeps` above, sharing its dismissal and pool reads so the cube
- * and the pool line can never count different money.
+ * `poolReportDeps` above, reading the same spending lines (Wealthfolio's
+ * definition, 1.62) so the cube and the pool line can never count different money.
  */
 function cubeBuildDeps(wfClient: WealthfolioClient, dbPath: string): CubeBuildDeps {
   return {
@@ -1773,8 +1773,8 @@ function cubeBuildDeps(wfClient: WealthfolioClient, dbPath: string): CubeBuildDe
     feesInterestByMonth: (s, e) => getNativeFeesInterestByMonth(dbPath, s, e),
     spendDaily: (s, e) => getNativeSpendDailyTotals(dbPath, s, e),
     valuationByMonth: (months) => getNativeValuationByMonth(dbPath, months),
-    // The digest's own readers, verbatim — the check's whole worth is that
-    // this path shares no aggregation code with the matrices above.
+    // The digest's own readers, verbatim — summed the digest's way, over the
+    // same spending lines as the matrices above (1.62).
     drillRows: (s, e) => getNativeDrillRows(dbPath, s, e),
     // Who filed each drill row (1.61). Each read on its own: an unreadable
     // rule list still lets the log say "you", and the reverse.

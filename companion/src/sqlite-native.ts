@@ -10,7 +10,7 @@ import { execFileSync } from 'child_process';
 import { DatabaseSync } from 'node:sqlite';
 import { descriptionFromComment, PENDING_SUFFIX as PENDING_NOTE_SUFFIX } from '../../shared/sync-core.js';
 import { IN_TRANSIT_COMMENT_PREFIX } from '../../shared/reconcile.js';
-import { CLI_SEPARATOR, isDay, isTrue, NOTES, shiftDay, tail } from './sqlite-cli-helpers.js';
+import { CLI_SEPARATOR, isDay, isTrue, NOTES, shiftDay, tail, TOP_CATEGORY_CTE } from './sqlite-cli-helpers.js';
 import { spendLines, topCategoryId, SPENDING_TAXONOMY, type SpendLine, type SpendRow } from '../../shared/wf-spending.js';
 
 export interface NativeCategorySpending {
@@ -436,7 +436,7 @@ export function getNativeWealthfolioBudgets(dbPath: string, yearMonth: string): 
   if (!dbPath || !existsSync(dbPath)) return {};
 
   const query = `
-    WITH ranked_budgets AS (
+    WITH RECURSIVE ${TOP_CATEGORY_CTE}, ranked_budgets AS (
       SELECT
         category_id,
         CAST(amount AS REAL) as amount,
@@ -448,13 +448,12 @@ export function getNativeWealthfolioBudgets(dbPath: string, yearMonth: string): 
       WHERE period_key = '${yearMonth}' OR period_key = 'default'
     )
     SELECT
-      COALESCE(parent.name, tc.name) as parent_category,
+      top.name as parent_category,
       ROUND(SUM(rb.amount), 2) as total_budget
     FROM ranked_budgets rb
-    JOIN taxonomy_categories tc ON rb.category_id = tc.id
-    LEFT JOIN taxonomy_categories parent ON tc.parent_id = parent.id
+    JOIN top ON top.start_id = rb.category_id
     WHERE rb.rn = 1
-    GROUP BY COALESCE(parent.name, tc.name);
+    GROUP BY top.name;
   `;
 
   const rows = queryNativeDb<{ parent_category: string; total_budget: number }>(
@@ -1093,7 +1092,8 @@ export function getNativeUncategorizedSpendingTotal(
   let cents = 0;
   for (const line of read.lines) {
     if (line.uncategorizedCents === 0) continue;
-    count += 1;
+    // Only a charge is something to file; a refund just nets the amount.
+    if (line.uncategorizedCents > 0) count += 1;
     cents += line.uncategorizedCents;
   }
   return { count, total: toDollars(cents) };

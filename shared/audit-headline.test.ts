@@ -170,6 +170,25 @@ describe('explainHeadline', () => {
       expect(h.baseCurrency).toBe('USD');
     });
 
+    it('never explains more than its own rows: a $3 euro row cannot account for a $500 gap', () => {
+      const h = explainHeadline({
+        ...eur(), reportCents: 62500, wealthfolioCents: 12500,
+        rows: [row({ absCents: 300, currency: 'EUR', notes: 'CAFE · TRN-9' })],
+      });
+      expect(h.reasons).toEqual([{ kind: 'foreign-currency', cents: 300, rows: [{ date: '2026-10-05', description: 'CAFE', cents: 300, account: 'PNC Checking' }] }]);
+      expect(h.unexplainedCents).toBe(49700);
+      // And the other way: Wealthfolio counts $500 more.
+      const under = explainHeadline({ ...eur(), reportCents: 12500, wealthfolioCents: 62500, rows: [row({ absCents: 300, currency: 'EUR' })] });
+      expect(under.reasons![0].cents).toBe(-300);
+      expect(under.unexplainedCents).toBe(-49700);
+    });
+
+    it('names no reason, and prints no "$0.00" line, when the two already agree', () => {
+      const h = explainHeadline({ ...eur(), reportCents: 12500, wealthfolioCents: 12500, rows: [row({ absCents: 2000, currency: 'EUR' })] });
+      expect(h.reasons).toEqual([]);
+      expect(h.unexplainedCents).toBe(0);
+    });
+
     it('is labelled and explained in the base currency', () => {
       const h = explainHeadline(eur());
       expect(headlineReasonLine(h, h.reasons![0])).toBe(

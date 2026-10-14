@@ -86,6 +86,21 @@ describe('sqlite-native', () => {
       }
     });
 
+    it('keys a budget by its top-level category in a three-level taxonomy, summing what sits below it', () => {
+      const { path, cleanup } = makeTestDb();
+      try {
+        const db = new DatabaseSync(path);
+        db.exec(`INSERT INTO taxonomy_categories (id, name, parent_id) VALUES ('top', 'Food', NULL), ('mid', 'Restaurants', 'top'), ('low', 'Pizza', 'mid')`);
+        db.exec(`INSERT INTO budget_targets (category_id, amount, period_key, updated_at) VALUES
+          ('top', '300', 'default', '2026-06-01T00:00:00Z'), ('low', '40', 'default', '2026-06-01T00:00:00Z')`);
+        db.close();
+        // Upstream keys a budget and its actuals by `top_category_id`.
+        expect(getNativeWealthfolioBudgets(path, '2026-07')).toEqual({ Food: 340 });
+      } finally {
+        cleanup();
+      }
+    });
+
     it('falls back to the default row when no month-specific row exists', () => {
       const { path, cleanup } = makeTestDb();
       try {
@@ -292,7 +307,7 @@ describe('sqlite-native', () => {
         db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, account_id)
                  VALUES ('refund', '11.00', '2026-08-21', 'CREDIT', 'acct-card')`);
         db.close();
-        expect(getNativeUncategorizedSpendingTotal(path, '2026-08-01', '2026-09-01')).toEqual({ count: 3, total: 120 });
+        expect(getNativeUncategorizedSpendingTotal(path, '2026-08-01', '2026-09-01')).toEqual({ count: 2, total: 120 }); // two charges; the refund nets the amount but is not a charge to file
       } finally { cleanup(); }
     });
 

@@ -186,8 +186,11 @@ export function parseAuditSnapshot(raw: string | null | undefined): AuditSnapsho
     }
     issues.push(i);
   }
-  const headline = h.reasons === null ? h : {
-    ...h, reasons,
+  // The base currency names a reason in the views: a code or nothing.
+  const { baseCurrency, ...rest } = h;
+  const withBase = typeof baseCurrency === 'string' && /^[A-Z]{3}$/.test(baseCurrency) ? { ...rest, baseCurrency } : rest;
+  const headline = h.reasons === null ? withBase : {
+    ...withBase, reasons,
     ...(unnamedCents !== 0 && isNum(h.unexplainedCents) ? { unexplainedCents: h.unexplainedCents + unnamedCents } : {}),
   };
   const checked = health.issues === null ? health : {

@@ -17,6 +17,7 @@ import type { LedgerFacts } from '../../shared/ledger-checks.js';
 import { IN_TRANSIT_COMMENT_PREFIX } from '../../shared/reconcile.js';
 import { PENDING_SUFFIX, txIdFromComment } from '../../shared/sync-core.js';
 import { readSpendLines, topCategoryName } from './sqlite-native.js';
+import { TOP_CATEGORY_CTE } from './sqlite-cli-helpers.js';
 
 /** Wealthfolio's spending sign, for the refund check below (a finding, not a
  *  figure: every spending figure is shared/wf-spending.ts's). */
@@ -186,15 +187,14 @@ export function getLedgerFacts(
     const budgetsFor = (period: string) =>
       new Map(
         all<{ cat: string; budget: number }>(
-          `WITH ranked AS (
+          `WITH RECURSIVE ${TOP_CATEGORY_CTE}, ranked AS (
              SELECT category_id, CAST(amount AS REAL) amount,
                     ROW_NUMBER() OVER (PARTITION BY category_id
                                        ORDER BY (period_key = ?) DESC, updated_at DESC) rn
              FROM budget_targets WHERE period_key = ? OR period_key = 'default')
-           SELECT COALESCE(p.name, tc.name) cat, ROUND(SUM(r.amount), 2) budget
-           FROM ranked r JOIN taxonomy_categories tc ON r.category_id = tc.id
-           LEFT JOIN taxonomy_categories p ON tc.parent_id = p.id
-           WHERE r.rn = 1 GROUP BY COALESCE(p.name, tc.name)`,
+           SELECT top.name cat, ROUND(SUM(r.amount), 2) budget
+           FROM ranked r JOIN top ON top.start_id = r.category_id
+           WHERE r.rn = 1 GROUP BY top.name`,
           period, period,
         ).map((r) => [String(r.cat), Number(r.budget)]),
       );
