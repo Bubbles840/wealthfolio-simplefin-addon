@@ -36,7 +36,9 @@ The addon has three tabs: **Home**, **Reports** and **Settings**.
   words or an amount and read its story — where it came from, what it is, who
   filed it and every change made to it, with Undo. Then a status strip (last
   sync, accounts, anything that needs you; a needs-a-category row opens its
-  story),
+  story; with the companion, **Next 30 days** — your cash if nothing comes in:
+  cash today, minus your known bills on their dates and a typical day of
+  other spending — which opens what it counted),
   then your budget: six reports to start (headline numbers, cash flow or the
   semester-pool burn-down, budget vs actual, top merchants, subscriptions & bills (remind, rename, hide, add by hand)),
   with more a tap away under **+ Add report**, or build your own.
@@ -50,7 +52,13 @@ The addon has three tabs: **Home**, **Reports** and **Settings**.
     balance; any difference is flagged with a one-click fix.
 - **Reports** (with the companion) — the daily, weekly and monthly reports
   as they stand right now, plus every edition that was sent. On a Wealthfolio
-  server with Web Push, each report is also pushed to your devices.
+  server with Web Push, each report is also pushed to your devices. The tab
+  counts the editions you haven't opened and marks them New; opening a
+  report's tab marks it seen, on every device. In Full detail the monthly
+  report for a completed month ends with a month in review: the biggest
+  category changes, top merchants, subscriptions that started, stopped or
+  rose in price, net worth, savings rate (as on the Budget tab), and how many
+  changes were made to your books.
 - **Telegram bot** (with the companion) — one short daily report: what you
   spent, what's left, and a single "🧹 N things to fix" line with buttons.
   File transactions, check what you can afford and pull charts from the chat.
@@ -67,7 +75,10 @@ The addon has three tabs: **Home**, **Reports** and **Settings**.
   screen do the same. `/audit` explains why a balance is off from the bank,
   why the month's spending differs from Wealthfolio's, and what Wealthfolio's
   Health page flags — checked live on every tap; `/status` puts a 🔎 under
-  each account that is off.
+  each account that is off. `/forecast` shows your cash over the next 30
+  days if nothing comes in, with the bills it counts; the weekly check-in
+  carries the same line in Full detail, and the daily report warns when cash
+  may run short within two weeks.
 - **Checks** (with the companion) — the same three explanations in the app:
   an account's "off by" chip in **Settings → Accounts** opens why in place,
   the Budget tab's "Why is this different from Wealthfolio?" breaks down the
