@@ -15,6 +15,7 @@ import { useTelegramDraft } from '../tabs/NotificationsTab';
 import { SettingsTab, CARD as SETTINGS_CARD } from '../tabs/SettingsTab';
 import { ReportsTab } from '../tabs/ReportsTab';
 import { parseReportsLink } from '../../shared/reports-archive';
+import type { AuditSnapshotRead } from '../../shared/audit-snapshot';
 import { useAmazonDraft } from '../components/AmazonCard';
 import type { SecretsStore, AccountBalanceInfo, CategoryCatalogEntry } from '../utils/secrets';
 import type { Scheduler } from '../utils/scheduler';
@@ -141,6 +142,9 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
   const [reportCube, setReportCube] = useState<
     Awaited<ReturnType<SecretsStore['getReportCube']>>
   >(null);
+  // The companion's audit snapshot (2c): Settings → Checks and the account
+  // chips, Home's Accounts tile, the Budget tab's link. Null until read.
+  const [auditSnapshot, setAuditSnapshot] = useState<AuditSnapshotRead | null>(null);
   const [customReports, setCustomReportsState] = useState<
     Awaited<ReturnType<SecretsStore['getCustomReports']>>
   >([]);
@@ -259,6 +263,9 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
         setSubscriptionPrefs(subPrefs ?? null);
       })
       .catch(() => {});
+    // On its own, so it can never cost the reads above: optional-called, and
+    // the store answers ok / absent / corrupt rather than throwing.
+    store.getAuditSnapshot?.().then((r) => { if (mounted.current) setAuditSnapshot(r); }).catch(() => {});
   }, [store]);
 
   const onDismissalsChange = useCallback((next: DismissalLedger) => {
@@ -710,6 +717,7 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
           // The pool tile opens the burn-down full-screen in the budget below,
           // which already carries the pool editor.
           onOpenPool={() => setBudgetOpen((prev) => ({ id: 'pool-burndown', seq: (prev?.seq ?? 0) + 1 }))}
+          auditSnapshot={auditSnapshot}
           renderTxStory={renderTxStory}
         />
         <BudgetTab
@@ -726,6 +734,7 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
           onSetUpCompanion={() => navigate('settings', SETTINGS_CARD.docker)}
           openRequest={budgetOpen}
           renderTxStory={renderTxStory}
+          audit={auditSnapshot ? { read: auditSnapshot, companionVersion, now: new Date() } : undefined}
         />
       </TabPanel>
 
@@ -751,6 +760,7 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
           wfNames={wfNames}
           onAccountsChanged={reloadAccounts}
           telegramDraft={telegramDraft}
+          auditSnapshot={auditSnapshot}
         />
       </TabPanel>
 

@@ -7,6 +7,8 @@ import { Button, SectionLabel, Why } from '../components/ui';
 import { SetupChecklist } from '../components/SetupChecklist';
 import { UncategorizedList, useDismissals } from '../components/UncategorizedList';
 import { WhyCard } from '../components/WhyCard';
+import { healthIssueCount } from '../components/AuditViews';
+import type { AuditSnapshotRead } from '../../shared/audit-snapshot';
 import { appTxSearch, type AppStoryTarget } from '../utils/tx-story';
 import type { TxQuery } from '../../shared/tx-search';
 import { money, accountsSummary } from '../components/AccountList';
@@ -89,6 +91,9 @@ interface Props {
   /** 1.61: a transaction's story (TxStoryPanel). Present: "Why is this here?"
    *  heads the page and needs-a-category rows open their stories. */
   renderTxStory?: (target: AppStoryTarget) => React.ReactNode;
+  /** 2c: the companion's audit snapshot. With something Health flags, the
+   *  Accounts tile says so and opens Settings on the Checks card. */
+  auditSnapshot?: AuditSnapshotRead | null;
 }
 
 /**
@@ -107,8 +112,9 @@ export function HomeTab({
   prunedDuplicates, unmappedAccounts, onIgnoreAccounts, uncategorized, dismissals, onDismissalsChange,
   isOpen, toggleCard, onBalancesChanged, onClearError, onError,
   companionVersion, telegramConfigured, amazonConfigured, checklistDismissed,
-  onDismissChecklist, onNavigate, poolStatus, onOpenPool, renderTxStory,
+  onDismissChecklist, onNavigate, poolStatus, onOpenPool, renderTxStory, auditSnapshot,
 }: Props) {
+  const checksToLook = healthIssueCount(auditSnapshot);
   const [fixingBaseline, setFixingBaseline] = useState<string | null>(null);
   const [adjusting, setAdjusting] = useState<string | null>(null);
   const { justDismissed, dismiss, undo } = useDismissals(dismissals, onDismissalsChange);
@@ -416,8 +422,8 @@ export function HomeTab({
         <button
           type="button"
           className="sfin-tile sfin-tile--toggle"
-          aria-label={`Accounts: ${accountsSummary(mapping, balances)}`}
-          onClick={() => onNavigate('settings', SETTINGS_CARD.accounts)}
+          aria-label={`Accounts: ${accountsSummary(mapping, balances)}${checksToLook > 0 ? ` · Checks: ${checksToLook} to look at` : ''}`}
+          onClick={() => onNavigate('settings', checksToLook > 0 ? SETTINGS_CARD.checks : SETTINGS_CARD.accounts)}
         >
           <SectionLabel>Accounts</SectionLabel>
           <div className="sfin-tile-val">{mappedCount}</div>
@@ -431,6 +437,7 @@ export function HomeTab({
                 ? 'all match the bank'
                 : 'not all checked yet'}
           </div>
+          {checksToLook > 0 && <div className="sfin-tile-sub">Checks: {checksToLook} to look at</div>}
         </button>
         {/* Doubles as the disclosure trigger once there is a list to show — one
             surface for the number instead of the tile plus a separate bar
