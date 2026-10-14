@@ -90,8 +90,9 @@ export function TxStoryView({ story, entries, actions, onChanged }: {
       {story.history && (
         <div className="sfin-why-history">
           <div className="sfin-why-heading">{TX_STORY_WHAT_HAPPENED}</div>
+          {/* A log read in part can't say nothing happened: its note says why the list may be short. */}
           {story.history.length === 0
-            ? <div className="sfin-subtle">{TX_STORY_NO_HISTORY}</div>
+            ? !story.historyPartial && <div className="sfin-subtle">{TX_STORY_NO_HISTORY}</div>
             : story.history.map((h) => <HistoryLine key={h.entryId} line={h.line} entry={byId.get(h.entryId)} actions={rowActions} />)}
         </div>
       )}

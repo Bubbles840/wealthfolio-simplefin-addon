@@ -51,7 +51,8 @@ export const TX_STORY_GONE_APP = 'That transaction has changed since — search 
 
 /** Reads a host can fail, each with the note the story carries. */
 export type TxFactName =
-  | 'mapping' | 'partner' | 'category' | 'rules' | 'changeLog' | 'overrides' | 'overridesUnreadable' | 'skipList';
+  | 'mapping' | 'partner' | 'category' | 'rules' | 'changeLog' | 'changeLogPartial' | 'overrides' | 'overridesUnreadable'
+  | 'skipList';
 
 export const TX_FACT_NOTES: Record<TxFactName, string> = {
   mapping: "Couldn't read your account mapping just now, so where it came from is left out.",
@@ -59,11 +60,16 @@ export const TX_FACT_NOTES: Record<TxFactName, string> = {
   category: "Couldn't read its category just now.",
   rules: "Couldn't read your category rules just now, so the rule isn't named.",
   changeLog: "Couldn't read the change log just now.",
+  /** Read, but a bucket is unreadable or a gap says changes were not saved
+   *  (`isChangeLogPartial`): the history keeps what was read. */
+  changeLogPartial: "Part of the change log can't be read, so this list may be missing changes.",
   overrides: "Couldn't read your overrides just now.",
   overridesUnreadable: "Your sync overrides can't be read, so any you set aren't shown.",
   skipList: "Couldn't read your skip list just now.",
 };
-const FACT_ORDER: readonly TxFactName[] = ['mapping', 'partner', 'category', 'rules', 'changeLog', 'overrides', 'overridesUnreadable', 'skipList'];
+const FACT_ORDER: readonly TxFactName[] = [
+  'mapping', 'partner', 'category', 'rules', 'changeLog', 'changeLogPartial', 'overrides', 'overridesUnreadable', 'skipList',
+];
 
 /** "You told the sync: …" — one phrase per override, and the skip list. */
 export const TX_OVERRIDE_WORDS: Record<TxOverrideFlag | 'skipped', string> = {
@@ -145,6 +151,9 @@ export interface TxStory {
   answer: string[];
   /** Oldest first. Null when the change log was not read. */
   history: TxStoryHistoryLine[] | null;
+  /** Part of the log could not be read (`changeLogPartial`): the history may
+   *  be missing entries, so an empty one is never "No changes…". */
+  historyPartial?: true;
   notes: string[];
 }
 
@@ -259,7 +268,9 @@ export interface FilerInput {
   source: string | null | undefined;
   categoryId: string;
   row: RuleRow;
-  /** Entries about this transaction; null when the log could not be read. */
+  /** Entries about this transaction; null when the log could not be read, or
+   *  only in part (`isChangeLogPartial`) — a missing filing must not read as
+   *  "by hand". */
   history: readonly ChangeEntry[] | null;
   /** The categorization rules, listed as Wealthfolio lists them; null when
    *  they could not be read. Only read for a rule's filing. */
@@ -413,6 +424,7 @@ export function buildTxStory(facts: TxStoryFacts): TxStory {
     accountLine: row.accountName,
     answer,
     history,
+    ...(history && failed.has('changeLogPartial') ? { historyPartial: true as const } : {}),
     notes: FACT_ORDER.filter((f) => failed.has(f)).map((f) => TX_FACT_NOTES[f]),
   };
 }

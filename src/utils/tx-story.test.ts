@@ -128,6 +128,20 @@ describe('appTxStory', () => {
     expect(out.story.notes).toEqual([TX_FACT_NOTES[fact]]);
   });
 
+  it.each([
+    ['an unreadable bucket', { unreadable: [{ writer: 'companion' as const, month: '2026-10', paused: false }] }],
+    ['a gap in the log', { gaps: [{ at: '2026-10-05T12:00:00Z', count: 1, reason: "couldn't save the log", writer: 'addon' as const }] }],
+  ])('%s that may hold the Telegram filing: no "set by hand", a note, and the story is marked partial', async (_what, part) => {
+    // The cube says "you"; the filing itself sat in the bucket that can't be read.
+    const out = ground(await appTxStory(ctxWith(byId([detail()])), store({ getChangeLog: vi.fn(async () => ({ ...logOf(), ...part })) }),
+      { activityId: 'act-1', categoryName: 'Groceries', filer: 'y' }, NOW));
+    expect(out.answer).toContain('Filed under Groceries by you, in Telegram.');
+    expect(out.answer.join(' ')).not.toContain('set by hand');
+    expect(out.history).toEqual([]);
+    expect(out.historyPartial).toBe(true);
+    expect(out.notes).toEqual([TX_FACT_NOTES.changeLogPartial]);
+  });
+
   it('a skipped transaction says so, and an absent skip list is none', async () => {
     const skipped = { readSkippedTransactions: vi.fn(async () => ({ kind: 'ok' as const, list: [{ account: 'ACT-chk', txId: 'TRN-1' }] })) };
     const out = await appTxStory(ctxWith(byId([detail()])), store(skipped), { activityId: 'act-1' }, NOW);
