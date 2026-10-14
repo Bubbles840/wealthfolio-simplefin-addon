@@ -76,6 +76,63 @@ describe('parseCashForecast', () => {
   });
 });
 
+describe('parseCashForecast: the short day and the low point agree', () => {
+  it('is corrupt with a short date but a low point at or above $0', () => {
+    expect(parseCashForecast(JSON.stringify(FORECAST({ shortDate: '2026-11-03' })))).toEqual({ kind: 'corrupt' });
+    expect(parseCashForecast(JSON.stringify(FORECAST({ shortDate: '2026-11-03', lowCents: 0 })))).toEqual({ kind: 'corrupt' });
+  });
+
+  it('is corrupt with a low point below $0 but no short date', () => {
+    expect(parseCashForecast(JSON.stringify(FORECAST({ lowCents: -1 })))).toEqual({ kind: 'corrupt' });
+  });
+
+  it('reads the two consistent shapes', () => {
+    expect(parseCashForecast(JSON.stringify(SHORT()))).toEqual({ kind: 'ok', forecast: SHORT() });
+    expect(parseCashForecast(JSON.stringify(FORECAST({ lowCents: 0 })))).toEqual({ kind: 'ok', forecast: FORECAST({ lowCents: 0 }) });
+  });
+});
+
+describe('an undated bank balance', () => {
+  it('parses with asOf null, and rejects a non-day, non-null asOf', () => {
+    const undated = FORECAST({ accounts: [{ name: 'Savings', cents: 50000, asOf: null }] });
+    expect(parseCashForecast(JSON.stringify(undated))).toEqual({ kind: 'ok', forecast: undated });
+    for (const asOf of ['', 'Oct 9', 0, undefined]) {
+      expect(parseCashForecast(JSON.stringify({ ...FORECAST(), accounts: [{ name: 'Savings', cents: 1, asOf }] }))).toEqual({ kind: 'corrupt' });
+    }
+  });
+
+  it('says the date is unknown — never "Balance from", whatever the forecast date', () => {
+    const f = FORECAST();
+    expect(forecastAccountLine({ name: 'Savings', cents: 50000, asOf: null }, f)).toBe('Savings · $500 · balance date unknown');
+    expect(forecastAccountLine({ name: 'Savings', cents: 50000, asOf: null }, FORECAST({ at: '2027-06-01T00:00:00.000Z' })))
+      .toBe('Savings · $500 · balance date unknown');
+  });
+});
+
+describe('the exact two-day stale boundary', () => {
+  const AT = new Date('2026-10-14T18:00:00.000Z');
+  const EXACT = new Date(AT.getTime() + 2 * 86_400_000);
+  const OVER = new Date(EXACT.getTime() + 1);
+  const f = SHORT({ at: AT.toISOString() });
+  // forecastWarningLine needs the short date within 14 days of its `today`.
+  const today = '2026-10-25';
+
+  it('cashForecastView: exactly 2 days is fresh, 2 days + 1 ms is stale', () => {
+    expect(cashForecastView(ok(f), '1.61.0', EXACT)).toMatchObject({ state: 'ok', stale: false });
+    expect(cashForecastView(ok(f), '1.61.0', OVER)).toMatchObject({ state: 'ok', stale: true });
+  });
+
+  it('weeklyForecastLine: exactly 2 days is fresh, 2 days + 1 ms is stale', () => {
+    expect(weeklyForecastLine(ok(f), EXACT, CLEAN)).not.toBeNull();
+    expect(weeklyForecastLine(ok(f), OVER, CLEAN)).toBeNull();
+  });
+
+  it('forecastWarningLine: exactly 2 days is fresh, 2 days + 1 ms is stale', () => {
+    expect(forecastWarningLine(ok(f), today, EXACT)).not.toBeNull();
+    expect(forecastWarningLine(ok(f), today, OVER)).toBeNull();
+  });
+});
+
 describe('the version gate', () => {
   it('opens at the release that publishes the forecast', () => {
     expect(companionPublishesForecast(CASH_FORECAST_SINCE)).toBe(true);

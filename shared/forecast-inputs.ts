@@ -7,8 +7,9 @@
  *  - Cash today: the bank balances (`account_balances`, dollars, keyed by
  *    SimpleFin id) of the mapped accounts whose Wealthfolio account is CASH
  *    and neither archived nor hidden. Cards, investment accounts and unmapped
- *    accounts are left out. A counted account the bank sent no dated balance
- *    for is left out BY NAME, never silently.
+ *    accounts are left out. A counted account the bank sent no numeric balance
+ *    for is left out BY NAME, never silently; a balance with no usable date
+ *    still counts, its date unknown (`asOf: null`).
  *  - The bills: the roster's subscriptions and bills with a date
  *    (forecastBills in shared/forecast.ts).
  *  - Daily spending: the report's spending — the cube's `monthlySpendTotals`,
@@ -49,7 +50,7 @@ export interface CashToday {
   cashCents: number;
   /** Counted, by name. */
   accounts: ForecastAccount[];
-  /** CASH accounts with no dated balance from the bank, by name. */
+  /** CASH accounts with no numeric balance from the bank, by name. */
   missing: string[];
 }
 
@@ -66,12 +67,14 @@ export function cashToday(input: CashTodayInput): CashToday {
     const name = (own(input.names, sfinId) && input.names[sfinId]) || account.name || sfinId;
     const b = own(input.balances, sfinId) ? input.balances[sfinId] : undefined;
     const balance = b && typeof b.balance === 'number' && Number.isFinite(b.balance) ? b.balance : null;
-    const date = b && typeof b.date === 'number' && Number.isFinite(b.date) ? b.date : null;
-    // Every number handed on is finite: a balance too large to hold in cents,
-    // or a date outside what a calendar holds, is a balance the bank didn't send.
+    // The bank's date is Unix seconds. Absent, zero, negative or off the
+    // calendar means the date is UNKNOWN (asOf null) — the balance still counts.
+    const date = b && typeof b.date === 'number' && Number.isFinite(b.date) && b.date > 0 ? b.date : null;
+    // Every number handed on is finite: a balance too large to hold in cents
+    // is a balance the bank didn't send.
     const cents = balance === null ? NaN : Math.round(balance * 100);
     const asOf = date === null || !Number.isFinite(new Date(date * 1000).getTime()) ? null : new Date(date * 1000).toISOString().slice(0, 10);
-    if (!Number.isFinite(cents) || asOf === null) {
+    if (!Number.isFinite(cents)) {
       missing.push(name);
       continue;
     }

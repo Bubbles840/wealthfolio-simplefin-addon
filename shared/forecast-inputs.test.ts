@@ -80,13 +80,15 @@ describe('cashToday', () => {
 
   it('sums the bank balances of mapped CASH accounts — not cards, investments, archived or hidden ones', () => {
     expect(cashToday({ mapping: MAPPING, balances: BALANCES, names: { 'sfin-chk': 'PNC Checking' }, accounts: ACCOUNTS })).toEqual({
-      cashCents: 371849,
+      cashCents: 379349,
       accounts: [
         { name: 'PNC Checking', cents: 321849, asOf: '2026-10-14' },
         { name: 'Savings', cents: 50000, asOf: '2026-10-09' },
+        // An undated balance still counts; only its date is unknown.
+        { name: 'Undated', cents: 7500, asOf: null },
       ],
-      // Never a silent wrong total: no balance, or no date for it, is named.
-      missing: ['Joint', 'Undated'],
+      // Never a silent wrong total: no numeric balance is named.
+      missing: ['Joint'],
     });
   });
 
@@ -96,8 +98,6 @@ describe('cashToday', () => {
     ['-Infinity', Number.NEGATIVE_INFINITY, day('2026-10-14')],
     ['a number too large to hold in cents', 1e308, day('2026-10-14')],
     ['a string', '3218.49', day('2026-10-14')],
-    ['a date NaN', 100, Number.NaN],
-    ['a date outside what a calendar holds', 100, 1e15],
   ])('leaves out an account whose balance is malformed (%s), named in missing, never in the total', (_what, balance, date) => {
     const got = cashToday({
       mapping: { 'sfin-chk': 'wf-chk', 'sfin-sav': 'wf-sav' },
@@ -106,6 +106,23 @@ describe('cashToday', () => {
       accounts: ACCOUNTS,
     });
     expect(got).toEqual({ cashCents: 50000, accounts: [{ name: 'Savings', cents: 50000, asOf: '2026-10-09' }], missing: ['PNC Checking'] });
+  });
+
+  it.each<[string, unknown]>([
+    ['absent', undefined],
+    ['zero', 0],
+    ['negative', -5],
+    ['NaN', Number.NaN],
+    ['a string', '1760400000'],
+    ['outside what a calendar holds', 1e15],
+  ])('counts a numeric balance whose date is %s, its date unknown (asOf null) — never in missing', (_what, date) => {
+    const got = cashToday({
+      mapping: { 'sfin-chk': 'wf-chk' },
+      balances: { 'sfin-chk': { balance: 120.5, ...(date === undefined ? {} : { date }) } },
+      names: { 'sfin-chk': 'PNC Checking' },
+      accounts: ACCOUNTS,
+    });
+    expect(got).toEqual({ cashCents: 12050, accounts: [{ name: 'PNC Checking', cents: 12050, asOf: null }], missing: [] });
   });
 
   it('counts nothing without a mapping or the accounts', () => {
