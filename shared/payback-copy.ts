@@ -9,7 +9,7 @@
  * planner, the filing runner and the change log's runner can share it without
  * importing one another.
  */
-import { money } from './telegram.js';
+import { changeMoney } from './change-entries.js';
 
 // ── The menu ─────────────────────────────────────────────────────────────
 /** The switch on a deposit's category screen (it read "Spending categories »"). */
@@ -18,9 +18,11 @@ export const PAYBACK_SWITCH = "It's a payback »";
 export const PAYBACK_PICK = 'Pick the spending it pays you back for.';
 
 // ── Filing ───────────────────────────────────────────────────────────────
+/** `$14` for whole dollars, else the change log's cents-aware `$1,234.56`: never rounded. */
+const paybackMoney = (cents: number): string => changeMoney(cents).replace(/\.00$/, '');
 /** "Filed as a payback under Restaurants — it takes $14 off your Food & Dining spending." */
 export function paybackDone(categoryName: string, spendingName: string, absCents: number): string {
-  return `Filed as a payback under ${categoryName} — it takes ${money(absCents / 100)} off your ${spendingName} spending.`;
+  return `Filed as a payback under ${categoryName} — it takes ${paybackMoney(absCents)} off your ${spendingName} spending.`;
 }
 export const PAYBACK_UNDO_HINT = 'Undo it from /changes.';
 export const PAYBACK_NO_UNDO = "The change log couldn't be written, so there's no Undo for it.";
@@ -28,13 +30,14 @@ export const paybackUnfiled = (categoryName: string): string =>
   `It's a payback now, but Wealthfolio didn't file it under ${categoryName} — /categorize offers it again.`;
 
 export const PAYBACK_GONE = 'That transaction is gone — nothing was changed.';
-export const PAYBACK_MANAGED = "The sync manages this row (a held transfer, a starting balance or a correction), so it can't be a payback.";
+export const PAYBACK_MANAGED = "The sync manages this row (a held transfer, a starting balance or a correction), so it can't be a payback — nothing was changed.";
 export const PAYBACK_NOT_FEED = 'Only a transaction from your bank feed can be a payback here — nothing was changed.';
 export const PAYBACK_LINKED = "It's half of a linked transfer, so it can't be a payback — nothing was changed.";
 export const PAYBACK_TRANSFER = "It's recorded as a transfer, so it can't be a payback — nothing was changed.";
-export const PAYBACK_PENDING = "It's still pending — file it as a payback once it posts.";
-export const PAYBACK_NOT_CASH = 'Only money into a bank account can be a payback — on a card, Wealthfolio already takes a credit off spending.';
+export const PAYBACK_PENDING = "It's still pending, so file it as a payback once it posts — nothing was changed.";
+export const PAYBACK_NOT_CASH = 'Only money into a bank account can be a payback; on a card, Wealthfolio already takes a credit off spending — nothing was changed.';
 export const PAYBACK_ALREADY = "It's already a payback — nothing was changed.";
+export const PAYBACK_ZERO = "There's no amount to file as a payback — nothing was changed.";
 export const PAYBACK_NOT_DEPOSIT = 'Only a deposit can be a payback — nothing was changed.';
 /** Telegram, while the installed add-on is older than PAYBACK_SINCE or unknown (W8). */
 export const PAYBACK_UPDATE_ADDON = "Update the add-on to 1.62.0 or newer first — an older one turns a payback back into a deposit on its next sync. Nothing was changed; once it's updated, paybacks show in the app's Change log too.";

@@ -4,7 +4,7 @@ import { changeBeforeAfter, changeGroupOf } from './change-view.js';
 import { paybackRowOf, planPayback, type PaybackFacts } from './payback.js';
 import { isPaybackRow, paybackRetype, type PaybackRow } from './payback-row.js';
 import {
-  PAYBACK_ALREADY, PAYBACK_GONE, PAYBACK_LINKED, PAYBACK_MANAGED, PAYBACK_NOT_CASH, PAYBACK_NOT_DEPOSIT, PAYBACK_NOT_FEED,
+  PAYBACK_ALREADY, PAYBACK_ZERO, PAYBACK_GONE, PAYBACK_LINKED, PAYBACK_MANAGED, PAYBACK_NOT_CASH, PAYBACK_NOT_DEPOSIT, PAYBACK_NOT_FEED,
   PAYBACK_PENDING, PAYBACK_TRANSFER, paybackDone,
 } from './payback-copy.js';
 import { emptySyncOverrides, setTxOverride, SYNC_OVERRIDES_UNREADABLE_MESSAGE } from './sync-overrides.js';
@@ -99,9 +99,17 @@ describe('planPayback', () => {
     expect(planPayback(facts(over))).toEqual({ ok: false, reason });
   });
 
+  it('refuses a row whose stored amount is not positive, writing nothing', () => {
+    expect(planPayback(facts({ row: deposit({ absCents: 0 }) }))).toEqual({ ok: false, reason: PAYBACK_ZERO });
+  });
+
+  it('ends every refusal that changed nothing with "— nothing was changed."', () => {
+    for (const s of [PAYBACK_MANAGED, PAYBACK_PENDING, PAYBACK_NOT_CASH]) expect(s.endsWith('— nothing was changed.')).toBe(true);
+  });
+
   it('gives every refusal its own words', () => {
     const words = [PAYBACK_GONE, PAYBACK_MANAGED, PAYBACK_NOT_FEED, PAYBACK_LINKED, PAYBACK_TRANSFER, PAYBACK_PENDING, PAYBACK_NOT_CASH,
-      PAYBACK_ALREADY, PAYBACK_NOT_DEPOSIT, SYNC_OVERRIDES_UNREADABLE_MESSAGE];
+      PAYBACK_ALREADY, PAYBACK_NOT_DEPOSIT, PAYBACK_ZERO, SYNC_OVERRIDES_UNREADABLE_MESSAGE];
     expect(new Set(words).size).toBe(words.length);
   });
 
@@ -151,5 +159,6 @@ describe('the payback-filed entry', () => {
   it('words the filing as the spec does', () => {
     expect(paybackDone('Restaurants', 'Food & Dining', 1400)).toBe('Filed as a payback under Restaurants — it takes $14 off your Food & Dining spending.');
     expect(paybackDone('Entertainment', 'Entertainment', 1450)).toBe('Filed as a payback under Entertainment — it takes $14.50 off your Entertainment spending.');
+    expect(paybackDone('Restaurants', 'Food & Dining', 123456)).toBe('Filed as a payback under Restaurants — it takes $1,234.56 off your Food & Dining spending.');
   });
 });
