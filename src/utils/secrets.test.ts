@@ -127,6 +127,14 @@ describe('SecretsStore', () => {
     expect(await s.getUncategorizedStatus()).toBeNull();
   });
 
+  it('reads a published row with a guess as before — the optional field rides along, nothing else changes', async () => {
+    const ctx = makeCtx();
+    const row = { activityId: 'a', date: '2026-10-04', amountCents: 2500, description: 'KROGER #415', accountName: 'Checking', direction: 'out' };
+    const guessed = { ...row, activityId: 'b', guess: { categoryId: 'cat-gro', name: 'Groceries' } };
+    await ctx.api.secrets.set(UNCATEGORIZED_STATUS_SECRET_KEY, JSON.stringify({ count: 2, asOf: '2026-10-14', rows: [row, guessed] }));
+    expect(await new SecretsStore(ctx).getUncategorizedStatus()).toEqual({ count: 2, asOf: '2026-10-14', rows: [row, guessed] });
+  });
+
   it('clearAll deletes the Amazon mailbox config, ledger and label catalog too', async () => {
     // Same class of bug as uncategorized_status above: getAmazonConfig,
     // getAmazonLabels and getAmazonLedger all read/write their key constants
