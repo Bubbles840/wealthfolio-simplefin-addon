@@ -70,6 +70,7 @@ import type { SyncHealth } from '../../shared/telegram.js';
 import { SIMPLEFIN_SYNC_VERSION, COMPANION_VERSION_SECRET_KEY, INSTALLED_ADDON_VERSION_SECRET_KEY, isNewerVersion } from '../../shared/version.js';
 import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeRuleCategorizedAmazonRows, getNativeCategorizedSpending, getNativeSpendingCategories, getNativeCategoryCatalog, getNativeSubcategorySpending, getNativeUncategorizedSpendingTotal, countRulePatternMatches, getNativeSpendMatrix, getNativeIncomeByMonthAccount, getNativeUncategorizedByMonthAccount, getNativeMerchantRows, getNativeDrillRows, getNativeFeesInterestByMonth, getNativeSpendDailyTotals, getNativeValuationByMonth, getNativeIncomeCategories } from './sqlite-native.js';
 import { publishUncategorizedStatusForDbPath } from './uncategorized-status.js';
+import { getNativePastFilings } from './sqlite-guess.js';
 import { createCategorizeController, SPENDING_TAXONOMY_ID } from './categorize.js';
 import { createAmazonLabelMenu, type AmazonLabelMenu } from './amazon-labels.js';
 import { fileAmazonCharges } from './amazon-filing.js';
@@ -1073,6 +1074,9 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
         await wfClient.getAddonSecret('simplefin-sync', 'uncategorized_dismissals'),
         'uncategorized_dismissals',
       ) ?? {},
+      new Date(),
+      // Each row's guessed category (3): how you filed the same merchant before.
+      getNativePastFilings,
     );
 
     // The Overview tile's copy of the semester pool. Republished every sync,
@@ -2968,6 +2972,8 @@ export function buildCategorizeDeps(wfClient: WealthfolioClient): CategorizeDeps
           (key, value) => wfClient.setAddonSecret('simplefin-sync', key, value),
           (dbPath, start, end) => getNativeUncategorizedSpending(dbPath, start, end),
           readLedger,
+          new Date(),
+          getNativePastFilings,
         );
       } catch (err) {
         log(`Categorize menu: republishing the uncategorized status failed: ${formatError(err)}`);
