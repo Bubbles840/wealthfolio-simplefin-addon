@@ -85,6 +85,9 @@ import { visibleUncategorized, type DismissalLedger } from '../../shared/uncateg
 import { descriptionFromComment, txIdFromComment } from '../../shared/sync-core.js';
 import { categoryFiledChange, categoryRuleCreatedChange, type ChangeDraft, type FiledCategory } from '../../shared/change-entries.js';
 import { buildGuessIndex, guessCategory, guessSinceDay, type GuessIndex, type PastFiling } from '../../shared/category-guess.js';
+import type { PaybackChoice, PaybackOutcome } from '../../shared/payback.js';
+import { PAYBACK_UNAVAILABLE, PAYBACK_UNREACHABLE } from '../../shared/payback-copy.js';
+import { removalFingerprint } from '../../shared/tx-remove.js';
 import { uncategorizedWindow } from './uncategorized-status.js';
 
 /**
@@ -133,6 +136,10 @@ export interface CategorizeSourceRow {
   direction?: 'in' | 'out';
   /** See `NativeUncategorizedTx.incomeEligible`. */
   incomeEligible?: boolean;
+  /** See `NativeUncategorizedTx.activityType` / `.pending` (1.62): the payback
+   *  switch is for a posted DEPOSIT only. */
+  activityType?: string;
+  pending?: boolean;
 }
 
 /** One taxonomy's assignment on a row — `NativeAssignment` from
@@ -265,6 +272,10 @@ export interface CategorizeDeps {
   /** The change log: one draft per write that succeeded. Optional (most tests
    *  leave it out); read at call time; a throw is logged and swallowed. */
   record?: (draft: ChangeDraft) => void;
+  /** 1.62 (W6): files a deposit as a payback — `filePayback` over the
+   *  companion's REST host, refused while its own sync runs. It records its own
+   *  change-log entry. Optional: without it a payback tap is refused, in words. */
+  payback?: (choice: PaybackChoice) => Promise<PaybackOutcome>;
   /** 1.61: the transaction screen's 🔎 Why? — sends that transaction's story
    *  as a NEW message (companion/src/why-menu.ts). Optional: without it the
    *  button is not offered. */
@@ -426,7 +437,7 @@ const PENDING_CHAT_ID = 0;
  *  screen gets the fresh data alone — that is what makes a row filed elsewhere
  *  disappear instead of lingering. */
 const PINNED_SCREEN_KINDS: ReadonlySet<MenuScreen['kind']> = new Set([
-  'filed', 'dismissed', 'rulePreview', 'ruleCreated', 'refiled',
+  'filed', 'dismissed', 'rulePreview', 'ruleCreated', 'refiled', 'paybackResult',
 ]);
 
 function pinnedActivityId(screen: MenuScreen): string | null {
@@ -688,6 +699,9 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
       ...(r.wfAccountId ? { accountId: r.wfAccountId } : {}),
       ...(r.direction ? { direction: r.direction } : {}),
       ...(r.incomeEligible !== undefined ? { incomeEligible: r.incomeEligible } : {}),
+      ...(r.activityType !== undefined ? { activityType: r.activityType } : {}),
+      ...(r.pending !== undefined ? { pending: r.pending } : {}),
+      note: r.notes,
     };
   }
 
@@ -1212,6 +1226,60 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
         return;
       }
 
+      case 'payback': {
+        // 1.62 (W6): a spending category picked for a deposit files it as a
+        // payback. The runner re-reads the row by id before it writes; this
+        // sweep only checks the row still needs a category. What the menu
+        // showed is taken from the session BEFORE the sweep replaces it (PB-B M1).
+        const drawn = rowFor(chat, action.activityId);
+        const loaded = await load(chat.mode);
+        if (!loaded.ok) {
+          await showError(chat, failureText(loaded.failure, chat.session.screen, chat.mode), ui);
+          return;
+        }
+        const row = loaded.fresh.txns.find((t) => t.activityId === action.activityId) ?? null;
+        const category = loaded.fresh.categories.find((c) => c.id === action.categoryId) ?? null;
+        if (!row || !category) {
+          await showGone(chat, action.activityId, loaded.fresh, ui);
+          return;
+        }
+        // The fingerprint `filePayback` makes of its own row: same account name,
+        // note, absolute cents and day, the type of a deposit.
+        const shown = drawn
+          ? removalFingerprint({
+              activityId: drawn.activityId, note: drawn.note ?? drawn.description, absCents: drawn.amountCents, date: drawn.date,
+              activityType: drawn.activityType ?? 'DEPOSIT', accountName: drawn.accountName,
+            })
+          : undefined;
+        let outcome: PaybackOutcome;
+        if (!deps.payback) {
+          outcome = { kind: 'refused', message: PAYBACK_UNAVAILABLE };
+        } else {
+          try {
+            outcome = await deps.payback({
+              activityId: row.activityId, categoryId: category.id, categoryName: category.name, parentName: category.parentName,
+              ...(shown !== undefined ? { shown } : {}),
+            });
+          } catch (err) {
+            safeLog(`Categorize menu: the payback for ${action.activityId} failed: ${formatError(err)}`);
+            outcome = { kind: 'refused', message: PAYBACK_UNREACHABLE };
+          }
+        }
+        if (outcome.kind === 'refused') {
+          const { text, keyboard } = show(chat, { kind: 'paybackRefused', activityId: row.activityId, text: outcome.message }, null, loaded.fresh);
+          await ui.edit(text, keyboard);
+          return;
+        }
+        await republishQuietly();
+        // Drawn from the sweep in hand, never a second read: a read that failed
+        // now would hide what was just written.
+        const { text, keyboard } = show(chat, {
+          kind: 'paybackResult', activityId: row.activityId, categoryId: category.id, text: outcome.message, offerRules: outcome.kind === 'filed',
+        }, row, loaded.fresh);
+        await ui.edit(text, keyboard);
+        return;
+      }
+
       case 'unassign': {
         // NO visibility precondition, unlike `assign`: this row was just filed,
         // so a fresh sweep of what needs a category no longer lists it — that is
@@ -1709,6 +1777,12 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
         await republishQuietly();
         await transition(chat, { ...screen, undone: true }, pin, ui);
         return;
+      }
+
+      default: {
+        // Exhaustive: a new action kind must be handled above.
+        const unhandled: never = action;
+        void unhandled;
       }
     }
   }

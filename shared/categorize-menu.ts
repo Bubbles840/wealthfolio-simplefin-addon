@@ -41,6 +41,15 @@ export interface CategorizeTxn {
    *  bucket question, distinct from `direction`: a card credit is money in
    *  but a spending-bucket refund, and its income grid would be all 400s. */
   incomeEligible?: boolean;
+  /** The row's stored activity type, upper-cased (1.62): with `pending`, what
+   *  decides whether it can be filed as a payback — only a posted DEPOSIT can;
+   *  INTEREST, INCOME, DIVIDEND and a pending DEPOSIT are also `incomeEligible`. */
+  activityType?: string;
+  /** Whether the stored note marks the row pending (1.62). */
+  pending?: boolean;
+  /** The RAW stored note (1.62): what a payback's "shown" fingerprint is made
+   *  from, since `description` is already stripped. */
+  note?: string;
   /** Present in recategorize mode: the ONE category this transaction is
    *  currently filed under that a reader would recognise — the spending
    *  assignment when it has one (their budgets are about it), else whatever it
@@ -634,12 +643,15 @@ function renderTxn(session: MenuSession, activityId: string, showSpending = fals
   // keeps its spending-centric flow untouched.
   const income = session.incomeCategories ?? [];
   const incomeGridAvailable = !isRecategorize && txn.incomeEligible === true && income.length > 0;
-  const useIncomeGrid = incomeGridAvailable && !showSpending;
+  // Only a posted DEPOSIT can be a payback (1.62): INTEREST, INCOME, DIVIDEND and
+  // a pending DEPOSIT keep today's routing, with no switch.
+  const paybackable = txn.activityType === 'DEPOSIT' && txn.pending !== true;
+  const useIncomeGrid = incomeGridAvailable && !(showSpending && paybackable);
   // A money-in row's spending grid files a PAYBACK (1.62, W6): Wealthfolio
   // takes a spending category on money in only once the row is a CREDIT marked
   // REIMBURSEMENT, which the payback re-types it to first. Without an income
   // grid to switch from, the row gets this grid straight away.
-  const paybackGrid = !isRecategorize && txn.incomeEligible === true && !useIncomeGrid;
+  const paybackGrid = !isRecategorize && txn.incomeEligible === true && paybackable && !useIncomeGrid;
 
   const catButtons: Btn[] = useIncomeGrid
     ? income.map((c) => ({
@@ -668,7 +680,9 @@ function renderTxn(session: MenuSession, activityId: string, showSpending = fals
     : [];
 
   const switchRows: Btn[][] = useIncomeGrid
-    ? [[{ text: PAYBACK_SWITCH, action: { kind: 'goto', screen: { kind: 'txn', activityId, showSpending: true } } }]]
+    ? paybackable
+      ? [[{ text: PAYBACK_SWITCH, action: { kind: 'goto', screen: { kind: 'txn', activityId, showSpending: true } } }]]
+      : []
     : incomeGridAvailable
       ? [[{ text: '« Income categories', action: { kind: 'goto', screen: { kind: 'txn', activityId } } }]]
       : [];

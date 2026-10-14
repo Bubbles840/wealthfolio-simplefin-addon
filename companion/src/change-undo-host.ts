@@ -15,6 +15,7 @@ import { SPENDING_TAXONOMY } from '../../shared/change-undo.js';
 import type { SyncHost } from '../../shared/sync-host.js';
 import { SIMPLEFIN_SYNC_VERSION } from '../../shared/version.js';
 import { recordCompanionChanges, type SecretClient } from './change-log-host.js';
+import { readPaybackRow } from './payback-host.js';
 import { RestSyncHost } from './rest-host.js';
 import { getNativeRuleFiledActivityIds } from './sqlite-native.js';
 import type { WealthfolioClient } from './wealthfolio.js';
@@ -25,15 +26,19 @@ const ADDON_ID = 'simplefin-sync';
 export type UndoClient = SecretClient & Pick<WealthfolioClient,
   'getActivityAssignments' | 'assignActivityCategory' | 'unassignActivityCategory'
   | 'listCategorizationRules' | 'createCategorizationRule' | 'deleteCategorizationRule'
-  | 'getBudgetTargets' | 'setDefaultBudgetTarget' | 'deleteBudgetTarget'>;
+  | 'getBudgetTargets' | 'setDefaultBudgetTarget' | 'deleteBudgetTarget'
+  | 'searchActivities' | 'getAccounts'>;
 
 export function companionUndoIo(
   client: UndoClient,
   dbPath: string,
   host: SyncHost = new RestSyncHost(client as unknown as WealthfolioClient, dbPath),
+  /** The companion's log, for what a refusal must not say aloud (a payback's Undo, 1.62). */
+  log?: (msg: string) => void,
 ): UndoIo {
   return {
     host,
+    ...(log ? { log } : {}),
     secrets: {
       get: (k) => client.getAddonSecret(ADDON_ID, k),
       set: (k, v) => client.setAddonSecret(ADDON_ID, k, v),
@@ -65,6 +70,8 @@ export function companionUndoIo(
       set: async (categoryId, amountCents) => (await client.setDefaultBudgetTarget(categoryId, amountCents))?.id ?? null,
       remove: (id) => client.deleteBudgetTarget(id),
     },
+    // A payback's row (1.62): by exact id, with its stored instant.
+    paybacks: { read: (activityId) => readPaybackRow(client, activityId) },
     record: (draft) => recordCompanionChanges(client, [draft]),
     where: { host: 'companion', companionVersion: SIMPLEFIN_SYNC_VERSION },
   };
