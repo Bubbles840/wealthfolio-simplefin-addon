@@ -639,8 +639,9 @@ export function accountCreatedChange(f: AccountCreatedFacts): ChangeDraft {
 // ── Budgets (project 4) ──────────────────────────────────────────────────
 
 export interface BudgetSetFacts {
-  /** The target Wealthfolio stored (`BudgetTarget.id`): what Undo deletes. */
-  targetId: string;
+  /** The target Wealthfolio stored (`BudgetTarget.id`): what Undo deletes. Null:
+   *  the budget was written but Wealthfolio's reply named no target. */
+  targetId: string | null;
   categoryId: string;
   categoryName: string;
   /** What Wealthfolio stored, cents: what Undo checks is still there. */

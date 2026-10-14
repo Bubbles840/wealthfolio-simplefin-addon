@@ -10,6 +10,7 @@ import { execFileSync } from 'child_process';
 import { DatabaseSync } from 'node:sqlite';
 import { BALANCE_ADJUSTMENT_COMMENT_PREFIX, descriptionFromComment, PENDING_SUFFIX as PENDING_NOTE_SUFFIX } from '../../shared/sync-core.js';
 import { IN_TRANSIT_COMMENT_PREFIX } from '../../shared/reconcile.js';
+import { excludedWithDescendants } from '../../shared/audit-headline.js';
 
 export interface NativeCategorySpending {
   categoryName: string;
@@ -1344,6 +1345,84 @@ export function getNativeSpendMatrix(
       amount: typeof v[3] === 'number' ? v[3] : parseFloat(String(v[3])) || 0,
     };
   }).filter((r) => r.month && r.category);
+}
+
+/**
+ * Suggested budgets' spend read (project 4): `getNativeSpendMatrix`'s series,
+ * restricted the way Wealthfolio's own budget actuals are.
+ *  - Only the SPENDING accounts (`getNativeAuditSettings.spendingAccountIds`):
+ *    Wealthfolio's budgets never see the others.
+ *  - A row whose OWN category is excluded (`spending.excluded_category_ids`,
+ *    descendants included) is dropped BEFORE it rolls up, so an excluded
+ *    subcategory's spending never lands in its parent's figure.
+ * The matrix is grouped by the row's own category id so both can be applied;
+ * the account and category ids are filtered here, in code, never interpolated
+ * into SQL (only the validated date bounds are). Strict: a database that
+ * cannot be read throws `NativeDbUnreadableError` — never "nothing spent".
+ */
+export function getNativeBudgetSpend(
+  dbPath: string,
+  startInclusive: string,
+  endExclusive: string,
+  scope: { spendingAccountIds: readonly string[]; excludedCategoryIds: readonly string[]; categoryParents: Readonly<Record<string, string | null>> },
+): Array<{ month: string; category: string; accountId: string; amount: number }> {
+  if (!validDateBounds(startInclusive, endExclusive)) throw new Error('Refusing the budget spend read: malformed date bounds');
+  const query = `
+    SELECT strftime('%Y-%m', a.activity_date) as month,
+           ${SPENDING_CATEGORY} as category,
+           tc.id as category_id,
+           COALESCE(a.account_id, '') as account_id,
+           ROUND(SUM(${SPENDING_SIGNED_AMOUNT}), 2) as amount
+    ${SPENDING_FROM}
+    ${spendingWhere(startInclusive, endExclusive)}
+    GROUP BY month, category, category_id, account_id;
+  `;
+  const rows = queryNativeDbStrict<Record<string, unknown>>(
+    dbPath,
+    'budget spend',
+    query,
+    (parts) => (parts.length === 5
+      ? { c0: parts[0], c1: parts[1], c2: parts[2], c3: parts[3], c4: parseFloat(parts[4]) || 0 }
+      : null),
+    DRILL_CLI_SEPARATOR,
+  );
+  const accounts = new Set(scope.spendingAccountIds);
+  const dropped = excludedWithDescendants(scope.excludedCategoryIds, scope.categoryParents);
+  const cents = new Map<string, { month: string; category: string; accountId: string; cents: number }>();
+  for (const r of rows) {
+    const [month, category, categoryId, accountId, amount] = Object.values(r) as [string, string, string, string, number | string];
+    if (!month || !category || !accounts.has(String(accountId)) || dropped.has(String(categoryId))) continue;
+    const key = `${month}\u0000${category}\u0000${accountId}`;
+    const entry = cents.get(key) ?? { month: String(month), category: String(category), accountId: String(accountId), cents: 0 };
+    entry.cents += Math.round((typeof amount === 'number' ? amount : parseFloat(String(amount)) || 0) * 100);
+    cents.set(key, entry);
+  }
+  return [...cents.values()].map((e) => ({ month: e.month, category: e.category, accountId: e.accountId, amount: e.cents / 100 }));
+}
+
+/**
+ * The earliest activity day ('YYYY-MM-DD') on the given accounts — how far
+ * back the ledger covers, so a new install's first 30 days are not averaged
+ * over three months. Null: no activity at all. Strict (throws on an unreadable
+ * database); the account ids are filtered in code, not interpolated.
+ */
+export function getNativeSpendingHistoryStart(dbPath: string, accountIds: readonly string[]): string | null {
+  const rows = queryNativeDbStrict<Record<string, unknown>>(
+    dbPath,
+    'history start',
+    `SELECT COALESCE(account_id, '') AS account_id, MIN(substr(activity_date, 1, 10)) AS first_day
+     FROM activities WHERE activity_date IS NOT NULL AND activity_date <> '' GROUP BY account_id;`,
+    (parts) => (parts.length >= 2 ? { c0: parts[0], c1: parts[1] } : null),
+    DRILL_CLI_SEPARATOR,
+  );
+  const wanted = new Set(accountIds);
+  let first: string | null = null;
+  for (const r of rows) {
+    const [accountId, day] = Object.values(r) as [string, string];
+    if (!wanted.has(String(accountId)) || !/^\d{4}-\d{2}-\d{2}$/.test(String(day))) continue;
+    if (first === null || String(day) < first) first = String(day);
+  }
+  return first;
 }
 
 /**
