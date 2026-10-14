@@ -97,6 +97,21 @@ describe('budget-set: the planner', () => {
       .toEqual([{ do: 'delete-budget', targetId: 'bt-again' }]);
   });
 
+  it('finds the default target by category when no id was recorded', () => {
+    const e = groceries();
+    const redone = reversal(e, 'redo', { targetId: null });
+    const found = [target({ id: 'bt-found' }), target({ id: 'bt-oct', periodKey: '2026-10' })];
+    expect(ok(planChangeUndo(e, 'undo', { budgetTargets: found }, { latest: redone })).steps)
+      .toEqual([{ do: 'delete-budget', targetId: 'bt-found' }]);
+    const bare = { ...groceries(), after: { ...groceries().after as object, targetId: null } } as ChangeEntry;
+    expect(ok(planChangeUndo(bare, 'undo', { budgetTargets: found }, { latest: null })).steps)
+      .toEqual([{ do: 'delete-budget', targetId: 'bt-found' }]);
+    expect(reason(planChangeUndo(e, 'undo', { budgetTargets: [target({ id: 'bt-found', amountCents: 1 })] }, { latest: redone })))
+      .toBe('It has changed since — nothing was undone.');
+    expect(reason(planChangeUndo(e, 'undo', { budgetTargets: [] }, { latest: redone })))
+      .toBe('That budget is already gone — nothing was undone.');
+  });
+
   it("can't be undone without what it recorded", () => {
     const bare = { ...groceries(), after: { targetId: 'bt-gro' } };
     expect(reason(planChangeUndo(bare, 'undo', { budgetTargets: [target()] }, { latest: null }))).toBe(UNDO_NOT_POSSIBLE);
@@ -161,6 +176,35 @@ describe('budget-set: the runner, on the companion', () => {
     const h = harness([target()], { targets: vi.fn(async () => { throw new Error('spending tracking is off'); }) });
     expect(await h.run(groceries(), 'undo')).toEqual({ ok: false, message: UNDO_UNREACHABLE });
     expect(h.io.budgets!.remove).not.toHaveBeenCalled();
+  });
+
+  it('a Redo whose reply names no target is still recorded, and Undo then finds the budget by category', async () => {
+    const e = groceries();
+    const h = harness([], { set: vi.fn(async () => null) });
+    h.log.unshift(reversal(e, 'undo', { targetId: null }));
+    expect(await h.run(e, 'redo')).toMatchObject({ ok: true });
+    expect(h.log[0]).toMatchObject({ reverses: { id: e.id, op: 'redo' }, after: { targetId: null } });
+    h.store.push(target({ id: 'bt-written' }));
+    expect(await h.run(e, 'undo')).toMatchObject({ ok: true, message: 'Undone — Groceries has no budget.' });
+    expect(h.io.budgets!.remove).toHaveBeenCalledWith('bt-written');
+  });
+
+  it('that fallback refuses when the found budget was edited by hand', async () => {
+    const e = groceries();
+    const h = harness([], { set: vi.fn(async () => null) });
+    h.log.unshift(reversal(e, 'undo', { targetId: null }));
+    await h.run(e, 'redo');
+    h.store.push(target({ id: 'bt-written', amountCents: 99900 }));
+    expect(await h.run(e, 'undo')).toEqual({ ok: false, message: 'It has changed since — nothing was undone.' });
+    expect(h.io.budgets!.remove).not.toHaveBeenCalled();
+  });
+
+  it("a Redo that can't re-read the budgets refuses and makes no POST", async () => {
+    const e = groceries();
+    const h = harness([], { targets: vi.fn(async () => { throw new Error('down'); }) });
+    h.log.unshift(reversal(e, 'undo', { targetId: null }));
+    expect(await h.run(e, 'redo')).toEqual({ ok: false, message: UNDO_UNREACHABLE });
+    expect(h.io.budgets!.set).not.toHaveBeenCalled();
   });
 
   it('refuses on a host with no budget API', async () => {

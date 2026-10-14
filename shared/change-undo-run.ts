@@ -70,8 +70,9 @@ export interface UndoIo {
   budgets?: {
     /** Every target now; rejects when they cannot be read. */
     targets(): Promise<BudgetTarget[]>;
-    /** Sets a category's default monthly budget; resolves the target's id. */
-    set(categoryId: string, amountCents: number): Promise<string>;
+    /** Sets a category's default monthly budget; resolves the target's id, or null
+     *  when it was written but Wealthfolio's reply named no target. */
+    set(categoryId: string, amountCents: number): Promise<string | null>;
     remove(targetId: string): Promise<void>;
   };
   /** Appends the reversal entry to this writer's bucket. Never rejects. */
