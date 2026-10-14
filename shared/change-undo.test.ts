@@ -117,9 +117,8 @@ describe('the Venmo note gate (ruling P3-K)', () => {
     expect(addonGateCovers(note)).toBe(true);
     expect(addonGateCovers(telegramFiling)).toBe(false);
     expect(addonGateCovers(amazonFiling)).toBe(false);
-    expect(UNDO_UPDATE_ADDON).toBe(
-      "Update the add-on first — an add-on older than v1.61.0 can't read a Venmo note's Undo, and its syncs would ignore every other Undo too.",
-    );
+    // A companion that cannot see the add-ons directory still points somewhere that works (P3-L).
+    expect(UNDO_UPDATE_ADDON).toBe("Update the add-on first — or undo it from the app's Change log.");
   });
 });
 

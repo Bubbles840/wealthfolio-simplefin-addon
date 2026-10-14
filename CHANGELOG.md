@@ -97,8 +97,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     days). So a Venmo note's Undo waits for both halves: the app's asks for a
     companion of 1.61.0 or newer ("Update the companion first"), and
     Telegram's Undo and Redo ask for an installed add-on of 1.61.0 or newer
-    ("Update the add-on first — …", also while the companion cannot tell
-    which add-on is installed). The overrides reader now ignores flags it does
+    ("Update the add-on first — or undo it from the app's Change log.", also
+    while the companion cannot tell which add-on is installed). The overrides reader now ignores flags it does
     not know and keeps them, so a later flag will not break this release's
     add-on.
 
