@@ -388,6 +388,39 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+describe('🔎 Why? on the transaction screen (1.61)', () => {
+  it('sends the story as a new message and leaves the screen as it is', async () => {
+    const h = setup();
+    const why = vi.fn(async () => {});
+    const controller = createCategorizeController({ ...h.deps, why });
+    const tap = (data: string) => controller.onCallback({ data, chatId: CHAT, messageId: 55 }, h.ui);
+    await controller.open(h.send);
+    await tap(dataFor(keyboardOf(lastCall(h.send)), 'BOOK STORES a'));
+    const picker = keyboardOf(lastCall(h.ui.edit));
+    const edits = h.ui.edit.mock.calls.length;
+    await tap(dataFor(picker, '🔎 Why?'));
+    expect(why).toHaveBeenCalledWith('a', h.ui.send);
+    expect(h.ui.edit.mock.calls.length).toBe(edits);
+    expect(h.ui.answer).toHaveBeenLastCalledWith();
+    // The screen's own buttons still work afterwards.
+    await tap(dataFor(picker, 'Entertainment'));
+    expect(h.deps.assign).toHaveBeenCalledWith('a', 'cat-fun');
+  });
+
+  it('is offered on /recategorize’s screen too', async () => {
+    const h = setup({ categorized: [catRow('a', [spendingAt('cat-fun', 'Entertainment')], REIMBURSED)] });
+    const controller = createCategorizeController({ ...h.deps, why: vi.fn(async () => {}) });
+    await controller.openRecategorize(undefined, h.send);
+    await controller.onCallback({ data: dataFor(keyboardOf(lastCall(h.send)), 'VENMO PAYMENT a'), chatId: CHAT, messageId: 55 }, h.ui);
+    expect(labels(keyboardOf(lastCall(h.ui.edit)))).toContain('🔎 Why?');
+  });
+
+  it('is not offered when nothing can tell the story', async () => {
+    const picker = await openAtTxn(setup());
+    expect(labels(picker)).not.toContain('🔎 Why?');
+  });
+});
+
 describe('the taxonomy the whole feature writes into', () => {
   it('is Wealthfolio\'s spending taxonomy', () => {
     expect(SPENDING_TAXONOMY_ID).toBe('spending_categories');
