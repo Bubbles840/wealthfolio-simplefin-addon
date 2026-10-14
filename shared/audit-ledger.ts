@@ -47,6 +47,8 @@ export interface AuditLedgerRow {
   group: string;
   /** `asset_id`, '' when none. */
   assetId: string;
+  /** `quantity`, when the row has one (security legs); absent when unread. */
+  quantity?: number | null;
   /** `metadata.flow.is_external` is JSON true. */
   external: boolean;
   /** `asset_id` names the phantom `$CASH` security. */
