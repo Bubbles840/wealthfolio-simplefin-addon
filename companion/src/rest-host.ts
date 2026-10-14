@@ -339,8 +339,13 @@ export class RestSyncStore implements SyncStore {
 
   /** Venmo payments (3): the mail poll merges into it, both syncers consume. */
   async getVenmoLedger(): Promise<VenmoLedger> {
-    const ledger = await this.getJson<VenmoLedger>(VENMO_LEDGER_SECRET_KEY);
-    return ledger && typeof ledger === 'object' && !Array.isArray(ledger) ? ledger : {};
+    // Absent reads as empty; a document that is present but unreadable THROWS, so
+    // a sync turns Venmo off and nothing ever overwrites it.
+    const raw = await this.client.getAddonSecret(this.addonId, VENMO_LEDGER_SECRET_KEY);
+    if (!raw) return {};
+    const ledger = JSON.parse(raw);
+    if (!ledger || typeof ledger !== 'object' || Array.isArray(ledger)) throw new Error('the Venmo payments list is not an object');
+    return ledger as VenmoLedger;
   }
 
   async setVenmoLedger(map: VenmoLedger): Promise<void> {

@@ -479,17 +479,15 @@ export class SecretsStore {
   }
 
   /** Venmo payments awaiting their bank row (3), so an add-on sync adds the
-   *  same notes the companion's does. Malformed reads as empty: Venmo notes
-   *  off for the run, never a failed sync. */
+   *  same notes the companion's does. Absent reads as empty; a document that is
+   *  present but unreadable THROWS, so the sync turns Venmo off (and says so)
+   *  and nothing overwrites it. */
   async getVenmoLedger(): Promise<VenmoLedger> {
     const raw = await this.ctx.api.secrets.get(VENMO_LEDGER_SECRET_KEY);
     if (!raw) return {};
-    try {
-      const parsed = JSON.parse(raw);
-      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as VenmoLedger) : {};
-    } catch {
-      return {};
-    }
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('the Venmo payments list is not an object');
+    return parsed as VenmoLedger;
   }
   async setVenmoLedger(map: VenmoLedger): Promise<void> {
     await this.ctx.api.secrets.set(VENMO_LEDGER_SECRET_KEY, JSON.stringify(map));
