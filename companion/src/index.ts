@@ -2504,7 +2504,9 @@ export async function composeMonthlyWrapUpMessage(
   // Project 5 (N4): Full detail adds the month in review; Brief is the
   // wrap-up exactly as it always was. Each read can cost only its own lines,
   // and the archived edition stores this same text.
-  if (resolveReportDetail(tg) !== 'full') return wrapUp;
+  // The live "<Month> so far" edition passes the current month: a month that
+  // is not over gets no review (its changes, savings and net worth are partial).
+  if (resolveReportDetail(tg) !== 'full' || yearMonth >= currentYearMonth(now)) return wrapUp;
   const review = formatMonthReview(buildMonthReview({
     month: yearMonth,
     cube: parseReportCube(await wfClient.getAddonSecret('simplefin-sync', REPORT_CUBE_SECRET_KEY).catch(() => null)),

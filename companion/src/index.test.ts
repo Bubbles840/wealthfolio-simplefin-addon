@@ -3622,6 +3622,14 @@ describe('the month in review (project 5)', () => {
     expect(JSON.parse(secrets.get('reports_monthly')!).archive[0].text).toBe(text);
   });
 
+  it('the live "so far" edition of the current month carries no review, even in Full', async () => {
+    const { client, secrets } = clientWith({});
+    await publishLiveReports(client, new Date(2026, 9, 1, 9, 0));
+    const live = JSON.parse(secrets.get('reports_monthly')!).live.text as string;
+    expect(live).toContain('October so far');
+    expect(live).not.toContain('Month in review');
+  });
+
   it('Brief is the wrap-up exactly as it always was, byte for byte', async () => {
     const { client } = clientWith({ reportDetail: 'brief' });
     expect(await sentText(client)).toBe(WRAP_UP);
