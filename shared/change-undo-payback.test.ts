@@ -4,11 +4,11 @@ import type { ChangeLogItem } from './change-log.js';
 import {
   COMPANION_ONLY_KINDS, REDO_FROM_TELEGRAM, UNDO_FROM_TELEGRAM, UNDO_KINDS, UNDO_UPDATE_COMPANION, undoAvailability, type UndoOp,
 } from './change-undo.js';
-import { runChangeUndo, type UndoIo } from './change-undo-run.js';
+import { runChangeUndo, UNDO_SAVE_FAILED, type UndoIo } from './change-undo-run.js';
 import { createFakeHost } from './fake-host.js';
 import { filePayback, paybackRowOf, type PaybackIo } from './payback.js';
 import {
-  PAYBACK_REDO_UNCHANGED, PAYBACK_UNDO_STUCK, PAYBACK_UNDO_UNCHANGED, PAYBACK_UPDATE_ADDON, paybackRedoHalf, paybackUndoHalf,
+  PAYBACK_REDO_UNCHANGED, PAYBACK_UNDO_STUCK, PAYBACK_UNDO_STUCK_PLAIN, PAYBACK_UNDO_UNCHANGED, PAYBACK_UNREACHABLE, PAYBACK_UPDATE_ADDON, paybackRedoHalf, paybackUndoHalf,
 } from './payback-copy.js';
 import type { HostActivity } from './sync-host.js';
 import {
@@ -33,6 +33,9 @@ function harness(rows: HostActivity[] = [{ ...DEPOSIT }], secrets: Record<string
   });
   const data = new Map(Object.entries({ [INSTALLED_ADDON_VERSION_SECRET_KEY]: '1.62.0', ...secrets }));
   const filed = new Map<string, string>();
+  /** Filings in the income taxonomy, which /categorize gives a deposit. */
+  const income = new Map<string, string>();
+  const logs: string[] = [];
   const log: ChangeEntry[] = [];
   const secretsIo = {
     get: async (k: string) => data.get(k) ?? null,
@@ -45,12 +48,16 @@ function harness(rows: HostActivity[] = [{ ...DEPOSIT }], secrets: Record<string
     return r ? paybackRowOf({ ...r, currency: 'USD', accountName: 'Checking' }, 'CASH') : null;
   };
   const categories = {
-    assignments: vi.fn(async (id: string) => (filed.has(id) ? [{ taxonomyId: SPENDING, categoryId: filed.get(id)! }] : [])),
+    assignments: vi.fn(async (id: string) => [
+      ...(filed.has(id) ? [{ taxonomyId: SPENDING, categoryId: filed.get(id)! }] : []),
+      ...(income.has(id) ? [{ taxonomyId: 'income_sources', categoryId: income.get(id)! }] : []),
+    ]),
     assign: vi.fn(async (id: string, _t: string, cat: string) => { filed.set(id, cat); }),
     unassign: vi.fn(async (id: string) => { filed.delete(id); }),
   };
   const io: UndoIo = {
     host: fh.host, secrets: secretsIo, categories, paybacks: { read }, record, where: { host: 'companion', companionVersion: '1.62.0' },
+    log: (m: string) => { logs.push(m); },
   };
   const paybackIo: PaybackIo = {
     gate: async () => null,
@@ -78,7 +85,7 @@ function harness(rows: HostActivity[] = [{ ...DEPOSIT }], secrets: Record<string
     await filePayback({ activityId: 'act-7', categoryId: 'cat-rest', categoryName: 'Restaurants', parentName: 'Food & Dining' }, paybackIo, NOW);
     return log.find((e) => e.kind === 'payback-filed')!;
   };
-  return { fh, data, filed, log, io, read, undo, overrides, file, set: secretsIo.set, record, categories };
+  return { fh, data, filed, income, logs, log, io, read, undo, overrides, file, set: secretsIo.set, record, categories };
 }
 
 describe('Undo and Redo of a payback', () => {
@@ -165,7 +172,7 @@ describe('Undo and Redo of a payback', () => {
     const h = harness();
     const entry = await h.file();
     await h.undo(entry, 'undo');
-    h.filed.set('act-7', 'inc-other');
+    h.income.set('act-7', 'inc-other');
     h.set.mockClear();
     expect(await h.undo(entry, 'redo')).toEqual({ ok: false, message: 'It has changed since — nothing was redone.' });
     expect(h.set).not.toHaveBeenCalled();
@@ -278,5 +285,194 @@ describe('Undo and Redo of a payback', () => {
       expect(h.overrides().tx[KEY]).toMatchObject({ noVenmoNote: true });
       expect(hasTxOverride(h.overrides(), KEY, 'asReimbursement')).toBe(false);
     });
+  });
+});
+
+describe('Undo and Redo of a payback — fix round 1 (PB-C)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(NOW);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const unfiledEntry = () => stampChange(paybackFiledChange({
+    account: { sfinId: 'sfin-1', wfId: 'wf-a', name: 'Checking' }, txKeys: [KEY], activityId: 'act-7', description: 'VENMO CASHOUT',
+    amountCents: 1400, date: '2026-10-09', subtypeBefore: null, categoryId: null, categoryName: null,
+  }), 'companion', NOW);
+  const flag = (h: ReturnType<typeof harness>) => h.data.set(
+    SYNC_OVERRIDES_SECRET_KEY, JSON.stringify(setTxOverride(emptySyncOverrides(), KEY, 'asReimbursement', NOW)),
+  );
+
+  it('I1: Undo after a half-done Redo gives a deposit with no filing and no override', async () => {
+    const h = harness();
+    const entry = await h.file();
+    await h.undo(entry, 'undo');
+    h.categories.assign.mockRejectedValueOnce(new Error('400'));
+    expect(await h.undo(entry, 'redo')).toEqual({ ok: false, message: paybackRedoHalf('Restaurants') });
+    expect(h.filed.has('act-7')).toBe(false);
+    h.categories.unassign.mockClear();
+    expect(await h.undo(entry, 'undo')).toMatchObject({ ok: true });
+    expect(await h.read('act-7')).toMatchObject({ type: 'DEPOSIT', subtype: null });
+    expect(h.filed.has('act-7')).toBe(false);
+    expect(h.categories.unassign).not.toHaveBeenCalled();
+    expect(hasTxOverride(h.overrides(), KEY, 'asReimbursement')).toBe(false);
+  });
+
+  it('I1: a payback filed under a DIFFERENT spending category still refuses its Undo', async () => {
+    const h = harness();
+    const entry = await h.file();
+    h.filed.set('act-7', 'cat-other');
+    expect(await h.undo(entry, 'undo')).toEqual({ ok: false, message: 'It has changed since — nothing was undone.' });
+  });
+
+  it('I2: a deposit without the flag is refused, with no writes', async () => {
+    const h = harness();
+    const saves = h.fh.saved.length;
+    expect(await h.undo(unfiledEntry(), 'undo')).toEqual({ ok: false, message: 'It has changed since — nothing was undone.' });
+    expect(h.set).not.toHaveBeenCalled();
+    expect(h.fh.saved.length).toBe(saves);
+  });
+
+  it('I2: a deposit with the flag clears only the override — no re-type, no category call', async () => {
+    const h = harness();
+    flag(h);
+    const saves = h.fh.saved.length;
+    expect(await h.undo(unfiledEntry(), 'undo')).toMatchObject({ ok: true });
+    expect(hasTxOverride(h.overrides(), KEY, 'asReimbursement')).toBe(false);
+    expect(h.fh.saved.length).toBe(saves);
+    expect(h.categories.unassign).not.toHaveBeenCalled();
+  });
+
+  it('I2: a hand-set subtype on that deposit is untouched', async () => {
+    const h = harness([{ ...DEPOSIT, subtype: 'BONUS' }]);
+    flag(h);
+    expect(await h.undo(unfiledEntry(), 'undo')).toMatchObject({ ok: true });
+    expect(await h.read('act-7')).toMatchObject({ type: 'DEPOSIT', subtype: 'BONUS' });
+  });
+
+  it('I2: an overrides document it cannot read refuses that Undo', async () => {
+    const h = harness();
+    h.data.set(SYNC_OVERRIDES_SECRET_KEY, '{oops');
+    expect(await h.undo(unfiledEntry(), 'undo')).toEqual({ ok: false, message: SYNC_OVERRIDES_UNREADABLE_MESSAGE });
+  });
+
+  /** A secrets write that lands and then throws, once. */
+  const lostOnce = (h: ReturnType<typeof harness>, lands: boolean) => {
+    const set = h.io.secrets.set;
+    let first = true;
+    h.io.secrets.set = async (k, v) => {
+      if (first) { first = false; if (lands) await set(k, v); throw new Error('socket hang up'); }
+      await set(k, v);
+    };
+  };
+
+  it('I3: Undo whose override write landed but lost its response carries on to the re-type', async () => {
+    const h = harness();
+    const entry = await h.file();
+    lostOnce(h, true);
+    expect(await h.undo(entry, 'undo')).toMatchObject({ ok: true });
+    expect(await h.read('act-7')).toMatchObject({ type: 'DEPOSIT' });
+    expect(hasTxOverride(h.overrides(), KEY, 'asReimbursement')).toBe(false);
+  });
+
+  it('I3: Undo whose override write did not land still says nothing was changed', async () => {
+    const h = harness();
+    const entry = await h.file();
+    lostOnce(h, false);
+    expect(await h.undo(entry, 'undo')).toEqual({ ok: false, message: UNDO_SAVE_FAILED });
+    expect(await h.read('act-7')).toMatchObject({ type: 'CREDIT' });
+  });
+
+  it('I3: Redo whose override write landed but lost its response carries on to the re-type', async () => {
+    const h = harness();
+    const entry = await h.file();
+    await h.undo(entry, 'undo');
+    lostOnce(h, true);
+    expect(await h.undo(entry, 'redo')).toMatchObject({ ok: true });
+    expect(await h.read('act-7')).toMatchObject({ type: 'CREDIT', subtype: 'REIMBURSEMENT' });
+    expect(h.filed.get('act-7')).toBe('cat-rest');
+  });
+
+  it('I3: Redo whose override write did not land still says nothing was changed', async () => {
+    const h = harness();
+    const entry = await h.file();
+    await h.undo(entry, 'undo');
+    lostOnce(h, false);
+    expect(await h.undo(entry, 'redo')).toEqual({ ok: false, message: UNDO_SAVE_FAILED });
+    expect(await h.read('act-7')).toMatchObject({ type: 'DEPOSIT' });
+  });
+
+  /** saveMany lands and then throws. */
+  const lostRetype = (h: ReturnType<typeof harness>) => {
+    const save = h.fh.host.saveMany.bind(h.fh.host);
+    h.fh.host.saveMany = async (...a: Parameters<typeof save>) => { await save(...a); throw new Error('socket hang up'); };
+  };
+
+  it('m1: an Undo whose re-type landed but lost its response goes on to take the category off', async () => {
+    const h = harness();
+    const entry = await h.file();
+    lostRetype(h);
+    expect(await h.undo(entry, 'undo')).toMatchObject({ ok: true, message: "Undone — it's a deposit again, off Restaurants." });
+    expect(h.filed.has('act-7')).toBe(false);
+    expect(hasTxOverride(h.overrides(), KEY, 'asReimbursement')).toBe(false);
+  });
+
+  it('m1: a Redo whose re-type landed but lost its response goes on to file the category', async () => {
+    const h = harness();
+    const entry = await h.file();
+    await h.undo(entry, 'undo');
+    lostRetype(h);
+    expect(await h.undo(entry, 'redo')).toMatchObject({ ok: true });
+    expect(h.filed.get('act-7')).toBe('cat-rest');
+    expect(hasTxOverride(h.overrides(), KEY, 'asReimbursement')).toBe(true);
+  });
+
+  it('m1: when the row cannot be read after a failed re-type, the override still goes back and nothing is claimed', async () => {
+    const h = harness();
+    const entry = await h.file();
+    h.fh.host.saveMany = async () => { throw new Error('ECONNRESET'); };
+    const read = h.io.paybacks!.read;
+    let reads = 0;
+    h.io.paybacks = { read: async (id) => { reads += 1; if (reads > 1) throw new Error('ECONNRESET'); return read(id); } };
+    expect(await h.undo(entry, 'undo')).toEqual({ ok: false, message: PAYBACK_UNDO_UNCHANGED });
+    expect(hasTxOverride(h.overrides(), KEY, 'asReimbursement')).toBe(true);
+  });
+
+  it('m2: with no category, a stuck Undo does not say "still filed under its category"', async () => {
+    const h = harness();
+    const entry = unfiledEntry();
+    h.fh.activities.set('wf-a', [{ ...DEPOSIT, activityType: 'CREDIT', subtype: 'REIMBURSEMENT' }]);
+    flag(h);
+    h.fh.host.saveMany = async () => { throw new Error('ECONNRESET'); };
+    let writes = 0;
+    const set = h.io.secrets.set;
+    h.io.secrets.set = async (k, v) => { writes += 1; if (writes > 1) throw new Error('500'); await set(k, v); };
+    const out = await h.undo(entry, 'undo');
+    expect(out).toEqual({ ok: false, message: PAYBACK_UNDO_STUCK_PLAIN });
+    expect(PAYBACK_UNDO_STUCK_PLAIN).not.toContain('category');
+    expect(PAYBACK_UNDO_STUCK).toContain('category');
+  });
+
+  it('m3: Redo refuses a deposit filed in the INCOME taxonomy, and writes nothing', async () => {
+    const h = harness();
+    const entry = await h.file();
+    await h.undo(entry, 'undo');
+    h.income.set('act-7', 'inc-salary');
+    h.set.mockClear();
+    const saves = h.fh.saved.length;
+    expect(await h.undo(entry, 'redo')).toEqual({ ok: false, message: 'It has changed since — nothing was redone.' });
+    expect(h.set).not.toHaveBeenCalled();
+    expect(h.fh.saved.length).toBe(saves);
+  });
+
+  it('gate: a failed secrets read logs the error and says it could not reach Wealthfolio — not "update the add-on"', async () => {
+    const h = harness();
+    const entry = await h.file();
+    h.io.secrets.get = async () => { throw new Error('keychain locked'); };
+    const out = await h.undo(entry, 'undo');
+    expect(out).toEqual({ ok: false, message: PAYBACK_UNREACHABLE });
+    expect(h.logs.join('\n')).toContain('keychain locked');
   });
 });

@@ -64,6 +64,8 @@ export const paybackRedone = (categoryName: string | null): string =>
   `Redone — it's a payback${categoryName ? ` under ${categoryName}` : ''} again.`;
 export const PAYBACK_UNDO_UNCHANGED = "Couldn't undo it — Wealthfolio didn't take the change. It's still a payback, and nothing was changed.";
 export const PAYBACK_UNDO_STUCK = "Couldn't undo it — Wealthfolio didn't take the change, and the payback setting couldn't be put back, so the next sync turns it into a deposit that is still filed under its category. Take that off in Wealthfolio then.";
+/** The same, for a payback with no category (nothing is left filed). */
+export const PAYBACK_UNDO_STUCK_PLAIN = "Couldn't undo it — Wealthfolio didn't take the change, and the payback setting couldn't be put back, so the next sync turns it into a deposit again.";
 export const paybackUndoHalf = (categoryName: string): string =>
   `Couldn't finish the undo — it's a deposit again, but it's still filed under ${categoryName}. Take that off in Wealthfolio.`;
 export const PAYBACK_REDO_UNCHANGED = "Couldn't redo it — Wealthfolio didn't take the change. It's still a deposit, and nothing was changed.";

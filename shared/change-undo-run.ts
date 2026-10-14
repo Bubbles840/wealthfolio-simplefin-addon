@@ -41,14 +41,15 @@ import {
 import type { HostActivity, SyncHost } from './sync-host.js';
 import {
   clearAccountOverride, clearTxOverride, editSyncOverrides, isUnreadableOverridesError, setAccountOverride, setTxOverride,
-  hasTxOverride, type SyncOverrides,
+  hasTxOverride, loadSyncOverrides, SYNC_OVERRIDES_UNREADABLE_MESSAGE, type SyncOverrides,
 } from './sync-overrides.js';
 import { accountTxKey } from './transfers.js';
 import type { MappingRule } from './types.js';
 import {
-  PAYBACK_REDO_STUCK, PAYBACK_REDO_UNCHANGED, PAYBACK_UNDO_STUCK, PAYBACK_UNDO_UNCHANGED, PAYBACK_UPDATE_ADDON, paybackRedoHalf, paybackUndoHalf,
+  PAYBACK_REDO_STUCK, PAYBACK_REDO_UNCHANGED, PAYBACK_UNDO_STUCK, PAYBACK_UNDO_STUCK_PLAIN, PAYBACK_UNDO_UNCHANGED, PAYBACK_UNREACHABLE,
+  PAYBACK_UPDATE_ADDON, paybackRedoHalf, paybackUndoHalf,
 } from './payback-copy.js';
-import type { PaybackRow } from './payback-row.js';
+import { isPaybackRow, type PaybackRow } from './payback-row.js';
 import { addonUnderstandsPaybacks, addonUnderstandsVenmoNotes, INSTALLED_ADDON_VERSION_SECRET_KEY } from './version.js';
 
 export const MAPPING_RULES_SECRET_KEY = 'mapping_rules';
@@ -93,6 +94,8 @@ export interface UndoIo {
   paybacks?: {
     read(activityId: string): Promise<PaybackRow | null>;
   };
+  /** Where a failure is said that the message must not carry (optional). */
+  log?(msg: string): void;
   /** Appends the reversal entry to this writer's bucket. Never rejects. */
   record(draft: ChangeDraft): Promise<void>;
   where: { host: 'addon' | 'companion'; companionVersion: string | null };
@@ -290,6 +293,12 @@ async function gather(io: UndoIo, entry: ChangeEntry, op: UndoOp, latest: Change
       if (!io.paybacks || !io.categories || !id) throw new Refusal(UNDO_NOT_POSSIBLE);
       state.payback = await io.paybacks.read(id);
       state.assignments = state.payback ? await io.categories.assignments(id) : [];
+      // A setting left on a deposit: Undo needs to know the flag is still there.
+      if (op === 'undo' && state.payback?.type === 'DEPOSIT' && str(after.categoryId) === null) {
+        const loaded = await loadSyncOverrides(io.secrets.get);
+        if (loaded.unreadable) throw new Refusal(SYNC_OVERRIDES_UNREADABLE_MESSAGE);
+        state.paybackFlagged = (entry.subject.txKeys ?? []).some((k) => hasTxOverride(loaded.overrides, k, 'asReimbursement'));
+      }
       return state;
     }
     case 'import': {
@@ -479,8 +488,17 @@ async function runOnce(
     let installed: string | null = null;
     try {
       installed = await io.secrets.get(INSTALLED_ADDON_VERSION_SECRET_KEY);
-    } catch {
+    } catch (err) {
       installed = null;
+      if (entry.kind === 'payback-filed') {
+        // Cannot tell is not "too old" (PB-B M7).
+        try {
+          io.log?.(`Payback ${entry.id}: could not read the installed add-on version: ${message(err)}`);
+        } catch {
+          // Saying so never costs the refusal.
+        }
+        return { ok: false, message: PAYBACK_UNREACHABLE };
+      }
     }
     const seen = installed && installed.trim() ? installed : null;
     if (entry.kind === 'payback-filed') {
@@ -522,7 +540,19 @@ async function runOnce(
         return overrideSteps.reduce((d, s) => applyOverride(d, s, now, entry.id), o);
       }, now);
     } catch (err) {
-      return { ok: false, message: isUnreadableOverridesError(err) ? message(err) : UNDO_SAVE_FAILED };
+      if (isUnreadableOverridesError(err)) return { ok: false, message: message(err) };
+      // A payback's write can fail after it landed (a lost response): read it again (mirrors PB-B M2).
+      let landed = false;
+      if (entry.kind === 'payback-filed') {
+        try {
+          const now2 = await loadSyncOverrides(io.secrets.get);
+          landed = !now2.unreadable && overrideSteps.every((s) => (s.do === 'set-tx' || s.do === 'clear-tx')
+            && hasTxOverride(now2.overrides, s.txKey, s.flag) === (s.do === 'set-tx'));
+        } catch {
+          landed = false;
+        }
+      }
+      if (!landed) return { ok: false, message: UNDO_SAVE_FAILED };
     }
   }
 
@@ -556,7 +586,35 @@ async function runOnce(
         }
         return { ok: false, message: op === 'undo' ? paybackUndoHalf(name) : paybackRedoHalf(name) };
       }
-      // The re-type failed: every override this run touched goes back as it was.
+      // The re-type failed — or its response was lost: read the row again.
+      let again: PaybackRow | null = null;
+      let readable = state.payback != null && !!io.paybacks;
+      if (readable) {
+        try {
+          again = await io.paybacks!.read(state.payback!.id);
+        } catch {
+          readable = false;
+        }
+      }
+      if (readable && again && (op === 'undo' ? again.type === 'DEPOSIT' && !isPaybackRow(again) : isPaybackRow(again))) {
+        // It landed: go on to the category step.
+        const tail = rest.filter((s) => s.do === 'assign' || s.do === 'unassign');
+        let made: string | null = null;
+        let finished = true;
+        try {
+          made = await perform(io, tail, now);
+        } catch {
+          finished = false;
+        }
+        try {
+          await io.record(reversalChange(entry, op, reversalExtra(p, made, state)));
+        } catch {
+          // Never costs the reversal.
+        }
+        if (finished) return { ok: true, message: p.done, needsSync: p.needsSync };
+        return { ok: false, message: op === 'undo' ? paybackUndoHalf(name) : paybackRedoHalf(name) };
+      }
+      // Still as it was (or cannot tell): every override this run touched goes back as it was.
       const was = prior;
       try {
         await editSyncOverrides(io.secrets.get, io.secrets.set, (o) => overrideSteps.reduce((d, s) => {
@@ -568,7 +626,7 @@ async function runOnce(
           });
         }, o), now);
       } catch {
-        return { ok: false, message: op === 'undo' ? PAYBACK_UNDO_STUCK : PAYBACK_REDO_STUCK };
+        return { ok: false, message: op === 'undo' ? (str(rec(entry.after).categoryId) === null ? PAYBACK_UNDO_STUCK_PLAIN : PAYBACK_UNDO_STUCK) : PAYBACK_REDO_STUCK };
       }
       return { ok: false, message: op === 'undo' ? PAYBACK_UNDO_UNCHANGED : PAYBACK_REDO_UNCHANGED };
     }
