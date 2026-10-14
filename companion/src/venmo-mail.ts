@@ -72,7 +72,7 @@ export async function ingestVenmoMail(
       result.samples.push(toVenmoMailSample(msg));
       continue;
     }
-    // The email's day: the ±5-day window is measured in days, as Amazon's is.
+    // The email's day: the match window (a day before to five after) is measured in days, as Amazon's is.
     const merged = mergeVenmoRecords(ledger, [record], new Date(msg.date).toISOString().slice(0, 10));
     ledger = merged.ledger;
     result.added += merged.added;

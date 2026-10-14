@@ -37,7 +37,7 @@ const DAY_MS = 86_400_000;
 
 /**
  * Whether every entry of a ledger read from a secret has the fields the matcher
- * touches. A null or non-object entry would throw inside `matchVenmoPayment`, so
+ * touches. A null or non-object entry would throw inside `matchVenmoPayments`, so
  * a sync checks first: a ledger that fails is treated as unreadable — Venmo
  * notes are skipped for the run and the ledger is never written back over it.
  */
