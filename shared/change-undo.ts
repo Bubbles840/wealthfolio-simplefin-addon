@@ -19,7 +19,7 @@ import type { ChangeLogItem } from './change-log.js';
 import type { ActivityWrite, ImportRow } from './sync-host.js';
 import type { AccountOverrideFlag, TxOverrideFlag } from './sync-overrides.js';
 import type { MappingRule } from './types.js';
-import { companionUnderstandsOverrides, companionUnderstandsVenmoNotes, VENMO_NOTE_SINCE } from './version.js';
+import { companionUnderstandsOverrides, companionUnderstandsVenmoNotes } from './version.js';
 
 export type UndoOp = 'undo' | 'redo';
 /** A rule's Undo comes in two: the rule alone, or the rule and the charges it filed. */
@@ -42,9 +42,10 @@ export const SPENDING_TAXONOMY = 'spending_categories';
 // ── Copy (both surfaces) ─────────────────────────────────────────────────
 export const UNDO_UPDATE_COMPANION = 'Update the companion first';
 /** Telegram, for a Venmo note's Undo or Redo while the installed add-on is
- *  older than `VENMO_NOTE_SINCE`, or unknown (see `addonGateCovers`). */
-export const UNDO_UPDATE_ADDON =
-  `Update the add-on first — an add-on older than v${VENMO_NOTE_SINCE} can't read a Venmo note's Undo, and its syncs would ignore every other Undo too.`;
+ *  older than `VENMO_NOTE_SINCE`, or unknown (see `addonGateCovers`). It names
+ *  the app too, so a companion that cannot see the add-ons directory still
+ *  points somewhere that works (ruling P3-L). */
+export const UNDO_UPDATE_ADDON = "Update the add-on first — or undo it from the app's Change log.";
 /** The app, when the companion's version could not be read: a gated undo waits. */
 export const UNDO_VERSION_UNKNOWN = "Couldn't check the companion's version — nothing was changed. Try again.";
 export const UNDO_FROM_TELEGRAM = 'Undo this from Telegram: /changes';
