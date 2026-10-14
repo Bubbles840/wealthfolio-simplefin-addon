@@ -321,14 +321,23 @@ Bank:   VENMO PAYMENT 1023 · -$25.00
    →    comment becomes "VENMO PAYMENT 1023 · Venmo: Rent October · TRN-…"
 ```
 
-A note goes on only when exactly one Venmo payment has the same amount, the
-same direction and its email within 5 days; two payments of the same amount
-that week mean no note. Only posted rows get one: a pending row is noted once
-it posts. Money you were paid counts when it reaches the bank,
-and so does a transfer to your bank ("Transfer to your bank"). Each note is in
-the change log, where Undo takes it off and keeps it off. Wealthfolio's rules
-read the note, so a rule on `Venmo: Rent` works. With no Venmo mail forwarded,
-nothing happens.
+A note goes on only when the match is certain: one Venmo payment with the
+same amount and direction, the bank row dated from the day before its email
+to five days after, and no other bank row in the same sync that the payment
+could also be. Two payments of the same amount that week, or two bank rows
+that could each be the one payment, mean no note. Only posted rows get one: a
+pending row is noted once it posts, and while it is pending no other row gets
+the payment it could be. A transfer to your bank gets the note "Transfer to
+your bank". A cash-out gets no note when it moves exactly one payment you were
+paid: "Sam paid you $40" and "Transfer to your bank $40" in the same week are
+two money-in emails of the same amount, so the $40 deposit could be either.
+Each note is in the change log, where Undo takes it off and keeps it off.
+Wealthfolio's rules read the note when it is added at import, so a rule on
+`Venmo: Rent` files those rows. A note added later — the email arrived after
+the row was imported, or a pending row posted — reaches the row by an update,
+and whether Wealthfolio re-runs its rules on an update has not been checked:
+file such a row yourself if it stays uncategorized. With no Venmo mail
+forwarded, nothing happens.
 
 Keep the forwarding address private. The companion cannot tell a real Venmo
 email from a forged one with a `venmo@venmo.com` From line, so anyone who knows
