@@ -232,6 +232,13 @@ export function healthIssues(facts: HealthFacts): HealthReport {
     if (contested) many.add(p.leg.id);
     else pairs.push(p);
   }
+  // A row in a group, of any type, is somebody's half already (or a broken group's),
+  // and Link would delete and re-create it; a held transfer placeholder is the
+  // sync's own. Link refuses both, so no pair with such a row either side is
+  // offered. Dropped BEFORE the issues, so the one-issue-per-pair rule below never
+  // hides a grouped row and each side reports its own state.
+  const unlinkable = (r: AuditLedgerRow) => r.group.trim() !== '' || isPlaceholderNote(r.notes);
+  const offered = pairs.filter((p) => !unlinkable(p.leg) && !unlinkable(p.other));
   const listed = new Set(incomplete.map((i) => i.row.id));
 
   const issues: HealthIssue[] = [];
@@ -241,7 +248,7 @@ export function healthIssues(facts: HealthFacts): HealthReport {
     let match: 'one' | 'many' | 'none' | 'skipped' = owner === 'you' && !paired ? 'none' : 'skipped';
     let counterpart: HealthLeg | null = null;
     if (match === 'none') {
-      const pair = pairs.find((p) => p.leg.id === row.id || p.other.id === row.id);
+      const pair = offered.find((p) => p.leg.id === row.id || p.other.id === row.id);
       if (pair) {
         const other = pair.leg.id === row.id ? pair.other : pair.leg;
         // Both halves incomplete: one issue, from the leg the money left.

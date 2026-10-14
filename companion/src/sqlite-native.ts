@@ -127,7 +127,12 @@ function tryQueryNativeDb<Row>(
   try {
     // No shell: the query can carry typed chat text (rule patterns), so it must
     // reach sqlite3 as a single argv element.
-    const args = separator === '|' ? [dbPath, query.replace(/\n/g, ' ')] : ['-separator', separator, dbPath, query.replace(/\n/g, ' ')];
+    // The query goes through verbatim, newlines and all: execFileSync passes it
+    // as ONE argv element, and sqlite3 reads it line by line, so a `--` comment
+    // ends at its own line. Flattening it onto one line made the comment in
+    // `spendingWhere` swallow the taxonomy filter and the GROUP BY, and the
+    // uncategorized reader's swallow every filter after it.
+    const args = separator === '|' ? [dbPath, query] : ['-separator', separator, dbPath, query];
     // stderr piped, not inherited: the caught error carries it, and the
     // console line below reports it once.
     const output = execFileSync('sqlite3', args, {

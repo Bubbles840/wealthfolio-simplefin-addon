@@ -13,9 +13,20 @@
  *   r<handle>      one reason's rows, in place, Back to the month
  *   i              what Health flags, in place
  *   x<handle>      one issue, in place, Back to Health
+ *   l<pair>        R2: link one pair, then Health again, in place
+ *   L<handle>      R2: link every pair the Health list showed, then Health again
  * `<handle>` is `findingHandle` of the account's Wealthfolio id, of
- * `reason:<kind>`, or of the issue's key — 8 hex, so the longest button is
- * 15 bytes. Nothing else may start with `cz:au`.
+ * `reason:<kind>`, of the issue's key, or of every pair a list showed — 8
+ * hex; `<pair>` is both legs' fingerprints (shared/audit-link.ts), 16 hex, so
+ * the longest button is 23 bytes. Nothing else may start with `cz:au`.
+ *
+ * Link (2c R2) appears only when the deps can link (`link`): on the Health
+ * list, under each leg with one likely other half, that half, a "Link N" per
+ * pair and "Link all N" for two or more; on the issue's own screen, "Link".
+ * The list is the preview: a tap re-reads Health and links only a pair whose
+ * legs still read exactly as the button carried them. A tap that finds none
+ * (a double tap's second run, say) answers "It has changed since — nothing
+ * was linked." as a toast and leaves the message as it is.
  *
  * Bank and user text is escaped AND kept outside every `*…*`; the only
  * entities are fixed headings. Button labels are plain text, not escaped.
@@ -29,9 +40,12 @@ import {
   HEADLINE_AGREE, HEADLINE_REASON_LABELS, type HeadlineExplanation, type HeadlineReason, type HeadlineRow,
 } from '../../shared/audit-headline.js';
 import {
-  healthCount, healthIssueLines, healthIssues, healthIssueTitle, HEALTH_NONE, type HealthIssue, type HealthLeg,
+  healthCount, healthIssueLines, healthIssues, healthIssueTitle, healthLegLine, HEALTH_NONE, type HealthIssue, type HealthLeg,
   type HealthReport,
 } from '../../shared/audit-health.js';
+import {
+  linkablePair, linkablePairs, linkAllButton, pairHandle, pairsHandle, LINK_BUTTON, LINK_CHANGED, type LinkPair, type LinkRun,
+} from '../../shared/audit-link.js';
 import { findingHandle } from '../../shared/handle.js';
 import { escapeMarkdown, type InlineKeyboard } from '../../shared/telegram.js';
 import { TX_STORY_UNREACHABLE } from '../../shared/tx-story.js';
@@ -64,7 +78,11 @@ export type AuditView =
   | { kind: 'headline' }
   | { kind: 'reason'; handle: string }
   | { kind: 'health' }
-  | { kind: 'issue'; handle: string };
+  | { kind: 'issue'; handle: string }
+  /** `handle`: `pairHandle`, 16 hex. */
+  | { kind: 'link'; handle: string }
+  /** `handle`: `pairsHandle` of every pair the list showed. */
+  | { kind: 'link-all'; handle: string };
 
 export function auditData(view: AuditView): string {
   switch (view.kind) {
@@ -75,6 +93,8 @@ export function auditData(view: AuditView): string {
     case 'reason': return `${AUDIT_CALLBACK_PREFIX}r${view.handle}`;
     case 'health': return `${AUDIT_CALLBACK_PREFIX}i`;
     case 'issue': return `${AUDIT_CALLBACK_PREFIX}x${view.handle}`;
+    case 'link': return `${AUDIT_CALLBACK_PREFIX}l${view.handle}`;
+    case 'link-all': return `${AUDIT_CALLBACK_PREFIX}L${view.handle}`;
   }
 }
 
@@ -86,6 +106,10 @@ export function parseAuditData(data: string): AuditView | null {
   if (s === 'b') return { kind: 'balances' };
   if (s === 'h') return { kind: 'headline' };
   if (s === 'i') return { kind: 'health' };
+  const link = /^l([0-9a-f]{16})$/.exec(s);
+  if (link) return { kind: 'link', handle: link[1] };
+  const all = /^L([0-9a-f]{8})$/.exec(s);
+  if (all) return { kind: 'link-all', handle: all[1] };
   const m = /^([asrx])([0-9a-f]{8})$/.exec(s);
   if (!m) return null;
   if (m[1] === 'a' || m[1] === 's') return { kind: 'account', handle: m[2], fresh: m[1] === 's' };
@@ -172,29 +196,92 @@ export function renderAuditReason(r: HeadlineReason): MenuScreen {
   return { text: lines.join('\n'), keyboard: { inline_keyboard: [back({ kind: 'headline' })] } };
 }
 
-export function renderAuditHealth(report: HealthReport): MenuScreen {
-  const lines = ['🔎 *Health*'];
-  const numbers: Button[] = [];
-  if (report.issues && report.issues.length === 0 && !report.more) lines.push(escapeMarkdown(HEALTH_NONE));
-  if (report.issues) {
-    const { shown, hidden } = listed(report.issues, report.more);
-    shown.forEach((issue, i) => {
-      lines.push(`${i + 1}. ${escapeMarkdown(healthIssueTitle(clipIssue(issue)))}`);
-      numbers.push({ text: String(i + 1), callback_data: auditData({ kind: 'issue', handle: issueHandle(issue) }) });
-    });
-    if (hidden > 0) lines.push(`…and ${hidden} more`);
+/** R2: what the Health screens add when the deps can link. `result`: what the last tap did. */
+export interface HealthScreenOptions {
+  link?: boolean;
+  result?: string;
+}
+
+/** Telegram refuses a message over 4096 characters, and the edit's 400 would be swallowed. */
+export const HEALTH_LIST_BUDGET = 2400;
+export const HEALTH_RESULT_MAX = 1500;
+const TOAST_MAX = 200;
+
+/** `raw` escaped, cut so the ESCAPED text is at most `max` characters, then "…". */
+function clipEscaped(raw: string, max: number): string {
+  let out = '';
+  for (const ch of raw) {
+    const e = escapeMarkdown(ch);
+    if (out.length + e.length > max) return `${out}…`;
+    out += e;
   }
-  lines.push(...noteLines(report.notes));
+  return out;
+}
+
+interface HealthLayout { lines: string[]; numbers: Button[]; links: Button[]; pairs: LinkPair[] }
+
+/**
+ * The list a Health screen shows, cut to a fixed budget that does not depend on
+ * the result line (so the tap, which has no result yet, reaches the same
+ * cut). A Link button is offered only for a pair whose "Likely the other half"
+ * line is on screen, and `pairs` is exactly those.
+ */
+function healthLayout(report: HealthReport, link: boolean): HealthLayout {
+  const out: HealthLayout = { lines: [], numbers: [], links: [], pairs: [] };
+  if (report.issues && report.issues.length === 0 && !report.more) out.lines.push(escapeMarkdown(HEALTH_NONE));
+  let used = out.lines.join('\n').length;
+  const notes = noteLines(report.notes);
+  used += notes.join('\n').length + 40;
+  let count = 0;
+  if (report.issues) {
+    for (const issue of report.issues.slice(0, AUDIT_LIST_MAX)) {
+      const pair = link ? linkablePair(issue) : null;
+      const entry = [`${count + 1}. ${escapeMarkdown(healthIssueTitle(clipIssue(issue)))}`];
+      // The list is the preview: the pair the button links.
+      if (pair) entry.push(`   ${escapeMarkdown(`Likely the other half: ${healthLegLine(clipLeg(pair.counterpart))}`)}`);
+      const size = entry.join('\n').length + 1;
+      if (count > 0 && used + size > HEALTH_LIST_BUDGET) break;
+      used += size;
+      count += 1;
+      out.lines.push(...entry);
+      out.numbers.push({ text: String(count), callback_data: auditData({ kind: 'issue', handle: issueHandle(issue) }) });
+      if (pair) {
+        out.pairs.push(pair);
+        out.links.push({ text: `${LINK_BUTTON} ${count}`, callback_data: auditData({ kind: 'link', handle: pairHandle(pair) }) });
+      }
+    }
+    const hidden = report.issues.length - count + (report.more ?? 0);
+    if (hidden > 0) out.lines.push(`…and ${hidden} more`);
+  }
+  out.lines.push(...notes);
+  return out;
+}
+
+/** The pairs a Health list shows: the ones its Link buttons carry. */
+const shownPairs = (report: HealthReport): LinkPair[] => healthLayout(report, true).pairs;
+
+export function renderAuditHealth(report: HealthReport, opts: HealthScreenOptions = {}): MenuScreen {
+  const lay = healthLayout(report, !!opts.link);
+  const lines = ['🔎 *Health*'];
+  if (opts.result) lines.push(clipEscaped(opts.result, HEALTH_RESULT_MAX));
+  lines.push(...lay.lines);
   const rows: Button[][] = [];
-  for (let i = 0; i < numbers.length; i += 4) rows.push(numbers.slice(i, i + 4));
+  for (let i = 0; i < lay.numbers.length; i += 4) rows.push(lay.numbers.slice(i, i + 4));
+  for (let i = 0; i < lay.links.length; i += 4) rows.push(lay.links.slice(i, i + 4));
+  if (lay.links.length >= 2) {
+    rows.push([{ text: linkAllButton(lay.links.length), callback_data: auditData({ kind: 'link-all', handle: pairsHandle(lay.pairs) }) }]);
+  }
   rows.push(back({ kind: 'menu' }));
   return { text: lines.join('\n'), keyboard: { inline_keyboard: rows } };
 }
 
-export function renderAuditIssue(raw: HealthIssue): MenuScreen {
+export function renderAuditIssue(raw: HealthIssue, opts: HealthScreenOptions = {}): MenuScreen {
   const issue = clipIssue(raw);
   const lines = ['🔎 *Health*', escapeMarkdown(healthIssueTitle(issue)), ...healthIssueLines(issue).map(escapeMarkdown)];
-  return { text: lines.join('\n'), keyboard: { inline_keyboard: [back({ kind: 'health' })] } };
+  const pair = opts.link ? linkablePair(raw) : null;
+  const rows: Button[][] = pair ? [[{ text: LINK_BUTTON, callback_data: auditData({ kind: 'link', handle: pairHandle(pair) }) }]] : [];
+  rows.push(back({ kind: 'health' }));
+  return { text: lines.join('\n'), keyboard: { inline_keyboard: rows } };
 }
 
 /**
@@ -225,6 +312,8 @@ export interface AuditMenuDeps {
   balances(): Promise<BalanceReport & { reached: boolean }>;
   headline(now: Date): Promise<HeadlineExplanation>;
   health(): Promise<HealthReport & { reached: boolean }>;
+  /** R2: link these pairs (shared/audit-link.ts `linkPairs`). Absent: no Link buttons. */
+  link?(pairs: LinkPair[]): Promise<LinkRun>;
   now(): Date;
   log(msg: string): void;
 }
@@ -270,30 +359,37 @@ export function createAuditMenu(deps: AuditMenuDeps): AuditMenu {
     },
 
     async onCallback(cb, ui) {
+      // Telegram takes one answer per tap: once one went through, a later
+      // failure (a failed edit, say) is only logged.
+      let answered = false;
+      const answer = async (...text: [string?]) => {
+        await ui.answer(...text);
+        answered = true;
+      };
       try {
         const view = parseAuditData(cb.data);
-        if (!view) return void await ui.answer();
+        if (!view) return void await answer();
         const show = async (screen: MenuScreen, fresh = false) => {
           if (fresh) await sendScreen(ui.send, screen);
           else await ui.edit(screen.text, screen.keyboard);
-          await ui.answer();
+          await answer();
         };
         switch (view.kind) {
           case 'menu': {
             const health = await deps.health();
-            if (!health.reached) return void await ui.answer(AUDIT_UNREACHABLE);
+            if (!health.reached) return void await answer(AUDIT_UNREACHABLE);
             return void await show(renderAuditMenu(health));
           }
           case 'balances': {
             const report = await deps.balances();
-            if (!report.reached) return void await ui.answer(AUDIT_UNREACHABLE);
+            if (!report.reached) return void await answer(AUDIT_UNREACHABLE);
             return void await show(renderAuditBalances(report));
           }
           case 'account': {
             const report = await deps.balances();
-            if (!report.reached) return void await ui.answer(AUDIT_UNREACHABLE);
+            if (!report.reached) return void await answer(AUDIT_UNREACHABLE);
             const e = report.accounts.find((a) => accountHandle(a.wfAccountId) === view.handle);
-            if (!e) return void await ui.answer(AUDIT_ACCOUNT_GONE);
+            if (!e) return void await answer(AUDIT_ACCOUNT_GONE);
             return void await show(renderAuditAccount(e, report.notes, view.fresh), view.fresh);
           }
           case 'headline':
@@ -303,24 +399,56 @@ export function createAuditMenu(deps: AuditMenuDeps): AuditMenu {
             // Rows that could not be read are not rows that are gone.
             if (!h.reasons) return void await show(renderAuditHeadline(h));
             const r = h.reasons.find((x) => reasonHandle(x) === view.handle);
-            if (!r) return void await ui.answer(AUDIT_REASON_GONE);
+            if (!r) return void await answer(AUDIT_REASON_GONE);
             return void await show(renderAuditReason(r));
           }
           case 'health': {
             const report = await deps.health();
-            return void await show(renderAuditHealth(report));
+            return void await show(renderAuditHealth(report, { link: !!deps.link }));
           }
           case 'issue': {
             const report = await deps.health();
-            if (!report.issues) return void await show(renderAuditHealth(report));
+            if (!report.issues) return void await show(renderAuditHealth(report, { link: !!deps.link }));
             const issue = report.issues.find((i) => issueHandle(i) === view.handle);
-            if (!issue) return void await ui.answer(AUDIT_ISSUE_GONE);
-            return void await show(renderAuditIssue(issue));
+            if (!issue) return void await answer(AUDIT_ISSUE_GONE);
+            return void await show(renderAuditIssue(issue, { link: !!deps.link }));
+          }
+          case 'link':
+          case 'link-all': {
+            if (!deps.link) return void await answer();
+            // The toast carries the outcome, so it is seen even if the edit fails.
+            const finish = async (screen: MenuScreen, outcome: string) => {
+              await answer(clip(outcome, TOAST_MAX)).catch(() => {});
+              await ui.edit(screen.text, screen.keyboard);
+            };
+            const report = await deps.health();
+            if (!report.issues) return void await show(renderAuditHealth(report, { link: true }));
+            // Only pairs whose legs still read as the button carried them.
+            const shown = shownPairs(report);
+            const pairs = view.kind === 'link'
+              ? shown.filter((p) => pairHandle(p) === view.handle)
+              : pairsHandle(shown) === view.handle ? shown : [];
+            // Nothing to link: the toast alone. The message keeps what it says —
+            // a double tap's second run must not cover the first's "Linked.".
+            if (pairs.length === 0) return void await answer(LINK_CHANGED);
+            const run = await deps.link(pairs);
+            // The screen re-reads: the list shows what is left.
+            let screen: MenuScreen;
+            try {
+              screen = renderAuditHealth(await deps.health(), { link: true, result: run.message });
+            } catch (err) {
+              deps.log(`Audit menu: re-reading Health after a link failed: ${message(err)}`);
+              screen = {
+                text: ['🔎 *Health*', clipEscaped(run.message, HEALTH_RESULT_MAX), clipEscaped(`Couldn't re-read Health (${message(err)}).`, 300)].join('\n'),
+                keyboard: { inline_keyboard: [back({ kind: 'health' })] },
+              };
+            }
+            return void await finish(screen, run.message);
           }
         }
       } catch (err) {
         deps.log(`Audit menu: ${cb.data} failed: ${message(err)}`);
-        await ui.answer(FAILED_ANSWER).catch(() => {});
+        if (!answered) await ui.answer(FAILED_ANSWER).catch(() => {});
       }
     },
   };

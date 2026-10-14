@@ -9,7 +9,9 @@
  * that cannot be read, the Undo is refused rather than let through.
  *
  * The reversal entry is recorded in the add-on's own bucket through the
- * store's one writer.
+ * store's one writer. Like Link and Remove, an Undo or Redo holds the add-on's
+ * write lock (src/utils/write-lock.ts): refused while a sync or another change
+ * runs, and a sync that starts meanwhile waits for it.
  */
 import type { AddonContext } from '@wealthfolio/addon-sdk';
 import type { ChangeLogItem } from '../../shared/change-log';
@@ -17,6 +19,7 @@ import { companionGateCovers, UNDO_VERSION_UNKNOWN, type UndoOp } from '../../sh
 import { runChangeUndo, type UndoIo, type UndoOutcome } from '../../shared/change-undo-run';
 import { AddonSyncHost } from './addon-host';
 import type { SecretsStore } from './secrets';
+import { beginWrite, writeRefusal } from './write-lock';
 
 export function addonUndoIo(ctx: AddonContext, store: SecretsStore, companionVersion: string | null): UndoIo {
   return {
@@ -43,12 +46,18 @@ export async function undoFromApp(
   entries: ChangeLogItem[],
   op: UndoOp,
 ): Promise<UndoOutcome> {
-  let companionVersion: string | null;
+  const release = beginWrite();
+  if (!release) return { ok: false, message: writeRefusal('undo') };
   try {
-    companionVersion = (await store.getCompanionVersion?.()) ?? null;
-  } catch {
-    if (companionGateCovers(entry, op)) return { ok: false, message: UNDO_VERSION_UNKNOWN };
-    companionVersion = null;
+    let companionVersion: string | null;
+    try {
+      companionVersion = (await store.getCompanionVersion?.()) ?? null;
+    } catch {
+      if (companionGateCovers(entry, op)) return { ok: false, message: UNDO_VERSION_UNKNOWN };
+      companionVersion = null;
+    }
+    return await runChangeUndo(entry, entries, op, addonUndoIo(ctx, store, companionVersion));
+  } finally {
+    release();
   }
-  return runChangeUndo(entry, entries, op, addonUndoIo(ctx, store, companionVersion));
 }

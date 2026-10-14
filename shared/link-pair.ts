@@ -102,7 +102,7 @@ export interface UnlinkResult {
 }
 
 /** A row named the way a person would look for it: account, date, amount, note. */
-const describeLeg = (l: UnlinkLeg) => `${l.accountName || l.accountId} ${l.date} ${(l.absCents / 100).toFixed(2)} "${l.comment}"`;
+export const describeLeg = (l: Pick<UnlinkLeg, 'accountId' | 'date' | 'absCents' | 'comment'> & { accountName?: string }) => `${l.accountName || l.accountId} ${l.date} ${(l.absCents / 100).toFixed(2)} "${l.comment}"`;
 
 /**
  * Undo of a transfer link: re-create both legs as ordinary money in or out
