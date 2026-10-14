@@ -17,6 +17,7 @@
 import { BUDGET_TAXONOMY, DEFAULT_PERIOD_KEY, isClearedDefault, type BudgetTarget } from './budget-suggest.js';
 import { changeMoney, type ChangeEntry } from './change-entries.js';
 import type { ChangeLogItem } from './change-log.js';
+import { sameMappingRule } from './mapper.js';
 import { paybackRedone, paybackUndone } from './payback-copy.js';
 import { isPaybackRow, paybackRetype, type PaybackRow } from './payback-row.js';
 import type { ActivityWrite, ImportRow } from './sync-host.js';
@@ -248,7 +249,7 @@ export type UndoStep =
   | { do: 'assign'; activityId: string; taxonomyId: string; categoryId: string }
   | { do: 'unassign'; activityId: string; taxonomyId: string }
   | { do: 'delete-rule'; ruleId: string }
-  | { do: 'create-rule'; rule: { name: string; pattern: string; categoryId: string; accountId?: string } }
+  | { do: 'create-rule'; rule: { name: string; pattern: string; categoryId: string; accountId?: string; activityType?: string } }
   | { do: 'mapping-remove'; rule: MappingRule }
   | { do: 'mapping-add'; rule: MappingRule }
   | { do: 'delete-budget'; targetId: string }
@@ -304,16 +305,19 @@ function legDescription(entry: ChangeEntry, leg: Record<string, unknown> | undef
     : undefined;
 }
 
-const sameRule = (a: MappingRule, b: MappingRule) =>
-  a.pattern === b.pattern && a.matchType === b.matchType && a.activityType === b.activityType && (a.subtype ?? '') === (b.subtype ?? '');
-
+/** The logged rule, with a payback rule's limits (W10): a Redo puts back exactly that rule. */
 function mappingRuleOf(entry: ChangeEntry): MappingRule | null {
   const r = rec(rec(entry.after).rule);
   const pattern = str(r.pattern);
   const matchType = r.matchType === 'contains' || r.matchType === 'regex' ? r.matchType : null;
   const activityType = str(r.activityType);
   if (!pattern || !matchType || !activityType) return null;
-  return { pattern, matchType, activityType: activityType as MappingRule['activityType'], ...(str(r.subtype) ? { subtype: str(r.subtype)! } : {}) };
+  return {
+    pattern, matchType, activityType: activityType as MappingRule['activityType'],
+    ...(str(r.subtype) ? { subtype: str(r.subtype)! } : {}),
+    ...(r.onlyMoneyIn === true ? { onlyMoneyIn: true as const } : {}),
+    ...(str(r.accountId) ? { accountId: str(r.accountId)! } : {}),
+  };
 }
 
 /**
@@ -429,14 +433,19 @@ export function planChangeUndo(
       const name = str(after.name);
       const pattern = str(after.pattern);
       const categoryId = str(after.categoryId);
-      // A rule scoped to one account (3, L5) comes back scoped.
+      // A rule scoped to one account (3, L5) comes back scoped, and a payback
+      // rule's activity type (W10) with it.
       const accountId = str(after.accountId);
+      const activityType = str(after.activityType);
       if (!name || !pattern || !categoryId) return refuse(UNDO_NOT_POSSIBLE);
       if (op === 'redo') {
         if (state.rule) return refuse('That rule is already there.');
         return plan({
           op, needsSync: false, ruleAfter: 'created', done: 'Redone — the rule is back.',
-          steps: [{ do: 'create-rule', rule: { name, pattern, categoryId, ...(accountId ? { accountId } : {}) } }],
+          steps: [{
+            do: 'create-rule',
+            rule: { name, pattern, categoryId, ...(accountId ? { accountId } : {}), ...(activityType ? { activityType } : {}) },
+          }],
         });
       }
       if (!state.rule) return refuse('That rule is already gone.');
@@ -491,7 +500,7 @@ export function planChangeUndo(
     case 'mapping-rule-created': {
       const rule = mappingRuleOf(entry);
       if (!rule) return refuse(UNDO_NOT_POSSIBLE);
-      const present = (state.mappingRules ?? []).some((r) => sameRule(r, rule));
+      const present = (state.mappingRules ?? []).some((r) => sameMappingRule(r, rule));
       if (op === 'undo' && !present) return refuse('That transaction rule is already gone.');
       if (op === 'redo' && present) return refuse('That transaction rule is already there.');
       return plan({

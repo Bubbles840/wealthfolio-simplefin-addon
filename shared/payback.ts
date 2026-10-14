@@ -26,12 +26,16 @@
  */
 import { isCorrectionNote, isPendingNote, isPlaceholderNote, isStartingBalanceNote } from './audit-ledger.js';
 import { REIMBURSEMENT_SUBTYPE } from './cash-flow-bucket.js';
-import { paybackFiledChange, type ChangeDraft, type PaybackFiledFacts } from './change-entries.js';
+import {
+  categoryRuleCreatedChange, mappingRuleCreatedChange, paybackFiledChange, type ChangeDraft, type PaybackFiledFacts,
+} from './change-entries.js';
+import { MAPPING_RULES_SECRET_KEY, UNDO_MAPPING_RULES_UNREADABLE } from './change-undo-run.js';
 import { fixRowOf } from './fix-row.js';
+import { paybackMappingRule, sameMappingRule } from './mapper.js';
 import {
   PAYBACK_ALREADY, PAYBACK_CHANGED, PAYBACK_GONE, PAYBACK_GONE_STUCK, PAYBACK_LINKED, PAYBACK_MANAGED, PAYBACK_NO_UNDO, PAYBACK_NO_UNDO_SETTING, PAYBACK_NOT_CASH, PAYBACK_NOT_DEPOSIT, PAYBACK_NOT_FEED,
-  PAYBACK_OVERRIDE_FAILED, PAYBACK_PENDING, PAYBACK_RUNNING, PAYBACK_SETTING_HINT, PAYBACK_TRANSFER, PAYBACK_UNDO_HINT, PAYBACK_UNREACHABLE, PAYBACK_UPDATE_ADDON,
-  PAYBACK_UPDATE_REFUSED, PAYBACK_UPDATE_STUCK, PAYBACK_UPDATE_UNSURE, PAYBACK_ZERO, paybackDone, paybackUnfiled,
+  PAYBACK_OVERRIDE_FAILED, PAYBACK_PENDING, PAYBACK_RULES_EXIST, PAYBACK_RULES_REFUSED, PAYBACK_RULES_SAVE_FAILED, PAYBACK_RUNNING, PAYBACK_SETTING_HINT, PAYBACK_TRANSFER, PAYBACK_UNDO_HINT, PAYBACK_UNREACHABLE, PAYBACK_UPDATE_ADDON,
+  PAYBACK_UPDATE_REFUSED, PAYBACK_UPDATE_STUCK, PAYBACK_UPDATE_UNSURE, PAYBACK_ZERO, paybackDone, paybackRulesDone, paybackRulesStuck, paybackUnfiled,
 } from './payback-copy.js';
 import { isPaybackRow, paybackRetype, type PaybackRow } from './payback-row.js';
 import type { SecretGet, SecretSet } from './subscription-prefs.js';
@@ -42,6 +46,7 @@ import {
   SYNC_OVERRIDES_UNREADABLE_MESSAGE, type LoadedSyncOverrides,
 } from './sync-overrides.js';
 import { accountTxKey } from './transfers.js';
+import type { MappingRule } from './types.js';
 import { removalFingerprint } from './tx-remove.js';
 import { addonUnderstandsPaybacks, INSTALLED_ADDON_VERSION_SECRET_KEY } from './version.js';
 
@@ -325,4 +330,148 @@ async function fileOnce(choice: PaybackChoice, io: PaybackIo, now: Date): Promis
   return filed
     ? { kind: 'filed', message: `${paybackDone(choice.categoryName, choice.parentName ?? choice.categoryName, absCents)}\n${tail}` }
     : { kind: 'partial', message: `${paybackUnfiled(choice.categoryName)}\n${tail}` };
+}
+
+// ── "Make every … deposit a payback" (W10) ───────────────────────────────
+
+/** What the rules are called in Wealthfolio's rules list (the pattern is never cut). */
+export const PAYBACK_RULE_NAME_PREFIX = 'Telegram payback: ';
+const RULE_NAME_MAX = 60;
+
+/** The offer, as the Filed screen makes it. */
+export interface PaybackRulesInput {
+  /** `paybackRulePattern` of the deposit's description. */
+  pattern: string;
+  /** The deposit's Wealthfolio account: both rules read only it. */
+  account: { id: string; name: string };
+  categoryId: string;
+  categoryName: string;
+  /** The deposit it was made from, for the change log. */
+  description: string;
+}
+
+/** What a host lends `makePaybackRules`. */
+export interface PaybackRulesIo {
+  /** As `PaybackIo.gate`: an older add-on would read the transaction rule without its limits. */
+  gate(): Promise<string | null>;
+  secrets: { get: SecretGet; set: SecretSet };
+  /** Wealthfolio's categorization rules now. Rejects when unreachable. */
+  categoryRules(): Promise<Array<{ id: string; pattern: string; categoryId: string | null; accountId?: string; activityType?: string }>>;
+  /** Creates a contains rule for one account and one activity type; resolves its id (null when the reply named none). */
+  createCategoryRule(rule: { name: string; pattern: string; categoryId: string; accountId: string; activityType: string }): Promise<string | null>;
+  record(draft: ChangeDraft): Promise<void>;
+  log(msg: string): void;
+}
+
+export interface PaybackRulesOutcome {
+  ok: boolean;
+  message: string;
+}
+
+/** `mapping_rules`, read strictly: nothing stored is none; anything but a list is unreadable (null) and never rewritten. */
+function parseMappingRules(raw: string | null): MappingRule[] | null {
+  if (raw === null || raw.trim() === '') return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as MappingRule[]) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Make every <pattern> deposit into one account a payback under a category
+ * (W10): an add-on transaction rule — money in only, this account only, a
+ * CREDIT marked REIMBURSEMENT — which the sync applies on import, then
+ * Wealthfolio's categorization rule for the category, which files only
+ * CREDITs (the paybacks) in this account. A rule that is already there is not
+ * made twice. The transaction rule is appended to a list re-read right before
+ * the write; if Wealthfolio then refuses the category rule, the transaction
+ * rule comes back out, so neither is half made — and when that write fails
+ * too, it is logged so Undo can take it out. Both rules are change-logged.
+ */
+export async function makePaybackRules(input: PaybackRulesInput, io: PaybackRulesIo): Promise<PaybackRulesOutcome> {
+  const no = (message: string): PaybackRulesOutcome => ({ ok: false, message });
+  // A gate that cannot read the add-on's version REJECTS: that is "couldn't
+  // reach", logged, never "update the add-on" (PB-B, M7).
+  let gate: string | null;
+  try {
+    gate = await io.gate();
+  } catch (err) {
+    io.log(`Payback rules for "${input.pattern}": could not read the installed add-on version: ${errorText(err)}`);
+    return no(PAYBACK_UNREACHABLE);
+  }
+  if (gate) return no(gate);
+  const rule = paybackMappingRule(input.pattern, input.account.id);
+
+  let list: MappingRule[] | null;
+  let haveCategoryRule: boolean;
+  try {
+    list = parseMappingRules(await io.secrets.get(MAPPING_RULES_SECRET_KEY));
+    haveCategoryRule = (await io.categoryRules()).some((r) => r.pattern === input.pattern && r.categoryId === input.categoryId
+      && r.accountId === input.account.id && r.activityType === 'CREDIT');
+  } catch (err) {
+    io.log(`Payback rules for "${input.pattern}": ${errorText(err)}`);
+    return no(PAYBACK_UNREACHABLE);
+  }
+  if (list === null) return no(UNDO_MAPPING_RULES_UNREADABLE);
+  const haveMapping = list.some((r) => sameMappingRule(r, rule));
+  if (haveMapping && haveCategoryRule) return no(PAYBACK_RULES_EXIST);
+
+  const log = async (draft: ChangeDraft) => {
+    try {
+      await io.record(draft);
+    } catch (err) {
+      io.log(`Payback rules for "${input.pattern}": the change log was not written: ${errorText(err)}`);
+    }
+  };
+  const mappingEntry = () => mappingRuleCreatedChange({ rule, description: input.description, account: { wfId: input.account.id, name: input.account.name } });
+
+  // 1. The transaction rule, appended to the list as it is right now.
+  let added = false;
+  if (!haveMapping) {
+    try {
+      const fresh = parseMappingRules(await io.secrets.get(MAPPING_RULES_SECRET_KEY));
+      if (fresh === null) return no(UNDO_MAPPING_RULES_UNREADABLE);
+      if (!fresh.some((r) => sameMappingRule(r, rule))) {
+        await io.secrets.set(MAPPING_RULES_SECRET_KEY, JSON.stringify([...fresh, rule]));
+        added = true;
+      }
+    } catch (err) {
+      io.log(`Payback rules for "${input.pattern}": the transaction rule was not saved: ${errorText(err)}`);
+      return no(PAYBACK_RULES_SAVE_FAILED);
+    }
+  }
+
+  // 2. Wealthfolio's category rule: paybacks (CREDIT) in this account only.
+  const name = `${PAYBACK_RULE_NAME_PREFIX}${input.pattern}`.slice(0, RULE_NAME_MAX);
+  let ruleId: string | null = null;
+  if (!haveCategoryRule) {
+    try {
+      ruleId = await io.createCategoryRule({ name, pattern: input.pattern, categoryId: input.categoryId, accountId: input.account.id, activityType: 'CREDIT' });
+    } catch (err) {
+      io.log(`Payback rules for "${input.pattern}": Wealthfolio refused the category rule: ${errorText(err)}`);
+      if (!added) return no(PAYBACK_RULES_REFUSED);
+      try {
+        const now = parseMappingRules(await io.secrets.get(MAPPING_RULES_SECRET_KEY));
+        if (now === null) throw new Error('the transaction rules are unreadable');
+        await io.secrets.set(MAPPING_RULES_SECRET_KEY, JSON.stringify(now.filter((r) => !sameMappingRule(r, rule))));
+      } catch (again) {
+        io.log(`Payback rules for "${input.pattern}": taking the transaction rule back failed: ${errorText(again)}`);
+        await log(mappingEntry());
+        return no(paybackRulesStuck(input.pattern));
+      }
+      return no(PAYBACK_RULES_REFUSED);
+    }
+  }
+
+  // 3. The change log, which never costs the rules.
+  if (added) await log(mappingEntry());
+  if (!haveCategoryRule) {
+    await log(categoryRuleCreatedChange({
+      ruleId, name, pattern: input.pattern, categoryId: input.categoryId, categoryName: input.categoryName,
+      account: { wfId: input.account.id, name: input.account.name }, activityType: 'CREDIT',
+    }));
+  }
+  return { ok: true, message: paybackRulesDone(input.pattern, input.account.name, input.categoryName) };
 }

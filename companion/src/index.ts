@@ -125,8 +125,8 @@ import { auditMenuDeps, auditStatusKeyboard, createAuditMenu, type AuditMenu } f
 import { companionBudgetReaders } from './budget-suggest-host.js';
 import { budgetsMenuDeps, createBudgetsMenu, type BudgetsMenu } from './budgets-menu.js';
 import { companionLinkIo, companionRemoveIo } from './audit-fix-host.js';
-import { filePayback, type PaybackOutcome } from '../../shared/payback.js';
-import { companionPaybackIo } from './payback-host.js';
+import { filePayback, makePaybackRules, type PaybackOutcome } from '../../shared/payback.js';
+import { companionPaybackIo, companionPaybackRulesIo } from './payback-host.js';
 import { linkPairs, type LinkRun } from '../../shared/audit-link.js';
 import { removeForGood } from '../../shared/tx-remove.js';
 import { addManual, editSubscriptionPrefs, emptySubscriptionPrefs, isUnreadablePrefsError, loadSubscriptionPrefs, newManualId, renameKey, setRemind, SubscriptionPrefsInvalidError, type ManualSubscription, type RemindDays, type SecretGet, type SecretSet, type SubscriptionEdit } from '../../shared/subscription-prefs.js';
@@ -3069,6 +3069,9 @@ export function buildCategorizeDeps(wfClient: WealthfolioClient): CategorizeDeps
       () => filePayback(choice, companionPaybackIo(wfClient, log), new Date()),
       (): PaybackOutcome => ({ kind: 'refused', message: FIX_SYNC_RUNNING }),
     ),
+    // W10: "Make every <pattern> deposit a payback" — the transaction rule the
+    // sync applies on import, and Wealthfolio's category rule for paybacks.
+    paybackRules: (input) => makePaybackRules(input, companionPaybackRulesIo(wfClient, log)),
     // Exactly as the sync path publishes it, so the tile the addon renders cannot
     // disagree with itself depending on which host last wrote it. Wrapped so it
     // can never throw: the controller already swallows a failure here, and this

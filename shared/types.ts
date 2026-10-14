@@ -11,6 +11,12 @@ export interface MappingRule {
    *  Only meaningful for CREDIT (see docs/upstream-spending-buckets.md): a
    *  DEPOSIT is income regardless of subtype. */
   subtype?: string;
+  /** A payback rule (1.62, W10): it reads money in only, so a payment out
+   *  that shares the pattern is never typed by it. A reader before 1.62
+   *  ignores it — which is why the offer waits for PAYBACK_SINCE. */
+  onlyMoneyIn?: true;
+  /** A payback rule (1.62, W10): the one Wealthfolio account it reads. */
+  accountId?: string;
 }
 
 export interface SimplefinOrg {

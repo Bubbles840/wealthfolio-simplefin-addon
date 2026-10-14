@@ -2157,7 +2157,7 @@ async function runSyncPass(
       const flagged = hasTxOverride(overrides, key, 'asReimbursement');
       const payback = flagged && amount > 0 && (!acctType || acctType === 'CASH');
       if (flagged && !payback) yieldedPaybackKeys.add(key);
-      const mapped = mapTransactionWithSource(tx.description, amount, rules, wfTypes.get(wfAccountId));
+      const mapped = mapTransactionWithSource(tx.description, amount, rules, wfTypes.get(wfAccountId), wfAccountId);
       const { type, fromRule, subtype } = payback
         ? { type: 'CREDIT' as ActivityType, fromRule: true, subtype: REIMBURSEMENT_SUBTYPE as string | undefined }
         : notTransfer && isTransferType(mapped.type)

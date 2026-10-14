@@ -704,44 +704,52 @@ export interface CategoryRuleFacts {
   categoryName: string;
   /** The one account the rule is scoped to (3, L5); absent, every account. */
   account?: { wfId: string; name: string };
+  /** The one activity type it files (W10: `CREDIT`, paybacks only); absent, every type. */
+  activityType?: string;
 }
 
 /** A Wealthfolio categorization rule created from Telegram. Undo (R2): delete it.
  *  A scoped one names its account, and its Redo re-creates it scoped. */
 export function categoryRuleCreatedChange(f: CategoryRuleFacts): ChangeDraft {
   const where = f.account ? ` in ${f.account.name}` : '';
+  const which = f.activityType === 'CREDIT' ? 'paybacks' : 'descriptions';
   return {
     actor: 'you',
     kind: 'category-rule-created',
     ...(f.account ? { account: { wfId: f.account.wfId, name: f.account.name } } : {}),
     subject: { ...(f.ruleId ? { ruleId: f.ruleId } : {}), rulePattern: f.pattern, categoryName: f.categoryName },
-    summary: `Created a rule: descriptions containing "${f.pattern}"${where} go to ${f.categoryName}`,
+    summary: `Created a rule: ${which} containing "${f.pattern}"${where} go to ${f.categoryName}`,
     after: {
       ruleId: f.ruleId, name: f.name, pattern: f.pattern, categoryId: f.categoryId, categoryName: f.categoryName,
       ...(f.account ? { accountId: f.account.wfId } : {}),
+      ...(f.activityType ? { activityType: f.activityType } : {}),
     },
     undoable: true,
   };
 }
 
 export interface MappingRuleFacts {
-  rule: { pattern: string; matchType: string; activityType: string; subtype?: string };
+  rule: { pattern: string; matchType: string; activityType: string; subtype?: string; onlyMoneyIn?: true; accountId?: string };
   /** The transaction it was taught from. */
   description?: string;
   account?: ChangeAccount;
 }
 
-/** A transaction rule added to `mapping_rules` (the transfer-learning menu). */
+/** A transaction rule added to `mapping_rules` (the transfer-learning menu, or
+ *  "Make every … deposit a payback", W10). */
 export function mappingRuleCreatedChange(f: MappingRuleFacts): ChangeDraft {
   const direction = f.rule.activityType === 'TRANSFER_IN' ? 'a transfer in'
     : f.rule.activityType === 'TRANSFER_OUT' ? 'a transfer out'
       : f.rule.activityType;
+  const payback = f.rule.activityType === 'CREDIT' && f.rule.subtype === 'REIMBURSEMENT' && f.rule.onlyMoneyIn === true;
   return {
     actor: 'you',
     kind: 'mapping-rule-created',
     ...(f.account ? { account: f.account } : {}),
     subject: { rulePattern: f.rule.pattern, ...(f.description ? { description: f.description } : {}) },
-    summary: `Added a transaction rule: "${f.rule.pattern}" is ${direction}`,
+    summary: payback
+      ? `Added a transaction rule: "${f.rule.pattern}" deposits${f.account ? ` into ${f.account.name}` : ''} are paybacks`
+      : `Added a transaction rule: "${f.rule.pattern}" is ${direction}`,
     after: { rule: { ...f.rule } },
     undoable: true,
   };

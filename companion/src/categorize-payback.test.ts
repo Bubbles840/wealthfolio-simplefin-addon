@@ -1,8 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { InlineKeyboard } from '../../shared/telegram.js';
-import type { PaybackChoice, PaybackOutcome } from '../../shared/payback.js';
+import type { PaybackChoice, PaybackOutcome, PaybackRulesInput, PaybackRulesOutcome } from '../../shared/payback.js';
 import { removalFingerprint } from '../../shared/tx-remove.js';
-import { PAYBACK_PICK, PAYBACK_SWITCH, PAYBACK_UNAVAILABLE, PAYBACK_UNREACHABLE } from '../../shared/payback-copy.js';
+import {
+  PAYBACK_PICK, PAYBACK_RULES_EXIST, PAYBACK_SWITCH, PAYBACK_UNAVAILABLE, PAYBACK_UNREACHABLE,
+} from '../../shared/payback-copy.js';
 import { createCategorizeController, type CategorizeDeps } from './categorize.js';
 
 const CATS = [
@@ -18,7 +20,10 @@ const FILED: PaybackOutcome = {
   kind: 'filed', message: 'Filed as a payback under Restaurants — it takes $14 off your Food & Dining spending.\nUndo it from /changes.',
 };
 
-function setup(payback?: (c: PaybackChoice) => Promise<PaybackOutcome>) {
+function setup(
+  payback?: (c: PaybackChoice) => Promise<PaybackOutcome>,
+  paybackRules?: (i: PaybackRulesInput) => Promise<PaybackRulesOutcome>,
+) {
   let rows = [{ ...DEPOSIT }];
   const deps: CategorizeDeps = {
     dbPath: () => '/db',
@@ -35,6 +40,7 @@ function setup(payback?: (c: PaybackChoice) => Promise<PaybackOutcome>) {
     republish: vi.fn(async () => {}),
     log: vi.fn(),
     ...(payback ? { payback: vi.fn(payback) } : {}),
+    ...(paybackRules ? { paybackRules: vi.fn(paybackRules) } : {}),
   };
   const ui = { edit: vi.fn(async (_t: string, _k?: InlineKeyboard) => {}), answer: vi.fn(async () => {}), send: vi.fn(async () => {}) };
   const controller = createCategorizeController(deps);
@@ -67,7 +73,7 @@ describe('/categorize: a deposit filed as a payback (W6)', () => {
     expect(h.deps.payback).toHaveBeenCalledWith({ activityId: 'act-7', categoryId: 'cat-rest', categoryName: 'Restaurants', parentName: 'Food & Dining', shown: expect.any(String) });
     expect(h.deps.assign).not.toHaveBeenCalled();
     expect(h.last()[0]).toBe('Filed as a payback under Dine\\_Out — it takes $14 off your Food & Dining spending.\nUndo it from /changes.');
-    expect(h.labels(h.last()[1])).toEqual(['Next transaction', 'Done']);
+    expect(h.labels(h.last()[1])).toEqual(['Make every VENMO CASHOUT deposit a payback', 'Next transaction', 'Done']);
     expect(h.deps.republish).toHaveBeenCalled();
   });
 
@@ -112,6 +118,37 @@ describe('/categorize: a deposit filed as a payback (W6)', () => {
     await h.press('Entertainment');
     expect(h.last()[0]).toBe(PAYBACK_UNAVAILABLE);
     expect(h.deps.assign).not.toHaveBeenCalled();
+  });
+});
+
+describe('/categorize: "Make every … deposit a payback" (W10)', () => {
+  const DONE = 'Done — every VENMO CASHOUT deposit into PNC Checking is a payback under Restaurants from now on. Undo either rule from /changes.';
+
+  it('offers it after the payback, previews it, and makes both rules for the row’s account and words', async () => {
+    const h = setup(async () => FILED, async () => ({ ok: true, message: DONE }));
+    await h.toPaybackGrid();
+    await h.press('Food & Dining');
+    await h.press('Restaurants');
+    await h.press('Make every VENMO CASHOUT deposit a payback');
+    expect(h.last()[0].split('\n')[0]).toBe('Make every VENMO CASHOUT deposit a payback?');
+    await h.press('Create both rules');
+    expect(h.deps.paybackRules).toHaveBeenCalledWith({
+      pattern: 'VENMO CASHOUT', account: { id: 'wf-chk', name: 'PNC Checking' }, categoryId: 'cat-rest', categoryName: 'Restaurants',
+      description: 'VENMO CASHOUT',
+    });
+    expect(h.last()[0]).toBe(DONE);
+    expect(h.labels(h.last()[1])).toEqual(['‹ Back to list', 'Done']);
+  });
+
+  it('says why when nothing was made, with nothing to tap twice', async () => {
+    const h = setup(async () => FILED, async () => ({ ok: false, message: PAYBACK_RULES_EXIST }));
+    await h.toPaybackGrid();
+    await h.press('Entertainment');
+    await h.press('Make every VENMO CASHOUT deposit a payback');
+    await h.press('Create both rules');
+    expect(h.last()[0]).toBe(PAYBACK_RULES_EXIST);
+    expect(h.labels(h.last()[1])).not.toContain('Create both rules');
+    expect(h.deps.republish).toHaveBeenCalledTimes(1);
   });
 });
 
