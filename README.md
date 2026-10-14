@@ -80,16 +80,23 @@ The addon has three tabs: **Home**, **Reports** and **Settings**.
   each account that is off. `/forecast` shows your cash over the next 30
   days if nothing comes in, with the bills it counts; the weekly check-in
   carries the same line in Full detail, and the daily report warns when cash
-  may run short within two weeks.
+  may run short within two weeks. Health's list offers **Link** on a transfer with
+  exactly one likely other half (**Link all** for two or more), and a story
+  offers **Remove for good…** for a row the bank reported twice: it goes on
+  the skip list and is deleted, so the bank feed never brings it back. Both
+  are in the change log, with Undo.
 - **Checks** (with the companion) — the same three explanations in the app:
   an account's "off by" chip in **Settings → Accounts** opens why in place,
   the Budget tab's "Why is this different from Wealthfolio?" breaks down the
   month, and **Settings → Checks** lists what Health flags, each with what to
-  do. They come from a snapshot the companion publishes after each sync, and
-  say when it was taken.
+  do, and **Link** for a transfer with one likely other half. They come from a
+  snapshot the companion publishes after each sync, and say when it was
+  taken; a fix shows there after the next sync. A transaction's story in the
+  app offers **Remove for good…** too.
 - **Change log** — every change the sync, the companion and you made, the last
   90 days, under **Settings → Change log**: imports, bank updates, transfer
-  links, removed duplicates, starting balances, corrections, filings and rules,
+  links, removed duplicates, rows you removed for good, starting balances,
+  corrections, filings and rules,
   each with why and, where there is one, what it was before. Undo or Redo
   most of it from the entry — no confirmation; a transfer the sync stopped
   waiting on, bank updates, removed pending charges, background bookkeeping
