@@ -227,6 +227,9 @@ export interface UndoState {
   currency?: string;
   /** `payback-filed`: the row re-read by exact id, its stored instant included; null: gone. */
   payback?: PaybackRow | null;
+  /** `payback-filed` with no category, on a row that is still a deposit: whether
+   *  `asReimbursement` is set on at least one of the entry's keys. */
+  paybackFlagged?: boolean;
 }
 
 export type UndoStep =
@@ -748,21 +751,29 @@ export function planChangeUndo(
       const categoryName = str(after.categoryName);
       const filedNow = (state.assignments ?? []).find((a) => a.taxonomyId === SPENDING_TAXONOMY)?.categoryId ?? null;
       if (op === 'undo') {
-        // A payback setting left on a deposit (a re-type that could not be confirmed, PB-B M5) is logged with no
-        // category: its Undo takes the setting off a row that is still a deposit.
-        const settingOnly = categoryId === null && row.type === 'DEPOSIT';
-        if ((!isPaybackRow(row) && !settingOnly) || filedNow !== categoryId) return refuse(undoChangedSince(op));
+        const clears = keys.map((txKey) => ({ do: 'clear-tx', txKey, flag: 'asReimbursement' } as const));
+        if (!isPaybackRow(row)) {
+          // A payback setting left on a deposit (a re-type that could not be confirmed, PB-B M5) is logged with no
+          // category: its Undo takes only the setting off, and only while it is there. The row is not touched.
+          if (categoryId !== null || row.type !== 'DEPOSIT' || filedNow !== null || !state.paybackFlagged) {
+            return refuse(undoChangedSince(op));
+          }
+          return plan({ op, needsSync: false, rowAfter: row.id, done: paybackUndone(categoryName), steps: clears });
+        }
+        // A half-done Redo leaves the payback with no filing: accept the entry's category or none, never another.
+        if (filedNow !== null && filedNow !== categoryId) return refuse(undoChangedSince(op));
         return plan({
           op, needsSync: false, rowAfter: row.id, done: paybackUndone(categoryName),
           steps: [
-            ...keys.map((txKey) => ({ do: 'clear-tx', txKey, flag: 'asReimbursement' } as const)),
+            ...clears,
             // The deposit's own subtype back; '' clears REIMBURSEMENT.
             { do: 'update', write: paybackRetype(row, 'DEPOSIT', str(before.subtype) ?? '') },
-            ...(categoryId ? [{ do: 'unassign', activityId: row.id, taxonomyId: SPENDING_TAXONOMY } as const] : []),
+            ...(filedNow ? [{ do: 'unassign', activityId: row.id, taxonomyId: SPENDING_TAXONOMY } as const] : []),
           ],
         });
       }
-      if (row.type !== 'DEPOSIT' || filedNow !== null) return refuse(undoChangedSince(op));
+      // A deposit /categorize filed (income_sources) must not end up with two filings.
+      if (row.type !== 'DEPOSIT' || (state.assignments ?? []).length > 0) return refuse(undoChangedSince(op));
       return plan({
         op, needsSync: false, rowAfter: row.id, done: paybackRedone(categoryName),
         steps: [
