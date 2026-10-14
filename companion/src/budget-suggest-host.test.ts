@@ -164,6 +164,18 @@ describe('applyBudgetSuggestions', () => {
     expect(recorded[0].why).toBe('Your average for Sep, rounded up to the nearest $5');
   });
 
+  it('marks a left-alone category whose default target already holds the suggested amount as sameAmount', async () => {
+    const { r } = readers({
+      targets: vi.fn(async () => ({ enabled: true, targets: [
+        target({ id: 'bt-gro', categoryId: 'cat-gro', amountCents: 42000 }), target({ id: 'bt-din', categoryId: 'cat-din', amountCents: 20000 }),
+      ] })),
+    });
+    const result = await applyBudgetSuggestions(r, chosen(), AT, NOW);
+    if (!result.ok) throw new Error('refused');
+    expect(result.outcome.alreadySet.map((s) => [s.name, s.sameAmount])).toEqual([['Groceries', true], ['Dining out', false]]);
+    expect(r.set).toHaveBeenCalledTimes(1);
+  });
+
   it('re-reads before EACH POST: a category that gained a default target meanwhile is left alone, with no POST', async () => {
     const reads: BudgetTarget[][] = [[], [], [target({ id: 'bt-gas', categoryId: 'cat-gas', amountCents: 1 })]];
     const { r } = readers({ targets: vi.fn(async () => ({ enabled: true, targets: reads.shift() ?? [] })) });
