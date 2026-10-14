@@ -139,7 +139,7 @@ describe('buildTxStory — one fixture per row kind', () => {
       const s = story({ row: row({ note: 'AAPL · TRN-1', activityType }), category: null });
       expect(s.answer).toEqual(['From your PNC Checking bank feed.']);
     }
-    for (const activityType of ['DEPOSIT', 'CREDIT', 'INTEREST', 'DIVIDEND']) expect(story({ row: row({ activityType }) }).answer[1]).toBe(TX_STORY_MONEY_IN);
+    for (const activityType of ['DEPOSIT', 'CREDIT', 'INTEREST', 'DIVIDEND', 'INCOME']) expect(story({ row: row({ activityType }) }).answer[1]).toBe(TX_STORY_MONEY_IN);
     for (const activityType of ['WITHDRAWAL', 'FEE', 'TAX']) expect(story({ row: row({ activityType }) }).answer[1]).toBe(TX_STORY_SPENDING);
   });
 
