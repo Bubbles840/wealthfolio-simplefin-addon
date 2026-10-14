@@ -879,6 +879,27 @@ const css = `
   .sfin-why-open { grid-template-columns: 6.5em minmax(0, 1fr); }
   .sfin-why-amt { grid-column: 2; }
 }
+/* Audits (2c): why a balance is off (under its account), why the month differs
+   from Wealthfolio (under the headline numbers), and what Health flags
+   (Settings → Checks). */
+.sfin-audit-chip { border: none; font-family: inherit; cursor: pointer; }
+.sfin-audit-chip:hover { text-decoration: underline; text-underline-offset: 2px; }
+.sfin-audit-under { margin: -4px 0 10px; }
+.sfin-audit-inline { padding: 4px 0 8px 12px; border-left: 2px solid var(--border); display: flex; flex-direction: column; gap: 6px; font-size: var(--sfin-sz-sm); }
+.sfin-audit-body { display: flex; flex-direction: column; gap: 4px; overflow-wrap: anywhere; }
+.sfin-audit-head { font-weight: 600; }
+.sfin-audit-lines { margin: 2px 0; padding-left: 1.1em; display: flex; flex-direction: column; gap: 2px; }
+.sfin-audit-reason > summary { cursor: pointer; }
+.sfin-audit-rows { margin: 4px 0; padding-left: 1.1em; font-size: var(--sfin-sz-xs); color: var(--muted-foreground); }
+.sfin-audit-issues { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.sfin-audit-issue { border-top: 1px solid color-mix(in srgb, var(--border) 55%, transparent); padding-top: 6px; }
+.sfin-audit-issue:first-child { border-top: none; padding-top: 0; }
+.sfin-audit-notes { margin: 4px 0 0; padding-left: 1.1em; color: var(--destructive); font-size: var(--sfin-sz-xs); }
+.sfin-audit-status { font-size: var(--sfin-sz-xs); }
+.sfin-audit-status--stale, .sfin-audit-status--corrupt { color: var(--destructive); }
+.sfin-audit-checks { display: flex; flex-direction: column; gap: 8px; }
+.sfin-audit-headline { margin-top: 8px; }
+.sfin-audit-link { padding: 0; border: none; background: transparent; color: var(--primary); font: inherit; font-size: var(--sfin-sz-sm); cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
 @keyframes sfin-pop { from { transform: scale(.92); opacity: 0; } to { transform: scale(1); opacity: 1; } }
 .sfin-range-pin { position: absolute; bottom: 6px; right: 10px; font-size: var(--sfin-sz-2xs); color: var(--muted-foreground); background: color-mix(in srgb, var(--card) 80%, transparent); border-radius: var(--sfin-rad-xs); padding: 1px 6px; }
 /* Drag feedback: the picked-up card lifts and fades while every other card

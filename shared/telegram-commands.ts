@@ -64,7 +64,8 @@ export const TELEGRAM_COMMAND_MENU = [
  *  `/subscriptions` (1.60) takes no arguments; everything happens on its buttons.
  *  `/changes` lists the change log; `/changes <words>` searches it.
  *  `/why <words or an amount>` (1.61) finds a transaction and tells its story;
- *  bare `/why` asks. */
+ *  bare `/why` asks.
+ *  `/audit` (2c) takes no arguments; its buttons run each check. */
 export const TELEGRAM_MORE_COMMANDS = [
   { command: 'afford', description: 'Can I afford it? — asks, or /afford 20 shopping' },
   { command: 'pool', description: 'Semester money pool — asks, or /pool 16000 Dec 12' },
@@ -74,6 +75,7 @@ export const TELEGRAM_MORE_COMMANDS = [
   { command: 'subscriptions', description: 'Subscriptions and bills — remind, rename, hide, or add one' },
   { command: 'changes', description: 'What changed lately — /changes venmo searches' },
   { command: 'why', description: 'Why is this here? — /why kroger 54.20 finds a transaction and its story' },
+  { command: 'audit', description: 'Why a balance or the month differs from Wealthfolio, and what its Health page flags' },
 ] as const;
 
 export function formatHelpReply(unknownCommand?: string): string {
@@ -463,6 +465,9 @@ export interface StatusReplyInput {
     /** Whether a comparison was actually attempted this run — see the chip
      *  precedence below for why this can't be inferred from `drift` alone. */
     measured: boolean;
+    /** The Wealthfolio account it maps to, when known: what `/status`'s 🔎
+     *  button opens (2c). The text never shows it. */
+    wfAccountId?: string;
   }>;
   /**
    * How many accounts the snapshot HAS but could not be priced — SimpleFin

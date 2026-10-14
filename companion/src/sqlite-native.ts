@@ -64,16 +64,21 @@ export class NativeDbUnreadableError extends Error {
 }
 
 /** `queryNativeDb`, except a database that is not there or that every path
- *  failed to read throws `NativeDbUnreadableError`. */
-function queryNativeDbStrict<Row>(
+ *  failed to read throws `NativeDbUnreadableError`. Exported for the audits'
+ *  readers (sqlite-audit.ts, 2c). */
+export function queryNativeDbStrict<Row>(
   dbPath: string,
   label: string,
   query: string,
   fromCliParts: (parts: string[]) => Row | null,
   separator = '|',
+  /** The sqlite3 CLI's output buffer, in bytes, for a read whose output can
+   *  pass execFileSync's 1 MB default (the audits read the whole ledger).
+   *  Absent: the default. */
+  maxBuffer?: number,
 ): Row[] {
   if (!dbPath || !existsSync(dbPath)) throw new NativeDbUnreadableError(`${label}: no database at ${dbPath || '(unset)'}`);
-  const rows = tryQueryNativeDb(dbPath, label, query, fromCliParts, separator);
+  const rows = tryQueryNativeDb(dbPath, label, query, fromCliParts, separator, maxBuffer);
   if (rows === null) throw new NativeDbUnreadableError(label);
   return rows;
 }
@@ -87,6 +92,7 @@ function tryQueryNativeDb<Row>(
   /** The sqlite3 CLI's column separator for this query's fallback. Default
    *  `|`; a query whose free text can contain one passes an unambiguous one. */
   separator = '|',
+  maxBuffer?: number,
 ): Row[] | null {
   // LIVE read first, snapshot only as a fallback. `immutable=1` reads the main
   // DB file alone and ignores the write-ahead log — and Wealthfolio checkpoints
@@ -124,7 +130,9 @@ function tryQueryNativeDb<Row>(
     const args = separator === '|' ? [dbPath, query.replace(/\n/g, ' ')] : ['-separator', separator, dbPath, query.replace(/\n/g, ' ')];
     // stderr piped, not inherited: the caught error carries it, and the
     // console line below reports it once.
-    const output = execFileSync('sqlite3', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    const output = execFileSync('sqlite3', args, {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...(maxBuffer ? { maxBuffer } : {}),
+    });
     const rows: Row[] = [];
     for (const line of output.split('\n')) {
       const trimmed = line.trim();
@@ -170,6 +178,12 @@ const SPENDING_FROM = `
 /** The rolled-up label: the parent category where there is one, else the
  *  category itself. Both readers select and filter on this same expression. */
 const SPENDING_CATEGORY = `COALESCE(parent.name, tc.name)`;
+
+/** A spending filing every spending reader counts: its rolled-up category is
+ *  not named like a transfer. Over `tc` (the category) and `parent` (its
+ *  parent, LEFT JOINed). Exported for the audits' month read
+ *  (sqlite-audit.ts), which counts the report's filings per row. */
+export const REPORT_COUNTS_CATEGORY = `LOWER(${SPENDING_CATEGORY}) NOT IN ('transfers', 'transfer', 'internal transfers', 'savings & transfers')`;
 
 /**
  * Wealthfolio's own spending classification, transcribed from upstream —
@@ -289,7 +303,7 @@ function spendingWhere(startInclusive: string, endExclusive: string): string {
       -- an income one and a spending one — so joining every taxonomy counted
       -- the same row twice, under two different category names.
       AND tc.taxonomy_id = 'spending_categories'
-      AND LOWER(${SPENDING_CATEGORY}) NOT IN ('transfers', 'transfer', 'internal transfers', 'savings & transfers')`;
+      AND ${REPORT_COUNTS_CATEGORY}`;
 }
 
 /**

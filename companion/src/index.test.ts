@@ -8,7 +8,7 @@ import { runSyncCore } from '../../shared/sync-core.js';
 import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeCategorizedSpending, getNativeSpendingCategories, getNativeTxSearchRows } from './sqlite-native.js';
 import { ingestAmazonMail } from './amazon-mail.js';
 import { AMAZON_MAIL_STATUS_SECRET_KEY, AMAZON_MAIL_SAMPLES_SECRET_KEY, UNCATEGORIZED_STATUS_SECRET_KEY } from '../../shared/status-keys.js';
-import { CATEGORIZE_ENTRY_CALLBACK } from '../../shared/telegram.js';
+import { CATEGORIZE_ENTRY_CALLBACK, escapeMarkdown } from '../../shared/telegram.js';
 import { categoryFiledChange, stampChange } from '../../shared/change-entries.js';
 import { existsSync } from 'fs';
 import type { SyncResult } from '../../shared/sync-core.js';
@@ -119,6 +119,15 @@ vi.mock('./sqlite-native.js', () => ({
   getNativeTxPartner: vi.fn(() => null),
   getNativeTxSearchRows: vi.fn(() => []),
   NativeDbUnreadableError: class NativeDbUnreadableError extends Error {},
+}));
+
+// The audits' strict readers (2c): mocked as a module, because sqlite-audit.ts
+// reads its separator from the sqlite-native mock above at import time. An
+// empty ledger is the "quiet database" every unrelated sync test wants.
+vi.mock('./sqlite-audit.js', () => ({
+  getNativeAuditLedger: vi.fn(() => ({ accounts: [], rows: [] })),
+  getNativeHeadlineRows: vi.fn(() => []),
+  getNativeAuditSettings: vi.fn(() => ({ timezone: null, excludedCategoryIds: [], categoryParents: {} })),
 }));
 
 vi.mock('./amazon-mail.js', async (importOriginal) => ({
@@ -2639,6 +2648,73 @@ describe('buildTelegramCommandHandler', () => {
     });
   });
 
+  describe('/audit', () => {
+    const NAME = "Joe's *Visa*_[1]";
+    const offAccount = (): Array<[string, string]> => [
+      ['account_mapping', JSON.stringify({ 'sfin-1': 'wf-1', 'sfin-2': 'wf-2' })],
+      ['account_balances', JSON.stringify({
+        'sfin-1': { balance: 3475.23, currency: 'USD', date: 1_760_000_000, drift: 13, measured: true },
+        'sfin-2': { balance: 100, currency: 'USD', date: 1_760_000_000, drift: null, measured: true },
+      })],
+      ['account_names', JSON.stringify({ 'sfin-1': NAME, 'sfin-2': 'Save' })],
+    ];
+    const ui = () => ({ edit: vi.fn(async () => {}), answer: vi.fn(async () => {}), send: vi.fn(async () => {}) });
+
+    it('replies with the menu, Health counted from the database', async () => {
+      const { client } = clientFor();
+      const sent: Array<[string, any]> = [];
+      await buildTelegramCommandHandler(client)({ command: 'audit', args: '' }, async (t, k) => { sent.push([t, k]); });
+      expect(sent[0][0].startsWith('🔎 *Audit*\n')).toBe(true);
+      expect(sent[0][1].inline_keyboard.flat().map((b: any) => b.callback_data)).toEqual(['cz:au:b', 'cz:au:h', 'cz:au:i']);
+      expect(sent[0][1].inline_keyboard[2][0].text).toBe('Health (0)');
+    });
+
+    it("says so when Wealthfolio can't be reached", async () => {
+      const client = { getAddonSecret: vi.fn(async () => { throw new Error('ECONNREFUSED'); }), setAddonSecret: vi.fn() } as any;
+      const { sent, reply } = collector();
+      await buildTelegramCommandHandler(client)({ command: 'audit', args: '' }, reply);
+      expect(sent).toEqual(["Couldn't reach Wealthfolio — try again."]);
+    });
+
+    it('cz:au: taps reach the audit menu, not the transaction menu', async () => {
+      const { client } = clientFor();
+      const deps = buildTelegramListenerDeps(client);
+      const u = ui();
+      await deps.onMenuCallback!({ data: 'cz:au:i', chatId: 1, messageId: 2 }, u);
+      expect((u.edit.mock.calls[0] as unknown as [string])[0]).toBe('🔎 *Health*\nNothing the add-on checks for: no incomplete transfers, late starting balances or $CASH rows.');
+    });
+
+    it('/status puts a 🔎 under each account that is off: the bank name escaped in the text, raw on the button', async () => {
+      const { client } = clientFor(offAccount());
+      const sent: Array<[string, any]> = [];
+      await buildTelegramCommandHandler(client)({ command: 'status', args: '' }, async (t, k) => { sent.push([t, k]); });
+      expect(sent[0][0]).toContain(`${escapeMarkdown(NAME)}: $3,475 · $13 off`);
+      expect(sent[0][0]).not.toContain(NAME);
+      expect(sent[0][1]).toEqual({ inline_keyboard: [[{ text: `🔎 ${NAME}`, callback_data: `cz:au:s${findingHandle('wf-1')}` }]] });
+    });
+
+    it('/status with nothing off replies as it always did, without a keyboard', async () => {
+      const { client } = clientFor(offAccount().filter(([k]) => k !== 'account_balances').concat([['account_balances', JSON.stringify({
+        'sfin-1': { balance: 1, currency: 'USD', date: 1_760_000_000, drift: null, measured: true },
+      })]]));
+      const calls: unknown[][] = [];
+      await buildTelegramCommandHandler(client)({ command: 'status', args: '' }, async (...args: unknown[]) => { calls.push(args); });
+      expect(calls[0]).toHaveLength(1);
+    });
+
+    it('the 🔎 opens why that account is off as a new message, a failed read saying so', async () => {
+      const { client } = clientFor(offAccount());
+      const deps = buildTelegramListenerDeps(client);
+      const u = ui();
+      await deps.onMenuCallback!({ data: `cz:au:s${findingHandle('wf-1')}`, chatId: 1, messageId: 2 }, u);
+      expect(u.edit).not.toHaveBeenCalled();
+      const [text] = u.send.mock.calls[0] as unknown as [string];
+      expect(text.startsWith(`🔎 *Balance*\n${escapeMarkdown(NAME)}\nBank: $3,475.23`)).toBe(true);
+      // This fake client has no valuations: Wealthfolio's figure is unknown, and the reply says why.
+      expect(text).toContain("⚠️ Couldn't read Wealthfolio's balances, so cash accounts aren't compared.");
+    });
+  });
+
   describe('subscription questions (1.60)', () => {
     const SUB_CUBE = JSON.stringify({
       version: 1, asOf: '2026-10-12T06:00:00.000Z', months: ['2026-10'], categories: [], accounts: [],
@@ -5030,6 +5106,101 @@ describe('report_cube publish', () => {
     const call = instance.setAddonSecret.mock.calls.find((c: any[]) => c[1] === 'report_cube');
     expect(call).toBeTruthy();
     expect(JSON.parse(call[2]).version).toBe(1);
+  });
+});
+
+describe('audit_snapshot publish', () => {
+  /** The full client shape, pinned for the same reason as report_cube's test. */
+  const pinClient = async (setAddonSecret: (addon: string, key: string, value: string) => Promise<void>) => {
+    process.env.WEALTHFOLIO_API_URL = 'http://wf';
+    process.env.WEALTHFOLIO_PASSWORD = 'pw';
+    const { WealthfolioClient } = await import('./wealthfolio.js');
+    vi.mocked(WealthfolioClient as any).mockClear();
+    vi.mocked(WealthfolioClient as any).mockImplementation(function (this: any) {
+      this.login = vi.fn(async () => {});
+      this.getAddonSecret = vi.fn(async (_a: string, key: string) => (
+        key === 'simplefin_access_url' ? 'https://user:pass@bridge.simplefin.org/simplefin' : null
+      ));
+      this.setAddonSecret = vi.fn(setAddonSecret);
+      this.getAccounts = vi.fn(async () => []);
+    });
+    return () => (vi.mocked(WealthfolioClient as any).mock.instances.at(-1)) as any;
+  };
+
+  it('publishes the checks after a sync', async () => {
+    const instance = await pinClient(async () => {});
+    await runCompanionSync();
+    const call = instance().setAddonSecret.mock.calls.find((c: any[]) => c[1] === 'audit_snapshot');
+    expect(call).toBeTruthy();
+    expect(JSON.parse(call[2]).v).toBe(1);
+  });
+
+  it('logs a publish that fails and returns the sync’s result unchanged', async () => {
+    await pinClient(async (_a, key) => { if (key === 'audit_snapshot') throw new Error('disk full'); });
+    const logs = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const result = await runCompanionSync();
+      expect(result.imported).toBe(2);
+      expect(result.errors).toEqual([]);
+      expect(logs.mock.calls.flat().join('\n')).toContain('Audit snapshot publish failed');
+    } finally {
+      logs.mockRestore();
+    }
+  });
+
+  it('logs once and keeps the sync’s result when the publish rejects over budget', async () => {
+    const audit = await import('./audit-facts.js');
+    const spy = vi.spyOn(audit, 'publishAuditSnapshot').mockRejectedValue(
+      new Error('audit snapshot over budget after trimming; keeping the previous one'));
+    await pinClient(async () => {});
+    const logs = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const result = await runCompanionSync();
+      expect(result.imported).toBe(2);
+      expect(result.errors).toEqual([]);
+      const lines = logs.mock.calls.flat().filter((l) => String(l).includes('Audit snapshot publish failed'));
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain('over budget');
+    } finally {
+      logs.mockRestore();
+      spy.mockRestore();
+    }
+  });
+
+  it('publishes only after the stuck-transfer and large-transaction alerts have gone out', async () => {
+    // Its REST reads have no timeout: a slow one must never hold an alert back.
+    const order: string[] = [];
+    const audit = await import('./audit-facts.js');
+    const spy = vi.spyOn(audit, 'publishAuditSnapshot').mockImplementation(async () => { order.push('publish'); return true; });
+    vi.mocked(runSyncCore).mockResolvedValueOnce({
+      ...FAKE_SYNC_RESULT,
+      stuckTransferAlerts: [{ outTxId: 'tx-out', description: 'Payment ↔ Payment', amountCents: 130000, currency: 'USD' }],
+      largeTransactionAlerts: [{ txId: 'tx-1', description: 'DELTA AIR LINES', amountCents: 124000, currency: 'USD', accountName: 'Spend' }],
+    });
+    const secrets = new Map<string, string>([
+      ['simplefin_access_url', 'https://user:pass@bridge.simplefin.org/simplefin'],
+      ['telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true, digestRows: 'all', dailyReportEnabled: false })],
+    ]);
+    process.env.WEALTHFOLIO_API_URL = 'http://wf';
+    process.env.WEALTHFOLIO_PASSWORD = 'pw';
+    const { WealthfolioClient } = await import('./wealthfolio.js');
+    vi.mocked(WealthfolioClient as any).mockImplementation(function (this: any) {
+      this.login = vi.fn(async () => {});
+      this.getAddonSecret = vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null);
+      this.setAddonSecret = vi.fn(async (_a: string, key: string, value: string) => { secrets.set(key, value); });
+      this.getAccounts = vi.fn(async () => []);
+    });
+    const previousFetch = globalThis.fetch;
+    vi.stubGlobal('fetch', vi.fn(async () => { order.push('telegram'); return { json: async () => ({ ok: true }) }; }));
+    try {
+      await runCompanionSync();
+      const before = order.slice(0, order.indexOf('publish'));
+      expect(order).toContain('publish');
+      expect(before.filter((o) => o === 'telegram')).toHaveLength(2);
+    } finally {
+      vi.stubGlobal('fetch', previousFetch);
+      spy.mockRestore();
+    }
   });
 });
 

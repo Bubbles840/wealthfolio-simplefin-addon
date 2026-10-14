@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { CheckIcon, AlertIcon } from './ui';
 import type { AccountBalanceInfo } from '../utils/secrets';
 import type { AccountMapping } from '../../shared/types';
@@ -33,6 +33,9 @@ export interface AccountListProps {
    *  by their absence, that the target account no longer exists. */
   wfNames: Record<string, string>;
   onOpenAccount: (wfAccountId: string) => void;
+  /** 2c: why an account is off, opened in place under it from its "off by"
+   *  chip. Absent: the chip stays a plain label. */
+  renderExplanation?: (wfAccountId: string) => React.ReactNode;
 }
 
 /** "2 accounts · 1 off by $36.10": the collapsed Accounts card's summary and
@@ -55,7 +58,9 @@ export function accountsSummary(mapping: AccountMapping, balances: Record<string
  * against the bank. Moved out of the Overview tab (1.57) so Settings → Accounts
  * can show the same rows the mapping beneath them is about.
  */
-export function AccountList({ mapping, balances, sfinNames, wfNames, onOpenAccount }: AccountListProps) {
+export function AccountList({ mapping, balances, sfinNames, wfNames, onOpenAccount, renderExplanation }: AccountListProps) {
+  /** The account whose "off by" chip is open, by SimpleFin id. */
+  const [explaining, setExplaining] = useState<string | null>(null);
   const entries = Object.entries(mapping).filter(([, wfId]) => !!wfId);
   const asOf = entries
     .map(([sfinId]) => balances[sfinId]?.date)
@@ -69,12 +74,12 @@ export function AccountList({ mapping, balances, sfinNames, wfNames, onOpenAccou
       const exists = !!wfNames[wfId];
       const open = () => { if (exists) onOpenAccount(wfId); };
       return (
-        // One full-width card per account, stacked. A grid of two columns
-        // made the balance and its chip compete with the neighbouring
-        // account's name; a row that spans the width does not.
+        <React.Fragment key={sfinId}>
+        {/* One full-width card per account, stacked. A grid of two columns
+            made the balance and its chip compete with the neighbouring
+            account's name; a row that spans the width does not. */}
         <div
           className={`sfin-card sfin-acct-card${exists ? ' sfin-acct-card--link' : ''}`}
-          key={sfinId}
           {...(exists
             ? {
                 role: 'button',
@@ -113,7 +118,23 @@ export function AccountList({ mapping, balances, sfinNames, wfNames, onOpenAccou
                 means unmeasured, since a snapshot from an older build has
                 proved nothing about the current state either. */}
             {info && info.balance != null && (info.drift != null ? (
-              <span className="sfin-chip sfin-chip--off"><AlertIcon /> off by {money(Math.abs(info.drift), info.currency)}</span>
+              renderExplanation ? (
+                // A button inside the row's own button: it stops its click and
+                // its keys here, or the row would open the account instead.
+                <button
+                  type="button"
+                  className="sfin-chip sfin-chip--off sfin-audit-chip"
+                  title="See why"
+                  aria-expanded={explaining === sfinId}
+                  {...(explaining === sfinId ? { 'aria-controls': `sfin-audit-${sfinId}` } : {})}
+                  onClick={(ev) => { ev.stopPropagation(); setExplaining((cur) => (cur === sfinId ? null : sfinId)); }}
+                  onKeyDown={(ev) => ev.stopPropagation()}
+                >
+                  <AlertIcon /> off by {money(Math.abs(info.drift), info.currency)}
+                </button>
+              ) : (
+                <span className="sfin-chip sfin-chip--off"><AlertIcon /> off by {money(Math.abs(info.drift), info.currency)}</span>
+              )
             ) : (info as { measured?: boolean }).measured ? (
               <span className="sfin-chip"><CheckIcon /> in sync</span>
             ) : (
@@ -130,6 +151,10 @@ export function AccountList({ mapping, balances, sfinNames, wfNames, onOpenAccou
             ))}
           </div>
         </div>
+        {explaining === sfinId && renderExplanation && info?.drift != null && (
+          <div className="sfin-audit-under" id={`sfin-audit-${sfinId}`} role="region" aria-label={`Why ${name} is off`}>{renderExplanation(wfId)}</div>
+        )}
+        </React.Fragment>
       );
     });
   // No frame or heading of its own: it sits inside Settings' Accounts card,

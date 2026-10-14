@@ -64,7 +64,16 @@ The addon has three tabs: **Home**, **Reports** and **Settings**.
   or Redo where an entry offers one, and `/changes venmo` searches it.
   `/why kroger 54.20` finds a transaction and tells its story; the 🔎 Why?
   buttons on large-transaction alerts, import notices and the `/categorize`
-  screen do the same.
+  screen do the same. `/audit` explains why a balance is off from the bank,
+  why the month's spending differs from Wealthfolio's, and what Wealthfolio's
+  Health page flags — checked live on every tap; `/status` puts a 🔎 under
+  each account that is off.
+- **Checks** (with the companion) — the same three explanations in the app:
+  an account's "off by" chip in **Settings → Accounts** opens why in place,
+  the Budget tab's "Why is this different from Wealthfolio?" breaks down the
+  month, and **Settings → Checks** lists what Health flags, each with what to
+  do. They come from a snapshot the companion publishes after each sync, and
+  say when it was taken.
 - **Change log** — every change the sync, the companion and you made, the last
   90 days, under **Settings → Change log**: imports, bank updates, transfer
   links, removed duplicates, starting balances, corrections, filings and rules,

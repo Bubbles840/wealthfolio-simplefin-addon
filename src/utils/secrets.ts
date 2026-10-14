@@ -7,6 +7,7 @@ import { UNCATEGORIZED_STATUS_SECRET_KEY, AMAZON_MAIL_STATUS_SECRET_KEY, AMAZON_
 import { SEMESTER_POOL_SECRET_KEY, parsePoolConfig } from '../../shared/pool';
 import type { SemesterPoolConfig, PoolStatus } from '../../shared/pool';
 import { REPORT_CUBE_SECRET_KEY, parseReportCube } from '../../shared/report-cube';
+import { AUDIT_SNAPSHOT_SECRET_KEY, parseAuditSnapshot, type AuditSnapshotRead } from '../../shared/audit-snapshot';
 import type { ReportCube } from '../../shared/report-cube';
 import { parseCustomReports } from '../../shared/report-eval';
 import type { CustomReport } from '../../shared/report-eval';
@@ -122,6 +123,8 @@ const KEYS = {
   poolStatus: POOL_STATUS_SECRET_KEY,
   // Companion-published like poolStatus; in KEYS for the same clearAll reason.
   reportCube: REPORT_CUBE_SECRET_KEY,
+  // The audits' snapshot (2c): companion-published, addon-read-only, cleared on Reset.
+  auditSnapshot: AUDIT_SNAPSHOT_SECRET_KEY,
   customReports: 'custom_reports',
   budgetLayout: 'budget_layout',
   openCards: 'ui_open_cards',
@@ -861,6 +864,17 @@ export class SecretsStore {
       return parseReportCube(await this.ctx.api.secrets.get(KEYS.reportCube));
     } catch {
       return null;
+    }
+  }
+
+  /** The companion's audit snapshot (2c): ok, absent (none published yet)
+   *  or corrupt. A host read that fails reads as corrupt too: the Checks card
+   *  then says it could not read them, never that there are none. */
+  async getAuditSnapshot(): Promise<AuditSnapshotRead> {
+    try {
+      return parseAuditSnapshot(await this.ctx.api.secrets.get(KEYS.auditSnapshot));
+    } catch {
+      return { kind: 'corrupt' };
     }
   }
 
