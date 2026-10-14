@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { categoryFiledChange, importChange, stampChange } from '../../shared/change-entries.js';
+import { categoryFiledChange, importChange, stampChange, transferLinkChange } from '../../shared/change-entries.js';
 import type { ChangeLogRead } from '../../shared/change-log.js';
 import { SYNC_OVERRIDES_SECRET_KEY } from '../../shared/sync-overrides.js';
 import { SKIPPED_TRANSACTIONS_SECRET_KEY } from '../../shared/skipped-transactions.js';
@@ -105,6 +105,37 @@ describe('companionTxStory', () => {
     ]);
     const moved = await companionTxStory(opening('Groceries'), 'act-1', NOW);
     expect(moved.kind === 'ok' && moved.story.answer.at(-1)).toBe('Filed under Groceries.');
+  });
+
+  describe('a row a transfer link re-created', () => {
+    const lnk = stampChange(transferLinkChange(
+      { account: { sfinId: 'ACT-chk', wfId: 'wf-chk', name: 'PNC Checking' }, txKey: KEY, description: 'TRANSFER TO ALLY', amountCents: -60000, date: '2026-10-04', oldActivityId: 'act-old', newActivityId: 'act-1' },
+      { account: { sfinId: 'ACT-ally', wfId: 'wf-ally', name: 'Ally Savings' }, txKey: accountTxKey('ACT-ally', 'TRN-2'), description: 'TRANSFER FROM PNC', amountCents: 60000, date: '2026-10-04', oldActivityId: 'act-old-2', newActivityId: 'act-2' },
+    ), 'companion', new Date('2026-10-04T13:00:00Z'));
+
+    it('a story by its old id follows the link to the row that stands for it now', async () => {
+      const r = readers({ changeLog: vi.fn(async () => logOf(lnk, imported)) });
+      const out = await companionTxStory(r, 'act-old', NOW);
+      expect(out.kind).toBe('ok');
+      if (out.kind !== 'ok') return;
+      expect(r.row).toHaveBeenCalledWith('act-old');
+      expect(r.row).toHaveBeenLastCalledWith('act-1');
+      expect(out.movedTo).toBe('act-1');
+      expect(out.facts.row.activityId).toBe('act-1');
+      expect(out.story.title).toBe('KROGER #415 · -$54.20 · Oct 4');
+      expect(out.story.history!.map((h) => h.entryId)).toEqual([imported.id, lnk.id]);
+    });
+
+    it('an undone link is not followed: the old id is gone', async () => {
+      const undone = { ...lnk, undone: { by: 'u1', at: '2026-10-05T12:00:00Z' } };
+      const r = readers({ changeLog: vi.fn(async () => logOf(undone, imported)) });
+      expect(await companionTxStory(r, 'act-old', NOW)).toEqual({ kind: 'gone' });
+    });
+
+    it('a row found where it was carries no movedTo', async () => {
+      const out = await companionTxStory(readers(), 'act-1', NOW);
+      expect(out.kind === 'ok' && 'movedTo' in out).toBe(false);
+    });
   });
 
   it('is "gone" when the row no longer exists, and "unreachable" when it cannot be read', async () => {

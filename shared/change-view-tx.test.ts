@@ -1,9 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import {
-  bankUpdateChange, categoryFiledChange, importChange, stampChange, transferLinkChange, type ChangeDraft,
+  balanceCorrectionChange, bankUpdateChange, categoryFiledChange, importChange, reversalChange, stampChange,
+  transferLinkChange, type ChangeDraft,
 } from './change-entries';
 import type { ChangeLogItem } from './change-log';
-import { changesForTransaction } from './change-view';
+import { changesForTransaction, currentActivityId } from './change-view';
 
 const CHECKING = { sfinId: 'ACT-chk', wfId: 'wf-chk', name: 'PNC Checking' };
 const ALLY = { sfinId: 'ACT-ally', wfId: 'wf-ally', name: 'Ally Savings' };
@@ -72,5 +73,50 @@ describe('changesForTransaction', () => {
 
   it('finds nothing for a transaction with no identity', () => {
     expect(changesForTransaction([imported('k1', 'act-1', 3)], {})).toEqual([]);
+  });
+});
+
+describe('currentActivityId', () => {
+  it('follows a transfer link from each leg’s old row to its new one, by position', () => {
+    const log = [link(4), imported('k-out', 'old-out', 3)];
+    expect(currentActivityId(log, 'old-out')).toBe('new-out');
+    expect(currentActivityId(log, 'old-in')).toBe('new-in');
+    expect(currentActivityId(log, 'new-out')).toBe('new-out');
+    expect(currentActivityId(log, 'someone-else')).toBe('someone-else');
+  });
+
+  it('does not follow a link that was undone, nor the Undo entry backwards', () => {
+    const lnk = link(4);
+    const undo = item(reversalChange(lnk, 'undo'), 5);
+    expect(currentActivityId([{ ...lnk, undone: { by: undo.id, at: undo.at } }], 'old-out')).toBe('old-out');
+    expect(currentActivityId([undo, { ...lnk, undone: { by: undo.id, at: undo.at } }], 'new-out')).toBe('new-out');
+  });
+
+  it('follows a reversal that re-created the row, to the newest one', () => {
+    const plug = item(balanceCorrectionChange({
+      account: CHECKING, actor: 'auto', activityId: 'row-1', amountCents: 1522, date: '2026-10-02', activityType: 'DEPOSIT', comment: 'Balance adjustment · ACT-chk · 2026-10-02',
+    }), 2);
+    const undo = item(reversalChange(plug, 'undo', { activityId: undefined }), 3);
+    const redo = item(reversalChange(plug, 'redo', { activityId: 'row-2' }), 4);
+    expect(currentActivityId([redo, undo, plug], 'row-1')).toBe('row-2');
+    const undoAgain = item(reversalChange(plug, 'undo', { activityId: undefined }), 5);
+    const redoAgain = item(reversalChange(plug, 'redo', { activityId: 'row-3' }), 6);
+    // An older re-created row leads to the newest too.
+    expect(currentActivityId([redoAgain, undoAgain, redo, undo, plug], 'row-2')).toBe('row-3');
+    // Removed by the newest reversal: nowhere to go.
+    expect(currentActivityId([undoAgain, redo, undo, plug], 'row-1')).toBe('row-1');
+  });
+
+  it('repeats until nothing moves, and never loops', () => {
+    const second = item(transferLinkChange(
+      { account: CHECKING, txKey: 'k-out', description: 'TRANSFER TO ALLY', amountCents: -60000, date: '2026-10-04', oldActivityId: 'new-out', newActivityId: 'newer-out' },
+      { account: ALLY, txKey: 'k-in', description: 'TRANSFER FROM PNC', amountCents: 60000, date: '2026-10-04', oldActivityId: 'new-in', newActivityId: 'newer-in' },
+    ), 6);
+    expect(currentActivityId([second, link(4)], 'old-out')).toBe('newer-out');
+    const back = item(transferLinkChange(
+      { account: CHECKING, txKey: 'k-out', description: 'TRANSFER TO ALLY', amountCents: -60000, date: '2026-10-04', oldActivityId: 'new-out', newActivityId: 'old-out' },
+      { account: ALLY, txKey: 'k-in', description: 'TRANSFER FROM PNC', amountCents: 60000, date: '2026-10-04', oldActivityId: 'new-in', newActivityId: 'old-in' },
+    ), 6);
+    expect(['old-out', 'new-out']).toContain(currentActivityId([back, link(4)], 'old-out'));
   });
 });

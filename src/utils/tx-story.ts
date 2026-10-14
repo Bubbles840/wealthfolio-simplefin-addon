@@ -25,7 +25,7 @@
  */
 import type { ActivityDetails, ActivitySearchFilters, AddonContext } from '@wealthfolio/addon-sdk';
 import type { ChangeLogItem } from '../../shared/change-log';
-import { changesForTransaction, isChangeLogPartial } from '../../shared/change-view';
+import { changesForTransaction, currentActivityId, isChangeLogPartial } from '../../shared/change-view';
 import { txIdFromComment, isTransferType } from '../../shared/sync-core';
 import { hasTxOverride, TX_OVERRIDE_FLAGS, type TxOverrideFlag } from '../../shared/sync-overrides';
 import { accountTxKey } from '../../shared/transfers';
@@ -78,8 +78,16 @@ const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v =
 
 export async function appTxStory(ctx: AddonContext, store: StoryStore, target: AppStoryTarget, now: Date): Promise<AppStoryOutcome> {
   let item: ActivityDetails | null;
+  // A row that no longer exists is followed forward through the change log
+  // once (a transfer link re-created it); the read is kept for the history.
+  let logRead: Awaited<ReturnType<NonNullable<StoryStore['getChangeLog']>>> | null | undefined;
   try {
     item = await readRow(ctx, target.activityId);
+    if (!item && store.getChangeLog) {
+      logRead = await store.getChangeLog().catch(() => null);
+      const moved = logRead ? currentActivityId(logRead.entries, target.activityId) : target.activityId;
+      if (moved !== target.activityId) item = await readRow(ctx, moved);
+    }
   } catch {
     return { kind: 'unreachable' };
   }
@@ -110,7 +118,7 @@ export async function appTxStory(ctx: AddonContext, store: StoryStore, target: A
   let entries: ChangeLogItem[] = [];
   let history: ChangeLogItem[] | undefined;
   if (store.getChangeLog) {
-    const read = await store.getChangeLog().catch(() => null);
+    const read = logRead ?? await store.getChangeLog().catch(() => null);
     if (read) {
       // An unreadable bucket or a gap: keep what was read, and say the list may be short.
       if (isChangeLogPartial(read)) failed.push('changeLogPartial');

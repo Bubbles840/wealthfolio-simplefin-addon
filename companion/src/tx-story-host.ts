@@ -11,11 +11,12 @@
  * Every read but the row's own is wrapped: a failure leaves that part of the
  * story out and adds a note (`failed`). An overrides document that cannot be
  * parsed is reported, never read as "none". Only the row failing is a full
- * failure ("Couldn't reach Wealthfolio — try again."), and a row that no
- * longer exists is `gone` — a transfer link re-created it, or it was removed.
+ * failure ("Couldn't reach Wealthfolio — try again."). A row that no longer
+ * exists is followed forward through the change log once — a transfer link
+ * re-created it — and is `gone` only when nothing leads on (it was removed).
  */
 import type { ChangeLogItem, ChangeLogRead } from '../../shared/change-log.js';
-import { changesForTransaction, isChangeLogPartial } from '../../shared/change-view.js';
+import { changesForTransaction, currentActivityId, isChangeLogPartial } from '../../shared/change-view.js';
 import { parseSkippedTransactionsStrict, SKIPPED_TRANSACTIONS_SECRET_KEY } from '../../shared/skipped-transactions.js';
 import { txIdFromComment } from '../../shared/sync-core.js';
 import { hasTxOverride, loadSyncOverrides, TX_OVERRIDE_FLAGS, type TxOverrideFlag } from '../../shared/sync-overrides.js';
@@ -97,17 +98,31 @@ export function companionStoryReaders(client: StoryClient, dbPath: string): Stor
 }
 
 export type StoryOutcome =
-  | { kind: 'ok'; story: TxStory; facts: TxStoryFacts }
+  /** `movedTo`: the id asked for was replaced (a transfer link, or an Undo
+   *  that put the row back); the story is that row's, under this id. */
+  | { kind: 'ok'; story: TxStory; facts: TxStoryFacts; movedTo?: string }
   | { kind: 'gone' }
   | { kind: 'unreachable' };
 
 const absCentsOf = (amount: unknown) => Math.round(Math.abs(Number(amount ?? 0)) * 100) || 0;
 
-/** One transaction's story. Never rejects. */
-export async function companionTxStory(readers: StoryReaders, activityId: string, now: Date): Promise<StoryOutcome> {
+/** One transaction's story. Never rejects. A row that no longer exists is
+ *  followed forward through the change log once (`currentActivityId`), so an
+ *  old button — a queued alert, an import a link re-created — still opens it. */
+export async function companionTxStory(readers: StoryReaders, requestedId: string, now: Date): Promise<StoryOutcome> {
+  let activityId = requestedId;
   let item: ActivitySearchItem | null;
+  // Read once, here or below; a failed read here is retried below.
+  let logRead: Promise<ChangeLogRead> | null = null;
   try {
     item = await readers.row(activityId);
+    if (!item) {
+      logRead = readers.changeLog(now);
+      const moved = await logRead.then((read) => currentActivityId(read.entries, activityId), () => activityId);
+      if (moved === activityId) return { kind: 'gone' };
+      item = await readers.row(moved);
+      activityId = moved;
+    }
   } catch {
     return { kind: 'unreachable' };
   }
@@ -151,7 +166,7 @@ export async function companionTxStory(readers: StoryReaders, activityId: string
   // keeps what was read, but who filed it is not inferred from an absence.
   let partial = false;
   try {
-    const read = await readers.changeLog(now);
+    const read = await (logRead ? logRead.catch(() => readers.changeLog(now)) : readers.changeLog(now));
     partial = isChangeLogPartial(read);
     if (partial) failed.push('changeLogPartial');
     history = changesForTransaction(read.entries, { txKeys: txKey ? [txKey] : [], activityIds: [activityId] });
@@ -224,7 +239,7 @@ export async function companionTxStory(readers: StoryReaders, activityId: string
     failed,
     now,
   };
-  return { kind: 'ok', story: buildTxStory(facts), facts };
+  return { kind: 'ok', story: buildTxStory(facts), facts, ...(activityId !== requestedId ? { movedTo: activityId } : {}) };
 }
 
 export type SearchOutcome =
