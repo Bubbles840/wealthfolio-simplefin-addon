@@ -859,7 +859,7 @@ const css = `
 .sfin-why-results { display: flex; flex-direction: column; margin-top: 8px; }
 .sfin-why-result { border-top: 1px solid color-mix(in srgb, var(--border) 55%, transparent); }
 .sfin-why-result:first-of-type { border-top: none; }
-.sfin-why-open { display: grid; grid-template-columns: 4em minmax(0, 1fr) auto; align-items: baseline; gap: 10px; width: 100%; padding: 6px 0; border: none; background: transparent; color: var(--foreground); font: inherit; text-align: left; cursor: pointer; }
+.sfin-why-open { display: grid; grid-template-columns: 6.5em minmax(0, 1fr) auto; align-items: baseline; gap: 10px; width: 100%; padding: 6px 0; border: none; background: transparent; color: var(--foreground); font: inherit; text-align: left; cursor: pointer; }
 .sfin-why-open:hover { background: color-mix(in srgb, var(--sfin-s0) 6%, transparent); }
 .sfin-why-when { font-size: var(--sfin-sz-xs); color: var(--muted-foreground); white-space: nowrap; }
 .sfin-why-what { min-width: 0; overflow-wrap: anywhere; font-size: var(--sfin-sz-sm); }
@@ -876,7 +876,7 @@ const css = `
 /* A needs-a-category or drill-down row's description, as the button that opens its story. */
 .sfin-why-row-btn { padding: 0; border: none; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; text-decoration: underline dotted color-mix(in srgb, var(--foreground) 35%, transparent); text-underline-offset: 3px; }
 @media (max-width: 560px) {
-  .sfin-why-open { grid-template-columns: 4em minmax(0, 1fr); }
+  .sfin-why-open { grid-template-columns: 6.5em minmax(0, 1fr); }
   .sfin-why-amt { grid-column: 2; }
 }
 @keyframes sfin-pop { from { transform: scale(.92); opacity: 0; } to { transform: scale(1); opacity: 1; } }

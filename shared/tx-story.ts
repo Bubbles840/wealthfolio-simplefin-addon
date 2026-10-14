@@ -165,7 +165,7 @@ export interface TxStory {
 const OUTFLOW = new Set(['WITHDRAWAL', 'TRANSFER_OUT', 'FEE', 'TAX']);
 /** Wealthfolio's cash activity types (the SDK's `ActivityType`): money in or
  *  out. A trade (BUY, SELL, SPLIT) or an ADJUSTMENT is neither. */
-const CASH_TYPES = new Set(['DEPOSIT', 'WITHDRAWAL', 'CREDIT', 'INTEREST', 'DIVIDEND', 'FEE', 'TAX', 'TRANSFER_IN', 'TRANSFER_OUT']);
+const CASH_TYPES = new Set(['DEPOSIT', 'WITHDRAWAL', 'CREDIT', 'INTEREST', 'DIVIDEND', 'INCOME', 'FEE', 'TAX', 'TRANSFER_IN', 'TRANSFER_OUT']);
 
 export const isCashType = (activityType: string): boolean => CASH_TYPES.has(activityType.toUpperCase());
 
