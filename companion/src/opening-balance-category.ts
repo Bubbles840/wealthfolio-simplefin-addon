@@ -51,7 +51,9 @@ export interface OpeningBalanceFilingDeps {
 }
 
 const EXCLUSION_MIN_VERSION = '3.9.0';
-const supportsExclusion = (v: string | null | undefined): boolean =>
+/** Whether the host takes `spending.excluded_category_ids` (3.9.0+). Shared
+ *  with the bookkeeping filing (bookkeeping-category.ts). */
+export const supportsExclusion = (v: string | null | undefined): boolean =>
   !!v && (v === EXCLUSION_MIN_VERSION || isNewerVersion(v, EXCLUSION_MIN_VERSION));
 
 interface OpeningDebtRow { id: string; account_id: string; account_name: string; amount: string; day: string; notes: string }
