@@ -36,11 +36,11 @@ describe('fixRowOf', () => {
 describe('recreateWrite', () => {
   it('writes ordinary money with the cash symbol, and a transfer leg with none', () => {
     expect(recreateWrite(fix())).toEqual({
-      accountId: 'wf-chk', activityType: 'DEPOSIT', activityDate: '2026-10-09', symbol: { symbol: '$CASH-USD' }, amount: 600,
+      accountId: 'wf-chk', activityType: 'DEPOSIT', activityDate: '2026-10-09T12:00:00Z', symbol: { symbol: '$CASH-USD' }, amount: 600,
       currency: 'USD', comment: 'MOBILE DEPOSIT · TRN-600',
     });
     expect(recreateWrite(fix({ type: 'TRANSFER_OUT', feeCents: 125, subtype: 'REIMBURSEMENT', flowExternal: true }))).toEqual({
-      accountId: 'wf-chk', activityType: 'TRANSFER_OUT', activityDate: '2026-10-09', amount: 600, fee: 1.25, currency: 'USD',
+      accountId: 'wf-chk', activityType: 'TRANSFER_OUT', activityDate: '2026-10-09T12:00:00Z', amount: 600, fee: 1.25, currency: 'USD',
       comment: 'MOBILE DEPOSIT · TRN-600', subtype: 'REIMBURSEMENT', metadata: '{"flow":{"is_external":true}}',
     });
   });

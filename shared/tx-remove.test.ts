@@ -98,7 +98,7 @@ describe('removeForGood', () => {
       subject: { txKeys: [KEY], activityIds: ['dup-1'], description: 'MOBILE DEPOSIT', amountCents: 60000, date: '2026-10-09' },
       before: {
         activityId: 'dup-1', addedKeys: [KEY],
-        activity: { accountId: 'wf-chk', activityType: 'DEPOSIT', activityDate: '2026-10-09', symbol: { symbol: '$CASH-USD' }, amount: 600, currency: 'USD', comment: NOTE },
+        activity: { accountId: 'wf-chk', activityType: 'DEPOSIT', activityDate: '2026-10-09T12:00:00Z', symbol: { symbol: '$CASH-USD' }, amount: 600, currency: 'USD', comment: NOTE },
       },
     })]);
   });

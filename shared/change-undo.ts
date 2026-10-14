@@ -14,6 +14,7 @@
  * Every plan puts its override steps FIRST: an override left behind by a
  * reversal that then failed is harmless, and the failure is reported.
  */
+import { bankDayInstant } from './bank-day.js';
 import { BUDGET_TAXONOMY, DEFAULT_PERIOD_KEY, isClearedDefault, type BudgetTarget } from './budget-suggest.js';
 import { changeMoney, type ChangeEntry } from './change-entries.js';
 import type { ChangeLogItem } from './change-log.js';
@@ -696,7 +697,7 @@ export function planChangeUndo(
         op, needsSync: false, rowAfter: row.id, done: 'Undone — the label is off, and stays off.',
         steps: [
           { do: 'set-tx', txKey: key, flag: 'noAmazonLabel', label: labelOf(entry) },
-          { do: 'update', write: { id: row.id, accountId: row.accountId, activityType: row.type, activityDate: row.date, amount: row.absCents / 100, currency, comment: beforeNote } },
+          { do: 'update', write: { id: row.id, accountId: row.accountId, activityType: row.type, activityDate: bankDayInstant(row.date), amount: row.absCents / 100, currency, comment: beforeNote } },
         ],
       });
     }
@@ -721,7 +722,7 @@ export function planChangeUndo(
         op, needsSync: false, rowAfter: row.id, done: 'Undone — the note is off, and stays off.',
         steps: [
           { do: 'set-tx', txKey: key, flag: 'noVenmoNote', label: labelOf(entry) },
-          { do: 'update', write: { id: row.id, accountId: row.accountId, activityType: row.type, activityDate: row.date, amount: row.absCents / 100, currency, comment: beforeNote } },
+          { do: 'update', write: { id: row.id, accountId: row.accountId, activityType: row.type, activityDate: bankDayInstant(row.date), amount: row.absCents / 100, currency, comment: beforeNote } },
         ],
       });
     }
