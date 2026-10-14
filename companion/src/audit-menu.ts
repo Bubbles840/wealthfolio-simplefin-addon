@@ -1,0 +1,316 @@
+/**
+ * companion/src/audit-menu.ts
+ *
+ * `/audit` (2c R1, spec A4): the three checks in Telegram, run LIVE on every
+ * tap, plus the 🔎 buttons `/status` puts under an account that is off.
+ * STATELESS like why-menu.ts: every tap re-reads, and every button carries
+ * where it leads. After `cz:au:`:
+ *   m              the menu (Balances · Spent vs Wealthfolio · Health), in place
+ *   b              the mapped accounts, one button each, in place
+ *   a<handle>      one account's explanation, in place, Back to the accounts
+ *   s<handle>      one account's explanation as a NEW message (/status's 🔎)
+ *   h              the report's spending against Wealthfolio's, in place
+ *   r<handle>      one reason's rows, in place, Back to the month
+ *   i              what Health flags, in place
+ *   x<handle>      one issue, in place, Back to Health
+ * `<handle>` is `findingHandle` of the account's Wealthfolio id, of
+ * `reason:<kind>`, or of the issue's key — 8 hex, so the longest button is
+ * 15 bytes. Nothing else may start with `cz:au`.
+ *
+ * Bank and user text is escaped AND kept outside every `*…*`; the only
+ * entities are fixed headings. Button labels are plain text, not escaped.
+ */
+import {
+  balanceCauseLines, balanceHeaderLine, balanceIncludesLine, balanceShort, explainBalances, type BalanceExplanation,
+  type BalanceReport,
+} from '../../shared/audit-balance.js';
+import {
+  explainHeadline, headlineAgrees, headlineReasonLine, headlineRowLine, headlineSummaryLine, headlineUnexplainedLine,
+  HEADLINE_AGREE, HEADLINE_REASON_LABELS, type HeadlineExplanation, type HeadlineReason,
+} from '../../shared/audit-headline.js';
+import {
+  healthCount, healthIssueLines, healthIssues, healthIssueTitle, HEALTH_NONE, type HealthIssue, type HealthReport,
+} from '../../shared/audit-health.js';
+import { findingHandle } from '../../shared/handle.js';
+import { escapeMarkdown, type InlineKeyboard } from '../../shared/telegram.js';
+import { TX_STORY_UNREACHABLE } from '../../shared/tx-story.js';
+import { gatherBalanceFacts, gatherHeadlineFacts, gatherHealthFacts, readAuditLedger, type AuditReaders } from './audit-facts.js';
+
+export const AUDIT_CALLBACK_PREFIX = 'cz:au:';
+export const AUDIT_TITLE = 'Audit';
+export const AUDIT_INTRO = "Why a balance or this month's spending differs from Wealthfolio, and what its Health page flags. Every tap checks again.";
+export const AUDIT_UNREACHABLE = TX_STORY_UNREACHABLE;
+export const AUDIT_NO_ACCOUNTS = 'No accounts are mapped yet.';
+export const AUDIT_TAP_ACCOUNT = 'Tap an account to see why.';
+export const AUDIT_ACCOUNT_GONE = "That account isn't mapped any more — send /audit again.";
+export const AUDIT_REASON_GONE = 'That reason has nothing in it now.';
+export const AUDIT_ISSUE_GONE = 'Health has changed since — that one is gone.';
+export const AUDIT_BALANCES_BUTTON = 'Balances';
+export const AUDIT_HEADLINE_BUTTON = 'Spent vs Wealthfolio';
+/** Lines one message lists before "…and N more". */
+export const AUDIT_LIST_MAX = 20;
+const BACK = '⬅️ Back';
+const FAILED_ANSWER = 'Could not do that — check the companion logs.';
+
+type Button = { text: string; callback_data: string };
+export interface MenuScreen { text: string; keyboard: InlineKeyboard }
+
+export type AuditView =
+  | { kind: 'menu' }
+  | { kind: 'balances' }
+  /** `fresh`: from /status — a new message with no Back. */
+  | { kind: 'account'; handle: string; fresh: boolean }
+  | { kind: 'headline' }
+  | { kind: 'reason'; handle: string }
+  | { kind: 'health' }
+  | { kind: 'issue'; handle: string };
+
+export function auditData(view: AuditView): string {
+  switch (view.kind) {
+    case 'menu': return `${AUDIT_CALLBACK_PREFIX}m`;
+    case 'balances': return `${AUDIT_CALLBACK_PREFIX}b`;
+    case 'account': return `${AUDIT_CALLBACK_PREFIX}${view.fresh ? 's' : 'a'}${view.handle}`;
+    case 'headline': return `${AUDIT_CALLBACK_PREFIX}h`;
+    case 'reason': return `${AUDIT_CALLBACK_PREFIX}r${view.handle}`;
+    case 'health': return `${AUDIT_CALLBACK_PREFIX}i`;
+    case 'issue': return `${AUDIT_CALLBACK_PREFIX}x${view.handle}`;
+  }
+}
+
+/** The view a button carries, or null for anything this menu never emitted. */
+export function parseAuditData(data: string): AuditView | null {
+  if (!data.startsWith(AUDIT_CALLBACK_PREFIX)) return null;
+  const s = data.slice(AUDIT_CALLBACK_PREFIX.length);
+  if (s === 'm') return { kind: 'menu' };
+  if (s === 'b') return { kind: 'balances' };
+  if (s === 'h') return { kind: 'headline' };
+  if (s === 'i') return { kind: 'health' };
+  const m = /^([asrx])([0-9a-f]{8})$/.exec(s);
+  if (!m) return null;
+  if (m[1] === 'a' || m[1] === 's') return { kind: 'account', handle: m[2], fresh: m[1] === 's' };
+  return m[1] === 'r' ? { kind: 'reason', handle: m[2] } : { kind: 'issue', handle: m[2] };
+}
+
+export const accountHandle = (wfAccountId: string) => findingHandle(wfAccountId);
+export const reasonHandle = (r: Pick<HeadlineReason, 'kind'>) => findingHandle(`reason:${r.kind}`);
+export const issueHandle = (i: Pick<HealthIssue, 'key'>) => findingHandle(i.key);
+
+const clip = (s: string, n: number) => {
+  const chars = Array.from(s);
+  return chars.length > n ? `${chars.slice(0, n - 1).join('')}…` : s;
+};
+const back = (view: AuditView): Button[] => [{ text: BACK, callback_data: auditData(view) }];
+const noteLines = (notes: readonly string[]) => (notes.length ? ['', ...notes.map((n) => `⚠️ ${escapeMarkdown(n)}`)] : []);
+const listed = <T>(items: readonly T[], more = 0) => ({
+  shown: items.slice(0, AUDIT_LIST_MAX),
+  hidden: Math.max(0, items.length - AUDIT_LIST_MAX) + more,
+});
+
+export function renderAuditMenu(health: HealthReport): MenuScreen {
+  const n = healthCount(health);
+  return {
+    text: `🔎 *${AUDIT_TITLE}*\n${escapeMarkdown(AUDIT_INTRO)}`,
+    keyboard: {
+      inline_keyboard: [
+        [{ text: AUDIT_BALANCES_BUTTON, callback_data: auditData({ kind: 'balances' }) }],
+        [{ text: AUDIT_HEADLINE_BUTTON, callback_data: auditData({ kind: 'headline' }) }],
+        [{ text: n === null ? 'Health' : `Health (${n})`, callback_data: auditData({ kind: 'health' }) }],
+      ],
+    },
+  };
+}
+
+export function renderAuditBalances(report: BalanceReport): MenuScreen {
+  const lines = ['🔎 *Balances*', report.accounts.length ? AUDIT_TAP_ACCOUNT : AUDIT_NO_ACCOUNTS, ...noteLines(report.notes)];
+  const rows: Button[][] = report.accounts.map((e) => [{
+    text: `${clip(e.name, 32)} · ${balanceShort(e)}`,
+    callback_data: auditData({ kind: 'account', handle: accountHandle(e.wfAccountId), fresh: false }),
+  }]);
+  rows.push(back({ kind: 'menu' }));
+  return { text: lines.join('\n'), keyboard: { inline_keyboard: rows } };
+}
+
+export function renderAuditAccount(e: BalanceExplanation, notes: readonly string[], fresh: boolean): MenuScreen {
+  const lines = ['🔎 *Balance*', escapeMarkdown(e.name), escapeMarkdown(balanceHeaderLine(e))];
+  lines.push(...balanceCauseLines(e).map((l) => `• ${escapeMarkdown(l)}`));
+  const includes = balanceIncludesLine(e);
+  if (includes) lines.push(escapeMarkdown(includes));
+  lines.push(...noteLines(notes));
+  return { text: lines.join('\n'), keyboard: { inline_keyboard: fresh ? [] : [back({ kind: 'balances' })] } };
+}
+
+export function renderAuditHeadline(h: HeadlineExplanation): MenuScreen {
+  const lines = [`🔎 *${AUDIT_HEADLINE_BUTTON}*`];
+  const summary = headlineSummaryLine(h);
+  if (summary) lines.push(escapeMarkdown(summary));
+  const rows: Button[][] = [];
+  if (headlineAgrees(h)) lines.push(escapeMarkdown(HEADLINE_AGREE));
+  else if (h.reasons) {
+    lines.push(...h.reasons.map((r) => `• ${escapeMarkdown(headlineReasonLine(h, r))}`));
+    const rest = headlineUnexplainedLine(h);
+    if (rest) lines.push(`• ${escapeMarkdown(rest)}`);
+    for (const r of h.reasons) {
+      rows.push([{ text: `${HEADLINE_REASON_LABELS[r.kind]} (${r.rows.length + (r.more ?? 0)})`, callback_data: auditData({ kind: 'reason', handle: reasonHandle(r) }) }]);
+    }
+  }
+  lines.push(...noteLines(h.notes));
+  rows.push(back({ kind: 'menu' }));
+  return { text: lines.join('\n'), keyboard: { inline_keyboard: rows } };
+}
+
+export function renderAuditReason(r: HeadlineReason): MenuScreen {
+  const { shown, hidden } = listed(r.rows, r.more);
+  const lines = [`🔎 *${HEADLINE_REASON_LABELS[r.kind]}*`, ...shown.map((row) => escapeMarkdown(headlineRowLine(row)))];
+  if (hidden > 0) lines.push(`…and ${hidden} more`);
+  return { text: lines.join('\n'), keyboard: { inline_keyboard: [back({ kind: 'headline' })] } };
+}
+
+export function renderAuditHealth(report: HealthReport): MenuScreen {
+  const lines = ['🔎 *Health*'];
+  const numbers: Button[] = [];
+  if (report.issues && report.issues.length === 0 && !report.more) lines.push(escapeMarkdown(HEALTH_NONE));
+  if (report.issues) {
+    const { shown, hidden } = listed(report.issues, report.more);
+    shown.forEach((issue, i) => {
+      lines.push(`${i + 1}. ${escapeMarkdown(healthIssueTitle(issue))}`);
+      numbers.push({ text: String(i + 1), callback_data: auditData({ kind: 'issue', handle: issueHandle(issue) }) });
+    });
+    if (hidden > 0) lines.push(`…and ${hidden} more`);
+  }
+  lines.push(...noteLines(report.notes));
+  const rows: Button[][] = [];
+  for (let i = 0; i < numbers.length; i += 4) rows.push(numbers.slice(i, i + 4));
+  rows.push(back({ kind: 'menu' }));
+  return { text: lines.join('\n'), keyboard: { inline_keyboard: rows } };
+}
+
+export function renderAuditIssue(issue: HealthIssue): MenuScreen {
+  const lines = ['🔎 *Health*', escapeMarkdown(healthIssueTitle(issue)), ...healthIssueLines(issue).map(escapeMarkdown)];
+  return { text: lines.join('\n'), keyboard: { inline_keyboard: [back({ kind: 'health' })] } };
+}
+
+/**
+ * `/status`'s buttons: a 🔎 for every account it shows "off by $X", opening
+ * that account's explanation as a new message. Null when there are none (the
+ * reply then goes without a keyboard, as it always did).
+ */
+export function auditStatusKeyboard(
+  accounts: ReadonlyArray<{ name: string; drift: number | null; wfAccountId?: string }>,
+): InlineKeyboard | null {
+  const rows = accounts
+    .filter((a) => a.drift !== null && !!a.wfAccountId)
+    .map((a) => [{ text: `🔎 ${clip(a.name, 40)}`, callback_data: auditData({ kind: 'account', handle: accountHandle(a.wfAccountId!), fresh: true }) }]);
+  return rows.length ? { inline_keyboard: rows } : null;
+}
+
+type Send = (text: string, keyboard?: InlineKeyboard) => Promise<void>;
+
+export interface AuditMenuUi {
+  edit(text: string, keyboard?: InlineKeyboard): Promise<void>;
+  answer(text?: string): Promise<void>;
+  /** A NEW message. */
+  send: Send;
+}
+
+/** What one tap reads, live. `reached`: the account mapping could be read. */
+export interface AuditMenuDeps {
+  balances(): Promise<BalanceReport & { reached: boolean }>;
+  headline(now: Date): Promise<HeadlineExplanation>;
+  health(): Promise<HealthReport & { reached: boolean }>;
+  now(): Date;
+  log(msg: string): void;
+}
+
+/** The deps over the companion's real readers (audit-facts.ts). */
+export function auditMenuDeps(readers: AuditReaders, log: (msg: string) => void): AuditMenuDeps {
+  return {
+    balances: async () => {
+      const facts = await gatherBalanceFacts(readers, readAuditLedger(readers));
+      return { ...explainBalances(facts), reached: !facts.failed?.includes('mapping') };
+    },
+    headline: async (now) => explainHeadline(await gatherHeadlineFacts(readers, now)),
+    health: async () => {
+      const facts = await gatherHealthFacts(readers, readAuditLedger(readers));
+      return { ...healthIssues(facts), reached: !facts.failed?.includes('mapping') };
+    },
+    now: () => new Date(),
+    log,
+  };
+}
+
+export interface AuditMenu {
+  handles(data: string): boolean;
+  onCallback(cb: { data: string }, ui: AuditMenuUi): Promise<void>;
+  /** `/audit`: the menu, as a reply. */
+  reply(send: Send): Promise<void>;
+}
+
+const message = (err: unknown) => (err instanceof Error ? err.message : String(err));
+/** An empty keyboard is sent as none. */
+const sendScreen = (send: Send, s: MenuScreen) => (s.keyboard.inline_keyboard.length ? send(s.text, s.keyboard) : send(s.text));
+
+export function createAuditMenu(deps: AuditMenuDeps): AuditMenu {
+  return {
+    handles(data) {
+      return data.startsWith(AUDIT_CALLBACK_PREFIX);
+    },
+
+    async reply(send) {
+      const health = await deps.health();
+      if (!health.reached) return void await send(AUDIT_UNREACHABLE);
+      await sendScreen(send, renderAuditMenu(health));
+    },
+
+    async onCallback(cb, ui) {
+      try {
+        const view = parseAuditData(cb.data);
+        if (!view) return void await ui.answer();
+        const show = async (screen: MenuScreen, fresh = false) => {
+          if (fresh) await sendScreen(ui.send, screen);
+          else await ui.edit(screen.text, screen.keyboard);
+          await ui.answer();
+        };
+        switch (view.kind) {
+          case 'menu': {
+            const health = await deps.health();
+            if (!health.reached) return void await ui.answer(AUDIT_UNREACHABLE);
+            return void await show(renderAuditMenu(health));
+          }
+          case 'balances': {
+            const report = await deps.balances();
+            if (!report.reached) return void await ui.answer(AUDIT_UNREACHABLE);
+            return void await show(renderAuditBalances(report));
+          }
+          case 'account': {
+            const report = await deps.balances();
+            if (!report.reached) return void await ui.answer(AUDIT_UNREACHABLE);
+            const e = report.accounts.find((a) => accountHandle(a.wfAccountId) === view.handle);
+            if (!e) return void await ui.answer(AUDIT_ACCOUNT_GONE);
+            return void await show(renderAuditAccount(e, report.notes, view.fresh), view.fresh);
+          }
+          case 'headline':
+            return void await show(renderAuditHeadline(await deps.headline(deps.now())));
+          case 'reason': {
+            const h = await deps.headline(deps.now());
+            const r = h.reasons?.find((x) => reasonHandle(x) === view.handle);
+            if (!r) return void await ui.answer(AUDIT_REASON_GONE);
+            return void await show(renderAuditReason(r));
+          }
+          case 'health': {
+            const report = await deps.health();
+            return void await show(renderAuditHealth(report));
+          }
+          case 'issue': {
+            const report = await deps.health();
+            const issue = report.issues?.find((i) => issueHandle(i) === view.handle);
+            if (!issue) return void await ui.answer(AUDIT_ISSUE_GONE);
+            return void await show(renderAuditIssue(issue));
+          }
+        }
+      } catch (err) {
+        deps.log(`Audit menu: ${cb.data} failed: ${message(err)}`);
+        await ui.answer(FAILED_ANSWER).catch(() => {});
+      }
+    },
+  };
+}
