@@ -63,8 +63,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     "Opening balances" are left out. A ledger with no full month yet gets
     "once a full calendar month has synced". Tap a category to leave it out,
     then **Apply all** or **Apply selected**: each becomes a default monthly
-    budget in Wealthfolio. An existing budget (a $0 one counts) is never
-    overwritten: the budget is read again right before each write, and a
+    budget in Wealthfolio. An existing budget (other than a cleared $0
+    default, which Wealthfolio shows as empty) is never overwritten: the
+    budget is read again right before each write, and a
     category that gained one since is left alone and said so. Applying the
     same list again shows "✓ ... (already set)", and one that fails to save
     doesn't stop the rest. Each budget set is in the change log, and Undo
@@ -78,9 +79,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     budget as "0" and cannot delete a default, so `/budgets` may suggest for
     such a category and apply over it, and a Redo of a budget set goes over it.
     A this-month $0 target or an unreadable amount still counts as a budget.
-    A Redo whose request failed after Wealthfolio saved the budget is now
-    recorded instead of reported as failed. Close preview returns focus to the
-    button that opened it.
 
 ### Fixed
 - **The sqlite3 command-line fallback no longer flattens newlines** in

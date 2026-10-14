@@ -23,8 +23,10 @@
  *    excluded categories (`spending.excluded_category_ids`, descendants
  *    included via `excludedWithDescendants`); an average under $10; past the 24
  *    biggest (a Telegram keyboard's worth); and last, a category that already
- *    has a budget — a `'default'` target or one for this month. An existing
- *    target is never overwritten: Wealthfolio's POST is an upsert.
+ *    has a budget — a non-zero `'default'` target (a $0 default is
+ *    Wealthfolio's cleared state, `isClearedDefault`) or any target for this
+ *    month. Any other existing target is never overwritten: Wealthfolio's POST
+ *    is an upsert.
  *  - `candidates` is everything but the last rule, biggest first (ties by
  *    name): what a `/budgets` button's bits index. `suggestions` is the
  *    candidates with no budget yet — what is offered.

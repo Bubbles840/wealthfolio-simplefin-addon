@@ -95,8 +95,9 @@ describe('budget-set: the planner', () => {
       .toEqual([{ do: 'set-budget', categoryId: 'cat-gro', amountCents: 42500 }]);
     expect(reason(planChangeUndo(e, 'redo', { budgetTargets: [target({ id: 'bt-nan', amountCents: NaN })] }, { latest })))
       .toBe('Groceries has a budget again — nothing was redone.');
-    expect(reason(planChangeUndo(e, 'redo', { budgetTargets: [target({ id: 'bt-m', periodKey: '2026-10', amountCents: 0 })] }, { latest: null })))
-      .not.toBe('Groceries has a budget again — nothing was redone.');
+    // A this-month target never blocks Redo (the default POST cannot touch it).
+    expect(ok(planChangeUndo(e, 'redo', { budgetTargets: [target({ id: 'bt-m', periodKey: '2026-10', amountCents: 0 })] }, { latest })).steps)
+      .toEqual([{ do: 'set-budget', categoryId: 'cat-gro', amountCents: 42500 }]);
   });
 
   it('acts on the target the last Redo created', () => {

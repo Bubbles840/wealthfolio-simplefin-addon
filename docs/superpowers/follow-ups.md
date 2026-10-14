@@ -818,8 +818,7 @@ his review, so the PR stays open.
   snippet and lost its `user:` line and external network.
 - **Deferred minors.**
   - Compose: `WEB_URL` accepts a trailing `:` (YAML then reads a map).
-  - Setup preview toggle: no `aria-controls`, and focus drops to `<body>` on
-    Close preview (now returned to the opener); the "doesn't disturb step 1" test
+  - Setup preview toggle: no `aria-controls`; the "doesn't disturb step 1" test
     never types a token; an empty-months cube would say "No budgets yet"; no
     test that the pointer is absent in the sample preview.
   - Sample: `headlineStatValues` on day 1-2 extrapolates rent ("Projected
@@ -834,7 +833,12 @@ his review, so the PR stays open.
   - The "No budgets yet — /budgets" pointer on the budget card is not gated
     on the companion's version (an older companion has no `/budgets`).
   - `/budgets`' history start is the earliest activity across ALL spending
-    accounts, so a bank linked later understates the history it needs.
+    accounts, so months a later-linked bank never covered still count, which
+    understates its categories.
+  - An Undo of a budget set whose DELETE throws after Wealthfolio committed
+    leaves the budget gone and the entry live; Redo is then never offered.
+  - The password file: `chmod 644` makes it readable by every user on the
+    host; `chown 1000` (the image's uid) and keeping 600 is tighter.
   - Dead menu paths: the `cz:bg:m` view is never offered; "Pick at least one
     first." is unreachable; Apply all ignores the toggles by design.
   - Undo of a budget set: "nothing undone" wording on an unreachable Redo is
