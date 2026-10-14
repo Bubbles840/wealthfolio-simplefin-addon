@@ -96,6 +96,8 @@ describe('sqlite-native — sqlite3 CLI fallback', () => {
         expect(args[0]).toBe(path);
         expect(args).toHaveLength(2);
         expect(args[1]).toContain('joes $(touch /tmp/pwned) `id` "quoted"');
+        // Verbatim, newlines kept: sqlite3 ends a `--` comment at its line.
+        expect(args[args.length - 1]).toContain('\n');
         expect(options.shell).toBeUndefined();
       } finally {
         cleanup();
