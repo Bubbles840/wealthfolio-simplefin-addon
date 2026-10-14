@@ -98,16 +98,46 @@ describe('Remove for good… in the app', () => {
     expect(msg).toContain('TRN-600');
   });
 
-  it('sets no state after the story is gone', async () => {
+  it('sets no state after the story is gone: a late refusal does not read the story again', async () => {
     let finish!: (o: RemoveOutcome) => void;
     const remove = vi.fn(() => new Promise<RemoveOutcome>((r) => { finish = r; }));
-    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const { unmount } = view(remove);
+    const onChanged = vi.fn();
+    const { unmount } = view(remove, onChanged);
     fireEvent.click(screen.getByRole('button', { name: 'Remove for good…' }));
     fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
     unmount();
     await act(async () => { finish({ ok: false, message: REMOVE_CHANGED }); });
-    expect(errors).not.toHaveBeenCalled();
-    errors.mockRestore();
+    expect(onChanged).not.toHaveBeenCalled();
+  });
+
+  it('Cancel is busy-marked while Remove runs', async () => {
+    let finish!: (o: RemoveOutcome) => void;
+    view(vi.fn(() => new Promise<RemoveOutcome>((r) => { finish = r; })));
+    fireEvent.click(screen.getByRole('button', { name: 'Remove for good…' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    expect(screen.getByRole('button', { name: 'Cancel' })).toHaveAttribute('aria-busy', 'true');
+    await act(async () => { finish({ ok: true, message: REMOVE_DONE }); });
+  });
+
+  it('moves focus to Remove on confirm and back to the action on Cancel', () => {
+    view(vi.fn());
+    fireEvent.click(screen.getByRole('button', { name: 'Remove for good…' }));
+    expect(screen.getByRole('button', { name: 'Remove' })).toHaveFocus();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.getByRole('button', { name: 'Remove for good…' })).toHaveFocus();
+  });
+
+  it('keeps a refusal on screen when the re-read story no longer offers Remove', async () => {
+    const remove = vi.fn(async () => ({ ok: false, message: REMOVE_CHANGED }));
+    const props = { story, entries: [], actions: { companionVersion: null, remove } };
+    const { rerender } = render(<TxStoryView {...props} onChanged={() => {}} removal={REMOVAL} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Remove for good…' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    expect(await screen.findByText(REMOVE_CHANGED)).toBeInTheDocument();
+    // The panel's re-read: same view, now without a removal.
+    rerender(<TxStoryView {...props} onChanged={() => {}} removal={undefined} />);
+    expect(screen.getByText(REMOVE_CHANGED)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Remove for good…' })).toBeNull();
+    expect(screen.getByText(REMOVE_CHANGED).closest('[role="status"]')).not.toBeNull();
   });
 });

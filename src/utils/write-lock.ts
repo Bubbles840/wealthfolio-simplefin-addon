@@ -14,6 +14,9 @@
  */
 export const LINK_SYNC_RUNNING = 'A sync is running — try Link again when it finishes.';
 export const REMOVE_SYNC_RUNNING = 'A sync is running — try again when it finishes.';
+/** The lock is held by another Link or Remove, not a sync. */
+export const LINK_BUSY = 'Another change is running — try again when it finishes.';
+export const REMOVE_BUSY = LINK_BUSY;
 
 let syncs = 0;
 let linking: Promise<void> | null = null;
@@ -33,6 +36,12 @@ export function beginWrite(): (() => void) | null {
     }
     resolveMine();
   };
+}
+
+/** Why a writer was refused: a running sync, or another writer (Link, Remove). */
+export function writeRefusal(kind: 'link' | 'remove'): string {
+  if (syncs > 0) return kind === 'link' ? LINK_SYNC_RUNNING : REMOVE_SYNC_RUNNING;
+  return kind === 'link' ? LINK_BUSY : REMOVE_BUSY;
 }
 
 /** Link's name for `beginWrite`. */

@@ -4,7 +4,9 @@ import {
   removalFingerprint, REMOVE_DONE, REMOVE_NOT_FEED, REMOVE_SKIP_UNREADABLE, REMOVE_UNLINK_FIRST,
 } from '../../shared/tx-remove';
 import { removeFromApp, type FixStore } from './audit-fix';
-import { beginLink, beginSync, REMOVE_SYNC_RUNNING } from './write-lock';
+import { beginLink, beginSync, LINK_BUSY, REMOVE_BUSY, REMOVE_SYNC_RUNNING } from './write-lock';
+import { linkFromApp } from './audit-fix';
+import { REMOVE_UNLINK_FIRST as UNLINK_FIRST } from '../../shared/tx-remove';
 
 type Row = Record<string, unknown> & { id: string; accountId: string };
 const DUP: Row = {
@@ -72,7 +74,10 @@ describe('Remove for good from the app', () => {
 
   it('deletes nothing when the skip list is corrupt', async () => {
     const f = fakeCtx([DUP], { [SKIPPED_TRANSACTIONS_SECRET_KEY]: '[{"account":1}]' });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     expect(await removeFromApp(f.ctx, fakeStore(), 'dup-1', shown(DUP))).toEqual({ ok: false, message: REMOVE_SKIP_UNREADABLE });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('Remove dup-1: the skip list was not saved'));
+    warn.mockRestore();
     expect(f.ctx.api.activities.saveMany).not.toHaveBeenCalled();
   });
 
@@ -113,12 +118,53 @@ describe('Remove for good from the app', () => {
     again!();
   });
 
-  it('frees the lock when the removal throws', async () => {
+  it('frees the lock when the removal really throws out of the remover', async () => {
     const f = fakeCtx([DUP]);
     f.ctx.api.activities.search = vi.fn(async () => { throw new Error('offline'); });
-    await removeFromApp(f.ctx, fakeStore(), 'dup-1', shown(DUP));
+    // The remover's own log line throws, so the error escapes removeForGood itself.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => { throw new Error('log broke'); });
+    await expect(removeFromApp(f.ctx, fakeStore(), 'dup-1', shown(DUP))).rejects.toThrow('log broke');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('Remove dup-1: offline'));
+    warn.mockRestore();
     const free = beginLink();
     expect(free).toBeTypeOf('function');
     free!();
+  });
+
+  it('refuses during a Link, saying another change is running, and writes nothing', async () => {
+    const f = fakeCtx([DUP]);
+    const endLink = beginLink()!;
+    try {
+      expect(await removeFromApp(f.ctx, fakeStore(), 'dup-1', shown(DUP))).toEqual({ ok: false, message: REMOVE_BUSY });
+    } finally {
+      endLink();
+    }
+    expect(REMOVE_BUSY).toBe('Another change is running — try again when it finishes.');
+    expect(f.ctx.api.activities.search).not.toHaveBeenCalled();
+    expect(f.ctx.api.activities.saveMany).not.toHaveBeenCalled();
+  });
+
+  it('makes Link refuse during a Remove, saying another change is running', async () => {
+    const f = fakeCtx([DUP]);
+    let release!: () => void;
+    f.ctx.api.activities.saveMany = vi.fn(() => new Promise((resolve) => { release = () => resolve({ created: [], updated: [], errors: [] }); }));
+    const run = removeFromApp(f.ctx, fakeStore(), 'dup-1', shown(DUP));
+    await vi.waitFor(() => expect(f.ctx.api.activities.saveMany).toHaveBeenCalled());
+    const out = await linkFromApp(f.ctx, fakeStore(), []);
+    expect(out.message).toBe(LINK_BUSY);
+    expect(LINK_BUSY).toBe('Another change is running — try again when it finishes.');
+    release();
+    await run;
+  });
+
+  it('refuses every transfer-typed row, even one the host calls external', async () => {
+    for (const activityType of ['TRANSFER_IN', 'transfer_out']) {
+      const leg = { ...DUP, activityType, isExternal: true, is_external: true };
+      const f = fakeCtx([leg]);
+      const store = fakeStore({ getLinkedGroups: vi.fn(async () => ({ 'other\u0000x': 'g' })) });
+      expect(await removeFromApp(f.ctx, store, 'dup-1', shown(leg))).toEqual({ ok: false, message: UNLINK_FIRST });
+      expect(f.ctx.api.activities.saveMany).not.toHaveBeenCalled();
+      expect(f.data.size).toBe(0);
+    }
   });
 });
