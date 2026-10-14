@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest';
-import { maskUrl, publishLiveReports, validateStartupEnv, startupWarnings, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, composeDailyDigest, composeWeeklyReportMessage, runCompanionSyncExclusive, buildTelegramCommandHandler, applyTelegramDismissal, undoTelegramDismissal, formatDismissedReply, buildTelegramListenerDeps, buildCategorizeController, buildCategorizeDeps, rememberImportScope, sendUnmappedAccountsNotice, updateCheckDeps, buildAskSessions } from './index.js';
+import { maskUrl, publishLiveReports, validateStartupEnv, startupWarnings, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, composeDailyDigest, composeWeeklyReportMessage, composeMonthlyWrapUpMessage, runCompanionSyncExclusive, buildTelegramCommandHandler, applyTelegramDismissal, undoTelegramDismissal, formatDismissedReply, buildTelegramListenerDeps, buildCategorizeController, buildCategorizeDeps, rememberImportScope, sendUnmappedAccountsNotice, updateCheckDeps, buildAskSessions } from './index.js';
 import { findingHandle } from '../../shared/findings.js';
 import { whyRunHandle } from './why-menu.js';
 import { formatHelpReply, parseCommand } from '../../shared/telegram-commands.js';
@@ -3630,6 +3630,24 @@ describe('the month in review (project 5)', () => {
     expect(live).not.toContain('Month in review');
   });
 
+  it('the live edition judges "the month is over" by the caller’s clock, not the process clock', async () => {
+    // The process clock says Nov 2 (September is long over); the caller says
+    // Sep 20, so "September so far" is a month in progress and gets no review.
+    vi.setSystemTime(new Date(2026, 10, 2, 9, 0));
+    const { client, secrets } = clientWith({});
+    await publishLiveReports(client, new Date(2026, 8, 20, 9, 0));
+    const live = JSON.parse(secrets.get('reports_monthly')!).live.text as string;
+    expect(live).toContain('September so far');
+    expect(live).not.toContain('Month in review');
+  });
+
+  it('a completed month, composed with an explicit now, gets its review whatever the process clock says', async () => {
+    vi.setSystemTime(new Date(2026, 8, 20, 9, 0));
+    const { client } = clientWith({});
+    const text = await composeMonthlyWrapUpMessage(client, '2026-09', 'September', { reportDetail: 'full' }, new Date(2026, 9, 1, 9, 0));
+    expect(text).toContain('*Month in review*');
+  });
+
   it('Brief is the wrap-up exactly as it always was, byte for byte', async () => {
     const { client } = clientWith({ reportDetail: 'brief' });
     expect(await sentText(client)).toBe(WRAP_UP);
@@ -5362,6 +5380,51 @@ describe('cash_forecast publish', () => {
     } finally {
       logs.mockRestore();
     }
+  });
+});
+
+describe('post-sync publish order: the forecast before the live editions', () => {
+  const run = async (failKey?: string) => {
+    process.env.WEALTHFOLIO_API_URL = 'http://wf';
+    process.env.WEALTHFOLIO_PASSWORD = 'pw';
+    vi.mocked(existsSync).mockReturnValue(true);
+    const writes: string[] = [];
+    const { WealthfolioClient } = await import('./wealthfolio.js');
+    vi.mocked(WealthfolioClient as any).mockClear();
+    vi.mocked(WealthfolioClient as any).mockImplementation(function (this: any) {
+      this.login = vi.fn(async () => {});
+      this.getAddonSecret = vi.fn(async (_a: string, key: string) => (
+        key === 'simplefin_access_url' ? 'https://user:pass@bridge.simplefin.org/simplefin' : null
+      ));
+      this.setAddonSecret = vi.fn(async (_a: string, key: string) => {
+        if (key === failKey) throw new Error('disk full');
+        writes.push(key);
+      });
+      this.getAccounts = vi.fn(async () => []);
+    });
+    const logs = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await runCompanionSync();
+    } finally {
+      logs.mockRestore();
+    }
+    return writes;
+  };
+
+  it('publishes the cube and the forecast, then the live editions', async () => {
+    const writes = await run();
+    const live = writes.findIndex((k) => k.startsWith('reports_'));
+    expect(live).toBeGreaterThan(-1);
+    expect(writes.indexOf('report_cube')).toBeGreaterThan(-1);
+    expect(writes.indexOf('cash_forecast')).toBeGreaterThan(-1);
+    expect(writes.indexOf('report_cube')).toBeLessThan(writes.indexOf('cash_forecast'));
+    expect(writes.indexOf('cash_forecast')).toBeLessThan(live);
+  });
+
+  it('a forecast that fails to publish still lets the live editions go out', async () => {
+    const writes = await run('cash_forecast');
+    expect(writes).not.toContain('cash_forecast');
+    expect(writes.some((k) => k.startsWith('reports_'))).toBe(true);
   });
 });
 
