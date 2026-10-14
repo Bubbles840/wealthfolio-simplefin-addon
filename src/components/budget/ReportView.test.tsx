@@ -1,7 +1,7 @@
 import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { ReportView } from './ReportView';
+import { NO_BUDGETS_YET, ReportView } from './ReportView';
 import { CUBE } from '../../../shared/report-cube.test';
 import type { ReportCube } from '../../../shared/report-cube';
 import type { CustomReport } from '../../../shared/report-eval';
@@ -592,5 +592,25 @@ describe('category drill-down (v1.48)', () => {
   it('says so when the companion has not published drill rows yet', () => {
     render(<ReportView id="drill:Dining" customReports={[]} cube={fresh()} hero />);
     expect(screen.getByText(/after the next sync/i)).toBeTruthy();
+  });
+});
+
+describe('budget vs actual with no budgets (project 4)', () => {
+  it('points to /budgets when no category has a budget, above the spending rows', () => {
+    view('budget-vs-actual', { ...fresh(), budgets: [[0, 0], [0, 0]] });
+    expect(NO_BUDGETS_YET).toBe('No budgets yet — /budgets in Telegram suggests some from your last 3 months.');
+    expect(screen.getByText(NO_BUDGETS_YET)).toBeTruthy();
+    expect(document.querySelector('[data-bva="Groceries"]')).toBeTruthy();
+  });
+
+  it('says only that when there is no spending either', () => {
+    view('budget-vs-actual', { ...fresh(), budgets: [[0, 0], [0, 0]], spend: [[[0, 0], [0, 0]], [[0, 0], [0, 0]]] });
+    expect(screen.getByText(NO_BUDGETS_YET)).toBeTruthy();
+    expect(document.querySelector('[data-bva]')).toBeNull();
+  });
+
+  it('stays quiet once any category has a budget', () => {
+    view('budget-vs-actual');
+    expect(screen.queryByText(NO_BUDGETS_YET)).toBeNull();
   });
 });

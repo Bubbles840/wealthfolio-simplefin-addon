@@ -65,6 +65,7 @@ import {
   type MenuAction,
   type MenuScreen,
   type MenuSession,
+  type RuleAccount,
   type SpendingCategory,
   type TaxonomyAssignment,
 } from '../../shared/categorize-menu.js';
@@ -79,6 +80,7 @@ import { categoryRulePattern } from '../../shared/rule-pattern.js';
 import { visibleUncategorized, type DismissalLedger } from '../../shared/uncategorized.js';
 import { descriptionFromComment, txIdFromComment } from '../../shared/sync-core.js';
 import { categoryFiledChange, categoryRuleCreatedChange, type ChangeDraft, type FiledCategory } from '../../shared/change-entries.js';
+import { buildGuessIndex, guessCategory, guessSinceDay, type GuessIndex, type PastFiling } from '../../shared/category-guess.js';
 import { uncategorizedWindow } from './uncategorized-status.js';
 
 /**
@@ -115,6 +117,8 @@ export const INCOME_TAXONOMY_NOTE = 'income';
  *  mirrors how `publishUncategorizedStatusForDbPath` takes its own row reader. */
 export interface CategorizeSourceRow {
   activityId: string;
+  /** The row's Wealthfolio account: what a rule from it can be scoped to (3, L5). */
+  wfAccountId?: string;
   /** RAW stored note (`<description> · <txId>[ · pending]`), cleaned below. */
   notes: string;
   amountCents: number;
@@ -202,6 +206,10 @@ export interface CategorizeDeps {
    *  first filings. OPTIONAL: absent (older callers, most tests) means those
    *  rows keep the spending grid they always had. */
   readIncomeCategories?: (dbPath: string) => SpendingCategory[];
+  /** `getNativePastFilings` (./sqlite-guess.ts): the year's spending filings,
+   *  each row's guessed category (3). OPTIONAL: absent means no guesses; a read
+   *  that throws means no guesses this render, never a wrong one. */
+  readFilings?: (dbPath: string, sinceDay: string) => PastFiling[];
   readLedger: () => Promise<DismissalLedger>;
   /**
    * Persists a dismissal delta. `base` is the ledger THIS controller read a
@@ -247,8 +255,9 @@ export interface CategorizeDeps {
   unassignTaxonomy: (activityId: string, taxonomyId: string) => Promise<void>;
   /** Creates a contains-match rule (priority + taxonomy applied by the caller).
    *  Resolves the new rule's id when the server reports one — kept for the
-   *  change log (R2 deletes the rule by it). */
-  createRule: (rule: { name: string; pattern: string; categoryId: string }) => Promise<string | null | void>;
+   *  change log (R2 deletes the rule by it). `accountId`: for that account
+   *  only (3, L5); absent, every account, as before. */
+  createRule: (rule: { name: string; pattern: string; categoryId: string; accountId?: string }) => Promise<string | null | void>;
   /** The change log: one draft per write that succeeded. Optional (most tests
    *  leave it out); read at call time; a throw is logged and swallowed. */
   record?: (draft: ChangeDraft) => void;
@@ -282,7 +291,7 @@ export interface CategorizeController {
    * tapped-off-a-transaction path, with the same name truncation and the same
    * disclosure copy: one rule write, two ways in.
    */
-  openRulePreview(pattern: string, categoryId: string, send: MenuSend): Promise<void>;
+  openRulePreview(pattern: string, categoryId: string, send: MenuSend, account?: RuleAccount): Promise<void>;
   /**
    * `/recategorize [text]`: builds a fresh session over the CATEGORIZED sweep and
    * sends the list screen.
@@ -673,6 +682,7 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
       amountCents: r.amountCents,
       description: descriptionFromComment(r.notes) || r.notes,
       accountName: r.accountName,
+      ...(r.wfAccountId ? { accountId: r.wfAccountId } : {}),
       ...(r.direction ? { direction: r.direction } : {}),
       ...(r.incomeEligible !== undefined ? { incomeEligible: r.incomeEligible } : {}),
     };
@@ -782,12 +792,26 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
       try {
         incomeCategories = deps.readIncomeCategories?.(path) ?? [];
       } catch { /* the spending grid still works */ }
+      // Guessed categories (3): one read of the year's filings. A failed read
+      // costs the guesses, never the menu — and never offers a wrong one.
+      let guesses: GuessIndex | null = null;
+      try {
+        guesses = deps.readFilings ? buildGuessIndex(deps.readFilings(path, guessSinceDay(new Date()))) : null;
+      } catch (err) {
+        safeLog(`Categorize menu: could not read past filings, so no guesses: ${formatError(err)}`);
+      }
+      const withGuess = (t: CategorizeTxn): CategorizeTxn => {
+        // A money-in row that takes an income category gets none: a guess is a
+        // spending category, which Wealthfolio refuses on it.
+        const guess = guesses && !t.incomeEligible ? guessCategory(guesses, t.description) : null;
+        return guess ? { ...t, guess } : t;
+      };
       return {
         ok: true,
         // ONE definition of "needs a category", shared with the status tile and
         // the addon: the native rows minus whatever the ledger dismissed.
         fresh: {
-          txns: visibleUncategorized(rows, ledger).map(toTxn),
+          txns: visibleUncategorized(rows, ledger).map(toTxn).map(withGuess),
           categories,
           incomeCategories,
           ledger,
@@ -1060,11 +1084,13 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
     done: MenuScreen,
     pin: CategorizeTxn | null,
     ui: CategorizeUi,
+    /** One account only (3, L5). A scoped rule the server refuses says so, like any other. */
+    account?: RuleAccount,
   ): Promise<void> {
     const name = `${RULE_NAME_PREFIX}${pattern}`.slice(0, RULE_NAME_MAX);
     let ruleId: string | null = null;
     try {
-      const created = await deps.createRule({ name, pattern, categoryId });
+      const created = await deps.createRule({ name, pattern, categoryId, ...(account ? { accountId: account.id } : {}) });
       ruleId = typeof created === 'string' && created ? created : null;
     } catch (err) {
       const message = formatError(err);
@@ -1075,6 +1101,7 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
     record(() => categoryRuleCreatedChange({
       ruleId, name, pattern, categoryId,
       categoryName: categoryNameIn([chat.session], categoryId) || categoryId,
+      ...(account ? { account: { wfId: account.id, name: account.name } } : {}),
     }));
     // The rule EXISTS from here on, so the session leaves the preview screen
     // before anything else can fail. `showError` offers `« Back` to whatever
@@ -1332,9 +1359,13 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
           // the write must never be broader or narrower than what was shown.
           categoryRulePattern(row.description),
           action.categoryId,
-          { kind: 'ruleCreated', activityId: action.activityId, categoryId: action.categoryId },
+          {
+            kind: 'ruleCreated', activityId: action.activityId, categoryId: action.categoryId,
+            ...(action.account ? { accountName: action.account.name } : {}),
+          },
           row,
           ui,
+          action.account,
         );
         return;
       }
@@ -1347,9 +1378,13 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
           chat,
           action.pattern,
           action.categoryId,
-          { kind: 'ruleCreated', activityId: null, categoryId: action.categoryId },
+          {
+            kind: 'ruleCreated', activityId: null, categoryId: action.categoryId,
+            ...(action.account ? { accountName: action.account.name } : {}),
+          },
           null,
           ui,
+          action.account,
         );
         return;
 
@@ -1743,8 +1778,14 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
     /** Same parking as `open`, and uncaught for the same reason — this is a
      *  command path too (`/newrule`), reached with the category already
      *  resolved. */
-    async openRulePreview(pattern, categoryId, send): Promise<void> {
-      await openScreen(PENDING_CHAT_ID, { kind: 'freeRulePreview', pattern, categoryId }, send, CATEGORIZE_MODE);
+    async openRulePreview(pattern, categoryId, send, account): Promise<void> {
+      // `/newrule … in <account>` opens scoped to it; the toggle can widen it.
+      await openScreen(
+        PENDING_CHAT_ID,
+        { kind: 'freeRulePreview', pattern, categoryId, ...(account ? { account, onlyAccount: true } : {}) },
+        send,
+        CATEGORIZE_MODE,
+      );
     },
 
     /** Same parking and the same uncaught contract as `open` — `/recategorize` is

@@ -19,10 +19,11 @@
  *  4. Only a reversal that worked is recorded.
  */
 import { reversalChange, type ChangeDraft, type ChangeEntry } from './change-entries.js';
+import { BUDGET_TAXONOMY, DEFAULT_PERIOD_KEY, type BudgetTarget } from './budget-suggest.js';
 import type { ChangeLogItem } from './change-log.js';
 import {
-  currentRowId, currentRuleId, latestReversal, planChangeUndo, undoAvailability, UNDO_EXACT_COPY, UNDO_NOT_POSSIBLE,
-  UNDO_UNREACHABLE, type UndoOp, type UndoPlan, type UndoRow, type UndoState, type UndoStep, type UndoVariant,
+  addonGateCovers, currentRowId, currentRuleId, latestReversal, planChangeUndo, undoAvailability, UNDO_EXACT_COPY, UNDO_NOT_POSSIBLE,
+  UNDO_UNREACHABLE, UNDO_UPDATE_ADDON, type UndoOp, type UndoPlan, type UndoRow, type UndoState, type UndoStep, type UndoVariant,
 } from './change-undo.js';
 import {
   editSkippedTransactions, parseSkippedTransactionsStrict, REMOVED_FOR_GOOD_NOTE, SKIPPED_TRANSACTIONS_SECRET_KEY, SkippedTransactionsUnreadableError,
@@ -39,6 +40,7 @@ import {
 } from './sync-overrides.js';
 import { accountTxKey } from './transfers.js';
 import type { MappingRule } from './types.js';
+import { addonUnderstandsVenmoNotes, INSTALLED_ADDON_VERSION_SECRET_KEY } from './version.js';
 
 export const MAPPING_RULES_SECRET_KEY = 'mapping_rules';
 export const LINKED_GROUPS_SECRET_KEY = 'linked_groups';
@@ -62,11 +64,20 @@ export interface UndoIo {
   /** The companion only: Wealthfolio's categorization rules. */
   rules?: {
     list(): Promise<Array<{ id: string; name: string; pattern: string }>>;
-    create(rule: { name: string; pattern: string; categoryId: string }): Promise<string | null>;
+    create(rule: { name: string; pattern: string; categoryId: string; accountId?: string }): Promise<string | null>;
     remove(id: string): Promise<void>;
     /** The charges the rule filed (assignment source "rule", its category, a note
      *  containing its words), by activity id. Null when that cannot be read. */
     filedBy(rule: { categoryId: string; pattern: string }): Promise<string[] | null>;
+  };
+  /** The companion only: Wealthfolio's budget targets (`/spending/budget`, project 4). */
+  budgets?: {
+    /** Every target now; rejects when they cannot be read. */
+    targets(): Promise<BudgetTarget[]>;
+    /** Sets a category's default monthly budget; resolves the target's id, or null
+     *  when it was written but Wealthfolio's reply named no target. */
+    set(categoryId: string, amountCents: number): Promise<string | null>;
+    remove(targetId: string): Promise<void>;
   };
   /** Appends the reversal entry to this writer's bucket. Never rejects. */
   record(draft: ChangeDraft): Promise<void>;
@@ -96,7 +107,7 @@ const STEP_WORDS: Record<string, string> = {
   skip: 'put it on the skip list', unskip: 'took it off the skip list', delete: 'removed the row', create: 're-created the row',
   import: 'wrote the row back', update: 'updated the row', assign: 'filed the category', unassign: 'took the category off',
   'delete-rule': 'deleted the rule', 'create-rule': 'created the rule', 'mapping-remove': 'removed the transaction rule',
-  'mapping-add': 'added the transaction rule',
+  'mapping-add': 'added the transaction rule', 'delete-budget': 'deleted the budget', 'set-budget': 'set the budget',
 };
 
 /** Entries whose undo/redo is running right now in this process (a double tap). */
@@ -206,7 +217,7 @@ async function gather(io: UndoIo, entry: ChangeEntry, op: UndoOp, latest: Change
   const key = entry.subject.txKeys?.[0] ?? null;
   const state: UndoState = {};
   const wf = entry.account?.wfId ?? str(after.accountId);
-  const needsCurrency = ['balance-correction', 'starting-balance', 'starting-balance-moved', 'amazon-label'].includes(entry.kind);
+  const needsCurrency = ['balance-correction', 'starting-balance', 'starting-balance-moved', 'amazon-label', 'venmo-note'].includes(entry.kind);
   if (needsCurrency && wf) {
     state.currency = (await io.host.listAccounts()).find((a) => a.id === wf)?.currency ?? 'USD';
   }
@@ -238,6 +249,10 @@ async function gather(io: UndoIo, entry: ChangeEntry, op: UndoOp, latest: Change
     case 'mapping-rule-created':
       state.mappingRules = await readMappingRules(io.secrets.get);
       return state;
+    case 'budget-set':
+      if (!io.budgets) throw new Refusal(UNDO_NOT_POSSIBLE);
+      state.budgetTargets = await io.budgets.targets();
+      return state;
     case 'starting-balance':
       state.row = await findRow(io, entry, latest, key);
       if (op === 'redo' && wf) {
@@ -248,6 +263,7 @@ async function gather(io: UndoIo, entry: ChangeEntry, op: UndoOp, latest: Change
     case 'starting-balance-moved':
     case 'duplicate-removed':
     case 'amazon-label':
+    case 'venmo-note':
       state.row = await findRow(io, entry, latest, key);
       return state;
     case 'transaction-removed':
@@ -380,6 +396,12 @@ async function performStep(io: UndoIo, s: UndoStep, prior: string | null): Promi
         if (!list.some((r) => sameRule(r, s.rule))) await io.secrets.set(MAPPING_RULES_SECRET_KEY, JSON.stringify([...list, s.rule]));
         break;
       }
+      case 'delete-budget':
+        await io.budgets!.remove(s.targetId);
+        break;
+      case 'set-budget':
+        created = await io.budgets!.set(s.categoryId, s.amountCents);
+        break;
       default:
         break;
     }
@@ -396,6 +418,7 @@ function reversalExtra(p: UndoPlan, created: string | null, state: UndoState): R
     extra.activityId = id ?? undefined;
   }
   if (p.ruleAfter !== undefined) extra.ruleId = p.ruleAfter === 'created' ? created : null;
+  if (p.budgetAfter !== undefined) extra.targetId = p.budgetAfter === 'created' ? created : null;
   if (state.txKey && p.steps.some((s) => s.do === 'skip')) extra.txKey = state.txKey;
   if (state.ruleFiled && p.steps.some((s) => s.do === 'unassign')) extra.unfiledActivityIds = [...state.ruleFiled];
   return extra;
@@ -428,6 +451,17 @@ async function runOnce(
   const available = undoAvailability(entry, io.where);
   if (available.kind === 'none') return { ok: false, message: UNDO_NOT_POSSIBLE };
   if (available.kind !== 'ready') return { ok: false, message: available.text };
+  // Telegram: an override an older INSTALLED add-on cannot read waits for it.
+  // Unknown (no version written, or the read failed) waits too.
+  if (io.where.host === 'companion' && addonGateCovers(entry)) {
+    let installed: string | null = null;
+    try {
+      installed = await io.secrets.get(INSTALLED_ADDON_VERSION_SECRET_KEY);
+    } catch {
+      installed = null;
+    }
+    if (!addonUnderstandsVenmoNotes(installed && installed.trim() ? installed : null)) return { ok: false, message: UNDO_UPDATE_ADDON };
+  }
   const latest = latestReversal(entries, entry.id);
 
   let state: UndoState;
@@ -466,6 +500,21 @@ async function runOnce(
   try {
     created = await perform(io, rest, now, entry.kind === 'transaction-removed' ? REMOVED_FOR_GOOD_NOTE : UNDO_SKIP_NOTE);
   } catch (err) {
+    const setStep = rest.find((s): s is Extract<UndoStep, { do: 'set-budget' }> => s.do === 'set-budget');
+    // A Redo's POST that threw may still have committed: when the category's default
+    // target now holds exactly the amount, the reversal is done (as apply's recovery).
+    const landed = op === 'redo' && setStep && io.budgets && !(err instanceof Refusal)
+      ? await io.budgets.targets().then((ts) => ts.find((t) => t.targetType === 'category' && t.taxonomyId === BUDGET_TAXONOMY
+        && t.categoryId === setStep.categoryId && t.periodKey === DEFAULT_PERIOD_KEY && t.amountCents === setStep.amountCents), () => undefined)
+      : undefined;
+    if (landed) {
+      try {
+        await io.record(reversalChange(entry, op, reversalExtra(p, landed.id, state)));
+      } catch {
+        // Never costs the redo: the writer records a gap instead.
+      }
+      return { ok: true, message: p.done, needsSync: p.needsSync };
+    }
     if (entry.kind === 'transaction-removed' && err instanceof PartialFailure) {
       const base = `Couldn't finish the ${op}: ${message(err)}`.replace(/\.$/, '');
       if (op === 'undo' && err.created) {

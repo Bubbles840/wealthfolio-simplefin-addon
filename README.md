@@ -36,12 +36,16 @@ The addon has three tabs: **Home**, **Reports** and **Settings**.
   words or an amount and read its story — where it came from, what it is, who
   filed it and every change made to it, with Undo. Then a status strip (last
   sync, accounts, anything that needs you; a needs-a-category row opens its
-  story; with the companion, **Next 30 days** — your cash if nothing comes in:
-  cash today, minus your known bills on their dates and a typical day of
-  other spending — which opens what it counted),
+  story, and shows the category you probably meant when you filed the same
+  merchant that way before; with the companion, **Next 30 days** — your cash
+  if nothing comes in: cash today, minus your known bills on their dates and a
+  typical day of other spending — which opens what it counted),
   then your budget: six reports to start (headline numbers, cash flow or the
   semester-pool burn-down, budget vs actual, top merchants, subscriptions & bills (remind, rename, hide, add by hand)),
-  with more a tap away under **+ Add report**, or build your own.
+  with more a tap away under **+ Add report**, or build your own. Until the
+  companion has synced, **Preview with sample data** shows the board over
+  made-up numbers, read-only (setup's first step has it too: **See what it
+  looks like**).
 - **Syncing that gets the money right.**
   - Every SimpleFin account (checking, savings and cards) is imported on a
     schedule, with a catch-up when you open the app.
@@ -64,6 +68,10 @@ The addon has three tabs: **Home**, **Reports** and **Settings**.
 - **Telegram bot** (with the companion) — one short daily report: what you
   spent, what's left, and a single "🧹 N things to fix" line with buttons.
   File transactions, check what you can afford and pull charts from the chat.
+  `/categorize` offers the category you filed the same merchant under before
+  as the first, one-tap choice ("✓ Groceries (like the last 3)"), and a rule
+  made from a filing can be for one account only ("Only <account>" on its
+  preview; `/newrule trader joes = groceries in checking` does the same).
   Commands that need details — `/pool`, `/newrule`, `/afford` — ask for them
   one question at a time; the one-line forms still work. Bare `/pool` shows
   the pool with Set and Clear buttons.
@@ -84,7 +92,11 @@ The addon has three tabs: **Home**, **Reports** and **Settings**.
   exactly one likely other half (**Link all** for two or more), and a story
   offers **Remove for good…** for a row the bank reported twice: it goes on
   the skip list and is deleted, so the bank feed never brings it back. Both
-  are in the change log, with Undo.
+  are in the change log, with Undo. `/budgets` suggests a monthly budget for each
+  category that has none (your average over the last 3 full months the ledger
+  covers, rounded up to the nearest $5) and sets the ones you pick in
+  Wealthfolio, never over a budget you already have; Undo any of them from
+  `/changes`.
 - **Checks** (with the companion) — the same three explanations in the app:
   an account's "off by" chip in **Settings → Accounts** opens why in place,
   the Budget tab's "Why is this different from Wealthfolio?" breaks down the
@@ -105,10 +117,12 @@ The addon has three tabs: **Home**, **Reports** and **Settings**.
   again (the card's **Your overrides** lists those, each with Remove). Most
   of it happens at once; undoing or redoing a transfer link or hold or a
   transaction rule, and redoing an import, an Amazon label or a removed
-  duplicate, take effect on the next sync — Sync now is right there. Category
-  and rule changes are undone from Telegram's `/changes`.
+  duplicate, take effect on the next sync — Sync now is right there. Category,
+  rule and budget changes are undone from Telegram's `/changes`.
 - **Amazon categorization** (optional) — reads Amazon's order emails from a
   throwaway mailbox and files each `AMAZON.COM*…` charge under what you bought.
+- **Venmo notes** (optional, the same mailbox) — a bank row for a Venmo
+  payment gets the payment's note from Venmo's email.
 - **Rules** — map a description pattern to a category or activity type when a
   bank's wording needs help. Your rules always win.
 
@@ -229,7 +243,12 @@ docker pull ghcr.io/bubbles840/wealthfolio-simplefin-sync:latest
 
 The companion runs on the exact same shared sync core as the in-app addon. Account
 mappings and credentials are configured directly in Wealthfolio via the addon UI,
-so the companion container runs as a lightweight background daemon:
+so the companion container runs as a lightweight background daemon. Add it to the
+`docker-compose.yml` that runs Wealthfolio (alongside it: merge the snippet's
+`services:` and `secrets:` into that file's, don't duplicate them), put Wealthfolio's password in
+`wealthfolio_password.txt` beside that file (readable by the container: `chmod 644`), and run `docker compose up -d`. The
+addon's **Settings → Background sync (Docker)** card shows the same service with
+your timezone filled in, and a Copy button:
 
 ```yaml
 services:
@@ -237,16 +256,29 @@ services:
     image: ghcr.io/bubbles840/wealthfolio-simplefin-sync:latest
     restart: unless-stopped
     environment:
-      - WEALTHFOLIO_API_URL=http://wealthfolio:8088   # Wealthfolio's default port
-      - WEALTHFOLIO_PASSWORD=your_wealthfolio_password
+      - WEALTHFOLIO_API_URL=http://wealthfolio:8088   # Wealthfolio's service name and port
+      - WEALTHFOLIO_PASSWORD_FILE=/run/secrets/wealthfolio_password
+      # Or sign in with an API key instead of the password:
+      # - WEALTHFOLIO_API_KEY=your_api_key
       - WEALTHFOLIO_DB_PATH=/mnt/wealthfolio/wealthfolio.db
-      - TZ=America/New_York          # Required, or schedules fire on UTC
+      - TZ=America/New_York   # change to your timezone, or every schedule runs on UTC
+    secrets:
+      - wealthfolio_password
     volumes:
-      # Mount the FOLDER containing wealthfolio.db, not the .db file itself.
-      # A file-only mount hides the -wal/-shm files beside it, so the companion
-      # reads whatever was last checkpointed — observed two days stale.
+      # The FOLDER holding wealthfolio.db, read-only. A file-only mount hides
+      # the -wal/-shm files beside it, so the companion reads stale data.
       - /path/to/wealthfolio:/mnt/wealthfolio:ro
+    # Wealthfolio on the host network instead? Uncomment the next line and
+    # set WEALTHFOLIO_API_URL=http://127.0.0.1:8088 above.
+    # network_mode: host
+
+secrets:
+  wealthfolio_password:
+    file: ./wealthfolio_password.txt   # Wealthfolio's password, on one line
 ```
+
+It syncs every 6 hours; add `SYNC_SCHEDULE` (a cron line, e.g. `0 */3 * * *`) to
+the environment to change that. `docker-compose.example.yml` is the same service.
 
 Images are published for `linux/amd64`, tagged `:latest` and `:vX.Y.Z`. To
 upgrade:
@@ -297,7 +329,7 @@ mailbox and run the read-only diagnostic — it marks nothing read and records
 nothing, so the real poll still picks the message up:
 
 ```bash
-docker exec simplefin-sync node dist/companion/src/amazon-check.js \
+docker compose exec simplefin-sync node dist/companion/src/amazon-check.js \
   --host imap.gmail.com --user you@gmail.com --password 'xxxx xxxx xxxx xxxx'
 ```
 
@@ -321,6 +353,45 @@ Three things trip up almost everyone setting this up:
 
 If the companion cannot sign in to the mailbox, the card shows the error itself
 (before 1.57.0 it was only in `docker logs`).
+
+#### Venmo notes
+
+The same mailbox reads Venmo's emails. Add a second Gmail filter — _From_
+`venmo@venmo.com`, _To_ empty, **Forward it to** the same address — and a bank
+row for a Venmo payment gets the payment's note:
+
+```
+Email:  You paid Jane Doe $25.00 · Rent October
+Bank:   VENMO PAYMENT 1023 · -$25.00
+   →    comment becomes "VENMO PAYMENT 1023 · Venmo: Rent October · TRN-…"
+```
+
+A note goes on only when the match is certain: one Venmo payment with the
+same amount and direction, the bank row dated from the day before its email
+to five days after, and no other bank row in the same sync that the payment
+could also be. Two payments of the same amount that week, or two bank rows
+that could each be the one payment, mean no note. Only posted rows get one: a
+pending row is noted once it posts, and while it is pending no other row gets
+the payment it could be. A transfer to your bank gets the note "Transfer to
+your bank". A cash-out gets no note when it moves exactly one payment you were
+paid: "Sam paid you $40" and "Transfer to your bank $40" in the same week are
+two money-in emails of the same amount, so the $40 deposit could be either.
+Each note is in the change log, where Undo takes it off and keeps it off.
+Wealthfolio's rules read the note when it is added at import, so a rule on
+`Venmo: Rent` files those rows. A note added later — the email arrived after
+the row was imported, or a pending row posted — reaches the row by an update,
+and whether Wealthfolio re-runs its rules on an update has not been checked:
+file such a row yourself if it stays uncategorized. With no Venmo mail
+forwarded, nothing happens.
+
+Keep the forwarding address private. The companion cannot tell a real Venmo
+email from a forged one with a `venmo@venmo.com` From line, so anyone who knows
+the address could send mail that writes a "Venmo note" onto a matching bank
+row. The note is only text, and a matching amount and date are still needed.
+
+Venmo's email formats are built from its documented wording and have not yet
+been checked against real emails. One that does not read stays unread in the
+mailbox, and the companion's log counts it (`Venmo mail: … unrecognised`).
 
 **Proton Mail does not work for this**, for two reasons. An alias delivers into the
 same mailbox, so credentials for it reach everything in the account — no isolation

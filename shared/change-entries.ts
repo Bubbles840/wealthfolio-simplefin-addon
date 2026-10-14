@@ -21,6 +21,9 @@
  *  - an import: the activity id and the account-scoped tx key;
  *  - a transfer link: both legs' tx keys and their new activity ids;
  *  - an Amazon label: the label text and the note before and after;
+ *  - a budget set from `/budgets` (project 4): the target's id, category and
+ *    amount;
+ *  - a Venmo note: the note text and the row's note before and after;
  *  - a row you removed for good (2c R2): its tx keys and its full create payload.
  */
 
@@ -32,9 +35,10 @@ export type ChangeKind =
   | 'transfer-link' | 'transfer-type'
   | 'duplicate-removed' | 'transaction-removed'
   | 'starting-balance' | 'starting-balance-moved' | 'balance-correction'
-  | 'amazon-label' | 'category-filed' | 'opening-balance-filed'
+  | 'amazon-label' | 'venmo-note' | 'category-filed' | 'opening-balance-filed'
   | 'category-rule-created' | 'mapping-rule-created'
   | 'account-created'
+  | 'budget-set'
   | 'bookkeeping';
 
 export const CHANGE_KINDS: readonly ChangeKind[] = [
@@ -42,9 +46,10 @@ export const CHANGE_KINDS: readonly ChangeKind[] = [
   'transfer-link', 'transfer-type',
   'duplicate-removed', 'transaction-removed',
   'starting-balance', 'starting-balance-moved', 'balance-correction',
-  'amazon-label', 'category-filed', 'opening-balance-filed',
+  'amazon-label', 'venmo-note', 'category-filed', 'opening-balance-filed',
   'category-rule-created', 'mapping-rule-created',
   'account-created',
+  'budget-set',
   'bookkeeping',
 ];
 
@@ -538,6 +543,36 @@ export function amazonLabelChange(f: AmazonLabelFacts): ChangeDraft {
   };
 }
 
+export interface VenmoNoteFacts {
+  account: ChangeAccount;
+  txKey: string;
+  activityId: string;
+  /** The bank's own text, without the note. */
+  description: string;
+  amountCents: number;
+  date: string;
+  beforeNote: string;
+  afterNote: string;
+  /** The text after ` · Venmo: `. */
+  note: string;
+}
+
+/** A Venmo note added to a row's note, at import or later (3). A sync decision:
+ *  Undo puts the old note back and sets `noVenmoNote`. */
+export function venmoNoteChange(f: VenmoNoteFacts): ChangeDraft {
+  return {
+    actor: 'auto',
+    kind: 'venmo-note',
+    account: f.account,
+    subject: { txKeys: [f.txKey], activityIds: [f.activityId], description: f.description, amountCents: f.amountCents, date: f.date },
+    summary: `Added the Venmo note "${f.note}" to ${what(f.description)}`,
+    why: 'Venmo email',
+    before: { comment: f.beforeNote },
+    after: { comment: f.afterNote, note: f.note },
+    undoable: true,
+  };
+}
+
 export interface CategoryFiledFacts {
   actor: ChangeActor;
   account?: ChangeAccount;
@@ -617,16 +652,24 @@ export interface CategoryRuleFacts {
   pattern: string;
   categoryId: string;
   categoryName: string;
+  /** The one account the rule is scoped to (3, L5); absent, every account. */
+  account?: { wfId: string; name: string };
 }
 
-/** A Wealthfolio categorization rule created from Telegram. Undo (R2): delete it. */
+/** A Wealthfolio categorization rule created from Telegram. Undo (R2): delete it.
+ *  A scoped one names its account, and its Redo re-creates it scoped. */
 export function categoryRuleCreatedChange(f: CategoryRuleFacts): ChangeDraft {
+  const where = f.account ? ` in ${f.account.name}` : '';
   return {
     actor: 'you',
     kind: 'category-rule-created',
+    ...(f.account ? { account: { wfId: f.account.wfId, name: f.account.name } } : {}),
     subject: { ...(f.ruleId ? { ruleId: f.ruleId } : {}), rulePattern: f.pattern, categoryName: f.categoryName },
-    summary: `Created a rule: descriptions containing "${f.pattern}" go to ${f.categoryName}`,
-    after: { ruleId: f.ruleId, name: f.name, pattern: f.pattern, categoryId: f.categoryId, categoryName: f.categoryName },
+    summary: `Created a rule: descriptions containing "${f.pattern}"${where} go to ${f.categoryName}`,
+    after: {
+      ruleId: f.ruleId, name: f.name, pattern: f.pattern, categoryId: f.categoryId, categoryName: f.categoryName,
+      ...(f.account ? { accountId: f.account.wfId } : {}),
+    },
     undoable: true,
   };
 }
@@ -665,6 +708,42 @@ export function accountCreatedChange(f: AccountCreatedFacts): ChangeDraft {
     summary: 'Created a Wealthfolio account',
     after: { wfAccountId: f.wfId, sfinAccountId: f.sfinId, accountType: f.accountType },
     undoable: false,
+  };
+}
+
+// ── Budgets (project 4) ──────────────────────────────────────────────────
+
+export interface BudgetSetFacts {
+  /** The target Wealthfolio stored (`BudgetTarget.id`): what Undo deletes. Null:
+   *  the budget was written but Wealthfolio's reply named no target. */
+  targetId: string | null;
+  categoryId: string;
+  categoryName: string;
+  /** What Wealthfolio stored, cents: what Undo checks is still there. */
+  amountCents: number;
+  /** Why this amount (`suggestionWhy`). Raw. */
+  why?: string;
+}
+
+/**
+ * A default monthly budget set from Telegram's `/budgets`. Only ever a
+ * category that had none — or a cleared $0 default, which Wealthfolio treats
+ * the same as none — so there is no "before" to put back: Undo deletes the
+ * target (refusing if its amount changed since), Redo sets it again.
+ */
+export function budgetSetChange(f: BudgetSetFacts): ChangeDraft {
+  return {
+    actor: 'you',
+    kind: 'budget-set',
+    subject: { categoryName: f.categoryName },
+    summary: `Set a ${changeMoney(f.amountCents)} monthly budget for ${f.categoryName}`,
+    ...(f.why ? { why: f.why } : {}),
+    before: { targetId: null },
+    after: {
+      targetId: f.targetId, categoryId: f.categoryId, categoryName: f.categoryName, amountCents: f.amountCents,
+      periodKey: 'default', taxonomyId: 'spending_categories',
+    },
+    undoable: true,
   };
 }
 

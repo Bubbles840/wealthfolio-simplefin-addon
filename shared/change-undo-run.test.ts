@@ -1,12 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   amazonLabelChange, balanceCorrectionChange, categoryFiledChange, categoryRuleCreatedChange, duplicateRemovedChange,
-  importChange, mappingRuleCreatedChange, stampChange, transferLinkChange, type ChangeDraft, type ChangeEntry,
+  importChange, mappingRuleCreatedChange, stampChange, transferLinkChange, venmoNoteChange, type ChangeDraft, type ChangeEntry,
 } from './change-entries.js';
 import type { ChangeLogItem } from './change-log.js';
 import {
-  UNDO_EXACT_COPY, UNDO_FROM_TELEGRAM, UNDO_LINKED_REFUSAL, UNDO_MAYBE_LINKED, UNDO_UNREACHABLE, UNDO_UPDATE_COMPANION, type UndoOp,
-  type UndoVariant,
+  UNDO_EXACT_COPY, UNDO_FROM_TELEGRAM, UNDO_LINKED_REFUSAL, UNDO_MAYBE_LINKED, UNDO_UNREACHABLE, UNDO_UPDATE_ADDON, UNDO_UPDATE_COMPANION,
+  type UndoOp, type UndoVariant,
 } from './change-undo.js';
 import {
   maybeLinkedTransfer, runChangeUndo, UNDO_ALREADY_RUNNING, UNDO_MAPPING_RULES_UNREADABLE, UNDO_RULE_FILED_UNREADABLE, UNDO_SAVE_FAILED,
@@ -20,6 +20,7 @@ import {
   emptySyncOverrides, setTxOverride, hasAccountOverride, hasTxOverride, parseSyncOverrides, SYNC_OVERRIDES_SECRET_KEY, SYNC_OVERRIDES_UNREADABLE_MESSAGE,
 } from './sync-overrides.js';
 import { accountTxKey } from './transfers.js';
+import { INSTALLED_ADDON_VERSION_SECRET_KEY, VENMO_NOTE_SINCE } from './version.js';
 
 const NOW = new Date('2026-10-13T15:00:00Z');
 const CHECKING = { sfinId: 'sfin-1', wfId: 'wf-a', name: 'Checking' };
@@ -368,6 +369,61 @@ describe('runChangeUndo', () => {
     expect(await h.undo(label, 'undo')).toMatchObject({ ok: true });
     expect(h.fh.activities.get('wf-a')![0]).toMatchObject({ comment: 'AMAZON.COM*MB3T81 · tx-1', activityType: 'WITHDRAWAL', amount: 21.18 });
     expect(hasTxOverride(h.overrides(), KEY, 'noAmazonLabel')).toBe(true);
+  });
+
+  const venmoNote = () => stampChange(venmoNoteChange({
+    account: CHECKING, txKey: KEY, activityId: 'act-v', description: 'VENMO PAYMENT 1023', amountCents: -2500, date: '2026-10-04',
+    beforeNote: 'VENMO PAYMENT 1023 · tx-1', afterNote: 'VENMO PAYMENT 1023 · Venmo: Rent October · tx-1', note: 'Rent October',
+  }), 'companion', NOW);
+  const notedRow = (): HostActivity => ({
+    id: 'act-v', accountId: 'wf-a', activityType: 'WITHDRAWAL', date: '2026-10-04', amount: 25,
+    comment: 'VENMO PAYMENT 1023 · Venmo: Rent October · tx-1', sourceGroupId: null,
+  });
+
+  it('a Venmo note: noVenmoNote, then the old note back', async () => {
+    const note = venmoNote();
+    const h = harness(seedWith([notedRow()]), { [INSTALLED_ADDON_VERSION_SECRET_KEY]: VENMO_NOTE_SINCE });
+    expect(await h.undo(note, 'undo')).toEqual({ ok: true, message: 'Undone — the note is off, and stays off.', needsSync: false });
+    expect(h.fh.activities.get('wf-a')![0]).toMatchObject({ comment: 'VENMO PAYMENT 1023 · tx-1', activityType: 'WITHDRAWAL', amount: 25 });
+    expect(hasTxOverride(h.overrides(), KEY, 'noVenmoNote')).toBe(true);
+  });
+
+  describe('a Venmo note and the version gate (ruling P3-K)', () => {
+    it('Telegram refuses its Undo and its Redo while the installed add-on is older, or unknown — writing nothing', async () => {
+      const cases: Array<Record<string, string>> = [{ [INSTALLED_ADDON_VERSION_SECRET_KEY]: '1.60.0' }, {}];
+      for (const installed of cases) {
+        const h = harness(seedWith([notedRow()]), installed);
+        const note = venmoNote();
+        expect(await h.undo(note, 'undo')).toEqual({ ok: false, message: UNDO_UPDATE_ADDON });
+        const undone: ChangeLogItem = { ...note, undone: { by: 'a1', at: NOW.toISOString() } };
+        expect(await runChangeUndo(undone, [note], 'redo', h.io, 'plain', NOW)).toEqual({ ok: false, message: UNDO_UPDATE_ADDON });
+        expect(h.set).not.toHaveBeenCalled();
+        expect(h.fh.activities.get('wf-a')![0].comment).toBe('VENMO PAYMENT 1023 · Venmo: Rent October · tx-1');
+        expect(h.log).toEqual([]);
+      }
+    });
+
+    it('Telegram refuses when the installed version cannot be read at all', async () => {
+      const h = harness(seedWith([notedRow()]));
+      const get = h.io.secrets.get;
+      h.io.secrets.get = async (k) => { if (k === INSTALLED_ADDON_VERSION_SECRET_KEY) throw new Error('502'); return get(k); };
+      expect(await h.undo(venmoNote(), 'undo')).toEqual({ ok: false, message: UNDO_UPDATE_ADDON });
+      expect(h.set).not.toHaveBeenCalled();
+    });
+
+    it('other kinds never wait for the add-on in Telegram', async () => {
+      const h = harness(seedWith([importedRow()]), { [INSTALLED_ADDON_VERSION_SECRET_KEY]: '1.60.0' });
+      expect(await h.undo(imported, 'undo')).toMatchObject({ ok: true });
+    });
+
+    it('the app refuses its Undo while the companion is older, and lets it through once it is new', async () => {
+      const old = harness(seedWith([notedRow()]), {}, { where: { host: 'addon', companionVersion: '1.60.0' } });
+      expect(await old.undo(venmoNote(), 'undo')).toEqual({ ok: false, message: UNDO_UPDATE_COMPANION });
+      expect(old.set).not.toHaveBeenCalled();
+      const current = harness(seedWith([notedRow()]), {}, { where: { host: 'addon', companionVersion: VENMO_NOTE_SINCE } });
+      expect(await current.undo(venmoNote(), 'undo')).toMatchObject({ ok: true });
+      expect(hasTxOverride(current.overrides(), KEY, 'noVenmoNote')).toBe(true);
+    });
   });
 
   it('a transaction rule leaves mapping_rules and comes back; an unreadable list is refused', async () => {

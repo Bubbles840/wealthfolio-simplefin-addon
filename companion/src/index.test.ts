@@ -5,9 +5,12 @@ import { whyRunHandle } from './why-menu.js';
 import { formatHelpReply, parseCommand } from '../../shared/telegram-commands.js';
 import { SIMPLEFIN_SYNC_VERSION } from '../../shared/version.js';
 import { runSyncCore } from '../../shared/sync-core.js';
-import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeCategorizedSpending, getNativeSpendingCategories, getNativeTxSearchRows } from './sqlite-native.js';
+import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeCategorizedSpending, getNativeSpendingCategories, getNativeTxSearchRows, getNativeBudgetSpend, getNativeSpendingHistoryStart } from './sqlite-native.js';
+import { getNativeAuditSettings } from './sqlite-audit.js';
 import { ingestAmazonMail } from './amazon-mail.js';
-import { AMAZON_MAIL_STATUS_SECRET_KEY, AMAZON_MAIL_SAMPLES_SECRET_KEY, UNCATEGORIZED_STATUS_SECRET_KEY } from '../../shared/status-keys.js';
+import { ingestVenmoMail } from './venmo-mail.js';
+import { getNativePastFilings } from './sqlite-guess.js';
+import { AMAZON_MAIL_STATUS_SECRET_KEY, AMAZON_MAIL_SAMPLES_SECRET_KEY, UNCATEGORIZED_STATUS_SECRET_KEY, VENMO_MAIL_SAMPLES_SECRET_KEY } from '../../shared/status-keys.js';
 import { CATEGORIZE_ENTRY_CALLBACK, escapeMarkdown } from '../../shared/telegram.js';
 import { categoryFiledChange, stampChange, transactionRemovedChange } from '../../shared/change-entries.js';
 import { changesData } from './changes-menu.js';
@@ -108,6 +111,9 @@ vi.mock('./sqlite-native.js', () => ({
   // missing an imported export fails every test in this file); empty results
   // are the "quiet database" every unrelated test wants.
   getNativeSpendMatrix: vi.fn(() => []),
+  // Suggested budgets' readers (project 4): bound by budgetsMenuDeps in index.ts.
+  getNativeBudgetSpend: vi.fn(() => []),
+  getNativeSpendingHistoryStart: vi.fn(() => null),
   getNativeIncomeByMonthAccount: vi.fn(() => []),
   getNativeUncategorizedByMonthAccount: vi.fn(() => []),
   getNativeMerchantRows: vi.fn(() => []),
@@ -139,6 +145,19 @@ vi.mock('./amazon-mail.js', async (importOriginal) => ({
   ingestAmazonMail: vi.fn(async () => ({
     scanned: 0, added: 0, unparsed: 0, ignored: 0, pruned: 0, newLabels: [], unparsedSenders: {}, cancelled: 0, samples: [],
   })),
+}));
+
+// Guessed categories' strict reader (3): mocked as a module for the same reason
+// as sqlite-audit.js — it reads its separator from the sqlite-native mock.
+vi.mock('./sqlite-guess.js', () => ({
+  getNativePastFilings: vi.fn(() => []),
+}));
+
+// Venmo's ingest (3) reads the same faked mailbox: a quiet result by default,
+// so every Amazon test above keeps exactly the mailbox it had.
+vi.mock('./venmo-mail.js', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  ingestVenmoMail: vi.fn(async () => ({ scanned: 0, added: 0, ignored: 0, unparsed: 0, pruned: 0, samples: [] })),
 }));
 
 vi.mock('fs', async (importOriginal) => {
@@ -282,6 +301,49 @@ describe('runCompanionSync', () => {
     } finally {
       vi.mocked(getNativeUncategorizedSpending).mockReturnValue([]);
       vi.mocked(getNativeSpendingCategories).mockReturnValue([]);
+      vi.mocked(WealthfolioClient).mockImplementation(original!);
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('runCompanionSync — the needs-a-category status carries guesses', () => {
+  beforeEach(() => {
+    process.env.WEALTHFOLIO_API_URL = 'http://wf';
+    process.env.WEALTHFOLIO_PASSWORD = 'pw';
+    vi.mocked(runSyncCore).mockClear();
+  });
+
+  it('the sync publish site reads the year’s filings (getNativePastFilings) and publishes each row’s guess', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-14T12:00:00Z'));
+    const { WealthfolioClient } = await import('./wealthfolio.js');
+    const original = vi.mocked(WealthfolioClient).getMockImplementation();
+    try {
+      const secrets = new Map<string, string>([['simplefin_access_url', 'https://user:pass@bridge.simplefin.org/simplefin']]);
+      const client = new (WealthfolioClient as any)();
+      client.getAddonSecret = vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null);
+      client.setAddonSecret = vi.fn(async (_a: string, key: string, val: string) => { secrets.set(key, val); });
+      vi.mocked(WealthfolioClient).mockImplementation(function () { return client; } as any);
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(getNativeUncategorizedSpending).mockReturnValue([{
+        activityId: 'a1', wfAccountId: 'wf-a', notes: 'KROGER #415 · TRN-1', amountCents: 4200,
+        date: '2026-10-12', accountName: 'Checking', direction: 'out', incomeEligible: false,
+      }]);
+      vi.mocked(getNativePastFilings).mockClear();
+      vi.mocked(getNativePastFilings).mockReturnValue([
+        { description: 'KROGER #415', categoryId: 'cat-gro', categoryName: 'Groceries' },
+        { description: 'KROGER #9', categoryId: 'cat-gro', categoryName: 'Groceries' },
+      ]);
+
+      await runCompanionSync();
+
+      expect(vi.mocked(getNativePastFilings)).toHaveBeenCalledWith(expect.any(String), '2025-10-14');
+      const status = JSON.parse(secrets.get(UNCATEGORIZED_STATUS_SECRET_KEY)!);
+      expect(status.rows).toEqual([expect.objectContaining({ activityId: 'a1', guess: { categoryId: 'cat-gro', name: 'Groceries' } })]);
+    } finally {
+      vi.mocked(getNativeUncategorizedSpending).mockReturnValue([]);
+      vi.mocked(getNativePastFilings).mockReturnValue([]);
       vi.mocked(WealthfolioClient).mockImplementation(original!);
       vi.useRealTimers();
     }
@@ -2955,6 +3017,70 @@ describe('buildTelegramCommandHandler', () => {
     });
   });
 
+  describe('/budgets', () => {
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date('2026-10-14T15:00:00Z'));
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    /** One read's worth of the database: Spending on, $1,260 of groceries over Jul-Sep, history from January. */
+    const spendingOnce = () => {
+      vi.mocked(getNativeAuditSettings).mockReturnValueOnce({
+        timezone: 'America/New_York', excludedCategoryIds: [], categoryParents: {}, spendingOn: true, spendingAccountIds: ['wf-1'],
+      });
+      vi.mocked(getNativeBudgetSpend).mockReturnValueOnce([{ month: '2026-09', category: 'Groceries', accountId: 'wf-1', amount: 1260 }]);
+      vi.mocked(getNativeSpendingHistoryStart).mockReturnValueOnce('2026-01-01');
+      vi.mocked(getNativeSpendingCategories).mockReturnValueOnce([{ id: 'cat-gro', name: 'Groceries', parentId: null, parentName: null }]);
+    };
+    const budgetClient = () => {
+      const { client, secrets } = clientFor();
+      client.getBudgetTargets = vi.fn(async () => ({ enabled: true, targets: [] }));
+      client.setDefaultBudgetTarget = vi.fn(async (categoryId: string, amountCents: number) => ({
+        id: `bt-${categoryId}`, periodKey: 'default', targetType: 'category', taxonomyId: 'spending_categories', categoryId, amountCents,
+      }));
+      return { client, secrets };
+    };
+
+    it('replies with the suggestions, every one picked', async () => {
+      spendingOnce();
+      const { client } = budgetClient();
+      const sent: Array<[string, any]> = [];
+      await buildTelegramCommandHandler(client)({ command: 'budgets', args: '' }, async (t, k) => { sent.push([t, k]); });
+      expect(sent[0][0].startsWith('*Suggested budgets*\n')).toBe(true);
+      expect(sent[0][0]).toContain('\nGroceries $420\n');
+      expect(sent[0][1].inline_keyboard.flat().map((b: any) => b.text)).toEqual(['✓ Groceries $420', 'Apply all (1)']);
+    });
+
+    it("says so when Wealthfolio's Spending tracker is off", async () => {
+      const { client } = budgetClient();
+      const { sent, reply } = collector();
+      await buildTelegramCommandHandler(client)({ command: 'budgets', args: '' }, reply);
+      expect(sent).toEqual(["Wealthfolio's Spending tracker is off, so it has no budgets — turn it on in Wealthfolio first."]);
+    });
+
+    it('cz:bg: taps reach the budgets menu, not the transaction menu: Apply sets the budget and logs it for Undo', async () => {
+      spendingOnce();
+      spendingOnce();
+      const { client, secrets } = budgetClient();
+      const sent: Array<[string, any]> = [];
+      await buildTelegramCommandHandler(client)({ command: 'budgets', args: '' }, async (t, k) => { sent.push([t, k]); });
+      const applyAll = sent[0][1].inline_keyboard.flat().find((b: any) => b.text === 'Apply all (1)').callback_data;
+      const deps = buildTelegramListenerDeps(client);
+      const ui = { edit: vi.fn(async () => {}), answer: vi.fn(async () => {}), send: vi.fn(async () => {}) };
+      await deps.onMenuCallback!({ data: applyAll, chatId: 1, messageId: 2 }, ui);
+      expect(client.setDefaultBudgetTarget).toHaveBeenCalledWith('cat-gro', 42000);
+      expect((ui.edit.mock.calls[0] as unknown as [string])[0]).toBe('Setting 1 budget…');
+      expect((ui.edit.mock.calls.at(-1) as unknown as [string])[0]).toBe('*Budgets*\n✓ Groceries: $420 a month\n\nUndo any of these from /changes.');
+      const bucket = JSON.parse(secrets.get('change_log:companion:2026-10')!);
+      expect(bucket.entries).toEqual([expect.objectContaining({
+        kind: 'budget-set', actor: 'you', summary: 'Set a $420.00 monthly budget for Groceries', after: expect.objectContaining({ targetId: 'bt-cat-gro' }),
+      })]);
+    });
+  });
+
   describe('subscription questions (1.60)', () => {
     const SUB_CUBE = JSON.stringify({
       version: 1, asOf: '2026-10-12T06:00:00.000Z', months: ['2026-10'], categories: [], accounts: [],
@@ -4526,6 +4652,35 @@ describe('Amazon mail status publishing', () => {
     expect(result.imported).toBe(2); // the mocked runSyncCore's usual result
     expect(secrets.has(AMAZON_MAIL_STATUS_SECRET_KEY)).toBe(false);
   });
+
+  it('reads the same mailbox for Venmo, and keeps the Venmo emails it could not read', async () => {
+    const secrets = configuredSecrets();
+    await clientFor(secrets);
+    vi.mocked(ingestVenmoMail).mockClear();
+    vi.mocked(ingestVenmoMail).mockResolvedValueOnce({
+      scanned: 2, added: 1, ignored: 0, unparsed: 1, pruned: 0,
+      samples: [{ at: '2026-10-03T12:00:00Z', from: 'venmo@venmo.com', subject: 'You paid Jane Doe $25.00', plain: 'x', html: '' }],
+    });
+
+    await runCompanionSync();
+
+    expect(vi.mocked(ingestVenmoMail)).toHaveBeenCalledTimes(1);
+    const kept = JSON.parse(secrets.get(VENMO_MAIL_SAMPLES_SECRET_KEY)!);
+    expect(kept.unparsed).toBe(1);
+    expect(kept.samples.map((s: { subject: string }) => s.subject)).toEqual(['You paid Jane Doe $25.00']);
+  });
+
+  it('a Venmo failure leaves Amazon’s scan a completed one and the sync untouched', async () => {
+    const secrets = configuredSecrets();
+    await clientFor(secrets);
+    vi.mocked(ingestVenmoMail).mockRejectedValueOnce(new Error('venmo parser exploded'));
+
+    const result = await runCompanionSync();
+
+    expect(result.imported).toBe(2);
+    expect(JSON.parse(secrets.get(AMAZON_MAIL_STATUS_SECRET_KEY)!).error).toBeUndefined();
+    expect(secrets.has(VENMO_MAIL_SAMPLES_SECRET_KEY)).toBe(false);
+  });
 });
 
 describe('the /categorize wiring', () => {
@@ -4669,6 +4824,28 @@ describe('the /categorize wiring', () => {
     const status = JSON.parse(secrets.get(UNCATEGORIZED_STATUS_SECRET_KEY)!);
     expect(status.count).toBe(2);
     expect(status.rows.map((r: any) => r.description)).toEqual(['BOOK STORES', 'VENMO PAYMENT']);
+  });
+
+  it('republishes each row’s guessed category from the year’s filings', async () => {
+    vi.mocked(getNativePastFilings).mockReturnValueOnce([
+      { description: 'BOOK STORES', categoryId: 'cat-fun', categoryName: 'Entertainment' },
+      { description: 'BOOK STORES', categoryId: 'cat-fun', categoryName: 'Entertainment' },
+    ]);
+    const { client, secrets } = clientFor();
+    await buildCategorizeDeps(client).republish();
+    const status = JSON.parse(secrets.get(UNCATEGORIZED_STATUS_SECRET_KEY)!);
+    expect(status.rows.map((r: any) => r.guess)).toEqual([{ categoryId: 'cat-fun', name: 'Entertainment' }, undefined]);
+  });
+
+  it('/categorize shows each row’s guess, read from the year’s filings', async () => {
+    vi.mocked(getNativePastFilings).mockReturnValueOnce([
+      { description: 'BOOK STORES', categoryId: 'cat-fun', categoryName: 'Entertainment' },
+      { description: 'BOOK STORES', categoryId: 'cat-fun', categoryName: 'Entertainment' },
+    ]);
+    const { client } = clientFor();
+    const { sent, reply } = collect();
+    await buildTelegramCommandHandler(client)({ command: 'categorize', args: '' }, reply);
+    expect(labels(sent[0][1]).slice(0, 2)).toEqual(['Aug 8 · BOOK STORES · $12 · probably Entertainment', 'Aug 8 · VENMO PAYMENT · $12']);
   });
 
   it('drills into subcategories and files the child id', async () => {
@@ -4948,6 +5125,67 @@ describe('the /categorize wiring', () => {
       expect(lastOf(ui.edit)[0]).toBe(
         'Rule created — future matches will file automatically under Restaurants (Food & Dining).',
       );
+    });
+
+    describe('… in <account> (3)', () => {
+      const ACCOUNTS = [
+        { id: 'wf-chk', name: 'PNC Checking' }, { id: 'wf-sav', name: 'PNC Savings' },
+        { id: 'wf-old', name: 'PNC Old', isArchived: true },
+      ];
+      const scoped = async (args: string, accounts: () => Promise<unknown[]>) => {
+        const { client } = clientFor();
+        client.getAccounts = vi.fn(accounts);
+        const controller = buildCategorizeController(client);
+        const { sent, reply } = collect();
+        await buildTelegramCommandHandler(client, controller)({ command: 'newrule', args }, reply);
+        return { client, controller, sent };
+      };
+
+      it('opens the preview for that account only, and creates the rule for it', async () => {
+        const { client, controller, sent } = await scoped('trader joes = restaur in pnc checking', async () => ACCOUNTS);
+        expect(sent[0][0].split('\n')[1]).toBe('Descriptions containing "trader joes" in PNC Checking → Restaurants (Food & Dining)');
+        expect(labels(sent[0][1])).toEqual(['Create rule', 'All accounts', '✓ Only PNC Checking', 'Cancel']);
+        await controller.onCallback({ data: dataFor(sent[0][1], 'Create rule'), chatId: 4242, messageId: 7 }, fakeUi());
+        expect(client.createCategorizationRule).toHaveBeenCalledWith({
+          name: 'Telegram: trader joes', pattern: 'trader joes', categoryId: 'cat-rest',
+          taxonomyId: 'spending_categories', priority: 50, accountId: 'wf-chk',
+        });
+      });
+
+      it('asks which account when the name fits several, never offering an archived one', async () => {
+        const { sent, client } = await scoped('trader joes = restaur in pnc', async () => ACCOUNTS);
+        expect(sent).toEqual([['Which account? PNC Checking, PNC Savings', undefined]]);
+        expect(client.createCategorizationRule).not.toHaveBeenCalled();
+      });
+
+      it('names the accounts there are when none matches', async () => {
+        const { sent } = await scoped('trader joes = restaur in chase', async () => ACCOUNTS);
+        expect(sent[0][0]).toBe('No account matches "chase". Your accounts: PNC Checking, PNC Savings.');
+      });
+
+      it('says so when the accounts cannot be read', async () => {
+        const { sent } = await scoped('trader joes = restaur in pnc', async () => { throw new Error('502'); });
+        expect(sent[0][0]).toBe("Couldn't read your accounts just now — try again.");
+      });
+
+      // M1: a custom category whose name holds " in " is read whole first.
+      const DINE = [...CATS, { id: 'cat-dio', name: 'Dine In Out', parentId: null, parentName: null }];
+
+      it('`x = Dine In Out` with that category opens its preview for every account, reading no accounts', async () => {
+        vi.mocked(getNativeSpendingCategories).mockReturnValue(DINE as any);
+        const getAccounts = vi.fn(async () => [{ id: 'wf-out', name: 'Out' }]);
+        const { sent } = await scoped('x = Dine In Out', getAccounts);
+        expect(sent[0][0].split('\n')[1]).toBe('Descriptions containing "x" → Dine In Out');
+        expect(getAccounts).not.toHaveBeenCalled();
+      });
+
+      it('`x = dine in pnc checking` is the category "dine" for the account "pnc checking"', async () => {
+        vi.mocked(getNativeSpendingCategories).mockReturnValue(DINE as any);
+        const { client, controller, sent } = await scoped('x = dine in pnc checking', async () => ACCOUNTS);
+        expect(sent[0][0].split('\n')[1]).toBe('Descriptions containing "x" in PNC Checking → Dine In Out');
+        await controller.onCallback({ data: dataFor(sent[0][1], 'Create rule'), chatId: 4242, messageId: 7 }, fakeUi());
+        expect(client.createCategorizationRule).toHaveBeenCalledWith(expect.objectContaining({ categoryId: 'cat-dio', accountId: 'wf-chk' }));
+      });
     });
 
     it('pins the rule priority at 50 — higher wins upstream, so a tapped rule yields', async () => {

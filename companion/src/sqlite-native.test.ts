@@ -1763,3 +1763,78 @@ describe('uncategorized readers: a transfer waiting for its other half', () => {
     expect(listed({ type: 'TRANSFER_OUT' })).toEqual(['bank-half']);
   });
 });
+
+// ── Suggested budgets' reads (project 4, Task 8) ─────────────────────────
+import { getNativeBudgetSpend, getNativeSpendingHistoryStart } from './sqlite-native.js';
+
+describe('getNativeBudgetSpend / getNativeSpendingHistoryStart', () => {
+  const parents = { 'cat-food': null, 'cat-fun': 'cat-food', 'cat-gro': null };
+  const seed = (path: string) => {
+    const db = new DatabaseSync(path);
+    db.exec(`INSERT INTO accounts (id, name, account_type) VALUES ('acct-untracked', 'Elsewhere', 'CASH')`);
+    db.exec(`INSERT INTO taxonomy_categories (id, name, parent_id) VALUES ('cat-food', 'Food', NULL), ('cat-fun', 'Fun', 'cat-food'), ('cat-gro', 'Groceries', NULL)`);
+    const add = (id: string, amount: string, date: string, account: string, category: string) => {
+      db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, account_id) VALUES ('${id}', '${amount}', '${date}', 'WITHDRAWAL', '${account}')`);
+      db.exec(`INSERT INTO activity_taxonomy_assignments (activity_id, category_id) VALUES ('${id}', '${category}')`);
+    };
+    add('own', '-50', '2026-08-03', 'acct-cash', 'cat-food');
+    add('sub', '-100', '2026-08-04', 'acct-cash', 'cat-fun');
+    add('gro', '-30', '2026-08-05', 'acct-card', 'cat-gro');
+    add('else', '-999', '2026-08-06', 'acct-untracked', 'cat-gro');
+    db.exec(`INSERT INTO accounts (id, name, account_type) VALUES ('acct-sec', 'Brokerage', 'SECURITIES')`);
+    db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, account_id) VALUES ('old-sec', '5', '2026-02-01', 'DEPOSIT', 'acct-sec')`);
+    db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, account_id) VALUES ('early', '5', '2026-01-02T00:00:00+00:00', 'DEPOSIT', 'acct-untracked')`);
+    db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, account_id) VALUES ('first', '5', '2026-06-20T04:00:00+00:00', 'DEPOSIT', 'acct-card')`);
+    db.close();
+  };
+  const scope = (over: Record<string, unknown> = {}) => ({
+    spendingAccountIds: ['acct-cash', 'acct-card'], excludedCategoryIds: [] as string[], categoryParents: parents, ...over,
+  });
+
+  it('counts only the spending accounts, rolled up to the parent name', () => {
+    const { path, cleanup } = makeTestDb();
+    try {
+      seed(path);
+      const rows = getNativeBudgetSpend(path, '2026-07-01', '2026-10-01', scope());
+      expect(rows).toContainEqual({ month: '2026-08', category: 'Food', accountId: 'acct-cash', amount: 150 });
+      expect(rows).toContainEqual({ month: '2026-08', category: 'Groceries', accountId: 'acct-card', amount: 30 });
+      expect(rows.some((r) => r.accountId === 'acct-untracked')).toBe(false);
+    } finally { cleanup(); }
+  });
+
+  it("drops a row whose OWN category is excluded, so an excluded subcategory never rolls into its parent", () => {
+    const { path, cleanup } = makeTestDb();
+    try {
+      seed(path);
+      const rows = getNativeBudgetSpend(path, '2026-07-01', '2026-10-01', scope({ excludedCategoryIds: ['cat-fun'] }));
+      expect(rows).toContainEqual({ month: '2026-08', category: 'Food', accountId: 'acct-cash', amount: 50 });
+      // Excluding a parent drops its subcategories' rows too.
+      const parentGone = getNativeBudgetSpend(path, '2026-07-01', '2026-10-01', scope({ excludedCategoryIds: ['cat-food'] }));
+      expect(parentGone.some((r) => r.category === 'Food')).toBe(false);
+      expect(parentGone.some((r) => r.category === 'Groceries')).toBe(true);
+    } finally { cleanup(); }
+  });
+
+  it('throws on a database it cannot read, and refuses malformed bounds, rather than answering "nothing spent"', () => {
+    expect(() => getNativeBudgetSpend('/nope/wealthfolio.db', '2026-07-01', '2026-10-01', scope())).toThrow(NativeDbUnreadableError);
+    const { path, cleanup } = makeTestDb();
+    const noise = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect(() => getNativeBudgetSpend(path, "2026-07-01' OR 1=1 --", '2026-10-01', scope())).toThrow(/malformed/);
+    } finally { noise.mockRestore(); cleanup(); }
+  });
+
+  it('reads the earliest activity day on the spending accounts only — null with no activity — and throws when unreadable', () => {
+    const { path, cleanup } = makeTestDb();
+    try {
+      expect(getNativeSpendingHistoryStart(path, ['acct-cash', 'acct-card'])).toBeNull();
+      seed(path);
+      expect(getNativeSpendingHistoryStart(path, ['acct-cash', 'acct-card'])).toBe('2026-06-20');
+      expect(getNativeSpendingHistoryStart(path, ['acct-untracked'])).toBe('2026-01-02');
+      // A securities account never supports spending (upstream account_supports_purpose): its older row does not move the start.
+      expect(getNativeSpendingHistoryStart(path, ['acct-cash', 'acct-card', 'acct-sec'])).toBe('2026-06-20');
+      expect(getNativeSpendingHistoryStart(path, [])).toBeNull();
+    } finally { cleanup(); }
+    expect(() => getNativeSpendingHistoryStart('/nope/wealthfolio.db', ['acct-cash'])).toThrow(NativeDbUnreadableError);
+  });
+});
