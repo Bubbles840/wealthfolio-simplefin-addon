@@ -15,7 +15,7 @@ import type { SecretsStore, CategoryCatalogEntry, AccountBalanceInfo } from '../
 import type { Scheduler } from '../utils/scheduler';
 import type { MappingRule, SimplefinAccount, AccountMapping } from '../../shared/types';
 import { accountCreatedChange } from '../../shared/change-entries';
-import { ChangeLogCard } from '../components/ChangeLogCard';
+import { ChangeLogCard, syncNowSentence } from '../components/ChangeLogCard';
 import { emptySyncOverrides, removeOverrideRow, type OverrideRow } from '../../shared/sync-overrides';
 import type { ChangeLogItem } from '../../shared/change-log';
 import type { UndoOp } from '../../shared/change-undo';
@@ -275,10 +275,7 @@ export function SettingsTab({
     (entry: ChangeLogItem, entries: ChangeLogItem[], op: UndoOp) => undoFromApp(ctx, store, entry, entries, op),
     [ctx, store],
   );
-  const syncNowForLog = useCallback(async () => {
-    const r = await runSync(ctx, store, { force: true });
-    return r.errors.length ? `Synced, with a problem: ${r.errors[0]}` : `Synced — ${r.imported} imported.`;
-  }, [ctx, store]);
+  const syncNowForLog = useCallback(async () => syncNowSentence(await runSync(ctx, store, { force: true })), [ctx, store]);
   const loadOverrides = useCallback(
     async () => (store.readSyncOverrides ? store.readSyncOverrides() : { overrides: emptySyncOverrides(), unreadable: false }),
     [store],

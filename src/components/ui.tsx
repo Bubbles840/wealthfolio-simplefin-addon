@@ -851,6 +851,32 @@ const css = `
   .sfin-log-row { grid-template-columns: 3.2em minmax(0, 1fr); }
   .sfin-log-run-line { grid-template-columns: 3.2em minmax(0, 1fr); }
 }
+/* "Why is this here?" (1.61): Home's search card, and a transaction's story
+   wherever it opens (search results, needs-a-category, budget drill-down). */
+.sfin-why-card { margin-bottom: 14px; }
+.sfin-why-form { display: flex; gap: 8px; align-items: center; margin-top: 6px; }
+.sfin-why-form .sfin-input { flex: 1; min-width: 0; }
+.sfin-why-results { display: flex; flex-direction: column; margin-top: 8px; }
+.sfin-why-result { border-top: 1px solid color-mix(in srgb, var(--border) 55%, transparent); }
+.sfin-why-result:first-of-type { border-top: none; }
+.sfin-why-open { display: grid; grid-template-columns: 4em minmax(0, 1fr) auto; align-items: baseline; gap: 10px; width: 100%; padding: 6px 0; border: none; background: transparent; color: var(--foreground); font: inherit; text-align: left; cursor: pointer; }
+.sfin-why-open:hover { background: color-mix(in srgb, var(--sfin-s0) 6%, transparent); }
+.sfin-why-when { font-size: var(--sfin-sz-xs); color: var(--muted-foreground); white-space: nowrap; }
+.sfin-why-what { min-width: 0; overflow-wrap: anywhere; font-size: var(--sfin-sz-sm); }
+.sfin-why-amt { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.sfin-why-inline { padding: 4px 0 10px 12px; border-left: 2px solid var(--border); margin: 2px 0 8px; }
+.sfin-why-story { display: flex; flex-direction: column; gap: 4px; font-size: var(--sfin-sz-sm); }
+.sfin-why-title { font-weight: 600; overflow-wrap: anywhere; }
+.sfin-why-answer { margin: 4px 0; padding-left: 1.1em; display: flex; flex-direction: column; gap: 2px; }
+.sfin-why-history { margin-top: 6px; }
+.sfin-why-heading { font-size: var(--sfin-sz-xs); letter-spacing: .06em; text-transform: uppercase; color: var(--muted-foreground); margin-bottom: 2px; }
+.sfin-why-line { display: flex; flex-direction: column; }
+.sfin-why-line-btn { width: 100%; padding: 3px 0; border: none; border-bottom: 1px solid color-mix(in srgb, var(--border) 40%, transparent); background: transparent; color: var(--foreground); font: inherit; text-align: left; cursor: pointer; overflow-wrap: anywhere; }
+.sfin-why-line-btn:hover { background: color-mix(in srgb, var(--sfin-s0) 6%, transparent); }
+@media (max-width: 560px) {
+  .sfin-why-open { grid-template-columns: 4em minmax(0, 1fr); }
+  .sfin-why-amt { grid-column: 2; }
+}
 @keyframes sfin-pop { from { transform: scale(.92); opacity: 0; } to { transform: scale(1); opacity: 1; } }
 .sfin-range-pin { position: absolute; bottom: 6px; right: 10px; font-size: var(--sfin-sz-2xs); color: var(--muted-foreground); background: color-mix(in srgb, var(--card) 80%, transparent); border-radius: var(--sfin-rad-xs); padding: 1px 6px; }
 /* Drag feedback: the picked-up card lifts and fades while every other card
