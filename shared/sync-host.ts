@@ -105,10 +105,13 @@ export interface LinkLeg {
 export interface LinkResult {
   linked: boolean;
   groupId?: string;
-  /** The two re-created rows' ids, in leg order, when the host's echo carried
-   *  them. Linking deletes and re-creates both legs, so these are NEW ids —
-   *  the change log records them for R2. Absent from an older host. */
+  /** The two rows' ids, in leg order, when the host's echo carried them.
+   *  Re-creating both legs gives NEW ids — the change log records them for
+   *  R2; a link in place keeps the old ones. Absent from an older host. */
   activityIds?: [string, string];
+  /** Linked by Wealthfolio's own link (shared/link-in-place.ts): same rows,
+   *  same ids, every filing kept, nothing deleted. */
+  inPlace?: true;
   /** Why the link failed, when it did. Present only on `linked: false`.
    *
    *  Linking DELETES both rows before re-creating them, so a refused re-create
