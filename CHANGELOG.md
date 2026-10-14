@@ -76,9 +76,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     in price, net worth, savings rate (the same figure as the Budget tab) and
     how many changes were made to your books. A "No longer charging" line
     names subscriptions found missing their charge near the month's end; ones
-    that stopped earlier have already left the subscription list, so the line
-    is rare until the cube keeps them a while longer. Brief is unchanged, and the live "so far" edition of the
-    current month carries no review.
+    that stopped earlier have already left the subscription list, so for now
+    the line is rare. Brief is unchanged, and the live "so far" edition of
+    the current month carries no review.
   - **Unread reports.** The Reports tab and each report's tab count the
     editions you haven't opened and mark them New; opening a report's tab
     marks it seen, on every device. The inbox re-reads what is stored before

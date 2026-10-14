@@ -840,8 +840,8 @@ changes what a user sees today.
   undated balance counts and is shown "· balance date unknown".
 - **The forecast's unbounded calls precede the health write.**
   `GET /accounts` has no timeout, and the forecast publishes before
-  `updateSyncHealth`; a hung call holds the sync-health write. Bound the call,
-  or move the forecast after the health write.
+  `updateSyncHealth` and the live report editions; a hung call (here or in the
+  audit snapshot's reads) holds both. Bound the calls.
 - **The open sub-tab's list doesn't refresh.** The Reports tab's badge and
   counts follow the live state, but the editions listed under a sub-tab that is
   already open are read once; a new edition shows after reopening the tab.
