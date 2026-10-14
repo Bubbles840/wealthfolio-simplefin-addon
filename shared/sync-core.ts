@@ -2054,6 +2054,16 @@ async function runSyncPass(
   /** What Undo told the sync not to do again (shared/sync-overrides.ts). A
    *  failed or corrupt read is empty: the sync then behaves as it always did. */
   const overrides = (await store.getSyncOverrides?.().catch(() => null)) ?? emptySyncOverrides();
+  /** The document could not be read (a failed read or a corrupt one): `overrides`
+   *  above is then empty, which must not revert a payback — see below. A host
+   *  without `readSyncOverrides` cannot say, and keeps today's behaviour. */
+  const overridesUnread = store.readSyncOverrides
+    ? await store.readSyncOverrides().then((l) => !l || l.unreadable, () => true)
+    : false;
+  /** Flagged `asReimbursement` keys whose override yielded this sync (money
+   *  out, or a known non-cash account) — logged where a stored payback is seen. */
+  const yieldedPaybackKeys = new Set<string>();
+  let paybackNoteGiven = false;
 
   // Keep pending rows now (they import and reconcile), dropping only rows we
   // can't date at all — no `posted` and no `transacted_at` — since those
@@ -2131,7 +2141,13 @@ async function runSyncPass(
       // account, whatever a keyword or a rule says — and never paired below,
       // which would type it a transfer. Money out, or another account type,
       // and the override yields: the row is typed as usual.
-      const payback = hasTxOverride(overrides, key, 'asReimbursement') && amount > 0 && wfTypes.get(wfAccountId) === 'CASH';
+      // An UNKNOWN type (listAccounts failed) does not yield: only a known
+      // non-cash type does. (An override past its year still applies until the
+      // next overrides write prunes it — by design.)
+      const acctType = wfTypes.get(wfAccountId);
+      const flagged = hasTxOverride(overrides, key, 'asReimbursement');
+      const payback = flagged && amount > 0 && (!acctType || acctType === 'CASH');
+      if (flagged && !payback) yieldedPaybackKeys.add(key);
       const mapped = mapTransactionWithSource(tx.description, amount, rules, wfTypes.get(wfAccountId));
       const { type, fromRule, subtype } = payback
         ? { type: 'CREDIT' as ActivityType, fromRule: true, subtype: REIMBURSEMENT_SUBTYPE as string | undefined }
@@ -2840,8 +2856,35 @@ async function runSyncPass(
       const key = accountTxKey(sfAccount.id, r.txId);
       errors.push(`Left ${descByKey.get(key) || descriptionFromComment(r.comment) || r.txId} as it is: this app has no record of linking it; the companion will unlink it on its next sync.`);
     }
-    const hiddenIds = new Set(foreign.map((r) => r.wfId));
-    const foreignTxIds = new Set(foreign.map((r) => r.txId));
+    // The same for a leg under an `asReimbursement` key that is a transfer the
+    // ledger does not know: something else linked it, and retyping one leg of
+    // a linked pair rewrites its partner. Left for the companion.
+    const foreignPayback = readsGroups ? [] : planExistingAll.filter((r) => isTransferType(r.type)
+      && hasTxOverride(overrides, accountTxKey(sfAccount.id, r.txId), 'asReimbursement') && !isLinkedRow(r)
+      && !(r.comment ?? '').startsWith(IN_TRANSIT_COMMENT_PREFIX));
+    for (const r of foreignPayback) {
+      const key = accountTxKey(sfAccount.id, r.txId);
+      errors.push(`Left ${descByKey.get(key) || descriptionFromComment(r.comment) || r.txId} as it is: this app has no record of linking it; the companion will unlink it on its next sync.`);
+    }
+    // A failed or corrupt overrides read reads as no overrides, which would
+    // turn every stored payback (money in, cash, CREDIT/REIMBURSEMENT) back
+    // into a deposit: keep each exactly as stored, and say so once.
+    const keptPaybacks = overridesUnread
+      ? planExistingAll.filter((r) => r.type === 'CREDIT' && (r.subtype ?? '').toUpperCase() === REIMBURSEMENT_SUBTYPE
+        && (!wfTypes.get(wfAccountId) || wfTypes.get(wfAccountId) === 'CASH'))
+      : [];
+    if (keptPaybacks.length > 0 && !paybackNoteGiven) {
+      paybackNoteGiven = true;
+      errors.push('Couldn\u2019t read your sync overrides \u2014 paybacks were left as they are.');
+    }
+    for (const r of planExistingAll) {
+      if (r.type === 'CREDIT' && (r.subtype ?? '').toUpperCase() === REIMBURSEMENT_SUBTYPE
+        && yieldedPaybackKeys.has(accountTxKey(sfAccount.id, r.txId))) {
+        console.info(`[simplefin-sync] payback yielded: ${accountTxKey(sfAccount.id, r.txId)} is no longer money in on a cash account, so it is typed as usual`);
+      }
+    }
+    const hiddenIds = new Set([...foreign, ...foreignPayback, ...keptPaybacks].map((r) => r.wfId));
+    const foreignTxIds = new Set([...foreign, ...foreignPayback, ...keptPaybacks].map((r) => r.txId));
     const planExisting = planExistingAll.filter((r) => !hiddenIds.has(r.wfId));
     for (const { row, tx } of adoptions) {
       const aliasKey = accountTxKey(sfAccount.id, tx.txId);

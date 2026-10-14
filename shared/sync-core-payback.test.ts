@@ -96,4 +96,72 @@ describe('runSyncCore — a payback (asReimbursement)', () => {
     await runSyncCore(fh.host, fh.store, {});
     expect(row(fh).activityType).toBe('DEPOSIT');
   });
+  const writes = (fh: ReturnType<typeof createFakeHost>) => fh.saved.filter((r) => (r.updates ?? []).length > 0 || (r.creates ?? []).length > 0);
+  const NOTE = 'Couldn\u2019t read your sync overrides \u2014 paybacks were left as they are.';
+
+  it('keeps a payback when the account types cannot be read (an unknown type does not yield)', async () => {
+    const fh = createFakeHost(seed('14.00', { existing: stored(), syncOverrides: payback() }));
+    const host = { ...fh.host, listAccounts: async () => { throw new Error('down'); } };
+    await runSyncCore(host, fh.store, {});
+    expect(writes(fh)).toEqual([]);
+    expect(row(fh)).toMatchObject({ activityType: 'CREDIT', subtype: 'REIMBURSEMENT' });
+  });
+
+  it.each([
+    ['a rejected read', async () => { throw new Error('ECONNREFUSED'); }],
+    ['a corrupt document', async () => ({ overrides: emptySyncOverrides(), unreadable: true })],
+  ])('leaves a stored payback exactly as stored after %s, with one note', async (_n, read) => {
+    const fh = createFakeHost(seed('14.00', { existing: stored() }));
+    const store = { ...fh.store, readSyncOverrides: read };
+    const result = await runSyncCore(fh.host, store, {});
+    expect(writes(fh)).toEqual([]);
+    expect(row(fh)).toMatchObject({ activityType: 'CREDIT', subtype: 'REIMBURSEMENT' });
+    expect(result.errors.filter((e) => e.includes('sync overrides'))).toEqual([NOTE]);
+  });
+
+  it('keeps a stored payback whose date is the instant 2026-10-09T12:00:00Z', async () => {
+    const fh = createFakeHost(seed('14.00', { existing: stored({ date: '2026-10-09T12:00:00Z' }), syncOverrides: payback() }));
+    await runSyncCore(fh.host, fh.store, {});
+    expect(writes(fh)).toEqual([]);
+  });
+
+  it('keeps a stored payback on a non-cash account (a subtype is only ever added)', async () => {
+    const fh = createFakeHost(seed('14.00', { accountTypes: { 'wf-a': 'CREDIT_CARD' }, existing: stored(), syncOverrides: payback() }));
+    await runSyncCore(fh.host, fh.store, {});
+    expect(writes(fh)).toEqual([]);
+  });
+
+  it('still applies an override past its year until the next write prunes it (by design)', async () => {
+    // Expiry is the next overrides WRITE\u2019s prune, not the sync\u2019s clock.
+    const stale = payback(new Date('2025-10-13T15:00:00Z'));
+    const fh = createFakeHost(seed('14.00', { existing: stored(), syncOverrides: stale }));
+    await runSyncCore(fh.host, fh.store, {});
+    expect(writes(fh)).toEqual([]);
+  });
+
+  it('leaves a transfer-typed leg under an asReimbursement key alone on a host that cannot read groups, with a note', async () => {
+    const fh = createFakeHost(seed('14.00', { existing: stored({ activityType: 'TRANSFER_IN', subtype: null }), syncOverrides: payback() }));
+    const host = { ...fh.host, capabilities: { readsSourceGroupId: false } };
+    const result = await runSyncCore(host, fh.store, {});
+    expect(writes(fh)).toEqual([]);
+    expect(row(fh).activityType).toBe('TRANSFER_IN');
+    expect(result.errors.some((e) => e.startsWith('Left ') && e.includes('as it is'))).toBe(true);
+  });
+
+  it.each([
+    ['money out', seed('-14.00', { existing: stored(), syncOverrides: payback() })],
+    ['a known non-cash account', seed('14.00', { accountTypes: { 'wf-a': 'CREDIT_CARD' }, existing: stored(), syncOverrides: payback() })],
+  ])('logs one tagged line when the override yields on %s, without an errors note', async (_n, sd) => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    try {
+      const fh = createFakeHost(sd);
+      const result = await runSyncCore(fh.host, fh.store, {});
+      const lines = info.mock.calls.map((c) => String(c[0])).filter((l) => l.includes('payback yielded'));
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain('[simplefin-sync] payback yielded');
+      expect(result.errors).toEqual([]);
+    } finally {
+      info.mockRestore();
+    }
+  });
 });
