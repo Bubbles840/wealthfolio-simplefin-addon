@@ -9,6 +9,8 @@ import { UncategorizedList, useDismissals } from '../components/UncategorizedLis
 import { WhyCard } from '../components/WhyCard';
 import { healthIssueCount } from '../components/AuditViews';
 import type { AuditSnapshotRead } from '../../shared/audit-snapshot';
+import { ForecastDetail, ForecastTile } from '../components/ForecastViews';
+import { cashForecastView, type CashForecastRead } from '../../shared/cash-forecast';
 import { appTxSearch, type AppStoryTarget } from '../utils/tx-story';
 import type { TxQuery } from '../../shared/tx-search';
 import { money, accountsSummary } from '../components/AccountList';
@@ -25,7 +27,7 @@ import type { AccountMapping, UnmappedAccount } from '../../shared/types';
  *  precedent (`src/tabs/NotificationsTab.tsx`): the page owns the open-state
  *  map, this tab owns the keys into it. The value is unchanged from when this
  *  was the Overview tab, so a list someone left open stays open. */
-export const HOME_CARD = { uncategorized: 'uncategorized-list' } as const;
+export const HOME_CARD = { uncategorized: 'uncategorized-list', forecast: 'cash-forecast' } as const;
 
 /** The offer a sync attaches to an account when it proved the drift belongs to
  *  the starting-balance baseline rather than to any transaction. */
@@ -94,6 +96,9 @@ interface Props {
   /** 2c: the companion's audit snapshot. With something Health flags, the
    *  Accounts tile says so and opens Settings on the Checks card. */
   auditSnapshot?: AuditSnapshotRead | null;
+  /** Project 5: the companion's 30-day cash forecast behind the "Next 30
+   *  days" tile. Absent or null until read; cashForecastView decides. */
+  cashForecast?: CashForecastRead | null;
 }
 
 /**
@@ -112,9 +117,10 @@ export function HomeTab({
   prunedDuplicates, unmappedAccounts, onIgnoreAccounts, uncategorized, dismissals, onDismissalsChange,
   isOpen, toggleCard, onBalancesChanged, onClearError, onError,
   companionVersion, telegramConfigured, amazonConfigured, checklistDismissed,
-  onDismissChecklist, onNavigate, poolStatus, onOpenPool, renderTxStory, auditSnapshot,
+  onDismissChecklist, onNavigate, poolStatus, onOpenPool, renderTxStory, auditSnapshot, cashForecast,
 }: Props) {
   const checksToLook = healthIssueCount(auditSnapshot);
+  const forecastView = cashForecastView(cashForecast ?? null, companionVersion, new Date());
   const [fixingBaseline, setFixingBaseline] = useState<string | null>(null);
   const [adjusting, setAdjusting] = useState<string | null>(null);
   const { justDismissed, dismiss, undo } = useDismissals(dismissals, onDismissalsChange);
@@ -509,6 +515,14 @@ export function HomeTab({
             </button>
           );
         })()}
+        {/* Project 5: the next 30 days if nothing comes in. Opens what it
+            counted in place, under the strip, like "Needs a category". */}
+        <ForecastTile
+          view={forecastView}
+          open={isOpen(HOME_CARD.forecast)}
+          panelId={HOME_CARD.forecast}
+          onToggle={() => toggleCard(HOME_CARD.forecast)}
+        />
       </div>
 
       {uncategorized && isOpen(HOME_CARD.uncategorized) && (
@@ -522,6 +536,10 @@ export function HomeTab({
           onOpenActivities={() => { ctx.api.navigation.navigate('/activities').catch(() => {}); }}
           renderStory={renderTxStory}
         />
+      )}
+
+      {forecastView.state === 'ok' && isOpen(HOME_CARD.forecast) && (
+        <ForecastDetail view={forecastView} id={HOME_CARD.forecast} />
       )}
 
     </>

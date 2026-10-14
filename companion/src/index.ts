@@ -115,6 +115,12 @@ import {
 import { addDaysIso, dueWithin, formatRosterTotal, manualKey, rosterMoney, type Cadence } from '../../shared/subscription-roster.js';
 import { REPORT_CUBE_SECRET_KEY, parseReportCube } from '../../shared/report-cube.js';
 import { companionAuditReaders, publishAuditSnapshot } from './audit-facts.js';
+import { publishCashForecast } from './cash-forecast-facts.js';
+import {
+  CASH_FORECAST_SECRET_KEY, FORECAST_UNREACHABLE_REPLY, forecastWarningLine, formatForecastReply, parseCashForecast,
+  weeklyForecastLine, type CashForecastRead,
+} from '../../shared/cash-forecast.js';
+import { buildMonthReview, formatMonthReview } from '../../shared/month-review.js';
 import { auditMenuDeps, auditStatusKeyboard, createAuditMenu, type AuditMenu } from './audit-menu.js';
 import { companionBudgetReaders } from './budget-suggest-host.js';
 import { budgetsMenuDeps, createBudgetsMenu, type BudgetsMenu } from './budgets-menu.js';
@@ -1070,9 +1076,6 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
     // After the catch: a filing that stopped half-way still logs what landed.
     await recordCompanionChanges(wfClient, openingChanges, changeLog.run).catch((e) => log(`Change log skipped: ${formatError(e)}`));
 
-    // The Reports tab's live editions, from the ledger this sync just updated.
-    await publishLiveReports(wfClient).catch((e) => log(`Live reports skipped: ${formatError(e)}`));
-
     await publishUncategorizedStatusForDbPath(
       wealthfolioDbPath(),
       (key, value) => wfClient.setAddonSecret('simplefin-sync', key, value),
@@ -1227,6 +1230,28 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
       await publishAuditSnapshot(wfClient, wealthfolioDbPath(), new Date());
     } catch (e) {
       log(`Audit snapshot publish failed (the app's checks may be stale): ${formatError(e)}`);
+    }
+
+    // Project 5: the 30-day cash forecast behind Home's tile, the weekly
+    // line, /forecast and the daily warning — after the cube it reads, and
+    // last like the checks (its REST read has no timeout either). Best-effort:
+    // a failed run or write keeps the previous forecast and never touches
+    // this sync's result.
+    try {
+      await publishCashForecast(wfClient, wealthfolioDbPath(), new Date());
+    } catch (e) {
+      log(`Cash forecast publish failed (the app's forecast may be stale): ${formatError(e)}`);
+    }
+
+    // The Reports tab's live editions, from the ledger this sync just updated.
+    // AFTER the cube and the forecast they read (the daily warning and the
+    // weekly line read the published forecast; the monthly review reads the
+    // cube), so the live editions agree with Home's tile instead of lagging a
+    // sync behind it. Its own guard: a failure here never changes the sync.
+    try {
+      await publishLiveReports(wfClient);
+    } catch (e) {
+      log(`Live reports skipped: ${formatError(e)}`);
     }
 
     await updateSyncHealth(wfClient, null);
@@ -1715,6 +1740,12 @@ async function readRosterFor(wfClient: WealthfolioClient, now: Date): Promise<Ro
   return readSubscriptionRoster(subscriptionSecrets(wfClient).get, toDateString(now));
 }
 
+/** The published cash forecast (project 5). Rejects when Wealthfolio cannot
+ *  be read: /forecast says so, and the reports catch it to absence. */
+async function readCashForecast(wfClient: WealthfolioClient): Promise<CashForecastRead> {
+  return parseCashForecast(await wfClient.getAddonSecret('simplefin-sync', CASH_FORECAST_SECRET_KEY));
+}
+
 /**
  * The cube builder's data sources, bound once — the report-cube twin of
  * `poolReportDeps` above, sharing its dismissal and pool reads so the cube
@@ -2041,6 +2072,13 @@ export async function composeDailyDigest(
     },
   );
 
+  // Project 5: cash may run short within two weeks. A warning, so Brief
+  // carries it too; from the published forecast, guarded to absence.
+  const forecastWarning = forecastWarningLine(
+    await readCashForecast(wfClient).catch(() => null), toDateString(now), now,
+  );
+  if (forecastWarning) message += `\n\n${forecastWarning}`;
+
   // "Coming up" (1.60): reminders, the week's charges (Full), the price-rise
   // line that used to stand alone here (same 3-day rule), and "cancelled?".
   // From the roster, so it says what the card and /subscriptions say.
@@ -2252,7 +2290,7 @@ export async function publishLiveReports(wfClient: WealthfolioClient, now = new 
   const texts: Array<[ReportKind, () => Promise<string | null>]> = [
     ['daily', async () => (await composeDailyDigest(wfClient, { requireTelegram: false, recordLedgerChecks: false }))?.archive ?? null],
     ['weekly', () => composeWeeklyReportMessage(wfClient, now, tg)],
-    ['monthly', () => composeMonthlyWrapUpMessage(wfClient, currentYearMonth(now), `${monthName} so far`, tg)],
+    ['monthly', () => composeMonthlyWrapUpMessage(wfClient, currentYearMonth(now), `${monthName} so far`, tg, now)],
   ];
   for (const [kind, compose] of texts) {
     try {
@@ -2441,6 +2479,10 @@ export async function composeWeeklyReport(
   );
   let keyboard: InlineKeyboard | undefined;
   if (full) {
+    // Project 5: the next 30 days if nothing comes in, from a fresh
+    // published forecast; guarded to absence.
+    const forecastLine = weeklyForecastLine(await readCashForecast(wfClient).catch(() => null), now, glyphStyle);
+    if (forecastLine) message += `\n\n${forecastLine}`;
     // From the roster since 1.60: the card's names and totals, and what the
     // coming week will charge. Guarded: it can cost these lines, never the report.
     const read = await readRosterFor(wfClient, now).catch(() => null);
@@ -2526,6 +2568,8 @@ export async function composeMonthlyWrapUpMessage(
   yearMonth: string,
   monthName: string,
   tg: any,
+  /** When the report is composed: the roster's "today" for the review. */
+  now: Date = new Date(),
 ): Promise<string | null> {
   const dbPath = wealthfolioDbPath();
   if (!dbPath || !existsSync(dbPath)) {
@@ -2542,7 +2586,20 @@ export async function composeMonthlyWrapUpMessage(
     spent: spentMap[name] ?? 0,
     budget: budgetMap[name] ?? 0,
   }));
-  return formatMonthlyWrapUp(categories, monthName, await readGlyphStyle(wfClient));
+  const wrapUp = formatMonthlyWrapUp(categories, monthName, await readGlyphStyle(wfClient));
+  // Project 5 (N4): Full detail adds the month in review; Brief is the
+  // wrap-up exactly as it always was. Each read can cost only its own lines,
+  // and the archived edition stores this same text.
+  // The live "<Month> so far" edition passes the current month: a month that
+  // is not over gets no review (its changes, savings and net worth are partial).
+  if (resolveReportDetail(tg) !== 'full' || yearMonth >= currentYearMonth(now)) return wrapUp;
+  const review = formatMonthReview(buildMonthReview({
+    month: yearMonth,
+    cube: parseReportCube(await wfClient.getAddonSecret('simplefin-sync', REPORT_CUBE_SECRET_KEY).catch(() => null)),
+    roster: (await readRosterFor(wfClient, now).catch(() => null))?.roster ?? null,
+    changes: await readCompanionChangeLog(wfClient, now).catch(() => null),
+  }));
+  return review ? `${wrapUp}\n\n${review}` : wrapUp;
 }
 
 export async function sendMonthlyTelegramReport(
@@ -2553,7 +2610,7 @@ export async function sendMonthlyTelegramReport(
   const tg = parseSecretJson<any>(tgRaw, 'telegram_config');
   const now = new Date();
   const { yearMonth, monthName } = previousYearMonth(now);
-  const message = await composeMonthlyWrapUpMessage(wfClient, yearMonth, monthName, tg ?? {});
+  const message = await composeMonthlyWrapUpMessage(wfClient, yearMonth, monthName, tg ?? {}, now);
   if (message === null) return;
   // Filed under the month it describes, not the day it was sent.
   await deliverReportEdition(wfClient, 'monthly', message, new Date(now.getFullYear(), now.getMonth() - 1, 15), tg?.monthlyReportEnabled !== false);
@@ -3477,6 +3534,21 @@ export function buildTelegramCommandHandler(
           return;
         }
         await why.reply(cmd.args, reply);
+        return;
+      }
+
+      case 'forecast': {
+        // Project 5: the published forecast; "Couldn't reach Wealthfolio"
+        // when not even that can be read. No buttons.
+        let read: CashForecastRead;
+        try {
+          read = await readCashForecast(wfClient);
+        } catch (err) {
+          log(`/forecast: reading failed: ${formatError(err)}`);
+          await reply(FORECAST_UNREACHABLE_REPLY);
+          return;
+        }
+        await reply(formatForecastReply(read, new Date(), await readGlyphStyle(wfClient)));
         return;
       }
 

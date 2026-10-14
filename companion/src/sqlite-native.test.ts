@@ -1378,7 +1378,7 @@ describe('report cube readers, month × account', () => {
 
 import {
   getNativeMerchantRows, getNativeFeesInterestByMonth, getNativeDrillRows, parseDrillCliLine,
-  getNativeSpendDailyTotals, getNativeValuationByMonth,
+  getNativeSpendDailyTotals, getNativeValuationByMonth, NativeDbUnreadableError,
 } from './sqlite-native.js';
 
 describe('report cube readers, merchants / fees / daily / valuations', () => {
@@ -1405,6 +1405,20 @@ describe('report cube readers, merchants / fees / daily / valuations', () => {
       // `date` feeds the subscription detector, which needs day-level cadence.
       expect(rows).toContainEqual({ month: '2026-07', date: '2026-07-09', notes: 'CHIPOTLE 1234 · TRN-1', amount: 25.5 });
       expect(rows).toContainEqual({ month: '2026-07', date: '2026-07-09', notes: 'MYSTERY · TRN-9', amount: 12 });
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('getNativeMerchantRows, strict (the cash forecast), throws instead of answering "no rows" when it cannot look', () => {
+    expect(getNativeMerchantRows('/nonexistent/wealthfolio.db', '2026-07-01', '2026-09-01')).toEqual([]);
+    expect(() => getNativeMerchantRows('/nonexistent/wealthfolio.db', '2026-07-01', '2026-09-01', true)).toThrow(NativeDbUnreadableError);
+    expect(() => getNativeMerchantRows('', '2026-07-01', '2026-09-01', true)).toThrow(NativeDbUnreadableError);
+    const { path, cleanup } = makeTestDb();
+    try {
+      seed(path);
+      expect(getNativeMerchantRows(path, '2026-07-01', '2026-09-01', true))
+        .toContainEqual({ month: '2026-07', date: '2026-07-09', notes: 'CHIPOTLE 1234 · TRN-1', amount: 25.5 });
     } finally {
       cleanup();
     }
@@ -1751,7 +1765,7 @@ describe('uncategorized readers: a transfer waiting for its other half', () => {
 });
 
 // ── Suggested budgets' reads (project 4, Task 8) ─────────────────────────
-import { getNativeBudgetSpend, getNativeSpendingHistoryStart, NativeDbUnreadableError } from './sqlite-native.js';
+import { getNativeBudgetSpend, getNativeSpendingHistoryStart } from './sqlite-native.js';
 
 describe('getNativeBudgetSpend / getNativeSpendingHistoryStart', () => {
   const parents = { 'cat-food': null, 'cat-fun': 'cat-food', 'cat-gro': null };
