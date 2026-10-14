@@ -855,8 +855,6 @@ Minor, deferred (not fixed in R2):
 - Task 5: the companion's `feeds` uses bare `JSON.parse` (a `null` or array
   secret reads as unreachable; `parseSecretJson` would be consistent).
 - Task 6: `report.notes` is counted but not clipped in Health's 4096 fit.
-- Task 8: a grouped row that contests an ungrouped leg's match still makes
-  that leg "many" (dropped from offers only after contest counting).
 
 ## Reference: name mismatches between the database, the REST API, and the SDK
 
