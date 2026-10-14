@@ -282,6 +282,19 @@ describe('WealthfolioClient', () => {
     expect(body).not.toHaveProperty('presetVersion');
   });
 
+  it('createCategorizationRule scopes a rule to one account: isGlobal false and its id (3)', async () => {
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({}) });
+    const client = new WealthfolioClient('http://wf');
+    await client.createCategorizationRule({
+      name: 'Telegram: VENMO PAYMENT', pattern: 'VENMO PAYMENT', categoryId: 'cat-1', taxonomyId: 'spending_categories', priority: 50,
+      accountId: 'wf-chk',
+    });
+    expect(JSON.parse((mockFetch.mock.calls[0][1] as any).body)).toEqual({
+      name: 'Telegram: VENMO PAYMENT', pattern: 'VENMO PAYMENT', matchType: 'contains', taxonomyId: 'spending_categories',
+      categoryId: 'cat-1', priority: 50, isGlobal: false, accountId: 'wf-chk',
+    });
+  });
+
   it('createCategorizationRule resolves the id of the rule the server stored', async () => {
     // Upstream answers with the stored rule (Json<CategorizationRule>, camelCase).
     mockFetch.mockResolvedValueOnce({

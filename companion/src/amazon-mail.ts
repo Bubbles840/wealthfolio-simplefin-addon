@@ -72,6 +72,33 @@ export interface MailSource {
   close(): Promise<void>;
 }
 
+/** A message's two body copies as one text — what the sender checks
+ *  (`isAmazonMessage`, `isVenmoMessage`) read for a hand-forwarded `From:`. */
+export function mailBody(m: Pick<MailMessage, 'parts'>): string {
+  return [m.parts.plain, m.parts.html].filter(Boolean).join('\n');
+}
+
+/**
+ * One read of the mailbox shared by every reader of it — Amazon's ingest and
+ * Venmo's (3) — so a poll connects and fetches once. Each view's `fetch` is
+ * that one read filtered to its own messages; `markSeen` goes to the source,
+ * and closing is the caller's, once, on the source itself.
+ */
+export function shareMailSource(source: MailSource): { view(pick: (m: MailMessage) => boolean): MailSource } {
+  let all: Promise<MailMessage[]> | null = null;
+  const read = () => {
+    if (!all) all = source.fetch();
+    return all;
+  };
+  return {
+    view: (pick) => ({
+      fetch: async () => (await read()).filter(pick),
+      markSeen: (messages) => source.markSeen(messages),
+      close: async () => {},
+    }),
+  };
+}
+
 /** What a poll found, for logging and for the daily digest. */
 export interface AmazonIngestResult {
   scanned: number;
@@ -268,7 +295,12 @@ export async function ingestAmazonMail(
  * arrive as `=E2=80=AB` sequences and lines are broken with soft `=` continuations
  * — both of which silently corrupt the text the parser is looking at.
  */
-export async function createImapSource(cfg: AmazonMailConfig): Promise<MailSource> {
+export async function createImapSource(
+  cfg: AmazonMailConfig,
+  /** Which messages to read at all. Amazon's by default; the companion's poll
+   *  passes Amazon's or Venmo's (3). Anything else stays unread. */
+  accept: (from: string | undefined, body: string) => boolean = isAmazonMessage,
+): Promise<MailSource> {
   const { ImapFlow } = await import('imapflow');
   const { simpleParser } = await import('mailparser');
 
@@ -336,7 +368,7 @@ export async function createImapSource(cfg: AmazonMailConfig): Promise<MailSourc
         // should contain nothing else, but "should" is not a reason to parse
         // whatever else lands in it. Needs the decoded body too, so a hand-forwarded
         // order — whose From: is the person who forwarded it — still counts.
-        if (!isAmazonMessage(from[0], [parts.plain, parts.html].filter(Boolean).join('\n'))) continue;
+        if (!accept(from[0], [parts.plain, parts.html].filter(Boolean).join('\n'))) continue;
         out.push({
           uid: msg.uid,
           mailbox,

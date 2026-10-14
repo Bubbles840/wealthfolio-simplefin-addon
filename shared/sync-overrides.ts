@@ -15,6 +15,7 @@
  *  - `keepDuplicate` the duplicate prune leaves its copies.
  *  - `noAutoFile`    the Amazon filer leaves it.
  *  - `noAmazonLabel` no Amazon label is added to its note.
+ *  - `noVenmoNote`   no Venmo note is added to its note (3).
  * Per SimpleFin account (`accounts`):
  *  - `noAutoCorrect` no automatic balance correction (drift is still reported).
  *  - `noOpeningFile` the card opening-balance filer leaves its opening balance.
@@ -33,7 +34,7 @@ export const SYNC_OVERRIDES_SECRET_KEY = 'sync_overrides';
 /** Transaction overrides older than this are dropped on the next write. */
 export const TX_OVERRIDE_KEEP_DAYS = 365;
 
-export const TX_OVERRIDE_FLAGS = ['notTransfer', 'keepDuplicate', 'noAutoFile', 'noAmazonLabel'] as const;
+export const TX_OVERRIDE_FLAGS = ['notTransfer', 'keepDuplicate', 'noAutoFile', 'noAmazonLabel', 'noVenmoNote'] as const;
 export type TxOverrideFlag = (typeof TX_OVERRIDE_FLAGS)[number];
 export const ACCOUNT_OVERRIDE_FLAGS = ['noAutoCorrect', 'noOpeningFile'] as const;
 export type AccountOverrideFlag = (typeof ACCOUNT_OVERRIDE_FLAGS)[number];
@@ -43,6 +44,7 @@ export interface TxOverride {
   keepDuplicate?: true;
   noAutoFile?: true;
   noAmazonLabel?: true;
+  noVenmoNote?: true;
   /** When it was last set (ISO). */
   at: string;
   /** The change-log entry whose undo set it. */
@@ -112,16 +114,18 @@ const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v =
 const own = (rec: object, key: string): boolean => Object.prototype.hasOwnProperty.call(rec, key);
 const isIso = (x: unknown): x is string => typeof x === 'string' && !Number.isNaN(Date.parse(x));
 
-/** Every key known and well-shaped; a flag is only ever `true`. An unknown key
- *  is corruption: a newer document shape needs `v: 2`, or an older writer would
- *  drop what it does not know on its next write. */
+/** Every KNOWN key well-shaped; a flag is only ever `true`. A key this version
+ *  does not know is ignored, not corruption: a newer add-on or companion may
+ *  have written a flag, and treating it as corrupt would make an older one
+ *  drop ALL overrides. Unknown keys are kept as stored, so a write here never
+ *  deletes them. */
 function isEntry(v: unknown, flags: readonly string[]): boolean {
   if (!isRecord(v) || !isIso(v.at)) return false;
   return Object.entries(v).every(([k, x]) => {
     if (flags.includes(k)) return x === true;
     if (k === 'at') return true;
     if (k === 'entryId' || k === 'label') return typeof x === 'string';
-    return false;
+    return true;
   });
 }
 
@@ -227,7 +231,9 @@ function withKey<T>(rec: Record<string, T>, key: string, value: T | null): Recor
   return Object.fromEntries(value === null ? rest : [...rest, [key, value]]);
 }
 
-const hasAnyFlag = (entry: object, flags: readonly string[]) => flags.some((f) => own(entry, f));
+/** Anything beyond the entry's bookkeeping keys is a flag — one this version
+ *  knows or one from a newer version, which keeps the entry alive. */
+const hasAnyFlag = (entry: object) => Object.keys(entry).some((k) => k !== 'at' && k !== 'entryId' && k !== 'label');
 
 export function setTxOverride(
   o: SyncOverrides,
@@ -251,7 +257,7 @@ export function setTxOverride(
 export function clearTxOverride(o: SyncOverrides, txKey: string, flag: TxOverrideFlag): SyncOverrides {
   if (!own(o.tx, txKey)) return o;
   const { [flag]: _gone, ...rest } = o.tx[txKey];
-  return { ...o, tx: withKey(o.tx, txKey, hasAnyFlag(rest, TX_OVERRIDE_FLAGS) ? (rest as TxOverride) : null) };
+  return { ...o, tx: withKey(o.tx, txKey, hasAnyFlag(rest) ? (rest as TxOverride) : null) };
 }
 
 export function setAccountOverride(
@@ -274,7 +280,7 @@ export function setAccountOverride(
 export function clearAccountOverride(o: SyncOverrides, sfinId: string, flag: AccountOverrideFlag): SyncOverrides {
   if (!own(o.accounts, sfinId)) return o;
   const { [flag]: _gone, ...rest } = o.accounts[sfinId];
-  return { ...o, accounts: withKey(o.accounts, sfinId, hasAnyFlag(rest, ACCOUNT_OVERRIDE_FLAGS) ? (rest as AccountOverride) : null) };
+  return { ...o, accounts: withKey(o.accounts, sfinId, hasAnyFlag(rest) ? (rest as AccountOverride) : null) };
 }
 
 /** Drops transaction entries set more than a year ago. Account switches stay
@@ -300,6 +306,7 @@ export const OVERRIDE_FLAG_WORDS: Record<TxOverrideFlag | AccountOverrideFlag, s
   keepDuplicate: 'Keep both copies',
   noAutoFile: "Don't file automatically",
   noAmazonLabel: 'No Amazon label',
+  noVenmoNote: 'No Venmo note',
   noAutoCorrect: 'No automatic balance corrections',
   noOpeningFile: "Don't file the opening balance",
 };

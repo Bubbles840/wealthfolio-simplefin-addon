@@ -54,6 +54,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     snapshot the companion publishes after each sync, which says when it was
     taken and when it is out of date or unreadable. Home's Accounts tile
     points at the checks when there is something to look at.
+- **Less filing (R1).**
+  - **Venmo notes.** Forward Venmo's emails to the Amazon mailbox (a second
+    Gmail filter, `from:venmo@venmo.com`) and a bank row for a Venmo payment
+    gets the payment's note: `VENMO PAYMENT 1023 · Venmo: Rent October`. A
+    note goes on only when exactly one payment has the same amount and
+    direction, the bank row is dated from the day before its email to five
+    days after, and no other bank row in the same sync could be that payment
+    (a pending one included); it is clipped to 60 characters. Only posted rows
+    get one (a pending row gets its note once it posts), and never a transfer.
+    A cash-out of exactly one payment you were paid gets none (the payment's
+    email and the transfer's are two of the same amount).
+    Each note is in the change log; Undo takes it off and keeps it off. Your
+    rules can match on a note added at import; one added later arrives by an
+    update, and whether Wealthfolio re-runs rules then is not yet checked.
+    Venmo's email formats are built from its documented wording and not yet
+    checked against real emails: one that does not read is left unread and
+    kept.
+  - **Guessed categories.** A needs-a-category row whose merchant you filed
+    the same way before (at least 2 filings in a rolling 365 days, 80% of them
+    in one category) gets a guess. A row you re-filed counts from when you
+    re-filed it, a rule's filing from when the rule filed it. A Venmo row is
+    guessed by its note only (no note, no guess); bank text made only of
+    generic banking words ("POS PURCHASE 1234") gets none; neither does a row
+    that takes an income category. `/categorize` offers it as the first button —
+    "✓ Groceries (like the last 3)", one tap files it exactly as the grid
+    would — and shows it beside the row on the list; the app shows "Probably
+    Groceries" under the row. A guess never files anything on its own; Amazon
+    rows get none.
+  - **Rules for one account.** The rule preview after a filing offers "All
+    accounts ⇄ Only <account>", and `/newrule trader joes = groceries in
+    checking` opens it for that account. The change log names the account,
+    and Redo brings the rule back for it. A category whose own name holds
+    " in " still works: `/newrule x = Dine In Out` is that category, for
+    every account.
+  - **Update the add-on and the companion together.** Undoing a Venmo note
+    saves a new override, `noVenmoNote`. An add-on or companion of 1.60.0
+    reads the whole overrides list holding it as corrupt, and its sync then
+    ignores EVERY override — `keepDuplicate` (the duplicate check may delete a
+    copy you chose to keep), `notTransfer` (a pair you unlinked is paired and
+    linked again) and `noAmazonLabel` — until the flag is gone (Redo, or 365
+    days). So a Venmo note's Undo waits for both halves: the app's asks for a
+    companion of 1.61.0 or newer ("Update the companion first"), and
+    Telegram's Undo and Redo ask for an installed add-on of 1.61.0 or newer
+    ("Update the add-on first — or undo it from the app's Change log.", also
+    while the companion cannot tell which add-on is installed). The overrides reader now ignores flags it does
+    not know and keeps them, so a later flag will not break this release's
+    add-on.
 - **Audits without SSH — fix.** Two repairs that used to need the server's
   `fix-transfers.mjs` and `skip-transaction.mjs`, in Telegram and the app,
   each in the change log with Undo:

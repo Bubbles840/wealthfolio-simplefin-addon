@@ -588,6 +588,8 @@ const css = `
 .sfin-uncat-row:first-of-type { border-top: none; }
 .sfin-uncat-when { flex: none; font-size: var(--sfin-sz-xs); color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
 .sfin-uncat-what { flex: 1; min-width: 0; font-size: var(--sfin-sz-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The companion's guessed category (3): its own muted line under the description. */
+.sfin-uncat-guess { display: block; font-size: var(--sfin-sz-xs); color: var(--muted-foreground); overflow: hidden; text-overflow: ellipsis; }
 .sfin-uncat-amt { flex: none; font-size: var(--sfin-sz-sm); font-weight: 600; font-variant-numeric: tabular-nums; }
 .sfin-amt--in { color: var(--sfin-ok); }
 .sfin-amt--out { color: var(--sfin-bad); }

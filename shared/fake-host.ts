@@ -1,5 +1,6 @@
 import type { AccountMapping, MappingRule, SimplefinAccountSet } from './types.js';
 import type { AmazonLedger } from './amazon-ledger.js';
+import type { VenmoLedger } from './venmo-ledger.js';
 import type { HoldingsSnapshot } from './holdings.js';
 import type { SkippedTransaction } from './skipped-transactions.js';
 import type { SyncOverrides } from './sync-overrides.js';
@@ -51,6 +52,10 @@ export interface FakeHostSeed {
   /** Amazon orders awaiting their charge. Empty means Amazon categorization is
    *  off, which is what every test that doesn't care about it wants. */
   amazonLedger?: AmazonLedger;
+  /** Venmo payments awaiting their bank row (3). Absent: empty, Venmo notes off. */
+  venmoLedger?: VenmoLedger;
+  /** Leave the Venmo ledger reader and writer off the store — an older host. */
+  noVenmoLedger?: boolean;
   /**
    * Called before every `saveMany`, so a test can make it THROW.
    *
@@ -107,6 +112,8 @@ export interface FakeHost {
   imported: ImportRow[][];
   /** The Amazon ledger as the run left it, for asserting what got consumed. */
   amazon: () => AmazonLedger;
+  /** The Venmo ledger as the run left it. */
+  venmo: () => VenmoLedger;
 }
 
 /** Rows a single `listActivities` page returns — mirrors the addon adapter's
@@ -258,6 +265,7 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
     seed.transferLinkFailures ?? {};
   let driftAlerts: Record<string, DriftAlertEntry> = seed.driftAlerts ?? {};
   let amazonLedger: AmazonLedger = seed.amazonLedger ?? {};
+  let venmoLedger: VenmoLedger = seed.venmoLedger ?? {};
   let accountBalances: Record<string, unknown> = {};
   let balanceInitialized: string[] = [];
   let lastSyncAt: Date | null = null;
@@ -508,6 +516,10 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
     async setAmazonLedger(map: AmazonLedger) {
       amazonLedger = map;
     },
+    ...(seed.noVenmoLedger ? {} : {
+      async getVenmoLedger() { return venmoLedger; },
+      async setVenmoLedger(map: VenmoLedger) { venmoLedger = map; },
+    }),
     async getAutoHeal() {
       return autoHeal;
     },
@@ -522,5 +534,5 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
       : {}),
   };
 
-  return { host, store, activities, saved, links, imported, holdings, amazon: () => amazonLedger };
+  return { host, store, activities, saved, links, imported, holdings, amazon: () => amazonLedger, venmo: () => venmoLedger };
 }

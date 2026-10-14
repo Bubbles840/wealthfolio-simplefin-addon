@@ -1,5 +1,6 @@
 import type { AccountMapping, MappingRule, SimplefinAccountSet, UnmappedAccount } from './types.js';
 import type { AmazonLedger } from './amazon-ledger.js';
+import type { VenmoLedger } from './venmo-ledger.js';
 import type { HoldingsSnapshot } from './holdings.js';
 import type { SkippedTransaction } from './skipped-transactions.js';
 import type { SyncOverrides } from './sync-overrides.js';
@@ -274,6 +275,14 @@ export interface SyncStore {
    */
   getAmazonLedger(): Promise<AmazonLedger>;
   setAmazonLedger(map: AmazonLedger): Promise<void>;
+  /**
+   * Venmo payments parsed from forwarded Venmo emails, awaiting their bank row
+   * (shared/venmo-ledger.ts, project 3). The same off-switch as Amazon's: an
+   * empty ledger skips the matcher. Optional: an older host (or a test double)
+   * without them simply adds no Venmo notes.
+   */
+  getVenmoLedger?(): Promise<VenmoLedger>;
+  setVenmoLedger?(map: VenmoLedger): Promise<void>;
   /**
    * The SimpleFin accounts the last run found no mapping for (see
    * `SyncResult.unmappedAccounts`), persisted so the addon's UI can offer to

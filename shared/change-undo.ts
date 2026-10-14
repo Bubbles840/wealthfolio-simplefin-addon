@@ -19,7 +19,7 @@ import type { ChangeLogItem } from './change-log.js';
 import type { ActivityWrite, ImportRow } from './sync-host.js';
 import type { AccountOverrideFlag, TxOverrideFlag } from './sync-overrides.js';
 import type { MappingRule } from './types.js';
-import { companionUnderstandsOverrides } from './version.js';
+import { companionUnderstandsOverrides, companionUnderstandsVenmoNotes } from './version.js';
 
 export type UndoOp = 'undo' | 'redo';
 /** A rule's Undo comes in two: the rule alone, or the rule and the charges it filed. */
@@ -27,7 +27,7 @@ export type UndoVariant = 'plain' | 'unfile';
 
 /** Kinds whose undo the SYNC carries out (an override): gated on the companion's version. */
 export const SYNC_DECISION_KINDS: ReadonlySet<string> = new Set([
-  'transfer-link', 'transfer-type', 'duplicate-removed', 'balance-correction', 'import', 'amazon-label',
+  'transfer-link', 'transfer-type', 'duplicate-removed', 'balance-correction', 'import', 'amazon-label', 'venmo-note',
 ]);
 /** Kinds only the companion can reverse: the add-on SDK has no category or rule API. */
 export const COMPANION_ONLY_KINDS: ReadonlySet<string> = new Set([
@@ -42,6 +42,11 @@ export const SPENDING_TAXONOMY = 'spending_categories';
 
 // ── Copy (both surfaces) ─────────────────────────────────────────────────
 export const UNDO_UPDATE_COMPANION = 'Update the companion first';
+/** Telegram, for a Venmo note's Undo or Redo while the installed add-on is
+ *  older than `VENMO_NOTE_SINCE`, or unknown (see `addonGateCovers`). It names
+ *  the app too, so a companion that cannot see the add-ons directory still
+ *  points somewhere that works (ruling P3-L). */
+export const UNDO_UPDATE_ADDON = "Update the add-on first — or undo it from the app's Change log.";
 /** The app, when the companion's version could not be read: a gated undo waits. */
 export const UNDO_VERSION_UNKNOWN = "Couldn't check the companion's version — nothing was changed. Try again.";
 export const UNDO_FROM_TELEGRAM = 'Undo this from Telegram: /changes';
@@ -95,10 +100,28 @@ export function undoAvailability(
       ? { kind: 'telegram', op, text: op === 'undo' ? UNDO_FROM_TELEGRAM : REDO_FROM_TELEGRAM }
       : { kind: 'none' };
   }
-  if (where.host === 'addon' && companionGateCovers(entry, op) && !companionUnderstandsOverrides(where.companionVersion)) {
+  if (where.host === 'addon' && companionGateCovers(entry, op) && !companionUnderstands(entry, where.companionVersion)) {
     return { kind: 'update-companion', op, text: UNDO_UPDATE_COMPANION };
   }
   return { kind: 'ready', op };
+}
+
+/** The companion this entry's override needs: one that obeys overrides at all,
+ *  and for a Venmo note one that also reads `noVenmoNote` (ruling P3-K). */
+function companionUnderstands(entry: Pick<ChangeEntry, 'kind'>, companionVersion: string | null): boolean {
+  return companionUnderstandsOverrides(companionVersion)
+    && (entry.kind !== 'venmo-note' || companionUnderstandsVenmoNotes(companionVersion));
+}
+
+/**
+ * In Telegram, this waits for the INSTALLED add-on to read the override it
+ * touches: a Venmo note's Undo writes `noVenmoNote`, its Redo clears it, and an
+ * add-on older than `VENMO_NOTE_SINCE` reads the whole overrides document as
+ * corrupt while the flag is there (see `VENMO_NOTE_SINCE`). The runner reads
+ * the installed version and refuses with `UNDO_UPDATE_ADDON`.
+ */
+export function addonGateCovers(entry: Pick<ChangeEntry, 'kind'>): boolean {
+  return entry.kind === 'venmo-note';
 }
 
 /** A sync decision whose undo is an override the sync must obey: an automatic
@@ -203,7 +226,7 @@ export type UndoStep =
   | { do: 'assign'; activityId: string; taxonomyId: string; categoryId: string }
   | { do: 'unassign'; activityId: string; taxonomyId: string }
   | { do: 'delete-rule'; ruleId: string }
-  | { do: 'create-rule'; rule: { name: string; pattern: string; categoryId: string } }
+  | { do: 'create-rule'; rule: { name: string; pattern: string; categoryId: string; accountId?: string } }
   | { do: 'mapping-remove'; rule: MappingRule }
   | { do: 'mapping-add'; rule: MappingRule };
 
@@ -379,10 +402,15 @@ export function planChangeUndo(
       const name = str(after.name);
       const pattern = str(after.pattern);
       const categoryId = str(after.categoryId);
+      // A rule scoped to one account (3, L5) comes back scoped.
+      const accountId = str(after.accountId);
       if (!name || !pattern || !categoryId) return refuse(UNDO_NOT_POSSIBLE);
       if (op === 'redo') {
         if (state.rule) return refuse('That rule is already there.');
-        return plan({ op, needsSync: false, ruleAfter: 'created', done: 'Redone — the rule is back.', steps: [{ do: 'create-rule', rule: { name, pattern, categoryId } }] });
+        return plan({
+          op, needsSync: false, ruleAfter: 'created', done: 'Redone — the rule is back.',
+          steps: [{ do: 'create-rule', rule: { name, pattern, categoryId, ...(accountId ? { accountId } : {}) } }],
+        });
       }
       if (!state.rule) return refuse('That rule is already gone.');
       const steps: UndoStep[] = [{ do: 'delete-rule', ruleId: state.rule.id }];
@@ -618,6 +646,31 @@ export function planChangeUndo(
         op, needsSync: false, rowAfter: row.id, done: 'Undone — the label is off, and stays off.',
         steps: [
           { do: 'set-tx', txKey: key, flag: 'noAmazonLabel', label: labelOf(entry) },
+          { do: 'update', write: { id: row.id, accountId: row.accountId, activityType: row.type, activityDate: row.date, amount: row.absCents / 100, currency, comment: beforeNote } },
+        ],
+      });
+    }
+
+    // A Venmo note (3): the override first, then the old note back — as an
+    // Amazon label is undone. The sync then never adds it again.
+    case 'venmo-note': {
+      if (!key) return refuse(UNDO_NO_KEY);
+      if (op === 'redo') {
+        return plan({
+          op, needsSync: true, rowAfter: rowNow, done: 'Redone — the next sync adds the note again.',
+          steps: [{ do: 'clear-tx', txKey: key, flag: 'noVenmoNote' }],
+        });
+      }
+      const row = state.row;
+      const beforeNote = str(before.comment);
+      if (!row) return refuse(undoGone(op));
+      const linked = linkedRefusal(row);
+      if (linked) return refuse(linked);
+      if (!beforeNote || row.comment !== str(after.comment)) return refuse(undoChangedSince(op));
+      return plan({
+        op, needsSync: false, rowAfter: row.id, done: 'Undone — the note is off, and stays off.',
+        steps: [
+          { do: 'set-tx', txKey: key, flag: 'noVenmoNote', label: labelOf(entry) },
           { do: 'update', write: { id: row.id, accountId: row.accountId, activityType: row.type, activityDate: row.date, amount: row.absCents / 100, currency, comment: beforeNote } },
         ],
       });

@@ -2,8 +2,9 @@ import { parseReportStore, reportsSecretKey, type ReportKind, type ReportStore }
 import { SKIPPED_TRANSACTIONS_SECRET_KEY, parseSkippedTransactions, parseSkippedTransactionsStrict, type ParsedSkippedTransactions, type SkippedTransaction } from '../../shared/skipped-transactions';
 import type { AddonContext } from '@wealthfolio/addon-sdk';
 import { AMAZON_LEDGER_SECRET_KEY } from '../../shared/amazon-ledger';
+import { VENMO_LEDGER_SECRET_KEY, type VenmoLedger } from '../../shared/venmo-ledger';
 import { AMAZON_CONFIG_SECRET_KEY, AMAZON_LABELS_SECRET_KEY } from '../../shared/amazon-config';
-import { UNCATEGORIZED_STATUS_SECRET_KEY, AMAZON_MAIL_STATUS_SECRET_KEY, AMAZON_MAIL_SAMPLES_SECRET_KEY, POOL_STATUS_SECRET_KEY, type AmazonMailStatus, type AmazonMailSamples } from '../../shared/status-keys';
+import { UNCATEGORIZED_STATUS_SECRET_KEY, AMAZON_MAIL_STATUS_SECRET_KEY, AMAZON_MAIL_SAMPLES_SECRET_KEY, POOL_STATUS_SECRET_KEY, VENMO_MAIL_SAMPLES_SECRET_KEY, type AmazonMailStatus, type AmazonMailSamples } from '../../shared/status-keys';
 import { SEMESTER_POOL_SECRET_KEY, parsePoolConfig } from '../../shared/pool';
 import type { SemesterPoolConfig, PoolStatus } from '../../shared/pool';
 import { REPORT_CUBE_SECRET_KEY, parseReportCube } from '../../shared/report-cube';
@@ -153,6 +154,11 @@ const KEYS = {
   amazonConfig: AMAZON_CONFIG_SECRET_KEY,
   amazonLabels: AMAZON_LABELS_SECRET_KEY,
   amazonLedger: AMAZON_LEDGER_SECRET_KEY,
+  // The Venmo payments (3): companion-written, read by an add-on sync; the
+  // same mailbox as Amazon's, so Reset clears it with the rest.
+  venmoLedger: VENMO_LEDGER_SECRET_KEY,
+  // The unreadable Venmo emails beside it: companion-written, redacted text.
+  venmoMailSamples: VENMO_MAIL_SAMPLES_SECRET_KEY,
   dismissals: 'uncategorized_dismissals',
   hiddenSubscriptions: HIDDEN_SUBSCRIPTIONS_SECRET_KEY,
   confirmedSubscriptions: CONFIRMED_SUBSCRIPTIONS_SECRET_KEY,
@@ -472,6 +478,21 @@ export class SecretsStore {
   }
   async setAmazonLedger(map: AmazonLedger): Promise<void> {
     await this.ctx.api.secrets.set(AMAZON_LEDGER_SECRET_KEY, JSON.stringify(map));
+  }
+
+  /** Venmo payments awaiting their bank row (3), so an add-on sync adds the
+   *  same notes the companion's does. Absent reads as empty; a document that is
+   *  present but unreadable THROWS, so the sync turns Venmo off (and says so)
+   *  and nothing overwrites it. */
+  async getVenmoLedger(): Promise<VenmoLedger> {
+    const raw = await this.ctx.api.secrets.get(VENMO_LEDGER_SECRET_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('the Venmo payments list is not an object');
+    return parsed as VenmoLedger;
+  }
+  async setVenmoLedger(map: VenmoLedger): Promise<void> {
+    await this.ctx.api.secrets.set(VENMO_LEDGER_SECRET_KEY, JSON.stringify(map));
   }
 
   /** How many activities the last completed run imported. Written by both syncers,
