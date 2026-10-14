@@ -67,6 +67,13 @@ export class WealthfolioClient {
    * bounds it so a large HTML error page can't flood the logs.
    */
   private async httpError(action: string, res: Response): Promise<Error> {
+    // Wealthfolio 3.10 answers 423 PROFILE_LOCKED to a request with no profile
+    // scope when the instance has several profiles or a locked one.
+    if (res.status === 423) {
+      return new Error(
+        'Wealthfolio refused the request: a profile is locked or there is more than one profile (HTTP 423 PROFILE_LOCKED). The companion supports one default profile with no lock.',
+      );
+    }
     const MAX_BODY_CHARS = 300;
     let body = '';
     try {
@@ -220,6 +227,19 @@ export class WealthfolioClient {
     const created = (await res.json()) as { id?: unknown };
     if (typeof created.id !== 'string' || !created.id) throw new Error('createSpendingCategory returned no id');
     return created.id;
+  }
+
+  /** The host's version (`GET /api/v1/app/info` → `version`, on 3.8 and 3.10),
+   *  or null on any failure: callers treat an unknown host as an old one. */
+  async getAppVersion(): Promise<string | null> {
+    try {
+      const res = await fetch(`${this.baseUrl}/api/v1/app/info`, { headers: this.authHeaders() });
+      if (!res.ok) return null;
+      const body = (await res.json()) as { version?: unknown };
+      return typeof body?.version === 'string' && body.version ? body.version : null;
+    } catch {
+      return null;
+    }
   }
 
   /** Sets `spending.excluded_category_ids`. The route is a patch: omitted
