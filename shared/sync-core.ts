@@ -12,8 +12,10 @@ import {
   matchAmazonCharge, consumeAmazonMatch, amazonDescription,
 } from './amazon-ledger.js';
 import type { AmazonLedger } from './amazon-ledger.js';
-import { consumeVenmoMatch, isReadableVenmoLedger, matchVenmoPayment, venmoDescription, type VenmoLedger } from './venmo-ledger.js';
-import type { ActivityType, SimplefinTransaction, UnmappedAccount } from './types.js';
+import {
+  consumeVenmoMatch, isReadableVenmoLedger, matchVenmoPayments, venmoDescription, type VenmoLedger, type VenmoMatch,
+} from './venmo-ledger.js';
+import type { ActivityType, SimplefinAccount, SimplefinTransaction, UnmappedAccount } from './types.js';
 import type { ActivityWrite, HoldingsSyncOutcome, HostActivity, ImportRow, LinkLeg, LinkResult, SaveManyRequest, SaveManyResult, SyncHost, SyncStore } from './sync-host.js';
 import { unlinkPairByRecreate, type UnlinkLeg, type UnlinkResult } from './link-pair.js';
 import {
@@ -2052,6 +2054,53 @@ async function runSyncPass(
    *  failed or corrupt read is empty: the sync then behaves as it always did. */
   const overrides = (await store.getSyncOverrides?.().catch(() => null)) ?? emptySyncOverrides();
 
+  // Keep pending rows now (they import and reconcile), dropping only rows we
+  // can't date at all — no `posted` and no `transacted_at` — since those
+  // would produce a 1970 date the server rejects.
+  //
+  // Then collapse repeated transaction ids, BEFORE anything is planned from the
+  // list: two copies of one id would otherwise both plan a create and both land
+  // in one saveMany batch, which is the only way past Wealthfolio's duplicate
+  // guard (see dedupeAccountTransactions). Per account — the same id is a
+  // legitimate sight in two accounts, as the two legs of one transfer.
+  //
+  // A skipped transaction goes here too, so nothing downstream plans from it.
+  // `accountSet` itself is left whole: an overwritten leg is recognised by the
+  // bank still reporting its partner's id, skipped or not.
+  //
+  // Worked out for every mapped account BEFORE the loop, because the Venmo
+  // match below needs the whole run's rows at once.
+  const feedOf = new Map<SimplefinAccount, SimplefinTransaction[]>();
+  for (const sfAccount of accountSet.accounts) {
+    if (!mapping[sfAccount.id]) continue;
+    feedOf.set(sfAccount, dedupeAccountTransactions(
+      sfAccount.id,
+      (sfAccount.transactions ?? []).filter(
+        (tx) => txEpoch(tx) !== null && !skippedTxKeys.has(accountTxKey(sfAccount.id, tx.id)),
+      ),
+    ));
+  }
+
+  // Which Venmo payment each bank row is, decided for the whole run at once
+  // (ruling P3-K): one payment to one row, in any feed order, across accounts.
+  // A posted row competes, whatever its type or override (a transfer or a
+  // `noVenmoNote` row still consumes its payment, it only gets no note); a
+  // pending row competes too, as a blocker that never gets a payment itself.
+  const venmoMatches: Map<string, VenmoMatch> = venmoEnabled
+    ? matchVenmoPayments(venmoLedger, [...feedOf].flatMap(([sfAccount, txs]) => txs.map((tx) => {
+      const amount = parseFloat(tx.amount);
+      return {
+        description: tx.description,
+        amountCents: Math.round(Math.abs(amount) * 100),
+        // The sign alone, never the account type: a card's purchases are negative too.
+        direction: amount < 0 ? 'out' as const : 'in' as const,
+        postedMs: txEpoch(tx)! * 1000,
+        txKey: accountTxKey(sfAccount.id, tx.id),
+        ...(tx.pending ? { pending: true } : {}),
+      };
+    })))
+    : new Map();
+
   for (const sfAccount of accountSet.accounts) {
     const wfAccountId = mapping[sfAccount.id];
     if (!wfAccountId) {
@@ -2065,25 +2114,8 @@ async function runSyncPass(
       });
       continue;
     }
-    // Keep pending rows now (they import and reconcile), dropping only rows we
-    // can't date at all — no `posted` and no `transacted_at` — since those
-    // would produce a 1970 date the server rejects.
-    //
-    // Then collapse repeated transaction ids, BEFORE anything is planned from the
-    // list: two copies of one id would otherwise both plan a create and both land
-    // in one saveMany batch, which is the only way past Wealthfolio's duplicate
-    // guard (see dedupeAccountTransactions). Per account — the same id is a
-    // legitimate sight in two accounts, as the two legs of one transfer.
-    //
-    // A skipped transaction goes here too, so nothing downstream plans from it.
-    // `accountSet` itself is left whole: an overwritten leg is recognised by the
-    // bank still reporting its partner's id, skipped or not.
-    const transactions = dedupeAccountTransactions(
-      sfAccount.id,
-      (sfAccount.transactions ?? []).filter(
-        (tx) => txEpoch(tx) !== null && !skippedTxKeys.has(accountTxKey(sfAccount.id, tx.id)),
-      ),
-    );
+    // Datable, not skipped, one copy per id (see `feedOf` above).
+    const transactions = feedOf.get(sfAccount) ?? [];
     const prepared: PreparedTx[] = [];
     for (const tx of transactions) {
       const amount = parseFloat(tx.amount);
@@ -2136,20 +2168,14 @@ async function runSyncPass(
           amazonLedgerChanged = true;
         }
       }
-      // A Venmo note goes on after typing too, matched on the bank's own text,
-      // and consumed whether or not the person undid it (`noVenmoNote`).
+      // A Venmo note goes on after typing too, matched on the bank's own text
+      // (the run's one-to-one answer, `venmoMatches`), and consumed whether or
+      // not the person undid it (`noVenmoNote`).
       // POSTED rows only: the sync rewrites a pending row's note when it posts,
       // and the payment stays live for the posted row (same id or a new one),
       // which gets its note at import or through the late pass.
       if (venmoEnabled && !tx.pending) {
-        const hit = matchVenmoPayment(venmoLedger, {
-          description: tx.description,
-          amountCents: Math.round(Math.abs(amount) * 100),
-          // The sign alone, never the account type: a card's purchases are negative too.
-          direction: amount < 0 ? 'out' : 'in',
-          postedMs: txEpoch(tx)! * 1000,
-          txKey: key,
-        });
+        const hit = venmoMatches.get(key) ?? null;
         if (hit && !hasTxOverride(overrides, key, 'noVenmoNote')) {
           const enriched = venmoDescription(description, hit.note);
           if (enriched !== description) {

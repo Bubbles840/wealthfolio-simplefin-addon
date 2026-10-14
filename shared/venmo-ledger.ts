@@ -4,14 +4,16 @@
  * Remembering parsed Venmo payments, and deciding which bank row each one is —
  * the `amazon-ledger.ts` pattern (merge by key, prune at 90 days, consume by
  * `accountTxKey`), with Venmo's own match: the word VENMO in the bank text, the
- * exact amount, the same direction, ±5 days of the email, and exactly one
- * distinct record (identical duplicate emails count as one). Host-agnostic; the ledger is an add-on secret both syncers read and
- * the companion's mail poll writes.
+ * exact amount, the same direction, a bank row dated from the day before the
+ * email to five days after it, and one payment for one row — a payment two
+ * rows of the run could be is nobody's, and a row two payments could be gets
+ * none (identical duplicate emails count as one). Host-agnostic; the ledger is
+ * an add-on secret both syncers read and the companion's mail poll writes.
  */
 import type { VenmoDirection, VenmoRecord } from './venmo.js';
 
 export interface VenmoLedgerRecord extends VenmoRecord {
-  /** The EMAIL's date (YYYY-MM-DD), the anchor the ±window is measured from. */
+  /** The EMAIL's date (YYYY-MM-DD), the anchor the match window is measured from. */
   emailDate: string;
   /** The `accountTxKey` this payment was matched to — consumed, never deleted,
    *  so a re-read email cannot offer it to a second row. */
@@ -22,7 +24,11 @@ export type VenmoLedger = Record<string, VenmoLedgerRecord>;
 
 /** Written by the companion (it reads the mailbox), read by both syncers. */
 export const VENMO_LEDGER_SECRET_KEY = 'venmo_ledger';
-export const VENMO_MATCH_WINDOW_DAYS = 5;
+/** A bank row posts at most this many calendar days BEFORE its email's day —
+ *  never really before it; the one day absorbs the email's UTC day (ruling P3-K). */
+export const VENMO_MATCH_DAYS_BEFORE = 1;
+/** …and at most this many calendar days after it. */
+export const VENMO_MATCH_DAYS_AFTER = 5;
 export const VENMO_LEDGER_RETENTION_DAYS = 90;
 /** What goes between the bank's text and the note: `VENMO PAYMENT 1023 · Venmo: Rent October`. */
 export const VENMO_NOTE_MARK = ' · Venmo: ';
@@ -106,6 +112,9 @@ export interface VenmoPaymentQuery {
   postedMs: number;
   /** `accountTxKey(sfAccountId, txId)`. */
   txKey: string;
+  /** A pending row: it competes for a payment — one it could be is nobody's this
+   *  run — but is never matched itself (notes go on posted rows only, P3-G). */
+  pending?: boolean;
 }
 
 export interface VenmoMatch {
@@ -115,42 +124,74 @@ export interface VenmoMatch {
   counterparty: string | null;
 }
 
-/**
- * The Venmo payment a bank row is, or null. Two candidates — two $25.00
- * payments the same week — is null: a wrong note on real money is invisible,
- * a missing one is merely a row without a note. A record consumed by another
- * row is not a candidate; one consumed by THIS row is, so a re-run is
- * idempotent.
- */
-export function matchVenmoPayment(
-  ledger: VenmoLedger,
-  query: VenmoPaymentQuery,
-  windowDays = VENMO_MATCH_WINDOW_DAYS,
-): VenmoMatch | null {
-  if (!isVenmoDescription(query.description)) return null;
+type Hit = [string, VenmoLedgerRecord];
+
+/** The records a row could be: its amount and direction, its window by calendar
+ *  day (a day before the email to five after), and not consumed by another row. */
+function venmoCandidates(ledger: VenmoLedger, query: VenmoPaymentQuery): Hit[] {
+  if (!isVenmoDescription(query.description)) return [];
   const postedDay = Math.floor(query.postedMs / DAY_MS);
-  const hits: Array<[string, VenmoLedgerRecord]> = [];
+  const hits: Hit[] = [];
   for (const [key, rec] of Object.entries(ledger)) {
     if (rec.amountCents !== query.amountCents || rec.direction !== query.direction) continue;
     if (rec.consumedBy && rec.consumedBy !== query.txKey) continue;
     const emailMs = Date.parse(rec.emailDate);
-    if (!Number.isFinite(emailMs) || Math.abs(postedDay - Math.floor(emailMs / DAY_MS)) > windowDays) continue;
+    if (!Number.isFinite(emailMs)) continue;
+    const emailDay = Math.floor(emailMs / DAY_MS);
+    if (postedDay < emailDay - VENMO_MATCH_DAYS_BEFORE || postedDay > emailDay + VENMO_MATCH_DAYS_AFTER) continue;
     hits.push([key, rec]);
   }
-  if (hits.length === 0) return null;
-  // Idempotent: a payment this very row already consumed is its answer, whatever else arrived since.
-  const own = hits.find(([, r]) => r.consumedBy === query.txKey);
-  if (own) return { key: own[0], note: own[1].note, counterparty: own[1].counterparty };
-  // A bank transfer sends two emails (initiated, arrived) that parse to the same
-  // record, possibly on different days. Candidates identical in every field are
-  // one payment, and they would give the same note anyway, so they are not
-  // ambiguous. A payment this row already consumed wins, else the earliest.
-  const sig = (r: VenmoLedgerRecord) => JSON.stringify([r.kind, r.counterparty, r.note, r.paymentId ?? null]);
-  if (hits.some(([, r]) => sig(r) !== sig(hits[0][1]))) return null;
-  hits.sort((a, b) => Number(b[1].consumedBy === query.txKey) - Number(a[1].consumedBy === query.txKey)
-    || a[1].emailDate.localeCompare(b[1].emailDate));
-  const [key, rec] = hits[0];
-  return { key, note: rec.note, counterparty: rec.counterparty };
+  return hits;
+}
+
+/** A bank transfer sends two emails (initiated, arrived) that parse to the same
+ *  record, possibly on different days. Records identical in every field are one
+ *  payment, and would give the same note anyway. */
+const paymentSig = (r: VenmoLedgerRecord) => JSON.stringify([r.kind, r.counterparty, r.note, r.paymentId ?? null]);
+
+const toMatch = ([key, rec]: Hit): VenmoMatch => ({ key, note: rec.note, counterparty: rec.counterparty });
+
+/**
+ * Which Venmo payment each bank row of one sync run is — one payment to one row
+ * (ruling P3-K). Every row of the run is asked together, so the answer never
+ * depends on the order the feed lists them in:
+ *  - a row that already consumed a payment keeps it, whatever arrived since
+ *    (idempotent re-runs, P3-E), and competes for nothing else;
+ *  - a payment two or more rows could be — a pending row among them — is
+ *    dropped for all of them, with its identical twins;
+ *  - a row gets a payment only when exactly one is left.
+ * A wrong note on real money is invisible; a missing one is merely a row
+ * without a note. Pending rows are never in the answer.
+ */
+export function matchVenmoPayments(ledger: VenmoLedger, queries: readonly VenmoPaymentQuery[]): Map<string, VenmoMatch> {
+  const matches = new Map<string, VenmoMatch>();
+  const open: Array<{ txKey: string; hits: Hit[] }> = [];
+  const wantedBy = new Map<string, number>();
+  for (const q of queries) {
+    const hits = venmoCandidates(ledger, q);
+    if (hits.length === 0) continue;
+    const own = q.pending ? undefined : hits.find(([, r]) => r.consumedBy === q.txKey);
+    if (own) {
+      matches.set(q.txKey, toMatch(own));
+      continue;
+    }
+    for (const [key] of hits) wantedBy.set(key, (wantedBy.get(key) ?? 0) + 1);
+    if (!q.pending) open.push({ txKey: q.txKey, hits });
+  }
+  for (const { txKey, hits } of open) {
+    const contested = new Set(hits.filter(([key]) => (wantedBy.get(key) ?? 0) > 1).map(([, r]) => paymentSig(r)));
+    const left = hits.filter(([, r]) => !contested.has(paymentSig(r)));
+    if (left.length === 0 || left.some(([, r]) => paymentSig(r) !== paymentSig(left[0][1]))) continue;
+    // One payment, possibly in two emails: the earliest stands for it.
+    left.sort((a, b) => a[1].emailDate.localeCompare(b[1].emailDate));
+    matches.set(txKey, toMatch(left[0]));
+  }
+  return matches;
+}
+
+/** One row on its own: `matchVenmoPayments` with nothing to compete against. */
+export function matchVenmoPayment(ledger: VenmoLedger, query: VenmoPaymentQuery): VenmoMatch | null {
+  return matchVenmoPayments(ledger, [query]).get(query.txKey) ?? null;
 }
 
 /** Record that a payment's bank row was found. */
