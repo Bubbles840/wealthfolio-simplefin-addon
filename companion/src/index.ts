@@ -61,7 +61,7 @@ import type { TelegramListenerDeps } from './telegram-listener.js';
 import { createImapSource, ingestAmazonMail, amazonMailConfigured } from './amazon-mail.js';
 import { AMAZON_CONFIG_SECRET_KEY, AMAZON_LABELS_SECRET_KEY } from './amazon-mail.js';
 import type { AmazonIngestResult, AmazonMailConfig, MailSource } from './amazon-mail.js';
-import { DEFAULT_GLYPH_STYLE, money } from '../../shared/telegram.js';
+import { DEFAULT_GLYPH_STYLE, money, whyButton, WHY_BUTTON_TEXT, WHY_CALLBACK_PREFIX } from '../../shared/telegram.js';
 import type { GlyphStyle, InlineKeyboard } from '../../shared/telegram.js';
 import type { DismissalLedger } from './dismissals.js';
 import type { SyncHealth } from '../../shared/telegram.js';
@@ -74,7 +74,7 @@ import { fileAmazonCharges } from './amazon-filing.js';
 import { companionChangeSink, readCompanionChangeLog, recordCompanionChanges } from './change-log-host.js';
 import { emptySyncOverrides, hasAccountOverride, hasTxOverride, syncOverridesOrEmpty, type SyncOverrides } from '../../shared/sync-overrides.js';
 import { createChangesMenu, renderChangesCommand, CHANGES_UNREACHABLE_REPLY, type ChangesMenu } from './changes-menu.js';
-import { buildWhyFlow, createWhyMenu, type WhyMenu } from './why-menu.js';
+import { buildWhyFlow, createWhyMenu, whyRunHandle, type WhyMenu } from './why-menu.js';
 import { companionStoryReaders, companionTxSearch, companionTxStory } from './tx-story-host.js';
 import { companionRuleFiledCount, companionUndoIo } from './change-undo-host.js';
 import { runChangeUndo } from '../../shared/change-undo-run.js';
@@ -522,6 +522,10 @@ async function deliverLargeTransactionAlerts(
           tg.botToken,
           tg.chatId,
           formatLargeTransactionAlert(alert),
+          undefined,
+          // 1.61: the story, as a new message. An alert an older build queued
+          // has no row id, and goes out as it always did.
+          alert.activityId ? { inline_keyboard: [[whyButton(alert.activityId)]] } : undefined,
         );
         if (!result.ok) {
           log(`Large-transaction alert failed to send, will retry next sync: ${result.description}`);
@@ -1135,7 +1139,7 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
         if (result.imported > 0) {
           if (tg.notifyOnImport !== false) {
             try {
-              await sendImportNotice(wfClient, tg, result, sharedTransferLearning ?? undefined);
+              await sendImportNotice(wfClient, tg, result, sharedTransferLearning ?? undefined, changeLog.run);
             } catch (err) {
               // `log`, not `debug`: the sync has already succeeded and these rows
               // are already sitting in Wealthfolio, so a thrown notice means the
@@ -1354,6 +1358,9 @@ export async function sendImportNotice(
    *  arguments — reading the shared instance made the notice's keyboard depend
    *  on whether a listener had been built earlier in the process. */
   transfers?: TransferLearning,
+  /** 1.61: this sync's change-log run id — the notice's 🔎 Why? lists the
+   *  run's imports from the log. Absent: no such button. */
+  run?: string,
 ): Promise<void> {
   // Read the ledger BEFORE the sweep, because it is what filters the notice.
   // Button presses are already in it: the always-on listener
@@ -1477,6 +1484,9 @@ export async function sendImportNotice(
     })),
   );
   if (transferRow) keyboard.inline_keyboard.push(transferRow);
+  // Last: one button for the whole sync — it lists the run's imports (from the
+  // change log), and each opens its story.
+  if (run) keyboard.inline_keyboard.push([{ text: WHY_BUTTON_TEXT, callback_data: `${WHY_CALLBACK_PREFIX}r${whyRunHandle(run)}` }]);
   // Remembered BEFORE the send, so the scope is in place no matter how the send
   // goes: Telegram can deliver the message and still fail the response we read.
   // Every row this notice announced, not just the filed ones — the menu is drawn
@@ -2850,6 +2860,8 @@ export function buildCategorizeDeps(wfClient: WealthfolioClient): CategorizeDeps
     // The income taxonomy, for money-in rows' first filings (a grant check is
     // not spending, and upstream refuses a spending category on it).
     readIncomeCategories: getNativeIncomeCategories,
+    // 1.61: the transaction screen's 🔎 Why? — the story as a new message.
+    why: (activityId, send) => buildWhyMenu(wfClient).sendStory(activityId, send),
     readLedger,
     // The shared core, with its fresh second read — NOT a local copy, and never
     // `base` as `persisted`. See `dismissalLedgerAccess`.

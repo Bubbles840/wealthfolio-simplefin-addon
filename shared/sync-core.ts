@@ -452,6 +452,9 @@ export interface SyncResult {
     /** The Wealthfolio account the row landed in, by name (falling back to the
      *  SimpleFin account name on a host that reports no name). */
     accountName: string;
+    /** 1.61: the row this run created — the alert's 🔎 Why? opens its story.
+     *  Absent on an alert an older build queued in the outbox. */
+    activityId?: string;
   }>;
   /** Accounts that opened a new drift episode this run — a TRUSTWORTHY drift
    *  measurement past the alert threshold that the user has not been told about
@@ -3237,6 +3240,7 @@ async function runSyncPass(
               amountCents: t.absCents,
               currency: sfAccount.currency,
               accountName: wfNames.get(t.wfAccountId) || sfAccount.name,
+              activityId: a.id,
             });
           }
         }

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest';
 import { maskUrl, publishLiveReports, validateStartupEnv, startupWarnings, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, composeDailyDigest, composeWeeklyReportMessage, runCompanionSyncExclusive, buildTelegramCommandHandler, applyTelegramDismissal, undoTelegramDismissal, formatDismissedReply, buildTelegramListenerDeps, buildCategorizeController, buildCategorizeDeps, rememberImportScope, sendUnmappedAccountsNotice, updateCheckDeps, buildAskSessions } from './index.js';
 import { findingHandle } from '../../shared/findings.js';
+import { whyRunHandle } from './why-menu.js';
 import { formatHelpReply, parseCommand } from '../../shared/telegram-commands.js';
 import { SIMPLEFIN_SYNC_VERSION } from '../../shared/version.js';
 import { runSyncCore } from '../../shared/sync-core.js';
@@ -909,6 +910,45 @@ describe('large-transaction alert delivery', () => {
     expect(payload.chat_id).toBe('1');
     expect(payload.parse_mode).toBe('Markdown');
     expect(payload.text).toBe('💸 *$1,240.00* USD — SQ \\*BLUE BOTTLE\\_COFFEE · Spend');
+  });
+
+  it('carries a 🔎 Why? button when the alert knows its row (1.61), and none on an older queued one', async () => {
+    const older = { txId: 'tx-0', description: 'Roof repair', amountCents: 250099, currency: 'USD', accountName: 'Spend' };
+    secrets.set('pending_large_tx_alerts', JSON.stringify([older]));
+    vi.mocked(runSyncCore).mockResolvedValueOnce({
+      imported: 0, skipped: 0, errors: [], prunedDuplicates: [], unmappedAccounts: [], refusedCreates: [], stuckTransferAlerts: [], balanceDriftAlerts: [],
+      largeTransactionAlerts: [{
+        txId: 'tx-1', description: 'DELTA AIR LINES', amountCents: 124000, currency: 'USD', accountName: 'Spend',
+        activityId: '0f8fad5b-d9cb-469f-a165-708677289501',
+      }],
+    });
+    await client();
+    const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await runCompanionSync();
+
+    const bodies = fetchMock.mock.calls.map((c: any[]) => JSON.parse(c[1].body));
+    expect(bodies[0]).not.toHaveProperty('reply_markup');
+    expect(bodies[1].reply_markup).toEqual({
+      inline_keyboard: [[{ text: '🔎 Why?', callback_data: 'cz:wy:t0f8fad5b-d9cb-469f-a165-708677289501' }]],
+    });
+  });
+
+  it('queues an undelivered alert with its activity id, so the retry still has the button', async () => {
+    const alert = {
+      txId: 'tx-1', description: 'DELTA AIR LINES', amountCents: 124000, currency: 'USD', accountName: 'Spend', activityId: 'act-1',
+    };
+    vi.mocked(runSyncCore).mockResolvedValueOnce({
+      imported: 0, skipped: 0, errors: [], prunedDuplicates: [], unmappedAccounts: [], refusedCreates: [], stuckTransferAlerts: [], balanceDriftAlerts: [],
+      largeTransactionAlerts: [alert],
+    });
+    await client();
+    vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ ok: false, description: 'Too Many Requests' }) })));
+
+    await runCompanionSync();
+
+    expect(JSON.parse(secrets.get('pending_large_tx_alerts')!)).toEqual([alert]);
   });
 
   it('keeps an undelivered alert queued and re-sends it on the next sync', async () => {
@@ -3653,6 +3693,23 @@ describe('sendImportNotice', () => {
     expect(fetchMock.mock.calls.filter((c: any[]) => String(c[0]).includes('getUpdates'))).toHaveLength(0);
     expect(client.getAddonSecret).not.toHaveBeenCalledWith('simplefin-sync', 'telegram_update_offset');
     expect(client.setAddonSecret).not.toHaveBeenCalledWith('simplefin-sync', 'telegram_update_offset', expect.anything());
+  });
+
+  it('offers 🔎 Why? for this sync’s imports when it knows the run (1.61), as the last row', async () => {
+    vi.mocked(getNativeUncategorizedSpending).mockReturnValue([uncatRow('act-1', 'VENMO PAYMENT')]);
+    const fetchMock = vi.fn((_url: any, _init?: any) => Promise.resolve({ ok: true, json: async () => ({ ok: true }) }));
+    vi.stubGlobal('fetch', fetchMock);
+    const client: any = { getAddonSecret: vi.fn(async () => null), setAddonSecret: vi.fn(async () => {}) };
+
+    await sendImportNotice(client, { botToken: 'T', chatId: '9' }, {
+      imported: 1, importedTransactions: [importedTx],
+    } as any, undefined, 'c1a2b3c4d');
+
+    const body = JSON.parse((fetchMock.mock.calls.find((c: any[]) => String(c[0]).includes('sendMessage'))![1] as any).body);
+    expect(body.reply_markup.inline_keyboard.at(-1)).toEqual([
+      { text: '🔎 Why?', callback_data: `cz:wy:r${whyRunHandle('c1a2b3c4d')}` },
+    ]);
+    expect(body.reply_markup.inline_keyboard[0][0].callback_data).toBe('d:act-1');
   });
 
   it('does not erase a dismissal the addon wrote after this run\'s first read', async () => {

@@ -13,7 +13,7 @@
 import { categoryRulePattern } from './rule-pattern.js';
 import { isAmazonDescription } from './amazon-ledger.js';
 import type { InlineKeyboard } from './telegram.js';
-import { moneyWhole, escapeMarkdown } from './telegram.js';
+import { moneyWhole, escapeMarkdown, WHY_BUTTON_TEXT } from './telegram.js';
 import { INCOME_TAXONOMY_ID } from './cash-flow-bucket.js';
 
 /** One uncategorized spending transaction, as the menu needs it. `date` is
@@ -217,6 +217,9 @@ export interface MenuSession {
    * default; it remains optional for this module's own callers, which build
    * sessions by hand and mostly exercise the categorize flow. */
   mode?: 'categorize' | 'recategorize';
+  /** 1.61: the controller can send a transaction's story, so the transaction
+   *  screen offers 🔎 Why?. Absent: no button, exactly as before. */
+  why?: boolean;
 }
 
 export type MenuAction =
@@ -258,7 +261,9 @@ export type MenuAction =
    *  confirmation happened to be displaying and dropped the others, while the
    *  screen reported the undo as complete. Never empty — the button that emits
    *  this is not rendered when there is nothing to restore. */
-  | { kind: 'undoReassign'; activityId: string; toRestore: readonly TaxonomyAssignment[] };
+  | { kind: 'undoReassign'; activityId: string; toRestore: readonly TaxonomyAssignment[] }
+  /** 1.61: send this transaction's story as a NEW message; the screen stays. */
+  | { kind: 'why'; activityId: string };
 
 /**
  * Parses `/newrule <pattern> = <category>` (or `→` in place of `=`) — the
@@ -555,6 +560,7 @@ function renderTxn(session: MenuSession, activityId: string, showSpending = fals
     // to the same category is a harmless no-op for the controller to shrug
     // off, not a state this screen needs to special-case.
     ...(isRecategorize ? [] : [[{ text: 'Keep uncategorized', action: { kind: 'dismiss' as const, activityId } }]]),
+    ...(session.why ? [[{ text: WHY_BUTTON_TEXT, action: { kind: 'why' as const, activityId } }]] : []),
     [{ text: '‹ Back', action: { kind: 'goto', screen: { kind: 'list', page: 0 } } }],
   ];
 

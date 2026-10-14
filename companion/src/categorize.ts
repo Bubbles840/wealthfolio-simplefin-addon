@@ -252,6 +252,10 @@ export interface CategorizeDeps {
   /** The change log: one draft per write that succeeded. Optional (most tests
    *  leave it out); read at call time; a throw is logged and swallowed. */
   record?: (draft: ChangeDraft) => void;
+  /** 1.61: the transaction screen's 🔎 Why? — sends that transaction's story
+   *  as a NEW message (companion/src/why-menu.ts). Optional: without it the
+   *  button is not offered. */
+  why?: (activityId: string, send: (text: string, keyboard?: InlineKeyboard) => Promise<void>) => Promise<void>;
   /** Republishes the addon's needs-a-category status. May throw; a failure here
    *  costs a stale tile, never the flow the user is in (see `republishQuietly`). */
   republish: () => Promise<void>;
@@ -901,6 +905,7 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
       buttons: [],
       generation: nextGeneration(),
       mode,
+      ...(deps.why ? { why: true } : {}),
     };
   }
 
@@ -1095,6 +1100,12 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
     switch (action.kind) {
       case 'goto':
         await transition(chat, action.screen, carryPin(chat, action.screen), ui);
+        return;
+
+      case 'why':
+        // A NEW message: the screen, its session and its buttons stay exactly
+        // as they were, so the next tap on it still works.
+        await deps.why?.(action.activityId, ui.send);
         return;
 
       case 'close': {

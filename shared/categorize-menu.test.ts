@@ -181,6 +181,14 @@ describe('renderScreen — txn', () => {
     expect(buttons[idx]).toEqual({ kind: 'goto', screen: { kind: 'list', page: 0 } });
   });
 
+  it('offers 🔎 Why? for this transaction when the controller can tell its story (1.61)', () => {
+    const { keyboard, buttons } = renderScreen(session({ why: true, screen: { kind: 'txn', activityId: 'act-1' } }));
+    const idx = keyboard.inline_keyboard.flat().findIndex((b) => b.text === '🔎 Why?');
+    expect(buttons[idx]).toEqual({ kind: 'why', activityId: 'act-1' });
+    const without = renderScreen(session({ screen: { kind: 'txn', activityId: 'act-1' } }));
+    expect(without.keyboard.inline_keyboard.flat().map((b) => b.text)).not.toContain('🔎 Why?');
+  });
+
   it('falls back to the list when the transaction is no longer present', () => {
     const s = session({ txns: [], screen: { kind: 'txn', activityId: 'gone' } });
     const { text, keyboard } = renderScreen(s);
