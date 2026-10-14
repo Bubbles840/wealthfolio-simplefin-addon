@@ -118,6 +118,26 @@ export class WealthfolioClient {
     return res.json() as Promise<Array<{ accountId: string; totalValue: string | number }>>;
   }
 
+  /**
+   * What Wealthfolio's Spending page counts as spent between two instants
+   * (`POST /spending/insight`, upstream `SpendingInsightRequest` →
+   * `SpendingInsight.headline.spent`, Wealthfolio 3.8), in the base currency.
+   * The page sends its "This month" as the calendar month in its timezone,
+   * RFC 3339, both ends inclusive.
+   */
+  async getSpendingInsightSpent(startDate: string, endDate: string): Promise<number> {
+    const res = await fetch(`${this.baseUrl}/api/v1/spending/insight`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
+      body: JSON.stringify({ startDate, endDate }),
+    });
+    if (!res.ok) throw await this.httpError('getSpendingInsight', res);
+    const body = (await res.json()) as { headline?: { spent?: unknown } } | null;
+    const spent = body?.headline?.spent;
+    if (typeof spent !== 'number' || !Number.isFinite(spent)) throw new Error('getSpendingInsight: the reply carried no headline.spent');
+    return spent;
+  }
+
   /** Marks two activities as one internal transfer (shared source_group_id). */
   async linkTransferActivities(activityAId: string, activityBId: string): Promise<void> {
     const res = await fetch(`${this.baseUrl}/api/v1/activities/link`, {

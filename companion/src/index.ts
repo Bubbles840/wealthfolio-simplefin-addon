@@ -109,6 +109,8 @@ import {
 } from './subscriptions-menu.js';
 import { addDaysIso, dueWithin, formatRosterTotal, manualKey, rosterMoney, type Cadence } from '../../shared/subscription-roster.js';
 import { REPORT_CUBE_SECRET_KEY, parseReportCube } from '../../shared/report-cube.js';
+import { companionAuditReaders, publishAuditSnapshot } from './audit-facts.js';
+import { auditMenuDeps, auditStatusKeyboard, createAuditMenu, type AuditMenu } from './audit-menu.js';
 import { addManual, editSubscriptionPrefs, emptySubscriptionPrefs, isUnreadablePrefsError, loadSubscriptionPrefs, newManualId, renameKey, setRemind, SubscriptionPrefsInvalidError, type ManualSubscription, type RemindDays, type SecretGet, type SecretSet, type SubscriptionEdit } from '../../shared/subscription-prefs.js';
 import { renderReportSvg, reportImageTitle, reportImageCaption, RENDERABLE_REPORT_IDS } from '../../shared/report-render.js';
 import { createAskSessions, CANCELLED, CANCELLED_EARLIER, NOT_WAITING, type AskSessions } from './ask-session.js';
@@ -1169,6 +1171,19 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
       }
     } catch (err) {
       debug(`Telegram check note: ${formatError(err)}`);
+    }
+
+    // 2c: the checks behind the app's Checks card, its account chips and the
+    // Budget tab's "different from Wealthfolio" link — after the cube, whose
+    // figure they compare, and LAST, after every alert and notice above: its
+    // Wealthfolio REST reads have no timeout, and a slow one must never hold
+    // an alert back. Best-effort like the cube: a failed run, an over-budget
+    // rejection or a failed write keeps the previous snapshot and never
+    // touches this sync's result.
+    try {
+      await publishAuditSnapshot(wfClient, wealthfolioDbPath(), new Date());
+    } catch (e) {
+      log(`Audit snapshot publish failed (the app's checks may be stale): ${formatError(e)}`);
     }
 
     await updateSyncHealth(wfClient, null);
@@ -2704,6 +2719,9 @@ async function readStatusReplyInput(wfClient: WealthfolioClient): Promise<Status
   const balances =
     parseSecretJson<Record<string, StoredAccountBalance>>(balancesRead.raw, 'account_balances') ?? {};
   const names = parseSecretJson<Record<string, string>>(await secret('account_names'), 'account_names') ?? {};
+  // Which Wealthfolio account each is, for its 🔎 button (2c). Unreadable:
+  // no buttons, and the reply is otherwise unchanged.
+  const mapping = parseSecretJson<Record<string, string>>(await secret('account_mapping'), 'account_mapping') ?? {};
   const uncategorized = parseSecretJson<{ count?: number }>(
     await secret(UNCATEGORIZED_STATUS_SECRET_KEY),
     UNCATEGORIZED_STATUS_SECRET_KEY,
@@ -2734,6 +2752,7 @@ async function readStatusReplyInput(wfClient: WealthfolioClient): Promise<Status
       // Absent reads as false: an older build's snapshot proves nothing about
       // whether a comparison actually happened.
       measured: info.measured === true,
+      ...(mapping[sfinAccountId] ? { wfAccountId: mapping[sfinAccountId] } : {}),
     });
   }
 
@@ -3012,6 +3031,15 @@ export function buildWhyMenu(wfClient: WealthfolioClient): WhyMenu {
 }
 
 /**
+ * `/audit` (2c): why a balance or the month differs from Wealthfolio, and what
+ * its Health page flags. Stateless — every tap re-reads — so the listener and
+ * `/status`'s 🔎 buttons can share one instance or build their own.
+ */
+export function buildAuditMenu(wfClient: WealthfolioClient): AuditMenu {
+  return createAuditMenu(auditMenuDeps(companionAuditReaders(wfClient, wealthfolioDbPath()), log));
+}
+
+/**
  * The bot's question flows, registered on ONE session holder. Like the
  * categorize controller, one instance must serve `onCommand`, `onText` and
  * `onMenuCallback`, or a question asked through one could never be answered
@@ -3190,6 +3218,7 @@ export function buildTelegramCommandHandler(
   controller: CategorizeController = buildCategorizeController(wfClient),
   asks: AskSessions = buildAskSessions(wfClient, controller),
   why: WhyMenu = buildWhyMenu(wfClient),
+  audit: AuditMenu = buildAuditMenu(wfClient),
 ): (cmd: ParsedCommand, reply: (text: string, keyboard?: InlineKeyboard) => Promise<void>) => Promise<void> {
   const budgetSnapshot = () => readBudgetSnapshotWithStyle(wfClient);
 
@@ -3345,9 +3374,20 @@ export function buildTelegramCommandHandler(
         return;
       }
 
-      case 'status':
-        await reply(formatStatusReply(await readStatusReplyInput(wfClient), new Date()));
+      case 'audit':
+        // 2c: checked live; "Couldn't reach Wealthfolio" is the answer when it can't be.
+        await audit.reply(reply);
         return;
+
+      case 'status': {
+        const input = await readStatusReplyInput(wfClient);
+        const text = formatStatusReply(input, new Date());
+        // 2c: a 🔎 under each account that is off opens why, as a new message.
+        // None off, none sent: the reply keeps its one-argument shape.
+        const keyboard = auditStatusKeyboard(input.accounts);
+        await (keyboard ? reply(text, keyboard) : reply(text));
+        return;
+      }
 
       case 'dismissed': {
         const { readLedger } = dismissalLedgerAccess(wfClient);
@@ -3532,9 +3572,11 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
 
   /** `/why`: stateless, but one instance serves commands, answers and taps. */
   const why = buildWhyMenu(wfClient);
+  /** `/audit` (2c) and `/status`'s 🔎 buttons: stateless too. */
+  const audit = buildAuditMenu(wfClient);
   /** ONE question slot for commands, plain answers and taps alike. */
   const asks = buildAskSessions(wfClient, categorize, why);
-  const runCommand = buildTelegramCommandHandler(wfClient, categorize, asks, why);
+  const runCommand = buildTelegramCommandHandler(wfClient, categorize, asks, why, audit);
 
   /** The Amazon label picker. Shares the `cz:` callback prefix, so
    *  `onMenuCallback` below asks it first and only then falls through to the
@@ -3794,6 +3836,11 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
       // `cz:wy:` (1.61) likewise.
       if (why.handles(cb.data)) {
         await why.onCallback(cb, ui);
+        return;
+      }
+      // `cz:au:` (2c) likewise: /audit and /status's 🔎 buttons.
+      if (audit.handles(cb.data)) {
+        await audit.onCallback(cb, ui);
         return;
       }
       if (cb.data !== RECATEGORIZE_ENTRY_CALLBACK) {
