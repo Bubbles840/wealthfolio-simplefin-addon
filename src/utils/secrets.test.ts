@@ -200,6 +200,13 @@ describe('SecretsStore', () => {
     await s.clearAll();
     expect(data['venmo_ledger']).toBeUndefined();
   });
+
+  it('clearAll removes the unreadable Venmo emails the companion keeps', async () => {
+    const { ctx, data } = makeCtxWithData();
+    data['venmo_mail_samples'] = JSON.stringify({ asOf: '2026-10-05', unparsed: 1, samples: [] });
+    await new SecretsStore(ctx).clearAll();
+    expect(data['venmo_mail_samples']).toBeUndefined();
+  });
 });
 
 describe('SecretsStore skipped transactions', () => {

@@ -7,7 +7,8 @@ import { SIMPLEFIN_SYNC_VERSION } from '../../shared/version.js';
 import { runSyncCore } from '../../shared/sync-core.js';
 import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeCategorizedSpending, getNativeSpendingCategories, getNativeTxSearchRows } from './sqlite-native.js';
 import { ingestAmazonMail } from './amazon-mail.js';
-import { AMAZON_MAIL_STATUS_SECRET_KEY, AMAZON_MAIL_SAMPLES_SECRET_KEY, UNCATEGORIZED_STATUS_SECRET_KEY } from '../../shared/status-keys.js';
+import { ingestVenmoMail } from './venmo-mail.js';
+import { AMAZON_MAIL_STATUS_SECRET_KEY, AMAZON_MAIL_SAMPLES_SECRET_KEY, UNCATEGORIZED_STATUS_SECRET_KEY, VENMO_MAIL_SAMPLES_SECRET_KEY } from '../../shared/status-keys.js';
 import { CATEGORIZE_ENTRY_CALLBACK, escapeMarkdown } from '../../shared/telegram.js';
 import { categoryFiledChange, stampChange } from '../../shared/change-entries.js';
 import { existsSync } from 'fs';
@@ -138,6 +139,13 @@ vi.mock('./amazon-mail.js', async (importOriginal) => ({
   ingestAmazonMail: vi.fn(async () => ({
     scanned: 0, added: 0, unparsed: 0, ignored: 0, pruned: 0, newLabels: [], unparsedSenders: {}, cancelled: 0, samples: [],
   })),
+}));
+
+// Venmo's ingest (3) reads the same faked mailbox: a quiet result by default,
+// so every Amazon test above keeps exactly the mailbox it had.
+vi.mock('./venmo-mail.js', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  ingestVenmoMail: vi.fn(async () => ({ scanned: 0, added: 0, ignored: 0, unparsed: 0, pruned: 0, samples: [] })),
 }));
 
 vi.mock('fs', async (importOriginal) => {
@@ -4198,6 +4206,35 @@ describe('Amazon mail status publishing', () => {
 
     expect(result.imported).toBe(2); // the mocked runSyncCore's usual result
     expect(secrets.has(AMAZON_MAIL_STATUS_SECRET_KEY)).toBe(false);
+  });
+
+  it('reads the same mailbox for Venmo, and keeps the Venmo emails it could not read', async () => {
+    const secrets = configuredSecrets();
+    await clientFor(secrets);
+    vi.mocked(ingestVenmoMail).mockClear();
+    vi.mocked(ingestVenmoMail).mockResolvedValueOnce({
+      scanned: 2, added: 1, ignored: 0, unparsed: 1, pruned: 0,
+      samples: [{ at: '2026-10-03T12:00:00Z', from: 'venmo@venmo.com', subject: 'You paid Jane Doe $25.00', plain: 'x', html: '' }],
+    });
+
+    await runCompanionSync();
+
+    expect(vi.mocked(ingestVenmoMail)).toHaveBeenCalledTimes(1);
+    const kept = JSON.parse(secrets.get(VENMO_MAIL_SAMPLES_SECRET_KEY)!);
+    expect(kept.unparsed).toBe(1);
+    expect(kept.samples.map((s: { subject: string }) => s.subject)).toEqual(['You paid Jane Doe $25.00']);
+  });
+
+  it('a Venmo failure leaves Amazon’s scan a completed one and the sync untouched', async () => {
+    const secrets = configuredSecrets();
+    await clientFor(secrets);
+    vi.mocked(ingestVenmoMail).mockRejectedValueOnce(new Error('venmo parser exploded'));
+
+    const result = await runCompanionSync();
+
+    expect(result.imported).toBe(2);
+    expect(JSON.parse(secrets.get(AMAZON_MAIL_STATUS_SECRET_KEY)!).error).toBeUndefined();
+    expect(secrets.has(VENMO_MAIL_SAMPLES_SECRET_KEY)).toBe(false);
   });
 });
 

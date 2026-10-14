@@ -58,7 +58,9 @@ import { withSnooze } from '../../shared/findings.js';
 import { monthEndForecast, previousThreeFullMonths, daysInMonthOf } from '../../shared/projection.js';
 import { startTelegramListener } from './telegram-listener.js';
 import type { TelegramListenerDeps } from './telegram-listener.js';
-import { createImapSource, ingestAmazonMail, amazonMailConfigured } from './amazon-mail.js';
+import { createImapSource, ingestAmazonMail, amazonMailConfigured, isAmazonMessage, mailBody, shareMailSource } from './amazon-mail.js';
+import { ingestVenmoMail, isVenmoMail } from './venmo-mail.js';
+import { isVenmoMessage } from '../../shared/venmo.js';
 import { AMAZON_CONFIG_SECRET_KEY, AMAZON_LABELS_SECRET_KEY } from './amazon-mail.js';
 import type { AmazonIngestResult, AmazonMailConfig, MailSource } from './amazon-mail.js';
 import { DEFAULT_GLYPH_STYLE, money, whyButton, WHY_BUTTON_TEXT, WHY_CALLBACK_PREFIX } from '../../shared/telegram.js';
@@ -83,7 +85,7 @@ import { isChangeLogPartial } from '../../shared/change-view.js';
 import type { ChangeDraft } from '../../shared/change-entries.js';
 import { createTransferLearning, type TransferLearning } from './transfer-learning.js';
 import type { CategorizeController, CategorizeDeps } from './categorize.js';
-import { AMAZON_MAIL_STATUS_SECRET_KEY, AMAZON_MAIL_SAMPLES_SECRET_KEY, UNCATEGORIZED_STATUS_SECRET_KEY, POOL_STATUS_SECRET_KEY, type AmazonMailStatus, type AmazonMailSamples } from '../../shared/status-keys.js';
+import { AMAZON_MAIL_STATUS_SECRET_KEY, AMAZON_MAIL_SAMPLES_SECRET_KEY, UNCATEGORIZED_STATUS_SECRET_KEY, POOL_STATUS_SECRET_KEY, VENMO_MAIL_SAMPLES_SECRET_KEY, type AmazonMailStatus, type AmazonMailSamples, type VenmoMailSamples } from '../../shared/status-keys.js';
 import {
   formatHelpReply,
   formatLeftReply,
@@ -587,8 +589,10 @@ async function pollAmazonMail(
   );
   let source: MailSource | null = null;
   try {
-    source = await createImapSource(merged);
-    const result = await ingestAmazonMail(source, store, merged, Date.now());
+    // Amazon's and Venmo's messages (3), one read shared between the two.
+    source = await createImapSource(merged, (from, body) => isAmazonMessage(from, body) || isVenmoMessage(from, body));
+    const mailbox = shareMailSource(source);
+    const result = await ingestAmazonMail(mailbox.view((m) => isAmazonMessage(m.from, mailBody(m))), store, merged, Date.now());
     log(
       `Amazon mail: ${result.scanned} scanned, ${result.added} orders added` +
       `${result.ignored ? `, ${result.ignored} delivery notices skipped` : ''}` +
@@ -631,6 +635,7 @@ async function pollAmazonMail(
     await wfClient
       .setAddonSecret('simplefin-sync', AMAZON_MAIL_SAMPLES_SECRET_KEY, JSON.stringify(samples))
       .catch(() => {});
+    await pollVenmoMail(mailbox.view(isVenmoMail), store, wfClient);
     return result.newLabels;
   } catch (err) {
     log(`Amazon mail error (categorization skipped this run): ${formatError(err)}`);
@@ -648,6 +653,33 @@ async function pollAmazonMail(
     return [];
   } finally {
     await source?.close().catch(() => {});
+  }
+}
+
+/**
+ * The same mailbox's Venmo emails into the Venmo ledger (3). On whenever the
+ * Amazon mailbox is: it only acts on Venmo mail that arrives. Its own guard —
+ * a Venmo failure costs this run's Venmo notes, never Amazon's status or the
+ * sync. The unreadable ones are published every completed scan, so the set
+ * clears itself once a fix reads them.
+ */
+async function pollVenmoMail(source: MailSource, store: RestSyncStore, wfClient: WealthfolioClient): Promise<void> {
+  try {
+    const result = await ingestVenmoMail(source, store, Date.now());
+    if (result.scanned > 0) {
+      log(
+        `Venmo mail: ${result.scanned} scanned, ${result.added} payments added` +
+        `${result.ignored ? `, ${result.ignored} other Venmo emails skipped` : ''}` +
+        `${result.unparsed ? `, ${result.unparsed} unrecognised` : ''}` +
+        `${result.pruned ? `, ${result.pruned} pruned` : ''}`,
+      );
+    }
+    const samples: VenmoMailSamples = { asOf: new Date().toISOString(), unparsed: result.unparsed, samples: result.samples };
+    await wfClient
+      .setAddonSecret('simplefin-sync', VENMO_MAIL_SAMPLES_SECRET_KEY, JSON.stringify(samples))
+      .catch(() => {});
+  } catch (err) {
+    log(`Venmo mail error (notes skipped this run): ${formatError(err)}`);
   }
 }
 
