@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { ChangeEntry, ChangeLogSink } from './change-entries.js';
 import { currentActivityId } from './change-view.js';
 import { createFakeHost, type FakeHostSeed } from './fake-host.js';
+import { unlinkPairPreferInPlace, type InPlaceIo } from './link-in-place.js';
 import type { UnlinkLeg } from './link-pair.js';
 import { runSyncCore, VALUATION_POLL } from './sync-core.js';
 import type { HostActivity, LinkLeg, LinkResult } from './sync-host.js';
@@ -140,6 +141,41 @@ describe('runSyncCore — links and unlinks in place', () => {
     await fh.store.setLinkedGroups({ [OUT]: 'wf-transfer-grp-9', [IN]: 'wf-transfer-grp-9' });
     const unlinkPair = vi.fn(async () => ({ unlinked: true, inPlace: true as const, activityIds: ['act-out', 'act-in'] as [string, string] }));
     await runSyncCore({ ...fh.host, capabilities: { readsSourceGroupId: false }, unlinkPair }, fh.store, {});
+    expect(await fh.store.getLinkedGroups()).toEqual({});
+  });
+
+  it('on the add-on, the sync after an incomplete unlink retypes the same rows in place: no delete, no create, one transfer-unlink logged', async () => {
+    const linked = unlinkedRows();
+    for (const rows of linked.values()) for (const r of rows) Object.assign(r, { sourceGroupId: 'grp-9' });
+    const overrides = [OUT, IN].reduce((o, k) => setTxOverride(o, k, 'notTransfer', NOW), emptySyncOverrides());
+    const fh = createFakeHost(twoAccounts({ existing: linked, syncOverrides: overrides }));
+    await fh.store.setLinkedGroups({ [OUT]: 'wf-transfer-grp-9', [IN]: 'wf-transfer-grp-9' });
+    const all = () => [...fh.activities.values()].flat();
+    const io: InPlaceIo = {
+      read: async (ids) => all().filter((r) => ids.includes(r.id)),
+      link: async () => [],
+      unlink: async () => { for (const r of all()) r.sourceGroupId = null; return []; },
+    };
+    let refuse = true;
+    const saveMany = async (req: Parameters<typeof fh.host.saveMany>[0]) => {
+      if (refuse && req.updates?.length) { refuse = false; return { created: [], updated: [], errors: [{ action: 'update', message: 'refused' }] }; }
+      return fh.host.saveMany(req);
+    };
+    const host = {
+      ...fh.host, capabilities: { readsSourceGroupId: false }, saveMany,
+      unlinkPair: (legs: [UnlinkLeg, UnlinkLeg]) => unlinkPairPreferInPlace(io, saveMany, legs),
+    };
+    const first = capture();
+    const r1 = await runSyncCore(host, fh.store, { changeLog: first, force: true });
+    expect(r1.errors.join('\n')).toContain('Transfer-unlink incomplete');
+    expect(all().map((r) => r.activityType)).toEqual(['TRANSFER_OUT', 'TRANSFER_IN']);
+    fh.saved.length = 0;
+    const second = capture();
+    const r2 = await runSyncCore(host, fh.store, { changeLog: second, force: true });
+    expect(r2.errors).toEqual([]);
+    expect(fh.saved.filter((r) => (r.creates ?? []).length > 0 || (r.deleteIds ?? []).length > 0)).toEqual([]);
+    expect(all().map((r) => [r.id, r.activityType])).toEqual([['act-out', 'WITHDRAWAL'], ['act-in', 'DEPOSIT']]);
+    expect(second.entries().filter((e) => e.kind === 'bookkeeping')).toHaveLength(1);
     expect(await fh.store.getLinkedGroups()).toEqual({});
   });
 });

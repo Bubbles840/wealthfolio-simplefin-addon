@@ -70,12 +70,16 @@ export interface InPlaceIo {
 /** Wealthfolio's refusal when a row is already half of ANOTHER transfer
  *  (`link_transfer_activities`, v3.8.0 through v3.10.0). */
 const OTHER_TRANSFER_REFUSAL = /already linked to another transfer/i;
-/** The refusal 3.8 and 3.9 give a pair that is already linked to each other
- *  (the text varies; "already linked" or "already belong"). */
-const ALREADY_LINKED_REFUSAL = /already (linked|belong)/i;
+/** The refusal 3.8 and 3.9 give a pair that is already linked to each other:
+ *  upstream has the one text, "already linked to another transfer", across
+ *  3.8 through 3.10 (the same text as a row in a different pair). */
+const ALREADY_LINKED_REFUSAL = OTHER_TRANSFER_REFUSAL;
 /** What the caller is told when it is: re-creating would delete the other
  *  pair's partner too, and that partner is never re-created. */
 export const HALF_OF_ANOTHER_TRANSFER = 'One of these is already half of another transfer — nothing was changed.';
+/** What a lost answer leaves when a row is still in its earlier group and its
+ *  partner is not in it: nothing was written here, and the next sync looks again. */
+export const LINK_ANSWER_LOST = "Couldn't tell whether Wealthfolio linked them — it will try again next sync.";
 const whyOf = (e: unknown): string => String((e as { message?: unknown } | null)?.message ?? e);
 
 /** A stored row as in-place linking checks it: a search row (ActivityDetails) or a link answer (Activity). */
@@ -242,7 +246,7 @@ export async function linkPairPreferInPlace(
       !!now && !!was && was.group !== '' && now.group === was.group && (!other || other.group !== now.group));
     if (a && b && stuck) {
       io.log?.(`link ${ids[0]}/${ids[1]}: a row is still in its earlier group and its partner is not; left unlinked, nothing deleted`);
-      return { linked: false, problems: [HALF_OF_ANOTHER_TRANSFER] };
+      return { linked: false, problems: [LINK_ANSWER_LOST] };
     }
   } catch (e) {
     // Can't tell: re-creating links them either way.
@@ -310,10 +314,18 @@ export async function unlinkPairPreferInPlace(
     return recreate(`the rows could not be read: ${whyOf(e)}`);
   }
   const stored: [StoredLeg | null, StoredLeg | null] = [find(before, ids[0]), find(before, ids[1])];
-  const refusal = unlinkInPlaceRefusal(legs, stored);
+  // Both rows read as ungrouped (the host reported the group, and it is none)
+  // and still typed as their legs: an earlier in-place unlink got this far but
+  // its retype was refused. There is no pair to copy an update onto, so skip
+  // the unlink and retype in place, keeping the ids and their filings.
+  const apart = stored.every((s) => !!s && s.groupKnown && !s.group);
+  const refusal = unlinkInPlaceRefusal(legs, apart ? stored.map((s) => ({ ...s!, group: 'apart' })) as [StoredLeg, StoredLeg] : stored);
   if (refusal !== null) return recreate(refusal);
   let unlinked = false;
-  try {
+  if (apart) {
+    io.log?.(`unlink ${ids[0]}/${ids[1]}: already apart; retyping in place`);
+    unlinked = true;
+  } else try {
     await io.unlink(ids[0], ids[1]);
     unlinked = true;
   } catch (e) {

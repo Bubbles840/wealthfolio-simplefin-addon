@@ -57,7 +57,7 @@ describe('Link from the app, on Wealthfolio 3.9 and newer', () => {
   it('falls back to re-creating when Wealthfolio refuses to link in place — and, when that re-create is refused too, writes both rows back and says so', async () => {
     const rows: Row[] = [{ ...OUT }, { ...INTO }];
     const ctx = host39(rows);
-    ctx.api.activities.linkTransfer = vi.fn(async () => { throw new Error('Security transfer legs use different assets'); });
+    ctx.api.activities.linkTransfer = vi.fn(async () => { throw new Error('Linking requires one TRANSFER_IN and one TRANSFER_OUT activity'); });
     let n = 0;
     ctx.api.activities.saveMany = vi.fn(async (req: { deleteIds?: string[]; creates?: Array<Record<string, unknown>> }) => {
       n += 1;
