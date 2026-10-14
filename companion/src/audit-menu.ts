@@ -26,10 +26,11 @@ import {
 } from '../../shared/audit-balance.js';
 import {
   explainHeadline, headlineAgrees, headlineReasonLine, headlineRowLine, headlineSummaryLine, headlineUnexplainedLine,
-  HEADLINE_AGREE, HEADLINE_REASON_LABELS, type HeadlineExplanation, type HeadlineReason,
+  HEADLINE_AGREE, HEADLINE_REASON_LABELS, type HeadlineExplanation, type HeadlineReason, type HeadlineRow,
 } from '../../shared/audit-headline.js';
 import {
-  healthCount, healthIssueLines, healthIssues, healthIssueTitle, HEALTH_NONE, type HealthIssue, type HealthReport,
+  healthCount, healthIssueLines, healthIssues, healthIssueTitle, HEALTH_NONE, type HealthIssue, type HealthLeg,
+  type HealthReport,
 } from '../../shared/audit-health.js';
 import { findingHandle } from '../../shared/handle.js';
 import { escapeMarkdown, type InlineKeyboard } from '../../shared/telegram.js';
@@ -99,6 +100,12 @@ const clip = (s: string, n: number) => {
   const chars = Array.from(s);
   return chars.length > n ? `${chars.slice(0, n - 1).join('')}…` : s;
 };
+/** Bank descriptions are unbounded; a message holds 4,096 characters. */
+export const AUDIT_DESCRIPTION_MAX = 60;
+const clipRow = (r: HeadlineRow): HeadlineRow => ({ ...r, description: clip(r.description, AUDIT_DESCRIPTION_MAX) });
+const clipLeg = (l: HealthLeg): HealthLeg => ({ ...l, description: clip(l.description, AUDIT_DESCRIPTION_MAX) });
+const clipIssue = (i: HealthIssue): HealthIssue =>
+  i.kind === 'incomplete-leg' ? { ...i, leg: clipLeg(i.leg), counterpart: i.counterpart ? clipLeg(i.counterpart) : null } : i;
 const back = (view: AuditView): Button[] => [{ text: BACK, callback_data: auditData(view) }];
 const noteLines = (notes: readonly string[]) => (notes.length ? ['', ...notes.map((n) => `⚠️ ${escapeMarkdown(n)}`)] : []);
 const listed = <T>(items: readonly T[], more = 0) => ({
@@ -160,7 +167,7 @@ export function renderAuditHeadline(h: HeadlineExplanation): MenuScreen {
 
 export function renderAuditReason(r: HeadlineReason): MenuScreen {
   const { shown, hidden } = listed(r.rows, r.more);
-  const lines = [`🔎 *${HEADLINE_REASON_LABELS[r.kind]}*`, ...shown.map((row) => escapeMarkdown(headlineRowLine(row)))];
+  const lines = [`🔎 *${HEADLINE_REASON_LABELS[r.kind]}*`, ...shown.map((row) => escapeMarkdown(headlineRowLine(clipRow(row))))];
   if (hidden > 0) lines.push(`…and ${hidden} more`);
   return { text: lines.join('\n'), keyboard: { inline_keyboard: [back({ kind: 'headline' })] } };
 }
@@ -172,7 +179,7 @@ export function renderAuditHealth(report: HealthReport): MenuScreen {
   if (report.issues) {
     const { shown, hidden } = listed(report.issues, report.more);
     shown.forEach((issue, i) => {
-      lines.push(`${i + 1}. ${escapeMarkdown(healthIssueTitle(issue))}`);
+      lines.push(`${i + 1}. ${escapeMarkdown(healthIssueTitle(clipIssue(issue)))}`);
       numbers.push({ text: String(i + 1), callback_data: auditData({ kind: 'issue', handle: issueHandle(issue) }) });
     });
     if (hidden > 0) lines.push(`…and ${hidden} more`);
@@ -184,7 +191,8 @@ export function renderAuditHealth(report: HealthReport): MenuScreen {
   return { text: lines.join('\n'), keyboard: { inline_keyboard: rows } };
 }
 
-export function renderAuditIssue(issue: HealthIssue): MenuScreen {
+export function renderAuditIssue(raw: HealthIssue): MenuScreen {
+  const issue = clipIssue(raw);
   const lines = ['🔎 *Health*', escapeMarkdown(healthIssueTitle(issue)), ...healthIssueLines(issue).map(escapeMarkdown)];
   return { text: lines.join('\n'), keyboard: { inline_keyboard: [back({ kind: 'health' })] } };
 }
@@ -292,7 +300,9 @@ export function createAuditMenu(deps: AuditMenuDeps): AuditMenu {
             return void await show(renderAuditHeadline(await deps.headline(deps.now())));
           case 'reason': {
             const h = await deps.headline(deps.now());
-            const r = h.reasons?.find((x) => reasonHandle(x) === view.handle);
+            // Rows that could not be read are not rows that are gone.
+            if (!h.reasons) return void await show(renderAuditHeadline(h));
+            const r = h.reasons.find((x) => reasonHandle(x) === view.handle);
             if (!r) return void await ui.answer(AUDIT_REASON_GONE);
             return void await show(renderAuditReason(r));
           }
@@ -302,7 +312,8 @@ export function createAuditMenu(deps: AuditMenuDeps): AuditMenu {
           }
           case 'issue': {
             const report = await deps.health();
-            const issue = report.issues?.find((i) => issueHandle(i) === view.handle);
+            if (!report.issues) return void await show(renderAuditHealth(report));
+            const issue = report.issues.find((i) => issueHandle(i) === view.handle);
             if (!issue) return void await ui.answer(AUDIT_ISSUE_GONE);
             return void await show(renderAuditIssue(issue));
           }
