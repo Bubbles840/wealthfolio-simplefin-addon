@@ -29,8 +29,8 @@ import { REIMBURSEMENT_SUBTYPE } from './cash-flow-bucket.js';
 import { paybackFiledChange, type ChangeDraft, type PaybackFiledFacts } from './change-entries.js';
 import { fixRowOf } from './fix-row.js';
 import {
-  PAYBACK_ALREADY, PAYBACK_GONE, PAYBACK_LINKED, PAYBACK_MANAGED, PAYBACK_NO_UNDO, PAYBACK_NOT_CASH, PAYBACK_NOT_DEPOSIT, PAYBACK_NOT_FEED,
-  PAYBACK_OVERRIDE_FAILED, PAYBACK_PENDING, PAYBACK_RUNNING, PAYBACK_TRANSFER, PAYBACK_UNDO_HINT, PAYBACK_UNREACHABLE, PAYBACK_UPDATE_ADDON,
+  PAYBACK_ALREADY, PAYBACK_CHANGED, PAYBACK_GONE, PAYBACK_GONE_STUCK, PAYBACK_LINKED, PAYBACK_MANAGED, PAYBACK_NO_UNDO, PAYBACK_NO_UNDO_SETTING, PAYBACK_NOT_CASH, PAYBACK_NOT_DEPOSIT, PAYBACK_NOT_FEED,
+  PAYBACK_OVERRIDE_FAILED, PAYBACK_PENDING, PAYBACK_RUNNING, PAYBACK_SETTING_HINT, PAYBACK_TRANSFER, PAYBACK_UNDO_HINT, PAYBACK_UNREACHABLE, PAYBACK_UPDATE_ADDON,
   PAYBACK_UPDATE_REFUSED, PAYBACK_UPDATE_STUCK, PAYBACK_UPDATE_UNSURE, PAYBACK_ZERO, paybackDone, paybackUnfiled,
 } from './payback-copy.js';
 import { isPaybackRow, paybackRetype, type PaybackRow } from './payback-row.js';
@@ -42,6 +42,7 @@ import {
   SYNC_OVERRIDES_UNREADABLE_MESSAGE, type LoadedSyncOverrides,
 } from './sync-overrides.js';
 import { accountTxKey } from './transfers.js';
+import { removalFingerprint } from './tx-remove.js';
 import { addonUnderstandsPaybacks, INSTALLED_ADDON_VERSION_SECRET_KEY } from './version.js';
 
 /** An ActivityDetails row as a payback reads it; null when the fixes' reader
@@ -137,7 +138,8 @@ export function planPayback(f: PaybackFacts): PaybackPlan {
 
 /** What a host lends `filePayback`. */
 export interface PaybackIo {
-  /** Why this host may not file a payback now (a version gate, W8), or null. Never rejects. */
+  /** Why this host may not file a payback now (a version gate, W8), or null.
+   *  Rejects when it cannot tell (the add-on's secrets are unreadable). */
   gate(): Promise<string | null>;
   /** The row by exact id, now; null when gone. Rejects when unreachable. */
   read(activityId: string): Promise<PaybackRow | null>;
@@ -161,6 +163,8 @@ export interface PaybackChoice {
   /** The category's parent, whose spending it comes off (`Food & Dining` for
    *  Restaurants); null for a top-level category. */
   parentName: string | null;
+  /** `removalFingerprint` of the row as the menu showed it (PB-B, M1). Absent: no check. */
+  shown?: string;
 }
 
 /** `filed`: all of it. `partial`: something changed, but not all of it — the
@@ -171,19 +175,18 @@ export type PaybackOutcome =
   | { kind: 'refused'; message: string };
 
 /** The companion's gate (W8): an INSTALLED add-on of PAYBACK_SINCE or newer.
- *  Unknown — nothing written, or the read failed — refuses too. */
+ *  Unknown — nothing written — refuses too. A read that fails REJECTS: that is
+ *  "couldn't reach", not "too old" (PB-B, M7). */
 export async function addonPaybackGate(get: SecretGet): Promise<string | null> {
-  let installed: string | null;
-  try {
-    installed = await get(INSTALLED_ADDON_VERSION_SECRET_KEY);
-  } catch {
-    installed = null;
-  }
+  const installed = await get(INSTALLED_ADDON_VERSION_SECRET_KEY);
   return addonUnderstandsPaybacks(installed && installed.trim() ? installed : null) ? null : PAYBACK_UPDATE_ADDON;
 }
 
 /** Activity ids being filed right now: a second tap on the same row writes nothing. */
 const inFlight = new Set<string>();
+const paybackFingerprint = (r: PaybackRow): string => removalFingerprint({
+  activityId: r.id, note: r.notes, absCents: r.absCents, date: r.date, activityType: r.type, accountName: r.accountName,
+});
 const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
 /**
@@ -197,6 +200,10 @@ const errorText = (err: unknown) => (err instanceof Error ? err.message : String
  *  - the category refused: a payback with no category, which /categorize
  *    offers again — logged, so Undo can still turn it back into a deposit;
  *  - the log not written: all done, without an Undo.
+ * PB-B: a `shown` fingerprint that no longer matches the re-read row refuses
+ * with nothing written; an override write that failed but landed carries on; a
+ * setting left on a possibly-unfiled row is logged with no category (Undo takes
+ * it off); a row gone on the re-read is said to be gone.
  * Wealthfolio's own error text goes to the host's log, never to the message.
  */
 export async function filePayback(choice: PaybackChoice, io: PaybackIo, now: Date): Promise<PaybackOutcome> {
@@ -211,13 +218,21 @@ export async function filePayback(choice: PaybackChoice, io: PaybackIo, now: Dat
 
 async function fileOnce(choice: PaybackChoice, io: PaybackIo, now: Date): Promise<PaybackOutcome> {
   const refused = (message: string): PaybackOutcome => ({ kind: 'refused', message });
-  const gate = await io.gate().catch(() => PAYBACK_UPDATE_ADDON);
+  let gate: string | null;
+  try {
+    gate = await io.gate();
+  } catch (err) {
+    io.log(`Payback ${choice.activityId}: could not read the installed add-on version: ${errorText(err)}`);
+    return refused(PAYBACK_UNREACHABLE);
+  }
   if (gate) return refused(gate);
 
   let row: PaybackRow | null;
   let plan: PaybackPlan;
   try {
     row = await io.read(choice.activityId);
+    // What the menu showed is what is written (PB-B, M1); absent, no check.
+    if (row && choice.shown !== undefined && choice.shown !== paybackFingerprint(row)) return refused(PAYBACK_CHANGED);
     const feeds = row ? await io.feeds(row.accountId) : [];
     const overrides = await loadSyncOverrides(io.secrets.get);
     plan = planPayback({ row, feeds, overrides, category: { id: choice.categoryId, name: choice.categoryName } });
@@ -229,6 +244,18 @@ async function fileOnce(choice: PaybackChoice, io: PaybackIo, now: Date): Promis
   const w = plan.writes;
   const absCents = row!.absCents;
 
+  // The payback setting stays on a row that may not be a payback: logged with no category, so Undo takes it off (PB-B, M5).
+  const unconfirmed = async (message: string): Promise<PaybackOutcome> => {
+    let logged = true;
+    try {
+      await io.record(paybackFiledChange({ ...w.entry, categoryId: null, categoryName: null }));
+    } catch (err) {
+      logged = false;
+      io.log(`Payback ${choice.activityId}: the payback setting stays, but the change log was not written: ${errorText(err)}`);
+    }
+    return { kind: 'partial', message: `${message}\n${logged ? PAYBACK_SETTING_HINT : PAYBACK_NO_UNDO_SETTING}` };
+  };
+
   // 1. The override, re-read right before it is written. Only what this run adds is ever taken back.
   let added: string[] = [];
   try {
@@ -238,7 +265,16 @@ async function fileOnce(choice: PaybackChoice, io: PaybackIo, now: Date): Promis
     }, now);
   } catch (err) {
     io.log(`Payback ${choice.activityId}: the override was not saved: ${errorText(err)}`);
-    return refused(isUnreadableOverridesError(err) ? SYNC_OVERRIDES_UNREADABLE_MESSAGE : PAYBACK_OVERRIDE_FAILED);
+    if (isUnreadableOverridesError(err)) return refused(SYNC_OVERRIDES_UNREADABLE_MESSAGE);
+    // The write can fail after it landed (a lost response): read it again (PB-B, M2).
+    let landed = false;
+    try {
+      const now2 = await loadSyncOverrides(io.secrets.get);
+      landed = !now2.unreadable && w.txKeys.every((k) => hasTxOverride(now2.overrides, k, 'asReimbursement'));
+    } catch (readErr) {
+      io.log(`Payback ${choice.activityId}: could not read the overrides again: ${errorText(readErr)}`);
+    }
+    if (!landed) return refused(PAYBACK_OVERRIDE_FAILED);
   }
 
   // 2. The row. A refused update is read again: its response can be lost after it landed.
@@ -251,7 +287,7 @@ async function fileOnce(choice: PaybackChoice, io: PaybackIo, now: Date): Promis
       again = await io.read(choice.activityId);
     } catch (readErr) {
       io.log(`Payback ${choice.activityId}: could not tell whether the update landed: ${errorText(readErr)}`);
-      return { kind: 'partial', message: PAYBACK_UPDATE_UNSURE };
+      return unconfirmed(PAYBACK_UPDATE_UNSURE);
     }
     if (!again || !isPaybackRow(again)) {
       try {
@@ -260,9 +296,10 @@ async function fileOnce(choice: PaybackChoice, io: PaybackIo, now: Date): Promis
         }
       } catch (undoErr) {
         io.log(`Payback ${choice.activityId}: taking the override back failed: ${errorText(undoErr)}`);
-        return { kind: 'partial', message: PAYBACK_UPDATE_STUCK };
+        if (!again) return { kind: 'partial', message: PAYBACK_GONE_STUCK };
+        return unconfirmed(PAYBACK_UPDATE_STUCK);
       }
-      return refused(PAYBACK_UPDATE_REFUSED);
+      return refused(again ? PAYBACK_UPDATE_REFUSED : PAYBACK_GONE);
     }
   }
 
