@@ -21,6 +21,8 @@ export interface ActivitySearchItem {
   subtype?: string | null;
   /** Upstream `ActivityDetails.accountName`. */
   accountName?: string | null;
+  /** Upstream `ActivityDetails.currency`. */
+  currency?: string | null;
 }
 
 /**

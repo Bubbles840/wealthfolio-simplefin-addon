@@ -749,7 +749,12 @@ export function budgetSetChange(f: BudgetSetFacts): ChangeDraft {
 
 // ── Bookkeeping ──────────────────────────────────────────────────────────
 
-export type BookkeepingStep = 'legacy-placeholder' | 'external-marker' | 'transfer-relink' | 'opening-category' | 'transfer-unlink';
+export type BookkeepingStep =
+  | 'legacy-placeholder' | 'external-marker' | 'transfer-relink' | 'opening-category' | 'transfer-unlink'
+  /** 1.62 (W2): rows stored at 00:00 UTC moved to noon on the same date. */
+  | 'date-repair'
+  /** 1.62 (W3): the sync's bookkeeping rows filed under, or taken out of, "Sync bookkeeping". */
+  | 'sync-bookkeeping';
 
 export interface BookkeepingFacts {
   step: BookkeepingStep;
@@ -764,6 +769,21 @@ export interface BookkeepingFacts {
    *  how many rows were re-created (default: the ids listed). */
   pairs?: number;
   rows?: number;
+  /** `date-repair` only: the rows at 00:00 UTC it left alone — half of a
+   *  linked transfer, or a type Wealthfolio overrides. */
+  skipped?: number;
+  /** `sync-bookkeeping` only: the rows taken back out of the category (no
+   *  longer bookkeeping); `activityIds` are the rows filed. */
+  unfiledIds?: string[];
+}
+
+/** `sync-bookkeeping`: what one pass filed and took out. */
+function syncBookkeepingSummary(filed: number, unfiled: number, category: string): string {
+  if (filed > 0 && unfiled > 0) {
+    return `Filed ${filed} bookkeeping ${plural(filed, 'row', 'rows')} under "${category}" and took ${unfiled} that ${plural(unfiled, 'is', 'are')} no longer bookkeeping out`;
+  }
+  if (unfiled > 0) return `Took ${unfiled} ${plural(unfiled, 'row', 'rows')} that ${plural(unfiled, 'is', 'are')} no longer bookkeeping out of "${category}"`;
+  return `Filed ${filed} bookkeeping ${plural(filed, 'row', 'rows')} under "${category}", which Wealthfolio leaves out of spending`;
 }
 
 /** Repairs the sync makes to its own rows. Shown behind a button; never undoable. */
@@ -779,17 +799,27 @@ export function bookkeepingChange(f: BookkeepingFacts): ChangeDraft {
           ? ((f.pairs ?? 1) > 1
             ? `Unlinked ${f.pairs} transfers you undid: re-created their ${f.rows ?? n} rows as spending or money in`
             : `Unlinked a transfer you undid: re-created ${(f.rows ?? n) === 1 ? 'its row' : `its ${f.rows ?? n} rows`} as spending or money in`)
-          : `Set up the "${f.categoryName ?? 'Opening balances'}" category and kept it out of spending`;
+          : f.step === 'date-repair'
+            ? `Moved ${n} ${plural(n, 'row', 'rows')} stored at midnight UTC to noon on the same date, so Wealthfolio counts ${plural(n, 'it', 'them')} on the bank's day${
+              f.skipped ? ` — ${f.skipped} linked or retyped ${plural(f.skipped, 'row', 'rows')} left as ${plural(f.skipped, 'it was', 'they were')}` : ''}`
+            : f.step === 'sync-bookkeeping'
+              ? syncBookkeepingSummary(n, f.unfiledIds?.length ?? 0, f.categoryName ?? 'Sync bookkeeping')
+              : `Set up the "${f.categoryName ?? 'Opening balances'}" category and kept it out of spending`;
+  const ids = [...f.activityIds, ...(f.unfiledIds ?? [])];
   return {
     actor: 'auto',
     kind: 'bookkeeping',
     ...(f.account ? { account: f.account } : {}),
     subject: {
-      ...(n > 0 ? { activityIds: [...f.activityIds] } : {}),
+      ...(ids.length > 0 ? { activityIds: ids } : {}),
       ...(f.legs?.length ? { txKeys: f.legs.map((l) => l.txKey), description: f.legs.map((l) => l.description).join(' / ') } : {}),
     },
     summary,
-    after: { step: f.step, count: n, ...(f.categoryName ? { categoryName: f.categoryName } : {}) },
+    after: {
+      step: f.step, count: n, ...(f.categoryName ? { categoryName: f.categoryName } : {}),
+      ...(f.skipped !== undefined ? { skipped: f.skipped } : {}),
+      ...(f.unfiledIds ? { unfiled: f.unfiledIds.length } : {}),
+    },
     undoable: false,
   };
 }

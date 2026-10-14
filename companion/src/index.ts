@@ -12,6 +12,7 @@ import {
   type ReportEdition, type ReportKind, type ReportStore,
 } from '../../shared/reports-archive.js';
 import { fileCardOpeningDebts } from './opening-balance-category.js';
+import { runDateRepair, type DateRepairDeps } from './date-repair.js';
 import cron from 'node-cron';
 import { readFileSync, existsSync } from 'fs';
 import { runSyncCore, descriptionFromComment, txIdFromComment } from '../../shared/sync-core.js';
@@ -68,7 +69,7 @@ import type { GlyphStyle, InlineKeyboard } from '../../shared/telegram.js';
 import type { DismissalLedger } from './dismissals.js';
 import type { SyncHealth } from '../../shared/telegram.js';
 import { SIMPLEFIN_SYNC_VERSION, COMPANION_VERSION_SECRET_KEY, INSTALLED_ADDON_VERSION_SECRET_KEY, isNewerVersion } from '../../shared/version.js';
-import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeRuleCategorizedAmazonRows, getNativeCategorizedSpending, getNativeSpendingCategories, getNativeCategoryCatalog, getNativeSubcategorySpending, getNativeUncategorizedSpendingTotal, countRulePatternMatches, getNativeSpendMatrix, getNativeIncomeByMonthAccount, getNativeUncategorizedByMonthAccount, getNativeMerchantRows, getNativeDrillRows, getNativeFeesInterestByMonth, getNativeSpendDailyTotals, getNativeValuationByMonth, getNativeIncomeCategories } from './sqlite-native.js';
+import { getNativeOverriddenActivityIds, getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeRuleCategorizedAmazonRows, getNativeCategorizedSpending, getNativeSpendingCategories, getNativeCategoryCatalog, getNativeSubcategorySpending, getNativeUncategorizedSpendingTotal, countRulePatternMatches, getNativeSpendMatrix, getNativeIncomeByMonthAccount, getNativeUncategorizedByMonthAccount, getNativeMerchantRows, getNativeDrillRows, getNativeFeesInterestByMonth, getNativeSpendDailyTotals, getNativeValuationByMonth, getNativeIncomeCategories } from './sqlite-native.js';
 import { publishUncategorizedStatusForDbPath } from './uncategorized-status.js';
 import { getNativePastFilings } from './sqlite-guess.js';
 import { createCategorizeController, SPENDING_TAXONOMY_ID } from './categorize.js';
@@ -1022,6 +1023,14 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
     }
     log(`Done: ${result.imported} imported, ${result.skipped} skipped`);
 
+    // 1.62 (W2): once, move the rows Wealthfolio stored at 00:00 UTC to noon
+    // on the same date, so its Spending page counts them on the bank's day.
+    // Before the filings and the cube, which read the dates. Best-effort: a
+    // failure costs the repair this run, never the sync; the next sync
+    // carries on from where it stopped.
+    await runDateRepair(dateRepairDeps(wfClient, store, changeLog.run), new Date())
+      .catch((e) => log(`Date repair skipped: ${formatError(e)}`));
+
     // Record which companion build produced this run, so the Sync page can show
     // it. Best-effort: a failure here must never affect the sync.
     await wfClient
@@ -1262,6 +1271,26 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
   } finally {
     await checkSyncHealthAlert(wfClient).catch(() => {});
   }
+}
+
+/** The date repair's reads and writes over this companion's client and database. */
+function dateRepairDeps(wfClient: WealthfolioClient, store: RestSyncStore, run: string): DateRepairDeps {
+  return {
+    getSecret: (key) => wfClient.getAddonSecret('simplefin-sync', key),
+    setSecret: (key, value) => wfClient.setAddonSecret('simplefin-sync', key, value),
+    mappedAccountIds: async () => Object.values((await store.getAccountMapping()) ?? {}),
+    searchPage: async (accountId, page, pageSize) => (await wfClient.searchActivities({ page, pageSize, accountIdFilter: [accountId] }))
+      .map((a) => ({
+        id: String(a.id), accountId: String(a.accountId ?? accountId), date: String(a.date ?? ''),
+        activityType: String(a.activityType ?? ''), currency: String(a.currency ?? ''),
+        comment: a.comment ?? null, sourceGroupId: a.sourceGroupId ?? null,
+      })),
+    overriddenIds: () => getNativeOverriddenActivityIds(wealthfolioDbPath()),
+    saveUpdates: async (updates) => ({ errors: (await wfClient.saveMany({ updates })).errors ?? [] }),
+    record: (draft) => recordCompanionChanges(wfClient, [draft], run),
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    log,
+  };
 }
 
 /** The currently in-flight sync, or `null` when none is running. Module-level

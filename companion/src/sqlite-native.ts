@@ -1886,3 +1886,16 @@ export function readSpendLines(dbPath: string, startDay: string, endDayExclusive
 export function topCategoryName(categoryId: string, settings: Pick<NativeSpendingSettings, 'categoryParents' | 'categoryNames'>): string {
   return settings.categoryNames[topCategoryId(categoryId, settings.categoryParents)] ?? '';
 }
+
+/** Ids of every row with a non-blank `activity_type_override` — rows whose
+ *  stored type Wealthfolio's search does not show (it answers the effective
+ *  one). Strict: throws when the database cannot be read. */
+export function getNativeOverriddenActivityIds(dbPath: string): Set<string> {
+  const rows = queryNativeDbStrict<Record<string, unknown>>(
+    dbPath, 'type overrides',
+    `SELECT a.id AS id FROM activities a WHERE TRIM(COALESCE(a.activity_type_override, '')) <> '' ORDER BY a.id;`,
+    (parts) => (parts.length >= 1 ? { c0: parts[0] } : null),
+    DRILL_CLI_SEPARATOR, SPEND_CLI_MAX_BUFFER,
+  );
+  return new Set(rows.map((r) => String(Object.values(r)[0])));
+}
