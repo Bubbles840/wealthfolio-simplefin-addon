@@ -4,10 +4,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import {
-  auditAccountFromCliParts, auditRowFromCliParts, getNativeAuditLedger, getNativeAuditSettings, getNativeHeadlineRows,
-  headlineRowFromCliParts, PHANTOM_CASH_ASSET_ID,
+  auditAccountFromCliParts, auditRowFromCliParts, getNativeAuditLedger, getNativeAuditSettings, getNativeHeadlineRows, PHANTOM_CASH_ASSET_ID,
 } from './sqlite-audit.js';
-import { NativeDbUnreadableError } from './sqlite-native.js';
+import { NativeDbUnreadableError, spendRowFromCliParts } from './sqlite-native.js';
 
 const made: string[] = [];
 afterEach(() => { for (const d of made.splice(0)) rmSync(d, { recursive: true, force: true }); });
@@ -25,6 +24,9 @@ function ledger(settings = true): string {
     CREATE TABLE assets (id TEXT PRIMARY KEY, display_code TEXT, instrument_symbol TEXT, name TEXT);
     CREATE TABLE taxonomy_categories (id TEXT PRIMARY KEY, taxonomy_id TEXT, name TEXT, parent_id TEXT);
     CREATE TABLE activity_taxonomy_assignments (id TEXT, activity_id TEXT, taxonomy_id TEXT, category_id TEXT, weight INTEGER, source TEXT, created_at TEXT);
+    CREATE TABLE spending_activity_splits (id TEXT, activity_id TEXT, taxonomy_id TEXT, category_id TEXT, amount TEXT, sort_order INTEGER);
+    INSERT INTO spending_activity_splits VALUES ('s2', 'act-1', 'spending_categories', 'cat-b', '100', 1), ('s1', 'act-1', 'spending_categories', 'cat-a', '500', 0),
+      ('s3', 'act-1', 'income_sources', 'inc', '600', 0);
     INSERT INTO accounts VALUES ('wf-chk', 'PNC Checking', 'cash', 0, 1), ('wf-ally', 'Ally Savings', 'CASH', 1, 0);
     INSERT INTO assets VALUES ('cash-by-code', '$CASH', NULL, 'Cash'), ('AAPL', 'AAPL', 'AAPL', 'Apple');
     INSERT INTO activities VALUES
@@ -103,17 +105,27 @@ describe('getNativeAuditLedger', () => {
 });
 
 describe('getNativeHeadlineRows', () => {
-  it('reads the month’s rows in every account: its account and group, the filings the report counts, and every category', () => {
+  it('reads the month a day wider on each side, every account, each row with its spending filings and split lines', () => {
     const rows = getNativeHeadlineRows(ledger(), '2026-10-01', '2026-11-01');
-    expect(rows.map((r) => r.id)).toEqual(['act-1', 'act-2']);
-    const two = rows[1];
-    // Four spending filings, but the report counts only the two not rolled up to "Transfers" (spendingWhere).
-    expect({ ...two, categoryIds: [...two.categoryIds].sort() }).toEqual({
-      id: 'act-2', date: '2026-10-05T04:00:00+00:00', accountId: 'wf-chk', groupId: 'g1', accountType: 'CASH', type: 'DEPOSIT', subtype: 'REFUND',
-      absCents: 1235, spendingFilings: 2, categoryIds: ['cat-a', 'cat-b', 'cat-t', 'cat-tc', 'inc'], spendingCategoryId: 'cat-b',
-      accountName: 'PNC Checking', notes: 'A | B · TRN-2',
+    // Wealthfolio places a row by its local date, which can be a day from its UTC date.
+    expect(rows.map((r) => r.id)).toEqual(['act-3', 'act-1', 'act-2', 'act-4']);
+    expect(rows.find((r) => r.id === 'act-2')).toEqual({
+      id: 'act-2', date: '2026-10-05T04:00:00+00:00', accountId: 'wf-chk', accountName: 'PNC Checking', accountType: 'CASH',
+      type: 'DEPOSIT', typeOverride: 'TRANSFER_IN', subtype: 'REFUND', groupId: 'g1', absCents: 1235, notes: 'A | B · TRN-2',
+      // The spending taxonomy only, oldest first: Wealthfolio allocates to the first.
+      filings: [
+        { id: 'x2', categoryId: 'cat-b', createdAt: '2026-10-05T09:00:00Z', source: 'manual' },
+        { id: 'x1', categoryId: 'cat-a', createdAt: '2026-10-06T00:00:00Z', source: 'rule' },
+        { id: 'x4', categoryId: 'cat-t', createdAt: '2026-10-07T00:00:00Z', source: 'manual' },
+        { id: 'x5', categoryId: 'cat-tc', createdAt: '2026-10-07T00:00:01Z', source: 'manual' },
+      ],
+      splits: [],
     });
-    expect(rows[0]).toMatchObject({ accountId: 'wf-chk', groupId: '', spendingFilings: 0, categoryIds: [], spendingCategoryId: null });
+    expect(rows.find((r) => r.id === 'act-1')).toMatchObject({
+      accountId: 'wf-chk', groupId: '', typeOverride: '', filings: [],
+      splits: [{ categoryId: 'cat-a', absCents: 50000 }, { categoryId: 'cat-b', absCents: 10000 }],
+    });
+    expect(rows.find((r) => r.id === 'act-4')!.typeOverride).toBe('  ');
   });
 
   it('refuses malformed bounds, and throws when the database cannot be read', () => {
@@ -189,9 +201,9 @@ describe('the CLI fallback parsers split on the unit separator', () => {
     expect(auditRowFromCliParts(['act-1', 'x'])).toBeNull();
     expect(auditRowFromCliParts([...row.slice(0, 7), 'oops', ...row.slice(8)])).toBeNull();
     expect(auditAccountFromCliParts(['wf-chk', 'CASH', '0', '1', 'Joe\x1fCo'])).toEqual({ c0: 'wf-chk', c1: 'CASH', c2: '0', c3: '1', c4: 'Joe\x1fCo' });
-    const month = ['act-2', '2026-10-05', 'wf-chk', 'g1', 'CASH', 'DEPOSIT', '', '1235', '2', 'cat-a,cat-b', 'cat-b', 'PNC', 'A\x1fB | C'];
-    expect(headlineRowFromCliParts(month)).toMatchObject({ c2: 'wf-chk', c3: 'g1', c7: '1235', c10: 'cat-b', c12: 'A\x1fB | C' });
-    expect(headlineRowFromCliParts(month.slice(0, 5))).toBeNull();
-    expect(headlineRowFromCliParts([...month.slice(0, 7), 'oops', ...month.slice(8)])).toBeNull();
+    const month = ['act-2', '2026-10-05T04:00:00+00:00', 'wf-chk', 'DEPOSIT', 'TRANSFER_IN', 'REFUND', '1235', 'g1', 'A\x1fB | C'];
+    expect(spendRowFromCliParts(month)).toMatchObject({ c2: 'wf-chk', c6: '1235', c7: 'g1', c8: 'A\x1fB | C' });
+    expect(spendRowFromCliParts(month.slice(0, 5))).toBeNull();
+    expect(spendRowFromCliParts([...month.slice(0, 6), 'oops', ...month.slice(7)])).toBeNull();
   });
 });

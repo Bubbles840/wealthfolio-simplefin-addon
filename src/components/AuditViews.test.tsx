@@ -8,7 +8,7 @@ import {
   buildAuditSnapshot, parseAuditSnapshot, AUDIT_CORRUPT, AUDIT_NEEDS_COMPANION, AUDIT_NOT_YET, type AuditResults, type AuditSnapshotRead,
 } from '../../shared/audit-snapshot';
 import { explainBalances } from '../../shared/audit-balance';
-import { explainHeadline } from '../../shared/audit-headline';
+import { explainHeadline, type HeadlineExplanation } from '../../shared/audit-headline';
 import { healthIssues, HEALTH_NONE, HEALTH_READ_NOTES } from '../../shared/audit-health';
 import type { AuditLedgerRow } from '../../shared/audit-ledger';
 
@@ -33,13 +33,11 @@ const LEDGER = {
 };
 
 function results(): AuditResults {
-  const headline = explainHeadline({
-    month: '2026-10', timezone: 'America/New_York', reportCents: 130000, wealthfolioCents: 120000, excludedCategoryIds: [],
-    rows: [{
-      id: 'h', date: '2026-10-01T00:00:00+00:00', accountId: 'wf-chk', groupId: '', accountName: NAME, accountType: 'CASH', type: 'WITHDRAWAL', subtype: '',
-      absCents: 2500, notes: `${BANK} · TRN-9`, spendingFilings: 1, categoryIds: ['c'],
-    }],
-  });
+  // A reason a 1.61 companion published: the app still shows it as it came.
+  const headline: HeadlineExplanation = {
+    month: '2026-10', reportCents: 130000, wealthfolioCents: 120000, unexplainedCents: 7500, notes: [],
+    reasons: [{ kind: 'first-midnight', cents: 2500, rows: [{ date: '2026-10-01', description: BANK, cents: 2500, account: NAME }] }],
+  };
   headline.reasons![0].more = 5;
   return {
     balances: explainBalances({

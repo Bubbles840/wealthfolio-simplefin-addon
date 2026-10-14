@@ -10,7 +10,7 @@ import { execFileSync } from 'child_process';
 import { DatabaseSync } from 'node:sqlite';
 import { BALANCE_ADJUSTMENT_COMMENT_PREFIX, descriptionFromComment, PENDING_SUFFIX as PENDING_NOTE_SUFFIX } from '../../shared/sync-core.js';
 import { IN_TRANSIT_COMMENT_PREFIX } from '../../shared/reconcile.js';
-import { excludedWithDescendants } from '../../shared/audit-headline.js';
+import { excludedWithDescendants, spendLines, topCategoryId, SPENDING_TAXONOMY, type SpendLine, type SpendRow } from '../../shared/wf-spending.js';
 
 export interface NativeCategorySpending {
   categoryName: string;
@@ -2051,4 +2051,204 @@ export function getNativeTxSearchRows(dbPath: string): NativeTxSearchRow[] {
       notes: String(v[6] ?? ''),
     };
   });
+}
+
+/** The sqlite3 CLI's output buffer for the spending reads (the audits' too):
+ *  they return every row of a window, past execFileSync's 1 MB default. */
+export const SPEND_CLI_MAX_BUFFER = 256 * 1024 * 1024;
+/** A note with each CR and LF made a space: the CLI prints a row per line. */
+const SPEND_NOTES = `REPLACE(REPLACE(COALESCE(a.notes, ''), char(13), ' '), char(10), ' ')`;
+const isSpendDay = (s: string) => /^\d{4}-\d{2}-\d{2}$/.test(s);
+const spendTail = (parts: string[], from: number) => parts.slice(from).join(DRILL_CLI_SEPARATOR);
+const spendTrue = (v: unknown) => String(v) === '1' || String(v).toLowerCase() === 'true';
+
+/** CLI line → the spending row read's nine columns (the note last). */
+export function spendRowFromCliParts(parts: string[]): Record<string, unknown> | null {
+  if (parts.length < 9 || !Number.isFinite(parseFloat(parts[6]))) return null;
+  const out: Record<string, unknown> = {};
+  for (let i = 0; i < 8; i++) out[`c${i}`] = parts[i];
+  out.c8 = spendTail(parts, 8);
+  return out;
+}
+
+/**
+ * Every activity whose STORED date is in `[startDay, endDayExclusive)` (both
+ * YYYY-MM-DD), with its account and every spending-taxonomy filing and split
+ * line — the rows shared/wf-spending.ts counts. A caller placing rows by
+ * Wealthfolio's local date reads a day wider on each side (`readSpendLines`).
+ *
+ * Strict: a database that cannot be read throws NativeDbUnreadableError, never
+ * "nothing spent". Every table and column read is Wealthfolio's own on 3.8,
+ * 3.9 and 3.10 (`spending_activity_splits` arrived with the spending module,
+ * 3.8). The sqlite3 CLI fallback splits on the unit separator, with the free
+ * text last; the account names are their own read for the same reason.
+ */
+export function getNativeSpendRows(dbPath: string, startDay: string, endDayExclusive: string): SpendRow[] {
+  // Interpolated (the CLI fallback cannot bind), so validated, never trusted.
+  if (!isSpendDay(startDay) || !isSpendDay(endDayExclusive)) throw new Error(`malformed spending bounds: ${startDay}..${endDayExclusive}`);
+  const window = `a.activity_date >= '${startDay}' AND a.activity_date < '${endDayExclusive}'`;
+  const accounts = queryNativeDbStrict<Record<string, unknown>>(
+    dbPath, 'spending accounts',
+    `SELECT acc.id AS id, UPPER(COALESCE(acc.account_type, '')) AS account_type, COALESCE(acc.name, '') AS name FROM accounts acc ORDER BY acc.id;`,
+    (parts) => (parts.length >= 3 ? { c0: parts[0], c1: parts[1], c2: spendTail(parts, 2) } : null),
+    DRILL_CLI_SEPARATOR, SPEND_CLI_MAX_BUFFER,
+  );
+  const accountById = new Map(accounts.map((r) => {
+    const v = Object.values(r);
+    return [String(v[0]), { type: String(v[1] ?? ''), name: String(v[2] ?? '') }];
+  }));
+  const activities = queryNativeDbStrict<Record<string, unknown>>(
+    dbPath, 'spending rows',
+    `SELECT a.id AS id, a.activity_date AS activity_date, COALESCE(a.account_id, '') AS account_id,
+            UPPER(COALESCE(a.activity_type, '')) AS activity_type, COALESCE(a.activity_type_override, '') AS type_override,
+            UPPER(COALESCE(a.subtype, '')) AS subtype, ROUND(ABS(CAST(COALESCE(a.amount, '0') AS REAL)) * 100) AS abs_cents,
+            COALESCE(a.source_group_id, '') AS grp, ${SPEND_NOTES} AS notes
+     FROM activities a
+     WHERE ${window}
+     ORDER BY a.activity_date, a.id;`,
+    spendRowFromCliParts, DRILL_CLI_SEPARATOR, SPEND_CLI_MAX_BUFFER,
+  );
+  const filings = queryNativeDbStrict<Record<string, unknown>>(
+    dbPath, 'spending filings',
+    `SELECT ata.activity_id AS activity_id, COALESCE(ata.id, '') AS id, ata.category_id AS category_id,
+            COALESCE(ata.created_at, '') AS created_at, COALESCE(ata.source, '') AS source
+     FROM activity_taxonomy_assignments ata JOIN activities a ON a.id = ata.activity_id
+     WHERE ata.taxonomy_id = '${SPENDING_TAXONOMY}' AND ${window}
+     ORDER BY ata.activity_id, ata.created_at, ata.id;`,
+    (parts) => (parts.length >= 5 ? { c0: parts[0], c1: parts[1], c2: parts[2], c3: parts[3], c4: spendTail(parts, 4) } : null),
+    DRILL_CLI_SEPARATOR, SPEND_CLI_MAX_BUFFER,
+  );
+  const splits = queryNativeDbStrict<Record<string, unknown>>(
+    dbPath, 'spending splits',
+    `SELECT s.activity_id AS activity_id, s.category_id AS category_id, ROUND(ABS(CAST(COALESCE(s.amount, '0') AS REAL)) * 100) AS abs_cents
+     FROM spending_activity_splits s JOIN activities a ON a.id = s.activity_id
+     WHERE s.taxonomy_id = '${SPENDING_TAXONOMY}' AND ${window}
+     ORDER BY s.activity_id, s.sort_order, s.id;`,
+    (parts) => (parts.length >= 3 ? { c0: parts[0], c1: parts[1], c2: parts[2] } : null),
+    DRILL_CLI_SEPARATOR, SPEND_CLI_MAX_BUFFER,
+  );
+  const filingsOf = new Map<string, SpendRow['filings']>();
+  for (const r of filings) {
+    const v = Object.values(r);
+    const list = filingsOf.get(String(v[0])) ?? [];
+    list.push({ id: String(v[1] ?? ''), categoryId: String(v[2] ?? ''), createdAt: String(v[3] ?? ''), source: String(v[4] ?? '') });
+    filingsOf.set(String(v[0]), list);
+  }
+  const splitsOf = new Map<string, SpendRow['splits']>();
+  for (const r of splits) {
+    const v = Object.values(r);
+    const list = splitsOf.get(String(v[0])) ?? [];
+    list.push({ categoryId: String(v[1] ?? ''), absCents: Math.round(Number(v[2]) || 0) });
+    splitsOf.set(String(v[0]), list);
+  }
+  return activities.map((r): SpendRow => {
+    const v = Object.values(r);
+    const id = String(v[0]);
+    const account = accountById.get(String(v[2] ?? ''));
+    return {
+      id, date: String(v[1] ?? ''), accountId: String(v[2] ?? ''), accountName: account?.name ?? '', accountType: account?.type ?? '',
+      type: String(v[3] ?? ''), typeOverride: String(v[4] ?? ''), subtype: String(v[5] ?? ''), absCents: Math.round(Number(v[6]) || 0),
+      groupId: String(v[7] ?? ''), notes: String(v[8] ?? ''), filings: filingsOf.get(id) ?? [], splits: splitsOf.get(id) ?? [],
+    };
+  });
+}
+
+/** Wealthfolio's Spending settings and its spending categories, as its page
+ *  reads them (crates/spending settings/service.rs, insight/service.rs). */
+export interface NativeSpendingSettings {
+  /** Wealthfolio's timezone; null when unset. */
+  timezone: string | null;
+  /** `spending.excluded_category_ids`; [] when unset (3.8) or not a list of strings. */
+  excludedCategoryIds: string[];
+  /** Every spending category's parent (null at the top). */
+  categoryParents: Record<string, string | null>;
+  /** Every spending category's name. */
+  categoryNames: Record<string, string>;
+  /** Off unless `spending.enabled` is "true" and at least one account is opted in. */
+  spendingOn: boolean;
+  /** The accounts its Spending page reads: opted in, existing and not archived. */
+  spendingAccountIds: string[];
+}
+
+/** Strict: throws NativeDbUnreadableError when the database cannot be read. */
+export function getNativeSpendingSettings(dbPath: string): NativeSpendingSettings {
+  const rows = queryNativeDbStrict<Record<string, unknown>>(
+    dbPath, 'spending settings',
+    `SELECT setting_key AS k, COALESCE(setting_value, '') AS v FROM app_settings
+     WHERE setting_key IN ('timezone', 'spending.excluded_category_ids', 'spending.enabled', 'spending.account_ids') ORDER BY setting_key;`,
+    (parts) => (parts.length >= 2 ? { c0: parts[0], c1: spendTail(parts, 1) } : null),
+    DRILL_CLI_SEPARATOR, SPEND_CLI_MAX_BUFFER,
+  );
+  const value = new Map(rows.map((r) => {
+    const v = Object.values(r);
+    return [String(v[0]), String(v[1] ?? '')];
+  }));
+  // As upstream reads a list setting: `Vec<String>` or nothing — one
+  // non-string element, or text that is not JSON, is the whole list absent.
+  const stringList = (key: string): string[] => {
+    try {
+      const parsed: unknown = JSON.parse(value.get(key) || '[]');
+      return Array.isArray(parsed) && parsed.every((x) => typeof x === 'string') ? (parsed as string[]) : [];
+    } catch {
+      return [];
+    }
+  };
+  const optedIn = value.get('spending.enabled') === 'true' ? stringList('spending.account_ids') : [];
+  const accounts = queryNativeDbStrict<Record<string, unknown>>(
+    dbPath, 'spending settings accounts',
+    `SELECT id AS id, COALESCE(is_archived, 0) AS archived FROM accounts ORDER BY id;`,
+    (parts) => (parts.length >= 2 ? { c0: parts[0], c1: parts[1] } : null),
+    DRILL_CLI_SEPARATOR, SPEND_CLI_MAX_BUFFER,
+  );
+  const live = new Set(accounts.flatMap((r) => {
+    const v = Object.values(r);
+    return spendTrue(v[1]) ? [] : [String(v[0])];
+  }));
+  const categories = queryNativeDbStrict<Record<string, unknown>>(
+    dbPath, 'spending categories',
+    `SELECT id AS id, COALESCE(parent_id, '') AS parent, COALESCE(name, '') AS name FROM taxonomy_categories
+     WHERE taxonomy_id = '${SPENDING_TAXONOMY}' ORDER BY id;`,
+    (parts) => (parts.length >= 3 ? { c0: parts[0], c1: parts[1], c2: spendTail(parts, 2) } : null),
+    DRILL_CLI_SEPARATOR, SPEND_CLI_MAX_BUFFER,
+  );
+  const categoryParents: Record<string, string | null> = {};
+  const categoryNames: Record<string, string> = {};
+  for (const r of categories) {
+    const v = Object.values(r);
+    categoryParents[String(v[0])] = String(v[1] ?? '') || null;
+    categoryNames[String(v[0])] = String(v[2] ?? '');
+  }
+  return {
+    timezone: value.get('timezone') || null,
+    excludedCategoryIds: stringList('spending.excluded_category_ids'),
+    categoryParents,
+    categoryNames,
+    spendingOn: optedIn.length > 0,
+    spendingAccountIds: optedIn.filter((id) => live.has(id)),
+  };
+}
+
+const shiftDay = (day: string, days: number) => new Date(Date.parse(`${day}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
+
+/** The lines Wealthfolio's Spending page counts on its local days
+ *  `[startDay, endDayExclusive)`, and the settings they were counted with.
+ *  Rows are read a day wider on each side: a row's local date is at most a
+ *  day from its UTC date. Strict. */
+export function readSpendLines(dbPath: string, startDay: string, endDayExclusive: string): { lines: SpendLine[]; settings: NativeSpendingSettings } {
+  if (!isSpendDay(startDay) || !isSpendDay(endDayExclusive)) throw new Error(`malformed spending bounds: ${startDay}..${endDayExclusive}`);
+  const settings = getNativeSpendingSettings(dbPath);
+  const rows = getNativeSpendRows(dbPath, shiftDay(startDay, -1), shiftDay(endDayExclusive, 1));
+  const lines = spendLines(rows, {
+    timezone: settings.timezone,
+    spendingAccountIds: settings.spendingAccountIds,
+    excludedCategoryIds: settings.excludedCategoryIds,
+    categoryParents: settings.categoryParents,
+  }).filter((l) => l.day >= startDay && l.day < endDayExclusive);
+  return { lines, settings };
+}
+
+/** A category's name rolled up to its top-level ancestor, as every report
+ *  labels spending; '' when the category is unknown. */
+export function topCategoryName(categoryId: string, settings: Pick<NativeSpendingSettings, 'categoryParents' | 'categoryNames'>): string {
+  return settings.categoryNames[topCategoryId(categoryId, settings.categoryParents)] ?? '';
 }
