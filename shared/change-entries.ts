@@ -652,8 +652,9 @@ export interface BudgetSetFacts {
 
 /**
  * A default monthly budget set from Telegram's `/budgets`. Only ever a
- * category that had none, so there is no "before" to put back: Undo deletes
- * the target (refusing if its amount changed since), Redo sets it again.
+ * category that had none — or a cleared $0 default, which Wealthfolio treats
+ * the same as none — so there is no "before" to put back: Undo deletes the
+ * target (refusing if its amount changed since), Redo sets it again.
  */
 export function budgetSetChange(f: BudgetSetFacts): ChangeDraft {
   return {
