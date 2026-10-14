@@ -57,3 +57,12 @@ describe('AddonSyncHost links in place on a 3.9+ host', () => {
     expect(Object.keys(ctx.api.activities.saveMany.mock.calls[0][0])).toEqual(['updates']);
   });
 });
+
+describe('AddonSyncHost passes its log to the in-place linker', () => {
+  it('a fallback reason reaches the logger', async () => {
+    const ctx = fakeCtx([detail(OUT), detail(IN, { activityType: 'DEPOSIT' })], '3.9');
+    const log = vi.fn();
+    await new AddonSyncHost(ctx, log).linkPair([OUT, IN]);
+    expect(log).toHaveBeenCalledWith('link out-1/in-1: re-creating instead of linking in place (in-1 is stored as DEPOSIT and links as TRANSFER_IN)');
+  });
+});

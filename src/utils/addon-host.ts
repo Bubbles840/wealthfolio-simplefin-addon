@@ -102,7 +102,7 @@ function fromSdkEcho(a: any): HostActivity {
  * sync core. The Docker companion implements the same interface over REST.
  */
 export class AddonSyncHost implements SyncHost {
-  constructor(private ctx: AddonContext) {}
+  constructor(private ctx: AddonContext, private log?: (message: string) => void) {}
 
   /** ActivityDetails (what `activities.search` returns) has no sourceGroupId,
    *  so links can only be read back from a saveMany echo. */
@@ -217,6 +217,7 @@ export class AddonSyncHost implements SyncHost {
       },
       link: async (a, b) => (await this.ctx.api.activities.linkTransfer(a, b)) as unknown[],
       unlink: async (a, b) => (await this.ctx.api.activities.unlinkTransfer(a, b)) as unknown[],
+      ...(this.log ? { log: this.log } : {}),
     };
   }
 

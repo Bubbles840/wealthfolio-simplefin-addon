@@ -5,6 +5,7 @@ import {
   LINK_CARD_OUT, LINK_CHANGED, LINK_DONE, LINK_DROPPED, LINK_UNKNOWN_ACCOUNT, LINK_UNREACHABLE, type LinkIo, type LinkPair, type ReadRow,
 } from './audit-link';
 import type { ChangeDraft } from './change-entries';
+import { HALF_OF_ANOTHER_TRANSFER } from './link-in-place';
 import type { FixRow } from './fix-row';
 import type { LinkLeg } from './sync-host';
 import { emptySyncOverrides, setTxOverride, SYNC_OVERRIDES_UNREADABLE_MESSAGE } from './sync-overrides';
@@ -321,6 +322,15 @@ describe('linkPairs', () => {
     const f = fakeIo({ link: vi.fn(async () => ({ linked: false, problems: ['save (create): no'] })) });
     expect((await linkPairs([PAIR], f.io)).message).toBe("Couldn't link them: no. Nothing was changed.");
     expect(f.io.restore).not.toHaveBeenCalled();
+  });
+
+  it('a pair that is already half of another transfer says so once, with no re-read and no write-back', async () => {
+    const f = fakeIo({ link: vi.fn(async () => ({ linked: false, problems: [HALF_OF_ANOTHER_TRANSFER] })) });
+    const run = await linkPairs([PAIR], f.io);
+    expect(run.message).toBe('One of these is already half of another transfer — nothing was changed.');
+    expect(f.io.read).toHaveBeenCalledTimes(1);
+    expect(f.io.restore).not.toHaveBeenCalled();
+    expect(run.failed).toBe(1);
   });
 
   it('the write-back entry carries the new ids it was given, and the old ones', async () => {

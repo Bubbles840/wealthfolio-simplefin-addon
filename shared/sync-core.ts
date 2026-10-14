@@ -18,6 +18,7 @@ import {
 import type { ActivityType, SimplefinAccount, SimplefinTransaction, UnmappedAccount } from './types.js';
 import type { ActivityWrite, HoldingsSyncOutcome, HostActivity, ImportRow, LinkLeg, LinkResult, SaveManyRequest, SaveManyResult, SyncHost, SyncStore } from './sync-host.js';
 import { unlinkPairByRecreate, type UnlinkLeg, type UnlinkResult } from './link-pair.js';
+import { ledgerGroupId } from './link-in-place.js';
 import {
   amazonLabelChange, amazonLabelOf, balanceCorrectionChange, bankUpdateChange, bookkeepingChange, duplicateRemovedChange,
   importChange, pendingRemovedChange, stampChange, startingBalanceChange, startingBalanceMovedChange, transferLinkChange,
@@ -3794,7 +3795,11 @@ async function runSyncPass(
     };
     let result: UnlinkResult;
     try {
-      result = await unlinkPairByRecreate((req) => host.saveMany(req), [leg(row), leg(partner)]);
+      // In place where the host can (Wealthfolio's own unlink, the same rows
+      // retyped), else re-created as it always was.
+      result = host.unlinkPair
+        ? await host.unlinkPair([leg(row), leg(partner)])
+        : await unlinkPairByRecreate((req) => host.saveMany(req), [leg(row), leg(partner)]);
     } catch (e: any) {
       result = { unlinked: false, problems: [String(e?.message ?? e)] };
     }
@@ -3802,6 +3807,12 @@ async function runSyncPass(
       for (const p of result.problems ?? []) errors.push(`Transfer-unlink ${result.stale ? 'incomplete' : 'failed'} (${row.txId}/${partner.txId}): ${p}`);
       continue;
     }
+    // Unlinked in place but not retyped: the pair is apart, and says what is left.
+    for (const p of result.problems ?? []) errors.push(`Transfer-unlink incomplete (${row.txId}/${partner.txId}): ${p}`);
+    // An incomplete unlink keeps its ledger records and logs nothing yet: the
+    // rows are still typed as transfers, so the next run finds the pair again
+    // through the ledger and finishes the retype.
+    if (result.inPlace && (result.problems?.length ?? 0) > 0) continue;
     if (!readsGroups) {
       const gid = ledger[key] ?? ledger[row.txId];
       for (const [k, r] of [[key, row], [partnerKey, partner]] as const) {
@@ -3813,6 +3824,7 @@ async function runSyncPass(
     logChange?.(() => bookkeepingChange({
       step: 'transfer-unlink', activityIds: result.activityIds ?? [row.wfId, partner.wfId],
       legs: unlinkedPair.map(([k, r]) => ({ txKey: k, description: descByKey.get(k) || descriptionFromComment(r.comment) || r.txId })),
+      ...(result.inPlace ? { inPlace: true } : {}),
     }));
   }
 
@@ -4042,8 +4054,11 @@ async function runSyncPass(
     for (const [i, leg] of legs.entries()) {
       const key = keys[i];
       if (result.linked && result.groupId) {
-        if (ledger[key] !== result.groupId) {
-          ledger[key] = result.groupId;
+        // A link in place carries Wealthfolio's own group id; the ledger keeps
+        // it under the prefix its one-time migration does not drop.
+        const gid = ledgerGroupId(result.groupId);
+        if (ledger[key] !== gid) {
+          ledger[key] = gid;
           ledgerChanged = true;
         }
         // Retire the bare-txId entry this per-leg key supersedes, so the legacy
