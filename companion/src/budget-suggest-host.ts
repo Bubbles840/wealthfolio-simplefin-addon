@@ -113,8 +113,10 @@ export async function readBudgetSuggestions(r: BudgetReaders, now: Date): Promis
 export interface BudgetApplyOutcome {
   /** `target` null: written, but Wealthfolio's reply named no target (logged with a null id). */
   set: Array<{ suggestion: BudgetSuggestion; target: BudgetTarget | null }>;
-  /** Gained a budget since the list was shown: left alone. */
-  alreadySet: BudgetSuggestion[];
+  /** Gained a budget since the list was shown: left alone. `sameAmount`: its
+   *  current default target already holds exactly the suggested amount (a
+   *  double tap, or the same list applied twice). */
+  alreadySet: Array<BudgetSuggestion & { sameAmount: boolean }>;
   /** Its POST failed; the rest still applied. */
   failed: Array<{ suggestion: BudgetSuggestion; message: string }>;
 }
@@ -154,7 +156,9 @@ export async function applyBudgetSuggestions(
   // `null` writes nothing and reports every choice `unread` (an empty choice has none, hence the explicit test).
   const { write, alreadySet, unread } = planBudgetApply(chosen, first, at.month);
   if (first === null || unread.length > 0) return { ok: false };
-  const outcome: BudgetApplyOutcome = { set: [], alreadySet: [...alreadySet], failed: [] };
+  const sameAmount = (s: BudgetSuggestion, targets: readonly BudgetTarget[]) => targets.some((t) => t.targetType === 'category'
+    && t.taxonomyId === BUDGET_TAXONOMY && t.categoryId === s.categoryId && t.periodKey === DEFAULT_PERIOD_KEY && t.amountCents === s.cents);
+  const outcome: BudgetApplyOutcome = { set: [], alreadySet: alreadySet.map((s) => ({ ...s, sameAmount: sameAmount(s, first) })), failed: [] };
   const log = async (suggestion: BudgetSuggestion, target: BudgetTarget | null) => {
     outcome.set.push({ suggestion, target });
     try {
@@ -179,7 +183,7 @@ export async function applyBudgetSuggestions(
         continue;
       }
       if (planBudgetApply([suggestion], current, at.month).alreadySet.length > 0) {
-        outcome.alreadySet.push(suggestion);
+        outcome.alreadySet.push({ ...suggestion, sameAmount: sameAmount(suggestion, current) });
         continue;
       }
     }

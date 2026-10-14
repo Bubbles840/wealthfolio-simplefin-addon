@@ -7,7 +7,7 @@ import { AUDIT_CALLBACK_PREFIX } from './audit-menu.js';
 import type { BudgetReaders } from './budget-suggest-host.js';
 import {
   budgetsData, budgetsFingerprint, budgetsMenuDeps, createBudgetsMenu, parseBudgetsData, renderBudgetList, shownMask,
-  BUDGETS_ALL_SET, BUDGETS_CALLBACK_PREFIX, BUDGETS_CHANGED, BUDGETS_DATABASE, BUDGETS_NO_HISTORY, BUDGETS_NOT_ENOUGH_HISTORY, BUDGETS_PICK_ONE,
+  BUDGETS_ALL_SET, BUDGETS_CALLBACK_PREFIX, BUDGETS_CHANGED, BUDGETS_DATABASE, BUDGETS_NO_HISTORY, BUDGETS_NOT_ENOUGH_HISTORY, BUDGETS_BIGGEST_SET, BUDGETS_PICK_ONE,
   BUDGETS_SPENDING_OFF, BUDGETS_UNREADABLE, BUDGETS_UNREADABLE_SHOW, type BudgetsMenuDeps, type MenuScreen,
 } from './budgets-menu.js';
 import { CHANGES_CALLBACK_PREFIX } from './changes-menu.js';
@@ -272,7 +272,7 @@ describe('project 4 rulings P4-E..P4-H', () => {
     const send = vi.fn(async () => {});
     await menu.reply(send);
     expect(send.mock.calls[0]).toEqual([`*Suggested budgets*\n${escapeMarkdown(BUDGETS_NOT_ENOUGH_HISTORY)}`]);
-    expect(BUDGETS_NOT_ENOUGH_HISTORY).toBe("Your ledger doesn't cover a full month yet — send /budgets again next month.");
+    expect(BUDGETS_NOT_ENOUGH_HISTORY).toBe("Your ledger doesn't cover a full month yet — send /budgets again once a full calendar month has synced.");
     const none = { ...suggestions(), notEnoughHistory: true, candidates: [], suggestions: [] };
     expect(renderBudgetList(none, 0).text).toBe(`*Suggested budgets*\n${BUDGETS_NOT_ENOUGH_HISTORY}`);
   });
@@ -338,3 +338,85 @@ describe('project 4 rulings P4-E..P4-H', () => {
     expect(longest).toBeLessThanOrEqual(64);
   });
 });
+
+describe('project 4 ruling P4-I (fix round 1)', () => {
+  it('I1: a re-drawn list drops mask bits for categories no longer shown', async () => {
+    const { menu, state } = setup();
+    const s = suggestions();
+    state.targets = [...state.targets, target({ id: 'bt-gas', categoryId: 'cat-gas' })];
+    const fp = budgetsFingerprint(s);
+    const u = ui();
+    await menu.onCallback({ data: budgetsData({ kind: 'toggle', fp, handle: findingHandle('cat-gro'), mask: 0b111 }) }, u);
+    const [, keyboard] = edited(u);
+    const buttons = keyboard!.inline_keyboard.flat();
+    expect(buttons.map((b) => b.text)).toEqual(['Groceries $425 — left out', `✓ ${ODD} $180`, 'Apply all (2)', 'Apply selected (1)']);
+    expect(parseBudgetsData(buttons.at(-1)!.callback_data!)).toEqual({ kind: 'apply', fp, mask: 0b010 });
+    const v = ui();
+    await menu.onCallback({ data: budgetsData({ kind: 'toggle', fp, handle: findingHandle('cat-odd'), mask: 0b110 }) }, v);
+    expect(edited(v)[1]!.inline_keyboard.flat().map((b) => b.text)).toEqual(['Groceries $425 — left out', `${ODD} $180 — left out`, 'Apply all (2)']);
+  });
+
+  it('I2: a double tap on Apply POSTs once per category and the second screen says already set', async () => {
+    const { menu, readers, state } = setup();
+    readers.set = vi.fn(async (categoryId: string, amountCents: number) => {
+      const t = target({ id: `bt-${categoryId}`, categoryId, amountCents });
+      state.targets = [...state.targets, t];
+      return t;
+    });
+    const s = suggestions();
+    const data = budgetsData({ kind: 'apply', fp: budgetsFingerprint(s), mask: shownMask(s) });
+    const u = ui();
+    await menu.onCallback({ data }, u);
+    expect(u.edit.mock.calls[0]).toEqual(['Setting 3 budgets…']);
+    expect(u.answer).toHaveBeenCalledTimes(1);
+    expect(u.answer.mock.invocationCallOrder[0]).toBeLessThan((readers.set as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]);
+    const v = ui();
+    await menu.onCallback({ data }, v);
+    expect(readers.set).toHaveBeenCalledTimes(3);
+    expect(edited(v)[0]).toBe([
+      '*Budgets*', '✓ Groceries: $425 a month (already set)', `✓ ${escapeMarkdown(ODD)}: $180 a month (already set)`, '✓ Gas: $50 a month (already set)',
+      '', 'Undo any of these from /changes.',
+    ].join('\n'));
+    const one = ui();
+    await menu.onCallback({ data: budgetsData({ kind: 'apply', fp: budgetsFingerprint(s), mask: 0b1 }) }, one);
+    expect(one.edit.mock.calls[0]).toEqual(['Setting 1 budget…']);
+  });
+
+  it('M2: when only over-limit categories are unbudgeted, it is not "every category"', () => {
+    const many = Array.from({ length: BUDGET_MAX_CANDIDATES + 2 }, (_, i) => ({ id: `c${i}`, name: `Cat${String(i).padStart(2, '0')}`, parentId: null }));
+    const facts = {
+      now: NOW, timezone: null, categories: many, excludedCategoryIds: [], categoryParents: {},
+      spend: many.map((c, i) => ({ month: '2026-09', category: c.name, accountId: 'a', amount: 1000 - i * 10 })),
+    };
+    const first = suggestBudgets({ ...facts, targets: [] });
+    const targets = first.suggestions.map((x) => target({ id: `t-${x.categoryId}`, categoryId: x.categoryId }));
+    const s = suggestBudgets({ ...facts, targets });
+    expect(s.suggestions).toEqual([]);
+    expect(s.skipped.some((k) => k.reason === 'over-limit')).toBe(true);
+    expect(BUDGETS_BIGGEST_SET).toBe('Your biggest categories already have a budget (a $0 budget counts) — nothing to suggest.');
+    expect(renderBudgetList(s, 0).text).toBe(`*Suggested budgets*\n${BUDGETS_BIGGEST_SET}`);
+  });
+
+  it('M3: 12 long failures stay under Telegram\'s 4096 characters', async () => {
+    const { menu, readers } = setup();
+    const many = Array.from({ length: 12 }, (_, i) => ({ id: `c${i}`, name: `A fairly long category name number ${i}_*`, parentId: null }));
+    readers.categories = vi.fn(() => many);
+    readers.spend = vi.fn(() => many.map((c) => ({ month: '2026-09', category: c.name, accountId: 'a', amount: 5000 })));
+    readers.targets = vi.fn(async () => ({ enabled: true, targets: [] }));
+    readers.set = vi.fn(async () => { throw new Error('x_*'.repeat(400)); });
+    const read = await deps(readers).read(NOW);
+    if (!read.ok) throw new Error('unreadable');
+    const u = ui();
+    await menu.onCallback({ data: budgetsData({ kind: 'apply', fp: budgetsFingerprint(read.result), mask: shownMask(read.result) }) }, u);
+    const text = edited(u)[0];
+    expect(text.split('\n').filter((l) => l.includes("couldn't set it"))).toHaveLength(12);
+    expect(text.length).toBeLessThanOrEqual(4096);
+    expect(text).toContain('…');
+  });
+
+  it('M4: the changed-list notice', () => {
+    expect(BUDGETS_CHANGED).toBe('That list is out of date — here it is again.');
+  });
+});
+
+const deps = (readers: BudgetReaders) => ({ ...budgetsMenuDeps(readers, vi.fn()), now: () => NOW });

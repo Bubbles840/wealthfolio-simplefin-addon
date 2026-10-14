@@ -39,14 +39,15 @@ export const budgetsIntro = (window: readonly string[]) =>
   `Your average monthly spending for ${windowLabel(window)}, rounded up to the nearest $5, for each category with no budget yet. Each becomes a default monthly budget in Wealthfolio.`;
 export const BUDGETS_HINT = 'Tap a category to leave it out.';
 export const BUDGETS_ALL_SET = 'Every category you spend on already has a budget (a $0 budget counts) — nothing to suggest.';
-export const BUDGETS_NOT_ENOUGH_HISTORY = "Your ledger doesn't cover a full month yet — send /budgets again next month.";
+export const BUDGETS_BIGGEST_SET = 'Your biggest categories already have a budget (a $0 budget counts) — nothing to suggest.';
+export const BUDGETS_NOT_ENOUGH_HISTORY = "Your ledger doesn't cover a full month yet — send /budgets again once a full calendar month has synced.";
 export const BUDGETS_NO_HISTORY = 'Nothing to suggest yet: no category averaged $10 or more a month over the full months your ledger covers (of the last 3).';
 export const BUDGETS_DATABASE = "Couldn't read your spending from Wealthfolio's database — try again.";
 export const BUDGETS_SPENDING_OFF = "Wealthfolio's Spending tracker is off, so it has no budgets — turn it on in Wealthfolio first.";
 export const BUDGETS_UNREADABLE_SHOW = "Couldn't read your budgets — try again.";
 export const BUDGETS_UNREADABLE = "Couldn't read your budgets — nothing was set.";
 export const BUDGETS_ALREADY = 'Already has a budget — left alone.';
-export const BUDGETS_CHANGED = 'Your spending changed since that list — here it is again.';
+export const BUDGETS_CHANGED = 'That list is out of date — here it is again.';
 export const BUDGETS_PICK_ONE = 'Pick at least one first.';
 export const BUDGETS_UNDO_HINT = 'Undo any of these from /changes.';
 export const BUDGETS_RETRY_HINT = 'Send /budgets again to try the rest.';
@@ -94,6 +95,8 @@ export function shownMask(s: BudgetSuggestions): number {
 }
 const count = (mask: number, n: number) => Array.from({ length: n }, (_, i) => i).filter((i) => has(mask, i)).length;
 
+/** Wealthfolio's error text, clipped so twelve failures fit one Telegram message. */
+const ERROR_CLIP = 120;
 const clip = (s: string, n: number) => {
   const chars = Array.from(s);
   return chars.length > n ? `${chars.slice(0, n - 1).join('')}…` : s;
@@ -103,11 +106,14 @@ const clip = (s: string, n: number) => {
 export function renderBudgetList(s: BudgetSuggestions, selected: number, notice?: string): MenuScreen {
   const head = [`*${BUDGETS_TITLE}*`, ...(notice ? [escapeMarkdown(notice)] : [])];
   if (s.suggestions.length === 0) {
-    const why = s.notEnoughHistory ? BUDGETS_NOT_ENOUGH_HISTORY : s.candidates.length ? BUDGETS_ALL_SET : BUDGETS_NO_HISTORY;
+    const why = s.notEnoughHistory ? BUDGETS_NOT_ENOUGH_HISTORY
+      : s.candidates.length ? (s.skipped.some((k) => k.reason === 'over-limit') ? BUDGETS_BIGGEST_SET : BUDGETS_ALL_SET)
+      : BUDGETS_NO_HISTORY;
     return { text: [...head, why].join('\n'), keyboard: { inline_keyboard: [] } };
   }
   const shown = shownMask(s);
-  const picked = selected % bit(BUDGET_MAX_CANDIDATES);
+  // Only what is shown can be picked: a stale bit (a category that gained a budget) is dropped.
+  const picked = s.candidates.reduce((m, _, i) => (has(selected, i) && has(shown, i) ? m + bit(i) : m), 0);
   const fp = budgetsFingerprint(s);
   const rows: Button[][] = [];
   s.candidates.forEach((c, i) => {
@@ -137,10 +143,12 @@ export function renderBudgetResult(o: BudgetApplyOutcome): string {
     `*${BUDGETS_RESULT_TITLE}*`,
     // A null target (written, reply named none) or a non-finite amount shows what was sent.
     ...o.set.map(({ suggestion, target }) => `✓ ${name(suggestion)}: ${budgetDollars(target && Number.isFinite(target.amountCents) ? target.amountCents : suggestion.cents)} a month`),
-    ...o.alreadySet.map((x) => `${name(x)}: ${BUDGETS_ALREADY}`),
-    ...o.failed.map(({ suggestion, message }) => `${name(suggestion)}: couldn't set it — ${escapeMarkdown(message)}`),
+    ...o.alreadySet.map((x) => (x.sameAmount
+      ? `✓ ${name(x)}: ${budgetDollars(x.cents)} a month (already set)`
+      : `${name(x)}: ${BUDGETS_ALREADY}`)),
+    ...o.failed.map(({ suggestion, message }) => `${name(suggestion)}: couldn't set it — ${escapeMarkdown(clip(message, ERROR_CLIP))}`),
   ];
-  const tail = [...(o.set.length ? [BUDGETS_UNDO_HINT] : []), ...(o.failed.length ? [BUDGETS_RETRY_HINT] : [])];
+  const tail = [...(o.set.length || o.alreadySet.some((x) => x.sameAmount) ? [BUDGETS_UNDO_HINT] : []), ...(o.failed.length ? [BUDGETS_RETRY_HINT] : [])];
   return (tail.length ? [...lines, '', ...tail] : lines).join('\n');
 }
 
@@ -229,13 +237,15 @@ export function createBudgetsMenu(deps: BudgetsMenuDeps): BudgetsMenu {
           return void await ui.answer();
         }
         const chosen = s.candidates.filter((_, i) => has(view.mask, i));
+        // Answer first and drop the buttons: a second tap on this message finds nothing to press.
+        await ui.answer();
+        await ui.edit(`Setting ${chosen.length} budget${chosen.length === 1 ? '' : 's'}…`);
         const result = await deps.apply(chosen, { month: s.month, monthsUsed: s.monthsUsed }, now);
         if (!result.ok) {
           await ui.edit(`*${BUDGETS_TITLE}*\n${escapeMarkdown(BUDGETS_UNREADABLE)}`, { inline_keyboard: [[{ text: 'Try again', callback_data: cb.data }]] });
-          return void await ui.answer();
+          return;
         }
         await ui.edit(renderBudgetResult(result.outcome));
-        await ui.answer();
       } catch (err) {
         deps.log(`Budgets menu: ${cb.data} failed: ${message(err)}`);
         await ui.answer(FAILED_ANSWER).catch(() => {});
