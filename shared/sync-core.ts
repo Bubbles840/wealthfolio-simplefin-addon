@@ -1,4 +1,5 @@
 import { mapTransactionWithSource } from './mapper.js';
+import { REIMBURSEMENT_SUBTYPE } from './cash-flow-bucket.js';
 import { accountTxKey, detectTransferPairs, TRANSFER_MATCH_WINDOW_SECONDS } from './transfers.js';
 import type { TransferCandidate } from './transfers.js';
 import { planReconciliation, IN_TRANSIT_COMMENT_PREFIX } from './reconcile.js';
@@ -2125,10 +2126,18 @@ async function runSyncPass(
       // transfer. It becomes ordinary money in or out, the type a leg whose
       // other half never arrived takes, and the rule's subtype goes with it.
       const notTransfer = hasTxOverride(overrides, key, 'notTransfer');
+      // A payback you filed (`asReimbursement`, 1.62 W7): a CREDIT marked
+      // REIMBURSEMENT for as long as the bank row is money in on a cash
+      // account, whatever a keyword or a rule says — and never paired below,
+      // which would type it a transfer. Money out, or another account type,
+      // and the override yields: the row is typed as usual.
+      const payback = hasTxOverride(overrides, key, 'asReimbursement') && amount > 0 && wfTypes.get(wfAccountId) === 'CASH';
       const mapped = mapTransactionWithSource(tx.description, amount, rules, wfTypes.get(wfAccountId));
-      const { type, fromRule, subtype } = notTransfer && isTransferType(mapped.type)
-        ? { type: expiredTransferLegType(wfTypes.get(wfAccountId) ?? '', amount), fromRule: false, subtype: undefined }
-        : mapped;
+      const { type, fromRule, subtype } = payback
+        ? { type: 'CREDIT' as ActivityType, fromRule: true, subtype: REIMBURSEMENT_SUBTYPE as string | undefined }
+        : notTransfer && isTransferType(mapped.type)
+          ? { type: expiredTransferLegType(wfTypes.get(wfAccountId) ?? '', amount), fromRule: false, subtype: undefined }
+          : mapped;
       prepared.push({
         sfAccountId: sfAccount.id, tx, type,
         ...(subtype ? { subtype } : {}),
@@ -2195,8 +2204,9 @@ async function runSyncPass(
       // Pending transactions are provisional — exclude them from transfer
       // pairing so a not-yet-settled row can't lock in a TRANSFER typing.
       if (tx.pending) continue;
-      // Never paired: pairing would type it a transfer and link it again.
-      if (notTransfer) continue;
+      // Never paired: pairing would type it a transfer and link it again — or,
+      // for a payback, turn it into a transfer leg.
+      if (notTransfer || payback) continue;
       // A rule's type is never overridden by pair detection, which is why ruled
       // rows sit out of it — except a rule that already says "transfer, this way".
       // Pairing assigns that very type, so all it adds is the link; leaving such a
