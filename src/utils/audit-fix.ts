@@ -6,7 +6,8 @@
  * write through the add-on SDK. Rows are
  * re-read by exact id — Wealthfolio 3.8's `activityIds` search filter, the
  * read the story uses (src/utils/tx-story.ts) — and written through
- * `AddonSyncHost`, whose `linkPair` is the sync's own `linkPairByRecreate`.
+ * `AddonSyncHost`, whose `linkPair` is the sync's own linker: in place on a
+ * Wealthfolio 3.9+ host, else `linkPairByRecreate`.
  *
  * The add-on cannot count on reading a row's group back, so a row is
  * confirmed linked by a group the host does report or by the add-on's own
@@ -21,6 +22,7 @@ import type { ActivitySearchFilters, AddonContext } from '@wealthfolio/addon-sdk
 import type { HealthLeg } from '../../shared/audit-health';
 import { linkPairs, LINK_DONE, type LinkIo, type LinkPair, type LinkRun, type ReadRow } from '../../shared/audit-link';
 import { fixRowOf, linkedState, type FixRow } from '../../shared/fix-row';
+import { ledgerGroupId } from '../../shared/link-in-place';
 import { isTransferType, txIdFromComment } from '../../shared/sync-core';
 import { removeForGood, type RemoveIo, type RemoveOutcome } from '../../shared/tx-remove';
 import { sfinIdsFor } from '../../shared/tx-story';
@@ -65,7 +67,7 @@ const ledgerKnows = (ledger: Record<string, string> | null, keys: readonly strin
   !!ledger && (keys.some((k) => ledger[k] !== undefined) || (!!txId && ledger[txId] !== undefined));
 
 export function addonLinkIo(ctx: AddonContext, store: FixStore, log: (msg: string) => void = warn): LinkIo {
-  const host = new AddonSyncHost(ctx);
+  const host = new AddonSyncHost(ctx, log);
   return {
     read: async (pair: LinkPair) => {
       const types = await accountTypes(ctx);
@@ -90,7 +92,8 @@ export function addonLinkIo(ctx: AddonContext, store: FixStore, log: (msg: strin
       // Re-read right before the write (the add-on's sync writes it too); a
       // ledger that cannot be read throws here and is never overwritten.
       const ledger = plainLedger(await store.getLinkedGroups());
-      await store.setLinkedGroups({ ...ledger, [keys[0]]: groupId, [keys[1]]: groupId });
+      // A pair linked in place carries Wealthfolio's own group: kept under the prefix the sync keeps.
+      await store.setLinkedGroups({ ...ledger, [keys[0]]: ledgerGroupId(groupId), [keys[1]]: ledgerGroupId(groupId) });
     },
     record: async (draft) => {
       await store.recordChange?.(draft);
@@ -131,7 +134,7 @@ export async function linkFromApp(ctx: AddonContext, store: FixStore, pairs: Lin
 }
 
 export function addonRemoveIo(ctx: AddonContext, store: FixStore, log: (msg: string) => void = warn): RemoveIo {
-  const host = new AddonSyncHost(ctx);
+  const host = new AddonSyncHost(ctx, log);
   return {
     read: async (activityId) => readFixRow(ctx, activityId, await accountTypes(ctx)),
     feeds: async (wfAccountId) => sfinIdsFor((await store.getAccountMapping?.()) ?? {}, wfAccountId),

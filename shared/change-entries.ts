@@ -764,6 +764,8 @@ export interface BookkeepingFacts {
    *  how many rows were re-created (default: the ids listed). */
   pairs?: number;
   rows?: number;
+  /** `transfer-unlink` only: Wealthfolio's own unlink kept both rows, retyped. */
+  inPlace?: boolean;
 }
 
 /** Repairs the sync makes to its own rows. Shown behind a button; never undoable. */
@@ -776,9 +778,11 @@ export function bookkeepingChange(f: BookkeepingFacts): ChangeDraft {
       : f.step === 'transfer-relink'
         ? `Re-created ${n} old transfer ${plural(n, 'row', 'rows')} so ${plural(n, 'it moves', 'they move')} cash`
         : f.step === 'transfer-unlink'
-          ? ((f.pairs ?? 1) > 1
-            ? `Unlinked ${f.pairs} transfers you undid: re-created their ${f.rows ?? n} rows as spending or money in`
-            : `Unlinked a transfer you undid: re-created ${(f.rows ?? n) === 1 ? 'its row' : `its ${f.rows ?? n} rows`} as spending or money in`)
+          ? (f.inPlace
+            ? 'Unlinked a transfer you undid: both rows now count as spending or money in'
+            : (f.pairs ?? 1) > 1
+              ? `Unlinked ${f.pairs} transfers you undid: re-created their ${f.rows ?? n} rows as spending or money in`
+              : `Unlinked a transfer you undid: re-created ${(f.rows ?? n) === 1 ? 'its row' : `its ${f.rows ?? n} rows`} as spending or money in`)
           : `Set up the "${f.categoryName ?? 'Opening balances'}" category and kept it out of spending`;
   return {
     actor: 'auto',

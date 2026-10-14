@@ -60,7 +60,7 @@ export class RestSyncHost implements SyncHost {
   /** `dbPath` is optional so every existing construction and test keeps
    *  working; without it the ledger-balance fallback simply stays unavailable,
    *  which is the behaviour that existed before it. */
-  constructor(private client: WealthfolioClient, private dbPath?: string) {}
+  constructor(private client: WealthfolioClient, private dbPath?: string, private log?: (message: string) => void) {}
 
   readonly capabilities = { readsSourceGroupId: true };
 
@@ -192,6 +192,7 @@ export class RestSyncHost implements SyncHost {
       read: (ids) => this.client.searchActivities({ page: 0, pageSize: 2, activityIdFilter: ids }),
       link: (a, b) => this.client.linkTransferActivities(a, b),
       unlink: (a, b) => this.client.unlinkTransferActivities(a, b),
+      ...(this.log ? { log: this.log } : {}),
     };
   }
 

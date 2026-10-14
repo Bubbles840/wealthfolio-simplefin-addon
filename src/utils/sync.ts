@@ -60,7 +60,7 @@ export function runSync(
       // The change log rides along when the store can keep one (an older store
       // or a test double cannot, and then nothing is recorded).
       const changeLog = opts.changeLog ?? store.changeLogSink?.();
-      const result = await runSyncCore(new AddonSyncHost(ctx), store, { ...opts, ...(changeLog ? { changeLog } : {}) });
+      const result = await runSyncCore(new AddonSyncHost(ctx, (m) => console.warn(`[simplefin-sync] ${m}`)), store, { ...opts, ...(changeLog ? { changeLog } : {}) });
       // Deliver INSIDE the single-flight lock and inside the returned promise, so
       // one run announces its own alerts exactly once and a caller that awaits the
       // sync has also awaited the sends. `deliverAddonAlerts` never rejects, so it

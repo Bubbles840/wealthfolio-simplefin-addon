@@ -6,7 +6,8 @@
  * write, bound to one Wealthfolio client. Rows are re-read live over REST by
  * exact id (`activityIdFilter`); each carries its group, so on the companion
  * a row is linked or not — never "maybe". Writes go through `RestSyncHost`,
- * whose `linkPair` is the sync's own `linkPairByRecreate`, and entries land
+ * whose `linkPair` is the sync's own linker (Wealthfolio's link in place,
+ * else `linkPairByRecreate`), and entries land
  * in the companion's bucket of the change log through its one writer.
  */
 import type { LinkIo, LinkPair, ReadRow } from '../../shared/audit-link.js';

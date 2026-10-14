@@ -991,9 +991,11 @@ describe('runSync', () => {
     await runSync(ctx, store as any, { heal: true });
 
     const persisted = vi.mocked(store.setLinkedGroups).mock.calls.at(-1)![0] as Record<string, string>;
-    // The REAL gid is adopted, under one PER-LEG key each...
+    // The REAL gid is adopted, under one PER-LEG key each — kept under the
+    // `wf-transfer-` prefix, which the ledger's one-time migration never drops
+    // (a bare id would be dropped next run and the pair re-linked)...
     expect(Object.keys(persisted)).toHaveLength(2);
-    expect(new Set(Object.values(persisted))).toEqual(new Set(['gid-real']));
+    expect(new Set(Object.values(persisted))).toEqual(new Set(['wf-transfer-gid-real']));
     // ...and the legacy bare-txId entries are drained rather than left behind to
     // shadow the per-leg ones on the next run.
     expect(persisted['tx-out']).toBeUndefined();

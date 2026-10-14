@@ -70,6 +70,9 @@ export interface InPlaceIo {
 /** Wealthfolio's refusal when a row is already half of ANOTHER transfer
  *  (`link_transfer_activities`, v3.8.0 through v3.10.0). */
 const OTHER_TRANSFER_REFUSAL = /already linked to another transfer/i;
+/** The refusal 3.8 and 3.9 give a pair that is already linked to each other
+ *  (the text varies; "already linked" or "already belong"). */
+const ALREADY_LINKED_REFUSAL = /already (linked|belong)/i;
 /** What the caller is told when it is: re-creating would delete the other
  *  pair's partner too, and that partner is never re-created. */
 export const HALF_OF_ANOTHER_TRANSFER = 'One of these is already half of another transfer — nothing was changed.';
@@ -201,12 +204,22 @@ export async function linkPairPreferInPlace(
   // proves the link if it is a new one.
   const existing = new Set(storedBefore.map((s) => s?.group ?? '').filter(Boolean));
   const alreadyOneGroup = storedBefore[0]!.group !== '' && storedBefore[0]!.group === storedBefore[1]!.group;
+  // A shared group Wealthfolio itself marked: `flow.is_external` false on both
+  // rows, or a `wf-transfer-` group id.
+  const marked = alreadyOneGroup
+    && ((storedBefore[0]!.external === false && storedBefore[1]!.external === false) || storedBefore[0]!.group.startsWith(TRANSFER_GROUP_PREFIX));
   try {
     const done = linkedIn(legs, await io.link(ids[0], ids[1]), alreadyOneGroup ? new Set() : existing);
     if (done) return done;
     io.log?.(`link ${ids[0]}/${ids[1]}: Wealthfolio answered without a shared group; looking`);
   } catch (e) {
     const why = whyOf(e);
+    if (marked && ALREADY_LINKED_REFUSAL.test(why)) {
+      // 3.8 and 3.9 refuse a pair already linked to each other. It IS linked:
+      // keep the ids and the filings instead of re-creating.
+      io.log?.(`link ${ids[0]}/${ids[1]}: already linked to each other (${why}); kept as they are`);
+      return { linked: true, groupId: storedBefore[0]!.group, activityIds: ids, inPlace: true };
+    }
     if (OTHER_TRANSFER_REFUSAL.test(why) && !alreadyOneGroup) {
       // Re-creating would delete the OTHER pair's partner too (a delete expands
       // to the whole group), and that partner is never re-created.
@@ -216,22 +229,36 @@ export async function linkPairPreferInPlace(
     io.log?.(`link ${ids[0]}/${ids[1]}: Wealthfolio refused or its answer was lost (${why}); looking`);
   }
   try {
-    const done = linkedIn(legs, await io.read(ids), existing);
+    const again = await io.read(ids);
+    const done = linkedIn(legs, again, existing);
     if (done) return done;
-  } catch {
+    // A lost answer, and a row still in the group it had at the first read
+    // while its partner is not in that group: it is half of another transfer
+    // (a link that went through would have moved it). Re-creating would delete
+    // that other pair's partner too, so leave it for the next sync.
+    const a = find(again, ids[0]);
+    const b = find(again, ids[1]);
+    const stuck = [[a, b, storedBefore[0]], [b, a, storedBefore[1]]].some(([now, other, was]) =>
+      !!now && !!was && was.group !== '' && now.group === was.group && (!other || other.group !== now.group));
+    if (a && b && stuck) {
+      io.log?.(`link ${ids[0]}/${ids[1]}: a row is still in its earlier group and its partner is not; left unlinked, nothing deleted`);
+      return { linked: false, problems: [HALF_OF_ANOTHER_TRANSFER] };
+    }
+  } catch (e) {
     // Can't tell: re-creating links them either way.
+    return recreate(`could not check: ${whyOf(e)}`);
   }
   return recreate('Wealthfolio did not link them');
 }
 
 /** Why this pair cannot be unlinked in place, or null when it can. */
 export function unlinkInPlaceRefusal(legs: readonly [UnlinkLeg, UnlinkLeg], stored: readonly [StoredLeg | null, StoredLeg | null]): string | null {
+  for (let i = 0; i < 2; i++) if (!stored[i]) return `${legs[i].wfId} could not be read`;
   const types = new Set(stored.map((s) => s?.type));
   if (!types.has('TRANSFER_OUT') || !types.has('TRANSFER_IN')) return 'Wealthfolio unlinks one transfer out from one transfer in';
   for (let i = 0; i < 2; i++) {
     const leg = legs[i];
-    const s = stored[i];
-    if (!s) return `${leg.wfId} could not be read`;
+    const s = stored[i]!;
     if (s.accountId !== leg.accountId) return `${leg.wfId} is in another account now`;
     if (s.type !== leg.activityType) return `${leg.wfId} is stored as ${s.type}`;
     if (s.absCents !== leg.absCents) return `${leg.wfId} has another amount`;
@@ -315,7 +342,10 @@ export async function unlinkPairPreferInPlace(
     try {
       const again = await io.read(ids);
       const types = legs.map((leg) => find(again, leg.wfId)?.type);
-      if (types.every((t, i) => t === legs[i].newType)) problem = null;
+      if (types.every((t, i) => t === legs[i].newType)) {
+        io.log?.(`unlink ${ids[0]}/${ids[1]}: the retype threw (${problem}) but landed`);
+        problem = null;
+      }
       else if (types.every((t) => t !== undefined && isTransferType(t))) still = 'are still';
     } catch {
       // Can't tell: stays "may still be".
