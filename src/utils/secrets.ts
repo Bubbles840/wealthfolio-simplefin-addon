@@ -8,6 +8,7 @@ import { SEMESTER_POOL_SECRET_KEY, parsePoolConfig } from '../../shared/pool';
 import type { SemesterPoolConfig, PoolStatus } from '../../shared/pool';
 import { REPORT_CUBE_SECRET_KEY, parseReportCube } from '../../shared/report-cube';
 import { AUDIT_SNAPSHOT_SECRET_KEY, parseAuditSnapshot, type AuditSnapshotRead } from '../../shared/audit-snapshot';
+import { REPORTS_SEEN_SECRET_KEY, parseReportsSeen, type ReportsSeen, type ReportsSeenRead } from '../../shared/reports-seen';
 import type { ReportCube } from '../../shared/report-cube';
 import { parseCustomReports } from '../../shared/report-eval';
 import type { CustomReport } from '../../shared/report-eval';
@@ -125,6 +126,9 @@ const KEYS = {
   reportCube: REPORT_CUBE_SECRET_KEY,
   // The audits' snapshot (2c): companion-published, addon-read-only, cleared on Reset.
   auditSnapshot: AUDIT_SNAPSHOT_SECRET_KEY,
+  // The Reports tab's unread state (project 5): written by the add-on only,
+  // cleared on Reset.
+  reportsSeen: REPORTS_SEEN_SECRET_KEY,
   customReports: 'custom_reports',
   budgetLayout: 'budget_layout',
   openCards: 'ui_open_cards',
@@ -228,6 +232,17 @@ export class SecretsStore {
   /** A report's live edition and archive, published by the companion. */
   async getReports(kind: ReportKind): Promise<ReportStore> {
     return parseReportStore(await this.ctx.api.secrets.get(reportsSecretKey(kind)));
+  }
+
+  /** Which sent editions this person has seen (project 5): ok, absent (the
+   *  first run) or corrupt. Rejects when the host read itself fails, so the
+   *  page can tell that apart and write nothing. */
+  async getReportsSeen(): Promise<ReportsSeenRead> {
+    return parseReportsSeen(await this.ctx.api.secrets.get(KEYS.reportsSeen));
+  }
+
+  async setReportsSeen(seen: ReportsSeen): Promise<void> {
+    await this.ctx.api.secrets.set(KEYS.reportsSeen, JSON.stringify(seen));
   }
 
   async getAccessUrl(): Promise<string | null> {
