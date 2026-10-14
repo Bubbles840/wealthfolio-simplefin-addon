@@ -136,6 +136,54 @@ describe('appTxStory', () => {
     expect(none.kind === 'ok' && none.story.notes).toEqual([]);
   });
 
+  const xfer = () => ctxWith(byId([detail({ activityType: 'TRANSFER_OUT', amount: '600', comment: 'TRANSFER TO ALLY · TRN-1' })]));
+  const ground = (out: Awaited<ReturnType<typeof appTxStory>>) => (out.kind === 'ok' ? out.story : (null as never));
+
+  it('a throwing or corrupt linked-groups ledger is a partner note, and a transfer with no partner has no "what it is" line', async () => {
+    const out = ground(await appTxStory(xfer(), store({ getChangeLog: vi.fn(async () => logOf()), getLinkedGroups: vi.fn(async () => { throw new SyntaxError('bad JSON'); }) }), { activityId: 'act-1' }, NOW));
+    expect(out.notes).toEqual([TX_FACT_NOTES.partner]);
+    expect(out.answer).toEqual(['From your PNC Checking bank feed.']);
+  });
+
+  it('a transfer-typed row with no partner leaves "what it is" out, with no note when the ledger reads fine', async () => {
+    const out = ground(await appTxStory(xfer(), store({ getChangeLog: vi.fn(async () => logOf()) }), { activityId: 'act-1' }, NOW));
+    expect(out.notes).toEqual([]);
+    expect(out.answer.some((l) => l.includes('transfer') || l === TX_STORY_SPENDING)).toBe(false);
+  });
+
+  it('a missing linked-groups method is not a failure', async () => {
+    const { getLinkedGroups: _g, ...rest } = store({ getChangeLog: vi.fn(async () => logOf()) });
+    expect(ground(await appTxStory(xfer(), rest, { activityId: 'act-1' }, NOW)).notes).toEqual([]);
+  });
+
+  it.each([
+    ['the report cube', { getReportCube: vi.fn(async () => { throw new Error('down'); }) }],
+    ['the needs-a-category list', { getUncategorizedStatus: vi.fn(async () => { throw new Error('down'); }) }],
+  ])('a throwing read of %s is a category note', async (_what, over) => {
+    const out = ground(await appTxStory(ctxWith(byId([detail()])), store(over), { activityId: 'act-1' }, NOW));
+    expect(out.notes).toEqual([TX_FACT_NOTES.category]);
+  });
+
+  it('a companion-version read that throws gives neither filer line; a resolved null says Wealthfolio', async () => {
+    const out = ground(await appTxStory(ctxWith(byId([detail()])), store({ getCompanionVersion: vi.fn(async () => { throw new Error('down'); }) }), { activityId: 'act-1' }, NOW));
+    expect(out.answer).toEqual(['From your PNC Checking bank feed.', TX_STORY_SPENDING]);
+    expect(out.notes).toEqual([]);
+  });
+
+  it('a missing mapping method leaves the feed line out, with no note', async () => {
+    const { getAccountMapping: _m, ...rest } = store();
+    const out = ground(await appTxStory(ctxWith(byId([detail()])), rest, { activityId: 'act-1' }, NOW));
+    expect(out.notes).toEqual([]);
+    expect(out.answer.join(' ')).not.toContain('Not from your bank feed');
+    expect(out.answer.join(' ')).not.toContain('bank feed.');
+  });
+
+  it('a failed accounts read is a mapping note', async () => {
+    const ctx = ctxWith(byId([detail()]));
+    ctx.api.accounts.getAll = vi.fn(async () => { throw new Error('down'); });
+    expect(ground(await appTxStory(ctx, store(), { activityId: 'act-1' }, NOW)).notes).toEqual([TX_FACT_NOTES.mapping]);
+  });
+
   it('an older store without the newer reads still tells the story', async () => {
     const out = await appTxStory(ctxWith(byId([detail()])), { getAccountMapping: vi.fn(async () => ({ 'ACT-chk': 'wf-chk' })) }, { activityId: 'act-1' }, NOW);
     expect(out.kind === 'ok' && out.story.notes).toEqual([]);
@@ -169,6 +217,23 @@ describe('appTxSearch', () => {
     const out = await appTxSearch(ctx, parseTxQuery('kroger'), NOW);
     expect(ctx.api.activities.search).toHaveBeenCalledTimes(2);
     expect(out.kind === 'ok' && out.result.rows.map((r) => r.activityId)).toEqual(['act-1']);
+  });
+
+  it('says there may be more when it runs out of pages while pages are still full', async () => {
+    const full = Array.from({ length: 500 }, (_, i) => detail({ id: `p${i}`, comment: 'TARGET · TRN-x' }));
+    const ctx = ctxWith(async () => ({ data: full, meta: { totalRowCount: 99999 } }));
+    const out = await appTxSearch(ctx, parseTxQuery('kroger'), NOW);
+    expect(ctx.api.activities.search).toHaveBeenCalledTimes(10);
+    expect(out.kind === 'ok' && out.result).toEqual({ rows: [], truncated: true });
+  });
+
+  it('stops early past 40 matches and says there were more', async () => {
+    const full = Array.from({ length: 500 }, (_, i) => detail({ id: `k${i}`, comment: 'KROGER · TRN-x' }));
+    const ctx = ctxWith(async () => ({ data: full, meta: { totalRowCount: 99999 } }));
+    const out = await appTxSearch(ctx, parseTxQuery('kroger'), NOW);
+    expect(ctx.api.activities.search).toHaveBeenCalledTimes(1);
+    expect(out.kind === 'ok' && out.result.truncated).toBe(true);
+    expect(out.kind === 'ok' && out.result.rows).toHaveLength(40);
   });
 
   it('is unreachable when Wealthfolio cannot be read', async () => {
