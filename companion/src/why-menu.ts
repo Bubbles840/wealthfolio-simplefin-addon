@@ -21,8 +21,18 @@
  *   t<id>:r<handle>:<page>     a story in place; Back to a sync's imports
  *   r<handle>                  a sync's imports as a NEW message (the import notice)
  *   r<handle>:<page>           a sync's imports, in place
- * `<id>` is an activity id; `<handle>` is `findingHandle(runId)`. A query is
- * cut to WHY_QUERY_MAX_BYTES so the longest story button fits 64 bytes.
+ *   d<id>                      R2: "Remove for good…" — the confirm screen, in place
+ *   D<id>:<fingerprint>        R2: remove it, then say what happened, in place
+ * `<id>` is an activity id; `<handle>` is `findingHandle(runId)`;
+ * `<fingerprint>` is `removalFingerprint` of the row as the confirm screen
+ * showed it (shared/tx-remove.ts), 8 hex. A query is cut to
+ * WHY_QUERY_MAX_BYTES so the longest story button fits 64 bytes; the longest
+ * remove button is 52.
+ *
+ * "Remove for good…" (2c R2) shows on a story only when the deps can remove
+ * (`remove`) and the row qualifies (`removalOffered`). Its first tap edits
+ * the story into the confirm screen — Remove, or Cancel back to the story —
+ * and Remove re-reads the row and refuses, in place, if it changed since.
  *
  * Bank and user text is escaped AND kept outside every `*…*`/`_…_`; button
  * labels are plain text and are not escaped.
@@ -37,6 +47,9 @@ import {
   isEmptyTxQuery, parseTxQuery, txQueryText, txSearchPage, TX_SEARCH_TOO_MANY, type TxQuery, type TxSearchResult,
 } from '../../shared/tx-search.js';
 import { TX_STORY_GONE, TX_STORY_NO_HISTORY, TX_STORY_UNREACHABLE, TX_STORY_WHAT_HAPPENED, type TxStory } from '../../shared/tx-story.js';
+import {
+  removalFingerprint, removalOffered, REMOVE_ACTION, REMOVE_BUTTON, REMOVE_CANCEL, REMOVE_CONFIRM, type RemoveOutcome,
+} from '../../shared/tx-remove.js';
 import { changesData } from './changes-menu.js';
 import type { SearchOutcome, StoryOutcome } from './tx-story-host.js';
 
@@ -69,12 +82,18 @@ export type WhyView =
   | { kind: 'search'; page: number; query: string }
   | { kind: 'story'; activityId: string; back: StoryBack }
   /** `fresh`: from the import notice — sent as a new message. */
-  | { kind: 'run'; run: string; page: number; fresh: boolean };
+  | { kind: 'run'; run: string; page: number; fresh: boolean }
+  /** R2: the confirm screen of "Remove for good…". */
+  | { kind: 'remove-ask'; activityId: string }
+  /** R2: remove it, if it still reads as the confirm screen showed it. */
+  | { kind: 'remove'; activityId: string; fingerprint: string };
 
 export function whyData(view: WhyView): string {
   switch (view.kind) {
     case 'search': return `${WHY_CALLBACK_PREFIX}s${view.page}:${view.query}`;
     case 'run': return `${WHY_CALLBACK_PREFIX}r${view.run}${view.fresh ? '' : `:${view.page}`}`;
+    case 'remove-ask': return `${WHY_CALLBACK_PREFIX}d${view.activityId}`;
+    case 'remove': return `${WHY_CALLBACK_PREFIX}D${view.activityId}:${view.fingerprint}`;
     case 'story': {
       const b = view.back;
       const tail = b.kind === 'none' ? ''
@@ -108,6 +127,10 @@ export function parseWhyData(data: string): WhyView | null {
   if (m) return { kind: 'story', activityId: m[1], back: { kind: 'search', page: Number(m[2]), query: m[3] } };
   m = /^t([^:\s]{1,64}):r([0-9a-f]{8}):(\d{1,3})$/.exec(s);
   if (m) return { kind: 'story', activityId: m[1], back: { kind: 'run', run: m[2], page: Number(m[3]) } };
+  m = /^d([^:\s]{1,64})$/.exec(s);
+  if (m) return { kind: 'remove-ask', activityId: m[1] };
+  m = /^D([^:\s]{1,64}):([0-9a-f]{8})$/.exec(s);
+  if (m) return { kind: 'remove', activityId: m[1], fingerprint: m[2] };
   return null;
 }
 
@@ -128,6 +151,12 @@ export function normalizeWhyQuery(raw: string): string {
   while (bytes(t) > WHY_QUERY_MAX_BYTES) t = Array.from(t).slice(0, -1).join('');
   return t.trim();
 }
+
+/** Telegram rejects a message over this many characters. */
+const TELEGRAM_MAX = 4096;
+/** A removal's message carries raw bank and Wealthfolio text; cut it so even
+ *  fully escaped (up to twice as long) it leaves room for the story. */
+const REMOVE_MESSAGE_MAX = 1000;
 
 const clip = (s: string, n: number) => {
   const chars = Array.from(s);
@@ -174,8 +203,31 @@ export function renderWhyResults(found: { result: TxSearchResult; recentOnly: bo
   return { text: lines.join('\n'), keyboard: { inline_keyboard: keyboard } };
 }
 
-export function renderWhyStory(story: TxStory, activityId: string, back: StoryBack): MenuScreen {
+/** R2: what a story screen adds. `removable`: offer "Remove for good…";
+ *  `notice`: why the last tap did nothing, on top. */
+export interface StoryScreenOptions {
+  removable?: boolean;
+  notice?: string;
+}
+
+/** "Remove for good…", first tap: the story's row and what Remove does. */
+export function renderWhyRemoveConfirm(story: TxStory, activityId: string, fingerprint: string): MenuScreen {
   const lines = [`🔎 ${escapeMarkdown(story.title)}`];
+  if (story.accountLine) lines.push(escapeMarkdown(story.accountLine));
+  lines.push('', escapeMarkdown(REMOVE_CONFIRM));
+  return {
+    text: lines.join('\n'),
+    keyboard: {
+      inline_keyboard: [
+        [{ text: REMOVE_BUTTON, callback_data: whyData({ kind: 'remove', activityId, fingerprint }) }],
+        [{ text: REMOVE_CANCEL, callback_data: whyData({ kind: 'story', activityId, back: { kind: 'changes' } }) }],
+      ],
+    },
+  };
+}
+
+export function renderWhyStory(story: TxStory, activityId: string, back: StoryBack, opts: StoryScreenOptions = {}): MenuScreen {
+  const lines = [...(opts.notice ? [`⚠️ ${escapeMarkdown(opts.notice)}`] : []), `🔎 ${escapeMarkdown(story.title)}`];
   if (story.accountLine) lines.push(escapeMarkdown(story.accountLine));
   if (story.answer.length) lines.push('', ...story.answer.map(escapeMarkdown));
   const numbers: Button[] = [];
@@ -197,6 +249,7 @@ export function renderWhyStory(story: TxStory, activityId: string, back: StoryBa
   if (story.notes.length) lines.push('', ...story.notes.map((n) => `⚠️ ${escapeMarkdown(n)}`));
   const keyboard: Button[][] = [];
   for (let i = 0; i < numbers.length; i += 4) keyboard.push(numbers.slice(i, i + 4));
+  if (opts.removable) keyboard.push([{ text: REMOVE_ACTION, callback_data: whyData({ kind: 'remove-ask', activityId }) }]);
   if (back.kind === 'search') keyboard.push([{ text: '⬅️ Back', callback_data: whyData({ kind: 'search', page: back.page, query: back.query }) }]);
   if (back.kind === 'run') keyboard.push([{ text: '⬅️ Back', callback_data: whyData({ kind: 'run', run: back.run, page: back.page, fresh: false }) }]);
   return { text: lines.join('\n'), keyboard: { inline_keyboard: keyboard } };
@@ -253,6 +306,8 @@ export interface WhyMenuDeps {
   story(activityId: string, now: Date): Promise<StoryOutcome>;
   /** The change log, for a sync's imports. Rejects when unreachable. */
   read(now: Date): Promise<ChangeLogRead>;
+  /** R2: remove a row for good (shared/tx-remove.ts `removeForGood`). Absent: never offered. */
+  remove?(activityId: string, fingerprint: string, now: Date): Promise<RemoveOutcome>;
   now(): Date;
   log(msg: string): void;
 }
@@ -273,6 +328,8 @@ const sendScreen = (send: Send, s: MenuScreen) => (s.keyboard.inline_keyboard.le
 export function createWhyMenu(deps: WhyMenuDeps): WhyMenu {
   const runImports = (read: ChangeLogRead, handle: string) =>
     read.entries.filter((e) => e.kind === 'import' && e.run && whyRunHandle(e.run) === handle && !!e.subject.activityIds?.[0]);
+  /** R2: a story offers "Remove for good…" only when this menu can remove. */
+  const removable = (out: Extract<StoryOutcome, { kind: 'ok' }>) => !!deps.remove && removalOffered(out.facts);
 
   return {
     handles(data) {
@@ -292,7 +349,7 @@ export function createWhyMenu(deps: WhyMenuDeps): WhyMenu {
       const out = await deps.story(activityId, deps.now());
       if (out.kind === 'unreachable') return void await send(TX_STORY_UNREACHABLE);
       if (out.kind === 'gone') return void await send(TX_STORY_GONE);
-      await sendScreen(send, renderWhyStory(out.story, out.movedTo ?? activityId, { kind: 'none' }));
+      await sendScreen(send, renderWhyStory(out.story, out.movedTo ?? activityId, { kind: 'none' }, { removable: removable(out) }));
     },
 
     async onCallback(cb, ui) {
@@ -316,7 +373,29 @@ export function createWhyMenu(deps: WhyMenuDeps): WhyMenu {
             if (out.kind === 'unreachable') return void await ui.answer(TX_STORY_UNREACHABLE);
             if (out.kind === 'gone') return void await ui.answer(TX_STORY_GONE);
             // A row that moved (a link re-created it) is the one its history lines come back to.
-            return void await show(renderWhyStory(out.story, out.movedTo ?? view.activityId, view.back), view.back.kind === 'none');
+            return void await show(
+              renderWhyStory(out.story, out.movedTo ?? view.activityId, view.back, { removable: removable(out) }),
+              view.back.kind === 'none',
+            );
+          }
+          case 'remove-ask': {
+            if (!deps.remove) return void await ui.answer();
+            const out = await deps.story(view.activityId, now);
+            if (out.kind === 'unreachable') return void await ui.answer(TX_STORY_UNREACHABLE);
+            if (out.kind === 'gone') return void await ui.answer(TX_STORY_GONE);
+            return void await show(renderWhyRemoveConfirm(out.story, out.movedTo ?? view.activityId, removalFingerprint(out.facts.row)), false);
+          }
+          case 'remove': {
+            if (!deps.remove) return void await ui.answer();
+            const result = await deps.remove(view.activityId, view.fingerprint, now);
+            const said = clip(result.message, REMOVE_MESSAGE_MAX);
+            if (result.ok) return void await show({ text: `🔎 ${escapeMarkdown(said)}`, keyboard: { inline_keyboard: [] } }, false);
+            // Refused: the story again, as it is now, with why on top.
+            const out = await deps.story(view.activityId, now);
+            const refusedAlone: MenuScreen = { text: `⚠️ ${escapeMarkdown(said)}`, keyboard: { inline_keyboard: [] } };
+            if (out.kind !== 'ok') return void await show(refusedAlone, false);
+            const again = renderWhyStory(out.story, out.movedTo ?? view.activityId, { kind: 'changes' }, { removable: removable(out), notice: said });
+            return void await show(again.text.length <= TELEGRAM_MAX ? again : refusedAlone, false);
           }
           case 'run': {
             let read: ChangeLogRead;
