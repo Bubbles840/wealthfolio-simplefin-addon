@@ -35,6 +35,7 @@ export const COMPANION_ONLY_KINDS: ReadonlySet<string> = new Set([
 ]);
 export const UNDO_KINDS: ReadonlySet<string> = new Set([
   ...SYNC_DECISION_KINDS, ...COMPANION_ONLY_KINDS, 'mapping-rule-created', 'starting-balance', 'starting-balance-moved',
+  'transaction-removed',
 ]);
 
 export const SPENDING_TAXONOMY = 'spending_categories';
@@ -90,9 +91,11 @@ export function undoAvailability(
   return { kind: 'ready', op };
 }
 
-/** An automatic sync decision: its undo is an override the sync must obey. */
+/** A sync decision whose undo is an override the sync must obey: an automatic
+ *  one, and a transfer link whoever made it — 2c R2 links as `you`, and its
+ *  Undo is still `notTransfer` on both legs, which only a sync carries out. */
 export function needsOverrideSupport(entry: Pick<ChangeEntry, 'kind' | 'actor'>): boolean {
-  return SYNC_DECISION_KINDS.has(entry.kind) && entry.actor === 'auto';
+  return SYNC_DECISION_KINDS.has(entry.kind) && (entry.actor === 'auto' || entry.kind === 'transfer-link');
 }
 
 /** In the app, this waits for a companion that obeys overrides: the Undo of
@@ -124,7 +127,8 @@ export function currentRowId(entry: ChangeEntry, latest: ChangeEntry | null): st
     case 'starting-balance-moved':
       return str(rec(entry.before).activityId) ?? entry.subject.activityIds?.[0] ?? null;
     case 'duplicate-removed':
-      // The copy was removed; there is no row until an undo puts one back.
+    case 'transaction-removed':
+      // The row was removed; there is no row until an undo puts one back.
       return null;
     default:
       return entry.subject.activityIds?.[0] ?? null;
@@ -523,6 +527,41 @@ export function planChangeUndo(
         steps.push({ do: 'create', write });
       }
       return plan({ op, steps, needsSync: false, rowAfter: state.row ? state.row.id : 'created', done: 'Undone — both copies stay.' });
+    }
+
+    case 'transaction-removed': {
+      // Every key the removal put on the skip list: (SimpleFin account, tx id).
+      const skipped: Array<{ account: string; txId: string }> = [];
+      for (const k of entry.subject.txKeys ?? []) {
+        const at = k.indexOf('\u0000');
+        if (at <= 0 || at === k.length - 1) return refuse(UNDO_NO_KEY);
+        skipped.push({ account: k.slice(0, at), txId: k.slice(at + 1) });
+      }
+      if (skipped.length === 0) return refuse(UNDO_NO_KEY);
+      if (op === 'undo') {
+        const payload = rec(before.activity);
+        if (!str(payload.accountId) || !str(payload.activityType) || !str(payload.activityDate) || typeof payload.comment !== 'string') {
+          return refuse(UNDO_NOT_POSSIBLE);
+        }
+        // The row first: a skip entry left behind is harmless to a stored row
+        // (the sync never deletes one on the list's behalf), and it is reported.
+        return plan({
+          op, needsSync: false, rowAfter: 'created', done: "Undone — it's back, and the bank feed can import it again.",
+          steps: [
+            { do: 'create', write: payload as unknown as ActivityWrite },
+            ...skipped.map((s) => ({ do: 'unskip' as const, account: s.account, txId: s.txId })),
+          ],
+        });
+      }
+      const row = state.row ?? null;
+      if (!row) return refuse(undoGone(op));
+      const linked = linkedRefusal(row);
+      if (linked) return refuse(linked);
+      // The skip first, as the removal did.
+      return plan({
+        op, needsSync: false, rowAfter: null, done: "Redone — it's removed and won't be imported again.",
+        steps: [...skipped.map((s) => ({ do: 'skip' as const, account: s.account, txId: s.txId })), { do: 'delete', activityId: row.id }],
+      });
     }
 
     case 'import': {

@@ -246,6 +246,10 @@ async function gather(io: UndoIo, entry: ChangeEntry, op: UndoOp, latest: Change
     case 'amazon-label':
       state.row = await findRow(io, entry, latest, key);
       return state;
+    case 'transaction-removed':
+      // Only a Redo acts on a row: the one the last Undo put back.
+      if (op === 'redo') state.row = await findRow(io, entry, latest, key);
+      return state;
     case 'import': {
       state.row = await findRow(io, entry, latest, key);
       // A pending row that later posted carries a NEW tx id in its note: the skip
