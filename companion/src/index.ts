@@ -111,6 +111,10 @@ import { addDaysIso, dueWithin, formatRosterTotal, manualKey, rosterMoney, type 
 import { REPORT_CUBE_SECRET_KEY, parseReportCube } from '../../shared/report-cube.js';
 import { companionAuditReaders, publishAuditSnapshot } from './audit-facts.js';
 import { publishCashForecast } from './cash-forecast-facts.js';
+import {
+  CASH_FORECAST_SECRET_KEY, FORECAST_UNREACHABLE_REPLY, forecastWarningLine, formatForecastReply, parseCashForecast,
+  weeklyForecastLine, type CashForecastRead,
+} from '../../shared/cash-forecast.js';
 import { auditMenuDeps, auditStatusKeyboard, createAuditMenu, type AuditMenu } from './audit-menu.js';
 import { addManual, editSubscriptionPrefs, emptySubscriptionPrefs, isUnreadablePrefsError, loadSubscriptionPrefs, newManualId, renameKey, setRemind, SubscriptionPrefsInvalidError, type ManualSubscription, type RemindDays, type SecretGet, type SecretSet, type SubscriptionEdit } from '../../shared/subscription-prefs.js';
 import { renderReportSvg, reportImageTitle, reportImageCaption, RENDERABLE_REPORT_IDS } from '../../shared/report-render.js';
@@ -1649,6 +1653,12 @@ async function readRosterFor(wfClient: WealthfolioClient, now: Date): Promise<Ro
   return readSubscriptionRoster(subscriptionSecrets(wfClient).get, toDateString(now));
 }
 
+/** The published cash forecast (project 5). Rejects when Wealthfolio cannot
+ *  be read: /forecast says so, and the reports catch it to absence. */
+async function readCashForecast(wfClient: WealthfolioClient): Promise<CashForecastRead> {
+  return parseCashForecast(await wfClient.getAddonSecret('simplefin-sync', CASH_FORECAST_SECRET_KEY));
+}
+
 /**
  * The cube builder's data sources, bound once — the report-cube twin of
  * `poolReportDeps` above, sharing its dismissal and pool reads so the cube
@@ -1974,6 +1984,13 @@ export async function composeDailyDigest(
       offBudget: resolveReportDetail(tg) === 'full',
     },
   );
+
+  // Project 5: cash may run short within two weeks. A warning, so Brief
+  // carries it too; from the published forecast, guarded to absence.
+  const forecastWarning = forecastWarningLine(
+    await readCashForecast(wfClient).catch(() => null), toDateString(now), now,
+  );
+  if (forecastWarning) message += `\n\n${forecastWarning}`;
 
   // "Coming up" (1.60): reminders, the week's charges (Full), the price-rise
   // line that used to stand alone here (same 3-day rule), and "cancelled?".
@@ -2375,6 +2392,10 @@ export async function composeWeeklyReport(
   );
   let keyboard: InlineKeyboard | undefined;
   if (full) {
+    // Project 5: the next 30 days if nothing comes in, from a fresh
+    // published forecast; guarded to absence.
+    const forecastLine = weeklyForecastLine(await readCashForecast(wfClient).catch(() => null), now, glyphStyle);
+    if (forecastLine) message += `\n\n${forecastLine}`;
     // From the roster since 1.60: the card's names and totals, and what the
     // coming week will charge. Guarded: it can cost these lines, never the report.
     const read = await readRosterFor(wfClient, now).catch(() => null);
@@ -3383,6 +3404,21 @@ export function buildTelegramCommandHandler(
           return;
         }
         await why.reply(cmd.args, reply);
+        return;
+      }
+
+      case 'forecast': {
+        // Project 5: the published forecast; "Couldn't reach Wealthfolio"
+        // when not even that can be read. No buttons.
+        let read: CashForecastRead;
+        try {
+          read = await readCashForecast(wfClient);
+        } catch (err) {
+          log(`/forecast: reading failed: ${formatError(err)}`);
+          await reply(FORECAST_UNREACHABLE_REPLY);
+          return;
+        }
+        await reply(formatForecastReply(read, new Date(), await readGlyphStyle(wfClient)));
         return;
       }
 
