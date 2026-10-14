@@ -47,20 +47,19 @@ const FILER_TEXT_MAX = 60;
 
 export interface CubeBuildDeps {
   accountMeta(): Promise<Array<{ sfinId: string; wfId: string; name: string; type: string }>>;
-  dismissedIds(): Promise<string[]>;
   poolConfig(): Promise<SemesterPoolConfig | null>;
   spendMatrix(start: string, endEx: string): ReturnType<typeof getNativeSpendMatrix>;
   incomeByMonthAccount(start: string, endEx: string): ReturnType<typeof getNativeIncomeByMonthAccount>;
-  uncategorizedByMonthAccount(start: string, endEx: string, excluded: string[]): ReturnType<typeof getNativeUncategorizedByMonthAccount>;
+  uncategorizedByMonthAccount(start: string, endEx: string): ReturnType<typeof getNativeUncategorizedByMonthAccount>;
   budgetsForMonth(yearMonth: string): Record<string, number>;
   merchantRows(start: string, endEx: string): ReturnType<typeof getNativeMerchantRows>;
   feesInterestByMonth(start: string, endEx: string): ReturnType<typeof getNativeFeesInterestByMonth>;
-  spendDaily(start: string, endEx: string, excluded: string[]): ReturnType<typeof getNativeSpendDailyTotals>;
+  spendDaily(start: string, endEx: string): ReturnType<typeof getNativeSpendDailyTotals>;
   valuationByMonth(months: string[]): ReturnType<typeof getNativeValuationByMonth>;
   /** The digest's own current-month sums (spending by category + uncategorized
    *  total), dollars — an independent pipeline the cube is checked against.
    *  Optional so an older binding keeps building cubes, just without a check. */
-  checkTotals?(start: string, endEx: string, excluded: string[]):
+  checkTotals?(start: string, endEx: string):
     { spendByCategory: Record<string, number>; uncategorized: number } | null;
   /** Newest-month transactions per rolled-up category (getNativeDrillRows).
    *  Optional so an older binding keeps building cubes without drill-down. The
@@ -116,12 +115,11 @@ export async function buildReportCube(
   const endEx = nextMonthFirst(months[months.length - 1]);
 
   const meta = await deps.accountMeta();
-  const dismissed = await deps.dismissedIds();
   const poolCfg = await deps.poolConfig();
 
   const spendRows = deps.spendMatrix(start, endEx);
   const incomeRows = deps.incomeByMonthAccount(start, endEx);
-  const uncatRows = deps.uncategorizedByMonthAccount(start, endEx, dismissed);
+  const uncatRows = deps.uncategorizedByMonthAccount(start, endEx);
   const merchantRows = deps.merchantRows(start, endEx);
   const feeRows = deps.feesInterestByMonth(start, endEx);
   const budgetsByMonth = months.map((m) => deps.budgetsForMonth(m));
@@ -207,7 +205,7 @@ export async function buildReportCube(
       .toISOString().slice(0, 10);
     const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
     const poolEndEx = tomorrow < dayAfterEnd ? tomorrow : dayAfterEnd;
-    const dailyRows = [...deps.spendDaily(poolCfg.startDate, poolEndEx, dismissed)]
+    const dailyRows = [...deps.spendDaily(poolCfg.startDate, poolEndEx)]
       .sort((a, b) => (a.date < b.date ? -1 : 1));
     let running = 0;
     pool = {
@@ -288,7 +286,7 @@ export async function buildReportCube(
   // headline numbers agree with the digest right now", not "audit all history".
   let check: ReportCube['check'] = null;
   const currentMonth = months[months.length - 1];
-  const digest = deps.checkTotals?.(`${currentMonth}-01`, endEx, dismissed) ?? null;
+  const digest = deps.checkTotals?.(`${currentMonth}-01`, endEx) ?? null;
   if (digest) {
     const mi = months.length - 1;
     check = {

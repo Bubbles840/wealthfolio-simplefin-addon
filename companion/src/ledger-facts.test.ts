@@ -29,6 +29,19 @@ function ledger(rows: string): string {
       ('reimb','Reimbursements',NULL,'income_sources'),('pay','Salary',NULL,'income_sources');
     INSERT INTO budget_targets VALUES ('ent','100','default','2026-01-01'),('food','200','default','2026-01-01');
     ${rows}
+    -- What the report's spending read needs besides (1.62), added after the
+    -- rows so each keeps its short positional form above.
+    ALTER TABLE accounts ADD COLUMN is_archived INTEGER DEFAULT 0;
+    ALTER TABLE activities ADD COLUMN activity_type_override TEXT;
+    ALTER TABLE activities ADD COLUMN currency TEXT;
+    ALTER TABLE activity_taxonomy_assignments ADD COLUMN taxonomy_id TEXT;
+    ALTER TABLE activity_taxonomy_assignments ADD COLUMN source TEXT;
+    ALTER TABLE activity_taxonomy_assignments ADD COLUMN id TEXT;
+    ALTER TABLE activity_taxonomy_assignments ADD COLUMN created_at TEXT;
+    UPDATE activity_taxonomy_assignments SET taxonomy_id = (SELECT tc.taxonomy_id FROM taxonomy_categories tc WHERE tc.id = category_id);
+    CREATE TABLE spending_activity_splits (id TEXT, activity_id TEXT, taxonomy_id TEXT, category_id TEXT, amount TEXT, sort_order INTEGER);
+    CREATE TABLE app_settings (setting_key TEXT PRIMARY KEY, setting_value TEXT);
+    INSERT INTO app_settings VALUES ('timezone', 'UTC'), ('spending.enabled', 'true'), ('spending.account_ids', '["cash","sav","card","card2"]');
   `);
   db.close();
   return path;

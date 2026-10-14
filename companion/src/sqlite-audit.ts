@@ -25,6 +25,7 @@
  */
 import type { AuditAccount, AuditLedger, AuditLedgerRow } from '../../shared/audit-ledger.js';
 import type { HeadlineDbRow } from '../../shared/audit-headline.js';
+import { isDay, isTrue, NOTES, shiftDay, tail } from './sqlite-cli-helpers.js';
 import { DRILL_CLI_SEPARATOR, getNativeSpendingSettings, getNativeSpendRows, queryNativeDbStrict, SPEND_CLI_MAX_BUFFER } from './sqlite-native.js';
 
 /** The `$CASH` security the July 2026 bulk import minted (audit-health.mjs). */
@@ -34,10 +35,6 @@ const SEP = DRILL_CLI_SEPARATOR;
 /** The sqlite3 CLI's output buffer for every audit read: the ledger read
  *  returns every row Wealthfolio holds. The spending reads' own. */
 export const AUDIT_CLI_MAX_BUFFER = SPEND_CLI_MAX_BUFFER;
-/** A note with each CR and LF made a space: the CLI prints a row per line. */
-const NOTES = `REPLACE(REPLACE(COALESCE(a.notes, ''), char(13), ' '), char(10), ' ')`;
-const tail = (parts: string[], from: number) => parts.slice(from).join(SEP);
-const isTrue = (v: unknown) => String(v) === '1' || String(v).toLowerCase() === 'true';
 
 /** CLI line → the account read's columns (the name last). */
 export function auditAccountFromCliParts(parts: string[]): Record<string, unknown> | null {
@@ -113,9 +110,6 @@ export function getNativeAuditLedger(dbPath: string): AuditLedger {
   };
 }
 
-const isDay = (s: string) => /^\d{4}-\d{2}-\d{2}$/.test(s);
-const shiftDay = (day: string, days: number) => new Date(Date.parse(`${day}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
-
 /** The month's activities, every account, as shared/wf-spending.ts counts
  *  them: `[startInclusive, endExclusive)` on the stored date (both
  *  YYYY-MM-DD) read a day wider on each side, since Wealthfolio places a row
@@ -135,9 +129,9 @@ export function getNativeHeadlineRows(dbPath: string, startInclusive: string, en
  *  descendants count too (3.9+). The report's own read
  *  (`getNativeSpendingSettings`), without the category names. */
 export function getNativeAuditSettings(dbPath: string): {
-  timezone: string | null; excludedCategoryIds: string[]; categoryParents: Record<string, string | null>; spendingOn: boolean;
+  timezone: string | null; baseCurrency: string | null; excludedCategoryIds: string[]; categoryParents: Record<string, string | null>; spendingOn: boolean;
   spendingAccountIds: string[];
 } {
-  const { timezone, excludedCategoryIds, categoryParents, spendingOn, spendingAccountIds } = getNativeSpendingSettings(dbPath);
-  return { timezone, excludedCategoryIds, categoryParents, spendingOn, spendingAccountIds };
+  const { timezone, baseCurrency, excludedCategoryIds, categoryParents, spendingOn, spendingAccountIds } = getNativeSpendingSettings(dbPath);
+  return { timezone, baseCurrency, excludedCategoryIds, categoryParents, spendingOn, spendingAccountIds };
 }

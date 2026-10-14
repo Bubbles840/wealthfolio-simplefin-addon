@@ -61,7 +61,8 @@ export interface ReportCube {
   accounts: CubeAccount[];
   /** [month][category][account], signed cents (refunds negative). */
   spend: number[][][];
-  /** [month][account] cents — spending with no category, dismissed excluded. */
+  /** [month][account] cents — spending with no category, refunds netted; a
+   *  dismissed charge counts, as Wealthfolio counts it (1.62). */
   uncategorized: number[][];
   /** [month][account] cents — income as Wealthfolio classifies it (deposits
    *  and interest on cash), internal transfers and placeholders excluded. */

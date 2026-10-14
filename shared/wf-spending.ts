@@ -67,6 +67,8 @@ export interface SpendRow {
   /** `source_group_id`; '' when none: a linked transfer's group. */
   groupId: string;
   absCents: number;
+  /** `currency` as stored, upper-case; '' or absent when unrecorded. */
+  currency?: string;
   /** The stored note, raw. */
   notes: string;
   /** Every spending-taxonomy filing. */
@@ -166,21 +168,42 @@ export function topCategoryId(categoryId: string, parents: Readonly<Record<strin
 
 const pad = (n: number) => String(n).padStart(2, '0');
 
+/** A stored date as an instant. A timestamp with no offset
+ *  (`YYYY-MM-DD HH:MM:SS[.f]` or `YYYY-MM-DDTHH:MM:SS[.f]`, a legacy row) is
+ *  UTC, as upstream's `parse_db_datetime` reads it — never the process's zone,
+ *  which is what `Date.parse` would use. NaN when it cannot be read. */
+export function storedInstant(stored: string): number {
+  const naive = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(\.\d+)?$/.exec(stored.trim());
+  return Date.parse(naive ? `${naive[1]}T${naive[2]}${naive[3] ?? ''}Z` : stored);
+}
+
+/** One formatter per zone: building one is the slow part of `localDay`. A
+ *  zone the runtime does not know is cached as null. */
+const dayFormatters = new Map<string, Intl.DateTimeFormat | null>();
+function dayFormatter(timeZone: string): Intl.DateTimeFormat | null {
+  let f = dayFormatters.get(timeZone);
+  if (f === undefined) {
+    try {
+      f = new Intl.DateTimeFormat('en-US', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' });
+    } catch {
+      f = null; // an unknown zone: the process's own
+    }
+    dayFormatters.set(timeZone, f);
+  }
+  return f;
+}
+
 /** The calendar day a stored instant falls on in `timeZone` — Wealthfolio's
  *  local date. Null or a zone the runtime does not know: the process's own.
- *  A bare `YYYY-MM-DD` is the UTC midnight 3.8 stores it at. Null when the
- *  date cannot be read. */
+ *  A bare `YYYY-MM-DD` is the UTC midnight 3.8 stores it at; a timestamp with
+ *  no offset is UTC (`storedInstant`). Null when the date cannot be read. */
 export function localDay(stored: string, timeZone: string | null): string | null {
-  const at = Date.parse(stored);
+  const at = storedInstant(stored);
   if (Number.isNaN(at)) return null;
-  if (timeZone) {
-    try {
-      const parts = new Intl.DateTimeFormat('en-US', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date(at));
-      const p = Object.fromEntries(parts.map((x) => [x.type, x.value]));
-      return `${p.year}-${p.month}-${p.day}`;
-    } catch {
-      /* an unknown zone: the process's own, below */
-    }
+  const formatter = timeZone ? dayFormatter(timeZone) : null;
+  if (formatter) {
+    const p = Object.fromEntries(formatter.formatToParts(new Date(at)).map((x) => [x.type, x.value]));
+    return `${p.year}-${p.month}-${p.day}`;
   }
   const d = new Date(at);
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;

@@ -4,7 +4,7 @@ import {
   gatherHeadlineFacts, publishAuditSnapshot, runAudit, type AuditPublishClient, type AuditReaders,
 } from './audit-facts.js';
 import { BALANCE_READ_NOTES } from '../../shared/audit-balance.js';
-import { HEADLINE_READ_NOTES } from '../../shared/audit-headline.js';
+import { explainHeadline, HEADLINE_READ_NOTES } from '../../shared/audit-headline.js';
 import { HEALTH_READ_NOTES } from '../../shared/audit-health.js';
 import type { AuditLedger, AuditLedgerRow } from '../../shared/audit-ledger.js';
 import { AUDIT_SNAPSHOT_SECRET_KEY, parseAuditSnapshot } from '../../shared/audit-snapshot.js';
@@ -73,7 +73,7 @@ describe('runAudit', () => {
   });
 
   it.each<[string, Partial<AuditReaders>, () => [string[], string[], string[]]]>([
-    ['the account mapping', failingSecret('account_mapping'), () => [[BALANCE_READ_NOTES.mapping], [], [HEALTH_READ_NOTES.mapping]]],
+    ['the account mapping', failingSecret('account_mapping'), () => [[BALANCE_READ_NOTES.mapping], [HEADLINE_READ_NOTES.mapping], [HEALTH_READ_NOTES.mapping]]],
     ['the bank balances', failingSecret('account_balances'), () => [[BALANCE_READ_NOTES.balances], [], []]],
     ['the account names', failingSecret('account_names'), () => [[BALANCE_READ_NOTES.names], [], []]],
     ['the report cube', failingSecret('report_cube'), () => [[], [HEADLINE_READ_NOTES.report], []]],
@@ -169,7 +169,19 @@ describe('gatherHeadlineFacts', () => {
     expect(facts.timezone).toBeNull();
     expect(facts.spendingAccountIds).toBeUndefined();
     expect(facts.reportAccountIds).toBeUndefined();
-    expect(facts.failed).toEqual(['settings']);
+    expect(facts.failed).toEqual(['mapping', 'settings']);
+  });
+
+  it('reads Wealthfolio’s base currency from its settings, and says nothing of it when the settings are unread', async () => {
+    const settings = () => ({ timezone: 'America/New_York', baseCurrency: 'USD', excludedCategoryIds: [], categoryParents: {}, spendingOn: true, spendingAccountIds: ['wf-chk'] });
+    expect((await gatherHeadlineFacts(readers({ settings }), NOW)).baseCurrency).toBe('USD');
+    expect((await gatherHeadlineFacts(readers({ settings: boom }), NOW)).baseCurrency).toBeUndefined();
+  });
+
+  it('turns an unreadable account mapping into a note, not a silent empty list of reasons', async () => {
+    const facts = await gatherHeadlineFacts(readers({ ...failingSecret('account_mapping') }), NOW);
+    expect(facts.failed).toContain('mapping');
+    expect(explainHeadline(facts).notes).toContain(HEADLINE_READ_NOTES.mapping);
   });
 
   it('takes the report’s figure only from a cube built this month', async () => {

@@ -16,9 +16,10 @@ import { DatabaseSync } from 'node:sqlite';
 import type { LedgerFacts } from '../../shared/ledger-checks.js';
 import { IN_TRANSIT_COMMENT_PREFIX } from '../../shared/reconcile.js';
 import { PENDING_SUFFIX, txIdFromComment } from '../../shared/sync-core.js';
+import { readSpendLines, topCategoryName } from './sqlite-native.js';
 
-/** The digest's own spending sign — kept in step with `SPENDING_SIGN` in
- *  sqlite-native.ts, which transcribes Wealthfolio's classifier. */
+/** Wealthfolio's spending sign, for the refund check below (a finding, not a
+ *  figure: every spending figure is shared/wf-spending.ts's). */
 const SPENDING_SIGN = `
   CASE UPPER(acc.account_type)
     WHEN 'CREDIT_CARD' THEN CASE
@@ -197,19 +198,15 @@ export function getLedgerFacts(
           period, period,
         ).map((r) => [String(r.cat), Number(r.budget)]),
       );
-    const spendRows = (start: string, end: string) =>
-      all<{ id: string; cat: string; signed: number; notes: string }>(
-        `SELECT a.id, COALESCE(p.name, tc.name) cat, a.notes,
-                (${SPENDING_SIGN}) * ABS(CAST(a.amount AS REAL)) signed
-         FROM activities a JOIN accounts acc ON a.account_id = acc.id
-         JOIN activity_taxonomy_assignments ata ON a.id = ata.activity_id
-         JOIN taxonomy_categories tc ON ata.category_id = tc.id
-         LEFT JOIN taxonomy_categories p ON tc.parent_id = p.id
-         WHERE tc.taxonomy_id = 'spending_categories'
-           AND a.activity_date >= ? AND a.activity_date < ?
-           AND (${SPENDING_SIGN}) <> 0 AND ${NOT_BOOKKEEPING}`,
-        start, end,
-      );
+    // Budget vs actual: each top-level category's spending as Wealthfolio's
+    // Spending page counts it — the report's one definition (1.62,
+    // shared/wf-spending.ts), once per category a row counts under.
+    const spendRows = (start: string, end: string) => {
+      const read = readSpendLines(dbPath, start, end);
+      return read.lines.flatMap((line) => line.allocations.map((a) => ({
+        id: line.row.id, cat: topCategoryName(a.categoryId, read.settings), notes: line.row.notes, signed: a.cents / 100,
+      }))).filter((r) => r.cat !== '');
+    };
 
     const budgets = budgetsFor(month);
     const byCat = new Map<string, { spent: number; largest: { id: string; description: string; amount: number } | null }>();
