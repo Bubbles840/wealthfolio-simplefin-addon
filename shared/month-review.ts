@@ -94,7 +94,7 @@ export function buildMonthReview(input: MonthReviewInput): MonthReview {
       .map(({ name, cents }) => ({ name, cents })));
     // The Budget tab's own figure (one decimal, then the headline's round).
     const rate = savingsRateData(cube)[mi].rate;
-    if (rate !== null) savingsRatePct = Math.round(rate);
+    if (typeof rate === 'number') savingsRatePct = Math.round(rate);
   }
 
   let newSubs: MonthReview['newSubs'] = null;
