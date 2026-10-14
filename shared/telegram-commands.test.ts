@@ -58,9 +58,9 @@ describe('formatHelpReply', () => {
     expect(TELEGRAM_COMMAND_MENU.map((c) => c.command))
       .toEqual(['report', 'left', 'categorize', 'charts', 'status', 'sync', 'help']);
   });
-  it('keeps the other nine working, listed under "More commands" in /help', () => {
+  it('keeps the other ten working, listed under "More commands" in /help', () => {
     expect(TELEGRAM_MORE_COMMANDS.map((c) => c.command))
-      .toEqual(['afford', 'pool', 'recategorize', 'newrule', 'dismissed', 'subscriptions', 'changes', 'why', 'audit']);
+      .toEqual(['afford', 'pool', 'recategorize', 'newrule', 'dismissed', 'subscriptions', 'changes', 'why', 'audit', 'budgets']);
     const help = formatHelpReply();
     const more = help.indexOf('*More commands*');
     expect(more).toBeGreaterThan(help.indexOf('/help'));
