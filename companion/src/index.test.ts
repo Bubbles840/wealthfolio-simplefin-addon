@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest';
-import { maskUrl, publishLiveReports, validateStartupEnv, startupWarnings, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, composeDailyDigest, composeWeeklyReportMessage, runCompanionSyncExclusive, FIX_SYNC_RUNNING, buildTelegramCommandHandler, applyTelegramDismissal, undoTelegramDismissal, formatDismissedReply, buildTelegramListenerDeps, buildCategorizeController, buildCategorizeDeps, rememberImportScope, sendUnmappedAccountsNotice, updateCheckDeps, buildAskSessions } from './index.js';
+import { maskUrl, publishLiveReports, validateStartupEnv, startupWarnings, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, composeDailyDigest, composeWeeklyReportMessage, composeMonthlyWrapUpMessage, runCompanionSyncExclusive, FIX_SYNC_RUNNING, buildTelegramCommandHandler, applyTelegramDismissal, undoTelegramDismissal, formatDismissedReply, buildTelegramListenerDeps, buildCategorizeController, buildCategorizeDeps, rememberImportScope, sendUnmappedAccountsNotice, updateCheckDeps, buildAskSessions } from './index.js';
 import { findingHandle } from '../../shared/findings.js';
 import { whyRunHandle } from './why-menu.js';
 import { formatHelpReply, parseCommand } from '../../shared/telegram-commands.js';
@@ -2965,6 +2965,58 @@ describe('buildTelegramCommandHandler', () => {
     });
   });
 
+  describe('/forecast (project 5)', () => {
+    const AT = new Date('2026-10-14T18:00:00.000Z');
+    const FORECAST = JSON.stringify({
+      v: 1, at: AT.toISOString(), ok: true, cashCents: 248107, lowCents: 124000, lowDate: '2026-11-13',
+      days: 30, basedOnMonths: 3, dailySpendCents: 4210,
+      accounts: [{ name: "Joe's *Checking*", cents: 248107, asOf: '2026-10-14' }],
+      bills: [{ name: 'SQ *COFFEE_CLUB', date: '2026-10-20', cents: 450 }],
+    });
+
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date('2026-10-14T19:00:00Z'));
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('replies with the forecast, bank text escaped and kept out of every entity, and no buttons', async () => {
+      const { client } = clientFor([['cash_forecast', FORECAST]]);
+      const calls: unknown[][] = [];
+      await buildTelegramCommandHandler(client)({ command: 'forecast', args: '' }, async (...args: unknown[]) => { calls.push(args); });
+      expect(calls[0]).toHaveLength(1);
+      const text = calls[0][0] as string;
+      expect(text.startsWith('Next 30 days: $1,240 left at the low point (Nov 13) if nothing comes in.\n\nCash today: $2,481.07\n')).toBe(true);
+      expect(text).toContain("\nJoe's \\*Checking\\* · $2,481.07\n");
+      expect(text).toContain('\n*Bills it counts*\nOct 20 · SQ \\*COFFEE\\_CLUB · $4.50\n');
+      expect(text).toContain('(your last 3 months).');
+    });
+
+    it('stays within the 4096-character limit with twenty long-named bills and accounts', async () => {
+      const long = JSON.stringify({
+        ...JSON.parse(FORECAST),
+        accounts: Array.from({ length: 6 }, (_, i) => ({ name: `Joe's *Very_Long* Account Name ${i} `.repeat(3), cents: 100000 + i, asOf: '2026-10-14' })),
+        bills: Array.from({ length: 20 }, (_, i) => ({ name: `SQ *LONG_BILL_NAME_${i} `.repeat(4), date: '2026-10-20', cents: 450 + i })),
+      });
+      const { client } = clientFor([['cash_forecast', long]]);
+      const [text] = await run(client, 'forecast');
+      expect(text.length).toBeLessThanOrEqual(4096);
+      expect(text).toContain('*Bills it counts*');
+    });
+
+    it('says the forecast arrives with the next sync before the first publish', async () => {
+      const { client } = clientFor();
+      expect(await run(client, 'forecast')).toEqual(["The forecast arrives with the companion's next sync."]);
+    });
+
+    it("says so when Wealthfolio can't be reached", async () => {
+      const client = { getAddonSecret: vi.fn(async () => { throw new Error('ECONNREFUSED'); }), setAddonSecret: vi.fn() } as any;
+      expect(await run(client, 'forecast')).toEqual(["Couldn't reach Wealthfolio — try again."]);
+    });
+  });
+
   describe('/budgets', () => {
     beforeEach(() => {
       vi.useFakeTimers({ toFake: ['Date'] });
@@ -3826,6 +3878,93 @@ describe('sendMonthlyTelegramReport', () => {
     } finally {
       logSpy.mockRestore();
     }
+  });
+});
+
+describe('the month in review (project 5)', () => {
+  const CUBE = JSON.stringify({
+    version: 1, asOf: '2026-10-01T13:00:00.000Z', months: ['2026-08', '2026-09', '2026-10'], categories: ['Food_Drink', 'Groceries'],
+    accounts: [{ sfinId: 'sfin-chk', name: 'PNC Checking', type: 'CASH' }],
+    spend: [[[20000], [40000]], [[12000], [52000]], [[0], [0]]], uncategorized: [[0], [0], [0]], income: [[0], [100000], [0]],
+    budgets: [[0, 0], [0, 0], [0, 0]], merchants: [[], [{ name: 'SQ *COFFEE_CLUB', cents: 41200, count: 4 }], []],
+    feesInterest: [0, 0, 0], netWorth: [1000000, 1124000, null], liquid: [null, null, null], pool: null,
+  });
+  /** The wrap-up from the mocked readers: Groceries 200 of 800, Dining 550 of 500. */
+  const WRAP_UP = '*September wrap-up*\n'
+    + '\n'
+    + '🚨 Dining  $550 of $500 · *$50 over*\n'
+    + 'Groceries  *$200* of $800\n'
+    + '\n'
+    + '💰 Finished *$550 under budget* · spent $750 of $1,300';
+  const clientWith = (tg: Record<string, unknown>) => {
+    const secrets = new Map<string, string>([
+      ['telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true, digestRows: 'all', ...tg })],
+      ['report_cube', CUBE],
+    ]);
+    return {
+      secrets,
+      client: {
+        getAddonSecret: vi.fn(async (_a: string, k: string) => secrets.get(k) ?? null),
+        setAddonSecret: vi.fn(async (_a: string, k: string, v: string) => { secrets.set(k, v); }),
+      } as any,
+    };
+  };
+  const sentText = async (client: any): Promise<string> => {
+    const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+    vi.stubGlobal('fetch', fetchMock);
+    await sendMonthlyTelegramReport(client);
+    return JSON.parse((fetchMock.mock.calls[0] as any)[1].body).text;
+  };
+
+  beforeEach(() => {
+    vi.mocked(existsSync).mockReturnValue(true);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(2026, 9, 1, 9, 0, 0));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('Full adds the review after the verdict, bank text escaped — and the archive keeps it', async () => {
+    const { client, secrets } = clientWith({});
+    const text = await sentText(client);
+    expect(text).toBe(`${WRAP_UP}\n\n*Month in review*\n`
+      + 'Biggest changes: Groceries +$120 · Food\\_Drink -$80\n'
+      + 'Top merchants: SQ \\*COFFEE\\_CLUB $412\n'
+      + 'Net worth: +$1,240 over the month\n'
+      + 'Savings rate: 36%');
+    expect(JSON.parse(secrets.get('reports_monthly')!).archive[0].text).toBe(text);
+  });
+
+  it('the live "so far" edition of the current month carries no review, even in Full', async () => {
+    const { client, secrets } = clientWith({});
+    await publishLiveReports(client, new Date(2026, 9, 1, 9, 0));
+    const live = JSON.parse(secrets.get('reports_monthly')!).live.text as string;
+    expect(live).toContain('October so far');
+    expect(live).not.toContain('Month in review');
+  });
+
+  it('the live edition judges "the month is over" by the caller’s clock, not the process clock', async () => {
+    // The process clock says Nov 2 (September is long over); the caller says
+    // Sep 20, so "September so far" is a month in progress and gets no review.
+    vi.setSystemTime(new Date(2026, 10, 2, 9, 0));
+    const { client, secrets } = clientWith({});
+    await publishLiveReports(client, new Date(2026, 8, 20, 9, 0));
+    const live = JSON.parse(secrets.get('reports_monthly')!).live.text as string;
+    expect(live).toContain('September so far');
+    expect(live).not.toContain('Month in review');
+  });
+
+  it('a completed month, composed with an explicit now, gets its review whatever the process clock says', async () => {
+    vi.setSystemTime(new Date(2026, 8, 20, 9, 0));
+    const { client } = clientWith({});
+    const text = await composeMonthlyWrapUpMessage(client, '2026-09', 'September', { reportDetail: 'full' }, new Date(2026, 9, 1, 9, 0));
+    expect(text).toContain('*Month in review*');
+  });
+
+  it('Brief is the wrap-up exactly as it always was, byte for byte', async () => {
+    const { client } = clientWith({ reportDetail: 'brief' });
+    expect(await sentText(client)).toBe(WRAP_UP);
   });
 });
 
@@ -5630,6 +5769,91 @@ describe('audit_snapshot publish', () => {
   });
 });
 
+describe('cash_forecast publish', () => {
+  /** The full client shape, pinned for the same reason as report_cube's test. */
+  const pinClient = async (setAddonSecret: (addon: string, key: string, value: string) => Promise<void>) => {
+    process.env.WEALTHFOLIO_API_URL = 'http://wf';
+    process.env.WEALTHFOLIO_PASSWORD = 'pw';
+    const { WealthfolioClient } = await import('./wealthfolio.js');
+    vi.mocked(WealthfolioClient as any).mockClear();
+    vi.mocked(WealthfolioClient as any).mockImplementation(function (this: any) {
+      this.login = vi.fn(async () => {});
+      this.getAddonSecret = vi.fn(async (_a: string, key: string) => (
+        key === 'simplefin_access_url' ? 'https://user:pass@bridge.simplefin.org/simplefin' : null
+      ));
+      this.setAddonSecret = vi.fn(setAddonSecret);
+      this.getAccounts = vi.fn(async () => []);
+    });
+    return () => (vi.mocked(WealthfolioClient as any).mock.instances.at(-1)) as any;
+  };
+
+  it('publishes the forecast after a sync — with nothing mapped, why there is none', async () => {
+    const instance = await pinClient(async () => {});
+    await runCompanionSync();
+    const call = instance().setAddonSecret.mock.calls.find((c: any[]) => c[1] === 'cash_forecast');
+    expect(call).toBeTruthy();
+    expect(JSON.parse(call[2])).toMatchObject({ v: 1, ok: false, reason: 'No cash account is mapped, so there is nothing to forecast.' });
+  });
+
+  it('logs a publish that fails and returns the sync’s result unchanged', async () => {
+    await pinClient(async (_a, key) => { if (key === 'cash_forecast') throw new Error('disk full'); });
+    const logs = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const result = await runCompanionSync();
+      expect(result.imported).toBe(2);
+      expect(result.errors).toEqual([]);
+      expect(logs.mock.calls.flat().join('\n')).toContain('Cash forecast publish failed');
+    } finally {
+      logs.mockRestore();
+    }
+  });
+});
+
+describe('post-sync publish order: the forecast before the live editions', () => {
+  const run = async (failKey?: string) => {
+    process.env.WEALTHFOLIO_API_URL = 'http://wf';
+    process.env.WEALTHFOLIO_PASSWORD = 'pw';
+    vi.mocked(existsSync).mockReturnValue(true);
+    const writes: string[] = [];
+    const { WealthfolioClient } = await import('./wealthfolio.js');
+    vi.mocked(WealthfolioClient as any).mockClear();
+    vi.mocked(WealthfolioClient as any).mockImplementation(function (this: any) {
+      this.login = vi.fn(async () => {});
+      this.getAddonSecret = vi.fn(async (_a: string, key: string) => (
+        key === 'simplefin_access_url' ? 'https://user:pass@bridge.simplefin.org/simplefin' : null
+      ));
+      this.setAddonSecret = vi.fn(async (_a: string, key: string) => {
+        if (key === failKey) throw new Error('disk full');
+        writes.push(key);
+      });
+      this.getAccounts = vi.fn(async () => []);
+    });
+    const logs = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await runCompanionSync();
+    } finally {
+      logs.mockRestore();
+    }
+    return writes;
+  };
+
+  it('publishes the cube and the forecast, then the live editions', async () => {
+    const writes = await run();
+    const live = writes.findIndex((k) => k.startsWith('reports_'));
+    expect(live).toBeGreaterThan(-1);
+    expect(writes.indexOf('report_cube')).toBeGreaterThan(-1);
+    expect(writes.indexOf('cash_forecast')).toBeGreaterThan(-1);
+    expect(writes.indexOf('report_cube')).toBeLessThan(writes.indexOf('cash_forecast'));
+    expect(writes.indexOf('cash_forecast')).toBeLessThan(live);
+  });
+
+  it('a forecast that fails to publish still lets the live editions go out', async () => {
+    const writes = await run('cash_forecast');
+    expect(writes).not.toContain('cash_forecast');
+    expect(writes.some((k) => k.startsWith('reports_'))).toBe(true);
+  });
+});
+
 describe('daily digest: version skew + update line', () => {
   const clientWith = (entries: Array<[string, string]> = []) => {
     const secrets = new Map<string, string>([
@@ -5719,6 +5943,92 @@ describe('daily digest: version skew + update line', () => {
     } finally {
       updateCheckDeps.fetchLatestVersion = prev;
     }
+  });
+});
+
+describe('the cash forecast in the reports (project 5)', () => {
+  const forecast = (at: Date, over: Record<string, unknown> = {}) => JSON.stringify({
+    v: 1, at: at.toISOString(), ok: true, cashCents: 248107, lowCents: 124000, lowDate: '2026-11-13',
+    days: 30, basedOnMonths: 3, dailySpendCents: 4210,
+    accounts: [{ name: 'PNC Checking', cents: 248107, asOf: '2026-10-14' }], bills: [], ...over,
+  });
+  const clientWith = (entries: Array<[string, string]>, tg: Record<string, unknown> = {}) => {
+    const secrets = new Map<string, string>([
+      ['telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true, digestRows: 'all', ...tg })],
+      ...entries,
+    ]);
+    return {
+      getAddonSecret: vi.fn(async (_a: string, k: string) => secrets.get(k) ?? null),
+      setAddonSecret: vi.fn(async (_a: string, k: string, v: string) => { secrets.set(k, v); }),
+    } as any;
+  };
+  // Earlier tests leave the module-level fs mock answering false, and a
+  // report with no database is null: pin it.
+  beforeEach(() => {
+    vi.mocked(existsSync).mockReturnValue(true);
+  });
+  const SUNDAY = new Date(2026, 9, 18, 20, 0, 0);
+  const LINE = 'Next 30 days: $1,240 left at the low point (Nov 13) if nothing comes in.';
+
+  it('the weekly check-in carries the forecast line in Full, not in Brief', async () => {
+    const fresh = forecast(new Date(2026, 9, 18, 19, 0, 0));
+    expect(await composeWeeklyReportMessage(clientWith([['cash_forecast', fresh]]), SUNDAY, {})).toContain(`\n\n${LINE}`);
+    const brief = await composeWeeklyReportMessage(clientWith([['cash_forecast', fresh]]), SUNDAY, { reportDetail: 'brief' });
+    expect(brief).not.toContain('Next 30 days');
+    const none = await composeWeeklyReportMessage(clientWith([], { reportDetail: 'brief' }), SUNDAY, { reportDetail: 'brief' });
+    expect(brief).toBe(none);
+  });
+
+  it('leaves an old, failed or unreadable forecast out of the weekly check-in', async () => {
+    for (const value of [
+      forecast(new Date(2026, 9, 15, 19, 0, 0)),
+      JSON.stringify({ v: 1, at: new Date(2026, 9, 18, 19, 0, 0).toISOString(), ok: false, reason: 'No cash account is mapped, so there is nothing to forecast.' }),
+      '{oops',
+    ]) {
+      expect(await composeWeeklyReportMessage(clientWith([['cash_forecast', value]]), SUNDAY, {})).not.toContain('Next 30 days');
+    }
+  });
+
+  describe('the daily report', () => {
+    const MORNING = new Date(2026, 9, 14, 8, 0, 0);
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(MORNING);
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+    const short = (shortDate: string) => forecast(new Date(2026, 9, 14, 7, 0, 0), { lowCents: -30000, shortDate });
+    const WARNING = '⚠️ Cash may run short around Oct 28 if nothing comes in.';
+
+    it('warns when cash may run short within 14 days — in Brief too — and archives the warning', async () => {
+      for (const tg of [{}, { reportDetail: 'brief' }]) {
+        const digest = (await composeDailyDigest(clientWith([['cash_forecast', short('2026-10-28')]], tg), { requireTelegram: false }))!;
+        expect(digest.text).toContain(`\n\n${WARNING}`);
+        expect(digest.archive).toContain(`\n\n${WARNING}`);
+      }
+    });
+
+    it('leaves Brief and Full exactly as they were with no forecast, an old one, a failed one or an unreadable one', async () => {
+      const old = forecast(new Date(2026, 9, 11, 7, 0, 0), { lowCents: -30000, shortDate: '2026-10-28' });
+      const failed = JSON.stringify({ v: 1, at: new Date(2026, 9, 14, 7, 0, 0).toISOString(), ok: false, reason: 'No cash account is mapped, so there is nothing to forecast.' });
+      for (const tg of [{ reportDetail: 'brief' }, {}]) {
+        const base = (await composeDailyDigest(clientWith([], tg), { requireTelegram: false }))!;
+        for (const value of [old, failed, '{oops']) {
+          const got = (await composeDailyDigest(clientWith([['cash_forecast', value]], tg), { requireTelegram: false }))!;
+          expect(got.text).toBe(base.text);
+          expect(got.archive).toBe(base.archive);
+        }
+      }
+    });
+
+    it('says nothing at 15 days, or when cash lasts', async () => {
+      const later = (await composeDailyDigest(clientWith([['cash_forecast', short('2026-10-29')]]), { requireTelegram: false }))!;
+      expect(later.text).not.toContain('run short');
+      const lasts = (await composeDailyDigest(clientWith([['cash_forecast', forecast(new Date(2026, 9, 14, 7, 0, 0))]]), { requireTelegram: false }))!;
+      expect(lasts.text).not.toContain('Next 30 days');
+      expect(lasts.text).not.toContain('run short');
+    });
   });
 });
 

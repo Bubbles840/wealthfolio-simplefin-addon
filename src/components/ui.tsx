@@ -915,6 +915,19 @@ const css = `
 .sfin-audit-checks { display: flex; flex-direction: column; gap: 8px; }
 .sfin-audit-headline { margin-top: 8px; }
 .sfin-audit-link { padding: 0; border: none; background: transparent; color: var(--primary); font: inherit; font-size: var(--sfin-sz-sm); cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+/* The cash forecast (project 5): Home's "Next 30 days" tile and, opened in
+   place under the strip, what it counted. */
+.sfin-forecast { margin-top: 8px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; font-size: var(--sfin-sz-sm); overflow-wrap: anywhere; }
+.sfin-forecast-head { font-weight: 600; font-size: var(--sfin-sz-base); }
+.sfin-forecast-list { margin: 0; padding-left: 1.1em; display: flex; flex-direction: column; gap: 2px; }
+.sfin-forecast-missing { color: var(--destructive); }
+.sfin-forecast-assume { margin: 2px 0 0; color: var(--muted-foreground); }
+.sfin-forecast-status { font-size: var(--sfin-sz-xs); color: var(--muted-foreground); }
+.sfin-forecast-status--stale, .sfin-forecast-stale, .sfin-forecast-short { color: var(--destructive); }
+/* The Reports tab's unread state (project 5): a count on the tab and on each
+   sub-tab, and "New" on an edition not seen yet. */
+.sfin-inbox-badge { display: inline-block; min-width: 1.5em; margin-left: 6px; padding: 0 5px; border-radius: 999px; background: var(--primary); color: var(--primary-foreground, #fff); font-size: var(--sfin-sz-2xs); font-weight: 600; line-height: 1.5; text-align: center; }
+.sfin-inbox-new { margin-left: 8px; padding: 1px 6px; border-radius: 999px; background: color-mix(in srgb, var(--primary) 15%, transparent); color: var(--primary); font-size: var(--sfin-sz-2xs); font-weight: 600; }
 .sfin-audit-fix { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 4px; }
 @keyframes sfin-pop { from { transform: scale(.92); opacity: 0; } to { transform: scale(1); opacity: 1; } }
 .sfin-range-pin { position: absolute; bottom: 6px; right: 10px; font-size: var(--sfin-sz-2xs); color: var(--muted-foreground); background: color-mix(in srgb, var(--card) 80%, transparent); border-radius: var(--sfin-rad-xs); padding: 1px 6px; }

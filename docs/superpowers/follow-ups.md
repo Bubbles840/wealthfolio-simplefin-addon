@@ -1043,6 +1043,109 @@ his review, so the PR stays open.
   - Undo of a budget set: "nothing undone" wording on an unreachable Redo is
     pre-existing.
 
+## 15. Planning — R1 (2026-10-14, plan `2026-10-14-planning.md`)
+
+- **Merge main before release.** This branch must merge main once the 2c R2
+  branch (with the sqlite3 CLI newline fix in `tryQueryNativeDb`) lands, then
+  re-run every gate. Until then `getNativeMerchantRows` also uses the `'|'` CLI
+  separator, so a note containing `'|'` (or a newline) drops a row on the
+  sqlite3 fallback, even under the strict flag. Fix: use `DRILL_CLI_SEPARATOR`
+  (`\x1f`) with a join, and test with a `'|'` note.
+- **Savings goals are R2 (N6).** Wealthfolio already has save-up Goals,
+  funded by account shares; R2 shows their progress read-only in the reports
+  through the companion's REST instead of building spending-side goals that
+  duplicate them.
+- **Income detection.** The forecast assumes no income (N1): nothing detects
+  paychecks (recurring deposits). Until something does, a regular earner sees
+  a pessimistic line, and the wording says "if nothing comes in".
+- **Card balances.** Cards are left out of the forecast (N2): card spending
+  reaches cash through the card payment, which the daily spending stands in
+  for. A card's statement balance and due date would replace that average
+  with the real payment.
+- **Charts in the archive.** The Reports tab keeps each edition's text; the
+  companion's chart images (`/charts`) are not kept with it.
+- **A bill charged to a card is subtracted from cash.** Neither the roster nor
+  the cube knows which account a subscription charges, so a card-charged one
+  is subtracted on its date; its past charges leave the daily figure, so it
+  is not counted twice; it only lands earlier than the card payment would.
+- **No weekly cadence.** The roster knows monthly and yearly (the detector is
+  monthly-only); the forecast repeats whatever cadence an entry has, so a
+  weekly one needs only the roster to learn it.
+- **"New" subscriptions in the review** are any whose first charge is this
+  month or last and which was charged in the month; a subscription reaches
+  the roster only at its second charge (an unknown brand at its third, so it
+  is never called new). Two charges in one month can make it new two months
+  running.
+- **"No longer charging" is rare in R1.** The detector drops a subscription 45
+  days after its last charge (`ACTIVE_WITHIN_DAYS`, `shared/subscriptions.ts`)
+  and the roster calls an entry overdue only after its predicted date + 7
+  days. So on the review date the line names only subscriptions found missing
+  their charge near the month's end (for a September review on Oct 1, last
+  charges about Aug 18 to Aug 23, a week-wide band); ones that stopped earlier
+  have already left the subscription list. Pinned through the real
+  `detectSubscriptions` + `buildRoster` in `shared/month-review.test.ts`. The
+  real fix, for R2: the cube keeps recently silent subscriptions (for example
+  a `stoppedSince` date for the 45 to 75 days after their last charge), and
+  the review names those that stopped inside the month.
+- **The "possible" exception.** A user-confirmed "possible" (two charges, an
+  unknown merchant) reaches the roster at its second charge, so it can be
+  called new at that charge: its whole history is known and one charge was in
+  the month. The unconfirmed ones stay out until a third charge.
+- **A past short date silences the daily warning (plan-mandated).** The
+  warning shows for a short date from today to today + 14 and never for a day
+  already past, so a forecast whose short date has passed (cash already
+  negative) says nothing in the daily report until the next sync recomputes.
+- **A frozen balance counts silently on the headline.** A bank balance that
+  stops updating (an old date) is counted and dated on the forecast's own
+  panel, but nothing on the Home tile or the weekly line says it is old. An
+  undated balance counts and is shown "· balance date unknown".
+- **The forecast's unbounded calls precede the health write.**
+  `GET /accounts` has no timeout, and the forecast publishes before
+  `updateSyncHealth` and the live report editions; a hung call (here or in the
+  audit snapshot's reads) holds both. Bound the calls.
+- **The open sub-tab's list doesn't refresh.** The Reports tab's badge and
+  counts follow the live state, but the editions listed under a sub-tab that is
+  already open are read once; a new edition shows after reopening the tab.
+- **The forced-2027 run isn't scripted.** Every new test file is checked with
+  the date forced to 2027-01-01 by a throwaway setup file during the final
+  task; it should be a repeatable script (an `npm run test:2027`).
+- **Live editions lagged the forecast (fixed).** The Reports tab's live
+  editions used to publish before the cube and the forecast, so the daily
+  warning and the weekly line were one sync behind Home's tile. They now
+  publish after both.
+- **A card payment that never linked** can be detected as a bill. The
+  forecast leaves out an entry whose name reads like one (the sync's own
+  `CASH_CARD_PAYMENT_KEYWORDS`); one worded otherwise ("ACH DEBIT ROBINHOOD
+  CCB") is still subtracted. A hand-added unlinked entry is a mild
+  pessimistic double count.
+- **`CASH_FORECAST_SINCE` is 1.61.0 and holds only if this ships in 1.61.0.**
+  If it ships in a later release, raise it to that release, or an older
+  companion's install is told the forecast arrives with the next sync instead
+  of to update the companion.
+- **Minor, deferred (from the task reviews):**
+  - Forecast arithmetic: `days < 0` gives an empty series; the doc says only
+    LATE entries are subtracted today though any past date is (unreachable,
+    the roster rolls dates forward, so reword); fractional bill cents are
+    unrounded; an extra `Number.isFinite` guard in `forecastCash` itself.
+  - `cash_forecast` parsing: pin an unknown or
+    pre-release companion version ("1.61.0-beta"); a failed (`ok: false`)
+    forecast never goes stale, so show its age too.
+  - Inputs: (a balance date of 0 or absent is now an unknown date, counted,
+    never missing); cents should be
+    `Number.isSafeInteger` and normalise -0; the `cashToday` sum-overflow
+    guard is untested; the bill keys include entries with cents <= 0 (filter
+    cents > 0); `dailySpendCents` adds days for months missing from the cube;
+    `asOf` and the balance-age comparison use UTC (cosmetic).
+  - Companion: log one line when `publishCashForecast` returns false
+    (unreachable, the previous forecast is kept); a persistent 500 on one
+    secret never yields an `ok: false` reason (brief-mandated); the timezone
+    fallback is silent.
+  - App: pin the page-level throwing read, `FORECAST_NO_BILLS` and the panel's stale status and
+    class; `SyncPage`'s `.catch` hides the tile instead of "Couldn't read"
+    (unreachable today); a div inside a button follows the tile precedent.
+  - Inbox: the unmount test cannot fail under React 19 (setState after
+    unmount is silent), so it pins "no further reads or writes after unmount".
+
 ## Reference: name mismatches between the database, the REST API, and the SDK
 
 Every one of these cost a diagnostic cycle against the live instance on
