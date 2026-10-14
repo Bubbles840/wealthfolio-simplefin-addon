@@ -121,7 +121,7 @@ const isExternal = (meta) => {
 const allActs = db
   .prepare(
     `SELECT a.id, a.account_id, substr(a.activity_date,1,10) d, acc.name acct, UPPER(acc.account_type) at,
-            UPPER(COALESCE(a.activity_type_override, a.activity_type)) t, UPPER(COALESCE(a.subtype,'')) st,
+            UPPER(COALESCE(NULLIF(TRIM(a.activity_type_override),''), a.activity_type)) t, UPPER(COALESCE(a.subtype,'')) st,
             UPPER(COALESCE(a.status,'POSTED')) status, ABS(CAST(COALESCE(a.amount,'0') AS REAL)) amt,
             COALESCE(a.source_group_id,'') g, COALESCE(a.asset_id,'') asset, COALESCE(a.notes,'') notes,
             COALESCE(a.metadata,'') meta
@@ -202,7 +202,7 @@ console.log(`   $CASH assets: ${phantom.length ? phantom.join(', ') : 'none'}`);
 for (const id of phantom) {
   const rows = db
     .prepare(
-      `SELECT acc.name acct, UPPER(COALESCE(a.activity_type_override, a.activity_type)) t, COUNT(*) n
+      `SELECT acc.name acct, UPPER(COALESCE(NULLIF(TRIM(a.activity_type_override),''), a.activity_type)) t, COUNT(*) n
        FROM activities a JOIN accounts acc ON a.account_id = acc.id WHERE a.asset_id = ? GROUP BY 1, 2 ORDER BY 1, 2`,
     )
     .all(id);
@@ -237,7 +237,9 @@ const catOf = db.prepare(
 const classify = (a) => {
   if (isTransfer(a.t) && a.g) {
     if ((legCount.get(a.g) ?? 0) >= 2) return 'neutral';
-    return a.at === 'CASH' && a.t === 'TRANSFER_OUT' ? 'saving' : 'neutral';
+    // Since Wealthfolio 3.10 a card TRANSFER_OUT linked out of the spending set
+    // (linked, with its other leg outside the spending accounts) is Saving too (upstream ec509088c).
+    return (a.at === 'CASH' || a.at === 'CREDIT_CARD') && a.t === 'TRANSFER_OUT' ? 'saving' : 'neutral';
   }
   if (a.at === 'CASH') {
     if (['DEPOSIT', 'TRANSFER_IN', 'INTEREST'].includes(a.t)) return 'income';
