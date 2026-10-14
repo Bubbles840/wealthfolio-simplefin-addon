@@ -121,9 +121,9 @@ export function parseAuditSnapshot(raw: string | null | undefined): AuditSnapsho
   const isNum = (x: unknown) => typeof x === 'number' && Number.isFinite(x);
   for (const [key, e] of Object.entries(v.balances)) {
     if (!isObject(e) || typeof e.wfAccountId !== 'string' || e.wfAccountId !== key || typeof e.name !== 'string' || !isObject(e.bank)) return corrupt;
-    if (e.offCents !== null && !isNum(e.offCents)) return corrupt;
-    if (!Array.isArray(e.causes)) return corrupt;
-    for (const c of e.causes) if (!isObject(c) || typeof c.kind !== 'string' || !isNum(c.cents)) return corrupt;
+    if (e.offCents != null && !isNum(e.offCents)) return corrupt;
+    if (e.causes != null && !Array.isArray(e.causes)) return corrupt;
+    for (const c of e.causes ?? []) if (!isObject(c) || typeof c.kind !== 'string' || !isNum(c.cents)) return corrupt;
   }
   const h = v.headline;
   if (!isObject(h) || typeof h.month !== 'string' || !nullOrArray(h.reasons) || !Array.isArray(h.notes)) return corrupt;
