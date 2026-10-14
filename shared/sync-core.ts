@@ -1257,6 +1257,8 @@ export function planAmazonLateLabels(
   return updates;
 }
 
+const VENMO_UNREADABLE_ERROR = "Couldn't read the Venmo payments list — Venmo notes are off for this sync.";
+
 export const VENMO_LATE_NOTE_LOG_TAG = 'venmo-late-note';
 
 /**
@@ -2007,9 +2009,15 @@ async function runSyncPass(
   let venmoLedger: VenmoLedger = {};
   try {
     const read = await store.getVenmoLedger?.();
-    if (read && isReadableVenmoLedger(read)) venmoLedger = read;
-  } catch { /* unreadable: no Venmo notes this run */ }
-  let venmoLedgerChanged = false;
+    if (read) {
+      if (isReadableVenmoLedger(read)) venmoLedger = read;
+      else errors.push(VENMO_UNREADABLE_ERROR);
+    }
+  } catch {
+    errors.push(VENMO_UNREADABLE_ERROR);
+  }
+  /** What THIS run consumed (ledger key -> tx key): the only thing it writes back. */
+  const venmoConsumed = new Map<string, string>();
   /** Rows this run matched to a Venmo payment, per SimpleFin account then tx
    *  id: the bank's text, the text with the note, and the note. */
   const venmoNoted = new Map<string, Map<string, { bare: string; enriched: string; note: string }>>();
@@ -2152,8 +2160,8 @@ async function runSyncPass(
           }
         }
         if (hit) {
+          if (venmoLedger[hit.key]?.consumedBy !== key) venmoConsumed.set(hit.key, key);
           venmoLedger = consumeVenmoMatch(venmoLedger, hit, key);
-          venmoLedgerChanged = true;
         }
       }
       descByKey.set(key, description);
@@ -2281,6 +2289,19 @@ async function runSyncPass(
       // carry a subtype, and a ruled leg whose counterpart has not posted yet
       // lands here like any other.
       delete p.subtype;
+    }
+  }
+
+  // A Venmo note never goes on a row whose FINAL type is a transfer (it may be
+  // linked, and Wealthfolio copies a linked leg's note onto its partner) nor on
+  // an in-transit placeholder. Decided here, once pairing and the placeholder
+  // rules have typed every row; the payment stays consumed.
+  for (const prepared of preparedByAccount.values()) {
+    for (const p of prepared) {
+      const noted = venmoNoted.get(p.sfAccountId)?.get(p.tx.id);
+      if (!noted || !(isTransferType(p.type) || p.inTransit)) continue;
+      descByKey.set(accountTxKey(p.sfAccountId, p.tx.id), noted.bare);
+      venmoNoted.get(p.sfAccountId)!.delete(p.tx.id);
     }
   }
 
@@ -4087,10 +4108,26 @@ async function runSyncPass(
       errors.push(`Could not save Amazon order ledger: ${String(e?.message ?? e)}`);
     });
   }
-  if (venmoLedgerChanged && store.setVenmoLedger) {
-    await store.setVenmoLedger(venmoLedger).catch((e) => {
+  if (venmoConsumed.size > 0 && store.getVenmoLedger && store.setVenmoLedger) {
+    // The mail poll may have merged new payments since the read at the top of
+    // the run: re-read, apply only THIS run's consumptions, and never write
+    // over a document that cannot be read.
+    try {
+      const fresh = await store.getVenmoLedger();
+      if (!isReadableVenmoLedger(fresh)) throw new Error('unreadable');
+      let next = fresh;
+      let changed = false;
+      for (const [k, txKey] of venmoConsumed) {
+        const rec = next[k];
+        if (!rec || rec.consumedBy === txKey) continue;
+        if (rec.consumedBy) continue; // another row took it meanwhile
+        next = { ...next, [k]: { ...rec, consumedBy: txKey } };
+        changed = true;
+      }
+      if (changed) await store.setVenmoLedger(next);
+    } catch (e: any) {
       errors.push(`Could not save the Venmo payment ledger: ${String(e?.message ?? e)}`);
-    });
+    }
   }
 
   await store.setAccountBalances(accountBalances);

@@ -1,10 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { ChangeEntry, ChangeLogSink } from './change-entries.js';
 import { createFakeHost, type FakeHostSeed } from './fake-host.js';
+import { linkPairByRecreate } from './link-pair.js';
+import type { HostActivity, SyncHost } from './sync-host.js';
 import { runSyncCore, VALUATION_POLL } from './sync-core.js';
 import { emptySyncOverrides, setTxOverride } from './sync-overrides.js';
 import { accountTxKey } from './transfers.js';
-import type { VenmoLedger } from './venmo-ledger.js';
+import { isReadableVenmoLedger, type VenmoLedger } from './venmo-ledger.js';
 
 const NOW = new Date('2026-10-13T15:00:00Z');
 const epoch = (iso: string) => Date.parse(iso) / 1000;
@@ -157,6 +159,10 @@ describe('runSyncCore — Venmo notes', () => {
       const log = capture();
       await runSyncCore(fh.host, fh.store, { changeLog: log, force: true });
       expect(venmoEntries(log)).toHaveLength(1);
+      expect(venmoEntries(log)[0]).toMatchObject({
+        before: { comment: `VENMO PAYMENT 1023 · ${postedId}` },
+        after: { comment: `VENMO PAYMENT 1023 · Venmo: Rent October · ${postedId}`, note: 'Rent October' },
+      });
       expect(fh.activities.get('wf-a')!.some((r) => r.comment === `VENMO PAYMENT 1023 · Venmo: Rent October · ${postedId}`)).toBe(true);
       expect(fh.venmo()[RENT_KEY].consumedBy).toBe(accountTxKey('sfin-1', postedId));
     }
@@ -172,22 +178,130 @@ describe('runSyncCore — Venmo notes', () => {
     expect(inn.venmo()[RENT_KEY].consumedBy).toBeUndefined();
   });
 
-  it('a ledger with an unreadable entry adds no notes, throws nothing, and is never overwritten', async () => {
+  const UNREADABLE = "Couldn't read the Venmo payments list — Venmo notes are off for this sync.";
+
+  it('a ledger with an unreadable entry adds no notes, says so, and is never overwritten', async () => {
     const bad = { ...RENT, 'id|1': null, 'id|2': 'x' } as unknown as VenmoLedger;
     const fh = createFakeHost(seed({ venmoLedger: bad }));
     const result = await runSyncCore(fh.host, fh.store, {});
-    expect(result.errors).toEqual([]);
+    expect(result.errors).toEqual([UNREADABLE]);
     expect(fh.activities.get('wf-a')![0].comment).toBe('VENMO PAYMENT 1023 · tx-v');
     expect(fh.venmo()).toBe(bad);
   });
 
-  it('a ledger that cannot be read skips Venmo notes for the run', async () => {
+  it('a ledger that cannot be read skips Venmo notes for the run, and says so', async () => {
     const fh = createFakeHost(seed());
     fh.store.getVenmoLedger = async () => { throw new Error('boom'); };
     const spy = vi.spyOn(fh.store, 'setVenmoLedger' as any);
     const result = await runSyncCore(fh.host, fh.store, {});
-    expect(result.errors).toEqual([]);
+    expect(result.errors).toEqual([UNREADABLE]);
     expect(fh.activities.get('wf-a')![0].comment).toBe('VENMO PAYMENT 1023 · tx-v');
     expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('a run that only re-matches what is already consumed writes nothing', async () => {
+    const fh = createFakeHost(seed());
+    await runSyncCore(fh.host, fh.store, { force: true });
+    const spy = vi.spyOn(fh.store, 'setVenmoLedger' as any);
+    await runSyncCore(fh.host, fh.store, { force: true });
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('a payment merged into the ledger mid-run survives the write', async () => {
+    const fh = createFakeHost(seed());
+    const extra = { direction: 'in' as const, kind: 'payment' as const, amountCents: 700, counterparty: 'Sam', note: 'Coffee', emailDate: '2026-10-12' };
+    const inner = fh.store.getVenmoLedger!.bind(fh.store);
+    let reads = 0;
+    fh.store.getVenmoLedger = async () => {
+      reads += 1;
+      const l = await inner();
+      return reads === 1 ? l : { ...l, 'id|new': extra };
+    };
+    const result = await runSyncCore(fh.host, fh.store, {});
+    expect(result.errors).toEqual([]);
+    expect(fh.venmo()['id|new']).toEqual(extra);
+    expect(fh.venmo()[RENT_KEY].consumedBy).toBe(KEY);
+  });
+
+  it('does not write over a ledger that is unreadable at write time', async () => {
+    const fh = createFakeHost(seed());
+    const inner = fh.store.getVenmoLedger!.bind(fh.store);
+    let reads = 0;
+    fh.store.getVenmoLedger = async () => { reads += 1; if (reads > 1) throw new Error('corrupt'); return inner(); };
+    const spy = vi.spyOn(fh.store, 'setVenmoLedger' as any);
+    const result = await runSyncCore(fh.host, fh.store, {});
+    expect(result.errors.some((e) => e.startsWith('Could not save the Venmo payment ledger'))).toBe(true);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  // Transfer-typed rows and placeholders never carry a note (Wealthfolio copies a
+  // linked leg's note onto its partner); the payment is still consumed.
+  const linkedWorld = (opts: { partner?: boolean; existing?: Map<string, HostActivity[]> }) => {
+    const sd: FakeHostSeed = {
+      accountSet: { errors: [], accounts: [
+        { id: 'sfin-1', name: 'Checking', currency: 'USD', balance: '0', 'balance-date': epoch('2026-10-13T12:00:00Z'),
+          transactions: [{ id: 'tx-v', posted: epoch('2026-10-04T12:00:00Z'), amount: '-25.00', description: 'VENMO PAYMENT 1023' }] },
+        { id: 'sfin-2', name: 'Savings', currency: 'USD', balance: '0', 'balance-date': epoch('2026-10-13T12:00:00Z'),
+          transactions: opts.partner === false ? [] : [{ id: 'tx-p', posted: epoch('2026-10-04T12:00:00Z'), amount: '25.00', description: 'ONLINE TRANSFER FROM CHK' }] },
+      ] },
+      mapping: { 'sfin-1': 'wf-a', 'sfin-2': 'wf-b' },
+      accountTypes: { 'wf-a': 'CASH', 'wf-b': 'CASH' },
+      accountNames: { 'wf-a': 'Checking', 'wf-b': 'Savings' },
+      mappingRules: [{ pattern: 'VENMO', matchType: 'contains', activityType: 'TRANSFER_OUT' }],
+      upstreamWriteRules: true,
+      venmoLedger: RENT,
+      ...(opts.existing ? { existing: opts.existing } : {}),
+    };
+    const fake = createFakeHost(sd);
+    const host: SyncHost = { ...fake.host, linkPair: (legs) => linkPairByRecreate((req) => fake.host.saveMany(req), legs) };
+    return { fake, host };
+  };
+  const comments = (fh: ReturnType<typeof createFakeHost>) => [...fh.activities.values()].flat().map((r) => r.comment);
+
+  it('a rule-typed transfer VENMO row and its partner: no note on either leg, payment consumed, no entry', async () => {
+    const w = linkedWorld({});
+    const log = capture();
+    await runSyncCore(w.host, w.fake.store, { changeLog: log, force: true });
+    expect(comments(w.fake).sort()).toEqual(['ONLINE TRANSFER FROM CHK · tx-p', 'VENMO PAYMENT 1023 · tx-v']);
+    expect(w.fake.venmo()[RENT_KEY].consumedBy).toBe(KEY);
+    expect(venmoEntries(log)).toEqual([]);
+  });
+
+  it('a linked leg with an amount correction: no entry, the partner unchanged', async () => {
+    const existing = new Map<string, HostActivity[]>([
+      ['wf-a', [{ id: 'act-v', accountId: 'wf-a', activityType: 'TRANSFER_OUT', date: '2026-10-04', amount: 24, comment: 'VENMO PAYMENT 1023 · tx-v', sourceGroupId: 'g1' }]],
+      ['wf-b', [{ id: 'act-p', accountId: 'wf-b', activityType: 'TRANSFER_IN', date: '2026-10-04', amount: 25, comment: 'ONLINE TRANSFER FROM CHK · tx-p', sourceGroupId: 'g1' }]],
+    ]);
+    const w = linkedWorld({ existing });
+    const log = capture();
+    await runSyncCore(w.host, w.fake.store, { changeLog: log, force: true });
+    expect(venmoEntries(log)).toEqual([]);
+    expect(comments(w.fake)).not.toContainEqual(expect.stringContaining('Venmo:'));
+    expect(w.fake.activities.get('wf-b')![0].comment).toBe('ONLINE TRANSFER FROM CHK · tx-p');
+  });
+
+  it('an in-transit placeholder gets no note', async () => {
+    const w = linkedWorld({ partner: false });
+    const log = capture();
+    await runSyncCore(w.host, w.fake.store, { changeLog: log, force: true });
+    expect(comments(w.fake)).not.toContainEqual(expect.stringContaining('Venmo:'));
+    expect(venmoEntries(log)).toEqual([]);
+    expect(w.fake.venmo()[RENT_KEY].consumedBy).toBe(KEY);
+  });
+});
+
+describe('isReadableVenmoLedger', () => {
+  const ok = RENT[RENT_KEY];
+  it('accepts a real ledger, an empty one and a consumed record', () => {
+    expect(isReadableVenmoLedger(RENT)).toBe(true);
+    expect(isReadableVenmoLedger({})).toBe(true);
+    expect(isReadableVenmoLedger({ a: { ...ok, consumedBy: 'k' } })).toBe(true);
+  });
+  it('refuses a bad direction, a string amount, a numeric consumedBy, an array and a null entry', () => {
+    expect(isReadableVenmoLedger({ a: { ...ok, direction: 'sideways' } })).toBe(false);
+    expect(isReadableVenmoLedger({ a: { ...ok, amountCents: '2500' } })).toBe(false);
+    expect(isReadableVenmoLedger({ a: { ...ok, consumedBy: 5 } })).toBe(false);
+    expect(isReadableVenmoLedger([ok])).toBe(false);
+    expect(isReadableVenmoLedger({ a: null })).toBe(false);
   });
 });

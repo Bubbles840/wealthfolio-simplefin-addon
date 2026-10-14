@@ -185,7 +185,7 @@ describe('SecretsStore', () => {
     expect(await new SecretsStore(ctx).getAmazonMailSamples()).toBeNull();
   });
 
-  it('reads and writes the Venmo payments under the key the companion writes, malformed as empty, and clearAll removes them', async () => {
+  it('reads and writes the Venmo payments under the key the companion writes, absent as empty, unreadable as an error, and clearAll removes them', async () => {
     const { ctx, data } = makeCtxWithData();
     const s = new SecretsStore(ctx);
     expect(await s.getVenmoLedger()).toEqual({});
@@ -194,9 +194,9 @@ describe('SecretsStore', () => {
     expect(JSON.parse(data['venmo_ledger'])).toEqual(ledger);
     expect(await s.getVenmoLedger()).toEqual(ledger);
     data['venmo_ledger'] = '[1,2]';
-    expect(await s.getVenmoLedger()).toEqual({});
+    await expect(s.getVenmoLedger()).rejects.toThrow();
     data['venmo_ledger'] = '{not json';
-    expect(await s.getVenmoLedger()).toEqual({});
+    await expect(s.getVenmoLedger()).rejects.toThrow();
     await s.clearAll();
     expect(data['venmo_ledger']).toBeUndefined();
   });

@@ -261,7 +261,7 @@ describe('RestSyncStore', () => {
     expect(await new RestSyncStore(client).getSkippedTransactions()).toEqual([{ account: 'sfin-1', txId: 'TRN-1' }]);
   });
 
-  it('reads and writes the Venmo payments under venmo_ledger, anything but an object as empty', async () => {
+  it('reads and writes the Venmo payments under venmo_ledger, absent as empty, unreadable as an error', async () => {
     const secrets = new Map<string, string>();
     const client = {
       getAddonSecret: vi.fn(async (_addonId: string, key: string) => secrets.get(key) ?? null),
@@ -274,6 +274,10 @@ describe('RestSyncStore', () => {
     expect(client.setAddonSecret).toHaveBeenCalledWith('simplefin-sync', 'venmo_ledger', JSON.stringify(ledger));
     expect(await store.getVenmoLedger()).toEqual(ledger);
     secrets.set('venmo_ledger', '[]');
+    await expect(store.getVenmoLedger()).rejects.toThrow();
+    secrets.set('venmo_ledger', '{not json');
+    await expect(store.getVenmoLedger()).rejects.toThrow();
+    secrets.delete('venmo_ledger');
     expect(await store.getVenmoLedger()).toEqual({});
   });
 
