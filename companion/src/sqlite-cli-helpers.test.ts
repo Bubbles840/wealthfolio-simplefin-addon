@@ -24,7 +24,7 @@ describe('sqlite-cli-helpers — the one place the reads share their small piece
   });
 
   it('is imported, never copied, by the two files that read the database', () => {
-    for (const file of ['sqlite-native.ts', 'sqlite-audit.ts']) {
+    for (const file of ["sqlite-native.ts", "sqlite-audit.ts", "sqlite-guess.ts"]) {
       const source = readFileSync(new URL(`./${file}`, import.meta.url), 'utf8');
       expect(source, file).toContain("from './sqlite-cli-helpers.js'");
       expect(source, file).not.toMatch(/char\(13\)/);

@@ -1443,9 +1443,9 @@ export function accountNameWords(name: string, orgName?: string): string[] {
  * `crates/spending/src/activity_classification.rs`, and 3.8 left no
  * cash-moving outflow type that isn't spending), so Wealthfolio's own spending
  * page shows a placeholder as an uncategorised outflow until its counterpart
- * posts and the pair links. The addon's readers exclude the sync's bookkeeping
- * rows by their note marker instead (see `spendingWhere` in the companion), so
- * the Budget tab and digests never count them. On a card TRANSFER_OUT is
+ * posts and the pair links. Since 1.62 the addon's readers count what
+ * Wealthfolio counts; the sync files its own unfiled bookkeeping rows under an
+ * excluded "Sync bookkeeping" category (3.9+) to keep them out of both. On a card TRANSFER_OUT is
  * Ignored outright. Legacy fee-side rows are restated by
  * `planLegacyPlaceholderRewrite` on the next sync.
  *
