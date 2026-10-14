@@ -46,6 +46,13 @@ describe('recreateWrite', () => {
   });
 });
 
+describe('recreateWrite metadata', () => {
+  it('writes back every metadata key the host reported', () => {
+    const r = fixRowOf(details({ activityType: 'transfer_out', metadata: { flow: { is_external: false }, tag: 'x' } }), 'CASH')!;
+    expect(JSON.parse(recreateWrite(r).metadata as string)).toEqual({ flow: { is_external: false }, tag: 'x' });
+  });
+});
+
 describe('linkedState', () => {
   const leg = (over: Partial<FixRow> = {}) => fix({ type: 'TRANSFER_OUT', ...over });
   const addon = { readsGroups: false, ledgerKnows: false };

@@ -32,11 +32,25 @@ export interface FixRow {
   /** `metadata.flow.is_external`: true/false; null when unset; undefined
    *  when the host did not report metadata (unknown, never "unset"). */
   flowExternal: boolean | null | undefined;
+  /** The metadata object the host reported (every key), when it reported a
+   *  non-empty one; written back as it was. */
+  meta?: Record<string, unknown>;
   /** The host reported a transfer group id on the row. */
   grouped: boolean;
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+function metaOf(metadata: unknown): Record<string, unknown> | undefined {
+  let parsed: unknown = metadata;
+  if (typeof metadata === 'string') {
+    try {
+      parsed = JSON.parse(metadata);
+    } catch {
+      return undefined;
+    }
+  }
+  return isRecord(parsed) && Object.keys(parsed).length > 0 ? parsed : undefined;
+}
 const cents = (v: unknown) => Math.round(Math.abs(Number(v ?? 0)) * 100) || 0;
 /** The day the add-on's story shows (src/utils/tx-story.ts): the stored instant's UTC day. */
 function isoDay(v: unknown): string {
@@ -61,6 +75,7 @@ export function fixRowOf(raw: unknown, accountType: string): FixRow | null {
     type, date, absCents: cents(raw.amount), feeCents: cents(raw.fee), currency, notes,
     subtype: typeof raw.subtype === 'string' && raw.subtype.trim() !== '' ? raw.subtype : null,
     flowExternal: 'metadata' in raw ? flowExternalOf(raw.metadata) : undefined,
+    ...('metadata' in raw && metaOf(raw.metadata) ? { meta: metaOf(raw.metadata) } : {}),
     grouped: typeof raw.sourceGroupId === 'string' && raw.sourceGroupId.trim() !== '',
   };
 }
@@ -82,7 +97,7 @@ export function recreateWrite(row: FixRow): ActivityWrite {
     currency: row.currency,
     comment: row.notes,
     ...(row.subtype ? { subtype: row.subtype } : {}),
-    ...(typeof row.flowExternal === 'boolean' ? { metadata: JSON.stringify({ flow: { is_external: row.flowExternal } }) } : {}),
+    ...(row.meta ? { metadata: JSON.stringify(row.meta) } : typeof row.flowExternal === 'boolean' ? { metadata: JSON.stringify({ flow: { is_external: row.flowExternal } }) } : {}),
   };
 }
 
