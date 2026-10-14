@@ -64,8 +64,9 @@ export class NativeDbUnreadableError extends Error {
 }
 
 /** `queryNativeDb`, except a database that is not there or that every path
- *  failed to read throws `NativeDbUnreadableError`. */
-function queryNativeDbStrict<Row>(
+ *  failed to read throws `NativeDbUnreadableError`. Exported for the audits'
+ *  readers (sqlite-audit.ts, 2c). */
+export function queryNativeDbStrict<Row>(
   dbPath: string,
   label: string,
   query: string,
