@@ -28,6 +28,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   open a story once the companion is updated; rows from an older companion
   stay as they were.
 
+### Fixed
+- **The "Opening balances" spending exclusion is re-applied.** It was only set
+  while there was an opening debt to file, so a category created on Wealthfolio
+  3.8 (which ignores the setting) stayed counted as spending. The companion now
+  also sets it, on its next sync, when there is nothing to file and the host is
+  3.9 or newer; on 3.8 or an unknown version it skips the step instead of
+  sending a request that is ignored.
+
+### Changed
+- SimpleFin `/accounts` requests ask the host for the longest timeout (120 s,
+  Wealthfolio 3.9+; older hosts ignore it).
+- The add-on now requires Wealthfolio 3.8 or newer (it relied on 3.8's cash
+  semantics since 1.49); the README says so.
+- The companion reports a Wealthfolio HTTP 423 as a clear "profile is locked or
+  there is more than one profile" error.
+
+### Wealthfolio 3.10
+Works with 3.10. When upgrading: set `WF_CORS_ALLOW_ORIGINS` to your proxy URL,
+keep one default profile with no lock, keep the database unencrypted, and let
+Wealthfolio finish rebuilding history (Health page) before a Deep scan. See
+"Upgrading Wealthfolio to 3.10" in the README.
+
 ## [1.60.0] - 2026-10-13
 
 ### Added

@@ -24,7 +24,7 @@ That's it: saving the mapping runs the first sync and turns on auto-sync every
 6 hours. Rules, the Telegram bot and Amazon categorization are optional, and
 live in **Settings** when you want them.
 
-You need Wealthfolio **3.6.2** or newer and a SimpleFin account with a one-time
+You need Wealthfolio **3.8 or newer** (it works with 3.10) and a SimpleFin account with a one-time
 **setup token**. The token is exchanged once for a long-lived access URL, kept
 in Wealthfolio's encrypted secret storage; the token itself is not kept.
 
@@ -85,10 +85,26 @@ The addon has three tabs: **Home**, **Reports** and **Settings**.
 
 ## Requirements
 
-- Wealthfolio **3.6.2** or newer
+- Wealthfolio **3.8 or newer** (works with 3.10)
 - A SimpleFin account and a one-time **setup token**
 - Optional: Docker, for the background companion (background sync, Reports,
   the Telegram bot and Amazon categorization)
+
+### Upgrading Wealthfolio to 3.10
+
+Before or right after you upgrade:
+
+- If you reach Wealthfolio through a proxy (Tailscale or tsdproxy), set
+  `WF_CORS_ALLOW_ORIGINS` to the exact URL you open it at. Otherwise the app and
+  the add-on may not load.
+- Keep one default profile with no lock. The companion stops with
+  `PROFILE_LOCKED` otherwise.
+- Keep the database unencrypted (`WF_DB_REQUIRE_ENCRYPTION` off). The companion
+  reads it directly.
+- After the upgrade, Wealthfolio rebuilds every account's history. Wait until its
+  Health page no longer shows a stale projection before running a Deep scan.
+- On its next sync, the companion makes sure "Opening balances" is excluded from
+  Wealthfolio's spending.
 
 ### Adding or removing accounts later
 

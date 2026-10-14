@@ -6,7 +6,7 @@
   "author": "Bubbles840",
   "main": "dist/addon.js",
   "sdkVersion": "3.6.2",
-  "minWealthfolioVersion": "3.6.2",
+  "minWealthfolioVersion": "3.8.0",
   "enabled": true,
   "network": {
     "allowedHosts": [

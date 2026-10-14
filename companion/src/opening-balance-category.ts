@@ -24,6 +24,7 @@
 import { existsSync } from 'fs';
 import { DatabaseSync } from 'node:sqlite';
 import { bookkeepingChange, openingBalanceFiledChange, type ChangeDraft } from '../../shared/change-entries.js';
+import { isNewerVersion } from '../../shared/version.js';
 import { OPENING_BALANCES_CATEGORY, STARTING_BALANCE_COMMENT_PREFIX } from '../../shared/sync-core.js';
 
 export { OPENING_BALANCES_CATEGORY };
@@ -42,7 +43,16 @@ export interface OpeningBalanceFilingDeps {
   /** True for a SimpleFin account whose opening-balance filing the person
    *  undid (`noOpeningFile`, shared/sync-overrides.ts): never filed again. */
   noOpeningFile?: (sfinAccountId: string) => boolean;
+  /** The host's version. `PUT /spending/settings {excludedCategoryIds}` exists
+   *  only from Wealthfolio 3.9.0 (3.8 silently ignores it), so the exclusion
+   *  is applied only when this resolves to 3.9.0 or newer; null or absent
+   *  means unknown and skips it. */
+  appVersion?: () => Promise<string | null>;
 }
+
+const EXCLUSION_MIN_VERSION = '3.9.0';
+const supportsExclusion = (v: string | null | undefined): boolean =>
+  !!v && (v === EXCLUSION_MIN_VERSION || isNewerVersion(v, EXCLUSION_MIN_VERSION));
 
 interface OpeningDebtRow { id: string; account_id: string; account_name: string; amount: string; day: string; notes: string }
 
@@ -84,7 +94,6 @@ export async function fileCardOpeningDebts(deps: OpeningBalanceFilingDeps): Prom
     // The note names the SimpleFin account: `Starting balance · <sfinId>`.
     rows = rows.filter((r) => !(r.notes.startsWith(STARTING_BALANCE_COMMENT_PREFIX)
       && deps.noOpeningFile?.(r.notes.slice(STARTING_BALANCE_COMMENT_PREFIX.length))));
-    if (rows.length === 0) return { filed: 0 };
     categoryId = (
       db.prepare(`SELECT id FROM taxonomy_categories WHERE taxonomy_id = ? AND name = ?`).get(TAXONOMY, OPENING_BALANCES_CATEGORY) as
         | { id: string }
@@ -105,23 +114,36 @@ export async function fileCardOpeningDebts(deps: OpeningBalanceFilingDeps): Prom
     db.close();
   }
 
+  // A failed recording never costs the filing.
+  const record = (make: () => ChangeDraft) => {
+    if (!deps.record) return;
+    try { deps.record(make()); } catch (err) { deps.log(`Could not record the change: ${String(err)}`); }
+  };
+  const hostExcludes = async () => supportsExclusion(await deps.appVersion?.().catch(() => null));
+
+  if (rows.length === 0) {
+    // Nothing to file, but a category an earlier sync made on Wealthfolio 3.8
+    // (which ignored the exclusion) may still be counted as spending.
+    if (categoryId && !excluded.includes(categoryId) && (await hostExcludes())) {
+      await deps.setExcluded([...excluded, categoryId]);
+      deps.log(`Excluded "${OPENING_BALANCES_CATEGORY}" from spending, so an opening debt is not read as a purchase.`);
+      record(() => bookkeepingChange({ step: 'opening-category', activityIds: [], categoryName: OPENING_BALANCES_CATEGORY }));
+    }
+    return { filed: 0 };
+  }
+
   let setUp = false;
   if (!categoryId) {
     categoryId = await deps.createCategory(OPENING_BALANCES_CATEGORY);
     deps.log(`Created the "${OPENING_BALANCES_CATEGORY}" spending category for card opening balances.`);
     setUp = true;
   }
-  if (!excluded.includes(categoryId)) {
+  if (!excluded.includes(categoryId) && (await hostExcludes())) {
     // Appended to the user's own list, never replacing it.
     await deps.setExcluded([...excluded, categoryId]);
     deps.log(`Excluded "${OPENING_BALANCES_CATEGORY}" from spending, so an opening debt is not read as a purchase.`);
     setUp = true;
   }
-  // A failed recording never costs the filing.
-  const record = (make: () => ChangeDraft) => {
-    if (!deps.record) return;
-    try { deps.record(make()); } catch (err) { deps.log(`Could not record the change: ${String(err)}`); }
-  };
   if (setUp) record(() => bookkeepingChange({ step: 'opening-category', activityIds: [], categoryName: OPENING_BALANCES_CATEGORY }));
   for (const row of rows) {
     await deps.assign(row.id, categoryId);

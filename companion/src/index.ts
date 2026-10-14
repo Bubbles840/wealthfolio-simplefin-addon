@@ -1019,6 +1019,7 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
       dbPath: wealthfolioDbPath(),
       createCategory: (name) => wfClient.createSpendingCategory(name),
       setExcluded: (ids) => wfClient.setExcludedSpendingCategories(ids),
+      appVersion: () => wfClient.getAppVersion(),
       assign: (activityId, categoryId) => wfClient.assignActivityCategory(activityId, SPENDING_TAXONOMY_ID, categoryId),
       log,
       record: (draft) => openingChanges.push(draft),
