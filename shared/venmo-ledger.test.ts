@@ -24,6 +24,8 @@ describe('matchVenmoPayment', () => {
     expect(isVenmoDescription('PAYPAL *VENMO 4029357733')).toBe(true);
     expect(isVenmoDescription('Venmo cashout')).toBe(true);
     expect(isVenmoDescription('VENMOX STORE')).toBe(false);
+    expect(isVenmoDescription('SVENMOX')).toBe(false);
+    expect(isVenmoDescription('VENMO1023')).toBe(true);
     expect(matchVenmoPayment(one, query({ description: 'ZELLE TO JANE DOE' }))).toBeNull();
   });
 
@@ -35,11 +37,12 @@ describe('matchVenmoPayment', () => {
     expect(matchVenmoPayment(one, query({ amountCents: 2501 }))).toBeNull();
   });
 
-  it('allows 5 days either side of the email and not a moment more', () => {
-    const email = Date.parse('2026-10-03');
-    expect(matchVenmoPayment(one, query({ postedMs: email + 5 * 86_400_000 }))).not.toBeNull();
-    expect(matchVenmoPayment(one, query({ postedMs: email - 5 * 86_400_000 }))).not.toBeNull();
-    expect(matchVenmoPayment(one, query({ postedMs: email + 5 * 86_400_000 + 1 }))).toBeNull();
+  it('allows 5 calendar days either side of the email day, at any time of day, and not a day more', () => {
+    const at2 = (iso: string, hh: string) => Date.parse(`${iso}T${hh}Z`);
+    expect(matchVenmoPayment(one, query({ postedMs: at2('2026-10-08', '23:59:59') }))).not.toBeNull();
+    expect(matchVenmoPayment(one, query({ postedMs: at2('2026-09-28', '23:00:00') }))).not.toBeNull();
+    expect(matchVenmoPayment(one, query({ postedMs: at2('2026-10-09', '00:00:00') }))).toBeNull();
+    expect(matchVenmoPayment(one, query({ postedMs: at2('2026-09-27', '23:59:59') }))).toBeNull();
   });
 
   it('gives no note when two payments of the same amount fall in the window', () => {
@@ -129,5 +132,28 @@ describe('a bank transfer that sends two emails (initiated, arrived)', () => {
   it('still gives no note when the candidates differ in their note', () => {
     const l = ledgerOf({ ...BANK, note: 'A', emailDate: '2026-10-03' }, { ...BANK, note: 'B', emailDate: '2026-10-05' });
     expect(matchVenmoPayment(l, bq())).toBeNull();
+  });
+});
+
+describe('review fixes', () => {
+  it('re-running the row that consumed a payment still finds it after another same-amount payment arrives', () => {
+    const l = ledgerOf({ ...RENT, emailDate: '2026-10-03', consumedBy: 'sfin-1\u0000tx-v' },
+      { ...RENT, counterparty: 'Bob', note: 'Cable', emailDate: '2026-10-05' });
+    expect(matchVenmoPayment(l, query())).toEqual({ key: 'k0', note: 'Rent October', counterparty: 'Jane Doe' });
+  });
+
+  it('prunes a record whose email date cannot be read', () => {
+    const out = pruneVenmoLedger(ledgerOf({ ...RENT, emailDate: 'garbage' }), at('2026-10-14'));
+    expect(out.removed).toBe(1);
+    expect(out.ledger).toEqual({});
+  });
+
+  it('gives no note when two records differ by payment id', () => {
+    const l = ledgerOf({ ...RENT, paymentId: '1', emailDate: '2026-10-03' }, { ...RENT, paymentId: '2', emailDate: '2026-10-03' });
+    expect(matchVenmoPayment(l, query())).toBeNull();
+  });
+
+  it('gives no note for a money-in bank row against an out record (a refund shape)', () => {
+    expect(matchVenmoPayment(ledgerOf({ ...RENT, emailDate: '2026-10-03' }), query({ direction: 'in' }))).toBeNull();
   });
 });

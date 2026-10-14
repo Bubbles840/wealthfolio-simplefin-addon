@@ -31,7 +31,7 @@ const DAY_MS = 86_400_000;
 
 /** Whether a bank description is a Venmo row: the word VENMO, any case. */
 export function isVenmoDescription(description: string | null | undefined): boolean {
-  return /\bvenmo\b/i.test(description ?? '');
+  return /\bvenmo(?=\d|\b)/i.test(description ?? '');
 }
 
 /** Ledger key: Venmo's payment id when the email had one; otherwise every field
@@ -71,7 +71,7 @@ export function pruneVenmoLedger(
   let removed = 0;
   for (const [key, rec] of Object.entries(ledger)) {
     const t = Date.parse(rec.emailDate);
-    if (Number.isFinite(t) && t < cutoff) { removed += 1; continue; }
+    if (!Number.isFinite(t) || t < cutoff) { removed += 1; continue; }
     next[key] = rec;
   }
   return { ledger: next, removed };
@@ -110,16 +110,19 @@ export function matchVenmoPayment(
   windowDays = VENMO_MATCH_WINDOW_DAYS,
 ): VenmoMatch | null {
   if (!isVenmoDescription(query.description)) return null;
-  const window = windowDays * DAY_MS;
+  const postedDay = Math.floor(query.postedMs / DAY_MS);
   const hits: Array<[string, VenmoLedgerRecord]> = [];
   for (const [key, rec] of Object.entries(ledger)) {
     if (rec.amountCents !== query.amountCents || rec.direction !== query.direction) continue;
     if (rec.consumedBy && rec.consumedBy !== query.txKey) continue;
     const emailMs = Date.parse(rec.emailDate);
-    if (!Number.isFinite(emailMs) || Math.abs(query.postedMs - emailMs) > window) continue;
+    if (!Number.isFinite(emailMs) || Math.abs(postedDay - Math.floor(emailMs / DAY_MS)) > windowDays) continue;
     hits.push([key, rec]);
   }
   if (hits.length === 0) return null;
+  // Idempotent: a payment this very row already consumed is its answer, whatever else arrived since.
+  const own = hits.find(([, r]) => r.consumedBy === query.txKey);
+  if (own) return { key: own[0], note: own[1].note, counterparty: own[1].counterparty };
   // A bank transfer sends two emails (initiated, arrived) that parse to the same
   // record, possibly on different days. Candidates identical in every field are
   // one payment, and they would give the same note anyway, so they are not
