@@ -33,7 +33,7 @@
 
 - **Read-only.** Nothing a story, a search or a 🔎 Why? does writes anything. Every change goes through the change log's existing Undo (`runChangeUndo` / `undoFromApp`) or `/categorize`.
 - **Raw text in shared code.** Bank and user text in `TxStory` and in search rows is RAW. Telegram escapes it with `escapeMarkdown` and keeps it outside every `*…*`/`_…_`; the app renders it as React text. Button labels are plain text and are not escaped.
-- **Copy (verbatim, the `TX_STORY_*` constants in shared/tx-story.ts, both surfaces):** `Not from your bank feed — added in Wealthfolio by hand or from a file.` · `Spending.` · `Money in.` · `Not filed yet — it's on your needs-a-category list.` · `Ask /why in Telegram to see who filed it.` · `Category set in Wealthfolio.` · `No changes in the last 90 days.` · `What happened` · `Couldn't reach Wealthfolio — try again.` · `That transaction has changed since — search again with /why.` (Telegram) · `That transaction has changed since — search for it again.` (app) · `Too many matches — add a word or an amount.` Dynamic lines are built in exactly one place, `buildTxStory`: `From your <account> bank feed.[ Still pending.]`, `Half of a transfer: ↔ <$600.00> into|from <account>[, <Oct 4>].`, `A transfer the sync is holding: it waits until <date> for its other half, then counts as spending|money in.`, `The starting balance the add-on set so <account> matches the bank from <date>.`, `A correction the add-on added on <date> so <account> matches the bank.`, `Filed under <cat> by a rule — '<pattern>' matches it.`, `Filed under <cat> by a rule (none of your current rules matches it).`, `Filed under <cat> by you, in Telegram, <Oct 4>.`, `Filed under <cat> from an Amazon email.`, `You told the sync: <not a transfer, keep this duplicate, don't file it automatically, no Amazon label, don't import it>.` Every other user-facing string is spelled out in its task.
+- **Copy (verbatim, the `TX_STORY_*` constants in shared/tx-story.ts, both surfaces):** `Not from your bank feed — added in Wealthfolio by hand or from a file.` · `Spending.` · `Money in.` · `Not filed yet — it's on your needs-a-category list.` · `Ask /why in Telegram to see who filed it.` · `Category set in Wealthfolio.` · `No changes in the last 90 days.` · `What happened` · `Couldn't reach Wealthfolio — try again.` · `That transaction has changed since — search again with /why.` (Telegram) · `That transaction has changed since — search for it again.` (app) · `Too many matches — add a word or an amount.` Dynamic lines are built in exactly one place, `buildTxStory`: `From your <account> bank feed.[ Still pending.]`, `Half of a transfer: <$600.00> into|from <account>[, <Oct 4>].`, `A transfer the sync is holding: it waits until <date> for its other half, then counts as spending|money in.`, `The starting balance the add-on set so <account> matches the bank from <date>.`, `A correction the add-on added on <date> so <account> matches the bank.`, `Filed under <cat> by a rule — '<pattern>' matches it.`, `Filed under <cat> by a rule (none of your current rules matches it).`, `Filed under <cat> by you, in Telegram, <Oct 4>.`, `Filed under <cat> from an Amazon email.`, `You told the sync: <not a transfer, keep this duplicate, don't file it automatically, no Amazon label, don't import it>.` Every other user-facing string is spelled out in its task.
 - **Telegram.** Legacy `Markdown`. Prefix `cz:wy:` (`WHY_CALLBACK_PREFIX`, shared/telegram.ts), routed in `onMenuCallback` right after `cz:cl:` and before the categorize fallthrough. Stateless: every tap re-reads. Every `callback_data` ≤ 64 bytes. Buttons: `🔎 Why?`, `⬅️ Back`, `‹ Older` / `Newer ›`, numbered history lines. 🔎 Why? buttons send a NEW message and never edit the one they sit on; navigation inside `/why` edits in place.
 - **Search.** Newest first, 8 a page (`TX_SEARCH_PAGE_SIZE`), up to 5 pages (40, `TX_SEARCH_MAX_RESULTS`). Telegram: the database, all history; the last 12 months over REST when it cannot be read. App: one keyword word across all history, else the last 12 months.
 - **Facts.** Every read but the row's own is wrapped: a failure leaves its line out and adds its `TX_FACT_NOTES` note. An unparseable `sync_overrides` is reported (`overridesUnreadable`), never read as "none". Only the row failing is a full failure (`unreachable`); a row that no longer exists is `gone`.
@@ -747,12 +747,12 @@ describe('buildTxStory — one fixture per row kind', () => {
       row: row({ note: 'TRANSFER TO ALLY · TRN-9', absCents: 60000, activityType: 'TRANSFER_OUT' }),
       partner: { accountName: 'Ally Savings', date: '2026-10-04' }, category: null, history: [lnk],
     });
-    expect(s.answer).toEqual(['From your PNC Checking bank feed.', 'Half of a transfer: ↔ $600.00 into Ally Savings, Oct 4.']);
+    expect(s.answer).toEqual(['From your PNC Checking bank feed.', 'Half of a transfer: $600.00 into Ally Savings, Oct 4.']);
     const incoming = story({
       row: row({ note: 'TRANSFER FROM PNC · TRN-8', absCents: 60000, activityType: 'TRANSFER_IN', accountName: 'Ally Savings' }),
       partner: { accountName: 'PNC Checking' }, category: null,
     });
-    expect(incoming.answer[1]).toBe('Half of a transfer: ↔ $600.00 from PNC Checking.');
+    expect(incoming.answer[1]).toBe('Half of a transfer: $600.00 from PNC Checking.');
   });
 
   it('a held transfer says how long it waits and what it becomes', () => {
@@ -1367,7 +1367,7 @@ export function buildTxStory(facts: TxStoryFacts): TxStory {
   } else if (!failed.has('partner')) {
     if (facts.partner) {
       const when = facts.partner.date ? `, ${changeDay(facts.partner.date)}` : '';
-      answer.push(`Half of a transfer: ↔ ${changeMoney(Math.abs(row.absCents))} ${out ? 'into' : 'from'} ${facts.partner.accountName}${when}.`);
+      answer.push(`Half of a transfer: ${changeMoney(Math.abs(row.absCents))} ${out ? 'into' : 'from'} ${facts.partner.accountName}${when}.`);
     } else if (facts.partner === null || !isTransferType(row.activityType.toUpperCase())) {
       answer.push(out ? TX_STORY_SPENDING : TX_STORY_MONEY_IN);
     }
@@ -2255,7 +2255,7 @@ describe('companionTxStory', () => {
     });
     const out = await companionTxStory(r, 'act-1', NOW);
     expect(r.partner).toHaveBeenCalledWith('wf-transfer-9', 'act-1');
-    expect(out.kind === 'ok' && out.story.answer[1]).toBe('Half of a transfer: ↔ $600.00 into Ally Savings, Oct 6.');
+    expect(out.kind === 'ok' && out.story.answer[1]).toBe('Half of a transfer: $600.00 into Ally Savings, Oct 6.');
   });
 
   it('a person’s filing says "by you, in Telegram" with the day, and rules are not read', async () => {
@@ -4701,14 +4701,14 @@ describe('appTxStory', () => {
     ), 'companion', new Date('2026-10-04T13:00:00Z'));
     const ctx = ctxWith(byId([detail({ activityType: 'TRANSFER_OUT', amount: '600', comment: 'TRANSFER TO ALLY · TRN-1' })]));
     const out = await appTxStory(ctx, store({ getChangeLog: vi.fn(async () => logOf(link)) }), { activityId: 'act-1' }, NOW);
-    expect(out.kind === 'ok' && out.story.answer.slice(0, 2)).toEqual(['From your PNC Checking bank feed.', 'Half of a transfer: ↔ $600.00 into Ally Savings.']);
+    expect(out.kind === 'ok' && out.story.answer.slice(0, 2)).toEqual(['From your PNC Checking bank feed.', 'Half of a transfer: $600.00 into Ally Savings.']);
   });
 
   it('or from the add-on’s own linked groups', async () => {
     const ctx = ctxWith(byId([detail({ activityType: 'TRANSFER_OUT', amount: '600', comment: 'TRANSFER TO ALLY · TRN-1' })]));
     const groups = { [KEY]: 'wf-transfer-1', [accountTxKey('ACT-ally', 'TRN-2')]: 'wf-transfer-1' };
     const out = await appTxStory(ctx, store({ getChangeLog: vi.fn(async () => logOf()), getLinkedGroups: vi.fn(async () => groups) }), { activityId: 'act-1' }, NOW);
-    expect(out.kind === 'ok' && out.story.answer[1]).toBe('Half of a transfer: ↔ $600.00 into Ally Savings.');
+    expect(out.kind === 'ok' && out.story.answer[1]).toBe('Half of a transfer: $600.00 into Ally Savings.');
   });
 
   it('is "gone" for a row that no longer exists and "unreachable" when the read fails', async () => {

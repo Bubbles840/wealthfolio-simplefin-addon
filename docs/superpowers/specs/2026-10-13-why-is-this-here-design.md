@@ -74,7 +74,7 @@ The story is the same in both places. It has a **title**, the **answer**, and **
    - "Not from your bank feed — added in Wealthfolio by hand or from a file." This applies when the row has no transaction id, or is in an account the add-on doesn't sync.
 2. **What it is.**
    - "Spending." / "Money in."
-   - "Half of a transfer: ↔ $600.00 into Ally Savings, Oct 4."
+   - "Half of a transfer: $600.00 into Ally Savings, Oct 4."
    - Special rows:
      - **Held transfer:** "A transfer the sync is holding: it waits until <date> for its other half, then counts as spending." For an inflow, it counts as money in.
      - **Starting balance:** "The starting balance the add-on set so <account> matches the bank from <date>."
