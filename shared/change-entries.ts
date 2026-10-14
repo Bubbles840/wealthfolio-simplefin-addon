@@ -20,7 +20,8 @@
  *  - a category rule: its id, name, pattern and category;
  *  - an import: the activity id and the account-scoped tx key;
  *  - a transfer link: both legs' tx keys and their new activity ids;
- *  - an Amazon label: the label text and the note before and after.
+ *  - an Amazon label: the label text and the note before and after;
+ *  - a Venmo note: the note text and the row's note before and after.
  */
 
 export type ChangeWriter = 'addon' | 'companion';
@@ -31,7 +32,7 @@ export type ChangeKind =
   | 'transfer-link' | 'transfer-type'
   | 'duplicate-removed'
   | 'starting-balance' | 'starting-balance-moved' | 'balance-correction'
-  | 'amazon-label' | 'category-filed' | 'opening-balance-filed'
+  | 'amazon-label' | 'venmo-note' | 'category-filed' | 'opening-balance-filed'
   | 'category-rule-created' | 'mapping-rule-created'
   | 'account-created'
   | 'bookkeeping';
@@ -41,7 +42,7 @@ export const CHANGE_KINDS: readonly ChangeKind[] = [
   'transfer-link', 'transfer-type',
   'duplicate-removed',
   'starting-balance', 'starting-balance-moved', 'balance-correction',
-  'amazon-label', 'category-filed', 'opening-balance-filed',
+  'amazon-label', 'venmo-note', 'category-filed', 'opening-balance-filed',
   'category-rule-created', 'mapping-rule-created',
   'account-created',
   'bookkeeping',
@@ -498,6 +499,36 @@ export function amazonLabelChange(f: AmazonLabelFacts): ChangeDraft {
     why: 'Amazon order email',
     before: { comment: f.beforeNote },
     after: { comment: f.afterNote, label: f.label },
+    undoable: true,
+  };
+}
+
+export interface VenmoNoteFacts {
+  account: ChangeAccount;
+  txKey: string;
+  activityId: string;
+  /** The bank's own text, without the note. */
+  description: string;
+  amountCents: number;
+  date: string;
+  beforeNote: string;
+  afterNote: string;
+  /** The text after ` · Venmo: `. */
+  note: string;
+}
+
+/** A Venmo note added to a row's note, at import or later (3). A sync decision:
+ *  Undo puts the old note back and sets `noVenmoNote`. */
+export function venmoNoteChange(f: VenmoNoteFacts): ChangeDraft {
+  return {
+    actor: 'auto',
+    kind: 'venmo-note',
+    account: f.account,
+    subject: { txKeys: [f.txKey], activityIds: [f.activityId], description: f.description, amountCents: f.amountCents, date: f.date },
+    summary: `Added the Venmo note "${f.note}" to ${what(f.description)}`,
+    why: 'Venmo email',
+    before: { comment: f.beforeNote },
+    after: { comment: f.afterNote, note: f.note },
     undoable: true,
   };
 }

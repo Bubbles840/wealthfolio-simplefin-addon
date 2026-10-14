@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   amazonLabelChange, balanceCorrectionChange, bankUpdateChange, categoryFiledChange, categoryRuleCreatedChange,
   duplicateRemovedChange, importChange, mappingRuleCreatedChange, openingBalanceFiledChange, reversalChange,
-  stampChange, startingBalanceChange, startingBalanceMovedChange, transferLinkChange, transferTypeChange,
+  stampChange, startingBalanceChange, startingBalanceMovedChange, transferLinkChange, transferTypeChange, venmoNoteChange,
   type ChangeDraft, type ChangeEntry,
 } from './change-entries.js';
 import type { ChangeLogItem } from './change-log.js';
@@ -370,6 +370,28 @@ describe('planChangeUndo — sync decisions', () => {
     expect(reason(planChangeUndo(label, 'undo', { row: null }, { latest: null }))).toBe('That transaction is gone — nothing was undone.');
     expect(ok(planChangeUndo(label, 'redo', {}, { latest: undo(label, { activityId: 'act-4' }) }))).toMatchObject({
       needsSync: true, rowAfter: 'act-4', steps: [{ do: 'clear-tx', txKey: CARD_KEY, flag: 'noAmazonLabel' }],
+    });
+  });
+
+  const venmo = entry(venmoNoteChange({
+    account: CHECKING, txKey: KEY, activityId: 'act-6', description: 'VENMO PAYMENT 1023', amountCents: -2500, date: '2026-10-04',
+    beforeNote: 'VENMO PAYMENT 1023 · TRN-a1b2', afterNote: 'VENMO PAYMENT 1023 · Venmo: Rent October · TRN-a1b2', note: 'Rent October',
+  }));
+
+  it('a Venmo note: noVenmoNote first, then the old note back; a changed, linked or gone row is refused', () => {
+    const noted = row({ id: 'act-6', absCents: 2500, date: '2026-10-04', comment: 'VENMO PAYMENT 1023 · Venmo: Rent October · TRN-a1b2' });
+    const plan = ok(planChangeUndo(venmo, 'undo', { row: noted, currency: 'USD' }, { latest: null }));
+    expect(plan).toMatchObject({ needsSync: false, rowAfter: 'act-6', done: 'Undone — the note is off, and stays off.' });
+    expect(plan.steps).toEqual([
+      { do: 'set-tx', txKey: KEY, flag: 'noVenmoNote', label: 'VENMO PAYMENT 1023 · Checking' },
+      { do: 'update', write: { id: 'act-6', accountId: 'wf-checking', activityType: 'WITHDRAWAL', activityDate: '2026-10-04', amount: 25, currency: 'USD', comment: 'VENMO PAYMENT 1023 · TRN-a1b2' } },
+    ]);
+    expect(reason(planChangeUndo(venmo, 'undo', { row: { ...noted, comment: 'edited by hand' } }, { latest: null }))).toBe('It has changed since — nothing was undone.');
+    expect(reason(planChangeUndo(venmo, 'undo', { row: { ...noted, linked: 'confirmed' } }, { latest: null }))).toBe(UNDO_LINKED_REFUSAL);
+    expect(reason(planChangeUndo(venmo, 'undo', { row: null }, { latest: null }))).toBe('That transaction is gone — nothing was undone.');
+    expect(ok(planChangeUndo(venmo, 'redo', {}, { latest: undo(venmo, { activityId: 'act-6' }) }))).toMatchObject({
+      needsSync: true, rowAfter: 'act-6', done: 'Redone — the next sync adds the note again.',
+      steps: [{ do: 'clear-tx', txKey: KEY, flag: 'noVenmoNote' }],
     });
   });
 

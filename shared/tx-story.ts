@@ -32,12 +32,15 @@ import {
 import type { TxOverrideFlag } from './sync-overrides.js';
 import { accountTxKey } from './transfers.js';
 import { txDescription } from './tx-search.js';
+import { VENMO_NOTE_MARK } from './venmo-ledger.js';
 
 // ── Copy ─────────────────────────────────────────────────────────────────
 
 export const TX_STORY_NOT_FROM_FEED = 'Not from your bank feed — added in Wealthfolio by hand or from a file.';
 export const TX_STORY_SPENDING = 'Spending.';
 export const TX_STORY_MONEY_IN = 'Money in.';
+/** A row whose note carries ` · Venmo: <note>` (3). */
+export const TX_STORY_VENMO_NOTE = 'Note from a Venmo email.';
 export const TX_STORY_NOT_FILED = "Not filed yet — it's on your needs-a-category list.";
 export const TX_STORY_ASK_TELEGRAM = 'Ask /why in Telegram to see who filed it.';
 export const TX_STORY_SET_IN_WEALTHFOLIO = 'Category set in Wealthfolio.';
@@ -80,9 +83,10 @@ export const TX_OVERRIDE_WORDS: Record<TxOverrideFlag | 'skipped', string> = {
   keepDuplicate: 'keep this duplicate',
   noAutoFile: "don't file it automatically",
   noAmazonLabel: 'no Amazon label',
+  noVenmoNote: 'no Venmo note',
   skipped: "don't import it",
 };
-const OVERRIDE_ORDER: ReadonlyArray<TxOverrideFlag | 'skipped'> = ['notTransfer', 'keepDuplicate', 'noAutoFile', 'noAmazonLabel', 'skipped'];
+const OVERRIDE_ORDER: ReadonlyArray<TxOverrideFlag | 'skipped'> = ['notTransfer', 'keepDuplicate', 'noAutoFile', 'noAmazonLabel', 'noVenmoNote', 'skipped'];
 
 // ── Facts ────────────────────────────────────────────────────────────────
 
@@ -415,6 +419,8 @@ export function buildTxStory(facts: TxStoryFacts): TxStory {
       ? `From your ${row.accountName} bank feed.${note.endsWith(PENDING_SUFFIX) ? ' Still pending.' : ''}`
       : TX_STORY_NOT_FROM_FEED);
   }
+  // The note the sync added from a Venmo email (3), right under where it came from.
+  if (!special && note.includes(VENMO_NOTE_MARK)) answer.push(TX_STORY_VENMO_NOTE);
 
   // 2. What it is.
   if (held) {

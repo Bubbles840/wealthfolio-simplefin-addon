@@ -19,6 +19,7 @@ import type { ChangeLogItem } from './change-log.js';
 import type { ActivityWrite, ImportRow } from './sync-host.js';
 import type { AccountOverrideFlag, TxOverrideFlag } from './sync-overrides.js';
 import type { MappingRule } from './types.js';
+import { stripVenmoNote } from './venmo-ledger.js';
 import { companionUnderstandsOverrides } from './version.js';
 
 export type UndoOp = 'undo' | 'redo';
@@ -27,7 +28,7 @@ export type UndoVariant = 'plain' | 'unfile';
 
 /** Kinds whose undo the SYNC carries out (an override): gated on the companion's version. */
 export const SYNC_DECISION_KINDS: ReadonlySet<string> = new Set([
-  'transfer-link', 'transfer-type', 'duplicate-removed', 'balance-correction', 'import', 'amazon-label',
+  'transfer-link', 'transfer-type', 'duplicate-removed', 'balance-correction', 'import', 'amazon-label', 'venmo-note',
 ]);
 /** Kinds only the companion can reverse: the add-on SDK has no category or rule API. */
 export const COMPANION_ONLY_KINDS: ReadonlySet<string> = new Set([
@@ -562,6 +563,31 @@ export function planChangeUndo(
         steps: [
           { do: 'set-tx', txKey: key, flag: 'noAmazonLabel', label: labelOf(entry) },
           { do: 'update', write: { id: row.id, accountId: row.accountId, activityType: row.type, activityDate: row.date, amount: row.absCents / 100, currency, comment: beforeNote } },
+        ],
+      });
+    }
+
+    // A Venmo note (3): the override first, then the old note back — as an
+    // Amazon label is undone. The sync then never adds it again.
+    case 'venmo-note': {
+      if (!key) return refuse(UNDO_NO_KEY);
+      if (op === 'redo') {
+        return plan({
+          op, needsSync: true, rowAfter: rowNow, done: 'Redone — the next sync adds the note again.',
+          steps: [{ do: 'clear-tx', txKey: key, flag: 'noVenmoNote' }],
+        });
+      }
+      const row = state.row;
+      const beforeNote = str(before.comment);
+      if (!row) return refuse(undoGone(op));
+      const linked = linkedRefusal(row);
+      if (linked) return refuse(linked);
+      if (!beforeNote || row.comment !== str(after.comment)) return refuse(undoChangedSince(op));
+      return plan({
+        op, needsSync: false, rowAfter: row.id, done: 'Undone — the note is off, and stays off.',
+        steps: [
+          { do: 'set-tx', txKey: key, flag: 'noVenmoNote', label: labelOf(entry) },
+          { do: 'update', write: { id: row.id, accountId: row.accountId, activityType: row.type, activityDate: row.date, amount: row.absCents / 100, currency, comment: stripVenmoNote(row.comment) ?? beforeNote } },
         ],
       });
     }
