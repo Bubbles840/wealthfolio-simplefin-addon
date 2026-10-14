@@ -10,16 +10,14 @@
  * Netflix charges with different reference numbers share it. A guess needs at
  * least `GUESS_MIN_FILINGS` filings under that key in the last
  * `GUESS_LOOKBACK_DAYS`, and at least `GUESS_MIN_SHARE_PERCENT` of them in one
- * category. A Venmo row with a note (` · Venmo: <note>`) is tried by its note
- * first — the same note usually means the same category — then by the bank's
- * own words. Amazon rows get no guess: the Amazon pipeline files them.
+ * category. A Venmo row (` · Venmo: <note>`) is keyed by its note only. Amazon rows get no guess: the Amazon pipeline files them.
  *
  * A guess never files anything (L4): Telegram offers it as one tap, the app
  * shows it as a hint.
  */
 import { isAmazonDescription } from './amazon-ledger.js';
 import { categoryRulePattern } from './rule-pattern.js';
-import { VENMO_NOTE_MARK } from './venmo-ledger.js';
+import { isVenmoDescription, VENMO_NOTE_MARK } from './venmo-ledger.js';
 
 export const GUESS_LOOKBACK_DAYS = 365;
 export const GUESS_MIN_FILINGS = 2;
@@ -49,21 +47,37 @@ export type GuessIndex = ReadonlyMap<string, Tally>;
 
 const norm = (s: string) => s.trim().replace(/\s+/g, ' ').toLowerCase();
 
-/** The keys a description is filed and guessed under, most specific first:
- *  a Venmo note's own words, then the bank text's rule pattern. */
-export function guessKeys(description: string): string[] {
-  const at = description.indexOf(VENMO_NOTE_MARK);
-  const bank = at === -1 ? description : description.slice(0, at);
-  const note = at === -1 ? '' : norm(description.slice(at + VENMO_NOTE_MARK.length));
-  const pattern = norm(categoryRulePattern(bank.trim()));
-  return [...(note ? [`venmo:${note}`] : []), ...(pattern ? [`pattern:${pattern}`] : [])];
+/** Words that describe HOW money moved, not who it moved to: a pattern made of
+ *  only these (and numbers) is shared by unrelated merchants, so it is no key. */
+export const GENERIC_BANK_WORDS: readonly string[] = [
+  'pos', 'purchase', 'debit', 'credit', 'card', 'ach', 'web', 'withdrawal', 'deposit', 'payment',
+  'transfer', 'online', 'recurring', 'check', 'atm', 'pending', 'pmt', 'pymt', 'bill', 'pay', 'the',
+];
+const GENERIC = new Set(GENERIC_BANK_WORDS);
+
+const isGenericPattern = (pattern: string): boolean =>
+  pattern.split(' ').filter((t) => t && !/^\d+$/.test(t)).every((t) => GENERIC.has(t));
+
+/** The keys a description is filed and guessed under. A Venmo row is keyed by
+ *  its note ONLY (every Venmo payment shares the bank's words, so those say
+ *  nothing); with no note it has no key. Any other row is keyed by the rule
+ *  pattern `/categorize` would build, unless that is only generic banking words. */
+export function guessKeys(description: string | null | undefined): string[] {
+  const text = description ?? '';
+  if (isVenmoDescription(text)) {
+    const at = text.indexOf(VENMO_NOTE_MARK);
+    const note = at === -1 ? '' : norm(text.slice(at + VENMO_NOTE_MARK.length));
+    return note ? [`venmo:${note}`] : [];
+  }
+  const pattern = norm(categoryRulePattern(text.trim()));
+  return pattern && !isGenericPattern(pattern) ? [`pattern:${pattern}`] : [];
 }
 
 /** Count the filings once, by key and category. */
 export function buildGuessIndex(filings: readonly PastFiling[]): GuessIndex {
   const index = new Map<string, Tally>();
   for (const f of filings) {
-    if (!f.categoryId) continue;
+    if (!f.categoryId || !f.categoryName) continue;
     for (const key of guessKeys(f.description)) {
       const tally = index.get(key) ?? { total: 0, byCategory: new Map() };
       tally.total += 1;
@@ -78,8 +92,8 @@ export function buildGuessIndex(filings: readonly PastFiling[]): GuessIndex {
 
 /** The guess for a row's description, or null: too few filings, no category
  *  with 80% of them, a category with no name, or an Amazon row. */
-export function guessCategory(index: GuessIndex, description: string): CategoryGuess | null {
-  if (isAmazonDescription(description)) return null;
+export function guessCategory(index: GuessIndex, description: string | null | undefined): CategoryGuess | null {
+  if (isAmazonDescription(description ?? '')) return null;
   for (const key of guessKeys(description)) {
     const tally = index.get(key);
     if (!tally || tally.total < GUESS_MIN_FILINGS) continue;

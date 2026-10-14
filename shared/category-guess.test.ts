@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  buildGuessIndex, guessCategory, guessKeys, guessSinceDay, GUESS_LOOKBACK_DAYS, GUESS_MIN_FILINGS, GUESS_MIN_SHARE_PERCENT,
+  buildGuessIndex, guessCategory, guessKeys, guessSinceDay, GUESS_LOOKBACK_DAYS, GUESS_MIN_FILINGS, GUESS_MIN_SHARE_PERCENT, GENERIC_BANK_WORDS,
   type PastFiling,
 } from './category-guess';
 
@@ -50,22 +50,63 @@ describe('guessCategory — Venmo notes', () => {
     expect(guess(past, 'VENMO PAYMENT 2001 · Venmo: Rent October')).toEqual({ categoryId: 'cat-rent', name: 'Rent', count: 2 });
   });
 
-  it('falls back to the bank’s own words when the note decides nothing', () => {
-    const past = [
-      filed('VENMO CASHOUT · Venmo: Transfer to your bank', 'cat-tr', 'Transfers'),
-      filed('VENMO CASHOUT', 'cat-tr', 'Transfers'),
-    ];
-    expect(guess(past, 'VENMO CASHOUT · Venmo: Something new')).toEqual({ categoryId: 'cat-tr', name: 'Transfers', count: 2 });
+  it('keys a Venmo row by its note only — never by the bank words every payment shares', () => {
+    const dinners = Array.from({ length: 9 }, (_, i) => filed(`VENMO PAYMENT ${i} · Venmo: Dinner`, 'cat-eat', 'Eating'));
+    const split = [filed('VENMO PAYMENT 90 · Venmo: Rent', 'cat-rent', 'Rent'), filed('VENMO PAYMENT 91 · Venmo: Rent', 'cat-ut', 'Utilities')];
+    expect(guess([...dinners, ...split], 'VENMO PAYMENT 2001 · Venmo: Rent')).toBeNull();
+    expect(guess(dinners, 'VENMO PAYMENT 2001')).toBeNull();
+    expect(guess(dinners, 'VENMO CASHOUT · Venmo: Something new')).toBeNull();
   });
 
-  it('files a note and its bank words under both keys', () => {
-    expect(guessKeys('VENMO PAYMENT 1023 · Venmo: Rent  October')).toEqual(['venmo:rent october', 'pattern:venmo payment']);
+  it('still guesses a noted row with 2+ filings at 80% under that note', () => {
+    const past = [filed('VENMO PAYMENT 1 · Venmo: Rent', 'cat-rent', 'Rent'), filed('VENMO PAYMENT 2 · Venmo: Rent', 'cat-rent', 'Rent')];
+    expect(guess(past, 'VENMO PAYMENT 3 · Venmo: Rent')).toEqual({ categoryId: 'cat-rent', name: 'Rent', count: 2 });
+  });
+
+  it('gives no guess from a note split 50/50', () => {
+    const past = [filed('VENMO PAYMENT 1 · Venmo: Gift', 'cat-a', 'A'), filed('VENMO PAYMENT 2 · Venmo: Gift', 'cat-b', 'B')];
+    expect(guess(past, 'VENMO PAYMENT 3 · Venmo: Gift')).toBeNull();
+  });
+
+  it('keys a Venmo note, and a bank row by its pattern', () => {
+    expect(guessKeys('VENMO PAYMENT 1023 · Venmo: Rent  October')).toEqual(['venmo:rent october']);
     expect(guessKeys('KROGER #415 12/03')).toEqual(['pattern:kroger']);
+  });
+});
+
+describe('guessCategory — generic descriptors and bad input', () => {
+  it('gives generic banking words no key and no guess', () => {
+    for (const d of ['POS PURCHASE 1234', 'ACH WEB 5521', 'WITHDRAWAL']) {
+      expect(guessKeys(d)).toEqual([]);
+      expect(guess([filed(d), filed(d)], d)).toBeNull();
+    }
+    expect(GENERIC_BANK_WORDS).toContain('pos');
+  });
+
+  it('still guesses a merchant behind a generic prefix', () => {
+    expect(guess([filed('PAYPAL *SPOTIFY'), filed('PAYPAL *SPOTIFY')], 'PAYPAL *SPOTIFY')).not.toBeNull();
+    expect(guess([filed('SQ *JOES PIZZA'), filed('SQ *JOES PIZZA')], 'SQ *JOES PIZZA')).not.toBeNull();
+  });
+
+  it('does not throw on a null or undefined description', () => {
+    expect(guessKeys(null)).toEqual([]);
+    expect(guess([filed('KROGER'), filed('KROGER')], undefined)).toBeNull();
+    expect(guess([filed('KROGER'), filed('KROGER')], null)).toBeNull();
+  });
+
+  it('leaves a blank-named category out of the total', () => {
+    const past = [filed('KROGER'), filed('KROGER'), filed('KROGER', 'cat-x', '')];
+    expect(guess(past, 'KROGER')).toEqual({ categoryId: 'cat-gro', name: 'Groceries', count: 2 });
   });
 });
 
 describe('guessSinceDay', () => {
   it('is a year back, as a UTC day', () => {
     expect(guessSinceDay(new Date('2026-10-14T12:00:00Z'))).toBe('2025-10-14');
+  });
+
+  it('crosses a leap year and a month boundary', () => {
+    expect(guessSinceDay(new Date('2028-03-01T00:00:00Z'))).toBe('2027-03-02');
+    expect(guessSinceDay(new Date('2026-03-31T23:59:00Z'))).toBe('2025-03-31');
   });
 });
