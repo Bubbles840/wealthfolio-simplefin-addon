@@ -215,6 +215,7 @@ export async function companionTxStory(readers: StoryReaders, activityId: string
     skipped,
     ...(history ? { history } : {}),
     failed,
+    now,
   };
   return { kind: 'ok', story: buildTxStory(facts), facts };
 }
