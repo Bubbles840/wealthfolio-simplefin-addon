@@ -55,6 +55,16 @@ describe('TxStoryView', () => {
     expect(screen.getByText("Couldn't read the change log just now.")).toBeInTheDocument();
   });
 
+  it('a transfer story carries no emoji either', () => {
+    const transfer = buildTxStory({
+      row: { activityId: 'act-1', note: 'TRANSFER TO ALLY · tx-1', absCents: 60000, date: '2026-10-04', activityType: 'TRANSFER_OUT', accountName: 'Checking' },
+      feed: { sfinAccountId: 'sfin-1' }, partner: { accountName: 'Ally Savings', date: '2026-10-04' }, category: null, history: [], now: NOW,
+    });
+    const { container } = render(<TxStoryView story={transfer} entries={[]} actions={actions()} onChanged={() => {}} />);
+    expect(screen.getByText('Half of a transfer: $600.00 into Ally Savings, Oct 4.')).toBeInTheDocument();
+    expect(EMOJI.test(container.textContent ?? '')).toBe(false);
+  });
+
   it('a change log read in part never says "No changes", and says why the list may be short', () => {
     const partial = buildTxStory({
       row: { activityId: 'act-1', note: 'SQ *BLUE_BOTTLE <b> · tx-1', absCents: 650, date: '2026-10-12', activityType: 'WITHDRAWAL', accountName: 'Checking' },

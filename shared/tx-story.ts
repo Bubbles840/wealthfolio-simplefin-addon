@@ -30,6 +30,7 @@ import {
   STARTING_BALANCE_COMMENT_PREFIX, isTransferType, txIdFromComment,
 } from './sync-core.js';
 import type { TxOverrideFlag } from './sync-overrides.js';
+import { accountTxKey } from './transfers.js';
 import { txDescription } from './tx-search.js';
 
 // ── Copy ─────────────────────────────────────────────────────────────────
@@ -55,7 +56,9 @@ export type TxFactName =
   | 'skipList';
 
 export const TX_FACT_NOTES: Record<TxFactName, string> = {
-  mapping: "Couldn't read your account mapping just now, so where it came from is left out.",
+  /** Without the mapping the row's keys are unknown, so its overrides, its
+   *  skip-list entry and its key-linked history go unchecked as well. */
+  mapping: "Couldn't read your account mapping just now, so where it came from, your overrides and its history may be incomplete.",
   partner: "Couldn't read the other half of this transfer just now.",
   category: "Couldn't read its category just now.",
   rules: "Couldn't read your category rules just now, so the rule isn't named.",
@@ -160,6 +163,11 @@ export interface TxStory {
 // ── Helpers both hosts use ───────────────────────────────────────────────
 
 const OUTFLOW = new Set(['WITHDRAWAL', 'TRANSFER_OUT', 'FEE', 'TAX']);
+/** Wealthfolio's cash activity types (the SDK's `ActivityType`): money in or
+ *  out. A trade (BUY, SELL, SPLIT) or an ADJUSTMENT is neither. */
+const CASH_TYPES = new Set(['DEPOSIT', 'WITHDRAWAL', 'CREDIT', 'INTEREST', 'DIVIDEND', 'FEE', 'TAX', 'TRANSFER_IN', 'TRANSFER_OUT']);
+
+export const isCashType = (activityType: string): boolean => CASH_TYPES.has(activityType.toUpperCase());
 
 /** Money out: the spending types, and interest charged on a card. */
 export function isOutflow(activityType: string, accountType?: string): boolean {
@@ -171,6 +179,25 @@ export function isOutflow(activityType: string, accountType?: string): boolean {
 export function signedCents(row: Pick<TxStoryRow, 'absCents' | 'activityType' | 'accountType'>): number {
   const abs = Math.abs(Math.round(row.absCents));
   return isOutflow(row.activityType, row.accountType) ? -abs : abs;
+}
+
+/** Every SimpleFin account the add-on syncs into this Wealthfolio account, in
+ *  the mapping's order: two feeds can share one (a card reissued under a new
+ *  feed id, both still mapped). A row's history, overrides and skip-list entry
+ *  can sit under any of them. */
+export function sfinIdsFor(mapping: Record<string, string>, wfAccountId: string): string[] {
+  return Object.entries(mapping).filter(([, wf]) => wf === wfAccountId).map(([sfin]) => sfin);
+}
+
+/** The feed a row came from: the one whose key for this transaction the log
+ *  knows, else the first mapped. Null when none is mapped. */
+export function feedOf(sfinIds: readonly string[], txId: string | null, history: readonly ChangeEntry[] | null | undefined): string | null {
+  if (sfinIds.length === 0) return null;
+  const known = new Set((history ?? []).flatMap((e) => [
+    ...(e.subject.txKeys ?? []),
+    ...(e.kind === 'bank-update' && isRecord(e.before) && typeof e.before.txKey === 'string' ? [e.before.txKey] : []),
+  ]));
+  return (txId ? sfinIds.find((id) => known.has(accountTxKey(id, txId))) : undefined) ?? sfinIds[0];
 }
 
 const AMAZON_MARK = ' · Amazon: ';
@@ -273,8 +300,8 @@ export interface FilerInput {
   row: RuleRow;
   /** Entries about this transaction; null when the log could not be read, or
    *  only in part (`isChangeLogPartial`) — a missing filing must not read as
-   *  "by hand". */
-  history: readonly ChangeEntry[] | null;
+   *  "by hand". An entry that was undone is not a filing. */
+  history: readonly ChangeLogItem[] | null;
   /** The categorization rules, listed as Wealthfolio lists them; null when
    *  they could not be read. Only read for a rule's filing. */
   rules: readonly CategoryRuleLike[] | null;
@@ -298,7 +325,7 @@ export function resolveFiler(f: FilerInput): TxFiler | null {
   }
   // A non-"Amazon: " auto filing reads as by hand: the Amazon filer is the only auto filer today.
   const filing = [...(f.history ?? [])]
-    .filter((e) => (e.kind === 'category-filed' || e.kind === 'opening-balance-filed') && afterCategoryId(e) === f.categoryId)
+    .filter((e) => !e.undone && (e.kind === 'category-filed' || e.kind === 'opening-balance-filed') && afterCategoryId(e) === f.categoryId)
     .sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0))[0];
   if (filing?.kind === 'opening-balance-filed') return { kind: 'opening' };
   if (filing?.actor === 'you') return { kind: 'you', at: filing.at };
@@ -314,10 +341,10 @@ export function resolveFiler(f: FilerInput): TxFiler | null {
 
 /** A filer from the report cube says "you" without a day: the day comes from
  *  the newest filing by you in the log, when there is one. */
-export function withFilingDay(filer: TxFiler, history: readonly ChangeEntry[] | null | undefined): TxFiler {
+export function withFilingDay(filer: TxFiler, history: readonly ChangeLogItem[] | null | undefined): TxFiler {
   if (filer.kind !== 'you' || filer.at) return filer;
   const mine = [...(history ?? [])]
-    .filter((e) => e.kind === 'category-filed' && e.actor === 'you' && afterCategoryId(e) !== null)
+    .filter((e) => !e.undone && e.kind === 'category-filed' && e.actor === 'you' && afterCategoryId(e) !== null)
     .sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0))[0];
   return mine ? { kind: 'you', at: mine.at } : filer;
 }
@@ -379,6 +406,7 @@ export function buildTxStory(facts: TxStoryFacts): TxStory {
   const correction = note.startsWith(BALANCE_ADJUSTMENT_COMMENT_PREFIX);
   const special = held || starting || correction;
   const linked = !!facts.partner;
+  const cash = isCashType(row.activityType);
   const answer: string[] = [];
 
   // 1. Where it came from.
@@ -401,15 +429,17 @@ export function buildTxStory(facts: TxStoryFacts): TxStory {
     // A failed partner read drops this whole line: a card outflow is a WITHDRAWAL and can still be linked.
     if (facts.partner) {
       const when = facts.partner.date ? `, ${changeDay(facts.partner.date)}` : '';
-      answer.push(`Half of a transfer: ↔ ${changeMoney(Math.abs(row.absCents))} ${out ? 'into' : 'from'} ${facts.partner.accountName}${when}.`);
-    } else if (facts.partner === null || !isTransferType(row.activityType.toUpperCase())) {
+      answer.push(`Half of a transfer: ${changeMoney(Math.abs(row.absCents))} ${out ? 'into' : 'from'} ${facts.partner.accountName}${when}.`);
+    } else if (cash && (facts.partner === null || !isTransferType(row.activityType.toUpperCase()))) {
+      // Only cash activity is spending or money in; a trade gets no line.
       answer.push(out ? TX_STORY_SPENDING : TX_STORY_MONEY_IN);
     }
   }
 
   // 3. Its category, and who filed it.
   if (!failed.has('category')) {
-    const routine = !special && !linked && !isTransferType(row.activityType.toUpperCase());
+    // The needs-a-category list holds cash activity only.
+    const routine = cash && !special && !linked && !isTransferType(row.activityType.toUpperCase());
     if (facts.category) answer.push(filedLine(facts.category.name, facts.category.filer));
     else if (facts.needsCategory || (facts.category === null && routine)) answer.push(TX_STORY_NOT_FILED);
     else if (facts.category === undefined && facts.filerHint && routine) {

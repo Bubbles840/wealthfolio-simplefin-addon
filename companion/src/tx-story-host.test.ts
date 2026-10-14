@@ -76,7 +76,7 @@ describe('companionTxStory', () => {
     });
     const out = await companionTxStory(r, 'act-1', NOW);
     expect(r.partner).toHaveBeenCalledWith('wf-transfer-9', 'act-1');
-    expect(out.kind === 'ok' && out.story.answer[1]).toBe('Half of a transfer: ↔ $600.00 into Ally Savings, Oct 6.');
+    expect(out.kind === 'ok' && out.story.answer[1]).toBe('Half of a transfer: $600.00 into Ally Savings, Oct 6.');
   });
 
   it('a person’s filing says "by you, in Telegram" with the day, and rules are not read', async () => {
@@ -205,6 +205,26 @@ describe('companionTxStory', () => {
       expect(out.kind === 'ok' && out.story.notes).toEqual([TX_FACT_NOTES.skipList]);
       expect(out.kind === 'ok' && base.kind === 'ok' && out.story.answer).toEqual(base.story.answer);
     }
+  });
+
+  it('two feeds mapped to one account: the history, the overrides and the skip list are read under either', async () => {
+    // The pending import, before the row was re-created: tied to this row by its key alone.
+    const byKey = stampChange(importChange({
+      account: { sfinId: 'ACT-chk', wfId: 'wf-chk', name: 'PNC Checking' }, txKey: KEY, activityId: 'act-earlier',
+      description: 'KROGER #415', amountCents: -5420, date: '2026-10-04', pending: true, activityType: 'WITHDRAWAL',
+    }), 'companion', new Date('2026-10-04T12:00:00Z'));
+    const r = readers({ changeLog: vi.fn(async () => logOf(byKey)) }, {
+      // The retired feed is listed first.
+      account_mapping: JSON.stringify({ 'ACT-old': 'wf-chk', 'ACT-chk': 'wf-chk' }),
+      [SKIPPED_TRANSACTIONS_SECRET_KEY]: JSON.stringify([{ account: 'ACT-chk', txId: 'TRN-1' }]),
+    });
+    const out = await companionTxStory(r, 'act-1', NOW);
+    expect(out.kind).toBe('ok');
+    if (out.kind !== 'ok') return;
+    expect(out.facts.feed).toEqual({ sfinAccountId: 'ACT-chk' });
+    expect(out.story.answer[0]).toBe('From your PNC Checking bank feed.');
+    expect(out.story.answer.at(-1)).toBe("You told the sync: don't file it automatically, don't import it.");
+    expect(out.story.history!.map((h) => h.entryId)).toEqual([byKey.id]);
   });
 
   it('a row on the skip list says so', async () => {

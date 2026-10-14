@@ -34,7 +34,7 @@ import {
   TX_SEARCH_RECENT_DAYS, type TxQuery, type TxSearchResult, type TxSearchRow,
 } from '../../shared/tx-search';
 import {
-  buildTxStory, decodeFiler, signedCents, withFilingDay, type TxFactName, type TxStory, type TxStoryFacts,
+  buildTxStory, decodeFiler, feedOf, sfinIdsFor, signedCents, withFilingDay, type TxFactName, type TxStory, type TxStoryFacts,
 } from '../../shared/tx-story';
 import type { SecretsStore } from './secrets';
 
@@ -112,8 +112,10 @@ export async function appTxStory(ctx: AddonContext, store: StoryStore, target: A
   } catch {
     failed.push('mapping');
   }
-  const sfinId = mapping ? Object.entries(mapping).find(([, wfId]) => wfId === row.accountId)?.[0] ?? null : undefined;
-  const txKey = sfinId && txId ? accountTxKey(sfinId, txId) : null;
+  // Every SimpleFin account this row's account syncs from (two feeds can
+  // share one); the row's keys are its tx id under each.
+  const sfinIds = mapping ? sfinIdsFor(mapping, row.accountId) : undefined;
+  const txKeys = txId ? (sfinIds ?? []).map((id) => accountTxKey(id, txId)) : [];
 
   let entries: ChangeLogItem[] = [];
   let history: ChangeLogItem[] | undefined;
@@ -123,7 +125,7 @@ export async function appTxStory(ctx: AddonContext, store: StoryStore, target: A
       // An unreadable bucket or a gap: keep what was read, and say the list may be short.
       if (isChangeLogPartial(read)) failed.push('changeLogPartial');
       entries = read.entries;
-      history = changesForTransaction(entries, { txKeys: txKey ? [txKey] : [], activityIds: [row.id] });
+      history = changesForTransaction(entries, { txKeys, activityIds: [row.id] });
     } else failed.push('changeLog');
   }
 
@@ -132,14 +134,14 @@ export async function appTxStory(ctx: AddonContext, store: StoryStore, target: A
     const loaded = await store.readSyncOverrides().catch(() => null);
     if (!loaded) failed.push('overrides');
     else if (loaded.unreadable) failed.push('overridesUnreadable');
-    else if (txKey) overrides = TX_OVERRIDE_FLAGS.filter((flag) => hasTxOverride(loaded.overrides, txKey, flag));
+    else overrides = TX_OVERRIDE_FLAGS.filter((flag) => txKeys.some((key) => hasTxOverride(loaded.overrides, key, flag)));
   }
 
   let skipped = false;
   try {
     const parsed = await store.readSkippedTransactions?.();
     if (parsed?.kind === 'corrupt') failed.push('skipList');
-    else if (parsed?.kind === 'ok') skipped = !!sfinId && !!txId && parsed.list.some((s) => s.account === sfinId && s.txId === txId);
+    else if (parsed?.kind === 'ok') skipped = !!txId && parsed.list.some((s) => !!sfinIds?.includes(s.account) && s.txId === txId);
   } catch {
     failed.push('skipList');
   }
@@ -149,18 +151,18 @@ export async function appTxStory(ctx: AddonContext, store: StoryStore, target: A
   let partner: TxStoryFacts['partner'] = null;
   const link = [...(history ?? [])].reverse().find((e) => e.kind === 'transfer-link' && !e.reverses && !e.undone);
   const legs = link && isRecord(link.after) && Array.isArray(link.after.legs) ? link.after.legs.filter(isRecord) : [];
-  const other = legs.find((l) => (txKey ? l.txKey !== txKey : l.activityId !== row.id));
+  const other = legs.find((l) => (txKeys.length ? !txKeys.includes(l.txKey as string) : l.activityId !== row.id));
   if (other && typeof other.accountName === 'string') {
     partner = { accountName: other.accountName };
-  } else if (txKey) {
+  } else if (txKeys.length) {
     let groups: Record<string, string> | null = null;
     try {
       groups = (await store.getLinkedGroups?.()) ?? null;
     } catch {
       failed.push('partner');
     }
-    const gid = groups?.[txKey];
-    const otherKey = gid ? Object.keys(groups!).find((k) => k !== txKey && groups![k] === gid) : undefined;
+    const gid = txKeys.map((k) => groups?.[k]).find(Boolean);
+    const otherKey = gid ? Object.keys(groups!).find((k) => !txKeys.includes(k) && groups![k] === gid) : undefined;
     const otherWf = otherKey && mapping ? mapping[otherKey.split('\u0000')[0]] : undefined;
     const name = otherWf ? accounts.find((a) => a.id === otherWf)?.name : undefined;
     if (name) partner = { accountName: name };
@@ -222,7 +224,7 @@ export async function appTxStory(ctx: AddonContext, store: StoryStore, target: A
       accountName: row.accountName ?? '',
       ...(accountType ? { accountType: String(accountType) } : {}),
     },
-    ...(sfinId === undefined ? {} : { feed: sfinId ? { sfinAccountId: sfinId } : null }),
+    ...(sfinIds === undefined ? {} : { feed: sfinIds.length ? { sfinAccountId: feedOf(sfinIds, txId, history)! } : null }),
     partner,
     ...(category ? { category } : {}),
     needsCategory,

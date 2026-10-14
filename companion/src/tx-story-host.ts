@@ -23,7 +23,7 @@ import { hasTxOverride, loadSyncOverrides, TX_OVERRIDE_FLAGS, type TxOverrideFla
 import { accountTxKey } from '../../shared/transfers.js';
 import { findTransactions, txDescription, TX_SEARCH_RECENT_DAYS, type TxQuery, type TxSearchResult, type TxSearchRow } from '../../shared/tx-search.js';
 import {
-  buildTxStory, resolveFiler, signedCents, type CategoryRuleLike, type TxFactName, type TxStory,
+  buildTxStory, feedOf, resolveFiler, sfinIdsFor, signedCents, type CategoryRuleLike, type TxFactName, type TxStory,
   type TxStoryFacts, type TxStoryRow,
 } from '../../shared/tx-story.js';
 import { readCompanionChangeLog, type SecretClient } from './change-log-host.js';
@@ -132,16 +132,16 @@ export async function companionTxStory(readers: StoryReaders, requestedId: strin
   const note = item.comment ?? '';
   const txId = txIdFromComment(note);
 
-  // The mapping: which SimpleFin account this row's account syncs from.
-  let sfinId: string | null | undefined;
+  // The mapping: every SimpleFin account this row's account syncs from (two
+  // feeds can share one); the row's keys are its tx id under each.
+  let sfinIds: string[] | undefined;
   try {
     const raw = await readers.secret('account_mapping');
-    const mapping = raw ? JSON.parse(raw) as Record<string, string> : {};
-    sfinId = Object.entries(mapping).find(([, wfId]) => wfId === item!.accountId)?.[0] ?? null;
+    sfinIds = sfinIdsFor(raw ? JSON.parse(raw) as Record<string, string> : {}, item.accountId);
   } catch {
     failed.push('mapping');
   }
-  const txKey = sfinId && txId ? accountTxKey(sfinId, txId) : null;
+  const txKeys = txId ? (sfinIds ?? []).map((id) => accountTxKey(id, txId)) : [];
 
   let details: { accountType: string; assignments: NativeTxAssignment[] } | null = null;
   try {
@@ -169,7 +169,7 @@ export async function companionTxStory(readers: StoryReaders, requestedId: strin
     const read = await (logRead ? logRead.catch(() => readers.changeLog(now)) : readers.changeLog(now));
     partial = isChangeLogPartial(read);
     if (partial) failed.push('changeLogPartial');
-    history = changesForTransaction(read.entries, { txKeys: txKey ? [txKey] : [], activityIds: [activityId] });
+    history = changesForTransaction(read.entries, { txKeys, activityIds: [activityId] });
   } catch {
     failed.push('changeLog');
   }
@@ -178,7 +178,7 @@ export async function companionTxStory(readers: StoryReaders, requestedId: strin
   try {
     const loaded = await loadSyncOverrides(readers.secret);
     if (loaded.unreadable) failed.push('overridesUnreadable');
-    else if (txKey) overrides = TX_OVERRIDE_FLAGS.filter((flag) => hasTxOverride(loaded.overrides, txKey, flag));
+    else overrides = TX_OVERRIDE_FLAGS.filter((flag) => txKeys.some((key) => hasTxOverride(loaded.overrides, key, flag)));
   } catch {
     failed.push('overrides');
   }
@@ -187,7 +187,7 @@ export async function companionTxStory(readers: StoryReaders, requestedId: strin
   try {
     const parsed = parseSkippedTransactionsStrict(await readers.secret(SKIPPED_TRANSACTIONS_SECRET_KEY));
     if (parsed.kind === 'corrupt') failed.push('skipList');
-    else if (parsed.kind === 'ok') skipped = !!sfinId && !!txId && parsed.list.some((s) => s.account === sfinId && s.txId === txId);
+    else if (parsed.kind === 'ok') skipped = !!txId && parsed.list.some((s) => !!sfinIds?.includes(s.account) && s.txId === txId);
   } catch {
     failed.push('skipList');
   }
@@ -230,7 +230,7 @@ export async function companionTxStory(readers: StoryReaders, requestedId: strin
 
   const facts: TxStoryFacts = {
     row,
-    ...(sfinId === undefined ? {} : { feed: sfinId ? { sfinAccountId: sfinId } : null }),
+    ...(sfinIds === undefined ? {} : { feed: sfinIds.length ? { sfinAccountId: feedOf(sfinIds, txId, history)! } : null }),
     partner,
     category,
     overrides,

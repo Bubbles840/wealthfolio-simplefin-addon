@@ -77,12 +77,12 @@ describe('buildTxStory — one fixture per row kind', () => {
       row: row({ note: 'TRANSFER TO ALLY · TRN-9', absCents: 60000, activityType: 'TRANSFER_OUT' }),
       partner: { accountName: 'Ally Savings', date: '2026-10-04' }, category: null, history: [lnk],
     });
-    expect(s.answer).toEqual(['From your PNC Checking bank feed.', 'Half of a transfer: ↔ $600.00 into Ally Savings, Oct 4.']);
+    expect(s.answer).toEqual(['From your PNC Checking bank feed.', 'Half of a transfer: $600.00 into Ally Savings, Oct 4.']);
     const incoming = story({
       row: row({ note: 'TRANSFER FROM PNC · TRN-8', absCents: 60000, activityType: 'TRANSFER_IN', accountName: 'Ally Savings' }),
       partner: { accountName: 'PNC Checking' }, category: null,
     });
-    expect(incoming.answer[1]).toBe('Half of a transfer: ↔ $600.00 from PNC Checking.');
+    expect(incoming.answer[1]).toBe('Half of a transfer: $600.00 from PNC Checking.');
   });
 
   it('a held transfer says how long it waits and what it becomes', () => {
@@ -131,6 +131,15 @@ describe('buildTxStory — one fixture per row kind', () => {
 
   it('a transaction older than 90 days has no history to show', () => {
     expect(story({ row: row({ date: '2026-03-01' }), history: [] }).history).toEqual([]);
+  });
+
+  it('says spending or money in only for cash activity; a trade gets no "what it is" line', () => {
+    for (const activityType of ['BUY', 'SELL', 'SPLIT', 'ADJUSTMENT']) {
+      const s = story({ row: row({ note: 'AAPL · TRN-1', activityType }), category: null });
+      expect(s.answer).toEqual(['From your PNC Checking bank feed.']);
+    }
+    for (const activityType of ['DEPOSIT', 'CREDIT', 'INTEREST', 'DIVIDEND']) expect(story({ row: row({ activityType }) }).answer[1]).toBe(TX_STORY_MONEY_IN);
+    for (const activityType of ['WITHDRAWAL', 'FEE', 'TAX']) expect(story({ row: row({ activityType }) }).answer[1]).toBe(TX_STORY_SPENDING);
   });
 
   it('money in on a card, and interest a card charged', () => {
@@ -193,6 +202,10 @@ describe('buildTxStory — missing and failed facts', () => {
     expect(s.title).toBe('KROGER #415 · -$54.20 · Oct 4');
     expect(s.answer).toEqual(expected);
     expect(s.notes).toEqual([TX_FACT_NOTES[fact]]);
+    // Without the mapping, the row's keys are unknown: the overrides and the history go unchecked too.
+    if (fact === 'mapping') {
+      expect(s.notes).toEqual(["Couldn't read your account mapping just now, so where it came from, your overrides and its history may be incomplete."]);
+    }
     if (fact === 'changeLog') expect(s.history).toBeNull();
     else expect(s.history).toEqual([]);
   });
@@ -286,6 +299,16 @@ describe('resolveFiler', () => {
       .toEqual({ kind: 'you', at: at(6).toISOString() });
     expect(resolveFiler({ source: 'manual', categoryId: 'cat-gro', row: rowFor(), history: [filedBy('auto', 2, 'cat-gro', 'Amazon: Grocery')], rules: null }))
       .toEqual({ kind: 'amazon', label: 'Grocery' });
+  });
+
+  it('skips a filing that was undone', () => {
+    const mine = filedBy('you', 6);
+    const undone = { ...mine, undone: { by: 'u1', at: at(7).toISOString() } };
+    expect(resolveFiler({ source: 'manual', categoryId: 'cat-gro', row: rowFor(), history: [filedBy('auto', 2, 'cat-gro', 'Amazon: Grocery'), undone], rules: null }))
+      .toEqual({ kind: 'amazon', label: 'Grocery' });
+    expect(resolveFiler({ source: 'manual', categoryId: 'cat-gro', row: rowFor(), history: [undone], rules: null })).toEqual({ kind: 'hand' });
+    // A cube "you" takes its day from a filing that stands, never an undone one.
+    expect(withFilingDay({ kind: 'you' }, [filedBy('you', 4), undone])).toEqual({ kind: 'you', at: at(4).toISOString() });
   });
 
   it('falls back to the note’s Amazon label, then to "by hand", and to nothing when the log was unreadable', () => {
