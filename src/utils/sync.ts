@@ -1,4 +1,5 @@
 import { AddonSyncHost } from './addon-host';
+import { beginSync } from './write-lock';
 import { applyBaselineFix, importAdjustmentActivity, rowIdByComment, runSyncCore } from '../../shared/sync-core';
 import { balanceCorrectionChange, startingBalanceMovedChange, type ChangeAccount } from '../../shared/change-entries';
 import type { SyncOptions, SyncResult } from '../../shared/sync-core';
@@ -52,17 +53,24 @@ export function runSync(
 ): Promise<SyncResult> {
   if (syncInFlight) return syncInFlight;
   syncInFlight = (async () => {
-    // The change log rides along when the store can keep one (an older store
-    // or a test double cannot, and then nothing is recorded).
-    const changeLog = opts.changeLog ?? store.changeLogSink?.();
-    const result = await runSyncCore(new AddonSyncHost(ctx), store, { ...opts, ...(changeLog ? { changeLog } : {}) });
-    // Deliver INSIDE the single-flight lock and inside the returned promise, so
-    // one run announces its own alerts exactly once and a caller that awaits the
-    // sync has also awaited the sends. `deliverAddonAlerts` never rejects, so it
-    // cannot turn a successful sync into a failed one; a core that throws skips
-    // delivery entirely, which is correct — it produced no alerts to deliver.
-    await deliverAddonAlerts(ctx, store, result);
-    return result;
+    // One add-on write lock with Link (src/utils/write-lock.ts): a sync that
+    // starts while Link is writing waits for it.
+    const release = await beginSync();
+    try {
+      // The change log rides along when the store can keep one (an older store
+      // or a test double cannot, and then nothing is recorded).
+      const changeLog = opts.changeLog ?? store.changeLogSink?.();
+      const result = await runSyncCore(new AddonSyncHost(ctx), store, { ...opts, ...(changeLog ? { changeLog } : {}) });
+      // Deliver INSIDE the single-flight lock and inside the returned promise, so
+      // one run announces its own alerts exactly once and a caller that awaits the
+      // sync has also awaited the sends. `deliverAddonAlerts` never rejects, so it
+      // cannot turn a successful sync into a failed one; a core that throws skips
+      // delivery entirely, which is correct — it produced no alerts to deliver.
+      await deliverAddonAlerts(ctx, store, result);
+      return result;
+    } finally {
+      release();
+    }
   })().finally(() => {
     syncInFlight = null;
   });

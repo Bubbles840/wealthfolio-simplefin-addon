@@ -32,6 +32,7 @@ const GROUP_OF: Record<string, ChangeGroup> = {
   'transfer-link': 'transfers',
   'transfer-type': 'transfers',
   'duplicate-removed': 'corrections',
+  'transaction-removed': 'corrections',
   'starting-balance': 'corrections',
   'starting-balance-moved': 'corrections',
   'balance-correction': 'corrections',

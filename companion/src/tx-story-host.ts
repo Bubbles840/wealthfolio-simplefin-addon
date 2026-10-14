@@ -20,6 +20,7 @@ import { changesForTransaction, currentActivityId, isChangeLogPartial } from '..
 import { parseSkippedTransactionsStrict, SKIPPED_TRANSACTIONS_SECRET_KEY } from '../../shared/skipped-transactions.js';
 import { txIdFromComment } from '../../shared/sync-core.js';
 import { hasTxOverride, loadSyncOverrides, TX_OVERRIDE_FLAGS, type TxOverrideFlag } from '../../shared/sync-overrides.js';
+import { isoDay } from '../../shared/fix-row.js';
 import { accountTxKey } from '../../shared/transfers.js';
 import { findTransactions, txDescription, TX_SEARCH_RECENT_DAYS, type TxQuery, type TxSearchResult, type TxSearchRow } from '../../shared/tx-search.js';
 import {
@@ -196,7 +197,8 @@ export async function companionTxStory(readers: StoryReaders, requestedId: strin
     activityId,
     note,
     absCents: absCentsOf(item.amount),
-    date: String(item.date ?? '').slice(0, 10),
+    // The stored instant's UTC day, as the remover's read (shared/fix-row.ts) and the add-on's story have it.
+    date: isoDay(item.date ?? ''),
     activityType: String(item.activityType ?? '').toUpperCase(),
     accountName: item.accountName ?? '',
     ...(details?.accountType ? { accountType: details.accountType } : {}),

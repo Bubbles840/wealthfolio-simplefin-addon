@@ -133,7 +133,6 @@ describe('parseAuditSnapshot', () => {
       'null', '[]', '5', '"text"',
       JSON.stringify({ ...good, at: undefined }),
       JSON.stringify({ ...good, balanceNotes: undefined }),
-      JSON.stringify({ ...good, health: { issues: [{ kind: 'x', key: 'k' }], notes: [] } }),
       JSON.stringify({ ...good, health: { issues: [{ kind: 'incomplete-leg', key: 'k' }], notes: [] } }),
       JSON.stringify({ ...good, health: { issues: [{ kind: 'incomplete-leg', key: 'k', leg: { activityId: 'a', accountId: 'b', absCents: 'x' } }], notes: [] } }),
       JSON.stringify({ ...good, health: { issues: [{ kind: 'incomplete-leg', key: 'k', leg: { activityId: 'a', accountId: 'b', absCents: 1 }, counterpart: {} }], notes: [] } }),
@@ -166,7 +165,6 @@ describe('parseAuditSnapshot', () => {
       reasonRows([{ description: 'A', cents: 1, account: 'B' }]),
       reasonRows([{ date: 20261001, description: 'A', cents: 1, account: 'B' }]),
       reasonRows([{ date: 'soon', description: 'A', cents: 1, account: 'B' }]),
-      reasonRows([], 'future'),
       issue({ ...legIssue, leg: { ...goodLeg, date: undefined } }),
       issue({ ...legIssue, counterpart: { ...goodLeg, date: 5 } }),
       issue({ ...lateStart, date: null }),
@@ -183,6 +181,45 @@ describe('parseAuditSnapshot', () => {
     // The bank's date may be null, and an account need not carry includes.
     expect(parseAuditSnapshot(balance({ bank: { kind: 'ok', cents: 1, date: null }, includes: null })).kind).toBe('ok');
     expect(parseAuditSnapshot(balance({ bank: { kind: 'none' } })).kind).toBe('ok');
+  });
+});
+
+describe('a snapshot from a newer companion', () => {
+  const good = buildAuditSnapshot(small(), NOW)!;
+  const lateStart = { kind: 'late-start', key: 'k', activityId: 'a', accountId: 'b', accountName: 'C', date: '2026-10-02', earliest: '2026-10-01', cents: 1 };
+
+  it('drops a reason kind it cannot name, counts its cents as not explained, and still reads ok', () => {
+    const newer = { kind: 'split-lines', cents: 7, rows: [{ date: '2026-10-02', description: 'A', cents: 7, account: 'B' }], more: 3 };
+    const read = parseAuditSnapshot(JSON.stringify({
+      ...good, headline: { ...good.headline, unexplainedCents: 5, reasons: [...good.headline.reasons!, newer] },
+    }));
+    expect(read.kind).toBe('ok');
+    if (read.kind !== 'ok') return;
+    expect(read.snapshot.headline.reasons!.map((r) => r.kind)).toEqual(['first-midnight']);
+    expect(read.snapshot.headline.unexplainedCents).toBe(12);
+  });
+
+  it('drops a Health issue kind it cannot name, counts it under "and N more", and still reads ok', () => {
+    const read = parseAuditSnapshot(JSON.stringify({
+      ...good, health: { issues: [lateStart, { kind: 'oversold', key: 'o', anything: true }], notes: [], more: 2 },
+    }));
+    expect(read.kind).toBe('ok');
+    if (read.kind !== 'ok') return;
+    expect(read.snapshot.health.issues!.map((i) => i.kind)).toEqual(['late-start']);
+    expect(read.snapshot.health.more).toBe(3);
+  });
+
+  it('still refuses a kind it knows that is malformed, and a `more` that is not a number', () => {
+    for (const raw of [
+      JSON.stringify({ ...good, headline: { ...good.headline, reasons: [{ kind: 'excluded', cents: 'x', rows: [] }] } }),
+      JSON.stringify({ ...good, headline: { ...good.headline, reasons: [{ cents: 1, rows: [] }] } }),
+      JSON.stringify({ ...good, headline: { ...good.headline, reasons: [{ kind: 'excluded', cents: 1, rows: [], more: null }] } }),
+      JSON.stringify({ ...good, health: { issues: [{ ...lateStart, cents: 'x' }], notes: [] } }),
+      JSON.stringify({ ...good, health: { issues: [{ kind: 5, key: 'k' }], notes: [] } }),
+      JSON.stringify({ ...good, health: { issues: [], notes: [], more: '1' } }),
+    ]) {
+      expect(parseAuditSnapshot(raw)).toEqual({ kind: 'corrupt' });
+    }
   });
 });
 
