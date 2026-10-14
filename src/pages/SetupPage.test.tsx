@@ -103,8 +103,11 @@ describe('SetupPage', () => {
       expect(screen.getByText('Sample data — not your money')).toBeTruthy();
       expect(document.querySelector('[data-bva="Groceries"]')).toBeTruthy();
       expect(screen.getByText('Step 1 of 2')).toBeTruthy();
-      fireEvent.click(screen.getByRole('button', { name: 'Close preview' }));
+      const close = screen.getByRole('button', { name: 'Close preview' });
+      close.focus();
+      fireEvent.click(close);
       expect(screen.queryByText('Sample data — not your money')).toBeNull();
+      expect(document.activeElement).toBe(screen.getByRole('button', { name: 'See what it looks like' }));
       for (const write of [
         props.store.setAccessUrl, props.store.setAuthB64, props.store.setAccountNames,
         props.store.setAccountMapping, props.store.setMappingRules, props.store.setSyncScheduleHours,
