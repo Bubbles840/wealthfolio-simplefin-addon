@@ -238,7 +238,7 @@ const classify = (a) => {
   if (isTransfer(a.t) && a.g) {
     if ((legCount.get(a.g) ?? 0) >= 2) return 'neutral';
     // Since Wealthfolio 3.10 a card TRANSFER_OUT linked out of the spending set
-    // (to an investing account) is Saving too (upstream ec509088c).
+    // (linked, with its other leg outside the spending accounts) is Saving too (upstream ec509088c).
     return (a.at === 'CASH' || a.at === 'CREDIT_CARD') && a.t === 'TRANSFER_OUT' ? 'saving' : 'neutral';
   }
   if (a.at === 'CASH') {
