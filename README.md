@@ -219,7 +219,7 @@ mappings and credentials are configured directly in Wealthfolio via the addon UI
 so the companion container runs as a lightweight background daemon. Add it to the
 `docker-compose.yml` that runs Wealthfolio (alongside it: merge the snippet's
 `services:` and `secrets:` into that file's, don't duplicate them), put Wealthfolio's password in
-`wealthfolio_password.txt` beside that file, and run `docker compose up -d`. The
+`wealthfolio_password.txt` beside that file (readable by the container: `chmod 644`), and run `docker compose up -d`. The
 addon's **Settings → Background sync (Docker)** card shows the same service with
 your timezone filled in, and a Copy button:
 
@@ -302,7 +302,7 @@ mailbox and run the read-only diagnostic — it marks nothing read and records
 nothing, so the real poll still picks the message up:
 
 ```bash
-docker exec simplefin-sync node dist/companion/src/amazon-check.js \
+docker compose exec simplefin-sync node dist/companion/src/amazon-check.js \
   --host imap.gmail.com --user you@gmail.com --password 'xxxx xxxx xxxx xxxx'
 ```
 

@@ -29,6 +29,12 @@ describe('DockerSnippet', () => {
     );
   });
 
+  it('says to put the password in wealthfolio_password.txt, readable by the container', () => {
+    render(<DockerSnippet timezone="Europe/Berlin" />);
+    const note = document.querySelector('.sfin-docker-note')!.textContent!.replace(/\s+/g, ' ');
+    expect(note).toContain("Put Wealthfolio's password in wealthfolio_password.txt beside the compose file, readable by the container (chmod 644).");
+  });
+
   it("fills in this browser's own timezone by default", () => {
     const real = Intl.DateTimeFormat.prototype.resolvedOptions;
     vi.spyOn(Intl.DateTimeFormat.prototype, 'resolvedOptions').mockImplementation(function (this: Intl.DateTimeFormat) {
