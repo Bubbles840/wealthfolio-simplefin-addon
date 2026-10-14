@@ -1,7 +1,28 @@
+import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
 import { SetupPage } from './SetupPage';
 import { fetchAccounts } from '../utils/simplefin';
+
+// Step 1's sample-data preview renders the Budget board: recharts and the host
+// chart kit are stubbed to passthrough elements, as in BudgetTab.test.tsx.
+vi.mock('recharts', () => {
+  const stub = (name: string) => (p: any) => React.createElement('div', { 'data-recharts': name }, p?.children ?? null);
+  return {
+    Area: stub('Area'), AreaChart: stub('AreaChart'), Bar: stub('Bar'), BarChart: stub('BarChart'),
+    CartesianGrid: stub('CartesianGrid'), Cell: stub('Cell'), Line: stub('Line'),
+    LineChart: stub('LineChart'), Pie: stub('Pie'), PieChart: stub('PieChart'),
+    XAxis: stub('XAxis'), YAxis: stub('YAxis'),
+  };
+});
+vi.mock('@wealthfolio/ui/chart', () => ({
+  ChartContainer: (p: any) => React.createElement('div', null, p.children),
+  ChartTooltip: () => null,
+  ChartTooltipContent: () => null,
+  ChartLegend: () => null,
+  ChartLegendContent: () => null,
+  ChartStyle: () => null,
+}));
 
 vi.mock('../utils/simplefin', () => ({
   claimToken: vi.fn(async () => 'https://user:pass@bridge.simplefin.org/simplefin'),
@@ -70,5 +91,28 @@ describe('SetupPage', () => {
     expect(props.store.setAccountMapping).toHaveBeenCalledWith({ 'sfin-1': 'wf-a' });
     expect(props.store.setSyncScheduleHours).toHaveBeenCalledWith(6);
     expect(screen.queryByText(/step 3/i)).toBeNull();
+  });
+
+  it('shows the sample-data preview from step 1, writes nothing, and closes it', () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(2026, 9, 14, 12, 0));
+    try {
+      const props = makeProps();
+      render(<SetupPage {...props} />);
+      fireEvent.click(screen.getByRole('button', { name: 'See what it looks like' }));
+      expect(screen.getByText('Sample data — not your money')).toBeTruthy();
+      expect(document.querySelector('[data-bva="Groceries"]')).toBeTruthy();
+      expect(screen.getByText('Step 1 of 2')).toBeTruthy();
+      fireEvent.click(screen.getByRole('button', { name: 'Close preview' }));
+      expect(screen.queryByText('Sample data — not your money')).toBeNull();
+      for (const write of [
+        props.store.setAccessUrl, props.store.setAuthB64, props.store.setAccountNames,
+        props.store.setAccountMapping, props.store.setMappingRules, props.store.setSyncScheduleHours,
+      ]) {
+        expect(write).not.toHaveBeenCalled();
+      }
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
