@@ -97,14 +97,14 @@ describe('appTxStory', () => {
     ), 'companion', new Date('2026-10-04T13:00:00Z'));
     const ctx = ctxWith(byId([detail({ activityType: 'TRANSFER_OUT', amount: '600', comment: 'TRANSFER TO ALLY · TRN-1' })]));
     const out = await appTxStory(ctx, store({ getChangeLog: vi.fn(async () => logOf(link)) }), { activityId: 'act-1' }, NOW);
-    expect(out.kind === 'ok' && out.story.answer.slice(0, 2)).toEqual(['From your PNC Checking bank feed.', 'Half of a transfer: ↔ $600.00 into Ally Savings.']);
+    expect(out.kind === 'ok' && out.story.answer.slice(0, 2)).toEqual(['From your PNC Checking bank feed.', 'Half of a transfer: $600.00 into Ally Savings.']);
   });
 
   it('or from the add-on’s own linked groups', async () => {
     const ctx = ctxWith(byId([detail({ activityType: 'TRANSFER_OUT', amount: '600', comment: 'TRANSFER TO ALLY · TRN-1' })]));
     const groups = { [KEY]: 'wf-transfer-1', [accountTxKey('ACT-ally', 'TRN-2')]: 'wf-transfer-1' };
     const out = await appTxStory(ctx, store({ getChangeLog: vi.fn(async () => logOf()), getLinkedGroups: vi.fn(async () => groups) }), { activityId: 'act-1' }, NOW);
-    expect(out.kind === 'ok' && out.story.answer[1]).toBe('Half of a transfer: ↔ $600.00 into Ally Savings.');
+    expect(out.kind === 'ok' && out.story.answer[1]).toBe('Half of a transfer: $600.00 into Ally Savings.');
   });
 
   it('a story by an old id follows a transfer link to the row that stands for it now; an undone link is not followed', async () => {
@@ -115,7 +115,7 @@ describe('appTxStory', () => {
     const ctx = ctxWith(byId([detail({ activityType: 'TRANSFER_OUT', amount: '600', comment: 'TRANSFER TO ALLY · TRN-1' })]));
     const out = ground(await appTxStory(ctx, store({ getChangeLog: vi.fn(async () => logOf(link)) }), { activityId: 'act-old' }, NOW));
     expect(ctx.api.activities.search).toHaveBeenLastCalledWith(0, 1, { activityIds: ['act-1'] }, '');
-    expect(out.answer[1]).toBe('Half of a transfer: ↔ $600.00 into Ally Savings.');
+    expect(out.answer[1]).toBe('Half of a transfer: $600.00 into Ally Savings.');
     const undone = { ...link, undone: { by: 'u1', at: '2026-10-05T12:00:00Z' } };
     expect(await appTxStory(ctx, store({ getChangeLog: vi.fn(async () => logOf(undone)) }), { activityId: 'act-old' }, NOW)).toEqual({ kind: 'gone' });
   });
@@ -153,6 +153,29 @@ describe('appTxStory', () => {
     expect(out.history).toEqual([]);
     expect(out.historyPartial).toBe(true);
     expect(out.notes).toEqual([TX_FACT_NOTES.changeLogPartial]);
+  });
+
+  it('two feeds mapped to one account: the history, the overrides, the skip list and the partner are read under either', async () => {
+    const byKey = stampChange(importChange({
+      account: { sfinId: 'ACT-chk', wfId: 'wf-chk', name: 'PNC Checking' }, txKey: KEY, activityId: 'act-earlier',
+      description: 'KROGER #415', amountCents: -5420, date: '2026-10-04', pending: true, activityType: 'WITHDRAWAL',
+    }), 'companion', new Date('2026-10-04T12:00:00Z'));
+    const twoFeeds = {
+      // The retired feed is listed first.
+      getAccountMapping: vi.fn(async () => ({ 'ACT-old': 'wf-chk', 'ACT-chk': 'wf-chk', 'ACT-ally': 'wf-ally' })),
+      getChangeLog: vi.fn(async () => logOf(byKey)),
+      readSyncOverrides: vi.fn(async () => ({ overrides: { ...emptySyncOverrides(), tx: { [KEY]: { noAutoFile: true as const, at: '2026-10-06T00:00:00Z' } } }, unreadable: false })),
+      readSkippedTransactions: vi.fn(async () => ({ kind: 'ok' as const, list: [{ account: 'ACT-chk', txId: 'TRN-1' }] })),
+    };
+    const out = ground(await appTxStory(ctxWith(byId([detail()])), store(twoFeeds), { activityId: 'act-1' }, NOW));
+    expect(out.answer[0]).toBe('From your PNC Checking bank feed.');
+    expect(out.answer.at(-1)).toBe("You told the sync: don't file it automatically, don't import it.");
+    expect(out.history!.map((h) => h.entryId)).toEqual([byKey.id]);
+    // The add-on's own linked groups, keyed under the second feed.
+    const groups = { [KEY]: 'wf-transfer-1', [accountTxKey('ACT-ally', 'TRN-2')]: 'wf-transfer-1' };
+    const xferOut = ground(await appTxStory(ctxWith(byId([detail({ activityType: 'TRANSFER_OUT', amount: '600', comment: 'TRANSFER TO ALLY · TRN-1' })])),
+      store({ ...twoFeeds, getChangeLog: vi.fn(async () => logOf()), getLinkedGroups: vi.fn(async () => groups) }), { activityId: 'act-1' }, NOW));
+    expect(xferOut.answer[1]).toBe('Half of a transfer: $600.00 into Ally Savings.');
   });
 
   it('a skipped transaction says so, and an absent skip list is none', async () => {
