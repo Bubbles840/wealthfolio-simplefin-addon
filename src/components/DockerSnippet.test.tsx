@@ -48,11 +48,35 @@ describe('DockerSnippet', () => {
     const writeText = vi.fn(async (_text: string) => {});
     Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
     render(<DockerSnippet timezone="Europe/Berlin" />);
-    fireEvent.click(screen.getByRole('button', { name: 'Copy' }));
-    await waitFor(() => expect(screen.getByText(/Copied\./)).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Copy snippet' }));
+    expect(screen.getByRole('status').textContent).toBe('');
+    await waitFor(() => expect(screen.getByRole('status').textContent).toContain('Copied.'));
     expect(writeText).toHaveBeenCalledWith(composeSnippet({ timezone: 'Europe/Berlin' }));
     writeText.mockRejectedValueOnce(new Error('denied'));
-    fireEvent.click(screen.getByRole('button', { name: 'Copy' }));
-    await waitFor(() => expect(screen.getByText(/Couldn.t copy here/)).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Copy snippet' }));
+    await waitFor(() => expect(screen.getByRole('status').textContent).toMatch(/Couldn.t copy here/));
+  });
+
+  it('makes the snippet reachable: labelled and focusable', () => {
+    render(<DockerSnippet timezone="Europe/Berlin" />);
+    const pre = screen.getByLabelText('Docker Compose snippet');
+    expect(pre.tagName).toBe('PRE');
+    expect(pre.getAttribute('tabindex')).toBe('0');
+  });
+
+  it('browserTimezone is null when Intl throws, or has no zone', () => {
+    const spy = vi.spyOn(Intl, 'DateTimeFormat').mockImplementation(() => {
+      throw new Error('no intl');
+    });
+    expect(browserTimezone()).toBeNull();
+    spy.mockRestore();
+    vi.spyOn(Intl.DateTimeFormat.prototype, 'resolvedOptions').mockReturnValue({} as Intl.ResolvedDateTimeFormatOptions);
+    expect(browserTimezone()).toBeNull();
+  });
+
+  it("says it couldn't copy when there is no clipboard", async () => {
+    render(<DockerSnippet timezone="Europe/Berlin" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Copy snippet' }));
+    await waitFor(() => expect(screen.getByRole('status').textContent).toMatch(/Couldn.t copy here/));
   });
 });

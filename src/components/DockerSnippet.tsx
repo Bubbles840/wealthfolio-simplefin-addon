@@ -38,13 +38,15 @@ export function DockerSnippet({ timezone = browserTimezone() }: { timezone?: str
         Add this to the same docker-compose.yml as Wealthfolio — merge its{' '}
         <code>services</code>: and <code>secrets</code>: into the ones already there.
       </div>
-      <pre className="sfin-pre sfin-docker-pre">{snippet}</pre>
+      <pre className="sfin-pre sfin-docker-pre" aria-label="Docker Compose snippet" tabIndex={0}>{snippet}</pre>
       <div className="sfin-docker-copy">
-        <Button variant="outline" onClick={copy}>Copy</Button>
-        {copied === 'ok' && <span className="sfin-subtle"> Copied.</span>}
-        {copied === 'failed' && (
-          <span className="sfin-subtle"> Couldn&apos;t copy here — select the text above and copy it.</span>
-        )}
+        <Button variant="outline" onClick={copy}>Copy snippet</Button>
+        {/* Always in the DOM: screen readers announce changes only inside a live
+            region that already exists. */}
+        <span role="status" className="sfin-subtle">
+          {copied === 'ok' && ' Copied.'}
+          {copied === 'failed' && " Couldn't copy here — select the text above and copy it."}
+        </span>
       </div>
       <div className="sfin-subtle sfin-docker-note">
         The database mount is what lets the companion count spending that still
