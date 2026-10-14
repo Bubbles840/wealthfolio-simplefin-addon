@@ -115,6 +115,7 @@ import {
   CASH_FORECAST_SECRET_KEY, FORECAST_UNREACHABLE_REPLY, forecastWarningLine, formatForecastReply, parseCashForecast,
   weeklyForecastLine, type CashForecastRead,
 } from '../../shared/cash-forecast.js';
+import { buildMonthReview, formatMonthReview } from '../../shared/month-review.js';
 import { auditMenuDeps, auditStatusKeyboard, createAuditMenu, type AuditMenu } from './audit-menu.js';
 import { addManual, editSubscriptionPrefs, emptySubscriptionPrefs, isUnreadablePrefsError, loadSubscriptionPrefs, newManualId, renameKey, setRemind, SubscriptionPrefsInvalidError, type ManualSubscription, type RemindDays, type SecretGet, type SecretSet, type SubscriptionEdit } from '../../shared/subscription-prefs.js';
 import { renderReportSvg, reportImageTitle, reportImageCaption, RENDERABLE_REPORT_IDS } from '../../shared/report-render.js';
@@ -2481,6 +2482,8 @@ export async function composeMonthlyWrapUpMessage(
   yearMonth: string,
   monthName: string,
   tg: any,
+  /** When the report is composed: the roster's "today" for the review. */
+  now: Date = new Date(),
 ): Promise<string | null> {
   const dbPath = wealthfolioDbPath();
   if (!dbPath || !existsSync(dbPath)) {
@@ -2497,7 +2500,18 @@ export async function composeMonthlyWrapUpMessage(
     spent: spentMap[name] ?? 0,
     budget: budgetMap[name] ?? 0,
   }));
-  return formatMonthlyWrapUp(categories, monthName, await readGlyphStyle(wfClient));
+  const wrapUp = formatMonthlyWrapUp(categories, monthName, await readGlyphStyle(wfClient));
+  // Project 5 (N4): Full detail adds the month in review; Brief is the
+  // wrap-up exactly as it always was. Each read can cost only its own lines,
+  // and the archived edition stores this same text.
+  if (resolveReportDetail(tg) !== 'full') return wrapUp;
+  const review = formatMonthReview(buildMonthReview({
+    month: yearMonth,
+    cube: parseReportCube(await wfClient.getAddonSecret('simplefin-sync', REPORT_CUBE_SECRET_KEY).catch(() => null)),
+    roster: (await readRosterFor(wfClient, now).catch(() => null))?.roster ?? null,
+    changes: await readCompanionChangeLog(wfClient, now).catch(() => null),
+  }));
+  return review ? `${wrapUp}\n\n${review}` : wrapUp;
 }
 
 export async function sendMonthlyTelegramReport(
