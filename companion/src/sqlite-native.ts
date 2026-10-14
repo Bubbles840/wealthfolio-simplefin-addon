@@ -1457,14 +1457,22 @@ export function getNativeUncategorizedByMonthAccount(
  * ` · tx-id` suffix and markers) happens in the cube builder with
  * `descriptionFromComment`, where it is tested; SQL string-mangling of that
  * format is how silent mismatches happen.
+ *
+ * `strict` (the cash forecast, project 5): a database that cannot be read
+ * throws NativeDbUnreadableError instead of answering "no rows" — the
+ * forecast must tell "could not look" from "no bill charged".
  */
 export function getNativeMerchantRows(
   dbPath: string,
   startInclusive: string,
   endExclusive: string,
+  strict = false,
 ): Array<{ month: string; date: string; notes: string; amount: number }> {
-  if (!dbPath || !existsSync(dbPath)) return [];
-  if (!validDateBounds(startInclusive, endExclusive)) return [];
+  if (!strict && (!dbPath || !existsSync(dbPath))) return [];
+  if (!validDateBounds(startInclusive, endExclusive)) {
+    if (strict) throw new NativeDbUnreadableError(`merchant rows: bounds ${startInclusive}..${endExclusive}`);
+    return [];
+  }
   // `date` sits BEFORE notes: notes are free text and only the pipe-split
   // parser's fixed leading columns are safe from a stray delimiter in them.
   const query = `
@@ -1490,7 +1498,8 @@ export function getNativeMerchantRows(
       ${NOT_AWAITING_TRANSFER_HALF}
       AND (${SPENDING_SIGN}) > 0;
   `;
-  const rows = queryNativeDb<Record<string, unknown>>(
+  const read: typeof queryNativeDb = strict ? queryNativeDbStrict : queryNativeDb;
+  const rows = read<Record<string, unknown>>(
     dbPath,
     'merchant rows',
     query,

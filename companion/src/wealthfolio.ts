@@ -98,12 +98,15 @@ export class WealthfolioClient {
     return res.json() as Promise<unknown[]>;
   }
 
-  async getAccounts(): Promise<Array<{ id: string; accountType?: string; isArchived?: boolean }>> {
+  /** Every account. `name` and `isActive` (false = hidden) feed the cash
+   *  forecast (project 5); every field is optional because the server's DTO
+   *  is not ours to pin. */
+  async getAccounts(): Promise<Array<{ id: string; name?: string; accountType?: string; isArchived?: boolean; isActive?: boolean }>> {
     const res = await fetch(`${this.baseUrl}/api/v1/accounts`, {
       headers: this.authHeaders(),
     });
     if (!res.ok) throw await this.httpError('getAccounts', res);
-    return res.json() as Promise<Array<{ id: string; accountType?: string; isArchived?: boolean }>>;
+    return res.json() as Promise<Array<{ id: string; name?: string; accountType?: string; isArchived?: boolean; isActive?: boolean }>>;
   }
 
   /**

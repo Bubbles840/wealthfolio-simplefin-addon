@@ -5204,6 +5204,46 @@ describe('audit_snapshot publish', () => {
   });
 });
 
+describe('cash_forecast publish', () => {
+  /** The full client shape, pinned for the same reason as report_cube's test. */
+  const pinClient = async (setAddonSecret: (addon: string, key: string, value: string) => Promise<void>) => {
+    process.env.WEALTHFOLIO_API_URL = 'http://wf';
+    process.env.WEALTHFOLIO_PASSWORD = 'pw';
+    const { WealthfolioClient } = await import('./wealthfolio.js');
+    vi.mocked(WealthfolioClient as any).mockClear();
+    vi.mocked(WealthfolioClient as any).mockImplementation(function (this: any) {
+      this.login = vi.fn(async () => {});
+      this.getAddonSecret = vi.fn(async (_a: string, key: string) => (
+        key === 'simplefin_access_url' ? 'https://user:pass@bridge.simplefin.org/simplefin' : null
+      ));
+      this.setAddonSecret = vi.fn(setAddonSecret);
+      this.getAccounts = vi.fn(async () => []);
+    });
+    return () => (vi.mocked(WealthfolioClient as any).mock.instances.at(-1)) as any;
+  };
+
+  it('publishes the forecast after a sync — with nothing mapped, why there is none', async () => {
+    const instance = await pinClient(async () => {});
+    await runCompanionSync();
+    const call = instance().setAddonSecret.mock.calls.find((c: any[]) => c[1] === 'cash_forecast');
+    expect(call).toBeTruthy();
+    expect(JSON.parse(call[2])).toMatchObject({ v: 1, ok: false, reason: 'No cash account is mapped, so there is nothing to forecast.' });
+  });
+
+  it('logs a publish that fails and returns the sync’s result unchanged', async () => {
+    await pinClient(async (_a, key) => { if (key === 'cash_forecast') throw new Error('disk full'); });
+    const logs = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const result = await runCompanionSync();
+      expect(result.imported).toBe(2);
+      expect(result.errors).toEqual([]);
+      expect(logs.mock.calls.flat().join('\n')).toContain('Cash forecast publish failed');
+    } finally {
+      logs.mockRestore();
+    }
+  });
+});
+
 describe('daily digest: version skew + update line', () => {
   const clientWith = (entries: Array<[string, string]> = []) => {
     const secrets = new Map<string, string>([
