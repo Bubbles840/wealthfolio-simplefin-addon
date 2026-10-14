@@ -142,7 +142,7 @@ describe('the sample-data preview', () => {
     const base = sampleReportCube(NOW);
     const cube = {
       ...base,
-      drill: { ...base.drill, Groceries: base.drill.Groceries.map((r, i) => ({ ...r, i: `act-${i}` })) },
+      drill: { ...base.drill, Groceries: base.drill!.Groceries.map((r, i) => ({ ...r, i: `act-${i}` })) },
     };
     const spies = {
       onLayoutChange: vi.fn(),
