@@ -113,6 +113,18 @@ describe('parseAuditSnapshot', () => {
     expect(parseAuditSnapshot(JSON.stringify(snap))).toEqual({ kind: 'ok', snapshot: snap });
   });
 
+  it('keeps a foreign-currency reason, and an older reader drops a kind it does not know into "unexplained" (1.62)', () => {
+    const good = buildAuditSnapshot(small(), NOW)!;
+    const reasons = [
+      { kind: 'foreign-currency', cents: -900, rows: [{ date: '2026-10-05', description: 'BOULANGERIE', cents: 2000, account: 'Checking' }] },
+      { kind: 'a-kind-from-the-future', cents: 5, rows: [] },
+    ];
+    const read = parseAuditSnapshot(JSON.stringify({ ...good, headline: { ...good.headline, baseCurrency: 'USD', reasons } }));
+    expect(read.kind === 'ok' && read.snapshot.headline.reasons).toEqual([reasons[0]]);
+    expect(read.kind === 'ok' && read.snapshot.headline.baseCurrency).toBe('USD');
+    expect(HEADLINE_REASON_KINDS).toContain('foreign-currency');
+  });
+
   it('is absent when nothing was published', () => {
     expect(parseAuditSnapshot(null)).toEqual({ kind: 'absent' });
     expect(parseAuditSnapshot(undefined)).toEqual({ kind: 'absent' });

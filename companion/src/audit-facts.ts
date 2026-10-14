@@ -43,7 +43,7 @@ export interface AuditReaders {
   headlineRows(startInclusive: string, endExclusive: string): HeadlineDbRow[];
   /** Throws when the database cannot be read. */
   settings(): {
-    timezone: string | null; excludedCategoryIds: string[]; categoryParents: Record<string, string | null>; spendingOn: boolean;
+    timezone: string | null; baseCurrency?: string | null; excludedCategoryIds: string[]; categoryParents: Record<string, string | null>; spendingOn: boolean;
     spendingAccountIds: string[];
   };
   /** Wealthfolio's Spending page `headline.spent`, in dollars. */
@@ -152,6 +152,7 @@ export async function gatherHeadlineFacts(r: AuditReaders, now: Date, sharedMapp
   // The report covers the mapped accounts only (the cube drops any other).
   const mapping = sharedMapping ?? await readMapping(r);
   if (mapping.ok) facts.reportAccountIds = Object.values(mapping.value ?? {}).filter((id) => !!id);
+  else failed.push('mapping');
   try {
     // The report's "Spent this month": the cube's newest month, which must be this one.
     const cube = parseReportCube(await r.secret(REPORT_CUBE_SECRET_KEY));
@@ -165,6 +166,7 @@ export async function gatherHeadlineFacts(r: AuditReaders, now: Date, sharedMapp
   try {
     const settings = r.settings();
     timezone = settings.timezone;
+    facts.baseCurrency = settings.baseCurrency ?? null;
     facts.excludedCategoryIds = settings.excludedCategoryIds;
     facts.categoryParents = settings.categoryParents;
     facts.spendingAccountIds = settings.spendingAccountIds;

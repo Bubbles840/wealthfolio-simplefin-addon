@@ -142,12 +142,63 @@ describe('explainHeadline', () => {
   });
 
   it('still reads the five kinds a 1.61 companion published, and finds only not-covered itself', () => {
-    expect(HEADLINE_REASON_KINDS).toEqual(['not-covered', 'first-midnight', 'bookkeeping', 'excluded', 'double-filed', 'uncategorized-refund']);
+    expect(HEADLINE_REASON_KINDS).toEqual(['not-covered', 'foreign-currency', 'first-midnight', 'bookkeeping', 'excluded', 'double-filed', 'uncategorized-refund']);
     const h = explainHeadline(jar());
     // Shown against the gap's direction, as every reason is: Wealthfolio counts more here.
     expect(headlineReasonLine(h, { kind: 'first-midnight', cents: 2500, rows: [] })).toBe(
       "-$25.00 — Dated the 1st at midnight UTC: Wealthfolio's month starts later west of UTC, so it counts these last month (0 rows)",
     );
+  });
+
+  describe('amounts in another currency (1.62, ruling LU-B)', () => {
+    const eur = (): HeadlineFacts => october({
+      baseCurrency: 'usd', reportCents: 12000, wealthfolioCents: 12900,
+      rows: [
+        row({ absCents: 10000, currency: 'USD', notes: 'KROGER · TRN-1' }),
+        row({ absCents: 2000, currency: 'EUR', notes: 'BOULANGERIE · TRN-2' }),
+        row({ absCents: 500, currency: '', notes: 'NO CURRENCY · TRN-3' }),
+      ],
+    });
+
+    it('names the rows whose currency is not the base currency, and sizes them by the difference the conversion leaves', () => {
+      const h = explainHeadline(eur());
+      expect(h.reasons).toEqual([{
+        kind: 'foreign-currency', cents: -900,
+        rows: [{ date: '2026-10-05', description: 'BOULANGERIE', cents: 2000, account: 'PNC Checking' }],
+      }]);
+      expect(h.unexplainedCents).toBe(0);
+      expect(h.baseCurrency).toBe('USD');
+    });
+
+    it('is labelled and explained in the base currency', () => {
+      const h = explainHeadline(eur());
+      expect(headlineReasonLine(h, h.reasons![0])).toBe(
+        "$9.00 — Amounts in another currency: Wealthfolio converts them to USD; the report doesn't (1 row)",
+      );
+    });
+
+    it('finds nothing when every row is in the base currency, or the base currency is unread', () => {
+      expect(explainHeadline({ ...eur(), rows: [row({ currency: 'usd' })] }).reasons).toEqual([]);
+      expect(explainHeadline({ ...eur(), baseCurrency: undefined }).reasons).toEqual([]);
+      expect(explainHeadline({ ...eur(), baseCurrency: null }).reasons).toEqual([]);
+    });
+
+    it('leaves a foreign row on an unsynced account to not-covered, and counts a month’s own rows only', () => {
+      const h = explainHeadline(october({
+        baseCurrency: 'USD', spendingAccountIds: ['wf-chk', 'wf-jar'], reportAccountIds: ['wf-chk'], reportCents: 0, wealthfolioCents: 2000,
+        rows: [row({ accountId: 'wf-jar', accountName: 'Jar', currency: 'EUR', absCents: 2000 }), row({ date: '2026-09-05T12:00:00+00:00', currency: 'EUR' })],
+      }));
+      expect(h.reasons!.map((r) => r.kind)).toEqual(['not-covered']);
+    });
+  });
+
+  it('an unreadable account mapping is a note, never a silent empty list of reasons', () => {
+    const facts = jar();
+    delete facts.reportAccountIds;
+    facts.failed = ['mapping'];
+    const h = explainHeadline(facts);
+    expect(h.notes).toEqual([HEADLINE_READ_NOTES.mapping]);
+    expect(HEADLINE_READ_NOTES.mapping).toMatch(/account mapping/);
   });
 
   it.each<HeadlineRead>(['report', 'wealthfolio', 'ledger', 'settings'])('a failed %s read says so and leaves out only its own part', (read) => {

@@ -12,7 +12,6 @@ const deps = (over: Partial<CubeBuildDeps> = {}): CubeBuildDeps => ({
     { sfinId: 'sfin-2', wfId: 'acct-card', name: 'Card', type: 'CREDIT_CARD' },
     { sfinId: 'sfin-3', wfId: 'acct-inv', name: 'Brokerage', type: 'SECURITIES' },
   ]),
-  dismissedIds: vi.fn(async () => ['dis-1']),
   poolConfig: vi.fn(async () => null),
   spendMatrix: vi.fn(() => [
     { month: '2026-07', category: 'Dining', accountId: 'acct-cash', amount: 25.5 },
@@ -235,10 +234,9 @@ describe('buildReportCube', () => {
     // digest readers. The fixture's $99 unmapped Dining row is the one honest
     // divergence — the cube drops it, the digest counts it.
     const cube = await buildReportCube(deps({
-      checkTotals: vi.fn((start: string, endEx: string, excluded: string[]) => {
+      checkTotals: vi.fn((start: string, endEx: string) => {
         expect(start).toBe('2026-08-01');
         expect(endEx).toBe('2026-09-01');
-        expect(excluded).toEqual(['dis-1']);
         return { spendByCategory: { Groceries: 40, Dining: 99 }, uncategorized: 12 };
       }),
     }), NOW, 2);
@@ -263,7 +261,7 @@ describe('buildReportCube', () => {
     expect(cube.months).toEqual(['2026-07', '2026-08']);
     expect(cube.asOf).toBe(NOW.toISOString());
     expect(d.spendMatrix).toHaveBeenCalledWith('2026-07-01', '2026-09-01');
-    expect(d.uncategorizedByMonthAccount).toHaveBeenCalledWith('2026-07-01', '2026-09-01', ['dis-1']);
+    expect(d.uncategorizedByMonthAccount).toHaveBeenCalledWith('2026-07-01', '2026-09-01');
     expect(d.budgetsForMonth).toHaveBeenCalledWith('2026-07');
     expect(d.budgetsForMonth).toHaveBeenCalledWith('2026-08');
   });

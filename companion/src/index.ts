@@ -1705,10 +1705,7 @@ function poolReportDeps(wfClient: WealthfolioClient, dbPath: string): PoolReport
   return {
     getSecret: (key) => wfClient.getAddonSecret('simplefin-sync', key),
     spendingBetween: (start, end) => getNativeWealthfolioSpendingBetween(dbPath, start, end),
-    uncategorizedTotal: (start, end, dismissedIds) =>
-      getNativeUncategorizedSpendingTotal(dbPath, start, end, dismissedIds),
-    dismissedIds: async () =>
-      Object.keys(await dismissalLedgerAccess(wfClient).readLedger().catch(() => ({}))),
+    uncategorizedTotal: (start, end) => getNativeUncategorizedSpendingTotal(dbPath, start, end),
     accountTypes: async () => {
       const mapping = (await new RestSyncStore(wfClient).getAccountMapping()) ?? {};
       const accounts = await wfClient.getAccounts();
@@ -1765,18 +1762,16 @@ function cubeBuildDeps(wfClient: WealthfolioClient, dbPath: string): CubeBuildDe
         sfinId, wfId, name: names[sfinId] ?? sfinId, type: typeById.get(wfId) ?? '',
       }));
     },
-    dismissedIds: async () =>
-      Object.keys(await dismissalLedgerAccess(wfClient).readLedger().catch(() => ({}))),
     poolConfig: async () => parsePoolConfig(
       await wfClient.getAddonSecret('simplefin-sync', SEMESTER_POOL_SECRET_KEY).catch(() => null),
     ),
     spendMatrix: (s, e) => getNativeSpendMatrix(dbPath, s, e),
     incomeByMonthAccount: (s, e) => getNativeIncomeByMonthAccount(dbPath, s, e),
-    uncategorizedByMonthAccount: (s, e, excluded) => getNativeUncategorizedByMonthAccount(dbPath, s, e, excluded),
+    uncategorizedByMonthAccount: (s, e) => getNativeUncategorizedByMonthAccount(dbPath, s, e),
     budgetsForMonth: (m) => getNativeWealthfolioBudgets(dbPath, m),
     merchantRows: (s, e) => getNativeMerchantRows(dbPath, s, e),
     feesInterestByMonth: (s, e) => getNativeFeesInterestByMonth(dbPath, s, e),
-    spendDaily: (s, e, excluded) => getNativeSpendDailyTotals(dbPath, s, e, excluded),
+    spendDaily: (s, e) => getNativeSpendDailyTotals(dbPath, s, e),
     valuationByMonth: (months) => getNativeValuationByMonth(dbPath, months),
     // The digest's own readers, verbatim — the check's whole worth is that
     // this path shares no aggregation code with the matrices above.
@@ -1788,9 +1783,9 @@ function cubeBuildDeps(wfClient: WealthfolioClient, dbPath: string): CubeBuildDe
       // An unreadable bucket or a gap may hold the filing: say nothing rather than "by hand".
       history: await readCompanionChangeLog(wfClient, new Date()).then((r) => (isChangeLogPartial(r) ? null : r.entries)).catch(() => null),
     }),
-    checkTotals: (s, e, excluded) => ({
+    checkTotals: (s, e) => ({
       spendByCategory: getNativeWealthfolioSpendingBetween(dbPath, s, e),
-      uncategorized: getNativeUncategorizedSpendingTotal(dbPath, s, e, excluded).total,
+      uncategorized: getNativeUncategorizedSpendingTotal(dbPath, s, e).total,
     }),
     // Link suggestions for hand-added subscriptions. An unreadable document
     // offers none rather than guessing from the legacy lists.
@@ -2035,16 +2030,11 @@ export async function composeDailyDigest(
     children: childrenByParent.get(name),
   }));
   // Spending with no category at all — invisible to the per-category reader
-  // above, and counted by Wealthfolio against the same month.
-  // Dismissed rows are excluded: dismissing means "not spending I need to
-  // file", and counting them anyway let a dismissed charge quietly shrink
-  // every category through the pool.
-  const dismissedIds = Object.keys(
-    await dismissalLedgerAccess(wfClient).readLedger().catch(() => ({})),
-  );
+  // above, and counted by Wealthfolio against the same month, refunds netted.
+  // A dismissed charge counts too (1.62): Wealthfolio counts it, and the
+  // report counts what Wealthfolio counts.
   const uncategorizedSpend = getNativeUncategorizedSpendingTotal(
     dbPath, `${yearMonth}-01`, toDateString(new Date(now.getFullYear(), now.getMonth() + 1, 1)),
-    dismissedIds,
   );
   // Guarded to null, not allowed to throw: the pool line is an addition to the
   // digest, and a broken pool read must cost the line, never the report. No

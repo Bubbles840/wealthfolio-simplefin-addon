@@ -45,15 +45,16 @@ export { excludedWithDescendants } from './wf-spending.js';
 
 /** 'spending-off' is not a failed read: Wealthfolio's Spending page is turned
  *  off (or has no accounts), so its figure is a meaningless $0 and is left out. */
-export type HeadlineRead = 'report' | 'wealthfolio' | 'spending-off' | 'ledger' | 'settings';
+export type HeadlineRead = 'report' | 'wealthfolio' | 'spending-off' | 'ledger' | 'settings' | 'mapping';
 export const HEADLINE_READ_NOTES: Record<HeadlineRead, string> = {
   report: "Couldn't read the report's figure for this month.",
   wealthfolio: "Couldn't read Wealthfolio's Spending page figure.",
   ledger: "Couldn't read the Wealthfolio database, so the reasons are missing.",
   'spending-off': "Wealthfolio's Spending page is turned off or has no accounts selected, so there's nothing to compare.",
+  mapping: "Couldn't read the account mapping, so accounts the add-on doesn't sync aren't named.",
   settings: "Couldn't read Wealthfolio's settings just now, so its excluded categories and the Spending page's accounts aren't taken into account, and the month follows the companion's timezone.",
 };
-const READ_ORDER: HeadlineRead[] = ['report', 'wealthfolio', 'spending-off', 'ledger', 'settings'];
+const READ_ORDER: HeadlineRead[] = ['report', 'wealthfolio', 'spending-off', 'ledger', 'settings', 'mapping'];
 
 export const HEADLINE_AGREE = 'The report and Wealthfolio agree this month.';
 
@@ -73,6 +74,10 @@ export interface HeadlineFacts {
   /** The accounts the report covers: the mapped ones (the cube drops any
    *  other). Absent (unread): every account. */
   reportAccountIds?: string[];
+  /** Wealthfolio's base currency (`base_currency`); absent (unread): no row
+   *  is judged foreign. Wealthfolio converts every row to it; the report sums
+   *  the amounts as stored. */
+  baseCurrency?: string | null;
   /** The report's "Spent this month", cents. */
   reportCents?: number;
   /** Wealthfolio's Spending page `headline.spent`, cents. */
@@ -88,13 +93,15 @@ export interface HeadlineFacts {
   failed?: HeadlineRead[];
 }
 
-/** `not-covered` is the one a 1.62 companion finds. The other five are a
- *  1.61 companion's: still read and shown, never found any more. */
+/** `not-covered` and `foreign-currency` are the ones a 1.62 companion finds.
+ *  The other five are a 1.61 companion's: still read and shown, never found
+ *  any more. A reader that does not know a kind folds it into "unexplained"
+ *  (audit-snapshot.ts). */
 export type HeadlineReasonKind =
-  | 'not-covered'
+  | 'not-covered' | 'foreign-currency'
   | 'first-midnight' | 'bookkeeping' | 'excluded' | 'double-filed' | 'uncategorized-refund';
 export const HEADLINE_REASON_KINDS: readonly HeadlineReasonKind[] = [
-  'not-covered', 'first-midnight', 'bookkeeping', 'excluded', 'double-filed', 'uncategorized-refund',
+  'not-covered', 'foreign-currency', 'first-midnight', 'bookkeeping', 'excluded', 'double-filed', 'uncategorized-refund',
 ];
 
 /** One row behind a reason. Raw text. */
@@ -122,6 +129,9 @@ export interface HeadlineExplanation {
   wealthfolioCents: number | null;
   /** null: the database could not be read. Reasons with no rows are left out. */
   reasons: HeadlineReason[] | null;
+  /** Wealthfolio's base currency, when it was read (names the
+   *  foreign-currency reason). Optional: an older snapshot has none. */
+  baseCurrency?: string;
   /** null when either figure or the reasons are unknown. */
   unexplainedCents: number | null;
   notes: string[];
@@ -149,12 +159,30 @@ export function explainHeadline(facts: HeadlineFacts): HeadlineExplanation {
       notCovered.cents -= line.cents;
       notCovered.rows.push({ date: line.day, description: descriptionFromComment(line.row.notes), cents: line.cents, account: line.row.accountName });
     }
-    reasons = notCovered.rows.length > 0 ? [notCovered] : [];
+    // Wealthfolio converts each row to its base currency; the report sums the
+    // stored amounts. The conversion is not modelled, so this reason takes
+    // whatever difference the other reason leaves (nothing, when the two
+    // agree), and names the rows it cannot size.
+    const foreign: HeadlineReason = { kind: 'foreign-currency', cents: 0, rows: [] };
+    const base = facts.baseCurrency?.trim().toUpperCase() || null;
+    if (base) {
+      for (const line of lines) {
+        const currency = line.row.currency?.trim().toUpperCase();
+        if (line.month !== facts.month || !currency || currency === base) continue;
+        if (covered && !covered.has(line.row.accountId)) continue;
+        foreign.rows.push({ date: line.day, description: descriptionFromComment(line.row.notes), cents: line.cents, account: line.row.accountName });
+      }
+      if (foreign.rows.length > 0 && reportCents !== null && wealthfolioCents !== null) {
+        foreign.cents = reportCents - wealthfolioCents - notCovered.cents;
+      }
+    }
+    reasons = [notCovered, foreign].filter((r) => r.rows.length > 0);
   }
   const unexplainedCents = reportCents !== null && wealthfolioCents !== null && reasons !== null
     ? reportCents - wealthfolioCents - reasons.reduce((s, r) => s + r.cents, 0)
     : null;
-  return { month: facts.month, reportCents, wealthfolioCents, reasons, unexplainedCents, notes };
+  const baseCurrency = facts.baseCurrency?.trim().toUpperCase();
+  return { month: facts.month, reportCents, wealthfolioCents, reasons, unexplainedCents, notes, ...(baseCurrency ? { baseCurrency } : {}) };
 }
 
 /** True when both figures were read and are the same to the cent. */
@@ -198,19 +226,21 @@ export function headlineAgreeLine(h: HeadlineExplanation, now?: Date): string {
 
 export const HEADLINE_REASON_LABELS: Record<HeadlineReasonKind, string> = {
   'not-covered': "On accounts the add-on doesn't sync",
+  'foreign-currency': 'Amounts in another currency',
   'first-midnight': 'Dated the 1st at midnight UTC',
   bookkeeping: "The add-on's own bookkeeping rows",
   excluded: 'In categories Wealthfolio excludes',
   'double-filed': 'Filed under two categories',
   'uncategorized-refund': 'Refunds with no category',
 };
-const REASON_WHY: Record<HeadlineReasonKind, string> = {
-  'not-covered': "Wealthfolio's Spending page reads them; the report covers only the accounts the add-on syncs",
-  'first-midnight': "Wealthfolio's month starts later west of UTC, so it counts these last month",
-  bookkeeping: "Wealthfolio counts them; the report doesn't",
-  excluded: "Wealthfolio leaves these out; the report doesn't",
-  'double-filed': 'the report counts them twice',
-  'uncategorized-refund': "Wealthfolio subtracts them; the report doesn't",
+const REASON_WHY: Record<HeadlineReasonKind, (baseCurrency?: string) => string> = {
+  'not-covered': () => "Wealthfolio's Spending page reads them; the report covers only the accounts the add-on syncs",
+  'foreign-currency': (base) => `Wealthfolio converts them to ${base || 'its base currency'}; the report doesn't`,
+  'first-midnight': () => "Wealthfolio's month starts later west of UTC, so it counts these last month",
+  bookkeeping: () => "Wealthfolio counts them; the report doesn't",
+  excluded: () => "Wealthfolio leaves these out; the report doesn't",
+  'double-filed': () => 'the report counts them twice',
+  'uncategorized-refund': () => "Wealthfolio subtracts them; the report doesn't",
 };
 
 const signFor = (h: HeadlineExplanation) =>
@@ -219,7 +249,7 @@ const signFor = (h: HeadlineExplanation) =>
 /** "$12.00 — Dated the 1st at midnight UTC: Wealthfolio's month … (2 rows)". Raw. */
 export function headlineReasonLine(h: HeadlineExplanation, r: HeadlineReason): string {
   const n = r.rows.length + (r.more ?? 0);
-  return `${changeMoney(signFor(h) * r.cents)} — ${HEADLINE_REASON_LABELS[r.kind]}: ${REASON_WHY[r.kind]} (${n} ${n === 1 ? 'row' : 'rows'})`;
+  return `${changeMoney(signFor(h) * r.cents)} — ${HEADLINE_REASON_LABELS[r.kind]}: ${REASON_WHY[r.kind](h.baseCurrency)} (${n} ${n === 1 ? 'row' : 'rows'})`;
 }
 
 /** "$3.20 not explained by these reasons", or null. Raw. */

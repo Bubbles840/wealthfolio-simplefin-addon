@@ -46,7 +46,7 @@ function ledger(settings = true): string {
   if (settings) {
     db.exec(`
       CREATE TABLE app_settings (setting_key TEXT PRIMARY KEY, setting_value TEXT);
-      INSERT INTO app_settings VALUES ('timezone', 'America/New_York'), ('spending.excluded_category_ids', '["cat-a", "cat-b"]'), ('spending.enabled', 'true'), ('spending.account_ids', '["wf-chk"]'), ('theme', 'dark');
+      INSERT INTO app_settings VALUES ('timezone', 'America/New_York'), ('spending.excluded_category_ids', '["cat-a", "cat-b"]'), ('spending.enabled', 'true'), ('spending.account_ids', '["wf-chk"]'), ('base_currency', 'usd'), ('theme', 'dark');
     `);
   }
   db.close();
@@ -111,7 +111,7 @@ describe('getNativeHeadlineRows', () => {
     expect(rows.map((r) => r.id)).toEqual(['act-3', 'act-1', 'act-2', 'act-4']);
     expect(rows.find((r) => r.id === 'act-2')).toEqual({
       id: 'act-2', date: '2026-10-05T04:00:00+00:00', accountId: 'wf-chk', accountName: 'PNC Checking', accountType: 'CASH',
-      type: 'DEPOSIT', typeOverride: 'TRANSFER_IN', subtype: 'REFUND', groupId: 'g1', absCents: 1235, notes: 'A | B · TRN-2',
+      type: 'DEPOSIT', typeOverride: 'TRANSFER_IN', subtype: 'REFUND', groupId: 'g1', absCents: 1235, currency: 'USD', notes: 'A | B · TRN-2',
       // The spending taxonomy only, oldest first: Wealthfolio allocates to the first.
       filings: [
         { id: 'x2', categoryId: 'cat-b', createdAt: '2026-10-05T09:00:00Z', source: 'manual' },
@@ -137,12 +137,30 @@ describe('getNativeHeadlineRows', () => {
 describe('getNativeAuditSettings', () => {
   it('reads Wealthfolio’s timezone, the categories it excludes, each spending category’s parent and the Spending page’s accounts', () => {
     expect(getNativeAuditSettings(ledger())).toEqual({
-      timezone: 'America/New_York', excludedCategoryIds: ['cat-a', 'cat-b'],
+      timezone: 'America/New_York', baseCurrency: 'USD', excludedCategoryIds: ['cat-a', 'cat-b'],
       categoryParents: { 'cat-a': null, 'cat-b': 'cat-a', 'cat-t': null, 'cat-tc': 'cat-t' }, spendingOn: true, spendingAccountIds: ['wf-chk'],
     });
   });
 
-  it('reads the Spending page’s accounts as Wealthfolio does: opted in, existing and not archived', () => {
+  it('reads only cash and credit-card accounts, as upstream’s account_supports_purpose does', () => {
+    const path = ledger();
+    const db = new DatabaseSync(path);
+    db.exec(`INSERT INTO accounts VALUES ('wf-card', 'Visa', 'credit_card', 0, 1), ('wf-brk', 'Brokerage', 'SECURITIES', 0, 1), ('wf-none', 'Untyped', NULL, 0, 1);
+      UPDATE app_settings SET setting_value = '["wf-chk", "wf-card", "wf-brk", "wf-none"]' WHERE setting_key = 'spending.account_ids';`);
+    db.close();
+    expect(getNativeAuditSettings(path)).toMatchObject({ spendingOn: true, spendingAccountIds: ['wf-chk', 'wf-card'] });
+  });
+
+  it('reads Wealthfolio’s base currency, upper-cased, and null when unset', () => {
+    const path = ledger();
+    expect(getNativeAuditSettings(path).baseCurrency).toBe('USD');
+    const db = new DatabaseSync(path);
+    db.exec(`DELETE FROM app_settings WHERE setting_key = 'base_currency';`);
+    db.close();
+    expect(getNativeAuditSettings(path).baseCurrency).toBeNull();
+  });
+
+  it('reads Wealthfolio’s settings as it does: opted in, existing and not archived', () => {
     const path = ledger();
     const db = new DatabaseSync(path);
     db.exec(`UPDATE app_settings SET setting_value = '["wf-ally", "wf-chk", "wf-gone"]' WHERE setting_key = 'spending.account_ids';`);
@@ -201,8 +219,8 @@ describe('the CLI fallback parsers split on the unit separator', () => {
     expect(auditRowFromCliParts(['act-1', 'x'])).toBeNull();
     expect(auditRowFromCliParts([...row.slice(0, 7), 'oops', ...row.slice(8)])).toBeNull();
     expect(auditAccountFromCliParts(['wf-chk', 'CASH', '0', '1', 'Joe\x1fCo'])).toEqual({ c0: 'wf-chk', c1: 'CASH', c2: '0', c3: '1', c4: 'Joe\x1fCo' });
-    const month = ['act-2', '2026-10-05T04:00:00+00:00', 'wf-chk', 'DEPOSIT', 'TRANSFER_IN', 'REFUND', '1235', 'g1', 'A\x1fB | C'];
-    expect(spendRowFromCliParts(month)).toMatchObject({ c2: 'wf-chk', c6: '1235', c7: 'g1', c8: 'A\x1fB | C' });
+    const month = ['act-2', '2026-10-05T04:00:00+00:00', 'wf-chk', 'DEPOSIT', 'TRANSFER_IN', 'REFUND', '1235', 'g1', 'USD', 'A\x1fB | C'];
+    expect(spendRowFromCliParts(month)).toMatchObject({ c2: 'wf-chk', c6: '1235', c7: 'g1', c8: 'USD', c9: 'A\x1fB | C' });
     expect(spendRowFromCliParts(month.slice(0, 5))).toBeNull();
     expect(spendRowFromCliParts([...month.slice(0, 6), 'oops', ...month.slice(7)])).toBeNull();
   });

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   effectiveType, excludedWithDescendants, isSpendingBucket, localDay, spendLine, spendLines, spentCents, topCategoryId, wfSpendSign,
   type SpendRow, type SpendScope,
@@ -40,6 +40,52 @@ describe('wfSpendSign — Wealthfolio’s classifier (3.8–3.10)', () => {
     expect(wfSpendSign({ accountType: 'CASH', type: 'WITHDRAWAL', typeOverride: 'DEPOSIT', subtype: '', groupId: '' })).toBe(0);
     expect(wfSpendSign({ accountType: 'CASH', type: 'TRANSFER_OUT', typeOverride: 'TRANSFER_OUT', subtype: '', groupId: 'g' })).toBe(0);
     expect(isSpendingBucket({ accountType: 'CASH', type: 'DEPOSIT', typeOverride: 'WITHDRAWAL', subtype: '', groupId: '' })).toBe(true);
+  });
+});
+
+describe('localDay — legacy timestamps with no offset (upstream parse_db_datetime)', () => {
+  const original = process.env.TZ;
+  afterEach(() => {
+    if (original === undefined) delete process.env.TZ; else process.env.TZ = original;
+    vi.restoreAllMocks();
+  });
+
+  it.each([
+    '2026-10-01 23:30:00', '2026-10-01T23:30:00', '2026-10-01 23:30:00.123', '2026-10-01T23:30:00.5',
+  ])('reads %s as UTC, whatever zone the process is in', (stored) => {
+    process.env.TZ = 'America/New_York';
+    // 23:30 UTC is still the 1st in UTC and in New York (19:30), but local
+    // parsing would read 03:30 UTC on the 2nd.
+    expect(localDay(stored, 'UTC')).toBe('2026-10-01');
+    expect(localDay(stored, 'America/New_York')).toBe('2026-10-01');
+    expect(localDay(stored, 'Pacific/Auckland')).toBe('2026-10-02');
+    // The process's own zone (null): the UTC instant seen from New York.
+    expect(localDay(stored, null)).toBe('2026-10-01');
+  });
+
+  it('reads an early naive timestamp as the same UTC instant too', () => {
+    process.env.TZ = 'America/New_York';
+    expect(localDay('2026-10-01 02:00:00', 'UTC')).toBe('2026-10-01');
+    expect(localDay('2026-10-01 02:00:00', 'America/New_York')).toBe('2026-09-30');
+  });
+
+  it('keeps reading an offset timestamp and a bare date as before', () => {
+    process.env.TZ = 'America/New_York';
+    expect(localDay('2026-10-01T02:00:00+00:00', 'UTC')).toBe('2026-10-01');
+    expect(localDay('2026-10-01', 'UTC')).toBe('2026-10-01');
+  });
+
+  it('builds one formatter per timezone, however many rows it places', () => {
+    const real = Intl.DateTimeFormat;
+    const made = vi.fn();
+    vi.spyOn(Intl, 'DateTimeFormat').mockImplementation(function (this: unknown, ...args: ConstructorParameters<typeof Intl.DateTimeFormat>) {
+      made(args[1]?.timeZone);
+      return new real(...args);
+    } as unknown as typeof Intl.DateTimeFormat);
+    for (let i = 0; i < 50; i++) localDay('2026-10-05T12:00:00Z', 'Africa/Nairobi');
+    for (let i = 0; i < 50; i++) localDay('2026-10-05T12:00:00Z', 'Mars/Olympus');
+    expect(made.mock.calls.filter(([z]) => z === 'Africa/Nairobi')).toHaveLength(1);
+    expect(made.mock.calls.filter(([z]) => z === 'Mars/Olympus')).toHaveLength(1);
   });
 });
 

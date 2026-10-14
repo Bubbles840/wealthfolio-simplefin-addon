@@ -10,9 +10,9 @@
  *  - Wealthfolio's timezone, its excluded categories and whether its Spending
  *    tracker is on: the database, strictly (`getNativeAuditSettings`) — a
  *    database that cannot be read is said, never read as "nothing spent";
- *  - the window's spend matrix: the database, strictly, over Wealthfolio's
- *    spending accounts only and without excluded categories' own rows
- *    (`getNativeBudgetSpend`); the earliest activity day on those accounts
+ *  - the window's spend matrix: the database, strictly — what Wealthfolio's
+ *    Spending page counts, the report's own definition (`getNativeBudgetSpend`,
+ *    shared/wf-spending.ts); the earliest activity day on those accounts
  *    (`getNativeSpendingHistoryStart`), so months the ledger never covered are
  *    not averaged in; and the category catalog;
  *  - the budget targets: REST (`GET /spending/budget`), on every show and again
@@ -58,7 +58,7 @@ export type BudgetClient = SecretClient & Pick<WealthfolioClient, 'getBudgetTarg
 export function companionBudgetReaders(client: BudgetClient, dbPath: string): BudgetReaders {
   return {
     settings: () => getNativeAuditSettings(dbPath),
-    spend: (start, endExclusive, settings) => getNativeBudgetSpend(dbPath, start, endExclusive, settings),
+    spend: (start, endExclusive) => getNativeBudgetSpend(dbPath, start, endExclusive),
     historyStart: (settings) => getNativeSpendingHistoryStart(dbPath, settings.spendingAccountIds),
     categories: () => getNativeSpendingCategories(dbPath),
     targets: () => client.getBudgetTargets(),
