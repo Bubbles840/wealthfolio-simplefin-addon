@@ -149,6 +149,10 @@ export function BudgetTab({
   const [poolSaved, setPoolSaved] = useState(false);
   /** The empty state's "Preview with sample data", open (G2). */
   const [previewing, setPreviewing] = useState(false);
+  // A real cube arriving ends it, so the sample never reopens unprompted.
+  useEffect(() => {
+    if (cube) setPreviewing(false);
+  }, [cube]);
 
   /** FLIP refs: previous on-screen rect per card, so any render that moves a
    *  card (live reorder under a drag, a resize reflowing neighbors) plays a
