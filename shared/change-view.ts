@@ -228,6 +228,60 @@ export function changesForTransaction<T extends ChangeEntry>(
     .sort((a, b) => (a.at === b.at ? (a.id < b.id ? -1 : a.id > b.id ? 1 : 0) : a.at < b.at ? -1 : 1));
 }
 
+/** Hops `currentActivityId` follows at most: a link, a later link of the
+ *  same leg, a re-created row — and never round a loop. */
+const FORWARD_MAX_HOPS = 8;
+
+const newestFirst = <T extends Pick<ChangeEntry, 'at'>>(entries: readonly T[]) =>
+  [...entries].sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
+
+/**
+ * Where a row went: the activity id that stands for `activityId` now — the
+ * forward half of `changesForTransaction`'s walk, for a button or a list that
+ * carries an id the log has since replaced. Two things re-create a row:
+ *  - a transfer link deletes both legs and writes them again, so each leg's
+ *    old id `before.activityIds[i]` becomes `after.activityIds[i]`, by
+ *    position. A link that was undone is not followed (its Undo re-imports the
+ *    legs on the next sync, under ids no entry ties back), and neither is an
+ *    Undo or Redo entry, whose before and after are the other way round;
+ *  - an Undo or Redo that put a row back records it as `after.activityId`. The
+ *    NEWEST reversal of an entry decides, from its row or any row an earlier
+ *    reversal of it left behind; one that removed the row leads nowhere.
+ * Repeats until nothing moves, at most FORWARD_MAX_HOPS times. The id itself
+ * when nothing moved it.
+ */
+export function currentActivityId(entries: readonly ChangeLogItem[], activityId: string): string {
+  const ordered = newestFirst(entries);
+  const links = ordered.filter((e) => e.kind === 'transfer-link' && !e.reverses && !e.undone).map(entryIdentity);
+  // Each reversed entry's reversals, newest first.
+  const reversals = new Map<string, ChangeLogItem[]>();
+  for (const e of ordered) if (e.reverses) reversals.set(e.reverses.id, [...(reversals.get(e.reverses.id) ?? []), e]);
+
+  const next = (id: string): string | null => {
+    for (const x of links) {
+      const i = x.beforeIds.indexOf(id);
+      if (i !== -1 && x.afterIds[i]) return x.afterIds[i];
+    }
+    for (const group of reversals.values()) {
+      // The newest reversal kept the same row, or removed it: nothing moved.
+      const to = entryIdentity(group[0]).leftBehind;
+      if (!to || to === id) continue;
+      if (group.some((r) => strings(r.subject.activityIds).includes(id) || entryIdentity(r).leftBehind === id)) return to;
+    }
+    return null;
+  };
+
+  let id = activityId;
+  const seen = new Set([id]);
+  for (let hop = 0; hop < FORWARD_MAX_HOPS; hop++) {
+    const moved = next(id);
+    if (!moved || seen.has(moved)) break;
+    seen.add(moved);
+    id = moved;
+  }
+  return id;
+}
+
 /** Entries from the last `days` days (by the moment they were written). */
 export function changesWithin<T extends Pick<ChangeEntry, 'at'>>(entries: readonly T[], now: Date, days: number): T[] {
   const cutoff = now.getTime() - days * 86_400_000;

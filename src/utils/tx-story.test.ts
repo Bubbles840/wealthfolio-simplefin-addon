@@ -107,6 +107,19 @@ describe('appTxStory', () => {
     expect(out.kind === 'ok' && out.story.answer[1]).toBe('Half of a transfer: ↔ $600.00 into Ally Savings.');
   });
 
+  it('a story by an old id follows a transfer link to the row that stands for it now; an undone link is not followed', async () => {
+    const link = stampChange(transferLinkChange(
+      { account: { sfinId: 'ACT-chk', wfId: 'wf-chk', name: 'PNC Checking' }, txKey: KEY, description: 'TRANSFER TO ALLY', amountCents: -60000, date: '2026-10-04', oldActivityId: 'act-old', newActivityId: 'act-1' },
+      { account: { sfinId: 'ACT-ally', wfId: 'wf-ally', name: 'Ally Savings' }, txKey: accountTxKey('ACT-ally', 'TRN-2'), description: 'FROM PNC', amountCents: 60000, date: '2026-10-04', oldActivityId: 'o2', newActivityId: 'act-2' },
+    ), 'companion', new Date('2026-10-04T13:00:00Z'));
+    const ctx = ctxWith(byId([detail({ activityType: 'TRANSFER_OUT', amount: '600', comment: 'TRANSFER TO ALLY · TRN-1' })]));
+    const out = ground(await appTxStory(ctx, store({ getChangeLog: vi.fn(async () => logOf(link)) }), { activityId: 'act-old' }, NOW));
+    expect(ctx.api.activities.search).toHaveBeenLastCalledWith(0, 1, { activityIds: ['act-1'] }, '');
+    expect(out.answer[1]).toBe('Half of a transfer: ↔ $600.00 into Ally Savings.');
+    const undone = { ...link, undone: { by: 'u1', at: '2026-10-05T12:00:00Z' } };
+    expect(await appTxStory(ctx, store({ getChangeLog: vi.fn(async () => logOf(undone)) }), { activityId: 'act-old' }, NOW)).toEqual({ kind: 'gone' });
+  });
+
   it('is "gone" for a row that no longer exists and "unreachable" when the read fails', async () => {
     expect(await appTxStory(ctxWith(byId([])), store(), { activityId: 'act-1' }, NOW)).toEqual({ kind: 'gone' });
     expect(await appTxStory(ctxWith(async () => { throw new Error('down'); }), store(), { activityId: 'act-1' }, NOW)).toEqual({ kind: 'unreachable' });

@@ -30,6 +30,7 @@
 import type { AskFlow } from '../../shared/ask-flow.js';
 import { changeDayYear, changeMoney } from '../../shared/change-entries.js';
 import type { ChangeLogItem, ChangeLogRead } from '../../shared/change-log.js';
+import { currentActivityId } from '../../shared/change-view.js';
 import { findingHandle } from '../../shared/handle.js';
 import { escapeMarkdown, shortDateTime, WHY_CALLBACK_PREFIX, type InlineKeyboard } from '../../shared/telegram.js';
 import {
@@ -200,8 +201,12 @@ export function renderWhyStory(story: TxStory, activityId: string, back: StoryBa
   return { text: lines.join('\n'), keyboard: { inline_keyboard: keyboard } };
 }
 
-/** One sync's imports (its import entries in the log, newest first). */
-export function renderWhyRun(entries: ChangeLogItem[], run: string, page: number, now: Date): MenuScreen {
+/** One sync's imports (its import entries in the log, newest first). Each
+ *  opens the row that stands for it NOW (`current`, `currentActivityId` over
+ *  the log): a link in the same sync re-creates both legs under new ids. */
+export function renderWhyRun(
+  entries: ChangeLogItem[], run: string, page: number, now: Date, current: (activityId: string) => string = (id) => id,
+): MenuScreen {
   if (entries.length === 0) return { text: `🔎 *${WHY_RUN_TITLE}*\n\n${escapeMarkdown(WHY_RUN_GONE)}`, keyboard: { inline_keyboard: [] } };
   const { slice, page: p, pages } = txSearchPage(entries, page);
   const lines = [`🔎 *${WHY_RUN_TITLE}*`, `_${shortDateTime(entries[0].at)}_`, '', WHY_TAP_ONE];
@@ -211,7 +216,7 @@ export function renderWhyRun(entries: ChangeLogItem[], run: string, page: number
       date: e.subject.date ?? e.at.slice(0, 10), description: e.subject.description ?? '',
       amountCents: e.subject.amountCents ?? 0, accountName: e.account?.name ?? '',
     }, now),
-    callback_data: whyData({ kind: 'story', activityId: e.subject.activityIds![0], back: { kind: 'run', run, page: p } }),
+    callback_data: whyData({ kind: 'story', activityId: current(e.subject.activityIds![0]), back: { kind: 'run', run, page: p } }),
   }]);
   const nav = navRow(p, pages, (n) => whyData({ kind: 'run', run, page: n, fresh: false }));
   if (nav.length) keyboard.push(nav);
@@ -286,7 +291,7 @@ export function createWhyMenu(deps: WhyMenuDeps): WhyMenu {
       const out = await deps.story(activityId, deps.now());
       if (out.kind === 'unreachable') return void await send(TX_STORY_UNREACHABLE);
       if (out.kind === 'gone') return void await send(TX_STORY_GONE);
-      await sendScreen(send, renderWhyStory(out.story, activityId, { kind: 'none' }));
+      await sendScreen(send, renderWhyStory(out.story, out.movedTo ?? activityId, { kind: 'none' }));
     },
 
     async onCallback(cb, ui) {
@@ -309,7 +314,8 @@ export function createWhyMenu(deps: WhyMenuDeps): WhyMenu {
             const out = await deps.story(view.activityId, now);
             if (out.kind === 'unreachable') return void await ui.answer(TX_STORY_UNREACHABLE);
             if (out.kind === 'gone') return void await ui.answer(TX_STORY_GONE);
-            return void await show(renderWhyStory(out.story, view.activityId, view.back), view.back.kind === 'none');
+            // A row that moved (a link re-created it) is the one its history lines come back to.
+            return void await show(renderWhyStory(out.story, out.movedTo ?? view.activityId, view.back), view.back.kind === 'none');
           }
           case 'run': {
             let read: ChangeLogRead;
@@ -321,7 +327,7 @@ export function createWhyMenu(deps: WhyMenuDeps): WhyMenu {
             }
             const entries = runImports(read, view.run);
             if (entries.length === 0) return void await ui.answer(WHY_RUN_GONE);
-            return void await show(renderWhyRun(entries, view.run, view.page, now), view.fresh);
+            return void await show(renderWhyRun(entries, view.run, view.page, now, (id) => currentActivityId(read.entries, id)), view.fresh);
           }
         }
       } catch (err) {

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { importChange, stampChange } from '../../shared/change-entries.js';
+import { importChange, stampChange, transferLinkChange } from '../../shared/change-entries.js';
 import type { ChangeLogItem, ChangeLogRead } from '../../shared/change-log.js';
 import { MENU_CALLBACK_PREFIX } from '../../shared/categorize-menu.js';
 import { findingHandle } from '../../shared/handle.js';
@@ -336,6 +336,36 @@ describe('the menu', () => {
     await createWhyMenu(deps()).onCallback({ data: `cz:wy:r${findingHandle('c-old')}` }, gone);
     expect(gone.answer).toHaveBeenCalledWith(WHY_RUN_GONE);
     expect(gone.send).not.toHaveBeenCalled();
+  });
+
+  it('a sync’s imports open each one’s CURRENT row: a link in the same run re-created it', async () => {
+    const out = imp('old-out', 'c1', 'TRANSFER TO ALLY');
+    const kroger = imp('act-k', 'c1');
+    const lnk = stampChange(transferLinkChange(
+      { account: { sfinId: 'ACT-chk', wfId: 'wf-chk', name: 'PNC Checking' }, txKey: 'k-old-out', description: 'TRANSFER TO ALLY', amountCents: -60000, date: '2026-10-04', oldActivityId: 'old-out', newActivityId: ID },
+      { account: { sfinId: 'ACT-ally', wfId: 'wf-ally', name: 'Ally Savings' }, txKey: 'k-old-in', description: 'TRANSFER FROM PNC', amountCents: 60000, date: '2026-10-04', oldActivityId: 'old-in', newActivityId: 'new-in' },
+    ), 'companion', new Date('2026-10-04T12:01:00Z'), 'c1');
+    const u = ui();
+    const d = deps({ read: vi.fn(async (): Promise<ChangeLogRead> => ({ entries: [lnk, kroger, out], gaps: [], trimmed: 0, unreadable: [] })) });
+    await createWhyMenu(d).onCallback({ data: `cz:wy:r${findingHandle('c1')}` }, u);
+    const keyboard = (u.send.mock.calls[0] as unknown as [string, { inline_keyboard: Array<Array<{ callback_data: string }>> }])[1];
+    const opens = keyboard.inline_keyboard.flat().map((b) => b.callback_data);
+    expect(opens).toContain(`cz:wy:t${ID}:r${findingHandle('c1')}:0`);
+    expect(opens).toContain(`cz:wy:tact-k:r${findingHandle('c1')}:0`);
+    expect(opens.some((o) => o.includes('old-out'))).toBe(false);
+    // …and that button opens the story.
+    const story = ui();
+    await createWhyMenu(d).onCallback({ data: `cz:wy:t${ID}:r${findingHandle('c1')}:0` }, story);
+    expect(story.edit).toHaveBeenCalledTimes(1);
+    expect(story.answer).not.toHaveBeenCalledWith(TX_STORY_GONE);
+  });
+
+  it('a story told for a row that moved leads its history lines back to the row it is now', async () => {
+    const d = deps({ story: vi.fn(async () => ({ kind: 'ok' as const, story: storyFor(), facts: {} as never, movedTo: ID })) });
+    const u = ui();
+    await createWhyMenu(d).onCallback({ data: 'cz:wy:tolder-row-id:s0:kroger' }, u);
+    const keyboard = (u.edit.mock.calls[0] as unknown as [string, { inline_keyboard: Array<Array<{ callback_data: string }>> }])[1];
+    expect(parseChangesData(keyboard.inline_keyboard[0][0].callback_data)).toMatchObject({ back: { kind: 'why', activityId: ID } });
   });
 
   it('sendStory sends the story, or the reason it cannot', async () => {
