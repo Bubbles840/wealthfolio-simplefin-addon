@@ -6,6 +6,7 @@ import { AccountMapper } from '../components/AccountMapper';
 import { Button, Card, ErrorBox, Input } from '../components/ui';
 import type { SecretsStore } from '../utils/secrets';
 import { accountCreatedChange } from '../../shared/change-entries';
+import { BudgetPreview } from '../tabs/BudgetTab';
 
 /** Two steps since 1.57: connect, then map. Rules start empty and the schedule
  *  starts at every 6 hours; both are in Settings for anyone who wants them. */
@@ -28,6 +29,8 @@ export function SetupPage({ ctx, store, onComplete }: Props) {
   const [loading, setLoading] = useState(false);
   const [sfAccounts, setSfAccounts] = useState<SimplefinAccount[]>([]);
   const [mapping, setMapping] = useState<AccountMapping>({});
+  /** Step 1's "See what it looks like": the sample-data preview (project 4). */
+  const [preview, setPreview] = useState(false);
 
   // Step 1: Claim token
   const handleConnect = async () => {
@@ -103,8 +106,19 @@ export function SetupPage({ ctx, store, onComplete }: Props) {
             <Button onClick={handleConnect} disabled={!token || loading}>
               {loading ? 'Connecting…' : 'Connect'}
             </Button>
+            <Button variant="ghost" aria-expanded={preview} onClick={() => setPreview((p) => !p)}>
+              See what it looks like
+            </Button>
           </div>
         </Card>
+      )}
+
+      {/* The Budget board over made-up data, read-only, under its banner — the
+          same preview as the empty Budget board's. It writes nothing. */}
+      {step === 1 && preview && (
+        <div className="sfin-setup-preview">
+          <BudgetPreview store={store} onExit={() => setPreview(false)} />
+        </div>
       )}
 
       {step === 2 && (

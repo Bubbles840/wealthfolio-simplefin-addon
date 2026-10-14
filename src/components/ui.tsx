@@ -312,6 +312,7 @@ const css = `
   border-radius: var(--sfin-rad);
   padding: 12px 14px; font-size: var(--sfin-sz-base); line-height: 1.5; margin-bottom: 12px;
 }
+.sfin-setup-preview { margin-top: 16px; }
 .sfin-banner-warn {
   display: flex; gap: 10px; align-items: flex-start;
   background: color-mix(in srgb, var(--sfin-warn) 8%, var(--card, var(--background)));
