@@ -59,16 +59,24 @@ export const VENMO_BANK_TRANSFER_NOTE = 'Transfer to your bank';
 
 /** Whether a message came from Venmo — by sender, or by the `From:` line of a
  *  message forwarded by hand (Gmail does not forward old mail; see
- *  `isAmazonMessage`). */
+ *  `isAmazonMessage`). ADDRESS CONTRACT: `from` is a BARE address
+ *  (`venmo@venmo.com`, never `Venmo <venmo@venmo.com>`); the caller (the mail
+ *  adapter) extracts it. In a forwarded body the Venmo address must be the one
+ *  in the angle brackets, or the only address on the `From:` line, and must end
+ *  there (`venmo.com.evil.com` is not Venmo). */
 export function isVenmoMessage(from: string | undefined, body: string): boolean {
-  if (from && /@venmo\.com$/i.test(from)) return true;
-  return /^\s*From:.*@venmo\.com\b/im.test(body);
+  if (from && /^[^\s<>@,"]+@venmo\.com$/i.test(from.trim())) return true;
+  return /^[ \t]*From:[ \t]*(?:[^<>@\r\n,"]*<[^<>@\s,"]+@venmo\.com>|[^<>@\s,"]+@venmo\.com)[ \t]*$/im.test(body);
 }
+
+/** Whitespace to single spaces, control and format characters (NUL, zero-width,
+ *  bidi overrides) removed, trimmed. */
+const tidy = (raw: string) => raw.replace(/\s/g, ' ').replace(/[\p{Cc}\p{Cf}]/gu, '').replace(/ +/g, ' ').trim();
 
 /** Every run of whitespace a single space, then at most `VENMO_NOTE_MAX`
  *  characters (code points, so an emoji is never cut in half), `…` marking a cut. */
 export function clipVenmoNote(raw: string): string {
-  const flat = raw.replace(/\s+/g, ' ').trim();
+  const flat = tidy(raw);
   const chars = [...flat];
   return chars.length <= VENMO_NOTE_MAX ? flat : `${chars.slice(0, VENMO_NOTE_MAX - 1).join('').trimEnd()}…`;
 }
@@ -81,7 +89,7 @@ interface Head { re: RegExp; direction: VenmoDirection; kind: VenmoKind }
 /** A head line with its amount, in the subject or the body. Requests first:
  *  "You paid Jane's $25.00 request" must not read as a payment to "Jane's". */
 const HEADS: Head[] = [
-  { re: new RegExp(`^You (?:paid|completed) (.+?)'s ${MONEY} (?:charge )?request$`, 'i'), direction: 'out', kind: 'request' },
+  { re: new RegExp(`^You (?:paid|completed) (.+?)['’]s ${MONEY} (?:charge )?request$`, 'i'), direction: 'out', kind: 'request' },
   { re: new RegExp(`^(.+?) (?:paid|completed) your ${MONEY} (?:charge )?request$`, 'i'), direction: 'in', kind: 'request' },
   { re: new RegExp(`^You paid (.+?) ${MONEY}$`, 'i'), direction: 'out', kind: 'payment' },
   { re: new RegExp(`^(.+?) paid you ${MONEY}$`, 'i'), direction: 'in', kind: 'payment' },
@@ -89,7 +97,7 @@ const HEADS: Head[] = [
 
 /** A head line without its amount; the amount is the next line of the body. */
 const NAME_HEADS: Head[] = [
-  { re: /^You (?:paid|completed) (.+?)'s (?:charge )?request$/i, direction: 'out', kind: 'request' },
+  { re: /^You (?:paid|completed) (.+?)['’]s (?:charge )?request$/i, direction: 'out', kind: 'request' },
   { re: /^(.+?) (?:paid|completed) your (?:charge )?request$/i, direction: 'in', kind: 'request' },
   { re: /^You paid (.+)$/i, direction: 'out', kind: 'payment' },
   { re: /^(.+?) paid you$/i, direction: 'in', kind: 'payment' },
@@ -99,6 +107,20 @@ const NAME_HEADS: Head[] = [
 const AMOUNT_LINE = new RegExp(`^[-+−]?\\s*${MONEY}$`);
 const ANY_AMOUNT = new RegExp(MONEY);
 const BANK_TRANSFER = /\btransfer(?:red)?\b.*\bto your bank\b|\bbank transfer\b/i;
+/** A transfer line that carries its own amount: "transferred $X to your bank",
+ *  "Your $X transfer to your bank". A figure elsewhere is never the amount. */
+const TRANSFER_AMOUNT: RegExp[] = [
+  new RegExp(`\\btransfer(?:red)?\\s+${MONEY}\\s+to your bank\\b`, 'i'),
+  new RegExp(`${MONEY}\\s+(?:bank\\s+)?transfer\\b[^.]*?\\bto your bank\\b`, 'i'),
+];
+const transferCents = (line: string): number | null => {
+  for (const re of TRANSFER_AMOUNT) {
+    const m = re.exec(line);
+    if (m) return cents(m[1]);
+  }
+  return null;
+};
+const TRANSFER_FAILED = /\b(?:fail(?:ed|s|ure)?|cancel(?:l?ed)?|declined|returned|unsuccessful|reversed|rejected|unable)\b/i;
 const LOOKS_LIKE_PAYMENT = /\b(?:paid|completed|transfer(?:red)?)\b/i;
 const PAYMENT_ID = /\b(?:Payment|Transaction) ID:?\s*#?\s*(\d{6,})/i;
 /** `Fwd: `, `FW: `, `Re: ` — however many. */
@@ -114,6 +136,12 @@ const NOT_A_NOTE: RegExp[] = [
   /^(?:from|to|date|subject|sent|cc):/i,
   /^(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]* \d{1,2},? \d{4}\b/i,
   /^[-–—_=·•*|\s]+$/,
+  /^(?:hi|hello|hey|dear)\s+\S+(?:\s+\S+)?\s*[,:!]?$/i,
+  /^thank(?:s| you)\b/i,
+  /venmo is a service of/i,
+  /^on .+ wrote:?$/i,
+  /unsubscribe|privacy (?:policy|statement|notice)|terms of (?:service|use)|\blegal\b|manage (?:your )?(?:notification|email)/i,
+  /©|\(c\)\s*\d{4}|all rights reserved/i,
 ];
 
 const isNote = (line: string) => line !== '' && !NOT_A_NOTE.some((re) => re.test(line));
@@ -141,7 +169,9 @@ function noteAfter(lines: string[], amountCents: number): string {
   });
   if (anchor === -1) anchor = lines.findIndex((l) => matchHead(l, HEADS) !== null);
   if (anchor === -1) return '';
-  for (const line of lines.slice(anchor + 1, anchor + 7)) {
+  const after = lines.slice(anchor + 1, anchor + 7);
+  const marker = after.findIndex((l) => /^(?:see|view) (?:transaction|payment|details|in app)\b/i.test(l));
+  for (const line of marker === -1 ? after : after.slice(0, marker)) {
     if (isNote(line)) return clipVenmoNote(unquote(line));
   }
   return '';
@@ -152,10 +182,10 @@ function noteAfter(lines: string[], amountCents: number): string {
 function headFromBody(lines: string[]): { direction: VenmoDirection; kind: VenmoKind; name: string; amountCents: number } | null {
   for (let i = 0; i < lines.length; i += 1) {
     const full = matchHead(lines[i], HEADS);
-    if (full) return { ...full.head, name: full.m[1].trim(), amountCents: cents(full.m[2]) };
+    if (full) return { ...full.head, name: tidy(full.m[1]), amountCents: cents(full.m[2]) };
     const named = matchHead(lines[i], NAME_HEADS);
     const next = named ? AMOUNT_LINE.exec(lines[i + 1] ?? '') : null;
-    if (named && next) return { ...named.head, name: named.m[1].trim(), amountCents: cents(next[1]) };
+    if (named && next) return { ...named.head, name: tidy(named.m[1]), amountCents: cents(next[1]) };
   }
   return null;
 }
@@ -178,7 +208,7 @@ export function classifyVenmoEmail(parts: AmazonMailParts): VenmoEmailClassifica
 
   const fromSubject = matchHead(subject, HEADS);
   const head = fromSubject
-    ? { ...fromSubject.head, name: fromSubject.m[1].trim(), amountCents: cents(fromSubject.m[2]) }
+    ? { ...fromSubject.head, name: tidy(fromSubject.m[1]), amountCents: cents(fromSubject.m[2]) }
     : null;
   const found = head ?? (BANK_TRANSFER.test(subject) ? null : copies.map(headFromBody).find((h) => h !== null) ?? null);
   if (found) {
@@ -194,15 +224,15 @@ export function classifyVenmoEmail(parts: AmazonMailParts): VenmoEmailClassifica
     return { status: 'unrecognised' };
   }
 
-  const transferLine = [subject, ...copies.flat()].find((l) => BANK_TRANSFER.test(l));
-  if (transferLine !== undefined) {
-    const amount = ANY_AMOUNT.exec(transferLine) ?? ANY_AMOUNT.exec(subject) ?? ANY_AMOUNT.exec(copies.flat().join('\n'));
-    if (!amount) return { status: 'unrecognised' };
+  const hit = [subject, ...copies.flat()].map((line) => ({ line, c: transferCents(line) })).find((x) => x.c !== null);
+  if (hit && hit.c !== null) {
+    if (TRANSFER_FAILED.test(subject) || TRANSFER_FAILED.test(hit.line)) return { status: 'ignored' };
     return {
       status: 'payment',
-      record: withId({ direction: 'in', kind: 'bank-transfer', amountCents: cents(amount[1]), counterparty: null, note: VENMO_BANK_TRANSFER_NOTE }),
+      record: withId({ direction: 'in', kind: 'bank-transfer', amountCents: hit.c, counterparty: null, note: VENMO_BANK_TRANSFER_NOTE }),
     };
   }
+  if (BANK_TRANSFER.test(subject)) return { status: TRANSFER_FAILED.test(subject) ? 'ignored' : 'unrecognised' };
 
   return LOOKS_LIKE_PAYMENT.test(subject) && ANY_AMOUNT.test(all) ? { status: 'unrecognised' } : { status: 'ignored' };
 }
