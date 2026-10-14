@@ -52,6 +52,18 @@ feed's.
 | W11 | **Paybacks in the app, too.** A money-in row in the needs-a-category list (and its story) gets **It's a payback…**: pick a spending category; the add-on re-types the row (`activities` write it already has), records the `asReimbursement` override, and files it. The add-on SDK has no "file this one transaction" call, so the filing goes through an add-on-owned one-off categorization rule matching the row's unique transaction id, run at once with `rerunRules(true)` (uncategorized only) and deleted after — Wealthfolio records it as a rule filing. Change-logged; the app's Undo of a payback says "Undo this from Telegram: /changes" (the SDK cannot un-file — the 2a rule for category kinds). Gated like W8 on the companion's version. | The filing shows as "rule" in Wealthfolio, not "manual". |
 | W12 | **Adopt add-on SDK 3.9.** `@wealthfolio/addon-sdk` 3.9.0 and the manifest permissions its spending calls need; `minWealthfolioVersion` stays 3.8.0 — the payback action appears only when the host offers the spending API (feature-detected), so 3.8 installs keep working without it. | A 3.8 user does not get app paybacks (they need 3.9+). |
 
+## Part 3 — Platform upgrades (Nick: "If there's any other upgrades that we didn't do, let's do those as well")
+
+The add-on is still on SDK 3.6.2 (the 3.9/3.10 opportunities were listed on
+2026-10-13 and never adopted). W12 above is folded into U1.
+
+| # | Decision | Cost if wrong |
+|---|---|---|
+| U1 | **SDK 3.9.0** (`@wealthfolio/addon-sdk`), the manifest permissions its calls need, and one feature-detection helper: every 3.9 call is used only when the host offers it, so `minWealthfolioVersion` stays 3.8.0. | — |
+| U2 | **Link transfers in place** where Wealthfolio can: the companion through `POST /activities/link` (present since 3.8), the add-on through the SDK's `activities.linkTransfer` (3.9). Today's delete-and-re-create (`linkPairByRecreate`) stays as the fallback, used only where linking in place cannot work — the planner must prove from upstream code which legs `link_transfer_activities` accepts (types, assets — the legacy `$CASH` asset that once forced re-creation, rows already in another group) and route exactly those to it. Ids stay stable, so the change log, Undo and stories keep pointing at the same rows. Undo of a link uses `unlink` where it can, by the same rule. | If upstream refuses a case the planner missed, the fallback still links it as today. |
+| U3 | **The app reads Wealthfolio's own facts** through `spending.searchCashActivities` (3.9): a row's real link status, its category, and its cash-flow bucket. These replace the app's "maybe linked" guesses (Link and Remove refuse less, and only on facts) and let the app's stories show a row's category and group as Telegram's do. Where the call is not offered (3.8), today's rules stay. | — |
+| U4 | **Card bookkeeping rows as `TRANSFER_OUT` on 3.10+** (card opening debt, card balance plugs, card outflow placeholders): 3.10 accepts `TRANSFER_OUT` on cards (#1796) and its spending ignores an unlinked one — neutral natively, no excluded category needed (W3 still covers cash accounts and 3.9). Gated on the host version (`/app/info` ≥ 3.10); existing rows are rewritten once by the companion, skipping grouped rows. | A 3.9 host keeps today's card rows, filed per W3. |
+
 ## Testing
 
 - **Dates (W1):** a created row's `activityDate` is `…T12:00:00Z`. The sync
