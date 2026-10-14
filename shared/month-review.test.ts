@@ -74,7 +74,7 @@ const FULL = [
   'Biggest changes: Groceries +$120 · Dining -$80 · Travel +$45',
   'Top merchants: KROGER #415 $412 · AMAZON MKTP $230 · SHELL OIL $120',
   'New: Netflix $15.49/mo (since Aug 5)',
-  'No longer charging (cancelled?): Hulu · Old Gym',
+  'No longer charging (cancelled?): Hulu',
   'Rose in price: Spotify $10.99 → $11.99',
   'Net worth: +$1,240 over the month',
   'Savings rate: 16%',
@@ -95,7 +95,7 @@ describe('the month in review', () => {
 
   it.each<[string, Partial<MonthReviewInput>, string[]]>([
     ['there is no cube', { cube: null }, ['Biggest changes', 'Top merchants', 'New:', 'Net worth', 'Savings rate']],
-    ['the cube does not have the month', { month: '2026-11' }, ['Biggest changes', 'Top merchants', 'Net worth', 'Savings rate']],
+    ['the cube does not have the month', { month: '2026-11', changes: log({ entries: [filed(new Date(2026, 10, 3, 9, 0))] }) }, ['Biggest changes', 'Top merchants', 'Net worth', 'Savings rate']],
     ['the month before is not in the cube', { cube: cube({ months: ['2026-09', '2026-10', '2026-11'], netWorth: [1124000, null, null] }) }, ['Biggest changes', 'Net worth']],
     ['a month-end net worth is unknown', { cube: cube({ netWorth: [null, 1124000, null] }) }, ['Net worth']],
     ['nothing came in', { cube: cube({ income: [[0, 0], [0, 0], [0, 0]] }) }, ['Savings rate']],
@@ -134,5 +134,46 @@ describe('the month in review', () => {
     expect(text).toContain('Top merchants: SQ \\*COFFEE\\_CLUB $900');
     expect(text).toContain('Hulu\\_Plus \\*');
     expect(text.replace('*Month in review*', '').replace(/\\[_*`[]/g, '')).not.toMatch(/[_*`[]/);
+  });
+
+  it('counts a new subscription charged in the month even when a later charge moved its last date out', () => {
+    const subs = cube().subscriptions!.map((d) => (d.name === 'NETFLIX'
+      ? { ...d, lastDate: '2026-10-01', recent: [{ date: '2026-10-01', cents: 1549 }, { date: '2026-09-05', cents: 1549 }] } : d));
+    const r = buildMonthReview(input({ cube: cube({ subscriptions: subs }) }));
+    expect(r.newSubs?.map((n) => n.entry.key)).toEqual(['NETFLIX']);
+  });
+
+  it('rounds the savings rate the way the Budget tab does: 14.46% is 14.5, then 15%', () => {
+    const c = cube({ income: [[90000, 0], [10000, 0], [0, 0]], spend: [SPEND[0], [[8554, 0], [0, 0], [0, 0], [0, 0]], SPEND[2]] });
+    expect(buildMonthReview(input({ cube: c })).savingsRatePct).toBe(15);
+  });
+
+  it('names only subscriptions that stopped in the reviewed month, not stale ones', () => {
+    const names = (month: string) => buildMonthReview(input({ month })).gone?.map((e) => e.displayName);
+    expect(names('2026-09')).toEqual(['Hulu']);
+    expect(names('2026-08')).toEqual(['Old Gym']);
+  });
+
+  it('reviews December against November across the year boundary, on 2027-01-01', () => {
+    const c = cube({
+      months: ['2026-11', '2026-12', '2027-01'], netWorth: [1000000, 1100000, null],
+      spend: [[[10000, 0], [0, 0], [0, 0], [0, 0]], [[15000, 0], [0, 0], [0, 0], [0, 0]], SPEND[2]],
+      merchants: [[], [{ name: 'KROGER #415', cents: 15000, count: 2 }], []],
+      subscriptions: [],
+    });
+    const text = formatMonthReview(buildMonthReview({ month: '2026-12', cube: c, roster: null, changes: null }))!;
+    expect(text).toContain('Biggest changes: Dining +$50');
+    expect(text).toContain('Net worth: +$1,000 over the month');
+  });
+
+  it('finds a linked or manual entry by its bank name, else its display name', () => {
+    const r = roster();
+    r.subscriptions = [
+      entry('manual-1', 'Streaming', { source: 'manual', bankName: 'NETFLIX' }),
+      entry('manual-2', 'ADOBE', { source: 'manual', cents: 5499 }),
+    ];
+    const subs = cube().subscriptions!.map((d) => (d.name === 'ADOBE' ? { ...d, count: 1, recent: [{ date: '2026-09-25', cents: 5499 }] } : d));
+    const got = buildMonthReview(input({ roster: r, cube: cube({ subscriptions: subs }) })).newSubs;
+    expect(got?.map((n) => n.entry.key)).toEqual(['manual-1', 'manual-2']);
   });
 });
