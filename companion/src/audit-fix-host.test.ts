@@ -71,7 +71,7 @@ describe('Link on the companion', () => {
     expect(f.logged()).toEqual([expect.objectContaining({
       writer: 'companion', actor: 'you', kind: 'transfer-link', subject: expect.objectContaining({ activityIds: ['new-1', 'new-2'] }),
     })]);
-    expect(log).not.toHaveBeenCalled();
+    expect(log.mock.calls.map((c) => c[0])).toEqual([expect.stringContaining('re-creating instead of linking in place')]);
   });
 
   it('reads a grouped row as linked, and writes nothing', async () => {
@@ -134,5 +134,18 @@ describe('Remove for good on the companion', () => {
       return down.data.get(k) ?? null;
     });
     expect(await removeForGood('dup-1', FP, companionRemoveIo(down.client, vi.fn()), NOW)).toEqual({ ok: false, message: REMOVE_UNREACHABLE });
+  });
+});
+
+describe('the companion Link host logs why a link fell back', () => {
+  it('passes its logger to the in-place linker', async () => {
+    const f = fakeClient([{ ...OUT }, { ...INTO }]);
+    const log = vi.fn();
+    const legs = [
+      { wfId: 'out-1', accountId: 'wf-chk', txId: 'TRN-1', activityType: 'TRANSFER_OUT', date: '2026-10-08', absCents: 46460, currency: 'USD', comment: 'CITI AUTOPAY · TRN-1' },
+      { wfId: 'in-1', accountId: 'wf-card', txId: 'TRN-2', activityType: 'TRANSFER_IN', date: '2026-10-08', absCents: 46460, currency: 'USD', comment: 'PAYMENT THANK YOU · TRN-2' },
+    ] as const;
+    await companionLinkIo(f.client, log).link([legs[0], legs[1]]);
+    expect(log).toHaveBeenCalledWith('link out-1/in-1: re-creating instead of linking in place (out-1 is stored as WITHDRAWAL and links as TRANSFER_OUT)');
   });
 });

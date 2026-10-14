@@ -34,7 +34,7 @@ async function readFixRow(client: FixClient, activityId: string, types: Map<stri
   return hit ? fixRowOf(hit, types.get(hit.accountId) ?? '') : null;
 }
 
-const restHost = (client: FixClient) => new RestSyncHost(client as unknown as WealthfolioClient);
+const restHost = (client: FixClient, log?: (msg: string) => void) => new RestSyncHost(client as unknown as WealthfolioClient, undefined, log);
 
 /** The account mapping as stored: none yet is `{}`; anything but a plain
  *  object of strings is unreadable — a refusal of its own, not "unreachable". */
@@ -53,7 +53,7 @@ function parseMapping(raw: string | null): Record<string, string> {
 }
 
 export function companionLinkIo(client: FixClient, log: (msg: string) => void): LinkIo {
-  const host = restHost(client);
+  const host = restHost(client, log);
   return {
     read: async (pair: LinkPair) => {
       const types = await accountTypes(client);
@@ -72,7 +72,7 @@ export function companionLinkIo(client: FixClient, log: (msg: string) => void): 
 }
 
 export function companionRemoveIo(client: FixClient, log: (msg: string) => void): RemoveIo {
-  const host = restHost(client);
+  const host = restHost(client, log);
   return {
     read: async (activityId) => readFixRow(client, activityId, await accountTypes(client)),
     feeds: async (wfAccountId) => sfinIdsFor(parseMapping(await client.getAddonSecret(ADDON_ID, 'account_mapping')), wfAccountId),

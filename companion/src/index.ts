@@ -3876,7 +3876,7 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
   const changes: ChangesMenu = createChangesMenu({
     read: (now) => readCompanionChangeLog(wfClient, now),
     undo: (entry, entries, op, variant) => {
-      const run = () => runChangeUndo(entry, entries, op, companionUndoIo(wfClient, wealthfolioDbPath()), variant);
+      const run = () => runChangeUndo(entry, entries, op, companionUndoIo(wfClient, wealthfolioDbPath(), undefined, log), variant);
       // A removal's Undo/Redo writes the row and the skip list the sync reads:
       // refused while the companion's own sync runs, and a sync waits for it.
       return entry.kind === 'transaction-removed'
