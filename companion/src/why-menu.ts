@@ -157,6 +157,7 @@ const TELEGRAM_MAX = 4096;
 /** A removal's message carries raw bank and Wealthfolio text; cut it so even
  *  fully escaped (up to twice as long) it leaves room for the story. */
 const REMOVE_MESSAGE_MAX = 1000;
+const REMOVE_ALREADY_GONE = "It's already gone — nothing more to do.";
 
 const clip = (s: string, n: number) => {
   const chars = Array.from(s);
@@ -383,6 +384,8 @@ export function createWhyMenu(deps: WhyMenuDeps): WhyMenu {
             const out = await deps.story(view.activityId, now);
             if (out.kind === 'unreachable') return void await ui.answer(TX_STORY_UNREACHABLE);
             if (out.kind === 'gone') return void await ui.answer(TX_STORY_GONE);
+            // No longer qualifies (pending now, say): the story as it is, with no Remove button.
+            if (!removable(out)) return void await show(renderWhyStory(out.story, out.movedTo ?? view.activityId, { kind: 'changes' }, { removable: false }), false);
             return void await show(renderWhyRemoveConfirm(out.story, out.movedTo ?? view.activityId, removalFingerprint(out.facts.row)), false);
           }
           case 'remove': {
@@ -393,6 +396,8 @@ export function createWhyMenu(deps: WhyMenuDeps): WhyMenu {
             // Refused: the story again, as it is now, with why on top.
             const out = await deps.story(view.activityId, now);
             const refusedAlone: MenuScreen = { text: `⚠️ ${escapeMarkdown(said)}`, keyboard: { inline_keyboard: [] } };
+            // Gone: a double tap's second run, after the first removed it. Leave that result standing.
+            if (out.kind === 'gone') return void await ui.answer(REMOVE_ALREADY_GONE);
             if (out.kind !== 'ok') return void await show(refusedAlone, false);
             const again = renderWhyStory(out.story, out.movedTo ?? view.activityId, { kind: 'changes' }, { removable: removable(out), notice: said });
             return void await show(again.text.length <= TELEGRAM_MAX ? again : refusedAlone, false);

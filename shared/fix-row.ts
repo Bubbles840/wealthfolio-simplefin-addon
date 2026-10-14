@@ -53,7 +53,7 @@ function metaOf(metadata: unknown): Record<string, unknown> | undefined {
 }
 const cents = (v: unknown) => Math.round(Math.abs(Number(v ?? 0)) * 100) || 0;
 /** The day the add-on's story shows (src/utils/tx-story.ts): the stored instant's UTC day. */
-function isoDay(v: unknown): string {
+export function isoDay(v: unknown): string {
   const d = new Date(v as string);
   return Number.isNaN(d.getTime()) ? String(v ?? '').slice(0, 10) : d.toISOString().slice(0, 10);
 }

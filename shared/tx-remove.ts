@@ -25,7 +25,7 @@
 import { isCorrectionNote, isPendingNote, isPlaceholderNote, isStartingBalanceNote } from './audit-ledger.js';
 import { createPayloadOf } from './change-undo.js';
 import { transactionRemovedChange, type ChangeDraft } from './change-entries.js';
-import { recreateWrite, type FixRow, type LinkedState } from './fix-row.js';
+import { isoDay, recreateWrite, type FixRow, type LinkedState } from './fix-row.js';
 import { findingHandle } from './handle.js';
 import { describeLeg } from './link-pair.js';
 import { editSkippedTransactions, REMOVED_FOR_GOOD_NOTE, withoutSkipped, withSkipped, type SkippedTransaction } from './skipped-transactions.js';
@@ -68,9 +68,11 @@ export interface ShownRow {
   accountName: string;
 }
 
-/** The row as the story showed it, as the Remove button carries it: 8 hex. */
+/** The row as the story showed it, as the Remove button carries it: 8 hex.
+ *  The date goes through the same `isoDay` the remover's read uses, so a
+ *  story's raw date string and the re-read row agree in any format. */
 export const removalFingerprint = (r: ShownRow): string =>
-  findingHandle([r.activityId, r.accountName, r.absCents, r.date, r.activityType.toUpperCase(), r.note].join('\u001f'));
+  findingHandle([r.activityId, r.accountName, r.absCents, isoDay(r.date), r.activityType.toUpperCase(), r.note].join('\u001f'));
 
 const shownOf = (row: FixRow): ShownRow => ({
   activityId: row.id, note: row.notes, absCents: row.absCents, date: row.date, activityType: row.type, accountName: row.accountName,

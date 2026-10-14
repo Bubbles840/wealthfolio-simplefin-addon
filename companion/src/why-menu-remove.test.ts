@@ -95,7 +95,7 @@ describe('Remove for good… on a /why story', () => {
     await createWhyMenu(d).onCallback({ data: `cz:wy:D${ID}:${FP}` }, u);
     const [text] = edited(u);
     expect(text.startsWith(`⚠️ ${escapeMarkdown(REMOVE_CHANGED)}\n🔎 `)).toBe(true);
-    const gone = deps({ remove: vi.fn(async () => ({ ok: false, message: REMOVE_CHANGED })), story: vi.fn(async (): Promise<StoryOutcome> => ({ kind: 'gone' })) });
+    const gone = deps({ remove: vi.fn(async () => ({ ok: false, message: REMOVE_CHANGED })), story: vi.fn(async (): Promise<StoryOutcome> => ({ kind: 'unreachable' })) });
     const v = ui();
     await createWhyMenu(gone).onCallback({ data: `cz:wy:D${ID}:${FP}` }, v);
     expect(edited(v)).toEqual([`⚠️ ${escapeMarkdown(REMOVE_CHANGED)}`, { inline_keyboard: [] }]);
@@ -118,7 +118,7 @@ describe('raw bank and Wealthfolio text in a removal outcome', () => {
     ];
     for (const message of msgs) {
       const u = ui();
-      await createWhyMenu(deps({ remove: vi.fn(async () => ({ ok: false, message })), story: vi.fn(async (): Promise<StoryOutcome> => ({ kind: 'gone' })) })).onCallback({ data: `cz:wy:D${ID}:${FP}` }, u);
+      await createWhyMenu(deps({ remove: vi.fn(async () => ({ ok: false, message })), story: vi.fn(async (): Promise<StoryOutcome> => ({ kind: 'unreachable' })) })).onCallback({ data: `cz:wy:D${ID}:${FP}` }, u);
       expect(edited(u)[0]).toBe(`⚠️ ${escapeMarkdown(message)}`);
       expect(edited(u)[0]).not.toMatch(/(^|[^\\])[_*]/);
       const f = facts({}, note);
@@ -144,7 +144,7 @@ describe('raw bank and Wealthfolio text in a removal outcome', () => {
       const u = ui();
       await createWhyMenu(deps({
         remove: vi.fn(async () => ({ ok: false, message })),
-        story: vi.fn(async (): Promise<StoryOutcome> => (gone ? { kind: 'gone' } : ok())),
+        story: vi.fn(async (): Promise<StoryOutcome> => (gone ? { kind: 'unreachable' } : ok())),
       })).onCallback({ data: `cz:wy:D${ID}:${FP}` }, u);
       expect(edited(u)[0].length).toBeLessThanOrEqual(4096);
       expect(edited(u)[0].startsWith('⚠️ ')).toBe(true);
@@ -152,5 +152,49 @@ describe('raw bank and Wealthfolio text in a removal outcome', () => {
     const u = ui();
     await createWhyMenu(deps({ remove: vi.fn(async () => ({ ok: true, message: 'x_'.repeat(5000) })) })).onCallback({ data: `cz:wy:D${ID}:${FP}` }, u);
     expect(edited(u)[0].length).toBeLessThanOrEqual(4096);
+  });
+});
+
+describe('fix round 1 (ruling R-F)', () => {
+  it('a double tap on Remove ends on Removed: the second tap only toasts and edits nothing', async () => {
+    let gone = false;
+    const remove = vi.fn(async (): Promise<RemoveOutcome> => (gone ? { ok: false, message: REMOVE_CHANGED } : (gone = true, { ok: true, message: REMOVE_DONE })));
+    const d = deps({ remove, story: vi.fn(async (): Promise<StoryOutcome> => (gone ? { kind: 'gone' } : ok())) });
+    const menu = createWhyMenu(d);
+    const one = ui();
+    const two = ui();
+    await menu.onCallback({ data: `cz:wy:D${ID}:${FP}` }, one);
+    await menu.onCallback({ data: `cz:wy:D${ID}:${FP}` }, two);
+    expect(edited(one)[0]).toBe(`🔎 ${escapeMarkdown(REMOVE_DONE)}`);
+    expect(two.edit).not.toHaveBeenCalled();
+    expect(two.answer).toHaveBeenCalledWith("It's already gone — nothing more to do.");
+    expect(remove.mock.calls.filter(() => gone)).toHaveLength(2); // both asked; only the first deleted
+  });
+
+  it('a d tap on a row that no longer qualifies shows the re-read story, no Remove button, no confirm', async () => {
+    const u = ui();
+    await createWhyMenu(deps({ story: vi.fn(async () => ok(facts({}, `${BANK} · TRN-600 · pending`))) })).onCallback({ data: `cz:wy:d${ID}` }, u);
+    const [text, kb] = edited(u);
+    expect(text).not.toContain(escapeMarkdown(REMOVE_CONFIRM));
+    expect(kb.inline_keyboard.flat().map((b) => b.text)).not.toContain('Remove');
+    expect(kb.inline_keyboard.flat().map((b) => b.text)).not.toContain('Remove for good…');
+  });
+
+  it('fingerprints a non-UTC date string the same as the day the remover reads', () => {
+    const row = { activityId: ID, note: `${BANK} · TRN-600`, absCents: 60000, activityType: 'DEPOSIT', accountName: 'PNC Checking' };
+    expect(removalFingerprint({ ...row, date: '2026-10-09T23:30:00-04:00' })).toBe(removalFingerprint({ ...row, date: '2026-10-10' }));
+  });
+
+  it('falls back to the notice alone when the story plus the notice is over 4096', async () => {
+    const f = facts({}, `${'_'.repeat(1500)} · TRN-600`);
+    const message = `Couldn't remove it (${'_'.repeat(900)}) — nothing was changed.`;
+    const u = ui();
+    await createWhyMenu(deps({ remove: vi.fn(async () => ({ ok: false, message })), story: vi.fn(async () => ok(f)) }))
+      .onCallback({ data: `cz:wy:D${ID}:${removalFingerprint(f.row)}` }, u);
+    const [text, kb] = edited(u);
+    expect(text.length).toBeLessThanOrEqual(4096);
+    expect(text.startsWith('⚠️ ')).toBe(true);
+    expect(text).not.toContain('🔎');
+    expect(kb).toEqual({ inline_keyboard: [] });
   });
 });

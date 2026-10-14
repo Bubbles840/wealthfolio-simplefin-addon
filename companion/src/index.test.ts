@@ -2647,20 +2647,22 @@ describe('buildTelegramCommandHandler', () => {
       expect((ui.edit.mock.calls[0] as unknown as [string])[0]).toBe('🔎 *Why is this here?* kroger\n\nTap one to see its story.');
     });
 
-    it('Remove on a story skips it and deletes it over REST', async () => {
-      const { removalFingerprint } = await import('../../shared/tx-remove.js');
+    it.each(['2026-10-09T00:00:00+00:00', '2026-10-09T23:30:00-04:00'])('Remove on a story dated %s skips it and deletes it over REST', async (rowDate) => {
       const { client, secrets } = clientFor([['account_mapping', JSON.stringify({ 'sfin-1': 'wf-1' })]]);
       const dup = {
-        id: 'dup-1', accountId: 'wf-1', accountName: 'PNC Checking', activityType: 'DEPOSIT', date: '2026-10-09T00:00:00+00:00', amount: '600',
+        id: 'dup-1', accountId: 'wf-1', accountName: 'PNC Checking', activityType: 'DEPOSIT', date: rowDate, amount: '600',
         currency: 'USD', comment: 'MOBILE DEPOSIT · TRN-600', sourceGroupId: null, metadata: null,
       };
       client.getAccounts = vi.fn(async () => [{ id: 'wf-1', accountType: 'CASH' }]);
       client.searchActivities = vi.fn(async (b: { activityIdFilter?: string[] }) => [dup].filter((r) => b.activityIdFilter?.includes(r.id)));
       client.saveMany = vi.fn(async () => ({ created: [], updated: [], errors: [] }));
-      const fp = removalFingerprint({ activityId: 'dup-1', note: dup.comment, absCents: 60000, date: '2026-10-09', activityType: 'DEPOSIT', accountName: 'PNC Checking' });
       const deps = buildTelegramListenerDeps(client);
       const ui = { edit: vi.fn(async () => {}), answer: vi.fn(async () => {}), send: vi.fn(async () => {}) };
-      await deps.onMenuCallback!({ data: `cz:wy:Ddup-1:${fp}`, chatId: 1, messageId: 2 }, ui);
+      await deps.onMenuCallback!({ data: 'cz:wy:ddup-1', chatId: 1, messageId: 2 }, ui);
+      const confirm = (ui.edit.mock.calls[0] as unknown as [string, { inline_keyboard: { callback_data: string }[][] }])[1];
+      const removeData = confirm.inline_keyboard.flat().map((b) => b.callback_data).find((d) => d.startsWith('cz:wy:D'))!;
+      ui.edit.mockClear();
+      await deps.onMenuCallback!({ data: removeData, chatId: 1, messageId: 2 }, ui);
       expect(JSON.parse(secrets.get('skipped_transactions')!)).toEqual([expect.objectContaining({ account: 'sfin-1', txId: 'TRN-600' })]);
       expect(client.saveMany).toHaveBeenCalledWith(expect.objectContaining({ deleteIds: ['dup-1'] }));
       expect((ui.edit.mock.calls[0] as unknown as [string])[0]).toBe(`🔎 ${escapeMarkdown("Removed. The bank feed won't import it again — Undo in the change log puts it back.")}`);
