@@ -57,6 +57,16 @@ export const UNDO_NOT_POSSIBLE = "This change can't be undone.";
 export const UNDO_NO_KEY = "Couldn't tell which bank transaction this is — nothing was changed.";
 export const UNDO_NO_ACCOUNT = "Couldn't tell which account this is — nothing was changed.";
 export const UNDO_EXACT_COPY = 'Wealthfolio refused it as an exact copy of a transaction it already has — nothing changed.';
+/** A removed row's create request, or null when it cannot be re-created: an
+ *  account, type, date and note, a finite positive amount and a currency. */
+export function createPayloadOf(raw: unknown): ActivityWrite | null {
+  const p = rec(raw);
+  const amount = Number(p.amount);
+  if (!str(p.accountId) || !str(p.activityType) || !str(p.activityDate) || typeof p.comment !== 'string') return null;
+  if (typeof p.amount !== 'number' || !Number.isFinite(amount) || amount <= 0 || !str(p.currency)) return null;
+  return p as unknown as ActivityWrite;
+}
+
 export const undoChangedSince = (op: UndoOp) => `It has changed since — nothing was ${op === 'undo' ? 'undone' : 'redone'}.`;
 export const undoGone = (op: UndoOp) => `That transaction is gone — nothing was ${op === 'undo' ? 'undone' : 'redone'}.`;
 
@@ -516,10 +526,7 @@ export function planChangeUndo(
           steps: [{ do: 'clear-tx', txKey: key, flag: 'keepDuplicate' }],
         });
       }
-      const payload = rec(before.activity);
-      const write = (str(payload.accountId) && str(payload.activityType) && str(payload.activityDate) && typeof payload.comment === 'string')
-        ? payload as unknown as ActivityWrite
-        : null;
+      const write = createPayloadOf(before.activity);
       // A copy an earlier undo put back is still there: keeping it is all that is left to do.
       const steps: UndoStep[] = [{ do: 'set-tx', txKey: key, flag: 'keepDuplicate', label: labelOf(entry) }];
       if (!state.row) {
@@ -539,16 +546,14 @@ export function planChangeUndo(
       }
       if (skipped.length === 0) return refuse(UNDO_NO_KEY);
       if (op === 'undo') {
-        const payload = rec(before.activity);
-        if (!str(payload.accountId) || !str(payload.activityType) || !str(payload.activityDate) || typeof payload.comment !== 'string') {
-          return refuse(UNDO_NOT_POSSIBLE);
-        }
+        const payload = createPayloadOf(before.activity);
+        if (!payload) return refuse(UNDO_NOT_POSSIBLE);
         // The row first: a skip entry left behind is harmless to a stored row
         // (the sync never deletes one on the list's behalf), and it is reported.
         return plan({
           op, needsSync: false, rowAfter: 'created', done: "Undone — it's back, and the bank feed can import it again.",
           steps: [
-            { do: 'create', write: payload as unknown as ActivityWrite },
+            { do: 'create', write: payload },
             ...skipped.map((s) => ({ do: 'unskip' as const, account: s.account, txId: s.txId })),
           ],
         });
@@ -557,6 +562,12 @@ export function planChangeUndo(
       if (!row) return refuse(undoGone(op));
       const linked = linkedRefusal(row);
       if (linked) return refuse(linked);
+      // Redo removes the row the Undo put back, not one edited since.
+      const was = rec(before.activity);
+      if (
+        row.type !== str(was.activityType) || row.date !== (str(was.activityDate) ?? '').slice(0, 10)
+        || row.absCents !== Math.round(Math.abs(Number(was.amount)) * 100) || row.comment !== was.comment
+      ) return refuse(undoChangedSince(op));
       // The skip first, as the removal did.
       return plan({
         op, needsSync: false, rowAfter: null, done: "Redone — it's removed and won't be imported again.",
