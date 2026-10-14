@@ -6,6 +6,7 @@ import {
   type ChangeDraft, type ChangeEntry,
 } from './change-entries.js';
 import type { ChangeLogItem } from './change-log.js';
+import { txIdFromComment } from './sync-core.js';
 import {
   currentRowId, currentRuleId, latestReversal, planChangeUndo, REDO_FROM_TELEGRAM, undoAvailability, undoChangedSince,
   UNDO_ALREADY_UNDONE, UNDO_EXACT_COPY, UNDO_FROM_TELEGRAM, UNDO_LINKED_REFUSAL, UNDO_MAYBE_LINKED, UNDO_NO_KEY, UNDO_NOT_POSSIBLE,
@@ -388,11 +389,30 @@ describe('planChangeUndo — sync decisions', () => {
     ]);
     expect(reason(planChangeUndo(venmo, 'undo', { row: { ...noted, comment: 'edited by hand' } }, { latest: null }))).toBe('It has changed since — nothing was undone.');
     expect(reason(planChangeUndo(venmo, 'undo', { row: { ...noted, linked: 'confirmed' } }, { latest: null }))).toBe(UNDO_LINKED_REFUSAL);
+    expect(reason(planChangeUndo(venmo, 'undo', { row: { ...noted, linked: 'maybe' } }, { latest: null }))).toBe(UNDO_MAYBE_LINKED);
+    const keyless = { ...venmo, subject: { ...venmo.subject, txKeys: [] } };
+    expect(reason(planChangeUndo(keyless, 'undo', { row: noted }, { latest: null }))).toBe(UNDO_NO_KEY);
     expect(reason(planChangeUndo(venmo, 'undo', { row: null }, { latest: null }))).toBe('That transaction is gone — nothing was undone.');
     expect(ok(planChangeUndo(venmo, 'redo', {}, { latest: undo(venmo, { activityId: 'act-6' }) }))).toMatchObject({
       needsSync: true, rowAfter: 'act-6', done: 'Redone — the next sync adds the note again.',
       steps: [{ do: 'clear-tx', txKey: KEY, flag: 'noVenmoNote' }],
     });
+  });
+
+  it('a Venmo note on a pending row undoes to exactly the old note, tx id intact', () => {
+    const pending = entry(venmoNoteChange({
+      account: CHECKING, txKey: KEY, activityId: 'act-6', description: 'VENMO PAYMENT 1023', amountCents: -2500, date: '2026-10-04',
+      beforeNote: 'VENMO PAYMENT 1023 · TRN-a1b2 · pending', afterNote: 'VENMO PAYMENT 1023 · Venmo: Rent October · TRN-a1b2 · pending', note: 'Rent October',
+    }));
+    const noted = row({ id: 'act-6', absCents: 2500, date: '2026-10-04', comment: 'VENMO PAYMENT 1023 · Venmo: Rent October · TRN-a1b2 · pending' });
+    const plan = ok(planChangeUndo(pending, 'undo', { row: noted, currency: 'USD' }, { latest: null }));
+    const written = (plan.steps[1] as { write: { comment: string } }).write.comment;
+    expect(written).toBe('VENMO PAYMENT 1023 · TRN-a1b2 · pending');
+    expect(txIdFromComment(written)).toBe('TRN-a1b2');
+  });
+
+  it('a Venmo note is a sync decision: an old companion disables its Undo in the app', () => {
+    expect(undoAvailability(venmo, { host: 'addon', companionVersion: '1.59.2' })).toEqual({ kind: 'update-companion', op: 'undo', text: 'Update the companion first' });
   });
 
   const plug = entry(balanceCorrectionChange({
