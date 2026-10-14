@@ -3567,6 +3567,67 @@ describe('sendMonthlyTelegramReport', () => {
   });
 });
 
+describe('the month in review (project 5)', () => {
+  const CUBE = JSON.stringify({
+    version: 1, asOf: '2026-10-01T13:00:00.000Z', months: ['2026-08', '2026-09', '2026-10'], categories: ['Food_Drink', 'Groceries'],
+    accounts: [{ sfinId: 'sfin-chk', name: 'PNC Checking', type: 'CASH' }],
+    spend: [[[20000], [40000]], [[12000], [52000]], [[0], [0]]], uncategorized: [[0], [0], [0]], income: [[0], [100000], [0]],
+    budgets: [[0, 0], [0, 0], [0, 0]], merchants: [[], [{ name: 'SQ *COFFEE_CLUB', cents: 41200, count: 4 }], []],
+    feesInterest: [0, 0, 0], netWorth: [1000000, 1124000, null], liquid: [null, null, null], pool: null,
+  });
+  /** The wrap-up from the mocked readers: Groceries 200 of 800, Dining 550 of 500. */
+  const WRAP_UP = '*September wrap-up*\n'
+    + '\n'
+    + '🚨 Dining  $550 of $500 · *$50 over*\n'
+    + 'Groceries  *$200* of $800\n'
+    + '\n'
+    + '💰 Finished *$550 under budget* · spent $750 of $1,300';
+  const clientWith = (tg: Record<string, unknown>) => {
+    const secrets = new Map<string, string>([
+      ['telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true, digestRows: 'all', ...tg })],
+      ['report_cube', CUBE],
+    ]);
+    return {
+      secrets,
+      client: {
+        getAddonSecret: vi.fn(async (_a: string, k: string) => secrets.get(k) ?? null),
+        setAddonSecret: vi.fn(async (_a: string, k: string, v: string) => { secrets.set(k, v); }),
+      } as any,
+    };
+  };
+  const sentText = async (client: any): Promise<string> => {
+    const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+    vi.stubGlobal('fetch', fetchMock);
+    await sendMonthlyTelegramReport(client);
+    return JSON.parse((fetchMock.mock.calls[0] as any)[1].body).text;
+  };
+
+  beforeEach(() => {
+    vi.mocked(existsSync).mockReturnValue(true);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(2026, 9, 1, 9, 0, 0));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('Full adds the review after the verdict, bank text escaped — and the archive keeps it', async () => {
+    const { client, secrets } = clientWith({});
+    const text = await sentText(client);
+    expect(text).toBe(`${WRAP_UP}\n\n*Month in review*\n`
+      + 'Biggest changes: Groceries +$120 · Food\\_Drink -$80\n'
+      + 'Top merchants: SQ \\*COFFEE\\_CLUB $412\n'
+      + 'Net worth: +$1,240 over the month\n'
+      + 'Savings rate: 36%');
+    expect(JSON.parse(secrets.get('reports_monthly')!).archive[0].text).toBe(text);
+  });
+
+  it('Brief is the wrap-up exactly as it always was, byte for byte', async () => {
+    const { client } = clientWith({ reportDetail: 'brief' });
+    expect(await sentText(client)).toBe(WRAP_UP);
+  });
+});
+
 describe('sendUnmappedAccountsNotice', () => {
   const ROBINHOOD = { sfinAccountId: 'sfin-rh', accountName: 'Robinhood Gold Card', orgName: 'Robinhood' };
   const ANNOUNCED_KEY = 'announced_unmapped_accounts';
