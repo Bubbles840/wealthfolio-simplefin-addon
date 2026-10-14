@@ -75,7 +75,7 @@ export const HEADLINE_READ_NOTES: Record<HeadlineRead, string> = {
   report: "Couldn't read the report's figure for this month.",
   wealthfolio: "Couldn't read Wealthfolio's Spending page figure.",
   ledger: "Couldn't read the Wealthfolio database, so the reasons are missing.",
-  'spending-off': "Wealthfolio's Spending page is turned off, so there's nothing to compare.",
+  'spending-off': "Wealthfolio's Spending page is turned off or has no accounts selected, so there's nothing to compare.",
   settings: "Couldn't read Wealthfolio's settings just now, so its excluded categories and the Spending page's accounts aren't taken into account, and the month follows the companion's timezone.",
 };
 const READ_ORDER: HeadlineRead[] = ['report', 'wealthfolio', 'spending-off', 'ledger', 'settings'];
