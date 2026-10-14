@@ -67,8 +67,10 @@ export interface BalanceFacts {
   names?: Record<string, string>;
   /** Account type (upper-case) by Wealthfolio account id, from the accounts
    *  REST route. When present it is authoritative: an id missing from it, or
-   *  with a blank type, is of UNKNOWN type and is never compared. When absent,
-   *  the ledger's account types are used. */
+   *  with a blank type, has no type here (so is not treated as a card). That
+   *  such an account is never COMPARED is the companion's guarantee, not this
+   *  module's: audit-facts.ts drops its valuation. When absent, the ledger's
+   *  account types are used. */
   accountTypes?: Record<string, string>;
   /** `/valuations/latest`, in cents, by Wealthfolio account id. */
   valuations?: Record<string, number>;
@@ -98,7 +100,8 @@ export interface BalanceExplanation {
   wfAccountId: string;
   /** Raw: escaped by Telegram, rendered as text by the app. */
   name: string;
-  /** Upper-case; '' when the database could not say. */
+  /** Upper-case, from REST `/accounts` (`accountTypes`; the ledger's when
+   *  that list is not given); '' when unknown. */
   accountType: string;
   bank: BankFigure;
   /** null: Wealthfolio's figure could not be read. */

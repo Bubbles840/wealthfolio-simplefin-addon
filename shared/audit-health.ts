@@ -25,8 +25,8 @@
  * A leg of yours gets its likely other half only as fix-transfers.mjs would
  * link it: another account (not archived), the same currency and amount to
  * the cent, the opposite direction (a TRANSFER_OUT wants a TRANSFER_IN,
- * DEPOSIT or CREDIT; a TRANSFER_IN a TRANSFER_OUT or WITHDRAWAL), POSTED,
- * within MATCH_DAYS, not already half of a valid pair, not the add-on's
+ * DEPOSIT or CREDIT; a TRANSFER_IN a TRANSFER_OUT or WITHDRAWAL), POSTED and
+ * not pending (the sync never pairs a ` · pending` row), within MATCH_DAYS, not already half of a valid pair, not the add-on's
  * opening balance or correction — and unique BOTH ways: the leg has exactly
  * one candidate and no other leg claims it. Anything else is "many" and is
  * never offered. The add-on's own rows (opening balances, corrections,
@@ -50,7 +50,7 @@ import { changeDay, changeMoney } from './change-entries.js';
 import { descriptionFromComment, isTransferType, txIdFromComment } from './sync-core.js';
 import { accountTxKey } from './transfers.js';
 import {
-  isCorrectionNote, isPlaceholderNote, isStartingBalanceNote, type AuditLedger, type AuditLedgerRow,
+  isCorrectionNote, isPendingNote, isPlaceholderNote, isStartingBalanceNote, type AuditLedger, type AuditLedgerRow,
 } from './audit-ledger.js';
 
 /** fix-transfers.mjs's MATCH_DAYS. */
@@ -153,7 +153,8 @@ function groupProblem(legs: AuditLedgerRow[]): GroupProblem | null {
     const key = (r: AuditLedgerRow) => (carriesSecurity(r) ? r.assetId : '');
     if (key(a) !== key(b)) return { kind: 'security' };
     // Same asset: invalid only when both quantities are known and differ.
-    if (a.quantity != null && b.quantity != null && Math.abs(Math.abs(a.quantity) - Math.abs(b.quantity)) > 1e-9) {
+    // Wealthfolio's transfer_pair_tolerance (transfer_pairs.rs): 0.000001.
+    if (a.quantity != null && b.quantity != null && Math.abs(Math.abs(a.quantity) - Math.abs(b.quantity)) > 1e-6) {
       return { kind: 'security' };
     }
   }
@@ -205,8 +206,9 @@ export function healthIssues(facts: HealthFacts): HealthReport {
   const userLegs = live.filter((r) => eligible(r) && isTransferType(r.type) && r.status === 'POSTED' && !inValidPair(r) && !r.external
     && !isBookkeeping(r) && !isPlaceholderNote(r.notes));
   const userIds = new Set(userLegs.map((l) => l.id));
+  // A pending row (the sync's ` · pending` note) is never offered: the sync never pairs one.
   const counterparts = (leg: AuditLedgerRow) => live.filter((c) => c.id !== leg.id && c.accountId !== leg.accountId
-    && c.currency === leg.currency && c.status === 'POSTED' && !isBookkeeping(c) && !inValidPair(c)
+    && c.currency === leg.currency && c.status === 'POSTED' && !isPendingNote(c.notes) && !isBookkeeping(c) && !inValidPair(c)
     && c.absCents === leg.absCents && Math.abs(dayMs(c.date) - dayMs(leg.date)) <= MATCH_DAYS * 86_400_000
     && (leg.type === 'TRANSFER_OUT' ? INFLOW.has(c.type) : OUTFLOW.has(c.type)));
   const claims = new Map<string, number>();

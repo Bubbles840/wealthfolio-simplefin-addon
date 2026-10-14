@@ -9,8 +9,13 @@
  * Where each fact comes from:
  *  - account_mapping, account_balances, account_names and the report cube:
  *    add-on secrets, over REST;
+ *  - every account's type: `GET /accounts` (so a database that is down costs
+ *    only the ledger's part; an account of unknown type is never compared);
  *  - Wealthfolio's figures: `/valuations/latest` and `/spending/insight`;
- *  - the rows and two settings: the read-only database (sqlite-audit.ts).
+ *  - from the read-only database (sqlite-audit.ts): the whole ledger (read
+ *    once, shared by the balance and Health checks), the month's rows, and
+ *    the Spending page's settings — its timezone, excluded categories,
+ *    on/off, accounts — with each spending category's parent.
  *
  * `/audit` re-runs these on every tap; the publish runs them after each sync.
  */
@@ -221,8 +226,10 @@ export type AuditPublishClient = AuditClient & Pick<WealthfolioClient, 'setAddon
 /**
  * Runs the checks and writes the snapshot (shared/audit-snapshot.ts). Writes
  * nothing when Wealthfolio could not be reached, so the previous snapshot
- * stays; rejects when the write fails. The sync's caller catches and logs
- * either way — a publish never fails or changes a sync.
+ * stays; rejects WITHOUT writing when the snapshot is over budget even fully
+ * trimmed (the previous one stays); rejects when the write fails. The sync's
+ * caller catches and logs either way — a publish never fails or changes a
+ * sync.
  */
 export async function publishAuditSnapshot(
   client: AuditPublishClient,

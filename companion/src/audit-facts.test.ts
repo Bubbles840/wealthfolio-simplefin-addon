@@ -133,7 +133,7 @@ describe('runAudit', () => {
     expect(spendingSpent).not.toHaveBeenCalled();
     expect(out.headline.wealthfolioCents).toBeNull();
     expect(out.headline.notes).toEqual([HEADLINE_READ_NOTES['spending-off']]);
-    expect(HEADLINE_READ_NOTES['spending-off']).toBe("Wealthfolio's Spending page is turned off, so there's nothing to compare.");
+    expect(HEADLINE_READ_NOTES['spending-off']).toBe("Wealthfolio's Spending page is turned off or has no accounts selected, so there's nothing to compare.");
   });
 
   it('reads the account mapping once per run', async () => {

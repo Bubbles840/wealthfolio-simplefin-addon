@@ -57,6 +57,17 @@ describe('healthIssues: incomplete transfer legs', () => {
     expect(healthIssueLines(mine)[1]).toBe('It could pair with more than one row — link the right two in Wealthfolio.');
   });
 
+  it('never offers a pending row as the other half — the sync never pairs one', () => {
+    const out = row({ id: 'out' });
+    const pending = row({ id: 'pend', accountId: 'wf-ally', rawType: 'DEPOSIT', type: 'DEPOSIT', date: '2026-10-05', notes: 'FROM PNC · TRN-9 · pending' });
+    const [mine] = legs(healthIssues(facts([out, pending])).issues);
+    expect(mine).toMatchObject({ match: 'none', counterpart: null });
+    // …and a pending candidate beside a posted one leaves the posted one unique.
+    const posted = row({ id: 'post', accountId: 'wf-cap', rawType: 'DEPOSIT', type: 'DEPOSIT', date: '2026-10-05', notes: 'FROM PNC · TRN-10' });
+    const [both] = legs(healthIssues(facts([out, pending, posted])).issues);
+    expect(both).toMatchObject({ match: 'one', counterpart: expect.objectContaining({ activityId: 'post' }) });
+  });
+
   it('does not offer a row two legs both want', () => {
     const one = row({ id: 'one', date: '2026-10-04' });
     const two = row({ id: 'two', accountId: 'wf-cap', date: '2026-10-05' });
@@ -224,6 +235,12 @@ describe('healthIssues: pairs Wealthfolio 3.10 accepts, and hidden claimants', (
     const unread = healthIssues(facts([row({ group: 'u', assetId: 'AAPL' }), inn({ group: 'u', assetId: 'AAPL' })]));
     expect(same.issues).toEqual([]);
     expect(unread.issues).toEqual([]);
+  });
+  it('holds quantities equal within Wealthfolio’s own tolerance, 0.000001', () => {
+    const near = healthIssues(facts([row({ group: 'n', assetId: 'AAPL', quantity: 3 }), inn({ group: 'n', assetId: 'AAPL', quantity: -3.0000005 })]));
+    expect(near.issues).toEqual([]);
+    const far = legs(healthIssues(facts([row({ id: 'f1', group: 'f', assetId: 'AAPL', quantity: 3 }), inn({ id: 'f2', group: 'f', assetId: 'AAPL', quantity: 3.000002 })])).issues);
+    expect(far[0].problem).toEqual({ kind: 'security' });
   });
   it('refuses security legs of different assets or quantities', () => {
     const diffAsset = legs(healthIssues(facts([row({ id: 'p1', group: 'a', assetId: 'AAPL' }), inn({ id: 'p2', group: 'a', assetId: 'MSFT' })])).issues);
