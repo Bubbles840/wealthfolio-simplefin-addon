@@ -1,3 +1,4 @@
+import type { BudgetTarget } from '../../shared/budget-suggest.js';
 import type { CategoryRuleLike } from '../../shared/tx-story.js';
 
 /** A categorization rule as `GET /spending/rules` lists it (upstream
@@ -20,6 +21,44 @@ export interface ActivitySearchItem {
   subtype?: string | null;
   /** Upstream `ActivityDetails.accountName`. */
   accountName?: string | null;
+}
+
+/**
+ * The budget targets in a `BudgetSnapshot` (upstream crates/spending
+ * budget/model.rs, camelCase; the same on 3.8, 3.9 and 3.10): `state.targets`,
+ * each `{ id, periodKey, targetType, taxonomyId, categoryId, groupId, amount }`
+ * with `amount` a decimal STRING — read here as cents. A target missing an id,
+ * period or type is skipped; one whose AMOUNT does not parse is KEPT with
+ * `amountCents: NaN`, because overwrite safety (`hasBudget`) must never depend
+ * on reading the amount — Wealthfolio's POST is an upsert, and a target we
+ * cannot price is still a budget. `enabled` is false when the snapshot has no
+ * budget groups: Wealthfolio answers an EMPTY snapshot while its Spending
+ * tracker is off (`BudgetService::get`), and otherwise always has its system
+ * groups — so an empty list there is not "no budgets". A reply that is not a
+ * snapshot throws.
+ */
+export function parseBudgetSnapshot(body: unknown): { enabled: boolean; targets: BudgetTarget[] } {
+  const state = (body && typeof body === 'object' && !Array.isArray(body) ? (body as { state?: unknown }).state : null) as
+    { groups?: unknown; targets?: unknown } | null | undefined;
+  if (!state || typeof state !== 'object' || !Array.isArray(state.targets)) {
+    throw new Error("Wealthfolio's budget reply carried no budget targets");
+  }
+  const text = (v: unknown) => (typeof v === 'string' && v !== '' ? v : null);
+  const targets: BudgetTarget[] = [];
+  for (const raw of state.targets as unknown[]) {
+    if (!raw || typeof raw !== 'object') continue;
+    const t = raw as Record<string, unknown>;
+    const amount = typeof t.amount === 'number' ? t.amount : typeof t.amount === 'string' && t.amount.trim() !== '' ? Number(t.amount) : NaN;
+    const id = text(t.id);
+    const periodKey = text(t.periodKey);
+    const targetType = text(t.targetType);
+    if (!id || !periodKey || !targetType) continue;
+    targets.push({
+      id, periodKey, targetType, taxonomyId: text(t.taxonomyId), categoryId: text(t.categoryId),
+      amountCents: Number.isFinite(amount) ? Math.round(amount * 100) : NaN,
+    });
+  }
+  return { enabled: Array.isArray(state.groups) && state.groups.length > 0, targets };
 }
 
 export class WealthfolioClient {
@@ -136,6 +175,60 @@ export class WealthfolioClient {
     const spent = body?.headline?.spent;
     if (typeof spent !== 'number' || !Number.isFinite(spent)) throw new Error('getSpendingInsight: the reply carried no headline.spent');
     return spent;
+  }
+
+  /**
+   * Every budget target (`GET /spending/budget?periodKey=default`, upstream
+   * `get_budget`; `state.targets` lists every period's targets, and the
+   * `'default'` view skips the month's actuals). See `parseBudgetSnapshot`.
+   */
+  async getBudgetTargets(): Promise<{ enabled: boolean; targets: BudgetTarget[] }> {
+    const res = await fetch(`${this.baseUrl}/api/v1/spending/budget?periodKey=default`, { headers: this.authHeaders() });
+    if (!res.ok) throw await this.httpError('getBudgetTargets', res);
+    return parseBudgetSnapshot(await res.json());
+  }
+
+  /**
+   * Sets a category's default monthly budget (`POST /spending/budget/targets`,
+   * upstream `NewBudgetTarget`: `periodKey: 'default'`, `targetType:
+   * 'category'`, the spending taxonomy, the category, and `amount` as a
+   * decimal string — `validate_budget_target` requires taxonomyId and
+   * categoryId and no groupId). Upstream this is an UPSERT on (period,
+   * taxonomy, category): an existing target is overwritten, so callers
+   * re-read first. Resolves the stored target, read back from the snapshot
+   * the reply carries — or null when the POST succeeded but the reply names
+   * no such target (or is not a snapshot): the budget IS written, so this
+   * never throws after a 2xx, and the caller must record it without an id.
+   */
+  async setDefaultBudgetTarget(categoryId: string, amountCents: number): Promise<BudgetTarget | null> {
+    const res = await fetch(`${this.baseUrl}/api/v1/spending/budget/targets?periodKey=default`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
+      body: JSON.stringify({
+        periodKey: 'default',
+        targetType: 'category',
+        taxonomyId: 'spending_categories',
+        categoryId,
+        amount: (amountCents / 100).toFixed(2),
+      }),
+    });
+    if (!res.ok) throw await this.httpError('setBudgetTarget', res);
+    try {
+      return parseBudgetSnapshot(await res.json()).targets.find((t) => t.periodKey === 'default'
+        && t.targetType === 'category' && t.taxonomyId === 'spending_categories' && t.categoryId === categoryId) ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Deletes a budget target (`DELETE /spending/budget/targets/{id}`). Upstream
+   *  deleting one that is already gone succeeds; Undo re-reads first anyway. */
+  async deleteBudgetTarget(id: string): Promise<void> {
+    const res = await fetch(`${this.baseUrl}/api/v1/spending/budget/targets/${encodeURIComponent(id)}?periodKey=default`, {
+      method: 'DELETE',
+      headers: this.authHeaders(),
+    });
+    if (!res.ok) throw await this.httpError('deleteBudgetTarget', res);
   }
 
   /** Marks two activities as one internal transfer (shared source_group_id). */
