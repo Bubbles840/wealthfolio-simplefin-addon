@@ -58,7 +58,9 @@ import { withSnooze } from '../../shared/findings.js';
 import { monthEndForecast, previousThreeFullMonths, daysInMonthOf } from '../../shared/projection.js';
 import { startTelegramListener } from './telegram-listener.js';
 import type { TelegramListenerDeps } from './telegram-listener.js';
-import { createImapSource, ingestAmazonMail, amazonMailConfigured } from './amazon-mail.js';
+import { createImapSource, ingestAmazonMail, amazonMailConfigured, isAmazonMessage, mailBody, shareMailSource } from './amazon-mail.js';
+import { ingestVenmoMail, isVenmoMail } from './venmo-mail.js';
+import { isVenmoMessage } from '../../shared/venmo.js';
 import { AMAZON_CONFIG_SECRET_KEY, AMAZON_LABELS_SECRET_KEY } from './amazon-mail.js';
 import type { AmazonIngestResult, AmazonMailConfig, MailSource } from './amazon-mail.js';
 import { DEFAULT_GLYPH_STYLE, money, whyButton, WHY_BUTTON_TEXT, WHY_CALLBACK_PREFIX } from '../../shared/telegram.js';
@@ -68,6 +70,7 @@ import type { SyncHealth } from '../../shared/telegram.js';
 import { SIMPLEFIN_SYNC_VERSION, COMPANION_VERSION_SECRET_KEY, INSTALLED_ADDON_VERSION_SECRET_KEY, isNewerVersion } from '../../shared/version.js';
 import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeRuleCategorizedAmazonRows, getNativeCategorizedSpending, getNativeSpendingCategories, getNativeCategoryCatalog, getNativeSubcategorySpending, getNativeUncategorizedSpendingTotal, countRulePatternMatches, getNativeSpendMatrix, getNativeIncomeByMonthAccount, getNativeUncategorizedByMonthAccount, getNativeMerchantRows, getNativeDrillRows, getNativeFeesInterestByMonth, getNativeSpendDailyTotals, getNativeValuationByMonth, getNativeIncomeCategories } from './sqlite-native.js';
 import { publishUncategorizedStatusForDbPath } from './uncategorized-status.js';
+import { getNativePastFilings } from './sqlite-guess.js';
 import { createCategorizeController, SPENDING_TAXONOMY_ID } from './categorize.js';
 import { createAmazonLabelMenu, type AmazonLabelMenu } from './amazon-labels.js';
 import { fileAmazonCharges } from './amazon-filing.js';
@@ -83,7 +86,7 @@ import { isChangeLogPartial } from '../../shared/change-view.js';
 import type { ChangeDraft } from '../../shared/change-entries.js';
 import { createTransferLearning, type TransferLearning } from './transfer-learning.js';
 import type { CategorizeController, CategorizeDeps } from './categorize.js';
-import { AMAZON_MAIL_STATUS_SECRET_KEY, AMAZON_MAIL_SAMPLES_SECRET_KEY, UNCATEGORIZED_STATUS_SECRET_KEY, POOL_STATUS_SECRET_KEY, type AmazonMailStatus, type AmazonMailSamples } from '../../shared/status-keys.js';
+import { AMAZON_MAIL_STATUS_SECRET_KEY, AMAZON_MAIL_SAMPLES_SECRET_KEY, UNCATEGORIZED_STATUS_SECRET_KEY, POOL_STATUS_SECRET_KEY, VENMO_MAIL_SAMPLES_SECRET_KEY, type AmazonMailStatus, type AmazonMailSamples, type VenmoMailSamples } from '../../shared/status-keys.js';
 import {
   formatHelpReply,
   formatLeftReply,
@@ -97,7 +100,9 @@ import {
   formatCategoryQueryMiss,
   NEWRULE_CATEGORY_LIST_HINT,
 } from '../../shared/telegram-commands.js';
-import { parseNewRuleArgs } from '../../shared/categorize-menu.js';
+import {
+  formatAccountQueryMiss, NEWRULE_ACCOUNTS_UNREADABLE, parseNewRuleArgs, resolveAccountQuery, resolveNewRuleCategory, type RuleAccount,
+} from '../../shared/categorize-menu.js';
 import type { CategoryBudgetSnapshot, BudgetPeriod, ParsedCommand, StatusReplyInput } from '../../shared/telegram-commands.js';
 import { parsePoolArgs, POOL_USAGE_REPLY } from '../../shared/telegram-commands.js';
 import { SEMESTER_POOL_SECRET_KEY, parsePoolConfig } from '../../shared/pool.js';
@@ -592,8 +597,10 @@ async function pollAmazonMail(
   );
   let source: MailSource | null = null;
   try {
-    source = await createImapSource(merged);
-    const result = await ingestAmazonMail(source, store, merged, Date.now());
+    // Amazon's and Venmo's messages (3), one read shared between the two.
+    source = await createImapSource(merged, (from, body) => isAmazonMessage(from, body) || isVenmoMessage(from, body));
+    const mailbox = shareMailSource(source);
+    const result = await ingestAmazonMail(mailbox.view((m) => isAmazonMessage(m.from, mailBody(m))), store, merged, Date.now());
     log(
       `Amazon mail: ${result.scanned} scanned, ${result.added} orders added` +
       `${result.ignored ? `, ${result.ignored} delivery notices skipped` : ''}` +
@@ -636,6 +643,7 @@ async function pollAmazonMail(
     await wfClient
       .setAddonSecret('simplefin-sync', AMAZON_MAIL_SAMPLES_SECRET_KEY, JSON.stringify(samples))
       .catch(() => {});
+    await pollVenmoMail(mailbox.view(isVenmoMail), store, wfClient);
     return result.newLabels;
   } catch (err) {
     log(`Amazon mail error (categorization skipped this run): ${formatError(err)}`);
@@ -653,6 +661,33 @@ async function pollAmazonMail(
     return [];
   } finally {
     await source?.close().catch(() => {});
+  }
+}
+
+/**
+ * The same mailbox's Venmo emails into the Venmo ledger (3). On whenever the
+ * Amazon mailbox is: it only acts on Venmo mail that arrives. Its own guard —
+ * a Venmo failure costs this run's Venmo notes, never Amazon's status or the
+ * sync. The unreadable ones are published every completed scan, so the set
+ * clears itself once a fix reads them.
+ */
+async function pollVenmoMail(source: MailSource, store: RestSyncStore, wfClient: WealthfolioClient): Promise<void> {
+  try {
+    const result = await ingestVenmoMail(source, store, Date.now());
+    if (result.scanned > 0) {
+      log(
+        `Venmo mail: ${result.scanned} scanned, ${result.added} payments added` +
+        `${result.ignored ? `, ${result.ignored} other Venmo emails skipped` : ''}` +
+        `${result.unparsed ? `, ${result.unparsed} unrecognised` : ''}` +
+        `${result.pruned ? `, ${result.pruned} pruned` : ''}`,
+      );
+    }
+    const samples: VenmoMailSamples = { asOf: new Date().toISOString(), unparsed: result.unparsed, samples: result.samples };
+    await wfClient
+      .setAddonSecret('simplefin-sync', VENMO_MAIL_SAMPLES_SECRET_KEY, JSON.stringify(samples))
+      .catch(() => {});
+  } catch (err) {
+    log(`Venmo mail error (notes skipped this run): ${formatError(err)}`);
   }
 }
 
@@ -1046,6 +1081,9 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
         await wfClient.getAddonSecret('simplefin-sync', 'uncategorized_dismissals'),
         'uncategorized_dismissals',
       ) ?? {},
+      new Date(),
+      // Each row's guessed category (3): how you filed the same merchant before.
+      getNativePastFilings,
     );
 
     // The Overview tile's copy of the semester pool. Republished every sync,
@@ -2921,6 +2959,8 @@ export function buildCategorizeDeps(wfClient: WealthfolioClient): CategorizeDeps
     // The income taxonomy, for money-in rows' first filings (a grant check is
     // not spending, and upstream refuses a spending category on it).
     readIncomeCategories: getNativeIncomeCategories,
+    // Each row's guessed category (3): how you filed the same merchant before.
+    readFilings: getNativePastFilings,
     // 1.61: the transaction screen's 🔎 Why? — the story as a new message.
     why: (activityId, send) => buildWhyMenu(wfClient).sendStory(activityId, send),
     readLedger,
@@ -2976,6 +3016,8 @@ export function buildCategorizeDeps(wfClient: WealthfolioClient): CategorizeDeps
           (key, value) => wfClient.setAddonSecret('simplefin-sync', key, value),
           (dbPath, start, end) => getNativeUncategorizedSpending(dbPath, start, end),
           readLedger,
+          new Date(),
+          getNativePastFilings,
         );
       } catch (err) {
         log(`Categorize menu: republishing the uncategorized status failed: ${formatError(err)}`);
@@ -3542,21 +3584,47 @@ export function buildTelegramCommandHandler(
         // presets ship several `Other`s) come back AMBIGUOUS rather than as
         // whichever one the tree lists first, and the reply names each one's
         // parent so the reader can type one back qualified.
-        const result = resolveCategoryQuery(categories, parsed.categoryQuery);
+        //
+        // The whole category side first, then `<category> in <account>` (M1):
+        // a category named "Dine In Out" is never "Dine" in an account "Out".
+        const target = resolveNewRuleCategory(parsed, (q) => resolveCategoryQuery(categories, q));
         // With THIS command's pointer, not `/left`'s: the tree resolved here
         // includes children, which `/left` never lists, so its default "…/left
         // lists them all" would send a reader who mistyped a subcategory to a
         // list that cannot contain it.
-        const miss = formatCategoryQueryMiss(result, parsed.categoryQuery, NEWRULE_CATEGORY_LIST_HINT);
+        const miss = formatCategoryQueryMiss(target.result, target.query, NEWRULE_CATEGORY_LIST_HINT);
         if (miss !== null) {
           await reply(miss);
           return;
         }
-        const category = (result as { kind: 'one'; category: { id: string } }).category;
+        const category = (target.result as { kind: 'one'; category: { id: string } }).category;
+        // `… in <account>` (3, L5): the preview opens for that account only.
+        // Archived accounts are not offered.
+        let account: RuleAccount | undefined;
+        const accountQuery = target.accountQuery;
+        if (accountQuery) {
+          let accounts: RuleAccount[];
+          try {
+            accounts = (await wfClient.getAccounts())
+              .filter((a) => a.isArchived !== true)
+              .map((a) => ({ id: a.id, name: String((a as { name?: unknown }).name ?? '') }))
+              .filter((a) => a.name !== '');
+          } catch (err) {
+            log(`/newrule: reading accounts failed: ${formatError(err)}`);
+            await reply(NEWRULE_ACCOUNTS_UNREADABLE);
+            return;
+          }
+          const found = resolveAccountQuery(accounts, accountQuery);
+          if (found.kind !== 'one') {
+            await reply(formatAccountQueryMiss(found, accountQuery, accounts));
+            return;
+          }
+          account = found.account;
+        }
         // Never creates the rule outright: a rule files every uncategorized
         // match now AND on every future import, so the confirmation screen is
         // where that gets disclosed before anything is written.
-        await controller.openRulePreview(parsed.pattern, category.id, (text, keyboard) => reply(text, keyboard));
+        await controller.openRulePreview(parsed.pattern, category.id, (text, keyboard) => reply(text, keyboard), account);
         return;
       }
 

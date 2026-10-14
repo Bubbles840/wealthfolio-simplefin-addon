@@ -13,6 +13,7 @@ import {
   visibleUncategorized,
 } from '../../shared/uncategorized.js';
 import { descriptionFromComment } from '../../shared/sync-core.js';
+import { buildGuessIndex, guessCategory, guessSinceDay, type GuessIndex, type PastFiling } from '../../shared/category-guess.js';
 
 /**
  * Last 90 days, end-exclusive tomorrow — half-open bounds like the
@@ -41,6 +42,9 @@ interface UncategorizedSourceRow {
   accountName: string;
   /** See `UncategorizedRow.direction` — passed through untouched. */
   direction?: 'in' | 'out';
+  /** A row whose filing is an INCOME category gets no guess: a guess is a
+   *  spending category, which Wealthfolio refuses on it. */
+  incomeEligible?: boolean;
 }
 
 /**
@@ -57,22 +61,40 @@ export async function publishUncategorizedStatus(
   readRows: () => UncategorizedSourceRow[],
   readLedger: () => Promise<DismissalLedger>,
   now: Date = new Date(),
+  /** The year's filings, for each row's guessed category (3). Absent: no
+   *  guesses. A read that throws means no guesses at all — never a guess from
+   *  part of the history — and the status is published as usual. */
+  readFilings?: () => PastFiling[],
 ): Promise<void> {
   try {
     const ledger = await readLedger();
     const visible = visibleUncategorized(readRows(), ledger);
-    const rows: UncategorizedRow[] = visible.slice(0, UNCATEGORIZED_ROWS_CAP).map((r) => ({
-      activityId: r.activityId,
-      date: r.date,
-      amountCents: r.amountCents,
+    let guesses: GuessIndex | null = null;
+    try {
+      guesses = readFilings ? buildGuessIndex(readFilings()) : null;
+    } catch (err) {
+      // No guesses at all, never a guess from part of the history — and said,
+      // since a missing "Probably …" is otherwise silent.
+      guesses = null;
+      console.log(`[simplefin-sync] Guessed categories skipped: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    const rows: UncategorizedRow[] = visible.slice(0, UNCATEGORIZED_ROWS_CAP).map((r) => {
       // The stored note carries ` · <txId>` and possibly ` · pending`; the
       // addon renders this string, so strip the bookkeeping first. A blank
       // strip result (a legitimately empty SimpleFin description) falls back
       // to the raw note rather than publishing an empty field.
-      description: descriptionFromComment(r.notes) || r.notes,
-      accountName: r.accountName,
-      ...(r.direction ? { direction: r.direction } : {}),
-    }));
+      const description = descriptionFromComment(r.notes) || r.notes;
+      const guess = guesses && !r.incomeEligible ? guessCategory(guesses, description) : null;
+      return {
+        activityId: r.activityId,
+        date: r.date,
+        amountCents: r.amountCents,
+        description,
+        accountName: r.accountName,
+        ...(r.direction ? { direction: r.direction } : {}),
+        ...(guess ? { guess: { categoryId: guess.categoryId, name: guess.name } } : {}),
+      };
+    });
     const status = {
       // The true total AFTER dismissal filtering — NOT `rows.length`, which is
       // capped below. A truncated list must never make the tile understate
@@ -111,8 +133,13 @@ export async function publishUncategorizedStatusForDbPath(
   ) => UncategorizedSourceRow[],
   readLedger: () => Promise<DismissalLedger>,
   now: Date = new Date(),
+  /** `getNativePastFilings`, read from `guessSinceDay(now)`. Absent: no guesses. */
+  readFilings?: (dbPath: string, sinceDay: string) => PastFiling[],
 ): Promise<void> {
   if (!dbPath || !existsSync(dbPath)) return;
   const { start, end } = uncategorizedWindow(now);
-  await publishUncategorizedStatus(setSecret, () => readRows(dbPath, start, end), readLedger, now);
+  await publishUncategorizedStatus(
+    setSecret, () => readRows(dbPath, start, end), readLedger, now,
+    readFilings ? () => readFilings(dbPath, guessSinceDay(now)) : undefined,
+  );
 }

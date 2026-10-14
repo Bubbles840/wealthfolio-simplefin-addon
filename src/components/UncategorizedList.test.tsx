@@ -216,3 +216,26 @@ describe('useDismissals', () => {
     clearSpy.mockRestore();
   });
 });
+
+describe('UncategorizedList — the guessed category (3)', () => {
+  const EMOJI = /\p{Extended_Pictographic}/u;
+  const guessed = row({ guess: { categoryId: 'cat-gro', name: 'Groceries' } });
+
+  it('shows the guess as a muted line under the description, with no emoji', () => {
+    const { container } = render(<UncategorizedList {...base} rows={[guessed]} />);
+    const hint = screen.getByText('Probably Groceries');
+    expect(hint.className).toBe('sfin-uncat-guess');
+    expect(hint.closest('.sfin-uncat-what')).not.toBeNull();
+    expect(EMOJI.test(container.textContent ?? '')).toBe(false);
+  });
+
+  it('shows it inside a row that opens its story too', () => {
+    render(<UncategorizedList {...base} rows={[guessed]} renderStory={() => <div>story</div>} />);
+    expect(screen.getByRole('button', { name: /^Thankyou Points Redeemed/ }).textContent).toContain('Probably Groceries');
+  });
+
+  it('shows nothing for a row with no guess — what an older companion publishes — or one it cannot read', () => {
+    render(<UncategorizedList {...base} rows={[row(), row({ activityId: 'b', guess: { categoryId: 'x' } as any })]} total={2} />);
+    expect(screen.queryByText(/Probably/)).toBeNull();
+  });
+});
