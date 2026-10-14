@@ -277,6 +277,7 @@ export function resolveFiler(f: FilerInput): TxFiler | null {
     const rule = inferFilingRule(f.rules, f.row, f.categoryId);
     return { kind: 'rule', pattern: rule ? rule.pattern : null };
   }
+  // A non-"Amazon: " auto filing reads as by hand: the Amazon filer is the only auto filer today.
   const filing = [...(f.history ?? [])]
     .filter((e) => (e.kind === 'category-filed' || e.kind === 'opening-balance-filed') && afterCategoryId(e) === f.categoryId)
     .sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0))[0];
@@ -375,6 +376,7 @@ export function buildTxStory(facts: TxStoryFacts): TxStory {
     const day = /(\d{4}-\d{2}-\d{2})$/.exec(note)?.[1] ?? row.date;
     answer.push(`A correction the add-on added on ${changeDay(day)} so ${row.accountName} matches the bank.`);
   } else if (!failed.has('partner')) {
+    // A failed partner read drops this whole line: a card outflow is a WITHDRAWAL and can still be linked.
     if (facts.partner) {
       const when = facts.partner.date ? `, ${changeDay(facts.partner.date)}` : '';
       answer.push(`Half of a transfer: ↔ ${changeMoney(Math.abs(row.absCents))} ${out ? 'into' : 'from'} ${facts.partner.accountName}${when}.`);
