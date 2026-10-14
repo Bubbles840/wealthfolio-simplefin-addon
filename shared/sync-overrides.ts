@@ -16,6 +16,11 @@
  *  - `noAutoFile`    the Amazon filer leaves it.
  *  - `noAmazonLabel` no Amazon label is added to its note.
  *  - `noVenmoNote`   no Venmo note is added to its note (3).
+ *  - `asReimbursement` a payback you filed (1.62, W7): while the bank row is
+ *                    money in on a cash account, the sync plans it as a
+ *                    `CREDIT` marked `REIMBURSEMENT` — never a transfer, never
+ *                    a deposit again. Money out, or another account type, and
+ *                    the override yields: the row is typed as usual.
  * Per SimpleFin account (`accounts`):
  *  - `noAutoCorrect` no automatic balance correction (drift is still reported).
  *  - `noOpeningFile` the card opening-balance filer leaves its opening balance.
@@ -34,7 +39,7 @@ export const SYNC_OVERRIDES_SECRET_KEY = 'sync_overrides';
 /** Transaction overrides older than this are dropped on the next write. */
 export const TX_OVERRIDE_KEEP_DAYS = 365;
 
-export const TX_OVERRIDE_FLAGS = ['notTransfer', 'keepDuplicate', 'noAutoFile', 'noAmazonLabel', 'noVenmoNote'] as const;
+export const TX_OVERRIDE_FLAGS = ['notTransfer', 'keepDuplicate', 'noAutoFile', 'noAmazonLabel', 'noVenmoNote', 'asReimbursement'] as const;
 export type TxOverrideFlag = (typeof TX_OVERRIDE_FLAGS)[number];
 export const ACCOUNT_OVERRIDE_FLAGS = ['noAutoCorrect', 'noOpeningFile'] as const;
 export type AccountOverrideFlag = (typeof ACCOUNT_OVERRIDE_FLAGS)[number];
@@ -45,6 +50,7 @@ export interface TxOverride {
   noAutoFile?: true;
   noAmazonLabel?: true;
   noVenmoNote?: true;
+  asReimbursement?: true;
   /** When it was last set (ISO). */
   at: string;
   /** The change-log entry whose undo set it. */
@@ -307,6 +313,7 @@ export const OVERRIDE_FLAG_WORDS: Record<TxOverrideFlag | AccountOverrideFlag, s
   noAutoFile: "Don't file automatically",
   noAmazonLabel: 'No Amazon label',
   noVenmoNote: 'No Venmo note',
+  asReimbursement: 'Payback',
   noAutoCorrect: 'No automatic balance corrections',
   noOpeningFile: "Don't file the opening balance",
 };
