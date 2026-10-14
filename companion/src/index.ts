@@ -13,6 +13,7 @@ import {
 } from '../../shared/reports-archive.js';
 import { fileCardOpeningDebts } from './opening-balance-category.js';
 import { runDateRepair, type DateRepairDeps } from './date-repair.js';
+import { fileSyncBookkeeping } from './bookkeeping-category.js';
 import cron from 'node-cron';
 import { readFileSync, existsSync } from 'fs';
 import { runSyncCore, descriptionFromComment, txIdFromComment } from '../../shared/sync-core.js';
@@ -1085,6 +1086,26 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
     }).catch((e) => log(`Card opening balance filing skipped: ${formatError(e)}`));
     // After the catch: a filing that stopped half-way still logs what landed.
     await recordCompanionChanges(wfClient, openingChanges, changeLog.run).catch((e) => log(`Change log skipped: ${formatError(e)}`));
+
+    // 1.62 (W3): the sync's own bookkeeping rows — transfers in transit,
+    // corrections, starting balances — filed under "Sync bookkeeping", which
+    // Wealthfolio leaves out of spending (3.9+; nothing on 3.8), and taken
+    // back out once they are no longer bookkeeping. After the opening-debt
+    // filing, whose rows it then leaves alone; before the cube and the
+    // checks, which read the filings. Best-effort, like the filings above.
+    const bookkeepingChanges: ChangeDraft[] = [];
+    await fileSyncBookkeeping({
+      dbPath: wealthfolioDbPath(),
+      createCategory: (name, description) => wfClient.createSpendingCategory(name, description),
+      setExcluded: (ids) => wfClient.setExcludedSpendingCategories(ids),
+      assign: (activityId, categoryId) => wfClient.assignActivityCategory(activityId, SPENDING_TAXONOMY_ID, categoryId),
+      unassign: (activityId) => wfClient.unassignActivityCategory(activityId, SPENDING_TAXONOMY_ID),
+      appVersion: () => wfClient.getAppVersion(),
+      noOpeningFile: (sfinId) => hasAccountOverride(overrides, sfinId, 'noOpeningFile'),
+      record: (draft) => bookkeepingChanges.push(draft),
+      log,
+    }).catch((e) => log(`Bookkeeping filing skipped: ${formatError(e)}`));
+    await recordCompanionChanges(wfClient, bookkeepingChanges, changeLog.run).catch((e) => log(`Change log skipped: ${formatError(e)}`));
 
     await publishUncategorizedStatusForDbPath(
       wealthfolioDbPath(),

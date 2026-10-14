@@ -327,7 +327,10 @@ export class WealthfolioClient {
 
   /** Creates a top-level spending category and returns its id. The key is the
    *  name in snake case, which is how Wealthfolio keys its own categories. */
-  async createSpendingCategory(name: string): Promise<string> {
+  async createSpendingCategory(
+    name: string,
+    description = 'Balances an account already had when syncing began. Not spending.',
+  ): Promise<string> {
     const res = await fetch(`${this.baseUrl}/api/v1/taxonomies/categories`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
@@ -337,7 +340,7 @@ export class WealthfolioClient {
         name,
         key: name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, ''),
         color: '#9ca3af',
-        description: 'Balances an account already had when syncing began. Not spending.',
+        description,
         sortOrder: 999,
       }),
     });
