@@ -2747,6 +2747,10 @@ describe('buildTelegramCommandHandler', () => {
       expect(client.saveMany.mock.calls[0][0]).toMatchObject({ deleteIds: ['out-1', 'in-1'] });
       expect((client.saveMany.mock.calls[1][0] as { creates: Array<Record<string, unknown>> }).creates.map((w) => w.activityType)).toEqual(['TRANSFER_OUT', 'TRANSFER_IN']);
       expect((u.edit.mock.calls[1] as unknown as [string])[0].startsWith('🔎 *Health*\nLinked.\n')).toBe(true);
+      // The re-rendered list no longer offers the linked pair.
+      const [after, afterKb] = u.edit.mock.calls[1] as unknown as [string, { inline_keyboard: Array<Array<{ text: string }>> }];
+      expect(after).not.toContain('Likely the other half');
+      expect(afterKb.inline_keyboard.flat().some((b) => b.text.startsWith('Link'))).toBe(false);
     });
   });
 
