@@ -65,7 +65,8 @@ export const TELEGRAM_COMMAND_MENU = [
  *  `/changes` lists the change log; `/changes <words>` searches it.
  *  `/why <words or an amount>` (1.61) finds a transaction and tells its story;
  *  bare `/why` asks.
- *  `/audit` (2c) takes no arguments; its buttons run each check. */
+ *  `/audit` (2c) takes no arguments; its buttons run each check.
+ *  `/budgets` (project 4) takes no arguments; its buttons pick and apply. */
 export const TELEGRAM_MORE_COMMANDS = [
   { command: 'afford', description: 'Can I afford it? — asks, or /afford 20 shopping' },
   { command: 'pool', description: 'Semester money pool — asks, or /pool 16000 Dec 12' },
@@ -76,6 +77,7 @@ export const TELEGRAM_MORE_COMMANDS = [
   { command: 'changes', description: 'What changed lately — /changes venmo searches' },
   { command: 'why', description: 'Why is this here? — /why kroger 54.20 finds a transaction and its story' },
   { command: 'audit', description: 'Why a balance or the month differs from Wealthfolio, and what its Health page flags' },
+  { command: 'budgets', description: 'Suggested budgets from your last 3 months, for categories with none' },
 ] as const;
 
 export function formatHelpReply(unknownCommand?: string): string {
