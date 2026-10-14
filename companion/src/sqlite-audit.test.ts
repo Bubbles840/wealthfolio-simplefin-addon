@@ -78,6 +78,19 @@ describe('getNativeAuditLedger', () => {
     ]);
   });
 
+  it('reads a note holding a newline with a space in its place, its tx id intact (both reads)', () => {
+    const path = ledger();
+    const db = new DatabaseSync(path);
+    db.exec(`INSERT INTO activities VALUES ('act-5', 'wf-chk', 'WITHDRAWAL', NULL, NULL, NULL, '2026-10-06T00:00:00+00:00', '7', 'USD', NULL, NULL,
+      'VENMO' || char(13) || char(10) || 'for pizza' || char(10) || 'thanks · TRN-5', NULL, NULL);`);
+    db.close();
+    const row = getNativeAuditLedger(path).rows.find((r) => r.id === 'act-5')!;
+    expect(row.notes).toBe('VENMO  for pizza thanks · TRN-5');
+    expect(getNativeHeadlineRows(path, '2026-10-01', '2026-11-01').find((r) => r.id === 'act-5')!.notes).toBe('VENMO  for pizza thanks · TRN-5');
+    // Every other note reads exactly as stored.
+    expect(getNativeAuditLedger(path).rows.find((r) => r.id === 'act-2')!.notes).toBe('A | B · TRN-2');
+  });
+
   it('throws — unknown, never "nothing" — when the database cannot be read', () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     try {

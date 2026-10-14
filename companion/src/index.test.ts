@@ -5166,6 +5166,42 @@ describe('audit_snapshot publish', () => {
       spy.mockRestore();
     }
   });
+
+  it('publishes only after the stuck-transfer and large-transaction alerts have gone out', async () => {
+    // Its REST reads have no timeout: a slow one must never hold an alert back.
+    const order: string[] = [];
+    const audit = await import('./audit-facts.js');
+    const spy = vi.spyOn(audit, 'publishAuditSnapshot').mockImplementation(async () => { order.push('publish'); return true; });
+    vi.mocked(runSyncCore).mockResolvedValueOnce({
+      ...FAKE_SYNC_RESULT,
+      stuckTransferAlerts: [{ outTxId: 'tx-out', description: 'Payment ↔ Payment', amountCents: 130000, currency: 'USD' }],
+      largeTransactionAlerts: [{ txId: 'tx-1', description: 'DELTA AIR LINES', amountCents: 124000, currency: 'USD', accountName: 'Spend' }],
+    });
+    const secrets = new Map<string, string>([
+      ['simplefin_access_url', 'https://user:pass@bridge.simplefin.org/simplefin'],
+      ['telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true, digestRows: 'all', dailyReportEnabled: false })],
+    ]);
+    process.env.WEALTHFOLIO_API_URL = 'http://wf';
+    process.env.WEALTHFOLIO_PASSWORD = 'pw';
+    const { WealthfolioClient } = await import('./wealthfolio.js');
+    vi.mocked(WealthfolioClient as any).mockImplementation(function (this: any) {
+      this.login = vi.fn(async () => {});
+      this.getAddonSecret = vi.fn(async (_a: string, key: string) => secrets.get(key) ?? null);
+      this.setAddonSecret = vi.fn(async (_a: string, key: string, value: string) => { secrets.set(key, value); });
+      this.getAccounts = vi.fn(async () => []);
+    });
+    const previousFetch = globalThis.fetch;
+    vi.stubGlobal('fetch', vi.fn(async () => { order.push('telegram'); return { json: async () => ({ ok: true }) }; }));
+    try {
+      await runCompanionSync();
+      const before = order.slice(0, order.indexOf('publish'));
+      expect(order).toContain('publish');
+      expect(before.filter((o) => o === 'telegram')).toHaveLength(2);
+    } finally {
+      vi.stubGlobal('fetch', previousFetch);
+      spy.mockRestore();
+    }
+  });
 });
 
 describe('daily digest: version skew + update line', () => {

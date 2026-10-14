@@ -18,6 +18,10 @@
  *
  * The sqlite3 CLI fallback splits on the unit separator, with the free text
  * (a name, a note) last, so a separator inside it cannot shift the columns.
+ * It prints one row per line, so the notes are read with every newline made a
+ * space (display only — a note's ` · <txId>` tail and markers survive), and
+ * its output, the whole ledger, gets a buffer far past execFileSync's 1 MB
+ * default (AUDIT_CLI_MAX_BUFFER).
  */
 import type { AuditAccount, AuditLedger, AuditLedgerRow } from '../../shared/audit-ledger.js';
 import type { HeadlineDbRow } from '../../shared/audit-headline.js';
@@ -27,6 +31,11 @@ import { DRILL_CLI_SEPARATOR, queryNativeDbStrict, REPORT_COUNTS_CATEGORY } from
 export const PHANTOM_CASH_ASSET_ID = '9231cb80-4223-4c04-98e3-dd3b1af60311';
 
 const SEP = DRILL_CLI_SEPARATOR;
+/** The sqlite3 CLI's output buffer for every audit read: the ledger read
+ *  returns every row Wealthfolio holds. */
+export const AUDIT_CLI_MAX_BUFFER = 256 * 1024 * 1024;
+/** A note with each CR and LF made a space: the CLI prints a row per line. */
+const NOTES = `REPLACE(REPLACE(COALESCE(a.notes, ''), char(13), ' '), char(10), ' ')`;
 const tail = (parts: string[], from: number) => parts.slice(from).join(SEP);
 const isTrue = (v: unknown) => String(v) === '1' || String(v).toLowerCase() === 'true';
 
@@ -70,6 +79,7 @@ export function getNativeAuditLedger(dbPath: string): AuditLedger {
      FROM accounts acc ORDER BY acc.id;`,
     auditAccountFromCliParts,
     SEP,
+    AUDIT_CLI_MAX_BUFFER,
   );
   const rows = queryNativeDbStrict<Record<string, unknown>>(
     dbPath,
@@ -88,11 +98,12 @@ export function getNativeAuditLedger(dbPath: string): AuditLedger {
                    SELECT id FROM assets WHERE UPPER(COALESCE(display_code, instrument_symbol, name, id)) = '$CASH'))
                  THEN 1 ELSE 0 END AS phantom,
             COALESCE(a.quantity, '') AS quantity,
-            COALESCE(a.notes, '') AS notes
+            ${NOTES} AS notes
      FROM activities a
      ORDER BY a.activity_date, a.id;`,
     auditRowFromCliParts,
     SEP,
+    AUDIT_CLI_MAX_BUFFER,
   );
   return {
     accounts: accounts.map((r): AuditAccount => {
@@ -136,12 +147,13 @@ export function getNativeHeadlineRows(dbPath: string, startInclusive: string, en
               WHERE ata.activity_id = a.id AND ata.taxonomy_id = 'spending_categories'
               ORDER BY ata.created_at, ata.id LIMIT 1), '') AS spending_category,
             COALESCE(acc.name, '') AS account_name,
-            COALESCE(a.notes, '') AS notes
+            ${NOTES} AS notes
      FROM activities a JOIN accounts acc ON a.account_id = acc.id
      WHERE a.activity_date >= '${startInclusive}' AND a.activity_date < '${endExclusive}'
      ORDER BY a.activity_date, a.id;`,
     headlineRowFromCliParts,
     SEP,
+    AUDIT_CLI_MAX_BUFFER,
   );
   return rows.map((r) => {
     const v = Object.values(r);
@@ -173,6 +185,7 @@ export function getNativeAuditSettings(dbPath: string): {
      WHERE setting_key IN ('timezone', 'spending.excluded_category_ids', 'spending.enabled', 'spending.account_ids') ORDER BY setting_key;`,
     (parts) => (parts.length >= 2 ? { c0: parts[0], c1: tail(parts, 1) } : null),
     SEP,
+    AUDIT_CLI_MAX_BUFFER,
   );
   const value = new Map(rows.map((r) => {
     const v = Object.values(r);
@@ -202,6 +215,7 @@ export function getNativeAuditSettings(dbPath: string): {
     `SELECT id AS id, COALESCE(is_archived, 0) AS archived FROM accounts ORDER BY id;`,
     (parts) => (parts.length >= 2 ? { c0: parts[0], c1: parts[1] } : null),
     SEP,
+    AUDIT_CLI_MAX_BUFFER,
   );
   const live = new Set(accounts.flatMap((r) => {
     const v = Object.values(r);
@@ -215,6 +229,7 @@ export function getNativeAuditSettings(dbPath: string): {
      WHERE taxonomy_id = 'spending_categories' ORDER BY id;`,
     (parts) => (parts.length >= 2 ? { c0: parts[0], c1: parts[1] } : null),
     SEP,
+    AUDIT_CLI_MAX_BUFFER,
   );
   const categoryParents: Record<string, string | null> = {};
   for (const r of parents) {
