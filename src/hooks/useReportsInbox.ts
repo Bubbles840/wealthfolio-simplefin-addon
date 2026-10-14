@@ -36,10 +36,23 @@ export interface ReportsInbox {
  * opened quickly cannot overwrite each other; a failed write leaves the count
  * as it was and never throws; nothing is set after unmount.
  */
+/** Per kind, the later of two seen documents: a time never goes back. */
+function laterOf(a: ReportsSeen | null, b: ReportsSeen | null): ReportsSeen {
+  const out: ReportsSeen = { ...(a ?? {}) };
+  for (const k of REPORT_KINDS) {
+    const t = b?.[k];
+    if (t === undefined) continue;
+    const have = out[k];
+    if (have === undefined || Date.parse(t) > Date.parse(have)) out[k] = t;
+  }
+  return out;
+}
+
 export function useReportsInbox(store: ReportsInboxStore): ReportsInbox {
   const [seen, setSeen] = useState<ReportsSeen | null>(null);
   const [stores, setStores] = useState<Partial<Record<ReportKind, ReportStore>>>({});
   const seenRef = useRef<ReportsSeen | null>(null);
+  const storesRef = useRef<Partial<Record<ReportKind, ReportStore>>>({});
   const mounted = useRef(true);
   const baselineTried = useRef(false);
   const queue = useRef<Promise<unknown>>(Promise.resolve());
@@ -55,13 +68,16 @@ export function useReportsInbox(store: ReportsInboxStore): ReportsInbox {
         if (!mounted.current) return;
         const byKind: Partial<Record<ReportKind, ReportStore>> = {};
         REPORT_KINDS.forEach((k, i) => { byKind[k] = list[i]; });
+        storesRef.current = byKind;
         setStores(byKind);
+        // A refresh never lowers a kind's seen time (a write may be landing).
         if (read.kind === 'ok') {
-          seenRef.current = read.seen;
-          setSeen(read.seen);
+          const merged = laterOf(seenRef.current, read.seen);
+          seenRef.current = merged;
+          setSeen(merged);
           return;
         }
-        const baseline = baselineSeen(byKind);
+        const baseline = laterOf(seenRef.current, baselineSeen(byKind));
         seenRef.current = baseline;
         setSeen(baseline);
         if (baselineTried.current) return;
@@ -71,15 +87,37 @@ export function useReportsInbox(store: ReportsInboxStore): ReportsInbox {
       .catch(() => {});
   }, [store]);
 
-  useEffect(() => { refresh(); }, [refresh]);
+  // No effect of its own: the page calls `refresh` from its live path (mount,
+  // focus, the minute interval), so there is one reader.
 
   const opened = useCallback((kind: ReportKind, data: ReportStore) => {
     if (!store.setReportsSeen) return;
     const run = async () => {
       const current = seenRef.current;
       if (!current) return;
-      const next = markSeen(current, kind, data);
-      if (!next) return;
+      // Re-read first: another device may have moved another kind on, and
+      // writing our older copy would put its time back.
+      let next: ReportsSeen | null;
+      let base = current;
+      try {
+        const read = await store.getReportsSeen?.();
+        if (read === undefined) {
+          next = markSeen(current, kind, data);
+        } else if (read.kind === 'ok') {
+          base = laterOf(current, read.seen);
+          next = markSeen(base, kind, data);
+        } else {
+          next = baselineSeen({ ...storesRef.current, [kind]: data });
+        }
+      } catch {
+        return;
+      }
+      if (!next) {
+        // Nothing to write, but another device may have moved times on.
+        seenRef.current = base;
+        if (mounted.current) setSeen(base);
+        return;
+      }
       try {
         await store.setReportsSeen!(next);
       } catch {
@@ -89,6 +127,7 @@ export function useReportsInbox(store: ReportsInboxStore): ReportsInbox {
       if (!mounted.current) return;
       setSeen(next);
       setStores((prev) => ({ ...prev, [kind]: data }));
+      storesRef.current = { ...storesRef.current, [kind]: data };
     };
     queue.current = queue.current.then(run, run);
   }, [store]);
