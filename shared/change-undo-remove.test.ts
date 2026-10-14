@@ -11,7 +11,7 @@ import {
 } from './change-undo.js';
 import { runChangeUndo, type UndoIo } from './change-undo-run.js';
 import { createFakeHost, type FakeHostSeed } from './fake-host.js';
-import { parseSkippedTransactionsStrict, SKIPPED_TRANSACTIONS_SECRET_KEY } from './skipped-transactions.js';
+import { parseSkippedTransactionsStrict, SKIPPED_TRANSACTIONS_SECRET_KEY, SkippedTransactionsUnreadableError } from './skipped-transactions.js';
 import type { HostActivity } from './sync-host.js';
 import { hasTxOverride, parseSyncOverrides, SYNC_OVERRIDES_SECRET_KEY } from './sync-overrides.js';
 import { accountTxKey } from './transfers.js';
@@ -81,6 +81,18 @@ describe('planning the Undo and Redo of a removal', () => {
     expect(plan.ok && plan.plan.steps.slice(1)).toEqual([
       { do: 'unskip', account: 'sfin-1', txId: 'TRN-600' }, { do: 'unskip', account: 'sfin-old', txId: 'TRN-600' },
     ]);
+  });
+
+  it('says the row stays skipped when the removal added no key of its own', () => {
+    const plan = planChangeUndo(removed({ addedKeys: [] }), 'undo', {}, { latest: null });
+    expect(plan).toEqual({
+      ok: true,
+      plan: {
+        op: 'undo', needsSync: false, rowAfter: 'created',
+        done: "Undone — it's back. It was on the skip list before you removed it, and it stays there.",
+        steps: [{ do: 'create', write: PAYLOAD }],
+      },
+    });
   });
 
   it('refuses an Undo it cannot carry out', () => {
@@ -192,16 +204,50 @@ describe('Undo and Redo of a removal, on a host', () => {
     expect(h.fh.activities.get('wf-a')).toHaveLength(1);
   });
 
-  it('a corrupt skip list refuses both Undo and Redo and writes nothing', async () => {
+  it('a corrupt skip list refuses an Undo and writes nothing', async () => {
     const h = harness([], { [SKIPPED_TRANSACTIONS_SECRET_KEY]: '{not json' });
-    const e = removed();
-    for (const op of ['undo', 'redo'] as const) {
-      const r = await h.undo(e, op);
-      expect(r.ok).toBe(false);
-    }
+    const r = await h.undo(removed(), 'undo');
+    expect(r).toEqual({ ok: false, message: new SkippedTransactionsUnreadableError().message });
     expect(h.fh.saved).toEqual([]);
     expect(h.data.get(SKIPPED_TRANSACTIONS_SECRET_KEY)).toBe('{not json');
     expect(h.log).toEqual([]);
+  });
+
+  it('a corrupt skip list refuses a Redo after an Undo, and deletes nothing', async () => {
+    const h = harness([], { [SKIPPED_TRANSACTIONS_SECRET_KEY]: list });
+    const e = removed();
+    expect((await h.undo(e, 'undo')).ok).toBe(true);
+    h.data.set(SKIPPED_TRANSACTIONS_SECRET_KEY, '{not json');
+    const saved = h.fh.saved.length;
+    expect(await h.undo(e, 'redo')).toEqual({ ok: false, message: new SkippedTransactionsUnreadableError().message });
+    expect(h.fh.saved).toHaveLength(saved);
+    expect(h.fh.activities.get('wf-a')).toHaveLength(1);
+    expect(h.data.get(SKIPPED_TRANSACTIONS_SECRET_KEY)).toBe('{not json');
+    expect(h.log).toHaveLength(1);
+  });
+
+  it('takes every key off, and puts every key back, in ONE edit of the skip list each', async () => {
+    let writes = 0;
+    const OLD = accountTxKey('sfin-old', 'TRN-600');
+    const both = JSON.stringify([
+      { account: 'sfin-9', txId: 'KEEP' }, { account: 'sfin-1', txId: 'TRN-600', note: 'Removed for good' }, { account: 'sfin-old', txId: 'TRN-600', note: 'Removed for good' },
+    ]);
+    const h = harness([], { [SKIPPED_TRANSACTIONS_SECRET_KEY]: both }, {}, () => { writes += 1; return false; });
+    const e = removed({ txKeys: [KEY, OLD], addedKeys: [KEY, OLD] });
+    expect((await h.undo(e, 'undo')).ok).toBe(true);
+    expect(writes).toBe(1);
+    expect(h.skipped()).toEqual(['sfin-9/KEEP']);
+    expect((await h.undo(e, 'redo')).ok).toBe(true);
+    expect(writes).toBe(2);
+    expect(h.skipped()).toEqual(['sfin-9/KEEP', 'sfin-1/TRN-600', 'sfin-old/TRN-600']);
+  });
+
+  it("Redo finds the row by the removed activity's own account when the entry names none", async () => {
+    const h = harness([], { [SKIPPED_TRANSACTIONS_SECRET_KEY]: list });
+    const e: ChangeEntry = { ...removed(), account: undefined };
+    expect((await h.undo(e, 'undo')).ok).toBe(true);
+    expect(await h.undo(e, 'redo')).toEqual({ ok: true, message: "Redone — it's removed and won't be imported again.", needsSync: false });
+    expect(h.fh.activities.get('wf-a')).toEqual([]);
   });
 
   it('records an Undo whose un-skip failed, says so, and Redo then Undo finishes it', async () => {
@@ -219,6 +265,30 @@ describe('Undo and Redo of a removal, on a host', () => {
     expect(h.skipped()).toEqual(['sfin-9/KEEP', 'sfin-1/TRN-600']);
     expect((await h.undo(e, 'undo')).ok).toBe(true);
     expect(h.skipped()).toEqual(['sfin-9/KEEP']);
+  });
+
+  it('a Redo whose delete fails after a half-done Undo writes nothing more, and says the row stays skipped', async () => {
+    let failing = true;
+    let writes = 0;
+    const h = harness([], { [SKIPPED_TRANSACTIONS_SECRET_KEY]: list }, {}, () => { writes += 1; return failing; });
+    const e = removed();
+    expect((await h.undo(e, 'undo')).message).toContain('still on the skip list');
+    failing = false;
+    const real = h.fh.host.saveMany.bind(h.fh.host);
+    h.fh.host.saveMany = async (req) => {
+      if (req.deleteIds?.length) return { created: [], errors: [{ message: 'wealthfolio down' }] } as never;
+      return real(req);
+    };
+    writes = 0;
+    const r = await h.undo(e, 'redo');
+    expect(r).toEqual({
+      ok: false,
+      message: "Couldn't finish the redo: wealthfolio down. Nothing was removed; it was already on the skip list and stays there.",
+    });
+    // The Redo's own skip, and no take-back.
+    expect(writes).toBe(1);
+    expect(h.skipped()).toEqual(['sfin-9/KEEP', 'sfin-1/TRN-600']);
+    expect(h.fh.activities.get('wf-a')).toHaveLength(1);
   });
 
   it("Redo takes the key back off the skip list when the delete fails, and the note is the removal's", async () => {

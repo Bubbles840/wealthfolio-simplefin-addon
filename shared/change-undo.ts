@@ -554,7 +554,11 @@ export function planChangeUndo(
         // The row first: a skip entry left behind is harmless to a stored row
         // (the sync never deletes one on the list's behalf), and it is reported.
         return plan({
-          op, needsSync: false, rowAfter: 'created', done: "Undone — it's back, and the bank feed can import it again.",
+          op, needsSync: false, rowAfter: 'created',
+          // Keys already skipped before the removal are not this Undo's to take off.
+          done: ours.length > 0
+            ? "Undone — it's back, and the bank feed can import it again."
+            : "Undone — it's back. It was on the skip list before you removed it, and it stays there.",
           steps: [
             { do: 'create', write: payload },
             ...ours.map((s) => ({ do: 'unskip' as const, account: s.account, txId: s.txId })),
