@@ -288,6 +288,141 @@ describe('runSyncCore — Venmo notes', () => {
     expect(venmoEntries(log)).toEqual([]);
     expect(w.fake.venmo()[RENT_KEY].consumedBy).toBe(KEY);
   });
+
+  it('a VENMO row typed a transfer by pairing alone (no rule): no note on either leg, payment consumed, no entry', async () => {
+    // Decided AFTER pairing (ruling P3-H): nothing but the pair detector says this
+    // is a transfer, and Wealthfolio would copy a note onto the linked partner.
+    const sd: FakeHostSeed = {
+      accountSet: { errors: [], accounts: [
+        { id: 'sfin-1', name: 'Checking', currency: 'USD', balance: '0', 'balance-date': epoch('2026-10-13T12:00:00Z'),
+          transactions: [{ id: 'tx-v', posted: epoch('2026-10-04T12:00:00Z'), amount: '-25.00', description: 'VENMO PAYMENT 1023' }] },
+        { id: 'sfin-2', name: 'Savings', currency: 'USD', balance: '0', 'balance-date': epoch('2026-10-13T12:00:00Z'),
+          transactions: [{ id: 'tx-p', posted: epoch('2026-10-04T12:00:00Z'), amount: '25.00', description: 'ONLINE TRANSFER FROM CHK' }] },
+      ] },
+      mapping: { 'sfin-1': 'wf-a', 'sfin-2': 'wf-b' },
+      accountTypes: { 'wf-a': 'CASH', 'wf-b': 'CASH' },
+      accountNames: { 'wf-a': 'Checking', 'wf-b': 'Savings' },
+      upstreamWriteRules: true,
+      venmoLedger: RENT,
+    };
+    const fake = createFakeHost(sd);
+    const host: SyncHost = { ...fake.host, linkPair: (legs) => linkPairByRecreate((req) => fake.host.saveMany(req), legs) };
+    const log = capture();
+    await runSyncCore(host, fake.store, { changeLog: log, force: true });
+    const rows = [...fake.activities.values()].flat();
+    expect(rows.map((r) => [r.activityType, r.comment]).sort()).toEqual([
+      ['TRANSFER_IN', 'ONLINE TRANSFER FROM CHK · tx-p'],
+      ['TRANSFER_OUT', 'VENMO PAYMENT 1023 · tx-v'],
+    ]);
+    expect(new Set(rows.map((r) => r.sourceGroupId)).size).toBe(1);
+    expect(rows[0].sourceGroupId).toBeTruthy();
+    expect(fake.venmo()[RENT_KEY].consumedBy).toBe(KEY);
+    expect(venmoEntries(log)).toEqual([]);
+  });
+});
+
+describe('runSyncCore — one Venmo payment, one bank row per run (ruling P3-K)', () => {
+  beforeEach(() => {
+    VALUATION_POLL.delayMs = 1;
+    VALUATION_POLL.attempts = 1;
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-16T15:00:00Z'));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // The final review's case: Sam's $20 email on Oct 14, and two $20 VENMO rows —
+  // Oct 10 (its payment's email never came) and Oct 15.
+  const SAM_KEY = 'out|2000|Sam|Coffee club|2026-10-14';
+  const SAM: VenmoLedger = {
+    [SAM_KEY]: { direction: 'out', kind: 'payment', amountCents: 2000, counterparty: 'Sam', note: 'Coffee club', emailDate: '2026-10-14' },
+  };
+  type Tx = { id: string; posted: number; amount: string; description: string; pending?: boolean };
+  const tx = (id: string, day: string, extra: Partial<Tx> = {}): Tx =>
+    ({ id, posted: epoch(`${day}T12:00:00Z`), amount: '-20.00', description: `VENMO PAYMENT ${id}`, ...extra });
+  const world = (transactions: Tx[], ledger: VenmoLedger = SAM, card: Tx[] = []): FakeHostSeed => ({
+    accountSet: { errors: [], accounts: [
+      { id: 'sfin-1', name: 'Checking', currency: 'USD', balance: '0', 'balance-date': epoch('2026-10-16T12:00:00Z'), transactions },
+      ...(card.length ? [{ id: 'sfin-2', name: 'Card', currency: 'USD', balance: '0', 'balance-date': epoch('2026-10-16T12:00:00Z'), transactions: card }] : []),
+    ] },
+    mapping: { 'sfin-1': 'wf-a', ...(card.length ? { 'sfin-2': 'wf-c' } : {}) },
+    accountTypes: { 'wf-a': 'CASH', ...(card.length ? { 'wf-c': 'CREDIT_CARD' } : {}) },
+    accountNames: { 'wf-a': 'Checking', ...(card.length ? { 'wf-c': 'Card' } : {}) },
+    venmoLedger: ledger,
+  });
+  const notes = (fh: ReturnType<typeof createFakeHost>) => [...fh.activities.values()].flat().map((r) => r.comment).sort();
+
+  for (const order of ['oldest first', 'newest first'] as const) {
+    it(`gives Sam's note to the Oct 15 row, never the Oct 10 one — ${order}`, async () => {
+      const rows = [tx('tx-old', '2026-10-10'), tx('tx-new', '2026-10-15')];
+      const fh = createFakeHost(world(order === 'oldest first' ? rows : [...rows].reverse()));
+      const log = capture();
+      await runSyncCore(fh.host, fh.store, { changeLog: log });
+      expect(notes(fh)).toEqual(['VENMO PAYMENT tx-new · Venmo: Coffee club · tx-new', 'VENMO PAYMENT tx-old · tx-old']);
+      expect(fh.venmo()[SAM_KEY].consumedBy).toBe(accountTxKey('sfin-1', 'tx-new'));
+      expect(venmoEntries(log)).toHaveLength(1);
+    });
+  }
+
+  it('gives neither row a note when both fall inside the window, and consumes nothing', async () => {
+    const fh = createFakeHost(world([tx('tx-a', '2026-10-14'), tx('tx-b', '2026-10-16')]));
+    await runSyncCore(fh.host, fh.store, {});
+    expect(notes(fh)).toEqual(['VENMO PAYMENT tx-a · tx-a', 'VENMO PAYMENT tx-b · tx-b']);
+    expect(fh.venmo()[SAM_KEY].consumedBy).toBeUndefined();
+  });
+
+  it('counts rows in every account: a checking row and a card row the same payment could be get no note', async () => {
+    const fh = createFakeHost(world([tx('tx-a', '2026-10-15')], SAM, [tx('tx-c', '2026-10-15')]));
+    await runSyncCore(fh.host, fh.store, {});
+    expect(notes(fh).filter((c) => c!.includes('Venmo:'))).toEqual([]);
+    expect(fh.venmo()[SAM_KEY].consumedBy).toBeUndefined();
+  });
+
+  it('a pending VENMO row blocks the payment: the posted row gets no note until the pending one is gone', async () => {
+    const s = world([tx('tx-a', '2026-10-15'), tx('tx-p', '2026-10-16', { pending: true })]);
+    const fh = createFakeHost(s);
+    await runSyncCore(fh.host, fh.store, {});
+    expect(notes(fh).filter((c) => c!.includes('Venmo:'))).toEqual([]);
+    expect(fh.venmo()[SAM_KEY].consumedBy).toBeUndefined();
+    // The pending row turns out to be another $20 that posts on a later day, outside the window.
+    s.accountSet!.accounts[0].transactions = [tx('tx-a', '2026-10-15'), tx('tx-p', '2026-10-21')];
+    vi.setSystemTime(new Date('2026-10-21T15:00:00Z'));
+    await runSyncCore(fh.host, fh.store, { force: true });
+    expect(notes(fh).filter((c) => c!.includes('Venmo:'))).toEqual(['VENMO PAYMENT tx-a · Venmo: Coffee club · tx-a']);
+  });
+
+  it('an idempotent re-run keeps a row its own note when another same-amount row arrives in the window', async () => {
+    const s = world([tx('tx-a', '2026-10-15')]);
+    const fh = createFakeHost(s);
+    await runSyncCore(fh.host, fh.store, {});
+    expect(notes(fh)).toEqual(['VENMO PAYMENT tx-a · Venmo: Coffee club · tx-a']);
+    s.accountSet!.accounts[0].transactions = [tx('tx-a', '2026-10-15'), tx('tx-b', '2026-10-16')];
+    const spy = vi.spyOn(fh.store, 'setVenmoLedger' as any);
+    const log = capture();
+    await runSyncCore(fh.host, fh.store, { changeLog: log, force: true });
+    expect(notes(fh)).toEqual(['VENMO PAYMENT tx-a · Venmo: Coffee club · tx-a', 'VENMO PAYMENT tx-b · tx-b']);
+    expect(fh.venmo()[SAM_KEY].consumedBy).toBe(accountTxKey('sfin-1', 'tx-a'));
+    expect(venmoEntries(log)).toEqual([]);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('matches a row posted the day before the email, not two days before — at import and later', async () => {
+    const oneBefore = createFakeHost(world([tx('tx-a', '2026-10-13')]));
+    await runSyncCore(oneBefore.host, oneBefore.store, {});
+    expect(notes(oneBefore)).toEqual(['VENMO PAYMENT tx-a · Venmo: Coffee club · tx-a']);
+    const twoBefore = createFakeHost(world([tx('tx-a', '2026-10-12')]));
+    await runSyncCore(twoBefore.host, twoBefore.store, {});
+    expect(notes(twoBefore)).toEqual(['VENMO PAYMENT tx-a · tx-a']);
+    expect(twoBefore.venmo()[SAM_KEY].consumedBy).toBeUndefined();
+    // The late pass uses the same match: a row imported before the email was read.
+    const late = createFakeHost({ ...world([tx('tx-old', '2026-10-10'), tx('tx-new', '2026-10-15')]), existing: new Map([['wf-a', [
+      { id: 'act-old', accountId: 'wf-a', activityType: 'WITHDRAWAL', date: '2026-10-10', amount: 20, comment: 'VENMO PAYMENT tx-old · tx-old', sourceGroupId: null },
+      { id: 'act-new', accountId: 'wf-a', activityType: 'WITHDRAWAL', date: '2026-10-15', amount: 20, comment: 'VENMO PAYMENT tx-new · tx-new', sourceGroupId: null },
+    ]]]) });
+    await runSyncCore(late.host, late.store, {});
+    expect(notes(late)).toEqual(['VENMO PAYMENT tx-new · Venmo: Coffee club · tx-new', 'VENMO PAYMENT tx-old · tx-old']);
+  });
 });
 
 describe('isReadableVenmoLedger', () => {

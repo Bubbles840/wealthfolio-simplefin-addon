@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
-  consumeVenmoMatch, isVenmoDescription, matchVenmoPayment, mergeVenmoRecords, pruneVenmoLedger, venmoDescription,
-  venmoLedgerKey, venmoNoteOf, VENMO_LEDGER_SECRET_KEY, VENMO_NOTE_MARK, type VenmoLedger, type VenmoPaymentQuery,
+  consumeVenmoMatch, isVenmoDescription, matchVenmoPayment, matchVenmoPayments, mergeVenmoRecords, pruneVenmoLedger, venmoDescription,
+  venmoLedgerKey, venmoNoteOf, VENMO_LEDGER_SECRET_KEY, VENMO_MATCH_DAYS_AFTER, VENMO_MATCH_DAYS_BEFORE, VENMO_NOTE_MARK,
+  type VenmoLedger, type VenmoPaymentQuery,
 } from './venmo-ledger';
 import type { VenmoRecord } from './venmo';
 
@@ -37,12 +38,16 @@ describe('matchVenmoPayment', () => {
     expect(matchVenmoPayment(one, query({ amountCents: 2501 }))).toBeNull();
   });
 
-  it('allows 5 calendar days either side of the email day, at any time of day, and not a day more', () => {
+  it('allows a bank row from 1 calendar day before the email day to 5 after, at any time of day, and not a day more', () => {
     const at2 = (iso: string, hh: string) => Date.parse(`${iso}T${hh}Z`);
+    expect(VENMO_MATCH_DAYS_BEFORE).toBe(1);
+    expect(VENMO_MATCH_DAYS_AFTER).toBe(5);
     expect(matchVenmoPayment(one, query({ postedMs: at2('2026-10-08', '23:59:59') }))).not.toBeNull();
-    expect(matchVenmoPayment(one, query({ postedMs: at2('2026-09-28', '23:00:00') }))).not.toBeNull();
+    expect(matchVenmoPayment(one, query({ postedMs: at2('2026-10-02', '00:00:00') }))).not.toBeNull();
     expect(matchVenmoPayment(one, query({ postedMs: at2('2026-10-09', '00:00:00') }))).toBeNull();
-    expect(matchVenmoPayment(one, query({ postedMs: at2('2026-09-27', '23:59:59') }))).toBeNull();
+    expect(matchVenmoPayment(one, query({ postedMs: at2('2026-10-01', '23:59:59') }))).toBeNull();
+    // The old ±5 days: a bank row never comes days before the payment's email.
+    expect(matchVenmoPayment(one, query({ postedMs: at2('2026-09-28', '23:00:00') }))).toBeNull();
   });
 
   it('gives no note when two payments of the same amount fall in the window', () => {
@@ -155,5 +160,64 @@ describe('review fixes', () => {
 
   it('gives no note for a money-in bank row against an out record (a refund shape)', () => {
     expect(matchVenmoPayment(ledgerOf({ ...RENT, emailDate: '2026-10-03' }), query({ direction: 'in' }))).toBeNull();
+  });
+});
+
+describe('matchVenmoPayments — one payment, one row, per sync run (ruling P3-K)', () => {
+  // The final review's case: Sam's $20 email on Oct 14; two $20 VENMO rows, Oct 10
+  // (a payment whose email never came — mail before the filter existed) and Oct 15.
+  const COFFEE: VenmoRecord = { direction: 'out', kind: 'payment', amountCents: 2000, counterparty: 'Sam', note: 'Coffee club' };
+  const sam = ledgerOf({ ...COFFEE, emailDate: '2026-10-14' });
+  const row = (id: string, day: string, over: Partial<VenmoPaymentQuery> = {}): VenmoPaymentQuery =>
+    query({ description: `VENMO PAYMENT ${id}`, amountCents: 2000, postedMs: at(day), txKey: `sfin-1\u0000${id}`, ...over });
+  const OLD = row('tx-old', '2026-10-10');
+  const NEW = row('tx-new', '2026-10-15');
+  const noted = (m: Map<string, { note: string }>) => Object.fromEntries([...m].map(([k, v]) => [k.split('\u0000')[1], v.note]));
+
+  it('gives the record to the Oct 15 row and none to the Oct 10 row, in either feed order', () => {
+    expect(noted(matchVenmoPayments(sam, [OLD, NEW]))).toEqual({ 'tx-new': 'Coffee club' });
+    expect(noted(matchVenmoPayments(sam, [NEW, OLD]))).toEqual({ 'tx-new': 'Coffee club' });
+  });
+
+  it('gives neither row a note when both fall inside the window', () => {
+    const both = [row('tx-a', '2026-10-14'), row('tx-b', '2026-10-16')];
+    expect(noted(matchVenmoPayments(sam, both))).toEqual({});
+    expect(noted(matchVenmoPayments(sam, [...both].reverse()))).toEqual({});
+  });
+
+  it('counts a pending VENMO row as a blocker: the posted row gets nothing, the pending one never does', () => {
+    const pending = row('tx-p', '2026-10-16', { pending: true });
+    expect(noted(matchVenmoPayments(sam, [NEW, pending]))).toEqual({});
+    expect(noted(matchVenmoPayments(sam, [pending]))).toEqual({});
+  });
+
+  it('keeps a row’s own consumed record on a re-run, whatever other row now wants it', () => {
+    const consumed = ledgerOf({ ...COFFEE, emailDate: '2026-10-14', consumedBy: NEW.txKey });
+    expect(noted(matchVenmoPayments(consumed, [row('tx-other', '2026-10-16'), NEW]))).toEqual({ 'tx-new': 'Coffee club' });
+    expect(noted(matchVenmoPayments(consumed, [NEW, row('tx-other', '2026-10-16')]))).toEqual({ 'tx-new': 'Coffee club' });
+  });
+
+  it('measures the window from a day before the email to five after: −1 in, −2 out, +5 in, +6 out', () => {
+    expect(noted(matchVenmoPayments(sam, [row('tx-m1', '2026-10-13')]))).toEqual({ 'tx-m1': 'Coffee club' });
+    expect(noted(matchVenmoPayments(sam, [row('tx-m2', '2026-10-12')]))).toEqual({});
+    expect(noted(matchVenmoPayments(sam, [row('tx-p5', '2026-10-19')]))).toEqual({ 'tx-p5': 'Coffee club' });
+    expect(noted(matchVenmoPayments(sam, [row('tx-p6', '2026-10-20')]))).toEqual({});
+  });
+
+  it('drops a contested record for every row that wanted it — and its identical twin with it', () => {
+    // A bank transfer's two emails (initiated Oct 3, arrived Oct 5) are one payment:
+    // a row that saw both and a row that saw only the second compete for it.
+    const BANK: VenmoRecord = { direction: 'in', kind: 'bank-transfer', amountCents: 10000, counterparty: null, note: 'Transfer to your bank' };
+    const twins = ledgerOf({ ...BANK, emailDate: '2026-10-03' }, { ...BANK, emailDate: '2026-10-05' });
+    const bank = (id: string, day: string) => row(id, day, { description: 'VENMO CASHOUT', amountCents: 10000, direction: 'in' });
+    expect(noted(matchVenmoPayments(twins, [bank('tx-1', '2026-10-04'), bank('tx-2', '2026-10-09')]))).toEqual({});
+    // Alone, the first row still gets the transfer's note once.
+    expect(noted(matchVenmoPayments(twins, [bank('tx-1', '2026-10-04')]))).toEqual({ 'tx-1': 'Transfer to your bank' });
+  });
+
+  it('a row left with one record after the contested one is dropped gets it', () => {
+    const two = ledgerOf({ ...COFFEE, emailDate: '2026-10-14' }, { ...COFFEE, counterparty: 'Ann', note: 'Lunch', emailDate: '2026-10-17' });
+    // tx-a can be either payment; tx-b only Sam's (Oct 13 is before Ann's window).
+    expect(noted(matchVenmoPayments(two, [row('tx-a', '2026-10-17'), row('tx-b', '2026-10-13')]))).toEqual({ 'tx-a': 'Lunch' });
   });
 });
