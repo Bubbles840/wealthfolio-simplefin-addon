@@ -118,8 +118,8 @@ const bytes = (s: string) => new TextEncoder().encode(s).length;
 export function normalizeWhyQuery(raw: string): string {
   const q = parseTxQuery(raw);
   const words = [...q.words];
-  const amount = q.amount ? [q.amount.text] : [];
-  // The amount FIRST, so the text parses back to this same query (txQueryText).
+  const amount = q.amount ? [`$${q.amount.text}`] : [];
+  // `$amount` FIRST, so the text parses back to this same query (txQueryText).
   const text = () => [...amount, ...words].join(' ');
   while (bytes(text()) > WHY_QUERY_MAX_BYTES && words.length > (amount.length ? 0 : 1)) words.pop();
   let t = text();
