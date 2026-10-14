@@ -3,6 +3,9 @@ import {
   renderScreen,
   applyTap,
   parseNewRuleArgs,
+  resolveAccountQuery,
+  formatAccountQueryMiss,
+  NEWRULE_ACCOUNTS_UNREADABLE,
   MENU_PAGE_SIZE,
   MENU_CALLBACK_PREFIX,
 } from './categorize-menu';
@@ -1478,5 +1481,106 @@ describe('guessed categories (3)', () => {
     const filed = renderScreen(session({ ...base, screen: { kind: 'filed', activityId: 'act-1', categoryId: 'cat-odd', undone: false } }));
     expect(filed.text).toContain('Fun\\_&\\_\\*Games\\*');
     expect(filed.text).not.toContain('Fun_&_*Games*');
+  });
+});
+
+
+describe('account-scoped rules (3)', () => {
+  const CHK = { activityId: 'act-1', accountId: 'wf-chk', accountName: 'PNC Checking', description: 'VENMO PAYMENT 1023' };
+  const rows = [
+    txn(CHK),
+    txn({ ...CHK, activityId: 'act-2' }),
+    txn({ ...CHK, activityId: 'act-3', accountId: 'wf-card', accountName: 'Citi Card' }),
+  ];
+  const preview = (onlyAccount?: boolean): MenuScreen => ({ kind: 'rulePreview', activityId: 'act-1', categoryId: 'cat-groceries', ...(onlyAccount ? { onlyAccount } : {}) });
+  const flat = (s: MenuSession) => {
+    const { keyboard, buttons } = renderScreen(s);
+    return keyboard.inline_keyboard.flat().map((b, i) => [b.text, buttons[i]] as const);
+  };
+
+  it('offers "All accounts ⇄ Only <account>" on a filing’s preview, all accounts ticked by default', () => {
+    const s = session({ txns: rows, screen: preview() });
+    expect(flat(s)).toEqual([
+      ['Create rule', { kind: 'createRule', activityId: 'act-1', categoryId: 'cat-groceries' }],
+      ['✓ All accounts', { kind: 'goto', screen: preview() }],
+      ['Only PNC Checking', { kind: 'goto', screen: preview(true) }],
+      ['‹ Back', { kind: 'goto', screen: { kind: 'txn', activityId: 'act-1' } }],
+    ]);
+    expect(renderScreen(s).text).toContain('Right now that also files 2 other uncategorized transactions.');
+  });
+
+  it('scoped: names the account in the copy, counts only its rows, and creates for it', () => {
+    const s = session({ txns: rows, screen: preview(true) });
+    expect(renderScreen(s).text).toBe(
+      'Create this rule?\n'
+      + 'Descriptions containing "VENMO PAYMENT" in PNC Checking → Groceries\n'
+      + 'It will also file any other uncategorized transactions in PNC Checking that match, now and on every future import. '
+      + 'Already-categorized transactions are never touched.\n'
+      + 'Right now that also files 1 other uncategorized transaction.',
+    );
+    expect(flat(s).map(([t]) => t)).toEqual(['Create rule', 'All accounts', '✓ Only PNC Checking', '‹ Back']);
+    expect(flat(s)[0][1]).toEqual({ kind: 'createRule', activityId: 'act-1', categoryId: 'cat-groceries', account: { id: 'wf-chk', name: 'PNC Checking' } });
+  });
+
+  it('a /newrule preview naming an account opens scoped, and can widen to all accounts', () => {
+    const account = { id: 'wf-chk', name: 'PNC Checking' };
+    const free: MenuScreen = { kind: 'freeRulePreview', pattern: 'venmo', categoryId: 'cat-groceries', account, onlyAccount: true };
+    const s = session({ screen: free });
+    expect(renderScreen(s).text.split('\n')[1]).toBe('Descriptions containing "venmo" in PNC Checking → Groceries');
+    expect(flat(s)).toEqual([
+      ['Create rule', { kind: 'createFreeRule', pattern: 'venmo', categoryId: 'cat-groceries', account }],
+      ['All accounts', { kind: 'goto', screen: { kind: 'freeRulePreview', pattern: 'venmo', categoryId: 'cat-groceries', account } }],
+      ['✓ Only PNC Checking', { kind: 'goto', screen: free }],
+      ['Cancel', { kind: 'close' }],
+    ]);
+    const wide = session({ screen: { kind: 'freeRulePreview', pattern: 'venmo', categoryId: 'cat-groceries', account } });
+    expect(flat(wide)[0][1]).toEqual({ kind: 'createFreeRule', pattern: 'venmo', categoryId: 'cat-groceries' });
+  });
+
+  it('says where a scoped rule will file once it exists', () => {
+    const s = session({ screen: { kind: 'ruleCreated', activityId: null, categoryId: 'cat-groceries', accountName: 'J_D *Checking*' } });
+    expect(renderScreen(s).text).toBe('Rule created — future matches in J\\_D \\*Checking\\* will file automatically under Groceries.');
+  });
+
+  it('escapes an account name full of Markdown in the text and keeps it raw on the button', () => {
+    const odd = txn({ ...CHK, accountName: 'J_D *Checking* [1]' });
+    const s = session({ txns: [odd], screen: preview(true) });
+    expect(renderScreen(s).text.split('\n')[1]).toBe('Descriptions containing "VENMO PAYMENT" in J\\_D \\*Checking\\* \\[1] → Groceries');
+    expect(flat(s)[2][0]).toBe('✓ Only J_D *Checking* [1]');
+  });
+
+  it('offers no scope for a row whose account has no name to show', () => {
+    const s = session({ txns: [txn({ ...CHK, accountName: '' })], screen: preview() });
+    expect(flat(s).map(([t]) => t)).toEqual(['Create rule', '‹ Back']);
+  });
+
+  it('keeps every scoped screen’s callbacks within 64 bytes', () => {
+    const long = txn({ ...CHK, accountName: `A Very Long Household Account Name ${'Z'.repeat(80)}` });
+    for (const screen of [preview(), preview(true)]) {
+      assertCallbackBytesFit(renderScreen(session({ txns: [long], generation: 4294967295, screen })).keyboard);
+    }
+  });
+});
+
+describe('/newrule … in <account> (3)', () => {
+  const ACCOUNTS = [{ id: 'wf-chk', name: 'PNC Checking' }, { id: 'wf-sav', name: 'PNC Savings' }, { id: 'wf-card', name: 'Citi Card' }];
+
+  it('reads an account after " in " on the category side', () => {
+    expect(parseNewRuleArgs('venmo = rent in pnc checking')).toEqual({ pattern: 'venmo', categoryQuery: 'rent', accountQuery: 'pnc checking' });
+    expect(parseNewRuleArgs('venmo = rent in money in bank')).toEqual({ pattern: 'venmo', categoryQuery: 'rent', accountQuery: 'money in bank' });
+    expect(parseNewRuleArgs('dine in = restaurants')).toEqual({ pattern: 'dine in', categoryQuery: 'restaurants' });
+  });
+
+  it('resolves the account: an exact name first, else the one name holding the words', () => {
+    expect(resolveAccountQuery(ACCOUNTS, 'citi')).toEqual({ kind: 'one', account: ACCOUNTS[2] });
+    expect(resolveAccountQuery(ACCOUNTS, 'PNC checking')).toEqual({ kind: 'one', account: ACCOUNTS[0] });
+    expect(resolveAccountQuery(ACCOUNTS, 'pnc')).toEqual({ kind: 'many', accounts: [ACCOUNTS[0], ACCOUNTS[1]] });
+    expect(resolveAccountQuery(ACCOUNTS, 'chase')).toEqual({ kind: 'none' });
+  });
+
+  it('asks which account, or names them all, escaped', () => {
+    expect(formatAccountQueryMiss({ kind: 'many', accounts: [ACCOUNTS[0], ACCOUNTS[1]] }, 'pnc', ACCOUNTS)).toBe('Which account? PNC Checking, PNC Savings');
+    expect(formatAccountQueryMiss({ kind: 'none' }, 'chase_1', [{ id: 'x', name: 'J_D Card' }])).toBe('No account matches "chase\\_1". Your accounts: J\\_D Card.');
+    expect(NEWRULE_ACCOUNTS_UNREADABLE).toBe("Couldn't read your accounts just now — try again.");
   });
 });

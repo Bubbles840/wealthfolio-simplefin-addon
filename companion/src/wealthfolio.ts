@@ -326,6 +326,10 @@ export class WealthfolioClient {
     categoryId: string;
     taxonomyId: string;
     priority: number;
+    /** For one account only (3, L5): `isGlobal: false` with its id. Absent:
+     *  every account, and no `accountId` key — upstream refuses a global rule
+     *  that names an account (`validate_rule_scope`, 3.8–3.10). */
+    accountId?: string;
   }): Promise<string | null> {
     const res = await fetch(`${this.baseUrl}/api/v1/spending/rules`, {
       method: 'POST',
@@ -337,7 +341,8 @@ export class WealthfolioClient {
         taxonomyId: rule.taxonomyId,
         categoryId: rule.categoryId,
         priority: rule.priority,
-        isGlobal: true,
+        isGlobal: !rule.accountId,
+        ...(rule.accountId ? { accountId: rule.accountId } : {}),
       }),
     });
     if (!res.ok) throw await this.httpError('createCategorizationRule', res);

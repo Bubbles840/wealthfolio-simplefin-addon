@@ -4689,6 +4689,48 @@ describe('the /categorize wiring', () => {
       );
     });
 
+    describe('… in <account> (3)', () => {
+      const ACCOUNTS = [
+        { id: 'wf-chk', name: 'PNC Checking' }, { id: 'wf-sav', name: 'PNC Savings' },
+        { id: 'wf-old', name: 'PNC Old', isArchived: true },
+      ];
+      const scoped = async (args: string, accounts: () => Promise<unknown[]>) => {
+        const { client } = clientFor();
+        client.getAccounts = vi.fn(accounts);
+        const controller = buildCategorizeController(client);
+        const { sent, reply } = collect();
+        await buildTelegramCommandHandler(client, controller)({ command: 'newrule', args }, reply);
+        return { client, controller, sent };
+      };
+
+      it('opens the preview for that account only, and creates the rule for it', async () => {
+        const { client, controller, sent } = await scoped('trader joes = restaur in pnc checking', async () => ACCOUNTS);
+        expect(sent[0][0].split('\n')[1]).toBe('Descriptions containing "trader joes" in PNC Checking → Restaurants (Food & Dining)');
+        expect(labels(sent[0][1])).toEqual(['Create rule', 'All accounts', '✓ Only PNC Checking', 'Cancel']);
+        await controller.onCallback({ data: dataFor(sent[0][1], 'Create rule'), chatId: 4242, messageId: 7 }, fakeUi());
+        expect(client.createCategorizationRule).toHaveBeenCalledWith({
+          name: 'Telegram: trader joes', pattern: 'trader joes', categoryId: 'cat-rest',
+          taxonomyId: 'spending_categories', priority: 50, accountId: 'wf-chk',
+        });
+      });
+
+      it('asks which account when the name fits several, never offering an archived one', async () => {
+        const { sent, client } = await scoped('trader joes = restaur in pnc', async () => ACCOUNTS);
+        expect(sent).toEqual([['Which account? PNC Checking, PNC Savings', undefined]]);
+        expect(client.createCategorizationRule).not.toHaveBeenCalled();
+      });
+
+      it('names the accounts there are when none matches', async () => {
+        const { sent } = await scoped('trader joes = restaur in chase', async () => ACCOUNTS);
+        expect(sent[0][0]).toBe('No account matches "chase". Your accounts: PNC Checking, PNC Savings.');
+      });
+
+      it('says so when the accounts cannot be read', async () => {
+        const { sent } = await scoped('trader joes = restaur in pnc', async () => { throw new Error('502'); });
+        expect(sent[0][0]).toBe("Couldn't read your accounts just now — try again.");
+      });
+    });
+
     it('pins the rule priority at 50 — higher wins upstream, so a tapped rule yields', async () => {
       // Verified against upstream source, not inferred:
       // `crates/spending/src/categorization_rules/matcher.rs` picks

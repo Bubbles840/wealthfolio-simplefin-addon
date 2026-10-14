@@ -189,7 +189,7 @@ export type UndoStep =
   | { do: 'assign'; activityId: string; taxonomyId: string; categoryId: string }
   | { do: 'unassign'; activityId: string; taxonomyId: string }
   | { do: 'delete-rule'; ruleId: string }
-  | { do: 'create-rule'; rule: { name: string; pattern: string; categoryId: string } }
+  | { do: 'create-rule'; rule: { name: string; pattern: string; categoryId: string; accountId?: string } }
   | { do: 'mapping-remove'; rule: MappingRule }
   | { do: 'mapping-add'; rule: MappingRule };
 
@@ -365,10 +365,15 @@ export function planChangeUndo(
       const name = str(after.name);
       const pattern = str(after.pattern);
       const categoryId = str(after.categoryId);
+      // A rule scoped to one account (3, L5) comes back scoped.
+      const accountId = str(after.accountId);
       if (!name || !pattern || !categoryId) return refuse(UNDO_NOT_POSSIBLE);
       if (op === 'redo') {
         if (state.rule) return refuse('That rule is already there.');
-        return plan({ op, needsSync: false, ruleAfter: 'created', done: 'Redone — the rule is back.', steps: [{ do: 'create-rule', rule: { name, pattern, categoryId } }] });
+        return plan({
+          op, needsSync: false, ruleAfter: 'created', done: 'Redone — the rule is back.',
+          steps: [{ do: 'create-rule', rule: { name, pattern, categoryId, ...(accountId ? { accountId } : {}) } }],
+        });
       }
       if (!state.rule) return refuse('That rule is already gone.');
       const steps: UndoStep[] = [{ do: 'delete-rule', ruleId: state.rule.id }];
