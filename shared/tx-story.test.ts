@@ -174,14 +174,44 @@ describe('buildTxStory — missing and failed facts', () => {
 
   const each: TxFactName[] = ['mapping', 'partner', 'category', 'rules', 'changeLog', 'overrides', 'overridesUnreadable', 'skipList'];
   it.each(each)('a failed %s read still tells the story, with a note', (fact) => {
-    const s = story({ category: { name: 'Groceries', filer: { kind: 'hand' } }, failed: [fact] });
+    const s = story({
+      category: { name: 'Groceries', filer: { kind: 'hand' } }, overrides: ['noAutoFile'], skipped: true, failed: [fact],
+    });
+    const full = [
+      'From your PNC Checking bank feed.',
+      TX_STORY_SPENDING,
+      'Filed under Groceries — set by hand in Wealthfolio.',
+      "You told the sync: don't file it automatically, don't import it.",
+    ];
+    const expected = fact === 'mapping' ? full.slice(1)
+      : fact === 'partner' ? full.filter((l) => l !== TX_STORY_SPENDING)
+        : fact === 'category' ? full.filter((l) => !l.startsWith('Filed under'))
+          : full;
     expect(s.title).toBe('KROGER #415 · -$54.20 · Oct 4');
+    expect(s.answer).toEqual(expected);
     expect(s.notes).toEqual([TX_FACT_NOTES[fact]]);
-    if (fact === 'mapping') expect(s.answer).not.toContain('From your PNC Checking bank feed.');
-    if (fact === 'partner') expect(s.answer).not.toContain(TX_STORY_SPENDING);
-    if (fact === 'category') expect(s.answer.join(' ')).not.toContain('Filed under');
     if (fact === 'changeLog') expect(s.history).toBeNull();
     else expect(s.history).toEqual([]);
+  });
+
+  it('all five things you told the sync, in order', () => {
+    const s = story({ overrides: ['noAmazonLabel', 'keepDuplicate', 'noAutoFile', 'notTransfer'], skipped: true });
+    expect(s.answer.at(-1)).toBe(
+      "You told the sync: not a transfer, keep this duplicate, don't file it automatically, no Amazon label, don't import it.",
+    );
+  });
+
+  it('a filing by you with no day says only "in Telegram"', () => {
+    expect(story({ category: { name: 'Groceries', filer: { kind: 'you' } } }).answer[2]).toBe('Filed under Groceries by you, in Telegram.');
+  });
+
+  it('a transfer-typed row with no partner reads as spending or money in', () => {
+    expect(story({ row: row({ activityType: 'TRANSFER_OUT' }), partner: null }).answer).toEqual(['From your PNC Checking bank feed.', TX_STORY_SPENDING]);
+    expect(story({ row: row({ activityType: 'TRANSFER_IN' }), partner: null }).answer).toEqual(['From your PNC Checking bank feed.', TX_STORY_MONEY_IN]);
+  });
+
+  it('a pending mark on a row with no transaction id is still not from the bank', () => {
+    expect(story({ row: row({ note: 'Rent for October · pending' }) }).answer[0]).toBe(TX_STORY_NOT_FROM_FEED);
   });
 
   it('keeps bank text raw — escaping is the renderer’s job', () => {
