@@ -42,7 +42,7 @@ describe('parseTxQuery', () => {
   });
 
   it('writes a query back as words then the amount', () => {
-    expect(txQueryText(parseTxQuery('$54.20 Kroger'))).toBe('kroger 54.20');
+    expect(txQueryText(parseTxQuery('$54.20 Kroger'))).toBe('54.20 kroger');
   });
 });
 

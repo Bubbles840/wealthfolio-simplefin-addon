@@ -74,9 +74,12 @@ export function isEmptyTxQuery(q: TxQuery): boolean {
   return q.words.length === 0 && q.amount === null;
 }
 
-/** A query as one line of text: words, then the amount. */
+/** A query as one line of text: the amount, then the words. The amount goes
+ *  FIRST because `parseTxQuery` takes the first amount-like token as the
+ *  amount, so this text parses back to the same query ("kroger 415 54.20"
+ *  keeps 415 as its amount). */
 export function txQueryText(q: TxQuery): string {
-  return [...q.words, ...(q.amount ? [q.amount.text] : [])].join(' ');
+  return [...(q.amount ? [q.amount.text] : []), ...q.words].join(' ');
 }
 
 export function matchesTxQuery(row: Pick<TxSearchRow, 'description' | 'accountName' | 'amountCents'>, q: TxQuery): boolean {

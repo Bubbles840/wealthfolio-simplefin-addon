@@ -139,6 +139,12 @@ export function changeDay(iso: string): string {
   return `${MONTHS[(m || 1) - 1]} ${d || 1}`;
 }
 
+/** `changeDay`, plus the year ("Oct 4, 2024") when it is not `now`'s year. */
+export function changeDayYear(iso: string, now: Date): string {
+  const year = Number(iso.slice(0, 4));
+  return year && year !== now.getFullYear() ? `${changeDay(iso)}, ${year}` : changeDay(iso);
+}
+
 const plural = (n: number, one: string, many: string) => (n === 1 ? one : many);
 /** The bank text a summary names; a blank description is legitimate. */
 const what = (description: string | undefined) => (description && description.trim() ? description.trim() : 'a transaction');
