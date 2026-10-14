@@ -3,6 +3,7 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { BudgetPreview, BudgetTab, SAMPLE_BANNER } from './BudgetTab';
 import { emptySubscriptionPrefs } from '../../shared/subscription-prefs';
+import { sampleReportCube } from '../../shared/sample-cube';
 
 /**
  * The sample-data preview (project 4, G2): the Budget board over the built-in
@@ -134,5 +135,88 @@ describe('the sample-data preview', () => {
       .map((p: { month: string }) => p.month);
     expect(months.at(-1)).toBe('2027-01');
     expect(months[0]).toBe('2026-08');
+  });
+  it('a preview BudgetTab hands no handler to anything: every write and every ledger link is absent', () => {
+    // A sample whose drill rows carry activity ids, so a story COULD open if
+    // the renderTxStory gate were missing.
+    const base = sampleReportCube(NOW);
+    const cube = {
+      ...base,
+      drill: { ...base.drill, Groceries: base.drill.Groceries.map((r, i) => ({ ...r, i: `act-${i}` })) },
+    };
+    const spies = {
+      onLayoutChange: vi.fn(),
+      onLayoutReset: vi.fn(),
+      onCustomReportsChange: vi.fn(),
+      onSubscriptionEdit: vi.fn(),
+      onOpenActivities: vi.fn(),
+      renderTxStory: vi.fn(() => null),
+      onSetUpCompanion: vi.fn(),
+      setSemesterPool: vi.fn(async () => {}),
+      setBudgetLayout: vi.fn(async () => {}),
+      setCustomReports: vi.fn(async () => {}),
+    };
+    const store = { setSemesterPool: spies.setSemesterPool, setBudgetLayout: spies.setBudgetLayout, setCustomReports: spies.setCustomReports } as any;
+    render(
+      <BudgetTab
+        cube={cube}
+        customReports={[]}
+        layout={null}
+        onLayoutChange={spies.onLayoutChange}
+        onLayoutReset={spies.onLayoutReset}
+        onCustomReportsChange={spies.onCustomReportsChange}
+        store={store}
+        subscriptionPrefs={{ prefs: emptySubscriptionPrefs(), unreadable: false }}
+        onSubscriptionEdit={spies.onSubscriptionEdit}
+        onOpenActivities={spies.onOpenActivities}
+        renderTxStory={spies.renderTxStory}
+        onSetUpCompanion={spies.onSetUpCompanion}
+        preview={{ onExit: vi.fn() }}
+      />,
+    );
+    const back = () => fireEvent.click(screen.getByRole('button', { name: 'Back to all reports' }));
+    expect(screen.getByText(SAMPLE_BANNER)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Customize' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '+ Add report' })).toBeNull();
+    for (const label of ['Month', '3 months', '6 months', '12 months', 'All']) {
+      fireEvent.click(screen.getByRole('button', { name: label }));
+    }
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open Subscriptions' }));
+    expect(screen.getByText('StreamPlus')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '+ Add subscription' })).toBeNull();
+    expect(screen.queryAllByRole('group', { name: /^Remind before/ })).toHaveLength(0);
+    expect(screen.queryByRole('button', { name: /^(Hide|Rename|Delete|Edit)/ })).toBeNull();
+    back();
+
+    fireEvent.click(screen.getByRole('button', { name: 'See Groceries transactions' }));
+    expect(screen.getAllByText('Corner Grocer').length).toBeGreaterThan(0);
+    fireEvent.click(screen.getAllByText('Corner Grocer')[0]);
+    expect(screen.queryByRole('button', { name: 'Open in Wealthfolio' })).toBeNull();
+    expect(spies.renderTxStory).not.toHaveBeenCalled();
+    expect(document.querySelector('.sfin-why-inline')).toBeNull();
+    back();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open Headline numbers' }));
+    expect(screen.queryByText('Choose up to five numbers:')).toBeNull();
+    back();
+
+    for (const spy of Object.values(spies)) expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('leaves the preview when a real cube arrives, and does not reopen it if the cube goes away', () => {
+    const props = {
+      customReports: [], layout: null, onLayoutChange: vi.fn(), onCustomReportsChange: vi.fn(),
+      store: {} as any, onSetUpCompanion: vi.fn(),
+    };
+    const { rerender } = render(<BudgetTab cube={null} {...props} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Preview with sample data' }));
+    expect(screen.getByText(SAMPLE_BANNER)).toBeTruthy();
+    rerender(<BudgetTab cube={sampleReportCube(NOW)} {...props} />);
+    expect(screen.queryByText(SAMPLE_BANNER)).toBeNull();
+    expect(reportIds().length).toBeGreaterThan(0);
+    rerender(<BudgetTab cube={null} {...props} />);
+    expect(screen.queryByText(SAMPLE_BANNER)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Preview with sample data' })).toBeTruthy();
   });
 });
