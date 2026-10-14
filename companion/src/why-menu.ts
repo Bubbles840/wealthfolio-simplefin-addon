@@ -28,7 +28,7 @@
  * labels are plain text and are not escaped.
  */
 import type { AskFlow } from '../../shared/ask-flow.js';
-import { changeDay, changeMoney } from '../../shared/change-entries.js';
+import { changeDayYear, changeMoney } from '../../shared/change-entries.js';
 import type { ChangeLogItem, ChangeLogRead } from '../../shared/change-log.js';
 import { findingHandle } from '../../shared/handle.js';
 import { escapeMarkdown, shortDateTime, WHY_CALLBACK_PREFIX, type InlineKeyboard } from '../../shared/telegram.js';
@@ -85,23 +85,27 @@ export function whyData(view: WhyView): string {
   }
 }
 
+/** The handle a sync's run rides in a `cz:wy:r` button as; the import notice's
+ *  🔎 button must build it with this too. */
+export const whyRunHandle = (run: string): string => findingHandle(run);
+
 /** The view a button carries, or null for anything this menu never emitted. */
 export function parseWhyData(data: string): WhyView | null {
   if (!data.startsWith(WHY_CALLBACK_PREFIX)) return null;
   const s = data.slice(WHY_CALLBACK_PREFIX.length);
-  let m = /^s(\d):(.+)$/s.exec(s);
+  let m = /^s(\d{1,3}):(.+)$/s.exec(s);
   if (m) return { kind: 'search', page: Number(m[1]), query: m[2] };
   m = /^r([0-9a-f]{8})$/.exec(s);
   if (m) return { kind: 'run', run: m[1], page: 0, fresh: true };
-  m = /^r([0-9a-f]{8}):(\d)$/.exec(s);
+  m = /^r([0-9a-f]{8}):(\d{1,3})$/.exec(s);
   if (m) return { kind: 'run', run: m[1], page: Number(m[2]), fresh: false };
   m = /^t([^:\s]{1,64})$/.exec(s);
   if (m) return { kind: 'story', activityId: m[1], back: { kind: 'none' } };
   m = /^t([^:\s]{1,64}):c$/.exec(s);
   if (m) return { kind: 'story', activityId: m[1], back: { kind: 'changes' } };
-  m = /^t([^:\s]{1,64}):s(\d):(.+)$/s.exec(s);
+  m = /^t([^:\s]{1,64}):s(\d{1,3}):(.+)$/s.exec(s);
   if (m) return { kind: 'story', activityId: m[1], back: { kind: 'search', page: Number(m[2]), query: m[3] } };
-  m = /^t([^:\s]{1,64}):r([0-9a-f]{8}):(\d)$/.exec(s);
+  m = /^t([^:\s]{1,64}):r([0-9a-f]{8}):(\d{1,3})$/.exec(s);
   if (m) return { kind: 'story', activityId: m[1], back: { kind: 'run', run: m[2], page: Number(m[3]) } };
   return null;
 }
@@ -115,7 +119,8 @@ export function normalizeWhyQuery(raw: string): string {
   const q = parseTxQuery(raw);
   const words = [...q.words];
   const amount = q.amount ? [q.amount.text] : [];
-  const text = () => [...words, ...amount].join(' ');
+  // The amount FIRST, so the text parses back to this same query (txQueryText).
+  const text = () => [...amount, ...words].join(' ');
   while (bytes(text()) > WHY_QUERY_MAX_BYTES && words.length > (amount.length ? 0 : 1)) words.pop();
   let t = text();
   while (bytes(t) > WHY_QUERY_MAX_BYTES) t = Array.from(t).slice(0, -1).join('');
@@ -129,7 +134,7 @@ const clip = (s: string, n: number) => {
 
 /** A result's button: date · description · amount · account. */
 function rowLabel(r: { date: string; description: string; amountCents: number; accountName: string }): string {
-  return [changeDay(r.date), clip(r.description || 'A transaction', 28), changeMoney(r.amountCents), clip(r.accountName, 20)]
+  return [changeDayYear(r.date, new Date()), clip(r.description || 'A transaction', 28), changeMoney(r.amountCents), clip(r.accountName, 20)]
     .filter(Boolean).join(' · ');
 }
 
@@ -196,6 +201,7 @@ export function renderWhyStory(story: TxStory, activityId: string, back: StoryBa
 
 /** One sync's imports (its import entries in the log, newest first). */
 export function renderWhyRun(entries: ChangeLogItem[], run: string, page: number): MenuScreen {
+  if (entries.length === 0) return { text: `🔎 *${WHY_RUN_TITLE}*\n\n${escapeMarkdown(WHY_RUN_GONE)}`, keyboard: { inline_keyboard: [] } };
   const { slice, page: p, pages } = txSearchPage(entries, page);
   const lines = [`🔎 *${WHY_RUN_TITLE}*`, `_${shortDateTime(entries[0].at)}_`, '', WHY_TAP_ONE];
   if (pages > 1) lines.push(`Page ${p + 1} of ${pages}`);
@@ -259,7 +265,7 @@ const sendScreen = (send: Send, s: MenuScreen) => (s.keyboard.inline_keyboard.le
 
 export function createWhyMenu(deps: WhyMenuDeps): WhyMenu {
   const runImports = (read: ChangeLogRead, handle: string) =>
-    read.entries.filter((e) => e.kind === 'import' && e.run && findingHandle(e.run) === handle && !!e.subject.activityIds?.[0]);
+    read.entries.filter((e) => e.kind === 'import' && e.run && whyRunHandle(e.run) === handle && !!e.subject.activityIds?.[0]);
 
   return {
     handles(data) {

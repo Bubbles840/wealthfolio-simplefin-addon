@@ -4,13 +4,13 @@ import type { ChangeLogItem, ChangeLogRead } from '../../shared/change-log.js';
 import { MENU_CALLBACK_PREFIX } from '../../shared/categorize-menu.js';
 import { findingHandle } from '../../shared/handle.js';
 import { WHY_CALLBACK_PREFIX } from '../../shared/telegram.js';
-import { parseTxQuery, type TxSearchRow } from '../../shared/tx-search.js';
+import { matchesTxQuery, parseTxQuery, txQueryText, type TxSearchRow } from '../../shared/tx-search.js';
 import { buildTxStory, TX_STORY_GONE, TX_STORY_UNREACHABLE, type TxStory } from '../../shared/tx-story.js';
 import { answerText, startAsk } from '../../shared/ask-flow.js';
 import { parseChangesData } from './changes-menu.js';
 import {
   buildWhyFlow, createWhyMenu, normalizeWhyQuery, parseWhyData, renderWhyResults, renderWhyRun, renderWhyStory,
-  whyData, WHY_QUERY_MAX_BYTES, WHY_RECENT_ONLY, WHY_RUN_GONE, type WhyMenuDeps, type MenuScreen,
+  whyData, whyRunHandle, WHY_QUERY_MAX_BYTES, WHY_RECENT_ONLY, WHY_RUN_GONE, type WhyMenuDeps, type MenuScreen,
 } from './why-menu.js';
 
 const ID = '0f8fad5b-d9cb-469f-a165-708677289501';
@@ -40,19 +40,50 @@ const storyFor = (over: Partial<TxStory> = {}): TxStory => ({
 
 describe('normalizeWhyQuery', () => {
   it('keeps a short query as words then the amount', () => {
-    expect(normalizeWhyQuery('  $54.20   Kroger ')).toBe('kroger 54.20');
+    expect(normalizeWhyQuery('  $54.20   Kroger ')).toBe('54.20 kroger');
   });
 
   it('drops words from the end, keeping the amount, until it fits', () => {
     const q = normalizeWhyQuery('heine brothers coffee shop 12.50');
     expect(bytes(q)).toBeLessThanOrEqual(WHY_QUERY_MAX_BYTES);
-    expect(q).toBe('heine 12.50');
+    expect(q).toBe('12.50 heine');
   });
 
   it('cuts one long word at a character, never mid-byte', () => {
     const q = normalizeWhyQuery('ééééééééééééééééééé');
     expect(bytes(q)).toBeLessThanOrEqual(WHY_QUERY_MAX_BYTES);
     expect(q).toBe('éééééééé');
+  });
+});
+
+describe('a canonical query parses back to the same query', () => {
+  it.each(['kroger 415 54.20', '7 eleven 5.43', '54.20', 'kroger', '$1,250.50 rent', 'heine brothers coffee shop 12.50'])('%s', (t) => {
+    const q = parseTxQuery(t);
+    const n = normalizeWhyQuery(t);
+    if (bytes(txQueryText(q)) <= WHY_QUERY_MAX_BYTES) expect(parseTxQuery(n)).toEqual(q);
+    else expect(parseTxQuery(n).amount).toEqual(q.amount);
+  });
+
+  it('pages and Back keep two amount-like tokens: the same rows are listed', async () => {
+    const rows = [{ activityId: ID, date: '2026-10-04', description: 'KROGER 54.20', amountCents: -41500, accountName: 'PNC Checking' }];
+    const search = vi.fn(async (q: ReturnType<typeof parseTxQuery>) => ({
+      kind: 'ok' as const, result: { rows: rows.filter((r) => matchesTxQuery(r, q)), truncated: false }, recentOnly: false,
+    }));
+    const menu = createWhyMenu({
+      search, story: vi.fn(async () => ({ kind: 'ok' as const, story: storyFor(), facts: {} as never })),
+      read: vi.fn(), now: () => NOW, log: vi.fn(),
+    } as unknown as WhyMenuDeps);
+    const sent: Array<[string, any]> = [];
+    await menu.reply('kroger 415 54.20', async (t, k) => { sent.push([t, k]); });
+    expect(sent[0][1].inline_keyboard).toHaveLength(1);
+    const open = sent[0][1].inline_keyboard[0][0].callback_data as string;
+    const edits: Array<[string, any]> = [];
+    const u = { edit: vi.fn(async (t: string, k: any) => { edits.push([t, k]); }), answer: vi.fn(async () => {}), send: vi.fn(async () => {}) };
+    await menu.onCallback({ data: open }, u);
+    const back = edits[0][1].inline_keyboard.at(-1)[0].callback_data as string;
+    await menu.onCallback({ data: back }, u);
+    expect(edits[1][0]).toBe(sent[0][0]);
+    expect(edits[1][1]).toEqual(sent[0][1]);
   });
 });
 
@@ -91,6 +122,13 @@ describe('the results', () => {
     expect(s.text.split('\n')[0]).toBe('🔎 *Why is this here?* sq \\*coffee\\_');
     // Button labels are not Markdown: they stay as the bank wrote them.
     expect(labels(s)[0]).toBe('Oct 20 · SQ *COFFEE_CLUB [2] · -$54.20 · PNC Checking');
+  });
+});
+
+describe('the year', () => {
+  it('shows it on a result from another year, and not for this one', () => {
+    const s = renderWhyResults({ result: { rows: result(1, { date: '2024-10-04' }), truncated: false }, recentOnly: false }, 'kroger', 0);
+    expect(labels(s)[0]).toBe('Oct 4, 2024 · KROGER #415 · -$54.20 · PNC Checking');
   });
 });
 
@@ -154,6 +192,14 @@ describe('the story', () => {
 });
 
 describe('a sync’s imports', () => {
+  it('an empty list does not throw', () => {
+    expect(renderWhyRun([], 'abcd1234', 0).text).toContain('past the change log');
+  });
+
+  it('whyRunHandle is the handle the menu reads', () => {
+    expect(whyRunHandle('c1')).toBe(findingHandle('c1'));
+  });
+
   it('lists them, each opening its story with Back to the list', () => {
     const s = renderWhyRun([imp('a1', 'c1'), imp('a2', 'c1', 'TARGET')], 'abcd1234', 0);
     expect(s.text.split('\n')[0]).toBe('🔎 *What this sync imported*');
@@ -162,6 +208,27 @@ describe('a sync’s imports', () => {
 });
 
 describe('callback data', () => {
+  it('round-trips two-digit run pages within 64 bytes', () => {
+    const a = { kind: 'run', run: 'abcd1234', page: 12, fresh: false } as const;
+    const b = { kind: 'story', activityId: ID, back: { kind: 'run', run: 'abcd1234', page: 12 } } as const;
+    for (const v of [a, b]) {
+      expect(parseWhyData(whyData(v))).toEqual(v);
+      expect(bytes(whyData(v))).toBeLessThanOrEqual(64);
+    }
+  });
+
+  it.each([['abcdefghijklmnopq', 64], ['😀😀😀😀', 64 - (17 - 16)]])('the widest button for %s fits and cuts no UTF-8 sequence', (q, widest) => {
+    const query = normalizeWhyQuery(q);
+    const found = { result: { rows: result(8, { activityId: ID }), truncated: true }, recentOnly: false };
+    const data = [...allData(renderWhyResults(found, query, 1)), ...allData(renderWhyStory(storyFor(), ID, { kind: 'search', page: 4, query }))];
+    for (const d of data) {
+      expect(bytes(d!)).toBeLessThanOrEqual(64);
+      expect(Buffer.from(d!, 'utf8').toString('utf8')).toBe(d);
+      expect(d).not.toContain('\uFFFD');
+    }
+    expect(Math.max(...data.map((d) => bytes(d!)))).toBe(widest);
+  });
+
   it('round-trips every view', () => {
     const views = [
       { kind: 'search', page: 3, query: 'kroger 54.20' },

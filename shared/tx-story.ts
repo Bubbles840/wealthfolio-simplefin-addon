@@ -21,7 +21,7 @@
  * Every string returned is RAW. Telegram escapes bank and user text at render
  * and keeps it outside every `*…*`/`_…_`; the app renders it as text.
  */
-import { amazonLabelOf, changeDay, changeMoney, type ChangeEntry } from './change-entries.js';
+import { amazonLabelOf, changeDay, changeDayYear, changeMoney, type ChangeEntry } from './change-entries.js';
 import type { ChangeLogItem } from './change-log.js';
 import { changeLocalDay } from './change-view.js';
 import { IN_TRANSIT_COMMENT_PREFIX } from './reconcile.js';
@@ -109,6 +109,8 @@ export type TxFiler =
 
 export interface TxStoryFacts {
   row: TxStoryRow;
+  /** The clock the title's year is judged against; defaults to the real one. */
+  now?: Date;
   /** The SimpleFin account the row's account syncs from; null when the
    *  add-on does not sync that account. */
   feed?: { sfinAccountId: string } | null;
@@ -407,7 +409,7 @@ export function buildTxStory(facts: TxStoryFacts): TxStory {
       .map((e) => ({ entryId: e.id, line: `${changeDay(changeLocalDay(e.at))} · ${e.summary}` }));
 
   return {
-    title: `${description} · ${changeMoney(signedCents(row))} · ${changeDay(row.date)}`,
+    title: `${description} · ${changeMoney(signedCents(row))} · ${changeDayYear(row.date, facts.now ?? new Date())}`,
     accountLine: row.accountName,
     answer,
     history,

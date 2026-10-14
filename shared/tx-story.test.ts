@@ -333,3 +333,11 @@ describe('helpers', () => {
     expect(story({ history: [label] }).history).toEqual([{ entryId: label.id, line: 'Oct 5 · Added the Amazon label "Toys" to AMAZON MKTPL' }]);
   });
 });
+
+describe('buildTxStory — the title’s year', () => {
+  it('adds the year only when the row is from another year', () => {
+    const now = new Date('2026-10-13T12:00:00Z');
+    expect(story({ now, row: row({ date: '2026-10-04' }) }).title).toMatch(/ · Oct 4$/);
+    expect(story({ now, row: row({ date: '2024-10-04' }) }).title).toMatch(/ · Oct 4, 2024$/);
+  });
+});
