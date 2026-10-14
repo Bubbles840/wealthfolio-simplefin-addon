@@ -9,9 +9,9 @@
  * Ported from companion/tools: the row read is audit-health.mjs part 1's
  * (`activity_type_override`, `status`, `metadata`, `asset_id`) with
  * fix-transfers.mjs's archived flag and its `$CASH` asset test; the month
- * read is the report cube's month, with each row's account, link group and
- * the filings the cube counts; the settings are what Wealthfolio's Spending
- * page reads (its timezone, exclusions and accounts). Every table and column
+ * read and the settings are the report's own (1.62: `getNativeSpendRows` and
+ * `getNativeSpendingSettings` in sqlite-native.ts — the rows and the Spending
+ * page's settings shared/wf-spending.ts counts with). Every table and column
  * read here is the same on Wealthfolio 3.8, 3.9 and 3.10; a blank override
  * reads as none, and the excluded-categories setting (3.9+) as none when it
  * is not there.
@@ -25,15 +25,15 @@
  */
 import type { AuditAccount, AuditLedger, AuditLedgerRow } from '../../shared/audit-ledger.js';
 import type { HeadlineDbRow } from '../../shared/audit-headline.js';
-import { DRILL_CLI_SEPARATOR, queryNativeDbStrict, REPORT_COUNTS_CATEGORY } from './sqlite-native.js';
+import { DRILL_CLI_SEPARATOR, getNativeSpendingSettings, getNativeSpendRows, queryNativeDbStrict, SPEND_CLI_MAX_BUFFER } from './sqlite-native.js';
 
 /** The `$CASH` security the July 2026 bulk import minted (audit-health.mjs). */
 export const PHANTOM_CASH_ASSET_ID = '9231cb80-4223-4c04-98e3-dd3b1af60311';
 
 const SEP = DRILL_CLI_SEPARATOR;
 /** The sqlite3 CLI's output buffer for every audit read: the ledger read
- *  returns every row Wealthfolio holds. */
-export const AUDIT_CLI_MAX_BUFFER = 256 * 1024 * 1024;
+ *  returns every row Wealthfolio holds. The spending reads' own. */
+export const AUDIT_CLI_MAX_BUFFER = SPEND_CLI_MAX_BUFFER;
 /** A note with each CR and LF made a space: the CLI prints a row per line. */
 const NOTES = `REPLACE(REPLACE(COALESCE(a.notes, ''), char(13), ' '), char(10), ' ')`;
 const tail = (parts: string[], from: number) => parts.slice(from).join(SEP);
@@ -50,15 +50,6 @@ export function auditRowFromCliParts(parts: string[]): Record<string, unknown> |
   const out: Record<string, unknown> = {};
   for (let i = 0; i < 13; i++) out[`c${i}`] = parts[i];
   out.c13 = tail(parts, 13);
-  return out;
-}
-
-/** CLI line → the month read's thirteen columns (the note last). */
-export function headlineRowFromCliParts(parts: string[]): Record<string, unknown> | null {
-  if (parts.length < 13 || !Number.isFinite(parseFloat(parts[7]))) return null;
-  const out: Record<string, unknown> = {};
-  for (let i = 0; i < 12; i++) out[`c${i}`] = parts[i];
-  out.c12 = tail(parts, 12);
   return out;
 }
 
@@ -123,49 +114,17 @@ export function getNativeAuditLedger(dbPath: string): AuditLedger {
 }
 
 const isDay = (s: string) => /^\d{4}-\d{2}-\d{2}$/.test(s);
+const shiftDay = (day: string, days: number) => new Date(Date.parse(`${day}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
 
-/** The report's month of activities, every account, as the cube reads it:
- *  `[startInclusive, endExclusive)` on the stored date, both YYYY-MM-DD. A
- *  row's spending filings are the ones the report counts (spendingWhere: not
- *  rolled up to a transfer-named category). */
+/** The month's activities, every account, as shared/wf-spending.ts counts
+ *  them: `[startInclusive, endExclusive)` on the stored date (both
+ *  YYYY-MM-DD) read a day wider on each side, since Wealthfolio places a row
+ *  by its local date. Each with its filings and split lines
+ *  (`getNativeSpendRows`). */
 export function getNativeHeadlineRows(dbPath: string, startInclusive: string, endExclusive: string): HeadlineDbRow[] {
   // Interpolated (the CLI fallback cannot bind), so validated, never trusted.
   if (!isDay(startInclusive) || !isDay(endExclusive)) throw new Error(`malformed month bounds: ${startInclusive}..${endExclusive}`);
-  const rows = queryNativeDbStrict<Record<string, unknown>>(
-    dbPath,
-    'audit month',
-    `SELECT a.id AS id, a.activity_date AS activity_date, COALESCE(a.account_id, '') AS account_id,
-            COALESCE(a.source_group_id, '') AS grp, UPPER(COALESCE(acc.account_type, '')) AS account_type,
-            UPPER(COALESCE(a.activity_type, '')) AS activity_type, UPPER(COALESCE(a.subtype, '')) AS subtype,
-            ROUND(ABS(CAST(COALESCE(a.amount, '0') AS REAL)) * 100) AS abs_cents,
-            (SELECT COUNT(*) FROM activity_taxonomy_assignments ata JOIN taxonomy_categories tc ON ata.category_id = tc.id
-              LEFT JOIN taxonomy_categories parent ON tc.parent_id = parent.id
-              WHERE ata.activity_id = a.id AND tc.taxonomy_id = 'spending_categories' AND ${REPORT_COUNTS_CATEGORY}) AS spending_filings,
-            COALESCE((SELECT group_concat(ata.category_id, ',') FROM activity_taxonomy_assignments ata
-              WHERE ata.activity_id = a.id), '') AS category_ids,
-            COALESCE((SELECT ata.category_id FROM activity_taxonomy_assignments ata
-              WHERE ata.activity_id = a.id AND ata.taxonomy_id = 'spending_categories'
-              ORDER BY ata.created_at, ata.id LIMIT 1), '') AS spending_category,
-            COALESCE(acc.name, '') AS account_name,
-            ${NOTES} AS notes
-     FROM activities a JOIN accounts acc ON a.account_id = acc.id
-     WHERE a.activity_date >= '${startInclusive}' AND a.activity_date < '${endExclusive}'
-     ORDER BY a.activity_date, a.id;`,
-    headlineRowFromCliParts,
-    SEP,
-    AUDIT_CLI_MAX_BUFFER,
-  );
-  return rows.map((r) => {
-    const v = Object.values(r);
-    const ids = String(v[9] ?? '');
-    return {
-      id: String(v[0]), date: String(v[1]), accountId: String(v[2] ?? ''), groupId: String(v[3] ?? ''),
-      accountType: String(v[4] ?? ''), type: String(v[5] ?? ''), subtype: String(v[6] ?? ''),
-      absCents: Math.round(Number(v[7]) || 0), spendingFilings: Number(v[8]) || 0,
-      categoryIds: ids ? ids.split(',') : [], spendingCategoryId: String(v[10] ?? '') || null,
-      accountName: String(v[11] ?? ''), notes: String(v[12] ?? ''),
-    };
-  });
+  return getNativeSpendRows(dbPath, shiftDay(startInclusive, -1), shiftDay(endExclusive, 1));
 }
 
 /** What the headline check needs besides the rows: Wealthfolio's timezone
@@ -173,68 +132,12 @@ export function getNativeHeadlineRows(dbPath: string, startInclusive: string, en
  *  — Wealthfolio 3.8 has no such setting — or not a list of strings, as
  *  upstream reads it), whether its Spending page is on and which accounts it
  *  reads, and each spending category's parent, so an excluded category's
- *  descendants count too (3.9+). */
+ *  descendants count too (3.9+). The report's own read
+ *  (`getNativeSpendingSettings`), without the category names. */
 export function getNativeAuditSettings(dbPath: string): {
   timezone: string | null; excludedCategoryIds: string[]; categoryParents: Record<string, string | null>; spendingOn: boolean;
   spendingAccountIds: string[];
 } {
-  const rows = queryNativeDbStrict<Record<string, unknown>>(
-    dbPath,
-    'audit settings',
-    `SELECT setting_key AS k, COALESCE(setting_value, '') AS v FROM app_settings
-     WHERE setting_key IN ('timezone', 'spending.excluded_category_ids', 'spending.enabled', 'spending.account_ids') ORDER BY setting_key;`,
-    (parts) => (parts.length >= 2 ? { c0: parts[0], c1: tail(parts, 1) } : null),
-    SEP,
-    AUDIT_CLI_MAX_BUFFER,
-  );
-  const value = new Map(rows.map((r) => {
-    const v = Object.values(r);
-    return [String(v[0]), String(v[1] ?? '')];
-  }));
-  // As upstream reads a list setting (settings/service.rs): `Vec<String>` or
-  // nothing — one non-string element, or text that is not JSON, is the whole
-  // list absent.
-  const stringList = (key: string): string[] => {
-    try {
-      const parsed: unknown = JSON.parse(value.get(key) || '[]');
-      return Array.isArray(parsed) && parsed.every((x) => typeof x === 'string') ? (parsed as string[]) : [];
-    } catch {
-      return [];
-    }
-  };
-  const excludedCategoryIds = stringList('spending.excluded_category_ids');
-  // The Spending page's own gate: off unless `spending.enabled` is "true" and
-  // at least one account is opted in; a missing row is off.
-  const optedIn = value.get('spending.enabled') === 'true' ? stringList('spending.account_ids') : [];
-  const spendingOn = optedIn.length > 0;
-  // The accounts the page reads (insight/service.rs: `account_repo.list(None,
-  // Some(false), account_ids)`): opted in, existing and not archived.
-  const accounts = queryNativeDbStrict<Record<string, unknown>>(
-    dbPath,
-    'audit spending accounts',
-    `SELECT id AS id, COALESCE(is_archived, 0) AS archived FROM accounts ORDER BY id;`,
-    (parts) => (parts.length >= 2 ? { c0: parts[0], c1: parts[1] } : null),
-    SEP,
-    AUDIT_CLI_MAX_BUFFER,
-  );
-  const live = new Set(accounts.flatMap((r) => {
-    const v = Object.values(r);
-    return isTrue(v[1]) ? [] : [String(v[0])];
-  }));
-  const spendingAccountIds = optedIn.filter((id) => live.has(id));
-  const parents = queryNativeDbStrict<Record<string, unknown>>(
-    dbPath,
-    'audit categories',
-    `SELECT id AS id, COALESCE(parent_id, '') AS parent FROM taxonomy_categories
-     WHERE taxonomy_id = 'spending_categories' ORDER BY id;`,
-    (parts) => (parts.length >= 2 ? { c0: parts[0], c1: parts[1] } : null),
-    SEP,
-    AUDIT_CLI_MAX_BUFFER,
-  );
-  const categoryParents: Record<string, string | null> = {};
-  for (const r of parents) {
-    const v = Object.values(r);
-    categoryParents[String(v[0])] = String(v[1] ?? '') || null;
-  }
-  return { timezone: value.get('timezone') || null, excludedCategoryIds, categoryParents, spendingOn, spendingAccountIds };
+  const { timezone, excludedCategoryIds, categoryParents, spendingOn, spendingAccountIds } = getNativeSpendingSettings(dbPath);
+  return { timezone, excludedCategoryIds, categoryParents, spendingOn, spendingAccountIds };
 }
