@@ -109,14 +109,26 @@ describe('classifyVenmoEmail', () => {
   it('never takes boilerplate for the note: greetings, thanks, footers, quoted headers, legal lines', () => {
     const base = 'You paid Jane Doe\n$25.00\n';
     for (const line of [
-      'Hi Nicholas,', 'Hello Nicholas', 'Dear Nicholas,', 'Thanks for using Venmo', 'Thank you!',
-      'Venmo is a service of PayPal, Inc.', 'On Oct 3, 2026 Jane wrote:', 'Unsubscribe from these emails',
+      'Hi Nick,', 'Dear Nicholas,', 'Hello Nicholas:', 'Thanks for using Venmo', 'Thanks!', 'Thank you!',
+      'Venmo is a service of PayPal, Inc.', 'On Oct 3, 2026 Venmo wrote:', 'Unsubscribe from these emails',
       'Privacy Policy', 'Terms of Service', '© 2026 Venmo', 'All rights reserved',
     ]) {
       expect(classifyVenmoEmail({ subject: 'You paid Jane Doe $25.00', plain: `${base}${line}\n` }), line).toEqual({ status: 'unrecognised' });
     }
     expect(classifyVenmoEmail({ subject: 'You paid Jane Doe $25.00', plain: `${base}See transaction\nThanks for using Venmo\n` }))
       .toEqual({ status: 'unrecognised' });
+  });
+
+  it('still reads real notes that merely resemble boilerplate', () => {
+    for (const note of ['thanks for dinner', 'Thank you for the ride', 'Hi mom', 'Hey you', 'Hi there!', 'Hi Nick, rent', 'Dinner at Legal Sea Foods']) {
+      expect(classifyVenmoEmail({ subject: 'You paid Jane Doe $25.00', plain: `You paid Jane Doe\n$25.00\n${note}\n` }).record?.note, note).toBe(note);
+    }
+  });
+
+  it('ignores a transfer whose body says it could not be completed, wherever', () => {
+    expect(classifyVenmoEmail({
+      subject: 'Update', plain: 'Transfer to your bank could not be completed\nYou transferred $12.00 to your bank account.\n',
+    })).toEqual({ status: 'ignored' });
   });
 
   it('ignores a failed, cancelled or returned transfer to your bank', () => {
@@ -161,6 +173,10 @@ describe('isVenmoMessage', () => {
     expect(isVenmoMessage('auto-confirm@amazon.com', 'Thanks for your order')).toBe(false);
     expect(isVenmoMessage(undefined, '')).toBe(false);
     expect(isVenmoMessage('nick@gmail.com', 'From: venmo@venmo.com\nYou paid Jane Doe')).toBe(true);
+  });
+
+  it('accepts a quoted display name with the address inside the brackets', () => {
+    expect(isVenmoMessage('nick@gmail.com', 'From: "Venmo" <venmo@venmo.com>\nYou paid Jane')).toBe(true);
   });
 
   it('refuses a spoofed From: line', () => {

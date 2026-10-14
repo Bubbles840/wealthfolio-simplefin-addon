@@ -66,7 +66,7 @@ export const VENMO_BANK_TRANSFER_NOTE = 'Transfer to your bank';
  *  there (`venmo.com.evil.com` is not Venmo). */
 export function isVenmoMessage(from: string | undefined, body: string): boolean {
   if (from && /^[^\s<>@,"]+@venmo\.com$/i.test(from.trim())) return true;
-  return /^[ \t]*From:[ \t]*(?:[^<>@\r\n,"]*<[^<>@\s,"]+@venmo\.com>|[^<>@\s,"]+@venmo\.com)[ \t]*$/im.test(body);
+  return /^[ \t]*From:[ \t]*(?:(?:[^<>@\r\n,"]*|"[^"<>\r\n]*"[ \t]*)<[^<>@\s,"]+@venmo\.com>|[^<>@\s,"]+@venmo\.com)[ \t]*$/im.test(body);
 }
 
 /** Whitespace to single spaces, control and format characters (NUL, zero-width,
@@ -120,6 +120,8 @@ const transferCents = (line: string): number | null => {
   }
   return null;
 };
+/** Failure wording that counts anywhere in a transfer message. */
+const NOT_COMPLETED = /\b(?:could not|couldn't|can't|cannot|was not|were not|wasn't|not be) (?:be )?completed\b/i;
 const TRANSFER_FAILED = /\b(?:fail(?:ed|s|ure)?|cancel(?:l?ed)?|declined|returned|unsuccessful|reversed|rejected|unable)\b/i;
 const LOOKS_LIKE_PAYMENT = /\b(?:paid|completed|transfer(?:red)?)\b/i;
 const PAYMENT_ID = /\b(?:Payment|Transaction) ID:?\s*#?\s*(\d{6,})/i;
@@ -136,11 +138,12 @@ const NOT_A_NOTE: RegExp[] = [
   /^(?:from|to|date|subject|sent|cc):/i,
   /^(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]* \d{1,2},? \d{4}\b/i,
   /^[-–—_=·•*|\s]+$/,
-  /^(?:hi|hello|hey|dear)\s+\S+(?:\s+\S+)?\s*[,:!]?$/i,
-  /^thank(?:s| you)\b/i,
+  /^(?:[Hh]i|[Hh]ello|[Hh]ey|[Dd]ear)\s+[A-Z][\w'’-]*[,:]$/,
+  /^thank(?:s| you) for (?:using|choosing) venmo\b/i,
+  /^(?:thanks|thank you)!?$/i,
   /venmo is a service of/i,
   /^on .+ wrote:?$/i,
-  /unsubscribe|privacy (?:policy|statement|notice)|terms of (?:service|use)|\blegal\b|manage (?:your )?(?:notification|email)/i,
+  /unsubscribe|^privacy\b|^terms of\b|^legal\b|^manage (?:your )?(?:notification|email)/i,
   /©|\(c\)\s*\d{4}|all rights reserved/i,
 ];
 
@@ -226,13 +229,13 @@ export function classifyVenmoEmail(parts: AmazonMailParts): VenmoEmailClassifica
 
   const hit = [subject, ...copies.flat()].map((line) => ({ line, c: transferCents(line) })).find((x) => x.c !== null);
   if (hit && hit.c !== null) {
-    if (TRANSFER_FAILED.test(subject) || TRANSFER_FAILED.test(hit.line)) return { status: 'ignored' };
+    if (TRANSFER_FAILED.test(subject) || TRANSFER_FAILED.test(hit.line) || NOT_COMPLETED.test(all)) return { status: 'ignored' };
     return {
       status: 'payment',
       record: withId({ direction: 'in', kind: 'bank-transfer', amountCents: hit.c, counterparty: null, note: VENMO_BANK_TRANSFER_NOTE }),
     };
   }
-  if (BANK_TRANSFER.test(subject)) return { status: TRANSFER_FAILED.test(subject) ? 'ignored' : 'unrecognised' };
+  if (BANK_TRANSFER.test(subject)) return { status: TRANSFER_FAILED.test(subject) || NOT_COMPLETED.test(all) ? 'ignored' : 'unrecognised' };
 
   return LOOKS_LIKE_PAYMENT.test(subject) && ANY_AMOUNT.test(all) ? { status: 'unrecognised' } : { status: 'ignored' };
 }
