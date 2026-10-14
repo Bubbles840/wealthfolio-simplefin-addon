@@ -233,6 +233,17 @@ describe('what R2 needs to undo it (P1)', () => {
     expect(categoryRuleCreatedChange({ ruleId: null, name: 'n', pattern: 'X', categoryId: 'c1', categoryName: 'G' }).subject.ruleId).toBeUndefined();
   });
 
+  it('a rule for one account names it, in the summary and for its Redo (3)', () => {
+    const d = categoryRuleCreatedChange({
+      ruleId: 'rule-8', name: 'Telegram: VENMO PAYMENT', pattern: 'VENMO PAYMENT', categoryId: 'c1', categoryName: 'Rent',
+      account: { wfId: 'wf-chk', name: 'PNC Checking' },
+    });
+    expect(d.summary).toBe('Created a rule: descriptions containing "VENMO PAYMENT" in PNC Checking go to Rent');
+    expect(d.account).toEqual({ wfId: 'wf-chk', name: 'PNC Checking' });
+    expect(d.after).toEqual({ ruleId: 'rule-8', name: 'Telegram: VENMO PAYMENT', pattern: 'VENMO PAYMENT', categoryId: 'c1', categoryName: 'Rent', accountId: 'wf-chk' });
+    expect('account' in categoryRuleCreatedChange({ ruleId: null, name: 'n', pattern: 'X', categoryId: 'c1', categoryName: 'G' })).toBe(false);
+  });
+
   it('a late label carries the label text and both notes', () => {
     expect(amazonLabelOf('AMAZON MKTPL', 'AMAZON MKTPL · Amazon: mixed — Books + Toys')).toBe('mixed — Books + Toys');
     const d = amazonLabelChange({

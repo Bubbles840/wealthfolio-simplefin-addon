@@ -59,7 +59,7 @@ export interface UndoIo {
   /** The companion only: Wealthfolio's categorization rules. */
   rules?: {
     list(): Promise<Array<{ id: string; name: string; pattern: string }>>;
-    create(rule: { name: string; pattern: string; categoryId: string }): Promise<string | null>;
+    create(rule: { name: string; pattern: string; categoryId: string; accountId?: string }): Promise<string | null>;
     remove(id: string): Promise<void>;
     /** The charges the rule filed (assignment source "rule", its category, a note
      *  containing its words), by activity id. Null when that cannot be read. */

@@ -266,6 +266,16 @@ describe('planChangeUndo — rules', () => {
       .toEqual([{ do: 'create-rule', rule: { name: 'Telegram: TRADER JOE S', pattern: 'TRADER JOE S', categoryId: 'cat-gro' } }]);
   });
 
+  it('a rule for one account is deleted by id like any other, and comes back for that account (3)', () => {
+    const scoped = entry(categoryRuleCreatedChange({
+      ruleId: 'rule-8', name: 'Telegram: VENMO PAYMENT', pattern: 'VENMO PAYMENT', categoryId: 'cat-rent', categoryName: 'Rent',
+      account: { wfId: 'wf-checking', name: 'Checking' },
+    }));
+    expect(ok(planChangeUndo(scoped, 'undo', { rule: { id: 'rule-8' } }, { latest: null })).steps).toEqual([{ do: 'delete-rule', ruleId: 'rule-8' }]);
+    expect(ok(planChangeUndo(scoped, 'redo', { rule: null }, { latest: undo(scoped) })).steps)
+      .toEqual([{ do: 'create-rule', rule: { name: 'Telegram: VENMO PAYMENT', pattern: 'VENMO PAYMENT', categoryId: 'cat-rent', accountId: 'wf-checking' } }]);
+  });
+
   it('a transaction rule comes out of mapping_rules and goes back, and the next sync retypes', () => {
     const mapping = entry(mappingRuleCreatedChange({ rule: { pattern: 'Payment to Ccb', matchType: 'contains', activityType: 'TRANSFER_OUT' } }));
     const r = { pattern: 'Payment to Ccb', matchType: 'contains' as const, activityType: 'TRANSFER_OUT' as const };

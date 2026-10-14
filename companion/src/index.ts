@@ -100,7 +100,7 @@ import {
   formatCategoryQueryMiss,
   NEWRULE_CATEGORY_LIST_HINT,
 } from '../../shared/telegram-commands.js';
-import { parseNewRuleArgs } from '../../shared/categorize-menu.js';
+import { formatAccountQueryMiss, NEWRULE_ACCOUNTS_UNREADABLE, parseNewRuleArgs, resolveAccountQuery, type RuleAccount } from '../../shared/categorize-menu.js';
 import type { CategoryBudgetSnapshot, BudgetPeriod, ParsedCommand, StatusReplyInput } from '../../shared/telegram-commands.js';
 import { parsePoolArgs, POOL_USAGE_REPLY } from '../../shared/telegram-commands.js';
 import { SEMESTER_POOL_SECRET_KEY, parsePoolConfig } from '../../shared/pool.js';
@@ -3524,10 +3524,32 @@ export function buildTelegramCommandHandler(
           return;
         }
         const category = (result as { kind: 'one'; category: { id: string } }).category;
+        // `… in <account>` (3, L5): the preview opens for that account only.
+        // Archived accounts are not offered.
+        let account: RuleAccount | undefined;
+        if (parsed.accountQuery) {
+          let accounts: RuleAccount[];
+          try {
+            accounts = (await wfClient.getAccounts())
+              .filter((a) => a.isArchived !== true)
+              .map((a) => ({ id: a.id, name: String((a as { name?: unknown }).name ?? '') }))
+              .filter((a) => a.name !== '');
+          } catch (err) {
+            log(`/newrule: reading accounts failed: ${formatError(err)}`);
+            await reply(NEWRULE_ACCOUNTS_UNREADABLE);
+            return;
+          }
+          const found = resolveAccountQuery(accounts, parsed.accountQuery);
+          if (found.kind !== 'one') {
+            await reply(formatAccountQueryMiss(found, parsed.accountQuery, accounts));
+            return;
+          }
+          account = found.account;
+        }
         // Never creates the rule outright: a rule files every uncategorized
         // match now AND on every future import, so the confirmation screen is
         // where that gets disclosed before anything is written.
-        await controller.openRulePreview(parsed.pattern, category.id, (text, keyboard) => reply(text, keyboard));
+        await controller.openRulePreview(parsed.pattern, category.id, (text, keyboard) => reply(text, keyboard), account);
         return;
       }
 

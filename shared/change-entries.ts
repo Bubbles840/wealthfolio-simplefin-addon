@@ -612,16 +612,24 @@ export interface CategoryRuleFacts {
   pattern: string;
   categoryId: string;
   categoryName: string;
+  /** The one account the rule is scoped to (3, L5); absent, every account. */
+  account?: { wfId: string; name: string };
 }
 
-/** A Wealthfolio categorization rule created from Telegram. Undo (R2): delete it. */
+/** A Wealthfolio categorization rule created from Telegram. Undo (R2): delete it.
+ *  A scoped one names its account, and its Redo re-creates it scoped. */
 export function categoryRuleCreatedChange(f: CategoryRuleFacts): ChangeDraft {
+  const where = f.account ? ` in ${f.account.name}` : '';
   return {
     actor: 'you',
     kind: 'category-rule-created',
+    ...(f.account ? { account: { wfId: f.account.wfId, name: f.account.name } } : {}),
     subject: { ...(f.ruleId ? { ruleId: f.ruleId } : {}), rulePattern: f.pattern, categoryName: f.categoryName },
-    summary: `Created a rule: descriptions containing "${f.pattern}" go to ${f.categoryName}`,
-    after: { ruleId: f.ruleId, name: f.name, pattern: f.pattern, categoryId: f.categoryId, categoryName: f.categoryName },
+    summary: `Created a rule: descriptions containing "${f.pattern}"${where} go to ${f.categoryName}`,
+    after: {
+      ruleId: f.ruleId, name: f.name, pattern: f.pattern, categoryId: f.categoryId, categoryName: f.categoryName,
+      ...(f.account ? { accountId: f.account.wfId } : {}),
+    },
     undoable: true,
   };
 }

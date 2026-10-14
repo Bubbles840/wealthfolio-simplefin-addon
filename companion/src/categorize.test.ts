@@ -998,7 +998,49 @@ describe('rules', () => {
       + 'It will also file any other uncategorized transactions that match, now and on every future import. '
       + 'Already-categorized transactions are never touched.',
     );
-    expect(labels(keyboardOf(lastCall(h.ui.edit)))).toEqual(['Create rule', '‹ Back']);
+    // The row's account can scope the rule (3): every account until "Only" is tapped.
+    expect(labels(keyboardOf(lastCall(h.ui.edit)))).toEqual(['Create rule', '✓ All accounts', 'Only Citi Double Cash', '‹ Back']);
+  });
+
+  it('creates a rule for the row’s account only, says so, and records the scope (3)', async () => {
+    const h = setup({ rows: [ODD] });
+    const recorded: any[] = [];
+    (h.deps as any).record = (d: unknown) => recorded.push(d);
+    h.deps.createRule.mockResolvedValueOnce('rule-8' as never);
+    const filed = await openAtFiled(h, 'TRADER JOE*S');
+    await h.tap(dataFor(filed, 'Make this a rule'));
+    await h.tap(dataFor(keyboardOf(lastCall(h.ui.edit)), 'Only Citi Double Cash'));
+    expect(lastCall(h.ui.edit)[0].split('\n')[1]).toBe('Descriptions containing "TRADER JOE\\*S" in Citi Double Cash → Entertainment');
+    await h.tap(dataFor(keyboardOf(lastCall(h.ui.edit)), 'Create rule'));
+    expect(h.deps.createRule).toHaveBeenCalledWith({ name: 'Telegram: TRADER JOE*S', pattern: 'TRADER JOE*S', categoryId: 'cat-fun', accountId: 'wf-1' });
+    expect(lastCall(h.ui.edit)[0]).toBe('Rule created — future matches in Citi Double Cash will file automatically under Entertainment.');
+    expect(recorded.at(-1)).toMatchObject({
+      kind: 'category-rule-created', account: { wfId: 'wf-1', name: 'Citi Double Cash' },
+      summary: 'Created a rule: descriptions containing "TRADER JOE*S" in Citi Double Cash go to Entertainment',
+      after: expect.objectContaining({ accountId: 'wf-1' }),
+    });
+  });
+
+  it('a scoped rule the server refuses says so and logs nothing (3)', async () => {
+    const h = setup({ rows: [ODD] });
+    const recorded: any[] = [];
+    (h.deps as any).record = (d: unknown) => recorded.push(d);
+    const filed = await openAtFiled(h, 'TRADER JOE*S');
+    recorded.length = 0;
+    h.deps.createRule.mockRejectedValueOnce(new Error('400 accountId is required when isGlobal is false'));
+    await h.tap(dataFor(filed, 'Make this a rule'));
+    await h.tap(dataFor(keyboardOf(lastCall(h.ui.edit)), 'Only Citi Double Cash'));
+    await h.tap(dataFor(keyboardOf(lastCall(h.ui.edit)), 'Create rule'));
+    expect(lastCall(h.ui.edit)[0]).toBe('Couldn\'t create that rule — Wealthfolio said: 400 accountId is required when isGlobal is false');
+    expect(recorded).toEqual([]);
+  });
+
+  it('/newrule naming an account opens scoped to it (3)', async () => {
+    const h = setup();
+    await h.controller.openRulePreview('venmo', 'cat-fun', h.send, { id: 'wf-chk', name: 'PNC Checking' });
+    expect(labels(keyboardOf(lastCall(h.send)))).toEqual(['Create rule', 'All accounts', '✓ Only PNC Checking', 'Cancel']);
+    await h.tap(dataFor(keyboardOf(lastCall(h.send)), 'Create rule'));
+    expect(h.deps.createRule).toHaveBeenCalledWith({ name: 'Telegram: venmo', pattern: 'venmo', categoryId: 'cat-fun', accountId: 'wf-chk' });
   });
 
   it('creates a contains-rule from the trimmed head of the description', async () => {

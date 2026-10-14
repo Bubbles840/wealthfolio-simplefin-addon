@@ -28,6 +28,10 @@ export interface CategorizeTxn {
   amountCents: number;
   description: string;
   accountName: string;
+  /** The row's Wealthfolio account id. Optional: with it, the rule preview
+   *  offers "Only <account>" (3, L5); without it (an older controller), the
+   *  preview is as it always was. */
+  accountId?: string;
   /** Which way the money moved. Optional so an older controller's rows render
    *  as they always did; when present it puts the +/− on every listed amount
    *  and decides whether a first filing offers income or spending categories. */
@@ -88,9 +92,12 @@ export type MenuScreen =
    *  (an income category), so Undo can clear the assignment it actually made. */
   | { kind: 'filed'; activityId: string; categoryId: string; undone: boolean; taxonomyId?: string }
   | { kind: 'dismissed'; activityId: string; undone: boolean }
-  | { kind: 'rulePreview'; activityId: string; categoryId: string }
-  | { kind: 'freeRulePreview'; pattern: string; categoryId: string }
-  | { kind: 'ruleCreated'; activityId: string | null; categoryId: string }
+  /** `onlyAccount`: the rule is scoped to the row's account (3, L5). */
+  | { kind: 'rulePreview'; activityId: string; categoryId: string; onlyAccount?: boolean }
+  /** `account`: the one `/newrule … in <account>` named; `onlyAccount` whether
+   *  the rule is scoped to it. Without `account` there is nothing to scope to. */
+  | { kind: 'freeRulePreview'; pattern: string; categoryId: string; account?: RuleAccount; onlyAccount?: boolean }
+  | { kind: 'ruleCreated'; activityId: string | null; categoryId: string; accountName?: string }
   | { kind: 'closed' }
   /** Rendered instead of a category picker when a move cannot work at all.
    *  `reason` mirrors `assignabilityOf`'s own machine tokens
@@ -236,8 +243,9 @@ export type MenuAction =
   | { kind: 'unassign'; activityId: string; categoryId: string; taxonomyId?: string }
   | { kind: 'dismiss'; activityId: string }
   | { kind: 'undismiss'; activityId: string }
-  | { kind: 'createRule'; activityId: string; categoryId: string }
-  | { kind: 'createFreeRule'; pattern: string; categoryId: string }
+  /** `account` present: create the rule for that account only (3, L5). */
+  | { kind: 'createRule'; activityId: string; categoryId: string; account?: RuleAccount }
+  | { kind: 'createFreeRule'; pattern: string; categoryId: string; account?: RuleAccount }
   | { kind: 'close' }
   /** `assign`'s recategorize-mode counterpart: files onto a transaction that
    *  already has a category, rather than one with none. A separate kind
@@ -270,6 +278,12 @@ export type MenuAction =
   /** 1.61: send this transaction's story as a NEW message; the screen stays. */
   | { kind: 'why'; activityId: string };
 
+/** A Wealthfolio account a category rule can be scoped to. */
+export interface RuleAccount {
+  id: string;
+  name: string;
+}
+
 /**
  * Parses `/newrule <pattern> = <category>` (or `→` in place of `=`) — the
  * free-text counterpart to tapping "Make this a rule" off a specific
@@ -280,13 +294,47 @@ export type MenuAction =
  * rather than guessed at — the handler's job, not this function's, is
  * turning that into the one-line usage reply.
  */
-export function parseNewRuleArgs(args: string): { pattern: string; categoryQuery: string } | null {
+export function parseNewRuleArgs(args: string): { pattern: string; categoryQuery: string; accountQuery?: string } | null {
   const sepIndex = args.search(/[=→]/);
   if (sepIndex === -1) return null;
   const pattern = args.slice(0, sepIndex).trim();
   const categoryQuery = args.slice(sepIndex + 1).trim();
   if (!pattern || !categoryQuery) return null;
-  return { pattern, categoryQuery };
+  // `… = groceries in checking` (3, L5): the first ` in ` on the category side
+  // names an account. No preset category name has one in it.
+  const scoped = /^(.*?\S)\s+in\s+(\S.*)$/i.exec(categoryQuery);
+  return scoped ? { pattern, categoryQuery: scoped[1], accountQuery: scoped[2] } : { pattern, categoryQuery };
+}
+
+/**
+ * The account `/newrule … in <account>` names: an exact name (any case) first,
+ * else the one name containing the words. Several → `many` (the reply asks
+ * "Which account?"); none → `none`.
+ */
+export function resolveAccountQuery(
+  accounts: readonly RuleAccount[],
+  query: string,
+): { kind: 'one'; account: RuleAccount } | { kind: 'many'; accounts: RuleAccount[] } | { kind: 'none' } {
+  const q = query.trim().toLowerCase();
+  const exact = accounts.filter((a) => a.name.toLowerCase() === q);
+  if (exact.length === 1) return { kind: 'one', account: exact[0] };
+  const near = accounts.filter((a) => a.name.toLowerCase().includes(q));
+  if (near.length === 1) return { kind: 'one', account: near[0] };
+  return near.length > 1 ? { kind: 'many', accounts: near } : { kind: 'none' };
+}
+
+/** `/newrule … in <account>` when the accounts could not be read. */
+export const NEWRULE_ACCOUNTS_UNREADABLE = "Couldn't read your accounts just now — try again.";
+
+/** The reply when `in <account>` names no one account: which ones it could
+ *  mean, or every account there is. Names escaped for Telegram's Markdown. */
+export function formatAccountQueryMiss(
+  result: { kind: 'many'; accounts: RuleAccount[] } | { kind: 'none' },
+  query: string,
+  all: readonly RuleAccount[],
+): string {
+  if (result.kind === 'many') return `Which account? ${result.accounts.map((a) => escapeMarkdown(a.name)).join(', ')}`;
+  return `No account matches "${escapeMarkdown(query)}". Your accounts: ${all.map((a) => escapeMarkdown(a.name)).join(', ')}.`;
 }
 
 /**
@@ -621,11 +669,13 @@ function renderSubcats(session: MenuSession, activityId: string, parentId: strin
  *  trimmed pattern would file immediately — the number that turns "Make this
  *  a rule" from a chore into a payoff. Counted over the session's own list:
  *  the same rows the user is looking at, no extra read. */
-function ruleCatchCount(session: MenuSession, activityId: string, description: string): number {
+function ruleCatchCount(session: MenuSession, activityId: string, description: string, accountId?: string): number {
   const pattern = categoryRulePattern(description).toLowerCase();
   if (!pattern) return 0;
   return session.txns.filter(
-    (t) => t.activityId !== activityId && t.description.toLowerCase().includes(pattern),
+    (t) => t.activityId !== activityId && t.description.toLowerCase().includes(pattern)
+      // A rule for one account only files that account's rows (3, L5).
+      && (accountId === undefined || t.accountId === accountId),
   ).length;
 }
 
@@ -707,7 +757,16 @@ function renderDismissed(
  *  `freeRulePreview` (a typed pattern via `/newrule`) — the two differ only
  *  in what fills the quoted blank, so the sentence lives in one place to
  *  keep them from drifting apart. EXACT wording, locked by the spec. */
-function ruleCopy(patternLabel: string, categoryName: string): string {
+function ruleCopy(patternLabel: string, categoryName: string, accountLabel?: string): string {
+  if (accountLabel !== undefined) {
+    // One account only (3, L5): the same sentences, each naming it.
+    return (
+      'Create this rule?\n'
+      + `Descriptions containing "${patternLabel}" in ${accountLabel} → ${categoryName}\n`
+      + `It will also file any other uncategorized transactions in ${accountLabel} that match, now and on every future import. `
+      + 'Already-categorized transactions are never touched.'
+    );
+  }
   return (
     'Create this rule?\n'
     + `Descriptions containing "${patternLabel}" → ${categoryName}\n`
@@ -716,49 +775,69 @@ function ruleCopy(patternLabel: string, categoryName: string): string {
   );
 }
 
-function renderRulePreview(session: MenuSession, activityId: string, categoryId: string): RenderResult {
+/** The "All accounts ⇄ Only <account>" toggle (3, L5): both choices, the one in
+ *  force ticked; tapping either re-renders the preview in that scope. */
+function scopeRow(account: RuleAccount, only: boolean, screenFor: (only: boolean) => MenuScreen): Btn[] {
+  return [
+    { text: only ? 'All accounts' : '✓ All accounts', action: { kind: 'goto', screen: screenFor(false) } },
+    { text: only ? `✓ Only ${account.name}` : `Only ${account.name}`, action: { kind: 'goto', screen: screenFor(true) } },
+  ];
+}
+
+function renderRulePreview(session: MenuSession, screen: Extract<MenuScreen, { kind: 'rulePreview' }>): RenderResult {
+  const { activityId, categoryId } = screen;
   const txn = findTxn(session, activityId);
   const category = findCategory(session, categoryId);
   if (!txn || !category) return renderList(session, 0, GONE_NOTE);
 
+  // The row's account, when the controller knows it: the rule can be scoped to it.
+  const account: RuleAccount | null = txn.accountId && txn.accountName ? { id: txn.accountId, name: txn.accountName } : null;
+  const only = !!account && screen.onlyAccount === true;
   // The TRIMMED pattern — what the rule is actually built from (the companion
   // trims identically before the write), so the preview never promises a
   // reference-number-specific rule while creating a broader one.
   const pattern = categoryRulePattern(txn.description);
-  const catches = ruleCatchCount(session, activityId, txn.description);
+  const catches = ruleCatchCount(session, activityId, txn.description, only ? account!.id : undefined);
   const catchLine = catches > 0
     ? `\nRight now that also files ${catches} other uncategorized transaction${catches === 1 ? '' : 's'}.`
     : '';
-  const text = ruleCopy(escapeMarkdown(pattern), escapeMarkdown(categoryDisplayName(category))) + catchLine;
+  const text = ruleCopy(
+    escapeMarkdown(pattern), escapeMarkdown(categoryDisplayName(category)), only ? escapeMarkdown(account!.name) : undefined,
+  ) + catchLine;
   const rows: Btn[][] = [
-    [{ text: 'Create rule', action: { kind: 'createRule', activityId, categoryId } }],
+    [{ text: 'Create rule', action: { kind: 'createRule', activityId, categoryId, ...(only ? { account: account! } : {}) } }],
+    ...(account ? [scopeRow(account, only, (o) => ({ kind: 'rulePreview', activityId, categoryId, ...(o ? { onlyAccount: true } : {}) }))] : []),
     [{ text: '‹ Back', action: { kind: 'goto', screen: { kind: 'txn', activityId } } }],
   ];
   return finish(session.generation, text, rows);
 }
 
-function renderFreeRulePreview(session: MenuSession, pattern: string, categoryId: string): RenderResult {
+function renderFreeRulePreview(session: MenuSession, screen: Extract<MenuScreen, { kind: 'freeRulePreview' }>): RenderResult {
+  const { pattern, categoryId, account } = screen;
   const category = findCategory(session, categoryId);
   if (!category) return renderList(session, 0, GONE_NOTE);
 
+  const only = !!account && screen.onlyAccount === true;
   // `categoryDisplayName`, not the bare name: this screen is the ONLY thing
   // between a typed `/newrule x = other` and a rule against whichever `Other`
   // the flat-tree resolver reached first.
-  const text = ruleCopy(escapeMarkdown(pattern), escapeMarkdown(categoryDisplayName(category)));
+  const text = ruleCopy(escapeMarkdown(pattern), escapeMarkdown(categoryDisplayName(category)), only ? escapeMarkdown(account!.name) : undefined);
   // No « Back: this screen is reachable only from /newrule, a free-standing
   // command with no prior menu screen to return to. Cancel closes instead.
   const rows: Btn[][] = [
-    [{ text: 'Create rule', action: { kind: 'createFreeRule', pattern, categoryId } }],
+    [{ text: 'Create rule', action: { kind: 'createFreeRule', pattern, categoryId, ...(only ? { account: account! } : {}) } }],
+    ...(account ? [scopeRow(account, only, (o) => ({ kind: 'freeRulePreview', pattern, categoryId, account, ...(o ? { onlyAccount: true } : {}) }))] : []),
     [{ text: 'Cancel', action: { kind: 'close' } }],
   ];
   return finish(session.generation, text, rows);
 }
 
-function renderRuleCreated(session: MenuSession, activityId: string | null, categoryId: string): RenderResult {
+function renderRuleCreated(session: MenuSession, activityId: string | null, categoryId: string, accountName?: string): RenderResult {
   const category = findCategory(session, categoryId);
   if (!category) return renderList(session, 0, GONE_NOTE);
 
-  const text = `Rule created — future matches will file automatically under ${escapeMarkdown(categoryDisplayName(category))}.`;
+  const where = accountName !== undefined ? ` in ${escapeMarkdown(accountName)}` : '';
+  const text = `Rule created — future matches${where} will file automatically under ${escapeMarkdown(categoryDisplayName(category))}.`;
   // Only Done from /newrule (activityId: null): there is no in-flight
   // transaction to return to the list FOR, since this path never showed one.
   const rows: Btn[][] = activityId !== null ? [[BACK_TO_LIST_BTN], [DONE_BTN]] : [[DONE_BTN]];
@@ -973,11 +1052,11 @@ export function renderScreen(session: MenuSession): RenderResult {
     case 'dismissed':
       return renderDismissed(session, screen);
     case 'rulePreview':
-      return renderRulePreview(session, screen.activityId, screen.categoryId);
+      return renderRulePreview(session, screen);
     case 'freeRulePreview':
-      return renderFreeRulePreview(session, screen.pattern, screen.categoryId);
+      return renderFreeRulePreview(session, screen);
     case 'ruleCreated':
-      return renderRuleCreated(session, screen.activityId, screen.categoryId);
+      return renderRuleCreated(session, screen.activityId, screen.categoryId, screen.accountName);
     case 'refiled':
       return renderRefiled(session, screen);
     case 'refused':
