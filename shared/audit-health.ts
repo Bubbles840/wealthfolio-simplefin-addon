@@ -232,12 +232,13 @@ export function healthIssues(facts: HealthFacts): HealthReport {
     if (contested) many.add(p.leg.id);
     else pairs.push(p);
   }
-  // A transfer-typed row that is in a group is somebody's half already, and Link would
-  // delete and re-create it: no pair with such a row either side is offered. Dropped
-  // BEFORE the issues, so the one-issue-per-pair rule below never hides a grouped row
-  // and each side reports its own state.
-  const grouped = (r: AuditLedgerRow) => isTransferType(r.type) && r.group.trim() !== '';
-  const offered = pairs.filter((p) => !grouped(p.leg) && !grouped(p.other));
+  // A row in a group, of any type, is somebody's half already (or a broken group's),
+  // and Link would delete and re-create it; a held transfer placeholder is the
+  // sync's own. Link refuses both, so no pair with such a row either side is
+  // offered. Dropped BEFORE the issues, so the one-issue-per-pair rule below never
+  // hides a grouped row and each side reports its own state.
+  const unlinkable = (r: AuditLedgerRow) => r.group.trim() !== '' || isPlaceholderNote(r.notes);
+  const offered = pairs.filter((p) => !unlinkable(p.leg) && !unlinkable(p.other));
   const listed = new Set(incomplete.map((i) => i.row.id));
 
   const issues: HealthIssue[] = [];
