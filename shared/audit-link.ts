@@ -22,10 +22,14 @@
  * host's `linkPair` (shared/link-pair.ts). It DELETES both rows and then
  * re-creates them as one marked group. Wealthfolio applies a bulk request all
  * or nothing (activities_service.rs, bulk_mutate_activities), so a re-create
- * it refuses (or a request that throws) wrote nothing while the delete already
- * went through. After any throw, or a refused re-create, the runner re-reads
- * both rows by id, writes back whichever are gone (`recreateWrite`), records
- * that, and names any row it could not restore.
+ * it refuses wrote nothing while the delete already went through. A request
+ * that throws is not known either way: its response can be lost after the
+ * create committed. After any throw, or a refused re-create, the runner
+ * re-reads both rows by id, writes back whichever are gone (`recreateWrite`),
+ * records that, and names any row it could not restore. After a throw it
+ * also says to check both accounts: a link that went through after all
+ * leaves each row there twice (Wealthfolio 3.10 refuses that write-back as a
+ * duplicate, and the message says a matching row already exists instead).
  *
  * Each link is a `transfer-link` change entry with actor `you`, so the change
  * log's Undo — `notTransfer` on both legs, which the next sync acts on — and
@@ -176,16 +180,19 @@ const errorText = (err: unknown) => (err instanceof Error ? err.message : String
 /** Error text without a trailing full stop, to sit inside a sentence. */
 const bare = (t: string) => t.trim().replace(/[.\s]+$/, '');
 const describeRow = (r: FixRow) => describeLeg({ accountId: r.accountId, accountName: r.accountName, date: r.date, absCents: r.absCents, comment: r.notes });
-const TRANSPORT = /ECONN|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket hang up|fetch failed|network|timed? ?out|\b5\d\d\b|bad gateway|unavailable/i;
+const TRANSPORT = /ECONN|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket hang up|fetch failed|failed to fetch|load failed|network|timed? ?out|\b5\d\d\b|bad gateway|unavailable/i;
 const DUPLICATE = /duplicate/i;
 const LINK_MAYBE_THERE = 'A matching row already exists — the link may have gone through; check both accounts.';
 
 /** A bookkeeping entry for a Link that re-created rows without linking them
- *  (the person tapped it: actor `you`; two rows). */
-function relinkNote(check: Extract<LinkCheck, { ok: true }>, newIds: string[], summary: string, oldIds: string[] = []): ChangeDraft {
-  const legs = check.rows.map((r, i) => ({ txKey: check.keys[i], description: descriptionFromComment(r.notes) }));
+ *  (the person tapped it: actor `you`). `rows`: the ones it re-created, out of
+ *  `check.rows` — both, or only the one a write-back put back. */
+function relinkNote(
+  check: Extract<LinkCheck, { ok: true }>, rows: readonly FixRow[], newIds: string[], summary: string, oldIds: string[] = [],
+): ChangeDraft {
+  const legs = rows.map((r) => ({ txKey: check.keys[check.rows.indexOf(r)], description: descriptionFromComment(r.notes) }));
   const base = bookkeepingChange({ step: 'transfer-relink', activityIds: newIds, legs });
-  return { ...base, actor: 'you', summary, after: { step: 'transfer-relink', count: 2, ...(oldIds.length ? { oldActivityIds: oldIds } : {}) } };
+  return { ...base, actor: 'you', summary, after: { step: 'transfer-relink', count: rows.length, ...(oldIds.length ? { oldActivityIds: oldIds } : {}) } };
 }
 
 async function linkOne(pair: LinkPair, io: LinkIo, overrides: SyncOverrides): Promise<One> {
@@ -214,7 +221,7 @@ async function linkOne(pair: LinkPair, io: LinkIo, overrides: SyncOverrides): Pr
       // Both saves went through and Wealthfolio kept no group: the rows exist,
       // as transfers, unlinked. Say so, and leave a visible trace.
       try {
-        await io.record(relinkNote(check, [], `Re-created ${descriptionFromComment(check.rows[0].notes)} and ${descriptionFromComment(check.rows[1].notes)} as transfers, but Wealthfolio did not link them`));
+        await io.record(relinkNote(check, check.rows, [], `Re-created ${descriptionFromComment(check.rows[0].notes)} and ${descriptionFromComment(check.rows[1].notes)} as transfers, but Wealthfolio did not link them`));
       } catch (err) {
         io.log(`Link ${pair.key}: the change log was not written: ${errorText(err)}`);
       }
@@ -267,19 +274,23 @@ async function linkOne(pair: LinkPair, io: LinkIo, overrides: SyncOverrides): Pr
     if (!restored) io.log(`Link ${pair.key}: putting the rows back failed: ${backErrors.join('; ')}`);
     if (restored) {
       try {
-        await io.record(relinkNote(check, newIds, `Link failed (${why}); put ${lostRows.length === 2 ? 'both rows' : 'the deleted row'} back with new ids`, lostRows.map((r) => r.id)));
+        await io.record(relinkNote(check, lostRows, newIds, `Link failed (${why}); put ${lostRows.length === 2 ? 'both rows' : 'the deleted row'} back with new ids`, lostRows.map((r) => r.id)));
       } catch (err) {
         io.log(`Link ${pair.key}: the change log was not written: ${errorText(err)}`);
       }
+      // A thrown request may have linked them after all (its response lost):
+      // then each row is there twice.
+      const check2 = thrown !== null ? ' Check both accounts in Wealthfolio: if the link went through after all, they show twice.' : '';
       return {
         kind: 'failed',
-        message: lostRows.length === 2
+        message: (lostRows.length === 2
           ? `${lead}. Both rows are back, with new ids. Their categories may need filing again.`
-          : `${lead}. The deleted row is back, with a new id. Its category may need filing again.`,
+          : `${lead}. The deleted row is back, with a new id. Its category may need filing again.`) + check2,
       };
     }
     io.log(`Link ${pair.key}: payloads: ${JSON.stringify(writes)}`);
-    if (backErrors.some((m) => DUPLICATE.test(m))) return { kind: 'failed', message: LINK_MAYBE_THERE };
+    // Named, so Link all's line says which rows to check.
+    if (backErrors.some((m) => DUPLICATE.test(m))) return { kind: 'failed', message: LINK_MAYBE_THERE, maybeLost: lostRows.map(describeRow) };
     const lost = lostRows.map(describeRow);
     io.log(`Link ${pair.key}: deleted and not restored: ${lost.join('; ')}`);
     return {
