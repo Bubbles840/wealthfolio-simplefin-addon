@@ -22,6 +22,8 @@ import { emptySyncOverrides, removeOverrideRow, type OverrideRow } from '../../s
 import type { ChangeLogItem } from '../../shared/change-log';
 import type { UndoOp } from '../../shared/change-undo';
 import { undoFromApp } from '../utils/change-undo';
+import type { LinkPair } from '../../shared/audit-link';
+import { linkFromApp } from '../utils/audit-fix';
 
 /** Ids for this tab's collapsible cards. Doubles as the persisted key set (the
  *  page owns the open-card map), so these strings must not change — a rename
@@ -75,6 +77,8 @@ interface Props {
   /** 2c: the companion's audit snapshot, for the Checks card and the
    *  account chips. Absent (an older page): neither is shown. */
   auditSnapshot?: AuditSnapshotRead | null;
+  /** 2c R2: after a fix on the Checks card, the page reads the snapshot again. */
+  onAuditChanged?: () => void;
 }
 
 /**
@@ -92,7 +96,7 @@ interface Props {
  */
 export function SettingsTab({
   ctx, store, scheduler, onReset, amazon, categories, isOpen, toggleCard,
-  accountMapping, balances, sfinNames, wfNames, telegramDraft, onAccountsChanged, auditSnapshot,
+  accountMapping, balances, sfinNames, wfNames, telegramDraft, onAccountsChanged, auditSnapshot, onAuditChanged,
 }: Props) {
   // The stored pool, for the card's collapsed summary. Read here and updated by
   // the card itself on Set / Clear: the companion's published status would lag
@@ -104,6 +108,8 @@ export function SettingsTab({
   const poolSummary = poolCfg
     ? `${new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(poolCfg.amountCents / 100)} until ${shortDate(poolCfg.endDate)}`
     : 'Not set';
+  // 2c R2: Link on the Checks card, through the add-on's own host.
+  const linkChecks = useCallback((pairs: LinkPair[]) => linkFromApp(ctx, store, pairs), [ctx, store]);
   const [scheduleHours, setScheduleHours] = useState<number | null>(null);
   const [autoHeal, setAutoHeal] = useState(false);
   const [autoAdjust, setAutoAdjust] = useState(false);
@@ -424,7 +430,10 @@ export function SettingsTab({
           open={isOpen(CARD.checks)}
           onToggle={() => toggleCard(CARD.checks)}
         >
-          <ChecksCard read={auditSnapshot} companionVersion={companionVersion} now={new Date()} />
+          <ChecksCard
+            read={auditSnapshot} companionVersion={companionVersion} now={new Date()}
+            link={linkChecks} onFixed={onAuditChanged}
+          />
         </CollapsibleCard>
       )}
 

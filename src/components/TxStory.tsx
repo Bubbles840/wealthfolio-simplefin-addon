@@ -5,7 +5,9 @@
  * account, the few lines that answer "why", then What happened — each line a
  * button that opens, in place, the Change log card's own entry detail with its
  * Undo, Redo and Sync now (`EntryDetail`, exported from ChangeLogCard.tsx, not
- * a copy). Read-only otherwise: any change goes through that Undo.
+ * a copy). Otherwise a story changes nothing — except "Remove for good…"
+ * (2c R2), on a row from the bank feed: the first click explains, Remove
+ * acts, one action at a time, and the result is said in a status line.
  *
  * `TxStoryPanel` loads a story and reads it again after an Undo; a re-read that
  * fails keeps the story on screen and says so. Bank text renders as React
@@ -19,7 +21,12 @@ import type { UndoOutcome } from '../../shared/change-undo-run';
 import {
   TX_STORY_GONE_APP, TX_STORY_NO_HISTORY, TX_STORY_UNREACHABLE, TX_STORY_WHAT_HAPPENED, type TxStory,
 } from '../../shared/tx-story';
+import {
+  REMOVE_ACTION, REMOVE_BUTTON, REMOVE_CANCEL, REMOVE_CONFIRM, REMOVE_UNREACHABLE, type RemoveOutcome,
+} from '../../shared/tx-remove';
 import { EntryDetail, syncNowSentence, type RowActions } from './ChangeLogCard';
+import { Button } from './ui';
+import { removeFromApp } from '../utils/audit-fix';
 import { undoFromApp } from '../utils/change-undo';
 import { runSync } from '../utils/sync';
 import type { SecretsStore } from '../utils/secrets';
@@ -35,16 +42,83 @@ export interface TxStoryActions {
   /** The companion's published version: the gate and the Telegram pointer. */
   companionVersion: string | null;
   onSyncNow?: () => Promise<string>;
+  /** 2c R2: "Remove for good…" (`removeFromApp`). Absent: never offered. */
+  remove?: (activityId: string, fingerprint: string) => Promise<RemoveOutcome>;
 }
 
-/** The add-on's own Undo and Sync now — the same ones Settings → Change log uses. */
+/** The add-on's own Undo, Sync now and Remove for good — Undo and Sync now are the ones Settings → Change log uses. */
 export function useTxStoryActions(ctx: AddonContext, store: SecretsStore, companionVersion: string | null): TxStoryActions {
   const undo = useCallback(
     (entry: ChangeLogItem, entries: ChangeLogItem[], op: UndoOp) => undoFromApp(ctx, store, entry, entries, op),
     [ctx, store],
   );
   const onSyncNow = useCallback(async () => syncNowSentence(await runSync(ctx, store, { force: true })), [ctx, store]);
-  return useMemo(() => ({ undo, companionVersion, onSyncNow }), [undo, companionVersion, onSyncNow]);
+  const remove = useCallback((activityId: string, fingerprint: string) => removeFromApp(ctx, store, activityId, fingerprint), [ctx, store]);
+  return useMemo(() => ({ undo, companionVersion, onSyncNow, remove }), [undo, companionVersion, onSyncNow, remove]);
+}
+
+/** "Remove for good…": the first click explains, Remove acts. A refusal reads the story again. */
+function RemoveForGood({ activityId, fingerprint, remove, onRefused, result, onResult }: {
+  activityId: string;
+  fingerprint: string;
+  remove: NonNullable<TxStoryActions['remove']>;
+  onRefused: () => void;
+  /** The last outcome lives in the story view, so it survives a re-read that stops offering Remove. */
+  result: RemoveOutcome | null;
+  onResult: (r: RemoveOutcome | null) => void;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const removeBtn = useRef<HTMLButtonElement>(null);
+  const openBtn = useRef<HTMLButtonElement>(null);
+  const focusAfter = useRef<'remove' | 'open' | null>(null);
+  useEffect(() => {
+    if (focusAfter.current === 'remove') removeBtn.current?.focus();
+    else if (focusAfter.current === 'open') openBtn.current?.focus();
+    focusAfter.current = null;
+  }, [confirming]);
+  // One action per click, even before the re-render that disables the buttons.
+  const running = useRef(false);
+  // No state updates once the story is gone.
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+  const act = async () => {
+    if (running.current) return;
+    running.current = true;
+    setBusy(true);
+    let out: RemoveOutcome;
+    try {
+      out = await remove(activityId, fingerprint);
+    } catch {
+      out = { ok: false, message: REMOVE_UNREACHABLE };
+    }
+    running.current = false;
+    if (!mounted.current) return;
+    onResult(out);
+    setBusy(false);
+    setConfirming(false);
+    if (!out.ok) onRefused();
+  };
+  return (
+    <div>
+      {confirming && <div>{REMOVE_CONFIRM}</div>}
+      {!result?.ok && (
+        <div className="sfin-audit-fix">
+          {confirming ? (
+            <>
+              <Button ref={removeBtn} variant="ghost" disabled={busy} aria-busy={busy} onClick={act}>{REMOVE_BUTTON}</Button>
+              <Button variant="ghost" disabled={busy} aria-busy={busy} onClick={() => { focusAfter.current = 'open'; setConfirming(false); }}>{REMOVE_CANCEL}</Button>
+            </>
+          ) : (
+            <Button ref={openBtn} variant="ghost" onClick={() => { onResult(null); focusAfter.current = 'remove'; setConfirming(true); }}>{REMOVE_ACTION}</Button>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 /** One line of What happened: opens its entry's detail in place. */
@@ -70,18 +144,21 @@ function HistoryLine({ line, entry, actions }: { line: string; entry: ChangeLogI
   );
 }
 
-export function TxStoryView({ story, entries, actions, onChanged }: {
+export function TxStoryView({ story, entries, actions, onChanged, removal }: {
   story: TxStory;
   /** The change log as read: a line's entry, and what Undo is decided against. */
   entries: ChangeLogItem[];
   actions: TxStoryActions;
   /** After an Undo or a Sync now: read the story again. */
   onChanged: () => void;
+  /** 2c R2: the row as shown, when the story offers "Remove for good…". */
+  removal?: { activityId: string; fingerprint: string };
 }) {
   const rowActions: RowActions = {
     undo: actions.undo, companionVersion: actions.companionVersion, entries, onSyncNow: actions.onSyncNow, changed: onChanged,
   };
   const byId = new Map(entries.map((e) => [e.id, e]));
+  const [removed, setRemoved] = useState<RemoveOutcome | null>(null);
   return (
     <div className="sfin-why-story">
       <div className="sfin-why-title">{story.title}</div>
@@ -90,6 +167,19 @@ export function TxStoryView({ story, entries, actions, onChanged }: {
         <ul className="sfin-why-answer">
           {story.answer.map((line, i) => <li key={`${i}:${line}`}>{line}</li>)}
         </ul>
+      )}
+      {actions.remove && (
+        <div className="sfin-why-remove">
+          {/* Mounted from the first render, so what lands in it is announced; it stays
+              when a re-read stops offering Remove, so a refusal is never lost. */}
+          <div role="status" className="sfin-subtle">{removed?.message ?? ''}</div>
+          {removal && (
+            <RemoveForGood
+              activityId={removal.activityId} fingerprint={removal.fingerprint} remove={actions.remove} onRefused={onChanged}
+              result={removed} onResult={setRemoved}
+            />
+          )}
+        </div>
       )}
       {story.history && (
         <div className="sfin-why-history">
@@ -161,7 +251,7 @@ export function TxStoryPanel({ target, load, actions }: {
         {note && <div className="sfin-log-note">{note}</div>}
       </div>
       {shown !== 'loading' && shown.kind === 'ok' && (
-        <TxStoryView story={shown.story} entries={shown.entries} actions={actions} onChanged={changed} />
+        <TxStoryView story={shown.story} entries={shown.entries} actions={actions} onChanged={changed} removal={shown.removal} />
       )}
     </>
   );

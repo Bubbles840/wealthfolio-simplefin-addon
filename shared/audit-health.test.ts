@@ -57,6 +57,54 @@ describe('healthIssues: incomplete transfer legs', () => {
     expect(healthIssueLines(mine)[1]).toBe('It could pair with more than one row — link the right two in Wealthfolio.');
   });
 
+  it('never offers a transfer row that is already in a group as the other half', () => {
+    const out = row({ id: 'out' });
+    const grouped = row({ id: 'grp', accountId: 'wf-ally', rawType: 'TRANSFER_IN', type: 'TRANSFER_IN', date: '2026-10-05', group: 'broken', notes: 'FROM PNC · TRN-8' });
+    const mine = legs(healthIssues(facts([out, grouped])).issues).find((i) => i.leg.activityId === 'out')!;
+    expect(mine).toMatchObject({ match: 'none', counterpart: null });
+  });
+
+  it('a broken group still reports itself when an ungrouped leg would pair with it, and the ungrouped leg offers nothing', () => {
+    const lone = row({ id: 'L' });
+    const c = row({ id: 'c', accountId: 'wf-ally', rawType: 'TRANSFER_IN', type: 'TRANSFER_IN', date: '2026-10-05', group: 'g1', notes: 'FROM PNC · TRN-2' });
+    const issues = legs(healthIssues(facts([lone, c])).issues);
+    const byId = Object.fromEntries(issues.map((i) => [i.leg.activityId, i]));
+    expect(byId.c.problem).toMatchObject({ kind: 'legs' });
+    expect(healthIssueLines(byId.c)[0]).toContain('its group has 1 transfer rows');
+    expect(byId.c.counterpart).toBeNull();
+    expect(byId.L).toMatchObject({ match: 'none', counterpart: null });
+    expect(healthIssueLines(byId.L)[1]).toContain('No likely other half');
+  });
+
+  it('a leg alone in a group beside an ungrouped one does not contradict itself', () => {
+    const l = row({ id: 'L', group: 'g2' });
+    const c = row({ id: 'c', accountId: 'wf-ally', rawType: 'TRANSFER_IN', type: 'TRANSFER_IN', date: '2026-10-05', notes: 'FROM PNC · TRN-2' });
+    const byId = Object.fromEntries(legs(healthIssues(facts([l, c])).issues).map((i) => [i.leg.activityId, i]));
+    expect(byId.L.problem).toMatchObject({ kind: 'legs' });
+    expect(byId.L.counterpart).toBeNull();
+    expect(byId.c).toMatchObject({ match: 'none', counterpart: null });
+  });
+
+  it('never offers a grouped row of any type: a grouped WITHDRAWAL is not offered (Link would refuse it)', () => {
+    const into = row({ id: 'in', accountId: 'wf-ally', rawType: 'TRANSFER_IN', type: 'TRANSFER_IN', date: '2026-10-05', notes: 'FROM PNC · TRN-2' });
+    const wd = row({ id: 'wd', rawType: 'WITHDRAWAL', type: 'WITHDRAWAL', group: 'g9', notes: 'ONLINE TRANSFER · TRN-3' });
+    const [mine] = legs(healthIssues(facts([into, wd])).issues);
+    expect(mine).toMatchObject({ key: 'leg:in', match: 'none', counterpart: null });
+    // The same withdrawal, ungrouped, is offered.
+    const [free] = legs(healthIssues(facts([into, { ...wd, group: '' }])).issues);
+    expect(free).toMatchObject({ match: 'one', counterpart: expect.objectContaining({ activityId: 'wd' }) });
+  });
+
+  it("never offers the sync's own held-transfer placeholder as the other half", () => {
+    const out = row({ id: 'out' });
+    const held = row({
+      id: 'held', accountId: 'wf-ally', rawType: 'TRANSFER_IN', type: 'TRANSFER_IN', date: '2026-10-05', external: true,
+      notes: '↔️ In-transit transfer · FROM PNC · TRN-8',
+    });
+    const [mine] = legs(healthIssues(facts([out, held])).issues);
+    expect(mine).toMatchObject({ key: 'leg:out', match: 'none', counterpart: null });
+  });
+
   it('never offers a pending row as the other half — the sync never pairs one', () => {
     const out = row({ id: 'out' });
     const pending = row({ id: 'pend', accountId: 'wf-ally', rawType: 'DEPOSIT', type: 'DEPOSIT', date: '2026-10-05', notes: 'FROM PNC · TRN-9 · pending' });

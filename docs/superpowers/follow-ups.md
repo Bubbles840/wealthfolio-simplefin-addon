@@ -762,12 +762,19 @@ changes what a user sees today.
   excluded categories and their descendants, and the WHOLE calendar month in
   its timezone — so there is no "after today" reason, and "first midnight" is
   named only west of UTC. What only one side counts for a rule no reason names
-  stays in "not explained": a spending account the add-on does not map, a
-  linked transfer filed under a spending category, a row Wealthfolio puts in
-  another month other than at 00:00 UTC on the 1st (an east-of-UTC local
-  midnight at the month's end, 3.10), an activity type override, the
+  stays in "not explained": a spending account the add-on does not map; a
+  categorized row in a mapped account the Spending page does not read (the
+  report counts it); a linked transfer filed under a spending category; an
+  unlinked transfer filed under your own transfer-named category (the report
+  drops the filing, Wealthfolio counts the transfer); a grouped row that is
+  not a transfer (the uncategorized reader skips it, Wealthfolio counts it); a
+  row Wealthfolio puts in another month other than at 00:00 UTC on this
+  month's 1st (an east-of-UTC local midnight at the month's end, 3.10, and,
+  west of UTC, a row stored at 00:00 UTC on the NEXT month's 1st, which
+  Wealthfolio counts this month); an activity type override; the
   uncategorized reader's dismissed rows and rows awaiting a transfer's other
-  half, and split lines. A card's opening debt is counted by the report (the
+  half; and split lines. (R2 added the four this list missed: ruling C-H.)
+  A card's opening debt is counted by the report (the
   cube excludes no starting balance), so on 3.9+, filed under the excluded
   "Opening balances", it shows as "excluded" — whether the report should
   drop starting balances like the digest does is its own question.
@@ -778,9 +785,81 @@ changes what a user sees today.
 - **A pending row is never offered as the other half** of a Health leg: the
   sync never pairs a ` · pending` row (the bank's provisional copy, whose
   amount can still change before it posts).
-- **R2 (Fix) is next:** Link on a Health leg with a unique other half (the
-  snapshot already carries both rows' ids, accounts, tx keys, amounts and
-  dates), and "Remove for good…" on a transaction's story.
+- **R2 (Fix)** — Link and Remove for good — is §12.
+
+## 12. Audits without SSH — R2 Fix (2026-10-14, plan `2026-10-14-audits-r2-fix.md`)
+
+What R2 deliberately leaves open:
+
+- **The linker deletes first.** Link goes through the sync's own
+  `linkPairByRecreate`: delete both rows, then re-create them as one marked
+  group. When the re-create is refused or the request throws, R2 reads both
+  rows again by id, writes back any that are gone, and names what may have
+  been lost; but a connection lost between the two requests can still leave
+  rows deleted until the next sync re-imports what the bank still sends, and
+  a lost response after a committed create leaves the linked pair plus the
+  written-back originals (on 3.8, or with a fee that gets past 3.10's
+  duplicate check) — the message then says to check both accounts. SDK
+  3.9's `activities.linkTransfer` links in place and would close the window,
+  but it needs new add-on permissions: Nick's call.
+- **Money leaving a card is never linked**, whatever type the card stores it
+  as — a TRANSFER_OUT on 3.10 included: the sync never links money leaving a
+  card, 3.8 and 3.9 accept no TRANSFER_OUT on one (v1.55), and a WITHDRAWAL
+  is never half of a valid pair.
+- **The app links from a snapshot.** It re-reads both rows by id first. A
+  transfer leg a link has marked since (`flow.is_external: false`), or one
+  whose metadata the host did not report, may be linked and is refused; a pair
+  the card linked hides its button until the next snapshot.
+- **Remove for good refuses a pending row**: SimpleFin often gives a pending
+  transaction a new id when it posts, so skipping the pending id would not
+  keep the posted copy out. It also refuses, and never offers, a $0 row
+  (Undo could not put it back).
+- **The app never removes a transfer-typed row**: the SDK cannot be counted
+  on to report groups. `/why`, which reads them, can remove an unlinked one.
+- **Remove's Undo writes the row back as the bank feed wrote it.** A category
+  filed on it is not part of the row and does not come back. A $0 surplus
+  copy the sync pruned cannot be put back.
+- **The exact-id read is Wealthfolio 3.8's** (`activityIds` / `activityIdFilter`);
+  an older host ignores it, and a fix then reads the row as changed and
+  writes nothing.
+- **One lock per host, none across them.** The add-on's write lock covers its
+  syncs, Link, Remove and the Change log's Undo/Redo; the companion makes its
+  own sync and Telegram's Link, Remove and a removal's Undo/Redo take turns.
+  Neither covers the other host: the companion's sync and Telegram's
+  Link/Remove are not behind the add-on's lock, and the add-on's sync and the
+  app's Link/Remove are not behind the companion's. So a fix on one host
+  racing a sync on the other can re-import a removed row once, or leave a
+  duplicate. On the companion, only a removal's `/changes` Undo/Redo waits for
+  its sync; other kinds that write rows or the skip list (an `import` Undo
+  skips then deletes, since 2a) are not guarded there, while the add-on locks
+  every Undo. The
+  add-on's `linked_groups` is also still a copy a companion write can
+  outdate, and the add-on's sync then treats a pair the companion linked as
+  one it did not link.
+- **Link all covers what the list shows**: what fits one Telegram message
+  (clipped, a pair's button only if its line is on screen), what fits the
+  snapshot in the app.
+- **A link you make is undone like the sync's** (`notTransfer` on both legs,
+  carried out by the next sync), so the app's "Update the companion first"
+  gate now covers a transfer link whoever made it.
+- **Version skew**: an older snapshot from a companion without R1+R2's
+  Health rule can still offer a pair with a grouped row; they ship together.
+- **Ruling C-H's residuals are done**: an unknown reason or Health issue kind
+  is dropped, not read as a corrupt snapshot; `more` must be a number; §11's
+  remainder list names the four cases it missed.
+
+Minor, deferred (not fixed in R2):
+
+- Task 1: a dropped reason's cents vanish when `unexplainedCents` is null;
+  unknown kinds still need cents/rows/more; coverage gaps (more absent, all
+  reasons dropped, null passthrough, cents 0).
+- Task 3: the write-back reuses step `transfer-relink` (naming only).
+- Task 4: a Redo of a removal skips only the keys the removal added; it
+  should skip every key (idempotent) and record what it added for the next
+  Undo, so a hand edit to the skip list between Undo and Redo is honoured.
+- Task 6: `report.notes` is counted but not clipped in Health's 4096 fit.
+- Task 8: a grouped row that contests an ungrouped leg's match still makes
+  that leg "many" (dropped from offers only after contest counting).
 
 ## 13. Less filing — R1 (2026-10-14, plan `2026-10-14-less-filing.md`)
 

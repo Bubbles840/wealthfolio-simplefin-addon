@@ -21,7 +21,8 @@
  *  - an import: the activity id and the account-scoped tx key;
  *  - a transfer link: both legs' tx keys and their new activity ids;
  *  - an Amazon label: the label text and the note before and after;
- *  - a Venmo note: the note text and the row's note before and after.
+ *  - a Venmo note: the note text and the row's note before and after;
+ *  - a row you removed for good (2c R2): its tx keys and its full create payload.
  */
 
 export type ChangeWriter = 'addon' | 'companion';
@@ -30,7 +31,7 @@ export type ChangeActor = 'auto' | 'you';
 export type ChangeKind =
   | 'import' | 'bank-update' | 'pending-removed'
   | 'transfer-link' | 'transfer-type'
-  | 'duplicate-removed'
+  | 'duplicate-removed' | 'transaction-removed'
   | 'starting-balance' | 'starting-balance-moved' | 'balance-correction'
   | 'amazon-label' | 'venmo-note' | 'category-filed' | 'opening-balance-filed'
   | 'category-rule-created' | 'mapping-rule-created'
@@ -40,7 +41,7 @@ export type ChangeKind =
 export const CHANGE_KINDS: readonly ChangeKind[] = [
   'import', 'bank-update', 'pending-removed',
   'transfer-link', 'transfer-type',
-  'duplicate-removed',
+  'duplicate-removed', 'transaction-removed',
   'starting-balance', 'starting-balance-moved', 'balance-correction',
   'amazon-label', 'venmo-note', 'category-filed', 'opening-balance-filed',
   'category-rule-created', 'mapping-rule-created',
@@ -326,8 +327,9 @@ export interface LinkLegFacts {
   newActivityId?: string;
 }
 
-/** Two legs linked as one transfer. Undo (R2): `notTransfer` on both tx keys. */
-export function transferLinkChange(out: LinkLegFacts, inLeg: LinkLegFacts): ChangeDraft {
+/** Two legs linked as one transfer — by the sync, or by you from the Health
+ *  list (2c R2). Undo (R2): `notTransfer` on both tx keys. */
+export function transferLinkChange(out: LinkLegFacts, inLeg: LinkLegFacts, actor: ChangeActor = 'auto'): ChangeDraft {
   const fresh = [out.newActivityId, inLeg.newActivityId].filter((id): id is string => !!id);
   const leg = (l: LinkLegFacts) => ({
     txKey: l.txKey,
@@ -338,7 +340,7 @@ export function transferLinkChange(out: LinkLegFacts, inLeg: LinkLegFacts): Chan
     ...(l.newActivityId ? { activityId: l.newActivityId } : {}),
   });
   return {
-    actor: 'auto',
+    actor,
     kind: 'transfer-link',
     account: out.account,
     subject: {
@@ -349,7 +351,7 @@ export function transferLinkChange(out: LinkLegFacts, inLeg: LinkLegFacts): Chan
       date: out.date,
     },
     summary: `Linked ${what(out.description)} and ${what(inLeg.description)} as one transfer`,
-    why: 'Same amount left one account and arrived in another',
+    why: actor === 'you' ? 'You linked them from the Health list' : 'Same amount left one account and arrived in another',
     before: { activityIds: [out.oldActivityId, inLeg.oldActivityId] },
     after: { ...(fresh.length === 2 ? { activityIds: fresh } : {}), legs: [leg(out), leg(inLeg)] },
     undoable: true,
@@ -378,6 +380,40 @@ export function duplicateRemovedChange(f: DuplicateRemovedFacts): ChangeDraft {
     summary: `Removed a duplicate copy of ${what(f.description)}`,
     why: 'Wealthfolio held this transaction twice',
     before: { activityId: f.activityId, activity: f.payload },
+    undoable: true,
+  };
+}
+
+export interface TransactionRemovedFacts {
+  account: ChangeAccount;
+  /** Its key under every feed of its account: each went on the skip list. */
+  txKeys: string[];
+  activityId: string;
+  description: string;
+  /** Signed, money out negative. */
+  amountCents: number;
+  date: string;
+  /** The deleted row as a create request (`ActivityWrite` shape). */
+  payload: Record<string, unknown>;
+  /** The keys this removal itself put on the skip list (not ones skipped earlier); Undo takes back only these. */
+  addedKeys?: string[];
+}
+
+/**
+ * A row you removed for good (2c R2, "Remove for good…" on its story): deleted,
+ * and its tx id put on the skip list so the bank feed never imports it again.
+ * Undo (R2): re-create the row from `before.activity`, then take it off the
+ * skip list. Redo: skip it and remove it again.
+ */
+export function transactionRemovedChange(f: TransactionRemovedFacts): ChangeDraft {
+  return {
+    actor: 'you',
+    kind: 'transaction-removed',
+    account: f.account,
+    subject: { txKeys: [...f.txKeys], activityIds: [f.activityId], description: f.description, amountCents: f.amountCents, date: f.date },
+    summary: `Removed ${what(f.description)} for good`,
+    why: "You removed it; the bank feed won't import it again",
+    before: { activityId: f.activityId, activity: f.payload, ...(f.addedKeys ? { addedKeys: f.addedKeys } : {}) },
     undoable: true,
   };
 }
@@ -681,7 +717,8 @@ export interface BookkeepingFacts {
   activityIds: string[];
   /** `opening-category` only: the category it created or reused. */
   categoryName?: string;
-  /** `transfer-unlink` only: the legs that were unlinked. */
+  /** `transfer-unlink`: the legs that were unlinked; `transfer-relink` from a
+   *  Link (2c): the legs that were re-created. */
   legs?: Array<{ txKey: string; description: string }>;
   /** `transfer-unlink` only: how many pairs this entry covers (default 1) and
    *  how many rows were re-created (default: the ids listed). */

@@ -18,6 +18,9 @@
  * Both writers (companion and addon) read the same secret.
  */
 
+/** The note a skip-list entry written by "Remove for good" (and its Redo) carries. */
+export const REMOVED_FOR_GOOD_NOTE = 'Removed for good';
+
 export const SKIPPED_TRANSACTIONS_SECRET_KEY = 'skipped_transactions';
 
 export interface SkippedTransaction {

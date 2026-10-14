@@ -36,6 +36,7 @@ import {
 import {
   buildTxStory, decodeFiler, feedOf, sfinIdsFor, signedCents, withFilingDay, type TxFactName, type TxStory, type TxStoryFacts,
 } from '../../shared/tx-story';
+import { removalFingerprint, removalOffered } from '../../shared/tx-remove';
 import type { SecretsStore } from './secrets';
 
 /** What a story is opened for. A budget drill-down row also brings its
@@ -52,8 +53,10 @@ export type StoryStore = Partial<Pick<SecretsStore,
   | 'getCompanionVersion' | 'getUncategorizedStatus' | 'getReportCube'>>;
 
 export type AppStoryOutcome =
-  /** `entries`: the whole change log as read (Undo needs it); [] when unread. */
-  | { kind: 'ok'; story: TxStory; entries: ChangeLogItem[] }
+  /** `entries`: the whole change log as read (Undo needs it); [] when unread.
+   *  `removal` (2c R2): the story offers "Remove for good…" for this row, as shown
+   *  (its date is the UTC day the story shows, which is the one the remover checks). */
+  | { kind: 'ok'; story: TxStory; entries: ChangeLogItem[]; removal?: { activityId: string; fingerprint: string } }
   | { kind: 'gone' }
   | { kind: 'unreachable' };
 
@@ -235,7 +238,10 @@ export async function appTxStory(ctx: AddonContext, store: StoryStore, target: A
     now,
     failed,
   };
-  return { kind: 'ok', story: buildTxStory(facts), entries };
+  return {
+    kind: 'ok', story: buildTxStory(facts), entries,
+    ...(removalOffered(facts) ? { removal: { activityId: row.id, fingerprint: removalFingerprint(facts.row) } } : {}),
+  };
 }
 
 const PAGE_SIZE = 500;
