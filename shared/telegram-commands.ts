@@ -62,7 +62,9 @@ export const TELEGRAM_COMMAND_MENU = [
  *  Since 1.60 the bare form of `/afford`, `/pool` and `/newrule` asks for what
  *  it needs; the example still shows the one-line shortcut.
  *  `/subscriptions` (1.60) takes no arguments; everything happens on its buttons.
- *  `/changes` lists the change log; `/changes <words>` searches it. */
+ *  `/changes` lists the change log; `/changes <words>` searches it.
+ *  `/why <words or an amount>` (1.61) finds a transaction and tells its story;
+ *  bare `/why` asks. */
 export const TELEGRAM_MORE_COMMANDS = [
   { command: 'afford', description: 'Can I afford it? — asks, or /afford 20 shopping' },
   { command: 'pool', description: 'Semester money pool — asks, or /pool 16000 Dec 12' },
@@ -71,6 +73,7 @@ export const TELEGRAM_MORE_COMMANDS = [
   { command: 'dismissed', description: 'What you dismissed lately, with Undo' },
   { command: 'subscriptions', description: 'Subscriptions and bills — remind, rename, hide, or add one' },
   { command: 'changes', description: 'What changed lately — /changes venmo searches' },
+  { command: 'why', description: 'Why is this here? — /why kroger 54.20 finds a transaction and its story' },
 ] as const;
 
 export function formatHelpReply(unknownCommand?: string): string {

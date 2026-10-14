@@ -74,6 +74,8 @@ import { fileAmazonCharges } from './amazon-filing.js';
 import { companionChangeSink, readCompanionChangeLog, recordCompanionChanges } from './change-log-host.js';
 import { emptySyncOverrides, hasAccountOverride, hasTxOverride, syncOverridesOrEmpty, type SyncOverrides } from '../../shared/sync-overrides.js';
 import { createChangesMenu, renderChangesCommand, CHANGES_UNREACHABLE_REPLY, type ChangesMenu } from './changes-menu.js';
+import { buildWhyFlow, createWhyMenu, type WhyMenu } from './why-menu.js';
+import { companionStoryReaders, companionTxSearch, companionTxStory } from './tx-story-host.js';
 import { companionRuleFiledCount, companionUndoIo } from './change-undo-host.js';
 import { runChangeUndo } from '../../shared/change-undo-run.js';
 import type { ChangeLogRead } from '../../shared/change-log.js';
@@ -2980,12 +2982,32 @@ function subscriptionWriteFailure(outcome: 'unreadable' | 'invalid' | 'unreachab
 }
 
 /**
+ * `/why` (1.61): one transaction's story. Stateless — every tap re-reads — so
+ * any number of instances answer alike, and the categorize screen's 🔎 Why?
+ * can build its own.
+ */
+export function buildWhyMenu(wfClient: WealthfolioClient): WhyMenu {
+  const readers = () => companionStoryReaders(wfClient, wealthfolioDbPath());
+  return createWhyMenu({
+    search: (query, now) => companionTxSearch(readers(), query, now),
+    story: (activityId, now) => companionTxStory(readers(), activityId, now),
+    read: (now) => readCompanionChangeLog(wfClient, now),
+    now: () => new Date(),
+    log,
+  });
+}
+
+/**
  * The bot's question flows, registered on ONE session holder. Like the
  * categorize controller, one instance must serve `onCommand`, `onText` and
  * `onMenuCallback`, or a question asked through one could never be answered
  * through another.
  */
-export function buildAskSessions(wfClient: WealthfolioClient, controller: CategorizeController): AskSessions {
+export function buildAskSessions(
+  wfClient: WealthfolioClient,
+  controller: CategorizeController,
+  why: WhyMenu = buildWhyMenu(wfClient),
+): AskSessions {
   const asks = createAskSessions({
     log,
     firstQuestionNote: async () => {
@@ -3046,6 +3068,11 @@ export function buildAskSessions(wfClient: WealthfolioClient, controller: Catego
       onDone: (a, send) => controller.openRulePreview(a.pattern as string, a.category as string, send),
     };
   });
+  // Bare /why (1.61): one question, then the results as a new message.
+  asks.register('why', async () => ({
+    flow: buildWhyFlow(),
+    onDone: (a, send) => why.reply(a.query as string, send),
+  }));
   asks.register('afford', async () => {
     const snapshot = await readBudgetSnapshotWithStyle(wfClient);
     return {
@@ -3148,6 +3175,7 @@ export function buildTelegramCommandHandler(
   wfClient: WealthfolioClient,
   controller: CategorizeController = buildCategorizeController(wfClient),
   asks: AskSessions = buildAskSessions(wfClient, controller),
+  why: WhyMenu = buildWhyMenu(wfClient),
 ): (cmd: ParsedCommand, reply: (text: string, keyboard?: InlineKeyboard) => Promise<void>) => Promise<void> {
   const budgetSnapshot = () => readBudgetSnapshotWithStyle(wfClient);
 
@@ -3290,6 +3318,16 @@ export function buildTelegramCommandHandler(
         }
         const screen = renderChangesCommand(read, cmd.args, now);
         await reply(screen.text, screen.keyboard);
+        return;
+      }
+
+      case 'why': {
+        // Bare /why asks (1.61), like /newrule; words or an amount search.
+        if (cmd.args.trim() === '') {
+          await asks.start('why', reply);
+          return;
+        }
+        await why.reply(cmd.args, reply);
         return;
       }
 
@@ -3478,9 +3516,11 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
    *  every button would answer "that menu expired". */
   const categorize = buildCategorizeController(wfClient);
 
+  /** `/why`: stateless, but one instance serves commands, answers and taps. */
+  const why = buildWhyMenu(wfClient);
   /** ONE question slot for commands, plain answers and taps alike. */
-  const asks = buildAskSessions(wfClient, categorize);
-  const runCommand = buildTelegramCommandHandler(wfClient, categorize, asks);
+  const asks = buildAskSessions(wfClient, categorize, why);
+  const runCommand = buildTelegramCommandHandler(wfClient, categorize, asks, why);
 
   /** The Amazon label picker. Shares the `cz:` callback prefix, so
    *  `onMenuCallback` below asks it first and only then falls through to the
@@ -3735,6 +3775,11 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
       // `cz:cl:` likewise, before the transaction menu's fallthrough.
       if (changes.handles(cb.data)) {
         await changes.onCallback(cb, ui);
+        return;
+      }
+      // `cz:wy:` (1.61) likewise.
+      if (why.handles(cb.data)) {
+        await why.onCallback(cb, ui);
         return;
       }
       if (cb.data !== RECATEGORIZE_ENTRY_CALLBACK) {

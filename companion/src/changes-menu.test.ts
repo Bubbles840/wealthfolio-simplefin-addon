@@ -33,6 +33,22 @@ const button = (s: MenuScreen, text: string) => {
   return b.callback_data;
 };
 
+describe('an entry opened from a /why story (1.61)', () => {
+  const ID = '0f8fad5b-d9cb-469f-a165-708677289501';
+  it('carries the story as its back, inside 64 bytes, and Back returns to the story in place', () => {
+    const entry = imp(1, at(12, 9, 0));
+    const data = changesData({ kind: 'detail', entry: 'abcd1234', back: { kind: 'why', activityId: ID } });
+    expect(Buffer.byteLength(data)).toBeLessThanOrEqual(64);
+    expect(parseChangesData(data)).toEqual({ kind: 'detail', entry: 'abcd1234', back: { kind: 'why', activityId: ID } });
+    const s = renderChangeDetail(entry, { kind: 'why', activityId: ID });
+    expect(button(s, '‹ Back')).toBe(`cz:wy:t${ID}:c`);
+  });
+
+  it('is only ever a back, never a screen of its own', () => {
+    expect(parseChangesData(`cz:cl:w${'x'.repeat(36)}`)).toBeNull();
+  });
+});
+
 describe('the /changes list', () => {
   it('shows the last 7 days newest first, by day, numbered, a run as one row, background behind a button', () => {
     const read = log([

@@ -4,7 +4,7 @@ import { findingHandle } from '../../shared/findings.js';
 import { formatHelpReply, parseCommand } from '../../shared/telegram-commands.js';
 import { SIMPLEFIN_SYNC_VERSION } from '../../shared/version.js';
 import { runSyncCore } from '../../shared/sync-core.js';
-import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeCategorizedSpending, getNativeSpendingCategories } from './sqlite-native.js';
+import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeCategorizedSpending, getNativeSpendingCategories, getNativeTxSearchRows } from './sqlite-native.js';
 import { ingestAmazonMail } from './amazon-mail.js';
 import { AMAZON_MAIL_STATUS_SECRET_KEY, AMAZON_MAIL_SAMPLES_SECRET_KEY, UNCATEGORIZED_STATUS_SECRET_KEY } from '../../shared/status-keys.js';
 import { CATEGORIZE_ENTRY_CALLBACK } from '../../shared/telegram.js';
@@ -113,6 +113,11 @@ vi.mock('./sqlite-native.js', () => ({
   getNativeSpendDailyTotals: vi.fn(() => []),
   getNativeValuationByMonth: vi.fn(() => []),
   getNativeIncomeCategories: vi.fn(() => []),
+  // "Why is this here?" (1.61): tx-story-host.ts's readers.
+  getNativeTxDetails: vi.fn(() => ({ accountType: '', assignments: [] })),
+  getNativeTxPartner: vi.fn(() => null),
+  getNativeTxSearchRows: vi.fn(() => []),
+  NativeDbUnreadableError: class NativeDbUnreadableError extends Error {},
 }));
 
 vi.mock('./amazon-mail.js', async (importOriginal) => ({
@@ -2554,6 +2559,40 @@ describe('buildTelegramCommandHandler', () => {
       const ui = { edit: vi.fn(async () => {}), answer: vi.fn(async () => {}), send: vi.fn(async () => {}) };
       await deps.onMenuCallback!({ data: 'cz:cl:l0', chatId: 1, messageId: 2 }, ui);
       expect((ui.edit.mock.calls[0] as unknown as [string])[0]).toContain('*Changes — last 7 days*');
+    });
+  });
+
+  describe('/why', () => {
+    const kroger = {
+      activityId: 'act-1', date: '2026-10-04', absCents: 5420, activityType: 'WITHDRAWAL',
+      accountName: 'PNC Checking', accountType: 'CASH', notes: 'KROGER #415 · TRN-1',
+    };
+
+    it('searches all of history with the words after the command, each match a button', async () => {
+      vi.mocked(getNativeTxSearchRows).mockReturnValueOnce([kroger]);
+      const { client } = clientFor();
+      const sent: Array<[string, any]> = [];
+      await buildTelegramCommandHandler(client)({ command: 'why', args: 'Kroger 54.20' }, async (t, k) => { sent.push([t, k]); });
+      expect(sent[0][0]).toBe('🔎 *Why is this here?* kroger 54.20\n\nTap one to see its story.');
+      expect(sent[0][1].inline_keyboard[0][0]).toEqual({
+        text: 'Oct 4 · KROGER #415 · -$54.20 · PNC Checking', callback_data: 'cz:wy:tact-1:s0:kroger 54.20',
+      });
+    });
+
+    it('asks which transaction when sent bare', async () => {
+      const { client } = clientFor();
+      const { sent, reply } = collector();
+      await buildTelegramCommandHandler(client)({ command: 'why', args: '' }, reply);
+      expect(sent[0]).toBe('*Why is this here?*\nWhich transaction? Send a few words or an amount.');
+    });
+
+    it('cz:wy: taps reach the why menu, not the transaction menu', async () => {
+      vi.mocked(getNativeTxSearchRows).mockReturnValueOnce([kroger]);
+      const { client } = clientFor();
+      const deps = buildTelegramListenerDeps(client);
+      const ui = { edit: vi.fn(async () => {}), answer: vi.fn(async () => {}), send: vi.fn(async () => {}) };
+      await deps.onMenuCallback!({ data: 'cz:wy:s0:kroger', chatId: 1, messageId: 2 }, ui);
+      expect((ui.edit.mock.calls[0] as unknown as [string])[0]).toBe('🔎 *Why is this here?* kroger\n\nTap one to see its story.');
     });
   });
 
