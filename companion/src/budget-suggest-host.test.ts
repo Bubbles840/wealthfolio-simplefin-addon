@@ -95,6 +95,35 @@ describe('readBudgetSuggestions', () => {
   });
 });
 
+describe('a $0 default budget is Wealthfolio’s cleared state', () => {
+  const zeroGro = (over: Partial<BudgetTarget> = {}) => target({ id: 'bt-zero', categoryId: 'cat-gro', amountCents: 0, ...over });
+
+  it('is suggested for, and applied over', async () => {
+    const { r, recorded } = readers({ targets: vi.fn(async () => ({ enabled: true, targets: [zeroGro()] })) });
+    const read = await readBudgetSuggestions(r, NOW);
+    if (!read.ok) throw new Error(read.reason);
+    expect(read.result.suggestions.map((s) => s.name)).toContain('Groceries');
+    const result = await applyBudgetSuggestions(r, read.result.suggestions, AT, NOW);
+    if (!result.ok) throw new Error('refused');
+    expect(r.set).toHaveBeenCalledWith('cat-gro', 42000);
+    expect(result.outcome.alreadySet).toEqual([]);
+    expect(recorded.map((d) => d.summary)).toContain('Set a $420.00 monthly budget for Groceries');
+  });
+
+  it('still blocks when the amount is unparseable (NaN) or the $0 target is this month’s', async () => {
+    for (const blocker of [zeroGro({ amountCents: NaN }), zeroGro({ periodKey: '2026-10' })]) {
+      const { r } = readers({ targets: vi.fn(async () => ({ enabled: true, targets: [blocker] })) });
+      const read = await readBudgetSuggestions(r, NOW);
+      if (!read.ok) throw new Error(read.reason);
+      expect(read.result.suggestions.map((s) => s.name)).not.toContain('Groceries');
+      const result = await applyBudgetSuggestions(r, chosen(), AT, NOW);
+      if (!result.ok) throw new Error('refused');
+      expect(result.outcome.alreadySet.map((s) => s.name)).toContain('Groceries');
+      expect(r.set).not.toHaveBeenCalledWith('cat-gro', expect.anything());
+    }
+  });
+});
+
 describe('applyBudgetSuggestions', () => {
   it('never overwrites a budget added since the list was shown: re-reads, writes the rest, logs each', async () => {
     const { r, recorded } = readers({

@@ -247,6 +247,15 @@ describe('planBudgetApply: re-read before writing', () => {
     expect(hasBudget([target({ periodKey: '2026-11' })], 'cat-gro', '2026-10')).toBe(false);
     expect(hasBudget([target({ categoryId: 'cat-din' })], 'cat-gro', '2026-10')).toBe(false);
   });
+
+  it('counts a $0 default as no budget (Wealthfolio\'s cleared state), but not a $0 month target or an unparseable amount', () => {
+    expect(hasBudget([target({ periodKey: 'default', amountCents: 0 })], 'cat-gro', '2026-10')).toBe(false);
+    expect(hasBudget([target({ periodKey: '2026-10', amountCents: 0 })], 'cat-gro', '2026-10')).toBe(true);
+    expect(hasBudget([target({ periodKey: 'default', amountCents: NaN })], 'cat-gro', '2026-10')).toBe(true);
+    expect(hasBudget([target({ periodKey: 'default', amountCents: 100 })], 'cat-gro', '2026-10')).toBe(true);
+    expect(planBudgetApply(chosen, [target({ id: 'z', categoryId: 'cat-gro', periodKey: 'default', amountCents: 0 })], '2026-10').write.map((x) => x.name))
+      .toContain('Groceries');
+  });
 });
 
 describe('the words', () => {

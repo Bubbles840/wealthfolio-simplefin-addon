@@ -14,7 +14,7 @@
  * Every plan puts its override steps FIRST: an override left behind by a
  * reversal that then failed is harmless, and the failure is reported.
  */
-import { BUDGET_TAXONOMY, DEFAULT_PERIOD_KEY, type BudgetTarget } from './budget-suggest.js';
+import { BUDGET_TAXONOMY, DEFAULT_PERIOD_KEY, isClearedDefault, type BudgetTarget } from './budget-suggest.js';
 import { changeMoney, type ChangeEntry } from './change-entries.js';
 import type { ChangeLogItem } from './change-log.js';
 import type { ActivityWrite, ImportRow } from './sync-host.js';
@@ -407,10 +407,10 @@ export function planChangeUndo(
       const targets = state.budgetTargets ?? [];
       if (op === 'redo') {
         // Never over a budget set since: Wealthfolio's POST would overwrite it. Only a
-        // DEFAULT blocks: a this-month target is untouched by the default POST and sat
+        // DEFAULT blocks (a $0 one is Wealthfolio's cleared state, not a budget): a this-month target is untouched by the default POST and sat
         // beside the default before the Undo, so it deliberately does not block Redo.
         const again = targets.some((t) => t.targetType === 'category' && t.taxonomyId === BUDGET_TAXONOMY
-          && t.categoryId === categoryId && t.periodKey === DEFAULT_PERIOD_KEY);
+          && t.categoryId === categoryId && t.periodKey === DEFAULT_PERIOD_KEY && !isClearedDefault(t));
         if (again) return refuse(`${name} has a budget again — nothing was redone.`);
         return plan({
           op, needsSync: false, budgetAfter: 'created', done: `Redone — ${name} has its ${changeMoney(amountCents)} budget back.`,

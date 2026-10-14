@@ -38,8 +38,8 @@ export const BUDGETS_RESULT_TITLE = 'Budgets';
 export const budgetsIntro = (window: readonly string[]) =>
   `Your average monthly spending for ${windowLabel(window)}, rounded up to the nearest $5, for each category with no budget yet. Each becomes a default monthly budget in Wealthfolio.`;
 export const BUDGETS_HINT = 'Tap a category to leave it out.';
-export const BUDGETS_ALL_SET = 'Every category you spend on already has a budget (a $0 budget counts) — nothing to suggest.';
-export const BUDGETS_BIGGEST_SET = 'Your biggest categories already have a budget (a $0 budget counts) — nothing to suggest.';
+export const BUDGETS_ALL_SET = 'Every category you spend on already has a budget — nothing to suggest.';
+export const BUDGETS_BIGGEST_SET = 'Your biggest categories already have a budget — nothing to suggest.';
 export const BUDGETS_NOT_ENOUGH_HISTORY = "Your ledger doesn't cover a full month yet — send /budgets again once a full calendar month has synced.";
 export const BUDGETS_NO_HISTORY = 'Nothing to suggest yet: no category averaged $10 or more a month over the full months your ledger covers (of the last 3).';
 export const BUDGETS_DATABASE = "Couldn't read your spending from Wealthfolio's database — try again.";

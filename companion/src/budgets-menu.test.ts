@@ -277,9 +277,9 @@ describe('project 4 rulings P4-E..P4-H', () => {
     expect(renderBudgetList(none, 0).text).toBe(`*Suggested budgets*\n${BUDGETS_NOT_ENOUGH_HISTORY}`);
   });
 
-  it('keeps the every-category-has-a-budget copy true when some budgets are $0', () => {
-    expect(BUDGETS_ALL_SET).toContain('(a $0 budget counts)');
-    const zero = suggestions(CATEGORIES.map((c) => target({ id: `bt-${c.id}`, categoryId: c.id, amountCents: 0 })));
+  it('keeps the every-category-has-a-budget copy true when the budgets are this month’s $0 targets', () => {
+    expect(BUDGETS_ALL_SET).not.toContain('$0');
+    const zero = suggestions(CATEGORIES.map((c) => target({ id: `bt-${c.id}`, categoryId: c.id, amountCents: 0, periodKey: '2026-10' })));
     expect(renderBudgetList(zero, 0).text).toBe(`*Suggested budgets*\n${BUDGETS_ALL_SET}`);
   });
 
@@ -393,7 +393,7 @@ describe('project 4 ruling P4-I (fix round 1)', () => {
     const s = suggestBudgets({ ...facts, targets });
     expect(s.suggestions).toEqual([]);
     expect(s.skipped.some((k) => k.reason === 'over-limit')).toBe(true);
-    expect(BUDGETS_BIGGEST_SET).toBe('Your biggest categories already have a budget (a $0 budget counts) — nothing to suggest.');
+    expect(BUDGETS_BIGGEST_SET).toBe('Your biggest categories already have a budget — nothing to suggest.');
     expect(renderBudgetList(s, 0).text).toBe(`*Suggested budgets*\n${BUDGETS_BIGGEST_SET}`);
   });
 
