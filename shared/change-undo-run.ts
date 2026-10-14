@@ -82,6 +82,10 @@ export interface UndoIo {
   /** Appends the reversal entry to this writer's bucket. Never rejects. */
   record(draft: ChangeDraft): Promise<void>;
   where: { host: 'addon' | 'companion'; companionVersion: string | null };
+  /** The add-on on a Wealthfolio 3.9+ host: Wealthfolio's own word on whether
+   *  the row is half of a linked pair (shared/wf-facts.ts `linkedOfFact`);
+   *  null when it has none for this row. Where it answers, nothing is "maybe". */
+  linkFact?(a: HostActivity): Promise<'confirmed' | false | null>;
 }
 
 export type UndoOutcome =
@@ -157,8 +161,11 @@ export function maybeLinkedTransfer(a: HostActivity): boolean {
 /** The row as the planner sees it, with "is it one half of a linked transfer". */
 async function toUndoRow(io: UndoIo, a: HostActivity, txKey: string | null): Promise<UndoRow> {
   let linked: UndoRow['linked'];
+  const fact = io.linkFact ? await io.linkFact(a).catch(() => null) : null;
   if (io.host.capabilities.readsSourceGroupId) {
     linked = a.sourceGroupId ? 'confirmed' : false;
+  } else if (fact !== null) {
+    linked = fact;
   } else {
     // The add-on cannot read groups back. The ledger the sync keeps confirms
     // the links IT made; the companion's links are in no ledger, so any other
