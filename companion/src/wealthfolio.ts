@@ -18,6 +18,8 @@ export interface ActivitySearchItem {
   sourceGroupId?: string | null;
   comment?: string | null;
   subtype?: string | null;
+  /** Upstream `ActivityDetails.accountName`. */
+  accountName?: string | null;
 }
 
 export class WealthfolioClient {
@@ -124,6 +126,8 @@ export class WealthfolioClient {
     pageSize: number;
     accountIdFilter?: string[];
     activityTypeFilter?: string[];
+    /** Exact ids (upstream `activityIdFilter`, Wealthfolio 3.8). */
+    activityIdFilter?: string[];
     dateFrom?: string;
     dateTo?: string;
   }): Promise<ActivitySearchItem[]> {

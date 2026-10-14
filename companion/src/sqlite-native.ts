@@ -51,6 +51,42 @@ function queryNativeDb<Row>(
    *  `|`; a query whose free text can contain one passes an unambiguous one. */
   separator = '|',
 ): Row[] {
+  return tryQueryNativeDb(dbPath, label, query, fromCliParts, separator) ?? [];
+}
+
+/** Thrown by the story readers (1.61) when the database cannot be read: they
+ *  must tell "could not look" from "nothing there", which `[]` cannot. */
+export class NativeDbUnreadableError extends Error {
+  constructor(what: string) {
+    super(`Could not read the Wealthfolio database (${what})`);
+    this.name = 'NativeDbUnreadableError';
+  }
+}
+
+/** `queryNativeDb`, except a database that is not there or that every path
+ *  failed to read throws `NativeDbUnreadableError`. */
+function queryNativeDbStrict<Row>(
+  dbPath: string,
+  label: string,
+  query: string,
+  fromCliParts: (parts: string[]) => Row | null,
+): Row[] {
+  if (!dbPath || !existsSync(dbPath)) throw new NativeDbUnreadableError(`${label}: no database at ${dbPath || '(unset)'}`);
+  const rows = tryQueryNativeDb(dbPath, label, query, fromCliParts);
+  if (rows === null) throw new NativeDbUnreadableError(label);
+  return rows;
+}
+
+/** The two-path read behind both: null — not [] — when every path failed. */
+function tryQueryNativeDb<Row>(
+  dbPath: string,
+  label: string,
+  query: string,
+  fromCliParts: (parts: string[]) => Row | null,
+  /** The sqlite3 CLI's column separator for this query's fallback. Default
+   *  `|`; a query whose free text can contain one passes an unambiguous one. */
+  separator = '|',
+): Row[] | null {
   // LIVE read first, snapshot only as a fallback. `immutable=1` reads the main
   // DB file alone and ignores the write-ahead log — and Wealthfolio checkpoints
   // rarely (a live instance was observed 2 DAYS behind, 2.4 MB of WAL), so an
@@ -96,7 +132,7 @@ function queryNativeDb<Row>(
     return rows;
   } catch (err) {
     console.error(`[simplefin-sync] Failed to read native sqlite ${label}:`, err);
-    return [];
+    return null;
   }
 }
 
@@ -1777,4 +1813,110 @@ export function getNativeRuleFiledActivityIds(dbPath: string, categoryId: string
     (parts) => (parts.length >= 1 && parts[0] ? { activity_id: parts[0] } : null),
   );
   return rows.map((r) => String(r.activity_id));
+}
+
+// ── "Why is this here?" (1.61) ───────────────────────────────────────────
+// Strict readers: each throws NativeDbUnreadableError rather than answering
+// [] for a database it could not read, because the story must say "couldn't
+// read" there, never "none". Ids are interpolated like every bound in this
+// file (the CLI fallback cannot bind): quotes doubled.
+
+const sqlText = (s: string) => s.replace(/'/g, "''");
+
+/** One taxonomy's assignment on an activity, with what the story says of it. */
+export interface NativeTxAssignment {
+  taxonomyId: string;
+  categoryId: string;
+  categoryName: string;
+  /** 'rule', 'manual', … ('' when unrecorded). */
+  source: string;
+}
+
+/** An activity's account type and every assignment it holds, spending or not. */
+export function getNativeTxDetails(dbPath: string, activityId: string): { accountType: string; assignments: NativeTxAssignment[] } {
+  const id = sqlText(activityId);
+  const account = queryNativeDbStrict<Record<string, unknown>>(
+    dbPath,
+    'story account',
+    `SELECT COALESCE(acc.account_type, '') AS account_type FROM activities a LEFT JOIN accounts acc ON acc.id = a.account_id WHERE a.id = '${id}';`,
+    (parts) => ({ account_type: parts[0] ?? '' }),
+  );
+  const rows = queryNativeDbStrict<Record<string, unknown>>(
+    dbPath,
+    'story assignments',
+    `SELECT ata.taxonomy_id AS taxonomy_id, ata.category_id AS category_id, COALESCE(tc.name, '') AS category_name,
+            COALESCE(ata.source, '') AS source
+     FROM activity_taxonomy_assignments ata
+     LEFT JOIN taxonomy_categories tc ON tc.id = ata.category_id
+     WHERE ata.activity_id = '${id}'
+     ORDER BY ata.taxonomy_id;`,
+    (parts) => (parts.length >= 4 ? { c0: parts[0], c1: parts[1], c2: parts.slice(2, -1).join('|'), c3: parts[parts.length - 1] } : null),
+  );
+  return {
+    accountType: String(Object.values(account[0] ?? {})[0] ?? ''),
+    assignments: rows.map((r) => {
+      const v = Object.values(r).map((x) => String(x ?? ''));
+      return { taxonomyId: v[0], categoryId: v[1], categoryName: v[2], source: v[3] };
+    }),
+  };
+}
+
+/** The other activity in a transfer's group: its account and day. */
+export function getNativeTxPartner(dbPath: string, groupId: string, activityId: string): { activityId: string; accountName: string; date: string } | null {
+  const rows = queryNativeDbStrict<Record<string, unknown>>(
+    dbPath,
+    'story partner',
+    `SELECT b.id AS activity_id, substr(b.activity_date, 1, 10) AS activity_date, COALESCE(acc.name, '') AS account_name
+     FROM activities b LEFT JOIN accounts acc ON acc.id = b.account_id
+     WHERE b.source_group_id = '${sqlText(groupId)}' AND b.id <> '${sqlText(activityId)}'
+     ORDER BY b.id LIMIT 1;`,
+    (parts) => (parts.length >= 3 ? { c0: parts[0], c1: parts[1], c2: parts.slice(2).join('|') } : null),
+  );
+  if (rows.length === 0) return null;
+  const v = Object.values(rows[0]).map((x) => String(x ?? ''));
+  return { activityId: v[0], date: v[1], accountName: v[2] };
+}
+
+/** One activity as `/why` searches it. */
+export interface NativeTxSearchRow {
+  activityId: string;
+  date: string;
+  absCents: number;
+  activityType: string;
+  accountName: string;
+  accountType: string;
+  /** The stored note, raw. */
+  notes: string;
+}
+
+/** Every activity in every account Wealthfolio has not archived — all of
+ *  history, newest first. `/why` filters it in memory. */
+export function getNativeTxSearchRows(dbPath: string): NativeTxSearchRow[] {
+  const rows = queryNativeDbStrict<Record<string, unknown>>(
+    dbPath,
+    'story search',
+    `SELECT a.id AS activity_id, substr(a.activity_date, 1, 10) AS activity_date,
+            ROUND(ABS(CAST(a.amount AS REAL)) * 100) AS abs_cents, UPPER(COALESCE(a.activity_type, '')) AS activity_type,
+            COALESCE(acc.account_type, '') AS account_type, COALESCE(acc.name, '') AS account_name, COALESCE(a.notes, '') AS notes
+     FROM activities a LEFT JOIN accounts acc ON acc.id = a.account_id
+     WHERE COALESCE(acc.is_archived, 0) = 0
+     ORDER BY a.activity_date DESC, a.id;`,
+    // Account name and notes are free text; the name sits before the notes, so
+    // a `|` inside it cannot be told apart — the CLI fallback is a last resort.
+    (parts) => (parts.length >= 7
+      ? { c0: parts[0], c1: parts[1], c2: parseFloat(parts[2]) || 0, c3: parts[3], c4: parts[4], c5: parts[5], c6: parts.slice(6).join('|') }
+      : null),
+  );
+  return rows.map((r) => {
+    const v = Object.values(r);
+    return {
+      activityId: String(v[0]),
+      date: String(v[1]),
+      absCents: Math.round(Number(v[2]) || 0),
+      activityType: String(v[3]),
+      accountType: String(v[4] ?? ''),
+      accountName: String(v[5] ?? ''),
+      notes: String(v[6] ?? ''),
+    };
+  });
 }
