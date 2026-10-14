@@ -133,7 +133,7 @@ describe('checkLinkPair', () => {
     expect(checkLinkPair(PAIR, read(), told)).toEqual({ ok: false, reason: LINK_CHANGED });
   });
 
-  it('refuses money leaving a card unless the card already stores it as a transfer out (Wealthfolio 3.10)', () => {
+  it('refuses any money leaving a card, whatever type the card stores it as', () => {
     const fromCard: LinkPair = {
       key: 'leg:in-c', leg: { ...OTHER, activityId: 'in-c', type: 'TRANSFER_IN' }, counterpart: { ...LEG, activityId: 'out-c', accountId: 'wf-card', type: 'WITHDRAWAL' },
     };
@@ -157,7 +157,7 @@ describe('checkLinkPair', () => {
 describe('linkPairs', () => {
   it('links one pair, records it as yours with both legs, remembers it, and says "Linked."', async () => {
     const f = fakeIo();
-    expect(await linkPairs([PAIR], f.io)).toEqual({ total: 1, linked: 1, changed: 0, failed: 0, done: ['leg:out-1'], lost: [], message: LINK_DONE });
+    expect(await linkPairs([PAIR], f.io)).toEqual({ total: 1, linked: 1, changed: 0, failed: 0, done: ['leg:out-1'], lost: [], maybeLost: [], message: LINK_DONE });
     expect(f.links).toHaveLength(1);
     expect(f.io.remember).toHaveBeenCalledWith([OUT_KEY, IN_KEY], 'wf-transfer-1');
     expect(f.recorded[0]).toMatchObject({
@@ -223,7 +223,7 @@ describe('linkPairs', () => {
     const run = await linkPairs([PAIR], f.io);
     expect(run.message).toBe('Wealthfolio refused the link (not supported for this account). Both rows are back, with new ids. Their categories may need filing again.');
     expect(f.io.restore).toHaveBeenCalledWith([OUT_WRITE, IN_WRITE]);
-    expect(f.io.record).not.toHaveBeenCalled();
+    expect(f.recorded[0]).toMatchObject({ kind: 'bookkeeping', actor: 'you', after: { count: 2, oldActivityIds: ['out-1', 'in-1'] } });
     const kept = fakeIo({ link: vi.fn(async () => ({ linked: false, problems: ['delete (delete): not found', 'save (create): no'] })) });
     expect((await linkPairs([PAIR], kept.io)).message).toBe("Couldn't link them: delete (delete): not found.");
     expect(kept.io.restore).not.toHaveBeenCalled();
@@ -231,7 +231,8 @@ describe('linkPairs', () => {
 
   it('a THROWN re-create (the SDK, a 502 between the requests) writes back whichever rows are gone', async () => {
     const f = goneIo({ link: vi.fn(async () => { throw new Error('502 bad gateway.'); }) });
-    expect((await linkPairs([PAIR], f.io)).message).toBe('Wealthfolio refused the link (502 bad gateway). Both rows are back, with new ids. Their categories may need filing again.');
+    expect((await linkPairs([PAIR], f.io)).message).toBe("Couldn't reach Wealthfolio (502 bad gateway). Both rows are back, with new ids. Their categories may need filing again.");
+    expect(f.recorded[0]).toMatchObject({ kind: 'bookkeeping', actor: 'you', undoable: false, after: { count: 2, oldActivityIds: ['out-1', 'in-1'] } });
     expect(f.io.restore).toHaveBeenCalledWith([OUT_WRITE, IN_WRITE]);
     // Only one gone: only that one is written back.
     const one = fakeIo({
@@ -272,11 +273,50 @@ describe('linkPairs', () => {
     expect(linkRunLine({ total: 2, linked: 1, changed: 0, failed: 1, lost: ['x'] })).toBe("Linked 1 of 2 — 1 couldn't be linked. Deleted and not restored: x.");
   });
 
+  const READ_FAILS = (): Partial<LinkIo> => ({
+    read: vi.fn().mockImplementationOnce(async (p: LinkPair) => [{ row: row(p.leg), linked: false }, { row: row(p.counterpart), linked: false }])
+      .mockImplementation(async () => { throw new Error('ECONNRESET'); }),
+  });
+  const BOTH = 'PNC Checking 2026-10-04 600.00 "TRANSFER TO ALLY · TRN-1" and Ally Savings 2026-10-05 600.00 "FROM PNC · TRN-2"';
+
+  it('names both rows when it cannot look after a throw, logs their payloads, and carries them through Link all', async () => {
+    const f = fakeIo({ ...READ_FAILS(), link: vi.fn(async () => { throw new Error('boom'); }) });
+    const run = await linkPairs([PAIR], f.io);
+    expect(run.message).toBe(`Couldn't link them: boom, and couldn't check whether the two rows are still there. If they're gone, they were: ${BOTH}. Check both accounts in Wealthfolio.`);
+    expect(run.maybeLost).toHaveLength(2);
+    expect(f.io.restore).not.toHaveBeenCalled();
+    expect((f.io.log as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]).join('\n')).toContain('"activityType":"TRANSFER_OUT"');
+    const all = fakeIo({ ...READ_FAILS(), link: vi.fn(async () => { throw new Error('boom'); }) });
+    expect((await linkPairs([PAIR, pairN(2)], all.io)).message).toMatch(/^Linked 0 of 2 — 2 couldn't be linked\. May have been deleted: PNC Checking .*; Ally Savings .*\.$/);
+  });
+
+  it('after a refused save and a failed look, assumes both deleted (the bulk write is all or nothing) and writes them back', async () => {
+    const f = fakeIo({ ...READ_FAILS(), link: vi.fn(async () => ({ linked: false, problems: ['save (create): no'] })) });
+    expect((await linkPairs([PAIR], f.io)).message).toMatch(/^Wealthfolio refused the link \(no\)\. Both rows are back/);
+    expect(f.io.restore).toHaveBeenCalledTimes(1);
+  });
+
+  it('a refused save with both rows still there changes nothing, and says so', async () => {
+    const f = fakeIo({ link: vi.fn(async () => ({ linked: false, problems: ['save (create): no'] })) });
+    expect((await linkPairs([PAIR], f.io)).message).toBe("Couldn't link them: no. Nothing was changed.");
+    expect(f.io.restore).not.toHaveBeenCalled();
+  });
+
+  it('a write-back refused as a duplicate says a matching row exists, not that rows are lost', async () => {
+    const f = goneIo({
+      link: vi.fn(async () => { throw new Error('boom'); }),
+      restore: vi.fn(async () => ({ created: [], updated: [], errors: [{ action: 'create', message: 'Duplicate activity detected' }] })),
+    });
+    const run = await linkPairs([PAIR], f.io);
+    expect(run.message).toBe('A matching row already exists — the link may have gone through; check both accounts.');
+    expect(run.lost).toEqual([]);
+  });
+
   it('says plainly when both rows were re-created but Wealthfolio kept no group, and records it', async () => {
     const f = fakeIo({ link: vi.fn(async () => ({ linked: false, problems: ['the host stored no shared group for both legs (got none / none)'] })) });
     expect((await linkPairs([PAIR], f.io)).message).toBe(LINK_DROPPED);
     expect(f.io.restore).not.toHaveBeenCalled();
-    expect(f.recorded[0]).toMatchObject({ kind: 'bookkeeping', undoable: false, subject: { txKeys: [OUT_KEY, IN_KEY] } });
+    expect(f.recorded[0]).toMatchObject({ kind: 'bookkeeping', actor: 'you', undoable: false, after: { count: 2 }, subject: { txKeys: [OUT_KEY, IN_KEY] } });
   });
 
   it('never lets the log or the ledger cost the link', async () => {

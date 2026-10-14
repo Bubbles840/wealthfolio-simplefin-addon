@@ -13,16 +13,19 @@
  * carries a `notTransfer` override; is pending (the sync never pairs one); is
  * the add-on's own in-transit placeholder, opening balance or correction; or
  * no longer carries the tx id its Health leg named. Money leaving a card is
- * refused on its own words: Wealthfolio 3.8 and 3.9 accept no TRANSFER_OUT on
- * a card (v1.55), and a WITHDRAWAL is never half of a valid pair. A card row
- * already stored as a TRANSFER_OUT (3.10 accepts one) links like any other.
+ * refused on its own words, whatever the row's stored type: the sync never
+ * links money leaving a card, Wealthfolio 3.8 and 3.9 accept no TRANSFER_OUT
+ * on one (v1.55), and a WITHDRAWAL is never half of a valid pair. So is a pair
+ * whose account types, or whose currency, are not what was shown.
  *
  * The write is the sync's own linker, `linkPairByRecreate`, through the
  * host's `linkPair` (shared/link-pair.ts). It DELETES both rows and then
  * re-creates them as one marked group. Wealthfolio applies a bulk request all
  * or nothing (activities_service.rs, bulk_mutate_activities), so a re-create
- * it refuses wrote nothing while the delete already went through: the runner
- * then writes both rows back exactly as they were (`recreateWrite`) and says so.
+ * it refuses (or a request that throws) wrote nothing while the delete already
+ * went through. After any throw, or a refused re-create, the runner re-reads
+ * both rows by id, writes back whichever are gone (`recreateWrite`), records
+ * that, and names any row it could not restore.
  *
  * Each link is a `transfer-link` change entry with actor `you`, so the change
  * log's Undo — `notTransfer` on both legs, which the next sync acts on — and
@@ -36,6 +39,7 @@ import { isCorrectionNote, isPendingNote, isPlaceholderNote, isStartingBalanceNo
 import { bookkeepingChange, transferLinkChange, type ChangeDraft, type LinkLegFacts } from './change-entries.js';
 import { recreateWrite, type FixRow, type LinkedState } from './fix-row.js';
 import { findingHandle } from './handle.js';
+import { describeLeg } from './link-pair.js';
 import { descriptionFromComment, txIdFromComment } from './sync-core.js';
 import type { ActivityWrite, LinkLeg, LinkResult, SaveManyResult } from './sync-host.js';
 import { hasTxOverride, SYNC_OVERRIDES_UNREADABLE_MESSAGE, type LoadedSyncOverrides, type SyncOverrides } from './sync-overrides.js';
@@ -160,16 +164,29 @@ export interface LinkRun {
   done: string[];
   /** Rows deleted by a link and not written back, named. */
   lost: string[];
+  /** Rows a failed link may have deleted, when the run could not look. */
+  maybeLost: string[];
   /** What to say, in place. */
   message: string;
 }
 
-type One = { kind: 'linked' } | { kind: 'changed' } | { kind: 'failed'; message: string; lost?: string[] };
+type One = { kind: 'linked' } | { kind: 'changed' } | { kind: 'failed'; message: string; lost?: string[]; maybeLost?: string[] };
 
 const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
 /** Error text without a trailing full stop, to sit inside a sentence. */
 const bare = (t: string) => t.trim().replace(/[.\s]+$/, '');
-const describeRow = (r: FixRow) => `${r.accountName || r.accountId} ${r.date} ${(r.absCents / 100).toFixed(2)} "${r.notes}"`;
+const describeRow = (r: FixRow) => describeLeg({ accountId: r.accountId, accountName: r.accountName, date: r.date, absCents: r.absCents, comment: r.notes });
+const TRANSPORT = /ECONN|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket hang up|fetch failed|network|timed? ?out|\b5\d\d\b|bad gateway|unavailable/i;
+const DUPLICATE = /duplicate/i;
+const LINK_MAYBE_THERE = 'A matching row already exists — the link may have gone through; check both accounts.';
+
+/** A bookkeeping entry for a Link that re-created rows without linking them
+ *  (the person tapped it: actor `you`; two rows). */
+function relinkNote(check: Extract<LinkCheck, { ok: true }>, newIds: string[], summary: string, oldIds: string[] = []): ChangeDraft {
+  const legs = check.rows.map((r, i) => ({ txKey: check.keys[i], description: descriptionFromComment(r.notes) }));
+  const base = bookkeepingChange({ step: 'transfer-relink', activityIds: newIds, legs });
+  return { ...base, actor: 'you', summary, after: { step: 'transfer-relink', count: 2, ...(oldIds.length ? { oldActivityIds: oldIds } : {}) } };
+}
 
 async function linkOne(pair: LinkPair, io: LinkIo, overrides: SyncOverrides): Promise<One> {
   let now: [ReadRow | null, ReadRow | null];
@@ -196,13 +213,8 @@ async function linkOne(pair: LinkPair, io: LinkIo, overrides: SyncOverrides): Pr
     if (problems.some((p) => p.startsWith('the host stored no shared group'))) {
       // Both saves went through and Wealthfolio kept no group: the rows exist,
       // as transfers, unlinked. Say so, and leave a visible trace.
-      const legs = [{ txKey: check.keys[0], description: descriptionFromComment(check.rows[0].notes) },
-        { txKey: check.keys[1], description: descriptionFromComment(check.rows[1].notes) }];
       try {
-        await io.record({
-          ...bookkeepingChange({ step: 'transfer-relink', activityIds: [], legs }),
-          summary: `Re-created ${legs[0].description} and ${legs[1].description} as transfers, but Wealthfolio did not link them`,
-        });
+        await io.record(relinkNote(check, [], `Re-created ${descriptionFromComment(check.rows[0].notes)} and ${descriptionFromComment(check.rows[1].notes)} as transfers, but Wealthfolio did not link them`));
       } catch (err) {
         io.log(`Link ${pair.key}: the change log was not written: ${errorText(err)}`);
       }
@@ -214,18 +226,24 @@ async function linkOne(pair: LinkPair, io: LinkIo, overrides: SyncOverrides): Pr
     const why = bare(thrown ?? (refused ? refused.replace(/^save \([^)]*\): /, '') : problems[0] ?? 'Wealthfolio did not say why'));
     // The linker deletes first, so a throw or a refused re-create may have
     // taken both rows. Look; write back whichever are gone.
+    // Wealthfolio's bulk endpoint is all or nothing, so a refused re-create
+    // wrote nothing and the delete before it is known to have landed.
     let gone: boolean[] | null = null;
     try {
-      const now = await io.read(pair);
-      gone = [now[0] === null, now[1] === null];
+      const again = await io.read(pair);
+      gone = [again[0] === null, again[1] === null];
     } catch (err) {
       io.log(`Link ${pair.key}: re-reading the rows failed: ${errorText(err)}`);
-      if (refused) gone = [true, true]; // the delete is known to have landed
+      if (refused) gone = [true, true];
     }
+    const lead = thrown !== null && TRANSPORT.test(why) ? `Couldn't reach Wealthfolio (${why})` : `Wealthfolio refused the link (${why})`;
     if (gone === null) {
+      const maybe = check.rows.map(describeRow);
+      io.log(`Link ${pair.key}: could not check the rows; they may be deleted. Payloads: ${JSON.stringify(check.rows.map(recreateWrite))}`);
       return {
         kind: 'failed',
-        message: `Couldn't link them: ${why}, and couldn't check whether the two rows are still there. Check both accounts in Wealthfolio.`,
+        maybeLost: maybe,
+        message: `Couldn't link them: ${why}, and couldn't check whether the two rows are still there. If they're gone, they were: ${maybe.join(' and ')}. Check both accounts in Wealthfolio.`,
       };
     }
     const lostRows = check.rows.filter((_, i) => gone![i]);
@@ -234,27 +252,38 @@ async function linkOne(pair: LinkPair, io: LinkIo, overrides: SyncOverrides): Pr
     }
     const writes = lostRows.map(recreateWrite);
     let restored = false;
+    let backErrors: string[] = [];
+    let newIds: string[] = [];
     try {
       const back = await io.restore(writes);
-      restored = back.errors.length === 0;
-      if (!restored) io.log(`Link ${pair.key}: putting the rows back failed: ${back.errors.map((e) => e.message).join('; ')}`);
+      backErrors = back.errors.map((e) => e.message);
+      restored = backErrors.length === 0;
+      newIds = [...back.created, ...back.updated].map((a) => a.id);
     } catch (err) {
-      io.log(`Link ${pair.key}: putting the rows back failed: ${errorText(err)}`);
+      backErrors = [errorText(err)];
     }
+    if (!restored) io.log(`Link ${pair.key}: putting the rows back failed: ${backErrors.join('; ')}`);
     if (restored) {
+      try {
+        await io.record(relinkNote(check, newIds, `Link failed (${why}); put ${lostRows.length === 2 ? 'both rows' : 'the deleted row'} back with new ids`, lostRows.map((r) => r.id)));
+      } catch (err) {
+        io.log(`Link ${pair.key}: the change log was not written: ${errorText(err)}`);
+      }
       return {
         kind: 'failed',
         message: lostRows.length === 2
-          ? `Wealthfolio refused the link (${why}). Both rows are back, with new ids. Their categories may need filing again.`
-          : `Wealthfolio refused the link (${why}). The deleted row is back, with a new id. Its category may need filing again.`,
+          ? `${lead}. Both rows are back, with new ids. Their categories may need filing again.`
+          : `${lead}. The deleted row is back, with a new id. Its category may need filing again.`,
       };
     }
+    io.log(`Link ${pair.key}: payloads: ${JSON.stringify(writes)}`);
+    if (backErrors.some((m) => DUPLICATE.test(m))) return { kind: 'failed', message: LINK_MAYBE_THERE };
     const lost = lostRows.map(describeRow);
-    io.log(`Link ${pair.key}: deleted and not restored: ${lost.join('; ')}; payloads: ${JSON.stringify(writes)}`);
+    io.log(`Link ${pair.key}: deleted and not restored: ${lost.join('; ')}`);
     return {
       kind: 'failed',
       lost,
-      message: `Wealthfolio refused the link (${why}), and the ${lostRows.length === 2 ? 'two rows' : 'row'} couldn't be put back. Deleted and not restored: ${lost.join('; ')}. The next sync brings back any the bank still sends.`,
+      message: `${lead}, and the ${lostRows.length === 2 ? 'two rows' : 'row'} couldn't be put back. Deleted and not restored: ${lost.join('; ')}. The next sync brings back any the bank still sends.`,
     };
   }
 
@@ -289,8 +318,9 @@ async function linkOne(pair: LinkPair, io: LinkIo, overrides: SyncOverrides): Pr
 }
 
 /** "Linked." / "Linked all 4." / "Linked 3 of 4 — 1 had changed since." */
-export function linkRunLine(r: Pick<LinkRun, 'total' | 'linked' | 'changed' | 'failed'> & { lost?: readonly string[] }): string {
-  const lost = r.lost?.length ? ` Deleted and not restored: ${r.lost.join('; ')}.` : '';
+export function linkRunLine(r: Pick<LinkRun, 'total' | 'linked' | 'changed' | 'failed'> & { lost?: readonly string[]; maybeLost?: readonly string[] }): string {
+  const lost = (r.lost?.length ? ` Deleted and not restored: ${r.lost.join('; ')}.` : '')
+    + (r.maybeLost?.length ? ` May have been deleted: ${r.maybeLost.join('; ')}.` : '');
   if (r.total === 0) return LINK_CHANGED;
   if (r.linked === r.total) return r.total === 1 ? LINK_DONE : `Linked all ${r.total}.`;
   const why = [
@@ -307,7 +337,7 @@ export function linkRunLine(r: Pick<LinkRun, 'total' | 'linked' | 'changed' | 'f
  * `notTransfer` could not be checked).
  */
 export async function linkPairs(pairs: readonly LinkPair[], io: LinkIo): Promise<LinkRun> {
-  const run: LinkRun = { total: pairs.length, linked: 0, changed: 0, failed: 0, done: [], lost: [], message: '' };
+  const run: LinkRun = { total: pairs.length, linked: 0, changed: 0, failed: 0, done: [], lost: [], maybeLost: [], message: '' };
   let loaded: LoadedSyncOverrides;
   try {
     loaded = await io.overrides();
@@ -332,6 +362,7 @@ export async function linkPairs(pairs: readonly LinkPair[], io: LinkIo): Promise
     else {
       run.failed += 1;
       if (one.lost) run.lost.push(...one.lost);
+      if (one.maybeLost) run.maybeLost.push(...one.maybeLost);
     }
     last = one.kind === 'linked' ? LINK_DONE : one.kind === 'changed' ? LINK_CHANGED : one.message;
   }
