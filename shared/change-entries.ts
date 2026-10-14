@@ -749,7 +749,7 @@ export function budgetSetChange(f: BudgetSetFacts): ChangeDraft {
 
 // ── Bookkeeping ──────────────────────────────────────────────────────────
 
-export type BookkeepingStep = 'legacy-placeholder' | 'external-marker' | 'transfer-relink' | 'opening-category' | 'transfer-unlink';
+export type BookkeepingStep = 'legacy-placeholder' | 'external-marker' | 'transfer-relink' | 'opening-category' | 'transfer-unlink' | 'card-transfer-out';
 
 export interface BookkeepingFacts {
   step: BookkeepingStep;
@@ -773,6 +773,8 @@ export function bookkeepingChange(f: BookkeepingFacts): ChangeDraft {
   const n = f.activityIds.length;
   const summary = f.step === 'legacy-placeholder'
     ? `Restated ${n} old placeholder ${plural(n, 'row', 'rows')} with ${plural(n, 'its', 'their')} real ${plural(n, 'amount', 'amounts')}`
+    : f.step === 'card-transfer-out'
+    ? `Restated ${n} card bookkeeping ${plural(n, 'row', 'rows')} as ${plural(n, 'a transfer', 'transfers')} out, which Wealthfolio leaves out of spending`
     : f.step === 'external-marker'
       ? `Marked ${n} bookkeeping ${plural(n, 'row', 'rows')} as outside transfers for Wealthfolio's Health page`
       : f.step === 'transfer-relink'

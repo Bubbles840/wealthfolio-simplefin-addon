@@ -12,6 +12,7 @@ import {
   type ReportEdition, type ReportKind, type ReportStore,
 } from '../../shared/reports-archive.js';
 import { fileCardOpeningDebts } from './opening-balance-category.js';
+import { CARD_REWRITE_SECRET_KEY, rewriteCardBookkeeping } from './card-bookkeeping-rewrite.js';
 import cron from 'node-cron';
 import { readFileSync, existsSync } from 'fs';
 import { runSyncCore, descriptionFromComment, txIdFromComment } from '../../shared/sync-core.js';
@@ -974,7 +975,7 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
   // The database path enables the ledger-balance fallback, which is what lets a
   // credit card get a starting balance at all (Wealthfolio values cash only).
   // The version decides a card's bookkeeping shape (TRANSFER_OUT from 3.10).
-  const { host } = await syncHostFor(wfClient, wealthfolioDbPath(), log);
+  const { host, wealthfolioVersion } = await syncHostFor(wfClient, wealthfolioDbPath(), log);
 
   try {
     log('Reading SimpleFin credentials from Wealthfolio addon secrets...');
@@ -1060,9 +1061,28 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
     const overrides = await syncOverridesOrEmpty((k) => wfClient.getAddonSecret('simplefin-sync', k));
     await fileAmazonLabelledCharges(wfClient, changeLog.run, overrides);
 
-    // A card's opening DEBT has to be a WITHDRAWAL on Wealthfolio 3.8, which its
-    // Spending page reads as a purchase; filed under an excluded category it
-    // counts nowhere. Best-effort, like the Amazon filing above.
+    // Once, on Wealthfolio 3.10+: the card bookkeeping rows written as
+    // WITHDRAWALs become TRANSFER_OUTs, which its Spending page ignores — before
+    // the filing below, which then has none of them left to file. Best-effort;
+    // an interrupted run carries on at the next sync.
+    const rewriteChanges: ChangeDraft[] = [];
+    await rewriteCardBookkeeping({
+      dbPath: wealthfolioDbPath(),
+      wealthfolioVersion,
+      marker: {
+        get: () => wfClient.getAddonSecret('simplefin-sync', CARD_REWRITE_SECRET_KEY),
+        set: (value) => wfClient.setAddonSecret('simplefin-sync', CARD_REWRITE_SECRET_KEY, value),
+      },
+      saveMany: (req) => host.saveMany(req),
+      record: (draft) => rewriteChanges.push(draft),
+      log,
+      now: new Date(),
+    }).catch((e) => log(`Card bookkeeping rewrite skipped: ${formatError(e)}`));
+    await recordCompanionChanges(wfClient, rewriteChanges, changeLog.run).catch((e) => log(`Change log skipped: ${formatError(e)}`));
+
+    // A card's opening DEBT has to be a WITHDRAWAL on Wealthfolio 3.8 and 3.9,
+    // which their Spending page reads as a purchase; filed under an excluded
+    // category it counts nowhere. Best-effort, like the Amazon filing above.
     const openingChanges: ChangeDraft[] = [];
     await fileCardOpeningDebts({
       dbPath: wealthfolioDbPath(),
