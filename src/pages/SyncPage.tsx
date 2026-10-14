@@ -8,6 +8,8 @@ import { SyncStatus } from '../components/SyncStatus';
 import { Button, ErrorBox } from '../components/ui';
 import { TabBar, resolveStoredTab, type TabId } from '../components/Tabs';
 import { BudgetTab } from '../tabs/BudgetTab';
+import { TxStoryPanel, useTxStoryActions } from '../components/TxStory';
+import { appTxStory, type AppStoryTarget } from '../utils/tx-story';
 import { HomeTab } from '../tabs/HomeTab';
 import { useTelegramDraft } from '../tabs/NotificationsTab';
 import { SettingsTab, CARD as SETTINGS_CARD } from '../tabs/SettingsTab';
@@ -103,6 +105,14 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
   // Which companion build last synced this instance. Null until one has run — the
   // addon works standalone, so no companion is normal, not an error.
   const [companionVersion, setCompanionVersion] = useState<string | null>(null);
+  // "Why is this here?" (1.61): one story renderer for Home and the budget
+  // drill-down, with the Change log card's own Undo and Sync now.
+  const storyActions = useTxStoryActions(ctx, store, companionVersion);
+  const loadStory = useCallback((target: AppStoryTarget) => appTxStory(ctx, store, target, new Date()), [ctx, store]);
+  const renderTxStory = useCallback(
+    (target: AppStoryTarget) => <TxStoryPanel target={target} load={loadStory} actions={storyActions} />,
+    [loadStory, storyActions],
+  );
   // The installed zip's version, published by the companion. With it, a stale
   // tab can say whether reloading is enough or a zip still needs uploading.
   const [installedAddonVersion, setInstalledAddonVersion] = useState<string | null>(null);
@@ -700,6 +710,7 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
           // The pool tile opens the burn-down full-screen in the budget below,
           // which already carries the pool editor.
           onOpenPool={() => setBudgetOpen((prev) => ({ id: 'pool-burndown', seq: (prev?.seq ?? 0) + 1 }))}
+          renderTxStory={renderTxStory}
         />
         <BudgetTab
           cube={reportCube}
@@ -714,6 +725,7 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
           onOpenActivities={() => { ctx.api.navigation.navigate('/activities').catch(() => {}); }}
           onSetUpCompanion={() => navigate('settings', SETTINGS_CARD.docker)}
           openRequest={budgetOpen}
+          renderTxStory={renderTxStory}
         />
       </TabPanel>
 

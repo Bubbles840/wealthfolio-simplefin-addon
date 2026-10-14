@@ -927,3 +927,48 @@ describe('links into Settings (1.57)', () => {
     }
   });
 });
+
+describe('Why is this here? (1.61)', () => {
+  const kroger = {
+    id: 'act-1', accountId: 'wf-a', accountName: 'Checking', activityType: 'WITHDRAWAL',
+    date: '2026-10-04T04:00:00.000Z', amount: '54.20', comment: 'KROGER #415 · TRN-1',
+  };
+  const withActivities = () => {
+    const props = makeProps();
+    props.ctx.api.activities = {
+      search: vi.fn(async (_page: number, _size: number, filters: any) => ({
+        data: [kroger].filter((r) => !filters?.activityIds || filters.activityIds.includes(r.id)),
+        meta: { totalRowCount: 1 },
+      })),
+    };
+    return props;
+  };
+
+  it('sits at the top of Home: a search whose match opens its story in place', async () => {
+    render(<SyncPage {...withActivities()} />);
+    const box = await screen.findByRole('searchbox', { name: 'Find a transaction' });
+    const card = box.closest('.sfin-why-card')!;
+    // Above the banners and the tiles.
+    for (const below of [document.querySelector('.sfin-banner-warn')!, document.querySelector('.sfin-strip')!]) {
+      expect(card.compareDocumentPosition(below) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
+    fireEvent.change(box, { target: { value: 'kroger' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Find' }));
+    fireEvent.click(await screen.findByRole('button', { name: /KROGER #415/ }));
+    expect(await screen.findByText('From your Checking bank feed.')).toBeInTheDocument();
+    // No companion published a version: the app says where the category was set.
+    expect(screen.getByText('Category set in Wealthfolio.')).toBeInTheDocument();
+  });
+
+  it('a needs-a-category row opens its story', async () => {
+    const props = withActivities();
+    props.store.getUncategorizedStatus = vi.fn(async () => ({
+      count: 1, asOf: '2026-10-04T12:00:00.000Z',
+      rows: [{ activityId: 'act-1', date: '2026-10-04', amountCents: 5420, description: 'KROGER #415', accountName: 'Checking' }],
+    })) as any;
+    render(<SyncPage {...props} />);
+    fireEvent.click(await screen.findByRole('button', { name: /^1 needs/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /^KROGER #415/ }));
+    expect(await screen.findByText("Not filed yet — it's on your needs-a-category list.")).toBeInTheDocument();
+  });
+});
