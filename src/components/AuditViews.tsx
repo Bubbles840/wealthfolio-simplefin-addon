@@ -1,11 +1,15 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { balanceCauseLines, balanceHeaderLine, balanceIncludesLine, type BalanceExplanation } from '../../shared/audit-balance';
 import {
   headlineAgreeLine, headlineAgrees, headlineReasonLine, headlineRowLine, headlineSummaryLine, headlineUnexplainedLine,
   type HeadlineExplanation,
 } from '../../shared/audit-headline';
-import { healthCount, healthIssueLines, healthIssueTitle, HEALTH_NONE, type HealthReport } from '../../shared/audit-health';
+import { healthCount, healthIssueLines, healthIssueTitle, HEALTH_NONE, type HealthIssue, type HealthReport } from '../../shared/audit-health';
+import {
+  linkablePair, linkablePairs, linkAllButton, LINK_BUTTON, LINK_UNREACHABLE, type LinkPair, type LinkRun,
+} from '../../shared/audit-link';
 import { auditSnapshotStatus, AUDIT_CORRUPT, type AuditSnapshotRead } from '../../shared/audit-snapshot';
+import { Button } from './ui';
 
 /**
  * The three checks as the app shows them (2c R1, spec A5), from the
@@ -15,8 +19,16 @@ import { auditSnapshotStatus, AUDIT_CORRUPT, type AuditSnapshotRead } from '../.
  * Wealthfolio's Health page flags (Settings → Checks). Every line comes from
  * the shared builders — the words Telegram sends — and renders as text, so
  * bank text is never markup. No emoji (src/pages/copy-policy.test.tsx).
+ *
+ * R2: given a linker, the Checks card offers Link under each Health leg with
+ * one likely other half, and Link all for two or more. One action at a time
+ * (every button disabled and busy while it runs); the result is said in a
+ * status line, and — the card shows a snapshot — that changes show here
+ * after the next sync.
  */
 export const AUDIT_HEADLINE_LINK = 'Why is this different from Wealthfolio?';
+/** After a fix: the card reads the companion's snapshot, which only its next sync renews. */
+export const AUDIT_AFTER_SYNC = 'Changes show here after the next sync.';
 /** Health returned no verdict (its database read failed). */
 export const AUDIT_HEALTH_NOT_CHECKED = "Health wasn't checked.";
 export const AUDIT_ACCOUNT_NOT_COVERED = "These checks don't cover this account yet — they arrive with the companion's next sync.";
@@ -118,33 +130,119 @@ export function HeadlineView({ h, now }: { h: HeadlineExplanation; now?: Date })
   );
 }
 
-export function HealthView({ report }: { report: HealthReport }) {
+/** R2: what the Checks card can fix. */
+export interface HealthFix {
+  link: (pairs: LinkPair[]) => Promise<LinkRun>;
+  /** After a fix: read the snapshot again. */
+  onFixed?: () => void;
+}
+
+/**
+ * The card's fix state lives at module scope: a link outlives the card (Checks
+ * collapsed, another tab), and a card mounted meanwhile must show the buttons
+ * disabled, then the result. One run at a time, app-wide. Only mounted cards
+ * hear about changes, so nothing is set on a card that is gone.
+ */
+interface FixListener { update: () => void; onFixed?: () => void }
+const fixState = { running: false, result: null as string | null, at: null as string | null, after: true, done: new Set<string>(), listeners: new Set<FixListener>() };
+/** Tests: forget everything the module remembers. */
+export function resetCheckFixes(): void {
+  fixState.running = false;
+  fixState.result = null;
+  fixState.at = null;
+  fixState.after = true;
+  fixState.done = new Set();
+  fixState.listeners.clear();
+}
+const notifyFix = () => fixState.listeners.forEach((l) => l.update());
+
+async function runLinks(link: HealthFix['link'], pairs: LinkPair[], at: string | null): Promise<void> {
+  if (fixState.running || pairs.length === 0) return;
+  fixState.running = true;
+  fixState.result = null;
+  fixState.at = at;
+  notifyFix();
+  let message: string;
+  let linked: string[] = [];
+  // Nothing was linked, lost or failed (a refusal): nothing will change after the next sync.
+  let after = false;
+  try {
+    const r = await link(pairs);
+    message = r.message;
+    linked = r.done;
+    after = r.linked > 0 || r.failed > 0 || r.lost.length > 0 || r.maybeLost.length > 0;
+  } catch {
+    message = LINK_UNREACHABLE;
+  }
+  fixState.running = false;
+  fixState.done = new Set([...fixState.done, ...linked]);
+  fixState.result = message;
+  fixState.after = after;
+  notifyFix();
+  // The newest card still mounted asks its page to read the snapshot again.
+  [...fixState.listeners].pop()?.onFixed?.();
+}
+
+/** `at`: when the snapshot shown was taken. A result belongs to the snapshot it was run against. */
+export function HealthView({ report, fix, at }: { report: HealthReport; fix?: HealthFix; at?: string }) {
+  const [, tick] = useState(0);
+  const onFixed = useRef(fix?.onFixed);
+  onFixed.current = fix?.onFixed;
+  useEffect(() => {
+    const me: FixListener = { update: () => tick((n) => n + 1), onFixed: () => onFixed.current?.() };
+    fixState.listeners.add(me);
+    // A run may have finished between the render and this subscription.
+    me.update();
+    return () => { fixState.listeners.delete(me); };
+  }, []);
+  const busy = fixState.running;
+  const done = fixState.done;
+  const result = fixState.result !== null && fixState.at === (at ?? null) ? fixState.result : null;
+  const pairOf = (i: HealthIssue) => (fix && !done.has(i.key) ? linkablePair(i) : null);
+  const open = fix ? linkablePairs(report.issues).filter((p) => !done.has(p.key)) : [];
+  const run = (pairs: LinkPair[]) => { if (fix) void runLinks(fix.link, pairs, at ?? null); };
   return (
     <div className="sfin-audit-body">
       {report.issues === null && report.notes.length === 0 && <div>{AUDIT_HEALTH_NOT_CHECKED}</div>}
       {report.issues && report.issues.length === 0 && !report.more && <div>{HEALTH_NONE}</div>}
       {report.issues && report.issues.length > 0 && (
         <ul className="sfin-audit-issues">
-          {report.issues.map((i) => (
-            <li key={i.key} className="sfin-audit-issue">
-              <div className="sfin-audit-head">{healthIssueTitle(i)}</div>
-              {healthIssueLines(i).map((l, n) => <div key={n} className="sfin-subtle">{l}</div>)}
-            </li>
-          ))}
+          {report.issues.map((i) => {
+            const pair = pairOf(i);
+            return (
+              <li key={i.key} className="sfin-audit-issue">
+                <div className="sfin-audit-head" id={`sfin-audit-title-${i.key}`}>{healthIssueTitle(i)}</div>
+                {healthIssueLines(i).map((l, n) => <div key={n} className="sfin-subtle">{l}</div>)}
+                {pair && (
+                  <div className="sfin-audit-fix">
+                    <Button variant="ghost" disabled={busy} aria-busy={busy} aria-describedby={`sfin-audit-title-${i.key}`} onClick={() => run([pair])}>{LINK_BUTTON}</Button>
+                  </div>
+                )}
+              </li>
+            );
+          })}
         </ul>
       )}
       {report.more ? <div className="sfin-subtle">and {report.more} more</div> : null}
+      {open.length >= 2 && (
+        <div className="sfin-audit-fix">
+          <Button variant="ghost" disabled={busy} aria-busy={busy} onClick={() => run(open)}>{linkAllButton(open.length)}</Button>
+        </div>
+      )}
+      {/* Mounted from the first render, so what lands in it is announced. */}
+      {fix && <div role="status" className="sfin-subtle">{result ? (fixState.after ? `${result} ${AUDIT_AFTER_SYNC}` : result) : ''}</div>}
       <AuditNotes notes={report.notes} />
     </div>
   );
 }
 
-/** Settings → Checks: what Health flags, and where the checks came from. */
-export function ChecksCard(source: AuditSource) {
+/** Settings → Checks: what Health flags, and where the checks came from.
+ *  R2: `link` adds Link; `onFixed` reads the snapshot again after a fix. */
+export function ChecksCard({ link, onFixed, ...source }: AuditSource & Partial<HealthFix>) {
   return (
     <div className="sfin-audit-checks">
       <AuditBoundary read={source.read}>
-        {source.read.kind === 'ok' && <HealthView report={source.read.snapshot.health} />}
+        {source.read.kind === 'ok' && <HealthView report={source.read.snapshot.health} fix={link ? { link, onFixed } : undefined} at={source.read.snapshot.at} />}
         <AuditStatusLine {...source} />
       </AuditBoundary>
     </div>

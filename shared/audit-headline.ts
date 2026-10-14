@@ -44,11 +44,17 @@
  *   uncategorized-refund  −spend  a refund with no category: Wealthfolio nets it, the report ignores it
  * unexplainedCents = (report − Wealthfolio) − Σ reasons. A row only one side
  * counts for a rule no reason names stays in it: an account the report does
- * not cover, a linked transfer or a transfer-named category the report still
- * files, a row Wealthfolio puts in another month other than at 00:00 UTC on
- * the 1st, and what this does not model — split lines (the add-on never
- * writes them), an activity type override, and the uncategorized reader's
- * dismissed rows and rows awaiting a transfer's other half.
+ * not cover; a categorized row in a mapped account the Spending page does not
+ * read (the report counts it); a linked transfer the report still files under
+ * a spending category; an unlinked transfer filed under your own
+ * transfer-named category (the report drops the filing, Wealthfolio counts
+ * the transfer); a grouped row that is not a transfer (the uncategorized
+ * reader skips it, Wealthfolio counts it); a row Wealthfolio puts in another
+ * month other than at 00:00 UTC on this month's 1st — among them, west of
+ * UTC, a row stored at 00:00 UTC on the NEXT month's 1st, which Wealthfolio
+ * counts this month; and what this does not model — split lines (the add-on
+ * never writes them), an activity type override, and the uncategorized
+ * reader's dismissed rows and rows awaiting a transfer's other half.
  *
  * Across Wealthfolio versions (3.8 to 3.10):
  *  - first-midnight: a date-only row is stored at UTC midnight on 3.8, and
