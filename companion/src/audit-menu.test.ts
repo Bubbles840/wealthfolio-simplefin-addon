@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { explainBalances, type BalanceReport } from '../../shared/audit-balance.js';
-import { explainHeadline, HEADLINE_AGREE, type HeadlineExplanation } from '../../shared/audit-headline.js';
+import { explainHeadline, HEADLINE_AGREE, HEADLINE_READ_NOTES, type HeadlineExplanation } from '../../shared/audit-headline.js';
 import { healthIssues, HEALTH_NONE, HEALTH_READ_NOTES, type HealthReport } from '../../shared/audit-health.js';
 import type { AuditLedgerRow } from '../../shared/audit-ledger.js';
 import { ASK_CALLBACK_PREFIX } from '../../shared/ask-flow.js';
@@ -11,7 +11,7 @@ import { SUBSCRIPTIONS_CALLBACK_PREFIX } from './subscriptions-menu.js';
 import {
   accountHandle, auditData, auditStatusKeyboard, createAuditMenu, parseAuditData, renderAuditAccount, renderAuditBalances,
   renderAuditHeadline, renderAuditHealth, renderAuditIssue, renderAuditMenu, renderAuditReason,
-  AUDIT_ACCOUNT_GONE, AUDIT_CALLBACK_PREFIX, AUDIT_ISSUE_GONE, AUDIT_UNREACHABLE, type AuditMenuDeps, type AuditView, type MenuScreen,
+  AUDIT_ACCOUNT_GONE, AUDIT_REASON_GONE, reasonHandle, AUDIT_CALLBACK_PREFIX, AUDIT_ISSUE_GONE, AUDIT_UNREACHABLE, type AuditMenuDeps, type AuditView, type MenuScreen,
 } from './audit-menu.js';
 
 const NOW = new Date(2026, 9, 13, 12, 0);
@@ -200,6 +200,102 @@ describe('/audit', () => {
     await createAuditMenu(d).onCallback({ data: 'cz:au:h' }, u);
     expect(d.log).toHaveBeenCalledWith(expect.stringContaining('boom'));
     expect(u.answer).toHaveBeenCalledWith('Could not do that — check the companion logs.');
+  });
+});
+
+describe('failed reads are not "gone", and hostile text is escaped everywhere', () => {
+  const only = (text: string, heading: string) => text.replace(heading, '').match(/(?<!\\)[*_`[]/g);
+  const hostileLedger = {
+    accounts: [{ id: VISA, name: NAME, type: 'CREDIT_CARD', archived: false }, { id: 'wf-chk', name: `Chk ${NAME}`, type: 'CASH', archived: false }],
+    rows: [
+      row({ id: 'out', rawType: 'TRANSFER_OUT', type: 'TRANSFER_OUT', absCents: 60000, notes: `${BANK} · TRN-1` }),
+      row({ id: 'dep', accountId: VISA, rawType: 'CREDIT', type: 'CREDIT', absCents: 60000, date: '2026-10-05', notes: `${BANK} \`x\` · TRN-2` }),
+    ],
+  };
+  const hostile = () => ({ ...healthIssues({ ledger: hostileLedger, mapping: { 'sfin-v': VISA, 'sfin-c': 'wf-chk' } }), reached: true });
+
+  it('escapes the Health list and an issue with a counterpart, entities only in the heading', () => {
+    const list = renderAuditHealth(hostile());
+    const issue = hostile().issues!.find((i) => i.kind === 'incomplete-leg' && i.counterpart)!;
+    const screen = renderAuditIssue(issue);
+    expect(screen.text).toContain(escapeMarkdown(NAME));
+    expect(list.text).toContain(escapeMarkdown(BANK));
+    expect(only(list.text, '*Health*')).toBeNull();
+    expect(only(screen.text, '*Health*')).toBeNull();
+  });
+
+  it('answers a failed ledger read with its note on a reason or issue tap, never "gone"', async () => {
+    const unread = deps({
+      headline: vi.fn(async () => explainHeadline({ month: '2026-10', today: '2026-10-13', reportCents: 1, wealthfolioCents: 2, failed: ['ledger'] })),
+      health: vi.fn(async () => ({ ...healthIssues({ mapping: {}, failed: ['ledger'] }), reached: true })),
+    });
+    const u = ui();
+    await createAuditMenu(unread).onCallback({ data: auditData({ kind: 'reason', handle: reasonHandle({ kind: 'first-midnight' }) }) }, u);
+    expect(u.answer).not.toHaveBeenCalledWith(AUDIT_REASON_GONE);
+    expect((u.edit.mock.calls[0] as unknown as [string])[0]).toContain(escapeMarkdown(HEADLINE_READ_NOTES.ledger));
+    const v = ui();
+    await createAuditMenu(unread).onCallback({ data: auditData({ kind: 'issue', handle: '15f88b89' }) }, v);
+    expect(v.answer).not.toHaveBeenCalledWith(AUDIT_ISSUE_GONE);
+    expect((v.edit.mock.calls[0] as unknown as [string])[0]).toContain(escapeMarkdown(HEALTH_READ_NOTES.ledger));
+  });
+
+  it('says a reason is gone only when the ledger was readable and it vanished', async () => {
+    const u = ui();
+    await createAuditMenu(deps()).onCallback({ data: auditData({ kind: 'reason', handle: reasonHandle({ kind: 'future-dated' }) }) }, u);
+    expect(u.answer).toHaveBeenCalledWith(AUDIT_REASON_GONE);
+    expect(u.edit).not.toHaveBeenCalled();
+  });
+
+  it('answers unreachable on the menu and account taps', async () => {
+    const down = deps({
+      health: vi.fn(async () => ({ ...health(), reached: false })),
+      balances: vi.fn(async () => ({ ...balances(), reached: false })),
+    });
+    for (const data of ['cz:au:m', auditData({ kind: 'account', handle: accountHandle(VISA), fresh: false }), auditData({ kind: 'account', handle: accountHandle(VISA), fresh: true })]) {
+      const u = ui();
+      await createAuditMenu(down).onCallback({ data }, u);
+      expect(u.answer).toHaveBeenCalledWith(AUDIT_UNREACHABLE);
+      expect(u.edit).not.toHaveBeenCalled();
+      expect(u.send).not.toHaveBeenCalled();
+    }
+  });
+
+  it('re-reads on every tap: the second screen shows the data that changed in between', async () => {
+    let renamed = false;
+    const d = deps({
+      balances: vi.fn(async () => {
+        const r = balances();
+        return renamed ? { ...r, accounts: r.accounts.map((a) => ({ ...a, name: 'Renamed' })) } : r;
+      }),
+    });
+    const menu = createAuditMenu(d);
+    const first = ui();
+    await menu.onCallback({ data: 'cz:au:b' }, first);
+    renamed = true;
+    const second = ui();
+    await menu.onCallback({ data: 'cz:au:b' }, second);
+    expect(d.balances).toHaveBeenCalledTimes(2);
+    expect((first.edit.mock.calls[0] as unknown as [string])[0]).not.toContain('Renamed');
+    expect((second.edit.mock.calls[0] as unknown as [string, MenuScreen['keyboard']])[1].inline_keyboard[0][0].text).toContain('Renamed');
+  });
+
+  it('keeps every screen under 4,096 characters with 20 rows of very long descriptions', () => {
+    const long = 'X'.repeat(500);
+    const h = explainHeadline({
+      month: '2026-10', today: '2026-10-13', reportCents: 130000, wealthfolioCents: 120000, excludedCategoryIds: [],
+      rows: Array.from({ length: 30 }, (_, i) => ({
+        id: `h${i}`, date: '2026-10-01T00:00:00+00:00', accountName: 'A', accountType: 'CASH', type: 'WITHDRAWAL', subtype: '',
+        absCents: 100, notes: `${long} · TRN-${i}`, spendingFilings: 1, categoryIds: ['c'],
+      })),
+    });
+    const reason = renderAuditReason(h.reasons![0]);
+    expect(reason.text.split('\n').length).toBeGreaterThan(20);
+    expect(reason.text.length).toBeLessThan(4096);
+    const legs = Array.from({ length: 24 }, (_, i) => row({ id: `o${i}`, rawType: 'TRANSFER_OUT', type: 'TRANSFER_OUT', absCents: 1000 + i, notes: `${long} · TRN-${i}` }));
+    const report = { ...healthIssues({ ledger: { accounts: LEDGER.accounts, rows: legs }, mapping: { 'sfin-c': 'wf-chk' } }), reached: true };
+    expect(report.issues!.length).toBeGreaterThanOrEqual(20);
+    expect(renderAuditHealth(report).text.length).toBeLessThan(4096);
+    expect(renderAuditIssue(report.issues![0]).text.length).toBeLessThan(4096);
   });
 });
 
