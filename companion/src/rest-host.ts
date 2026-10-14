@@ -229,6 +229,7 @@ export async function syncHostFor(
   log?: (message: string) => void,
 ): Promise<{ host: RestSyncHost; wealthfolioVersion: string | null }> {
   const wealthfolioVersion = await Promise.resolve().then(() => client.getAppVersion()).catch(() => null);
+  if (!wealthfolioVersion) log?.('Wealthfolio version unknown: card bookkeeping stays WITHDRAWAL');
   if (wealthfolioVersion) await client.setAddonSecret('simplefin-sync', WEALTHFOLIO_VERSION_SECRET_KEY, wealthfolioVersion).catch(() => {});
   const host = new RestSyncHost(client as WealthfolioClient, dbPath, {
     cardTransferOut: hostTakesCardTransferOut(wealthfolioVersion),

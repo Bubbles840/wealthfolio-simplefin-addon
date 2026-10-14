@@ -90,6 +90,11 @@ export interface FakeHostSeed {
    *    `idempotency_key`).
    */
   upstreamWriteRules?: boolean;
+  /** Model Wealthfolio 3.10 on a credit card: TRANSFER_OUT is accepted, an
+   *  update that omits the asset keeps the stored one (patch semantics), and a
+   *  card TRANSFER_OUT that carries a non-cash asset is refused ("Securities
+   *  transfers are not supported for credit card accounts"). */
+  cardTransferOut?: boolean;
   /** The user's skip list (see shared/skipped-transactions.ts). */
   skippedTransactions?: SkippedTransaction[];
   /** What Undo told the sync not to do (shared/sync-overrides.ts). Absent
@@ -188,8 +193,13 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
    *  refusal 2026-09-23: "TRANSFER_OUT activities are not supported for credit
    *  card accounts". Enforced here so a test cannot pass on a write the real
    *  server would refuse. */
-  function cardRefusal(accountId: string, activityType: string): string | null {
+  function cardRefusal(accountId: string, activityType: string, assetId?: string): string | null {
     if (accountTypes[accountId] !== 'CREDIT_CARD') return null;
+    if (seed.cardTransferOut && activityType === 'TRANSFER_OUT') {
+      return assetId && !/^(\$CASH-|CASH:)/.test(assetId)
+        ? 'Invalid data: Securities transfers are not supported for credit card accounts'
+        : null;
+    }
     return ['WITHDRAWAL', 'TRANSFER_IN', 'CREDIT', 'FEE', 'INTEREST'].includes(activityType)
       ? null
       : `Invalid data: ${activityType} activities are not supported for credit card accounts`;
@@ -334,7 +344,11 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
       seed.saveManyHook?.(req, saved.length - 1);
       // The bulk endpoint is all-or-nothing: one refused row and nothing lands.
       const refusals = [...(req.creates ?? []), ...(req.updates ?? [])]
-        .map((w) => cardRefusal(accountOfId.get(w.id ?? '') ?? w.accountId, w.activityType))
+        .map((w) => {
+          const accountId = accountOfId.get(w.id ?? '') ?? w.accountId;
+          const stored = w.id ? rowsFor(accountId).find((r) => r.id === w.id) : undefined;
+          return cardRefusal(accountId, w.activityType, w.symbol?.symbol ?? (seed.cardTransferOut ? stored?.assetId : undefined));
+        })
         .filter((m): m is string => m !== null);
       if (refusals.length) {
         return { created: [], updated: [], errors: refusals.map((message) => ({ action: 'save', message })) };
@@ -375,6 +389,7 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
         const counterpart = upstream && !explicitlyUpdated.has(linkedCounterpart(w.id)?.id) ? linkedCounterpart(w.id) : null;
         const row = {
           ...toHostActivity(w.id, w),
+          ...(seed.cardTransferOut && !w.symbol && idx >= 0 && rows[idx].assetId ? { assetId: rows[idx].assetId } : {}),
           metadata: mergedMetadata(idx >= 0 ? rows[idx] : undefined, w.metadata),
           ...(upstream && idx >= 0 ? { sourceGroupId: w.sourceGroupId ?? rows[idx].sourceGroupId } : {}),
         };
