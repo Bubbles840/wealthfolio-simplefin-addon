@@ -2,11 +2,17 @@ import { describe, it, expect, vi } from 'vitest';
 import { LINK_SYNC_RUNNING, beginLink } from './write-lock';
 
 let finish!: () => void;
+/** A complete SyncResult, so delivery has nothing to complain about. */
+const RESULT = {
+  imported: 0, skipped: 0, errors: [], stuckTransferAlerts: [], importedTransactions: [], largeTransactionAlerts: [],
+  balanceDriftAlerts: [], prunedDuplicates: [], unmappedAccounts: null, refusedCreates: [],
+  holdingsSnapshots: { imported: 0, skipped: 0, unresolvedSymbols: [] },
+};
 vi.mock('../../shared/sync-core', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../shared/sync-core')>();
   return {
     ...actual,
-    runSyncCore: vi.fn(() => new Promise((resolve) => { finish = () => resolve({ imported: 0, skipped: 0, errors: [] }); })),
+    runSyncCore: vi.fn(() => new Promise((resolve) => { finish = () => resolve(RESULT); })),
   };
 });
 
@@ -33,5 +39,20 @@ describe('runSync and the write lock', () => {
     finish();
     await waiting;
     expect(LINK_SYNC_RUNNING).toContain('sync is running');
+  });
+});
+
+describe('the write lock', () => {
+  it('a release called late (twice) never frees a later holder', () => {
+    const first = beginLink()!;
+    first();
+    const second = beginLink()!;
+    expect(second).toBeTypeOf('function');
+    first();
+    expect(beginLink()).toBeNull();
+    second();
+    const third = beginLink();
+    expect(third).toBeTypeOf('function');
+    third!();
   });
 });

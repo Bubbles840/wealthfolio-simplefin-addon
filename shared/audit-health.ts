@@ -209,8 +209,6 @@ export function healthIssues(facts: HealthFacts): HealthReport {
   // A pending row (the sync's ` · pending` note) is never offered: the sync never pairs one.
   const counterparts = (leg: AuditLedgerRow) => live.filter((c) => c.id !== leg.id && c.accountId !== leg.accountId
     && c.currency === leg.currency && c.status === 'POSTED' && !isPendingNote(c.notes) && !isBookkeeping(c) && !inValidPair(c)
-    // A transfer-typed row in a (broken) group is somebody's half already; Link would delete and re-create it.
-    && !(isTransferType(c.type) && c.group.trim())
     && c.absCents === leg.absCents && Math.abs(dayMs(c.date) - dayMs(leg.date)) <= MATCH_DAYS * 86_400_000
     && (leg.type === 'TRANSFER_OUT' ? INFLOW.has(c.type) : OUTFLOW.has(c.type)));
   const claims = new Map<string, number>();
@@ -234,6 +232,12 @@ export function healthIssues(facts: HealthFacts): HealthReport {
     if (contested) many.add(p.leg.id);
     else pairs.push(p);
   }
+  // A transfer-typed row that is in a group is somebody's half already, and Link would
+  // delete and re-create it: no pair with such a row either side is offered. Dropped
+  // BEFORE the issues, so the one-issue-per-pair rule below never hides a grouped row
+  // and each side reports its own state.
+  const grouped = (r: AuditLedgerRow) => isTransferType(r.type) && r.group.trim() !== '';
+  const offered = pairs.filter((p) => !grouped(p.leg) && !grouped(p.other));
   const listed = new Set(incomplete.map((i) => i.row.id));
 
   const issues: HealthIssue[] = [];
@@ -243,11 +247,9 @@ export function healthIssues(facts: HealthFacts): HealthReport {
     let match: 'one' | 'many' | 'none' | 'skipped' = owner === 'you' && !paired ? 'none' : 'skipped';
     let counterpart: HealthLeg | null = null;
     if (match === 'none') {
-      const pair = pairs.find((p) => p.leg.id === row.id || p.other.id === row.id);
-      const found = pair && (pair.leg.id === row.id ? pair.other : pair.leg);
-      // Found from the other end: a grouped transfer row is never the answer for an ungrouped one.
-      if (pair && found && !(isTransferType(found.type) && found.group.trim() && !row.group.trim())) {
-        const other = found;
+      const pair = offered.find((p) => p.leg.id === row.id || p.other.id === row.id);
+      if (pair) {
+        const other = pair.leg.id === row.id ? pair.other : pair.leg;
         // Both halves incomplete: one issue, from the leg the money left.
         if (listed.has(other.id) && row.type !== 'TRANSFER_OUT' && other.type === 'TRANSFER_OUT') continue;
         match = 'one';

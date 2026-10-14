@@ -144,39 +144,47 @@ export interface HealthFix {
  * hear about changes, so nothing is set on a card that is gone.
  */
 interface FixListener { update: () => void; onFixed?: () => void }
-const fixState = { running: false, result: null as string | null, done: new Set<string>(), listeners: new Set<FixListener>() };
+const fixState = { running: false, result: null as string | null, at: null as string | null, after: true, done: new Set<string>(), listeners: new Set<FixListener>() };
 /** Tests: forget everything the module remembers. */
 export function resetCheckFixes(): void {
   fixState.running = false;
   fixState.result = null;
+  fixState.at = null;
+  fixState.after = true;
   fixState.done = new Set();
   fixState.listeners.clear();
 }
 const notifyFix = () => fixState.listeners.forEach((l) => l.update());
 
-async function runLinks(link: HealthFix['link'], pairs: LinkPair[]): Promise<void> {
+async function runLinks(link: HealthFix['link'], pairs: LinkPair[], at: string | null): Promise<void> {
   if (fixState.running || pairs.length === 0) return;
   fixState.running = true;
   fixState.result = null;
+  fixState.at = at;
   notifyFix();
   let message: string;
   let linked: string[] = [];
+  // Nothing was linked, lost or failed (a refusal): nothing will change after the next sync.
+  let after = false;
   try {
     const r = await link(pairs);
     message = r.message;
     linked = r.done;
+    after = r.linked > 0 || r.failed > 0 || r.lost.length > 0 || r.maybeLost.length > 0;
   } catch {
     message = LINK_UNREACHABLE;
   }
   fixState.running = false;
   fixState.done = new Set([...fixState.done, ...linked]);
   fixState.result = message;
+  fixState.after = after;
   notifyFix();
   // The newest card still mounted asks its page to read the snapshot again.
   [...fixState.listeners].pop()?.onFixed?.();
 }
 
-export function HealthView({ report, fix }: { report: HealthReport; fix?: HealthFix }) {
+/** `at`: when the snapshot shown was taken. A result belongs to the snapshot it was run against. */
+export function HealthView({ report, fix, at }: { report: HealthReport; fix?: HealthFix; at?: string }) {
   const [, tick] = useState(0);
   const onFixed = useRef(fix?.onFixed);
   onFixed.current = fix?.onFixed;
@@ -189,10 +197,10 @@ export function HealthView({ report, fix }: { report: HealthReport; fix?: Health
   }, []);
   const busy = fixState.running;
   const done = fixState.done;
-  const result = fixState.result;
+  const result = fixState.result !== null && fixState.at === (at ?? null) ? fixState.result : null;
   const pairOf = (i: HealthIssue) => (fix && !done.has(i.key) ? linkablePair(i) : null);
   const open = fix ? linkablePairs(report.issues).filter((p) => !done.has(p.key)) : [];
-  const run = (pairs: LinkPair[]) => { if (fix) void runLinks(fix.link, pairs); };
+  const run = (pairs: LinkPair[]) => { if (fix) void runLinks(fix.link, pairs, at ?? null); };
   return (
     <div className="sfin-audit-body">
       {report.issues === null && report.notes.length === 0 && <div>{AUDIT_HEALTH_NOT_CHECKED}</div>}
@@ -222,7 +230,7 @@ export function HealthView({ report, fix }: { report: HealthReport; fix?: Health
         </div>
       )}
       {/* Mounted from the first render, so what lands in it is announced. */}
-      {fix && <div role="status" className="sfin-subtle">{result ? `${result} ${AUDIT_AFTER_SYNC}` : ''}</div>}
+      {fix && <div role="status" className="sfin-subtle">{result ? (fixState.after ? `${result} ${AUDIT_AFTER_SYNC}` : result) : ''}</div>}
       <AuditNotes notes={report.notes} />
     </div>
   );
@@ -234,7 +242,7 @@ export function ChecksCard({ link, onFixed, ...source }: AuditSource & Partial<H
   return (
     <div className="sfin-audit-checks">
       <AuditBoundary read={source.read}>
-        {source.read.kind === 'ok' && <HealthView report={source.read.snapshot.health} fix={link ? { link, onFixed } : undefined} />}
+        {source.read.kind === 'ok' && <HealthView report={source.read.snapshot.health} fix={link ? { link, onFixed } : undefined} at={source.read.snapshot.at} />}
         <AuditStatusLine {...source} />
       </AuditBoundary>
     </div>

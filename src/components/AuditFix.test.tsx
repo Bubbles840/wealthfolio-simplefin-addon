@@ -91,7 +91,7 @@ describe('Link on the Checks card', () => {
   it('says Wealthfolio could not be reached when the link throws, with no emoji anywhere', async () => {
     const { container } = card(vi.fn(async () => { throw new Error('offline'); }));
     fireEvent.click(screen.getAllByRole('button', { name: 'Link' })[0]);
-    expect(await screen.findByText(`Couldn't reach Wealthfolio — nothing was linked. ${AUDIT_AFTER_SYNC}`)).toBeInTheDocument();
+    expect(await screen.findByText("Couldn't reach Wealthfolio — nothing was linked.")).toBeInTheDocument();
     expect(EMOJI.test(container.textContent ?? '')).toBe(false);
   });
 
@@ -128,6 +128,33 @@ describe('Link on the Checks card', () => {
     expect(status.textContent).toContain('FROM PNC · TRN-2');
     expect(status.textContent).toContain(AUDIT_AFTER_SYNC);
     warn.mockRestore();
+  });
+
+  it('does not say changes show after the next sync when nothing was linked (a refusal)', async () => {
+    const run = (message: string, changed: number): LinkRun => ({ total: 1, linked: 0, changed, failed: 0, done: [], lost: [], maybeLost: [], message });
+    const link = vi.fn()
+      .mockResolvedValueOnce(run('A sync is running — try Link again when it finishes.', 0))
+      .mockResolvedValueOnce(run('It has changed since — nothing was linked.', 1));
+    card(link);
+    fireEvent.click(screen.getAllByRole('button', { name: 'Link' })[0]);
+    await waitFor(() => expect(fixStatus().textContent).toBe('A sync is running — try Link again when it finishes.'));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Link' })[0]);
+    await waitFor(() => expect(fixStatus().textContent).toBe('It has changed since — nothing was linked.'));
+  });
+
+  it('hides the last result once the card shows a newer snapshot', async () => {
+    const newer = parseAuditSnapshot(JSON.stringify(buildAuditSnapshot({
+      balances: { accounts: [], notes: [] },
+      headline: { month: '2026-10', reportCents: null, wealthfolioCents: null, unexplainedCents: null, reasons: null, notes: [] },
+      health,
+    }, new Date(2026, 9, 14, 11, 0))));
+    const link = vi.fn(async (pairs: LinkPair[]) => linked(pairs));
+    const { rerender } = card(link);
+    fireEvent.click(screen.getAllByRole('button', { name: 'Link' })[0]);
+    await screen.findByText(`Linked. ${AUDIT_AFTER_SYNC}`);
+    rerender(<ChecksCard read={newer} companionVersion="1.61.0" now={NOW} link={link} onFixed={vi.fn()} />);
+    expect(screen.queryByText(`Linked. ${AUDIT_AFTER_SYNC}`)).toBeNull();
+    expect(fixStatus().textContent).toBe('');
   });
 
   it('a new run clears the last result at once', async () => {
