@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.61.0] - 2026-10-14
+
 ### Added
 - **"Why is this here?" — one transaction's story.** In Telegram,
   `/why kroger 54.20` finds any transaction — words, an amount, or both (a

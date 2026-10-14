@@ -911,7 +911,7 @@ Minor, deferred (not fixed in R2):
   ("Update the add-on first — or undo it from the app's Change log.") while
   it is older or unknown (the companion cannot see the addons directory). `shared/change-undo.test.ts` fails a release
   that ships BELOW the constant, but cannot catch one shipped above it.
-- **Release checklist:** If this ships after 1.61.0, raise VENMO_NOTE_SINCE.
+- **Released in 1.61.0**, so VENMO_NOTE_SINCE (1.61.0) is right as it stands.
 - **Forged From line (accepted risk).** The companion reads Venmo mail by its
   From line, which anyone who knows the forwarding address can forge (the same
   as Amazon's). The worst case is a "Venmo note" on a bank row whose amount and
@@ -983,8 +983,8 @@ Minor, deferred (not fixed in R2):
 
 ## 14. Getting started (2026-10-14, plan `2026-10-14-getting-started.md`)
 
-Designed overnight under Nick's standing instruction; the spec and plan await
-his review, so the PR stays open.
+Designed overnight under Nick's standing instruction; approved by Nick on
+2026-10-14 and released in 1.61.0.
 
 - **Suggested budgets' spend read differs from Wealthfolio's own budget actuals** (`getNativeBudgetSpend`, companion/src/sqlite-native.ts). It matches them on the spending accounts and the excluded categories (an excluded subcategory's own rows dropped before the roll-up) only. Three known differences: a LINKED `TRANSFER_OUT` filed under a category counts here (upstream treats a linked transfer as neutral); `activity_type_override` is ignored (the raw `activity_type` classifies); `spending_activity_splits` are ignored (an activity counts whole, under its one assignment). Cost: a suggestion can be off by those rows; it is only a suggestion.
 - **Budgets are set from Telegram only.** The add-on SDK has no budget API;
@@ -1045,10 +1045,8 @@ his review, so the PR stays open.
 
 ## 15. Planning — R1 (2026-10-14, plan `2026-10-14-planning.md`)
 
-- **Merge main before release.** This branch must merge main once the 2c R2
-  branch (with the sqlite3 CLI newline fix in `tryQueryNativeDb`) lands, then
-  re-run every gate. Until then `getNativeMerchantRows` also uses the `'|'` CLI
-  separator, so a note containing `'|'` (or a newline) drops a row on the
+- **`getNativeMerchantRows` still uses the `'|'` CLI separator** (the sqlite3
+  newline fix in `tryQueryNativeDb` shipped with 2c R2), so a note containing `'|'` (or a newline) drops a row on the
   sqlite3 fallback, even under the strict flag. Fix: use `DRILL_CLI_SEPARATOR`
   (`\x1f`) with a join, and test with a `'|'` note.
 - **Savings goals are R2 (N6).** Wealthfolio already has save-up Goals,
@@ -1118,10 +1116,7 @@ his review, so the PR stays open.
   `CASH_CARD_PAYMENT_KEYWORDS`); one worded otherwise ("ACH DEBIT ROBINHOOD
   CCB") is still subtracted. A hand-added unlinked entry is a mild
   pessimistic double count.
-- **`CASH_FORECAST_SINCE` is 1.61.0 and holds only if this ships in 1.61.0.**
-  If it ships in a later release, raise it to that release, or an older
-  companion's install is told the forecast arrives with the next sync instead
-  of to update the companion.
+- **`CASH_FORECAST_SINCE` is 1.61.0**, the release this shipped in.
 - **Minor, deferred (from the task reviews):**
   - Forecast arithmetic: `days < 0` gives an empty series; the doc says only
     LATE entries are subtracted today though any past date is (unreachable,

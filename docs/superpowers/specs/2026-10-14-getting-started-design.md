@@ -1,10 +1,9 @@
 # Getting started — design (project 4)
 
-> **Not yet approved by Nick.** Claude designed this overnight on 2026-10-13/14,
-> under Nick's standing instruction "keep going until we're done with all the
-> phases", taking the recommended option at each decision. The rulings below
-> record those choices. It ships as an **open PR, not merged**, so Nick can review
-> the design before it reaches main.
+> **Approved by Nick on 2026-10-14** and released in 1.61.0. Claude designed
+> it overnight on 2026-10-13/14 under Nick's standing instruction to keep going
+> until every phase was done, choosing the recommended option at each decision;
+> the rulings below record those choices.
 
 Project 4 of the roadmap approved on 2026-10-12 is "Getting started", for people who install the add-on from Wealthfolio's store. The roadmap names three things:
 - a Docker compose helper card;
