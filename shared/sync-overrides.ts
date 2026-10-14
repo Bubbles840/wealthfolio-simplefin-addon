@@ -18,9 +18,12 @@
  *  - `noVenmoNote`   no Venmo note is added to its note (3).
  *  - `asReimbursement` a payback you filed (1.62, W7): while the bank row is
  *                    money in on a cash account, the sync plans it as a
- *                    `CREDIT` marked `REIMBURSEMENT` — never a transfer, never
- *                    a deposit again. Money out, or another account type, and
- *                    the override yields: the row is typed as usual.
+ *                    `CREDIT` marked `REIMBURSEMENT` — never a transfer. Money
+ *                    out, or a known non-cash account, and the override yields:
+ *                    the row is typed as usual. If the document cannot be read
+ *                    the sync leaves a stored payback as stored (and says so);
+ *                    an override past its year applies until the next write
+ *                    prunes it.
  * Per SimpleFin account (`accounts`):
  *  - `noAutoCorrect` no automatic balance correction (drift is still reported).
  *  - `noOpeningFile` the card opening-balance filer leaves its opening balance.

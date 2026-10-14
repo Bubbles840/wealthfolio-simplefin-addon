@@ -3,7 +3,7 @@ import type { AmazonLedger } from './amazon-ledger.js';
 import type { VenmoLedger } from './venmo-ledger.js';
 import type { HoldingsSnapshot } from './holdings.js';
 import type { SkippedTransaction } from './skipped-transactions.js';
-import type { SyncOverrides } from './sync-overrides.js';
+import type { LoadedSyncOverrides, SyncOverrides } from './sync-overrides.js';
 
 /** A Wealthfolio activity row, normalized across the SDK and REST shapes. */
 export interface HostActivity {
@@ -325,4 +325,11 @@ export interface SyncStore {
    * Optional like the getters above; a host without it obeys no overrides.
    */
   getSyncOverrides?(): Promise<SyncOverrides>;
+  /**
+   * The same document with its read state: `unreadable` for a corrupt one, null
+   * (or a rejection) for a failed read. The sync uses it only to learn that
+   * `getSyncOverrides` came back empty because it could not read — so it leaves
+   * a stored payback alone instead of reverting it. Optional.
+   */
+  readSyncOverrides?(): Promise<LoadedSyncOverrides | null>;
 }

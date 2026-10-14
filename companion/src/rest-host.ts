@@ -7,7 +7,7 @@ import type { AmazonLedger } from '../../shared/amazon-ledger.js';
 import { VENMO_LEDGER_SECRET_KEY, type VenmoLedger } from '../../shared/venmo-ledger.js';
 import { linkPairByRecreate } from '../../shared/link-pair.js';
 import { SKIPPED_TRANSACTIONS_SECRET_KEY, parseSkippedTransactions, type SkippedTransaction } from '../../shared/skipped-transactions.js';
-import { syncOverridesIgnoredLog, syncOverridesOrEmpty, type SyncOverrides } from '../../shared/sync-overrides.js';
+import { loadSyncOverrides, syncOverridesIgnoredLog, syncOverridesOrEmpty, type LoadedSyncOverrides, type SyncOverrides } from '../../shared/sync-overrides.js';
 import type { WealthfolioClient } from './wealthfolio.js';
 import type {
   HostActivity,
@@ -327,6 +327,16 @@ export class RestSyncStore implements SyncStore {
    *  and a corrupt or unread document gets one log line saying so. */
   async getSyncOverrides(): Promise<SyncOverrides> {
     return syncOverridesOrEmpty((k) => this.client.getAddonSecret(this.addonId, k), (why) => console.warn(syncOverridesIgnoredLog(why)));
+  }
+
+  /** The same document with its read state (null on a failed read), so the sync
+   *  can tell an unreadable document from an empty one. */
+  async readSyncOverrides(): Promise<LoadedSyncOverrides | null> {
+    try {
+      return await loadSyncOverrides((k) => this.client.getAddonSecret(this.addonId, k));
+    } catch {
+      return null;
+    }
   }
 
   async getAmazonLedger(): Promise<AmazonLedger> {
