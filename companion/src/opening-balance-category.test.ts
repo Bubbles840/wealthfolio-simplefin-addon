@@ -31,6 +31,7 @@ const deps = (dbPath: string) => ({
   setExcluded: vi.fn(async () => {}),
   assign: vi.fn(async () => {}),
   log: vi.fn(),
+  appVersion: vi.fn(async (): Promise<string | null> => '3.10.0'),
 });
 
 describe('fileCardOpeningDebts', () => {
@@ -129,5 +130,73 @@ describe('fileCardOpeningDebts — change log', () => {
     `)), record: () => { throw new Error('boom'); } };
     await expect(fileCardOpeningDebts(d)).resolves.toEqual({ filed: 2 });
     expect(d.assign).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('fileCardOpeningDebts — the exclusion needs Wealthfolio 3.9+', () => {
+  const idle = (extra = '') => ledger(`
+    INSERT INTO taxonomy_categories VALUES ('ob','Opening balances',NULL,'spending_categories');
+    INSERT INTO app_settings VALUES ('spending.excluded_category_ids','["mine"]');
+    ${extra}
+  `);
+
+  it('nothing to file, category exists but is not excluded, host 3.10.0: appends ours to the user list', async () => {
+    const d = deps(idle());
+    const rec: any[] = [];
+    expect(await fileCardOpeningDebts({ ...d, record: (x: any) => rec.push(x) })).toEqual({ filed: 0 });
+    expect(d.setExcluded).toHaveBeenCalledWith(['mine', 'ob']);
+    expect(d.log).toHaveBeenCalledTimes(1);
+    expect(rec.map((x) => x.kind)).toEqual(['bookkeeping']);
+    expect(d.createCategory).not.toHaveBeenCalled();
+  });
+
+  it('host 3.8.0: no PUT, no log, no change entry', async () => {
+    const d = deps(idle());
+    d.appVersion.mockResolvedValue('3.8.0');
+    const rec: any[] = [];
+    await fileCardOpeningDebts({ ...d, record: (x: any) => rec.push(x) });
+    expect(d.setExcluded).not.toHaveBeenCalled();
+    expect(d.log).not.toHaveBeenCalled();
+    expect(rec).toEqual([]);
+  });
+
+  it('unknown version (null or no dep): no PUT', async () => {
+    const d = deps(idle());
+    d.appVersion.mockResolvedValue(null);
+    await fileCardOpeningDebts(d);
+    const { appVersion: _omit, ...noDep } = deps(idle());
+    await fileCardOpeningDebts(noDep);
+    expect(d.setExcluded).not.toHaveBeenCalled();
+    expect(noDep.setExcluded).not.toHaveBeenCalled();
+  });
+
+  it('already excluded: no PUT', async () => {
+    const d = deps(ledger(`
+      INSERT INTO taxonomy_categories VALUES ('ob','Opening balances',NULL,'spending_categories');
+      INSERT INTO app_settings VALUES ('spending.excluded_category_ids','["ob"]');
+    `));
+    await fileCardOpeningDebts(d);
+    expect(d.setExcluded).not.toHaveBeenCalled();
+    expect(d.log).not.toHaveBeenCalled();
+  });
+
+  it('rows to file on 3.8.0: category created and rows filed, but no PUT or misleading log', async () => {
+    const d = deps(ledger(`INSERT INTO activities VALUES ('o','card','WITHDRAWAL','2026-04-20','464.6','Starting balance · sfc');`));
+    d.appVersion.mockResolvedValue('3.8.0');
+    expect(await fileCardOpeningDebts(d)).toEqual({ filed: 1 });
+    expect(d.createCategory).toHaveBeenCalled();
+    expect(d.assign).toHaveBeenCalledWith('o', 'new-cat');
+    expect(d.setExcluded).not.toHaveBeenCalled();
+    expect(d.log.mock.calls.map((c) => c[0]).join('\n')).not.toContain('Excluded');
+  });
+
+  it('rows to file on 3.10.0: filed and excluded, keeping the user list', async () => {
+    const d = deps(ledger(`
+      INSERT INTO app_settings VALUES ('spending.excluded_category_ids','["mine"]');
+      INSERT INTO activities VALUES ('o','card','WITHDRAWAL','2026-04-20','464.6','Starting balance · sfc');
+    `));
+    expect(await fileCardOpeningDebts(d)).toEqual({ filed: 1 });
+    expect(d.assign).toHaveBeenCalledWith('o', 'new-cat');
+    expect(d.setExcluded).toHaveBeenCalledWith(['mine', 'new-cat']);
   });
 });

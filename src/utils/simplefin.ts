@@ -131,7 +131,13 @@ export async function fetchAccounts(
   url.searchParams.set('start-date', String(Math.floor(startDate.getTime() / 1000)));
   url.searchParams.set('pending', '1');
 
-  const req: Parameters<NetworkAPI['request']>[0] = { url: url.href, method: 'GET' };
+  // SDK 3.9's NetworkRequest has `timeoutSecs` (max 120); our SDK types (3.6.2)
+  // lack it and older hosts ignore the unknown field. The bridge can be slow.
+  const req: Parameters<NetworkAPI['request']>[0] & { timeoutSecs?: number } = {
+    url: url.href,
+    method: 'GET',
+    timeoutSecs: 120,
+  };
   if (authSecretKey) {
     // SDK types only expose 'bearer', but our patched Wealthfolio backend also
     // supports 'basic' (injects "Authorization: Basic <secret>"). SimpleFin
