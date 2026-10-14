@@ -145,10 +145,19 @@ export function roundUpToFiveDollars(cents: number): number {
   return Math.ceil(cents / BUDGET_ROUND_CENTS) * BUDGET_ROUND_CENTS;
 }
 
-/** Whether the category has a budget this month: its `'default'` target or this month's. */
+/**
+ * A `'default'` target of exactly $0 is Wealthfolio's cleared state (its editor saves a
+ * cleared amount as "0" and cannot delete a default), so it counts as NO budget. An
+ * unparseable amount (NaN) is not zero: it blocks.
+ */
+export function isClearedDefault(t: BudgetTarget): boolean {
+  return t.periodKey === DEFAULT_PERIOD_KEY && t.amountCents === 0;
+}
+
+/** Whether the category has a budget this month: a non-zero `'default'` target or this month's (even $0). */
 export function hasBudget(targets: readonly BudgetTarget[], categoryId: string, month: string): boolean {
   return targets.some((t) => t.targetType === 'category' && t.taxonomyId === BUDGET_TAXONOMY && t.categoryId === categoryId
-    && (t.periodKey === DEFAULT_PERIOD_KEY || t.periodKey === month));
+    && ((t.periodKey === DEFAULT_PERIOD_KEY && !isClearedDefault(t)) || t.periodKey === month));
 }
 
 const byNameAsc = (a: { name: string }, b: { name: string }) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);

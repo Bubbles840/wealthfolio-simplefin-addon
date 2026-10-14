@@ -19,7 +19,7 @@
  *  4. Only a reversal that worked is recorded.
  */
 import { reversalChange, type ChangeDraft, type ChangeEntry } from './change-entries.js';
-import type { BudgetTarget } from './budget-suggest.js';
+import { BUDGET_TAXONOMY, DEFAULT_PERIOD_KEY, type BudgetTarget } from './budget-suggest.js';
 import type { ChangeLogItem } from './change-log.js';
 import {
   currentRowId, currentRuleId, latestReversal, planChangeUndo, undoAvailability, UNDO_EXACT_COPY, UNDO_NOT_POSSIBLE,
@@ -460,6 +460,21 @@ async function runOnce(
   try {
     created = await perform(io, rest, now);
   } catch (err) {
+    const setStep = rest.find((s): s is Extract<UndoStep, { do: 'set-budget' }> => s.do === 'set-budget');
+    // A Redo's POST that threw may still have committed: when the category's default
+    // target now holds exactly the amount, the reversal is done (as apply's recovery).
+    const landed = op === 'redo' && setStep && io.budgets && !(err instanceof Refusal)
+      ? await io.budgets.targets().then((ts) => ts.find((t) => t.targetType === 'category' && t.taxonomyId === BUDGET_TAXONOMY
+        && t.categoryId === setStep.categoryId && t.periodKey === DEFAULT_PERIOD_KEY && t.amountCents === setStep.amountCents), () => undefined)
+      : undefined;
+    if (landed) {
+      try {
+        await io.record(reversalChange(entry, op, reversalExtra(p, landed.id, state)));
+      } catch {
+        // Never costs the redo: the writer records a gap instead.
+      }
+      return { ok: true, message: p.done, needsSync: p.needsSync };
+    }
     if (err instanceof Refusal) {
       // Refused as an exact copy: take the override back out, so nothing changed.
       if (ours.length > 0) {

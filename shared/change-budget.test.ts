@@ -88,6 +88,17 @@ describe('budget-set: the planner', () => {
       .toBe('Groceries has a budget again — nothing was redone.');
   });
 
+  it('Redo goes over a $0 default (the cleared state) but not a NaN one or a non-zero one', () => {
+    const e = groceries();
+    const latest = reversal(e, 'undo', { targetId: null });
+    expect(ok(planChangeUndo(e, 'redo', { budgetTargets: [target({ id: 'bt-zero', amountCents: 0 })] }, { latest })).steps)
+      .toEqual([{ do: 'set-budget', categoryId: 'cat-gro', amountCents: 42500 }]);
+    expect(reason(planChangeUndo(e, 'redo', { budgetTargets: [target({ id: 'bt-nan', amountCents: NaN })] }, { latest })))
+      .toBe('Groceries has a budget again — nothing was redone.');
+    expect(reason(planChangeUndo(e, 'redo', { budgetTargets: [target({ id: 'bt-m', periodKey: '2026-10', amountCents: 0 })] }, { latest: null })))
+      .not.toBe('Groceries has a budget again — nothing was redone.');
+  });
+
   it('acts on the target the last Redo created', () => {
     const e = groceries();
     const redone = reversal(e, 'redo', { targetId: 'bt-again' });
@@ -197,6 +208,25 @@ describe('budget-set: the runner, on the companion', () => {
     h.store.push(target({ id: 'bt-written', amountCents: 99900 }));
     expect(await h.run(e, 'undo')).toEqual({ ok: false, message: 'It has changed since — nothing was undone.' });
     expect(h.io.budgets!.remove).not.toHaveBeenCalled();
+  });
+
+  it('a Redo whose POST throws is recorded when the default now holds exactly the amount, with the found id', async () => {
+    const e = groceries();
+    const h = harness([], { set: vi.fn(async () => { h.store.push(target({ id: 'bt-landed' })); throw new Error('socket hang up'); }) });
+    h.log.unshift(reversal(e, 'undo', { targetId: null }));
+    expect(await h.run(e, 'redo')).toMatchObject({ ok: true, message: 'Redone — Groceries has its $425.00 budget back.' });
+    expect(h.log[0]).toMatchObject({ reverses: { id: e.id, op: 'redo' }, after: { targetId: 'bt-landed' } });
+  });
+
+  it('a Redo whose POST throws keeps the failure when nothing, or another amount, landed', async () => {
+    for (const landed of [null, target({ id: 'bt-other', amountCents: 10000 })]) {
+      const e = groceries();
+      const h = harness([], { set: vi.fn(async () => { if (landed) h.store.push(landed); throw new Error('boom'); }) });
+      h.log.unshift(reversal(e, 'undo', { targetId: null }));
+      const n = h.log.length;
+      expect(await h.run(e, 'redo')).toEqual({ ok: false, message: "Couldn't finish the redo: boom" });
+      expect(h.log.length).toBe(n);
+    }
   });
 
   it("a Redo that can't re-read the budgets refuses and makes no POST", async () => {
