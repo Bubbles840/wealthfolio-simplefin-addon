@@ -149,6 +149,15 @@ export function BudgetTab({
   const [poolSaved, setPoolSaved] = useState(false);
   /** The empty state's "Preview with sample data", open (G2). */
   const [previewing, setPreviewing] = useState(false);
+  /** The button that opened the preview; Close preview hands focus back to it. */
+  const previewOpener = useRef<HTMLButtonElement>(null);
+  const returnFocus = useRef(false);
+  useEffect(() => {
+    if (!previewing && returnFocus.current) {
+      returnFocus.current = false;
+      previewOpener.current?.focus();
+    }
+  }, [previewing]);
   // A real cube arriving ends it, so the sample never reopens unprompted.
   useEffect(() => {
     if (cube) setPreviewing(false);
@@ -191,7 +200,7 @@ export function BudgetTab({
   // Not a warning: a new install has no companion yet, and nothing is wrong.
   if (!cube) {
     // Leaving the preview comes back here, to the empty state.
-    if (previewing) return <BudgetPreview store={store} onExit={() => setPreviewing(false)} />;
+    if (previewing) return <BudgetPreview store={store} onExit={() => { returnFocus.current = true; setPreviewing(false); }} />;
     return (
       <div className="sfin-budget-empty">
         <p>Budget reports come from the background companion; once it syncs, they appear here.</p>
@@ -199,7 +208,7 @@ export function BudgetTab({
           {onSetUpCompanion && (
             <Button variant="outline" onClick={onSetUpCompanion}>Set up background sync</Button>
           )}
-          <Button variant="ghost" onClick={() => setPreviewing(true)}>Preview with sample data</Button>
+          <Button variant="ghost" ref={previewOpener} onClick={() => setPreviewing(true)}>Preview with sample data</Button>
         </div>
       </div>
     );

@@ -204,6 +204,16 @@ describe('the sample-data preview', () => {
     for (const spy of Object.values(spies)) expect(spy).not.toHaveBeenCalled();
   });
 
+  it('Close preview returns focus to the Preview with sample data button', () => {
+    emptyTab();
+    const opener = screen.getByRole('button', { name: 'Preview with sample data' });
+    fireEvent.click(opener);
+    const close = screen.getByRole('button', { name: 'Close preview' });
+    close.focus();
+    fireEvent.click(close);
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Preview with sample data' }));
+  });
+
   it('leaves the preview when a real cube arrives, and does not reopen it if the cube goes away', () => {
     const props = {
       customReports: [], layout: null, onLayoutChange: vi.fn(), onCustomReportsChange: vi.fn(),

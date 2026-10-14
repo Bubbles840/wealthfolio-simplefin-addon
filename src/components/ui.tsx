@@ -1009,7 +1009,7 @@ export function Button({
   variant = 'primary',
   className,
   ...props
-}: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: ButtonVariant }) {
+}: React.ComponentPropsWithRef<'button'> & { variant?: ButtonVariant }) {
   const variantClass = variant === 'primary' ? '' : ` sfin-btn--${variant}`;
   return <button type="button" className={`sfin-btn${variantClass}${className ? ` ${className}` : ''}`} {...props} />;
 }
