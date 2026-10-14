@@ -1,5 +1,5 @@
 import { parseReportStore, reportsSecretKey, type ReportKind, type ReportStore } from '../../shared/reports-archive';
-import { SKIPPED_TRANSACTIONS_SECRET_KEY, parseSkippedTransactions, type SkippedTransaction } from '../../shared/skipped-transactions';
+import { SKIPPED_TRANSACTIONS_SECRET_KEY, parseSkippedTransactions, parseSkippedTransactionsStrict, type ParsedSkippedTransactions, type SkippedTransaction } from '../../shared/skipped-transactions';
 import type { AddonContext } from '@wealthfolio/addon-sdk';
 import { AMAZON_LEDGER_SECRET_KEY } from '../../shared/amazon-ledger';
 import { AMAZON_CONFIG_SECRET_KEY, AMAZON_LABELS_SECRET_KEY } from '../../shared/amazon-config';
@@ -575,6 +575,12 @@ export class SecretsStore {
   /** Bank transactions never to import (see shared/skipped-transactions.ts). */
   async getSkippedTransactions(): Promise<SkippedTransaction[]> {
     return parseSkippedTransactions(await this.ctx.api.secrets.get(KEYS.skippedTransactions));
+  }
+
+  /** The skip list with corrupt told apart from absent (a story must not say
+   *  "none" for a list it cannot read). */
+  async readSkippedTransactions(): Promise<ParsedSkippedTransactions> {
+    return parseSkippedTransactionsStrict(await this.ctx.api.secrets.get(KEYS.skippedTransactions));
   }
 
   /** What the sync obeys (shared/sync-overrides.ts): corrupt, absent and a

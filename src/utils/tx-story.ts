@@ -1,0 +1,239 @@
+/**
+ * src/utils/tx-story.ts
+ *
+ * The add-on's half of "Why is this here?": what the add-on SDK can see about
+ * one transaction, gathered into shared/tx-story.ts's facts, and the search
+ * behind Home's "Why is this here?" box.
+ *
+ * It sees less than the companion: the SDK has no categories and no link
+ * groups. So who filed a row is told only when something the add-on CAN read
+ * knows it — a budget drill-down row's `f` (the caller passes it), the report
+ * cube's drill-down, the companion's needs-a-category list — and otherwise the
+ * story points at Telegram (when a companion has published a version) or says
+ * the category was set in Wealthfolio. The other half of a transfer comes from
+ * the change log's link entry, else the add-on's own `linked_groups`.
+ *
+ * Search: Wealthfolio's keyword is one `LIKE '%…%'` over the note (upstream
+ * activities repository, `search_activities_with_utc_bounds`), never the
+ * account name. A word no account name contains goes to Wealthfolio across all
+ * history; with none (an amount alone, or words that may be an account's), the
+ * last 12 months are read and filtered here. Either way every word and the
+ * amount are matched here (`matchesTxQuery`).
+ *
+ * Every store read is optional-called and wrapped: a failure leaves that part
+ * of the story out with a note. Only the row failing is a full failure.
+ */
+import type { ActivityDetails, ActivitySearchFilters, AddonContext } from '@wealthfolio/addon-sdk';
+import type { ChangeLogItem } from '../../shared/change-log';
+import { changesForTransaction } from '../../shared/change-view';
+import { txIdFromComment, isTransferType } from '../../shared/sync-core';
+import { hasTxOverride, TX_OVERRIDE_FLAGS, type TxOverrideFlag } from '../../shared/sync-overrides';
+import { accountTxKey } from '../../shared/transfers';
+import {
+  findTransactions, isEmptyTxQuery, matchesTxQuery, txDescription, txSearchKeyword, TX_SEARCH_MAX_RESULTS,
+  TX_SEARCH_RECENT_DAYS, type TxQuery, type TxSearchResult, type TxSearchRow,
+} from '../../shared/tx-search';
+import {
+  buildTxStory, decodeFiler, signedCents, withFilingDay, type TxFactName, type TxStory, type TxStoryFacts,
+} from '../../shared/tx-story';
+import type { SecretsStore } from './secrets';
+
+/** What a story is opened for. A budget drill-down row also brings its
+ *  (rolled-up) category and its `f` code. */
+export interface AppStoryTarget {
+  activityId: string;
+  categoryName?: string;
+  filer?: string;
+}
+
+/** The store reads a story makes, every one optional. */
+export type StoryStore = Partial<Pick<SecretsStore,
+  'getAccountMapping' | 'getChangeLog' | 'readSyncOverrides' | 'readSkippedTransactions' | 'getLinkedGroups'
+  | 'getCompanionVersion' | 'getUncategorizedStatus' | 'getReportCube'>>;
+
+export type AppStoryOutcome =
+  /** `entries`: the whole change log as read (Undo needs it); [] when unread. */
+  | { kind: 'ok'; story: TxStory; entries: ChangeLogItem[] }
+  | { kind: 'gone' }
+  | { kind: 'unreachable' };
+
+export type AppSearchOutcome = { kind: 'ok'; result: TxSearchResult } | { kind: 'unreachable' };
+
+const isoDay = (v: unknown) => {
+  const d = new Date(v as string);
+  return Number.isNaN(d.getTime()) ? String(v ?? '').slice(0, 10) : d.toISOString().slice(0, 10);
+};
+const absCentsOf = (amount: unknown) => Math.round(Math.abs(Number(amount ?? 0)) * 100) || 0;
+
+/** One row by id. `activityIds` reaches Wealthfolio 3.8's exact-id filter (its
+ *  activities adapter passes it through); the SDK's filter type does not list
+ *  it, and an older host would ignore it — hence the id check. */
+async function readRow(ctx: AddonContext, activityId: string): Promise<ActivityDetails | null> {
+  const filters = { activityIds: [activityId] } as ActivitySearchFilters;
+  const res = await ctx.api.activities.search(0, 1, filters, '');
+  return (res.data ?? []).find((a) => a.id === activityId) ?? null;
+}
+
+const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+
+export async function appTxStory(ctx: AddonContext, store: StoryStore, target: AppStoryTarget, now: Date): Promise<AppStoryOutcome> {
+  let item: ActivityDetails | null;
+  try {
+    item = await readRow(ctx, target.activityId);
+  } catch {
+    return { kind: 'unreachable' };
+  }
+  if (!item) return { kind: 'gone' };
+  const row = item;
+  const failed: TxFactName[] = [];
+  const note = row.comment ?? '';
+  const txId = txIdFromComment(note);
+
+  const accounts = await ctx.api.accounts.getAll().catch(() => []);
+  const accountType = accounts.find((a) => a.id === row.accountId)?.accountType;
+
+  let mapping: Record<string, string> | null = null;
+  try {
+    mapping = (await store.getAccountMapping?.()) ?? {};
+  } catch {
+    failed.push('mapping');
+  }
+  const sfinId = mapping ? Object.entries(mapping).find(([, wfId]) => wfId === row.accountId)?.[0] ?? null : undefined;
+  const txKey = sfinId && txId ? accountTxKey(sfinId, txId) : null;
+
+  let entries: ChangeLogItem[] = [];
+  let history: ChangeLogItem[] | undefined;
+  if (store.getChangeLog) {
+    const read = await store.getChangeLog().catch(() => null);
+    if (read) {
+      entries = read.entries;
+      history = changesForTransaction(entries, { txKeys: txKey ? [txKey] : [], activityIds: [row.id] });
+    } else failed.push('changeLog');
+  }
+
+  let overrides: TxOverrideFlag[] = [];
+  if (store.readSyncOverrides) {
+    const loaded = await store.readSyncOverrides().catch(() => null);
+    if (!loaded) failed.push('overrides');
+    else if (loaded.unreadable) failed.push('overridesUnreadable');
+    else if (txKey) overrides = TX_OVERRIDE_FLAGS.filter((flag) => hasTxOverride(loaded.overrides, txKey, flag));
+  }
+
+  let skipped = false;
+  try {
+    const parsed = await store.readSkippedTransactions?.();
+    if (parsed?.kind === 'corrupt') failed.push('skipList');
+    else if (parsed?.kind === 'ok') skipped = !!sfinId && !!txId && parsed.list.some((s) => s.account === sfinId && s.txId === txId);
+  } catch {
+    failed.push('skipList');
+  }
+
+  // The other half of a transfer: the newest link in the log that is not
+  // undone, else the add-on's own ledger of pairs it linked.
+  let partner: TxStoryFacts['partner'] = null;
+  const link = [...(history ?? [])].reverse().find((e) => e.kind === 'transfer-link' && !e.reverses && !e.undone);
+  const legs = link && isRecord(link.after) && Array.isArray(link.after.legs) ? link.after.legs.filter(isRecord) : [];
+  const other = legs.find((l) => (txKey ? l.txKey !== txKey : l.activityId !== row.id));
+  if (other && typeof other.accountName === 'string') {
+    partner = { accountName: other.accountName };
+  } else if (txKey) {
+    const groups = await store.getLinkedGroups?.().catch(() => null);
+    const gid = groups?.[txKey];
+    const otherKey = gid ? Object.keys(groups!).find((k) => k !== txKey && groups![k] === gid) : undefined;
+    const otherWf = otherKey && mapping ? mapping[otherKey.split('\u0000')[0]] : undefined;
+    const name = otherWf ? accounts.find((a) => a.id === otherWf)?.name : undefined;
+    if (name) partner = { accountName: name };
+  }
+  // A row that IS grouped (when the host reports it) or transfer-typed, with no
+  // partner found, is not known to be ordinary money: leave that line out.
+  const grouped = !!(row as { sourceGroupId?: string | null }).sourceGroupId;
+  if (!partner && (grouped || isTransferType(String(row.activityType).toUpperCase()))) partner = undefined;
+
+  // Who filed it, as far as the add-on can see.
+  let category: TxStoryFacts['category'];
+  let needsCategory = false;
+  let filerHint: TxStoryFacts['filerHint'];
+  const fromCode = (code: string | undefined) => {
+    const f = decodeFiler(code);
+    return f ? withFilingDay(f, history) : null;
+  };
+  if (target.categoryName) {
+    category = { name: target.categoryName, filer: fromCode(target.filer) };
+  } else {
+    const cube = await store.getReportCube?.().catch(() => null);
+    for (const [name, list] of Object.entries(cube?.drill ?? {})) {
+      const hit = list.find((r) => r.i === row.id);
+      if (hit) {
+        category = { name, filer: fromCode(hit.f) };
+        break;
+      }
+    }
+    if (!category) {
+      const status = await store.getUncategorizedStatus?.().catch(() => null);
+      if (status?.rows.some((r) => r.activityId === row.id)) needsCategory = true;
+      else filerHint = (await store.getCompanionVersion?.().catch(() => null)) ? 'telegram' : 'wealthfolio';
+    }
+  }
+
+  const facts: TxStoryFacts = {
+    row: {
+      activityId: row.id,
+      note,
+      absCents: absCentsOf(row.amount),
+      date: isoDay(row.date),
+      activityType: String(row.activityType).toUpperCase(),
+      accountName: row.accountName ?? '',
+      ...(accountType ? { accountType: String(accountType) } : {}),
+    },
+    ...(sfinId === undefined ? {} : { feed: sfinId ? { sfinAccountId: sfinId } : null }),
+    partner,
+    ...(category ? { category } : {}),
+    needsCategory,
+    ...(filerHint ? { filerHint } : {}),
+    overrides,
+    skipped,
+    ...(history ? { history } : {}),
+    now,
+    failed,
+  };
+  return { kind: 'ok', story: buildTxStory(facts), entries };
+}
+
+const PAGE_SIZE = 500;
+const KEYWORD_MAX_PAGES = 10;
+const RECENT_MAX_PAGES = 20;
+
+export async function appTxSearch(ctx: AddonContext, query: TxQuery, now: Date): Promise<AppSearchOutcome> {
+  if (isEmptyTxQuery(query)) return { kind: 'ok', result: { rows: [], truncated: false } };
+  try {
+    const accounts = await ctx.api.accounts.getAll();
+    const typeOf = new Map(accounts.map((a) => [a.id, String(a.accountType ?? '')]));
+    const keyword = txSearchKeyword(query, accounts.map((a) => a.name ?? ''));
+    const cutoff = new Date(now.getTime() - TX_SEARCH_RECENT_DAYS * 86_400_000).toISOString().slice(0, 10);
+    const hits: TxSearchRow[] = [];
+    for (let page = 0; page < (keyword ? KEYWORD_MAX_PAGES : RECENT_MAX_PAGES); page++) {
+      const data = (await ctx.api.activities.search(page, PAGE_SIZE, {}, keyword ?? '', { id: 'date', desc: true })).data ?? [];
+      let pastCutoff = false;
+      for (const a of data) {
+        const date = isoDay(a.date);
+        if (!keyword && date < cutoff) {
+          pastCutoff = true;
+          continue;
+        }
+        const r: TxSearchRow = {
+          activityId: a.id,
+          date,
+          description: txDescription(a.comment),
+          amountCents: signedCents({ absCents: absCentsOf(a.amount), activityType: String(a.activityType), accountType: typeOf.get(a.accountId) }),
+          accountName: a.accountName ?? '',
+        };
+        if (matchesTxQuery(r, query)) hits.push(r);
+      }
+      // One past the cap is enough to say there were too many.
+      if (hits.length > TX_SEARCH_MAX_RESULTS || pastCutoff || data.length < PAGE_SIZE) break;
+    }
+    return { kind: 'ok', result: findTransactions(hits, query) };
+  } catch {
+    return { kind: 'unreachable' };
+  }
+}
