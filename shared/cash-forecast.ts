@@ -35,8 +35,9 @@ export const FORECAST_WARN_DAYS = 14;
 /** `/forecast` lists at most this many bills, then "…and N more". */
 export const FORECAST_REPLY_BILLS = 20;
 
-/** One CASH account the forecast counted: its bank balance and that balance's (UTC) day. */
-export interface ForecastAccount { name: string; cents: number; asOf: string }
+/** One CASH account the forecast counted: its bank balance and that balance's
+ *  (UTC) day, or null when the bank sent no usable date (unknown, never judged stale or fresh). */
+export interface ForecastAccount { name: string; cents: number; asOf: string | null }
 
 export interface CashForecastOk {
   v: 1;
@@ -53,7 +54,7 @@ export interface CashForecastOk {
   dailySpendCents: number;
   accounts: ForecastAccount[];
   bills: ForecastCharge[];
-  /** CASH accounts left out because the bank sent no balance. Absent when none. */
+  /** CASH accounts left out because the bank sent no numeric balance. Absent when none. */
   missing?: string[];
 }
 
@@ -108,8 +109,10 @@ export function parseCashForecast(raw: string | null | undefined): CashForecastR
   if (v.ok !== true) return corrupt;
   if (!isInt(v.cashCents) || !isInt(v.lowCents) || !isInt(v.dailySpendCents)) return corrupt;
   if (!isDay(v.lowDate) || (v.shortDate !== undefined && !isDay(v.shortDate))) return corrupt;
+  // A short day exists exactly when the low point is below $0.
+  if ((v.shortDate !== undefined) !== (v.lowCents < 0)) return corrupt;
   if (!isInt(v.days) || v.days < 1 || !isInt(v.basedOnMonths) || v.basedOnMonths < 1 || v.basedOnMonths > 3) return corrupt;
-  if (!Array.isArray(v.accounts) || !v.accounts.every((a: unknown) => isObject(a) && typeof a.name === 'string' && isInt(a.cents) && isDay(a.asOf))) return corrupt;
+  if (!Array.isArray(v.accounts) || !v.accounts.every((a: unknown) => isObject(a) && typeof a.name === 'string' && isInt(a.cents) && (a.asOf === null || isDay(a.asOf)))) return corrupt;
   if (!Array.isArray(v.bills) || !v.bills.every((b: unknown) => isObject(b) && typeof b.name === 'string' && isInt(b.cents) && isDay(b.date))) return corrupt;
   if (v.missing !== undefined && !(Array.isArray(v.missing) && v.missing.every((m: unknown) => typeof m === 'string'))) return corrupt;
   return { kind: 'ok', forecast: v as CashForecastOk };
@@ -200,10 +203,14 @@ export function forecastCashLine(f: CashForecastOk): string {
 }
 
 /** "PNC Checking · $2,481.07", plus " · Balance from Oct 9" when the bank's
- *  balance is more than BALANCE_STALE_DAYS older than the forecast. Raw. */
+ *  balance is more than BALANCE_STALE_DAYS older than the forecast, or
+ *  " · balance date unknown" when the bank sent no usable date (only known
+ *  dates are judged). Raw. */
 export function forecastAccountLine(a: ForecastAccount, f: CashForecastOk): string {
+  const money = `${a.name} · ${rosterMoney(a.cents)}`;
+  if (a.asOf === null) return `${money} · balance date unknown`;
   const old = daysBetween(a.asOf, f.at.slice(0, 10)) > BALANCE_STALE_DAYS;
-  return `${a.name} · ${rosterMoney(a.cents)}${old ? ` · Balance from ${shortDate(a.asOf)}` : ''}`;
+  return `${money}${old ? ` · Balance from ${shortDate(a.asOf)}` : ''}`;
 }
 
 /** A CASH account the forecast had to leave out. Raw. */
