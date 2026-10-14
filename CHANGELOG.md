@@ -27,6 +27,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Budget drill-down rows carry their transaction and who filed it, so they
   open a story once the companion is updated; rows from an older companion
   stay as they were.
+- **Audits without SSH — explain.** The checks that used to need the server's
+  `companion/tools` scripts, read-only, in Telegram and the app:
+  - **Why a balance is off.** The bank's figure against Wealthfolio's (a
+    card's is its whole ledger, pending included), and what makes up the
+    gap: pending transactions the bank hasn't posted, transactions newer than
+    the bank's figure, a transfer held waiting for its other half, a card
+    payment (or transfer) still unlinked, a transfer out Wealthfolio never
+    took out of the balance — and whatever none of those explains. Plus the
+    starting balance and corrections the balance includes.
+  - **Why the month's spending differs from Wealthfolio's.** The report's
+    "Spent this month" against Wealthfolio's Spending page, split into the
+    six known reasons (rows at midnight UTC on the 1st, rows after today, the
+    add-on's own bookkeeping rows, excluded categories, rows filed twice,
+    refunds with no category), each with its rows, and the rest.
+  - **What Wealthfolio's Health page flags** of the things the add-on checks:
+    incomplete transfer legs (with the likely other half when exactly one row
+    fits, both ways), starting balances dated after an account's first
+    transaction, and older rows on a `$CASH` asset — each with what to do.
+  - In Telegram, `/audit` runs them live on every tap; `/status` puts a 🔎
+    under each account that is off. In the app, an account's "off by" chip
+    opens why in place, the Budget tab has "Why is this different from
+    Wealthfolio?", and **Settings → Checks** lists Health's issues — from a
+    snapshot the companion publishes after each sync, which says when it was
+    taken and when it is out of date or unreadable. Home's Accounts tile
+    points at the checks when there is something to look at.
 
 ### Fixed
 - **The "Opening balances" spending exclusion is re-applied.** It was only set
