@@ -85,6 +85,32 @@ describe('UncategorizedList', () => {
   });
 });
 
+describe('UncategorizedList — a row opens its story (1.61)', () => {
+  it('turns each description into a button that opens the story under the row, and closes it again', () => {
+    const renderStory = vi.fn((t: { activityId: string }) => <div>story of {t.activityId}</div>);
+    render(<UncategorizedList {...base} renderStory={renderStory} />);
+    const open = screen.getByRole('button', { name: /^Thankyou Points Redeemed/ });
+    expect(open.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(open);
+    expect(screen.getByText('story of a')).toBeTruthy();
+    expect(renderStory).toHaveBeenCalledWith({ activityId: 'a' });
+    fireEvent.click(open);
+    expect(screen.queryByText('story of a')).toBeNull();
+  });
+
+  it('keeps Dismiss working beside it', () => {
+    const onDismiss = vi.fn();
+    render(<UncategorizedList {...base} onDismiss={onDismiss} renderStory={() => null} />);
+    fireEvent.click(screen.getByRole('button', { name: /dismiss/i }));
+    expect(onDismiss).toHaveBeenCalledWith('a');
+  });
+
+  it('without a story to tell, a row stays plain text', () => {
+    render(<UncategorizedList {...base} />);
+    expect(screen.queryByRole('button', { name: /^Thankyou Points Redeemed/ })).toBeNull();
+  });
+});
+
 describe('useDismissals', () => {
   beforeEach(() => {
     vi.useFakeTimers();
