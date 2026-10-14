@@ -51,14 +51,18 @@ export interface TxSearchRow {
 /** The first token that reads as an amount is the amount; everything else,
  *  including a second amount-looking token, is a word. */
 export function parseTxQuery(text: string): TxQuery {
-  const words: string[] = [];
-  let amount: TxAmountQuery | null = null;
-  for (const token of (text ?? '').trim().split(/\s+/).filter(Boolean)) {
-    const read: TxAmountQuery | null = amount ? null : readAmount(token);
-    if (read) amount = read;
-    else words.push(token.toLowerCase());
-  }
-  return { words, amount };
+  const tokens = (text ?? '').trim().split(/\s+/).filter(Boolean);
+  const reads = tokens.map(readAmount);
+  // The amount: the first token written with a $, else the first with cents,
+  // else the last amount-like one ("kroger 415 54.20" is $54.20 at store 415).
+  const likes = tokens.map((t, i) => i).filter((i) => reads[i]);
+  const at = likes.find((i) => tokens[i].includes('$'))
+    ?? likes.find((i) => tokens[i].includes('.'))
+    ?? likes[likes.length - 1];
+  return {
+    words: tokens.filter((_, i) => i !== at).map((t) => t.toLowerCase()),
+    amount: at === undefined ? null : reads[at],
+  };
 }
 
 function readAmount(token: string): TxAmountQuery | null {
@@ -74,12 +78,11 @@ export function isEmptyTxQuery(q: TxQuery): boolean {
   return q.words.length === 0 && q.amount === null;
 }
 
-/** A query as one line of text: the amount, then the words. The amount goes
- *  FIRST because `parseTxQuery` takes the first amount-like token as the
- *  amount, so this text parses back to the same query ("kroger 415 54.20"
- *  keeps 415 as its amount). */
+/** A query as one line of text: `$amount` FIRST, then the words. A $ token
+ *  always wins `parseTxQuery`'s choice, so this text parses back to the same
+ *  query. */
 export function txQueryText(q: TxQuery): string {
-  return [...(q.amount ? [q.amount.text] : []), ...q.words].join(' ');
+  return [...(q.amount ? [`$${q.amount.text}`] : []), ...q.words].join(' ');
 }
 
 export function matchesTxQuery(row: Pick<TxSearchRow, 'description' | 'accountName' | 'amountCents'>, q: TxQuery): boolean {

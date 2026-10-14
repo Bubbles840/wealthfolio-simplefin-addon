@@ -2573,9 +2573,9 @@ describe('buildTelegramCommandHandler', () => {
       const { client } = clientFor();
       const sent: Array<[string, any]> = [];
       await buildTelegramCommandHandler(client)({ command: 'why', args: 'Kroger 54.20' }, async (t, k) => { sent.push([t, k]); });
-      expect(sent[0][0]).toBe('🔎 *Why is this here?* 54.20 kroger\n\nTap one to see its story.');
+      expect(sent[0][0]).toBe('🔎 *Why is this here?* $54.20 kroger\n\nTap one to see its story.');
       expect(sent[0][1].inline_keyboard[0][0]).toEqual({
-        text: 'Oct 4 · KROGER #415 · -$54.20 · PNC Checking', callback_data: 'cz:wy:tact-1:s0:54.20 kroger',
+        text: 'Oct 4 · KROGER #415 · -$54.20 · PNC Checking', callback_data: 'cz:wy:tact-1:s0:$54.20 kroger',
       });
     });
 

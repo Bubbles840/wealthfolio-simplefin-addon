@@ -40,13 +40,13 @@ const storyFor = (over: Partial<TxStory> = {}): TxStory => ({
 
 describe('normalizeWhyQuery', () => {
   it('keeps a short query as words then the amount', () => {
-    expect(normalizeWhyQuery('  $54.20   Kroger ')).toBe('54.20 kroger');
+    expect(normalizeWhyQuery('  $54.20   Kroger ')).toBe('$54.20 kroger');
   });
 
   it('drops words from the end, keeping the amount, until it fits', () => {
     const q = normalizeWhyQuery('heine brothers coffee shop 12.50');
     expect(bytes(q)).toBeLessThanOrEqual(WHY_QUERY_MAX_BYTES);
-    expect(q).toBe('12.50 heine');
+    expect(q).toBe('$12.50 heine');
   });
 
   it('cuts one long word at a character, never mid-byte', () => {
@@ -57,7 +57,7 @@ describe('normalizeWhyQuery', () => {
 });
 
 describe('a canonical query parses back to the same query', () => {
-  it.each(['kroger 415 54.20', '7 eleven 5.43', '54.20', 'kroger', '$1,250.50 rent', 'heine brothers coffee shop 12.50'])('%s', (t) => {
+  it.each(['kroger 415 54.20', '7 eleven 5.43', 'kroger 415 54', '$415 kroger 54.20', '54.20', 'kroger', '$1,250.50 rent', 'heine brothers coffee shop 12.50'])('%s', (t) => {
     const q = parseTxQuery(t);
     const n = normalizeWhyQuery(t);
     if (bytes(txQueryText(q)) <= WHY_QUERY_MAX_BYTES) expect(parseTxQuery(n)).toEqual(q);
@@ -65,7 +65,7 @@ describe('a canonical query parses back to the same query', () => {
   });
 
   it('pages and Back keep two amount-like tokens: the same rows are listed', async () => {
-    const rows = [{ activityId: ID, date: '2026-10-04', description: 'KROGER 54.20', amountCents: -41500, accountName: 'PNC Checking' }];
+    const rows = [{ activityId: ID, date: '2026-10-04', description: 'KROGER #415', amountCents: -5420, accountName: 'PNC Checking' }];
     const search = vi.fn(async (q: ReturnType<typeof parseTxQuery>) => ({
       kind: 'ok' as const, result: { rows: rows.filter((r) => matchesTxQuery(r, q)), truncated: false }, recentOnly: false,
     }));

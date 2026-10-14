@@ -29,7 +29,7 @@ describe('parseTxQuery', () => {
 
   it('reads words only, and keeps a second amount-looking token as a word', () => {
     expect(parseTxQuery('venmo jane')).toEqual({ words: ['venmo', 'jane'], amount: null });
-    expect(parseTxQuery('20 30')).toEqual({ words: ['30'], amount: { minCents: 2000, maxCents: 2099, text: '20' } });
+    expect(parseTxQuery('20 30')).toEqual({ words: ['20'], amount: { minCents: 3000, maxCents: 3099, text: '30' } });
   });
 
   it('ignores a sign: an amount matches money in and money out', () => {
@@ -41,8 +41,17 @@ describe('parseTxQuery', () => {
     expect(isEmptyTxQuery(parseTxQuery('54'))).toBe(false);
   });
 
-  it('writes a query back as words then the amount', () => {
-    expect(txQueryText(parseTxQuery('$54.20 Kroger'))).toBe('54.20 kroger');
+  it('picks the amount: the first $, else the first with cents, else the last', () => {
+    expect(parseTxQuery('kroger 415 54.20')).toEqual({ words: ['kroger', '415'], amount: { minCents: 5420, maxCents: 5420, text: '54.20' } });
+    expect(parseTxQuery('kroger 415 54').amount?.text).toBe('54');
+    expect(parseTxQuery('$415 kroger 54.20')).toEqual({ words: ['kroger', '54.20'], amount: { minCents: 41500, maxCents: 41599, text: '415' } });
+  });
+
+  it('writes a query back as $amount then the words, and that parses to the same query', () => {
+    expect(txQueryText(parseTxQuery('$54.20 Kroger'))).toBe('$54.20 kroger');
+    for (const t of ['kroger 415 54.20', '7 eleven 5.43', 'kroger 415 54', '$415 kroger 54.20', '54.20', 'kroger', '$1,250.50 rent']) {
+      expect(parseTxQuery(txQueryText(parseTxQuery(t)))).toEqual(parseTxQuery(t));
+    }
   });
 });
 
