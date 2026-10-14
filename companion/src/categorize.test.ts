@@ -1035,6 +1035,41 @@ describe('rules', () => {
     expect(recorded).toEqual([]);
   });
 
+  it('toggled to Only and back to All accounts, Create sends no accountId — a global rule (3)', async () => {
+    const h = setup({ rows: [ODD] });
+    const filed = await openAtFiled(h, 'TRADER JOE*S');
+    await h.tap(dataFor(filed, 'Make this a rule'));
+    await h.tap(dataFor(keyboardOf(lastCall(h.ui.edit)), 'Only Citi Double Cash'));
+    expect(labels(keyboardOf(lastCall(h.ui.edit)))).toEqual(['Create rule', 'All accounts', '✓ Only Citi Double Cash', '‹ Back']);
+    await h.tap(dataFor(keyboardOf(lastCall(h.ui.edit)), 'All accounts'));
+    expect(labels(keyboardOf(lastCall(h.ui.edit)))).toEqual(['Create rule', '✓ All accounts', 'Only Citi Double Cash', '‹ Back']);
+    expect(lastCall(h.ui.edit)[0].split('\n')[1]).toBe('Descriptions containing "TRADER JOE\\*S" → Entertainment');
+    await h.tap(dataFor(keyboardOf(lastCall(h.ui.edit)), 'Create rule'));
+    expect(h.deps.createRule).toHaveBeenCalledTimes(1);
+    expect(h.deps.createRule.mock.calls[0][0]).toEqual({ name: 'Telegram: TRADER JOE*S', pattern: 'TRADER JOE*S', categoryId: 'cat-fun' });
+    expect('accountId' in h.deps.createRule.mock.calls[0][0]).toBe(false);
+    expect(lastCall(h.ui.edit)[0]).toBe('Rule created — future matches will file automatically under Entertainment.');
+  });
+
+  it('the toggle works on /newrule’s free preview: widened to All accounts, then back to Only (3)', async () => {
+    const h = setup();
+    await h.controller.openRulePreview('venmo', 'cat-fun', h.send, { id: 'wf-chk', name: 'PNC Checking' });
+    // The free preview is SENT; every tap after it edits that message.
+    await h.tap(dataFor(keyboardOf(lastCall(h.send)), 'All accounts'));
+    expect(labels(keyboardOf(lastCall(h.ui.edit)))).toEqual(['Create rule', '✓ All accounts', 'Only PNC Checking', 'Cancel']);
+    expect(lastCall(h.ui.edit)[0].split('\n')[1]).toBe('Descriptions containing "venmo" → Entertainment');
+    await h.tap(dataFor(keyboardOf(lastCall(h.ui.edit)), 'Create rule'));
+    expect(h.deps.createRule.mock.calls[0][0]).toEqual({ name: 'Telegram: venmo', pattern: 'venmo', categoryId: 'cat-fun' });
+
+    const again = setup();
+    await again.controller.openRulePreview('venmo', 'cat-fun', again.send, { id: 'wf-chk', name: 'PNC Checking' });
+    await again.tap(dataFor(keyboardOf(lastCall(again.send)), 'All accounts'));
+    await again.tap(dataFor(keyboardOf(lastCall(again.ui.edit)), 'Only PNC Checking'));
+    expect(labels(keyboardOf(lastCall(again.ui.edit)))).toEqual(['Create rule', 'All accounts', '✓ Only PNC Checking', 'Cancel']);
+    await again.tap(dataFor(keyboardOf(lastCall(again.ui.edit)), 'Create rule'));
+    expect(again.deps.createRule).toHaveBeenCalledWith({ name: 'Telegram: venmo', pattern: 'venmo', categoryId: 'cat-fun', accountId: 'wf-chk' });
+  });
+
   it('/newrule naming an account opens scoped to it (3)', async () => {
     const h = setup();
     await h.controller.openRulePreview('venmo', 'cat-fun', h.send, { id: 'wf-chk', name: 'PNC Checking' });
