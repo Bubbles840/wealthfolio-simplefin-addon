@@ -215,8 +215,8 @@ describe('linkPairs', () => {
   const goneIo = (over: Partial<LinkIo>) => fakeIo({ read: vi.fn()
     .mockImplementationOnce(async (p: LinkPair) => [{ row: row(p.leg), linked: false }, { row: row(p.counterpart), linked: false }])
     .mockImplementation(async () => [null, null]), ...over });
-  const OUT_WRITE = { accountId: 'wf-chk', activityType: 'TRANSFER_OUT', activityDate: '2026-10-04', amount: 600, currency: 'USD', comment: 'TRANSFER TO ALLY · TRN-1' };
-  const IN_WRITE = { accountId: 'wf-ally', activityType: 'DEPOSIT', activityDate: '2026-10-05', symbol: { symbol: '$CASH-USD' }, amount: 600, currency: 'USD', comment: 'FROM PNC · TRN-2' };
+  const OUT_WRITE = { accountId: 'wf-chk', activityType: 'TRANSFER_OUT', activityDate: '2026-10-04T12:00:00Z', amount: 600, currency: 'USD', comment: 'TRANSFER TO ALLY · TRN-1' };
+  const IN_WRITE = { accountId: 'wf-ally', activityType: 'DEPOSIT', activityDate: '2026-10-05T12:00:00Z', symbol: { symbol: '$CASH-USD' }, amount: 600, currency: 'USD', comment: 'FROM PNC · TRN-2' };
 
   it('puts both rows back exactly when Wealthfolio refuses the re-create after the delete went through', async () => {
     const f = goneIo({ link: vi.fn(async () => ({ linked: false, problems: ['save (create): not supported for this account'] })) });

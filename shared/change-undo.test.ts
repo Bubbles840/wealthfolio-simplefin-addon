@@ -434,7 +434,7 @@ describe('planChangeUndo — sync decisions', () => {
     const labelled = row({ id: 'act-4', accountId: 'wf-citi', absCents: 1080, date: '2026-09-15', comment: 'AMAZON MKTPL*2K4 · Amazon: Hair Care · TRN-a1b2' });
     expect(ok(planChangeUndo(label, 'undo', { row: labelled, currency: 'USD' }, { latest: null })).steps).toEqual([
       { do: 'set-tx', txKey: CARD_KEY, flag: 'noAmazonLabel', label: 'AMAZON MKTPL*2K4 · Citi Card' },
-      { do: 'update', write: { id: 'act-4', accountId: 'wf-citi', activityType: 'WITHDRAWAL', activityDate: '2026-09-15', amount: 10.8, currency: 'USD', comment: 'AMAZON MKTPL*2K4 · TRN-a1b2' } },
+      { do: 'update', write: { id: 'act-4', accountId: 'wf-citi', activityType: 'WITHDRAWAL', activityDate: '2026-09-15T12:00:00Z', amount: 10.8, currency: 'USD', comment: 'AMAZON MKTPL*2K4 · TRN-a1b2' } },
     ]);
     expect(reason(planChangeUndo(label, 'undo', { row: { ...labelled, comment: 'edited by hand' } }, { latest: null }))).toBe('It has changed since — nothing was undone.');
     expect(reason(planChangeUndo(label, 'undo', { row: { ...labelled, linked: 'confirmed' } }, { latest: null }))).toBe(UNDO_LINKED_REFUSAL);
@@ -456,7 +456,7 @@ describe('planChangeUndo — sync decisions', () => {
     expect(plan).toMatchObject({ needsSync: false, rowAfter: 'act-6', done: 'Undone — the note is off, and stays off.' });
     expect(plan.steps).toEqual([
       { do: 'set-tx', txKey: KEY, flag: 'noVenmoNote', label: 'VENMO PAYMENT 1023 · Checking' },
-      { do: 'update', write: { id: 'act-6', accountId: 'wf-checking', activityType: 'WITHDRAWAL', activityDate: '2026-10-04', amount: 25, currency: 'USD', comment: 'VENMO PAYMENT 1023 · TRN-a1b2' } },
+      { do: 'update', write: { id: 'act-6', accountId: 'wf-checking', activityType: 'WITHDRAWAL', activityDate: '2026-10-04T12:00:00Z', amount: 25, currency: 'USD', comment: 'VENMO PAYMENT 1023 · TRN-a1b2' } },
     ]);
     expect(reason(planChangeUndo(venmo, 'undo', { row: { ...noted, comment: 'edited by hand' } }, { latest: null }))).toBe('It has changed since — nothing was undone.');
     expect(reason(planChangeUndo(venmo, 'undo', { row: { ...noted, linked: 'confirmed' } }, { latest: null }))).toBe(UNDO_LINKED_REFUSAL);

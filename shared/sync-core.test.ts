@@ -872,7 +872,7 @@ describe('runSyncCore', () => {
       // offer used to write DEPOSIT and quietly turn the opening balance back
       // into income.
       activityType: 'CREDIT',
-      activityDate: '2023-11-01',
+      activityDate: '2023-11-01T12:00:00Z',
       amount: 10055.12,
       comment: 'Starting balance · sfin-1',
     });
@@ -2507,7 +2507,7 @@ describe('runSyncCore + Amazon order categories', () => {
     const updates = saved.flatMap((s) => s.updates ?? []).filter((u) => u.id === 'act-amz');
     expect(updates).toEqual([expect.objectContaining({
       comment: 'AMAZON.COM*MB3T81 · Amazon: Lawn & Garden · tx-amz',
-      activityType: 'WITHDRAWAL', activityDate: '2026-08-06', amount: 21.18,
+      activityType: 'WITHDRAWAL', activityDate: '2026-08-06T12:00:00Z', amount: 21.18,
     })]);
   });
 
@@ -3715,7 +3715,7 @@ describe('the starting balance stays the OLDEST row (v1.54)', () => {
     });
     await runSyncCore(host, store, {});
     const updates = saved.flatMap((s) => s.updates ?? []).filter((u) => u.id === 'act-start');
-    expect(updates.at(-1)).toMatchObject({ activityDate: '2026-04-22', activityType: 'CREDIT' });
+    expect(updates.at(-1)).toMatchObject({ activityDate: '2026-04-22T12:00:00Z', activityType: 'CREDIT' });
     expect(updates.at(-1)!.amount).toBeCloseTo(5800.38, 2);
   });
 
@@ -3737,7 +3737,7 @@ describe('the starting balance stays the OLDEST row (v1.54)', () => {
     await runSyncCore(host, store, { force: true });
     const updates = saved.flatMap((s) => s.updates ?? []).filter((u) => u.id === 'act-start');
     expect(updates).toHaveLength(1);
-    expect(updates[0]).toMatchObject({ activityDate: '2026-04-22', activityType: 'CREDIT', amount: 4500.38 });
+    expect(updates[0]).toMatchObject({ activityDate: '2026-04-22T12:00:00Z', activityType: 'CREDIT', amount: 4500.38 });
     // Omitted, so the stored asset is left exactly as it is.
     expect(updates[0].symbol).toBeUndefined();
   });
@@ -3780,7 +3780,7 @@ describe('the starting balance stays the OLDEST row (v1.54)', () => {
     const update = saved.flatMap((s) => s.updates ?? []).filter((u) => u.id === 'act-start').at(-1)!;
     // Rewritten as a WITHDRAWAL: a stored TRANSFER_OUT (possible only from
     // before Wealthfolio 3.8) cannot be written back on a card.
-    expect(update).toMatchObject({ activityType: 'WITHDRAWAL', amount: 450, activityDate: '2026-04-22' });
+    expect(update).toMatchObject({ activityType: 'WITHDRAWAL', amount: 450, activityDate: '2026-04-22T12:00:00Z' });
   });
 });
 
@@ -3813,7 +3813,7 @@ describe("the sync's own unlinked transfer rows are marked external (v1.54)", ()
     ]));
     await runSyncCore(host, store, { force: true });
     const byId = new Map(saved.flatMap((s) => s.updates ?? []).map((u) => [u.id, u]));
-    expect(byId.get('sb')).toMatchObject({ metadata: EXTERNAL, activityType: 'TRANSFER_IN', amount: 235.4, activityDate: '2026-04-18', comment: 'Starting balance · sfin-1' });
+    expect(byId.get('sb')).toMatchObject({ metadata: EXTERNAL, activityType: 'TRANSFER_IN', amount: 235.4, activityDate: '2026-04-18T12:00:00Z', comment: 'Starting balance · sfin-1' });
     expect(byId.get('plug')).toMatchObject({ metadata: EXTERNAL, activityType: 'TRANSFER_IN', amount: 80 });
     expect(byId.get('ph')).toMatchObject({ metadata: EXTERNAL, activityType: 'TRANSFER_IN', amount: 700 });
     for (const id of ['sb', 'plug', 'ph']) expect(byId.get(id)!.symbol).toBeUndefined();
@@ -3896,7 +3896,7 @@ describe('planAmazonLateLabels', () => {
 
   it('labels the sync\'s own note and passes everything else through unchanged', () => {
     expect(planAmazonLateLabels([row()], labelled, 'USD')).toEqual([{
-      id: 'act-amz', accountId: 'wf-a', activityType: 'WITHDRAWAL', activityDate: '2026-08-06',
+      id: 'act-amz', accountId: 'wf-a', activityType: 'WITHDRAWAL', activityDate: '2026-08-06T12:00:00Z',
       amount: 21.18, currency: 'USD', comment: 'AMAZON.COM*MB3T81 · Amazon: Lawn & Garden · tx-amz',
     }]);
   });
