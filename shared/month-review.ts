@@ -23,7 +23,8 @@
  */
 import type { ChangeLogRead } from './change-log.js';
 import { changeLocalDay, isBackground, isChangeLogPartial } from './change-view.js';
-import { monthlyIncomeTotals, monthlySpendTotals, type ReportCube } from './report-cube.js';
+import { savingsRateData } from './report-data.js';
+import type { ReportCube } from './report-cube.js';
 import { rosterMoney, rosterPrice, type Roster, type RosterEntry } from './subscription-roster.js';
 import type { DetectedSubscription } from './subscriptions.js';
 import { escapeMarkdown, moneyWhole, shortDate } from './telegram.js';
@@ -91,9 +92,9 @@ export function buildMonthReview(input: MonthReviewInput): MonthReview {
       .sort((a, b) => b.cents - a.cents || a.name.localeCompare(b.name))
       .slice(0, REVIEW_TOP)
       .map(({ name, cents }) => ({ name, cents })));
-    const income = monthlyIncomeTotals(cube)[mi];
-    const spent = monthlySpendTotals(cube)[mi];
-    if (income > 0) savingsRatePct = Math.round(((income - spent) / income) * 100);
+    // The Budget tab's own figure (one decimal, then the headline's round).
+    const rate = savingsRateData(cube)[mi].rate;
+    if (rate !== null) savingsRatePct = Math.round(rate);
   }
 
   let newSubs: MonthReview['newSubs'] = null;
@@ -106,11 +107,11 @@ export function buildMonthReview(input: MonthReviewInput): MonthReview {
       newSubs = orNull(entries.flatMap((entry) => {
         const d = detected.get(entry.source === 'detected' ? entry.key : entry.bankName ?? entry.displayName);
         const since = d ? firstCharge(d) : null;
-        if (!d || !since || d.lastDate.slice(0, 7) !== month) return [];
+        if (!d || !since || !(d.recent ?? []).some((c) => c.date.slice(0, 7) === month)) return [];
         return since.slice(0, 7) === month || since.slice(0, 7) === previous ? [{ entry, since }] : [];
       }));
     }
-    gone = orNull(entries.filter((e) => !!e.overdueSince && e.overdueSince.slice(0, 7) <= month));
+    gone = orNull(entries.filter((e) => !!e.overdueSince && e.overdueSince.slice(0, 7) === month));
     rose = orNull(entries.filter((e) => !!e.creep && e.creep.chargedOn.slice(0, 7) === month));
   }
 
