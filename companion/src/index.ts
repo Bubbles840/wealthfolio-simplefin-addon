@@ -111,6 +111,8 @@ import { addDaysIso, dueWithin, formatRosterTotal, manualKey, rosterMoney, type 
 import { REPORT_CUBE_SECRET_KEY, parseReportCube } from '../../shared/report-cube.js';
 import { companionAuditReaders, publishAuditSnapshot } from './audit-facts.js';
 import { auditMenuDeps, auditStatusKeyboard, createAuditMenu, type AuditMenu } from './audit-menu.js';
+import { companionLinkIo } from './audit-fix-host.js';
+import { linkPairs } from '../../shared/audit-link.js';
 import { addManual, editSubscriptionPrefs, emptySubscriptionPrefs, isUnreadablePrefsError, loadSubscriptionPrefs, newManualId, renameKey, setRemind, SubscriptionPrefsInvalidError, type ManualSubscription, type RemindDays, type SecretGet, type SecretSet, type SubscriptionEdit } from '../../shared/subscription-prefs.js';
 import { renderReportSvg, reportImageTitle, reportImageCaption, RENDERABLE_REPORT_IDS } from '../../shared/report-render.js';
 import { createAskSessions, CANCELLED, CANCELLED_EARLIER, NOT_WAITING, type AskSessions } from './ask-session.js';
@@ -3036,7 +3038,11 @@ export function buildWhyMenu(wfClient: WealthfolioClient): WhyMenu {
  * `/status`'s 🔎 buttons can share one instance or build their own.
  */
 export function buildAuditMenu(wfClient: WealthfolioClient): AuditMenu {
-  return createAuditMenu(auditMenuDeps(companionAuditReaders(wfClient, wealthfolioDbPath()), log));
+  return createAuditMenu({
+    ...auditMenuDeps(companionAuditReaders(wfClient, wealthfolioDbPath()), log),
+    // R2: Link on the Health list, through the sync's own linker.
+    link: (pairs) => linkPairs(pairs, companionLinkIo(wfClient, log)),
+  });
 }
 
 /**
