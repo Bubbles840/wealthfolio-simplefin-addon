@@ -797,20 +797,23 @@ What R2 deliberately leaves open:
   rows again by id, writes back any that are gone, and names what may have
   been lost; but a connection lost between the two requests can still leave
   rows deleted until the next sync re-imports what the bank still sends, and
-  a lost response after a committed create can read as "deleted" when the
-  pair is linked. SDK 3.9's `activities.linkTransfer` links in place and
-  would close the window, but it needs new add-on permissions: Nick's call.
-- **Money leaving a card is not linked** unless the card already stores it as
-  a TRANSFER_OUT (Wealthfolio 3.10): 3.8 and 3.9 accept none on a card
-  (v1.55), and a WITHDRAWAL is never half of a valid pair.
+  a lost response after a committed create leaves the linked pair plus the
+  written-back originals (on 3.8, or with a fee that gets past 3.10's
+  duplicate check) — the message then says to check both accounts. SDK
+  3.9's `activities.linkTransfer` links in place and would close the window,
+  but it needs new add-on permissions: Nick's call.
+- **Money leaving a card is never linked**, whatever type the card stores it
+  as — a TRANSFER_OUT on 3.10 included: the sync never links money leaving a
+  card, 3.8 and 3.9 accept no TRANSFER_OUT on one (v1.55), and a WITHDRAWAL
+  is never half of a valid pair.
 - **The app links from a snapshot.** It re-reads both rows by id first. A
   transfer leg a link has marked since (`flow.is_external: false`), or one
   whose metadata the host did not report, may be linked and is refused; a pair
   the card linked hides its button until the next snapshot.
 - **Remove for good refuses a pending row**: SimpleFin often gives a pending
   transaction a new id when it posts, so skipping the pending id would not
-  keep the posted copy out. It also refuses a $0 row (Undo could not put it
-  back).
+  keep the posted copy out. It also refuses, and never offers, a $0 row
+  (Undo could not put it back).
 - **The app never removes a transfer-typed row**: the SDK cannot be counted
   on to report groups. `/why`, which reads them, can remove an unlinked one.
 - **Remove's Undo writes the row back as the bank feed wrote it.** A category
@@ -819,10 +822,17 @@ What R2 deliberately leaves open:
 - **The exact-id read is Wealthfolio 3.8's** (`activityIds` / `activityIdFilter`);
   an older host ignores it, and a fix then reads the row as changed and
   writes nothing.
-- **A companion-side sync is not behind the add-on's write lock.** The lock
-  covers the add-on's syncs, Link and Remove; the add-on's `linked_groups` is
-  still a copy a companion write can outdate, and the add-on's sync then
-  treats a pair the companion linked as one it did not link.
+- **One lock per host, none across them.** The add-on's write lock covers its
+  syncs, Link, Remove and the Change log's Undo/Redo; the companion makes its
+  own sync and Telegram's Link, Remove and a removal's Undo/Redo take turns.
+  Neither covers the other host: the companion's sync and Telegram's
+  Link/Remove are not behind the add-on's lock, and the add-on's sync and the
+  app's Link/Remove are not behind the companion's. So a fix on one host
+  racing a sync on the other can re-import a removed row once, or leave a
+  duplicate. The
+  add-on's `linked_groups` is also still a copy a companion write can
+  outdate, and the add-on's sync then treats a pair the companion linked as
+  one it did not link.
 - **Link all covers what the list shows**: what fits one Telegram message
   (clipped, a pair's button only if its line is on screen), what fits the
   snapshot in the app.
@@ -840,21 +850,13 @@ Minor, deferred (not fixed in R2):
 - Task 1: a dropped reason's cents vanish when `unexplainedCents` is null;
   unknown kinds still need cents/rows/more; coverage gaps (more absent, all
   reasons dropped, null passthrough, cents 0).
-- Task 2: a Redo whose delete fails after a half-done Undo says "off the skip
-  list again" though nothing was un-skipped; the corrupt-list Redo test cannot
-  fail; no tests for one-edit batching or the `findRow` fallback; dead
-  skip/unskip cases in `performStep`; the bare "Removed for good" string in
-  `change-undo-run.ts` (importing the constant makes a cycle
-  change-undo-run → tx-remove → fix-row → change-undo-run: move it to a leaf
-  module).
-- Task 3: the write-back reuses step `transfer-relink` (naming only); a
-  fee-bearing leg whose link response was lost after the create committed ends
-  as the linked pair plus both originals while the message says "Both rows
-  are back"; Link all hides "check both accounts" after a duplicate refusal;
-  the header overclaims "a request that throws wrote nothing".
-- Task 5: the companion's `feeds` uses bare `JSON.parse` (a `null` or array
-  secret reads as unreachable; `parseSecretJson` would be consistent).
+- Task 3: the write-back reuses step `transfer-relink` (naming only).
+- Task 4: a Redo of a removal skips only the keys the removal added; it
+  should skip every key (idempotent) and record what it added for the next
+  Undo, so a hand edit to the skip list between Undo and Redo is honoured.
 - Task 6: `report.notes` is counted but not clipped in Health's 4096 fit.
+- Task 8: a grouped row that contests an ungrouped leg's match still makes
+  that leg "many" (dropped from offers only after contest counting).
 
 ## Reference: name mismatches between the database, the REST API, and the SDK
 
