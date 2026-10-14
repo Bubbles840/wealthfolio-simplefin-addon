@@ -625,10 +625,12 @@ export const RECATEGORIZE_ENTRY_CALLBACK = 'cz:recat';
 
 /**
  * `/why`'s callback prefix (1.61; companion/src/why-menu.ts answers it). Here,
- * beside the other `cz:` payloads shared messages carry, because both syncers'
- * large-transaction alerts carry its 🔎 Why? button and `/changes` leads back
- * to a story through it. Written out for the reason `CATEGORIZE_ENTRY_CALLBACK`
- * is; a test asserts the two agree.
+ * beside the other `cz:` payloads shared messages carry, because the
+ * companion's large-transaction alert and import notice carry its 🔎 Why?
+ * button — only the companion's: the add-on sends both text-only, with no
+ * listener guaranteed to answer — and `/changes` leads back to a story through
+ * it. Written out for the reason `CATEGORIZE_ENTRY_CALLBACK` is; a test
+ * asserts the two agree.
  */
 export const WHY_CALLBACK_PREFIX = 'cz:wy:';
 export const WHY_BUTTON_TEXT = '🔎 Why?';

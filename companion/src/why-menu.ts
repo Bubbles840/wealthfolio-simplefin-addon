@@ -113,9 +113,10 @@ export function parseWhyData(data: string): WhyView | null {
 
 const bytes = (s: string) => new TextEncoder().encode(s).length;
 
-/** A search as buttons carry it: words then the amount, single-spaced. Too
- *  long, it loses words from the end — never the amount — and a single word
- *  too long loses characters. Either way it only ever matches MORE. */
+/** A search as buttons carry it: the amount first (`$<amount>`), then the
+ *  words, single-spaced. Too long, it loses words from the end — never the
+ *  amount — and a single word too long loses characters. Either way it only
+ *  ever matches MORE. */
 export function normalizeWhyQuery(raw: string): string {
   const q = parseTxQuery(raw);
   const words = [...q.words];

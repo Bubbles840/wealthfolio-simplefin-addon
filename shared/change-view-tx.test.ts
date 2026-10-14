@@ -15,11 +15,11 @@ const imported = (txKey: string, activityId: string, day: number, pending = fals
   account: CHECKING, txKey, activityId, description: 'KROGER #415', amountCents: -5420, date: '2026-10-01',
   pending, activityType: 'WITHDRAWAL',
 }), day);
-const posted = (newKey: string, oldKey: string, activityId: string, day: number) => item(bankUpdateChange({
+const posted = (newKey: string, oldKey: string | undefined, activityId: string, day: number) => item(bankUpdateChange({
   account: CHECKING, txKey: newKey, activityId, description: 'KROGER #415', amountCents: -5420,
   before: { absCents: 5420, date: '2026-10-01', pending: true, activityType: 'WITHDRAWAL' },
   after: { absCents: 5420, date: '2026-10-02', pending: false, activityType: 'WITHDRAWAL' },
-  previousTxKey: oldKey,
+  ...(oldKey ? { previousTxKey: oldKey } : {}),
 }), day);
 const filedOn = (activityId: string, day: number) => item(categoryFiledChange({
   actor: 'you', activityId, description: 'KROGER #415', before: null, after: { categoryId: 'cat-gro', categoryName: 'Groceries' },
@@ -36,8 +36,18 @@ describe('changesForTransaction', () => {
   });
 
   it('follows a pending row that posted under a new transaction id back to its pending import', () => {
-    const log = [posted('k-new', 'k-old', 'act-1', 6), imported('k-old', 'act-1', 2, true)];
-    const found = changesForTransaction(log, { txKeys: ['k-new'] });
+    // Its own activity id: only the old key the bank update records ties the two together.
+    const log = [posted('k-new', 'k-old', 'act-2', 6), imported('k-old', 'act-1', 2, true)];
+    const found = changesForTransaction(log, { txKeys: ['k-new'], activityIds: ['act-2'] });
+    expect(found.map((e) => e.summary)).toEqual([
+      'Imported KROGER #415 (pending)',
+      'Updated KROGER #415 from the bank: Oct 1 → Oct 2, posted',
+    ]);
+  });
+
+  it('follows a bank update to the pending import by activity id alone, with no old key recorded', () => {
+    const log = [posted('k-new', undefined, 'act-1', 6), imported('k-old', 'act-1', 2, true)];
+    const found = changesForTransaction(log, { txKeys: ['k-new'], activityIds: ['act-1'] });
     expect(found.map((e) => e.summary)).toEqual([
       'Imported KROGER #415 (pending)',
       'Updated KROGER #415 from the bank: Oct 1 → Oct 2, posted',
@@ -64,7 +74,11 @@ describe('changesForTransaction', () => {
       account: CHECKING, txKey: 'k-out', activityId: 'old-out', description: 'TRANSFER TO ALLY', amountCents: -60000,
       date: '2026-10-04', pending: false, activityType: 'WITHDRAWAL',
     }), 3);
-    const found = changesForTransaction([otherHalf, thisHalf, link(4)], { txKeys: ['k-out'], activityIds: ['new-out'] });
+    // A later entry about the OTHER leg's new row stays out too.
+    const otherLater = item(categoryFiledChange({
+      actor: 'you', activityId: 'new-in', description: 'TRANSFER FROM PNC', before: null, after: { categoryId: 'cat-sav', categoryName: 'Savings' },
+    }), 6);
+    const found = changesForTransaction([otherLater, otherHalf, thisHalf, link(4)], { txKeys: ['k-out'], activityIds: ['new-out'] });
     expect(found.map((e) => e.summary)).toEqual([
       'Imported TRANSFER TO ALLY',
       'Linked TRANSFER TO ALLY and TRANSFER FROM PNC as one transfer',
