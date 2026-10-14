@@ -1,9 +1,9 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { describe, it, expect, vi, onTestFinished } from 'vitest';
+import { beforeEach, describe, it, expect, vi, onTestFinished } from 'vitest';
 import { SyncPage } from './SyncPage';
 import { makeProps } from './test-props';
-import { AUDIT_AFTER_SYNC } from '../components/AuditViews';
+import { AUDIT_AFTER_SYNC, resetCheckFixes } from '../components/AuditViews';
 import { healthIssues } from '../../shared/audit-health';
 import type { AuditLedgerRow } from '../../shared/audit-ledger';
 import { buildAuditSnapshot, parseAuditSnapshot } from '../../shared/audit-snapshot';
@@ -57,6 +57,8 @@ const stored = () => [
 ];
 
 describe('Settings → Checks → Link', () => {
+  beforeEach(() => { resetCheckFixes(); });
+
   it('links the pair through the add-on, says so, and reads the snapshot again', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(LATER);

@@ -16,11 +16,12 @@
  */
 import type { ActivitySearchFilters, AddonContext } from '@wealthfolio/addon-sdk';
 import type { HealthLeg } from '../../shared/audit-health';
-import { linkPairs, type LinkIo, type LinkPair, type LinkRun, type ReadRow } from '../../shared/audit-link';
+import { linkPairs, LINK_DONE, type LinkIo, type LinkPair, type LinkRun, type ReadRow } from '../../shared/audit-link';
 import { fixRowOf, linkedState, type FixRow } from '../../shared/fix-row';
 import { txIdFromComment } from '../../shared/sync-core';
 import { AddonSyncHost } from './addon-host';
 import type { SecretsStore } from './secrets';
+import { beginLink, LINK_SYNC_RUNNING } from './write-lock';
 
 /** The store methods the fixes use, every one optional. */
 export type FixStore = Partial<Pick<SecretsStore,
@@ -39,10 +40,17 @@ async function readFixRow(ctx: AddonContext, activityId: string, types: Map<stri
   return hit ? fixRowOf(hit, types.get(hit.accountId) ?? '') : null;
 }
 
+/** The ledger as stored must be a plain object (the store's getter only JSON.parses, so an
+ *  array or a string would otherwise read as "no pairs" and be written over). */
+function plainLedger(v: unknown): Record<string, string> {
+  if (v === null || typeof v !== 'object' || Array.isArray(v)) throw new Error('linked_groups is not a plain object');
+  return v as Record<string, string>;
+}
+
 /** The add-on's ledger of pairs; null when it cannot be read (no evidence either way). */
 async function ledgerOf(store: FixStore): Promise<Record<string, string> | null> {
   try {
-    return (await store.getLinkedGroups?.()) ?? {};
+    return plainLedger((await store.getLinkedGroups?.()) ?? {});
   } catch {
     return null;
   }
@@ -76,7 +84,7 @@ export function addonLinkIo(ctx: AddonContext, store: FixStore, log: (msg: strin
       if (!store.getLinkedGroups || !store.setLinkedGroups) return;
       // Re-read right before the write (the add-on's sync writes it too); a
       // ledger that cannot be read throws here and is never overwritten.
-      const ledger = await store.getLinkedGroups();
+      const ledger = plainLedger(await store.getLinkedGroups());
       await store.setLinkedGroups({ ...ledger, [keys[0]]: groupId, [keys[1]]: groupId });
     },
     record: async (draft) => {
@@ -86,7 +94,33 @@ export function addonLinkIo(ctx: AddonContext, store: FixStore, log: (msg: strin
   };
 }
 
-/** Link from Settings → Checks. */
-export function linkFromApp(ctx: AddonContext, store: FixStore, pairs: LinkPair[]): Promise<LinkRun> {
-  return linkPairs(pairs, addonLinkIo(ctx, store));
+/** Link from Settings → Checks. Holds the add-on's write lock (src/utils/write-lock.ts):
+ *  refused while a sync is running, and a sync that starts meanwhile waits. */
+export async function linkFromApp(ctx: AddonContext, store: FixStore, pairs: LinkPair[]): Promise<LinkRun> {
+  const release = beginLink();
+  if (!release) {
+    return { total: pairs.length, linked: 0, changed: 0, failed: 0, done: [], lost: [], maybeLost: [], message: LINK_SYNC_RUNNING };
+  }
+  try {
+    const io = addonLinkIo(ctx, store);
+    // A pair that linked but did not reach `linked_groups`: say so, the run still stands.
+    const unnoted: string[] = [];
+    const remember = io.remember;
+    if (remember) {
+      io.remember = async (keys, groupId) => {
+        try {
+          await remember(keys, groupId);
+        } catch (err) {
+          unnoted.push(err instanceof Error ? err.message : String(err));
+          throw err;
+        }
+      };
+    }
+    const run = await linkPairs(pairs, io);
+    if (unnoted.length === 0) return run;
+    const note = `Linked, but the add-on couldn't note it (${unnoted[0].trim().replace(/[.\s]+$/, '')}) — check Health after the next sync.`;
+    return { ...run, message: run.message === LINK_DONE ? note : `${run.message} ${note}` };
+  } finally {
+    release();
+  }
 }

@@ -130,17 +130,6 @@ export function HeadlineView({ h, now }: { h: HeadlineExplanation; now?: Date })
   );
 }
 
-/** The run's message with any lost or maybe-lost rows spelled out, whatever the message already says. */
-function withLoss(r: LinkRun): string {
-  let m = r.message;
-  const add = (rows: readonly string[] | undefined, lead: string) => {
-    if (rows?.length && !rows.every((x) => m.includes(x))) m += ` ${lead}: ${rows.join('; ')}.`;
-  };
-  add(r.lost, 'Deleted and not restored');
-  add(r.maybeLost, 'May have been deleted');
-  return m;
-}
-
 /** R2: what the Checks card can fix. */
 export interface HealthFix {
   link: (pairs: LinkPair[]) => Promise<LinkRun>;
@@ -148,41 +137,62 @@ export interface HealthFix {
   onFixed?: () => void;
 }
 
+/**
+ * The card's fix state lives at module scope: a link outlives the card (Checks
+ * collapsed, another tab), and a card mounted meanwhile must show the buttons
+ * disabled, then the result. One run at a time, app-wide. Only mounted cards
+ * hear about changes, so nothing is set on a card that is gone.
+ */
+interface FixListener { update: () => void; onFixed?: () => void }
+const fixState = { running: false, result: null as string | null, done: new Set<string>(), listeners: new Set<FixListener>() };
+/** Tests: forget everything the module remembers. */
+export function resetCheckFixes(): void {
+  fixState.running = false;
+  fixState.result = null;
+  fixState.done = new Set();
+  fixState.listeners.clear();
+}
+const notifyFix = () => fixState.listeners.forEach((l) => l.update());
+
+async function runLinks(link: HealthFix['link'], pairs: LinkPair[]): Promise<void> {
+  if (fixState.running || pairs.length === 0) return;
+  fixState.running = true;
+  fixState.result = null;
+  notifyFix();
+  let message: string;
+  let linked: string[] = [];
+  try {
+    const r = await link(pairs);
+    message = r.message;
+    linked = r.done;
+  } catch {
+    message = LINK_UNREACHABLE;
+  }
+  fixState.running = false;
+  fixState.done = new Set([...fixState.done, ...linked]);
+  fixState.result = message;
+  notifyFix();
+  // The newest card still mounted asks its page to read the snapshot again.
+  [...fixState.listeners].pop()?.onFixed?.();
+}
+
 export function HealthView({ report, fix }: { report: HealthReport; fix?: HealthFix }) {
-  const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState<string | null>(null);
-  // Pairs linked here: the snapshot lists them until the companion's next sync.
-  const [done, setDone] = useState<ReadonlySet<string>>(() => new Set());
-  // One action per click, even before the re-render that disables the buttons.
-  const running = useRef(false);
-  // No state updates once the card is gone (a link can outlive it).
-  const mounted = useRef(true);
+  const [, tick] = useState(0);
+  const onFixed = useRef(fix?.onFixed);
+  onFixed.current = fix?.onFixed;
   useEffect(() => {
-    mounted.current = true;
-    return () => { mounted.current = false; };
+    const me: FixListener = { update: () => tick((n) => n + 1), onFixed: () => onFixed.current?.() };
+    fixState.listeners.add(me);
+    // A run may have finished between the render and this subscription.
+    me.update();
+    return () => { fixState.listeners.delete(me); };
   }, []);
+  const busy = fixState.running;
+  const done = fixState.done;
+  const result = fixState.result;
   const pairOf = (i: HealthIssue) => (fix && !done.has(i.key) ? linkablePair(i) : null);
   const open = fix ? linkablePairs(report.issues).filter((p) => !done.has(p.key)) : [];
-  const run = async (pairs: LinkPair[]) => {
-    if (!fix || running.current || pairs.length === 0) return;
-    running.current = true;
-    setBusy(true);
-    let message: string;
-    let linked: string[] = [];
-    try {
-      const r = await fix.link(pairs);
-      message = withLoss(r);
-      linked = r.done;
-    } catch {
-      message = LINK_UNREACHABLE;
-    }
-    running.current = false;
-    if (!mounted.current) return;
-    setDone((d) => new Set([...d, ...linked]));
-    setResult(message);
-    setBusy(false);
-    fix.onFixed?.();
-  };
+  const run = (pairs: LinkPair[]) => { if (fix) void runLinks(fix.link, pairs); };
   return (
     <div className="sfin-audit-body">
       {report.issues === null && report.notes.length === 0 && <div>{AUDIT_HEALTH_NOT_CHECKED}</div>}
@@ -193,11 +203,11 @@ export function HealthView({ report, fix }: { report: HealthReport; fix?: Health
             const pair = pairOf(i);
             return (
               <li key={i.key} className="sfin-audit-issue">
-                <div className="sfin-audit-head">{healthIssueTitle(i)}</div>
+                <div className="sfin-audit-head" id={`sfin-audit-title-${i.key}`}>{healthIssueTitle(i)}</div>
                 {healthIssueLines(i).map((l, n) => <div key={n} className="sfin-subtle">{l}</div>)}
                 {pair && (
                   <div className="sfin-audit-fix">
-                    <Button variant="ghost" disabled={busy} aria-busy={busy} onClick={() => run([pair])}>{LINK_BUTTON}</Button>
+                    <Button variant="ghost" disabled={busy} aria-busy={busy} aria-describedby={`sfin-audit-title-${i.key}`} onClick={() => run([pair])}>{LINK_BUTTON}</Button>
                   </div>
                 )}
               </li>

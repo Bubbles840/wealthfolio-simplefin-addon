@@ -228,16 +228,18 @@ async function linkOne(pair: LinkPair, io: LinkIo, overrides: SyncOverrides): Pr
     // taken both rows. Look; write back whichever are gone.
     // Wealthfolio's bulk endpoint is all or nothing, so a refused re-create
     // wrote nothing and the delete before it is known to have landed.
-    let gone: boolean[] | null = null;
+    // `again` is in the pair's order (leg first); `check.rows` is money-out
+    // first, so which rows survive is decided by id, never by position.
+    let still: Set<string> | null = null;
     try {
       const again = await io.read(pair);
-      gone = [again[0] === null, again[1] === null];
+      still = new Set(again.flatMap((r) => (r ? [r.row.id] : [])));
     } catch (err) {
       io.log(`Link ${pair.key}: re-reading the rows failed: ${errorText(err)}`);
-      if (refused) gone = [true, true];
+      if (refused) still = new Set();
     }
     const lead = thrown !== null && TRANSPORT.test(why) ? `Couldn't reach Wealthfolio (${why})` : `Wealthfolio refused the link (${why})`;
-    if (gone === null) {
+    if (still === null) {
       const maybe = check.rows.map(describeRow);
       io.log(`Link ${pair.key}: could not check the rows; they may be deleted. Payloads: ${JSON.stringify(check.rows.map(recreateWrite))}`);
       return {
@@ -246,7 +248,7 @@ async function linkOne(pair: LinkPair, io: LinkIo, overrides: SyncOverrides): Pr
         message: `Couldn't link them: ${why}, and couldn't check whether the two rows are still there. If they're gone, they were: ${maybe.join(' and ')}. Check both accounts in Wealthfolio.`,
       };
     }
-    const lostRows = check.rows.filter((_, i) => gone![i]);
+    const lostRows = check.rows.filter((r) => !still!.has(r.id));
     if (lostRows.length === 0) {
       return { kind: 'failed', message: thrown ? `Couldn't link them: ${why}. Check both accounts in Wealthfolio.` : `Couldn't link them: ${why}. Nothing was changed.` };
     }

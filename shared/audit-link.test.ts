@@ -248,6 +248,21 @@ describe('linkPairs', () => {
     expect(there.io.restore).not.toHaveBeenCalled();
   });
 
+  it('writes back the row that is gone, not the one in the other slot, when the leg is the money-in half', async () => {
+    // The leg is the TRANSFER_IN; its other half, a withdrawal, is the only row the delete took.
+    const swapped: LinkPair = { key: 'leg:in-1', leg: { ...OTHER, type: 'TRANSFER_IN' }, counterpart: { ...LEG, type: 'WITHDRAWAL' } };
+    const f = fakeIo({
+      read: vi.fn().mockImplementationOnce(async (p: LinkPair) => [{ row: row(p.leg), linked: false }, { row: row(p.counterpart), linked: false }])
+        .mockImplementation(async (p: LinkPair) => [{ row: row(p.leg), linked: false }, null]),
+      link: vi.fn(async () => { throw new Error('boom'); }),
+    });
+    const run = await linkPairs([swapped], f.io);
+    expect(run.message).toMatch(/^Wealthfolio refused the link \(boom\)\. The deleted row is back/);
+    const writes = (f.io.restore as ReturnType<typeof vi.fn>).mock.calls[0][0] as Array<{ accountId: string; comment: string }>;
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toMatchObject({ accountId: 'wf-chk', comment: 'TRANSFER TO ALLY · TRN-1' });
+  });
+
   it('names each lost row, in the message, the log and the run, when the write-back fails or throws', async () => {
     const lostText = 'PNC Checking 2026-10-04 600.00 "TRANSFER TO ALLY · TRN-1"; Ally Savings 2026-10-05 600.00 "FROM PNC · TRN-2"';
     for (const restore of [

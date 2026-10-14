@@ -4,6 +4,7 @@ import { LINK_CHANGED, LINK_DONE, LINK_UNREACHABLE, type LinkPair } from '../../
 import { emptySyncOverrides } from '../../shared/sync-overrides';
 import { accountTxKey } from '../../shared/transfers';
 import { linkFromApp, type FixStore } from './audit-fix';
+import { beginSync, LINK_SYNC_RUNNING } from './write-lock';
 
 const OUT_KEY = accountTxKey('sfin-chk', 'TRN-1');
 const IN_KEY = accountTxKey('sfin-card', 'TRN-2');
@@ -85,14 +86,60 @@ describe('Link from the app', () => {
 
   it('never overwrites a ledger it cannot read', async () => {
     const f = fakeCtx([{ ...OUT }, { ...INTO }]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const store = fakeStore({ getLinkedGroups: vi.fn(async () => { throw new SyntaxError('Unexpected token'); }) });
-    expect((await linkFromApp(f.ctx, store, [PAIR])).message).toBe(LINK_DONE);
+    const run = await linkFromApp(f.ctx, store, [PAIR]);
+    // It linked; only the add-on's note of it failed, and the status line says so.
+    expect(run.linked).toBe(1);
+    expect(run.message).toBe("Linked, but the add-on couldn't note it (Unexpected token) — check Health after the next sync.");
     expect(store.setLinkedGroups).not.toHaveBeenCalled();
+    expect(warn.mock.calls.map((c) => c[0]).join('\n')).toContain('linked_groups was not updated: Unexpected token');
+    warn.mockRestore();
+  });
+
+  it.each([['an array', []], ['a string', 'oops'], ['null', null]])('treats a linked_groups that parses to %s as unreadable and never writes it', async (_n, parsed) => {
+    const f = fakeCtx([{ ...OUT }, { ...INTO }]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const store = fakeStore({ getLinkedGroups: vi.fn(async () => parsed as unknown as Record<string, string>) });
+    const run = await linkFromApp(f.ctx, store, [PAIR]);
+    expect(run.linked).toBe(1);
+    expect(run.message).toContain("couldn't note it");
+    expect(store.setLinkedGroups).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('refuses while a sync is running, and a sync that starts during a Link waits for it', async () => {
+    const f = fakeCtx([{ ...OUT }, { ...INTO }]);
+    const endSync = await beginSync();
+    const refused = await linkFromApp(f.ctx, fakeStore(), [PAIR]);
+    expect(refused.message).toBe(LINK_SYNC_RUNNING);
+    expect(refused.linked).toBe(0);
+    expect(f.saved).toEqual([]);
+    endSync();
+    // Now hold Link inside its first write and start a sync.
+    let open!: () => void;
+    const gate = new Promise<void>((r) => { open = r; });
+    const original = f.ctx.api.activities.saveMany;
+    f.ctx.api.activities.saveMany = vi.fn(async (req: unknown) => { await gate; return original(req); });
+    const linking = linkFromApp(f.ctx, fakeStore(), [PAIR]);
+    let syncStarted = false;
+    const syncing = beginSync().then((end) => { syncStarted = true; return end; });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(syncStarted).toBe(false);
+    // A second Link is refused too: one writer at a time.
+    expect((await linkFromApp(f.ctx, fakeStore(), [PAIR])).message).toBe(LINK_SYNC_RUNNING);
+    open();
+    expect((await linking).message).toBe(LINK_DONE);
+    (await syncing)();
+    expect(syncStarted).toBe(true);
   });
 
   it('links nothing when the overrides cannot be read', async () => {
     const f = fakeCtx([{ ...OUT }, { ...INTO }]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     expect((await linkFromApp(f.ctx, fakeStore({ readSyncOverrides: undefined }), [PAIR])).message).toBe(LINK_UNREACHABLE);
     expect(f.saved).toEqual([]);
+    expect(warn.mock.calls.map((c) => c[0]).join('\n')).toContain("the overrides couldn't be read");
+    warn.mockRestore();
   });
 });

@@ -209,6 +209,8 @@ export function healthIssues(facts: HealthFacts): HealthReport {
   // A pending row (the sync's ` · pending` note) is never offered: the sync never pairs one.
   const counterparts = (leg: AuditLedgerRow) => live.filter((c) => c.id !== leg.id && c.accountId !== leg.accountId
     && c.currency === leg.currency && c.status === 'POSTED' && !isPendingNote(c.notes) && !isBookkeeping(c) && !inValidPair(c)
+    // A transfer-typed row in a (broken) group is somebody's half already; Link would delete and re-create it.
+    && !(isTransferType(c.type) && c.group.trim())
     && c.absCents === leg.absCents && Math.abs(dayMs(c.date) - dayMs(leg.date)) <= MATCH_DAYS * 86_400_000
     && (leg.type === 'TRANSFER_OUT' ? INFLOW.has(c.type) : OUTFLOW.has(c.type)));
   const claims = new Map<string, number>();
@@ -242,8 +244,10 @@ export function healthIssues(facts: HealthFacts): HealthReport {
     let counterpart: HealthLeg | null = null;
     if (match === 'none') {
       const pair = pairs.find((p) => p.leg.id === row.id || p.other.id === row.id);
-      if (pair) {
-        const other = pair.leg.id === row.id ? pair.other : pair.leg;
+      const found = pair && (pair.leg.id === row.id ? pair.other : pair.leg);
+      // Found from the other end: a grouped transfer row is never the answer for an ungrouped one.
+      if (pair && found && !(isTransferType(found.type) && found.group.trim() && !row.group.trim())) {
+        const other = found;
         // Both halves incomplete: one issue, from the leg the money left.
         if (listed.has(other.id) && row.type !== 'TRANSFER_OUT' && other.type === 'TRANSFER_OUT') continue;
         match = 'one';
