@@ -100,6 +100,29 @@ describe('HeadlineAuditLink', () => {
   });
 });
 
+describe('HeadlineView in a later month', () => {
+  it('labels a last-month snapshot by its month, not "this month"', () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(2026, 10, 1, 9, 0));
+    try {
+      const now = new Date();
+      render(<HeadlineAuditLink read={ok()} companionVersion="1.61.0" now={now} />);
+      fireEvent.click(screen.getByRole('button', { name: AUDIT_HEADLINE_LINK }));
+      expect(screen.getByText("The report counts $1,300.00 spent in October; Wealthfolio's Spending page counts $1,200.00.")).toBeInTheDocument();
+      expect(screen.queryByText(/this month/)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('says the two agree on that month', () => {
+    const agree = { ...results(), headline: explainHeadline({ month: '2026-10', reportCents: 500, wealthfolioCents: 500, rows: [] }) };
+    render(<HeadlineAuditLink read={ok(agree)} companionVersion="1.61.0" now={new Date(2026, 10, 2, 9, 0)} />);
+    fireEvent.click(screen.getByRole('button', { name: AUDIT_HEADLINE_LINK }));
+    expect(screen.getByText('The report and Wealthfolio agree on October.')).toBeInTheDocument();
+  });
+});
+
 describe('ChecksCard', () => {
   it('lists what Health flags, each with what to do', () => {
     render(<ChecksCard read={ok()} companionVersion="1.61.0" now={LATER} />);
@@ -190,5 +213,49 @@ describe('R-F review fixes', () => {
     expect(screen.getAllByText('same')).toHaveLength(2);
     expect(err).not.toHaveBeenCalled();
     err.mockRestore();
+  });
+});
+
+describe('a snapshot the views cannot draw', () => {
+  /** Handed to the views as-is, past the reader: dates that are not strings. */
+  const broken = (): AuditSnapshotRead => {
+    const snap = buildAuditSnapshot(results(), AT)!;
+    (snap.balances['wf-visa'].bank as { date: unknown }).date = 5;
+    (snap.headline.reasons![0].rows[0] as { date: unknown }).date = 5;
+    for (const i of snap.health.issues!) if (i.kind === 'incomplete-leg') (i.leg as { date: unknown }).date = 5;
+    return { kind: 'ok', snapshot: snap };
+  };
+
+  it('shows the corrupt line in place of each view instead of taking the page down', () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      render(
+        <>
+          <div>Still here</div>
+          <AccountAudit read={broken()} wfAccountId="wf-visa" companionVersion="1.61.0" now={LATER} />
+          <HeadlineAuditLink read={broken()} companionVersion="1.61.0" now={LATER} />
+          <ChecksCard read={broken()} companionVersion="1.61.0" now={LATER} />
+        </>,
+      );
+      fireEvent.click(screen.getByRole('button', { name: AUDIT_HEADLINE_LINK }));
+      expect(screen.getAllByText(AUDIT_CORRUPT)).toHaveLength(3);
+      expect(screen.getByText('Still here')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: AUDIT_HEADLINE_LINK })).toHaveAttribute('aria-expanded', 'true');
+    } finally {
+      err.mockRestore();
+    }
+  });
+
+  it('draws again once a readable snapshot arrives', () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const { rerender } = render(<AccountAudit read={broken()} wfAccountId="wf-visa" companionVersion="1.61.0" now={LATER} />);
+      expect(screen.getByText(AUDIT_CORRUPT)).toBeInTheDocument();
+      rerender(<AccountAudit read={ok()} wfAccountId="wf-visa" companionVersion="1.61.0" now={LATER} />);
+      expect(screen.getByText('Bank: $100.00 (Oct 13) · Wealthfolio: $80.90 · Off by $19.10')).toBeInTheDocument();
+      expect(screen.queryByText(AUDIT_CORRUPT)).toBeNull();
+    } finally {
+      err.mockRestore();
+    }
   });
 });

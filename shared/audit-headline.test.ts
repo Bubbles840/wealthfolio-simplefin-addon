@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  explainHeadline, headlineAgrees, headlineReasonLine, headlineRowLine, headlineSummaryLine, headlineUnexplainedLine,
+  explainHeadline, headlineAgreeLine, headlineAgrees, headlineReasonLine, headlineRowLine, headlineSummaryLine, headlineUnexplainedLine,
   reportSpendSign, zonedMonthBounds, HEADLINE_AGREE, HEADLINE_READ_NOTES, HEADLINE_REASON_KINDS,
   type HeadlineDbRow, type HeadlineFacts, type HeadlineRead,
 } from './audit-headline';
@@ -291,6 +291,23 @@ describe('a reason is a row exactly one side counts', () => {
       ],
     }));
     expect(h.reasons!.map((r) => [r.kind, r.cents, r.rows.length])).toEqual([['first-midnight', 1000, 1], ['excluded', 800, 2], ['double-filed', 1500, 2]]);
+  });
+});
+
+describe('a snapshot from another month', () => {
+  const h = (month: string, agree = false) => explainHeadline({ month, reportCents: 130000, wealthfolioCents: agree ? 130000 : 120000, rows: [] });
+
+  it('names the month when it is not the viewer’s', () => {
+    const now = new Date(2026, 10, 1, 9, 0);
+    expect(headlineSummaryLine(h('2026-10'), now)).toBe("The report counts $1,300.00 spent in October; Wealthfolio's Spending page counts $1,200.00.");
+    expect(headlineAgreeLine(h('2026-10', true), now)).toBe('The report and Wealthfolio agree on October.');
+    expect(headlineSummaryLine(h('2026-12'), new Date(2027, 0, 1, 9, 0))).toBe("The report counts $1,300.00 spent in December 2026; Wealthfolio's Spending page counts $1,200.00.");
+  });
+
+  it('says "this month" for the viewer’s own month, or with no viewer', () => {
+    expect(headlineSummaryLine(h('2026-11'), new Date(2026, 10, 1, 9, 0))).toContain('spent this month;');
+    expect(headlineSummaryLine(h('2026-11'))).toContain('spent this month;');
+    expect(headlineAgreeLine(h('2026-11', true), new Date(2026, 10, 30, 23, 0))).toBe(HEADLINE_AGREE);
   });
 });
 

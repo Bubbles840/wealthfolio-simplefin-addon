@@ -293,14 +293,38 @@ export function headlineAgrees(h: HeadlineExplanation): boolean {
   return h.reportCents !== null && h.wealthfolioCents !== null && h.reportCents === h.wealthfolioCents;
 }
 
-/** "The report counts $1,240.18 spent this month; Wealthfolio's Spending page counts $1,301.40." Raw. */
-export function headlineSummaryLine(h: HeadlineExplanation): string | null {
+const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const ownMonth = (now: Date) => `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+
+/** The checked month by name — "October", "December 2026" when not `now`'s
+ *  year — or null when it is `now`'s own month (or there is no `now`: a live
+ *  check is always this month). A snapshot read after the month turned is
+ *  last month's, and says so. */
+function otherMonthName(month: string, now?: Date): string | null {
+  if (!now || ownMonth(now) === month) return null;
+  const [y, m] = month.split('-').map(Number);
+  const name = MONTH_NAMES[(m || 1) - 1];
+  return y === now.getFullYear() ? name : `${name} ${y}`;
+}
+
+/** "The report counts $1,240.18 spent this month; Wealthfolio's Spending page
+ *  counts $1,301.40." — "spent in October" for a month that is not `now`'s. Raw. */
+export function headlineSummaryLine(h: HeadlineExplanation, now?: Date): string | null {
+  const other = otherMonthName(h.month, now);
+  const when = other ? `in ${other}` : 'this month';
   const report = h.reportCents === null ? null : changeMoney(h.reportCents);
   const wf = h.wealthfolioCents === null ? null : changeMoney(h.wealthfolioCents);
-  if (report && wf) return `The report counts ${report} spent this month; Wealthfolio's Spending page counts ${wf}.`;
-  if (report) return `The report counts ${report} spent this month.`;
-  if (wf) return `Wealthfolio's Spending page counts ${wf} spent this month.`;
+  if (report && wf) return `The report counts ${report} spent ${when}; Wealthfolio's Spending page counts ${wf}.`;
+  if (report) return `The report counts ${report} spent ${when}.`;
+  if (wf) return `Wealthfolio's Spending page counts ${wf} spent ${when}.`;
   return null;
+}
+
+/** HEADLINE_AGREE, or "The report and Wealthfolio agree on October." for a
+ *  month that is not `now`'s. Raw. */
+export function headlineAgreeLine(h: HeadlineExplanation, now?: Date): string {
+  const other = otherMonthName(h.month, now);
+  return other ? `The report and Wealthfolio agree on ${other}.` : HEADLINE_AGREE;
 }
 
 export const HEADLINE_REASON_LABELS: Record<HeadlineReasonKind, string> = {
