@@ -106,6 +106,13 @@ describe('fetchAccounts', () => {
     expect(calledReq.auth).toBeUndefined();
   });
 
+  it('asks the host for the longest timeout (SDK 3.9 timeoutSecs; older hosts ignore it)', async () => {
+    const network = makeNetwork(() => okResponse(JSON.stringify({ errors: [], accounts: [] })));
+    await fetchAccounts('https://user:pass@bridge.simplefin.org/simplefin', new Date(), network);
+    const [calledReq] = (network.request as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(calledReq.timeoutSecs).toBe(120);
+  });
+
   it('throws when access URL is not HTTPS', async () => {
     await expect(
       fetchAccounts('http://user:pass@bridge.simplefin.org/simplefin', new Date(), makeNetwork()),
