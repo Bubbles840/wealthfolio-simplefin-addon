@@ -54,8 +54,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     snapshot the companion publishes after each sync, which says when it was
     taken and when it is out of date or unreadable. Home's Accounts tile
     points at the checks when there is something to look at.
+- **Getting started.**
+  - **Suggested budgets: `/budgets` in Telegram.** For each spending
+    category with no budget, the average of the last 3 full months the
+    synced ledger covers (only Wealthfolio's Spending accounts, refunds
+    netted out, an excluded subcategory's spending left out) rounded up to
+    the nearest $5; categories under $10 a month, excluded categories and
+    "Opening balances" are left out. A ledger with no full month yet gets
+    "once a full calendar month has synced". Tap a category to leave it out,
+    then **Apply all** or **Apply selected**: each becomes a default monthly
+    budget in Wealthfolio. An existing budget (a $0 one counts) is never
+    overwritten: the budget is read again right before each write, and a
+    category that gained one since is left alone and said so. Applying the
+    same list again shows "✓ ... (already set)", and one that fails to save
+    doesn't stop the rest. Each budget set is in the change log, and Undo
+    (from `/changes`) deletes it. In the app, the budget card with no
+    budgets says where to get some.
+  - **A sample-data preview.** Before the companion has synced, the Budget
+    board offers **Preview with sample data**: six months of made-up
+    accounts and spending, under a "Sample data, not your money" banner,
+    read-only. Setup's first step has **See what it looks like**.
 
 ### Fixed
+- **The sqlite3 command-line fallback no longer flattens newlines** in
+  queries, which had turned part of several spending queries (the budget
+  spend, the spend matrix, uncategorized spending) into a comment and
+  returned wrong rows there. The default node:sqlite path was unaffected.
 - **The "Opening balances" spending exclusion is re-applied.** It was only set
   while there was an opening debt to file, so a category created on Wealthfolio
   3.8 (which ignores the setting) stayed counted as spending. The companion now
@@ -70,6 +94,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   semantics since 1.49); the README says so.
 - The companion reports a Wealthfolio HTTP 423 as a clear "profile is locked or
   there is more than one profile" error.
+- **One Docker Compose snippet.** Settings → Background sync (Docker), the
+  README and `docker-compose.example.yml` now show the same service, written
+  once: Wealthfolio's service name on a shared network (host networking as a
+  comment), the password from a Compose secret file (an API key as the
+  alternative), never a password in the snippet, the database folder
+  mounted read-only, `restart: unless-stopped`, and `TZ`. The card fills in
+  your browser's timezone and has a Copy button. The card's old snippet used
+  host networking and set no `TZ`; a working install needs no change.
+  `docker-compose.example.yml` loses its `user:` line and external network.
 
 ### Wealthfolio 3.10
 Works with 3.10. When upgrading: set `WF_CORS_ALLOW_ORIGINS` to your proxy URL,

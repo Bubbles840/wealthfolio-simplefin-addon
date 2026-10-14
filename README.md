@@ -39,7 +39,10 @@ The addon has three tabs: **Home**, **Reports** and **Settings**.
   story),
   then your budget: six reports to start (headline numbers, cash flow or the
   semester-pool burn-down, budget vs actual, top merchants, subscriptions & bills (remind, rename, hide, add by hand)),
-  with more a tap away under **+ Add report**, or build your own.
+  with more a tap away under **+ Add report**, or build your own. Until the
+  companion has synced, **Preview with sample data** shows the board over
+  made-up numbers, read-only (setup's first step has it too: **See what it
+  looks like**).
 - **Syncing that gets the money right.**
   - Every SimpleFin account (checking, savings and cards) is imported on a
     schedule, with a catch-up when you open the app.
@@ -67,7 +70,11 @@ The addon has three tabs: **Home**, **Reports** and **Settings**.
   screen do the same. `/audit` explains why a balance is off from the bank,
   why the month's spending differs from Wealthfolio's, and what Wealthfolio's
   Health page flags — checked live on every tap; `/status` puts a 🔎 under
-  each account that is off.
+  each account that is off. `/budgets` suggests a monthly budget for each
+  category that has none (your average over the last 3 full months the ledger
+  covers, rounded up to the nearest $5) and sets the ones you pick in
+  Wealthfolio, never over a budget you already have; Undo any of them from
+  `/changes`.
 - **Checks** (with the companion) — the same three explanations in the app:
   an account's "off by" chip in **Settings → Accounts** opens why in place,
   the Budget tab's "Why is this different from Wealthfolio?" breaks down the
@@ -85,8 +92,8 @@ The addon has three tabs: **Home**, **Reports** and **Settings**.
   again (the card's **Your overrides** lists those, each with Remove). Most
   of it happens at once; undoing or redoing a transfer link or hold or a
   transaction rule, and redoing an import, an Amazon label or a removed
-  duplicate, take effect on the next sync — Sync now is right there. Category
-  and rule changes are undone from Telegram's `/changes`.
+  duplicate, take effect on the next sync — Sync now is right there. Category,
+  rule and budget changes are undone from Telegram's `/changes`.
 - **Amazon categorization** (optional) — reads Amazon's order emails from a
   throwaway mailbox and files each `AMAZON.COM*…` charge under what you bought.
 - **Rules** — map a description pattern to a category or activity type when a
@@ -210,7 +217,8 @@ docker pull ghcr.io/bubbles840/wealthfolio-simplefin-sync:latest
 The companion runs on the exact same shared sync core as the in-app addon. Account
 mappings and credentials are configured directly in Wealthfolio via the addon UI,
 so the companion container runs as a lightweight background daemon. Add it to the
-`docker-compose.yml` that runs Wealthfolio, put Wealthfolio's password in
+`docker-compose.yml` that runs Wealthfolio (alongside it: merge the snippet's
+`services:` and `secrets:` into that file's, don't duplicate them), put Wealthfolio's password in
 `wealthfolio_password.txt` beside that file, and run `docker compose up -d`. The
 addon's **Settings → Background sync (Docker)** card shows the same service with
 your timezone filled in, and a Copy button:
