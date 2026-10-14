@@ -56,9 +56,11 @@ The addon has three tabs: **Home**, **Reports** and **Settings**.
   counts the editions you haven't opened and marks them New; opening a
   report's tab marks it seen, on every device. In Full detail the monthly
   report for a completed month ends with a month in review: the biggest
-  category changes, top merchants, subscriptions that started, stopped or
-  rose in price, net worth, savings rate (as on the Budget tab), and how many
-  changes were made to your books.
+  category changes, top merchants, subscriptions that started or rose in
+  price, net worth, savings rate (as on the Budget tab), and how many changes
+  were made to your books. "No longer charging" names only subscriptions
+  found missing their charge near the month's end; ones that stopped earlier
+  have already left the subscription list.
 - **Telegram bot** (with the companion) — one short daily report: what you
   spent, what's left, and a single "🧹 N things to fix" line with buttons.
   File transactions, check what you can afford and pull charts from the chat.

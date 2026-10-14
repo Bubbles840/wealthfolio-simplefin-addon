@@ -3,7 +3,9 @@ import { buildMonthReview, formatMonthReview, type MonthReviewInput } from './mo
 import { bookkeepingChange, categoryFiledChange, stampChange } from './change-entries';
 import type { ChangeLogRead } from './change-log';
 import type { ReportCube } from './report-cube';
-import type { Roster, RosterEntry } from './subscription-roster';
+import { buildRoster, type Roster, type RosterEntry } from './subscription-roster';
+import { emptySubscriptionPrefs } from './subscription-prefs';
+import { detectSubscriptions } from './subscriptions';
 import type { DetectedSubscription } from './subscriptions';
 
 const MONTHS = ['2026-08', '2026-09', '2026-10'];
@@ -175,5 +177,46 @@ describe('the month in review', () => {
     const subs = cube().subscriptions!.map((d) => (d.name === 'ADOBE' ? { ...d, count: 1, recent: [{ date: '2026-09-25', cents: 5499 }] } : d));
     const got = buildMonthReview(input({ roster: r, cube: cube({ subscriptions: subs }) })).newSubs;
     expect(got?.map((n) => n.entry.key)).toEqual(['manual-1', 'manual-2']);
+  });
+});
+
+describe('"No longer charging" through the real detector and roster', () => {
+  // The detector drops a subscription 45 days after its last charge and the
+  // roster calls an entry overdue only 7 days past its predicted date, so on
+  // Oct 1 only a week-wide band of September's silent subscriptions is still
+  // on the list to be named. This pins that band end to end.
+  const namedFor = (lastCharge: string, reviewDay: string): boolean => {
+    const [y, m, d] = lastCharge.split('-').map(Number);
+    const charges = [0, 1, 2, 3].map((back) => ({
+      date: new Date(Date.UTC(y, m - 1 - back, d)).toISOString().slice(0, 10), merchant: 'GYM CLUB', cents: 2500,
+    }));
+    const detected = detectSubscriptions(charges, new Date(`${reviewDay}T09:00:00Z`));
+    const roster = buildRoster({ detected, merchants: [], links: [], prefs: emptySubscriptionPrefs(), today: reviewDay });
+    const review = buildMonthReview({ month: '2026-09', cube: cube({ subscriptions: detected }), roster, changes: null });
+    return (review.gone ?? []).some((e) => e.displayName === 'GYM CLUB');
+  };
+  // Aug 17 is 45 days and 9 hours back at a 09:00 sync: already dropped.
+  const NAMED = ['2026-08-18', '2026-08-19', '2026-08-20', '2026-08-21', '2026-08-22', '2026-08-23'];
+
+  it('names a September review on Oct 1 only for last charges on Aug 18 to Aug 23 (a 09:00 sync)', () => {
+    const days = Array.from({ length: 31 }, (_, i) => `2026-08-${String(i + 1).padStart(2, '0')}`);
+    expect(days.filter((day) => namedFor(day, '2026-10-01'))).toEqual(NAMED);
+  });
+
+  it('does not name one that stopped before Aug 17 (45 days): the detector has already dropped it', () => {
+    expect(namedFor('2026-08-17', '2026-10-01')).toBe(false); // 45 days and 9 hours
+    expect(namedFor('2026-08-16', '2026-10-01')).toBe(false);
+    expect(namedFor('2026-07-20', '2026-10-01')).toBe(false);
+  });
+
+  it('does not name one whose predicted charge is under a week late, or not yet due', () => {
+    expect(namedFor('2026-08-24', '2026-10-01')).toBe(false);
+    expect(namedFor('2026-09-05', '2026-10-01')).toBe(false);
+  });
+
+  it('the Aug 23 charge is named in the formatted review', () => {
+    const detected = detectSubscriptions([0, 1, 2, 3].map((b) => ({ date: new Date(Date.UTC(2026, 7 - b, 23)).toISOString().slice(0, 10), merchant: 'GYM CLUB', cents: 2500 })), new Date('2026-10-01T09:00:00Z'));
+    const roster = buildRoster({ detected, merchants: [], links: [], prefs: emptySubscriptionPrefs(), today: '2026-10-01' });
+    expect(formatMonthReview(buildMonthReview({ month: '2026-09', cube: cube({ subscriptions: detected }), roster, changes: null }))).toContain('No longer charging (cancelled?): GYM CLUB');
   });
 });
