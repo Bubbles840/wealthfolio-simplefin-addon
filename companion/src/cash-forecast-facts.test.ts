@@ -82,10 +82,12 @@ describe('runCashForecast', () => {
 
   it("dates today in Wealthfolio's timezone", async () => {
     const instant = new Date('2026-11-01T02:00:00Z');
-    const ny = readers({ timezone: 'America/New_York' });
+    // The cube is as fresh as the instant, or the cube's own staleness rule would answer first.
+    const freshCube = JSON.stringify({ ...JSON.parse(CUBE), asOf: instant.toISOString() });
+    const ny = readers({ timezone: 'America/New_York', secrets: secrets([['report_cube', freshCube]]) });
     await runCashForecast(ny, instant);
     expect(ny.merchantRows).toHaveBeenCalledWith('2026-07-01', '2026-10-01');
-    const berlin = readers({ timezone: 'Europe/Berlin' });
+    const berlin = readers({ timezone: 'Europe/Berlin', secrets: secrets([['report_cube', freshCube]]) });
     await runCashForecast(berlin, instant);
     expect(berlin.merchantRows).toHaveBeenCalledWith('2026-08-01', '2026-11-01');
   });
@@ -113,6 +115,41 @@ describe('runCashForecast', () => {
     ['the database', { rows: () => { throw new Error('no database'); } }, FORECAST_REASONS.database],
   ])('a failed read of %s is a reason, never a number', async (_what, opts, reason) => {
     expect(await runCashForecast(readers(opts), NOW)).toEqual({ v: 1, at: '2026-10-14T18:00:00.000Z', ok: false, reason });
+  });
+});
+
+describe('the cube’s freshness', () => {
+  const cubeAt = (iso: string) => JSON.stringify({ ...JSON.parse(CUBE), asOf: iso });
+  const HISTORY_FAILED = { v: 1, at: '2026-10-14T18:00:00.000Z', ok: false, reason: FORECAST_REASONS.history };
+
+  it('a cube older than two days gives the history reason, never a number', async () => {
+    const stale = readers({ secrets: secrets([['report_cube', cubeAt('2026-09-13T18:00:00.000Z')]]) });
+    expect(await runCashForecast(stale, NOW)).toEqual(HISTORY_FAILED);
+    expect(stale.merchantRows).not.toHaveBeenCalled();
+    const justOver = readers({ secrets: secrets([['report_cube', cubeAt('2026-10-12T17:59:59.999Z')]]) });
+    expect(await runCashForecast(justOver, NOW)).toEqual(HISTORY_FAILED);
+  });
+
+  it('a cube exactly two days old is still fresh', async () => {
+    const edge = readers({ secrets: secrets([['report_cube', cubeAt('2026-10-12T18:00:00.000Z')]]) });
+    expect(await runCashForecast(edge, NOW)).toMatchObject({ ok: true });
+  });
+
+  it('a cube with an unreadable date gives the history reason', async () => {
+    const bad = readers({ secrets: secrets([['report_cube', cubeAt('not a date')]]) });
+    expect(await runCashForecast(bad, NOW)).toEqual(HISTORY_FAILED);
+  });
+});
+
+describe('an undated bank balance', () => {
+  it('counts, with its date unknown, and is not named as missing', async () => {
+    const balances = JSON.stringify({
+      'sfin-chk': { balance: 3218.49, currency: 'USD', date: day('2026-10-14'), drift: null },
+      'sfin-sav': { balance: 500, currency: 'USD', drift: null },
+    });
+    const f = await runCashForecast(readers({ secrets: secrets([['account_balances', balances]]) }), NOW);
+    expect(f).toMatchObject({ ok: true, cashCents: 371849, accounts: [{ name: 'PNC Checking', asOf: '2026-10-14' }, { name: 'Savings', cents: 50000, asOf: null }] });
+    expect(f).not.toHaveProperty('missing');
   });
 });
 

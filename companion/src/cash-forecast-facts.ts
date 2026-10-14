@@ -20,7 +20,7 @@
  * Wealthfolio cannot be reached at all nothing is written, so the previous
  * forecast stays.
  */
-import { CASH_FORECAST_SECRET_KEY, failedForecast, type CashForecast } from '../../shared/cash-forecast.js';
+import { CASH_FORECAST_SECRET_KEY, CASH_FORECAST_STALE_MS, failedForecast, type CashForecast } from '../../shared/cash-forecast.js';
 import { zonedDay } from '../../shared/forecast.js';
 import {
   buildCashForecast, cashToday, historyMonths, historyWindow, type MerchantRow, type WealthfolioAccountLike,
@@ -119,6 +119,11 @@ async function gather(r: ForecastReaders, now: Date): Promise<CashForecast> {
   }
   const cube = parseReportCube(cubeRaw);
   if (!cube) return failedForecast('history', now);
+  // A cube the companion has not rebuilt for CASH_FORECAST_STALE_MS has lost
+  // months of bills and history: a number from it would be optimistic. An
+  // unreadable cube date is as bad as an old one.
+  const cubeAt = Date.parse(cube.asOf);
+  if (!Number.isFinite(cubeAt) || now.getTime() - cubeAt > CASH_FORECAST_STALE_MS) return failedForecast('history', now);
   let prefs: LoadedSubscriptionPrefs;
   try {
     prefs = await loadSubscriptionPrefs((key) => r.secret(key));
