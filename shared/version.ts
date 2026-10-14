@@ -86,6 +86,26 @@ export function isAtLeastVersion(version: string, min: string): boolean {
   return version === min || isNewerVersion(version, min);
 }
 
+/**
+ * The first Wealthfolio that takes TRANSFER_OUT on a credit card (upstream
+ * #1796, 3.10.0: `account_activity_validation_message`) — and whose Spending
+ * page ignores an unlinked one (`classify_activity`, CREDIT_CARD `_ =>
+ * Ignored`). From it on, the sync writes a card's bookkeeping outflows (an
+ * opening debt, a balance plug, an in-transit placeholder) as TRANSFER_OUT,
+ * neutral on Wealthfolio's own pages with no category at all (1.62.0, U4).
+ */
+export const CARD_TRANSFER_OUT_SINCE = '3.10.0';
+
+/** Whether this Wealthfolio takes TRANSFER_OUT on a card. Unknown (null) is no. */
+export function hostTakesCardTransferOut(wealthfolioVersion: string | null | undefined): boolean {
+  return !!wealthfolioVersion && isAtLeastVersion(wealthfolioVersion.trim(), CARD_TRANSFER_OUT_SINCE);
+}
+
+/** The companion writes the Wealthfolio version it syncs against here (`GET
+ *  /app/info`): the add-on's SDK has no way to ask, and its own sync shapes
+ *  card bookkeeping by it. */
+export const WEALTHFOLIO_VERSION_SECRET_KEY = 'wealthfolio_version';
+
 /** The app's half: a companion that reads `noVenmoNote`. No companion at all
  *  (null) is true, as for `companionUnderstandsOverrides`. */
 export function companionUnderstandsVenmoNotes(companionVersion: string | null): boolean {

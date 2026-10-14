@@ -34,7 +34,7 @@ export function companionUndoIo(
   log?: (message: string) => void,
 ): UndoIo {
   return {
-    host: host ?? new RestSyncHost(client as unknown as WealthfolioClient, dbPath, log),
+    host: host ?? new RestSyncHost(client as unknown as WealthfolioClient, dbPath, log ? { log } : {}),
     secrets: {
       get: (k) => client.getAddonSecret(ADDON_ID, k),
       set: (k, v) => client.setAddonSecret(ADDON_ID, k, v),

@@ -60,7 +60,7 @@ describe('RestSyncHost passes its log to the in-place linker', () => {
   it('a fallback reason reaches the logger', async () => {
     const c = client([item(OUT), item(IN, { activityType: 'DEPOSIT' })]);
     const log = vi.fn();
-    await new RestSyncHost(c as any, undefined, log).linkPair([OUT, IN]);
+    await new RestSyncHost(c as any, undefined, { log }).linkPair([OUT, IN]);
     expect(log).toHaveBeenCalledWith('link out-1/in-1: re-creating instead of linking in place (in-1 is stored as DEPOSIT and links as TRANSFER_IN)');
   });
 });

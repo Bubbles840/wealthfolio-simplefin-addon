@@ -16,7 +16,7 @@ import cron from 'node-cron';
 import { readFileSync, existsSync } from 'fs';
 import { runSyncCore, descriptionFromComment, txIdFromComment } from '../../shared/sync-core.js';
 import type { SyncResult } from '../../shared/sync-core.js';
-import { RestSyncHost, RestSyncStore } from './rest-host.js';
+import { RestSyncStore, syncHostFor } from './rest-host.js';
 import { WealthfolioClient } from './wealthfolio.js';
 import { resolveDigestRows, resolveReportDetail, shortDate, shortDateTime, formatDollars } from '../../shared/telegram.js';
 import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatMonthlyWrapUp, formatSyncHealthFooter, formatLargeTransactionAlert, formatBalanceDriftAlert, formatFeedLagNotice, formatStuckTransferAlert, formatDuplicatePruneAlert, formatImportNotice, formatRefusedCreatesAlert, formatPoolLine, formatPoolSection, buildDismissKeyboard, dailyReportCarriesProblems, IMPORT_NOTICE_UNCATEGORIZED_CAP, escapeMarkdown, formatComingUpBlock, formatNextWeekLine, formatSubscriptionNews, parseNewsSent, pruneNewsSent, SUBSCRIPTION_NEWS_SECRET_KEY, LARGE_TX_OUTBOX_SECRET_KEY, RECATEGORIZE_ENTRY_CALLBACK } from '../../shared/telegram.js';
@@ -973,7 +973,8 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
   const store = new RestSyncStore(wfClient);
   // The database path enables the ledger-balance fallback, which is what lets a
   // credit card get a starting balance at all (Wealthfolio values cash only).
-  const host = new RestSyncHost(wfClient, wealthfolioDbPath(), log);
+  // The version decides a card's bookkeeping shape (TRANSFER_OUT from 3.10).
+  const { host } = await syncHostFor(wfClient, wealthfolioDbPath(), log);
 
   try {
     log('Reading SimpleFin credentials from Wealthfolio addon secrets...');

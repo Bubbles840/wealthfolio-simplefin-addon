@@ -102,11 +102,19 @@ function fromSdkEcho(a: any): HostActivity {
  * sync core. The Docker companion implements the same interface over REST.
  */
 export class AddonSyncHost implements SyncHost {
-  constructor(private ctx: AddonContext, private log?: (message: string) => void) {}
-
   /** ActivityDetails (what `activities.search` returns) has no sourceGroupId,
-   *  so links can only be read back from a saveMany echo. */
-  readonly capabilities = { readsSourceGroupId: false };
+   *  so links can only be read back from a saveMany echo. `cardTransferOut`:
+   *  the host is Wealthfolio 3.10+, as the companion published it — the SDK
+   *  has no version call. */
+  readonly capabilities: { readsSourceGroupId: boolean; cardTransferOut: boolean };
+
+  private log?: (message: string) => void;
+
+  /** `opts.log` is the logger (Task 4); `opts.cardTransferOut` the 3.10 capability. */
+  constructor(private ctx: AddonContext, opts: { cardTransferOut?: boolean; log?: (message: string) => void } = {}) {
+    this.log = opts.log;
+    this.capabilities = { readsSourceGroupId: false, cardTransferOut: !!opts.cardTransferOut };
+  }
 
   async fetchSimplefin(
     accessUrl: string,

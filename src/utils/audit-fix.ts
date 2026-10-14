@@ -69,7 +69,7 @@ const ledgerKnows = (ledger: Record<string, string> | null, keys: readonly strin
   !!ledger && (keys.some((k) => ledger[k] !== undefined) || (!!txId && ledger[txId] !== undefined));
 
 export function addonLinkIo(ctx: AddonContext, store: FixStore, log: (msg: string) => void = warn): LinkIo {
-  const host = new AddonSyncHost(ctx, log);
+  const host = new AddonSyncHost(ctx, { log });
   return {
     read: async (pair: LinkPair) => {
       const types = await accountTypes(ctx);
@@ -140,7 +140,7 @@ export async function linkFromApp(ctx: AddonContext, store: FixStore, pairs: Lin
 }
 
 export function addonRemoveIo(ctx: AddonContext, store: FixStore, log: (msg: string) => void = warn): RemoveIo {
-  const host = new AddonSyncHost(ctx, log);
+  const host = new AddonSyncHost(ctx, { log });
   return {
     read: async (activityId) => readFixRow(ctx, activityId, await accountTypes(ctx)),
     feeds: async (wfAccountId) => sfinIdsFor((await store.getAccountMapping?.()) ?? {}, wfAccountId),
