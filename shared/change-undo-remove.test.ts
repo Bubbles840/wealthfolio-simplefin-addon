@@ -1,12 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
-  CHANGE_KINDS, reversalChange, stampChange, transactionRemovedChange, transferLinkChange, type ChangeDraft, type ChangeEntry,
+  CHANGE_KINDS, duplicateRemovedChange, reversalChange, stampChange, transactionRemovedChange, transferLinkChange, type ChangeDraft, type ChangeEntry,
   type TransactionRemovedFacts,
 } from './change-entries.js';
 import type { ChangeLogItem } from './change-log.js';
 import { changeGroupOf, changeSourceText } from './change-view.js';
 import {
-  planChangeUndo, undoAvailability, undoGone, UNDO_EXACT_COPY, UNDO_LINKED_REFUSAL, UNDO_NO_KEY, UNDO_NOT_POSSIBLE, type UndoOp,
+  planChangeUndo, undoAvailability, undoChangedSince, undoGone, UNDO_EXACT_COPY, UNDO_LINKED_REFUSAL, UNDO_MAYBE_LINKED, UNDO_NO_KEY,
+  UNDO_NOT_POSSIBLE, type UndoOp,
 } from './change-undo.js';
 import { runChangeUndo, type UndoIo } from './change-undo-run.js';
 import { createFakeHost, type FakeHostSeed } from './fake-host.js';
@@ -86,6 +87,19 @@ describe('planning the Undo and Redo of a removal', () => {
     expect(planChangeUndo(removed({ txKeys: [] }), 'undo', {}, { latest: null })).toEqual({ ok: false, reason: UNDO_NO_KEY });
     expect(planChangeUndo(removed({ txKeys: ['no-separator'] }), 'undo', {}, { latest: null })).toEqual({ ok: false, reason: UNDO_NO_KEY });
     expect(planChangeUndo(removed({ payload: { amount: 600 } }), 'undo', {}, { latest: null })).toEqual({ ok: false, reason: UNDO_NOT_POSSIBLE });
+    for (const amount of [0, -5, NaN, '600']) {
+      expect(planChangeUndo(removed({ payload: { ...PAYLOAD, amount } }), 'undo', {}, { latest: null })).toEqual({ ok: false, reason: UNDO_NOT_POSSIBLE });
+    }
+    const { currency: _c, ...noCurrency } = PAYLOAD;
+    expect(planChangeUndo(removed({ payload: noCurrency }), 'undo', {}, { latest: null })).toEqual({ ok: false, reason: UNDO_NOT_POSSIBLE });
+  });
+
+  it('a removed duplicate shares the validator: a bad amount or no currency cannot be re-created', () => {
+    const dup = (payload: Record<string, unknown>) => stampChange(duplicateRemovedChange({
+      account: CHECKING, txKey: KEY, activityId: 'd1', description: 'X', amountCents: 100, date: '2026-10-09', payload,
+    }), 'addon', NOW);
+    expect(planChangeUndo(dup({ ...PAYLOAD, amount: 0 }), 'undo', {}, { latest: null })).toEqual({ ok: false, reason: UNDO_NOT_POSSIBLE });
+    expect(planChangeUndo(dup({ ...PAYLOAD, currency: undefined }), 'undo', {}, { latest: null })).toEqual({ ok: false, reason: UNDO_NOT_POSSIBLE });
   });
 
   it('removes the row the Undo put back again, skip first — unless it is gone or now linked', () => {
@@ -100,6 +114,9 @@ describe('planning the Undo and Redo of a removal', () => {
     });
     expect(planChangeUndo(e, 'redo', { row: null }, { latest })).toEqual({ ok: false, reason: undoGone('redo') });
     expect(planChangeUndo(e, 'redo', { row: { ...back, linked: 'confirmed' } }, { latest })).toEqual({ ok: false, reason: UNDO_LINKED_REFUSAL });
+    for (const edit of [{ absCents: 60100 }, { comment: 'edited note' }, { date: '2026-10-10' }, { type: 'WITHDRAWAL' }]) {
+      expect(planChangeUndo(e, 'redo', { row: { ...back, ...edit, linked: false } }, { latest })).toEqual({ ok: false, reason: undoChangedSince('redo') });
+    }
   });
 });
 
@@ -112,13 +129,17 @@ describe('Undo and Redo of a removal, on a host', () => {
     vi.useRealTimers();
   });
 
-  function harness(rows: HostActivity[], secrets: Record<string, string>, seed: Partial<FakeHostSeed> = {}) {
+  function harness(rows: HostActivity[], secrets: Record<string, string>, seed: Partial<FakeHostSeed> = {}, failSkipWrite: () => boolean = () => false) {
     const fh = createFakeHost({ mapping: { 'sfin-1': 'wf-a' }, accountTypes: { 'wf-a': 'CASH' }, existing: new Map([['wf-a', rows]]), ...seed });
     const data = new Map(Object.entries(secrets));
     const log: ChangeEntry[] = [];
     const io: UndoIo = {
       host: fh.host,
-      secrets: { get: async (k) => data.get(k) ?? null, set: async (k, v) => { data.set(k, v); } },
+      secrets: { get: async (k) => data.get(k) ?? null, set: async (k, v) => {
+        if (k === SKIPPED_TRANSACTIONS_SECRET_KEY && failSkipWrite()) throw new Error('disk full');
+        data.set(k, v);
+      },
+    },
       record: async (d: ChangeDraft) => { log.unshift(stampChange(d, 'addon', NOW)); },
       where: { host: 'addon', companionVersion: '1.61.0' },
     };
@@ -150,6 +171,74 @@ describe('Undo and Redo of a removal, on a host', () => {
     expect(await h.undo(e, 'redo')).toEqual({ ok: true, message: "Redone — it's removed and won't be imported again.", needsSync: false });
     expect(h.fh.activities.get('wf-a')).toEqual([]);
     expect(h.skipped()).toEqual(['sfin-9/KEEP', 'sfin-1/TRN-600']);
+  });
+
+  it('Redo refuses a row edited since the Undo, and deletes nothing', async () => {
+    const h = harness([], { [SKIPPED_TRANSACTIONS_SECRET_KEY]: list });
+    const e = removed();
+    await h.undo(e, 'undo');
+    h.fh.activities.get('wf-a')![0].amount = 650;
+    expect(await h.undo(e, 'redo')).toEqual({ ok: false, message: undoChangedSince('redo') });
+    expect(h.fh.activities.get('wf-a')).toHaveLength(1);
+    expect(h.skipped()).toEqual(['sfin-9/KEEP']);
+  });
+
+  it('Redo refuses a row the add-on cannot rule out as linked', async () => {
+    const h = harness([], { [SKIPPED_TRANSACTIONS_SECRET_KEY]: list });
+    const e = removed({ payload: { ...PAYLOAD, activityType: 'TRANSFER_IN' } });
+    (h.fh.host as { capabilities: { readsSourceGroupId: boolean } }).capabilities = { readsSourceGroupId: false };
+    await h.undo(e, 'undo');
+    expect(await h.undo(e, 'redo')).toEqual({ ok: false, message: UNDO_MAYBE_LINKED });
+    expect(h.fh.activities.get('wf-a')).toHaveLength(1);
+  });
+
+  it('a corrupt skip list refuses both Undo and Redo and writes nothing', async () => {
+    const h = harness([], { [SKIPPED_TRANSACTIONS_SECRET_KEY]: '{not json' });
+    const e = removed();
+    for (const op of ['undo', 'redo'] as const) {
+      const r = await h.undo(e, op);
+      expect(r.ok).toBe(false);
+    }
+    expect(h.fh.saved).toEqual([]);
+    expect(h.data.get(SKIPPED_TRANSACTIONS_SECRET_KEY)).toBe('{not json');
+    expect(h.log).toEqual([]);
+  });
+
+  it('records an Undo whose un-skip failed, says so, and Redo then Undo finishes it', async () => {
+    let failing = true;
+    const h = harness([], { [SKIPPED_TRANSACTIONS_SECRET_KEY]: list }, {}, () => failing);
+    const e = removed();
+    const r = await h.undo(e, 'undo');
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain('still on the skip list');
+    expect(h.log[0]).toMatchObject({ kind: 'transaction-removed', reverses: { id: e.id, op: 'undo' } });
+    expect(h.fh.activities.get('wf-a')).toHaveLength(1);
+    failing = false;
+    expect((await h.undo(e, 'redo')).ok).toBe(true);
+    expect(h.fh.activities.get('wf-a')).toEqual([]);
+    expect(h.skipped()).toEqual(['sfin-9/KEEP', 'sfin-1/TRN-600']);
+    expect((await h.undo(e, 'undo')).ok).toBe(true);
+    expect(h.skipped()).toEqual(['sfin-9/KEEP']);
+  });
+
+  it("Redo takes the key back off the skip list when the delete fails, and the note is the removal's", async () => {
+    const h = harness([], { [SKIPPED_TRANSACTIONS_SECRET_KEY]: JSON.stringify([{ account: 'sfin-9', txId: 'KEEP' }]) });
+    const e = removed();
+    await h.undo(e, 'undo');
+    const real = h.fh.host.saveMany.bind(h.fh.host);
+    h.fh.host.saveMany = async (req) => {
+      if (req.deleteIds?.length) return { created: [], errors: [{ message: 'wealthfolio down' }] } as never;
+      return real(req);
+    };
+    const r = await h.undo(e, 'redo');
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain('off the skip list again');
+    expect(h.skipped()).toEqual(['sfin-9/KEEP']);
+    expect(h.fh.activities.get('wf-a')).toHaveLength(1);
+    h.fh.host.saveMany = real;
+    expect((await h.undo(e, 'redo')).ok).toBe(true);
+    const stored = JSON.parse(h.data.get(SKIPPED_TRANSACTIONS_SECRET_KEY)!);
+    expect(stored[1]).toMatchObject({ account: 'sfin-1', txId: 'TRN-600', note: 'Removed for good' });
   });
 
   it('Undo of a link you made tells the sync neither half is a transfer; Redo takes that back', async () => {
