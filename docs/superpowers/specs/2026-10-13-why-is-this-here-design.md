@@ -83,7 +83,7 @@ The story is the same in both places. It has a **title**, the **answer**, and **
    - "Filed under Groceries by a rule — 'KROGER' matches it."
    - "Filed under Groceries by you, in Telegram, Oct 4."
    - "Filed under Lawn & Garden from an Amazon email."
-   - "Set by hand in Wealthfolio."
+   - "Set by hand."
    - "Not filed yet — it's on your needs-a-category list."
    - In the app, when the filer can't be seen:
      - With a companion: "Ask /why in Telegram to see who filed it."
