@@ -89,12 +89,18 @@ export async function appTxStory(ctx: AddonContext, store: StoryStore, target: A
   const note = row.comment ?? '';
   const txId = txIdFromComment(note);
 
-  const accounts = await ctx.api.accounts.getAll().catch(() => []);
+  let accounts: Awaited<ReturnType<AddonContext['api']['accounts']['getAll']>> = [];
+  try {
+    accounts = await ctx.api.accounts.getAll();
+  } catch {
+    // Without accounts the sign and where it came from are unreliable.
+    failed.push('mapping');
+  }
   const accountType = accounts.find((a) => a.id === row.accountId)?.accountType;
 
   let mapping: Record<string, string> | null = null;
   try {
-    mapping = (await store.getAccountMapping?.()) ?? {};
+    mapping = store.getAccountMapping ? ((await store.getAccountMapping()) ?? {}) : null;
   } catch {
     failed.push('mapping');
   }
@@ -137,7 +143,12 @@ export async function appTxStory(ctx: AddonContext, store: StoryStore, target: A
   if (other && typeof other.accountName === 'string') {
     partner = { accountName: other.accountName };
   } else if (txKey) {
-    const groups = await store.getLinkedGroups?.().catch(() => null);
+    let groups: Record<string, string> | null = null;
+    try {
+      groups = (await store.getLinkedGroups?.()) ?? null;
+    } catch {
+      failed.push('partner');
+    }
     const gid = groups?.[txKey];
     const otherKey = gid ? Object.keys(groups!).find((k) => k !== txKey && groups![k] === gid) : undefined;
     const otherWf = otherKey && mapping ? mapping[otherKey.split('\u0000')[0]] : undefined;
@@ -160,7 +171,12 @@ export async function appTxStory(ctx: AddonContext, store: StoryStore, target: A
   if (target.categoryName) {
     category = { name: target.categoryName, filer: fromCode(target.filer) };
   } else {
-    const cube = await store.getReportCube?.().catch(() => null);
+    let cube: Awaited<ReturnType<NonNullable<StoryStore['getReportCube']>>> | null = null;
+    try {
+      cube = (await store.getReportCube?.()) ?? null;
+    } catch {
+      failed.push('category');
+    }
     for (const [name, list] of Object.entries(cube?.drill ?? {})) {
       const hit = list.find((r) => r.i === row.id);
       if (hit) {
@@ -169,9 +185,20 @@ export async function appTxStory(ctx: AddonContext, store: StoryStore, target: A
       }
     }
     if (!category) {
-      const status = await store.getUncategorizedStatus?.().catch(() => null);
+      let status: Awaited<ReturnType<NonNullable<StoryStore['getUncategorizedStatus']>>> | null = null;
+      try {
+        status = (await store.getUncategorizedStatus?.()) ?? null;
+      } catch {
+        if (!failed.includes('category')) failed.push('category');
+      }
       if (status?.rows.some((r) => r.activityId === row.id)) needsCategory = true;
-      else filerHint = (await store.getCompanionVersion?.().catch(() => null)) ? 'telegram' : 'wealthfolio';
+      else if (store.getCompanionVersion) {
+        try {
+          filerHint = (await store.getCompanionVersion()) ? 'telegram' : 'wealthfolio';
+        } catch {
+          // Unknown whether a companion exists: say neither.
+        }
+      } else filerHint = 'wealthfolio';
     }
   }
 
@@ -211,6 +238,7 @@ export async function appTxSearch(ctx: AddonContext, query: TxQuery, now: Date):
     const keyword = txSearchKeyword(query, accounts.map((a) => a.name ?? ''));
     const cutoff = new Date(now.getTime() - TX_SEARCH_RECENT_DAYS * 86_400_000).toISOString().slice(0, 10);
     const hits: TxSearchRow[] = [];
+    let endedOnLimit = true;
     for (let page = 0; page < (keyword ? KEYWORD_MAX_PAGES : RECENT_MAX_PAGES); page++) {
       const data = (await ctx.api.activities.search(page, PAGE_SIZE, {}, keyword ?? '', { id: 'date', desc: true })).data ?? [];
       let pastCutoff = false;
@@ -230,9 +258,14 @@ export async function appTxSearch(ctx: AddonContext, query: TxQuery, now: Date):
         if (matchesTxQuery(r, query)) hits.push(r);
       }
       // One past the cap is enough to say there were too many.
-      if (hits.length > TX_SEARCH_MAX_RESULTS || pastCutoff || data.length < PAGE_SIZE) break;
+      if (hits.length > TX_SEARCH_MAX_RESULTS || pastCutoff || data.length < PAGE_SIZE) {
+        endedOnLimit = false;
+        break;
+      }
     }
-    return { kind: 'ok', result: findTransactions(hits, query) };
+    const result = findTransactions(hits, query);
+    // Out of pages while pages were still full: there may be more.
+    return { kind: 'ok', result: endedOnLimit ? { ...result, truncated: true } : result };
   } catch {
     return { kind: 'unreachable' };
   }
