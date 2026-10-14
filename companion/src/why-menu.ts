@@ -133,8 +133,8 @@ const clip = (s: string, n: number) => {
 };
 
 /** A result's button: date · description · amount · account. */
-function rowLabel(r: { date: string; description: string; amountCents: number; accountName: string }): string {
-  return [changeDayYear(r.date, new Date()), clip(r.description || 'A transaction', 28), changeMoney(r.amountCents), clip(r.accountName, 20)]
+function rowLabel(r: { date: string; description: string; amountCents: number; accountName: string }, now: Date): string {
+  return [changeDayYear(r.date, now), clip(r.description || 'A transaction', 28), changeMoney(r.amountCents), clip(r.accountName, 20)]
     .filter(Boolean).join(' · ');
 }
 
@@ -152,7 +152,7 @@ export function whyNoMatch(q: TxQuery): string {
     : 'Nothing matches. If it was removed, try /changes with a word from its description.';
 }
 
-export function renderWhyResults(found: { result: TxSearchResult; recentOnly: boolean }, query: string, page: number): MenuScreen {
+export function renderWhyResults(found: { result: TxSearchResult; recentOnly: boolean }, query: string, page: number, now: Date): MenuScreen {
   const lines = [`🔎 *${WHY_TITLE}* ${escapeMarkdown(query)}`];
   if (found.recentOnly) lines.push(WHY_RECENT_ONLY);
   if (found.result.rows.length === 0) {
@@ -164,7 +164,7 @@ export function renderWhyResults(found: { result: TxSearchResult; recentOnly: bo
   if (pages > 1) lines.push(`Page ${p + 1} of ${pages}`);
   if (found.result.truncated) lines.push(TX_SEARCH_TOO_MANY);
   const keyboard: Button[][] = slice.map((r) => [{
-    text: rowLabel(r),
+    text: rowLabel(r, now),
     callback_data: whyData({ kind: 'story', activityId: r.activityId, back: { kind: 'search', page: p, query } }),
   }]);
   const nav = navRow(p, pages, (n) => whyData({ kind: 'search', page: n, query }));
@@ -200,7 +200,7 @@ export function renderWhyStory(story: TxStory, activityId: string, back: StoryBa
 }
 
 /** One sync's imports (its import entries in the log, newest first). */
-export function renderWhyRun(entries: ChangeLogItem[], run: string, page: number): MenuScreen {
+export function renderWhyRun(entries: ChangeLogItem[], run: string, page: number, now: Date): MenuScreen {
   if (entries.length === 0) return { text: `🔎 *${WHY_RUN_TITLE}*\n\n${escapeMarkdown(WHY_RUN_GONE)}`, keyboard: { inline_keyboard: [] } };
   const { slice, page: p, pages } = txSearchPage(entries, page);
   const lines = [`🔎 *${WHY_RUN_TITLE}*`, `_${shortDateTime(entries[0].at)}_`, '', WHY_TAP_ONE];
@@ -209,7 +209,7 @@ export function renderWhyRun(entries: ChangeLogItem[], run: string, page: number
     text: rowLabel({
       date: e.subject.date ?? e.at.slice(0, 10), description: e.subject.description ?? '',
       amountCents: e.subject.amountCents ?? 0, accountName: e.account?.name ?? '',
-    }),
+    }, now),
     callback_data: whyData({ kind: 'story', activityId: e.subject.activityIds![0], back: { kind: 'run', run, page: p } }),
   }]);
   const nav = navRow(p, pages, (n) => whyData({ kind: 'run', run, page: n, fresh: false }));
@@ -278,7 +278,7 @@ export function createWhyMenu(deps: WhyMenuDeps): WhyMenu {
       if (isEmptyTxQuery(q)) return void await send(WHY_ASK_HINT);
       const out = await deps.search(q, deps.now());
       if (out.kind === 'unreachable') return void await send(TX_STORY_UNREACHABLE);
-      await sendScreen(send, renderWhyResults(out, txQueryText(q), 0));
+      await sendScreen(send, renderWhyResults(out, txQueryText(q), 0, deps.now()));
     },
 
     async sendStory(activityId, send) {
@@ -302,7 +302,7 @@ export function createWhyMenu(deps: WhyMenuDeps): WhyMenu {
           case 'search': {
             const out = await deps.search(parseTxQuery(view.query), now);
             if (out.kind === 'unreachable') return void await ui.answer(TX_STORY_UNREACHABLE);
-            return void await show(renderWhyResults(out, view.query, view.page), false);
+            return void await show(renderWhyResults(out, view.query, view.page, now), false);
           }
           case 'story': {
             const out = await deps.story(view.activityId, now);
@@ -320,7 +320,7 @@ export function createWhyMenu(deps: WhyMenuDeps): WhyMenu {
             }
             const entries = runImports(read, view.run);
             if (entries.length === 0) return void await ui.answer(WHY_RUN_GONE);
-            return void await show(renderWhyRun(entries, view.run, view.page), view.fresh);
+            return void await show(renderWhyRun(entries, view.run, view.page, now), view.fresh);
           }
         }
       } catch (err) {

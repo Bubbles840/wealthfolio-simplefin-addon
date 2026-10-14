@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest';
 import { maskUrl, publishLiveReports, validateStartupEnv, startupWarnings, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, composeDailyDigest, composeWeeklyReportMessage, runCompanionSyncExclusive, buildTelegramCommandHandler, applyTelegramDismissal, undoTelegramDismissal, formatDismissedReply, buildTelegramListenerDeps, buildCategorizeController, buildCategorizeDeps, rememberImportScope, sendUnmappedAccountsNotice, updateCheckDeps, buildAskSessions } from './index.js';
 import { findingHandle } from '../../shared/findings.js';
 import { formatHelpReply, parseCommand } from '../../shared/telegram-commands.js';
@@ -2569,6 +2569,9 @@ describe('buildTelegramCommandHandler', () => {
     };
 
     it('searches all of history with the words after the command, each match a button', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date('2026-10-13T12:00:00Z'));
+      onTestFinished(() => { vi.useRealTimers(); });
       vi.mocked(getNativeTxSearchRows).mockReturnValueOnce([kroger]);
       const { client } = clientFor();
       const sent: Array<[string, any]> = [];

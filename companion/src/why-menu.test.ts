@@ -31,6 +31,7 @@ const imp = (activityId: string, run: string, description = 'KROGER #415'): Chan
 
 const storyFor = (over: Partial<TxStory> = {}): TxStory => ({
   ...buildTxStory({
+    now: NOW,
     row: { activityId: ID, note: 'KROGER #415 · TRN-1', absCents: 5420, date: '2026-10-04', activityType: 'WITHDRAWAL', accountName: 'PNC Checking' },
     feed: { sfinAccountId: 'ACT-chk' }, partner: null, category: { name: 'Groceries', filer: { kind: 'rule', pattern: 'KROGER' } },
     history: [imp(ID, 'c1')],
@@ -89,36 +90,36 @@ describe('a canonical query parses back to the same query', () => {
 
 describe('the results', () => {
   it('lists matches as buttons, newest first, with the date, description, amount and account', () => {
-    const s = renderWhyResults({ result: { rows: result(2), truncated: false }, recentOnly: false }, 'kroger', 0);
+    const s = renderWhyResults({ result: { rows: result(2), truncated: false }, recentOnly: false }, 'kroger', 0, NOW);
     expect(s.text).toBe(['🔎 *Why is this here?* kroger', '', 'Tap one to see its story.'].join('\n'));
     expect(s.keyboard.inline_keyboard[0]).toEqual([{ text: 'Oct 20 · KROGER #415 · -$54.20 · PNC Checking', callback_data: 'cz:wy:tact-0:s0:kroger' }]);
   });
 
   it('pages by 8, with a page count, and says when there were too many', () => {
     const found = { result: { rows: result(40), truncated: true }, recentOnly: false };
-    const first = renderWhyResults(found, '54', 0);
+    const first = renderWhyResults(found, '54', 0, NOW);
     expect(first.keyboard.inline_keyboard).toHaveLength(9);
     expect(first.text).toContain('Page 1 of 5');
     expect(first.text).toContain('Too many matches — add a word or an amount.');
     expect(labels(first).at(-1)).toBe('‹ Older');
-    const last = renderWhyResults(found, '54', 4);
+    const last = renderWhyResults(found, '54', 4, NOW);
     expect(labels(last).at(-1)).toBe('Newer ›');
     expect(allData(last)).toContain('cz:wy:s3:54');
   });
 
   it('says when it could only search the last 12 months', () => {
-    expect(renderWhyResults({ result: { rows: result(1), truncated: false }, recentOnly: true }, 'kroger', 0).text).toContain(WHY_RECENT_ONLY);
+    expect(renderWhyResults({ result: { rows: result(1), truncated: false }, recentOnly: true }, 'kroger', 0, NOW).text).toContain(WHY_RECENT_ONLY);
   });
 
   it('says nothing matches, pointing at /changes with the words', () => {
     const none = { result: { rows: [], truncated: false }, recentOnly: false };
-    expect(renderWhyResults(none, 'venmo jane', 0).text).toBe('🔎 *Why is this here?* venmo jane\n\nNothing matches. If it was removed, try /changes venmo jane.');
-    expect(renderWhyResults(none, '54.20', 0).text).toContain('Nothing matches. If it was removed, try /changes with a word from its description.');
-    expect(renderWhyResults(none, '54.20', 0).keyboard.inline_keyboard).toEqual([]);
+    expect(renderWhyResults(none, 'venmo jane', 0, NOW).text).toBe('🔎 *Why is this here?* venmo jane\n\nNothing matches. If it was removed, try /changes venmo jane.');
+    expect(renderWhyResults(none, '54.20', 0, NOW).text).toContain('Nothing matches. If it was removed, try /changes with a word from its description.');
+    expect(renderWhyResults(none, '54.20', 0, NOW).keyboard.inline_keyboard).toEqual([]);
   });
 
   it('escapes a bank name full of Markdown characters and keeps it out of every entity', () => {
-    const s = renderWhyResults({ result: { rows: result(1, { description: 'SQ *COFFEE_CLUB [2]' }), truncated: false }, recentOnly: false }, 'sq *coffee_', 0);
+    const s = renderWhyResults({ result: { rows: result(1, { description: 'SQ *COFFEE_CLUB [2]' }), truncated: false }, recentOnly: false }, 'sq *coffee_', 0, NOW);
     expect(s.text.split('\n')[0]).toBe('🔎 *Why is this here?* sq \\*coffee\\_');
     // Button labels are not Markdown: they stay as the bank wrote them.
     expect(labels(s)[0]).toBe('Oct 20 · SQ *COFFEE_CLUB [2] · -$54.20 · PNC Checking');
@@ -126,9 +127,20 @@ describe('the results', () => {
 });
 
 describe('the year', () => {
+  it('the story title shows it too, against the clock it was built with', () => {
+    const build = (now: Date) => buildTxStory({
+      now, row: { activityId: ID, note: 'KROGER #415 · TRN-1', absCents: 5420, date: '2026-10-04', activityType: 'WITHDRAWAL', accountName: 'PNC Checking' },
+    });
+    expect(renderWhyStory(build(NOW), ID, { kind: 'none' }).text.split('\n')[0]).toBe('🔎 KROGER #415 · -$54.20 · Oct 4');
+    expect(renderWhyStory(build(new Date('2027-01-01T12:00:00Z')), ID, { kind: 'none' }).text.split('\n')[0]).toBe('🔎 KROGER #415 · -$54.20 · Oct 4, 2026');
+  });
+
   it('shows it on a result from another year, and not for this one', () => {
-    const s = renderWhyResults({ result: { rows: result(1, { date: '2024-10-04' }), truncated: false }, recentOnly: false }, 'kroger', 0);
+    const s = renderWhyResults({ result: { rows: result(1, { date: '2024-10-04' }), truncated: false }, recentOnly: false }, 'kroger', 0, NOW);
     expect(labels(s)[0]).toBe('Oct 4, 2024 · KROGER #415 · -$54.20 · PNC Checking');
+    const row2026 = { result: { rows: result(1, { date: '2026-10-04' }), truncated: false }, recentOnly: false };
+    expect(labels(renderWhyResults(row2026, 'kroger', 0, NOW))[0]).toMatch(/^Oct 4 · /);
+    expect(labels(renderWhyResults(row2026, 'kroger', 0, new Date('2027-01-01T12:00:00Z')))[0]).toMatch(/^Oct 4, 2026 · /);
   });
 });
 
@@ -171,6 +183,7 @@ describe('the story', () => {
 
   it('escapes bank text in the title, the account and the answer, and keeps it out of every entity', () => {
     const story = buildTxStory({
+      now: NOW,
       row: { activityId: ID, note: 'SQ *COFFEE_CLUB [2] · TRN-1', absCents: 500, date: '2026-10-04', activityType: 'WITHDRAWAL', accountName: "Joe's *Visa*" },
       feed: { sfinAccountId: 'x' }, partner: null, history: [],
     });
@@ -193,7 +206,7 @@ describe('the story', () => {
 
 describe('a sync’s imports', () => {
   it('an empty list does not throw', () => {
-    expect(renderWhyRun([], 'abcd1234', 0).text).toContain('past the change log');
+    expect(renderWhyRun([], 'abcd1234', 0, NOW).text).toContain('past the change log');
   });
 
   it('whyRunHandle is the handle the menu reads', () => {
@@ -201,7 +214,7 @@ describe('a sync’s imports', () => {
   });
 
   it('lists them, each opening its story with Back to the list', () => {
-    const s = renderWhyRun([imp('a1', 'c1'), imp('a2', 'c1', 'TARGET')], 'abcd1234', 0);
+    const s = renderWhyRun([imp('a1', 'c1'), imp('a2', 'c1', 'TARGET')], 'abcd1234', 0, NOW);
     expect(s.text.split('\n')[0]).toBe('🔎 *What this sync imported*');
     expect(s.keyboard.inline_keyboard[1]).toEqual([{ text: 'Oct 4 · TARGET · -$54.20 · PNC Checking', callback_data: 'cz:wy:ta2:rabcd1234:0' }]);
   });
@@ -220,7 +233,7 @@ describe('callback data', () => {
   it.each([['abcdefghijklmnopq', 64], ['😀😀😀😀', 64 - (17 - 16)]])('the widest button for %s fits and cuts no UTF-8 sequence', (q, widest) => {
     const query = normalizeWhyQuery(q);
     const found = { result: { rows: result(8, { activityId: ID }), truncated: true }, recentOnly: false };
-    const data = [...allData(renderWhyResults(found, query, 1)), ...allData(renderWhyStory(storyFor(), ID, { kind: 'search', page: 4, query }))];
+    const data = [...allData(renderWhyResults(found, query, 1, NOW)), ...allData(renderWhyStory(storyFor(), ID, { kind: 'search', page: 4, query }))];
     for (const d of data) {
       expect(bytes(d!)).toBeLessThanOrEqual(64);
       expect(Buffer.from(d!, 'utf8').toString('utf8')).toBe(d);
@@ -247,9 +260,9 @@ describe('callback data', () => {
   it('the longest query still fits Telegram’s 64 bytes on every button, story Back included', () => {
     const query = normalizeWhyQuery('éééé ééé ééé 1,234,567.89 trailing words here');
     const found = { result: { rows: result(8, { activityId: ID }), truncated: true }, recentOnly: false };
-    const results = renderWhyResults(found, query, 1);
+    const results = renderWhyResults(found, query, 1, NOW);
     const story = renderWhyStory(storyFor(), ID, { kind: 'search', page: 4, query });
-    const run = renderWhyRun([imp(ID, 'c1')], 'abcd1234', 0);
+    const run = renderWhyRun([imp(ID, 'c1')], 'abcd1234', 0, NOW);
     const fromRun = renderWhyStory(storyFor(), ID, { kind: 'run', run: 'abcd1234', page: 4 });
     for (const data of [...allData(results), ...allData(story), ...allData(run), ...allData(fromRun)]) {
       expect(bytes(data)).toBeLessThanOrEqual(64);

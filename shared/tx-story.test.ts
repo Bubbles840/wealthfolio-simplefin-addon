@@ -21,7 +21,9 @@ const row = (over: Partial<TxStoryRow> = {}): TxStoryRow => ({
   activityId: 'act-1', note: 'KROGER #415 · TRN-1', absCents: 5420, date: '2026-10-04',
   activityType: 'WITHDRAWAL', accountName: 'PNC Checking', accountType: 'CASH', ...over,
 });
-const story = (over: Partial<TxStoryFacts> = {}) => buildTxStory({ row: row(), feed: { sfinAccountId: 'ACT-chk' }, partner: null, history: [], ...over });
+// A fixed clock, so "Oct 4" never turns into "Oct 4, 2026" when the year turns.
+const NOW = new Date('2026-10-13T12:00:00Z');
+const story = (over: Partial<TxStoryFacts> = {}) => buildTxStory({ now: NOW, row: row(), feed: { sfinAccountId: 'ACT-chk' }, partner: null, history: [], ...over });
 
 describe('buildTxStory — one fixture per row kind', () => {
   it('a bank import: the feed, spending, the rule that filed it, its history', () => {
@@ -166,7 +168,7 @@ describe('buildTxStory — the category line', () => {
 
 describe('buildTxStory — missing and failed facts', () => {
   it('leaves out each line whose fact is missing', () => {
-    const s = buildTxStory({ row: row() });
+    const s = buildTxStory({ now: NOW, row: row() });
     expect(s.answer).toEqual([TX_STORY_SPENDING]);
     expect(s.history).toBeNull();
     expect(s.notes).toEqual([]);
@@ -336,8 +338,9 @@ describe('helpers', () => {
 
 describe('buildTxStory — the title’s year', () => {
   it('adds the year only when the row is from another year', () => {
-    const now = new Date('2026-10-13T12:00:00Z');
-    expect(story({ now, row: row({ date: '2026-10-04' }) }).title).toMatch(/ · Oct 4$/);
-    expect(story({ now, row: row({ date: '2024-10-04' }) }).title).toMatch(/ · Oct 4, 2024$/);
+    const in2027 = new Date('2027-01-01T12:00:00Z');
+    expect(story({ now: NOW, row: row({ date: '2026-10-04' }) }).title).toMatch(/ · Oct 4$/);
+    expect(story({ now: in2027, row: row({ date: '2026-10-04' }) }).title).toMatch(/ · Oct 4, 2026$/);
+    expect(story({ now: NOW, row: row({ date: '2024-10-04' }) }).title).toMatch(/ · Oct 4, 2024$/);
   });
 });
