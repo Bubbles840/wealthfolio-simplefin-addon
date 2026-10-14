@@ -1483,16 +1483,17 @@ export function getNativeDrillRows(
   if (!dbPath || !existsSync(dbPath)) return [];
   if (!validDateBounds(startInclusive, endExclusive)) return [];
   // Notes LAST: free text is the one column a stray `|` can split in the CLI
-  // fallback, and only trailing columns are safe from it.
+  // fallback, and only trailing columns are safe from it. Every free-text
+  // column before it has its `|` replaced, so the column count is exact.
   const query = `
-    SELECT ${SPENDING_CATEGORY} as category,
+    SELECT REPLACE(${SPENDING_CATEGORY}, '|', '/') as category,
            date(a.activity_date) as date,
-           COALESCE(acc.name, '') as account,
+           REPLACE(COALESCE(acc.name, ''), '|', '/') as account,
            ROUND(${SPENDING_SIGNED_AMOUNT}, 2) as amount,
            a.id as activity_id,
-           COALESCE(a.account_id, '') as account_id,
-           COALESCE(ata.category_id, '') as category_id,
-           COALESCE(ata.source, '') as source,
+           REPLACE(COALESCE(a.account_id, ''), '|', '/') as account_id,
+           REPLACE(COALESCE(ata.category_id, ''), '|', '/') as category_id,
+           REPLACE(COALESCE(ata.source, ''), '|', '/') as source,
            UPPER(COALESCE(a.activity_type, '')) as activity_type,
            COALESCE(a.notes, '') as notes
     ${SPENDING_FROM}
@@ -1503,7 +1504,7 @@ export function getNativeDrillRows(
     dbPath,
     'drill rows',
     query,
-    (parts) => (parts.length >= 10
+    (parts) => (parts.length >= 10 && Number.isFinite(parseFloat(parts[3]))
       ? {
           c0: parts[0], c1: parts[1], c2: parts[2], c3: parseFloat(parts[3]) || 0, c4: parts[4], c5: parts[5],
           c6: parts[6], c7: parts[7], c8: parts[8], c9: parts.slice(9).join('|'),

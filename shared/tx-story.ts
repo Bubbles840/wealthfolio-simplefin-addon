@@ -342,7 +342,7 @@ function filedLine(name: string, filer: TxFiler | null | undefined): string {
       return filer.at ? `Filed under ${name} by you, in Telegram, ${changeDay(changeLocalDay(filer.at))}.` : `Filed under ${name} by you, in Telegram.`;
     case 'amazon': return `Filed under ${name} from an Amazon email.`;
     case 'opening': return `Filed under ${name} by the add-on — an opening balance isn't spending.`;
-    case 'hand': return `Filed under ${name} — set by hand in Wealthfolio.`;
+    case 'hand': return `Filed under ${name} — set by hand.`;
   }
 }
 

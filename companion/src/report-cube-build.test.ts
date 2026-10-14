@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { buildReportCube, type CubeBuildDeps } from './report-cube-build.js';
 import { parseReportCube, REPORT_CUBE_MAX_BYTES } from '../../shared/report-cube.js';
 import { emptySubscriptionPrefs } from '../../shared/subscription-prefs.js';
+import { decodeFiler } from '../../shared/tx-story.js';
 import { categoryFiledChange, stampChange } from '../../shared/change-entries.js';
 
 /** All-fake deps, like pool-report.test.ts: this module is DI end to end. */
@@ -97,6 +98,54 @@ describe('buildReportCube', () => {
       ['act-hand', 'h'],
       ['act-gone', 'r'],
     ]);
+  });
+
+  it('round-trips a rule pattern and an Amazon label that contain colons, and caps long ones at 60 characters', async () => {
+    const row = (activityId: string, notes: string, source: string) => ({
+      category: 'Dining', date: '2026-08-20', notes, amount: 12.5, account: 'Card',
+      activityId, accountId: 'acct-card', categoryId: 'cat-din', source, activityType: 'WITHDRAWAL',
+    });
+    const long = 'X'.repeat(80);
+    const cube = await buildReportCube(deps({
+      drillRows: vi.fn(() => [
+        row('a1', 'A:B STORE · TRN-1', 'rule'),
+        row('a2', 'AMAZON MKTPL · Amazon: X: Y · TRN-2', 'manual'),
+        row('a3', `${long} · TRN-3`, 'rule'),
+      ]),
+      filingContext: vi.fn(async () => ({
+        rules: [{ id: 'r1', pattern: 'A:B', categoryId: 'cat-din' }, { id: 'r2', pattern: long, categoryId: 'cat-din' }],
+        history: [],
+      })),
+    }), NOW, 2);
+    const f = cube.drill!.Dining.map((r) => r.f);
+    expect(f[0]).toBe('r:A:B');
+    expect(f[1]).toBe('a:X: Y');
+    expect(f[2]).toBe(`r:${'X'.repeat(60)}…`);
+    expect(decodeFiler(f[0])).toEqual({ kind: 'rule', pattern: 'A:B' });
+    expect(decodeFiler(f[1])).toEqual({ kind: 'amazon', label: 'X: Y' });
+  });
+
+  it('an unreadable change log (history null) never says "by hand": no code, or the Amazon label from the note', async () => {
+    const row = (activityId: string, notes: string) => ({
+      category: 'Dining', date: '2026-08-20', notes, amount: 12.5, account: 'Card',
+      activityId, accountId: 'acct-card', categoryId: 'cat-din', source: 'manual', activityType: 'WITHDRAWAL',
+    });
+    const cube = await buildReportCube(deps({
+      drillRows: vi.fn(() => [row('m1', 'DINER · TRN-1'), row('m2', 'AMAZON MKTPL · Amazon: Kitchen · TRN-2')]),
+      filingContext: vi.fn(async () => ({ rules: [], history: null })),
+    }), NOW, 2);
+    expect(cube.drill!.Dining.map((r) => [r.i, r.f])).toEqual([['m1', undefined], ['m2', 'a:Kitchen']]);
+  });
+
+  it('survives a filingContext that throws synchronously', async () => {
+    const cube = await buildReportCube(deps({
+      drillRows: vi.fn(() => [{
+        category: 'Dining', date: '2026-08-20', notes: 'CHIPOTLE · TRN-1', amount: 12.5, account: 'Card',
+        activityId: 'act-1', accountId: 'acct-card', categoryId: 'cat-din', source: 'rule', activityType: 'WITHDRAWAL',
+      }]),
+      filingContext: vi.fn(() => { throw new Error('sync boom'); }),
+    }), NOW, 2);
+    expect(cube.drill!.Dining[0]).toEqual({ d: '2026-08-20', n: 'CHIPOTLE', c: 1250, a: 'Card', i: 'act-1' });
   });
 
   it('says only "a rule" when the rules cannot be read, and builds the cube when nothing can', async () => {

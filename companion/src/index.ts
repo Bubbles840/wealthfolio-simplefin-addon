@@ -1647,7 +1647,8 @@ function cubeBuildDeps(wfClient: WealthfolioClient, dbPath: string): CubeBuildDe
     // rule list still lets the log say "you", and the reverse.
     filingContext: async () => ({
       rules: await Promise.resolve().then(() => wfClient.listCategorizationRules()).catch(() => null),
-      history: await readCompanionChangeLog(wfClient, new Date()).then((r) => r.entries).catch(() => null),
+      // An unreadable bucket may hold the filing: say nothing rather than "by hand".
+      history: await readCompanionChangeLog(wfClient, new Date()).then((r) => (r.unreadable.length ? null : r.entries)).catch(() => null),
     }),
     checkTotals: (s, e, excluded) => ({
       spendByCategory: getNativeWealthfolioSpendingBetween(dbPath, s, e),

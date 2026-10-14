@@ -42,6 +42,9 @@ import type {
   getNativeValuationByMonth,
 } from './sqlite-native.js';
 
+/** The longest rule pattern or Amazon label a drill row's `f` carries. */
+const FILER_TEXT_MAX = 60;
+
 export interface CubeBuildDeps {
   accountMeta(): Promise<Array<{ sfinId: string; wfId: string; name: string; type: string }>>;
   dismissedIds(): Promise<string[]>;
@@ -242,7 +245,7 @@ export async function buildReportCube(
     // Who filed each row: the rules and the log are read ONCE for the list.
     // A failed read costs the codes it feeds, never the cube.
     const filing = drillSource.some((r) => r.activityId && r.categoryId)
-      ? await deps.filingContext?.().catch(() => null) ?? null
+      ? await Promise.resolve().then(() => deps.filingContext?.()).catch(() => null) ?? null
       : null;
     const filings = filing?.history
       ? filing.history.filter((e) => e.kind === 'category-filed' || e.kind === 'opening-balance-filed')
@@ -252,7 +255,7 @@ export async function buildReportCube(
       if (!filing || !r.activityId || !r.categoryId) return undefined;
       const sfin = r.accountId ? sfinOf.get(r.accountId) : undefined;
       const txId = txIdFromComment(r.notes);
-      return encodeFiler(resolveFiler({
+      const code = encodeFiler(resolveFiler({
         source: r.source ?? null,
         categoryId: r.categoryId,
         row: { note: r.notes, activityType: r.activityType ?? '', accountId: r.accountId ?? '', absCents: Math.abs(cents(r.amount)) },
@@ -261,6 +264,11 @@ export async function buildReportCube(
         }),
         rules: filing.rules,
       }));
+      // A pattern or label can be long: keep the cube small.
+      if (code && (code.startsWith('r:') || code.startsWith('a:')) && code.length > 2 + FILER_TEXT_MAX) {
+        return `${code.slice(0, 2 + FILER_TEXT_MAX)}…`;
+      }
+      return code;
     };
     const byCat: Record<string, DrillTxLike[]> = {};
     for (const r of [...drillSource].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))) {

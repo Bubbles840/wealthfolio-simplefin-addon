@@ -21,7 +21,7 @@
 - **The app's keyword is one word, not "the query's words"** — (a): Wealthfolio's keyword is a single substring and never sees the account name.
 - **`/why` joins `/help`'s More commands and the README, not Telegram's registered ☰ menu**, which stays at the seven commands 1.57 chose; every other occasional command (`/changes`, `/newrule`, …) lives there too.
 - **Only the companion's messages carry 🔎 Why?.** The add-on's sync sends the same large-transaction alert and import notice text-only, as its notice already is (`src/utils/sync.ts`: "No inline keyboard"): no listener is guaranteed to answer. An alert it queues keeps its id, so the companion's retry carries the button.
-- **Copy the spec did not spell out, or worded with the category:** "Filed under X — set by hand in Wealthfolio." (the spec's "Set by hand in Wealthfolio." never said what it is filed under); "Filed under X by the add-on — an opening balance isn't spending." (the companion's card opening-balance filing, which the spec's list omits); "Filed under X by a rule." (rules unreadable); "Filed under X." (who filed it cannot be told); the skip list in the overrides line ("don't import it"); one note per failed read; the amount-only "Nothing matches" line; the app's own "gone" and no-match lines; "Searched the last 12 months — the companion couldn't read the database."; Telegram shows the newest 20 history lines.
+- **Copy the spec did not spell out, or worded with the category:** "Filed under X — set by hand." (the spec's "Set by hand in Wealthfolio." never said what it is filed under); "Filed under X by the add-on — an opening balance isn't spending." (the companion's card opening-balance filing, which the spec's list omits); "Filed under X by a rule." (rules unreadable); "Filed under X." (who filed it cannot be told); the skip list in the overrides line ("don't import it"); one note per failed read; the amount-only "Nothing matches" line; the app's own "gone" and no-match lines; "Searched the last 12 months — the companion couldn't read the database."; Telegram shows the newest 20 history lines.
 - **The story view carries its own Back**: `t<id>` (a 🔎 Why? button — a new message, no Back), `t<id>:c` (back from `/changes`, in place, no Back), `t<id>:s<page>:<query>`, `t<id>:r<handle>:<page>`; a sync's imports are `r<handle>` (the notice — a new message) and `r<handle>:<page>`. So a query is cut to **17 bytes** (`WHY_QUERY_MAX_BYTES`), not `/changes`' 30: the story's Back must fit 64 with a 36-character id. A cut drops words from the end, never the amount.
 - **A row's category is its spending assignment, else its first other one** — what `sendImportNotice` already shows — so a paycheck filed under an income category is not "not filed yet".
 - **The app names the other half of a transfer without its date** (the log's link entry carries one date for both legs) and leaves "what it is" out for a grouped or transfer-typed row whose partner it cannot see.
@@ -817,7 +817,7 @@ describe('buildTxStory — the category line', () => {
     expect(line({ kind: 'rule', pattern: null, unknown: true })).toBe('Filed under Groceries by a rule.');
     expect(line({ kind: 'you', at: at(4).toISOString() })).toBe('Filed under Groceries by you, in Telegram, Oct 4.');
     expect(line({ kind: 'amazon', label: 'Lawn & Garden' })).toBe('Filed under Groceries from an Amazon email.');
-    expect(line({ kind: 'hand' })).toBe('Filed under Groceries — set by hand in Wealthfolio.');
+    expect(line({ kind: 'hand' })).toBe('Filed under Groceries — set by hand.');
     expect(line(null)).toBe('Filed under Groceries.');
   });
 
@@ -1331,7 +1331,7 @@ function filedLine(name: string, filer: TxFiler | null | undefined): string {
       return filer.at ? `Filed under ${name} by you, in Telegram, ${changeDay(changeLocalDay(filer.at))}.` : `Filed under ${name} by you, in Telegram.`;
     case 'amazon': return `Filed under ${name} from an Amazon email.`;
     case 'opening': return `Filed under ${name} by the add-on — an opening balance isn't spending.`;
-    case 'hand': return `Filed under ${name} — set by hand in Wealthfolio.`;
+    case 'hand': return `Filed under ${name} — set by hand.`;
   }
 }
 
