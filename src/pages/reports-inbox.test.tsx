@@ -181,4 +181,19 @@ describe('the report inbox', () => {
     await act(async () => { window.dispatchEvent(new Event('focus')); });
     expect(await screen.findByRole('tab', { name: 'Reports, 1 unread' })).toBeTruthy();
   });
+
+  it('an older store with no getReportsSeen shows no badge and never writes', async () => {
+    const props = makeProps();
+    props.store.getUiState = vi.fn(async () => ({ activeTab: 'home' }));
+    props.store.getReports = vi.fn(async (kind: ReportKind) => REPORTS[kind]);
+    props.store.setReportsSeen = vi.fn(async () => {});
+    delete (props.store as any).getReportsSeen;
+    expect((props.store as any).getReportsSeen).toBeUndefined();
+    render(<SyncPage {...props} />);
+    fireEvent.click(await screen.findByRole('tab', { name: 'Reports' }));
+    expect(await screen.findByText('Title 2026-10-13')).toBeTruthy();
+    expect(screen.queryByRole('tab', { name: /unread/ })).toBeNull();
+    expect(document.querySelector('.sfin-inbox-new')).toBeNull();
+    expect(props.store.setReportsSeen).not.toHaveBeenCalled();
+  });
 });
