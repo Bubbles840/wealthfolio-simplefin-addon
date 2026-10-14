@@ -47,6 +47,9 @@ function queryNativeDb<Row>(
   label: string,
   query: string,
   fromCliParts: (parts: string[]) => Row | null,
+  /** The sqlite3 CLI's column separator for this query's fallback. Default
+   *  `|`; a query whose free text can contain one passes an unambiguous one. */
+  separator = '|',
 ): Row[] {
   // LIVE read first, snapshot only as a fallback. `immutable=1` reads the main
   // DB file alone and ignores the write-ahead log — and Wealthfolio checkpoints
@@ -81,12 +84,13 @@ function queryNativeDb<Row>(
   try {
     // No shell: the query can carry typed chat text (rule patterns), so it must
     // reach sqlite3 as a single argv element.
-    const output = execFileSync('sqlite3', [dbPath, query.replace(/\n/g, ' ')], { encoding: 'utf8' });
+    const args = separator === '|' ? [dbPath, query.replace(/\n/g, ' ')] : ['-separator', separator, dbPath, query.replace(/\n/g, ' ')];
+    const output = execFileSync('sqlite3', args, { encoding: 'utf8' });
     const rows: Row[] = [];
     for (const line of output.split('\n')) {
       const trimmed = line.trim();
       if (!trimmed) continue;
-      const row = fromCliParts(trimmed.split('|'));
+      const row = fromCliParts(trimmed.split(separator));
       if (row) rows.push(row);
     }
     return rows;
@@ -1469,6 +1473,25 @@ export interface NativeDrillRow {
   activityType: string;
 }
 
+/** The sqlite3 CLI separator for the drill query: ASCII unit separator. */
+export const DRILL_CLI_SEPARATOR = '\x1f';
+
+/** Rebuild a drill row from one split CLI line (ten columns, notes last), or
+ *  null for a malformed or shifted line. */
+export function drillRowFromCliParts(parts: string[]): Record<string, unknown> | null {
+  if (parts.length < 10 || !Number.isFinite(parseFloat(parts[3]))) return null;
+  return {
+    c0: parts[0], c1: parts[1], c2: parts[2], c3: parseFloat(parts[3]) || 0, c4: parts[4], c5: parts[5],
+    c6: parts[6], c7: parts[7], c8: parts[8], c9: parts.slice(9).join(DRILL_CLI_SEPARATOR),
+  };
+}
+
+/** One line of the CLI fallback's output, as `queryNativeDb` reads it. */
+export function parseDrillCliLine(line: string): Record<string, unknown> | null {
+  const trimmed = line.trim();
+  return trimmed ? drillRowFromCliParts(trimmed.split(DRILL_CLI_SEPARATOR)) : null;
+}
+
 /**
  * Drill-down rows: every categorized spending transaction in the window under
  * its ROLLED-UP category — the same SPENDING_FROM / SPENDING_CATEGORY / sign
@@ -1482,18 +1505,18 @@ export function getNativeDrillRows(
 ): NativeDrillRow[] {
   if (!dbPath || !existsSync(dbPath)) return [];
   if (!validDateBounds(startInclusive, endExclusive)) return [];
-  // Notes LAST: free text is the one column a stray `|` can split in the CLI
-  // fallback, and only trailing columns are safe from it. Every free-text
-  // column before it has its `|` replaced, so the column count is exact.
+  // Names come back unchanged on the node:sqlite path (they must match the
+  // cube's other matrices). The CLI fallback uses the unit separator, so a `|`
+  // in any column cannot shift the others; notes stay last anyway.
   const query = `
-    SELECT REPLACE(${SPENDING_CATEGORY}, '|', '/') as category,
+    SELECT ${SPENDING_CATEGORY} as category,
            date(a.activity_date) as date,
-           REPLACE(COALESCE(acc.name, ''), '|', '/') as account,
+           COALESCE(acc.name, '') as account,
            ROUND(${SPENDING_SIGNED_AMOUNT}, 2) as amount,
            a.id as activity_id,
-           REPLACE(COALESCE(a.account_id, ''), '|', '/') as account_id,
-           REPLACE(COALESCE(ata.category_id, ''), '|', '/') as category_id,
-           REPLACE(COALESCE(ata.source, ''), '|', '/') as source,
+           COALESCE(a.account_id, '') as account_id,
+           COALESCE(ata.category_id, '') as category_id,
+           COALESCE(ata.source, '') as source,
            UPPER(COALESCE(a.activity_type, '')) as activity_type,
            COALESCE(a.notes, '') as notes
     ${SPENDING_FROM}
@@ -1504,12 +1527,8 @@ export function getNativeDrillRows(
     dbPath,
     'drill rows',
     query,
-    (parts) => (parts.length >= 10 && Number.isFinite(parseFloat(parts[3]))
-      ? {
-          c0: parts[0], c1: parts[1], c2: parts[2], c3: parseFloat(parts[3]) || 0, c4: parts[4], c5: parts[5],
-          c6: parts[6], c7: parts[7], c8: parts[8], c9: parts.slice(9).join('|'),
-        }
-      : null),
+    drillRowFromCliParts,
+    DRILL_CLI_SEPARATOR,
   );
   return rows.map((r) => {
     const v = Object.values(r) as Array<string | number>;

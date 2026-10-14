@@ -1377,7 +1377,7 @@ describe('report cube readers, month × account', () => {
 });
 
 import {
-  getNativeMerchantRows, getNativeFeesInterestByMonth, getNativeDrillRows,
+  getNativeMerchantRows, getNativeFeesInterestByMonth, getNativeDrillRows, parseDrillCliLine,
   getNativeSpendDailyTotals, getNativeValuationByMonth,
 } from './sqlite-native.js';
 
@@ -1574,12 +1574,49 @@ describe('getNativeDrillRows (v1.48)', () => {
       const rows = getNativeDrillRows(path, '2026-09-01', '2026-10-01');
       expect(rows).toHaveLength(1);
       expect(rows[0]).toMatchObject({
-        category: 'Food/Drink', account: 'Joe/s Visa', activityId: 'p1', accountId: 'acct-pipe',
+        category: 'Food|Drink', account: 'Joe|s Visa', activityId: 'p1', accountId: 'acct-pipe',
         categoryId: 'cat-pipe', source: 'rule', activityType: 'WITHDRAWAL', amount: 9, notes: 'CAFE | BAR · TRN-9',
       });
     } finally {
       cleanup();
     }
+  });
+
+  it('keeps a category name containing a pipe unchanged, so it matches the cube’s other readers', () => {
+    const { path, cleanup } = makeTestDb();
+    try {
+      const db = new DatabaseSync(path);
+      db.exec(`INSERT INTO taxonomy_categories (id, name, parent_id, taxonomy_id) VALUES ('cat-pipe', 'Food|Drink', NULL, 'spending_categories')`);
+      db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, account_id, notes) VALUES ('p1', '-9', '2026-09-03', 'WITHDRAWAL', 'acct-card', 'CAFE · TRN-9')`);
+      db.exec(`INSERT INTO activity_taxonomy_assignments (activity_id, category_id, source) VALUES ('p1', 'cat-pipe', 'rule')`);
+      db.close();
+      const drill = getNativeDrillRows(path, '2026-09-01', '2026-10-01');
+      const spend = getNativeSpendMatrix(path, '2026-09-01', '2026-10-01');
+      expect(drill.map((r) => r.category)).toEqual(['Food|Drink']);
+      expect(spend.map((r) => r.category)).toContain('Food|Drink');
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+describe('parseDrillCliLine (the sqlite3 CLI fallback’s row parser)', () => {
+  const U = '\x1f';
+  const line = (...cols: string[]) => cols.join(U);
+  it('reads a full line, keeping a pipe in notes intact', () => {
+    expect(parseDrillCliLine(line('Dining', '2026-09-03', 'Card', '9.5', 'p1', 'acct-card', 'cat-d', 'rule', 'WITHDRAWAL', 'CAFE | BAR · TRN-9'))).toEqual({
+      c0: 'Dining', c1: '2026-09-03', c2: 'Card', c3: 9.5, c4: 'p1', c5: 'acct-card', c6: 'cat-d', c7: 'rule', c8: 'WITHDRAWAL', c9: 'CAFE | BAR · TRN-9',
+    });
+  });
+  it('keeps the fields aligned when a category and an account name contain a pipe', () => {
+    expect(parseDrillCliLine(line('Food|Drink', '2026-09-03', 'Joe|s Visa', '9', 'p1', 'acct-pipe', 'cat-pipe', 'rule', 'WITHDRAWAL', 'N'))).toMatchObject({
+      c0: 'Food|Drink', c2: 'Joe|s Visa', c4: 'p1', c5: 'acct-pipe', c6: 'cat-pipe', c7: 'rule', c9: 'N',
+    });
+  });
+  it('drops a blank, short or shifted line', () => {
+    expect(parseDrillCliLine('   ')).toBeNull();
+    expect(parseDrillCliLine(line('Dining', '2026-09-03', 'Card', '9'))).toBeNull();
+    expect(parseDrillCliLine(line('Dining', '2026-09-03', 'Card', 'not-a-number', 'p1', 'a', 'c', 's', 'T', 'N'))).toBeNull();
   });
 });
 
