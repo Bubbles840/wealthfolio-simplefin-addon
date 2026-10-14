@@ -200,35 +200,74 @@ export interface HealthScreenOptions {
   result?: string;
 }
 
-/** The pairs a Health list shows: the issues it lists, linkable. */
-const shownPairs = (report: HealthReport): LinkPair[] => linkablePairs((report.issues ?? []).slice(0, AUDIT_LIST_MAX));
+/** Telegram refuses a message over 4096 characters, and the edit's 400 would be swallowed. */
+export const HEALTH_LIST_BUDGET = 2400;
+export const HEALTH_RESULT_MAX = 1500;
+const TOAST_MAX = 200;
+
+/** `raw` escaped, cut so the ESCAPED text is at most `max` characters, then "…". */
+function clipEscaped(raw: string, max: number): string {
+  let out = '';
+  for (const ch of raw) {
+    const e = escapeMarkdown(ch);
+    if (out.length + e.length > max) return `${out}…`;
+    out += e;
+  }
+  return out;
+}
+
+interface HealthLayout { lines: string[]; numbers: Button[]; links: Button[]; pairs: LinkPair[] }
+
+/**
+ * The list a Health screen shows, cut to a fixed budget that does not depend on
+ * the result line (so the tap, which has no result yet, reaches the same
+ * cut). A Link button is offered only for a pair whose "Likely the other half"
+ * line is on screen, and `pairs` is exactly those.
+ */
+function healthLayout(report: HealthReport, link: boolean): HealthLayout {
+  const out: HealthLayout = { lines: [], numbers: [], links: [], pairs: [] };
+  if (report.issues && report.issues.length === 0 && !report.more) out.lines.push(escapeMarkdown(HEALTH_NONE));
+  let used = out.lines.join('\n').length;
+  const notes = noteLines(report.notes);
+  used += notes.join('\n').length + 40;
+  let count = 0;
+  if (report.issues) {
+    for (const issue of report.issues.slice(0, AUDIT_LIST_MAX)) {
+      const pair = link ? linkablePair(issue) : null;
+      const entry = [`${count + 1}. ${escapeMarkdown(healthIssueTitle(clipIssue(issue)))}`];
+      // The list is the preview: the pair the button links.
+      if (pair) entry.push(`   ${escapeMarkdown(`Likely the other half: ${healthLegLine(clipLeg(pair.counterpart))}`)}`);
+      const size = entry.join('\n').length + 1;
+      if (count > 0 && used + size > HEALTH_LIST_BUDGET) break;
+      used += size;
+      count += 1;
+      out.lines.push(...entry);
+      out.numbers.push({ text: String(count), callback_data: auditData({ kind: 'issue', handle: issueHandle(issue) }) });
+      if (pair) {
+        out.pairs.push(pair);
+        out.links.push({ text: `${LINK_BUTTON} ${count}`, callback_data: auditData({ kind: 'link', handle: pairHandle(pair) }) });
+      }
+    }
+    const hidden = report.issues.length - count + (report.more ?? 0);
+    if (hidden > 0) out.lines.push(`…and ${hidden} more`);
+  }
+  out.lines.push(...notes);
+  return out;
+}
+
+/** The pairs a Health list shows: the ones its Link buttons carry. */
+const shownPairs = (report: HealthReport): LinkPair[] => healthLayout(report, true).pairs;
 
 export function renderAuditHealth(report: HealthReport, opts: HealthScreenOptions = {}): MenuScreen {
+  const lay = healthLayout(report, !!opts.link);
   const lines = ['🔎 *Health*'];
-  if (opts.result) lines.push(escapeMarkdown(opts.result));
-  const numbers: Button[] = [];
-  const links: Button[] = [];
-  if (report.issues && report.issues.length === 0 && !report.more) lines.push(escapeMarkdown(HEALTH_NONE));
-  if (report.issues) {
-    const { shown, hidden } = listed(report.issues, report.more);
-    shown.forEach((issue, i) => {
-      lines.push(`${i + 1}. ${escapeMarkdown(healthIssueTitle(clipIssue(issue)))}`);
-      numbers.push({ text: String(i + 1), callback_data: auditData({ kind: 'issue', handle: issueHandle(issue) }) });
-      const pair = opts.link ? linkablePair(issue) : null;
-      if (pair) {
-        // The list is the preview: the pair the button links.
-        lines.push(`   ${escapeMarkdown(`Likely the other half: ${healthLegLine(clipLeg(pair.counterpart))}`)}`);
-        links.push({ text: `${LINK_BUTTON} ${i + 1}`, callback_data: auditData({ kind: 'link', handle: pairHandle(pair) }) });
-      }
-    });
-    if (hidden > 0) lines.push(`…and ${hidden} more`);
-  }
-  lines.push(...noteLines(report.notes));
+  if (opts.result) lines.push(clipEscaped(opts.result, HEALTH_RESULT_MAX));
+  lines.push(...lay.lines);
   const rows: Button[][] = [];
-  for (let i = 0; i < numbers.length; i += 4) rows.push(numbers.slice(i, i + 4));
-  for (let i = 0; i < links.length; i += 4) rows.push(links.slice(i, i + 4));
-  if (links.length >= 2) {
-    rows.push([{ text: linkAllButton(links.length), callback_data: auditData({ kind: 'link-all', handle: pairsHandle(shownPairs(report)) }) }]);
+  for (let i = 0; i < lay.numbers.length; i += 4) rows.push(lay.numbers.slice(i, i + 4));
+  for (let i = 0; i < lay.links.length; i += 4) rows.push(lay.links.slice(i, i + 4));
+  if (lay.links.length >= 2) {
+    rows.push([{ text: linkAllButton(lay.links.length), callback_data: auditData({ kind: 'link-all', handle: pairsHandle(lay.pairs) }) }]);
   }
   rows.push(back({ kind: 'menu' }));
   return { text: lines.join('\n'), keyboard: { inline_keyboard: rows } };
@@ -368,6 +407,11 @@ export function createAuditMenu(deps: AuditMenuDeps): AuditMenu {
           case 'link':
           case 'link-all': {
             if (!deps.link) return void await ui.answer();
+            // The toast carries the outcome, so it is seen even if the edit fails.
+            const finish = async (screen: MenuScreen, outcome: string) => {
+              await ui.answer(clip(outcome, TOAST_MAX)).catch(() => {});
+              await ui.edit(screen.text, screen.keyboard);
+            };
             const report = await deps.health();
             if (!report.issues) return void await show(renderAuditHealth(report, { link: true }));
             // Only pairs whose legs still read as the button carried them.
@@ -375,10 +419,20 @@ export function createAuditMenu(deps: AuditMenuDeps): AuditMenu {
             const pairs = view.kind === 'link'
               ? shown.filter((p) => pairHandle(p) === view.handle)
               : pairsHandle(shown) === view.handle ? shown : [];
-            if (pairs.length === 0) return void await show(renderAuditHealth(report, { link: true, result: LINK_CHANGED }));
+            if (pairs.length === 0) return void await finish(renderAuditHealth(report, { link: true, result: LINK_CHANGED }), LINK_CHANGED);
             const run = await deps.link(pairs);
             // The screen re-reads: the list shows what is left.
-            return void await show(renderAuditHealth(await deps.health(), { link: true, result: run.message }));
+            let screen: MenuScreen;
+            try {
+              screen = renderAuditHealth(await deps.health(), { link: true, result: run.message });
+            } catch (err) {
+              deps.log(`Audit menu: re-reading Health after a link failed: ${message(err)}`);
+              screen = {
+                text: ['🔎 *Health*', clipEscaped(run.message, HEALTH_RESULT_MAX), clipEscaped(`Couldn't re-read Health (${message(err)}).`, 300)].join('\n'),
+                keyboard: { inline_keyboard: [back({ kind: 'health' })] },
+              };
+            }
+            return void await finish(screen, run.message);
           }
         }
       } catch (err) {
