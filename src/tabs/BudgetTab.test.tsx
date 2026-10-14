@@ -863,10 +863,14 @@ describe('per-card ranges, headline picks, palettes (v1.43)', () => {
 });
 
 describe('drill-down from the board (v1.48)', () => {
+  // The story's title shows the year once it is not the current one.
+  beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date(2026, 9, 12, 9, 0, 0)); });
+  afterEach(() => { vi.useRealTimers(); });
+
   it('clicking a category row opens its transactions full-screen, with a way back', async () => {
     const props = makeProps();
     (props.store as any).getReportCube = vi.fn(async () => ({
-      ...CUBE, asOf: new Date().toISOString(),
+      ...CUBE, asOf: '2026-10-12T13:00:00.000Z',
       drill: { Groceries: [{ d: '2026-08-11', n: 'TRADER JOES', c: 4000, a: 'Card' }] },
     }));
     render(<SyncPage {...props} />);
@@ -875,6 +879,34 @@ describe('drill-down from the board (v1.48)', () => {
     expect(await screen.findByText('TRADER JOES')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /back to all reports/i }));
     await waitFor(() => expect(screen.queryByText('TRADER JOES')).toBeNull());
+  });
+
+  it('a row opens its story in place, saying who filed it (1.61)', async () => {
+    const props = makeProps();
+    props.ctx.api.activities = {
+      search: vi.fn(async () => ({
+        data: [{
+          id: 'act-9', accountId: 'wf-a', accountName: 'Checking', activityType: 'WITHDRAWAL',
+          date: '2026-08-11T04:00:00.000Z', amount: '40', comment: 'TRADER JOES · TRN-9',
+        }],
+        meta: { totalRowCount: 1 },
+      })),
+    };
+    (props.store as any).getReportCube = vi.fn(async () => ({
+      ...CUBE, asOf: '2026-10-12T13:00:00.000Z',
+      drill: { Groceries: [
+        { d: '2026-08-11', n: 'TRADER JOES', c: 4000, a: 'Card', i: 'act-9', f: 'r:TRADER JOE' },
+        { d: '2026-08-10', n: 'OLD ROW', c: 100, a: 'Card' },
+      ] },
+    }));
+    render(<SyncPage {...props} />);
+    await waitFor(() => expect(reportIds().length).toBeGreaterThan(0));
+    fireEvent.click(screen.getByRole('button', { name: /see Groceries transactions/i }));
+    fireEvent.click(await screen.findByRole('button', { name: 'TRADER JOES' }));
+    expect(await screen.findByText("Filed under Groceries by a rule — 'TRADER JOE' matches it.")).toBeInTheDocument();
+    // An older companion's row has no id: plain text.
+    expect(screen.getByText('OLD ROW')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'OLD ROW' })).toBeNull();
   });
 });
 

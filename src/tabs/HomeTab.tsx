@@ -6,6 +6,9 @@ import { BASELINE_FIX_MIN_DRIFT_AGE_MS } from '../../shared/sync-core';
 import { Button, SectionLabel, Why } from '../components/ui';
 import { SetupChecklist } from '../components/SetupChecklist';
 import { UncategorizedList, useDismissals } from '../components/UncategorizedList';
+import { WhyCard } from '../components/WhyCard';
+import { appTxSearch, type AppStoryTarget } from '../utils/tx-story';
+import type { TxQuery } from '../../shared/tx-search';
 import { money, accountsSummary } from '../components/AccountList';
 import { shortDate } from '../../shared/telegram';
 import { visibleUncategorized, type DismissalLedger } from '../../shared/uncategorized';
@@ -83,6 +86,9 @@ interface Props {
   poolStatus: Awaited<ReturnType<SecretsStore['getPoolStatus']>>;
   /** The pool tile's tap: opens the pool's burn-down in the budget below. */
   onOpenPool: () => void;
+  /** 1.61: a transaction's story (TxStoryPanel). Present: "Why is this here?"
+   *  heads the page and needs-a-category rows open their stories. */
+  renderTxStory?: (target: AppStoryTarget) => React.ReactNode;
 }
 
 /**
@@ -101,11 +107,12 @@ export function HomeTab({
   prunedDuplicates, unmappedAccounts, onIgnoreAccounts, uncategorized, dismissals, onDismissalsChange,
   isOpen, toggleCard, onBalancesChanged, onClearError, onError,
   companionVersion, telegramConfigured, amazonConfigured, checklistDismissed,
-  onDismissChecklist, onNavigate, poolStatus, onOpenPool,
+  onDismissChecklist, onNavigate, poolStatus, onOpenPool, renderTxStory,
 }: Props) {
   const [fixingBaseline, setFixingBaseline] = useState<string | null>(null);
   const [adjusting, setAdjusting] = useState<string | null>(null);
   const { justDismissed, dismiss, undo } = useDismissals(dismissals, onDismissalsChange);
+  const searchTx = useCallback((query: TxQuery) => appTxSearch(ctx, query, new Date()), [ctx]);
 
   // Plug the residual: add a one-time balance-adjustment entry for an account.
   const doFixBaseline = useCallback(
@@ -166,6 +173,10 @@ export function HomeTab({
 
   return (
     <>
+      {/* "Why is this here?" (1.61): find any transaction and read its story.
+          First, because it is where a question about the numbers starts. */}
+      {renderTxStory && <WhyCard search={searchTx} renderStory={renderTxStory} />}
+
       {/* An account SimpleFin is offering that nothing is mapped to. First
           banner on the page because it is the only one that means data is
           MISSING rather than wrong: until it is mapped, every sync silently
@@ -502,6 +513,7 @@ export function HomeTab({
           justDismissed={justDismissed}
           onUndo={undo}
           onOpenActivities={() => { ctx.api.navigation.navigate('/activities').catch(() => {}); }}
+          renderStory={renderTxStory}
         />
       )}
 

@@ -32,7 +32,11 @@ in Wealthfolio's encrypted secret storage; the token itself is not kept.
 
 The addon has three tabs: **Home**, **Reports** and **Settings**.
 
-- **Home** — a status strip (last sync, accounts, anything that needs you),
+- **Home** — "Why is this here?" at the top: find any transaction by a few
+  words or an amount and read its story — where it came from, what it is, who
+  filed it and every change made to it, with Undo. Then a status strip (last
+  sync, accounts, anything that needs you; a needs-a-category row opens its
+  story),
   then your budget: six reports to start (headline numbers, cash flow or the
   semester-pool burn-down, budget vs actual, top merchants, subscriptions & bills (remind, rename, hide, add by hand)),
   with more a tap away under **+ Add report**, or build your own.
@@ -58,6 +62,9 @@ The addon has three tabs: **Home**, **Reports** and **Settings**.
   and the daily report's "Coming up" lines say what charges soon. In a group chat, answer a question by
   replying to it. `/changes` lists what changed in the last 7 days, with Undo
   or Redo where an entry offers one, and `/changes venmo` searches it.
+  `/why kroger 54.20` finds a transaction and tells its story; the 🔎 Why?
+  buttons on large-transaction alerts, import notices and the `/categorize`
+  screen do the same.
 - **Change log** — every change the sync, the companion and you made, the last
   90 days, under **Settings → Change log**: imports, bank updates, transfer
   links, removed duplicates, starting balances, corrections, filings and rules,

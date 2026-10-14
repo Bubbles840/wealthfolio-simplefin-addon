@@ -61,7 +61,7 @@ import type { TelegramListenerDeps } from './telegram-listener.js';
 import { createImapSource, ingestAmazonMail, amazonMailConfigured } from './amazon-mail.js';
 import { AMAZON_CONFIG_SECRET_KEY, AMAZON_LABELS_SECRET_KEY } from './amazon-mail.js';
 import type { AmazonIngestResult, AmazonMailConfig, MailSource } from './amazon-mail.js';
-import { DEFAULT_GLYPH_STYLE, money } from '../../shared/telegram.js';
+import { DEFAULT_GLYPH_STYLE, money, whyButton, WHY_BUTTON_TEXT, WHY_CALLBACK_PREFIX } from '../../shared/telegram.js';
 import type { GlyphStyle, InlineKeyboard } from '../../shared/telegram.js';
 import type { DismissalLedger } from './dismissals.js';
 import type { SyncHealth } from '../../shared/telegram.js';
@@ -74,9 +74,12 @@ import { fileAmazonCharges } from './amazon-filing.js';
 import { companionChangeSink, readCompanionChangeLog, recordCompanionChanges } from './change-log-host.js';
 import { emptySyncOverrides, hasAccountOverride, hasTxOverride, syncOverridesOrEmpty, type SyncOverrides } from '../../shared/sync-overrides.js';
 import { createChangesMenu, renderChangesCommand, CHANGES_UNREACHABLE_REPLY, type ChangesMenu } from './changes-menu.js';
+import { buildWhyFlow, createWhyMenu, whyRunHandle, type WhyMenu } from './why-menu.js';
+import { companionStoryReaders, companionTxSearch, companionTxStory } from './tx-story-host.js';
 import { companionRuleFiledCount, companionUndoIo } from './change-undo-host.js';
 import { runChangeUndo } from '../../shared/change-undo-run.js';
 import type { ChangeLogRead } from '../../shared/change-log.js';
+import { isChangeLogPartial } from '../../shared/change-view.js';
 import type { ChangeDraft } from '../../shared/change-entries.js';
 import { createTransferLearning, type TransferLearning } from './transfer-learning.js';
 import type { CategorizeController, CategorizeDeps } from './categorize.js';
@@ -520,6 +523,10 @@ async function deliverLargeTransactionAlerts(
           tg.botToken,
           tg.chatId,
           formatLargeTransactionAlert(alert),
+          undefined,
+          // 1.61: the story, as a new message. An alert an older build queued
+          // has no row id, and goes out as it always did.
+          alert.activityId ? { inline_keyboard: [[whyButton(alert.activityId)]] } : undefined,
         );
         if (!result.ok) {
           log(`Large-transaction alert failed to send, will retry next sync: ${result.description}`);
@@ -1133,7 +1140,7 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
         if (result.imported > 0) {
           if (tg.notifyOnImport !== false) {
             try {
-              await sendImportNotice(wfClient, tg, result, sharedTransferLearning ?? undefined);
+              await sendImportNotice(wfClient, tg, result, sharedTransferLearning ?? undefined, changeLog.run);
             } catch (err) {
               // `log`, not `debug`: the sync has already succeeded and these rows
               // are already sitting in Wealthfolio, so a thrown notice means the
@@ -1352,6 +1359,9 @@ export async function sendImportNotice(
    *  arguments — reading the shared instance made the notice's keyboard depend
    *  on whether a listener had been built earlier in the process. */
   transfers?: TransferLearning,
+  /** 1.61: this sync's change-log run id — the notice's 🔎 Why? lists the
+   *  run's imports from the log. Absent: no such button. */
+  run?: string,
 ): Promise<void> {
   // Read the ledger BEFORE the sweep, because it is what filters the notice.
   // Button presses are already in it: the always-on listener
@@ -1475,6 +1485,9 @@ export async function sendImportNotice(
     })),
   );
   if (transferRow) keyboard.inline_keyboard.push(transferRow);
+  // Last: one button for the whole sync — it lists the run's imports (from the
+  // change log), and each opens its story.
+  if (run) keyboard.inline_keyboard.push([{ text: WHY_BUTTON_TEXT, callback_data: `${WHY_CALLBACK_PREFIX}r${whyRunHandle(run)}` }]);
   // Remembered BEFORE the send, so the scope is in place no matter how the send
   // goes: Telegram can deliver the message and still fail the response we read.
   // Every row this notice announced, not just the filed ones — the menu is drawn
@@ -1643,6 +1656,13 @@ function cubeBuildDeps(wfClient: WealthfolioClient, dbPath: string): CubeBuildDe
     // The digest's own readers, verbatim — the check's whole worth is that
     // this path shares no aggregation code with the matrices above.
     drillRows: (s, e) => getNativeDrillRows(dbPath, s, e),
+    // Who filed each drill row (1.61). Each read on its own: an unreadable
+    // rule list still lets the log say "you", and the reverse.
+    filingContext: async () => ({
+      rules: await Promise.resolve().then(() => wfClient.listCategorizationRules()).catch(() => null),
+      // An unreadable bucket or a gap may hold the filing: say nothing rather than "by hand".
+      history: await readCompanionChangeLog(wfClient, new Date()).then((r) => (isChangeLogPartial(r) ? null : r.entries)).catch(() => null),
+    }),
     checkTotals: (s, e, excluded) => ({
       spendByCategory: getNativeWealthfolioSpendingBetween(dbPath, s, e),
       uncategorized: getNativeUncategorizedSpendingTotal(dbPath, s, e, excluded).total,
@@ -2841,6 +2861,8 @@ export function buildCategorizeDeps(wfClient: WealthfolioClient): CategorizeDeps
     // The income taxonomy, for money-in rows' first filings (a grant check is
     // not spending, and upstream refuses a spending category on it).
     readIncomeCategories: getNativeIncomeCategories,
+    // 1.61: the transaction screen's 🔎 Why? — the story as a new message.
+    why: (activityId, send) => buildWhyMenu(wfClient).sendStory(activityId, send),
     readLedger,
     // The shared core, with its fresh second read — NOT a local copy, and never
     // `base` as `persisted`. See `dismissalLedgerAccess`.
@@ -2973,12 +2995,32 @@ function subscriptionWriteFailure(outcome: 'unreadable' | 'invalid' | 'unreachab
 }
 
 /**
+ * `/why` (1.61): one transaction's story. Stateless — every tap re-reads — so
+ * any number of instances answer alike, and the categorize screen's 🔎 Why?
+ * can build its own.
+ */
+export function buildWhyMenu(wfClient: WealthfolioClient): WhyMenu {
+  const readers = () => companionStoryReaders(wfClient, wealthfolioDbPath());
+  return createWhyMenu({
+    search: (query, now) => companionTxSearch(readers(), query, now),
+    story: (activityId, now) => companionTxStory(readers(), activityId, now),
+    read: (now) => readCompanionChangeLog(wfClient, now),
+    now: () => new Date(),
+    log,
+  });
+}
+
+/**
  * The bot's question flows, registered on ONE session holder. Like the
  * categorize controller, one instance must serve `onCommand`, `onText` and
  * `onMenuCallback`, or a question asked through one could never be answered
  * through another.
  */
-export function buildAskSessions(wfClient: WealthfolioClient, controller: CategorizeController): AskSessions {
+export function buildAskSessions(
+  wfClient: WealthfolioClient,
+  controller: CategorizeController,
+  why: WhyMenu = buildWhyMenu(wfClient),
+): AskSessions {
   const asks = createAskSessions({
     log,
     firstQuestionNote: async () => {
@@ -3039,6 +3081,11 @@ export function buildAskSessions(wfClient: WealthfolioClient, controller: Catego
       onDone: (a, send) => controller.openRulePreview(a.pattern as string, a.category as string, send),
     };
   });
+  // Bare /why (1.61): one question, then the results as a new message.
+  asks.register('why', async () => ({
+    flow: buildWhyFlow(),
+    onDone: (a, send) => why.reply(a.query as string, send),
+  }));
   asks.register('afford', async () => {
     const snapshot = await readBudgetSnapshotWithStyle(wfClient);
     return {
@@ -3141,6 +3188,7 @@ export function buildTelegramCommandHandler(
   wfClient: WealthfolioClient,
   controller: CategorizeController = buildCategorizeController(wfClient),
   asks: AskSessions = buildAskSessions(wfClient, controller),
+  why: WhyMenu = buildWhyMenu(wfClient),
 ): (cmd: ParsedCommand, reply: (text: string, keyboard?: InlineKeyboard) => Promise<void>) => Promise<void> {
   const budgetSnapshot = () => readBudgetSnapshotWithStyle(wfClient);
 
@@ -3283,6 +3331,16 @@ export function buildTelegramCommandHandler(
         }
         const screen = renderChangesCommand(read, cmd.args, now);
         await reply(screen.text, screen.keyboard);
+        return;
+      }
+
+      case 'why': {
+        // Bare /why asks (1.61), like /newrule; words or an amount search.
+        if (cmd.args.trim() === '') {
+          await asks.start('why', reply);
+          return;
+        }
+        await why.reply(cmd.args, reply);
         return;
       }
 
@@ -3471,9 +3529,11 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
    *  every button would answer "that menu expired". */
   const categorize = buildCategorizeController(wfClient);
 
+  /** `/why`: stateless, but one instance serves commands, answers and taps. */
+  const why = buildWhyMenu(wfClient);
   /** ONE question slot for commands, plain answers and taps alike. */
-  const asks = buildAskSessions(wfClient, categorize);
-  const runCommand = buildTelegramCommandHandler(wfClient, categorize, asks);
+  const asks = buildAskSessions(wfClient, categorize, why);
+  const runCommand = buildTelegramCommandHandler(wfClient, categorize, asks, why);
 
   /** The Amazon label picker. Shares the `cz:` callback prefix, so
    *  `onMenuCallback` below asks it first and only then falls through to the
@@ -3728,6 +3788,11 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
       // `cz:cl:` likewise, before the transaction menu's fallthrough.
       if (changes.handles(cb.data)) {
         await changes.onCallback(cb, ui);
+        return;
+      }
+      // `cz:wy:` (1.61) likewise.
+      if (why.handles(cb.data)) {
+        await why.onCallback(cb, ui);
         return;
       }
       if (cb.data !== RECATEGORIZE_ENTRY_CALLBACK) {

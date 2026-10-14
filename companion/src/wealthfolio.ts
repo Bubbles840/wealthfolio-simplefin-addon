@@ -1,3 +1,13 @@
+import type { CategoryRuleLike } from '../../shared/tx-story.js';
+
+/** A categorization rule as `GET /spending/rules` lists it (upstream
+ *  `CategorizationRule`, camelCase): what Undo needs and what rule inference
+ *  (shared/tx-story.ts) reads. Optional fields are absent when the server did
+ *  not send them. */
+export interface WealthfolioRule extends CategoryRuleLike {
+  name: string;
+}
+
 export interface ActivitySearchItem {
   id: string;
   accountId: string;
@@ -8,6 +18,8 @@ export interface ActivitySearchItem {
   sourceGroupId?: string | null;
   comment?: string | null;
   subtype?: string | null;
+  /** Upstream `ActivityDetails.accountName`. */
+  accountName?: string | null;
 }
 
 export class WealthfolioClient {
@@ -79,12 +91,12 @@ export class WealthfolioClient {
     return res.json() as Promise<unknown[]>;
   }
 
-  async getAccounts(): Promise<Array<{ id: string; accountType?: string }>> {
+  async getAccounts(): Promise<Array<{ id: string; accountType?: string; isArchived?: boolean }>> {
     const res = await fetch(`${this.baseUrl}/api/v1/accounts`, {
       headers: this.authHeaders(),
     });
     if (!res.ok) throw await this.httpError('getAccounts', res);
-    return res.json() as Promise<Array<{ id: string; accountType?: string }>>;
+    return res.json() as Promise<Array<{ id: string; accountType?: string; isArchived?: boolean }>>;
   }
 
   /**
@@ -114,6 +126,8 @@ export class WealthfolioClient {
     pageSize: number;
     accountIdFilter?: string[];
     activityTypeFilter?: string[];
+    /** Exact ids (upstream `activityIdFilter`, Wealthfolio 3.8). */
+    activityIdFilter?: string[];
     dateFrom?: string;
     dateTo?: string;
   }): Promise<ActivitySearchItem[]> {
@@ -320,20 +334,36 @@ export class WealthfolioClient {
   }
 
   /** Every categorization rule (`GET /spending/rules`, `Vec<CategorizationRule>`):
-   *  how an Undo finds a rule the log knows only by name. */
-  async listCategorizationRules(): Promise<Array<{ id: string; name: string; pattern: string; categoryId: string | null }>> {
+   *  how an Undo finds a rule the log knows only by name, and what "which rule
+   *  filed this" is inferred from. Kept in the server's order — priority
+   *  first, then oldest first — which is the order Wealthfolio applies them in
+   *  (upstream `CategorizationRulesRepository::list`). */
+  async listCategorizationRules(): Promise<WealthfolioRule[]> {
     const res = await fetch(`${this.baseUrl}/api/v1/spending/rules`, { headers: this.authHeaders() });
     if (!res.ok) throw await this.httpError('listCategorizationRules', res);
     const rows = (await res.json()) as unknown;
     if (!Array.isArray(rows)) return [];
+    const text = (v: unknown) => (typeof v === 'string' ? v : undefined);
     return rows
       .filter((r): r is Record<string, unknown> => !!r && typeof r === 'object' && typeof (r as { id?: unknown }).id === 'string')
-      .map((r) => ({
-        id: r.id as string,
-        name: typeof r.name === 'string' ? r.name : '',
-        pattern: typeof r.pattern === 'string' ? r.pattern : '',
-        categoryId: typeof r.categoryId === 'string' ? r.categoryId : null,
-      }));
+      .map((r) => {
+        const rule: WealthfolioRule = {
+          id: r.id as string,
+          name: typeof r.name === 'string' ? r.name : '',
+          pattern: typeof r.pattern === 'string' ? r.pattern : '',
+          categoryId: typeof r.categoryId === 'string' ? r.categoryId : null,
+        };
+        if (text(r.matchType)) rule.matchType = text(r.matchType);
+        if (text(r.taxonomyId)) rule.taxonomyId = text(r.taxonomyId);
+        if (text(r.activityType)) rule.activityType = text(r.activityType);
+        if (text(r.amountOp)) rule.amountOp = text(r.amountOp);
+        if (typeof r.amountValue === 'string' || typeof r.amountValue === 'number') rule.amountValue = r.amountValue;
+        if (typeof r.amountValue2 === 'string' || typeof r.amountValue2 === 'number') rule.amountValue2 = r.amountValue2;
+        if (typeof r.priority === 'number') rule.priority = r.priority;
+        if (typeof r.isGlobal === 'boolean') rule.isGlobal = r.isGlobal;
+        if (text(r.accountId)) rule.accountId = text(r.accountId);
+        return rule;
+      });
   }
 
   /** Deletes a categorization rule (`DELETE /spending/rules/{id}`, upstream

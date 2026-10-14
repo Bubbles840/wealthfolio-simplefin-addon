@@ -4,7 +4,8 @@ Findings that survived a review cycle without being fixed, with enough context
 to act on them later. Each says why it was deferred, so a future reader can
 tell "decided against" from "not got to yet".
 
-Last updated: 2026-10-13, after the change log Undo plan (new section 9).
+Last updated: 2026-10-13, after the "Why is this here?" plan (new section 10).
+Previous revision: 2026-10-13, after the change log Undo plan (new section 9).
 Previous revision: 2026-10-12, after the subscriptions & bills plan (new
 section 7). Previous revision: 2026-07-30, after fixing the shared-transaction-id collision
 (former item 1, now under "Fixed"; former items 2-6 are now 1-5). Previous
@@ -651,6 +652,70 @@ changes what a user sees today.
   taken out of that account's plan that run (it cannot be matched to the pair
   without the unread rows); nothing deletes it, at worst its ordinary row is
   re-held as a placeholder and the cleanup waits for it.
+
+## 10. "Why is this here?" (2026-10-13, plan `2026-10-13-why-is-this-here.md`)
+
+- **The app tells less than Telegram, on purpose.** The add-on SDK has no
+  categories and no link groups. The app names a filer only when the cube's
+  drill-down (this month's categorized spending) or the needs-a-category list
+  knows it; otherwise it says "Ask /why in Telegram to see who filed it." (a
+  companion has published a version) or "Category set in Wealthfolio." (none
+  has). The other half of a transfer comes from the change log's link entry
+  (90 days) or the add-on's own `linked_groups`; an older companion-linked
+  transfer gets no "what it is" line in the app.
+- **Rule inference names the rule that would file the row TODAY** — the
+  highest-priority current rule for its category whose pattern matches
+  (Wealthfolio's own order). A rule edited since the filing can be named in
+  its place, or none ("none of your current rules matches it"). A `regex`
+  rule is matched with JavaScript's `RegExp`, which differs from Rust's
+  `regex` at the edges.
+- **"By hand" is an inference too.** A manual filing with no Telegram or Amazon
+  entry in the last 90 days, and no Amazon label in its note, reads "set by
+  hand" — not "in Wealthfolio": a Telegram filing older than the log, or from
+  before v1.60, looks the same. With the log unreadable — or read only in
+  part, a bucket unreadable or a gap recorded — it says only "Filed under
+  X.", and a story read from part of the log keeps what it read, adds "Part
+  of the change log can't be read, so this list may be missing changes." and
+  never says "No changes in the last 90 days." A starting balance with no
+  filing in the log (the companion filed card opening balances over REST
+  before v1.60) is the add-on's when it sits under "Opening balances", and
+  "Filed under X." anywhere else.
+- **Drill-down stories name the rolled-up (parent) category.** A budget
+  drill-down row carries the category it is rolled up under, not the leaf a
+  rule filed it into: "Filed under Food by a rule — 'KROGER' matches it." for
+  a row in Food › Groceries. The rule still filed the row under that parent;
+  naming the leaf would add its name to every drill row, with the worst-case
+  cube already near 80% of its byte cap. Telegram's `/why` reads the leaf from the database.
+- **A button whose row a transfer link re-created still opens it.** A story
+  by an id that no longer exists follows the change log forward once
+  (`currentActivityId`: a link's old leg to its new one, by position; an Undo
+  or Redo that put the row back), and an import notice's list opens each
+  import's current row. An undone link is not followed — its legs come back
+  on the next sync under ids no entry ties back — so such a button still says
+  "That transaction has changed since".
+- **`/why` queries are cut to 17 bytes**, so a story's Back button (the query
+  rides in it) fits Telegram's 64: words drop from the end, never the amount,
+  and a dropped word only widens the match. A story reached back from a
+  `/changes` entry has no Back of its own.
+- **Which number is the amount.** In a query, the first number written with
+  `$` is the amount; else the first with cents; else the LAST number (so
+  "kroger 415 54" searches $54, with 415 as a word). Buttons write the amount
+  first as `$<amount>`, so paging and Back repeat the same search.
+- **Only the companion's messages carry 🔎 Why?.** The add-on's sync sends its
+  large-transaction alert and import notice text-only, as its notice always
+  was — no listener is guaranteed to answer. An alert the add-on queues keeps
+  its activity id, so the companion's retry carries the button.
+- **An import notice's 🔎 Why? reads the run's import entries from the log.**
+  If that run's entries were never saved (a gap record), the button answers
+  "That sync is past the change log's 90 days — search with /why."
+- **Search limits.** Telegram searches all history in the database, or the
+  last 12 months over REST when the database cannot be read (it says so). The
+  app asks Wealthfolio for a word no account name contains across all history
+  (up to 10 pages of 500) and otherwise reads the last 12 months (up to 20
+  pages). Both stop at 40 matches: "Too many matches — add a word or an
+  amount."
+- **`/why` is under /help's More commands**, not the seven-command ☰ menu
+  (Telegram's registered list), which stays at seven.
 
 ## Reference: name mismatches between the database, the REST API, and the SDK
 

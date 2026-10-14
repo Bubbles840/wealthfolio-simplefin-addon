@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Button } from './ui';
 import type { DismissalLedger, UncategorizedRow } from '../../shared/uncategorized';
+import type { AppStoryTarget } from '../utils/tx-story';
 
 function money(cents: number): string {
   return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' })
@@ -81,7 +82,7 @@ export function useDismissals(
  * size target.
  */
 export function UncategorizedList({
-  rows, total, id, onDismiss, justDismissed, onUndo, onOpenActivities,
+  rows, total, id, onDismiss, justDismissed, onUndo, onOpenActivities, renderStory,
 }: {
   rows: UncategorizedRow[];
   total: number;
@@ -94,7 +95,11 @@ export function UncategorizedList({
    *  Optional so the component stays renderable without a host (its tests) — and
    *  absent means the affordance is simply not shown, never a dead button. */
   onOpenActivities?: () => void;
+  /** 1.61: a row's story, opened under it when its description is clicked.
+   *  Absent: rows stay plain text, as before. */
+  renderStory?: (target: AppStoryTarget) => React.ReactNode;
 }) {
+  const [openId, setOpenId] = useState<string | null>(null);
   // Gated on ROWS, not on `total`: a v1.10.0 companion publishes a count with no
   // rows, and the tile that opens onto this panel already refuses to be a
   // trigger in that case — but a stale open toggle from before the rows
@@ -117,27 +122,45 @@ export function UncategorizedList({
         </div>
       )}
       {rows.map((r) => (
-        <div className="sfin-uncat-row" key={r.activityId}>
-          <span className="sfin-uncat-when">{r.date}</span>
-          <span className="sfin-uncat-what">
-            {r.description}
-            <span className="sfin-subtle"> · {r.accountName}</span>
-          </span>
-          <span className={`sfin-uncat-amt${r.direction ? ` sfin-amt--${r.direction}` : ''}`}>
-            {r.direction === 'out' ? '−' : r.direction === 'in' ? '+' : ''}{money(r.amountCents)}
-          </span>
-          <Button
-            variant="ghost"
-            onClick={() => onDismiss(r.activityId)}
-            title="Stop counting this transaction as needing a category"
-            // Nine rows otherwise announce nine identical "Dismiss, button"s to
-            // assistive tech. Visible text stays "Dismiss" — only the accessible
-            // name carries the distinguishing detail.
-            aria-label={`Dismiss ${r.description}, ${money(r.amountCents)} on ${r.date}`}
-          >
-            Dismiss
-          </Button>
-        </div>
+        <React.Fragment key={r.activityId}>
+          <div className="sfin-uncat-row">
+            <span className="sfin-uncat-when">{r.date}</span>
+            {renderStory ? (
+              <button
+                type="button"
+                className="sfin-uncat-what sfin-why-row-btn"
+                aria-expanded={openId === r.activityId}
+                aria-controls={`sfin-why-story-${r.activityId}`}
+                onClick={() => setOpenId((open) => (open === r.activityId ? null : r.activityId))}
+              >
+                {r.description}
+                <span className="sfin-subtle"> · {r.accountName}</span>
+              </button>
+            ) : (
+              <span className="sfin-uncat-what">
+                {r.description}
+                <span className="sfin-subtle"> · {r.accountName}</span>
+              </span>
+            )}
+            <span className={`sfin-uncat-amt${r.direction ? ` sfin-amt--${r.direction}` : ''}`}>
+              {r.direction === 'out' ? '−' : r.direction === 'in' ? '+' : ''}{money(r.amountCents)}
+            </span>
+            <Button
+              variant="ghost"
+              onClick={() => { setOpenId((open) => (open === r.activityId ? null : open)); onDismiss(r.activityId); }}
+              title="Stop counting this transaction as needing a category"
+              // Nine rows otherwise announce nine identical "Dismiss, button"s to
+              // assistive tech. Visible text stays "Dismiss" — only the accessible
+              // name carries the distinguishing detail.
+              aria-label={`Dismiss ${r.description}, ${money(r.amountCents)} on ${r.date}`}
+            >
+              Dismiss
+            </Button>
+          </div>
+          {renderStory && openId === r.activityId && (
+            <div className="sfin-why-inline" id={`sfin-why-story-${r.activityId}`}>{renderStory({ activityId: r.activityId })}</div>
+          )}
+        </React.Fragment>
       ))}
       {(capped || onOpenActivities) && (
         <div className="sfin-uncat-foot">

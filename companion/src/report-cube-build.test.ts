@@ -2,6 +2,8 @@ import { describe, it, expect, vi } from 'vitest';
 import { buildReportCube, type CubeBuildDeps } from './report-cube-build.js';
 import { parseReportCube, REPORT_CUBE_MAX_BYTES } from '../../shared/report-cube.js';
 import { emptySubscriptionPrefs } from '../../shared/subscription-prefs.js';
+import { decodeFiler } from '../../shared/tx-story.js';
+import { categoryFiledChange, stampChange } from '../../shared/change-entries.js';
 
 /** All-fake deps, like pool-report.test.ts: this module is DI end to end. */
 const deps = (over: Partial<CubeBuildDeps> = {}): CubeBuildDeps => ({
@@ -65,6 +67,142 @@ describe('buildReportCube', () => {
     }));
     const cube = await buildReportCube(deps({ drillRows: vi.fn(() => many) }), NOW, 2);
     expect(cube.drill!.Dining.length).toBeLessThanOrEqual(30);
+  });
+
+  it('carries each drill row’s activity id and a short code for who filed it (1.61)', async () => {
+    const youFiled = stampChange(categoryFiledChange({
+      actor: 'you', activityId: 'act-you', description: 'SWEETGREEN', before: null,
+      after: { categoryId: 'cat-din', categoryName: 'Dining' },
+    }), 'companion', new Date('2026-08-21T12:00:00Z'));
+    const row = (activityId: string, notes: string, source: string, categoryId = 'cat-din') => ({
+      category: 'Dining', date: '2026-08-20', notes, amount: 12.5, account: 'Card',
+      activityId, accountId: 'acct-card', categoryId, source, activityType: 'WITHDRAWAL',
+    });
+    const cube = await buildReportCube(deps({
+      drillRows: vi.fn(() => [
+        row('act-rule', 'CHIPOTLE 1234 · TRN-1', 'rule'),
+        row('act-you', 'SWEETGREEN · TRN-2', 'manual'),
+        row('act-amz', 'AMAZON MKTPL · Amazon: Kitchen · TRN-3', 'manual'),
+        row('act-hand', 'DINER · TRN-4', 'manual'),
+        row('act-gone', 'TACO PLACE · TRN-5', 'rule'),
+      ]),
+      filingContext: vi.fn(async () => ({
+        rules: [{ id: 'r1', pattern: 'CHIPOTLE', categoryId: 'cat-din', priority: 0 }],
+        history: [youFiled],
+      })),
+    }), NOW, 2);
+    expect(cube.drill!.Dining.map((r) => [r.i, r.f])).toEqual([
+      ['act-rule', 'r:CHIPOTLE'],
+      ['act-you', 'y'],
+      ['act-amz', 'a:Kitchen'],
+      ['act-hand', 'h'],
+      ['act-gone', 'r'],
+    ]);
+  });
+
+  it('round-trips a rule pattern and an Amazon label that contain colons, and caps long ones at 60 characters', async () => {
+    const row = (activityId: string, notes: string, source: string) => ({
+      category: 'Dining', date: '2026-08-20', notes, amount: 12.5, account: 'Card',
+      activityId, accountId: 'acct-card', categoryId: 'cat-din', source, activityType: 'WITHDRAWAL',
+    });
+    const long = 'X'.repeat(80);
+    const cube = await buildReportCube(deps({
+      drillRows: vi.fn(() => [
+        row('a1', 'A:B STORE · TRN-1', 'rule'),
+        row('a2', 'AMAZON MKTPL · Amazon: X: Y · TRN-2', 'manual'),
+        row('a3', `${long} · TRN-3`, 'rule'),
+      ]),
+      filingContext: vi.fn(async () => ({
+        rules: [{ id: 'r1', pattern: 'A:B', categoryId: 'cat-din' }, { id: 'r2', pattern: long, categoryId: 'cat-din' }],
+        history: [],
+      })),
+    }), NOW, 2);
+    const f = cube.drill!.Dining.map((r) => r.f);
+    expect(f[0]).toBe('r:A:B');
+    expect(f[1]).toBe('a:X: Y');
+    expect(f[2]).toBe(`r:${'X'.repeat(60)}…`);
+    expect(decodeFiler(f[0])).toEqual({ kind: 'rule', pattern: 'A:B' });
+    expect(decodeFiler(f[1])).toEqual({ kind: 'amazon', label: 'X: Y' });
+  });
+
+  it('an unreadable change log (history null) never says "by hand": no code, or the Amazon label from the note', async () => {
+    const row = (activityId: string, notes: string) => ({
+      category: 'Dining', date: '2026-08-20', notes, amount: 12.5, account: 'Card',
+      activityId, accountId: 'acct-card', categoryId: 'cat-din', source: 'manual', activityType: 'WITHDRAWAL',
+    });
+    const cube = await buildReportCube(deps({
+      drillRows: vi.fn(() => [row('m1', 'DINER · TRN-1'), row('m2', 'AMAZON MKTPL · Amazon: Kitchen · TRN-2')]),
+      filingContext: vi.fn(async () => ({ rules: [], history: null })),
+    }), NOW, 2);
+    expect(cube.drill!.Dining.map((r) => [r.i, r.f])).toEqual([['m1', undefined], ['m2', 'a:Kitchen']]);
+  });
+
+  it('survives a filingContext that throws synchronously', async () => {
+    const cube = await buildReportCube(deps({
+      drillRows: vi.fn(() => [{
+        category: 'Dining', date: '2026-08-20', notes: 'CHIPOTLE · TRN-1', amount: 12.5, account: 'Card',
+        activityId: 'act-1', accountId: 'acct-card', categoryId: 'cat-din', source: 'rule', activityType: 'WITHDRAWAL',
+      }]),
+      filingContext: vi.fn(() => { throw new Error('sync boom'); }),
+    }), NOW, 2);
+    expect(cube.drill!.Dining[0]).toEqual({ d: '2026-08-20', n: 'CHIPOTLE', c: 1250, a: 'Card', i: 'act-1' });
+  });
+
+  it('says only "a rule" when the rules cannot be read, and builds the cube when nothing can', async () => {
+    const drillRows = vi.fn(() => [{
+      category: 'Dining', date: '2026-08-20', notes: 'CHIPOTLE · TRN-1', amount: 12.5, account: 'Card',
+      activityId: 'act-1', accountId: 'acct-card', categoryId: 'cat-din', source: 'rule', activityType: 'WITHDRAWAL',
+    }]);
+    const unreadable = await buildReportCube(deps({ drillRows, filingContext: vi.fn(async () => ({ rules: null, history: null })) }), NOW, 2);
+    expect(unreadable.drill!.Dining[0]).toMatchObject({ i: 'act-1', f: 'r?' });
+    const failing = await buildReportCube(deps({ drillRows, filingContext: vi.fn(async () => { throw new Error('down'); }) }), NOW, 2);
+    expect(failing.drill!.Dining[0]).toEqual({ d: '2026-08-20', n: 'CHIPOTLE', c: 1250, a: 'Card', i: 'act-1' });
+  });
+
+  it('an older reader’s rows carry neither field, so the app keeps them plain', async () => {
+    const cube = await buildReportCube(deps({
+      drillRows: vi.fn(() => [{ category: 'Dining', date: '2026-08-20', notes: 'CHIPOTLE · TRN-1', amount: 12.5, account: 'Card' }]),
+      filingContext: vi.fn(async () => ({ rules: [], history: [] })),
+    }), NOW, 2);
+    expect(cube.drill!.Dining[0]).toEqual({ d: '2026-08-20', n: 'CHIPOTLE', c: 1250, a: 'Card' });
+  });
+
+  it('a heavy cube with every drill row carrying both fields stays under 80% of the size guard', async () => {
+    // Measured for the plan: 24 months, 16 categories at the 30-row cap, six
+    // accounts — 104,715 bytes without the two fields, 148,875 with these
+    // (the longest) codes on every row: 74% of the guard.
+    const categories = Array.from({ length: 16 }, (_, i) => `Category ${String.fromCharCode(65 + i)} & Co`);
+    const accounts = Array.from({ length: 6 }, (_, i) => ({
+      sfinId: `ACT-${i}f0b2c3d-4e5f-6071-8293-a4b5c6d7e8f9`, wfId: `wf-${i}`, name: `Account number ${i} (4937)`, type: i < 2 ? 'CASH' : 'CREDIT_CARD',
+    }));
+    const months = Array.from({ length: 24 }, (_, b) => new Date(Date.UTC(2026, 7 - 23 + b, 1)).toISOString().slice(0, 7));
+    const heavy = deps({
+      accountMeta: vi.fn(async () => accounts),
+      spendMatrix: vi.fn(() => months.flatMap((month) => categories.flatMap((category, ci) => accounts.slice(0, 5).map((a, ai) => ({
+        month, category, accountId: a.wfId, amount: 12.34 * (ci + ai + 1),
+      }))))),
+      incomeByMonthAccount: vi.fn(() => months.flatMap((month) => accounts.map((a) => ({ month, accountId: a.wfId, amount: 1234.56 })))),
+      uncategorizedByMonthAccount: vi.fn(() => months.flatMap((month) => accounts.map((a) => ({ month, accountId: a.wfId, amount: 45.67 })))),
+      budgetsForMonth: vi.fn(() => Object.fromEntries(categories.map((c) => [c, 250]))),
+      merchantRows: vi.fn(() => months.flatMap((month) => Array.from({ length: 40 }, (_, i) => ({
+        month, date: `${month}-${String((i % 27) + 1).padStart(2, '0')}`, notes: `POS PURCHASE SQ *HEINE BROTHERS COFF ${i} · TRN-${month}-${i}`, amount: 10 + i,
+      })))),
+      valuationByMonth: vi.fn(() => months.flatMap((month) => accounts.map((a) => ({ month, accountId: a.wfId, amount: 12345.67 })))),
+      drillRows: vi.fn(() => categories.flatMap((category, ci) => Array.from({ length: 40 }, (_, i) => ({
+        category, date: `2026-08-${String((i % 28) + 1).padStart(2, '0')}`, notes: `POS PURCHASE CHIPOTLE 1234 LOUISVILLE KY · TRN-a1b2c3d4-${ci}-${i}`,
+        amount: 12.34 + i, account: accounts[i % 5].name,
+        activityId: `0f8fad5b-d9cb-469f-a165-7086772895${String(ci).padStart(2, '0')}`, accountId: accounts[i % 5].wfId,
+        categoryId: `cat-${ci}`, source: 'rule', activityType: 'WITHDRAWAL',
+      })))),
+      filingContext: vi.fn(async () => ({
+        rules: categories.map((_, ci) => ({ id: `r${ci}`, pattern: 'POS PURCHASE CHIPOTLE 1234 LOUISVILLE KY', categoryId: `cat-${ci}` })),
+        history: [],
+      })),
+    });
+    const cube = await buildReportCube(heavy, NOW);
+    expect(cube.months).toHaveLength(24);
+    expect(Object.values(cube.drill!).every((list) => list.length === 30 && list.every((r) => r.i && r.f))).toBe(true);
+    expect(JSON.stringify(cube).length).toBeLessThanOrEqual(REPORT_CUBE_MAX_BYTES * 0.8);
   });
 
   it('detects subscriptions from dated merchant rows', async () => {
