@@ -67,19 +67,34 @@ function trimHealth(h: HealthReport, cap: number): HealthReport {
   return { ...h, issues: h.issues.slice(0, cap), more: (h.more ?? 0) + h.issues.length - cap };
 }
 
-/** The snapshot for one run, trimmed until it fits AUDIT_SNAPSHOT_MAX_BYTES. */
-export function buildAuditSnapshot(results: AuditResults, now: Date): AuditSnapshot {
+const NOTE_CAP = 3;
+const capNotes = (notes: string[]): string[] =>
+  notes.length <= NOTE_CAP ? notes : [...notes.slice(0, NOTE_CAP), `and ${notes.length - NOTE_CAP} more`];
+
+/** The snapshot for one run, trimmed until it fits AUDIT_SNAPSHOT_MAX_BYTES:
+ *  rows first, then the notes lists. Null when it still does not fit — the
+ *  caller keeps the previous snapshot rather than publish an oversize one. */
+export function buildAuditSnapshot(results: AuditResults, now: Date): AuditSnapshot | null {
   const balances: Record<string, BalanceExplanation> = {};
   for (const a of results.balances.accounts) balances[a.wfAccountId] = a;
-  let snapshot: AuditSnapshot | null = null;
-  for (const [rowCap, issueCap] of CAPS) {
-    snapshot = {
-      v: 1, at: now.toISOString(), balances, balanceNotes: results.balances.notes,
-      headline: trimHeadline(results.headline, rowCap), health: trimHealth(results.health, issueCap),
+  const fits = (s: AuditSnapshot) => utf8Bytes(JSON.stringify(s)) <= AUDIT_SNAPSHOT_MAX_BYTES;
+  const make = (rowCap: number, issueCap: number, capNote: boolean): AuditSnapshot => {
+    const headline = trimHeadline(results.headline, rowCap);
+    const health = trimHealth(results.health, issueCap);
+    return {
+      v: 1, at: now.toISOString(), balances,
+      balanceNotes: capNote ? capNotes(results.balances.notes) : results.balances.notes,
+      headline: capNote ? { ...headline, notes: capNotes(headline.notes) } : headline,
+      health: capNote ? { ...health, notes: capNotes(health.notes) } : health,
     };
-    if (utf8Bytes(JSON.stringify(snapshot)) <= AUDIT_SNAPSHOT_MAX_BYTES) break;
+  };
+  for (const [rowCap, issueCap] of CAPS) {
+    const snapshot = make(rowCap, issueCap, false);
+    if (fits(snapshot)) return snapshot;
   }
-  return snapshot!;
+  const last = CAPS[CAPS.length - 1];
+  const capped = make(last[0], last[1], true);
+  return fits(capped) ? capped : null;
 }
 
 export type AuditSnapshotRead =
@@ -103,18 +118,31 @@ export function parseAuditSnapshot(raw: string | null | undefined): AuditSnapsho
   }
   if (!isObject(v) || v.v !== 1 || typeof v.at !== 'string' || Number.isNaN(Date.parse(v.at))) return corrupt;
   if (!isObject(v.balances) || !Array.isArray(v.balanceNotes)) return corrupt;
-  for (const e of Object.values(v.balances)) {
-    if (!isObject(e) || typeof e.wfAccountId !== 'string' || typeof e.name !== 'string' || !isObject(e.bank) || !nullOrArray(e.causes)) return corrupt;
+  const isNum = (x: unknown) => typeof x === 'number' && Number.isFinite(x);
+  for (const [key, e] of Object.entries(v.balances)) {
+    if (!isObject(e) || typeof e.wfAccountId !== 'string' || e.wfAccountId !== key || typeof e.name !== 'string' || !isObject(e.bank)) return corrupt;
+    if (e.offCents !== null && !isNum(e.offCents)) return corrupt;
+    if (!Array.isArray(e.causes)) return corrupt;
+    for (const c of e.causes) if (!isObject(c) || typeof c.kind !== 'string' || !isNum(c.cents)) return corrupt;
   }
   const h = v.headline;
   if (!isObject(h) || typeof h.month !== 'string' || !nullOrArray(h.reasons) || !Array.isArray(h.notes)) return corrupt;
   for (const r of h.reasons ?? []) {
-    if (!isObject(r) || typeof r.kind !== 'string' || typeof r.cents !== 'number' || !Array.isArray(r.rows)) return corrupt;
+    if (!isObject(r) || typeof r.kind !== 'string' || !isNum(r.cents) || !Array.isArray(r.rows)) return corrupt;
+    for (const row of r.rows) if (!isObject(row) || !isNum(row.cents)) return corrupt;
   }
   const health = v.health;
   if (!isObject(health) || !nullOrArray(health.issues) || !Array.isArray(health.notes)) return corrupt;
+  const goodLeg = (l: unknown) => isObject(l) && typeof l.activityId === 'string' && typeof l.accountId === 'string' && isNum(l.absCents);
   for (const i of health.issues ?? []) {
     if (!isObject(i) || typeof i.kind !== 'string' || typeof i.key !== 'string') return corrupt;
+    if (i.kind === 'incomplete-leg') {
+      if (!goodLeg(i.leg) || (i.counterpart != null && !goodLeg(i.counterpart))) return corrupt;
+    } else if (i.kind === 'phantom-cash') {
+      if (!isNum(i.rows) || !Array.isArray(i.accounts)) return corrupt;
+    } else if (i.kind === 'late-start') {
+      if (typeof i.activityId !== 'string' || typeof i.accountId !== 'string' || !isNum(i.cents)) return corrupt;
+    } else return corrupt;
   }
   return { kind: 'ok', snapshot: v as AuditSnapshot };
 }

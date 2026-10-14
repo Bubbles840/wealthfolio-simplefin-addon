@@ -58,7 +58,7 @@ describe('buildAuditSnapshot', () => {
   });
 
   it('keeps a worst case within budget by trimming rows first, saying how many it left out', () => {
-    const snap = buildAuditSnapshot(worstCase(), NOW);
+    const snap = buildAuditSnapshot(worstCase(), NOW)!;
     expect(bytes(JSON.stringify(snap))).toBeLessThanOrEqual(AUDIT_SNAPSHOT_MAX_BYTES);
     expect(Object.keys(snap.balances)).toHaveLength(40);
     for (const r of snap.headline.reasons!) {
@@ -69,8 +69,34 @@ describe('buildAuditSnapshot', () => {
     expect(snap.health.issues!.length + snap.health.more!).toBe(1000);
   });
 
+  it('caps an oversized notes list so the snapshot fits', () => {
+    const r = small();
+    r.balances.notes = Array.from({ length: 500 }, (_, i) => `${'n'.repeat(400)} ${i}`);
+    const snap = buildAuditSnapshot(r, NOW)!;
+    expect(bytes(JSON.stringify(snap))).toBeLessThanOrEqual(AUDIT_SNAPSHOT_MAX_BYTES);
+    expect(snap.balanceNotes).toHaveLength(4);
+    expect(snap.balanceNotes[3]).toBe('and 497 more');
+  });
+
+  it('returns null when it cannot fit, so nothing oversize is published', () => {
+    const r = small();
+    r.balances.accounts = Array.from({ length: 40 }, (_, i) => ({ ...account(i), name: 'Ü'.repeat(3000) }));
+    expect(buildAuditSnapshot(r, NOW)).toBeNull();
+  });
+
+  it('counts bytes, not characters: 3-byte text under 100,000 characters still trims', () => {
+    const r = small();
+    r.headline.reasons = [{ kind: 'future', cents: 1, rows: Array.from({ length: 400 }, (_, i) => ({ ...headlineRow(i), description: '€'.repeat(110) })) }];
+    const chars = JSON.stringify(r).length;
+    expect(chars).toBeLessThan(AUDIT_SNAPSHOT_MAX_BYTES);
+    expect(bytes(JSON.stringify(r))).toBeGreaterThan(AUDIT_SNAPSHOT_MAX_BYTES);
+    const snap = buildAuditSnapshot(r, NOW)!;
+    expect(bytes(JSON.stringify(snap))).toBeLessThanOrEqual(AUDIT_SNAPSHOT_MAX_BYTES);
+    expect(snap.headline.reasons![0].more).toBeGreaterThan(0);
+  });
+
   it('leaves a small snapshot whole, keyed by account in mapping order', () => {
-    const snap = buildAuditSnapshot(small(), NOW);
+    const snap = buildAuditSnapshot(small(), NOW)!;
     expect(snap).toEqual({
       v: 1, at: '2026-10-13T18:00:00.000Z', balances: { [uuid(1)]: account(1) }, balanceNotes: [],
       headline: small().headline, health: small().health,
@@ -80,7 +106,7 @@ describe('buildAuditSnapshot', () => {
 
 describe('parseAuditSnapshot', () => {
   it('reads back what the companion wrote', () => {
-    const snap = buildAuditSnapshot(small(), NOW);
+    const snap = buildAuditSnapshot(small(), NOW)!;
     expect(parseAuditSnapshot(JSON.stringify(snap))).toEqual({ kind: 'ok', snapshot: snap });
   });
 
@@ -91,7 +117,7 @@ describe('parseAuditSnapshot', () => {
   });
 
   it('is corrupt — never empty — when it cannot be read', () => {
-    const good = buildAuditSnapshot(small(), NOW);
+    const good = buildAuditSnapshot(small(), NOW)!;
     for (const raw of [
       '{not json',
       JSON.stringify({ ...good, v: 2 }),
@@ -101,7 +127,18 @@ describe('parseAuditSnapshot', () => {
       JSON.stringify({ ...good, headline: { ...good.headline, reasons: [{ kind: 'future', cents: 1 }] } }),
       JSON.stringify({ ...good, health: { issues: 'none', notes: [] } }),
       JSON.stringify({ ...good, health: { issues: [{ kind: 'late-start' }], notes: [] } }),
-      'null',
+      'null', '[]', '5', '"text"',
+      JSON.stringify({ ...good, at: undefined }),
+      JSON.stringify({ ...good, balanceNotes: undefined }),
+      JSON.stringify({ ...good, health: { issues: [{ kind: 'x', key: 'k' }], notes: [] } }),
+      JSON.stringify({ ...good, health: { issues: [{ kind: 'incomplete-leg', key: 'k' }], notes: [] } }),
+      JSON.stringify({ ...good, health: { issues: [{ kind: 'incomplete-leg', key: 'k', leg: { activityId: 'a', accountId: 'b', absCents: 'x' } }], notes: [] } }),
+      JSON.stringify({ ...good, health: { issues: [{ kind: 'incomplete-leg', key: 'k', leg: { activityId: 'a', accountId: 'b', absCents: 1 }, counterpart: {} }], notes: [] } }),
+      JSON.stringify({ ...good, headline: { ...good.headline, reasons: [{ kind: 'future', cents: 1, rows: [{ date: 'x' }] }] } }),
+      JSON.stringify({ ...good, balances: { [uuid(1)]: { ...account(1), causes: [{ kind: 'pending' }] } } }),
+      JSON.stringify({ ...good, balances: { [uuid(1)]: { ...account(1), causes: [5] } } }),
+      JSON.stringify({ ...good, balances: { [uuid(1)]: { ...account(1), offCents: 'x' } } }),
+      JSON.stringify({ ...good, balances: { [uuid(2)]: account(1) } }),
     ]) {
       expect(parseAuditSnapshot(raw)).toEqual({ kind: 'corrupt' });
     }
@@ -110,7 +147,7 @@ describe('parseAuditSnapshot', () => {
 
 describe('auditSnapshotStatus', () => {
   const at = new Date(2026, 9, 13, 14, 0);
-  const ok = parseAuditSnapshot(JSON.stringify(buildAuditSnapshot(small(), at)));
+  const ok = parseAuditSnapshot(JSON.stringify(buildAuditSnapshot(small(), at)!));
 
   it('says when a fresh snapshot was taken, in the viewer’s own time', () => {
     expect(auditSnapshotStatus(ok, '1.61.0', new Date(2026, 9, 13, 18, 30))).toEqual({ state: 'fresh', line: 'As of the 2:00 PM sync.' });
@@ -118,6 +155,7 @@ describe('auditSnapshotStatus', () => {
   });
 
   it('says a snapshot older than two days is from that day', () => {
+    expect(auditSnapshotStatus(ok, '1.61.0', new Date(2026, 9, 15, 14, 0, 0)).state).toBe('fresh');
     expect(auditSnapshotStatus(ok, '1.61.0', new Date(2026, 9, 15, 14, 0, 1))).toEqual({
       state: 'stale', line: "These checks are from Oct 13 — the companion hasn't synced since.",
     });
