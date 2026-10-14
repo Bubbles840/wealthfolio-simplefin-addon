@@ -36,7 +36,8 @@ The addon has three tabs: **Home**, **Reports** and **Settings**.
   words or an amount and read its story — where it came from, what it is, who
   filed it and every change made to it, with Undo. Then a status strip (last
   sync, accounts, anything that needs you; a needs-a-category row opens its
-  story),
+  story, and shows the category you probably meant when you filed the same
+  merchant that way before),
   then your budget: six reports to start (headline numbers, cash flow or the
   semester-pool burn-down, budget vs actual, top merchants, subscriptions & bills (remind, rename, hide, add by hand)),
   with more a tap away under **+ Add report**, or build your own.
@@ -54,6 +55,10 @@ The addon has three tabs: **Home**, **Reports** and **Settings**.
 - **Telegram bot** (with the companion) — one short daily report: what you
   spent, what's left, and a single "🧹 N things to fix" line with buttons.
   File transactions, check what you can afford and pull charts from the chat.
+  `/categorize` offers the category you filed the same merchant under before
+  as the first, one-tap choice ("✓ Groceries (like the last 3)"), and a rule
+  made from a filing can be for one account only ("Only <account>" on its
+  preview; `/newrule trader joes = groceries in checking` does the same).
   Commands that need details — `/pool`, `/newrule`, `/afford` — ask for them
   one question at a time; the one-line forms still work. Bare `/pool` shows
   the pool with Set and Clear buttons.
@@ -89,6 +94,8 @@ The addon has three tabs: **Home**, **Reports** and **Settings**.
   and rule changes are undone from Telegram's `/changes`.
 - **Amazon categorization** (optional) — reads Amazon's order emails from a
   throwaway mailbox and files each `AMAZON.COM*…` charge under what you bought.
+- **Venmo notes** (optional, the same mailbox) — a bank row for a Venmo
+  payment gets the payment's note from Venmo's email.
 - **Rules** — map a description pattern to a category or activity type when a
   bank's wording needs help. Your rules always win.
 
@@ -301,6 +308,36 @@ Three things trip up almost everyone setting this up:
 
 If the companion cannot sign in to the mailbox, the card shows the error itself
 (before 1.57.0 it was only in `docker logs`).
+
+#### Venmo notes
+
+The same mailbox reads Venmo's emails. Add a second Gmail filter — _From_
+`venmo@venmo.com`, _To_ empty, **Forward it to** the same address — and a bank
+row for a Venmo payment gets the payment's note:
+
+```
+Email:  You paid Jane Doe $25.00 · Rent October
+Bank:   VENMO PAYMENT 1023 · -$25.00
+   →    comment becomes "VENMO PAYMENT 1023 · Venmo: Rent October · TRN-…"
+```
+
+A note goes on only when exactly one Venmo payment has the same amount, the
+same direction and its email within 5 days; two payments of the same amount
+that week mean no note. Only posted rows get one: a pending row is noted once
+it posts. Money you were paid counts when it reaches the bank,
+and so does a transfer to your bank ("Transfer to your bank"). Each note is in
+the change log, where Undo takes it off and keeps it off. Wealthfolio's rules
+read the note, so a rule on `Venmo: Rent` works. With no Venmo mail forwarded,
+nothing happens.
+
+Keep the forwarding address private. The companion cannot tell a real Venmo
+email from a forged one with a `venmo@venmo.com` From line, so anyone who knows
+the address could send mail that writes a "Venmo note" onto a matching bank
+row. The note is only text, and a matching amount and date are still needed.
+
+Venmo's email formats are built from its documented wording and have not yet
+been checked against real emails. One that does not read stays unread in the
+mailbox, and the companion's log counts it (`Venmo mail: … unrecognised`).
 
 **Proton Mail does not work for this**, for two reasons. An alias delivers into the
 same mailbox, so credentials for it reach everything in the account — no isolation
