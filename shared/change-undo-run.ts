@@ -25,7 +25,7 @@ import {
   UNDO_UNREACHABLE, type UndoOp, type UndoPlan, type UndoRow, type UndoState, type UndoStep, type UndoVariant,
 } from './change-undo.js';
 import {
-  editSkippedTransactions, parseSkippedTransactionsStrict, SKIPPED_TRANSACTIONS_SECRET_KEY, SkippedTransactionsUnreadableError,
+  editSkippedTransactions, parseSkippedTransactionsStrict, REMOVED_FOR_GOOD_NOTE, SKIPPED_TRANSACTIONS_SECRET_KEY, SkippedTransactionsUnreadableError,
   withoutSkipped, withSkipped,
 } from './skipped-transactions.js';
 import type { SecretGet, SecretSet } from './subscription-prefs.js';
@@ -471,7 +471,7 @@ async function runOnce(
 
   let created: string | null;
   try {
-    created = await perform(io, rest, now, entry.kind === 'transaction-removed' ? 'Removed for good' : UNDO_SKIP_NOTE);
+    created = await perform(io, rest, now, entry.kind === 'transaction-removed' ? REMOVED_FOR_GOOD_NOTE : UNDO_SKIP_NOTE);
   } catch (err) {
     if (entry.kind === 'transaction-removed' && err instanceof PartialFailure) {
       const base = `Couldn't finish the ${op}: ${message(err)}`.replace(/\.$/, '');

@@ -3,13 +3,14 @@ import { stampChange, type ChangeDraft, type ChangeEntry } from './change-entrie
 import type { ChangeLogItem } from './change-log';
 import { runChangeUndo, type UndoIo } from './change-undo-run';
 import { createFakeHost } from './fake-host';
-import { fixRowOf, type FixRow } from './fix-row';
+import { fixRowOf, recreateWrite, type FixRow } from './fix-row';
+import { describeLeg } from './link-pair';
 import { parseSkippedTransactionsStrict, SKIPPED_TRANSACTIONS_SECRET_KEY } from './skipped-transactions';
 import type { HostActivity } from './sync-host';
 import { accountTxKey } from './transfers';
 import type { TxStoryFacts } from './tx-story';
 import {
-  removalFingerprint, removalOffered, removeForGood, REMOVE_CHANGED, REMOVE_DONE, REMOVE_MANAGED, REMOVE_NOT_FEED, REMOVE_PENDING,
+  removalFingerprint, removalOffered, removeForGood, REMOVE_CHANGED, REMOVE_DONE, REMOVE_MANAGED, REMOVE_NOT_FEED, REMOVE_NO_UNDO, REMOVE_NO_UNDO_POSSIBLE, REMOVE_PENDING, REMOVE_RUNNING, removeUnsure,
   REMOVE_SKIP_NOTE, REMOVE_SKIP_UNREADABLE, REMOVE_UNLINK_FIRST, REMOVE_UNREACHABLE, type RemoveIo,
 } from './tx-remove';
 
@@ -94,7 +95,7 @@ describe('removeForGood', () => {
       account: { sfinId: 'sfin-chk', wfId: 'wf-chk', name: 'PNC Checking' },
       subject: { txKeys: [KEY], activityIds: ['dup-1'], description: 'MOBILE DEPOSIT', amountCents: 60000, date: '2026-10-09' },
       before: {
-        activityId: 'dup-1',
+        activityId: 'dup-1', addedKeys: [KEY],
         activity: { accountId: 'wf-chk', activityType: 'DEPOSIT', activityDate: '2026-10-09', symbol: { symbol: '$CASH-USD' }, amount: 600, currency: 'USD', comment: NOTE },
       },
     })]);
@@ -159,8 +160,64 @@ describe('removeForGood', () => {
 
   it('never lets the log cost the removal', async () => {
     const f = fakeIo({ record: vi.fn(async () => { throw new Error('log down'); }) });
-    expect(await removeForGood('dup-1', FP, f.io, NOW)).toEqual({ ok: true, message: REMOVE_DONE });
+    expect(await removeForGood('dup-1', FP, f.io, NOW)).toEqual({ ok: true, message: REMOVE_NO_UNDO });
     expect(f.io.log).toHaveBeenCalledTimes(1);
+    const line = (f.io.log as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+    expect(line).toContain(JSON.stringify({ keys: [KEY], payload: recreateWrite(ROW) }));
+  });
+
+  it('keeps the skip and records the removal when the delete threw after it landed', async () => {
+    let reads = 0;
+    const f = fakeIo({ read: vi.fn(async () => (reads++ === 0 ? ROW : null)), remove: vi.fn(async () => { throw new Error('timeout'); }) });
+    expect(await removeForGood('dup-1', FP, f.io, NOW)).toEqual({ ok: true, message: REMOVE_DONE });
+    expect(f.skipped()).toHaveLength(1);
+    expect(f.recorded).toHaveLength(1);
+  });
+
+  it('says it cannot tell, and keeps the skip, when the re-read after a thrown delete fails', async () => {
+    let reads = 0;
+    const f = fakeIo({
+      read: vi.fn(async () => { if (reads++ === 0) return ROW; throw new Error('down'); }),
+      remove: vi.fn(async () => { throw new Error('timeout'); }),
+    });
+    const out = await removeForGood('dup-1', FP, f.io, NOW);
+    expect(out).toEqual({ ok: false, message: removeUnsure('down', describeLeg({ accountId: 'wf-chk', accountName: 'PNC Checking', date: '2026-10-09', absCents: 60000, comment: NOTE })) });
+    expect(f.skipped()).toHaveLength(1);
+    expect(f.recorded).toEqual([]);
+    expect((f.io.log as ReturnType<typeof vi.fn>).mock.calls.some((c) => String(c[0]).includes(JSON.stringify({ keys: [KEY], payload: recreateWrite(ROW) })))).toBe(true);
+  });
+
+  it('refuses a row the host calls grouped even when linked() says no', async () => {
+    const row = { ...ROW, grouped: true };
+    const f = fakeIo({ read: vi.fn(async () => row) });
+    expect(await removeForGood('dup-1', shown(row), f.io, NOW)).toEqual({ ok: false, message: REMOVE_UNLINK_FIRST });
+    expect(f.calls).toEqual([]);
+  });
+
+  it('refuses a $0 row, which Undo could not put back, before writing', async () => {
+    const row = { ...ROW, absCents: 0 };
+    const f = fakeIo({ read: vi.fn(async () => row) });
+    expect(await removeForGood('dup-1', shown(row), f.io, NOW)).toEqual({ ok: false, message: REMOVE_NO_UNDO_POSSIBLE });
+    expect(f.calls).toEqual([]);
+  });
+
+  it('does one removal at a time per row', async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => { release = r; });
+    const f = fakeIo({ remove: vi.fn(async () => { await gate; }) });
+    const first = removeForGood('dup-1', FP, f.io, NOW);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(await removeForGood('dup-1', FP, f.io, NOW)).toEqual({ ok: false, message: REMOVE_RUNNING });
+    release();
+    expect(await first).toEqual({ ok: true, message: REMOVE_DONE });
+    expect(f.io.remove).toHaveBeenCalledTimes(1);
+  });
+
+  it('records only the keys it added', async () => {
+    const f = fakeIo({ feeds: vi.fn(async () => ['sfin-chk', 'sfin-old']) },
+      { [SKIPPED_TRANSACTIONS_SECRET_KEY]: JSON.stringify([{ account: 'sfin-old', txId: 'TRN-600' }]) });
+    await removeForGood('dup-1', FP, f.io, NOW);
+    expect(f.recorded[0].before).toMatchObject({ addedKeys: [KEY] });
   });
 });
 
@@ -173,33 +230,48 @@ describe('remove, then Undo, on a host', () => {
     vi.useRealTimers();
   });
 
-  it('re-creates the exact row and takes it off the skip list', async () => {
-    const original: HostActivity = { id: 'dup-1', accountId: 'wf-chk', activityType: 'DEPOSIT', date: '2026-10-09', amount: 600, comment: NOTE, sourceGroupId: null };
+  it('re-creates the exact row and takes only its own key off the skip list', async () => {
+    const original: HostActivity = {
+      id: 'dup-1', accountId: 'wf-chk', activityType: 'WITHDRAWAL', date: '2026-10-09', amount: 600, fee: 1.5, comment: NOTE, sourceGroupId: null,
+      subtype: 'REIMBURSEMENT', metadata: JSON.stringify({ flow: { is_external: true }, tag: 'x' }),
+    };
     const fh = createFakeHost({ mapping: { 'sfin-chk': 'wf-chk' }, accountTypes: { 'wf-chk': 'CASH' }, existing: new Map([['wf-chk', [original]]]) });
-    const data = new Map<string, string>();
+    const data = new Map<string, string>([[SKIPPED_TRANSACTIONS_SECRET_KEY, JSON.stringify([{ account: 'sfin-old', txId: 'TRN-600', note: 'by hand' }])]]);
     const log: ChangeEntry[] = [];
     const secrets = { get: async (k: string) => data.get(k) ?? null, set: async (k: string, v: string) => { data.set(k, v); } };
     const record = async (d: ChangeDraft) => { log.unshift(stampChange(d, 'addon', NOW)); };
+    const rowOf = (a: HostActivity) => fixRowOf({ ...a, currency: 'EUR', accountName: 'PNC Checking' }, 'CASH');
+    const row = rowOf(original)!;
     const io: RemoveIo = {
       read: async (id) => {
         const a = fh.activities.get('wf-chk')!.find((r) => r.id === id);
-        return a ? fixRowOf({ ...a, currency: 'USD', accountName: 'PNC Checking' }, 'CASH') : null;
+        return a ? rowOf(a) : null;
       },
-      feeds: async () => ['sfin-chk'],
+      feeds: async () => ['sfin-chk', 'sfin-old'],
       linked: async () => false,
       secrets,
-      remove: async (id) => { await fh.host.saveMany({ deleteIds: [id] }); },
+      remove: async (id) => {
+        const res = await fh.host.saveMany({ deleteIds: [id] });
+        if (res.errors.length > 0) throw new Error(res.errors.join('; '));
+      },
       record,
       log: () => {},
     };
-    expect((await removeForGood('dup-1', FP, io, NOW)).ok).toBe(true);
+    expect((await removeForGood('dup-1', shown(row), io, NOW)).ok).toBe(true);
     expect(fh.activities.get('wf-chk')).toEqual([]);
+    const afterRemove = parseSkippedTransactionsStrict(data.get(SKIPPED_TRANSACTIONS_SECRET_KEY));
+    expect(afterRemove.kind === 'ok' && afterRemove.list.map((s) => `${s.account}:${s.txId}`)).toEqual(['sfin-old:TRN-600', 'sfin-chk:TRN-600']);
 
     const undoIo: UndoIo = { host: fh.host, secrets, record, where: { host: 'addon', companionVersion: '1.61.0' } };
     const entry = log[0] as ChangeLogItem;
     expect(await runChangeUndo(entry, log, 'undo', undoIo, 'plain', NOW)).toMatchObject({ ok: true });
-    const [back] = fh.activities.get('wf-chk')!;
-    expect(back).toMatchObject({ accountId: 'wf-chk', activityType: 'DEPOSIT', date: '2026-10-09', amount: 600, comment: NOTE });
-    expect(parseSkippedTransactionsStrict(data.get(SKIPPED_TRANSACTIONS_SECRET_KEY))).toEqual({ kind: 'ok', list: [] });
+    const back = fh.activities.get('wf-chk')!;
+    expect(back).toHaveLength(1);
+    expect(back[0]).toMatchObject({ accountId: 'wf-chk', activityType: 'WITHDRAWAL', date: '2026-10-09', amount: 600, comment: NOTE });
+    const fixed = rowOf(back[0]);
+    expect(fixed).toMatchObject({ feeCents: 150, subtype: 'REIMBURSEMENT', currency: 'EUR', flowExternal: true });
+    expect(parseSkippedTransactionsStrict(data.get(SKIPPED_TRANSACTIONS_SECRET_KEY))).toEqual({
+      kind: 'ok', list: [expect.objectContaining({ account: 'sfin-old', txId: 'TRN-600', note: 'by hand' })],
+    });
   });
 });
