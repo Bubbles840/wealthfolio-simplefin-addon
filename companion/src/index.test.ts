@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest';
-import { maskUrl, publishLiveReports, validateStartupEnv, startupWarnings, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, composeDailyDigest, composeWeeklyReportMessage, runCompanionSyncExclusive, buildTelegramCommandHandler, applyTelegramDismissal, undoTelegramDismissal, formatDismissedReply, buildTelegramListenerDeps, buildCategorizeController, buildCategorizeDeps, rememberImportScope, sendUnmappedAccountsNotice, updateCheckDeps, buildAskSessions } from './index.js';
+import { maskUrl, publishLiveReports, validateStartupEnv, startupWarnings, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, composeDailyDigest, composeWeeklyReportMessage, runCompanionSyncExclusive, FIX_SYNC_RUNNING, buildTelegramCommandHandler, applyTelegramDismissal, undoTelegramDismissal, formatDismissedReply, buildTelegramListenerDeps, buildCategorizeController, buildCategorizeDeps, rememberImportScope, sendUnmappedAccountsNotice, updateCheckDeps, buildAskSessions } from './index.js';
 import { findingHandle } from '../../shared/findings.js';
 import { whyRunHandle } from './why-menu.js';
 import { formatHelpReply, parseCommand } from '../../shared/telegram-commands.js';
@@ -10,7 +10,8 @@ import { getNativeAuditSettings } from './sqlite-audit.js';
 import { ingestAmazonMail } from './amazon-mail.js';
 import { AMAZON_MAIL_STATUS_SECRET_KEY, AMAZON_MAIL_SAMPLES_SECRET_KEY, UNCATEGORIZED_STATUS_SECRET_KEY } from '../../shared/status-keys.js';
 import { CATEGORIZE_ENTRY_CALLBACK, escapeMarkdown } from '../../shared/telegram.js';
-import { categoryFiledChange, stampChange } from '../../shared/change-entries.js';
+import { categoryFiledChange, stampChange, transactionRemovedChange } from '../../shared/change-entries.js';
+import { changesData } from './changes-menu.js';
 import { existsSync } from 'fs';
 import type { SyncResult } from '../../shared/sync-core.js';
 
@@ -2650,6 +2651,27 @@ describe('buildTelegramCommandHandler', () => {
       await deps.onMenuCallback!({ data: 'cz:wy:s0:kroger', chatId: 1, messageId: 2 }, ui);
       expect((ui.edit.mock.calls[0] as unknown as [string])[0]).toBe('🔎 *Why is this here?* kroger\n\nTap one to see its story.');
     });
+
+    it.each(['2026-10-09T00:00:00+00:00', '2026-10-09T23:30:00-04:00'])('Remove on a story dated %s skips it and deletes it over REST', async (rowDate) => {
+      const { client, secrets } = clientFor([['account_mapping', JSON.stringify({ 'sfin-1': 'wf-1' })]]);
+      const dup = {
+        id: 'dup-1', accountId: 'wf-1', accountName: 'PNC Checking', activityType: 'DEPOSIT', date: rowDate, amount: '600',
+        currency: 'USD', comment: 'MOBILE DEPOSIT · TRN-600', sourceGroupId: null, metadata: null,
+      };
+      client.getAccounts = vi.fn(async () => [{ id: 'wf-1', accountType: 'CASH' }]);
+      client.searchActivities = vi.fn(async (b: { activityIdFilter?: string[] }) => [dup].filter((r) => b.activityIdFilter?.includes(r.id)));
+      client.saveMany = vi.fn(async () => ({ created: [], updated: [], errors: [] }));
+      const deps = buildTelegramListenerDeps(client);
+      const ui = { edit: vi.fn(async () => {}), answer: vi.fn(async () => {}), send: vi.fn(async () => {}) };
+      await deps.onMenuCallback!({ data: 'cz:wy:ddup-1', chatId: 1, messageId: 2 }, ui);
+      const confirm = (ui.edit.mock.calls[0] as unknown as [string, { inline_keyboard: { callback_data: string }[][] }])[1];
+      const removeData = confirm.inline_keyboard.flat().map((b) => b.callback_data).find((d) => d.startsWith('cz:wy:D'))!;
+      ui.edit.mockClear();
+      await deps.onMenuCallback!({ data: removeData, chatId: 1, messageId: 2 }, ui);
+      expect(JSON.parse(secrets.get('skipped_transactions')!)).toEqual([expect.objectContaining({ account: 'sfin-1', txId: 'TRN-600' })]);
+      expect(client.saveMany).toHaveBeenCalledWith(expect.objectContaining({ deleteIds: ['dup-1'] }));
+      expect((ui.edit.mock.calls[0] as unknown as [string])[0]).toBe(`🔎 ${escapeMarkdown("Removed. The bank feed won't import it again — Undo in the change log puts it back.")}`);
+    });
   });
 
   describe('/audit', () => {
@@ -2716,6 +2738,172 @@ describe('buildTelegramCommandHandler', () => {
       expect(text.startsWith(`🔎 *Balance*\n${escapeMarkdown(NAME)}\nBank: $3,475.23`)).toBe(true);
       // This fake client has no valuations: Wealthfolio's figure is unknown, and the reply says why.
       expect(text).toContain("⚠️ Couldn't read Wealthfolio's balances, so cash accounts aren't compared.");
+    });
+
+    it('Link on the Health list re-reads both rows over REST and links them through the sync’s linker', async () => {
+      const { getNativeAuditLedger } = await import('./sqlite-audit.js');
+      const leg = (over: Record<string, unknown>) => ({
+        accountId: 'wf-1', date: '2026-10-04', currency: 'USD', rawType: 'TRANSFER_OUT', type: 'TRANSFER_OUT', status: 'POSTED', absCents: 60000,
+        group: '', assetId: '', external: false, phantomCash: false, notes: 'TRANSFER TO SAVE · TRN-1', ...over,
+      });
+      const ledger = {
+        accounts: [{ id: 'wf-1', name: 'Checking', type: 'CASH', archived: false }, { id: 'wf-2', name: 'Save', type: 'CASH', archived: false }],
+        rows: [leg({ id: 'out-1' }), leg({ id: 'in-1', accountId: 'wf-2', rawType: 'DEPOSIT', type: 'DEPOSIT', date: '2026-10-05', notes: 'FROM CHECKING · TRN-2' })],
+      };
+      // The list's read and the tap's read see the pair; the read after the link sees it gone.
+      vi.mocked(getNativeAuditLedger).mockReturnValueOnce(ledger as any).mockReturnValueOnce(ledger as any);
+      const { client } = clientFor([['account_mapping', JSON.stringify({ 'sfin-1': 'wf-1', 'sfin-2': 'wf-2' })]]);
+      const stored = [
+        { id: 'out-1', accountId: 'wf-1', activityType: 'TRANSFER_OUT', date: '2026-10-04T00:00:00+00:00', amount: '600', currency: 'USD', comment: 'TRANSFER TO SAVE · TRN-1', sourceGroupId: null, metadata: null },
+        { id: 'in-1', accountId: 'wf-2', activityType: 'DEPOSIT', date: '2026-10-05T00:00:00+00:00', amount: '600', currency: 'USD', comment: 'FROM CHECKING · TRN-2', sourceGroupId: null, metadata: null },
+      ];
+      client.getAccounts = vi.fn(async () => [{ id: 'wf-1', accountType: 'CASH' }, { id: 'wf-2', accountType: 'CASH' }]);
+      client.searchActivities = vi.fn(async (b: { activityIdFilter?: string[] }) => stored.filter((r) => b.activityIdFilter?.includes(r.id)));
+      client.saveMany = vi.fn(async (req: { creates?: Array<Record<string, unknown>> }) => ({
+        created: (req.creates ?? []).map((w, i) => ({ id: `new-${i}`, accountId: w.accountId, comment: w.comment, sourceGroupId: w.sourceGroupId })),
+        updated: [], errors: [],
+      }));
+      const deps = buildTelegramListenerDeps(client);
+      const u = ui();
+      await deps.onMenuCallback!({ data: 'cz:au:i', chatId: 1, messageId: 2 }, u);
+      const [, kb] = u.edit.mock.calls[0] as unknown as [string, { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> }];
+      const link = kb.inline_keyboard.flat().find((b) => b.text === 'Link 1')!.callback_data;
+      await deps.onMenuCallback!({ data: link, chatId: 1, messageId: 2 }, u);
+      expect(client.searchActivities).toHaveBeenCalledWith({ page: 0, pageSize: 1, activityIdFilter: ['out-1'] });
+      expect(client.saveMany.mock.calls[0][0]).toMatchObject({ deleteIds: ['out-1', 'in-1'] });
+      expect((client.saveMany.mock.calls[1][0] as { creates: Array<Record<string, unknown>> }).creates.map((w) => w.activityType)).toEqual(['TRANSFER_OUT', 'TRANSFER_IN']);
+      expect((u.edit.mock.calls[1] as unknown as [string])[0].startsWith('🔎 *Health*\nLinked.\n')).toBe(true);
+      // The re-rendered list no longer offers the linked pair.
+      const [after, afterKb] = u.edit.mock.calls[1] as unknown as [string, { inline_keyboard: Array<Array<{ text: string }>> }];
+      expect(after).not.toContain('Likely the other half');
+      expect(afterKb.inline_keyboard.flat().some((b) => b.text.startsWith('Link'))).toBe(false);
+    });
+  });
+
+  describe("Telegram's fixes and the companion's own sync", () => {
+    const ui = () => ({ edit: vi.fn(async () => {}), answer: vi.fn(async () => {}), send: vi.fn(async () => {}) });
+    /** A sync holding the companion's slot until `end()`. */
+    const occupy = () => {
+      const deferred = createDeferred<SyncResult>();
+      const sync = runCompanionSyncExclusive(() => deferred.promise);
+      return { end: async () => { deferred.resolve(FAKE_SYNC_RESULT); await sync.result; } };
+    };
+    const dup = {
+      id: 'dup-1', accountId: 'wf-1', accountName: 'PNC Checking', activityType: 'DEPOSIT', date: '2026-10-09T00:00:00+00:00', amount: '600',
+      currency: 'USD', comment: 'MOBILE DEPOSIT · TRN-600', sourceGroupId: null, metadata: null,
+    };
+    /** A client whose one row can be removed, and the Remove button its confirm screen carries. */
+    const removable = async (saveMany = vi.fn(async (_req: unknown) => ({ created: [], updated: [], errors: [] }))) => {
+      const { client, secrets } = clientFor([['account_mapping', JSON.stringify({ 'sfin-1': 'wf-1' })]]);
+      client.getAccounts = vi.fn(async () => [{ id: 'wf-1', accountType: 'CASH' }]);
+      client.searchActivities = vi.fn(async (b: { activityIdFilter?: string[] }) => [dup].filter((r) => b.activityIdFilter?.includes(r.id)));
+      client.saveMany = saveMany;
+      const deps = buildTelegramListenerDeps(client);
+      const u = ui();
+      await deps.onMenuCallback!({ data: 'cz:wy:ddup-1', chatId: 1, messageId: 2 }, u);
+      const confirm = (u.edit.mock.calls[0] as unknown as [string, { inline_keyboard: { callback_data: string }[][] }])[1];
+      const removeData = confirm.inline_keyboard.flat().map((b) => b.callback_data).find((d) => d.startsWith('cz:wy:D'))!;
+      u.edit.mockClear();
+      return { client, secrets, deps, u, removeData };
+    };
+
+    it('Remove for good refuses while the companion syncs, and writes nothing', async () => {
+      const r = await removable();
+      const sync = occupy();
+      try {
+        await r.deps.onMenuCallback!({ data: r.removeData, chatId: 1, messageId: 2 }, r.u);
+        expect((r.u.edit.mock.calls[0] as unknown as [string])[0]).toContain(`⚠️ ${escapeMarkdown(FIX_SYNC_RUNNING)}`);
+        expect(r.client.saveMany).not.toHaveBeenCalled();
+        expect(r.secrets.has('skipped_transactions')).toBe(false);
+      } finally {
+        await sync.end();
+      }
+    });
+
+    it('Link refuses while the companion syncs, and writes nothing', async () => {
+      const { getNativeAuditLedger } = await import('./sqlite-audit.js');
+      const leg = (over: Record<string, unknown>) => ({
+        accountId: 'wf-1', date: '2026-10-04', currency: 'USD', rawType: 'TRANSFER_OUT', type: 'TRANSFER_OUT', status: 'POSTED', absCents: 60000,
+        group: '', assetId: '', external: false, phantomCash: false, notes: 'TRANSFER TO SAVE · TRN-1', ...over,
+      });
+      const ledger = {
+        accounts: [{ id: 'wf-1', name: 'Checking', type: 'CASH', archived: false }, { id: 'wf-2', name: 'Save', type: 'CASH', archived: false }],
+        rows: [leg({ id: 'out-1' }), leg({ id: 'in-1', accountId: 'wf-2', rawType: 'DEPOSIT', type: 'DEPOSIT', date: '2026-10-05', notes: 'FROM CHECKING · TRN-2' })],
+      };
+      vi.mocked(getNativeAuditLedger).mockReturnValueOnce(ledger as any).mockReturnValueOnce(ledger as any).mockReturnValueOnce(ledger as any);
+      const { client } = clientFor([['account_mapping', JSON.stringify({ 'sfin-1': 'wf-1', 'sfin-2': 'wf-2' })]]);
+      client.getAccounts = vi.fn(async () => [{ id: 'wf-1', accountType: 'CASH' }, { id: 'wf-2', accountType: 'CASH' }]);
+      client.searchActivities = vi.fn(async () => []);
+      client.saveMany = vi.fn(async () => ({ created: [], updated: [], errors: [] }));
+      const deps = buildTelegramListenerDeps(client);
+      const u = ui();
+      await deps.onMenuCallback!({ data: 'cz:au:i', chatId: 1, messageId: 2 }, u);
+      const [, kb] = u.edit.mock.calls[0] as unknown as [string, { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> }];
+      const link = kb.inline_keyboard.flat().find((b) => b.text === 'Link 1')!.callback_data;
+      const sync = occupy();
+      try {
+        await deps.onMenuCallback!({ data: link, chatId: 1, messageId: 2 }, u);
+        expect(u.answer).toHaveBeenCalledWith(FIX_SYNC_RUNNING);
+        expect((u.edit.mock.calls[1] as unknown as [string])[0].startsWith(`🔎 *Health*\n${escapeMarkdown(FIX_SYNC_RUNNING)}\n`)).toBe(true);
+        expect(client.searchActivities).not.toHaveBeenCalled();
+        expect(client.saveMany).not.toHaveBeenCalled();
+      } finally {
+        await sync.end();
+      }
+    });
+
+    it("/changes Undo of a removal refuses while the companion syncs; another entry's Undo is not held up", async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date(2026, 9, 12, 8, 0, 0));
+      onTestFinished(() => { vi.useRealTimers(); });
+      const removal = stampChange(transactionRemovedChange({
+        account: { sfinId: 'sfin-1', wfId: 'wf-1', name: 'PNC Checking' }, txKeys: ['sfin-1\u0000TRN-600'], addedKeys: ['sfin-1\u0000TRN-600'],
+        activityId: 'dup-1', description: 'MOBILE DEPOSIT', amountCents: 60000, date: '2026-10-09',
+        payload: { accountId: 'wf-1', activityType: 'DEPOSIT', activityDate: '2026-10-09', symbol: { symbol: '$CASH-USD' }, amount: 600, currency: 'USD', comment: dup.comment },
+      }), 'companion', new Date(2026, 9, 12, 7, 30, 0));
+      const filed = stampChange(categoryFiledChange({
+        actor: 'you', account: { name: 'Checking' }, activityId: 'a1', description: 'VENMO *J SMITH', amountCents: -650,
+        before: null, after: { categoryId: 'cat-din', categoryName: 'Dining' },
+      }), 'companion', new Date(2026, 9, 12, 7, 0, 0));
+      const { client } = clientFor([[
+        'change_log:companion:2026-10',
+        JSON.stringify({ v: 1, writer: 'companion', month: '2026-10', entries: [removal, filed], gaps: [] }),
+      ]]);
+      client.saveMany = vi.fn(async () => ({ created: [], updated: [], errors: [] }));
+      const deps = buildTelegramListenerDeps(client);
+      const back = { kind: 'list', page: 0, background: false } as const;
+      const sync = occupy();
+      try {
+        const u = ui();
+        await deps.onMenuCallback!({ data: changesData({ kind: 'act', action: 'u', entry: findingHandle(removal.id), back }), chatId: 1, messageId: 2 }, u);
+        expect((u.edit.mock.calls[0] as unknown as [string])[0]).toContain(`⚠️ ${escapeMarkdown(FIX_SYNC_RUNNING)}`);
+        expect(client.saveMany).not.toHaveBeenCalled();
+        const v = ui();
+        await deps.onMenuCallback!({ data: changesData({ kind: 'act', action: 'u', entry: findingHandle(filed.id), back }), chatId: 1, messageId: 2 }, v);
+        expect((v.edit.mock.calls[0] as unknown as [string])[0]).not.toContain(escapeMarkdown(FIX_SYNC_RUNNING));
+      } finally {
+        await sync.end();
+      }
+    });
+
+    it('a sync waits for a running Remove, then starts', async () => {
+      const deleting = createDeferred<void>();
+      const r = await removable(vi.fn(async (req: any) => {
+        if (req.deleteIds?.length) await deleting.promise;
+        return { created: [], updated: [], errors: [] };
+      }));
+      const tap = r.deps.onMenuCallback!({ data: r.removeData, chatId: 1, messageId: 2 }, r.u);
+      await waitFor('the delete to start', () => r.client.saveMany.mock.calls.length > 0);
+      const runner = vi.fn(async () => FAKE_SYNC_RESULT);
+      const sync = runCompanionSyncExclusive(runner);
+      expect(sync.started).toBe(true);
+      await new Promise((res) => setTimeout(res, 10));
+      expect(runner).not.toHaveBeenCalled();
+      deleting.resolve();
+      await tap;
+      await sync.result;
+      expect(runner).toHaveBeenCalledTimes(1);
+      expect((r.u.edit.mock.calls[0] as unknown as [string])[0]).toBe(`🔎 ${escapeMarkdown("Removed. The bank feed won't import it again — Undo in the change log puts it back.")}`);
     });
   });
 

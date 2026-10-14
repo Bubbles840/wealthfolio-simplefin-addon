@@ -77,7 +77,7 @@ import { createChangesMenu, renderChangesCommand, CHANGES_UNREACHABLE_REPLY, typ
 import { buildWhyFlow, createWhyMenu, whyRunHandle, type WhyMenu } from './why-menu.js';
 import { companionStoryReaders, companionTxSearch, companionTxStory } from './tx-story-host.js';
 import { companionRuleFiledCount, companionUndoIo } from './change-undo-host.js';
-import { runChangeUndo } from '../../shared/change-undo-run.js';
+import { runChangeUndo, type UndoOutcome } from '../../shared/change-undo-run.js';
 import type { ChangeLogRead } from '../../shared/change-log.js';
 import { isChangeLogPartial } from '../../shared/change-view.js';
 import type { ChangeDraft } from '../../shared/change-entries.js';
@@ -113,6 +113,9 @@ import { companionAuditReaders, publishAuditSnapshot } from './audit-facts.js';
 import { auditMenuDeps, auditStatusKeyboard, createAuditMenu, type AuditMenu } from './audit-menu.js';
 import { companionBudgetReaders } from './budget-suggest-host.js';
 import { budgetsMenuDeps, createBudgetsMenu, type BudgetsMenu } from './budgets-menu.js';
+import { companionLinkIo, companionRemoveIo } from './audit-fix-host.js';
+import { linkPairs, type LinkRun } from '../../shared/audit-link.js';
+import { removeForGood } from '../../shared/tx-remove.js';
 import { addManual, editSubscriptionPrefs, emptySubscriptionPrefs, isUnreadablePrefsError, loadSubscriptionPrefs, newManualId, renameKey, setRemind, SubscriptionPrefsInvalidError, type ManualSubscription, type RemindDays, type SecretGet, type SecretSet, type SubscriptionEdit } from '../../shared/subscription-prefs.js';
 import { renderReportSvg, reportImageTitle, reportImageCaption, RENDERABLE_REPORT_IDS } from '../../shared/report-render.js';
 import { createAskSessions, CANCELLED, CANCELLED_EARLIER, NOT_WAITING, type AskSessions } from './ask-session.js';
@@ -1228,11 +1231,46 @@ export function runCompanionSyncExclusive(
   if (syncInFlight) {
     return { started: false, result: syncInFlight };
   }
-  const result = runner().finally(() => {
+  const result = (async () => {
+    // A Telegram fix that is already running finishes first: Link deletes
+    // before it re-creates, and a Remove landing between the sync's skip-list
+    // read and its row read would be re-imported by that very sync. Fixes are
+    // refused from here on (`syncInFlight` is set below, synchronously), so
+    // the wait ends. With none running, the runner starts at once.
+    while (fixesInFlight.size > 0) await Promise.allSettled([...fixesInFlight]);
+    return runner();
+  })().finally(() => {
     syncInFlight = null;
   });
   syncInFlight = result;
   return { started: true, result };
+}
+
+/** Telegram's fixes running now: Link, Remove for good, and the change log's
+ *  Undo/Redo of a removal. A sync waits for them (`runCompanionSyncExclusive`). */
+const fixesInFlight = new Set<Promise<unknown>>();
+
+/** A Telegram fix refused because the companion's own sync is running. */
+export const FIX_SYNC_RUNNING = 'A sync is running — try again when it finishes.';
+
+/**
+ * Runs one Telegram fix (Link, Remove for good, an Undo/Redo of a removal)
+ * unless the companion's sync is running, in which case it answers
+ * `refused()` and writes nothing — a person is watching the button, so it
+ * never waits. A sync that starts while the fix runs waits for it.
+ *
+ * The add-on's write lock (src/utils/write-lock.ts) is a different process:
+ * neither covers the other host.
+ */
+export async function runCompanionFixExclusive<T>(fix: () => Promise<T>, refused: () => T): Promise<T> {
+  if (syncInFlight) return refused();
+  const running = fix();
+  fixesInFlight.add(running);
+  try {
+    return await running;
+  } finally {
+    fixesInFlight.delete(running);
+  }
 }
 
 function unionCategoryNames(spentMap: Record<string, number>, budgetMap: Record<string, number>): string[] {
@@ -3027,6 +3065,12 @@ export function buildWhyMenu(wfClient: WealthfolioClient): WhyMenu {
     search: (query, now) => companionTxSearch(readers(), query, now),
     story: (activityId, now) => companionTxStory(readers(), activityId, now),
     read: (now) => readCompanionChangeLog(wfClient, now),
+    // R2: "Remove for good…" on a story.
+    // Refused while the companion's own sync runs; a sync waits for it.
+    remove: (activityId, fingerprint, now) => runCompanionFixExclusive(
+      () => removeForGood(activityId, fingerprint, companionRemoveIo(wfClient, log), now),
+      () => ({ ok: false, message: FIX_SYNC_RUNNING }),
+    ),
     now: () => new Date(),
     log,
   });
@@ -3038,7 +3082,15 @@ export function buildWhyMenu(wfClient: WealthfolioClient): WhyMenu {
  * `/status`'s 🔎 buttons can share one instance or build their own.
  */
 export function buildAuditMenu(wfClient: WealthfolioClient): AuditMenu {
-  return createAuditMenu(auditMenuDeps(companionAuditReaders(wfClient, wealthfolioDbPath()), log));
+  return createAuditMenu({
+    ...auditMenuDeps(companionAuditReaders(wfClient, wealthfolioDbPath()), log),
+    // R2: Link on the Health list, through the sync's own linker.
+    // Refused while the companion's own sync runs; a sync waits for it.
+    link: (pairs) => runCompanionFixExclusive(
+      () => linkPairs(pairs, companionLinkIo(wfClient, log)),
+      (): LinkRun => ({ total: pairs.length, linked: 0, changed: 0, failed: 0, done: [], lost: [], maybeLost: [], message: FIX_SYNC_RUNNING }),
+    ),
+  });
 }
 
 /**
@@ -3683,7 +3735,14 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
   // Undo and Redo run here (R2) through the shared runner; Sync now is /sync.
   const changes: ChangesMenu = createChangesMenu({
     read: (now) => readCompanionChangeLog(wfClient, now),
-    undo: (entry, entries, op, variant) => runChangeUndo(entry, entries, op, companionUndoIo(wfClient, wealthfolioDbPath()), variant),
+    undo: (entry, entries, op, variant) => {
+      const run = () => runChangeUndo(entry, entries, op, companionUndoIo(wfClient, wealthfolioDbPath()), variant);
+      // A removal's Undo/Redo writes the row and the skip list the sync reads:
+      // refused while the companion's own sync runs, and a sync waits for it.
+      return entry.kind === 'transaction-removed'
+        ? runCompanionFixExclusive(run, (): UndoOutcome => ({ ok: false, message: FIX_SYNC_RUNNING }))
+        : run();
+    },
     ruleFiledCount: async (entry) => companionRuleFiledCount(wealthfolioDbPath(), entry),
     syncNow: () => startTelegramSync(),
     now: () => new Date(),

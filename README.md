@@ -70,7 +70,11 @@ The addon has three tabs: **Home**, **Reports** and **Settings**.
   screen do the same. `/audit` explains why a balance is off from the bank,
   why the month's spending differs from Wealthfolio's, and what Wealthfolio's
   Health page flags — checked live on every tap; `/status` puts a 🔎 under
-  each account that is off. `/budgets` suggests a monthly budget for each
+  each account that is off. Health's list offers **Link** on a transfer with
+  exactly one likely other half (**Link all** for two or more), and a story
+  offers **Remove for good…** for a row the bank reported twice: it goes on
+  the skip list and is deleted, so the bank feed never brings it back. Both
+  are in the change log, with Undo. `/budgets` suggests a monthly budget for each
   category that has none (your average over the last 3 full months the ledger
   covers, rounded up to the nearest $5) and sets the ones you pick in
   Wealthfolio, never over a budget you already have; Undo any of them from
@@ -79,11 +83,14 @@ The addon has three tabs: **Home**, **Reports** and **Settings**.
   an account's "off by" chip in **Settings → Accounts** opens why in place,
   the Budget tab's "Why is this different from Wealthfolio?" breaks down the
   month, and **Settings → Checks** lists what Health flags, each with what to
-  do. They come from a snapshot the companion publishes after each sync, and
-  say when it was taken.
+  do, and **Link** for a transfer with one likely other half. They come from a
+  snapshot the companion publishes after each sync, and say when it was
+  taken; a fix shows there after the next sync. A transaction's story in the
+  app offers **Remove for good…** too.
 - **Change log** — every change the sync, the companion and you made, the last
   90 days, under **Settings → Change log**: imports, bank updates, transfer
-  links, removed duplicates, starting balances, corrections, filings and rules,
+  links, removed duplicates, rows you removed for good, starting balances,
+  corrections, filings and rules,
   each with why and, where there is one, what it was before. Undo or Redo
   most of it from the entry — no confirmation; a transfer the sync stopped
   waiting on, bank updates, removed pending charges, background bookkeeping

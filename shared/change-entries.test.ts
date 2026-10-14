@@ -3,7 +3,7 @@ import {
   accountCreatedChange, amazonLabelChange, amazonLabelOf, balanceCorrectionChange, bankUpdateChange, bookkeepingChange, budgetSetChange,
   categoryFiledChange, categoryRuleCreatedChange, CHANGE_KINDS, changeDay, changeMoney, duplicateRemovedChange,
   importChange, mappingRuleCreatedChange, newEntryId, newRunId, openingBalanceFiledChange, pendingRemovedChange,
-  stampChange, startingBalanceChange, startingBalanceMovedChange, transferLinkChange, transferTypeChange,
+  stampChange, startingBalanceChange, startingBalanceMovedChange, transactionRemovedChange, transferLinkChange, transferTypeChange,
   type ChangeDraft,
 } from './change-entries.js';
 import { accountTxKey } from './transfers.js';
@@ -34,7 +34,7 @@ describe('ids and stamps', () => {
   });
 
   it('lists every kind once', () => {
-    expect(new Set(CHANGE_KINDS).size).toBe(17);
+    expect(new Set(CHANGE_KINDS).size).toBe(18);
   });
 });
 
@@ -81,6 +81,10 @@ describe('summaries — one per kind, bank text raw', () => {
       account: CHECKING, txKey: KEY, activityId: 'act-dup', description: 'TRADER JOE S #628', amountCents: -2120,
       date: '2026-08-06', payload: { accountId: 'wf-checking', activityType: 'WITHDRAWAL', activityDate: '2026-08-06', amount: 21.2, currency: 'USD', comment: 'TRADER JOE S #628 · TRN-a1b2' },
     }), 'Removed a duplicate copy of TRADER JOE S #628'],
+    ['transaction-removed', transactionRemovedChange({
+      account: CHECKING, txKeys: [KEY], activityId: 'act-600', description: 'MOBILE DEPOSIT', amountCents: 60000, date: '2026-10-09',
+      payload: { accountId: 'wf-checking', activityType: 'DEPOSIT', activityDate: '2026-10-09', amount: 600, currency: 'USD', comment: 'MOBILE DEPOSIT · TRN-a1b2' },
+    }), 'Removed MOBILE DEPOSIT for good'],
     ['starting-balance', startingBalanceChange({
       account: CARD, activityId: 'sb-1', amountCents: -46460, date: '2026-06-18', activityType: 'WITHDRAWAL', comment: 'Starting balance · ACT-9c8d',
     }), 'Set the starting balance, dated Jun 18'],

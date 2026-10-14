@@ -131,7 +131,8 @@ function tryQueryNativeDb<Row>(
     // The query goes through verbatim, newlines and all: execFileSync passes it
     // as ONE argv element, and sqlite3 reads it line by line, so a `--` comment
     // ends at its own line. Flattening it onto one line made the comment in
-    // `spendingWhere` swallow the taxonomy filter and the GROUP BY.
+    // `spendingWhere` swallow the taxonomy filter and the GROUP BY, and the
+    // uncategorized reader's swallow every filter after it.
     const args = separator === '|' ? [dbPath, query] : ['-separator', separator, dbPath, query];
     // stderr piped, not inherited: the caught error carries it, and the
     // console line below reports it once.

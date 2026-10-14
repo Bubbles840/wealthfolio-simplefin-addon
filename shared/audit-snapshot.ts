@@ -124,9 +124,18 @@ function goodIncludes(inc: unknown): boolean {
   return fixes == null || (isObject(fixes) && isNum(fixes.count) && isNum(fixes.cents) && isDay(fixes.latest));
 }
 
+/** `more`: absent, or a count. */
+const goodMore = (x: unknown) => x === undefined || isNum(x);
+
 /** The stored secret: absent when there is none, corrupt when it is not a
  *  snapshot this version can read — every field the app's views read, dates
- *  and kinds included — else the snapshot. */
+ *  and kinds included — else the snapshot.
+ *
+ *  A newer companion may publish a reason or a Health issue of a kind this
+ *  version cannot name (2c R2, ruling C-H). It is DROPPED, never read as
+ *  corrupt, so an older add-on keeps showing everything it does know: a
+ *  dropped reason's cents count as not explained, and a dropped issue counts
+ *  under "and N more". Every kind it knows stays strictly checked. */
 export function parseAuditSnapshot(raw: string | null | undefined): AuditSnapshotRead {
   if (raw === null || raw === undefined || raw === '') return { kind: 'absent' };
   const corrupt = { kind: 'corrupt' } as const;
@@ -147,13 +156,22 @@ export function parseAuditSnapshot(raw: string | null | undefined): AuditSnapsho
   }
   const h = v.headline;
   if (!isObject(h) || typeof h.month !== 'string' || !nullOrArray(h.reasons) || !Array.isArray(h.notes)) return corrupt;
+  const reasons: unknown[] = [];
+  let unnamedCents = 0;
   for (const r of h.reasons ?? []) {
-    if (!isObject(r) || !REASON_KINDS.has(r.kind) || !isNum(r.cents) || !Array.isArray(r.rows)) return corrupt;
+    if (!isObject(r) || typeof r.kind !== 'string' || !isNum(r.cents) || !Array.isArray(r.rows) || !goodMore(r.more)) return corrupt;
+    if (!REASON_KINDS.has(r.kind)) {
+      unnamedCents += r.cents;
+      continue;
+    }
     for (const row of r.rows) if (!isObject(row) || !isNum(row.cents) || !isDay(row.date)) return corrupt;
+    reasons.push(r);
   }
   const health = v.health;
-  if (!isObject(health) || !nullOrArray(health.issues) || !Array.isArray(health.notes)) return corrupt;
+  if (!isObject(health) || !nullOrArray(health.issues) || !Array.isArray(health.notes) || !goodMore(health.more)) return corrupt;
   const goodLeg = (l: unknown) => isObject(l) && typeof l.activityId === 'string' && typeof l.accountId === 'string' && isNum(l.absCents) && isDay(l.date);
+  const issues: unknown[] = [];
+  let unnamedIssues = 0;
   for (const i of health.issues ?? []) {
     if (!isObject(i) || typeof i.kind !== 'string' || typeof i.key !== 'string') return corrupt;
     if (i.kind === 'incomplete-leg') {
@@ -162,9 +180,21 @@ export function parseAuditSnapshot(raw: string | null | undefined): AuditSnapsho
       if (!isNum(i.rows) || !Array.isArray(i.accounts)) return corrupt;
     } else if (i.kind === 'late-start') {
       if (typeof i.activityId !== 'string' || typeof i.accountId !== 'string' || !isNum(i.cents) || !isDay(i.date) || !isDay(i.earliest)) return corrupt;
-    } else return corrupt;
+    } else {
+      unnamedIssues += 1;
+      continue;
+    }
+    issues.push(i);
   }
-  return { kind: 'ok', snapshot: v as AuditSnapshot };
+  const headline = h.reasons === null ? h : {
+    ...h, reasons,
+    ...(unnamedCents !== 0 && isNum(h.unexplainedCents) ? { unexplainedCents: h.unexplainedCents + unnamedCents } : {}),
+  };
+  const checked = health.issues === null ? health : {
+    ...health, issues,
+    ...(unnamedIssues > 0 ? { more: (health.more ?? 0) + unnamedIssues } : {}),
+  };
+  return { kind: 'ok', snapshot: { ...v, headline, health: checked } as AuditSnapshot };
 }
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];

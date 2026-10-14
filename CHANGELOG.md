@@ -80,11 +80,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     such a category and apply over it, and a Redo of a budget set goes over it.
     A this-month $0 target or an unreadable amount still counts as a budget.
 
+- **Audits without SSH — fix.** Two repairs that used to need the server's
+  `fix-transfers.mjs` and `skip-transaction.mjs`, in Telegram and the app,
+  each in the change log with Undo:
+  - **Link.** On `/audit` → Health and on **Settings → Checks**, a transfer
+    leg with exactly one likely other half shows that half and **Link**;
+    with two or more, **Link all**. Health never offers a pair where either
+    row is in a group, whatever its type, or is the add-on's held-transfer
+    placeholder. Both rows are read again right before anything is written,
+    and nothing is linked if either changed, is linked (or may be), is
+    pending, is one of the add-on's own rows, or is one you told the sync is
+    not a transfer: "It has changed since — nothing was linked." The pair is linked by the sync's own linker, which deletes both
+    rows and re-creates them as a group. If Wealthfolio refuses the new pair,
+    or the request fails part-way, both rows are read again and whichever are
+    gone are written back; anything that may have been lost is named by row,
+    and after a failed request it says to check both accounts (the link may
+    have gone through after all). A duplicate refusal says "a matching row
+    already exists". Money leaving a credit card is never linked, whatever
+    type it is stored as, and says so. Telegram shows Health again after
+    each tap (clipped to fit a message) and the outcome as a toast — a tap
+    that finds nothing left to link only toasts, so a double tap keeps
+    "Linked." on screen; the app's card shows a snapshot, so it says
+    "Changes show here after the next sync."
+  - **Remove for good…** on a transaction's story (`/why` and the app), for a
+    row the bank reported twice. The first tap explains; **Remove** puts it
+    on the skip list, then deletes it, so the bank feed never imports it
+    again; after a delete that throws, the row is read again to see whether it
+    went. If the change log can't be written, it says "no Undo". Refused for
+    half of a linked transfer ("Unlink it first."), a held transfer, a
+    starting balance or a correction, a row not from the bank feed, a pending
+    row, a $0 row (never offered), an unreadable skip list or account
+    mapping, a row that changed since, and a second removal of the same row
+    while one is running. The app never
+    removes a transfer-typed row. Undo writes the row back exactly and takes
+    off the skip list only the keys this removal added (one already skipped
+    before stays, and Undo says so); Redo removes it again.
+  - **One write at a time in the app.** Syncs, Link, Remove and the Change
+    log's Undo/Redo share one add-on write lock. A sync waits for a running
+    Link, Remove or Undo; one started during a sync, or during another
+    change, is refused, and says which. A result is tied to the snapshot it
+    was made against.
+  - **One write at a time in Telegram.** While the companion syncs, Link,
+    Remove for good and `/changes` Undo/Redo of a removal are refused ("A
+    sync is running — try again when it finishes."); a sync that starts
+    during one of them waits for it. A double tap on Link or Remove keeps
+    "Linked." or "Removed." on screen. The add-on's lock and the
+    companion's don't cover each other.
+  - An older add-on reads a snapshot from a newer companion instead of
+    calling it unreadable: a reason or a Health issue it doesn't know is left
+    out — its amount counts as not explained, the issue under "and N more".
+
 ### Fixed
-- **The sqlite3 command-line fallback no longer flattens newlines** in
-  queries, which had turned part of several spending queries (the budget
-  spend, the spend matrix, uncategorized spending) into a comment and
-  returned wrong rows there. The default node:sqlite path was unaffected.
+- **The companion's sqlite3 fallback kept every filter.** When `node:sqlite`
+  couldn't open the database, the fallback put each query on one line, so a
+  `--` comment swallowed the rest of it. Every spending total read through the
+  fallback was affected — the digest, weekly and pool figures, the reports and
+  the Budget tab (the spend matrix summed everything into one row), and the
+  `/budgets` suggestions' budget spend and history start — and the
+  needs-a-category list lost its filters (linked rows, transfers, starting
+  balances and untracked accounts were listed). Queries now go through as
+  written. The default `node:sqlite` path was never affected.
 - **The "Opening balances" spending exclusion is re-applied.** It was only set
   while there was an opening debt to file, so a category created on Wealthfolio
   3.8 (which ignores the setting) stayed counted as spending. The companion now
