@@ -41,6 +41,40 @@ describe('AccountList', () => {
   });
 });
 
+describe('AccountList: why an account is off (2c)', () => {
+  it('an "off by" chip opens the explanation in place, and never opens the account', () => {
+    const onOpenAccount = vi.fn();
+    const { container } = render(
+      <AccountList mapping={mapping} balances={balances} sfinNames={sfinNames} wfNames={wfNames} onOpenAccount={onOpenAccount}
+        renderExplanation={(wfId) => <div>why {wfId}</div>} />,
+    );
+    const chip = container.querySelector('button.sfin-audit-chip')!;
+    expect(chip.textContent).toContain('off by $36.10');
+    expect(chip).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(chip);
+    expect(screen.getByText('why wf-b')).toBeInTheDocument();
+    expect(chip).toHaveAttribute('aria-expanded', 'true');
+    expect(chip).toHaveAttribute('aria-controls', 'sfin-audit-s2');
+    fireEvent.keyDown(chip, { key: 'Enter' });
+    expect(onOpenAccount).not.toHaveBeenCalled();
+    fireEvent.click(chip);
+    expect(screen.queryByText('why wf-b')).toBeNull();
+  });
+
+  it('keeps the chip a label without an explainer, and "in sync" is never a button', () => {
+    const { container, unmount } = render(
+      <AccountList mapping={mapping} balances={balances} sfinNames={sfinNames} wfNames={wfNames} onOpenAccount={() => {}} />,
+    );
+    expect(container.querySelector('button.sfin-audit-chip')).toBeNull();
+    unmount();
+    const explained = render(
+      <AccountList mapping={mapping} balances={balances} sfinNames={sfinNames} wfNames={wfNames} onOpenAccount={() => {}}
+        renderExplanation={() => null} />,
+    );
+    expect(explained.container.querySelectorAll('button.sfin-audit-chip')).toHaveLength(1);
+  });
+});
+
 describe('accountsSummary', () => {
   it('names the count, and the difference only when there is one', () => {
     expect(accountsSummary(mapping, balances)).toBe('2 accounts · 1 off by $36.10');
