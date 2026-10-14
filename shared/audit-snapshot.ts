@@ -17,7 +17,7 @@
  * Health's issues — and saying how many were left out (`more`).
  */
 import type { BalanceExplanation, BalanceReport } from './audit-balance.js';
-import type { HeadlineExplanation } from './audit-headline.js';
+import { HEADLINE_REASON_KINDS, type HeadlineExplanation } from './audit-headline.js';
 import type { HealthReport } from './audit-health.js';
 
 export const AUDIT_SNAPSHOT_SECRET_KEY = 'audit_snapshot';
@@ -104,9 +104,29 @@ export type AuditSnapshotRead =
 
 const isObject = (x: unknown): x is Record<string, any> => !!x && typeof x === 'object' && !Array.isArray(x);
 const nullOrArray = (x: unknown) => x === null || Array.isArray(x);
+const isNum = (x: unknown) => typeof x === 'number' && Number.isFinite(x);
+/** A date the views print (changeDay): a string starting YYYY-MM-DD. */
+const isDay = (x: unknown) => typeof x === 'string' && /^\d{4}-\d{2}-\d{2}/.test(x);
+const REASON_KINDS = new Set<string>(HEADLINE_REASON_KINDS);
+
+function goodBank(b: unknown): boolean {
+  if (!isObject(b)) return false;
+  if (b.kind === 'none' || b.kind === 'unread') return true;
+  return b.kind === 'ok' && isNum(b.cents) && (b.date === null || isDay(b.date));
+}
+
+function goodIncludes(inc: unknown): boolean {
+  if (inc === null || inc === undefined) return true;
+  if (!isObject(inc)) return false;
+  const start = inc.start;
+  const fixes = inc.corrections;
+  if (start != null && !(isObject(start) && isNum(start.cents) && isDay(start.date))) return false;
+  return fixes == null || (isObject(fixes) && isNum(fixes.count) && isNum(fixes.cents) && isDay(fixes.latest));
+}
 
 /** The stored secret: absent when there is none, corrupt when it is not a
- *  snapshot this version can read, else the snapshot. */
+ *  snapshot this version can read — every field the app's views read, dates
+ *  and kinds included — else the snapshot. */
 export function parseAuditSnapshot(raw: string | null | undefined): AuditSnapshotRead {
   if (raw === null || raw === undefined || raw === '') return { kind: 'absent' };
   const corrupt = { kind: 'corrupt' } as const;
@@ -118,9 +138,9 @@ export function parseAuditSnapshot(raw: string | null | undefined): AuditSnapsho
   }
   if (!isObject(v) || v.v !== 1 || typeof v.at !== 'string' || Number.isNaN(Date.parse(v.at))) return corrupt;
   if (!isObject(v.balances) || !Array.isArray(v.balanceNotes)) return corrupt;
-  const isNum = (x: unknown) => typeof x === 'number' && Number.isFinite(x);
   for (const [key, e] of Object.entries(v.balances)) {
-    if (!isObject(e) || typeof e.wfAccountId !== 'string' || e.wfAccountId !== key || typeof e.name !== 'string' || !isObject(e.bank)) return corrupt;
+    if (!isObject(e) || typeof e.wfAccountId !== 'string' || e.wfAccountId !== key || typeof e.name !== 'string' || !goodBank(e.bank)) return corrupt;
+    if (!goodIncludes(e.includes)) return corrupt;
     if (e.offCents != null && !isNum(e.offCents)) return corrupt;
     if (e.causes != null && !Array.isArray(e.causes)) return corrupt;
     for (const c of e.causes ?? []) if (!isObject(c) || typeof c.kind !== 'string' || !isNum(c.cents)) return corrupt;
@@ -128,12 +148,12 @@ export function parseAuditSnapshot(raw: string | null | undefined): AuditSnapsho
   const h = v.headline;
   if (!isObject(h) || typeof h.month !== 'string' || !nullOrArray(h.reasons) || !Array.isArray(h.notes)) return corrupt;
   for (const r of h.reasons ?? []) {
-    if (!isObject(r) || typeof r.kind !== 'string' || !isNum(r.cents) || !Array.isArray(r.rows)) return corrupt;
-    for (const row of r.rows) if (!isObject(row) || !isNum(row.cents)) return corrupt;
+    if (!isObject(r) || !REASON_KINDS.has(r.kind) || !isNum(r.cents) || !Array.isArray(r.rows)) return corrupt;
+    for (const row of r.rows) if (!isObject(row) || !isNum(row.cents) || !isDay(row.date)) return corrupt;
   }
   const health = v.health;
   if (!isObject(health) || !nullOrArray(health.issues) || !Array.isArray(health.notes)) return corrupt;
-  const goodLeg = (l: unknown) => isObject(l) && typeof l.activityId === 'string' && typeof l.accountId === 'string' && isNum(l.absCents);
+  const goodLeg = (l: unknown) => isObject(l) && typeof l.activityId === 'string' && typeof l.accountId === 'string' && isNum(l.absCents) && isDay(l.date);
   for (const i of health.issues ?? []) {
     if (!isObject(i) || typeof i.kind !== 'string' || typeof i.key !== 'string') return corrupt;
     if (i.kind === 'incomplete-leg') {
@@ -141,7 +161,7 @@ export function parseAuditSnapshot(raw: string | null | undefined): AuditSnapsho
     } else if (i.kind === 'phantom-cash') {
       if (!isNum(i.rows) || !Array.isArray(i.accounts)) return corrupt;
     } else if (i.kind === 'late-start') {
-      if (typeof i.activityId !== 'string' || typeof i.accountId !== 'string' || !isNum(i.cents)) return corrupt;
+      if (typeof i.activityId !== 'string' || typeof i.accountId !== 'string' || !isNum(i.cents) || !isDay(i.date) || !isDay(i.earliest)) return corrupt;
     } else return corrupt;
   }
   return { kind: 'ok', snapshot: v as AuditSnapshot };

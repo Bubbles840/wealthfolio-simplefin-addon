@@ -11,7 +11,7 @@ import { explainHeadline } from '../../shared/audit-headline';
 import { healthIssues } from '../../shared/audit-health';
 import type { AuditLedgerRow } from '../../shared/audit-ledger';
 import {
-  buildAuditSnapshot, parseAuditSnapshot, AUDIT_CORRUPT, AUDIT_NEEDS_COMPANION, type AuditSnapshotRead,
+  buildAuditSnapshot, parseAuditSnapshot, AUDIT_CORRUPT, AUDIT_NEEDS_COMPANION, AUDIT_NOT_YET, type AuditSnapshotRead,
 } from '../../shared/audit-snapshot';
 
 /**
@@ -96,12 +96,23 @@ describe('Settings → Checks', () => {
   it.each<[string, () => AuditSnapshotRead, string | null, Date, string, string]>([
     ['stale', snapshot, '1.61.0', new Date(2026, 9, 16, 9, 0), '1 to look at', "These checks are from Oct 13 — the companion hasn't synced since."],
     ['corrupt', () => ({ kind: 'corrupt' }), '1.61.0', LATER, "Couldn't read", AUDIT_CORRUPT],
-    ['missing, with no companion', () => ({ kind: 'absent' }), null, LATER, 'Need the companion', AUDIT_NEEDS_COMPANION],
+    ['missing, with the companion', () => ({ kind: 'absent' }), '1.61.0', LATER, 'Arrive with the next sync', AUDIT_NOT_YET],
   ])('says so when the snapshot is %s', async (_what, read, companion, now, summary, line) => {
     at(now);
     page(read(), { cards: { checks: true }, companion });
     expect(await screen.findByText(summary)).toBeInTheDocument();
     expect(screen.getByText(line)).toBeInTheDocument();
+  });
+
+  it('is not there at all for an add-on-only install: no snapshot and no companion', async () => {
+    at(LATER);
+    const { props } = page({ kind: 'absent' }, { cards: { checks: true, accounts: true }, companion: null });
+    await waitFor(() => expect(props.store.getCompanionVersion).toHaveBeenCalled());
+    await waitFor(() => expect(document.querySelector('#sfin-panel-settings')).toBeTruthy());
+    expect((await screen.findAllByText('Accounts')).length).toBeGreaterThan(0);
+    expect(screen.queryByText('Checks')).toBeNull();
+    expect(screen.queryByText('Need the companion')).toBeNull();
+    expect(screen.queryByText(AUDIT_NEEDS_COMPANION)).toBeNull();
   });
 
   it('an account’s "off by" chip opens why in place, under the account', async () => {

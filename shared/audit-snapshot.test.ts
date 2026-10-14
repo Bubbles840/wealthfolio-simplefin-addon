@@ -149,6 +149,41 @@ describe('parseAuditSnapshot', () => {
       expect(parseAuditSnapshot(raw)).toEqual({ kind: 'corrupt' });
     }
   });
+
+  it('is corrupt when a date the views read is missing or not a date, or a kind they cannot name', () => {
+    const good = buildAuditSnapshot(small(), NOW)!;
+    const acct = account(1);
+    const goodLeg = leg(1);
+    const issue = (over: Record<string, unknown>) => JSON.stringify({ ...good, health: { issues: [over], notes: [] } });
+    const legIssue = { kind: 'incomplete-leg', key: 'k', problem: null, owner: 'you', match: 'one', leg: goodLeg, counterpart: goodLeg };
+    const lateStart = { kind: 'late-start', key: 'k', activityId: 'a', accountId: 'b', accountName: 'C', date: '2026-10-02', earliest: '2026-10-01', cents: 1 };
+    const balance = (over: Partial<BalanceExplanation> | Record<string, unknown>) => JSON.stringify({ ...good, balances: { [uuid(1)]: { ...acct, ...over } } });
+    const reasonRows = (rows: unknown[], kind = 'first-midnight') => JSON.stringify({ ...good, headline: { ...good.headline, reasons: [{ kind, cents: 1, rows }] } });
+    // Each of these is well-formed but for the one field.
+    expect(parseAuditSnapshot(issue(legIssue)).kind).toBe('ok');
+    expect(parseAuditSnapshot(issue(lateStart)).kind).toBe('ok');
+    for (const raw of [
+      reasonRows([{ description: 'A', cents: 1, account: 'B' }]),
+      reasonRows([{ date: 20261001, description: 'A', cents: 1, account: 'B' }]),
+      reasonRows([{ date: 'soon', description: 'A', cents: 1, account: 'B' }]),
+      reasonRows([], 'future'),
+      issue({ ...legIssue, leg: { ...goodLeg, date: undefined } }),
+      issue({ ...legIssue, counterpart: { ...goodLeg, date: 5 } }),
+      issue({ ...lateStart, date: null }),
+      issue({ ...lateStart, earliest: 'x' }),
+      balance({ bank: { kind: 'ok', cents: 1, date: 5 } }),
+      balance({ bank: { kind: 'ok', cents: 'x', date: null } }),
+      balance({ bank: { kind: 'maybe' } }),
+      balance({ includes: { start: { cents: 1 }, corrections: null } }),
+      balance({ includes: { start: null, corrections: { count: 1, cents: 1, latest: 7 } } }),
+      balance({ includes: 'none' }),
+    ]) {
+      expect(parseAuditSnapshot(raw)).toEqual({ kind: 'corrupt' });
+    }
+    // The bank's date may be null, and an account need not carry includes.
+    expect(parseAuditSnapshot(balance({ bank: { kind: 'ok', cents: 1, date: null }, includes: null })).kind).toBe('ok');
+    expect(parseAuditSnapshot(balance({ bank: { kind: 'none' } })).kind).toBe('ok');
+  });
 });
 
 describe('auditSnapshotStatus', () => {

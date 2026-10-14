@@ -1,11 +1,11 @@
 import React, { useState } from 'react';
 import { balanceCauseLines, balanceHeaderLine, balanceIncludesLine, type BalanceExplanation } from '../../shared/audit-balance';
 import {
-  headlineAgrees, headlineReasonLine, headlineRowLine, headlineSummaryLine, headlineUnexplainedLine, HEADLINE_AGREE,
+  headlineAgreeLine, headlineAgrees, headlineReasonLine, headlineRowLine, headlineSummaryLine, headlineUnexplainedLine,
   type HeadlineExplanation,
 } from '../../shared/audit-headline';
 import { healthCount, healthIssueLines, healthIssueTitle, HEALTH_NONE, type HealthReport } from '../../shared/audit-health';
-import { auditSnapshotStatus, type AuditSnapshotRead } from '../../shared/audit-snapshot';
+import { auditSnapshotStatus, AUDIT_CORRUPT, type AuditSnapshotRead } from '../../shared/audit-snapshot';
 
 /**
  * The three checks as the app shows them (2c R1, spec A5), from the
@@ -33,6 +33,31 @@ export function AuditStatusLine({ read, companionVersion, now }: AuditSource) {
   return <div role="status" className={`sfin-subtle sfin-audit-status sfin-audit-status--${state}`}>{line}</div>;
 }
 
+/**
+ * A snapshot the reader let through but a view still cannot draw (a host
+ * that hands over a parsed object as-is, or a shape the reader does not
+ * check) shows the corrupt line in place of that view, never a crashed page.
+ * A new snapshot draws again.
+ */
+class AuditBoundary extends React.Component<{ read: AuditSnapshotRead; children: React.ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  componentDidUpdate(prev: { read: AuditSnapshotRead }) {
+    if (prev.read !== this.props.read && this.state.failed) this.setState({ failed: false });
+  }
+
+  render() {
+    if (this.state.failed) {
+      return <div role="status" className="sfin-subtle sfin-audit-status sfin-audit-status--corrupt">{AUDIT_CORRUPT}</div>;
+    }
+    return this.props.children;
+  }
+}
+
 function AuditNotes({ notes }: { notes: readonly string[] }) {
   if (notes.length === 0) return null;
   return <ul className="sfin-audit-notes">{notes.map((n, i) => <li key={i}>{n}</li>)}</ul>;
@@ -56,21 +81,25 @@ export function AccountAudit({ wfAccountId, ...source }: AuditSource & { wfAccou
   const e = source.read.kind === 'ok' ? source.read.snapshot.balances[wfAccountId] : undefined;
   return (
     <div className="sfin-audit-inline">
-      {source.read.kind === 'ok' && (e
-        ? <BalanceExplanationView e={e} notes={source.read.snapshot.balanceNotes} />
-        : <div className="sfin-subtle">{AUDIT_ACCOUNT_NOT_COVERED}</div>)}
-      <AuditStatusLine {...source} />
+      <AuditBoundary read={source.read}>
+        {source.read.kind === 'ok' && (e
+          ? <BalanceExplanationView e={e} notes={source.read.snapshot.balanceNotes} />
+          : <div className="sfin-subtle">{AUDIT_ACCOUNT_NOT_COVERED}</div>)}
+        <AuditStatusLine {...source} />
+      </AuditBoundary>
     </div>
   );
 }
 
-export function HeadlineView({ h }: { h: HeadlineExplanation }) {
-  const summary = headlineSummaryLine(h);
+/** `now` is the viewer's: a snapshot from a month that has since turned is
+ *  labelled by that month's name, never "this month". */
+export function HeadlineView({ h, now }: { h: HeadlineExplanation; now?: Date }) {
+  const summary = headlineSummaryLine(h, now);
   const rest = headlineUnexplainedLine(h);
   return (
     <div className="sfin-audit-body">
       {summary && <div className="sfin-audit-head">{summary}</div>}
-      {headlineAgrees(h) ? <div>{HEADLINE_AGREE}</div> : h.reasons && (
+      {headlineAgrees(h) ? <div>{headlineAgreeLine(h, now)}</div> : h.reasons && (
         <ul className="sfin-audit-lines">
           {h.reasons.map((r) => (
             <li key={r.kind}>
@@ -114,8 +143,10 @@ export function HealthView({ report }: { report: HealthReport }) {
 export function ChecksCard(source: AuditSource) {
   return (
     <div className="sfin-audit-checks">
-      {source.read.kind === 'ok' && <HealthView report={source.read.snapshot.health} />}
-      <AuditStatusLine {...source} />
+      <AuditBoundary read={source.read}>
+        {source.read.kind === 'ok' && <HealthView report={source.read.snapshot.health} />}
+        <AuditStatusLine {...source} />
+      </AuditBoundary>
     </div>
   );
 }
@@ -143,8 +174,10 @@ export function HeadlineAuditLink(source: AuditSource) {
       </button>
       {open && (
         <div className="sfin-audit-inline" role="region" aria-label="Spent vs Wealthfolio">
-          {source.read.kind === 'ok' && <HeadlineView h={source.read.snapshot.headline} />}
-          <AuditStatusLine {...source} />
+          <AuditBoundary read={source.read}>
+            {source.read.kind === 'ok' && <HeadlineView h={source.read.snapshot.headline} now={source.now} />}
+            <AuditStatusLine {...source} />
+          </AuditBoundary>
         </div>
       )}
     </div>

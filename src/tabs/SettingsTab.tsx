@@ -413,8 +413,10 @@ export function SettingsTab({
 
       {/* 2c: what Wealthfolio's Health page flags, from the companion's
           snapshot. Beside Accounts: Home's Accounts tile opens it when there
-          is something to look at. */}
-      {auditSnapshot && (
+          is something to look at. Not there at all for an add-on-only
+          install (no snapshot, no companion): a card that can only ever say
+          "Need the companion" is noise. */}
+      {auditSnapshot && !(auditSnapshot.kind === 'absent' && !companionVersion) && (
         <CollapsibleCard
           id={CARD.checks}
           title="Checks"
