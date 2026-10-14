@@ -21,7 +21,11 @@
  *  - The size guard trims the OLDEST months until the serialized cube fits
  *    REPORT_CUBE_MAX_BYTES: shorter history beats a failed publish.
  */
-import { descriptionFromComment } from '../../shared/sync-core.js';
+import { descriptionFromComment, txIdFromComment } from '../../shared/sync-core.js';
+import type { ChangeLogItem } from '../../shared/change-log.js';
+import { changesForTransaction } from '../../shared/change-view.js';
+import { accountTxKey } from '../../shared/transfers.js';
+import { encodeFiler, resolveFiler, type CategoryRuleLike } from '../../shared/tx-story.js';
 import {
   REPORT_CUBE_MAX_BYTES, REPORT_CUBE_MAX_MONTHS, REPORT_CUBE_TARGET_MONTHS,
   type CubeMerchant, type ReportCube,
@@ -56,9 +60,17 @@ export interface CubeBuildDeps {
   checkTotals?(start: string, endEx: string, excluded: string[]):
     { spendByCategory: Record<string, number>; uncategorized: number } | null;
   /** Newest-month transactions per rolled-up category (getNativeDrillRows).
-   *  Optional so an older binding keeps building cubes without drill-down. */
-  drillRows?(start: string, endEx: string):
-    Array<{ category: string; date: string; notes: string; amount: number; account: string }>;
+   *  Optional so an older binding keeps building cubes without drill-down. The
+   *  ids, leaf category, source and type (1.61) are optional too: a row
+   *  without an activity id gets neither `i` nor `f`. */
+  drillRows?(start: string, endEx: string): Array<{
+    category: string; date: string; notes: string; amount: number; account: string;
+    activityId?: string; accountId?: string; categoryId?: string; source?: string; activityType?: string;
+  }>;
+  /** What says who filed a drill row (1.61): the categorization rules in the
+   *  server's order, and the change log — each null when it could not be
+   *  read. Optional; absent or rejecting, rows carry `i` but no `f`. */
+  filingContext?(): Promise<{ rules: CategoryRuleLike[] | null; history: ChangeLogItem[] | null }>;
   /** The subscription document, for link suggestions. Optional so an older
    *  binding keeps building cubes, just without suggestions. */
   subscriptionPrefs?(): Promise<SubscriptionPrefs | null>;
@@ -227,11 +239,39 @@ export async function buildReportCube(
   let drill: ReportCube['drill'] = null;
   const drillSource = deps.drillRows?.(`${months[months.length - 1]}-01`, endEx);
   if (drillSource) {
+    // Who filed each row: the rules and the log are read ONCE for the list.
+    // A failed read costs the codes it feeds, never the cube.
+    const filing = drillSource.some((r) => r.activityId && r.categoryId)
+      ? await deps.filingContext?.().catch(() => null) ?? null
+      : null;
+    const filings = filing?.history
+      ? filing.history.filter((e) => e.kind === 'category-filed' || e.kind === 'opening-balance-filed')
+      : null;
+    const sfinOf = new Map(meta.map((a) => [a.wfId, a.sfinId]));
+    const filerCode = (r: (typeof drillSource)[number]): string | undefined => {
+      if (!filing || !r.activityId || !r.categoryId) return undefined;
+      const sfin = r.accountId ? sfinOf.get(r.accountId) : undefined;
+      const txId = txIdFromComment(r.notes);
+      return encodeFiler(resolveFiler({
+        source: r.source ?? null,
+        categoryId: r.categoryId,
+        row: { note: r.notes, activityType: r.activityType ?? '', accountId: r.accountId ?? '', absCents: Math.abs(cents(r.amount)) },
+        history: filings && changesForTransaction(filings, {
+          activityIds: [r.activityId], txKeys: sfin && txId ? [accountTxKey(sfin, txId)] : [],
+        }),
+        rules: filing.rules,
+      }));
+    };
     const byCat: Record<string, DrillTxLike[]> = {};
     for (const r of [...drillSource].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))) {
       const list = byCat[r.category] ?? (byCat[r.category] = []);
       if (list.length >= DRILL_ROWS_PER_CATEGORY) continue;
-      list.push({ d: r.date, n: descriptionFromComment(r.notes) || r.notes, c: cents(r.amount), a: r.account });
+      const f = filerCode(r);
+      list.push({
+        d: r.date, n: descriptionFromComment(r.notes) || r.notes, c: cents(r.amount), a: r.account,
+        ...(r.activityId ? { i: r.activityId } : {}),
+        ...(f ? { f } : {}),
+      });
     }
     drill = byCat;
   }

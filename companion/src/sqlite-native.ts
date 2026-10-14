@@ -1452,6 +1452,23 @@ export function getNativeMerchantRows(
   }).filter((r) => r.month !== '');
 }
 
+/** One drill-down row. Since 1.61 it carries what the cube needs to open the
+ *  row's story and say who filed it: the activity and account ids, the LEAF
+ *  category id (a rule files into it, not into the rolled-up parent), the
+ *  assignment's source ('' when unrecorded) and the activity type. */
+export interface NativeDrillRow {
+  category: string;
+  date: string;
+  notes: string;
+  amount: number;
+  account: string;
+  activityId: string;
+  accountId: string;
+  categoryId: string;
+  source: string;
+  activityType: string;
+}
+
 /**
  * Drill-down rows: every categorized spending transaction in the window under
  * its ROLLED-UP category — the same SPENDING_FROM / SPENDING_CATEGORY / sign
@@ -1462,14 +1479,21 @@ export function getNativeDrillRows(
   dbPath: string,
   startInclusive: string,
   endExclusive: string,
-): Array<{ category: string; date: string; notes: string; amount: number; account: string }> {
+): NativeDrillRow[] {
   if (!dbPath || !existsSync(dbPath)) return [];
   if (!validDateBounds(startInclusive, endExclusive)) return [];
+  // Notes LAST: free text is the one column a stray `|` can split in the CLI
+  // fallback, and only trailing columns are safe from it.
   const query = `
     SELECT ${SPENDING_CATEGORY} as category,
            date(a.activity_date) as date,
            COALESCE(acc.name, '') as account,
            ROUND(${SPENDING_SIGNED_AMOUNT}, 2) as amount,
+           a.id as activity_id,
+           COALESCE(a.account_id, '') as account_id,
+           COALESCE(ata.category_id, '') as category_id,
+           COALESCE(ata.source, '') as source,
+           UPPER(COALESCE(a.activity_type, '')) as activity_type,
            COALESCE(a.notes, '') as notes
     ${SPENDING_FROM}
     ${spendingWhere(startInclusive, endExclusive)}
@@ -1479,18 +1503,26 @@ export function getNativeDrillRows(
     dbPath,
     'drill rows',
     query,
-    (parts) => (parts.length === 5
-      ? { c0: parts[0], c1: parts[1], c2: parts[2], c3: parseFloat(parts[3]) || 0, c4: parts[4] }
+    (parts) => (parts.length >= 10
+      ? {
+          c0: parts[0], c1: parts[1], c2: parts[2], c3: parseFloat(parts[3]) || 0, c4: parts[4], c5: parts[5],
+          c6: parts[6], c7: parts[7], c8: parts[8], c9: parts.slice(9).join('|'),
+        }
       : null),
   );
   return rows.map((r) => {
-    const v = Object.values(r) as [string, string, string, number | string, string];
+    const v = Object.values(r) as Array<string | number>;
     return {
       category: String(v[0]),
       date: String(v[1]),
       account: String(v[2]),
       amount: typeof v[3] === 'number' ? v[3] : parseFloat(String(v[3])) || 0,
-      notes: String(v[4]),
+      activityId: String(v[4] ?? ''),
+      accountId: String(v[5] ?? ''),
+      categoryId: String(v[6] ?? ''),
+      source: String(v[7] ?? ''),
+      activityType: String(v[8] ?? ''),
+      notes: String(v[9] ?? ''),
     };
   }).filter((r) => r.category !== '');
 }

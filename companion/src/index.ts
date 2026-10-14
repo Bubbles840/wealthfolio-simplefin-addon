@@ -1643,6 +1643,12 @@ function cubeBuildDeps(wfClient: WealthfolioClient, dbPath: string): CubeBuildDe
     // The digest's own readers, verbatim — the check's whole worth is that
     // this path shares no aggregation code with the matrices above.
     drillRows: (s, e) => getNativeDrillRows(dbPath, s, e),
+    // Who filed each drill row (1.61). Each read on its own: an unreadable
+    // rule list still lets the log say "you", and the reverse.
+    filingContext: async () => ({
+      rules: await Promise.resolve().then(() => wfClient.listCategorizationRules()).catch(() => null),
+      history: await readCompanionChangeLog(wfClient, new Date()).then((r) => r.entries).catch(() => null),
+    }),
     checkTotals: (s, e, excluded) => ({
       spendByCategory: getNativeWealthfolioSpendingBetween(dbPath, s, e),
       uncategorized: getNativeUncategorizedSpendingTotal(dbPath, s, e, excluded).total,
