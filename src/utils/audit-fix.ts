@@ -26,8 +26,10 @@ import { ledgerGroupId } from '../../shared/link-in-place';
 import { isTransferType, txIdFromComment } from '../../shared/sync-core';
 import { removeForGood, type RemoveIo, type RemoveOutcome } from '../../shared/tx-remove';
 import { sfinIdsFor } from '../../shared/tx-story';
+import { linkedOfFact } from '../../shared/wf-facts';
 import { AddonSyncHost } from './addon-host';
 import type { SecretsStore } from './secrets';
+import { readCashFacts } from './wf-facts';
 import { beginWrite, writeRefusal } from './write-lock';
 
 /** The store methods the fixes use, every one optional. */
@@ -72,13 +74,17 @@ export function addonLinkIo(ctx: AddonContext, store: FixStore, log: (msg: strin
     read: async (pair: LinkPair) => {
       const types = await accountTypes(ctx);
       const ledger = await ledgerOf(store);
-      const one = async (leg: HealthLeg): Promise<ReadRow | null> => {
-        const row = await readFixRow(ctx, leg.activityId, types);
+      const rows = [await readFixRow(ctx, pair.leg.activityId, types), await readFixRow(ctx, pair.counterpart.activityId, types)];
+      // Wealthfolio 3.9+: linked or not on its own word (U3), never "maybe".
+      const facts = await readCashFacts(ctx, rows.flatMap((r) => (r ? [{ id: r.id, accountId: r.accountId, date: r.date }] : [])));
+      const one = (row: FixRow | null, leg: HealthLeg): ReadRow | null => {
         if (!row) return null;
+        const fact = facts?.get(row.id);
+        if (fact) return { row, linked: linkedOfFact(fact) };
         const knows = ledgerKnows(ledger, leg.txKey ? [leg.txKey] : [], txIdFromComment(row.notes));
         return { row, linked: linkedState(row, { readsGroups: false, ledgerKnows: knows, unpairedWhenRead: true }) };
       };
-      return [await one(pair.leg), await one(pair.counterpart)];
+      return [one(rows[0], pair.leg), one(rows[1], pair.counterpart)];
     },
     overrides: async () => {
       const loaded = await store.readSyncOverrides?.();
@@ -139,6 +145,9 @@ export function addonRemoveIo(ctx: AddonContext, store: FixStore, log: (msg: str
     read: async (activityId) => readFixRow(ctx, activityId, await accountTypes(ctx)),
     feeds: async (wfAccountId) => sfinIdsFor((await store.getAccountMapping?.()) ?? {}, wfAccountId),
     linked: async (row, txKeys) => {
+      // Wealthfolio 3.9+: linked or not on its own word (U3) — an unlinked transfer leg can go.
+      const fact = (await readCashFacts(ctx, [{ id: row.id, accountId: row.accountId, date: row.date }]))?.get(row.id);
+      if (fact) return linkedOfFact(fact);
       // The app's Remove never needs a transfer leg, and upstream treats a wf-transfer- group or
       // a "wealthfolio" transfer source as linked even when the row reads is_external:true.
       if (isTransferType(row.type.toUpperCase())) return 'confirmed';
