@@ -245,4 +245,64 @@ describe('runSyncCore — a payback (asReimbursement)', () => {
     expect(writes(fh)).toEqual([]);
     expect(result.errors.some((e) => e.includes('it is marked a payback but is now a transfer this app did not link'))).toBe(true);
   });
+
+  describe('the foreign-payback partner prescan (PB-H)', () => {
+    const two = (savAmount: string, wfB: HostActivity, overrides = payback(), extraAccount = false): FakeHostSeed => ({
+      accountSet: { errors: [], accounts: [
+        { id: 'sfin-1', name: 'Checking', currency: 'USD', balance: '0', 'balance-date': epoch('2026-10-14T12:00:00Z'),
+          transactions: [{ id: 'tx-1', posted: epoch('2026-10-09T12:00:00Z'), amount: '14.00', description: 'ONLINE TRANSFER FROM SAV' }] },
+        { id: 'sfin-2', name: 'Savings', currency: 'USD', balance: '0', 'balance-date': epoch('2026-10-14T12:00:00Z'),
+          transactions: [{ id: 'tx-1', posted: epoch('2026-10-09T12:00:00Z'), amount: savAmount, description: 'ONLINE TRANSFER TO CHK' }] },
+        ...(extraAccount ? [{ id: 'sfin-3', name: 'Other', currency: 'USD', balance: '0', 'balance-date': epoch('2026-10-14T12:00:00Z'),
+          transactions: [{ id: 'tx-9', posted: epoch('2026-10-09T12:00:00Z'), amount: '5.00', description: 'COFFEE REFUND' }] }] : []),
+      ] },
+      mapping: { 'sfin-1': 'wf-a', 'sfin-2': 'wf-b', ...(extraAccount ? { 'sfin-3': 'wf-c' } : {}) },
+      accountTypes: { 'wf-a': 'CASH', 'wf-b': 'CASH', 'wf-c': 'CASH' },
+      existing: new Map([
+        ['wf-a', [{ id: 'act-7', accountId: 'wf-a', activityType: 'TRANSFER_IN', subtype: null, date: '2026-10-09', amount: 14, comment: 'ONLINE TRANSFER FROM SAV \u00b7 tx-1', sourceGroupId: 'g1' } as HostActivity]],
+        ['wf-b', [wfB]],
+      ]),
+      syncOverrides: overrides,
+    });
+    const partner = (over: Partial<HostActivity> = {}): HostActivity => ({
+      id: 'act-8', accountId: 'wf-b', activityType: 'TRANSFER_OUT', subtype: null, date: '2026-10-09', amount: 14,
+      comment: 'ONLINE TRANSFER TO CHK \u00b7 tx-1', sourceGroupId: 'g1', ...over,
+    });
+    const readsOff = (fh: ReturnType<typeof createFakeHost>) => ({ ...fh.host, capabilities: { readsSourceGroupId: false } });
+
+    it('m-a: an unrelated same-id row of ANOTHER AMOUNT in another account is not hidden with the payback', async () => {
+      const fh = createFakeHost(two('-14.00', partner({ amount: 99 })));
+      await runSyncCore(readsOff(fh), fh.store, { force: true });
+      expect(fh.activities.get('wf-b')!.find((r) => r.id === 'act-8')!.amount).toBe(14);
+    });
+
+    it('m-a: nor one of the SAME direction (not the opposite transfer type)', async () => {
+      const fh = createFakeHost(two('14.00', partner({ activityType: 'TRANSFER_IN', amount: 99 })));
+      await runSyncCore(readsOff(fh), fh.store, { force: true });
+      expect(fh.activities.get('wf-b')!.find((r) => r.id === 'act-8')!.amount).toBe(14);
+    });
+
+    it('m-a: the real partner (same amount, opposite type) is still left alone', async () => {
+      const fh = createFakeHost(two('-14.00', partner({ amount: 14 })));
+      await runSyncCore(readsOff(fh), fh.store, { force: true });
+      expect(writes(fh)).toEqual([]);
+    });
+
+    it('m-b: reads only the flagged transaction’s accounts, and nothing extra when no flagged id is in this run’s feed', async () => {
+      const readCount = async (overrides: SyncOverrides) => {
+        const fh = createFakeHost(two('-14.00', partner(), overrides, true));
+        const calls: string[] = [];
+        const host = { ...readsOff(fh), listActivities: async (id: string) => { calls.push(id); return fh.host.listActivities(id); } };
+        await runSyncCore(host, fh.store, { force: true });
+        return (id: string) => calls.filter((c) => c === id).length;
+      };
+      const none = await readCount(emptySyncOverrides());
+      const flaggedHere = await readCount(payback());
+      const flaggedElsewhere = await readCount(setTxOverride(emptySyncOverrides(), accountTxKey('sfin-1', 'tx-gone'), 'asReimbursement', NOW));
+      // The bystander account is never read for the prescan.
+      expect(flaggedHere('wf-c')).toBe(none('wf-c'));
+      // A flagged id that is not in the feed costs no extra read anywhere.
+      for (const a of ['wf-a', 'wf-b', 'wf-c']) expect(flaggedElsewhere(a)).toBe(none(a));
+    });
+  });
 });

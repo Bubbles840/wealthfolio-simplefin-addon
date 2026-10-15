@@ -2565,11 +2565,19 @@ async function runSyncPass(
   /** Keys of transfer rows in OTHER accounts sharing a tx id with a "foreign
    *  payback" (below): left alone with it. Only a host that cannot read groups. */
   const paybackPartnerKeys = new Set<string>();
-  if (!readsGroups && Object.values(overrides.tx).some((o) => o.asReimbursement)) {
+  // Only for a flagged transaction that is in THIS run's feed, and then only the accounts
+  // whose feed carries that transaction id (PB-H m-b): a payback elsewhere costs nothing.
+  const flaggedFeedIds = new Set<string>();
+  if (!readsGroups) {
+    for (const [acc, txs] of feedOf) {
+      for (const t of txs) if (hasTxOverride(overrides, accountTxKey(acc.id, t.id), 'asReimbursement')) flaggedFeedIds.add(t.id);
+    }
+  }
+  if (flaggedFeedIds.size > 0) {
     const seen: Array<{ sf: string; row: StoredRow }> = [];
     for (const acc of accountSet.accounts) {
       const wf = mapping[acc.id];
-      if (!wf) continue;
+      if (!wf || !(feedOf.get(acc) ?? []).some((t) => flaggedFeedIds.has(t.id))) continue;
       try {
         for (const row of await fetchExistingRows(host, wf)) seen.push({ sf: acc.id, row });
       } catch {
@@ -2582,7 +2590,9 @@ async function runSyncPass(
       if (!isTransferType(row.type) || !hasTxOverride(overrides, key, 'asReimbursement') || known
         || (row.comment ?? '').startsWith(IN_TRANSIT_COMMENT_PREFIX)) continue;
       for (const other of seen) {
-        if (other.sf !== sf && other.row.txId === row.txId && isTransferType(other.row.type)) {
+        // The partner: same id, same amount, the opposite leg (PB-H m-a).
+        if (other.sf !== sf && other.row.txId === row.txId && isTransferType(other.row.type)
+          && other.row.absCents === row.absCents && other.row.type !== row.type) {
           paybackPartnerKeys.add(accountTxKey(other.sf, other.row.txId));
         }
       }
