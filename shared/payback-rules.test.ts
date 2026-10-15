@@ -186,6 +186,16 @@ describe('makePaybackRules', () => {
     expect(w.logged[1].after).toMatchObject({ ruleId: 'rule-9', accountId: 'wf-chk', activityType: 'CREDIT' });
   });
 
+  it('promises no Undo when a change-log entry was not written; both rules stand', async () => {
+    const w = world({ io: { record: vi.fn(async () => { throw new Error('the change log was not written'); }) } });
+    expect(await makePaybackRules(INPUT, w.io, NOW)).toEqual({
+      ok: true, message: 'Done — every JANE DOE VENMO deposit into PNC Checking is a payback under Restaurants from now on.',
+    });
+    expect(w.mapping()).toEqual([RULE, GLOBAL]);
+    expect(w.io.createCategoryRule).toHaveBeenCalled();
+    expect(w.io.log).toHaveBeenCalledWith(expect.stringContaining('the change log was not written'));
+  });
+
   it('waits for an add-on that reads the rule’s limits, and writes nothing', async () => {
     const w = world({ io: { gate: async () => PAYBACK_UPDATE_ADDON } });
     expect(await makePaybackRules(INPUT, w.io, NOW)).toEqual({ ok: false, message: PAYBACK_UPDATE_ADDON });

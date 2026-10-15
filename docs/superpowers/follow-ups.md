@@ -1273,6 +1273,13 @@ branches.
   - **The list offers it only on rows a 1.62 companion marks**
     (`paybackEligible`): until the companion's first 1.62 publish, only the
     story offers it.
+- **Link refuses a payback** (the integration review): the `asReimbursement`
+  setting, or a cash `CREDIT` marked `REIMBURSEMENT`. Health skips only rows
+  the setting is on (its ledger rows carry no subtype), so a payback the W10
+  rule typed can still be offered as a counterpart; Link then refuses it.
+- **W10's "stuck" reply** (the category rule refused, the transaction rule
+  not taken back) still says to undo it from `/changes` when its entry was
+  not written; only the Done reply waits for both entries.
 - **Telegram's paybacks wait for an installed add-on of 1.62.0.** A companion
   that cannot see the add-ons directory reads it as unknown and refuses, as
   the Venmo note's Undo does; W11 then offers paybacks from the app.

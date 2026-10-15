@@ -25,6 +25,7 @@ import { healthIssues, type HealthFacts, type HealthRead } from '../../shared/au
 import type { AuditLedger } from '../../shared/audit-ledger.js';
 import { AUDIT_SNAPSHOT_SECRET_KEY, buildAuditSnapshot, type AuditResults } from '../../shared/audit-snapshot.js';
 import { monthlySpendTotals, parseReportCube, REPORT_CUBE_SECRET_KEY } from '../../shared/report-cube.js';
+import { loadSyncOverrides } from '../../shared/sync-overrides.js';
 import { getNativeAuditLedger, getNativeAuditSettings, getNativeHeadlineRows } from './sqlite-audit.js';
 import type { WealthfolioClient } from './wealthfolio.js';
 
@@ -208,6 +209,14 @@ export async function gatherHealthFacts(r: AuditReaders, ledger: AuditLedger | u
   const mapping = sharedMapping ?? await readMapping(r);
   if (mapping.ok) facts.mapping = mapping.value ?? {};
   else failed.push('mapping');
+  // A row the payback setting is on is never offered as a transfer's other half (1.62).
+  // Unread or unreadable: none known, and Link's own re-read refuses one.
+  try {
+    const loaded = await loadSyncOverrides((k) => r.secret(k));
+    if (!loaded.unreadable) facts.overrides = loaded.overrides;
+  } catch {
+    // Nothing more to say: the Health list is unchanged.
+  }
   if (failed.length > 0) facts.failed = failed;
   return facts;
 }

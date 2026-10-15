@@ -859,6 +859,10 @@ function syncBookkeepingSummary(filed: number, unfiled: number, category: string
   return `Filed ${filed} bookkeeping ${plural(filed, 'row', 'rows')} under "${category}", which Wealthfolio leaves out of spending`;
 }
 
+/** At most this many refused ids on a `card-transfer-out` or `date-repair`
+ *  entry; `refusedCount` is the total (the summary counts them all). */
+export const BOOKKEEPING_REFUSED_IDS = 200;
+
 /** Repairs the sync makes to its own rows. Shown behind a button; never undoable. */
 export function bookkeepingChange(f: BookkeepingFacts): ChangeDraft {
   const n = f.total ?? f.activityIds.length;
@@ -908,7 +912,7 @@ export function bookkeepingChange(f: BookkeepingFacts): ChangeDraft {
       step: f.step, count: n, ...(f.categoryName ? { categoryName: f.categoryName } : {}),
       ...(f.skipped !== undefined ? { skipped: f.skipped } : {}),
       ...(f.unfiledIds ? { unfiled: f.unfiledIds.length } : {}),
-      ...(f.refused?.length ? { refused: [...f.refused] } : {}),
+      ...(f.refused?.length ? { refused: f.refused.slice(0, BOOKKEEPING_REFUSED_IDS), refusedCount: f.refused.length } : {}),
     },
     undoable: false,
   };

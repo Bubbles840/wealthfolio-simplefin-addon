@@ -22,7 +22,7 @@ import type { PaybackRow } from '../../shared/payback-row.js';
 import { parseAccountMapping } from '../../shared/tx-remove.js';
 import { sfinIdsFor } from '../../shared/tx-story.js';
 import { readActivityById } from './audit-fix-host.js';
-import { recordCompanionChanges, recordCompanionChangesStrict, type SecretClient } from './change-log-host.js';
+import { recordCompanionChangesStrict, type SecretClient } from './change-log-host.js';
 import type { WealthfolioClient } from './wealthfolio.js';
 
 const ADDON_ID = 'simplefin-sync';
@@ -77,7 +77,8 @@ export function companionPaybackRulesIo(client: PaybackRulesClient, log: (msg: s
       ...(r.taxonomyId ? { taxonomyId: r.taxonomyId } : {}), ...(r.amountOp ? { amountOp: r.amountOp } : {}),
     })),
     createCategoryRule: async (rule) => (await client.createCategorizationRule({ ...rule, taxonomyId: SPENDING_TAXONOMY_ID, priority: PAYBACK_RULE_PRIORITY })) ?? null,
-    record: (draft) => recordCompanionChanges(client, [draft]),
+    // Strict: the reply promises "Undo either rule" only when both entries were written.
+    record: (draft) => recordCompanionChangesStrict(client, [draft]),
     log,
   };
 }

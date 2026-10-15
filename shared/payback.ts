@@ -385,6 +385,7 @@ export interface PaybackRulesIo {
   }>>;
   /** Creates a contains rule for one account and one activity type; resolves its id (null when the reply named none). */
   createCategoryRule(rule: { name: string; pattern: string; categoryId: string; accountId: string; activityType: string }): Promise<string | null>;
+  /** Appends to the change log; rejects when THIS entry was not written (the reply then promises no Undo). */
   record(draft: ChangeDraft): Promise<void>;
   log(msg: string): void;
 }
@@ -606,11 +607,14 @@ export async function makePaybackRules(input: PaybackRulesInput, io: PaybackRule
   // The list as it will stand must make the source deposit a payback.
   if (!listMakesPayback(withRuleFirst(list, rule), rule, input.description)) return no(PAYBACK_RULES_SHADOWED);
 
-  const log = async (draft: ChangeDraft) => {
+  /** Whether the entry was written: the reply promises an Undo only then. */
+  const log = async (draft: ChangeDraft): Promise<boolean> => {
     try {
       await io.record(draft);
+      return true;
     } catch (err) {
       io.log(`Payback rules for "${input.pattern}": the change log was not written: ${errorText(err)}`);
+      return false;
     }
   };
   const mappingEntry = () => mappingRuleCreatedChange({
@@ -682,13 +686,14 @@ export async function makePaybackRules(input: PaybackRulesInput, io: PaybackRule
     }
   }
 
-  // 3. The change log, which never costs the rules.
-  if (added) await log(mappingEntry());
+  // 3. The change log, which never costs the rules. "Undo either rule" only when both entries were written.
+  let logged = true;
+  if (added) logged = (await log(mappingEntry())) && logged;
   if (madeCategoryRule) {
-    await log(categoryRuleCreatedChange({
+    logged = (await log(categoryRuleCreatedChange({
       ruleId, name, pattern: input.pattern, categoryId: input.categoryId, categoryName: input.categoryName,
       account: { wfId: input.account.id, name: input.account.name }, activityType: 'CREDIT',
-    }));
+    }))) && logged;
   }
-  return { ok: true, message: paybackRulesDone(input.pattern, input.account.name, input.categoryName) };
+  return { ok: true, message: paybackRulesDone(input.pattern, input.account.name, input.categoryName, logged) };
 }

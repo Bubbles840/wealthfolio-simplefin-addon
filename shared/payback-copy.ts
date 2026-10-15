@@ -106,8 +106,9 @@ export function paybackRulesPreview(
   return lines.join('\n');
 }
 export const PAYBACK_RULES_CREATE = 'Create both rules';
-export const paybackRulesDone = (pattern: string, accountName: string, categoryName: string): string =>
-  `Done — every ${pattern} deposit into ${accountName} is a payback under ${categoryName} from now on. Undo either rule from /changes.`;
+/** `undoable` false: a change-log entry was not written, so no Undo is promised. */
+export const paybackRulesDone = (pattern: string, accountName: string, categoryName: string, undoable = true): string =>
+  `Done — every ${pattern} deposit into ${accountName} is a payback under ${categoryName} from now on.${undoable ? ' Undo either rule from /changes.' : ''}`;
 export const PAYBACK_RULES_EXIST = 'Both rules are already there — nothing was added.';
 export const PAYBACK_RULES_GENERIC = "That description is only common bank words (like DEPOSIT or ACH), so a rule on it would catch things that aren't paybacks — nothing was changed.";
 export const PAYBACK_RULES_SHADOWED = 'An earlier transaction rule would still decide those deposits, so a new one would never apply — nothing was changed.';

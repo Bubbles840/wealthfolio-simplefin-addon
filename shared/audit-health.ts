@@ -27,7 +27,8 @@
  * the cent, the opposite direction (a TRANSFER_OUT wants a TRANSFER_IN,
  * DEPOSIT or CREDIT; a TRANSFER_IN a TRANSFER_OUT or WITHDRAWAL), POSTED and
  * not pending (the sync never pairs a ` · pending` row), within MATCH_DAYS, not already half of a valid pair, not the add-on's
- * opening balance or correction — and unique BOTH ways: the leg has exactly
+ * opening balance or correction, not a row the payback setting is on (1.62:
+ * Link refuses a payback) — and unique BOTH ways: the leg has exactly
  * one candidate and no other leg claims it. Anything else is "many" and is
  * never offered. The add-on's own rows (opening balances, corrections,
  * in-transit placeholders) are flagged but never matched: the sync marks
@@ -48,6 +49,7 @@
  */
 import { changeDay, changeMoney } from './change-entries.js';
 import { descriptionFromComment, isTransferType, txIdFromComment } from './sync-core.js';
+import { hasTxOverride, type SyncOverrides } from './sync-overrides.js';
 import { accountTxKey } from './transfers.js';
 import {
   isCorrectionNote, isPendingNote, isPlaceholderNote, isStartingBalanceNote, type AuditLedger, type AuditLedgerRow,
@@ -69,6 +71,9 @@ export interface HealthFacts {
   ledger?: AuditLedger;
   /** account_mapping: SimpleFin id → Wealthfolio id, for the rows' tx keys. */
   mapping?: Record<string, string>;
+  /** The overrides document: a row the payback setting is on is never offered
+   *  as a transfer's other half. Absent: none known (Link still refuses one). */
+  overrides?: SyncOverrides;
   failed?: HealthRead[];
 }
 
@@ -206,9 +211,14 @@ export function healthIssues(facts: HealthFacts): HealthReport {
   const userLegs = live.filter((r) => eligible(r) && isTransferType(r.type) && r.status === 'POSTED' && !inValidPair(r) && !r.external
     && !isBookkeeping(r) && !isPlaceholderNote(r.notes));
   const userIds = new Set(userLegs.map((l) => l.id));
+  // A row the payback setting is on is money in that comes off spending: Link refuses it.
+  const paidBack = (r: AuditLedgerRow) => {
+    const key = legOf(r).txKey;
+    return !!key && !!facts.overrides && hasTxOverride(facts.overrides, key, 'asReimbursement');
+  };
   // A pending row (the sync's ` · pending` note) is never offered: the sync never pairs one.
   const counterparts = (leg: AuditLedgerRow) => live.filter((c) => c.id !== leg.id && c.accountId !== leg.accountId
-    && c.currency === leg.currency && c.status === 'POSTED' && !isPendingNote(c.notes) && !isBookkeeping(c) && !inValidPair(c)
+    && c.currency === leg.currency && c.status === 'POSTED' && !isPendingNote(c.notes) && !isBookkeeping(c) && !inValidPair(c) && !paidBack(c)
     && c.absCents === leg.absCents && Math.abs(dayMs(c.date) - dayMs(leg.date)) <= MATCH_DAYS * 86_400_000
     && (leg.type === 'TRANSFER_OUT' ? INFLOW.has(c.type) : OUTFLOW.has(c.type)));
   const claims = new Map<string, number>();
