@@ -6,6 +6,7 @@
  * Undo and Redo (shared/change-undo.ts), which must not import the planner:
  * the planner reaches the change log's runner through the fixes' reader. Pure.
  */
+import { bankDayInstant } from './bank-day.js';
 import { REIMBURSEMENT_SUBTYPE } from './cash-flow-bucket.js';
 import type { FixRow } from './fix-row.js';
 import type { ActivityWrite } from './sync-host.js';
@@ -14,7 +15,8 @@ import type { ActivityWrite } from './sync-host.js';
  *  host reported it. */
 export interface PaybackRow extends FixRow {
   /** `2026-10-09T12:00:00Z`, `2026-10-09T00:00:00+00:00`, or a bare day from a
-   *  host that sends one: written back unchanged on a retype. */
+   *  host that sends one: an instant is written back unchanged on a retype, a
+   *  bare day at noon UTC on it (`bankDayInstant`, 1.62 W1). */
   instant: string;
 }
 
@@ -25,7 +27,8 @@ export const isPaybackRow = (row: Pick<FixRow, 'type' | 'subtype'>): boolean =>
 
 /**
  * The row re-typed, as the bulk endpoint's update: the same account, date
- * (the stored instant), amount, currency and note, the cash asset by symbol
+ * (the stored instant; a bare day goes to noon UTC on it, never to 00:00 UTC
+ * as Wealthfolio 3.8 and 3.9 store a bare date), amount, currency and note, the cash asset by symbol
  * (as the sync writes every non-transfer row), and `subtype` stated — an
  * explicit `''` clears it (Wealthfolio 3.8–3.10 stores none for an empty
  * subtype on an update; an omitted one is kept). Fee, metadata and the review
@@ -36,7 +39,7 @@ export function paybackRetype(row: PaybackRow, activityType: string, subtype: st
     id: row.id,
     accountId: row.accountId,
     activityType,
-    activityDate: row.instant,
+    activityDate: bankDayInstant(row.instant),
     symbol: { symbol: `$CASH-${row.currency}` },
     amount: row.absCents / 100,
     currency: row.currency,

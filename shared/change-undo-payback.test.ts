@@ -10,7 +10,7 @@ import { filePayback, paybackRowOf, type PaybackIo } from './payback.js';
 import {
   PAYBACK_REDO_UNCHANGED, PAYBACK_REDO_UNSURE, PAYBACK_UNDO_STUCK, PAYBACK_UNDO_STUCK_PLAIN, PAYBACK_UNDO_UNCHANGED, PAYBACK_UNDO_UNSURE, PAYBACK_UNREACHABLE, PAYBACK_UPDATE_ADDON, paybackRedoHalf, paybackUndoHalf,
 } from './payback-copy.js';
-import type { HostActivity } from './sync-host.js';
+import type { HostActivity, SyncHost } from './sync-host.js';
 import {
   emptySyncOverrides, hasTxOverride, parseSyncOverrides, setTxOverride, SYNC_OVERRIDES_SECRET_KEY, SYNC_OVERRIDES_UNREADABLE_MESSAGE,
 } from './sync-overrides.js';
@@ -42,10 +42,21 @@ function harness(rows: HostActivity[] = [{ ...DEPOSIT }], secrets: Record<string
     set: vi.fn(async (k: string, v: string) => { data.set(k, v); }),
   };
   const record = vi.fn(async (d: ChangeDraft) => { log.unshift(stampChange(d, 'companion', NOW)); });
+  /** The instant each row was last written at. The fake host reads a written date back as
+   *  its UTC day (as the sync hosts' `date` does); Wealthfolio's REST `date`, which a payback
+   *  reads, is the stored instant itself, so the harness keeps what was written. */
+  const writtenAt = new Map<string, string>();
+  const host: SyncHost = {
+    ...fh.host,
+    saveMany: async (req) => {
+      for (const w of req.updates ?? []) if (w.id) writtenAt.set(w.id, w.activityDate);
+      return fh.host.saveMany(req);
+    },
+  };
   /** The row as Wealthfolio reports it now, the way a payback reads it. */
   const read = async (id: string) => {
     const r = [...fh.activities.values()].flat().find((x) => x.id === id);
-    return r ? paybackRowOf({ ...r, currency: 'USD', accountName: 'Checking' }, 'CASH') : null;
+    return r ? paybackRowOf({ ...r, date: writtenAt.get(id) ?? r.date, currency: 'USD', accountName: 'Checking' }, 'CASH') : null;
   };
   const categories = {
     assignments: vi.fn(async (id: string) => [
@@ -56,7 +67,7 @@ function harness(rows: HostActivity[] = [{ ...DEPOSIT }], secrets: Record<string
     unassign: vi.fn(async (id: string) => { filed.delete(id); }),
   };
   const io: UndoIo = {
-    host: fh.host, secrets: secretsIo, categories, paybacks: { read }, record, where: { host: 'companion', companionVersion: '1.62.0' },
+    host, secrets: secretsIo, categories, paybacks: { read }, record, where: { host: 'companion', companionVersion: '1.62.0' },
     log: (m: string) => { logs.push(m); },
   };
   const paybackIo: PaybackIo = {
@@ -65,7 +76,7 @@ function harness(rows: HostActivity[] = [{ ...DEPOSIT }], secrets: Record<string
     feeds: async () => ['sfin-1'],
     secrets: secretsIo,
     update: async (w) => {
-      const r = await fh.host.saveMany({ updates: [w] });
+      const r = await host.saveMany({ updates: [w] });
       if (r.errors.length) throw new Error(r.errors[0].message);
     },
     assign: async (id, cat) => { filed.set(id, cat); },
@@ -95,6 +106,19 @@ describe('Undo and Redo of a payback', () => {
   });
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it('a row read with a bare day is written at noon UTC on that day by the payback, its Undo and its Redo — never a bare date (a full instant is written as stored)', async () => {
+    const h = harness([{ ...DEPOSIT, date: '2026-10-09' }]);
+    const entry = await h.file();
+    expect(await h.undo(entry, 'undo')).toMatchObject({ ok: true });
+    expect(await h.undo(entry, 'redo')).toMatchObject({ ok: true });
+    const dates = h.fh.saved.flatMap((r) => r.updates ?? []).map((w) => w.activityDate);
+    expect(dates).toEqual(['2026-10-09T12:00:00Z', '2026-10-09T12:00:00Z', '2026-10-09T12:00:00Z']);
+    // A stored instant, midnight included, goes back exactly as it is.
+    const midnight = harness([{ ...DEPOSIT, date: '2026-10-09T00:00:00+00:00' }]);
+    await midnight.file();
+    expect(midnight.fh.saved.flatMap((r) => r.updates ?? []).map((w) => w.activityDate)).toEqual(['2026-10-09T00:00:00+00:00']);
   });
 
   it('is an exact round trip: Undo puts the deposit back as Wealthfolio had it, Redo makes it the payback again', async () => {
