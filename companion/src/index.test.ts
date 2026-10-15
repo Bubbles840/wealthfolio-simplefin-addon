@@ -8,6 +8,8 @@ import { runSyncCore } from '../../shared/sync-core.js';
 import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeCategorizedSpending, getNativeSpendingCategories, getNativeTxSearchRows, getNativeBudgetSpend, getNativeSpendingHistoryStart } from './sqlite-native.js';
 import { getNativeAuditSettings } from './sqlite-audit.js';
 import { ingestAmazonMail } from './amazon-mail.js';
+import { rewriteCardBookkeeping } from './card-bookkeeping-rewrite.js';
+import { fileCardOpeningDebts } from './opening-balance-category.js';
 import { ingestVenmoMail } from './venmo-mail.js';
 import { getNativePastFilings } from './sqlite-guess.js';
 import { AMAZON_MAIL_STATUS_SECRET_KEY, AMAZON_MAIL_SAMPLES_SECRET_KEY, UNCATEGORIZED_STATUS_SECRET_KEY, VENMO_MAIL_SAMPLES_SECRET_KEY } from '../../shared/status-keys.js';
@@ -137,6 +139,16 @@ vi.mock('./sqlite-audit.js', () => ({
   getNativeAuditSettings: vi.fn(() => ({ timezone: null, excludedCategoryIds: [], categoryParents: {} })),
 }));
 
+// Wrapped, not replaced: the real filing and rewrite still run, and a test can read their order and arguments.
+vi.mock('./card-bookkeeping-rewrite.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./card-bookkeeping-rewrite.js')>();
+  return { ...actual, rewriteCardBookkeeping: vi.fn(actual.rewriteCardBookkeeping) };
+});
+vi.mock('./opening-balance-category.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./opening-balance-category.js')>();
+  return { ...actual, fileCardOpeningDebts: vi.fn(actual.fileCardOpeningDebts) };
+});
+
 vi.mock('./amazon-mail.js', async (importOriginal) => ({
   // Real `amazonMailConfigured`, `htmlToText`, etc. stay real; only the two
   // functions that would otherwise try a real IMAP connection are faked.
@@ -238,6 +250,22 @@ describe('runCompanionSync', () => {
   it('calls runSyncCore using REST host and store adapters', async () => {
     await runCompanionSync();
     expect(runSyncCore).toHaveBeenCalledTimes(1);
+  });
+
+  it('runs the card bookkeeping rewrite BEFORE the opening-debt filing, marking through the card_bookkeeping_rewrite secret', async () => {
+    vi.mocked(rewriteCardBookkeeping).mockClear();
+    vi.mocked(fileCardOpeningDebts).mockClear();
+    await runCompanionSync();
+    expect(rewriteCardBookkeeping).toHaveBeenCalledTimes(1);
+    expect(fileCardOpeningDebts).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(rewriteCardBookkeeping).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(fileCardOpeningDebts).mock.invocationCallOrder[0]);
+    const deps = vi.mocked(rewriteCardBookkeeping).mock.calls[0][0];
+    await deps.marker.get();
+    await deps.marker.set('2026-10-14T15:00:00.000Z');
+    const { WealthfolioClient } = await import('./wealthfolio.js');
+    const client = vi.mocked(WealthfolioClient).mock.results.at(-1)!.value as any;
+    expect(client.getAddonSecret).toHaveBeenCalledWith('simplefin-sync', 'card_bookkeeping_rewrite');
+    expect(client.setAddonSecret).toHaveBeenCalledWith('simplefin-sync', 'card_bookkeeping_rewrite', '2026-10-14T15:00:00.000Z');
   });
 
   it('derives force from MIN_SYNC_INTERVAL_HOURS when called with no options, so the cron tick is unchanged', async () => {
