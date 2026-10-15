@@ -199,13 +199,13 @@ describe('runDateRepair', () => {
     const result = await runDateRepair(f.deps, NOW);
     expect(result).toMatchObject({ moved: 2, failed: 0 });
     expect(f.secrets.has(DATE_REPAIR_SECRET_KEY)).toBe(true);
-    expect(f.recorded[0].after).not.toHaveProperty('failed');
+    expect(f.recorded[0].after).not.toHaveProperty('refused');
     // Refused again on the retry: now it is for good.
     const g = fake([row('a'), row('bad')]);
     const gsave = g.deps.saveUpdates;
     g.deps.saveUpdates = vi.fn(async (w: ActivityWrite[]) => (w.some((u) => u.id === 'bad') ? { errors: [{ action: 'update', message: 'no' }] } : gsave(w)));
     expect(await runDateRepair(g.deps, NOW)).toMatchObject({ moved: 1, failed: 1, transient: 0 });
-    expect(g.recorded[0].after).toMatchObject({ failed: 1 });
+    expect(g.recorded[0].after).toMatchObject({ refused: ['bad'] });
     expect(g.deps.sleep).toHaveBeenCalledWith(DATE_REPAIR_PAUSE_MS);
   });
 
@@ -233,7 +233,7 @@ describe('runDateRepair', () => {
     const result = await runDateRepair(g.deps, NOW);
     expect(result).toMatchObject({ moved: 1, transient: 1 });
     expect(g.recorded[0].after).toMatchObject({ skipped: 1 });
-    expect(g.recorded[0].after).not.toHaveProperty('failed'); // a transient failure is not a refusal
+    expect(g.recorded[0].after).not.toHaveProperty('refused'); // a transient failure is not a refusal
     // A changed row is not "linked or retyped".
     const h = fake([row('x'), row('y')]);
     const hr = h.deps.searchByIds;
@@ -271,17 +271,35 @@ describe('runDateRepair', () => {
     f.deps.saveUpdates = vi.fn(async (w: ActivityWrite[]) => (w.some((u) => u.id === 'bad') ? { errors: [{ action: 'update', message: 'Activity type cannot be empty' }] } : save(w)));
     const first = await runDateRepair(f.deps, NOW);
     expect(first).toMatchObject({ ran: true, moved: 1, failed: 1, transient: 0 });
-    expect(f.recorded[0]).toMatchObject({ after: { step: 'date-repair', count: 1, failed: 1 } });
+    expect(f.recorded[0]).toMatchObject({ after: { step: 'date-repair', count: 1, refused: ['bad'] } });
     expect(f.secrets.has(DATE_REPAIR_SECRET_KEY)).toBe(true);
     expect((await runDateRepair(f.deps, NOW)).ran).toBe(false);
   });
 
-  it('a 4xx thrown for one row is permanent; a 5xx is not', async () => {
+  it('a 400/422 thrown for one row is permanent; a 5xx is not', async () => {
     const f = fake([row('a'), row('bad')]);
     const save = f.deps.saveUpdates;
     f.deps.saveUpdates = vi.fn(async (w: ActivityWrite[]) => (w.some((u) => u.id === 'bad') ? Promise.reject(new Error('saveMany failed: 422 - nope')) : save(w)));
     expect(await runDateRepair(f.deps, NOW)).toMatchObject({ failed: 1, transient: 0 });
     expect(f.secrets.has(DATE_REPAIR_SECRET_KEY)).toBe(true);
+  });
+
+  it('refusals are reported as the card rewrite reports them: only a 400/422 thrown for a row is a refusal (a 403 stops the run unmarked), and a run whose rows were all refused records one entry naming them', async () => {
+    const f = fake([row('a'), row('locked')]);
+    const save = f.deps.saveUpdates;
+    f.deps.saveUpdates = vi.fn(async (w: ActivityWrite[]) => (w.some((u) => u.id === 'locked') ? Promise.reject(new Error('saveMany failed: 403 - forbidden')) : save(w)));
+    expect(await runDateRepair(f.deps, NOW)).toMatchObject({ moved: 1, failed: 1, transient: 1 });
+    expect(f.secrets.has(DATE_REPAIR_SECRET_KEY)).toBe(false);
+    expect(f.recorded[0].after).not.toHaveProperty('refused');
+    // Every row refused twice: marked done, one entry with the count and the ids.
+    const g = fake([row('bad')]);
+    g.deps.saveUpdates = vi.fn(async () => ({ errors: [{ action: 'update', message: 'no' }] }));
+    expect(await runDateRepair(g.deps, NOW)).toMatchObject({ moved: 0, failed: 1, transient: 0 });
+    expect(g.secrets.has(DATE_REPAIR_SECRET_KEY)).toBe(true);
+    expect(g.recorded).toEqual([expect.objectContaining({
+      summary: "Couldn't move 1 row stored at midnight UTC to noon: Wealthfolio refused it, so it stays at midnight",
+      after: expect.objectContaining({ step: 'date-repair', count: 0, refused: ['bad'] }),
+    })]);
   });
 
   it('m10: pages past 500 rows', async () => {

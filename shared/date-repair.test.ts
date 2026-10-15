@@ -104,10 +104,10 @@ describe('the done marker and the change log', () => {
       after: { step: 'date-repair', count: 2, skipped: 3 },
       summary: "Moved 2 rows stored at midnight UTC to noon on the same date, so Wealthfolio counts them on the bank's day — 3 linked or retyped rows left as they were",
     });
-    const capped = bookkeepingChange({ step: 'date-repair', activityIds: ['a1'], total: 230, skipped: 0, failed: 2 });
+    const capped = bookkeepingChange({ step: 'date-repair', activityIds: ['a1'], total: 230, skipped: 0, refused: ['r1', 'r2'] });
     expect(capped.summary).toContain('Moved 230 rows');
-    expect(capped.summary).toContain('2 refused by Wealthfolio');
-    expect(capped).toMatchObject({ after: { count: 230, failed: 2 } });
+    expect(capped.summary).toContain('Wealthfolio refused 2 rows, which stay at midnight');
+    expect(capped).toMatchObject({ after: { count: 230, refused: ['r1', 'r2'] } });
     expect(bookkeepingChange({ step: 'date-repair', activityIds: ['a1'], skipped: 0 }).summary)
       .toBe("Moved 1 row stored at midnight UTC to noon on the same date, so Wealthfolio counts it on the bank's day");
   });

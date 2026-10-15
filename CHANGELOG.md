@@ -124,13 +124,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with one entry in the change log. Each batch is re-read right before it is
   written; a linked transfer, a row with a type override, and a row changed
   meanwhile are left alone. A row Wealthfolio refuses is asked twice; if it
-  refuses both times it is left at midnight and named in the companion's log,
-  and counted in the run's change-log entry only when that run moved
-  something. A final sweep, on a fresh live read of the database, checks
-  nothing movable is left before the repair is recorded. The repair reads the
-  database live only: when it can only be read as a snapshot ("Date repair
-  waits: the database can only be read as a snapshot"), it does nothing, and
-  a row the database read doesn't know yet is never taken for a retyped one.
+  refuses both times it is left at midnight, named in the companion's log and
+  listed in the change log, as the card rewrite does. Only Wealthfolio's
+  refusal of the row counts (an answer naming it, or a 400 or 422); any other
+  failure leaves the repair unfinished, and the next sync carries on. A final
+  sweep, on a fresh live read of the database, checks nothing movable is left
+  before the repair is recorded. The repair reads the database live only:
+  when it can only be read as a snapshot ("Date repair waits: the database
+  can only be read as a snapshot"), it does nothing, and a row the database
+  read doesn't know yet is never taken for a retyped one.
   If it is interrupted, it resumes on the next sync.
   - **It waits for the 1.62 add-on** ("Date repair waits for the 1.62
     add-on"), because a 1.61 add-on keeps writing bare dates: see the deploy

@@ -1194,7 +1194,9 @@ Designed overnight under Nick's standing instruction; approved by Nick on
   partner); a row with a type override, or whose stored type differs from the
   search's (a blank override on 3.8/3.9; Wealthfolio's search shows only the
   effective type, and an update writes the type it is sent); rows in accounts
-  the add-on doesn't map; rows Wealthfolio refuses twice; rows the database
+  the add-on doesn't map; rows Wealthfolio refuses twice (an `errors[]` entry
+  or a thrown 400/422, the card rewrite's rule too: `companion/src/row-refusal.ts`;
+  both list them in their entry's `refused`); rows the database
   read doesn't know yet (newer than the read: never counted as retyped, the
   repair isn't done while any is left); and rows written at midnight after it
   finished (a 1.61 browser tab, a replay). It reads the database LIVE only

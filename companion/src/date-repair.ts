@@ -19,6 +19,7 @@ import {
   batches, DATE_REPAIR_PAUSE_MS, DATE_REPAIR_SECRET_KEY, DATE_REPAIR_SINCE, parseDateRepairMarker, planDateRepair, type DateRepairPlan, type DateRepairRow, type DateRepairWrite,
 } from '../../shared/date-repair.js';
 import { isNewerVersion } from '../../shared/version.js';
+import { isRowRefusal } from './row-refusal.js';
 
 /** Page size for the account sweep, and the most pages read per account. */
 const PAGE_SIZE = 500;
@@ -74,14 +75,6 @@ export class SnapshotOnlyError extends Error {
 }
 
 const NOT_RUN: DateRepairResult = { ran: false, moved: 0, failed: 0, transient: 0, changed: 0, skippedGrouped: 0, skippedOverride: 0 };
-
-/** A thrown write error that is the row's own fault (4xx) and will not heal. */
-function isPermanent(e: unknown): boolean {
-  const m = /failed: (\d{3})/.exec(e instanceof Error ? e.message : String(e));
-  if (!m) return false;
-  const status = Number(m[1]);
-  return status >= 400 && status < 500 && ![408, 423, 429].includes(status);
-}
 
 type Move = DateRepairPlan['moves'][number];
 
@@ -183,7 +176,7 @@ export async function runDateRepair(
         permanent = true; // A refusal in the answer is about this row.
         message = one.errors.map((e) => e.message).join('; ');
       } catch (e) {
-        permanent = isPermanent(e);
+        permanent = isRowRefusal(e);
         message = e instanceof Error ? e.message : String(e);
       }
       if (permanent) refusedOnce.push(m); else transient += 1;
@@ -208,7 +201,7 @@ export async function runDateRepair(
           if (one.errors.length === 0) { moved.push(m.row.id); continue; }
           refused.add(m.row.id);
         } catch (e) {
-          if (isPermanent(e)) refused.add(m.row.id); else transient += 1;
+          if (isRowRefusal(e)) refused.add(m.row.id); else transient += 1;
         }
       }
     }
@@ -216,9 +209,11 @@ export async function runDateRepair(
   const failed = refused.size + transient;
   // Rows left on purpose; a row that changed or vanished meanwhile is no one of them.
   const skipped = plan.skippedGrouped + plan.skippedOverride;
-  if (moved.length > 0) {
+  // As the card rewrite: an entry when it moved something or Wealthfolio refused rows for good.
+  if (moved.length > 0 || refused.size > 0) {
     await deps.record(bookkeepingChange({
-      step: 'date-repair', activityIds: moved.slice(0, DATE_REPAIR_ENTRY_IDS), total: moved.length, skipped, failed: refused.size,
+      step: 'date-repair', activityIds: moved.slice(0, DATE_REPAIR_ENTRY_IDS), total: moved.length, skipped,
+      ...(refused.size > 0 ? { refused: [...refused] } : {}),
     })).catch((e) => deps.log(`Change log skipped: ${String(e)}`));
   }
 
