@@ -150,6 +150,7 @@ function cardWithdrawals(db: DatabaseSync): Row[] {
      FROM activities a JOIN accounts acc ON a.account_id = acc.id
      LEFT JOIN assets s ON s.id = a.asset_id
      WHERE UPPER(acc.account_type) = 'CREDIT_CARD'
+       AND COALESCE(acc.is_archived, 0) = 0
        AND UPPER(a.activity_type) = 'WITHDRAWAL'
        AND (COALESCE(a.notes,'') LIKE ? || '%' OR COALESCE(a.notes,'') LIKE ? || '%' OR COALESCE(a.notes,'') LIKE ? || '%')
      ORDER BY a.activity_date, a.id`,
@@ -170,12 +171,10 @@ function cardWithdrawals(db: DatabaseSync): Row[] {
 
 const BOOKKEEPING_PREFIXES = [STARTING_BALANCE_COMMENT_PREFIX, BALANCE_ADJUSTMENT_COMMENT_PREFIX, IN_TRANSIT_COMMENT_PREFIX];
 
-/** A thrown write error that is the row's own fault (4xx) and will not heal. */
+/** A thrown write error that is the row's own fault and will not heal: only a 400 or a 422. Any other 4xx (a 401, 403, 404, 409 …) is the host's or the moment's, so the run stops unmarked. */
 function isPermanent(e: unknown): boolean {
   const m = /failed: (\d{3})/.exec(e instanceof Error ? e.message : String(e));
-  if (!m) return false;
-  const status = Number(m[1]);
-  return status >= 400 && status < 500 && ![408, 423, 429].includes(status);
+  return !!m && [400, 422].includes(Number(m[1]));
 }
 
 /** Built from the FRESH row: its stored instant verbatim (a date-only value would move the row) and its note. No amount, no fee: 3.10 keeps an omitted decimal. */
@@ -269,6 +268,7 @@ export async function rewriteCardBookkeeping(deps: CardRewriteDeps): Promise<Car
     for (const r of batch) {
       const f = fresh.get(r.id);
       if (!f) leave(r, 'it is gone from Wealthfolio');
+      else if (f.accountId && f.accountId !== r.account_id) leave(r, 'it has moved to another account');
       else if (f.activityType.toUpperCase() !== 'WITHDRAWAL') leave(r, `it is now a ${f.activityType}`);
       else if ((f.sourceGroupId ?? '').trim()) leave(r, 'it is now in a transfer group');
       else if (!BOOKKEEPING_PREFIXES.some((p) => (f.comment ?? '').startsWith(p))) leave(r, 'its note is no longer the sync\'s');
@@ -292,7 +292,7 @@ export async function rewriteCardBookkeeping(deps: CardRewriteDeps): Promise<Car
     if (out === 'refused') { refused.push(x.row.id); left.push(x.row); }
   }
 
-  if (done.length > 0 && deps.record) {
+  if ((done.length > 0 || refused.length > 0) && deps.record) {
     try {
       deps.record(bookkeepingChange({ step: 'card-transfer-out', activityIds: done, ...(refused.length ? { refused } : {}) }));
     } catch (err) {
@@ -302,6 +302,12 @@ export async function rewriteCardBookkeeping(deps: CardRewriteDeps): Promise<Car
   if (stopped !== null) {
     deps.log(`Card bookkeeping rewrite stopped after ${done.length} of ${todo.length} rows (${stopped}); the next sync carries on.`);
     return { kind: 'stopped', rewritten: done.length, why: stopped };
+  }
+  if (done.length === 0 && refused.length > 0) {
+    // Nothing could be rewritten and Wealthfolio refused every row it was given: not finished, so no marker.
+    const why = 'Wealthfolio refused every row';
+    deps.log(`Card bookkeeping rewrite wrote nothing (${why}); the next sync tries again.`);
+    return { kind: 'stopped', rewritten: 0, why };
   }
   try {
     await deps.marker.set(deps.now.toISOString());

@@ -773,10 +773,14 @@ export interface BookkeepingFacts {
 /** Repairs the sync makes to its own rows. Shown behind a button; never undoable. */
 export function bookkeepingChange(f: BookkeepingFacts): ChangeDraft {
   const n = f.activityIds.length;
+  const refusedCount = f.refused?.length ?? 0;
+  const refusedNote = `Wealthfolio refused ${refusedCount} ${plural(refusedCount, 'row', 'rows')}, which ${plural(refusedCount, 'stays', 'stay')} as ${plural(refusedCount, 'it was', 'they were')}`;
   const summary = f.step === 'legacy-placeholder'
     ? `Restated ${n} old placeholder ${plural(n, 'row', 'rows')} with ${plural(n, 'its', 'their')} real ${plural(n, 'amount', 'amounts')}`
     : f.step === 'card-transfer-out'
-    ? `Restated ${n} card bookkeeping ${plural(n, 'row', 'rows')} as ${plural(n, 'a transfer', 'transfers')} out, which Wealthfolio leaves out of spending${f.refused?.length ? `; Wealthfolio refused ${f.refused.join(', ')}, which stay as they were` : ''}`
+    ? (n === 0 && refusedCount > 0
+      ? refusedNote
+      : `Restated ${n} card bookkeeping ${plural(n, 'row', 'rows')} as ${plural(n, 'a transfer', 'transfers')} out, which Wealthfolio leaves out of spending${refusedCount > 0 ? `; ${refusedNote}` : ''}`)
     : f.step === 'external-marker'
       ? `Marked ${n} bookkeeping ${plural(n, 'row', 'rows')} as outside transfers for Wealthfolio's Health page`
       : f.step === 'transfer-relink'

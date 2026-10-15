@@ -136,7 +136,8 @@ The addon has three tabs: **Home**, **Reports** and **Settings**.
     other half of its transfer.
   - **3.10 and newer:** a credit card's opening debt, corrections and held
     transfers are Transfer Out, which Wealthfolio's Spending page leaves out on
-    its own.
+    its own, with the Docker companion running (the add-on learns the version
+    from it); the companion also rewrites the existing ones once.
 - A SimpleFin account and a one-time **setup token**
 - Optional: Docker, for the background companion (background sync, Reports,
   the Telegram bot and Amazon categorization)
@@ -157,8 +158,9 @@ Before or right after you upgrade:
 - On its next sync, the companion makes sure "Opening balances" is excluded from
   Wealthfolio's spending. Once it has a live database read and the 1.62 add-on
   is installed, it also rewrites a credit card's bookkeeping withdrawals as
-  Transfer Out, once (it clears their phantom `$CASH` asset and leaves rows
-  you split, filed yourself or placed in a transfer group).
+  Transfer Out, once (it clears their phantom `$CASH` asset and leaves
+  rows in a transfer group, rows you split, retyped or filed yourself, a real
+  security, and a starting balance whose opening-balance filing you undid).
 
 ### Updating the add-on to 1.62.0
 
@@ -230,8 +232,8 @@ day before the earliest transaction, so the account's history never dips
 below zero.
 
 A credit card that started out owing money gets its opening debt as a
-Transfer Out on Wealthfolio 3.10 and newer (once the companion has published
-the version), which its Spending page leaves out. Before 3.10 it is a
+Transfer Out on Wealthfolio 3.10 and newer (the companion reads the version itself; the add-on needs a companion that
+synced in the last two days), which its Spending page leaves out. Before 3.10 it is a
 withdrawal, the only money-out type Wealthfolio accepts on a card; the Docker
 companion files it under an **Opening balances** spending category and
 excludes that category from spending, so Wealthfolio's Spending page does not

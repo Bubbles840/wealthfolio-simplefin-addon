@@ -156,6 +156,9 @@ describe('summaries — one per kind, bank text raw', () => {
 
   it('words each bookkeeping step, singular and plural', () => {
     expect(bookkeepingChange({ step: 'legacy-placeholder', activityIds: ['a'] }).summary).toBe('Restated 1 old placeholder row with its real amount');
+    const refusedOnly = bookkeepingChange({ step: 'card-transfer-out', activityIds: [], refused: ['x', 'y'] });
+    expect(refusedOnly.summary).toBe('Wealthfolio refused 2 rows, which stay as they were');
+    expect(refusedOnly.after).toMatchObject({ refused: ['x', 'y'] });
     expect(bookkeepingChange({ step: 'external-marker', activityIds: ['a'] }).summary).toBe("Marked 1 bookkeeping row as outside transfers for Wealthfolio's Health page");
     expect(bookkeepingChange({ step: 'transfer-relink', activityIds: ['a', 'b'] }).summary).toBe('Re-created 2 old transfer rows so they move cash');
     expect(bookkeepingChange({ step: 'opening-category', activityIds: [], categoryName: 'Opening balances' }).summary)

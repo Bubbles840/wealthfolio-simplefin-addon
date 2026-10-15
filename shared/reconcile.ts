@@ -103,8 +103,10 @@ function normSubtype(v: string | null | undefined): string {
  * pick the other shape leaves the stored one as it is, so the add-on and the
  * companion never flip it back and forth. (A cash account's placeholder is a
  * TRANSFER_OUT on every version and an investment account's a WITHDRAWAL; this
- * test does not know the account type, so it also leaves a hand-retyped cash
- * placeholder alone. The sync keeps the stored shape on a real change too:
+ * test does not know the account type, so its scope covers cash too: a CASH
+ * in-transit placeholder stored as WITHDRAWAL is no longer retyped to
+ * TRANSFER_OUT unless something else about it changes — a deliberate departure
+ * from d344c96 — and a hand-retyped cash placeholder is left alone. The sync keeps the stored shape on a real change too:
  * see "A held card placeholder keeps the shape" in sync-core.ts.)
  */
 function sameType(row: ExistingRow, tx: FeedTx): boolean {

@@ -19,7 +19,7 @@ function ledger(rows: string): string {
   const path = join(dir, 'wealthfolio.db');
   const db = new DatabaseSync(path);
   db.exec(`
-    CREATE TABLE accounts (id TEXT PRIMARY KEY, name TEXT, account_type TEXT);
+    CREATE TABLE accounts (id TEXT PRIMARY KEY, name TEXT, account_type TEXT, is_archived BOOLEAN NOT NULL DEFAULT 0);
     CREATE TABLE assets (id TEXT PRIMARY KEY, kind TEXT, name TEXT, display_code TEXT, instrument_symbol TEXT);
     INSERT INTO assets VALUES ('9231cb80-4223-4c04-98e3-dd3b1af60311','INVESTMENT','$CASH','$CASH','$CASH'),
       ('aapl-uuid','INVESTMENT','Apple Inc','AAPL','AAPL'),('$CASH-USD','FX','USD cash','CASH:USD','CASH:USD');
@@ -29,7 +29,7 @@ function ledger(rows: string): string {
     CREATE TABLE activity_taxonomy_assignments (id TEXT PRIMARY KEY, activity_id TEXT, taxonomy_id TEXT, category_id TEXT);
     CREATE TABLE spending_activity_splits (id TEXT PRIMARY KEY, activity_id TEXT, taxonomy_id TEXT, category_id TEXT, amount TEXT);
     INSERT INTO taxonomy_categories VALUES ('c-open','spending_categories','Opening balances'),('c-food','spending_categories','Dining'),('c-sync','spending_categories','Sync bookkeeping');
-    INSERT INTO accounts VALUES ('card','Citi','CREDIT_CARD'),('cash','Spend','CASH');
+    INSERT INTO accounts (id, name, account_type) VALUES ('card','Citi','CREDIT_CARD'),('cash','Spend','CASH');
     ${rows}
   `);
   db.close();
@@ -186,7 +186,8 @@ describe('the one-time rewrite of card bookkeeping as transfers out (Wealthfolio
     expect(t.d.log).toHaveBeenCalledWith(expect.stringContaining('Invalid data: plug-003'));
     expect(t.drafts).toHaveLength(1);
     expect(t.drafts[0].subject).toEqual({ activityIds: expect.arrayContaining(['plug-000']) });
-    expect(t.drafts[0].summary).toContain('plug-003');
+    expect(t.drafts[0].summary).toBe('Restated 51 card bookkeeping rows as transfers out, which Wealthfolio leaves out of spending; Wealthfolio refused 1 row, which stays as it was');
+    expect(t.drafts[0].summary).not.toContain('plug-003');
     expect((t.drafts[0].after as any).refused).toEqual(['plug-003']);
   });
 
@@ -206,6 +207,42 @@ describe('the one-time rewrite of card bookkeeping as transfers out (Wealthfolio
       expect(await rewriteCardBookkeeping(t.d)).toMatchObject({ kind: 'stopped', rewritten: 0 });
       expect(t.marker()).toBeNull();
     }
+  });
+
+  it('PF-H m1: a thrown 403 is temporary, not the row\'s fault — the run stops unmarked', async () => {
+    const t = deps(ledger(row('a', 'Balance adjustment · sfc · 1')), { saveMany: vi.fn(async () => { throw new Error('saveMany failed: 403'); }) });
+    expect(await rewriteCardBookkeeping(t.d)).toMatchObject({ kind: 'stopped', rewritten: 0 });
+    expect(t.marker()).toBeNull();
+  });
+
+  it('PF-H m1/m4: nothing rewritten and every row refused — unmarked, but the refusal is still recorded', async () => {
+    const t = deps(ledger(row('a', 'Balance adjustment · sfc · 1')), {
+      saveMany: vi.fn(async () => ({ created: [], updated: [], errors: [{ action: 'update', message: 'Invalid data' }] })),
+    });
+    expect(await rewriteCardBookkeeping(t.d)).toMatchObject({ kind: 'stopped', rewritten: 0 });
+    expect(t.marker()).toBeNull();
+    expect(t.drafts).toHaveLength(1);
+    expect(t.drafts[0].summary).toBe('Wealthfolio refused 1 row, which stays as it was');
+    expect((t.drafts[0].after as any).refused).toEqual(['a']);
+  });
+
+  it('PF-H m2: an archived card is not read (REST hides it, so it would be logged as gone)', async () => {
+    const path = ledger(`${row('a', 'Balance adjustment · sfc · 1')}`);
+    sql(path, `UPDATE accounts SET is_archived = 1 WHERE id = 'card';`);
+    const t = deps(path);
+    expect(await rewriteCardBookkeeping(t.d)).toEqual({ kind: 'done', rewritten: 0, left: 0 });
+    expect(t.d.saveMany).not.toHaveBeenCalled();
+    expect(t.d.log).not.toHaveBeenCalledWith(expect.stringContaining('gone'));
+  });
+
+  it('PF-H m3: a row moved to another account since the read is left alone and logged', async () => {
+    const path = ledger(row('a', 'Balance adjustment · sfc · 1'));
+    const t = deps(path, {
+      searchByIds: vi.fn(async (ids: string[]) => ids.map((id) => ({ id, accountId: 'other', activityType: 'WITHDRAWAL', date: '2026-04-20T00:00:00+00:00', comment: 'Balance adjustment · sfc · 1', sourceGroupId: null }))),
+    });
+    expect(await rewriteCardBookkeeping(t.d)).toEqual({ kind: 'done', rewritten: 0, left: 1 });
+    expect(t.d.saveMany).not.toHaveBeenCalled();
+    expect(t.d.log).toHaveBeenCalledWith(expect.stringContaining('another account'));
   });
 
   it('M6: marker.set rejecting — the rows are written and logged, and the next run marks it done', async () => {
