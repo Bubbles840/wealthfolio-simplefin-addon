@@ -48,7 +48,7 @@ describe('"Make every … deposit a payback" (W10)', () => {
   });
 
   it('says when no deposit in the last 90 days reads that way, and when the ledger could not be read', () => {
-    expect(preview({ ok: true, filed: 0, waiting: 0 }).text.split('\n')[2]).toBe('No deposit in the last 90 days reads that way.');
+    expect(preview({ ok: true, filed: 0, waiting: 0 }).text.split('\n')[2]).toBe('No other deposit in the last 90 days reads that way.');
     expect(preview().text.split('\n')).toHaveLength(2);
   });
 

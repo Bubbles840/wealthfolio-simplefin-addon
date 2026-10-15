@@ -643,7 +643,7 @@ export function SettingsTab({
         open={isOpen(CARD.rules)}
         onToggle={() => toggleCard(CARD.rules)}
       >
-        <RuleEditor rules={rules} onChange={saveRules} />
+        <RuleEditor rules={rules} onChange={saveRules} accountNames={wfNames} />
         {rulesNote && (
           <div className="sfin-log-note" role="status">
             {rulesNote}

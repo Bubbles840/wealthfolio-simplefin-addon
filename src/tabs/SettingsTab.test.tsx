@@ -332,6 +332,18 @@ describe('SettingsTab', () => {
     await waitFor(() => expect(props.store.setMappingRules).toHaveBeenCalledWith([payback, { ...loaded[0], pattern: 'PAYCHECK' }]));
   });
 
+  it('PB-K: a payback rule names its account by the name the page already loaded, not its id', async () => {
+    const props = makeProps();
+    props.store.getMappingRules = vi.fn(async () => [
+      { pattern: 'JANE DOE VENMO', matchType: 'contains', activityType: 'CREDIT', subtype: 'REIMBURSEMENT', onlyMoneyIn: true, accountId: 'wf-a', since: '2026-10-13' },
+    ] as any);
+    render(<SyncPage {...props} />);
+    await switchTab(/settings/i);
+    await openSection(/^Transaction rules/i);
+    expect(await screen.findByText(/account \(Checking\)/i)).toBeInTheDocument();
+    expect(screen.queryByText(/\(wf-a\)/)).toBeNull();
+  });
+
   it('persists which cards are open, and restores them on the next visit', async () => {
     const props = makeProps();
     const first = render(<SyncPage {...props} />);

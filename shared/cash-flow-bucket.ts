@@ -177,6 +177,12 @@ export function refundSubtypeWouldMakeSpending(input: BucketInput): boolean {
 /** Why Wealthfolio refused a category assignment, when it said why. */
 export type AssignRefusal = 'neutral' | 'wrong-bucket' | 'scope' | 'off';
 
+/** The bucket Wealthfolio named in a "… activities can only use … categories" refusal: money in or money out. */
+export function wrongBucketOf(message: string): 'income' | 'spending' | null {
+  const m = /\b(income|spending)\s+activities can only use \w+ categories/i.exec(message);
+  return m ? (m[1].toLowerCase() as 'income' | 'spending') : null;
+}
+
 /**
  * Wealthfolio's own refusals of an assignment, read by their words (W9):
  * `ensure_activity_assignment_allowed` and `ensure_activity_in_spending_scope`

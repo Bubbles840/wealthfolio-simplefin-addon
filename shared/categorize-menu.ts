@@ -14,10 +14,10 @@ import { categoryRulePattern, paybackRulePattern } from './rule-pattern.js';
 import type { PaybackBreadth } from './payback.js';
 import { isAmazonDescription } from './amazon-ledger.js';
 import type { InlineKeyboard } from './telegram.js';
-import { moneyWhole, escapeMarkdown, WHY_BUTTON_TEXT } from './telegram.js';
-import { assignRefusalOf, INCOME_TAXONOMY_ID, type AssignRefusal } from './cash-flow-bucket.js';
+import { escapeMarkdown, WHY_BUTTON_TEXT } from './telegram.js';
+import { assignRefusalOf, INCOME_TAXONOMY_ID, wrongBucketOf, type AssignRefusal } from './cash-flow-bucket.js';
 import {
-  PAYBACK_PICK, PAYBACK_RULES_CREATE, PAYBACK_SWITCH, paybackRulesButton, paybackRulesPreview,
+  PAYBACK_PICK, paybackMoney, PAYBACK_RULES_CREATE, PAYBACK_SWITCH, paybackRulesButton, paybackRulesPreview,
 } from './payback-copy.js';
 
 /** One uncategorized spending transaction, as the menu needs it. `date` is
@@ -483,7 +483,8 @@ function directionSign(t: Pick<CategorizeTxn, 'direction'>): string {
  *  exactly as it always did. */
 function signedWhole(t: Pick<CategorizeTxn, 'direction' | 'amountCents'>): string {
   const cents = t.direction ? Math.abs(t.amountCents) : t.amountCents;
-  return `${directionSign(t)}${moneyWhole(cents / 100)}`;
+  // Cents kept when there are any, as the payback reply words it: $14.50 is never shown as $15.
+  return `${directionSign(t)}${paybackMoney(cents)}`;
 }
 
 /** Sentence shown when a screen refers to a transaction or category id that
@@ -613,7 +614,7 @@ function renderList(session: MenuSession, page: number, note?: string): RenderRe
     // The guess (3), beside the row — a hint only; the tap still opens the row.
     const guessSuffix = mode !== 'recategorize' && t.guess ? ` · probably ${t.guess.name}` : '';
     return [{
-      // moneyWhole takes DOLLARS, so cents are divided down first. Both native
+      // The amount is cents (kept when there are any). Both native
       // readers ABS() the amount before it ever reaches this module, so the
       // sign comes from `direction`, not the figure — and stays absent for a
       // row whose direction an older controller never supplied.
@@ -1122,7 +1123,12 @@ export const UNDO_ASSIGN_FAILED_TEXT = "Couldn't undo that — Wealthfolio didn'
  */
 export function assignFailureText(lead: string, message: string): string {
   const reason = assignRefusalOf(message);
-  return reason ? `${lead}\n${ASSIGN_REFUSAL_LINES[reason]}` : lead;
+  if (!reason) return lead;
+  // Name the bucket Wealthfolio named (PB-G): money out takes a spending category, money in an income one.
+  if (reason === 'wrong-bucket' && wrongBucketOf(message) === 'spending') {
+    return `${lead}\nIt is recorded as money out and can only take a spending category while that is true.`;
+  }
+  return `${lead}\n${ASSIGN_REFUSAL_LINES[reason]}`;
 }
 
 function renderRefused(
