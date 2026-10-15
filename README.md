@@ -128,7 +128,15 @@ The addon has three tabs: **Home**, **Reports** and **Settings**.
 
 ## Requirements
 
-- Wealthfolio **3.8 or newer** (works with 3.10)
+- Wealthfolio **3.8 or newer** (works with 3.10). Newer versions unlock more:
+  - **3.9 and newer:** the app links and unlinks transfers in place (the
+    companion does on 3.8 too), and reads whether a transaction is linked and
+    what it is filed under, so its Link, Remove for good… and Undo go by
+    Wealthfolio's word, and a transaction's story names its category and the
+    other half of its transfer.
+  - **3.10 and newer:** a credit card's opening debt, corrections and held
+    transfers are Transfer Out, which Wealthfolio's Spending page leaves out on
+    its own.
 - A SimpleFin account and a one-time **setup token**
 - Optional: Docker, for the background companion (background sync, Reports,
   the Telegram bot and Amazon categorization)
@@ -147,7 +155,20 @@ Before or right after you upgrade:
 - After the upgrade, Wealthfolio rebuilds every account's history. Wait until its
   Health page no longer shows a stale projection before running a Deep scan.
 - On its next sync, the companion makes sure "Opening balances" is excluded from
-  Wealthfolio's spending.
+  Wealthfolio's spending. Once it has a live database read and the 1.62 add-on
+  is installed, it also rewrites a credit card's bookkeeping withdrawals as
+  Transfer Out, once (it clears their phantom `$CASH` asset and leaves rows
+  you split, filed yourself or placed in a transfer group).
+
+### Updating the add-on to 1.62.0
+
+1.62.0 asks for new permissions, and Wealthfolio's **Update** button refuses an
+update that does. Install 1.62.0 over the installed add-on with **Install from
+File**, without removing the old one first, and approve them: linking and
+unlinking transfers, reading how Wealthfolio files and links each transaction,
+and your spending categories' names. Your settings stay. Deploy the add-on
+zip before or together with the companion: the companion's one-time rewrites
+wait for the 1.62 add-on.
 
 ### Adding or removing accounts later
 
@@ -185,7 +206,8 @@ nothing.
 - Transfers between two mapped accounts (for example, paying a credit card from
   checking) are matched on equal amounts, opposite signs, within five days, and
   imported as a linked Transfer Out / Transfer In pair — excluded from both
-  spending and income.
+  spending and income. Wealthfolio links the two rows itself wherever it can,
+  so they keep their ids and categories.
 - Positive amounts on a credit-card account import as **Credit** (a refund,
   netted against spending) unless they look like a card payment — "payment",
   "autopay", "thank you", "e-pay" — which become Transfer In.
@@ -208,7 +230,9 @@ day before the earliest transaction, so the account's history never dips
 below zero.
 
 A credit card that started out owing money gets its opening debt as a
-withdrawal, the only money-out type Wealthfolio accepts on a card. The Docker
+Transfer Out on Wealthfolio 3.10 and newer (once the companion has published
+the version), which its Spending page leaves out. Before 3.10 it is a
+withdrawal, the only money-out type Wealthfolio accepts on a card; the Docker
 companion files it under an **Opening balances** spending category and
 excludes that category from spending, so Wealthfolio's Spending page does not
 read it as a purchase.

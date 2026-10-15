@@ -1141,6 +1141,90 @@ Designed overnight under Nick's standing instruction; approved by Nick on
   - Inbox: the unmount test cannot fail under React 19 (setState after
     unmount is silent), so it pins "no further reads or writes after unmount".
 
+## 18. Platform upgrades (2026-10-14, plan `2026-10-14-platform.md`)
+
+- **SDK 3.9, feature-detected.** `hostCan` (src/utils/host-can.ts) makes a cash
+  search no row can match (`spending.searchCashActivities`, 3.9+) once per
+  context: inside the sandbox `ctx.api` is a Proxy on which every path is a
+  function, so `typeof` proves nothing, and a 3.8 host rejects the call with
+  "Unknown addon host API method". `spending.isEnabled`, `getCategories` and
+  the rule calls cannot tell the two apart (3.8 already offers them). Never
+  call an SDK function through `.call`, `.apply` or `.bind`: on the Proxy that
+  is one more path.
+- **1.62.0 adds manifest permissions**, so Wealthfolio's Update button refuses
+  it; the README and CHANGELOG say to install over the old one. W11 (app
+  paybacks) adds its spending rule permissions to the same manifest before
+  1.62.0 ships, so one reinstall covers both.
+- **FINDING: `readsSourceGroupId` is stale.** `AddonSyncHost.capabilities.
+  readsSourceGroupId` (false since db08f48) is wrong: search has returned
+  `sourceGroupId` since 3.6.2 or earlier. Flipping it changes sync-core's
+  add-on path (linked-leg detection, the ledger migration, change-undo-run.ts
+  ~160) and would let the add-on see links on 3.8 too. It is its own small plan
+  after 1.62.0, not this branch.
+- **Link in place keeps re-creating** a pair whose stored rows are not exactly
+  its legs (in place cannot change a type or clear an asset; a held placeholder
+  marked external must not keep a bookkeeping filing on a real transfer;
+  another note, amount, day, subtype or fee), and any pair Wealthfolio refuses
+  except one already half of another transfer, which is refused outright
+  (re-creating would delete the other pair's partner). On 3.8 and 3.9 an
+  "already linked" refusal whose first read showed both rows in one shared
+  group with a marker is reported linked, ids kept. The sync's brand-new pairs
+  mostly link in place; a promoted held placeholder still re-creates.
+- **A lost link answer** is read again: a row still in an earlier group that
+  its partner does not share is refused as half of another transfer and retried
+  next sync. Variants that still hit the old re-create data-loss path (a row of
+  another pair deleted with its partner): a shape refusal on a row already in
+  another pair, a failed first read, and a 3.8 add-on (it cannot read the group,
+  so it cannot tell).
+- **The add-on's ledger keeps Wealthfolio's own group ids** under the
+  `wf-transfer-` prefix (`ledgerGroupId`); its one-time migration drops bare
+  ids. This also ends a churn that predates 1.62.0.
+- **Unlink in place, then retype.** If the retype is refused the pair stays
+  apart, as transfers marked external; the add-on keeps its ledger records and
+  retries it next sync, and the companion retypes each while the bank feed
+  still sends it.
+  - The companion never logs a transfer-unlink for an incomplete unlink; its
+    later retype shows as two bank-update lines.
+  - The add-on's ledger keeps keys whose stored rows are no longer
+    transfer-typed (two-writer staleness); drain them.
+  - Adopting a pair Wealthfolio says is already linked (3.8/3.9) logs a second
+    "Linked" entry, as before this branch.
+- **Facts are read per row:** `searchCashActivities` has no id filter, so a row
+  is found by account and its stored instant's UTC day. A row it does not
+  return (an account outside Spending, a card transfer out 3.10 hides) keeps
+  the 3.8 rule. A row in any group, even a broken one, counts as linked.
+- **The app's story** says "by a rule" without naming it: the SDK lists only
+  the add-on's own rules.
+- **A card's bookkeeping shape needs the host version.** The SDK cannot ask, so
+  the companion publishes `wealthfolio_version` each sync and the add-on reads
+  it, trusting it only while the companion's sync_health is under two days old
+  (absent or stale: WITHDRAWAL). Both shapes are one row to both syncers
+  (`keepBookkeepingOutflow`, reconcile's `sameType`).
+  - Convergence: an add-on that cannot tell the version may retype a stored
+    card TRANSFER_OUT to WITHDRAWAL once, on a real change (pending to posted,
+    amount, date); then both writers keep WITHDRAWAL and the filing excludes it.
+    Accepted: protecting TRANSFER_OUT on an unknown host risks writing one to
+    3.8/3.9, which refuse it.
+  - A netting by a pre-3.10 writer still writes WITHDRAWAL.
+- **The one-time card rewrite** (`card_bookkeeping_rewrite`) rewrites each
+  batch from a REST re-read (stored instant and note kept, amount and fee
+  omitted), never from the database snapshot. It clears the phantom `$CASH`
+  asset older withdrawals carry (sent as `$CASH-<ccy>`, which 3.10 clears). It
+  needs a live database read (no immutable snapshot), is off below 3.10, and
+  waits while an installed add-on is below 1.62.0. Left as they are, and logged:
+  rows in a transfer group, retyped rows, real security assets, rows with
+  split lines, rows carrying a filing the sync did not make, and a starting
+  balance whose account has no opening-balance file. A refused batch is retried
+  row by row; a row refused twice joins the left rows (listed in the entry); only
+  a temporary failure (5xx, network, 408/423/429) stops the run unmarked.
+- **One shared open-ladder helper:** the database open-ladder is copied four
+  times; make one.
+- **Task 8 writes NEW 3.10 card starting balances as TRANSFER_OUT even under
+  noOpeningFile**; the rewrite respects that setting, the first write does not.
+- **Not taken:** pairing money leaving a card (3.10 takes card TRANSFER_OUT, so
+  it could now be half of a pair; the detector still never pairs one);
+  `findTransferMatchCandidates`, `saveTransferPair`, alternative assets.
+
 ## Reference: name mismatches between the database, the REST API, and the SDK
 
 Every one of these cost a diagnostic cycle against the live instance on

@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Wealthfolio's own link, on every version the companion supports.** A
+  transfer pair is linked through Wealthfolio's own link (the companion's sync
+  and Telegram's Link on 3.8 and newer, the app on 3.9 and newer), so both rows
+  keep their ids, their categories and their place in the change log. A pair
+  whose rows are not already exactly its two transfer legs (a leg stored as
+  ordinary money, one carrying an asset, a held transfer, another note, amount
+  or day) is re-created as before. So is a pair Wealthfolio refuses to link,
+  unless one of the rows is already half of another transfer: that is refused
+  with "One of these is already half of another transfer — nothing was
+  changed", because re-creating it would delete the other pair's partner. On
+  3.8 and 3.9 a pair Wealthfolio says is already linked to each other is kept
+  as it is. Undoing a link unlinks it the same way, then makes both rows
+  ordinary money in or out.
+- **The app reads Wealthfolio's own facts (Wealthfolio 3.9 and newer).** Link,
+  Remove for good… and Undo ask Wealthfolio whether a row is half of a linked
+  transfer: they no longer refuse an unlinked transfer as "may be linked", and
+  never offer Remove on a linked one. A transaction's story in the app names
+  its category, who filed it, and the other half of its transfer, as `/why`
+  does. On Wealthfolio 3.8 the app works exactly as before.
+- **A card's bookkeeping is a transfer out (Wealthfolio 3.10 and newer).** The
+  sync writes a credit card's opening debt, balance corrections and held
+  transfers as Transfer Out, which Wealthfolio's Spending page leaves out on
+  its own, with no category needed. It does so only while the companion has
+  published a fresh Wealthfolio version (the add-on trusts it for two days);
+  otherwise it keeps writing a withdrawal. The companion also rewrites the
+  card rows already there, once: it waits for a live database read and for the
+  1.62 add-on, clears the phantom `$CASH` asset older withdrawals carry, leaves
+  rows in a transfer group, rows you split or filed yourself, rows whose
+  account has no opening-balance file, and any row Wealthfolio refuses twice,
+  and says so in the change log.
+
+### Changed
+- Built against add-on SDK 3.9.0. It still installs on Wealthfolio 3.8.
+- **Updating asks for new permissions.** Wealthfolio's Update button refuses an
+  update that adds permissions. Install 1.62.0 over the installed add-on with
+  Install from File (don't remove it first) and approve: linking and unlinking
+  transfers, reading how Wealthfolio files and links each transaction, and your
+  spending categories' names. Deploy the add-on before or together with the
+  companion: the one-time rewrites wait for the 1.62 add-on.
+
+### Fixed
+- The app's sync no longer re-links, on its next run, a pair whose group id
+  Wealthfolio chose itself.
+- A transfer the app's sync unlinked but could not retype is retried at its
+  next run instead of being forgotten.
+
 ## [1.61.0] - 2026-10-14
 
 ### Added
