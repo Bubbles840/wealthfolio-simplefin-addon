@@ -182,14 +182,16 @@ Before or right after you upgrade:
 update that does. Install 1.62.0 over the installed add-on with **Install from
 File**, without removing the old one first, and approve them: linking and
 unlinking transfers, reading how Wealthfolio files and links each transaction,
-and your spending categories' names. Your settings stay.
+your spending categories' names, and making, running and deleting the one-off
+rule that files a payback from the app. Your settings stay.
 
 Upload the add-on zip before the companion, or together with it. The
 companion's two one-time passes, the date repair (see "Date repair" below) and
 the card rewrite above, wait for the 1.62 add-on when the companion can see
 the installed add-on; when it can't, they run at once. Then reload any browser
-tab still running 1.61: until it is reloaded it keeps writing bare dates, and
-a card's bookkeeping as withdrawals.
+tab still running 1.61: until it is reloaded it keeps writing bare dates,
+writes a card's bookkeeping as withdrawals, and turns a payback back into a
+deposit.
 
 ### Adding or removing accounts later
 
