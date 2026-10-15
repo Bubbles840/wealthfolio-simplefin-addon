@@ -705,6 +705,17 @@ describe('formatDailySpendingDigest', () => {
     expect(text).toContain('Off budget:');
   });
 
+  it('counts only the charges, not the refunds, and lets a net-negative Uncategorized through to the headline (1.62)', () => {
+    // Three lines in the bucket: two charges and a refund that nets the total
+    // to -$5. Wealthfolio subtracts it, so the headline does too.
+    const text = formatDailySpendingDigest(
+      [{ name: 'Groceries', monthSpent: 550, weekSpent: 50, budget: 1000 }],
+      period, GLYPHS, 'rollup', true, { count: 2, total: -5 },
+    );
+    expect(text).not.toContain('with no category');
+    expect(text).toContain('💰 $455 left this month');
+  });
+
   it('counts uncategorized spending and lists it separately', () => {
     // Wealthfolio shows an "Uncategorized" bucket and counts it against the
     // month; every reader here is per-category, so this spending could never

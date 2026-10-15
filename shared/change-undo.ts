@@ -14,6 +14,7 @@
  * Every plan puts its override steps FIRST: an override left behind by a
  * reversal that then failed is harmless, and the failure is reported.
  */
+import { bankDayInstant } from './bank-day.js';
 import { BUDGET_TAXONOMY, DEFAULT_PERIOD_KEY, isClearedDefault, type BudgetTarget } from './budget-suggest.js';
 import { changeMoney, type ChangeEntry } from './change-entries.js';
 import type { ChangeLogItem } from './change-log.js';
@@ -537,7 +538,8 @@ export function planChangeUndo(
           {
             do: 'import',
             row: {
-              accountId, sourceSystem: 'simplefin', activityType, date, symbol: `$CASH-${currency}`,
+              // A recorded BARE day is written at noon UTC like any bank day (the timestamp it was recorded as is put back as it was).
+              accountId, sourceSystem: 'simplefin', activityType, date: bankDayInstant(date), symbol: `$CASH-${currency}`,
               amount: Math.abs(amountCents) / 100, fee: 0, currency, comment, isValid: true, isDraft: false,
             },
           },
@@ -567,7 +569,7 @@ export function planChangeUndo(
         steps: [{
           do: 'import',
           row: {
-            accountId, sourceSystem: 'simplefin', activityType, date, symbol: `$CASH-${currency}`,
+            accountId, sourceSystem: 'simplefin', activityType, date: bankDayInstant(date), symbol: `$CASH-${currency}`,
             amount: Math.abs(amountCents) / 100, currency, comment, isValid: true, isDraft: false,
           },
         }],
@@ -588,7 +590,7 @@ export function planChangeUndo(
         op, needsSync: false, rowAfter: row.id,
         steps: [{
           do: 'update',
-          write: { id: row.id, accountId: row.accountId, activityType: toType, activityDate: toDate, amount: Math.abs(toCents) / 100, currency, comment: row.comment },
+          write: { id: row.id, accountId: row.accountId, activityType: toType, activityDate: bankDayInstant(toDate), amount: Math.abs(toCents) / 100, currency, comment: row.comment },
         }],
         done: op === 'undo'
           ? "Undone — the starting balance is back as it was, so the account may no longer match the bank's balance."
@@ -696,7 +698,7 @@ export function planChangeUndo(
         op, needsSync: false, rowAfter: row.id, done: 'Undone — the label is off, and stays off.',
         steps: [
           { do: 'set-tx', txKey: key, flag: 'noAmazonLabel', label: labelOf(entry) },
-          { do: 'update', write: { id: row.id, accountId: row.accountId, activityType: row.type, activityDate: row.date, amount: row.absCents / 100, currency, comment: beforeNote } },
+          { do: 'update', write: { id: row.id, accountId: row.accountId, activityType: row.type, activityDate: bankDayInstant(row.date), amount: row.absCents / 100, currency, comment: beforeNote } },
         ],
       });
     }
@@ -721,7 +723,7 @@ export function planChangeUndo(
         op, needsSync: false, rowAfter: row.id, done: 'Undone — the note is off, and stays off.',
         steps: [
           { do: 'set-tx', txKey: key, flag: 'noVenmoNote', label: labelOf(entry) },
-          { do: 'update', write: { id: row.id, accountId: row.accountId, activityType: row.type, activityDate: row.date, amount: row.absCents / 100, currency, comment: beforeNote } },
+          { do: 'update', write: { id: row.id, accountId: row.accountId, activityType: row.type, activityDate: bankDayInstant(row.date), amount: row.absCents / 100, currency, comment: beforeNote } },
         ],
       });
     }

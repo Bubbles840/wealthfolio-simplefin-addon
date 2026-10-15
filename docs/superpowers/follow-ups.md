@@ -1141,6 +1141,92 @@ Designed overnight under Nick's standing instruction; approved by Nick on
   - Inbox: the unmount test cannot fail under React 19 (setState after
     unmount is silent), so it pins "no further reads or writes after unmount".
 
+## 16. Line up with Wealthfolio (2026-10-14, plan `2026-10-14-line-up.md`)
+
+- **One definition of spending** (`shared/wf-spending.ts`), Wealthfolio's,
+  read by every report figure and by the audit's two sides. What it does not
+  model:
+  - **Currency conversion.** Wealthfolio converts a foreign-currency row to
+    the base currency at the period's end; the report sums it as stored. The
+    audit names such rows as their own reason, capped at the foreign rows'
+    own absolute total, so a rate above 2 leaves an honest unexplained
+    excess. Converting them is open.
+  - Split lines that don't add up to the row (Wealthfolio's editor keeps
+    them adding up).
+- **The "identical on 3.8, 3.9 and 3.10" claim was wrong** and the header of
+  `wf-spending.ts` now says so. The definition is 3.10's: 3.8 and 3.9 treat a
+  blank type override as a type (the row then counts as nothing there), and
+  exclusions exist only from 3.9.
+- **The CLI fallback prints control characters in caret form** (display
+  only; the stored text is unchanged).
+- **About 11 `readSpendLines` per sync.** Each reader makes its own read;
+  they could share one 24-month read. In the CLI fallback every read is
+  logged, so the log volume grows with them.
+- **The cube's accounts are still the mapped ones.** A spending account the
+  add-on doesn't map is counted by Wealthfolio and not by the cube: the
+  audit names it ("On accounts the add-on doesn't sync") and the tripwire
+  sets that amount aside, so it is not a warning (the covered difference is
+  compared). The digest's own figures cover every spending account.
+- **Dismissed charges, and charges whose transfer's other half is on its
+  way, now count** in every figure (1.23.0 left dismissed ones out):
+  Wealthfolio counts both, and a report that didn't would trip the wire
+  every day. Both stay off the needs-a-category list.
+- **On 3.8 the bookkeeping pass does nothing** (no excluded categories), so
+  in-transit placeholders and corrections that are spending to Wealthfolio
+  count on both sides there. An income-bucket placeholder (money in) can't
+  take a spending category: Wealthfolio's Income page still counts it. The
+  pass files nothing it can't read live, and has no Undo.
+- **Dates.** Noon UTC (`bankDayInstant`) is the bank's day in UTC-12 to
+  UTC+11. UTC+12 to +14 land a day late, a regression from 1.61, and the
+  repair leaves their already-correct rows alone (it moves a row only when
+  noon UTC on its day is that day in Wealthfolio's timezone). Writing those
+  zones' new rows correctly is open. A write replayed from what the change
+  log recorded: Undo of a removed duplicate or a removed row replays a
+  recorded payload, which has been noon since 1.62; re-importing a starting
+  balance or a correction, and moving a starting balance back, replay a
+  recorded day, and wrap a bare one in `bankDayInstant`, so they write noon
+  too (a recorded timestamp is put back as it was).
+  `companion/tools/audit-headline.mjs` still matches only T00:00:00 rows.
+- **The date repair** resumes on the next sync rather than being re-runnable
+  from the audit's tools (the spec's wording); delete the `date_repair_done`
+  secret to run it again. It leaves rows at 00:00 UTC on purpose or by
+  necessity: a linked leg (Wealthfolio copies an updated leg's date onto its
+  partner); a row with a type override, or whose stored type differs from the
+  search's (a blank override on 3.8/3.9; Wealthfolio's search shows only the
+  effective type, and an update writes the type it is sent); rows in accounts
+  the add-on doesn't map; rows Wealthfolio refuses twice; rows the database
+  read doesn't know yet (newer than the read: never counted as retyped, the
+  repair isn't done while any is left); and rows written at midnight after it
+  finished (a 1.61 browser tab, a replay). It reads the database LIVE only
+  (`openLiveDatabase`), also before its verifying sweep, so it waits
+  ("Date repair waits: the database can only be read as a snapshot") while the
+  database can't be read live, and it waits for the 1.62 add-on when the
+  companion can see it.
+- **Tripwire timing.** The cube is built moments before Wealthfolio is asked
+  for its figure; a write in between shows as a difference until the next
+  sync. The cube's months follow the UTC month of the sync; the digest and
+  the audit, the companion's local month (unchanged).
+- **Left as they were:** `countRulePatternMatches` (a rule preview's count)
+  keeps its SQL sign; `companion/tools/audit-month.mjs` and
+  `audit-headline.mjs` keep their own copies; the ledger audit's idle-refund
+  check still reads the stored type.
+- **With the platform branch (U4):** on 3.10 a card's bookkeeping rows become
+  TRANSFER_OUT, which Wealthfolio ignores; the pass reads the bucket, so it
+  files none of them, and the two compose. Rows filed on 3.9 keep their
+  filing after U4's rewrite (harmless), and U2's link in place leaves the held
+  placeholder to re-creation.
+- **The Budget tab's "✓ matches the ledger" check** now compares the cube
+  with the same spending lines. It checks assembly only; the tripwire is the
+  independent check now.
+- **The cube's spending series are strict** (a failed read fails the publish
+  and the previous cube stays), and the tripwire reads a cube only if its
+  `asOf` is from the same sync run; otherwise it says nothing.
+- **Budgets** (both readers) keep only `target_type='category'` targets in
+  `spending_categories`, in categories not excluded from spending, as
+  upstream's budget page does (budget/service.rs:250-251 at v3.10.0). A
+  sub-category target under an excluded top-level category is still summed
+  into its top.
+
 ## Reference: name mismatches between the database, the REST API, and the SDK
 
 Every one of these cost a diagnostic cycle against the live instance on

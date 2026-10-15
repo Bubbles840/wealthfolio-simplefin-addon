@@ -195,12 +195,19 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
       : `Invalid data: ${activityType} activities are not supported for credit card accounts`;
   }
 
+  /** A written date as both real adapters read it back: the stored
+   *  instant's UTC day (`toIsoDate`), so a noon write reads as its bank day. */
+  function readBackDay(activityDate: string): string {
+    const d = new Date(activityDate);
+    return Number.isNaN(d.getTime()) ? activityDate : d.toISOString().slice(0, 10);
+  }
+
   function toHostActivity(id: string, w: ActivityWrite): HostActivity {
     return {
       id,
       accountId: w.accountId,
       activityType: w.activityType,
-      date: w.activityDate,
+      date: readBackDay(w.activityDate),
       amount: w.amount ?? null,
       fee: w.fee ?? null,
       comment: w.comment ?? null,
@@ -386,7 +393,7 @@ export function createFakeHost(seed: FakeHostSeed = {}): FakeHost {
         }
         updated.push(withNotes(row));
         if (counterpart) {
-          counterpart.date = w.activityDate;
+          counterpart.date = readBackDay(w.activityDate);
           counterpart.comment = w.comment ?? null;
           if (w.amount !== undefined) counterpart.amount = w.amount;
           updated.push(withNotes({ ...counterpart }));

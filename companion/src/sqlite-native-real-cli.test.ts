@@ -22,7 +22,7 @@ vi.mock('node:sqlite', () => ({
   },
 }));
 
-import { getNativeBudgetSpend, getNativeSpendingHistoryStart, getNativeSpendMatrix, getNativeUncategorizedSpending } from './sqlite-native.js';
+import { getNativeBudgetSpend, getNativeSpendingHistoryStart, getNativeSpendMatrix, getNativeUncategorizedSpending, readSpendLines } from './sqlite-native.js';
 
 let hasSqlite3 = true;
 try { execFileSync('sqlite3', ['-version'], { stdio: 'ignore' }); } catch { hasSqlite3 = false; }
@@ -43,13 +43,15 @@ function database(rows: string): string {
   const db = new real.DatabaseSync(path);
   db.exec(`
     CREATE TABLE taxonomy_categories (id TEXT PRIMARY KEY, name TEXT, parent_id TEXT, taxonomy_id TEXT DEFAULT 'spending_categories', icon TEXT, color TEXT, sort_order INTEGER);
-    CREATE TABLE activities (id TEXT PRIMARY KEY, amount TEXT, activity_date TEXT, activity_type TEXT, notes TEXT, account_id TEXT DEFAULT 'acct-cash', subtype TEXT, currency TEXT, source_group_id TEXT);
-    CREATE TABLE activity_taxonomy_assignments (activity_id TEXT, category_id TEXT, taxonomy_id TEXT, source TEXT);
-    CREATE TABLE budget_targets (category_id TEXT, amount TEXT, period_key TEXT, updated_at TEXT);
-    CREATE TABLE accounts (id TEXT PRIMARY KEY, name TEXT, account_type TEXT);
+    CREATE TABLE activities (id TEXT PRIMARY KEY, amount TEXT, activity_date TEXT, activity_type TEXT, notes TEXT, account_id TEXT DEFAULT 'acct-cash', subtype TEXT, currency TEXT, source_group_id TEXT, activity_type_override TEXT);
+    CREATE TABLE activity_taxonomy_assignments (activity_id TEXT, category_id TEXT, taxonomy_id TEXT DEFAULT 'spending_categories', source TEXT, id TEXT, created_at TEXT);
+    CREATE TABLE spending_activity_splits (id TEXT, activity_id TEXT, taxonomy_id TEXT, category_id TEXT, amount TEXT, sort_order INTEGER);
+    CREATE TABLE budget_targets (category_id TEXT, amount TEXT, period_key TEXT, updated_at TEXT, target_type TEXT DEFAULT 'category', taxonomy_id TEXT DEFAULT 'spending_categories');
+    CREATE TABLE accounts (id TEXT PRIMARY KEY, name TEXT, account_type TEXT, is_archived INTEGER DEFAULT 0);
     CREATE TABLE budget_groups (id TEXT PRIMARY KEY, name TEXT, key TEXT, color TEXT, icon TEXT, sort_order INTEGER);
     CREATE TABLE budget_group_assignments (id TEXT PRIMARY KEY, group_id TEXT, taxonomy_id TEXT, category_id TEXT);
     CREATE TABLE app_settings (setting_key TEXT PRIMARY KEY, setting_value TEXT);
+    INSERT INTO app_settings VALUES ('timezone', 'UTC');
     INSERT INTO app_settings VALUES ('spending.enabled', 'true');
     INSERT INTO app_settings VALUES ('spending.account_ids', '["acct-cash","acct-card","wf-a","wf-cash"]');
     INSERT INTO accounts (id, name, account_type) VALUES ('acct-cash', 'Spend', 'CASH');
@@ -62,7 +64,7 @@ function database(rows: string): string {
 }
 
 describe.skipIf(!hasSqlite3)('the sqlite3 CLI fallback, for real', () => {
-  it('getNativeSpendMatrix keeps the taxonomy filter and the GROUP BY: one row per category, transfers and income out', () => {
+  it('getNativeSpendMatrix: one row per category, a transfer-named category counted, an income filing out', () => {
     const path = database(`
       INSERT INTO taxonomy_categories (id, name, parent_id, taxonomy_id) VALUES
         ('cat-food', 'Food', NULL, 'spending_categories'), ('cat-fun', 'Fun', 'cat-food', 'spending_categories'),
@@ -74,19 +76,23 @@ describe.skipIf(!hasSqlite3)('the sqlite3 CLI fallback, for real', () => {
         ('gro', '30', '2026-08-05', 'WITHDRAWAL', 'c', 'acct-card'),
         ('xfer', '700', '2026-08-07', 'WITHDRAWAL', 'e', 'acct-cash'),
         ('reimb', '20', '2026-08-08', 'WITHDRAWAL', 'f', 'acct-cash');
-      INSERT INTO activity_taxonomy_assignments VALUES
+      INSERT INTO activity_taxonomy_assignments (activity_id, category_id, taxonomy_id, source) VALUES
         ('own', 'cat-food', 'spending_categories', 'manual'), ('sub', 'cat-fun', 'spending_categories', 'manual'),
         ('gro', 'cat-gro', 'spending_categories', 'manual'), ('xfer', 'cat-tr', 'spending_categories', 'manual'),
         ('reimb', 'inc', 'income_sources', 'manual');
     `);
     const matrix = getNativeSpendMatrix(path, '2026-07-01', '2026-10-01')
       .sort((a, b) => a.category.localeCompare(b.category));
+    // A withdrawal filed under "Transfers" is spending to Wealthfolio, so to
+    // the report (1.62); one filed only under an income category is
+    // uncategorized spending, not a category's.
     expect(matrix).toEqual([
       { month: '2026-08', category: 'Food', accountId: 'acct-cash', amount: 150 },
       { month: '2026-08', category: 'Groceries', accountId: 'acct-card', amount: 30 },
+      { month: '2026-08', category: 'Transfers', accountId: 'acct-cash', amount: 700 },
     ]);
     // The CLI answered: every node:sqlite open threw and said so.
-    expect(errors).toHaveBeenCalledWith(expect.stringContaining('node:sqlite spend matrix error'), expect.anything());
+    expect(errors).toHaveBeenCalledWith(expect.stringContaining('node:sqlite spending rows error'), expect.anything());
     expect(errors).not.toHaveBeenCalledWith(expect.stringContaining('Failed to read native sqlite'), expect.anything());
   });
 
@@ -124,19 +130,47 @@ describe.skipIf(!hasSqlite3)('the sqlite3 CLI fallback, for real', () => {
         ('xfer', '700', '2026-08-07', 'WITHDRAWAL', 'e', 'acct-cash'),
         ('pay', '2000', '2026-08-08', 'DEPOSIT', 'f', 'acct-cash'),
         ('first', '5', '2026-06-20T04:00:00+00:00', 'DEPOSIT', 'g', 'acct-card');
-      INSERT INTO activity_taxonomy_assignments VALUES
+      INSERT INTO activity_taxonomy_assignments (activity_id, category_id, taxonomy_id, source) VALUES
         ('own', 'cat-food', 'spending_categories', 'manual'), ('sub', 'cat-fun', 'spending_categories', 'manual'),
         ('gro', 'cat-gro', 'spending_categories', 'manual'), ('else', 'cat-gro', 'spending_categories', 'manual'),
         ('xfer', 'cat-tr', 'spending_categories', 'manual'), ('pay', 'inc', 'income_sources', 'manual');
+      INSERT INTO app_settings VALUES ('spending.excluded_category_ids', '["cat-fun"]');
     `);
-    const scope = { spendingAccountIds: ['acct-cash', 'acct-card'], excludedCategoryIds: ['cat-fun'], categoryParents: { 'cat-fun': 'cat-food' } as Record<string, string | null> };
-    // The excluded subcategory, the non-spending account, the transfer-named
-    // category and the income row are all absent; nothing is merged into one row.
-    expect(getNativeBudgetSpend(path, '2026-07-01', '2026-10-01', scope).sort((a, b) => a.category.localeCompare(b.category))).toEqual([
+    // The excluded subcategory, the non-spending account and the income row
+    // are all absent; nothing is merged into one row.
+    expect(getNativeBudgetSpend(path, '2026-07-01', '2026-10-01').sort((a, b) => a.category.localeCompare(b.category))).toEqual([
       { month: '2026-08', category: 'Food', accountId: 'acct-cash', amount: 50 },
       { month: '2026-08', category: 'Groceries', accountId: 'acct-card', amount: 30 },
+      { month: '2026-08', category: 'Transfers', accountId: 'acct-cash', amount: 700 },
     ]);
     expect(getNativeSpendingHistoryStart(path, ['acct-cash', 'acct-card'])).toBe('2026-06-20');
+    expect(errors).not.toHaveBeenCalledWith(expect.stringContaining('Failed to read native sqlite'), expect.anything());
+  });
+
+  it('readSpendLines reads the override, the earliest filing, split lines and a note with a newline, each row on its line', () => {
+    const path = database(`
+      INSERT INTO accounts (id, name, account_type) VALUES ('acct-odd', 'Joe|s Card', 'CREDIT_CARD');
+      UPDATE app_settings SET setting_value = '["acct-cash","acct-card","acct-odd"]' WHERE setting_key = 'spending.account_ids';
+      INSERT INTO taxonomy_categories (id, name, parent_id, taxonomy_id) VALUES
+        ('cat-food', 'Food', NULL, 'spending_categories'), ('cat-fun', 'Fun', 'cat-food', 'spending_categories'), ('cat-gro', 'Groceries', NULL, 'spending_categories');
+      INSERT INTO activities (id, amount, activity_date, activity_type, notes, account_id, activity_type_override) VALUES
+        ('twice', '40', '2026-08-03T12:00:00+00:00', 'WITHDRAWAL', 'LINE ONE' || char(10) || 'LINE TWO · TRN-1', 'acct-odd', NULL),
+        ('split', '100', '2026-08-04T12:00:00+00:00', 'WITHDRAWAL', 'COSTCO · TRN-2', 'acct-cash', NULL),
+        ('override', '25', '2026-08-05T12:00:00+00:00', 'DEPOSIT', 'BACKWARDS · TRN-3', 'acct-cash', 'WITHDRAWAL');
+      INSERT INTO activity_taxonomy_assignments (activity_id, category_id, taxonomy_id, source, id, created_at) VALUES
+        ('twice', 'cat-gro', 'spending_categories', 'rule', 'b', '2026-08-04T00:00:00Z'),
+        ('twice', 'cat-fun', 'spending_categories', 'manual', 'a', '2026-08-03T00:00:00Z');
+      INSERT INTO spending_activity_splits VALUES ('s1', 'split', 'spending_categories', 'cat-food', '70', 0), ('s2', 'split', 'spending_categories', 'cat-gro', '30', 1);
+    `);
+    const { lines, settings } = readSpendLines(path, '2026-08-01', '2026-09-01');
+    expect(lines.map((l) => [l.row.id, l.cents, l.allocations.map((a) => [a.categoryId, a.cents])])).toEqual([
+      ['twice', 4000, [['cat-fun', 4000]]],
+      ['split', 10000, [['cat-food', 7000], ['cat-gro', 3000]]],
+      ['override', 2500, []],
+    ]);
+    expect(lines[0].row).toMatchObject({ accountName: 'Joe|s Card', notes: 'LINE ONE LINE TWO · TRN-1' });
+    expect(settings).toMatchObject({ timezone: 'UTC', spendingAccountIds: ['acct-cash', 'acct-card', 'acct-odd'], categoryNames: { 'cat-fun': 'Fun' } });
+    expect(errors).toHaveBeenCalledWith(expect.stringContaining('node:sqlite spending rows error'), expect.anything());
     expect(errors).not.toHaveBeenCalledWith(expect.stringContaining('Failed to read native sqlite'), expect.anything());
   });
 });

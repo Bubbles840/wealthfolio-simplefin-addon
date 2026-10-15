@@ -8,7 +8,6 @@ const deps = (over: Partial<PoolReportDeps> = {}): PoolReportDeps => ({
   getSecret: vi.fn(async () => CFG),
   spendingBetween: vi.fn(() => ({ Groceries: 3000, Dining: 1400 })),
   uncategorizedTotal: vi.fn(() => ({ count: 2, total: 100 })),
-  dismissedIds: vi.fn(async () => ['dismissed-1']),
   accountTypes: vi.fn(async () => ({ 'sfin-1': 'CASH', 'sfin-2': 'CREDIT_CARD', 'sfin-3': 'SECURITIES' })),
   accountBalances: vi.fn(async () => ({
     'sfin-1': { balance: 8000 },
@@ -32,8 +31,8 @@ describe('readPoolStatus', () => {
     expect(s?.spentCents).toBe(450_000);
     expect(s?.phase).toBe('active');
     expect(d.spendingBetween).toHaveBeenCalledWith('2026-08-25', '2026-10-02');
-    // Dismissed rows are excluded from the burn, matching the daily digest.
-    expect(d.uncategorizedTotal).toHaveBeenCalledWith('2026-08-25', '2026-10-02', ['dismissed-1']);
+    // Every uncategorized charge burns, a dismissed one too: Wealthfolio counts it (1.62).
+    expect(d.uncategorizedTotal).toHaveBeenCalledWith('2026-08-25', '2026-10-02');
   });
 
   it('stops counting spend at the day after the end date once the pool is over', async () => {

@@ -25,6 +25,7 @@ import {
   type BaselineState, type ChangeAccount, type ChangeDraft, type ChangeEntry, type ChangeLogSink, type LinkLegFacts,
 } from './change-entries.js';
 import { emptySyncOverrides, hasAccountOverride, hasTxOverride } from './sync-overrides.js';
+import { bankDayInstant } from './bank-day.js';
 
 /**
  * A datable timestamp for a SimpleFin transaction: `posted` when present, else
@@ -877,7 +878,7 @@ export async function applyBaselineFix(
         id: baseline.id,
         accountId: wfAccountId,
         activityType: shape.activityType,
-        activityDate: baseline.date,
+        activityDate: bankDayInstant(baseline.date),
         // No symbol, as before: the stored asset is left as it is, and a card
         // baseline's transfer leg must never gain one (it would become the
         // phantom "$CASH" security and stop booking cash).
@@ -960,7 +961,7 @@ async function keepStartingBalanceOldest(
       id: sb.id,
       accountId: wfAccountId,
       activityType,
-      activityDate: nextDate,
+      activityDate: bankDayInstant(nextDate),
       // Only a non-transfer row that is being re-shaped states its cash symbol.
       // A TRANSFER leg carrying one becomes the phantom "$CASH" security and
       // stops moving cash, and a date-only move has no reason to touch the
@@ -1203,7 +1204,7 @@ export function planExternalMarkerStamp(rows: ReadonlyArray<StoredRow>, currency
       id: row.wfId,
       accountId: row.wfAccountId,
       activityType: row.type,
-      activityDate: row.date,
+      activityDate: bankDayInstant(row.date),
       amount: row.absCents / 100,
       currency,
       comment: note,
@@ -1250,7 +1251,7 @@ export function planAmazonLateLabels(
       id: row.wfId,
       accountId: row.wfAccountId,
       activityType: row.type,
-      activityDate: row.date,
+      activityDate: bankDayInstant(row.date),
       amount: row.absCents / 100,
       currency,
       comment: `${hit.enriched} · ${row.txId}`,
@@ -1315,7 +1316,7 @@ export function planLegacyPlaceholderRewrite(
       id: row.wfId,
       accountId: row.wfAccountId,
       activityType: outflowType,
-      activityDate: row.date,
+      activityDate: bankDayInstant(row.date),
       amount: row.feeCents / 100,
       fee: 0,
       currency,
@@ -1442,9 +1443,9 @@ export function accountNameWords(name: string, orgName?: string): string[] {
  * `crates/spending/src/activity_classification.rs`, and 3.8 left no
  * cash-moving outflow type that isn't spending), so Wealthfolio's own spending
  * page shows a placeholder as an uncategorised outflow until its counterpart
- * posts and the pair links. The addon's readers exclude the sync's bookkeeping
- * rows by their note marker instead (see `spendingWhere` in the companion), so
- * the Budget tab and digests never count them. On a card TRANSFER_OUT is
+ * posts and the pair links. Since 1.62 the addon's readers count what
+ * Wealthfolio counts; the sync files its own unfiled bookkeeping rows under an
+ * excluded "Sync bookkeeping" category (3.9+) to keep them out of both. On a card TRANSFER_OUT is
  * Ignored outright. Legacy fee-side rows are restated by
  * `planLegacyPlaceholderRewrite` on the next sync.
  *
@@ -1583,7 +1584,7 @@ export async function importAdjustmentActivity(
     accountId: wfAccountId,
     sourceSystem: 'simplefin',
     activityType,
-    date: today,
+    date: bankDayInstant(today),
     symbol: `$CASH-${currency}`,
     amount: fieldAmount,
     fee,
@@ -1810,7 +1811,7 @@ function recreatePayload(row: StoredRow, currency: string): ActivityWrite {
   return {
     accountId: row.wfAccountId,
     activityType: row.type,
-    activityDate: row.date,
+    activityDate: bankDayInstant(row.date),
     ...(isTransferType(row.type) ? {} : { symbol: { symbol: `$CASH-${currency}` } }),
     amount: row.absCents / 100,
     ...(row.feeCents ? { fee: row.feeCents / 100 } : {}),
@@ -3069,7 +3070,7 @@ async function runSyncPass(
                   actor: 'auto',
                   activityId: plugId,
                   amountCents: driftCents,
-                  date: plug.date,
+                  date: plug.date.slice(0, 10),
                   activityType: plug.activityType,
                   comment: plug.comment,
                 }));
@@ -3186,7 +3187,7 @@ async function runSyncPass(
     const toActivityCreate = (t: FeedTx): ActivityWrite => ({
       accountId: t.wfAccountId,
       activityType: t.type,
-      activityDate: t.date,
+      activityDate: bankDayInstant(t.date),
       // Transfer legs carry NO asset so they land as real cash and stay pairable
       // (see isTransferType's note). Everything else resolves the reserved cash
       // asset by symbol — the /activities/bulk endpoint deserializes `symbol` as
@@ -3585,7 +3586,7 @@ async function runSyncPass(
           accountId: wfAccountId,
           sourceSystem: 'simplefin',
           activityType: shape.activityType,
-          date: dayBeforeDate,
+          date: bankDayInstant(dayBeforeDate),
           symbol: `$CASH-${sfAccount.currency}`,
           amount: shape.amount,
           currency: sfAccount.currency,
@@ -3602,7 +3603,7 @@ async function runSyncPass(
               account: accountRef,
               activityId: sbId,
               amountCents: Math.round(starting * 100),
-              date: correction.date,
+              date: dayBeforeDate,
               activityType: correction.activityType,
               comment: correction.comment,
             }));
@@ -3678,7 +3679,7 @@ async function runSyncPass(
               accountId: p.wfAccountId,
               sourceSystem: 'simplefin',
               activityType: shape.activityType,
-              date: p.date,
+              date: bankDayInstant(p.date),
               symbol: `$CASH-${p.currency}`,
               amount: shape.amount,
               currency: p.currency,
@@ -3698,7 +3699,7 @@ async function runSyncPass(
                 },
                 activityId: sbId,
                 amountCents: Math.round(starting * 100),
-                date: correction.date,
+                date: p.date,
                 activityType: correction.activityType,
                 comment: correction.comment,
               }));
@@ -4096,7 +4097,7 @@ async function runSyncPass(
     relinkCreates.push({
       accountId: row.wfAccountId,
       activityType: row.type,
-      activityDate: row.date,
+      activityDate: bankDayInstant(row.date),
       amount: row.absCents / 100,
       currency: row.currency,
       comment: row.comment ?? `${descByKey.get(key) ?? ''} · ${row.txId}`,

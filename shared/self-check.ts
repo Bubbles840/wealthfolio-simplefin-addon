@@ -55,7 +55,10 @@ export interface SelfCheckFinding {
      *  the ledger audit's own `card-balance` check). */
     | 'balance-drift'
     /** A finding from `shared/ledger-checks.ts`: the row-level audit. */
-    | 'ledger';
+    | 'ledger'
+    /** 1.62: the report's month total and Wealthfolio's differ by more than
+     *  a cent (shared/spending-tripwire.ts). */
+    | 'spending-differs';
   severity: SelfCheckSeverity;
   /** One line, already user-facing. No Markdown: the caller escapes and
    *  decorates, because the same finding is rendered in two places. */
@@ -317,7 +320,9 @@ export function escapeFindingText(text: string): string {
  * with them: it is not a chore, it is "nothing below can be trusted".
  */
 export function printsInFull(f: SelfCheckFinding): boolean {
-  return f.severity === 'problem' || f.kind === 'signals-unreadable';
+  // The tripwire too (1.62): the report disagreeing with Wealthfolio is
+  // never folded into a count — the reader must see it, in Brief as in Full.
+  return f.severity === 'problem' || f.kind === 'signals-unreadable' || f.kind === 'spending-differs';
 }
 
 /**

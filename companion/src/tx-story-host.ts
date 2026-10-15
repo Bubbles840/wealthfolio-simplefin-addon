@@ -219,6 +219,7 @@ export async function companionTxStory(readers: StoryReaders, requestedId: strin
         }
       }
       const filer = resolveFiler({
+        activityId,
         source: a.source,
         categoryId: a.categoryId,
         categoryName: a.categoryName,

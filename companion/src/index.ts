@@ -12,12 +12,17 @@ import {
   type ReportEdition, type ReportKind, type ReportStore,
 } from '../../shared/reports-archive.js';
 import { fileCardOpeningDebts } from './opening-balance-category.js';
+import { runDateRepair, type DateRepairDeps } from './date-repair.js';
+import { liveOverriddenActivityIds, liveStoredActivityTypes, liveTimeZone } from './date-repair-reads.js';
+import { BOOKKEEPING_FILED_SECRET_KEY, fileSyncBookkeeping, withoutSyncBookkeeping } from './bookkeeping-category.js';
+import { parseFiledState } from '../../shared/bookkeeping-filing.js';
 import cron from 'node-cron';
 import { readFileSync, existsSync } from 'fs';
 import { runSyncCore, descriptionFromComment, txIdFromComment } from '../../shared/sync-core.js';
 import type { SyncResult } from '../../shared/sync-core.js';
 import { RestSyncHost, RestSyncStore } from './rest-host.js';
-import { WealthfolioClient } from './wealthfolio.js';
+import { WealthfolioClient, type ActivitySearchItem } from './wealthfolio.js';
+import type { DateRepairRow } from '../../shared/date-repair.js';
 import { resolveDigestRows, resolveReportDetail, shortDate, shortDateTime, formatDollars } from '../../shared/telegram.js';
 import { sendTelegramMessage, formatDailySpendingDigest, formatMonthlyRemainingSummary, formatMonthlyWrapUp, formatSyncHealthFooter, formatLargeTransactionAlert, formatBalanceDriftAlert, formatFeedLagNotice, formatStuckTransferAlert, formatDuplicatePruneAlert, formatImportNotice, formatRefusedCreatesAlert, formatPoolLine, formatPoolSection, buildDismissKeyboard, dailyReportCarriesProblems, IMPORT_NOTICE_UNCATEGORIZED_CAP, escapeMarkdown, formatComingUpBlock, formatNextWeekLine, formatSubscriptionNews, parseNewsSent, pruneNewsSent, SUBSCRIPTION_NEWS_SECRET_KEY, LARGE_TX_OUTBOX_SECRET_KEY, RECATEGORIZE_ENTRY_CALLBACK } from '../../shared/telegram.js';
 import { pruneDismissals, mergeDismissals } from './dismissals.js';
@@ -68,7 +73,7 @@ import type { GlyphStyle, InlineKeyboard } from '../../shared/telegram.js';
 import type { DismissalLedger } from './dismissals.js';
 import type { SyncHealth } from '../../shared/telegram.js';
 import { SIMPLEFIN_SYNC_VERSION, COMPANION_VERSION_SECRET_KEY, INSTALLED_ADDON_VERSION_SECRET_KEY, isNewerVersion } from '../../shared/version.js';
-import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeRuleCategorizedAmazonRows, getNativeCategorizedSpending, getNativeSpendingCategories, getNativeCategoryCatalog, getNativeSubcategorySpending, getNativeUncategorizedSpendingTotal, countRulePatternMatches, getNativeSpendMatrix, getNativeIncomeByMonthAccount, getNativeUncategorizedByMonthAccount, getNativeMerchantRows, getNativeDrillRows, getNativeFeesInterestByMonth, getNativeSpendDailyTotals, getNativeValuationByMonth, getNativeIncomeCategories } from './sqlite-native.js';
+import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeRuleCategorizedAmazonRows, getNativeCategorizedSpending, getNativeSpendingCategories, getNativeCategoryCatalog, getNativeSubcategorySpending, getNativeUncategorizedSpendingTotal, countRulePatternMatches, getNativeBudgetSpend, getNativeIncomeByMonthAccount, getNativeUncategorizedByMonthAccount, getNativeMerchantRows, getNativeDrillRows, getNativeFeesInterestByMonth, getNativeSpendDailyTotals, getNativeValuationByMonth, getNativeIncomeCategories } from './sqlite-native.js';
 import { publishUncategorizedStatusForDbPath } from './uncategorized-status.js';
 import { getNativePastFilings } from './sqlite-guess.js';
 import { createCategorizeController, SPENDING_TAXONOMY_ID } from './categorize.js';
@@ -941,6 +946,8 @@ export async function sendUnmappedAccountsNotice(
  * a "Sync anyway" retry when a scheduled run was skipped (src/pages/SyncPage.tsx).
  */
 export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<SyncResult> {
+  // The checks compare the report's figure only from a cube THIS run published (M-2).
+  const runStartedAt = new Date();
   const apiUrl = process.env.WEALTHFOLIO_API_URL ?? '';
   if (!apiUrl) throw new Error('Missing WEALTHFOLIO_API_URL');
 
@@ -1022,6 +1029,14 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
     }
     log(`Done: ${result.imported} imported, ${result.skipped} skipped`);
 
+    // 1.62 (W2): once, move the rows Wealthfolio stored at 00:00 UTC to noon
+    // on the same date, so its Spending page counts them on the bank's day.
+    // Before the filings and the cube, which read the dates. Best-effort: a
+    // failure costs the repair this run, never the sync; the next sync
+    // carries on from where it stopped.
+    await runDateRepair(dateRepairDeps(wfClient, store, changeLog.run), new Date())
+      .catch((e) => log(`Date repair skipped: ${formatError(e)}`));
+
     // Record which companion build produced this run, so the Sync page can show
     // it. Best-effort: a failure here must never affect the sync.
     await wfClient
@@ -1068,6 +1083,7 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
       createCategory: (name) => wfClient.createSpendingCategory(name),
       setExcluded: (ids) => wfClient.setExcludedSpendingCategories(ids),
       appVersion: () => wfClient.getAppVersion(),
+      readExcluded: () => wfClient.getExcludedSpendingCategories(),
       assign: (activityId, categoryId) => wfClient.assignActivityCategory(activityId, SPENDING_TAXONOMY_ID, categoryId),
       log,
       record: (draft) => openingChanges.push(draft),
@@ -1075,6 +1091,29 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
     }).catch((e) => log(`Card opening balance filing skipped: ${formatError(e)}`));
     // After the catch: a filing that stopped half-way still logs what landed.
     await recordCompanionChanges(wfClient, openingChanges, changeLog.run).catch((e) => log(`Change log skipped: ${formatError(e)}`));
+
+    // 1.62 (W3): the sync's own bookkeeping rows — transfers in transit,
+    // corrections, starting balances — filed under "Sync bookkeeping", which
+    // Wealthfolio leaves out of spending (3.9+; nothing on 3.8), and taken
+    // back out once they are no longer bookkeeping. After the opening-debt
+    // filing, whose rows it then leaves alone; before the cube and the
+    // checks, which read the filings. Best-effort, like the filings above.
+    const bookkeepingChanges: ChangeDraft[] = [];
+    await fileSyncBookkeeping({
+      dbPath: wealthfolioDbPath(),
+      createCategory: (name, description) => wfClient.createSpendingCategory(name, description),
+      setExcluded: (ids) => wfClient.setExcludedSpendingCategories(ids),
+      assign: (activityId, categoryId) => wfClient.assignActivityCategory(activityId, SPENDING_TAXONOMY_ID, categoryId),
+      unassign: (activityId) => wfClient.unassignActivityCategory(activityId, SPENDING_TAXONOMY_ID),
+      appVersion: () => wfClient.getAppVersion(),
+      readExcluded: () => wfClient.getExcludedSpendingCategories(),
+      loadFiled: async () => parseFiledState(await wfClient.getAddonSecret('simplefin-sync', BOOKKEEPING_FILED_SECRET_KEY)),
+      saveFiled: (state) => wfClient.setAddonSecret('simplefin-sync', BOOKKEEPING_FILED_SECRET_KEY, JSON.stringify(state)),
+      noOpeningFile: (sfinId) => hasAccountOverride(overrides, sfinId, 'noOpeningFile'),
+      record: (draft) => bookkeepingChanges.push(draft),
+      log,
+    }).catch((e) => log(`Bookkeeping filing skipped: ${formatError(e)}`));
+    await recordCompanionChanges(wfClient, bookkeepingChanges, changeLog.run).catch((e) => log(`Change log skipped: ${formatError(e)}`));
 
     await publishUncategorizedStatusForDbPath(
       wealthfolioDbPath(),
@@ -1227,7 +1266,7 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
     // rejection or a failed write keeps the previous snapshot and never
     // touches this sync's result.
     try {
-      await publishAuditSnapshot(wfClient, wealthfolioDbPath(), new Date());
+      await publishAuditSnapshot(wfClient, wealthfolioDbPath(), new Date(), undefined, runStartedAt);
     } catch (e) {
       log(`Audit snapshot publish failed (the app's checks may be stale): ${formatError(e)}`);
     }
@@ -1262,6 +1301,34 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
   } finally {
     await checkSyncHealthAlert(wfClient).catch(() => {});
   }
+}
+
+/** One search hit as the date repair reads it. A missing `sourceGroupId` stays undefined: unknown counts as linked. */
+function repairRow(a: ActivitySearchItem): DateRepairRow {
+  return {
+    id: String(a.id), accountId: String(a.accountId ?? ''), date: String(a.date ?? ''),
+    activityType: String(a.activityType ?? ''), currency: String(a.currency ?? ''),
+    comment: a.comment ?? null, sourceGroupId: a.sourceGroupId,
+  };
+}
+
+/** The date repair's reads and writes over this companion's client and database. */
+function dateRepairDeps(wfClient: WealthfolioClient, store: RestSyncStore, run: string): DateRepairDeps {
+  return {
+    getSecret: (key) => wfClient.getAddonSecret('simplefin-sync', key),
+    setSecret: (key, value) => wfClient.setAddonSecret('simplefin-sync', key, value),
+    mappedAccountIds: async () => Object.values((await store.getAccountMapping()) ?? {}),
+    installedAddonVersion: () => readInstalledAddonVersion(wealthfolioDbPath()),
+    searchPage: async (accountId, page, pageSize) => (await wfClient.searchActivities({ page, pageSize, accountIdFilter: [accountId] })).map(repairRow),
+    searchByIds: async (ids) => (await wfClient.searchActivities({ page: 0, pageSize: ids.length, activityIdFilter: ids })).map(repairRow),
+    overriddenIds: () => liveOverriddenActivityIds(wealthfolioDbPath()),
+    storedTypes: () => liveStoredActivityTypes(wealthfolioDbPath()),
+    timeZone: () => liveTimeZone(wealthfolioDbPath()),
+    saveUpdates: async (updates) => ({ errors: (await wfClient.saveMany({ updates })).errors ?? [] }),
+    record: (draft) => recordCompanionChanges(wfClient, [draft], run),
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    log,
+  };
 }
 
 /** The currently in-flight sync, or `null` when none is running. Module-level
@@ -1705,10 +1772,7 @@ function poolReportDeps(wfClient: WealthfolioClient, dbPath: string): PoolReport
   return {
     getSecret: (key) => wfClient.getAddonSecret('simplefin-sync', key),
     spendingBetween: (start, end) => getNativeWealthfolioSpendingBetween(dbPath, start, end),
-    uncategorizedTotal: (start, end, dismissedIds) =>
-      getNativeUncategorizedSpendingTotal(dbPath, start, end, dismissedIds),
-    dismissedIds: async () =>
-      Object.keys(await dismissalLedgerAccess(wfClient).readLedger().catch(() => ({}))),
+    uncategorizedTotal: (start, end) => getNativeUncategorizedSpendingTotal(dbPath, start, end),
     accountTypes: async () => {
       const mapping = (await new RestSyncStore(wfClient).getAccountMapping()) ?? {};
       const accounts = await wfClient.getAccounts();
@@ -1748,10 +1812,10 @@ async function readCashForecast(wfClient: WealthfolioClient): Promise<CashForeca
 
 /**
  * The cube builder's data sources, bound once — the report-cube twin of
- * `poolReportDeps` above, sharing its dismissal and pool reads so the cube
- * and the pool line can never count different money.
+ * `poolReportDeps` above, reading the same spending lines (Wealthfolio's
+ * definition, 1.62) so the cube and the pool line can never count different money.
  */
-function cubeBuildDeps(wfClient: WealthfolioClient, dbPath: string): CubeBuildDeps {
+export function cubeBuildDeps(wfClient: WealthfolioClient, dbPath: string): CubeBuildDeps {
   return {
     accountMeta: async () => {
       const mapping = (await new RestSyncStore(wfClient).getAccountMapping()) ?? {};
@@ -1765,21 +1829,20 @@ function cubeBuildDeps(wfClient: WealthfolioClient, dbPath: string): CubeBuildDe
         sfinId, wfId, name: names[sfinId] ?? sfinId, type: typeById.get(wfId) ?? '',
       }));
     },
-    dismissedIds: async () =>
-      Object.keys(await dismissalLedgerAccess(wfClient).readLedger().catch(() => ({}))),
     poolConfig: async () => parsePoolConfig(
       await wfClient.getAddonSecret('simplefin-sync', SEMESTER_POOL_SECRET_KEY).catch(() => null),
     ),
-    spendMatrix: (s, e) => getNativeSpendMatrix(dbPath, s, e),
+    // The spending series are STRICT: a failed read fails the publish (the previous cube stays) instead of publishing zeros.
+    spendMatrix: (s, e) => getNativeBudgetSpend(dbPath, s, e),
     incomeByMonthAccount: (s, e) => getNativeIncomeByMonthAccount(dbPath, s, e),
-    uncategorizedByMonthAccount: (s, e, excluded) => getNativeUncategorizedByMonthAccount(dbPath, s, e, excluded),
+    uncategorizedByMonthAccount: (s, e) => getNativeUncategorizedByMonthAccount(dbPath, s, e, true),
     budgetsForMonth: (m) => getNativeWealthfolioBudgets(dbPath, m),
     merchantRows: (s, e) => getNativeMerchantRows(dbPath, s, e),
     feesInterestByMonth: (s, e) => getNativeFeesInterestByMonth(dbPath, s, e),
-    spendDaily: (s, e, excluded) => getNativeSpendDailyTotals(dbPath, s, e, excluded),
+    spendDaily: (s, e) => getNativeSpendDailyTotals(dbPath, s, e, true),
     valuationByMonth: (months) => getNativeValuationByMonth(dbPath, months),
-    // The digest's own readers, verbatim — the check's whole worth is that
-    // this path shares no aggregation code with the matrices above.
+    // The digest's own readers, verbatim — summed the digest's way, over the
+    // same spending lines as the matrices above (1.62).
     drillRows: (s, e) => getNativeDrillRows(dbPath, s, e),
     // Who filed each drill row (1.61). Each read on its own: an unreadable
     // rule list still lets the log say "you", and the reverse.
@@ -1788,9 +1851,9 @@ function cubeBuildDeps(wfClient: WealthfolioClient, dbPath: string): CubeBuildDe
       // An unreadable bucket or a gap may hold the filing: say nothing rather than "by hand".
       history: await readCompanionChangeLog(wfClient, new Date()).then((r) => (isChangeLogPartial(r) ? null : r.entries)).catch(() => null),
     }),
-    checkTotals: (s, e, excluded) => ({
+    checkTotals: (s, e) => ({
       spendByCategory: getNativeWealthfolioSpendingBetween(dbPath, s, e),
-      uncategorized: getNativeUncategorizedSpendingTotal(dbPath, s, e, excluded).total,
+      uncategorized: getNativeUncategorizedSpendingTotal(dbPath, s, e).total,
     }),
     // Link suggestions for hand-added subscriptions. An unreadable document
     // offers none rather than guessing from the legacy lists.
@@ -2035,16 +2098,11 @@ export async function composeDailyDigest(
     children: childrenByParent.get(name),
   }));
   // Spending with no category at all — invisible to the per-category reader
-  // above, and counted by Wealthfolio against the same month.
-  // Dismissed rows are excluded: dismissing means "not spending I need to
-  // file", and counting them anyway let a dismissed charge quietly shrink
-  // every category through the pool.
-  const dismissedIds = Object.keys(
-    await dismissalLedgerAccess(wfClient).readLedger().catch(() => ({})),
-  );
+  // above, and counted by Wealthfolio against the same month, refunds netted.
+  // A dismissed charge counts too (1.62): Wealthfolio counts it, and the
+  // report counts what Wealthfolio counts.
   const uncategorizedSpend = getNativeUncategorizedSpendingTotal(
     dbPath, `${yearMonth}-01`, toDateString(new Date(now.getFullYear(), now.getMonth() + 1, 1)),
-    dismissedIds,
   );
   // Guarded to null, not allowed to throw: the pool line is an addition to the
   // digest, and a broken pool read must cost the line, never the report. No
@@ -3012,7 +3070,8 @@ export function buildCategorizeDeps(wfClient: WealthfolioClient): CategorizeDeps
     // is this row filed under right now", which is what both menus' Undo checks
     // before they un-file anything.
     readCategorized: getNativeCategorizedSpending,
-    readCategories: getNativeSpendingCategories,
+    // Not "Sync bookkeeping": a category the sync files its own rows under is not one to pick (by name; the id lives in a secret).
+    readCategories: (path) => withoutSyncBookkeeping(getNativeSpendingCategories(path)),
     // The income taxonomy, for money-in rows' first filings (a grant check is
     // not spending, and upstream refuses a spending category on it).
     readIncomeCategories: getNativeIncomeCategories,
@@ -3241,7 +3300,7 @@ export function buildAskSessions(
     }
     let categories;
     try {
-      categories = getNativeSpendingCategories(dbPath);
+      categories = withoutSyncBookkeeping(getNativeSpendingCategories(dbPath));
     } catch (err) {
       log(`Ask flow newrule: reading spending categories failed: ${formatError(err)}`);
       await send(NEWRULE_NO_DATABASE_REPLY);
@@ -3644,7 +3703,7 @@ export function buildTelegramCommandHandler(
         // anything the reader could do about it.
         let categories;
         try {
-          categories = getNativeSpendingCategories(dbPath);
+          categories = withoutSyncBookkeeping(getNativeSpendingCategories(dbPath));
         } catch (err) {
           log(`Categorize menu: reading spending categories for /newrule failed: ${formatError(err)}`);
           await reply(NEWRULE_NO_DATABASE_REPLY);

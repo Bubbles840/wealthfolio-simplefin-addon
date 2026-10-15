@@ -1087,7 +1087,8 @@ export function formatDailySpendingDigest(
    * which is a real fact about the budget; it is the "spend this" number that
    * must not over-promise.
    */
-  const uncategorizedTotal = uncategorized && uncategorized.total > 0 ? uncategorized.total : 0;
+  // Net, as Wealthfolio's Uncategorized bucket is: unfiled refunds subtract.
+  const uncategorizedTotal = uncategorized ? uncategorized.total : 0;
   const countedOffBudget = countOffBudget ? offBudgetTotal + uncategorizedTotal : 0;
   // Needed HERE, not just for the headline: the per-category weekly
   // allowances below are scaled by what this pool can actually cover.
@@ -1260,7 +1261,7 @@ export function formatDailySpendingDigest(
   if (showOffBudget && offBudgetLines.length > 0) blocks.push(`Off budget:\n${offBudgetLines.join('\n')}`);
   // Its own block, not folded into "Off budget": those have a category the user
   // chose and simply no budget, while these are unfiled — a different thing to
-  // do about it, and the count is the actionable half.
+  // do about it. The count is of charges (refunds are netted into the amount).
   if (uncategorizedTotal > 0) {
     const n = uncategorized!.count;
     blocks.push(

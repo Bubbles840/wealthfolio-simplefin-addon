@@ -250,7 +250,7 @@ describe('runSyncCore — change log', () => {
       before: {
         activityId: 'act-2',
         activity: {
-          accountId: 'wf-a', activityType: 'WITHDRAWAL', activityDate: '2026-10-01', symbol: { symbol: '$CASH-USD' },
+          accountId: 'wf-a', activityType: 'WITHDRAWAL', activityDate: '2026-10-01T12:00:00Z', symbol: { symbol: '$CASH-USD' },
           amount: 25, currency: 'USD', comment: 'NETFLIX.COM · tx-1',
         },
       },

@@ -233,6 +233,15 @@ describe('WealthfolioClient', () => {
     expect(JSON.parse((opts as any).body)).toEqual({ excludedCategoryIds: ['a', 'b'] });
   });
 
+  it('getExcludedSpendingCategories GETs Wealthfolio’s live list, and throws rather than guess', async () => {
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ excludedCategoryIds: ['a', 'b'] }) });
+    const client = new WealthfolioClient('http://wf');
+    expect(await client.getExcludedSpendingCategories()).toEqual(['a', 'b']);
+    expect(mockFetch.mock.calls[0][0]).toBe('http://wf/api/v1/spending/settings');
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({}) });
+    await expect(client.getExcludedSpendingCategories()).rejects.toThrow();
+  });
+
   it('unassignActivityCategory DELETEs the taxonomy off the assignments path, with no body', async () => {
     mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({}) });
     const client = new WealthfolioClient('http://wf');
