@@ -129,11 +129,21 @@ function companionUnderstands(entry: Pick<ChangeEntry, 'kind'>, companionVersion
  * add-on older than `VENMO_NOTE_SINCE` reads the whole overrides document as
  * corrupt while the flag is there (see `VENMO_NOTE_SINCE`); a payback's Undo
  * and Redo touch `asReimbursement`, which an add-on older than `PAYBACK_SINCE`
- * ignores (W8). The runner reads the installed version and refuses with
+ * ignores (W8), and so does the Undo/Redo of the W10 transaction rule (M6). The runner reads the installed version and refuses with
  * `UNDO_UPDATE_ADDON`, or for a payback `PAYBACK_UPDATE_ADDON`.
  */
-export function addonGateCovers(entry: Pick<ChangeEntry, 'kind'>): boolean {
-  return entry.kind === 'venmo-note' || entry.kind === 'payback-filed';
+export function addonGateCovers(entry: Pick<ChangeEntry, 'kind' | 'after'>): boolean {
+  return entry.kind === 'venmo-note' || isPaybackEntry(entry);
+}
+
+/** An entry whose Undo or Redo an older INSTALLED add-on would get wrong: a payback filed, or
+ *  the W10 transaction rule that makes deposits paybacks (an older add-on reads that rule
+ *  without its money-in, account and `since` limits — direction-blind, every account). */
+export function isPaybackEntry(entry: Pick<ChangeEntry, 'kind' | 'after'>): boolean {
+  if (entry.kind === 'payback-filed') return true;
+  if (entry.kind !== 'mapping-rule-created') return false;
+  const rule = (entry.after as { rule?: { activityType?: unknown; subtype?: unknown; onlyMoneyIn?: unknown } } | undefined)?.rule;
+  return !!rule && rule.activityType === 'CREDIT' && rule.subtype === 'REIMBURSEMENT' && rule.onlyMoneyIn === true;
 }
 
 /** A sync decision whose undo is an override the sync must obey: an automatic

@@ -385,6 +385,24 @@ describe('Undo and Redo of a payback — fix round 1 (PB-C)', () => {
     expect(await h.read('act-7')).toMatchObject({ type: 'CREDIT' });
   });
 
+  it('M7: a failed overrides write is logged, whether or not it landed (Undo and Redo)', async () => {
+    for (const lands of [false, true]) {
+      const u = harness();
+      const entry = await u.file();
+      lostOnce(u, lands);
+      await u.undo(entry, 'undo');
+      expect(u.logs.some((m) => m.includes('socket hang up') && m.includes('overrides'))).toBe(true);
+
+      const r = harness();
+      const e2 = await r.file();
+      await r.undo(e2, 'undo');
+      r.logs.length = 0;
+      lostOnce(r, lands);
+      await r.undo(e2, 'redo');
+      expect(r.logs.some((m) => m.includes('socket hang up') && m.includes('overrides'))).toBe(true);
+    }
+  });
+
   it('I3: Redo whose override write landed but lost its response carries on to the re-type', async () => {
     const h = harness();
     const entry = await h.file();
