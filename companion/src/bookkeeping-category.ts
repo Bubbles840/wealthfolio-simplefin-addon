@@ -110,8 +110,9 @@ function filingReaders(db: DatabaseSync) {
 }
 
 /** The category: the remembered id first (a rename keeps working, duplicates
- *  resolve to ours), else the one with the name. */
-function findCategory(db: DatabaseSync, rememberedId: string | null): string | null {
+ *  resolve to ours), else the one with the name. The card rewrite tells this
+ *  pass's filings from the person's by the same rule. */
+export function findSyncBookkeepingCategory(db: DatabaseSync, rememberedId: string | null): string | null {
   if (rememberedId) {
     const byId = db.prepare(`SELECT id FROM taxonomy_categories WHERE taxonomy_id = ? AND id = ?`).get(SPENDING_TAXONOMY, rememberedId) as { id: string } | undefined;
     if (byId) return byId.id;
@@ -123,7 +124,7 @@ function findCategory(db: DatabaseSync, rememberedId: string | null): string | n
 /** The bookkeeping rows, the rows filed under the category, and which
  *  remembered ids are still under it, with their spending filings and splits. */
 function readCandidates(db: DatabaseSync, dbPath: string, state: FiledState): Read {
-  const categoryId = findCategory(db, state.categoryId);
+  const categoryId = findSyncBookkeepingCategory(db, state.categoryId);
   const raw = db.prepare(
     `${ROW_SELECT}
        WHERE COALESCE(a.notes, '') LIKE ? OR COALESCE(a.notes, '') LIKE ? OR COALESCE(a.notes, '') LIKE ?

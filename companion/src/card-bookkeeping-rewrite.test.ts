@@ -353,6 +353,29 @@ describe('the one-time rewrite of card bookkeeping as transfers out (Wealthfolio
     expect(t.d.log).toHaveBeenCalledWith(expect.stringContaining('left mine'));
   });
 
+  it("PF-H m5: the sync's own \"Sync bookkeeping\" is the category remembered in sync_bookkeeping_filed — renamed, it is still the sync's; a same-named one of yours is not; with nothing remembered, the name", async () => {
+    const rows = `
+      INSERT INTO taxonomy_categories VALUES ('c-w3','spending_categories','Bookkeeping (renamed)');
+      ${row('renamed', 'Balance adjustment · sfc · 2026-09-02')}
+      ${row('by-name', 'Balance adjustment · sfc · 2026-09-03')}
+      INSERT INTO activity_taxonomy_assignments VALUES ('x1','renamed','spending_categories','c-w3'),('x2','by-name','spending_categories','c-sync');
+    `;
+    const remembered = deps(ledger(rows), { rememberedBookkeepingCategory: async () => 'c-w3' });
+    expect(await rewriteCardBookkeeping(remembered.d)).toEqual({ kind: 'done', rewritten: 1, left: 1 });
+    expect(remembered.d.saveMany.mock.calls.flatMap(([req]) => req.updates ?? []).map((u) => u.id)).toEqual(['renamed']);
+    expect(remembered.d.log).toHaveBeenCalledWith(expect.stringContaining('left by-name'));
+
+    // Nothing remembered (or the remembered category is gone): the one named "Sync bookkeeping".
+    for (const id of [null, 'c-deleted']) {
+      const byName = deps(ledger(rows), { rememberedBookkeepingCategory: async () => id });
+      expect(await rewriteCardBookkeeping(byName.d)).toEqual({ kind: 'done', rewritten: 1, left: 1 });
+      expect(byName.d.saveMany.mock.calls.flatMap(([req]) => req.updates ?? []).map((u) => u.id)).toEqual(['by-name']);
+    }
+    // An unreadable secret is the same as nothing remembered.
+    const unreadable = deps(ledger(rows), { rememberedBookkeepingCategory: async () => { throw new Error('503'); } });
+    expect(await rewriteCardBookkeeping(unreadable.d)).toEqual({ kind: 'done', rewritten: 1, left: 1 });
+  });
+
   it('M4: a row with spending split lines is left (3.10 deletes them on a type change), logged', async () => {
     const path = ledger(`${row('split', 'Balance adjustment · sfc · 2026-09-02')}${row('plain', 'Balance adjustment · sfc · 2026-09-03')}
       INSERT INTO spending_activity_splits VALUES ('s1','split','spending_categories','c-food','5');`);

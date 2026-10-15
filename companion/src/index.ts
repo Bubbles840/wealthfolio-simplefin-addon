@@ -1094,6 +1094,12 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
         .map((a) => ({ id: a.id, accountId: a.accountId, activityType: a.activityType, date: a.date, comment: a.comment ?? null, sourceGroupId: a.sourceGroupId ?? null })),
       installedAddonVersion: () => readInstalledAddonVersion(wealthfolioDbPath()),
       noOpeningFile: (sfinId) => hasAccountOverride(overrides, sfinId, 'noOpeningFile'),
+      // The bookkeeping pass's own category, by the id it remembers: a renamed
+      // "Sync bookkeeping" is still the sync's filing, not the person's.
+      rememberedBookkeepingCategory: async () => {
+        const state = parseFiledState(await wfClient.getAddonSecret('simplefin-sync', BOOKKEEPING_FILED_SECRET_KEY));
+        return state === 'corrupt' ? null : state.categoryId;
+      },
       record: (draft) => rewriteChanges.push(draft),
       log,
       now: new Date(),
