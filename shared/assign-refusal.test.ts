@@ -37,4 +37,11 @@ describe('a refused assignment (W9)', () => {
     expect(out).not.toContain('money in');
     expect(out).not.toMatch(/Spending activities|Categories label/);
   });
+
+  it('PB-G: a bucket the add-on does not name (Saving) gets a neutral line, never "money in"', () => {
+    const saving = 'assignActivityCategory failed: 400 - Saving activities can only use savings categories. Categories label the cash-flow bucket; they do not change it.';
+    const out = assignFailureText(ASSIGN_FAILED_TEXT, saving);
+    expect(out).toContain('Wealthfolio counts it as a different kind of money, so that category does not fit it.');
+    expect(out).not.toMatch(/money in|money out|Saving activities/);
+  });
 });

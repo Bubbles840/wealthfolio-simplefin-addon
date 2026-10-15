@@ -45,9 +45,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bank's own words, placed first in the list) and a Wealthfolio category rule
   (that account, `CREDIT`s only) that files those paybacks under the
   category. The transaction rule decides only deposits the sync creates from
-  now on; a deposit already in your ledger keeps its type (an in-transit
-  placeholder one the rule matches loses its in-transit marker when it is
-  next synced). The preview looks back 90 days and says how many other
+  now on; a deposit already in your ledger keeps its type, and an in-transit
+  placeholder the rule matches keeps its marker. The preview looks back 90 days and says how many other
   deposits read that way: "N already in your ledger, M waiting for a
   category" (file those with **It's a payback »**), or "No other deposit in
   the last 90 days reads that way."; if the count cannot be read it says so
@@ -62,8 +61,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The rule editor shows a rule's limits** (settings → Transaction rules):
   money in only, one account (by its name) and the `since` day are listed
   read-only on a payback rule and kept when you edit the list; "Test a
-  description" never matches a payback rule, which needs an account and a
-  day. Saving refuses to overwrite rules changed elsewhere — "Your rules
+  description" honours them: pick the direction and the account to see a
+  payback rule apply. Saving refuses to overwrite rules changed elsewhere — "Your rules
   changed elsewhere — reload them first." — so the companion's payback rule is
   never silently dropped.
 
@@ -74,6 +73,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deposit — and the app's Change log waits for a companion of 1.62.0 before it
   points a payback's Undo at Telegram ("Update the companion first" until
   then).
+- /categorize's list shows every amount to the cent ($14.50, not $15), so it
+  matches the payback reply.
+- A category Wealthfolio refuses because the row counts as a different kind
+  of money than money in or money out (a saving) gets a plain neutral line
+  instead of being called money in.
 
 ### Fixed
 - `/categorize` and `/recategorize` never show Wealthfolio's own error text
