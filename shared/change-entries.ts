@@ -754,7 +754,9 @@ export type BookkeepingStep =
   /** 1.62 (W2): rows stored at 00:00 UTC moved to noon on the same date. */
   | 'date-repair'
   /** 1.62 (W3): the sync's bookkeeping rows filed under, or taken out of, "Sync bookkeeping". */
-  | 'sync-bookkeeping';
+  | 'sync-bookkeeping'
+  /** 1.62 (W3): the "Sync bookkeeping" category was created, or its exclusion (re)added. */
+  | 'sync-bookkeeping-setup';
 
 export interface BookkeepingFacts {
   step: BookkeepingStep;
@@ -779,6 +781,8 @@ export interface BookkeepingFacts {
   /** `sync-bookkeeping` only: the rows taken back out of the category (no
    *  longer bookkeeping); `activityIds` are the rows filed. */
   unfiledIds?: string[];
+  /** `sync-bookkeeping-setup` only: Wealthfolio did not take the exclusion (yet). */
+  excludePending?: boolean;
 }
 
 /** `sync-bookkeeping`: what one pass filed and took out. */
@@ -807,6 +811,8 @@ export function bookkeepingChange(f: BookkeepingFacts): ChangeDraft {
             ? `Moved ${n} ${plural(n, 'row', 'rows')} stored at midnight UTC to noon on the same date, so Wealthfolio counts ${plural(n, 'it', 'them')} on the bank's day${
               f.skipped ? ` — ${f.skipped} linked or retyped ${plural(f.skipped, 'row', 'rows')} left as ${plural(f.skipped, 'it was', 'they were')}` : ''}${
               f.failed ? `; ${f.failed} refused by Wealthfolio and left at midnight` : ''}`
+            : f.step === 'sync-bookkeeping-setup'
+              ? `Set up the "${f.categoryName ?? 'Sync bookkeeping'}" category${f.excludePending ? ", but Wealthfolio didn't exclude it yet" : ' and kept it out of spending'}`
             : f.step === 'sync-bookkeeping'
               ? syncBookkeepingSummary(n, f.unfiledIds?.length ?? 0, f.categoryName ?? 'Sync bookkeeping')
               : `Set up the "${f.categoryName ?? 'Opening balances'}" category and kept it out of spending`;

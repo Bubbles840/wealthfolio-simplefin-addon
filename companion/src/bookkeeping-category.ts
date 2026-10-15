@@ -41,7 +41,7 @@ import { IN_TRANSIT_COMMENT_PREFIX } from '../../shared/reconcile.js';
 import { BALANCE_ADJUSTMENT_COMMENT_PREFIX, STARTING_BALANCE_COMMENT_PREFIX } from '../../shared/sync-core.js';
 import { isNewerVersion } from '../../shared/version.js';
 import { SPENDING_TAXONOMY } from '../../shared/wf-spending.js';
-import { databaseFileExists, openLiveDatabase } from './live-db.js';
+import { databaseFileExists, openLiveDatabase, whyNoLiveOpen } from './live-db.js';
 import { supportsExclusion } from './opening-balance-category.js';
 import { getNativeSpendingSettings } from './sqlite-native.js';
 
@@ -77,11 +77,18 @@ export interface BookkeepingFilingDeps {
 /** A row with the extra the pass needs beyond the plan: a blank type override. */
 type CandidateRow = BookkeepingRow & { blankOverride: boolean };
 
-interface Read { rows: CandidateRow[]; categoryId: string | null; present: Set<string> }
+interface Read {
+  rows: CandidateRow[];
+  categoryId: string | null;
+  /** The remembered ids whose row still exists AND is still under the category,
+   *  read by id with no Spending-scope filter: an account that leaves Spending
+   *  for a sync does not make the pass forget its rows. */
+  stillMine: Set<string>;
+}
 
 const ROW_SELECT = `SELECT a.id AS id, COALESCE(a.account_id, '') AS account_id, UPPER(COALESCE(acc.account_type, '')) AS account_type,
               UPPER(COALESCE(a.activity_type, '')) AS type, COALESCE(a.activity_type_override, '') AS type_override,
-              CASE WHEN a.activity_type_override IS NOT NULL AND a.activity_type_override = '' THEN 1 ELSE 0 END AS blank_override,
+              CASE WHEN a.activity_type_override IS NOT NULL AND TRIM(a.activity_type_override) = '' THEN 1 ELSE 0 END AS blank_override,
               UPPER(COALESCE(a.subtype, '')) AS subtype, COALESCE(a.source_group_id, '') AS grp, COALESCE(a.notes, '') AS notes
        FROM activities a LEFT JOIN accounts acc ON acc.id = a.account_id`;
 
@@ -114,7 +121,7 @@ function findCategory(db: DatabaseSync, rememberedId: string | null): string | n
 }
 
 /** The bookkeeping rows, the rows filed under the category, and which
- *  remembered ids still exist, with their spending filings and splits. */
+ *  remembered ids are still under it, with their spending filings and splits. */
 function readCandidates(db: DatabaseSync, dbPath: string, state: FiledState): Read {
   const categoryId = findCategory(db, state.categoryId);
   const raw = db.prepare(
@@ -125,11 +132,11 @@ function readCandidates(db: DatabaseSync, dbPath: string, state: FiledState): Re
   ).all(`${IN_TRANSIT_COMMENT_PREFIX}%`, `${BALANCE_ADJUSTMENT_COMMENT_PREFIX}%`, `${STARTING_BALANCE_COMMENT_PREFIX}%`, SPENDING_TAXONOMY, categoryId ?? '') as RawRow[];
   const toRow = filingReaders(db);
   const scope = new Set(getNativeSpendingSettings(dbPath).spendingAccountIds);
-  const exists = db.prepare(`SELECT 1 AS x FROM activities WHERE id = ?`);
+  const underCategory = db.prepare(`SELECT 1 AS x FROM activities a JOIN activity_taxonomy_assignments ata ON ata.activity_id = a.id WHERE a.id = ? AND ata.taxonomy_id = ? AND ata.category_id = ?`);
   return {
     categoryId,
     rows: raw.filter((r) => scope.has(r.account_id)).map(toRow),
-    present: new Set(state.ids.filter((id) => !!exists.get(id))),
+    stillMine: new Set(categoryId ? state.ids.filter((id) => !!underCategory.get(id, SPENDING_TAXONOMY, categoryId)) : []),
   };
 }
 
@@ -160,11 +167,16 @@ export async function fileSyncBookkeeping(deps: BookkeepingFilingDeps): Promise<
     deps.log(`Bookkeeping filing skipped: the remembered rows (${BOOKKEEPING_FILED_SECRET_KEY}) can't be read — nothing is filed or taken out until that is fixed`);
     return none;
   }
-  if (!databaseFileExists(deps.dbPath)) return none;
+  if (!databaseFileExists(deps.dbPath)) {
+    deps.log("Bookkeeping filing skipped: the database file isn't there");
+    return none;
+  }
   // A writer never decides from a snapshot (live-db.ts).
   const db = openLiveDatabase(deps.dbPath);
   if (!db) {
-    deps.log('Bookkeeping filing waits: the database can only be read as a snapshot');
+    deps.log(whyNoLiveOpen(deps.dbPath) === 'snapshot'
+      ? 'Bookkeeping filing waits: the database can only be read as a snapshot'
+      : "Bookkeeping filing skipped: couldn't read the database");
     return none;
   }
   let read: Read;
@@ -180,10 +192,10 @@ export async function fileSyncBookkeeping(deps: BookkeepingFilingDeps): Promise<
 
   // Ids remembered for a category that is gone had their filings cascade away.
   const sameCategory = read.categoryId !== null && read.categoryId === loaded.categoryId;
-  const mine = new Set(sameCategory ? loaded.ids.filter((id) => read.present.has(id)) : []);
-  const stillUnder = new Set(read.rows.filter((r) => read.categoryId && r.spendingCategoryIds.includes(read.categoryId)).map((r) => r.id));
-  // A row the person moved elsewhere is theirs now.
-  for (const id of [...mine]) if (!stillUnder.has(id)) mine.delete(id);
+  // Forgotten only when the row is gone or no longer under the category (the
+  // person moved it elsewhere: it is theirs now) — never because its account
+  // is out of the Spending scope for a sync.
+  const mine = new Set(sameCategory ? loaded.ids.filter((id) => read.stillMine.has(id)) : []);
   const plannedWith = (rows: readonly CandidateRow[], categoryId: string | null) =>
     planBookkeepingFiling(rows, { categoryId, filedByPass: mine, noOpeningFile: deps.noOpeningFile });
   const plan = plannedWith(read.rows, read.categoryId);
@@ -207,10 +219,11 @@ export async function fileSyncBookkeeping(deps: BookkeepingFilingDeps): Promise<
   }
 
   let setUp = false;
+  let excludeDone = true;
   const recordSetUp = () => {
     if (!setUp || !deps.record) return;
     try {
-      deps.record(bookkeepingChange({ step: 'opening-category', activityIds: [], categoryName: SYNC_BOOKKEEPING_CATEGORY }));
+      deps.record(bookkeepingChange({ step: 'sync-bookkeeping-setup', activityIds: [], categoryName: SYNC_BOOKKEEPING_CATEGORY, excludePending: !excludeDone }));
     } catch (err) {
       deps.log(`Could not record the change: ${String(err)}`);
     }
@@ -223,12 +236,14 @@ export async function fileSyncBookkeeping(deps: BookkeepingFilingDeps): Promise<
     }
     // Wealthfolio's own list, right now: the PUT replaces it whole, and the
     // opening-debt filer may just have written to it. Appended, never replaced.
+    excludeDone = false;
     const excluded = await deps.readExcluded();
     if (!excluded.includes(categoryId)) {
       await deps.setExcluded([...excluded, categoryId]);
       deps.log(`Excluded "${SYNC_BOOKKEEPING_CATEGORY}" from spending.`);
       setUp = true;
     }
+    excludeDone = true;
   } catch (err) {
     // Nothing is filed under a category that is not excluded; what did get made is still logged.
     recordSetUp();
@@ -243,8 +258,22 @@ export async function fileSyncBookkeeping(deps: BookkeepingFilingDeps): Promise<
     if (kind === 'file' && row.blankOverride && !blankOverrideIsNone(version)) return false;
     return plannedWith([row], cat)[kind].includes(id);
   };
+  // Remember what is about to be filed BEFORE filing it: a failed save or a
+  // restart after the writes must not leave a filed row unremembered (its
+  // expiry would never be taken out). An id whose assign doesn't land is
+  // pruned next run, when it isn't under the category. If it can't be saved,
+  // nothing is filed.
+  const planned = toFile.filter((id) => asPlanned(id, 'file'));
+  if (planned.length > 0) {
+    try {
+      await deps.saveFiled({ categoryId: cat, ids: [...new Set([...mine, ...planned])].sort() });
+    } catch (err) {
+      deps.log(`Bookkeeping filing skipped: couldn't remember the rows before filing them: ${err instanceof Error ? err.message : String(err)}`);
+      planned.length = 0;
+    }
+  }
   const filed: string[] = [];
-  for (const id of toFile) {
+  for (const id of planned) {
     if (!asPlanned(id, 'file')) continue;
     try {
       await deps.assign(id, cat);
@@ -277,3 +306,8 @@ export async function fileSyncBookkeeping(deps: BookkeepingFilingDeps): Promise<
   if (unfiled.length > 0) deps.log(`Took ${unfiled.length} row(s) that are no longer bookkeeping out of "${SYNC_BOOKKEEPING_CATEGORY}".`);
   return { filed: filed.length, unfiled: unfiled.length };
 }
+
+/** The categories a Telegram picker offers: not the one the sync files its own
+ *  rows under (by name — the pickers are synchronous, the stored id is a secret). */
+export const withoutSyncBookkeeping = <T extends { name: string }>(categories: readonly T[]): T[] =>
+  categories.filter((c) => c.name !== SYNC_BOOKKEEPING_CATEGORY);

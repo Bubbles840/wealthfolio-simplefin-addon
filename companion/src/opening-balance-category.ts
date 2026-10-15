@@ -21,7 +21,7 @@
  * Runs in the companion only: creating a category and changing the spending
  * settings need REST routes the addon SDK does not expose.
  */
-import { databaseFileExists, openLiveDatabase } from './live-db.js';
+import { databaseFileExists, openLiveDatabase, whyNoLiveOpen } from './live-db.js';
 import { bookkeepingChange, openingBalanceFiledChange, type ChangeDraft } from '../../shared/change-entries.js';
 import { isNewerVersion } from '../../shared/version.js';
 import { OPENING_BALANCES_CATEGORY, STARTING_BALANCE_COMMENT_PREFIX } from '../../shared/sync-core.js';
@@ -62,12 +62,17 @@ export const supportsExclusion = (v: string | null | undefined): boolean =>
 interface OpeningDebtRow { id: string; account_id: string; account_name: string; amount: string; day: string; notes: string }
 
 export async function fileCardOpeningDebts(deps: OpeningBalanceFilingDeps): Promise<{ filed: number }> {
-  if (!databaseFileExists(deps.dbPath)) return { filed: 0 };
+  if (!databaseFileExists(deps.dbPath)) {
+    deps.log("Opening balance filing skipped: the database file isn't there");
+    return { filed: 0 };
+  }
   // A writer never decides from a snapshot (live-db.ts): the exclusions it
   // writes back whole could drop another writer's.
   const db = openLiveDatabase(deps.dbPath);
   if (!db) {
-    deps.log('Opening balance filing waits: the database can only be read as a snapshot');
+    deps.log(whyNoLiveOpen(deps.dbPath) === 'snapshot'
+      ? 'Opening balance filing waits: the database can only be read as a snapshot'
+      : "Opening balance filing skipped: couldn't read the database");
     return { filed: 0 };
   }
   let rows: OpeningDebtRow[];
