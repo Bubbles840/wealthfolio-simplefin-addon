@@ -5,7 +5,7 @@
   "description": "Sync bank transactions from SimpleFin into Wealthfolio automatically.",
   "author": "Bubbles840",
   "main": "dist/addon.js",
-  "sdkVersion": "3.6.2",
+  "sdkVersion": "3.9.0",
   "minWealthfolioVersion": "3.8.0",
   "enabled": true,
   "network": {
@@ -56,9 +56,20 @@
         "getAll",
         "create",
         "update",
-        "saveMany"
+        "saveMany",
+        "searchCashActivities",
+        "getTransferPair",
+        "linkTransfer",
+        "unlinkTransfer"
       ],
-      "purpose": "Import bank transactions, reconcile pending transactions (create/update/delete), and link transfer pairs"
+      "purpose": "Import bank transactions, reconcile pending transactions (create/update/delete), and link transfer pairs. On Wealthfolio 3.9 and newer: link and unlink transfers in place, and read whether a transaction is linked and what it is filed under"
+    },
+    {
+      "category": "spending",
+      "functions": [
+        "getCategories"
+      ],
+      "purpose": "Read your spending categories' names, to show what a transaction is filed under"
     },
     {
       "category": "navigation",

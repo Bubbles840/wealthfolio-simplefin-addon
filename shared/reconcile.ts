@@ -96,10 +96,29 @@ function normSubtype(v: string | null | undefined): string {
   return (v ?? '').trim().toUpperCase();
 }
 
+/**
+ * One in-transit outflow placeholder, two shapes: a card's is a WITHDRAWAL
+ * where Wealthfolio refuses TRANSFER_OUT on a card (3.8, 3.9) and a
+ * TRANSFER_OUT where it takes one (3.10+, 1.62.0 U4). A writer that would
+ * pick the other shape leaves the stored one as it is, so the add-on and the
+ * companion never flip it back and forth. (A cash account's placeholder is a
+ * TRANSFER_OUT on every version and an investment account's a WITHDRAWAL; this
+ * test does not know the account type, so its scope covers cash too: a CASH
+ * in-transit placeholder stored as WITHDRAWAL is no longer retyped to
+ * TRANSFER_OUT unless something else about it changes — a deliberate departure
+ * from d344c96 — and a hand-retyped cash placeholder is left alone. The sync keeps the stored shape on a real change too:
+ * see "A held card placeholder keeps the shape" in sync-core.ts.)
+ */
+function sameType(row: ExistingRow, tx: FeedTx): boolean {
+  if (row.type === tx.type) return true;
+  const outflow = (t: string) => t === 'WITHDRAWAL' || t === 'TRANSFER_OUT';
+  return !!tx.inTransit && isInTransitRow(row) && outflow(row.type) && outflow(tx.type);
+}
+
 function changed(row: ExistingRow, tx: FeedTx): boolean {
   return (
     row.absCents !== tx.absCents ||
-    row.type !== tx.type ||
+    !sameType(row, tx) ||
     row.date !== tx.date ||
     row.pending !== tx.pending ||
     // Placeholder-ness is a real difference even when nothing else moved: a

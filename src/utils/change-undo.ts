@@ -17,19 +17,27 @@ import type { AddonContext } from '@wealthfolio/addon-sdk';
 import type { ChangeLogItem } from '../../shared/change-log';
 import { companionGateCovers, UNDO_VERSION_UNKNOWN, type UndoOp } from '../../shared/change-undo';
 import { runChangeUndo, type UndoIo, type UndoOutcome } from '../../shared/change-undo-run';
+import { linkedOfFact } from '../../shared/wf-facts';
 import { AddonSyncHost } from './addon-host';
+import { warn } from './audit-fix';
 import type { SecretsStore } from './secrets';
+import { readCashFacts } from './wf-facts';
 import { beginWrite, writeRefusal } from './write-lock';
 
 export function addonUndoIo(ctx: AddonContext, store: SecretsStore, companionVersion: string | null): UndoIo {
   return {
-    host: new AddonSyncHost(ctx),
+    host: new AddonSyncHost(ctx, { log: warn }),
     secrets: {
       get: (k) => ctx.api.secrets.get(k),
       set: (k, v) => ctx.api.secrets.set(k, v),
     },
     record: (draft) => store.recordChange(draft),
     where: { host: 'addon', companionVersion },
+    // Wealthfolio 3.9+: whether the row is linked, on its own word (U3).
+    linkFact: async (a) => {
+      const fact = (await readCashFacts(ctx, [{ id: a.id, accountId: a.accountId, date: a.date }]))?.get(a.id);
+      return fact ? linkedOfFact(fact) : null;
+    },
   };
 }
 

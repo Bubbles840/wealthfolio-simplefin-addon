@@ -97,8 +97,12 @@ export interface UnlinkResult {
   unlinked: boolean;
   /** The new rows exist but the old linked pair could not be deleted. */
   stale?: boolean;
-  /** The re-created rows' ids, in leg order, when the echo carried them. */
+  /** The re-created rows' ids, in leg order, when the echo carried them —
+   *  or, unlinked in place, the rows' own ids. */
   activityIds?: [string, string];
+  /** Unlinked by Wealthfolio's own unlink (shared/link-in-place.ts): the same
+   *  rows, retyped; nothing created or deleted. */
+  inPlace?: true;
   problems?: string[];
 }
 

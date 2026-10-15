@@ -28,8 +28,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sync it also makes sure the category is still excluded (a Wealthfolio
   upgrade or reset can drop it from the list), and "Why is this here?" says
   such a row was filed by the sync as bookkeeping, not set by hand.
+- **Wealthfolio's own link, on every version the companion supports.** A
+  transfer pair is linked through Wealthfolio's own link (the companion's sync
+  and Telegram's Link on 3.8 and newer, the app on 3.9 and newer), so both rows
+  keep their ids, their categories and their place in the change log. A pair
+  whose rows are not already exactly its two transfer legs (a leg stored as
+  ordinary money, one carrying an asset, a held transfer, another note, amount
+  or day) is re-created as before. So is a pair Wealthfolio refuses to link,
+  unless one of the rows is already half of another transfer: that is refused
+  with "One of these is already half of another transfer — nothing was
+  changed", because re-creating it would delete the other pair's partner. On
+  3.8 and 3.9 a pair Wealthfolio says is already linked to each other is kept
+  as it is when Wealthfolio itself marked it (both rows marked internal, or a
+  sync group); otherwise it is re-created. Undoing a link unlinks it the same
+  way, then makes both rows ordinary money in or out. On a 3.8 host that runs
+  both writers, the add-on's next sync still re-creates a pair the companion
+  linked in place, because its ledger does not know the pair; that is the same
+  as 1.61.
+- **The app reads Wealthfolio's own facts (Wealthfolio 3.9 and newer).** Link,
+  Remove for good… and Undo ask Wealthfolio whether a row is half of a linked
+  transfer: they no longer refuse an unlinked transfer as "may be linked", and
+  never offer Remove on a linked one. A transaction's story in the app names
+  its category, who filed it, and the other half of its transfer, as `/why`
+  does. On Wealthfolio 3.8 the app works exactly as before.
+- **A card's bookkeeping is a transfer out (Wealthfolio 3.10 and newer).** The
+  sync writes a credit card's opening debt, balance corrections and held
+  transfers as Transfer Out, which Wealthfolio's Spending page leaves out on
+  its own, with no category needed. The companion's sync reads Wealthfolio's
+  version itself each sync. The add-on, which cannot ask, uses the version the
+  companion publishes, and only while the companion's last successful sync is
+  under two days old. Otherwise it writes a withdrawal. The companion also
+  rewrites the card rows already there, once: it waits for a live database
+  read and for the 1.62 add-on, clears the phantom `$CASH` asset older
+  withdrawals carry, and leaves rows in a transfer group, rows you split,
+  retyped or filed yourself, rows carrying a real security, a starting balance
+  whose opening-balance filing you undid, and any row Wealthfolio refuses
+  twice. The change log records what it rewrote and which rows Wealthfolio
+  refused; the companion's log names the rest.
 
 ### Changed
+- **Updating: Install from File, and the add-on zip first.**
+  - **New permissions.** Wealthfolio's Update button refuses an update that
+    adds permissions. Install 1.62.0 over the installed add-on with Install
+    from File (don't remove it first) and approve: linking and unlinking
+    transfers, reading how Wealthfolio files and links each transaction, and
+    your spending categories' names.
+  - **The add-on zip before the companion, or together with it.** The
+    companion's two one-time passes, the date repair (under Fixed) and the
+    card rewrite (under Added), wait for the 1.62 add-on ("Date repair waits
+    for the 1.62 add-on", "Card bookkeeping rewrite waits for the 1.62
+    add-on") when the companion can see the installed add-on. When it can't,
+    they run at once, so upload the zip first.
+  - **Then reload any browser tab still running 1.61.** Until it is reloaded
+    it keeps writing bare dates, and a card's bookkeeping as withdrawals.
+- Built against add-on SDK 3.9.0. It still installs on Wealthfolio 3.8.
 - **The report counts spending the same way as Wealthfolio** (see Known
   limits). The digest's "spent this month", the weekly and pool figures, the Budget tab, budget vs
   actual, suggested budgets and the cash forecast now read one definition —
@@ -80,13 +132,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   waits: the database can only be read as a snapshot"), it does nothing, and
   a row the database read doesn't know yet is never taken for a retyped one.
   If it is interrupted, it resumes on the next sync.
-  - **Deploy the add-on zip before or together with the companion.** The
-    repair waits ("Date repair waits for the 1.62 add-on") until the
-    installed add-on is 1.62 or later, because a 1.61 add-on keeps writing
-    bare dates, when the companion can see the installed add-on; when it
-    can't, the repair runs at once, so upload the zip first. A browser tab
-    still running 1.61 after the upload writes bare dates too, until it is
-    reloaded.
+  - **It waits for the 1.62 add-on** ("Date repair waits for the 1.62
+    add-on"), because a 1.61 add-on keeps writing bare dates: see the deploy
+    order under Changed.
   - **To run it again,** delete the `date_repair_done` secret; the next sync
     checks every row again.
   - **UTC+12 to UTC+14 (Auckland, Fiji, Kiritimati) are worse off.** There,
@@ -95,6 +143,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     row alone when noon UTC on its day isn't that day in Wealthfolio's
     timezone, so it doesn't move correct rows there. Writing those zones'
     new rows correctly is open.
+- The app's sync no longer re-links, on its next run, a pair whose group id
+  Wealthfolio chose itself.
 
 ### Known limits
 - The spending definition is Wealthfolio 3.10's. On 3.8 and 3.9 a blank

@@ -92,6 +92,23 @@ describe('WealthfolioClient', () => {
     await expect(client.linkTransferActivities('a', 'b')).rejects.toThrow('422');
   });
 
+  it('linkTransferActivities answers with the two rows Wealthfolio wrote, and names its refusal', async () => {
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => [{ id: 'act-in', sourceGroupId: 'g' }, { id: 'act-out', sourceGroupId: 'g' }] });
+    const client = new WealthfolioClient('http://wealthfolio:8088');
+    expect(await client.linkTransferActivities('act-out', 'act-in')).toEqual([{ id: 'act-in', sourceGroupId: 'g' }, { id: 'act-out', sourceGroupId: 'g' }]);
+    mockFetch.mockResolvedValueOnce({ ok: false, status: 400, text: async () => 'One or both activities are already linked to another transfer' });
+    await expect(client.linkTransferActivities('a', 'b')).rejects.toThrow('linkTransferActivities failed: 400 - One or both activities are already linked to another transfer');
+  });
+
+  it('unlinkTransferActivities POSTs both ids to /activities/unlink', async () => {
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => [{ id: 'act-in' }, { id: 'act-out' }] });
+    const client = new WealthfolioClient('http://wealthfolio:8088');
+    expect(await client.unlinkTransferActivities('act-out', 'act-in')).toEqual([{ id: 'act-in' }, { id: 'act-out' }]);
+    const [url, opts] = mockFetch.mock.calls[0];
+    expect(url).toBe('http://wealthfolio:8088/api/v1/activities/unlink');
+    expect(JSON.parse((opts as any).body)).toEqual({ activityAId: 'act-out', activityBId: 'act-in' });
+  });
+
   it('searchActivities POSTs filters and returns the data array', async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,

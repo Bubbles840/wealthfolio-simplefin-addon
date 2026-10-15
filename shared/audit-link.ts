@@ -18,9 +18,10 @@
  * on one (v1.55), and a WITHDRAWAL is never half of a valid pair. So is a pair
  * whose account types, or whose currency, are not what was shown.
  *
- * The write is the sync's own linker, `linkPairByRecreate`, through the
- * host's `linkPair` (shared/link-pair.ts). It DELETES both rows and then
- * re-creates them as one marked group. Wealthfolio applies a bulk request all
+ * The write is the sync's own linker, through the host's `linkPair`: in place
+ * where Wealthfolio's own link can (shared/link-in-place.ts — the same rows,
+ * nothing deleted), else `linkPairByRecreate` (shared/link-pair.ts), which
+ * DELETES both rows and then re-creates them as one marked group. Wealthfolio applies a bulk request all
  * or nothing (activities_service.rs, bulk_mutate_activities), so a re-create
  * it refuses wrote nothing while the delete already went through. A request
  * that throws is not known either way: its response can be lost after the
@@ -43,6 +44,7 @@ import { isCorrectionNote, isPendingNote, isPlaceholderNote, isStartingBalanceNo
 import { bookkeepingChange, transferLinkChange, type ChangeDraft, type LinkLegFacts } from './change-entries.js';
 import { recreateWrite, type FixRow, type LinkedState } from './fix-row.js';
 import { findingHandle } from './handle.js';
+import { HALF_OF_ANOTHER_TRANSFER, LINK_ANSWER_LOST } from './link-in-place.js';
 import { describeLeg } from './link-pair.js';
 import { descriptionFromComment, txIdFromComment } from './sync-core.js';
 import type { ActivityWrite, LinkLeg, LinkResult, SaveManyResult } from './sync-host.js';
@@ -217,6 +219,10 @@ async function linkOne(pair: LinkPair, io: LinkIo, overrides: SyncOverrides): Pr
   if (!result || !result.linked || !result.groupId) {
     const problems = result?.problems ?? [];
     if (result) io.log(`Link ${pair.key}: ${problems.join('; ') || 'not linked'}`);
+    // Already half of another transfer: nothing was written, so there is
+    // nothing to re-read or write back. The reason is the whole message.
+    if (problems.includes(HALF_OF_ANOTHER_TRANSFER)) return { kind: 'failed', message: HALF_OF_ANOTHER_TRANSFER };
+    if (problems.includes(LINK_ANSWER_LOST)) return { kind: 'failed', message: LINK_ANSWER_LOST };
     if (problems.some((p) => p.startsWith('the host stored no shared group'))) {
       // Both saves went through and Wealthfolio kept no group: the rows exist,
       // as transfers, unlinked. Say so, and leave a visible trace.
