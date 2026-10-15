@@ -176,7 +176,7 @@ export function UncategorizedList({
               Dismiss
             </Button>
           </div>
-          {payback && r.paybackEligible === true && (
+          {payback && r.paybackEligible === true && !(renderStory && openId === r.activityId) && (
             <PaybackAction
               inlineStatus activityId={r.activityId} actions={payback}
               label={`${r.description}, ${money(r.amountCents)} on ${r.date}`}

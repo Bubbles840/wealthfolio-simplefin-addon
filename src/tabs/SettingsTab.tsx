@@ -333,8 +333,8 @@ export function SettingsTab({
     async () => (store.readSyncOverrides ? store.readSyncOverrides() : { overrides: emptySyncOverrides(), unreadable: false }),
     [store],
   );
-  const removeOverride = useCallback(async (row: OverrideRow) => {
-    await store.editSyncOverrides?.((o) => removeOverrideRow(o, row));
+  const removeOverride = useCallback(async (row: OverrideRow, undoCovers: boolean) => {
+    await store.editSyncOverrides?.((o) => removeOverrideRow(o, row, undoCovers));
   }, [store]);
 
   const handleReset = useCallback(async () => {

@@ -144,6 +144,9 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
   const [uncategorized, setUncategorized] = useState<
     Awaited<ReturnType<SecretsStore['getUncategorizedStatus']>>
   >(null);
+  // A payback's words describe the list as it was: a new publish (a new `asOf`) replaces them.
+  const uncategorizedAsOf = uncategorized?.asOf ?? null;
+  useEffect(() => { setPaybackNote(null); }, [uncategorizedAsOf]);
   // The companion-published pool status behind the Home tile — same
   // lifecycle as `uncategorized`: loaded here, refreshed on the same path.
   const [poolStatus, setPoolStatus] = useState<

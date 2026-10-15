@@ -218,7 +218,7 @@ export function TxStoryView({ story, entries, actions, onChanged, removal, payba
         </div>
       )}
       {actions.payback && (
-        <div className="sfin-why-remove">
+        <div>
           {/* Mounted from the first render, and kept when a re-read stops offering it. */}
           <div role="status" className="sfin-subtle"><MessageLines message={paidBack?.message} /></div>
           {payback && (

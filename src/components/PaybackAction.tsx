@@ -16,7 +16,7 @@ import type { PaybackCategory } from '../../shared/payback-app';
 import type { AppPaybackOutcome } from '../../shared/payback-app-file';
 import {
   PAYBACK_APP_ACTION, PAYBACK_APP_CANCEL, PAYBACK_APP_CATEGORIES_FAILED, PAYBACK_APP_CATEGORY_LABEL, PAYBACK_APP_CHOOSE, PAYBACK_APP_FILE,
-  PAYBACK_APP_LOADING, PAYBACK_PICK, PAYBACK_UNREACHABLE,
+  PAYBACK_APP_LOADING, PAYBACK_APP_NO_CATEGORIES, PAYBACK_PICK, PAYBACK_UNREACHABLE,
 } from '../../shared/payback-copy';
 import { Button, Select } from './ui';
 
@@ -51,12 +51,22 @@ export function PaybackAction({ activityId, shown, label, actions, onOutcome, in
   const [note, setNote] = useState<string | null>(null);
   // One action per click, even before the re-render that disables the buttons.
   const running = useRef(false);
+  const selectRef = useRef<HTMLSelectElement>(null);
+  const actionRef = useRef<HTMLButtonElement>(null);
+  // Where focus goes once the next render has put it there (as TxStory's Remove for good).
+  const focusAfter = useRef<'select' | 'action' | null>(null);
   // No state updates once the row or story is gone.
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
     return () => { mounted.current = false; };
   }, []);
+
+  useEffect(() => {
+    if (focusAfter.current === 'select') selectRef.current?.focus();
+    else if (focusAfter.current === 'action') actionRef.current?.focus();
+    focusAfter.current = null;
+  });
 
   const open = async () => {
     setNote(null);
@@ -66,6 +76,13 @@ export function PaybackAction({ activityId, shown, label, actions, onOutcome, in
       if (!mounted.current) return;
       setCategories(list);
       setChosen('');
+      if (list.length === 0) {
+        focusAfter.current = 'action';
+        setStage('closed');
+        setNote(PAYBACK_APP_NO_CATEGORIES);
+        return;
+      }
+      focusAfter.current = 'select';
       setStage('picking');
     } catch {
       if (!mounted.current) return;
@@ -87,6 +104,7 @@ export function PaybackAction({ activityId, shown, label, actions, onOutcome, in
     running.current = false;
     if (!mounted.current) return;
     setBusy(false);
+    focusAfter.current = 'action';
     setStage('closed');
     if (inlineStatus && out.kind !== 'filed') setNote(out.message);
     onOutcome?.(out);
@@ -100,22 +118,23 @@ export function PaybackAction({ activityId, shown, label, actions, onOutcome, in
         <>
           <div>{PAYBACK_PICK}</div>
           <div className="sfin-audit-fix">
-            <Select aria-label={PAYBACK_APP_CATEGORY_LABEL} value={chosen} disabled={busy} onChange={(e) => setChosen(e.target.value)}>
+            <Select ref={selectRef} aria-label={PAYBACK_APP_CATEGORY_LABEL} value={chosen} disabled={busy} onChange={(e) => setChosen(e.target.value)}>
               <option value="">{PAYBACK_APP_CHOOSE}</option>
               {categories.map((c) => <option key={c.id} value={c.id}>{c.path}</option>)}
             </Select>
             <Button variant="ghost" disabled={busy || !chosen} aria-busy={busy} onClick={file}>{PAYBACK_APP_FILE}</Button>
-            <Button variant="ghost" disabled={busy} onClick={() => setStage('closed')}>{PAYBACK_APP_CANCEL}</Button>
+            <Button variant="ghost" disabled={busy} aria-busy={busy} onClick={() => { focusAfter.current = 'action'; setStage('closed'); }}>{PAYBACK_APP_CANCEL}</Button>
           </div>
         </>
       ) : (
         <div className="sfin-audit-fix">
           <Button
+            ref={actionRef}
             variant="ghost"
             disabled={stage === 'loading'}
             aria-busy={stage === 'loading'}
             onClick={open}
-            {...(label ? { 'aria-label': `${PAYBACK_APP_ACTION} ${label}` } : {})}
+            {...(label && stage !== 'loading' ? { 'aria-label': `${PAYBACK_APP_ACTION} ${label}` } : {})}
           >
             {stage === 'loading' ? PAYBACK_APP_LOADING : PAYBACK_APP_ACTION}
           </Button>
