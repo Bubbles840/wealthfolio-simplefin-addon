@@ -686,8 +686,8 @@ describe('sqlite-native', () => {
       try {
         seed(path);
         const db = new DatabaseSync(path);
+        // The test schema carries activity_type_override (Wealthfolio 3.8+) since 1.62's line-up.
         db.exec(`
-          ALTER TABLE activities ADD COLUMN activity_type_override TEXT;
           -- A deposit Wealthfolio's own override calls a transfer: no category wanted.
           UPDATE activities SET activity_type_override = 'TRANSFER_IN' WHERE id = 'act-4';
           -- A transfer its override calls a deposit: it now wants one.
