@@ -1141,6 +1141,68 @@ Designed overnight under Nick's standing instruction; approved by Nick on
   - Inbox: the unmount test cannot fail under React 19 (setState after
     unmount is silent), so it pins "no further reads or writes after unmount".
 
+## 16. Line up with Wealthfolio (2026-10-14, plan `2026-10-14-line-up.md`)
+
+- **One definition of spending** (`shared/wf-spending.ts`), Wealthfolio's,
+  read by every report figure and by the audit's two sides. What it does not
+  model:
+  - **Currency conversion.** Wealthfolio converts a foreign-currency row to
+    the base currency at the period's end; the report sums it as stored. The
+    audit names such rows as their own reason, capped at the foreign rows'
+    own absolute total, so a rate above 2 leaves an honest unexplained
+    excess. Converting them is open.
+  - Split lines that don't add up to the row (Wealthfolio's editor keeps
+    them adding up).
+- **The "identical on 3.8, 3.9 and 3.10" claim was wrong** and the header of
+  `wf-spending.ts` now says so. The definition is 3.10's: 3.8 and 3.9 treat a
+  blank type override as a type (the row then counts as nothing there), and
+  exclusions exist only from 3.9.
+- **The CLI fallback prints control characters in caret form** (display
+  only; the stored text is unchanged).
+- **About 11 `readSpendLines` per sync.** Each reader makes its own read;
+  they could share one 24-month read. In the CLI fallback every read is
+  logged, so the log volume grows with them.
+- **The cube's accounts are still the mapped ones.** A spending account the
+  add-on doesn't map is counted by Wealthfolio and not by the cube: the
+  audit names it ("On accounts the add-on doesn't sync") and the tripwire
+  sets that amount aside, so it is not a warning (the covered difference is
+  compared). The digest's own figures cover every spending account.
+- **Dismissed charges, and charges whose transfer's other half is on its
+  way, now count** in every figure (1.23.0 left dismissed ones out):
+  Wealthfolio counts both, and a report that didn't would trip the wire
+  every day. Both stay off the needs-a-category list.
+- **On 3.8 the bookkeeping pass does nothing** (no excluded categories), so
+  in-transit placeholders and corrections that are spending to Wealthfolio
+  count on both sides there. An income-bucket placeholder (money in) can't
+  take a spending category: Wealthfolio's Income page still counts it. The
+  pass files nothing it can't read live, and has no Undo.
+- **Dates.** Noon UTC (`bankDayInstant`) reaches only zones within 11 hours
+  of UTC; beyond that a noon row lands a day off. A write replayed from what
+  the change log recorded keeps the recorded date (Undo of a removed
+  duplicate or a removed row, re-importing a starting balance or a
+  correction, moving a starting balance back), so one recorded before 1.62
+  can still land at 00:00 UTC on 3.8 or 3.9.
+  `companion/tools/audit-headline.mjs` still matches only T00:00:00 rows.
+- **The date repair** resumes on the next sync rather than being re-runnable
+  from the audit's tools (the spec's wording); delete the `date_repair_done`
+  secret to run it again. It leaves two kinds of row at 00:00 UTC: a linked
+  leg (Wealthfolio copies an updated leg's date onto its partner) and a row
+  with a type override (Wealthfolio's search shows only the effective type,
+  and an update writes the type it is sent). It needs the database for the
+  second, so it waits while the database can't be read, and it waits for the
+  1.62 add-on.
+- **Tripwire timing.** The cube is built moments before Wealthfolio is asked
+  for its figure; a write in between shows as a difference until the next
+  sync. The cube's months follow the UTC month of the sync; the digest and
+  the audit, the companion's local month (unchanged).
+- **Left as they were:** `countRulePatternMatches` (a rule preview's count)
+  keeps its SQL sign; `companion/tools/audit-month.mjs` and
+  `audit-headline.mjs` keep their own copies; the ledger audit's idle-refund
+  check still reads the stored type.
+- **With the platform branch (U4):** on 3.10 a card's bookkeeping rows become
+  TRANSFER_OUT, which Wealthfolio ignores; the pass reads the bucket, so it
+  files none of them, and the two compose.
+
 ## Reference: name mismatches between the database, the REST API, and the SDK
 
 Every one of these cost a diagnostic cycle against the live instance on

@@ -104,7 +104,11 @@ The addon has three tabs: **Home**, **Reports** and **Settings**.
   do, and **Link** for a transfer with one likely other half. They come from a
   snapshot the companion publishes after each sync, and say when it was
   taken; a fix shows there after the next sync. A transaction's story in the
-  app offers **Remove for good…** too.
+  app offers **Remove for good…** too. The report counts spending exactly as
+  Wealthfolio's Spending page does, so after each sync the two month totals
+  are compared: more than a cent apart (after setting aside accounts the
+  add-on doesn't sync), the daily report says so (in Brief too) and Home's
+  Accounts tile shows it.
 - **Change log** — every change the sync, the companion and you made, the last
   90 days, under **Settings → Change log**: imports, bank updates, transfer
   links, removed duplicates, rows you removed for good, starting balances,
@@ -146,7 +150,8 @@ Before or right after you upgrade:
   reads it directly.
 - After the upgrade, Wealthfolio rebuilds every account's history. Wait until its
   Health page no longer shows a stale projection before running a Deep scan.
-- On its next sync, the companion makes sure "Opening balances" is excluded from
+- On its next sync, the companion makes sure "Opening balances" (and, when it
+  has bookkeeping rows to file, "Sync bookkeeping") is excluded from
   Wealthfolio's spending.
 
 ### Adding or removing accounts later
@@ -211,7 +216,22 @@ A credit card that started out owing money gets its opening debt as a
 withdrawal, the only money-out type Wealthfolio accepts on a card. The Docker
 companion files it under an **Opening balances** spending category and
 excludes that category from spending, so Wealthfolio's Spending page does not
-read it as a purchase.
+read it as a purchase. On Wealthfolio 3.9 and later it does the same for the
+sync's other bookkeeping rows that Wealthfolio would count as spending (a
+transfer waiting for its other half, a balance correction, a cash account's
+negative starting balance) under **Sync bookkeeping**, and takes a row back
+out once it stops being bookkeeping. That pass has no Undo; to keep a
+bookkeeping row counted, file it under another category, which it never
+touches. It never touches a row with split lines either.
+
+### Date repair (upgrading to 1.62)
+
+New rows are written at noon UTC on the bank's date, and the companion moves
+rows already stored at midnight UTC the same way, once, in small batches. Put
+the add-on zip up before or together with the companion (the repair waits for
+the 1.62 add-on), and reload any browser tab still running 1.61, which writes
+bare dates until reloaded. The repair resumes on its own on the next sync if
+interrupted. To run it again, delete the `date_repair_done` secret.
 
 ### Deep scan
 
