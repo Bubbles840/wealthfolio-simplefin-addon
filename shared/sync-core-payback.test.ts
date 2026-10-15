@@ -89,12 +89,12 @@ describe('runSyncCore — a payback (asReimbursement)', () => {
     expect(row(fh)).toMatchObject({ activityType: 'CREDIT', subtype: null });
   });
 
-  it('yields once its year runs out and the next overrides write prunes it', async () => {
+  it('leaves the stored payback as it is once its year runs out and the next overrides write prunes the flag (I-1)', async () => {
     const lapsed = pruneTxOverrides(payback(new Date('2025-10-13T15:00:00Z')), NOW);
     expect(lapsed.tx).toEqual({});
     const fh = createFakeHost(seed('14.00', { existing: stored(), syncOverrides: lapsed }));
     await runSyncCore(fh.host, fh.store, {});
-    expect(row(fh).activityType).toBe('DEPOSIT');
+    expect(row(fh)).toMatchObject({ activityType: 'CREDIT', subtype: 'REIMBURSEMENT' });
   });
   const writes = (fh: ReturnType<typeof createFakeHost>) => fh.saved.filter((r) => (r.updates ?? []).length > 0 || (r.creates ?? []).length > 0);
   const NOTE = 'Couldn\u2019t read your sync overrides \u2014 paybacks were left as they are.';

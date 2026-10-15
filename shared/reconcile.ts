@@ -30,6 +30,11 @@ export interface FeedTx {
    *  CREATES only. Against a stored row, `changed()` ignores type and subtype and an
    *  update writes the stored ones back. */
   createOnly?: true;
+  /** A cash money-in row that nothing decides (no rule, no payback flag) and the plain
+   *  mapping calls a DEPOSIT. A STORED CREDIT/REIMBURSEMENT is then a payback somebody
+   *  filed (or made by hand, or a rule made before it was undone): `changed()` leaves
+   *  its type and subtype alone and an update writes them back, as for `createOnly`. */
+  keepPayback?: true;
   /**
    * Mark the written row as needing the user's eye — Wealthfolio 3.8's
    * `needs_review`, which it surfaces on its own Activities screen.
@@ -100,17 +105,26 @@ function normSubtype(v: string | null | undefined): string {
   return (v ?? '').trim().toUpperCase();
 }
 
+/** Whether the stored row's own type and subtype stand: a `createOnly` tx never re-types a
+ *  stored row, and a `keepPayback` tx never re-types a stored payback. */
+function keepsStored(row: ExistingRow, tx: FeedTx): boolean {
+  return !!tx.createOnly
+    || (!!tx.keepPayback && row.type === 'CREDIT' && normSubtype(row.subtype) === 'REIMBURSEMENT');
+}
+
 function changed(row: ExistingRow, tx: FeedTx): boolean {
+  const keeps = keepsStored(row, tx);
   return (
     row.absCents !== tx.absCents ||
-    (!tx.createOnly && row.type !== tx.type) ||
+    (!keeps && row.type !== tx.type) ||
     row.date !== tx.date ||
     row.pending !== tx.pending ||
     // Placeholder-ness is a real difference even when nothing else moved: a
     // non-CASH placeholder expires into the identical DEPOSIT/WITHDRAWAL, so
     // without this the row would keep its in-transit marker forever on a leg
     // that will never pair.
-    isInTransitRow(row) !== !!tx.inTransit ||
+    // (A `createOnly` tx keeps the stored marker too: its plan is never in transit.)
+    (!tx.createOnly && isInTransitRow(row) !== !!tx.inTransit) ||
     // Subtype only ever gets ADDED here, never removed. The write path omits
     // the `subtype` key entirely whenever the feed has none (see
     // toActivityCreate in sync-core.ts) — it deliberately never sends `''`,
@@ -123,15 +137,20 @@ function changed(row: ExistingRow, tx: FeedTx): boolean {
     // update, every sync, forever. The accepted trade (the user's call):
     // removing a rule's subtype does not reach rows already imported; those
     // get cleared by hand in Wealthfolio.
-    (!tx.createOnly && !!tx.subtype && normSubtype(row.subtype) !== normSubtype(tx.subtype))
+    (!keeps && !!tx.subtype && normSubtype(row.subtype) !== normSubtype(tx.subtype))
   );
 }
 
-/** The update for a stored row: a `createOnly` tx writes the stored type and subtype back. */
+/** The update for a stored row: a tx that keeps it writes the stored type and subtype back
+ *  (and, for `createOnly`, the stored in-transit marker). */
 function updateTo(row: ExistingRow, tx: FeedTx): FeedTx {
-  if (!tx.createOnly) return tx;
-  const { subtype: _drop, ...rest } = tx;
-  return { ...rest, type: row.type, ...(row.subtype ? { subtype: row.subtype } : {}) };
+  if (!keepsStored(row, tx)) return tx;
+  const { subtype: _drop, inTransit: _t, ...rest } = tx;
+  return {
+    ...rest, type: row.type,
+    ...(row.subtype ? { subtype: row.subtype } : {}),
+    ...(tx.createOnly ? (isInTransitRow(row) ? { inTransit: true as const } : {}) : (tx.inTransit ? { inTransit: true as const } : {})),
+  };
 }
 
 /**
