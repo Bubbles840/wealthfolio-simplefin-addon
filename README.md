@@ -72,6 +72,9 @@ The addon has three tabs: **Home**, **Reports** and **Settings**.
   as the first, one-tap choice ("✓ Groceries (like the last 3)"), and a rule
   made from a filing can be for one account only ("Only <account>" on its
   preview; `/newrule trader joes = groceries in checking` does the same).
+  A deposit that pays you back — a friend's Venmo for dinner — goes under the
+  spending it pays back with **It's a payback »**, and the next screen can
+  make every deposit like it a payback; Undo either from `/changes`.
   Commands that need details — `/pool`, `/newrule`, `/afford` — ask for them
   one question at a time; the one-line forms still work. Bare `/pool` shows
   the pool with Set and Clear buttons.
