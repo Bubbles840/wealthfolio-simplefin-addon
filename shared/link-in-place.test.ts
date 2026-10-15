@@ -268,6 +268,30 @@ describe('unlinking in place (Undo of a link)', () => {
     ]);
   });
 
+  it('a leg stored at 00:00 UTC (a pre-1.62 row the date repair leaves while linked) is retyped at noon UTC on its day; a leg read with no instant is written at noon on its bank day', async () => {
+    const midnight = linked();
+    midnight[0].date = '2026-10-08T00:00:00+00:00';
+    midnight[1].date = '2026-10-09T00:00:00.000Z';
+    const wf = wealthfolio(midnight);
+    expect(await unlinkPairPreferInPlace(wf.io, wf.saveMany, unlinkLegs())).toEqual({ unlinked: true, inPlace: true, activityIds: ['out-1', 'in-1'] });
+    expect(wf.rows.map((r) => [r.id, r.activityType, r.date])).toEqual([
+      ['out-1', 'WITHDRAWAL', '2026-10-08T12:00:00Z'],
+      ['in-1', 'CREDIT', '2026-10-09T12:00:00Z'],
+    ]);
+    // Any other instant is kept exactly as stored.
+    const evening = linked();
+    evening[0].date = '2026-10-08T23:30:00Z';
+    const kept = wealthfolio(evening);
+    await unlinkPairPreferInPlace(kept.io, kept.saveMany, unlinkLegs());
+    expect(kept.rows.map((r) => r.date)).toEqual(['2026-10-08T23:30:00Z', '2026-10-09T12:00:00.000Z']);
+    // No instant in the read: the leg's bank day at noon, never a bare date.
+    const blank = linked();
+    blank[0].date = '';
+    const noInstant = wealthfolio(blank);
+    await unlinkPairPreferInPlace(noInstant.io, noInstant.saveMany, unlinkLegs());
+    expect(noInstant.rows[0].date).toBe('2026-10-08T12:00:00Z');
+  });
+
   it('round-trips: linked in place, then unlinked in place, the same two rows', async () => {
     const wf = wealthfolio([stored(OUT_LEG), stored(IN_LEG)]);
     expect((await linkPairPreferInPlace(wf.io, wf.saveMany, [OUT_LEG, IN_LEG])).activityIds).toEqual(['out-1', 'in-1']);
