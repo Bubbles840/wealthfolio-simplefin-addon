@@ -9,35 +9,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **Paybacks.** A deposit that pays you back for spending — a friend's Venmo
-  for dinner — is filed against that spending. In `/categorize`, a settled
-  money-in row on a bank (cash) account gets **It's a payback »** (it read
+  for dinner — is filed against that spending. In `/categorize`, a posted
+  deposit on a bank (cash) account gets **It's a payback »** (it read
   "Spending categories »"), which shows the spending categories; picking one
-  re-types the row to a `CREDIT` marked `REIMBURSEMENT` — since Wealthfolio
-  3.9 the only money in it takes off spending — and files it: "Filed as a
-  payback under Restaurants — it takes $14 off your Food & Dining spending."
-  A new sync override, `asReimbursement`, keeps the sync from turning it back
-  into a deposit while the bank row is money in on a cash account; the sync
-  also keeps a payback exactly as it is when it cannot read your overrides
-  (it says so in its notes). **Undo and Redo are in `/changes`**: Undo takes
-  the override off, makes the row a deposit again and takes the category off;
-  Redo does it all again. Refused, each in its own words and with nothing
-  written: a transfer, half of a linked transfer, a pending row, a card, a row
-  that is not a deposit or is already a payback, one the sync manages, one not
-  from the bank feed, and an unreadable overrides document. A step that fails
-  partway says what stands.
+  re-types the row to a `CREDIT` marked `REIMBURSEMENT` — Wealthfolio takes
+  money in off spending only as a `CREDIT` marked refund, rebate or
+  reimbursement — and files it: "Filed as a payback under Restaurants — it
+  takes $14 off your Food & Dining spending." Interest, dividend, income and
+  pending rows get no payback switch and keep the income grid. A new sync
+  override, `asReimbursement`, keeps the sync from turning it back into a
+  deposit while the bank row is money in on a cash account. **A payback
+  stays a payback unless a rule or your own choice changes it:** the sync
+  leaves a stored cash money-in `CREDIT`/`REIMBURSEMENT` row as it is when no
+  rule and no override decides its type, so a payback you make by hand in
+  Wealthfolio sticks too, and removing the override or undoing the
+  transaction rule never turns a filed payback into a deposit that is still
+  under a spending category. The sync also keeps a payback exactly as it is
+  when it cannot read your overrides (it says so in its notes). **Undo and
+  Redo are in `/changes`**: Undo takes the override off (a key that held
+  another override gets that entry back exactly as it was), makes the row a
+  deposit again and takes the category off; Redo does it all again. If the
+  category's answer is lost after it landed, the filing is read back and
+  counts as done. Refused, each in its own words and with nothing written: a
+  transfer, half of a linked transfer, a pending row, a row outside a bank
+  (cash) account, a row that is not a deposit or is already a payback, one the
+  sync manages, one not from the bank feed, and an unreadable overrides
+  document. A step that fails partway says what stands. A payback the sync
+  left with no category, which you then filed from `/categorize`, must have
+  that filing undone from `/changes` before the payback itself can be undone.
+  In the app's **Your overrides** list a Payback is shown read-only, with
+  "Undo it from Telegram: /changes" — removing only its flag is not an undo.
 - **Make every <pattern> deposit a payback.** After a payback, the Filed
   screen offers this instead of "Make this a rule": two rules made together —
   an add-on transaction rule (money into that account only, matched on the
   bank's own words, placed first in the list) and a Wealthfolio category rule
   (that account, `CREDIT`s only) that files those paybacks under the
   category. The transaction rule decides only deposits the sync creates from
-  now on; deposits already in your ledger are never changed. The preview looks
-  back 90 days and says how many deposits read that way: "N already in your
-  ledger, M waiting for a category" (file those with **It's a payback »**).
-  It refuses a pattern made only of common bank words (DEPOSIT, ACH, MOBILE …;
-  VENMO, CASHOUT and ZELLE are fine), one a transfer rule already decides, an
-  older payback rule that sits behind another rule, and a conflicting
-  Wealthfolio rule. Both rules are in the change log, with Undo and Redo.
+  now on; a deposit already in your ledger keeps its type (an in-transit
+  placeholder one the rule matches loses its in-transit marker when it is
+  next synced). The preview looks back 90 days and says how many other
+  deposits read that way: "N already in your ledger, M waiting for a
+  category" (file those with **It's a payback »**), or "No other deposit in
+  the last 90 days reads that way."; if the count cannot be read it says so
+  and the rules are checked again when they are made. It refuses a pattern
+  made only of common bank words (DEPOSIT, ACH, MOBILE …; VENMO, CASHOUT and
+  ZELLE are fine), a pattern a bank-transfer keyword or one of your transfer
+  rules already decides (and one a ledger row typed as a transfer matches),
+  and the whole offer when the ledger cannot be read; also an older payback
+  rule that sits behind another rule, and a Wealthfolio rule for the same or a
+  broader pattern that would win. Both rules are in the change log, with Undo
+  and Redo; undoing the transaction rule leaves its paybacks as they are.
+- **The rule editor shows a rule's limits** (settings → Transaction rules):
+  money in only, one account (by its name) and the `since` day are listed
+  read-only on a payback rule and kept when you edit the list; "Test a
+  description" never matches a payback rule, which needs an account and a
+  day. Saving refuses to overwrite rules changed elsewhere — "Your rules
+  changed elsewhere — reload them first." — so the companion's payback rule is
+  never silently dropped.
 
 ### Changed
 - Paybacks need both halves on 1.62.0. Telegram's payback, its Undo and Redo

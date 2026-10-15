@@ -1174,20 +1174,39 @@ branches.
   /changes" (the add-on SDK cannot take a category off).
 - **The one-tap guess is not offered on the payback grid**: every tap there
   goes through the payback.
-- **The transaction rule's limits are not shown** in Settings → Transaction
-  rules (money in only, one account, and the `since` day that makes it decide
-  only rows the sync creates); the rule editor does not yet show or keep
-  them, and the "Test a description" box ignores them. Saving the list from
-  Settings can drop the companion's payback rule if it changed meanwhile. A
-  reader before 1.62 ignores the limits — the reason the offer waits for an
-  installed add-on of 1.62.0.
+- **The transaction rule's limits are shown read-only** in Settings → Transaction
+  rules (money in only, one account by name, and the `since` day), and the
+  editor keeps them when the list is edited; the "Test a description" box
+  never matches a payback rule, which needs an account and a day, so it
+  cannot preview one. Saving re-reads the list first and refuses with "Your
+  rules changed elsewhere — reload them first." when the companion changed it
+  meanwhile. A reader before 1.62 ignores the limits — the reason the offer
+  waits for an installed add-on of 1.62.0.
 - **Deposits already imported are never re-typed by the payback rule**; the
   ones the 90-day preview finds are filed by hand with **It's a payback »**.
   A pending deposit the rule typed is replaced on posting like any pending
-  row.
+  row; an in-transit placeholder the rule matches loses its marker when it is
+  next synced.
+- **A payback stays a payback unless a rule or your own choice changes it.**
+  The sync leaves a stored cash money-in `CREDIT`/`REIMBURSEMENT` row as
+  stored when neither a rule nor an override decides its type, so the reverse
+  cases cannot happen: removing the override (the list shows it read-only
+  anyway) or undoing the W10 transaction rule leaves the paybacks as they
+  are. A payback made by hand in Wealthfolio sticks too. A rule or the
+  override that later decides a different type still wins.
+- **W10 refuses a pattern a transfer keyword or rule decides**, and when the
+  ledger cannot be read. The preview's own count failing is a note, and the
+  checks run again when the rules are made. A Wealthfolio rule that is broader
+  than the pattern and would win is a conflict too.
 - **A stuck payback** — the override saved, Wealthfolio refusing the re-type,
   and the override not taken back — is said so: the next sync makes the row a
-  payback with no category, which `/categorize` then offers.
+  payback with no category, which `/categorize` then offers. If it is filed
+  there, the payback's Undo refuses and says to undo that filing from
+  `/changes` first.
+- **A key that held another override** (a `notTransfer`, say) keeps that entry:
+  a payback set over it remembers the entry (`was`), and taking the payback
+  off — Undo, a refused filing, a take-back — puts its `at` and `label` back
+  exactly, with no `entryId` left from a Redo.
 
 ## Reference: name mismatches between the database, the REST API, and the SDK
 
