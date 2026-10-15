@@ -10,6 +10,8 @@ import { getNativeAuditSettings } from './sqlite-audit.js';
 import { ingestAmazonMail } from './amazon-mail.js';
 import { rewriteCardBookkeeping } from './card-bookkeeping-rewrite.js';
 import { fileCardOpeningDebts } from './opening-balance-category.js';
+import { runDateRepair } from './date-repair.js';
+import { fileSyncBookkeeping } from './bookkeeping-category.js';
 import { ingestVenmoMail } from './venmo-mail.js';
 import { getNativePastFilings } from './sqlite-guess.js';
 import { AMAZON_MAIL_STATUS_SECRET_KEY, AMAZON_MAIL_SAMPLES_SECRET_KEY, UNCATEGORIZED_STATUS_SECRET_KEY, VENMO_MAIL_SAMPLES_SECRET_KEY } from '../../shared/status-keys.js';
@@ -155,6 +157,14 @@ vi.mock('./opening-balance-category.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./opening-balance-category.js')>();
   return { ...actual, fileCardOpeningDebts: vi.fn(actual.fileCardOpeningDebts) };
 });
+vi.mock('./date-repair.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./date-repair.js')>();
+  return { ...actual, runDateRepair: vi.fn(actual.runDateRepair) };
+});
+vi.mock('./bookkeeping-category.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./bookkeeping-category.js')>();
+  return { ...actual, fileSyncBookkeeping: vi.fn(actual.fileSyncBookkeeping) };
+});
 
 vi.mock('./amazon-mail.js', async (importOriginal) => ({
   // Real `amazonMailConfigured`, `htmlToText`, etc. stay real; only the two
@@ -273,6 +283,15 @@ describe('runCompanionSync', () => {
     const client = vi.mocked(WealthfolioClient).mock.results.at(-1)!.value as any;
     expect(client.getAddonSecret).toHaveBeenCalledWith('simplefin-sync', 'card_bookkeeping_rewrite');
     expect(client.setAddonSecret).toHaveBeenCalledWith('simplefin-sync', 'card_bookkeeping_rewrite', '2026-10-14T15:00:00.000Z');
+  });
+
+  it('runs the post-sync passes in the merged 1.62 order: sync, date repair, card rewrite, opening-debt filing, bookkeeping pass', async () => {
+    for (const f of [runDateRepair, rewriteCardBookkeeping, fileCardOpeningDebts, fileSyncBookkeeping]) vi.mocked(f).mockClear();
+    await runCompanionSync();
+    const order = [runSyncCore, runDateRepair, rewriteCardBookkeeping, fileCardOpeningDebts, fileSyncBookkeeping]
+      .map((f) => vi.mocked(f).mock.invocationCallOrder.at(-1)!);
+    expect(order.every((n) => typeof n === 'number')).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
   });
 
   it("hands the card rewrite the bookkeeping pass's remembered category (sync_bookkeeping_filed); none or corrupt is null", async () => {
