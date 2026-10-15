@@ -1218,10 +1218,7 @@ Designed overnight under Nick's standing instruction; approved by Nick on
   split lines, rows carrying a filing the sync did not make, and a starting
   balance whose opening-balance filing you undid (`noOpeningFile`). A refused
   batch is retried row by row; a row refused twice joins the left rows (listed
-  in the entry); only a 400 or 422 is the row's fault, so any other failure
-  (5xx, network, any other 4xx) stops the run unmarked, as does a failed batch
-  re-read, and so does a run where nothing was rewritten and every row was
-  refused.
+  in the entry); only a refusal (an `errors[]` entry, or a thrown 400/422) is the row's fault, so any other failure (5xx, network, any other 4xx) stops the run unmarked, as does a failed batch re-read. A run whose rows were all refused is marked done and records its entry once.
 - **One shared open-ladder helper:** the database open-ladder is copied four
   times; make one.
 - **Task 8 writes NEW 3.10 card starting balances as TRANSFER_OUT even under
