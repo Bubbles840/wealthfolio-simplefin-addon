@@ -4953,6 +4953,19 @@ describe('the /categorize wiring', () => {
       expect(written['act-earlier']).toBe(RECENT_DISMISSAL);
     });
 
+    it('LU-H I1: the Telegram category pickers (/categorize, /newrule) do not offer "Sync bookkeeping"', () => {
+      const { client } = clientFor([]);
+      vi.mocked(getNativeSpendingCategories).mockReturnValue([
+        { id: 'c1', name: 'Groceries', parentId: null, parentName: null },
+        { id: 'c2', name: 'Sync bookkeeping', parentId: null, parentName: null },
+      ] as any);
+      try {
+        expect(buildCategorizeDeps(client).readCategories('/db').map((c) => c.name)).toEqual(['Groceries']);
+      } finally {
+        vi.mocked(getNativeSpendingCategories).mockReturnValue([]);
+      }
+    });
+
     it('replays a REMOVAL as a delta, leaving a third party\'s entry alone', async () => {
       const { client, secrets } = clientFor([
         [LEDGER_KEY, JSON.stringify({ 'act-menu': RECENT_DISMISSAL })],

@@ -810,7 +810,8 @@ export function bookkeepingChange(f: BookkeepingFacts): ChangeDraft {
             : f.step === 'sync-bookkeeping'
               ? syncBookkeepingSummary(n, f.unfiledIds?.length ?? 0, f.categoryName ?? 'Sync bookkeeping')
               : `Set up the "${f.categoryName ?? 'Opening balances'}" category and kept it out of spending`;
-  const ids = [...f.activityIds, ...(f.unfiledIds ?? [])];
+  // `sync-bookkeeping` lists at most 200 ids; the counts are the totals.
+  const ids = [...f.activityIds, ...(f.unfiledIds ?? [])].slice(0, f.step === 'sync-bookkeeping' ? 200 : undefined);
   return {
     actor: 'auto',
     kind: 'bookkeeping',

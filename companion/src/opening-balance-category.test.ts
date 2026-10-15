@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -198,5 +198,29 @@ describe('fileCardOpeningDebts — the exclusion needs Wealthfolio 3.9+', () => 
     expect(await fileCardOpeningDebts(d)).toEqual({ filed: 1 });
     expect(d.assign).toHaveBeenCalledWith('o', 'new-cat');
     expect(d.setExcluded).toHaveBeenCalledWith(['mine', 'new-cat']);
+  });
+});
+
+describe('fileCardOpeningDebts — writers never read a snapshot (LU-H I2/I3)', () => {
+  it('I3: appends to the live list read from Wealthfolio right before the PUT, not to the database copy', async () => {
+    const d = { ...deps(ledger(`
+      INSERT INTO activities VALUES ('o','card','WITHDRAWAL','2026-04-20','464.6','Starting balance · sfc');
+      INSERT INTO app_settings VALUES ('spending.excluded_category_ids','["stale"]');
+    `)), readExcluded: vi.fn(async () => ['live-1', 'live-2']) };
+    await fileCardOpeningDebts(d);
+    expect(d.readExcluded).toHaveBeenCalled();
+    expect(d.setExcluded).toHaveBeenCalledWith(['live-1', 'live-2', 'new-cat']);
+  });
+
+  it('I2: a database that can only be read as a snapshot is left alone, with a log', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sfin-open-'));
+    made.push(dir);
+    const path = join(dir, 'wealthfolio.db');
+    writeFileSync(path, 'not a database');
+    const d = deps(path);
+    expect(await fileCardOpeningDebts(d)).toEqual({ filed: 0 });
+    expect(d.log).toHaveBeenCalledWith(expect.stringContaining('waits: the database can only be read as a snapshot'));
+    expect(d.createCategory).not.toHaveBeenCalled();
+    expect(d.setExcluded).not.toHaveBeenCalled();
   });
 });

@@ -1,10 +1,11 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileSyncBookkeeping, type BookkeepingFilingDeps } from './bookkeeping-category.js';
 import { SYNC_BOOKKEEPING_DESCRIPTION } from '../../shared/bookkeeping-filing.js';
+import type { FiledState } from '../../shared/bookkeeping-filing.js';
 import type { ChangeDraft } from '../../shared/change-entries.js';
 
 const made: string[] = [];
@@ -23,6 +24,7 @@ function database(rows: string, settings = ''): string {
     CREATE TABLE taxonomy_categories (id TEXT, taxonomy_id TEXT, name TEXT, parent_id TEXT);
     CREATE TABLE activity_taxonomy_assignments (id TEXT, activity_id TEXT, taxonomy_id TEXT, category_id TEXT, source TEXT, created_at TEXT);
     CREATE TABLE app_settings (setting_key TEXT PRIMARY KEY, setting_value TEXT);
+    CREATE TABLE spending_activity_splits (id TEXT PRIMARY KEY, activity_id TEXT, taxonomy_id TEXT, category_id TEXT, amount TEXT, sort_order INTEGER);
     INSERT INTO accounts VALUES ('chk', 'PNC Checking', 'CASH', 0), ('visa', 'Visa', 'CREDIT_CARD', 0), ('sav', 'Savings', 'CASH', 0);
     INSERT INTO app_settings VALUES ('spending.enabled', 'true'), ('spending.account_ids', '["chk","visa"]');
     INSERT INTO taxonomy_categories VALUES ('cat-gro', 'spending_categories', 'Groceries', NULL), ('cat-open', 'spending_categories', 'Opening balances', NULL);
@@ -33,8 +35,9 @@ function database(rows: string, settings = ''): string {
   return path;
 }
 
-function deps(dbPath: string, over: Partial<BookkeepingFilingDeps> = {}) {
+function deps(dbPath: string, over: Partial<BookkeepingFilingDeps> = {}, remembered: FiledState | 'corrupt' = { categoryId: null, ids: [] }) {
   const recorded: ChangeDraft[] = [];
+  const saved: FiledState[] = [];
   const d: BookkeepingFilingDeps = {
     dbPath,
     createCategory: vi.fn(async () => 'cat-sync-new'),
@@ -42,12 +45,25 @@ function deps(dbPath: string, over: Partial<BookkeepingFilingDeps> = {}) {
     assign: vi.fn(async () => {}),
     unassign: vi.fn(async () => {}),
     appVersion: vi.fn(async () => '3.10.0'),
+    // Wealthfolio's own list, read right before each PUT (here: the database's).
+    readExcluded: vi.fn(async () => liveExcluded(dbPath)),
+    loadFiled: vi.fn(async () => remembered),
+    saveFiled: vi.fn(async (state: FiledState) => { saved.push(state); }),
     record: (draft) => { recorded.push(draft); },
     log: vi.fn(),
     ...over,
   };
-  return { d, recorded };
+  return { d, recorded, saved };
 }
+
+function liveExcluded(path: string): string[] {
+  const db = new DatabaseSync(path);
+  try {
+    const r = db.prepare(`SELECT setting_value v FROM app_settings WHERE setting_key = 'spending.excluded_category_ids'`).get() as { v: string } | undefined;
+    return r ? JSON.parse(r.v) : [];
+  } finally { db.close(); }
+}
+function write(path: string, sql: string) { const db = new DatabaseSync(path); db.exec(sql); db.close(); }
 
 const PLACEHOLDER = `INSERT INTO activities VALUES ('ph', 'chk', 'TRANSFER_OUT', NULL, NULL, '2026-10-05T12:00:00+00:00', '600', '↔️ In-transit transfer · ZELLE · TRN-1', NULL);`;
 
@@ -59,7 +75,11 @@ describe('fileSyncBookkeeping', () => {
     // Appended to the person's own exclusions, never replacing them.
     expect(d.setExcluded).toHaveBeenCalledWith(['cat-mine', 'cat-sync-new']);
     expect(d.assign).toHaveBeenCalledWith('ph', 'cat-sync-new');
-    expect(recorded).toEqual([expect.objectContaining({ kind: 'bookkeeping', after: expect.objectContaining({ step: 'sync-bookkeeping', count: 1, unfiled: 0 }) })]);
+    // M2: a set-up entry for the create and the exclusion, then the pass's own.
+    expect(recorded).toEqual([
+      expect.objectContaining({ kind: 'bookkeeping', after: expect.objectContaining({ step: 'opening-category' }) }),
+      expect.objectContaining({ kind: 'bookkeeping', after: expect.objectContaining({ step: 'sync-bookkeeping', count: 1, unfiled: 0 }) }),
+    ]);
   });
 
   it('takes out an expired placeholder, leaves a hand-filed row and one already filed alone', async () => {
@@ -73,9 +93,10 @@ describe('fileSyncBookkeeping', () => {
         ('f2', 'mine', 'spending_categories', 'cat-gro', 'manual', '2026-10-05T13:00:00Z'),
         ('f3', 'done', 'spending_categories', 'cat-sync', 'manual', '2026-10-06T13:00:00Z');
     `, `INSERT INTO app_settings VALUES ('spending.excluded_category_ids', '["cat-sync"]');`);
-    const { d, recorded } = deps(path);
+    const { d, recorded, saved } = deps(path, {}, { categoryId: 'cat-sync', ids: ['expired', 'done'] });
     expect(await fileSyncBookkeeping(d)).toEqual({ filed: 0, unfiled: 1 });
     expect(d.unassign).toHaveBeenCalledWith('expired');
+    expect(saved).toEqual([{ categoryId: 'cat-sync', ids: ['done'] }]);
     expect(d.assign).not.toHaveBeenCalled();
     expect(d.createCategory).not.toHaveBeenCalled();
     expect(d.setExcluded).not.toHaveBeenCalled();
@@ -115,5 +136,165 @@ describe('fileSyncBookkeeping', () => {
     expect(await fileSyncBookkeeping(d)).toEqual({ filed: 1, unfiled: 0 });
     expect((d.assign as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0])).toEqual(['p1', 'p2']);
     expect(d.log).toHaveBeenCalledWith(expect.stringContaining("Couldn't file p1"));
+  });
+
+  it('C1: a placeholder the person split is never filed — assigning would erase the split', async () => {
+    const path = database(PLACEHOLDER, `INSERT INTO spending_activity_splits VALUES ('s1', 'ph', 'spending_categories', 'cat-gro', '400', 0), ('s2', 'ph', 'spending_categories', 'cat-open', '200', 1);`);
+    const { d } = deps(path);
+    expect(await fileSyncBookkeeping(d)).toEqual({ filed: 0, unfiled: 0 });
+    expect(d.assign).not.toHaveBeenCalled();
+    expect(d.createCategory).not.toHaveBeenCalled();
+  });
+
+  it('I1: a manual or rule filing under the category is left alone; the pass’s own is taken out, and forgotten', async () => {
+    const path = database(`
+      INSERT INTO taxonomy_categories VALUES ('cat-sync', 'spending_categories', 'Sync bookkeeping', NULL);
+      INSERT INTO activities VALUES ('manual', 'chk', 'WITHDRAWAL', NULL, NULL, '2026-10-05T12:00:00+00:00', '25', 'KROGER · TRN-9', NULL);
+      INSERT INTO activities VALUES ('rule', 'chk', 'WITHDRAWAL', NULL, NULL, '2026-10-05T12:00:00+00:00', '12', 'SHELL · TRN-8', NULL);
+      INSERT INTO activities VALUES ('mine', 'chk', 'WITHDRAWAL', NULL, NULL, '2026-10-05T12:00:00+00:00', '40', 'ZELLE TO MOM · TRN-2', NULL);
+      INSERT INTO activity_taxonomy_assignments VALUES
+        ('f1', 'manual', 'spending_categories', 'cat-sync', 'manual', '2026-10-05T13:00:00Z'),
+        ('f2', 'rule', 'spending_categories', 'cat-sync', 'rule', '2026-10-05T13:00:00Z'),
+        ('f3', 'mine', 'spending_categories', 'cat-sync', 'manual', '2026-10-05T13:00:00Z');
+    `, `INSERT INTO app_settings VALUES ('spending.excluded_category_ids', '["cat-sync"]');`);
+    const { d, saved } = deps(path, {}, { categoryId: 'cat-sync', ids: ['mine', 'long-gone'] });
+    expect(await fileSyncBookkeeping(d)).toEqual({ filed: 0, unfiled: 1 });
+    expect((d.unassign as ReturnType<typeof vi.fn>).mock.calls).toEqual([['mine']]);
+    // 'mine' is unfiled and 'long-gone' no longer exists: both forgotten.
+    expect(saved.at(-1)).toEqual({ categoryId: 'cat-sync', ids: [] });
+  });
+
+  it('I1: a corrupt memory means nothing is filed, nothing is taken out and it is never overwritten', async () => {
+    const { d, saved } = deps(database(PLACEHOLDER), {}, 'corrupt');
+    expect(await fileSyncBookkeeping(d)).toEqual({ filed: 0, unfiled: 0 });
+    expect(d.assign).not.toHaveBeenCalled();
+    expect(d.unassign).not.toHaveBeenCalled();
+    expect(d.createCategory).not.toHaveBeenCalled();
+    expect(saved).toEqual([]);
+    expect(d.log).toHaveBeenCalledWith(expect.stringContaining('sync_bookkeeping_filed'));
+  });
+
+  it('I1: what it files is remembered, with the category', async () => {
+    const { d, saved } = deps(database(PLACEHOLDER));
+    await fileSyncBookkeeping(d);
+    expect(saved.at(-1)).toEqual({ categoryId: 'cat-sync-new', ids: ['ph'] });
+  });
+
+  it('I1: a re-created category forgets ids remembered for the old one (their filings cascaded away)', async () => {
+    const { d, saved } = deps(database(PLACEHOLDER), {}, { categoryId: 'cat-deleted', ids: ['ph'] });
+    await fileSyncBookkeeping(d);
+    expect(saved.at(-1)).toEqual({ categoryId: 'cat-sync-new', ids: ['ph'] });
+    expect(d.assign).toHaveBeenCalledWith('ph', 'cat-sync-new');
+  });
+
+  it('I2: a database that can only be read as a snapshot is left alone, with a log', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sfin-bk-'));
+    made.push(dir);
+    const path = join(dir, 'wealthfolio.db');
+    writeFileSync(path, 'not a database');
+    const { d } = deps(path);
+    expect(await fileSyncBookkeeping(d)).toEqual({ filed: 0, unfiled: 0 });
+    expect(d.log).toHaveBeenCalledWith('Bookkeeping filing waits: the database can only be read as a snapshot');
+    expect(d.createCategory).not.toHaveBeenCalled();
+  });
+
+  it('I3: the exclusions are Wealthfolio’s live list, read right before the PUT — another writer’s exclusion is kept', async () => {
+    const { d } = deps(database(PLACEHOLDER, `INSERT INTO app_settings VALUES ('spending.excluded_category_ids', '["stale"]');`), {
+      readExcluded: vi.fn(async () => ['cat-open', 'cat-mine']),
+    });
+    await fileSyncBookkeeping(d);
+    expect(d.setExcluded).toHaveBeenCalledWith(['cat-open', 'cat-mine', 'cat-sync-new']);
+  });
+
+  it('I3: each row is re-read just before its write — one the person filed meanwhile is not overwritten', async () => {
+    const path = database(`
+      INSERT INTO activities VALUES ('p1', 'chk', 'TRANSFER_OUT', NULL, NULL, '2026-10-05T12:00:00+00:00', '60', '↔️ In-transit transfer · VENMO · TRN-1', NULL);
+      INSERT INTO activities VALUES ('p2', 'chk', 'TRANSFER_OUT', NULL, NULL, '2026-10-06T12:00:00+00:00', '61', '↔️ In-transit transfer · VENMO · TRN-2', NULL);
+      INSERT INTO activities VALUES ('p3', 'chk', 'TRANSFER_OUT', NULL, NULL, '2026-10-07T12:00:00+00:00', '62', '↔️ In-transit transfer · VENMO · TRN-3', NULL);
+    `);
+    const { d } = deps(path);
+    d.assign = vi.fn(async (id: string) => {
+      if (id === 'p1') write(path, `
+        INSERT INTO activity_taxonomy_assignments VALUES ('h', 'p2', 'spending_categories', 'cat-gro', 'manual', '2026-10-05T13:00:00Z');
+        INSERT INTO spending_activity_splits VALUES ('s', 'p3', 'spending_categories', 'cat-gro', '62', 0);`);
+    });
+    expect(await fileSyncBookkeeping(d)).toEqual({ filed: 1, unfiled: 0 });
+    expect((d.assign as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0])).toEqual(['p1']);
+  });
+
+  it('I3: a row the person filed elsewhere before it is taken out is not unassigned', async () => {
+    const path = database(`
+      INSERT INTO taxonomy_categories VALUES ('cat-sync', 'spending_categories', 'Sync bookkeeping', NULL);
+      INSERT INTO activities VALUES ('e1', 'chk', 'WITHDRAWAL', NULL, NULL, '2026-09-20T12:00:00+00:00', '40', 'ZELLE · TRN-2', NULL);
+      INSERT INTO activities VALUES ('e2', 'chk', 'WITHDRAWAL', NULL, NULL, '2026-09-21T12:00:00+00:00', '41', 'ZELLE · TRN-3', NULL);
+      INSERT INTO activity_taxonomy_assignments VALUES
+        ('f1', 'e1', 'spending_categories', 'cat-sync', 'manual', '2026-09-20T13:00:00Z'),
+        ('f2', 'e2', 'spending_categories', 'cat-sync', 'manual', '2026-09-21T13:00:00Z');
+    `, `INSERT INTO app_settings VALUES ('spending.excluded_category_ids', '["cat-sync"]');`);
+    const { d } = deps(path, {}, { categoryId: 'cat-sync', ids: ['e1', 'e2'] });
+    d.unassign = vi.fn(async (id: string) => {
+      if (id === 'e1') write(path, `UPDATE activity_taxonomy_assignments SET category_id = 'cat-gro' WHERE activity_id = 'e2';`);
+    });
+    expect(await fileSyncBookkeeping(d)).toEqual({ filed: 0, unfiled: 1 });
+  });
+
+  it('M1: an unreadable database is logged, not silent', async () => {
+    const path = database(PLACEHOLDER);
+    write(path, 'DROP TABLE activity_taxonomy_assignments;');
+    const { d } = deps(path);
+    expect(await fileSyncBookkeeping(d)).toEqual({ filed: 0, unfiled: 0 });
+    expect(d.log).toHaveBeenCalledWith("Bookkeeping filing skipped: couldn't read the database");
+  });
+
+  it('M2: a setup entry is written when the category was made or its exclusion re-added, even if every filing then fails', async () => {
+    const { d, recorded } = deps(database(PLACEHOLDER), { assign: vi.fn(async () => { throw new Error('refused'); }) });
+    expect(await fileSyncBookkeeping(d)).toEqual({ filed: 0, unfiled: 0 });
+    expect(recorded.map((r) => r.after)).toEqual([expect.objectContaining({ step: 'opening-category', categoryName: 'Sync bookkeeping' })]);
+
+    const again = deps(database(`INSERT INTO taxonomy_categories VALUES ('cat-sync', 'spending_categories', 'Sync bookkeeping', NULL);\n${PLACEHOLDER}`),
+      { assign: vi.fn(async () => { throw new Error('refused'); }) }, { categoryId: 'cat-sync', ids: [] });
+    await fileSyncBookkeeping(again.d);
+    expect(again.d.setExcluded).toHaveBeenCalledWith(['cat-sync']);
+    expect(again.recorded.map((r) => r.after)).toEqual([expect.objectContaining({ step: 'opening-category' })]);
+  });
+
+  it('M5: setExcluded refused — nothing is filed under a category that is not excluded, and the create is still logged', async () => {
+    const { d, recorded } = deps(database(PLACEHOLDER), { setExcluded: vi.fn(async () => { throw new Error('500'); }) });
+    await expect(fileSyncBookkeeping(d)).rejects.toThrow('500');
+    expect(d.assign).not.toHaveBeenCalled();
+    expect(recorded.map((r) => r.after)).toEqual([expect.objectContaining({ step: 'opening-category' })]);
+  });
+
+  it('M3: below 3.10 a blank (not null) type override is skipped — 3.9 reads it as a type and refuses the filing', async () => {
+    const path = database(`INSERT INTO activities VALUES ('blank', 'chk', 'TRANSFER_OUT', '', NULL, '2026-10-05T12:00:00+00:00', '600', '↔️ In-transit transfer · ZELLE · TRN-1', NULL);`);
+    const old = deps(path, { appVersion: vi.fn(async () => '3.9.0') });
+    expect(await fileSyncBookkeeping(old.d)).toEqual({ filed: 0, unfiled: 0 });
+    expect(old.d.assign).not.toHaveBeenCalled();
+    const current = deps(path);
+    expect(await fileSyncBookkeeping(current.d)).toEqual({ filed: 1, unfiled: 0 });
+  });
+
+  it('M5: re-created linked rows carry no filing and are never filed; the old row’s id is forgotten', async () => {
+    const path = database(`
+      INSERT INTO taxonomy_categories VALUES ('cat-sync', 'spending_categories', 'Sync bookkeeping', NULL);
+      INSERT INTO activities VALUES ('pla', 'chk', 'TRANSFER_OUT', NULL, NULL, '2026-10-11T12:00:00+00:00', '250', 'TO ALLY · TRN-PL', 'g-PL');
+      INSERT INTO activities VALUES ('plb', 'sav', 'TRANSFER_IN', NULL, NULL, '2026-10-11T12:00:00+00:00', '250', 'FROM PNC · TRN-PLb', 'g-PL');
+    `, `INSERT INTO app_settings VALUES ('spending.excluded_category_ids', '["cat-sync"]');`);
+    const { d, saved } = deps(path, {}, { categoryId: 'cat-sync', ids: ['pl-old'] });
+    expect(await fileSyncBookkeeping(d)).toEqual({ filed: 0, unfiled: 0 });
+    expect(d.assign).not.toHaveBeenCalled();
+    expect(saved.at(-1)).toEqual({ categoryId: 'cat-sync', ids: [] });
+  });
+
+  it('M6: the category is found by the remembered id first — a rename keeps working; duplicates use the remembered one', async () => {
+    const path = database(`
+      INSERT INTO taxonomy_categories VALUES ('cat-renamed', 'spending_categories', 'Plumbing', NULL);
+      INSERT INTO taxonomy_categories VALUES ('cat-dupe', 'spending_categories', 'Sync bookkeeping', NULL);
+      ${PLACEHOLDER}
+    `, `INSERT INTO app_settings VALUES ('spending.excluded_category_ids', '["cat-renamed","cat-dupe"]');`);
+    const { d } = deps(path, {}, { categoryId: 'cat-renamed', ids: [] });
+    await fileSyncBookkeeping(d);
+    expect(d.createCategory).not.toHaveBeenCalled();
+    expect(d.assign).toHaveBeenCalledWith('ph', 'cat-renamed');
   });
 });

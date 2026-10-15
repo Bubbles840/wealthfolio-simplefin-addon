@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isSyncBookkeepingNote, planBookkeepingFiling, SYNC_BOOKKEEPING_CATEGORY, type BookkeepingRow } from './bookkeeping-filing.js';
+import { isSyncBookkeepingNote, parseFiledState, planBookkeepingFiling, SYNC_BOOKKEEPING_CATEGORY, type BookkeepingRow } from './bookkeeping-filing.js';
 import { neutralAdjustmentFields, startingBalanceFields } from './sync-core.js';
 import { bookkeepingChange } from './change-entries.js';
 
@@ -8,7 +8,8 @@ const row = (over: Partial<BookkeepingRow> = {}): BookkeepingRow => ({
   id: 'r', accountType: 'CASH', type: 'TRANSFER_OUT', subtype: '', groupId: '', notes: '↔️ In-transit transfer · ZELLE · TRN-1',
   spendingCategoryIds: [], ...over,
 });
-const plan = (rows: BookkeepingRow[], categoryId: string | null = CAT) => planBookkeepingFiling(rows, { categoryId });
+const plan = (rows: BookkeepingRow[], categoryId: string | null = CAT, filedByPass: string[] = ['expired', 'still', 'theirs']) =>
+  planBookkeepingFiling(rows, { categoryId, filedByPass: new Set(filedByPass) });
 
 describe('the sync’s bookkeeping rows, by marker', () => {
   it('knows its three notes and nothing else', () => {
@@ -64,12 +65,36 @@ describe('planBookkeepingFiling', () => {
 
   it('keeps a starting balance unfiled when the person undid its account’s opening filing', () => {
     const rows = [row({ id: 'sb', notes: 'Starting balance · sfin-chk', type: 'WITHDRAWAL' })];
-    expect(planBookkeepingFiling(rows, { categoryId: CAT, noOpeningFile: (id) => id === 'sfin-chk' }).file).toEqual([]);
-    expect(planBookkeepingFiling(rows, { categoryId: CAT, noOpeningFile: () => false }).file).toEqual(['sb']);
+    expect(planBookkeepingFiling(rows, { categoryId: CAT, filedByPass: new Set(), noOpeningFile: (id) => id === 'sfin-chk' }).file).toEqual([]);
+    expect(planBookkeepingFiling(rows, { categoryId: CAT, filedByPass: new Set(), noOpeningFile: () => false }).file).toEqual(['sb']);
   });
 
   it('files before the category exists, and takes out nothing then', () => {
     expect(plan([row({ id: 'out' }), row({ id: 'x', notes: 'KROGER · TRN-2', spendingCategoryIds: ['cat-groceries'] })], null)).toEqual({ file: ['out'], unfile: [] });
+  });
+});
+
+describe('fix round: splits, and only what the pass filed', () => {
+  it('C1: a row with split lines counts as filed — assigning would clear the person’s split', () => {
+    expect(plan([row({ id: 'split', hasSplits: true })])).toEqual({ file: [], unfile: [] });
+  });
+
+  it('I1: a manual or rule filing under the category, not made by the pass, is left alone', () => {
+    const rows = [
+      row({ id: 'manual', type: 'WITHDRAWAL', notes: 'KROGER · TRN-9', spendingCategoryIds: [CAT] }),
+      row({ id: 'rule', type: 'WITHDRAWAL', notes: 'SHELL · TRN-8', spendingCategoryIds: [CAT] }),
+      row({ id: 'expired', type: 'WITHDRAWAL', notes: 'ZELLE TO MOM · TRN-1', spendingCategoryIds: [CAT] }),
+    ];
+    expect(plan(rows, CAT, ['expired'])).toEqual({ file: [], unfile: ['expired'] });
+    expect(plan(rows, CAT, [])).toEqual({ file: [], unfile: [] });
+  });
+
+  it('I1: the remembered ids parse; absent is empty; anything corrupt is refused, never read as empty', () => {
+    expect(parseFiledState(null)).toEqual({ categoryId: null, ids: [] });
+    expect(parseFiledState(JSON.stringify({ categoryId: 'c', ids: ['a', 'b'] }))).toEqual({ categoryId: 'c', ids: ['a', 'b'] });
+    for (const bad of ['', 'nope', '[]', '{"ids":"a"}', '{"categoryId":3,"ids":[]}', '{"categoryId":null,"ids":[1]}', 'null']) {
+      expect(parseFiledState(bad)).toBe('corrupt');
+    }
   });
 });
 
@@ -81,6 +106,11 @@ describe('one change-log entry per pass', () => {
     });
     expect(bookkeepingChange({ step: 'sync-bookkeeping', activityIds: [], unfiledIds: ['c'], categoryName: 'Sync bookkeeping' }).summary)
       .toBe('Took 1 row that is no longer bookkeeping out of "Sync bookkeeping"');
+    // M4: at most 200 ids are listed; the counts are the totals.
+    const many = Array.from({ length: 250 }, (_, i) => `r${i}`);
+    const big = bookkeepingChange({ step: 'sync-bookkeeping', activityIds: many, unfiledIds: ['u1'], categoryName: 'Sync bookkeeping' });
+    expect(big.subject.activityIds).toHaveLength(200);
+    expect(big.after).toMatchObject({ count: 250, unfiled: 1 });
     expect(bookkeepingChange({ step: 'sync-bookkeeping', activityIds: ['a'], unfiledIds: ['c', 'd'], categoryName: 'Sync bookkeeping' }))
       .toMatchObject({ subject: { activityIds: ['a', 'c', 'd'] }, summary: 'Filed 1 bookkeeping row under "Sync bookkeeping" and took 2 that are no longer bookkeeping out' });
   });
