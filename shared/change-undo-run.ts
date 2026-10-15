@@ -27,7 +27,7 @@ import { reversalChange, type ChangeDraft, type ChangeEntry } from './change-ent
 import { BUDGET_TAXONOMY, DEFAULT_PERIOD_KEY, type BudgetTarget } from './budget-suggest.js';
 import type { ChangeLogItem } from './change-log.js';
 import {
-  addonGateCovers, currentRowId, currentRuleId, latestReversal, planChangeUndo, undoAvailability, UNDO_EXACT_COPY, UNDO_NOT_POSSIBLE,
+  addonGateCovers, currentRowId, isPaybackEntry, currentRuleId, latestReversal, planChangeUndo, undoAvailability, UNDO_EXACT_COPY, UNDO_NOT_POSSIBLE,
   UNDO_UNREACHABLE, UNDO_UPDATE_ADDON, type UndoOp, type UndoPlan, type UndoRow, type UndoState, type UndoStep, type UndoVariant,
 } from './change-undo.js';
 import {
@@ -492,7 +492,7 @@ async function runOnce(
       installed = await io.secrets.get(INSTALLED_ADDON_VERSION_SECRET_KEY);
     } catch (err) {
       installed = null;
-      if (entry.kind === 'payback-filed') {
+      if (isPaybackEntry(entry)) {
         // Cannot tell is not "too old" (PB-B M7).
         try {
           io.log?.(`Payback ${entry.id}: could not read the installed add-on version: ${message(err)}`);
@@ -503,7 +503,7 @@ async function runOnce(
       }
     }
     const seen = installed && installed.trim() ? installed : null;
-    if (entry.kind === 'payback-filed') {
+    if (isPaybackEntry(entry)) {
       if (!addonUnderstandsPaybacks(seen)) return { ok: false, message: PAYBACK_UPDATE_ADDON };
     } else if (!addonUnderstandsVenmoNotes(seen)) {
       return { ok: false, message: UNDO_UPDATE_ADDON };
@@ -543,6 +543,13 @@ async function runOnce(
       }, now);
     } catch (err) {
       if (isUnreadableOverridesError(err)) return { ok: false, message: message(err) };
+      if (entry.kind === 'payback-filed') {
+        try {
+          io.log?.(`Payback ${entry.id}: the overrides write failed (${op}): ${message(err)}`);
+        } catch {
+          // Saying so never costs the refusal.
+        }
+      }
       // A payback's write can fail after it landed (a lost response): read it again (mirrors PB-B M2).
       let landed = false;
       if (entry.kind === 'payback-filed') {
@@ -627,7 +634,12 @@ async function runOnce(
             ...(e.entryId ? { entryId: e.entryId } : {}), ...(e.label ? { label: e.label } : {}),
           });
         }, o), now);
-      } catch {
+      } catch (backErr) {
+        try {
+          io.log?.(`Payback ${entry.id}: putting the overrides back failed (${op}): ${message(backErr)}`);
+        } catch {
+          // Saying so never costs the answer.
+        }
         return { ok: false, message: op === 'undo' ? (str(rec(entry.after).categoryId) === null ? PAYBACK_UNDO_STUCK_PLAIN : PAYBACK_UNDO_STUCK) : PAYBACK_REDO_STUCK };
       }
       return { ok: false, message: op === 'undo' ? PAYBACK_UNDO_UNCHANGED : PAYBACK_REDO_UNCHANGED };

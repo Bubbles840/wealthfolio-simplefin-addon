@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { categoryRuleCreatedChange, mappingRuleCreatedChange, stampChange, type ChangeDraft, type ChangeEntry } from './change-entries.js';
 import type { ChangeLogItem } from './change-log.js';
+import { addonGateCovers } from './change-undo.js';
 import { MAPPING_RULES_SECRET_KEY, runChangeUndo, UNDO_MAPPING_RULES_UNREADABLE, type UndoIo } from './change-undo-run.js';
 import { createFakeHost } from './fake-host.js';
 import { mapTransactionWithSource, paybackMappingRule, ruleApplies, sameMappingRule } from './mapper.js';
@@ -11,6 +12,7 @@ import {
 } from './payback-copy.js';
 import { bankWords, categoryRulePattern, paybackRulePattern } from './rule-pattern.js';
 import type { MappingRule } from './types.js';
+import { INSTALLED_ADDON_VERSION_SECRET_KEY } from './version.js';
 
 const NOW = new Date('2026-10-14T15:00:00Z');
 /** The day a rule made at NOW carries as `since`: the day BEFORE its UTC day. */
@@ -305,6 +307,39 @@ describe('makePaybackRules', () => {
     expect(w.io.secrets.set).not.toHaveBeenCalled();
   });
 
+  describe('a BROADER Wealthfolio rule that would win (M3)', () => {
+    const other = { id: 'r2', pattern: 'VENMO', categoryId: 'cat-groc', activityType: 'CREDIT', priority: 50 };
+    const cats = [{ id: 'cat-groc', name: 'Groceries' }];
+    const refused = async (rule: Record<string, unknown>, categoryId = 'cat-groc') => {
+      const w = world({ wfRules: [{ ...other, ...rule, categoryId }] });
+      const out = await makePaybackRules({ ...INPUT, categories: cats }, w.io, NOW);
+      return { w, out };
+    };
+
+    it('refuses a global one at the same priority (ours is 50, and a tie can go either way), naming it', async () => {
+      const { w, out } = await refused({});
+      expect(out).toEqual({ ok: false, message: paybackRulesConflict('VENMO', 'PNC Checking', 'Groceries') });
+      expect(w.io.secrets.set).not.toHaveBeenCalled();
+      expect(w.io.createCategoryRule).not.toHaveBeenCalled();
+    });
+
+    it('refuses one for this account at a higher priority, with no activity type', async () => {
+      const { out } = await refused({ accountId: 'wf-chk', priority: 90, activityType: undefined });
+      expect(out.ok).toBe(false);
+    });
+
+    it('lets a lower-priority rule, another account’s rule, another activity type and the same category through', async () => {
+      expect((await refused({ priority: 10 })).out.ok).toBe(true);
+      expect((await refused({ accountId: 'wf-sav' })).out.ok).toBe(true);
+      expect((await refused({ activityType: 'WITHDRAWAL' })).out.ok).toBe(true);
+      expect((await refused({}, 'cat-rest')).out.ok).toBe(true);
+    });
+
+    it('ignores a rule that is not broader (its words are not inside ours)', async () => {
+      expect((await refused({ pattern: 'VENMO PAYMENT' })).out.ok).toBe(true);
+    });
+  });
+
   it('makes nothing twice', async () => {
     const both = world({
       mapping: JSON.stringify([RULE]),
@@ -361,8 +396,9 @@ describe('makePaybackRules', () => {
 describe('Undo and Redo of the two rules', () => {
   const NAME = 'Telegram payback: JANE DOE VENMO';
   /** The runner over the add-on's secrets and Wealthfolio's rules. */
-  function undoWorld(mapping: MappingRule[], wfRules: Array<{ id: string; name: string; pattern: string }>) {
+  function undoWorld(mapping: MappingRule[], wfRules: Array<{ id: string; name: string; pattern: string }>, installed: string | null = '1.62.0') {
     const data = new Map([[MAPPING_RULES_SECRET_KEY, JSON.stringify(mapping)]]);
+    if (installed !== null) data.set(INSTALLED_ADDON_VERSION_SECRET_KEY, installed);
     const log: ChangeEntry[] = [];
     const create = vi.fn(async (_r: Record<string, unknown>) => 'rule-10');
     const io: UndoIo = {
@@ -394,6 +430,31 @@ describe('Undo and Redo of the two rules', () => {
     // Redo keeps the order: first again (I2).
     expect(await w.run(entry, 'redo')).toMatchObject({ ok: true, message: PAYBACK_TX_RULE_REDONE });
     expect(w.mapping()).toEqual([RULE, GLOBAL, lookalike]);
+  });
+
+  it('M6: the companion’s Undo and Redo of the transaction rule wait for an add-on that reads its limits, and write nothing', async () => {
+    const entry = stampChange(mappingRuleCreatedChange({ rule: RULE, description: 'JANE DOE VENMO', account: { wfId: 'wf-chk', name: 'PNC Checking' }, index: 0 }), 'companion', NOW);
+    for (const installed of ['1.61.0', null, '']) {
+      const w = undoWorld([RULE, GLOBAL], [], installed);
+      expect(await w.run(entry, 'undo')).toEqual({ ok: false, message: PAYBACK_UPDATE_ADDON });
+      expect(await w.run(entry, 'redo')).toEqual({ ok: false, message: PAYBACK_UPDATE_ADDON });
+      expect(w.mapping()).toEqual([RULE, GLOBAL]);
+    }
+    // An unreadable version is "couldn't reach", never "update the add-on".
+    const down = undoWorld([RULE, GLOBAL], []);
+    down.io.secrets.get = async (k) => { if (k === INSTALLED_ADDON_VERSION_SECRET_KEY) throw new Error('secrets down'); return down.data.get(k) ?? null; };
+    expect(await down.run(entry, 'undo')).toEqual({ ok: false, message: PAYBACK_UNREACHABLE });
+  });
+
+  it('M6: an ordinary transaction rule, and Wealthfolio’s category rule, are not held up by the add-on’s version', async () => {
+    const plain = stampChange(mappingRuleCreatedChange({ rule: GLOBAL, description: 'VENMO PAYMENT' }), 'companion', NOW);
+    expect(addonGateCovers(plain)).toBe(false);
+    expect(await undoWorld([GLOBAL], [], '1.61.0').run(plain, 'undo')).toMatchObject({ ok: true });
+    const cat = stampChange(categoryRuleCreatedChange({
+      ruleId: 'rule-9', name: NAME, pattern: 'JANE DOE VENMO', categoryId: 'cat-rest', categoryName: 'Restaurants',
+      account: { wfId: 'wf-chk', name: 'PNC Checking' }, activityType: 'CREDIT',
+    }), 'companion', NOW);
+    expect(addonGateCovers(cat)).toBe(false);
   });
 
   it('Redo puts the rule first when its logged index no longer fits the list (I2)', async () => {

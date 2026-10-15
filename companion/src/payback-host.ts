@@ -13,7 +13,7 @@
 import { SPENDING_TAXONOMY_ID } from '../../shared/cash-flow-bucket.js';
 import { MAPPING_RULES_SECRET_KEY } from '../../shared/change-undo-run.js';
 import {
-  addonPaybackGate, paybackBreadth, paybackRowOf, paybackRuleSince, type PaybackBreadth, type PaybackBreadthRow, type PaybackIo, type PaybackRulesIo,
+  addonPaybackGate, PAYBACK_RULE_PRIORITY, paybackBreadth, paybackRowOf, paybackRuleSince, type PaybackBreadth, type PaybackBreadthRow, type PaybackIo, type PaybackRulesIo,
 } from '../../shared/payback.js';
 import { PAYBACK_BREADTH_DAYS } from '../../shared/payback-copy.js';
 import { descriptionFromComment } from '../../shared/sync-core.js';
@@ -72,8 +72,10 @@ export function companionPaybackRulesIo(client: PaybackRulesClient, log: (msg: s
     categoryRules: async () => (await client.listCategorizationRules()).map((r) => ({
       id: r.id, pattern: r.pattern, categoryId: r.categoryId,
       ...(r.accountId ? { accountId: r.accountId } : {}), ...(r.activityType ? { activityType: r.activityType } : {}),
+      ...(typeof r.priority === 'number' ? { priority: r.priority } : {}), ...(r.matchType ? { matchType: r.matchType } : {}),
+      ...(r.taxonomyId ? { taxonomyId: r.taxonomyId } : {}), ...(r.amountOp ? { amountOp: r.amountOp } : {}),
     })),
-    createCategoryRule: async (rule) => (await client.createCategorizationRule({ ...rule, taxonomyId: SPENDING_TAXONOMY_ID, priority: 50 })) ?? null,
+    createCategoryRule: async (rule) => (await client.createCategorizationRule({ ...rule, taxonomyId: SPENDING_TAXONOMY_ID, priority: PAYBACK_RULE_PRIORITY })) ?? null,
     record: (draft) => recordCompanionChanges(client, [draft]),
     log,
   };

@@ -25,7 +25,7 @@
  * reads and writes) and, when a later step fails, says plainly what stands.
  */
 import { isCorrectionNote, isPendingNote, isPlaceholderNote, isStartingBalanceNote } from './audit-ledger.js';
-import { REIMBURSEMENT_SUBTYPE } from './cash-flow-bucket.js';
+import { REIMBURSEMENT_SUBTYPE, SPENDING_TAXONOMY_ID } from './cash-flow-bucket.js';
 import {
   categoryRuleCreatedChange, mappingRuleCreatedChange, paybackFiledChange, type ChangeDraft, type PaybackFiledFacts,
 } from './change-entries.js';
@@ -335,6 +335,9 @@ async function fileOnce(choice: PaybackChoice, io: PaybackIo, now: Date): Promis
 
 // ── "Make every … deposit a payback" (W10) ───────────────────────────────
 
+/** The priority the category rule is made at: Wealthfolio applies the highest first, and /categorize's rules use it too. */
+export const PAYBACK_RULE_PRIORITY = 50;
+
 /** What the rules are called in Wealthfolio's rules list (the pattern is never cut). */
 export const PAYBACK_RULE_NAME_PREFIX = 'Telegram payback: ';
 const RULE_NAME_MAX = 60;
@@ -363,7 +366,11 @@ export interface PaybackRulesIo {
   /** Wealthfolio's categorization rules now. Rejects when unreachable. */
   /** The account's money-in rows of the last 90 days, for the transfer check. Optional; rejects when unreadable. */
   breadthRows?(accountId: string): Promise<PaybackBreadthRow[]>;
-  categoryRules(): Promise<Array<{ id: string; pattern: string; categoryId: string | null; accountId?: string; activityType?: string }>>;
+  categoryRules(): Promise<Array<{
+    id: string; pattern: string; categoryId: string | null; accountId?: string; activityType?: string;
+    /** For the broader-rule check (M3); a rule without them is judged as a plain contains rule at priority 0. */
+    priority?: number; matchType?: string; taxonomyId?: string; amountOp?: string;
+  }>>;
   /** Creates a contains rule for one account and one activity type; resolves its id (null when the reply named none). */
   createCategoryRule(rule: { name: string; pattern: string; categoryId: string; accountId: string; activityType: string }): Promise<string | null>;
   record(draft: ChangeDraft): Promise<void>;
@@ -532,15 +539,28 @@ export async function makePaybackRules(input: PaybackRulesInput, io: PaybackRule
 
   const matches = (r: { pattern: string; accountId?: string; activityType?: string }) =>
     r.pattern.toLowerCase() === input.pattern.toLowerCase() && r.accountId === input.account.id && r.activityType === 'CREDIT';
+  // A broader rule (its words inside ours) for this account or every account, at our priority
+  // or higher, for CREDITs, under ANOTHER category: Wealthfolio can pick it over ours, so the
+  // reply "…is a payback under X from now on" would over-promise (M3).
+  const wouldBeat = (r: Awaited<ReturnType<PaybackRulesIo['categoryRules']>>[number]): boolean =>
+    r.categoryId !== null && r.categoryId !== input.categoryId
+    && (r.matchType === undefined || r.matchType === 'contains')
+    && (r.taxonomyId === undefined || r.taxonomyId === SPENDING_TAXONOMY_ID)
+    && !r.amountOp
+    && (r.accountId === undefined || r.accountId === input.account.id)
+    && (r.activityType === undefined || r.activityType === 'CREDIT')
+    && (r.priority ?? 0) >= PAYBACK_RULE_PRIORITY
+    && r.pattern.trim() !== '' && input.pattern.toLowerCase().includes(r.pattern.trim().toLowerCase());
   let list: MappingRule[] | null;
   let haveCategoryRule: boolean;
   try {
     list = parseMappingRules(await io.secrets.get(MAPPING_RULES_SECRET_KEY));
-    const theirs = (await io.categoryRules()).filter(matches);
-    const other = theirs.find((r) => r.categoryId !== input.categoryId);
+    const all = await io.categoryRules();
+    const theirs = all.filter(matches);
+    const other = theirs.find((r) => r.categoryId !== input.categoryId) ?? all.find(wouldBeat);
     if (other) {
       const name = input.categories?.find((c) => c.id === other.categoryId)?.name ?? null;
-      return no(paybackRulesConflict(input.pattern, input.account.name, name));
+      return no(paybackRulesConflict(other.pattern, input.account.name, name));
     }
     haveCategoryRule = theirs.length > 0;
   } catch (err) {
