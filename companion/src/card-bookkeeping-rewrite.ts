@@ -31,6 +31,10 @@
  * - Respects choices: a starting balance whose account has `noOpeningFile`, a
  *   row filed under a category the sync did not make, and a row with split
  *   lines (3.10 deletes them when the type changes) are left alone, logged.
+ *   The sync's categories are "Opening balances", by name as its filer finds
+ *   it, and "Sync bookkeeping" as the bookkeeping pass finds it: the id it
+ *   remembers in `sync_bookkeeping_filed` (a rename keeps working), else the
+ *   name.
  * - Finishes past a refusal (3.10's bulk write is all or nothing): a refused
  *   batch is retried row by row, a row refused alone is retried once at the
  *   end, and a row refused twice is left for good (logged, listed in the
@@ -45,10 +49,12 @@ import { existsSync } from 'fs';
 import { DatabaseSync } from 'node:sqlite';
 import { bookkeepingChange, type ChangeDraft } from '../../shared/change-entries.js';
 import {
-  BALANCE_ADJUSTMENT_COMMENT_PREFIX, EXTERNAL_BOOKKEEPING_METADATA, IN_TRANSIT_COMMENT_PREFIX, STARTING_BALANCE_COMMENT_PREFIX,
+  BALANCE_ADJUSTMENT_COMMENT_PREFIX, EXTERNAL_BOOKKEEPING_METADATA, IN_TRANSIT_COMMENT_PREFIX, OPENING_BALANCES_CATEGORY,
+  STARTING_BALANCE_COMMENT_PREFIX,
 } from '../../shared/sync-core.js';
 import type { ActivityWrite, SaveManyRequest, SaveManyResult } from '../../shared/sync-host.js';
 import { hostTakesCardTransferOut, isNewerVersion } from '../../shared/version.js';
+import { findSyncBookkeepingCategory } from './bookkeeping-category.js';
 import { PHANTOM_CASH_ASSET_ID } from './sqlite-audit.js';
 
 /** The secret that says the rewrite finished (an ISO timestamp). */
@@ -58,8 +64,6 @@ export const CARD_REWRITE_BATCH = 50;
 
 /** The add-on that no longer writes card WITHDRAWAL bookkeeping. */
 export const CARD_REWRITE_ADDON_SINCE = '1.62.0';
-/** Categories the sync itself files its bookkeeping under; any other is the person's. */
-const OWN_FILINGS = ['Opening balances', 'Sync bookkeeping'];
 
 /** A row as Wealthfolio's search answers it now. */
 export interface RewriteRestRow {
@@ -82,6 +86,9 @@ export interface CardRewriteDeps {
   installedAddonVersion(): string | null;
   /** True for a SimpleFin account whose opening-balance filing the person undid (`noOpeningFile`). */
   noOpeningFile?(sfinAccountId: string): boolean;
+  /** The "Sync bookkeeping" category id the bookkeeping pass remembers (`sync_bookkeeping_filed`);
+   *  null when none or unreadable (then the category is found by its name). */
+  rememberedBookkeepingCategory?(): Promise<string | null>;
   /** The change log: one draft per run that wrote anything. */
   record?(draft: ChangeDraft): void;
   log(message: string): void;
@@ -102,8 +109,8 @@ interface Row {
   /** The stored asset's display code / instrument symbol / name; '' when the asset row is missing. */
   asset_codes: string;
   asset_label: string;
-  /** Names of the spending categories it is filed under (taxonomy spending_categories). */
-  filings: string[];
+  /** The spending categories it is filed under (taxonomy spending_categories). */
+  filings: Array<{ id: string; name: string }>;
   has_splits: boolean;
 }
 
@@ -155,12 +162,14 @@ function cardWithdrawals(db: DatabaseSync): Row[] {
        AND (COALESCE(a.notes,'') LIKE ? || '%' OR COALESCE(a.notes,'') LIKE ? || '%' OR COALESCE(a.notes,'') LIKE ? || '%')
      ORDER BY a.activity_date, a.id`,
   ).all(STARTING_BALANCE_COMMENT_PREFIX, BALANCE_ADJUSTMENT_COMMENT_PREFIX, IN_TRANSIT_COMMENT_PREFIX) as unknown as Omit<Row, 'filings' | 'has_splits'>[];
-  const filings = new Map<string, string[]>();
+  const filings = new Map<string, Array<{ id: string; name: string }>>();
   if (hasTable(db, 'activity_taxonomy_assignments') && hasTable(db, 'taxonomy_categories')) {
     for (const f of db.prepare(
-      `SELECT ata.activity_id id, COALESCE(tc.name,'') name FROM activity_taxonomy_assignments ata
+      `SELECT ata.activity_id activity, tc.id id, COALESCE(tc.name,'') name FROM activity_taxonomy_assignments ata
        JOIN taxonomy_categories tc ON ata.category_id = tc.id WHERE tc.taxonomy_id = 'spending_categories'`,
-    ).all() as unknown as Array<{ id: string; name: string }>) filings.set(f.id, [...(filings.get(f.id) ?? []), f.name]);
+    ).all() as unknown as Array<{ activity: string; id: string; name: string }>) {
+      filings.set(f.activity, [...(filings.get(f.activity) ?? []), { id: f.id, name: f.name }]);
+    }
   }
   const splits = new Set<string>();
   if (hasTable(db, 'spending_activity_splits')) {
@@ -198,6 +207,7 @@ export async function rewriteCardBookkeeping(deps: CardRewriteDeps): Promise<Car
     deps.log('Card bookkeeping rewrite waits for the 1.62 add-on.');
     return { kind: 'old-addon' };
   }
+  const remembered = deps.rememberedBookkeepingCategory ? await deps.rememberedBookkeepingCategory().catch(() => null) : null;
   const db = deps.dbPath && existsSync(deps.dbPath) ? open(deps.dbPath) : null;
   if (!db) {
     deps.log(deps.dbPath && existsSync(deps.dbPath)
@@ -206,11 +216,15 @@ export async function rewriteCardBookkeeping(deps: CardRewriteDeps): Promise<Car
     return { kind: 'no-database' };
   }
   let rows: Row[];
+  let syncCategory: string | null = null;
   try {
     rows = cardWithdrawals(db);
+    if (hasTable(db, 'taxonomy_categories')) syncCategory = findSyncBookkeepingCategory(db, remembered);
   } finally {
     db.close();
   }
+  /** A filing the sync made: "Opening balances" (by name, as its filer finds it) or the bookkeeping pass's category. */
+  const ownFiling = (f: { id: string; name: string }) => f.name === OPENING_BALANCES_CATEGORY || f.id === syncCategory;
 
   const left: Row[] = [];
   const todo: Row[] = [];
@@ -223,7 +237,7 @@ export async function rewriteCardBookkeeping(deps: CardRewriteDeps): Promise<Car
     else if (r.override) leave(r, `you typed it ${r.override} in Wealthfolio`);
     else if (assetKind(r) === 'security') leave(r, `it carries a security (${r.asset_label || r.asset_id})`);
     else if (r.has_splits) leave(r, 'it has split lines, which Wealthfolio deletes when the type changes');
-    else if (r.filings.some((n) => !OWN_FILINGS.includes(n))) leave(r, `you filed it under ${r.filings.filter((n) => !OWN_FILINGS.includes(n)).join(', ')}`);
+    else if (r.filings.some((f) => !ownFiling(f))) leave(r, `you filed it under ${r.filings.filter((f) => !ownFiling(f)).map((f) => f.name).join(', ')}`);
     else if (r.notes.startsWith(STARTING_BALANCE_COMMENT_PREFIX) && deps.noOpeningFile?.(r.notes.slice(STARTING_BALANCE_COMMENT_PREFIX.length))) {
       leave(r, 'you undid its opening-balance filing');
     } else todo.push(r);

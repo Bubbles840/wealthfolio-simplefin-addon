@@ -275,6 +275,22 @@ describe('runCompanionSync', () => {
     expect(client.setAddonSecret).toHaveBeenCalledWith('simplefin-sync', 'card_bookkeeping_rewrite', '2026-10-14T15:00:00.000Z');
   });
 
+  it("hands the card rewrite the bookkeeping pass's remembered category (sync_bookkeeping_filed); none or corrupt is null", async () => {
+    vi.mocked(rewriteCardBookkeeping).mockClear();
+    await runCompanionSync();
+    const deps = vi.mocked(rewriteCardBookkeeping).mock.calls[0][0];
+    const { WealthfolioClient } = await import('./wealthfolio.js');
+    const client = vi.mocked(WealthfolioClient).mock.results.at(-1)!.value as any;
+    let filed: string | null = JSON.stringify({ categoryId: 'c-w3', ids: ['a1'] });
+    client.getAddonSecret.mockImplementation(async (_addon: string, key: string) => (key === 'sync_bookkeeping_filed' ? filed : null));
+    expect(await deps.rememberedBookkeepingCategory?.()).toBe('c-w3');
+    expect(client.getAddonSecret).toHaveBeenCalledWith('simplefin-sync', 'sync_bookkeeping_filed');
+    filed = null;
+    expect(await deps.rememberedBookkeepingCategory?.()).toBeNull();
+    filed = '{not json';
+    expect(await deps.rememberedBookkeepingCategory?.()).toBeNull();
+  });
+
   it('derives force from MIN_SYNC_INTERVAL_HOURS when called with no options, so the cron tick is unchanged', async () => {
     delete process.env.MIN_SYNC_INTERVAL_HOURS;
     await runCompanionSync();
