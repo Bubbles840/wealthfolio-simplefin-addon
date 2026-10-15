@@ -111,6 +111,8 @@ export const PAYBACK_CAT_RULE_REDONE = 'Redone — the rule is back. If the tran
 export const PAYBACK_RULES_UNSURE = "Couldn't tell whether the transaction rule was saved — check the add-on's Transaction Rules card. The Wealthfolio rule was not made.";
 export const paybackRulesTakesOver = (rulePattern: string): string =>
   `The transaction rule "${rulePattern}" already makes deposits like these transfers, and a payback rule would take them over — change that rule first. Nothing was changed.`;
+export const paybackRulesBehind = (rulePattern: string | null): string =>
+  `You already have a payback rule for these deposits, but ${rulePattern ? `your transaction rule "${rulePattern}"` : 'another transaction rule'} comes first and decides them. Move yours up in Settings → Transaction rules. Nothing was changed.`;
 export const PAYBACK_RULES_SAVE_FAILED = "Couldn't save the transaction rule — nothing was changed.";
 export const PAYBACK_RULES_REFUSED = "Wealthfolio didn't take the category rule, so neither rule was made.";
 export const paybackRulesStuck = (pattern: string): string =>

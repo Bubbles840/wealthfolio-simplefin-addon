@@ -7,7 +7,7 @@ import { mapTransactionWithSource, paybackMappingRule, ruleApplies, sameMappingR
 import { makePaybackRules, paybackBreadth, paybackPatternRefusal, type PaybackRulesInput, type PaybackRulesIo } from './payback.js';
 import {
   PAYBACK_CAT_RULE_REDONE, PAYBACK_CAT_RULE_UNDONE, PAYBACK_RULES_EXIST, PAYBACK_RULES_GENERIC, PAYBACK_RULES_REFUSED, PAYBACK_RULES_SAVE_FAILED,
-  PAYBACK_RULES_UNSURE, PAYBACK_TX_RULE_REDONE, PAYBACK_TX_RULE_UNDONE, PAYBACK_UNREACHABLE, PAYBACK_UPDATE_ADDON, paybackRulesConflict, paybackRulesStuck, paybackRulesTakesOver,
+  PAYBACK_RULES_UNSURE, PAYBACK_TX_RULE_REDONE, PAYBACK_TX_RULE_UNDONE, PAYBACK_UNREACHABLE, PAYBACK_UPDATE_ADDON, paybackRulesBehind, paybackRulesConflict, paybackRulesStuck, paybackRulesTakesOver,
 } from './payback-copy.js';
 import { bankWords, categoryRulePattern, paybackRulePattern } from './rule-pattern.js';
 import type { MappingRule } from './types.js';
@@ -199,22 +199,17 @@ describe('makePaybackRules', () => {
     expect(mapTransactionWithSource('JANE DOE VENMO 7781', 25, [GLOBAL, RULE], 'CASH', 'wf-chk', TODAY).type).toBe('TRANSFER_IN');
   });
 
-  it('MOVES an older payback rule for the same words that an earlier rule shadows, keeping its day, logged (m6)', async () => {
+  it('names an older payback rule that another rule sits in front of, and writes and logs nothing, never moving it (m6)', async () => {
     const broad: MappingRule = { pattern: 'JANE DOE', matchType: 'contains', activityType: 'TRANSFER_IN' };
     const old = { ...RULE, since: '2026-09-01' };
-    const w = world({ mapping: JSON.stringify([broad, old]), wfRules: [{ id: 'r1', pattern: 'JANE DOE VENMO', categoryId: 'cat-rest', accountId: 'wf-chk', activityType: 'CREDIT' }] });
-    expect((await makePaybackRules(INPUT, w.io, NOW)).ok).toBe(true);
-    expect(w.mapping()).toEqual([old, broad]);
-    expect(w.logged.map((e) => e.kind)).toEqual(['mapping-rule-created']);
-    expect(w.logged[0].after).toMatchObject({ index: 0, rule: { since: '2026-09-01' } });
-  });
-
-  it('puts the move back when Wealthfolio then refuses the category rule (m6)', async () => {
-    const broad: MappingRule = { pattern: 'JANE DOE', matchType: 'contains', activityType: 'TRANSFER_IN' };
-    const old = { ...RULE, since: '2026-09-01' };
-    const w = world({ mapping: JSON.stringify([broad, old]), io: { createCategoryRule: vi.fn(async () => { throw new Error('400'); }) } });
-    expect((await makePaybackRules(INPUT, w.io, NOW)).ok).toBe(false);
+    const w = world({ mapping: JSON.stringify([broad, old]) });
+    const out = await makePaybackRules(INPUT, w.io, NOW);
+    expect(out).toEqual({ ok: false, message: paybackRulesBehind('JANE DOE') });
+    expect(out.message).toContain('Settings → Transaction rules');
     expect(w.mapping()).toEqual([broad, old]);
+    expect(w.io.secrets.set).not.toHaveBeenCalled();
+    expect(w.io.createCategoryRule).not.toHaveBeenCalled();
+    expect(w.logged).toEqual([]);
   });
 
   it('says it couldn’t tell, not "nothing was changed", when the write threw and the re-read failed too (m5)', async () => {
