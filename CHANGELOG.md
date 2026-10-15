@@ -98,6 +98,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that filing undone from `/changes` before the payback itself can be undone.
   In the app's **Your overrides** list a Payback is shown read-only, with
   "Undo it from Telegram: /changes" — removing only its flag is not an undo.
+  Only when no Undo is behind it (the change log could not be written, or the
+  setting was left on a row that is gone) does the row offer **Remove**, which
+  takes the flag off and nothing else.
 - **Make every <pattern> deposit a payback.** After a payback, the Filed
   screen offers this instead of "Make this a rule": two rules made together —
   an add-on transaction rule (money into that account only, matched on the
@@ -125,8 +128,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   changed elsewhere — reload them first." — so the companion's payback rule is
   never silently dropped.
 - **Paybacks in the app** (Wealthfolio 3.9 and newer, with a companion of
-  1.62.0 or newer). A posted deposit on Home's needs-a-category list, and its
-  story, offers **It's a payback…**: pick the spending it pays back ("Pick the
+  1.62.0 or newer). A posted deposit on a bank (cash) account from your bank
+  feed offers **It's a payback…** on Home's needs-a-category list, and in its
+  story when Wealthfolio says it is filed nowhere: pick the spending it pays back ("Pick the
   spending it pays you back for.") and **File it**. It becomes a payback as in
   Telegram — the `asReimbursement` override, then a `CREDIT` marked
   `REIMBURSEMENT` — and leaves the list at once: "Filed as a payback under
@@ -138,10 +142,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   records the filing as a rule's. The rule is made before the row is
   re-typed, so it wins over an older rule for paybacks; if another rule still
   filed it first, the reply names that category. A one-off rule that could
-  not be deleted is named, and the next payback from the app deletes it.
+  not be deleted is named, and the next payback from the app tries to delete it again.
   Refused in its own words, with nothing written: a row already filed under
   any category ("take that off in Wealthfolio first" — the add-on cannot take
-  a filing off), an account Wealthfolio's Spending does not track, half of a
+  a filing off), a category the sync keeps for its own bookkeeping, an account Wealthfolio's Spending does not track, half of a
   linked transfer, a row that changed since its story showed it, and
   everything Telegram refuses. The change log names the category Wealthfolio
   confirmed, and when the entry could not be written the reply says there is
@@ -169,7 +173,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     they run at once, so upload the zip first. Telegram's paybacks wait for
     the 1.62 add-on too (below).
   - **Then reload any browser tab still running 1.61.** Until it is reloaded
-    it keeps writing bare dates, and a card's bookkeeping as withdrawals.
+    it keeps writing bare dates, writes a card's bookkeeping as withdrawals,
+    and turns a payback back into a deposit.
 - Built against add-on SDK 3.9.0. It still installs on Wealthfolio 3.8.
 - Paybacks need both halves on 1.62.0. Telegram's payback, its Undo and Redo
   and the two-rule offer wait for an installed add-on of 1.62.0 or newer —

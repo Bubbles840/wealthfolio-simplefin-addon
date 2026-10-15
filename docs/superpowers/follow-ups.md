@@ -1270,6 +1270,15 @@ branches.
     entry is logged with no category, so if Wealthfolio did file it,
     Telegram's Undo turns it back into a deposit but leaves that filing on —
     take it off in Wealthfolio.
+  - **The bookkeeping categories match by exact name.** The app's picker
+    leaves out the categories the sync keeps for its own bookkeeping, and the
+    runner refuses them, by exact name: a "Sync bookkeeping" category renamed
+    in Wealthfolio shows in the picker and is accepted.
+  - **A shared override-then-retype step** is still to be extracted from
+    `filePayback` (Telegram) and the app's runner, which carry the same
+    override write, read-back, re-type and take-back by hand.
+  - **Two app windows** (see above): one window's sweep can delete the other's
+    in-flight one-off rule.
   - **The list offers it only on rows a 1.62 companion marks**
     (`paybackEligible`): until the companion's first 1.62 publish, only the
     story offers it.
