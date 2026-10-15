@@ -16,7 +16,7 @@
  */
 import { bookkeepingChange, type ChangeDraft } from '../../shared/change-entries.js';
 import {
-  batches, DATE_REPAIR_PAUSE_MS, DATE_REPAIR_SECRET_KEY, DATE_REPAIR_SINCE, parseDateRepairMarker, planDateRepair, type DateRepairRow, type DateRepairWrite,
+  batches, DATE_REPAIR_PAUSE_MS, DATE_REPAIR_SECRET_KEY, DATE_REPAIR_SINCE, parseDateRepairMarker, planDateRepair, type DateRepairPlan, type DateRepairRow, type DateRepairWrite,
 } from '../../shared/date-repair.js';
 import { isNewerVersion } from '../../shared/version.js';
 
@@ -38,10 +38,12 @@ export interface DateRepairDeps {
   searchPage(accountId: string, page: number, pageSize: number): Promise<DateRepairRow[]>;
   /** These rows by id, as the search returns them now (a vanished id is absent). */
   searchByIds(ids: string[]): Promise<DateRepairRow[]>;
-  /** Ids of rows with a non-blank type override. Throws when the database cannot be read. */
+  /** Ids of rows with a non-blank type override. LIVE reads only: throws `SnapshotOnlyError` when the database can only be read as a snapshot, and another error when it cannot be read at all. */
   overriddenIds(): Set<string>;
-  /** Every row's stored type by id. Throws when the database cannot be read. */
+  /** Every row's stored type by id. Live only, as `overriddenIds`. */
   storedTypes(): Map<string, string>;
+  /** Wealthfolio's timezone (null when unset). Live only, as `overriddenIds`. */
+  timeZone(): string | null;
   /** One bulk update; resolves the refusals (Wealthfolio's bulk write is all or nothing). */
   saveUpdates(writes: DateRepairWrite[]): Promise<{ errors: Array<{ action: string; message: string }> }>;
   record(draft: ChangeDraft): Promise<void>;
@@ -63,6 +65,14 @@ export interface DateRepairResult {
   skippedOverride: number;
 }
 
+/** The database can only be read as a snapshot (a checkpoint behind): the repair never decides from one. */
+export class SnapshotOnlyError extends Error {
+  constructor() {
+    super('the database can only be read as a snapshot');
+    this.name = 'SnapshotOnlyError';
+  }
+}
+
 const NOT_RUN: DateRepairResult = { ran: false, moved: 0, failed: 0, transient: 0, changed: 0, skippedGrouped: 0, skippedOverride: 0 };
 
 /** A thrown write error that is the row's own fault (4xx) and will not heal. */
@@ -72,6 +82,8 @@ function isPermanent(e: unknown): boolean {
   const status = Number(m[1]);
   return status >= 400 && status < 500 && ![408, 423, 429].includes(status);
 }
+
+type Move = DateRepairPlan['moves'][number];
 
 export async function runDateRepair(
   deps: DateRepairDeps, now: Date, limits: { pageSize?: number; maxPages?: number } = {},
@@ -93,16 +105,19 @@ export async function runDateRepair(
   }
   const mapped = new Set((await deps.mappedAccountIds()).filter((id) => !!id));
   if (mapped.size === 0) return NOT_RUN;
-  let overriddenIds: Set<string>;
-  let storedTypes: Map<string, string>;
-  try {
-    overriddenIds = deps.overriddenIds();
-    storedTypes = deps.storedTypes();
-  } catch (err) {
-    deps.log(`Date repair waits: couldn't read the Wealthfolio database (${err instanceof Error ? err.message : String(err)}).`);
-    return NOT_RUN;
-  }
-  const opts = { mappedAccountIds: mapped, overriddenIds, storedTypes };
+  /** The database's view of the rows, read live; null (logged) when it cannot be. */
+  const readOpts = () => {
+    try {
+      return { mappedAccountIds: mapped, overriddenIds: deps.overriddenIds(), storedTypes: deps.storedTypes(), timeZone: deps.timeZone() };
+    } catch (err) {
+      deps.log(err instanceof SnapshotOnlyError
+        ? 'Date repair waits: the database can only be read as a snapshot'
+        : `Date repair waits: couldn't read the Wealthfolio database (${err instanceof Error ? err.message : String(err)}).`);
+      return null;
+    }
+  };
+  const opts = readOpts();
+  if (!opts) return NOT_RUN;
 
   /** Every mapped account's rows, one per id; `capped` when a sweep hit its page limit. */
   const sweep = async (): Promise<{ rows: DateRepairRow[]; capped: boolean }> => {
@@ -119,30 +134,38 @@ export async function runDateRepair(
     return { rows: [...byId.values()], capped };
   };
 
-  const first = await sweep();
-  const plan = planDateRepair(first.rows, opts);
-  const moved: string[] = [];
-  const refused = new Set<string>();
-  let transient = 0;
-  let changed = 0;
-  const groups = batches(plan.moves);
-  for (const [i, group] of groups.entries()) {
-    if (i > 0) await deps.sleep(DATE_REPAIR_PAUSE_MS);
-    // Re-read right before writing: the note and type go out as swept.
+  /** Re-read right before writing (the note and type go out as swept): the moves still true now; null when the re-read failed. */
+  const reread = async (group: Move[]): Promise<Move[] | null> => {
     let fresh: Map<string, DateRepairRow>;
     try {
       fresh = new Map((await deps.searchByIds(group.map((m) => m.row.id))).map((r) => [r.id, r]));
     } catch (e) {
-      transient += group.length;
       deps.log(`Date repair: couldn't re-read a batch (${e instanceof Error ? e.message : String(e)}) — the next sync tries again.`);
-      continue;
+      return null;
     }
     const same = group.filter((m) => {
       const now = fresh.get(m.row.id);
       return !!now && now.accountId === m.row.accountId && now.activityType === m.row.activityType
         && now.currency === m.row.currency && (now.comment ?? '') === (m.row.comment ?? '');
     });
-    const send = planDateRepair(same.map((m) => fresh.get(m.row.id)!), opts).moves;
+    return planDateRepair(same.map((m) => fresh.get(m.row.id)!), opts).moves;
+  };
+
+  const first = await sweep();
+  const plan = planDateRepair(first.rows, opts);
+  const moved: string[] = [];
+  const refused = new Set<string>();
+  const refusedOnce: Move[] = [];
+  let transient = 0;
+  let changed = 0;
+  const groups = batches(plan.moves);
+  for (const [i, group] of groups.entries()) {
+    if (i > 0) await deps.sleep(DATE_REPAIR_PAUSE_MS);
+    const send = await reread(group);
+    if (!send) {
+      transient += group.length;
+      continue;
+    }
     changed += group.length - send.length;
     if (send.length === 0) continue;
     const bulk = await deps.saveUpdates(send.map((m) => m.write)).catch((e) => ({ errors: [{ action: 'save', message: String(e) }] }));
@@ -163,27 +186,64 @@ export async function runDateRepair(
         permanent = isPermanent(e);
         message = e instanceof Error ? e.message : String(e);
       }
-      if (permanent) refused.add(m.row.id); else transient += 1;
+      if (permanent) refusedOnce.push(m); else transient += 1;
       deps.log(`Date repair: couldn't move ${m.row.id} (${message}).`);
     }
   }
+  // Upstream maps every error, "database is locked" included, to a 400: one
+  // refusal proves nothing. Refused rows get one more try after a pause, on a
+  // fresh read, and only a second refusal is for good.
+  if (refusedOnce.length > 0) {
+    await deps.sleep(DATE_REPAIR_PAUSE_MS);
+    for (const group of batches(refusedOnce)) {
+      const send = await reread(group);
+      if (!send) {
+        transient += group.length;
+        continue;
+      }
+      changed += group.length - send.length;
+      for (const m of send) {
+        try {
+          const one = await deps.saveUpdates([m.write]);
+          if (one.errors.length === 0) { moved.push(m.row.id); continue; }
+          refused.add(m.row.id);
+        } catch (e) {
+          if (isPermanent(e)) refused.add(m.row.id); else transient += 1;
+        }
+      }
+    }
+  }
   const failed = refused.size + transient;
-  const skipped = plan.skippedGrouped + plan.skippedOverride + changed;
+  // Rows left on purpose; a row that changed or vanished meanwhile is no one of them.
+  const skipped = plan.skippedGrouped + plan.skippedOverride;
   if (moved.length > 0) {
     await deps.record(bookkeepingChange({
-      step: 'date-repair', activityIds: moved.slice(0, DATE_REPAIR_ENTRY_IDS), total: moved.length, skipped, failed,
+      step: 'date-repair', activityIds: moved.slice(0, DATE_REPAIR_ENTRY_IDS), total: moved.length, skipped, failed: refused.size,
     })).catch((e) => deps.log(`Change log skipped: ${String(e)}`));
   }
 
   // Done only when nothing movable is left: a last sweep, apart from the rows Wealthfolio refuses for good.
   let complete = transient === 0 && !first.capped;
   if (first.capped) deps.log(`Date repair: an account has more than ${maxPages * pageSize} rows — not all were read, so it isn't marked done.`);
+  if (complete && plan.unknown > 0) {
+    complete = false;
+    deps.log(`Date repair: ${plan.unknown} row(s) are not in the database read yet — the next sync tries again.`);
+  }
   if (complete) {
-    const last = await sweep();
-    const left = planDateRepair(last.rows, opts).moves.filter((m) => !refused.has(m.row.id));
-    if (last.capped || left.length > 0) {
-      complete = false;
-      deps.log(`Date repair: ${left.length} row(s) are still at midnight after the pass — the next sync tries again.`);
+    try {
+      // The types as they are NOW: a retype during the run must not leave a row counted as "retyped".
+      const latest = readOpts();
+      if (!latest) throw new Error('the database could not be read again');
+      const last = await sweep();
+      const check = planDateRepair(last.rows, latest);
+      const left = check.moves.filter((m) => !refused.has(m.row.id));
+      if (last.capped || left.length > 0 || check.unknown > 0) {
+        complete = false;
+        deps.log(`Date repair: ${left.length + check.unknown} row(s) are still at midnight after the pass — the next sync tries again.`);
+      }
+    } catch {
+      deps.log(`Date repair moved ${moved.length} rows but couldn't finish checking — it will check again next sync.`);
+      return { ran: true, moved: moved.length, failed, transient, changed, skippedGrouped: plan.skippedGrouped, skippedOverride: plan.skippedOverride };
     }
   }
   if (complete) {
@@ -198,6 +258,8 @@ export async function runDateRepair(
   }
   deps.log(complete
     ? `Date repair: moved ${moved.length} row(s) from midnight UTC to noon; left ${skipped} linked or retyped row(s) alone${refused.size ? `; Wealthfolio refused ${refused.size}` : ''}. Done.`
-    : `Date repair: moved ${moved.length} row(s); ${failed} could not be moved — the next sync tries again.`);
+    : failed > 0
+      ? `Date repair: moved ${moved.length} row(s); ${failed} could not be moved — the next sync tries again.`
+      : `Date repair: moved ${moved.length} row(s); not finished — the next sync tries again.`);
   return { ran: true, moved: moved.length, failed, transient, changed, skippedGrouped: plan.skippedGrouped, skippedOverride: plan.skippedOverride };
 }

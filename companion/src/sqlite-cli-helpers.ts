@@ -31,6 +31,14 @@ export const shiftDay = (day: string, days: number) => new Date(Date.parse(`${da
  *  and its actuals (`top_category_id`, crates/spending/src/budget/service.rs,
  *  v3.10.0), however deep the taxonomy goes. The walk is bounded (32) so a
  *  parent loop cannot hang the read; a category in such a loop has no top. */
+/** Only the budget targets upstream's Spending budget page lists
+ *  (budget/service.rs:250-251 at v3.10.0): category targets in the spending
+ *  taxonomy, in a category that is not excluded from spending. An income
+ *  target, a group buffer or an excluded category's target is no part of
+ *  "left this month". Append to a WHERE on `budget_targets`. */
+export const SPENDING_BUDGET_TARGET_FILTER = `target_type = 'category' AND taxonomy_id = 'spending_categories'
+    AND category_id NOT IN (SELECT value FROM json_each(COALESCE((SELECT setting_value FROM app_settings WHERE setting_key = 'spending.excluded_category_ids'), '[]')))`;
+
 export const TOP_CATEGORY_CTE = `up(start_id, parent_id, name, depth) AS (
     SELECT id, parent_id, name, 0 FROM taxonomy_categories
     UNION ALL

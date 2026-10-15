@@ -247,7 +247,7 @@ export async function buildReportCube(
       ? await Promise.resolve().then(() => deps.filingContext?.()).catch(() => null) ?? null
       : null;
     const filings = filing?.history
-      ? filing.history.filter((e) => e.kind === 'category-filed' || e.kind === 'opening-balance-filed')
+      ? filing.history.filter((e) => e.kind === 'category-filed' || e.kind === 'opening-balance-filed' || e.kind === 'bookkeeping')
       : null;
     const sfinOf = new Map(meta.map((a) => [a.wfId, a.sfinId]));
     const filerCode = (r: (typeof drillSource)[number]): string | undefined => {
@@ -255,6 +255,8 @@ export async function buildReportCube(
       const sfin = r.accountId ? sfinOf.get(r.accountId) : undefined;
       const txId = txIdFromComment(r.notes);
       const code = encodeFiler(resolveFiler({
+        activityId: r.activityId,
+        categoryName: r.category,
         source: r.source ?? null,
         categoryId: r.categoryId,
         row: { note: r.notes, activityType: r.activityType ?? '', accountId: r.accountId ?? '', absCents: Math.abs(cents(r.amount)) },

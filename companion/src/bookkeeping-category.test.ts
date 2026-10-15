@@ -374,6 +374,27 @@ describe('fileSyncBookkeeping', () => {
     expect(old.d.assign).not.toHaveBeenCalled();
   });
 
+  it('M-5: with nothing to file or take out, a category dropped from the exclusion list (an upgrade, a reset) is excluded again — after reading the list', async () => {
+    const path = database(`INSERT INTO taxonomy_categories VALUES ('cat-sync', 'spending_categories', 'Sync bookkeeping', NULL);`,
+      `INSERT INTO app_settings VALUES ('spending.excluded_category_ids', '["cat-mine"]');`);
+    const { d, recorded } = deps(path, {}, { categoryId: 'cat-sync', ids: [] });
+    expect(await fileSyncBookkeeping(d)).toEqual({ filed: 0, unfiled: 0 });
+    expect(d.readExcluded).toHaveBeenCalled();
+    expect(d.setExcluded).toHaveBeenCalledWith(['cat-mine', 'cat-sync']);
+    expect(d.createCategory).not.toHaveBeenCalled();
+    expect(recorded).toEqual([expect.objectContaining({ after: expect.objectContaining({ step: 'sync-bookkeeping-setup' }) })]);
+    // Already excluded: nothing is written.
+    const again = deps(database(`INSERT INTO taxonomy_categories VALUES ('cat-sync', 'spending_categories', 'Sync bookkeeping', NULL);`,
+      `INSERT INTO app_settings VALUES ('spending.excluded_category_ids', '["cat-sync"]');`), {}, { categoryId: 'cat-sync', ids: [] });
+    await fileSyncBookkeeping(again.d);
+    expect(again.d.setExcluded).not.toHaveBeenCalled();
+    // No category at all: nothing is created for nothing.
+    const none = deps(database(''));
+    await fileSyncBookkeeping(none.d);
+    expect(none.d.createCategory).not.toHaveBeenCalled();
+    expect(none.d.setExcluded).not.toHaveBeenCalled();
+  });
+
   it('m4: the set-up entry has its own step and says only what happened', async () => {
     const ok = deps(database(PLACEHOLDER));
     await fileSyncBookkeeping(ok.d);

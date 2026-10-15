@@ -24,10 +24,22 @@ describe('utcMidnightDay — exactly 00:00:00 UTC, in each form Wealthfolio retu
 });
 
 describe('planDateRepair', () => {
+  it('M-1: with Wealthfolio’s timezone, moves a row only when noon UTC on its day is that same day there (UTC+12..+14 rows are already right)', () => {
+    const zone = (timeZone: string | null) => planDateRepair([row({ date: '2026-10-31T00:00:00+00:00' })], { ...opts, timeZone }).moves.length;
+    expect(zone('America/New_York')).toBe(1);
+    expect(zone('Europe/Berlin')).toBe(1);
+    expect(zone('Pacific/Auckland')).toBe(0); // NZDT UTC+13: 00:00Z is already Oct 31 13:00 local; noon would be Nov 1
+    expect(zone('Pacific/Kiritimati')).toBe(0); // UTC+14
+    expect(zone('Pacific/Fiji')).toBe(0); // UTC+12 (+13 in summer)
+    expect(zone('Pacific/Noumea')).toBe(1); // UTC+11: noon is still the same day
+    // No timezone given: the plan does not look at the zone at all (the caller's choice).
+    expect(planDateRepair([row({ date: '2026-10-31T00:00:00+00:00' })], opts).moves).toHaveLength(1);
+  });
+
   it('moves a mapped, ungrouped row at 00:00 UTC to noon on its date, date only, with its own note', () => {
     expect(planDateRepair([row()], opts)).toEqual({
       moves: [{ row: row(), write: { id: 'a1', accountId: 'wf-chk', activityType: 'WITHDRAWAL', activityDate: '2026-10-01T12:00:00Z', currency: 'USD', comment: 'RENT PORTAL · TRN-1' } }],
-      skippedGrouped: 0, skippedOverride: 0,
+      skippedGrouped: 0, skippedOverride: 0, unknown: 0,
     });
     // Nothing else is sent: Wealthfolio's update keeps the asset, amount, subtype, metadata and filings it is not sent.
     expect(Object.keys(dateRepairWrite(row(), '2026-10-01')).sort()).toEqual(['accountId', 'activityDate', 'activityType', 'comment', 'currency', 'id']);
@@ -48,7 +60,7 @@ describe('planDateRepair', () => {
   it('skips a row whose stored type is not the type the search shows', () => {
     const storedTypes = new Map([['a1', 'DEPOSIT']]);
     expect(planDateRepair([row()], { ...opts, storedTypes })).toMatchObject({ moves: [], skippedOverride: 1 });
-    expect(planDateRepair([row()], { ...opts, storedTypes: new Map() })).toMatchObject({ moves: [], skippedOverride: 1 });
+    expect(planDateRepair([row()], { ...opts, storedTypes: new Map() })).toMatchObject({ moves: [], skippedOverride: 0, unknown: 1 }); // I1: unknown, never "retyped"
     expect(planDateRepair([row()], { ...opts, storedTypes: new Map([['a1', 'WITHDRAWAL']]) }).moves).toHaveLength(1);
   });
 

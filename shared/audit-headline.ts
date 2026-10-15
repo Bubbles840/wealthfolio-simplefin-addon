@@ -165,14 +165,15 @@ export function explainHeadline(facts: HeadlineFacts): HeadlineExplanation {
     // (nothing, when the two agree).
     const foreign: HeadlineReason = { kind: 'foreign-currency', cents: 0, rows: [] };
     const base = facts.baseCurrency?.trim().toUpperCase() || null;
-    if (base) {
+    // Both figures must have been read: with one unread the reason would print a "$0.00" line.
+    if (base && reportCents !== null && wealthfolioCents !== null) {
       for (const line of lines) {
         const currency = line.row.currency?.trim().toUpperCase();
         if (line.month !== facts.month || !currency || currency === base) continue;
         if (covered && !covered.has(line.row.accountId)) continue;
         foreign.rows.push({ date: line.day, description: descriptionFromComment(line.row.notes), cents: line.cents, account: line.row.accountName });
       }
-      if (foreign.rows.length > 0 && reportCents !== null && wealthfolioCents !== null) {
+      if (foreign.rows.length > 0) {
         // No more than the rows themselves could account for: the rest stays
         // unexplained. Nothing left to say, no reason.
         const cap = foreign.rows.reduce((sum, r) => sum + Math.abs(r.cents), 0);

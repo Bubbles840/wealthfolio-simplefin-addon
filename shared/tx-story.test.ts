@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  amazonLabelChange, bankUpdateChange, categoryFiledChange, importChange, openingBalanceFiledChange, stampChange,
+  amazonLabelChange, bankUpdateChange, bookkeepingChange, categoryFiledChange, importChange, openingBalanceFiledChange, stampChange,
   transferLinkChange, transferTypeChange, type ChangeDraft,
 } from './change-entries';
 import type { ChangeLogItem } from './change-log';
@@ -341,6 +341,22 @@ describe('resolveFiler', () => {
     }), 3);
     expect(resolveFiler({ source: 'manual', categoryId: 'cat-open', row: rowFor('Starting balance · ACT-chk'), history: [opening], rules: null }))
       .toEqual({ kind: 'opening' });
+  });
+
+  it('M-3: a row the sync filed as bookkeeping says so, not "set by hand" (and a newer filing by you wins)', () => {
+    const swept = item(bookkeepingChange({ step: 'sync-bookkeeping', activityIds: ['act-1', 'act-2'], categoryName: 'Sync bookkeeping' }), 3);
+    const input = { source: 'manual', categoryId: 'cat-sync', categoryName: 'Sync bookkeeping', activityId: 'act-1', row: rowFor('↔️ In-transit transfer · PAYMENT · TRN-x'), rules: null };
+    expect(resolveFiler({ ...input, history: [swept] })).toEqual({ kind: 'bookkeeping' });
+    // Another row's entry says nothing about this one; an undone entry is not a filing.
+    expect(resolveFiler({ ...input, activityId: 'act-9', history: [swept] })).toEqual({ kind: 'hand' });
+    expect(resolveFiler({ ...input, history: [{ ...swept, undone: { by: 'u1', at: at(4).toISOString() } }] })).toEqual({ kind: 'hand' });
+    const byYou = item(categoryFiledChange({
+      actor: 'you', activityId: 'act-1', description: 'X', before: null, after: { categoryId: 'cat-sync', categoryName: 'Sync bookkeeping' },
+    }), 6);
+    expect(resolveFiler({ ...input, history: [swept, byYou] })).toEqual({ kind: 'you', at: at(6).toISOString() });
+    expect(decodeFiler(encodeFiler({ kind: 'bookkeeping' }))).toEqual({ kind: 'bookkeeping' });
+    expect(story({ category: { name: 'Sync bookkeeping', filer: { kind: 'bookkeeping' } } }).answer)
+      .toContain("Filed under Sync bookkeeping by the sync as bookkeeping — it isn't spending.");
   });
 
   it('a starting balance with no filing in the log: the add-on’s when it is under Opening balances, else no filer', () => {

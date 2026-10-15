@@ -13,6 +13,7 @@ import {
 } from '../../shared/reports-archive.js';
 import { fileCardOpeningDebts } from './opening-balance-category.js';
 import { runDateRepair, type DateRepairDeps } from './date-repair.js';
+import { liveOverriddenActivityIds, liveStoredActivityTypes, liveTimeZone } from './date-repair-reads.js';
 import { BOOKKEEPING_FILED_SECRET_KEY, fileSyncBookkeeping, withoutSyncBookkeeping } from './bookkeeping-category.js';
 import { parseFiledState } from '../../shared/bookkeeping-filing.js';
 import cron from 'node-cron';
@@ -72,7 +73,7 @@ import type { GlyphStyle, InlineKeyboard } from '../../shared/telegram.js';
 import type { DismissalLedger } from './dismissals.js';
 import type { SyncHealth } from '../../shared/telegram.js';
 import { SIMPLEFIN_SYNC_VERSION, COMPANION_VERSION_SECRET_KEY, INSTALLED_ADDON_VERSION_SECRET_KEY, isNewerVersion } from '../../shared/version.js';
-import { getNativeOverriddenActivityIds, getNativeStoredActivityTypes, getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeRuleCategorizedAmazonRows, getNativeCategorizedSpending, getNativeSpendingCategories, getNativeCategoryCatalog, getNativeSubcategorySpending, getNativeUncategorizedSpendingTotal, countRulePatternMatches, getNativeSpendMatrix, getNativeIncomeByMonthAccount, getNativeUncategorizedByMonthAccount, getNativeMerchantRows, getNativeDrillRows, getNativeFeesInterestByMonth, getNativeSpendDailyTotals, getNativeValuationByMonth, getNativeIncomeCategories } from './sqlite-native.js';
+import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeRuleCategorizedAmazonRows, getNativeCategorizedSpending, getNativeSpendingCategories, getNativeCategoryCatalog, getNativeSubcategorySpending, getNativeUncategorizedSpendingTotal, countRulePatternMatches, getNativeBudgetSpend, getNativeIncomeByMonthAccount, getNativeUncategorizedByMonthAccount, getNativeMerchantRows, getNativeDrillRows, getNativeFeesInterestByMonth, getNativeSpendDailyTotals, getNativeValuationByMonth, getNativeIncomeCategories } from './sqlite-native.js';
 import { publishUncategorizedStatusForDbPath } from './uncategorized-status.js';
 import { getNativePastFilings } from './sqlite-guess.js';
 import { createCategorizeController, SPENDING_TAXONOMY_ID } from './categorize.js';
@@ -945,6 +946,8 @@ export async function sendUnmappedAccountsNotice(
  * a "Sync anyway" retry when a scheduled run was skipped (src/pages/SyncPage.tsx).
  */
 export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<SyncResult> {
+  // The checks compare the report's figure only from a cube THIS run published (M-2).
+  const runStartedAt = new Date();
   const apiUrl = process.env.WEALTHFOLIO_API_URL ?? '';
   if (!apiUrl) throw new Error('Missing WEALTHFOLIO_API_URL');
 
@@ -1263,7 +1266,7 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
     // rejection or a failed write keeps the previous snapshot and never
     // touches this sync's result.
     try {
-      await publishAuditSnapshot(wfClient, wealthfolioDbPath(), new Date());
+      await publishAuditSnapshot(wfClient, wealthfolioDbPath(), new Date(), undefined, runStartedAt);
     } catch (e) {
       log(`Audit snapshot publish failed (the app's checks may be stale): ${formatError(e)}`);
     }
@@ -1318,8 +1321,9 @@ function dateRepairDeps(wfClient: WealthfolioClient, store: RestSyncStore, run: 
     installedAddonVersion: () => readInstalledAddonVersion(wealthfolioDbPath()),
     searchPage: async (accountId, page, pageSize) => (await wfClient.searchActivities({ page, pageSize, accountIdFilter: [accountId] })).map(repairRow),
     searchByIds: async (ids) => (await wfClient.searchActivities({ page: 0, pageSize: ids.length, activityIdFilter: ids })).map(repairRow),
-    overriddenIds: () => getNativeOverriddenActivityIds(wealthfolioDbPath()),
-    storedTypes: () => getNativeStoredActivityTypes(wealthfolioDbPath()),
+    overriddenIds: () => liveOverriddenActivityIds(wealthfolioDbPath()),
+    storedTypes: () => liveStoredActivityTypes(wealthfolioDbPath()),
+    timeZone: () => liveTimeZone(wealthfolioDbPath()),
     saveUpdates: async (updates) => ({ errors: (await wfClient.saveMany({ updates })).errors ?? [] }),
     record: (draft) => recordCompanionChanges(wfClient, [draft], run),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
@@ -1811,7 +1815,7 @@ async function readCashForecast(wfClient: WealthfolioClient): Promise<CashForeca
  * `poolReportDeps` above, reading the same spending lines (Wealthfolio's
  * definition, 1.62) so the cube and the pool line can never count different money.
  */
-function cubeBuildDeps(wfClient: WealthfolioClient, dbPath: string): CubeBuildDeps {
+export function cubeBuildDeps(wfClient: WealthfolioClient, dbPath: string): CubeBuildDeps {
   return {
     accountMeta: async () => {
       const mapping = (await new RestSyncStore(wfClient).getAccountMapping()) ?? {};
@@ -1828,13 +1832,14 @@ function cubeBuildDeps(wfClient: WealthfolioClient, dbPath: string): CubeBuildDe
     poolConfig: async () => parsePoolConfig(
       await wfClient.getAddonSecret('simplefin-sync', SEMESTER_POOL_SECRET_KEY).catch(() => null),
     ),
-    spendMatrix: (s, e) => getNativeSpendMatrix(dbPath, s, e),
+    // The spending series are STRICT: a failed read fails the publish (the previous cube stays) instead of publishing zeros.
+    spendMatrix: (s, e) => getNativeBudgetSpend(dbPath, s, e),
     incomeByMonthAccount: (s, e) => getNativeIncomeByMonthAccount(dbPath, s, e),
-    uncategorizedByMonthAccount: (s, e) => getNativeUncategorizedByMonthAccount(dbPath, s, e),
+    uncategorizedByMonthAccount: (s, e) => getNativeUncategorizedByMonthAccount(dbPath, s, e, true),
     budgetsForMonth: (m) => getNativeWealthfolioBudgets(dbPath, m),
     merchantRows: (s, e) => getNativeMerchantRows(dbPath, s, e),
     feesInterestByMonth: (s, e) => getNativeFeesInterestByMonth(dbPath, s, e),
-    spendDaily: (s, e) => getNativeSpendDailyTotals(dbPath, s, e),
+    spendDaily: (s, e) => getNativeSpendDailyTotals(dbPath, s, e, true),
     valuationByMonth: (months) => getNativeValuationByMonth(dbPath, months),
     // The digest's own readers, verbatim — summed the digest's way, over the
     // same spending lines as the matrices above (1.62).
