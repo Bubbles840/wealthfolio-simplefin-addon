@@ -6,8 +6,9 @@
  * actual, the forecast, suggested budgets) and the audit's model of
  * Wealthfolio's Spending page both read it from here, so the two cannot drift.
  *
- * Transcribed from upstream crates/spending (identical for spending on 3.8,
- * 3.9 and 3.10):
+ * Transcribed from upstream crates/spending (3.10's reading; 3.8 and 3.9
+ * differ in two ways: they treat a blank type override as a type, and they
+ * have no excluded categories before 3.9):
  *  - insight/service.rs `compute`: the accounts its Spending page reads
  *    (`spending.account_ids`, not archived, CASH or CREDIT_CARD), every row in
  *    the window `activity_date >= start && <= end` — the calendar month in
