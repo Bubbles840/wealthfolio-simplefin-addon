@@ -31,11 +31,11 @@ import {
 } from './change-entries.js';
 import { MAPPING_RULES_SECRET_KEY, UNDO_MAPPING_RULES_UNREADABLE } from './change-undo-run.js';
 import { fixRowOf } from './fix-row.js';
-import { mapTransactionWithSource, paybackMappingRule, ruleApplies, sameMappingRule } from './mapper.js';
+import { BANK_TRANSFER_KEYWORDS, mapTransactionWithSource, paybackMappingRule, ruleApplies, sameMappingRule } from './mapper.js';
 import { bankWords } from './rule-pattern.js';
 import {
   PAYBACK_ALREADY, PAYBACK_CHANGED, PAYBACK_GONE, PAYBACK_GONE_STUCK, PAYBACK_LINKED, PAYBACK_MANAGED, PAYBACK_NO_UNDO, PAYBACK_NO_UNDO_SETTING, PAYBACK_NOT_CASH, PAYBACK_NOT_DEPOSIT, PAYBACK_NOT_FEED,
-  PAYBACK_OVERRIDE_FAILED, PAYBACK_PENDING, PAYBACK_RULES_EXIST, PAYBACK_RULES_GENERIC, PAYBACK_RULES_REFUSED, PAYBACK_RULES_SHADOWED, PAYBACK_RULES_UNSURE, PAYBACK_RULES_SAVE_FAILED, PAYBACK_RUNNING, PAYBACK_SETTING_HINT, PAYBACK_TRANSFER, PAYBACK_UNDO_HINT, PAYBACK_UNREACHABLE, PAYBACK_UPDATE_ADDON,
+  PAYBACK_OVERRIDE_FAILED, PAYBACK_PENDING, PAYBACK_RULES_EXIST, PAYBACK_RULES_GENERIC, PAYBACK_RULES_REFUSED, PAYBACK_RULES_SHADOWED, PAYBACK_RULES_UNSURE, PAYBACK_RULES_SAVE_FAILED, PAYBACK_RULES_TRANSFER_ROWS, PAYBACK_RULES_TRANSFER_WORDS, PAYBACK_RUNNING, PAYBACK_SETTING_HINT, PAYBACK_TRANSFER, PAYBACK_UNDO_HINT, PAYBACK_UNREACHABLE, PAYBACK_UPDATE_ADDON,
   PAYBACK_UPDATE_REFUSED, PAYBACK_UPDATE_STUCK, PAYBACK_UPDATE_UNSURE, PAYBACK_ZERO, paybackDone, paybackRulesBehind, paybackRulesConflict, paybackRulesDone, paybackRulesTakesOver, paybackRulesStuck, paybackUnfiled,
 } from './payback-copy.js';
 import { isPaybackRow, paybackRetype, type PaybackRow } from './payback-row.js';
@@ -349,6 +349,8 @@ export interface PaybackRulesInput {
   categoryName: string;
   /** The deposit it was made from, for the change log. */
   description: string;
+  /** The deposit's activity id: the transfer check leaves it out. Optional. */
+  sourceId?: string;
   /** Category names by id, to name another category in a conflict. Optional. */
   categories?: Array<{ id: string; name: string }>;
 }
@@ -359,6 +361,8 @@ export interface PaybackRulesIo {
   gate(): Promise<string | null>;
   secrets: { get: SecretGet; set: SecretSet };
   /** Wealthfolio's categorization rules now. Rejects when unreachable. */
+  /** The account's money-in rows of the last 90 days, for the transfer check. Optional; rejects when unreadable. */
+  breadthRows?(accountId: string): Promise<PaybackBreadthRow[]>;
   categoryRules(): Promise<Array<{ id: string; pattern: string; categoryId: string | null; accountId?: string; activityType?: string }>>;
   /** Creates a contains rule for one account and one activity type; resolves its id (null when the reply named none). */
   createCategoryRule(rule: { name: string; pattern: string; categoryId: string; accountId: string; activityType: string }): Promise<string | null>;
@@ -425,6 +429,33 @@ export interface PaybackBreadthRow {
   grouped?: boolean;
 }
 
+/**
+ * Would a payback rule for `pattern` take over transfers? A refusal's words, or null.
+ * Three ways, none of which depends on what typed the transfer (PB-M m-a):
+ *  - the pattern itself reads as a bank transfer (`BANK_TRANSFER_KEYWORDS`);
+ *  - an existing TRANSFER_* contains-rule's pattern contains it, so the new rule would
+ *    catch every description that rule does (no ledger row needed);
+ *  - a ledger row typed TRANSFER_*, or decided by a TRANSFER_* rule today, that it would read.
+ */
+export function paybackTransferRefusal(i: {
+  pattern: string; accountId: string; since: string; list: MappingRule[]; rows: PaybackBreadthRow[];
+}): string | null {
+  if (BANK_TRANSFER_KEYWORDS.test(i.pattern)) return PAYBACK_RULES_TRANSFER_WORDS(i.pattern);
+  const lower = i.pattern.toLowerCase();
+  const containing = i.list.find((x) => x.activityType.startsWith('TRANSFER_') && x.matchType === 'contains' && x.pattern.toLowerCase().includes(lower));
+  if (containing) return paybackRulesTakesOver(containing.pattern);
+  const rule = paybackMappingRule(i.pattern, i.accountId, i.since);
+  for (const r of i.rows) {
+    if (!(r.amount > 0)) continue;
+    const words = bankWords(r.description);
+    if (!ruleApplies(rule, words, r.amount, i.accountId, i.since)) continue;
+    const was = i.list.find((x) => ruleApplies(x, words, r.amount, i.accountId, i.since));
+    if (was && was.activityType.startsWith('TRANSFER_')) return paybackRulesTakesOver(was.pattern);
+    if ((r.type ?? '').startsWith('TRANSFER_')) return PAYBACK_RULES_TRANSFER_ROWS(i.pattern);
+  }
+  return null;
+}
+
 export type PaybackBreadth = { ok: true; filed: number; waiting: number } | { ok: false; message: string };
 
 /**
@@ -450,17 +481,14 @@ export function paybackBreadth(i: {
   const rule = paybackMappingRule(i.pattern, i.accountId, i.since);
   const list = withRuleFirst(i.list, rule);
   if (!listMakesPayback(list, rule, i.source.description)) return { ok: false, message: PAYBACK_RULES_SHADOWED };
+  // A transfer this rule would take over (first match wins) would stop pairing.
+  const transfer = paybackTransferRefusal({ pattern: i.pattern, accountId: i.accountId, since: i.since, list: i.list, rows: i.rows.filter((r) => r.id !== i.source.id) });
+  if (transfer) return { ok: false, message: transfer };
   let filed = 0;
   let waiting = 0;
   for (const r of i.rows) {
     if (r.id === i.source.id || !(r.amount > 0)) continue;
-    // A transfer rule that decides a row today would be taken over by this one
-    // (first match wins): future cash-outs from savings would stop pairing.
-    const was = i.list.find((x) => ruleApplies(x, bankWords(r.description), r.amount, i.accountId, i.since));
-    if (was && was.activityType.startsWith('TRANSFER_') && ruleApplies(rule, bankWords(r.description), r.amount, i.accountId, i.since)) {
-      return { ok: false, message: paybackRulesTakesOver(was.pattern) };
-    }
-    if (r.grouped || (r.type ?? '').startsWith('TRANSFER_')) continue;
+    if (r.grouped) continue;
     // The first rule that reads the row decides it; ours must be that one.
     const decider = list.find((x) => ruleApplies(x, bankWords(r.description), r.amount, i.accountId, i.since));
     if (!decider || !sameMappingRule(decider, rule)) continue;
@@ -520,6 +548,19 @@ export async function makePaybackRules(input: PaybackRulesInput, io: PaybackRule
     return no(PAYBACK_UNREACHABLE);
   }
   if (list === null) return no(UNDO_MAPPING_RULES_UNREADABLE);
+  // The transfer-takeover checks, re-run here (M2): the preview may have been skipped or
+  // failed, and the ledger may have changed since. A ledger that cannot be read refuses.
+  let rows: PaybackBreadthRow[] = [];
+  if (io.breadthRows) {
+    try {
+      rows = await io.breadthRows(input.account.id);
+    } catch (err) {
+      io.log(`Payback rules for "${input.pattern}": the account's recent deposits could not be read: ${errorText(err)}`);
+      return no(PAYBACK_UNREACHABLE);
+    }
+  }
+  const takesOver = paybackTransferRefusal({ pattern: input.pattern, accountId: input.account.id, since: rule.since!, list, rows: rows.filter((r) => r.id !== input.sourceId) });
+  if (takesOver) return no(takesOver);
   const older = list.find((r) => samePaybackRule(r, rule)) ?? null;
   // An older rule for the same words that another rule sits in front of is never
   // moved (undoing the move would delete the person's own rule): it is named.

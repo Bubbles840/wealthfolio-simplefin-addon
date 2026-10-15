@@ -58,7 +58,7 @@ export function companionPaybackIo(client: PaybackClient, log: (msg: string) => 
 }
 
 /** What "Make every … deposit a payback" needs of a `WealthfolioClient`. */
-export type PaybackRulesClient = SecretClient & Pick<WealthfolioClient, 'listCategorizationRules' | 'createCategorizationRule'>;
+export type PaybackRulesClient = SecretClient & Pick<WealthfolioClient, 'listCategorizationRules' | 'createCategorizationRule' | 'searchActivities'>;
 
 /** W10 on the companion: the add-on's transaction rules (a secret) and
  *  Wealthfolio's categorization rules, at the same LOSING priority (50) and in
@@ -68,6 +68,7 @@ export function companionPaybackRulesIo(client: PaybackRulesClient, log: (msg: s
   return {
     gate: () => addonPaybackGate(get),
     secrets: { get, set: (k, v) => client.setAddonSecret(ADDON_ID, k, v) },
+    breadthRows: (accountId) => readBreadthRows(client, accountId, new Date()),
     categoryRules: async () => (await client.listCategorizationRules()).map((r) => ({
       id: r.id, pattern: r.pattern, categoryId: r.categoryId,
       ...(r.accountId ? { accountId: r.accountId } : {}), ...(r.activityType ? { activityType: r.activityType } : {}),
@@ -85,6 +86,28 @@ const MONEY_IN_TYPES = ['DEPOSIT', 'CREDIT', 'TRANSFER_IN', 'INTEREST'];
 const BREADTH_PAGE = 500;
 const BREADTH_MAX_PAGES = 6;
 
+/** The account's money-in rows of the last 90 days (REST), as the breadth and transfer checks read them. Rejects when unreadable. */
+export async function readBreadthRows(client: Pick<WealthfolioClient, 'searchActivities'>, accountId: string, now: Date): Promise<PaybackBreadthRow[]> {
+  const day = (d: Date) => d.toISOString().slice(0, 10);
+  const dateFrom = day(new Date(now.getTime() - PAYBACK_BREADTH_DAYS * 86_400_000));
+  const rows: PaybackBreadthRow[] = [];
+  for (let page = 0; page < BREADTH_MAX_PAGES; page += 1) {
+    const items = await client.searchActivities({
+      page, pageSize: BREADTH_PAGE, accountIdFilter: [accountId], activityTypeFilter: MONEY_IN_TYPES, dateFrom, dateTo: day(now),
+    });
+    for (const a of items) {
+      const amount = Math.abs(Number(a.amount ?? 0));
+      if (amount > 0) {
+        rows.push({
+          id: a.id, description: descriptionFromComment(a.comment), amount, type: a.activityType, ...(a.sourceGroupId ? { grouped: true } : {}),
+        });
+      }
+    }
+    if (items.length < BREADTH_PAGE) break;
+  }
+  return rows;
+}
+
 /** W10's preview, read live: the account's money-in rows of the last 90 days
  *  (REST), judged by the whole fresh `mapping_rules` list with the new rule
  *  first. Rejects when Wealthfolio or the secrets cannot be read. */
@@ -100,23 +123,7 @@ export async function companionPaybackBreadth(
     if (!Array.isArray(parsed)) throw new Error('the transaction rules are unreadable');
     list = parsed as MappingRule[];
   }
-  const day = (d: Date) => d.toISOString().slice(0, 10);
-  const dateFrom = day(new Date(now.getTime() - PAYBACK_BREADTH_DAYS * 86_400_000));
-  const rows: PaybackBreadthRow[] = [];
-  for (let page = 0; page < BREADTH_MAX_PAGES; page += 1) {
-    const items = await client.searchActivities({
-      page, pageSize: BREADTH_PAGE, accountIdFilter: [input.account.id], activityTypeFilter: MONEY_IN_TYPES, dateFrom, dateTo: day(now),
-    });
-    for (const a of items) {
-      const amount = Math.abs(Number(a.amount ?? 0));
-      if (amount > 0) {
-        rows.push({
-          id: a.id, description: descriptionFromComment(a.comment), amount, type: a.activityType, ...(a.sourceGroupId ? { grouped: true } : {}),
-        });
-      }
-    }
-    if (items.length < BREADTH_PAGE) break;
-  }
+  const rows = await readBreadthRows(client, input.account.id, now);
   return paybackBreadth({
     pattern: input.pattern, accountId: input.account.id, since: paybackRuleSince(now), source: { id: input.sourceId, description: input.description },
     list, rows, waitingIds: new Set(input.waitingIds),

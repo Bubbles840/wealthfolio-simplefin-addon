@@ -138,7 +138,7 @@ export type MenuScreen =
   | { kind: 'paybackRefused'; activityId: string; text: string }
   /** "Make every <pattern> deposit a payback?" (W10): the two rules, and how
    *  many deposits waiting for a category they would catch now. */
-  | { kind: 'paybackRulePreview'; activityId: string; categoryId: string; breadth?: PaybackBreadth }
+  | { kind: 'paybackRulePreview'; activityId: string; categoryId: string; breadth?: PaybackBreadth; breadthFailed?: true }
   /** What making the two rules did, RAW. */
   | { kind: 'paybackRulesResult'; activityId: string; text: string }
   /** The recategorize confirmation. `fromName` (not an id) is what the row
@@ -1165,7 +1165,7 @@ function renderPaybackRulePreview(session: MenuSession, screen: Extract<MenuScre
   // A breadth check that refused (a generic pattern, a shadowed rule) says why,
   // with nothing to create.
   if (screen.breadth && !screen.breadth.ok) return finish(session.generation, escapeMarkdown(screen.breadth.message), [[BACK_TO_LIST_BTN]]);
-  const text = escapeMarkdown(paybackRulesPreview(pattern, txn.accountName, categoryDisplayName(category), screen.breadth));
+  const text = escapeMarkdown(paybackRulesPreview(pattern, txn.accountName, categoryDisplayName(category), screen.breadth, !!screen.breadthFailed));
   const rows: Btn[][] = [
     [{ text: PAYBACK_RULES_CREATE, action: { kind: 'paybackRules', activityId: screen.activityId, categoryId: screen.categoryId } }],
     [BACK_TO_LIST_BTN],

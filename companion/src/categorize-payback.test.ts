@@ -136,7 +136,7 @@ describe('/categorize: "Make every … deposit a payback" (W10)', () => {
     await h.press('Create both rules');
     expect(h.deps.paybackRules).toHaveBeenCalledWith({
       pattern: 'VENMO CASHOUT', account: { id: 'wf-chk', name: 'PNC Checking' }, categoryId: 'cat-rest', categoryName: 'Restaurants',
-      description: 'VENMO CASHOUT',
+      description: 'VENMO CASHOUT', sourceId: 'act-7',
       categories: [{ id: 'cat-food', name: 'Food & Dining' }, { id: 'cat-rest', name: 'Restaurants' }, { id: 'cat-fun', name: 'Entertainment' }],
     });
     expect(h.last()[0]).toBe(DONE);
@@ -177,12 +177,14 @@ describe('/categorize: the breadth of the rules, read from the ledger as the pre
     expect(h.labels(h.last()[1])).not.toContain('Create both rules');
   });
 
-  it('still previews, without counts, when the ledger cannot be read', async () => {
+  it('still previews, with a note instead of counts, when the ledger cannot be read (M2)', async () => {
     const h = setup(async () => FILED, undefined, async () => { throw new Error('down'); });
     await h.toPaybackGrid();
     await h.press('Entertainment');
     await h.press('Make every VENMO CASHOUT deposit a payback');
     expect(h.last()[0]).not.toContain('waiting for a category');
+    // M2: the missing count is said, and Create re-runs the checks itself.
+    expect(h.last()[0]).toContain("Couldn't count matching deposits right now.");
     expect(h.labels(h.last()[1])).toContain('Create both rules');
   });
 });
