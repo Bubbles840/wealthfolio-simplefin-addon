@@ -312,6 +312,26 @@ describe('SettingsTab', () => {
     ]));
   });
 
+  it('PB-K: refuses to save when the rules changed elsewhere since they were loaded (the companion added a payback rule)', async () => {
+    const props = makeProps();
+    const loaded = [{ pattern: 'PAYROLL', matchType: 'contains', activityType: 'DEPOSIT' }];
+    const payback = { pattern: 'JANE DOE VENMO', matchType: 'contains', activityType: 'CREDIT', subtype: 'REIMBURSEMENT', onlyMoneyIn: true, accountId: 'wf-a', since: '2026-10-13' };
+    props.store.getMappingRules = vi.fn(async () => loaded as any);
+    render(<SyncPage {...props} />);
+    await switchTab(/settings/i);
+    await openSection(/^Transaction rules/i);
+    // The companion writes its rule behind the page's back.
+    props.store.getMappingRules = vi.fn(async () => [payback, ...loaded] as any);
+    fireEvent.change(screen.getByPlaceholderText('pattern'), { target: { value: 'PAYCHECK' } });
+    expect(await screen.findByText('Your rules changed elsewhere — reload them first.')).toBeInTheDocument();
+    expect(props.store.setMappingRules).not.toHaveBeenCalled();
+    // Reloading shows the companion's rule, and the next edit saves with it kept.
+    fireEvent.click(screen.getByRole('button', { name: /reload rules/i }));
+    expect(await screen.findByDisplayValue('JANE DOE VENMO')).toBeInTheDocument();
+    fireEvent.change(screen.getByDisplayValue('PAYROLL'), { target: { value: 'PAYCHECK' } });
+    await waitFor(() => expect(props.store.setMappingRules).toHaveBeenCalledWith([payback, { ...loaded[0], pattern: 'PAYCHECK' }]));
+  });
+
   it('persists which cards are open, and restores them on the next visit', async () => {
     const props = makeProps();
     const first = render(<SyncPage {...props} />);
