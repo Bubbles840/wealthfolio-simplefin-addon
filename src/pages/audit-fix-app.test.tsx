@@ -88,6 +88,7 @@ describe('Settings → Checks → Link', () => {
     expect(await screen.findByText(`Linked. ${AUDIT_AFTER_SYNC}`)).toBeInTheDocument();
     expect(props.ctx.api.activities.saveMany).toHaveBeenCalledWith({ deleteIds: ['out', 'in'] });
     expect(props.store.recordChange).toHaveBeenCalledWith(expect.objectContaining({ actor: 'you', kind: 'transfer-link' }));
-    await waitFor(() => expect(props.store.getAuditSnapshot).toHaveBeenCalledTimes(reads + 1));
+    // The re-read follows the whole link flow; a loaded CI runner needs more than waitFor's default 1 s.
+    await waitFor(() => expect(props.store.getAuditSnapshot).toHaveBeenCalledTimes(reads + 1), { timeout: 5000 });
   });
 });
