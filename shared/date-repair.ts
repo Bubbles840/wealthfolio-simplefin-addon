@@ -32,6 +32,7 @@
  * longer at midnight.
  */
 import { bankDayInstant } from './bank-day.js';
+import { localDay } from './wf-spending.js';
 import type { ActivityWrite } from './sync-host.js';
 
 /** The first add-on release that writes bank rows at noon. Before it, a 1.61 add-on keeps writing midnight rows (3.8/3.9), so a repair run first would be undone. */
@@ -76,6 +77,8 @@ export interface DateRepairPlan {
   skippedGrouped: number;
   /** At midnight UTC, left alone: a type override. */
   skippedOverride: number;
+  /** At midnight UTC, not decided: the database does not know the row's stored type (it is newer than the read). Never counted as retyped, and the repair is not done while any is left. */
+  unknown: number;
 }
 
 /** The date-only update that moves one row to noon UTC on its day. */
@@ -98,9 +101,11 @@ export function planDateRepair(
     overriddenIds: ReadonlySet<string>;
     /** Each row's STORED type, from the database. When given, a row is moved only if its stored type equals the search's (effective) one: a blank override or a stale read is left alone. */
     storedTypes?: ReadonlyMap<string, string>;
+    /** Wealthfolio's timezone (null: the process's own). When given, a row moves only if noon UTC on its day is that same day there: east of UTC+11 a midnight-UTC row is ALREADY on the bank's day and noon would push it into the next one. */
+    timeZone?: string | null;
   },
 ): DateRepairPlan {
-  const plan: DateRepairPlan = { moves: [], skippedGrouped: 0, skippedOverride: 0 };
+  const plan: DateRepairPlan = { moves: [], skippedGrouped: 0, skippedOverride: 0, unknown: 0 };
   for (const row of rows) {
     if (!opts.mappedAccountIds.has(row.accountId)) continue;
     const day = utcMidnightDay(row.date);
@@ -109,10 +114,15 @@ export function planDateRepair(
       plan.skippedGrouped += 1;
       continue;
     }
+    if (opts.storedTypes && !opts.storedTypes.has(row.id)) {
+      plan.unknown += 1;
+      continue;
+    }
     if (opts.overriddenIds.has(row.id) || (opts.storedTypes && opts.storedTypes.get(row.id) !== row.activityType)) {
       plan.skippedOverride += 1;
       continue;
     }
+    if (opts.timeZone !== undefined && localDay(bankDayInstant(day), opts.timeZone) !== day) continue;
     plan.moves.push({ row, write: dateRepairWrite(row, day) });
   }
   return plan;

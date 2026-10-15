@@ -21,13 +21,13 @@ function ledger(rows: string): string {
       activity_date TEXT, amount TEXT, notes TEXT, source_group_id TEXT, needs_review INTEGER DEFAULT 0);
     CREATE TABLE taxonomy_categories (id TEXT PRIMARY KEY, name TEXT, parent_id TEXT, taxonomy_id TEXT);
     CREATE TABLE activity_taxonomy_assignments (activity_id TEXT, category_id TEXT);
-    CREATE TABLE budget_targets (category_id TEXT, amount TEXT, period_key TEXT, updated_at TEXT);
+    CREATE TABLE budget_targets (category_id TEXT, amount TEXT, period_key TEXT, updated_at TEXT, target_type TEXT DEFAULT 'category', taxonomy_id TEXT DEFAULT 'spending_categories');
     INSERT INTO accounts VALUES ('cash','Spend','CASH'),('sav','Savings','CASH'),('card','Citi','CREDIT_CARD'),('card2','Robinhood','CREDIT_CARD');
     INSERT INTO taxonomy_categories VALUES
       ('ent','Entertainment',NULL,'spending_categories'),('mov','Movies & Events','ent','spending_categories'),
       ('food','Food & Dining',NULL,'spending_categories'),
       ('reimb','Reimbursements',NULL,'income_sources'),('pay','Salary',NULL,'income_sources');
-    INSERT INTO budget_targets VALUES ('ent','100','default','2026-01-01'),('food','200','default','2026-01-01');
+    INSERT INTO budget_targets (category_id, amount, period_key, updated_at) VALUES ('ent','100','default','2026-01-01'),('food','200','default','2026-01-01');
     ${rows}
     -- What the report's spending read needs besides (1.62), added after the
     -- rows so each keeps its short positional form above.
@@ -148,13 +148,24 @@ describe('getLedgerFacts', () => {
   it('keys a budget and its spending by the top-level category, however deep the taxonomy (upstream top_category_id)', () => {
     const f = facts(`
       INSERT INTO taxonomy_categories VALUES ('imax','IMAX','mov','spending_categories');
-      INSERT INTO budget_targets VALUES ('imax','25','default','2026-01-01');
+      INSERT INTO budget_targets (category_id, amount, period_key, updated_at) VALUES ('imax','25','default','2026-01-01');
       INSERT INTO activities VALUES ('d1','card','WITHDRAWAL',NULL,'2026-09-18','30','Cinema · t1',NULL,0);
       INSERT INTO activity_taxonomy_assignments VALUES ('d1','imax');
     `);
     // The third-level filing and the third-level budget both belong to Entertainment.
     expect(f.categories.filter((c) => c.name === 'IMAX' || c.name === 'Movies & Events')).toEqual([]);
     expect(f.categories.find((c) => c.name === 'Entertainment')).toMatchObject({ budget: 125, spent: 30 });
+  });
+
+  it('LU-E m2: a budget counts only spending-taxonomy category targets (an income or group target of the same name adds nothing)', () => {
+    const f = facts(`
+      INSERT INTO taxonomy_categories VALUES ('ent-inc','Entertainment',NULL,'income_sources');
+      INSERT INTO budget_targets (category_id, amount, period_key, updated_at, taxonomy_id) VALUES ('ent-inc','5000','default','2026-01-01','income_sources');
+      INSERT INTO budget_targets (category_id, amount, period_key, updated_at, target_type, taxonomy_id) VALUES (NULL,'900','default','2026-01-01','group_buffer',NULL);
+      INSERT INTO activities VALUES ('x1','card','WITHDRAWAL',NULL,'2026-09-18','30','Cinema · t1',NULL,0);
+      INSERT INTO activity_taxonomy_assignments VALUES ('x1','ent');
+    `);
+    expect(f.categories.find((c) => c.name === 'Entertainment')).toMatchObject({ budget: 100, spent: 30 });
   });
 
   it('calls a category chronic only when it was over in EVERY one of the last three full months', () => {

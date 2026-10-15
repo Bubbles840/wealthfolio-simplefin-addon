@@ -9,6 +9,7 @@ import { HEALTH_READ_NOTES } from '../../shared/audit-health.js';
 import type { AuditLedger, AuditLedgerRow } from '../../shared/audit-ledger.js';
 import { AUDIT_SNAPSHOT_SECRET_KEY, parseAuditSnapshot } from '../../shared/audit-snapshot.js';
 import type { ReportCube } from '../../shared/report-cube.js';
+import { snapshotTripwire } from '../../shared/spending-tripwire.js';
 
 vi.mock('../../shared/audit-snapshot.js', async (orig) => {
   const real = await orig<typeof import('../../shared/audit-snapshot.js')>();
@@ -190,6 +191,16 @@ describe('gatherHeadlineFacts', () => {
     expect(facts.reportCents).toBeUndefined();
     expect(facts.failed).toEqual(['report']);
   });
+
+  it('M-2: takes the report’s figure only from a cube built in this run (a failed publish leaves an older one)', async () => {
+    const olderCube = { ...CUBE, asOf: new Date(NOW.getTime() - 60_000).toISOString() };
+    const rd = readers({ secret: async (k) => (k === 'report_cube' ? JSON.stringify(olderCube) : SECRETS[k] ?? null) });
+    const thisRun = await gatherHeadlineFacts(rd, NOW, undefined, new Date(NOW.getTime() - 120_000));
+    expect(thisRun.reportCents).toBe(130000);
+    const stale = await gatherHeadlineFacts(rd, NOW, undefined, new Date(NOW.getTime() - 30_000));
+    expect(stale.reportCents).toBeUndefined();
+    expect(stale.failed).toEqual(['report']);
+  });
 });
 
 describe('publishAuditSnapshot', () => {
@@ -207,6 +218,15 @@ describe('publishAuditSnapshot', () => {
       expect(read.snapshot.at).toBe(NOW.toISOString());
       expect(Object.keys(read.snapshot.balances)).toEqual(['wf-chk']);
     }
+  });
+
+  it('M-2: a cube left from an earlier run makes the tripwire unknown, never a difference', async () => {
+    const older = { ...CUBE, spend: [[[0]]], asOf: new Date(NOW.getTime() - 3_600_000).toISOString() };
+    const rd = readers({ secret: async (k) => (k === 'report_cube' ? JSON.stringify(older) : SECRETS[k] ?? null) });
+    const set = vi.fn(async () => {});
+    await publishAuditSnapshot(client(set), '/db', NOW, rd, new Date(NOW.getTime() - 60_000));
+    const value = (set.mock.calls[0] as unknown as [string, string, string])[2];
+    expect(snapshotTripwire(parseAuditSnapshot(value), NOW)).toEqual({ kind: 'unknown' });
   });
 
   it('writes nothing when Wealthfolio cannot be reached, so the previous snapshot stays', async () => {

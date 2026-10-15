@@ -118,6 +118,8 @@ export type TxFiler =
   | { kind: 'you'; at?: string }
   | { kind: 'amazon'; label: string }
   | { kind: 'opening' }
+  /** The sync's own bookkeeping rows (a held transfer, a correction), filed under "Sync bookkeeping" so Wealthfolio leaves them out of spending. */
+  | { kind: 'bookkeeping' }
   | { kind: 'hand' };
 
 export interface TxStoryFacts {
@@ -292,9 +294,17 @@ export function inferFilingRule(rules: readonly CategoryRuleLike[], row: RuleRow
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+/** The pass's own entry: it filed (or took out) these rows under "Sync bookkeeping". */
+const isBookkeepingFiling = (e: ChangeEntry, activityId: string | undefined, categoryName: string | undefined) =>
+  e.kind === 'bookkeeping' && isRecord(e.after) && e.after.step === 'sync-bookkeeping'
+  && (activityId === undefined || (e.subject.activityIds ?? []).includes(activityId))
+  // A row the person has since moved elsewhere (the pass leaves it alone) is no longer under the pass's category.
+  && (categoryName === undefined || e.after.categoryName === categoryName);
 const afterCategoryId = (e: ChangeEntry) => (isRecord(e.after) && typeof e.after.categoryId === 'string' ? e.after.categoryId : null);
 
 export interface FilerInput {
+  /** The row's Wealthfolio id: a bookkeeping filing is recognised by the entry listing it. Absent: the history is already this row's. */
+  activityId?: string;
   /** The assignment's `source` (`rule`, `manual`, …). */
   source: string | null | undefined;
   categoryId: string;
@@ -329,9 +339,12 @@ export function resolveFiler(f: FilerInput): TxFiler | null {
   }
   // A non-"Amazon: " auto filing reads as by hand: the Amazon filer is the only auto filer today.
   const filing = [...(f.history ?? [])]
-    .filter((e) => !e.undone && (e.kind === 'category-filed' || e.kind === 'opening-balance-filed') && afterCategoryId(e) === f.categoryId)
+    .filter((e) => !e.undone && (
+      ((e.kind === 'category-filed' || e.kind === 'opening-balance-filed') && afterCategoryId(e) === f.categoryId)
+      || isBookkeepingFiling(e, f.activityId, f.categoryName)))
     .sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0))[0];
   if (filing?.kind === 'opening-balance-filed') return { kind: 'opening' };
+  if (filing?.kind === 'bookkeeping') return { kind: 'bookkeeping' };
   if (filing?.actor === 'you') return { kind: 'you', at: filing.at };
   if (filing?.why?.startsWith('Amazon: ')) return { kind: 'amazon', label: filing.why.slice('Amazon: '.length) };
   if (!filing && f.row.note.startsWith(STARTING_BALANCE_COMMENT_PREFIX)) {
@@ -361,6 +374,7 @@ export function encodeFiler(filer: TxFiler | null | undefined): string | undefin
     case 'you': return 'y';
     case 'amazon': return `a:${filer.label}`;
     case 'opening': return 'o';
+    case 'bookkeeping': return 'b';
     case 'hand': return 'h';
   }
 }
@@ -374,6 +388,7 @@ export function decodeFiler(code: unknown): TxFiler | null {
   if (code === 'y') return { kind: 'you' };
   if (code.startsWith('a:') && code.length > 2) return { kind: 'amazon', label: code.slice(2) };
   if (code === 'o') return { kind: 'opening' };
+  if (code === 'b') return { kind: 'bookkeeping' };
   if (code === 'h') return { kind: 'hand' };
   return null;
 }
@@ -395,6 +410,7 @@ function filedLine(name: string, filer: TxFiler | null | undefined): string {
       return filer.at ? `Filed under ${name} by you, in Telegram, ${changeDay(changeLocalDay(filer.at))}.` : `Filed under ${name} by you, in Telegram.`;
     case 'amazon': return `Filed under ${name} from an Amazon email.`;
     case 'opening': return `Filed under ${name} by the add-on — an opening balance isn't spending.`;
+    case 'bookkeeping': return `Filed under ${name} by the sync as bookkeeping — it isn't spending.`;
     case 'hand': return `Filed under ${name} — set by hand.`;
   }
 }

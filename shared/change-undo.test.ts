@@ -503,7 +503,7 @@ describe('planChangeUndo — sync decisions', () => {
     expect(r.steps).toEqual([
       { do: 'clear-account', sfinId: 'ACT-1f2e', flag: 'noAutoCorrect' },
       { do: 'import', row: {
-        accountId: 'wf-checking', sourceSystem: 'simplefin', activityType: 'TRANSFER_OUT', date: '2026-10-12', symbol: '$CASH-USD',
+        accountId: 'wf-checking', sourceSystem: 'simplefin', activityType: 'TRANSFER_OUT', date: '2026-10-12T12:00:00Z', symbol: '$CASH-USD',
         amount: 2.15, fee: 0, currency: 'USD', comment: 'Balance adjustment · ACT-1f2e · 2026-10-12', isValid: true, isDraft: false,
       } },
     ]);
@@ -523,7 +523,7 @@ describe('planChangeUndo — starting balances', () => {
     expect(p.done).toBe("Undone — the starting balance is gone, so the account may no longer match the bank's balance.");
     expect(reason(planChangeUndo(sb, 'redo', { startingBalanceId: 'sb-9' }, { latest: undo(sb) }))).toBe('This account has a starting balance again.');
     expect(ok(planChangeUndo(sb, 'redo', { startingBalanceId: null, currency: 'USD' }, { latest: undo(sb) })).steps[0]).toMatchObject({
-      do: 'import', row: { accountId: 'wf-citi', activityType: 'WITHDRAWAL', date: '2026-06-18', amount: 464.6, comment: 'Starting balance · ACT-9c8d' },
+      do: 'import', row: { accountId: 'wf-citi', activityType: 'WITHDRAWAL', date: '2026-06-18T12:00:00Z', amount: 464.6, comment: 'Starting balance · ACT-9c8d' },
     });
   });
 
@@ -536,11 +536,22 @@ describe('planChangeUndo — starting balances', () => {
     const now = row({ id: 'sb-2', type: 'CREDIT', absCents: 80000, date: '2026-04-22', comment: 'Starting balance · ACT-1f2e' });
     expect(ok(planChangeUndo(moved, 'undo', { row: now, currency: 'USD' }, { latest: null })).steps).toEqual([{
       do: 'update',
-      write: { id: 'sb-2', accountId: 'wf-checking', activityType: 'CREDIT', activityDate: '2026-06-19', amount: 1200, currency: 'USD', comment: 'Starting balance · ACT-1f2e' },
+      write: { id: 'sb-2', accountId: 'wf-checking', activityType: 'CREDIT', activityDate: '2026-06-19T12:00:00Z', amount: 1200, currency: 'USD', comment: 'Starting balance · ACT-1f2e' },
     }]);
     expect(reason(planChangeUndo(moved, 'undo', { row: { ...now, date: '2026-04-01' } }, { latest: null }))).toBe('It has changed since — nothing was undone.');
     expect(ok(planChangeUndo(moved, 'redo', { row: { ...now, absCents: 120000, date: '2026-06-19' }, currency: 'USD' }, { latest: undo(moved, { activityId: 'sb-2' }) })).steps[0])
-      .toMatchObject({ do: 'update', write: { activityDate: '2026-04-22', amount: 800 } });
+      .toMatchObject({ do: 'update', write: { activityDate: '2026-04-22T12:00:00Z', amount: 800 } });
+  });
+
+  it('M-4: a replay from a recorded BARE day writes noon UTC; a recorded timestamp is put back as it was', () => {
+    const stamped = entry(startingBalanceMovedChange({
+      account: CHECKING, actor: 'auto', activityId: 'sb-3',
+      before: { amountCents: 120000, date: '2026-06-19T04:00:00Z', activityType: 'CREDIT' },
+      after: { amountCents: 80000, date: '2026-04-22', activityType: 'CREDIT' },
+    }));
+    const now = row({ id: 'sb-3', type: 'CREDIT', absCents: 80000, date: '2026-04-22', comment: 'Starting balance · ACT-1f2e' });
+    expect(ok(planChangeUndo(stamped, 'undo', { row: now, currency: 'USD' }, { latest: null })).steps[0])
+      .toMatchObject({ write: { activityDate: '2026-06-19T04:00:00Z' } });
   });
 });
 

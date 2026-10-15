@@ -538,7 +538,8 @@ export function planChangeUndo(
           {
             do: 'import',
             row: {
-              accountId, sourceSystem: 'simplefin', activityType, date, symbol: `$CASH-${currency}`,
+              // A recorded BARE day is written at noon UTC like any bank day (the timestamp it was recorded as is put back as it was).
+              accountId, sourceSystem: 'simplefin', activityType, date: bankDayInstant(date), symbol: `$CASH-${currency}`,
               amount: Math.abs(amountCents) / 100, fee: 0, currency, comment, isValid: true, isDraft: false,
             },
           },
@@ -568,7 +569,7 @@ export function planChangeUndo(
         steps: [{
           do: 'import',
           row: {
-            accountId, sourceSystem: 'simplefin', activityType, date, symbol: `$CASH-${currency}`,
+            accountId, sourceSystem: 'simplefin', activityType, date: bankDayInstant(date), symbol: `$CASH-${currency}`,
             amount: Math.abs(amountCents) / 100, currency, comment, isValid: true, isDraft: false,
           },
         }],
@@ -589,7 +590,7 @@ export function planChangeUndo(
         op, needsSync: false, rowAfter: row.id,
         steps: [{
           do: 'update',
-          write: { id: row.id, accountId: row.accountId, activityType: toType, activityDate: toDate, amount: Math.abs(toCents) / 100, currency, comment: row.comment },
+          write: { id: row.id, accountId: row.accountId, activityType: toType, activityDate: bankDayInstant(toDate), amount: Math.abs(toCents) / 100, currency, comment: row.comment },
         }],
         done: op === 'undo'
           ? "Undone — the starting balance is back as it was, so the account may no longer match the bank's balance."

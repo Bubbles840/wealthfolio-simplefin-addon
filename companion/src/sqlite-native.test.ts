@@ -26,7 +26,7 @@ function makeTestDb(): { path: string; cleanup: () => void } {
     -- spending readers read the assignment's own taxonomy, as Wealthfolio does.
     CREATE TABLE activity_taxonomy_assignments (activity_id TEXT, category_id TEXT, taxonomy_id TEXT DEFAULT 'spending_categories', source TEXT, id TEXT, created_at TEXT);
     CREATE TABLE spending_activity_splits (id TEXT, activity_id TEXT, taxonomy_id TEXT, category_id TEXT, amount TEXT, sort_order INTEGER);
-    CREATE TABLE budget_targets (category_id TEXT, amount TEXT, period_key TEXT, updated_at TEXT);
+    CREATE TABLE budget_targets (category_id TEXT, amount TEXT, period_key TEXT, updated_at TEXT, target_type TEXT DEFAULT 'category', taxonomy_id TEXT DEFAULT 'spending_categories');
     CREATE TABLE accounts (id TEXT PRIMARY KEY, name TEXT, account_type TEXT, is_archived INTEGER DEFAULT 0);
     CREATE TABLE budget_groups (id TEXT PRIMARY KEY, name TEXT, key TEXT, color TEXT, icon TEXT, sort_order INTEGER);
     CREATE TABLE budget_group_assignments (id TEXT PRIMARY KEY, group_id TEXT, taxonomy_id TEXT, category_id TEXT);
@@ -96,6 +96,26 @@ describe('sqlite-native', () => {
         db.close();
         // Upstream keys a budget and its actuals by `top_category_id`.
         expect(getNativeWealthfolioBudgets(path, '2026-07')).toEqual({ Food: 340 });
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('LU-E m2: counts only spending-taxonomy category targets, and drops excluded categories (upstream budget/service.rs:250-251)', () => {
+      const { path, cleanup } = makeTestDb();
+      try {
+        const db = new DatabaseSync(path);
+        db.exec(`INSERT INTO taxonomy_categories (id, name, parent_id, taxonomy_id) VALUES
+          ('food', 'Food', NULL, 'spending_categories'), ('edu', 'Education', NULL, 'spending_categories'),
+          ('emp', 'Employment', NULL, 'income_sources')`);
+        db.exec(`INSERT INTO budget_targets (category_id, amount, period_key, updated_at, target_type, taxonomy_id) VALUES
+          ('food', '300', 'default', '2026-06-01T00:00:00Z', 'category', 'spending_categories'),
+          ('edu', '120', 'default', '2026-06-01T00:00:00Z', 'category', 'spending_categories'),
+          ('emp', '5000', 'default', '2026-06-01T00:00:00Z', 'category', 'income_sources'),
+          (NULL, '777', 'default', '2026-06-01T00:00:00Z', 'group_buffer', NULL)`);
+        db.exec(`INSERT INTO app_settings VALUES ('spending.excluded_category_ids', '["edu"]')`);
+        db.close();
+        expect(getNativeWealthfolioBudgets(path, '2026-07')).toEqual({ Food: 300 });
       } finally {
         cleanup();
       }
@@ -1436,6 +1456,13 @@ describe('report cube readers, merchants / fees / daily / valuations', () => {
     } finally {
       cleanup();
     }
+  });
+
+  it('M-2: the cube’s uncategorized and daily series, strict, throw instead of answering zero when they cannot look', () => {
+    expect(getNativeUncategorizedByMonthAccount('/nonexistent/wealthfolio.db', '2026-07-01', '2026-09-01')).toEqual([]);
+    expect(() => getNativeUncategorizedByMonthAccount('/nonexistent/wealthfolio.db', '2026-07-01', '2026-09-01', true)).toThrow(NativeDbUnreadableError);
+    expect(getNativeSpendDailyTotals('/nonexistent/wealthfolio.db', '2026-07-01', '2026-09-01')).toEqual([]);
+    expect(() => getNativeSpendDailyTotals('/nonexistent/wealthfolio.db', '2026-07-01', '2026-09-01', true)).toThrow(NativeDbUnreadableError);
   });
 
   it('getNativeMerchantRows, strict (the cash forecast), throws instead of answering "no rows" when it cannot look', () => {

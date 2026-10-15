@@ -202,6 +202,17 @@ describe('explainHeadline', () => {
       expect(explainHeadline({ ...eur(), baseCurrency: null }).reasons).toEqual([]);
     });
 
+    it('LU-E m1: names no foreign-currency reason, and prints no "$0.00" line, unless BOTH figures were read', () => {
+      const bothRead = explainHeadline(eur());
+      expect(bothRead.reasons!.map((r) => r.kind)).toEqual(['foreign-currency']);
+      const unreadReport = (() => { const f = eur(); delete f.reportCents; f.failed = ['report']; return explainHeadline(f); })();
+      expect(unreadReport.reportCents).toBeNull();
+      expect(unreadReport.reasons?.map((r) => r.kind) ?? []).not.toContain('foreign-currency');
+      const unreadWealthfolio = (() => { const f = eur(); delete f.wealthfolioCents; f.failed = ['wealthfolio']; return explainHeadline(f); })();
+      expect(unreadWealthfolio.wealthfolioCents).toBeNull();
+      expect(unreadWealthfolio.reasons?.map((r) => r.kind) ?? []).not.toContain('foreign-currency');
+    });
+
     it('leaves a foreign row on an unsynced account to not-covered, and counts a month’s own rows only', () => {
       const h = explainHeadline(october({
         baseCurrency: 'USD', spendingAccountIds: ['wf-chk', 'wf-jar'], reportAccountIds: ['wf-chk'], reportCents: 0, wealthfolioCents: 2000,

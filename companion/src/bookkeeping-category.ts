@@ -213,10 +213,10 @@ export async function fileSyncBookkeeping(deps: BookkeepingFilingDeps): Promise<
       deps.log(`Couldn't remember the bookkeeping rows it filed: ${err instanceof Error ? err.message : String(err)}`);
     }
   };
-  if (toFile.length === 0 && plan.unfile.length === 0) {
-    if (categoryId && !unchangedMemory()) await save();
-    return none;
-  }
+  const nothingToWrite = toFile.length === 0 && plan.unfile.length === 0;
+  // With nothing to write, no category is made for nothing — but one that exists
+  // is still kept out of spending: a Wealthfolio upgrade or reset can drop it from the list.
+  if (nothingToWrite && !categoryId) return none;
 
   let setUp = false;
   let excludeDone = true;
@@ -250,6 +250,10 @@ export async function fileSyncBookkeeping(deps: BookkeepingFilingDeps): Promise<
     throw err;
   }
   recordSetUp();
+  if (nothingToWrite) {
+    if (!unchangedMemory()) await save();
+    return none;
+  }
 
   const cat = categoryId;
   const asPlanned = (id: string, kind: 'file' | 'unfile'): boolean => {

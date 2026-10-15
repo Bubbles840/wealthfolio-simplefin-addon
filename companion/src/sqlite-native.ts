@@ -10,7 +10,7 @@ import { execFileSync } from 'child_process';
 import { DatabaseSync } from 'node:sqlite';
 import { descriptionFromComment, PENDING_SUFFIX as PENDING_NOTE_SUFFIX } from '../../shared/sync-core.js';
 import { IN_TRANSIT_COMMENT_PREFIX } from '../../shared/reconcile.js';
-import { CLI_SEPARATOR, isDay, isTrue, NOTES, shiftDay, tail, TOP_CATEGORY_CTE } from './sqlite-cli-helpers.js';
+import { CLI_SEPARATOR, isDay, isTrue, NOTES, shiftDay, SPENDING_BUDGET_TARGET_FILTER, tail, TOP_CATEGORY_CTE } from './sqlite-cli-helpers.js';
 import { spendLines, topCategoryId, SPENDING_TAXONOMY, type SpendLine, type SpendRow } from '../../shared/wf-spending.js';
 
 export interface NativeCategorySpending {
@@ -445,7 +445,7 @@ export function getNativeWealthfolioBudgets(dbPath: string, yearMonth: string): 
           ORDER BY (period_key = '${yearMonth}') DESC, updated_at DESC
         ) as rn
       FROM budget_targets
-      WHERE period_key = '${yearMonth}' OR period_key = 'default'
+      WHERE (period_key = '${yearMonth}' OR period_key = 'default') AND ${SPENDING_BUDGET_TARGET_FILTER}
     )
     SELECT
       top.name as parent_category,
@@ -1279,8 +1279,10 @@ export function getNativeUncategorizedByMonthAccount(
   dbPath: string,
   startInclusive: string,
   endExclusive: string,
+  /** The report cube: a database that cannot be read throws instead of answering "nothing uncategorized". */
+  strict = false,
 ): Array<{ month: string; accountId: string; amount: number }> {
-  const read = spendLinesOrNull(dbPath, startInclusive, endExclusive);
+  const read = strict ? readSpendLines(dbPath, startInclusive, endExclusive) : spendLinesOrNull(dbPath, startInclusive, endExclusive);
   if (!read) return [];
   const byKey = new Map<string, { month: string; accountId: string; cents: number }>();
   for (const line of read.lines) {
@@ -1418,8 +1420,10 @@ export function getNativeSpendDailyTotals(
   dbPath: string,
   startInclusive: string,
   endExclusive: string,
+  /** The report cube: a database that cannot be read throws instead of answering "nothing spent". */
+  strict = false,
 ): Array<{ date: string; amount: number }> {
-  const read = spendLinesOrNull(dbPath, startInclusive, endExclusive);
+  const read = strict ? readSpendLines(dbPath, startInclusive, endExclusive) : spendLinesOrNull(dbPath, startInclusive, endExclusive);
   if (!read) return [];
   const byDay = new Map<string, number>();
   for (const line of read.lines) byDay.set(line.day, (byDay.get(line.day) ?? 0) + line.cents);
@@ -1885,32 +1889,4 @@ export function readSpendLines(dbPath: string, startDay: string, endDayExclusive
  *  labels spending; '' when the category is unknown. */
 export function topCategoryName(categoryId: string, settings: Pick<NativeSpendingSettings, 'categoryParents' | 'categoryNames'>): string {
   return settings.categoryNames[topCategoryId(categoryId, settings.categoryParents)] ?? '';
-}
-
-/** Every row's STORED `activity_type`, by id. Strict. The date repair moves a
- *  row only when this equals the type the search shows. */
-export function getNativeStoredActivityTypes(dbPath: string): Map<string, string> {
-  const rows = queryNativeDbStrict<Record<string, unknown>>(
-    dbPath, 'stored types',
-    `SELECT a.id AS id, COALESCE(a.activity_type, '') AS t FROM activities a ORDER BY a.id;`,
-    (parts) => (parts.length >= 2 ? { c0: parts[0], c1: parts[1] } : null),
-    DRILL_CLI_SEPARATOR, SPEND_CLI_MAX_BUFFER,
-  );
-  return new Map(rows.map((r) => {
-    const [id, t] = Object.values(r) as [string, string];
-    return [String(id), String(t)];
-  }));
-}
-
-/** Ids of every row with a non-blank `activity_type_override` — rows whose
- *  stored type Wealthfolio's search does not show (it answers the effective
- *  one). Strict: throws when the database cannot be read. */
-export function getNativeOverriddenActivityIds(dbPath: string): Set<string> {
-  const rows = queryNativeDbStrict<Record<string, unknown>>(
-    dbPath, 'type overrides',
-    `SELECT a.id AS id FROM activities a WHERE TRIM(COALESCE(a.activity_type_override, '')) <> '' ORDER BY a.id;`,
-    (parts) => (parts.length >= 1 ? { c0: parts[0] } : null),
-    DRILL_CLI_SEPARATOR, SPEND_CLI_MAX_BUFFER,
-  );
-  return new Set(rows.map((r) => String(Object.values(r)[0])));
 }
