@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { chmodSync, mkdtempSync, rmSync } from 'node:fs';
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -323,6 +323,18 @@ describe('the one-time rewrite of card bookkeeping as transfers out (Wealthfolio
     } finally {
       chmodSync(dirname(path), 0o755);
     }
+  });
+
+  it('a file that is not a database: nothing written, nothing marked, and it says it could not read it (no throw)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sfin-card-'));
+    made.push(dir);
+    const path = join(dir, 'wealthfolio.db');
+    writeFileSync(path, 'this is not a database, just text long enough to fill a header page');
+    const t = deps(path);
+    expect(await rewriteCardBookkeeping(t.d)).toEqual({ kind: 'no-database' });
+    expect(t.d.saveMany).not.toHaveBeenCalled();
+    expect(t.marker()).toBeNull();
+    expect(t.d.log).toHaveBeenCalledWith("Card bookkeeping rewrite skipped: couldn't read the database.");
   });
 
   it('M2: waits while the installed add-on is older than 1.62.0; an absent or unreadable one runs', async () => {

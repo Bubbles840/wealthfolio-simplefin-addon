@@ -1312,15 +1312,17 @@ Designed overnight under Nick's standing instruction; approved by Nick on
   batch from a REST re-read (stored instant and note kept, amount and fee
   omitted), never from the database snapshot. It clears the phantom `$CASH`
   asset older withdrawals carry (sent as `$CASH-<ccy>`, which 3.10 clears). It
-  needs a live database read (no immutable snapshot), is off below 3.10, and
+  needs a live database read (`openLiveDatabase`, no immutable snapshot), is off below 3.10, and
   waits while an installed add-on is below 1.62.0. Left as they are, and logged:
   rows in a transfer group, retyped rows, real security assets, rows with
   split lines, rows carrying a filing the sync did not make, and a starting
   balance whose opening-balance filing you undid (`noOpeningFile`). A refused
   batch is retried row by row; a row refused twice joins the left rows (listed
   in the entry); only a refusal (an `errors[]` entry, or a thrown 400/422) is the row's fault, so any other failure (5xx, network, any other 4xx) stops the run unmarked, as does a failed batch re-read. A run whose rows were all refused is marked done and records its entry once.
-- **One shared open-ladder helper:** the database open-ladder is copied four
-  times; make one.
+- **One shared open-ladder helper:** the writers (the card rewrite, both
+  filers, the date repair's reads) now open through `companion/src/live-db.ts`;
+  the readers' ladder (with its immutable rung) is still copied in
+  `sqlite-native.ts` and `ledger-facts.ts`; make one.
 - **Task 8 writes NEW 3.10 card starting balances as TRANSFER_OUT even under
   noOpeningFile**; the rewrite respects that setting, the first write does not.
 - **Not taken:** pairing money leaving a card (3.10 takes card TRANSFER_OUT, so

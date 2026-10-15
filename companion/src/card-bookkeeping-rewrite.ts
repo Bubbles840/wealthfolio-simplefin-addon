@@ -45,8 +45,7 @@
  *
  * Reads the database read-only; writes through the REST bulk endpoint.
  */
-import { existsSync } from 'fs';
-import { DatabaseSync } from 'node:sqlite';
+import type { DatabaseSync } from 'node:sqlite';
 import { bookkeepingChange, type ChangeDraft } from '../../shared/change-entries.js';
 import {
   BALANCE_ADJUSTMENT_COMMENT_PREFIX, EXTERNAL_BOOKKEEPING_METADATA, IN_TRANSIT_COMMENT_PREFIX, OPENING_BALANCES_CATEGORY,
@@ -55,6 +54,7 @@ import {
 import type { ActivityWrite, SaveManyRequest, SaveManyResult } from '../../shared/sync-host.js';
 import { hostTakesCardTransferOut, isNewerVersion } from '../../shared/version.js';
 import { findSyncBookkeepingCategory } from './bookkeeping-category.js';
+import { databaseFileExists, openLiveDatabase, whyNoLiveOpen } from './live-db.js';
 import { PHANTOM_CASH_ASSET_ID } from './sqlite-audit.js';
 
 /** The secret that says the rewrite finished (an ISO timestamp). */
@@ -129,21 +129,6 @@ function assetKind(r: Row): AssetKind {
   return codes.length > 0 && codes.some(isPhantomCashCode) ? 'phantom' : 'security';
 }
 
-/** Live reads only: the immutable rung can serve a days-old snapshot of a database in use. */
-function open(dbPath: string): DatabaseSync | null {
-  if (!dbPath || !existsSync(dbPath)) return null;
-  for (const uri of [`file:${dbPath}?mode=ro`, `file:${dbPath}?mode=ro&readonly_shm=1`]) {
-    try {
-      const db = new DatabaseSync(uri);
-      db.prepare('SELECT 1').get();
-      return db;
-    } catch {
-      /* next form */
-    }
-  }
-  return null;
-}
-
 const hasTable = (db: DatabaseSync, name: string) =>
   !!db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`).get(name);
 
@@ -208,11 +193,16 @@ export async function rewriteCardBookkeeping(deps: CardRewriteDeps): Promise<Car
     return { kind: 'old-addon' };
   }
   const remembered = deps.rememberedBookkeepingCategory ? await deps.rememberedBookkeepingCategory().catch(() => null) : null;
-  const db = deps.dbPath && existsSync(deps.dbPath) ? open(deps.dbPath) : null;
+  if (!databaseFileExists(deps.dbPath)) {
+    deps.log('Card bookkeeping rewrite skipped: no Wealthfolio database to read.');
+    return { kind: 'no-database' };
+  }
+  // Live reads only (live-db.ts): the immutable rung can serve a days-old snapshot of a database in use.
+  const db = openLiveDatabase(deps.dbPath);
   if (!db) {
-    deps.log(deps.dbPath && existsSync(deps.dbPath)
+    deps.log(whyNoLiveOpen(deps.dbPath) === 'snapshot'
       ? 'Card bookkeeping rewrite waits for a live database read.'
-      : 'Card bookkeeping rewrite skipped: no Wealthfolio database to read.');
+      : "Card bookkeeping rewrite skipped: couldn't read the database.");
     return { kind: 'no-database' };
   }
   let rows: Row[];
