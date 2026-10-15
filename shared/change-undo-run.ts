@@ -422,7 +422,11 @@ async function performStep(io: UndoIo, s: UndoStep, prior: string | null): Promi
       }
       case 'mapping-add': {
         const list = await readMappingRules(io.secrets.get);
-        if (!list.some((r) => sameMappingRule(r, s.rule))) await io.secrets.set(MAPPING_RULES_SECRET_KEY, JSON.stringify([...list, s.rule]));
+        if (!list.some((r) => sameMappingRule(r, s.rule))) {
+          // A rule logged with an index (W10: first) goes back there, or first when it no longer fits.
+          const at = s.index === undefined ? list.length : s.index <= list.length ? s.index : 0;
+          await io.secrets.set(MAPPING_RULES_SECRET_KEY, JSON.stringify([...list.slice(0, at), s.rule, ...list.slice(at)]));
+        }
         break;
       }
       case 'delete-budget':

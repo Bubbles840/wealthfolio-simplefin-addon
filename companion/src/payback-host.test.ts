@@ -8,7 +8,7 @@ import { hasTxOverride, parseSyncOverrides, SYNC_OVERRIDES_SECRET_KEY } from '..
 import { accountTxKey } from '../../shared/transfers.js';
 import { INSTALLED_ADDON_VERSION_SECRET_KEY } from '../../shared/version.js';
 import { companionUndoIo } from './change-undo-host.js';
-import { companionPaybackIo, companionPaybackRulesIo, readPaybackRow, type PaybackClient, type PaybackRulesClient } from './payback-host.js';
+import { companionPaybackBreadth, companionPaybackIo, companionPaybackRulesIo, readPaybackRow, type PaybackBreadthClient, type PaybackClient, type PaybackRulesClient } from './payback-host.js';
 
 const NOW = new Date('2026-10-14T15:00:00Z');
 const KEY = accountTxKey('sfin-chk', 'TRN-77');
@@ -138,16 +138,32 @@ describe('"Make every … deposit a payback" on the companion (W10)', () => {
       createCategorizationRule: vi.fn(async () => 'rule-9'),
     }) as unknown as PaybackRulesClient & { createCategorizationRule: ReturnType<typeof vi.fn> };
     const out = await makePaybackRules({
-      pattern: 'VENMO CASHOUT', account: { id: 'wf-chk', name: 'PNC Checking' }, categoryId: 'cat-rest', categoryName: 'Restaurants', description: 'VENMO CASHOUT',
-    }, companionPaybackRulesIo(client, vi.fn()));
+      pattern: 'ACME REFUND', account: { id: 'wf-chk', name: 'PNC Checking' }, categoryId: 'cat-rest', categoryName: 'Restaurants', description: 'ACME REFUND',
+    }, companionPaybackRulesIo(client, vi.fn()), NOW);
     expect(out.ok).toBe(true);
     expect(client.createCategorizationRule).toHaveBeenCalledWith({
-      name: 'Telegram payback: VENMO CASHOUT', pattern: 'VENMO CASHOUT', categoryId: 'cat-rest', accountId: 'wf-chk', activityType: 'CREDIT',
+      name: 'Telegram payback: ACME REFUND', pattern: 'ACME REFUND', categoryId: 'cat-rest', accountId: 'wf-chk', activityType: 'CREDIT',
       taxonomyId: 'spending_categories', priority: 50,
     });
     expect(JSON.parse(f.data.get('mapping_rules')!)).toEqual([{
-      pattern: 'VENMO CASHOUT', matchType: 'contains', activityType: 'CREDIT', subtype: 'REIMBURSEMENT', onlyMoneyIn: true, accountId: 'wf-chk',
+      pattern: 'ACME REFUND', matchType: 'contains', activityType: 'CREDIT', subtype: 'REIMBURSEMENT', onlyMoneyIn: true, accountId: 'wf-chk', since: '2026-10-14',
     }]);
     expect(f.logged().map((e) => e.kind)).toEqual(['mapping-rule-created', 'category-rule-created']);
+  });
+
+  it('reads the breadth live: 90 days of the account’s money in, judged by the fresh transaction rules (I1)', async () => {
+    const f = fakeClient();
+    f.data.set('mapping_rules', JSON.stringify([{ pattern: 'ACME', matchType: 'contains', activityType: 'TRANSFER_IN' }]));
+    const searchActivities = vi.fn(async () => [
+      { id: 'w', accountId: 'wf-chk', activityType: 'DEPOSIT', date: '2026-10-08', amount: '14', comment: 'ACME REFUND 1 · TRN-1' },
+      { id: 'f', accountId: 'wf-chk', activityType: 'CREDIT', date: '2026-10-07', amount: '9', comment: 'ACME REFUND · Venmo: Rent · TRN-2' },
+      { id: 'x', accountId: 'wf-chk', activityType: 'DEPOSIT', date: '2026-10-07', amount: '2000', comment: 'ACME PAYROLL · TRN-3' },
+    ]);
+    const client = Object.assign(f.client, { searchActivities }) as unknown as PaybackBreadthClient;
+    const out = await companionPaybackBreadth(client, {
+      pattern: 'ACME REFUND', account: { id: 'wf-chk', name: 'PNC Checking' }, sourceId: 'src', description: 'ACME REFUND', waitingIds: ['w'],
+    }, NOW);
+    expect(out).toEqual({ ok: true, filed: 1, waiting: 1 });
+    expect(searchActivities).toHaveBeenCalledWith(expect.objectContaining({ accountIdFilter: ['wf-chk'], dateFrom: '2026-07-16', dateTo: '2026-10-14' }));
   });
 });

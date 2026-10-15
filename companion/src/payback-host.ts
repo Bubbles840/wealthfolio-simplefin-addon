@@ -11,7 +11,13 @@
  * reads `asReimbursement` (W8).
  */
 import { SPENDING_TAXONOMY_ID } from '../../shared/cash-flow-bucket.js';
-import { addonPaybackGate, paybackRowOf, type PaybackIo, type PaybackRulesIo } from '../../shared/payback.js';
+import { MAPPING_RULES_SECRET_KEY } from '../../shared/change-undo-run.js';
+import {
+  addonPaybackGate, paybackBreadth, paybackRowOf, type PaybackBreadth, type PaybackIo, type PaybackRulesIo,
+} from '../../shared/payback.js';
+import { PAYBACK_BREADTH_DAYS } from '../../shared/payback-copy.js';
+import { descriptionFromComment } from '../../shared/sync-core.js';
+import type { MappingRule } from '../../shared/types.js';
 import type { PaybackRow } from '../../shared/payback-row.js';
 import { sfinIdsFor } from '../../shared/tx-story.js';
 import { recordCompanionChanges, type SecretClient } from './change-log-host.js';
@@ -70,4 +76,45 @@ export function companionPaybackRulesIo(client: PaybackRulesClient, log: (msg: s
     record: (draft) => recordCompanionChanges(client, [draft]),
     log,
   };
+}
+
+/** What the preview's breadth check needs of a `WealthfolioClient`. */
+export type PaybackBreadthClient = SecretClient & Pick<WealthfolioClient, 'searchActivities'>;
+
+const MONEY_IN_TYPES = ['DEPOSIT', 'CREDIT', 'TRANSFER_IN', 'INTEREST'];
+const BREADTH_PAGE = 500;
+const BREADTH_MAX_PAGES = 6;
+
+/** W10's preview, read live: the account's money-in rows of the last 90 days
+ *  (REST), judged by the whole fresh `mapping_rules` list with the new rule
+ *  first. Rejects when Wealthfolio or the secrets cannot be read. */
+export async function companionPaybackBreadth(
+  client: PaybackBreadthClient,
+  input: { pattern: string; account: { id: string; name: string }; sourceId: string; description: string; waitingIds: string[] },
+  now: Date = new Date(),
+): Promise<PaybackBreadth> {
+  const raw = await client.getAddonSecret(ADDON_ID, MAPPING_RULES_SECRET_KEY);
+  let list: MappingRule[] = [];
+  if (raw && raw.trim() !== '') {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) throw new Error('the transaction rules are unreadable');
+    list = parsed as MappingRule[];
+  }
+  const day = (d: Date) => d.toISOString().slice(0, 10);
+  const dateFrom = day(new Date(now.getTime() - PAYBACK_BREADTH_DAYS * 86_400_000));
+  const rows: Array<{ id: string; description: string; amount: number }> = [];
+  for (let page = 0; page < BREADTH_MAX_PAGES; page += 1) {
+    const items = await client.searchActivities({
+      page, pageSize: BREADTH_PAGE, accountIdFilter: [input.account.id], activityTypeFilter: MONEY_IN_TYPES, dateFrom, dateTo: day(now),
+    });
+    for (const a of items) {
+      const amount = Math.abs(Number(a.amount ?? 0));
+      if (amount > 0) rows.push({ id: a.id, description: descriptionFromComment(a.comment), amount });
+    }
+    if (items.length < BREADTH_PAGE) break;
+  }
+  return paybackBreadth({
+    pattern: input.pattern, accountId: input.account.id, since: day(now), source: { id: input.sourceId, description: input.description },
+    list, rows, waitingIds: new Set(input.waitingIds),
+  });
 }

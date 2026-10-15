@@ -5242,22 +5242,22 @@ describe('the /categorize wiring', () => {
       currency: 'USD', comment: 'VENMO CASHOUT · TRN-act-7', subtype: null, sourceGroupId: null, metadata: null,
     };
     /** A client whose one deposit can be filed as a payback, opened on its payback grid. */
-    const onPaybackGrid = async (installed: string) => {
+    const onPaybackGrid = async (installed: string, text = 'VENMO CASHOUT') => {
       vi.mocked(getNativeUncategorizedSpending).mockReturnValue([{
-        ...uncatRow('act-7', 'VENMO CASHOUT'), amountCents: 1400, date: '2026-10-09', accountName: 'Checking', direction: 'in', incomeEligible: true, activityType: 'DEPOSIT', pending: false,
+        ...uncatRow('act-7', text), amountCents: 1400, date: '2026-10-09', accountName: 'Checking', direction: 'in', incomeEligible: true, activityType: 'DEPOSIT', pending: false,
       }] as any);
       const { client, secrets } = clientFor([
         ['account_mapping', JSON.stringify({ 'sfin-1': 'wf-a' })], ['installed_addon_version', installed],
       ]);
       client.getAccounts = vi.fn(async () => [{ id: 'wf-a', accountType: 'CASH' }]);
-      client.searchActivities = vi.fn(async (b: { activityIdFilter?: string[] }) => [deposit].filter((r) => b.activityIdFilter?.includes(r.id)));
+      client.searchActivities = vi.fn(async (b: { activityIdFilter?: string[] }) => [{ ...deposit, comment: `${text} · TRN-act-7` }].filter((r) => b.activityIdFilter?.includes(r.id)));
       client.saveMany = vi.fn(async () => ({ created: [], updated: [], errors: [] }));
       const controller = buildCategorizeController(client);
       const { sent, reply } = collect();
       await buildTelegramCommandHandler(client, controller)({ command: 'categorize', args: '' }, reply);
       const ui = fakeUi();
       const cb = (data: string) => controller.onCallback({ data, chatId: 4242, messageId: 7 }, ui);
-      await cb(dataFor(sent[0][1], 'VENMO CASHOUT'));
+      await cb(dataFor(sent[0][1], text));
       return { client, secrets, ui, cb };
     };
 
@@ -5275,18 +5275,32 @@ describe('the /categorize wiring', () => {
       expect(logged.map((e: any) => [e.kind, e.summary])).toEqual([['payback-filed', 'Filed VENMO CASHOUT as a payback under Entertainment']]);
     });
 
-    it('then makes every deposit like it a payback: the transaction rule and Wealthfolio’s rule for paybacks in that account', async () => {
-      const p = await onPaybackGrid('1.62.0');
+    it('then makes every deposit like it a payback from today on: the transaction rule first, and Wealthfolio’s rule for paybacks in that account', async () => {
+      const p = await onPaybackGrid('1.62.0', 'ACME REFUND');
       p.client.listCategorizationRules = vi.fn(async () => []);
       p.client.createCategorizationRule.mockResolvedValue('rule-9');
+      p.secrets.set('mapping_rules', JSON.stringify([{ pattern: 'ACME', matchType: 'contains', activityType: 'TRANSFER_IN' }]));
       await p.cb(dataFor(lastOf(p.ui.edit)[1], 'Entertainment'));
-      await p.cb(dataFor(lastOf(p.ui.edit)[1], 'Make every VENMO CASHOUT deposit a payback'));
+      await p.cb(dataFor(lastOf(p.ui.edit)[1], 'Make every ACME REFUND deposit a payback'));
+      expect(lastOf(p.ui.edit)[0]).toContain('From today on');
+      expect(lastOf(p.ui.edit)[0]).toContain('No deposit in the last 90 days reads that way.');
       await p.cb(dataFor(lastOf(p.ui.edit)[1], 'Create both rules'));
       expect(p.client.createCategorizationRule).toHaveBeenCalledWith(expect.objectContaining({
-        pattern: 'VENMO CASHOUT', categoryId: 'cat-fun', accountId: 'wf-a', activityType: 'CREDIT', priority: 50,
+        pattern: 'ACME REFUND', categoryId: 'cat-fun', accountId: 'wf-a', activityType: 'CREDIT', priority: 50,
       }));
-      expect(JSON.parse(p.secrets.get('mapping_rules')!)).toEqual([expect.objectContaining({ pattern: 'VENMO CASHOUT', onlyMoneyIn: true, accountId: 'wf-a' })]);
-      expect(lastOf(p.ui.edit)[0]).toBe('Done — every VENMO CASHOUT deposit into Checking is a payback under Entertainment from now on. Undo either rule from /changes.');
+      expect(JSON.parse(p.secrets.get('mapping_rules')!)).toEqual([
+        expect.objectContaining({ pattern: 'ACME REFUND', onlyMoneyIn: true, accountId: 'wf-a', since: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/) }),
+        expect.objectContaining({ pattern: 'ACME' }),
+      ]);
+      expect(lastOf(p.ui.edit)[0]).toBe('Done — every ACME REFUND deposit into Checking is a payback under Entertainment from now on. Undo either rule from /changes.');
+    });
+
+    it('refuses a deposit whose words are only generic bank wording: nothing to create, nothing written', async () => {
+      const p = await onPaybackGrid('1.62.0', 'DEPOSIT 123456');
+      await p.cb(dataFor(lastOf(p.ui.edit)[1], 'Entertainment'));
+      await p.cb(dataFor(lastOf(p.ui.edit)[1], 'Make every DEPOSIT deposit a payback'));
+      expect(lastOf(p.ui.edit)[0]).toContain('only common bank words');
+      expect(p.secrets.get('mapping_rules')).toBeUndefined();
     });
 
     it('refuses while the installed add-on is older, naming the app’s Change log, and writes nothing', async () => {

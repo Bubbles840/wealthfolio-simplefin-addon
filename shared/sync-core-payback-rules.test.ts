@@ -4,11 +4,12 @@ import { paybackMappingRule } from './mapper.js';
 import { runSyncCore, VALUATION_POLL } from './sync-core.js';
 import type { HostActivity } from './sync-host.js';
 import { emptySyncOverrides, setTxOverride } from './sync-overrides.js';
+import type { MappingRule } from './types.js';
 import { accountTxKey } from './transfers.js';
 
 const NOW = new Date('2026-10-14T15:00:00Z');
 const epoch = (iso: string) => Date.parse(iso) / 1000;
-const RULE = paybackMappingRule('VENMO CASHOUT', 'wf-a');
+const RULE = paybackMappingRule('VENMO CASHOUT', 'wf-a', '2026-10-01');
 const flag = () => setTxOverride(emptySyncOverrides(), accountTxKey('sfin-1', 'tx-1'), 'asReimbursement', NOW, { label: 'VENMO CASHOUT · Checking' });
 
 /** Checking (wf-a) and Savings (wf-b), one Venmo cash-out each, of `amount`. */
@@ -70,7 +71,33 @@ describe('runSyncCore — a payback rule (W10: onlyMoneyIn + accountId)', () => 
     expect(stored.comment).toContain('pending');
     const posted = createFakeHost(seed('14.00', { existing: new Map([['wf-a', [stored]]]) }));
     await runSyncCore(posted.host, posted.store, { force: true });
-    expect(posted.activities.get('wf-a')!.filter((r) => r.comment?.includes('tx-1'))).toHaveLength(1);
+    const after = posted.activities.get('wf-a')!.filter((r) => r.comment?.includes('tx-1'));
+    expect(after).toHaveLength(1);
+    expect(after[0]).toMatchObject({ id: stored.id, activityType: 'CREDIT', subtype: 'REIMBURSEMENT' });
+  });
+
+  it('leaves a stored deposit dated before the rule alone: last week’s payroll stays income (I1)', async () => {
+    const payroll = { id: 'tx-pay', posted: epoch('2026-10-10T12:00:00Z'), amount: '2000.00', description: 'DIRECT DEPOSIT ACME CORP PAYROLL' };
+    const accounts = (rule: MappingRule[]) => seed('14.00', {
+      accountSet: { errors: [], accounts: [{ id: 'sfin-1', name: 'Checking', currency: 'USD', balance: '0', 'balance-date': epoch('2026-10-14T12:00:00Z'), transactions: [payroll] }] },
+      mappingRules: rule as never[],
+    });
+    const first = createFakeHost(accounts([]));
+    await runSyncCore(first.host, first.store, {});
+    // The payroll is stored as a deposit; a payback rule made today for "DEPOSIT" words arrives.
+    const next = createFakeHost({ ...accounts([paybackMappingRule('ACME CORP PAYROLL', 'wf-a', '2026-10-14')]), existing: new Map([['wf-a', first.activities.get('wf-a')!.map((r) => ({ ...r }))]]) });
+    await runSyncCore(next.host, next.store, { force: true });
+    expect(rowOf(next, 'wf-a', 'tx-pay')).toMatchObject({ activityType: 'DEPOSIT' });
+  });
+
+  it('types a new matching deposit dated on or after the rule a payback (I1)', async () => {
+    const feed = { id: 'tx-new', posted: epoch('2026-10-14T12:00:00Z'), amount: '14.00', description: 'VENMO CASHOUT 99' };
+    const fh = createFakeHost(seed('14.00', {
+      accountSet: { errors: [], accounts: [{ id: 'sfin-1', name: 'Checking', currency: 'USD', balance: '0', 'balance-date': epoch('2026-10-14T12:00:00Z'), transactions: [feed] }] },
+      mappingRules: [paybackMappingRule('VENMO CASHOUT', 'wf-a', '2026-10-14') as never],
+    }));
+    await runSyncCore(fh.host, fh.store, {});
+    expect(rowOf(fh, 'wf-a', 'tx-new')).toMatchObject({ activityType: 'CREDIT', subtype: 'REIMBURSEMENT' });
   });
 
   it('keeps a stored rule-typed pending row visible when the overrides cannot be read (not hidden, so no duplicate)', async () => {

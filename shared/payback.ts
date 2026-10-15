@@ -31,11 +31,12 @@ import {
 } from './change-entries.js';
 import { MAPPING_RULES_SECRET_KEY, UNDO_MAPPING_RULES_UNREADABLE } from './change-undo-run.js';
 import { fixRowOf } from './fix-row.js';
-import { paybackMappingRule, sameMappingRule } from './mapper.js';
+import { mapTransactionWithSource, paybackMappingRule, ruleApplies, sameMappingRule } from './mapper.js';
+import { bankWords } from './rule-pattern.js';
 import {
   PAYBACK_ALREADY, PAYBACK_CHANGED, PAYBACK_GONE, PAYBACK_GONE_STUCK, PAYBACK_LINKED, PAYBACK_MANAGED, PAYBACK_NO_UNDO, PAYBACK_NO_UNDO_SETTING, PAYBACK_NOT_CASH, PAYBACK_NOT_DEPOSIT, PAYBACK_NOT_FEED,
-  PAYBACK_OVERRIDE_FAILED, PAYBACK_PENDING, PAYBACK_RULES_EXIST, PAYBACK_RULES_REFUSED, PAYBACK_RULES_SAVE_FAILED, PAYBACK_RUNNING, PAYBACK_SETTING_HINT, PAYBACK_TRANSFER, PAYBACK_UNDO_HINT, PAYBACK_UNREACHABLE, PAYBACK_UPDATE_ADDON,
-  PAYBACK_UPDATE_REFUSED, PAYBACK_UPDATE_STUCK, PAYBACK_UPDATE_UNSURE, PAYBACK_ZERO, paybackDone, paybackRulesDone, paybackRulesStuck, paybackUnfiled,
+  PAYBACK_OVERRIDE_FAILED, PAYBACK_PENDING, PAYBACK_RULES_EXIST, PAYBACK_RULES_GENERIC, PAYBACK_RULES_REFUSED, PAYBACK_RULES_SHADOWED, PAYBACK_RULES_SAVE_FAILED, PAYBACK_RUNNING, PAYBACK_SETTING_HINT, PAYBACK_TRANSFER, PAYBACK_UNDO_HINT, PAYBACK_UNREACHABLE, PAYBACK_UPDATE_ADDON,
+  PAYBACK_UPDATE_REFUSED, PAYBACK_UPDATE_STUCK, PAYBACK_UPDATE_UNSURE, PAYBACK_ZERO, paybackDone, paybackRulesConflict, paybackRulesDone, paybackRulesStuck, paybackUnfiled,
 } from './payback-copy.js';
 import { isPaybackRow, paybackRetype, type PaybackRow } from './payback-row.js';
 import type { SecretGet, SecretSet } from './subscription-prefs.js';
@@ -348,6 +349,8 @@ export interface PaybackRulesInput {
   categoryName: string;
   /** The deposit it was made from, for the change log. */
   description: string;
+  /** Category names by id, to name another category in a conflict. Optional. */
+  categories?: Array<{ id: string; name: string }>;
 }
 
 /** What a host lends `makePaybackRules`. */
@@ -368,6 +371,18 @@ export interface PaybackRulesOutcome {
   message: string;
 }
 
+/** Words so common in a bank's wording that a rule made only of them would catch deposits that are not paybacks. */
+const GENERIC_BANK_WORDS: ReadonlySet<string> = new Set([
+  'DEPOSIT', 'MOBILE', 'CREDIT', 'ACH', 'TRANSFER', 'ONLINE', 'DIRECT', 'CHECK', 'FROM', 'TO', 'REF', 'PAYMENT',
+  'CASHOUT', 'ZELLE', 'VENMO', 'PPD', 'WEB', 'ID',
+]);
+
+/** A pattern needs at least one word that is not generic bank wording (and not a number); else the plain refusal. */
+export function paybackPatternRefusal(pattern: string): string | null {
+  const words = pattern.toUpperCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+  return words.some((w) => /\p{L}/u.test(w) && !GENERIC_BANK_WORDS.has(w)) ? null : PAYBACK_RULES_GENERIC;
+}
+
 /** `mapping_rules`, read strictly: nothing stored is none; anything but a list is unreadable (null) and never rewritten. */
 function parseMappingRules(raw: string | null): MappingRule[] | null {
   if (raw === null || raw.trim() === '') return [];
@@ -379,18 +394,83 @@ function parseMappingRules(raw: string | null): MappingRule[] | null {
   }
 }
 
+/** A payback rule for the same words and account, whatever day it was made. */
+const samePaybackRule = (a: MappingRule, rule: MappingRule): boolean =>
+  sameMappingRule({ ...a, since: rule.since }, rule);
+
+/** The list with the new rule FIRST (first match wins, so nothing earlier can shadow it). */
+const withRuleFirst = (list: MappingRule[], rule: MappingRule): MappingRule[] => [rule, ...list.filter((r) => !samePaybackRule(r, rule))];
+
+/** Whether the list, as it would stand, makes a deposit with these bank words a payback. */
+function listMakesPayback(list: MappingRule[], rule: MappingRule, description: string): boolean {
+  const mapped = mapTransactionWithSource(bankWords(description), 1, list, 'CASH', rule.accountId, rule.since);
+  return mapped.type === 'CREDIT' && mapped.subtype === REIMBURSEMENT_SUBTYPE;
+}
+
+/** One stored money-in row of the account, as the breadth check reads it. */
+export interface PaybackBreadthRow {
+  id: string;
+  /** The stored description (bank words, possibly with a sync note). */
+  description: string;
+  /** Signed: money in is positive. */
+  amount: number;
+}
+
+export type PaybackBreadth = { ok: true; filed: number; waiting: number } | { ok: false; message: string };
+
+/**
+ * The preview's breadth check (W10), over the account's last 90 days from the
+ * ledger: the money-in rows whose bank words the new rule would DECIDE,
+ * evaluated over the whole fresh mapping list with the rule in its position
+ * (first) — split into those that already have a category and those waiting
+ * for one (`waitingIds`). The deposit it is made from is not counted. Refuses a
+ * generic pattern, and a list that would still type the source row another way.
+ */
+export function paybackBreadth(i: {
+  pattern: string;
+  accountId: string;
+  /** The bank day the rule would be made. */
+  since: string;
+  source: { id: string; description: string };
+  list: MappingRule[];
+  rows: PaybackBreadthRow[];
+  waitingIds: ReadonlySet<string>;
+}): PaybackBreadth {
+  const generic = paybackPatternRefusal(i.pattern);
+  if (generic) return { ok: false, message: generic };
+  const rule = paybackMappingRule(i.pattern, i.accountId, i.since);
+  const list = withRuleFirst(i.list, rule);
+  if (!listMakesPayback(list, rule, i.source.description)) return { ok: false, message: PAYBACK_RULES_SHADOWED };
+  let filed = 0;
+  let waiting = 0;
+  for (const r of i.rows) {
+    if (r.id === i.source.id || !(r.amount > 0)) continue;
+    // The first rule that reads the row decides it; ours must be that one.
+    const decider = list.find((x) => ruleApplies(x, bankWords(r.description), r.amount, i.accountId, i.since));
+    if (!decider || !sameMappingRule(decider, rule)) continue;
+    if (i.waitingIds.has(r.id)) waiting += 1;
+    else filed += 1;
+  }
+  return { ok: true, filed, waiting };
+}
+
 /**
  * Make every <pattern> deposit into one account a payback under a category
- * (W10): an add-on transaction rule — money in only, this account only, a
- * CREDIT marked REIMBURSEMENT — which the sync applies on import, then
- * Wealthfolio's categorization rule for the category, which files only
- * CREDITs (the paybacks) in this account. A rule that is already there is not
- * made twice. The transaction rule is appended to a list re-read right before
- * the write; if Wealthfolio then refuses the category rule, the transaction
- * rule comes back out, so neither is half made — and when that write fails
- * too, it is logged so Undo can take it out. Both rules are change-logged.
+ * (W10): an add-on transaction rule — money in only, this account only, from
+ * today on (`since`: a deposit already stored is never re-typed), a CREDIT
+ * marked REIMBURSEMENT — which the sync applies on import, then Wealthfolio's
+ * categorization rule for the category, which files only CREDITs (the
+ * paybacks) in this account. The transaction rule goes FIRST in the list
+ * (first match wins, so an older rule cannot shadow it), written to a list
+ * re-read right before; a pattern of only generic bank words is refused. A
+ * Wealthfolio rule for the same words, account and CREDIT under ANOTHER
+ * category is a conflict; one under this category is reused. A write that
+ * throws but landed counts as done. If Wealthfolio then refuses the category
+ * rule, the transaction rule comes back out, so neither is half made — and when
+ * that write fails too, it is logged so Undo can take it out. Both rules are
+ * change-logged.
  */
-export async function makePaybackRules(input: PaybackRulesInput, io: PaybackRulesIo): Promise<PaybackRulesOutcome> {
+export async function makePaybackRules(input: PaybackRulesInput, io: PaybackRulesIo, now: Date = new Date()): Promise<PaybackRulesOutcome> {
   const no = (message: string): PaybackRulesOutcome => ({ ok: false, message });
   // A gate that cannot read the add-on's version REJECTS: that is "couldn't
   // reach", logged, never "update the add-on" (PB-B, M7).
@@ -402,21 +482,34 @@ export async function makePaybackRules(input: PaybackRulesInput, io: PaybackRule
     return no(PAYBACK_UNREACHABLE);
   }
   if (gate) return no(gate);
-  const rule = paybackMappingRule(input.pattern, input.account.id);
+  const generic = paybackPatternRefusal(input.pattern);
+  if (generic) return no(generic);
+  const rule = paybackMappingRule(input.pattern, input.account.id, now.toISOString().slice(0, 10));
 
+  const matches = (r: { pattern: string; accountId?: string; activityType?: string }) =>
+    r.pattern === input.pattern && r.accountId === input.account.id && r.activityType === 'CREDIT';
   let list: MappingRule[] | null;
   let haveCategoryRule: boolean;
   try {
     list = parseMappingRules(await io.secrets.get(MAPPING_RULES_SECRET_KEY));
-    haveCategoryRule = (await io.categoryRules()).some((r) => r.pattern === input.pattern && r.categoryId === input.categoryId
-      && r.accountId === input.account.id && r.activityType === 'CREDIT');
+    const theirs = (await io.categoryRules()).filter(matches);
+    const other = theirs.find((r) => r.categoryId !== input.categoryId);
+    if (other) {
+      const name = input.categories?.find((c) => c.id === other.categoryId)?.name ?? null;
+      return no(paybackRulesConflict(input.pattern, input.account.name, name));
+    }
+    haveCategoryRule = theirs.length > 0;
   } catch (err) {
     io.log(`Payback rules for "${input.pattern}": ${errorText(err)}`);
     return no(PAYBACK_UNREACHABLE);
   }
   if (list === null) return no(UNDO_MAPPING_RULES_UNREADABLE);
-  const haveMapping = list.some((r) => sameMappingRule(r, rule));
+  const haveMapping = list.some((r) => samePaybackRule(r, rule));
   if (haveMapping && haveCategoryRule) return no(PAYBACK_RULES_EXIST);
+  // The list as it will stand must make the source deposit a payback.
+  if (!listMakesPayback(haveMapping ? list : withRuleFirst(list, rule), haveMapping ? list.find((r) => samePaybackRule(r, rule))! : rule, input.description)) {
+    return no(PAYBACK_RULES_SHADOWED);
+  }
 
   const log = async (draft: ChangeDraft) => {
     try {
@@ -425,17 +518,28 @@ export async function makePaybackRules(input: PaybackRulesInput, io: PaybackRule
       io.log(`Payback rules for "${input.pattern}": the change log was not written: ${errorText(err)}`);
     }
   };
-  const mappingEntry = () => mappingRuleCreatedChange({ rule, description: input.description, account: { wfId: input.account.id, name: input.account.name } });
+  const mappingEntry = () => mappingRuleCreatedChange({
+    rule, description: input.description, account: { wfId: input.account.id, name: input.account.name }, index: 0,
+  });
+  const readList = async (): Promise<MappingRule[] | null> => parseMappingRules(await io.secrets.get(MAPPING_RULES_SECRET_KEY));
 
-  // 1. The transaction rule, appended to the list as it is right now.
+  // 1. The transaction rule, FIRST in the list as it is right now.
   let added = false;
   if (!haveMapping) {
     try {
-      const fresh = parseMappingRules(await io.secrets.get(MAPPING_RULES_SECRET_KEY));
+      const fresh = await readList();
       if (fresh === null) return no(UNDO_MAPPING_RULES_UNREADABLE);
-      if (!fresh.some((r) => sameMappingRule(r, rule))) {
-        await io.secrets.set(MAPPING_RULES_SECRET_KEY, JSON.stringify([...fresh, rule]));
-        added = true;
+      if (!fresh.some((r) => samePaybackRule(r, rule))) {
+        try {
+          await io.secrets.set(MAPPING_RULES_SECRET_KEY, JSON.stringify(withRuleFirst(fresh, rule)));
+          added = true;
+        } catch (err) {
+          // A write that failed but landed counts as done (PB-B M2 style).
+          const now2 = await readList().catch(() => null);
+          if (!now2?.some((r) => sameMappingRule(r, rule))) throw err;
+          io.log(`Payback rules for "${input.pattern}": the transaction rule write reported ${errorText(err)}, but it landed`);
+          added = true;
+        }
       }
     } catch (err) {
       io.log(`Payback rules for "${input.pattern}": the transaction rule was not saved: ${errorText(err)}`);
@@ -446,28 +550,38 @@ export async function makePaybackRules(input: PaybackRulesInput, io: PaybackRule
   // 2. Wealthfolio's category rule: paybacks (CREDIT) in this account only.
   const name = `${PAYBACK_RULE_NAME_PREFIX}${input.pattern}`.slice(0, RULE_NAME_MAX);
   let ruleId: string | null = null;
+  let madeCategoryRule = false;
   if (!haveCategoryRule) {
     try {
       ruleId = await io.createCategoryRule({ name, pattern: input.pattern, categoryId: input.categoryId, accountId: input.account.id, activityType: 'CREDIT' });
+      madeCategoryRule = true;
     } catch (err) {
       io.log(`Payback rules for "${input.pattern}": Wealthfolio refused the category rule: ${errorText(err)}`);
-      if (!added) return no(PAYBACK_RULES_REFUSED);
-      try {
-        const now = parseMappingRules(await io.secrets.get(MAPPING_RULES_SECRET_KEY));
-        if (now === null) throw new Error('the transaction rules are unreadable');
-        await io.secrets.set(MAPPING_RULES_SECRET_KEY, JSON.stringify(now.filter((r) => !sameMappingRule(r, rule))));
-      } catch (again) {
-        io.log(`Payback rules for "${input.pattern}": taking the transaction rule back failed: ${errorText(again)}`);
-        await log(mappingEntry());
-        return no(paybackRulesStuck(input.pattern));
+      // A rule that landed despite the error counts as made (PB-B M2 style).
+      const landed = (await io.categoryRules().catch(() => []))
+        .find((r) => matches(r) && r.categoryId === input.categoryId);
+      if (landed) {
+        ruleId = landed.id;
+        madeCategoryRule = true;
+      } else {
+        if (!added) return no(PAYBACK_RULES_REFUSED);
+        try {
+          const cur = await readList();
+          if (cur === null) throw new Error('the transaction rules are unreadable');
+          await io.secrets.set(MAPPING_RULES_SECRET_KEY, JSON.stringify(cur.filter((r) => !sameMappingRule(r, rule))));
+        } catch (again) {
+          io.log(`Payback rules for "${input.pattern}": taking the transaction rule back failed: ${errorText(again)}`);
+          await log(mappingEntry());
+          return no(paybackRulesStuck(input.pattern));
+        }
+        return no(PAYBACK_RULES_REFUSED);
       }
-      return no(PAYBACK_RULES_REFUSED);
     }
   }
 
   // 3. The change log, which never costs the rules.
   if (added) await log(mappingEntry());
-  if (!haveCategoryRule) {
+  if (madeCategoryRule) {
     await log(categoryRuleCreatedChange({
       ruleId, name, pattern: input.pattern, categoryId: input.categoryId, categoryName: input.categoryName,
       account: { wfId: input.account.id, name: input.account.name }, activityType: 'CREDIT',

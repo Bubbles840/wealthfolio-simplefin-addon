@@ -17,6 +17,10 @@ export interface MappingRule {
   onlyMoneyIn?: true;
   /** A payback rule (1.62, W10): the one Wealthfolio account it reads. */
   accountId?: string;
+  /** A payback rule (1.62, W10): the bank day (YYYY-MM-DD) it was made. The
+   *  sync applies it only to transactions dated on or after it, so it never
+   *  re-types a deposit already stored (income filed last week stays income). */
+  since?: string;
 }
 
 export interface SimplefinOrg {
