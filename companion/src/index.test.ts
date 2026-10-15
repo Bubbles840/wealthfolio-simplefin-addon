@@ -5320,7 +5320,7 @@ describe('the /categorize wiring', () => {
       await p.cb(dataFor(lastOf(p.ui.edit)[1], 'Entertainment'));
       await p.cb(dataFor(lastOf(p.ui.edit)[1], 'Make every ACME REFUND deposit a payback'));
       expect(lastOf(p.ui.edit)[0]).toContain('From today on');
-      expect(lastOf(p.ui.edit)[0]).toContain('No deposit in the last 90 days reads that way.');
+      expect(lastOf(p.ui.edit)[0]).toContain('No other deposit in the last 90 days reads that way.');
       await p.cb(dataFor(lastOf(p.ui.edit)[1], 'Create both rules'));
       expect(p.client.createCategorizationRule).toHaveBeenCalledWith(expect.objectContaining({
         pattern: 'ACME REFUND', categoryId: 'cat-fun', accountId: 'wf-a', activityType: 'CREDIT', priority: 50,
