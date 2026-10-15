@@ -1,12 +1,12 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileCardOpeningDebts, OPENING_BALANCES_CATEGORY } from './opening-balance-category.js';
 
 const made: string[] = [];
-afterEach(() => { for (const d of made.splice(0)) rmSync(d, { recursive: true, force: true }); });
+afterEach(() => { for (const d of made.splice(0)) { try { chmodSync(d, 0o755); } catch { /* gone */ } rmSync(d, { recursive: true, force: true }); } });
 
 function ledger(rows: string): string {
   const dir = mkdtempSync(join(tmpdir(), 'sfin-open-'));
@@ -212,15 +212,31 @@ describe('fileCardOpeningDebts — writers never read a snapshot (LU-H I2/I3)', 
     expect(d.setExcluded).toHaveBeenCalledWith(['live-1', 'live-2', 'new-cat']);
   });
 
-  it('I2: a database that can only be read as a snapshot is left alone, with a log', async () => {
+  it('I2: a real WAL database on a mount where only a snapshot is possible (0555 directory, no -wal/-shm) is left alone', async () => {
+    const path = ledger(`INSERT INTO activities VALUES ('o','card','WITHDRAWAL','2026-04-20','464.6','Starting balance · sfc');`);
+    const db = new DatabaseSync(path); db.exec('PRAGMA journal_mode=WAL;'); db.close();
+    chmodSync(join(path, '..'), 0o555);
+    const d = deps(path);
+    expect(await fileCardOpeningDebts(d)).toEqual({ filed: 0 });
+    expect(d.log).toHaveBeenCalledWith('Opening balance filing waits: the database can only be read as a snapshot');
+    expect(d.createCategory).not.toHaveBeenCalled();
+    expect(d.setExcluded).not.toHaveBeenCalled();
+  });
+
+  it('I2: a file that is not a database at all is logged as unreadable, not as a snapshot', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'sfin-open-'));
     made.push(dir);
     const path = join(dir, 'wealthfolio.db');
     writeFileSync(path, 'not a database');
     const d = deps(path);
     expect(await fileCardOpeningDebts(d)).toEqual({ filed: 0 });
-    expect(d.log).toHaveBeenCalledWith(expect.stringContaining('waits: the database can only be read as a snapshot'));
-    expect(d.createCategory).not.toHaveBeenCalled();
-    expect(d.setExcluded).not.toHaveBeenCalled();
+    expect(d.log).toHaveBeenCalledWith("Opening balance filing skipped: couldn't read the database");
+  });
+
+  it('m5: a missing database file logs one line', async () => {
+    const d = deps(join(tmpdir(), 'sfin-open-definitely-missing', 'wealthfolio.db'));
+    expect(await fileCardOpeningDebts(d)).toEqual({ filed: 0 });
+    expect(d.log).toHaveBeenCalledTimes(1);
+    expect(d.log).toHaveBeenCalledWith("Opening balance filing skipped: the database file isn't there");
   });
 });

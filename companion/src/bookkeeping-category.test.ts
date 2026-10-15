@@ -1,15 +1,15 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { fileSyncBookkeeping, type BookkeepingFilingDeps } from './bookkeeping-category.js';
+import { fileSyncBookkeeping, withoutSyncBookkeeping, type BookkeepingFilingDeps } from './bookkeeping-category.js';
 import { SYNC_BOOKKEEPING_DESCRIPTION } from '../../shared/bookkeeping-filing.js';
 import type { FiledState } from '../../shared/bookkeeping-filing.js';
 import type { ChangeDraft } from '../../shared/change-entries.js';
 
 const made: string[] = [];
-afterEach(() => { for (const d of made.splice(0)) rmSync(d, { recursive: true, force: true }); });
+afterEach(() => { for (const d of made.splice(0)) { try { chmodSync(d, 0o755); } catch { /* gone */ } rmSync(d, { recursive: true, force: true }); } });
 
 /** Wealthfolio's tables: a checking account and a card the Spending page reads, savings it does not. */
 function database(rows: string, settings = ''): string {
@@ -77,7 +77,7 @@ describe('fileSyncBookkeeping', () => {
     expect(d.assign).toHaveBeenCalledWith('ph', 'cat-sync-new');
     // M2: a set-up entry for the create and the exclusion, then the pass's own.
     expect(recorded).toEqual([
-      expect.objectContaining({ kind: 'bookkeeping', after: expect.objectContaining({ step: 'opening-category' }) }),
+      expect.objectContaining({ kind: 'bookkeeping', after: expect.objectContaining({ step: 'sync-bookkeeping-setup' }) }),
       expect.objectContaining({ kind: 'bookkeeping', after: expect.objectContaining({ step: 'sync-bookkeeping', count: 1, unfiled: 0 }) }),
     ]);
   });
@@ -187,15 +187,32 @@ describe('fileSyncBookkeeping', () => {
     expect(d.assign).toHaveBeenCalledWith('ph', 'cat-sync-new');
   });
 
-  it('I2: a database that can only be read as a snapshot is left alone, with a log', async () => {
+  it('I2: a real WAL database on a mount where only a snapshot is possible (0555 directory, no -wal/-shm) is left alone', async () => {
+    const path = database(PLACEHOLDER);
+    write(path, 'PRAGMA journal_mode=WAL;');   // closed again: checkpointed, -wal/-shm gone, the header says WAL
+    chmodSync(join(path, '..'), 0o555);
+    const { d } = deps(path);
+    expect(await fileSyncBookkeeping(d)).toEqual({ filed: 0, unfiled: 0 });
+    expect(d.log).toHaveBeenCalledWith('Bookkeeping filing waits: the database can only be read as a snapshot');
+    expect(d.createCategory).not.toHaveBeenCalled();
+    expect(d.assign).not.toHaveBeenCalled();
+  });
+
+  it('I2: a file that is not a database at all is logged as unreadable, not as a snapshot', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'sfin-bk-'));
     made.push(dir);
     const path = join(dir, 'wealthfolio.db');
     writeFileSync(path, 'not a database');
     const { d } = deps(path);
     expect(await fileSyncBookkeeping(d)).toEqual({ filed: 0, unfiled: 0 });
-    expect(d.log).toHaveBeenCalledWith('Bookkeeping filing waits: the database can only be read as a snapshot');
-    expect(d.createCategory).not.toHaveBeenCalled();
+    expect(d.log).toHaveBeenCalledWith("Bookkeeping filing skipped: couldn't read the database");
+  });
+
+  it('m5: a missing database file logs one line', async () => {
+    const { d } = deps(join(tmpdir(), 'sfin-bk-definitely-missing', 'wealthfolio.db'));
+    expect(await fileSyncBookkeeping(d)).toEqual({ filed: 0, unfiled: 0 });
+    expect(d.log).toHaveBeenCalledTimes(1);
+    expect(d.log).toHaveBeenCalledWith("Bookkeeping filing skipped: the database file isn't there");
   });
 
   it('I3: the exclusions are Wealthfolio’s live list, read right before the PUT — another writer’s exclusion is kept', async () => {
@@ -249,20 +266,20 @@ describe('fileSyncBookkeeping', () => {
   it('M2: a setup entry is written when the category was made or its exclusion re-added, even if every filing then fails', async () => {
     const { d, recorded } = deps(database(PLACEHOLDER), { assign: vi.fn(async () => { throw new Error('refused'); }) });
     expect(await fileSyncBookkeeping(d)).toEqual({ filed: 0, unfiled: 0 });
-    expect(recorded.map((r) => r.after)).toEqual([expect.objectContaining({ step: 'opening-category', categoryName: 'Sync bookkeeping' })]);
+    expect(recorded.map((r) => r.after)).toEqual([expect.objectContaining({ step: 'sync-bookkeeping-setup', categoryName: 'Sync bookkeeping' })]);
 
     const again = deps(database(`INSERT INTO taxonomy_categories VALUES ('cat-sync', 'spending_categories', 'Sync bookkeeping', NULL);\n${PLACEHOLDER}`),
       { assign: vi.fn(async () => { throw new Error('refused'); }) }, { categoryId: 'cat-sync', ids: [] });
     await fileSyncBookkeeping(again.d);
     expect(again.d.setExcluded).toHaveBeenCalledWith(['cat-sync']);
-    expect(again.recorded.map((r) => r.after)).toEqual([expect.objectContaining({ step: 'opening-category' })]);
+    expect(again.recorded.map((r) => r.after)).toEqual([expect.objectContaining({ step: 'sync-bookkeeping-setup' })]);
   });
 
   it('M5: setExcluded refused — nothing is filed under a category that is not excluded, and the create is still logged', async () => {
     const { d, recorded } = deps(database(PLACEHOLDER), { setExcluded: vi.fn(async () => { throw new Error('500'); }) });
     await expect(fileSyncBookkeeping(d)).rejects.toThrow('500');
     expect(d.assign).not.toHaveBeenCalled();
-    expect(recorded.map((r) => r.after)).toEqual([expect.objectContaining({ step: 'opening-category' })]);
+    expect(recorded.map((r) => r.after)).toEqual([expect.objectContaining({ step: 'sync-bookkeeping-setup' })]);
   });
 
   it('M3: below 3.10 a blank (not null) type override is skipped — 3.9 reads it as a type and refuses the filing', async () => {
@@ -296,5 +313,77 @@ describe('fileSyncBookkeeping', () => {
     await fileSyncBookkeeping(d);
     expect(d.createCategory).not.toHaveBeenCalled();
     expect(d.assign).toHaveBeenCalledWith('ph', 'cat-renamed');
+  });
+
+  // The remembered rows must survive a failed save, a restart and an account that leaves Spending.
+  const EXPIRE = `UPDATE activities SET activity_type = 'WITHDRAWAL', notes = 'ZELLE TO MOM · TRN-1' WHERE id = 'ph';`;
+  const assignWrites = (path: string) => vi.fn(async (id: string, cat: string) => {
+    write(path, `INSERT INTO activity_taxonomy_assignments VALUES ('a-${id}', '${id}', 'spending_categories', '${cat}', 'manual', '2026-10-05T13:00:00Z');`);
+  });
+
+  it('I-1 (S16): the rows are saved BEFORE they are filed — a failed final save, or a restart, still knows them', async () => {
+    const path = database(PLACEHOLDER);
+    const order: string[] = [];
+    const saves: FiledState[] = [];
+    const first = deps(path, {
+      assign: vi.fn(async (id: string, cat: string) => { order.push('assign'); await assignWrites(path)(id, cat); }),
+      saveFiled: vi.fn(async (state: FiledState) => { order.push('save'); saves.push(state); if (order.filter((o) => o === 'save').length > 1) throw new Error('disk full'); }),
+    });
+    expect(await fileSyncBookkeeping(first.d)).toEqual({ filed: 1, unfiled: 0 });
+    expect(order).toEqual(['save', 'assign', 'save']);
+    expect(saves[0]).toEqual({ categoryId: 'cat-sync-new', ids: ['ph'] });
+    // Next run: the placeholder expired; the first run's memory (from before the writes) still names it.
+    write(path, EXPIRE);
+    write(path, `INSERT INTO taxonomy_categories VALUES ('cat-sync-new', 'spending_categories', 'Sync bookkeeping', NULL); INSERT INTO app_settings VALUES ('spending.excluded_category_ids', '["cat-sync-new"]');`);
+    const second = deps(path, {}, saves[0]);
+    expect(await fileSyncBookkeeping(second.d)).toEqual({ filed: 0, unfiled: 1 });
+    expect(second.d.unassign).toHaveBeenCalledWith('ph');
+  });
+
+  it('I-1: if the rows cannot be remembered first, nothing is filed', async () => {
+    const { d } = deps(database(PLACEHOLDER), { saveFiled: vi.fn(async () => { throw new Error('disk full'); }) });
+    expect(await fileSyncBookkeeping(d)).toEqual({ filed: 0, unfiled: 0 });
+    expect(d.assign).not.toHaveBeenCalled();
+    expect(d.log).toHaveBeenCalledWith(expect.stringContaining("couldn't remember the rows before filing them"));
+  });
+
+  it('I-1 (S14): an account that leaves Spending for one sync does not make the pass forget its rows', async () => {
+    const path = database(PLACEHOLDER);
+    const first = deps(path, { assign: assignWrites(path) });
+    await fileSyncBookkeeping(first.d);
+    const memory = first.saved.at(-1)!;
+    expect(memory.ids).toEqual(['ph']);
+    write(path, `INSERT INTO taxonomy_categories VALUES ('cat-sync-new', 'spending_categories', 'Sync bookkeeping', NULL);`);   // what the real create made
+    // The person takes the checking account out of Spending for a sync…
+    write(path, `UPDATE app_settings SET setting_value = '["visa"]' WHERE setting_key = 'spending.account_ids'; ${EXPIRE}`);
+    const away = deps(path, {}, memory);
+    expect(await fileSyncBookkeeping(away.d)).toEqual({ filed: 0, unfiled: 0 });
+    const kept = away.saved.at(-1) ?? memory;
+    expect(kept.ids).toEqual(['ph']);
+    // …and puts it back: the expired row is taken out.
+    write(path, `UPDATE app_settings SET setting_value = '["chk","visa"]' WHERE setting_key = 'spending.account_ids';`);
+    const back = deps(path, {}, kept);
+    expect(await fileSyncBookkeeping(back.d)).toEqual({ filed: 0, unfiled: 1 });
+    expect(back.d.unassign).toHaveBeenCalledWith('ph');
+  });
+
+  it('m1 (S17): a whitespace-only override is blank too — skipped below 3.10, not refused forever', async () => {
+    const path = database(`INSERT INTO activities VALUES ('ws', 'chk', 'TRANSFER_OUT', '  ', NULL, '2026-10-05T12:00:00+00:00', '600', '↔️ In-transit transfer · ZELLE · TRN-1', NULL);`);
+    const old = deps(path, { appVersion: vi.fn(async () => '3.9.0') });
+    expect(await fileSyncBookkeeping(old.d)).toEqual({ filed: 0, unfiled: 0 });
+    expect(old.d.assign).not.toHaveBeenCalled();
+  });
+
+  it('m4: the set-up entry has its own step and says only what happened', async () => {
+    const ok = deps(database(PLACEHOLDER));
+    await fileSyncBookkeeping(ok.d);
+    expect(ok.recorded[0]).toMatchObject({ after: { step: 'sync-bookkeeping-setup' }, summary: 'Set up the "Sync bookkeeping" category and kept it out of spending' });
+    const refused = deps(database(PLACEHOLDER), { setExcluded: vi.fn(async () => { throw new Error('500'); }) });
+    await expect(fileSyncBookkeeping(refused.d)).rejects.toThrow('500');
+    expect(refused.recorded[0]).toMatchObject({ after: { step: 'sync-bookkeeping-setup' }, summary: 'Set up the "Sync bookkeeping" category, but Wealthfolio didn\'t exclude it yet' });
+  });
+
+  it('m3: the pickers’ category lists drop "Sync bookkeeping"', () => {
+    expect(withoutSyncBookkeeping([{ name: 'Groceries' }, { name: 'Sync bookkeeping' }])).toEqual([{ name: 'Groceries' }]);
   });
 });

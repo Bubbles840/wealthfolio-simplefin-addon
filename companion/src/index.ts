@@ -13,8 +13,8 @@ import {
 } from '../../shared/reports-archive.js';
 import { fileCardOpeningDebts } from './opening-balance-category.js';
 import { runDateRepair, type DateRepairDeps } from './date-repair.js';
-import { BOOKKEEPING_FILED_SECRET_KEY, fileSyncBookkeeping } from './bookkeeping-category.js';
-import { parseFiledState, SYNC_BOOKKEEPING_CATEGORY } from '../../shared/bookkeeping-filing.js';
+import { BOOKKEEPING_FILED_SECRET_KEY, fileSyncBookkeeping, withoutSyncBookkeeping } from './bookkeeping-category.js';
+import { parseFiledState } from '../../shared/bookkeeping-filing.js';
 import cron from 'node-cron';
 import { readFileSync, existsSync } from 'fs';
 import { runSyncCore, descriptionFromComment, txIdFromComment } from '../../shared/sync-core.js';
@@ -3066,7 +3066,7 @@ export function buildCategorizeDeps(wfClient: WealthfolioClient): CategorizeDeps
     // before they un-file anything.
     readCategorized: getNativeCategorizedSpending,
     // Not "Sync bookkeeping": a category the sync files its own rows under is not one to pick (by name; the id lives in a secret).
-    readCategories: (path) => getNativeSpendingCategories(path).filter((c) => c.name !== SYNC_BOOKKEEPING_CATEGORY),
+    readCategories: (path) => withoutSyncBookkeeping(getNativeSpendingCategories(path)),
     // The income taxonomy, for money-in rows' first filings (a grant check is
     // not spending, and upstream refuses a spending category on it).
     readIncomeCategories: getNativeIncomeCategories,
@@ -3295,7 +3295,7 @@ export function buildAskSessions(
     }
     let categories;
     try {
-      categories = getNativeSpendingCategories(dbPath);
+      categories = withoutSyncBookkeeping(getNativeSpendingCategories(dbPath));
     } catch (err) {
       log(`Ask flow newrule: reading spending categories failed: ${formatError(err)}`);
       await send(NEWRULE_NO_DATABASE_REPLY);
@@ -3698,7 +3698,7 @@ export function buildTelegramCommandHandler(
         // anything the reader could do about it.
         let categories;
         try {
-          categories = getNativeSpendingCategories(dbPath);
+          categories = withoutSyncBookkeeping(getNativeSpendingCategories(dbPath));
         } catch (err) {
           log(`Categorize menu: reading spending categories for /newrule failed: ${formatError(err)}`);
           await reply(NEWRULE_NO_DATABASE_REPLY);
