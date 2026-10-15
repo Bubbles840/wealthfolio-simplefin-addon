@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   clearAccountOverride, clearTxOverride, editSyncOverrides, emptySyncOverrides, hasAccountOverride, hasTxOverride,
-  isUnreadableOverridesError, loadSyncOverrides, overrideRows, parseSyncOverrides, pruneTxOverrides, removeOverrideRow,
+  isUnreadableOverridesError, loadSyncOverrides, overrideRows, paybackUndoCovers, parseSyncOverrides, pruneTxOverrides, removeOverrideRow,
   setAccountOverride, setTxOverride, SYNC_OVERRIDES_SECRET_KEY, SYNC_OVERRIDES_UNREADABLE_MESSAGE, syncOverridesIgnoredLog, syncOverridesOrEmpty,
   SyncOverridesInvalidError, type SyncOverrides,
 } from './sync-overrides.js';
@@ -191,6 +191,27 @@ describe('overrideRows', () => {
     const [first] = overrideRows(o).filter((r) => r.flag === 'noAmazonLabel');
     const next = removeOverrideRow(o, first);
     expect(overrideRows(next).map((r) => r.flag)).toEqual(['notTransfer']);
+  });
+
+  it('never removes a payback flag: that is undone from /changes', () => {
+    const o = setTxOverride(emptySyncOverrides(), OUT, 'asReimbursement', NOW);
+    expect(removeOverrideRow(o, overrideRows(o)[0])).toEqual(o);
+  });
+
+  it('removes a payback flag only when no Undo covers it (W11-C I1)', () => {
+    const o = setTxOverride(emptySyncOverrides(), OUT, 'asReimbursement', NOW);
+    const [row] = overrideRows(o);
+    expect(removeOverrideRow(o, row, true)).toEqual(o);
+    expect(hasTxOverride(removeOverrideRow(o, row, false), OUT, 'asReimbursement')).toBe(false);
+  });
+
+  it('paybackUndoCovers: an un-undone payback-filed entry with the key covers it; undone, other-kind or other-key do not', () => {
+    const e = (kind: string, keys: string[], undone?: boolean) => ({ kind, undone, subject: { txKeys: keys } });
+    expect(paybackUndoCovers([e('payback-filed', [OUT])], OUT)).toBe(true);
+    expect(paybackUndoCovers([e('payback-filed', [OUT], true)], OUT)).toBe(false);
+    expect(paybackUndoCovers([e('payback-filed', [IN])], OUT)).toBe(false);
+    expect(paybackUndoCovers([e('category-filed', [OUT])], OUT)).toBe(false);
+    expect(paybackUndoCovers([], OUT)).toBe(false);
   });
 
   describe('a flag from a newer version', () => {

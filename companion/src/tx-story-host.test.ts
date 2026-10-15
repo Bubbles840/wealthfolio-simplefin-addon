@@ -1,11 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
-import { categoryFiledChange, importChange, stampChange, transferLinkChange } from '../../shared/change-entries.js';
+import { categoryFiledChange, importChange, paybackFiledChange, stampChange, transferLinkChange } from '../../shared/change-entries.js';
 import type { ChangeLogRead } from '../../shared/change-log.js';
 import { SYNC_OVERRIDES_SECRET_KEY } from '../../shared/sync-overrides.js';
 import { SKIPPED_TRANSACTIONS_SECRET_KEY } from '../../shared/skipped-transactions.js';
 import { OPENING_BALANCES_CATEGORY } from './opening-balance-category.js';
 import { accountTxKey } from '../../shared/transfers.js';
-import { TX_FACT_NOTES, TX_STORY_NO_HISTORY, TX_STORY_SPENDING } from '../../shared/tx-story.js';
+import { TX_FACT_NOTES, TX_STORY_NO_HISTORY, TX_STORY_PAYBACK, TX_STORY_SPENDING } from '../../shared/tx-story.js';
 import { parseTxQuery } from '../../shared/tx-search.js';
 import { companionStoryReaders, companionTxSearch, companionTxStory, type StoryReaders } from './tx-story-host.js';
 import { renderWhyStory } from './why-menu.js';
@@ -51,6 +51,26 @@ function readers(over: Partial<StoryReaders> = {}, secrets: Record<string, strin
     ...over,
   };
 }
+
+describe("a payback in Telegram's story (1.62)", () => {
+  it('says a payback lowers your spending, and that you filed it as a payback — not "set by hand"', async () => {
+    const filedAsPayback = stampChange(paybackFiledChange({
+      account: { sfinId: 'ACT-chk', wfId: 'wf-chk', name: 'PNC Checking' }, txKeys: [KEY], activityId: 'act-1', description: 'VENMO FROM ALEX',
+      amountCents: 4000, date: '2026-10-03', subtypeBefore: null, categoryId: 'cat-food', categoryName: 'Food & Dining',
+    }), 'companion', new Date('2026-10-13T12:00:00Z'));
+    const r = readers({
+      row: vi.fn(async () => restRow({ activityType: 'CREDIT', subtype: 'REIMBURSEMENT', amount: '40', comment: 'VENMO FROM ALEX · TRN-1' })),
+      details: vi.fn(() => ({ accountType: 'CASH', assignments: [{ taxonomyId: 'spending_categories', categoryId: 'cat-food', categoryName: 'Food & Dining', source: 'manual' }] })),
+      changeLog: vi.fn(async () => logOf(filedAsPayback)),
+    });
+    const out = await companionTxStory(r, 'act-1', NOW);
+    expect(out.kind === 'ok' && out.story.answer.slice(0, 3)).toEqual([
+      'From your PNC Checking bank feed.',
+      TX_STORY_PAYBACK,
+      'Filed under Food & Dining by you, as a payback, Oct 13.',
+    ]);
+  });
+});
 
 describe('companionTxStory', () => {
   it('tells the whole story from REST, the database, the rules, the log and the settings', async () => {

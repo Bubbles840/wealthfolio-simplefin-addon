@@ -26,6 +26,15 @@ export interface FeedTx {
    *  Omitted — not `null` — when no rule set one; see `normSubtype` for why
    *  that distinction matters to `changed()`. */
   subtype?: string;
+  /** A payback rule decided this row's type (W10): it applies to rows the sync
+   *  CREATES only. Against a stored row, `changed()` ignores type and subtype and an
+   *  update writes the stored ones back. */
+  createOnly?: true;
+  /** A cash money-in row that nothing decides (no rule, no payback flag) and the plain
+   *  mapping calls a DEPOSIT. A STORED CREDIT/REIMBURSEMENT is then a payback somebody
+   *  filed (or made by hand, or a rule made before it was undone): `changed()` leaves
+   *  its type and subtype alone and an update writes them back, as for `createOnly`. */
+  keepPayback?: true;
   /**
    * Mark the written row as needing the user's eye — Wealthfolio 3.8's
    * `needs_review`, which it surfaces on its own Activities screen.
@@ -96,17 +105,47 @@ function normSubtype(v: string | null | undefined): string {
   return (v ?? '').trim().toUpperCase();
 }
 
+/**
+ * One in-transit outflow placeholder, two shapes: a card's is a WITHDRAWAL
+ * where Wealthfolio refuses TRANSFER_OUT on a card (3.8, 3.9) and a
+ * TRANSFER_OUT where it takes one (3.10+, 1.62.0 U4). A writer that would
+ * pick the other shape leaves the stored one as it is, so the add-on and the
+ * companion never flip it back and forth. (A cash account's placeholder is a
+ * TRANSFER_OUT on every version and an investment account's a WITHDRAWAL; this
+ * test does not know the account type, so its scope covers cash too: a CASH
+ * in-transit placeholder stored as WITHDRAWAL is no longer retyped to
+ * TRANSFER_OUT unless something else about it changes — a deliberate departure
+ * from d344c96 — and a hand-retyped cash placeholder is left alone. The sync keeps the stored shape on a real change too:
+ * see "A held card placeholder keeps the shape" in sync-core.ts.)
+ */
+function sameType(row: ExistingRow, tx: FeedTx): boolean {
+  if (row.type === tx.type) return true;
+  const outflow = (t: string) => t === 'WITHDRAWAL' || t === 'TRANSFER_OUT';
+  return !!tx.inTransit && isInTransitRow(row) && outflow(row.type) && outflow(tx.type);
+}
+
+/** Whether the stored row's own type and subtype stand: a `createOnly` tx never re-types a
+ *  stored row, and a `keepPayback` tx never re-types a stored payback. */
+function keepsStored(row: ExistingRow, tx: FeedTx): boolean {
+  return !!tx.createOnly
+    || (!!tx.keepPayback && row.type === 'CREDIT' && normSubtype(row.subtype) === 'REIMBURSEMENT');
+}
+
 function changed(row: ExistingRow, tx: FeedTx): boolean {
+  const keeps = keepsStored(row, tx);
   return (
     row.absCents !== tx.absCents ||
-    row.type !== tx.type ||
+    // A tx that keeps the stored row never changes its type; otherwise one
+    // in-transit outflow in either shape is the same type (`sameType`).
+    (!keeps && !sameType(row, tx)) ||
     row.date !== tx.date ||
     row.pending !== tx.pending ||
     // Placeholder-ness is a real difference even when nothing else moved: a
     // non-CASH placeholder expires into the identical DEPOSIT/WITHDRAWAL, so
     // without this the row would keep its in-transit marker forever on a leg
     // that will never pair.
-    isInTransitRow(row) !== !!tx.inTransit ||
+    // (A `createOnly` tx keeps the stored marker too: its plan is never in transit.)
+    (!tx.createOnly && isInTransitRow(row) !== !!tx.inTransit) ||
     // Subtype only ever gets ADDED here, never removed. The write path omits
     // the `subtype` key entirely whenever the feed has none (see
     // toActivityCreate in sync-core.ts) — it deliberately never sends `''`,
@@ -119,8 +158,20 @@ function changed(row: ExistingRow, tx: FeedTx): boolean {
     // update, every sync, forever. The accepted trade (the user's call):
     // removing a rule's subtype does not reach rows already imported; those
     // get cleared by hand in Wealthfolio.
-    (!!tx.subtype && normSubtype(row.subtype) !== normSubtype(tx.subtype))
+    (!keeps && !!tx.subtype && normSubtype(row.subtype) !== normSubtype(tx.subtype))
   );
+}
+
+/** The update for a stored row: a tx that keeps it writes the stored type and subtype back
+ *  (and, for `createOnly`, the stored in-transit marker). */
+function updateTo(row: ExistingRow, tx: FeedTx): FeedTx {
+  if (!keepsStored(row, tx)) return tx;
+  const { subtype: _drop, inTransit: _t, ...rest } = tx;
+  return {
+    ...rest, type: row.type,
+    ...(row.subtype ? { subtype: row.subtype } : {}),
+    ...(tx.createOnly ? (isInTransitRow(row) ? { inTransit: true as const } : {}) : (tx.inTransit ? { inTransit: true as const } : {})),
+  };
 }
 
 /**
@@ -157,7 +208,7 @@ export function planReconciliation(
     if (!row) {
       creates.push(tx);
     } else if (changed(row, tx)) {
-      updates.push({ wfId: row.wfId, to: tx });
+      updates.push({ wfId: row.wfId, to: updateTo(row, tx) });
     }
   }
 
@@ -175,7 +226,7 @@ export function planReconciliation(
     );
     if (match) {
       claimed.add(match.txId);
-      updates.push({ wfId: row.wfId, to: match });
+      updates.push({ wfId: row.wfId, to: updateTo(row, match) });
     } else {
       deleteIds.push(row.wfId);
     }

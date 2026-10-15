@@ -7,10 +7,11 @@
  * tests need no module mocks — and so the three consumers (daily digest,
  * weekly check-in, `pool_status` publish) provably share one implementation.
  *
- * "Spending" here is the same figure the reports print: categorized spending
- * via the transcription SQL plus uncategorized spending with dismissed rows
- * excluded, exactly as the daily digest counts its headline. The pool must
- * never disagree with the digest about how much is gone.
+ * "Spending" here is the same figure the reports print: what Wealthfolio's
+ * Spending page counts (shared/wf-spending.ts), categorized plus
+ * uncategorized, exactly as the daily digest counts its headline. The pool
+ * must never disagree with the digest — or Wealthfolio — about how much is
+ * gone.
  */
 import {
   computePoolStatus,
@@ -27,14 +28,8 @@ export interface PoolReportDeps {
    *  category over `[startInclusive, endExclusive)`. */
   spendingBetween(startInclusive: string, endExclusive: string): Record<string, number>;
   /** `getNativeUncategorizedSpendingTotal`-shaped: dollars of spending with no
-   *  category, the given activity ids excluded. */
-  uncategorizedTotal(
-    startInclusive: string,
-    endExclusive: string,
-    dismissedIds: string[],
-  ): { count: number; total: number };
-  /** Activity ids the user dismissed — excluded from the burn, like the digest. */
-  dismissedIds(): Promise<string[]>;
+   *  category, refunds netted. */
+  uncategorizedTotal(startInclusive: string, endExclusive: string): { count: number; total: number };
   /** Wealthfolio account type per SIMPLEFIN account id, for the mapped accounts. */
   accountTypes(): Promise<Record<string, string>>;
   /** The `account_balances` snapshot, keyed by SimpleFin account id. */
@@ -51,15 +46,10 @@ function addDays(iso: string, days: number): string {
   return dateString(new Date(Date.parse(`${iso}T00:00:00Z`) + days * DAY_MS));
 }
 
-function spentCentsBetween(
-  deps: PoolReportDeps,
-  startInclusive: string,
-  endExclusive: string,
-  dismissedIds: string[],
-): number {
+function spentCentsBetween(deps: PoolReportDeps, startInclusive: string, endExclusive: string): number {
   const categorized = Object.values(deps.spendingBetween(startInclusive, endExclusive))
     .reduce((sum, v) => sum + v, 0);
-  const uncategorized = deps.uncategorizedTotal(startInclusive, endExclusive, dismissedIds).total;
+  const uncategorized = deps.uncategorizedTotal(startInclusive, endExclusive).total;
   return Math.round((categorized + uncategorized) * 100);
 }
 
@@ -79,7 +69,7 @@ export async function readPoolStatus(deps: PoolReportDeps, now: Date): Promise<P
   const dayAfterEnd = addDays(cfg.endDate, 1);
   // Lexicographic min is date min for YYYY-MM-DD.
   const endExclusive = tomorrow < dayAfterEnd ? tomorrow : dayAfterEnd;
-  const spentCents = spentCentsBetween(deps, cfg.startDate, endExclusive, await deps.dismissedIds());
+  const spentCents = spentCentsBetween(deps, cfg.startDate, endExclusive);
   return computePoolStatus(cfg, spentCents, now);
 }
 
@@ -107,7 +97,7 @@ export async function readRunwayMonths(deps: PoolReportDeps, now: Date): Promise
     }
     if (liquidDollars === null) return null;
     const today = dateString(now);
-    const spentCents = spentCentsBetween(deps, addDays(today, -90), addDays(today, 1), await deps.dismissedIds());
+    const spentCents = spentCentsBetween(deps, addDays(today, -90), addDays(today, 1));
     return computeRunwayMonths(Math.round(liquidDollars * 100), Math.round(spentCents / 3));
   } catch {
     return null;

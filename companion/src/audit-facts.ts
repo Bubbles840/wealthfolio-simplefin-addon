@@ -25,6 +25,7 @@ import { healthIssues, type HealthFacts, type HealthRead } from '../../shared/au
 import type { AuditLedger } from '../../shared/audit-ledger.js';
 import { AUDIT_SNAPSHOT_SECRET_KEY, buildAuditSnapshot, type AuditResults } from '../../shared/audit-snapshot.js';
 import { monthlySpendTotals, parseReportCube, REPORT_CUBE_SECRET_KEY } from '../../shared/report-cube.js';
+import { loadSyncOverrides } from '../../shared/sync-overrides.js';
 import { getNativeAuditLedger, getNativeAuditSettings, getNativeHeadlineRows } from './sqlite-audit.js';
 import type { WealthfolioClient } from './wealthfolio.js';
 
@@ -43,7 +44,7 @@ export interface AuditReaders {
   headlineRows(startInclusive: string, endExclusive: string): HeadlineDbRow[];
   /** Throws when the database cannot be read. */
   settings(): {
-    timezone: string | null; excludedCategoryIds: string[]; categoryParents: Record<string, string | null>; spendingOn: boolean;
+    timezone: string | null; baseCurrency?: string | null; excludedCategoryIds: string[]; categoryParents: Record<string, string | null>; spendingOn: boolean;
     spendingAccountIds: string[];
   };
   /** Wealthfolio's Spending page `headline.spent`, in dollars. */
@@ -145,17 +146,23 @@ export async function gatherBalanceFacts(r: AuditReaders, ledger: AuditLedger | 
   return facts;
 }
 
-export async function gatherHeadlineFacts(r: AuditReaders, now: Date, sharedMapping?: Mapping): Promise<HeadlineFacts> {
+export async function gatherHeadlineFacts(
+  r: AuditReaders, now: Date, sharedMapping?: Mapping,
+  /** The sync's tripwire: a cube published before this moment is from an earlier run (this run's publish failed or was skipped), so its figure is not read. */
+  cubeNotBefore?: Date,
+): Promise<HeadlineFacts> {
   const month = localMonth(now);
   const facts: HeadlineFacts = { month };
   const failed: HeadlineRead[] = [];
   // The report covers the mapped accounts only (the cube drops any other).
   const mapping = sharedMapping ?? await readMapping(r);
   if (mapping.ok) facts.reportAccountIds = Object.values(mapping.value ?? {}).filter((id) => !!id);
+  else failed.push('mapping');
   try {
     // The report's "Spent this month": the cube's newest month, which must be this one.
     const cube = parseReportCube(await r.secret(REPORT_CUBE_SECRET_KEY));
-    if (cube && cube.months.at(-1) === month) facts.reportCents = Math.round(monthlySpendTotals(cube).at(-1) ?? 0);
+    const fromThisRun = !cubeNotBefore || (cube !== null && Date.parse(cube.asOf) >= cubeNotBefore.getTime());
+    if (cube && fromThisRun && cube.months.at(-1) === month) facts.reportCents = Math.round(monthlySpendTotals(cube).at(-1) ?? 0);
     else failed.push('report');
   } catch {
     failed.push('report');
@@ -165,6 +172,7 @@ export async function gatherHeadlineFacts(r: AuditReaders, now: Date, sharedMapp
   try {
     const settings = r.settings();
     timezone = settings.timezone;
+    facts.baseCurrency = settings.baseCurrency ?? null;
     facts.excludedCategoryIds = settings.excludedCategoryIds;
     facts.categoryParents = settings.categoryParents;
     facts.spendingAccountIds = settings.spendingAccountIds;
@@ -201,17 +209,25 @@ export async function gatherHealthFacts(r: AuditReaders, ledger: AuditLedger | u
   const mapping = sharedMapping ?? await readMapping(r);
   if (mapping.ok) facts.mapping = mapping.value ?? {};
   else failed.push('mapping');
+  // A row the payback setting is on is never offered as a transfer's other half (1.62).
+  // Unread or unreadable: none known, and Link's own re-read refuses one.
+  try {
+    const loaded = await loadSyncOverrides((k) => r.secret(k));
+    if (!loaded.unreadable) facts.overrides = loaded.overrides;
+  } catch {
+    // Nothing more to say: the Health list is unchanged.
+  }
   if (failed.length > 0) facts.failed = failed;
   return facts;
 }
 
 /** All three checks over one ledger read. `reached` is false when not even
  *  the account mapping could be read: Wealthfolio is unreachable. */
-export async function runAudit(r: AuditReaders, now: Date): Promise<AuditResults & { reached: boolean }> {
+export async function runAudit(r: AuditReaders, now: Date, cubeNotBefore?: Date): Promise<AuditResults & { reached: boolean }> {
   const ledger = readAuditLedger(r);
   const mapping = await readMapping(r);
   const balanceFacts = await gatherBalanceFacts(r, ledger, mapping);
-  const headlineFacts = await gatherHeadlineFacts(r, now, mapping);
+  const headlineFacts = await gatherHeadlineFacts(r, now, mapping, cubeNotBefore);
   const healthFacts = await gatherHealthFacts(r, ledger, mapping);
   return {
     balances: explainBalances(balanceFacts),
@@ -236,8 +252,10 @@ export async function publishAuditSnapshot(
   dbPath: string,
   now: Date,
   readers: AuditReaders = companionAuditReaders(client, dbPath),
+  /** The start of the sync run: only a cube published since then is compared (M-2). */
+  cubeNotBefore?: Date,
 ): Promise<boolean> {
-  const { reached, ...results } = await runAudit(readers, now);
+  const { reached, ...results } = await runAudit(readers, now, cubeNotBefore);
   if (!reached) return false;
   const snapshot = buildAuditSnapshot(results, now);
   // Over budget even fully trimmed: never write "null" over the previous one.

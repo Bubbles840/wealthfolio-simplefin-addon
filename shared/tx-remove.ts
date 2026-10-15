@@ -63,6 +63,22 @@ export class RemoveMappingUnreadableError extends Error {
     this.name = 'RemoveMappingUnreadableError';
   }
 }
+/** The account mapping as stored: none yet is `{}`; anything but a plain object of strings is
+ *  unreadable — `RemoveMappingUnreadableError`, a refusal of its own (not "unreachable", and not
+ *  "not from the bank feed"). Shared by the removal and the payback hosts. */
+export function parseAccountMapping(raw: string | null): Record<string, string> {
+  if (raw === null || raw.trim() === '') return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new RemoveMappingUnreadableError();
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || Object.values(parsed).some((v) => typeof v !== 'string')) {
+    throw new RemoveMappingUnreadableError();
+  }
+  return parsed as Record<string, string>;
+}
 /** The note a skip-list entry written by a removal carries. */
 export const REMOVE_SKIP_NOTE = REMOVED_FOR_GOOD_NOTE;
 

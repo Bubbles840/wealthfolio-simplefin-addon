@@ -21,6 +21,8 @@ export interface ActivitySearchItem {
   subtype?: string | null;
   /** Upstream `ActivityDetails.accountName`. */
   accountName?: string | null;
+  /** Upstream `ActivityDetails.currency`. */
+  currency?: string | null;
 }
 
 /**
@@ -234,14 +236,31 @@ export class WealthfolioClient {
     if (!res.ok) throw await this.httpError('deleteBudgetTarget', res);
   }
 
-  /** Marks two activities as one internal transfer (shared source_group_id). */
-  async linkTransferActivities(activityAId: string, activityBId: string): Promise<void> {
+  /** Links two activities as one internal transfer, in place (`POST
+   *  /activities/link`, Wealthfolio 3.8+): one transaction that refuses with
+   *  nothing written. Resolves to the two rows it wrote, transfer-in first. */
+  async linkTransferActivities(activityAId: string, activityBId: string): Promise<unknown[]> {
     const res = await fetch(`${this.baseUrl}/api/v1/activities/link`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
       body: JSON.stringify({ activityAId, activityBId }),
     });
-    if (!res.ok) throw new Error(`linkTransferActivities failed: ${res.status}`);
+    if (!res.ok) throw await this.httpError('linkTransferActivities', res);
+    const rows = (await res.json()) as unknown;
+    return Array.isArray(rows) ? rows : [];
+  }
+
+  /** Unlinks a linked pair in place (`POST /activities/unlink`, 3.8+): both
+   *  rows lose their group and are marked external; nothing else changes. */
+  async unlinkTransferActivities(activityAId: string, activityBId: string): Promise<unknown[]> {
+    const res = await fetch(`${this.baseUrl}/api/v1/activities/unlink`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
+      body: JSON.stringify({ activityAId, activityBId }),
+    });
+    if (!res.ok) throw await this.httpError('unlinkTransferActivities', res);
+    const rows = (await res.json()) as unknown;
+    return Array.isArray(rows) ? rows : [];
   }
 
   async searchActivities(body: {
@@ -325,7 +344,10 @@ export class WealthfolioClient {
 
   /** Creates a top-level spending category and returns its id. The key is the
    *  name in snake case, which is how Wealthfolio keys its own categories. */
-  async createSpendingCategory(name: string): Promise<string> {
+  async createSpendingCategory(
+    name: string,
+    description = 'Balances an account already had when syncing began. Not spending.',
+  ): Promise<string> {
     const res = await fetch(`${this.baseUrl}/api/v1/taxonomies/categories`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
@@ -335,7 +357,7 @@ export class WealthfolioClient {
         name,
         key: name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, ''),
         color: '#9ca3af',
-        description: 'Balances an account already had when syncing began. Not spending.',
+        description,
         sortOrder: 999,
       }),
     });
@@ -356,6 +378,18 @@ export class WealthfolioClient {
     } catch {
       return null;
     }
+  }
+
+  /** Wealthfolio's own `spending.excluded_category_ids` (`GET /spending/settings`,
+   *  3.9+). Throws when it cannot be read: a writer that replaces the list whole
+   *  must not guess. */
+  async getExcludedSpendingCategories(): Promise<string[]> {
+    const res = await fetch(`${this.baseUrl}/api/v1/spending/settings`, { headers: this.authHeaders() });
+    if (!res.ok) throw await this.httpError('getExcludedSpendingCategories', res);
+    const body = (await res.json()) as { excludedCategoryIds?: unknown };
+    const ids = body?.excludedCategoryIds;
+    if (!Array.isArray(ids) || !ids.every((x) => typeof x === 'string')) throw new Error('getExcludedSpendingCategories: no excludedCategoryIds list');
+    return ids as string[];
   }
 
   /** Sets `spending.excluded_category_ids`. The route is a patch: omitted
@@ -426,6 +460,9 @@ export class WealthfolioClient {
      *  every account, and no `accountId` key — upstream refuses a global rule
      *  that names an account (`validate_rule_scope`, 3.8–3.10). */
     accountId?: string;
+    /** For one activity type only (a payback rule files CREDITs, W10): the
+     *  matcher skips any other (`match_compiled`, 3.8–3.10). Absent: every type. */
+    activityType?: string;
   }): Promise<string | null> {
     const res = await fetch(`${this.baseUrl}/api/v1/spending/rules`, {
       method: 'POST',
@@ -439,6 +476,7 @@ export class WealthfolioClient {
         priority: rule.priority,
         isGlobal: !rule.accountId,
         ...(rule.accountId ? { accountId: rule.accountId } : {}),
+        ...(rule.activityType ? { activityType: rule.activityType } : {}),
       }),
     });
     if (!res.ok) throw await this.httpError('createCategorizationRule', res);

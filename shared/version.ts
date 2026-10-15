@@ -16,7 +16,7 @@
  * so a release that bumps those and forgets this one fails the suite instead of
  * shipping a lie.
  */
-export const SIMPLEFIN_SYNC_VERSION = '1.61.0';
+export const SIMPLEFIN_SYNC_VERSION = '1.62.0';
 
 /** Addon secret the companion writes its version to, so the Sync page can show
  *  which daemon build is actually running against this instance — the two are
@@ -86,6 +86,26 @@ export function isAtLeastVersion(version: string, min: string): boolean {
   return version === min || isNewerVersion(version, min);
 }
 
+/**
+ * The first Wealthfolio that takes TRANSFER_OUT on a credit card (upstream
+ * #1796, 3.10.0: `account_activity_validation_message`) — and whose Spending
+ * page ignores an unlinked one (`classify_activity`, CREDIT_CARD `_ =>
+ * Ignored`). From it on, the sync writes a card's bookkeeping outflows (an
+ * opening debt, a balance plug, an in-transit placeholder) as TRANSFER_OUT,
+ * neutral on Wealthfolio's own pages with no category at all (1.62.0, U4).
+ */
+export const CARD_TRANSFER_OUT_SINCE = '3.10.0';
+
+/** Whether this Wealthfolio takes TRANSFER_OUT on a card. Unknown (null) is no. */
+export function hostTakesCardTransferOut(wealthfolioVersion: string | null | undefined): boolean {
+  return !!wealthfolioVersion && isAtLeastVersion(wealthfolioVersion.trim(), CARD_TRANSFER_OUT_SINCE);
+}
+
+/** The companion writes the Wealthfolio version it syncs against here (`GET
+ *  /app/info`): the add-on's SDK has no way to ask, and its own sync shapes
+ *  card bookkeeping by it. */
+export const WEALTHFOLIO_VERSION_SECRET_KEY = 'wealthfolio_version';
+
 /** The app's half: a companion that reads `noVenmoNote`. No companion at all
  *  (null) is true, as for `companionUnderstandsOverrides`. */
 export function companionUnderstandsVenmoNotes(companionVersion: string | null): boolean {
@@ -97,6 +117,33 @@ export function companionUnderstandsVenmoNotes(companionVersion: string | null):
  *  (null — the companion cannot see the addons directory) is false. */
 export function addonUnderstandsVenmoNotes(installedAddonVersion: string | null): boolean {
   return installedAddonVersion !== null && isAtLeastVersion(installedAddonVersion.trim(), VENMO_NOTE_SINCE);
+}
+
+/**
+ * The first release whose BOTH halves read `asReimbursement`, the override a
+ * payback sets (1.62.0, W6–W8). A reader of 1.61.0 keeps a flag it does not
+ * know (it is not corruption, P3-B) but ignores it, so its sync would turn a
+ * payback back into a deposit. So Telegram's payback, its Undo and its Redo —
+ * and "Make every … deposit a payback" — wait for an INSTALLED add-on this
+ * new (refused while the companion cannot tell), and the app's paybacks and
+ * their Undo wait for a companion this new. The same pattern as
+ * `VENMO_NOTE_SINCE`.
+ *
+ * Raise to the release that ships this.
+ */
+export const PAYBACK_SINCE = '1.62.0';
+
+/** The app's half: a companion that reads `asReimbursement`. No companion at
+ *  all (null) is true: nothing else is syncing that could ignore it. */
+export function companionUnderstandsPaybacks(companionVersion: string | null): boolean {
+  if (companionVersion === null) return true;
+  return isAtLeastVersion(companionVersion.trim(), PAYBACK_SINCE);
+}
+
+/** The companion's half: an installed add-on that reads `asReimbursement`.
+ *  Unknown (null — the companion cannot see the addons directory) is false. */
+export function addonUnderstandsPaybacks(installedAddonVersion: string | null): boolean {
+  return installedAddonVersion !== null && isAtLeastVersion(installedAddonVersion.trim(), PAYBACK_SINCE);
 }
 
 /** The companion writes the version in the INSTALLED addon's manifest here

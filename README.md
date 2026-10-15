@@ -37,7 +37,10 @@ The addon has three tabs: **Home**, **Reports** and **Settings**.
   filed it and every change made to it, with Undo. Then a status strip (last
   sync, accounts, anything that needs you; a needs-a-category row opens its
   story, and shows the category you probably meant when you filed the same
-  merchant that way before; with the companion, **Next 30 days** — your cash
+  merchant that way before; a deposit there that pays you back — a friend's
+  Venmo for dinner — offers **It's a payback…** (Wealthfolio 3.9 or newer,
+  with the companion): pick the spending it pays back and it comes off that
+  spending, with Undo in Telegram's `/changes`; with the companion, **Next 30 days** — your cash
   if nothing comes in: cash today, minus your known bills on their dates and a
   typical day of other spending — which opens what it counted),
   then your budget: six reports to start (headline numbers, cash flow or the
@@ -72,6 +75,9 @@ The addon has three tabs: **Home**, **Reports** and **Settings**.
   as the first, one-tap choice ("✓ Groceries (like the last 3)"), and a rule
   made from a filing can be for one account only ("Only <account>" on its
   preview; `/newrule trader joes = groceries in checking` does the same).
+  A deposit that pays you back — a friend's Venmo for dinner — goes under the
+  spending it pays back with **It's a payback »**, and the next screen can
+  make every deposit like it a payback; Undo either from `/changes`.
   Commands that need details — `/pool`, `/newrule`, `/afford` — ask for them
   one question at a time; the one-line forms still work. Bare `/pool` shows
   the pool with Set and Clear buttons.
@@ -104,7 +110,12 @@ The addon has three tabs: **Home**, **Reports** and **Settings**.
   do, and **Link** for a transfer with one likely other half. They come from a
   snapshot the companion publishes after each sync, and say when it was
   taken; a fix shows there after the next sync. A transaction's story in the
-  app offers **Remove for good…** too.
+  app offers **Remove for good…** too. The report counts spending the same way
+  as Wealthfolio's Spending page does (see the changelog's Known limits), so
+  after each sync the two month totals
+  are compared: more than a cent apart (after setting aside accounts the
+  add-on doesn't sync), the daily report says so (in Brief too) and Home's
+  Accounts tile shows it.
 - **Change log** — every change the sync, the companion and you made, the last
   90 days, under **Settings → Change log**: imports, bank updates, transfer
   links, removed duplicates, rows you removed for good, starting balances,
@@ -128,7 +139,16 @@ The addon has three tabs: **Home**, **Reports** and **Settings**.
 
 ## Requirements
 
-- Wealthfolio **3.8 or newer** (works with 3.10)
+- Wealthfolio **3.8 or newer** (works with 3.10). Newer versions unlock more:
+  - **3.9 and newer:** the app links and unlinks transfers in place (the
+    companion does on 3.8 too), and reads whether a transaction is linked and
+    what it is filed under, so its Link, Remove for good… and Undo go by
+    Wealthfolio's word, and a transaction's story names its category and the
+    other half of its transfer.
+  - **3.10 and newer:** a credit card's opening debt, corrections and held
+    transfers are Transfer Out, which Wealthfolio's Spending page leaves out on
+    its own, with the Docker companion running (the add-on learns the version
+    from it); the companion also rewrites the existing ones once.
 - A SimpleFin account and a one-time **setup token**
 - Optional: Docker, for the background companion (background sync, Reports,
   the Telegram bot and Amazon categorization)
@@ -146,8 +166,32 @@ Before or right after you upgrade:
   reads it directly.
 - After the upgrade, Wealthfolio rebuilds every account's history. Wait until its
   Health page no longer shows a stale projection before running a Deep scan.
-- On its next sync, the companion makes sure "Opening balances" is excluded from
-  Wealthfolio's spending.
+- On its next sync, and every sync after, the companion makes sure "Opening
+  balances" and "Sync bookkeeping" are excluded from Wealthfolio's spending,
+  each once it exists (the sync creates "Sync bookkeeping" the first time it
+  has a bookkeeping row to file). Once it has a live database read and the
+  1.62 add-on is installed, it also rewrites a credit card's bookkeeping
+  withdrawals as Transfer Out, once (it clears their phantom `$CASH` asset and
+  leaves rows in a transfer group, rows you split, retyped or filed yourself,
+  a real security, and a starting balance whose opening-balance filing you
+  undid).
+
+### Updating the add-on to 1.62.0
+
+1.62.0 asks for new permissions, and Wealthfolio's **Update** button refuses an
+update that does. Install 1.62.0 over the installed add-on with **Install from
+File**, without removing the old one first, and approve them: linking and
+unlinking transfers, reading how Wealthfolio files and links each transaction,
+your spending categories' names, and making, running and deleting the one-off
+rule that files a payback from the app. Your settings stay.
+
+Upload the add-on zip before the companion, or together with it. The
+companion's two one-time passes, the date repair (see "Date repair" below) and
+the card rewrite above, wait for the 1.62 add-on when the companion can see
+the installed add-on; when it can't, they run at once. Then reload any browser
+tab still running 1.61: until it is reloaded it keeps writing bare dates,
+writes a card's bookkeeping as withdrawals, and turns a payback back into a
+deposit.
 
 ### Adding or removing accounts later
 
@@ -185,7 +229,8 @@ nothing.
 - Transfers between two mapped accounts (for example, paying a credit card from
   checking) are matched on equal amounts, opposite signs, within five days, and
   imported as a linked Transfer Out / Transfer In pair — excluded from both
-  spending and income.
+  spending and income. Wealthfolio links the two rows itself wherever it can,
+  so they keep their ids and categories.
 - Positive amounts on a credit-card account import as **Credit** (a refund,
   netted against spending) unless they look like a card payment — "payment",
   "autopay", "thank you", "e-pay" — which become Transfer In.
@@ -208,10 +253,29 @@ day before the earliest transaction, so the account's history never dips
 below zero.
 
 A credit card that started out owing money gets its opening debt as a
-withdrawal, the only money-out type Wealthfolio accepts on a card. The Docker
+Transfer Out on Wealthfolio 3.10 and newer (the companion reads the version itself; the add-on needs a companion that
+synced in the last two days), which its Spending page leaves out. Before 3.10 it is a
+withdrawal, the only money-out type Wealthfolio accepts on a card; the Docker
 companion files it under an **Opening balances** spending category and
 excludes that category from spending, so Wealthfolio's Spending page does not
-read it as a purchase.
+read it as a purchase. On Wealthfolio 3.9 and later it does the same for the
+sync's other bookkeeping rows that Wealthfolio would count as spending (a
+transfer waiting for its other half, a balance correction, a cash account's
+negative starting balance) under **Sync bookkeeping**, and takes a row back
+out once it stops being bookkeeping. That pass has no Undo; to keep a
+bookkeeping row counted, file it under another category, which it never
+touches. It never touches a row with split lines either.
+
+### Date repair (upgrading to 1.62)
+
+New rows are written at noon UTC on the bank's date, and the companion moves
+rows already stored at midnight UTC the same way, once, in small batches. It
+waits for the 1.62 add-on: see "Updating the add-on to 1.62.0" above for the
+order. It leaves linked transfers and rows with a type override alone, and
+touches only the accounts the add-on syncs. It reads the database live only,
+so it waits when the database can only be read as a snapshot. The repair
+resumes on its own on the next sync if interrupted. To run it again, delete
+the `date_repair_done` secret.
 
 ### Deep scan
 

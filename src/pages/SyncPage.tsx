@@ -22,7 +22,7 @@ import { useAmazonDraft } from '../components/AmazonCard';
 import type { SecretsStore, AccountBalanceInfo, CategoryCatalogEntry } from '../utils/secrets';
 import type { Scheduler } from '../utils/scheduler';
 import type { AccountMapping, UnmappedAccount } from '../../shared/types';
-import { pruneDismissals, mergeDismissals, type DismissalLedger } from '../../shared/uncategorized';
+import { pruneDismissals, mergeDismissals, type DismissalLedger, type PaidBackLedger } from '../../shared/uncategorized';
 import {
   emptySubscriptionPrefs, isUnreadablePrefsError, type LoadedSubscriptionPrefs, type SubscriptionEdit,
 } from '../../shared/subscription-prefs';
@@ -108,9 +108,18 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
   // Which companion build last synced this instance. Null until one has run — the
   // addon works standalone, so no companion is normal, not an error.
   const [companionVersion, setCompanionVersion] = useState<string | null>(null);
+  // W11: rows filed as a payback from the app since the companion's last
+  // publish, and what the last one said. Here, not in HomeTab: a payback filed
+  // from a story on the budget must leave Home's list too, and tabs unmount.
+  const [paidBack, setPaidBack] = useState<PaidBackLedger>({});
+  const [paybackNote, setPaybackNote] = useState<string | null>(null);
+  const onPaidBack = useCallback((activityId: string, message: string) => {
+    setPaidBack((prev) => ({ ...prev, [activityId]: new Date().toISOString() }));
+    setPaybackNote(message);
+  }, []);
   // "Why is this here?" (1.61): one story renderer for Home and the budget
   // drill-down, with the Change log card's own Undo and Sync now.
-  const storyActions = useTxStoryActions(ctx, store, companionVersion);
+  const storyActions = useTxStoryActions(ctx, store, companionVersion, onPaidBack);
   const loadStory = useCallback((target: AppStoryTarget) => appTxStory(ctx, store, target, new Date()), [ctx, store]);
   const renderTxStory = useCallback(
     (target: AppStoryTarget) => <TxStoryPanel target={target} load={loadStory} actions={storyActions} />,
@@ -135,6 +144,9 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
   const [uncategorized, setUncategorized] = useState<
     Awaited<ReturnType<SecretsStore['getUncategorizedStatus']>>
   >(null);
+  // A payback's words describe the list as it was: a new publish (a new `asOf`) replaces them.
+  const uncategorizedAsOf = uncategorized?.asOf ?? null;
+  useEffect(() => { setPaybackNote(null); }, [uncategorizedAsOf]);
   // The companion-published pool status behind the Home tile — same
   // lifecycle as `uncategorized`: loaded here, refreshed on the same path.
   const [poolStatus, setPoolStatus] = useState<
@@ -739,6 +751,9 @@ export function SyncPage({ ctx, store, onReset, scheduler, initialSearch }: Prop
           auditSnapshot={auditSnapshot}
           cashForecast={cashForecast}
           renderTxStory={renderTxStory}
+          payback={storyActions.payback}
+          paidBack={paidBack}
+          paybackNote={paybackNote}
         />
         <BudgetTab
           cube={reportCube}

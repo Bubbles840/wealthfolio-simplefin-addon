@@ -237,6 +237,9 @@ export interface ChangeLogWriter {
   readonly writer: ChangeWriter;
   /** Never rejects. Appends run one after another, in call order. */
   append(io: ChangeLogIo, entries: ChangeEntry[]): Promise<void>;
+  /** As `append` (same queue, same gap record on a failure), but says whether THIS
+   *  append was written: a caller that must not promise an Undo it cannot give. Never rejects. */
+  appendStrict(io: ChangeLogIo, entries: ChangeEntry[]): Promise<{ saved: boolean }>;
   /** Failed appends not yet written as a gap record. */
   pendingGaps(): ChangeGap[];
 }
@@ -272,13 +275,14 @@ export function createChangeLogWriter(opts: {
     }
   }
 
-  async function run(io: ChangeLogIo, entries: ChangeEntry[]): Promise<void> {
-    if (entries.length === 0) return;
+  async function run(io: ChangeLogIo, entries: ChangeEntry[]): Promise<boolean> {
+    if (entries.length === 0) return true;
     const at = now();
     await clearOld(io, changeMonth(at));
     try {
       await appendChanges(io.get, io.set, opts.writer, entries, at, pending);
       pending = [];
+      return true;
     } catch (err) {
       const reason = err instanceof ChangeLogPausedError ? GAP_REASON_UNREADABLE : GAP_REASON_WRITE;
       const day = at.toISOString().slice(0, 10);
@@ -286,15 +290,21 @@ export function createChangeLogWriter(opts: {
       if (last && last.reason === reason && last.at.slice(0, 10) === day) last.count += entries.length;
       else pending.push({ at: at.toISOString(), count: entries.length, reason });
       log(`Change log: ${entries.length} change(s) not saved (${err instanceof Error ? err.message : String(err)})`);
+      return false;
     }
   }
 
   return {
     writer: opts.writer,
     append(io, entries) {
-      const next = tail.then(() => run(io, entries)).catch(() => {});
+      const next = tail.then(() => run(io, entries)).then(() => {}, () => {});
       tail = next;
       return next;
+    },
+    appendStrict(io, entries) {
+      const result = tail.then(() => run(io, entries)).then((saved) => ({ saved }), () => ({ saved: false }));
+      tail = result.then(() => {});
+      return result;
     },
     pendingGaps: () => pending.map((g) => ({ ...g })),
   };

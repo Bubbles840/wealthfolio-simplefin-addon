@@ -113,6 +113,32 @@ describe('parseAuditSnapshot', () => {
     expect(parseAuditSnapshot(JSON.stringify(snap))).toEqual({ kind: 'ok', snapshot: snap });
   });
 
+  it('keeps a foreign-currency reason, and an older reader drops a kind it does not know into "unexplained" (1.62)', () => {
+    const good = buildAuditSnapshot(small(), NOW)!;
+    const reasons = [
+      { kind: 'foreign-currency', cents: -900, rows: [{ date: '2026-10-05', description: 'BOULANGERIE', cents: 2000, account: 'Checking' }] },
+      { kind: 'a-kind-from-the-future', cents: 5, rows: [] },
+    ];
+    const read = parseAuditSnapshot(JSON.stringify({ ...good, headline: { ...good.headline, baseCurrency: 'USD', reasons } }));
+    expect(read.kind === 'ok' && read.snapshot.headline.reasons).toEqual([reasons[0]]);
+    expect(read.kind === 'ok' && read.snapshot.headline.baseCurrency).toBe('USD');
+    expect(HEADLINE_REASON_KINDS).toContain('foreign-currency');
+  });
+
+  it('keeps a base currency only when it is a three-letter code', () => {
+    const good = buildAuditSnapshot(small(), NOW)!;
+    const read = (baseCurrency: unknown) => {
+      const r = parseAuditSnapshot(JSON.stringify({ ...good, headline: { ...good.headline, baseCurrency } }));
+      return r.kind === 'ok' ? r.snapshot.headline : null;
+    };
+    expect(read('EUR')).toMatchObject({ baseCurrency: 'EUR' });
+    for (const bad of ['usd', 'USDX', '', 5, null, { a: 1 }, '<b>']) {
+      const h = read(bad);
+      expect(h).not.toBeNull();
+      expect(h).not.toHaveProperty('baseCurrency');
+    }
+  });
+
   it('is absent when nothing was published', () => {
     expect(parseAuditSnapshot(null)).toEqual({ kind: 'absent' });
     expect(parseAuditSnapshot(undefined)).toEqual({ kind: 'absent' });
@@ -281,16 +307,18 @@ describe('round trip through the real builders', () => {
     valuations: { 'wf-a': 39000, 'wf-b': 1 },
   };
   const noLedger: BalanceFacts = { mapping, names: {}, failed: ['ledger', 'balances', 'valuations'] };
+  const filed = [{ id: 'f1', categoryId: 'c', createdAt: '2026-10-01T00:00:00Z', source: 'manual' }];
   const rows = [
-    { id: 'h1', date: '2026-10-01T00:00:00+00:00', accountId: 'wf-a', groupId: '', accountName: 'A', accountType: 'CASH', type: 'WITHDRAWAL', subtype: '', absCents: 100, notes: 'RENT · TRN-1', spendingFilings: 2, categoryIds: ['c', 'd'] },
-    { id: 'h2', date: '2026-10-03T00:00:00+00:00', accountId: 'wf-a', groupId: '', accountName: 'A', accountType: 'CASH', type: 'CREDIT', subtype: 'REFUND', absCents: 200, notes: 'RETURN · TRN-2', spendingFilings: 0, categoryIds: [] },
-    { id: 'h3', date: '2026-10-05T00:00:00+00:00', accountId: 'wf-a', groupId: '', accountName: 'A', accountType: 'CASH', type: 'DEPOSIT', subtype: '', absCents: 300, notes: 'REFUND · TRN-3', spendingFilings: 0, categoryIds: [] },
+    { id: 'h1', date: '2026-10-02T12:00:00+00:00', accountId: 'wf-a', groupId: '', accountName: 'A', accountType: 'CASH', type: 'WITHDRAWAL', subtype: '', absCents: 100, notes: 'RENT · TRN-1', filings: filed, splits: [] },
+    { id: 'h2', date: '2026-10-03T12:00:00+00:00', accountId: 'wf-a', groupId: '', accountName: 'A', accountType: 'CASH', type: 'CREDIT', subtype: 'REFUND', absCents: 200, notes: 'RETURN · TRN-2', filings: [], splits: [] },
+    { id: 'h3', date: '2026-10-05T12:00:00+00:00', accountId: 'wf-a', groupId: '', accountName: 'A', accountType: 'CASH', type: 'DEPOSIT', subtype: '', absCents: 300, notes: 'REFUND · TRN-3', filings: [], splits: [] },
   ];
 
   it('parses a snapshot of real results as ok, nulls and all', () => {
     const full = {
       balances: explainBalances(balanceFacts),
-      headline: explainHeadline({ month: '2026-10', timezone: 'America/New_York', reportCents: 5000, wealthfolioCents: 4000, rows }),
+      // wf-a is an account the add-on does not map: a not-covered reason.
+      headline: explainHeadline({ month: '2026-10', timezone: 'America/New_York', reportCents: 5000, wealthfolioCents: 4000, reportAccountIds: ['wf-b'], rows }),
       health: healthIssues({ ledger, mapping }),
     };
     const kinds = new Set(full.health.issues!.map((i) => i.kind));
@@ -300,6 +328,7 @@ describe('round trip through the real builders', () => {
     expect(legs.some((l) => l.counterpart !== null)).toBe(true);
     expect(full.balances.accounts.map((a) => a.bank.kind)).toContain('none');
     expect(full.balances.accounts.map((a) => a.bank.kind)).toContain('ok');
+    expect(full.headline.reasons!.map((r) => [r.kind, r.cents, r.rows.length])).toEqual([['not-covered', 100, 2]]);
 
     const degraded = {
       balances: explainBalances(noLedger),

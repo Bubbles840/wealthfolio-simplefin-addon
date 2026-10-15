@@ -31,6 +31,10 @@ export interface UncategorizedRow {
    *  hint. Optional: an older add-on ignores it, an older companion never
    *  sends it, and a row with no clear history has none. */
   guess?: { categoryId: string; name: string };
+  /** A posted DEPOSIT on a cash account (1.62, W11): the app offers "It's a
+   *  payback…" on it — the rows Telegram's /categorize offers "It's a payback »"
+   *  on. Optional: an older companion never sends it, so its rows offer none. */
+  paybackEligible?: true;
 }
 
 /**
@@ -105,6 +109,24 @@ export function mergeDismissals(
     if (!(id in next)) delete merged[id];
   }
   return merged;
+}
+
+/** Rows filed as a payback from the app (1.62, W11) → when (ISO). Held for
+ *  the session only: the companion's next publish leaves them out. */
+export interface PaidBackLedger {
+  [activityId: string]: string;
+}
+
+/**
+ * The rows to hide at once because they were filed as a payback since this
+ * publish (`asOf`) — as a dismissal hides its row: the companion's list only
+ * changes when it next publishes. A publish made after the filing is the
+ * truth again (a payback undone in Telegram comes back). Only ids in `rows`,
+ * so the tile never subtracts a row the publish no longer counts.
+ */
+export function paidBackHidden(rows: ReadonlyArray<{ activityId: string }>, paidBack: PaidBackLedger, asOf: string): Set<string> {
+  const publishedAt = Date.parse(asOf);
+  return new Set(rows.map((r) => r.activityId).filter((id) => id in paidBack && !(Date.parse(paidBack[id]) <= publishedAt)));
 }
 
 /**

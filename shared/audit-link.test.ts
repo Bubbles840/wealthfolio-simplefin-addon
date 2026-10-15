@@ -5,6 +5,7 @@ import {
   LINK_CARD_OUT, LINK_CHANGED, LINK_DONE, LINK_DROPPED, LINK_UNKNOWN_ACCOUNT, LINK_UNREACHABLE, type LinkIo, type LinkPair, type ReadRow,
 } from './audit-link';
 import type { ChangeDraft } from './change-entries';
+import { HALF_OF_ANOTHER_TRANSFER, LINK_ANSWER_LOST } from './link-in-place';
 import type { FixRow } from './fix-row';
 import type { LinkLeg } from './sync-host';
 import { emptySyncOverrides, setTxOverride, SYNC_OVERRIDES_UNREADABLE_MESSAGE } from './sync-overrides';
@@ -215,8 +216,8 @@ describe('linkPairs', () => {
   const goneIo = (over: Partial<LinkIo>) => fakeIo({ read: vi.fn()
     .mockImplementationOnce(async (p: LinkPair) => [{ row: row(p.leg), linked: false }, { row: row(p.counterpart), linked: false }])
     .mockImplementation(async () => [null, null]), ...over });
-  const OUT_WRITE = { accountId: 'wf-chk', activityType: 'TRANSFER_OUT', activityDate: '2026-10-04', amount: 600, currency: 'USD', comment: 'TRANSFER TO ALLY · TRN-1' };
-  const IN_WRITE = { accountId: 'wf-ally', activityType: 'DEPOSIT', activityDate: '2026-10-05', symbol: { symbol: '$CASH-USD' }, amount: 600, currency: 'USD', comment: 'FROM PNC · TRN-2' };
+  const OUT_WRITE = { accountId: 'wf-chk', activityType: 'TRANSFER_OUT', activityDate: '2026-10-04T12:00:00Z', amount: 600, currency: 'USD', comment: 'TRANSFER TO ALLY · TRN-1' };
+  const IN_WRITE = { accountId: 'wf-ally', activityType: 'DEPOSIT', activityDate: '2026-10-05T12:00:00Z', symbol: { symbol: '$CASH-USD' }, amount: 600, currency: 'USD', comment: 'FROM PNC · TRN-2' };
 
   it('puts both rows back exactly when Wealthfolio refuses the re-create after the delete went through', async () => {
     const f = goneIo({ link: vi.fn(async () => ({ linked: false, problems: ['save (create): not supported for this account'] })) });
@@ -320,6 +321,23 @@ describe('linkPairs', () => {
   it('a refused save with both rows still there changes nothing, and says so', async () => {
     const f = fakeIo({ link: vi.fn(async () => ({ linked: false, problems: ['save (create): no'] })) });
     expect((await linkPairs([PAIR], f.io)).message).toBe("Couldn't link them: no. Nothing was changed.");
+    expect(f.io.restore).not.toHaveBeenCalled();
+  });
+
+  it('a pair that is already half of another transfer says so once, with no re-read and no write-back', async () => {
+    const f = fakeIo({ link: vi.fn(async () => ({ linked: false, problems: [HALF_OF_ANOTHER_TRANSFER] })) });
+    const run = await linkPairs([PAIR], f.io);
+    expect(run.message).toBe('One of these is already half of another transfer — nothing was changed.');
+    expect(f.io.read).toHaveBeenCalledTimes(1);
+    expect(f.io.restore).not.toHaveBeenCalled();
+    expect(run.failed).toBe(1);
+  });
+
+  it('a lost link answer is shown as its own sentence, with "nothing was changed" nowhere', async () => {
+    const f = fakeIo({ link: vi.fn(async () => ({ linked: false, problems: [LINK_ANSWER_LOST] })) });
+    const run = await linkPairs([PAIR], f.io);
+    expect(run.message).toBe("Couldn't tell whether Wealthfolio linked them — it will try again next sync.");
+    expect(run.message).not.toMatch(/nothing was changed/i);
     expect(f.io.restore).not.toHaveBeenCalled();
   });
 

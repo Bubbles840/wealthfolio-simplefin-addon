@@ -17,13 +17,18 @@
  *     what failed. A re-created duplicate Wealthfolio refuses as an exact copy
  *     takes its override back out, so nothing changes.
  *  4. Only a reversal that worked is recorded.
+ *
+ * A payback's Undo and Redo (1.62, W7) say plainly what stands when a write
+ * fails, never in Wealthfolio's words: a re-type Wealthfolio refused puts the
+ * override back as it was ("nothing was changed"); a category step that failed
+ * after the re-type is recorded, and named.
  */
 import { reversalChange, type ChangeDraft, type ChangeEntry } from './change-entries.js';
 import { BUDGET_TAXONOMY, DEFAULT_PERIOD_KEY, type BudgetTarget } from './budget-suggest.js';
 import type { ChangeLogItem } from './change-log.js';
 import {
-  addonGateCovers, currentRowId, currentRuleId, latestReversal, planChangeUndo, undoAvailability, UNDO_EXACT_COPY, UNDO_NOT_POSSIBLE,
-  UNDO_UNREACHABLE, UNDO_UPDATE_ADDON, type UndoOp, type UndoPlan, type UndoRow, type UndoState, type UndoStep, type UndoVariant,
+  addonGateCovers, currentRowId, isPaybackEntry, currentRuleId, latestReversal, planChangeUndo, undoAvailability, UNDO_EXACT_COPY, UNDO_NOT_POSSIBLE,
+  UNDO_UNREACHABLE, UNDO_UPDATE_ADDON, undoGone, type UndoOp, type UndoPlan, type UndoRow, type UndoState, type UndoStep, type UndoVariant,
 } from './change-undo.js';
 import {
   editSkippedTransactions, parseSkippedTransactionsStrict, REMOVED_FOR_GOOD_NOTE, SKIPPED_TRANSACTIONS_SECRET_KEY, SkippedTransactionsUnreadableError,
@@ -33,14 +38,20 @@ import type { SecretGet, SecretSet } from './subscription-prefs.js';
 import {
   flowExternalOf, IN_TRANSIT_COMMENT_PREFIX, isInternalMarkerComment, isTransferType, rowIdByComment, txIdFromComment,
 } from './sync-core.js';
+import { sameMappingRule } from './mapper.js';
 import type { HostActivity, SyncHost } from './sync-host.js';
 import {
   clearAccountOverride, clearTxOverride, editSyncOverrides, isUnreadableOverridesError, setAccountOverride, setTxOverride,
-  hasTxOverride, type SyncOverrides,
+  hasTxOverride, loadSyncOverrides, restoreTxEntry, SYNC_OVERRIDES_UNREADABLE_MESSAGE, type SyncOverrides,
 } from './sync-overrides.js';
 import { accountTxKey } from './transfers.js';
 import type { MappingRule } from './types.js';
-import { addonUnderstandsVenmoNotes, INSTALLED_ADDON_VERSION_SECRET_KEY } from './version.js';
+import {
+  PAYBACK_REDO_STUCK, PAYBACK_REDO_UNCHANGED, PAYBACK_REDO_UNSURE, PAYBACK_UNDO_STUCK, PAYBACK_UNDO_STUCK_PLAIN, PAYBACK_UNDO_UNCHANGED, PAYBACK_UNDO_UNSURE, PAYBACK_UNREACHABLE,
+  PAYBACK_UPDATE_ADDON, paybackRedoHalf, paybackUndoHalf,
+} from './payback-copy.js';
+import { isPaybackRow, type PaybackRow } from './payback-row.js';
+import { addonUnderstandsPaybacks, addonUnderstandsVenmoNotes, INSTALLED_ADDON_VERSION_SECRET_KEY } from './version.js';
 
 export const MAPPING_RULES_SECRET_KEY = 'mapping_rules';
 export const LINKED_GROUPS_SECRET_KEY = 'linked_groups';
@@ -64,7 +75,7 @@ export interface UndoIo {
   /** The companion only: Wealthfolio's categorization rules. */
   rules?: {
     list(): Promise<Array<{ id: string; name: string; pattern: string }>>;
-    create(rule: { name: string; pattern: string; categoryId: string; accountId?: string }): Promise<string | null>;
+    create(rule: { name: string; pattern: string; categoryId: string; accountId?: string; activityType?: string }): Promise<string | null>;
     remove(id: string): Promise<void>;
     /** The charges the rule filed (assignment source "rule", its category, a note
      *  containing its words), by activity id. Null when that cannot be read. */
@@ -79,9 +90,20 @@ export interface UndoIo {
     set(categoryId: string, amountCents: number): Promise<string | null>;
     remove(targetId: string): Promise<void>;
   };
+  /** The companion only: a payback's row by exact id, its stored instant
+   *  included (1.62); null when gone. Rejects when unreachable. */
+  paybacks?: {
+    read(activityId: string): Promise<PaybackRow | null>;
+  };
+  /** Where a failure is said that the message must not carry (optional). */
+  log?(msg: string): void;
   /** Appends the reversal entry to this writer's bucket. Never rejects. */
   record(draft: ChangeDraft): Promise<void>;
   where: { host: 'addon' | 'companion'; companionVersion: string | null };
+  /** The add-on on a Wealthfolio 3.9+ host: Wealthfolio's own word on whether
+   *  the row is half of a linked pair (shared/wf-facts.ts `linkedOfFact`);
+   *  null when it has none for this row. Where it answers, nothing is "maybe". */
+  linkFact?(a: HostActivity): Promise<'confirmed' | false | null>;
 }
 
 export type UndoOutcome =
@@ -133,9 +155,6 @@ async function readMappingRules(get: SecretGet): Promise<MappingRule[]> {
   return parsed as MappingRule[];
 }
 
-const sameRule = (a: MappingRule, b: MappingRule) =>
-  a.pattern === b.pattern && a.matchType === b.matchType && a.activityType === b.activityType && (a.subtype ?? '') === (b.subtype ?? '');
-
 /**
  * On a host that cannot read groups: could this row be half of a pair someone
  * else linked? Any transfer-typed row could, except the ones the sync wrote as
@@ -157,8 +176,11 @@ export function maybeLinkedTransfer(a: HostActivity): boolean {
 /** The row as the planner sees it, with "is it one half of a linked transfer". */
 async function toUndoRow(io: UndoIo, a: HostActivity, txKey: string | null): Promise<UndoRow> {
   let linked: UndoRow['linked'];
+  const fact = io.linkFact ? await io.linkFact(a).catch(() => null) : null;
   if (io.host.capabilities.readsSourceGroupId) {
     linked = a.sourceGroupId ? 'confirmed' : false;
+  } else if (fact !== null) {
+    linked = fact;
   } else {
     // The add-on cannot read groups back. The ledger the sync keeps confirms
     // the links IT made; the companion's links are in no ledger, so any other
@@ -270,6 +292,20 @@ async function gather(io: UndoIo, entry: ChangeEntry, op: UndoOp, latest: Change
       // Only a Redo acts on a row: the one the last Undo put back.
       if (op === 'redo') state.row = await findRow(io, entry, latest, key);
       return state;
+    case 'payback-filed': {
+      // Re-read by exact id, with its stored instant: the re-type writes it back unchanged.
+      const id = currentRowId(entry, latest);
+      if (!io.paybacks || !io.categories || !id) throw new Refusal(UNDO_NOT_POSSIBLE);
+      state.payback = await io.paybacks.read(id);
+      state.assignments = state.payback ? await io.categories.assignments(id) : [];
+      // A setting left on a deposit: Undo needs to know the flag is still there.
+      if (op === 'undo' && state.payback?.type === 'DEPOSIT' && str(after.categoryId) === null) {
+        const loaded = await loadSyncOverrides(io.secrets.get);
+        if (loaded.unreadable) throw new Refusal(SYNC_OVERRIDES_UNREADABLE_MESSAGE);
+        state.paybackFlagged = (entry.subject.txKeys ?? []).some((k) => hasTxOverride(loaded.overrides, k, 'asReimbursement'));
+      }
+      return state;
+    }
     case 'import': {
       state.row = await findRow(io, entry, latest, key);
       // A pending row that later posted carries a NEW tx id in its note: the skip
@@ -388,12 +424,16 @@ async function performStep(io: UndoIo, s: UndoStep, prior: string | null): Promi
       case 'mapping-remove': {
         const rule = s.rule;
         const list = await readMappingRules(io.secrets.get);
-        await io.secrets.set(MAPPING_RULES_SECRET_KEY, JSON.stringify(list.filter((r) => !sameRule(r, rule))));
+        await io.secrets.set(MAPPING_RULES_SECRET_KEY, JSON.stringify(list.filter((r) => !sameMappingRule(r, rule))));
         break;
       }
       case 'mapping-add': {
         const list = await readMappingRules(io.secrets.get);
-        if (!list.some((r) => sameRule(r, s.rule))) await io.secrets.set(MAPPING_RULES_SECRET_KEY, JSON.stringify([...list, s.rule]));
+        if (!list.some((r) => sameMappingRule(r, s.rule))) {
+          // A rule logged with an index (W10: first) goes back there, or first when it no longer fits.
+          const at = s.index === undefined ? list.length : s.index <= list.length ? s.index : 0;
+          await io.secrets.set(MAPPING_RULES_SECRET_KEY, JSON.stringify([...list.slice(0, at), s.rule, ...list.slice(at)]));
+        }
         break;
       }
       case 'delete-budget':
@@ -457,10 +497,24 @@ async function runOnce(
     let installed: string | null = null;
     try {
       installed = await io.secrets.get(INSTALLED_ADDON_VERSION_SECRET_KEY);
-    } catch {
+    } catch (err) {
       installed = null;
+      if (isPaybackEntry(entry)) {
+        // Cannot tell is not "too old" (PB-B M7).
+        try {
+          io.log?.(`Payback ${entry.id}: could not read the installed add-on version: ${message(err)}`);
+        } catch {
+          // Saying so never costs the refusal.
+        }
+        return { ok: false, message: PAYBACK_UNREACHABLE };
+      }
     }
-    if (!addonUnderstandsVenmoNotes(installed && installed.trim() ? installed : null)) return { ok: false, message: UNDO_UPDATE_ADDON };
+    const seen = installed && installed.trim() ? installed : null;
+    if (isPaybackEntry(entry)) {
+      if (!addonUnderstandsPaybacks(seen)) return { ok: false, message: PAYBACK_UPDATE_ADDON };
+    } else if (!addonUnderstandsVenmoNotes(seen)) {
+      return { ok: false, message: UNDO_UPDATE_ADDON };
+    }
   }
   const latest = latestReversal(entries, entry.id);
 
@@ -485,14 +539,36 @@ async function runOnce(
   const rest = p.steps.filter((s) => !isOverrideStep(s));
   // Overrides THIS undo set (a flag already there before is not ours to take back).
   let ours: UndoStep[] = [];
+  // The document as this run found it: a payback whose re-type failed puts it back.
+  let prior = null as SyncOverrides | null;
   if (overrideSteps.length > 0) {
     try {
       await editSyncOverrides(io.secrets.get, io.secrets.set, (o) => {
+        prior = o;
         ours = overrideSteps.filter((s) => !(s.do === 'set-tx' && hasTxOverride(o, s.txKey, s.flag)));
         return overrideSteps.reduce((d, s) => applyOverride(d, s, now, entry.id), o);
       }, now);
     } catch (err) {
-      return { ok: false, message: isUnreadableOverridesError(err) ? message(err) : UNDO_SAVE_FAILED };
+      if (isUnreadableOverridesError(err)) return { ok: false, message: message(err) };
+      if (entry.kind === 'payback-filed') {
+        try {
+          io.log?.(`Payback ${entry.id}: the overrides write failed (${op}): ${message(err)}`);
+        } catch {
+          // Saying so never costs the refusal.
+        }
+      }
+      // A payback's write can fail after it landed (a lost response): read it again (mirrors PB-B M2).
+      let landed = false;
+      if (entry.kind === 'payback-filed') {
+        try {
+          const now2 = await loadSyncOverrides(io.secrets.get);
+          landed = !now2.unreadable && overrideSteps.every((s) => (s.do === 'set-tx' || s.do === 'clear-tx')
+            && hasTxOverride(now2.overrides, s.txKey, s.flag) === (s.do === 'set-tx'));
+        } catch {
+          landed = false;
+        }
+      }
+      if (!landed) return { ok: false, message: UNDO_SAVE_FAILED };
     }
   }
 
@@ -514,6 +590,68 @@ async function runOnce(
         // Never costs the redo: the writer records a gap instead.
       }
       return { ok: true, message: p.done, needsSync: p.needsSync };
+    }
+    if (entry.kind === 'payback-filed') {
+      const name = str(rec(entry.after).categoryName) ?? 'its category';
+      if (err instanceof PartialFailure) {
+        // The row was re-typed and the category step failed: keep the log honest.
+        try {
+          await io.record(reversalChange(entry, op, reversalExtra(p, err.created, state)));
+        } catch {
+          // Never costs the reversal.
+        }
+        return { ok: false, message: op === 'undo' ? paybackUndoHalf(name) : paybackRedoHalf(name) };
+      }
+      // The re-type failed — or its response was lost: read the row again.
+      let again: PaybackRow | null = null;
+      let readable = state.payback != null && !!io.paybacks;
+      if (readable) {
+        try {
+          again = await io.paybacks!.read(state.payback!.id);
+        } catch {
+          readable = false;
+        }
+      }
+      if (readable && again && (op === 'undo' ? again.type === 'DEPOSIT' && !isPaybackRow(again) : isPaybackRow(again))) {
+        // It landed: go on to the category step.
+        const tail = rest.filter((s) => s.do === 'assign' || s.do === 'unassign');
+        let made: string | null = null;
+        let finished = true;
+        try {
+          made = await perform(io, tail, now);
+        } catch {
+          finished = false;
+        }
+        try {
+          await io.record(reversalChange(entry, op, reversalExtra(p, made, state)));
+        } catch {
+          // Never costs the reversal.
+        }
+        if (finished) return { ok: true, message: p.done, needsSync: p.needsSync };
+        return { ok: false, message: op === 'undo' ? paybackUndoHalf(name) : paybackRedoHalf(name) };
+      }
+      // Still as it was (or cannot tell): every override this run touched goes back as it was.
+      const was = prior;
+      try {
+        await editSyncOverrides(io.secrets.get, io.secrets.set, (o) => overrideSteps.reduce((d, s) => {
+          if (s.do !== 'set-tx' && s.do !== 'clear-tx') return d;
+          // The key's entry exactly as this run found it (at, label, entryId and all), or gone if it had none.
+          if (!was) return clearTxOverride(d, s.txKey, s.flag);
+          return restoreTxEntry(d, s.txKey, Object.prototype.hasOwnProperty.call(was.tx, s.txKey) ? was.tx[s.txKey] : undefined);
+        }, o), now);
+      } catch (backErr) {
+        try {
+          io.log?.(`Payback ${entry.id}: putting the overrides back failed (${op}): ${message(backErr)}`);
+        } catch {
+          // Saying so never costs the answer.
+        }
+        // The category wording only when this Undo had a filing to take off (PB-D m1).
+        return { ok: false, message: op === 'undo' ? (rest.some((s) => s.do === 'unassign') ? PAYBACK_UNDO_STUCK : PAYBACK_UNDO_STUCK_PLAIN) : PAYBACK_REDO_STUCK };
+      }
+      // A re-read that failed cannot claim "nothing was changed"; a row that is gone says so (PB-D m2).
+      if (!readable) return { ok: false, message: op === 'undo' ? PAYBACK_UNDO_UNSURE : PAYBACK_REDO_UNSURE };
+      if (!again) return { ok: false, message: undoGone(op) };
+      return { ok: false, message: op === 'undo' ? PAYBACK_UNDO_UNCHANGED : PAYBACK_REDO_UNCHANGED };
     }
     if (entry.kind === 'transaction-removed' && err instanceof PartialFailure) {
       const base = `Couldn't finish the ${op}: ${message(err)}`.replace(/\.$/, '');

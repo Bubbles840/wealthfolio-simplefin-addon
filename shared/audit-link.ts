@@ -10,7 +10,9 @@
  * Right before each pair's write both rows are re-read by id, and nothing is
  * written — "It has changed since — nothing was linked." — when either row
  * changed account, amount, date or type; is linked, or may be (the add-on);
- * carries a `notTransfer` override; is pending (the sync never pairs one); is
+ * carries a `notTransfer` override; is a payback — the `asReimbursement`
+ * override, or a cash CREDIT marked REIMBURSEMENT (its own words: re-creating
+ * it as a TRANSFER_IN would lose the payback and its filing); is pending (the sync never pairs one); is
  * the add-on's own in-transit placeholder, opening balance or correction; or
  * no longer carries the tx id its Health leg named. Money leaving a card is
  * refused on its own words, whatever the row's stored type: the sync never
@@ -18,9 +20,10 @@
  * on one (v1.55), and a WITHDRAWAL is never half of a valid pair. So is a pair
  * whose account types, or whose currency, are not what was shown.
  *
- * The write is the sync's own linker, `linkPairByRecreate`, through the
- * host's `linkPair` (shared/link-pair.ts). It DELETES both rows and then
- * re-creates them as one marked group. Wealthfolio applies a bulk request all
+ * The write is the sync's own linker, through the host's `linkPair`: in place
+ * where Wealthfolio's own link can (shared/link-in-place.ts — the same rows,
+ * nothing deleted), else `linkPairByRecreate` (shared/link-pair.ts), which
+ * DELETES both rows and then re-creates them as one marked group. Wealthfolio applies a bulk request all
  * or nothing (activities_service.rs, bulk_mutate_activities), so a re-create
  * it refuses wrote nothing while the delete already went through. A request
  * that throws is not known either way: its response can be lost after the
@@ -43,7 +46,9 @@ import { isCorrectionNote, isPendingNote, isPlaceholderNote, isStartingBalanceNo
 import { bookkeepingChange, transferLinkChange, type ChangeDraft, type LinkLegFacts } from './change-entries.js';
 import { recreateWrite, type FixRow, type LinkedState } from './fix-row.js';
 import { findingHandle } from './handle.js';
+import { HALF_OF_ANOTHER_TRANSFER, LINK_ANSWER_LOST } from './link-in-place.js';
 import { describeLeg } from './link-pair.js';
+import { isPaybackRow } from './payback-row.js';
 import { descriptionFromComment, txIdFromComment } from './sync-core.js';
 import type { ActivityWrite, LinkLeg, LinkResult, SaveManyResult } from './sync-host.js';
 import { hasTxOverride, SYNC_OVERRIDES_UNREADABLE_MESSAGE, type LoadedSyncOverrides, type SyncOverrides } from './sync-overrides.js';
@@ -56,6 +61,8 @@ export const LINK_CARD_OUT = "Wealthfolio doesn't take a transfer out of a credi
 export const LINK_UNKNOWN_ACCOUNT = "Can't tell what kind of account this is — nothing was linked.";
 export const LINK_DROPPED = "Both rows were re-created as transfers, but Wealthfolio didn't link them.";
 export const LINK_UNREACHABLE = "Couldn't reach Wealthfolio — nothing was linked.";
+/** One of the two is a payback (1.62): money in that comes off spending, never half of a transfer. */
+export const LINK_PAYBACK = "One of these is a payback, not half of a transfer — nothing was linked.";
 
 /** A Health leg and its one likely other half, as the list shows them. */
 export interface LinkPair {
@@ -122,6 +129,9 @@ export function checkLinkPair(pair: LinkPair, now: readonly [ReadRow | null, Rea
     const txId = txIdFromComment(row.notes);
     if (!was.txKey || !txId || !was.txKey.endsWith(`\u0000${txId}`)) return changed;
     if (hasTxOverride(overrides, was.txKey, 'notTransfer')) return changed;
+    if (hasTxOverride(overrides, was.txKey, 'asReimbursement') || (isPaybackRow(row) && row.accountType === 'CASH')) {
+      return { ok: false, reason: LINK_PAYBACK };
+    }
   }
   const outAt = pair.leg.type === 'TRANSFER_OUT' ? 0 : 1;
   const out = now[outAt]!.row;
@@ -217,6 +227,10 @@ async function linkOne(pair: LinkPair, io: LinkIo, overrides: SyncOverrides): Pr
   if (!result || !result.linked || !result.groupId) {
     const problems = result?.problems ?? [];
     if (result) io.log(`Link ${pair.key}: ${problems.join('; ') || 'not linked'}`);
+    // Already half of another transfer: nothing was written, so there is
+    // nothing to re-read or write back. The reason is the whole message.
+    if (problems.includes(HALF_OF_ANOTHER_TRANSFER)) return { kind: 'failed', message: HALF_OF_ANOTHER_TRANSFER };
+    if (problems.includes(LINK_ANSWER_LOST)) return { kind: 'failed', message: LINK_ANSWER_LOST };
     if (problems.some((p) => p.startsWith('the host stored no shared group'))) {
       // Both saves went through and Wealthfolio kept no group: the rows exist,
       // as transfers, unlinked. Say so, and leave a visible trace.

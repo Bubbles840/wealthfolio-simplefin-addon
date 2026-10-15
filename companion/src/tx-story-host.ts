@@ -202,6 +202,7 @@ export async function companionTxStory(readers: StoryReaders, requestedId: strin
     activityType: String(item.activityType ?? '').toUpperCase(),
     accountName: item.accountName ?? '',
     ...(details?.accountType ? { accountType: details.accountType } : {}),
+    ...(item.subtype ? { subtype: String(item.subtype) } : {}),
   };
 
   // Its category: the spending one when it has one, else whatever it has.
@@ -219,6 +220,7 @@ export async function companionTxStory(readers: StoryReaders, requestedId: strin
         }
       }
       const filer = resolveFiler({
+        activityId,
         source: a.source,
         categoryId: a.categoryId,
         categoryName: a.categoryName,

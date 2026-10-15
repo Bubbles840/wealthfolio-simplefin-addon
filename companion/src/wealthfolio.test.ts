@@ -92,6 +92,23 @@ describe('WealthfolioClient', () => {
     await expect(client.linkTransferActivities('a', 'b')).rejects.toThrow('422');
   });
 
+  it('linkTransferActivities answers with the two rows Wealthfolio wrote, and names its refusal', async () => {
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => [{ id: 'act-in', sourceGroupId: 'g' }, { id: 'act-out', sourceGroupId: 'g' }] });
+    const client = new WealthfolioClient('http://wealthfolio:8088');
+    expect(await client.linkTransferActivities('act-out', 'act-in')).toEqual([{ id: 'act-in', sourceGroupId: 'g' }, { id: 'act-out', sourceGroupId: 'g' }]);
+    mockFetch.mockResolvedValueOnce({ ok: false, status: 400, text: async () => 'One or both activities are already linked to another transfer' });
+    await expect(client.linkTransferActivities('a', 'b')).rejects.toThrow('linkTransferActivities failed: 400 - One or both activities are already linked to another transfer');
+  });
+
+  it('unlinkTransferActivities POSTs both ids to /activities/unlink', async () => {
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => [{ id: 'act-in' }, { id: 'act-out' }] });
+    const client = new WealthfolioClient('http://wealthfolio:8088');
+    expect(await client.unlinkTransferActivities('act-out', 'act-in')).toEqual([{ id: 'act-in' }, { id: 'act-out' }]);
+    const [url, opts] = mockFetch.mock.calls[0];
+    expect(url).toBe('http://wealthfolio:8088/api/v1/activities/unlink');
+    expect(JSON.parse((opts as any).body)).toEqual({ activityAId: 'act-out', activityBId: 'act-in' });
+  });
+
   it('searchActivities POSTs filters and returns the data array', async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
@@ -233,6 +250,15 @@ describe('WealthfolioClient', () => {
     expect(JSON.parse((opts as any).body)).toEqual({ excludedCategoryIds: ['a', 'b'] });
   });
 
+  it('getExcludedSpendingCategories GETs Wealthfolio’s live list, and throws rather than guess', async () => {
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ excludedCategoryIds: ['a', 'b'] }) });
+    const client = new WealthfolioClient('http://wf');
+    expect(await client.getExcludedSpendingCategories()).toEqual(['a', 'b']);
+    expect(mockFetch.mock.calls[0][0]).toBe('http://wf/api/v1/spending/settings');
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({}) });
+    await expect(client.getExcludedSpendingCategories()).rejects.toThrow();
+  });
+
   it('unassignActivityCategory DELETEs the taxonomy off the assignments path, with no body', async () => {
     mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({}) });
     const client = new WealthfolioClient('http://wf');
@@ -292,6 +318,19 @@ describe('WealthfolioClient', () => {
     expect(JSON.parse((mockFetch.mock.calls[0][1] as any).body)).toEqual({
       name: 'Telegram: VENMO PAYMENT', pattern: 'VENMO PAYMENT', matchType: 'contains', taxonomyId: 'spending_categories',
       categoryId: 'cat-1', priority: 50, isGlobal: false, accountId: 'wf-chk',
+    });
+  });
+
+  it('createCategorizationRule files one activity type only when asked: a payback rule (W10)', async () => {
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({}) });
+    const client = new WealthfolioClient('http://wf');
+    await client.createCategorizationRule({
+      name: 'Telegram payback: VENMO CASHOUT', pattern: 'VENMO CASHOUT', categoryId: 'cat-rest', taxonomyId: 'spending_categories', priority: 50,
+      accountId: 'wf-chk', activityType: 'CREDIT',
+    });
+    expect(JSON.parse((mockFetch.mock.calls[0][1] as any).body)).toEqual({
+      name: 'Telegram payback: VENMO CASHOUT', pattern: 'VENMO CASHOUT', matchType: 'contains', taxonomyId: 'spending_categories',
+      categoryId: 'cat-rest', priority: 50, isGlobal: false, accountId: 'wf-chk', activityType: 'CREDIT',
     });
   });
 

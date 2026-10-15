@@ -29,20 +29,20 @@ import type { PastFiling } from '../../shared/category-guess.js';
 import { SPENDING_TAXONOMY_ID } from '../../shared/cash-flow-bucket.js';
 import { descriptionFromComment } from '../../shared/sync-core.js';
 import { DRILL_CLI_SEPARATOR, queryNativeDbStrict } from './sqlite-native.js';
+import { isDay, NOTES, tail } from './sqlite-cli-helpers.js';
 
 /** A year of filings is far past execFileSync's 1 MB default on the CLI path. */
 const GUESS_CLI_MAX_BUFFER = 64 * 1024 * 1024;
-const NOTES = `REPLACE(REPLACE(COALESCE(a.notes, ''), char(13), ' '), char(10), ' ')`;
 
 /** CLI line → the three columns (the note last, whatever it holds). */
 export function pastFilingFromCliParts(parts: string[]): Record<string, unknown> | null {
-  return parts.length >= 3 ? { c0: parts[0], c1: parts[1], c2: parts.slice(2).join(DRILL_CLI_SEPARATOR) } : null;
+  return parts.length >= 3 ? { c0: parts[0], c1: parts[1], c2: tail(parts, 2) } : null;
 }
 
 /** Every spending filing made on or after `sinceDay` (YYYY-MM-DD). Throws when
  *  the database cannot be read, or for a malformed day. */
 export function getNativePastFilings(dbPath: string, sinceDay: string): PastFiling[] {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(sinceDay)) throw new Error(`Refusing past filings since a malformed day: ${sinceDay}`);
+  if (!isDay(sinceDay)) throw new Error(`Refusing past filings since a malformed day: ${sinceDay}`);
   // When the filing was made: `updated_at` for a person's, `created_at` for a
   // rule's (see the file comment). Compared by its day, so the boundary day is
   // wholly in.

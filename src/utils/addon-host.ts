@@ -1,5 +1,7 @@
 import { fetchAccounts } from './simplefin';
-import { linkPairByRecreate } from '../../shared/link-pair';
+import { linkPairPreferInPlace, unlinkPairPreferInPlace, type InPlaceIo } from '../../shared/link-in-place';
+import type { UnlinkLeg, UnlinkResult } from '../../shared/link-pair';
+import { hostCan } from './host-can';
 import type {
   ActivityWrite,
   HostActivity,
@@ -13,7 +15,7 @@ import type {
 } from '../../shared/sync-host';
 import type { ActivityType, SimplefinAccountSet } from '../../shared/types';
 import type { HoldingsSnapshot } from '../../shared/holdings';
-import type { AddonContext, ActivityCreate, ActivityUpdate } from '@wealthfolio/addon-sdk';
+import type { AddonContext, ActivityCreate, ActivitySearchFilters, ActivityUpdate } from '@wealthfolio/addon-sdk';
 
 /**
  * Normalize a host date to YYYY-MM-DD.
@@ -100,11 +102,19 @@ function fromSdkEcho(a: any): HostActivity {
  * sync core. The Docker companion implements the same interface over REST.
  */
 export class AddonSyncHost implements SyncHost {
-  constructor(private ctx: AddonContext) {}
-
   /** ActivityDetails (what `activities.search` returns) has no sourceGroupId,
-   *  so links can only be read back from a saveMany echo. */
-  readonly capabilities = { readsSourceGroupId: false };
+   *  so links can only be read back from a saveMany echo. `cardTransferOut`:
+   *  the host is Wealthfolio 3.10+, as the companion published it — the SDK
+   *  has no version call. */
+  readonly capabilities: { readsSourceGroupId: boolean; cardTransferOut: boolean };
+
+  private log?: (message: string) => void;
+
+  /** `opts.log` is the logger (Task 4); `opts.cardTransferOut` the 3.10 capability. */
+  constructor(private ctx: AddonContext, opts: { cardTransferOut?: boolean; log?: (message: string) => void } = {}) {
+    this.log = opts.log;
+    this.capabilities = { readsSourceGroupId: false, cardTransferOut: !!opts.cardTransferOut };
+  }
 
   async fetchSimplefin(
     accessUrl: string,
@@ -198,7 +208,32 @@ export class AddonSyncHost implements SyncHost {
     return { imported: result.snapshotsImported, skipped: 0, unresolvedSymbols };
   }
 
+  /**
+   * Wealthfolio's own link or unlink through the SDK, and the exact-id read
+   * right before it — or null on a host that does not offer the call (3.8:
+   * `hostCan`), where the pair is re-created as it always was. Each call is
+   * made as a method on `ctx.api` (the sandbox's Proxy treats `.call` as one
+   * more path).
+   */
+  private async inPlace(method: 'activities.linkTransfer' | 'activities.unlinkTransfer'): Promise<InPlaceIo | null> {
+    if (!(await hostCan(this.ctx, method))) return null;
+    return {
+      read: async (ids) => {
+        // `activityIds` reaches Wealthfolio 3.8's exact-id filter; the SDK's filter type does not list it.
+        const res = await this.ctx.api.activities.search(0, 2, { activityIds: ids } as ActivitySearchFilters, '');
+        return (res.data ?? []) as unknown[];
+      },
+      link: async (a, b) => (await this.ctx.api.activities.linkTransfer(a, b)) as unknown[],
+      unlink: async (a, b) => (await this.ctx.api.activities.unlinkTransfer(a, b)) as unknown[],
+      ...(this.log ? { log: this.log } : {}),
+    };
+  }
+
   async linkPair(legs: [LinkLeg, LinkLeg]): Promise<LinkResult> {
-    return linkPairByRecreate((req) => this.saveMany(req), legs);
+    return linkPairPreferInPlace(await this.inPlace('activities.linkTransfer'), (req) => this.saveMany(req), legs);
+  }
+
+  async unlinkPair(legs: [UnlinkLeg, UnlinkLeg]): Promise<UnlinkResult> {
+    return unlinkPairPreferInPlace(await this.inPlace('activities.unlinkTransfer'), (req) => this.saveMany(req), legs);
   }
 }

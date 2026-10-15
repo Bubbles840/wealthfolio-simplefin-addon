@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { planReconciliation } from './reconcile';
+import { IN_TRANSIT_COMMENT_PREFIX, planReconciliation } from './reconcile';
 import type { FeedTx, ExistingRow } from './reconcile';
 
 const feed = (o: Partial<FeedTx>): FeedTx => ({
@@ -134,5 +134,26 @@ describe('planReconciliation', () => {
       const plan = planReconciliation([feed({ subtype: 'REFUND' })], [row({ subtype: 'REIMBURSEMENT' })]);
       expect(plan.updates).toEqual([{ wfId: 'w1', to: expect.objectContaining({ subtype: 'REFUND' }) }]);
     });
+  });
+});
+
+describe('planReconciliation — a createOnly tx keeps the stored in-transit marker (PB-M m-a)', () => {
+  const placeholder = row({ type: 'DEPOSIT', comment: `${IN_TRANSIT_COMMENT_PREFIX}VENMO · t1`, pending: true });
+
+  it('is not an update when only the marker differs', () => {
+    const plan = planReconciliation([feed({ type: 'CREDIT', subtype: 'REIMBURSEMENT', createOnly: true, pending: true })], [placeholder]);
+    expect(plan.updates).toEqual([]);
+  });
+
+  it('writes the marker back when the row moves for another reason (it posts)', () => {
+    const plan = planReconciliation([feed({ type: 'CREDIT', subtype: 'REIMBURSEMENT', createOnly: true, pending: false })], [placeholder]);
+    expect(plan.updates).toHaveLength(1);
+    expect(plan.updates[0].to).toMatchObject({ type: 'DEPOSIT', inTransit: true });
+  });
+
+  it('a plain tx still clears the marker', () => {
+    const plan = planReconciliation([feed({ type: 'DEPOSIT', pending: true })], [placeholder]);
+    expect(plan.updates).toHaveLength(1);
+    expect(plan.updates[0].to.inTransit).toBeUndefined();
   });
 });

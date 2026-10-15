@@ -1,5 +1,6 @@
 import { INTERNAL_TRANSFER_METADATA, isTransferType, newTransferGroupId, txIdFromComment } from './sync-core.js';
 import { accountTxKey } from './transfers.js';
+import { bankDayInstant } from './bank-day.js';
 import type { LinkLeg, LinkResult, SaveManyRequest, SaveManyResult } from './sync-host.js';
 
 /**
@@ -43,7 +44,7 @@ export async function linkPairByRecreate(
     creates: legs.map((leg) => ({
       accountId: leg.accountId,
       activityType: leg.activityType,
-      activityDate: leg.date,
+      activityDate: bankDayInstant(leg.date),
       amount: leg.absCents / 100,
       currency: leg.currency,
       comment: leg.comment,
@@ -96,8 +97,12 @@ export interface UnlinkResult {
   unlinked: boolean;
   /** The new rows exist but the old linked pair could not be deleted. */
   stale?: boolean;
-  /** The re-created rows' ids, in leg order, when the echo carried them. */
+  /** The re-created rows' ids, in leg order, when the echo carried them —
+   *  or, unlinked in place, the rows' own ids. */
   activityIds?: [string, string];
+  /** Unlinked by Wealthfolio's own unlink (shared/link-in-place.ts): the same
+   *  rows, retyped; nothing created or deleted. */
+  inPlace?: true;
   problems?: string[];
 }
 
@@ -131,7 +136,7 @@ export async function unlinkPairByRecreate(
       creates: legs.map((leg) => ({
         accountId: leg.accountId,
         activityType: leg.newType,
-        activityDate: leg.date,
+        activityDate: bankDayInstant(leg.date),
         // Ordinary money resolves the cash asset by symbol; only a transfer leg
         // must carry none (see `isTransferType`).
         ...(isTransferType(leg.newType) ? {} : { symbol: { symbol: `$CASH-${leg.currency}` } }),

@@ -1,4 +1,5 @@
 import { mapTransactionWithSource } from './mapper.js';
+import { REIMBURSEMENT_SUBTYPE } from './cash-flow-bucket.js';
 import { accountTxKey, detectTransferPairs, TRANSFER_MATCH_WINDOW_SECONDS } from './transfers.js';
 import type { TransferCandidate } from './transfers.js';
 import { planReconciliation, IN_TRANSIT_COMMENT_PREFIX } from './reconcile.js';
@@ -18,13 +19,15 @@ import {
 import type { ActivityType, SimplefinAccount, SimplefinTransaction, UnmappedAccount } from './types.js';
 import type { ActivityWrite, HoldingsSyncOutcome, HostActivity, ImportRow, LinkLeg, LinkResult, SaveManyRequest, SaveManyResult, SyncHost, SyncStore } from './sync-host.js';
 import { unlinkPairByRecreate, type UnlinkLeg, type UnlinkResult } from './link-pair.js';
+import { ledgerGroupId } from './link-in-place.js';
 import {
   amazonLabelChange, amazonLabelOf, balanceCorrectionChange, bankUpdateChange, bookkeepingChange, duplicateRemovedChange,
   importChange, pendingRemovedChange, stampChange, startingBalanceChange, startingBalanceMovedChange, transferLinkChange,
   transferTypeChange, venmoNoteChange,
   type BaselineState, type ChangeAccount, type ChangeDraft, type ChangeEntry, type ChangeLogSink, type LinkLegFacts,
 } from './change-entries.js';
-import { emptySyncOverrides, hasAccountOverride, hasTxOverride } from './sync-overrides.js';
+import { emptySyncOverrides, hasAccountOverride, hasTxOverride, syncOverridesIgnoredLog } from './sync-overrides.js';
+import { bankDayInstant } from './bank-day.js';
 
 /**
  * A datable timestamp for a SimpleFin transaction: `posted` when present, else
@@ -870,14 +873,15 @@ export async function applyBaselineFix(
   // the same function that wrote the row: a hard-coded DEPOSIT/WITHDRAWAL here
   // turned a neutral cash baseline back into income, and on a card wrote a type
   // the API refuses (DEPOSIT) or a purchase (WITHDRAWAL).
-  const shape = startingBalanceFields(accountType, suggestedAmount);
+  const shape = startingBalanceFields(accountType, suggestedAmount, bookkeepingShapeOf(host));
+  const activityType = keepBookkeepingOutflow(accountType, baseline.activityType, shape.activityType);
   const res = await host.saveMany({
     updates: [
       {
         id: baseline.id,
         accountId: wfAccountId,
-        activityType: shape.activityType,
-        activityDate: baseline.date,
+        activityType,
+        activityDate: bankDayInstant(baseline.date),
         // No symbol, as before: the stored asset is left as it is, and a card
         // baseline's transfer leg must never gain one (it would become the
         // phantom "$CASH" security and stop booking cash).
@@ -896,7 +900,7 @@ export async function applyBaselineFix(
     change: {
       activityId: baseline.id,
       before: { amountCents: Math.round(baseline.signed * 100), date: baseline.date, activityType: baseline.activityType },
-      after: { amountCents: Math.round(suggestedAmount * 100), date: baseline.date, activityType: shape.activityType },
+      after: { amountCents: Math.round(suggestedAmount * 100), date: baseline.date, activityType },
     },
   };
 }
@@ -953,14 +957,14 @@ async function keepStartingBalanceOldest(
   const activityType = netting
     // Through the same chooser that wrote the row, or an adjustment would
     // quietly flip a neutral baseline back into income.
-    ? startingBalanceFields(accountType, nextSigned).activityType
+    ? keepBookkeepingOutflow(accountType, sb.activityType, startingBalanceFields(accountType, nextSigned, bookkeepingShapeOf(host)).activityType)
     : sb.activityType;
   const res = await host.saveMany({
     updates: [{
       id: sb.id,
       accountId: wfAccountId,
       activityType,
-      activityDate: nextDate,
+      activityDate: bankDayInstant(nextDate),
       // Only a non-transfer row that is being re-shaped states its cash symbol.
       // A TRANSFER leg carrying one becomes the phantom "$CASH" security and
       // stops moving cash, and a date-only move has no reason to touch the
@@ -1203,7 +1207,7 @@ export function planExternalMarkerStamp(rows: ReadonlyArray<StoredRow>, currency
       id: row.wfId,
       accountId: row.wfAccountId,
       activityType: row.type,
-      activityDate: row.date,
+      activityDate: bankDayInstant(row.date),
       amount: row.absCents / 100,
       currency,
       comment: note,
@@ -1250,7 +1254,7 @@ export function planAmazonLateLabels(
       id: row.wfId,
       accountId: row.wfAccountId,
       activityType: row.type,
-      activityDate: row.date,
+      activityDate: bankDayInstant(row.date),
       amount: row.absCents / 100,
       currency,
       comment: `${hit.enriched} · ${row.txId}`,
@@ -1315,7 +1319,7 @@ export function planLegacyPlaceholderRewrite(
       id: row.wfId,
       accountId: row.wfAccountId,
       activityType: outflowType,
-      activityDate: row.date,
+      activityDate: bankDayInstant(row.date),
       amount: row.feeCents / 100,
       fee: 0,
       currency,
@@ -1442,9 +1446,9 @@ export function accountNameWords(name: string, orgName?: string): string[] {
  * `crates/spending/src/activity_classification.rs`, and 3.8 left no
  * cash-moving outflow type that isn't spending), so Wealthfolio's own spending
  * page shows a placeholder as an uncategorised outflow until its counterpart
- * posts and the pair links. The addon's readers exclude the sync's bookkeeping
- * rows by their note marker instead (see `spendingWhere` in the companion), so
- * the Budget tab and digests never count them. On a card TRANSFER_OUT is
+ * posts and the pair links. Since 1.62 the addon's readers count what
+ * Wealthfolio counts; the sync files its own unfiled bookkeeping rows under an
+ * excluded "Sync bookkeeping" category (3.9+) to keep them out of both. On a card TRANSFER_OUT is
  * Ignored outright. Legacy fee-side rows are restated by
  * `planLegacyPlaceholderRewrite` on the next sync.
  *
@@ -1467,7 +1471,10 @@ export function accountNameWords(name: string, orgName?: string): string[] {
  * `classify_import_activity` (3.8.0) sends every type with a cash symbol down
  * the same CashMovement branch, TRANSFER_OUT included.
  *
- * A card OUTFLOW is a WITHDRAWAL, and it is not neutral — there is no neutral
+ * A card OUTFLOW is a TRANSFER_OUT where the host takes one (Wealthfolio
+ * 3.10+, `cardTransferOut`): Ignored by 3.10's classifier when unlinked,
+ * marked external so Health leaves it alone, the real amount visible. On 3.8
+ * and 3.9 it is a WITHDRAWAL, and it is not neutral — there is no neutral
  * option. Wealthfolio 3.8 accepts only WITHDRAWAL, TRANSFER_IN, CREDIT, FEE and
  * INTEREST on a card, on every write path (activities_service.rs,
  * `account_activity_validation_message`), and all three outflows classify as
@@ -1482,17 +1489,41 @@ export function accountNameWords(name: string, orgName?: string): string[] {
  * SECURITIES/CRYPTOCURRENCY keep the simpler DEPOSIT/WITHDRAWAL shape: every
  * type is Ignored on an investment-style account.
  */
+/** What the host takes, for the shape of a bookkeeping row. */
+export interface BookkeepingShape {
+  /** Wealthfolio 3.10+: TRANSFER_OUT on a credit card. */
+  cardTransferOut?: boolean;
+}
+
+/** The shape options a host's capabilities give. */
+export const bookkeepingShapeOf = (host: Pick<SyncHost, 'capabilities'>): BookkeepingShape =>
+  ({ cardTransferOut: !!host.capabilities.cardTransferOut });
+
+/**
+ * The type a card's bookkeeping outflow is rewritten with. A stored WITHDRAWAL
+ * stays one where a 3.10 writer would choose TRANSFER_OUT: it is the same row
+ * (the one-time rewrite, not a netting, converts it), and every Wealthfolio
+ * takes it — so neither syncer flips a row the other wrote. The reverse is
+ * not kept: a writer that chooses WITHDRAWAL may have a host that refuses
+ * TRANSFER_OUT on a card (3.8, 3.9). Anything else: `chosen`.
+ */
+export function keepBookkeepingOutflow(accountType: string, stored: string, chosen: string): string {
+  return accountType === 'CREDIT_CARD' && stored === 'WITHDRAWAL' && chosen === 'TRANSFER_OUT' ? stored : chosen;
+}
+
 export function neutralAdjustmentFields(
   accountType: string,
   signedAmount: number,
+  shape: BookkeepingShape = {},
 ): { activityType: ActivityType; amount: number; fee: number } {
   const mag = Math.abs(Math.round(signedAmount * 100) / 100);
   if (accountType === 'CASH' || accountType === 'CREDIT_CARD') {
     if (signedAmount <= 0) {
-      // A card refuses TRANSFER_OUT outright (see the card note above), and
-      // every outflow type it accepts is spending; WITHDRAWAL is the honest one.
+      // A card before 3.10 refuses TRANSFER_OUT outright (see the card note
+      // above), and every outflow type it accepts is spending; WITHDRAWAL is
+      // the honest one there.
       return {
-        activityType: (accountType === 'CREDIT_CARD' ? 'WITHDRAWAL' : 'TRANSFER_OUT') as ActivityType,
+        activityType: (accountType === 'CREDIT_CARD' && !shape.cardTransferOut ? 'WITHDRAWAL' : 'TRANSFER_OUT') as ActivityType,
         amount: mag,
         fee: 0,
       };
@@ -1528,10 +1559,11 @@ export function neutralAdjustmentFields(
 export function startingBalanceFields(
   accountType: string,
   starting: number,
+  hostShape: BookkeepingShape = {},
 ): { activityType: ActivityType; amount: number } {
   const amount = Math.abs(Math.round(starting * 100) / 100);
   if (accountType === 'CREDIT_CARD') {
-    const shape = neutralAdjustmentFields(accountType, starting);
+    const shape = neutralAdjustmentFields(accountType, starting, hostShape);
     return { activityType: shape.activityType, amount: shape.amount };
   }
   // A positive cash baseline is a bare CREDIT, which the classifier treats as
@@ -1576,14 +1608,14 @@ export async function importAdjustmentActivity(
   const accountType = String(
     wfAccounts.find((a) => a.id === wfAccountId)?.accountType ?? '',
   );
-  const { activityType, amount: fieldAmount, fee } = neutralAdjustmentFields(accountType, amount);
+  const { activityType, amount: fieldAmount, fee } = neutralAdjustmentFields(accountType, amount, bookkeepingShapeOf(host));
   // Built as a variable (not an inline literal) so it matches the same relaxed
   // shape the starting-balance correction uses for the import endpoint.
   const adjustment: ImportRow = {
     accountId: wfAccountId,
     sourceSystem: 'simplefin',
     activityType,
-    date: today,
+    date: bankDayInstant(today),
     symbol: `$CASH-${currency}`,
     amount: fieldAmount,
     fee,
@@ -1810,7 +1842,7 @@ function recreatePayload(row: StoredRow, currency: string): ActivityWrite {
   return {
     accountId: row.wfAccountId,
     activityType: row.type,
-    activityDate: row.date,
+    activityDate: bankDayInstant(row.date),
     ...(isTransferType(row.type) ? {} : { symbol: { symbol: `$CASH-${currency}` } }),
     amount: row.absCents / 100,
     ...(row.feeCents ? { fee: row.feeCents / 100 } : {}),
@@ -1976,6 +2008,12 @@ async function runSyncPass(
      *  clear a subtype Wealthfolio set for its own reasons. Independent of
      *  `inTransit` above. */
     subtype?: string;
+    /** Decided by a rule that types only rows the sync creates (a payback rule's
+     *  `since`): reconciliation leaves a stored row's type and subtype as they are. */
+    createOnly?: true;
+    /** Nothing decided this cash money-in row's type and the plain mapping says
+     *  DEPOSIT: a stored payback stays as stored (see `FeedTx.keepPayback`). */
+    keepPayback?: true;
   }
   const preparedByAccount = new Map<string, PreparedTx[]>();
   const candidates: TransferCandidate[] = [];
@@ -2052,7 +2090,26 @@ async function runSyncPass(
   );
   /** What Undo told the sync not to do again (shared/sync-overrides.ts). A
    *  failed or corrupt read is empty: the sync then behaves as it always did. */
-  const overrides = (await store.getSyncOverrides?.().catch(() => null)) ?? emptySyncOverrides();
+  // Read ONCE: two reads can disagree (the first failing, the second working),
+  // which would leave `overrides` empty while `overridesUnread` is false.
+  const loadedOverrides = store.readSyncOverrides ? await store.readSyncOverrides().catch(() => null) : undefined;
+  const overrides = loadedOverrides === undefined
+    ? (await store.getSyncOverrides?.().catch(() => null)) ?? emptySyncOverrides()
+    : loadedOverrides?.overrides ?? emptySyncOverrides();
+  /** The document could not be read (a failed read or a corrupt one): `overrides`
+   *  above is then empty, which must not revert a payback — see below. A host
+   *  without `readSyncOverrides` cannot say, and keeps today's behaviour. */
+  const overridesUnread = loadedOverrides !== undefined && (!loadedOverrides || loadedOverrides.unreadable);
+  if (overridesUnread) console.warn(syncOverridesIgnoredLog(loadedOverrides ? 'corrupt' : 'unreadable'));
+  /** Flagged `asReimbursement` keys whose override yielded this sync (money
+   *  out, or a known non-cash account) — logged where a stored payback is seen. */
+  const yieldedPaybackKeys = new Set<string>();
+  let paybackNoteGiven = false;
+  /** A stored, settled CREDIT marked REIMBURSEMENT: what an unread overrides
+   *  document leaves exactly as stored. (A pending row is not kept: it posts
+   *  under a new id and must be replaced like any other.) */
+  const isKeptPayback = (r: ExistingRow) => r.type === 'CREDIT' && !r.pending
+    && (r.subtype ?? '').toUpperCase() === REIMBURSEMENT_SUBTYPE;
 
   // Keep pending rows now (they import and reconcile), dropping only rows we
   // can't date at all — no `posted` and no `transacted_at` — since those
@@ -2125,13 +2182,36 @@ async function runSyncPass(
       // transfer. It becomes ordinary money in or out, the type a leg whose
       // other half never arrived takes, and the rule's subtype goes with it.
       const notTransfer = hasTxOverride(overrides, key, 'notTransfer');
-      const mapped = mapTransactionWithSource(tx.description, amount, rules, wfTypes.get(wfAccountId));
-      const { type, fromRule, subtype } = notTransfer && isTransferType(mapped.type)
-        ? { type: expiredTransferLegType(wfTypes.get(wfAccountId) ?? '', amount), fromRule: false, subtype: undefined }
-        : mapped;
+      // A payback you filed (`asReimbursement`, 1.62 W7): a CREDIT marked
+      // REIMBURSEMENT for as long as the bank row is money in on a cash
+      // account, whatever a keyword or a rule says — and never paired below,
+      // which would type it a transfer. Money out, or another account type,
+      // and the override yields: the row is typed as usual.
+      // An UNKNOWN type (listAccounts failed) does not yield: only a known
+      // non-cash type does. (An override past its year still applies until the
+      // next overrides write prunes it — by design.)
+      const acctType = wfTypes.get(wfAccountId);
+      const flagged = hasTxOverride(overrides, key, 'asReimbursement');
+      const payback = flagged && amount > 0 && (!acctType || acctType === 'CASH');
+      if (flagged && !payback) yieldedPaybackKeys.add(key);
+      const mapped = mapTransactionWithSource(
+        tx.description, amount, rules, wfTypes.get(wfAccountId), wfAccountId,
+        txEpoch(tx) !== null ? new Date(txEpoch(tx)! * 1000).toISOString().split('T')[0] : undefined,
+      );
+      const { type, fromRule, subtype } = payback
+        ? { type: 'CREDIT' as ActivityType, fromRule: true, subtype: REIMBURSEMENT_SUBTYPE as string | undefined }
+        : notTransfer && isTransferType(mapped.type)
+          ? { type: expiredTransferLegType(wfTypes.get(wfAccountId) ?? '', amount), fromRule: false, subtype: undefined }
+          : mapped;
       prepared.push({
         sfAccountId: sfAccount.id, tx, type,
         ...(subtype ? { subtype } : {}),
+        // Only when the rule's own type stands: the asReimbursement flag and the
+        // notTransfer rewrite decide by themselves and may re-type a stored row.
+        ...(!payback && !(notTransfer && isTransferType(mapped.type)) && mapped.createOnly ? { createOnly: true as const } : {}),
+        // Neither a rule nor the flag decided: a stored payback (filed, made by hand, or
+        // made by a rule since undone) is not the sync's to turn into a deposit.
+        ...(!payback && !mapped.fromRule && mapped.type === 'DEPOSIT' && amount > 0 && (!acctType || acctType === 'CASH') ? { keepPayback: true as const } : {}),
       });
       // Amazon categories go on AFTER typing: `mapTransactionWithSource` above
       // matches the user's merchant rules against the bank's own text, and
@@ -2195,8 +2275,9 @@ async function runSyncPass(
       // Pending transactions are provisional — exclude them from transfer
       // pairing so a not-yet-settled row can't lock in a TRANSFER typing.
       if (tx.pending) continue;
-      // Never paired: pairing would type it a transfer and link it again.
-      if (notTransfer) continue;
+      // Never paired: pairing would type it a transfer and link it again — or,
+      // for a payback, turn it into a transfer leg.
+      if (notTransfer || payback) continue;
       // A rule's type is never overridden by pair detection, which is why ruled
       // rows sit out of it — except a rule that already says "transfer, this way".
       // Pairing assigns that very type, so all it adds is the link; leaving such a
@@ -2213,7 +2294,27 @@ async function runSyncPass(
     preparedByAccount.set(sfAccount.id, prepared);
   }
 
-  const detection = detectTransferPairs(candidates);
+  // A failed overrides read keeps every stored payback as stored (below), so it
+  // must not be paired either: a same-amount placeholder in another account
+  // would be rewritten to meet it. Read the stored rows first; an account that
+  // cannot be read contributes no keys.
+  const unreadPaybackKeys = new Set<string>();
+  if (overridesUnread) {
+    for (const acc of accountSet.accounts) {
+      const wf = mapping[acc.id];
+      if (!wf || (wfTypes.get(wf) && wfTypes.get(wf) !== 'CASH')) continue;
+      try {
+        for (const row of await fetchExistingRows(host, wf)) {
+          if (isKeptPayback(row)) unreadPaybackKeys.add(accountTxKey(acc.id, row.txId));
+        }
+      } catch {
+        // skipped
+      }
+    }
+  }
+  const detection = detectTransferPairs(unreadPaybackKeys.size === 0
+    ? candidates
+    : candidates.filter((c) => !unreadPaybackKeys.has(accountTxKey(c.accountId, c.txId))));
   for (const prepared of preparedByAccount.values()) {
     for (const p of prepared) {
       const override = detection.typeByAccountTx.get(accountTxKey(p.sfAccountId, p.tx.id));
@@ -2304,7 +2405,7 @@ async function runSyncPass(
         delete p.subtype;
         continue;
       }
-      p.type = neutralAdjustmentFields(accountType, signed).activityType;
+      p.type = neutralAdjustmentFields(accountType, signed, bookkeepingShapeOf(host)).activityType;
       p.inTransit = true;
       // Drop any rule-assigned subtype: a CASH inflow placeholder is
       // spending-neutral ONLY as a BARE CREDIT (see neutralAdjustmentFields),
@@ -2492,6 +2593,42 @@ async function runSyncPass(
       readsGroups ? [] : Object.entries(ledger).filter(([k]) => notTransferKey(k)).map(([, g]) => g),
     );
   }
+  /** Keys of transfer rows in OTHER accounts sharing a tx id with a "foreign
+   *  payback" (below): left alone with it. Only a host that cannot read groups. */
+  const paybackPartnerKeys = new Set<string>();
+  // Only for a flagged transaction that is in THIS run's feed, and then only the accounts
+  // whose feed carries that transaction id (PB-H m-b): a payback elsewhere costs nothing.
+  const flaggedFeedIds = new Set<string>();
+  if (!readsGroups) {
+    for (const [acc, txs] of feedOf) {
+      for (const t of txs) if (hasTxOverride(overrides, accountTxKey(acc.id, t.id), 'asReimbursement')) flaggedFeedIds.add(t.id);
+    }
+  }
+  if (flaggedFeedIds.size > 0) {
+    const seen: Array<{ sf: string; row: StoredRow }> = [];
+    for (const acc of accountSet.accounts) {
+      const wf = mapping[acc.id];
+      if (!wf || !(feedOf.get(acc) ?? []).some((t) => flaggedFeedIds.has(t.id))) continue;
+      try {
+        for (const row of await fetchExistingRows(host, wf)) seen.push({ sf: acc.id, row });
+      } catch {
+        // an unread account contributes no keys
+      }
+    }
+    for (const { sf, row } of seen) {
+      const key = accountTxKey(sf, row.txId);
+      const known = !unlinkPrepass.staleKeys.has(key) && (ledger[key] !== undefined || ledger[row.txId] !== undefined);
+      if (!isTransferType(row.type) || !hasTxOverride(overrides, key, 'asReimbursement') || known
+        || (row.comment ?? '').startsWith(IN_TRANSIT_COMMENT_PREFIX)) continue;
+      for (const other of seen) {
+        // The partner: same id, same amount, the opposite leg (PB-H m-a).
+        if (other.sf !== sf && other.row.txId === row.txId && isTransferType(other.row.type)
+          && other.row.absCents === row.absCents && other.row.type !== row.type) {
+          paybackPartnerKeys.add(accountTxKey(other.sf, other.row.txId));
+        }
+      }
+    }
+  }
   const { hiddenIds: unlinkHiddenIds, heldGids, frozenKeys, staleKeys, pairKeys, driftAccounts } = unlinkPrepass;
   /** Groups a leg was found in only by the account loop: their cleanup, if
    *  any, is no longer confirmed (a third row cannot be told apart). */
@@ -2516,7 +2653,7 @@ async function runSyncPass(
     // in place rather than re-importing). A failed read of existing rows is
     // treated as "none" — the planner then creates everything and the host's
     // own dedup remains the backstop.
-    const feed: FeedTx[] = preparedAll.map(({ tx, type, inTransit, subtype, needsReview }) => ({
+    const feed: FeedTx[] = preparedAll.map(({ tx, type, inTransit, subtype, needsReview, createOnly, keepPayback }) => ({
       txId: tx.id,
       wfAccountId,
       absCents: Math.round(Math.abs(parseFloat(tx.amount)) * 100),
@@ -2525,6 +2662,8 @@ async function runSyncPass(
       pending: !!tx.pending,
       ...(inTransit ? { inTransit: true } : {}),
       ...(needsReview ? { needsReview: true } : {}),
+      ...(createOnly ? { createOnly: true as const } : {}),
+      ...(keepPayback && type === 'DEPOSIT' && !inTransit ? { keepPayback: true as const } : {}),
       // Carried so `changed()` can compare it against the stored row — a rule
       // added after a row was imported has to reach that row as an update, and a
       // row that already agrees must not be rewritten every sync.
@@ -2830,8 +2969,39 @@ async function runSyncPass(
       const key = accountTxKey(sfAccount.id, r.txId);
       errors.push(`Left ${descByKey.get(key) || descriptionFromComment(r.comment) || r.txId} as it is: this app has no record of linking it; the companion will unlink it on its next sync.`);
     }
-    const hiddenIds = new Set(foreign.map((r) => r.wfId));
-    const foreignTxIds = new Set(foreign.map((r) => r.txId));
+    // The same for a leg under an `asReimbursement` key that is a transfer the
+    // ledger does not know: something else linked it, and retyping one leg of
+    // a linked pair rewrites its partner. Left for the companion.
+    const foreignPayback = readsGroups ? [] : planExistingAll.filter((r) => isTransferType(r.type)
+      && hasTxOverride(overrides, accountTxKey(sfAccount.id, r.txId), 'asReimbursement') && !isLinkedRow(r)
+      && !(r.comment ?? '').startsWith(IN_TRANSIT_COMMENT_PREFIX));
+    for (const r of foreignPayback) {
+      const key = accountTxKey(sfAccount.id, r.txId);
+      errors.push(`Left ${descByKey.get(key) || descriptionFromComment(r.comment) || r.txId} as it is: it is marked a payback but is now a transfer this app did not link \u2014 change it in Wealthfolio, or undo the payback from /changes.`);
+    }
+    // The linked partner of such a leg (a transfer row in another account with
+    // the same tx id) is left too: retyping it would rewrite the flagged leg.
+    const partnersOfPaybacks = planExistingAll.filter((r) => paybackPartnerKeys.has(accountTxKey(sfAccount.id, r.txId)));
+    // A failed or corrupt overrides read reads as no overrides, which would
+    // turn every stored payback (money in, cash, CREDIT/REIMBURSEMENT) back
+    // into a deposit: keep each exactly as stored, and say so once.
+    const keptPaybacks = overridesUnread
+      ? planExistingAll.filter((r) => isKeptPayback(r)
+        && (!wfTypes.get(wfAccountId) || wfTypes.get(wfAccountId) === 'CASH'))
+      : [];
+    if (keptPaybacks.length > 0 && !paybackNoteGiven) {
+      paybackNoteGiven = true;
+      errors.push('Couldn\u2019t read your sync overrides \u2014 paybacks were left as they are.');
+    }
+    for (const r of planExistingAll) {
+      if (r.type === 'CREDIT' && (r.subtype ?? '').toUpperCase() === REIMBURSEMENT_SUBTYPE
+        && yieldedPaybackKeys.has(accountTxKey(sfAccount.id, r.txId))
+        && preparedAll.some((p) => p.tx.id === r.txId && p.type !== r.type)) {
+        console.info(`[simplefin-sync] payback yielded: account ${sfAccount.id}, transaction ${r.txId} is no longer money in on a cash account, so it is typed as usual`);
+      }
+    }
+    const hiddenIds = new Set([...foreign, ...foreignPayback, ...keptPaybacks, ...partnersOfPaybacks].map((r) => r.wfId));
+    const foreignTxIds = new Set([...foreign, ...foreignPayback, ...keptPaybacks, ...partnersOfPaybacks].map((r) => r.txId));
     const planExisting = planExistingAll.filter((r) => !hiddenIds.has(r.wfId));
     for (const { row, tx } of adoptions) {
       const aliasKey = accountTxKey(sfAccount.id, tx.txId);
@@ -2867,6 +3037,20 @@ async function runSyncPass(
         return keepLinkedLegAsStored(t, row, !!row && isLinkedRow(row));
       });
     const plan = planReconciliation(planFeed, planExisting.filter((r) => !unlinkingIds.has(r.wfId)));
+    // A held card placeholder keeps the shape it is stored in when anything
+    // else about it changes (pending to posted, amount, date): the two writers
+    // would otherwise flip it per change, and a 3.8/3.9-written WITHDRAWAL that
+    // carries the phantom $CASH asset would be retyped TRANSFER_OUT, which 3.10
+    // refuses on every sync until the row expires. Applied to plan.updates
+    // itself, so the link rows below see the same type.
+    if (wfTypes.get(wfAccountId) === 'CREDIT_CARD') {
+      for (const u of plan.updates) {
+        const stored = planExisting.find((r) => r.wfId === u.wfId);
+        if (!stored || !u.to.inTransit || !(stored.comment ?? '').startsWith(IN_TRANSIT_COMMENT_PREFIX)) continue;
+        const type = keepBookkeepingOutflow('CREDIT_CARD', stored.type, u.to.type);
+        if (type !== u.to.type) u.to = { ...u.to, type: type as typeof u.to.type };
+      }
+    }
 
     // State the post-save drift correction needs (see "windowDelta assumed" below).
     // Captured BEFORE the measurement so a rollback can put the episode ledger back
@@ -3069,7 +3253,7 @@ async function runSyncPass(
                   actor: 'auto',
                   activityId: plugId,
                   amountCents: driftCents,
-                  date: plug.date,
+                  date: plug.date.slice(0, 10),
                   activityType: plug.activityType,
                   comment: plug.comment,
                 }));
@@ -3186,7 +3370,7 @@ async function runSyncPass(
     const toActivityCreate = (t: FeedTx): ActivityWrite => ({
       accountId: t.wfAccountId,
       activityType: t.type,
-      activityDate: t.date,
+      activityDate: bankDayInstant(t.date),
       // Transfer legs carry NO asset so they land as real cash and stay pairable
       // (see isTransferType's note). Everything else resolves the reserved cash
       // asset by symbol — the /activities/bulk endpoint deserializes `symbol` as
@@ -3580,12 +3764,12 @@ async function runSyncPass(
       const currentWfBalance = wfBalances!.get(wfAccountId)!;
       const starting = targetBalance - windowDelta - currentWfBalance;
       if (Number.isFinite(starting) && Math.abs(starting) >= 0.01) {
-        const shape = startingBalanceFields(wfTypes.get(wfAccountId) ?? '', starting);
+        const shape = startingBalanceFields(wfTypes.get(wfAccountId) ?? '', starting, bookkeepingShapeOf(host));
         const correction: ImportRow = {
           accountId: wfAccountId,
           sourceSystem: 'simplefin',
           activityType: shape.activityType,
-          date: dayBeforeDate,
+          date: bankDayInstant(dayBeforeDate),
           symbol: `$CASH-${sfAccount.currency}`,
           amount: shape.amount,
           currency: sfAccount.currency,
@@ -3602,7 +3786,7 @@ async function runSyncPass(
               account: accountRef,
               activityId: sbId,
               amountCents: Math.round(starting * 100),
-              date: correction.date,
+              date: dayBeforeDate,
               activityType: correction.activityType,
               comment: correction.comment,
             }));
@@ -3673,12 +3857,12 @@ async function runSyncPass(
           const alreadyDone = await hasExistingStartingBalance(host, p.wfAccountId, p.sfinAccountId);
           const starting = p.targetBalance - valuation;
           if (!alreadyDone && Number.isFinite(starting) && Math.abs(starting) >= 0.01) {
-            const shape = startingBalanceFields(p.accountType, starting);
+            const shape = startingBalanceFields(p.accountType, starting, bookkeepingShapeOf(host));
             const correction: ImportRow = {
               accountId: p.wfAccountId,
               sourceSystem: 'simplefin',
               activityType: shape.activityType,
-              date: p.date,
+              date: bankDayInstant(p.date),
               symbol: `$CASH-${p.currency}`,
               amount: shape.amount,
               currency: p.currency,
@@ -3698,7 +3882,7 @@ async function runSyncPass(
                 },
                 activityId: sbId,
                 amountCents: Math.round(starting * 100),
-                date: correction.date,
+                date: p.date,
                 activityType: correction.activityType,
                 comment: correction.comment,
               }));
@@ -3794,7 +3978,11 @@ async function runSyncPass(
     };
     let result: UnlinkResult;
     try {
-      result = await unlinkPairByRecreate((req) => host.saveMany(req), [leg(row), leg(partner)]);
+      // In place where the host can (Wealthfolio's own unlink, the same rows
+      // retyped), else re-created as it always was.
+      result = host.unlinkPair
+        ? await host.unlinkPair([leg(row), leg(partner)])
+        : await unlinkPairByRecreate((req) => host.saveMany(req), [leg(row), leg(partner)]);
     } catch (e: any) {
       result = { unlinked: false, problems: [String(e?.message ?? e)] };
     }
@@ -3802,6 +3990,12 @@ async function runSyncPass(
       for (const p of result.problems ?? []) errors.push(`Transfer-unlink ${result.stale ? 'incomplete' : 'failed'} (${row.txId}/${partner.txId}): ${p}`);
       continue;
     }
+    // Unlinked in place but not retyped: the pair is apart, and says what is left.
+    for (const p of result.problems ?? []) errors.push(`Transfer-unlink incomplete (${row.txId}/${partner.txId}): ${p}`);
+    // An incomplete unlink keeps its ledger records and logs nothing yet: the
+    // rows are still typed as transfers, so the next run finds the pair again
+    // through the ledger and finishes the retype.
+    if (result.inPlace && (result.problems?.length ?? 0) > 0) continue;
     if (!readsGroups) {
       const gid = ledger[key] ?? ledger[row.txId];
       for (const [k, r] of [[key, row], [partnerKey, partner]] as const) {
@@ -3813,6 +4007,7 @@ async function runSyncPass(
     logChange?.(() => bookkeepingChange({
       step: 'transfer-unlink', activityIds: result.activityIds ?? [row.wfId, partner.wfId],
       legs: unlinkedPair.map(([k, r]) => ({ txKey: k, description: descByKey.get(k) || descriptionFromComment(r.comment) || r.txId })),
+      ...(result.inPlace ? { inPlace: true } : {}),
     }));
   }
 
@@ -4042,8 +4237,11 @@ async function runSyncPass(
     for (const [i, leg] of legs.entries()) {
       const key = keys[i];
       if (result.linked && result.groupId) {
-        if (ledger[key] !== result.groupId) {
-          ledger[key] = result.groupId;
+        // A link in place carries Wealthfolio's own group id; the ledger keeps
+        // it under the prefix its one-time migration does not drop.
+        const gid = ledgerGroupId(result.groupId);
+        if (ledger[key] !== gid) {
+          ledger[key] = gid;
           ledgerChanged = true;
         }
         // Retire the bare-txId entry this per-leg key supersedes, so the legacy
@@ -4096,7 +4294,7 @@ async function runSyncPass(
     relinkCreates.push({
       accountId: row.wfAccountId,
       activityType: row.type,
-      activityDate: row.date,
+      activityDate: bankDayInstant(row.date),
       amount: row.absCents / 100,
       currency: row.currency,
       comment: row.comment ?? `${descByKey.get(key) ?? ''} · ${row.txId}`,

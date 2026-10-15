@@ -24,7 +24,9 @@
  *  - a budget set from `/budgets` (project 4): the target's id, category and
  *    amount;
  *  - a Venmo note: the note text and the row's note before and after;
- *  - a row you removed for good (2c R2): its tx keys and its full create payload.
+ *  - a row you removed for good (2c R2): its tx keys and its full create payload;
+ *  - a payback (1.62): its tx keys, its type and subtype before, and the
+ *    spending category it was filed under.
  */
 
 export type ChangeWriter = 'addon' | 'companion';
@@ -35,7 +37,7 @@ export type ChangeKind =
   | 'transfer-link' | 'transfer-type'
   | 'duplicate-removed' | 'transaction-removed'
   | 'starting-balance' | 'starting-balance-moved' | 'balance-correction'
-  | 'amazon-label' | 'venmo-note' | 'category-filed' | 'opening-balance-filed'
+  | 'amazon-label' | 'venmo-note' | 'category-filed' | 'opening-balance-filed' | 'payback-filed'
   | 'category-rule-created' | 'mapping-rule-created'
   | 'account-created'
   | 'budget-set'
@@ -46,7 +48,7 @@ export const CHANGE_KINDS: readonly ChangeKind[] = [
   'transfer-link', 'transfer-type',
   'duplicate-removed', 'transaction-removed',
   'starting-balance', 'starting-balance-moved', 'balance-correction',
-  'amazon-label', 'venmo-note', 'category-filed', 'opening-balance-filed',
+  'amazon-label', 'venmo-note', 'category-filed', 'opening-balance-filed', 'payback-filed',
   'category-rule-created', 'mapping-rule-created',
   'account-created',
   'budget-set',
@@ -643,6 +645,54 @@ export function openingBalanceFiledChange(f: OpeningBalanceFiledFacts): ChangeDr
   };
 }
 
+export interface PaybackFiledFacts {
+  account: { sfinId: string; wfId: string; name: string };
+  /** The row's key under every feed of its account: the override went on each. */
+  txKeys: string[];
+  activityId: string;
+  /** Bank text, raw. */
+  description: string;
+  /** Money in: positive cents. */
+  amountCents: number;
+  date: string;
+  /** The deposit's subtype before (null: none). Undo puts it back. */
+  subtypeBefore: string | null;
+  /** The spending category it was filed under; null when Wealthfolio did not take the filing. */
+  categoryId: string | null;
+  categoryName: string | null;
+}
+
+/**
+ * A deposit you filed as a payback (1.62.0, W6): re-typed to a CREDIT marked
+ * REIMBURSEMENT, kept that way by the `asReimbursement` override, and filed
+ * under a spending category. Undo: the override off, the row a DEPOSIT again
+ * with its old subtype, the category off. Redo: all three again.
+ */
+export function paybackFiledChange(f: PaybackFiledFacts): ChangeDraft {
+  return {
+    actor: 'you',
+    kind: 'payback-filed',
+    account: { ...f.account },
+    subject: {
+      txKeys: [...f.txKeys],
+      activityIds: [f.activityId],
+      description: f.description,
+      amountCents: f.amountCents,
+      date: f.date,
+      ...(f.categoryName ? { categoryName: f.categoryName } : {}),
+    },
+    summary: f.categoryName
+      ? `Filed ${what(f.description)} as a payback under ${f.categoryName}`
+      : `Made ${what(f.description)} a payback`,
+    why: 'You said it pays you back',
+    before: { activityType: 'DEPOSIT', subtype: f.subtypeBefore, categoryId: null },
+    after: {
+      activityType: 'CREDIT', subtype: 'REIMBURSEMENT', categoryId: f.categoryId, categoryName: f.categoryName, accountId: f.account.wfId,
+    },
+    undoable: true,
+  };
+}
+
 // ── Rules and accounts ───────────────────────────────────────────────────
 
 export interface CategoryRuleFacts {
@@ -654,45 +704,55 @@ export interface CategoryRuleFacts {
   categoryName: string;
   /** The one account the rule is scoped to (3, L5); absent, every account. */
   account?: { wfId: string; name: string };
+  /** The one activity type it files (W10: `CREDIT`, paybacks only); absent, every type. */
+  activityType?: string;
 }
 
 /** A Wealthfolio categorization rule created from Telegram. Undo (R2): delete it.
  *  A scoped one names its account, and its Redo re-creates it scoped. */
 export function categoryRuleCreatedChange(f: CategoryRuleFacts): ChangeDraft {
   const where = f.account ? ` in ${f.account.name}` : '';
+  const which = f.activityType === 'CREDIT' ? 'paybacks' : 'descriptions';
   return {
     actor: 'you',
     kind: 'category-rule-created',
     ...(f.account ? { account: { wfId: f.account.wfId, name: f.account.name } } : {}),
     subject: { ...(f.ruleId ? { ruleId: f.ruleId } : {}), rulePattern: f.pattern, categoryName: f.categoryName },
-    summary: `Created a rule: descriptions containing "${f.pattern}"${where} go to ${f.categoryName}`,
+    summary: `Created a rule: ${which} containing "${f.pattern}"${where} go to ${f.categoryName}`,
     after: {
       ruleId: f.ruleId, name: f.name, pattern: f.pattern, categoryId: f.categoryId, categoryName: f.categoryName,
       ...(f.account ? { accountId: f.account.wfId } : {}),
+      ...(f.activityType ? { activityType: f.activityType } : {}),
     },
     undoable: true,
   };
 }
 
 export interface MappingRuleFacts {
-  rule: { pattern: string; matchType: string; activityType: string; subtype?: string };
+  rule: { pattern: string; matchType: string; activityType: string; subtype?: string; onlyMoneyIn?: true; accountId?: string; since?: string };
+  /** Where in `mapping_rules` it was put (W10: 0, first); Redo puts it back there. */
+  index?: number;
   /** The transaction it was taught from. */
   description?: string;
   account?: ChangeAccount;
 }
 
-/** A transaction rule added to `mapping_rules` (the transfer-learning menu). */
+/** A transaction rule added to `mapping_rules` (the transfer-learning menu, or
+ *  "Make every … deposit a payback", W10). */
 export function mappingRuleCreatedChange(f: MappingRuleFacts): ChangeDraft {
   const direction = f.rule.activityType === 'TRANSFER_IN' ? 'a transfer in'
     : f.rule.activityType === 'TRANSFER_OUT' ? 'a transfer out'
       : f.rule.activityType;
+  const payback = f.rule.activityType === 'CREDIT' && f.rule.subtype === 'REIMBURSEMENT' && f.rule.onlyMoneyIn === true;
   return {
     actor: 'you',
     kind: 'mapping-rule-created',
     ...(f.account ? { account: f.account } : {}),
     subject: { rulePattern: f.rule.pattern, ...(f.description ? { description: f.description } : {}) },
-    summary: `Added a transaction rule: "${f.rule.pattern}" is ${direction}`,
-    after: { rule: { ...f.rule } },
+    summary: payback
+      ? `Added a transaction rule: "${f.rule.pattern}" deposits${f.account ? ` into ${f.account.name}` : ''} are paybacks`
+      : `Added a transaction rule: "${f.rule.pattern}" is ${direction}`,
+    after: { rule: { ...f.rule }, ...(f.index !== undefined ? { index: f.index } : {}) },
     undoable: true,
   };
 }
@@ -749,7 +809,16 @@ export function budgetSetChange(f: BudgetSetFacts): ChangeDraft {
 
 // ── Bookkeeping ──────────────────────────────────────────────────────────
 
-export type BookkeepingStep = 'legacy-placeholder' | 'external-marker' | 'transfer-relink' | 'opening-category' | 'transfer-unlink';
+export type BookkeepingStep =
+  | 'legacy-placeholder' | 'external-marker' | 'transfer-relink' | 'opening-category' | 'transfer-unlink'
+  /** 1.62 (W2): rows stored at 00:00 UTC moved to noon on the same date. */
+  | 'date-repair'
+  /** 1.62 (W3): the sync's bookkeeping rows filed under, or taken out of, "Sync bookkeeping". */
+  | 'sync-bookkeeping'
+  /** 1.62 (W3): the "Sync bookkeeping" category was created, or its exclusion (re)added. */
+  | 'sync-bookkeeping-setup'
+  /** 1.62 (U4): a card's bookkeeping WITHDRAWALs restated as TRANSFER_OUT on 3.10+. */
+  | 'card-transfer-out';
 
 export interface BookkeepingFacts {
   step: BookkeepingStep;
@@ -764,32 +833,87 @@ export interface BookkeepingFacts {
    *  how many rows were re-created (default: the ids listed). */
   pairs?: number;
   rows?: number;
+  /** `date-repair` only: the rows at 00:00 UTC it left alone — half of a
+   *  linked transfer, or a type Wealthfolio overrides. */
+  skipped?: number;
+  /** `date-repair` only: the full count when `activityIds` is cut to a sample. */
+  total?: number;
+  /** `sync-bookkeeping` only: the rows taken back out of the category (no
+   *  longer bookkeeping); `activityIds` are the rows filed. */
+  unfiledIds?: string[];
+  /** `sync-bookkeeping-setup` only: Wealthfolio did not take the exclusion (yet). */
+  excludePending?: boolean;
+  /** `card-transfer-out` and `date-repair`: rows Wealthfolio refused for good
+   *  (twice), left as they were. The summary counts them. */
+  refused?: string[];
+  /** `transfer-unlink` only: Wealthfolio's own unlink kept both rows, retyped. */
+  inPlace?: boolean;
 }
+
+/** `sync-bookkeeping`: what one pass filed and took out. */
+function syncBookkeepingSummary(filed: number, unfiled: number, category: string): string {
+  if (filed > 0 && unfiled > 0) {
+    return `Filed ${filed} bookkeeping ${plural(filed, 'row', 'rows')} under "${category}" and took ${unfiled} that ${plural(unfiled, 'is', 'are')} no longer bookkeeping out`;
+  }
+  if (unfiled > 0) return `Took ${unfiled} ${plural(unfiled, 'row', 'rows')} that ${plural(unfiled, 'is', 'are')} no longer bookkeeping out of "${category}"`;
+  return `Filed ${filed} bookkeeping ${plural(filed, 'row', 'rows')} under "${category}", which Wealthfolio leaves out of spending`;
+}
+
+/** At most this many refused ids on a `card-transfer-out` or `date-repair`
+ *  entry; `refusedCount` is the total (the summary counts them all). */
+export const BOOKKEEPING_REFUSED_IDS = 200;
 
 /** Repairs the sync makes to its own rows. Shown behind a button; never undoable. */
 export function bookkeepingChange(f: BookkeepingFacts): ChangeDraft {
-  const n = f.activityIds.length;
+  const n = f.total ?? f.activityIds.length;
+  const refusedCount = f.refused?.length ?? 0;
+  // One wording for both one-time passes' refusals (the card rewrite and the date repair).
+  const refusedNote = (stays: string) => `Wealthfolio refused ${refusedCount} ${plural(refusedCount, 'row', 'rows')}, which ${plural(refusedCount, 'stays', 'stay')} ${stays}`;
+  const asItWas = `as ${plural(refusedCount, 'it was', 'they were')}`;
   const summary = f.step === 'legacy-placeholder'
     ? `Restated ${n} old placeholder ${plural(n, 'row', 'rows')} with ${plural(n, 'its', 'their')} real ${plural(n, 'amount', 'amounts')}`
+    : f.step === 'card-transfer-out'
+    ? (n === 0 && refusedCount > 0
+      ? `Couldn't restate ${refusedCount} card bookkeeping ${plural(refusedCount, 'row', 'rows')} as transfers out: Wealthfolio refused ${plural(refusedCount, 'it', 'them')}, so ${plural(refusedCount, 'it stays', 'they stay')} ${asItWas}`
+      : `Restated ${n} card bookkeeping ${plural(n, 'row', 'rows')} as ${plural(n, 'a transfer', 'transfers')} out, which Wealthfolio leaves out of spending${refusedCount > 0 ? `; ${refusedNote(asItWas)}` : ''}`)
     : f.step === 'external-marker'
       ? `Marked ${n} bookkeeping ${plural(n, 'row', 'rows')} as outside transfers for Wealthfolio's Health page`
       : f.step === 'transfer-relink'
         ? `Re-created ${n} old transfer ${plural(n, 'row', 'rows')} so ${plural(n, 'it moves', 'they move')} cash`
         : f.step === 'transfer-unlink'
-          ? ((f.pairs ?? 1) > 1
-            ? `Unlinked ${f.pairs} transfers you undid: re-created their ${f.rows ?? n} rows as spending or money in`
-            : `Unlinked a transfer you undid: re-created ${(f.rows ?? n) === 1 ? 'its row' : `its ${f.rows ?? n} rows`} as spending or money in`)
-          : `Set up the "${f.categoryName ?? 'Opening balances'}" category and kept it out of spending`;
+          ? (f.inPlace
+            ? 'Unlinked a transfer you undid: both rows now count as spending or money in'
+            : (f.pairs ?? 1) > 1
+              ? `Unlinked ${f.pairs} transfers you undid: re-created their ${f.rows ?? n} rows as spending or money in`
+              : `Unlinked a transfer you undid: re-created ${(f.rows ?? n) === 1 ? 'its row' : `its ${f.rows ?? n} rows`} as spending or money in`)
+          : f.step === 'date-repair'
+            ? (n === 0 && refusedCount > 0
+              ? `Couldn't move ${refusedCount} ${plural(refusedCount, 'row', 'rows')} stored at midnight UTC to noon: Wealthfolio refused ${plural(refusedCount, 'it', 'them')}, so ${plural(refusedCount, 'it stays', 'they stay')} at midnight`
+              : `Moved ${n} ${plural(n, 'row', 'rows')} stored at midnight UTC to noon on the same date, so Wealthfolio counts ${plural(n, 'it', 'them')} on the bank's day${
+                f.skipped ? ` — ${f.skipped} linked or retyped ${plural(f.skipped, 'row', 'rows')} left as ${plural(f.skipped, 'it was', 'they were')}` : ''}${
+                refusedCount > 0 ? `; ${refusedNote('at midnight')}` : ''}`)
+            : f.step === 'sync-bookkeeping-setup'
+              ? `Set up the "${f.categoryName ?? 'Sync bookkeeping'}" category${f.excludePending ? ", but Wealthfolio didn't exclude it yet" : ' and kept it out of spending'}`
+            : f.step === 'sync-bookkeeping'
+              ? syncBookkeepingSummary(n, f.unfiledIds?.length ?? 0, f.categoryName ?? 'Sync bookkeeping')
+              : `Set up the "${f.categoryName ?? 'Opening balances'}" category and kept it out of spending`;
+  // `sync-bookkeeping` lists at most 200 ids; the counts are the totals.
+  const ids = [...f.activityIds, ...(f.unfiledIds ?? [])].slice(0, f.step === 'sync-bookkeeping' ? 200 : undefined);
   return {
     actor: 'auto',
     kind: 'bookkeeping',
     ...(f.account ? { account: f.account } : {}),
     subject: {
-      ...(n > 0 ? { activityIds: [...f.activityIds] } : {}),
+      ...(ids.length > 0 ? { activityIds: ids } : {}),
       ...(f.legs?.length ? { txKeys: f.legs.map((l) => l.txKey), description: f.legs.map((l) => l.description).join(' / ') } : {}),
     },
     summary,
-    after: { step: f.step, count: n, ...(f.categoryName ? { categoryName: f.categoryName } : {}) },
+    after: {
+      step: f.step, count: n, ...(f.categoryName ? { categoryName: f.categoryName } : {}),
+      ...(f.skipped !== undefined ? { skipped: f.skipped } : {}),
+      ...(f.unfiledIds ? { unfiled: f.unfiledIds.length } : {}),
+      ...(f.refused?.length ? { refused: f.refused.slice(0, BOOKKEEPING_REFUSED_IDS), refusedCount: f.refused.length } : {}),
+    },
     undoable: false,
   };
 }

@@ -45,7 +45,16 @@ interface UncategorizedSourceRow {
   /** A row whose filing is an INCOME category gets no guess: a guess is a
    *  spending category, which Wealthfolio refuses on it. */
   incomeEligible?: boolean;
+  /** The effective type, upper-cased, and whether the note marks it pending:
+   *  with `incomeEligible`, what makes a row a payback candidate (W11). */
+  activityType?: string;
+  pending?: boolean;
 }
+
+/** A posted DEPOSIT on a cash account: what Telegram's "It's a payback »" is
+ *  offered on (shared/categorize-menu.ts), and so the app's "It's a payback…". */
+const paybackEligible = (r: UncategorizedSourceRow): boolean =>
+  r.incomeEligible === true && (r.activityType ?? '').toUpperCase() === 'DEPOSIT' && r.pending !== true;
 
 /**
  * Publish the needs-a-category count AND the row list for the Overview tile.
@@ -93,6 +102,7 @@ export async function publishUncategorizedStatus(
         accountName: r.accountName,
         ...(r.direction ? { direction: r.direction } : {}),
         ...(guess ? { guess: { categoryId: guess.categoryId, name: guess.name } } : {}),
+        ...(paybackEligible(r) ? { paybackEligible: true as const } : {}),
       };
     });
     const status = {

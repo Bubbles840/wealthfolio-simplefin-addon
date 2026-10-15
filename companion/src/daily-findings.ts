@@ -16,6 +16,8 @@ import { evaluateSelfCheck, type SelfCheckFinding } from '../../shared/self-chec
 import { evaluateLedgerChecks, nextLedgerCheckSeen, type LedgerCheckSeen, type LedgerFacts } from '../../shared/ledger-checks.js';
 import { FINDING_SNOOZES_SECRET_KEY, parseSnoozes, partitionSnoozed, activeSnoozes } from '../../shared/findings.js';
 import { ADDON_VERSION_SECRET_KEY } from '../../shared/version.js';
+import { AUDIT_SNAPSHOT_SECRET_KEY, parseAuditSnapshot } from '../../shared/audit-snapshot.js';
+import { snapshotTripwire, tripwireFinding } from '../../shared/spending-tripwire.js';
 import type { SyncHealth } from '../../shared/telegram.js';
 
 export const LEDGER_CHECK_SEEN_SECRET_KEY = 'ledger_check_seen';
@@ -161,7 +163,14 @@ export async function gatherFindings(
     })),
   }, now);
 
-  const all = [...selfCheckFindings, ...ledgerFindings];
+  // 1.62 (W5): the report and Wealthfolio's Spending page, as the last
+  // sync's audit snapshot compared them. A snapshot that cannot be read
+  // says nothing — never "they agree".
+  const differs = tripwireFinding(snapshotTripwire(
+    parseAuditSnapshot(await deps.getSecret(AUDIT_SNAPSHOT_SECRET_KEY).catch(() => null)), now,
+  ));
+
+  const all = [...selfCheckFindings, ...ledgerFindings, ...(differs ? [differs] : [])];
   const snoozes = parseSnoozes(await deps.getSecret(FINDING_SNOOZES_SECRET_KEY).catch(() => null));
   return partitionSnoozed(all, snoozes, now);
 }
