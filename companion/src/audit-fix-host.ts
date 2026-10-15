@@ -13,9 +13,9 @@
 import type { LinkIo, LinkPair, ReadRow } from '../../shared/audit-link.js';
 import { fixRowOf, linkedState, type FixRow } from '../../shared/fix-row.js';
 import { loadSyncOverrides } from '../../shared/sync-overrides.js';
-import { RemoveMappingUnreadableError, type RemoveIo } from '../../shared/tx-remove.js';
+import { parseAccountMapping, type RemoveIo } from '../../shared/tx-remove.js';
 import { sfinIdsFor } from '../../shared/tx-story.js';
-import { recordCompanionChanges, type SecretClient } from './change-log-host.js';
+import { recordCompanionChangesStrict, type SecretClient } from './change-log-host.js';
 import { RestSyncHost } from './rest-host.js';
 import type { WealthfolioClient } from './wealthfolio.js';
 
@@ -27,30 +27,20 @@ export type FixClient = SecretClient & Pick<WealthfolioClient, 'searchActivities
 const accountTypes = async (client: FixClient) =>
   new Map((await client.getAccounts()).map((a) => [a.id, String(a.accountType ?? '')]));
 
+/** One activity by exact id, as REST reports it; null when it is gone. The one reader the
+ *  fixes and the paybacks share. Rejects when unreachable. */
+export async function readActivityById(client: Pick<WealthfolioClient, 'searchActivities'>, activityId: string) {
+  const items = await client.searchActivities({ page: 0, pageSize: 1, activityIdFilter: [activityId] });
+  return items.find((a) => a.id === activityId) ?? null;
+}
+
 /** One row by id, as the fixes read it; null when it is gone. */
 async function readFixRow(client: FixClient, activityId: string, types: Map<string, string>): Promise<FixRow | null> {
-  const items = await client.searchActivities({ page: 0, pageSize: 1, activityIdFilter: [activityId] });
-  const hit = items.find((a) => a.id === activityId);
+  const hit = await readActivityById(client, activityId);
   return hit ? fixRowOf(hit, types.get(hit.accountId) ?? '') : null;
 }
 
 const restHost = (client: FixClient, log?: (msg: string) => void) => new RestSyncHost(client as unknown as WealthfolioClient, undefined, log ? { log } : {});
-
-/** The account mapping as stored: none yet is `{}`; anything but a plain
- *  object of strings is unreadable — a refusal of its own, not "unreachable". */
-function parseMapping(raw: string | null): Record<string, string> {
-  if (raw === null || raw.trim() === '') return {};
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    throw new RemoveMappingUnreadableError();
-  }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || Object.values(parsed).some((v) => typeof v !== 'string')) {
-    throw new RemoveMappingUnreadableError();
-  }
-  return parsed as Record<string, string>;
-}
 
 export function companionLinkIo(client: FixClient, log: (msg: string) => void): LinkIo {
   const host = restHost(client, log);
@@ -66,7 +56,7 @@ export function companionLinkIo(client: FixClient, log: (msg: string) => void): 
     overrides: () => loadSyncOverrides((k) => client.getAddonSecret(ADDON_ID, k)),
     link: (legs) => host.linkPair(legs),
     restore: (writes) => host.saveMany({ creates: writes }),
-    record: (draft) => recordCompanionChanges(client, [draft]),
+    record: (draft) => recordCompanionChangesStrict(client, [draft]),
     log,
   };
 }
@@ -75,7 +65,7 @@ export function companionRemoveIo(client: FixClient, log: (msg: string) => void)
   const host = restHost(client, log);
   return {
     read: async (activityId) => readFixRow(client, activityId, await accountTypes(client)),
-    feeds: async (wfAccountId) => sfinIdsFor(parseMapping(await client.getAddonSecret(ADDON_ID, 'account_mapping')), wfAccountId),
+    feeds: async (wfAccountId) => sfinIdsFor(parseAccountMapping(await client.getAddonSecret(ADDON_ID, 'account_mapping')), wfAccountId),
     linked: async (row) => linkedState(row, { readsGroups: true, ledgerKnows: false }),
     secrets: {
       get: (k) => client.getAddonSecret(ADDON_ID, k),
@@ -85,7 +75,7 @@ export function companionRemoveIo(client: FixClient, log: (msg: string) => void)
       const res = await host.saveMany({ deleteIds: [activityId] });
       if (res.errors.length > 0) throw new Error(res.errors.map((e) => e.message).join('; '));
     },
-    record: (draft) => recordCompanionChanges(client, [draft]),
+    record: (draft) => recordCompanionChangesStrict(client, [draft]),
     log,
   };
 }

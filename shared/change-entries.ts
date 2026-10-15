@@ -24,7 +24,9 @@
  *  - a budget set from `/budgets` (project 4): the target's id, category and
  *    amount;
  *  - a Venmo note: the note text and the row's note before and after;
- *  - a row you removed for good (2c R2): its tx keys and its full create payload.
+ *  - a row you removed for good (2c R2): its tx keys and its full create payload;
+ *  - a payback (1.62): its tx keys, its type and subtype before, and the
+ *    spending category it was filed under.
  */
 
 export type ChangeWriter = 'addon' | 'companion';
@@ -35,7 +37,7 @@ export type ChangeKind =
   | 'transfer-link' | 'transfer-type'
   | 'duplicate-removed' | 'transaction-removed'
   | 'starting-balance' | 'starting-balance-moved' | 'balance-correction'
-  | 'amazon-label' | 'venmo-note' | 'category-filed' | 'opening-balance-filed'
+  | 'amazon-label' | 'venmo-note' | 'category-filed' | 'opening-balance-filed' | 'payback-filed'
   | 'category-rule-created' | 'mapping-rule-created'
   | 'account-created'
   | 'budget-set'
@@ -46,7 +48,7 @@ export const CHANGE_KINDS: readonly ChangeKind[] = [
   'transfer-link', 'transfer-type',
   'duplicate-removed', 'transaction-removed',
   'starting-balance', 'starting-balance-moved', 'balance-correction',
-  'amazon-label', 'venmo-note', 'category-filed', 'opening-balance-filed',
+  'amazon-label', 'venmo-note', 'category-filed', 'opening-balance-filed', 'payback-filed',
   'category-rule-created', 'mapping-rule-created',
   'account-created',
   'budget-set',
@@ -643,6 +645,54 @@ export function openingBalanceFiledChange(f: OpeningBalanceFiledFacts): ChangeDr
   };
 }
 
+export interface PaybackFiledFacts {
+  account: { sfinId: string; wfId: string; name: string };
+  /** The row's key under every feed of its account: the override went on each. */
+  txKeys: string[];
+  activityId: string;
+  /** Bank text, raw. */
+  description: string;
+  /** Money in: positive cents. */
+  amountCents: number;
+  date: string;
+  /** The deposit's subtype before (null: none). Undo puts it back. */
+  subtypeBefore: string | null;
+  /** The spending category it was filed under; null when Wealthfolio did not take the filing. */
+  categoryId: string | null;
+  categoryName: string | null;
+}
+
+/**
+ * A deposit you filed as a payback (1.62.0, W6): re-typed to a CREDIT marked
+ * REIMBURSEMENT, kept that way by the `asReimbursement` override, and filed
+ * under a spending category. Undo: the override off, the row a DEPOSIT again
+ * with its old subtype, the category off. Redo: all three again.
+ */
+export function paybackFiledChange(f: PaybackFiledFacts): ChangeDraft {
+  return {
+    actor: 'you',
+    kind: 'payback-filed',
+    account: { ...f.account },
+    subject: {
+      txKeys: [...f.txKeys],
+      activityIds: [f.activityId],
+      description: f.description,
+      amountCents: f.amountCents,
+      date: f.date,
+      ...(f.categoryName ? { categoryName: f.categoryName } : {}),
+    },
+    summary: f.categoryName
+      ? `Filed ${what(f.description)} as a payback under ${f.categoryName}`
+      : `Made ${what(f.description)} a payback`,
+    why: 'You said it pays you back',
+    before: { activityType: 'DEPOSIT', subtype: f.subtypeBefore, categoryId: null },
+    after: {
+      activityType: 'CREDIT', subtype: 'REIMBURSEMENT', categoryId: f.categoryId, categoryName: f.categoryName, accountId: f.account.wfId,
+    },
+    undoable: true,
+  };
+}
+
 // ── Rules and accounts ───────────────────────────────────────────────────
 
 export interface CategoryRuleFacts {
@@ -654,45 +704,55 @@ export interface CategoryRuleFacts {
   categoryName: string;
   /** The one account the rule is scoped to (3, L5); absent, every account. */
   account?: { wfId: string; name: string };
+  /** The one activity type it files (W10: `CREDIT`, paybacks only); absent, every type. */
+  activityType?: string;
 }
 
 /** A Wealthfolio categorization rule created from Telegram. Undo (R2): delete it.
  *  A scoped one names its account, and its Redo re-creates it scoped. */
 export function categoryRuleCreatedChange(f: CategoryRuleFacts): ChangeDraft {
   const where = f.account ? ` in ${f.account.name}` : '';
+  const which = f.activityType === 'CREDIT' ? 'paybacks' : 'descriptions';
   return {
     actor: 'you',
     kind: 'category-rule-created',
     ...(f.account ? { account: { wfId: f.account.wfId, name: f.account.name } } : {}),
     subject: { ...(f.ruleId ? { ruleId: f.ruleId } : {}), rulePattern: f.pattern, categoryName: f.categoryName },
-    summary: `Created a rule: descriptions containing "${f.pattern}"${where} go to ${f.categoryName}`,
+    summary: `Created a rule: ${which} containing "${f.pattern}"${where} go to ${f.categoryName}`,
     after: {
       ruleId: f.ruleId, name: f.name, pattern: f.pattern, categoryId: f.categoryId, categoryName: f.categoryName,
       ...(f.account ? { accountId: f.account.wfId } : {}),
+      ...(f.activityType ? { activityType: f.activityType } : {}),
     },
     undoable: true,
   };
 }
 
 export interface MappingRuleFacts {
-  rule: { pattern: string; matchType: string; activityType: string; subtype?: string };
+  rule: { pattern: string; matchType: string; activityType: string; subtype?: string; onlyMoneyIn?: true; accountId?: string; since?: string };
+  /** Where in `mapping_rules` it was put (W10: 0, first); Redo puts it back there. */
+  index?: number;
   /** The transaction it was taught from. */
   description?: string;
   account?: ChangeAccount;
 }
 
-/** A transaction rule added to `mapping_rules` (the transfer-learning menu). */
+/** A transaction rule added to `mapping_rules` (the transfer-learning menu, or
+ *  "Make every … deposit a payback", W10). */
 export function mappingRuleCreatedChange(f: MappingRuleFacts): ChangeDraft {
   const direction = f.rule.activityType === 'TRANSFER_IN' ? 'a transfer in'
     : f.rule.activityType === 'TRANSFER_OUT' ? 'a transfer out'
       : f.rule.activityType;
+  const payback = f.rule.activityType === 'CREDIT' && f.rule.subtype === 'REIMBURSEMENT' && f.rule.onlyMoneyIn === true;
   return {
     actor: 'you',
     kind: 'mapping-rule-created',
     ...(f.account ? { account: f.account } : {}),
     subject: { rulePattern: f.rule.pattern, ...(f.description ? { description: f.description } : {}) },
-    summary: `Added a transaction rule: "${f.rule.pattern}" is ${direction}`,
-    after: { rule: { ...f.rule } },
+    summary: payback
+      ? `Added a transaction rule: "${f.rule.pattern}" deposits${f.account ? ` into ${f.account.name}` : ''} are paybacks`
+      : `Added a transaction rule: "${f.rule.pattern}" is ${direction}`,
+    after: { rule: { ...f.rule }, ...(f.index !== undefined ? { index: f.index } : {}) },
     undoable: true,
   };
 }

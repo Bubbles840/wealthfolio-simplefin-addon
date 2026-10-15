@@ -44,3 +44,25 @@ export function categoryRulePattern(description: string): string {
   const end = Math.min(last, MAX_TOKENS - 1);
   return description.slice(tokens[0].start, tokens[end].end);
 }
+
+/** The marks the sync appends to a bank description (a Venmo note, an Amazon label). */
+const ENRICHMENT_MARKS = [' · Venmo: ', ' · Amazon: '];
+
+/** A stored description's own bank words: before the Venmo note or the Amazon
+ *  label the sync appends. Transaction rules match the bank's text, before
+ *  either is added. */
+export function bankWords(description: string): string {
+  const cut = ENRICHMENT_MARKS.map((m) => description.indexOf(m)).filter((i) => i >= 0);
+  return cut.length ? description.slice(0, Math.min(...cut)) : description;
+}
+
+/** The pattern "Make every … deposit a payback" (W10) is built from: the
+ *  bank's words, trimmed as a category rule's are, and also without a leading
+ *  reference token ("*1234") and a trailing " ON MM/DD" with whatever follows it
+ *  ("REF # …"). Category rules keep their own, unchanged cleanup. */
+export function paybackRulePattern(description: string): string {
+  const words = bankWords(description).trim()
+    .replace(/^[*#]\S*\d\S*\s+/, '')
+    .replace(/\s+ON\s+\d{1,2}\/\d{1,2}(?:\/\d{2,4})?(?:\s.*)?$/i, '');
+  return categoryRulePattern(words);
+}

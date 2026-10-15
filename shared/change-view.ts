@@ -30,6 +30,7 @@ const GROUP_OF: Record<string, ChangeGroup> = {
   'opening-balance-filed': 'categories',
   'amazon-label': 'categories',
   'venmo-note': 'categories',
+  'payback-filed': 'categories',
   'transfer-link': 'transfers',
   'transfer-type': 'transfers',
   'duplicate-removed': 'corrections',
@@ -105,6 +106,12 @@ export function changeBeforeAfter(e: ChangeEntry): string | null {
     case 'category-filed':
     case 'opening-balance-filed':
       return `${categoryText(before)} → ${categoryText(after)}`;
+    case 'payback-filed': {
+      const side = (s: unknown) => (isRecord(s) && s.activityType === 'CREDIT'
+        ? `Payback under ${str(s.categoryName) ?? 'no category'}`
+        : 'Money in, no category');
+      return `${side(before)} → ${side(after)}`;
+    }
     case 'starting-balance-moved': {
       if (!isRecord(before) || !isRecord(after)) return null;
       const side = (s: Record<string, unknown>) => {

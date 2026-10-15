@@ -109,7 +109,7 @@ describe.skipIf(!hasSqlite3)('the sqlite3 CLI fallback, for real', () => {
     expect(rows).toEqual([
       {
         activityId: 'plain', wfAccountId: 'acct-cash', notes: 'COFFEE · TRN-1', amountCents: 1234, date: '2026-08-03',
-        accountName: 'Spend', direction: 'out', incomeEligible: false,
+        accountName: 'Spend', direction: 'out', incomeEligible: false, activityType: 'WITHDRAWAL', pending: false,
       },
     ]);
     expect(errors).toHaveBeenCalledWith(expect.stringContaining('node:sqlite uncategorized error'), expect.anything());

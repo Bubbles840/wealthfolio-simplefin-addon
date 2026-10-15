@@ -84,9 +84,12 @@ export const TX_OVERRIDE_WORDS: Record<TxOverrideFlag | 'skipped', string> = {
   noAutoFile: "don't file it automatically",
   noAmazonLabel: 'no Amazon label',
   noVenmoNote: 'no Venmo note',
+  asReimbursement: "it's a payback",
   skipped: "don't import it",
 };
-const OVERRIDE_ORDER: ReadonlyArray<TxOverrideFlag | 'skipped'> = ['notTransfer', 'keepDuplicate', 'noAutoFile', 'noAmazonLabel', 'noVenmoNote', 'skipped'];
+const OVERRIDE_ORDER: ReadonlyArray<TxOverrideFlag | 'skipped'> = [
+  'notTransfer', 'keepDuplicate', 'noAutoFile', 'noAmazonLabel', 'noVenmoNote', 'asReimbursement', 'skipped',
+];
 
 // ── Facts ────────────────────────────────────────────────────────────────
 

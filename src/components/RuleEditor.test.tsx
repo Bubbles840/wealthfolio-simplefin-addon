@@ -123,3 +123,52 @@ describe('RuleEditor subtype control', () => {
     expect(screen.queryByText(/instead of counting as income/i)).not.toBeInTheDocument();
   });
 });
+
+describe('RuleEditor — a rule with limits (PB-K)', () => {
+  const PAYBACK: MappingRule = {
+    pattern: 'JANE DOE VENMO', matchType: 'contains', activityType: 'CREDIT', subtype: 'REIMBURSEMENT', onlyMoneyIn: true, accountId: 'wf-chk', since: '2026-10-13',
+  };
+  const PLAIN: MappingRule = { pattern: 'PAYROLL', matchType: 'contains', activityType: 'DEPOSIT' };
+
+  it('shows the limits read-only, in words, with no emoji, and only on the rule that has them', () => {
+    render(<RuleEditor rules={[PAYBACK, PLAIN]} onChange={vi.fn()} accountNames={{ 'wf-chk': 'PNC Checking' }} />);
+    const note = screen.getByText(/money in only/i);
+    expect(note.textContent).toContain('PNC Checking');
+    expect(note.textContent).toContain('2026-10-13');
+    expect(note.textContent).not.toMatch(EMOJI);
+    expect(screen.getAllByText(/money in only/i)).toHaveLength(1);
+    // Read-only: no input shows the account, the day or the direction.
+    expect(screen.queryByDisplayValue('wf-chk')).toBeNull();
+    expect(screen.queryByDisplayValue('2026-10-13')).toBeNull();
+  });
+
+  it('keeps the limits on every edit: the pattern, the type and the subtype', () => {
+    const onChange = vi.fn();
+    render(<RuleEditor rules={[PAYBACK]} onChange={onChange} />);
+    fireEvent.change(screen.getByPlaceholderText('pattern'), { target: { value: 'JANE DOE' } });
+    expect(onChange).toHaveBeenLastCalledWith([{ ...PAYBACK, pattern: 'JANE DOE' }]);
+    fireEvent.change(screen.getByLabelText(/subtype/i), { target: { value: 'REFUND' } });
+    expect(onChange).toHaveBeenLastCalledWith([{ ...PAYBACK, subtype: 'REFUND' }]);
+    fireEvent.change(screen.getByDisplayValue('CREDIT'), { target: { value: 'DEPOSIT' } });
+    expect(onChange).toHaveBeenLastCalledWith([{ ...PAYBACK, activityType: 'DEPOSIT', subtype: undefined }]);
+  });
+
+  it('its tester honours the limits: the account, the direction and the day', () => {
+    render(<RuleEditor rules={[PAYBACK]} onChange={vi.fn()} accountNames={{ 'wf-chk': 'PNC Checking' }} />);
+    const box = screen.getByPlaceholderText(/e\.g\./i);
+    fireEvent.change(box, { target: { value: 'JANE DOE VENMO 1023' } });
+    // No account chosen: a rule for one account does not read it.
+    expect(screen.getByTestId('rule-test-result').textContent).toBe('→ DEPOSIT');
+    fireEvent.change(screen.getByLabelText(/test account/i), { target: { value: 'wf-chk' } });
+    expect(screen.getByTestId('rule-test-result').textContent).toBe('→ CREDIT · REIMBURSEMENT');
+    fireEvent.change(screen.getByLabelText(/test direction/i), { target: { value: 'out' } });
+    expect(screen.getByTestId('rule-test-result').textContent).toBe('→ WITHDRAWAL');
+  });
+
+  it('offers neither tester control when no rule has limits', () => {
+    render(<RuleEditor rules={[PLAIN]} onChange={vi.fn()} />);
+    expect(screen.queryByLabelText(/test account/i)).toBeNull();
+    expect(screen.queryByLabelText(/test direction/i)).toBeNull();
+  });
+});
+

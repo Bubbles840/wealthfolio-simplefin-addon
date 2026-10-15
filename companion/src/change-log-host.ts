@@ -63,6 +63,22 @@ export async function recordCompanionChanges(
   await writer.append(companionChangeLogIo(client), drafts.map((d) => stampChange(d, 'companion', now, run)));
 }
 
+/**
+ * As `recordCompanionChanges`, but THROWS when this append was not written (the gap
+ * record is still left): for a caller that tells the person whether an Undo exists.
+ */
+export async function recordCompanionChangesStrict(
+  client: SecretClient,
+  drafts: ChangeDraft[],
+  run?: string,
+  now = new Date(),
+  writer: ChangeLogWriter = companionChangeLog,
+): Promise<void> {
+  if (drafts.length === 0) return;
+  const { saved } = await writer.appendStrict(companionChangeLogIo(client), drafts.map((d) => stampChange(d, 'companion', now, run)));
+  if (!saved) throw new Error('the change log was not written');
+}
+
 /** Both writers' log, merged. Rejects when Wealthfolio cannot be read. */
 export function readCompanionChangeLog(client: SecretClient, now: Date): Promise<ChangeLogRead> {
   return readChangeLog((k) => client.getAddonSecret(ADDON_ID, k), now);

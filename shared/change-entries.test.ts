@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   accountCreatedChange, amazonLabelChange, amazonLabelOf, balanceCorrectionChange, bankUpdateChange, bookkeepingChange, budgetSetChange,
   categoryFiledChange, categoryRuleCreatedChange, CHANGE_KINDS, changeDay, changeMoney, duplicateRemovedChange,
-  importChange, mappingRuleCreatedChange, newEntryId, newRunId, openingBalanceFiledChange, pendingRemovedChange,
+  importChange, mappingRuleCreatedChange, newEntryId, newRunId, openingBalanceFiledChange, paybackFiledChange, pendingRemovedChange,
   stampChange, startingBalanceChange, startingBalanceMovedChange, transactionRemovedChange, transferLinkChange, transferTypeChange, venmoNoteChange,
 
   type ChangeDraft,
@@ -35,7 +35,7 @@ describe('ids and stamps', () => {
   });
 
   it('lists every kind once', () => {
-    expect(new Set(CHANGE_KINDS).size).toBe(19);
+    expect(new Set(CHANGE_KINDS).size).toBe(20);
   });
 });
 
@@ -132,6 +132,11 @@ describe('summaries — one per kind, bank text raw', () => {
       account: CARD, activityId: 'sb-1', amountCents: -46460, date: '2026-06-18',
       category: { categoryId: 'cat-open', categoryName: 'Opening balances' },
     }), 'Filed the opening balance under Opening balances'],
+    ['payback-filed', paybackFiledChange({
+      account: { sfinId: 'ACT-1f2e', wfId: 'wf-checking', name: 'Checking' }, txKeys: [KEY], activityId: 'act-7',
+      description: 'VENMO CASHOUT', amountCents: 1400, date: '2026-10-09', subtypeBefore: null,
+      categoryId: 'cat-rest', categoryName: 'Restaurants',
+    }), 'Filed VENMO CASHOUT as a payback under Restaurants'],
     ['category-rule-created', categoryRuleCreatedChange({
       ruleId: 'rule-7', name: 'Telegram: TRADER JOE S', pattern: 'TRADER JOE S', categoryId: 'cat-gro', categoryName: 'Groceries',
     }), 'Created a rule: descriptions containing "TRADER JOE S" go to Groceries'],

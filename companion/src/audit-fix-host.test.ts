@@ -5,7 +5,7 @@ import type { ChangeBucket } from '../../shared/change-log.js';
 import { SKIPPED_TRANSACTIONS_SECRET_KEY } from '../../shared/skipped-transactions.js';
 import { accountTxKey } from '../../shared/transfers.js';
 import {
-  removalFingerprint, removeForGood, REMOVE_DONE, REMOVE_MAPPING_UNREADABLE, REMOVE_NOT_FEED, REMOVE_UNLINK_FIRST, REMOVE_UNREACHABLE,
+  removalFingerprint, removeForGood, REMOVE_DONE, REMOVE_MAPPING_UNREADABLE, REMOVE_NO_UNDO, REMOVE_NOT_FEED, REMOVE_UNLINK_FIRST, REMOVE_UNREACHABLE,
 } from '../../shared/tx-remove.js';
 import { companionLinkIo, companionRemoveIo, type FixClient } from './audit-fix-host.js';
 
@@ -74,6 +74,17 @@ describe('Link on the companion', () => {
     expect(log.mock.calls.map((c) => c[0])).toEqual([expect.stringContaining('re-creating instead of linking in place')]);
   });
 
+  it('logs that the change log was not written when its write is rejected (PB-I)', async () => {
+    const f = fakeClient([{ ...OUT }, { ...INTO }]);
+    f.client.setAddonSecret.mockImplementation(async (_a: string, k: string, v: string) => {
+      if (k.startsWith('change_log:')) throw new Error('500 from Wealthfolio');
+      f.data.set(k, v);
+    });
+    const log = vi.fn();
+    expect((await linkPairs([PAIR], companionLinkIo(f.client, log))).message).toBe(LINK_DONE);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('the change log was not written'));
+  });
+
   it('reads a grouped row as linked, and writes nothing', async () => {
     const f = fakeClient([{ ...OUT, sourceGroupId: 'wf-transfer-x' }, { ...INTO }]);
     expect((await linkPairs([PAIR], companionLinkIo(f.client, vi.fn()))).message).toBe(LINK_CHANGED);
@@ -95,6 +106,16 @@ describe('Remove for good on the companion', () => {
     expect(f.saved).toEqual([{ deleteIds: ['dup-1'] }]);
     expect(f.rows).toEqual([]);
     expect(f.logged()).toEqual([expect.objectContaining({ writer: 'companion', actor: 'you', kind: 'transaction-removed' })]);
+  });
+
+  it('says there is no Undo when the change log write is rejected (PB-I)', async () => {
+    const f = fakeClient([{ ...DUP }], mapping);
+    f.client.setAddonSecret.mockImplementation(async (_a: string, k: string, v: string) => {
+      if (k.startsWith('change_log:')) throw new Error('500 from Wealthfolio');
+      f.data.set(k, v);
+    });
+    expect(await removeForGood('dup-1', FP, companionRemoveIo(f.client, vi.fn()), NOW)).toEqual({ ok: true, message: REMOVE_NO_UNDO });
+    expect(f.rows).toEqual([]);
   });
 
   it('refuses a linked leg read through REST (the search reports its group), and deletes nothing', async () => {

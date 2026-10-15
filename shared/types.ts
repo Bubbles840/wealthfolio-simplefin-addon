@@ -11,6 +11,19 @@ export interface MappingRule {
    *  Only meaningful for CREDIT (see docs/upstream-spending-buckets.md): a
    *  DEPOSIT is income regardless of subtype. */
   subtype?: string;
+  /** A payback rule (1.62, W10): it reads money in only, so a payment out
+   *  that shares the pattern is never typed by it. A reader before 1.62
+   *  ignores it — which is why the offer waits for PAYBACK_SINCE. */
+  onlyMoneyIn?: true;
+  /** A payback rule (1.62, W10): the one Wealthfolio account it reads. */
+  accountId?: string;
+  /** A payback rule (1.62, W10): the day BEFORE the rule's UTC day (YYYY-MM-DD),
+   *  so a deposit of the same evening is not missed. The sync applies the rule
+   *  only to transactions dated on or after it. It is not what keeps stored
+   *  deposits from being re-typed: a rule that carries `since` also types only
+   *  rows the sync CREATES (`createOnly` on the mapped type), so a row already
+   *  stored keeps its own type and subtype. */
+  since?: string;
 }
 
 export interface SimplefinOrg {

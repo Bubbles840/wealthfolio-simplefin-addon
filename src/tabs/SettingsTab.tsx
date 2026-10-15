@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { AddonContext } from '@wealthfolio/addon-sdk';
 import { runSync } from '../utils/sync';
 import { Button, CollapsibleCard, ErrorBox, Why } from '../components/ui';
@@ -33,6 +33,9 @@ import { linkFromApp } from '../utils/audit-fix';
 /** The intervals offered here and in setup. The bridge refreshes from the bank
  *  every few hours, so anything shorter than 4 fetches nothing new. */
 export const SYNC_INTERVALS: readonly number[] = [4, 6, 12, 24];
+
+/** Another writer (the companion's payback rules) changed the stored list since this page read it. */
+export const RULES_CHANGED_ELSEWHERE = 'Your rules changed elsewhere — reload them first.';
 
 export const CARD = {
   accounts: 'accounts',
@@ -115,6 +118,11 @@ export function SettingsTab({
   const [autoHeal, setAutoHeal] = useState(false);
   const [autoAdjust, setAutoAdjust] = useState(false);
   const [rules, setRules] = useState<MappingRule[]>([]);
+  /** The rules as last read or saved here. Two writers (this page and the companion's payback
+   *  rules) share the list, so a save re-reads it first and refuses when it is no longer this. */
+  const knownRules = useRef<string>('[]');
+  const rulesQueue = useRef<Promise<void>>(Promise.resolve());
+  const [rulesNote, setRulesNote] = useState('');
   // Reset's own two-step inline confirm. window.confirm is silently
   // suppressed in the addon sandbox (the iframe is sandbox="allow-scripts"
   // with no allow-modals), which is why confirmation is rendered inline
@@ -169,6 +177,7 @@ export function SettingsTab({
       setAutoHeal(heal);
       setAutoAdjust(adjust);
       setRules(r);
+      knownRules.current = JSON.stringify(r);
       setMapping(m ?? {});
       setIgnoredAccounts(ignored ?? []);
       setMappingLoaded(true);
@@ -271,6 +280,37 @@ export function SettingsTab({
       scheduler.start(hours, () => store.getLastSyncAt(), () => runSync(ctx, store));
     }
   }, [ctx, store, scheduler]);
+
+  /** Saves the edited list unless the stored one changed since this page last read it. */
+  const saveRules = useCallback((next: MappingRule[]) => {
+    setRules(next);
+    const run = async () => {
+      try {
+        const fresh = JSON.stringify(await store.getMappingRules());
+        if (fresh !== knownRules.current) {
+          setRulesNote(RULES_CHANGED_ELSEWHERE);
+          return;
+        }
+        await store.setMappingRules(next);
+        knownRules.current = JSON.stringify(next);
+        setRulesNote('');
+      } catch (e: any) {
+        setRulesNote(String(e?.message ?? e));
+      }
+    };
+    rulesQueue.current = rulesQueue.current.then(run, run);
+    return rulesQueue.current;
+  }, [store]);
+  const reloadRules = useCallback(async () => {
+    try {
+      const fresh = await store.getMappingRules();
+      knownRules.current = JSON.stringify(fresh);
+      setRules(fresh);
+      setRulesNote('');
+    } catch {
+      setRulesNote("Couldn't reload your rules — try again.");
+    }
+  }, [store]);
 
   // Stable, so the card reads once each time it opens. Optional-called: an
   // older store (or a test double) has no change log, which reads as empty.
@@ -603,13 +643,13 @@ export function SettingsTab({
         open={isOpen(CARD.rules)}
         onToggle={() => toggleCard(CARD.rules)}
       >
-        <RuleEditor
-          rules={rules}
-          onChange={async (r) => {
-            setRules(r);
-            await store.setMappingRules(r);
-          }}
-        />
+        <RuleEditor rules={rules} onChange={saveRules} accountNames={wfNames} />
+        {rulesNote && (
+          <div className="sfin-log-note" role="status">
+            {rulesNote}
+            {rulesNote === RULES_CHANGED_ELSEWHERE && <> <Button variant="outline" onClick={reloadRules}>Reload rules</Button></>}
+          </div>
+        )}
       </CollapsibleCard>
 
       <div className="sfin-callout sfin-advanced-callout">
