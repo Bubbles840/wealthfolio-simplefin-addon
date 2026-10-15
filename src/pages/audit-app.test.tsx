@@ -49,8 +49,9 @@ const row = (over: Partial<AuditLedgerRow>): AuditLedgerRow => ({
   id: 'r', accountId: 'wf-b', date: '2026-10-04', currency: 'USD', rawType: 'WITHDRAWAL', type: 'WITHDRAWAL', status: 'POSTED',
   absCents: 0, group: '', assetId: '', external: false, phantomCash: false, notes: 'ROW · TRN-0', ...over,
 });
-/** test-props' Spend (sfin-2 → wf-b) is off by $15.22: a pending charge, and one unlinked transfer. */
-function snapshot(): AuditSnapshotRead {
+/** test-props' Spend (sfin-2 → wf-b) is off by $15.22: a pending charge, and one unlinked transfer.
+ *  The report counts $1,300.00 this month and Wealthfolio $1,200.00, unless `headline` says otherwise. */
+function snapshot(headline = explainHeadline({ month: '2026-10', reportCents: 130000, wealthfolioCents: 120000, rows: [], excludedCategoryIds: [] })): AuditSnapshotRead {
   const ledger = {
     accounts: [{ id: 'wf-b', name: 'Spend', type: 'CASH', archived: false }],
     rows: [
@@ -63,7 +64,7 @@ function snapshot(): AuditSnapshotRead {
       mapping: { 'sfin-2': 'wf-b' }, balances: { 'sfin-2': { balance: -420.1, date: null } }, names: { 'sfin-2': 'Spend' },
       valuations: { 'wf-b': -43532 }, ledger,
     }),
-    headline: explainHeadline({ month: '2026-10', reportCents: 130000, wealthfolioCents: 120000, rows: [], excludedCategoryIds: [] }),
+    headline,
     health: healthIssues({ ledger, mapping: { 'sfin-2': 'wf-b' } }),
   }, AT)));
 }
@@ -133,6 +134,33 @@ describe('Home’s Accounts tile', () => {
     expect(screen.getByText('Checks: 1 to look at')).toBeInTheDocument();
     fireEvent.click(tile);
     expect(await screen.findByText(ISSUE)).toBeInTheDocument();
+  });
+
+  it('shows when the last sync found the report and Wealthfolio apart this month', async () => {
+    at(LATER);
+    page(snapshot(), { tab: 'home' });
+    expect(await screen.findByText('The report and Wealthfolio differ by $100.00 this month')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Accounts: .* · The report and Wealthfolio differ by \$100\.00 this month · Checks: 1 to look at$/ })).toBeInTheDocument();
+  });
+
+  it.each([
+    ['a cent apart', explainHeadline({ month: '2026-10', reportCents: 120001, wealthfolioCents: 120000, rows: [], excludedCategoryIds: [] })],
+    ['Wealthfolio’s figure unread', explainHeadline({ month: '2026-10', reportCents: 130000, rows: [], failed: ['wealthfolio'] })],
+    ['last month’s checks', explainHeadline({ month: '2026-09', reportCents: 130000, wealthfolioCents: 120000, rows: [] })],
+    // LU-J: the whole gap is an account the add-on does not sync (the explained not-covered reason).
+    ['the gap being only an account the add-on does not sync', explainHeadline({
+      month: '2026-10', timezone: 'UTC', reportCents: 0, wealthfolioCents: 2000, excludedCategoryIds: [],
+      spendingAccountIds: ['wf-b', 'wf-jar'], reportAccountIds: ['wf-b'],
+      rows: [{
+        id: 'jar-1', date: '2026-10-05T12:00:00+00:00', accountId: 'wf-jar', groupId: '', accountName: 'Jar', accountType: 'CASH',
+        type: 'WITHDRAWAL', subtype: '', absCents: 2000, notes: 'COFFEE · TRN-9', filings: [], splits: [],
+      }],
+    })],
+  ])('says nothing about the two when %s', async (_what, headline) => {
+    at(LATER);
+    page(snapshot(headline), { tab: 'home' });
+    await screen.findByRole('button', { name: /^Accounts: .* · Checks: 1 to look at$/ });
+    expect(screen.queryByText(/differ by/)).toBeNull();
   });
 
   it('says nothing about checks with nothing to look at, and still opens Accounts', async () => {
