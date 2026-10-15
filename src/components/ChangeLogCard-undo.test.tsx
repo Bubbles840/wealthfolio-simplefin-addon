@@ -11,7 +11,7 @@ import {
   emptySyncOverrides, setAccountOverride, setTxOverride, type LoadedSyncOverrides,
 } from '../../shared/sync-overrides';
 import {
-  ChangeLogCard, CHANGE_LOG_READ_FAILED, OVERRIDES_EMPTY, OVERRIDES_READ_FAILED, OVERRIDES_UNREADABLE, OVERRIDE_REMOVED, type ChangeLogCardProps } from './ChangeLogCard';
+  ChangeLogCard, CHANGE_LOG_READ_FAILED, OVERRIDES_EMPTY, OVERRIDES_READ_FAILED, OVERRIDES_UNREADABLE, OVERRIDE_REMOVED, OVERRIDE_PAYBACK_UNDO, type ChangeLogCardProps } from './ChangeLogCard';
 
 const at = (month: number, day: number, h: number, m: number) => new Date(2026, month, day, h, m);
 const NOW = at(9, 13, 15, 0);
@@ -310,6 +310,22 @@ describe('ChangeLogCard — Your overrides', () => {
     expect(await screen.findByText(OVERRIDE_REMOVED)).toBeInTheDocument();
     expect(removeOverride).toHaveBeenCalledWith(expect.objectContaining({ scope: 'account', key: 'sfin-1', flag: 'noAutoCorrect' }));
     await waitFor(() => expect(rows()).toEqual(['Not a transfer: CITI AUTOPAY · Checking']));
+  });
+
+  it('a Payback row is read-only: it points to /changes and has no Remove button (I-1)', async () => {
+    const removeOverride = vi.fn();
+    mount([], { loadOverrides: vi.fn(async () => ({
+      overrides: setTxOverride(doc().overrides, 'sfin-1\u0000tx-9', 'asReimbursement', new Date('2026-10-14T09:00:00Z'), { label: 'VENMO CASHOUT · Checking' }),
+      unreadable: false,
+    })), removeOverride });
+    await screen.findByText('Payback: VENMO CASHOUT · Checking');
+    const paybackRow = Array.from(document.querySelectorAll('.sfin-log-override')).find((r) => r.textContent!.includes('Payback:')) as HTMLElement;
+    expect(OVERRIDE_PAYBACK_UNDO).toBe('Undo it from Telegram: /changes');
+    expect(paybackRow.textContent).toContain(OVERRIDE_PAYBACK_UNDO);
+    expect(within(paybackRow).queryByRole('button')).toBeNull();
+    // The other rows keep theirs.
+    expect(screen.getByRole('button', { name: 'Remove Not a transfer: CITI AUTOPAY · Checking' })).toBeInTheDocument();
+    expect(/\p{Extended_Pictographic}/u.test(paybackRow.textContent!)).toBe(false);
   });
 
   it('Remove is guarded while it runs: a double click removes once', async () => {
