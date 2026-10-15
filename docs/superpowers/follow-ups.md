@@ -1176,21 +1176,32 @@ Designed overnight under Nick's standing instruction; approved by Nick on
   count on both sides there. An income-bucket placeholder (money in) can't
   take a spending category: Wealthfolio's Income page still counts it. The
   pass files nothing it can't read live, and has no Undo.
-- **Dates.** Noon UTC (`bankDayInstant`) reaches only zones within 11 hours
-  of UTC; beyond that a noon row lands a day off. A write replayed from what
-  the change log recorded keeps the recorded date (Undo of a removed
-  duplicate or a removed row, re-importing a starting balance or a
-  correction, moving a starting balance back), so one recorded before 1.62
-  can still land at 00:00 UTC on 3.8 or 3.9.
+- **Dates.** Noon UTC (`bankDayInstant`) is the bank's day in UTC-12 to
+  UTC+11. UTC+12 to +14 land a day late, a regression from 1.61, and the
+  repair leaves their already-correct rows alone (it moves a row only when
+  noon UTC on its day is that day in Wealthfolio's timezone). Writing those
+  zones' new rows correctly is open. A write replayed from what the change
+  log recorded: Undo of a removed duplicate or a removed row replays a
+  recorded payload, which has been noon since 1.62; re-importing a starting
+  balance or a correction, and moving a starting balance back, replay a
+  recorded day, and wrap a bare one in `bankDayInstant`, so they write noon
+  too (a recorded timestamp is put back as it was).
   `companion/tools/audit-headline.mjs` still matches only T00:00:00 rows.
 - **The date repair** resumes on the next sync rather than being re-runnable
   from the audit's tools (the spec's wording); delete the `date_repair_done`
-  secret to run it again. It leaves two kinds of row at 00:00 UTC: a linked
-  leg (Wealthfolio copies an updated leg's date onto its partner) and a row
-  with a type override (Wealthfolio's search shows only the effective type,
-  and an update writes the type it is sent). It needs the database for the
-  second, so it waits while the database can't be read, and it waits for the
-  1.62 add-on.
+  secret to run it again. It leaves rows at 00:00 UTC on purpose or by
+  necessity: a linked leg (Wealthfolio copies an updated leg's date onto its
+  partner); a row with a type override, or whose stored type differs from the
+  search's (a blank override on 3.8/3.9; Wealthfolio's search shows only the
+  effective type, and an update writes the type it is sent); rows in accounts
+  the add-on doesn't map; rows Wealthfolio refuses twice; rows the database
+  read doesn't know yet (newer than the read: never counted as retyped, the
+  repair isn't done while any is left); and rows written at midnight after it
+  finished (a 1.61 browser tab, a replay). It reads the database LIVE only
+  (`openLiveDatabase`), also before its verifying sweep, so it waits
+  ("Date repair waits: the database can only be read as a snapshot") while the
+  database can't be read live, and it waits for the 1.62 add-on when the
+  companion can see it.
 - **Tripwire timing.** The cube is built moments before Wealthfolio is asked
   for its figure; a write in between shows as a difference until the next
   sync. The cube's months follow the UTC month of the sync; the digest and
@@ -1201,7 +1212,20 @@ Designed overnight under Nick's standing instruction; approved by Nick on
   check still reads the stored type.
 - **With the platform branch (U4):** on 3.10 a card's bookkeeping rows become
   TRANSFER_OUT, which Wealthfolio ignores; the pass reads the bucket, so it
-  files none of them, and the two compose.
+  files none of them, and the two compose. Rows filed on 3.9 keep their
+  filing after U4's rewrite (harmless), and U2's link in place leaves the held
+  placeholder to re-creation.
+- **The Budget tab's "✓ matches the ledger" check** now compares the cube
+  with the same spending lines. It checks assembly only; the tripwire is the
+  independent check now.
+- **The cube's spending series are strict** (a failed read fails the publish
+  and the previous cube stays), and the tripwire reads a cube only if its
+  `asOf` is from the same sync run; otherwise it says nothing.
+- **Budgets** (both readers) keep only `target_type='category'` targets in
+  `spending_categories`, in categories not excluded from spending, as
+  upstream's budget page does (budget/service.rs:250-251 at v3.10.0). A
+  sub-category target under an excluded top-level category is still summed
+  into its top.
 
 ## Reference: name mismatches between the database, the REST API, and the SDK
 

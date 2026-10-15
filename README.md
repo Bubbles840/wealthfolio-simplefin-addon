@@ -104,8 +104,9 @@ The addon has three tabs: **Home**, **Reports** and **Settings**.
   do, and **Link** for a transfer with one likely other half. They come from a
   snapshot the companion publishes after each sync, and say when it was
   taken; a fix shows there after the next sync. A transaction's story in the
-  app offers **Remove for good…** too. The report counts spending exactly as
-  Wealthfolio's Spending page does, so after each sync the two month totals
+  app offers **Remove for good…** too. The report counts spending the same way
+  as Wealthfolio's Spending page does (see the changelog's Known limits), so
+  after each sync the two month totals
   are compared: more than a cent apart (after setting aside accounts the
   add-on doesn't sync), the daily report says so (in Brief too) and Home's
   Accounts tile shows it.
@@ -229,9 +230,13 @@ touches. It never touches a row with split lines either.
 New rows are written at noon UTC on the bank's date, and the companion moves
 rows already stored at midnight UTC the same way, once, in small batches. Put
 the add-on zip up before or together with the companion (the repair waits for
-the 1.62 add-on), and reload any browser tab still running 1.61, which writes
-bare dates until reloaded. The repair resumes on its own on the next sync if
-interrupted. To run it again, delete the `date_repair_done` secret.
+the 1.62 add-on when the companion can see it; when it can't, the repair runs
+at once), and reload any browser tab still running 1.61, which writes bare
+dates until reloaded. It leaves linked transfers and rows with a type
+override alone, and touches only the accounts the add-on syncs. It reads the
+database live only, so it waits when the database can only be read as a
+snapshot. The repair resumes on its own on the next sync if interrupted. To
+run it again, delete the `date_repair_done` secret.
 
 ### Deep scan
 
