@@ -1035,7 +1035,7 @@ export function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
   return <input className="sfin-input" {...props} />;
 }
 
-export function Select(props: React.SelectHTMLAttributes<HTMLSelectElement>) {
+export function Select(props: React.ComponentPropsWithRef<'select'>) {
   return <select className="sfin-select" {...props} />;
 }
 

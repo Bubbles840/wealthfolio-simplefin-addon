@@ -84,6 +84,63 @@ describe('PaybackAction', () => {
   });
 });
 
+describe('PaybackAction — focus, loading and empty states (W11-C)', () => {
+  it('focuses the select when the picker opens, and the action button again after Cancel', async () => {
+    render(<PaybackAction activityId="act-7" actions={actions()} />);
+    fireEvent.click(screen.getByRole('button', { name: "It's a payback…" }));
+    const select = await screen.findByRole('combobox', { name: 'Spending category' });
+    expect(select).toHaveFocus();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.getByRole('button', { name: "It's a payback…" })).toHaveFocus();
+  });
+
+  it('focuses the action button again after a refusal', async () => {
+    render(<PaybackAction inlineStatus activityId="act-7" actions={actions(vi.fn(async () => ({ kind: 'refused' as const, message: PAYBACK_NOT_IN_SPENDING })))} />);
+    await pick();
+    fireEvent.click(screen.getByRole('button', { name: 'File it' }));
+    await screen.findByText(PAYBACK_NOT_IN_SPENDING);
+    expect(screen.getByRole('button', { name: /It's a payback…/ })).toHaveFocus();
+  });
+
+  it('leaves out the aria-label while "Loading categories…" shows (the name is then what it says)', async () => {
+    let release!: (c: PaybackCategory[]) => void;
+    const categories = vi.fn(() => new Promise<PaybackCategory[]>((r) => { release = r; }));
+    render(<PaybackAction activityId="act-7" label="VENMO CASHOUT, $14.00" actions={actions(vi.fn(), categories)} />);
+    fireEvent.click(screen.getByRole('button', { name: /It's a payback… VENMO CASHOUT/ }));
+    const loading = screen.getByRole('button', { name: 'Loading categories…' });
+    expect(loading).not.toHaveAttribute('aria-label');
+    await act(async () => { release(CATS); });
+  });
+
+  it('says "No spending categories to pick from." when there are none, and keeps the button', async () => {
+    render(<PaybackAction activityId="act-7" actions={actions(vi.fn(), vi.fn(async () => []))} />);
+    fireEvent.click(screen.getByRole('button', { name: "It's a payback…" }));
+    expect(await screen.findByText('No spending categories to pick from.')).toBeInTheDocument();
+    expect(screen.queryByRole('combobox')).toBeNull();
+    expect(screen.getByRole('button', { name: "It's a payback…" })).toBeEnabled();
+  });
+
+  it('marks Cancel busy while filing', async () => {
+    let finish!: (o: AppPaybackOutcome) => void;
+    render(<PaybackAction activityId="act-7" actions={actions(vi.fn(() => new Promise<AppPaybackOutcome>((r) => { finish = r; })))} />);
+    await pick();
+    fireEvent.click(screen.getByRole('button', { name: 'File it' }));
+    expect(screen.getByRole('button', { name: 'Cancel' })).toHaveAttribute('aria-busy', 'true');
+    await act(async () => { finish(FILED); });
+  });
+
+  it('on a story: one wrapper, not a .sfin-why-remove inside a .sfin-why-remove', () => {
+    const story = buildTxStory({
+      now: new Date('2026-10-14T15:00:00Z'),
+      row: { activityId: 'act-7', note: 'VENMO CASHOUT · TRN-77', absCents: 1400, date: '2026-10-09', activityType: 'DEPOSIT', accountName: 'PNC Checking', accountType: 'CASH' },
+      feed: { sfinAccountId: 'sfin-chk' }, partner: null, category: null, history: [],
+    });
+    const { container } = render(<TxStoryView story={story} entries={[]} actions={{ companionVersion: '1.62.0', payback: actions() }} onChanged={() => {}} payback={{ activityId: 'act-7', fingerprint: 'abcd1234' }} />);
+    expect(container.querySelector('.sfin-why-remove .sfin-why-remove')).toBeNull();
+    expect(container.querySelector('.sfin-why-remove')).not.toBeNull();
+  });
+});
+
 describe('"It\'s a payback…" on a story in the app', () => {
   const story = buildTxStory({
     now: new Date('2026-10-14T15:00:00Z'),

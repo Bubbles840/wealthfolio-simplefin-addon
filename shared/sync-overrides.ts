@@ -372,11 +372,22 @@ export function overrideRows(o: SyncOverrides): OverrideRow[] {
   return rows.sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : a.text.localeCompare(b.text)));
 }
 
-/** The edit that removes one listed override (the list's Remove button). */
-export function removeOverrideRow(o: SyncOverrides, row: Pick<OverrideRow, 'scope' | 'key' | 'flag'>): SyncOverrides {
-  // A payback is undone from /changes, which retypes the row too; clearing only its flag
-  // is not an undo. The list shows it read-only; this keeps any other caller honest.
-  if (row.flag === 'asReimbursement') return o;
+/** Whether an un-undone `payback-filed` entry covers this transaction key: its Undo is what takes the payback setting off. */
+export function paybackUndoCovers(
+  entries: ReadonlyArray<{ kind: string; undone?: unknown; subject?: { txKeys?: readonly string[] } }>,
+  key: string,
+): boolean {
+  return entries.some((e) => e.kind === 'payback-filed' && !e.undone && (e.subject?.txKeys ?? []).includes(key));
+}
+
+/** The edit that removes one listed override (the list's Remove button).
+ *  `undoCovers`: an un-undone `payback-filed` entry covers the key (`paybackUndoCovers`). */
+export function removeOverrideRow(
+  o: SyncOverrides, row: Pick<OverrideRow, 'scope' | 'key' | 'flag'>, undoCovers = true,
+): SyncOverrides {
+  // A payback is undone from /changes, which retypes the row too; clearing only its flag is not an undo.
+  // Only with no Undo behind it (the change log could not be written) is the flag the one thing to take off.
+  if (row.flag === 'asReimbursement' && undoCovers) return o;
   return row.scope === 'tx'
     ? clearTxOverride(o, row.key, row.flag as TxOverrideFlag)
     : clearAccountOverride(o, row.key, row.flag as AccountOverrideFlag);

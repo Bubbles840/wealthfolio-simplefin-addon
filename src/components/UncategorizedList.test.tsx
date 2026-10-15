@@ -86,6 +86,17 @@ describe('UncategorizedList', () => {
 });
 
 describe('UncategorizedList — a row opens its story (1.61)', () => {
+  it("hides the row's \"It's a payback…\" button while its story is open under it (W11-C)", () => {
+    const payback = { categories: vi.fn(async () => []), file: vi.fn() };
+    render(<UncategorizedList {...base} rows={[row({ paybackEligible: true, direction: 'in' })]} payback={payback} renderStory={(t) => <div>story of {t.activityId}</div>} />);
+    expect(screen.getByRole('button', { name: /It's a payback…/ })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /^Thankyou Points Redeemed/ }));
+    expect(screen.getByText('story of a')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /It's a payback…/ })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /^Thankyou Points Redeemed/ }));
+    expect(screen.getByRole('button', { name: /It's a payback…/ })).toBeTruthy();
+  });
+
   it('turns each description into a button that opens the story under the row, and closes it again', () => {
     const renderStory = vi.fn((t: { activityId: string }) => <div>story of {t.activityId}</div>);
     render(<UncategorizedList {...base} renderStory={renderStory} />);

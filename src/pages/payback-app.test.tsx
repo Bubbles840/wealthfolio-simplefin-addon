@@ -99,4 +99,21 @@ describe("It's a payback… on the needs-a-category list (W11)", () => {
     expect(screen.getByText('Row a')).toBeInTheDocument();
     await waitFor(() => expect(within(screen.getByText('Needs a category').closest('.sfin-tile') as HTMLElement).getByText('2')).toBeInTheDocument());
   });
+
+  it('the list\'s payback line clears when a new publish arrives (W11-C)', async () => {
+    vi.mocked(paybackFromApp).mockResolvedValueOnce({ kind: 'filed', message: `${FILED}\nUndo it from Telegram: /changes.` });
+    const props = page();
+    await openList();
+    await fileRowA();
+    expect(await screen.findByText(FILED)).toBeInTheDocument();
+    props.store.getUncategorizedStatus = vi.fn(async () => ({
+      count: 1, asOf: '2026-10-14T13:00:00.000Z', rows: [row('b')],
+    }));
+    fireEvent.click(screen.getByRole('tab', { name: /settings/i }));
+    fireEvent.click(await screen.findByRole('tab', { name: /home/i }));
+    await screen.findByText('Needs a category');
+    if (!screen.queryByText('Row b')) fireEvent.click(await screen.findByRole('button', { name: /^1 need/i }));
+    await screen.findByText('Row b');
+    expect(screen.queryByText(FILED)).toBeNull();
+  });
 });

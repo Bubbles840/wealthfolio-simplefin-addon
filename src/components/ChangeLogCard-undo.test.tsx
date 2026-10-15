@@ -2,7 +2,7 @@ import React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import {
-  balanceCorrectionChange, categoryFiledChange, importChange, stampChange, type ChangeDraft,
+  balanceCorrectionChange, categoryFiledChange, importChange, paybackFiledChange, stampChange, type ChangeDraft,
 } from '../../shared/change-entries';
 import type { ChangeLogItem, ChangeLogRead } from '../../shared/change-log';
 import type { UndoOutcome } from '../../shared/change-undo-run';
@@ -29,6 +29,11 @@ const filing = () => item(categoryFiledChange({
 }), at(9, 13, 11, 0));
 const log = (entries: ChangeLogItem[]): ChangeLogRead =>
   ({ entries: [...entries].sort((a, b) => (a.at < b.at ? 1 : -1)), gaps: [], trimmed: 0, unreadable: [] });
+const KEY = 'sfin-1\u0000tx-9';
+const covering = () => item(paybackFiledChange({
+  account: CHECKING, txKeys: [KEY], activityId: 'act-9', description: 'VENMO CASHOUT', amountCents: 5000, date: '2026-10-12',
+  subtypeBefore: null, categoryId: 'cat-1', categoryName: 'Dining',
+}), at(9, 13, 9, 0));
 const EMOJI = /\p{Extended_Pictographic}/u;
 
 function mount(entries: ChangeLogItem[], props: Partial<ChangeLogCardProps> = {}) {
@@ -308,13 +313,13 @@ describe('ChangeLogCard — Your overrides', () => {
     expect(rows()).toEqual(['No automatic balance corrections: Checking', 'Not a transfer: CITI AUTOPAY · Checking']);
     fireEvent.click(within(document.querySelectorAll('.sfin-log-override')[0] as HTMLElement).getByRole('button', { name: 'Remove No automatic balance corrections: Checking' }));
     expect(await screen.findByText(OVERRIDE_REMOVED)).toBeInTheDocument();
-    expect(removeOverride).toHaveBeenCalledWith(expect.objectContaining({ scope: 'account', key: 'sfin-1', flag: 'noAutoCorrect' }));
+    expect(removeOverride).toHaveBeenCalledWith(expect.objectContaining({ scope: 'account', key: 'sfin-1', flag: 'noAutoCorrect' }), false);
     await waitFor(() => expect(rows()).toEqual(['Not a transfer: CITI AUTOPAY · Checking']));
   });
 
   it('a Payback row is read-only: it points to /changes and has no Remove button (I-1)', async () => {
     const removeOverride = vi.fn();
-    mount([], { loadOverrides: vi.fn(async () => ({
+    mount([covering()], { loadOverrides: vi.fn(async () => ({
       overrides: setTxOverride(doc().overrides, 'sfin-1\u0000tx-9', 'asReimbursement', new Date('2026-10-14T09:00:00Z'), { label: 'VENMO CASHOUT · Checking' }),
       unreadable: false,
     })), removeOverride });
@@ -326,6 +331,31 @@ describe('ChangeLogCard — Your overrides', () => {
     // The other rows keep theirs.
     expect(screen.getByRole('button', { name: 'Remove Not a transfer: CITI AUTOPAY · Checking' })).toBeInTheDocument();
     expect(/\p{Extended_Pictographic}/u.test(paybackRow.textContent!)).toBe(false);
+  });
+
+  describe('a Payback row with no Undo behind it (W11-C I1)', () => {
+    const paybackEntry = covering;
+    const overrides = () => vi.fn(async () => ({
+      overrides: setTxOverride(doc().overrides, KEY, 'asReimbursement', new Date('2026-10-14T09:00:00Z'), { label: 'VENMO CASHOUT · Checking' }),
+      unreadable: false,
+    }));
+    const paybackRow = () => Array.from(document.querySelectorAll('.sfin-log-override')).find((r) => r.textContent!.includes('Payback:')) as HTMLElement;
+
+    it('offers Remove, and passes that no Undo covers it', async () => {
+      const removeOverride = vi.fn(async () => {});
+      mount([], { loadOverrides: overrides(), removeOverride });
+      await screen.findByText('Payback: VENMO CASHOUT · Checking');
+      expect(paybackRow().textContent).not.toContain(OVERRIDE_PAYBACK_UNDO);
+      fireEvent.click(within(paybackRow()).getByRole('button', { name: 'Remove Payback: VENMO CASHOUT · Checking' }));
+      await waitFor(() => expect(removeOverride).toHaveBeenCalledWith(expect.objectContaining({ flag: 'asReimbursement', key: KEY }), false));
+    });
+
+    it('keeps the Telegram pointer and no button while an un-undone payback-filed entry covers the key', async () => {
+      mount([paybackEntry()], { loadOverrides: overrides(), removeOverride: vi.fn() });
+      await screen.findByText('Payback: VENMO CASHOUT · Checking');
+      expect(paybackRow().textContent).toContain(OVERRIDE_PAYBACK_UNDO);
+      expect(within(paybackRow()).queryByRole('button')).toBeNull();
+    });
   });
 
   it('Remove is guarded while it runs: a double click removes once', async () => {
