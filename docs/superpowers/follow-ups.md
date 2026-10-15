@@ -1171,8 +1171,9 @@ Designed overnight under Nick's standing instruction; approved by Nick on
   group with a marker is reported linked, ids kept. The sync's brand-new pairs
   mostly link in place; a promoted held placeholder still re-creates.
 - **A lost link answer** is read again: a row still in an earlier group that
-  its partner does not share is refused as half of another transfer and retried
-  next sync. Variants that still hit the old re-create data-loss path (a row of
+  its partner does not share is left unlinked with "Couldn't tell whether
+  Wealthfolio linked them — it will try again next sync." and retried next
+  sync. Variants that still hit the old re-create data-loss path (a row of
   another pair deleted with its partner): a shape refusal on a row already in
   another pair, a failed first read, and a 3.8 add-on (it cannot read the group,
   so it cannot tell).
@@ -1191,8 +1192,9 @@ Designed overnight under Nick's standing instruction; approved by Nick on
     "Linked" entry, as before this branch.
 - **Facts are read per row:** `searchCashActivities` has no id filter, so a row
   is found by account and its stored instant's UTC day. A row it does not
-  return (an account outside Spending, a card transfer out 3.10 hides) keeps
-  the 3.8 rule. A row in any group, even a broken one, counts as linked.
+  return (an account outside Spending) keeps the 3.8 rule; 3.10 returns every
+  transfer on a cash or card account, so a card's bookkeeping TRANSFER_OUT
+  reads as unlinked. A row in any group, even a broken one, counts as linked.
 - **The app's story** says "by a rule" without naming it: the SDK lists only
   the add-on's own rules.
 - **A card's bookkeeping shape needs the host version.** The SDK cannot ask, so
@@ -1202,7 +1204,7 @@ Designed overnight under Nick's standing instruction; approved by Nick on
   (`keepBookkeepingOutflow`, reconcile's `sameType`).
   - Convergence: an add-on that cannot tell the version may retype a stored
     card TRANSFER_OUT to WITHDRAWAL once, on a real change (pending to posted,
-    amount, date); then both writers keep WITHDRAWAL and the filing excludes it.
+    amount, date); then both writers keep WITHDRAWAL and W3's bookkeeping filing (line-up) excludes it once merged.
     Accepted: protecting TRANSFER_OUT on an unknown host risks writing one to
     3.8/3.9, which refuse it.
   - A netting by a pre-3.10 writer still writes WITHDRAWAL.
@@ -1214,9 +1216,12 @@ Designed overnight under Nick's standing instruction; approved by Nick on
   waits while an installed add-on is below 1.62.0. Left as they are, and logged:
   rows in a transfer group, retyped rows, real security assets, rows with
   split lines, rows carrying a filing the sync did not make, and a starting
-  balance whose account has no opening-balance file. A refused batch is retried
-  row by row; a row refused twice joins the left rows (listed in the entry); only
-  a temporary failure (5xx, network, 408/423/429) stops the run unmarked.
+  balance whose opening-balance filing you undid (`noOpeningFile`). A refused
+  batch is retried row by row; a row refused twice joins the left rows (listed
+  in the entry); only a 400 or 422 is the row's fault, so any other failure
+  (5xx, network, any other 4xx) stops the run unmarked, as does a failed batch
+  re-read, and so does a run where nothing was rewritten and every row was
+  refused.
 - **One shared open-ladder helper:** the database open-ladder is copied four
   times; make one.
 - **Task 8 writes NEW 3.10 card starting balances as TRANSFER_OUT even under

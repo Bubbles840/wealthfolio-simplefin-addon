@@ -13,9 +13,11 @@
  *    `linked` — half of a valid pair; `invalid` — it carries a group that is
  *    not a valid pair; `unlinked` — no group. Any other type has none.
  *  - The call returns rows of accounts opted in to Spending, of the cash
- *    types, that Wealthfolio shows: an unlinked transfer out of a card
- *    (Ignored, 3.10) is not among them. A row it does not return has NO fact,
- *    and the caller keeps its old rule for it.
+ *    types, that Wealthfolio shows. 3.10 shows every TRANSFER_IN/OUT on a cash
+ *    or credit-card account (`is_neutral_visible_cash_activity`), so a card's
+ *    unlinked bookkeeping TRANSFER_OUT is returned and reads as unlinked. A row
+ *    it does not return (an account outside Spending) has NO fact, and the
+ *    caller keeps its old rule for it.
  *  - It has no id filter: rows are found by account and an inclusive RFC 3339
  *    window, at most 1,000 a page (`offset`, `limit`, `totalCount`).
  * A row in any group — linked, broken, or a non-transfer someone grouped —

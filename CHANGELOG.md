@@ -19,8 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with "One of these is already half of another transfer — nothing was
   changed", because re-creating it would delete the other pair's partner. On
   3.8 and 3.9 a pair Wealthfolio says is already linked to each other is kept
-  as it is. Undoing a link unlinks it the same way, then makes both rows
-  ordinary money in or out.
+  as it is when Wealthfolio itself marked it (both rows marked internal, or a
+  sync group); otherwise it is re-created. Undoing a link unlinks it the same
+  way, then makes both rows ordinary money in or out. On a 3.8 host that runs
+  both writers, the add-on's next sync still re-creates a pair the companion
+  linked in place, because its ledger does not know the pair; that is the same
+  as 1.61.
 - **The app reads Wealthfolio's own facts (Wealthfolio 3.9 and newer).** Link,
   Remove for good… and Undo ask Wealthfolio whether a row is half of a linked
   transfer: they no longer refuse an unlinked transfer as "may be linked", and
@@ -30,14 +34,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A card's bookkeeping is a transfer out (Wealthfolio 3.10 and newer).** The
   sync writes a credit card's opening debt, balance corrections and held
   transfers as Transfer Out, which Wealthfolio's Spending page leaves out on
-  its own, with no category needed. It does so only while the companion has
-  published a fresh Wealthfolio version (the add-on trusts it for two days);
-  otherwise it keeps writing a withdrawal. The companion also rewrites the
-  card rows already there, once: it waits for a live database read and for the
-  1.62 add-on, clears the phantom `$CASH` asset older withdrawals carry, leaves
-  rows in a transfer group, rows you split or filed yourself, rows whose
-  account has no opening-balance file, and any row Wealthfolio refuses twice,
-  and says so in the change log.
+  its own, with no category needed. The companion's sync reads Wealthfolio's
+  version itself each sync. The add-on, which cannot ask, uses the version the
+  companion publishes, and only while the companion's last successful sync is
+  under two days old. Otherwise it writes a withdrawal. The companion also
+  rewrites the card rows already there, once: it waits for a live database
+  read and for the 1.62 add-on, clears the phantom `$CASH` asset older
+  withdrawals carry, and leaves rows in a transfer group, rows you split,
+  retyped or filed yourself, rows carrying a real security, a starting balance
+  whose opening-balance filing you undid, and any row Wealthfolio refuses
+  twice. The change log records what it rewrote and which rows Wealthfolio
+  refused; the companion's log names the rest.
 
 ### Changed
 - Built against add-on SDK 3.9.0. It still installs on Wealthfolio 3.8.
@@ -47,12 +54,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   transfers, reading how Wealthfolio files and links each transaction, and your
   spending categories' names. Deploy the add-on before or together with the
   companion: the one-time rewrites wait for the 1.62 add-on.
-
-### Fixed
-- The app's sync no longer re-links, on its next run, a pair whose group id
-  Wealthfolio chose itself.
-- A transfer the app's sync unlinked but could not retype is retried at its
-  next run instead of being forgotten.
 
 ## [1.61.0] - 2026-10-14
 
