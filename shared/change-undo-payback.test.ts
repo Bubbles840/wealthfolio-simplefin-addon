@@ -8,7 +8,7 @@ import { runChangeUndo, UNDO_SAVE_FAILED, type UndoIo } from './change-undo-run.
 import { createFakeHost } from './fake-host.js';
 import { filePayback, paybackRowOf, type PaybackIo } from './payback.js';
 import {
-  PAYBACK_REDO_UNCHANGED, PAYBACK_UNDO_STUCK, PAYBACK_UNDO_STUCK_PLAIN, PAYBACK_UNDO_UNCHANGED, PAYBACK_UNREACHABLE, PAYBACK_UPDATE_ADDON, paybackRedoHalf, paybackUndoHalf,
+  PAYBACK_REDO_UNCHANGED, PAYBACK_REDO_UNSURE, PAYBACK_UNDO_STUCK, PAYBACK_UNDO_STUCK_PLAIN, PAYBACK_UNDO_UNCHANGED, PAYBACK_UNDO_UNSURE, PAYBACK_UNREACHABLE, PAYBACK_UPDATE_ADDON, paybackRedoHalf, paybackUndoHalf,
 } from './payback-copy.js';
 import type { HostActivity } from './sync-host.js';
 import {
@@ -447,14 +447,29 @@ describe('Undo and Redo of a payback — fix round 1 (PB-C)', () => {
     expect(hasTxOverride(h.overrides(), KEY, 'asReimbursement')).toBe(true);
   });
 
-  it('m1: when the row cannot be read after a failed re-type, the override still goes back and nothing is claimed', async () => {
+  it('m1: when the row cannot be read after a failed re-type, the override still goes back and the answer says it cannot tell', async () => {
     const h = harness();
     const entry = await h.file();
     h.fh.host.saveMany = async () => { throw new Error('ECONNRESET'); };
     const read = h.io.paybacks!.read;
     let reads = 0;
     h.io.paybacks = { read: async (id) => { reads += 1; if (reads > 1) throw new Error('ECONNRESET'); return read(id); } };
-    expect(await h.undo(entry, 'undo')).toEqual({ ok: false, message: PAYBACK_UNDO_UNCHANGED });
+    const out = await h.undo(entry, 'undo');
+    expect(out).toEqual({ ok: false, message: PAYBACK_UNDO_UNSURE });
+    expect(out.message).not.toContain('nothing was changed');
+    expect(PAYBACK_UNDO_UNSURE).toContain("Couldn't tell");
+    expect(PAYBACK_REDO_UNSURE).toContain("Couldn't tell");
+    expect(hasTxOverride(h.overrides(), KEY, 'asReimbursement')).toBe(true);
+  });
+
+  it('m2: a row that is gone on the re-read says it is gone, and the override still goes back', async () => {
+    const h = harness();
+    const entry = await h.file();
+    h.fh.host.saveMany = async () => { throw new Error('404'); };
+    const read = h.io.paybacks!.read;
+    let reads = 0;
+    h.io.paybacks = { read: async (id) => { reads += 1; return reads > 1 ? null : read(id); } };
+    expect(await h.undo(entry, 'undo')).toEqual({ ok: false, message: 'That transaction is gone — nothing was undone.' });
     expect(hasTxOverride(h.overrides(), KEY, 'asReimbursement')).toBe(true);
   });
 
@@ -492,5 +507,91 @@ describe('Undo and Redo of a payback — fix round 1 (PB-C)', () => {
     const out = await h.undo(entry, 'undo');
     expect(out).toEqual({ ok: false, message: PAYBACK_UNREACHABLE });
     expect(h.logs.join('\n')).toContain('keychain locked');
+  });
+
+  it('PB-D m1: Undo after a half-done Redo says nothing about a category it did not take off', async () => {
+    const h = harness();
+    const entry = await h.file();
+    await h.undo(entry, 'undo');
+    h.categories.assign.mockRejectedValueOnce(new Error('400'));
+    await h.undo(entry, 'redo');
+    expect(await h.undo(entry, 'undo')).toEqual({ ok: true, message: "Undone — it's a deposit again.", needsSync: false });
+  });
+
+  it('PB-D m1: a stuck Undo with nothing filed uses the plain wording even when the entry has a category', async () => {
+    const h = harness();
+    const entry = await h.file();
+    await h.undo(entry, 'undo');
+    h.categories.assign.mockRejectedValueOnce(new Error('400'));
+    await h.undo(entry, 'redo');
+    h.fh.host.saveMany = async () => { throw new Error('ECONNRESET'); };
+    let writes = 0;
+    const set = h.io.secrets.set;
+    h.io.secrets.set = async (k, v) => { writes += 1; if (writes > 1) throw new Error('500'); await set(k, v); };
+    expect(await h.undo(entry, 'undo')).toEqual({ ok: false, message: PAYBACK_UNDO_STUCK_PLAIN });
+  });
+
+  it('M1 (final): a stuck payback filed from /categorize since refuses its Undo, and says to undo that filing first', async () => {
+    const h = harness();
+    const entry = unfiledEntry();
+    h.fh.activities.set('wf-a', [{ ...DEPOSIT, activityType: 'CREDIT', subtype: 'REIMBURSEMENT' }]);
+    flag(h);
+    h.filed.set('act-7', 'cat-rest');
+    const out = await h.undo(entry, 'undo');
+    expect(out.ok).toBe(false);
+    expect(out.message).toContain('/changes');
+    expect(out.message).toMatch(/undo that filing/i);
+  });
+});
+
+describe('a key shared with a prior override (PB-B M4)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(NOW);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+  const T0 = new Date('2026-09-01T10:00:00Z');
+  const prior = () => ({
+    [SYNC_OVERRIDES_SECRET_KEY]: JSON.stringify(setTxOverride(emptySyncOverrides(), KEY, 'notTransfer', T0, { label: 'VENMO CASHOUT · hand-made' })),
+  });
+  const PRIOR_ENTRY = { notTransfer: true, at: T0.toISOString(), label: 'VENMO CASHOUT · hand-made' };
+
+  it('File → Undo → Redo → Undo restores the prior entry exactly — no entryId left behind', async () => {
+    const h = harness([{ ...DEPOSIT }], prior());
+    const entry = await h.file();
+    expect(h.overrides().tx[KEY]).toMatchObject({ notTransfer: true, asReimbursement: true });
+    await h.undo(entry, 'undo');
+    expect(h.overrides().tx[KEY]).toEqual(PRIOR_ENTRY);
+    await h.undo(entry, 'redo');
+    expect(h.overrides().tx[KEY]).toMatchObject({ notTransfer: true, asReimbursement: true, entryId: entry.id });
+    await h.undo(entry, 'undo');
+    expect(h.overrides().tx[KEY]).toEqual(PRIOR_ENTRY);
+  });
+
+  it('a filing whose re-type is refused takes its setting back and leaves the prior entry exactly as it was', async () => {
+    const h = harness([{ ...DEPOSIT }], prior());
+    h.fh.host.saveMany = async () => ({ created: [], updated: [], errors: [{ action: 'update', message: '400' }] });
+    await h.file();
+    expect(h.overrides().tx[KEY]).toEqual(PRIOR_ENTRY);
+  });
+
+  it('an Undo whose re-type is refused puts the entry back exactly as the filing left it', async () => {
+    const h = harness([{ ...DEPOSIT }], prior());
+    const entry = await h.file();
+    const kept = h.overrides().tx[KEY];
+    h.fh.host.saveMany = async () => ({ created: [], updated: [], errors: [{ action: 'update', message: '400' }] });
+    await h.undo(entry, 'undo');
+    expect(h.overrides().tx[KEY]).toEqual(kept);
+  });
+
+  it('a Redo whose re-type is refused leaves the prior entry exactly as the Undo left it', async () => {
+    const h = harness([{ ...DEPOSIT }], prior());
+    const entry = await h.file();
+    await h.undo(entry, 'undo');
+    h.fh.host.saveMany = async () => ({ created: [], updated: [], errors: [{ action: 'update', message: '400' }] });
+    await h.undo(entry, 'redo');
+    expect(h.overrides().tx[KEY]).toEqual(PRIOR_ENTRY);
   });
 });

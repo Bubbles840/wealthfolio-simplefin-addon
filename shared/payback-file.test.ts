@@ -334,3 +334,50 @@ describe('filePayback — ruling PB-B', () => {
     expect(await filePayback(RESTAURANTS, w.io, NOW)).toEqual({ kind: 'refused', message: PAYBACK_UPDATE_ADDON });
   });
 });
+
+describe('filePayback — fix wave B', () => {
+  it('M3: an assignment that landed but lost its response counts as filed — logged with its category, and the message is true', async () => {
+    const w = world();
+    w.io.assign = vi.fn(async () => { throw new Error('socket hang up'); });
+    w.io.assigned = vi.fn(async () => 'cat-rest');
+    const out = await filePayback(RESTAURANTS, w.io, NOW);
+    expect(out).toEqual({
+      kind: 'filed',
+      message: 'Filed as a payback under Restaurants — it takes $14 off your Food & Dining spending.\nUndo it from /changes.',
+    });
+    expect(w.logged[0]).toMatchObject({ kind: 'payback-filed', after: { categoryId: 'cat-rest', categoryName: 'Restaurants' } });
+  });
+
+  it('M3: a row that is filed under some OTHER category is not a landed filing', async () => {
+    const w = world();
+    w.io.assign = vi.fn(async () => { throw new Error(RAW); });
+    w.io.assigned = vi.fn(async () => 'cat-other');
+    expect((await filePayback(RESTAURANTS, w.io, NOW)).kind).toBe('partial');
+    expect(w.logged[0]).toMatchObject({ after: { categoryId: null } });
+  });
+
+  it('M3: a re-read that fails is not a landed filing either, and says so in the log', async () => {
+    const w = world();
+    w.io.assign = vi.fn(async () => { throw new Error(RAW); });
+    w.io.assigned = vi.fn(async () => { throw new Error('ECONNRESET'); });
+    expect((await filePayback(RESTAURANTS, w.io, NOW)).kind).toBe('partial');
+    expect(w.logs.join('\n')).toContain('ECONNRESET');
+  });
+
+  it('M3: a host without the read keeps the old answer', async () => {
+    const w = world();
+    w.io.assign = vi.fn(async () => { throw new Error(RAW); });
+    expect((await filePayback(RESTAURANTS, w.io, NOW)).kind).toBe('partial');
+  });
+
+  it('M9: the change log failing after a lost-response filing still says there is no Undo', async () => {
+    const w = world();
+    w.io.assign = vi.fn(async () => { throw new Error('socket hang up'); });
+    w.io.assigned = vi.fn(async () => 'cat-rest');
+    w.io.record = async () => { throw new Error('quota'); };
+    expect(await filePayback(RESTAURANTS, w.io, NOW)).toEqual({
+      kind: 'filed',
+      message: `Filed as a payback under Restaurants — it takes $14 off your Food & Dining spending.\n${PAYBACK_NO_UNDO}`,
+    });
+  });
+});

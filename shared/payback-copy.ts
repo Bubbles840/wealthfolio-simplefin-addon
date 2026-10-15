@@ -19,7 +19,7 @@ export const PAYBACK_PICK = 'Pick the spending it pays you back for.';
 
 // ── Filing ───────────────────────────────────────────────────────────────
 /** `$14` for whole dollars, else the change log's cents-aware `$1,234.56`: never rounded. */
-const paybackMoney = (cents: number): string => changeMoney(cents).replace(/\.00$/, '');
+export const paybackMoney = (cents: number): string => changeMoney(cents).replace(/\.00$/, '');
 /** "Filed as a payback under Restaurants — it takes $14 off your Food & Dining spending." */
 export function paybackDone(categoryName: string, spendingName: string, absCents: number): string {
   return `Filed as a payback under ${categoryName} — it takes ${paybackMoney(absCents)} off your ${spendingName} spending.`;
@@ -69,6 +69,12 @@ export const PAYBACK_UNDO_UNCHANGED = "Couldn't undo it — Wealthfolio didn't t
 export const PAYBACK_UNDO_STUCK = "Couldn't undo it — Wealthfolio didn't take the change, and the payback setting couldn't be put back, so the next sync turns it into a deposit that is still filed under its category. Take that off in Wealthfolio then.";
 /** The same, for a payback with no category (nothing is left filed). */
 export const PAYBACK_UNDO_STUCK_PLAIN = "Couldn't undo it — Wealthfolio didn't take the change, and the payback setting couldn't be put back, so the next sync turns it into a deposit again.";
+/** The re-type's answer was lost and the row could not be read again (PB-D m2). */
+export const PAYBACK_UNDO_UNSURE = "Couldn't tell whether Wealthfolio took the undo. The payback setting is back as it was; check the transaction in Wealthfolio before trying again.";
+export const PAYBACK_REDO_UNSURE = "Couldn't tell whether Wealthfolio took the redo. The payback setting is back off; check the transaction in Wealthfolio before trying again.";
+/** A stuck payback was filed from /categorize since (final review M1). */
+export const paybackFiledSince = (op: 'undo' | 'redo'): string =>
+  `It was filed under a category since — undo that filing from /changes first, then ${op === 'undo' ? 'undo' : 'redo'} this. Nothing was ${op === 'undo' ? 'undone' : 'redone'}.`;
 export const paybackUndoHalf = (categoryName: string): string =>
   `Couldn't finish the undo — it's a deposit again, but it's still filed under ${categoryName}. Take that off in Wealthfolio.`;
 export const PAYBACK_REDO_UNCHANGED = "Couldn't redo it — Wealthfolio didn't take the change. It's still a deposit, and nothing was changed.";
@@ -93,7 +99,7 @@ export function paybackRulesPreview(
   if (breadth) {
     const total = breadth.filed + breadth.waiting;
     lines.push(total === 0
-      ? `No deposit in the last ${PAYBACK_BREADTH_DAYS} days reads that way.`
+      ? `No other deposit in the last ${PAYBACK_BREADTH_DAYS} days reads that way.`
       : `In the last ${PAYBACK_BREADTH_DAYS} days, ${total} deposit${total === 1 ? '' : 's'} here read that way: ${breadth.filed} already in your ledger, ${breadth.waiting} waiting for a category.`
         + (breadth.waiting > 0 ? ` File the waiting ones one by one with ${PAYBACK_SWITCH}.` : ''));
   }

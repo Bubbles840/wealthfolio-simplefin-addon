@@ -61,6 +61,9 @@ export interface TxOverride {
   /** What it is, in words ("CITI AUTOPAY · Checking"), for the overrides list —
    *  the change log keeps 90 days, an override a year. */
   label?: string;
+  /** The entry as it was before `asReimbursement` was set over other flags: clearing that flag
+   *  puts `at`, `label` and `entryId` back exactly (1.62). Never a flag; ignored by older code. */
+  was?: { flag: string; at: string; label?: string; entryId?: string };
 }
 
 export interface AccountOverride {
@@ -242,7 +245,7 @@ function withKey<T>(rec: Record<string, T>, key: string, value: T | null): Recor
 
 /** Anything beyond the entry's bookkeeping keys is a flag — one this version
  *  knows or one from a newer version, which keeps the entry alive. */
-const hasAnyFlag = (entry: object) => Object.keys(entry).some((k) => k !== 'at' && k !== 'entryId' && k !== 'label');
+const hasAnyFlag = (entry: object) => Object.keys(entry).some((k) => k !== 'at' && k !== 'entryId' && k !== 'label' && k !== 'was');
 
 export function setTxOverride(
   o: SyncOverrides,
@@ -252,8 +255,13 @@ export function setTxOverride(
   extra: { entryId?: string; label?: string } = {},
 ): SyncOverrides {
   const prev = own(o.tx, txKey) ? o.tx[txKey] : undefined;
+  // A payback set over another flag remembers the entry it found (PB-B M4), so taking it off restores it exactly.
+  const remember = flag === 'asReimbursement' && prev && !prev.asReimbursement && !prev.was && hasAnyFlag(prev)
+    ? { was: { flag, at: prev.at, ...(prev.label ? { label: prev.label } : {}), ...(prev.entryId ? { entryId: prev.entryId } : {}) } }
+    : {};
   const entry: TxOverride = {
     ...(prev ?? {}),
+    ...remember,
     [flag]: true,
     at: now.toISOString(),
     ...(extra.entryId ? { entryId: extra.entryId } : {}),
@@ -266,7 +274,20 @@ export function setTxOverride(
 export function clearTxOverride(o: SyncOverrides, txKey: string, flag: TxOverrideFlag): SyncOverrides {
   if (!own(o.tx, txKey)) return o;
   const { [flag]: _gone, ...rest } = o.tx[txKey];
-  return { ...o, tx: withKey(o.tx, txKey, hasAnyFlag(rest) ? (rest as TxOverride) : null) };
+  if (!hasAnyFlag(rest)) return { ...o, tx: withKey(o.tx, txKey, null) };
+  const entry = rest as TxOverride;
+  // The flag that was set over this entry takes its stamp with it: `at`, `label` and `entryId` come back as they were.
+  if (entry.was?.flag !== flag) return { ...o, tx: withKey(o.tx, txKey, entry) };
+  const { was, entryId: _entryId, label: _label, ...kept } = entry;
+  const back: TxOverride = {
+    ...kept, at: was.at, ...(was.label ? { label: was.label } : {}), ...(was.entryId ? { entryId: was.entryId } : {}),
+  };
+  return { ...o, tx: withKey(o.tx, txKey, back) };
+}
+
+/** One transaction's entry put back exactly as it was (`undefined`: it had none). */
+export function restoreTxEntry(o: SyncOverrides, txKey: string, entry: TxOverride | undefined): SyncOverrides {
+  return { ...o, tx: withKey(o.tx, txKey, entry ?? null) };
 }
 
 export function setAccountOverride(
