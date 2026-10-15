@@ -374,7 +374,7 @@ export interface PaybackRulesOutcome {
 /** Words so common in a bank's wording that a rule made only of them would catch deposits that are not paybacks. */
 const GENERIC_BANK_WORDS: ReadonlySet<string> = new Set([
   'DEPOSIT', 'MOBILE', 'CREDIT', 'ACH', 'TRANSFER', 'ONLINE', 'DIRECT', 'CHECK', 'FROM', 'TO', 'REF', 'PAYMENT',
-  'CASHOUT', 'ZELLE', 'VENMO', 'PPD', 'WEB', 'ID',
+  'PPD', 'WEB', 'ID',
 ]);
 
 /** A pattern needs at least one word that is not generic bank wording (and not a number); else the plain refusal. */
