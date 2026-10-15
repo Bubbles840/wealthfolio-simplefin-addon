@@ -17,9 +17,12 @@ export interface MappingRule {
   onlyMoneyIn?: true;
   /** A payback rule (1.62, W10): the one Wealthfolio account it reads. */
   accountId?: string;
-  /** A payback rule (1.62, W10): the bank day (YYYY-MM-DD) it was made. The
-   *  sync applies it only to transactions dated on or after it, so it never
-   *  re-types a deposit already stored (income filed last week stays income). */
+  /** A payback rule (1.62, W10): the day BEFORE the rule's UTC day (YYYY-MM-DD),
+   *  so a deposit of the same evening is not missed. The sync applies the rule
+   *  only to transactions dated on or after it. It is not what keeps stored
+   *  deposits from being re-typed: a rule that carries `since` also types only
+   *  rows the sync CREATES (`createOnly` on the mapped type), so a row already
+   *  stored keeps its own type and subtype. */
   since?: string;
 }
 

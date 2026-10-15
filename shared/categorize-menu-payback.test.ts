@@ -130,3 +130,15 @@ describe('the payback’s outcome', () => {
     }
   });
 });
+
+describe('the list shows an amount as the reply does (PB-B cosmetic)', () => {
+  it('keeps the cents of a $14.50 deposit on the list and on its own screen — never "$15"', () => {
+    const s = session({ kind: 'list', page: 0 }, { txns: [deposit({ amountCents: 1450 })] });
+    expect(view(s).labels[0]).toBe('Oct 9 · VENMO CASHOUT · +$14.50');
+    expect(view({ ...s, screen: { kind: 'txn', activityId: 'act-7' } }).text).toContain('+$14.50 · Oct 9');
+  });
+
+  it('still drops the cents of a whole amount', () => {
+    expect(view(session({ kind: 'list', page: 0 })).labels[0]).toBe('Oct 9 · VENMO CASHOUT · +$14');
+  });
+});

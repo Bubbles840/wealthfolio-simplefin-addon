@@ -27,4 +27,14 @@ describe('a refused assignment (W9)', () => {
       expect(assignFailureText(lead, raw)).not.toMatch(/Income activities|Categories label/);
     }
   });
+
+  it('PB-G: the wrong-bucket line says money in or money out, as Wealthfolio named the bucket', () => {
+    const income = 'assignActivityCategory failed: 400 - Income activities can only use income categories. Categories label the cash-flow bucket; they do not change it.';
+    const spending = 'assignActivityCategory failed: 400 - Spending activities can only use spending categories. Categories label the cash-flow bucket; they do not change it.';
+    expect(assignFailureText(ASSIGN_FAILED_TEXT, income)).toContain('It is recorded as money in and can only take an income category while that is true.');
+    const out = assignFailureText(ASSIGN_FAILED_TEXT, spending);
+    expect(out).toContain('It is recorded as money out and can only take a spending category while that is true.');
+    expect(out).not.toContain('money in');
+    expect(out).not.toMatch(/Spending activities|Categories label/);
+  });
 });
