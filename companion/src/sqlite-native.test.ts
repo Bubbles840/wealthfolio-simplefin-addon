@@ -121,6 +121,21 @@ describe('sqlite-native', () => {
       }
     });
 
+    it('LU-E m2: an exclusion setting that is not JSON reads as no exclusions, not as no budgets', () => {
+      const { path, cleanup } = makeTestDb();
+      try {
+        const db = new DatabaseSync(path);
+        db.exec(`INSERT INTO taxonomy_categories (id, name, parent_id, taxonomy_id) VALUES ('food', 'Food', NULL, 'spending_categories')`);
+        db.exec(`INSERT INTO budget_targets (category_id, amount, period_key, updated_at, target_type, taxonomy_id) VALUES
+          ('food', '300', 'default', '2026-06-01T00:00:00Z', 'category', 'spending_categories')`);
+        db.exec(`INSERT INTO app_settings VALUES ('spending.excluded_category_ids', 'not json')`);
+        db.close();
+        expect(getNativeWealthfolioBudgets(path, '2026-07')).toEqual({ Food: 300 });
+      } finally {
+        cleanup();
+      }
+    });
+
     it('falls back to the default row when no month-specific row exists', () => {
       const { path, cleanup } = makeTestDb();
       try {
