@@ -764,6 +764,8 @@ export interface BookkeepingFacts {
    *  how many rows were re-created (default: the ids listed). */
   pairs?: number;
   rows?: number;
+  /** `card-transfer-out` only: rows Wealthfolio refused for good, left as they were. */
+  refused?: string[];
   /** `transfer-unlink` only: Wealthfolio's own unlink kept both rows, retyped. */
   inPlace?: boolean;
 }
@@ -774,7 +776,7 @@ export function bookkeepingChange(f: BookkeepingFacts): ChangeDraft {
   const summary = f.step === 'legacy-placeholder'
     ? `Restated ${n} old placeholder ${plural(n, 'row', 'rows')} with ${plural(n, 'its', 'their')} real ${plural(n, 'amount', 'amounts')}`
     : f.step === 'card-transfer-out'
-    ? `Restated ${n} card bookkeeping ${plural(n, 'row', 'rows')} as ${plural(n, 'a transfer', 'transfers')} out, which Wealthfolio leaves out of spending`
+    ? `Restated ${n} card bookkeeping ${plural(n, 'row', 'rows')} as ${plural(n, 'a transfer', 'transfers')} out, which Wealthfolio leaves out of spending${f.refused?.length ? `; Wealthfolio refused ${f.refused.join(', ')}, which stay as they were` : ''}`
     : f.step === 'external-marker'
       ? `Marked ${n} bookkeeping ${plural(n, 'row', 'rows')} as outside transfers for Wealthfolio's Health page`
       : f.step === 'transfer-relink'
@@ -795,7 +797,7 @@ export function bookkeepingChange(f: BookkeepingFacts): ChangeDraft {
       ...(f.legs?.length ? { txKeys: f.legs.map((l) => l.txKey), description: f.legs.map((l) => l.description).join(' / ') } : {}),
     },
     summary,
-    after: { step: f.step, count: n, ...(f.categoryName ? { categoryName: f.categoryName } : {}) },
+    after: { step: f.step, count: n, ...(f.categoryName ? { categoryName: f.categoryName } : {}), ...(f.refused?.length ? { refused: [...f.refused] } : {}) },
     undoable: false,
   };
 }

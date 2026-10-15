@@ -1074,6 +1074,11 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
         set: (value) => wfClient.setAddonSecret('simplefin-sync', CARD_REWRITE_SECRET_KEY, value),
       },
       saveMany: (req) => host.saveMany(req),
+      // Re-read each batch by id right before it is written (the database read is older).
+      searchByIds: async (ids) => (await wfClient.searchActivities({ page: 0, pageSize: Math.max(ids.length, 1), activityIdFilter: ids }))
+        .map((a) => ({ id: a.id, accountId: a.accountId, activityType: a.activityType, date: a.date, comment: a.comment ?? null, sourceGroupId: a.sourceGroupId ?? null })),
+      installedAddonVersion: () => readInstalledAddonVersion(wealthfolioDbPath()),
+      noOpeningFile: (sfinId) => hasAccountOverride(overrides, sfinId, 'noOpeningFile'),
       record: (draft) => rewriteChanges.push(draft),
       log,
       now: new Date(),
