@@ -31,6 +31,10 @@ export interface UncategorizedRow {
    *  hint. Optional: an older add-on ignores it, an older companion never
    *  sends it, and a row with no clear history has none. */
   guess?: { categoryId: string; name: string };
+  /** A posted DEPOSIT on a cash account (1.62, W11): the app offers "It's a
+   *  payback…" on it — the rows Telegram's /categorize offers "It's a payback »"
+   *  on. Optional: an older companion never sends it, so its rows offer none. */
+  paybackEligible?: true;
 }
 
 /**
