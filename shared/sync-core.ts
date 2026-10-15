@@ -1980,6 +1980,9 @@ async function runSyncPass(
     /** Decided by a rule that types only rows the sync creates (a payback rule's
      *  `since`): reconciliation leaves a stored row's type and subtype as they are. */
     createOnly?: true;
+    /** Nothing decided this cash money-in row's type and the plain mapping says
+     *  DEPOSIT: a stored payback stays as stored (see `FeedTx.keepPayback`). */
+    keepPayback?: true;
   }
   const preparedByAccount = new Map<string, PreparedTx[]>();
   const candidates: TransferCandidate[] = [];
@@ -2175,6 +2178,9 @@ async function runSyncPass(
         // Only when the rule's own type stands: the asReimbursement flag and the
         // notTransfer rewrite decide by themselves and may re-type a stored row.
         ...(!payback && !(notTransfer && isTransferType(mapped.type)) && mapped.createOnly ? { createOnly: true as const } : {}),
+        // Neither a rule nor the flag decided: a stored payback (filed, made by hand, or
+        // made by a rule since undone) is not the sync's to turn into a deposit.
+        ...(!payback && !mapped.fromRule && mapped.type === 'DEPOSIT' && amount > 0 && (!acctType || acctType === 'CASH') ? { keepPayback: true as const } : {}),
       });
       // Amazon categories go on AFTER typing: `mapTransactionWithSource` above
       // matches the user's merchant rules against the bank's own text, and
@@ -2606,7 +2612,7 @@ async function runSyncPass(
     // in place rather than re-importing). A failed read of existing rows is
     // treated as "none" — the planner then creates everything and the host's
     // own dedup remains the backstop.
-    const feed: FeedTx[] = preparedAll.map(({ tx, type, inTransit, subtype, needsReview, createOnly }) => ({
+    const feed: FeedTx[] = preparedAll.map(({ tx, type, inTransit, subtype, needsReview, createOnly, keepPayback }) => ({
       txId: tx.id,
       wfAccountId,
       absCents: Math.round(Math.abs(parseFloat(tx.amount)) * 100),
@@ -2616,6 +2622,7 @@ async function runSyncPass(
       ...(inTransit ? { inTransit: true } : {}),
       ...(needsReview ? { needsReview: true } : {}),
       ...(createOnly ? { createOnly: true as const } : {}),
+      ...(keepPayback && type === 'DEPOSIT' && !inTransit ? { keepPayback: true as const } : {}),
       // Carried so `changed()` can compare it against the stored row — a rule
       // added after a row was imported has to reach that row as an update, and a
       // row that already agrees must not be rewritten every sync.
