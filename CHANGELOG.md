@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.62.0] - 2026-10-15
+
 ### Added
 - **The report and Wealthfolio are compared after every sync.** When this
   month's spending totals are more than a cent apart, the daily report says
