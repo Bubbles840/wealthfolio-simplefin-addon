@@ -135,3 +135,43 @@ export const PAYBACK_RULES_SAVE_FAILED = "Couldn't save the transaction rule —
 export const PAYBACK_RULES_REFUSED = "Wealthfolio didn't take the category rule, so neither rule was made.";
 export const paybackRulesStuck = (pattern: string): string =>
   `Wealthfolio didn't take the category rule, and the transaction rule couldn't be taken back — new ${pattern} deposits become paybacks with no category. Undo the transaction rule from /changes.`;
+
+// ── In the app (W11) ─────────────────────────────────────────────────────
+// No emoji: the app's copy policy (src/pages/copy-policy.test.tsx). The picker's
+// heading is PAYBACK_PICK; the filed line is paybackDone, as in Telegram.
+/** The action on a money-in row of the needs-a-category list, and on its story. */
+export const PAYBACK_APP_ACTION = "It's a payback…";
+/** Files it, once a category is chosen. */
+export const PAYBACK_APP_FILE = 'File it';
+export const PAYBACK_APP_CANCEL = 'Cancel';
+/** The picker's accessible name, and its empty choice. */
+export const PAYBACK_APP_CATEGORY_LABEL = 'Spending category';
+export const PAYBACK_APP_CHOOSE = 'Choose a category';
+export const PAYBACK_APP_LOADING = 'Loading categories…';
+export const PAYBACK_APP_CATEGORIES_FAILED = "Couldn't read your spending categories — try again.";
+/** The filed reply's last line in the app (Telegram's is PAYBACK_UNDO_HINT). */
+export const PAYBACK_APP_UNDO_HINT = 'Undo it from Telegram: /changes.';
+/** The one-off filing rule's name in Wealthfolio's rules list. */
+export const paybackOnceName = (bankWords: string): string => `Payback (one-off) — ${bankWords}`;
+/** The one-off rule could not be deleted (or may have landed when its save failed). */
+export const paybackLeftoverRule = (ruleName: string): string =>
+  `A one-off rule named "${ruleName}" is still in Wealthfolio's rules; delete it there if it stays.`;
+/** Another rule filed the payback before the one-off rule could. */
+export const paybackFiledFirst = (categoryName: string): string =>
+  `Wealthfolio filed it under ${categoryName} first — it's a payback there; move it in Wealthfolio if that's wrong.`;
+/** The row has a filing in some taxonomy already; the add-on SDK cannot take one off. */
+export const paybackAlreadyFiled = (categoryName: string): string =>
+  `It's filed under ${categoryName} already — take that off in Wealthfolio first.`;
+/** The app, while the companion is older than PAYBACK_SINCE (W8, W11). */
+export const PAYBACK_UPDATE_COMPANION = 'Update the companion to 1.62.0 or newer first — an older one turns a payback back into a deposit on its next sync. Nothing was changed.';
+export const PAYBACK_COMPANION_UNKNOWN = "Couldn't check the companion's version — nothing was changed. Try again.";
+export const PAYBACK_NOT_IN_SPENDING = "Wealthfolio's Spending doesn't track this account, so it can't take a payback — nothing was changed.";
+export const PAYBACK_RULE_REFUSED = "Wealthfolio didn't take the filing rule — nothing was changed.";
+export const PAYBACK_APP_UPDATE_STUCK = "Wealthfolio didn't take the change, so it's still a deposit — but the payback setting couldn't be taken back, so the next sync makes it a payback with no category.";
+export const PAYBACK_APP_UPDATE_UNSURE = "Couldn't tell whether Wealthfolio took the change. The payback setting stays, so the next sync makes it a payback; if it has no category then, pick one in Wealthfolio.";
+/** After the payback setting stays on a row that may not be a payback (logged, so Telegram's Undo takes it off). */
+export const PAYBACK_APP_SETTING_HINT = 'To take the payback setting off, undo it from Telegram: /changes.';
+export const paybackAppUnfiled = (categoryName: string): string =>
+  `It's a payback now, but Wealthfolio didn't file it under ${categoryName} — pick its category in Wealthfolio.`;
+export const paybackAppUnsure = (categoryName: string): string =>
+  `It's a payback now, but couldn't tell whether Wealthfolio filed it under ${categoryName} — check it in Wealthfolio.`;
