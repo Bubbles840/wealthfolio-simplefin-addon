@@ -184,6 +184,22 @@ describe('a payback on the companion', () => {
 });
 
 describe('"Make every … deposit a payback" on the companion (W10)', () => {
+  it('logs both rules through the strict append: when the change log cannot be written, the reply promises no Undo', async () => {
+    const f = fakeClient();
+    f.client.setAddonSecret.mockImplementation(async (_a: string, k: string, v: string) => {
+      if (k.startsWith('change_log:')) throw new Error('500 from Wealthfolio');
+      f.data.set(k, v);
+    });
+    const client = Object.assign(f.client, {
+      listCategorizationRules: vi.fn(async () => []),
+      createCategorizationRule: vi.fn(async () => 'rule-9'),
+    }) as unknown as PaybackRulesClient;
+    const out = await makePaybackRules({
+      pattern: 'ACME REFUND', account: { id: 'wf-chk', name: 'PNC Checking' }, categoryId: 'cat-rest', categoryName: 'Restaurants', description: 'ACME REFUND',
+    }, companionPaybackRulesIo(client, vi.fn()), NOW);
+    expect(out).toEqual({ ok: true, message: 'Done — every ACME REFUND deposit into PNC Checking is a payback under Restaurants from now on.' });
+  });
+
   it('appends the transaction rule and asks Wealthfolio for a rule that files paybacks in that account only', async () => {
     const f = fakeClient();
     const client = Object.assign(f.client, {

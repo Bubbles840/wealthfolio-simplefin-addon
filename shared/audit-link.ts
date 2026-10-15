@@ -10,7 +10,9 @@
  * Right before each pair's write both rows are re-read by id, and nothing is
  * written — "It has changed since — nothing was linked." — when either row
  * changed account, amount, date or type; is linked, or may be (the add-on);
- * carries a `notTransfer` override; is pending (the sync never pairs one); is
+ * carries a `notTransfer` override; is a payback — the `asReimbursement`
+ * override, or a cash CREDIT marked REIMBURSEMENT (its own words: re-creating
+ * it as a TRANSFER_IN would lose the payback and its filing); is pending (the sync never pairs one); is
  * the add-on's own in-transit placeholder, opening balance or correction; or
  * no longer carries the tx id its Health leg named. Money leaving a card is
  * refused on its own words, whatever the row's stored type: the sync never
@@ -46,6 +48,7 @@ import { recreateWrite, type FixRow, type LinkedState } from './fix-row.js';
 import { findingHandle } from './handle.js';
 import { HALF_OF_ANOTHER_TRANSFER, LINK_ANSWER_LOST } from './link-in-place.js';
 import { describeLeg } from './link-pair.js';
+import { isPaybackRow } from './payback-row.js';
 import { descriptionFromComment, txIdFromComment } from './sync-core.js';
 import type { ActivityWrite, LinkLeg, LinkResult, SaveManyResult } from './sync-host.js';
 import { hasTxOverride, SYNC_OVERRIDES_UNREADABLE_MESSAGE, type LoadedSyncOverrides, type SyncOverrides } from './sync-overrides.js';
@@ -58,6 +61,8 @@ export const LINK_CARD_OUT = "Wealthfolio doesn't take a transfer out of a credi
 export const LINK_UNKNOWN_ACCOUNT = "Can't tell what kind of account this is — nothing was linked.";
 export const LINK_DROPPED = "Both rows were re-created as transfers, but Wealthfolio didn't link them.";
 export const LINK_UNREACHABLE = "Couldn't reach Wealthfolio — nothing was linked.";
+/** One of the two is a payback (1.62): money in that comes off spending, never half of a transfer. */
+export const LINK_PAYBACK = "One of these is a payback, not half of a transfer — nothing was linked.";
 
 /** A Health leg and its one likely other half, as the list shows them. */
 export interface LinkPair {
@@ -124,6 +129,9 @@ export function checkLinkPair(pair: LinkPair, now: readonly [ReadRow | null, Rea
     const txId = txIdFromComment(row.notes);
     if (!was.txKey || !txId || !was.txKey.endsWith(`\u0000${txId}`)) return changed;
     if (hasTxOverride(overrides, was.txKey, 'notTransfer')) return changed;
+    if (hasTxOverride(overrides, was.txKey, 'asReimbursement') || (isPaybackRow(row) && row.accountType === 'CASH')) {
+      return { ok: false, reason: LINK_PAYBACK };
+    }
   }
   const outAt = pair.leg.type === 'TRANSFER_OUT' ? 0 : 1;
   const out = now[outAt]!.row;

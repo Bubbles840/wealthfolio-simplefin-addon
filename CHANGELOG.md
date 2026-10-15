@@ -250,6 +250,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Wealthfolio refuses says so in plain words (money in or out, spending
   tracking off), with the reason in the log. Picking a spending category for a
   deposit used to end there, on Wealthfolio's raw refusal.
+- **Link never takes a payback for half of a transfer.** Health no longer
+  offers a row the payback setting is on as a transfer's other half, and
+  Link (Telegram's `/audit`, the app's Checks card) refuses a payback — the
+  setting, or a cash `CREDIT` marked `REIMBURSEMENT` — in its own words: "One
+  of these is a payback, not half of a transfer — nothing was linked."
+  Re-creating it as a transfer would have lost the payback and its category.
+- "Make every <pattern> deposit a payback" says "Undo either rule from
+  /changes" only when both change-log entries were written.
+- The date repair's and the card rewrite's change-log entries list at most 200
+  rows Wealthfolio refused, with the full count beside them.
 
 ### Known limits
 - The spending definition is Wealthfolio 3.10's. On 3.8 and 3.9 a blank
