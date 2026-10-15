@@ -192,6 +192,23 @@ describe('createChangeLogWriter', () => {
     expect(w.pendingGaps()).toEqual([]);
   });
 
+  it('appendStrict resolves { saved } for THIS append and still leaves the gap record on a failure (PB-I)', async () => {
+    const io = memory();
+    let fail = true;
+    io.set = vi.fn(async (k: string, v: string) => {
+      if (fail) throw new Error('500 from Wealthfolio');
+      io.data.set(k, v);
+    });
+    const w = createChangeLogWriter({ writer: 'companion', now: () => NOW });
+    await expect(w.appendStrict(io, [imported(1)])).resolves.toEqual({ saved: false });
+    expect(w.pendingGaps()).toEqual([{ at: NOW.toISOString(), count: 1, reason: GAP_REASON_WRITE }]);
+    fail = false;
+    await expect(w.appendStrict(io, [imported(2)])).resolves.toEqual({ saved: true });
+    expect(stored(io, 'change_log:companion:2026-10').entries).toHaveLength(1);
+    // Nothing to write is nothing lost.
+    await expect(w.appendStrict(io, [])).resolves.toEqual({ saved: true });
+  });
+
   it('counts a paused month as an unreadable gap', async () => {
     const io = memory({ 'change_log:addon:2026-10': 'x', 'change_log:addon:2026-10.2': 'y' });
     const w = createChangeLogWriter({ writer: 'addon', now: () => NOW });

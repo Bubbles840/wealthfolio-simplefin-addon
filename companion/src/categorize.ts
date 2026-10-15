@@ -86,7 +86,7 @@ import { descriptionFromComment, txIdFromComment } from '../../shared/sync-core.
 import { categoryFiledChange, categoryRuleCreatedChange, type ChangeDraft, type FiledCategory } from '../../shared/change-entries.js';
 import { buildGuessIndex, guessCategory, guessSinceDay, type GuessIndex, type PastFiling } from '../../shared/category-guess.js';
 import type { PaybackBreadth, PaybackChoice, PaybackOutcome, PaybackRulesInput, PaybackRulesOutcome } from '../../shared/payback.js';
-import { PAYBACK_UNAVAILABLE, PAYBACK_UNREACHABLE } from '../../shared/payback-copy.js';
+import { PAYBACK_CATEGORY_GONE, PAYBACK_UNAVAILABLE, PAYBACK_UNREACHABLE } from '../../shared/payback-copy.js';
 import { paybackRulePattern } from '../../shared/rule-pattern.js';
 import { removalFingerprint } from '../../shared/tx-remove.js';
 import { uncategorizedWindow } from './uncategorized-status.js';
@@ -1269,8 +1269,14 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
         }
         const row = loaded.fresh.txns.find((t) => t.activityId === action.activityId) ?? null;
         const category = loaded.fresh.categories.find((c) => c.id === action.categoryId) ?? null;
-        if (!row || !category) {
+        if (!row) {
           await showGone(chat, action.activityId, loaded.fresh, ui);
+          return;
+        }
+        if (!category) {
+          // The row is still there; the category the grid offered is not (PB-I m3).
+          const { text, keyboard } = show(chat, { kind: 'txn', activityId: action.activityId }, null, loaded.fresh);
+          await ui.edit(`${PAYBACK_CATEGORY_GONE}\n\n${text}`, keyboard);
           return;
         }
         // The fingerprint `filePayback` makes of its own row: same account name,

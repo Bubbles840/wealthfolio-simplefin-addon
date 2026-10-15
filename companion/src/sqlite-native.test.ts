@@ -635,6 +635,28 @@ describe('sqlite-native', () => {
       }
     });
 
+    it('reads the EFFECTIVE type: activity_type_override (3.8+) wins, a blank one is none (PB-I m4)', () => {
+      const { path, cleanup } = makeTestDb();
+      try {
+        seed(path);
+        const db = new DatabaseSync(path);
+        db.exec(`
+          ALTER TABLE activities ADD COLUMN activity_type_override TEXT;
+          -- A deposit Wealthfolio's own override calls a transfer: no category wanted.
+          UPDATE activities SET activity_type_override = 'TRANSFER_IN' WHERE id = 'act-4';
+          -- A transfer its override calls a deposit: it now wants one.
+          UPDATE activities SET activity_type_override = 'DEPOSIT' WHERE id = 'act-3';
+          -- Blank reads as none.
+          UPDATE activities SET activity_type_override = '  ' WHERE id = 'act-4b';
+        `);
+        db.close();
+        const rows = getNativeUncategorizedSpending(path, '2026-07-01', '2026-08-01');
+        expect(rows.map((r) => [r.activityId, r.activityType])).toEqual([['act-3', 'DEPOSIT'], ['act-4b', 'CREDIT'], ['act-1', 'WITHDRAWAL']]);
+      } finally {
+        cleanup();
+      }
+    });
+
     it('reads rows a live writer has not checkpointed yet (the two-day-stale snapshot bug)', () => {
       // The live incident: the main DB file was last checkpointed 07-31, the
       // write-ahead log held TWO DAYS of newer activity, and the immutable-mode
