@@ -9,6 +9,7 @@ import { UncategorizedList, useDismissals } from '../components/UncategorizedLis
 import { WhyCard } from '../components/WhyCard';
 import { healthIssueCount } from '../components/AuditViews';
 import type { AuditSnapshotRead } from '../../shared/audit-snapshot';
+import { snapshotTripwire, tripwireLine } from '../../shared/spending-tripwire';
 import { ForecastDetail, ForecastTile } from '../components/ForecastViews';
 import { cashForecastView, type CashForecastRead } from '../../shared/cash-forecast';
 import { appTxSearch, type AppStoryTarget } from '../utils/tx-story';
@@ -120,6 +121,10 @@ export function HomeTab({
   onDismissChecklist, onNavigate, poolStatus, onOpenPool, renderTxStory, auditSnapshot, cashForecast,
 }: Props) {
   const checksToLook = healthIssueCount(auditSnapshot);
+  // 1.62 (W5): the last sync found the report and Wealthfolio's Spending page
+  // more than a cent apart this month. Nothing when they agree, or when a
+  // figure could not be read.
+  const differs = tripwireLine(snapshotTripwire(auditSnapshot, new Date()));
   const forecastView = cashForecastView(cashForecast ?? null, companionVersion, new Date());
   const [fixingBaseline, setFixingBaseline] = useState<string | null>(null);
   const [adjusting, setAdjusting] = useState<string | null>(null);
@@ -428,7 +433,7 @@ export function HomeTab({
         <button
           type="button"
           className="sfin-tile sfin-tile--toggle"
-          aria-label={`Accounts: ${accountsSummary(mapping, balances)}${checksToLook > 0 ? ` · Checks: ${checksToLook} to look at` : ''}`}
+          aria-label={`Accounts: ${accountsSummary(mapping, balances)}${differs ? ` · ${differs}` : ''}${checksToLook > 0 ? ` · Checks: ${checksToLook} to look at` : ''}`}
           onClick={() => onNavigate('settings', checksToLook > 0 ? SETTINGS_CARD.checks : SETTINGS_CARD.accounts)}
         >
           <SectionLabel>Accounts</SectionLabel>
@@ -443,6 +448,7 @@ export function HomeTab({
                 ? 'all match the bank'
                 : 'not all checked yet'}
           </div>
+          {differs && <div className="sfin-tile-sub">{differs}</div>}
           {checksToLook > 0 && <div className="sfin-tile-sub">Checks: {checksToLook} to look at</div>}
         </button>
         {/* Doubles as the disclosure trigger once there is a list to show — one

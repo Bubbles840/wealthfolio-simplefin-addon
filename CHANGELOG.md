@@ -7,6 +7,107 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **The report and Wealthfolio are compared after every sync.** When this
+  month's spending totals are more than a cent apart, the daily report says
+  "The report and Wealthfolio differ by $X this month — /audit explains", in
+  Brief and Full, and Home's Accounts tile shows it. $X is the difference
+  after setting aside accounts Wealthfolio's Spending page reads that the
+  add-on doesn't sync, so those alone are not a warning. It goes away on its
+  own once they agree, and a figure that couldn't be read says nothing.
+- **The sync's bookkeeping rows stay out of Wealthfolio's spending.** A
+  transfer waiting for its other half, a balance correction or a starting
+  balance that Wealthfolio would count as spending is filed under a new
+  **Sync bookkeeping** category, which the companion excludes from spending
+  (Wealthfolio 3.9 and later), and taken back out once it stops being
+  bookkeeping. The pass never touches a row that has split lines, or a filing
+  it didn't make (it remembers its own in the `sync_bookkeeping_filed`
+  secret), and it reads the database live only: when the database can only be
+  read as a snapshot it waits. It has no Undo. To keep a bookkeeping row
+  counted, file it under another category; the pass leaves that alone. Each
+  sync it also makes sure the category is still excluded (a Wealthfolio
+  upgrade or reset can drop it from the list), and "Why is this here?" says
+  such a row was filed by the sync as bookkeeping, not set by hand.
+
+### Changed
+- **The report counts spending the same way as Wealthfolio** (see Known
+  limits). The digest's "spent this month", the weekly and pool figures, the Budget tab, budget vs
+  actual, suggested budgets and the cash forecast now read one definition —
+  Wealthfolio's own: the effective type (a type override wins), the subtype
+  and the account type; a linked transfer never; a row filed twice counts
+  once, under its earliest filing (split lines win when there are any); a
+  category Wealthfolio excludes, and its subcategories, left out; an
+  uncategorized refund netted; each row placed in its month by its date in
+  Wealthfolio's timezone; only the accounts Wealthfolio's Spending page
+  reads. Budgets are keyed as Wealthfolio's budget page keys them, by the
+  top-level category, and count only the targets its page lists: category
+  targets in the spending taxonomy, not a category excluded from spending (an
+  income target no longer inflates "left this month"). Three things now count that used to be left out,
+  because Wealthfolio counts them: a charge you dismissed from the
+  needs-a-category list (dismissing still keeps it off the list), a charge
+  whose transfer's other half is still on its way, and a withdrawal filed
+  under a category named "Transfers". On Wealthfolio 3.8, which excludes no
+  category, the sync's own bookkeeping rows count too, as they do there.
+- **"Why is this different from Wealthfolio?"** now names the one gap left:
+  rows on an account Wealthfolio's Spending page reads that the add-on
+  doesn't sync (and, for another currency, amounts Wealthfolio converts that
+  the report doesn't). A snapshot from an older companion still shows its
+  reasons.
+- **The card opening-balance filing reads the database live only** (it waits
+  when the database can only be read as a snapshot) and re-reads Wealthfolio's
+  exclusion list just before adding to it, as the bookkeeping pass does.
+- **Telegram's category pickers no longer offer "Sync bookkeeping".**
+- **The report cube fails to publish, rather than publishing zeros,** when
+  the database can't be read for its spending series, and the comparison
+  above says nothing unless the cube was published in the same sync run.
+- **Redoing a correction or a starting balance, and moving a starting
+  balance back, write noon UTC** when the change log recorded a bare date.
+
+### Fixed
+- **A row dated the 1st no longer lands in the month before.** New rows are
+  written at noon UTC on the bank's date instead of as a bare date, which
+  Wealthfolio 3.8 and 3.9 store at midnight UTC, the previous evening west
+  of UTC. On the first sync after the update, the companion moves the rows
+  already stored at midnight UTC to noon on the same date, in small batches
+  with one entry in the change log. Each batch is re-read right before it is
+  written; a linked transfer, a row with a type override, and a row changed
+  meanwhile are left alone. A row Wealthfolio refuses is asked twice; if it
+  refuses both times it is left at midnight and named in the companion's log,
+  and counted in the run's change-log entry only when that run moved
+  something. A final sweep, on a fresh live read of the database, checks
+  nothing movable is left before the repair is recorded. The repair reads the
+  database live only: when it can only be read as a snapshot ("Date repair
+  waits: the database can only be read as a snapshot"), it does nothing, and
+  a row the database read doesn't know yet is never taken for a retyped one.
+  If it is interrupted, it resumes on the next sync.
+  - **Deploy the add-on zip before or together with the companion.** The
+    repair waits ("Date repair waits for the 1.62 add-on") until the
+    installed add-on is 1.62 or later, because a 1.61 add-on keeps writing
+    bare dates, when the companion can see the installed add-on; when it
+    can't, the repair runs at once, so upload the zip first. A browser tab
+    still running 1.61 after the upload writes bare dates too, until it is
+    reloaded.
+  - **To run it again,** delete the `date_repair_done` secret; the next sync
+    checks every row again.
+  - **UTC+12 to UTC+14 (Auckland, Fiji, Kiritimati) are worse off.** There,
+    midnight UTC is already the bank's day, and noon UTC is the next one: new
+    rows land a day late, which 1.61 did not do. The repair itself leaves a
+    row alone when noon UTC on its day isn't that day in Wealthfolio's
+    timezone, so it doesn't move correct rows there. Writing those zones'
+    new rows correctly is open.
+
+### Known limits
+- The spending definition is Wealthfolio 3.10's. On 3.8 and 3.9 a blank
+  type override counts as a type (the row then counts as nothing there), and
+  exclusions exist only from 3.9, so the sync's bookkeeping rows count on 3.8.
+- The CLI fallback for reading the database prints control characters in
+  caret form (display only; the data is unchanged). That depends on the
+  sqlite3 version (3.50 and later); older versions print them raw, which the
+  note-last layout tolerates.
+- A foreign-currency row isn't converted, and the Budget tab's "✓ matches the
+  ledger" check compares the cube with the same spending lines, so it checks
+  assembly only; the tripwire is the independent check.
+
 ## [1.61.0] - 2026-10-14
 
 ### Added

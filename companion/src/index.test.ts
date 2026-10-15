@@ -1,11 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest';
-import { maskUrl, publishLiveReports, validateStartupEnv, startupWarnings, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, composeDailyDigest, composeWeeklyReportMessage, composeMonthlyWrapUpMessage, runCompanionSyncExclusive, FIX_SYNC_RUNNING, buildTelegramCommandHandler, applyTelegramDismissal, undoTelegramDismissal, formatDismissedReply, buildTelegramListenerDeps, buildCategorizeController, buildCategorizeDeps, rememberImportScope, sendUnmappedAccountsNotice, updateCheckDeps, buildAskSessions } from './index.js';
+import { maskUrl, publishLiveReports, validateStartupEnv, startupWarnings, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, composeDailyDigest, composeWeeklyReportMessage, composeMonthlyWrapUpMessage, runCompanionSyncExclusive, FIX_SYNC_RUNNING, buildTelegramCommandHandler, applyTelegramDismissal, undoTelegramDismissal, formatDismissedReply, buildTelegramListenerDeps, buildCategorizeController, buildCategorizeDeps, rememberImportScope, sendUnmappedAccountsNotice, updateCheckDeps, buildAskSessions, cubeBuildDeps } from './index.js';
 import { findingHandle } from '../../shared/findings.js';
 import { whyRunHandle } from './why-menu.js';
 import { formatHelpReply, parseCommand } from '../../shared/telegram-commands.js';
 import { SIMPLEFIN_SYNC_VERSION } from '../../shared/version.js';
 import { runSyncCore } from '../../shared/sync-core.js';
-import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeCategorizedSpending, getNativeSpendingCategories, getNativeTxSearchRows, getNativeBudgetSpend, getNativeSpendingHistoryStart } from './sqlite-native.js';
+import { getNativeUncategorizedByMonthAccount, getNativeSpendDailyTotals, getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeCategorizedSpending, getNativeSpendingCategories, getNativeTxSearchRows, getNativeBudgetSpend, getNativeSpendingHistoryStart } from './sqlite-native.js';
 import { getNativeAuditSettings } from './sqlite-audit.js';
 import { ingestAmazonMail } from './amazon-mail.js';
 import { ingestVenmoMail } from './venmo-mail.js';
@@ -16,20 +16,27 @@ import { categoryFiledChange, stampChange, transactionRemovedChange } from '../.
 import { changesData } from './changes-menu.js';
 import { existsSync } from 'fs';
 import type { SyncResult } from '../../shared/sync-core.js';
+import { AUDIT_SNAPSHOT_SECRET_KEY, buildAuditSnapshot } from '../../shared/audit-snapshot.js';
+import { explainBalances } from '../../shared/audit-balance.js';
+import { explainHeadline } from '../../shared/audit-headline.js';
+import { healthIssues } from '../../shared/audit-health.js';
 
 
 /**
  * A dismissal timestamp comfortably inside the 60-day pruning window.
  *
- * ONE value for the whole file, computed once. It has to be relative to the
- * clock — the literal dates this replaced turned four tests into time bombs
- * (one went off on 2026-09-18) — but it also has to be a single constant,
- * because several tests compare the fixture's timestamp against the value that
- * comes back: evaluating `Date.now()` separately on each side passes on a fast
- * machine and fails by one millisecond on a slow one, which is exactly how the
- * first version of this fix failed in CI while passing locally.
+ * Relative to the clock — a literal date is a time bomb — and computed in a
+ * `beforeEach`, never at import: the code under test prunes against the clock
+ * of the TEST, and an import-time value is a different clock's (it broke with
+ * the system date moved). It is still ONE value for the whole test, because
+ * several tests compare the fixture's timestamp against the value that comes
+ * back: evaluating `Date.now()` separately on each side passes on a fast
+ * machine and fails by one millisecond on a slow one.
  */
-const RECENT_DISMISSAL = new Date(Date.now() - 10 * 86_400_000).toISOString();
+let RECENT_DISMISSAL = '';
+beforeEach(() => {
+  RECENT_DISMISSAL = new Date(Date.now() - 10 * 86_400_000).toISOString();
+});
 
 /** A promise plus its resolve/reject, for tests that need to control exactly
  *  when an in-flight async operation settles. */
@@ -4953,6 +4960,19 @@ describe('the /categorize wiring', () => {
       expect(written['act-earlier']).toBe(RECENT_DISMISSAL);
     });
 
+    it('LU-H I1: the Telegram category pickers (/categorize, /newrule) do not offer "Sync bookkeeping"', () => {
+      const { client } = clientFor([]);
+      vi.mocked(getNativeSpendingCategories).mockReturnValue([
+        { id: 'c1', name: 'Groceries', parentId: null, parentName: null },
+        { id: 'c2', name: 'Sync bookkeeping', parentId: null, parentName: null },
+      ] as any);
+      try {
+        expect(buildCategorizeDeps(client).readCategories('/db').map((c) => c.name)).toEqual(['Groceries']);
+      } finally {
+        vi.mocked(getNativeSpendingCategories).mockReturnValue([]);
+      }
+    });
+
     it('replays a REMOVAL as a delta, leaving a third party\'s entry alone', async () => {
       const { client, secrets } = clientFor([
         [LEDGER_KEY, JSON.stringify({ 'act-menu': RECENT_DISMISSAL })],
@@ -6421,7 +6441,7 @@ describe('report slimming toggles (v1.47)', () => {
     });
     const client = clientWith(
       { reportDetail: 'brief' },
-      [['report_cube', cube], ['semester_pool', JSON.stringify({ amountCents: 1_600_000, startDate: '2026-07-01', endDate: '2027-01-01' })]],
+      [['report_cube', cube], ['semester_pool', JSON.stringify({ amountCents: 1_600_000, startDate: '2026-07-01', endDate: '2030-01-01' })]],
     );
     const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
     vi.stubGlobal('fetch', fetchMock);
@@ -6450,5 +6470,60 @@ describe('report slimming toggles (v1.47)', () => {
     // The headline still counts it: same "left this month" figure either way.
     const headline = (t: string) => t.match(/\$[\d,]+ (left|over budget)/)?.[0];
     expect(headline(brief!)).toBe(headline(full!));
+  });
+});
+
+describe('the tripwire in the daily report (1.62)', () => {
+  const MORNING = new Date(2026, 9, 14, 8, 0, 0);
+  const snapshot = (reportCents: number, wealthfolioCents: number) => JSON.stringify(buildAuditSnapshot({
+    balances: explainBalances({}),
+    headline: explainHeadline({ month: '2026-10', reportCents, wealthfolioCents, rows: [] }),
+    health: healthIssues({}),
+  }, MORNING));
+  const clientWith = (snap: string | null, tg: Record<string, unknown> = {}) => {
+    const secrets = new Map<string, string>([
+      ['telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true, digestRows: 'all', ...tg })],
+      ...(snap === null ? [] : [[AUDIT_SNAPSHOT_SECRET_KEY, snap] as [string, string]]),
+    ]);
+    return {
+      getAddonSecret: vi.fn(async (_a: string, k: string) => secrets.get(k) ?? null),
+      setAddonSecret: vi.fn(async (_a: string, k: string, v: string) => { secrets.set(k, v); }),
+    } as any;
+  };
+  beforeEach(() => {
+    vi.mocked(existsSync).mockReturnValue(true);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(MORNING);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+  const LINE = '⚠️ The report and Wealthfolio differ by $951.45 this month — /audit explains';
+
+  it('carries the line in Brief and in Full, and archives it', async () => {
+    for (const tg of [{}, { reportDetail: 'brief' }]) {
+      const digest = (await composeDailyDigest(clientWith(snapshot(229206, 324351), tg), { requireTelegram: false }))!;
+      expect(digest.text).toContain(LINE);
+      expect(digest.archive).toContain(LINE);
+    }
+  });
+
+  it('says nothing when the two are a cent apart, or there are no checks to read', async () => {
+    for (const snap of [snapshot(324352, 324351), null, '{oops']) {
+      const digest = (await composeDailyDigest(clientWith(snap, { reportDetail: 'brief' }), { requireTelegram: false }))!;
+      expect(digest.text).not.toContain('differ by');
+    }
+  });
+});
+
+describe('M-2: the report cube reads the spending series strictly', () => {
+  it('a spending read that fails fails the cube (no zeros published), and the other series ask for strict reads too', async () => {
+    const deps = cubeBuildDeps({} as any, '/db/wealthfolio.db');
+    vi.mocked(getNativeBudgetSpend).mockImplementationOnce(() => { throw new Error('database is locked'); });
+    expect(() => deps.spendMatrix('2026-09-01', '2026-10-01')).toThrow('database is locked');
+    deps.uncategorizedByMonthAccount('2026-09-01', '2026-10-01');
+    expect(getNativeUncategorizedByMonthAccount).toHaveBeenLastCalledWith('/db/wealthfolio.db', '2026-09-01', '2026-10-01', true);
+    deps.spendDaily('2026-09-01', '2026-10-01');
+    expect(getNativeSpendDailyTotals).toHaveBeenLastCalledWith('/db/wealthfolio.db', '2026-09-01', '2026-10-01', true);
   });
 });

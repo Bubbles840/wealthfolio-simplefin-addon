@@ -9,6 +9,7 @@
  */
 import { maybeLinkedTransfer } from './change-undo-run.js';
 import { flowExternalOf, isTransferType } from './sync-core.js';
+import { bankDayInstant } from './bank-day.js';
 import type { ActivityWrite } from './sync-host.js';
 
 export interface FixRow {
@@ -90,7 +91,7 @@ export function recreateWrite(row: FixRow): ActivityWrite {
   return {
     accountId: row.accountId,
     activityType: row.type,
-    activityDate: row.date,
+    activityDate: bankDayInstant(row.date),
     ...(isTransferType(row.type) ? {} : { symbol: { symbol: `$CASH-${row.currency}` } }),
     amount: row.absCents / 100,
     ...(row.feeCents ? { fee: row.feeCents / 100 } : {}),

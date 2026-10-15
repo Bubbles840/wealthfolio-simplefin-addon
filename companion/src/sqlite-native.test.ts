@@ -21,10 +21,13 @@ function makeTestDb(): { path: string; cleanup: () => void } {
     -- "notes" is the real column name for what the REST API calls "comment";
     -- SELECT comment FROM activities fails with "no such column: comment", so
     -- the fixture carries the SQLite name deliberately.
-    CREATE TABLE activities (id TEXT PRIMARY KEY, amount TEXT, activity_date TEXT, activity_type TEXT, notes TEXT, account_id TEXT DEFAULT 'acct-cash', subtype TEXT, currency TEXT, source_group_id TEXT);
-    CREATE TABLE activity_taxonomy_assignments (activity_id TEXT, category_id TEXT, taxonomy_id TEXT, source TEXT);
-    CREATE TABLE budget_targets (category_id TEXT, amount TEXT, period_key TEXT, updated_at TEXT);
-    CREATE TABLE accounts (id TEXT PRIMARY KEY, name TEXT, account_type TEXT);
+    CREATE TABLE activities (id TEXT PRIMARY KEY, amount TEXT, activity_date TEXT, activity_type TEXT, notes TEXT, account_id TEXT DEFAULT 'acct-cash', subtype TEXT, currency TEXT, source_group_id TEXT, activity_type_override TEXT);
+    -- A filing's taxonomy defaults to spending, like the categories': the
+    -- spending readers read the assignment's own taxonomy, as Wealthfolio does.
+    CREATE TABLE activity_taxonomy_assignments (activity_id TEXT, category_id TEXT, taxonomy_id TEXT DEFAULT 'spending_categories', source TEXT, id TEXT, created_at TEXT);
+    CREATE TABLE spending_activity_splits (id TEXT, activity_id TEXT, taxonomy_id TEXT, category_id TEXT, amount TEXT, sort_order INTEGER);
+    CREATE TABLE budget_targets (category_id TEXT, amount TEXT, period_key TEXT, updated_at TEXT, target_type TEXT DEFAULT 'category', taxonomy_id TEXT DEFAULT 'spending_categories');
+    CREATE TABLE accounts (id TEXT PRIMARY KEY, name TEXT, account_type TEXT, is_archived INTEGER DEFAULT 0);
     CREATE TABLE budget_groups (id TEXT PRIMARY KEY, name TEXT, key TEXT, color TEXT, icon TEXT, sort_order INTEGER);
     CREATE TABLE budget_group_assignments (id TEXT PRIMARY KEY, group_id TEXT, taxonomy_id TEXT, category_id TEXT);
     CREATE TABLE app_settings (setting_key TEXT PRIMARY KEY, setting_value TEXT);
@@ -33,7 +36,10 @@ function makeTestDb(): { path: string; cleanup: () => void } {
   // state of a configured install: Wealthfolio only categorises (and only
   // totals) activities in these accounts, and the uncategorized readers now
   // honour the same scope. A test about an UNtracked account adds its own.
+  // Wealthfolio's timezone is UTC here, so a row's stored date is the day it
+  // is counted on wherever the suite runs; a test about a zone sets its own.
   db.exec(`
+    INSERT INTO app_settings VALUES ('timezone', 'UTC');
     INSERT INTO app_settings VALUES ('spending.enabled', 'true');
     INSERT INTO app_settings VALUES ('spending.account_ids', '["acct-cash","acct-card","wf-a","wf-cash"]');
   `);
@@ -75,6 +81,56 @@ describe('sqlite-native', () => {
 
         const result = getNativeWealthfolioBudgets(path, '2026-07');
         expect(result['Groceries']).toBe(400);
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('keys a budget by its top-level category in a three-level taxonomy, summing what sits below it', () => {
+      const { path, cleanup } = makeTestDb();
+      try {
+        const db = new DatabaseSync(path);
+        db.exec(`INSERT INTO taxonomy_categories (id, name, parent_id) VALUES ('top', 'Food', NULL), ('mid', 'Restaurants', 'top'), ('low', 'Pizza', 'mid')`);
+        db.exec(`INSERT INTO budget_targets (category_id, amount, period_key, updated_at) VALUES
+          ('top', '300', 'default', '2026-06-01T00:00:00Z'), ('low', '40', 'default', '2026-06-01T00:00:00Z')`);
+        db.close();
+        // Upstream keys a budget and its actuals by `top_category_id`.
+        expect(getNativeWealthfolioBudgets(path, '2026-07')).toEqual({ Food: 340 });
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('LU-E m2: counts only spending-taxonomy category targets, and drops excluded categories (upstream budget/service.rs:250-251)', () => {
+      const { path, cleanup } = makeTestDb();
+      try {
+        const db = new DatabaseSync(path);
+        db.exec(`INSERT INTO taxonomy_categories (id, name, parent_id, taxonomy_id) VALUES
+          ('food', 'Food', NULL, 'spending_categories'), ('edu', 'Education', NULL, 'spending_categories'),
+          ('emp', 'Employment', NULL, 'income_sources')`);
+        db.exec(`INSERT INTO budget_targets (category_id, amount, period_key, updated_at, target_type, taxonomy_id) VALUES
+          ('food', '300', 'default', '2026-06-01T00:00:00Z', 'category', 'spending_categories'),
+          ('edu', '120', 'default', '2026-06-01T00:00:00Z', 'category', 'spending_categories'),
+          ('emp', '5000', 'default', '2026-06-01T00:00:00Z', 'category', 'income_sources'),
+          (NULL, '777', 'default', '2026-06-01T00:00:00Z', 'group_buffer', NULL)`);
+        db.exec(`INSERT INTO app_settings VALUES ('spending.excluded_category_ids', '["edu"]')`);
+        db.close();
+        expect(getNativeWealthfolioBudgets(path, '2026-07')).toEqual({ Food: 300 });
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('LU-E m2: an exclusion setting that is not JSON reads as no exclusions, not as no budgets', () => {
+      const { path, cleanup } = makeTestDb();
+      try {
+        const db = new DatabaseSync(path);
+        db.exec(`INSERT INTO taxonomy_categories (id, name, parent_id, taxonomy_id) VALUES ('food', 'Food', NULL, 'spending_categories')`);
+        db.exec(`INSERT INTO budget_targets (category_id, amount, period_key, updated_at, target_type, taxonomy_id) VALUES
+          ('food', '300', 'default', '2026-06-01T00:00:00Z', 'category', 'spending_categories')`);
+        db.exec(`INSERT INTO app_settings VALUES ('spending.excluded_category_ids', 'not json')`);
+        db.close();
+        expect(getNativeWealthfolioBudgets(path, '2026-07')).toEqual({ Food: 300 });
       } finally {
         cleanup();
       }
@@ -273,38 +329,20 @@ describe('sqlite-native', () => {
       } finally { cleanup(); }
     });
 
-    it('excludes charges the user dismissed, count and total together', () => {
-      // Dismissing says "not spending I need to file". The total still fed the
-      // daily digest's pool, so one dismissed charge went on shrinking every
-      // category's figure with nothing on screen explaining why.
+    it('counts a charge dismissed from the needs-a-category list, and nets a refund, as Wealthfolio does (1.62)', () => {
+      // Dismissing says "I won't file this", not "this is not spending":
+      // Wealthfolio's Uncategorized bucket still counts it, so the report does.
       const { path, cleanup } = makeTestDb();
       try {
         const db = new DatabaseSync(path);
         db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type)
                  VALUES ('keep', '-25.00', '2026-08-20', 'WITHDRAWAL')`);
         db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type)
-                 VALUES ('gone', '-106.00', '2026-08-20', 'WITHDRAWAL')`);
+                 VALUES ('dismissed', '-106.00', '2026-08-20', 'WITHDRAWAL')`);
+        db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, account_id)
+                 VALUES ('refund', '11.00', '2026-08-21', 'CREDIT', 'acct-card')`);
         db.close();
-        expect(getNativeUncategorizedSpendingTotal(path, '2026-08-01', '2026-09-01'))
-          .toEqual({ count: 2, total: 131 });
-        const res = getNativeUncategorizedSpendingTotal(path, '2026-08-01', '2026-09-01', ['gone']);
-        expect(res).toEqual({ count: 1, total: 25 });
-      } finally { cleanup(); }
-    });
-
-    it('ignores malformed dismissal ids rather than building broken SQL', () => {
-      // The ids arrive from an addon secret, so a junk value must not be able
-      // to change the query's meaning — or crash the whole daily report.
-      const { path, cleanup } = makeTestDb();
-      try {
-        const db = new DatabaseSync(path);
-        db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type)
-                 VALUES ('keep', '-25.00', '2026-08-20', 'WITHDRAWAL')`);
-        db.close();
-        const res = getNativeUncategorizedSpendingTotal(
-          path, '2026-08-01', '2026-09-01', ["' OR 1=1 --", 'keep'],
-        );
-        expect(res).toEqual({ count: 0, total: 0 });
+        expect(getNativeUncategorizedSpendingTotal(path, '2026-08-01', '2026-09-01')).toEqual({ count: 2, total: 120 }); // two charges; the refund nets the amount but is not a charge to file
       } finally { cleanup(); }
     });
 
@@ -375,12 +413,17 @@ describe('sqlite-native', () => {
         // A DEPOSIT does not.
         db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type) VALUES ('a3', '-100', '2026-07-08', 'DEPOSIT')`);
         db.exec(`INSERT INTO activity_taxonomy_assignments (activity_id, category_id) VALUES ('a3', 'c1')`);
-        // Transfers are excluded entirely.
+        // A withdrawal filed under a category NAMED like a transfer is still
+        // spending to Wealthfolio — only a linked transfer is not — so since
+        // 1.62 it is to the report too.
         db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type) VALUES ('a4', '-400', '2026-07-08', 'WITHDRAWAL')`);
         db.exec(`INSERT INTO activity_taxonomy_assignments (activity_id, category_id) VALUES ('a4', 't1')`);
+        // A linked transfer is not, whatever it is filed under.
+        db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, source_group_id) VALUES ('a5', '-300', '2026-07-08', 'TRANSFER_OUT', 'g-1')`);
+        db.exec(`INSERT INTO activity_taxonomy_assignments (activity_id, category_id) VALUES ('a5', 'c1')`);
         db.close();
 
-        expect(getNativeWealthfolioSpendingBetween(path, '2026-07-06', '2026-08-01')).toEqual({ 'Food & Dining': 14.75 });
+        expect(getNativeWealthfolioSpendingBetween(path, '2026-07-06', '2026-08-01')).toEqual({ 'Food & Dining': 14.75, Transfers: 400 });
       } finally {
         cleanup();
       }
@@ -438,17 +481,18 @@ describe('sqlite-native', () => {
         // Biggest of the week, and a pending row: ` · pending` trails the id.
         ['a2', '-412.37', '2026-07-07', 'WITHDRAWAL', 'WHOLE FOODS MKT · TRN-b2c3d4e5 · pending', 'c1'],
         // An in-transit placeholder the user (or a Wealthfolio rule) has filed
-        // as real spending. Excluded by its marker since v1.49 — it would
-        // otherwise be the week's second-biggest line — see
-        // SYNC_BOOKKEEPING_EXCLUSION.
+        // as Shopping: Wealthfolio counts it, so since 1.62 the report does too.
+        // (The sync files its own UNFILED bookkeeping rows under the excluded
+        // "Sync bookkeeping" category, which keeps them off both.)
         ['a3', '-180.00', '2026-07-09', 'TRANSFER_OUT', '↔️ In-transit transfer · Online Transfer to Savings · TRN-c3d4e5f6', 's1'],
         // A description that itself contains ' · ': all of it must survive.
         ['a4', '-63.00', '2026-07-10', 'FEE', 'COSTCO GAS · PUMP 4 · TRN-d4e5f6a7', 't1'],
         // No note at all (a hand-entered row, or a blank bank description).
         ['a5', '-20.00', '2026-07-10', 'TAX', null, 's1'],
-        // A transfer miscategorised into the Transfers category: excluded, and it
-        // would otherwise top the list by a wide margin.
-        ['x1', '-5000.00', '2026-07-08', 'WITHDRAWAL', 'Online Transfer to Savings · TRN-xxxx', 'x1'],
+        // A linked transfer, even one filed under the Transfers category: never
+        // spending (made a linked TRANSFER_OUT below), and it would otherwise top
+        // the list by a wide margin.
+        ['x1', '-5000.00', '2026-07-08', 'TRANSFER_OUT', 'Online Transfer to Savings · TRN-xxxx', 'x1'],
         // Not spending.
         ['x2', '-9999.00', '2026-07-08', 'DEPOSIT', 'PAYCHECK · TRN-yyyy', 'c1'],
         // Outside the window on both sides.
@@ -461,6 +505,7 @@ describe('sqlite-native', () => {
                  VALUES ('${id}', '${amount}', '${date}', '${type}', ${notesSql})`);
         db.exec(`INSERT INTO activity_taxonomy_assignments (activity_id, category_id) VALUES ('${id}', '${cat}')`);
       }
+      db.exec(`UPDATE activities SET source_group_id = 'g-savings' WHERE id = 'x1'`);
       db.close();
     }
 
@@ -480,6 +525,7 @@ describe('sqlite-native', () => {
         try {
           expect(getNativeWealthfolioTopSpending(path, '2026-07-06', '2026-07-13', 5)).toEqual([
             { amount: 412.37, description: 'WHOLE FOODS MKT', categoryName: 'Food & Dining' },
+            { amount: 180, description: 'Online Transfer to Savings', categoryName: 'Shopping' },
             { amount: 95.5, description: 'TARGET 00021479', categoryName: 'Food & Dining' },
             { amount: 63, description: 'COSTCO GAS · PUMP 4', categoryName: 'Transportation' },
             { amount: 20, description: '', categoryName: 'Shopping' },
@@ -498,7 +544,7 @@ describe('sqlite-native', () => {
       try {
         seedWeek(path);
         const top = getNativeWealthfolioTopSpending(path, '2026-07-06', '2026-07-13', 2);
-        expect(top.map((t) => t.amount)).toEqual([412.37, 95.5]);
+        expect(top.map((t) => t.amount)).toEqual([412.37, 180]);
       } finally {
         cleanup();
       }
@@ -1227,11 +1273,14 @@ describe('getNativeAccountBalances', () => {
 });
 
 describe('in-transit placeholder shapes against the spending classifier', () => {
-  // The invariant the 2026-08-27 refund broke, checked against the classifier
-  // transcription itself rather than against anyone's belief about it: every
-  // placeholder shape, on every account type, in both directions, must
-  // classify as ZERO spending. A control row proves the join is live, so a
-  // zero cannot be the vacuous kind.
+  // Every placeholder shape, on every account type, in both directions,
+  // counted exactly as Wealthfolio's classifier counts it (1.62): money IN is
+  // never spending; money OUT filed under a spending category is — the
+  // report no longer drops the sync's rows by their marker. The sync files
+  // its UNFILED bookkeeping rows under the excluded "Sync bookkeeping"
+  // category (3.9+), which takes them out of both figures; a row a rule or a
+  // person filed is theirs. A control row proves the read is live, so a zero
+  // cannot be the vacuous kind.
   const cases = [
     { accountType: 'CASH', acct: 'acct-cash', signed: 1300 },
     { accountType: 'CASH', acct: 'acct-cash', signed: -1300 },
@@ -1239,7 +1288,7 @@ describe('in-transit placeholder shapes against the spending classifier', () => 
     { accountType: 'CREDIT_CARD', acct: 'acct-card', signed: -429.71 },
   ];
 
-  it.each(cases)('$accountType $signed classifies as no spending at all', ({ acct, accountType, signed }) => {
+  it.each(cases)('$accountType $signed counts as Wealthfolio counts it', ({ acct, accountType, signed }) => {
     const { path, cleanup } = makeTestDb();
     try {
       const db = new DatabaseSync(path);
@@ -1253,10 +1302,9 @@ describe('in-transit placeholder shapes against the spending classifier', () => 
       // Stored the way the sync writes it: the in-transit marker in front of
       // the note. Since v1.49 a CASH outflow placeholder is a bare TRANSFER_OUT
       // — an Expense to Wealthfolio's classifier (only a LINKED transfer is
-      // neutral there, and 3.8 left no cash-moving outflow type that isn't) —
-      // so the readers exclude the sync's own bookkeeping rows by that marker
-      // rather than by type. Categorised here on purpose: a Wealthfolio rule
-      // can auto-file the placeholder before its counterpart posts.
+      // neutral there) — and a card's is a WITHDRAWAL. Categorised here on
+      // purpose: a Wealthfolio rule can auto-file the placeholder before its
+      // counterpart posts, and then Wealthfolio counts it.
       db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, account_id, notes)
                VALUES ('ph', '${shape.amount}', '2026-08-21', '${shape.activityType}', '${acct}', '↔️ In-transit transfer · PAYMENT · tx-1')`);
       db.exec(`INSERT INTO activity_taxonomy_assignments (activity_id, category_id) VALUES ('ph', 'cat-g')`);
@@ -1264,16 +1312,31 @@ describe('in-transit placeholder shapes against the spending classifier', () => 
                VALUES ('plug', '${shape.amount}', '2026-08-22', '${shape.activityType}', '${acct}', 'Balance adjustment · sfin-1 · 2026-08-22')`);
       db.exec(`INSERT INTO activity_taxonomy_assignments (activity_id, category_id) VALUES ('plug', 'cat-g')`);
       db.close();
+      const outflow = signed < 0 ? Math.round(Math.abs(signed) * 2 * 100) / 100 : 0;
+      expect(getNativeWealthfolioSpendingBetween(path, '2026-08-01', '2026-09-01')).toEqual({ Groceries: Math.round((50 + outflow) * 100) / 100 });
+      expect(getNativeUncategorizedSpendingTotal(path, '2026-08-01', '2026-09-01')).toEqual({ count: 0, total: 0 });
+    } finally { cleanup(); }
+  });
+
+  it('counts the sync\'s bookkeeping rows nowhere once they are filed under an excluded category (3.9+)', () => {
+    const { path, cleanup } = makeTestDb();
+    try {
+      const db = new DatabaseSync(path);
+      db.exec(`INSERT INTO taxonomy_categories (id, name, parent_id) VALUES ('cat-g', 'Groceries', NULL), ('cat-sb', 'Sync bookkeeping', NULL)`);
+      db.exec(`INSERT INTO app_settings VALUES ('spending.excluded_category_ids', '["cat-sb"]')`);
+      db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, notes)
+               VALUES ('control', '-50', '2026-08-20', 'WITHDRAWAL', 'KROGER · tx-1'),
+                      ('ph', '1300', '2026-08-21', 'TRANSFER_OUT', '↔️ In-transit transfer · PAYMENT · tx-2')`);
+      db.exec(`INSERT INTO activity_taxonomy_assignments (activity_id, category_id) VALUES ('control', 'cat-g'), ('ph', 'cat-sb')`);
+      db.close();
       expect(getNativeWealthfolioSpendingBetween(path, '2026-08-01', '2026-09-01')).toEqual({ Groceries: 50 });
       expect(getNativeUncategorizedSpendingTotal(path, '2026-08-01', '2026-09-01')).toEqual({ count: 0, total: 0 });
     } finally { cleanup(); }
   });
 
-  it('excludes by the marker, not by type: the same CASH TRANSFER_OUT without it counts as spending', () => {
-    // The negative case for the table above. A bare TRANSFER_OUT on a cash
-    // account IS spending to Wealthfolio (an unlinked transfer classifies as
-    // Expense), so the readers must agree — only the sync's own marker earns
-    // an exclusion.
+  it('a bare CASH TRANSFER_OUT counts as spending, as Wealthfolio counts it', () => {
+    // A bare TRANSFER_OUT on a cash account IS spending to Wealthfolio (an
+    // unlinked transfer classifies as Expense), so the readers agree.
     const { path, cleanup } = makeTestDb();
     try {
       const db = new DatabaseSync(path);
@@ -1364,12 +1427,12 @@ describe('report cube readers, month × account', () => {
     }
   });
 
-  it('getNativeUncategorizedByMonthAccount excludes the given activity ids', () => {
+  it('getNativeUncategorizedByMonthAccount counts every uncategorized charge, a dismissed one too (1.62)', () => {
     const { path, cleanup } = makeTestDb();
     try {
       seedTwoMonths(path);
-      const rows = getNativeUncategorizedByMonthAccount(path, '2026-07-01', '2026-09-01', ['uncat-dismissed']);
-      expect(rows).toEqual([{ month: '2026-08', accountId: 'acct-card', amount: 12 }]);
+      const rows = getNativeUncategorizedByMonthAccount(path, '2026-07-01', '2026-09-01');
+      expect(rows).toEqual([{ month: '2026-07', accountId: 'acct-cash', amount: 99 }, { month: '2026-08', accountId: 'acct-card', amount: 12 }]);
     } finally {
       cleanup();
     }
@@ -1377,7 +1440,7 @@ describe('report cube readers, month × account', () => {
 });
 
 import {
-  getNativeMerchantRows, getNativeFeesInterestByMonth, getNativeDrillRows, parseDrillCliLine,
+  getNativeMerchantRows, getNativeFeesInterestByMonth, getNativeDrillRows,
   getNativeSpendDailyTotals, getNativeValuationByMonth, NativeDbUnreadableError,
 } from './sqlite-native.js';
 
@@ -1410,6 +1473,13 @@ describe('report cube readers, merchants / fees / daily / valuations', () => {
     }
   });
 
+  it('M-2: the cube’s uncategorized and daily series, strict, throw instead of answering zero when they cannot look', () => {
+    expect(getNativeUncategorizedByMonthAccount('/nonexistent/wealthfolio.db', '2026-07-01', '2026-09-01')).toEqual([]);
+    expect(() => getNativeUncategorizedByMonthAccount('/nonexistent/wealthfolio.db', '2026-07-01', '2026-09-01', true)).toThrow(NativeDbUnreadableError);
+    expect(getNativeSpendDailyTotals('/nonexistent/wealthfolio.db', '2026-07-01', '2026-09-01')).toEqual([]);
+    expect(() => getNativeSpendDailyTotals('/nonexistent/wealthfolio.db', '2026-07-01', '2026-09-01', true)).toThrow(NativeDbUnreadableError);
+  });
+
   it('getNativeMerchantRows, strict (the cash forecast), throws instead of answering "no rows" when it cannot look', () => {
     expect(getNativeMerchantRows('/nonexistent/wealthfolio.db', '2026-07-01', '2026-09-01')).toEqual([]);
     expect(() => getNativeMerchantRows('/nonexistent/wealthfolio.db', '2026-07-01', '2026-09-01', true)).toThrow(NativeDbUnreadableError);
@@ -1435,14 +1505,14 @@ describe('report cube readers, merchants / fees / daily / valuations', () => {
     }
   });
 
-  it('getNativeSpendDailyTotals buckets spending by day, exclusions honored', () => {
+  it('getNativeSpendDailyTotals buckets spending by Wealthfolio’s local day, categorized and not', () => {
     const { path, cleanup } = makeTestDb();
     try {
       seed(path);
-      const rows = getNativeSpendDailyTotals(path, '2026-07-01', '2026-09-01', []);
+      const rows = getNativeSpendDailyTotals(path, '2026-07-01', '2026-09-01');
       expect(rows).toContainEqual({ date: '2026-07-09', amount: 37.5 }); // 25.50 + 12 uncategorized
-      const excluded = getNativeSpendDailyTotals(path, '2026-07-01', '2026-09-01', ['m2']);
-      expect(excluded).toContainEqual({ date: '2026-07-09', amount: 25.5 });
+      expect(rows).toContainEqual({ date: '2026-08-04', amount: 5 }); // a cash fee
+      expect(rows).toContainEqual({ date: '2026-08-06', amount: 2.5 }); // card interest
     } finally {
       cleanup();
     }
@@ -1581,6 +1651,7 @@ describe('getNativeDrillRows (v1.48)', () => {
     try {
       const db = new DatabaseSync(path);
       db.exec(`INSERT INTO accounts (id, name, account_type) VALUES ('acct-pipe', 'Joe|s Visa', 'CREDIT_CARD')`);
+      db.exec(`UPDATE app_settings SET setting_value = '["acct-cash","acct-card","acct-pipe"]' WHERE setting_key = 'spending.account_ids'`);
       db.exec(`INSERT INTO taxonomy_categories (id, name, parent_id, taxonomy_id) VALUES ('cat-pipe', 'Food|Drink', NULL, 'spending_categories')`);
       db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, account_id, notes) VALUES ('p1', '-9', '2026-09-03', 'WITHDRAWAL', 'acct-pipe', 'CAFE | BAR · TRN-9')`);
       db.exec(`INSERT INTO activity_taxonomy_assignments (activity_id, category_id, source) VALUES ('p1', 'cat-pipe', 'rule')`);
@@ -1611,26 +1682,6 @@ describe('getNativeDrillRows (v1.48)', () => {
     } finally {
       cleanup();
     }
-  });
-});
-
-describe('parseDrillCliLine (the sqlite3 CLI fallback’s row parser)', () => {
-  const U = '\x1f';
-  const line = (...cols: string[]) => cols.join(U);
-  it('reads a full line, keeping a pipe in notes intact', () => {
-    expect(parseDrillCliLine(line('Dining', '2026-09-03', 'Card', '9.5', 'p1', 'acct-card', 'cat-d', 'rule', 'WITHDRAWAL', 'CAFE | BAR · TRN-9'))).toEqual({
-      c0: 'Dining', c1: '2026-09-03', c2: 'Card', c3: 9.5, c4: 'p1', c5: 'acct-card', c6: 'cat-d', c7: 'rule', c8: 'WITHDRAWAL', c9: 'CAFE | BAR · TRN-9',
-    });
-  });
-  it('keeps the fields aligned when a category and an account name contain a pipe', () => {
-    expect(parseDrillCliLine(line('Food|Drink', '2026-09-03', 'Joe|s Visa', '9', 'p1', 'acct-pipe', 'cat-pipe', 'rule', 'WITHDRAWAL', 'N'))).toMatchObject({
-      c0: 'Food|Drink', c2: 'Joe|s Visa', c4: 'p1', c5: 'acct-pipe', c6: 'cat-pipe', c7: 'rule', c9: 'N',
-    });
-  });
-  it('drops a blank, short or shifted line', () => {
-    expect(parseDrillCliLine('   ')).toBeNull();
-    expect(parseDrillCliLine(line('Dining', '2026-09-03', 'Card', '9'))).toBeNull();
-    expect(parseDrillCliLine(line('Dining', '2026-09-03', 'Card', 'not-a-number', 'p1', 'a', 'c', 's', 'T', 'N'))).toBeNull();
   });
 });
 
@@ -1729,14 +1780,14 @@ describe('uncategorized readers: a transfer waiting for its other half', () => {
     expect(listed({})).toEqual([]);
   });
 
-  it('leaves it out of the count, the totals and the report cube too', () => {
+  it('counts it in the totals and the report cube, as Wealthfolio does until the halves link (1.62)', () => {
     const { path, cleanup } = makeTestDb();
     try {
       seed(path, {});
-      expect(getNativeUncategorizedSpendingTotal(path, '2026-10-01', '2026-11-01')).toEqual({ count: 0, total: 0 });
-      expect(getNativeUncategorizedByMonthAccount(path, '2026-10-01', '2026-11-01')).toEqual([]);
-      expect(getNativeSpendDailyTotals(path, '2026-10-01', '2026-11-01')).toEqual([]);
-      expect(getNativeMerchantRows(path, '2026-10-01', '2026-11-01')).toEqual([]);
+      expect(getNativeUncategorizedSpendingTotal(path, '2026-10-01', '2026-11-01')).toEqual({ count: 1, total: 691.29 });
+      expect(getNativeUncategorizedByMonthAccount(path, '2026-10-01', '2026-11-01')).toEqual([{ month: '2026-10', accountId: 'acct-cash', amount: 691.29 }]);
+      expect(getNativeSpendDailyTotals(path, '2026-10-01', '2026-11-01')).toEqual([{ date: '2026-10-10', amount: 691.29 }]);
+      expect(getNativeMerchantRows(path, '2026-10-01', '2026-11-01').map((r) => r.amount)).toEqual([691.29]);
     } finally {
       cleanup();
     }
@@ -1768,7 +1819,6 @@ describe('uncategorized readers: a transfer waiting for its other half', () => {
 import { getNativeBudgetSpend, getNativeSpendingHistoryStart } from './sqlite-native.js';
 
 describe('getNativeBudgetSpend / getNativeSpendingHistoryStart', () => {
-  const parents = { 'cat-food': null, 'cat-fun': 'cat-food', 'cat-gro': null };
   const seed = (path: string) => {
     const db = new DatabaseSync(path);
     db.exec(`INSERT INTO accounts (id, name, account_type) VALUES ('acct-untracked', 'Elsewhere', 'CASH')`);
@@ -1787,15 +1837,18 @@ describe('getNativeBudgetSpend / getNativeSpendingHistoryStart', () => {
     db.exec(`INSERT INTO activities (id, amount, activity_date, activity_type, account_id) VALUES ('first', '5', '2026-06-20T04:00:00+00:00', 'DEPOSIT', 'acct-card')`);
     db.close();
   };
-  const scope = (over: Record<string, unknown> = {}) => ({
-    spendingAccountIds: ['acct-cash', 'acct-card'], excludedCategoryIds: [] as string[], categoryParents: parents, ...over,
-  });
+  /** Wealthfolio's own excluded categories, as its settings store them (3.9+). */
+  const exclude = (path: string, ids: string[]) => {
+    const db = new DatabaseSync(path);
+    db.prepare(`INSERT INTO app_settings VALUES ('spending.excluded_category_ids', ?)`).run(JSON.stringify(ids));
+    db.close();
+  };
 
   it('counts only the spending accounts, rolled up to the parent name', () => {
     const { path, cleanup } = makeTestDb();
     try {
       seed(path);
-      const rows = getNativeBudgetSpend(path, '2026-07-01', '2026-10-01', scope());
+      const rows = getNativeBudgetSpend(path, '2026-07-01', '2026-10-01');
       expect(rows).toContainEqual({ month: '2026-08', category: 'Food', accountId: 'acct-cash', amount: 150 });
       expect(rows).toContainEqual({ month: '2026-08', category: 'Groceries', accountId: 'acct-card', amount: 30 });
       expect(rows.some((r) => r.accountId === 'acct-untracked')).toBe(false);
@@ -1806,21 +1859,27 @@ describe('getNativeBudgetSpend / getNativeSpendingHistoryStart', () => {
     const { path, cleanup } = makeTestDb();
     try {
       seed(path);
-      const rows = getNativeBudgetSpend(path, '2026-07-01', '2026-10-01', scope({ excludedCategoryIds: ['cat-fun'] }));
+      exclude(path, ['cat-fun']);
+      const rows = getNativeBudgetSpend(path, '2026-07-01', '2026-10-01');
       expect(rows).toContainEqual({ month: '2026-08', category: 'Food', accountId: 'acct-cash', amount: 50 });
-      // Excluding a parent drops its subcategories' rows too.
-      const parentGone = getNativeBudgetSpend(path, '2026-07-01', '2026-10-01', scope({ excludedCategoryIds: ['cat-food'] }));
+    } finally { cleanup(); }
+    // Excluding a parent drops its subcategories' rows too.
+    const other = makeTestDb();
+    try {
+      seed(other.path);
+      exclude(other.path, ['cat-food']);
+      const parentGone = getNativeBudgetSpend(other.path, '2026-07-01', '2026-10-01');
       expect(parentGone.some((r) => r.category === 'Food')).toBe(false);
       expect(parentGone.some((r) => r.category === 'Groceries')).toBe(true);
-    } finally { cleanup(); }
+    } finally { other.cleanup(); }
   });
 
   it('throws on a database it cannot read, and refuses malformed bounds, rather than answering "nothing spent"', () => {
-    expect(() => getNativeBudgetSpend('/nope/wealthfolio.db', '2026-07-01', '2026-10-01', scope())).toThrow(NativeDbUnreadableError);
+    expect(() => getNativeBudgetSpend('/nope/wealthfolio.db', '2026-07-01', '2026-10-01')).toThrow(NativeDbUnreadableError);
     const { path, cleanup } = makeTestDb();
     const noise = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
-      expect(() => getNativeBudgetSpend(path, "2026-07-01' OR 1=1 --", '2026-10-01', scope())).toThrow(/malformed/);
+      expect(() => getNativeBudgetSpend(path, "2026-07-01' OR 1=1 --", '2026-10-01')).toThrow(/malformed/);
     } finally { noise.mockRestore(); cleanup(); }
   });
 

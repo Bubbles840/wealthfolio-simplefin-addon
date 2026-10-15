@@ -4,11 +4,12 @@ import {
   gatherHeadlineFacts, publishAuditSnapshot, runAudit, type AuditPublishClient, type AuditReaders,
 } from './audit-facts.js';
 import { BALANCE_READ_NOTES } from '../../shared/audit-balance.js';
-import { HEADLINE_READ_NOTES } from '../../shared/audit-headline.js';
+import { explainHeadline, HEADLINE_READ_NOTES } from '../../shared/audit-headline.js';
 import { HEALTH_READ_NOTES } from '../../shared/audit-health.js';
 import type { AuditLedger, AuditLedgerRow } from '../../shared/audit-ledger.js';
 import { AUDIT_SNAPSHOT_SECRET_KEY, parseAuditSnapshot } from '../../shared/audit-snapshot.js';
 import type { ReportCube } from '../../shared/report-cube.js';
+import { snapshotTripwire } from '../../shared/spending-tripwire.js';
 
 vi.mock('../../shared/audit-snapshot.js', async (orig) => {
   const real = await orig<typeof import('../../shared/audit-snapshot.js')>();
@@ -73,7 +74,7 @@ describe('runAudit', () => {
   });
 
   it.each<[string, Partial<AuditReaders>, () => [string[], string[], string[]]]>([
-    ['the account mapping', failingSecret('account_mapping'), () => [[BALANCE_READ_NOTES.mapping], [], [HEALTH_READ_NOTES.mapping]]],
+    ['the account mapping', failingSecret('account_mapping'), () => [[BALANCE_READ_NOTES.mapping], [HEADLINE_READ_NOTES.mapping], [HEALTH_READ_NOTES.mapping]]],
     ['the bank balances', failingSecret('account_balances'), () => [[BALANCE_READ_NOTES.balances], [], []]],
     ['the account names', failingSecret('account_names'), () => [[BALANCE_READ_NOTES.names], [], []]],
     ['the report cube', failingSecret('report_cube'), () => [[], [HEADLINE_READ_NOTES.report], []]],
@@ -169,7 +170,19 @@ describe('gatherHeadlineFacts', () => {
     expect(facts.timezone).toBeNull();
     expect(facts.spendingAccountIds).toBeUndefined();
     expect(facts.reportAccountIds).toBeUndefined();
-    expect(facts.failed).toEqual(['settings']);
+    expect(facts.failed).toEqual(['mapping', 'settings']);
+  });
+
+  it('reads Wealthfolio’s base currency from its settings, and says nothing of it when the settings are unread', async () => {
+    const settings = () => ({ timezone: 'America/New_York', baseCurrency: 'USD', excludedCategoryIds: [], categoryParents: {}, spendingOn: true, spendingAccountIds: ['wf-chk'] });
+    expect((await gatherHeadlineFacts(readers({ settings }), NOW)).baseCurrency).toBe('USD');
+    expect((await gatherHeadlineFacts(readers({ settings: boom }), NOW)).baseCurrency).toBeUndefined();
+  });
+
+  it('turns an unreadable account mapping into a note, not a silent empty list of reasons', async () => {
+    const facts = await gatherHeadlineFacts(readers({ ...failingSecret('account_mapping') }), NOW);
+    expect(facts.failed).toContain('mapping');
+    expect(explainHeadline(facts).notes).toContain(HEADLINE_READ_NOTES.mapping);
   });
 
   it('takes the report’s figure only from a cube built this month', async () => {
@@ -177,6 +190,16 @@ describe('gatherHeadlineFacts', () => {
     const facts = await gatherHeadlineFacts(readers({ secret: async (k) => (k === 'report_cube' ? JSON.stringify(stale) : SECRETS[k] ?? null) }), NOW);
     expect(facts.reportCents).toBeUndefined();
     expect(facts.failed).toEqual(['report']);
+  });
+
+  it('M-2: takes the report’s figure only from a cube built in this run (a failed publish leaves an older one)', async () => {
+    const olderCube = { ...CUBE, asOf: new Date(NOW.getTime() - 60_000).toISOString() };
+    const rd = readers({ secret: async (k) => (k === 'report_cube' ? JSON.stringify(olderCube) : SECRETS[k] ?? null) });
+    const thisRun = await gatherHeadlineFacts(rd, NOW, undefined, new Date(NOW.getTime() - 120_000));
+    expect(thisRun.reportCents).toBe(130000);
+    const stale = await gatherHeadlineFacts(rd, NOW, undefined, new Date(NOW.getTime() - 30_000));
+    expect(stale.reportCents).toBeUndefined();
+    expect(stale.failed).toEqual(['report']);
   });
 });
 
@@ -195,6 +218,15 @@ describe('publishAuditSnapshot', () => {
       expect(read.snapshot.at).toBe(NOW.toISOString());
       expect(Object.keys(read.snapshot.balances)).toEqual(['wf-chk']);
     }
+  });
+
+  it('M-2: a cube left from an earlier run makes the tripwire unknown, never a difference', async () => {
+    const older = { ...CUBE, spend: [[[0]]], asOf: new Date(NOW.getTime() - 3_600_000).toISOString() };
+    const rd = readers({ secret: async (k) => (k === 'report_cube' ? JSON.stringify(older) : SECRETS[k] ?? null) });
+    const set = vi.fn(async () => {});
+    await publishAuditSnapshot(client(set), '/db', NOW, rd, new Date(NOW.getTime() - 60_000));
+    const value = (set.mock.calls[0] as unknown as [string, string, string])[2];
+    expect(snapshotTripwire(parseAuditSnapshot(value), NOW)).toEqual({ kind: 'unknown' });
   });
 
   it('writes nothing when Wealthfolio cannot be reached, so the previous snapshot stays', async () => {

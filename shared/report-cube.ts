@@ -61,7 +61,8 @@ export interface ReportCube {
   accounts: CubeAccount[];
   /** [month][category][account], signed cents (refunds negative). */
   spend: number[][][];
-  /** [month][account] cents — spending with no category, dismissed excluded. */
+  /** [month][account] cents — spending with no category, refunds netted; a
+   *  dismissed charge counts, as Wealthfolio counts it (1.62). */
   uncategorized: number[][];
   /** [month][account] cents — income as Wealthfolio classifies it (deposits
    *  and interest on cash), internal transfers and placeholders excluded. */
@@ -90,9 +91,10 @@ export interface ReportCube {
    *  those purchases" without the host API (which cannot filter by
    *  category). Absent on older companions. */
   drill?: Record<string, DrillTx[]> | null;
-  /** Current-month totals recomputed through the DIGEST's single-shot readers,
-   *  an independent pipeline from the matrices above. The Budget tab's data
-   *  check renders the comparison; absent on cubes from older companions. */
+  /** Current-month totals recomputed through the DIGEST's single-shot readers.
+   *  Since 1.62 both read the same spending lines (readSpendLines), so this is
+   *  a check of the cube's assembly, not an independent pipeline. The Budget
+   *  tab's data check renders the comparison; absent on cubes from older companions. */
   check?: CubeCheck | null;
 }
 

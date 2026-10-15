@@ -456,7 +456,7 @@ export async function applyBalanceAdjustment(
         actor: 'you',
         activityId: await rowIdByComment(() => host.listActivities(args.wfAccountId), row.comment, { amount: row.amount, fee: row.fee }),
         amountCents: Math.round(args.amount * 100),
-        date: row.date,
+        date: row.date.slice(0, 10),
         activityType: row.activityType,
         comment: row.comment,
       }));

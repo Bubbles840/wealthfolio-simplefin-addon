@@ -21,8 +21,7 @@
  * Runs in the companion only: creating a category and changing the spending
  * settings need REST routes the addon SDK does not expose.
  */
-import { existsSync } from 'fs';
-import { DatabaseSync } from 'node:sqlite';
+import { databaseFileExists, openLiveDatabase, whyNoLiveOpen } from './live-db.js';
 import { bookkeepingChange, openingBalanceFiledChange, type ChangeDraft } from '../../shared/change-entries.js';
 import { isNewerVersion } from '../../shared/version.js';
 import { OPENING_BALANCES_CATEGORY, STARTING_BALANCE_COMMENT_PREFIX } from '../../shared/sync-core.js';
@@ -48,31 +47,34 @@ export interface OpeningBalanceFilingDeps {
    *  is applied only when this resolves to 3.9.0 or newer; null or absent
    *  means unknown and skips it. */
   appVersion?: () => Promise<string | null>;
+  /** Wealthfolio's own exclusions (`GET /spending/settings`, 3.9+), read
+   *  immediately before each PUT, which replaces the list whole. When absent
+   *  the database's copy is used. */
+  readExcluded?: () => Promise<string[]>;
 }
 
 const EXCLUSION_MIN_VERSION = '3.9.0';
-const supportsExclusion = (v: string | null | undefined): boolean =>
+/** Whether the host takes `spending.excluded_category_ids` (3.9.0+). Shared
+ *  with the bookkeeping filing (bookkeeping-category.ts). */
+export const supportsExclusion = (v: string | null | undefined): boolean =>
   !!v && (v === EXCLUSION_MIN_VERSION || isNewerVersion(v, EXCLUSION_MIN_VERSION));
 
 interface OpeningDebtRow { id: string; account_id: string; account_name: string; amount: string; day: string; notes: string }
 
-function open(dbPath: string): DatabaseSync | null {
-  if (!dbPath || !existsSync(dbPath)) return null;
-  for (const uri of [`file:${dbPath}?mode=ro`, `file:${dbPath}?mode=ro&readonly_shm=1`, `file:${dbPath}?immutable=1`]) {
-    try {
-      const db = new DatabaseSync(uri);
-      db.prepare('SELECT 1').get();
-      return db;
-    } catch {
-      /* next form */
-    }
-  }
-  return null;
-}
-
 export async function fileCardOpeningDebts(deps: OpeningBalanceFilingDeps): Promise<{ filed: number }> {
-  const db = open(deps.dbPath);
-  if (!db) return { filed: 0 };
+  if (!databaseFileExists(deps.dbPath)) {
+    deps.log("Opening balance filing skipped: the database file isn't there");
+    return { filed: 0 };
+  }
+  // A writer never decides from a snapshot (live-db.ts): the exclusions it
+  // writes back whole could drop another writer's.
+  const db = openLiveDatabase(deps.dbPath);
+  if (!db) {
+    deps.log(whyNoLiveOpen(deps.dbPath) === 'snapshot'
+      ? 'Opening balance filing waits: the database can only be read as a snapshot'
+      : "Opening balance filing skipped: couldn't read the database");
+    return { filed: 0 };
+  }
   let rows: OpeningDebtRow[];
   let categoryId: string | undefined;
   let excluded: string[] = [];
@@ -119,13 +121,14 @@ export async function fileCardOpeningDebts(deps: OpeningBalanceFilingDeps): Prom
     if (!deps.record) return;
     try { deps.record(make()); } catch (err) { deps.log(`Could not record the change: ${String(err)}`); }
   };
+  const liveExcluded = async () => (deps.readExcluded ? deps.readExcluded() : excluded);
   const hostExcludes = async () => supportsExclusion(await deps.appVersion?.().catch(() => null));
 
   if (rows.length === 0) {
     // Nothing to file, but a category an earlier sync made on Wealthfolio 3.8
     // (which ignored the exclusion) may still be counted as spending.
     if (categoryId && !excluded.includes(categoryId) && (await hostExcludes())) {
-      await deps.setExcluded([...excluded, categoryId]);
+      await deps.setExcluded([...(await liveExcluded()), categoryId]);
       deps.log(`Excluded "${OPENING_BALANCES_CATEGORY}" from spending, so an opening debt is not read as a purchase.`);
       record(() => bookkeepingChange({ step: 'opening-category', activityIds: [], categoryName: OPENING_BALANCES_CATEGORY }));
     }
@@ -140,7 +143,7 @@ export async function fileCardOpeningDebts(deps: OpeningBalanceFilingDeps): Prom
   }
   if (!excluded.includes(categoryId) && (await hostExcludes())) {
     // Appended to the user's own list, never replacing it.
-    await deps.setExcluded([...excluded, categoryId]);
+    await deps.setExcluded([...(await liveExcluded()), categoryId]);
     deps.log(`Excluded "${OPENING_BALANCES_CATEGORY}" from spending, so an opening debt is not read as a purchase.`);
     setUp = true;
   }

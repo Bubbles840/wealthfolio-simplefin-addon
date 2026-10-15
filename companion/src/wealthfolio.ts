@@ -21,6 +21,8 @@ export interface ActivitySearchItem {
   subtype?: string | null;
   /** Upstream `ActivityDetails.accountName`. */
   accountName?: string | null;
+  /** Upstream `ActivityDetails.currency`. */
+  currency?: string | null;
 }
 
 /**
@@ -325,7 +327,10 @@ export class WealthfolioClient {
 
   /** Creates a top-level spending category and returns its id. The key is the
    *  name in snake case, which is how Wealthfolio keys its own categories. */
-  async createSpendingCategory(name: string): Promise<string> {
+  async createSpendingCategory(
+    name: string,
+    description = 'Balances an account already had when syncing began. Not spending.',
+  ): Promise<string> {
     const res = await fetch(`${this.baseUrl}/api/v1/taxonomies/categories`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
@@ -335,7 +340,7 @@ export class WealthfolioClient {
         name,
         key: name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, ''),
         color: '#9ca3af',
-        description: 'Balances an account already had when syncing began. Not spending.',
+        description,
         sortOrder: 999,
       }),
     });
@@ -356,6 +361,18 @@ export class WealthfolioClient {
     } catch {
       return null;
     }
+  }
+
+  /** Wealthfolio's own `spending.excluded_category_ids` (`GET /spending/settings`,
+   *  3.9+). Throws when it cannot be read: a writer that replaces the list whole
+   *  must not guess. */
+  async getExcludedSpendingCategories(): Promise<string[]> {
+    const res = await fetch(`${this.baseUrl}/api/v1/spending/settings`, { headers: this.authHeaders() });
+    if (!res.ok) throw await this.httpError('getExcludedSpendingCategories', res);
+    const body = (await res.json()) as { excludedCategoryIds?: unknown };
+    const ids = body?.excludedCategoryIds;
+    if (!Array.isArray(ids) || !ids.every((x) => typeof x === 'string')) throw new Error('getExcludedSpendingCategories: no excludedCategoryIds list');
+    return ids as string[];
   }
 
   /** Sets `spending.excluded_category_ids`. The route is a patch: omitted

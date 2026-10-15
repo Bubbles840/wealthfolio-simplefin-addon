@@ -2,6 +2,10 @@ import { describe, it, expect, vi } from 'vitest';
 import { gatherFindings, readSyncHealth, updateSnoozes, LEDGER_CHECK_SEEN_SECRET_KEY, type FindingsDeps } from './daily-findings.js';
 import { FINDING_SNOOZES_SECRET_KEY } from '../../shared/findings.js';
 import type { LedgerFacts } from '../../shared/ledger-checks.js';
+import { AUDIT_SNAPSHOT_SECRET_KEY, buildAuditSnapshot } from '../../shared/audit-snapshot.js';
+import { explainBalances } from '../../shared/audit-balance.js';
+import { explainHeadline } from '../../shared/audit-headline.js';
+import { healthIssues } from '../../shared/audit-health.js';
 
 const NOW = new Date('2026-10-09T12:00:00Z');
 const unixDaysAgo = (d: number) => Math.floor((NOW.getTime() - d * 86_400_000) / 1000);
@@ -130,6 +134,23 @@ describe('gatherFindings', () => {
     const scheduled = makeDeps({}, facts);
     await gatherFindings(scheduled.deps, NOW, { recordLedgerChecks: true, ...healthy });
     expect(JSON.parse(scheduled.store.get(LEDGER_CHECK_SEEN_SECRET_KEY)!)).toHaveProperty('budget-buster:p1');
+  });
+
+  it('says the report and Wealthfolio differ, from the last sync’s checks — and nothing when they agree or the checks cannot be read (1.62)', async () => {
+    const snap = (reportCents: number, wealthfolioCents: number | undefined) => JSON.stringify(buildAuditSnapshot({
+      balances: explainBalances({}),
+      headline: explainHeadline({ month: '2026-10', reportCents, wealthfolioCents, rows: [], ...(wealthfolioCents === undefined ? { failed: ['wealthfolio'] } : {}) }),
+      health: healthIssues({}),
+    }, NOW));
+    const differ = await gatherFindings(makeDeps({ [AUDIT_SNAPSHOT_SECRET_KEY]: snap(229206, 324351) }).deps, NOW, { recordLedgerChecks: false, ...healthy });
+    expect(differ.visible).toContainEqual({ kind: 'spending-differs', severity: 'warning', message: 'The report and Wealthfolio differ by $951.45 this month — /audit explains' });
+    for (const raw of [snap(324352, 324351), snap(229206, undefined), '{oops']) {
+      const found = await gatherFindings(makeDeps({ [AUDIT_SNAPSHOT_SECRET_KEY]: raw }).deps, NOW, { recordLedgerChecks: false, ...healthy });
+      expect(found.visible.some((f) => f.kind === 'spending-differs')).toBe(false);
+    }
+    const unreachable = makeDeps({}).deps;
+    unreachable.getSecret = vi.fn(async (k: string) => { if (k === AUDIT_SNAPSHOT_SECRET_KEY) throw new Error('502'); return null; });
+    expect((await gatherFindings(unreachable, NOW, { recordLedgerChecks: false, ...healthy })).visible.some((f) => f.kind === 'spending-differs')).toBe(false);
   });
 
   it('still returns the sync checks when the ledger cannot be read', async () => {

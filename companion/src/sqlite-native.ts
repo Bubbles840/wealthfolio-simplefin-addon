@@ -8,9 +8,10 @@
 import { existsSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { DatabaseSync } from 'node:sqlite';
-import { BALANCE_ADJUSTMENT_COMMENT_PREFIX, descriptionFromComment, PENDING_SUFFIX as PENDING_NOTE_SUFFIX } from '../../shared/sync-core.js';
+import { descriptionFromComment, PENDING_SUFFIX as PENDING_NOTE_SUFFIX } from '../../shared/sync-core.js';
 import { IN_TRANSIT_COMMENT_PREFIX } from '../../shared/reconcile.js';
-import { excludedWithDescendants } from '../../shared/audit-headline.js';
+import { CLI_SEPARATOR, isDay, isTrue, NOTES, shiftDay, SPENDING_BUDGET_TARGET_FILTER, tail, TOP_CATEGORY_CTE } from './sqlite-cli-helpers.js';
+import { spendLines, topCategoryId, SPENDING_TAXONOMY, type SpendLine, type SpendRow } from '../../shared/wf-spending.js';
 
 export interface NativeCategorySpending {
   categoryName: string;
@@ -168,32 +169,12 @@ function validDateBounds(startInclusive: string, endExclusive: string): boolean 
 }
 
 /**
- * The joins and predicates that define "spending", shared verbatim by the
- * aggregate reader and the biggest-transactions reader so the two can never
- * disagree about what counts. In particular the transfers exclusion has to apply
- * to both: a transfer miscategorised as spending is typically the largest row of
- * the week and would otherwise top the list.
- */
-const SPENDING_FROM = `
-    FROM activities a
-    JOIN accounts acc ON a.account_id = acc.id
-    JOIN activity_taxonomy_assignments ata ON a.id = ata.activity_id
-    JOIN taxonomy_categories tc ON ata.category_id = tc.id
-    LEFT JOIN taxonomy_categories parent ON tc.parent_id = parent.id`;
-
-/** The rolled-up label: the parent category where there is one, else the
- *  category itself. Both readers select and filter on this same expression. */
-const SPENDING_CATEGORY = `COALESCE(parent.name, tc.name)`;
-
-/** A spending filing every spending reader counts: its rolled-up category is
- *  not named like a transfer. Over `tc` (the category) and `parent` (its
- *  parent, LEFT JOINed). Exported for the audits' month read
- *  (sqlite-audit.ts), which counts the report's filings per row. */
-export const REPORT_COUNTS_CATEGORY = `LOWER(${SPENDING_CATEGORY}) NOT IN ('transfers', 'transfer', 'internal transfers', 'savings & transfers')`;
-
-/**
  * Wealthfolio's own spending classification, transcribed from upstream —
  * `docs/upstream-spending-buckets.md` §2 quotes the Rust with line numbers.
+ * Since 1.62 every spending FIGURE comes from shared/wf-spending.ts (the
+ * effective type, linked transfers, filings, exclusions, the local date);
+ * this SQL form is left only to the rule preview's count
+ * (`countRulePatternMatches`).
  * `+1` is an Expense, `-1` an ExpenseRefund (money BACK, which reduces what a
  * category has cost), `0` Ignored.
  *
@@ -225,36 +206,16 @@ const SPENDING_SIGN = `
         ELSE 0
       END`;
 
-/** Signed dollars for one assignment row: positive spend, negative refund. */
-const SPENDING_SIGNED_AMOUNT = `(${SPENDING_SIGN}) * ABS(CAST(a.amount AS REAL))`;
-
-/**
- * Rows the sync wrote for its own bookkeeping — drift-heal plugs and
- * in-transit transfer placeholders — recognised by the note marker each one
- * carries. Excluded from every spending figure BY MARKER rather than by type:
- * since v1.49 an outflow placeholder is a bare TRANSFER_OUT, which on a CASH
- * account is an Expense to Wealthfolio's classifier (only a LINKED transfer is
- * neutral there, and 3.8 left no cash-moving outflow type that isn't). So the
- * type cannot tell a placeholder from a real transfer, a Wealthfolio rule can
- * even auto-file one before its counterpart posts — and the marker is the one
- * thing that is unambiguously the sync's. The single quote is the only
- * character SQL cares about in these prefixes; neither contains one.
- */
-const SYNC_BOOKKEEPING_EXCLUSION = `
-      AND COALESCE(a.notes, '') NOT LIKE '${BALANCE_ADJUSTMENT_COMMENT_PREFIX}%'
-      AND COALESCE(a.notes, '') NOT LIKE '${IN_TRANSIT_COMMENT_PREFIX}%'`;
-
 /**
  * Only activities in accounts Wealthfolio tracks for spending — the scope it
  * enforces on every category write (`ensure_activity_in_spending_scope`,
  * crates/spending cash_activities/service.rs: "Activity account is not opted
  * into spending tracking") and the only accounts its own totals read. Applied
- * to every UNCATEGORIZED reader, because the categorized ones are scoped
- * already: Wealthfolio never let those rows be filed outside it.
+ * to the needs-a-category list (the spending figures apply the same scope
+ * through shared/wf-spending.ts).
  *
  * Without it the needs-a-category list offered rows nobody could file — live
- * 2026-10-10, six Robinhood cashback deposits failed on every attempt — and
- * the digest counted spending Wealthfolio leaves out.
+ * 2026-10-10, six Robinhood cashback deposits failed on every attempt.
  *
  * Settings are read exactly as upstream reads them (settings/service.rs): no
  * `spending.enabled` row means OFF, and a missing or unparsable account list
@@ -273,13 +234,14 @@ const IN_SPENDING_SCOPE = `
  * account: an UNLINKED transfer-typed row there — the sync's in-transit
  * placeholder included — for the same amount to the cent, moving money the
  * opposite way, within the pairing window (TRANSFER_MATCH_WINDOW_SECONDS, 5
- * days). Applied to every uncategorized reader, like IN_SPENDING_SCOPE.
+ * days). Applied to the needs-a-category list, like IN_SPENDING_SCOPE — the
+ * spending figures count such a row, as Wealthfolio does (1.62).
  *
  * Live 2026-10-10: a $691.29 card payment. The card's half was typed as an
  * in-transit TRANSFER_IN, but PNC's half was still pending ("ACH DEBIT
  * ROBINHOOD CCB") and pending rows are never paired, so it sat in the
- * needs-a-category list as a $691 purchase, counted in the digest and one tap
- * from being filed as spending.
+ * needs-a-category list as a $691 purchase, one tap from being filed as
+ * spending.
  *
  * Read-only and self-limiting. Once the halves link both are transfers
  * anyway; if they never do, the placeholder expires into a plain
@@ -299,29 +261,6 @@ const NOT_AWAITING_TRANSFER_HALF = `
           AND ROUND(ABS(CAST(b.amount AS REAL)) * 100) = ROUND(ABS(CAST(a.amount AS REAL)) * 100)
           AND ABS(julianday(substr(b.activity_date, 1, 10)) - julianday(substr(a.activity_date, 1, 10))) <= 5)`;
 
-function spendingWhere(startInclusive: string, endExclusive: string): string {
-  return `
-    WHERE a.activity_date >= '${startInclusive}'
-      AND a.activity_date < '${endExclusive}'
-      AND (${SPENDING_SIGN}) <> 0
-      ${SYNC_BOOKKEEPING_EXCLUSION}
-      -- The SPENDING taxonomy only. A reimbursement carries TWO assignments —
-      -- an income one and a spending one — so joining every taxonomy counted
-      -- the same row twice, under two different category names.
-      AND tc.taxonomy_id = 'spending_categories'
-      AND ${REPORT_COUNTS_CATEGORY}`;
-}
-
-/**
- * Returns native category spent totals for an arbitrary date window —
- * `[startInclusive, endExclusive)`, both `YYYY-MM-DD` — matching the format
- * `activities.activity_date` is stored in.
- *
- * This is the single implementation of the spending query; the month-scoped
- * reader below computes its own bounds and delegates here, so the type filter,
- * the transfers exclusion and the parent-category rollup exist in exactly one
- * place.
- */
 /**
  * Every account's balance, computed from its own activities.
  *
@@ -395,43 +334,46 @@ export function getNativeAccountBalances(dbPath: string): Map<string, number> {
   return out;
 }
 
+/**
+ * The spending lines the lenient readers below add up (1.62): Wealthfolio's
+ * own definition (shared/wf-spending.ts), on its local days. Null — never
+ * "nothing spent" — when the database is missing, the bounds are malformed or
+ * a read failed; those readers then answer empty, as they always have.
+ */
+function spendLinesOrNull(dbPath: string, startInclusive: string, endExclusive: string): ReturnType<typeof readSpendLines> | null {
+  if (!dbPath || !existsSync(dbPath) || !validDateBounds(startInclusive, endExclusive)) return null;
+  try {
+    return readSpendLines(dbPath, startInclusive, endExclusive);
+  } catch (err) {
+    console.error('[simplefin-sync] Failed to read spending:', err);
+    return null;
+  }
+}
+
+const toDollars = (cents: number) => Math.round(cents) / 100;
+
+/**
+ * Spending per top-level category over Wealthfolio's local days
+ * `[startInclusive, endExclusive)`, in dollars: the categorized part of what
+ * its Spending page counts (shared/wf-spending.ts). The uncategorized part is
+ * `getNativeUncategorizedSpendingTotal`. A filing on a category the database
+ * no longer names is left out of the categories.
+ */
 export function getNativeWealthfolioSpendingBetween(
   dbPath: string,
   startInclusive: string,
   endExclusive: string,
 ): Record<string, number> {
-  if (!dbPath || !existsSync(dbPath)) {
-    return {};
-  }
-  if (!validDateBounds(startInclusive, endExclusive)) {
-    return {};
-  }
-
-  const query = `
-    SELECT
-      ${SPENDING_CATEGORY} as parent_category,
-      ROUND(SUM(${SPENDING_SIGNED_AMOUNT}), 2) as total_spent
-    ${SPENDING_FROM}
-    ${spendingWhere(startInclusive, endExclusive)}
-    GROUP BY ${SPENDING_CATEGORY};
-  `;
-
-  const rows = queryNativeDb<{ parent_category: string; total_spent: number }>(
-    dbPath,
-    'spending',
-    query,
-    (parts) => (parts.length === 2
-      ? { parent_category: parts[0].trim(), total_spent: parseFloat(parts[1]) || 0 }
-      : null),
-  );
-
-  const result: Record<string, number> = {};
-  for (const r of rows) {
-    if (r.parent_category) {
-      result[r.parent_category] = typeof r.total_spent === 'number' ? r.total_spent : parseFloat(String(r.total_spent || 0));
+  const read = spendLinesOrNull(dbPath, startInclusive, endExclusive);
+  if (!read) return {};
+  const cents = new Map<string, number>();
+  for (const line of read.lines) {
+    for (const a of line.allocations) {
+      const name = topCategoryName(a.categoryId, read.settings);
+      if (name) cents.set(name, (cents.get(name) ?? 0) + a.cents);
     }
   }
-  return result;
+  return Object.fromEntries([...cents].map(([name, c]) => [name, toDollars(c)]));
 }
 
 /** First day of the month AFTER `yearMonth` (`2026-12` -> `2027-01-01`), as the
@@ -449,27 +391,16 @@ export function getNativeWealthfolioSpending(dbPath: string, yearMonth: string):
 }
 
 /**
- * The `limit` biggest INDIVIDUAL spending transactions in `[startInclusive,
- * endExclusive)` — largest first — rather than the per-category rollup the
- * readers above produce. Feeds the weekly report's "biggest this week"
- * section, which exists to say WHY the month's remaining figure moved.
- *
- * Shares the type filter, the transfers exclusion, the parent-category rollup,
- * the half-open bounds and the dual execution path with
- * `getNativeWealthfolioSpendingBetween` (see `SPENDING_FROM` / `spendingWhere` /
- * `queryNativeDb`), so the list can only ever contain rows the headline total
- * also counted.
- *
- * Two things worth knowing about the description:
- *  - the column is `notes`. `comment` is the REST API's name for the same field
- *    and `SELECT comment FROM activities` fails outright with `no such column`.
- *  - what is stored there is not display text; `descriptionFromComment` takes
- *    the bookkeeping decorations back off.
- *
- * `limit` is interpolated (the CLI fallback cannot bind parameters), so it is
- * floored to an integer and a non-positive or non-finite value returns `[]`
- * without touching the database — the same "refuse rather than guess" stance the
- * date bounds take.
+ * The `limit` biggest INDIVIDUAL spending transactions in Wealthfolio's local
+ * days `[startInclusive, endExclusive)` — largest first, once per category
+ * each counts under — rather than the per-category rollup. Feeds the weekly
+ * report's "biggest this week" section, which exists to say WHY the month's
+ * remaining figure moved. From the same lines as
+ * `getNativeWealthfolioSpendingBetween`, so the list can only ever contain
+ * spending the headline total also counted. The description is the stored
+ * note with the bookkeeping decorations taken off (`descriptionFromComment`).
+ * A non-positive or non-finite `limit` returns `[]` without touching the
+ * database.
  */
 export function getNativeWealthfolioTopSpending(
   dbPath: string,
@@ -477,52 +408,24 @@ export function getNativeWealthfolioTopSpending(
   endExclusive: string,
   limit: number,
 ): NativeSpendingTransaction[] {
-  if (!dbPath || !existsSync(dbPath)) {
-    return [];
-  }
-  if (!validDateBounds(startInclusive, endExclusive)) {
-    return [];
-  }
   const n = Number.isFinite(limit) ? Math.floor(limit) : 0;
   if (n < 1) return [];
-
-  const query = `
-    SELECT
-      ROUND(ABS(CAST(a.amount AS REAL)), 2) as amount,
-      COALESCE(a.notes, '') as notes,
-      ${SPENDING_CATEGORY} as parent_category
-    ${SPENDING_FROM}
-    ${spendingWhere(startInclusive, endExclusive)}
-      -- EXPENSES only, unlike the aggregate readers. "Biggest spends this week"
-      -- is a list of purchases; a large refund is money coming back and would
-      -- head the list as though it were the week's worst damage.
-      AND (${SPENDING_SIGN}) > 0
-    ORDER BY ABS(CAST(a.amount AS REAL)) DESC
-    LIMIT ${n};
-  `;
-
-  // The CLI fallback splits on `|`, which a bank description can legitimately
-  // contain, so the DESCRIPTION is read as "everything between the first and
-  // last field" rather than by index. (A `|` in a category name would still
-  // confuse it; the aggregate reader has the same exposure, and the node:sqlite
-  // path — the one that actually runs — is unaffected.)
-  const rows = queryNativeDb<{ amount: number | string; notes: string; parent_category: string }>(
-    dbPath,
-    'top spending',
-    query,
-    (parts) => (parts.length >= 3
-      ? {
-          amount: parseFloat(parts[0]) || 0,
-          notes: parts.slice(1, -1).join('|'),
-          parent_category: parts[parts.length - 1].trim(),
-        }
-      : null),
-  );
-
-  return rows.map((r) => ({
-    amount: typeof r.amount === 'number' ? r.amount : parseFloat(String(r.amount || 0)),
-    description: descriptionFromComment(r.notes),
-    categoryName: r.parent_category,
+  const read = spendLinesOrNull(dbPath, startInclusive, endExclusive);
+  if (!read) return [];
+  // EXPENSES only, per category it counts under. "Biggest spends this week"
+  // is a list of purchases; a large refund is money coming back and would
+  // head the list as though it were the week's worst damage.
+  const spends: Array<{ cents: number; notes: string; categoryName: string }> = [];
+  for (const line of read.lines) {
+    for (const a of line.allocations) {
+      const categoryName = topCategoryName(a.categoryId, read.settings);
+      if (a.cents > 0 && categoryName) spends.push({ cents: a.cents, notes: line.row.notes, categoryName });
+    }
+  }
+  return spends.sort((x, y) => y.cents - x.cents).slice(0, n).map((s) => ({
+    amount: toDollars(s.cents),
+    description: descriptionFromComment(s.notes),
+    categoryName: s.categoryName,
   }));
 }
 
@@ -533,7 +436,7 @@ export function getNativeWealthfolioBudgets(dbPath: string, yearMonth: string): 
   if (!dbPath || !existsSync(dbPath)) return {};
 
   const query = `
-    WITH ranked_budgets AS (
+    WITH RECURSIVE ${TOP_CATEGORY_CTE}, ranked_budgets AS (
       SELECT
         category_id,
         CAST(amount AS REAL) as amount,
@@ -542,16 +445,15 @@ export function getNativeWealthfolioBudgets(dbPath: string, yearMonth: string): 
           ORDER BY (period_key = '${yearMonth}') DESC, updated_at DESC
         ) as rn
       FROM budget_targets
-      WHERE period_key = '${yearMonth}' OR period_key = 'default'
+      WHERE (period_key = '${yearMonth}' OR period_key = 'default') AND ${SPENDING_BUDGET_TARGET_FILTER}
     )
     SELECT
-      COALESCE(parent.name, tc.name) as parent_category,
+      top.name as parent_category,
       ROUND(SUM(rb.amount), 2) as total_budget
     FROM ranked_budgets rb
-    JOIN taxonomy_categories tc ON rb.category_id = tc.id
-    LEFT JOIN taxonomy_categories parent ON tc.parent_id = parent.id
+    JOIN top ON top.start_id = rb.category_id
     WHERE rb.rn = 1
-    GROUP BY COALESCE(parent.name, tc.name);
+    GROUP BY top.name;
   `;
 
   const rows = queryNativeDb<{ parent_category: string; total_budget: number }>(
@@ -1069,54 +971,36 @@ export interface NativeSubcategorySpend {
 }
 
 /**
- * Spending split by subcategory, for the `breakdown` report mode.
- *
- * The rolled-up reader collapses children into parents inside SQL via
- * `COALESCE(parent.name, tc.name)`, so a Transportation envelope can never show
- * where the money actually went. This returns both levels and leaves the
- * rollup-vs-breakdown choice to the formatter — which is why the existing reader
- * is left exactly as it was: the default path must not change, and a second
- * query cannot regress the first.
- *
- * Shares `SPENDING_FROM` and `spendingWhere` with the rolled-up reader, so the
- * type filter and the transfers exclusion cannot drift between the two views —
- * a test pins that their totals agree.
+ * Spending split by subcategory, for the `breakdown` report mode: each
+ * category's top-level name and, when the money landed below it, the
+ * subcategory's (`child` null when it was booked on the top-level category
+ * itself, which keeps a breakdown's parts summing to its total). From the
+ * same lines as the rolled-up reader, so the two views cannot drift — a test
+ * pins that their totals agree.
  */
 export function getNativeSubcategorySpending(
   dbPath: string,
   startInclusive: string,
   endExclusive: string,
 ): NativeSubcategorySpend[] {
-  if (!dbPath || !existsSync(dbPath)) return [];
-  if (!validDateBounds(startInclusive, endExclusive)) return [];
-
-  const query = `
-    SELECT ${SPENDING_CATEGORY} as parent_name,
-           CASE WHEN parent.name IS NULL THEN '' ELSE tc.name END as child_name,
-                ROUND(SUM(${SPENDING_SIGNED_AMOUNT}), 2) as total_spent
-    ${SPENDING_FROM}
-    ${spendingWhere(startInclusive, endExclusive)}
-    GROUP BY parent_name, child_name
-    ORDER BY parent_name, child_name;
-  `;
-
-  const rows = queryNativeDb<Record<string, unknown>>(
-    dbPath,
-    'subcategory spending',
-    query,
-    (parts) => (parts.length === 3
-      ? { c0: parts[0], c1: parts[1], c2: parseFloat(parts[2]) || 0 }
-      : null),
-  );
-
-  return rows.map((r) => {
-    const v = Object.values(r) as Array<string | number>;
-    return {
-      parent: String(v[0]),
-      child: String(v[1] ?? '') || null,
-      spent: Number(v[2]) || 0,
-    };
-  }).filter((r) => !!r.parent);
+  const read = spendLinesOrNull(dbPath, startInclusive, endExclusive);
+  if (!read) return [];
+  const byKey = new Map<string, { parent: string; child: string | null; cents: number }>();
+  for (const line of read.lines) {
+    for (const a of line.allocations) {
+      const top = topCategoryId(a.categoryId, read.settings.categoryParents);
+      const parent = read.settings.categoryNames[top] ?? '';
+      if (!parent) continue;
+      const child = top === a.categoryId ? null : read.settings.categoryNames[a.categoryId] || null;
+      const key = `${parent}\u0000${child ?? ''}`;
+      const entry = byKey.get(key) ?? { parent, child, cents: 0 };
+      entry.cents += a.cents;
+      byKey.set(key, entry);
+    }
+  }
+  return [...byKey.values()]
+    .sort((x, y) => (x.parent === y.parent ? (x.child ?? '').localeCompare(y.child ?? '') : x.parent.localeCompare(y.parent)))
+    .map((e) => ({ parent: e.parent, child: e.child, spent: toDollars(e.cents) }));
 }
 
 /** One Amazon-looking row as Wealthfolio stores it. */
@@ -1186,80 +1070,33 @@ export function getNativeAmazonRows(dbPath: string, limit = 80): NativeAmazonRow
 }
 
 /**
- * Spending in the window that has NO category at all — what Wealthfolio's own
- * breakdown shows as "Uncategorized".
+ * Spending in the window that has NO spending category at all — what
+ * Wealthfolio's Spending page shows as "Uncategorized", refunds netted —
+ * as a count and a total in dollars (1.62: shared/wf-spending.ts).
  *
- * Invisible to every other reader here, because they INNER JOIN the assignment
- * table: a charge with no category has no assignment row. Wealthfolio counts it
- * against the month regardless, so the reports were quietly short by it (found
- * 2026-08-21: the app's monthly total ran ahead of the report's by exactly the
- * uncategorized charges).
- *
- * INTERNAL TRANSFERS ARE EXCLUDED, and that exclusion is the whole difficulty.
- * `TRANSFER_OUT` is an expense upstream, and a transfer between the user's own
- * accounts is uncategorizable (Wealthfolio calls it Neutral) — so it lands in
- * exactly the "no assignment" set this function selects. The first version of
- * this query reported $3,210.62 of "uncategorized spending" for a month whose
- * real figure was $20.76, the difference being a $3,000 transfer to a savings
- * account and two credit-card payments. A grouped activity is a paired
- * transfer leg (`sourceGroupId` is only ever written for pairs — see
- * `TRANSFER_GROUP_PREFIX`), so grouping is the marker to filter on.
+ * Since 1.62 a charge dismissed from the needs-a-category list counts, as
+ * Wealthfolio counts it: dismissing says "I won't file this", not "this is not
+ * spending". So does one half of a transfer whose other half waits in another
+ * account, and the sync's own bookkeeping rows unless they are filed under
+ * an excluded category (3.9+). The needs-a-category LIST still leaves all
+ * three out (`getNativeUncategorizedSpending`).
  */
 export function getNativeUncategorizedSpendingTotal(
   dbPath: string,
   startInclusive: string,
   endExclusive: string,
-  /**
-   * Activity IDs the user has dismissed from the "needs a category" list.
-   *
-   * Dismissing says "this is not spending I need to file" — but the total fed
-   * the daily digest's pool regardless, so a dismissed charge went on
-   * suppressing every category's figure with no line anywhere admitting why.
-   * Excluded here rather than at the call site so the count and the total can
-   * never disagree about which rows they describe.
-   */
-  dismissedActivityIds: readonly string[] = [],
 ): { count: number; total: number } {
-  const empty = { count: 0, total: 0 };
-  if (!dbPath || !existsSync(dbPath)) return empty;
-  if (!validDateBounds(startInclusive, endExclusive)) return empty;
-
-  // Ids come from an addon secret, so they are quoted defensively rather than
-  // interpolated bare — and anything not matching an activity-id shape is
-  // dropped instead of escaped, since a malformed id can only be junk.
-  const safeIds = dismissedActivityIds.filter((id) => /^[A-Za-z0-9_-]{1,64}$/.test(id));
-  const dismissedClause = safeIds.length
-    ? `AND a.id NOT IN (${safeIds.map((id) => `'${id}'`).join(',')})`
-    : '';
-
-  const query = `
-    SELECT COUNT(*) as n,
-           ROUND(SUM(ABS(CAST(a.amount AS REAL))), 2) as total
-    FROM activities a
-    JOIN accounts acc ON a.account_id = acc.id
-    LEFT JOIN activity_taxonomy_assignments ata ON a.id = ata.activity_id
-    WHERE a.activity_date >= '${startInclusive}'
-      AND a.activity_date < '${endExclusive}'
-      AND ata.activity_id IS NULL
-      AND COALESCE(a.source_group_id, '') = ''
-      ${dismissedClause}
-      ${SYNC_BOOKKEEPING_EXCLUSION}
-      ${IN_SPENDING_SCOPE}
-      ${NOT_AWAITING_TRANSFER_HALF}
-      AND (${SPENDING_SIGN}) > 0;
-  `;
-
-  const rows = queryNativeDb<{ n: number | string; total: number | string | null }>(
-    dbPath,
-    'uncategorized total',
-    query,
-    (parts) => (parts.length >= 2 ? { n: parts[0], total: parts[1] } : null),
-  );
-  const row = rows[0];
-  if (!row) return empty;
-  const count = typeof row.n === 'number' ? row.n : parseInt(String(row.n), 10) || 0;
-  const total = typeof row.total === 'number' ? row.total : parseFloat(String(row.total ?? 0)) || 0;
-  return { count, total };
+  const read = spendLinesOrNull(dbPath, startInclusive, endExclusive);
+  if (!read) return { count: 0, total: 0 };
+  let count = 0;
+  let cents = 0;
+  for (const line of read.lines) {
+    if (line.uncategorizedCents === 0) continue;
+    // Only a charge is something to file; a refund just nets the amount.
+    if (line.uncategorizedCents > 0) count += 1;
+    cents += line.uncategorizedCents;
+  }
+  return { count, total: toDollars(cents) };
 }
 
 /**
@@ -1310,102 +1147,50 @@ export function countRulePatternMatches(
 }
 
 /**
- * Signed spend per (month, parent category, account) — the report cube's
- * central series. Built on the SAME `SPENDING_FROM`/`SPENDING_SIGN`
- * transcription as every other spending reader, so the Budget tab can never
- * disagree with the digest about what a month cost; the only addition is the
- * month bucket and the account dimension (which is what makes the tab's
- * account filters possible).
+ * Signed spend per (month, top-level category, account) — the report cube's
+ * central series, from the same lines as every other spending reader
+ * (shared/wf-spending.ts), so the Budget tab can never disagree with the
+ * digest, or with Wealthfolio, about what a month cost. The month is
+ * Wealthfolio's local one.
  */
+function spendMatrixOf(read: ReturnType<typeof readSpendLines>): Array<{ month: string; category: string; accountId: string; amount: number }> {
+  const byKey = new Map<string, { month: string; category: string; accountId: string; cents: number }>();
+  for (const line of read.lines) {
+    for (const a of line.allocations) {
+      const category = topCategoryName(a.categoryId, read.settings);
+      if (!category) continue;
+      const key = `${line.month}\u0000${category}\u0000${line.row.accountId}`;
+      const entry = byKey.get(key) ?? { month: line.month, category, accountId: line.row.accountId, cents: 0 };
+      entry.cents += a.cents;
+      byKey.set(key, entry);
+    }
+  }
+  return [...byKey.values()].map((e) => ({ month: e.month, category: e.category, accountId: e.accountId, amount: toDollars(e.cents) }));
+}
+
 export function getNativeSpendMatrix(
   dbPath: string,
   startInclusive: string,
   endExclusive: string,
 ): Array<{ month: string; category: string; accountId: string; amount: number }> {
-  if (!dbPath || !existsSync(dbPath)) return [];
-  if (!validDateBounds(startInclusive, endExclusive)) return [];
-  const query = `
-    SELECT strftime('%Y-%m', a.activity_date) as month,
-           ${SPENDING_CATEGORY} as category,
-           COALESCE(a.account_id, '') as account_id,
-           ROUND(SUM(${SPENDING_SIGNED_AMOUNT}), 2) as amount
-    ${SPENDING_FROM}
-    ${spendingWhere(startInclusive, endExclusive)}
-    GROUP BY month, category, account_id;
-  `;
-  const rows = queryNativeDb<Record<string, unknown>>(
-    dbPath,
-    'spend matrix',
-    query,
-    (parts) => (parts.length === 4
-      ? { c0: parts[0], c1: parts[1], c2: parts[2], c3: parseFloat(parts[3]) || 0 }
-      : null),
-  );
-  return rows.map((r) => {
-    const v = Object.values(r) as [string, string, string, number | string];
-    return {
-      month: String(v[0]),
-      category: String(v[1]),
-      accountId: String(v[2]),
-      amount: typeof v[3] === 'number' ? v[3] : parseFloat(String(v[3])) || 0,
-    };
-  }).filter((r) => r.month && r.category);
+  const read = spendLinesOrNull(dbPath, startInclusive, endExclusive);
+  return read ? spendMatrixOf(read) : [];
 }
 
 /**
- * Suggested budgets' spend read (project 4): `getNativeSpendMatrix`'s series,
- * restricted to what Wealthfolio's budget actuals count in two respects. It is
- * NOT an exact copy of them (see follow-ups §14: a linked TRANSFER_OUT filed
- * under a category counts, `activity_type_override` and
- * `spending_activity_splits` are ignored).
- *  - Only the SPENDING accounts (`getNativeAuditSettings.spendingAccountIds`):
- *    Wealthfolio's budgets never see the others.
- *  - A row whose OWN category is excluded (`spending.excluded_category_ids`,
- *    descendants included) is dropped BEFORE it rolls up, so an excluded
- *    subcategory's spending never lands in its parent's figure.
- * The matrix is grouped by the row's own category id so both can be applied;
- * the account and category ids are filtered here, in code, never interpolated
- * into SQL (only the validated date bounds are). Strict: a database that
- * cannot be read throws `NativeDbUnreadableError` — never "nothing spent".
+ * Suggested budgets' spend read (project 4): `getNativeSpendMatrix`'s series
+ * — since 1.62 exactly what Wealthfolio's budget actuals count, its spending
+ * accounts and excluded categories included (shared/wf-spending.ts). Strict:
+ * a database that cannot be read throws `NativeDbUnreadableError` — never
+ * "nothing spent".
  */
 export function getNativeBudgetSpend(
   dbPath: string,
   startInclusive: string,
   endExclusive: string,
-  scope: { spendingAccountIds: readonly string[]; excludedCategoryIds: readonly string[]; categoryParents: Readonly<Record<string, string | null>> },
 ): Array<{ month: string; category: string; accountId: string; amount: number }> {
   if (!validDateBounds(startInclusive, endExclusive)) throw new Error('Refusing the budget spend read: malformed date bounds');
-  const query = `
-    SELECT strftime('%Y-%m', a.activity_date) as month,
-           ${SPENDING_CATEGORY} as category,
-           tc.id as category_id,
-           COALESCE(a.account_id, '') as account_id,
-           ROUND(SUM(${SPENDING_SIGNED_AMOUNT}), 2) as amount
-    ${SPENDING_FROM}
-    ${spendingWhere(startInclusive, endExclusive)}
-    GROUP BY month, category, category_id, account_id;
-  `;
-  const rows = queryNativeDbStrict<Record<string, unknown>>(
-    dbPath,
-    'budget spend',
-    query,
-    (parts) => (parts.length === 5
-      ? { c0: parts[0], c1: parts[1], c2: parts[2], c3: parts[3], c4: parseFloat(parts[4]) || 0 }
-      : null),
-    DRILL_CLI_SEPARATOR,
-  );
-  const accounts = new Set(scope.spendingAccountIds);
-  const dropped = excludedWithDescendants(scope.excludedCategoryIds, scope.categoryParents);
-  const cents = new Map<string, { month: string; category: string; accountId: string; cents: number }>();
-  for (const r of rows) {
-    const [month, category, categoryId, accountId, amount] = Object.values(r) as [string, string, string, string, number | string];
-    if (!month || !category || !accounts.has(String(accountId)) || dropped.has(String(categoryId))) continue;
-    const key = `${month}\u0000${category}\u0000${accountId}`;
-    const entry = cents.get(key) ?? { month: String(month), category: String(category), accountId: String(accountId), cents: 0 };
-    entry.cents += Math.round((typeof amount === 'number' ? amount : parseFloat(String(amount)) || 0) * 100);
-    cents.set(key, entry);
-  }
-  return [...cents.values()].map((e) => ({ month: e.month, category: e.category, accountId: e.accountId, amount: e.cents / 100 }));
+  return spendMatrixOf(readSpendLines(dbPath, startInclusive, endExclusive));
 }
 
 /**
@@ -1486,67 +1271,36 @@ export function getNativeIncomeByMonthAccount(
 }
 
 /**
- * Uncategorized spending per (month, account) — the WHERE clause is
- * `getNativeUncategorizedSpendingTotal`'s verbatim (spending-signed only, no
- * grouped rows, dismissed ids excluded with the same defensive quoting), so
- * the cube's uncategorized cells and the digest's uncategorized total are one
- * definition with two groupings.
+ * Uncategorized spending per (month, account) — `getNativeUncategorizedSpendingTotal`'s
+ * lines with two groupings, refunds netted, so the cube's uncategorized cells
+ * and the digest's uncategorized total are one definition.
  */
 export function getNativeUncategorizedByMonthAccount(
   dbPath: string,
   startInclusive: string,
   endExclusive: string,
-  excludedActivityIds: readonly string[] = [],
+  /** The report cube: a database that cannot be read throws instead of answering "nothing uncategorized". */
+  strict = false,
 ): Array<{ month: string; accountId: string; amount: number }> {
-  if (!dbPath || !existsSync(dbPath)) return [];
-  if (!validDateBounds(startInclusive, endExclusive)) return [];
-  const safeIds = excludedActivityIds.filter((id) => /^[A-Za-z0-9_-]{1,64}$/.test(id));
-  const excludedClause = safeIds.length
-    ? `AND a.id NOT IN (${safeIds.map((id) => `'${id}'`).join(',')})`
-    : '';
-  const query = `
-    SELECT strftime('%Y-%m', a.activity_date) as month,
-           COALESCE(a.account_id, '') as account_id,
-           ROUND(SUM(ABS(CAST(a.amount AS REAL))), 2) as amount
-    FROM activities a
-    JOIN accounts acc ON a.account_id = acc.id
-    LEFT JOIN activity_taxonomy_assignments ata ON a.id = ata.activity_id
-    WHERE a.activity_date >= '${startInclusive}'
-      AND a.activity_date < '${endExclusive}'
-      AND ata.activity_id IS NULL
-      AND COALESCE(a.source_group_id, '') = ''
-      ${excludedClause}
-      ${SYNC_BOOKKEEPING_EXCLUSION}
-      ${IN_SPENDING_SCOPE}
-      ${NOT_AWAITING_TRANSFER_HALF}
-      AND (${SPENDING_SIGN}) > 0
-    GROUP BY month, account_id;
-  `;
-  const rows = queryNativeDb<Record<string, unknown>>(
-    dbPath,
-    'uncategorized by month',
-    query,
-    (parts) => (parts.length === 3
-      ? { c0: parts[0], c1: parts[1], c2: parseFloat(parts[2]) || 0 }
-      : null),
-  );
-  return rows.map((r) => {
-    const v = Object.values(r) as [string, string, number | string];
-    return {
-      month: String(v[0]),
-      accountId: String(v[1]),
-      amount: typeof v[2] === 'number' ? v[2] : parseFloat(String(v[2])) || 0,
-    };
-  }).filter((r) => r.month);
+  const read = strict ? readSpendLines(dbPath, startInclusive, endExclusive) : spendLinesOrNull(dbPath, startInclusive, endExclusive);
+  if (!read) return [];
+  const byKey = new Map<string, { month: string; accountId: string; cents: number }>();
+  for (const line of read.lines) {
+    if (line.uncategorizedCents === 0) continue;
+    const key = `${line.month}\u0000${line.row.accountId}`;
+    const entry = byKey.get(key) ?? { month: line.month, accountId: line.row.accountId, cents: 0 };
+    entry.cents += line.uncategorizedCents;
+    byKey.set(key, entry);
+  }
+  return [...byKey.values()].map((e) => ({ month: e.month, accountId: e.accountId, amount: toDollars(e.cents) }));
 }
 
 /**
- * Raw material for the merchant leaderboard: one row per spending transaction
- * — categorized AND uncategorized, since an unfiled charge is still money at a
- * merchant — with the stored note VERBATIM. Normalization (stripping the
- * ` · tx-id` suffix and markers) happens in the cube builder with
- * `descriptionFromComment`, where it is tested; SQL string-mangling of that
- * format is how silent mismatches happen.
+ * Raw material for the merchant leaderboard: one row per spending
+ * transaction — categorized AND uncategorized, since an unfiled charge is
+ * still money at a merchant — with what it adds to spending (refunds
+ * negative) and the stored note VERBATIM. Normalization happens in the cube
+ * builder with `descriptionFromComment`, where it is tested.
  *
  * `strict` (the cash forecast, project 5): a database that cannot be read
  * throws NativeDbUnreadableError instead of answering "no rows" — the
@@ -1558,54 +1312,15 @@ export function getNativeMerchantRows(
   endExclusive: string,
   strict = false,
 ): Array<{ month: string; date: string; notes: string; amount: number }> {
-  if (!strict && (!dbPath || !existsSync(dbPath))) return [];
-  if (!validDateBounds(startInclusive, endExclusive)) {
-    if (strict) throw new NativeDbUnreadableError(`merchant rows: bounds ${startInclusive}..${endExclusive}`);
-    return [];
+  let read: ReturnType<typeof readSpendLines> | null;
+  if (strict) {
+    if (!validDateBounds(startInclusive, endExclusive)) throw new NativeDbUnreadableError(`merchant rows: bounds ${startInclusive}..${endExclusive}`);
+    read = readSpendLines(dbPath, startInclusive, endExclusive);
+  } else {
+    read = spendLinesOrNull(dbPath, startInclusive, endExclusive);
   }
-  // `date` sits BEFORE notes: notes are free text and only the pipe-split
-  // parser's fixed leading columns are safe from a stray delimiter in them.
-  const query = `
-    SELECT strftime('%Y-%m', a.activity_date) as month,
-           date(a.activity_date) as date,
-           COALESCE(a.notes, '') as notes,
-           ROUND(${SPENDING_SIGNED_AMOUNT}, 2) as amount
-    ${SPENDING_FROM}
-    ${spendingWhere(startInclusive, endExclusive)}
-    UNION ALL
-    SELECT strftime('%Y-%m', a.activity_date) as month,
-           date(a.activity_date) as date,
-           COALESCE(a.notes, '') as notes,
-           ROUND(ABS(CAST(a.amount AS REAL)), 2) as amount
-    FROM activities a
-    JOIN accounts acc ON a.account_id = acc.id
-    LEFT JOIN activity_taxonomy_assignments ata ON a.id = ata.activity_id
-    WHERE a.activity_date >= '${startInclusive}'
-      AND a.activity_date < '${endExclusive}'
-      AND ata.activity_id IS NULL
-      AND COALESCE(a.source_group_id, '') = ''
-      ${IN_SPENDING_SCOPE}
-      ${NOT_AWAITING_TRANSFER_HALF}
-      AND (${SPENDING_SIGN}) > 0;
-  `;
-  const read: typeof queryNativeDb = strict ? queryNativeDbStrict : queryNativeDb;
-  const rows = read<Record<string, unknown>>(
-    dbPath,
-    'merchant rows',
-    query,
-    (parts) => (parts.length === 4
-      ? { c0: parts[0], c1: parts[1], c2: parts[2], c3: parseFloat(parts[3]) || 0 }
-      : null),
-  );
-  return rows.map((r) => {
-    const v = Object.values(r) as [string, string, string, number | string];
-    return {
-      month: String(v[0]),
-      date: String(v[1]),
-      notes: String(v[2]),
-      amount: typeof v[3] === 'number' ? v[3] : parseFloat(String(v[3])) || 0,
-    };
-  }).filter((r) => r.month !== '');
+  if (!read) return [];
+  return read.lines.map((line) => ({ month: line.month, date: line.day, notes: line.row.notes, amount: toDollars(line.cents) }));
 }
 
 /** One drill-down row. Since 1.61 it carries what the cube needs to open the
@@ -1626,77 +1341,35 @@ export interface NativeDrillRow {
 }
 
 /** The sqlite3 CLI separator for the drill query: ASCII unit separator. */
-export const DRILL_CLI_SEPARATOR = '\x1f';
-
-/** Rebuild a drill row from one split CLI line (ten columns, notes last), or
- *  null for a malformed or shifted line. */
-export function drillRowFromCliParts(parts: string[]): Record<string, unknown> | null {
-  if (parts.length < 10 || !Number.isFinite(parseFloat(parts[3]))) return null;
-  return {
-    c0: parts[0], c1: parts[1], c2: parts[2], c3: parseFloat(parts[3]) || 0, c4: parts[4], c5: parts[5],
-    c6: parts[6], c7: parts[7], c8: parts[8], c9: parts.slice(9).join(DRILL_CLI_SEPARATOR),
-  };
-}
-
-/** One line of the CLI fallback's output, as `queryNativeDb` reads it. */
-export function parseDrillCliLine(line: string): Record<string, unknown> | null {
-  const trimmed = line.trim();
-  return trimmed ? drillRowFromCliParts(trimmed.split(DRILL_CLI_SEPARATOR)) : null;
-}
+export const DRILL_CLI_SEPARATOR = CLI_SEPARATOR;
 
 /**
- * Drill-down rows: every categorized spending transaction in the window under
- * its ROLLED-UP category — the same SPENDING_FROM / SPENDING_CATEGORY / sign
- * definition the spend matrix uses, so a category's list always sums to the
- * bar the user clicked. Newest first; the cube builder caps per category.
+ * Drill-down rows: every categorized spending transaction in the window, once
+ * per category it counts under, by its ROLLED-UP category — the same lines
+ * the spend matrix uses, so a category's list always sums to the bar the
+ * user clicked. Newest first; the cube builder caps per category.
  */
 export function getNativeDrillRows(
   dbPath: string,
   startInclusive: string,
   endExclusive: string,
 ): NativeDrillRow[] {
-  if (!dbPath || !existsSync(dbPath)) return [];
-  if (!validDateBounds(startInclusive, endExclusive)) return [];
-  // Names come back unchanged on the node:sqlite path (they must match the
-  // cube's other matrices). The CLI fallback uses the unit separator, so a `|`
-  // in any column cannot shift the others; notes stay last anyway.
-  const query = `
-    SELECT ${SPENDING_CATEGORY} as category,
-           date(a.activity_date) as date,
-           COALESCE(acc.name, '') as account,
-           ROUND(${SPENDING_SIGNED_AMOUNT}, 2) as amount,
-           a.id as activity_id,
-           COALESCE(a.account_id, '') as account_id,
-           COALESCE(ata.category_id, '') as category_id,
-           COALESCE(ata.source, '') as source,
-           UPPER(COALESCE(a.activity_type, '')) as activity_type,
-           COALESCE(a.notes, '') as notes
-    ${SPENDING_FROM}
-    ${spendingWhere(startInclusive, endExclusive)}
-    ORDER BY a.activity_date DESC, a.id;
-  `;
-  const rows = queryNativeDb<Record<string, unknown>>(
-    dbPath,
-    'drill rows',
-    query,
-    drillRowFromCliParts,
-    DRILL_CLI_SEPARATOR,
-  );
-  return rows.map((r) => {
-    const v = Object.values(r) as Array<string | number>;
-    return {
-      category: String(v[0]),
-      date: String(v[1]),
-      account: String(v[2]),
-      amount: typeof v[3] === 'number' ? v[3] : parseFloat(String(v[3])) || 0,
-      activityId: String(v[4] ?? ''),
-      accountId: String(v[5] ?? ''),
-      categoryId: String(v[6] ?? ''),
-      source: String(v[7] ?? ''),
-      activityType: String(v[8] ?? ''),
-      notes: String(v[9] ?? ''),
-    };
-  }).filter((r) => r.category !== '');
+  const read = spendLinesOrNull(dbPath, startInclusive, endExclusive);
+  if (!read) return [];
+  const out: NativeDrillRow[] = [];
+  const newestFirst = [...read.lines].sort((x, y) => (x.row.date === y.row.date ? (x.row.id < y.row.id ? -1 : 1) : x.row.date < y.row.date ? 1 : -1));
+  for (const line of newestFirst) {
+    for (const a of line.allocations) {
+      const category = topCategoryName(a.categoryId, read.settings);
+      if (!category) continue;
+      out.push({
+        category, date: line.day, account: line.row.accountName, amount: toDollars(a.cents),
+        activityId: line.row.id, accountId: line.row.accountId, categoryId: a.categoryId, source: a.source,
+        activityType: line.row.type, notes: line.row.notes,
+      });
+    }
+  }
+  return out;
 }
 
 /**
@@ -1740,56 +1413,21 @@ export function getNativeFeesInterestByMonth(
 }
 
 /**
- * Total spending per DAY — the pool burn-down's resolution. Categorized plus
- * uncategorized with the same id-exclusion the uncategorized readers honor,
- * so a dismissed charge burns nothing here either.
+ * Total spending per day — the pool burn-down's resolution: what Wealthfolio's
+ * Spending page counts, categorized and uncategorized, on its local day.
  */
 export function getNativeSpendDailyTotals(
   dbPath: string,
   startInclusive: string,
   endExclusive: string,
-  excludedActivityIds: readonly string[] = [],
+  /** The report cube: a database that cannot be read throws instead of answering "nothing spent". */
+  strict = false,
 ): Array<{ date: string; amount: number }> {
-  if (!dbPath || !existsSync(dbPath)) return [];
-  if (!validDateBounds(startInclusive, endExclusive)) return [];
-  const safeIds = excludedActivityIds.filter((id) => /^[A-Za-z0-9_-]{1,64}$/.test(id));
-  const excludedClause = safeIds.length
-    ? `AND a.id NOT IN (${safeIds.map((id) => `'${id}'`).join(',')})`
-    : '';
-  const query = `
-    SELECT date, ROUND(SUM(amount), 2) as amount FROM (
-      SELECT substr(a.activity_date, 1, 10) as date, ${SPENDING_SIGNED_AMOUNT} as amount
-      ${SPENDING_FROM}
-      ${spendingWhere(startInclusive, endExclusive)}
-      ${excludedClause}
-      UNION ALL
-      SELECT substr(a.activity_date, 1, 10) as date, ABS(CAST(a.amount AS REAL)) as amount
-      FROM activities a
-      JOIN accounts acc ON a.account_id = acc.id
-      LEFT JOIN activity_taxonomy_assignments ata ON a.id = ata.activity_id
-      WHERE a.activity_date >= '${startInclusive}'
-        AND a.activity_date < '${endExclusive}'
-        AND ata.activity_id IS NULL
-        AND COALESCE(a.source_group_id, '') = ''
-        ${excludedClause}
-        ${IN_SPENDING_SCOPE}
-      ${NOT_AWAITING_TRANSFER_HALF}
-        AND (${SPENDING_SIGN}) > 0
-    ) GROUP BY date;
-  `;
-  const rows = queryNativeDb<Record<string, unknown>>(
-    dbPath,
-    'daily spend',
-    query,
-    (parts) => (parts.length === 2 ? { c0: parts[0], c1: parseFloat(parts[1]) || 0 } : null),
-  );
-  return rows.map((r) => {
-    const v = Object.values(r) as [string, number | string];
-    return {
-      date: String(v[0]),
-      amount: typeof v[1] === 'number' ? v[1] : parseFloat(String(v[1])) || 0,
-    };
-  }).filter((r) => /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(r.date));
+  const read = strict ? readSpendLines(dbPath, startInclusive, endExclusive) : spendLinesOrNull(dbPath, startInclusive, endExclusive);
+  if (!read) return [];
+  const byDay = new Map<string, number>();
+  for (const line of read.lines) byDay.set(line.day, (byDay.get(line.day) ?? 0) + line.cents);
+  return [...byDay].map(([date, cents]) => ({ date, amount: toDollars(cents) }));
 }
 
 /**
@@ -2051,4 +1689,204 @@ export function getNativeTxSearchRows(dbPath: string): NativeTxSearchRow[] {
       notes: String(v[6] ?? ''),
     };
   });
+}
+
+/** The sqlite3 CLI's output buffer for the spending reads (the audits' too):
+ *  they return every row of a window, past execFileSync's 1 MB default. */
+export const SPEND_CLI_MAX_BUFFER = 256 * 1024 * 1024;
+
+/** CLI line → the spending row read's ten columns (the note last). */
+export function spendRowFromCliParts(parts: string[]): Record<string, unknown> | null {
+  if (parts.length < 10 || !Number.isFinite(parseFloat(parts[6]))) return null;
+  const out: Record<string, unknown> = {};
+  for (let i = 0; i < 9; i++) out[`c${i}`] = parts[i];
+  out.c9 = tail(parts, 9);
+  return out;
+}
+
+/**
+ * Every activity whose STORED date is in `[startDay, endDayExclusive)` (both
+ * YYYY-MM-DD), with its account and every spending-taxonomy filing and split
+ * line — the rows shared/wf-spending.ts counts. A caller placing rows by
+ * Wealthfolio's local date reads a day wider on each side (`readSpendLines`).
+ *
+ * Strict: a database that cannot be read throws NativeDbUnreadableError, never
+ * "nothing spent". Every table and column read is Wealthfolio's own on 3.8,
+ * 3.9 and 3.10 (`spending_activity_splits` arrived with the spending module,
+ * 3.8). The sqlite3 CLI fallback splits on the unit separator, with the free
+ * text last; the account names are their own read for the same reason.
+ */
+export function getNativeSpendRows(dbPath: string, startDay: string, endDayExclusive: string): SpendRow[] {
+  // Interpolated (the CLI fallback cannot bind), so validated, never trusted.
+  if (!isDay(startDay) || !isDay(endDayExclusive)) throw new Error(`malformed spending bounds: ${startDay}..${endDayExclusive}`);
+  const window = `a.activity_date >= '${startDay}' AND a.activity_date < '${endDayExclusive}'`;
+  const accounts = queryNativeDbStrict<Record<string, unknown>>(
+    dbPath, 'spending accounts',
+    `SELECT acc.id AS id, UPPER(COALESCE(acc.account_type, '')) AS account_type, COALESCE(acc.name, '') AS name FROM accounts acc ORDER BY acc.id;`,
+    (parts) => (parts.length >= 3 ? { c0: parts[0], c1: parts[1], c2: tail(parts, 2) } : null),
+    DRILL_CLI_SEPARATOR, SPEND_CLI_MAX_BUFFER,
+  );
+  const accountById = new Map(accounts.map((r) => {
+    const v = Object.values(r);
+    return [String(v[0]), { type: String(v[1] ?? ''), name: String(v[2] ?? '') }];
+  }));
+  const activities = queryNativeDbStrict<Record<string, unknown>>(
+    dbPath, 'spending rows',
+    `SELECT a.id AS id, a.activity_date AS activity_date, COALESCE(a.account_id, '') AS account_id,
+            UPPER(COALESCE(a.activity_type, '')) AS activity_type, COALESCE(a.activity_type_override, '') AS type_override,
+            UPPER(COALESCE(a.subtype, '')) AS subtype, ROUND(ABS(CAST(COALESCE(a.amount, '0') AS REAL)) * 100) AS abs_cents,
+            COALESCE(a.source_group_id, '') AS grp, UPPER(COALESCE(a.currency, '')) AS ccy, ${NOTES} AS notes
+     FROM activities a
+     WHERE ${window}
+     ORDER BY a.activity_date, a.id;`,
+    spendRowFromCliParts, DRILL_CLI_SEPARATOR, SPEND_CLI_MAX_BUFFER,
+  );
+  const filings = queryNativeDbStrict<Record<string, unknown>>(
+    dbPath, 'spending filings',
+    `SELECT ata.activity_id AS activity_id, COALESCE(ata.id, '') AS id, ata.category_id AS category_id,
+            COALESCE(ata.created_at, '') AS created_at, COALESCE(ata.source, '') AS source
+     FROM activity_taxonomy_assignments ata JOIN activities a ON a.id = ata.activity_id
+     WHERE ata.taxonomy_id = '${SPENDING_TAXONOMY}' AND ${window}
+     ORDER BY ata.activity_id, ata.created_at, ata.id;`,
+    (parts) => (parts.length >= 5 ? { c0: parts[0], c1: parts[1], c2: parts[2], c3: parts[3], c4: tail(parts, 4) } : null),
+    DRILL_CLI_SEPARATOR, SPEND_CLI_MAX_BUFFER,
+  );
+  const splits = queryNativeDbStrict<Record<string, unknown>>(
+    dbPath, 'spending splits',
+    `SELECT s.activity_id AS activity_id, s.category_id AS category_id, ROUND(ABS(CAST(COALESCE(s.amount, '0') AS REAL)) * 100) AS abs_cents
+     FROM spending_activity_splits s JOIN activities a ON a.id = s.activity_id
+     WHERE s.taxonomy_id = '${SPENDING_TAXONOMY}' AND ${window}
+     ORDER BY s.activity_id, s.sort_order, s.id;`,
+    (parts) => (parts.length >= 3 ? { c0: parts[0], c1: parts[1], c2: parts[2] } : null),
+    DRILL_CLI_SEPARATOR, SPEND_CLI_MAX_BUFFER,
+  );
+  const filingsOf = new Map<string, SpendRow['filings']>();
+  for (const r of filings) {
+    const v = Object.values(r);
+    const list = filingsOf.get(String(v[0])) ?? [];
+    list.push({ id: String(v[1] ?? ''), categoryId: String(v[2] ?? ''), createdAt: String(v[3] ?? ''), source: String(v[4] ?? '') });
+    filingsOf.set(String(v[0]), list);
+  }
+  const splitsOf = new Map<string, SpendRow['splits']>();
+  for (const r of splits) {
+    const v = Object.values(r);
+    const list = splitsOf.get(String(v[0])) ?? [];
+    list.push({ categoryId: String(v[1] ?? ''), absCents: Math.round(Number(v[2]) || 0) });
+    splitsOf.set(String(v[0]), list);
+  }
+  return activities.map((r): SpendRow => {
+    const v = Object.values(r);
+    const id = String(v[0]);
+    const account = accountById.get(String(v[2] ?? ''));
+    return {
+      id, date: String(v[1] ?? ''), accountId: String(v[2] ?? ''), accountName: account?.name ?? '', accountType: account?.type ?? '',
+      type: String(v[3] ?? ''), typeOverride: String(v[4] ?? ''), subtype: String(v[5] ?? ''), absCents: Math.round(Number(v[6]) || 0),
+      groupId: String(v[7] ?? ''), currency: String(v[8] ?? ''), notes: String(v[9] ?? ''), filings: filingsOf.get(id) ?? [], splits: splitsOf.get(id) ?? [],
+    };
+  });
+}
+
+/** Wealthfolio's Spending settings and its spending categories, as its page
+ *  reads them (crates/spending settings/service.rs, insight/service.rs). */
+export interface NativeSpendingSettings {
+  /** Wealthfolio's timezone; null when unset. */
+  timezone: string | null;
+  /** `spending.excluded_category_ids`; [] when unset (3.8) or not a list of strings. */
+  excludedCategoryIds: string[];
+  /** Every spending category's parent (null at the top). */
+  categoryParents: Record<string, string | null>;
+  /** Every spending category's name. */
+  categoryNames: Record<string, string>;
+  /** Wealthfolio's base currency (`base_currency`); null when unset. */
+  baseCurrency: string | null;
+  /** Off unless `spending.enabled` is "true" and at least one account is opted in. */
+  spendingOn: boolean;
+  /** The accounts its Spending page reads: opted in, existing, not archived,
+   *  and a cash or credit-card account (upstream's `account_supports_purpose`). */
+  spendingAccountIds: string[];
+}
+
+/** The account types a Spending page can read (`account_supports_purpose`). */
+const SPENDING_ACCOUNT_TYPES: ReadonlySet<string> = new Set(['CASH', 'CREDIT_CARD']);
+
+/** Strict: throws NativeDbUnreadableError when the database cannot be read. */
+export function getNativeSpendingSettings(dbPath: string): NativeSpendingSettings {
+  const rows = queryNativeDbStrict<Record<string, unknown>>(
+    dbPath, 'spending settings',
+    `SELECT setting_key AS k, COALESCE(setting_value, '') AS v FROM app_settings
+     WHERE setting_key IN ('timezone', 'base_currency', 'spending.excluded_category_ids', 'spending.enabled', 'spending.account_ids') ORDER BY setting_key;`,
+    (parts) => (parts.length >= 2 ? { c0: parts[0], c1: tail(parts, 1) } : null),
+    DRILL_CLI_SEPARATOR, SPEND_CLI_MAX_BUFFER,
+  );
+  const value = new Map(rows.map((r) => {
+    const v = Object.values(r);
+    return [String(v[0]), String(v[1] ?? '')];
+  }));
+  // As upstream reads a list setting: `Vec<String>` or nothing — one
+  // non-string element, or text that is not JSON, is the whole list absent.
+  const stringList = (key: string): string[] => {
+    try {
+      const parsed: unknown = JSON.parse(value.get(key) || '[]');
+      return Array.isArray(parsed) && parsed.every((x) => typeof x === 'string') ? (parsed as string[]) : [];
+    } catch {
+      return [];
+    }
+  };
+  const optedIn = value.get('spending.enabled') === 'true' ? stringList('spending.account_ids') : [];
+  const accounts = queryNativeDbStrict<Record<string, unknown>>(
+    dbPath, 'spending settings accounts',
+    `SELECT id AS id, COALESCE(is_archived, 0) AS archived, UPPER(COALESCE(account_type, '')) AS account_type FROM accounts ORDER BY id;`,
+    (parts) => (parts.length >= 3 ? { c0: parts[0], c1: parts[1], c2: parts[2] } : null),
+    DRILL_CLI_SEPARATOR, SPEND_CLI_MAX_BUFFER,
+  );
+  const live = new Set(accounts.flatMap((r) => {
+    const v = Object.values(r);
+    return isTrue(v[1]) || !SPENDING_ACCOUNT_TYPES.has(String(v[2])) ? [] : [String(v[0])];
+  }));
+  const categories = queryNativeDbStrict<Record<string, unknown>>(
+    dbPath, 'spending categories',
+    `SELECT id AS id, COALESCE(parent_id, '') AS parent, COALESCE(name, '') AS name FROM taxonomy_categories
+     WHERE taxonomy_id = '${SPENDING_TAXONOMY}' ORDER BY id;`,
+    (parts) => (parts.length >= 3 ? { c0: parts[0], c1: parts[1], c2: tail(parts, 2) } : null),
+    DRILL_CLI_SEPARATOR, SPEND_CLI_MAX_BUFFER,
+  );
+  const categoryParents: Record<string, string | null> = {};
+  const categoryNames: Record<string, string> = {};
+  for (const r of categories) {
+    const v = Object.values(r);
+    categoryParents[String(v[0])] = String(v[1] ?? '') || null;
+    categoryNames[String(v[0])] = String(v[2] ?? '');
+  }
+  return {
+    timezone: value.get('timezone') || null,
+    baseCurrency: value.get('base_currency')?.trim().toUpperCase() || null,
+    excludedCategoryIds: stringList('spending.excluded_category_ids'),
+    categoryParents,
+    categoryNames,
+    spendingOn: optedIn.length > 0,
+    spendingAccountIds: optedIn.filter((id) => live.has(id)),
+  };
+}
+
+/** The lines Wealthfolio's Spending page counts on its local days
+ *  `[startDay, endDayExclusive)`, and the settings they were counted with.
+ *  Rows are read a day wider on each side: a row's local date is at most a
+ *  day from its UTC date. Strict. */
+export function readSpendLines(dbPath: string, startDay: string, endDayExclusive: string): { lines: SpendLine[]; settings: NativeSpendingSettings } {
+  if (!isDay(startDay) || !isDay(endDayExclusive)) throw new Error(`malformed spending bounds: ${startDay}..${endDayExclusive}`);
+  const settings = getNativeSpendingSettings(dbPath);
+  const rows = getNativeSpendRows(dbPath, shiftDay(startDay, -1), shiftDay(endDayExclusive, 1));
+  const lines = spendLines(rows, {
+    timezone: settings.timezone,
+    spendingAccountIds: settings.spendingAccountIds,
+    excludedCategoryIds: settings.excludedCategoryIds,
+    categoryParents: settings.categoryParents,
+  }).filter((l) => l.day >= startDay && l.day < endDayExclusive);
+  return { lines, settings };
+}
+
+/** A category's name rolled up to its top-level ancestor, as every report
+ *  labels spending; '' when the category is unknown. */
+export function topCategoryName(categoryId: string, settings: Pick<NativeSpendingSettings, 'categoryParents' | 'categoryNames'>): string {
+  return settings.categoryNames[topCategoryId(categoryId, settings.categoryParents)] ?? '';
 }
