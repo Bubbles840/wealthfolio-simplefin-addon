@@ -122,14 +122,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   payback rule apply. Saving refuses to overwrite rules changed elsewhere — "Your rules
   changed elsewhere — reload them first." — so the companion's payback rule is
   never silently dropped.
+- **Paybacks in the app** (Wealthfolio 3.9 and newer, with a companion of
+  1.62.0 or newer). A posted deposit on Home's needs-a-category list, and its
+  story, offers **It's a payback…**: pick the spending it pays back ("Pick the
+  spending it pays you back for.") and **File it**. It becomes a payback as in
+  Telegram — the `asReimbursement` override, then a `CREDIT` marked
+  `REIMBURSEMENT` — and leaves the list at once: "Filed as a payback under
+  Restaurants — it takes $14 off your Food & Dining spending. Undo it from
+  Telegram: /changes." The add-on SDK cannot file one transaction, so the
+  add-on makes a one-off Wealthfolio rule that matches only that row
+  ("Payback (one-off) — <bank words>"), runs Wealthfolio's rules over the rows
+  with no category, reads the filing back and deletes the rule; Wealthfolio
+  records the filing as a rule's. The rule is made before the row is
+  re-typed, so it wins over an older rule for paybacks; if another rule still
+  filed it first, the reply names that category. A one-off rule that could
+  not be deleted is named, and the next payback from the app deletes it.
+  Refused in its own words, with nothing written: a row already filed under
+  any category ("take that off in Wealthfolio first" — the add-on cannot take
+  a filing off), an account Wealthfolio's Spending does not track, half of a
+  linked transfer, a row that changed since its story showed it, and
+  everything Telegram refuses. The change log names the category Wealthfolio
+  confirmed, and when the entry could not be written the reply says there is
+  no Undo. It is not offered on Wealthfolio 3.8, without a companion, or with
+  a companion older than 1.62.0, which would turn the payback back into a
+  deposit.
+- **A payback's story says so**, in the app and in `/why`: "A payback: it
+  lowers your spending." instead of "Money in.", and "Filed under Restaurants
+  by you, as a payback" — a payback filed from `/categorize` used to read
+  "set by hand".
 
 ### Changed
 - **Updating: Install from File, and the add-on zip first.**
   - **New permissions.** Wealthfolio's Update button refuses an update that
     adds permissions. Install 1.62.0 over the installed add-on with Install
     from File (don't remove it first) and approve: linking and unlinking
-    transfers, reading how Wealthfolio files and links each transaction, and
-    your spending categories' names.
+    transfers, reading how Wealthfolio files and links each transaction,
+    your spending categories' names, and making, running and deleting the
+    one-off rule that files a payback from the app.
   - **The add-on zip before the companion, or together with it.** The
     companion's two one-time passes, the date repair (under Fixed) and the
     card rewrite (under Added), wait for the 1.62 add-on ("Date repair waits
