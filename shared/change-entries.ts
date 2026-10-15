@@ -776,8 +776,6 @@ export interface BookkeepingFacts {
   /** `date-repair` only: the rows at 00:00 UTC it left alone — half of a
    *  linked transfer, or a type Wealthfolio overrides. */
   skipped?: number;
-  /** `date-repair` only: rows that were refused and left at midnight. */
-  failed?: number;
   /** `date-repair` only: the full count when `activityIds` is cut to a sample. */
   total?: number;
   /** `sync-bookkeeping` only: the rows taken back out of the category (no
@@ -785,7 +783,8 @@ export interface BookkeepingFacts {
   unfiledIds?: string[];
   /** `sync-bookkeeping-setup` only: Wealthfolio did not take the exclusion (yet). */
   excludePending?: boolean;
-  /** `card-transfer-out` only: rows Wealthfolio refused for good, left as they were. */
+  /** `card-transfer-out` and `date-repair`: rows Wealthfolio refused for good
+   *  (twice), left as they were. The summary counts them. */
   refused?: string[];
   /** `transfer-unlink` only: Wealthfolio's own unlink kept both rows, retyped. */
   inPlace?: boolean;
@@ -804,13 +803,15 @@ function syncBookkeepingSummary(filed: number, unfiled: number, category: string
 export function bookkeepingChange(f: BookkeepingFacts): ChangeDraft {
   const n = f.total ?? f.activityIds.length;
   const refusedCount = f.refused?.length ?? 0;
-  const refusedNote = `Wealthfolio refused ${refusedCount} ${plural(refusedCount, 'row', 'rows')}, which ${plural(refusedCount, 'stays', 'stay')} as ${plural(refusedCount, 'it was', 'they were')}`;
+  // One wording for both one-time passes' refusals (the card rewrite and the date repair).
+  const refusedNote = (stays: string) => `Wealthfolio refused ${refusedCount} ${plural(refusedCount, 'row', 'rows')}, which ${plural(refusedCount, 'stays', 'stay')} ${stays}`;
+  const asItWas = `as ${plural(refusedCount, 'it was', 'they were')}`;
   const summary = f.step === 'legacy-placeholder'
     ? `Restated ${n} old placeholder ${plural(n, 'row', 'rows')} with ${plural(n, 'its', 'their')} real ${plural(n, 'amount', 'amounts')}`
     : f.step === 'card-transfer-out'
     ? (n === 0 && refusedCount > 0
-      ? `Couldn't restate ${refusedCount} card bookkeeping ${plural(refusedCount, 'row', 'rows')} as transfers out: Wealthfolio refused ${plural(refusedCount, 'it', 'them')}, so ${plural(refusedCount, 'it stays', 'they stay')} as ${plural(refusedCount, 'it was', 'they were')}`
-      : `Restated ${n} card bookkeeping ${plural(n, 'row', 'rows')} as ${plural(n, 'a transfer', 'transfers')} out, which Wealthfolio leaves out of spending${refusedCount > 0 ? `; ${refusedNote}` : ''}`)
+      ? `Couldn't restate ${refusedCount} card bookkeeping ${plural(refusedCount, 'row', 'rows')} as transfers out: Wealthfolio refused ${plural(refusedCount, 'it', 'them')}, so ${plural(refusedCount, 'it stays', 'they stay')} ${asItWas}`
+      : `Restated ${n} card bookkeeping ${plural(n, 'row', 'rows')} as ${plural(n, 'a transfer', 'transfers')} out, which Wealthfolio leaves out of spending${refusedCount > 0 ? `; ${refusedNote(asItWas)}` : ''}`)
     : f.step === 'external-marker'
       ? `Marked ${n} bookkeeping ${plural(n, 'row', 'rows')} as outside transfers for Wealthfolio's Health page`
       : f.step === 'transfer-relink'
@@ -822,9 +823,11 @@ export function bookkeepingChange(f: BookkeepingFacts): ChangeDraft {
               ? `Unlinked ${f.pairs} transfers you undid: re-created their ${f.rows ?? n} rows as spending or money in`
               : `Unlinked a transfer you undid: re-created ${(f.rows ?? n) === 1 ? 'its row' : `its ${f.rows ?? n} rows`} as spending or money in`)
           : f.step === 'date-repair'
-            ? `Moved ${n} ${plural(n, 'row', 'rows')} stored at midnight UTC to noon on the same date, so Wealthfolio counts ${plural(n, 'it', 'them')} on the bank's day${
-              f.skipped ? ` — ${f.skipped} linked or retyped ${plural(f.skipped, 'row', 'rows')} left as ${plural(f.skipped, 'it was', 'they were')}` : ''}${
-              f.failed ? `; ${f.failed} refused by Wealthfolio and left at midnight` : ''}`
+            ? (n === 0 && refusedCount > 0
+              ? `Couldn't move ${refusedCount} ${plural(refusedCount, 'row', 'rows')} stored at midnight UTC to noon: Wealthfolio refused ${plural(refusedCount, 'it', 'them')}, so ${plural(refusedCount, 'it stays', 'they stay')} at midnight`
+              : `Moved ${n} ${plural(n, 'row', 'rows')} stored at midnight UTC to noon on the same date, so Wealthfolio counts ${plural(n, 'it', 'them')} on the bank's day${
+                f.skipped ? ` — ${f.skipped} linked or retyped ${plural(f.skipped, 'row', 'rows')} left as ${plural(f.skipped, 'it was', 'they were')}` : ''}${
+                refusedCount > 0 ? `; ${refusedNote('at midnight')}` : ''}`)
             : f.step === 'sync-bookkeeping-setup'
               ? `Set up the "${f.categoryName ?? 'Sync bookkeeping'}" category${f.excludePending ? ", but Wealthfolio didn't exclude it yet" : ' and kept it out of spending'}`
             : f.step === 'sync-bookkeeping'
@@ -844,7 +847,6 @@ export function bookkeepingChange(f: BookkeepingFacts): ChangeDraft {
     after: {
       step: f.step, count: n, ...(f.categoryName ? { categoryName: f.categoryName } : {}),
       ...(f.skipped !== undefined ? { skipped: f.skipped } : {}),
-      ...(f.failed ? { failed: f.failed } : {}),
       ...(f.unfiledIds ? { unfiled: f.unfiledIds.length } : {}),
       ...(f.refused?.length ? { refused: [...f.refused] } : {}),
     },

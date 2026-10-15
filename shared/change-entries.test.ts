@@ -159,6 +159,14 @@ describe('summaries — one per kind, bank text raw', () => {
     const refusedOnly = bookkeepingChange({ step: 'card-transfer-out', activityIds: [], refused: ['x', 'y'] });
     expect(refusedOnly.summary).toBe("Couldn't restate 2 card bookkeeping rows as transfers out: Wealthfolio refused them, so they stay as they were");
     expect(refusedOnly.after).toMatchObject({ refused: ['x', 'y'] });
+    // The date repair words its refusals the same way.
+    expect(bookkeepingChange({ step: 'card-transfer-out', activityIds: ['a'], refused: ['x'] }).summary)
+      .toBe('Restated 1 card bookkeeping row as a transfer out, which Wealthfolio leaves out of spending; Wealthfolio refused 1 row, which stays as it was');
+    expect(bookkeepingChange({ step: 'date-repair', activityIds: ['a'], refused: ['x', 'y'] }).summary)
+      .toBe("Moved 1 row stored at midnight UTC to noon on the same date, so Wealthfolio counts it on the bank's day; Wealthfolio refused 2 rows, which stay at midnight");
+    const repairRefusedOnly = bookkeepingChange({ step: 'date-repair', activityIds: [], refused: ['x', 'y'] });
+    expect(repairRefusedOnly.summary).toBe("Couldn't move 2 rows stored at midnight UTC to noon: Wealthfolio refused them, so they stay at midnight");
+    expect(repairRefusedOnly.after).toMatchObject({ step: 'date-repair', count: 0, refused: ['x', 'y'] });
     expect(bookkeepingChange({ step: 'external-marker', activityIds: ['a'] }).summary).toBe("Marked 1 bookkeeping row as outside transfers for Wealthfolio's Health page");
     expect(bookkeepingChange({ step: 'transfer-relink', activityIds: ['a', 'b'] }).summary).toBe('Re-created 2 old transfer rows so they move cash');
     expect(bookkeepingChange({ step: 'opening-category', activityIds: [], categoryName: 'Opening balances' }).summary)

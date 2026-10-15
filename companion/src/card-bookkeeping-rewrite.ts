@@ -55,6 +55,7 @@ import type { ActivityWrite, SaveManyRequest, SaveManyResult } from '../../share
 import { hostTakesCardTransferOut, isNewerVersion } from '../../shared/version.js';
 import { findSyncBookkeepingCategory } from './bookkeeping-category.js';
 import { databaseFileExists, openLiveDatabase, whyNoLiveOpen } from './live-db.js';
+import { isRowRefusal } from './row-refusal.js';
 import { PHANTOM_CASH_ASSET_ID } from './sqlite-audit.js';
 
 /** The secret that says the rewrite finished (an ISO timestamp). */
@@ -165,12 +166,6 @@ function cardWithdrawals(db: DatabaseSync): Row[] {
 
 const BOOKKEEPING_PREFIXES = [STARTING_BALANCE_COMMENT_PREFIX, BALANCE_ADJUSTMENT_COMMENT_PREFIX, IN_TRANSIT_COMMENT_PREFIX];
 
-/** A thrown write error that is the row's own fault and will not heal: only a 400 or a 422. Any other 4xx (a 401, 403, 404, 409 …) is the host's or the moment's, so the run stops unmarked. */
-function isPermanent(e: unknown): boolean {
-  const m = /failed: (\d{3})/.exec(e instanceof Error ? e.message : String(e));
-  return !!m && [400, 422].includes(Number(m[1]));
-}
-
 /** Built from the FRESH row: its stored instant verbatim (a date-only value would move the row) and its note. No amount, no fee: 3.10 keeps an omitted decimal. */
 const transferOut = (r: Row, fresh: RewriteRestRow): ActivityWrite => ({
   id: r.id,
@@ -244,7 +239,7 @@ export async function rewriteCardBookkeeping(deps: CardRewriteDeps): Promise<Car
       const res = await deps.saveMany({ updates: writes });
       return res.errors.length > 0 ? { r: 'refused', why: res.errors.map((e) => `${e.action}: ${e.message}`).join('; ') } : { r: 'ok' };
     } catch (e) {
-      return { r: isPermanent(e) ? 'refused' : 'temporary', why: message(e) };
+      return { r: isRowRefusal(e) ? 'refused' : 'temporary', why: message(e) };
     }
   };
 
