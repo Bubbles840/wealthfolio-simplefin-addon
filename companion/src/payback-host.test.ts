@@ -71,6 +71,15 @@ describe('a payback on the companion', () => {
     expect(f.logged()).toEqual([expect.objectContaining({ writer: 'companion', actor: 'you', kind: 'payback-filed' })]);
   });
 
+  it('M3: an assignment that landed but lost its response is read back from Wealthfolio and counted as filed', async () => {
+    const f = fakeClient();
+    f.client.assignActivityCategory.mockImplementation(async (id: string, _t: string, cat: string) => { f.filed.set(id, cat); throw new Error('socket hang up'); });
+    const out = await filePayback(RESTAURANTS, companionPaybackIo(f.client, vi.fn()), NOW);
+    expect(out.kind).toBe('filed');
+    expect(f.client.getActivityAssignments).toHaveBeenCalledWith('act-7');
+    expect(f.logged()[0]).toMatchObject({ kind: 'payback-filed', after: { categoryId: 'cat-rest' } });
+  });
+
   it('says there is no Undo when the change log write is rejected (PB-I)', async () => {
     const f = fakeClient();
     const log = vi.fn();

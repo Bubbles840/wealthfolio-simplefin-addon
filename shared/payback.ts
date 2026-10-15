@@ -156,6 +156,9 @@ export interface PaybackIo {
   update(write: ActivityWrite): Promise<void>;
   /** Files the row under a spending category; rejects when Wealthfolio refuses. */
   assign(activityId: string, categoryId: string): Promise<void>;
+  /** The spending category the row is filed under now, or null; read-only. Rejects when unreadable.
+   *  Optional: a host without it treats a refused filing as not filed (PB-B, M3). */
+  assigned?(activityId: string): Promise<string | null>;
   /** Appends to the change log through the host's own writer. */
   record(draft: ChangeDraft): Promise<void>;
   log(msg: string): void;
@@ -203,7 +206,8 @@ const errorText = (err: unknown) => (err instanceof Error ? err.message : String
  *    added comes back off ("nothing was changed"), or, when that write fails
  *    too, the next sync makes it a payback; can't tell, the override stays
  *    and says so; a payback after all (a lost response), carry on;
- *  - the category refused: a payback with no category, which /categorize
+ *  - the category refused: read again — filed after all (a lost response),
+ *    carry on; else a payback with no category, which /categorize
  *    offers again — logged, so Undo can still turn it back into a deposit;
  *  - the log not written: all done, without an Undo.
  * PB-B: a `shown` fingerprint that no longer matches the re-read row refuses
@@ -316,6 +320,14 @@ async function fileOnce(choice: PaybackChoice, io: PaybackIo, now: Date): Promis
   } catch (err) {
     filed = false;
     io.log(`Payback ${choice.activityId}: filing it under ${choice.categoryId} failed: ${errorText(err)}`);
+    // The assignment can land and its response be lost: read it again, and treat a landed filing as done (PB-B, M3).
+    if (io.assigned) {
+      try {
+        filed = (await io.assigned(choice.activityId)) === choice.categoryId;
+      } catch (readErr) {
+        io.log(`Payback ${choice.activityId}: could not tell whether the filing landed: ${errorText(readErr)}`);
+      }
+    }
   }
 
   // 4. The change log, which never costs the payback.

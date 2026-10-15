@@ -28,7 +28,7 @@ import type { WealthfolioClient } from './wealthfolio.js';
 const ADDON_ID = 'simplefin-sync';
 
 /** What a payback needs of a `WealthfolioClient`. */
-export type PaybackClient = SecretClient & Pick<WealthfolioClient, 'searchActivities' | 'getAccounts' | 'saveMany' | 'assignActivityCategory'>;
+export type PaybackClient = SecretClient & Pick<WealthfolioClient, 'searchActivities' | 'getAccounts' | 'saveMany' | 'assignActivityCategory' | 'getActivityAssignments'>;
 
 /** One row by exact id, as a payback reads it; null when it is gone. Rejects when unreachable. */
 export async function readPaybackRow(client: Pick<WealthfolioClient, 'searchActivities' | 'getAccounts'>, activityId: string): Promise<PaybackRow | null> {
@@ -52,6 +52,7 @@ export function companionPaybackIo(client: PaybackClient, log: (msg: string) => 
       if (errors.length > 0) throw new Error(errors.map((e) => String(e.message ?? '')).join('; '));
     },
     assign: (activityId, categoryId) => client.assignActivityCategory(activityId, SPENDING_TAXONOMY_ID, categoryId),
+    assigned: async (activityId) => (await client.getActivityAssignments(activityId)).find((a) => a.taxonomyId === SPENDING_TAXONOMY_ID)?.categoryId ?? null,
     record: (draft) => recordCompanionChangesStrict(client, [draft]),
     log,
   };

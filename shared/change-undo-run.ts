@@ -28,7 +28,7 @@ import { BUDGET_TAXONOMY, DEFAULT_PERIOD_KEY, type BudgetTarget } from './budget
 import type { ChangeLogItem } from './change-log.js';
 import {
   addonGateCovers, currentRowId, isPaybackEntry, currentRuleId, latestReversal, planChangeUndo, undoAvailability, UNDO_EXACT_COPY, UNDO_NOT_POSSIBLE,
-  UNDO_UNREACHABLE, UNDO_UPDATE_ADDON, type UndoOp, type UndoPlan, type UndoRow, type UndoState, type UndoStep, type UndoVariant,
+  UNDO_UNREACHABLE, UNDO_UPDATE_ADDON, undoGone, type UndoOp, type UndoPlan, type UndoRow, type UndoState, type UndoStep, type UndoVariant,
 } from './change-undo.js';
 import {
   editSkippedTransactions, parseSkippedTransactionsStrict, REMOVED_FOR_GOOD_NOTE, SKIPPED_TRANSACTIONS_SECRET_KEY, SkippedTransactionsUnreadableError,
@@ -42,12 +42,12 @@ import { sameMappingRule } from './mapper.js';
 import type { HostActivity, SyncHost } from './sync-host.js';
 import {
   clearAccountOverride, clearTxOverride, editSyncOverrides, isUnreadableOverridesError, setAccountOverride, setTxOverride,
-  hasTxOverride, loadSyncOverrides, SYNC_OVERRIDES_UNREADABLE_MESSAGE, type SyncOverrides,
+  hasTxOverride, loadSyncOverrides, restoreTxEntry, SYNC_OVERRIDES_UNREADABLE_MESSAGE, type SyncOverrides,
 } from './sync-overrides.js';
 import { accountTxKey } from './transfers.js';
 import type { MappingRule } from './types.js';
 import {
-  PAYBACK_REDO_STUCK, PAYBACK_REDO_UNCHANGED, PAYBACK_UNDO_STUCK, PAYBACK_UNDO_STUCK_PLAIN, PAYBACK_UNDO_UNCHANGED, PAYBACK_UNREACHABLE,
+  PAYBACK_REDO_STUCK, PAYBACK_REDO_UNCHANGED, PAYBACK_REDO_UNSURE, PAYBACK_UNDO_STUCK, PAYBACK_UNDO_STUCK_PLAIN, PAYBACK_UNDO_UNCHANGED, PAYBACK_UNDO_UNSURE, PAYBACK_UNREACHABLE,
   PAYBACK_UPDATE_ADDON, paybackRedoHalf, paybackUndoHalf,
 } from './payback-copy.js';
 import { isPaybackRow, type PaybackRow } from './payback-row.js';
@@ -628,11 +628,9 @@ async function runOnce(
       try {
         await editSyncOverrides(io.secrets.get, io.secrets.set, (o) => overrideSteps.reduce((d, s) => {
           if (s.do !== 'set-tx' && s.do !== 'clear-tx') return d;
-          if (!was || !hasTxOverride(was, s.txKey, s.flag)) return clearTxOverride(d, s.txKey, s.flag);
-          const e = was.tx[s.txKey];
-          return setTxOverride(d, s.txKey, s.flag, new Date(e.at), {
-            ...(e.entryId ? { entryId: e.entryId } : {}), ...(e.label ? { label: e.label } : {}),
-          });
+          // The key's entry exactly as this run found it (at, label, entryId and all), or gone if it had none.
+          if (!was) return clearTxOverride(d, s.txKey, s.flag);
+          return restoreTxEntry(d, s.txKey, Object.prototype.hasOwnProperty.call(was.tx, s.txKey) ? was.tx[s.txKey] : undefined);
         }, o), now);
       } catch (backErr) {
         try {
@@ -640,8 +638,12 @@ async function runOnce(
         } catch {
           // Saying so never costs the answer.
         }
-        return { ok: false, message: op === 'undo' ? (str(rec(entry.after).categoryId) === null ? PAYBACK_UNDO_STUCK_PLAIN : PAYBACK_UNDO_STUCK) : PAYBACK_REDO_STUCK };
+        // The category wording only when this Undo had a filing to take off (PB-D m1).
+        return { ok: false, message: op === 'undo' ? (rest.some((s) => s.do === 'unassign') ? PAYBACK_UNDO_STUCK : PAYBACK_UNDO_STUCK_PLAIN) : PAYBACK_REDO_STUCK };
       }
+      // A re-read that failed cannot claim "nothing was changed"; a row that is gone says so (PB-D m2).
+      if (!readable) return { ok: false, message: op === 'undo' ? PAYBACK_UNDO_UNSURE : PAYBACK_REDO_UNSURE };
+      if (!again) return { ok: false, message: undoGone(op) };
       return { ok: false, message: op === 'undo' ? PAYBACK_UNDO_UNCHANGED : PAYBACK_REDO_UNCHANGED };
     }
     if (entry.kind === 'transaction-removed' && err instanceof PartialFailure) {

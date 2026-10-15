@@ -19,7 +19,7 @@ import { changeMoney, type ChangeEntry } from './change-entries.js';
 import type { ChangeLogItem } from './change-log.js';
 import { sameMappingRule } from './mapper.js';
 import {
-  PAYBACK_CAT_RULE_REDONE, PAYBACK_CAT_RULE_UNDONE, PAYBACK_TX_RULE_REDONE, PAYBACK_TX_RULE_UNDONE, paybackRedone, paybackUndone,
+  PAYBACK_CAT_RULE_REDONE, PAYBACK_CAT_RULE_UNDONE, PAYBACK_TX_RULE_REDONE, PAYBACK_TX_RULE_UNDONE, paybackFiledSince, paybackRedone, paybackUndone,
 } from './payback-copy.js';
 import { isPaybackRow, paybackRetype, type PaybackRow } from './payback-row.js';
 import type { ActivityWrite, ImportRow } from './sync-host.js';
@@ -784,15 +784,17 @@ export function planChangeUndo(
         if (!isPaybackRow(row)) {
           // A payback setting left on a deposit (a re-type that could not be confirmed, PB-B M5) is logged with no
           // category: its Undo takes only the setting off, and only while it is there. The row is not touched.
+          if (categoryId === null && row.type === 'DEPOSIT' && filedNow !== null && state.paybackFlagged) return refuse(paybackFiledSince(op));
           if (categoryId !== null || row.type !== 'DEPOSIT' || filedNow !== null || !state.paybackFlagged) {
             return refuse(undoChangedSince(op));
           }
           return plan({ op, needsSync: false, rowAfter: row.id, done: paybackUndone(categoryName), steps: clears });
         }
         // A half-done Redo leaves the payback with no filing: accept the entry's category or none, never another.
-        if (filedNow !== null && filedNow !== categoryId) return refuse(undoChangedSince(op));
+        if (filedNow !== null && filedNow !== categoryId) return refuse(categoryId === null ? paybackFiledSince(op) : undoChangedSince(op));
         return plan({
-          op, needsSync: false, rowAfter: row.id, done: paybackUndone(categoryName),
+          // Said only when a filing is there NOW to come off (PB-D m1).
+          op, needsSync: false, rowAfter: row.id, done: paybackUndone(filedNow ? categoryName : null),
           steps: [
             ...clears,
             // The deposit's own subtype back; '' clears REIMBURSEMENT.
