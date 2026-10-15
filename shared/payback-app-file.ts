@@ -20,12 +20,14 @@
  *  4. the `asReimbursement` override, re-read right before it is written;
  *  5. the row re-typed (`paybackRetype`: the stored instant, a bare day at
  *     noon UTC);
- *  6. `rerunRules(true)`, uncategorized rows only — a failure is not final:
- *     the background runs may have filed it;
+ *  6. `rerunRules(true)`, uncategorized rows only, retried once after a short
+ *     pause — a failure is not final: the activity write's own run is
+ *     debounced, so it lands after the read-back, but may still file it;
  *  7. the filing confirmed by reading the row's facts back;
  *  8. the one-off rule deleted, filed or not;
  *  9. `payback-filed` logged with the category Wealthfolio CONFIRMED (none
- *     when it did not), through the change log's strict append, so a log that
+ *     when it confirmed none; the CHOSEN one when the rule run succeeded but
+ *     the read-back failed, so Undo can un-file it), through the change log's strict append, so a log that
  *     was not written is said ("no Undo") — Telegram's Undo un-files exactly
  *     the logged category.
  *
@@ -35,13 +37,14 @@
  * message. Pure: src/utils/app-payback.ts lends the add-on's calls.
  */
 import { SPENDING_TAXONOMY_ID } from './cash-flow-bucket.js';
+import { SYNC_BOOKKEEPING_CATEGORY } from './bookkeeping-filing.js';
 import { paybackFiledChange, type ChangeDraft } from './change-entries.js';
 import { planPayback, type PaybackPlan } from './payback.js';
 import {
   leftoverPaybackKeys, paybackOnceRule, type ListedRule, type PaybackCategory, type PaybackOnceRule,
 } from './payback-app.js';
 import {
-  PAYBACK_APP_SETTING_HINT, PAYBACK_APP_UNDO_HINT, PAYBACK_APP_UPDATE_STUCK, PAYBACK_APP_UPDATE_UNSURE, PAYBACK_CATEGORY_GONE, PAYBACK_CHANGED,
+  PAYBACK_APP_OVERRIDE_UNSURE, PAYBACK_APP_SETTING_HINT, PAYBACK_CATEGORY_RESERVED, PAYBACK_APP_UNDO_HINT, PAYBACK_APP_UPDATE_STUCK, PAYBACK_APP_UPDATE_UNSURE, PAYBACK_CATEGORY_GONE, PAYBACK_CHANGED,
   PAYBACK_GONE, PAYBACK_GONE_STUCK, PAYBACK_LINKED, PAYBACK_MAPPING_UNREADABLE, PAYBACK_NO_UNDO, PAYBACK_NO_UNDO_SETTING, PAYBACK_NOT_IN_SPENDING,
   PAYBACK_OVERRIDE_FAILED, PAYBACK_RULE_REFUSED, PAYBACK_RUNNING, PAYBACK_UNREACHABLE, PAYBACK_UPDATE_REFUSED,
   paybackAlreadyFiled, paybackAppUnfiled, paybackAppUnsure, paybackDone, paybackFiledFirst, paybackLeftoverRule,
@@ -54,6 +57,7 @@ import {
   SYNC_OVERRIDES_UNREADABLE_MESSAGE,
 } from './sync-overrides.js';
 import { removalFingerprint, RemoveMappingUnreadableError } from './tx-remove.js';
+import { OPENING_BALANCES_CATEGORY } from './sync-core.js';
 import { filingOfFact, linkedOfFact, type CashFact } from './wf-facts.js';
 
 /** What the add-on lends `filePaybackInApp`. */
@@ -83,6 +87,8 @@ export interface AppPaybackIo {
   update(write: ActivityWrite): Promise<void>;
   /** Wealthfolio's rule run over the rows with no category (`rerunRules(true)`). */
   rerunRules(): Promise<void>;
+  /** The short pause before the rule run is retried; absent: one second. */
+  pause?(ms: number): Promise<void>;
   /** Appends to the change log: whether THIS entry was written. */
   record(draft: ChangeDraft): Promise<boolean>;
   log(msg: string): void;
@@ -159,6 +165,8 @@ async function fileOnce(choice: AppPaybackChoice, io: AppPaybackIo, now: Date): 
   }
   if (!plan.ok) return refused(plan.reason);
   if (!chosen) return refused(PAYBACK_CATEGORY_GONE);
+  // Defence in depth: the picker already hides the categories the sync keeps for itself.
+  if (chosen.name === OPENING_BALANCES_CATEGORY || chosen.name === SYNC_BOOKKEEPING_CATEGORY) return refused(PAYBACK_CATEGORY_RESERVED);
   if (!fact) return refused(PAYBACK_NOT_IN_SPENDING);
   if (linkedOfFact(fact)) return refused(PAYBACK_LINKED);
   const nameOf = (id: string): string | null => categories.find((c) => c.id === id)?.name ?? null;
@@ -226,12 +234,23 @@ async function fileOnce(choice: AppPaybackChoice, io: AppPaybackIo, now: Date): 
     const unreadable = isUnreadableOverridesError(err);
     // The write can fail after it landed (a lost response): read it again.
     let landed = false;
+    let unsure = false;
     if (!unreadable) {
       try {
         const again = await loadSyncOverrides(io.secrets.get);
         landed = !again.unreadable && w.txKeys.every((k) => hasTxOverride(again.overrides, k, 'asReimbursement'));
       } catch (readErr) {
+        unsure = true;
         say(`could not read the overrides again: ${errorText(readErr)}`);
+      }
+    }
+    if (unsure && added.length > 0) {
+      // Whether it landed is unknown: take back what this run added; if that fails too, the setting may be on.
+      try {
+        await editSyncOverrides(io.secrets.get, io.secrets.set, (o) => added.reduce((d, k) => clearTxOverride(d, k, 'asReimbursement'), o), now);
+      } catch (undoErr) {
+        say(`taking the override back failed: ${errorText(undoErr)}`);
+        return unconfirmed(PAYBACK_APP_OVERRIDE_UNSURE, await dropRule());
       }
     }
     if (!landed) return refused(lines(unreadable ? SYNC_OVERRIDES_UNREADABLE_MESSAGE : PAYBACK_OVERRIDE_FAILED, left(await dropRule())));
@@ -265,10 +284,15 @@ async function fileOnce(choice: AppPaybackChoice, io: AppPaybackIo, now: Date): 
   }
 
   // 6. Wealthfolio's rule run, now. A failure is not final: the background runs may have filed it.
-  try {
-    await io.rerunRules();
-  } catch (err) {
-    say(`the rule run failed: ${errorText(err)}`);
+  let ruleRunOk = false;
+  for (let attempt = 1; attempt <= 2 && !ruleRunOk; attempt += 1) {
+    try {
+      await io.rerunRules();
+      ruleRunOk = true;
+    } catch (err) {
+      say(`the rule run failed${attempt === 1 ? ', trying once more' : ''}: ${errorText(err)}`);
+      if (attempt === 1) await (io.pause ?? ((ms: number) => new Promise<void>((done) => { setTimeout(done, ms); })))(1000);
+    }
   }
 
   // 7. What Wealthfolio filed it under, read back. Undefined: couldn't tell.
@@ -285,8 +309,9 @@ async function fileOnce(choice: AppPaybackChoice, io: AppPaybackIo, now: Date): 
   // 8. The one-off rule comes out, filed or not.
   const gone = await dropRule();
 
-  // 9. The change log: the category Wealthfolio confirmed, else none.
-  const confirmed = filedAs ?? null;
+  // 9. The change log: the category Wealthfolio confirmed, else none. A read-back that failed after a successful
+  // rule run logs the chosen category: the rule likely filed it, and Undo needs it to un-file.
+  const confirmed = filedAs === undefined ? (ruleRunOk ? chosen.id : null) : filedAs;
   const saved = await record(paybackFiledChange({ ...w.entry, categoryId: confirmed, categoryName: confirmed ? nameOf(confirmed) : null }));
   const tail = saved ? PAYBACK_APP_UNDO_HINT : PAYBACK_NO_UNDO;
   if (filedAs === chosen.id) {

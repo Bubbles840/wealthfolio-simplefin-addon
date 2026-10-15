@@ -35,7 +35,7 @@ import { BANK_TRANSFER_KEYWORDS, mapTransactionWithSource, paybackMappingRule, r
 import { bankWords } from './rule-pattern.js';
 import {
   PAYBACK_ALREADY, PAYBACK_CHANGED, PAYBACK_GONE, PAYBACK_GONE_STUCK, PAYBACK_LINKED, PAYBACK_MANAGED, PAYBACK_MAPPING_UNREADABLE, PAYBACK_NO_UNDO, PAYBACK_NO_UNDO_SETTING, PAYBACK_NOT_CASH, PAYBACK_NOT_DEPOSIT, PAYBACK_NOT_FEED,
-  PAYBACK_OVERRIDE_FAILED, PAYBACK_PENDING, PAYBACK_RULES_EXIST, PAYBACK_RULES_GENERIC, PAYBACK_RULES_REFUSED, PAYBACK_RULES_SHADOWED, PAYBACK_RULES_UNSURE, PAYBACK_RULES_SAVE_FAILED, PAYBACK_RULES_TRANSFER_ROWS, PAYBACK_RULES_TRANSFER_WORDS, PAYBACK_RUNNING, PAYBACK_SETTING_HINT, PAYBACK_TRANSFER, PAYBACK_UNDO_HINT, PAYBACK_UNREACHABLE, PAYBACK_UPDATE_ADDON,
+  PAYBACK_OVERRIDE_FAILED, PAYBACK_OVERRIDE_UNSURE, PAYBACK_PENDING, PAYBACK_RULES_EXIST, PAYBACK_RULES_GENERIC, PAYBACK_RULES_REFUSED, PAYBACK_RULES_SHADOWED, PAYBACK_RULES_UNSURE, PAYBACK_RULES_SAVE_FAILED, PAYBACK_RULES_TRANSFER_ROWS, PAYBACK_RULES_TRANSFER_WORDS, PAYBACK_RUNNING, PAYBACK_SETTING_HINT, PAYBACK_TRANSFER, PAYBACK_UNDO_HINT, PAYBACK_UNREACHABLE, PAYBACK_UPDATE_ADDON,
   PAYBACK_UPDATE_REFUSED, PAYBACK_UPDATE_STUCK, PAYBACK_UPDATE_UNSURE, PAYBACK_ZERO, paybackDone, paybackRulesBehind, paybackRulesConflict, paybackRulesDone, paybackRulesTakesOver, paybackRulesStuck, paybackUnfiled,
 } from './payback-copy.js';
 import { isPaybackRow, paybackRetype, type PaybackRow } from './payback-row.js';
@@ -278,11 +278,22 @@ async function fileOnce(choice: PaybackChoice, io: PaybackIo, now: Date): Promis
     if (isUnreadableOverridesError(err)) return refused(SYNC_OVERRIDES_UNREADABLE_MESSAGE);
     // The write can fail after it landed (a lost response): read it again (PB-B, M2).
     let landed = false;
+    let unsure = false;
     try {
       const now2 = await loadSyncOverrides(io.secrets.get);
       landed = !now2.unreadable && w.txKeys.every((k) => hasTxOverride(now2.overrides, k, 'asReimbursement'));
     } catch (readErr) {
+      unsure = true;
       io.log(`Payback ${choice.activityId}: could not read the overrides again: ${errorText(readErr)}`);
+    }
+    if (unsure && added.length > 0) {
+      // Whether it landed is unknown: take back what this run added; if that fails too, the setting may be on.
+      try {
+        await editSyncOverrides(io.secrets.get, io.secrets.set, (o) => added.reduce((d, k) => clearTxOverride(d, k, 'asReimbursement'), o), now);
+      } catch (undoErr) {
+        io.log(`Payback ${choice.activityId}: taking the override back failed: ${errorText(undoErr)}`);
+        return unconfirmed(PAYBACK_OVERRIDE_UNSURE);
+      }
     }
     if (!landed) return refused(PAYBACK_OVERRIDE_FAILED);
   }

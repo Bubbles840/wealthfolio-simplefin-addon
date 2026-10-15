@@ -49,6 +49,8 @@ export const PAYBACK_RUNNING = 'Already being filed — try again in a moment.';
 export const PAYBACK_UNAVAILABLE = "Paybacks aren't available here — nothing was changed.";
 
 export const PAYBACK_OVERRIDE_FAILED = "Couldn't save the payback setting — nothing was changed.";
+/** The override write's answer was lost, the re-read failed, and taking the setting back failed too. */
+export const PAYBACK_OVERRIDE_UNSURE = "Couldn't tell whether the payback setting was saved, and couldn't take it back, so it may be on: the next sync would make it a payback, and /categorize offers it then.";
 export const PAYBACK_UPDATE_REFUSED = "Wealthfolio didn't take the change, so it's still a deposit — nothing was changed.";
 export const PAYBACK_UPDATE_STUCK = "Wealthfolio didn't take the change, so it's still a deposit — but the payback setting couldn't be taken back, so the next sync makes it a payback with no category, and /categorize offers it then.";
 export const PAYBACK_UPDATE_UNSURE = "Couldn't tell whether Wealthfolio took the change. The payback setting stays, so the next sync makes it a payback; if it has no category then, /categorize offers it.";
@@ -167,6 +169,9 @@ export const paybackAlreadyFiled = (categoryName: string): string =>
 export const PAYBACK_UPDATE_COMPANION = 'Update the companion to 1.62.0 or newer first — an older one turns a payback back into a deposit on its next sync. Nothing was changed.';
 export const PAYBACK_COMPANION_UNKNOWN = "Couldn't check the companion's version — nothing was changed. Try again.";
 export const PAYBACK_NOT_IN_SPENDING = "Wealthfolio's Spending doesn't track this account, so it can't take a payback — nothing was changed.";
+export const PAYBACK_APP_OVERRIDE_UNSURE = "Couldn't tell whether the payback setting was saved, and couldn't take it back, so it may be on: the next sync would make it a payback, and you pick its category in Wealthfolio.";
+/** The category chosen is one the sync keeps for itself; paybacks never go there. */
+export const PAYBACK_CATEGORY_RESERVED = "That category is kept for the sync's own bookkeeping, so a payback can't be filed under it — nothing was changed.";
 export const PAYBACK_RULE_REFUSED = "Wealthfolio didn't take the filing rule — nothing was changed.";
 export const PAYBACK_APP_UPDATE_STUCK = "Wealthfolio didn't take the change, so it's still a deposit — but the payback setting couldn't be taken back, so the next sync makes it a payback with no category.";
 export const PAYBACK_APP_UPDATE_UNSURE = "Couldn't tell whether Wealthfolio took the change. The payback setting stays, so the next sync makes it a payback; if it has no category then, pick one in Wealthfolio.";

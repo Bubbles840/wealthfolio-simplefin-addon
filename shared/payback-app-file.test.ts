@@ -1,11 +1,12 @@
 import { describe, it, expect, vi } from 'vitest';
 import { SPENDING_TAXONOMY_ID } from './cash-flow-bucket.js';
 import { stampChange, type ChangeDraft, type ChangeEntry } from './change-entries.js';
+import { planChangeUndo } from './change-undo.js';
 import { paybackRowOf } from './payback.js';
 import { paybackCategoriesOf, paybackOnceKey, type ListedRule, type PaybackOnceRule } from './payback-app.js';
 import { filePaybackInApp, type AppPaybackChoice, type AppPaybackIo } from './payback-app-file.js';
 import {
-  PAYBACK_ALREADY, PAYBACK_APP_SETTING_HINT, PAYBACK_APP_UNDO_HINT, PAYBACK_APP_UPDATE_STUCK, PAYBACK_APP_UPDATE_UNSURE, PAYBACK_CATEGORY_GONE,
+  PAYBACK_ALREADY, PAYBACK_APP_OVERRIDE_UNSURE, PAYBACK_CATEGORY_RESERVED, PAYBACK_APP_SETTING_HINT, PAYBACK_APP_UNDO_HINT, PAYBACK_APP_UPDATE_STUCK, PAYBACK_APP_UPDATE_UNSURE, PAYBACK_CATEGORY_GONE,
   PAYBACK_CHANGED, PAYBACK_COMPANION_UNKNOWN, PAYBACK_GONE, PAYBACK_GONE_STUCK, PAYBACK_LINKED, PAYBACK_MAPPING_UNREADABLE, PAYBACK_NO_UNDO,
   PAYBACK_NO_UNDO_SETTING, PAYBACK_NOT_IN_SPENDING, PAYBACK_OVERRIDE_FAILED, PAYBACK_PENDING, PAYBACK_RULE_REFUSED, PAYBACK_RUNNING,
   PAYBACK_UNAVAILABLE, PAYBACK_UNREACHABLE, PAYBACK_UPDATE_COMPANION, PAYBACK_UPDATE_REFUSED,
@@ -104,6 +105,7 @@ function world(over: {
       runRules();
     }),
     rerunRules: vi.fn(async () => { calls.push('rerun'); runRules(); }),
+    pause: vi.fn(async () => {}),
     record: vi.fn(async (d: ChangeDraft) => { calls.push(`record ${d.kind}`); logged.push(stampChange(d, 'addon', NOW)); return true; }),
     log: (m: string) => { logs.push(m); },
     ...(over.io ?? {}),
@@ -185,7 +187,7 @@ describe('filePaybackInApp: filing', () => {
     expect(w.logs.join('\n')).toContain(RAW);
   });
 
-  it("says it can't tell when the filing cannot be read back, and logs no category", async () => {
+  it("says it can't tell when the filing cannot be read back, and logs the chosen category (W11-B)", async () => {
     const w = world();
     let reads = 0;
     const fact = w.io.fact;
@@ -193,7 +195,7 @@ describe('filePaybackInApp: filing', () => {
     const out = await filePaybackInApp(RESTAURANTS, w.io, NOW);
     expect(out).toEqual({ kind: 'partial', message: `${paybackAppUnsure('Restaurants')}\n${PAYBACK_APP_UNDO_HINT}` });
     expect(out.message).not.toContain(RAW);
-    expect(w.logged[0].after).toMatchObject({ categoryId: null });
+    expect(w.logged[0].after).toMatchObject({ categoryId: 'cat-rest', categoryName: 'Restaurants' });
     expect(w.ours.size).toBe(0);
   });
 
@@ -461,5 +463,108 @@ describe('filePaybackInApp: a step that fails partway says what stands', () => {
     w.io.update = vi.fn(async () => { throw new Error(RAW); });
     w.io.deleteRule = vi.fn(async () => { throw new Error(RAW); });
     expect(await filePaybackInApp(RESTAURANTS, w.io, NOW)).toEqual({ kind: 'refused', message: `${PAYBACK_UPDATE_REFUSED}\n${paybackLeftoverRule(RULE_NAME)}` });
+  });
+});
+
+describe('filePaybackInApp: fix round B (W11-B)', () => {
+  const undoOf = (w: ReturnType<typeof world>, filed: boolean) => planChangeUndo(w.logged[0], 'undo', {
+    payback: w.row(),
+    assignments: filed ? [{ taxonomyId: SPENDING_TAXONOMY_ID, categoryId: 'cat-rest' }] : [],
+    paybackFlagged: hasTxOverride(w.overrides()!, KEY, 'asReimbursement'),
+  }, { latest: null });
+
+  it('I1: a read-back that fails after a successful rule run logs the CHOSEN category, and Undo plans for it filed or not', async () => {
+    const w = world();
+    let reads = 0;
+    const fact = w.io.fact;
+    w.io.fact = vi.fn(async (r: PaybackRow) => { if (++reads > 1) throw new Error(RAW); return fact(r); });
+    const out = await filePaybackInApp(RESTAURANTS, w.io, NOW);
+    expect(out).toEqual({ kind: 'partial', message: `${paybackAppUnsure('Restaurants')}\n${PAYBACK_APP_UNDO_HINT}` });
+    expect(w.logged[0].after).toMatchObject({ categoryId: 'cat-rest', categoryName: 'Restaurants' });
+    const filed = undoOf(w, true);
+    const unfiled = undoOf(w, false);
+    expect(JSON.stringify(filed)).toContain('"do":"unassign"');
+    expect(JSON.stringify(unfiled)).not.toContain('"do":"unassign"');
+    expect(JSON.stringify(unfiled)).toContain('"do":"clear-tx"');
+    expect(filed).toMatchObject({ ok: true });
+    expect(unfiled).toMatchObject({ ok: true });
+  });
+
+  it('I1: a confirmed-none read-back and an unconfirmed re-type stay logged with no category', async () => {
+    const w = world({ rulesOff: true });
+    await filePaybackInApp(RESTAURANTS, w.io, NOW);
+    expect(w.logged[0].after).toMatchObject({ categoryId: null });
+    const x = world();
+    x.io.update = vi.fn(async () => { throw new Error(RAW); });
+    let reads = 0;
+    const read = x.io.read;
+    x.io.read = vi.fn(async (id: string) => { if (++reads > 1) throw new Error(RAW); return read(id); });
+    await filePaybackInApp(RESTAURANTS, x.io, NOW);
+    expect(x.logged[0].after).toMatchObject({ categoryId: null });
+  });
+
+  it('I1: a failed rule run AND a failed read-back stay logged with no category', async () => {
+    const w = world();
+    w.io.rerunRules = vi.fn(async () => { throw new Error(RAW); });
+    let reads = 0;
+    const fact = w.io.fact;
+    w.io.fact = vi.fn(async (r: PaybackRow) => { if (++reads > 1) throw new Error(RAW); return fact(r); });
+    await filePaybackInApp(RESTAURANTS, w.io, NOW);
+    expect(w.logged[0].after).toMatchObject({ categoryId: null });
+  });
+
+  it('m1: a lost override answer whose re-read also fails is taken back; nothing was changed', async () => {
+    const w = world();
+    const set = w.io.secrets.set;
+    w.io.secrets.set = vi.fn(async (k: string, v: string) => { await set(k, v); if (w.io.secrets.set && (w.io.secrets.set as any).mock.calls.length === 1) throw new Error('response lost'); });
+    let gets = 0;
+    const get = w.io.secrets.get;
+    w.io.secrets.get = async (k: string) => { if (k === SYNC_OVERRIDES_SECRET_KEY && ++gets === 3) throw new Error(RAW); return get(k); };
+    expect(await filePaybackInApp(RESTAURANTS, w.io, NOW)).toEqual({ kind: 'refused', message: PAYBACK_OVERRIDE_FAILED });
+    expect(hasTxOverride(w.overrides()!, KEY, 'asReimbursement')).toBe(false);
+    expect(w.io.update).not.toHaveBeenCalled();
+    expect(w.ours.size).toBe(0);
+  });
+
+  it('m1: when the take-back fails too, a partial outcome says the setting may be on, logged with no category', async () => {
+    const w = world();
+    const set = w.io.secrets.set;
+    w.io.secrets.set = vi.fn(async (k: string, v: string) => { await set(k, v); throw new Error('response lost'); });
+    let gets = 0;
+    const get = w.io.secrets.get;
+    w.io.secrets.get = async (k: string) => { if (k === SYNC_OVERRIDES_SECRET_KEY && ++gets > 2) throw new Error(RAW); return get(k); };
+    expect(await filePaybackInApp(RESTAURANTS, w.io, NOW)).toEqual({ kind: 'partial', message: `${PAYBACK_APP_OVERRIDE_UNSURE}\n${PAYBACK_APP_SETTING_HINT}` });
+    expect(hasTxOverride(w.overrides()!, KEY, 'asReimbursement')).toBe(true);
+    expect(w.logged[0]).toMatchObject({ kind: 'payback-filed', after: { categoryId: null, categoryName: null } });
+    expect(w.io.update).not.toHaveBeenCalled();
+    expect(w.ours.size).toBe(0);
+  });
+
+  it('m2: the rule run is retried once, after a pause; a retry that works files it and confirms it', async () => {
+    const w = world({ others: [{ pattern: 'VENMO CASHOUT', matchType: 'contains', categoryId: 'cat-groc', activityType: 'CREDIT', accountId: 'wf-chk', priority: 50 }] });
+    let runs = 0;
+    const rerun = w.io.rerunRules;
+    w.io.rerunRules = vi.fn(async () => { if (++runs === 1) throw new Error(RAW); return rerun(); });
+    expect(await filePaybackInApp(RESTAURANTS, w.io, NOW)).toEqual({ kind: 'filed', message: `${FILED}\n${PAYBACK_APP_UNDO_HINT}` });
+    expect(w.io.rerunRules).toHaveBeenCalledTimes(2);
+    expect(w.io.pause).toHaveBeenCalledTimes(1);
+    expect(w.logged[0].after).toMatchObject({ categoryId: 'cat-rest' });
+  });
+
+  it('m2: a rule run that fails twice is tried no more than twice', async () => {
+    const w = world();
+    w.io.rerunRules = vi.fn(async () => { throw new Error(RAW); });
+    await filePaybackInApp(RESTAURANTS, w.io, NOW);
+    expect(w.io.rerunRules).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['Opening balances', 'Sync bookkeeping'])('m4: refuses a chosen "%s" category and writes nothing', async (name) => {
+    const w = world();
+    w.io.categories = vi.fn(async () => paybackCategoriesOf([{ kind: 'expense', categoryId: 'cat-rest', name, path: name }]));
+    expect(await filePaybackInApp(RESTAURANTS, w.io, NOW)).toEqual({ kind: 'refused', message: PAYBACK_CATEGORY_RESERVED });
+    expect(w.io.saveRule).not.toHaveBeenCalled();
+    expect(w.io.update).not.toHaveBeenCalled();
+    expect(w.io.secrets.set).not.toHaveBeenCalled();
+    expect(w.logged).toEqual([]);
   });
 });
