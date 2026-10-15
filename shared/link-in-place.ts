@@ -51,6 +51,8 @@
  * only follows a valid pair). If that update fails the pair stays unlinked,
  * as transfers marked external, and says so.
  */
+import { bankDayInstant } from './bank-day.js';
+import { utcMidnightDay } from './date-repair.js';
 import { describeLeg, linkPairByRecreate, unlinkPairByRecreate, type UnlinkLeg, type UnlinkResult } from './link-pair.js';
 import { flowExternalOf, isTransferType, TRANSFER_GROUP_PREFIX } from './sync-core.js';
 import type { ActivityWrite, LinkLeg, LinkResult, SaveManyRequest, SaveManyResult } from './sync-host.js';
@@ -274,14 +276,26 @@ export function unlinkInPlaceRefusal(legs: readonly [UnlinkLeg, UnlinkLeg], stor
   return null;
 }
 
+/** The instant a retyped leg keeps: the stored one, except 00:00 UTC — a
+ *  pre-1.62 bare date the date repair skipped while the row was linked — which
+ *  goes to noon on that day (`bankDayInstant`), as the repair would have moved
+ *  it; no instant at all is the leg's bank day at noon. Safe here: the pair is
+ *  already unlinked, so Wealthfolio copies the date onto no partner. */
+function retypeInstant(leg: UnlinkLeg, s: StoredLeg): string {
+  if (!s.instant) return bankDayInstant(leg.date);
+  const midnight = utcMidnightDay(s.instant);
+  return midnight ? bankDayInstant(midnight) : s.instant;
+}
+
 /** The leg as ordinary money, written over its own row: the stored instant
- *  kept, the cash symbol for any non-transfer type (see `isTransferType`). */
+ *  kept (see `retypeInstant`), the cash symbol for any non-transfer type (see
+ *  `isTransferType`). */
 function retypeWrite(leg: UnlinkLeg, s: StoredLeg): ActivityWrite {
   return {
     id: leg.wfId,
     accountId: leg.accountId,
     activityType: leg.newType,
-    activityDate: s.instant || leg.date,
+    activityDate: retypeInstant(leg, s),
     ...(isTransferType(leg.newType) ? {} : { symbol: { symbol: `$CASH-${leg.currency}` } }),
     amount: leg.absCents / 100,
     fee: 0,
