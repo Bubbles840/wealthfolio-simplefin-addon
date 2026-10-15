@@ -729,7 +729,9 @@ export function categoryRuleCreatedChange(f: CategoryRuleFacts): ChangeDraft {
 }
 
 export interface MappingRuleFacts {
-  rule: { pattern: string; matchType: string; activityType: string; subtype?: string; onlyMoneyIn?: true; accountId?: string };
+  rule: { pattern: string; matchType: string; activityType: string; subtype?: string; onlyMoneyIn?: true; accountId?: string; since?: string };
+  /** Where in `mapping_rules` it was put (W10: 0, first); Redo puts it back there. */
+  index?: number;
   /** The transaction it was taught from. */
   description?: string;
   account?: ChangeAccount;
@@ -750,7 +752,7 @@ export function mappingRuleCreatedChange(f: MappingRuleFacts): ChangeDraft {
     summary: payback
       ? `Added a transaction rule: "${f.rule.pattern}" deposits${f.account ? ` into ${f.account.name}` : ''} are paybacks`
       : `Added a transaction rule: "${f.rule.pattern}" is ${direction}`,
-    after: { rule: { ...f.rule } },
+    after: { rule: { ...f.rule }, ...(f.index !== undefined ? { index: f.index } : {}) },
     undoable: true,
   };
 }

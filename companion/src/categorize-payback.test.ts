@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { InlineKeyboard } from '../../shared/telegram.js';
-import type { PaybackChoice, PaybackOutcome, PaybackRulesInput, PaybackRulesOutcome } from '../../shared/payback.js';
+import type { PaybackBreadth, PaybackChoice, PaybackOutcome, PaybackRulesInput, PaybackRulesOutcome } from '../../shared/payback.js';
 import { removalFingerprint } from '../../shared/tx-remove.js';
 import {
   PAYBACK_PICK, PAYBACK_RULES_EXIST, PAYBACK_SWITCH, PAYBACK_UNAVAILABLE, PAYBACK_UNREACHABLE,
@@ -23,6 +23,7 @@ const FILED: PaybackOutcome = {
 function setup(
   payback?: (c: PaybackChoice) => Promise<PaybackOutcome>,
   paybackRules?: (i: PaybackRulesInput) => Promise<PaybackRulesOutcome>,
+  paybackBreadth?: (i: { pattern: string; account: { id: string; name: string }; sourceId: string; description: string; waitingIds: string[] }) => Promise<PaybackBreadth>,
 ) {
   let rows = [{ ...DEPOSIT }];
   const deps: CategorizeDeps = {
@@ -41,6 +42,7 @@ function setup(
     log: vi.fn(),
     ...(payback ? { payback: vi.fn(payback) } : {}),
     ...(paybackRules ? { paybackRules: vi.fn(paybackRules) } : {}),
+    ...(paybackBreadth ? { paybackBreadth: vi.fn(paybackBreadth) } : {}),
   };
   const ui = { edit: vi.fn(async (_t: string, _k?: InlineKeyboard) => {}), answer: vi.fn(async () => {}), send: vi.fn(async () => {}) };
   const controller = createCategorizeController(deps);
@@ -135,6 +137,7 @@ describe('/categorize: "Make every … deposit a payback" (W10)', () => {
     expect(h.deps.paybackRules).toHaveBeenCalledWith({
       pattern: 'VENMO CASHOUT', account: { id: 'wf-chk', name: 'PNC Checking' }, categoryId: 'cat-rest', categoryName: 'Restaurants',
       description: 'VENMO CASHOUT',
+      categories: [{ id: 'cat-food', name: 'Food & Dining' }, { id: 'cat-rest', name: 'Restaurants' }, { id: 'cat-fun', name: 'Entertainment' }],
     });
     expect(h.last()[0]).toBe(DONE);
     expect(h.labels(h.last()[1])).toEqual(['‹ Back to list', 'Done']);
@@ -149,6 +152,38 @@ describe('/categorize: "Make every … deposit a payback" (W10)', () => {
     expect(h.last()[0]).toBe(PAYBACK_RULES_EXIST);
     expect(h.labels(h.last()[1])).not.toContain('Create both rules');
     expect(h.deps.republish).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('/categorize: the breadth of the rules, read from the ledger as the preview opens (W10, I1)', () => {
+  it('shows the counts the ledger gave, asking for them with the account, the words and the rows waiting', async () => {
+    const h = setup(async () => FILED, undefined, async () => ({ ok: true, filed: 4, waiting: 2 }));
+    await h.toPaybackGrid();
+    await h.press('Entertainment');
+    await h.press('Make every VENMO CASHOUT deposit a payback');
+    expect(h.deps.paybackBreadth).toHaveBeenCalledWith({
+      pattern: 'VENMO CASHOUT', account: { id: 'wf-chk', name: 'PNC Checking' }, sourceId: 'act-7', description: 'VENMO CASHOUT', waitingIds: expect.any(Array),
+    });
+    expect(h.last()[0]).toContain('6 deposits here read that way: 4 already filed, 2 waiting for a category.');
+    expect(h.labels(h.last()[1])).toContain('Create both rules');
+  });
+
+  it('says why a refused breadth was refused and offers nothing to create', async () => {
+    const h = setup(async () => FILED, undefined, async () => ({ ok: false, message: 'That description is only common bank words — nothing was changed.' }));
+    await h.toPaybackGrid();
+    await h.press('Entertainment');
+    await h.press('Make every VENMO CASHOUT deposit a payback');
+    expect(h.last()[0]).toBe('That description is only common bank words — nothing was changed.');
+    expect(h.labels(h.last()[1])).not.toContain('Create both rules');
+  });
+
+  it('still previews, without counts, when the ledger cannot be read', async () => {
+    const h = setup(async () => FILED, undefined, async () => { throw new Error('down'); });
+    await h.toPaybackGrid();
+    await h.press('Entertainment');
+    await h.press('Make every VENMO CASHOUT deposit a payback');
+    expect(h.last()[0]).not.toContain('already filed');
+    expect(h.labels(h.last()[1])).toContain('Create both rules');
   });
 });
 

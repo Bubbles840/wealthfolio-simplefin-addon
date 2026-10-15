@@ -75,20 +75,39 @@ export const paybackRedoHalf = (categoryName: string): string =>
 
 // ── "Make every … deposit a payback" (W10) ───────────────────────────────
 export const paybackRulesButton = (pattern: string): string => `Make every ${pattern} deposit a payback`;
-export function paybackRulesPreview(pattern: string, accountName: string, categoryName: string, catches: number): string {
-  return [
+/** How far back the preview looks, and what it found: money in on this account
+ *  that the new rule would decide, split by whether it already has a category. */
+export const PAYBACK_BREADTH_DAYS = 90;
+export function paybackRulesPreview(
+  pattern: string, accountName: string, categoryName: string, breadth?: { filed: number; waiting: number },
+): string {
+  const lines = [
     `Make every ${pattern} deposit a payback?`,
-    `Money into ${accountName} whose description contains "${pattern}" becomes a payback under ${categoryName}: `
-      + 'the sync marks it when it imports, and Wealthfolio files it. Undo either rule from /changes.',
-    catches > 0
-      ? `Right now that also catches ${catches} other deposit${catches === 1 ? '' : 's'} waiting for a category.`
-      : 'Nothing else waiting for a category matches right now.',
-  ].join('\n');
+    `From today on, money into ${accountName} whose description contains "${pattern}" becomes a payback under ${categoryName}: `
+      + 'the sync marks it when it imports, and Wealthfolio files it. Deposits already in your ledger are not changed. Undo either rule from /changes.',
+  ];
+  if (breadth) {
+    const total = breadth.filed + breadth.waiting;
+    lines.push(total === 0
+      ? `No deposit in the last ${PAYBACK_BREADTH_DAYS} days reads that way.`
+      : `In the last ${PAYBACK_BREADTH_DAYS} days, ${total} deposit${total === 1 ? '' : 's'} here read that way: ${breadth.filed} already filed, ${breadth.waiting} waiting for a category.`
+        + (breadth.waiting > 0 ? ` File the waiting ones one by one with ${PAYBACK_SWITCH}.` : ''));
+  }
+  return lines.join('\n');
 }
 export const PAYBACK_RULES_CREATE = 'Create both rules';
 export const paybackRulesDone = (pattern: string, accountName: string, categoryName: string): string =>
   `Done — every ${pattern} deposit into ${accountName} is a payback under ${categoryName} from now on. Undo either rule from /changes.`;
 export const PAYBACK_RULES_EXIST = 'Both rules are already there — nothing was added.';
+export const PAYBACK_RULES_GENERIC = "That description is only common bank words (like DEPOSIT or ACH), so a rule on it would catch things that aren't paybacks — nothing was changed.";
+export const PAYBACK_RULES_SHADOWED = 'An earlier transaction rule would still decide those deposits, so a new one would never apply — nothing was changed.';
+export const paybackRulesConflict = (pattern: string, accountName: string, categoryName: string | null): string =>
+  `Wealthfolio already has a rule that files ${pattern} deposits in ${accountName} under ${categoryName ?? 'another category'} — change or delete that one in Wealthfolio first. Nothing was changed.`;
+/** The Undo/Redo of one of the two rules says where its partner stands. */
+export const PAYBACK_TX_RULE_UNDONE = "Undone — the transaction rule is gone. If Wealthfolio's rule for these paybacks is still there, undo it from /changes too.";
+export const PAYBACK_TX_RULE_REDONE = "Redone — the transaction rule is back. If Wealthfolio's rule for these paybacks is gone, redo it from /changes too.";
+export const PAYBACK_CAT_RULE_UNDONE = 'Undone — the rule is gone. If the transaction rule that makes these deposits paybacks is still there, undo it from /changes too.';
+export const PAYBACK_CAT_RULE_REDONE = 'Redone — the rule is back. If the transaction rule that makes these deposits paybacks is gone, redo it from /changes too.';
 export const PAYBACK_RULES_SAVE_FAILED = "Couldn't save the transaction rule — nothing was changed.";
 export const PAYBACK_RULES_REFUSED = "Wealthfolio didn't take the category rule, so neither rule was made.";
 export const paybackRulesStuck = (pattern: string): string =>

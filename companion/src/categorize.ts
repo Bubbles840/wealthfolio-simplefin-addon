@@ -85,7 +85,7 @@ import { visibleUncategorized, type DismissalLedger } from '../../shared/uncateg
 import { descriptionFromComment, txIdFromComment } from '../../shared/sync-core.js';
 import { categoryFiledChange, categoryRuleCreatedChange, type ChangeDraft, type FiledCategory } from '../../shared/change-entries.js';
 import { buildGuessIndex, guessCategory, guessSinceDay, type GuessIndex, type PastFiling } from '../../shared/category-guess.js';
-import type { PaybackChoice, PaybackOutcome, PaybackRulesInput, PaybackRulesOutcome } from '../../shared/payback.js';
+import type { PaybackBreadth, PaybackChoice, PaybackOutcome, PaybackRulesInput, PaybackRulesOutcome } from '../../shared/payback.js';
 import { PAYBACK_UNAVAILABLE, PAYBACK_UNREACHABLE } from '../../shared/payback-copy.js';
 import { paybackRulePattern } from '../../shared/rule-pattern.js';
 import { removalFingerprint } from '../../shared/tx-remove.js';
@@ -281,6 +281,13 @@ export interface CategorizeDeps {
    *  over the companion's host; it records its own change-log entries.
    *  Optional: without it the offer's tap is refused, in words. */
   paybackRules?: (input: PaybackRulesInput) => Promise<PaybackRulesOutcome>;
+  /** 1.62 (W10): the preview's breadth check, computed from the ledger — how
+   *  many money-in rows of the last 90 days the new rule would decide, split
+   *  filed / waiting (`waitingIds` are the ones still waiting for a category).
+   *  Optional, and a failure only leaves the counts out. */
+  paybackBreadth?: (input: {
+    pattern: string; account: { id: string; name: string }; sourceId: string; description: string; waitingIds: string[];
+  }) => Promise<PaybackBreadth>;
   /** 1.61: the transaction screen's 🔎 Why? — sends that transaction's story
    *  as a NEW message (companion/src/why-menu.ts). Optional: without it the
    *  button is not offered. */
@@ -1147,9 +1154,26 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
     ui: CategorizeUi,
   ): Promise<void> {
     switch (action.kind) {
-      case 'goto':
-        await transition(chat, action.screen, carryPin(chat, action.screen), ui);
+      case 'goto': {
+        let target = action.screen;
+        if (target.kind === 'paybackRulePreview' && deps.paybackBreadth) {
+          // W10: the breadth is read from the ledger as the preview opens.
+          const row = rowFor(chat, target.activityId);
+          if (row?.accountId) {
+            try {
+              const breadth = await deps.paybackBreadth({
+                pattern: paybackRulePattern(row.description), account: { id: row.accountId, name: row.accountName },
+                sourceId: row.activityId, description: row.description, waitingIds: chat.session.txns.map((t) => t.activityId),
+              });
+              target = { ...target, breadth };
+            } catch (err) {
+              safeLog(`Categorize menu: the payback rules' breadth for ${target.activityId} failed: ${formatError(err)}`);
+            }
+          }
+        }
+        await transition(chat, target, carryPin(chat, target), ui);
         return;
+      }
 
       case 'why':
         // A NEW message: the screen, its session and its buttons stay exactly
@@ -1307,6 +1331,7 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
             outcome = await deps.paybackRules({
               pattern: paybackRulePattern(row.description), account: { id: row.accountId, name: row.accountName },
               categoryId: category.id, categoryName: category.name, description: row.description,
+              categories: chat.session.categories.map((c) => ({ id: c.id, name: c.name })),
             });
           } catch (err) {
             safeLog(`Categorize menu: the payback rules for ${action.activityId} failed: ${formatError(err)}`);

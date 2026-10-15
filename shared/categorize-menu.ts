@@ -10,8 +10,8 @@
  * in, string (and keyboard) out.
  */
 
-import { bankWords, categoryRulePattern, paybackRulePattern } from './rule-pattern.js';
-import { paybackMappingRule, ruleApplies } from './mapper.js';
+import { categoryRulePattern, paybackRulePattern } from './rule-pattern.js';
+import type { PaybackBreadth } from './payback.js';
 import { isAmazonDescription } from './amazon-ledger.js';
 import type { InlineKeyboard } from './telegram.js';
 import { moneyWhole, escapeMarkdown, WHY_BUTTON_TEXT } from './telegram.js';
@@ -138,7 +138,7 @@ export type MenuScreen =
   | { kind: 'paybackRefused'; activityId: string; text: string }
   /** "Make every <pattern> deposit a payback?" (W10): the two rules, and how
    *  many deposits waiting for a category they would catch now. */
-  | { kind: 'paybackRulePreview'; activityId: string; categoryId: string }
+  | { kind: 'paybackRulePreview'; activityId: string; categoryId: string; breadth?: PaybackBreadth }
   /** What making the two rules did, RAW. */
   | { kind: 'paybackRulesResult'; activityId: string; text: string }
   /** The recategorize confirmation. `fromName` (not an id) is what the row
@@ -1157,22 +1157,15 @@ function renderPaybackResult(session: MenuSession, screen: Extract<MenuScreen, {
   return finish(session.generation, escapeMarkdown(screen.text), rows);
 }
 
-/** Other deposits waiting for a category that the transaction rule would make
- *  paybacks now: money in, in the same account, matched on their bank words by
- *  the sync's own predicate — so the count is the rule's, not a guess. */
-export function paybackRuleCatches(session: Pick<MenuSession, 'txns'>, txn: CategorizeTxn, pattern: string): number {
-  if (!txn.accountId) return 0;
-  const rule = paybackMappingRule(pattern, txn.accountId);
-  return session.txns.filter((t) => t.activityId !== txn.activityId && t.direction === 'in'
-    && ruleApplies(rule, bankWords(t.description), Math.abs(t.amountCents) / 100, t.accountId)).length;
-}
-
 function renderPaybackRulePreview(session: MenuSession, screen: Extract<MenuScreen, { kind: 'paybackRulePreview' }>): RenderResult {
   const txn = findTxn(session, screen.activityId);
   const category = findCategory(session, screen.categoryId);
   if (!txn || !category || !txn.accountId) return renderList(session, 0, GONE_NOTE);
   const pattern = paybackRulePattern(txn.description);
-  const text = escapeMarkdown(paybackRulesPreview(pattern, txn.accountName, categoryDisplayName(category), paybackRuleCatches(session, txn, pattern)));
+  // A breadth check that refused (a generic pattern, a shadowed rule) says why,
+  // with nothing to create.
+  if (screen.breadth && !screen.breadth.ok) return finish(session.generation, escapeMarkdown(screen.breadth.message), [[BACK_TO_LIST_BTN]]);
+  const text = escapeMarkdown(paybackRulesPreview(pattern, txn.accountName, categoryDisplayName(category), screen.breadth));
   const rows: Btn[][] = [
     [{ text: PAYBACK_RULES_CREATE, action: { kind: 'paybackRules', activityId: screen.activityId, categoryId: screen.categoryId } }],
     [BACK_TO_LIST_BTN],

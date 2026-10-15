@@ -18,7 +18,9 @@ import { BUDGET_TAXONOMY, DEFAULT_PERIOD_KEY, isClearedDefault, type BudgetTarge
 import { changeMoney, type ChangeEntry } from './change-entries.js';
 import type { ChangeLogItem } from './change-log.js';
 import { sameMappingRule } from './mapper.js';
-import { paybackRedone, paybackUndone } from './payback-copy.js';
+import {
+  PAYBACK_CAT_RULE_REDONE, PAYBACK_CAT_RULE_UNDONE, PAYBACK_TX_RULE_REDONE, PAYBACK_TX_RULE_UNDONE, paybackRedone, paybackUndone,
+} from './payback-copy.js';
 import { isPaybackRow, paybackRetype, type PaybackRow } from './payback-row.js';
 import type { ActivityWrite, ImportRow } from './sync-host.js';
 import type { AccountOverrideFlag, TxOverrideFlag } from './sync-overrides.js';
@@ -251,7 +253,7 @@ export type UndoStep =
   | { do: 'delete-rule'; ruleId: string }
   | { do: 'create-rule'; rule: { name: string; pattern: string; categoryId: string; accountId?: string; activityType?: string } }
   | { do: 'mapping-remove'; rule: MappingRule }
-  | { do: 'mapping-add'; rule: MappingRule }
+  | { do: 'mapping-add'; rule: MappingRule; index?: number }
   | { do: 'delete-budget'; targetId: string }
   /** A category's default monthly budget; the id is read back from Wealthfolio's reply. */
   | { do: 'set-budget'; categoryId: string; amountCents: number };
@@ -317,6 +319,7 @@ function mappingRuleOf(entry: ChangeEntry): MappingRule | null {
     ...(str(r.subtype) ? { subtype: str(r.subtype)! } : {}),
     ...(r.onlyMoneyIn === true ? { onlyMoneyIn: true as const } : {}),
     ...(str(r.accountId) ? { accountId: str(r.accountId)! } : {}),
+    ...(str(r.since) ? { since: str(r.since)! } : {}),
   };
 }
 
@@ -441,7 +444,7 @@ export function planChangeUndo(
       if (op === 'redo') {
         if (state.rule) return refuse('That rule is already there.');
         return plan({
-          op, needsSync: false, ruleAfter: 'created', done: 'Redone — the rule is back.',
+          op, needsSync: false, ruleAfter: 'created', done: activityType === 'CREDIT' ? PAYBACK_CAT_RULE_REDONE : 'Redone — the rule is back.',
           steps: [{
             do: 'create-rule',
             rule: { name, pattern, categoryId, ...(accountId ? { accountId } : {}), ...(activityType ? { activityType } : {}) },
@@ -458,7 +461,7 @@ export function planChangeUndo(
         op, steps, needsSync: false, ruleAfter: null,
         done: opts.variant === 'unfile'
           ? `Undone — the rule is gone and ${n} ${n === 1 ? 'charge is' : 'charges are'} back in the needs-a-category list.`
-          : 'Undone — the rule is gone.',
+          : activityType === 'CREDIT' ? PAYBACK_CAT_RULE_UNDONE : 'Undone — the rule is gone.',
       });
     }
 
@@ -503,9 +506,16 @@ export function planChangeUndo(
       const present = (state.mappingRules ?? []).some((r) => sameMappingRule(r, rule));
       if (op === 'undo' && !present) return refuse('That transaction rule is already gone.');
       if (op === 'redo' && present) return refuse('That transaction rule is already there.');
+      // A payback rule (W10) sits first in the list and comes back there: its
+      // logged index, or first when the list no longer has room for it.
+      const payback = rule.onlyMoneyIn === true && rule.subtype === 'REIMBURSEMENT';
+      const index = num(rec(entry.after).index);
+      const done = payback
+        ? (op === 'undo' ? PAYBACK_TX_RULE_UNDONE : PAYBACK_TX_RULE_REDONE)
+        : (op === 'undo' ? 'Undone — the rule is gone.' : 'Redone — the rule is back.');
       return plan({
-        op, needsSync: true, done: op === 'undo' ? 'Undone — the rule is gone.' : 'Redone — the rule is back.',
-        steps: [op === 'undo' ? { do: 'mapping-remove', rule } : { do: 'mapping-add', rule }],
+        op, needsSync: true, done,
+        steps: [op === 'undo' ? { do: 'mapping-remove', rule } : { do: 'mapping-add', rule, ...(index !== null ? { index } : {}) }],
       });
     }
 

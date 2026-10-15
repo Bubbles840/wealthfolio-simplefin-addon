@@ -57,5 +57,12 @@ export function bankWords(description: string): string {
 }
 
 /** The pattern "Make every … deposit a payback" (W10) is built from: the
- *  bank's words, trimmed as a category rule's are. */
-export const paybackRulePattern = (description: string): string => categoryRulePattern(bankWords(description));
+ *  bank's words, trimmed as a category rule's are, and also without a leading
+ *  reference token ("*1234") and a trailing " ON MM/DD" with whatever follows it
+ *  ("REF # …"). Category rules keep their own, unchanged cleanup. */
+export function paybackRulePattern(description: string): string {
+  const words = bankWords(description).trim()
+    .replace(/^[*#]\S*\d\S*\s+/, '')
+    .replace(/\s+ON\s+\d{1,2}\/\d{1,2}(?:\/\d{2,4})?(?:\s.*)?$/i, '');
+  return categoryRulePattern(words);
+}
