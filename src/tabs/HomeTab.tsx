@@ -16,7 +16,8 @@ import { appTxSearch, type AppStoryTarget } from '../utils/tx-story';
 import type { TxQuery } from '../../shared/tx-search';
 import { money, accountsSummary } from '../components/AccountList';
 import { shortDate } from '../../shared/telegram';
-import { visibleUncategorized, type DismissalLedger } from '../../shared/uncategorized';
+import { paidBackHidden, visibleUncategorized, type DismissalLedger, type PaidBackLedger } from '../../shared/uncategorized';
+import type { AppPaybackActions } from '../components/PaybackAction';
 import type { TabId } from '../components/Tabs';
 // Card ids only — the banner's CTA has to name the card it opens, and the
 // Advanced tab owns that id set. One-way: AdvancedTab imports nothing here.
@@ -100,6 +101,13 @@ interface Props {
   /** Project 5: the companion's 30-day cash forecast behind the "Next 30
    *  days" tile. Absent or null until read; cashForecastView decides. */
   cashForecast?: CashForecastRead | null;
+  /** W11: "It's a payback…" on the needs-a-category list; absent: not offered. */
+  payback?: AppPaybackActions;
+  /** W11: rows filed as a payback since the companion's publish. Held by the
+   *  SHELL, like `dismissals`: they leave the list at once, on any tab. */
+  paidBack?: PaidBackLedger;
+  /** W11: what the last payback filed from the app said. */
+  paybackNote?: string | null;
 }
 
 /**
@@ -119,6 +127,7 @@ export function HomeTab({
   isOpen, toggleCard, onBalancesChanged, onClearError, onError,
   companionVersion, telegramConfigured, amazonConfigured, checklistDismissed,
   onDismissChecklist, onNavigate, poolStatus, onOpenPool, renderTxStory, auditSnapshot, cashForecast,
+  payback, paidBack, paybackNote,
 }: Props) {
   const checksToLook = healthIssueCount(auditSnapshot);
   // 1.62 (W5): the last sync found the report and Wealthfolio's Spending page
@@ -169,8 +178,10 @@ export function HomeTab({
     [ctx, store, onBalancesChanged, onClearError, onError],
   );
 
+  // W11: a row filed as a payback leaves at once, as a dismissed one does.
+  const paidBackIds = uncategorized ? paidBackHidden(uncategorized.rows, paidBack ?? {}, uncategorized.asOf) : new Set<string>();
   const visibleRows = uncategorized
-    ? visibleUncategorized(uncategorized.rows, dismissals)
+    ? visibleUncategorized(uncategorized.rows, dismissals).filter((r) => !paidBackIds.has(r.activityId))
     : [];
   // The tile subtracts locally-known dismissals so it can never disagree with
   // the list under it. `count` is the companion's true total as of its last
@@ -181,7 +192,8 @@ export function HomeTab({
   // understate the backlog.
   const uncatCount = uncategorized
     ? Math.max(0, uncategorized.count - Object.keys(dismissals)
-        .filter((id) => uncategorized.rows.some((r) => r.activityId === id)).length)
+        .filter((id) => uncategorized.rows.some((r) => r.activityId === id)).length
+        - [...paidBackIds].filter((id) => !(id in dismissals)).length)
     : 0;
 
   const mappedEntries = Object.entries(mapping);
@@ -541,6 +553,8 @@ export function HomeTab({
           onUndo={undo}
           onOpenActivities={() => { ctx.api.navigation.navigate('/activities').catch(() => {}); }}
           renderStory={renderTxStory}
+          payback={payback}
+          paybackNote={paybackNote}
         />
       )}
 
