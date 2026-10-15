@@ -23,7 +23,7 @@ import type { DismissalLedger, UncategorizedRow } from '../../shared/uncategoriz
 import type { DriftAlertEntry, TransferLinkFailureEntry } from '../../shared/sync-host';
 import type { SyncResult } from '../../shared/sync-core';
 import { LARGE_TX_OUTBOX_SECRET_KEY, SUBSCRIPTION_NEWS_SECRET_KEY } from '../../shared/telegram';
-import { ADDON_VERSION_SECRET_KEY, INSTALLED_ADDON_VERSION_SECRET_KEY, SIMPLEFIN_SYNC_VERSION } from '../../shared/version';
+import { ADDON_VERSION_SECRET_KEY, INSTALLED_ADDON_VERSION_SECRET_KEY, SIMPLEFIN_SYNC_VERSION, WEALTHFOLIO_VERSION_SECRET_KEY } from '../../shared/version';
 import { REFUSED_ALERTED_SECRET_KEY } from '../../shared/refused-alerts';
 import { HIDDEN_SUBSCRIPTIONS_SECRET_KEY, CONFIRMED_SUBSCRIPTIONS_SECRET_KEY } from '../../shared/subscriptions';
 import {
@@ -212,6 +212,14 @@ export class SecretsStore {
   /** One entry for something the person did in the app (`actor: 'you'`). */
   async recordChange(draft: ChangeDraft): Promise<void> {
     await this.recordChanges([stampChange(draft, 'addon', new Date())]);
+  }
+
+  /** As `recordChange`, but says whether THIS entry was written (the same
+   *  queue, the same gap record on a failure): for a caller that must not
+   *  promise an Undo it cannot give (W11's payback). Never rejects. */
+  async recordChangeStrict(draft: ChangeDraft): Promise<boolean> {
+    const { saved } = await this.changeLog.appendStrict(this.changeLogIo(), [stampChange(draft, 'addon', new Date())]);
+    return saved;
   }
 
   /** What `runSync` hands the core: this writer, a fresh run id. */
@@ -417,6 +425,13 @@ export class SecretsStore {
    *  null when no companion can see the addons directory. */
   async getInstalledAddonVersion(): Promise<string | null> {
     const raw = await this.ctx.api.secrets.get(INSTALLED_ADDON_VERSION_SECRET_KEY);
+    return raw && raw.trim() ? raw.trim() : null;
+  }
+
+  /** The Wealthfolio version the companion last synced against (`GET
+   *  /app/info`); null when no companion has published one. The SDK cannot ask. */
+  async getWealthfolioVersion(): Promise<string | null> {
+    const raw = await this.ctx.api.secrets.get(WEALTHFOLIO_VERSION_SECRET_KEY);
     return raw && raw.trim() ? raw.trim() : null;
   }
 

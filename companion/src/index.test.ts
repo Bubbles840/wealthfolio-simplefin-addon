@@ -1,35 +1,47 @@
 import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest';
-import { maskUrl, publishLiveReports, validateStartupEnv, startupWarnings, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, composeDailyDigest, composeWeeklyReportMessage, composeMonthlyWrapUpMessage, runCompanionSyncExclusive, FIX_SYNC_RUNNING, buildTelegramCommandHandler, applyTelegramDismissal, undoTelegramDismissal, formatDismissedReply, buildTelegramListenerDeps, buildCategorizeController, buildCategorizeDeps, rememberImportScope, sendUnmappedAccountsNotice, updateCheckDeps, buildAskSessions } from './index.js';
+import { maskUrl, publishLiveReports, validateStartupEnv, startupWarnings, runCompanionSync, resolvePassword, sendDailyTelegramReport, sendWeeklyTelegramReport, sendMonthlyTelegramReport, previousYearMonth, sendImportNotice, readBudgetSnapshot, composeDailyDigestMessage, composeDailyDigest, composeWeeklyReportMessage, composeMonthlyWrapUpMessage, runCompanionSyncExclusive, FIX_SYNC_RUNNING, buildTelegramCommandHandler, applyTelegramDismissal, undoTelegramDismissal, formatDismissedReply, buildTelegramListenerDeps, buildCategorizeController, buildCategorizeDeps, rememberImportScope, sendUnmappedAccountsNotice, updateCheckDeps, buildAskSessions, cubeBuildDeps } from './index.js';
 import { findingHandle } from '../../shared/findings.js';
 import { whyRunHandle } from './why-menu.js';
 import { formatHelpReply, parseCommand } from '../../shared/telegram-commands.js';
 import { SIMPLEFIN_SYNC_VERSION } from '../../shared/version.js';
 import { runSyncCore } from '../../shared/sync-core.js';
-import { getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeCategorizedSpending, getNativeSpendingCategories, getNativeTxSearchRows, getNativeBudgetSpend, getNativeSpendingHistoryStart } from './sqlite-native.js';
+import { getNativeUncategorizedByMonthAccount, getNativeSpendDailyTotals, getNativeWealthfolioSpending, getNativeWealthfolioSpendingBetween, getNativeWealthfolioBudgets, getNativeWealthfolioTopSpending, getNativeUncategorizedSpending, getNativeCategorizedSpending, getNativeSpendingCategories, getNativeTxSearchRows, getNativeBudgetSpend, getNativeSpendingHistoryStart } from './sqlite-native.js';
 import { getNativeAuditSettings } from './sqlite-audit.js';
 import { ingestAmazonMail } from './amazon-mail.js';
+import { rewriteCardBookkeeping } from './card-bookkeeping-rewrite.js';
+import { fileCardOpeningDebts } from './opening-balance-category.js';
+import { runDateRepair } from './date-repair.js';
+import { fileSyncBookkeeping } from './bookkeeping-category.js';
 import { ingestVenmoMail } from './venmo-mail.js';
 import { getNativePastFilings } from './sqlite-guess.js';
 import { AMAZON_MAIL_STATUS_SECRET_KEY, AMAZON_MAIL_SAMPLES_SECRET_KEY, UNCATEGORIZED_STATUS_SECRET_KEY, VENMO_MAIL_SAMPLES_SECRET_KEY } from '../../shared/status-keys.js';
 import { CATEGORIZE_ENTRY_CALLBACK, escapeMarkdown } from '../../shared/telegram.js';
-import { categoryFiledChange, stampChange, transactionRemovedChange } from '../../shared/change-entries.js';
+import { categoryFiledChange, paybackFiledChange, stampChange, transactionRemovedChange } from '../../shared/change-entries.js';
+import { PAYBACK_UPDATE_ADDON } from '../../shared/payback-copy.js';
 import { changesData } from './changes-menu.js';
 import { existsSync } from 'fs';
 import type { SyncResult } from '../../shared/sync-core.js';
+import { AUDIT_SNAPSHOT_SECRET_KEY, buildAuditSnapshot } from '../../shared/audit-snapshot.js';
+import { explainBalances } from '../../shared/audit-balance.js';
+import { explainHeadline } from '../../shared/audit-headline.js';
+import { healthIssues } from '../../shared/audit-health.js';
 
 
 /**
  * A dismissal timestamp comfortably inside the 60-day pruning window.
  *
- * ONE value for the whole file, computed once. It has to be relative to the
- * clock — the literal dates this replaced turned four tests into time bombs
- * (one went off on 2026-09-18) — but it also has to be a single constant,
- * because several tests compare the fixture's timestamp against the value that
- * comes back: evaluating `Date.now()` separately on each side passes on a fast
- * machine and fails by one millisecond on a slow one, which is exactly how the
- * first version of this fix failed in CI while passing locally.
+ * Relative to the clock — a literal date is a time bomb — and computed in a
+ * `beforeEach`, never at import: the code under test prunes against the clock
+ * of the TEST, and an import-time value is a different clock's (it broke with
+ * the system date moved). It is still ONE value for the whole test, because
+ * several tests compare the fixture's timestamp against the value that comes
+ * back: evaluating `Date.now()` separately on each side passes on a fast
+ * machine and fails by one millisecond on a slow one.
  */
-const RECENT_DISMISSAL = new Date(Date.now() - 10 * 86_400_000).toISOString();
+let RECENT_DISMISSAL = '';
+beforeEach(() => {
+  RECENT_DISMISSAL = new Date(Date.now() - 10 * 86_400_000).toISOString();
+});
 
 /** A promise plus its resolve/reject, for tests that need to control exactly
  *  when an in-flight async operation settles. */
@@ -137,6 +149,24 @@ vi.mock('./sqlite-audit.js', () => ({
   getNativeAuditSettings: vi.fn(() => ({ timezone: null, excludedCategoryIds: [], categoryParents: {} })),
 }));
 
+// Wrapped, not replaced: the real filing and rewrite still run, and a test can read their order and arguments.
+vi.mock('./card-bookkeeping-rewrite.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./card-bookkeeping-rewrite.js')>();
+  return { ...actual, rewriteCardBookkeeping: vi.fn(actual.rewriteCardBookkeeping) };
+});
+vi.mock('./opening-balance-category.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./opening-balance-category.js')>();
+  return { ...actual, fileCardOpeningDebts: vi.fn(actual.fileCardOpeningDebts) };
+});
+vi.mock('./date-repair.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./date-repair.js')>();
+  return { ...actual, runDateRepair: vi.fn(actual.runDateRepair) };
+});
+vi.mock('./bookkeeping-category.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./bookkeeping-category.js')>();
+  return { ...actual, fileSyncBookkeeping: vi.fn(actual.fileSyncBookkeeping) };
+});
+
 vi.mock('./amazon-mail.js', async (importOriginal) => ({
   // Real `amazonMailConfigured`, `htmlToText`, etc. stay real; only the two
   // functions that would otherwise try a real IMAP connection are faked.
@@ -238,6 +268,47 @@ describe('runCompanionSync', () => {
   it('calls runSyncCore using REST host and store adapters', async () => {
     await runCompanionSync();
     expect(runSyncCore).toHaveBeenCalledTimes(1);
+  });
+
+  it('runs the card bookkeeping rewrite BEFORE the opening-debt filing, marking through the card_bookkeeping_rewrite secret', async () => {
+    vi.mocked(rewriteCardBookkeeping).mockClear();
+    vi.mocked(fileCardOpeningDebts).mockClear();
+    await runCompanionSync();
+    expect(rewriteCardBookkeeping).toHaveBeenCalledTimes(1);
+    expect(fileCardOpeningDebts).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(rewriteCardBookkeeping).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(fileCardOpeningDebts).mock.invocationCallOrder[0]);
+    const deps = vi.mocked(rewriteCardBookkeeping).mock.calls[0][0];
+    await deps.marker.get();
+    await deps.marker.set('2026-10-14T15:00:00.000Z');
+    const { WealthfolioClient } = await import('./wealthfolio.js');
+    const client = vi.mocked(WealthfolioClient).mock.results.at(-1)!.value as any;
+    expect(client.getAddonSecret).toHaveBeenCalledWith('simplefin-sync', 'card_bookkeeping_rewrite');
+    expect(client.setAddonSecret).toHaveBeenCalledWith('simplefin-sync', 'card_bookkeeping_rewrite', '2026-10-14T15:00:00.000Z');
+  });
+
+  it('runs the post-sync passes in the merged 1.62 order: sync, date repair, card rewrite, opening-debt filing, bookkeeping pass', async () => {
+    for (const f of [runDateRepair, rewriteCardBookkeeping, fileCardOpeningDebts, fileSyncBookkeeping]) vi.mocked(f).mockClear();
+    await runCompanionSync();
+    const order = [runSyncCore, runDateRepair, rewriteCardBookkeeping, fileCardOpeningDebts, fileSyncBookkeeping]
+      .map((f) => vi.mocked(f).mock.invocationCallOrder.at(-1)!);
+    expect(order.every((n) => typeof n === 'number')).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+  });
+
+  it("hands the card rewrite the bookkeeping pass's remembered category (sync_bookkeeping_filed); none or corrupt is null", async () => {
+    vi.mocked(rewriteCardBookkeeping).mockClear();
+    await runCompanionSync();
+    const deps = vi.mocked(rewriteCardBookkeeping).mock.calls[0][0];
+    const { WealthfolioClient } = await import('./wealthfolio.js');
+    const client = vi.mocked(WealthfolioClient).mock.results.at(-1)!.value as any;
+    let filed: string | null = JSON.stringify({ categoryId: 'c-w3', ids: ['a1'] });
+    client.getAddonSecret.mockImplementation(async (_addon: string, key: string) => (key === 'sync_bookkeeping_filed' ? filed : null));
+    expect(await deps.rememberedBookkeepingCategory?.()).toBe('c-w3');
+    expect(client.getAddonSecret).toHaveBeenCalledWith('simplefin-sync', 'sync_bookkeeping_filed');
+    filed = null;
+    expect(await deps.rememberedBookkeepingCategory?.()).toBeNull();
+    filed = '{not json';
+    expect(await deps.rememberedBookkeepingCategory?.()).toBeNull();
   });
 
   it('derives force from MIN_SYNC_INTERVAL_HOURS when called with no options, so the cron tick is unchanged', async () => {
@@ -2910,6 +2981,35 @@ describe('buildTelegramCommandHandler', () => {
       }
     });
 
+    it('/changes Undo and Redo of a payback refuse while the companion syncs, and write nothing (PB-I m5)', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date(2026, 9, 12, 8, 0, 0));
+      onTestFinished(() => { vi.useRealTimers(); });
+      const filed = stampChange(paybackFiledChange({
+        account: { sfinId: 'sfin-1', wfId: 'wf-1', name: 'Checking' }, txKeys: ['sfin-1\u0000TRN-7'], activityId: 'act-7',
+        description: 'VENMO CASHOUT', amountCents: 1400, date: '2026-10-09', subtypeBefore: null, categoryId: 'cat-fun', categoryName: 'Entertainment',
+      }), 'companion', new Date(2026, 9, 12, 7, 30, 0));
+      const { client, secrets } = clientFor([[
+        'change_log:companion:2026-10',
+        JSON.stringify({ v: 1, writer: 'companion', month: '2026-10', entries: [filed], gaps: [] }),
+      ]]);
+      client.saveMany = vi.fn(async () => ({ created: [], updated: [], errors: [] }));
+      const deps = buildTelegramListenerDeps(client);
+      const back = { kind: 'list', page: 0, background: false } as const;
+      const sync = occupy();
+      try {
+        for (const action of ['u', 'r'] as const) {
+          const u = ui();
+          await deps.onMenuCallback!({ data: changesData({ kind: 'act', action, entry: findingHandle(filed.id), back }), chatId: 1, messageId: 2 }, u);
+          expect((u.edit.mock.calls[0] as unknown as [string])[0]).toContain(`⚠️ ${escapeMarkdown(FIX_SYNC_RUNNING)}`);
+        }
+        expect(client.saveMany).not.toHaveBeenCalled();
+        expect(secrets.has('sync_overrides')).toBe(false);
+      } finally {
+        await sync.end();
+      }
+    });
+
     it("/changes Undo of a removal refuses while the companion syncs; another entry's Undo is not held up", async () => {
       vi.useFakeTimers({ toFake: ['Date'] });
       vi.setSystemTime(new Date(2026, 9, 12, 8, 0, 0));
@@ -4953,6 +5053,19 @@ describe('the /categorize wiring', () => {
       expect(written['act-earlier']).toBe(RECENT_DISMISSAL);
     });
 
+    it('LU-H I1: the Telegram category pickers (/categorize, /newrule) do not offer "Sync bookkeeping"', () => {
+      const { client } = clientFor([]);
+      vi.mocked(getNativeSpendingCategories).mockReturnValue([
+        { id: 'c1', name: 'Groceries', parentId: null, parentName: null },
+        { id: 'c2', name: 'Sync bookkeeping', parentId: null, parentName: null },
+      ] as any);
+      try {
+        expect(buildCategorizeDeps(client).readCategories('/db').map((c) => c.name)).toEqual(['Groceries']);
+      } finally {
+        vi.mocked(getNativeSpendingCategories).mockReturnValue([]);
+      }
+    });
+
     it('replays a REMOVAL as a delta, leaving a third party\'s entry alone', async () => {
       const { client, secrets } = clientFor([
         [LEDGER_KEY, JSON.stringify({ 'act-menu': RECENT_DISMISSAL })],
@@ -5232,6 +5345,106 @@ describe('the /categorize wiring', () => {
         'The companion has no database access right now, so it can\'t look up your categories.',
       );
       expect(vi.mocked(getNativeSpendingCategories)).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('a payback (1.62, W6)', () => {
+    const deposit = {
+      id: 'act-7', accountId: 'wf-a', accountName: 'Checking', activityType: 'DEPOSIT', date: '2026-10-09T00:00:00+00:00', amount: '14',
+      currency: 'USD', comment: 'VENMO CASHOUT · TRN-act-7', subtype: null, sourceGroupId: null, metadata: null,
+    };
+    /** A client whose one deposit can be filed as a payback, opened on its payback grid. */
+    const onPaybackGrid = async (installed: string, text = 'VENMO CASHOUT', stored: Partial<typeof deposit> = {}) => {
+      vi.mocked(getNativeUncategorizedSpending).mockReturnValue([{
+        ...uncatRow('act-7', text), amountCents: 1400, date: '2026-10-09', accountName: 'Checking', direction: 'in', incomeEligible: true, activityType: 'DEPOSIT', pending: false,
+      }] as any);
+      const { client, secrets } = clientFor([
+        ['account_mapping', JSON.stringify({ 'sfin-1': 'wf-a' })], ['installed_addon_version', installed],
+      ]);
+      client.getAccounts = vi.fn(async () => [{ id: 'wf-a', accountType: 'CASH' }]);
+      client.searchActivities = vi.fn(async (b: { activityIdFilter?: string[] }) => [{ ...deposit, ...stored, comment: `${text} · TRN-act-7` }].filter((r) => b.activityIdFilter?.includes(r.id)));
+      client.saveMany = vi.fn(async () => ({ created: [], updated: [], errors: [] }));
+      const controller = buildCategorizeController(client);
+      const { sent, reply } = collect();
+      await buildTelegramCommandHandler(client, controller)({ command: 'categorize', args: '' }, reply);
+      const ui = fakeUi();
+      const cb = (data: string) => controller.onCallback({ data, chatId: 4242, messageId: 7 }, ui);
+      await cb(dataFor(sent[0][1], text));
+      return { client, secrets, ui, cb };
+    };
+
+    it('files a deposit as a payback over REST: the override, the re-type at its stored instant, the category, the change log', async () => {
+      const p = await onPaybackGrid('1.62.0');
+      await p.cb(dataFor(lastOf(p.ui.edit)[1], 'Entertainment'));
+      expect(p.client.saveMany).toHaveBeenCalledWith({ updates: [expect.objectContaining({
+        id: 'act-7', activityType: 'CREDIT', subtype: 'REIMBURSEMENT', activityDate: '2026-10-09T00:00:00+00:00',
+      })] });
+      expect(p.client.assignActivityCategory).toHaveBeenCalledWith('act-7', 'spending_categories', 'cat-fun');
+      expect(lastOf(p.ui.edit)[0]).toBe('Filed as a payback under Entertainment — it takes $14 off your Entertainment spending.\nUndo it from /changes.');
+      expect(JSON.parse(p.secrets.get('sync_overrides')!).tx['sfin-1\u0000TRN-act-7']).toMatchObject({ asReimbursement: true });
+      const logged = [...p.secrets.entries()].filter(([k, v]) => /^change_log:companion:\d{4}-\d{2}$/.test(k) && v)
+        .flatMap(([, v]) => JSON.parse(v).entries);
+      expect(logged.map((e: any) => [e.kind, e.summary])).toEqual([['payback-filed', 'Filed VENMO CASHOUT as a payback under Entertainment']]);
+    });
+
+    it('writes a NOON stored instant back exactly as it was stored (PB-I m5)', async () => {
+      const p = await onPaybackGrid('1.62.0', 'VENMO CASHOUT', { date: '2026-10-09T12:00:00Z' });
+      await p.cb(dataFor(lastOf(p.ui.edit)[1], 'Entertainment'));
+      expect(p.client.saveMany).toHaveBeenCalledWith({ updates: [expect.objectContaining({
+        id: 'act-7', activityType: 'CREDIT', subtype: 'REIMBURSEMENT', activityDate: '2026-10-09T12:00:00Z',
+      })] });
+    });
+
+    it('then makes every deposit like it a payback from today on: the transaction rule first, and Wealthfolio’s rule for paybacks in that account', async () => {
+      const p = await onPaybackGrid('1.62.0', 'ACME REFUND');
+      p.client.listCategorizationRules = vi.fn(async () => []);
+      p.client.createCategorizationRule.mockResolvedValue('rule-9');
+      p.secrets.set('mapping_rules', JSON.stringify([{ pattern: 'ACME', matchType: 'contains', activityType: 'TRANSFER_IN' }]));
+      await p.cb(dataFor(lastOf(p.ui.edit)[1], 'Entertainment'));
+      await p.cb(dataFor(lastOf(p.ui.edit)[1], 'Make every ACME REFUND deposit a payback'));
+      expect(lastOf(p.ui.edit)[0]).toContain('From today on');
+      expect(lastOf(p.ui.edit)[0]).toContain('No other deposit in the last 90 days reads that way.');
+      await p.cb(dataFor(lastOf(p.ui.edit)[1], 'Create both rules'));
+      expect(p.client.createCategorizationRule).toHaveBeenCalledWith(expect.objectContaining({
+        pattern: 'ACME REFUND', categoryId: 'cat-fun', accountId: 'wf-a', activityType: 'CREDIT', priority: 50,
+      }));
+      expect(JSON.parse(p.secrets.get('mapping_rules')!)).toEqual([
+        expect.objectContaining({ pattern: 'ACME REFUND', onlyMoneyIn: true, accountId: 'wf-a', since: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/) }),
+        expect.objectContaining({ pattern: 'ACME' }),
+      ]);
+      expect(lastOf(p.ui.edit)[0]).toBe('Done — every ACME REFUND deposit into Checking is a payback under Entertainment from now on. Undo either rule from /changes.');
+    });
+
+    it('refuses a deposit whose words are only generic bank wording: nothing to create, nothing written', async () => {
+      const p = await onPaybackGrid('1.62.0', 'DEPOSIT 123456');
+      await p.cb(dataFor(lastOf(p.ui.edit)[1], 'Entertainment'));
+      await p.cb(dataFor(lastOf(p.ui.edit)[1], 'Make every DEPOSIT deposit a payback'));
+      expect(lastOf(p.ui.edit)[0]).toContain('only common bank words');
+      expect(p.secrets.get('mapping_rules')).toBeUndefined();
+    });
+
+    it('refuses while the installed add-on is older, naming the app’s Change log, and writes nothing', async () => {
+      const p = await onPaybackGrid('1.61.0');
+      await p.cb(dataFor(lastOf(p.ui.edit)[1], 'Entertainment'));
+      expect(lastOf(p.ui.edit)[0]).toBe(escapeMarkdown(PAYBACK_UPDATE_ADDON));
+      expect(p.client.saveMany).not.toHaveBeenCalled();
+      expect(p.client.assignActivityCategory).not.toHaveBeenCalled();
+      expect(p.secrets.has('sync_overrides')).toBe(false);
+    });
+
+    it('refuses while the companion syncs, and writes nothing', async () => {
+      const p = await onPaybackGrid('1.62.0');
+      const deferred = createDeferred<SyncResult>();
+      const sync = runCompanionSyncExclusive(() => deferred.promise);
+      try {
+        await p.cb(dataFor(lastOf(p.ui.edit)[1], 'Entertainment'));
+        expect(lastOf(p.ui.edit)[0]).toBe(escapeMarkdown(FIX_SYNC_RUNNING));
+        expect(p.client.searchActivities).not.toHaveBeenCalled();
+        expect(p.client.saveMany).not.toHaveBeenCalled();
+      } finally {
+        deferred.resolve(FAKE_SYNC_RESULT);
+        await sync.result;
+      }
     });
   });
 
@@ -6421,7 +6634,7 @@ describe('report slimming toggles (v1.47)', () => {
     });
     const client = clientWith(
       { reportDetail: 'brief' },
-      [['report_cube', cube], ['semester_pool', JSON.stringify({ amountCents: 1_600_000, startDate: '2026-07-01', endDate: '2027-01-01' })]],
+      [['report_cube', cube], ['semester_pool', JSON.stringify({ amountCents: 1_600_000, startDate: '2026-07-01', endDate: '2030-01-01' })]],
     );
     const fetchMock = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
     vi.stubGlobal('fetch', fetchMock);
@@ -6450,5 +6663,60 @@ describe('report slimming toggles (v1.47)', () => {
     // The headline still counts it: same "left this month" figure either way.
     const headline = (t: string) => t.match(/\$[\d,]+ (left|over budget)/)?.[0];
     expect(headline(brief!)).toBe(headline(full!));
+  });
+});
+
+describe('the tripwire in the daily report (1.62)', () => {
+  const MORNING = new Date(2026, 9, 14, 8, 0, 0);
+  const snapshot = (reportCents: number, wealthfolioCents: number) => JSON.stringify(buildAuditSnapshot({
+    balances: explainBalances({}),
+    headline: explainHeadline({ month: '2026-10', reportCents, wealthfolioCents, rows: [] }),
+    health: healthIssues({}),
+  }, MORNING));
+  const clientWith = (snap: string | null, tg: Record<string, unknown> = {}) => {
+    const secrets = new Map<string, string>([
+      ['telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true, digestRows: 'all', ...tg })],
+      ...(snap === null ? [] : [[AUDIT_SNAPSHOT_SECRET_KEY, snap] as [string, string]]),
+    ]);
+    return {
+      getAddonSecret: vi.fn(async (_a: string, k: string) => secrets.get(k) ?? null),
+      setAddonSecret: vi.fn(async (_a: string, k: string, v: string) => { secrets.set(k, v); }),
+    } as any;
+  };
+  beforeEach(() => {
+    vi.mocked(existsSync).mockReturnValue(true);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(MORNING);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+  const LINE = '⚠️ The report and Wealthfolio differ by $951.45 this month — /audit explains';
+
+  it('carries the line in Brief and in Full, and archives it', async () => {
+    for (const tg of [{}, { reportDetail: 'brief' }]) {
+      const digest = (await composeDailyDigest(clientWith(snapshot(229206, 324351), tg), { requireTelegram: false }))!;
+      expect(digest.text).toContain(LINE);
+      expect(digest.archive).toContain(LINE);
+    }
+  });
+
+  it('says nothing when the two are a cent apart, or there are no checks to read', async () => {
+    for (const snap of [snapshot(324352, 324351), null, '{oops']) {
+      const digest = (await composeDailyDigest(clientWith(snap, { reportDetail: 'brief' }), { requireTelegram: false }))!;
+      expect(digest.text).not.toContain('differ by');
+    }
+  });
+});
+
+describe('M-2: the report cube reads the spending series strictly', () => {
+  it('a spending read that fails fails the cube (no zeros published), and the other series ask for strict reads too', async () => {
+    const deps = cubeBuildDeps({} as any, '/db/wealthfolio.db');
+    vi.mocked(getNativeBudgetSpend).mockImplementationOnce(() => { throw new Error('database is locked'); });
+    expect(() => deps.spendMatrix('2026-09-01', '2026-10-01')).toThrow('database is locked');
+    deps.uncategorizedByMonthAccount('2026-09-01', '2026-10-01');
+    expect(getNativeUncategorizedByMonthAccount).toHaveBeenLastCalledWith('/db/wealthfolio.db', '2026-09-01', '2026-10-01', true);
+    deps.spendDaily('2026-09-01', '2026-10-01');
+    expect(getNativeSpendDailyTotals).toHaveBeenLastCalledWith('/db/wealthfolio.db', '2026-09-01', '2026-10-01', true);
   });
 });

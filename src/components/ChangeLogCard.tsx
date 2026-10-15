@@ -25,7 +25,7 @@ import { Button, Input, Select } from './ui';
 import type { ChangeLogItem, ChangeLogRead } from '../../shared/change-log';
 import { undoAvailability, UNDO_TAKES_EFFECT, UNDO_UNREACHABLE, type UndoOp } from '../../shared/change-undo';
 import type { UndoOutcome } from '../../shared/change-undo-run';
-import { overrideRows, type LoadedSyncOverrides, type OverrideRow } from '../../shared/sync-overrides';
+import { overrideRows, paybackUndoCovers, type LoadedSyncOverrides, type OverrideRow } from '../../shared/sync-overrides';
 import { changeDay } from '../../shared/change-entries';
 import { shortDateTime } from '../../shared/telegram';
 import {
@@ -41,6 +41,7 @@ export const OVERRIDES_TITLE = 'Your overrides';
 export const OVERRIDES_EMPTY = 'None. The sync decides everything.';
 export const OVERRIDES_UNREADABLE = "Your sync overrides can't be read, so they can't be changed here.";
 export const OVERRIDES_READ_FAILED = 'Could not read your overrides — reload the page to try again.';
+export const OVERRIDE_PAYBACK_UNDO = 'Undo it from Telegram: /changes';
 export const OVERRIDE_REMOVED = 'Removed. The next sync decides again.';
 const DAY_CHOICES = [7, 30, 90] as const;
 type Days = (typeof DAY_CHOICES)[number];
@@ -58,7 +59,8 @@ export interface ChangeLogCardProps {
   onSyncNow?: () => Promise<string>;
   /** "Your overrides": `store.readSyncOverrides` (null when the read failed). */
   loadOverrides?: () => Promise<LoadedSyncOverrides | null>;
-  removeOverride?: (row: OverrideRow) => Promise<void>;
+  /** `undoCovers`: an un-undone payback-filed entry covers the row (a payback is then undone, not removed). */
+  removeOverride?: (row: OverrideRow, undoCovers: boolean) => Promise<void>;
 }
 
 /** What Sync now says once the run is over — here and in a transaction's story. */
@@ -227,10 +229,12 @@ function RunLine({ entry, actions }: { entry: ChangeLogItem; actions: RowActions
 }
 
 /** "Your overrides": what Undo told the sync not to do, each with Remove. */
-function OverridesList({ load, remove, version }: {
+function OverridesList({ load, remove, version, entries }: {
   load: () => Promise<LoadedSyncOverrides | null>;
-  remove?: (row: OverrideRow) => Promise<void>;
+  remove?: (row: OverrideRow, undoCovers: boolean) => Promise<void>;
   version: number;
+  /** The merged change log: a payback it covers is undone, not removed. */
+  entries: readonly ChangeLogItem[];
 }) {
   const [doc, setDoc] = useState<LoadedSyncOverrides | null | 'loading'>('loading');
   const [note, setNote] = useState<string | null>(null);
@@ -252,7 +256,7 @@ function OverridesList({ load, remove, version }: {
     setRemoving(true);
     let said: string;
     try {
-      await remove!(row);
+      await remove!(row, row.flag === 'asReimbursement' && paybackUndoCovers(entries, row.key));
       said = OVERRIDE_REMOVED;
     } catch (e: any) {
       said = String(e?.message ?? e);
@@ -275,7 +279,9 @@ function OverridesList({ load, remove, version }: {
         rows.map((r) => (
           <div key={`${r.scope}:${r.key}:${r.flag}`} className="sfin-log-override">
             <span className="sfin-log-summary">{r.text}</span>
-            {remove && <Button variant="ghost" disabled={removing} aria-busy={removing} aria-label={`Remove ${r.text}`} onClick={() => onRemove(r)}>Remove</Button>}
+            {r.flag === 'asReimbursement' && paybackUndoCovers(entries, r.key)
+              ? <span className="sfin-subtle">{OVERRIDE_PAYBACK_UNDO}</span>
+              : remove && <Button variant="ghost" disabled={removing} aria-busy={removing} aria-label={`Remove ${r.text}`} onClick={() => onRemove(r)}>Remove</Button>}
           </div>
         ))
       )}
@@ -392,7 +398,7 @@ export function ChangeLogCard({
           {hiddenBackground} background {hiddenBackground === 1 ? 'change' : 'changes'} not shown — Background lists {hiddenBackground === 1 ? 'it' : 'them'}.
         </div>
       )}
-      {loadOverrides && <OverridesList load={loadOverrides} remove={removeOverride} version={version} />}
+      {loadOverrides && <OverridesList load={loadOverrides} remove={removeOverride} version={version} entries={entries} />}
     </div>
   );
 }

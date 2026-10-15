@@ -39,6 +39,8 @@ import { VENMO_NOTE_MARK } from './venmo-ledger.js';
 export const TX_STORY_NOT_FROM_FEED = 'Not from your bank feed — added in Wealthfolio by hand or from a file.';
 export const TX_STORY_SPENDING = 'Spending.';
 export const TX_STORY_MONEY_IN = 'Money in.';
+/** A cash CREDIT marked REIMBURSEMENT (1.62): money in that Wealthfolio takes off spending. */
+export const TX_STORY_PAYBACK = 'A payback: it lowers your spending.';
 /** A row whose note carries ` · Venmo: <note>` (3). */
 export const TX_STORY_VENMO_NOTE = 'Note from a Venmo email.';
 export const TX_STORY_NOT_FILED = "Not filed yet — it's on your needs-a-category list.";
@@ -84,9 +86,12 @@ export const TX_OVERRIDE_WORDS: Record<TxOverrideFlag | 'skipped', string> = {
   noAutoFile: "don't file it automatically",
   noAmazonLabel: 'no Amazon label',
   noVenmoNote: 'no Venmo note',
+  asReimbursement: "it's a payback",
   skipped: "don't import it",
 };
-const OVERRIDE_ORDER: ReadonlyArray<TxOverrideFlag | 'skipped'> = ['notTransfer', 'keepDuplicate', 'noAutoFile', 'noAmazonLabel', 'noVenmoNote', 'skipped'];
+const OVERRIDE_ORDER: ReadonlyArray<TxOverrideFlag | 'skipped'> = [
+  'notTransfer', 'keepDuplicate', 'noAutoFile', 'noAmazonLabel', 'noVenmoNote', 'asReimbursement', 'skipped',
+];
 
 // ── Facts ────────────────────────────────────────────────────────────────
 
@@ -102,6 +107,8 @@ export interface TxStoryRow {
   accountName: string;
   /** Wealthfolio account type (CASH, CREDIT_CARD, …); absent when unknown. */
   accountType?: string;
+  /** The stored subtype (`REIMBURSEMENT` on a payback); absent when none. */
+  subtype?: string;
 }
 
 /** The other half of a linked transfer. */
@@ -115,9 +122,13 @@ export interface TxPartner {
  *  would file it; `unknown`: the rules could not be read. */
 export type TxFiler =
   | { kind: 'rule'; pattern: string | null; unknown?: true }
-  | { kind: 'you'; at?: string }
+  /** `payback`: you filed it as a payback (1.62) — in Telegram by hand, or in
+   *  the app through a one-off rule, so it is told by its log entry. */
+  | { kind: 'you'; at?: string; payback?: true }
   | { kind: 'amazon'; label: string }
   | { kind: 'opening' }
+  /** The sync's own bookkeeping rows (a held transfer, a correction), filed under "Sync bookkeeping" so Wealthfolio leaves them out of spending. */
+  | { kind: 'bookkeeping' }
   | { kind: 'hand' };
 
 export interface TxStoryFacts {
@@ -172,6 +183,12 @@ const OUTFLOW = new Set(['WITHDRAWAL', 'TRANSFER_OUT', 'FEE', 'TAX']);
 const CASH_TYPES = new Set(['DEPOSIT', 'WITHDRAWAL', 'CREDIT', 'INTEREST', 'DIVIDEND', 'INCOME', 'FEE', 'TAX', 'TRANSFER_IN', 'TRANSFER_OUT']);
 
 export const isCashType = (activityType: string): boolean => CASH_TYPES.has(activityType.toUpperCase());
+
+/** A payback: a CREDIT marked REIMBURSEMENT on a cash account (on a card every
+ *  CREDIT comes off spending, payback or not). */
+export const isPaybackStoryRow = (row: Pick<TxStoryRow, 'activityType' | 'subtype' | 'accountType'>): boolean =>
+  row.activityType.toUpperCase() === 'CREDIT' && (row.subtype ?? '').trim().toUpperCase() === 'REIMBURSEMENT'
+  && (row.accountType ?? '').toUpperCase() === 'CASH';
 
 /** Money out: the spending types, and interest charged on a card. */
 export function isOutflow(activityType: string, accountType?: string): boolean {
@@ -292,9 +309,17 @@ export function inferFilingRule(rules: readonly CategoryRuleLike[], row: RuleRow
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+/** The pass's own entry: it filed (or took out) these rows under "Sync bookkeeping". */
+const isBookkeepingFiling = (e: ChangeEntry, activityId: string | undefined, categoryName: string | undefined) =>
+  e.kind === 'bookkeeping' && isRecord(e.after) && e.after.step === 'sync-bookkeeping'
+  && (activityId === undefined || (e.subject.activityIds ?? []).includes(activityId))
+  // A row the person has since moved elsewhere (the pass leaves it alone) is no longer under the pass's category.
+  && (categoryName === undefined || e.after.categoryName === categoryName);
 const afterCategoryId = (e: ChangeEntry) => (isRecord(e.after) && typeof e.after.categoryId === 'string' ? e.after.categoryId : null);
 
 export interface FilerInput {
+  /** The row's Wealthfolio id: a bookkeeping filing is recognised by the entry listing it. Absent: the history is already this row's. */
+  activityId?: string;
   /** The assignment's `source` (`rule`, `manual`, …). */
   source: string | null | undefined;
   categoryId: string;
@@ -312,8 +337,10 @@ export interface FilerInput {
 }
 
 /**
- * Who filed it. A rule's filing names the rule (`inferFilingRule`). Anything
- * else is the newest log entry that set THIS category — you in Telegram, the
+ * Who filed it. A payback you filed under this category comes first ("by you,
+ * as a payback"), whatever the source says: the app files a payback through a
+ * one-off rule it deletes after (W11). A rule's filing names the rule
+ * (`inferFilingRule`). Anything else is the newest log entry that set THIS category — you in Telegram, the
  * Amazon email, the opening-balance filing — then, for the add-on's own
  * starting balance, its category (the companion filed card opening balances
  * before the log existed, over REST, so `source` says `manual`); then the
@@ -322,6 +349,11 @@ export interface FilerInput {
  * in some other category, and nothing else says.
  */
 export function resolveFiler(f: FilerInput): TxFiler | null {
+  const payback = [...(f.history ?? [])]
+    .filter((e) => !e.undone && e.kind === 'payback-filed' && afterCategoryId(e) === f.categoryId
+      && (f.activityId === undefined || (e.subject.activityIds ?? []).includes(f.activityId)))
+    .sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0))[0];
+  if (payback) return { kind: 'you', at: payback.at, payback: true };
   if ((f.source ?? '').toLowerCase() === 'rule') {
     if (f.rules === null) return { kind: 'rule', pattern: null, unknown: true };
     const rule = inferFilingRule(f.rules, f.row, f.categoryId);
@@ -329,9 +361,12 @@ export function resolveFiler(f: FilerInput): TxFiler | null {
   }
   // A non-"Amazon: " auto filing reads as by hand: the Amazon filer is the only auto filer today.
   const filing = [...(f.history ?? [])]
-    .filter((e) => !e.undone && (e.kind === 'category-filed' || e.kind === 'opening-balance-filed') && afterCategoryId(e) === f.categoryId)
+    .filter((e) => !e.undone && (
+      ((e.kind === 'category-filed' || e.kind === 'opening-balance-filed') && afterCategoryId(e) === f.categoryId)
+      || isBookkeepingFiling(e, f.activityId, f.categoryName)))
     .sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0))[0];
   if (filing?.kind === 'opening-balance-filed') return { kind: 'opening' };
+  if (filing?.kind === 'bookkeeping') return { kind: 'bookkeeping' };
   if (filing?.actor === 'you') return { kind: 'you', at: filing.at };
   if (filing?.why?.startsWith('Amazon: ')) return { kind: 'amazon', label: filing.why.slice('Amazon: '.length) };
   if (!filing && f.row.note.startsWith(STARTING_BALANCE_COMMENT_PREFIX)) {
@@ -361,6 +396,7 @@ export function encodeFiler(filer: TxFiler | null | undefined): string | undefin
     case 'you': return 'y';
     case 'amazon': return `a:${filer.label}`;
     case 'opening': return 'o';
+    case 'bookkeeping': return 'b';
     case 'hand': return 'h';
   }
 }
@@ -374,6 +410,7 @@ export function decodeFiler(code: unknown): TxFiler | null {
   if (code === 'y') return { kind: 'you' };
   if (code.startsWith('a:') && code.length > 2) return { kind: 'amazon', label: code.slice(2) };
   if (code === 'o') return { kind: 'opening' };
+  if (code === 'b') return { kind: 'bookkeeping' };
   if (code === 'h') return { kind: 'hand' };
   return null;
 }
@@ -391,10 +428,13 @@ function filedLine(name: string, filer: TxFiler | null | undefined): string {
         : filer.pattern === null
           ? `Filed under ${name} by a rule (none of your current rules matches it).`
           : `Filed under ${name} by a rule — '${filer.pattern}' matches it.`;
-    case 'you':
-      return filer.at ? `Filed under ${name} by you, in Telegram, ${changeDay(changeLocalDay(filer.at))}.` : `Filed under ${name} by you, in Telegram.`;
+    case 'you': {
+      const how = filer.payback ? 'as a payback' : 'in Telegram';
+      return filer.at ? `Filed under ${name} by you, ${how}, ${changeDay(changeLocalDay(filer.at))}.` : `Filed under ${name} by you, ${how}.`;
+    }
     case 'amazon': return `Filed under ${name} from an Amazon email.`;
     case 'opening': return `Filed under ${name} by the add-on — an opening balance isn't spending.`;
+    case 'bookkeeping': return `Filed under ${name} by the sync as bookkeeping — it isn't spending.`;
     case 'hand': return `Filed under ${name} — set by hand.`;
   }
 }
@@ -438,7 +478,7 @@ export function buildTxStory(facts: TxStoryFacts): TxStory {
       answer.push(`Half of a transfer: ${changeMoney(Math.abs(row.absCents))} ${out ? 'into' : 'from'} ${facts.partner.accountName}${when}.`);
     } else if (cash && (facts.partner === null || !isTransferType(row.activityType.toUpperCase()))) {
       // Only cash activity is spending or money in; a trade gets no line.
-      answer.push(out ? TX_STORY_SPENDING : TX_STORY_MONEY_IN);
+      answer.push(out ? TX_STORY_SPENDING : isPaybackStoryRow(row) ? TX_STORY_PAYBACK : TX_STORY_MONEY_IN);
     }
   }
 

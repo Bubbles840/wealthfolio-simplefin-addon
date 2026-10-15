@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { MessageLines, PaybackAction, type AppPaybackActions } from './PaybackAction';
 import { Button } from './ui';
 import type { DismissalLedger, UncategorizedRow } from '../../shared/uncategorized';
 import type { AppStoryTarget } from '../utils/tx-story';
@@ -90,7 +91,7 @@ export function useDismissals(
  * size target.
  */
 export function UncategorizedList({
-  rows, total, id, onDismiss, justDismissed, onUndo, onOpenActivities, renderStory,
+  rows, total, id, onDismiss, justDismissed, onUndo, onOpenActivities, renderStory, payback, paybackNote,
 }: {
   rows: UncategorizedRow[];
   total: number;
@@ -106,6 +107,12 @@ export function UncategorizedList({
   /** 1.61: a row's story, opened under it when its description is clicked.
    *  Absent: rows stay plain text, as before. */
   renderStory?: (target: AppStoryTarget) => React.ReactNode;
+  /** W11: "It's a payback…" under each row the companion marks
+   *  `paybackEligible`. Absent: never offered (a Wealthfolio before 3.9, no
+   *  companion, or one older than 1.62.0). */
+  payback?: AppPaybackActions;
+  /** W11: what the last payback filed from the app said (its row has left the list). */
+  paybackNote?: string | null;
 }) {
   const [openId, setOpenId] = useState<string | null>(null);
   // Gated on ROWS, not on `total`: a v1.10.0 companion publishes a count with no
@@ -119,7 +126,7 @@ export function UncategorizedList({
   // left to click "Dismiss" on again) would become silently permanent. `window.
   // confirm` doesn't work in this sandbox, so the undo affordance IS the
   // confirmation; it cannot be allowed to vanish along with the row it's for.
-  if (rows.length === 0 && !justDismissed) return null;
+  if (rows.length === 0 && !justDismissed && !paybackNote) return null;
   const capped = rows.length < total;
   return (
     <div id={id} className="sfin-disc-inset sfin-uncat-panel">
@@ -129,6 +136,8 @@ export function UncategorizedList({
           <Button variant="ghost" onClick={onUndo}>Undo</Button>
         </div>
       )}
+      {/* Mounted while paybacks are offered, so a filing's words are announced. */}
+      {payback && <div role="status" className="sfin-subtle"><MessageLines message={paybackNote} /></div>}
       {rows.map((r) => (
         <React.Fragment key={r.activityId}>
           <div className="sfin-uncat-row">
@@ -167,6 +176,12 @@ export function UncategorizedList({
               Dismiss
             </Button>
           </div>
+          {payback && r.paybackEligible === true && !(renderStory && openId === r.activityId) && (
+            <PaybackAction
+              inlineStatus activityId={r.activityId} actions={payback}
+              label={`${r.description}, ${money(r.amountCents)} on ${r.date}`}
+            />
+          )}
           {renderStory && openId === r.activityId && (
             <div className="sfin-why-inline" id={`sfin-why-story-${r.activityId}`}>{renderStory({ activityId: r.activityId })}</div>
           )}

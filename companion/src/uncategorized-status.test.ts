@@ -177,6 +177,31 @@ describe('guessed categories', () => {
   });
 });
 
+describe('payback rows (W11)', () => {
+  const publish = async (rows: ReturnType<typeof native>[]) => {
+    const writes: Record<string, string> = {};
+    await publishUncategorizedStatus(async (k, v) => { writes[k] = v; }, () => rows, async () => ({}), new Date('2026-10-14T12:00:00Z'));
+    return JSON.parse(writes['uncategorized_status']).rows as Array<{ activityId: string; paybackEligible?: true }>;
+  };
+  const deposit = { notes: 'VENMO CASHOUT · TRN-77', direction: 'in' as const, incomeEligible: true, activityType: 'DEPOSIT', pending: false };
+
+  it("marks a posted deposit on a cash account: the rows Telegram offers \"It's a payback »\" on", async () => {
+    const [row] = await publish([native('a', deposit)]);
+    expect(row.paybackEligible).toBe(true);
+  });
+
+  it.each<[string, Record<string, unknown>]>([
+    ['interest', { ...deposit, activityType: 'INTEREST' }],
+    ['a pending deposit', { ...deposit, pending: true }],
+    ['a card credit', { ...deposit, incomeEligible: false, activityType: 'CREDIT' }],
+    ['a withdrawal', { ...deposit, direction: 'out', incomeEligible: false, activityType: 'WITHDRAWAL' }],
+    ['a row read without its type', { notes: 'VENMO CASHOUT · TRN-77', direction: 'in', incomeEligible: true }],
+  ])('marks no %s', async (_name, over) => {
+    const [row] = await publish([native('a', over)]);
+    expect('paybackEligible' in row).toBe(false);
+  });
+});
+
 describe('uncategorizedWindow', () => {
   it('spans the last 90 days, end-exclusive tomorrow', () => {
     expect(uncategorizedWindow(new Date('2026-08-08T15:30:00Z'))).toEqual({

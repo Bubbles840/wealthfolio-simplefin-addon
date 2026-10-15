@@ -5,8 +5,12 @@
  * one transaction, gathered into shared/tx-story.ts's facts, and the search
  * behind Home's "Why is this here?" box.
  *
- * It sees less than the companion: the SDK has no categories and no link
- * groups. So who filed a row is told only when something the add-on CAN read
+ * On Wealthfolio 3.9 and newer it reads what the companion reads (1.62.0,
+ * U3): Wealthfolio's own facts for the row (src/utils/wf-facts.ts) — whether
+ * it is linked and to what (`getTransferPair`), and what it is filed under,
+ * with who filed it as far as the change log tells. Where the host does not
+ * offer them (3.8), or has none for the row, the story keeps what the SDK
+ * alone could tell: who filed a row only when something the add-on CAN read
  * knows it — a budget drill-down row's `f` (the caller passes it), the report
  * cube's drill-down, the companion's needs-a-category list — and otherwise the
  * story points at Telegram (when a companion has published a version) or says
@@ -26,6 +30,7 @@
 import type { ActivityDetails, ActivitySearchFilters, AddonContext } from '@wealthfolio/addon-sdk';
 import type { ChangeLogItem } from '../../shared/change-log';
 import { changesForTransaction, currentActivityId, isChangeLogPartial } from '../../shared/change-view';
+import { paybackOfferedInStory } from '../../shared/payback-app';
 import { txIdFromComment, isTransferType } from '../../shared/sync-core';
 import { hasTxOverride, TX_OVERRIDE_FLAGS, type TxOverrideFlag } from '../../shared/sync-overrides';
 import { accountTxKey } from '../../shared/transfers';
@@ -34,10 +39,12 @@ import {
   TX_SEARCH_RECENT_DAYS, type TxQuery, type TxSearchResult, type TxSearchRow,
 } from '../../shared/tx-search';
 import {
-  buildTxStory, decodeFiler, feedOf, sfinIdsFor, signedCents, withFilingDay, type TxFactName, type TxStory, type TxStoryFacts,
+  buildTxStory, decodeFiler, feedOf, resolveFiler, sfinIdsFor, signedCents, withFilingDay, type TxFactName, type TxStory, type TxStoryFacts,
 } from '../../shared/tx-story';
 import { removalFingerprint, removalOffered } from '../../shared/tx-remove';
+import { filingOfFact, linkedOfFact } from '../../shared/wf-facts';
 import type { SecretsStore } from './secrets';
+import { readCashFacts, readCategoryNames, readTransferPartner } from './wf-facts';
 
 /** What a story is opened for. A budget drill-down row also brings its
  *  (rolled-up) category and its `f` code. */
@@ -55,8 +62,14 @@ export type StoryStore = Partial<Pick<SecretsStore,
 export type AppStoryOutcome =
   /** `entries`: the whole change log as read (Undo needs it); [] when unread.
    *  `removal` (2c R2): the story offers "Remove for good…" for this row, as shown
-   *  (its date is the UTC day the story shows, which is the one the remover checks). */
-  | { kind: 'ok'; story: TxStory; entries: ChangeLogItem[]; removal?: { activityId: string; fingerprint: string } }
+   *  (its date is the UTC day the story shows, which is the one the remover checks).
+   *  `payback` (W11): the row qualifies for "It's a payback…", as shown — the app
+   *  offers it only where the host and the companion allow (`appPaybacksOffered`). */
+  | {
+    kind: 'ok'; story: TxStory; entries: ChangeLogItem[];
+    removal?: { activityId: string; fingerprint: string };
+    payback?: { activityId: string; fingerprint: string };
+  }
   | { kind: 'gone' }
   | { kind: 'unreachable' };
 
@@ -149,13 +162,24 @@ export async function appTxStory(ctx: AddonContext, store: StoryStore, target: A
     failed.push('skipList');
   }
 
-  // The other half of a transfer: the newest link in the log that is not
-  // undone, else the add-on's own ledger of pairs it linked.
+  // Wealthfolio 3.9+: its own word on the row (U3). None on a 3.8 host, nor
+  // for a row it does not list (an account outside Spending).
+  const fact = (await readCashFacts(ctx, [{ id: row.id, accountId: row.accountId, date: String(row.date ?? '') }]))?.get(row.id);
+
+  // The other half of a transfer: Wealthfolio's own pair where it says; else
+  // the newest link in the log that is not undone, else the add-on's own
+  // ledger of pairs it linked.
   let partner: TxStoryFacts['partner'] = null;
   const link = [...(history ?? [])].reverse().find((e) => e.kind === 'transfer-link' && !e.reverses && !e.undone);
   const legs = link && isRecord(link.after) && Array.isArray(link.after.legs) ? link.after.legs.filter(isRecord) : [];
   const other = legs.find((l) => (txKeys.length ? !txKeys.includes(l.txKey as string) : l.activityId !== row.id));
-  if (other && typeof other.accountName === 'string') {
+  const pairOf = fact && linkedOfFact(fact) ? await readTransferPartner(ctx, row.id) : undefined;
+  const pairName = pairOf ? accounts.find((a) => a.id === pairOf.accountId)?.name : undefined;
+  if (fact && !linkedOfFact(fact)) {
+    partner = null;
+  } else if (pairOf && pairName) {
+    partner = { accountName: pairName, date: pairOf.date };
+  } else if (other && typeof other.accountName === 'string') {
     partner = { accountName: other.accountName };
   } else if (txKeys.length) {
     let groups: Record<string, string> | null = null;
@@ -171,9 +195,10 @@ export async function appTxStory(ctx: AddonContext, store: StoryStore, target: A
     if (name) partner = { accountName: name };
   }
   // A row that IS grouped (when the host reports it) or transfer-typed, with no
-  // partner found, is not known to be ordinary money: leave that line out.
-  const grouped = !!(row as { sourceGroupId?: string | null }).sourceGroupId;
-  if (!partner && (grouped || isTransferType(String(row.activityType).toUpperCase()))) partner = undefined;
+  // partner found, is not known to be ordinary money: leave that line out —
+  // unless Wealthfolio says it is in no pair.
+  const grouped = !!(row as { sourceGroupId?: string | null }).sourceGroupId || !!fact?.grouped;
+  if (!partner && !(fact && !linkedOfFact(fact)) && (grouped || isTransferType(String(row.activityType).toUpperCase()))) partner = undefined;
 
   // Who filed it, as far as the add-on can see.
   let category: TxStoryFacts['category'];
@@ -183,7 +208,25 @@ export async function appTxStory(ctx: AddonContext, store: StoryStore, target: A
     const f = decodeFiler(code);
     return f ? withFilingDay(f, history) : null;
   };
-  if (target.categoryName) {
+  // Wealthfolio 3.9+: what it is filed under, named, and who filed it as far
+  // as the change log tells (a rule is not named: the SDK lists the add-on's
+  // own rules only).
+  const filing = fact ? filingOfFact(fact) : null;
+  const names = filing ? await readCategoryNames(ctx) : null;
+  const filedAs = filing ? names?.get(filing.categoryId) : undefined;
+  if (fact && !filing) {
+    category = null;
+  } else if (filing && filedAs) {
+    category = {
+      name: filedAs,
+      filer: resolveFiler({
+        source: filing.source, categoryId: filing.categoryId, categoryName: filedAs,
+        row: { note, activityType: String(row.activityType).toUpperCase(), accountId: row.accountId, absCents: absCentsOf(row.amount) },
+        history: history && !failed.includes('changeLogPartial') ? history : null,
+        rules: null,
+      }),
+    };
+  } else if (target.categoryName) {
     category = { name: target.categoryName, filer: fromCode(target.filer) };
   } else {
     let cube: Awaited<ReturnType<NonNullable<StoryStore['getReportCube']>>> | null = null;
@@ -226,10 +269,12 @@ export async function appTxStory(ctx: AddonContext, store: StoryStore, target: A
       activityType: String(row.activityType).toUpperCase(),
       accountName: row.accountName ?? '',
       ...(accountType ? { accountType: String(accountType) } : {}),
+      ...(row.subtype ? { subtype: String(row.subtype) } : {}),
     },
     ...(sfinIds === undefined ? {} : { feed: sfinIds.length ? { sfinAccountId: feedOf(sfinIds, txId, history)! } : null }),
     partner,
-    ...(category ? { category } : {}),
+    // null: Wealthfolio says it is filed nowhere.
+    ...(category !== undefined ? { category } : {}),
     needsCategory,
     ...(filerHint ? { filerHint } : {}),
     overrides,
@@ -241,6 +286,7 @@ export async function appTxStory(ctx: AddonContext, store: StoryStore, target: A
   return {
     kind: 'ok', story: buildTxStory(facts), entries,
     ...(removalOffered(facts) ? { removal: { activityId: row.id, fingerprint: removalFingerprint(facts.row) } } : {}),
+    ...(paybackOfferedInStory(facts) ? { payback: { activityId: row.id, fingerprint: removalFingerprint(facts.row) } } : {}),
   };
 }
 

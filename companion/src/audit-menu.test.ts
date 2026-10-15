@@ -47,9 +47,11 @@ const balances = (): BalanceReport & { reached: boolean } => ({
 });
 const headline = (): HeadlineExplanation => explainHeadline({
   month: '2026-10', timezone: 'America/New_York', reportCents: 130000, wealthfolioCents: 120000, excludedCategoryIds: [],
+  // On an account Wealthfolio reads that the add-on does not map.
+  reportAccountIds: ['wf-other'],
   rows: Array.from({ length: 23 }, (_, i) => ({
-    id: `h${i}`, date: '2026-10-01T00:00:00+00:00', accountId: 'wf-chk', groupId: '', accountName: NAME, accountType: 'CASH', type: 'WITHDRAWAL', subtype: '',
-    absCents: 100, notes: `${BANK} · TRN-${i}`, spendingFilings: 1, categoryIds: ['c'],
+    id: `h${i}`, date: '2026-10-04T12:00:00+00:00', accountId: 'wf-chk', groupId: '', accountName: NAME, accountType: 'CASH', type: 'WITHDRAWAL', subtype: '',
+    absCents: 100, notes: `${BANK} · TRN-${i}`, filings: [], splits: [],
   })),
 });
 const health = (): HealthReport & { reached: boolean } => ({ ...healthIssues({ ledger: LEDGER, mapping: { 'sfin-v': VISA, 'sfin-c': 'wf-chk' } }), reached: true });
@@ -130,7 +132,7 @@ describe('/audit', () => {
     // The only entities are the fixed heading's.
     expect(text.replace('*Balance*', '').match(/(?<!\\)[*_]/g)).toBeNull();
     const reason = renderAuditReason(headline().reasons![0]);
-    expect(reason.text).toContain(escapeMarkdown(`Oct 1 · ${BANK} · $1.00 · ${NAME}`));
+    expect(reason.text).toContain(escapeMarkdown(`Oct 4 · ${BANK} · $1.00 · ${NAME}`));
   });
 
   it('opens an account in place with Back, and as a new message without one from /status', async () => {
@@ -176,7 +178,7 @@ describe('/audit', () => {
     const h = headline();
     const screen = renderAuditHeadline(h);
     expect(screen.text).toContain(escapeMarkdown("The report counts $1,300.00 spent this month; Wealthfolio's Spending page counts $1,200.00."));
-    expect(labels(screen)).toEqual(['Dated the 1st at midnight UTC (23)', '⬅️ Back']);
+    expect(labels(screen)).toEqual(["On accounts the add-on doesn't sync (23)", '⬅️ Back']);
     const u = ui();
     await createAuditMenu(deps()).onCallback({ data: allData(screen)[0] }, u);
     const [text, kb] = u.edit.mock.calls[0] as unknown as [string, MenuScreen['keyboard']];
@@ -282,10 +284,10 @@ describe('failed reads are not "gone", and hostile text is escaped everywhere', 
   it('keeps every screen under 4,096 characters with 20 rows of very long descriptions', () => {
     const long = 'X'.repeat(500);
     const h = explainHeadline({
-      month: '2026-10', timezone: 'America/New_York', reportCents: 130000, wealthfolioCents: 120000, excludedCategoryIds: [],
+      month: '2026-10', timezone: 'America/New_York', reportCents: 130000, wealthfolioCents: 120000, excludedCategoryIds: [], reportAccountIds: ['wf-other'],
       rows: Array.from({ length: 30 }, (_, i) => ({
-        id: `h${i}`, date: '2026-10-01T00:00:00+00:00', accountId: 'wf-chk', groupId: '', accountName: 'A', accountType: 'CASH', type: 'WITHDRAWAL', subtype: '',
-        absCents: 100, notes: `${long} · TRN-${i}`, spendingFilings: 1, categoryIds: ['c'],
+        id: `h${i}`, date: '2026-10-04T12:00:00+00:00', accountId: 'wf-chk', groupId: '', accountName: 'A', accountType: 'CASH', type: 'WITHDRAWAL', subtype: '',
+        absCents: 100, notes: `${long} · TRN-${i}`, filings: [], splits: [],
       })),
     });
     const reason = renderAuditReason(h.reasons![0]);

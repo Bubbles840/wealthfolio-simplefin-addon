@@ -5,6 +5,8 @@ export default defineConfig({
     environment: 'jsdom',
     setupFiles: ['./src/test-setup.ts'],
     globals: true,
+    // The component tests render a whole app under jsdom: under load they pass the 5 s default.
+    testTimeout: 15000,
     // A positive include list, deliberately, rather than excluding what we
     // don't want. The addon's tests live only in these two trees.
     //

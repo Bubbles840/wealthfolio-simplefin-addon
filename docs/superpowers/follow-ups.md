@@ -1141,6 +1141,298 @@ Designed overnight under Nick's standing instruction; approved by Nick on
   - Inbox: the unmount test cannot fail under React 19 (setState after
     unmount is silent), so it pins "no further reads or writes after unmount".
 
+## 16. Line up with Wealthfolio (2026-10-14, plan `2026-10-14-line-up.md`)
+
+- **One definition of spending** (`shared/wf-spending.ts`), Wealthfolio's,
+  read by every report figure and by the audit's two sides. What it does not
+  model:
+  - **Currency conversion.** Wealthfolio converts a foreign-currency row to
+    the base currency at the period's end; the report sums it as stored. The
+    audit names such rows as their own reason, capped at the foreign rows'
+    own absolute total, so a rate above 2 leaves an honest unexplained
+    excess. Converting them is open.
+  - Split lines that don't add up to the row (Wealthfolio's editor keeps
+    them adding up).
+- **The "identical on 3.8, 3.9 and 3.10" claim was wrong** and the header of
+  `wf-spending.ts` now says so. The definition is 3.10's: 3.8 and 3.9 treat a
+  blank type override as a type (the row then counts as nothing there), and
+  exclusions exist only from 3.9.
+- **The CLI fallback prints control characters in caret form** (display
+  only; the stored text is unchanged).
+- **About 11 `readSpendLines` per sync.** Each reader makes its own read;
+  they could share one 24-month read. In the CLI fallback every read is
+  logged, so the log volume grows with them.
+- **The cube's accounts are still the mapped ones.** A spending account the
+  add-on doesn't map is counted by Wealthfolio and not by the cube: the
+  audit names it ("On accounts the add-on doesn't sync") and the tripwire
+  sets that amount aside, so it is not a warning (the covered difference is
+  compared). The digest's own figures cover every spending account.
+- **Dismissed charges, and charges whose transfer's other half is on its
+  way, now count** in every figure (1.23.0 left dismissed ones out):
+  Wealthfolio counts both, and a report that didn't would trip the wire
+  every day. Both stay off the needs-a-category list.
+- **On 3.8 the bookkeeping pass does nothing** (no excluded categories), so
+  in-transit placeholders and corrections that are spending to Wealthfolio
+  count on both sides there. An income-bucket placeholder (money in) can't
+  take a spending category: Wealthfolio's Income page still counts it. The
+  pass files nothing it can't read live, and has no Undo.
+- **Dates.** Noon UTC (`bankDayInstant`) is the bank's day in UTC-12 to
+  UTC+11. UTC+12 to +14 land a day late, a regression from 1.61, and the
+  repair leaves their already-correct rows alone (it moves a row only when
+  noon UTC on its day is that day in Wealthfolio's timezone). Writing those
+  zones' new rows correctly is open. A write replayed from what the change
+  log recorded: Undo of a removed duplicate or a removed row replays a
+  recorded payload, which has been noon since 1.62; re-importing a starting
+  balance or a correction, and moving a starting balance back, replay a
+  recorded day, and wrap a bare one in `bankDayInstant`, so they write noon
+  too (a recorded timestamp is put back as it was).
+  `companion/tools/audit-headline.mjs` still matches only T00:00:00 rows.
+- **The date repair** resumes on the next sync rather than being re-runnable
+  from the audit's tools (the spec's wording); delete the `date_repair_done`
+  secret to run it again. It leaves rows at 00:00 UTC on purpose or by
+  necessity: a linked leg (Wealthfolio copies an updated leg's date onto its
+  partner); a row with a type override, or whose stored type differs from the
+  search's (a blank override on 3.8/3.9; Wealthfolio's search shows only the
+  effective type, and an update writes the type it is sent); rows in accounts
+  the add-on doesn't map; rows Wealthfolio refuses twice (an `errors[]` entry
+  or a thrown 400/422, the card rewrite's rule too: `companion/src/row-refusal.ts`;
+  both list them in their entry's `refused`); rows the database
+  read doesn't know yet (newer than the read: never counted as retyped, the
+  repair isn't done while any is left); and rows written at midnight after it
+  finished (a 1.61 browser tab, a replay). It reads the database LIVE only
+  (`openLiveDatabase`), also before its verifying sweep, so it waits
+  ("Date repair waits: the database can only be read as a snapshot") while the
+  database can't be read live, and it waits for the 1.62 add-on when the
+  companion can see it.
+- **Tripwire timing.** The cube is built moments before Wealthfolio is asked
+  for its figure; a write in between shows as a difference until the next
+  sync. The cube's months follow the UTC month of the sync; the digest and
+  the audit, the companion's local month (unchanged).
+- **Left as they were:** `countRulePatternMatches` (a rule preview's count)
+  keeps its SQL sign; `companion/tools/audit-month.mjs` and
+  `audit-headline.mjs` keep their own copies; the ledger audit's idle-refund
+  check still reads the stored type.
+- **With the platform work (U4, merged in 1.62.0):** on 3.10 a card's
+  bookkeeping rows become TRANSFER_OUT, which Wealthfolio ignores; the pass
+  reads the bucket, so it files none of them, and the two compose. Rows filed on 3.9 keep their
+  filing after U4's rewrite (harmless), and U2's link in place leaves the held
+  placeholder to re-creation.
+- **The Budget tab's "✓ matches the ledger" check** now compares the cube
+  with the same spending lines. It checks assembly only; the tripwire is the
+  independent check now.
+- **The cube's spending series are strict** (a failed read fails the publish
+  and the previous cube stays), and the tripwire reads a cube only if its
+  `asOf` is from the same sync run; otherwise it says nothing.
+- **Budgets** (both readers) keep only `target_type='category'` targets in
+  `spending_categories`, in categories not excluded from spending, as
+  upstream's budget page does (budget/service.rs:250-251 at v3.10.0). A
+  sub-category target under an excluded top-level category is still summed
+  into its top.
+- **Rows past the 200-id cap read "set by hand".** A `sync-bookkeeping` entry
+  lists at most 200 ids (plus the total), and "Why is this here?" recognises a
+  bookkeeping filing only by an id the entry lists, so a filed row beyond the
+  cap says it was filed by hand. Recognise one by its category and note too,
+  or list every id.
+- **The on-demand /audit skips the same-run cube check.** Only the audit
+  after a sync passes `cubeNotBefore`; `/audit` accepts whatever cube is
+  published, so one left stale by a failed publish can show a difference
+  there (as in 1.61).
+- **Two ports of upstream's classifier.** `shared/cash-flow-bucket.ts`
+  (`bucketFor`) and `shared/wf-spending.ts` (`isSpendingBucket`) each port
+  Wealthfolio's cash-flow classifier, and they disagree on grouped transfers
+  and the effective type (a type override). Make `bucketFor` delegate to one
+  port, or keep both in step.
+
+## 17. Paybacks (2026-10-14, plan `2026-10-14-paybacks.md`)
+
+1.62.0 part 2 — W6–W10 of `2026-10-14-line-up-and-paybacks-design.md`.
+Lining up (W1–W5) and the platform work (U1–U4) are planned on their own
+branches.
+
+- **W11 (paybacks in the app) shipped in this release** (plan
+  `2026-10-14-w11-app-paybacks.md`): **It's a payback…** on the
+  needs-a-category list and on a story, on Wealthfolio 3.9+ with a companion
+  of 1.62.0+. What it leaves open:
+  - **The filing is a rule's in Wealthfolio** (`source: rule`): the add-on
+    SDK has no call that files one row, so a one-off rule (CREDIT only, the
+    exact note, the account, priority 1,000,000, key
+    `payback-once:<accountId>:<txId>`) files it and is deleted after. The
+    stories tell "by you, as a payback" from the change log.
+  - **A one-off rule left behind** is named in the reply and swept by the
+    next payback from the app, its key rebuilt from the account and the tx
+    id in its pattern. One edited in Wealthfolio to another priority, type or
+    pattern is no longer recognised; delete it there.
+  - **Two app windows filing at once**: one window's sweep can delete the
+    other's rule before its rule run; that one then says Wealthfolio did not
+    file it, and the row is a payback with no category — file it in
+    Wealthfolio.
+  - **Couldn't tell what it was filed under** (the read-back failed): the
+    entry is logged with no category, so if Wealthfolio did file it,
+    Telegram's Undo turns it back into a deposit but leaves that filing on —
+    take it off in Wealthfolio.
+  - **The bookkeeping categories match by exact name.** The app's picker
+    leaves out the categories the sync keeps for its own bookkeeping, and the
+    runner refuses them, by exact name: a "Sync bookkeeping" category renamed
+    in Wealthfolio shows in the picker and is accepted.
+  - **A shared override-then-retype step** is still to be extracted from
+    `filePayback` (Telegram) and the app's runner, which carry the same
+    override write, read-back, re-type and take-back by hand.
+  - **Two app windows** (see above): one window's sweep can delete the other's
+    in-flight one-off rule.
+  - **The list offers it only on rows a 1.62 companion marks**
+    (`paybackEligible`): until the companion's first 1.62 publish, only the
+    story offers it.
+- **Link refuses a payback** (the integration review): the `asReimbursement`
+  setting, or a cash `CREDIT` marked `REIMBURSEMENT`. Health skips only rows
+  the setting is on (its ledger rows carry no subtype), so a payback the W10
+  rule typed can still be offered as a counterpart; Link then refuses it.
+- **W10's "stuck" reply** (the category rule refused, the transaction rule
+  not taken back) still says to undo it from `/changes` when its entry was
+  not written; only the Done reply waits for both entries.
+- **Telegram's paybacks wait for an installed add-on of 1.62.0.** A companion
+  that cannot see the add-ons directory reads it as unknown and refuses, as
+  the Venmo note's Undo does; W11 then offers paybacks from the app.
+- **A flag under one feed's key only.** The override is keyed by transaction
+  id and put on the row's key under every feed of its account; two feeds
+  mapped to one account can still disagree about a key a later write adds
+  (the same pattern as every per-key override).
+- **The override yields** when the bank row turns into money out, or the
+  account is known not to be a cash account: the row is typed as usual, and
+  keeps the `REIMBURSEMENT` subtype (Expense either way on a cash
+  `WITHDRAWAL`) and its category. An account type the sync could not read
+  never makes it yield. Like every transaction override it is pruned a year
+  after it was set, on the next write of the document — long after the row
+  left the sync's window; an expired but unpruned override still applies.
+- **A re-type writes back the stored instant exactly** (`activityDate` as
+  Wealthfolio reported it), so a payback never moves a row to another day.
+  The sync's own fallback re-type uses the bank day, like every sync update.
+- **The payback's Undo is in `/changes`.** The Filed screen says so; it has no
+  ↩ Undo of its own. The app's Change log says "Undo this from Telegram:
+  /changes" (the add-on SDK cannot take a category off).
+- **The one-tap guess is not offered on the payback grid**: every tap there
+  goes through the payback.
+- **The transaction rule's limits are shown read-only** in Settings → Transaction
+  rules (money in only, one account by name, and the `since` day), and the
+  editor keeps them when the list is edited; the "Test a description" box
+  honours them: pick the direction and the account to see a payback rule
+  apply. Saving re-reads the list first and refuses with "Your
+  rules changed elsewhere — reload them first." when the companion changed it
+  meanwhile. A reader before 1.62 ignores the limits — the reason the offer
+  waits for an installed add-on of 1.62.0.
+- **Deposits already imported are never re-typed by the payback rule**; the
+  ones the 90-day preview finds are filed by hand with **It's a payback »**.
+  A pending deposit the rule typed is replaced on posting like any pending
+  row; an in-transit placeholder the rule matches keeps its type and its
+  marker.
+- **A payback stays a payback unless a rule or your own choice changes it.**
+  The sync leaves a stored cash money-in `CREDIT`/`REIMBURSEMENT` row as
+  stored when neither a rule nor an override decides its type, so the reverse
+  cases cannot happen: removing the override (the list shows it read-only
+  anyway) or undoing the W10 transaction rule leaves the paybacks as they
+  are. A payback made by hand in Wealthfolio sticks too. A rule or the
+  override that later decides a different type still wins.
+- **W10 refuses a pattern a transfer keyword or rule decides**, and when the
+  ledger cannot be read. The preview's own count failing is a note, and the
+  checks run again when the rules are made. A Wealthfolio rule that is broader
+  than the pattern and would win is a conflict too.
+- **A stuck payback** — the override saved, Wealthfolio refusing the re-type,
+  and the override not taken back — is said so: the next sync makes the row a
+  payback with no category, which `/categorize` then offers. If it is filed
+  there, the payback's Undo refuses and says to undo that filing from
+  `/changes` first.
+- **A key that held another override** (a `notTransfer`, say) keeps that entry:
+  a payback set over it remembers the entry (`was`), and taking the payback
+  off — Undo, a refused filing, a take-back — puts its `at` and `label` back
+  exactly, with no `entryId` left from a Redo.
+
+## 18. Platform upgrades (2026-10-14, plan `2026-10-14-platform.md`)
+
+- **SDK 3.9, feature-detected.** `hostCan` (src/utils/host-can.ts) makes a cash
+  search no row can match (`spending.searchCashActivities`, 3.9+) once per
+  context: inside the sandbox `ctx.api` is a Proxy on which every path is a
+  function, so `typeof` proves nothing, and a 3.8 host rejects the call with
+  "Unknown addon host API method". `spending.isEnabled`, `getCategories` and
+  the rule calls cannot tell the two apart (3.8 already offers them). Never
+  call an SDK function through `.call`, `.apply` or `.bind`: on the Proxy that
+  is one more path.
+- **1.62.0 adds manifest permissions**, so Wealthfolio's Update button refuses
+  it; the README and CHANGELOG say to install over the old one. W11 (app
+  paybacks) adds its spending rule permissions to the same manifest before
+  1.62.0 ships, so one reinstall covers both.
+- **FINDING: `readsSourceGroupId` is stale.** `AddonSyncHost.capabilities.
+  readsSourceGroupId` (false since db08f48) is wrong: search has returned
+  `sourceGroupId` since 3.6.2 or earlier. Flipping it changes sync-core's
+  add-on path (linked-leg detection, the ledger migration, change-undo-run.ts
+  ~160) and would let the add-on see links on 3.8 too. It is its own small plan
+  after 1.62.0, not this branch.
+- **Link in place keeps re-creating** a pair whose stored rows are not exactly
+  its legs (in place cannot change a type or clear an asset; a held placeholder
+  marked external must not keep a bookkeeping filing on a real transfer;
+  another note, amount, day, subtype or fee), and any pair Wealthfolio refuses
+  except one already half of another transfer, which is refused outright
+  (re-creating would delete the other pair's partner). On 3.8 and 3.9 an
+  "already linked" refusal whose first read showed both rows in one shared
+  group with a marker is reported linked, ids kept. The sync's brand-new pairs
+  mostly link in place; a promoted held placeholder still re-creates.
+- **A lost link answer** is read again: a row still in an earlier group that
+  its partner does not share is left unlinked with "Couldn't tell whether
+  Wealthfolio linked them — it will try again next sync." and retried next
+  sync. Variants that still hit the old re-create data-loss path (a row of
+  another pair deleted with its partner): a shape refusal on a row already in
+  another pair, a failed first read, and a 3.8 add-on (it cannot read the group,
+  so it cannot tell).
+- **The add-on's ledger keeps Wealthfolio's own group ids** under the
+  `wf-transfer-` prefix (`ledgerGroupId`); its one-time migration drops bare
+  ids. This also ends a churn that predates 1.62.0.
+- **Unlink in place, then retype.** If the retype is refused the pair stays
+  apart, as transfers marked external; the add-on keeps its ledger records and
+  retries it next sync, and the companion retypes each while the bank feed
+  still sends it.
+  - The companion never logs a transfer-unlink for an incomplete unlink; its
+    later retype shows as two bank-update lines.
+  - The add-on's ledger keeps keys whose stored rows are no longer
+    transfer-typed (two-writer staleness); drain them.
+  - Adopting a pair Wealthfolio says is already linked (3.8/3.9) logs a second
+    "Linked" entry, as before this branch.
+- **Facts are read per row:** `searchCashActivities` has no id filter, so a row
+  is found by account and its stored instant's UTC day. A row it does not
+  return (an account outside Spending) keeps the 3.8 rule; 3.10 returns every
+  transfer on a cash or card account, so a card's bookkeeping TRANSFER_OUT
+  reads as unlinked. A row in any group, even a broken one, counts as linked.
+- **The app's story** says "by a rule" without naming it: the SDK lists only
+  the add-on's own rules.
+- **A card's bookkeeping shape needs the host version.** The SDK cannot ask, so
+  the companion publishes `wealthfolio_version` each sync and the add-on reads
+  it, trusting it only while the companion's sync_health is under two days old
+  (absent or stale: WITHDRAWAL). Both shapes are one row to both syncers
+  (`keepBookkeepingOutflow`, reconcile's `sameType`).
+  - Convergence: an add-on that cannot tell the version may retype a stored
+    card TRANSFER_OUT to WITHDRAWAL once, on a real change (pending to posted,
+    amount, date); then both writers keep WITHDRAWAL and W3's bookkeeping filing excludes it.
+    Accepted: protecting TRANSFER_OUT on an unknown host risks writing one to
+    3.8/3.9, which refuse it.
+  - A netting by a pre-3.10 writer still writes WITHDRAWAL.
+- **The one-time card rewrite** (`card_bookkeeping_rewrite`) rewrites each
+  batch from a REST re-read (stored instant and note kept, amount and fee
+  omitted), never from the database snapshot. It clears the phantom `$CASH`
+  asset older withdrawals carry (sent as `$CASH-<ccy>`, which 3.10 clears). It
+  needs a live database read (`openLiveDatabase`, no immutable snapshot), is off below 3.10, and
+  waits while an installed add-on is below 1.62.0. Left as they are, and logged:
+  rows in a transfer group, retyped rows, real security assets, rows with
+  split lines, rows carrying a filing the sync did not make, and a starting
+  balance whose opening-balance filing you undid (`noOpeningFile`). A refused
+  batch is retried row by row; a row refused twice joins the left rows (listed
+  in the entry); only a refusal (an `errors[]` entry, or a thrown 400/422) is the row's fault, so any other failure (5xx, network, any other 4xx) stops the run unmarked, as does a failed batch re-read. A run whose rows were all refused is marked done and records its entry once.
+- **One shared open-ladder helper:** the writers (the card rewrite, both
+  filers, the date repair's reads) now open through `companion/src/live-db.ts`;
+  the readers' ladder (with its immutable rung) is still copied in
+  `sqlite-native.ts` and `ledger-facts.ts`; make one.
+- **Task 8 writes NEW 3.10 card starting balances as TRANSFER_OUT even under
+  noOpeningFile**; the rewrite respects that setting, the first write does not.
+- **Not taken:** pairing money leaving a card (3.10 takes card TRANSFER_OUT, so
+  it could now be half of a pair; the detector still never pairs one);
+  `findTransferMatchCandidates`, `saveTransferPair`, alternative assets.
+
 ## Reference: name mismatches between the database, the REST API, and the SDK
 
 Every one of these cost a diagnostic cycle against the live instance on

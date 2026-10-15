@@ -173,3 +173,30 @@ export function assignabilityOf(
 export function refundSubtypeWouldMakeSpending(input: BucketInput): boolean {
   return bucketFor({ ...input, subtype: REIMBURSEMENT_SUBTYPE }) === 'spending';
 }
+
+/** Why Wealthfolio refused a category assignment, when it said why. */
+export type AssignRefusal = 'neutral' | 'wrong-bucket' | 'scope' | 'off';
+
+/** The bucket Wealthfolio named in a "… activities can only use … categories" refusal: money in or money out. */
+export function wrongBucketOf(message: string): 'income' | 'spending' | null {
+  const m = /\b(income|spending)\s+activities can only use \w+ categories/i.exec(message);
+  return m ? (m[1].toLowerCase() as 'income' | 'spending') : null;
+}
+
+/**
+ * Wealthfolio's own refusals of an assignment, read by their words (W9):
+ * `ensure_activity_assignment_allowed` and `ensure_activity_in_spending_scope`
+ * (crates/spending/src/cash_activities/service.rs:957-1018 and 1063-1098 at
+ * 3.10.0, 901-962 and 1007-1042 at 3.8.0; the same sentences on 3.8, 3.9 and
+ * 3.10). The caller maps the token to the add-on's own sentence and never
+ * forwards Wealthfolio's text, which names internal labels ("Income
+ * activities can only use income categories…") or misdescribes a merely
+ * neutral row as a transfer. Null for anything else (a 403, a timeout).
+ */
+export function assignRefusalOf(message: string): AssignRefusal | null {
+  if (/Neutral transfers cannot be categorized/i.test(message)) return 'neutral';
+  if (/activities can only use \w+ categories/i.test(message)) return 'wrong-bucket';
+  if (/not opted into spending tracking|does not support spending tracking/i.test(message)) return 'scope';
+  if (/Spending tracking is disabled/i.test(message)) return 'off';
+  return null;
+}

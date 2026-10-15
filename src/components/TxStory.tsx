@@ -7,7 +7,9 @@
  * Undo, Redo and Sync now (`EntryDetail`, exported from ChangeLogCard.tsx, not
  * a copy). Otherwise a story changes nothing — except "Remove for good…"
  * (2c R2), on a row from the bank feed: the first click explains, Remove
- * acts, one action at a time, and the result is said in a status line.
+ * acts, one action at a time, and the result is said in a status line; and
+ * "It's a payback…" (1.62, W11) on a money-in row filed nowhere, where the
+ * host and the companion allow it (PaybackAction.tsx).
  *
  * `TxStoryPanel` loads a story and reads it again after an Undo; a re-read that
  * fails keeps the story on screen and says so. Bank text renders as React
@@ -18,6 +20,7 @@ import type { AddonContext } from '@wealthfolio/addon-sdk';
 import type { ChangeLogItem } from '../../shared/change-log';
 import type { UndoOp } from '../../shared/change-undo';
 import type { UndoOutcome } from '../../shared/change-undo-run';
+import type { AppPaybackOutcome } from '../../shared/payback-app-file';
 import {
   TX_STORY_GONE_APP, TX_STORY_NO_HISTORY, TX_STORY_UNREACHABLE, TX_STORY_WHAT_HAPPENED, type TxStory,
 } from '../../shared/tx-story';
@@ -25,7 +28,9 @@ import {
   REMOVE_ACTION, REMOVE_BUTTON, REMOVE_CANCEL, REMOVE_CONFIRM, REMOVE_UNREACHABLE, type RemoveOutcome,
 } from '../../shared/tx-remove';
 import { EntryDetail, syncNowSentence, type RowActions } from './ChangeLogCard';
+import { MessageLines, PaybackAction, type AppPaybackActions } from './PaybackAction';
 import { Button } from './ui';
+import { appPaybacksOffered, paybackFromApp, readPaybackCategories } from '../utils/app-payback';
 import { removeFromApp } from '../utils/audit-fix';
 import { undoFromApp } from '../utils/change-undo';
 import { runSync } from '../utils/sync';
@@ -44,17 +49,45 @@ export interface TxStoryActions {
   onSyncNow?: () => Promise<string>;
   /** 2c R2: "Remove for good…" (`removeFromApp`). Absent: never offered. */
   remove?: (activityId: string, fingerprint: string) => Promise<RemoveOutcome>;
+  /** W11: "It's a payback…" (`paybackFromApp`). Absent — a Wealthfolio before
+   *  3.9, no companion, or one older than 1.62.0 — it is never offered. */
+  payback?: AppPaybackActions;
 }
 
-/** The add-on's own Undo, Sync now and Remove for good — Undo and Sync now are the ones Settings → Change log uses. */
-export function useTxStoryActions(ctx: AddonContext, store: SecretsStore, companionVersion: string | null): TxStoryActions {
+/** The add-on's own Undo, Sync now, Remove for good and "It's a payback…" —
+ *  Undo and Sync now are the ones Settings → Change log uses. `onPaidBack`:
+ *  a payback was filed (the needs-a-category list drops its row at once). */
+export function useTxStoryActions(
+  ctx: AddonContext, store: SecretsStore, companionVersion: string | null, onPaidBack?: (activityId: string, message: string) => void,
+): TxStoryActions {
   const undo = useCallback(
     (entry: ChangeLogItem, entries: ChangeLogItem[], op: UndoOp) => undoFromApp(ctx, store, entry, entries, op),
     [ctx, store],
   );
   const onSyncNow = useCallback(async () => syncNowSentence(await runSync(ctx, store, { force: true })), [ctx, store]);
   const remove = useCallback((activityId: string, fingerprint: string) => removeFromApp(ctx, store, activityId, fingerprint), [ctx, store]);
-  return useMemo(() => ({ undo, companionVersion, onSyncNow, remove }), [undo, companionVersion, onSyncNow, remove]);
+  // W11: offered only on a 3.9+ host with a companion of 1.62.0 or newer.
+  const [paybacks, setPaybacks] = useState(false);
+  useEffect(() => {
+    let live = true;
+    setPaybacks(false);
+    appPaybacksOffered(ctx, companionVersion).then((yes) => { if (live) setPaybacks(yes); }, () => {});
+    return () => { live = false; };
+  }, [ctx, companionVersion]);
+  const payback = useMemo<AppPaybackActions | undefined>(() => (paybacks
+    ? {
+      categories: () => readPaybackCategories(ctx),
+      file: async (activityId, categoryId, shown) => {
+        const out = await paybackFromApp(ctx, store, { activityId, categoryId, ...(shown ? { shown } : {}) });
+        if (out.kind === 'filed') onPaidBack?.(activityId, out.message);
+        return out;
+      },
+    }
+    : undefined), [paybacks, ctx, store, onPaidBack]);
+  return useMemo(
+    () => ({ undo, companionVersion, onSyncNow, remove, ...(payback ? { payback } : {}) }),
+    [undo, companionVersion, onSyncNow, remove, payback],
+  );
 }
 
 /** "Remove for good…": the first click explains, Remove acts. A refusal reads the story again. */
@@ -144,7 +177,7 @@ function HistoryLine({ line, entry, actions }: { line: string; entry: ChangeLogI
   );
 }
 
-export function TxStoryView({ story, entries, actions, onChanged, removal }: {
+export function TxStoryView({ story, entries, actions, onChanged, removal, payback }: {
   story: TxStory;
   /** The change log as read: a line's entry, and what Undo is decided against. */
   entries: ChangeLogItem[];
@@ -153,12 +186,15 @@ export function TxStoryView({ story, entries, actions, onChanged, removal }: {
   onChanged: () => void;
   /** 2c R2: the row as shown, when the story offers "Remove for good…". */
   removal?: { activityId: string; fingerprint: string };
+  /** W11: the row as shown, when it qualifies for "It's a payback…". */
+  payback?: { activityId: string; fingerprint: string };
 }) {
   const rowActions: RowActions = {
     undo: actions.undo, companionVersion: actions.companionVersion, entries, onSyncNow: actions.onSyncNow, changed: onChanged,
   };
   const byId = new Map(entries.map((e) => [e.id, e]));
   const [removed, setRemoved] = useState<RemoveOutcome | null>(null);
+  const [paidBack, setPaidBack] = useState<AppPaybackOutcome | null>(null);
   return (
     <div className="sfin-why-story">
       <div className="sfin-why-title">{story.title}</div>
@@ -177,6 +213,18 @@ export function TxStoryView({ story, entries, actions, onChanged, removal }: {
             <RemoveForGood
               activityId={removal.activityId} fingerprint={removal.fingerprint} remove={actions.remove} onRefused={onChanged}
               result={removed} onResult={setRemoved}
+            />
+          )}
+        </div>
+      )}
+      {actions.payback && (
+        <div>
+          {/* Mounted from the first render, and kept when a re-read stops offering it. */}
+          <div role="status" className="sfin-subtle"><MessageLines message={paidBack?.message} /></div>
+          {payback && (
+            <PaybackAction
+              activityId={payback.activityId} shown={payback.fingerprint} actions={actions.payback}
+              onOutcome={(out) => { setPaidBack(out); onChanged(); }}
             />
           )}
         </div>
@@ -251,7 +299,7 @@ export function TxStoryPanel({ target, load, actions }: {
         {note && <div className="sfin-log-note">{note}</div>}
       </div>
       {shown !== 'loading' && shown.kind === 'ok' && (
-        <TxStoryView story={shown.story} entries={shown.entries} actions={actions} onChanged={changed} removal={shown.removal} />
+        <TxStoryView story={shown.story} entries={shown.entries} actions={actions} onChanged={changed} removal={shown.removal} payback={shown.payback} />
       )}
     </>
   );

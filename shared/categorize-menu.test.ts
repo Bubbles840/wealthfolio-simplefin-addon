@@ -1301,7 +1301,7 @@ describe('direction-aware menu', () => {
 
   it('offers income categories to a money-in row, with taxonomy-carrying assigns', () => {
     const s = session({
-      txns: [txn({ direction: 'in', incomeEligible: true })],
+      txns: [txn({ direction: 'in', incomeEligible: true, activityType: 'DEPOSIT', pending: false })],
       incomeCategories: incomeCats,
       screen: { kind: 'txn', activityId: 'act-1' },
     });
@@ -1313,12 +1313,12 @@ describe('direction-aware menu', () => {
     expect(buttons[i]).toEqual({
       kind: 'assign', activityId: 'act-1', categoryId: 'inc-sal', taxonomyId: 'income_sources',
     });
-    expect(labels).toContain('Spending categories »');
+    expect(labels).toContain("It's a payback »");
   });
 
-  it('lets a money-in row switch to the spending grid, with a way back', () => {
+  it('lets a money-in row switch to the payback grid, with a way back', () => {
     const s = session({
-      txns: [txn({ direction: 'in', incomeEligible: true })],
+      txns: [txn({ direction: 'in', incomeEligible: true, activityType: 'DEPOSIT', pending: false })],
       incomeCategories: incomeCats,
       screen: { kind: 'txn', activityId: 'act-1', showSpending: true },
     });
@@ -1328,7 +1328,7 @@ describe('direction-aware menu', () => {
     expect(labels).not.toContain('Salary & Wages');
     expect(labels).toContain('« Income categories');
     const i = labels.indexOf('Groceries');
-    expect(buttons[i]).toEqual({ kind: 'assign', activityId: 'act-1', categoryId: 'cat-groceries' });
+    expect(buttons[i]).toEqual({ kind: 'payback', activityId: 'act-1', categoryId: 'cat-groceries' });
   });
 
   it('keeps the spending grid for money-in rows that are refunds, not income', () => {
@@ -1353,12 +1353,12 @@ describe('direction-aware menu', () => {
     const labels = renderScreen(s).keyboard.inline_keyboard.flat().map((b) => b.text);
     expect(labels).toContain('Groceries');
     expect(labels).not.toContain('Salary & Wages');
-    expect(labels).not.toContain('Spending categories »');
+    expect(labels).not.toContain("It's a payback »");
   });
 
   it("an income filing's Undo carries the taxonomy back", () => {
     const s = session({
-      txns: [txn({ direction: 'in', incomeEligible: true })],
+      txns: [txn({ direction: 'in', incomeEligible: true, activityType: 'DEPOSIT', pending: false })],
       incomeCategories: incomeCats,
       screen: { kind: 'filed', activityId: 'act-1', categoryId: 'inc-sal', taxonomyId: 'income_sources', undone: false },
     });
