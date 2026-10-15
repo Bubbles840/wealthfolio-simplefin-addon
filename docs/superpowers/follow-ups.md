@@ -1141,6 +1141,54 @@ Designed overnight under Nick's standing instruction; approved by Nick on
   - Inbox: the unmount test cannot fail under React 19 (setState after
     unmount is silent), so it pins "no further reads or writes after unmount".
 
+## 17. Paybacks (2026-10-14, plan `2026-10-14-paybacks.md`)
+
+1.62.0 part 2 — W6–W10 of `2026-10-14-line-up-and-paybacks-design.md`.
+Lining up (W1–W5) and the platform work (U1–U4) are planned on their own
+branches.
+
+- **W11 (paybacks in the app) is next**, its own small plan. It consumes the
+  fixed interface this part ships: the `asReimbursement` override, the
+  `payback-filed` change kind (`paybackFiledChange`), `PAYBACK_SINCE` /
+  `companionUnderstandsPaybacks`, and the pure `planPayback`. Nothing of W11
+  is in this part: the app cannot file or undo a payback yet.
+- **Telegram's paybacks wait for an installed add-on of 1.62.0.** A companion
+  that cannot see the add-ons directory reads it as unknown and refuses, as
+  the Venmo note's Undo does; W11 then offers paybacks from the app.
+- **A flag under one feed's key only.** The override is keyed by transaction
+  id and put on the row's key under every feed of its account; two feeds
+  mapped to one account can still disagree about a key a later write adds
+  (the same pattern as every per-key override).
+- **The override yields** when the bank row turns into money out, or the
+  account is known not to be a cash account: the row is typed as usual, and
+  keeps the `REIMBURSEMENT` subtype (Expense either way on a cash
+  `WITHDRAWAL`) and its category. An account type the sync could not read
+  never makes it yield. Like every transaction override it is pruned a year
+  after it was set, on the next write of the document — long after the row
+  left the sync's window; an expired but unpruned override still applies.
+- **A re-type writes back the stored instant exactly** (`activityDate` as
+  Wealthfolio reported it), so a payback never moves a row to another day.
+  The sync's own fallback re-type uses the bank day, like every sync update.
+- **The payback's Undo is in `/changes`.** The Filed screen says so; it has no
+  ↩ Undo of its own. The app's Change log says "Undo this from Telegram:
+  /changes" (the add-on SDK cannot take a category off).
+- **The one-tap guess is not offered on the payback grid**: every tap there
+  goes through the payback.
+- **The transaction rule's limits are not shown** in Settings → Transaction
+  rules (money in only, one account, and the `since` day that makes it decide
+  only rows the sync creates); the rule editor does not yet show or keep
+  them, and the "Test a description" box ignores them. Saving the list from
+  Settings can drop the companion's payback rule if it changed meanwhile. A
+  reader before 1.62 ignores the limits — the reason the offer waits for an
+  installed add-on of 1.62.0.
+- **Deposits already imported are never re-typed by the payback rule**; the
+  ones the 90-day preview finds are filed by hand with **It's a payback »**.
+  A pending deposit the rule typed is replaced on posting like any pending
+  row.
+- **A stuck payback** — the override saved, Wealthfolio refusing the re-type,
+  and the override not taken back — is said so: the next sync makes the row a
+  payback with no category, which `/categorize` then offers.
+
 ## Reference: name mismatches between the database, the REST API, and the SDK
 
 Every one of these cost a diagnostic cycle against the live instance on

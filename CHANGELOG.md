@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Paybacks.** A deposit that pays you back for spending — a friend's Venmo
+  for dinner — is filed against that spending. In `/categorize`, a settled
+  money-in row on a bank (cash) account gets **It's a payback »** (it read
+  "Spending categories »"), which shows the spending categories; picking one
+  re-types the row to a `CREDIT` marked `REIMBURSEMENT` — since Wealthfolio
+  3.9 the only money in it takes off spending — and files it: "Filed as a
+  payback under Restaurants — it takes $14 off your Food & Dining spending."
+  A new sync override, `asReimbursement`, keeps the sync from turning it back
+  into a deposit while the bank row is money in on a cash account; the sync
+  also keeps a payback exactly as it is when it cannot read your overrides
+  (it says so in its notes). **Undo and Redo are in `/changes`**: Undo takes
+  the override off, makes the row a deposit again and takes the category off;
+  Redo does it all again. Refused, each in its own words and with nothing
+  written: a transfer, half of a linked transfer, a pending row, a card, a row
+  that is not a deposit or is already a payback, one the sync manages, one not
+  from the bank feed, and an unreadable overrides document. A step that fails
+  partway says what stands.
+- **Make every <pattern> deposit a payback.** After a payback, the Filed
+  screen offers this instead of "Make this a rule": two rules made together —
+  an add-on transaction rule (money into that account only, matched on the
+  bank's own words, placed first in the list) and a Wealthfolio category rule
+  (that account, `CREDIT`s only) that files those paybacks under the
+  category. The transaction rule decides only deposits the sync creates from
+  now on; deposits already in your ledger are never changed. The preview looks
+  back 90 days and says how many deposits read that way: "N already in your
+  ledger, M waiting for a category" (file those with **It's a payback »**).
+  It refuses a pattern made only of common bank words (DEPOSIT, ACH, MOBILE …;
+  VENMO, CASHOUT and ZELLE are fine), one a transfer rule already decides, an
+  older payback rule that sits behind another rule, and a conflicting
+  Wealthfolio rule. Both rules are in the change log, with Undo and Redo.
+
+### Changed
+- Paybacks need both halves on 1.62.0. Telegram's payback, its Undo and Redo
+  and the two-rule offer wait for an installed add-on of 1.62.0 or newer —
+  an older one ignores the new override and would turn the row back into a
+  deposit — and the app's Change log waits for a companion of 1.62.0 before it
+  points a payback's Undo at Telegram ("Update the companion first" until
+  then).
+
+### Fixed
+- `/categorize` and `/recategorize` never show Wealthfolio's own error text
+  when it turns a category down: a filing, a move or a move's Undo that
+  Wealthfolio refuses says so in plain words (money in or out, spending
+  tracking off), with the reason in the log. Picking a spending category for a
+  deposit used to end there, on Wealthfolio's raw refusal.
+
 ## [1.61.0] - 2026-10-14
 
 ### Added
