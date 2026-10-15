@@ -16,6 +16,10 @@ import { categoryFiledChange, stampChange, transactionRemovedChange } from '../.
 import { changesData } from './changes-menu.js';
 import { existsSync } from 'fs';
 import type { SyncResult } from '../../shared/sync-core.js';
+import { AUDIT_SNAPSHOT_SECRET_KEY, buildAuditSnapshot } from '../../shared/audit-snapshot.js';
+import { explainBalances } from '../../shared/audit-balance.js';
+import { explainHeadline } from '../../shared/audit-headline.js';
+import { healthIssues } from '../../shared/audit-health.js';
 
 
 /**
@@ -6463,5 +6467,48 @@ describe('report slimming toggles (v1.47)', () => {
     // The headline still counts it: same "left this month" figure either way.
     const headline = (t: string) => t.match(/\$[\d,]+ (left|over budget)/)?.[0];
     expect(headline(brief!)).toBe(headline(full!));
+  });
+});
+
+describe('the tripwire in the daily report (1.62)', () => {
+  const MORNING = new Date(2026, 9, 14, 8, 0, 0);
+  const snapshot = (reportCents: number, wealthfolioCents: number) => JSON.stringify(buildAuditSnapshot({
+    balances: explainBalances({}),
+    headline: explainHeadline({ month: '2026-10', reportCents, wealthfolioCents, rows: [] }),
+    health: healthIssues({}),
+  }, MORNING));
+  const clientWith = (snap: string | null, tg: Record<string, unknown> = {}) => {
+    const secrets = new Map<string, string>([
+      ['telegram_config', JSON.stringify({ botToken: 'tok', chatId: '1', enabled: true, digestRows: 'all', ...tg })],
+      ...(snap === null ? [] : [[AUDIT_SNAPSHOT_SECRET_KEY, snap] as [string, string]]),
+    ]);
+    return {
+      getAddonSecret: vi.fn(async (_a: string, k: string) => secrets.get(k) ?? null),
+      setAddonSecret: vi.fn(async (_a: string, k: string, v: string) => { secrets.set(k, v); }),
+    } as any;
+  };
+  beforeEach(() => {
+    vi.mocked(existsSync).mockReturnValue(true);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(MORNING);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+  const LINE = '⚠️ The report and Wealthfolio differ by $951.45 this month — /audit explains';
+
+  it('carries the line in Brief and in Full, and archives it', async () => {
+    for (const tg of [{}, { reportDetail: 'brief' }]) {
+      const digest = (await composeDailyDigest(clientWith(snapshot(229206, 324351), tg), { requireTelegram: false }))!;
+      expect(digest.text).toContain(LINE);
+      expect(digest.archive).toContain(LINE);
+    }
+  });
+
+  it('says nothing when the two are a cent apart, or there are no checks to read', async () => {
+    for (const snap of [snapshot(324352, 324351), null, '{oops']) {
+      const digest = (await composeDailyDigest(clientWith(snap, { reportDetail: 'brief' }), { requireTelegram: false }))!;
+      expect(digest.text).not.toContain('differ by');
+    }
   });
 });
