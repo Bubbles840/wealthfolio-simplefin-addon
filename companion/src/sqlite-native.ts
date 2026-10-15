@@ -600,6 +600,17 @@ export interface NativeUncategorizedTx {
   pending: boolean;
 }
 
+/** Whether `activities` has Wealthfolio 3.8's `activity_type_override` column. */
+function hasActivityTypeOverride(dbPath: string): boolean {
+  const rows = queryNativeDb<Record<string, unknown>>(
+    dbPath,
+    'activity type override column',
+    "SELECT COUNT(*) FROM pragma_table_info('activities') WHERE name = 'activity_type_override';",
+    (parts) => (parts.length >= 1 ? { n: parts[0] } : null),
+  );
+  return Number(Object.values(rows[0] ?? {})[0]) > 0;
+}
+
 /**
  * Spending rows in `[startInclusive, endExclusive)` with NO taxonomy
  * assignment — the needs-a-category sweep behind the import notice.
@@ -621,17 +632,22 @@ export function getNativeUncategorizedSpending(
   if (!dbPath || !existsSync(dbPath)) return [];
   if (!validDateBounds(startInclusive, endExclusive)) return [];
 
+  // The EFFECTIVE type (Wealthfolio 3.8+ keeps an override beside the stored one); a database
+  // without the column reads the stored type.
+  const T = hasActivityTypeOverride(dbPath)
+    ? "UPPER(COALESCE(NULLIF(TRIM(a.activity_type_override), ''), a.activity_type, ''))"
+    : "UPPER(COALESCE(a.activity_type, ''))";
   const query = `
     SELECT a.id, COALESCE(a.account_id, ''), COALESCE(a.notes, ''),
            ROUND(ABS(CAST(a.amount AS REAL)) * 100),
            substr(a.activity_date, 1, 10), COALESCE(ac.name, ''),
-           CASE WHEN UPPER(a.activity_type) IN ('WITHDRAWAL', 'FEE', 'TAX')
-                  OR (UPPER(a.activity_type) = 'INTEREST' AND UPPER(COALESCE(ac.account_type, '')) = 'CREDIT_CARD')
+           CASE WHEN ${T} IN ('WITHDRAWAL', 'FEE', 'TAX')
+                  OR (${T} = 'INTEREST' AND UPPER(COALESCE(ac.account_type, '')) = 'CREDIT_CARD')
                 THEN 'out' ELSE 'in' END,
            CASE WHEN UPPER(COALESCE(ac.account_type, '')) = 'CASH'
-                  AND UPPER(a.activity_type) IN ('DEPOSIT', 'INTEREST', 'INCOME', 'DIVIDEND')
+                  AND ${T} IN ('DEPOSIT', 'INTEREST', 'INCOME', 'DIVIDEND')
                 THEN 1 ELSE 0 END,
-           UPPER(COALESCE(a.activity_type, ''))
+           ${T}
     FROM activities a
     LEFT JOIN activity_taxonomy_assignments ata ON a.id = ata.activity_id
     LEFT JOIN accounts ac ON a.account_id = ac.id
@@ -644,7 +660,7 @@ export function getNativeUncategorizedSpending(
       -- is exactly what this exclusion prevents. The TOTAL query always had it;
       -- the row list must agree with the count.
       AND COALESCE(a.source_group_id, '') = ''
-      AND UPPER(a.activity_type) IN ('WITHDRAWAL', 'FEE', 'TAX', 'DEPOSIT', 'CREDIT', 'INTEREST', 'DIVIDEND', 'INCOME')
+      AND ${T} IN ('WITHDRAWAL', 'FEE', 'TAX', 'DEPOSIT', 'CREDIT', 'INTEREST', 'DIVIDEND', 'INCOME')
       AND COALESCE(a.notes, '') NOT LIKE 'Starting balance · %'
       AND COALESCE(a.notes, '') NOT LIKE 'Balance adjustment · %'
       AND COALESCE(a.notes, '') NOT LIKE '↔️ In-transit transfer · %'

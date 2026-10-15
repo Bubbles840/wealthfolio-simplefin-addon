@@ -25,6 +25,9 @@ export function paybackDone(categoryName: string, spendingName: string, absCents
   return `Filed as a payback under ${categoryName} — it takes ${paybackMoney(absCents)} off your ${spendingName} spending.`;
 }
 export const PAYBACK_UNDO_HINT = 'Undo it from /changes.';
+export const PAYBACK_MAPPING_UNREADABLE = "Your account mapping can't be read, so it can't tell whether this deposit comes from the bank feed — nothing was changed.";
+/** The category picked was deleted since the grid was drawn. */
+export const PAYBACK_CATEGORY_GONE = 'That category is gone — pick another one.';
 export const PAYBACK_NO_UNDO = "The change log couldn't be written, so there's no Undo for it.";
 export const paybackUnfiled = (categoryName: string): string =>
   `It's a payback now, but Wealthfolio didn't file it under ${categoryName} — /categorize offers it again.`;

@@ -3,7 +3,7 @@ import type { InlineKeyboard } from '../../shared/telegram.js';
 import type { PaybackBreadth, PaybackChoice, PaybackOutcome, PaybackRulesInput, PaybackRulesOutcome } from '../../shared/payback.js';
 import { removalFingerprint } from '../../shared/tx-remove.js';
 import {
-  PAYBACK_PICK, PAYBACK_RULES_EXIST, PAYBACK_SWITCH, PAYBACK_UNAVAILABLE, PAYBACK_UNREACHABLE,
+  PAYBACK_CATEGORY_GONE, PAYBACK_PICK, PAYBACK_RULES_EXIST, PAYBACK_SWITCH, PAYBACK_UNAVAILABLE, PAYBACK_UNREACHABLE,
 } from '../../shared/payback-copy.js';
 import { createCategorizeController, type CategorizeDeps } from './categorize.js';
 
@@ -87,6 +87,16 @@ describe('/categorize: a deposit filed as a payback (W6)', () => {
     expect(h.deps.republish).not.toHaveBeenCalled();
     await h.press('‹ Back');
     expect(h.last()[0]).toContain(PAYBACK_PICK);
+  });
+
+  it('says "that category is gone" when it was deleted since the grid was drawn, and writes nothing (PB-I m3)', async () => {
+    const h = setup(async () => FILED);
+    await h.toPaybackGrid();
+    (h.deps.readCategories as ReturnType<typeof vi.fn>).mockImplementation(() => CATS.filter((c) => c.id !== 'cat-fun').map((c) => ({ ...c })));
+    await h.press('Entertainment');
+    expect(h.deps.payback).not.toHaveBeenCalled();
+    expect(h.last()[0]).toContain(PAYBACK_CATEGORY_GONE);
+    expect(h.last()[0]).toContain('VENMO CASHOUT');
   });
 
   it('shows a partial payback as it stands', async () => {

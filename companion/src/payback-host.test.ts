@@ -3,7 +3,7 @@ import type { ChangeBucket, ChangeLogItem } from '../../shared/change-log.js';
 import { runChangeUndo } from '../../shared/change-undo-run.js';
 import { filePayback, makePaybackRules, type PaybackChoice } from '../../shared/payback.js';
 import { removalFingerprint } from '../../shared/tx-remove.js';
-import { PAYBACK_CHANGED, PAYBACK_UPDATE_ADDON } from '../../shared/payback-copy.js';
+import { PAYBACK_CHANGED, PAYBACK_MAPPING_UNREADABLE, PAYBACK_NO_UNDO, PAYBACK_NO_UNDO_SETTING, PAYBACK_UPDATE_ADDON, PAYBACK_UPDATE_UNSURE } from '../../shared/payback-copy.js';
 import { hasTxOverride, parseSyncOverrides, SYNC_OVERRIDES_SECRET_KEY } from '../../shared/sync-overrides.js';
 import { accountTxKey } from '../../shared/transfers.js';
 import { INSTALLED_ADDON_VERSION_SECRET_KEY } from '../../shared/version.js';
@@ -34,8 +34,11 @@ function fakeClient(installed: string | null = '1.62.0') {
     saveMany: vi.fn(async (req: { updates?: Array<Record<string, any>> }) => {
       for (const w of req.updates ?? []) {
         const r = rows.find((x) => x.id === w.id)!;
-        // Wealthfolio's patch: an explicit empty subtype stores none.
-        Object.assign(r, { activityType: w.activityType, date: w.activityDate, subtype: w.subtype ? w.subtype : null, amount: String(w.amount) });
+        // Wealthfolio's patch: an explicit empty subtype stores none; an OMITTED one is kept.
+        Object.assign(r, {
+          activityType: w.activityType, date: w.activityDate, amount: String(w.amount),
+          ...('subtype' in w ? { subtype: w.subtype ? w.subtype : null } : {}),
+        });
       }
       return { created: [], updated: [], errors: [] };
     }),
@@ -67,6 +70,47 @@ describe('a payback on the companion', () => {
     expect(hasTxOverride(f.overrides(), KEY, 'asReimbursement')).toBe(true);
     expect(f.logged()).toEqual([expect.objectContaining({ writer: 'companion', actor: 'you', kind: 'payback-filed' })]);
   });
+
+  it('says there is no Undo when the change log write is rejected (PB-I)', async () => {
+    const f = fakeClient();
+    const log = vi.fn();
+    f.client.setAddonSecret.mockImplementation(async (_a: string, k: string, v: string) => {
+      if (k.startsWith('change_log:')) throw new Error('500 from Wealthfolio');
+      f.data.set(k, v);
+    });
+    const out = await filePayback(RESTAURANTS, companionPaybackIo(f.client, log), NOW);
+    expect(out.kind).toBe('filed');
+    expect(out.message).toContain(PAYBACK_NO_UNDO);
+    expect(out.message).not.toContain('Undo it from /changes.');
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('the change log was not written'));
+  });
+
+  it('says the setting can only be taken off in the app when its record is rejected too (PB-I)', async () => {
+    const f = fakeClient();
+    f.client.setAddonSecret.mockImplementation(async (_a: string, k: string, v: string) => {
+      if (k.startsWith('change_log:')) throw new Error('500 from Wealthfolio');
+      f.data.set(k, v);
+    });
+    // The update fails, and so does the read that would say whether it landed.
+    f.client.saveMany.mockRejectedValue(new Error('lost'));
+    let reads = 0;
+    const inner = f.client.searchActivities.getMockImplementation()!;
+    f.client.searchActivities.mockImplementation(async (b: any) => { reads += 1; if (reads > 1) throw new Error('down'); return inner(b); });
+    const out = await filePayback(RESTAURANTS, companionPaybackIo(f.client, vi.fn()), NOW);
+    expect(out.message).toContain(PAYBACK_UPDATE_UNSURE);
+    expect(out.message).toContain(PAYBACK_NO_UNDO_SETTING);
+  });
+
+  it.each(['{not json', '[]', '"wf-chk"', JSON.stringify({ 'sfin-chk': 7 })])(
+    'an account mapping that reads as %s is unreadable in its own words, not "not from the bank feed" and not unreachable (PB-I m2)',
+    async (raw) => {
+      const f = fakeClient();
+      f.data.set('account_mapping', raw);
+      expect(await filePayback(RESTAURANTS, companionPaybackIo(f.client, vi.fn()), NOW)).toEqual({ kind: 'refused', message: PAYBACK_MAPPING_UNREADABLE });
+      expect(f.client.saveMany).not.toHaveBeenCalled();
+      expect(f.data.has(SYNC_OVERRIDES_SECRET_KEY)).toBe(false);
+    },
+  );
 
   it('refuses, and touches nothing, while the installed add-on is unknown', async () => {
     const f = fakeClient(null);

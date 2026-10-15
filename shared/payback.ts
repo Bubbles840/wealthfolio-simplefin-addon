@@ -34,7 +34,7 @@ import { fixRowOf } from './fix-row.js';
 import { BANK_TRANSFER_KEYWORDS, mapTransactionWithSource, paybackMappingRule, ruleApplies, sameMappingRule } from './mapper.js';
 import { bankWords } from './rule-pattern.js';
 import {
-  PAYBACK_ALREADY, PAYBACK_CHANGED, PAYBACK_GONE, PAYBACK_GONE_STUCK, PAYBACK_LINKED, PAYBACK_MANAGED, PAYBACK_NO_UNDO, PAYBACK_NO_UNDO_SETTING, PAYBACK_NOT_CASH, PAYBACK_NOT_DEPOSIT, PAYBACK_NOT_FEED,
+  PAYBACK_ALREADY, PAYBACK_CHANGED, PAYBACK_GONE, PAYBACK_GONE_STUCK, PAYBACK_LINKED, PAYBACK_MANAGED, PAYBACK_MAPPING_UNREADABLE, PAYBACK_NO_UNDO, PAYBACK_NO_UNDO_SETTING, PAYBACK_NOT_CASH, PAYBACK_NOT_DEPOSIT, PAYBACK_NOT_FEED,
   PAYBACK_OVERRIDE_FAILED, PAYBACK_PENDING, PAYBACK_RULES_EXIST, PAYBACK_RULES_GENERIC, PAYBACK_RULES_REFUSED, PAYBACK_RULES_SHADOWED, PAYBACK_RULES_UNSURE, PAYBACK_RULES_SAVE_FAILED, PAYBACK_RULES_TRANSFER_ROWS, PAYBACK_RULES_TRANSFER_WORDS, PAYBACK_RUNNING, PAYBACK_SETTING_HINT, PAYBACK_TRANSFER, PAYBACK_UNDO_HINT, PAYBACK_UNREACHABLE, PAYBACK_UPDATE_ADDON,
   PAYBACK_UPDATE_REFUSED, PAYBACK_UPDATE_STUCK, PAYBACK_UPDATE_UNSURE, PAYBACK_ZERO, paybackDone, paybackRulesBehind, paybackRulesConflict, paybackRulesDone, paybackRulesTakesOver, paybackRulesStuck, paybackUnfiled,
 } from './payback-copy.js';
@@ -48,7 +48,7 @@ import {
 } from './sync-overrides.js';
 import { accountTxKey } from './transfers.js';
 import type { MappingRule } from './types.js';
-import { removalFingerprint } from './tx-remove.js';
+import { removalFingerprint, RemoveMappingUnreadableError } from './tx-remove.js';
 import { addonUnderstandsPaybacks, INSTALLED_ADDON_VERSION_SECRET_KEY } from './version.js';
 
 /** An ActivityDetails row as a payback reads it; null when the fixes' reader
@@ -244,7 +244,7 @@ async function fileOnce(choice: PaybackChoice, io: PaybackIo, now: Date): Promis
     plan = planPayback({ row, feeds, overrides, category: { id: choice.categoryId, name: choice.categoryName } });
   } catch (err) {
     io.log(`Payback ${choice.activityId}: ${errorText(err)}`);
-    return refused(PAYBACK_UNREACHABLE);
+    return refused(err instanceof RemoveMappingUnreadableError ? PAYBACK_MAPPING_UNREADABLE : PAYBACK_UNREACHABLE);
   }
   if (!plan.ok) return refused(plan.reason);
   const w = plan.writes;

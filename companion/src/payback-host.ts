@@ -19,8 +19,10 @@ import { PAYBACK_BREADTH_DAYS } from '../../shared/payback-copy.js';
 import { descriptionFromComment } from '../../shared/sync-core.js';
 import type { MappingRule } from '../../shared/types.js';
 import type { PaybackRow } from '../../shared/payback-row.js';
+import { parseAccountMapping } from '../../shared/tx-remove.js';
 import { sfinIdsFor } from '../../shared/tx-story.js';
-import { recordCompanionChanges, type SecretClient } from './change-log-host.js';
+import { readActivityById } from './audit-fix-host.js';
+import { recordCompanionChanges, recordCompanionChangesStrict, type SecretClient } from './change-log-host.js';
 import type { WealthfolioClient } from './wealthfolio.js';
 
 const ADDON_ID = 'simplefin-sync';
@@ -31,8 +33,7 @@ export type PaybackClient = SecretClient & Pick<WealthfolioClient, 'searchActivi
 /** One row by exact id, as a payback reads it; null when it is gone. Rejects when unreachable. */
 export async function readPaybackRow(client: Pick<WealthfolioClient, 'searchActivities' | 'getAccounts'>, activityId: string): Promise<PaybackRow | null> {
   const types = new Map((await client.getAccounts()).map((a) => [a.id, String(a.accountType ?? '')]));
-  const items = await client.searchActivities({ page: 0, pageSize: 1, activityIdFilter: [activityId] });
-  const hit = items.find((a) => a.id === activityId);
+  const hit = await readActivityById(client, activityId);
   return hit ? paybackRowOf(hit, types.get(hit.accountId) ?? '') : null;
 }
 
@@ -42,8 +43,7 @@ export function companionPaybackIo(client: PaybackClient, log: (msg: string) => 
     gate: () => addonPaybackGate(get),
     read: (activityId) => readPaybackRow(client, activityId),
     feeds: async (wfAccountId) => {
-      const raw = await get('account_mapping');
-      return sfinIdsFor(raw ? (JSON.parse(raw) as Record<string, string>) : {}, wfAccountId);
+      return sfinIdsFor(parseAccountMapping(await get('account_mapping')), wfAccountId);
     },
     secrets: { get, set: (k, v) => client.setAddonSecret(ADDON_ID, k, v) },
     update: async (write) => {
@@ -52,7 +52,7 @@ export function companionPaybackIo(client: PaybackClient, log: (msg: string) => 
       if (errors.length > 0) throw new Error(errors.map((e) => String(e.message ?? '')).join('; '));
     },
     assign: (activityId, categoryId) => client.assignActivityCategory(activityId, SPENDING_TAXONOMY_ID, categoryId),
-    record: (draft) => recordCompanionChanges(client, [draft]),
+    record: (draft) => recordCompanionChangesStrict(client, [draft]),
     log,
   };
 }

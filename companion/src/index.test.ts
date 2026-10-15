@@ -12,7 +12,7 @@ import { ingestVenmoMail } from './venmo-mail.js';
 import { getNativePastFilings } from './sqlite-guess.js';
 import { AMAZON_MAIL_STATUS_SECRET_KEY, AMAZON_MAIL_SAMPLES_SECRET_KEY, UNCATEGORIZED_STATUS_SECRET_KEY, VENMO_MAIL_SAMPLES_SECRET_KEY } from '../../shared/status-keys.js';
 import { CATEGORIZE_ENTRY_CALLBACK, escapeMarkdown } from '../../shared/telegram.js';
-import { categoryFiledChange, stampChange, transactionRemovedChange } from '../../shared/change-entries.js';
+import { categoryFiledChange, paybackFiledChange, stampChange, transactionRemovedChange } from '../../shared/change-entries.js';
 import { PAYBACK_UPDATE_ADDON } from '../../shared/payback-copy.js';
 import { changesData } from './changes-menu.js';
 import { existsSync } from 'fs';
@@ -2911,6 +2911,35 @@ describe('buildTelegramCommandHandler', () => {
       }
     });
 
+    it('/changes Undo and Redo of a payback refuse while the companion syncs, and write nothing (PB-I m5)', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date(2026, 9, 12, 8, 0, 0));
+      onTestFinished(() => { vi.useRealTimers(); });
+      const filed = stampChange(paybackFiledChange({
+        account: { sfinId: 'sfin-1', wfId: 'wf-1', name: 'Checking' }, txKeys: ['sfin-1\u0000TRN-7'], activityId: 'act-7',
+        description: 'VENMO CASHOUT', amountCents: 1400, date: '2026-10-09', subtypeBefore: null, categoryId: 'cat-fun', categoryName: 'Entertainment',
+      }), 'companion', new Date(2026, 9, 12, 7, 30, 0));
+      const { client, secrets } = clientFor([[
+        'change_log:companion:2026-10',
+        JSON.stringify({ v: 1, writer: 'companion', month: '2026-10', entries: [filed], gaps: [] }),
+      ]]);
+      client.saveMany = vi.fn(async () => ({ created: [], updated: [], errors: [] }));
+      const deps = buildTelegramListenerDeps(client);
+      const back = { kind: 'list', page: 0, background: false } as const;
+      const sync = occupy();
+      try {
+        for (const action of ['u', 'r'] as const) {
+          const u = ui();
+          await deps.onMenuCallback!({ data: changesData({ kind: 'act', action, entry: findingHandle(filed.id), back }), chatId: 1, messageId: 2 }, u);
+          expect((u.edit.mock.calls[0] as unknown as [string])[0]).toContain(`⚠️ ${escapeMarkdown(FIX_SYNC_RUNNING)}`);
+        }
+        expect(client.saveMany).not.toHaveBeenCalled();
+        expect(secrets.has('sync_overrides')).toBe(false);
+      } finally {
+        await sync.end();
+      }
+    });
+
     it("/changes Undo of a removal refuses while the companion syncs; another entry's Undo is not held up", async () => {
       vi.useFakeTimers({ toFake: ['Date'] });
       vi.setSystemTime(new Date(2026, 9, 12, 8, 0, 0));
@@ -5242,7 +5271,7 @@ describe('the /categorize wiring', () => {
       currency: 'USD', comment: 'VENMO CASHOUT · TRN-act-7', subtype: null, sourceGroupId: null, metadata: null,
     };
     /** A client whose one deposit can be filed as a payback, opened on its payback grid. */
-    const onPaybackGrid = async (installed: string, text = 'VENMO CASHOUT') => {
+    const onPaybackGrid = async (installed: string, text = 'VENMO CASHOUT', stored: Partial<typeof deposit> = {}) => {
       vi.mocked(getNativeUncategorizedSpending).mockReturnValue([{
         ...uncatRow('act-7', text), amountCents: 1400, date: '2026-10-09', accountName: 'Checking', direction: 'in', incomeEligible: true, activityType: 'DEPOSIT', pending: false,
       }] as any);
@@ -5250,7 +5279,7 @@ describe('the /categorize wiring', () => {
         ['account_mapping', JSON.stringify({ 'sfin-1': 'wf-a' })], ['installed_addon_version', installed],
       ]);
       client.getAccounts = vi.fn(async () => [{ id: 'wf-a', accountType: 'CASH' }]);
-      client.searchActivities = vi.fn(async (b: { activityIdFilter?: string[] }) => [{ ...deposit, comment: `${text} · TRN-act-7` }].filter((r) => b.activityIdFilter?.includes(r.id)));
+      client.searchActivities = vi.fn(async (b: { activityIdFilter?: string[] }) => [{ ...deposit, ...stored, comment: `${text} · TRN-act-7` }].filter((r) => b.activityIdFilter?.includes(r.id)));
       client.saveMany = vi.fn(async () => ({ created: [], updated: [], errors: [] }));
       const controller = buildCategorizeController(client);
       const { sent, reply } = collect();
@@ -5273,6 +5302,14 @@ describe('the /categorize wiring', () => {
       const logged = [...p.secrets.entries()].filter(([k, v]) => /^change_log:companion:\d{4}-\d{2}$/.test(k) && v)
         .flatMap(([, v]) => JSON.parse(v).entries);
       expect(logged.map((e: any) => [e.kind, e.summary])).toEqual([['payback-filed', 'Filed VENMO CASHOUT as a payback under Entertainment']]);
+    });
+
+    it('writes a NOON stored instant back exactly as it was stored (PB-I m5)', async () => {
+      const p = await onPaybackGrid('1.62.0', 'VENMO CASHOUT', { date: '2026-10-09T12:00:00Z' });
+      await p.cb(dataFor(lastOf(p.ui.edit)[1], 'Entertainment'));
+      expect(p.client.saveMany).toHaveBeenCalledWith({ updates: [expect.objectContaining({
+        id: 'act-7', activityType: 'CREDIT', subtype: 'REIMBURSEMENT', activityDate: '2026-10-09T12:00:00Z',
+      })] });
     });
 
     it('then makes every deposit like it a payback from today on: the transaction rule first, and Wealthfolio’s rule for paybacks in that account', async () => {
