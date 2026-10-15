@@ -1177,16 +1177,16 @@ branches.
 - **The transaction rule's limits are shown read-only** in Settings → Transaction
   rules (money in only, one account by name, and the `since` day), and the
   editor keeps them when the list is edited; the "Test a description" box
-  never matches a payback rule, which needs an account and a day, so it
-  cannot preview one. Saving re-reads the list first and refuses with "Your
+  honours them: pick the direction and the account to see a payback rule
+  apply. Saving re-reads the list first and refuses with "Your
   rules changed elsewhere — reload them first." when the companion changed it
   meanwhile. A reader before 1.62 ignores the limits — the reason the offer
   waits for an installed add-on of 1.62.0.
 - **Deposits already imported are never re-typed by the payback rule**; the
   ones the 90-day preview finds are filed by hand with **It's a payback »**.
   A pending deposit the rule typed is replaced on posting like any pending
-  row; an in-transit placeholder the rule matches loses its marker when it is
-  next synced.
+  row; an in-transit placeholder the rule matches keeps its type and its
+  marker.
 - **A payback stays a payback unless a rule or your own choice changes it.**
   The sync leaves a stored cash money-in `CREDIT`/`REIMBURSEMENT` row as
   stored when neither a rule nor an override decides its type, so the reverse

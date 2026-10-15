@@ -1124,9 +1124,12 @@ export const UNDO_ASSIGN_FAILED_TEXT = "Couldn't undo that — Wealthfolio didn'
 export function assignFailureText(lead: string, message: string): string {
   const reason = assignRefusalOf(message);
   if (!reason) return lead;
-  // Name the bucket Wealthfolio named (PB-G): money out takes a spending category, money in an income one.
-  if (reason === 'wrong-bucket' && wrongBucketOf(message) === 'spending') {
-    return `${lead}\nIt is recorded as money out and can only take a spending category while that is true.`;
+  // Name the bucket Wealthfolio named (PB-G): money out takes a spending category, money in an income one;
+  // any other bucket (Saving) gets a neutral line rather than a wrong "money in".
+  if (reason === 'wrong-bucket') {
+    const bucket = wrongBucketOf(message);
+    if (bucket === 'spending') return `${lead}\nIt is recorded as money out and can only take a spending category while that is true.`;
+    if (bucket === null) return `${lead}\nWealthfolio counts it as a different kind of money, so that category does not fit it.`;
   }
   return `${lead}\n${ASSIGN_REFUSAL_LINES[reason]}`;
 }
