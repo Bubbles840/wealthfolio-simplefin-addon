@@ -29,10 +29,14 @@ export type TripwireState =
 
 const monthOf = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 
-/** Compare the two figures `h` holds, for `now`'s month. */
-export function spendingTripwire(h: Pick<HeadlineExplanation, 'month' | 'reportCents' | 'wealthfolioCents'> | null | undefined, now: Date): TripwireState {
-  if (!h || h.month !== monthOf(now) || h.reportCents === null || h.wealthfolioCents === null) return { kind: 'unknown' };
-  const diffCents = h.reportCents - h.wealthfolioCents;
+/** Compare the two figures `h` holds (less what the report does not cover), for `now`'s month. */
+export function spendingTripwire(h: Pick<HeadlineExplanation, 'month' | 'reportCents' | 'wealthfolioCents' | 'reasons'> | null | undefined, now: Date): TripwireState {
+  if (!h || h.month !== monthOf(now) || h.reportCents === null || h.wealthfolioCents === null || h.reasons === null) return { kind: 'unknown' };
+  // LU-J: the report covers only the accounts the add-on syncs; the rest of
+  // Wealthfolio's total is the headline's explained `not-covered` reason, not
+  // a daily warning. Foreign-currency stays counted.
+  const notCovered = h.reasons.find((r) => r.kind === 'not-covered')?.cents ?? 0;
+  const diffCents = h.reportCents - h.wealthfolioCents - notCovered;
   return Math.abs(diffCents) > TRIPWIRE_TOLERANCE_CENTS ? { kind: 'differ', month: h.month, diffCents } : { kind: 'agree' };
 }
 

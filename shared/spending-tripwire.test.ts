@@ -8,7 +8,8 @@ import { explainHeadline } from './audit-headline.js';
 import { healthIssues } from './audit-health.js';
 
 const NOW = new Date(2026, 9, 14, 8, 0);
-const h = (reportCents: number | null, wealthfolioCents: number | null, month = '2026-10') => ({ month, reportCents, wealthfolioCents });
+const h = (reportCents: number | null, wealthfolioCents: number | null, month = '2026-10', reasons: any[] | null = []) => ({ month, reportCents, wealthfolioCents, reasons });
+const notCovered = (cents: number) => ({ kind: 'not-covered', cents, rows: [] });
 
 describe('spendingTripwire', () => {
   it('agrees when the two are equal, or a cent apart either way', () => {
@@ -31,6 +32,16 @@ describe('spendingTripwire', () => {
       expect(tripwireLine(spendingTripwire(t, NOW))).toBeNull();
     }
     expect(spendingTripwire(null, NOW)).toEqual({ kind: 'unknown' });
+  });
+
+  it('compares what the report covers: an unsynced account\u2019s gap is explained, not warned about (LU-J)', () => {
+    expect(spendingTripwire(h(100000, 102000, '2026-10', [notCovered(-2000)]), NOW)).toEqual({ kind: 'agree' });
+    const t = spendingTripwire(h(100000, 102500, '2026-10', [notCovered(-2000)]), NOW);
+    expect(t).toEqual({ kind: 'differ', month: '2026-10', diffCents: -500 });
+    expect(tripwireLine(t)).toBe('The report and Wealthfolio differ by $5.00 this month');
+    const fx = { kind: 'foreign-currency', cents: -2000, rows: [] };
+    expect(spendingTripwire(h(100000, 102000, '2026-10', [fx]), NOW)).toMatchObject({ kind: 'differ', diffCents: -2000 });
+    expect(spendingTripwire(h(100000, 102000, '2026-10', null), NOW)).toEqual({ kind: 'unknown' });
   });
 
   it('reads the published snapshot; an absent or corrupt one makes no claim', () => {
