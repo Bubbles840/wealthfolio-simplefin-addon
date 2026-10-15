@@ -10,11 +10,15 @@
  * in, string (and keyboard) out.
  */
 
-import { categoryRulePattern } from './rule-pattern.js';
+import { categoryRulePattern, paybackRulePattern } from './rule-pattern.js';
+import type { PaybackBreadth } from './payback.js';
 import { isAmazonDescription } from './amazon-ledger.js';
 import type { InlineKeyboard } from './telegram.js';
-import { moneyWhole, escapeMarkdown, WHY_BUTTON_TEXT } from './telegram.js';
-import { INCOME_TAXONOMY_ID } from './cash-flow-bucket.js';
+import { escapeMarkdown, WHY_BUTTON_TEXT } from './telegram.js';
+import { assignRefusalOf, INCOME_TAXONOMY_ID, wrongBucketOf, type AssignRefusal } from './cash-flow-bucket.js';
+import {
+  PAYBACK_PICK, paybackMoney, PAYBACK_RULES_CREATE, PAYBACK_SWITCH, paybackRulesButton, paybackRulesPreview,
+} from './payback-copy.js';
 
 /** One uncategorized spending transaction, as the menu needs it. `date` is
  *  the raw YYYY-MM-DD string — this module never constructs a `Date`, since
@@ -40,6 +44,15 @@ export interface CategorizeTxn {
    *  bucket question, distinct from `direction`: a card credit is money in
    *  but a spending-bucket refund, and its income grid would be all 400s. */
   incomeEligible?: boolean;
+  /** The row's stored activity type, upper-cased (1.62): with `pending`, what
+   *  decides whether it can be filed as a payback — only a posted DEPOSIT can;
+   *  INTEREST, INCOME, DIVIDEND and a pending DEPOSIT are also `incomeEligible`. */
+  activityType?: string;
+  /** Whether the stored note marks the row pending (1.62). */
+  pending?: boolean;
+  /** The RAW stored note (1.62): what a payback's "shown" fingerprint is made
+   *  from, since `description` is already stripped. */
+  note?: string;
   /** Present in recategorize mode: the ONE category this transaction is
    *  currently filed under that a reader would recognise — the spending
    *  assignment when it has one (their budgets are about it), else whatever it
@@ -85,9 +98,11 @@ export interface SpendingCategory {
 export type MenuScreen =
   | { kind: 'list'; page: number }
   /** `showSpending` overrides a money-in row's income grid with the spending
-   *  one — the escape hatch for a deposit that is really a refund. */
+   *  one — the payback grid (1.62, W6): a deposit that pays you back for
+   *  spending is filed against it. */
   | { kind: 'txn'; activityId: string; showSpending?: boolean }
-  | { kind: 'subcats'; activityId: string; parentId: string }
+  /** `payback`: reached from the payback grid, so a tap files a payback. */
+  | { kind: 'subcats'; activityId: string; parentId: string; payback?: true }
   /** `taxonomyId` rides along when the filing went to a non-spending taxonomy
    *  (an income category), so Undo can clear the assignment it actually made. */
   | { kind: 'filed'; activityId: string; categoryId: string; undone: boolean; taxonomyId?: string }
@@ -115,6 +130,17 @@ export type MenuScreen =
    *  The caller picks between them with `refundSubtypeWouldMakeSpending`; the
    *  same reasoning keeps the fix off `'scope'`. */
   | { kind: 'refused'; activityId: string; reason: 'neutral' | 'neutral-subtype' | 'wrong-bucket' | 'scope' }
+  /** A payback's outcome (1.62, W6), as the runner worded it — RAW, escaped
+   *  when rendered. `offerRules`: it was filed in full, so "Make every …
+   *  deposit a payback" may follow (W10). */
+  | { kind: 'paybackResult'; activityId: string; categoryId: string; text: string; offerRules: boolean }
+  /** A payback refused, nothing written: why, RAW. Back returns to the payback grid. */
+  | { kind: 'paybackRefused'; activityId: string; text: string }
+  /** "Make every <pattern> deposit a payback?" (W10): the two rules, and how
+   *  many deposits waiting for a category they would catch now. */
+  | { kind: 'paybackRulePreview'; activityId: string; categoryId: string; breadth?: PaybackBreadth; breadthFailed?: true }
+  /** What making the two rules did, RAW. */
+  | { kind: 'paybackRulesResult'; activityId: string; text: string }
   /** The recategorize confirmation. `fromName` (not an id) is what the row
    *  showed BEFORE the tap, because it may name an income-side category that
    *  never appears in `session.categories` (the spending tree) — the whole
@@ -276,7 +302,11 @@ export type MenuAction =
    *  this is not rendered when there is nothing to restore. */
   | { kind: 'undoReassign'; activityId: string; toRestore: readonly TaxonomyAssignment[] }
   /** 1.61: send this transaction's story as a NEW message; the screen stays. */
-  | { kind: 'why'; activityId: string };
+  | { kind: 'why'; activityId: string }
+  /** 1.62 (W6): file a deposit as a payback under a spending category. */
+  | { kind: 'payback'; activityId: string; categoryId: string }
+  /** 1.62 (W10): make every deposit like it a payback under the category. */
+  | { kind: 'paybackRules'; activityId: string; categoryId: string };
 
 /** A Wealthfolio account a category rule can be scoped to. */
 export interface RuleAccount {
@@ -453,7 +483,8 @@ function directionSign(t: Pick<CategorizeTxn, 'direction'>): string {
  *  exactly as it always did. */
 function signedWhole(t: Pick<CategorizeTxn, 'direction' | 'amountCents'>): string {
   const cents = t.direction ? Math.abs(t.amountCents) : t.amountCents;
-  return `${directionSign(t)}${moneyWhole(cents / 100)}`;
+  // Cents kept when there are any, as the payback reply words it: $14.50 is never shown as $15.
+  return `${directionSign(t)}${paybackMoney(cents)}`;
 }
 
 /** Sentence shown when a screen refers to a transaction or category id that
@@ -583,7 +614,7 @@ function renderList(session: MenuSession, page: number, note?: string): RenderRe
     // The guess (3), beside the row — a hint only; the tap still opens the row.
     const guessSuffix = mode !== 'recategorize' && t.guess ? ` · probably ${t.guess.name}` : '';
     return [{
-      // moneyWhole takes DOLLARS, so cents are divided down first. Both native
+      // The amount is cents (kept when there are any). Both native
       // readers ABS() the amount before it ever reaches this module, so the
       // sign comes from `direction`, not the figure — and stays absent for a
       // row whose direction an older controller never supplied.
@@ -623,7 +654,15 @@ function renderTxn(session: MenuSession, activityId: string, showSpending = fals
   // keeps its spending-centric flow untouched.
   const income = session.incomeCategories ?? [];
   const incomeGridAvailable = !isRecategorize && txn.incomeEligible === true && income.length > 0;
-  const useIncomeGrid = incomeGridAvailable && !showSpending;
+  // Only a posted DEPOSIT can be a payback (1.62): INTEREST, INCOME, DIVIDEND and
+  // a pending DEPOSIT keep today's routing, with no switch.
+  const paybackable = txn.activityType === 'DEPOSIT' && txn.pending !== true;
+  const useIncomeGrid = incomeGridAvailable && !(showSpending && paybackable);
+  // A money-in row's spending grid files a PAYBACK (1.62, W6): Wealthfolio
+  // takes a spending category on money in only once the row is a CREDIT marked
+  // REIMBURSEMENT, which the payback re-types it to first. Without an income
+  // grid to switch from, the row gets this grid straight away.
+  const paybackGrid = !isRecategorize && txn.incomeEligible === true && paybackable && !useIncomeGrid;
 
   const catButtons: Btn[] = useIncomeGrid
     ? income.map((c) => ({
@@ -636,22 +675,25 @@ function renderTxn(session: MenuSession, activityId: string, showSpending = fals
     : session.categories.filter((c) => c.parentId === null).map((c) => {
       const hasChildren = session.categories.some((k) => k.parentId === c.id);
       const action: MenuAction = hasChildren
-        ? { kind: 'goto', screen: { kind: 'subcats', activityId, parentId: c.id } }
-        : assignAction(session.mode, activityId, c.id);
+        ? { kind: 'goto', screen: { kind: 'subcats', activityId, parentId: c.id, ...(paybackGrid ? { payback: true as const } : {}) } }
+        : paybackGrid ? { kind: 'payback', activityId, categoryId: c.id } : assignAction(session.mode, activityId, c.id);
       return { text: c.name, action };
     });
 
   // The guess (3) comes first, as one tap — the same `assign` the grid's own
   // button makes, so it files, logs and offers Undo and the rule identically.
-  // Only on the spending grid (a guess is a spending category) and only for a
-  // category the tree still has.
-  const guessed = !isRecategorize && !useIncomeGrid && txn.guess ? findCategory(session, txn.guess.categoryId) : undefined;
+  // Only on the spending grid (a guess is a spending category), never on the
+  // payback grid (its one tap would skip the payback), and only for a category
+  // the tree still has.
+  const guessed = !isRecategorize && !useIncomeGrid && !paybackGrid && txn.guess ? findCategory(session, txn.guess.categoryId) : undefined;
   const guessRows: Btn[][] = guessed && txn.guess
     ? [[{ text: `✓ ${guessed.name} (like the last ${txn.guess.count})`, action: { kind: 'assign', activityId, categoryId: guessed.id } }]]
     : [];
 
   const switchRows: Btn[][] = useIncomeGrid
-    ? [[{ text: 'Spending categories »', action: { kind: 'goto', screen: { kind: 'txn', activityId, showSpending: true } } }]]
+    ? paybackable
+      ? [[{ text: PAYBACK_SWITCH, action: { kind: 'goto', screen: { kind: 'txn', activityId, showSpending: true } } }]]
+      : []
     : incomeGridAvailable
       ? [[{ text: '« Income categories', action: { kind: 'goto', screen: { kind: 'txn', activityId } } }]]
       : [];
@@ -681,26 +723,31 @@ function renderTxn(session: MenuSession, activityId: string, showSpending = fals
   if (isRecategorize && txn.currentCategory) {
     lines.push(`Currently: ${escapeMarkdown(txn.currentCategory.name)}`);
   }
+  if (paybackGrid) lines.push(PAYBACK_PICK);
   const text = lines.join('\n');
 
   return finish(session.generation, text, rows);
 }
 
-function renderSubcats(session: MenuSession, activityId: string, parentId: string): RenderResult {
+function renderSubcats(session: MenuSession, activityId: string, parentId: string, payback = false): RenderResult {
   const txn = findTxn(session, activityId);
   const parent = findCategory(session, parentId);
   if (!txn || !parent) return renderList(session, 0, GONE_NOTE);
 
+  // From the payback grid every tap files a payback, and Back returns there.
+  const pick = (categoryId: string): MenuAction => (payback
+    ? { kind: 'payback', activityId, categoryId }
+    : assignAction(session.mode, activityId, categoryId));
   const children = session.categories.filter((c) => c.parentId === parentId);
   const childButtons: Btn[] = children.map((c) => ({
     text: c.name,
-    action: assignAction(session.mode, activityId, c.id),
+    action: pick(c.id),
   }));
 
   const rows: Btn[][] = [
     ...childButtons.map((b) => [b]),
-    [{ text: `Just ${parent.name} itself`, action: assignAction(session.mode, activityId, parent.id) }],
-    [{ text: '‹ Back', action: { kind: 'goto', screen: { kind: 'txn', activityId } } }],
+    [{ text: `Just ${parent.name} itself`, action: pick(parent.id) }],
+    [{ text: '‹ Back', action: { kind: 'goto', screen: { kind: 'txn', activityId, ...(payback ? { showSpending: true } : {}) } } }],
   ];
 
   const text = `Choose a subcategory of ${escapeMarkdown(parent.name)}:`;
@@ -1053,6 +1100,40 @@ const REFUSED_TEXT: Record<Extract<MenuScreen, { kind: 'refused' }>['reason'], s
   scope: 'Its account is not set up for spending tracking.',
 };
 
+/** The plain words for a refusal Wealthfolio gave when an assignment failed
+ *  (W9) — the same sentences as the refusals above, without the hint. */
+const ASSIGN_REFUSAL_LINES: Record<AssignRefusal, string> = {
+  neutral: REFUSED_TEXT.neutral,
+  'wrong-bucket': 'It is recorded as money in and can only take an income category while that is true.',
+  scope: REFUSED_TEXT.scope,
+  off: 'Spending tracking is off in Wealthfolio.',
+};
+
+/** A first filing Wealthfolio refused. */
+export const ASSIGN_FAILED_TEXT = "Couldn't file that — Wealthfolio didn't take it, so it still has no category.";
+/** A recategorize whose new category Wealthfolio refused (the controller adds what stands). */
+export const REFILE_ASSIGN_FAILED_TEXT = "Couldn't move that — Wealthfolio didn't take the new category.";
+/** A recategorize Undo whose old category Wealthfolio refused (the controller adds what stands). */
+export const UNDO_ASSIGN_FAILED_TEXT = "Couldn't undo that — Wealthfolio didn't take the old category back.";
+
+/**
+ * What a refused assignment says (W9): `lead`, then why in the add-on's own
+ * words when Wealthfolio gave a reason it knows. Never Wealthfolio's text —
+ * the caller logs that.
+ */
+export function assignFailureText(lead: string, message: string): string {
+  const reason = assignRefusalOf(message);
+  if (!reason) return lead;
+  // Name the bucket Wealthfolio named (PB-G): money out takes a spending category, money in an income one;
+  // any other bucket (Saving) gets a neutral line rather than a wrong "money in".
+  if (reason === 'wrong-bucket') {
+    const bucket = wrongBucketOf(message);
+    if (bucket === 'spending') return `${lead}\nIt is recorded as money out and can only take a spending category while that is true.`;
+    if (bucket === null) return `${lead}\nWealthfolio counts it as a different kind of money, so that category does not fit it.`;
+  }
+  return `${lead}\n${ASSIGN_REFUSAL_LINES[reason]}`;
+}
+
 function renderRefused(
   session: MenuSession,
   screen: Extract<MenuScreen, { kind: 'refused' }>,
@@ -1062,6 +1143,57 @@ function renderRefused(
     [DONE_BTN],
   ];
   return finish(session.generation, REFUSED_TEXT[screen.reason], rows);
+}
+
+/** A payback's outcome: the runner's words, escaped — a bank or category name
+ *  can carry `_` or `*` — and the way on. A payback filed in full offers to
+ *  make every deposit like it one (W10) where "Make this a rule" would be: the
+ *  rules need the row's account and a pattern from its bank words. */
+function renderPaybackResult(session: MenuSession, screen: Extract<MenuScreen, { kind: 'paybackResult' }>): RenderResult {
+  const txn = findTxn(session, screen.activityId);
+  const pattern = txn ? paybackRulePattern(txn.description) : '';
+  const offer: Btn[][] = screen.offerRules && txn?.accountId && pattern
+    ? [[{
+      text: paybackRulesButton(pattern),
+      action: { kind: 'goto', screen: { kind: 'paybackRulePreview', activityId: screen.activityId, categoryId: screen.categoryId } },
+    }]]
+    : [];
+  const rows: Btn[][] = [
+    ...offer,
+    [{ text: 'Next transaction', action: { kind: 'goto', screen: { kind: 'list', page: 0 } } }],
+    [DONE_BTN],
+  ];
+  return finish(session.generation, escapeMarkdown(screen.text), rows);
+}
+
+function renderPaybackRulePreview(session: MenuSession, screen: Extract<MenuScreen, { kind: 'paybackRulePreview' }>): RenderResult {
+  const txn = findTxn(session, screen.activityId);
+  const category = findCategory(session, screen.categoryId);
+  if (!txn || !category || !txn.accountId) return renderList(session, 0, GONE_NOTE);
+  const pattern = paybackRulePattern(txn.description);
+  // A breadth check that refused (a generic pattern, a shadowed rule) says why,
+  // with nothing to create.
+  if (screen.breadth && !screen.breadth.ok) return finish(session.generation, escapeMarkdown(screen.breadth.message), [[BACK_TO_LIST_BTN]]);
+  const text = escapeMarkdown(paybackRulesPreview(pattern, txn.accountName, categoryDisplayName(category), screen.breadth, !!screen.breadthFailed));
+  const rows: Btn[][] = [
+    [{ text: PAYBACK_RULES_CREATE, action: { kind: 'paybackRules', activityId: screen.activityId, categoryId: screen.categoryId } }],
+    [BACK_TO_LIST_BTN],
+  ];
+  return finish(session.generation, text, rows);
+}
+
+/** What making the rules did, escaped. Nothing here makes them again. */
+function renderPaybackRulesResult(session: MenuSession, screen: Extract<MenuScreen, { kind: 'paybackRulesResult' }>): RenderResult {
+  return finish(session.generation, escapeMarkdown(screen.text), [[BACK_TO_LIST_BTN], [DONE_BTN]]);
+}
+
+/** A payback refused: why, escaped, and Back to the payback grid. */
+function renderPaybackRefused(session: MenuSession, screen: Extract<MenuScreen, { kind: 'paybackRefused' }>): RenderResult {
+  const rows: Btn[][] = [
+    [{ text: '‹ Back', action: { kind: 'goto', screen: { kind: 'txn', activityId: screen.activityId, showSpending: true } } }],
+    [DONE_BTN],
+  ];
+  return finish(session.generation, escapeMarkdown(screen.text), rows);
 }
 
 function renderClosed(generation: number): RenderResult {
@@ -1088,7 +1220,7 @@ export function renderScreen(session: MenuSession): RenderResult {
     case 'txn':
       return renderTxn(session, screen.activityId, screen.showSpending ?? false);
     case 'subcats':
-      return renderSubcats(session, screen.activityId, screen.parentId);
+      return renderSubcats(session, screen.activityId, screen.parentId, screen.payback === true);
     case 'filed':
       return renderFiled(session, screen);
     case 'dismissed':
@@ -1103,6 +1235,14 @@ export function renderScreen(session: MenuSession): RenderResult {
       return renderRefiled(session, screen);
     case 'refused':
       return renderRefused(session, screen);
+    case 'paybackResult':
+      return renderPaybackResult(session, screen);
+    case 'paybackRefused':
+      return renderPaybackRefused(session, screen);
+    case 'paybackRulePreview':
+      return renderPaybackRulePreview(session, screen);
+    case 'paybackRulesResult':
+      return renderPaybackRulesResult(session, screen);
     case 'closed':
       return renderClosed(session.generation);
   }

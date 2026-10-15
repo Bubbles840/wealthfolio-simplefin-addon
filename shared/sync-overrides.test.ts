@@ -193,6 +193,11 @@ describe('overrideRows', () => {
     expect(overrideRows(next).map((r) => r.flag)).toEqual(['notTransfer']);
   });
 
+  it('never removes a payback flag: that is undone from /changes', () => {
+    const o = setTxOverride(emptySyncOverrides(), OUT, 'asReimbursement', NOW);
+    expect(removeOverrideRow(o, overrideRows(o)[0])).toEqual(o);
+  });
+
   describe('a flag from a newer version', () => {
     const FUTURE = '{"v":1,"tx":{"k":{"notTransfer":true,"noFuture":true,"at":"2026-10-12T09:00:00Z"}},"accounts":{"a":{"noAutoCorrect":true,"noFutureAcct":{"x":1},"at":"2026-10-12T09:00:00Z"}}}';
 

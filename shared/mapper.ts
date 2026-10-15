@@ -1,3 +1,4 @@
+import { REIMBURSEMENT_SUBTYPE } from './cash-flow-bucket.js';
 import type { ActivityType, MappingRule } from './types';
 
 /**
@@ -22,29 +23,50 @@ export interface MappedType {
   /** True when a user mapping rule decided the type (never auto-overridden) */
   fromRule: boolean;
   subtype?: string;
+  /** The deciding rule carries `since` (a payback rule, W10): it types only rows
+   *  the sync CREATES — a row already stored keeps its type and subtype. */
+  createOnly?: true;
 }
 
-function matchRule(description: string, rules: MappingRule[]): MappingRule | null {
-  for (const rule of rules) {
-    if (rule.matchType === 'contains') {
-      if (description.toLowerCase().includes(rule.pattern.toLowerCase())) {
-        return rule;
-      }
-    } else {
-      // Skip rules with invalid regex rather than crashing a whole sync run.
-      // RuleEditor surfaces the error at save/preview time so the user can fix it.
-      let re: RegExp;
-      try {
-        re = new RegExp(rule.pattern, 'i');
-      } catch {
-        continue;
-      }
-      if (re.test(description)) {
-        return rule;
-      }
-    }
+/**
+ * Whether one transaction rule decides this transaction. A payback rule
+ * ("Make every … deposit a payback", 1.62 W10) carries two limits no older
+ * rule has: `onlyMoneyIn` — it reads money in only, so a payment out that
+ * shares the pattern is never typed a CREDIT (a rule's type is otherwise
+ * direction-blind) — and `accountId`, the one Wealthfolio account it reads.
+ */
+export function ruleApplies(rule: MappingRule, description: string, amount: number, wfAccountId?: string, txDay?: string): boolean {
+  if (rule.onlyMoneyIn && !(amount > 0)) return false;
+  if (rule.accountId && rule.accountId !== wfAccountId) return false;
+  // A rule with `since` reads only transactions dated on or after it; one whose
+  // day is unknown is left alone.
+  if (rule.since && !(txDay !== undefined && txDay >= rule.since)) return false;
+  if (rule.matchType === 'contains') return description.toLowerCase().includes(rule.pattern.toLowerCase());
+  // Skip rules with invalid regex rather than crashing a whole sync run.
+  // RuleEditor surfaces the error at save/preview time so the user can fix it.
+  try {
+    return new RegExp(rule.pattern, 'i').test(description);
+  } catch {
+    return false;
   }
-  return null;
+}
+
+function matchRule(description: string, rules: MappingRule[], amount: number, wfAccountId?: string, txDay?: string): MappingRule | null {
+  return rules.find((rule) => ruleApplies(rule, description, amount, wfAccountId, txDay)) ?? null;
+}
+
+/** The same transaction rule: pattern, match, type, subtype and the payback limits. */
+export function sameMappingRule(a: MappingRule, b: MappingRule): boolean {
+  return a.pattern === b.pattern && a.matchType === b.matchType && a.activityType === b.activityType
+    && (a.subtype ?? '') === (b.subtype ?? '') && !!a.onlyMoneyIn === !!b.onlyMoneyIn && (a.accountId ?? '') === (b.accountId ?? '')
+    && (a.since ?? '') === (b.since ?? '');
+}
+
+/** The transaction rule W10 adds: money into one account whose bank text
+ *  contains the pattern is a CREDIT marked REIMBURSEMENT — a payback — from
+ *  the day it was made (`since`) on. */
+export function paybackMappingRule(pattern: string, wfAccountId: string, since: string): MappingRule {
+  return { pattern, matchType: 'contains', activityType: 'CREDIT', subtype: REIMBURSEMENT_SUBTYPE, onlyMoneyIn: true, accountId: wfAccountId, since };
 }
 
 // `capital one transfer` earned its place the hard way (2026-09-12): two real
@@ -65,9 +87,13 @@ export function mapTransactionWithSource(
   amount: number,
   rules: MappingRule[],
   accountType?: string,
+  /** The Wealthfolio account, for a rule scoped to one (W10). */
+  wfAccountId?: string,
+  /** The transaction's bank day (YYYY-MM-DD), for a rule that reads only new ones (W10). */
+  txDay?: string,
 ): MappedType {
-  const ruled = matchRule(description, rules);
-  if (ruled) return { type: ruled.activityType, fromRule: true, ...(ruled.subtype ? { subtype: ruled.subtype } : {}) };
+  const ruled = matchRule(description, rules, amount, wfAccountId, txDay);
+  if (ruled) return { type: ruled.activityType, fromRule: true, ...(ruled.subtype ? { subtype: ruled.subtype } : {}), ...(ruled.since ? { createOnly: true as const } : {}) };
 
   if (accountType === 'CREDIT_CARD') {
     if (amount < 0) return { type: 'WITHDRAWAL', fromRule: false };

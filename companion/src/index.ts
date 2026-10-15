@@ -131,6 +131,8 @@ import { auditMenuDeps, auditStatusKeyboard, createAuditMenu, type AuditMenu } f
 import { companionBudgetReaders } from './budget-suggest-host.js';
 import { budgetsMenuDeps, createBudgetsMenu, type BudgetsMenu } from './budgets-menu.js';
 import { companionLinkIo, companionRemoveIo } from './audit-fix-host.js';
+import { filePayback, makePaybackRules, type PaybackOutcome } from '../../shared/payback.js';
+import { companionPaybackBreadth, companionPaybackIo, companionPaybackRulesIo } from './payback-host.js';
 import { linkPairs, type LinkRun } from '../../shared/audit-link.js';
 import { removeForGood } from '../../shared/tx-remove.js';
 import { addManual, editSubscriptionPrefs, emptySubscriptionPrefs, isUnreadablePrefsError, loadSubscriptionPrefs, newManualId, renameKey, setRemind, SubscriptionPrefsInvalidError, type ManualSubscription, type RemindDays, type SecretGet, type SecretSet, type SubscriptionEdit } from '../../shared/subscription-prefs.js';
@@ -3152,6 +3154,16 @@ export function buildCategorizeDeps(wfClient: WealthfolioClient): CategorizeDeps
     // Every filing, move, Undo and rule this menu writes, as `actor: 'you'`.
     // Fire and forget: the append never rejects, and the menu must not wait on it.
     record: (draft) => { void recordCompanionChanges(wfClient, [draft]).catch(() => {}); },
+    // 1.62 (W6): a payback writes the row and the overrides the sync reads, so
+    // it runs like a fix — refused while the companion's own sync runs.
+    payback: (choice) => runCompanionFixExclusive(
+      () => filePayback(choice, companionPaybackIo(wfClient, log), new Date()),
+      (): PaybackOutcome => ({ kind: 'refused', message: FIX_SYNC_RUNNING }),
+    ),
+    // W10: "Make every <pattern> deposit a payback" — the transaction rule the
+    // sync applies on import, and Wealthfolio's category rule for paybacks.
+    paybackRules: (input) => makePaybackRules(input, companionPaybackRulesIo(wfClient, log)),
+    paybackBreadth: (input) => companionPaybackBreadth(wfClient, input),
     // Exactly as the sync path publishes it, so the tile the addon renders cannot
     // disagree with itself depending on which host last wrote it. Wrapped so it
     // can never throw: the controller already swallows a failure here, and this
@@ -3968,9 +3980,10 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
     read: (now) => readCompanionChangeLog(wfClient, now),
     undo: (entry, entries, op, variant) => {
       const run = () => runChangeUndo(entry, entries, op, companionUndoIo(wfClient, wealthfolioDbPath(), undefined, log), variant);
-      // A removal's Undo/Redo writes the row and the skip list the sync reads:
-      // refused while the companion's own sync runs, and a sync waits for it.
-      return entry.kind === 'transaction-removed'
+      // A removal's Undo/Redo writes the row and the skip list the sync reads,
+      // a payback's the row and the overrides: refused while the companion's
+      // own sync runs, and a sync waits for it.
+      return entry.kind === 'transaction-removed' || entry.kind === 'payback-filed'
         ? runCompanionFixExclusive(run, (): UndoOutcome => ({ ok: false, message: FIX_SYNC_RUNNING }))
         : run();
     },

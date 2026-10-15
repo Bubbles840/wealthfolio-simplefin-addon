@@ -828,21 +828,37 @@ describe('filing a transaction', () => {
     expect(h.ui.answer).toHaveBeenLastCalledWith();
   });
 
-  it('renders what Wealthfolio said and keeps the previous screen for Back', async () => {
+  it('says plainly that Wealthfolio did not take it — never its words — and keeps the previous screen for Back', async () => {
     const h = setup();
     const picker = await openAtTxn(h);
     h.deps.assign.mockRejectedValue(new Error('403 Forbidden: token *expired*'));
     await h.tap(dataFor(picker, 'Entertainment'));
     const failure = lastCall(h.ui.edit);
-    // Escaped: the text is Markdown-parsed, and an unbalanced `*` from an API
-    // body makes Telegram refuse the edit outright — a screen that never appears.
-    expect(failure[0]).toBe('Couldn\'t file that — Wealthfolio said: 403 Forbidden: token \\*expired\\*');
+    // Wealthfolio's text goes to the log only (W9).
+    expect(failure[0]).toBe('Couldn\'t file that — Wealthfolio didn\'t take it, so it still has no category.');
+    expect(failure[0]).not.toContain('403');
     expect(labels(keyboardOf(failure))).toEqual(['‹ Back', 'Done']);
     expect(h.deps.republish).not.toHaveBeenCalled();
     expect(h.logs.join('\n')).toContain('403 Forbidden');
     // Back returns to the picker the tap came from — nothing is retried on its own.
     await h.tap(dataFor(keyboardOf(failure), '‹ Back'));
     expect(lastCall(h.ui.edit)[0]).toBe('BOOK STORES a\n-$12 · Aug 8 · Citi Double Cash');
+  });
+
+  it.each([
+    ['400 Bad Request: Neutral transfers cannot be categorized. Change or unlink the transfer if it should count as spending.',
+      'The transaction is not counted as spending or income at all, so no category can be attached to it as it stands.'],
+    ['400 Bad Request: Income activities can only use income categories. Categories label the cash-flow bucket; they do not change it.',
+      'It is recorded as money in and can only take an income category while that is true.'],
+    ['400 - {"message":"Activity account is not opted into spending tracking"}', 'Its account is not set up for spending tracking.'],
+    ['400 - Spending tracking is disabled', 'Spending tracking is off in Wealthfolio.'],
+  ])('maps Wealthfolio’s refusal "%s" to the add-on’s own sentence', async (raw, line) => {
+    const h = setup();
+    const picker = await openAtTxn(h);
+    h.deps.assign.mockRejectedValue(new Error(raw));
+    await h.tap(dataFor(picker, 'Entertainment'));
+    expect(lastCall(h.ui.edit)[0]).toBe(`Couldn't file that — Wealthfolio didn't take it, so it still has no category.\n${line}`);
+    expect(h.logs.join('\n')).toContain(raw);
   });
 
   it('does not file a row that stopped being uncategorized between taps', async () => {
@@ -1294,7 +1310,7 @@ describe('nothing escapes to the listener', () => {
     await expect(controller.onCallback({ data: picker, chatId: CHAT, messageId: 1 }, h.ui)).resolves.toBeUndefined();
     const catToken = dataFor(keyboardOf(lastCall(h.ui.edit)), 'Entertainment');
     await expect(controller.onCallback({ data: catToken, chatId: CHAT, messageId: 1 }, h.ui)).resolves.toBeUndefined();
-    expect(lastCall(h.ui.edit)[0]).toBe('Couldn\'t file that — Wealthfolio said: 403');
+    expect(lastCall(h.ui.edit)[0]).toBe('Couldn\'t file that — Wealthfolio didn\'t take it, so it still has no category.');
   });
 });
 
@@ -1842,7 +1858,7 @@ describe('reassign — the cross-taxonomy move', () => {
     expect(h.deps.unassignTaxonomy).toHaveBeenCalledWith('a', INCOME_TAXONOMY_ID);
     const failure = lastCall(h.ui.edit);
     expect(failure[0]).toBe(
-      'Couldn\'t move that — Wealthfolio said: 500 Internal Server Error'
+      'Couldn\'t move that — Wealthfolio didn\'t take the new category.'
       + '\n\nThe new category was NOT set, and the old one is already cleared — '
       + 'this transaction is uncategorized now, so /categorize will offer it.',
     );
@@ -2145,7 +2161,7 @@ describe('undoing a reassignment', () => {
     h.deps.assign.mockRejectedValue(new Error('500 Internal Server Error'));
     await h.tap(dataFor(refiled, '↩ Undo'));
     expect(lastCall(h.ui.edit)[0]).toBe(
-      'Couldn\'t undo that — Wealthfolio said: 500 Internal Server Error'
+      'Couldn\'t undo that — Wealthfolio didn\'t take the old category back.'
       + '\n\nThe old category was NOT restored, and the one the move set is already cleared — '
       + 'this transaction is uncategorized now, so /categorize will offer it.',
     );

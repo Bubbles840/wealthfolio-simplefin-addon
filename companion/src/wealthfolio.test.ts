@@ -321,6 +321,19 @@ describe('WealthfolioClient', () => {
     });
   });
 
+  it('createCategorizationRule files one activity type only when asked: a payback rule (W10)', async () => {
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({}) });
+    const client = new WealthfolioClient('http://wf');
+    await client.createCategorizationRule({
+      name: 'Telegram payback: VENMO CASHOUT', pattern: 'VENMO CASHOUT', categoryId: 'cat-rest', taxonomyId: 'spending_categories', priority: 50,
+      accountId: 'wf-chk', activityType: 'CREDIT',
+    });
+    expect(JSON.parse((mockFetch.mock.calls[0][1] as any).body)).toEqual({
+      name: 'Telegram payback: VENMO CASHOUT', pattern: 'VENMO CASHOUT', matchType: 'contains', taxonomyId: 'spending_categories',
+      categoryId: 'cat-rest', priority: 50, isGlobal: false, accountId: 'wf-chk', activityType: 'CREDIT',
+    });
+  });
+
   it('createCategorizationRule resolves the id of the rule the server stored', async () => {
     // Upstream answers with the stored rule (Json<CategorizationRule>, camelCase).
     mockFetch.mockResolvedValueOnce({

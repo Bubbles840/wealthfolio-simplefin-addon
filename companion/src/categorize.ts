@@ -59,8 +59,12 @@
 
 import {
   applyTap,
+  ASSIGN_FAILED_TEXT,
+  assignFailureText,
   layoutScreen,
+  REFILE_ASSIGN_FAILED_TEXT,
   renderScreen,
+  UNDO_ASSIGN_FAILED_TEXT,
   type CategorizeTxn,
   type MenuAction,
   type MenuScreen,
@@ -81,6 +85,10 @@ import { visibleUncategorized, type DismissalLedger } from '../../shared/uncateg
 import { descriptionFromComment, txIdFromComment } from '../../shared/sync-core.js';
 import { categoryFiledChange, categoryRuleCreatedChange, type ChangeDraft, type FiledCategory } from '../../shared/change-entries.js';
 import { buildGuessIndex, guessCategory, guessSinceDay, type GuessIndex, type PastFiling } from '../../shared/category-guess.js';
+import type { PaybackBreadth, PaybackChoice, PaybackOutcome, PaybackRulesInput, PaybackRulesOutcome } from '../../shared/payback.js';
+import { PAYBACK_CATEGORY_GONE, PAYBACK_UNAVAILABLE, PAYBACK_UNREACHABLE } from '../../shared/payback-copy.js';
+import { paybackRulePattern } from '../../shared/rule-pattern.js';
+import { removalFingerprint } from '../../shared/tx-remove.js';
 import { uncategorizedWindow } from './uncategorized-status.js';
 
 /**
@@ -129,6 +137,10 @@ export interface CategorizeSourceRow {
   direction?: 'in' | 'out';
   /** See `NativeUncategorizedTx.incomeEligible`. */
   incomeEligible?: boolean;
+  /** See `NativeUncategorizedTx.activityType` / `.pending` (1.62): the payback
+   *  switch is for a posted DEPOSIT only. */
+  activityType?: string;
+  pending?: boolean;
 }
 
 /** One taxonomy's assignment on a row — `NativeAssignment` from
@@ -261,6 +273,21 @@ export interface CategorizeDeps {
   /** The change log: one draft per write that succeeded. Optional (most tests
    *  leave it out); read at call time; a throw is logged and swallowed. */
   record?: (draft: ChangeDraft) => void;
+  /** 1.62 (W6): files a deposit as a payback — `filePayback` over the
+   *  companion's REST host, refused while its own sync runs. It records its own
+   *  change-log entry. Optional: without it a payback tap is refused, in words. */
+  payback?: (choice: PaybackChoice) => Promise<PaybackOutcome>;
+  /** 1.62 (W10): "Make every <pattern> deposit a payback" — `makePaybackRules`
+   *  over the companion's host; it records its own change-log entries.
+   *  Optional: without it the offer's tap is refused, in words. */
+  paybackRules?: (input: PaybackRulesInput) => Promise<PaybackRulesOutcome>;
+  /** 1.62 (W10): the preview's breadth check, computed from the ledger — how
+   *  many money-in rows of the last 90 days the new rule would decide, split
+   *  filed / waiting (`waitingIds` are the ones still waiting for a category).
+   *  Optional, and a failure only leaves the counts out. */
+  paybackBreadth?: (input: {
+    pattern: string; account: { id: string; name: string }; sourceId: string; description: string; waitingIds: string[];
+  }) => Promise<PaybackBreadth>;
   /** 1.61: the transaction screen's 🔎 Why? — sends that transaction's story
    *  as a NEW message (companion/src/why-menu.ts). Optional: without it the
    *  button is not offered. */
@@ -357,7 +384,6 @@ const RULE_READ_FAILED_PREFIX = 'Couldn\'t set that rule up — ';
  *  and the same reason `RECATEGORIZE_GONE_NOTE` exists in the pure machine. */
 const RECATEGORIZE_NO_DATABASE_TEXT = 'The companion has no database access right now, so it can\'t look up your transactions.';
 const RECATEGORIZE_READ_FAILED_PREFIX = 'Couldn\'t look up your transactions — ';
-const ASSIGN_FAILED_PREFIX = 'Couldn\'t file that — Wealthfolio said: ';
 const UNDO_FAILED_PREFIX = 'Couldn\'t undo that — Wealthfolio said: ';
 const DISMISS_FAILED_PREFIX = 'Couldn\'t save that — Wealthfolio said: ';
 const RULE_FAILED_PREFIX = 'Couldn\'t create that rule — Wealthfolio said: ';
@@ -423,7 +449,7 @@ const PENDING_CHAT_ID = 0;
  *  screen gets the fresh data alone — that is what makes a row filed elsewhere
  *  disappear instead of lingering. */
 const PINNED_SCREEN_KINDS: ReadonlySet<MenuScreen['kind']> = new Set([
-  'filed', 'dismissed', 'rulePreview', 'ruleCreated', 'refiled',
+  'filed', 'dismissed', 'rulePreview', 'ruleCreated', 'refiled', 'paybackResult', 'paybackRulePreview', 'paybackRulesResult',
 ]);
 
 function pinnedActivityId(screen: MenuScreen): string | null {
@@ -685,6 +711,9 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
       ...(r.wfAccountId ? { accountId: r.wfAccountId } : {}),
       ...(r.direction ? { direction: r.direction } : {}),
       ...(r.incomeEligible !== undefined ? { incomeEligible: r.incomeEligible } : {}),
+      ...(r.activityType !== undefined ? { activityType: r.activityType } : {}),
+      ...(r.pending !== undefined ? { pending: r.pending } : {}),
+      note: r.notes,
     };
   }
 
@@ -1125,9 +1154,27 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
     ui: CategorizeUi,
   ): Promise<void> {
     switch (action.kind) {
-      case 'goto':
-        await transition(chat, action.screen, carryPin(chat, action.screen), ui);
+      case 'goto': {
+        let target = action.screen;
+        if (target.kind === 'paybackRulePreview' && deps.paybackBreadth) {
+          // W10: the breadth is read from the ledger as the preview opens.
+          const row = rowFor(chat, target.activityId);
+          if (row?.accountId) {
+            try {
+              const breadth = await deps.paybackBreadth({
+                pattern: paybackRulePattern(row.description), account: { id: row.accountId, name: row.accountName },
+                sourceId: row.activityId, description: row.description, waitingIds: chat.session.txns.map((t) => t.activityId),
+              });
+              target = { ...target, breadth };
+            } catch (err) {
+              safeLog(`Categorize menu: the payback rules' breadth for ${target.activityId} failed: ${formatError(err)}`);
+              target = { ...target, breadthFailed: true };
+            }
+          }
+        }
+        await transition(chat, target, carryPin(chat, target), ui);
         return;
+      }
 
       case 'why':
         // A NEW message: the screen, its session and its buttons stay exactly
@@ -1181,7 +1228,8 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
         } catch (err) {
           const message = formatError(err);
           safeLog(`Categorize menu: filing ${action.activityId} failed: ${message}`);
-          await showError(chat, `${ASSIGN_FAILED_PREFIX}${escapeMarkdown(message)}`, ui);
+          // Never Wealthfolio's own words (W9): they are logged above.
+          await showError(chat, assignFailureText(ASSIGN_FAILED_TEXT, message), ui);
           return;
         }
         record(() => categoryFiledChange({
@@ -1205,6 +1253,107 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
           row,
           ui,
         );
+        return;
+      }
+
+      case 'payback': {
+        // 1.62 (W6): a spending category picked for a deposit files it as a
+        // payback. The runner re-reads the row by id before it writes; this
+        // sweep only checks the row still needs a category. What the menu
+        // showed is taken from the session BEFORE the sweep replaces it (PB-B M1).
+        const drawn = rowFor(chat, action.activityId);
+        const loaded = await load(chat.mode);
+        if (!loaded.ok) {
+          await showError(chat, failureText(loaded.failure, chat.session.screen, chat.mode), ui);
+          return;
+        }
+        const row = loaded.fresh.txns.find((t) => t.activityId === action.activityId) ?? null;
+        const category = loaded.fresh.categories.find((c) => c.id === action.categoryId) ?? null;
+        if (!row) {
+          await showGone(chat, action.activityId, loaded.fresh, ui);
+          return;
+        }
+        if (!category) {
+          // The row is still there; the category the grid offered is not (PB-I m3).
+          const { text, keyboard } = show(chat, { kind: 'txn', activityId: action.activityId }, null, loaded.fresh);
+          await ui.edit(`${PAYBACK_CATEGORY_GONE}\n\n${text}`, keyboard);
+          return;
+        }
+        // The fingerprint `filePayback` makes of its own row: same account name,
+        // note, absolute cents and day, the type of a deposit.
+        const shown = drawn
+          ? removalFingerprint({
+              activityId: drawn.activityId, note: drawn.note ?? drawn.description, absCents: drawn.amountCents, date: drawn.date,
+              activityType: drawn.activityType ?? 'DEPOSIT', accountName: drawn.accountName,
+            })
+          : undefined;
+        let outcome: PaybackOutcome;
+        if (!deps.payback) {
+          outcome = { kind: 'refused', message: PAYBACK_UNAVAILABLE };
+        } else {
+          try {
+            outcome = await deps.payback({
+              activityId: row.activityId, categoryId: category.id, categoryName: category.name, parentName: category.parentName,
+              ...(shown !== undefined ? { shown } : {}),
+            });
+          } catch (err) {
+            safeLog(`Categorize menu: the payback for ${action.activityId} failed: ${formatError(err)}`);
+            outcome = { kind: 'refused', message: PAYBACK_UNREACHABLE };
+          }
+        }
+        if (outcome.kind === 'refused') {
+          const { text, keyboard } = show(chat, { kind: 'paybackRefused', activityId: row.activityId, text: outcome.message }, null, loaded.fresh);
+          await ui.edit(text, keyboard);
+          return;
+        }
+        await republishQuietly();
+        // Drawn from the sweep in hand, never a second read: a read that failed
+        // now would hide what was just written.
+        const { text, keyboard } = show(chat, {
+          kind: 'paybackResult', activityId: row.activityId, categoryId: category.id, text: outcome.message, offerRules: outcome.kind === 'filed',
+        }, row, loaded.fresh);
+        await ui.edit(text, keyboard);
+        return;
+      }
+
+      case 'paybackRules': {
+        // W10, from the preview: the deposit just filed (pinned — it no longer
+        // needs a category) gives the pattern and the account.
+        const row = rowFor(chat, action.activityId);
+        const category = chat.session.categories.find((c) => c.id === action.categoryId) ?? null;
+        if (!row || !row.accountId || !category) {
+          const loaded = await load(chat.mode);
+          if (!loaded.ok) {
+            await showError(chat, failureText(loaded.failure, chat.session.screen, chat.mode), ui);
+            return;
+          }
+          await showGone(chat, action.activityId, loaded.fresh, ui);
+          return;
+        }
+        let outcome: PaybackRulesOutcome;
+        if (!deps.paybackRules) {
+          outcome = { ok: false, message: PAYBACK_UNAVAILABLE };
+        } else {
+          try {
+            outcome = await deps.paybackRules({
+              pattern: paybackRulePattern(row.description), account: { id: row.accountId, name: row.accountName },
+              categoryId: category.id, categoryName: category.name, description: row.description, sourceId: row.activityId,
+              categories: chat.session.categories.map((c) => ({ id: c.id, name: c.name })),
+            });
+          } catch (err) {
+            safeLog(`Categorize menu: the payback rules for ${action.activityId} failed: ${formatError(err)}`);
+            outcome = { ok: false, message: PAYBACK_UNREACHABLE };
+          }
+        }
+        if (outcome.ok) await republishQuietly();
+        // Drawn from what the session holds, never a second read: the rules may
+        // exist now, and a failed read must not hide that — nor leave the
+        // preview's Create button standing for a second tap.
+        const { text, keyboard } = show(chat, { kind: 'paybackRulesResult', activityId: row.activityId, text: outcome.message }, row, {
+          txns: chat.session.txns, categories: chat.session.categories, incomeCategories: chat.session.incomeCategories ?? [],
+          ledger: {}, assignments: NO_ASSIGNMENTS, buckets: NO_BUCKETS,
+        });
+        await ui.edit(text, keyboard);
         return;
       }
 
@@ -1575,7 +1724,8 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
             // and when a delete did land the row has no category at all now.
             await showError(
               chat,
-              `${REFILE_FAILED_PREFIX}${escapeMarkdown(message)}`
+              // Never Wealthfolio's own words (W9): they are logged above.
+              assignFailureText(REFILE_ASSIGN_FAILED_TEXT, message)
               + (cleared === 0 ? REFILE_UNCHANGED_SUFFIX : REFILE_CLEARED_SUFFIX),
               ui,
             );
@@ -1680,7 +1830,12 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
           const suffix = restored === 0
             ? (cleared ? UNDO_CLEARED_SUFFIX : UNDO_UNCHANGED_SUFFIX)
             : UNDO_PARTIAL_SUFFIX;
-          await showError(chat, `${UNDO_FAILED_PREFIX}${escapeMarkdown(message)}${suffix}`, ui);
+          // The delete either was not needed or landed, so an assign failed:
+          // never Wealthfolio's own words for that (W9).
+          const lead = keepsSpending || cleared
+            ? assignFailureText(UNDO_ASSIGN_FAILED_TEXT, message)
+            : `${UNDO_FAILED_PREFIX}${escapeMarkdown(message)}`;
+          await showError(chat, `${lead}${suffix}`, ui);
           return;
         }
         const back = replay[0];
@@ -1699,6 +1854,12 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
         await republishQuietly();
         await transition(chat, { ...screen, undone: true }, pin, ui);
         return;
+      }
+
+      default: {
+        // Exhaustive: a new action kind must be handled above.
+        const unhandled: never = action;
+        void unhandled;
       }
     }
   }

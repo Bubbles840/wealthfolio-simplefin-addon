@@ -119,6 +119,33 @@ export function addonUnderstandsVenmoNotes(installedAddonVersion: string | null)
   return installedAddonVersion !== null && isAtLeastVersion(installedAddonVersion.trim(), VENMO_NOTE_SINCE);
 }
 
+/**
+ * The first release whose BOTH halves read `asReimbursement`, the override a
+ * payback sets (1.62.0, W6–W8). A reader of 1.61.0 keeps a flag it does not
+ * know (it is not corruption, P3-B) but ignores it, so its sync would turn a
+ * payback back into a deposit. So Telegram's payback, its Undo and its Redo —
+ * and "Make every … deposit a payback" — wait for an INSTALLED add-on this
+ * new (refused while the companion cannot tell), and the app's paybacks and
+ * their Undo wait for a companion this new. The same pattern as
+ * `VENMO_NOTE_SINCE`.
+ *
+ * Raise to the release that ships this.
+ */
+export const PAYBACK_SINCE = '1.62.0';
+
+/** The app's half: a companion that reads `asReimbursement`. No companion at
+ *  all (null) is true: nothing else is syncing that could ignore it. */
+export function companionUnderstandsPaybacks(companionVersion: string | null): boolean {
+  if (companionVersion === null) return true;
+  return isAtLeastVersion(companionVersion.trim(), PAYBACK_SINCE);
+}
+
+/** The companion's half: an installed add-on that reads `asReimbursement`.
+ *  Unknown (null — the companion cannot see the addons directory) is false. */
+export function addonUnderstandsPaybacks(installedAddonVersion: string | null): boolean {
+  return installedAddonVersion !== null && isAtLeastVersion(installedAddonVersion.trim(), PAYBACK_SINCE);
+}
+
 /** The companion writes the version in the INSTALLED addon's manifest here
  *  (read off disk), so a browser tab can tell "I am an old bundle — reload me"
  *  apart from "the old zip is still installed — upload the new one". */

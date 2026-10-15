@@ -1,0 +1,488 @@
+import { describe, it, expect, vi } from 'vitest';
+import { categoryRuleCreatedChange, mappingRuleCreatedChange, stampChange, type ChangeDraft, type ChangeEntry } from './change-entries.js';
+import type { ChangeLogItem } from './change-log.js';
+import { addonGateCovers } from './change-undo.js';
+import { MAPPING_RULES_SECRET_KEY, runChangeUndo, UNDO_MAPPING_RULES_UNREADABLE, type UndoIo } from './change-undo-run.js';
+import { createFakeHost } from './fake-host.js';
+import { mapTransactionWithSource, paybackMappingRule, ruleApplies, sameMappingRule } from './mapper.js';
+import { makePaybackRules, paybackBreadth, paybackPatternRefusal, type PaybackRulesInput, type PaybackRulesIo } from './payback.js';
+import {
+  PAYBACK_CAT_RULE_REDONE, PAYBACK_CAT_RULE_UNDONE, PAYBACK_RULES_EXIST, PAYBACK_RULES_GENERIC, PAYBACK_RULES_REFUSED, PAYBACK_RULES_SAVE_FAILED,
+  PAYBACK_RULES_UNSURE, PAYBACK_RULES_TRANSFER_WORDS, PAYBACK_RULES_TRANSFER_ROWS, PAYBACK_TX_RULE_REDONE, PAYBACK_TX_RULE_UNDONE, PAYBACK_UNREACHABLE, PAYBACK_UPDATE_ADDON, paybackRulesBehind, paybackRulesConflict, paybackRulesStuck, paybackRulesTakesOver,
+} from './payback-copy.js';
+import { bankWords, categoryRulePattern, paybackRulePattern } from './rule-pattern.js';
+import type { MappingRule } from './types.js';
+import { INSTALLED_ADDON_VERSION_SECRET_KEY } from './version.js';
+
+const NOW = new Date('2026-10-14T15:00:00Z');
+/** The day a rule made at NOW carries as `since`: the day BEFORE its UTC day. */
+const TODAY = '2026-10-13';
+const RULE = paybackMappingRule('JANE DOE VENMO', 'wf-chk', TODAY);
+const GLOBAL: MappingRule = { pattern: 'VENMO', matchType: 'contains', activityType: 'TRANSFER_IN' };
+const INPUT: PaybackRulesInput = {
+  pattern: 'JANE DOE VENMO', account: { id: 'wf-chk', name: 'PNC Checking' }, categoryId: 'cat-rest', categoryName: 'Restaurants',
+  description: 'JANE DOE VENMO · Venmo: Dinner',
+};
+
+describe('a payback rule (W10)', () => {
+  it('reads money in only, in its one account', () => {
+    expect(RULE).toEqual({
+      pattern: 'JANE DOE VENMO', matchType: 'contains', activityType: 'CREDIT', subtype: 'REIMBURSEMENT', onlyMoneyIn: true, accountId: 'wf-chk', since: TODAY,
+    });
+    expect(ruleApplies(RULE, 'JANE DOE VENMO 1023', 25, 'wf-chk', TODAY)).toBe(true);
+    expect(ruleApplies(RULE, 'JANE DOE VENMO 1023', -25, 'wf-chk', TODAY)).toBe(false);
+    expect(ruleApplies(RULE, 'JANE DOE VENMO 1023', 0, 'wf-chk', TODAY)).toBe(false);
+    expect(ruleApplies(RULE, 'JANE DOE VENMO 1023', 25, 'wf-sav', TODAY)).toBe(false);
+    expect(ruleApplies(RULE, 'JANE DOE VENMO 1023', 25, undefined, TODAY)).toBe(false);
+  });
+
+  it('reads only transactions dated on or after the day it was made (I1)', () => {
+    expect(ruleApplies(RULE, 'JANE DOE VENMO 1023', 25, 'wf-chk', '2026-10-12')).toBe(false);
+    expect(ruleApplies(RULE, 'JANE DOE VENMO 1023', 25, 'wf-chk', '2026-10-15')).toBe(true);
+    expect(ruleApplies(RULE, 'JANE DOE VENMO 1023', 25, 'wf-chk')).toBe(false);
+    // A rule without `since` reads any day, as it always did.
+    expect(ruleApplies({ ...RULE, since: undefined }, 'JANE DOE VENMO 1023', 25, 'wf-chk', '2020-01-01')).toBe(true);
+  });
+
+  it('types money in a payback, and leaves a payment out and another account as they were', () => {
+    expect(mapTransactionWithSource('JANE DOE VENMO 1023', 25, [RULE], 'CASH', 'wf-chk', TODAY)).toEqual({ type: 'CREDIT', fromRule: true, subtype: 'REIMBURSEMENT', createOnly: true });
+    expect(mapTransactionWithSource('JANE DOE VENMO 1023', -25, [RULE], 'CASH', 'wf-chk', TODAY)).toEqual({ type: 'WITHDRAWAL', fromRule: false });
+    expect(mapTransactionWithSource('JANE DOE VENMO 1023', 25, [RULE], 'CASH', 'wf-sav', TODAY)).toEqual({ type: 'DEPOSIT', fromRule: false });
+  });
+
+  it('leaves every older rule as it always read: either way, any account', () => {
+    expect(ruleApplies(GLOBAL, 'VENMO PAYMENT', -25)).toBe(true);
+    expect(ruleApplies(GLOBAL, 'VENMO PAYMENT', 25, 'wf-any')).toBe(true);
+    expect(ruleApplies({ pattern: '(', matchType: 'regex', activityType: 'DEPOSIT' }, 'x', 1)).toBe(false);
+  });
+
+  it('is a different rule from one with the same words but no limits', () => {
+    const plain: MappingRule = { pattern: 'JANE DOE VENMO', matchType: 'contains', activityType: 'CREDIT', subtype: 'REIMBURSEMENT' };
+    expect(sameMappingRule(RULE, { ...RULE })).toBe(true);
+    expect(sameMappingRule(RULE, plain)).toBe(false);
+    expect(sameMappingRule(RULE, { ...RULE, accountId: 'wf-sav' })).toBe(false);
+    expect(sameMappingRule(RULE, { ...RULE, since: '2026-10-01' })).toBe(false);
+  });
+
+  it('is built from the bank’s words, not the note the sync added', () => {
+    expect(bankWords('VENMO CASHOUT · Venmo: Dinner')).toBe('VENMO CASHOUT');
+    expect(bankWords('AMAZON MKTPL*2K4 · Amazon: Lawn')).toBe('AMAZON MKTPL*2K4');
+    expect(paybackRulePattern('ZELLE FROM JANE DOE 8ZK1 · Venmo: Rent')).toBe('ZELLE FROM JANE DOE');
+  });
+
+  it('drops a leading reference token and a trailing date with its reference, for paybacks only (M4)', () => {
+    expect(paybackRulePattern('*1234 CASHOUT VENMO ACH CREDIT')).toBe('CASHOUT VENMO ACH CREDIT');
+    expect(paybackRulePattern('ZELLE FROM JANE DOE ON 10/09 REF # PNCAA0B1C2D3')).toBe('ZELLE FROM JANE DOE');
+    expect(categoryRulePattern('ZELLE FROM JANE DOE ON 10/09 REF # PNCAA0B1C2D3')).not.toBe('ZELLE FROM JANE DOE');
+  });
+
+  it('refuses a pattern made only of generic bank words (I1)', () => {
+    expect(paybackPatternRefusal(paybackRulePattern('DEPOSIT 123456'))).toBe(PAYBACK_RULES_GENERIC);
+    expect(paybackPatternRefusal('DIRECT DEPOSIT ACH')).toBe(PAYBACK_RULES_GENERIC);
+    expect(paybackPatternRefusal('MOBILE DEPOSIT')).toBe(PAYBACK_RULES_GENERIC);
+    for (const generic of ['ATM DEPOSIT', 'BRANCH DEPOSIT ON', 'INCOMING WIRE', 'EDEPOSIT IN BRANCH', 'XFER FROM SAVINGS', 'REMOTE DEP', 'BANK EFT']) {
+      expect(paybackPatternRefusal(generic)).toBe(PAYBACK_RULES_GENERIC);
+    }
+    // The money's source is not generic: a Venmo cash-out is the headline case.
+    expect(paybackPatternRefusal('VENMO CASHOUT')).toBeNull();
+    expect(paybackPatternRefusal(paybackRulePattern('*1234 CASHOUT VENMO ACH CREDIT'))).toBeNull();
+    expect(paybackPatternRefusal('ZELLE FROM JANE DOE')).toBeNull();
+    expect(paybackPatternRefusal('ACME PAYROLL')).toBeNull();
+  });
+});
+
+describe('the preview breadth (I1, M6)', () => {
+  const row = (id: string, description: string, amount = 14) => ({ id, description, amount });
+  const rows = [
+    row('self', 'JANE DOE VENMO'),
+    row('waiting', 'JANE DOE VENMO 7781'),
+    row('filed', 'JANE DOE VENMO · Venmo: Rent'),
+    row('filed2', 'JANE DOE VENMO 1'),
+    row('out', 'JANE DOE VENMO REVERSAL', -14),
+    row('payroll', 'DIRECT DEPOSIT ACME PAYROLL', 2000),
+  ];
+  const base = { pattern: 'JANE DOE VENMO', accountId: 'wf-chk', since: TODAY, source: { id: 'self', description: 'JANE DOE VENMO' }, rows, waitingIds: new Set(['waiting', 'self']) };
+
+  it('counts stored money-in rows the new rule would decide, split filed and waiting, over the whole list', () => {
+    expect(paybackBreadth({ ...base, list: [] })).toEqual({ ok: true, filed: 2, waiting: 1 });
+  });
+
+  it('is not shadowed by an earlier rule in the list: the new rule sits first and decides those rows', () => {
+    const earlier: MappingRule = { pattern: 'VENMO', matchType: 'contains', activityType: 'DEPOSIT' };
+    const broad: MappingRule = { pattern: 'JANE DOE', matchType: 'contains', activityType: 'DEPOSIT' };
+    expect(paybackBreadth({ ...base, list: [earlier, broad] })).toEqual({ ok: true, filed: 2, waiting: 1 });
+  });
+
+  it('counts neither grouped rows nor a row already typed a transfer by something else as deposits in the ledger (m1)', () => {
+    const more = [...rows, { ...row('g1', 'JANE DOE VENMO 6'), grouped: true }, { ...row('d1', 'JANE DOE VENMO 7'), type: 'DEPOSIT' }];
+    expect(paybackBreadth({ ...base, rows: more, list: [] })).toEqual({ ok: true, filed: 3, waiting: 1 });
+  });
+
+  it('refuses, naming the rule, when a transfer rule decides ledger rows today and this rule would take them over (m2)', () => {
+    const transfer: MappingRule = { pattern: 'JANE DOE VENMO FROM SAVINGS', matchType: 'contains', activityType: 'TRANSFER_IN' };
+    const out = paybackBreadth({ ...base, list: [transfer], rows: [...rows, { ...row('s1', 'JANE DOE VENMO FROM SAVINGS 9'), type: 'TRANSFER_IN' }] });
+    expect(out).toEqual({ ok: false, message: paybackRulesTakesOver('JANE DOE VENMO FROM SAVINGS') });
+  });
+
+  it('PB-M m-a: refuses a pattern the bank-transfer keywords match, with no ledger row needed', () => {
+    const out = paybackBreadth({ ...base, pattern: 'PNC BANK TRANSFER JANE', source: { id: 'self', description: 'PNC BANK TRANSFER JANE' }, list: [] });
+    expect(out).toEqual({ ok: false, message: PAYBACK_RULES_TRANSFER_WORDS('PNC BANK TRANSFER JANE') });
+  });
+
+  it('PB-M m-a: refuses when ANY ledger row typed TRANSFER_* matches, whatever typed it (a keyword, not a rule)', () => {
+    const out = paybackBreadth({ ...base, list: [], rows: [...rows, { ...row('k1', 'JANE DOE VENMO 5'), type: 'TRANSFER_IN' }] });
+    expect(out).toEqual({ ok: false, message: PAYBACK_RULES_TRANSFER_ROWS('JANE DOE VENMO') });
+  });
+
+  it('PB-M m-a: statically refuses when an existing TRANSFER_* contains-rule’s pattern contains the new one', () => {
+    const transfer: MappingRule = { pattern: 'JANE DOE VENMO FROM SAVINGS', matchType: 'contains', activityType: 'TRANSFER_IN' };
+    expect(paybackBreadth({ ...base, list: [transfer] })).toEqual({ ok: false, message: paybackRulesTakesOver('JANE DOE VENMO FROM SAVINGS') });
+    // A transfer rule broader than the new pattern is checked against the rows: it decides them today.
+    const broad: MappingRule = { pattern: 'VENMO', matchType: 'contains', activityType: 'TRANSFER_IN' };
+    expect(paybackBreadth({ ...base, list: [broad] })).toEqual({ ok: false, message: paybackRulesTakesOver('VENMO') });
+    expect(paybackBreadth({ ...base, list: [broad], rows: [row('only', 'ZELLE FROM JANE')] })).toMatchObject({ ok: true });
+  });
+
+  it('refuses a generic pattern in words', () => {
+    expect(paybackBreadth({ ...base, pattern: 'DEPOSIT', source: { id: 'self', description: 'DEPOSIT 123456' }, list: [] }))
+      .toEqual({ ok: false, message: PAYBACK_RULES_GENERIC });
+  });
+});
+
+/** The add-on's secrets, Wealthfolio's rules, and the change log, in memory. */
+function world(over: { mapping?: string | null; wfRules?: Array<Record<string, any>>; io?: Partial<PaybackRulesIo> } = {}) {
+  const data = new Map<string, string>();
+  if (over.mapping !== null) data.set(MAPPING_RULES_SECRET_KEY, over.mapping ?? JSON.stringify([GLOBAL]));
+  const wfRules: Array<Record<string, any>> = [...(over.wfRules ?? [])];
+  const logged: ChangeEntry[] = [];
+  const io: PaybackRulesIo = {
+    gate: async () => null,
+    secrets: { get: async (k) => data.get(k) ?? null, set: vi.fn(async (k: string, v: string) => { data.set(k, v); }) },
+    categoryRules: async () => wfRules.map((r) => ({ ...r })) as any,
+    createCategoryRule: vi.fn(async (r) => { wfRules.push({ id: 'rule-9', ...r }); return 'rule-9'; }),
+    record: vi.fn(async (d: ChangeDraft) => { logged.push(stampChange(d, 'companion', NOW)); }),
+    log: vi.fn(),
+    ...(over.io ?? {}),
+  };
+  const mapping = () => JSON.parse(data.get(MAPPING_RULES_SECRET_KEY) ?? '[]') as MappingRule[];
+  return { io, data, wfRules, logged, mapping };
+}
+
+describe('makePaybackRules', () => {
+  it('appends the transaction rule, makes Wealthfolio’s rule for paybacks in this account, and logs both', async () => {
+    const w = world();
+    expect(await makePaybackRules(INPUT, w.io, NOW)).toEqual({
+      ok: true, message: 'Done — every JANE DOE VENMO deposit into PNC Checking is a payback under Restaurants from now on. Undo either rule from /changes.',
+    });
+    expect(w.mapping()).toEqual([RULE, GLOBAL]);
+    expect(w.io.createCategoryRule).toHaveBeenCalledWith({
+      name: 'Telegram payback: JANE DOE VENMO', pattern: 'JANE DOE VENMO', categoryId: 'cat-rest', accountId: 'wf-chk', activityType: 'CREDIT',
+    });
+    expect(w.logged.map((e) => [e.kind, e.summary])).toEqual([
+      ['mapping-rule-created', 'Added a transaction rule: "JANE DOE VENMO" deposits into PNC Checking are paybacks'],
+      ['category-rule-created', 'Created a rule: paybacks containing "JANE DOE VENMO" in PNC Checking go to Restaurants'],
+    ]);
+    expect(w.logged[0].after).toMatchObject({ index: 0, rule: { since: TODAY } });
+    expect(w.logged[1].after).toMatchObject({ ruleId: 'rule-9', accountId: 'wf-chk', activityType: 'CREDIT' });
+  });
+
+  it('waits for an add-on that reads the rule’s limits, and writes nothing', async () => {
+    const w = world({ io: { gate: async () => PAYBACK_UPDATE_ADDON } });
+    expect(await makePaybackRules(INPUT, w.io, NOW)).toEqual({ ok: false, message: PAYBACK_UPDATE_ADDON });
+    expect(w.io.secrets.set).not.toHaveBeenCalled();
+    expect(w.io.createCategoryRule).not.toHaveBeenCalled();
+  });
+
+  it('says it couldn’t reach Wealthfolio, and logs why, when the gate cannot read the add-on’s version', async () => {
+    const w = world({ io: { gate: async () => { throw new Error('secrets down'); } } });
+    expect(await makePaybackRules(INPUT, w.io, NOW)).toEqual({ ok: false, message: PAYBACK_UNREACHABLE });
+    expect(w.io.log).toHaveBeenCalledWith(expect.stringContaining('secrets down'));
+    expect(w.io.secrets.set).not.toHaveBeenCalled();
+    expect(w.io.createCategoryRule).not.toHaveBeenCalled();
+  });
+
+  it('refuses a pattern of only generic bank words, in plain words, and writes nothing (I1)', async () => {
+    const w = world();
+    const input = { ...INPUT, pattern: 'DEPOSIT', description: 'DEPOSIT 123456' };
+    expect(await makePaybackRules(input, w.io, NOW)).toEqual({ ok: false, message: PAYBACK_RULES_GENERIC });
+    expect(w.io.secrets.set).not.toHaveBeenCalled();
+    expect(w.io.createCategoryRule).not.toHaveBeenCalled();
+  });
+
+  it('PB-M m-a: refuses a keyword-transfer pattern, a transfer-typed ledger row and a containing transfer rule INSIDE makePaybackRules, writing nothing', async () => {
+    const none = (w: ReturnType<typeof world>) => {
+      expect(w.io.secrets.set).not.toHaveBeenCalled();
+      expect(w.io.createCategoryRule).not.toHaveBeenCalled();
+      expect(w.logged).toEqual([]);
+    };
+    const kw = world();
+    expect(await makePaybackRules({ ...INPUT, pattern: 'ONLINE TRANSFER JANE', description: 'ONLINE TRANSFER JANE' }, kw.io, NOW))
+      .toEqual({ ok: false, message: PAYBACK_RULES_TRANSFER_WORDS('ONLINE TRANSFER JANE') });
+    none(kw);
+    const rowed = world({ mapping: '[]', io: { breadthRows: async () => [{ id: 'r1', description: 'JANE DOE VENMO 5', amount: 14, type: 'TRANSFER_IN' }] } });
+    expect(await makePaybackRules(INPUT, rowed.io, NOW)).toEqual({ ok: false, message: PAYBACK_RULES_TRANSFER_ROWS('JANE DOE VENMO') });
+    none(rowed);
+    const contained = world({ mapping: JSON.stringify([{ pattern: 'JANE DOE VENMO FROM SAVINGS', matchType: 'contains', activityType: 'TRANSFER_OUT' }]) });
+    expect(await makePaybackRules(INPUT, contained.io, NOW)).toEqual({ ok: false, message: paybackRulesTakesOver('JANE DOE VENMO FROM SAVINGS') });
+    none(contained);
+  });
+
+  it('M2: a ledger read that fails refuses the Create in words and writes nothing', async () => {
+    const w = world({ io: { breadthRows: async () => { throw new Error('down'); } } });
+    expect(await makePaybackRules(INPUT, w.io, NOW)).toEqual({ ok: false, message: PAYBACK_UNREACHABLE });
+    expect(w.io.log).toHaveBeenCalledWith(expect.stringContaining('down'));
+    expect(w.io.secrets.set).not.toHaveBeenCalled();
+    expect(w.io.createCategoryRule).not.toHaveBeenCalled();
+  });
+
+  it('PB-M m-b: the copy says to change or remove the front rule, and where', () => {
+    expect(paybackRulesBehind('JANE DOE')).toContain('change or remove "JANE DOE" in Settings → Transaction rules');
+    expect(PAYBACK_RULES_UNSURE).toContain('Transaction rules card');
+  });
+
+  it('puts the rule FIRST, so the GLOBAL VENMO transfer rule cannot shadow it (I2)', async () => {
+    const w = world();
+    expect((await makePaybackRules(INPUT, w.io, NOW)).ok).toBe(true);
+    expect(w.mapping()[0]).toEqual(RULE);
+    expect(mapTransactionWithSource('JANE DOE VENMO 7781', 25, w.mapping(), 'CASH', 'wf-chk', TODAY))
+      .toEqual({ type: 'CREDIT', fromRule: true, subtype: 'REIMBURSEMENT', createOnly: true });
+    // Appended last, the same fixture would have typed it a transfer.
+    expect(mapTransactionWithSource('JANE DOE VENMO 7781', 25, [GLOBAL, RULE], 'CASH', 'wf-chk', TODAY).type).toBe('TRANSFER_IN');
+  });
+
+  it('names an older payback rule that another rule sits in front of, and writes and logs nothing, never moving it (m6)', async () => {
+    const broad: MappingRule = { pattern: 'JANE DOE', matchType: 'contains', activityType: 'TRANSFER_IN' };
+    const old = { ...RULE, since: '2026-09-01' };
+    const w = world({ mapping: JSON.stringify([broad, old]) });
+    const out = await makePaybackRules(INPUT, w.io, NOW);
+    expect(out).toEqual({ ok: false, message: paybackRulesBehind('JANE DOE') });
+    expect(out.message).toContain('Settings → Transaction rules');
+    expect(w.mapping()).toEqual([broad, old]);
+    expect(w.io.secrets.set).not.toHaveBeenCalled();
+    expect(w.io.createCategoryRule).not.toHaveBeenCalled();
+    expect(w.logged).toEqual([]);
+  });
+
+  it('says it couldn’t tell, not "nothing was changed", when the write threw and the re-read failed too (m5)', async () => {
+    const w = world();
+    const get = w.io.secrets.get;
+    let reads = 0;
+    w.io.secrets.get = async (k) => { reads += 1; if (reads > 2) throw new Error('down'); return get(k); };
+    w.io.secrets.set = async () => { throw new Error('timeout'); };
+    const out = await makePaybackRules(INPUT, w.io, NOW);
+    expect(out).toEqual({ ok: false, message: PAYBACK_RULES_UNSURE });
+    expect(out.message).not.toContain('nothing was changed');
+    expect(w.io.createCategoryRule).not.toHaveBeenCalled();
+  });
+
+  it('compares the conflicting rule’s pattern case-insensitively (m4)', async () => {
+    const w = world({ wfRules: [{ id: 'r1', pattern: 'jane doe venmo', categoryId: 'cat-groc', accountId: 'wf-chk', activityType: 'CREDIT' }] });
+    expect((await makePaybackRules(INPUT, w.io, NOW)).message).toContain('another category');
+    expect(w.io.secrets.set).not.toHaveBeenCalled();
+  });
+
+  it('counts a transaction-rule write that threw after it landed as done: logged and undoable (M1)', async () => {
+    const w = world();
+    const set = w.io.secrets.set;
+    w.io.secrets.set = async (k, v) => { await set(k, v); throw new Error('timeout'); };
+    expect((await makePaybackRules(INPUT, w.io, NOW)).ok).toBe(true);
+    expect(w.mapping()[0]).toEqual(RULE);
+    expect(w.logged.map((e) => e.kind)).toEqual(['mapping-rule-created', 'category-rule-created']);
+  });
+
+  it('counts a category-rule create that threw after it landed as done: kept, logged with its id (M1)', async () => {
+    const w = world();
+    w.io.createCategoryRule = vi.fn(async (r) => { w.wfRules.push({ id: 'rule-77', ...r }); throw new Error('timeout'); });
+    expect((await makePaybackRules(INPUT, w.io, NOW)).ok).toBe(true);
+    expect(w.mapping()[0]).toEqual(RULE);
+    expect(w.logged.map((e) => e.kind)).toEqual(['mapping-rule-created', 'category-rule-created']);
+    expect(w.logged[1].after).toMatchObject({ ruleId: 'rule-77' });
+  });
+
+  it('refuses a Wealthfolio rule for the same words, account and CREDIT under ANOTHER category, naming it (M2)', async () => {
+    const w = world({ wfRules: [{ id: 'r1', pattern: 'JANE DOE VENMO', categoryId: 'cat-groc', accountId: 'wf-chk', activityType: 'CREDIT' }] });
+    const out = await makePaybackRules({ ...INPUT, categories: [{ id: 'cat-groc', name: 'Groceries' }] }, w.io, NOW);
+    expect(out).toEqual({ ok: false, message: paybackRulesConflict('JANE DOE VENMO', 'PNC Checking', 'Groceries') });
+    expect(out.message).toContain('Groceries');
+    expect(w.io.secrets.set).not.toHaveBeenCalled();
+  });
+
+  describe('a BROADER Wealthfolio rule that would win (M3)', () => {
+    const other = { id: 'r2', pattern: 'VENMO', categoryId: 'cat-groc', activityType: 'CREDIT', priority: 50 };
+    const cats = [{ id: 'cat-groc', name: 'Groceries' }];
+    const refused = async (rule: Record<string, unknown>, categoryId = 'cat-groc') => {
+      const w = world({ wfRules: [{ ...other, ...rule, categoryId }] });
+      const out = await makePaybackRules({ ...INPUT, categories: cats }, w.io, NOW);
+      return { w, out };
+    };
+
+    it('refuses a global one at the same priority (ours is 50, and a tie can go either way), naming it', async () => {
+      const { w, out } = await refused({});
+      expect(out).toEqual({ ok: false, message: paybackRulesConflict('VENMO', 'PNC Checking', 'Groceries') });
+      expect(w.io.secrets.set).not.toHaveBeenCalled();
+      expect(w.io.createCategoryRule).not.toHaveBeenCalled();
+    });
+
+    it('refuses one for this account at a higher priority, with no activity type', async () => {
+      const { out } = await refused({ accountId: 'wf-chk', priority: 90, activityType: undefined });
+      expect(out.ok).toBe(false);
+    });
+
+    it('lets a lower-priority rule, another account’s rule, another activity type and the same category through', async () => {
+      expect((await refused({ priority: 10 })).out.ok).toBe(true);
+      expect((await refused({ accountId: 'wf-sav' })).out.ok).toBe(true);
+      expect((await refused({ activityType: 'WITHDRAWAL' })).out.ok).toBe(true);
+      expect((await refused({}, 'cat-rest')).out.ok).toBe(true);
+    });
+
+    it('ignores a rule that is not broader (its words are not inside ours)', async () => {
+      expect((await refused({ pattern: 'VENMO PAYMENT' })).out.ok).toBe(true);
+    });
+  });
+
+  it('makes nothing twice', async () => {
+    const both = world({
+      mapping: JSON.stringify([RULE]),
+      wfRules: [{ id: 'r1', pattern: 'JANE DOE VENMO', categoryId: 'cat-rest', accountId: 'wf-chk', activityType: 'CREDIT' }],
+    });
+    expect(await makePaybackRules(INPUT, both.io, NOW)).toEqual({ ok: false, message: PAYBACK_RULES_EXIST });
+    expect(both.io.secrets.set).not.toHaveBeenCalled();
+    const one = world({ mapping: JSON.stringify([RULE]) });
+    expect((await makePaybackRules(INPUT, one.io, NOW)).ok).toBe(true);
+    expect(one.mapping()).toEqual([RULE]);
+    expect(one.logged.map((e) => e.kind)).toEqual(['category-rule-created']);
+  });
+
+  it('never rewrites a transaction-rule list it cannot read', async () => {
+    const w = world({ mapping: '{"not":"a list"}' });
+    expect(await makePaybackRules(INPUT, w.io, NOW)).toEqual({ ok: false, message: UNDO_MAPPING_RULES_UNREADABLE });
+    expect(w.io.secrets.set).not.toHaveBeenCalled();
+    expect(w.io.createCategoryRule).not.toHaveBeenCalled();
+  });
+
+  it('says it couldn’t reach Wealthfolio when its rules can’t be read, and writes nothing', async () => {
+    const w = world({ io: { categoryRules: async () => { throw new Error('ECONNREFUSED'); } } });
+    expect(await makePaybackRules(INPUT, w.io, NOW)).toEqual({ ok: false, message: PAYBACK_UNREACHABLE });
+    expect(w.io.secrets.set).not.toHaveBeenCalled();
+  });
+
+  it('stops when the transaction rule can’t be saved', async () => {
+    const w = world();
+    w.io.secrets.set = async () => { throw new Error('500'); };
+    expect(await makePaybackRules(INPUT, w.io, NOW)).toEqual({ ok: false, message: PAYBACK_RULES_SAVE_FAILED });
+    expect(w.io.createCategoryRule).not.toHaveBeenCalled();
+  });
+
+  it('takes the transaction rule back out when Wealthfolio refuses the category rule, so neither is half made', async () => {
+    const w = world({ io: { createCategoryRule: vi.fn(async () => { throw new Error('400 - accountId is required'); }) } });
+    const out = await makePaybackRules(INPUT, w.io, NOW);
+    expect(out).toEqual({ ok: false, message: PAYBACK_RULES_REFUSED });
+    expect(out.message).not.toContain('accountId');
+    expect(w.mapping()).toEqual([GLOBAL]);
+    expect(w.logged).toEqual([]);
+  });
+
+  it('says so, and logs the transaction rule for Undo, when it cannot take it back out', async () => {
+    const w = world({ io: { createCategoryRule: vi.fn(async () => { throw new Error('400'); }) } });
+    let writes = 0;
+    const set = w.io.secrets.set;
+    w.io.secrets.set = async (k, v) => { writes += 1; if (writes > 1) throw new Error('500'); await set(k, v); };
+    expect(await makePaybackRules(INPUT, w.io, NOW)).toEqual({ ok: false, message: paybackRulesStuck('JANE DOE VENMO') });
+    expect(w.mapping()).toEqual([RULE, GLOBAL]);
+    expect(w.logged.map((e) => e.kind)).toEqual(['mapping-rule-created']);
+  });
+});
+
+describe('Undo and Redo of the two rules', () => {
+  const NAME = 'Telegram payback: JANE DOE VENMO';
+  /** The runner over the add-on's secrets and Wealthfolio's rules. */
+  function undoWorld(mapping: MappingRule[], wfRules: Array<{ id: string; name: string; pattern: string }>, installed: string | null = '1.62.0') {
+    const data = new Map([[MAPPING_RULES_SECRET_KEY, JSON.stringify(mapping)]]);
+    if (installed !== null) data.set(INSTALLED_ADDON_VERSION_SECRET_KEY, installed);
+    const log: ChangeEntry[] = [];
+    const create = vi.fn(async (_r: Record<string, unknown>) => 'rule-10');
+    const io: UndoIo = {
+      host: createFakeHost({}).host,
+      secrets: { get: async (k) => data.get(k) ?? null, set: async (k, v) => { data.set(k, v); } },
+      rules: {
+        list: async () => wfRules,
+        create,
+        remove: vi.fn(async (id: string) => { wfRules.splice(wfRules.findIndex((r) => r.id === id), 1); }),
+        filedBy: async () => [],
+      },
+      record: async (d) => { log.unshift(stampChange(d, 'companion', NOW)); },
+      where: { host: 'companion', companionVersion: '1.62.0' },
+    };
+    const item = (e: ChangeEntry): ChangeLogItem => {
+      const latest = log.find((x) => x.reverses?.id === e.id);
+      return latest?.reverses?.op === 'undo' ? { ...e, undone: { by: latest.id, at: latest.at } } : { ...e };
+    };
+    const run = (e: ChangeEntry, op: 'undo' | 'redo') => runChangeUndo(item(e), [...log], op, io, 'plain', NOW);
+    return { data, io, run, create, wfRules, mapping: () => JSON.parse(data.get(MAPPING_RULES_SECRET_KEY)!) as MappingRule[] };
+  }
+
+  it('Undo of the transaction rule takes out exactly it; Redo puts it back with its limits', async () => {
+    const lookalike: MappingRule = { pattern: 'JANE DOE VENMO', matchType: 'contains', activityType: 'CREDIT', subtype: 'REIMBURSEMENT' };
+    const w = undoWorld([RULE, GLOBAL, lookalike], []);
+    const entry = stampChange(mappingRuleCreatedChange({ rule: RULE, description: 'JANE DOE VENMO', account: { wfId: 'wf-chk', name: 'PNC Checking' }, index: 0 }), 'companion', NOW);
+    expect(await w.run(entry, 'undo')).toMatchObject({ ok: true, message: PAYBACK_TX_RULE_UNDONE });
+    expect(w.mapping()).toEqual([GLOBAL, lookalike]);
+    // Redo keeps the order: first again (I2).
+    expect(await w.run(entry, 'redo')).toMatchObject({ ok: true, message: PAYBACK_TX_RULE_REDONE });
+    expect(w.mapping()).toEqual([RULE, GLOBAL, lookalike]);
+  });
+
+  it('M6: the companion’s Undo and Redo of the transaction rule wait for an add-on that reads its limits, and write nothing', async () => {
+    const entry = stampChange(mappingRuleCreatedChange({ rule: RULE, description: 'JANE DOE VENMO', account: { wfId: 'wf-chk', name: 'PNC Checking' }, index: 0 }), 'companion', NOW);
+    for (const installed of ['1.61.0', null, '']) {
+      const w = undoWorld([RULE, GLOBAL], [], installed);
+      expect(await w.run(entry, 'undo')).toEqual({ ok: false, message: PAYBACK_UPDATE_ADDON });
+      expect(await w.run(entry, 'redo')).toEqual({ ok: false, message: PAYBACK_UPDATE_ADDON });
+      expect(w.mapping()).toEqual([RULE, GLOBAL]);
+    }
+    // An unreadable version is "couldn't reach", never "update the add-on".
+    const down = undoWorld([RULE, GLOBAL], []);
+    down.io.secrets.get = async (k) => { if (k === INSTALLED_ADDON_VERSION_SECRET_KEY) throw new Error('secrets down'); return down.data.get(k) ?? null; };
+    expect(await down.run(entry, 'undo')).toEqual({ ok: false, message: PAYBACK_UNREACHABLE });
+  });
+
+  it('M6: an ordinary transaction rule, and Wealthfolio’s category rule, are not held up by the add-on’s version', async () => {
+    const plain = stampChange(mappingRuleCreatedChange({ rule: GLOBAL, description: 'VENMO PAYMENT' }), 'companion', NOW);
+    expect(addonGateCovers(plain)).toBe(false);
+    expect(await undoWorld([GLOBAL], [], '1.61.0').run(plain, 'undo')).toMatchObject({ ok: true });
+    const cat = stampChange(categoryRuleCreatedChange({
+      ruleId: 'rule-9', name: NAME, pattern: 'JANE DOE VENMO', categoryId: 'cat-rest', categoryName: 'Restaurants',
+      account: { wfId: 'wf-chk', name: 'PNC Checking' }, activityType: 'CREDIT',
+    }), 'companion', NOW);
+    expect(addonGateCovers(cat)).toBe(false);
+  });
+
+  it('Redo puts the rule first when its logged index no longer fits the list (I2)', async () => {
+    const w = undoWorld([RULE, GLOBAL], []);
+    const entry = stampChange(mappingRuleCreatedChange({ rule: RULE, description: 'JANE DOE VENMO', account: { wfId: 'wf-chk', name: 'PNC Checking' }, index: 5 }), 'companion', NOW);
+    expect(await w.run(entry, 'undo')).toMatchObject({ ok: true });
+    expect(await w.run(entry, 'redo')).toMatchObject({ ok: true });
+    expect(w.mapping()).toEqual([RULE, GLOBAL]);
+  });
+
+  it('a rule logged before the index existed is still put back at the end, and keeps `since` (I1)', async () => {
+    const w = undoWorld([GLOBAL, RULE], []);
+    const entry = stampChange(mappingRuleCreatedChange({ rule: RULE, description: 'JANE DOE VENMO' }), 'companion', NOW);
+    expect(await w.run(entry, 'undo')).toMatchObject({ ok: true });
+    expect(await w.run(entry, 'redo')).toMatchObject({ ok: true });
+    expect(w.mapping()).toEqual([GLOBAL, RULE]);
+    expect(w.mapping()[1].since).toBe(TODAY);
+  });
+
+  it('Undo of Wealthfolio’s rule deletes it; Redo makes it again for paybacks in that account', async () => {
+    const w = undoWorld([], [{ id: 'rule-9', name: NAME, pattern: 'JANE DOE VENMO' }]);
+    const entry = stampChange(categoryRuleCreatedChange({
+      ruleId: 'rule-9', name: NAME, pattern: 'JANE DOE VENMO', categoryId: 'cat-rest', categoryName: 'Restaurants',
+      account: { wfId: 'wf-chk', name: 'PNC Checking' }, activityType: 'CREDIT',
+    }), 'companion', NOW);
+    expect(await w.run(entry, 'undo')).toMatchObject({ ok: true, message: PAYBACK_CAT_RULE_UNDONE });
+    expect(w.wfRules).toEqual([]);
+    expect(await w.run(entry, 'redo')).toMatchObject({ ok: true, message: PAYBACK_CAT_RULE_REDONE });
+    expect(w.create).toHaveBeenCalledWith({ name: NAME, pattern: 'JANE DOE VENMO', categoryId: 'cat-rest', accountId: 'wf-chk', activityType: 'CREDIT' });
+  });
+});

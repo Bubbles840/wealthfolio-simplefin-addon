@@ -18,10 +18,15 @@ import { bankDayInstant } from './bank-day.js';
 import { BUDGET_TAXONOMY, DEFAULT_PERIOD_KEY, isClearedDefault, type BudgetTarget } from './budget-suggest.js';
 import { changeMoney, type ChangeEntry } from './change-entries.js';
 import type { ChangeLogItem } from './change-log.js';
+import { sameMappingRule } from './mapper.js';
+import {
+  PAYBACK_CAT_RULE_REDONE, PAYBACK_CAT_RULE_UNDONE, PAYBACK_TX_RULE_REDONE, PAYBACK_TX_RULE_UNDONE, paybackFiledSince, paybackRedone, paybackUndone,
+} from './payback-copy.js';
+import { isPaybackRow, paybackRetype, type PaybackRow } from './payback-row.js';
 import type { ActivityWrite, ImportRow } from './sync-host.js';
 import type { AccountOverrideFlag, TxOverrideFlag } from './sync-overrides.js';
 import type { MappingRule } from './types.js';
-import { companionUnderstandsOverrides, companionUnderstandsVenmoNotes } from './version.js';
+import { companionUnderstandsOverrides, companionUnderstandsPaybacks, companionUnderstandsVenmoNotes } from './version.js';
 
 export type UndoOp = 'undo' | 'redo';
 /** A rule's Undo comes in two: the rule alone, or the rule and the charges it filed. */
@@ -32,9 +37,9 @@ export const SYNC_DECISION_KINDS: ReadonlySet<string> = new Set([
   'transfer-link', 'transfer-type', 'duplicate-removed', 'balance-correction', 'import', 'amazon-label', 'venmo-note',
 ]);
 /** Kinds only the companion can reverse: the add-on SDK has no category, rule
- *  or budget API. */
+ *  or budget API — and a payback's Undo takes a category off (1.62, W7). */
 export const COMPANION_ONLY_KINDS: ReadonlySet<string> = new Set([
-  'category-filed', 'opening-balance-filed', 'category-rule-created', 'budget-set',
+  'category-filed', 'opening-balance-filed', 'category-rule-created', 'budget-set', 'payback-filed',
 ]);
 export const UNDO_KINDS: ReadonlySet<string> = new Set([
   ...SYNC_DECISION_KINDS, ...COMPANION_ONLY_KINDS, 'mapping-rule-created', 'starting-balance', 'starting-balance-moved',
@@ -99,9 +104,12 @@ export function undoAvailability(
   if (!entry.undoable || entry.reverses || !UNDO_KINDS.has(entry.kind)) return { kind: 'none' };
   const op: UndoOp = entry.undone ? 'redo' : 'undo';
   if (where.host === 'addon' && COMPANION_ONLY_KINDS.has(entry.kind)) {
-    return where.companionVersion
-      ? { kind: 'telegram', op, text: op === 'undo' ? UNDO_FROM_TELEGRAM : REDO_FROM_TELEGRAM }
-      : { kind: 'none' };
+    if (!where.companionVersion) return { kind: 'none' };
+    // A payback's Undo and Redo run in Telegram, on a companion that knows paybacks (W8).
+    if (entry.kind === 'payback-filed' && !companionUnderstandsPaybacks(where.companionVersion)) {
+      return { kind: 'update-companion', op, text: UNDO_UPDATE_COMPANION };
+    }
+    return { kind: 'telegram', op, text: op === 'undo' ? UNDO_FROM_TELEGRAM : REDO_FROM_TELEGRAM };
   }
   if (where.host === 'addon' && companionGateCovers(entry, op) && !companionUnderstands(entry, where.companionVersion)) {
     return { kind: 'update-companion', op, text: UNDO_UPDATE_COMPANION };
@@ -120,11 +128,23 @@ function companionUnderstands(entry: Pick<ChangeEntry, 'kind'>, companionVersion
  * In Telegram, this waits for the INSTALLED add-on to read the override it
  * touches: a Venmo note's Undo writes `noVenmoNote`, its Redo clears it, and an
  * add-on older than `VENMO_NOTE_SINCE` reads the whole overrides document as
- * corrupt while the flag is there (see `VENMO_NOTE_SINCE`). The runner reads
- * the installed version and refuses with `UNDO_UPDATE_ADDON`.
+ * corrupt while the flag is there (see `VENMO_NOTE_SINCE`); a payback's Undo
+ * and Redo touch `asReimbursement`, which an add-on older than `PAYBACK_SINCE`
+ * ignores (W8), and so does the Undo/Redo of the W10 transaction rule (M6). The runner reads the installed version and refuses with
+ * `UNDO_UPDATE_ADDON`, or for a payback `PAYBACK_UPDATE_ADDON`.
  */
-export function addonGateCovers(entry: Pick<ChangeEntry, 'kind'>): boolean {
-  return entry.kind === 'venmo-note';
+export function addonGateCovers(entry: Pick<ChangeEntry, 'kind' | 'after'>): boolean {
+  return entry.kind === 'venmo-note' || isPaybackEntry(entry);
+}
+
+/** An entry whose Undo or Redo an older INSTALLED add-on would get wrong: a payback filed, or
+ *  the W10 transaction rule that makes deposits paybacks (an older add-on reads that rule
+ *  without its money-in, account and `since` limits — direction-blind, every account). */
+export function isPaybackEntry(entry: Pick<ChangeEntry, 'kind' | 'after'>): boolean {
+  if (entry.kind === 'payback-filed') return true;
+  if (entry.kind !== 'mapping-rule-created') return false;
+  const rule = (entry.after as { rule?: { activityType?: unknown; subtype?: unknown; onlyMoneyIn?: unknown } } | undefined)?.rule;
+  return !!rule && rule.activityType === 'CREDIT' && rule.subtype === 'REIMBURSEMENT' && rule.onlyMoneyIn === true;
 }
 
 /** A sync decision whose undo is an override the sync must obey: an automatic
@@ -219,6 +239,11 @@ export interface UndoState {
   budgetTargets?: BudgetTarget[];
   /** The account's currency, for a row written back. */
   currency?: string;
+  /** `payback-filed`: the row re-read by exact id, its stored instant included; null: gone. */
+  payback?: PaybackRow | null;
+  /** `payback-filed` with no category, on a row that is still a deposit: whether
+   *  `asReimbursement` is set on at least one of the entry's keys. */
+  paybackFlagged?: boolean;
 }
 
 export type UndoStep =
@@ -237,9 +262,9 @@ export type UndoStep =
   | { do: 'assign'; activityId: string; taxonomyId: string; categoryId: string }
   | { do: 'unassign'; activityId: string; taxonomyId: string }
   | { do: 'delete-rule'; ruleId: string }
-  | { do: 'create-rule'; rule: { name: string; pattern: string; categoryId: string; accountId?: string } }
+  | { do: 'create-rule'; rule: { name: string; pattern: string; categoryId: string; accountId?: string; activityType?: string } }
   | { do: 'mapping-remove'; rule: MappingRule }
-  | { do: 'mapping-add'; rule: MappingRule }
+  | { do: 'mapping-add'; rule: MappingRule; index?: number }
   | { do: 'delete-budget'; targetId: string }
   /** A category's default monthly budget; the id is read back from Wealthfolio's reply. */
   | { do: 'set-budget'; categoryId: string; amountCents: number };
@@ -293,16 +318,20 @@ function legDescription(entry: ChangeEntry, leg: Record<string, unknown> | undef
     : undefined;
 }
 
-const sameRule = (a: MappingRule, b: MappingRule) =>
-  a.pattern === b.pattern && a.matchType === b.matchType && a.activityType === b.activityType && (a.subtype ?? '') === (b.subtype ?? '');
-
+/** The logged rule, with a payback rule's limits (W10): a Redo puts back exactly that rule. */
 function mappingRuleOf(entry: ChangeEntry): MappingRule | null {
   const r = rec(rec(entry.after).rule);
   const pattern = str(r.pattern);
   const matchType = r.matchType === 'contains' || r.matchType === 'regex' ? r.matchType : null;
   const activityType = str(r.activityType);
   if (!pattern || !matchType || !activityType) return null;
-  return { pattern, matchType, activityType: activityType as MappingRule['activityType'], ...(str(r.subtype) ? { subtype: str(r.subtype)! } : {}) };
+  return {
+    pattern, matchType, activityType: activityType as MappingRule['activityType'],
+    ...(str(r.subtype) ? { subtype: str(r.subtype)! } : {}),
+    ...(r.onlyMoneyIn === true ? { onlyMoneyIn: true as const } : {}),
+    ...(str(r.accountId) ? { accountId: str(r.accountId)! } : {}),
+    ...(str(r.since) ? { since: str(r.since)! } : {}),
+  };
 }
 
 /**
@@ -418,14 +447,19 @@ export function planChangeUndo(
       const name = str(after.name);
       const pattern = str(after.pattern);
       const categoryId = str(after.categoryId);
-      // A rule scoped to one account (3, L5) comes back scoped.
+      // A rule scoped to one account (3, L5) comes back scoped, and a payback
+      // rule's activity type (W10) with it.
       const accountId = str(after.accountId);
+      const activityType = str(after.activityType);
       if (!name || !pattern || !categoryId) return refuse(UNDO_NOT_POSSIBLE);
       if (op === 'redo') {
         if (state.rule) return refuse('That rule is already there.');
         return plan({
-          op, needsSync: false, ruleAfter: 'created', done: 'Redone — the rule is back.',
-          steps: [{ do: 'create-rule', rule: { name, pattern, categoryId, ...(accountId ? { accountId } : {}) } }],
+          op, needsSync: false, ruleAfter: 'created', done: activityType === 'CREDIT' ? PAYBACK_CAT_RULE_REDONE : 'Redone — the rule is back.',
+          steps: [{
+            do: 'create-rule',
+            rule: { name, pattern, categoryId, ...(accountId ? { accountId } : {}), ...(activityType ? { activityType } : {}) },
+          }],
         });
       }
       if (!state.rule) return refuse('That rule is already gone.');
@@ -438,7 +472,7 @@ export function planChangeUndo(
         op, steps, needsSync: false, ruleAfter: null,
         done: opts.variant === 'unfile'
           ? `Undone — the rule is gone and ${n} ${n === 1 ? 'charge is' : 'charges are'} back in the needs-a-category list.`
-          : 'Undone — the rule is gone.',
+          : activityType === 'CREDIT' ? PAYBACK_CAT_RULE_UNDONE : 'Undone — the rule is gone.',
       });
     }
 
@@ -480,12 +514,19 @@ export function planChangeUndo(
     case 'mapping-rule-created': {
       const rule = mappingRuleOf(entry);
       if (!rule) return refuse(UNDO_NOT_POSSIBLE);
-      const present = (state.mappingRules ?? []).some((r) => sameRule(r, rule));
+      const present = (state.mappingRules ?? []).some((r) => sameMappingRule(r, rule));
       if (op === 'undo' && !present) return refuse('That transaction rule is already gone.');
       if (op === 'redo' && present) return refuse('That transaction rule is already there.');
+      // A payback rule (W10) sits first in the list and comes back there: its
+      // logged index, or first when the list no longer has room for it.
+      const payback = rule.onlyMoneyIn === true && rule.subtype === 'REIMBURSEMENT';
+      const index = num(rec(entry.after).index);
+      const done = payback
+        ? (op === 'undo' ? PAYBACK_TX_RULE_UNDONE : PAYBACK_TX_RULE_REDONE)
+        : (op === 'undo' ? 'Undone — the rule is gone.' : 'Redone — the rule is back.');
       return plan({
-        op, needsSync: true, done: op === 'undo' ? 'Undone — the rule is gone.' : 'Redone — the rule is back.',
-        steps: [op === 'undo' ? { do: 'mapping-remove', rule } : { do: 'mapping-add', rule }],
+        op, needsSync: true, done,
+        steps: [op === 'undo' ? { do: 'mapping-remove', rule } : { do: 'mapping-add', rule, ...(index !== null ? { index } : {}) }],
       });
     }
 
@@ -724,6 +765,54 @@ export function planChangeUndo(
         steps: [
           { do: 'set-tx', txKey: key, flag: 'noVenmoNote', label: labelOf(entry) },
           { do: 'update', write: { id: row.id, accountId: row.accountId, activityType: row.type, activityDate: bankDayInstant(row.date), amount: row.absCents / 100, currency, comment: beforeNote } },
+        ],
+      });
+    }
+
+    // A payback (1.62, W7): the override first, then the row re-typed, then the
+    // category — Redo the same again. Each refuses a row that is not where the
+    // last write left it.
+    case 'payback-filed': {
+      const keys = entry.subject.txKeys ?? [];
+      if (keys.length === 0) return refuse(UNDO_NO_KEY);
+      const row = state.payback ?? null;
+      if (!row) return refuse(undoGone(op));
+      if (row.grouped) return refuse(UNDO_LINKED_REFUSAL);
+      const categoryId = str(after.categoryId);
+      const categoryName = str(after.categoryName);
+      const filedNow = (state.assignments ?? []).find((a) => a.taxonomyId === SPENDING_TAXONOMY)?.categoryId ?? null;
+      if (op === 'undo') {
+        const clears = keys.map((txKey) => ({ do: 'clear-tx', txKey, flag: 'asReimbursement' } as const));
+        if (!isPaybackRow(row)) {
+          // A payback setting left on a deposit (a re-type that could not be confirmed, PB-B M5) is logged with no
+          // category: its Undo takes only the setting off, and only while it is there. The row is not touched.
+          if (categoryId === null && row.type === 'DEPOSIT' && filedNow !== null && state.paybackFlagged) return refuse(paybackFiledSince(op));
+          if (categoryId !== null || row.type !== 'DEPOSIT' || filedNow !== null || !state.paybackFlagged) {
+            return refuse(undoChangedSince(op));
+          }
+          return plan({ op, needsSync: false, rowAfter: row.id, done: paybackUndone(categoryName), steps: clears });
+        }
+        // A half-done Redo leaves the payback with no filing: accept the entry's category or none, never another.
+        if (filedNow !== null && filedNow !== categoryId) return refuse(categoryId === null ? paybackFiledSince(op) : undoChangedSince(op));
+        return plan({
+          // Said only when a filing is there NOW to come off (PB-D m1).
+          op, needsSync: false, rowAfter: row.id, done: paybackUndone(filedNow ? categoryName : null),
+          steps: [
+            ...clears,
+            // The deposit's own subtype back; '' clears REIMBURSEMENT.
+            { do: 'update', write: paybackRetype(row, 'DEPOSIT', str(before.subtype) ?? '') },
+            ...(filedNow ? [{ do: 'unassign', activityId: row.id, taxonomyId: SPENDING_TAXONOMY } as const] : []),
+          ],
+        });
+      }
+      // A deposit /categorize filed (income_sources) must not end up with two filings.
+      if (row.type !== 'DEPOSIT' || (state.assignments ?? []).length > 0) return refuse(undoChangedSince(op));
+      return plan({
+        op, needsSync: false, rowAfter: row.id, done: paybackRedone(categoryName),
+        steps: [
+          ...keys.map((txKey) => ({ do: 'set-tx', txKey, flag: 'asReimbursement', label: labelOf(entry) } as const)),
+          { do: 'update', write: paybackRetype(row, 'CREDIT', 'REIMBURSEMENT') },
+          ...(categoryId ? [{ do: 'assign', activityId: row.id, taxonomyId: SPENDING_TAXONOMY, categoryId } as const] : []),
         ],
       });
     }

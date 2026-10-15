@@ -460,6 +460,9 @@ export class WealthfolioClient {
      *  every account, and no `accountId` key — upstream refuses a global rule
      *  that names an account (`validate_rule_scope`, 3.8–3.10). */
     accountId?: string;
+    /** For one activity type only (a payback rule files CREDITs, W10): the
+     *  matcher skips any other (`match_compiled`, 3.8–3.10). Absent: every type. */
+    activityType?: string;
   }): Promise<string | null> {
     const res = await fetch(`${this.baseUrl}/api/v1/spending/rules`, {
       method: 'POST',
@@ -473,6 +476,7 @@ export class WealthfolioClient {
         priority: rule.priority,
         isGlobal: !rule.accountId,
         ...(rule.accountId ? { accountId: rule.accountId } : {}),
+        ...(rule.activityType ? { activityType: rule.activityType } : {}),
       }),
     });
     if (!res.ok) throw await this.httpError('createCategorizationRule', res);

@@ -72,6 +72,9 @@ The addon has three tabs: **Home**, **Reports** and **Settings**.
   as the first, one-tap choice ("✓ Groceries (like the last 3)"), and a rule
   made from a filing can be for one account only ("Only <account>" on its
   preview; `/newrule trader joes = groceries in checking` does the same).
+  A deposit that pays you back — a friend's Venmo for dinner — goes under the
+  spending it pays back with **It's a payback »**, and the next screen can
+  make every deposit like it a payback; Undo either from `/changes`.
   Commands that need details — `/pool`, `/newrule`, `/afford` — ask for them
   one question at a time; the one-line forms still work. Bare `/pool` shows
   the pool with Set and Clear buttons.
@@ -160,13 +163,15 @@ Before or right after you upgrade:
   reads it directly.
 - After the upgrade, Wealthfolio rebuilds every account's history. Wait until its
   Health page no longer shows a stale projection before running a Deep scan.
-- On its next sync, the companion makes sure "Opening balances" (and, when it
-  has bookkeeping rows to file, "Sync bookkeeping") is excluded from
-  Wealthfolio's spending. Once it has a live database read and the 1.62 add-on
-  is installed, it also rewrites a credit card's bookkeeping withdrawals as
-  Transfer Out, once (it clears their phantom `$CASH` asset and leaves
-  rows in a transfer group, rows you split, retyped or filed yourself, a real
-  security, and a starting balance whose opening-balance filing you undid).
+- On its next sync, and every sync after, the companion makes sure "Opening
+  balances" and "Sync bookkeeping" are excluded from Wealthfolio's spending,
+  each once it exists (the sync creates "Sync bookkeeping" the first time it
+  has a bookkeeping row to file). Once it has a live database read and the
+  1.62 add-on is installed, it also rewrites a credit card's bookkeeping
+  withdrawals as Transfer Out, once (it clears their phantom `$CASH` asset and
+  leaves rows in a transfer group, rows you split, retyped or filed yourself,
+  a real security, and a starting balance whose opening-balance filing you
+  undid).
 
 ### Updating the add-on to 1.62.0
 

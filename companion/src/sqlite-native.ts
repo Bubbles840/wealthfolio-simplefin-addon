@@ -496,6 +496,21 @@ export interface NativeUncategorizedTx {
    *  question as `direction`: a card credit is money in but a spending-bucket
    *  refund, and offering it income categories would offer only 400s. */
   incomeEligible: boolean;
+  /** The stored activity type, upper-cased (1.62): only a posted DEPOSIT can be filed as a payback. */
+  activityType: string;
+  /** Whether the stored note marks the row pending. */
+  pending: boolean;
+}
+
+/** Whether `activities` has Wealthfolio 3.8's `activity_type_override` column. */
+function hasActivityTypeOverride(dbPath: string): boolean {
+  const rows = queryNativeDb<Record<string, unknown>>(
+    dbPath,
+    'activity type override column',
+    "SELECT COUNT(*) FROM pragma_table_info('activities') WHERE name = 'activity_type_override';",
+    (parts) => (parts.length >= 1 ? { n: parts[0] } : null),
+  );
+  return Number(Object.values(rows[0] ?? {})[0]) > 0;
 }
 
 /**
@@ -519,16 +534,22 @@ export function getNativeUncategorizedSpending(
   if (!dbPath || !existsSync(dbPath)) return [];
   if (!validDateBounds(startInclusive, endExclusive)) return [];
 
+  // The EFFECTIVE type (Wealthfolio 3.8+ keeps an override beside the stored one); a database
+  // without the column reads the stored type.
+  const T = hasActivityTypeOverride(dbPath)
+    ? "UPPER(COALESCE(NULLIF(TRIM(a.activity_type_override), ''), a.activity_type, ''))"
+    : "UPPER(COALESCE(a.activity_type, ''))";
   const query = `
     SELECT a.id, COALESCE(a.account_id, ''), COALESCE(a.notes, ''),
            ROUND(ABS(CAST(a.amount AS REAL)) * 100),
            substr(a.activity_date, 1, 10), COALESCE(ac.name, ''),
-           CASE WHEN UPPER(a.activity_type) IN ('WITHDRAWAL', 'FEE', 'TAX')
-                  OR (UPPER(a.activity_type) = 'INTEREST' AND UPPER(COALESCE(ac.account_type, '')) = 'CREDIT_CARD')
+           CASE WHEN ${T} IN ('WITHDRAWAL', 'FEE', 'TAX')
+                  OR (${T} = 'INTEREST' AND UPPER(COALESCE(ac.account_type, '')) = 'CREDIT_CARD')
                 THEN 'out' ELSE 'in' END,
            CASE WHEN UPPER(COALESCE(ac.account_type, '')) = 'CASH'
-                  AND UPPER(a.activity_type) IN ('DEPOSIT', 'INTEREST', 'INCOME', 'DIVIDEND')
-                THEN 1 ELSE 0 END
+                  AND ${T} IN ('DEPOSIT', 'INTEREST', 'INCOME', 'DIVIDEND')
+                THEN 1 ELSE 0 END,
+           ${T}
     FROM activities a
     LEFT JOIN activity_taxonomy_assignments ata ON a.id = ata.activity_id
     LEFT JOIN accounts ac ON a.account_id = ac.id
@@ -541,7 +562,7 @@ export function getNativeUncategorizedSpending(
       -- is exactly what this exclusion prevents. The TOTAL query always had it;
       -- the row list must agree with the count.
       AND COALESCE(a.source_group_id, '') = ''
-      AND UPPER(a.activity_type) IN ('WITHDRAWAL', 'FEE', 'TAX', 'DEPOSIT', 'CREDIT', 'INTEREST', 'DIVIDEND', 'INCOME')
+      AND ${T} IN ('WITHDRAWAL', 'FEE', 'TAX', 'DEPOSIT', 'CREDIT', 'INTEREST', 'DIVIDEND', 'INCOME')
       AND COALESCE(a.notes, '') NOT LIKE 'Starting balance · %'
       AND COALESCE(a.notes, '') NOT LIKE 'Balance adjustment · %'
       AND COALESCE(a.notes, '') NOT LIKE '↔️ In-transit transfer · %'
@@ -550,19 +571,19 @@ export function getNativeUncategorizedSpending(
     ORDER BY a.activity_date DESC, a.id;
   `;
 
-  type Raw = [string, string, string, number, string, string, string, number | string];
+  type Raw = [string, string, string, number, string, string, string, number | string, string];
   const rows = queryNativeDb<Record<string, unknown>>(
     dbPath,
     'uncategorized',
     query,
-    (parts) => (parts.length === 8
-      ? { c0: parts[0], c1: parts[1], c2: parts[2], c3: parseFloat(parts[3]) || 0, c4: parts[4], c5: parts[5], c6: parts[6], c7: parts[7] }
+    (parts) => (parts.length === 9
+      ? { c0: parts[0], c1: parts[1], c2: parts[2], c3: parseFloat(parts[3]) || 0, c4: parts[4], c5: parts[5], c6: parts[6], c7: parts[7], c8: parts[8] }
       : null),
   );
 
   return rows.map((r) => {
     // node:sqlite returns column-named objects; the CLI fallback returns the
-    // c0..c7 shape built above. Read positionally either way.
+    // c0..c8 shape built above. Read positionally either way.
     const vals = Object.values(r) as Raw;
     return {
       activityId: String(vals[0]),
@@ -573,6 +594,8 @@ export function getNativeUncategorizedSpending(
       accountName: String(vals[5]),
       direction: (String(vals[6]) === 'out' ? 'out' : 'in') as 'in' | 'out',
       incomeEligible: String(vals[7]) === '1',
+      activityType: String(vals[8] ?? '').toUpperCase(),
+      pending: String(vals[2]).endsWith(PENDING_NOTE_SUFFIX),
     };
   });
 }
