@@ -23,6 +23,9 @@ export interface MappedType {
   /** True when a user mapping rule decided the type (never auto-overridden) */
   fromRule: boolean;
   subtype?: string;
+  /** The deciding rule carries `since` (a payback rule, W10): it types only rows
+   *  the sync CREATES — a row already stored keeps its type and subtype. */
+  createOnly?: true;
 }
 
 /**
@@ -90,7 +93,7 @@ export function mapTransactionWithSource(
   txDay?: string,
 ): MappedType {
   const ruled = matchRule(description, rules, amount, wfAccountId, txDay);
-  if (ruled) return { type: ruled.activityType, fromRule: true, ...(ruled.subtype ? { subtype: ruled.subtype } : {}) };
+  if (ruled) return { type: ruled.activityType, fromRule: true, ...(ruled.subtype ? { subtype: ruled.subtype } : {}), ...(ruled.since ? { createOnly: true as const } : {}) };
 
   if (accountType === 'CREDIT_CARD') {
     if (amount < 0) return { type: 'WITHDRAWAL', fromRule: false };

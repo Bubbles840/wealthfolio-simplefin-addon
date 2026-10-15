@@ -146,14 +146,14 @@ describe('"Make every … deposit a payback" on the companion (W10)', () => {
       taxonomyId: 'spending_categories', priority: 50,
     });
     expect(JSON.parse(f.data.get('mapping_rules')!)).toEqual([{
-      pattern: 'ACME REFUND', matchType: 'contains', activityType: 'CREDIT', subtype: 'REIMBURSEMENT', onlyMoneyIn: true, accountId: 'wf-chk', since: '2026-10-14',
+      pattern: 'ACME REFUND', matchType: 'contains', activityType: 'CREDIT', subtype: 'REIMBURSEMENT', onlyMoneyIn: true, accountId: 'wf-chk', since: '2026-10-13',
     }]);
     expect(f.logged().map((e) => e.kind)).toEqual(['mapping-rule-created', 'category-rule-created']);
   });
 
   it('reads the breadth live: 90 days of the account’s money in, judged by the fresh transaction rules (I1)', async () => {
     const f = fakeClient();
-    f.data.set('mapping_rules', JSON.stringify([{ pattern: 'ACME', matchType: 'contains', activityType: 'TRANSFER_IN' }]));
+    f.data.set('mapping_rules', JSON.stringify([{ pattern: 'ACME', matchType: 'contains', activityType: 'DEPOSIT' }]));
     const searchActivities = vi.fn(async () => [
       { id: 'w', accountId: 'wf-chk', activityType: 'DEPOSIT', date: '2026-10-08', amount: '14', comment: 'ACME REFUND 1 · TRN-1' },
       { id: 'f', accountId: 'wf-chk', activityType: 'CREDIT', date: '2026-10-07', amount: '9', comment: 'ACME REFUND · Venmo: Rent · TRN-2' },

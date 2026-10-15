@@ -35,8 +35,8 @@ import { mapTransactionWithSource, paybackMappingRule, ruleApplies, sameMappingR
 import { bankWords } from './rule-pattern.js';
 import {
   PAYBACK_ALREADY, PAYBACK_CHANGED, PAYBACK_GONE, PAYBACK_GONE_STUCK, PAYBACK_LINKED, PAYBACK_MANAGED, PAYBACK_NO_UNDO, PAYBACK_NO_UNDO_SETTING, PAYBACK_NOT_CASH, PAYBACK_NOT_DEPOSIT, PAYBACK_NOT_FEED,
-  PAYBACK_OVERRIDE_FAILED, PAYBACK_PENDING, PAYBACK_RULES_EXIST, PAYBACK_RULES_GENERIC, PAYBACK_RULES_REFUSED, PAYBACK_RULES_SHADOWED, PAYBACK_RULES_SAVE_FAILED, PAYBACK_RUNNING, PAYBACK_SETTING_HINT, PAYBACK_TRANSFER, PAYBACK_UNDO_HINT, PAYBACK_UNREACHABLE, PAYBACK_UPDATE_ADDON,
-  PAYBACK_UPDATE_REFUSED, PAYBACK_UPDATE_STUCK, PAYBACK_UPDATE_UNSURE, PAYBACK_ZERO, paybackDone, paybackRulesConflict, paybackRulesDone, paybackRulesStuck, paybackUnfiled,
+  PAYBACK_OVERRIDE_FAILED, PAYBACK_PENDING, PAYBACK_RULES_EXIST, PAYBACK_RULES_GENERIC, PAYBACK_RULES_REFUSED, PAYBACK_RULES_SHADOWED, PAYBACK_RULES_UNSURE, PAYBACK_RULES_SAVE_FAILED, PAYBACK_RUNNING, PAYBACK_SETTING_HINT, PAYBACK_TRANSFER, PAYBACK_UNDO_HINT, PAYBACK_UNREACHABLE, PAYBACK_UPDATE_ADDON,
+  PAYBACK_UPDATE_REFUSED, PAYBACK_UPDATE_STUCK, PAYBACK_UPDATE_UNSURE, PAYBACK_ZERO, paybackDone, paybackRulesConflict, paybackRulesDone, paybackRulesTakesOver, paybackRulesStuck, paybackUnfiled,
 } from './payback-copy.js';
 import { isPaybackRow, paybackRetype, type PaybackRow } from './payback-row.js';
 import type { SecretGet, SecretSet } from './subscription-prefs.js';
@@ -375,7 +375,12 @@ export interface PaybackRulesOutcome {
 const GENERIC_BANK_WORDS: ReadonlySet<string> = new Set([
   'DEPOSIT', 'MOBILE', 'CREDIT', 'ACH', 'TRANSFER', 'ONLINE', 'DIRECT', 'CHECK', 'FROM', 'TO', 'REF', 'PAYMENT',
   'PPD', 'WEB', 'ID',
+  'ATM', 'BRANCH', 'REMOTE', 'WIRE', 'INCOMING', 'DEP', 'EDEPOSIT', 'XFER', 'SAVINGS', 'BANK', 'EFT', 'IN', 'ON',
 ]);
+
+/** The `since` of a rule made at `now`: the day BEFORE its UTC day, so a deposit
+ *  of the same evening (already the next UTC day) is never missed on a re-import. */
+export const paybackRuleSince = (now: Date): string => new Date(now.getTime() - 86_400_000).toISOString().slice(0, 10);
 
 /** A pattern needs at least one word that is not generic bank wording (and not a number); else the plain refusal. */
 export function paybackPatternRefusal(pattern: string): string | null {
@@ -414,6 +419,10 @@ export interface PaybackBreadthRow {
   description: string;
   /** Signed: money in is positive. */
   amount: number;
+  /** Stored type; a transfer-typed row is not a deposit "already in the ledger". */
+  type?: string;
+  /** Half of a linked group. */
+  grouped?: boolean;
 }
 
 export type PaybackBreadth = { ok: true; filed: number; waiting: number } | { ok: false; message: string };
@@ -445,6 +454,13 @@ export function paybackBreadth(i: {
   let waiting = 0;
   for (const r of i.rows) {
     if (r.id === i.source.id || !(r.amount > 0)) continue;
+    // A transfer rule that decides a row today would be taken over by this one
+    // (first match wins): future cash-outs from savings would stop pairing.
+    const was = i.list.find((x) => ruleApplies(x, bankWords(r.description), r.amount, i.accountId, i.since));
+    if (was && was.activityType.startsWith('TRANSFER_') && ruleApplies(rule, bankWords(r.description), r.amount, i.accountId, i.since)) {
+      return { ok: false, message: paybackRulesTakesOver(was.pattern) };
+    }
+    if (r.grouped || (r.type ?? '').startsWith('TRANSFER_')) continue;
     // The first rule that reads the row decides it; ours must be that one.
     const decider = list.find((x) => ruleApplies(x, bankWords(r.description), r.amount, i.accountId, i.since));
     if (!decider || !sameMappingRule(decider, rule)) continue;
@@ -484,10 +500,10 @@ export async function makePaybackRules(input: PaybackRulesInput, io: PaybackRule
   if (gate) return no(gate);
   const generic = paybackPatternRefusal(input.pattern);
   if (generic) return no(generic);
-  const rule = paybackMappingRule(input.pattern, input.account.id, now.toISOString().slice(0, 10));
+  let rule = paybackMappingRule(input.pattern, input.account.id, paybackRuleSince(now));
 
   const matches = (r: { pattern: string; accountId?: string; activityType?: string }) =>
-    r.pattern === input.pattern && r.accountId === input.account.id && r.activityType === 'CREDIT';
+    r.pattern.toLowerCase() === input.pattern.toLowerCase() && r.accountId === input.account.id && r.activityType === 'CREDIT';
   let list: MappingRule[] | null;
   let haveCategoryRule: boolean;
   try {
@@ -504,12 +520,15 @@ export async function makePaybackRules(input: PaybackRulesInput, io: PaybackRule
     return no(PAYBACK_UNREACHABLE);
   }
   if (list === null) return no(UNDO_MAPPING_RULES_UNREADABLE);
-  const haveMapping = list.some((r) => samePaybackRule(r, rule));
+  const older = list.find((r) => samePaybackRule(r, rule)) ?? null;
+  // An older rule for the same words that an earlier rule shadows is MOVED first
+  // (keeping its own `since`), not refused (m6).
+  const shadowed = older !== null && !listMakesPayback(list, older, input.description);
+  const haveMapping = older !== null && !shadowed;
   if (haveMapping && haveCategoryRule) return no(PAYBACK_RULES_EXIST);
+  if (older && shadowed) rule = { ...rule, ...(older.since ? { since: older.since } : {}) };
   // The list as it will stand must make the source deposit a payback.
-  if (!listMakesPayback(haveMapping ? list : withRuleFirst(list, rule), haveMapping ? list.find((r) => samePaybackRule(r, rule))! : rule, input.description)) {
-    return no(PAYBACK_RULES_SHADOWED);
-  }
+  if (!listMakesPayback(withRuleFirst(list, rule), rule, input.description)) return no(PAYBACK_RULES_SHADOWED);
 
   const log = async (draft: ChangeDraft) => {
     try {
@@ -525,18 +544,30 @@ export async function makePaybackRules(input: PaybackRulesInput, io: PaybackRule
 
   // 1. The transaction rule, FIRST in the list as it is right now.
   let added = false;
+  let prior = -1;
+  let priorRule: MappingRule | null = null;
   if (!haveMapping) {
     try {
       const fresh = await readList();
       if (fresh === null) return no(UNDO_MAPPING_RULES_UNREADABLE);
-      if (!fresh.some((r) => samePaybackRule(r, rule))) {
+      if (!(fresh.length > 0 && sameMappingRule(fresh[0], rule))) {
+        prior = fresh.findIndex((r) => samePaybackRule(r, rule));
+        priorRule = prior >= 0 ? fresh[prior] : null;
         try {
           await io.secrets.set(MAPPING_RULES_SECRET_KEY, JSON.stringify(withRuleFirst(fresh, rule)));
           added = true;
         } catch (err) {
-          // A write that failed but landed counts as done (PB-B M2 style).
-          const now2 = await readList().catch(() => null);
-          if (!now2?.some((r) => sameMappingRule(r, rule))) throw err;
+          // A write that failed but landed counts as done (PB-B M2 style); when the
+          // re-read fails too, nobody can say (m5).
+          let now2: MappingRule[] | null;
+          try {
+            now2 = await readList();
+          } catch (again) {
+            io.log(`Payback rules for "${input.pattern}": the transaction rule write failed (${errorText(err)}) and so did the re-read: ${errorText(again)}`);
+            return no(PAYBACK_RULES_UNSURE);
+          }
+          if (now2 === null) return no(PAYBACK_RULES_UNSURE);
+          if (!now2.some((r) => sameMappingRule(r, rule))) throw err;
           io.log(`Payback rules for "${input.pattern}": the transaction rule write reported ${errorText(err)}, but it landed`);
           added = true;
         }
@@ -568,7 +599,10 @@ export async function makePaybackRules(input: PaybackRulesInput, io: PaybackRule
         try {
           const cur = await readList();
           if (cur === null) throw new Error('the transaction rules are unreadable');
-          await io.secrets.set(MAPPING_RULES_SECRET_KEY, JSON.stringify(cur.filter((r) => !sameMappingRule(r, rule))));
+          const without = cur.filter((r) => !sameMappingRule(r, rule));
+          // A moved rule goes back where it was.
+          if (priorRule) without.splice(Math.min(prior, without.length), 0, priorRule);
+          await io.secrets.set(MAPPING_RULES_SECRET_KEY, JSON.stringify(without));
         } catch (again) {
           io.log(`Payback rules for "${input.pattern}": taking the transaction rule back failed: ${errorText(again)}`);
           await log(mappingEntry());

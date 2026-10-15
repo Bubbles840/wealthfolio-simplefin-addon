@@ -1977,6 +1977,9 @@ async function runSyncPass(
      *  clear a subtype Wealthfolio set for its own reasons. Independent of
      *  `inTransit` above. */
     subtype?: string;
+    /** Decided by a rule that types only rows the sync creates (a payback rule's
+     *  `since`): reconciliation leaves a stored row's type and subtype as they are. */
+    createOnly?: true;
   }
   const preparedByAccount = new Map<string, PreparedTx[]>();
   const candidates: TransferCandidate[] = [];
@@ -2169,6 +2172,9 @@ async function runSyncPass(
       prepared.push({
         sfAccountId: sfAccount.id, tx, type,
         ...(subtype ? { subtype } : {}),
+        // Only when the rule's own type stands: the asReimbursement flag and the
+        // notTransfer rewrite decide by themselves and may re-type a stored row.
+        ...(!payback && !(notTransfer && isTransferType(mapped.type)) && mapped.createOnly ? { createOnly: true as const } : {}),
       });
       // Amazon categories go on AFTER typing: `mapTransactionWithSource` above
       // matches the user's merchant rules against the bank's own text, and
@@ -2600,7 +2606,7 @@ async function runSyncPass(
     // in place rather than re-importing). A failed read of existing rows is
     // treated as "none" — the planner then creates everything and the host's
     // own dedup remains the backstop.
-    const feed: FeedTx[] = preparedAll.map(({ tx, type, inTransit, subtype, needsReview }) => ({
+    const feed: FeedTx[] = preparedAll.map(({ tx, type, inTransit, subtype, needsReview, createOnly }) => ({
       txId: tx.id,
       wfAccountId,
       absCents: Math.round(Math.abs(parseFloat(tx.amount)) * 100),
@@ -2609,6 +2615,7 @@ async function runSyncPass(
       pending: !!tx.pending,
       ...(inTransit ? { inTransit: true } : {}),
       ...(needsReview ? { needsReview: true } : {}),
+      ...(createOnly ? { createOnly: true as const } : {}),
       // Carried so `changed()` can compare it against the stored row — a rule
       // added after a row was imported has to reach that row as an update, and a
       // row that already agrees must not be rewritten every sync.
