@@ -30,6 +30,7 @@
 import type { ActivityDetails, ActivitySearchFilters, AddonContext } from '@wealthfolio/addon-sdk';
 import type { ChangeLogItem } from '../../shared/change-log';
 import { changesForTransaction, currentActivityId, isChangeLogPartial } from '../../shared/change-view';
+import { paybackOfferedInStory } from '../../shared/payback-app';
 import { txIdFromComment, isTransferType } from '../../shared/sync-core';
 import { hasTxOverride, TX_OVERRIDE_FLAGS, type TxOverrideFlag } from '../../shared/sync-overrides';
 import { accountTxKey } from '../../shared/transfers';
@@ -61,8 +62,14 @@ export type StoryStore = Partial<Pick<SecretsStore,
 export type AppStoryOutcome =
   /** `entries`: the whole change log as read (Undo needs it); [] when unread.
    *  `removal` (2c R2): the story offers "Remove for good…" for this row, as shown
-   *  (its date is the UTC day the story shows, which is the one the remover checks). */
-  | { kind: 'ok'; story: TxStory; entries: ChangeLogItem[]; removal?: { activityId: string; fingerprint: string } }
+   *  (its date is the UTC day the story shows, which is the one the remover checks).
+   *  `payback` (W11): the row qualifies for "It's a payback…", as shown — the app
+   *  offers it only where the host and the companion allow (`appPaybacksOffered`). */
+  | {
+    kind: 'ok'; story: TxStory; entries: ChangeLogItem[];
+    removal?: { activityId: string; fingerprint: string };
+    payback?: { activityId: string; fingerprint: string };
+  }
   | { kind: 'gone' }
   | { kind: 'unreachable' };
 
@@ -262,6 +269,7 @@ export async function appTxStory(ctx: AddonContext, store: StoryStore, target: A
       activityType: String(row.activityType).toUpperCase(),
       accountName: row.accountName ?? '',
       ...(accountType ? { accountType: String(accountType) } : {}),
+      ...(row.subtype ? { subtype: String(row.subtype) } : {}),
     },
     ...(sfinIds === undefined ? {} : { feed: sfinIds.length ? { sfinAccountId: feedOf(sfinIds, txId, history)! } : null }),
     partner,
@@ -278,6 +286,7 @@ export async function appTxStory(ctx: AddonContext, store: StoryStore, target: A
   return {
     kind: 'ok', story: buildTxStory(facts), entries,
     ...(removalOffered(facts) ? { removal: { activityId: row.id, fingerprint: removalFingerprint(facts.row) } } : {}),
+    ...(paybackOfferedInStory(facts) ? { payback: { activityId: row.id, fingerprint: removalFingerprint(facts.row) } } : {}),
   };
 }
 
