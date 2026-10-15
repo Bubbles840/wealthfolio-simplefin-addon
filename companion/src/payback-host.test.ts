@@ -151,6 +151,26 @@ describe('"Make every … deposit a payback" on the companion (W10)', () => {
     expect(f.logged().map((e) => e.kind)).toEqual(['mapping-rule-created', 'category-rule-created']);
   });
 
+  it('re-runs the transfer-takeover check itself, from the live ledger, and writes nothing when a transfer is there (PB-M m-a, M2)', async () => {
+    const f = fakeClient();
+    const rules = { listCategorizationRules: vi.fn(async () => []), createCategorizationRule: vi.fn(async () => 'rule-9') };
+    const input = { pattern: 'ACME REFUND', account: { id: 'wf-chk', name: 'PNC Checking' }, categoryId: 'cat-rest', categoryName: 'Restaurants', description: 'ACME REFUND', sourceId: 'src' };
+    const transfers = vi.fn(async () => [
+      { id: 'src', accountId: 'wf-chk', activityType: 'DEPOSIT', date: '2026-10-09', amount: '14', comment: 'ACME REFUND · TRN-0' },
+      { id: 't', accountId: 'wf-chk', activityType: 'TRANSFER_IN', date: '2026-10-08', amount: '50', comment: 'ACME REFUND 9 · TRN-1' },
+    ]);
+    const client = Object.assign(f.client, rules, { searchActivities: transfers }) as unknown as PaybackRulesClient;
+    const out = await makePaybackRules(input, companionPaybackRulesIo(client, vi.fn()), NOW);
+    expect(out.ok).toBe(false);
+    expect(out.message).toContain('already in your ledger as transfers');
+    expect(rules.createCategorizationRule).not.toHaveBeenCalled();
+    expect(f.data.get('mapping_rules')).toBeUndefined();
+    // A ledger that cannot be read refuses too.
+    const down = Object.assign(f.client, rules, { searchActivities: vi.fn(async () => { throw new Error('down'); }) }) as unknown as PaybackRulesClient;
+    expect((await makePaybackRules(input, companionPaybackRulesIo(down, vi.fn()), NOW)).ok).toBe(false);
+    expect(f.data.get('mapping_rules')).toBeUndefined();
+  });
+
   it('reads the breadth live: 90 days of the account’s money in, judged by the fresh transaction rules (I1)', async () => {
     const f = fakeClient();
     f.data.set('mapping_rules', JSON.stringify([{ pattern: 'ACME', matchType: 'contains', activityType: 'DEPOSIT' }]));

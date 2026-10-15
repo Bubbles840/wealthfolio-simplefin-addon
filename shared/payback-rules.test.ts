@@ -7,7 +7,7 @@ import { mapTransactionWithSource, paybackMappingRule, ruleApplies, sameMappingR
 import { makePaybackRules, paybackBreadth, paybackPatternRefusal, type PaybackRulesInput, type PaybackRulesIo } from './payback.js';
 import {
   PAYBACK_CAT_RULE_REDONE, PAYBACK_CAT_RULE_UNDONE, PAYBACK_RULES_EXIST, PAYBACK_RULES_GENERIC, PAYBACK_RULES_REFUSED, PAYBACK_RULES_SAVE_FAILED,
-  PAYBACK_RULES_UNSURE, PAYBACK_TX_RULE_REDONE, PAYBACK_TX_RULE_UNDONE, PAYBACK_UNREACHABLE, PAYBACK_UPDATE_ADDON, paybackRulesBehind, paybackRulesConflict, paybackRulesStuck, paybackRulesTakesOver,
+  PAYBACK_RULES_UNSURE, PAYBACK_RULES_TRANSFER_WORDS, PAYBACK_RULES_TRANSFER_ROWS, PAYBACK_TX_RULE_REDONE, PAYBACK_TX_RULE_UNDONE, PAYBACK_UNREACHABLE, PAYBACK_UPDATE_ADDON, paybackRulesBehind, paybackRulesConflict, paybackRulesStuck, paybackRulesTakesOver,
 } from './payback-copy.js';
 import { bankWords, categoryRulePattern, paybackRulePattern } from './rule-pattern.js';
 import type { MappingRule } from './types.js';
@@ -111,8 +111,8 @@ describe('the preview breadth (I1, M6)', () => {
     expect(paybackBreadth({ ...base, list: [earlier, broad] })).toEqual({ ok: true, filed: 2, waiting: 1 });
   });
 
-  it('counts neither transfer-typed nor grouped rows as deposits already in the ledger (m1)', () => {
-    const more = [...rows, { ...row('t1', 'JANE DOE VENMO 5'), type: 'TRANSFER_IN' }, { ...row('g1', 'JANE DOE VENMO 6'), grouped: true }, { ...row('d1', 'JANE DOE VENMO 7'), type: 'DEPOSIT' }];
+  it('counts neither grouped rows nor a row already typed a transfer by something else as deposits in the ledger (m1)', () => {
+    const more = [...rows, { ...row('g1', 'JANE DOE VENMO 6'), grouped: true }, { ...row('d1', 'JANE DOE VENMO 7'), type: 'DEPOSIT' }];
     expect(paybackBreadth({ ...base, rows: more, list: [] })).toEqual({ ok: true, filed: 3, waiting: 1 });
   });
 
@@ -120,7 +120,25 @@ describe('the preview breadth (I1, M6)', () => {
     const transfer: MappingRule = { pattern: 'JANE DOE VENMO FROM SAVINGS', matchType: 'contains', activityType: 'TRANSFER_IN' };
     const out = paybackBreadth({ ...base, list: [transfer], rows: [...rows, { ...row('s1', 'JANE DOE VENMO FROM SAVINGS 9'), type: 'TRANSFER_IN' }] });
     expect(out).toEqual({ ok: false, message: paybackRulesTakesOver('JANE DOE VENMO FROM SAVINGS') });
-    expect(paybackBreadth({ ...base, list: [transfer] })).toMatchObject({ ok: true });
+  });
+
+  it('PB-M m-a: refuses a pattern the bank-transfer keywords match, with no ledger row needed', () => {
+    const out = paybackBreadth({ ...base, pattern: 'PNC BANK TRANSFER JANE', source: { id: 'self', description: 'PNC BANK TRANSFER JANE' }, list: [] });
+    expect(out).toEqual({ ok: false, message: PAYBACK_RULES_TRANSFER_WORDS('PNC BANK TRANSFER JANE') });
+  });
+
+  it('PB-M m-a: refuses when ANY ledger row typed TRANSFER_* matches, whatever typed it (a keyword, not a rule)', () => {
+    const out = paybackBreadth({ ...base, list: [], rows: [...rows, { ...row('k1', 'JANE DOE VENMO 5'), type: 'TRANSFER_IN' }] });
+    expect(out).toEqual({ ok: false, message: PAYBACK_RULES_TRANSFER_ROWS('JANE DOE VENMO') });
+  });
+
+  it('PB-M m-a: statically refuses when an existing TRANSFER_* contains-rule’s pattern contains the new one', () => {
+    const transfer: MappingRule = { pattern: 'JANE DOE VENMO FROM SAVINGS', matchType: 'contains', activityType: 'TRANSFER_IN' };
+    expect(paybackBreadth({ ...base, list: [transfer] })).toEqual({ ok: false, message: paybackRulesTakesOver('JANE DOE VENMO FROM SAVINGS') });
+    // A transfer rule broader than the new pattern is checked against the rows: it decides them today.
+    const broad: MappingRule = { pattern: 'VENMO', matchType: 'contains', activityType: 'TRANSFER_IN' };
+    expect(paybackBreadth({ ...base, list: [broad] })).toEqual({ ok: false, message: paybackRulesTakesOver('VENMO') });
+    expect(paybackBreadth({ ...base, list: [broad], rows: [row('only', 'ZELLE FROM JANE')] })).toMatchObject({ ok: true });
   });
 
   it('refuses a generic pattern in words', () => {
@@ -187,6 +205,37 @@ describe('makePaybackRules', () => {
     expect(await makePaybackRules(input, w.io, NOW)).toEqual({ ok: false, message: PAYBACK_RULES_GENERIC });
     expect(w.io.secrets.set).not.toHaveBeenCalled();
     expect(w.io.createCategoryRule).not.toHaveBeenCalled();
+  });
+
+  it('PB-M m-a: refuses a keyword-transfer pattern, a transfer-typed ledger row and a containing transfer rule INSIDE makePaybackRules, writing nothing', async () => {
+    const none = (w: ReturnType<typeof world>) => {
+      expect(w.io.secrets.set).not.toHaveBeenCalled();
+      expect(w.io.createCategoryRule).not.toHaveBeenCalled();
+      expect(w.logged).toEqual([]);
+    };
+    const kw = world();
+    expect(await makePaybackRules({ ...INPUT, pattern: 'ONLINE TRANSFER JANE', description: 'ONLINE TRANSFER JANE' }, kw.io, NOW))
+      .toEqual({ ok: false, message: PAYBACK_RULES_TRANSFER_WORDS('ONLINE TRANSFER JANE') });
+    none(kw);
+    const rowed = world({ mapping: '[]', io: { breadthRows: async () => [{ id: 'r1', description: 'JANE DOE VENMO 5', amount: 14, type: 'TRANSFER_IN' }] } });
+    expect(await makePaybackRules(INPUT, rowed.io, NOW)).toEqual({ ok: false, message: PAYBACK_RULES_TRANSFER_ROWS('JANE DOE VENMO') });
+    none(rowed);
+    const contained = world({ mapping: JSON.stringify([{ pattern: 'JANE DOE VENMO FROM SAVINGS', matchType: 'contains', activityType: 'TRANSFER_OUT' }]) });
+    expect(await makePaybackRules(INPUT, contained.io, NOW)).toEqual({ ok: false, message: paybackRulesTakesOver('JANE DOE VENMO FROM SAVINGS') });
+    none(contained);
+  });
+
+  it('M2: a ledger read that fails refuses the Create in words and writes nothing', async () => {
+    const w = world({ io: { breadthRows: async () => { throw new Error('down'); } } });
+    expect(await makePaybackRules(INPUT, w.io, NOW)).toEqual({ ok: false, message: PAYBACK_UNREACHABLE });
+    expect(w.io.log).toHaveBeenCalledWith(expect.stringContaining('down'));
+    expect(w.io.secrets.set).not.toHaveBeenCalled();
+    expect(w.io.createCategoryRule).not.toHaveBeenCalled();
+  });
+
+  it('PB-M m-b: the copy says to change or remove the front rule, and where', () => {
+    expect(paybackRulesBehind('JANE DOE')).toContain('change or remove "JANE DOE" in Settings → Transaction rules');
+    expect(PAYBACK_RULES_UNSURE).toContain('Transaction rules card');
   });
 
   it('puts the rule FIRST, so the GLOBAL VENMO transfer rule cannot shadow it (I2)', async () => {

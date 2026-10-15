@@ -1168,6 +1168,7 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
               target = { ...target, breadth };
             } catch (err) {
               safeLog(`Categorize menu: the payback rules' breadth for ${target.activityId} failed: ${formatError(err)}`);
+              target = { ...target, breadthFailed: true };
             }
           }
         }
@@ -1330,7 +1331,7 @@ export function createCategorizeController(deps: CategorizeDeps): CategorizeCont
           try {
             outcome = await deps.paybackRules({
               pattern: paybackRulePattern(row.description), account: { id: row.accountId, name: row.accountName },
-              categoryId: category.id, categoryName: category.name, description: row.description,
+              categoryId: category.id, categoryName: category.name, description: row.description, sourceId: row.activityId,
               categories: chat.session.categories.map((c) => ({ id: c.id, name: c.name })),
             });
           } catch (err) {
