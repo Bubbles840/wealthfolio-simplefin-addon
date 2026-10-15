@@ -26,6 +26,10 @@ export interface FeedTx {
    *  Omitted — not `null` — when no rule set one; see `normSubtype` for why
    *  that distinction matters to `changed()`. */
   subtype?: string;
+  /** A payback rule decided this row's type (W10): it applies to rows the sync
+   *  CREATES only. Against a stored row, `changed()` ignores type and subtype and an
+   *  update writes the stored ones back. */
+  createOnly?: true;
   /**
    * Mark the written row as needing the user's eye — Wealthfolio 3.8's
    * `needs_review`, which it surfaces on its own Activities screen.
@@ -99,7 +103,7 @@ function normSubtype(v: string | null | undefined): string {
 function changed(row: ExistingRow, tx: FeedTx): boolean {
   return (
     row.absCents !== tx.absCents ||
-    row.type !== tx.type ||
+    (!tx.createOnly && row.type !== tx.type) ||
     row.date !== tx.date ||
     row.pending !== tx.pending ||
     // Placeholder-ness is a real difference even when nothing else moved: a
@@ -119,8 +123,15 @@ function changed(row: ExistingRow, tx: FeedTx): boolean {
     // update, every sync, forever. The accepted trade (the user's call):
     // removing a rule's subtype does not reach rows already imported; those
     // get cleared by hand in Wealthfolio.
-    (!!tx.subtype && normSubtype(row.subtype) !== normSubtype(tx.subtype))
+    (!tx.createOnly && !!tx.subtype && normSubtype(row.subtype) !== normSubtype(tx.subtype))
   );
+}
+
+/** The update for a stored row: a `createOnly` tx writes the stored type and subtype back. */
+function updateTo(row: ExistingRow, tx: FeedTx): FeedTx {
+  if (!tx.createOnly) return tx;
+  const { subtype: _drop, ...rest } = tx;
+  return { ...rest, type: row.type, ...(row.subtype ? { subtype: row.subtype } : {}) };
 }
 
 /**
@@ -157,7 +168,7 @@ export function planReconciliation(
     if (!row) {
       creates.push(tx);
     } else if (changed(row, tx)) {
-      updates.push({ wfId: row.wfId, to: tx });
+      updates.push({ wfId: row.wfId, to: updateTo(row, tx) });
     }
   }
 
@@ -175,7 +186,7 @@ export function planReconciliation(
     );
     if (match) {
       claimed.add(match.txId);
-      updates.push({ wfId: row.wfId, to: match });
+      updates.push({ wfId: row.wfId, to: updateTo(row, match) });
     } else {
       deleteIds.push(row.wfId);
     }

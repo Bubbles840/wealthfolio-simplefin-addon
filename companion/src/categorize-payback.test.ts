@@ -164,7 +164,7 @@ describe('/categorize: the breadth of the rules, read from the ledger as the pre
     expect(h.deps.paybackBreadth).toHaveBeenCalledWith({
       pattern: 'VENMO CASHOUT', account: { id: 'wf-chk', name: 'PNC Checking' }, sourceId: 'act-7', description: 'VENMO CASHOUT', waitingIds: expect.any(Array),
     });
-    expect(h.last()[0]).toContain('6 deposits here read that way: 4 already filed, 2 waiting for a category.');
+    expect(h.last()[0]).toContain('6 deposits here read that way: 4 already in your ledger, 2 waiting for a category.');
     expect(h.labels(h.last()[1])).toContain('Create both rules');
   });
 
@@ -182,7 +182,7 @@ describe('/categorize: the breadth of the rules, read from the ledger as the pre
     await h.toPaybackGrid();
     await h.press('Entertainment');
     await h.press('Make every VENMO CASHOUT deposit a payback');
-    expect(h.last()[0]).not.toContain('already filed');
+    expect(h.last()[0]).not.toContain('waiting for a category');
     expect(h.labels(h.last()[1])).toContain('Create both rules');
   });
 });

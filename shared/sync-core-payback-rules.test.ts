@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createFakeHost, type FakeHostSeed } from './fake-host.js';
 import { paybackMappingRule } from './mapper.js';
+import { paybackRuleSince } from './payback.js';
 import { runSyncCore, VALUATION_POLL } from './sync-core.js';
 import type { HostActivity } from './sync-host.js';
 import { emptySyncOverrides, setTxOverride } from './sync-overrides.js';
@@ -106,5 +107,68 @@ describe('runSyncCore — a payback rule (W10: onlyMoneyIn + accountId)', () => 
     const store = { ...fh.store, getSyncOverrides: async () => { throw new Error('down'); }, readSyncOverrides: async () => null };
     await runSyncCore(fh.host, store, { force: true });
     expect(fh.activities.get('wf-a')!.filter((r) => r.comment?.includes('tx-1'))).toHaveLength(1);
+  });
+
+  describe('a payback rule decides only rows the sync CREATES (PB-L I-1)', () => {
+    type Tx = { id: string; posted: string; amount: string; description: string; pending?: boolean };
+    const one = (txs: Tx[], extra: Partial<FakeHostSeed> = {}): FakeHostSeed => ({
+      accountSet: { errors: [], accounts: [{ id: 'sfin-1', name: 'Checking', currency: 'USD', balance: '0', 'balance-date': epoch('2026-10-14T12:00:00Z'),
+        transactions: txs.map((t) => ({ id: t.id, posted: t.pending ? 0 : epoch(t.posted), ...(t.pending ? { transacted_at: epoch(t.posted), pending: true } : {}), amount: t.amount, description: t.description })) }] },
+      mapping: { 'sfin-1': 'wf-a' }, accountTypes: { 'wf-a': 'CASH' }, ...extra,
+    });
+    const kinds = (fh: ReturnType<typeof createFakeHost>) => fh.activities.get('wf-a')!.map((r) => [r.activityType, r.subtype ?? null]);
+    /** Sync with no rule (the deposit is stored as income), then sync again with the rule. */
+    async function storedThenRule(first: Tx[], rule: MappingRule, later?: Tx[]) {
+      const a = createFakeHost(one(first));
+      await runSyncCore(a.host, a.store, {});
+      const b = createFakeHost(one(later ?? first, { existing: new Map([['wf-a', a.activities.get('wf-a')!.map((r) => ({ ...r }))]]), mappingRules: [rule as never] }));
+      await runSyncCore(b.host, b.store, { force: true });
+      return b;
+    }
+    const madeAt = (iso: string) => paybackMappingRule('ZELLE FROM JANE DOE', 'wf-a', paybackRuleSince(new Date(iso)));
+
+    it('F2b: a deposit stored on the rule’s own day is NOT re-typed', async () => {
+      const b = await storedThenRule([{ id: 'tx-am', posted: '2026-10-14T12:00:00Z', amount: '50.00', description: 'ZELLE FROM JANE DOE 8ZK1' }], madeAt('2026-10-14T15:00:00Z'));
+      expect(kinds(b)).toEqual([['DEPOSIT', null]]);
+    });
+
+    it('F2c: a deposit created after 8 pm EDT (the next UTC day) IS caught', async () => {
+      const fh = createFakeHost(one([{ id: 'tx-eve', posted: '2026-10-14T12:00:00Z', amount: '20.00', description: 'ZELLE FROM JANE DOE 9QQ1' }], { mappingRules: [madeAt('2026-10-15T01:00:00Z') as never] }));
+      await runSyncCore(fh.host, fh.store, {});
+      expect(kinds(fh)).toEqual([['CREDIT', 'REIMBURSEMENT']]);
+    });
+
+    it('F2e: rows stored while the rule was undone are NOT re-typed after a Redo puts it back', async () => {
+      const b = await storedThenRule([{ id: 'tx-mid', posted: '2026-10-20T12:00:00Z', amount: '40.00', description: 'ZELLE FROM JANE DOE 77ZZ' }], madeAt('2026-10-14T15:00:00Z'));
+      expect(kinds(b)).toEqual([['DEPOSIT', null]]);
+    });
+
+    it('a stored pending deposit that posts after the rule stays a DEPOSIT (same id)', async () => {
+      const b = await storedThenRule(
+        [{ id: 'tx-p', posted: '2026-10-13T12:00:00Z', amount: '30.00', description: 'ZELLE FROM JANE DOE 1AB2', pending: true }],
+        madeAt('2026-10-14T15:00:00Z'),
+        [{ id: 'tx-p', posted: '2026-10-15T12:00:00Z', amount: '30.00', description: 'ZELLE FROM JANE DOE 1AB2' }],
+      );
+      expect(kinds(b)).toEqual([['DEPOSIT', null]]);
+    });
+
+    it('a stored pending deposit that posts under a NEW id stays a DEPOSIT too', async () => {
+      const b = await storedThenRule(
+        [{ id: 'tx-p', posted: '2026-10-13T12:00:00Z', amount: '30.00', description: 'ZELLE FROM JANE DOE 1AB2', pending: true }],
+        madeAt('2026-10-14T15:00:00Z'),
+        [{ id: 'tx-posted', posted: '2026-10-15T12:00:00Z', amount: '30.00', description: 'ZELLE FROM JANE DOE 1AB2' }],
+      );
+      expect(kinds(b)).toEqual([['DEPOSIT', null]]);
+    });
+
+    it('still lets the asReimbursement flag re-type an unlanded retype (Task 5 path unaffected)', async () => {
+      const tx: Tx = { id: 'tx-1', posted: '2026-10-09T12:00:00Z', amount: '14.00', description: 'ZELLE FROM JANE DOE 8ZK1' };
+      const a = createFakeHost(one([tx]));
+      await runSyncCore(a.host, a.store, {});
+      const flag = setTxOverride(emptySyncOverrides(), accountTxKey('sfin-1', 'tx-1'), 'asReimbursement', NOW, { label: 'x' });
+      const b = createFakeHost(one([tx], { existing: new Map([['wf-a', a.activities.get('wf-a')!.map((r) => ({ ...r }))]]), mappingRules: [madeAt('2026-10-14T15:00:00Z') as never], syncOverrides: flag }));
+      await runSyncCore(b.host, b.store, { force: true });
+      expect(kinds(b)).toEqual([['CREDIT', 'REIMBURSEMENT']]);
+    });
   });
 });

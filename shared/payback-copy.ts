@@ -90,7 +90,7 @@ export function paybackRulesPreview(
     const total = breadth.filed + breadth.waiting;
     lines.push(total === 0
       ? `No deposit in the last ${PAYBACK_BREADTH_DAYS} days reads that way.`
-      : `In the last ${PAYBACK_BREADTH_DAYS} days, ${total} deposit${total === 1 ? '' : 's'} here read that way: ${breadth.filed} already filed, ${breadth.waiting} waiting for a category.`
+      : `In the last ${PAYBACK_BREADTH_DAYS} days, ${total} deposit${total === 1 ? '' : 's'} here read that way: ${breadth.filed} already in your ledger, ${breadth.waiting} waiting for a category.`
         + (breadth.waiting > 0 ? ` File the waiting ones one by one with ${PAYBACK_SWITCH}.` : ''));
   }
   return lines.join('\n');
@@ -108,6 +108,9 @@ export const PAYBACK_TX_RULE_UNDONE = "Undone — the transaction rule is gone. 
 export const PAYBACK_TX_RULE_REDONE = "Redone — the transaction rule is back. If Wealthfolio's rule for these paybacks is gone, redo it from /changes too.";
 export const PAYBACK_CAT_RULE_UNDONE = 'Undone — the rule is gone. If the transaction rule that makes these deposits paybacks is still there, undo it from /changes too.';
 export const PAYBACK_CAT_RULE_REDONE = 'Redone — the rule is back. If the transaction rule that makes these deposits paybacks is gone, redo it from /changes too.';
+export const PAYBACK_RULES_UNSURE = "Couldn't tell whether the transaction rule was saved — check the add-on's Transaction Rules card. The Wealthfolio rule was not made.";
+export const paybackRulesTakesOver = (rulePattern: string): string =>
+  `The transaction rule "${rulePattern}" already makes deposits like these transfers, and a payback rule would take them over — change that rule first. Nothing was changed.`;
 export const PAYBACK_RULES_SAVE_FAILED = "Couldn't save the transaction rule — nothing was changed.";
 export const PAYBACK_RULES_REFUSED = "Wealthfolio didn't take the category rule, so neither rule was made.";
 export const paybackRulesStuck = (pattern: string): string =>

@@ -41,7 +41,7 @@ describe('"Make every … deposit a payback" (W10)', () => {
       'Make every VENMO CASHOUT deposit a payback?',
       'From today on, money into PNC\\_Checking whose description contains "VENMO CASHOUT" becomes a payback under Restaurants (Food & Dining): '
         + 'the sync marks it when it imports, and Wealthfolio files it. Deposits already in your ledger are not changed. Undo either rule from /changes.',
-      'In the last 90 days, 3 deposits here read that way: 2 already filed, 1 waiting for a category. File the waiting ones one by one with It\'s a payback ».',
+      'In the last 90 days, 3 deposits here read that way: 2 already in your ledger, 1 waiting for a category. File the waiting ones one by one with It\'s a payback ».',
     ].join('\n'));
     expect(v.action('Create both rules')).toEqual({ kind: 'paybackRules', activityId: 'act-7', categoryId: 'cat-rest' });
     expect(v.labels).toEqual(['Create both rules', '‹ Back to list']);
