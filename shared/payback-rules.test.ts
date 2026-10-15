@@ -76,7 +76,10 @@ describe('a payback rule (W10)', () => {
   it('refuses a pattern made only of generic bank words (I1)', () => {
     expect(paybackPatternRefusal(paybackRulePattern('DEPOSIT 123456'))).toBe(PAYBACK_RULES_GENERIC);
     expect(paybackPatternRefusal('DIRECT DEPOSIT ACH')).toBe(PAYBACK_RULES_GENERIC);
-    expect(paybackPatternRefusal('VENMO CASHOUT')).toBe(PAYBACK_RULES_GENERIC);
+    expect(paybackPatternRefusal('MOBILE DEPOSIT')).toBe(PAYBACK_RULES_GENERIC);
+    // The money's source is not generic: a Venmo cash-out is the headline case.
+    expect(paybackPatternRefusal('VENMO CASHOUT')).toBeNull();
+    expect(paybackPatternRefusal(paybackRulePattern('*1234 CASHOUT VENMO ACH CREDIT'))).toBeNull();
     expect(paybackPatternRefusal('ZELLE FROM JANE DOE')).toBeNull();
     expect(paybackPatternRefusal('ACME PAYROLL')).toBeNull();
   });
