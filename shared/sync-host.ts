@@ -4,6 +4,7 @@ import type { VenmoLedger } from './venmo-ledger.js';
 import type { HoldingsSnapshot } from './holdings.js';
 import type { SkippedTransaction } from './skipped-transactions.js';
 import type { SyncOverrides } from './sync-overrides.js';
+import type { UnlinkLeg, UnlinkResult } from './link-pair.js';
 
 /** A Wealthfolio activity row, normalized across the SDK and REST shapes. */
 export interface HostActivity {
@@ -105,10 +106,13 @@ export interface LinkLeg {
 export interface LinkResult {
   linked: boolean;
   groupId?: string;
-  /** The two re-created rows' ids, in leg order, when the host's echo carried
-   *  them. Linking deletes and re-creates both legs, so these are NEW ids —
-   *  the change log records them for R2. Absent from an older host. */
+  /** The two rows' ids, in leg order, when the host's echo carried them.
+   *  Re-creating both legs gives NEW ids — the change log records them for
+   *  R2; a link in place keeps the old ones. Absent from an older host. */
   activityIds?: [string, string];
+  /** Linked by Wealthfolio's own link (shared/link-in-place.ts): same rows,
+   *  same ids, every filing kept, nothing deleted. */
+  inPlace?: true;
   /** Why the link failed, when it did. Present only on `linked: false`.
    *
    *  Linking DELETES both rows before re-creating them, so a refused re-create
@@ -171,8 +175,17 @@ export interface SyncHost {
   listOldestActivities(wfAccountId: string, limit: number): Promise<HostActivity[]>;
   saveMany(req: SaveManyRequest): Promise<SaveManyResult>;
   importActivities(rows: ImportRow[]): Promise<void>;
-  /** Record that two activities are one internal transfer. */
+  /** Record that two activities are one internal transfer: in place where
+   *  Wealthfolio's own link can (shared/link-in-place.ts), else by re-creating
+   *  both (shared/link-pair.ts). */
   linkPair(legs: [LinkLeg, LinkLeg]): Promise<LinkResult>;
+  /**
+   * Undo a link, the two legs becoming ordinary money in or out: in place
+   * where Wealthfolio's own unlink can, else by re-creating both
+   * (`unlinkPairByRecreate`). Optional: a host without it (an older one, a
+   * test double) has the sync re-create them, as it always did.
+   */
+  unlinkPair?(legs: [UnlinkLeg, UnlinkLeg]): Promise<UnlinkResult>;
   /**
    * Writes one investment account's positions for a date, idempotently.
    *
@@ -203,6 +216,9 @@ export interface SyncHost {
   readonly capabilities: {
     /** True when listActivities returns a trustworthy sourceGroupId. */
     readsSourceGroupId: boolean;
+    /** Wealthfolio takes TRANSFER_OUT on a credit card (3.10+): the sync
+     *  writes a card's bookkeeping outflows as one. Absent: it does not. */
+    cardTransferOut?: boolean;
   };
 }
 

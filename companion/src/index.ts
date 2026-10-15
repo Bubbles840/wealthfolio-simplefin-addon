@@ -16,11 +16,12 @@ import { runDateRepair, type DateRepairDeps } from './date-repair.js';
 import { liveOverriddenActivityIds, liveStoredActivityTypes, liveTimeZone } from './date-repair-reads.js';
 import { BOOKKEEPING_FILED_SECRET_KEY, fileSyncBookkeeping, withoutSyncBookkeeping } from './bookkeeping-category.js';
 import { parseFiledState } from '../../shared/bookkeeping-filing.js';
+import { CARD_REWRITE_SECRET_KEY, rewriteCardBookkeeping } from './card-bookkeeping-rewrite.js';
 import cron from 'node-cron';
 import { readFileSync, existsSync } from 'fs';
 import { runSyncCore, descriptionFromComment, txIdFromComment } from '../../shared/sync-core.js';
 import type { SyncResult } from '../../shared/sync-core.js';
-import { RestSyncHost, RestSyncStore } from './rest-host.js';
+import { RestSyncStore, syncHostFor } from './rest-host.js';
 import { WealthfolioClient, type ActivitySearchItem } from './wealthfolio.js';
 import type { DateRepairRow } from '../../shared/date-repair.js';
 import { resolveDigestRows, resolveReportDetail, shortDate, shortDateTime, formatDollars } from '../../shared/telegram.js';
@@ -980,7 +981,8 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
   const store = new RestSyncStore(wfClient);
   // The database path enables the ledger-balance fallback, which is what lets a
   // credit card get a starting balance at all (Wealthfolio values cash only).
-  const host = new RestSyncHost(wfClient, wealthfolioDbPath());
+  // The version decides a card's bookkeeping shape (TRANSFER_OUT from 3.10).
+  const { host, wealthfolioVersion } = await syncHostFor(wfClient, wealthfolioDbPath(), log);
 
   try {
     log('Reading SimpleFin credentials from Wealthfolio addon secrets...');
@@ -1074,9 +1076,33 @@ export async function runCompanionSync(opts: { force?: boolean } = {}): Promise<
     const overrides = await syncOverridesOrEmpty((k) => wfClient.getAddonSecret('simplefin-sync', k));
     await fileAmazonLabelledCharges(wfClient, changeLog.run, overrides);
 
-    // A card's opening DEBT has to be a WITHDRAWAL on Wealthfolio 3.8, which its
-    // Spending page reads as a purchase; filed under an excluded category it
-    // counts nowhere. Best-effort, like the Amazon filing above.
+    // Once, on Wealthfolio 3.10+: the card bookkeeping rows written as
+    // WITHDRAWALs become TRANSFER_OUTs, which its Spending page ignores — before
+    // the filing below, which then has none of them left to file. Best-effort;
+    // an interrupted run carries on at the next sync.
+    const rewriteChanges: ChangeDraft[] = [];
+    await rewriteCardBookkeeping({
+      dbPath: wealthfolioDbPath(),
+      wealthfolioVersion,
+      marker: {
+        get: () => wfClient.getAddonSecret('simplefin-sync', CARD_REWRITE_SECRET_KEY),
+        set: (value) => wfClient.setAddonSecret('simplefin-sync', CARD_REWRITE_SECRET_KEY, value),
+      },
+      saveMany: (req) => host.saveMany(req),
+      // Re-read each batch by id right before it is written (the database read is older).
+      searchByIds: async (ids) => (await wfClient.searchActivities({ page: 0, pageSize: Math.max(ids.length, 1), activityIdFilter: ids }))
+        .map((a) => ({ id: a.id, accountId: a.accountId, activityType: a.activityType, date: a.date, comment: a.comment ?? null, sourceGroupId: a.sourceGroupId ?? null })),
+      installedAddonVersion: () => readInstalledAddonVersion(wealthfolioDbPath()),
+      noOpeningFile: (sfinId) => hasAccountOverride(overrides, sfinId, 'noOpeningFile'),
+      record: (draft) => rewriteChanges.push(draft),
+      log,
+      now: new Date(),
+    }).catch((e) => log(`Card bookkeeping rewrite skipped: ${formatError(e)}`));
+    await recordCompanionChanges(wfClient, rewriteChanges, changeLog.run).catch((e) => log(`Change log skipped: ${formatError(e)}`));
+
+    // A card's opening DEBT has to be a WITHDRAWAL on Wealthfolio 3.8 and 3.9,
+    // which their Spending page reads as a purchase; filed under an excluded
+    // category it counts nowhere. Best-effort, like the Amazon filing above.
     const openingChanges: ChangeDraft[] = [];
     await fileCardOpeningDebts({
       dbPath: wealthfolioDbPath(),
@@ -3935,7 +3961,7 @@ export function buildTelegramListenerDeps(wfClient: WealthfolioClient): Telegram
   const changes: ChangesMenu = createChangesMenu({
     read: (now) => readCompanionChangeLog(wfClient, now),
     undo: (entry, entries, op, variant) => {
-      const run = () => runChangeUndo(entry, entries, op, companionUndoIo(wfClient, wealthfolioDbPath()), variant);
+      const run = () => runChangeUndo(entry, entries, op, companionUndoIo(wfClient, wealthfolioDbPath(), undefined, log), variant);
       // A removal's Undo/Redo writes the row and the skip list the sync reads:
       // refused while the companion's own sync runs, and a sync waits for it.
       return entry.kind === 'transaction-removed'

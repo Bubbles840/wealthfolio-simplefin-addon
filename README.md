@@ -133,7 +133,16 @@ The addon has three tabs: **Home**, **Reports** and **Settings**.
 
 ## Requirements
 
-- Wealthfolio **3.8 or newer** (works with 3.10)
+- Wealthfolio **3.8 or newer** (works with 3.10). Newer versions unlock more:
+  - **3.9 and newer:** the app links and unlinks transfers in place (the
+    companion does on 3.8 too), and reads whether a transaction is linked and
+    what it is filed under, so its Link, Remove for good… and Undo go by
+    Wealthfolio's word, and a transaction's story names its category and the
+    other half of its transfer.
+  - **3.10 and newer:** a credit card's opening debt, corrections and held
+    transfers are Transfer Out, which Wealthfolio's Spending page leaves out on
+    its own, with the Docker companion running (the add-on learns the version
+    from it); the companion also rewrites the existing ones once.
 - A SimpleFin account and a one-time **setup token**
 - Optional: Docker, for the background companion (background sync, Reports,
   the Telegram bot and Amazon categorization)
@@ -153,7 +162,26 @@ Before or right after you upgrade:
   Health page no longer shows a stale projection before running a Deep scan.
 - On its next sync, the companion makes sure "Opening balances" (and, when it
   has bookkeeping rows to file, "Sync bookkeeping") is excluded from
-  Wealthfolio's spending.
+  Wealthfolio's spending. Once it has a live database read and the 1.62 add-on
+  is installed, it also rewrites a credit card's bookkeeping withdrawals as
+  Transfer Out, once (it clears their phantom `$CASH` asset and leaves
+  rows in a transfer group, rows you split, retyped or filed yourself, a real
+  security, and a starting balance whose opening-balance filing you undid).
+
+### Updating the add-on to 1.62.0
+
+1.62.0 asks for new permissions, and Wealthfolio's **Update** button refuses an
+update that does. Install 1.62.0 over the installed add-on with **Install from
+File**, without removing the old one first, and approve them: linking and
+unlinking transfers, reading how Wealthfolio files and links each transaction,
+and your spending categories' names. Your settings stay.
+
+Upload the add-on zip before the companion, or together with it. The
+companion's two one-time passes, the date repair (see "Date repair" below) and
+the card rewrite above, wait for the 1.62 add-on when the companion can see
+the installed add-on; when it can't, they run at once. Then reload any browser
+tab still running 1.61: until it is reloaded it keeps writing bare dates, and
+a card's bookkeeping as withdrawals.
 
 ### Adding or removing accounts later
 
@@ -191,7 +219,8 @@ nothing.
 - Transfers between two mapped accounts (for example, paying a credit card from
   checking) are matched on equal amounts, opposite signs, within five days, and
   imported as a linked Transfer Out / Transfer In pair — excluded from both
-  spending and income.
+  spending and income. Wealthfolio links the two rows itself wherever it can,
+  so they keep their ids and categories.
 - Positive amounts on a credit-card account import as **Credit** (a refund,
   netted against spending) unless they look like a card payment — "payment",
   "autopay", "thank you", "e-pay" — which become Transfer In.
@@ -214,7 +243,9 @@ day before the earliest transaction, so the account's history never dips
 below zero.
 
 A credit card that started out owing money gets its opening debt as a
-withdrawal, the only money-out type Wealthfolio accepts on a card. The Docker
+Transfer Out on Wealthfolio 3.10 and newer (the companion reads the version itself; the add-on needs a companion that
+synced in the last two days), which its Spending page leaves out. Before 3.10 it is a
+withdrawal, the only money-out type Wealthfolio accepts on a card; the Docker
 companion files it under an **Opening balances** spending category and
 excludes that category from spending, so Wealthfolio's Spending page does not
 read it as a purchase. On Wealthfolio 3.9 and later it does the same for the
@@ -228,15 +259,13 @@ touches. It never touches a row with split lines either.
 ### Date repair (upgrading to 1.62)
 
 New rows are written at noon UTC on the bank's date, and the companion moves
-rows already stored at midnight UTC the same way, once, in small batches. Put
-the add-on zip up before or together with the companion (the repair waits for
-the 1.62 add-on when the companion can see it; when it can't, the repair runs
-at once), and reload any browser tab still running 1.61, which writes bare
-dates until reloaded. It leaves linked transfers and rows with a type
-override alone, and touches only the accounts the add-on syncs. It reads the
-database live only, so it waits when the database can only be read as a
-snapshot. The repair resumes on its own on the next sync if interrupted. To
-run it again, delete the `date_repair_done` secret.
+rows already stored at midnight UTC the same way, once, in small batches. It
+waits for the 1.62 add-on: see "Updating the add-on to 1.62.0" above for the
+order. It leaves linked transfers and rows with a type override alone, and
+touches only the accounts the add-on syncs. It reads the database live only,
+so it waits when the database can only be read as a snapshot. The repair
+resumes on its own on the next sync if interrupted. To run it again, delete
+the `date_repair_done` secret.
 
 ### Deep scan
 

@@ -756,7 +756,9 @@ export type BookkeepingStep =
   /** 1.62 (W3): the sync's bookkeeping rows filed under, or taken out of, "Sync bookkeeping". */
   | 'sync-bookkeeping'
   /** 1.62 (W3): the "Sync bookkeeping" category was created, or its exclusion (re)added. */
-  | 'sync-bookkeeping-setup';
+  | 'sync-bookkeeping-setup'
+  /** 1.62 (U4): a card's bookkeeping WITHDRAWALs restated as TRANSFER_OUT on 3.10+. */
+  | 'card-transfer-out';
 
 export interface BookkeepingFacts {
   step: BookkeepingStep;
@@ -783,6 +785,10 @@ export interface BookkeepingFacts {
   unfiledIds?: string[];
   /** `sync-bookkeeping-setup` only: Wealthfolio did not take the exclusion (yet). */
   excludePending?: boolean;
+  /** `card-transfer-out` only: rows Wealthfolio refused for good, left as they were. */
+  refused?: string[];
+  /** `transfer-unlink` only: Wealthfolio's own unlink kept both rows, retyped. */
+  inPlace?: boolean;
 }
 
 /** `sync-bookkeeping`: what one pass filed and took out. */
@@ -797,16 +803,24 @@ function syncBookkeepingSummary(filed: number, unfiled: number, category: string
 /** Repairs the sync makes to its own rows. Shown behind a button; never undoable. */
 export function bookkeepingChange(f: BookkeepingFacts): ChangeDraft {
   const n = f.total ?? f.activityIds.length;
+  const refusedCount = f.refused?.length ?? 0;
+  const refusedNote = `Wealthfolio refused ${refusedCount} ${plural(refusedCount, 'row', 'rows')}, which ${plural(refusedCount, 'stays', 'stay')} as ${plural(refusedCount, 'it was', 'they were')}`;
   const summary = f.step === 'legacy-placeholder'
     ? `Restated ${n} old placeholder ${plural(n, 'row', 'rows')} with ${plural(n, 'its', 'their')} real ${plural(n, 'amount', 'amounts')}`
+    : f.step === 'card-transfer-out'
+    ? (n === 0 && refusedCount > 0
+      ? `Couldn't restate ${refusedCount} card bookkeeping ${plural(refusedCount, 'row', 'rows')} as transfers out: Wealthfolio refused ${plural(refusedCount, 'it', 'them')}, so ${plural(refusedCount, 'it stays', 'they stay')} as ${plural(refusedCount, 'it was', 'they were')}`
+      : `Restated ${n} card bookkeeping ${plural(n, 'row', 'rows')} as ${plural(n, 'a transfer', 'transfers')} out, which Wealthfolio leaves out of spending${refusedCount > 0 ? `; ${refusedNote}` : ''}`)
     : f.step === 'external-marker'
       ? `Marked ${n} bookkeeping ${plural(n, 'row', 'rows')} as outside transfers for Wealthfolio's Health page`
       : f.step === 'transfer-relink'
         ? `Re-created ${n} old transfer ${plural(n, 'row', 'rows')} so ${plural(n, 'it moves', 'they move')} cash`
         : f.step === 'transfer-unlink'
-          ? ((f.pairs ?? 1) > 1
-            ? `Unlinked ${f.pairs} transfers you undid: re-created their ${f.rows ?? n} rows as spending or money in`
-            : `Unlinked a transfer you undid: re-created ${(f.rows ?? n) === 1 ? 'its row' : `its ${f.rows ?? n} rows`} as spending or money in`)
+          ? (f.inPlace
+            ? 'Unlinked a transfer you undid: both rows now count as spending or money in'
+            : (f.pairs ?? 1) > 1
+              ? `Unlinked ${f.pairs} transfers you undid: re-created their ${f.rows ?? n} rows as spending or money in`
+              : `Unlinked a transfer you undid: re-created ${(f.rows ?? n) === 1 ? 'its row' : `its ${f.rows ?? n} rows`} as spending or money in`)
           : f.step === 'date-repair'
             ? `Moved ${n} ${plural(n, 'row', 'rows')} stored at midnight UTC to noon on the same date, so Wealthfolio counts ${plural(n, 'it', 'them')} on the bank's day${
               f.skipped ? ` — ${f.skipped} linked or retyped ${plural(f.skipped, 'row', 'rows')} left as ${plural(f.skipped, 'it was', 'they were')}` : ''}${
@@ -832,6 +846,7 @@ export function bookkeepingChange(f: BookkeepingFacts): ChangeDraft {
       ...(f.skipped !== undefined ? { skipped: f.skipped } : {}),
       ...(f.failed ? { failed: f.failed } : {}),
       ...(f.unfiledIds ? { unfiled: f.unfiledIds.length } : {}),
+      ...(f.refused?.length ? { refused: [...f.refused] } : {}),
     },
     undoable: false,
   };

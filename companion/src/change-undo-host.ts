@@ -30,10 +30,11 @@ export type UndoClient = SecretClient & Pick<WealthfolioClient,
 export function companionUndoIo(
   client: UndoClient,
   dbPath: string,
-  host: SyncHost = new RestSyncHost(client as unknown as WealthfolioClient, dbPath),
+  host?: SyncHost,
+  log?: (message: string) => void,
 ): UndoIo {
   return {
-    host,
+    host: host ?? new RestSyncHost(client as unknown as WealthfolioClient, dbPath, log ? { log } : {}),
     secrets: {
       get: (k) => client.getAddonSecret(ADDON_ID, k),
       set: (k, v) => client.setAddonSecret(ADDON_ID, k, v),
