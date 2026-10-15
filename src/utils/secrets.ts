@@ -214,6 +214,14 @@ export class SecretsStore {
     await this.recordChanges([stampChange(draft, 'addon', new Date())]);
   }
 
+  /** As `recordChange`, but says whether THIS entry was written (the same
+   *  queue, the same gap record on a failure): for a caller that must not
+   *  promise an Undo it cannot give (W11's payback). Never rejects. */
+  async recordChangeStrict(draft: ChangeDraft): Promise<boolean> {
+    const { saved } = await this.changeLog.appendStrict(this.changeLogIo(), [stampChange(draft, 'addon', new Date())]);
+    return saved;
+  }
+
   /** What `runSync` hands the core: this writer, a fresh run id. */
   changeLogSink(now = new Date()): ChangeLogSink {
     return { writer: 'addon', run: newRunId('addon', now), append: (entries) => this.recordChanges(entries) };

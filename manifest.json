@@ -67,9 +67,13 @@
     {
       "category": "spending",
       "functions": [
-        "getCategories"
+        "getCategories",
+        "getRules",
+        "saveRule",
+        "deleteRule",
+        "rerunRules"
       ],
-      "purpose": "Read your spending categories' names, to show what a transaction is filed under"
+      "purpose": "Read your spending categories' names, to show what a transaction is filed under. On Wealthfolio 3.9 and newer: file a deposit you mark as a payback under the spending it pays back, through a one-off filing rule the add-on makes, runs and deletes"
     },
     {
       "category": "navigation",
