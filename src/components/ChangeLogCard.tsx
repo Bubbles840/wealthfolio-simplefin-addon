@@ -41,6 +41,7 @@ export const OVERRIDES_TITLE = 'Your overrides';
 export const OVERRIDES_EMPTY = 'None. The sync decides everything.';
 export const OVERRIDES_UNREADABLE = "Your sync overrides can't be read, so they can't be changed here.";
 export const OVERRIDES_READ_FAILED = 'Could not read your overrides — reload the page to try again.';
+export const OVERRIDE_PAYBACK_UNDO = 'Undo it from Telegram: /changes';
 export const OVERRIDE_REMOVED = 'Removed. The next sync decides again.';
 const DAY_CHOICES = [7, 30, 90] as const;
 type Days = (typeof DAY_CHOICES)[number];
@@ -275,7 +276,9 @@ function OverridesList({ load, remove, version }: {
         rows.map((r) => (
           <div key={`${r.scope}:${r.key}:${r.flag}`} className="sfin-log-override">
             <span className="sfin-log-summary">{r.text}</span>
-            {remove && <Button variant="ghost" disabled={removing} aria-busy={removing} aria-label={`Remove ${r.text}`} onClick={() => onRemove(r)}>Remove</Button>}
+            {r.flag === 'asReimbursement'
+              ? <span className="sfin-subtle">{OVERRIDE_PAYBACK_UNDO}</span>
+              : remove && <Button variant="ghost" disabled={removing} aria-busy={removing} aria-label={`Remove ${r.text}`} onClick={() => onRemove(r)}>Remove</Button>}
           </div>
         ))
       )}

@@ -353,6 +353,9 @@ export function overrideRows(o: SyncOverrides): OverrideRow[] {
 
 /** The edit that removes one listed override (the list's Remove button). */
 export function removeOverrideRow(o: SyncOverrides, row: Pick<OverrideRow, 'scope' | 'key' | 'flag'>): SyncOverrides {
+  // A payback is undone from /changes, which retypes the row too; clearing only its flag
+  // is not an undo. The list shows it read-only; this keeps any other caller honest.
+  if (row.flag === 'asReimbursement') return o;
   return row.scope === 'tx'
     ? clearTxOverride(o, row.key, row.flag as TxOverrideFlag)
     : clearAccountOverride(o, row.key, row.flag as AccountOverrideFlag);
