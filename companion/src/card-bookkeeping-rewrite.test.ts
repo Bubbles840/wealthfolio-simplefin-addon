@@ -215,15 +215,39 @@ describe('the one-time rewrite of card bookkeeping as transfers out (Wealthfolio
     expect(t.marker()).toBeNull();
   });
 
-  it('PF-H m1/m4: nothing rewritten and every row refused — unmarked, but the refusal is still recorded', async () => {
-    const t = deps(ledger(row('a', 'Balance adjustment · sfc · 1')), {
+  it('all rows refused: marked done after run 1, one entry with the count, and run 2 writes nothing', async () => {
+    const t = deps(ledger(`${row('a', 'Balance adjustment · sfc · 1')}${row('b', 'Balance adjustment · sfc · 2')}`), {
       saveMany: vi.fn(async () => ({ created: [], updated: [], errors: [{ action: 'update', message: 'Invalid data' }] })),
     });
-    expect(await rewriteCardBookkeeping(t.d)).toMatchObject({ kind: 'stopped', rewritten: 0 });
-    expect(t.marker()).toBeNull();
+    expect(await rewriteCardBookkeeping(t.d)).toEqual({ kind: 'done', rewritten: 0, left: 2 });
+    expect(t.marker()).toBe(NOW.toISOString());
     expect(t.drafts).toHaveLength(1);
-    expect(t.drafts[0].summary).toBe('Wealthfolio refused 1 row, which stays as it was');
-    expect((t.drafts[0].after as any).refused).toEqual(['a']);
+    expect(t.drafts[0].summary).toBe("Couldn't restate 2 card bookkeeping rows as transfers out: Wealthfolio refused them, so they stay as they were");
+    expect((t.drafts[0].after as any).refused).toEqual(['a', 'b']);
+    t.d.saveMany.mockClear();
+    expect(await rewriteCardBookkeeping(t.d)).toEqual({ kind: 'done-before' });
+    expect(t.d.saveMany).not.toHaveBeenCalled();
+    expect(t.drafts).toHaveLength(1);
+  });
+
+  it('resume: 50 rows rewritten then a 503 stops the run; the next run, with one refused row left, is marked', async () => {
+    const rows = Array.from({ length: CARD_REWRITE_BATCH + 1 }, (_, i) => row(`plug-${String(i).padStart(3, '0')}`, `Balance adjustment · sfc · day-${i}`)).join('\n');
+    const path = ledger(rows);
+    let calls = 0;
+    const first = deps(path, {
+      saveMany: vi.fn(async (req: SaveManyRequest): Promise<SaveManyResult> => {
+        if (++calls === 2) throw new Error('saveMany failed: 503');
+        applyAsWealthfolio(path, req);
+        return { created: [], updated: [], errors: [] };
+      }),
+    });
+    expect(await rewriteCardBookkeeping(first.d)).toMatchObject({ kind: 'stopped', rewritten: CARD_REWRITE_BATCH });
+    expect(first.marker()).toBeNull();
+    const second = deps(path, {
+      saveMany: vi.fn(async () => ({ created: [], updated: [], errors: [{ action: 'update', message: 'Invalid data' }] })),
+    });
+    expect(await rewriteCardBookkeeping(second.d)).toEqual({ kind: 'done', rewritten: 0, left: 1 });
+    expect(second.marker()).toBe(NOW.toISOString());
   });
 
   it('PF-H m2: an archived card is not read (REST hides it, so it would be logged as gone)', async () => {

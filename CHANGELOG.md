@@ -55,6 +55,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   spending categories' names. Deploy the add-on before or together with the
   companion: the one-time rewrites wait for the 1.62 add-on.
 
+### Fixed
+- The app's sync no longer re-links, on its next run, a pair whose group id
+  Wealthfolio chose itself.
+
 ## [1.61.0] - 2026-10-14
 
 ### Added

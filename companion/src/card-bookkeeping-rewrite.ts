@@ -303,12 +303,6 @@ export async function rewriteCardBookkeeping(deps: CardRewriteDeps): Promise<Car
     deps.log(`Card bookkeeping rewrite stopped after ${done.length} of ${todo.length} rows (${stopped}); the next sync carries on.`);
     return { kind: 'stopped', rewritten: done.length, why: stopped };
   }
-  if (done.length === 0 && refused.length > 0) {
-    // Nothing could be rewritten and Wealthfolio refused every row it was given: not finished, so no marker.
-    const why = 'Wealthfolio refused every row';
-    deps.log(`Card bookkeeping rewrite wrote nothing (${why}); the next sync tries again.`);
-    return { kind: 'stopped', rewritten: 0, why };
-  }
   try {
     await deps.marker.set(deps.now.toISOString());
   } catch (e) {

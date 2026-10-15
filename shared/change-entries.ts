@@ -779,7 +779,7 @@ export function bookkeepingChange(f: BookkeepingFacts): ChangeDraft {
     ? `Restated ${n} old placeholder ${plural(n, 'row', 'rows')} with ${plural(n, 'its', 'their')} real ${plural(n, 'amount', 'amounts')}`
     : f.step === 'card-transfer-out'
     ? (n === 0 && refusedCount > 0
-      ? refusedNote
+      ? `Couldn't restate ${refusedCount} card bookkeeping ${plural(refusedCount, 'row', 'rows')} as transfers out: Wealthfolio refused ${plural(refusedCount, 'it', 'them')}, so ${plural(refusedCount, 'it stays', 'they stay')} as ${plural(refusedCount, 'it was', 'they were')}`
       : `Restated ${n} card bookkeeping ${plural(n, 'row', 'rows')} as ${plural(n, 'a transfer', 'transfers')} out, which Wealthfolio leaves out of spending${refusedCount > 0 ? `; ${refusedNote}` : ''}`)
     : f.step === 'external-marker'
       ? `Marked ${n} bookkeeping ${plural(n, 'row', 'rows')} as outside transfers for Wealthfolio's Health page`
